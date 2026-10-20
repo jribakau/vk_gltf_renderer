@@ -278,6 +278,18 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
       materialIndex = max(0, renderNode.materialID);
 
+#if GLTF_USE_VOLUME
+      // A path inside a medium can only leave it through a back face. Meeting a front face means
+      // the mesh had an opening (an eye socket, a mouth on a figure) and the walk escaped through
+      // it: the medium ended at the opening, so the path continues outside, with no transmittance
+      // charged for the way here and this surface shaded from its front.
+      if(ptIsInside(pt) && hit.frontFace)
+      {
+        pt.isInside     = false;
+        pt.volumeMedium = {};
+      }
+#endif
+
       float     texGrad = worldFoot * hit.texelDensity * pushConst.texGradScale;
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;

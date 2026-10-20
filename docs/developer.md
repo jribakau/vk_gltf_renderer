@@ -373,6 +373,12 @@ The rasterizer cannot trace inside a medium, so `evaluateMaterial()` compiles on
 branch for `RASTER_PIPELINE` — the approximation the scatter spec explicitly permits for renderers
 without volumetric transport.
 
+A medium is bounded by its mesh, and a path leaves it only through a back face. When a path that
+is inside meets a front face instead, the mesh had an opening and the walk escaped through it
+(a figure's eye sockets or mouth); the bounce loop then treats the medium as having ended at the
+opening — the inside state is cleared before the hit is shaded and no transmittance is charged for
+the segment — instead of darkening everything the path meets afterwards.
+
 ### `FV_materials_detail`: a tiled detail layer
 
 A vendor extension written by [Figure Viewer](https://github.com/jribakau/daz-viewer) for DAZ
