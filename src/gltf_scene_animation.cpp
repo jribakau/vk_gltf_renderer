@@ -928,6 +928,32 @@ const MorphResult& AnimationSystem::getMorphResult(size_t morphTaskIndex) const
 
 //--------------------------------------------------------------------------------------------------
 // Find the morph result associated with a render primitive, or nullptr if it has no morph targets.
+bool AnimationSystem::setBaseGeometry(int renderPrimID, std::span<const glm::vec3> positions, std::span<const glm::vec3> normals)
+{
+  bool found  = false;
+  auto assign = [](std::vector<glm::vec3>& dst, std::span<const glm::vec3> src) {
+    if(!src.empty() && dst.size() == src.size())
+      std::copy(src.begin(), src.end(), dst.begin());
+  };
+  for(SkinTask& task : m_skinTasks)
+  {
+    if(task.renderPrimID != renderPrimID)
+      continue;
+    assign(task.basePositions, positions);
+    assign(task.baseNormals, normals);
+    found = true;
+  }
+  for(MorphResult& mr : m_morphResults)
+  {
+    if(mr.renderPrimID != renderPrimID)
+      continue;
+    assign(mr.basePositions, positions);
+    assign(mr.baseNormals, normals);
+    found = true;
+  }
+  return found;
+}
+
 const MorphResult* AnimationSystem::findMorphResult(int renderPrimID) const
 {
   for(const MorphResult& mr : m_morphResults)

@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <span>
+
 
 #include <nvvk/acceleration_structures.hpp>
 
@@ -83,6 +85,10 @@ public:
                          const std::unordered_set<int>& dirtyRenderNodes = {});
   // Update BLAS for morph targets and skinned primitives.
   void updateBottomLevelAS(VkCommandBuffer cmd, const nvvkgltf::Scene& scene);
+  // In-place refit of the given render primitives' BLAS after their vertex buffers changed (live
+  // edits from a host). Primitives whose BLAS was not built with ALLOW_UPDATE are skipped.
+  void updateBottomLevelAS(VkCommandBuffer cmd, std::span<const uint32_t> renderPrimIDs);
+  [[nodiscard]] bool isBlasUpdatable(uint32_t renderPrimID) const;
 
   // ---------- Destroy ----------
   void destroy();

@@ -580,6 +580,28 @@ void nvvkgltf::SceneRtx::updateBottomLevelAS(VkCommandBuffer cmd, const nvvkgltf
   }
 }
 
+void nvvkgltf::SceneRtx::updateBottomLevelAS(VkCommandBuffer cmd, std::span<const uint32_t> renderPrimIDs)
+{
+  for(uint32_t primID : renderPrimIDs)
+  {
+    if(!isBlasUpdatable(primID))
+    {
+      LOGW("BLAS of primitive %u is not updatable (built without ALLOW_UPDATE); edit not visible to ray tracing\n", primID);
+      continue;
+    }
+    m_blasBuildData[primID].cmdUpdateAccelerationStructure(cmd, m_blasAccel[primID].accel, m_blasScratchBuffer.address);
+    nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                                       VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+  }
+}
+
+bool nvvkgltf::SceneRtx::isBlasUpdatable(uint32_t renderPrimID) const
+{
+  return renderPrimID < m_blasBuildData.size() && renderPrimID < m_blasAccel.size()
+         && m_blasAccel[renderPrimID].accel != VK_NULL_HANDLE
+         && (m_blasBuildData[renderPrimID].buildInfo.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) != 0;
+}
+
 //--------------------------------------------------------------------------------------------------
 // Compact BLAS to reduce memory. Call after cmdBuildBottomLevelAccelerationStructure; then destroyNonCompactedBlas().
 VkResult nvvkgltf::SceneRtx::cmdCompactBlas(VkCommandBuffer cmd)

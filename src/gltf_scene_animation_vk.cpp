@@ -589,4 +589,35 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
                          VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 }
 
+bool AnimationVk::updateBaseGeometry(nvvk::CmdUploaderInterface& staging,
+                                     const Scene&                scn,
+                                     int                         renderPrimID,
+                                     std::span<const glm::vec3>  positions,
+                                     std::span<const glm::vec3>  normals)
+{
+  bool found = false;
+  auto upload = [&](const nvvk::Buffer& dst, std::span<const glm::vec3> src) {
+    if(dst.buffer != VK_NULL_HANDLE && !src.empty() && dst.bufferSize == src.size_bytes())
+      NVVK_CHECK(staging.appendBuffer(dst, 0, src.size_bytes(), src.data()));
+  };
+  const auto& skinTasks = scn.animation().getSkinTasks();
+  for(size_t i = 0; i < skinTasks.size() && i < m_skinGpuData.size(); i++)
+  {
+    if(skinTasks[i].renderPrimID != renderPrimID)
+      continue;
+    upload(m_skinGpuData[i].basePositions, positions);
+    upload(m_skinGpuData[i].baseNormals, normals);
+    found = true;
+  }
+  for(size_t mi = 0; mi < m_morphGpuData.size(); mi++)
+  {
+    if(scn.animation().getMorphResult(mi).renderPrimID != renderPrimID)
+      continue;
+    upload(m_morphGpuData[mi].basePositions, positions);
+    upload(m_morphGpuData[mi].baseNormals, normals);
+    found = true;
+  }
+  return found;
+}
+
 }  // namespace nvvkgltf

@@ -335,6 +335,34 @@ public:
   [[nodiscard]] bool loadHdrEnvironment(const std::filesystem::path& filename);
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);
 
+  // The tonemapped output and its size, for the headless frame stream (src/frame_stream.hpp). The
+  // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.
+  VkImage    tonemappedImage() const { return m_resources.gBuffers.getColorImage(Resources::eImgTonemapped); }
+  VkExtent2D renderSize() const { return m_resources.gBuffers.getSize(); }
+
+  // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.
+  nvvkgltf::Scene*  editScene() { return m_resources.getScene(); }
+  AnimationControl& editAnimationControl() { return m_resources.animationControl; }
+  bool              isBlasUpdatable(uint32_t renderPrimID) const { return m_resources.sceneRtx.isBlasUpdatable(renderPrimID); }
+  // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
+  // geometry edits can refit in place. Must be set before the scene loads.
+  void setEditable(bool editable) { m_editable = editable; }
+  bool isEditable() const { return m_editable; }
+  // Re-run skinning / morphing and the BLAS + TLAS refit on the next frame, even when no animation
+  // plays (joint transforms or morph weights changed).
+  void requestAnimationReconcile() { m_pendingAnimReconcile = true; }
+  // Bumped on every scene load, so a host's cached ids can tell scenes apart.
+  uint64_t sceneGeneration() const { return m_sceneGeneration; }
+  struct VertexUpload
+  {
+    int                    renderPrimID = -1;
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> normals;  // empty: keep the current normals
+  };
+  // New vertex positions (and normals) for one render primitive, applied at the start of the next
+  // frame's render. Skinned / morphed primitives get new base geometry; others are copied directly.
+  void queueVertexUpload(VertexUpload&& upload) { m_pendingVertexUploads.push_back(std::move(upload)); }
+
   /// Write the current scene to `filename`; backs --savefile, so it is reachable from the command
   /// line, a benchmark sequence and nvpro_set_parameters through the same single registration the
   /// load parameters use. Application thread only: it reads scene and model state.
@@ -412,6 +440,12 @@ private:
   // common tail of updateAnimation() (UI-driven single clip) and updateInteractivityGraphs()
   // (KHR_interactivity-driven, possibly several clips at once via animation/start).
   void reconcileAnimationGpuState(VkCommandBuffer cmd);
+  // Live edits queued by the host (vertex uploads, reconcile requests); see queueVertexUpload().
+  bool                      applyPendingSceneEdits(VkCommandBuffer cmd);
+  bool                      m_editable{false};
+  bool                      m_pendingAnimReconcile{false};
+  uint64_t                  m_sceneGeneration{0};
+  std::vector<VertexUpload> m_pendingVertexUploads;
   // KHR_interactivity: ticks the scene's default behavior graph instance, then applies any
   // animation/start-driven pose changes it computed this tick (via reconcileAnimationGpuState()).
   // pointer/set's glTF-model writes flow through Scene::markNodeDirty/markMaterialDirty and are

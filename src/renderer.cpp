@@ -210,7 +210,8 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   "Compile gltf_pathtrace.slang with GLTF_USE_* gates specialized per scene "
                   "(no runtime MAT_EXT_* changes; triggers shader recompile on scene/material change). Default off."},
                  &m_resources.settings.optimalShader, Persist::eYes);
-  m_settings.add({"useSolidBackground", "Use solid color background"}, &m_resources.settings.useSolidBackground, Persist::eYes, true);
+  // A value rather than a trigger, so a host can turn it off again over MCP (triggers aren't exposed there).
+  m_settings.add({"useSolidBackground", "Use solid color background"}, &m_resources.settings.useSolidBackground, Persist::eYes);
   m_settings.addVector({"solidBackgroundColor", "Solid Background Color"}, &m_resources.settings.solidBackgroundColor, Persist::eYes);
   m_settings.add({"ptMaxFrames", "Maximum number of iterations"}, &m_resources.settings.maxFrames, Persist::eYes);
   // Not persisted: a scripted or headless run must not change what the next interactive session plays.
@@ -1374,6 +1375,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // Check for changes
   bool changed{false};
   changed |= interactivityAnimationApplied;
+  changed |= applyPendingSceneEdits(cmd);  // Host edits (vertex uploads); before animation so it composes on top
   changed |= updateAnimation(cmd);  // Update the animation
   changed |= updateSceneChanges(cmd);
   if(changed)
@@ -3071,6 +3073,9 @@ bool GltfRenderer::createScene(const std::filesystem::path& sceneFilename)
 //
 void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
 {
+  ++m_sceneGeneration;
+  m_pendingVertexUploads.clear();
+  m_pendingAnimReconcile = false;
   // Scene object is set, we can create the Vulkan scene
   createVulkanScene();
   if(ui::animation::hasPlayableAnimation(m_resources.getScene()))
@@ -3517,7 +3522,8 @@ void GltfRenderer::createVulkanScene()
 void GltfRenderer::buildAccelerationStructures()
 {
   // Skip BLAS compaction for animated scenes to avoid freezing mesh positions; only static scenes are compacted.
-  const bool isAnimated = m_resources.getScene() && m_resources.getScene()->animation().hasAnimation();
+  // An editable (host-driven) session refits geometry in place too, so it never compacts.
+  const bool isAnimated = m_editable || (m_resources.getScene() && m_resources.getScene()->animation().hasAnimation());
   VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
   flags |= isAnimated ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
 
@@ -4162,8 +4168,12 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
     nvvkgltf::AnimationInfo& animInfo  = scn.animation().getAnimationInfo(animCtrl.currentAnimation);
     if(animCtrl.isReset())
       animInfo.reset();
-    else
-      animInfo.incrementTime(deltaTime);
+    else if(!animCtrl.seek)
+    {
+      animInfo.incrementTime(deltaTime, animCtrl.loop);
+      if(!animCtrl.loop && animInfo.currentTime >= animInfo.end)
+        animCtrl.play = false;
+    }
 
     // Evaluate animation channels (marks Scene nodes dirty internally; also marks
     // render nodes for skins whose joints moved, and materials/lights for pointer channels)
@@ -4175,10 +4185,96 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
 
     animCtrl.clearStates();
     reconcileAnimationGpuState(cmd);
+    m_pendingAnimReconcile = false;
+    return true;
+  }
+
+  // A host changed joint transforms or morph weights without an animation playing.
+  if(m_pendingAnimReconcile)
+  {
+    m_pendingAnimReconcile = false;
+    auto timerSection      = m_profilerGpuTimer.cmdFrameSection(cmd, "Live edit reconcile");
+    reconcileAnimationGpuState(cmd);
     return true;
   }
 
   return false;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Apply vertex uploads queued by a host (queueVertexUpload). Skinned / morphed primitives get new
+// base geometry and are recomputed by the reconcile that follows in updateAnimation(); static ones
+// are copied into their vertex buffers here and their BLAS refit in place. The render nodes are
+// marked so the TLAS is refit on either transform path.
+bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
+{
+  if(m_pendingVertexUploads.empty())
+    return false;
+  nvvkgltf::Scene* scn = m_resources.getScene();
+  if(!scn || !scn->valid())
+  {
+    m_pendingVertexUploads.clear();
+    return false;
+  }
+
+  auto                  timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Live vertex edits");
+  const auto&           vertexBufs   = m_resources.sceneVk.vertexBuffers();
+  const auto&           renderNodes  = scn->getRenderNodes();
+  std::vector<uint32_t> staticPrims;
+  bool                  any = false;
+
+  for(VertexUpload& u : m_pendingVertexUploads)
+  {
+    if(u.renderPrimID < 0 || u.renderPrimID >= int(vertexBufs.size()))
+      continue;
+    const std::span<const glm::vec3> pos(u.positions);
+    const std::span<const glm::vec3> nrm(u.normals);
+    if(m_resources.animationVk.updateBaseGeometry(m_resources.staging, *scn, u.renderPrimID, pos, nrm))
+    {
+      scn->animation().setBaseGeometry(u.renderPrimID, pos, nrm);
+      m_pendingAnimReconcile = true;
+    }
+    else
+    {
+      const auto& vb = vertexBufs[u.renderPrimID];
+      if(vb.position.buffer == VK_NULL_HANDLE || vb.position.bufferSize != pos.size_bytes())
+      {
+        LOGW("Vertex upload for primitive %d: %zu positions do not match the buffer; skipped\n", u.renderPrimID, pos.size());
+        continue;
+      }
+      NVVK_CHECK(m_resources.staging.appendBuffer(vb.position, 0, pos.size_bytes(), pos.data()));
+      if(!nrm.empty() && vb.normal.buffer != VK_NULL_HANDLE && vb.normal.bufferSize == nrm.size_bytes())
+        NVVK_CHECK(m_resources.staging.appendBuffer(vb.normal, 0, nrm.size_bytes(), nrm.data()));
+      staticPrims.push_back(uint32_t(u.renderPrimID));
+    }
+    for(size_t rn = 0; rn < renderNodes.size(); rn++)
+      if(renderNodes[rn].renderPrimID == u.renderPrimID)
+        scn->markRenderNodeDirty(int(rn), /*forVk=*/false, /*forRtx=*/true);
+    any = true;
+  }
+  m_pendingVertexUploads.clear();
+
+  if(!staticPrims.empty())
+  {
+    // The previous frame's readers of these buffers (raster, ray tracing, AS builds) before the copy,
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
+                               | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    m_resources.staging.cmdUploadAppended(cmd);
+    // then the copy before the BLAS refit and this frame's readers.
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT,
+                           VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
+                               | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT
+                               | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+    m_resources.sceneRtx.updateBottomLevelAS(cmd, staticPrims);
+    // BLAS refits finish before the TLAS refit reads them.
+    nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                                       VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+  }
+  return any;
 }
 
 void GltfRenderer::reconcileAnimationGpuState(VkCommandBuffer cmd)

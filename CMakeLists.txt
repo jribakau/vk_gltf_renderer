@@ -265,7 +265,71 @@ if(NVPRO2_ENABLE_nvmcp)
   endif()
   target_link_libraries(${PROJECT_NAME} PRIVATE nvpro2::nvmcp)
   target_compile_definitions(${PROJECT_NAME} PRIVATE USE_NVMCP)
+  # src/frame_stream.cpp serves frames with the cpp-httplib that ships inside cpp-mcp.
+  if(TARGET mcp)
+    get_target_property(_mcp_includes mcp INTERFACE_INCLUDE_DIRECTORIES)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${_mcp_includes})
+  endif()
 endif()
+
+# src/frame_stream.cpp encodes its frames with libjpeg-turbo (TurboJPEG API), about 10x faster
+# than stb. Its SIMD code is NASM assembly; without NASM it would quietly fall back to plain C,
+# so NASM is downloaded on Windows and SIMD is required. libjpeg-turbo can't be built with
+# add_subdirectory (it relies on CMAKE_SOURCE_DIR), hence the external project; only the
+# turbojpeg-static target is built, and linked straight from its build folder.
+set(LIBJPEG_TURBO_VERSION 3.2.0)
+download_package(
+  NAME libjpeg-turbo
+  URLS https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/${LIBJPEG_TURBO_VERSION}.zip
+  VERSION ${LIBJPEG_TURBO_VERSION}
+  LOCATION LIBJPEG_TURBO_DIR
+)
+set(LIBJPEG_TURBO_SOURCE_DIR ${LIBJPEG_TURBO_DIR}/libjpeg-turbo-${LIBJPEG_TURBO_VERSION})
+if(WIN32)
+  set(NASM_VERSION 2.16.03)
+  download_package(
+    NAME nasm
+    URLS https://www.nasm.us/pub/nasm/releasebuilds/${NASM_VERSION}/win64/nasm-${NASM_VERSION}-win64.zip
+    VERSION ${NASM_VERSION}
+    LOCATION NASM_DIR
+  )
+  set(NASM_EXECUTABLE ${NASM_DIR}/nasm-${NASM_VERSION}/nasm.exe)
+else()
+  find_program(NASM_EXECUTABLE nasm REQUIRED)
+endif()
+include(ExternalProject)
+set(TURBOJPEG_BINARY_DIR ${CMAKE_BINARY_DIR}/_deps/turbojpeg-build)
+get_property(_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(_multi_config)
+  set(_turbojpeg_build_type)
+  set(_turbojpeg_lib_dir ${TURBOJPEG_BINARY_DIR}/$<CONFIG>)
+else()
+  set(_turbojpeg_build_type -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE})
+  set(_turbojpeg_lib_dir ${TURBOJPEG_BINARY_DIR})
+endif()
+if(MSVC)
+  set(TURBOJPEG_LIBRARY ${_turbojpeg_lib_dir}/turbojpeg-static.lib)
+else()
+  set(TURBOJPEG_LIBRARY ${_turbojpeg_lib_dir}/libturbojpeg.a)
+endif()
+ExternalProject_Add(libjpeg_turbo
+  SOURCE_DIR ${LIBJPEG_TURBO_SOURCE_DIR}
+  BINARY_DIR ${TURBOJPEG_BINARY_DIR}
+  CMAKE_ARGS
+    -DCMAKE_ASM_NASM_COMPILER=${NASM_EXECUTABLE}
+    -DREQUIRE_SIMD=ON
+    -DENABLE_SHARED=OFF
+    -DWITH_TOOLS=OFF
+    -DWITH_CRT_DLL=ON
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+    ${_turbojpeg_build_type}
+  BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG> --target turbojpeg-static
+  INSTALL_COMMAND ""
+  BUILD_BYPRODUCTS ${TURBOJPEG_LIBRARY}
+)
+add_dependencies(${PROJECT_NAME} libjpeg_turbo)
+target_include_directories(${PROJECT_NAME} PRIVATE ${LIBJPEG_TURBO_SOURCE_DIR}/src)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${TURBOJPEG_LIBRARY})
 
 add_project_definitions(${PROJECT_NAME})
 

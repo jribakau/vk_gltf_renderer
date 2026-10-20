@@ -46,6 +46,10 @@
 #include "renderer.hpp"
 #include "ui_dock_layout.hpp"
 #include "mcp_timing.hpp"
+#include "frame_stream.hpp"
+#include "mcp_scene.hpp"
+
+#include <algorithm>
 #ifdef USE_AGENTIC
 #include "agentic_bridge.hpp"
 #endif
@@ -205,6 +209,20 @@ auto main(int argc, char** argv) -> int
   bool useOpacityMicromap = true;
   parameterRegistry.add({"useOpacityMicromap", "Use EXT_mesh_opacity_micromap opacity micromaps when supported"}, &useOpacityMicromap);
 
+  // Render server for a host application (Figure Viewer): a headless run that serves its frames
+  // over HTTP (see src/frame_stream.hpp) while the host drives it over --mcp.
+  bool     enableStream  = false;
+  uint32_t streamPort    = 7672;
+  int      streamQuality = 92;
+  int      streamFps     = 60;
+  parameterRegistry.add({"stream", "Headless only: serve the rendered frames over HTTP (MJPEG) for a host application"}, &enableStream, true);
+  parameterRegistry.add({"streamPort", "Port for the --stream endpoint (1-65535)"}, &streamPort);
+  parameterRegistry.add({"streamQuality", "JPEG quality of the --stream frames (1-100)"}, &streamQuality);
+  parameterRegistry.add({"streamFps", "Frame-rate cap of a --stream run"}, &streamFps);
+  // Live editing by a host (src/mcp_scene.cpp): keep every BLAS refittable instead of compacting it.
+  bool editable = false;
+  parameterRegistry.add({"editable", "Keep geometry refittable for live edits over --mcp (implied by --stream)"}, &editable, true);
+
   // Don't show the profiler by default
   auto profilerSettings  = std::make_shared<nvapp::ElementProfiler::ViewSettings>();
   profilerSettings->show = false;
@@ -249,6 +267,8 @@ auto main(int argc, char** argv) -> int
   // takes effect for a normal (non --agenticBridgeInit) run, not just the init path.
   elemGltfRenderer->setAgenticBridgeRoot(agenticBridgeRoot);
 #endif  // USE_AGENTIC
+
+  elemGltfRenderer->setEditable(editable || enableStream);
 
   if(appInfo.headless)
   {
@@ -533,6 +553,29 @@ auto main(int argc, char** argv) -> int
     app.addElement(elemSequencer);
   }
   app.addElement(elemGltfRenderer);
+  if(enableStream)
+  {
+    if(!appInfo.headless)
+    {
+      LOGW("--stream needs --headless; ignored.\n");
+    }
+    else if(streamPort == 0 || streamPort > 65535)
+    {
+      LOGE("--streamPort %u is not a valid TCP port (1-65535); frames are not served.\n", unsigned(streamPort));
+    }
+    else
+    {
+      GltfRenderer* r = elemGltfRenderer.get();
+      // after the renderer, so the copy sees the frame it just rendered
+      app.addElement(std::make_shared<FrameStream>(FrameStreamCreateInfo{
+          .port      = uint16_t(streamPort),
+          .quality   = std::clamp(streamQuality, 1, 100),
+          .maxFps    = std::clamp(streamFps, 1, 240),
+          .image     = [r] { return r->tonemappedImage(); },
+          .imageSize = [r] { return r->renderSize(); },
+      }));
+    }
+  }
 #ifdef USE_NVMCP
   if(enableMcp && (mcpPort == 0 || mcpPort > 65535))
   {
@@ -544,6 +587,7 @@ auto main(int argc, char** argv) -> int
   {
     if(auto elemMcp = createTimingMcpServer({.port = uint16_t(mcpPort)}, elemGltfRenderer))
     {
+      registerSceneMcpTools(*elemMcp, elemGltfRenderer);
       app.addElement(elemMcp);
     }
   }

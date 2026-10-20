@@ -57,6 +57,8 @@ struct AnimationControl
   float speed            = 1.0F;   // Playback multiplier
   int   currentAnimation = 0;      // Index into AnimationSystem clips
   bool  showStrip        = false;  // Viewport Animation Strip overlay visible (auto-enabled on animated scene load)
+  bool  loop             = true;   // Wrap at the clip end; false stops playback there
+  bool  seek             = false;  // One-shot: evaluate the clip at its current time without advancing it
 
   // Domain actions (used by the Animation Strip widget and keyboard shortcut)
   void togglePlay() { play = !play; }
@@ -73,12 +75,12 @@ struct AnimationControl
   void scrubTo(float time, nvvkgltf::Scene* scene);
 
   // Queries consumed by the animation update path
-  [[nodiscard]] bool  doAnimation() const { return play || runOnce || reset; }
+  [[nodiscard]] bool  doAnimation() const { return play || runOnce || reset || seek; }
   [[nodiscard]] float deltaTime() const;
   [[nodiscard]] bool  isReset() const { return reset; }
 
   // Called by the animation update path after consuming a one-shot step/reset.
-  void clearStates() { runOnce = reset = false; }
+  void clearStates() { runOnce = reset = seek = false; }
 
   // Format a time value in seconds as mm:ss.ms (used by the time readout).
   static std::string formatTime(float seconds);

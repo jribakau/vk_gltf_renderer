@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <span>
+
 #include <vector>
 #include <nvvk/resource_allocator.hpp>
 #include <nvvk/uploader_interface.hpp>
@@ -59,6 +61,17 @@ public:
   // --- Scene data (call once per scene load/rebuild) ---
   void createGpuBuffers(nvvk::CmdUploaderInterface& staging, const Scene& scn);  // Upload static SSBOs
   void destroyGpuBuffers();                                                      // Release static + workspace SSBOs
+
+  // --- Live edits ---
+  // Replace the static base geometry a skinned or morphed primitive is computed from (its SceneVk
+  // vertex buffers are compute outputs, rewritten from these on every dispatch). Sizes must match
+  // the buffers createGpuBuffers() made. Returns false when the primitive is neither skinned nor
+  // morphed; the caller then uploads into the SceneVk buffers directly.
+  bool updateBaseGeometry(nvvk::CmdUploaderInterface& staging,
+                          const Scene&                scn,
+                          int                         renderPrimID,
+                          std::span<const glm::vec3>  positions,
+                          std::span<const glm::vec3>  normals);
 
   // --- Per-frame animation (call each frame when animation is active) ---
   void dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, Scene& scn, const SceneVk& scnVk);

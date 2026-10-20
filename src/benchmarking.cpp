@@ -239,7 +239,9 @@ void BenchmarkController::beginHeadlessTimingIfNeeded(bool isHeadless, const Hea
 // has passed since the previous report (whichever happens first).
 void BenchmarkController::updateHeadlessProgressIfNeeded(const HeadlessFrameInfo& info)
 {
-  if(!m_headlessTimingActive)
+  // An open-ended run (--frames 0, a render server) has no last frame to report towards; the
+  // per-frame "first or last" record would otherwise be emitted every frame.
+  if(!m_headlessTimingActive || info.totalFrames == 0)
   {
     return;
   }
