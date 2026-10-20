@@ -160,6 +160,18 @@ void collectMaterialExtensionTextures(const tinygltf::Material& material, std::s
     if(idx >= 0)
       usedTextures.insert(idx);
   }
+
+  // FV_materials_detail
+  if(material.extensions.count(FV_MATERIALS_DETAIL_EXTENSION_NAME))
+  {
+    const tinygltf::Value& ext = material.extensions.at(FV_MATERIALS_DETAIL_EXTENSION_NAME);
+    for(const char* key : {"detailNormalTexture", "detailWeightTexture", "detailRoughnessTexture"})
+    {
+      int idx = getTextureIndex(ext, key);
+      if(idx >= 0)
+        usedTextures.insert(idx);
+    }
+  }
 }
 
 // Remap texture indices in material extensions
@@ -248,6 +260,15 @@ void remapMaterialExtensionTextures(tinygltf::Material& material, const std::vec
   {
     tinygltf::Value& ext = material.extensions.at(KHR_MATERIALS_RETROREFLECTION_EXTENSION_NAME);
     remapTextureIndex(ext, "retroreflectionTexture");
+  }
+
+  // FV_materials_detail
+  if(material.extensions.count(FV_MATERIALS_DETAIL_EXTENSION_NAME))
+  {
+    tinygltf::Value& ext = material.extensions.at(FV_MATERIALS_DETAIL_EXTENSION_NAME);
+    remapTextureIndex(ext, "detailNormalTexture");
+    remapTextureIndex(ext, "detailWeightTexture");
+    remapTextureIndex(ext, "detailRoughnessTexture");
   }
 }
 

@@ -109,6 +109,7 @@ struct KHR_materials_clearcoat
   float                 roughnessFactor  = 0.0f;
   tinygltf::TextureInfo roughnessTexture = {};
   tinygltf::TextureInfo normalTexture    = {};
+  float                 normalScale      = 1.0f;  // clearcoatNormalTexture.scale
 };
 
 // https://github.com/KhronosGroup/glTF/blob/master/extensions/2.0/Khronos/KHR_materials_sheen/README.md
@@ -263,6 +264,22 @@ struct KHR_materials_diffuse_transmission
   tinygltf::TextureInfo diffuseTransmissionTexture      = {};
   glm::vec3             diffuseTransmissionColor        = {1.0f, 1.0f, 1.0f};
   tinygltf::TextureInfo diffuseTransmissionColorTexture = {};
+};
+
+// FV_materials_detail (Figure Viewer, github.com/jribakau/daz-viewer): DAZ PBRSkin's detail
+// layer. A detail normal map, tiled through its texture info's KHR_texture_transform, bends the
+// normal on top of normalTexture (and on top of clearcoatNormalTexture), scaled by its `scale` and
+// by the detail weight (detailWeightFactor times detailWeightTexture.r). Roughness, and clearcoat
+// roughness, are multiplied by mix(1, detailRoughnessFactor * detailRoughnessTexture.r, weight).
+#define FV_MATERIALS_DETAIL_EXTENSION_NAME "FV_materials_detail"
+struct FV_materials_detail
+{
+  tinygltf::TextureInfo detailNormalTexture    = {};
+  float                 detailNormalScale      = 1.0f;  // detailNormalTexture.scale
+  float                 detailWeightFactor     = 0.0f;
+  tinygltf::TextureInfo detailWeightTexture    = {};
+  float                 detailRoughnessFactor  = 1.0f;
+  tinygltf::TextureInfo detailRoughnessTexture = {};
 };
 
 // https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_retroreflection/README.md
@@ -1302,6 +1319,8 @@ KHR_materials_diffuse_transmission getDiffuseTransmission(const tinygltf::Materi
 void setDiffuseTransmission(tinygltf::Material& tmat, const KHR_materials_diffuse_transmission& diffuseTransmission);
 KHR_materials_retroreflection getRetroreflection(const tinygltf::Material& tmat);
 void                          setRetroreflection(tinygltf::Material& tmat, const KHR_materials_retroreflection& retro);
+FV_materials_detail           getDetail(const tinygltf::Material& tmat);
+void                          setDetail(tinygltf::Material& tmat, const FV_materials_detail& detail);
 EXT_DLSS_NR                   getExtDlssNr(const tinygltf::Material& tmat);
 void                          setExtDlssNr(tinygltf::Material& tmat, const EXT_DLSS_NR& ext);
 

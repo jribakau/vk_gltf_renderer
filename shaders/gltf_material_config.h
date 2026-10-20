@@ -74,6 +74,9 @@ otherwise the material buffer layout will disagree.
 #ifndef MAT_EXT_SPECULAR
 #define MAT_EXT_SPECULAR MAT_EXT_VAL  // KHR_materials_specular
 #endif
+#ifndef MAT_EXT_DETAIL
+#define MAT_EXT_DETAIL MAT_EXT_VAL  // FV_materials_detail (Figure Viewer: tiled detail normal map)
+#endif
 #ifndef MAT_EXT_TEXTURE_TRANSFORM
 #define MAT_EXT_TEXTURE_TRANSFORM                                                                                      \
   MAT_EXT_VAL  // KHR_texture_transform (adds float3x2 to every GltfTextureInfo, ~24B/slot)

@@ -147,6 +147,22 @@ float3 decodeTangentSpaceNormal(float3 normal_vector, in GltfTextureInfo texture
   return normal_vector;
 }
 
+#if GLTF_USE_DETAIL
+/*-------------------------------------------------------------------------------------------------
+ * FV_materials_detail: bend a shading normal `N` by a tangent-space detail normal `d`, in the
+ * surface's tangent frame (`T`, `B`) made orthogonal to `N`. Layering on the already bent normal
+ * keeps the detail on top of the base normal map instead of replacing it.
+ * -------------------------------------------------------------------------------------------------*/
+float3 applyDetailNormal(float3 N, float3 T, float3 B, float3 d)
+{
+  float3 t = normalize(T - N * dot(N, T));
+  float3 b = cross(N, t);
+  if(dot(b, B) < 0.0F)
+    b = -b;
+  return normalize(t * d.x + b * d.y + N * d.z);
+}
+#endif
+
 // Volumetric scattering is path-tracer only (see the scatter block in evaluateMaterial), so this
 // mapping is not compiled into the raster pipeline.
 #if GLTF_USE_SCATTER && !defined(RASTER_PIPELINE)
@@ -283,6 +299,41 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     needsTangentUpdate = true;  // Mark that we need to update T and B due to normal perturbation
   }
 
+#if GLTF_USE_DETAIL
+  // FV_materials_detail (Figure Viewer, for DAZ PBRSkin): a detail normal map, tiled through its
+  // KHR_texture_transform, bends the normal on top of the normal map, and a roughness multiplier
+  // applies under the same weight. The clearcoat block below layers the same detail on its normal.
+  float  detailWeight       = 0.0F;
+  float3 detailNormal       = float3(0.0F, 0.0F, 1.0F);
+  float  detailRoughnessMul = 1.0F;
+  if(material.detailWeightFactor > 0.0F)
+  {
+    detailWeight = material.detailWeightFactor;
+    if(isTexturePresent(material.detailWeightTexture))
+    {
+      detailWeight *= getTexture(images, samplers, texInfos[material.detailWeightTexture], state.tc, state.texGrad).r;
+    }
+    if(isTexturePresent(material.detailNormalTexture))
+    {
+      GltfTextureInfo detailTexInfo = texInfos[material.detailNormalTexture];
+      detailNormal = getTexture(images, samplers, detailTexInfo, state.tc, state.texGrad).xyz * 2.0F - 1.0F;
+      detailNormal = decodeTangentSpaceNormal(detailNormal, detailTexInfo);
+      detailNormal.xy *= material.detailNormalScale * detailWeight;
+      pbrMat.N           = applyDetailNormal(pbrMat.N, state.T, state.B, detailNormal);
+      needsTangentUpdate = true;
+    }
+    float roughnessMul = material.detailRoughnessFactor;
+    if(isTexturePresent(material.detailRoughnessTexture))
+    {
+      roughnessMul *= getTexture(images, samplers, texInfos[material.detailRoughnessTexture], state.tc, state.texGrad).r;
+    }
+    detailRoughnessMul = lerp(1.0F, roughnessMul, detailWeight);
+    // pbrMat.roughness holds alpha = roughness^2
+    pbrMat.roughness = max(pbrMat.roughness * (detailRoughnessMul * detailRoughnessMul),
+                           float2(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS));
+  }
+#endif
+
   // Emissive term
   pbrMat.emissive = material.emissiveFactor;
   if(isTexturePresent(material.emissiveTexture))
@@ -368,13 +419,25 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   }
   if(isTexturePresent(material.clearcoatNormalTexture))
   {
-    float3x3        tbn           = float3x3(pbrMat.T, pbrMat.B, pbrMat.Nc);
+    // Per KHR_materials_clearcoat, the clearcoat normal map is a normal map of its own, in the
+    // surface's tangent frame like normalTexture and scaled by its texture info's `scale`. It used
+    // to tilt the base layer's already bent normal (pbrMat.Nc = pbrMat.N) with the unbent T and
+    // B, which doubled the tilt when both layers share one normal map.
+    float3x3        tbn           = float3x3(state.T, state.B, state.N);
     GltfTextureInfo normalTexInfo = texInfos[material.clearcoatNormalTexture];
     float3          normal_vector = getTexture(images, samplers, normalTexInfo, state.tc, state.texGrad).xyz;
     normal_vector                 = normal_vector * 2.0F - 1.0F;
     normal_vector                 = decodeTangentSpaceNormal(normal_vector, normalTexInfo);
-    pbrMat.Nc                     = normalize(mul(normal_vector, tbn));
+    normal_vector *= float3(material.clearcoatNormalTextureScale, material.clearcoatNormalTextureScale, 1.0F);
+    pbrMat.Nc = normalize(mul(normal_vector, tbn));
+#if GLTF_USE_DETAIL
+    if(detailWeight > 0.0F && isTexturePresent(material.detailNormalTexture))
+      pbrMat.Nc = applyDetailNormal(pbrMat.Nc, state.T, state.B, detailNormal);
+#endif
   }
+#if GLTF_USE_DETAIL
+  pbrMat.clearcoatRoughness *= detailRoughnessMul;
+#endif
   pbrMat.clearcoatRoughness = max(pbrMat.clearcoatRoughness, 0.001F);
 #endif
 

@@ -159,6 +159,7 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf:
   KHR_materials_clearcoat clearcoat = tinygltf::utils::getClearcoat(srcMat);
   dstMat.clearcoatFactor            = clearcoat.factor;
   dstMat.clearcoatRoughness         = clearcoat.roughnessFactor;
+  dstMat.clearcoatNormalTextureScale = clearcoat.normalScale;
   handleTexture(dstMat.clearcoatRoughnessTexture, clearcoat.roughnessTexture);
   handleTexture(dstMat.clearcoatTexture, clearcoat.texture);
   handleTexture(dstMat.clearcoatNormalTexture, clearcoat.normalTexture);
@@ -248,6 +249,16 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf:
   dstMat.scatterAnisotropy       = scatter.scatterAnisotropy;
   handleTexture(dstMat.scatterStrengthTexture, scatter.scatterStrengthTexture);
   handleTexture(dstMat.multiscatterColorTexture, scatter.multiscatterColorTexture);
+#endif
+
+#if MAT_EXT_DETAIL
+  FV_materials_detail detail   = tinygltf::utils::getDetail(srcMat);
+  dstMat.detailNormalScale     = detail.detailNormalScale;
+  dstMat.detailWeightFactor    = detail.detailWeightFactor;
+  dstMat.detailRoughnessFactor = detail.detailRoughnessFactor;
+  handleTexture(dstMat.detailNormalTexture, detail.detailNormalTexture);
+  handleTexture(dstMat.detailWeightTexture, detail.detailWeightTexture);
+  handleTexture(dstMat.detailRoughnessTexture, detail.detailRoughnessTexture);
 #endif
 
 #if MAT_EXT_DLSS_NR

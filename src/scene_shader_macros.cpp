@@ -52,6 +52,7 @@ constexpr std::array<FeatureMacro, SceneFeatureSet::kExtensionFeatureCount> kPat
     {SceneFeatureSet::eSpecular, "GLTF_USE_SPECULAR"},
     {SceneFeatureSet::eIor, "GLTF_USE_IOR"},
     {SceneFeatureSet::eSpecularGlossiness, "GLTF_USE_SPECULAR_GLOSSINESS"},
+    {SceneFeatureSet::eDetail, "GLTF_USE_DETAIL"},
     {SceneFeatureSet::eTextureTransform, "GLTF_USE_TEXTURE_TRANSFORM"},
 }};
 

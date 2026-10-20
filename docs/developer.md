@@ -373,6 +373,22 @@ The rasterizer cannot trace inside a medium, so `evaluateMaterial()` compiles on
 branch for `RASTER_PIPELINE` — the approximation the scatter spec explicitly permits for renderers
 without volumetric transport.
 
+### `FV_materials_detail`: a tiled detail layer
+
+A vendor extension written by [Figure Viewer](https://github.com/jribakau/daz-viewer) for DAZ
+PBRSkin's detail layer: fine pores in a small normal map repeated many times across the surface,
+which no single normal map at the base map's resolution can hold. Fields and their meaning are
+documented on `FV_materials_detail` in [`src/tinygltf_utils.hpp`](../src/tinygltf_utils.hpp).
+The tiling is the detail textures' own `KHR_texture_transform`, so `getTexture()` scales the
+sampling gradient with it; the weight texture uses the surface's UVs.
+
+In `evaluateMaterial()` the detail block runs right after the base normal map: it bends the
+already bent normal in the surface's tangent frame (`applyDetailNormal()`), so the detail layers
+on top of the normal map instead of replacing it, and scales roughness under the same weight. The
+clearcoat block layers the same detail on the clearcoat normal. It follows the usual gating
+(`MAT_EXT_DETAIL` for layout, `GLTF_USE_DETAIL` from `SceneFeatureSet::eDetail`) and has no
+Inspector section.
+
 ### Adding a new KHR_materials_* extension
 
 1. Define a new `MAT_EXT_<NAME>` flag in [`gltf_material_config.h`](../shaders/gltf_material_config.h),

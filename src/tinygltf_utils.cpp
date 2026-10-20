@@ -40,6 +40,21 @@
 
 namespace {
 
+// Writes `scale` into the texture info object `key` of an extension, as normalTexture carries it:
+// TextureInfo has no scale, so setValue() writes the object without one. The default 1 is left out.
+void setTextureInfoScale(tinygltf::Value& ext, const char* key, float scale)
+{
+  auto& obj = ext.Get<tinygltf::Value::Object>();
+  auto  it  = obj.find(key);
+  if(it == obj.end() || !it->second.IsObject())
+    return;
+  auto& info = it->second.Get<tinygltf::Value::Object>();
+  if(scale != 1.0f)
+    info["scale"] = tinygltf::Value(static_cast<double>(scale));
+  else
+    info.erase("scale");
+}
+
 // Texture extensions that store the backing image index in `source` (see `getTextureImageIndex`).
 const char* const kTextureImageSourceExtensionNames[] = {
     EXT_TEXTURE_WEBP_EXTENSION_NAME,
@@ -259,6 +274,8 @@ KHR_materials_clearcoat tinygltf::utils::getClearcoat(const tinygltf::Material& 
     tinygltf::utils::getValue(*ext, "clearcoatRoughnessFactor", gmat.roughnessFactor);
     tinygltf::utils::getValue(*ext, "clearcoatRoughnessTexture", gmat.roughnessTexture);
     tinygltf::utils::getValue(*ext, "clearcoatNormalTexture", gmat.normalTexture);
+    if(ext->Has("clearcoatNormalTexture"))
+      tinygltf::utils::getValue(ext->Get("clearcoatNormalTexture"), "scale", gmat.normalScale);
   }
   return gmat;
 }
@@ -271,6 +288,7 @@ void tinygltf::utils::setClearcoat(tinygltf::Material& tmat, const KHR_materials
   tinygltf::utils::setValue(ext, "clearcoatTexture", clearcoat.texture);
   tinygltf::utils::setValue(ext, "clearcoatRoughnessTexture", clearcoat.roughnessTexture);
   tinygltf::utils::setValue(ext, "clearcoatNormalTexture", clearcoat.normalTexture);
+  setTextureInfoScale(ext, "clearcoatNormalTexture", clearcoat.normalScale);
 }
 
 KHR_materials_sheen tinygltf::utils::getSheen(const tinygltf::Material& tmat)
@@ -392,6 +410,40 @@ void tinygltf::utils::setDispersion(tinygltf::Material& tmat, const KHR_material
 {
   tinygltf::Value& ext = tinygltf::utils::ensureExtension(tmat.extensions, KHR_MATERIALS_DISPERSION_EXTENSION_NAME);
   tinygltf::utils::setValue(ext, "dispersion", dispersion.dispersion);
+}
+
+FV_materials_detail tinygltf::utils::getDetail(const tinygltf::Material& tmat)
+{
+  FV_materials_detail gmat;
+  if(const auto* ext = tinygltf::utils::findExtension(tmat.extensions, FV_MATERIALS_DETAIL_EXTENSION_NAME))
+  {
+    tinygltf::utils::getValue(*ext, "detailNormalTexture", gmat.detailNormalTexture);
+    if(ext->Has("detailNormalTexture"))
+      tinygltf::utils::getValue(ext->Get("detailNormalTexture"), "scale", gmat.detailNormalScale);
+    tinygltf::utils::getValue(*ext, "detailWeightFactor", gmat.detailWeightFactor);
+    tinygltf::utils::getValue(*ext, "detailWeightTexture", gmat.detailWeightTexture);
+    tinygltf::utils::getValue(*ext, "detailRoughnessFactor", gmat.detailRoughnessFactor);
+    tinygltf::utils::getValue(*ext, "detailRoughnessTexture", gmat.detailRoughnessTexture);
+  }
+  return gmat;
+}
+
+void tinygltf::utils::setDetail(tinygltf::Material& tmat, const FV_materials_detail& detail)
+{
+  tinygltf::Value& ext = tinygltf::utils::ensureExtension(tmat.extensions, FV_MATERIALS_DETAIL_EXTENSION_NAME);
+  // an unassigned texture drops its property instead of keeping the old one (see setScatter)
+  auto setOrEraseTexture = [&ext](const char* key, const tinygltf::TextureInfo& info) {
+    if(info.index > -1)
+      tinygltf::utils::setValue(ext, key, info);
+    else
+      ext.Get<tinygltf::Value::Object>().erase(key);
+  };
+  setOrEraseTexture("detailNormalTexture", detail.detailNormalTexture);
+  setTextureInfoScale(ext, "detailNormalTexture", detail.detailNormalScale);
+  tinygltf::utils::setValue(ext, "detailWeightFactor", detail.detailWeightFactor);
+  setOrEraseTexture("detailWeightTexture", detail.detailWeightTexture);
+  tinygltf::utils::setValue(ext, "detailRoughnessFactor", detail.detailRoughnessFactor);
+  setOrEraseTexture("detailRoughnessTexture", detail.detailRoughnessTexture);
 }
 
 KHR_materials_retroreflection tinygltf::utils::getRetroreflection(const tinygltf::Material& tmat)

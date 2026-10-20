@@ -198,6 +198,7 @@ For the architecture, bridge directory layout, and request/response protocol beh
 - ✅ [EXT_texture_webp](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_texture_webp)
 - ✅ [MSFT_texture_dds](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/MSFT_texture_dds)
 - 🧪 [OMI_environment_sky](https://github.com/omigroup/gltf-extensions/tree/main/extensions/2.0/OMI_environment_sky) — `plain`, `gradient` and `physical` are rendered and round-trip on save; `panorama` needs a URI, which the extension does not define, so it is read from the sibling `NV_environment_sky_panorama` below
+- 🧪 `FV_materials_detail` — vendor extension from [Figure Viewer](https://github.com/jribakau/daz-viewer) for DAZ PBRSkin's detail layer: a detail normal map tiled through its `KHR_texture_transform`, layered on the normal (and clearcoat normal) under a weight, with a roughness multiplier. Path tracer and rasterizer; no Inspector section. See [developer.md](docs/developer.md#fv_materials_detail-a-tiled-detail-layer)
 - 🧪 `NV_environment_sky_panorama` — vendor sibling carrying the panorama image URI for `OMI_environment_sky`
 - 🧪 `NV_environment_sky_atmosphere` — vendor sibling carrying the rest of the physical sky's atmosphere (solar spectrum, planet size, scale heights, aerosol albedo, ozone layer), which `OMI_environment_sky` has no fields for
 

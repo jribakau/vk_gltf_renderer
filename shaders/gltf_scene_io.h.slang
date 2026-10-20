@@ -215,7 +215,8 @@ struct GltfShadeMaterial
 #endif
 
 #if MAT_EXT_CLEARCOAT
-  float clearcoatRoughness = 0;
+  float clearcoatRoughness          = 0;
+  float clearcoatNormalTextureScale = 1;  // clearcoatNormalTexture.scale
 #endif
 
 #if MAT_EXT_SPECULAR
@@ -274,6 +275,12 @@ struct GltfShadeMaterial
   float3 multiscatterColorFactor = float3(1);
   float  scatterStrengthFactor   = 0;
   float  scatterAnisotropy       = 0;
+#endif
+
+#if MAT_EXT_DETAIL
+  float detailNormalScale     = 1;  // detailNormalTexture.scale
+  float detailWeightFactor    = 0;
+  float detailRoughnessFactor = 1;
 #endif
 
   // Texture infos (uint16_t, 2 bytes each). Index 0 is the sentinel "no texture" slot
@@ -335,6 +342,13 @@ struct GltfShadeMaterial
 #if MAT_EXT_SCATTER
   uint16_t scatterStrengthTexture   = 0;
   uint16_t multiscatterColorTexture = 0;
+#endif
+
+#if MAT_EXT_DETAIL
+  uint16_t detailNormalTexture    = 0;
+  uint16_t detailWeightTexture    = 0;
+  uint16_t detailRoughnessTexture = 0;
+  uint16_t _detailPad             = 0;  // keeps the texture block a whole number of 4-byte words
 #endif
 
 #if MAT_EXT_DLSS_NR

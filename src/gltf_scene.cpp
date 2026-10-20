@@ -260,6 +260,7 @@ nvvkgltf::Scene::Scene()
       "EXT_mesh_gpu_instancing",
       "EXT_mesh_opacity_micromap",
       "EXT_meshopt_compression",
+      "FV_materials_detail",
       "KHR_accessor_float64",
       "KHR_animation_pointer",
       "KHR_interactivity",

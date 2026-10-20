@@ -89,6 +89,9 @@ layout off). Each pair has a compile-time guard below.
 #ifndef GLTF_USE_TEXTURE_TRANSFORM
 #define GLTF_USE_TEXTURE_TRANSFORM MAT_EXT_TEXTURE_TRANSFORM
 #endif
+#ifndef GLTF_USE_DETAIL
+#define GLTF_USE_DETAIL MAT_EXT_DETAIL
+#endif
 
 // Compile-time guards: behavior-on while layout-off is illegal.
 // We cannot turn on a GLTF_USE_X if the MAT_EXT_X is disabled.
@@ -109,6 +112,9 @@ layout off). Each pair has a compile-time guard below.
 #endif
 #if GLTF_USE_CLEARCOAT && !MAT_EXT_CLEARCOAT
 #error GLTF_USE_CLEARCOAT requires MAT_EXT_CLEARCOAT
+#endif
+#if GLTF_USE_DETAIL && !MAT_EXT_DETAIL
+#error GLTF_USE_DETAIL requires MAT_EXT_DETAIL
 #endif
 #if GLTF_USE_IRIDESCENCE && !MAT_EXT_IRIDESCENCE
 #error GLTF_USE_IRIDESCENCE requires MAT_EXT_IRIDESCENCE

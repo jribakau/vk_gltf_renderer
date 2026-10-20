@@ -49,6 +49,7 @@ constexpr std::array<FeatureName, SceneFeatureSet::kFeatureCount> kFeatureNames{
     {SceneFeatureSet::eSpecular, "specular"},
     {SceneFeatureSet::eIor, "ior"},
     {SceneFeatureSet::eSpecularGlossiness, "specularGlossiness"},
+    {SceneFeatureSet::eDetail, "detail"},
     {SceneFeatureSet::eTextureTransform, "textureTransform"},
     {SceneFeatureSet::eDlssGuide, "dlssGuide"},
 }};
@@ -211,6 +212,8 @@ SceneFeatureSet detectSceneFeatures(const std::vector<tinygltf::Material>& mater
       set.enable(SceneFeatureSet::eIor);
     if(hasExt(ext, KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS_EXTENSION_NAME))
       set.enable(SceneFeatureSet::eSpecularGlossiness);
+    if(hasExt(ext, FV_MATERIALS_DETAIL_EXTENSION_NAME))
+      set.enable(SceneFeatureSet::eDetail);
 
     if(materialHasTextureTransform(m))
       set.enable(SceneFeatureSet::eTextureTransform);
