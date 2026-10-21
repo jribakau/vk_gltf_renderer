@@ -20,6 +20,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -366,6 +367,14 @@ public:
   // New vertex positions (and normals) for one render primitive, applied at the start of the next
   // frame's render. Skinned / morphed primitives get new base geometry; others are copied directly.
   void queueVertexUpload(VertexUpload&& upload) { m_pendingVertexUploads.push_back(std::move(upload)); }
+
+  // Merge the glTF `filename` into the loaded scene, each of its root nodes under the node
+  // parentOf picks (-1: a scene root), and rebuild the GPU scene keeping every texture already
+  // loaded, so only the new file's images are read. Synchronous, like loadSceneFile, so a host's
+  // next edit lands on the merged scene. Host edits survive: model-side ones (materials, nodes,
+  // morph weights) live in the model, and vertex uploads are applied again from their live copies.
+  // Returns the number of roots attached, or -1 on failure (the scene is left as it was).
+  int appendSceneFile(const std::filesystem::path& filename, const std::function<int(const tinygltf::Node&)>& parentOf);
 
   /// Write the current scene to `filename`; backs --savefile, so it is reachable from the command
   /// line, a benchmark sequence and nvpro_set_parameters through the same single registration the

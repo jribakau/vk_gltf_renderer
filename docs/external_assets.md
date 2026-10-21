@@ -94,6 +94,11 @@ The instance node's own `mesh`/`camera` are cleared (spec: `externalAsset` takes
   **root nodes as children of `targetNode`** (no synthetic wrapper node — this matches the spec:
   *"append the externalAsset root node(s) to the array of children for the node"*). Returns a
   `MergeResult { firstNode, lastNode, roots }`.
+- **`mergeUnder(base, imported, parentOf, scene)`** — the same append, but each imported root
+  goes under the parent `parentOf` picks for it (or becomes a root of `scene`); `mergeIntoNode`
+  is the case of one parent for all. Used by `Scene::mergeSceneUnder` for a host adding objects
+  to the scene it mirrors (MCP `vk_gltf_add_scene`); a parent out of range refuses the merge
+  before anything is appended.
 - **`instanceSubtree(base, source, targetNode)`** — creates another instance of an
   already-merged subtree **sharing geometry**: it copies the node hierarchy (and duplicates skins
   and animation channels so instances animate independently) but leaves `mesh`/`material`/
@@ -252,7 +257,7 @@ by canonical source path so a file shared by several entries is copied at most o
 |---|---|
 | Parse/serialize `files`/`externalAssets`/`node.externalAsset` | `tiny_gltf.h` (nvpro_core2, branch `mkl/externalAssets`) |
 | Resolve + merge on load | `Scene::resolveExternalAssets`, `gltf_scene.cpp` |
-| Merge / instance primitives | `SceneMerger::mergeIntoNode`, `SceneMerger::instanceSubtree`, `MergeResult`, `gltf_scene_merger.{hpp,cpp}` |
+| Merge / instance primitives | `SceneMerger::mergeIntoNode`, `SceneMerger::mergeUnder`, `SceneMerger::instanceSubtree`, `MergeResult`, `gltf_scene_merger.{hpp,cpp}` |
 | Read-only marker + queries | `Scene::kExternalAssetContentKey`, `isNodeReadOnly`, `isMeshReadOnly`, `ReferencedAsset`, `gltf_scene.{hpp,cpp}` |
 | Editor guards | `SceneEditor::blockIfNodeReadOnly` + guarded mutators, `gltf_scene_editor.cpp` |
 | UI (badge / disabled controls / gizmo skip) | `ui_inspector.cpp`, `ui_scene_browser.cpp` |

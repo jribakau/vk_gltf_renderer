@@ -281,6 +281,12 @@ public:
   }
   // Merge another glTF into this scene. Optional maxTextureCount validates combined texture limit (e.g. GPU descriptor limit).
   [[nodiscard]] int mergeScene(const std::filesystem::path& filename, std::optional<uint32_t> maxTextureCount = std::nullopt);  // Returns wrapper node index, or -1 on failure
+  // Merge another glTF into this scene with each of its root nodes under a parent of its own:
+  // parentOf(root) returns an existing node to attach it under, or -1 for a root of the current
+  // scene. No wrapper node. Returns the number of roots attached, or -1 on failure.
+  [[nodiscard]] int mergeSceneUnder(const std::filesystem::path&                     filename,
+                                    const std::function<int(const tinygltf::Node&)>& parentOf,
+                                    std::optional<uint32_t>                          maxTextureCount = std::nullopt);
   // glTF 2.1: add another glTF as a referenced external asset (read-only, re-externalized on save)
   // instead of embedding it. Repeated references to the same file share geometry. Returns the new
   // instance node index, or -1 on failure.

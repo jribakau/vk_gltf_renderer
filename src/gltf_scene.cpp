@@ -866,6 +866,53 @@ int nvvkgltf::Scene::mergeScene(const std::filesystem::path& filename, std::opti
 }
 
 //--------------------------------------------------------------------------------------------------
+// Merge another glTF scene into this one, each imported root under the parent parentOf picks (see
+// the header). The steps are mergeScene's minus the wrapper node: on failure the model is left as it
+// was, since SceneMerger::mergeUnder appends nothing when it refuses.
+//
+int nvvkgltf::Scene::mergeSceneUnder(const std::filesystem::path&                     filename,
+                                     const std::function<int(const tinygltf::Node&)>& parentOf,
+                                     std::optional<uint32_t>                          maxTextureCount)
+{
+  nvutils::ScopedTimer st(std::string(__FUNCTION__) + "\n");
+
+  tinygltf::Model importedModel;
+  std::string     error, warn;
+  if(!loadGltfFile(filename, importedModel, &error, &warn))
+  {
+    LOGW("%sError loading file for merge: %s (%s)\n", st.indent().c_str(), nvutils::utf8FromPath(filename).c_str(),
+         error.empty() ? "unknown error" : error.c_str());
+    return -1;
+  }
+  if(!validator().validateModelExtensions(importedModel, "imported scene"))
+    return -1;
+
+  rebaseImageUris(importedModel, filename.parent_path(), m_filename.parent_path());
+  const MergeResult mr =
+      SceneMerger::mergeUnder(m_model, importedModel, parentOf, m_currentScene >= 0 ? m_currentScene : 0, maxTextureCount);
+  if(!mr.valid())
+  {
+    LOGW("%sFailed to merge %s\n", st.indent().c_str(), nvutils::utf8FromPath(filename).c_str());
+    return -1;
+  }
+
+  std::error_code       pathEc;
+  std::filesystem::path importDir = std::filesystem::absolute(filename.parent_path(), pathEc);
+  if(pathEc)
+    importDir = filename.parent_path();
+  m_imageSearchPaths.push_back(importDir);
+  resolveImageURIs();
+
+  m_validSceneParsed = false;
+  if(!decompressMeshoptExtension())
+    return -1;
+
+  parseScene();
+  m_validSceneParsed = !m_model.nodes.empty();
+  return static_cast<int>(mr.roots.size());
+}
+
+//--------------------------------------------------------------------------------------------------
 int nvvkgltf::Scene::takeMergePreferredAnimationIndex()
 {
   int v                                 = m_pendingMergePreferredAnimationIndex;

@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
@@ -78,6 +79,17 @@ public:
                                    const tinygltf::Model&  importedModel,
                                    int                     targetNodeIndex,
                                    std::optional<uint32_t> maxTextureCount = std::nullopt);
+
+  // Like mergeIntoNode, but each imported default-scene root picks its own parent: parentOf(root)
+  // returns an existing baseModel node to attach it under, or -1 to make it a root of
+  // baseModel.scenes[sceneIndex]. For a host adding objects to a scene it mirrors (Figure Viewer
+  // putting an item on a figure, under the node it hangs from). Same failure rules as mergeIntoNode;
+  // a parent past the end of baseModel.nodes also refuses the merge, before anything is appended.
+  static MergeResult mergeUnder(tinygltf::Model&                                 baseModel,
+                                const tinygltf::Model&                           importedModel,
+                                const std::function<int(const tinygltf::Node&)>& parentOf,
+                                int                                              sceneIndex,
+                                std::optional<uint32_t>                          maxTextureCount = std::nullopt);
 
   // Instance an existing merged subtree (already in baseModel, described by `source`) as a new
   // copy attached to targetNodeIndex. Node hierarchy is copied and skins/animation channels are
