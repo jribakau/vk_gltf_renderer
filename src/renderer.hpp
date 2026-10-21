@@ -25,6 +25,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -358,6 +359,9 @@ public:
     int                    renderPrimID = -1;
     std::vector<glm::vec3> positions;
     std::vector<glm::vec3> normals;  // empty: keep the current normals
+    // Non-empty: a sparse update. positions[k] (and normals[k]) are the new values of vertex
+    // indices[k]; every other vertex keeps its current value.
+    std::vector<uint32_t> indices;
   };
   // New vertex positions (and normals) for one render primitive, applied at the start of the next
   // frame's render. Skinned / morphed primitives get new base geometry; others are copied directly.
@@ -446,6 +450,15 @@ private:
   bool                      m_pendingAnimReconcile{false};
   uint64_t                  m_sceneGeneration{0};
   std::vector<VertexUpload> m_pendingVertexUploads;
+  // The vertices of each primitive edited live, as last uploaded: sparse uploads patch these and
+  // upload the result. Filled on a primitive's first edit; cleared with the scene.
+  struct LiveVertices
+  {
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> normals;
+  };
+  std::unordered_map<int, LiveVertices> m_liveVertices;
+  LiveVertices*                         liveVerticesOf(const nvvkgltf::Scene& scn, int renderPrimID);
   // KHR_interactivity: ticks the scene's default behavior graph instance, then applies any
   // animation/start-driven pose changes it computed this tick (via reconcileAnimationGpuState()).
   // pointer/set's glTF-model writes flow through Scene::markNodeDirty/markMaterialDirty and are

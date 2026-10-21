@@ -3075,6 +3075,7 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
 {
   ++m_sceneGeneration;
   m_pendingVertexUploads.clear();
+  m_liveVertices.clear();
   m_pendingAnimReconcile = false;
   // Scene object is set, we can create the Vulkan scene
   createVulkanScene();
@@ -4202,10 +4203,37 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
 }
 
 //--------------------------------------------------------------------------------------------------
+// The vertices a live edit of `renderPrimID` starts from: what was last uploaded, else the
+// primitive's base geometry (skinned / morphed) or its glTF attributes. Null when it has no
+// positions.
+GltfRenderer::LiveVertices* GltfRenderer::liveVerticesOf(const nvvkgltf::Scene& scn, int renderPrimID)
+{
+  if(auto it = m_liveVertices.find(renderPrimID); it != m_liveVertices.end())
+    return &it->second;
+  LiveVertices live;
+  if(!scn.animation().getBaseGeometry(renderPrimID, live.positions, live.normals))
+  {
+    const tinygltf::Primitive* prim = scn.getRenderPrimitive(renderPrimID).pPrimitive;
+    if(!prim)
+      return nullptr;
+    const tinygltf::Model& model = scn.getModel();
+    std::vector<glm::vec3> tempP, tempN;
+    auto                   p = tinygltf::utils::getAttributeData3(model, *prim, "POSITION", &tempP);
+    auto                   n = tinygltf::utils::getAttributeData3(model, *prim, "NORMAL", &tempN);
+    live.positions.assign(p.begin(), p.end());
+    live.normals.assign(n.begin(), n.end());
+  }
+  if(live.positions.empty())
+    return nullptr;
+  return &(m_liveVertices[renderPrimID] = std::move(live));
+}
+
+//--------------------------------------------------------------------------------------------------
 // Apply vertex uploads queued by a host (queueVertexUpload). Skinned / morphed primitives get new
 // base geometry and are recomputed by the reconcile that follows in updateAnimation(); static ones
 // are copied into their vertex buffers here and their BLAS refit in place. The render nodes are
-// marked so the TLAS is refit on either transform path.
+// marked so the TLAS is refit on either transform path. A sparse upload patches the primitive's
+// live copy (liveVerticesOf) and uploads that, so the host sends only the vertices that moved.
 bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
 {
   if(m_pendingVertexUploads.empty())
@@ -4227,8 +4255,37 @@ bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
   {
     if(u.renderPrimID < 0 || u.renderPrimID >= int(vertexBufs.size()))
       continue;
-    const std::span<const glm::vec3> pos(u.positions);
-    const std::span<const glm::vec3> nrm(u.normals);
+    LiveVertices* live = liveVerticesOf(*scn, u.renderPrimID);
+    if(!live)
+      continue;
+    // normals go up only when this upload brought some; otherwise the GPU keeps its own
+    const bool sendNormals = !u.normals.empty() && live->normals.size() == live->positions.size();
+    if(u.indices.empty())
+    {
+      if(u.positions.size() != live->positions.size())
+      {
+        LOGW("Vertex upload for primitive %d: %zu positions, the primitive has %zu; skipped\n", u.renderPrimID,
+             u.positions.size(), live->positions.size());
+        continue;
+      }
+      live->positions = std::move(u.positions);
+      if(sendNormals)
+        live->normals = std::move(u.normals);
+    }
+    else
+    {
+      for(size_t k = 0; k < u.indices.size() && k < u.positions.size(); k++)
+      {
+        const uint32_t v = u.indices[k];
+        if(v >= live->positions.size())
+          continue;
+        live->positions[v] = u.positions[k];
+        if(sendNormals && k < u.normals.size())
+          live->normals[v] = u.normals[k];
+      }
+    }
+    const std::span<const glm::vec3> pos(live->positions);
+    const std::span<const glm::vec3> nrm = sendNormals ? std::span<const glm::vec3>(live->normals) : std::span<const glm::vec3>();
     if(m_resources.animationVk.updateBaseGeometry(m_resources.staging, *scn, u.renderPrimID, pos, nrm))
     {
       scn->animation().setBaseGeometry(u.renderPrimID, pos, nrm);

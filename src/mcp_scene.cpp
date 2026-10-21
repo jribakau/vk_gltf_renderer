@@ -250,7 +250,7 @@ std::vector<PrimRef> resolvePrims(const Json& op, const SceneIds& ids, const tin
 //--------------------------------------------------------------------------------------------------
 // base64 (RFC 4648, padding optional) into little-endian float32 xyz triples.
 
-std::vector<glm::vec3> decodeVec3(const Json& j, const char* key)
+std::vector<uint8_t> decodeBase64(const Json& j, const char* key)
 {
   if(!j.is_string())
     fail(std::string("'") + key + "' must be a base64 string");
@@ -282,9 +282,25 @@ std::vector<glm::vec3> decodeVec3(const Json& j, const char* key)
       bytes.push_back(uint8_t((acc >> bits) & 0xFF));
     }
   }
+  return bytes;
+}
+
+std::vector<glm::vec3> decodeVec3(const Json& j, const char* key)
+{
+  const std::vector<uint8_t> bytes = decodeBase64(j, key);
   if(bytes.size() % sizeof(glm::vec3) != 0)
     fail(std::string("'") + key + "' is not a whole number of float32 xyz triples");
   std::vector<glm::vec3> out(bytes.size() / sizeof(glm::vec3));
+  std::memcpy(out.data(), bytes.data(), bytes.size());
+  return out;
+}
+
+std::vector<uint32_t> decodeU32(const Json& j, const char* key)
+{
+  const std::vector<uint8_t> bytes = decodeBase64(j, key);
+  if(bytes.size() % sizeof(uint32_t) != 0)
+    fail(std::string("'") + key + "' is not a whole number of uint32 values");
+  std::vector<uint32_t> out(bytes.size() / sizeof(uint32_t));
   std::memcpy(out.data(), bytes.data(), bytes.size());
   return out;
 }
@@ -647,11 +663,24 @@ Json opSetVertices(Ctx& c, const Json& op)
     if(normals.size() != positions.size())
       fail("'normals' and 'positions' differ in length");
   }
+  // sparse: only the listed vertices, positions[k] (and normals[k]) for vertex indices[k]
+  std::vector<uint32_t> indices;
+  if(auto ix = op.find("indices"); ix != op.end() && !ix->is_null())
+  {
+    indices = decodeU32(*ix, "indices");
+    if(indices.size() != positions.size())
+      fail("'indices' and 'positions' differ in length");
+  }
   const auto& renderPrims = c.scene.getRenderPrimitives();
   for(const PrimRef& p : prims)
-    if(renderPrims[p.renderPrimID].vertexCount != int(positions.size()))
-      fail("primitive has " + std::to_string(renderPrims[p.renderPrimID].vertexCount) + " vertices, got "
-           + std::to_string(positions.size()));
+  {
+    const int count = renderPrims[p.renderPrimID].vertexCount;
+    if(indices.empty() && count != int(positions.size()))
+      fail("primitive has " + std::to_string(count) + " vertices, got " + std::to_string(positions.size()));
+    for(uint32_t v : indices)
+      if(v >= uint32_t(count))
+        fail("vertex index " + std::to_string(v) + " is out of range: the primitive has " + std::to_string(count) + " vertices");
+  }
   for(size_t i = 0; i < prims.size(); i++)
   {
     GltfRenderer::VertexUpload u;
@@ -660,11 +689,13 @@ Json opSetVertices(Ctx& c, const Json& op)
     {
       u.positions = std::move(positions);
       u.normals   = std::move(normals);
+      u.indices   = std::move(indices);
     }
     else
     {
       u.positions = positions;
       u.normals   = normals;
+      u.indices   = indices;
     }
     c.renderer.queueVertexUpload(std::move(u));
   }
@@ -860,7 +891,9 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
       {"vk_gltf_set_morph_weights", "set_morph_weights", "Set all morph target weights of the mesh owning primitive {id} or of {mesh}."},
       {"vk_gltf_set_vertices", "set_vertices",
        "Replace vertex positions (and normals) of primitive {id} (all primitives sharing it) or {mesh, primitive?}: "
-       "base64 little-endian float32 xyz, one per vertex. Skinned or morphed primitives get new base geometry."},
+       "base64 little-endian float32 xyz, one per vertex. With indices (base64 little-endian uint32), only those "
+       "vertices change: positions[k] (and normals[k]) belong to vertex indices[k]. Skinned or morphed primitives get "
+       "new base geometry."},
   };
   for(const Single& s : singles)
   {

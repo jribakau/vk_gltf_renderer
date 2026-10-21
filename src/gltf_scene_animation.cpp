@@ -954,6 +954,27 @@ bool AnimationSystem::setBaseGeometry(int renderPrimID, std::span<const glm::vec
   return found;
 }
 
+bool AnimationSystem::getBaseGeometry(int renderPrimID, std::vector<glm::vec3>& positions, std::vector<glm::vec3>& normals) const
+{
+  for(const SkinTask& task : m_skinTasks)
+  {
+    if(task.renderPrimID != renderPrimID)
+      continue;
+    positions = task.basePositions;
+    normals   = task.baseNormals;
+    return true;
+  }
+  for(const MorphResult& mr : m_morphResults)
+  {
+    if(mr.renderPrimID != renderPrimID)
+      continue;
+    positions = mr.basePositions;
+    normals   = mr.baseNormals;
+    return true;
+  }
+  return false;
+}
+
 const MorphResult* AnimationSystem::findMorphResult(int renderPrimID) const
 {
   for(const MorphResult& mr : m_morphResults)

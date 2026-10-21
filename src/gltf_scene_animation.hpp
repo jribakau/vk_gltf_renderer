@@ -110,6 +110,8 @@ public:
   // Live edits: replace the cached base geometry of a skinned / morphed primitive (same sizes), so
   // the CPU fallback and later GPU buffer rebuilds agree with AnimationVk::updateBaseGeometry().
   bool setBaseGeometry(int renderPrimID, std::span<const glm::vec3> positions, std::span<const glm::vec3> normals);
+  // The cached base geometry of a skinned / morphed primitive; false when it is neither.
+  bool getBaseGeometry(int renderPrimID, std::vector<glm::vec3>& positions, std::vector<glm::vec3>& normals) const;
   bool                         hasSkinning() const { return !m_skinTasks.empty(); }
   void                         computeSkinning();
   const SkinningResult&        getSkinningResult(size_t skinTaskIndex) const;

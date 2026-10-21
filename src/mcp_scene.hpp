@@ -33,7 +33,8 @@
 //   vk_gltf_set_light           {id (node) | index (light), color?, intensity?}
 //   vk_gltf_animation           {clip?, time?, play?, speed?, loop?, reset?, stop?}
 //   vk_gltf_set_morph_weights   {id (primitive) | mesh, weights:[...]}
-//   vk_gltf_set_vertices        {id (primitive) | mesh, primitive?, positions: base64 f32 xyz, normals?: base64}
+//   vk_gltf_set_vertices        {id (primitive) | mesh, primitive?, positions: base64 f32 xyz, normals?: base64,
+//                                indices?: base64 u32 (only these vertices change, one per position)}
 //
 // Each op inside vk_gltf_edit is one of the single tools' inputs plus "op": "set_material" |
 // "set_node" | "set_light" | "animation" | "set_morph_weights" | "set_vertices".

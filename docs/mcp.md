@@ -42,6 +42,13 @@ authoritative names, schemas and descriptions:
 | `vk_gltf_list_timers` | GPU profiler timer names available right now |
 | `vk_gltf_measure` | Time one timer over a controlled window and return the distribution |
 
+Live scene edits for a host application (materials, nodes, lights, animation, morph weights and
+vertex positions, several per call landing in one frame) are a second set of tools, the
+`vk_gltf_set_*` family and `vk_gltf_edit`, registered in `src/mcp_scene.cpp`; the comment at the
+top of `src/mcp_scene.hpp` lists them. `vk_gltf_set_vertices` takes either every vertex or only
+the ones that moved (`indices`), which it patches into the renderer's copy of the primitive
+(`GltfRenderer::applyPendingSceneEdits`).
+
 Loading is not a tool: set `scenefile` or `hdrfile` and it loads. Those parameters carry a
 `callbackSuccess`, so the same write works from the command line, a benchmark sequence, and
 `nvpro_set_parameters` alike. Both loads run synchronously on the application thread — the parse
