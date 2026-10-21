@@ -117,6 +117,7 @@ public:
   bool               m_useSER{true};         // Requested SER state; clamped to m_supportSER each frame.
   bool m_shadowTransmission{true};  // Shadow rays pass through transmissive surfaces (biased; see ePtShadowTransmission).
   bool m_scatterAsThin{false};      // Volumetric scatter shades as the thin-walled preview (ePtScatterAsThin).
+  bool m_volumeDiffuseExit{false};  // Scatter walks gather light only where they leave the surface (ePtVolumeDiffuseExit).
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
   // Variant pipeline cache: avoids slow pipeline (re)compilation by reusing previously built

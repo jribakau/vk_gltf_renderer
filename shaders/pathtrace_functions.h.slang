@@ -1383,11 +1383,16 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
     {
 #if GLTF_USE_SCATTER
       pt.scatterBounces++;
-      pt.exitedVolumeWalk = true;
 
       // Scatter events translate the cone through the medium segment (no slant correction).
       pt.cone.width += pt.cone.spreadAngle * length(ray.Origin - originBeforeScatter);
-      pt.radiance += volumeScatterNEE(raytracer, pt.volumeMedium, ray.Origin, wiBeforeScatter, pt.throughput, seed);
+      // With the diffuse exit the walk gathers nothing inside: the surface it leaves through is
+      // shaded instead (gltf_pathtrace.slang), with the usual surface NEE and MIS.
+      if(!hasFlag(pushConst.flags, PathtracerFlags::ePtVolumeDiffuseExit))
+      {
+        pt.exitedVolumeWalk = true;
+        pt.radiance += volumeScatterNEE(raytracer, pt.volumeMedium, ray.Origin, wiBeforeScatter, pt.throughput, seed);
+      }
 
       if(pt.scatterBounces >= VOLUME_FREE_BUDGET)
       {

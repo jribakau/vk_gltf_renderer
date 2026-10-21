@@ -27,6 +27,9 @@
 //
 // Changing frames are encoded with 4:2:0 chroma, which halves the encode time. Once the image
 // stops changing (a converged path trace), that frame is sent once more with full 4:4:4 chroma.
+// The host can also ask for full chroma and a higher quality on every frame (`streamFullChroma`,
+// `streamQuality` over --mcp) while a still view refines, so the frames it watches converge
+// are not chroma-subsampled.
 //
 //   GET /stream         MJPEG stream of every new frame (unchanged frames are not re-sent)
 //   GET /frame          the latest frame as one image/jpeg
@@ -69,6 +72,12 @@ public:
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
   void onUpdate() override;
   void onRender(VkCommandBuffer cmd) override;
+
+  // Live encoder settings (the `streamQuality` and `streamFullChroma` parameters): a host lowers
+  // them while the image moves and raises them while a still view converges. Thread-safe; the
+  // next frame encoded picks them up, and a converged still is re-sent once when they rise.
+  void setQuality(int quality);
+  void setFullChroma(bool fullChroma);
 
 private:
   struct Impl;

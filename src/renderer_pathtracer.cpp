@@ -180,6 +180,15 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   // Not persisted: the viewer turns it on while the camera moves and off once the view is still.
   settings->add({.name = "scatterAsThin", .help = "PathTracer: Shade volumetric scatter as the thin-walled preview", .callbackSuccess = reset},
                 &m_scatterAsThin, Persist::eNo);
+  // Dense subsurface (skin): next-event estimation at interior scatter points, straight through the
+  // boundary, counts light that would be internally reflected and keeps counting after it is, so a
+  // dense medium returns more light than it gets, from a handful of near-surface events (grainy).
+  // With this flag a walk gathers nothing inside and leaves the surface as a Lambertian point,
+  // shaded like any surface (the random walk of production renderers).
+  settings->add({.name            = "ptVolumeDiffuseExit",
+                 .help            = "PathTracer: Scatter walks gather light only where they leave the surface, as a diffuse exit (dense media)",
+                 .callbackSuccess = reset},
+                &m_volumeDiffuseExit, Persist::eYes);
   settings->add({"ptAutoFocus", "PathTracer: Enable auto focus"}, &m_autoFocus, Persist::eYes);
   settings->add({"ptTechnique", "PathTracer: Rendering technique [RayQuery:0, RayTracing:1]"}, (int*)&m_renderTechnique,
                 Persist::eYes, 0, 1);
@@ -1764,6 +1773,7 @@ void PathTracer::setupPushConstant(VkCommandBuffer cmd, Resources& resources, Vk
   m_pushConst.flags = (resources.frameCount == 0 ? shaderio::ePtFirstFrame : 0);
   m_pushConst.flags |= m_shadowTransmission ? shaderio::ePtShadowTransmission : 0;
   m_pushConst.flags |= m_scatterAsThin ? shaderio::ePtScatterAsThin : 0;
+  m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;
 #if defined(USE_DLSS)
   m_pushConst.flags |= useDlss ? shaderio::ePtUseDlss : 0;
 #endif

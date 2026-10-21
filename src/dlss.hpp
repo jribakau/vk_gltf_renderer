@@ -392,6 +392,7 @@ private:
   int        m_builtSizeMode = -1;  // RR: Settings::sizeMode the inner GBuffer was last sized with (-1 = never)
   bool m_needsRecreate = false;  // true when the NGX feature must be torn down + recreated (UI preset / size-mode / quality change)
   uint32_t m_preset = 0;  // NGX preset hint (RR or SR table; 0 = NGX default)
+  uint32_t m_presetIndex = 0;  // `dlssPreset` parameter: index into the RR preset table, mirrored into m_preset
   Settings m_settings{};  // persisted settings (per kind)
   bool     m_settingsOpen = false;
 

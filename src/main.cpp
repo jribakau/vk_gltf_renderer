@@ -211,13 +211,31 @@ auto main(int argc, char** argv) -> int
 
   // Render server for a host application (Figure Viewer): a headless run that serves its frames
   // over HTTP (see src/frame_stream.hpp) while the host drives it over --mcp.
-  bool     enableStream  = false;
-  uint32_t streamPort    = 7672;
-  int      streamQuality = 92;
-  int      streamFps     = 60;
+  bool     enableStream     = false;
+  uint32_t streamPort       = 7672;
+  int      streamQuality    = 92;
+  bool     streamFullChroma = false;
+  int      streamFps        = 60;
+  // The stream element is created after the start-up parse; quality and chroma can be changed at
+  // runtime (nvpro_set_parameters), which forwards them to it. Before it exists the callbacks no-op
+  // and the values go into its create info.
+  std::shared_ptr<FrameStream> frameStream;
   parameterRegistry.add({"stream", "Headless only: serve the rendered frames over HTTP (MJPEG) for a host application"}, &enableStream, true);
   parameterRegistry.add({"streamPort", "Port for the --stream endpoint (1-65535)"}, &streamPort);
-  parameterRegistry.add({"streamQuality", "JPEG quality of the --stream frames (1-100)"}, &streamQuality);
+  parameterRegistry.add({.name            = "streamQuality",
+                         .help            = "JPEG quality of the --stream frames (1-100); changeable at runtime",
+                         .callbackSuccess = [&frameStream, &streamQuality](const nvutils::ParameterBase* const) {
+                           if(frameStream)
+                             frameStream->setQuality(streamQuality);
+                         }},
+                        &streamQuality);
+  parameterRegistry.add({.name = "streamFullChroma",
+                         .help = "Encode every --stream frame with 4:4:4 chroma instead of 4:2:0 (slower; for a still view that refines)",
+                         .callbackSuccess = [&frameStream, &streamFullChroma](const nvutils::ParameterBase* const) {
+                           if(frameStream)
+                             frameStream->setFullChroma(streamFullChroma);
+                         }},
+                        &streamFullChroma);
   parameterRegistry.add({"streamFps", "Frame-rate cap of a --stream run"}, &streamFps);
   // Live editing by a host (src/mcp_scene.cpp): keep every BLAS refittable instead of compacting it.
   bool editable = false;
@@ -567,13 +585,15 @@ auto main(int argc, char** argv) -> int
     {
       GltfRenderer* r = elemGltfRenderer.get();
       // after the renderer, so the copy sees the frame it just rendered
-      app.addElement(std::make_shared<FrameStream>(FrameStreamCreateInfo{
+      frameStream = std::make_shared<FrameStream>(FrameStreamCreateInfo{
           .port      = uint16_t(streamPort),
           .quality   = std::clamp(streamQuality, 1, 100),
           .maxFps    = std::clamp(streamFps, 1, 240),
           .image     = [r] { return r->tonemappedImage(); },
           .imageSize = [r] { return r->renderSize(); },
-      }));
+      });
+      frameStream->setFullChroma(streamFullChroma);
+      app.addElement(frameStream);
     }
   }
 #ifdef USE_NVMCP

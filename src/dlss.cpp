@@ -805,6 +805,24 @@ void Dlss::registerParameters(SettingsRegistry* settings, std::function<void()> 
                                       "below native), 2=Max. Use 2 when comparing timings with DLSS on and off",
                    .callbackSuccess = cb},
                   &m_settings.sizeMode, Persist::eYes, 0, 2);
+    // The network preset as a parameter, so a host can pick the transformer presets (the UI combo
+    // writes m_preset directly). NGX bakes the preset at feature creation, so the feature is
+    // recreated and its history dropped, as the combo does.
+    settings->add({.name            = "dlssPreset",
+                   .help            = "DLSS-RR network preset: 0=Default (NGX chooses), 1=D (transformer), 2=E (latest transformer)",
+                   .callbackSuccess = [this, cb](const nvutils::ParameterBase* const p) {
+                     const uint32_t index  = std::min<uint32_t>(m_presetIndex, uint32_t(std::size(kRrPresets)) - 1);
+                     const uint32_t preset = kRrPresets[index].value;
+                     if(preset != m_preset)
+                     {
+                       m_preset        = preset;
+                       m_needsRecreate = true;
+                       notifyReset();
+                     }
+                     if(cb)
+                       cb(p);
+                   }},
+                  &m_presetIndex, Persist::eYes, 0u, uint32_t(std::size(kRrPresets)) - 1);
   }
   else
   {

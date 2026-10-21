@@ -264,6 +264,7 @@ enum PathtracerFlags
   ePtFirstFrame         = 1 << 2,
   ePtShadowTransmission = 1 << 3,  // Biased: shadow rays pass straight through transmissive surfaces
   ePtScatterAsThin      = 1 << 4,  // Volumetric scatter shades as the thin-walled preview (no random walk)
+  ePtVolumeDiffuseExit  = 1 << 5,  // A scatter walk gathers no light inside; it leaves the surface as a Lambertian point
 };
 
 

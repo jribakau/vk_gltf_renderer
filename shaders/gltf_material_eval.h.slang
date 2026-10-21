@@ -572,7 +572,8 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     // their size (dense subsurface), the visual difference is small"), so the raster preview
     // always takes the thin-walled branch and the volume branch is path-tracer only.
 #ifndef RASTER_PIPELINE
-    // scatterAsThin forces the thin branch for the interactive preview: same albedo map, no walk.
+    // scatterAsThin forces the thin branch for the interactive preview: the walk collapsed to its
+    // diffuse exit at zero distance, so the base map (skin map and tint) is its colour, no walk.
     if(pbrMat.thickness > 0.0 && !scatterAsThin)
     {
       // Volumetric mode (KHR_materials_volume, thickness > 0): split the attenuation coefficient
@@ -595,9 +596,16 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     else
 #endif  // !RASTER_PIPELINE
     {
-      // The preview keeps the thin lobe's fixed back-scatter, whatever anisotropy the medium authored.
+      // The preview keeps the thin lobe's fixed back-scatter, whatever anisotropy the medium
+      // authored, and leaves through the base colour as the volume walk does (ptVolumeDiffuseExit),
+      // under the medium's multiple-scattering albedo: multiscatterColor carries no map in this
+      // mode (it is what the walk's per-event albedo is inverted from), and it is close to what the
+      // walk hands back from a thick medium, so the preview takes the colour the still view will have.
       if(scatterAsThin && pbrMat.thickness > 0.0)
-        g = -0.8;
+      {
+        g                 = -0.8;
+        multiscatterColor = pbrMat.baseColor * multiscatterColor;
+      }
       // Thin-walled mode (no volume / thickness = 0). The spec replaces the transmissive part of
       // the dielectric base with
       //   mix(specular_btdf * baseColor, scatter_bsdf(multiscatterColor, g), scatterStrength)

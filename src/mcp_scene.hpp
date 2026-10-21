@@ -30,7 +30,7 @@
 //   vk_gltf_edit {ops:[...]}    several edits applied in order, landing in the same frame
 //   vk_gltf_set_material        {id|index, material: partial glTF material (factors, alpha, extensions)}
 //   vk_gltf_set_node            {id|index, visible?, translation?, rotation? (xyzw), scale?}
-//   vk_gltf_set_light           {id (node) | index (light), color?, intensity?}
+//   vk_gltf_set_light           {id (node) | index (light), color?, intensity?, radius? (directional: disc radius in km at the sun's distance, soft shadows)}
 //   vk_gltf_animation           {clip?, time?, play?, speed?, loop?, reset?, stop?}
 //   vk_gltf_set_morph_weights   {id (primitive) | mesh, weights:[...]}
 //   vk_gltf_set_vertices        {id (primitive) | mesh, primitive?, positions: base64 f32 xyz, normals?: base64,

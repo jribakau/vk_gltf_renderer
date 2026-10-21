@@ -103,6 +103,9 @@ struct FrameStream::Impl
   std::atomic<uint64_t> framesSent{0};
   std::atomic<double>   renderFps{0.0};
   std::atomic<double>   encodeMs{0.0};
+  // live encoder settings, read by the encoder thread each frame
+  std::atomic<int>  quality{92};
+  std::atomic<bool> fullChroma{false};
 
   std::thread     encoder;
   std::thread     server;
@@ -123,9 +126,20 @@ FrameStream::FrameStream(FrameStreamCreateInfo info)
     : m_impl(std::make_unique<Impl>())
 {
   m_impl->info = std::move(info);
+  m_impl->quality.store(m_impl->info.quality);
 }
 
 FrameStream::~FrameStream() = default;
+
+void FrameStream::setQuality(int quality)
+{
+  m_impl->quality.store(std::clamp(quality, 1, 100));
+}
+
+void FrameStream::setFullChroma(bool fullChroma)
+{
+  m_impl->fullChroma.store(fullChroma);
+}
 
 void FrameStream::onAttach(nvapp::Application* app)
 {
@@ -374,12 +388,13 @@ void FrameStream::Impl::encodeLoop()
     LOGE("frame stream: could not create the JPEG encoder\n");
     return;
   }
-  tj3Set(tj, TJPARAM_QUALITY, info.quality);
+  int appliedQuality = -1;
 
   std::vector<uint8_t> raw;
   std::vector<uint8_t> last;
   VkExtent2D           lastExtent{};
   bool                 lastFullChroma = false;
+  int                  lastQuality    = -1;
   while(running)
   {
     VkExtent2D extent{};
@@ -392,17 +407,26 @@ void FrameStream::Impl::encodeLoop()
       extent   = rawExtent;
       rawReady = false;
     }
+    const int  wantQuality = quality.load();
+    const bool wantFull    = fullChroma.load();
     // A converged path trace repeats the same image frame after frame; don't re-send it, except
-    // once with full chroma, since the frame that was sent was encoded for speed.
+    // once with full chroma (or the quality the host raised to), since the frame that was sent
+    // was encoded for speed.
     const bool repeat = extent.width == lastExtent.width && extent.height == lastExtent.height
                         && raw.size() == last.size() && std::memcmp(raw.data(), last.data(), raw.size()) == 0;
-    if(repeat && lastFullChroma)
+    if(repeat && lastFullChroma && lastQuality == wantQuality)
       continue;
 
     const auto     start = std::chrono::steady_clock::now();
     unsigned char* jpeg  = nullptr;
     size_t         size  = 0;
-    tj3Set(tj, TJPARAM_SUBSAMP, repeat ? TJSAMP_444 : TJSAMP_420);
+    if(wantQuality != appliedQuality)
+    {
+      tj3Set(tj, TJPARAM_QUALITY, wantQuality);
+      appliedQuality = wantQuality;
+    }
+    const bool full = repeat || wantFull;
+    tj3Set(tj, TJPARAM_SUBSAMP, full ? TJSAMP_444 : TJSAMP_420);
     if(tj3Compress8(tj, raw.data(), int(extent.width), 0, int(extent.height), TJPF_RGBX, &jpeg, &size) != 0)
     {
       LOGW("frame stream: JPEG encoding failed: %s\n", tj3GetErrorStr(tj));
@@ -416,7 +440,8 @@ void FrameStream::Impl::encodeLoop()
 
     last.swap(raw);
     lastExtent     = extent;
-    lastFullChroma = repeat;
+    lastFullChroma = full;
+    lastQuality    = wantQuality;
     {
       std::lock_guard lock(jpgMutex);
       jpg       = std::move(out);

@@ -317,11 +317,57 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
 #endif
 
+      // Diffuse exit (ePtVolumeDiffuseExit): a scatter walk that reaches the surface from inside
+      // leaves through it as a Lambertian point, carrying the colour the walk gave its throughput,
+      // and is shaded below like any surface: one next-event estimate at the exit with MIS against
+      // the cosine-sampled continuation. The walk gathered nothing inside (pathtrace_functions),
+      // so nothing is counted twice, and the boundary's Fresnel and total internal reflection are
+      // folded into the exit lobe rather than being skipped by straight-through shadow rays (the
+      // estimator production renderers use for dense media). A medium that only absorbs keeps its
+      // refractive exit: this is for scattering media.
+      bool diffuseExit = false;
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+      if(ptIsInside(pt) && !hit.frontFace && hasFlag(pushConst.flags, PathtracerFlags::ePtVolumeDiffuseExit))
+      {
+        const float3 sigmaS = float3(pt.volumeMedium.scatterCoefficient);
+        diffuseExit         = max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
+      }
+      if(diffuseExit)
+      {
+        pt.isInside         = false;
+        pt.volumeMedium     = {};
+        pt.exitedVolumeWalk = false;
+        // getHitState turned the normals towards the ray, i.e. into the medium; the exit faces out
+        hit.nrm       = -hit.nrm;
+        hit.geonrm    = -hit.geonrm;
+        hit.tangent   = -hit.tangent;
+        hit.shadowPos = hit.pos;  // the terminator offset was made for the inner side
+      }
+#endif
+
       float     texGrad = worldFoot * hit.texelDensity * pushConst.texGradScale;
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;
       pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials,
                                                 hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+      if(diffuseExit)
+      {
+        // The exit lobe: Lambertian in the surface's colour map (the medium carried the measured
+        // scattering colour; the map is the skin's own), with no specular layer, since the walk
+        // already paid the boundary's share on the way in.
+        const float3 exitAlbedo = pbrMat.baseColor;
+        const float3 N          = pbrMat.N;
+        const float3 Ng         = pbrMat.Ng;
+        const float3 T          = pbrMat.T;
+        const float3 B          = pbrMat.B;
+        pbrMat                  = defaultPbrMaterial(exitAlbedo, 0.0F, 1.0F, N, Ng);
+        pbrMat.specular         = 0.0F;
+        pbrMat.ior2             = 1.0F;
+        pbrMat.T                = T;
+        pbrMat.B                = B;
+      }
+#endif
 
 #if WIREFRAME
       // Wireframe is only used for the camera-visible surface, so compute it once here on the

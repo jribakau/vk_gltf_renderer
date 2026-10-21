@@ -496,6 +496,14 @@ Json opSetLight(Ctx& c, const Json& op)
     l.color = numbers<3>(*v, "color");
   if(auto v = op.find("intensity"); v != op.end())
     l.intensity = std::max(0.0, number(*v, "intensity"));
+  // `extras.radius`: a directional light's disc radius (km, at the sun's distance), which gives it
+  // an angular size and soft shadows; the upload reads it from the light each time it is dirty.
+  if(auto v = op.find("radius"); v != op.end())
+  {
+    tinygltf::Value::Object extras = l.extras.IsObject() ? l.extras.Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
+    extras["radius"]                = tinygltf::Value(std::max(0.0, number(*v, "radius")));
+    l.extras                        = tinygltf::Value(extras);
+  }
   c.scene.markLightDirty(light);
   return {{"light", light}};
 }
@@ -884,7 +892,7 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
        "alphaMode, alphaCutoff, doubleSided, normalTexture.scale, and extensions (merge patch per extension; null "
        "removes it). Texture indices must already exist in the scene."},
       {"vk_gltf_set_node", "set_node", "Set a node's visible flag and/or local translation, rotation (x,y,z,w) and scale."},
-      {"vk_gltf_set_light", "set_light", "Set a punctual light's color and/or intensity, by light index or by the id of its node."},
+      {"vk_gltf_set_light", "set_light", "Set a punctual light's color, intensity and/or radius (extras.radius: a directional light's angular size), by light index or by the id of its node."},
       {"vk_gltf_animation", "animation",
        "Control playback: clip (index or name), time (seconds, evaluated exactly), play, speed, loop, reset, stop "
        "(stop restores the pose the scene was loaded with). Returns the state."},
