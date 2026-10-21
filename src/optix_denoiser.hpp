@@ -139,6 +139,10 @@ public:
     bool      autoDenoiseEnabled  = true;  // Automatically denoise every N frames
     int       autoDenoiseInterval = 50;    // Denoise at frames 50, 100, 150, etc.
     ModelKind modelKind           = ModelKind::eAOV;
+    // Share of the noisy accumulation mixed back in once maxFrames is reached, rising linearly with
+    // the frame count from 0. A converged image needs little denoising; full strength smooths away
+    // detail (skin pores, hair) the accumulation already resolves. 0 keeps it fully denoised.
+    float blendMax = 0.0f;
   };
 
   // Input images for denoising
@@ -198,7 +202,8 @@ public:
 
   // Public API for external control of denoising steps
   bool prepareDenoisingInputs(VkCommandBuffer cmd, const DenoisingInputs& inputs);
-  bool executeDenoising();
+  // blendFactor: 0 = fully denoised, 1 = the noisy input (OptixDenoiserParams::blendFactor)
+  bool executeDenoising(float blendFactor = 0.0f);
   bool finalizeDenoisedOutput(VkCommandBuffer cmd, const DenoisingOutputs& outputs);
 
   // Check if we have a valid denoised output

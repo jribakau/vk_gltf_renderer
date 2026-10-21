@@ -149,27 +149,37 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
 
 //--------------------------------------------------------------------------------------------------
 // Register command line parameters for the PathTracer
-void PathTracer::registerParameters(SettingsRegistry* settings)
+void PathTracer::registerParameters(SettingsRegistry* settings, std::function<void()> resetAccumulation)
 {
+  // A setting that changes what a frame renders must restart the accumulation when it is set from the
+  // command line, a benchmark sequence or MCP: otherwise new frames are averaged into the old image, and
+  // once the frame count has reached maxFrames nothing renders at all.
+  const nvutils::ParameterBase::CallbackSuccess reset = [resetAccumulation](const nvutils::ParameterBase* const) {
+    if(resetAccumulation)
+      resetAccumulation();
+  };
   // PathTracer-specific settings. Persist marks what survives a restart (see settings_registry.hpp).
   // Bounds mirror the UI sliders so CLI and benchmark sequences accept the same range the UI does:
   //   ptMaxDepth  -> "Max Depth" slider in showUI() (0..20)
   //   ptSamples   -> "Samples" slider in showUI() (MIN_SAMPLES_PER_PIXEL..MAX_SAMPLES_PER_PIXEL);
   //                  the adaptive-sampling autopilot also clamps to the same range at runtime.
-  settings->add({"ptMaxDepth", "PathTracer: Maximum ray depth"}, &m_pushConst.maxDepth, Persist::eYes, 0, 20);
+  settings->add({.name = "ptMaxDepth", .help = "PathTracer: Maximum ray depth", .callbackSuccess = reset}, &m_pushConst.maxDepth, Persist::eYes, 0, 20);
   settings->add({.name            = "ptSamples",
                  .help            = "PathTracer: Samples per pixel",
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
                 &m_pushConst.numSamples, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
-  settings->add({"ptFireflyClamp", "PathTracer: Firefly clamp threshold"}, &m_pushConst.fireflyClampThreshold, Persist::eYes);
-  settings->add({"ptTexGradScale", "PathTracer: Ray-footprint gradient scale (0=mip0, 1=physical)"},
+  settings->add({.name = "ptFireflyClamp", .help = "PathTracer: Firefly clamp threshold", .callbackSuccess = reset}, &m_pushConst.fireflyClampThreshold, Persist::eYes);
+  settings->add({.name = "ptTexGradScale", .help = "PathTracer: Ray-footprint gradient scale (0=mip0, 1=physical)", .callbackSuccess = reset},
                 &m_pushConst.texGradScale, Persist::eYes, 0.0F, 1.0F);
-  settings->add({"ptAperture", "PathTracer: Camera aperture"}, &m_pushConst.aperture, Persist::eYes, 0.0F, 1.0F);
-  settings->add({"ptFocalDistance", "PathTracer: Focal distance"}, &m_pushConst.focalDistance, Persist::eYes);
-  settings->add({"ptShadowTransmission", "PathTracer: Let shadow rays pass through transmissive surfaces (biased approximation)"},
+  settings->add({.name = "ptAperture", .help = "PathTracer: Camera aperture", .callbackSuccess = reset}, &m_pushConst.aperture, Persist::eYes, 0.0F, 1.0F);
+  settings->add({.name = "ptFocalDistance", .help = "PathTracer: Focal distance", .callbackSuccess = reset}, &m_pushConst.focalDistance, Persist::eYes);
+  settings->add({.name            = "ptShadowTransmission",
+                 .help            = "PathTracer: Let shadow rays pass through transmissive surfaces (biased approximation)",
+                 .callbackSuccess = reset},
                 &m_shadowTransmission, Persist::eYes);
   // Not persisted: the viewer turns it on while the camera moves and off once the view is still.
-  settings->add({"scatterAsThin", "PathTracer: Shade volumetric scatter as the thin-walled preview"}, &m_scatterAsThin, Persist::eNo);
+  settings->add({.name = "scatterAsThin", .help = "PathTracer: Shade volumetric scatter as the thin-walled preview", .callbackSuccess = reset},
+                &m_scatterAsThin, Persist::eNo);
   settings->add({"ptAutoFocus", "PathTracer: Enable auto focus"}, &m_autoFocus, Persist::eYes);
   settings->add({"ptTechnique", "PathTracer: Rendering technique [RayQuery:0, RayTracing:1]"}, (int*)&m_renderTechnique,
                 Persist::eYes, 0, 1);
@@ -181,7 +191,9 @@ void PathTracer::registerParameters(SettingsRegistry* settings)
   settings->add({"ptPerformanceTarget", "PathTracer: Performance target [Interactive:0, Balanced:1, Quality:2, MaxQuality:3]"},
                 (int*)&m_performanceTarget, Persist::eYes, 0, 3);
 #if defined(USE_DLSS)
-  m_dlss->registerParameters(settings);
+  // dlssEnable switches between RR's one-sample frames and accumulation: the accumulation must not
+  // start from the last DLSS input, weighted by every DLSS frame since the last reset.
+  m_dlss->registerParameters(settings, resetAccumulation);
 #endif
 
 #if defined(USE_OPTIX_DENOISER)

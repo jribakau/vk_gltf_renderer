@@ -82,7 +82,9 @@ public:
 
   // Register command line parameters
   /// Declare this subsystem's settings (command line + benchmark + MCP + persistence).
-  void registerParameters(SettingsRegistry* settings);
+  /// resetAccumulation restarts the frame count: settings that change what a frame renders call it
+  /// when they are set outside the UI (whose changes reset through onUI's return value).
+  void registerParameters(SettingsRegistry* settings, std::function<void()> resetAccumulation);
 
   VkDevice                        m_device{};  // Vulkan device
   VkPipelineLayout                m_pipelineLayout{};

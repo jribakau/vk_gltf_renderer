@@ -316,6 +316,20 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   bool scatterPreview = false;
 #if GLTF_USE_SCATTER
   scatterPreview = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin) && mat.scatterStrengthFactor > 0.0;
+#if GLTF_USE_VOLUME
+  // Volumetric scatter is not a window. A shadow ray that hits the shell from outside stops.
+  // A ray already in the medium (the walk's next-event connection) carries only the remaining
+  // Beer-Lambert. Tinting that ray by the base colour, Fresnel and roughness was a second colour
+  // on top of the walk, and the noisy samples accumulated once the view stopped moving.
+  if(mat.thicknessFactor > 0.0 && mat.scatterStrengthFactor > 0.0 && !scatterPreview)
+  {
+    if(!isInside)
+      return float3(0.0);
+    float3 extinction = -log(max(mat.attenuationColor, float3(0.001))) / mat.attenuationDistance;
+    isInside           = false;
+    return exp(-hitT * extinction);
+  }
+#endif
   // Thin-walled KHR_materials_scatter turns transmission * scatterStrength into a diffuse lobe
   // (evaluateMaterial): only the rest is a specular BTDF a shadow ray can pass straight through.
   // Without this, skin (transmission 0.7 under full scatter) let most of the light through, and an

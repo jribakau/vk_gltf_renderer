@@ -12,6 +12,15 @@
 - The **path tracer** (`renderer_pathtracer`) is the reference producer of the guide buffers; the
   **rasterizer** produces a subset for DLSS-SR.
 
+## OptiX blend with the accumulation
+
+The OptiX denoiser runs on the accumulated image, so the further accumulation has converged, the
+less denoising it needs; at full strength it keeps smoothing away detail the samples already resolve
+(skin pores, hair strands). **Blend at max frames** (`--optixBlendMax`, `OptiXDenoiser::Settings::blendMax`)
+mixes the noisy accumulation back in through OptiX's `blendFactor`, rising linearly with the frame
+count from 0 to that share at `ptMaxFrames`. Upscale 2X has no input at output size to blend with, so
+it always shows the fully denoised result.
+
 ## DLSS startup
 
 `Dlss::init` starts a nonblocking NGX prewarm as soon as the renderer is attached. This does not
@@ -155,6 +164,13 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
   reset — those are already correctly handled by instance motion vectors (see "Instance (node)
   motion" above); only *appearance* discontinuities (texture/material content changing at a
   stationary surface, which motion vectors can't describe) need a full history discard.
+- **Switching DLSS off restarts the path tracer's accumulation.** DLSS frames count toward
+  `maxFrames` and the accumulated-sample total like any other frame, and the result image holds the
+  last 1-spp DLSS input. Every DLSS setting therefore resets the frame (the `resetAccumulation` hook
+  `PathTracer::registerParameters` passes to `Dlss::registerParameters`), as do the path-tracer
+  settings that change a frame's content. Without it, accumulation after a DLSS run averages new
+  samples into that one noisy frame at the weight of every DLSS frame, or renders nothing once the
+  count has reached `maxFrames`.
 
 ## Debugging motion vectors
 

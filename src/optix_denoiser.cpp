@@ -455,9 +455,12 @@ bool OptiXDenoiser::denoiseOneShot(Resources& resources)
     resources.app->submitAndWaitTempCmdBuffer(cmd);
   }
 
-  // Execute OptiX denoising
+  // Execute OptiX denoising. Upscale's output is larger than its input, so there is nothing to blend with.
   {
-    if(!executeDenoising())
+    float blend = 0.0f;
+    if(!isUpscaleMode() && m_settings.blendMax > 0.0f && resources.settings.maxFrames > 0)
+      blend = m_settings.blendMax * std::clamp(float(resources.frameCount) / float(resources.settings.maxFrames), 0.0f, 1.0f);
+    if(!executeDenoising(blend))
     {
       return false;
     }
@@ -516,7 +519,7 @@ bool OptiXDenoiser::prepareDenoisingInputs(VkCommandBuffer cmd, const DenoisingI
   return true;
 }
 
-bool OptiXDenoiser::executeDenoising()
+bool OptiXDenoiser::executeDenoising(float blendFactor)
 {
   if(!isEnabled())
   {
@@ -576,7 +579,7 @@ bool OptiXDenoiser::executeDenoising()
     // According to NVIDIA: "They are automatically calculated if the device pointer is zero."
     // Explicit computation is only needed when using tiling for consistent results across tiles.
     OptixDenoiserParams params           = {};
-    params.blendFactor                   = 0.0f;  // 0.0 = fully denoised, 1.0 = original noisy
+    params.blendFactor                   = blendFactor;  // 0.0 = fully denoised, 1.0 = original noisy
     params.hdrIntensity                  = 0;     // Auto-calculated by OptiX
     params.hdrAverageColor               = 0;     // Auto-calculated by OptiX (for AOV mode)
     params.temporalModeUsePreviousLayers = 0;     // Not using temporal mode
@@ -771,6 +774,8 @@ void OptiXDenoiser::registerParameters(SettingsRegistry* settings)
                 &m_settings.autoDenoiseInterval, Persist::eYes, 1, 500);
   settings->add({"optixModelKind", "OptiX Denoiser: Model [AOV:0, Upscale2X:1]"}, (int*)&m_settings.modelKind,
                 Persist::eYes, 0, 1);
+  settings->add({"optixBlendMax", "OptiX Denoiser: Share of the noisy image mixed back in at max frames (0 = fully denoised)"},
+                &m_settings.blendMax, Persist::eYes, 0.0f, 1.0f);
 }
 
 
@@ -943,6 +948,9 @@ bool OptiXDenoiser::onUiSettings(Resources& resources)
       ImGui::TextDisabled("Next: frame %llu",
                           ((resources.frameCount / m_settings.autoDenoiseInterval) + 1) * m_settings.autoDenoiseInterval);
   }
+  if(!isUpscaleMode())
+    PE::SliderFloat("Blend at max frames", &m_settings.blendMax, 0.0f, 1.0f, "%.2f", 0,
+                    "Share of the noisy accumulation mixed back in, rising from 0 to this at max frames");
   PE::end();
 
   if(!m_settings.enable)

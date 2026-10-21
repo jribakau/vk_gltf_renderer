@@ -564,7 +564,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   });
 
   // Register PathTracer-specific command line parameters
-  m_pathTracer.registerParameters(&m_settings);
+  m_pathTracer.registerParameters(&m_settings, [this]() { resetFrame(); });
   m_rasterizer.registerParameters(&m_settings);
 
   m_benchmark.registerParameters(
