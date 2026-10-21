@@ -217,7 +217,7 @@ float3 convertSGToMR(float3 diffuseColor, float3 specularColor, float glossiness
 # Function `evaluateMaterial`
 > From the incoming `material` and `mesh` info, return a `PbrMaterial` struct for the BSDF system.
 -------------------------------------------------------------------------------------------------*/
-PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos)
+PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, bool scatterAsThin = false)
 {
   // Start from a fully-initialized material so that gating out any extension with MAT_EXT_*
   // cannot leave downstream BSDF reads undefined.
@@ -572,7 +572,8 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     // their size (dense subsurface), the visual difference is small"), so the raster preview
     // always takes the thin-walled branch and the volume branch is path-tracer only.
 #ifndef RASTER_PIPELINE
-    if(pbrMat.thickness > 0.0)
+    // scatterAsThin forces the thin branch for the interactive preview: same albedo map, no walk.
+    if(pbrMat.thickness > 0.0 && !scatterAsThin)
     {
       // Volumetric mode (KHR_materials_volume, thickness > 0): split the attenuation coefficient
       // sigma_t into scattering (sigma_s) and absorption via the strength-scaled single-scatter
@@ -586,10 +587,17 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
       float3 attenuationCoef    = -log(max(pbrMat.attenuationColor, float3(0.001))) / pbrMat.attenuationDistance;
       pbrMat.scatterCoefficient = attenuationCoef * singleScatterAlbedo;
       pbrMat.scatterAnisotropy  = g;  // consumed by the phase function; only meaningful with sigma_s
+      // The specular BTDF is tinted by baseColor. Cancelling that leaves the base map on the
+      // (1 - transmission) diffuse reflection only; the medium carries the skin colour, read
+      // once where the walk enters (multiscatterColor).
+      pbrMat.transmissionTint = 1.0 / max(pbrMat.baseColor, float3(1e-4));
     }
     else
 #endif  // !RASTER_PIPELINE
     {
+      // The preview keeps the thin lobe's fixed back-scatter, whatever anisotropy the medium authored.
+      if(scatterAsThin && pbrMat.thickness > 0.0)
+        g = -0.8;
       // Thin-walled mode (no volume / thickness = 0). The spec replaces the transmissive part of
       // the dielectric base with
       //   mix(specular_btdf * baseColor, scatter_bsdf(multiscatterColor, g), scatterStrength)
@@ -656,9 +664,9 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   return pbrMat;
 }
 
-PbrMaterial evaluateMaterial(uint materialIndex, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, GltfShadeMaterial* materials)
+PbrMaterial evaluateMaterial(uint materialIndex, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, GltfShadeMaterial* materials, bool scatterAsThin = false)
 {
-  return evaluateMaterial(materials[materialIndex], state, images, samplers, texInfos);
+  return evaluateMaterial(materials[materialIndex], state, images, samplers, texInfos, scatterAsThin);
 }
 
 

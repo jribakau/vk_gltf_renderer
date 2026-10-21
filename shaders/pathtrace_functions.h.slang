@@ -46,14 +46,14 @@ static const float VOLUME_RAND_FLOOR               = 1.0e-10f;    // Minimum ran
 static const float VOLUME_RAND_CEIL = 1.0f - 1.0e-7f;  // rand() can return exactly 1.0; keep u in the half-open [0,1) the bucket remap assumes
 static const float RR_PCONT_FLOOR = 0.001f;  // Minimum probability for Russian Roulette
 static const float RR_PCONT_CAP   = 0.95f;   // Maximum probability for Russian Roulette
-// In-volume Russian Roulette. Scattering is bounded by an event budget rather than by the surface
-// cap: a dense, high-albedo medium keeps the throughput near 1, so a 0.95 cap culls 5% of the
-// *fully energetic* paths at every scatter event and the medium renders far too dark (56% of the
-// energy lost at g = 0.95 in a medium that cannot absorb at all). Following the throughput instead
-// leaves those paths alone, and the hard stop keeps the cost of a dense medium bounded -- this is
-// an interactive path tracer, and an unbounded walk in a non-absorbing medium does not terminate
-// at all (measured: device loss, not merely a slow frame).
+// In-volume Russian Roulette, then a hard stop. Scattering is bounded by an event budget rather
+// than by the surface cap: a dense, high-albedo medium keeps the throughput near 1, so a 0.95 cap
+// culls 5% of the fully energetic paths at every scatter and the medium renders far too dark.
+// Following the throughput (cap 0.999) leaves those paths alone until VOLUME_HARD_CAP ends the walk.
+// Without that stop an unbounded walk in a non-absorbing medium does not terminate (measured:
+// device loss, not merely a slow frame).
 static const int   VOLUME_FREE_BUDGET  = 64;      // Scatter events before Russian Roulette starts culling a volume path
+static const int   VOLUME_HARD_CAP     = 256;     // Scatter events at which the walk is ended outright
 static const float RR_PCONT_CAP_VOLUME = 0.999f;  // Maximum Russian Roulette probability inside a volume
 
 //-----------------------------------------------------------------------
@@ -311,6 +311,18 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   GltfTextureInfo*   texInfos  = pushConst.gltfScene->textureInfos;
 
   float tFactor = mat.transmissionFactor;
+  // The preview flag shades a volumetric scatter material as thin-walled, so its shadow must too:
+  // Beer-Lambert through the measured medium would blacken a lobe the camera path never enters.
+  bool scatterPreview = false;
+#if GLTF_USE_SCATTER
+  scatterPreview = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin) && mat.scatterStrengthFactor > 0.0;
+  // Thin-walled KHR_materials_scatter turns transmission * scatterStrength into a diffuse lobe
+  // (evaluateMaterial): only the rest is a specular BTDF a shadow ray can pass straight through.
+  // Without this, skin (transmission 0.7 under full scatter) let most of the light through, and an
+  // occluder's shadow kept only its grazing-angle silhouette, like a see-through outline.
+  if(mat.thicknessFactor == 0.0 || scatterPreview)
+    tFactor *= 1.0 - saturate(mat.scatterStrengthFactor);
+#endif
 
   if(tFactor <= MIN_TRANSMISSION)
   {
@@ -341,7 +353,7 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   currentTransmission *= (1.0F - fresnel);
 
 #if GLTF_USE_VOLUME
-  if(mat.thicknessFactor > 0.0)
+  if(mat.thicknessFactor > 0.0 && !scatterPreview)
   {
     if(isInside)
     {
@@ -914,7 +926,10 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
     }
     float scatterDist = (sigmaTChannel > 0.0) ? -log(max(u, VOLUME_RAND_FLOOR)) / sigmaTChannel : hitDistance;
 
-    if(scatterDist < hitDistance)
+    // A finite free path is a scatter, including when the ray left the mesh (hitDistance is
+    // INFINITE). Both unbounded means this channel has no extinction: fall through and let the
+    // miss path below decide, which never multiplies 0 by INFINITE.
+    if(isfinite(scatterDist) && scatterDist < hitDistance)
     {
       // Scattering event: pdf_i(t) = sigma_t_i * exp(-sigma_t_i * t), combined over the channels.
       float3 transmittance = exp(-extinction * scatterDist);
@@ -937,8 +952,17 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
       return true;  // scatter event
     }
 
-    // Reached the surface without scattering: the probability of that is exp(-sigma_t_i * d) per
-    // channel, again combined with the balance heuristic.
+    // Reached the surface, or left the mesh, without scattering.
+    if(!(hitDistance < INFINITE))
+    {
+      // Any extinction over an unbounded distance absorbs the path. A zero extinction stays put:
+      // exp(0 * INFINITE) is NaN, and this medium had nothing to apply.
+      if(max(extinction.x, max(extinction.y, extinction.z)) > 0.0)
+        throughput = float3(0.0);
+      return false;
+    }
+    // The probability of reaching the surface is exp(-sigma_t_i * d) per channel, combined with
+    // the balance heuristic.
     float3 transmittance = exp(-extinction * hitDistance);
     float  pdf           = dot(channelProb, transmittance);
     throughput *= (pdf > 0.0) ? transmittance / pdf : float3(0.0);
@@ -949,7 +973,13 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
   // Pure-absorption path (no scatter coefficient, or GLTF_USE_SCATTER disabled):
   // straight Beer's law applied over the segment length. This is the case for plain
   // KHR_materials_volume materials and is what produces the colored tint of a glass
-  // filled with an absorbing medium.
+  // filled with an absorbing medium. An unbounded segment with any extinction absorbs fully.
+  if(!(hitDistance < INFINITE))
+  {
+    if(max(extinction.x, max(extinction.y, extinction.z)) > 0.0)
+      throughput = float3(0.0);
+    return false;
+  }
   throughput *= exp(-hitDistance * extinction);
   return false;
 }
@@ -967,9 +997,11 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
     return float3(0.0F);
 
   float cosTheta = dot(wiBeforeScatter, directLight.direction);
-  float phasePdf = henyeyGreensteinPdf(cosTheta, float(medium.scatterAnisotropy));
-
-  float misWeight = (directLight.pdf == DIRAC) ? 1.0F : directLight.pdf / (directLight.pdf + phasePdf);
+  // The phase function value. It is also the pdf of sampling this direction, but volume NEE is the
+  // only direct-light estimator at a scatter vertex (the exit surface's NEE faces the interior and
+  // does not run), so the MIS weight against the phase-sampled path is 1.
+  float phase = henyeyGreensteinPdf(cosTheta, float(medium.scatterAnisotropy));
+  float misWeight = 1.0F;
 
   RayDesc shadowRay;
   shadowRay.Origin    = scatterPos;
@@ -978,7 +1010,7 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
   shadowRay.TMax      = directLight.distance;
   float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, /*initialInside=*/true);
 
-  return throughput * directLight.radianceOverPdf * misWeight * phasePdf * shadowFactor;
+  return throughput * directLight.radianceOverPdf * misWeight * phase * shadowFactor;
 }
 #endif  // GLTF_USE_SCATTER
 
@@ -1158,7 +1190,8 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     HitState  hit  = getHitState(prim, barys, node.worldToObject, node.objectToWorld, payload.primitiveID, dir);
     MeshState mesh = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, isInside, 0.0f);
     mesh.baseColorVertexMul = hit.color;
-    mat    = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials);
+    mat    = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
+                          hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
     origin = hit.pos;
 
     if(dlssIsClearGlass(mat))
@@ -1277,6 +1310,10 @@ struct PathTracerState
 #endif
 #if GLTF_USE_VOLUME
   VolumeMedium volumeMedium = {};
+  // Set on a scatter. Volume NEE is the only direct-light estimator for the walk, so an
+  // environment or emitter hit while this is set contributes nothing. Cleared at the first
+  // surface hit outside the medium, which is shaded on its own.
+  bool exitedVolumeWalk = false;
 #endif
 #if GLTF_USE_SCATTER
   int scatterBounces = 0;
@@ -1332,6 +1369,7 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
     {
 #if GLTF_USE_SCATTER
       pt.scatterBounces++;
+      pt.exitedVolumeWalk = true;
 
       // Scatter events translate the cone through the medium segment (no slant correction).
       pt.cone.width += pt.cone.spreadAngle * length(ray.Origin - originBeforeScatter);
@@ -1344,6 +1382,8 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
           return PathStepResult.eBreak;
         pt.throughput /= rrPcont;
       }
+      if(pt.scatterBounces >= VOLUME_HARD_CAP)
+        return PathStepResult.eBreak;
       return PathStepResult.eVolumeContinue;  // skips surface-depth increment in the main loop
 #endif                                        // GLTF_USE_SCATTER
     }

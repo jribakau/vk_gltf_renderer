@@ -175,6 +175,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     //-----------------------------------------------------------------------
     if(payload.hitT == INFINITE)
     {
+      // A walk that leaves the mesh pays for the unbounded segment before the sky is considered.
+      // With scattering an event is sampled; with absorption only the transmittance is 0.
+      PathStepResult escaped = processVolumeSegment(raytracer, INFINITE, ray, pt, seed);
+      if(escaped != PathStepResult.eOutOfVolume)
+        return escaped;
+
       // Check if we hit the backplate
       if(firstRay && tryPrimaryMissBackplate(ray, frameInfo, pt))
         return PathStepResult.eBreak;
@@ -221,19 +227,40 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // for more indirect hits. This is the counter part of the MIS weighting in sampleLights()
       float misWeight = computeEnvHitMisWeight(pt.lastSamplePdf, envPdf);
 
-      pt.radiance += pt.throughput * misWeight * envColor;
-
-      // The sun the lighting field leaves out. Without it a lobe narrower than the disk -- smooth
-      // glass, a polished mirror -- shows no sun at all, as NEE's cone samples almost never land in it.
-      if(!delta)
+      // Volume NEE already estimated direct light for a walk. The sky reached by the phase-sampled
+      // path would count it again; that path contributes nothing.
+#if GLTF_USE_VOLUME
+      const bool walkOwnsSky = pt.exitedVolumeWalk;
+      pt.exitedVolumeWalk    = false;
+#else
+      const bool walkOwnsSky = false;
+#endif
+      if(!walkOwnsSky)
       {
-        const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
-        const float3 disk  = evalSkySunDisk(bgDir, frameInfo);
-        if(any(disk > 0.0F))
-          pt.radiance += pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf) * disk * frameInfo->envIntensity;
+        pt.radiance += pt.throughput * misWeight * envColor;
+
+        // The sun the lighting field leaves out. Without it a lobe narrower than the disk -- smooth
+        // glass, a polished mirror -- shows no sun at all, as NEE's cone samples almost never land in it.
+        if(!delta)
+        {
+          const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
+          const float3 disk  = evalSkySunDisk(bgDir, frameInfo);
+          if(any(disk > 0.0F))
+            pt.radiance += pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf) * disk * frameInfo->envIntensity;
+        }
       }
 
       return PathStepResult.eBreak;
+    }
+
+    // Charge the in-volume segment up to this hit before the front-face escape test, material
+    // evaluation or emission. A scatter returns here, so a surface the walk never reaches is not
+    // shaded. A walk that survives to an eyeball or a tooth has paid for the trip, and the
+    // front-face clear below then drops the medium.
+    {
+      PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed);
+      if(volumeStep != PathStepResult.eOutOfVolume)
+        return volumeStep;
     }
 
     GltfShadeMaterial* materials     = pushConst.gltfScene->materials;
@@ -293,7 +320,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float     texGrad = worldFoot * hit.texelDensity * pushConst.texGradScale;
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;
-      pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials);
+      pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials,
+                                                hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
 
 #if WIREFRAME
       // Wireframe is only used for the camera-visible surface, so compute it once here on the
@@ -407,10 +435,19 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     //-----------------------------------------------------------------------
     // Adding emissive
     //-----------------------------------------------------------------------
+    // The first surface outside a volume walk is shaded on its own. An emitter reached directly
+    // from the walk contributes nothing: volume NEE already estimated that light.
+#if GLTF_USE_VOLUME
+    const bool walkOwnsDirect = pt.exitedVolumeWalk && !ptIsInside(pt);
+    if(!ptIsInside(pt))
+      pt.exitedVolumeWalk = false;
+#else
+    const bool walkOwnsDirect = false;
+#endif
     // Emitters that are also sampled as area lights (constant emissive, no emissive texture) get
     // hit by BSDF rays too; MIS-weight those against the light technique, mirroring the env-hit
     // MIS above. Textured emitters are not in the light list, so they stay unweighted.
-    if(any(pbrMat.emissive > float3(0.0)))
+    if(!walkOwnsDirect && any(pbrMat.emissive > float3(0.0)))
     {
       float emissiveMis = 1.0;
       if(!hitInfinitePlane && !isTexturePresent(materials[materialIndex].emissiveTexture))
@@ -432,10 +469,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       return PathStepResult.eBreak;
     }
 #endif
-
-    PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed);
-    if(volumeStep != PathStepResult.eOutOfVolume)
-      return volumeStep;  // Skip the surface bounce if the ray is still in the volume (ray is scattered)
 
     // Normal surface bounce: propagate the cone footprint to the next segment. The new ray
     // starts at hit.pos with the slant-corrected worldFoot as its starting width, so the
@@ -526,13 +559,25 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // BSDF_EVENT_TRANSMISSION, so this branch is dead. makeVolumeMedium only when
         // GLTF_USE_VOLUME is on (medium has nowhere to live otherwise).
 #if GLTF_USE_TRANSMISSION
-        if(isTransmission)
+        // Thin-walled transmission (thickness == 0) has no interior, so it must not flip isInside.
+        // The scatter preview evaluates a volumetric material as thin and likewise stays outside.
+        if(isTransmission && pbrMat.thickness > 0.0f)
         {
-          pt.isInside = !pt.isInside;
-#if GLTF_USE_VOLUME
-          if(pt.isInside)
-            pt.volumeMedium = makeVolumeMedium(pbrMat);  // Entering volume: capture the medium for scatter/absorption
+          bool previewThin = false;
+#if GLTF_USE_SCATTER
+          previewThin = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin) && materialIndex >= 0
+                        && materials[materialIndex].scatterStrengthFactor > 0.0f;
 #endif
+          if(!previewThin)
+          {
+            pt.isInside = !pt.isInside;
+#if GLTF_USE_VOLUME
+            if(pt.isInside)
+              pt.volumeMedium = makeVolumeMedium(pbrMat);  // Entering volume: capture the medium for scatter/absorption
+            else
+              pt.volumeMedium = {};
+#endif
+          }
         }
 #endif
       }

@@ -168,6 +168,8 @@ void PathTracer::registerParameters(SettingsRegistry* settings)
   settings->add({"ptFocalDistance", "PathTracer: Focal distance"}, &m_pushConst.focalDistance, Persist::eYes);
   settings->add({"ptShadowTransmission", "PathTracer: Let shadow rays pass through transmissive surfaces (biased approximation)"},
                 &m_shadowTransmission, Persist::eYes);
+  // Not persisted: the viewer turns it on while the camera moves and off once the view is still.
+  settings->add({"scatterAsThin", "PathTracer: Shade volumetric scatter as the thin-walled preview"}, &m_scatterAsThin, Persist::eNo);
   settings->add({"ptAutoFocus", "PathTracer: Enable auto focus"}, &m_autoFocus, Persist::eYes);
   settings->add({"ptTechnique", "PathTracer: Rendering technique [RayQuery:0, RayTracing:1]"}, (int*)&m_renderTechnique,
                 Persist::eYes, 0, 1);
@@ -1749,6 +1751,7 @@ void PathTracer::setupPushConstant(VkCommandBuffer cmd, Resources& resources, Vk
   // is on and never resets; using it for ePtFirstFrame would only write depth once and break selection/depth.
   m_pushConst.flags = (resources.frameCount == 0 ? shaderio::ePtFirstFrame : 0);
   m_pushConst.flags |= m_shadowTransmission ? shaderio::ePtShadowTransmission : 0;
+  m_pushConst.flags |= m_scatterAsThin ? shaderio::ePtScatterAsThin : 0;
 #if defined(USE_DLSS)
   m_pushConst.flags |= useDlss ? shaderio::ePtUseDlss : 0;
 #endif
