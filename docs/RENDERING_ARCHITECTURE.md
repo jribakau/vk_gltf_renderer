@@ -691,9 +691,14 @@ Merging or referencing a scene reuses the same tail idea from the (threaded) reb
 frame-top flags: because `SceneMerger` only appends (existing image/texture/material indices never move),
 `rebuildVulkanSceneInternal(RebuildMode::eMergeAppend)` rebuilds geometry, render nodes and materials in
 full (cheap, no disk) but calls `SceneVk::syncTextureTail()` to keep the resident textures and load only
-the new tail images — so a merge no longer re-reads every image. A merge into a scene with no textures
-still uses `eFull` (the empty-scene dummy defaults do not match the model, same reason as the import
-fallback above).
+the new tail images, in parallel as a full load does — so a merge no longer re-reads every image. A
+merge into a scene with no textures still uses `eFull` (the empty-scene dummy defaults do not match the
+model, same reason as the import fallback above). A host that mirrors the scene (MCP
+`vk_gltf_add_scene`, `GltfRenderer::appendSceneFile`) uses the same rebuild, synchronously; since it
+re-derives vertex buffers from the model, which host vertex edits never write, it re-queues the live
+copies of the edited primitives (`m_liveVertices`) ahead of any upload still pending. Existing render
+primitives keep their ids across a merge, because new meshes are appended and primitives are numbered in
+mesh order (`Scene::buildPrimitiveKeyMap`).
 
 ### Debug Validation (debug builds only)
 

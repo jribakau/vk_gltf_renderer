@@ -47,7 +47,11 @@ vertex positions, several per call landing in one frame) are a second set of too
 `vk_gltf_set_*` family and `vk_gltf_edit`, registered in `src/mcp_scene.cpp`; the comment at the
 top of `src/mcp_scene.hpp` lists them. `vk_gltf_set_vertices` takes either every vertex or only
 the ones that moved (`indices`), which it patches into the renderer's copy of the primitive
-(`GltfRenderer::applyPendingSceneEdits`).
+(`GltfRenderer::applyPendingSceneEdits`). `vk_gltf_add_scene` merges a file into the loaded scene
+instead of loading it: each of its root nodes goes under the node named by its `extras.fvParent`
+(`GltfRenderer::appendSceneFile`, `SceneMerger::mergeUnder`), the textures already resident stay,
+and vertex edits sent before the merge are uploaded again from their live copies. Like a load, it
+runs synchronously on the application thread.
 
 Loading is not a tool: set `scenefile` or `hdrfile` and it loads. Those parameters carry a
 `callbackSuccess`, so the same write works from the command line, a benchmark sequence, and

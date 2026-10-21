@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -33,6 +34,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 #include <tinygltf/json.hpp>  // nlohmann::json
+#include <nvutils/file_operations.hpp>
 #include <nvutils/logger.hpp>
 
 #include "gltf_scene_animation.hpp"
@@ -129,7 +131,18 @@ void rebuildIds(SceneIds& ids, nvvkgltf::Scene& scene, uint64_t generation)
     ids.joints.insert(skin.joints.begin(), skin.joints.end());
 
   // The rest pose is what the file says, captured before anything here or an animation changed it.
-  if(newLoad)
+  // Nodes and meshes a merge appended (vk_gltf_add_scene) are captured as they arrive.
+  if(!newLoad)
+  {
+    for(size_t i = ids.rest.nodes.size(); i < model.nodes.size(); i++)
+    {
+      const auto& n = model.nodes[i];
+      ids.rest.nodes.push_back({n.translation, n.rotation, n.scale, n.matrix});
+    }
+    for(size_t m = ids.rest.meshWeights.size(); m < model.meshes.size(); m++)
+      ids.rest.meshWeights.push_back(model.meshes[m].weights);
+  }
+  else
   {
     ids.rest.nodes.resize(model.nodes.size());
     for(size_t i = 0; i < model.nodes.size(); i++)
@@ -877,6 +890,49 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
             });
           },
       .annotations            = {.readOnlyHint = false, .destructiveHint = false, .idempotentHint = true, .openWorldHint = false},
+      .runOnApplicationThread = true,
+  });
+
+  mcp.registerTool({
+      .name = "vk_gltf_add_scene",
+      .description = "Merge a glTF/GLB file into the loaded scene without reloading it: each root node of the file goes "
+                     "under the node whose extras.fvId equals the root's extras.fvParent (a scene root when it has "
+                     "none). Textures already loaded are kept; only the file's own images are read. Fails, changing "
+                     "nothing, when a named parent is not in the scene.",
+      .inputSchema = R"({"type":"object","properties":{"file":{"type":"string"}},"required":["file"]})",
+      .handler =
+          [withScene](std::string_view p) {
+            return withScene(p, [](Ctx& c, const Json& in) {
+              if(!c.renderer.isEditable())
+                fail("adding to the scene needs an --editable (or --stream) session");
+              auto file = in.find("file");
+              if(file == in.end() || !file->is_string() || file->get_ref<const std::string&>().empty())
+                fail("'file' must be a path");
+              // parents resolve against the ids before the merge; an unknown one refuses it
+              std::vector<std::string> missing;
+              const auto&              byId     = c.ids.nodes;
+              const auto               parentOf = [&](const tinygltf::Node& root) -> int {
+                std::string parent;
+                if(root.extras.IsObject() && root.extras.Has("fvParent") && root.extras.Get("fvParent").IsString())
+                  parent = root.extras.Get("fvParent").Get<std::string>();
+                if(parent.empty())
+                  return -1;
+                if(auto it = byId.find(parent); it != byId.end())
+                  return it->second;
+                missing.push_back(parent);
+                return std::numeric_limits<int>::max();  // out of range: mergeUnder refuses
+              };
+              const int roots = c.renderer.appendSceneFile(nvutils::pathFromUtf8(file->get<std::string>()), parentOf);
+              if(!missing.empty())
+                fail("no node with id '" + missing.front() + "' to attach to");
+              if(roots < 0)
+                fail("could not merge '" + file->get<std::string>() + "' (see the log)");
+              return Json{{"roots", roots},
+                          {"nodes", c.scene.getModel().nodes.size()},
+                          {"primitives", c.scene.getRenderPrimitives().size()}};
+            });
+          },
+      .annotations = {.readOnlyHint = false, .destructiveHint = false, .idempotentHint = false, .openWorldHint = false},
       .runOnApplicationThread = true,
   });
 

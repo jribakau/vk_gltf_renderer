@@ -606,9 +606,20 @@ MergeResult SceneMerger::mergeIntoNode(tinygltf::Model&        baseModel,
                                        int                     targetNodeIndex,
                                        std::optional<uint32_t> maxTextureCount)
 {
-  if(importedModel.nodes.empty() || importedModel.scenes.empty())
-    return {};
   if(targetNodeIndex < 0 || targetNodeIndex >= static_cast<int>(baseModel.nodes.size()))
+    return {};
+  // glTF 2.1: "append the externalAsset root node(s) to the array of children for the node."
+  // No scene root is ever added, so the scene index is unused.
+  return mergeUnder(baseModel, importedModel, [targetNodeIndex](const tinygltf::Node&) { return targetNodeIndex; }, 0, maxTextureCount);
+}
+
+MergeResult SceneMerger::mergeUnder(tinygltf::Model&                                 baseModel,
+                                    const tinygltf::Model&                           importedModel,
+                                    const std::function<int(const tinygltf::Node&)>& parentOf,
+                                    int                                              sceneIndex,
+                                    std::optional<uint32_t>                          maxTextureCount)
+{
+  if(importedModel.nodes.empty() || importedModel.scenes.empty())
     return {};
 
   if(maxTextureCount.has_value())
@@ -618,15 +629,6 @@ MergeResult SceneMerger::mergeIntoNode(tinygltf::Model&        baseModel,
       return {};
   }
 
-  IndexRemapping offsets = computeOffsets(baseModel);
-  appendResourcesAndExtensions(baseModel, importedModel, offsets);
-
-  MergeResult result;
-  result.firstNode = offsets.nodes;
-  result.lastNode  = static_cast<int>(baseModel.nodes.size());
-
-  // Attach the imported default-scene roots as children of the existing target node.
-  // (glTF 2.1: "append the externalAsset root node(s) to the array of children for the node.")
   // Guard against malformed assets: clamp an out-of-range defaultScene to 0 (scenes is non-empty,
   // checked above), and skip scene-root entries that fall outside the imported node range so we
   // never attach dangling children or push invalid roots.
@@ -635,12 +637,39 @@ MergeResult SceneMerger::mergeIntoNode(tinygltf::Model&        baseModel,
     defaultScene = 0;
   const tinygltf::Scene& importedScene     = importedModel.scenes[defaultScene];
   const int              importedNodeCount = static_cast<int>(importedModel.nodes.size());
+  const int              baseNodeCount     = static_cast<int>(baseModel.nodes.size());
+
+  // Parents are chosen before anything is appended, so a bad one fails the merge cleanly.
+  std::vector<std::pair<int, int>> rootParents;  // (imported root, base parent or -1)
   for(int nodeIdx : importedScene.nodes)
   {
     if(nodeIdx < 0 || nodeIdx >= importedNodeCount)
       continue;
+    const int parent = parentOf(importedModel.nodes[nodeIdx]);
+    if(parent >= baseNodeCount)
+      return {};
+    rootParents.emplace_back(nodeIdx, parent < 0 ? -1 : parent);
+  }
+  const bool needsScene =
+      std::any_of(rootParents.begin(), rootParents.end(), [](const auto& rp) { return rp.second < 0; });
+  if(needsScene && baseModel.scenes.empty())
+    baseModel.scenes.emplace_back();
+  if(needsScene && (sceneIndex < 0 || sceneIndex >= static_cast<int>(baseModel.scenes.size())))
+    return {};
+
+  IndexRemapping offsets = computeOffsets(baseModel);
+  appendResourcesAndExtensions(baseModel, importedModel, offsets);
+
+  MergeResult result;
+  result.firstNode = offsets.nodes;
+  result.lastNode  = static_cast<int>(baseModel.nodes.size());
+  for(const auto& [nodeIdx, parent] : rootParents)
+  {
     const int rootIdx = offsets.nodes + nodeIdx;
-    baseModel.nodes[targetNodeIndex].children.push_back(rootIdx);
+    if(parent >= 0)
+      baseModel.nodes[parent].children.push_back(rootIdx);
+    else
+      baseModel.scenes[sceneIndex].nodes.push_back(rootIdx);
     result.roots.push_back(rootIdx);
   }
 

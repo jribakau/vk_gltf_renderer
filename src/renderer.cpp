@@ -3770,6 +3770,49 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
 }
 
 //--------------------------------------------------------------------------------------------------
+// Programmatic merge for a host that adds objects to the scene it mirrors (see the header). The
+// interactive merge (addSceneFromFile) runs on a worker behind the busy indicator; a host needs the
+// merge installed before its next call, as with loadSceneFile.
+int GltfRenderer::appendSceneFile(const std::filesystem::path& filename, const std::function<int(const tinygltf::Node&)>& parentOf)
+{
+  nvvkgltf::Scene* scene = m_resources.getScene();
+  if(!m_app || !scene || !scene->valid() || m_busy.isBusy())
+    return -1;
+  nvutils::ScopedTimer st(__FUNCTION__);
+
+  // In-flight frames still read the buffers the rebuild replaces.
+  vkQueueWaitIdle(m_app->getQueue(0).queue);
+  // An empty or texture-less base holds 1x1 defaults that don't match the model: a full rebuild.
+  const bool wasTextured = !scene->getModel().images.empty() && !scene->getModel().textures.empty();
+  const int  roots       = scene->mergeSceneUnder(filename, parentOf, static_cast<uint32_t>(m_maxTextures));
+  if(roots < 0 && scene->valid())
+    return -1;  // refused before anything was appended
+  // A failure past the merge (meshopt decompression) has appended to the model: parse it again and
+  // rebuild like a success, so the GPU scene matches the model whatever it now holds.
+  if(roots < 0)
+    scene->setCurrentScene(scene->getCurrentScene());
+
+  m_undoStack.clear();
+  rebuildVulkanSceneInternal(wasTextured ? nvvkgltf::SceneGpu::RebuildMode::eMergeAppend : nvvkgltf::SceneGpu::RebuildMode::eFull);
+  m_resources.recomputeSceneFeatures(dlssGuideRequired());
+
+  // The rebuild re-created vertex buffers and base geometry from the model, which holds the shapes
+  // the host exported, not the ones it sent since. Render primitives of the existing meshes keep
+  // their ids (new meshes are appended), so their live copies go up again on the next frame --
+  // ahead of uploads still queued, which are newer than the copies and must land after them.
+  std::vector<VertexUpload> restore;
+  restore.reserve(m_liveVertices.size() + m_pendingVertexUploads.size());
+  for(const auto& [renderPrimID, live] : m_liveVertices)
+    restore.push_back({.renderPrimID = renderPrimID, .positions = live.positions, .normals = live.normals});
+  std::move(m_pendingVertexUploads.begin(), m_pendingVertexUploads.end(), std::back_inserter(restore));
+  m_pendingVertexUploads = std::move(restore);
+  // Skinning, morphs and the AS refit run once even when no animation plays.
+  m_pendingAnimReconcile = true;
+  resetFrame();
+  return roots < 0 ? -1 : roots;
+}
+
+//--------------------------------------------------------------------------------------------------
 // Recompile the active renderer's shaders and show the result.
 // SYNC NOTE: the recompile destroys live pipelines, so the queue must be drained first.
 bool GltfRenderer::reloadShaders()

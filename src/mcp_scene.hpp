@@ -35,6 +35,7 @@
 //   vk_gltf_set_morph_weights   {id (primitive) | mesh, weights:[...]}
 //   vk_gltf_set_vertices        {id (primitive) | mesh, primitive?, positions: base64 f32 xyz, normals?: base64,
 //                                indices?: base64 u32 (only these vertices change, one per position)}
+//   vk_gltf_add_scene           {file}: merge a glTF in, each root under the node its extras.fvParent names
 //
 // Each op inside vk_gltf_edit is one of the single tools' inputs plus "op": "set_material" |
 // "set_node" | "set_light" | "animation" | "set_morph_weights" | "set_vertices".

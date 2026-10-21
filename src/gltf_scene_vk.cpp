@@ -1711,10 +1711,12 @@ void nvvkgltf::SceneVk::syncTextureTail(VkCommandBuffer cmd, nvvk::CmdUploaderIn
     const std::vector<std::filesystem::path> imageSearchPaths = resolveImageSearchPaths(scn);
     m_images.resize(newImageCount);
     for(size_t i = oldImageCount; i < newImageCount; ++i)
-    {
       m_images[i].imgName = getImageName(model.images[i], i);
+    // in parallel, as createTextureImages loads a whole scene's (a merged item brings dozens)
+    nvutils::parallel_batches<1>(newImageCount - oldImageCount, [&](uint64_t k) {
+      const size_t i = oldImageCount + k;
       loadImage(resolveImageDiskPath(model, imageSearchPaths, i), model, i);  // failure -> magenta default below
-    }
+    });
     syncTinyGltfImageDimensionsFromLoadedImages(scn.getModel(), m_images);
     for(size_t i = oldImageCount; i < newImageCount; ++i)
       materializeImage(cmd, staging, i);
@@ -1762,6 +1764,9 @@ void nvvkgltf::SceneVk::recreatePreservingTextures(VkCommandBuffer cmd, nvvk::Cm
   createVertexBuffers(cmd, staging, scn);
   uploadLights(staging, scn);
   loadIesProfiles(staging, scn);  // re-derived in full -- cheap, and picks up profiles from a merged-in file
+  // as create() does: the emissive-triangle list indexes render nodes and primitives, which the
+  // merge re-derived, and a merged-in file may bring emitters of its own
+  uploadEmissiveTriangles(staging, scn);
 
   (void)flushSceneDescIfDirty(staging, scn);
 
