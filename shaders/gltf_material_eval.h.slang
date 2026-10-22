@@ -144,6 +144,11 @@ float3 decodeTangentSpaceNormal(float3 normal_vector, in GltfTextureInfo texture
   {
     normal_vector.z = sqrt(saturate(1.0F - dot(normal_vector.xy, normal_vector.xy)));
   }
+  // FV_texture_flip_green: the same as inverting the green channel of the image (255 - G).
+  if((textureInfo.flags & TextureInfoFlagBits::eTexInfoFlipGreen) != 0)
+  {
+    normal_vector.y = -normal_vector.y;
+  }
   return normal_vector;
 }
 

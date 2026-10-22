@@ -272,6 +272,13 @@ struct KHR_materials_diffuse_transmission
 // by the detail weight (detailWeightFactor times detailWeightTexture.r). Roughness, and clearcoat
 // roughness, are multiplied by mix(1, detailRoughnessFactor * detailRoughnessTexture.r, weight).
 #define FV_MATERIALS_DETAIL_EXTENSION_NAME "FV_materials_detail"
+
+// FV_texture_flip_green (Figure Viewer): on a normal texture info, an empty object saying the
+// image's green channel points the other way (Y down), so the shader negates the decoded Y.
+// Figure Viewer's texture cache keeps one cooked copy of each normal map for its own viewer and
+// marks the reference instead of cooking a green-inverted second copy for the RTX renderer.
+#define FV_TEXTURE_FLIP_GREEN_EXTENSION_NAME "FV_texture_flip_green"
+
 struct FV_materials_detail
 {
   tinygltf::TextureInfo detailNormalTexture    = {};

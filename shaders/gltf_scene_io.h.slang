@@ -143,6 +143,10 @@ enum TextureInfoFlagBits
   // from the decoded VkFormat. Consumers that need the third channel must reconstruct it from the
   // first two -- see the normal map handling in gltf_material_eval.h.slang.
   eTexInfoTwoChannelSource = 1 << 0,
+  // FV_texture_flip_green on the texture info: a tangent-space normal map stored with Y down
+  // (DirectX convention, or rows stored bottom-up as Figure Viewer's texture cache keeps them).
+  // The decoded normal's Y is negated, so one image serves both conventions without a second copy.
+  eTexInfoFlipGreen = 1 << 1,
 };
 
 // Texture info

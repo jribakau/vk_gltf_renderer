@@ -78,6 +78,9 @@ shaderio::GltfTextureInfo getTextureInfoImpl(const T& tinfo, const TextureSlotTa
   ti.flags        = textureSlots.isTwoChannelSource(tinfo.index) ?
                         static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoTwoChannelSource) :
                         uint8_t{0};
+  // Per reference, not per image: the same image can be sampled flipped in one slot and not another.
+  if(tinfo.extensions.count(FV_TEXTURE_FLIP_GREEN_EXTENSION_NAME) != 0)
+    ti.flags |= static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoFlipGreen);
 
   // The renderer only uploads TEXCOORD_0 and TEXCOORD_1 (see VertexBuffers::texCoord0/texCoord1
   // in shaders/gltf_scene_io.h.slang). glTF allows TEXCOORD_N for higher N but we clamp
