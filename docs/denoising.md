@@ -136,6 +136,42 @@ What PSR does not capture: the glass's own reflections and refraction edges are 
 guide edge, so they stay softer than the reference. Rough, tinted, or partly opaque glass is left
 alone, because there the glass surface is what the camera sees.
 
+## Stochastic alpha
+
+Hair and lashes are `BLEND`. The path tracer keeps a hit when a uniform draw falls within the
+opacity. `stochasticOpacityU` (`shaders/pathtrace_functions.h.slang`) supplies that draw to
+`rahitMain`, the ray-query trace, and both shadow paths.
+
+While DLSS denoises the frame (`PathtracerFlags::ePtUseDlss`) the draw is a hash of the hit,
+`alphaHashU`. Its inputs are the render node, the triangle, and the two independent barycentrics
+quantized onto the fixed grid `ALPHA_HASH_BINS`. The frame is not an input, and the path seed is not
+advanced. That seed is `xxhash32(pixel, frameCount)`, and with DLSS `frameCount` is the Halton index,
+so drawing from it re-rolls the same point every frame and Ray Reconstruction crawls the edge.
+
+- Raw barycentric bits avalanche under the half-pixel jitter, which is why they are quantized.
+- The grid belongs to the triangle, so a dolly does not reshuffle the pattern, and motion vectors
+  can follow it.
+- The render node, not the shared render primitive, salts the hash, so instances of one mesh cut
+  independently.
+
+Tried and dropped: hashed alpha testing (Wyman and McGuire 2017) on object-space cells one pixel
+wide, with `BLEND` alpha sampled at the pixel's mip. On a hair figure it looked worse. Filtering
+turned the maps' crisp 0/1 strands into partial opacity, and pixel-sized cells turned that into
+per-pixel dither that RR kept as grain. The hair looked frizzy when still and shimmered no less
+in motion. Point-sampled hair texels are mostly 0 or 1, which no hash changes, so the hair's
+shimmer in motion has another cause. That cause is not yet found.
+
+Every other frame draws from the path seed, which advances it. `USE_DLSS_SHADER` stays on for the
+whole time DLSS is enabled, including frames where OptiX accumulates, so the runtime flag is the
+gate. A frozen hash averages to 0 or 1 across those frames and never to the soft opacity.
+
+Every test keeps a hit when the draw is below the opacity, and the draw is in [0, 1): the hash
+keeps its top 24 bits and the path draw is clamped below 1. An opaque or mask-on texel is always
+kept and a cut-out texel never is, for camera and shadow rays alike.
+
+`dlssTraceSkipThinGlass` calls `alphaHashU` directly, so the clear-glass guides commit the cells
+the color keeps rather than cutting at half opacity.
+
 **Color-before-transparency guide.** NGX also accepts `pInColorBeforeTransparency` (a noisy color
 snapshot before transparencies are composited), meant for raster pipelines with ghosting
 particles. We prototyped it here by retracing pixels whose primary hit was transparent, with those

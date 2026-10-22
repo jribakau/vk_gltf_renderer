@@ -107,7 +107,7 @@ struct RayQueryRaytracer : IRaytracer
       float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics);
 
       // do alpha blending the stochastically way
-      if(rand(seed) <= opacity)
+      if(stochasticOpacityU(uint(instanceID), uint(triangleID), barycentrics, seed) < opacity)
         rayQuery.CommitNonOpaqueTriangleHit();
     }
 
@@ -161,7 +161,7 @@ struct RayQueryRaytracer : IRaytracer
       float3 barycentrics = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
       float  opacity      = getOpacity(renderNode, renderPrim, triangleID, barycentrics);
 
-      float r = rand(seed);
+      float r = stochasticOpacityU(uint(instanceID), uint(triangleID), barycentrics, seed);
       if(r < opacity)
       {
         // RayQuery candidate hits arrive in spatial order: |segment| = hitT - prevHitT.

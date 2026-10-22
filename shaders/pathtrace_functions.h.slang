@@ -279,6 +279,56 @@ float getOpacity(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int 
   return baseColorAlpha;
 }
 
+// Cells across one barycentric axis. A fixed grid, so the decision is a property of the
+// triangle: a dolly does not reshuffle it, and motion vectors can follow it. On a card a few
+// hundred pixels wide a cell is several pixels, wider than DLSS's half-pixel jitter except at a
+// cell border. Finer bins flicker under that jitter; coarser bins clump a soft ramp.
+//
+// Tried and dropped (2026-10-22): hashed alpha testing (Wyman and McGuire 2017) with object-space
+// cells one pixel wide, plus BLEND alpha sampled at the pixel's mip. Filtering turned the hair
+// maps' crisp 0/1 strands into partial opacity, and pixel-sized cells turned that into per-pixel
+// dither that Ray Reconstruction kept as grain; hair looked frizzy when still and shimmered no less
+// in motion. Point-sampled hair texels are mostly 0 or 1, which the hash does not touch.
+static const uint ALPHA_HASH_BINS = 64;
+
+// Largest float below 1.
+static const float ALPHA_U_MAX = 0.99999994f;
+
+// Every alpha test keeps a hit when u < opacity, with u in [0, 1). An opaque or mask-on texel
+// (opacity 1) is then always kept and a cut-out texel (opacity 0) never is, whichever ray asks.
+
+// Hash of the hit in [0, 1): render node, triangle, and the two independent barycentrics
+// (barycentrics.y and .z; .x is 1 - y - z) quantized onto ALPHA_HASH_BINS. Raw barycentric bits
+// avalanche when jitter moves the hit by a fraction of a pixel, so they are quantized first. The
+// render node, not the shared render primitive, so instances of one mesh cut independently. The
+// top 24 bits are exact in a float, so the value never rounds up to 1 (rand() can).
+float alphaHashU(uint renderNodeID, uint triangleID, float3 barycentrics)
+{
+  uint bx = min(uint(saturate(barycentrics.y) * float(ALPHA_HASH_BINS)), ALPHA_HASH_BINS - 1);
+  uint by = min(uint(saturate(barycentrics.z) * float(ALPHA_HASH_BINS)), ALPHA_HASH_BINS - 1);
+  uint h  = xxhash32(uint3(renderNodeID, triangleID, bx * ALPHA_HASH_BINS + by));
+  return float(h >> 8) * (1.F / 16777216.F);
+}
+
+// Uniform in [0, 1) for the stochastic alpha test.
+//
+// While DLSS denoises this frame the value is alphaHashU and the path seed is left alone. That
+// seed is xxhash32(pixel, frameCount), and with DLSS frameCount is the Halton index, so drawing
+// from it re-rolls the edge every frame. Ray Reconstruction holds a decision that sticks to the
+// card.
+//
+// Every other frame draws from the path seed, which advances it. A frozen hash averages to 0 or
+// 1 across accumulated frames, never to the soft opacity. USE_DLSS_SHADER stays on for every
+// frame while DLSS is enabled, including the frames OptiX accumulates, so ePtUseDlss — set only
+// when DLSS denoises this frame — is the gate.
+float stochasticOpacityU(uint renderNodeID, uint triangleID, float3 barycentrics, inout uint seed)
+{
+#if USE_DLSS_SHADER
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    return alphaHashU(renderNodeID, triangleID, barycentrics);
+#endif
+  return min(rand(seed), ALPHA_U_MAX);
+}
 
 //-----------------------------------------------------------------------
 // Shadow transmission
@@ -1077,8 +1127,9 @@ bool dlssIsThinWalled(GltfShadeMaterial* mat)
 
 // One traversal to the next surface the clear-glass chain has to look at. Thin clear glass and
 // cut-out texels are rejected inside the traversal itself, so a stack of glass panes costs a
-// single ray; alpha-blend texels count as a surface from half opacity, which keeps the result
-// deterministic. FORCE_NON_OPAQUE makes the (opaque-flagged) glass report candidates.
+// single ray; alpha-blend texels go through alphaHashU, the same deterministic cells the color
+// path keeps while DLSS denoises, so guides and color agree on which cells are solid.
+// FORCE_NON_OPAQUE makes the (opaque-flagged) glass report candidates.
 //
 // `glassCount` grows by the panes skipped in front of the hit. Candidates arrive in no set order,
 // so a pane is counted when it is nearer than the hit committed so far; one found before a nearer
@@ -1102,11 +1153,14 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
     const float        candidateT = rayQuery.CandidateTriangleRayT();
     const bool         clearGlass = dlssClearGlassFromFactors(mat) == 1 && dlssIsThinWalled(mat);
     float              opacity    = 1.0f;
+    float              u          = 0.0f;
     if(!clearGlass || mat.alphaMode != AlphaMode::eAlphaModeOpaque)
     {
-      const float2 bary = rayQuery.CandidateTriangleBarycentrics();
-      opacity = getOpacity(node, renderPrimitives[rayQuery.CandidateInstanceID()], rayQuery.CandidatePrimitiveIndex(),
-                           float3(1.0 - bary.x - bary.y, bary.x, bary.y));
+      const float2 bary         = rayQuery.CandidateTriangleBarycentrics();
+      const float3 barycentrics = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
+      const uint   triangleID   = rayQuery.CandidatePrimitiveIndex();
+      opacity = getOpacity(node, renderPrimitives[rayQuery.CandidateInstanceID()], triangleID, barycentrics);
+      u       = alphaHashU(rayQuery.CandidateInstanceIndex(), triangleID, barycentrics);
     }
 
     if(clearGlass && opacity >= 0.99f)
@@ -1114,7 +1168,7 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
       if(candidateT < committedT)
         glassCount++;  // Skipped pane in front of the hit so far
     }
-    else if(opacity >= 0.5f)
+    else if(u < opacity)
     {
       rayQuery.CommitNonOpaqueTriangleHit();
       committedT = candidateT;
@@ -1140,7 +1194,7 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
 // the content behind the glass rather than with the glass itself.
 //
 // The chain is deterministic, so the guides do not flicker from frame to frame: alpha is resolved
-// by a fixed threshold instead of the path's stochastic test. Thin clear glass costs nothing
+// by alphaHashU, the per-cell decision the path makes while DLSS denoises. Thin clear glass costs nothing
 // beyond the one traversal (dlssTraceSkipThinGlass); only refracting glass, or glass whose
 // clarity depends on a texture, starts another one.
 //

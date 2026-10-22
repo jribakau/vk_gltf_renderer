@@ -1041,7 +1041,7 @@ void rahitMain(inout HitPayload payload, in BuiltInTriangleIntersectionAttribute
   GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
 
   float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics);
-  if(rand(payload.seed) > opacity)
+  if(stochasticOpacityU(instanceID, triangleID, barycentrics, payload.seed) >= opacity)
   {
     IgnoreHit();
   }
@@ -1067,7 +1067,7 @@ void rahitShadow(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttr
   GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
 
   float opacity = getOpacity(renderNode, renderPrim, primitiveID, barycentrics);
-  float r       = rand(payload.seed);
+  float r       = stochasticOpacityU(instanceID, primitiveID, barycentrics, payload.seed);
   if(r < opacity)
   {
     // Segment length for Beer's law inside getShadowTransmission (only used when isInside == true).
