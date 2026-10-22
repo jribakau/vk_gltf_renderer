@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/epsilon.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include "common/test_utils.hpp"
 #include "gltf_scene.hpp"
 #include "gltf_scene_animation.hpp"
@@ -253,6 +254,56 @@ TEST(ComputeAnimation, CpuSkinningProducesTransformedPositions)
     }
   }
   EXPECT_TRUE(anyMoved) << "Skinned vertices should differ from base positions for at least one animation time";
+}
+
+// A host that moves joint centres replaces a skin's inverse bind matrices: the model's accessor
+// and the cached skin tasks take them, and the next skinning pass uses them.
+TEST(ComputeAnimation, SetInverseBindMatricesReachesTheModelAndTheSkinning)
+{
+  nvvkgltf::Scene scene;
+  if(!loadSampleModel(scene, "Models/SimpleSkin/glTF/SimpleSkin.gltf"))
+    GTEST_SKIP() << "SimpleSkin not found";
+
+  auto& anim = scene.animation();
+  ASSERT_TRUE(anim.hasSkinning());
+  const auto& tasks = anim.getSkinTasks();
+  ASSERT_FALSE(tasks.empty());
+  const int skinID = tasks[0].skinID;
+
+  std::vector<glm::mat4> ibm = tasks[0].inverseBindMatrices;
+  ASSERT_EQ(ibm.size(), scene.getModel().skins[skinID].joints.size());
+
+  // a different count is refused and changes nothing
+  const std::vector<glm::mat4> before = ibm;
+  EXPECT_FALSE(anim.setInverseBindMatrices(skinID, std::span<const glm::mat4>(ibm.data(), ibm.size() - 1)));
+  EXPECT_FALSE(anim.setInverseBindMatrices(-1, ibm));
+  EXPECT_EQ(tasks[0].inverseBindMatrices, before);
+
+  for(glm::mat4& m : ibm)
+    m = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.5f, 0.0f)) * m;
+  ASSERT_TRUE(anim.setInverseBindMatrices(skinID, ibm));
+  EXPECT_EQ(tasks[0].inverseBindMatrices, ibm);
+
+  // the model's accessor holds them too, so a rebuild or a merge keeps them
+  const tinygltf::Model&    model = scene.getModel();
+  const tinygltf::Accessor& acc   = model.accessors[model.skins[skinID].inverseBindMatrices];
+  std::vector<glm::mat4>    storage;
+  const auto                stored = tinygltf::utils::getAccessorData(model, acc, &storage);
+  ASSERT_EQ(stored.size(), ibm.size());
+  for(size_t i = 0; i < ibm.size(); i++)
+    EXPECT_EQ(stored[i], ibm[i]);
+
+  // and the skinning uses them: every skinned vertex is lower than it was
+  scene.updateNodeWorldMatrices();
+  anim.computeSkinning();
+  const std::vector<glm::vec3> moved = anim.getSkinningResult(0).positions;  // a copy: the next pass reuses the storage
+  ASSERT_EQ(moved.size(), tasks[0].basePositions.size());
+  anim.setInverseBindMatrices(skinID, before);
+  scene.updateNodeWorldMatrices();
+  anim.computeSkinning();
+  const auto& restored = anim.getSkinningResult(0);
+  for(size_t i = 0; i < restored.positions.size(); i++)
+    EXPECT_NE(moved[i], restored.positions[i]) << "vertex " << i;
 }
 
 TEST(ComputeAnimation, CpuSkinningOutputMatchesSizeOfBaseGeometry)

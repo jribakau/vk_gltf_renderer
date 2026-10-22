@@ -27,6 +27,7 @@
 #include "gltf_scene_animation.hpp"
 #include "gltf_scene_editor.hpp"
 
+#include <cstring>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -924,6 +925,40 @@ void AnimationSystem::computeMorphTargets()
 const MorphResult& AnimationSystem::getMorphResult(size_t morphTaskIndex) const
 {
   return m_morphResults[morphTaskIndex];
+}
+
+//--------------------------------------------------------------------------------------------------
+bool AnimationSystem::setInverseBindMatrices(int skinID, std::span<const glm::mat4> ibm)
+{
+  tinygltf::Model& model = m_scene.getModel();
+  if(skinID < 0 || skinID >= static_cast<int>(model.skins.size()))
+    return false;
+  const tinygltf::Skin& skin = model.skins[skinID];
+  if(ibm.size() != skin.joints.size())
+    return false;
+
+  // the accessor's bytes, when it is the plain packed float mat4 array glTF exporters write
+  if(skin.inverseBindMatrices >= 0 && skin.inverseBindMatrices < static_cast<int>(model.accessors.size()))
+  {
+    const tinygltf::Accessor& acc = model.accessors[skin.inverseBindMatrices];
+    if(acc.type == TINYGLTF_TYPE_MAT4 && acc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT && acc.count == ibm.size()
+       && acc.bufferView >= 0 && acc.bufferView < static_cast<int>(model.bufferViews.size()))
+    {
+      const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+      if(bv.buffer >= 0 && bv.buffer < static_cast<int>(model.buffers.size()) && (bv.byteStride == 0 || bv.byteStride == sizeof(glm::mat4)))
+      {
+        std::vector<unsigned char>& data   = model.buffers[bv.buffer].data;
+        const size_t                offset = bv.byteOffset + acc.byteOffset;
+        if(offset + ibm.size_bytes() <= data.size())
+          std::memcpy(data.data() + offset, ibm.data(), ibm.size_bytes());
+      }
+    }
+  }
+
+  for(SkinTask& task : m_skinTasks)
+    if(task.skinID == skinID)
+      task.inverseBindMatrices.assign(ibm.begin(), ibm.end());
+  return true;
 }
 
 //--------------------------------------------------------------------------------------------------
