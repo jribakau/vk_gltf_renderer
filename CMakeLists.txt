@@ -441,8 +441,8 @@ endif()
 #   USE_GUIDE_SHADER : enables the path tracer's per-bounce guide buffers
 #                      (albedo + normalRoughness) consumed by DLSS AND OptiX.
 #   USE_DLSS_SHADER  : DLSS-only path (drops per-frame MS loop to relieve register
-#                      pressure). Defaults off in the embedded shader; the runtime
-#                      rebuild flips it on when DLSS actually engages.
+#                      pressure). Off in the main embedded path tracer; a second
+#                      embedded copy has it on (see compile_slang ... _dlss below).
 # All three stay independently controllable.
 set(SHADER_EXTRA_FLAGS "-I${NVSHADERS_DIR}")
 if(DLSS_AVAILABLE)
@@ -463,6 +463,26 @@ compile_slang(
   OPTIMIZATION_LEVEL ${SHADER_OPT_LEVEL}
   CAPABILITIES ${SHADER_CAPABILITIES}
 )
+
+# The path tracer once more with USE_DLSS_SHADER=1: the variant a DLSS frame asks for, embedded so
+# turning DLSS on needs no Slang compile from source at run time (PathTracer::compileShader picks
+# it when the wanted variant is exactly this one). Same flags otherwise; the C array is
+# gltf_pathtrace_slang_dlss in _autogen/gltf_pathtrace.slang_dlss.h.
+if(DLSS_AVAILABLE)
+  compile_slang(
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gltf_pathtrace.slang"
+    "${CMAKE_BINARY_DIR}/${PROJECT_NAME}/_autogen"
+    HEADERS_VAR GENERATED_DLSS_SHADER_HEADERS
+    NAME_SUFFIX _dlss
+    EXTRA_FLAGS ${SHADER_EXTRA_FLAGS} -DUSE_DLSS_SHADER=1
+    DEBUG_LEVEL ${SHADER_DEBUG_LEVEL}
+    OPTIMIZATION_LEVEL ${SHADER_OPT_LEVEL}
+    # The DLSS path traces ray queries from the ray-generation shader too (dlssTraceSkipThinGlass);
+    # the run-time compile adds this capability for every variant (renderer.cpp).
+    CAPABILITIES ${SHADER_CAPABILITIES} spvRayQueryKHR
+  )
+  list(APPEND GENERATED_SHADER_HEADERS ${GENERATED_DLSS_SHADER_HEADERS})
+endif()
 
 # IDE grouping.
 source_group("Shaders"          FILES ${SHADER_SRC_SLANG_FILES} ${SHADER_H_FILES})

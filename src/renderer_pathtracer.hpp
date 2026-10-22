@@ -21,8 +21,11 @@
 
 #include "settings_registry.hpp"
 
+#include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -79,6 +82,8 @@ public:
   // User-initiated hot reload: drop cached variants and recompile from Slang source.
   bool reloadShader(Resources& resources);
   void setBusyWindow(BusyWindow* busy) { m_busyWindow = busy; }
+  // --cacheDir. Empty (the default) keeps the caches next to the executable. Set before onAttach.
+  void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
 
   // Register command line parameters
   /// Declare this subsystem's settings (command line + benchmark + MCP + persistence).
@@ -166,6 +171,9 @@ public:
   bool       swapVariant(Resources& resources, const VariantKey& newKey);
   void       destroyVariantCache(Resources& resources);
   VariantKey makeVariantKey(const Resources& resources) const;  // The variant the current settings ask for.
+  // True when that variant is the embedded DLSS build (gltf_pathtrace.slang_dlss.h): DLSS and the
+  // guide buffers on, nothing else, on a GPU with SER (the embedded build has AVAILABLE_SER=1).
+  bool isEmbeddedDlssVariant(const Resources& resources) const;
   // Swaps in the wanted variant if it is cached (cheap; no BusyWindow). Leaves live handles alone on a miss.
   bool tryRestoreCachedVariant(Resources& resources);
 
@@ -275,5 +283,14 @@ private:
   void destroyPipelinesLocked();
   // True when the scene's BLAS carry opacity micromaps, so the shader must be built with USE_OMM.
   static bool wantOpacityMicromapShader(const Resources& resources);
-  bool        m_skipVariantCache{false};  // Set during reloadShader(); bypasses swapVariant lookup.
+  // Disk cache of the from-file path-tracer SPIR-V. A hit fills `spirv`.
+  bool loadCachedSpirv(uint64_t key, std::vector<uint32_t>& spirv) const;
+  // compileStart is when compileFile began; sources written after it are not trusted.
+  void storeCachedSpirv(uint64_t key, const Resources& resources, std::filesystem::file_time_type compileStart);
+  // Drops old keys, orphaned blobs and stale temporary files from the cache folder.
+  void pruneShaderCache() const;
+
+  std::filesystem::path m_cacheDir;        // --cacheDir; empty means next to the executable
+  std::filesystem::path m_shaderCacheDir;  // <cache>/shaders, empty when that directory could not be created
+  bool m_skipVariantCache{false};  // Set during reloadShader(); bypasses the variant cache and the SPIR-V disk cache.
 };

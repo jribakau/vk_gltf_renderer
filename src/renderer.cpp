@@ -813,6 +813,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   createResourceBuffers();
 
   // Initialize the renderers
+  m_pathTracer.setCacheDir(m_cacheDir);
   m_pathTracer.onAttach(m_resources, &m_profilerGpuTimer);
   m_pathTracer.setProfilerTimeline(m_profilerTimeline);
   m_pathTracer.setBusyWindow(&m_busy);  // Show BusyWindow during async shader/pipeline compiles

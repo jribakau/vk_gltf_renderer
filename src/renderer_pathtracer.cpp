@@ -27,8 +27,16 @@
 #include <fmt/format.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <fstream>
+#include <span>
+#include <sstream>
+#include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <vector>
+
+#include <nvaftermath/aftermath.hpp>
 
 #include <nvapp/elem_dbgprintf.hpp>
 #include <nvvk/check_error.hpp>
@@ -47,6 +55,10 @@
 
 // Pre-compiled shaders
 #include "_autogen/gltf_pathtrace.slang.h"
+#if defined(USE_DLSS)
+// The same path tracer built with USE_DLSS_SHADER=1 (CMakeLists.txt): what a DLSS frame asks for.
+#include "_autogen/gltf_pathtrace.slang_dlss.h"
+#endif
 
 // Toggle deferred host operations for RTX pipeline creation.
 // 1 = use VkDeferredOperationKHR to parallelize SPIR-V->ISA compilation across worker threads.
@@ -83,8 +95,30 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   ::BaseRenderer::onAttach(resources, profiler);
   m_device = resources.allocator.getDevice();
 
-  // Create pipeline cache for faster pipeline creation
-  m_pipelineCache.init(m_device, nvutils::getExecutablePath().parent_path() / "pipeline_cache.bin");
+  // Pipeline cache and compiled SPIR-V. An empty --cacheDir keeps both next to the executable,
+  // which is where a stand-alone run has always written pipeline_cache.bin.
+  {
+    const std::filesystem::path cacheRoot = m_cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : m_cacheDir;
+    std::error_code             cacheEc;
+    std::filesystem::create_directories(cacheRoot, cacheEc);
+    if(cacheEc)
+      LOGW("PathTracer: cache directory '%s' was not created (%s); disk caches will fail to write\n",
+           nvutils::utf8FromPath(cacheRoot).c_str(), cacheEc.message().c_str());
+    m_pipelineCache.init(m_device, cacheRoot / "pipeline_cache.bin");
+    if(!cacheEc)
+    {
+      m_shaderCacheDir = cacheRoot / "shaders";
+      std::error_code shaderEc;
+      std::filesystem::create_directories(m_shaderCacheDir, shaderEc);
+      if(shaderEc)
+      {
+        LOGW("PathTracer: shader cache directory '%s' was not created (%s); SPIR-V disk cache is off\n",
+             nvutils::utf8FromPath(m_shaderCacheDir).c_str(), shaderEc.message().c_str());
+        m_shaderCacheDir.clear();
+      }
+      pruneShaderCache();
+    }
+  }
 
   // The path tracer writes depth as a storage image. nvvk::RenderTarget only gives the G-buffer depth
   // STORAGE usage when the format supports it, which D32_SFLOAT does not on every GPU (AMD); there the
@@ -963,6 +997,8 @@ void PathTracer::createRqPipeline(Resources& /*resources*/)
   const bool hit   = (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
   LOGI("RQ pipeline creation: %s, %s (%.2f ms)\n", valid ? "valid" : "invalid", hit ? "CACHE HIT" : "cache miss",
        feedback.duration / 1e6);
+  if(!hit)
+    m_pipelineCache.saveAsync();
 }
 
 
@@ -1172,6 +1208,9 @@ void PathTracer::createRtxPipeline(Resources& resources)
       valid ? ((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) ? "CACHE HIT" : "cache miss") :
               "cache status unknown";
   LOGI("RTX pipeline creation: %s, deferred=%s (%.2f ms)\n", cacheStatus, wasDeferred ? "yes" : "no", elapsedMs);
+  // Unknown feedback (the deferred path leaves it unset) is not a hit, so it still saves.
+  if((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) == 0)
+    m_pipelineCache.saveAsync();
 
   // Create the Shading Binding Table
   {
@@ -1207,6 +1246,374 @@ void PathTracer::createRtxPipeline(Resources& resources)
   }
 }
 
+
+namespace {
+
+constexpr uint64_t kSpirvCacheVersion   = 3;
+constexpr size_t   kMaxCachedSpirvBytes = 64ULL * 1024 * 1024;
+// Keys kept in shaders/ after pruning, least recently used dropped first. Each key is one
+// variant (DLSS, wireframe, optimal-shader feature set, ...) of several MB.
+constexpr size_t kMaxCachedSpirvKeys = 32;
+// A source written this close to the compile's start may have been read half-saved; that compile
+// is not cached. Also covers file systems with coarse timestamps.
+constexpr auto kSourceSettleTime = std::chrono::seconds(2);
+// Temporary files older than this belong to a process that was killed while writing.
+constexpr auto kStaleTempAge = std::chrono::minutes(10);
+
+uint64_t fnv1a(uint64_t hash, const void* data, size_t size)
+{
+  return nvvk::fnv1a64(data, size, hash);
+}
+
+uint64_t fnv1a(uint64_t hash, std::string_view text)
+{
+  hash = fnv1a(hash, text.data(), text.size());
+  const char separator = 0;
+  return fnv1a(hash, &separator, 1);
+}
+
+struct SourceStamp
+{
+  std::uintmax_t size    = 0;
+  std::int64_t   mtimeNs = 0;
+};
+
+bool readStamp(const std::filesystem::path& path, SourceStamp& stamp)
+{
+  std::error_code ec;
+  if(!std::filesystem::is_regular_file(path, ec))
+    return false;
+  stamp.size = std::filesystem::file_size(path, ec);
+  if(ec)
+    return false;
+  const auto mtime = std::filesystem::last_write_time(path, ec);
+  if(ec)
+    return false;
+  stamp.mtimeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch()).count();
+  return true;
+}
+
+std::filesystem::path canonicalDep(const std::filesystem::path& path)
+{
+  std::error_code       ec;
+  std::filesystem::path canon = std::filesystem::weakly_canonical(path, ec);
+  if(ec || canon.empty())
+    return path;
+  return canon;
+}
+
+void hashOption(uint64_t& hash, const slang::CompilerOptionEntry& option)
+{
+  const int name = static_cast<int>(option.name);
+  const int kind = static_cast<int>(option.value.kind);
+  hash           = fnv1a(hash, &name, sizeof(name));
+  hash           = fnv1a(hash, &kind, sizeof(kind));
+  hash           = fnv1a(hash, &option.value.intValue0, sizeof(option.value.intValue0));
+  hash           = fnv1a(hash, &option.value.intValue1, sizeof(option.value.intValue1));
+  hash           = fnv1a(hash, option.value.stringValue0 ? std::string_view(option.value.stringValue0) : std::string_view{});
+  hash           = fnv1a(hash, option.value.stringValue1 ? std::string_view(option.value.stringValue1) : std::string_view{});
+}
+
+// Everything that changes the SPIR-V except the source text itself (that lives in .deps): macros,
+// every compiler option (capabilities included), targets, the search paths, this executable, and
+// the Slang build. Two trees or two builds therefore do not share a file.
+uint64_t spirvCacheKey(nvslang::SlangCompiler& compiler)
+{
+  uint64_t hash = fnv1a(nvvk::kFnv1aOffset, std::string_view("pt-spirv"));
+  hash          = fnv1a(hash, &kSpirvCacheVersion, sizeof(kSpirvCacheVersion));
+  const char* tag = spGetBuildTagString();
+  hash            = fnv1a(hash, tag ? std::string_view(tag) : std::string_view{});
+
+  const std::filesystem::path executable = nvutils::getExecutablePath();
+  hash                                   = fnv1a(hash, nvutils::utf8FromPath(executable));
+  SourceStamp exeStamp{};
+  if(readStamp(executable, exeStamp))
+  {
+    hash = fnv1a(hash, &exeStamp.size, sizeof(exeStamp.size));
+    hash = fnv1a(hash, &exeStamp.mtimeNs, sizeof(exeStamp.mtimeNs));
+  }
+
+  for(const std::filesystem::path& searchPath : compiler.searchPaths())
+    hash = fnv1a(hash, nvutils::utf8FromPath(canonicalDep(searchPath)));
+  for(const slang::PreprocessorMacroDesc& macro : compiler.macros())
+  {
+    hash = fnv1a(hash, macro.name ? std::string_view(macro.name) : std::string_view{});
+    hash = fnv1a(hash, macro.value ? std::string_view(macro.value) : std::string_view{});
+  }
+  for(const slang::CompilerOptionEntry& option : compiler.options())
+    hashOption(hash, option);
+  for(const slang::TargetDesc& target : compiler.targets())
+  {
+    const int format = static_cast<int>(target.format);
+    const int floatMode = static_cast<int>(target.floatingPointMode);
+    const int lineMode  = static_cast<int>(target.lineDirectiveMode);
+    const int scalar    = target.forceGLSLScalarBufferLayout ? 1 : 0;
+    hash                = fnv1a(hash, &format, sizeof(format));
+    hash                = fnv1a(hash, &target.profile, sizeof(target.profile));
+    hash                = fnv1a(hash, &target.flags, sizeof(target.flags));
+    hash                = fnv1a(hash, &floatMode, sizeof(floatMode));
+    hash                = fnv1a(hash, &lineMode, sizeof(lineMode));
+    hash                = fnv1a(hash, &scalar, sizeof(scalar));
+    for(uint32_t i = 0; i < target.compilerOptionEntryCount && target.compilerOptionEntries != nullptr; ++i)
+      hashOption(hash, target.compilerOptionEntries[i]);
+  }
+  return hash;
+}
+
+constexpr std::string_view kSpvPrefix = "spv ";
+
+// The blob a .deps names on its first line ("spv <hash>"), or an empty path.
+std::filesystem::path blobOfDeps(std::istream& deps, const std::filesystem::path& dir, const std::string& stem)
+{
+  std::string line;
+  if(!std::getline(deps, line))
+    return {};
+  if(!line.empty() && line.back() == '\r')
+    line.pop_back();
+  if(!line.starts_with(kSpvPrefix) || line.size() != kSpvPrefix.size() + 16)
+    return {};
+  return dir / (stem + "-" + line.substr(kSpvPrefix.size()) + ".spv");
+}
+
+}  // namespace
+
+//--------------------------------------------------------------------------------------------------
+// Run once from onAttach, before any compile.
+// Keeps the shaders/ folder bounded: the kMaxCachedSpirvKeys most recently used keys (a hit
+// touches its .deps), blobs no .deps names, and temporary files a killed writer left. Blobs and
+// temporary files younger than kStaleTempAge are left alone: another renderer may be between
+// writing a blob and publishing its .deps.
+void PathTracer::pruneShaderCache() const
+{
+  if(m_shaderCacheDir.empty())
+    return;
+  // pipeline_cache.bin and its temporaries sit in the parent folder (the exe's without --cacheDir).
+  nvvk::removeStaleTempFiles(m_shaderCacheDir.parent_path(), kStaleTempAge, "pipeline_cache.bin.");
+  nvvk::removeStaleTempFiles(m_shaderCacheDir, kStaleTempAge, "pt-");
+
+  struct Entry
+  {
+    std::filesystem::path                deps;
+    std::filesystem::file_time_type      used;
+  };
+  std::vector<Entry>                    keys;
+  std::vector<std::filesystem::path>    blobs;
+  std::error_code                       ec;
+  for(std::filesystem::directory_iterator it(m_shaderCacheDir, ec), end; !ec && it != end; it.increment(ec))
+  {
+    std::error_code entryEc;
+    if(!it->is_regular_file(entryEc))
+      continue;
+    const auto extension = it->path().extension();
+    if(extension == ".deps")
+      keys.push_back({it->path(), it->last_write_time(entryEc)});
+    else if(extension == ".spv")
+      blobs.push_back(it->path());
+  }
+
+  std::sort(keys.begin(), keys.end(), [](const Entry& a, const Entry& b) { return a.used > b.used; });
+  std::unordered_set<std::string> named;
+  for(size_t i = 0; i < keys.size(); ++i)
+  {
+    std::error_code removeEc;
+    if(i >= kMaxCachedSpirvKeys)
+    {
+      std::filesystem::remove(keys[i].deps, removeEc);
+      continue;
+    }
+    std::ifstream               deps(keys[i].deps);
+    const std::filesystem::path blob = blobOfDeps(deps, m_shaderCacheDir, nvutils::utf8FromPath(keys[i].deps.stem()));
+    if(!blob.empty())
+      named.insert(nvutils::utf8FromPath(blob.filename()));
+  }
+
+  const auto cutoff = std::filesystem::file_time_type::clock::now() - kStaleTempAge;
+  for(const std::filesystem::path& blob : blobs)
+  {
+    std::error_code blobEc;
+    if(named.contains(nvutils::utf8FromPath(blob.filename())))
+      continue;
+    const auto written = std::filesystem::last_write_time(blob, blobEc);
+    if(!blobEc && written < cutoff)
+      std::filesystem::remove(blob, blobEc);
+  }
+}
+
+//--------------------------------------------------------------------------------------------------
+// .deps starts with "spv <hash>" naming the blob written before it. The following lines are
+// "size mtimeNs path" (canonical when written) and match only when each file is unchanged.
+// A hit touches the .deps, which is what pruneShaderCache orders by.
+bool PathTracer::loadCachedSpirv(uint64_t key, std::vector<uint32_t>& spirv) const
+{
+  spirv.clear();
+  if(m_shaderCacheDir.empty())
+    return false;
+
+  const std::string           stem     = fmt::format("pt-{:016x}", key);
+  const std::filesystem::path depsPath = m_shaderCacheDir / (stem + ".deps");
+
+  std::ifstream deps(depsPath);
+  if(!deps)
+    return false;
+  const std::filesystem::path spvPath = blobOfDeps(deps, m_shaderCacheDir, stem);
+  if(spvPath.empty())
+    return false;
+
+  std::string line;
+  bool        any = false;
+  while(std::getline(deps, line))
+  {
+    if(!line.empty() && line.back() == '\r')
+      line.pop_back();
+    if(line.empty())
+      continue;
+    const auto sp1 = line.find(' ');
+    const auto sp2 = sp1 == std::string::npos ? std::string::npos : line.find(' ', sp1 + 1);
+    if(sp1 == std::string::npos || sp2 == std::string::npos)
+      return false;
+    SourceStamp expected{};
+    try
+    {
+      expected.size    = static_cast<std::uintmax_t>(std::stoull(line.substr(0, sp1)));
+      expected.mtimeNs = std::stoll(line.substr(sp1 + 1, sp2 - sp1 - 1));
+    }
+    catch(const std::exception&)
+    {
+      return false;
+    }
+    const std::filesystem::path path = nvutils::pathFromUtf8(line.substr(sp2 + 1));
+    SourceStamp                 actual{};
+    if(path.empty() || !readStamp(path, actual) || actual.size != expected.size || actual.mtimeNs != expected.mtimeNs)
+      return false;
+    any = true;
+  }
+  if(!any)
+    return false;
+
+  std::error_code ec;
+  const auto      spvSize = std::filesystem::file_size(spvPath, ec);
+  if(ec || spvSize == 0 || spvSize > kMaxCachedSpirvBytes || (spvSize % sizeof(uint32_t)) != 0)
+    return false;
+
+  std::ifstream spv(spvPath, std::ios::binary);
+  if(!spv)
+    return false;
+  spirv.resize(static_cast<size_t>(spvSize / sizeof(uint32_t)));
+  spv.read(reinterpret_cast<char*>(spirv.data()), static_cast<std::streamsize>(spvSize));
+  if(!spv)
+  {
+    spirv.clear();
+    return false;
+  }
+  deps.close();
+  std::filesystem::last_write_time(depsPath, std::filesystem::file_time_type::clock::now(), ec);
+  return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// compileFile loads the entry as a source string, so the module's dependency list can omit
+// gltf_pathtrace.slang itself. The resolved entry path is always recorded. A source written at
+// or after `compileStart` (less kSourceSettleTime) may not be the text the compile read, so that
+// compile is not cached; the next one is.
+void PathTracer::storeCachedSpirv(uint64_t key, const Resources& resources, std::filesystem::file_time_type compileStart)
+{
+  if(m_shaderCacheDir.empty())
+    return;
+  const uint32_t* spirv      = resources.slangCompiler.getSpirv();
+  const size_t    spirvBytes = resources.slangCompiler.getSpirvSize();
+  if(spirv == nullptr || spirvBytes == 0 || (spirvBytes % sizeof(uint32_t)) != 0 || spirvBytes > kMaxCachedSpirvBytes)
+    return;
+
+  std::vector<std::filesystem::path> deps;
+  auto                               addDep = [&](const std::filesystem::path& path) {
+    if(path.empty())
+      return;
+    const std::filesystem::path canon = canonicalDep(path);
+    const std::string           utf8  = nvutils::utf8FromPath(canon);
+    if(utf8.empty())
+      return;
+    for(const std::filesystem::path& existing : deps)
+    {
+      if(nvutils::utf8FromPath(existing) == utf8)
+        return;
+    }
+    deps.push_back(canon);
+  };
+
+  addDep(nvutils::findFile("gltf_pathtrace.slang", resources.slangCompiler.searchPaths(), false));
+  if(slang::IModule* module = resources.slangCompiler.getSlangModule())
+  {
+    const int32_t count = static_cast<int32_t>(module->getDependencyFileCount());
+    for(int32_t i = 0; i < count; ++i)
+    {
+      const char* dep = module->getDependencyFilePath(i);
+      if(dep != nullptr && dep[0] != '\0')
+        addDep(nvutils::pathFromUtf8(dep));
+    }
+  }
+  if(deps.empty())
+  {
+    LOGW("Slang SPIR-V cache: no source files to stamp; not writing the cache\n");
+    return;
+  }
+
+  // loadModuleFromSourceString records the entry as a content hash, not a path. Those entries
+  // are not files and are skipped.
+  const std::int64_t settledNs =
+      std::chrono::duration_cast<std::chrono::nanoseconds>((compileStart - kSourceSettleTime).time_since_epoch()).count();
+  std::ostringstream text;
+  for(const std::filesystem::path& path : deps)
+  {
+    SourceStamp stamp{};
+    if(!readStamp(path, stamp))
+      continue;
+    const std::string utf8 = nvutils::utf8FromPath(path);
+    if(stamp.mtimeNs >= settledNs)
+    {
+      LOGW("Slang SPIR-V cache: '%s' changed around the compile; not writing the cache\n", utf8.c_str());
+      return;
+    }
+    text << stamp.size << ' ' << stamp.mtimeNs << ' ' << utf8 << '\n';
+  }
+  const std::string sources = text.str();
+  if(sources.empty())
+  {
+    LOGW("Slang SPIR-V cache: no source files to stamp; not writing the cache\n");
+    return;
+  }
+
+  const uint64_t    spirvHash = fnv1a(nvvk::kFnv1aOffset, spirv, spirvBytes);
+  const std::string spirvKey  = fmt::format("{:016x}", spirvHash);
+  const std::string body      = std::string(kSpvPrefix) + spirvKey + "\n" + sources;
+
+  std::error_code             ec;
+  const std::string           stem     = fmt::format("pt-{:016x}", key);
+  const std::filesystem::path spvPath  = m_shaderCacheDir / (stem + "-" + spirvKey + ".spv");
+  const std::filesystem::path depsPath = m_shaderCacheDir / (stem + ".deps");
+  std::filesystem::path       previousBlob;
+  {
+    std::ifstream previous(depsPath);
+    if(previous)
+      previousBlob = blobOfDeps(previous, m_shaderCacheDir, stem);
+  }
+  // The blob is named by its contents, so replacing .deps is the only publish step. A reader
+  // keeps seeing the previous blob until that rename, and two writers do not share a .tmp name.
+  std::string error;
+  if(!std::filesystem::is_regular_file(spvPath, ec) && !nvvk::writeFileAtomic(spvPath, spirv, spirvBytes, &error))
+  {
+    LOGW("Slang SPIR-V cache: %s\n", error.c_str());
+    return;
+  }
+  if(!nvvk::writeFileAtomic(depsPath, body.data(), body.size(), &error))
+  {
+    LOGW("Slang SPIR-V cache: %s\n", error.c_str());
+    return;
+  }
+  // Only this key's .deps names its blobs. A reader that opened the old .deps just before the
+  // replace finds the blob gone and compiles instead.
+  if(!previousBlob.empty() && previousBlob != spvPath)
+    std::filesystem::remove(previousBlob, ec);
+}
 
 //--------------------------------------------------------------------------------------------------
 // Compile the shader
@@ -1269,7 +1676,8 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
   };
 
   // Compile from shader file if requested, used when reloading the shader
-  bool compiledFromFile = false;
+  bool                  compiledFromFile = false;
+  std::vector<uint32_t> cachedSpirv;  // A disk-cache hit; shaderInfo.pCode points here until the module exists
   if(fromFile)
   {
     SCOPED_TIMER("Slang compile from file");
@@ -1305,14 +1713,41 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     for(const auto& [k, v] : macros)
       resources.slangCompiler.addMacro({k.c_str(), v.c_str()});
 
-    if(resources.slangCompiler.compileFile("gltf_pathtrace.slang"))
+    // A user-forced reload (reloadShader) compiles from source even when the embedded DLSS build
+    // or the disk cache would serve, and the result replaces that disk entry.
+    const uint64_t key = spirvCacheKey(resources.slangCompiler);
+    if(!m_skipVariantCache && isEmbeddedDlssVariant(resources))
     {
+#if defined(USE_DLSS)
+      shaderInfo.codeSize = gltf_pathtrace_slang_dlss_sizeInBytes;
+      shaderInfo.pCode    = gltf_pathtrace_slang_dlss;
+      compiledFromFile    = true;
+      LOGI("Slang: embedded DLSS path tracer, no compile\n");
+#endif
+    }
+    else if(!m_skipVariantCache && loadCachedSpirv(key, cachedSpirv))
+    {
+      shaderInfo.codeSize = cachedSpirv.size() * sizeof(uint32_t);
+      shaderInfo.pCode    = cachedSpirv.data();
+      compiledFromFile    = true;
+      LOGI("Slang SPIR-V cache hit %016llx\n", static_cast<unsigned long long>(key));
+#if defined(AFTERMATH_AVAILABLE)
+      // The compile callback in GltfRenderer does not run when the SPIR-V is loaded from disk.
+      AftermathCrashTracker::getInstance().addShaderBinary(std::span<const uint32_t>(cachedSpirv.data(), cachedSpirv.size()));
+#endif
+    }
+    else if(const auto compileStart = std::filesystem::file_time_type::clock::now();
+            resources.slangCompiler.compileFile("gltf_pathtrace.slang"))
+    {
+      LOGI("Slang SPIR-V cache %s %016llx\n", m_skipVariantCache ? "bypassed (reload)" : "miss", static_cast<unsigned long long>(key));
       shaderInfo.codeSize = resources.slangCompiler.getSpirvSize();
       shaderInfo.pCode    = resources.slangCompiler.getSpirv();
       compiledFromFile    = true;
+      storeCachedSpirv(key, resources, compileStart);
     }
     else
     {
+      LOGI("Slang SPIR-V cache miss %016llx\n", static_cast<unsigned long long>(key));
       // Falls back to the embedded SPIR-V, which is built with USE_OMM=0: in a scene with
       // micromaps its ray queries lack the OpacityMicromapIdKHR opt-in until a compile succeeds.
       LOGW("Error compiling gltf_pathtrace.slang\n");
@@ -1334,10 +1769,11 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
   }
 
   // Record which variant this compile is, so getPendingCompileWork() can tell whether the settings
-  // still match it. A from-file compile follows the live settings. The embedded SPIR-V fallback
-  // mirrors the CMake build (see CMakeLists.txt): not optimal, all-on features, USE_GUIDE_SHADER=1
-  // iff DLSS/OptiX is available at build time, and USE_DLSS_SHADER=0 (DLSS is never active at
-  // startup; it engages later and triggers a from-file recompile).
+  // still match it. A from-file compile (or the embedded DLSS build standing in for one) follows
+  // the live settings. The embedded SPIR-V fallback mirrors the CMake build (see CMakeLists.txt):
+  // not optimal, all-on features, USE_GUIDE_SHADER=1 iff DLSS/OptiX is available at build time,
+  // and USE_DLSS_SHADER=0 (DLSS is never active at startup; when it engages, the next compile
+  // takes the embedded DLSS build).
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);
 #if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER)
@@ -1355,6 +1791,21 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
   }
 
   return !fromFile || compiledFromFile;
+}
+
+//--------------------------------------------------------------------------------------------------
+// The embedded DLSS build is CMake's path tracer flags plus USE_DLSS_SHADER=1: guide buffers on
+// (USE_DLSS implies them), SER available, and wireframe, visualization, opacity micromaps and the
+// optimal shader at their off defaults. Any other variant still compiles from source.
+bool PathTracer::isEmbeddedDlssVariant(const Resources& resources) const
+{
+#if defined(USE_DLSS)
+  if(!m_supportSER)
+    return false;
+  return makeVariantKey(resources).sameShader(VariantKey{.dlss = true, .dlssGuide = true});
+#else
+  return false;
+#endif
 }
 
 //--------------------------------------------------------------------------------------------------

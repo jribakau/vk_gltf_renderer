@@ -102,6 +102,7 @@ auto main(int argc, char** argv) -> int
   std::filesystem::path sceneFilename{};             // "shader_ball.gltf"};  // Default scene
   std::filesystem::path saveSceneFilename{};         // --savefile: writes on change, never persisted
   std::filesystem::path hdrFilename{"std_env.hdr"};  // Default HDR
+  std::filesystem::path cacheDir{};                  // --cacheDir: pipeline cache and compiled SPIR-V. Empty: next to the exe
   std::filesystem::path loadPresetFilename;          // --loadSkyPreset, applied on write
   std::filesystem::path savePresetFilename;          // --saveSkyPreset, written on write
   std::filesystem::path iniFilename;                 // --iniFile: settings for an automated run (opt-in)
@@ -158,6 +159,24 @@ auto main(int argc, char** argv) -> int
                                }
                              }},
                         {".hdr", ".exr"}, &hdrFilename);
+  // A custom parameter, so MCP's nvpro_set_parameters does not offer it (it skips custom
+  // parsers): the folder is read once, before the path tracer attaches. A sequencer step that
+  // sets it later is rejected rather than silently ignored.
+  bool cacheDirApplied = false;
+  parameterRegistry.addCustom({"cacheDir",
+                               "Directory for the pipeline cache and the compiled path-tracer SPIR-V (default: next to "
+                               "the executable). Startup only"},
+                              1,
+                              [&cacheDir, &cacheDirApplied](const nvutils::ParameterBase* const, std::span<char const* const> args,
+                                                            const std::filesystem::path&) {
+                                if(cacheDirApplied)
+                                {
+                                  LOGE("--cacheDir only applies at startup\n");
+                                  return false;
+                                }
+                                cacheDir = nvutils::pathFromUtf8(args[0]);
+                                return true;
+                              });
   parameterRegistry.add({"iniFile",
                          "Restore settings from this .ini in a headless, scripted or benchmark run (those ignore "
                          "the default .ini, so their result does not depend on the last interactive session)"},
@@ -286,6 +305,8 @@ auto main(int argc, char** argv) -> int
   elemGltfRenderer->setAgenticBridgeRoot(agenticBridgeRoot);
 #endif  // USE_AGENTIC
 
+  elemGltfRenderer->setCacheDir(cacheDir);
+  cacheDirApplied = true;
   elemGltfRenderer->setEditable(editable || enableStream);
 
   if(appInfo.headless)

@@ -349,6 +349,9 @@ public:
   // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
   // geometry edits can refit in place. Must be set before the scene loads.
   void setEditable(bool editable) { m_editable = editable; }
+  // --cacheDir. Empty keeps the pipeline cache and compiled SPIR-V next to the executable.
+  // Copied into the path tracer before onAttach.
+  void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
   bool isEditable() const { return m_editable; }
   // Re-run skinning / morphing and the BLAS + TLAS refit on the next frame, even when no animation
   // plays (joint transforms or morph weights changed).
@@ -624,8 +627,9 @@ private:
   uint32_t m_maxTextures{100'000U};  // Maximum number of material images (eTextures SAMPLED_IMAGE array)
   uint32_t m_maxSamplers{0U};        // Maximum number of samplers (eSamplers SAMPLER array); set from device limits
 
-  Resources  m_resources;
-  PathTracer m_pathTracer;  // Path tracer renderer
+  Resources             m_resources;
+  std::filesystem::path m_cacheDir;   // --cacheDir, applied to the path tracer before onAttach
+  PathTracer            m_pathTracer;  // Path tracer renderer
   Rasterizer m_rasterizer;  // Rasterizer renderer
 
   // New Scene Browser system (parallel implementation)
