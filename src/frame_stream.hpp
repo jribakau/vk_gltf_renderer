@@ -56,6 +56,10 @@ struct FrameStreamCreateInfo
   // VK_IMAGE_LAYOUT_GENERAL after the renderer's onRender. Called on the application thread.
   std::function<VkImage()>    image;
   std::function<VkExtent2D()> imageSize;
+
+  // True while the renderer accumulates a still, where every frame improves the image. With a
+  // client connected such frames run unpaced; the stream still gets maxFps. Optional.
+  std::function<bool()> refining;
 };
 
 class FrameStream : public nvapp::IAppElement

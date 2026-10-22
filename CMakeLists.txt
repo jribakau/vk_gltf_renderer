@@ -66,6 +66,7 @@ option(USE_AGENTIC            "Build the optional Agentic bridge (ComfyUI HDRI +
 option(USE_DEFAULT_SCENE      "Load a bundled default scene at startup."                              OFF)
 option(BUILD_TESTING          "Build unit tests and benchmarks (GoogleTest + Google Benchmark)."      OFF)
 option(REQUIRE_NVML_MONITOR   "Fail configure if NVML support is unavailable in nvpro_core2."         OFF)
+option(USE_SOFTWARE_VULKAN    "Run on software Vulkan (lavapipe) for CI: path tracer only, see below." OFF)
 
 # ---- nvpro_core2 module toggles ----------------------------------------------------
 # These are read by nvpro_core2 during its own configure. We disable modules we
@@ -561,6 +562,14 @@ endif()
 #####################################################################################
 # Third-party deps (Draco, RapidJSON, MikkTSpace, WebP).
 #####################################################################################
+# Software Vulkan drivers (Mesa's lavapipe) ray trace but lack fragment shader barycentrics,
+# which only the rasterizer's fragment shader reads (gltf_raster.slang). This build asks for them
+# as optional, so the renderer starts there; the raster view then can't draw. For headless path
+# tracing in CI and benchmarks, never for a build people use.
+if(USE_SOFTWARE_VULKAN)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE USE_SOFTWARE_VULKAN)
+endif()
+
 if(USE_DRACO)
   include(cmake/draco.cmake)
   download_draco()
@@ -817,6 +826,7 @@ _summary_feature("USE_DLSS"           ${USE_DLSS}           ${DLSS_AVAILABLE})
 _summary_feature("USE_DLSSNR"         ${USE_DLSSNR}         ${DLSSNR_AVAILABLE})
 _summary_feature("USE_OPTIX_DENOISER" ${USE_OPTIX_DENOISER} ${OPTIX_DENOISER_AVAILABLE})
 _summary_bool("USE_DRACO"            ${USE_DRACO})
+_summary_bool("USE_SOFTWARE_VULKAN"  ${USE_SOFTWARE_VULKAN})
 _summary_bool("USE_AGENTIC"          ${USE_AGENTIC})
 _summary_bool("USE_DEFAULT_SCENE"    ${USE_DEFAULT_SCENE})
 _summary_bool("BUILD_TESTING"        ${BUILD_TESTING})

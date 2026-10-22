@@ -723,6 +723,35 @@ Json opSetVertices(Ctx& c, const Json& op)
   return {{"primitives", prims.size()}};
 }
 
+// New inverse bind matrices for the skin of node {id|index}: 16 float32 per joint, column-major as
+// glTF stores them, base64. A host that moves joint centres sends these with the bones' new
+// transforms instead of exporting the scene again.
+Json opSetSkin(Ctx& c, const Json& op)
+{
+  tinygltf::Model& model = c.scene.getModel();
+  const int        idx   = resolveIndex(op, c.ids.nodes, model.nodes.size(), "node");
+  const int        skin  = model.nodes[idx].skin;
+  if(skin < 0)
+    fail("node has no skin");
+  auto it = op.find("inverseBindMatrices");
+  if(it == op.end())
+    fail("'inverseBindMatrices' is required");
+  const std::vector<uint8_t> bytes = decodeBase64(*it, "inverseBindMatrices");
+  if(bytes.size() % sizeof(glm::mat4) != 0)
+    fail("'inverseBindMatrices' is not a whole number of float32 4x4 matrices");
+  std::vector<glm::mat4> ibm(bytes.size() / sizeof(glm::mat4));
+  std::memcpy(ibm.data(), bytes.data(), bytes.size());
+  if(!c.scene.animation().setInverseBindMatrices(skin, ibm))
+    fail("got " + std::to_string(ibm.size()) + " matrices, the skin has " + std::to_string(model.skins[skin].joints.size()) + " joints");
+  // the skinned geometry moves, so its instances need their acceleration structure bounds again
+  const auto& renderNodes = c.scene.getRenderNodes();
+  for(size_t rn = 0; rn < renderNodes.size(); rn++)
+    if(renderNodes[rn].skinID == skin)
+      c.scene.markRenderNodeDirty(int(rn), /*forVk=*/false, /*forRtx=*/true);
+  c.renderer.requestAnimationReconcile();
+  return {{"skin", skin}, {"joints", ibm.size()}};
+}
+
 Json applyOp(Ctx& c, const std::string& name, const Json& op)
 {
   if(name == "set_material")
@@ -737,6 +766,8 @@ Json applyOp(Ctx& c, const std::string& name, const Json& op)
     return opSetMorphWeights(c, op);
   if(name == "set_vertices")
     return opSetVertices(c, op);
+  if(name == "set_skin")
+    return opSetSkin(c, op);
   fail("unknown op '" + name + "'");
 }
 
@@ -859,7 +890,7 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
   mcp.registerTool({
       .name        = "vk_gltf_edit",
       .description = "Apply several live edits in order, all visible in the same frame. Each op is {\"op\": "
-                     "\"set_material\"|\"set_node\"|\"set_light\"|\"animation\"|\"set_morph_weights\"|\"set_vertices\", "
+                     "\"set_material\"|\"set_node\"|\"set_light\"|\"animation\"|\"set_morph_weights\"|\"set_vertices\"|\"set_skin\", "
                      "...the same fields as the single tool}. A failing op is reported and the rest still apply.",
       .inputSchema = R"({"type":"object","properties":{"ops":{"type":"array","items":{"type":"object"}}},"required":["ops"]})",
       .handler =
@@ -958,6 +989,10 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
        "base64 little-endian float32 xyz, one per vertex. With indices (base64 little-endian uint32), only those "
        "vertices change: positions[k] (and normals[k]) belong to vertex indices[k]. Skinned or morphed primitives get "
        "new base geometry."},
+      {"vk_gltf_set_skin", "set_skin",
+       "Replace the inverse bind matrices of the skin of node {id|index}: inverseBindMatrices is base64 little-endian "
+       "float32, 16 per joint, column-major as glTF stores them. Send it with the joints' new node transforms when a "
+       "host moves joint centres."},
   };
   for(const Single& s : singles)
   {

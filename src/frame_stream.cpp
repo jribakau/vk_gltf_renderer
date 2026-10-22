@@ -23,6 +23,7 @@
 #include <volk.h>
 
 #include "frame_stream.hpp"
+#include "frame_pacing.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -112,6 +113,9 @@ struct FrameStream::Impl
   httplib::Server http;
 
   std::chrono::steady_clock::time_point lastFrame{};
+  FramePacer                            pacer{std::chrono::milliseconds(16)};
+  // this frame's image goes to the stream (set in onUpdate, read in onRender)
+  bool copyFrame{true};
 
   void createRing(const VkExtent2D& extent);
   void destroyRing();
@@ -191,20 +195,24 @@ void FrameStream::onUpdate()
     return;
   const int  fps    = s.clients > 0 ? std::max(1, s.info.maxFps) : std::min(std::max(1, s.info.maxFps), 10);
   const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / fps));
-  auto       now    = std::chrono::steady_clock::now();
+  // Nobody watching: keep to the cap, the host needs the machine more than a still needs to converge.
+  const bool refining = s.clients > 0 && s.info.refining && s.info.refining();
+  s.pacer.setPeriod(period);
+  auto       now   = std::chrono::steady_clock::now();
+  const auto start = s.pacer.startTime(now, refining);
+  if(now < start)
+  {
+    std::this_thread::sleep_until(start);
+    now = std::chrono::steady_clock::now();
+  }
   if(s.lastFrame.time_since_epoch().count() != 0)
   {
-    const auto next = s.lastFrame + period;
-    if(now < next)
-    {
-      std::this_thread::sleep_until(next);
-      now = std::chrono::steady_clock::now();
-    }
     const double dt = std::chrono::duration<double>(now - s.lastFrame).count();
     if(dt > 0.0)
       s.renderFps = s.renderFps * 0.9 + (1.0 / dt) * 0.1;
   }
   s.lastFrame = now;
+  s.copyFrame = s.pacer.begin(now);
 }
 
 void FrameStream::onRender(VkCommandBuffer cmd)
@@ -221,6 +229,9 @@ void FrameStream::onRender(VkCommandBuffer cmd)
     rb.pending = false;
     s.harvest(rb);
   }
+  // an unpaced frame the stream is not due: nothing to copy out
+  if(!s.copyFrame)
+    return;
 
   const VkImage    image  = s.info.image();
   const VkExtent2D extent = s.info.imageSize();

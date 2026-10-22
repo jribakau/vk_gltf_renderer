@@ -374,6 +374,14 @@ auto main(int argc, char** argv) -> int
   VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR addressCmdFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR};
   // clang-format on
 
+  // Fragment shader barycentrics are for the rasterizer alone; a USE_SOFTWARE_VULKAN build (lavapipe,
+  // for CI) starts without them and can only path trace.
+#ifdef USE_SOFTWARE_VULKAN
+  constexpr bool kBarycentricsRequired = false;
+#else
+  constexpr bool kBarycentricsRequired = true;
+#endif
+
   // Requesting the extensions and features needed
   vkSetup.instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
   vkSetup.deviceExtensions   = {
@@ -384,7 +392,7 @@ auto main(int argc, char** argv) -> int
       {VK_KHR_RAY_QUERY_EXTENSION_NAME, &rayqueryFeature},
       {VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME, &computeDerivativesFeature},
       {VK_EXT_SHADER_OBJECT_EXTENSION_NAME, &shaderObjectFeatures},
-      {VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME, &baryFeatures},
+      {VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME, &baryFeatures, kBarycentricsRequired},
       {VK_EXT_NESTED_COMMAND_BUFFER_EXTENSION_NAME, &nestedCmdFeature},
       {VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME, &reorderFeature, false},
       {VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME, &addressCmdFeature, false},  // Optional: required by VK_KHR_opacity_micromap
@@ -612,6 +620,7 @@ auto main(int argc, char** argv) -> int
           .maxFps    = std::clamp(streamFps, 1, 240),
           .image     = [r] { return r->tonemappedImage(); },
           .imageSize = [r] { return r->renderSize(); },
+          .refining  = [r] { return r->isRefiningStill(); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);

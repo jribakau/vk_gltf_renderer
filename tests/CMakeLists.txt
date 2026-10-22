@@ -61,6 +61,8 @@ set(TEST_SOURCES
     test_image_loader.cpp
     # Phase 1 (env pipeline): CPU-only unit test for nvvk::buildEnvAliasmap (Vose)
     test_alias_table.cpp
+    # --stream frame pacing: paced, except a still being refined
+    test_frame_pacing.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough
     test_environment_sky.cpp
     # Phase 5c: .sky.json presets -- round trip, the sun angle OMI has no field for, strangers' keys

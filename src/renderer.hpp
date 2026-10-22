@@ -342,6 +342,14 @@ public:
   VkImage    tonemappedImage() const { return m_resources.gBuffers.getColorImage(Resources::eImgTonemapped); }
   VkExtent2D renderSize() const { return m_resources.gBuffers.getSize(); }
 
+  /// The path tracer is accumulating a still: the camera and scene have held for a frame, and
+  /// the iteration limit is not reached. Every further frame improves the image.
+  bool isRefiningStill() const
+  {
+    return m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.frameCount >= 1
+           && m_resources.frameCount < m_resources.settings.maxFrames;
+  }
+
   // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.
   nvvkgltf::Scene*  editScene() { return m_resources.getScene(); }
   AnimationControl& editAnimationControl() { return m_resources.animationControl; }
