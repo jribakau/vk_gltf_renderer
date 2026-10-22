@@ -752,6 +752,8 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_resources.transformCompute.setGraphicsQueue(m_app->getQueue(0).queue);
   m_resources.transformCompute.setDeferredFree(
       [app](std::function<void()>&& fn) { app->submitResourceFree(std::move(fn)); });
+  m_resources.prevPositions.init(&m_resources.allocator, m_app->getQueue(0).queue,
+                                 [app](std::function<void()>&& fn) { app->submitResourceFree(std::move(fn)); });
 
   // ===== Profiling & Performance =====
   {
@@ -1320,6 +1322,9 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // Start the profiler section for the GPU timer
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
 
+  // #DLSS deformation motion: before the interactivity tick, which can pose skins already.
+  snapshotPrevPositions(cmd);
+
   // KHR_interactivity: tick the graph (pointer/set writes, via Scene::markNodeDirty) BEFORE the DLSS
   // instance-motion snapshot decision below - that decision reads DirtyFlags::nodes to know whether
   // anything moved *this* frame, and a graph-driven move (e.g. a per-tick pointer/set slerp, as in the
@@ -1376,9 +1381,17 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // Check for changes
   bool changed{false};
   changed |= interactivityAnimationApplied;
-  changed |= applyPendingSceneEdits(cmd);  // Host edits (vertex uploads); before animation so it composes on top
-  changed |= updateAnimation(cmd);  // Update the animation
+  const bool verticesEdited = applyPendingSceneEdits(cmd);  // Host edits (vertex uploads); before animation so it composes on top
+  const bool animated = updateAnimation(cmd);  // Update the animation
+  changed |= verticesEdited || animated;
   changed |= updateSceneChanges(cmd);
+
+  // #DLSS deformation motion: every writer of vertex positions has run. Their reconcile may have
+  // skinned or morphed, and an edit uploaded; the copy snapshotPrevPositions() kept is what the
+  // surface was before them.
+  const bool verticesWritten           = interactivityAnimationApplied || verticesEdited || animated;
+  m_resources.dlssDeformMotionActive   = verticesWritten && m_resources.prevPositions.hasBuffers();
+  m_verticesWrittenLastFrame           = verticesWritten;
   if(changed)
   {
     resetFrame();
@@ -3300,6 +3313,8 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   m_rasterizer.onSceneInvalidated(m_resources);
   if(m_resources.getScene())
     m_resources.transformCompute.destroyGpuBuffers();
+  m_resources.prevPositions.destroyGpuBuffers();
+  m_verticesWrittenLastFrame = false;
   m_resources.scene.reset();
   m_thumbnailCache.clear();
   // Before sceneGpu.destroy(), which calls SceneVk::destroy() and would free these images.
@@ -3371,6 +3386,8 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
   {
     if(scene)
       m_resources.transformCompute.destroyGpuBuffers();  // Before scene RTX rebuild
+    m_resources.prevPositions.destroyGpuBuffers();       // The rebuild replaces the vertex buffers
+    m_verticesWrittenLastFrame = false;
     VkCommandBuffer cmd{};
     nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
     m_resources.sceneGpu.rebuild(cmd, *scene, mode);
@@ -4195,6 +4212,7 @@ void GltfRenderer::destroyResources()
   m_resources.tonemappedUi.deinit();
   m_resources.gBuffers.deinit();
   m_resources.transformCompute.deinit();
+  m_resources.prevPositions.deinit();
   m_resources.sceneGpu.deinit();
   m_resources.hdrIbl.deinit();
   m_resources.hdrDome.deinit();
@@ -4292,6 +4310,36 @@ GltfRenderer::LiveVertices* GltfRenderer::liveVerticesOf(const nvvkgltf::Scene& 
   if(live.positions.empty())
     return nullptr;
   return &(m_liveVertices[renderPrimID] = std::move(live));
+}
+
+//--------------------------------------------------------------------------------------------------
+// #DLSS deformation motion. Keeps each deforming primitive's positions as they are at the start
+// of the frame, before skinning, morphs or a host upload rewrite them in place: skinned and
+// morphed primitives, any primitive edited live, and the ones an upload queued for this frame
+// edits. Copied only when a writer ran last frame; otherwise the copy kept earlier still matches,
+// since nothing wrote in between. A newly kept primitive is copied at once. The first copies wait
+// for DLSS; from then on this runs every frame, DLSS or not, so no copy falls behind.
+void GltfRenderer::snapshotPrevPositions(VkCommandBuffer cmd)
+{
+  nvvkgltf::Scene* scn = m_resources.getScene();
+  const bool dlss = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled();
+  if(!scn || (!dlss && !m_resources.prevPositions.hasBuffers()))
+    return;
+
+  std::vector<int> prims;
+  for(uint32_t p : scn->animation().getMorphPrimitives())
+    prims.push_back(int(p));
+  for(const auto& task : scn->animation().getSkinTasks())
+    prims.push_back(task.renderPrimID);
+  for(const auto& [p, live] : m_liveVertices)
+    prims.push_back(p);
+  for(const VertexUpload& u : m_pendingVertexUploads)
+    prims.push_back(u.renderPrimID);
+  if(prims.empty())
+    return;
+
+  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Snapshot prev positions");
+  m_resources.prevPositions.cmdCopy(cmd, m_resources.sceneVk, prims, m_verticesWrittenLastFrame);
 }
 
 //--------------------------------------------------------------------------------------------------

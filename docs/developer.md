@@ -152,6 +152,7 @@ src/
 ├── gltf_scene_animation.cpp/hpp# AnimationSystem: playback/interpolation (CPU), via Scene::animation()
 ├── gltf_scene_animation_vk.cpp/hpp # GPU compute skinning / morph target animation
 ├── gltf_scene_transform_vk.cpp/hpp # GPU compute world-matrix propagation
+├── gltf_scene_prev_positions_vk.cpp/hpp # DLSS: previous-frame positions of deforming primitives
 ├── gltf_scene_merger.cpp/hpp   # Merge two glTF scenes
 ├── gltf_scene_validator.cpp/hpp# Scene validation
 ├── gltf_compact_*.cpp/hpp      # Orphan resource removal / buffer compaction

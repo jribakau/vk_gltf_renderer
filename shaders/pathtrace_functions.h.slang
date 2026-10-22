@@ -1083,6 +1083,36 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
 // DLSS guide buffers
 //-----------------------------------------------------------------------
 
+#if USE_GUIDE_SHADER
+// Previous-frame world position of the surface point at `hitPos`, on triangle `triangleID` of
+// render primitive `rprimID` in render node `rnodeID`, with the barycentrics getHitState used.
+// A primitive skinned, morphed or re-uploaded this frame takes its triangle's previous corners
+// (prevVertexPositions; the shape moved under the point), a node that moved takes its previous
+// transform (prevRenderNodeObjectToWorld), and a point with neither is where it was.
+float3 dlssPrevHitPos(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int rnodeID, int rprimID, int triangleID,
+                      float3 barys, float3 hitPos)
+{
+  float3* prevPositions = nullptr;
+  if(pushConst.prevVertexPositions != nullptr)
+    prevPositions = pushConst.prevVertexPositions[rprimID];
+  if(prevPositions == nullptr && pushConst.prevRenderNodeObjectToWorld == nullptr)
+    return hitPos;
+
+  float3 objPos;
+  if(prevPositions != nullptr)
+  {
+    const uint3 idx = getTriangleIndices(renderPrim, triangleID);
+    objPos          = prevPositions[idx.x] * barys.x + prevPositions[idx.y] * barys.y + prevPositions[idx.z] * barys.z;
+  }
+  else
+    objPos = mul(float4(hitPos, 1.0), renderNode.worldToObject).xyz;
+
+  const float4x4 objectToWorld =
+      pushConst.prevRenderNodeObjectToWorld != nullptr ? pushConst.prevRenderNodeObjectToWorld[rnodeID] : renderNode.objectToWorld;
+  return mul(float4(objPos, 1.0), objectToWorld).xyz;
+}
+#endif  // USE_GUIDE_SHADER
+
 #if USE_DLSS_SHADER
 float3 dlssEnforceMinAlbedo(float3 albedo, float3 specularAlbedo)
 {
@@ -1272,11 +1302,8 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     result.albedo    = mat.baseColor.xyz;
     result.normal    = mat.N;
     result.roughness = mat.roughness.x;
-    if(pushConst.prevRenderNodeObjectToWorld != nullptr)
-    {
-      float3 objPos   = mul(float4(hit.pos, 1.0), node.worldToObject).xyz;
-      result.posDelta = mul(float4(objPos, 1.0), pushConst.prevRenderNodeObjectToWorld[payload.rnodeID]).xyz - hit.pos;
-    }
+    result.posDelta =
+        dlssPrevHitPos(node, prim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos) - hit.pos;
     return result;
   }
   return result;  // Too many layers: keep the glass's own guides

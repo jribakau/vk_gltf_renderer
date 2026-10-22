@@ -2244,8 +2244,14 @@ void PathTracer::setupPushConstant(VkCommandBuffer cmd, Resources& resources, Vk
   m_pushConst.prevRenderNodeObjectToWorld = (useDlss && resources.dlssInstanceMotionActive) ?
                                                 (shaderio::float4x4*)resources.transformCompute.prevObjectToWorldAddress() :
                                                 nullptr;
+  // #DLSS deformation motion: the positions from before this frame's skin / morph / vertex uploads,
+  // bound only on frames where those ran (GltfRenderer::snapshotPrevPositions).
+  m_pushConst.prevVertexPositions = (useDlss && resources.dlssDeformMotionActive) ?
+                                        (shaderio::float3**)resources.prevPositions.tableAddress() :
+                                        nullptr;
 #else
   m_pushConst.prevRenderNodeObjectToWorld = nullptr;
+  m_pushConst.prevVertexPositions         = nullptr;
 #endif
 
   // Angular size of one pixel (radians). Same formula as the previous shader-side computePixelAngle():

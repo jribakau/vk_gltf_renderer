@@ -88,20 +88,32 @@ combined:
   (see [docs/interactivity.md](interactivity.md) for a real bug this ordering fixed - a graph-driven
   per-tick move ghosted for its entire duration when the check ran before the tick instead of after).
 
-**Not captured: per-vertex skin/morph deformation.** Skinning and morph overwrite the position
+**Per-vertex skin/morph deformation (path tracer).** Skinning and morph overwrite the position
 buffer in place (`AnimationVk::dispatchAnimation`; the CPU fallback is `SceneVk::uploadPrimitives`),
-and `set_vertices` does the same, with no previous-frame vertex copy. A bone pose is not instance
-motion: skinning writes the new positions while the mesh node's transform stays put. A pose edit
-moves only bones, which carry no mesh, so `prevRenderNodeObjectToWorld` stays unbound and the guide
-takes the current position. A playing clip binds it, but the mesh node's previous and current
-transforms match. Either way the guide reprojects the current shape under camera motion only.
-The smear shows when a pose, a shape dial, or a clip moves the surface, including skinned hair
-cards. A dolly or orbit of a posed figure is camera motion and is
-already correct. The rasterizer lacks this and also lacks the instance vectors the path tracer has:
-`vertexMain` in `shaders/gltf_raster.slang` multiplies the current position by `prevMVP`. Closing
-the gap requires a previous-frame position buffer per deforming primitive, copied before those
-writes and reprojected the same way as instance motion. The extra reads belong on the primary guide
-and on the clear-glass replacement surface, not on every hit.
+and `set_vertices` does the same. A bone pose is not instance motion: skinning writes the new
+positions while the mesh node's transform stays put, so instance motion alone reprojects the
+current shape under camera motion only, and Ray Reconstruction smears the surface while a pose, a
+shape dial or a clip moves it.
+
+`PrevPositionsVk` (`src/gltf_scene_prev_positions_vk.hpp`) keeps a copy of each deforming
+primitive's positions, 12 bytes a vertex. Deforming here means skinned, morphed, edited live, or
+named by an upload queued for this frame. The copy is made in
+`GltfRenderer::snapshotPrevPositions` at the start of the frame, before the interactivity tick,
+the host uploads and the animation reconcile write, and only when one of them ran the frame
+before. When nothing wrote in between, the copy taken earlier still matches. On frames where a
+writer ran, `dlssDeformMotionActive` binds `PathtracePushConstant::prevVertexPositions`, a table of
+device addresses, one per render primitive.
+
+`dlssPrevHitPos` interpolates the hit triangle's previous corners with the hit's barycentrics and
+applies the previous node transform when that moved too, or the current one otherwise. It costs
+three position reads on the primary guide and on the clear-glass replacement surface; no rays are
+added. The live buffer is not swapped for a second one: the BLAS refit reuses build data holding
+the fixed vertex address, and the shaders read positions through the scene description's vertex
+pointers.
+
+A dolly or orbit of a posed figure is camera motion and was already correct. The rasterizer lacks
+this and also lacks the instance vectors the path tracer has: `vertexMain` in
+`shaders/gltf_raster.slang` multiplies the current position by `prevMVP`.
 
 ## Clear glass: primary surface replacement
 

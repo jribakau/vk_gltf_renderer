@@ -403,12 +403,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       pt.firstHitPos = hit.pos;
 
 #if USE_GUIDE_SHADER
-      // #DLSS instance motion - Previous-frame world position of this surface point.
+      // #DLSS instance and deformation motion - Previous-frame world position of this surface point.
       pt.firstHitPosPrev = hit.pos;
-      if(!hitInfinitePlane && pushConst.prevRenderNodeObjectToWorld != nullptr)
+      if(!hitInfinitePlane)
       {
-        float3 objPos      = mul(float4(hit.pos, 1.0), renderNode.worldToObject).xyz;
-        pt.firstHitPosPrev = mul(float4(objPos, 1.0), pushConst.prevRenderNodeObjectToWorld[payload.rnodeID]).xyz;
+        const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+        pt.firstHitPosPrev = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos);
       }
 
       // Base-color guide albedo (shared by DLSS and OptiX). Stored temporarily, written at end to

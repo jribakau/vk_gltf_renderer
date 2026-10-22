@@ -286,6 +286,7 @@ struct PathtracePushConstant
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node
+  float3**        prevVertexPositions;  // #DLSS deformation motion: previous-frame positions per render primitive (null entry = none)
 };
 
 // Push constant

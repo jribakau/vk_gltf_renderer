@@ -52,6 +52,7 @@
 #include "ui_animation.hpp"
 #include "ui_interactivity.hpp"
 #include "gltf_scene_transform_vk.hpp"
+#include "gltf_scene_prev_positions_vk.hpp"
 #include "gpu_memory_tracker.hpp"
 #include "scene_feature_detection.hpp"
 #include <nvapp/application.hpp>
@@ -332,6 +333,7 @@ struct Resources
   nvvkgltf::AnimationVk            animationVk;
   nvvkgltf::TransformComputeVk     transformCompute{};
   nvvkgltf::SceneGpu sceneGpu{sceneVk, animationVk, sceneRtx, transformCompute, staging};  // Must be declared after its reference dependencies
+  nvvkgltf::PrevPositionsVk prevPositions{};  // #DLSS deformation motion: last frame's vertex positions
 
   nvvkgltf::Scene*       getScene() { return scene.get(); }
   const nvvkgltf::Scene* getScene() const { return scene.get(); }
@@ -405,6 +407,10 @@ struct Resources
 
   // #DLSS: True if any node transforms changed this frame (for DLSS per-instance motion).
   bool dlssInstanceMotionActive{false};
+
+  // #DLSS: True if vertex positions may have been rewritten this frame (skin, morph, set_vertices)
+  // and prevPositions holds the ones from before (for DLSS per-vertex motion).
+  bool dlssDeformMotionActive{false};
 
   // Selection: set of render node indices (TLAS order). One primitive = set of size 1; node + branch = many.
   std::unordered_set<int> selectedRenderNodes;

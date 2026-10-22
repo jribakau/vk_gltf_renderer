@@ -458,10 +458,14 @@ private:
   // common tail of updateAnimation() (UI-driven single clip) and updateInteractivityGraphs()
   // (KHR_interactivity-driven, possibly several clips at once via animation/start).
   void reconcileAnimationGpuState(VkCommandBuffer cmd);
+  // #DLSS deformation motion: keep the deforming primitives' positions from before this frame's
+  // writers (see PrevPositionsVk). Runs before any of them.
+  void snapshotPrevPositions(VkCommandBuffer cmd);
   // Live edits queued by the host (vertex uploads, reconcile requests); see queueVertexUpload().
   bool                      applyPendingSceneEdits(VkCommandBuffer cmd);
   bool                      m_editable{false};
   bool                      m_pendingAnimReconcile{false};
+  bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   uint64_t                  m_sceneGeneration{0};
   std::vector<VertexUpload> m_pendingVertexUploads;
   // The vertices of each primitive edited live, as last uploaded: sparse uploads patch these and
