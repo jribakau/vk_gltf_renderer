@@ -381,6 +381,8 @@ Dlss::State Dlss::state() const
 // first-time NGX readiness or feature recreation requests.
 bool Dlss::tick(Resources& resources)
 {
+  m_tickFrame = resources.drawnFrameCount;  // read by evaluate(), see m_lastEvaluateFrame
+
   const bool justInitedNgx = consumePendingInitResult();
 
   const State s = state();
@@ -391,8 +393,10 @@ bool Dlss::tick(Resources& resources)
     startAsyncInit(resources);
 
   // When DLSS-RR is off, keep the NGX prewarm alive but do not allocate its heavy guide
-  // buffers until the user enables it. SR is different: even "Off" needs its motion target
-  // resized back to native when quality changes.
+  // buffers until the user enables it. Only the checkbox frees buffers that are already allocated:
+  // a host that writes dlssEnable for every still keeps them, so turning it back on does not
+  // recreate the feature. SR is different: even "Off" needs its motion target resized back to
+  // native when quality changes.
   if(s == State::eOff && m_kind == Kind::RR)
     return false;
 
@@ -886,8 +890,11 @@ void Dlss::evaluate(VkCommandBuffer cmd, const glm::mat4& view, const glm::mat4&
   assert(isActive() && "Dlss::evaluate() called when isActive()==false");
 
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
-  const bool reset = (m_globalFrame < m_forceResetUntilFrame);
+  // History from before a drawn frame that did not evaluate predates whatever changed on it.
+  const bool missedFrame = m_lastEvaluateFrame != 0 && m_lastEvaluateFrame + 1 != m_tickFrame;
+  const bool reset       = missedFrame || (m_globalFrame < m_forceResetUntilFrame);
   ++m_globalFrame;
+  m_lastEvaluateFrame = m_tickFrame;
   m_dlss.cmdEvaluate(cmd, m_ngx, {m_currentJitter, view, proj, reset});
 }
 

@@ -1463,6 +1463,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
     // Switch between renderers based on the current mode
+    ++m_resources.drawnFrameCount;
     switch(m_resources.settings.renderSystem)
     {
       case RenderingMode::ePathtracer:

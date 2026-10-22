@@ -398,6 +398,11 @@ struct Resources
   // ready gate) should use this instead.
   uint64_t renderPassCount{0};
 
+  // Frames that wrote SceneFrameInfo and called the active renderer's onRender(), so the previous-frame
+  // matrices moved. Unlike renderPassCount, frames skipped once maxFrames is reached do not count.
+  // Dlss compares it across evaluate() calls to find frames it missed.
+  uint64_t drawnFrameCount{0};
+
   // #DLSS: True if any node transforms changed this frame (for DLSS per-instance motion).
   bool dlssInstanceMotionActive{false};
 

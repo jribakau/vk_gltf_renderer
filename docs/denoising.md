@@ -164,6 +164,17 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
   reset — those are already correctly handled by instance motion vectors (see "Instance (node)
   motion" above); only *appearance* discontinuities (texture/material content changing at a
   stationary surface, which motion vectors can't describe) need a full history discard.
+- **A drawn frame that skips `evaluate()` drops the history.** `GltfRenderer` counts the frames it
+  draws (`Resources::drawnFrameCount`), and `Dlss::evaluate` resets when the drawn frame before it
+  did not evaluate: DLSS was off, the other renderer drew, a pipeline compile skipped the frame, or
+  OptiX took it. The camera or the content may have changed on that frame without NGX seeing it,
+  and the motion vectors cover one frame only. This holds whichever path wrote `dlssEnable` (the
+  checkbox, the command line, a benchmark, MCP), so a host that turns DLSS off while a still
+  accumulates and back on at the next change gets the same reset as the checkbox. The cost is one
+  softer frame after each gap. Frames that are not drawn, once `maxFrames` is reached, do not count,
+  so a still with DLSS left on keeps its history when the camera moves again. Only the checkbox
+  frees the RR inner GBuffer; a `dlssEnable` write from elsewhere keeps it, so a host that turns
+  DLSS off for every still does not recreate the feature at the next move.
 - **Switching DLSS off restarts the path tracer's accumulation.** DLSS frames count toward
   `maxFrames` and the accumulated-sample total like any other frame, and the result image holds the
   last 1-spp DLSS input. Every DLSS setting therefore resets the frame (the `resetAccumulation` hook
