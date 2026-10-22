@@ -621,9 +621,15 @@ auto main(int argc, char** argv) -> int
           .image     = [r] { return r->tonemappedImage(); },
           .imageSize = [r] { return r->renderSize(); },
           .refining  = [r] { return r->isRefiningStill(); },
+          .upload    = [r](std::string bytes) { return r->blobs().put(std::move(bytes)); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
+      // a traced live edit is logged once the frame showing it is encoded
+      r->setEditTraceSink([weak = std::weak_ptr<FrameStream>(frameStream)](LatencyTrace t) {
+        if(auto fs = weak.lock())
+          fs->traceNextFrame(std::move(t));
+      });
     }
   }
 #ifdef USE_NVMCP

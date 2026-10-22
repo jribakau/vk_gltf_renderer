@@ -43,8 +43,11 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include <nvapp/application.hpp>
+
+#include "latency_trace.hpp"
 
 struct FrameStreamCreateInfo
 {
@@ -60,6 +63,10 @@ struct FrameStreamCreateInfo
   // True while the renderer accumulates a still, where every frame improves the image. With a
   // client connected such frames run unpaced; the stream still gets maxFps. Optional.
   std::function<bool()> refining;
+
+  // Stores a binary payload a host posts to /blob for a later live edit and returns its id
+  // (blob_store.hpp). Called on an HTTP thread. Optional: without it /blob answers 404.
+  std::function<uint64_t(std::string)> upload;
 };
 
 class FrameStream : public nvapp::IAppElement
@@ -82,6 +89,8 @@ public:
   // next frame encoded picks them up, and a converged still is re-sent once when they rise.
   void setQuality(int quality);
   void setFullChroma(bool fullChroma);
+  // The next frame copied out carries this latency trace and logs it once encoded (application thread).
+  void traceNextFrame(LatencyTrace trace);
 
 private:
   struct Impl;

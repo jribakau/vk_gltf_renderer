@@ -36,6 +36,8 @@
 //   vk_gltf_set_vertices        {id (primitive) | mesh, primitive?, positions: base64 f32 xyz, normals?: base64,
 //                                indices?: base64 u32 (only these vertices change, one per position)}
 //   vk_gltf_set_skin            {id (skinned node) | index, inverseBindMatrices: base64 f32, 16 per joint}
+//   (an array field may be {"blob": id} instead of base64: raw bytes POSTed to the frame stream's /blob,
+//    which returns {"id"}; see blob_store.hpp)
 //   vk_gltf_add_scene           {file}: merge a glTF in, each root under the node its extras.fvParent names
 //
 // Each op inside vk_gltf_edit is one of the single tools' inputs plus "op": "set_material" |

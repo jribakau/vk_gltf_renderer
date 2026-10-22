@@ -47,6 +47,8 @@
 #include "gltf_scene.hpp"
 #include "gltf_scene_rtx.hpp"
 #include "gltf_scene_vk.hpp"
+#include "latency_trace.hpp"
+#include "blob_store.hpp"
 #include <nvvk/profiler_vk.hpp>
 #include "nvutils/parameter_parser.hpp"
 #include "nvutils/parameter_registry.hpp"
@@ -364,6 +366,12 @@ public:
   // Re-run skinning / morphing and the BLAS + TLAS refit on the next frame, even when no animation
   // plays (joint transforms or morph weights changed).
   void requestAnimationReconcile() { m_pendingAnimReconcile = true; }
+  // Latency trace of a live edit (latency_trace.hpp): stamped "applied" in the frame that applies
+  // it, then handed to the sink (the frame stream), or logged when there is none.
+  void traceEdit(LatencyTrace trace) { m_editTrace = std::move(trace); }
+  void setEditTraceSink(std::function<void(LatencyTrace)> sink) { m_editTraceSink = std::move(sink); }
+  // Binary payloads for live edits (blob_store.hpp); thread-safe.
+  BlobStore& blobs() { return m_blobs; }
   // Bumped on every scene load, so a host's cached ids can tell scenes apart.
   uint64_t sceneGeneration() const { return m_sceneGeneration; }
   struct VertexUpload
@@ -474,6 +482,9 @@ private:
   bool                      m_editable{false};
   bool                      m_pendingAnimReconcile{false};
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
+  LatencyTrace                       m_editTrace;      // See traceEdit()
+  std::function<void(LatencyTrace)>  m_editTraceSink;
+  BlobStore                          m_blobs;
   uint64_t                  m_sceneGeneration{0};
   std::vector<VertexUpload> m_pendingVertexUploads;
   // The vertices of each primitive edited live, as last uploaded: sparse uploads patch these and

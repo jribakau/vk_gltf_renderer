@@ -24,6 +24,7 @@
 
 #include "frame_stream.hpp"
 #include "frame_pacing.hpp"
+#include "blob_store.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -54,6 +55,7 @@ struct Readback
   VkExtent2D     extent{};
   bool           coherent{true};
   bool           pending{false};
+  LatencyTrace   trace;  // A traced edit this frame shows (latency_trace.hpp)
 };
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeBits, VkMemoryPropertyFlags wanted, bool* found)
@@ -89,6 +91,9 @@ struct FrameStream::Impl
   std::vector<uint8_t>    rawPending;
   VkExtent2D              rawExtent{};
   bool                    rawReady{false};
+  LatencyTrace            rawTrace;
+  // a traced edit waiting for the next frame copied out (application thread)
+  LatencyTrace pendingTrace;
 
   // encoded frames: encoder thread -> HTTP client threads
   std::mutex                         jpgMutex;
@@ -143,6 +148,11 @@ void FrameStream::setQuality(int quality)
 void FrameStream::setFullChroma(bool fullChroma)
 {
   m_impl->fullChroma.store(fullChroma);
+}
+
+void FrameStream::traceNextFrame(LatencyTrace trace)
+{
+  m_impl->pendingTrace = std::move(trace);
 }
 
 void FrameStream::onAttach(nvapp::Application* app)
@@ -291,6 +301,12 @@ void FrameStream::onRender(VkCommandBuffer cmd)
 
   rb.extent  = extent;
   rb.pending = true;
+  if(!s.pendingTrace.empty())
+  {
+    rb.trace = std::move(s.pendingTrace);
+    rb.trace.emplace_back("copied", traceNowMs());
+    s.pendingTrace.clear();
+  }
   s.framesRendered++;
 }
 
@@ -376,7 +392,22 @@ void FrameStream::Impl::harvest(Readback& rb)
 {
   std::unique_lock lock(rawMutex);
   if(rawReady)
+  {
+    // dropped: a traced edit rides on the next frame copied out instead
+    if(!rb.trace.empty())
+    {
+      rb.trace.pop_back();
+      pendingTrace = std::move(rb.trace);
+      rb.trace.clear();
+    }
     return;
+  }
+  if(!rb.trace.empty())
+  {
+    rb.trace.emplace_back("harvested", traceNowMs());
+    rawTrace = std::move(rb.trace);
+    rb.trace.clear();
+  }
   const size_t bytes = size_t(rb.extent.width) * rb.extent.height * 4;
   if(!rb.coherent)
   {
@@ -408,7 +439,8 @@ void FrameStream::Impl::encodeLoop()
   int                  lastQuality    = -1;
   while(running)
   {
-    VkExtent2D extent{};
+    VkExtent2D   extent{};
+    LatencyTrace trace;
     {
       std::unique_lock lock(rawMutex);
       rawCv.wait(lock, [&] { return rawReady || !running; });
@@ -417,6 +449,7 @@ void FrameStream::Impl::encodeLoop()
       raw.swap(rawPending);
       extent   = rawExtent;
       rawReady = false;
+      trace.swap(rawTrace);
     }
     const int  wantQuality = quality.load();
     const bool wantFull    = fullChroma.load();
@@ -426,7 +459,11 @@ void FrameStream::Impl::encodeLoop()
     const bool repeat = extent.width == lastExtent.width && extent.height == lastExtent.height
                         && raw.size() == last.size() && std::memcmp(raw.data(), last.data(), raw.size()) == 0;
     if(repeat && lastFullChroma && lastQuality == wantQuality)
+    {
+      if(!trace.empty())
+        LOGI("%s (frame repeated, not re-sent)\n", formatTrace(trace).c_str());
       continue;
+    }
 
     const auto     start = std::chrono::steady_clock::now();
     unsigned char* jpeg  = nullptr;
@@ -461,6 +498,11 @@ void FrameStream::Impl::encodeLoop()
     }
     framesEncoded++;
     jpgCv.notify_all();
+    if(!trace.empty())
+    {
+      trace.emplace_back("encoded", traceNowMs());
+      LOGI("%s\n", formatTrace(trace).c_str());
+    }
   }
   tj3Destroy(tj);
 }
@@ -468,6 +510,7 @@ void FrameStream::Impl::encodeLoop()
 void FrameStream::Impl::serve()
 {
   http.set_default_headers({{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-store"}});
+  http.set_payload_max_length(BlobStore::kMaxBytes);
 
   http.Get("/stream", [this](const httplib::Request&, httplib::Response& res) {
     clients++;
@@ -519,6 +562,22 @@ void FrameStream::Impl::serve()
     }
     app->requestHeadlessResize({uint32_t(w), uint32_t(h)});
     res.set_content("ok", "text/plain");
+  });
+
+  // A host's binary payload for a live edit (blob_store.hpp): stored, and its id returned, so the
+  // edit can name it instead of carrying megabytes of base64 through JSON.
+  http.Options("/blob", [](const httplib::Request&, httplib::Response& res) {
+    res.set_header("Access-Control-Allow-Methods", "POST");
+    res.set_header("Access-Control-Allow-Headers", "Content-Type");
+  });
+  http.Post("/blob", [this](const httplib::Request& req, httplib::Response& res) {
+    if(!info.upload)
+    {
+      res.status = 404;
+      return;
+    }
+    const uint64_t id = info.upload(req.body);
+    res.set_content("{\"id\":" + std::to_string(id) + "}", "application/json");
   });
 
   http.Get("/stats", [this](const httplib::Request&, httplib::Response& res) {

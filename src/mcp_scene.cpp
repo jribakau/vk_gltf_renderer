@@ -27,6 +27,7 @@
 #include <cstring>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -298,9 +299,8 @@ std::vector<uint8_t> decodeBase64(const Json& j, const char* key)
   return bytes;
 }
 
-std::vector<glm::vec3> decodeVec3(const Json& j, const char* key)
+std::vector<glm::vec3> decodeVec3(const std::vector<uint8_t>& bytes, const char* key)
 {
-  const std::vector<uint8_t> bytes = decodeBase64(j, key);
   if(bytes.size() % sizeof(glm::vec3) != 0)
     fail(std::string("'") + key + "' is not a whole number of float32 xyz triples");
   std::vector<glm::vec3> out(bytes.size() / sizeof(glm::vec3));
@@ -308,9 +308,8 @@ std::vector<glm::vec3> decodeVec3(const Json& j, const char* key)
   return out;
 }
 
-std::vector<uint32_t> decodeU32(const Json& j, const char* key)
+std::vector<uint32_t> decodeU32(const std::vector<uint8_t>& bytes, const char* key)
 {
-  const std::vector<uint8_t> bytes = decodeBase64(j, key);
   if(bytes.size() % sizeof(uint32_t) != 0)
     fail(std::string("'") + key + "' is not a whole number of uint32 values");
   std::vector<uint32_t> out(bytes.size() / sizeof(uint32_t));
@@ -327,6 +326,21 @@ struct Ctx
   nvvkgltf::Scene& scene;
   SceneIds&        ids;
 };
+
+// An array field's bytes: a base64 string, or {"blob": id} naming a payload the host posted raw to
+// the frame stream's /blob (blob_store.hpp), which skips base64 and the JSON parses of megabytes.
+std::vector<uint8_t> bytesOf(Ctx& c, const Json& j, const char* key)
+{
+  if(!j.is_object())
+    return decodeBase64(j, key);
+  auto id = j.find("blob");
+  if(id == j.end() || !id->is_number_unsigned())
+    fail(std::string("'") + key + "' must be a base64 string or {\"blob\": id}");
+  std::optional<std::string> blob = c.renderer.blobs().take(id->get<uint64_t>());
+  if(!blob)
+    fail(std::string("'") + key + "' names blob " + std::to_string(id->get<uint64_t>()) + ", which was not uploaded or was already used");
+  return std::vector<uint8_t>(blob->begin(), blob->end());
+}
 
 void mergeTextureInfo(tinygltf::TextureInfo& info, const Json& j, size_t textureCount)
 {
@@ -676,11 +690,11 @@ Json opSetVertices(Ctx& c, const Json& op)
   auto                         pos   = op.find("positions");
   if(pos == op.end())
     fail("'positions' is required");
-  std::vector<glm::vec3> positions = decodeVec3(*pos, "positions");
+  std::vector<glm::vec3> positions = decodeVec3(bytesOf(c, *pos, "positions"), "positions");
   std::vector<glm::vec3> normals;
   if(auto n = op.find("normals"); n != op.end() && !n->is_null())
   {
-    normals = decodeVec3(*n, "normals");
+    normals = decodeVec3(bytesOf(c, *n, "normals"), "normals");
     if(normals.size() != positions.size())
       fail("'normals' and 'positions' differ in length");
   }
@@ -688,7 +702,7 @@ Json opSetVertices(Ctx& c, const Json& op)
   std::vector<uint32_t> indices;
   if(auto ix = op.find("indices"); ix != op.end() && !ix->is_null())
   {
-    indices = decodeU32(*ix, "indices");
+    indices = decodeU32(bytesOf(c, *ix, "indices"), "indices");
     if(indices.size() != positions.size())
       fail("'indices' and 'positions' differ in length");
   }
@@ -736,7 +750,7 @@ Json opSetSkin(Ctx& c, const Json& op)
   auto it = op.find("inverseBindMatrices");
   if(it == op.end())
     fail("'inverseBindMatrices' is required");
-  const std::vector<uint8_t> bytes = decodeBase64(*it, "inverseBindMatrices");
+  const std::vector<uint8_t> bytes = bytesOf(c, *it, "inverseBindMatrices");
   if(bytes.size() % sizeof(glm::mat4) != 0)
     fail("'inverseBindMatrices' is not a whole number of float32 4x4 matrices");
   std::vector<glm::mat4> ibm(bytes.size() / sizeof(glm::mat4));
@@ -895,7 +909,9 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
       .inputSchema = R"({"type":"object","properties":{"ops":{"type":"array","items":{"type":"object"}}},"required":["ops"]})",
       .handler =
           [withScene](std::string_view p) {
-            return withScene(p, [](Ctx& c, const Json& in) {
+            const double handled = traceNowMs();
+            return withScene(p, [handled](Ctx& c, const Json& in) {
+              const double parsed = traceNowMs();
               auto ops = in.find("ops");
               if(ops == in.end() || !ops->is_array())
                 fail("'ops' must be an array");
@@ -916,6 +932,19 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
                 {
                   results.push_back({{"ok", false}, {"error", e.message}});
                 }
+              }
+              // A host's latency trace: its stamps, then this call's; the renderer and the
+              // stream add the rest (latency_trace.hpp).
+              if(auto tr = in.find("trace"); tr != in.end() && tr->is_object())
+              {
+                LatencyTrace t;
+                for(const char* stage : {"input", "morphed", "flushed", "built", "sent"})
+                  if(auto s = tr->find(stage); s != tr->end() && s->is_number())
+                    t.emplace_back(stage, s->get<double>());
+                t.emplace_back("handled", handled);
+                t.emplace_back("parsed", parsed);
+                t.emplace_back("queued", traceNowMs());
+                c.renderer.traceEdit(std::move(t));
               }
               return Json{{"applied", applied}, {"results", results}};
             });
@@ -988,7 +1017,8 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
        "Replace vertex positions (and normals) of primitive {id} (all primitives sharing it) or {mesh, primitive?}: "
        "base64 little-endian float32 xyz, one per vertex. With indices (base64 little-endian uint32), only those "
        "vertices change: positions[k] (and normals[k]) belong to vertex indices[k]. Skinned or morphed primitives get "
-       "new base geometry."},
+       "new base geometry. Any of the arrays may instead be {\"blob\": id}, the raw bytes posted to the frame "
+       "stream's /blob."},
       {"vk_gltf_set_skin", "set_skin",
        "Replace the inverse bind matrices of the skin of node {id|index}: inverseBindMatrices is base64 little-endian "
        "float32, 16 per joint, column-major as glTF stores them. Send it with the joints' new node transforms when a "

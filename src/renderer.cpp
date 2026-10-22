@@ -1392,6 +1392,17 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   const bool verticesWritten           = interactivityAnimationApplied || verticesEdited || animated;
   m_resources.dlssDeformMotionActive   = verticesWritten && m_resources.prevPositions.hasBuffers();
   m_verticesWrittenLastFrame           = verticesWritten;
+
+  // A traced edit is on the GPU's way now: this frame renders it.
+  if(!m_editTrace.empty())
+  {
+    m_editTrace.emplace_back("applied", traceNowMs());
+    if(m_editTraceSink)
+      m_editTraceSink(std::move(m_editTrace));
+    else
+      LOGI("%s\n", formatTrace(m_editTrace).c_str());
+    m_editTrace.clear();
+  }
   if(changed)
   {
     resetFrame();
