@@ -581,6 +581,7 @@ auto main(int argc, char** argv) -> int
           .maxFps    = std::clamp(streamFps, 1, 240),
           .image     = [r] { return r->tonemappedImage(); },
           .imageSize = [r] { return r->renderSize(); },
+          .refining  = [r] { return r->isRefiningStill(); },
       }));
     }
   }

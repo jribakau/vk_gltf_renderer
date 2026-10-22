@@ -176,6 +176,10 @@ src/
 │                               #   as the sky's) and every path that aims it
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
 │                               #   Pure, self-contained, nothing else links against it
+├── frame_stream.cpp/hpp        # --stream: the headless run's rendered frames as MJPEG over HTTP, for a
+│                               #   host application. Paces the loop to --streamFps, except a still being
+│                               #   refined with a client connected, which runs unpaced
+├── frame_pacing.hpp            # The pacing decision on its own, free of Vulkan (unit-tested)
 ├── ui_dock_layout.cpp/hpp      # Default docking arrangement, shared by start-up (main.cpp's
 │                               #   dockSetup) and Windows > Reset UI Layout
 ├── ui_presentation_mode.cpp/hpp # Presentation mode (F11): hides panels + menu bar, borderless
