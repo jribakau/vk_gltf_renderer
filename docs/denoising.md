@@ -88,13 +88,20 @@ combined:
   (see [docs/interactivity.md](interactivity.md) for a real bug this ordering fixed - a graph-driven
   per-tick move ghosted for its entire duration when the check ran before the tick instead of after).
 
-**Not captured: per-vertex skin/morph deformation.** Skinning/morph overwrite the position buffer
-in place each frame (`SceneVk::uploadPrimitives`, `src/gltf_scene_vk.cpp`) with no previous-frame
-vertex copy, so a deforming surface only ever receives camera + instance-transform motion. The
-result is ghosting/smearing on animated (skinned/morphed) meshes under motion — most visible during
-a camera dolly, where the whole surface also moves in screen space. The rasterizer shares this
-limitation (see the note in `shaders/gltf_raster.slang`). Closing the gap requires a previous-frame
-position buffer per deforming primitive, reprojected the same way as instance motion.
+**Not captured: per-vertex skin/morph deformation.** Skinning and morph overwrite the position
+buffer in place (`AnimationVk::dispatchAnimation`; the CPU fallback is `SceneVk::uploadPrimitives`),
+and `set_vertices` does the same, with no previous-frame vertex copy. A bone pose is not instance
+motion: skinning writes the new positions while the mesh node's transform stays put. A pose edit
+moves only bones, which carry no mesh, so `prevRenderNodeObjectToWorld` stays unbound and the guide
+takes the current position. A playing clip binds it, but the mesh node's previous and current
+transforms match. Either way the guide reprojects the current shape under camera motion only.
+The smear shows when a pose, a shape dial, or a clip moves the surface, including skinned hair
+cards. A dolly or orbit of a posed figure is camera motion and is
+already correct. The rasterizer lacks this and also lacks the instance vectors the path tracer has:
+`vertexMain` in `shaders/gltf_raster.slang` multiplies the current position by `prevMVP`. Closing
+the gap requires a previous-frame position buffer per deforming primitive, copied before those
+writes and reprojected the same way as instance motion. The extra reads belong on the primary guide
+and on the clear-glass replacement surface, not on every hit.
 
 ## Clear glass: primary surface replacement
 
