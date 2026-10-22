@@ -403,7 +403,9 @@ private:
   bool updateFrameCounter();
 
   void clearGbuffer(VkCommandBuffer cmd);
-  void cleanupScene();  // Helper to cleanup current scene
+  // Drops the current scene. keepImagesForReuse retains file-backed GPU images (scenefile replace)
+  // so the following create() can adopt unchanged files; every other caller frees them.
+  void cleanupScene(bool keepImagesForReuse = false);
   void rebuildSceneFromModel();  // Rebuild Vulkan scene after modifying the glTF model in-place (preserves textures); clears undo
   void rebuildSceneGeometry();  // Geometry-only rebuild (preserves textures); does NOT clear undo (used by undoable geometry edits)
   void reconcileGeometryIfNeeded();  // Rebuild geometry when GPU buffers are behind the render-primitive count (e.g. added primitive)

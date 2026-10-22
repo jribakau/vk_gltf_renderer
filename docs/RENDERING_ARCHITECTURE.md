@@ -665,8 +665,11 @@ Image/texture edits are consumed at frame top (before any panel records an `ImGu
 
 - `texturesChanged` — a **structural** change (replace-in-place, reload, remove/insert at an arbitrary
   index, or a texture's sampler *reference*). `GltfRenderer::applyPendingTextureRebuild()` does a full
-  `rebuildVulkanSceneFull()`: it stalls the queue, frees and recreates every scene image (re-reading them
-  from disk) and rebuilds the acceleration structures.
+  `rebuildVulkanSceneFull()`: it stalls the queue and rebuilds the acceleration structures. Unchanged
+  file-backed images (same absolute path, mtime, size, sRGB and mipmap flag) are adopted;
+  changed, new and embedded images are read from disk. A replacement that keeps both the size and
+  the timestamp, which some copy and unzip tools do, is adopted as the previous image. The app's
+  cooked KTX2 files are named by their content and written once, so a new cook is a new path.
 - `texturesTailChanged` — a **tail-only** change: image(s)/texture(s) were appended to, or removed from,
   the end of the model with every lower index untouched (importing, and undoing/redoing an imported
   texture — see `SceneEditor::importImageAsTexture`). `GltfRenderer::applyPendingTextureTailSync()` calls

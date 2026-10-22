@@ -70,7 +70,7 @@ void SceneGpu::create(VkCommandBuffer cmd, Scene& scn, bool generateMipmaps)
 //--------------------------------------------------------------------------------------------------
 // Rebuild GPU resources after geometry or model changes (see RebuildMode). All modes first destroy the
 // animation + RTX resources; they differ only in how SceneVk is recreated:
-//   eFull        -> destroy + recreate everything (textures re-read from disk)
+//   eFull        -> recreate everything; unchanged file-backed images are adopted, the rest are read
 //   eGeometryOnly -> geometry only, textures/materials preserved
 //   eMergeAppend  -> geometry + materials rebuilt, existing textures preserved, new tail images appended
 void SceneGpu::rebuild(VkCommandBuffer cmd, Scene& scn, RebuildMode mode)

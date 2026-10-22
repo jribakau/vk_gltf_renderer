@@ -335,6 +335,42 @@ void nvvkgltf::SceneVk::releaseSamplerDeferred(VkSampler sampler)
   }
 }
 
+void nvvkgltf::SceneVk::retainImagesForReuse()
+{
+  for(SceneImage& image : m_images)
+  {
+    if(!image.reuseKey || image.imageTexture.image == VK_NULL_HANDLE)
+      continue;
+    // Copy, then clear the slot. nvvk::Image's move copies the handles, so a move alone would
+    // leave destroy() freeing the image the pool owns.
+    m_retainedImages.emplace(*image.reuseKey, image);
+    image = {};
+  }
+}
+
+void nvvkgltf::SceneVk::releaseRetainedImages()
+{
+  for(auto& entry : m_retainedImages)
+  {
+    SceneImage& image = entry.second;
+    if(image.imageTexture.image == VK_NULL_HANDLE)
+      continue;
+    m_memoryTracker.untrack(kMemCategoryImages, image.imageTexture.allocation);
+    m_alloc->destroyImage(image.imageTexture);
+  }
+  m_retainedImages.clear();
+}
+
+void nvvkgltf::SceneVk::trackRetainedImages()
+{
+  for(const auto& entry : m_retainedImages)
+  {
+    const SceneImage& image = entry.second;
+    if(image.imageTexture.image != VK_NULL_HANDLE)
+      m_memoryTracker.track(kMemCategoryImages, image.imageTexture.allocation);
+  }
+}
+
 void nvvkgltf::SceneVk::deinit()
 {
   if(!m_alloc)
@@ -343,6 +379,7 @@ void nvvkgltf::SceneVk::deinit()
   }
 
   destroy();
+  releaseRetainedImages();  // destroy() leaves the pool; a failed load may still be holding it
   m_sceneOmm.deinit();
 
   m_alloc          = nullptr;
@@ -355,9 +392,10 @@ void nvvkgltf::SceneVk::deinit()
 
 //--------------------------------------------------------------------------------------------------
 // Create all Vulkan resources for the given scene: materials, render nodes, vertex/index buffers,
-// textures, lights, and scene descriptor. Calls destroy() first to ensure a clean state.
-// Note: does NOT apply morph/skinning deformation to vertex buffers. The caller is responsible
-// for running the initial animation pass (GPU compute or CPU fallback) after creation.
+// textures, lights, and scene descriptor. File-backed images are retained first; destroy() then
+// frees everything else and leaves the pool alone. createTextureImages() adopts the unchanged
+// files and releases the rest. Does NOT apply morph/skinning deformation to vertex buffers. The
+// caller is responsible for running the initial animation pass (GPU compute or CPU fallback) after.
 void nvvkgltf::SceneVk::create(VkCommandBuffer cmd,
 
                                nvvk::CmdUploaderInterface& staging,
@@ -369,7 +407,8 @@ void nvvkgltf::SceneVk::create(VkCommandBuffer cmd,
 
 {
   nvutils::ScopedTimer st(__FUNCTION__);
-  destroy();  // Make sure not to leave allocated buffers
+  retainImagesForReuse();  // before destroy(), or the images a full reload could adopt are freed
+  destroy();               // pool is kept; unkeyed images and every other scene resource are freed
 
   m_generateMipmaps   = generateMipmaps;
   m_rayTracingEnabled = enableRayTracing;
@@ -1407,6 +1446,34 @@ std::filesystem::path nvvkgltf::SceneVk::resolveImageDiskPath(const tinygltf::Mo
 }
 
 //--------------------------------------------------------------------------------------------------
+// Absolute path + mtime + size + sRGB + the mipmap flag create() stored. One directory_entry
+// refresh feeds both file_size and last_write_time. Any error (or an empty path) means "no key":
+// the image is loaded instead of adopted, and a dummy is never keyed.
+std::optional<nvvkgltf::SceneVk::ReuseKey> nvvkgltf::SceneVk::makeReuseKey(const std::filesystem::path& diskPath, bool srgb) const
+{
+  if(diskPath.empty())
+    return std::nullopt;
+
+  std::error_code             ec;
+  const std::filesystem::path absolute = std::filesystem::absolute(diskPath, ec);
+  if(ec)
+    return std::nullopt;
+
+  const std::filesystem::directory_entry entry(absolute, ec);
+  if(ec)
+    return std::nullopt;
+
+  const std::uintmax_t size = entry.file_size(ec);
+  if(ec)
+    return std::nullopt;
+  const std::filesystem::file_time_type mtime = entry.last_write_time(ec);
+  if(ec)
+    return std::nullopt;
+
+  return ReuseKey{.path = absolute, .mtime = mtime, .size = size, .srgb = srgb, .generateMipmaps = m_generateMipmaps};
+}
+
+//--------------------------------------------------------------------------------------------------
 // EXT_lights_ies (load-only): parse every profile in extensions.EXT_lights_ies.lights[] and upload
 // the flattened [profile][sample] table shaders/gltf_light_ies.h.slang looks up by GltfLight.iesProfile.
 // `uri` is resolved like an image URI (external file); `bufferView` reads straight from the model's
@@ -1604,29 +1671,65 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
 
   // Load images in parallel, sorting by their size so larger images come first
   // for better multi-thread utilization. While we do this we also resolve
-  // file paths and image names.
+  // file paths and image names. A file already resident in the pool (same path,
+  // mtime, size, sRGB and mipmap flag) is adopted and not read.
   m_images.resize(model.images.size());
   struct ImageLoadItem
   {
-    std::filesystem::path diskPath{};
-    size_t                numBytes{};
-    uint64_t              imageId{};
+    std::filesystem::path   diskPath{};
+    size_t                  numBytes{};
+    uint64_t                imageId{};
+    std::optional<ReuseKey> reuseKey{};
   };
   std::vector<ImageLoadItem> imageLoadItems;
-  const std::string          indent = st.indent();
+  const std::string          indent    = st.indent();
+  size_t                     reused     = 0;
+  size_t                     considered = 0;
   for(size_t i = 0; i < model.images.size(); i++)
   {
     if(usedImages.find(static_cast<int>(i)) == usedImages.end())
       continue;  // Skip unused images
 
-    ImageLoadItem item{.imageId = i};
-    item.diskPath       = resolveImageDiskPath(model, imageSearchPaths, i);
-    item.numBytes       = getImageByteSize(model, model.images[i], item.diskPath);
-    m_images[i].imgName = getImageName(model.images[i], i);
+    ++considered;
+    const std::string           imageName = getImageName(model.images[i], i);
+    const std::filesystem::path diskPath  = resolveImageDiskPath(model, imageSearchPaths, i);
+    const bool                  srgb      = m_sRgbImages.find(static_cast<int>(i)) != m_sRgbImages.end();
+    // loadImage uses gltfImage.image when those bytes are already present, and the file otherwise.
+    // Key the file only in the second case, so an adopted image is what the next load would read.
+    std::optional<ReuseKey> key;
+    if(model.images[i].image.empty())
+      key = makeReuseKey(diskPath, srgb);
+    LOGI("%s(%" PRIu64 ") %s \n", indent.c_str(), static_cast<uint64_t>(i), imageName.c_str());
 
+    if(key)
+    {
+      const auto found = m_retainedImages.find(*key);
+      if(found != m_retainedImages.end())
+      {
+        // One pool entry per glTF image, so take one match and leave any sibling for the next image.
+        SceneImage adopted = std::move(found->second);
+        m_retainedImages.erase(found);
+        adopted.imgName  = imageName;
+        adopted.srgb     = key->srgb;
+        adopted.reuseKey = std::move(key);
+        if(!adopted.imgName.empty() && adopted.imageTexture.image != VK_NULL_HANDLE)
+          nvvk::DebugUtil::getInstance().setObjectName(adopted.imageTexture.image, adopted.imgName);
+        m_images[i] = std::move(adopted);
+        ++reused;
+        continue;
+      }
+    }
+
+    ImageLoadItem item{.imageId = i};
+    item.diskPath       = diskPath;
+    item.numBytes       = getImageByteSize(model, model.images[i], diskPath);
+    item.reuseKey       = std::move(key);
+    m_images[i].imgName = imageName;
     imageLoadItems.push_back(std::move(item));
-    LOGI("%s(%" PRIu64 ") %s \n", indent.c_str(), i, m_images[i].imgName.c_str());
   }
+
+  // Unmatched images go before the new ones are created, so peak GPU memory stays one scene.
+  releaseRetainedImages();
 
   std::sort(imageLoadItems.begin(), imageLoadItems.end(),
             [](const ImageLoadItem& a, const ImageLoadItem& b) { return a.numBytes > b.numBytes; });
@@ -1647,9 +1750,23 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
 
   syncTinyGltfImageDimensionsFromLoadedImages(scn.getModel(), m_images);
 
-  // Create Vulkan images (magenta default substituted for unused / failed slots)
+  // Create Vulkan images (magenta default substituted for unused / failed slots). Adopted slots
+  // already hold a VkImage and an empty mipData; createImage() would index that mipData.
   for(size_t i = 0; i < m_images.size(); i++)
+  {
+    if(m_images[i].imageTexture.image != VK_NULL_HANDLE)
+      continue;
     materializeImage(cmd, staging, i);
+  }
+
+  // Key only a real file-backed image. createDefaultImage() replaces the SceneImage, so a dummy
+  // or an unsupported format stays unkeyed and will not be retained next time.
+  for(const ImageLoadItem& item : imageLoadItems)
+  {
+    SceneImage& image = m_images[item.imageId];
+    if(item.reuseKey && image.format != VK_FORMAT_UNDEFINED && image.imageTexture.image != VK_NULL_HANDLE)
+      image.reuseKey = item.reuseKey;
+  }
 
   // Add default image if nothing was loaded
   if(model.images.empty())
@@ -1674,6 +1791,9 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
   // images exist, because the format flags depend on the decoded m_images[].format.
   buildTextureSamplerSlots(model);
   buildTextureFormatFlags(model);
+
+  LOGI("reused %zu of %zu image(s), %" PRIu64 " image bytes\n", reused, considered,
+       m_memoryTracker.getStats(kMemCategoryImages).currentBytes);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1710,16 +1830,38 @@ void nvvkgltf::SceneVk::syncTextureTail(VkCommandBuffer cmd, nvvk::CmdUploaderIn
   {
     const std::vector<std::filesystem::path> imageSearchPaths = resolveImageSearchPaths(scn);
     m_images.resize(newImageCount);
+    struct TailItem
+    {
+      std::filesystem::path   diskPath{};
+      std::optional<ReuseKey> reuseKey{};
+      size_t                  imageId{};
+    };
+    std::vector<TailItem> tailItems;
+    tailItems.reserve(newImageCount - oldImageCount);
     for(size_t i = oldImageCount; i < newImageCount; ++i)
+    {
       m_images[i].imgName = getImageName(model.images[i], i);
+      TailItem item{.imageId = i};
+      item.diskPath = resolveImageDiskPath(model, imageSearchPaths, i);
+      const bool srgb = m_sRgbImages.find(static_cast<int>(i)) != m_sRgbImages.end();
+      // Same rule as createTextureImages: no key when the image bytes are already in the model.
+      if(model.images[i].image.empty())
+        item.reuseKey = makeReuseKey(item.diskPath, srgb);
+      tailItems.push_back(std::move(item));
+    }
     // in parallel, as createTextureImages loads a whole scene's (a merged item brings dozens)
-    nvutils::parallel_batches<1>(newImageCount - oldImageCount, [&](uint64_t k) {
-      const size_t i = oldImageCount + k;
-      loadImage(resolveImageDiskPath(model, imageSearchPaths, i), model, i);  // failure -> magenta default below
+    nvutils::parallel_batches<1>(tailItems.size(), [&](uint64_t k) {
+      loadImage(tailItems[k].diskPath, model, tailItems[k].imageId);  // failure -> magenta default below
     });
     syncTinyGltfImageDimensionsFromLoadedImages(scn.getModel(), m_images);
-    for(size_t i = oldImageCount; i < newImageCount; ++i)
-      materializeImage(cmd, staging, i);
+    for(const TailItem& item : tailItems)
+    {
+      materializeImage(cmd, staging, item.imageId);
+      SceneImage& image = m_images[item.imageId];
+      // Same rule as createTextureImages: a dummy (format left undefined) is not reusable.
+      if(item.reuseKey && image.format != VK_FORMAT_UNDEFINED && image.imageTexture.image != VK_NULL_HANDLE)
+        image.reuseKey = item.reuseKey;
+    }
   }
 
   // Import / undo never change samplers, but keep the array consistent with the model in general.
@@ -2347,6 +2489,8 @@ void nvvkgltf::SceneVk::destroy()
 
   // Destroy samplers, textures and images. Samplers are a deduplicated array now (one release each),
   // and texture entries are shallow image-view copies of m_images (no per-texture sampler to release).
+  // The reuse pool is intentionally not touched: create() retains into it just before this runs, and
+  // deinit() releases whatever a failed load left behind.
   for(VkSampler sampler : m_samplers)
   {
     m_samplerPool->releaseSampler(sampler);

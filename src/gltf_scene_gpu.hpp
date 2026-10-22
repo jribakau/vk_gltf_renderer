@@ -81,7 +81,7 @@ public:
   // How rebuild() reconciles the GPU scene with the (possibly changed) model.
   enum class RebuildMode
   {
-    eFull,  // Destroy and recreate everything, re-reading every image from disk (scene replace, structural texture change).
+    eFull,  // Recreate the scene. Unchanged file-backed images are adopted; changed, new and embedded images are read (scene replace, structural texture change).
     eGeometryOnly,  // Rebuild geometry only; textures and materials are left untouched (mesh/tangent edits).
     eMergeAppend,  // Rebuild geometry + materials, preserve existing textures and append only the new tail images (merge/reference).
   };

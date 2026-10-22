@@ -1700,7 +1700,8 @@ void GltfRenderer::onFileDrop(const std::filesystem::path& filename)
     else
     {
       m_loadPipeline.clear();
-      cleanupScene();  // also frees rasterizer record cmd + clears sort state via onSceneInvalidated()
+      // Keep file-backed images: createScene adopts the unchanged ones. The queue is already idle.
+      cleanupScene(/*keepImagesForReuse=*/true);
 
       // Set busy BEFORE starting the worker thread to prevent re-entrant drops
       m_busy.start("Loading");
@@ -1708,7 +1709,10 @@ void GltfRenderer::onFileDrop(const std::filesystem::path& filename)
 
       std::thread([=, this]() {
         m_lastSceneDirectory = filename.parent_path();
-        createScene(filename);
+        // createScene returns before createVulkanScene on failure, so the pool would otherwise
+        // keep the previous scene's textures until deinit.
+        if(!createScene(filename))
+          m_resources.sceneVk.releaseRetainedImages();
         m_busy.stop();
       }).detach();
     }
@@ -3283,7 +3287,7 @@ void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descri
 //--------------------------------------------------------------------------------------------------
 // Helper function to cleanup the current scene
 //
-void GltfRenderer::cleanupScene()
+void GltfRenderer::cleanupScene(bool keepImagesForReuse)
 {
   m_undoStack.clear();
   // Drop any renderer-side state tied to the outgoing Scene BEFORE the unique_ptr is reset.
@@ -3296,6 +3300,10 @@ void GltfRenderer::cleanupScene()
     m_resources.transformCompute.destroyGpuBuffers();
   m_resources.scene.reset();
   m_thumbnailCache.clear();
+  // Before sceneGpu.destroy(), which calls SceneVk::destroy() and would free these images.
+  // Keyed slots are cleared so destroy() frees only the images that cannot be reused.
+  if(keepImagesForReuse)
+    m_resources.sceneVk.retainImagesForReuse();
   m_resources.sceneGpu.destroy();
   m_sceneBrowser.setScene(nullptr);
   m_inspector.setScene(nullptr);
@@ -3313,8 +3321,12 @@ void GltfRenderer::cleanupScene()
   m_hoveredNodeIndex = -1;
 
   // Reset memory statistics for the new scene
-  // Keeps lifetime allocation/deallocation counts but resets current and peak values
+  // Keeps lifetime allocation/deallocation counts but resets current and peak values.
+  // Retained images are still allocated; reset() just zeroed their counters, so count them again
+  // or a later untrack does nothing and the reused scene reports no image memory.
   m_resources.sceneVk.getMemoryTracker().reset();
+  if(keepImagesForReuse)
+    m_resources.sceneVk.trackRetainedImages();
   m_resources.sceneRtx.getMemoryTracker().reset();
   m_resources.transformCompute.getMemoryTracker().reset();
   m_resources.animationVk.getMemoryTracker().reset();
@@ -3338,16 +3350,17 @@ void GltfRenderer::refreshCpuSceneGraphFromModel()
 void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mode)
 {
   using RebuildMode = nvvkgltf::SceneGpu::RebuildMode;
-  // Modes that add or reload images (eFull re-reads all; eMergeAppend loads only the new tail). Both
-  // need a descriptor rewrite; eGeometryOnly leaves textures untouched.
+  // Modes that add or reload images (eFull adopts unchanged file-backed images and reads the rest;
+  // eMergeAppend loads only the new tail). Both need a descriptor rewrite; eGeometryOnly leaves
+  // textures untouched.
   const bool touchesTextures = (mode == RebuildMode::eFull || mode == RebuildMode::eMergeAppend);
 
   // SYNC NOTE: Full scene rebuild (merge/compact/geometry change) -- wait ensures GPU is idle.
   NVVK_CHECK(vkQueueWaitIdle(m_app->getQueue(0).queue));
 
-  // Only eFull destroys the existing texture/image views; release the thumbnails referencing them now
-  // (GPU is idle) so panels re-acquire against the new views. eMergeAppend keeps existing views, so the
-  // thumbnails stay valid and must NOT be cleared.
+  // eFull replaces image views (unchanged files keep theirs; the rest are destroyed). Release the
+  // thumbnails now (GPU is idle) so panels re-acquire against the views that survive. eMergeAppend
+  // keeps every existing view, so its thumbnails stay valid and must NOT be cleared.
   if(mode == RebuildMode::eFull)
     m_thumbnailCache.clear();
 
@@ -3761,12 +3774,20 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
   // naming the offending file.
   vkQueueWaitIdle(m_app->getQueue(0).queue);
   m_loadPipeline.clear();
-  cleanupScene();
+  // File-backed images stay resident so createScene can adopt the unchanged files.
+  cleanupScene(/*keepImagesForReuse=*/true);
 
   // Return createScene's own outcome, not `getScene() != nullptr`: even after cleanupScene()
   // above, we want the return to describe what the *new* attempt did, not accidentally report
   // success just because some scene pointer happens to be non-null.
-  return createScene(filename);
+  // createScene returns before any GPU image work when the file cannot be read, which would
+  // leave the previous scene's textures in the pool.
+  if(!createScene(filename))
+  {
+    m_resources.sceneVk.releaseRetainedImages();
+    return false;
+  }
+  return true;
 }
 
 //--------------------------------------------------------------------------------------------------

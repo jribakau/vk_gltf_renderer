@@ -20,8 +20,11 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
+#include <optional>
 #include <set>
 #include <unordered_set>
 #include <vector>
@@ -121,6 +124,20 @@ public:
 
   virtual void destroy();
 
+  // File-backed GPU images survive the next destroy() so a full reload can adopt them instead of
+  // reading the files again. nvvk::Image is a trivial handle struct: the slot is cleared after the
+  // copy, or destroy() would free the image the pool now owns. Allocations stay tracked.
+  // destroy() does not touch the pool.
+  void retainImagesForReuse();
+  // Destroy every pooled image immediately. Callers have already waited for the queue, the same
+  // assumption destroy() makes. Also the failed-load path, so a load that never reaches
+  // createTextureImages() does not pin the previous scene's textures.
+  void releaseRetainedImages();
+  // track() each pooled allocation. cleanupScene() resets the memory tracker after destroy(), which
+  // zeroes current bytes while the pool is still alive; without this a later untrack is a no-op and
+  // a reused scene reports no image memory. eFull does not reset the tracker and does not call this.
+  void trackRetainedImages();
+
   // Geometry-only recreation (preserves textures) - useful after tangent generation or mesh optimization
   void destroyGeometry();
   void createGeometry(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, const nvvkgltf::Scene& scn);
@@ -130,7 +147,7 @@ public:
   // model.images / model.textures -- every lower index is left untouched. Growth loads + creates the new
   // tail images and appends their texture views; shrink deferred-frees the removed tail images. This is the
   // fast path behind importing (and undoing/redoing) a texture, avoiding a full create()/destroy() cycle
-  // that would re-read every image from disk. The caller writes only the new descriptor slots afterwards.
+  // (geometry and acceleration structures included). The caller writes only the new descriptor slots afterwards.
   void syncTextureTail(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, nvvkgltf::Scene& scn);
 
   // In-place update of one sampler's wrap/filter (DirtyFlags::samplers): recreates only the VkSampler
@@ -140,8 +157,8 @@ public:
 
   // Rebuild for a merge/reference append: geometry, render nodes, materials and lights are re-derived
   // from the (grown) model, but existing GPU images/textures/samplers are kept and only the new tail
-  // images are loaded (via syncTextureTail). This is create() without the destroy()/full image re-read,
-  // so a merge no longer re-reads every image from disk. Requires a tail-only, non-empty-base texture set
+  // images are loaded (via syncTextureTail). Unlike create(), the resident images are not destroyed,
+  // so a merge does not rebuild them. Requires a tail-only, non-empty-base texture set
   // (existing GPU arrays must match the pre-merge model sizes); the merge/reference paths guarantee this.
   void recreatePreservingTextures(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, nvvkgltf::Scene& scn);
 
@@ -183,6 +200,30 @@ public:
   // Number of emissive area-light triangles in the NEE emitter list (0 when no material emits).
   [[nodiscard]] uint32_t numEmissiveTriangles() const { return m_numEmissiveTriangles; }
 
+  // Identity of one file-backed GPU image. Two glTF images of the same file each own a VkImage, so
+  // adoption is one-to-one (the pool is a multimap). Empty on an image that is not file-backed.
+  struct ReuseKey
+  {
+    std::filesystem::path           path{};
+    std::filesystem::file_time_type mtime{};
+    std::uintmax_t                  size{0};
+    bool                            srgb{false};
+    bool                            generateMipmaps{false};
+
+    bool operator<(const ReuseKey& other) const
+    {
+      if(path != other.path)
+        return path < other.path;
+      if(mtime != other.mtime)
+        return mtime < other.mtime;
+      if(size != other.size)
+        return size < other.size;
+      if(srgb != other.srgb)
+        return srgb < other.srgb;
+      return generateMipmaps < other.generateMipmaps;
+    }
+  };
+
   // An image to be loaded and created.
   struct SceneImage
   {
@@ -198,6 +239,8 @@ public:
     std::vector<std::vector<char>> mipData{};
     // And optionally set the component swizzle for image view (e.g. grayscale expansion):
     VkComponentMapping componentMapping{};
+    // Set only for a real GPU image that came from a file. Dummies and embedded images stay empty.
+    std::optional<ReuseKey> reuseKey{};
   };
 
   // A custom callback for loading images that will be called before
@@ -239,6 +282,9 @@ protected:
   std::filesystem::path resolveImageDiskPath(const tinygltf::Model&                    model,
                                              const std::vector<std::filesystem::path>& imageSearchPaths,
                                              size_t                                    imageId) const;
+  // Absolute path, mtime, size, sRGB and the current mipmap flag. nullopt when the path is empty
+  // or any filesystem query fails, so the image is loaded rather than adopted.
+  std::optional<ReuseKey> makeReuseKey(const std::filesystem::path& diskPath, bool srgb) const;
   // Replace m_images[idx] with a 1x1 solid-color image (magenta = load failure, white = empty scene).
   void createDefaultImage(nvvk::CmdUploaderInterface& staging, uint32_t idx, const std::array<uint8_t, 4>& color);
   // Create the GPU image for m_images[imageId] (already loaded), substituting the magenta default on failure.
@@ -304,6 +350,9 @@ protected:
   std::vector<nvvk::Buffer>  m_bIndices;
   std::vector<VertexBuffers> m_vertexBuffers;
   std::vector<SceneImage>    m_images;
+  // File-backed images held across destroy() so the next createTextureImages() can adopt them.
+  // One entry per glTF image: two images of the same file each own a VkImage.
+  std::multimap<ReuseKey, SceneImage> m_retainedImages;
   std::vector<nvvk::Image>   m_textures;  // One per glTF texture; bound as a SAMPLED_IMAGE array (image views only)
   std::vector<VkSampler> m_samplers;  // Deduplicated samplers; slot 0 = default, 1..N = model.samplers (SAMPLER array)
   TextureSlotTable       m_textureSlots;  // Per-glTF-texture sampler slot + source-format flags (fed to MaterialCache)
