@@ -76,6 +76,7 @@ cmake --build build
 | `USE_OPTIX_DENOISER` | `ON` | Enable OptiX AI Denoiser (requires CUDA Toolkit) |
 | `USE_DRACO` | `ON` | Enable Draco mesh compression support |
 | `BUILD_TESTING` | `OFF` | Build unit tests and benchmarks |
+| `USE_SOFTWARE_VULKAN` | `OFF` | Start on a software Vulkan driver (Mesa's lavapipe) for headless path tracing in CI: fragment shader barycentrics become optional, so the rasterizer can't draw |
 | `SHADER_DEBUG_LEVEL` | `2` | Slang debug info in the embedded shaders. `2`+ enables Nsight source-level shader debugging but crashes AMD's Vulkan driver; release binaries are built with `0` |
 
 ## Features

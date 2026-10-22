@@ -232,5 +232,6 @@ Key CMake options: `USE_DLSS`, `USE_OPTIX_DENOISER`, `USE_DRACO`,
 `NVPRO2_ENABLE_nvmcp` (all `ON`; the last one adds the `--mcp` endpoint and fetches
 cpp-mcp at configure time — see [docs/mcp.md](docs/mcp.md)),
 `BUILD_TESTING` (`OFF` — turn on to build unit tests + benchmarks; `ctest` runs the
-unit tests, run the benchmark executable directly). See `tests/README.md` and
-`docs/benchmarking.md`.
+unit tests, run the benchmark executable directly), `USE_SOFTWARE_VULKAN` (`OFF` — a
+path-tracer-only build that starts on Mesa's lavapipe, for headless CI and benchmarks).
+See `tests/README.md` and `docs/benchmarking.md`.
