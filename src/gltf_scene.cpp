@@ -2754,7 +2754,9 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
           (primitive.material >= 0 && primitive.material < static_cast<int>(m_model.materials.size())) ? primitive.material : 0;
       if(matId >= static_cast<int>(m_model.materials.size()))
         continue;
-      if(m_model.materials[matId].normalTexture.index < 0)
+      // A normal map needs the UV frame, and so does an anisotropy rotation, which is measured from the tangent.
+      const tinygltf::Material& material = m_model.materials[matId];
+      if(material.normalTexture.index < 0 && !material.extensions.count(KHR_MATERIALS_ANISOTROPY_EXTENSION_NAME))
         continue;
       if(primitive.attributes.find("TANGENT") != primitive.attributes.end())
         continue;
