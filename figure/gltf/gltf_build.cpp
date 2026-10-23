@@ -192,6 +192,13 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     model.textures.push_back(std::move(t));
     return textureOf[key] = int(model.textures.size()) - 1;
   };
+  // strand hair ribbons face one way, so their surfaces are seen from both sides
+  std::vector<bool> onRibbon(scene.materials.size(), false);
+  for(const Mesh& m : scene.meshes)
+    if(m.geo && m.geo->ribbon)
+      for(int mi : m.materials)
+        if(mi >= 0 && mi < int(onRibbon.size()))
+          onRibbon[mi] = true;
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
     const Material&     m = scene.materials[mi];
@@ -215,6 +222,8 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       g.alphaMode   = "BLEND";
       g.doubleSided = true;
     }
+    if(onRibbon[mi])
+      g.doubleSided = true;
     g.extras = extras("m:" + std::to_string(mi));
     model.materials.push_back(std::move(g));
   }
