@@ -11,6 +11,7 @@
 #include "gltf_light_ies.h.slang"
 #include "camera_ray.h.slang"
 #include "sky_background.h.slang"
+#include "ground.h.slang"
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -836,7 +837,13 @@ float computeSkySunHitMisWeight(float lastSamplePdf)
 // Infinite plane and shadow catcher
 //-----------------------------------------------------------------------
 
-// It returns true if the shadow catcher path should continue, false otherwise
+// A shadow catcher composites, as the rasterizer's does: the ray passes through the plane and sees
+// exactly what it would without it -- the same background, the same camera-ray status -- darkened by
+// how much of the light the plane would receive is blocked there. One next-event sample's
+// visibility per pass, so the darkening converges to the occluded share of the light, sun and
+// environment alike; its strength is the rasterizer's (groundCatcherStrength).
+//
+// Returns true: the path always continues, below the plane.
 bool handleShadowCatcher(IRaytracer      raytracer,
                          HitState        hit,
                          PbrMaterial     pbrMat,
@@ -850,51 +857,26 @@ bool handleShadowCatcher(IRaytracer      raytracer,
   DirectLight directLight;
   sampleLights(hit.pos, pbrMat.N, ray.Direction, seed, directLight);
 
-  float3 shadowFactor = float3(1, 1, 1);
-  if(dot(directLight.direction, hit.nrm) > 0.0f && directLight.pdf != 0.0f)
+  float visibility = 1.0F;
+  if(dot(directLight.direction, hit.nrm) > 0.0F && directLight.pdf != 0.0F && any(directLight.radianceOverPdf > 0.0F))
   {
     RayDesc shadowRay;
-    shadowRay.Origin    = hit.pos;
+    shadowRay.Origin    = safeOffsetRay(hit.pos, hit.geonrm);
     shadowRay.Direction = directLight.direction;
     shadowRay.TMin      = 0.0;
     shadowRay.TMax      = INFINITE;
-    shadowFactor        = raytracer.TraceShadow(shadowRay, seed);
+    const float3 shadow = raytracer.TraceShadow(shadowRay, seed);
+    visibility          = (shadow.x + shadow.y + shadow.z) / 3.0F;
   }
 
-  float3 envColor;
-  float  envPdf;
-  sampleEnvironment(ray.Direction, frameInfo, envColor, envPdf);
-
-  if(all(shadowFactor == float3(1, 1, 1)))
-  {
-    float misWeight = computeEnvHitMisWeight(lastSamplePdf, envPdf);
-    radiance += throughput * misWeight * envColor;
-    return false;
-  }
-
-  radiance += envColor * shadowFactor;
-  radiance -= envColor * (1.0f - shadowFactor) * frameInfo->shadowCatcherDarkenAmount;
-
-  BsdfSampleData sampleData;
-  sampleData.k1 = -ray.Direction;
-  sampleData.xi = float3(rand(seed), rand(seed), rand(seed));
-  bsdfSampleSimple(sampleData, pbrMat);
-
-  if(sampleData.event_type == BSDF_EVENT_ABSORB)
-  {
-    return false;
-  }
-
-  float3 offsetDir = dot(sampleData.k2, hit.geonrm) > 0 ? hit.geonrm : -hit.geonrm;
-  ray.Origin       = safeOffsetRay(hit.pos, offsetDir);
-  ray.Direction    = sampleData.k2;
-  throughput *= sampleData.bsdf_over_pdf;
-  lastSamplePdf = sampleData.pdf;
-
+  throughput *= 1.0F - groundCatcherStrength(frameInfo) * (1.0F - visibility);
+  ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm);
   return true;
 }
 
-bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout HitState hit, SceneFrameInfo* frameInfo)
+// The plane fades out at the edge of its disk as the rasterizer's floor does (groundFadeWeight): a
+// ray hits it with probability equal to the fade there, and otherwise passes on to whatever is behind.
+bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout HitState hit, SceneFrameInfo* frameInfo, inout uint seed)
 {
   if(!hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseInfinitePlane))
     return false;
@@ -914,8 +896,13 @@ bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout
   if(intersectionDist <= 0 || (intersectionDist >= payload.hitT))
     return false;
 
+  const float3 planePos = ray.Origin + ray.Direction * intersectionDist;
+  const float  fade     = groundFadeWeight(planePos, frameInfo);
+  if(fade < 1.0F && rand(seed) >= fade)
+    return false;
+
   payload.hitT  = intersectionDist;
-  hit.pos       = ray.Origin + ray.Direction * payload.hitT;
+  hit.pos       = planePos;
   hit.shadowPos = hit.pos;
   hit.nrm       = normal;
   hit.geonrm    = normal;

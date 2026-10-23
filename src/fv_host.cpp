@@ -40,14 +40,19 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <nvapp/elem_camera.hpp>
+#include <nvmcp/parameter_tools.hpp>
 #include <nvutils/logger.hpp>
+#include <nvutils/parameter_registry.hpp>
 
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
 
+#include "env_image_loader.hpp"
+#include "fv_lighting.hpp"
 #include "fv_protocol.hpp"
 #include "fv_view.hpp"
+#include "gltf_environment_sky.hpp"
 #include "renderer.hpp"
 
 using fv::Json;
@@ -317,6 +322,29 @@ std::string fileStem(const std::string& rel)
   return name;
 }
 
+constexpr const char* kStudioName = "Studio (built-in)";
+constexpr uint32_t    kStudioWidth = 512, kStudioHeight = 256;
+
+// The registered parameters nvmcp can read and write: values, not triggers or custom parsers.
+nvmcp::detail::ParameterList exposedParameters(const nvutils::ParameterRegistry* registry)
+{
+  nvmcp::detail::ParameterList out;
+  if(!registry)
+    return out;
+  for(const nvutils::ParameterBase* p : registry->getParameters())
+    if(p->destination.raw && p->type != nvutils::ParameterBase::Type::BOOL8_TRIGGER
+       && p->type != nvutils::ParameterBase::Type::CUSTOM && p->type != nvutils::ParameterBase::Type::INVALID)
+      out.push_back(p);
+  return out;
+}
+
+Json toolJson(const nvmcp::ToolResult& r)
+{
+  if(r.isError)
+    throw std::runtime_error(r.json);
+  return Json::parse(r.json);
+}
+
 }  // namespace
 
 struct FvHost::Impl
@@ -411,7 +439,41 @@ struct FvHost::Impl
   // the main figure's posed bone at a glTF node, or nullptr
   const fv::pose::PoseBone* boneAt(int gltf) const;
   void                      applyGizmoEdit();
-  void applyPreset(const fv::dson::Json& doc, const std::string& kind, uint64_t jobId, const std::string& rel);
+  void applyPreset(const fv::dson::Json&                             doc,
+                   const std::string&                                kind,
+                   uint64_t                                          jobId,
+                   const std::string&                                rel,
+                   const std::optional<fv::dson::EnvironmentPreset>& environment,
+                   const std::string&                                environmentPath);
+
+  // ---- lighting (fv_lighting.hpp), application thread only
+  nvutils::ParameterRegistry* registry = nullptr;
+  fv::lighting::State         lighting;
+  bool                        lightingStarted = false;
+  Json                        appliedParams   = Json::object();  // what the renderer was last given
+  Json                        appliedSun;                        // the sun light as last written
+  Json                        publishedLighting;
+  // the environment image in the renderer ("studio", "hdr:<path>"), and the one asked for
+  std::string loadedEnv;
+  std::string wantedEnv;
+  uint64_t    envRequest = 0;
+  uint64_t    envJob     = 0;
+  bool        envLoading = false;
+  std::string envName    = kStudioName;
+  glm::uvec2  envSize{kStudioWidth, kStudioHeight};
+  // the host's sun in the renderer's model, and the ground height the renderer chose at load
+  int   sunNode    = -1;
+  int   sunLight   = -1;
+  float autoGround = 0.0F;
+
+  Json lightingTopic() const;
+  Json lightingSet(const Json& patch);
+  void applyLighting(bool everything);
+  void requestEnvironment();
+  void applySun(bool force);
+  void addSun(tinygltf::Model& model);
+  void setParams(const Json& values);
+  void publishLighting();
 
   std::unique_ptr<FvView> view;
   // figure loads only: a preset must not take a generation, or it would cancel a figure load
@@ -459,7 +521,14 @@ Json FvHost::Impl::load(const Json& args)
       if(auto doc = store->load(rel))
         if(auto preset = fv::dson::describePreset(doc->json))
         {
-          post([this, body = doc->json, kind = preset->kind, jobId, rel] { applyPreset(body, kind, jobId, rel); });
+          // an environment preset's HDR, found through the preset's own library
+          std::string envPath;
+          if(preset->environment)
+            if(auto found = lib->find(normRel(preset->environment->image)))
+              envPath = utf8Of(*found);
+          post([this, body = doc->json, kind = preset->kind, jobId, rel, env = preset->environment, envPath] {
+            applyPreset(body, kind, jobId, rel, env, envPath);
+          });
           return;
         }
       uint64_t generation = 0;
@@ -565,11 +634,19 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
       f->sceneOf[f->nodeOf[i]] = i;
   f->meshOf  = std::move(built.meshOf);
   f->skinOf  = std::move(built.skinOf);
+  addSun(built.model);
   if(!renderer->loadModel(std::move(built.model)))
   {
+    sunNode = sunLight = -1;
     job(jobId, {{"state", "failed"}, {"error", "the renderer could not take the scene"}});
     return;
   }
+  // the renderer put the ground at the scene's lowest point; "auto" keeps that
+  for(const nvutils::ParameterBase* p : exposedParameters(registry))
+    if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
+      autoGround = *static_cast<const float*>(p->destination.raw);
+  appliedParams.erase("infinitePlaneDistance");
+  applyLighting(false);
   int meshes = 0;
   for(int m : f->meshOf)
     meshes = std::max(meshes, m + 1);
@@ -650,9 +727,34 @@ void FvHost::Impl::patchPose(const std::vector<std::string>& boneIds)
   protocol->events().patch("pose/" + figure->id, {{"changed", figure->fig->pose->changed()}, {"bones", bones}});
 }
 
-void FvHost::Impl::applyPreset(const fv::dson::Json& doc, const std::string& kind, uint64_t jobId, const std::string& rel)
+void FvHost::Impl::applyPreset(const fv::dson::Json&                             doc,
+                               const std::string&                                kind,
+                               uint64_t                                          jobId,
+                               const std::string&                                rel,
+                               const std::optional<fv::dson::EnvironmentPreset>& environment,
+                               const std::string&                                environmentPath)
 {
   const std::string name = fileStem(rel);
+  if(environment)
+  {
+    // as applyEnvironmentPreset (src/lib/actions.ts): the dome lights the scene, so the sun goes off
+    const std::string hdrName = utf8Of(pathOf(normRel(environment->image)).filename());
+    if(environmentPath.empty())
+      notice(name + ": its environment image " + environment->image + " isn't in the content library.", "error");
+    else
+    {
+      Json env = {{"source", "hdr"},
+                  {"path", environmentPath},
+                  {"intensity", environment->intensity.value_or(1.0)},
+                  {"rotation", fv::lighting::presetRotation(environment->rotation.value_or(0.0))}};
+      if(environment->drawDome.value_or(false))
+        env["background"] = "environment";
+      lightingSet({{"env", env}, {"sun", {{"enabled", false}}}});
+      notice("Applied lighting preset " + name + " (" + hdrName + "). The sun light is off; turn it back on in the Light tab.", "info");
+    }
+    job(jobId, {{"state", "done"}, {"preset", kind}});
+    return;
+  }
   if(kind == "pose preset")
   {
     if(!figure || !figure->fig->pose)
@@ -673,6 +775,217 @@ void FvHost::Impl::applyPreset(const fv::dson::Json& doc, const std::string& kin
   else
     notice(name + " is a DAZ " + kind + " and isn't supported in the native viewport yet.");
   job(jobId, {{"state", "done"}, {"preset", kind}});
+}
+
+Json FvHost::Impl::lightingTopic() const
+{
+  Json t           = fv::lighting::toJson(lighting);
+  t["env"]["name"]    = envName;
+  t["env"]["size"]    = {envSize.x, envSize.y};
+  t["env"]["loading"] = envLoading;
+  return t;
+}
+
+void FvHost::Impl::publishLighting()
+{
+  const Json now = lightingTopic();
+  if(publishedLighting.is_null())
+    protocol->events().snapshot("lighting", now);
+  else if(Json diff = fv::lighting::mergeDiff(publishedLighting, now); !diff.empty())
+    protocol->events().patch("lighting", diff);
+  publishedLighting = now;
+}
+
+Json FvHost::Impl::lightingSet(const Json& patch)
+{
+  fv::lighting::State next = fv::lighting::applyPatch(lighting, patch);  // throws, leaving everything as it was
+  if(next.env.source == "hdr" && next.env.path.empty())
+    throw std::invalid_argument("lighting: env.path is required for an hdr environment");
+  lighting = std::move(next);
+  applyLighting(false);
+  return lightingTopic();
+}
+
+// Writes what changed since the last call (everything, the first time) to the renderer: its
+// parameters, the sun light, and the environment image, which loads as a job.
+void FvHost::Impl::applyLighting(bool everything)
+{
+  if(everything)
+  {
+    appliedParams = Json::object();
+    appliedSun    = nullptr;
+  }
+  requestEnvironment();
+
+  Json params                     = fv::lighting::rendererParams(lighting, envSize);
+  params["infinitePlaneDistance"] = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
+  Json changed                    = Json::object();
+  for(auto it = params.begin(); it != params.end(); ++it)
+    if(!appliedParams.contains(it.key()) || appliedParams[it.key()] != it.value())
+      changed[it.key()] = it.value();
+  if(!changed.empty())
+  {
+    setParams(changed);
+    appliedParams.update(changed);
+  }
+  applySun(everything);
+  publishLighting();
+}
+
+// The environment image the state asks for, if the renderer doesn't have it: the studio is built
+// here, an HDR decodes on a worker. Each new choice bumps the request, so a load that finishes
+// after a newer one is dropped.
+void FvHost::Impl::requestEnvironment()
+{
+  const fv::lighting::Env& e    = lighting.env;
+  const std::string        want = e.source == "studio" ? "studio" : e.source == "hdr" ? "hdr:" + e.path : "";
+  if(want == wantedEnv)
+    return;
+  wantedEnv           = want;
+  const uint64_t req  = ++envRequest;
+  const bool     wasLoading = envLoading;
+  envLoading          = false;
+  if(wasLoading && envJob)
+    job(envJob, {{"state", "done"}});
+  if(want.empty() || want == loadedEnv)
+  {
+    // a sky, a plain colour, none, or the image already there: the envSystem parameter does it
+    if(!want.empty())
+      appliedParams.erase("envSystem");
+    return;
+  }
+  if(want == "studio")
+  {
+    EnvImage img;
+    img.pixels = fv::lighting::studioImage(kStudioWidth, kStudioHeight);
+    img.size   = {kStudioWidth, kStudioHeight};
+    if(renderer->loadHdrEnvironment(std::move(img), {}))
+    {
+      loadedEnv = want;
+      envName   = kStudioName;
+      envSize   = {kStudioWidth, kStudioHeight};
+    }
+    return;
+  }
+  const std::string path  = e.path;
+  const std::string label = "Loading " + utf8Of(pathOf(path).filename());
+  envLoading              = true;
+  envJob                  = ++jobs;
+  job(envJob, {{"label", label}, {"state", "running"}});
+  std::lock_guard lock(loadMutex);
+  loaders.emplace_back([this, path, want, req, jobId = envJob, label] {
+    auto image = std::make_shared<EnvImage>(loadEnvImage(pathOf(path)));
+    post([this, image, path, want, req, jobId, label] {
+      if(req != envRequest)
+        return;  // another environment was chosen meanwhile, and closed this job
+      envLoading = false;
+      const glm::uvec2 size{image->size.width, image->size.height};
+      if(!image->valid() || !renderer->loadHdrEnvironment(std::move(*image), pathOf(path)))
+      {
+        job(jobId, {{"label", label}, {"state", "failed"}, {"error", "could not read " + path}});
+        notice("Could not read the environment " + path, "error");
+        // the panel shows what is on screen: the HDR that was there before, else the studio
+        if(loadedEnv.rfind("hdr:", 0) == 0)
+        {
+          wantedEnv         = loadedEnv;
+          lighting.env.path = loadedEnv.substr(4);
+          publishLighting();
+        }
+        else
+        {
+          lighting.env.source = "studio";
+          lighting.env.path.clear();
+          applyLighting(false);
+        }
+        return;
+      }
+      loadedEnv = want;
+      envName   = utf8Of(pathOf(path).filename());
+      envSize   = size;
+      job(jobId, {{"label", label}, {"state", "done"}});
+      appliedParams.erase("envSystem");
+      applyLighting(false);  // hdrBlur depends on the image's size
+    });
+  });
+}
+
+// The sun light's colour, strength and size, and its node's rotation, when they changed.
+void FvHost::Impl::applySun(bool force)
+{
+  nvvkgltf::Scene* scene = renderer->editScene();
+  if(!scene || sunLight < 0 || sunNode < 0 || sunLight >= int(scene->getModel().lights.size())
+     || sunNode >= int(scene->getModel().nodes.size()))
+    return;
+  const fv::lighting::Sun& s     = lighting.sun;
+  const glm::vec3          color = fv::lighting::linearColor(s.color);
+  const Json               light = {{"color", {color.x, color.y, color.z}},
+                                    {"intensity", s.enabled ? s.intensity : 0.0},
+                                    {"radius", fv::lighting::sunRadiusKm(s.softness)}};
+  const Json               aim   = {s.azimuth, s.elevation};
+  if(force || appliedSun.is_null() || appliedSun["light"] != light)
+  {
+    tinygltf::Light& l = scene->editor().getLightForEdit(sunLight);
+    l.color            = {color.x, color.y, color.z};
+    l.intensity        = light["intensity"].get<double>();
+    tinygltf::Value::Object extras = l.extras.IsObject() ? l.extras.Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
+    extras["radius"]               = tinygltf::Value(light["radius"].get<double>());
+    l.extras                       = tinygltf::Value(extras);
+    scene->markLightDirty(sunLight);
+  }
+  if(force || appliedSun.is_null() || appliedSun["aim"] != aim)
+  {
+    const GltfRenderer::NodeTransform t{.node = sunNode, .rotation = fv::lighting::sunRotation(s.azimuth, s.elevation)};
+    renderer->setNodeTransforms({&t, 1});
+  }
+  appliedSun = {{"light", light}, {"aim", aim}};
+}
+
+// A directional "Sun" on a root node of a model about to be loaded, marked as the sky's sun so a
+// physical sky follows it. Written with the current state, so the load shows it as it is.
+void FvHost::Impl::addSun(tinygltf::Model& model)
+{
+  const fv::lighting::Sun& s     = lighting.sun;
+  const glm::vec3          color = fv::lighting::linearColor(s.color);
+  tinygltf::Light          light;
+  light.name      = "Sun";
+  light.type      = "directional";
+  light.color     = {color.x, color.y, color.z};
+  light.intensity = s.enabled ? s.intensity : 0.0;
+  tinygltf::Value::Object lightExtras;
+  lightExtras["radius"] = tinygltf::Value(fv::lighting::sunRadiusKm(s.softness));
+  light.extras          = tinygltf::Value(lightExtras);
+  model.lights.push_back(light);
+  sunLight = int(model.lights.size()) - 1;
+
+  tinygltf::Node node;
+  node.name  = "Sun";
+  node.light = sunLight;
+  const glm::quat r = fv::lighting::sunRotation(s.azimuth, s.elevation);
+  node.rotation     = {r.x, r.y, r.z, r.w};
+  tinygltf::Value::Object nodeExtras;
+  nodeExtras["fvId"] = tinygltf::Value(std::string("l:sun"));
+  node.extras        = tinygltf::Value(nodeExtras);
+  gltf_environment_sky::setSkySunMarker(node, gltf_environment_sky::kSkySunOwnerScene);
+  model.nodes.push_back(node);
+  sunNode = int(model.nodes.size()) - 1;
+
+  if(model.scenes.empty())
+    model.scenes.emplace_back();
+  const int scene = model.defaultScene >= 0 && model.defaultScene < int(model.scenes.size()) ? model.defaultScene : 0;
+  model.scenes[scene].nodes.push_back(sunNode);
+  if(std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), "KHR_lights_punctual") == model.extensionsUsed.end())
+    model.extensionsUsed.push_back("KHR_lights_punctual");
+  appliedSun = {{"light", {{"color", {color.x, color.y, color.z}}, {"intensity", light.intensity}, {"radius", fv::lighting::sunRadiusKm(s.softness)}}},
+                {"aim", {s.azimuth, s.elevation}}};
+}
+
+// A batch of renderer parameters, validated whole before any is applied; callbacks fire as over MCP.
+void FvHost::Impl::setParams(const Json& values)
+{
+  if(!registry || values.empty())
+    return;
+  const auto params = exposedParameters(registry);
+  toolJson(nvmcp::detail::setParameters(params, Json{{"values", values}}.dump()));
 }
 
 void FvHost::Impl::applyNodes(const std::set<int>& moved)
@@ -954,12 +1267,13 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
 
 //--------------------------------------------------------------------------------------------------
 
-FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
+FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvutils::ParameterRegistry* registry)
     : m_impl(std::make_unique<Impl>())
 {
   Impl& s     = *m_impl;
   s.renderer  = renderer;
   s.protocol  = std::move(protocol);
+  s.registry  = registry;
   auto& cmds  = s.protocol->commands();
   Impl* impl  = m_impl.get();
 
@@ -1045,6 +1359,16 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
       return Json{{"mode", mode}};
     });
   });
+  cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingSet(args); }); });
+  // any registered renderer parameter, read or written as nvmcp's parameter tools do
+  cmds.add("params.get", [impl](const Json& args) {
+    return impl->onApp([impl, args] { return toolJson(nvmcp::detail::getParameters(exposedParameters(impl->registry), args.dump())); });
+  });
+  cmds.add("params.set", [impl](const Json& args) {
+    return impl->onApp([impl, args] {
+      return toolJson(nvmcp::detail::setParameters(exposedParameters(impl->registry), args.dump()));
+    });
+  });
   // a clean exit (DLSS/NGX shut down), which the host asks for before it ends the process
   cmds.add("session.shutdown", [impl](const Json&) {
     impl->post([impl] {
@@ -1127,14 +1451,36 @@ void FvHost::onDetach()
 
 void FvHost::onUpdate()
 {
-  Impl&                             s = *m_impl;
+  Impl& s = *m_impl;
+  // the default look until the app sends its own: the renderer's remembered settings don't apply here
+  if(!s.lightingStarted)
+  {
+    s.lightingStarted = true;
+    try
+    {
+      s.applyLighting(true);
+    }
+    catch(const std::exception& e)
+    {
+      LOGW("[fv] lighting: %s\n", e.what());
+    }
+  }
   std::deque<std::function<void()>> work;
   {
     std::lock_guard lock(s.queueMutex);
     work.swap(s.queue);
   }
   for(auto& f : work)
-    f();
+  {
+    try
+    {
+      f();
+    }
+    catch(const std::exception& e)
+    {
+      s.notice(e.what(), "error");
+    }
+  }
   // input first: a gizmo drag poses this frame, and what the gizmo didn't take moves the camera
   std::vector<Json> events;
   {

@@ -108,6 +108,7 @@
 #include "sun_position.hpp"
 #include "sky_preset.hpp"
 #include "scene_descriptor.hpp"
+#include "shadow_fit.hpp"
 #include "staging_config.hpp"
 #include "tinygltf_utils.hpp"
 #include "utils.hpp"
@@ -541,6 +542,45 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"uiSnapEnabled", "Snap gizmo transforms to grid increments"}, &m_resources.settings.snapEnabled, Persist::eYes);
   m_settings.add({"uiSnapRotation", "Rotation snap increment (degrees)"}, &m_resources.settings.snapRotation, Persist::eYes);
   m_settings.add({"uiSnapScale", "Scale snap increment"}, &m_resources.settings.snapScale, Persist::eYes);
+
+  // The ground: the path tracer's infinite plane and the rasterizer's floor pass draw the same one.
+  const auto groundChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };
+  m_settings.add({.name = "useInfinitePlane", .help = "Ground: draw an infinite plane under the scene", .callbackSuccess = groundChanged},
+                 &m_resources.settings.useInfinitePlane, Persist::eYes);
+  m_settings.add({.name = "isShadowCatcher", .help = "Ground: the plane only darkens the background where shadows fall", .callbackSuccess = groundChanged},
+                 &m_resources.settings.isShadowCatcher, Persist::eYes);
+  m_settings.add({.name = "infinitePlaneDistance", .help = "Ground: height of the plane (world units)", .callbackSuccess = groundChanged},
+                 &m_resources.settings.infinitePlaneDistance, Persist::eNo);
+  m_settings.addVector({.name = "infinitePlaneBaseColor", .help = "Ground: plane color (linear)", .callbackSuccess = groundChanged},
+                       &m_resources.settings.infinitePlaneBaseColor, Persist::eYes);
+  m_settings.add({.name = "infinitePlaneMetallic", .help = "Ground: plane metalness", .callbackSuccess = groundChanged},
+                 &m_resources.settings.infinitePlaneMetallic, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({.name = "infinitePlaneRoughness", .help = "Ground: plane roughness", .callbackSuccess = groundChanged},
+                 &m_resources.settings.infinitePlaneRoughness, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({.name = "shadowCatcherDarkness", .help = "Ground: extra darkening of caught shadows (0..1)", .callbackSuccess = groundChanged},
+                 &m_resources.settings.shadowCatcherDarkness, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({.name = "groundFade", .help = "Ground: fade the plane out over a disk of this many scene radii (0: no fade)", .callbackSuccess = groundChanged},
+                 &m_resources.settings.groundFade, Persist::eYes, 0.0F, 100.0F);
+
+  // The rasterizer's sun shadow map.
+  const auto shadowChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };
+  m_settings.add({.name = "rasterShadows", .help = "Rasterizer: sun shadow map [Off:0, On:1]", .callbackSuccess = shadowChanged},
+                 &m_resources.settings.rasterShadows, Persist::eYes);
+  m_settings.add({.name = "shadowLight",
+                  .help = "Rasterizer: scene light index that casts the shadow map, or -1 for the sun (the marked sun light, "
+                          "else the sky's sun, else the brightest directional light)",
+                  .callbackSuccess = shadowChanged},
+                 &m_resources.settings.shadowLight, Persist::eNo, -1, 1 << 20);
+  m_settings.add({.name = "shadowMapSize", .help = "Rasterizer: shadow map size in texels (1024..8192)", .callbackSuccess = shadowChanged},
+                 &m_resources.settings.shadowMapSize, Persist::eYes, 1024, 8192);
+  m_settings.add({.name = "shadowContactHardening",
+                  .help = "Rasterizer: penumbrae widen with the distance to the occluder, from the light's angular size [Off:0, On:1]",
+                  .callbackSuccess = shadowChanged},
+                 &m_resources.settings.shadowContactHardening, Persist::eYes);
+  m_settings.add({.name = "shadowBias", .help = "Rasterizer: shadow depth bias, in shadow-map texels", .callbackSuccess = shadowChanged},
+                 &m_resources.settings.shadowBias, Persist::eYes, 0.0F, 50.0F);
+  m_settings.add({.name = "shadowNormalBias", .help = "Rasterizer: shadow normal offset, in shadow-map texels", .callbackSuccess = shadowChanged},
+                 &m_resources.settings.shadowNormalBias, Persist::eYes, 0.0F, 50.0F);
 
   // The two Windows-menu resets, also reachable from a script, a benchmark sequence and MCP. Both
   // only raise the pending flag that applyPendingResets() consumes at the top of the next UI pass,
@@ -1481,6 +1521,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
         .envSamplingGridWidth  = m_resources.hdrIbl.getSamplingGrid().width,
         .envSamplingGridHeight = m_resources.hdrIbl.getSamplingGrid().height,
     };
+    fillShadowAndGround(finfo);
     // Update the camera information
     m_prevMVP = finfo.viewProjMatrix;
 
@@ -2393,7 +2434,13 @@ void GltfRenderer::applyPendingEnvironmentRefresh()
   {
     // Leaving a baked sky for the HDR path: hdrIbl still points at EnvBaker's image and holds an
     // alias table built over it, so the file has to be reloaded to take ownership back.
-    createHDR(m_lastHdrFile);
+    if(m_lastHdrFile.empty() && m_lastHdrImage)
+    {
+      EnvImage copy = *m_lastHdrImage;
+      uploadHdrEnvironment(std::move(copy), {});
+    }
+    else
+      createHDR(m_lastHdrFile);
   }
   // eNone samples neither hdrIbl nor the prefiltered cubes, so a stale binding is harmless -- and
   // re-selecting a baked sky re-commits before anything reads it.
@@ -2473,6 +2520,123 @@ void GltfRenderer::onEnvironmentRotated()
 // that. `sunColor` keeps its job as the sun's colour *and* its relative brightness, so brightening
 // it in the UI now brightens the light as well as the disk.
 //
+// The shadow map's light, and where its box goes.
+//
+// The light is the scene's marked sun when there is one -- whatever the environment, since a host
+// that supplies its own sun marks it -- then the sky's own sun, then the brightest directional
+// light. `shadowLight` names a scene light instead. A light that gives no light casts nothing.
+void GltfRenderer::fillShadowAndGround(shaderio::SceneFrameInfo& finfo)
+{
+  finfo.shadowLightIndex       = -1;
+  finfo.groundFadeRadius       = 0.0F;
+  m_resources.shadowPassActive = false;
+  const nvvkgltf::Scene* scene = m_resources.getScene();
+  if(scene == nullptr || !scene->valid() || scene->getRenderNodes().empty())
+    return;
+
+  const Settings&     settings = m_resources.settings;
+  const nvutils::Bbox bounds   = scene->getSceneBounds();
+  const glm::vec3     center   = bounds.center();
+  const float         radius   = std::max(bounds.radius(), 1e-3F);
+
+  float groundReach = 0.0F;
+  if(settings.useInfinitePlane)
+  {
+    if(settings.groundFade > 0.0F)
+    {
+      finfo.groundFadeCenterX = center.x;
+      finfo.groundFadeCenterZ = center.z;
+      finfo.groundFadeRadius  = shadow_fit::groundReach(radius, settings.groundFade);
+      groundReach             = finfo.groundFadeRadius;
+    }
+    else
+      groundReach = radius * shadow_fit::kMaxFarRadii;
+  }
+
+  if(!settings.rasterShadows || settings.renderSystem != RenderingMode::eRasterizer)
+    return;
+
+  const tinygltf::Model&                    model   = scene->getModel();
+  const std::vector<nvvkgltf::RenderLight>& rlights = scene->getRenderLights();
+  // Toward the light, for a directional render light that shines; nullopt for anything else.
+  const auto directional = [&](int i) -> std::optional<glm::vec3> {
+    if(i < 0 || i >= int(rlights.size()))
+      return std::nullopt;
+    const int li = rlights[i].light;
+    if(li < 0 || li >= int(model.lights.size()) || model.lights[li].type != "directional")
+      return std::nullopt;
+    const bool skyDriven = skyHasSun(settings.envSystem) && i == m_skySun.lightIndex();
+    if(!skyDriven && model.lights[li].intensity <= 0.0)
+      return std::nullopt;
+    const glm::vec3 z   = glm::vec3(rlights[i].worldMatrix[2]);
+    const float     len = glm::length(z);
+    if(len < 1e-6F)
+      return std::nullopt;
+    return z / len;
+  };
+
+  int                      index = -1;
+  std::optional<glm::vec3> toLight;
+  if(settings.shadowLight >= 0)
+  {
+    index   = settings.shadowLight;
+    toLight = directional(index);
+  }
+  else if(m_skySun.lightIndex() >= 0)
+  {
+    index   = m_skySun.lightIndex();
+    toLight = directional(index);
+  }
+  else if(finfo.rendererSunLight != 0)
+  {
+    index   = int(rlights.size());
+    toLight = m_resources.sunDirection;
+  }
+  else
+  {
+    double brightest = 0.0;
+    for(int i = 0; i < int(rlights.size()); ++i)
+    {
+      if(!directional(i))
+        continue;
+      const tinygltf::Light& l = model.lights[rlights[i].light];
+      double                 c = 1.0;
+      if(l.color.size() == 3)
+        c = std::max({l.color[0], l.color[1], l.color[2]});
+      if(l.intensity * c > brightest)
+      {
+        brightest = l.intensity * c;
+        index     = i;
+      }
+    }
+    toLight = directional(index);
+  }
+  if(!toLight)
+    return;
+
+  const shadow_fit::Result fit = shadow_fit::fit({.center        = center,
+                                                  .radius        = radius,
+                                                  .toLight       = *toLight,
+                                                  .mapSize       = settings.shadowMapSize,
+                                                  .groundY       = settings.infinitePlaneDistance,
+                                                  .groundCenterX = center.x,
+                                                  .groundCenterZ = center.z,
+                                                  .groundReach   = groundReach});
+  if(!fit.valid)
+    return;
+
+  finfo.shadowLightIndex       = index;
+  finfo.shadowViewProj         = fit.viewProj;
+  finfo.shadowTexelWorld       = fit.texelWorld;
+  finfo.shadowDepthRange       = fit.depthRange;
+  finfo.shadowBias             = settings.shadowBias * fit.texelWorld;
+  finfo.shadowNormalBias       = settings.shadowNormalBias * fit.texelWorld;
+  finfo.shadowMinRadius        = fit.texelWorld;
+  finfo.shadowContactHardening = settings.shadowContactHardening ? 1 : 0;
+  finfo.shadowMapSize          = settings.shadowMapSize;
+  m_resources.shadowPassActive = true;
+}
+
 // The sky half only: the ground half of the gradient lights nothing that faces up, and including it
 // would make the sun follow the ground colour.
 //
@@ -3790,6 +3954,29 @@ bool GltfRenderer::loadHdrEnvironment(const std::filesystem::path& filename)
   return true;
 }
 
+bool GltfRenderer::loadHdrEnvironment(EnvImage&& image, const std::filesystem::path& name)
+{
+  if(!m_app || !image.valid())
+    return false;
+  LOGI("HDR environment: %s (%ux%u)\n", name.empty() ? "(generated)" : nvutils::utf8FromPath(name).c_str(),
+       image.size.width, image.size.height);
+  uploadHdrEnvironment(std::move(image), name);
+  if(!m_resources.hdrIbl.isValid())
+    return false;
+  m_resources.settings.envSystem = shaderio::EnvSystem::eHdr;
+  calibrateFireflyClamp();
+  resetFrame();
+  return true;
+}
+
+nvutils::Bbox GltfRenderer::sceneBounds() const
+{
+  const nvvkgltf::Scene* scene = m_resources.getScene();
+  if(scene == nullptr || !scene->valid() || scene->getRenderNodes().empty())
+    return {};
+  return scene->getSceneBounds();
+}
+
 bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
 {
   if(!m_app)
@@ -4197,20 +4384,6 @@ bool GltfRenderer::updateFrameCounter()
 // If the filename is empty, a default environment map (empty) is created, which allow the descriptor set to be updated
 void GltfRenderer::createHDR(const std::filesystem::path& hdrFilename)
 {
-  // Agentic HDRI reload can happen mid-frame (pollNow from renderUI). Wait until
-  // in-flight work finishes before tearing down env images the rasterizer/path
-  // tracer may still be sampling.
-  NVVK_CHECK(vkDeviceWaitIdle(m_device));
-
-  VkCommandBuffer cmd{};
-  nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
-  nvvk::FrameUploader uploader;
-  NVVK_CHECK(uploader.init({
-      .allocator = &m_resources.allocator,
-      .blockSize = 1024ull * 1024 * 1024,  // 8K RGBA32F HDR is 1 GiB
-      .debugName = "hdrUpload",
-  }));
-
   // Load an HDR and create the important sampling acceleration structure
   std::filesystem::path filename;
   if(!hdrFilename.empty())
@@ -4243,6 +4416,37 @@ void GltfRenderer::createHDR(const std::filesystem::path& hdrFilename)
     LOGI("HDR environment: %s (%ux%u)\n", nvutils::utf8FromPath(filename).c_str(), envImage.size.width, envImage.size.height);
   }
 
+  const std::filesystem::path source = envImage.pixels.empty() ? std::filesystem::path{} : filename;
+  uploadHdrEnvironment(std::move(envImage), source);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Install an already-decoded lat-long as the HDR environment. The decode is the slow half of an
+// HDR load; split out so a caller can run it on a worker and only pay for the upload here.
+void GltfRenderer::uploadHdrEnvironment(EnvImage&& envImage, const std::filesystem::path& sourceFile)
+{
+  // Agentic HDRI reload can happen mid-frame (pollNow from renderUI). Wait until
+  // in-flight work finishes before tearing down env images the rasterizer/path
+  // tracer may still be sampling.
+  NVVK_CHECK(vkDeviceWaitIdle(m_device));
+
+  VkCommandBuffer cmd{};
+  nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
+  nvvk::FrameUploader uploader;
+  NVVK_CHECK(uploader.init({
+      .allocator = &m_resources.allocator,
+      .blockSize = 1024ull * 1024 * 1024,  // 8K RGBA32F HDR is 1 GiB
+      .debugName = "hdrUpload",
+  }));
+
+  // An image with no file behind it (a generated studio) is kept, so leaving a baked sky for the
+  // HDR path can put it back -- the reload there has nothing else to read. HdrIbl writes into the
+  // pixels it is given, hence a copy taken before the upload.
+  if(sourceFile.empty() && envImage.valid())
+    m_lastHdrImage = std::make_shared<const EnvImage>(envImage);
+  else
+    m_lastHdrImage.reset();
+
   m_resources.hdrIbl.destroyEnvironment();
   m_resources.hdrIbl.loadEnvironment(cmd, uploader, std::span<float>(envImage.pixels), envImage.size, true);
   // Remembered so that switching to a baked sky and back to eHdr can rebind hdrIbl to this file:
@@ -4250,7 +4454,7 @@ void GltfRenderer::createHDR(const std::filesystem::path& hdrFilename)
   // path, not the request: a bare name found through the resources directories would otherwise be
   // saved as a panorama URI that resolves nowhere. Empty when nothing decoded -- the dummy is not a
   // panorama, and saving it as one would describe an environment that does not exist.
-  m_lastHdrFile     = envImage.pixels.empty() ? std::filesystem::path{} : filename;
+  m_lastHdrFile     = sourceFile;
   m_envOwnedByBaker = false;
 
   uploader.cmdUploadAppended(cmd);

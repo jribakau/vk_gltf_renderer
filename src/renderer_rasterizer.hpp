@@ -23,6 +23,7 @@
 #include <memory>
 
 #include <nvapp/application.hpp>
+#include <nvvk/descriptors.hpp>
 #include <nvvk/graphics_pipeline.hpp>
 #include <nvvk/resources.hpp>
 #include <nvshaders_host/sky.hpp>
@@ -97,6 +98,29 @@ private:
   VkShaderEXT m_vertexShader{};     // Vertex shader
   VkShaderEXT m_fragmentShader{};   // Fragment shader
   VkShaderEXT m_wireframeShader{};  // Wireframe shader
+
+  // Sun shadow map: a depth-only pass along the shadow light (SceneFrameInfo::shadowViewProj),
+  // read by the light loop through set 2 -- raster-only, so the layout the path tracer shares with
+  // set 0 is untouched. Alpha-tested entry points, so cutout hair and lashes cast cutout shadows.
+  VkShaderEXT          m_shadowVertexShader{};
+  VkShaderEXT          m_shadowFragmentShader{};
+  nvvk::Image          m_shadowMap{};
+  int                  m_shadowMapSize = 0;
+  VkSampler            m_shadowCompareSampler{};
+  VkSampler            m_shadowPointSampler{};
+  nvvk::DescriptorPack m_shadowDescPack;
+  void                 initShadowResources(Resources& resources);
+  void                 deinitShadowResources(Resources& resources);
+  // (Re)allocate the map at `size` texels, leaving it in SHADER_READ_ONLY. Records the transition into `cmd`.
+  void createShadowMap(VkCommandBuffer cmd, Resources& resources, int size);
+  void renderShadowMap(VkCommandBuffer cmd, Resources& resources);
+
+  // Ground: a fullscreen pass that intersects each pixel's ray with the plane, drawn after the opaque
+  // buckets. A floor shades and fades; a shadow catcher only darkens what is behind it.
+  VkShaderEXT m_groundVertexShader{};
+  VkShaderEXT m_groundFragmentShader{};
+  bool        m_lastGroundOn = false;  // Re-records the scene cmd when the ground comes or goes
+  void        renderGround(VkCommandBuffer cmd, Resources& resources);
 
 
   // Background pass for authored (OMI_environment_sky) sky types. Not nvshaders::SkyBase: that

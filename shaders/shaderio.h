@@ -255,6 +255,27 @@ struct SceneFrameInfo
   // Slang cannot disagree about alignment after the float3 above. (Appended, per the note above.)
   uint envSamplingGridWidth  = 1;
   uint envSamplingGridHeight = 1;
+
+  // The rasterizer's sun shadow map (Rasterizer::renderShadowMap). `shadowLightIndex` is the index
+  // in the raster light loop -- numLights for the renderer's own sun -- or -1 when nothing casts.
+  // The map is an orthographic depth image along that light: `shadowViewProj` takes world space to
+  // its clip space, `shadowTexelWorld` is one texel in metres and `shadowDepthRange` the metres its
+  // [0, 1] depth spans. The path tracer ignores all of it. (Appended, per the note above.)
+  float4x4 shadowViewProj;
+  int      shadowLightIndex       = -1;
+  float    shadowTexelWorld       = 0.0F;
+  float    shadowDepthRange       = 1.0F;
+  float    shadowBias             = 0.0F;  // metres along the light
+  float    shadowNormalBias       = 0.0F;  // metres along the receiver's normal
+  float    shadowMinRadius        = 0.0F;  // metres: the smallest filter radius (and the whole of it without contact hardening)
+  int      shadowContactHardening = 1;     // 1: the penumbra grows with the blocker distance (PCSS)
+  int      shadowMapSize          = 0;
+
+  // The ground (infinite plane) fades out to nothing over the outer part of a disk around the
+  // scene, as both renderers draw it. Radius 0: no fade.
+  float groundFadeCenterX = 0.0F;
+  float groundFadeCenterZ = 0.0F;
+  float groundFadeRadius  = 0.0F;
 };
 
 enum PathtracerFlags

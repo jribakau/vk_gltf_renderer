@@ -168,7 +168,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     bool firstRay = (pt.surfaceDepth == 0);
 
     // Check if we hit the infinite plane
-    bool hitInfinitePlane = checkInfinitePlaneIntersection(ray, payload, hit, frameInfo);
+    bool hitInfinitePlane = checkInfinitePlaneIntersection(ray, payload, hit, frameInfo, seed);
 
     //-----------------------------------------------------------------------
     // Hitting the environment
@@ -292,8 +292,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         bool continuePath =
             handleShadowCatcher(raytracer, hit, pbrMat, ray, pt.radiance, pt.throughput, pt.lastSamplePdf, seed, frameInfo);
         if(!continuePath)
-          return PathStepResult.eBreak;  // Catch the shadow
-        return PathStepResult.eEarlyContinue;  // Continue the path tracing from the infinite plane, missed the shadow catcher path
+          return PathStepResult.eBreak;
+        return PathStepResult.eEarlyContinue;  // On through the plane, as if it were not there
       }
     }
     //-----------------------------------------------------------------------

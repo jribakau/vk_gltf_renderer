@@ -63,6 +63,7 @@
 #include "resources.hpp"
 #include "renderer_silhouette.hpp"
 #include "env_baker.hpp"
+#include "env_image_loader.hpp"
 #include "sky_bruneton.hpp"
 #include "sky_sun.hpp"
 #include "ui_environment.hpp"
@@ -124,6 +125,8 @@ public:
   void ensureEmptyScene();
   void createSceneFromDescriptor(const std::filesystem::path& descriptorPath);
   void createHDR(const std::filesystem::path& hdrFilename);
+  // The upload half of createHDR: `envImage` is consumed. `sourceFile` is empty for a generated image.
+  void uploadHdrEnvironment(EnvImage&& envImage, const std::filesystem::path& sourceFile);
   void onMergeScene(const std::filesystem::path& filename);
   void onReferenceScene(const std::filesystem::path& filename);
   // Shared worker for merge (embed) and reference (glTF 2.1 external asset) imports.
@@ -305,6 +308,10 @@ public:
   /// clamp -- which is why it is one function.
   [[nodiscard]] glm::vec3 gradientSunIlluminance() const;
 
+  /// The rasterizer's shadow-map light and box, and the ground's fade disk, into the frame info.
+  /// `rendererSunLight` is the frame's own flag: whether the sky's sun is a light past the scene's.
+  void fillShadowAndGround(shaderio::SceneFrameInfo& finfo);
+
   /// Frame-top consumer of onEnvironmentChanged(). Called from onUIRender, not onRender: it waits
   /// on the device and rewrites descriptors, which is unsafe mid-command-buffer.
   void applyPendingEnvironmentRefresh();
@@ -337,6 +344,13 @@ public:
   /// change. False if the file does not exist or the renderer is not attached yet (the start-up
   /// parse, where main() does the load itself). Application thread only.
   [[nodiscard]] bool loadHdrEnvironment(const std::filesystem::path& filename);
+  /// Install a lat-long decoded elsewhere -- loadEnvImage() on a worker, or one generated in memory
+  /// -- and switch to the HDR environment, as the path overload does after its own decode. `name`
+  /// is the file it came from, or empty for a generated image (kept in memory then, so leaving a
+  /// baked sky can restore it). False for an invalid image. Application thread only.
+  [[nodiscard]] bool loadHdrEnvironment(EnvImage&& image, const std::filesystem::path& name);
+  /// Scene bounds as loaded (world space), or an empty box with no scene.
+  [[nodiscard]] nvutils::Bbox sceneBounds() const;
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);
   /// Replace the scene with a model a host built in memory (the Figure Viewer, fv_host.hpp), as
   /// loadSceneFile does with a file: synchronous, application thread only. Image URIs are absolute.
@@ -742,6 +756,7 @@ private:
   bool                  m_envCommitOwed{false};      // Previewed at least once; owes a commit once the edits stop
   bool                  m_envOwnedByBaker{false};    // hdrIbl currently points at EnvBaker's image, not a loaded file
   std::filesystem::path m_lastHdrFile;               // Last HDR handed to createHDR, replayed when returning to eHdr
+  std::shared_ptr<const EnvImage> m_lastHdrImage;    // The last HDR when no file backs it (generated), replayed likewise
   EnvironmentState      m_environmentSky;            // Sky the loaded scene authors, preserved verbatim for save
   bool                  m_environmentSkyPending{false};  // Authored sky parsed but not yet pushed to settings
   std::filesystem::path m_pendingLoadSkyPreset;          // Start-up --loadSkyPreset, applied at the frame top

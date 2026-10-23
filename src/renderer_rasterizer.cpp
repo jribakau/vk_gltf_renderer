@@ -99,6 +99,7 @@ void Rasterizer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   m_device      = resources.allocator.getDevice();
   m_commandPool = resources.commandPool;
   initSkyBackground(resources);
+  initShadowResources(resources);   // before the shaders: their layouts include its set
   compileShader(resources, false);  // Compile the shader
   createOpaqueColorImage(resources);
   createSheenLut(resources);
@@ -246,8 +247,114 @@ void Rasterizer::onDetach(Resources& resources)
   vkDestroyShaderEXT(m_device, m_vertexShader, nullptr);
   vkDestroyShaderEXT(m_device, m_fragmentShader, nullptr);
   vkDestroyShaderEXT(m_device, m_wireframeShader, nullptr);
+  vkDestroyShaderEXT(m_device, m_shadowVertexShader, nullptr);
+  vkDestroyShaderEXT(m_device, m_shadowFragmentShader, nullptr);
+  vkDestroyShaderEXT(m_device, m_groundVertexShader, nullptr);
+  vkDestroyShaderEXT(m_device, m_groundFragmentShader, nullptr);
 
+  deinitShadowResources(resources);
   deinitSkyBackground(resources);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Set 2: the shadow map, a comparison sampler for the filter and a point sampler for the blocker
+// search. The map starts as a 1x1 placeholder so the set is valid before any light casts.
+void Rasterizer::initShadowResources(Resources& resources)
+{
+  nvvk::DescriptorBindings bindings;
+  bindings.addBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+  bindings.addBinding(1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+  bindings.addBinding(2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+  NVVK_CHECK(m_shadowDescPack.init(bindings, m_device, 1));
+  NVVK_DBG_NAME(m_shadowDescPack.getLayout());
+
+  const VkSamplerCreateInfo compareInfo{
+      .sType         = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter     = VK_FILTER_LINEAR,
+      .minFilter     = VK_FILTER_LINEAR,
+      .mipmapMode    = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW  = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .compareEnable = VK_TRUE,
+      .compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL,
+      .maxLod        = 0.0F,
+  };
+  NVVK_CHECK(resources.samplerPool.acquireSampler(m_shadowCompareSampler, compareInfo));
+  const VkSamplerCreateInfo pointInfo{
+      .sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter    = VK_FILTER_NEAREST,
+      .minFilter    = VK_FILTER_NEAREST,
+      .mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .maxLod       = 0.0F,
+  };
+  NVVK_CHECK(resources.samplerPool.acquireSampler(m_shadowPointSampler, pointInfo));
+
+  VkCommandBuffer cmd{};
+  nvvk::beginSingleTimeCommands(cmd, m_device, m_commandPool);
+  createShadowMap(cmd, resources, 1);
+  nvvk::endSingleTimeCommands(cmd, m_device, m_commandPool, resources.app->getQueue(0).queue);
+}
+
+void Rasterizer::deinitShadowResources(Resources& resources)
+{
+  if(m_shadowMap.image != VK_NULL_HANDLE)
+    resources.allocator.destroyImage(m_shadowMap);
+  m_shadowMapSize = 0;
+  if(m_shadowCompareSampler)
+    resources.samplerPool.releaseSampler(m_shadowCompareSampler);
+  if(m_shadowPointSampler)
+    resources.samplerPool.releaseSampler(m_shadowPointSampler);
+  m_shadowCompareSampler = {};
+  m_shadowPointSampler   = {};
+  m_shadowDescPack.deinit();
+}
+
+void Rasterizer::createShadowMap(VkCommandBuffer cmd, Resources& resources, int size)
+{
+  if(m_shadowMap.image != VK_NULL_HANDLE)
+    resources.allocator.destroyImage(m_shadowMap);
+
+  const VkImageCreateInfo imageInfo{
+      .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType     = VK_IMAGE_TYPE_2D,
+      .format        = VK_FORMAT_D32_SFLOAT,
+      .extent        = {uint32_t(size), uint32_t(size), 1},
+      .mipLevels     = 1,
+      .arrayLayers   = 1,
+      .samples       = VK_SAMPLE_COUNT_1_BIT,
+      .tiling        = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+  };
+  const VkImageViewCreateInfo viewInfo{
+      .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+      .format           = imageInfo.format,
+      .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+  };
+  NVVK_CHECK(resources.allocator.createImage(m_shadowMap, imageInfo, viewInfo));
+  NVVK_DBG_NAME(m_shadowMap.image);
+  m_shadowMapSize = size;
+
+  // Cleared to the far plane, so a light that has not drawn yet reads as unoccluded.
+  nvvk::cmdImageMemoryBarrier(cmd, {m_shadowMap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}});
+  const VkClearDepthStencilValue farPlane{1.0F, 0};
+  const VkImageSubresourceRange  range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+  vkCmdClearDepthStencilImage(cmd, m_shadowMap.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &farPlane, 1, &range);
+  nvvk::cmdImageMemoryBarrier(cmd, {m_shadowMap.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}});
+
+  nvvk::WriteSetContainer writes;
+  writes.append(m_shadowDescPack.makeWrite(0), m_shadowMap.descriptor.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  writes.append(m_shadowDescPack.makeWrite(1), VkDescriptorImageInfo{.sampler = m_shadowCompareSampler});
+  writes.append(m_shadowDescPack.makeWrite(2), VkDescriptorImageInfo{.sampler = m_shadowPointSampler});
+  vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -497,6 +604,16 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
                           targets.colorView, viewMatrix, projMatrix);
       }
     }
+  }
+
+  if(resources.shadowPassActive)
+    renderShadowMap(cmd, resources);
+
+  // The ground pass is baked into the recorded scene, so its coming or going re-records.
+  if(m_lastGroundOn != resources.settings.useInfinitePlane)
+  {
+    freeRecordCommandBuffer(resources);
+    m_lastGroundOn = resources.settings.useInfinitePlane;
   }
 
   // 2 attachments in non-DLSS builds (color, selection); 3 when USE_DLSS=ON (+ motion at SV_TARGET2).
@@ -775,8 +892,9 @@ void Rasterizer::createPipeline(Resources& resources)
   SCOPED_TIMER(__FUNCTION__);
   // Set 1 is the physical sky's scattering LUTs, read by aerial perspective. Always in the layout,
   // even for a scene that never selects that sky: a layout is built once and the environment
-  // changes at runtime.
-  std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.skyLutDescriptorSetLayout};
+  // changes at runtime. Set 2 is the sun shadow map, the rasterizer's own.
+  std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.skyLutDescriptorSetLayout,
+                                                          m_shadowDescPack.getLayout()};
 
   // Push constant is used to pass data to the shader at each frame
   const VkPushConstantRange pushConstantRange{
@@ -840,8 +958,9 @@ bool Rasterizer::compileShader(Resources& resources, bool fromFile)
 
   // Set 1 is the physical sky's scattering LUTs, read by aerial perspective. Always in the layout,
   // even for a scene that never selects that sky: a layout is built once and the environment
-  // changes at runtime.
-  std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.skyLutDescriptorSetLayout};
+  // changes at runtime. Set 2 is the sun shadow map, the rasterizer's own.
+  std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.skyLutDescriptorSetLayout,
+                                                          m_shadowDescPack.getLayout()};
 
   VkShaderCreateInfoEXT shaderInfo{
       .sType                  = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
@@ -881,19 +1000,31 @@ bool Rasterizer::compileShader(Resources& resources, bool fromFile)
   vkDestroyShaderEXT(device, m_vertexShader, nullptr);
   vkDestroyShaderEXT(device, m_fragmentShader, nullptr);
   vkDestroyShaderEXT(device, m_wireframeShader, nullptr);
+  vkDestroyShaderEXT(device, m_shadowVertexShader, nullptr);
+  vkDestroyShaderEXT(device, m_shadowFragmentShader, nullptr);
+  vkDestroyShaderEXT(device, m_groundVertexShader, nullptr);
+  vkDestroyShaderEXT(device, m_groundFragmentShader, nullptr);
 
-
-  NVVK_CHECK(vkCreateShadersEXT(device, 1U, &shaderInfo, nullptr, &m_vertexShader));
+  const auto create = [&](const char* entry, VkShaderStageFlagBits stage, VkShaderEXT* out) {
+    shaderInfo.pName     = entry;
+    shaderInfo.stage     = stage;
+    shaderInfo.nextStage = (stage == VK_SHADER_STAGE_VERTEX_BIT) ? VkShaderStageFlags(VK_SHADER_STAGE_FRAGMENT_BIT) : 0;
+    NVVK_CHECK(vkCreateShadersEXT(device, 1U, &shaderInfo, nullptr, out));
+  };
+  create("vertexMain", VK_SHADER_STAGE_VERTEX_BIT, &m_vertexShader);
   NVVK_DBG_NAME(m_vertexShader);
-  shaderInfo.pName     = "fragmentMain";
-  shaderInfo.stage     = VK_SHADER_STAGE_FRAGMENT_BIT;
-  shaderInfo.nextStage = 0;
-  NVVK_CHECK(vkCreateShadersEXT(device, 1U, &shaderInfo, nullptr, &m_fragmentShader));
+  create("fragmentMain", VK_SHADER_STAGE_FRAGMENT_BIT, &m_fragmentShader);
   NVVK_DBG_NAME(m_fragmentShader);
-  shaderInfo.pName = "fragmentWireframeMain";
-  shaderInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  NVVK_CHECK(vkCreateShadersEXT(device, 1U, &shaderInfo, nullptr, &m_wireframeShader));
+  create("fragmentWireframeMain", VK_SHADER_STAGE_FRAGMENT_BIT, &m_wireframeShader);
   NVVK_DBG_NAME(m_wireframeShader);
+  create("vertexShadowMain", VK_SHADER_STAGE_VERTEX_BIT, &m_shadowVertexShader);
+  NVVK_DBG_NAME(m_shadowVertexShader);
+  create("fragmentShadowMain", VK_SHADER_STAGE_FRAGMENT_BIT, &m_shadowFragmentShader);
+  NVVK_DBG_NAME(m_shadowFragmentShader);
+  create("vertexGroundMain", VK_SHADER_STAGE_VERTEX_BIT, &m_groundVertexShader);
+  NVVK_DBG_NAME(m_groundVertexShader);
+  create("fragmentGroundMain", VK_SHADER_STAGE_FRAGMENT_BIT, &m_groundFragmentShader);
+  NVVK_DBG_NAME(m_groundFragmentShader);
 
   return !fromFile || compiledFromFile;
 }
@@ -950,12 +1081,15 @@ static void cmdSetCommonRasterState(VkCommandBuffer              cmd,
                                     VkExtent2D                   renderExtent,
                                     VkPipelineLayout             layout,
                                     VkShaderEXT                  vs,
-                                    VkShaderEXT                  fs)
+                                    VkShaderEXT                  fs,
+                                    VkDescriptorSet              shadowSet)
 {
   dyn.cmdApplyAllStates(cmd);
   dyn.cmdSetViewportAndScissor(cmd, renderExtent);
   dyn.cmdBindShaders(cmd, {.vertex = vs, .fragment = fs});
   vkCmdSetDepthTestEnable(cmd, VK_TRUE);
+  // Set 2: the sun shadow map, read by the light loop when the frame names a shadow light.
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1, &shadowSet, 0, nullptr);
 
   const auto& bindingDescription    = std::to_array<VkVertexInputBindingDescription2EXT>({
       {.sType     = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
@@ -987,7 +1121,8 @@ void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkE
   m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
 
-  cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader, m_fragmentShader);
+  cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader,
+                          m_fragmentShader, m_shadowDescPack.getSet(0));
 
   vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
   vkCmdSetDepthBias(cmd, -1.0f, 0.0f, 1.0f);
@@ -996,13 +1131,99 @@ void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkE
   vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolidDoubleSided));
+
+  // After the opaque buckets, so the figure has written its depth, and before the blend nodes,
+  // which then sort over a floor already in the image.
+  if(resources.settings.useInfinitePlane)
+    renderGround(cmd, resources);
+}
+
+//--------------------------------------------------------------------------------------------------
+// One fullscreen triangle; the fragment shader intersects the pixel's ray with the plane and writes
+// its depth. Blended: a floor by its fade, a catcher by how much shadow it caught.
+void Rasterizer::renderGround(VkCommandBuffer cmd, Resources& /*resources*/)
+{
+  m_dynamicPipeline.cmdBindShaders(cmd, {.vertex = m_groundVertexShader, .fragment = m_groundFragmentShader});
+  vkCmdSetVertexInputEXT(cmd, 0, nullptr, 0, nullptr);
+  vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+  vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+  const VkBool32 blendOn  = VK_TRUE;
+  const VkBool32 blendOff = VK_FALSE;
+  // Coverage composites "over" what is there, so a catcher never thins an opaque backdrop's alpha.
+  VkColorBlendEquationEXT groundBlend = m_dynamicPipeline.colorBlendEquations[0];
+  groundBlend.srcAlphaBlendFactor     = VK_BLEND_FACTOR_ONE;
+  groundBlend.dstAlphaBlendFactor     = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blendOn);
+  vkCmdSetColorBlendEquationEXT(cmd, 0, 1, &groundBlend);
+  vkCmdDraw(cmd, 3, 1, 0, 0);
+  vkCmdSetColorBlendEquationEXT(cmd, 0, 1, &m_dynamicPipeline.colorBlendEquations[0]);
+  vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blendOff);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Depth along the shadow light, from every visible node: opaque, double-sided and blended, the last
+// two alpha-tested in the fragment shader. No culling, so a thin sheet casts whichever way it faces.
+void Rasterizer::renderShadowMap(VkCommandBuffer cmd, Resources& resources)
+{
+  if(resources.getScene() == nullptr)
+    return;
+  const int size = std::clamp(resources.settings.shadowMapSize, 1024, 8192);
+  if(size != m_shadowMapSize)
+  {
+    // The descriptor set is rewritten below, which a recording or an in-flight frame may hold.
+    NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
+    freeRecordCommandBuffer(resources);
+    createShadowMap(cmd, resources, size);
+  }
+
+  auto section = m_profiler->cmdFrameSection(cmd, "Shadow Map");
+
+  const VkImageSubresourceRange depthRange{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+  nvvk::cmdImageMemoryBarrier(cmd, {m_shadowMap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, depthRange});
+
+  VkRenderingAttachmentInfo depth = DEFAULT_VkRenderingAttachmentInfo;
+  depth.imageView                 = m_shadowMap.descriptor.imageView;
+  depth.imageLayout               = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  depth.loadOp                    = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.storeOp                   = VK_ATTACHMENT_STORE_OP_STORE;
+  depth.clearValue                = {.depthStencil = {1.0F, 0}};
+
+  const VkExtent2D extent{uint32_t(size), uint32_t(size)};
+  VkRenderingInfo  renderingInfo      = DEFAULT_VkRenderingInfo;
+  renderingInfo.renderArea            = DEFAULT_VkRect2D(extent);
+  renderingInfo.colorAttachmentCount  = 0;
+  renderingInfo.pColorAttachments     = nullptr;
+  renderingInfo.pDepthAttachment      = &depth;
+  vkCmdBeginRendering(cmd, &renderingInfo);
+
+  m_pushConst.frameInfo  = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
+  m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
+  m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();
+  vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
+  cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, extent, m_graphicPipelineLayout, m_shadowVertexShader,
+                          m_shadowFragmentShader, m_shadowDescPack.getSet(0));
+  vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+  // Slope-scaled: grazing surfaces need more than the shader's constant bias to stay out of their
+  // own shadow. Positive is away from the light.
+  vkCmdSetDepthBias(cmd, 1.0f, 0.0f, 2.0f);
+
+  nvvkgltf::Scene& scene = *resources.getScene();
+  renderNodes(cmd, resources, scene.getShadedNodes(nvvkgltf::Scene::eRasterSolid));
+  renderNodes(cmd, resources, scene.getShadedNodes(nvvkgltf::Scene::eRasterSolidDoubleSided));
+  renderNodes(cmd, resources, scene.getShadedNodes(nvvkgltf::Scene::eRasterBlend));
+  vkCmdEndRendering(cmd);
+
+  nvvk::cmdImageMemoryBarrier(cmd, {m_shadowMap.image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, depthRange});
 }
 
 void Rasterizer::renderBlendOnly(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderExtent)
 {
   // No profiler section here: see comment in renderOpaqueOnly() -- this is also called from
   // a secondary command buffer recorded once and replayed every frame.
-  cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader, m_fragmentShader);
+  cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader,
+                          m_fragmentShader, m_shadowDescPack.getSet(0));
 
   VkBool32 blendEnable  = VK_TRUE;
   VkBool32 blendDisable = VK_FALSE;

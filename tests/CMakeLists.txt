@@ -86,6 +86,10 @@ set(TEST_SOURCES
     # Phase 5a: NOAA sun position, checked against astronomy rather than recorded output
     test_sun_position.cpp
     ${CMAKE_SOURCE_DIR}/src/sun_position.cpp
+    # Native P4a: the Light tab's state and unit conversions, and where the sun's shadow map goes
+    test_fv_lighting.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_lighting.cpp
+    test_shadow_fit.cpp
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Optional external generation bridge

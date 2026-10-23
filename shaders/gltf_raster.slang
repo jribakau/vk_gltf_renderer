@@ -39,6 +39,7 @@
 #include "nvshaders/light_contrib.h.slang"
 
 #include "sky_background.h.slang"  // makeSkySunLight
+#include "ground.h.slang"
 #include "aerial_perspective.h.slang"
 #include "gltf_light_ies.h.slang"
 #include "nvshaders/pbr_ggx_microfacet.h.slang"
@@ -65,7 +66,100 @@
 [[vk::binding(2, 1)]] Sampler3D<float4>                       g_singleMie;
 [[vk::binding(3, 1)]] Sampler2D<float3>                       g_irradiance;
 [[vk::binding(4, 1)]] ConstantBuffer<SkyAtmosphereParameters> g_atmosphere;
+
+// Set 2 is the rasterizer's sun shadow map (Rasterizer::renderShadowMap): depth along the shadow
+// light, a comparison sampler for the filter and a point sampler for the blocker search.
+[[vk::binding(0, 2)]] Texture2D<float>        g_shadowMap;
+[[vk::binding(1, 2)]] SamplerComparisonState  g_shadowCompare;
+[[vk::binding(2, 2)]] SamplerState            g_shadowPoint;
 // clang-format on
+
+// Interleaved gradient noise (Jimenez 2014): a per-pixel rotation that turns the filter's banding
+// into fine grain.
+float interleavedGradientNoise(float2 pixel)
+{
+  return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+
+// The i-th of n points of a Vogel (golden-angle) disk of radius 1, turned by `phi`.
+float2 vogelDisk(int i, int n, float phi)
+{
+  const float r     = sqrt((float(i) + 0.5) / float(n));
+  const float theta = float(i) * 2.39996323 + phi;
+  return r * float2(cos(theta), sin(theta));
+}
+
+// How much of the shadow light reaches `worldPos`: 1 lit, 0 in shadow.
+//
+// Contact-hardening soft shadows (PCSS). A blocker search finds the average occluder depth, the
+// penumbra is (receiver - blocker) x tan(the light's angular radius) -- the same angular size the
+// path tracer samples the light's disk with, so one softness matches between the two -- and a
+// rotated Vogel-disk PCF filters over it. Without contact hardening the radius is fixed by the
+// light's size at a typical occluder distance. Everything is in metres until the last step.
+float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angularSize, float2 pixel)
+{
+  SceneFrameInfo* fi = pushConst.frameInfo;
+
+  // Offset along the normal by how grazing the light is: what the depth bias alone cannot fix.
+  const float  NoL      = dot(geoNormal, toLight);
+  const float3 n        = NoL < 0.0 ? -geoNormal : geoNormal;
+  const float  sinTheta = sqrt(saturate(1.0 - NoL * NoL));
+  const float3 p        = worldPos + n * fi.shadowNormalBias * max(sinTheta, 0.2);
+
+  const float4 clip = mul(float4(p, 1.0), fi.shadowViewProj);
+  const float2 uv   = clip.xy * 0.5 + 0.5;
+  if(any(uv < 0.0) || any(uv > 1.0) || clip.z <= 0.0)
+    return 1.0;  // outside the box: nothing there casts
+  // Past the far plane is beyond every caster: shadowed wherever the map has a blocker.
+  const float receiver = min(clip.z, 1.0) - fi.shadowBias / fi.shadowDepthRange;
+
+  const float tanHalf    = tan(0.5 * angularSize);
+  const float uvPerMetre = 1.0 / (fi.shadowTexelWorld * float(fi.shadowMapSize));
+  const float maxRadius  = 48.0 * fi.shadowTexelWorld;
+  const float phi        = interleavedGradientNoise(pixel) * 6.28318531;
+
+  float radius;
+  if(fi.shadowContactHardening != 0)
+  {
+    // The widest penumbra any occluder could throw here comes from one at the near plane.
+    const float search = clamp(receiver * fi.shadowDepthRange * tanHalf, 2.0 * fi.shadowMinRadius, maxRadius);
+    float       sum    = 0.0;
+    int         count  = 0;
+    [unroll]
+    for(int i = 0; i < 16; ++i)
+    {
+      const float d = g_shadowMap.SampleLevel(g_shadowPoint, uv + vogelDisk(i, 16, phi) * search * uvPerMetre, 0.0);
+      if(d < receiver)
+      {
+        sum += d;
+        ++count;
+      }
+    }
+    if(count == 0)
+      return 1.0;
+    const float blocker = sum / float(count);
+    radius              = (receiver - blocker) * fi.shadowDepthRange * tanHalf;
+  }
+  else
+  {
+    radius = 0.25 * fi.shadowDepthRange * tanHalf;
+  }
+  radius = clamp(radius, fi.shadowMinRadius, maxRadius);
+
+  float lit = 0.0;
+  [unroll]
+  for(int i = 0; i < 32; ++i)
+    lit += g_shadowMap.SampleCmpLevelZero(g_shadowCompare, uv + vogelDisk(i, 32, phi) * radius * uvPerMetre, receiver);
+  return lit / 32.0;
+}
+
+// The shadow term for light `lightIndex` of the raster light loop: 1 unless it is the shadow light.
+float lightShadow(int lightIndex, GltfLight light, float3 worldPos, float3 geoNormal, float2 pixel)
+{
+  if(lightIndex != pushConst.frameInfo.shadowLightIndex || light.type != LightType::eLightTypeDirectional)
+    return 1.0;
+  return sunShadow(worldPos, geoNormal, -light.direction, light.angularSizeOrInvRange, pixel);
+}
 
 
 // Define the vertex attributes that will be provided by the vertex buffer
@@ -476,6 +570,9 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, hit.pos);  // EXT_lights_ies
     if(all(contrib.intensity == 0.0))
       continue;
+    contrib.intensity *= lightShadow(i, light, hit.pos, hit.geonrm, input.position.xy);
+    if(all(contrib.intensity == 0.0))
+      continue;
 
     // contrib.incidentVector points from the light toward the surface (= propagation direction).
     // The evaluator wants the unnormalized surface-to-light vector (length matters for the
@@ -545,5 +642,185 @@ PixelOutput fragmentWireframeMain(VertexOutput input)
 #ifdef HAS_DLSS_MOTION
   output.motion = float2(0.0);
 #endif
+  return output;
+}
+
+//------------------------------------------------------------------------------
+// Sun shadow map (Rasterizer::renderShadowMap): depth along the shadow light.
+//------------------------------------------------------------------------------
+struct ShadowVertexOutput
+{
+  float4 position : SV_Position;
+};
+
+[shader("vertex")]
+ShadowVertexOutput vertexShadowMain(VertexInput input)
+{
+  GltfRenderNode     renderNode = pushConst.gltfScene.renderNodes[pushConst.renderNodeID];
+  const float3       pos        = mul(float4(input.position, 1.0), renderNode.objectToWorld).xyz;
+  ShadowVertexOutput output;
+  output.position = mul(float4(pos, 1.0), pushConst.frameInfo.shadowViewProj);
+  return output;
+}
+
+// Opaque surfaces only write depth. A mask material is cut at its cutoff, as it is drawn; a blended
+// one is hashed against its opacity, so hair cards and lashes cast the cutout shadow their texture
+// says, and a nearly clear surface (an eye's moisture layer) casts almost none.
+[shader("fragment")]
+void fragmentShadowMain(ShadowVertexOutput input, uint primitiveID: SV_PrimitiveID, float3 baryWeights: SV_Barycentrics)
+{
+  GltfShadeMaterial material = pushConst.gltfScene->materials[pushConst.materialID];
+  if(material.alphaMode == AlphaMode::eAlphaModeOpaque)
+    return;
+
+  GltfRenderNode      renderNode      = pushConst.gltfScene->renderNodes[pushConst.renderNodeID];
+  GltfRenderPrimitive renderPrimitive = pushConst.gltfScene->renderPrimitives[pushConst.renderPrimID];
+  const float3        rayDir          = normalize(float3(0.0, -1.0, 0.0));
+  HitState hit = getHitState(renderPrimitive, baryWeights, renderNode.worldToObject, renderNode.objectToWorld, primitiveID, rayDir);
+
+  MeshState mesh          = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false, 0.0f);
+  mesh.baseColorVertexMul = hit.color;
+  PbrMaterial pbrMat      = evaluateMaterial(material, mesh, allImages, allSamplers, pushConst.gltfScene->textureInfos);
+
+  if(material.alphaMode == AlphaMode::eAlphaModeMask)
+  {
+    if(pbrMat.opacity < material.alphaCutoff)
+      discard;
+    return;
+  }
+  const float coverage = pbrMat.opacity * (1.0 - pbrMat.transmission);
+  if(coverage <= interleavedGradientNoise(input.position.xy))
+    discard;
+}
+
+//------------------------------------------------------------------------------
+// Ground (Rasterizer::renderGround): the infinite plane, as one fullscreen triangle.
+//------------------------------------------------------------------------------
+struct GroundVertexOutput
+{
+  float4 position : SV_Position;
+};
+
+[shader("vertex")]
+GroundVertexOutput vertexGroundMain(uint vertexId: SV_VertexID)
+{
+  const float2       uv = float2(float((vertexId << 1) & 2), float(vertexId & 2));
+  GroundVertexOutput output;
+  output.position = float4(uv * 2.0 - 1.0, 0.5, 1.0);
+  return output;
+}
+
+struct GroundOutput
+{
+  float4 color : SV_TARGET0;
+  float4 selection : SV_TARGET1;
+#ifdef HAS_DLSS_MOTION
+  float2 motion : SV_TARGET2;
+#endif
+  float depth : SV_Depth;
+};
+
+// A world-space point on the pixel's camera ray at NDC depth `z`.
+float3 unprojectPixel(float2 ndc, float z)
+{
+  float4 v = mul(float4(ndc, z, 1.0), pushConst.frameInfo.projInv);
+  v /= v.w;
+  return mul(float4(v.xyz, 1.0), pushConst.frameInfo.viewInv).xyz;
+}
+
+// Intersect the pixel's ray with the plane and draw it there, with its own depth, so the scene
+// occludes it and it occludes what is under it. A floor is lit as the path tracer lights its plane
+// -- image-based light plus the punctual lights, the shadow light through the shadow map -- and
+// fades out at the edge of its disk; a shadow catcher draws nothing but the darkening it catches.
+[shader("fragment")]
+GroundOutput fragmentGroundMain(GroundVertexOutput input)
+{
+  SceneFrameInfo* fi = pushConst.frameInfo;
+  GroundOutput    output;
+  output.selection = float4(0.0);
+
+  // The scene is drawn jittered (see vertexMain); the ray is the unjittered pixel's.
+  const float2 ndc = (input.position.xy / fi.imageSize) * 2.0 - 1.0 + fi.jitter * (2.0 / fi.imageSize);
+
+  // Two points on the ray, at depths every projection here maps to finite points, then the ray
+  // through them oriented away from the camera and started at the eye's plane.
+  const float3 a       = unprojectPixel(ndc, 0.25);
+  const float3 b       = unprojectPixel(ndc, 0.75);
+  const float3 eye     = float3(fi.viewInv[3].x, fi.viewInv[3].y, fi.viewInv[3].z);
+  const float3 forward = normalize(mul(float4(0.0, 0.0, -1.0, 0.0), fi.viewInv).xyz);
+  float3       dir     = normalize(b - a);
+  if(dot(dir, forward) < 0.0)
+    dir = -dir;
+  const float3 origin = a - dir * dot(a - eye, dir);
+
+  const float planeY = fi.infinitePlaneDistance;
+  if(origin.y <= planeY || dir.y >= -1e-6)
+    discard;  // below the plane, or looking at or above the horizon
+  const float  t = (planeY - origin.y) / dir.y;
+  const float3 P = origin + dir * t;
+
+  const float fade = groundFadeWeight(P, fi);
+  if(fade <= 0.0)
+    discard;
+
+  const float4 clip = mul(float4(P, 1.0), fi.viewProjMatrix);
+  output.depth      = clip.z / clip.w;
+#ifdef HAS_DLSS_MOTION
+  output.motion = calculateMotionVector(clip, mul(float4(P, 1.0), fi.prevMVP), fi.imageSize);
+#endif
+
+  const float3 up = float3(0.0, 1.0, 0.0);
+  const float3 V  = -dir;
+
+  const int lightCount = pushConst.gltfScene.numLights + (fi.rendererSunLight != 0 ? 1 : 0);
+
+  if(hasFlag(fi.flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
+  {
+    float shadow = 1.0;
+    const int i  = fi.shadowLightIndex;
+    if(i >= 0 && i < lightCount)
+    {
+      GltfLight light = (i >= pushConst.gltfScene.numLights) ? makeSkySunLight(fi) : pushConst.gltfScene.lights[i];
+      applySkySunLight(light, i, fi);
+      if(dot(up, -light.direction) > 0.0 && any(light.color * light.intensity > 0.0))
+        shadow = sunShadow(P, up, -light.direction, light.angularSizeOrInvRange, input.position.xy);
+    }
+    const float alpha = fade * groundCatcherStrength(fi) * (1.0 - shadow);
+    if(alpha <= 1.0 / 512.0)
+      discard;
+    output.color = float4(0.0, 0.0, 0.0, alpha);
+    return output;
+  }
+
+  PbrMaterial mat = defaultPbrMaterial(fi.infinitePlaneBaseColor, fi.infinitePlaneMetallic, fi.infinitePlaneRoughness, up, up);
+
+  float3 contribution = float3(0.0);
+  if(!hasFlag(fi.flags, SceneFrameInfoFlags::eSceneUseNoEnvironment))
+  {
+    contribution += evalKhronosIBL(mat, V, texturesCube[HDR_DIFFUSE_INDEX], texturesCube[HDR_GLOSSY_INDEX],
+                                   texturesHdr[HDR_LUT_INDEX], texturesHdr[HDR_SHEEN_INDEX], fi.envRotation,
+                                   fi.envIntensity, 0.0, float3(0.0), false);
+  }
+
+  for(int i = 0; i < lightCount; i++)
+  {
+    GltfLight light = (i >= pushConst.gltfScene.numLights) ? makeSkySunLight(fi) : pushConst.gltfScene.lights[i];
+    applySkySunLight(light, i, fi);
+    LightContrib contrib = singleLightContribution(light, P, up);
+    contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, P);
+    if(all(contrib.intensity == 0.0))
+      continue;
+    contrib.intensity *= lightShadow(i, light, P, up, input.position.xy);
+    if(all(contrib.intensity == 0.0))
+      continue;
+    const float3 pointToLight =
+        (light.type == LightType::eLightTypeDirectional) ? -contrib.incidentVector : -contrib.incidentVector * contrib.distance;
+    contribution += bsdfEvaluatePunctualKhronos(mat, V, pointToLight, contrib.intensity, float3(0.0), 0.0, texturesHdr[HDR_SHEEN_INDEX]);
+  }
+
+  if(hasAerialPerspective(fi))
+    contribution = applyAerialPerspective(contribution, P, eye, fi, g_atmosphere, g_transmittance, g_irradiance);
+
+  output.color = float4(contribution, fade);
   return output;
 }

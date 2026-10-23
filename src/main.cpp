@@ -635,7 +635,7 @@ auto main(int argc, char** argv) -> int
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
       // the Figure Viewer's scene, driven over the protocol the stream serves
-      app.addElement(std::make_shared<FvHost>(r, protocol));
+      app.addElement(std::make_shared<FvHost>(r, protocol, &parameterRegistry));
       // a traced live edit is logged once the frame showing it is encoded
       r->setEditTraceSink([weak = std::weak_ptr<FrameStream>(frameStream)](LatencyTrace t) {
         if(auto fs = weak.lock())

@@ -37,13 +37,21 @@
 //   morph.set       {figure, values: {name: value}}   coalesced, one setMany per frame
 //   morph.reset     {figure}
 //   render.mode     {mode: "raster" | "rtx"}
+//   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
+//   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
+//   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
 //   session.shutdown {}                          a clean exit, before the host ends the process
+//
+// Lighting: the environment, tone mapping, the raster shadow map and the ground are renderer
+// parameters; the sun is a directional light the host adds to every model it loads, marked as the
+// sky's sun. An HDR decodes on a worker (a "jobs" entry) and uploads on the application thread. An
+// environment preset .duf sets the HDR from its library and turns the sun off.
 //
 // Camera, selection and display commands live in fv_view.hpp. A .duf that is a pose preset is
 // applied by `load` to the figure already loaded; other presets are reported and left alone.
 //
 // Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "morphs/<figure>", "render",
-// "selection". "pose/<figure>" carries `eyes` (whether the figure can look at the camera).
+// "selection", "lighting" (the lighting.set shape, plus read-only env.name, env.size, env.loading). "pose/<figure>" carries `eyes` (whether the figure can look at the camera).
 // "morphs/<figure>" is the visible channels ({label, group, value, min, max, weight, order}); a new
 // channel list replaces it, and value or weight changes arrive as a merge patch. A figure's busy()
 // line is a "jobs" entry, and takeWarnings() goes to "notices".
@@ -56,11 +64,15 @@
 
 class GltfRenderer;
 class FvProtocol;
+namespace nvutils {
+class ParameterRegistry;
+}
 
 class FvHost : public nvapp::IAppElement
 {
 public:
-  FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol);
+  // `registry` holds the renderer's parameters, which lighting and params.* write.
+  FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvutils::ParameterRegistry* registry);
   ~FvHost() override;
 
   void onAttach(nvapp::Application* app) override;
