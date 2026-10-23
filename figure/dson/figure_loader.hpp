@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include <figure/dson/morphs.hpp>
 #include <figure/dson/rig.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/scene/graph.hpp>
@@ -41,6 +42,37 @@ struct LoadOptions
   int subdivision = 0;
 };
 
+// A morph dial a scene file sets, and the node or geometry instance it sits on: a character's shape
+// dials sit on the figure, a prop's on that one copy of it.
+struct SceneDial
+{
+  // the modifier: library file and id
+  std::string file, id;
+  std::string owner;
+  double      value = 0;
+};
+
+// What the morph engine (figure/figure.hpp) needs from a load.
+struct MorphContext
+{
+  // the meshes morphs can target
+  std::vector<MeshRef> meshes;
+  // the main figure's meshes (indices into `meshes`)
+  std::vector<size_t> mainMeshes;
+  // the scene node of the main figure; "" without one
+  std::string mainNode;
+  // the figure's own node and meshes' owner ids: dials on these are the main figure's
+  std::set<std::string> mainOwners;
+  // every non-zero morph dial the scene sets
+  std::vector<SceneDial> dials;
+  // scene node or geometry instance id -> the worn item it belongs to (index into LoadResult::items)
+  std::map<std::string, int> itemOf;
+  // "<figure folder>/Morphs", library-relative; empty without a figure
+  std::string morphDir;
+  // the scene recorded where its shape put the main figure's joints
+  bool previewCenters = false;
+};
+
 struct LoadResult
 {
   SceneGraph  scene;
@@ -51,6 +83,7 @@ struct LoadResult
   int               mainRig   = -1;
   int               mainGroup = -1;
   std::vector<Item> items;
+  MorphContext             morphs;
   std::vector<std::string> warnings;
   // library files referenced but not installed
   std::vector<std::string> missing;

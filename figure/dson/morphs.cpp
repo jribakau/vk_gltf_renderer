@@ -1,0 +1,346 @@
+#include <figure/dson/morphs.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <regex>
+
+namespace fv::dson {
+
+namespace {
+
+std::string lower(std::string s)
+{
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return s;
+}
+
+bool endsWith(const std::string& s, const char* suffix)
+{
+  const size_t n = std::char_traits<char>::length(suffix);
+  return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+// "Genesis8Female:/data/...#x?value" -> "/data/...#x?value"
+std::string stripNode(const std::string& url)
+{
+  const size_t colon = url.find(':');
+  if(colon != std::string::npos && colon + 1 < url.size() && (url[colon + 1] == '/' || url[colon + 1] == '#'))
+    return url.substr(colon + 1);
+  return url;
+}
+
+// `prefer`: the meshes of the scene node the dial sits on, tried first at each step
+const MeshRef* targetFor(const Json& mod, const std::string& file, const std::vector<MeshRef>& meshes, const std::vector<size_t>* prefer)
+{
+  const Json*       morph  = get(&mod, "morph");
+  const std::string parent = getString(&mod, "parent");
+  const size_t      hash   = parent.find('#');
+  const std::string pid    = hash != std::string::npos ? decodeUri(parent.substr(hash + 1)) : "";
+  std::string       pfile  = file;
+  if(hash != std::string::npos && hash > 0)
+  {
+    pfile = decodeUri(parent.substr(0, hash));
+    pfile.erase(0, std::min(pfile.find_first_not_of('/'), pfile.size()));
+  }
+  const std::string key = lower(pfile + "#" + pid);
+  auto              byKey = [&](const std::vector<size_t>* list) -> const MeshRef* {
+    if(list)
+    {
+      for(size_t i : *list)
+        if(meshes[i].geometryKey == key)
+          return &meshes[i];
+      return nullptr;
+    }
+    for(const MeshRef& m : meshes)
+      if(m.geometryKey == key)
+        return &m;
+    return nullptr;
+  };
+  if(const MeshRef* found = (prefer ? byKey(prefer) : nullptr))
+    return found;
+  if(const MeshRef* found = byKey(nullptr))
+    return found;
+  // parent is often the figure node, not its geometry: fall back to vertex count
+  const Json* count = get(morph, "vertex_count");
+  auto        byCount = [&](const std::vector<size_t>* list) -> const MeshRef* {
+    const int n = count->get<int>();
+    if(list)
+    {
+      for(size_t i : *list)
+        if(meshes[i].geo->dsonVertexCount == n)
+          return &meshes[i];
+      return nullptr;
+    }
+    for(const MeshRef& m : meshes)
+      if(m.geo->dsonVertexCount == n)
+        return &m;
+    return nullptr;
+  };
+  // a stated vertex count that matches nothing is a morph for a different mesh, not this one.
+  // HD morphs (a character's full-body shape among them) state -1: that says nothing.
+  if(count && count->is_number() && count->get<double>() > 0)
+  {
+    if(const MeshRef* m = (prefer ? byCount(prefer) : nullptr))
+      return m;
+    return byCount(nullptr);
+  }
+  if(prefer && !prefer->empty())
+    return &meshes[(*prefer)[0]];
+  return meshes.empty() ? nullptr : &meshes[0];
+}
+
+}  // namespace
+
+bool hiddenMorph(const std::string& name)
+{
+  static const std::regex re(R"(^(pjcm|pbmc|pcmc|jcm|mcm|pmcm|facs_jnt|facs_cbs|body_cbs|head_cbs|ctrl_?jcm)|_hd\d?$|HDLv\d)", std::regex::icase);
+  return std::regex_search(name, re);
+}
+
+std::string groupFromPath(const std::string& file)
+{
+  std::vector<std::string> parts;
+  size_t                   start = 0;
+  for(;;)
+  {
+    const size_t slash = file.find('/', start);
+    parts.push_back(file.substr(start, slash == std::string::npos ? std::string::npos : slash - start));
+    if(slash == std::string::npos)
+      break;
+    start = slash + 1;
+  }
+  for(size_t i = 0; i < parts.size(); i++)
+    if(lower(parts[i]) == "morphs")
+      return parts.size() > i + 2 ? parts[i + 2] : "Morphs";
+  return "Morphs";
+}
+
+std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, const std::vector<MeshRef>& meshes, const std::vector<size_t>* prefer)
+{
+  struct Found
+  {
+    const Json*    mod;
+    const MeshRef* fm;
+    mesh::CageDeltas deltas;
+  };
+  std::vector<Found> found;
+  const Json*        mods = get(&doc.json, "modifier_library");
+  if(!mods || !mods->is_array())
+    return {};
+  for(const Json& mod : *mods)
+  {
+    const Json* values = get(get(get(&mod, "morph"), "deltas"), "values");
+    const auto  deltas = doc.rows(values);
+    if(!deltas || !deltas->count)
+      continue;
+    const MeshRef* fm = targetFor(mod, file, meshes, prefer);
+    if(!fm)
+      continue;
+    Found f{&mod, fm, {}};
+    f.deltas.verts.resize(size_t(deltas->count));
+    f.deltas.deltas.resize(size_t(deltas->count) * 3);
+    for(int i = 0; i < deltas->count; i++)
+    {
+      f.deltas.verts[size_t(i)]          = toInt32(deltas->cell(i, 0));
+      f.deltas.deltas[size_t(i) * 3]     = float(deltas->cell(i, 1));
+      f.deltas.deltas[size_t(i) * 3 + 1] = float(deltas->cell(i, 2));
+      f.deltas.deltas[size_t(i) * 3 + 2] = float(deltas->cell(i, 3));
+    }
+    found.push_back(std::move(f));
+  }
+  std::vector<MorphDef> out;
+  for(const Found& f : found)
+  {
+    auto target = std::make_shared<mesh::RenderTarget>(mesh::target(*f.fm->geo, f.deltas));
+    if(target->indices.empty())
+      continue;
+    const Json* ch = get(f.mod, "channel");
+    MorphDef    def;
+    def.id = getString(f.mod, "id");
+    MorphPart part;
+    part.mesh   = f.fm->mesh;
+    part.target = std::move(target);
+    // the channel's label, else the modifier's label, else its name
+    for(const Json* v : {get(ch, "label"), get(f.mod, "label"), get(f.mod, "name")})
+      if(v && v->is_string())
+      {
+        part.label    = v->get<std::string>();
+        part.hasLabel = true;
+        break;
+      }
+    const Json* clamped = get(ch, "clamped");
+    const bool  limited = !(clamped && clamped->is_boolean() && !clamped->get<bool>());
+    const Json* lo      = get(ch, "min");
+    const Json* hi      = get(ch, "max");
+    part.min = lo && lo->is_number() && limited ? std::max(-1.0, lo->get<double>()) : 0;
+    part.max = hi && hi->is_number() && limited ? std::min(2.0, hi->get<double>()) : 1;
+    def.parts.push_back(std::move(part));
+    out.push_back(std::move(def));
+  }
+  return out;
+}
+
+namespace {
+
+TargetPtr scaled(const TargetPtr& t, double k)
+{
+  if(k == 1)
+    return t;
+  auto out = std::make_shared<mesh::RenderTarget>(*t);
+  for(float& v : out->deltas)
+    v = float(v * k);
+  for(float& v : out->cageDeltas)
+    v = float(v * k);
+  return out;
+}
+
+// the morph whose value a formula writes, or none for other outputs (bone centres, rotations...)
+std::optional<Ref> formulaTarget(const Json* output, const std::string& currentFile)
+{
+  if(!output || !output->is_string() || !endsWith(output->get<std::string>(), "?value"))
+    return std::nullopt;
+  auto ref = parseRef(stripNode(output->get<std::string>()), currentFile);
+  if(!ref || ref->id.empty())
+    return std::nullopt;
+  return ref;
+}
+
+// k when the operations compute `<id>.value * k` (or just `<id>.value`), otherwise none
+std::optional<double> linearFactor(const Json* ops, const std::string& id)
+{
+  if(!ops || !ops->is_array())
+    return std::nullopt;
+  auto isInput = [&](const Json& o) {
+    if(getString(&o, "op") != "push")
+      return false;
+    const Json* url = get(&o, "url");
+    if(!url || !url->is_string() || !endsWith(url->get<std::string>(), "?value"))
+      return false;
+    auto ref = parseRef(stripNode(url->get<std::string>()), "");
+    return ref && ref->id == id;
+  };
+  auto isConst = [](const Json& o) {
+    const Json* v = get(&o, "val");
+    return getString(&o, "op") == "push" && v && v->is_number();
+  };
+  if(ops->size() == 1 && isInput((*ops)[0]))
+    return 1.0;
+  if(ops->size() == 3 && getString(&(*ops)[2], "op") == "mult")
+  {
+    if(isInput((*ops)[0]) && isConst((*ops)[1]))
+      return (*ops)[1]["val"].get<double>();
+    if(isConst((*ops)[0]) && isInput((*ops)[1]))
+      return (*ops)[0]["val"].get<double>();
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+std::vector<DrivenMorph> drivenMorphs(Store& store, const std::string& file, const std::string& id, double weight, int depth)
+{
+  auto        doc  = store.load(file);
+  const Json* mods = get(&doc->json, "modifier_library");
+  if(!mods || !mods->is_array())
+    return {};
+  const Json* mod = nullptr;
+  for(const Json& m : *mods)
+    if(getString(&m, "id") == id)
+    {
+      mod = &m;
+      break;
+    }
+  if(!mod)
+    return {};
+  std::vector<DrivenMorph> out;
+  if(doc->hasRows(get(get(get(mod, "morph"), "deltas"), "values")))
+    out.push_back({file, id, weight});
+  if(depth < 4)
+  {
+    // the driver's file usually holds its formulas, on the driver itself or on a sibling modifier
+    for(const Json& m : *mods)
+    {
+      const Json* formulas = get(&m, "formulas");
+      if(!formulas || !formulas->is_array())
+        continue;
+      for(const Json& f : *formulas)
+      {
+        const Json* stage = get(&f, "stage");
+        if(stage && stage->is_string() && !stage->get<std::string>().empty() && stage->get<std::string>() != "sum")
+          continue;
+        const auto target = formulaTarget(get(&f, "output"), file);
+        const auto k      = linearFactor(get(&f, "operations"), id);
+        if(!target || !k || *k == 0 || (target->file == file && target->id == id))
+          continue;
+        // a driven morph that isn't installed: the store records it and the loader reports it
+        try
+        {
+          for(DrivenMorph& d : drivenMorphs(store, target->file, target->id, weight * *k, depth + 1))
+            out.push_back(std::move(d));
+        }
+        catch(const std::exception&)
+        {
+        }
+      }
+    }
+  }
+  std::vector<DrivenMorph>             merged;
+  std::map<std::string, size_t>        at;
+  for(DrivenMorph& d : out)
+  {
+    const std::string key = lower(d.file + "#" + d.id);
+    if(auto it = at.find(key); it != at.end())
+      merged[it->second].weight += d.weight;
+    else
+    {
+      at[key] = merged.size();
+      merged.push_back(std::move(d));
+    }
+  }
+  return merged;
+}
+
+std::vector<MorphPart> loadMorphFile(Store& store, const std::string& file, const std::vector<MeshRef>& meshes)
+{
+  auto                   doc = store.load(file);
+  std::vector<MorphPart> own;
+  for(MorphDef& m : morphsFromDoc(*doc, file, meshes))
+    for(MorphPart& p : m.parts)
+      own.push_back(std::move(p));
+  if(!own.empty())
+    return own;
+  std::vector<MorphPart> out;
+  const Json*            mods = get(&doc->json, "modifier_library");
+  if(!mods || !mods->is_array())
+    return out;
+  for(const Json& mod : *mods)
+  {
+    std::string label = getString(get(&mod, "channel"), "label");
+    if(label.empty())
+      label = getString(&mod, "label");
+    for(const DrivenMorph& d : drivenMorphs(store, file, getString(&mod, "id")))
+    {
+      auto ddoc = store.load(d.file);
+      for(MorphDef& m : morphsFromDoc(*ddoc, d.file, meshes))
+      {
+        if(m.id != d.id)
+          continue;
+        for(MorphPart& p : m.parts)
+        {
+          MorphPart q = p;
+          if(!label.empty())
+          {
+            q.label    = label;
+            q.hasLabel = true;
+          }
+          q.target = scaled(p.target, d.weight);
+          out.push_back(std::move(q));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+}  // namespace fv::dson

@@ -3864,6 +3864,31 @@ void GltfRenderer::setNodeTransforms(std::span<const NodeTransform> transforms)
     requestAnimationReconcile();
 }
 
+bool GltfRenderer::setInverseBindMatrices(int skin, std::span<const glm::mat4> ibm)
+{
+  nvvkgltf::Scene* scn = m_resources.getScene();
+  if(!scn || !scn->valid() || skin < 0 || skin >= int(scn->getModel().skins.size()))
+    return false;
+  if(!scn->animation().setInverseBindMatrices(skin, ibm))
+    return false;
+  scn->markSkinRenderNodesRtxDirty(skin);
+  requestAnimationReconcile();
+  return true;
+}
+
+std::vector<int> GltfRenderer::renderPrimitivesOfMesh(int gltfMesh) const
+{
+  std::vector<int>       out;
+  const nvvkgltf::Scene* scn = m_resources.getScene();
+  if(!scn || !scn->valid())
+    return out;
+  const auto& prims = scn->getRenderPrimitives();
+  for(size_t i = 0; i < prims.size(); i++)
+    if(prims[i].meshID == gltfMesh)
+      out.push_back(int(i));
+  return out;
+}
+
 void GltfRenderer::setRenderSystem(RenderingMode mode)
 {
   if(m_resources.settings.renderSystem == mode)

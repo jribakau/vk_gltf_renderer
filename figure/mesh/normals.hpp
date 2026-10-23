@@ -30,8 +30,10 @@ public:
 
   // Recomputes the normals the moved drawn vertices `moved` affect: every vertex of a triangle that
   // touches one. Returns the range of drawn vertices written (inclusive), or none when nothing was.
-  // Falls back to `full` when most of the mesh moved.
-  std::optional<std::pair<uint32_t, uint32_t>> partial(std::span<const float> position, std::span<float> out, std::span<const uint32_t> moved);
+  // Falls back to `full` when most of the mesh moved. `written`, when given, receives the drawn
+  // vertices written (empty after a full recompute, which wrote them all).
+  std::optional<std::pair<uint32_t, uint32_t>> partial(std::span<const float> position, std::span<float> out, std::span<const uint32_t> moved,
+                                                       std::vector<uint32_t>* written = nullptr);
 
 private:
   void adjacency();

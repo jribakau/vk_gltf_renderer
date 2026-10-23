@@ -33,11 +33,16 @@
 //   load            {path} or {rel}              -> {job}; the figure replaces the scene when done
 //   pose.set        {figure, values: {"bone/kind/axis": value}}
 //   pose.reset      {figure}
+//   morph.set       {figure, values: {name: value}}   coalesced, one setMany per frame
+//   morph.reset     {figure}
 //   render.mode     {mode: "raster" | "rtx"}
 //   camera.frame    {}
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
-// Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "render".
+// Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "morphs/<figure>", "render".
+// "morphs/<figure>" is the visible channels ({label, group, value, min, max, weight, order}); a new
+// channel list replaces it, and value or weight changes arrive as a merge patch. A figure's busy()
+// line is a "jobs" entry, and takeWarnings() goes to "notices".
 //
 
 #include <memory>

@@ -46,6 +46,12 @@ std::string lastSegment(const std::string& s, char sep)
   return at == std::string::npos ? s : s.substr(at + 1);
 }
 
+std::string lowerCase(std::string s)
+{
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return s;
+}
+
 std::string replaceAll(std::string s, const std::string& from, const std::string& to)
 {
   for(size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()))
@@ -390,6 +396,20 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     }
   }
 
+  // Morph dials the scene sets, and the node or geometry instance each one sits on
+  if(const Json* mods = get(sceneJson, "modifiers"); mods && mods->is_array())
+    for(const Json& m : *mods)
+    {
+      const Json* url = get(&m, "url");
+      if(!url || !url->is_string() || channelValue(get(&m, "channel")) == 0)
+        continue;
+      auto ref = parseRef(url->get<std::string>(), file);
+      if(!ref || ref->id.empty())
+        continue;
+      auto owner = parseRef(getString(&m, "parent"), file);
+      out.morphs.dials.push_back({ref->file, ref->id, owner ? owner->id : std::string(), channelValue(get(&m, "channel"))});
+    }
+
   // ---- node definitions, then groups and rigs in file order (parents before children)
   std::vector<std::string> skipped;
   auto                     skip = [&](const Json& node, const std::string& why, bool missingFile) {
@@ -534,6 +554,12 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     int rig = -1;
     if(resolved && type == "figure")
     {
+      // the first figure's folder holds the morphs of the figure that is posed
+      if(out.morphs.morphDir.empty())
+      {
+        const size_t slash = resolved->file.rfind('/');
+        out.morphs.morphDir = (slash == std::string::npos ? std::string() : resolved->file.substr(0, slash)) + "/Morphs";
+      }
       const Json* lib     = get(&resolved->doc->json, "node_library");
       const Json  empty   = Json::array();
       const Json& library = lib ? *lib : empty;
@@ -583,7 +609,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   for(const MeshJob& job : jobs)
   {
     std::vector<int>  made;
-    std::vector<Mesh> pending;
+    std::vector<Mesh>    pending;
+    std::vector<MeshRef> pendingRefs;
     try
     {
       const Json* geos = get(job.node, "geometries");
@@ -743,17 +770,27 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         }
 
         meshOut.name = firstString({{&geo, "label"}, {&geo, "name"}}, gid);
+        {
+          MeshRef ref;
+          ref.geo         = meshOut.geo;
+          ref.geometryKey = lowerCase(gres->file + "#" + getString(&geo, "id"));
+          ref.owners      = {getString(job.node, "id"), gid};
+          pendingRefs.push_back(std::move(ref));
+        }
         pending.push_back(std::move(meshOut));
       }
       // a node whose build fails adds none of its meshes
-      for(Mesh& m : pending)
+      for(size_t pi = 0; pi < pending.size(); pi++)
       {
-        Node meshNode;
+        Mesh& m = pending[pi];
+        Node  meshNode;
         meshNode.name = m.name;
         meshNode.kind = NodeKind::eMesh;
         // the node's own mesh only: its children (a strand hair conforming to a hidden growth cap) stay
         meshNode.visible = !hiddenNode(job.node);
         meshNode.mesh    = int(scene.meshes.size());
+        pendingRefs[pi].mesh = meshNode.mesh;
+        out.morphs.meshes.push_back(std::move(pendingRefs[pi]));
         scene.meshes.push_back(std::move(m));
         made.push_back(scene.add(std::move(meshNode)));
       }
@@ -792,6 +829,21 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     m.boneInverses.clear();
     for(int b : m.bones)
       m.boneInverses.push_back(inverse(worlds[b]));
+  }
+
+  // what the morph engine works from
+  out.morphs.mainNode = mainNode;
+  out.morphs.itemOf.insert(itemOf.begin(), itemOf.end());
+  if(!mainNode.empty())
+  {
+    out.morphs.mainOwners.insert(mainNode);
+    for(size_t i = 0; i < out.morphs.meshes.size(); i++)
+      if(out.morphs.meshes[i].owners[0] == mainNode)
+      {
+        out.morphs.mainMeshes.push_back(i);
+        out.morphs.mainOwners.insert(out.morphs.meshes[i].owners.begin(), out.morphs.meshes[i].owners.end());
+      }
+    out.morphs.previewCenters = previewCenters.count(mainNode) > 0;
   }
 
   out.missing = store.missing();

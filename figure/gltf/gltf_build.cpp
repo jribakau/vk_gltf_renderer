@@ -89,6 +89,18 @@ std::vector<TextureRequest> textureRequests(const SceneGraph& scene)
   return out;
 }
 
+std::vector<float> inverseBindMatrices(const Mesh& m)
+{
+  std::vector<float> ibm;
+  for(size_t j = 0; j < m.bones.size(); j++)
+  {
+    const Mat4 b = m.boneInverses[j] * m.bindMatrix;
+    for(double e : b.e)
+      ibm.push_back(float(e));
+  }
+  return ibm;
+}
+
 BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& options)
 {
   BuildResult      out;
@@ -98,6 +110,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   Writer w(model);
   out.nodeOf.assign(scene.nodes.size(), -1);
   out.meshOf.assign(scene.meshes.size(), -1);
+  out.skinOf.assign(scene.meshes.size(), -1);
 
   // nodes, depth first as traversal meets them
   std::vector<int> order;
@@ -283,18 +296,14 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     if(joints >= 0)
     {
       // GLTFExporter's inverse bind matrices: bone inverse times the bind matrix
-      std::vector<float> ibm;
       tinygltf::Skin     skin;
-      for(size_t j = 0; j < m.bones.size(); j++)
-      {
-        skin.joints.push_back(out.nodeOf[m.bones[j]]);
-        const Mat4 b = m.boneInverses[j] * m.bindMatrix;
-        for(double e : b.e)
-          ibm.push_back(float(e));
-      }
+      for(int bone : m.bones)
+        skin.joints.push_back(out.nodeOf[bone]);
+      const std::vector<float> ibm = inverseBindMatrices(m);
       skin.inverseBindMatrices = w.accessor(w.view(ibm.data(), ibm.size() * 4, 0), TINYGLTF_COMPONENT_TYPE_FLOAT, m.bones.size(), TINYGLTF_TYPE_MAT4);
       model.skins.push_back(std::move(skin));
       model.nodes[out.nodeOf[i]].skin = int(model.skins.size()) - 1;
+      out.skinOf[n.mesh]              = int(model.skins.size()) - 1;
     }
   }
   model.buffers[0].name = "figure";

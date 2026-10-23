@@ -52,7 +52,13 @@ struct BuildResult
   std::vector<int> nodeOf;
   // scene mesh -> glTF mesh
   std::vector<int> meshOf;
+  // scene mesh -> glTF skin, -1 for an unskinned mesh
+  std::vector<int> skinOf;
 };
+
+// A skinned mesh's inverse bind matrices as glTF stores them (16 floats per bone, column-major):
+// GLTFExporter's, the bone inverse times the bind matrix.
+std::vector<float> inverseBindMatrices(const Mesh& m);
 
 // Every node reachable from `root`, in the order traversal meets them.
 BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& options);

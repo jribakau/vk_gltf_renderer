@@ -12,7 +12,7 @@
 #include <iostream>
 #include <optional>
 
-#include <figure/dson/figure_loader.hpp>
+#include <figure/figure.hpp>
 
 using fv::dson::Json;
 
@@ -30,7 +30,7 @@ double r(double v)
   return std::floor(v * 1e6 + 0.5) / 1e6;
 }
 
-Json dumpScene(const fv::SceneGraph& scene, int root)
+Json dumpScene(const fv::SceneGraph& scene, int root, const fv::morph::MorphSet* morphs)
 {
   const auto worlds = scene.worlds();
   Json       bones  = Json::array();
@@ -73,7 +73,13 @@ Json dumpScene(const fv::SceneGraph& scene, int root)
     for(auto it = n.children.rbegin(); it != n.children.rend(); ++it)
       stack.push_back(*it);
   }
-  return {{"bones", bones}, {"meshes", meshes}};
+  // the weight every morph is applied at, formulas included (those that are not zero)
+  Json weights = Json::object();
+  if(morphs)
+    for(const fv::morph::Channel& ch : morphs->channels())
+      if(const double w = morphs->weightOf(ch.name); w != 0)
+        weights[ch.name] = r(w);
+  return {{"bones", bones}, {"meshes", meshes}, {"weights", weights}};
 }
 
 }  // namespace
@@ -113,25 +119,55 @@ int main(int argc, char** argv)
       libraryDir = pathOf(lib.c_str());
     if(libraryDir.is_relative())
       libraryDir = root / libraryDir;
-    auto store = fv::dson::Store(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{libraryDir}));
-    std::optional<fv::dson::LoadResult> loaded;
+    auto store = std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{libraryDir}));
+    std::unique_ptr<fv::Figure>         loaded;
     Json                                dumps = Json::object();
     for(const Json& step : c.at("steps"))
     {
       if(step.contains("load"))
-        loaded = fv::dson::loadDson(store, step["load"].get<std::string>(), {.subdivision = step.value("subdivision", 0)});
+        {
+          loaded = fv::Figure::load(store, step["load"].get<std::string>(), {.subdivision = step.value("subdivision", 0)});
+          loaded->settle();
+        }
+      else if(step.contains("morph"))
+      {
+        if(!loaded)
+          throw std::runtime_error("morph before load");
+        std::vector<std::pair<std::string, double>> values;
+        for(const auto& [name, v] : step["morph"].items())
+          values.emplace_back(name, v.get<double>());
+        loaded->morphs->setMany(values);
+        loaded->settle();
+      }
+      else if(step.contains("pose"))
+      {
+        if(!loaded || !loaded->pose)
+          throw std::runtime_error("pose before a figure loads");
+        // keys are "bone/kind/axis"
+        std::vector<fv::pose::ChannelValue> values;
+        for(const auto& [key, v] : step["pose"].items())
+        {
+          const size_t a = key.find('/'), b = key.rfind('/');
+          fv::pose::ChannelKind kind;
+          if(a == std::string::npos || a == b || !fv::pose::parseKind(key.substr(a + 1, b - a - 1), kind))
+            throw std::runtime_error("bad pose key " + key);
+          values.push_back({key.substr(0, a), kind, key.substr(b + 1), v.get<double>()});
+        }
+        loaded->pose->setMany(values);
+        loaded->settle();
+      }
       else if(step.contains("dump"))
       {
         if(!loaded)
           throw std::runtime_error("dump before load");
-        dumps[step["dump"].get<std::string>()] = dumpScene(loaded->scene, loaded->root);
+        dumps[step["dump"].get<std::string>()] = dumpScene(loaded->loaded.scene, loaded->loaded.root, loaded->morphs.get());
       }
     }
     std::filesystem::create_directories(outPath.parent_path());
     std::ofstream o(outPath);
     o << Json{{"case", casePath.stem().u8string()}, {"dumps", dumps}}.dump();
     if(loaded)
-      for(const auto& w : loaded->warnings)
+      for(const auto& w : loaded->takeWarnings())
         std::cerr << "warning: " << w << "\n";
     return 0;
   }

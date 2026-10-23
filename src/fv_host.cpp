@@ -22,21 +22,25 @@
 
 #include "fv_host.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <future>
+#include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <unordered_map>
 
+#include <glm/glm.hpp>
 #include <nvapp/elem_camera.hpp>
 #include <nvutils/logger.hpp>
 
+#include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
-#include <figure/dson/figure_loader.hpp>
-#include <figure/pose/pose_rig.hpp>
 
 #include "fv_protocol.hpp"
 #include "renderer.hpp"
@@ -59,12 +63,19 @@ struct HostSettings
 };
 
 // A loaded figure and what the renderer made of it. Lives on the application thread.
-struct Figure
+struct Loaded
 {
-  std::string                        id;
-  fv::dson::LoadResult               result;
-  std::unique_ptr<fv::pose::PoseRig> rig;
-  std::vector<int>                   nodeOf;  // scene node -> renderer (glTF) node
+  std::string                 id;
+  std::unique_ptr<fv::Figure> fig;
+  std::vector<int>            nodeOf;   // scene node -> glTF node
+  std::vector<int>            meshOf;   // scene mesh -> glTF mesh
+  std::vector<int>            skinOf;   // scene mesh -> glTF skin
+  std::vector<std::vector<int>> primsOf;  // glTF mesh -> render primitives
+  // morph topic: -1 until the channel list has been published, then the value and weight last sent
+  int                                                          morphList = -1;
+  std::unordered_map<std::string, std::pair<double, double>> published;
+  uint64_t                                                     busyJob = 0;
+  bool                                                         busyOn  = false;
 };
 
 std::filesystem::path pathOf(const std::string& utf8)
@@ -237,11 +248,11 @@ std::string axisKey(const fv::pose::Axis& a)
 }
 
 // The pose topic: bones by id, each with its axes by "kind/axis".
-Json poseSnapshot(const Figure& f)
+Json poseSnapshot(const Loaded& f)
 {
   Json bones = Json::object();
   int  order = 0;
-  for(const auto& pb : f.rig->bones())
+  for(const auto& pb : f.fig->pose->bones())
   {
     if(pb.axes.empty())
       continue;
@@ -252,7 +263,7 @@ Json poseSnapshot(const Figure& f)
                           {"value", a.value}, {"initial", a.initial}, {"order", i++}};
     bones[pb.id] = {{"name", pb.name}, {"label", pb.label}, {"group", pb.group}, {"order", order++}, {"axes", axes}};
   }
-  return {{"figure", f.id}, {"changed", f.rig->changed()}, {"bones", bones}};
+  return {{"figure", f.id}, {"changed", f.fig->pose->changed()}, {"bones", bones}};
 }
 
 }  // namespace
@@ -278,8 +289,13 @@ struct FvHost::Impl
   bool              lmb = false, mmb = false;
 
   // application thread only
-  std::unique_ptr<Figure> figure;
+  std::unique_ptr<Loaded> figure;
   int                     figures = 0;
+  // morph.set merges here (any thread); onUpdate applies it as one setMany
+  std::mutex                     morphMutex;
+  std::string                    figureId;
+  std::map<std::string, double>  pendingMorphs;
+  bool                           morphTouched = false;
   // frames until the camera frames a newly loaded figure (0: none pending)
   int frameIn = 0;
 
@@ -322,9 +338,14 @@ struct FvHost::Impl
   void job(uint64_t id, const Json& state) { protocol->events().patch("jobs", {{std::to_string(id), state}}); }
 
   Json load(const Json& args);
-  void install(std::unique_ptr<Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId);
+  void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId);
   Json poseSet(const Json& args);
-  void applyMoved(const std::vector<int>& moved);
+  void applyNodes(const std::set<int>& moved);
+  void applyMesh(const fv::morph::MeshChange& change);
+  void applyRebind(const std::vector<int>& meshes);
+  void applyPendingMorphs();
+  void publishMorphs();
+  void publishBusy();
   void frameCamera();
   void applyInput(const std::vector<Json>& events);
 };
@@ -364,31 +385,24 @@ Json FvHost::Impl::load(const Json& args)
     {
       const auto t0  = std::chrono::steady_clock::now();
       auto       lib = std::make_shared<fv::dson::Library>(roots);
-      fv::dson::Store store(lib);
-      auto            f = std::make_unique<Figure>();
-      f->result         = fv::dson::loadDson(store, rel, {.subdivision = s.subdivision});
+      auto       store = std::make_shared<fv::dson::Store>(lib);
+      auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision}, [this, jobId, label](const std::string& step) {
+        job(jobId, {{"label", label + ": " + step}, {"state", "running"}});
+      });
       if(generation != loadGeneration)
         return;  // a newer load replaced this one
-      for(const auto& w : f->result.warnings)
+      for(const auto& w : f->takeWarnings())
         notice(w);
-      // the figure's skeleton poses; worn items' skeletons follow it by bone name
-      if(f->result.mainRig >= 0)
-      {
-        std::vector<const fv::dson::Rig*> followers;
-        for(size_t r = 0; r < f->result.rigs.size(); r++)
-          if(int(r) != f->result.mainRig)
-            followers.push_back(&f->result.rigs[r]);
-        f->rig = std::make_unique<fv::pose::PoseRig>(f->result.scene, f->result.rigs[f->result.mainRig], followers);
-      }
-      // centimetres to metres, after the skins were bound (as loaders/index.ts scales)
-      auto& root = f->result.scene.nodes[f->result.root];
+      // centimetres to metres, after the skins were bound (as loaders/index.ts scales). A later
+      // rebind reads bone and mesh worlds that both carry this scale, so it cancels back out.
+      auto& root = f->loaded.scene.nodes[f->loaded.root];
       root.scale = root.scale * kCentimetre;
 
       // textures: every one the build asks for, resolved in parallel
       const bool cooked = !s.texServer.empty() && !s.rootId.empty();
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
       {
-        const auto                                                requests = fv::build::textureRequests(f->result.scene);
+        const auto                                                requests = fv::build::textureRequests(f->loaded.scene);
         std::atomic<size_t>                                       next{0};
         std::vector<std::optional<fv::build::TextureImage>>      found(requests.size());
         std::vector<std::thread>                                  workers;
@@ -408,12 +422,12 @@ Json FvHost::Impl::load(const Json& args)
         auto it = images.find(fv::build::requestKey(req));
         return it == images.end() ? std::nullopt : it->second;
       };
-      auto built = fv::build::buildGltf(f->result.scene, f->result.root, options);
+      auto built = fv::build::buildGltf(f->loaded.scene, f->loaded.root, options);
       LOGI("[fv] %s built in %.2f s: %zu nodes, %zu meshes, %zu materials, %zu images, %zu bytes of geometry\n", rel.c_str(),
            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), built.model.nodes.size(), built.model.meshes.size(),
            built.model.materials.size(), built.model.images.size(), built.model.buffers.empty() ? size_t(0) : built.model.buffers[0].data.size());
       // the renderer takes it on the application thread
-      auto shared = std::make_shared<std::pair<std::unique_ptr<Figure>, fv::build::BuildResult>>(std::move(f), std::move(built));
+      auto shared = std::make_shared<std::pair<std::unique_ptr<fv::Figure>, fv::build::BuildResult>>(std::move(f), std::move(built));
       post([this, shared, generation, jobId] { install(std::move(shared->first), std::move(shared->second), generation, jobId); });
     }
     catch(const std::exception& e)
@@ -425,47 +439,237 @@ Json FvHost::Impl::load(const Json& args)
   return {{"job", jobId}};
 }
 
-void FvHost::Impl::install(std::unique_ptr<Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId)
+void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResult built, uint64_t generation, uint64_t jobId)
 {
   if(generation != loadGeneration)
     return;
-  f->nodeOf = std::move(built.nodeOf);
+  auto f     = std::make_unique<Loaded>();
+  f->fig     = std::move(fig);
+  f->nodeOf  = std::move(built.nodeOf);
+  f->meshOf  = std::move(built.meshOf);
+  f->skinOf  = std::move(built.skinOf);
   if(!renderer->loadModel(std::move(built.model)))
   {
     job(jobId, {{"state", "failed"}, {"error", "the renderer could not take the scene"}});
     return;
   }
+  int meshes = 0;
+  for(int m : f->meshOf)
+    meshes = std::max(meshes, m + 1);
+  f->primsOf.resize(meshes);
+  for(int i = 0; i < meshes; i++)
+    f->primsOf[i] = renderer->renderPrimitivesOfMesh(i);
+  // the glTF already holds the scene's dials and binds; don't upload them again
+  f->fig->drain();
+  if(figure && figure->busyOn)
+    job(figure->busyJob, {{"state", "done"}});
   f->id  = "fig:" + std::to_string(++figures);
   figure = std::move(f);
+  {
+    std::lock_guard lock(morphMutex);
+    figureId = figure->id;
+    pendingMorphs.clear();
+  }
+  morphTouched = true;
   // the renderer sets its own camera up over the next frames; frame the figure after that
   frameIn = 2;
   auto& events = protocol->events();
-  events.snapshot("scene", {{"figures", {{figure->id, {{"name", figure->result.name}}}}}});
-  if(figure->rig)
+  events.snapshot("scene", {{"figures", {{figure->id, {{"name", figure->fig->loaded.name}}}}}});
+  if(figure->fig->pose)
     events.snapshot("pose/" + figure->id, poseSnapshot(*figure));
   job(jobId, {{"state", "done"}, {"figure", figure->id}});
 }
 
-void FvHost::Impl::applyMoved(const std::vector<int>& moved)
+void FvHost::Impl::applyNodes(const std::set<int>& moved)
 {
+  if(moved.empty() || !figure)
+    return;
   std::vector<GltfRenderer::NodeTransform> transforms;
   transforms.reserve(moved.size());
+  const fv::SceneGraph& scene = figure->fig->loaded.scene;
   for(int n : moved)
   {
     const int g = n >= 0 && n < int(figure->nodeOf.size()) ? figure->nodeOf[n] : -1;
-    if(g < 0)
+    if(g < 0 || n >= int(scene.nodes.size()))
       continue;
-    const fv::Node& node = figure->result.scene.nodes[n];
+    const fv::Node& node = scene.nodes[n];
     transforms.push_back({g, glm::vec3(node.position.x, node.position.y, node.position.z),
                           glm::quat(float(node.quaternion.w), float(node.quaternion.x), float(node.quaternion.y), float(node.quaternion.z)),
                           glm::vec3(node.scale.x, node.scale.y, node.scale.z)});
   }
-  renderer->setNodeTransforms(transforms);
+  if(!transforms.empty())
+    renderer->setNodeTransforms(transforms);
+}
+
+void FvHost::Impl::applyMesh(const fv::morph::MeshChange& change)
+{
+  if(!figure || change.mesh < 0 || change.mesh >= int(figure->fig->loaded.scene.meshes.size()))
+    return;
+  const int gltfMesh = change.mesh < int(figure->meshOf.size()) ? figure->meshOf[change.mesh] : -1;
+  if(gltfMesh < 0 || gltfMesh >= int(figure->primsOf.size()) || figure->primsOf[gltfMesh].empty())
+    return;
+  const auto& geo = figure->fig->loaded.scene.meshes[change.mesh].geo;
+  if(!geo)
+    return;
+  const size_t count = geo->position.size() / 3;
+  const bool   normals = geo->normal.size() == geo->position.size();
+  // glm::vec3 is the tightly packed 12-byte attribute the renderer stages
+  static_assert(sizeof(glm::vec3) == 12, "vertex uploads assume a packed vec3");
+
+  GltfRenderer::VertexUpload upload;
+  if(change.all)
+  {
+    upload.positions.resize(count);
+    if(count)
+      std::memcpy(upload.positions.data(), geo->position.data(), count * sizeof(glm::vec3));
+    if(normals)
+    {
+      upload.normals.resize(count);
+      if(count)
+        std::memcpy(upload.normals.data(), geo->normal.data(), count * sizeof(glm::vec3));
+    }
+  }
+  else
+  {
+    if(change.indices.empty())
+      return;
+    upload.indices.reserve(change.indices.size());
+    upload.positions.reserve(change.indices.size());
+    if(normals)
+      upload.normals.reserve(change.indices.size());
+    for(uint32_t v : change.indices)
+    {
+      if(v >= count)
+        continue;
+      const float* p = geo->position.data() + size_t(v) * 3;
+      upload.indices.push_back(v);
+      upload.positions.emplace_back(p[0], p[1], p[2]);
+      if(normals)
+      {
+        const float* nrm = geo->normal.data() + size_t(v) * 3;
+        upload.normals.emplace_back(nrm[0], nrm[1], nrm[2]);
+      }
+    }
+    if(upload.indices.empty())
+      return;
+  }
+  const auto& prims = figure->primsOf[gltfMesh];
+  for(size_t i = 0; i < prims.size(); i++)
+  {
+    GltfRenderer::VertexUpload one = i + 1 == prims.size() ? std::move(upload) : upload;
+    one.renderPrimID               = prims[i];
+    renderer->queueVertexUpload(std::move(one));
+  }
+}
+
+void FvHost::Impl::applyRebind(const std::vector<int>& meshes)
+{
+  if(!figure)
+    return;
+  for(int mesh : meshes)
+  {
+    if(mesh < 0 || mesh >= int(figure->skinOf.size()) || mesh >= int(figure->fig->loaded.scene.meshes.size()))
+      continue;
+    const int skin = figure->skinOf[mesh];
+    if(skin < 0)
+      continue;
+    const fv::Mesh&          m   = figure->fig->loaded.scene.meshes[mesh];
+    const std::vector<float> ibm = fv::build::inverseBindMatrices(m);
+    if(ibm.size() != m.bones.size() * 16)
+      continue;
+    static_assert(sizeof(glm::mat4) == 64, "inverse bind matrices are packed mat4");
+    std::vector<glm::mat4> mats(m.bones.size());
+    std::memcpy(mats.data(), ibm.data(), ibm.size() * sizeof(float));
+    renderer->setInverseBindMatrices(skin, mats);
+  }
+}
+
+void FvHost::Impl::applyPendingMorphs()
+{
+  std::vector<std::pair<std::string, double>> values;
+  {
+    std::lock_guard lock(morphMutex);
+    if(pendingMorphs.empty())
+      return;
+    values.reserve(pendingMorphs.size());
+    for(const auto& [name, value] : pendingMorphs)
+      values.emplace_back(name, value);
+    pendingMorphs.clear();
+  }
+  if(!figure || !figure->fig->morphs)
+    return;
+  figure->fig->morphs->setMany(values);
+  morphTouched = true;
+}
+
+void FvHost::Impl::publishMorphs()
+{
+  if(!figure || !figure->fig->morphs)
+    return;
+  fv::morph::MorphSet& morphs = *figure->fig->morphs;
+  const bool           listChanged = morphs.listVersion() != figure->morphList;
+  if(!listChanged && !morphTouched)
+    return;
+  morphTouched = false;
+  auto& events = protocol->events();
+  if(listChanged)
+  {
+    Json channels = Json::object();
+    figure->published.clear();
+    int order = 0;
+    for(const fv::morph::Channel& ch : morphs.channels())
+    {
+      if(ch.hidden)
+        continue;
+      const double w = morphs.weightOf(ch.name);
+      channels[ch.name] = {{"label", ch.label}, {"group", ch.group}, {"value", ch.value}, {"min", ch.min},
+                           {"max", ch.max},     {"weight", w},       {"order", order++}};
+      figure->published[ch.name] = {ch.value, w};
+    }
+    figure->morphList = morphs.listVersion();
+    events.snapshot("morphs/" + figure->id, {{"figure", figure->id}, {"channels", channels}});
+    return;
+  }
+  Json channels = Json::object();
+  for(const fv::morph::Channel& ch : morphs.channels())
+  {
+    if(ch.hidden)
+      continue;
+    const double w  = morphs.weightOf(ch.name);
+    const auto   it = figure->published.find(ch.name);
+    if(it != figure->published.end() && it->second.first == ch.value && it->second.second == w)
+      continue;
+    channels[ch.name]          = {{"value", ch.value}, {"weight", w}};
+    figure->published[ch.name] = {ch.value, w};
+  }
+  if(!channels.empty())
+    events.patch("morphs/" + figure->id, {{"channels", channels}});
+}
+
+void FvHost::Impl::publishBusy()
+{
+  if(!figure)
+    return;
+  const std::string b = figure->fig->busy();
+  if(!b.empty())
+  {
+    if(!figure->busyOn)
+    {
+      figure->busyJob = ++jobs;
+      figure->busyOn  = true;
+      job(figure->busyJob, {{"label", b}, {"state", "running"}});
+    }
+  }
+  else if(figure->busyOn)
+  {
+    job(figure->busyJob, {{"state", "done"}});
+    figure->busyOn = false;
+  }
 }
 
 Json FvHost::Impl::poseSet(const Json& args)
 {
-  if(!figure || !figure->rig || args.value("figure", figure->id) != figure->id)
+  if(!figure || !figure->fig->pose || args.value("figure", figure->id) != figure->id)
     throw std::runtime_error("no such figure");
   std::vector<fv::pose::ChannelValue> values;
   for(auto it = args.at("values").begin(); it != args.at("values").end(); ++it)
@@ -479,16 +683,18 @@ Json FvHost::Impl::poseSet(const Json& args)
       continue;
     values.push_back({key.substr(0, k), kind, key.substr(a + 1), it.value().get<double>()});
   }
-  applyMoved(figure->rig->setMany(values));
+  // nodes, corrective morphs and rebound skins go out with this frame's pump()
+  figure->fig->pose->setMany(values);
+  morphTouched = true;
   // the values as the rig took them (clamped), for every panel showing the pose
   Json bones = Json::object();
   for(const auto& v : values)
-    if(const auto* pb = figure->rig->get(v.bone))
+    if(const auto* pb = figure->fig->pose->get(v.bone))
       for(const auto& a : pb->axes)
         if(a.kind == v.kind && a.axis == v.axis)
           bones[pb->id]["axes"][axisKey(a)]["value"] = a.value;
-  protocol->events().patch("pose/" + figure->id, {{"changed", figure->rig->changed()}, {"bones", bones}});
-  return {{"changed", figure->rig->changed()}};
+  protocol->events().patch("pose/" + figure->id, {{"changed", figure->fig->pose->changed()}, {"bones", bones}});
+  return {{"changed", figure->fig->pose->changed()}};
 }
 
 void FvHost::Impl::frameCamera()
@@ -583,11 +789,39 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
   cmds.add("pose.reset", [impl](const Json& args) {
     return impl->onApp([impl, args] {
-      if(!impl->figure || !impl->figure->rig)
+      if(!impl->figure || !impl->figure->fig->pose || args.value("figure", impl->figure->id) != impl->figure->id)
         throw std::runtime_error("no figure loaded");
-      impl->applyMoved(impl->figure->rig->reset());
+      impl->figure->fig->pose->reset();
+      impl->morphTouched = true;
       impl->protocol->events().snapshot("pose/" + impl->figure->id, poseSnapshot(*impl->figure));
       return Json{{"changed", 0}};
+    });
+  });
+  // answered at once: the values merge with whatever else arrived this frame and apply in onUpdate
+  cmds.add("morph.set", [impl](const Json& args) {
+    std::lock_guard lock(impl->morphMutex);
+    const std::string fig = args.value("figure", impl->figureId);
+    if(impl->figureId.empty() || fig != impl->figureId)
+      throw std::runtime_error("no such figure");
+    const Json* values = args.contains("values") ? &args["values"] : nullptr;
+    if(!values || !values->is_object())
+      throw std::runtime_error("morph.set wants values: {name: value}");
+    for(auto it = values->begin(); it != values->end(); ++it)
+      if(it.value().is_number())
+        impl->pendingMorphs[it.key()] = it.value().get<double>();
+    return Json{{"ok", true}};
+  });
+  cmds.add("morph.reset", [impl](const Json& args) {
+    return impl->onApp([impl, args] {
+      if(!impl->figure || !impl->figure->fig->morphs || args.value("figure", impl->figure->id) != impl->figure->id)
+        throw std::runtime_error("no figure loaded");
+      {
+        std::lock_guard lock(impl->morphMutex);
+        impl->pendingMorphs.clear();
+      }
+      impl->figure->fig->morphs->resetAll();
+      impl->morphTouched = true;
+      return Json{{"ok", true}};
     });
   });
   cmds.add("render.mode", [impl](const Json& args) {
@@ -645,6 +879,11 @@ void FvHost::onDetach()
   s.loaders.clear();
   s.queue.clear();
   s.figure.reset();
+  {
+    std::lock_guard morphLock(s.morphMutex);
+    s.figureId.clear();
+    s.pendingMorphs.clear();
+  }
 }
 
 void FvHost::onUpdate()
@@ -657,6 +896,21 @@ void FvHost::onUpdate()
   }
   for(auto& f : work)
     f();
+  s.applyPendingMorphs();
+  if(s.figure)
+  {
+    const fv::Figure::Changes changes = s.figure->fig->pump();
+    s.applyNodes(changes.nodes);
+    for(const fv::morph::MeshChange& mesh : changes.meshes)
+      s.applyMesh(mesh);
+    s.applyRebind(changes.rebound);
+    if(!changes.empty())
+      s.morphTouched = true;
+    for(const std::string& w : s.figure->fig->takeWarnings())
+      s.notice(w);
+    s.publishBusy();
+    s.publishMorphs();
+  }
   if(s.frameIn > 0 && --s.frameIn == 0)
     s.frameCamera();
   std::vector<Json> events;

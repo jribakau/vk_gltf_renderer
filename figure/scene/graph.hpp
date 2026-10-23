@@ -38,6 +38,8 @@ struct JointData
   std::array<double, 3> center{};
   // the centre in the bone's own file, before a worn item took the figure's centres
   std::array<double, 3> centerAuthored{};
+  // the centre before formulas moved it (set when the first one does)
+  std::optional<std::array<double, 3>> centerBase;
   std::array<double, 3> endPoint{};
   std::vector<JointChannel> rotation, translation, scale;
 };

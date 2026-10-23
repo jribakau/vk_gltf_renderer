@@ -353,6 +353,12 @@ public:
   };
   void setNodeTransforms(std::span<const NodeTransform> transforms);
 
+  /// New inverse bind matrices for a skin of the loaded scene (a host that moved joint centres re-binds
+  /// the skin there), and the render primitives of a glTF mesh (the ones queueVertexUpload addresses).
+  /// False when the skin or the matrix count does not match. Application thread only.
+  bool             setInverseBindMatrices(int skin, std::span<const glm::mat4> ibm);
+  std::vector<int> renderPrimitivesOfMesh(int gltfMesh) const;
+
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
   void          setRenderSystem(RenderingMode mode);
   RenderingMode renderSystem() const { return m_resources.settings.renderSystem; }

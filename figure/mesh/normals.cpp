@@ -85,8 +85,11 @@ void NormalWelder::adjacency()
     m_adjTris[fill[m_renderTris[i]]++] = int32_t(i / 3);
 }
 
-std::optional<std::pair<uint32_t, uint32_t>> NormalWelder::partial(std::span<const float> position, std::span<float> out, std::span<const uint32_t> moved)
+std::optional<std::pair<uint32_t, uint32_t>> NormalWelder::partial(std::span<const float> position, std::span<float> out, std::span<const uint32_t> moved,
+                                                                          std::vector<uint32_t>* written)
 {
+  if(written)
+    written->clear();
   if(moved.size() > m_renderIndex.size() / 4)
   {
     full(position, out);
@@ -158,6 +161,8 @@ std::optional<std::pair<uint32_t, uint32_t>> NormalWelder::partial(std::span<con
     for(int32_t s = m_firstSplit[u]; s >= 0; s = m_nextSplit[s])
     {
       unit(out, size_t(s), x, y, z);
+      if(written)
+        written->push_back(uint32_t(s));
       lo  = std::min(lo, uint32_t(s));
       hi  = std::max(hi, uint32_t(s));
       any = true;
