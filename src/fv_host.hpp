@@ -37,6 +37,7 @@
 //   morph.set       {figure, values: {name: value}}   coalesced, one setMany per frame
 //   morph.reset     {figure}
 //   render.mode     {mode: "raster" | "rtx"}
+//   material.set    {material, values}           edit a surface (fv_materials.hpp); material.reset {material?}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
@@ -51,7 +52,7 @@
 // applied by `load` to the figure already loaded; other presets are reported and left alone.
 //
 // Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "morphs/<figure>", "render",
-// "selection", "lighting" (the lighting.set shape, plus read-only env.name, env.size, env.loading). "pose/<figure>" carries `eyes` (whether the figure can look at the camera).
+// "selection", "materials" (fv_materials.hpp), "lighting" (the lighting.set shape, plus read-only env.name, env.size, env.loading). "pose/<figure>" carries `eyes` (whether the figure can look at the camera).
 // "morphs/<figure>" is the visible channels ({label, group, value, min, max, weight, order}); a new
 // channel list replaces it, and value or weight changes arrive as a merge patch. A figure's busy()
 // line is a "jobs" entry, and takeWarnings() goes to "notices".

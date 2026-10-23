@@ -429,6 +429,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     int         rig;   // index into out.rigs, -1 without
     int         at;    // where the meshes go among the group's children: after its rig, before child nodes
     int         item;  // index into out.items, -1 without
+    std::string defFile;  // the library file of its node definition
   };
   std::vector<MeshJob>                       jobs;
   std::unordered_map<std::string, int>       itemOf;  // scene node or geometry instance id -> item
@@ -439,7 +440,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   std::vector<std::string>                   dazInstances;
   auto newItem = [&](const Json& node) {
     Item item;
-    item.key   = getString(&node, "id");
+    item.key   = options.attach ? options.attach->key + (out.items.empty() ? std::string() : "." + std::to_string(out.items.size()))
+                                : getString(&node, "id");
     item.label = firstString({{&node, "label"}, {&node, "name"}, {&node, "id"}});
     out.items.push_back(std::move(item));
     return int(out.items.size()) - 1;
@@ -500,7 +502,16 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
       if(auto r = rigOf.find(onBone->second.first); r != rigOf.end())
         parentBone = out.rigs[r->second].byId(onBone->second.second);
     int group = -1;
-    if(parentBone >= 0)
+    if(options.attach && item < 0)
+    {
+      // put on the figure later, by the wardrobe: under this scene's root until then
+      static const std::regex selection(R"(^name://@selection(?:/([^:]*))?:?$)");
+      std::smatch             sm;
+      group = scene.add(std::move(groupNode), out.root);
+      item  = newItem(node);
+      out.items[item].objects.emplace_back(group, std::regex_match(parentRef, sm, selection) && sm[1].matched ? decodeUri(sm[1].str()) : std::string());
+    }
+    else if(parentBone >= 0)
     {
       // a group under the bone that cancels its rest offset, so nodes in figure space can hang from it
       Node mount;
@@ -568,11 +579,14 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         own = &it->second;
       // an item binds at the figure's joint centres, which a character's shape has moved
       const int     mainRig = !mainNode.empty() && rigOf.count(mainNode) ? rigOf[mainNode] : -1;
+      const Rig*    figureRig = options.attach ? options.attach->rig : (mainRig >= 0 ? &out.rigs[mainRig] : nullptr);
+      const SceneGraph& figureScene = options.attach ? *options.attach->scene : scene;
       Centers       fitted;
       const Centers* centers = own;
-      if(item >= 0 && mainRig >= 0)
+      if(item >= 0 && figureRig)
       {
-        fitted  = fitCenters(scene, library, own, out.rigs[mainRig], false);
+        // attaching, the figure's own centres win, so the item binds where a character's shape moved the joints
+        fitted  = fitCenters(figureScene, library, own, *figureRig, options.attach.has_value());
         centers = &fitted;
       }
       if(auto r = buildRig(scene, library, centers))
@@ -583,7 +597,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         rigOf[id]  = rig;
         if(item >= 0)
           out.items[item].rigs.push_back(rig);
-        else if(mainNode.empty())
+        else if(mainNode.empty() && !options.attach)
         {
           mainNode      = id;
           out.mainRig   = rig;
@@ -591,7 +605,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         }
       }
     }
-    jobs.push_back({&node, group, type, rig, int(scene.nodes[group].children.size()), item});
+    jobs.push_back({&node, group, type, rig, int(scene.nodes[group].children.size()), item, resolved ? resolved->file : std::string()});
   }
   if(!dazInstances.empty())
   {
@@ -611,6 +625,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     std::vector<int>  made;
     std::vector<Mesh>    pending;
     std::vector<MeshRef> pendingRefs;
+    std::vector<ItemPart> pendingParts;
     try
     {
       const Json* geos = get(job.node, "geometries");
@@ -774,6 +789,18 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           ref.owners      = {getString(job.node, "id"), gid};
           pendingRefs.push_back(std::move(ref));
         }
+        {
+          ItemPart part;
+          part.item     = job.item;
+          part.conforms = job.rig >= 0 && meshOut.skinned();
+          part.defFile  = job.defFile;
+          if(job.item >= 0)
+          {
+            part.graft    = wardrobe::parseGraft(*gres->doc, geo);
+            part.rigidity = wardrobe::parseRigidity(*gres->doc, geo, meshOut.geo->dsonVertexCount);
+          }
+          pendingParts.push_back(std::move(part));
+        }
         pending.push_back(std::move(meshOut));
       }
       // a node whose build fails adds none of its meshes
@@ -787,6 +814,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         meshNode.visible = !hiddenNode(job.node);
         meshNode.mesh    = int(scene.meshes.size());
         pendingRefs[pi].mesh = meshNode.mesh;
+        pendingParts[pi].mesh = meshNode.mesh;
+        if(job.item >= 0)
+          out.parts.push_back(std::move(pendingParts[pi]));
         out.morphs.meshes.push_back(std::move(pendingRefs[pi]));
         scene.meshes.push_back(std::move(m));
         made.push_back(scene.add(std::move(meshNode)));

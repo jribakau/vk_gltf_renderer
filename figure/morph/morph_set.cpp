@@ -264,6 +264,30 @@ void MorphSet::pump()
     finishLoad(name, fut);
     any = true;
   }
+  // followers whose own fitted targets arrived replace their projections
+  for(auto& st : m_followers)
+    for(auto& [name, own] : st->own)
+    {
+      if(own.state != FollowerState::Own::State::ePending || own.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        continue;
+      try
+      {
+        own.targets = own.future.get();
+      }
+      catch(const std::exception&)
+      {
+        own.targets.clear();
+      }
+      own.state = own.targets.empty() ? FollowerState::Own::State::eNone : FollowerState::Own::State::eReady;
+      if(own.state == FollowerState::Own::State::eReady)
+      {
+        const double v = weightOf(name);
+        if(v != 0 && follow(*st, name, v))
+          any = true;
+      }
+    }
+  if(any)
+    flush();
   if(m_driverDirty && (m_loading.empty() || std::chrono::steady_clock::now() - m_driverSince >= kDriverDelay))
     runDriver();
   (void)any;
@@ -338,7 +362,137 @@ bool MorphSet::apply(const std::string& name, double value)
       st.active[b.target.get()] = {b.target, value};
     st.dirty = true;
   }
+  for(auto& f : m_followers)
+    follow(*f, name, value);
   return true;
+}
+
+void MorphSet::addFollower(Follower f)
+{
+  ensureCpu(f.mesh);
+  auto st = std::make_unique<FollowerState>();
+  st->f   = std::move(f);
+  FollowerState& ref = *st;
+  m_followers.push_back(std::move(st));
+  bool moved = false;
+  for(const Channel& ch : m_channels)
+  {
+    const double w = weightOf(ch.name);
+    if(w != 0 && follow(ref, ch.name, w))
+      moved = true;
+  }
+  if(moved)
+    flush();
+}
+
+// Applies channel `name` at `value` to one follower; returns whether its shape may have changed. A
+// follower with its own binding for the channel (a scene file set the item's copy) is left to it.
+bool MorphSet::follow(FollowerState& st, const std::string& name, double value)
+{
+  auto cpu = m_cpu.find(st.f.mesh);
+  if(cpu == m_cpu.end())
+    return false;
+  const auto               list = m_bindings.find(name);
+  std::vector<Binding>     sources;
+  bool                     own = false;
+  if(list != m_bindings.end())
+    for(const Binding& b : list->second)
+    {
+      if(b.mesh == st.f.source)
+        sources.push_back(b);
+      if(b.mesh == st.f.mesh)
+        own = true;
+    }
+  auto prev = st.applied.find(name);
+  if(sources.empty() && prev == st.applied.end())
+    return false;
+  if(prev != st.applied.end())
+  {
+    for(const auto& t : prev->second)
+      cpu->second.active.erase(t.get());
+    st.applied.erase(prev);
+  }
+  cpu->second.dirty = true;
+  if(value == 0 || sources.empty() || own)
+    return true;
+  auto targets = followerTargets(st, name, sources);
+  for(const auto& t : targets)
+    cpu->second.active[t.get()] = {t, value};
+  st.applied[name] = std::move(targets);
+  return true;
+}
+
+std::vector<dson::TargetPtr> MorphSet::followerTargets(FollowerState& st, const std::string& name, const std::vector<Binding>& sources)
+{
+  auto own = st.own.find(name);
+  if(own == st.own.end())
+  {
+    FollowerState::Own o;
+    if(st.f.own)
+    {
+      o.future = st.f.own(name);
+      if(o.future.valid())
+        o.state = FollowerState::Own::State::ePending;
+    }
+    own = st.own.emplace(name, std::move(o)).first;
+  }
+  if(own->second.state == FollowerState::Own::State::eReady)
+    return own->second.targets;
+  // projected meanwhile; the item's own shape replaces it when it has loaded (pump)
+  std::vector<dson::TargetPtr> out;
+  for(const Binding& b : sources)
+  {
+    auto it = st.projected.find(b.target.get());
+    if(it == st.projected.end())
+      it = st.projected.emplace(b.target.get(), st.f.project ? st.f.project(*b.target) : nullptr).first;
+    if(it->second)
+      out.push_back(it->second);
+  }
+  return out;
+}
+
+void MorphSet::removeMeshes(const std::set<int>& gone)
+{
+  m_followers.erase(std::remove_if(m_followers.begin(), m_followers.end(),
+                                   [&](const auto& st) { return gone.count(st->f.mesh) || gone.count(st->f.source); }),
+                    m_followers.end());
+  for(int m : gone)
+  {
+    m_cpu.erase(m);
+    m_changes.erase(m);
+  }
+  for(auto it = m_bindings.begin(); it != m_bindings.end();)
+  {
+    auto& list = it->second;
+    const size_t before = list.size();
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const Binding& b) { return gone.count(b.mesh) > 0; }), list.end());
+    if(list.size() != before && list.empty())
+    {
+      const std::string name = it->first;
+      it                     = m_bindings.erase(it);
+      if(!m_lazy.count(name))
+        m_channels.erase(std::remove_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return c.name == name; }), m_channels.end());
+    }
+    else
+      ++it;
+  }
+  reindex();
+  m_listVersion++;
+}
+
+void MorphSet::removeChannels(const std::vector<std::string>& names)
+{
+  const std::set<std::string> gone(names.begin(), names.end());
+  for(const std::string& n : gone)
+  {
+    m_bindings.erase(n);
+    m_lazy.erase(n);
+    m_weights.erase(n);
+    m_loading.erase(n);
+  }
+  m_channels.erase(std::remove_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return gone.count(c.name) > 0; }), m_channels.end());
+  reindex();
+  m_listVersion++;
 }
 
 void MorphSet::applyWeights(const std::vector<std::pair<std::string, double>>& values)

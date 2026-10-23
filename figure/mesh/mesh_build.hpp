@@ -11,7 +11,9 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <string>
 #include <optional>
 #include <span>
 #include <vector>
@@ -91,11 +93,21 @@ struct BuiltMesh
   std::shared_ptr<const subdiv::Refinement> refinement;
   std::optional<Ribbon>                      ribbon;
   Bounds                                     bounds;
+  // cage polygons a worn item hides (a geograft replaces them), by the item's key
+  std::map<std::string, std::vector<int32_t>> hiddenPolys;
 
   bool refined() const { return refinement != nullptr; }
 };
 
 BuiltMesh build(const MeshInput& m);
+
+// The triangles drawn: fullIndex without the polygons any worn item hides, and its groups.
+struct Drawn
+{
+  std::vector<uint32_t> index;
+  std::vector<Group>    groups;
+};
+Drawn drawnTriangles(const BuiltMesh& mesh);
 
 // Bone influences per cage vertex as compressed rows: vertex v's are [start[v], start[v + 1]).
 struct SkinInput

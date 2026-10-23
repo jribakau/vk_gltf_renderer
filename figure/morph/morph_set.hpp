@@ -70,6 +70,19 @@ public:
   virtual void update() = 0;
 };
 
+// A mesh that takes on the morphs of another, such as clothing worn over a figure's body: a channel
+// that moves `source` moves `mesh` too, with the follower's version of each target.
+struct Follower
+{
+  int mesh = -1, source = -1;
+  // The follower's version of one of the source's targets, or null when it moves nothing. Runs on
+  // the owner's thread, so it must be quick (the surface binding is made before).
+  std::function<dson::TargetPtr(const mesh::RenderTarget&)> project;
+  // The follower's own targets for a channel, used instead of projecting (an item ships fitted
+  // copies of the body shapes); an invalid future when it has none. Read on a pool thread.
+  std::function<std::shared_future<std::vector<dson::TargetPtr>>(const std::string&)> own;
+};
+
 // Vertices of one mesh whose position or normal changed since the last takeChanges().
 struct MeshChange
 {
@@ -134,6 +147,14 @@ public:
   // Rebuilds the vertex buffers from the base the next time they flush (a fit changed the base).
   void markRebuild(int mesh);
 
+  // Registers a follower and fits it to every morph already dialled in.
+  void addFollower(Follower f);
+  // Forgets meshes that left the scene: their followers, CPU state and bindings. Channels left with
+  // nothing to move and nothing to load are removed.
+  void removeMeshes(const std::set<int>& meshes);
+  // Removes channels outright, loaded or not.
+  void removeChannels(const std::vector<std::string>& names);
+
 private:
   struct Binding
   {
@@ -156,6 +177,24 @@ private:
     std::unique_ptr<mesh::NormalWelder>                   welder;
     std::vector<uint8_t>                                  mark;
   };
+
+  struct FollowerState
+  {
+    Follower f;
+    // the source target (by identity) -> its projection, null for one that moves nothing
+    std::unordered_map<const mesh::RenderTarget*, dson::TargetPtr> projected;
+    struct Own
+    {
+      enum class State { ePending, eNone, eReady } state = State::eNone;
+      std::shared_future<std::vector<dson::TargetPtr>> future;
+      std::vector<dson::TargetPtr>                      targets;
+    };
+    std::unordered_map<std::string, Own>                           own;
+    // the targets applied to the follower, per channel
+    std::unordered_map<std::string, std::vector<dson::TargetPtr>> applied;
+  };
+  bool follow(FollowerState& st, const std::string& name, double value);
+  std::vector<dson::TargetPtr> followerTargets(FollowerState& st, const std::string& name, const std::vector<Binding>& sources);
 
   Channel* channelMut(const std::string& name);
   void     reindex();
@@ -185,6 +224,7 @@ private:
   int                                                   m_listVersion = 0;
   std::vector<std::string>                              m_errors;
   std::map<int, MeshChange>                             m_changes;
+  std::vector<std::unique_ptr<FollowerState>>           m_followers;
 };
 
 }  // namespace fv::morph

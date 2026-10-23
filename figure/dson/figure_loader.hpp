@@ -9,6 +9,7 @@
 // The scene is in centimetres, as DSON is; the host scales it to metres.
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -17,6 +18,7 @@
 #include <figure/dson/rig.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/scene/graph.hpp>
+#include <figure/wardrobe/follow.hpp>
 
 namespace fv::dson {
 
@@ -36,10 +38,21 @@ struct Item
   std::vector<int> meshes;
 };
 
+// Loading a wearable (clothing, hair, a prop) for a figure that is already loaded: its figure nodes
+// are items that follow that figure's skeleton, bound at its joint centres. The result is a scene
+// of its own, which Figure::wear merges into the figure's.
+struct AttachTarget
+{
+  const SceneGraph* scene = nullptr;  // the figure's scene, for its joint centres
+  const Rig*        rig   = nullptr;  // the figure's skeleton
+  std::string       key;              // names the items ("w1", "w1.1")
+};
+
 struct LoadOptions
 {
   // SubD geometry drawn subdivided this many times (0-3)
   int subdivision = 0;
+  std::optional<AttachTarget> attach;
 };
 
 // A morph dial a scene file sets, and the node or geometry instance it sits on: a character's shape
@@ -73,6 +86,19 @@ struct MorphContext
   bool previewCenters = false;
 };
 
+// One mesh of a worn item, for fitting it to the body.
+struct ItemPart
+{
+  int item = -1;
+  int mesh = -1;  // into SceneGraph::meshes
+  // skinned to a skeleton of its own: it conforms, so it follows the body's shape too
+  bool                           conforms = false;
+  std::optional<wardrobe::Graft>    graft;
+  std::optional<wardrobe::Rigidity> rigidity;
+  // the library file of its node definition, whose Morphs folder holds the item's own morphs
+  std::string defFile;
+};
+
 struct LoadResult
 {
   SceneGraph  scene;
@@ -82,7 +108,8 @@ struct LoadResult
   // the main figure's rig (index into rigs) and its scene node group; -1 without a figure
   int               mainRig   = -1;
   int               mainGroup = -1;
-  std::vector<Item> items;
+  std::vector<Item>     items;
+  std::vector<ItemPart> parts;
   MorphContext             morphs;
   std::vector<std::string> warnings;
   // library files referenced but not installed

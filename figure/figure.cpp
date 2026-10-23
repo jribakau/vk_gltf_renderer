@@ -67,6 +67,7 @@ std::unique_ptr<Figure> Figure::load(std::shared_ptr<dson::Store> store, const s
   f->m_store = store;
   f->loaded  = dson::loadDson(*store, rel, options);
   f->setup(progress);
+  f->indexItems();
   return f;
 }
 
@@ -160,10 +161,49 @@ void Figure::setup(const Progress& progress)
     morphs->settled();
   }
 
-  // other figures' and props' dials: their controllers are followed through linear formulas, each
-  // chain summed per owner (six copies of a box each open their own lid)
-  if(!otherDials.empty())
+  // other figures' and props' dials: their controllers are followed through linear formulas
+  applyOtherDials(ctx, loaded.items, otherDials, progress);
+  morphs->flush();
+  morphs->sort();
+
+  // posing for the main figure; other figures (conforming clothing) follow its bones by name
+  if(loaded.mainRig >= 0)
   {
+    std::vector<const dson::Rig*> followers;
+    for(size_t i = 0; i < loaded.rigs.size(); i++)
+      if(int(i) != loaded.mainRig)
+        followers.push_back(&loaded.rigs[i]);
+    pose = std::make_unique<pose::PoseRig>(loaded.scene, loaded.rigs[size_t(loaded.mainRig)], followers);
+    if(driver)
+    {
+      driver->rig       = pose.get();
+      pose->afterPose   = [this] {
+        driver->update();
+        loadCorrectivesOnce();
+      };
+      driver->onDriven = [this] { loadCorrectivesOnce(); };
+      // a character's scene file stores its joints where its shape put them; a bare figure's are the base's
+      if(!ctx.mainNode.empty() && ctx.previewCenters)
+        driver->captureBaseline();
+      driver->update();
+      morphs->settled();
+    }
+    // joints the shape moved: the skins bind at the new centres, as the load leaves them
+    if(pose->takeRestMoved())
+      pose->rebind();
+    pose->takeMoved();
+  }
+}
+
+void Figure::applyOtherDials(const dson::MorphContext& ctx, const std::vector<dson::Item>& items, const std::vector<const dson::SceneDial*>& dials, const Progress& progress)
+{
+  if(dials.empty())
+    return;
+  auto          say   = [&](const std::string& s) {
+    if(progress)
+      progress(s);
+  };
+  dson::Store& store = *m_store;
     say("Resolving character morphs");
     struct Total
     {
@@ -172,7 +212,7 @@ void Figure::setup(const Progress& progress)
     };
     std::vector<Total>            totals;
     std::map<std::string, size_t> totalAt;
-    for(const dson::SceneDial* d : otherDials)
+    for(const dson::SceneDial* d : dials)
     {
       std::vector<dson::DrivenMorph> driven;
       try
@@ -246,7 +286,7 @@ void Figure::setup(const Progress& progress)
             own.push_back(i);
         }
         const auto itemIt = ctx.itemOf.find(f.owner);
-        const dson::Item* item = itemIt == ctx.itemOf.end() ? nullptr : &loaded.items[size_t(itemIt->second)];
+        const dson::Item* item = itemIt == ctx.itemOf.end() ? nullptr : &items[size_t(itemIt->second)];
         for(const dson::MorphDef& m : dson::morphsFromDoc(*mdoc, f.file, ctx.meshes, own.empty() ? nullptr : &own))
         {
           auto w = std::find_if(f.wanted.begin(), f.wanted.end(), [&](const auto& x) { return x.first == m.id; });
@@ -284,37 +324,6 @@ void Figure::setup(const Progress& progress)
       }
     }
   }
-  morphs->flush();
-  morphs->sort();
-
-  // posing for the main figure; other figures (conforming clothing) follow its bones by name
-  if(loaded.mainRig >= 0)
-  {
-    std::vector<const dson::Rig*> followers;
-    for(size_t i = 0; i < loaded.rigs.size(); i++)
-      if(int(i) != loaded.mainRig)
-        followers.push_back(&loaded.rigs[i]);
-    pose = std::make_unique<pose::PoseRig>(loaded.scene, loaded.rigs[size_t(loaded.mainRig)], followers);
-    if(driver)
-    {
-      driver->rig       = pose.get();
-      pose->afterPose   = [this] {
-        driver->update();
-        loadCorrectivesOnce();
-      };
-      driver->onDriven = [this] { loadCorrectivesOnce(); };
-      // a character's scene file stores its joints where its shape put them; a bare figure's are the base's
-      if(!ctx.mainNode.empty() && ctx.previewCenters)
-        driver->captureBaseline();
-      driver->update();
-      morphs->settled();
-    }
-    // joints the shape moved: the skins bind at the new centres, as the load leaves them
-    if(pose->takeRestMoved())
-      pose->rebind();
-    pose->takeMoved();
-  }
-}
 
 void Figure::loadCorrectivesOnce()
 {

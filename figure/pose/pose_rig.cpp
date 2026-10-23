@@ -139,6 +139,20 @@ void PoseRig::addFollowers(const dson::Rig& rig)
     apply(m_bones[i]);
 }
 
+void PoseRig::removeFollowers(const dson::Rig& rig)
+{
+  std::set<int> nodes;
+  for(const auto& [id, node] : rig.bones)
+    nodes.insert(node);
+  for(PoseBone& pb : m_bones)
+  {
+    pb.followers.erase(std::remove_if(pb.followers.begin(), pb.followers.end(), [&](int n) { return nodes.count(n) > 0; }), pb.followers.end());
+    pb.rest.erase(std::remove_if(pb.rest.begin(), pb.rest.end(), [&](const auto& r) { return nodes.count(r.first) > 0; }), pb.rest.end());
+  }
+  for(int n : nodes)
+    m_restBase.erase(n);
+}
+
 const PoseBone* PoseRig::get(const std::string& nameOrId) const
 {
   if(auto it = m_byName.find(nameOrId); it != m_byName.end())

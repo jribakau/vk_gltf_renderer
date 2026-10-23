@@ -11,6 +11,7 @@
 #include <future>
 #include <memory>
 #include <set>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,35 @@ struct PosePresetResult
 // animation, `name://@selection` urls and hierarchical `#bone?rotation/x/value` urls. Figure::applyPosePreset
 // is this, on the figure's own pose and morphs.
 PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc);
+
+// What the figure wears: one wearable's nodes, which go on and come off together. Items that came
+// with the scene file are listed too, with no library path.
+struct WornItem
+{
+  int         id = 0;
+  std::string rel;  // library path it was worn from; empty for the scene file's own
+  std::string key, label;
+  std::string kind;  // Clothing, Hair, Anatomy, Prop
+  bool        visible = true;
+  // the nodes it hangs from the figure by (scene node, the bone it is mounted on or ""), and what is under it
+  std::vector<std::pair<int, std::string>> objects;
+  std::vector<int>                         rigs;    // into LoadResult::rigs
+  std::vector<int>                         meshes;  // into SceneGraph::meshes
+  std::set<std::string>                    nodeNames, sources;
+  // the dials it brought: fit adjustments such as "Loosen Neck"
+  std::vector<std::string> channels;
+  // body polygons a geograft hides while it is worn and shown
+  std::vector<int32_t> hiddenPolys;
+};
+
+struct WearResult
+{
+  std::vector<int> items;     // ids of what went on
+  std::vector<int> replaced;  // ids taken off because these are the same garment
+  // share of the items' bones that found a figure bone: low means it was made for another figure
+  double                   fit = 1;
+  std::vector<std::string> missingBones, warnings;
+};
 
 class Figure
 {
@@ -75,12 +105,31 @@ public:
   // Starts loading the joint correctives, once (they join on the first pose change).
   void loadCorrectivesOnce();
 
+  // ---- wardrobe (figure_wardrobe.cpp)
+  std::vector<WornItem> items;
+
+  // A wearable loaded and bound to the body. Reads the figure (its skeleton, its body's cage) and
+  // changes nothing, so it can run on a worker while the figure is in use; commitWear puts it on.
+  struct PreparedWear;
+  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision);
+  // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
+  // figure's owning thread. The renderer's model has to be built again afterwards.
+  WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel);
+  // Takes an item off: its nodes leave the scene (the next build leaves them out), its skeleton
+  // stops following, its meshes stop following the body. False for an unknown id.
+  bool removeItem(int id);
+  bool setItemVisible(int id, bool visible);
+  const WornItem* item(int id) const;
+  // Lists the items the scene file came with (Figure::load does).
+  void indexItems();
+
   // Applies a DAZ pose preset to this figure's bones and morph dials.
   PosePresetResult applyPosePreset(const dson::Json& doc);
 
 private:
   Figure() = default;
   void setup(const Progress& progress);
+  void applyOtherDials(const dson::MorphContext& ctx, const std::vector<dson::Item>& items, const std::vector<const dson::SceneDial*>& dials, const Progress& progress);
   void finishCorrectives();
 
   struct CorrectiveFile
@@ -95,6 +144,8 @@ private:
   std::vector<std::string>                      m_correctiveFiles;
   std::vector<std::future<CorrectiveFile>>      m_correctiveJobs;
   bool                                          m_correctivesStarted = false;
+  std::atomic<int>                              m_wears{0};
+  int                                           m_nextItem = 1;
 };
 
 }  // namespace fv

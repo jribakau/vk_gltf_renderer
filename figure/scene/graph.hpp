@@ -63,6 +63,8 @@ struct Node
   Quat             quaternion;
   Vec3             scale{1, 1, 1};
   bool             visible = true;
+  // taken off (a worn item): the node and what is under it are left out of the glTF
+  bool removed = false;
   // the DSON node it was made from (presets address nodes by it)
   std::string dsonNode;
   // bones: their joint data

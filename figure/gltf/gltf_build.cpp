@@ -59,6 +59,24 @@ private:
   tinygltf::Model& m_model;
 };
 
+// A mesh's drawn triangles: all of them, or without the polygons a worn item hides.
+class DrawnView
+{
+public:
+  explicit DrawnView(const mesh::BuiltMesh& g)
+      : m_geo(g)
+  {
+    if(!g.hiddenPolys.empty())
+      m_own = mesh::drawnTriangles(g);
+  }
+  const std::vector<uint32_t>&    index() const { return m_geo.hiddenPolys.empty() ? m_geo.fullIndex : m_own.index; }
+  const std::vector<mesh::Group>& groups() const { return m_geo.hiddenPolys.empty() ? m_geo.groups : m_own.groups; }
+
+private:
+  const mesh::BuiltMesh& m_geo;
+  mesh::Drawn            m_own;
+};
+
 tinygltf::Value extras(const std::string& fvId)
 {
   tinygltf::Value::Object o;
@@ -125,6 +143,8 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     {
       const int i = stack.back();
       stack.pop_back();
+      if(scene.nodes[i].removed)
+        continue;
       out.nodeOf[i] = int(order.size());
       order.push_back(i);
       const auto& children = scene.nodes[i].children;
@@ -142,7 +162,8 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     g.scale       = {n.scale.x, n.scale.y, n.scale.z};
     g.extras      = extras("n:" + std::to_string(i));
     for(int c : n.children)
-      g.children.push_back(out.nodeOf[c]);
+      if(out.nodeOf[c] >= 0)
+        g.children.push_back(out.nodeOf[c]);
     if(!n.visible)
     {
       // KHR_node_visibility, which the renderer reads
@@ -165,6 +186,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     std::vector<float>              uv;
     std::vector<mat::StrandMesh::Range> ranges;
     const mesh::BuiltMesh*          geo;
+    std::vector<uint32_t>           index;
   };
   std::vector<std::vector<HairPart>> hairParts(scene.materials.size());
   for(int i : order)
@@ -180,7 +202,8 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     for(int c = 0; c < 3; c++)
       s2 = std::max(s2, w4.e[c * 4] * w4.e[c * 4] + w4.e[c * 4 + 1] * w4.e[c * 4 + 1] + w4.e[c * 4 + 2] * w4.e[c * 4 + 2]);
     std::map<int, std::vector<mat::StrandMesh::Range>> byMaterial;
-    for(const mesh::Group& group : geo.groups)
+    const DrawnView drawn(geo);
+    for(const mesh::Group& group : drawn.groups())
     {
       const int mi = group.materialIndex < int(m.materials.size()) ? m.materials[group.materialIndex] : -1;
       if(mi < 0 || mi >= int(scene.materials.size()))
@@ -189,7 +212,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       if(mat::needsArea(sf))
       {
         double area = 0;
-        const uint32_t* idx = geo.fullIndex.data() + group.start;
+        const uint32_t* idx = drawn.index().data() + group.start;
         for(uint32_t t = 0; t + 2 < group.count; t += 3)
         {
           const float* a = &geo.position[idx[t] * 3];
@@ -205,7 +228,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     }
     for(auto& [mi, ranges] : byMaterial)
     {
-      HairPart part{geo.uv, std::move(ranges), &geo};
+      HairPart part{geo.uv, std::move(ranges), &geo, drawn.index()};
       if(!options.texturesFlipped)
         for(size_t v = 1; v < part.uv.size(); v += 2)
           part.uv[v] = 1 - part.uv[v];
@@ -222,7 +245,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     std::vector<mat::StrandVote> votes;
     for(const HairPart& p : hairParts[mi])
     {
-      mat::StrandMesh part{p.geo->position, p.uv, p.geo->fullIndex, p.ranges};
+      mat::StrandMesh part{p.geo->position, p.uv, p.index, p.ranges};
       const auto      v = mat::strandVotes(part);
       votes.insert(votes.end(), v.begin(), v.end());
     }
@@ -300,7 +323,8 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     const Mesh&            m   = scene.meshes[n.mesh];
     const mesh::BuiltMesh& geo = *m.geo;
     const size_t           count = geo.position.size() / 3;
-    if(!count || geo.groups.empty())
+    const DrawnView drawn(geo);
+    if(!count || drawn.groups().empty())
       continue;
 
     std::vector<double> min{1e300, 1e300, 1e300}, max{-1e300, -1e300, -1e300};
@@ -331,9 +355,9 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     tinygltf::Mesh gm;
     gm.name   = m.name;
     gm.extras = extras("g:" + std::to_string(n.mesh));
-    for(const mesh::Group& group : geo.groups)
+    for(const mesh::Group& group : drawn.groups())
     {
-      const uint32_t* first = geo.fullIndex.data() + group.start;
+      const uint32_t* first = drawn.index().data() + group.start;
       tinygltf::Primitive p;
       if(count <= 65535)
       {

@@ -123,6 +123,12 @@ public:
   // Called after every pose change, once the bones moved: the figure runs its formulas here.
   std::function<void()> afterPose;
 
+  // A worn item's skeleton follows the figure's bones of the same name (and its root the figure
+  // itself); the bones are re-posed. Cross-generation aliases come with fitting.
+  void addFollowers(const dson::Rig& rig);
+  // An item taken off: its bones stop following.
+  void removeFollowers(const dson::Rig& rig);
+
   // The bone nodes that moved since last asked.
   std::set<int> takeMoved();
   // Whether joint centres moved since last asked (the skins want re-binding).
@@ -134,7 +140,6 @@ private:
   std::vector<int> apply(PoseBone& pb);
   // Rotation channels, in degrees, that turn this bone's local +Z toward `worldPoint`.
   std::optional<std::array<double, 3>> aimAngles(const PoseBone& pb, const Vec3& worldPoint) const;
-  void             addFollowers(const dson::Rig& rig);
   Vec3             localOffset(const PoseBone& pb) const;
 
   SceneGraph&                                  m_scene;
