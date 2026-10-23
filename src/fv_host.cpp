@@ -45,6 +45,7 @@
 #include <nvutils/logger.hpp>
 #include <nvutils/parameter_registry.hpp>
 
+#include <figure/dforce/dforce.hpp>
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
@@ -83,6 +84,9 @@ struct Loaded
 {
   std::string                 id;
   std::unique_ptr<fv::Figure> fig;
+  // drapes the worn dynamic surfaces (it works on `fig`, so it goes first); null without a body
+  std::unique_ptr<fv::dforce::Dforce> dforce;
+  int                                 dforceVersion = -1;
   std::vector<int>            nodeOf;   // scene node -> glTF node
   std::unordered_map<int, int> sceneOf;  // glTF node -> scene node
   std::vector<int>            meshOf;   // scene mesh -> glTF mesh
@@ -510,6 +514,8 @@ struct FvHost::Impl
   std::mutex wearMutex;
   Json wardrobeRemove(const Json& args);
   Json wardrobeVisible(const Json& args);
+  void publishDforce(bool force);
+  Json dforceCommand(const std::string& cmd, const Json& args);
   void rebuildScene(const std::string& label);
   void publishFigure();
   void publishWardrobe();
@@ -773,6 +779,13 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   if(figure && figure->busyOn)
     job(figure->busyJob, {{"state", "done"}});
   f->id  = "fig:" + std::to_string(++figures);
+  if(f->fig->morphs && !f->fig->loaded.morphs.mainMeshes.empty())
+  {
+    const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
+    f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body);
+    f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
+    f->dforce->poke();
+  }
   figure = std::move(f);
   {
     std::lock_guard lock(settingsMutex);
@@ -888,6 +901,9 @@ void FvHost::Impl::rebuildScene(const std::string& label)
   morphTouched = true;
   frameIn      = 2;
   publishFigure();
+  // what is worn changed: its cloth settles again
+  if(f.dforce)
+    f.dforce->poke();
 }
 
 Json FvHost::Impl::wear(const Json& args)
@@ -1074,6 +1090,36 @@ Json FvHost::Impl::wardrobeVisible(const Json& args)
   if(!figure->fig->setItemVisible(itemId(args), args.at("visible").get<bool>()))
     throw std::runtime_error("no such item");
   rebuildScene("Showing");
+  return {{"ok", true}};
+}
+
+//--------------------------------------------------------------------------------------------------
+// dForce
+
+// Topic "dforce": {figure, enabled, active, busy, draped}, when it changes.
+void FvHost::Impl::publishDforce(bool force)
+{
+  if(!figure || !figure->dforce)
+    return;
+  const fv::dforce::Dforce& d = *figure->dforce;
+  if(!force && figure->dforceVersion == d.version())
+    return;
+  figure->dforceVersion = d.version();
+  protocol->events().snapshot("dforce", {{"figure", figure->id}, {"enabled", d.enabled()}, {"active", d.active()}, {"busy", d.busy()}, {"draped", d.draped()}});
+}
+
+// dforce.enable {on}: cloth drapes (true) or shows the conforming shape (false); dforce.resimulate
+// settles the cloth now.
+Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
+{
+  if(!figure || !figure->dforce)
+    throw std::runtime_error("no figure with dynamic clothing is loaded");
+  if(cmd == "enable")
+    figure->dforce->setEnabled(args.value("on", true));
+  else
+    figure->dforce->resimulate();
+  morphTouched = true;
+  publishDforce(true);
   return {{"ok", true}};
 }
 
@@ -2043,6 +2089,8 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
   cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeVisible(args); }); });
+  cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("enable", args); }); });
+  cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
   cmds.add("material.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->set(args); }); });
   cmds.add("material.reset", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->reset(args); }); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
@@ -2254,7 +2302,19 @@ void FvHost::onUpdate()
   s.applyPendingMorphs();
   if(s.figure)
   {
+    // a settle that finished writes its drape first, so this frame's pump flushes it
+    if(s.figure->dforce)
+      s.figure->dforce->pump();
     const fv::Figure::Changes changes = s.figure->fig->pump();
+    if(s.figure->dforce)
+    {
+      std::vector<int> moved;
+      for(const fv::morph::MeshChange& m : changes.meshes)
+        moved.push_back(m.mesh);
+      if(!changes.nodes.empty() || !moved.empty())
+        s.figure->dforce->changed(moved, !changes.nodes.empty());
+      s.publishDforce(false);
+    }
     s.applyNodes(changes.nodes);
     for(const fv::morph::MeshChange& mesh : changes.meshes)
       s.applyMesh(mesh);

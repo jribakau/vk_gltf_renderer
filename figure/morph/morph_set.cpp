@@ -175,6 +175,7 @@ void MorphSet::replaceCpuTarget(const std::string& name, int mesh, dson::TargetP
   {
     addTarget(name, mesh, std::move(target), opts);
     m_listVersion++;
+    flush();
     return;
   }
   for(auto b = it->second.begin(); b != it->second.end();)
@@ -192,6 +193,7 @@ void MorphSet::replaceCpuTarget(const std::string& name, int mesh, dson::TargetP
   if(v != 0)
     st.active[target.get()] = {target, v};
   st.dirty = true;
+  flush();
 }
 
 void MorphSet::addLazy(const std::string& name, Loader loader, const ChannelOptions& opts)
