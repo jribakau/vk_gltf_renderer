@@ -2,7 +2,7 @@
 
 // The figure scene as the loaders build it: a tree of groups, bones and meshes with three.js-style
 // local transforms (position, quaternion, scale), meshes with their built geometry, skin and
-// materials. It is what the TypeScript viewer kept as three.js objects; build/gltf_build.cpp turns
+// materials. It is what the TypeScript viewer kept as three.js objects; gltf/gltf_build.cpp turns
 // it into the renderer's glTF model, and posing, morphs and fitting edit it.
 
 #include <array>

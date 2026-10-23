@@ -34,7 +34,7 @@
 #include <nvapp/elem_camera.hpp>
 #include <nvutils/logger.hpp>
 
-#include <figure/build/gltf_build.hpp>
+#include <figure/gltf/gltf_build.hpp>
 #include <figure/dson/figure_loader.hpp>
 #include <figure/pose/pose_rig.hpp>
 
