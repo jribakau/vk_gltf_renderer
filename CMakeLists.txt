@@ -246,9 +246,6 @@ endif()
 add_executable(${PROJECT_NAME} ${EXE_SOURCES})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
-  # Before turbojpeg, which ships its own zlib. The linker keeps the first
-  # inflateInit2_, and gzip files (DAZ presets) need zlib-ng's.
-  zlib
   fv_figure
   nvpro2::nvapp
   nvpro2::nvgui
