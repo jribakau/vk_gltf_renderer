@@ -729,13 +729,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           std::vector<std::array<double, 2>> widths;
           for(int mi : meshOut.materials)
           {
-            const auto& chans = scene.materials[mi].channels;
-            auto        width = [&](const char* n) -> std::optional<double> {
-              auto it = chans.find(norm(n));
-              if(it == chans.end() || it->second.first.empty())
-                return std::nullopt;
-              const Json v = Json::parse(it->second.first, nullptr, false);
-              return v.is_number() ? std::optional<double>(v.get<double>()) : std::nullopt;
+            const Channels* chans = scene.materials[mi].channels.get();
+            auto            width = [&](const char* n) -> std::optional<double> {
+              const Channel* c = chans ? chans->get(norm(n)) : nullptr;
+              return c && c->value.is_number() ? std::optional<double>(c->value.get<double>()) : std::nullopt;
             };
             widths.push_back(ribbonWidths(width("Line Start Width"), width("Line End Width"), meshOut.geo->ribbon->spacing));
           }

@@ -1,6 +1,9 @@
 #include <figure/gltf/gltf_build.hpp>
 
+#include <figure/materials/hair_strands.hpp>
+
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <set>
@@ -63,30 +66,32 @@ tinygltf::Value extras(const std::string& fvId)
   return tinygltf::Value(o);
 }
 
-// The base colour texture a material asks for: its colour map with the cutout folded into alpha, or
-// a cutout alone on a white base (texcache.rs composes it).
-std::optional<TextureRequest> baseColorRequest(const Material& m)
-{
-  if(m.baseColorMap.empty() && m.opacityMap.empty())
-    return std::nullopt;
-  return TextureRequest{m.baseColorMap.empty() ? m.opacityMap : m.baseColorMap, true, false, m.opacityMap};
-}
-
 }  // namespace
 
-std::string requestKey(const TextureRequest& req)
+std::vector<TextureRequest> textureRequests(const Material& m, mat::SkinMode skin)
 {
-  return req.rel + "|" + (req.srgb ? "1" : "0") + (req.normal ? "n" : "") + "|" + req.alphaRel;
+  mat::LowerOptions o;
+  o.skin = skin;
+  return mat::lower(m.surface, m.edits, o).requests;
 }
 
-std::vector<TextureRequest> textureRequests(const SceneGraph& scene)
+std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMode skin)
 {
   std::vector<TextureRequest> out;
   std::set<std::string>       seen;
   for(const Material& m : scene.materials)
-    if(auto req = baseColorRequest(m); req && seen.insert(requestKey(*req)).second)
-      out.push_back(*req);
+    for(TextureRequest& req : textureRequests(m, skin))
+      if(seen.insert(requestKey(req)).second)
+        out.push_back(std::move(req));
   return out;
+}
+
+tinygltf::Material materialToGltf(const Material& m, const mat::LowerOptions& options,
+                                  const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve, std::vector<std::string>& extensionsUsed)
+{
+  tinygltf::Material g = mat::toGltf(mat::lower(m.surface, m.edits, options), resolve, extensionsUsed);
+  g.name               = m.name;
+  return g;
 }
 
 std::vector<float> inverseBindMatrices(const Mesh& m)
@@ -151,18 +156,91 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   model.scenes[0].nodes = {out.nodeOf[root]};
   model.defaultScene    = 0;
 
+  // what the materials need from the meshes: the area an emitter spreads its flux over, and the
+  // direction of hair strands, which is measured from the cards' UVs as the glTF carries them
+  const std::vector<Mat4> worlds = scene.worlds();
+  std::vector<double>     emitArea(scene.materials.size(), 0.0);
+  struct HairPart
+  {
+    std::vector<float>              uv;
+    std::vector<mat::StrandMesh::Range> ranges;
+    const mesh::BuiltMesh*          geo;
+  };
+  std::vector<std::vector<HairPart>> hairParts(scene.materials.size());
+  for(int i : order)
+  {
+    const Node& n = scene.nodes[i];
+    if(n.kind != NodeKind::eMesh || n.mesh < 0 || !scene.meshes[n.mesh].geo)
+      continue;
+    const Mesh&            m   = scene.meshes[n.mesh];
+    const mesh::BuiltMesh& geo = *m.geo;
+    const Mat4&            w4  = worlds[i];
+    // the largest axis scale of the node's world matrix (three's getMaxScaleOnAxis)
+    double s2 = 0;
+    for(int c = 0; c < 3; c++)
+      s2 = std::max(s2, w4.e[c * 4] * w4.e[c * 4] + w4.e[c * 4 + 1] * w4.e[c * 4 + 1] + w4.e[c * 4 + 2] * w4.e[c * 4 + 2]);
+    std::map<int, std::vector<mat::StrandMesh::Range>> byMaterial;
+    for(const mesh::Group& group : geo.groups)
+    {
+      const int mi = group.materialIndex < int(m.materials.size()) ? m.materials[group.materialIndex] : -1;
+      if(mi < 0 || mi >= int(scene.materials.size()))
+        continue;
+      const mat::Surface& sf = scene.materials[mi].surface;
+      if(mat::needsArea(sf))
+      {
+        double area = 0;
+        const uint32_t* idx = geo.fullIndex.data() + group.start;
+        for(uint32_t t = 0; t + 2 < group.count; t += 3)
+        {
+          const float* a = &geo.position[idx[t] * 3];
+          const float* b = &geo.position[idx[t + 1] * 3];
+          const float* c = &geo.position[idx[t + 2] * 3];
+          const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+          area += 0.5 * std::sqrt((uy * vz - uz * vy) * (uy * vz - uz * vy) + (uz * vx - ux * vz) * (uz * vx - ux * vz) + (ux * vy - uy * vx) * (ux * vy - uy * vx));
+        }
+        emitArea[mi] += area * s2;
+      }
+      if(sf.kind == mat::Kind::eHair)
+        byMaterial[mi].push_back({group.start, group.count});
+    }
+    for(auto& [mi, ranges] : byMaterial)
+    {
+      HairPart part{geo.uv, std::move(ranges), &geo};
+      if(!options.texturesFlipped)
+        for(size_t v = 1; v < part.uv.size(); v += 2)
+          part.uv[v] = 1 - part.uv[v];
+      hairParts[mi].push_back(std::move(part));
+    }
+  }
+  out.lowering.assign(scene.materials.size(), {});
+  for(size_t mi = 0; mi < scene.materials.size(); mi++)
+  {
+    mat::LowerOptions& lo = out.lowering[mi];
+    lo.skin               = options.skin;
+    lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
+    // one material on several meshes is one glTF material, so those meshes vote together
+    std::vector<mat::StrandVote> votes;
+    for(const HairPart& p : hairParts[mi])
+    {
+      mat::StrandMesh part{p.geo->position, p.uv, p.geo->fullIndex, p.ranges};
+      const auto      v = mat::strandVotes(part);
+      votes.insert(votes.end(), v.begin(), v.end());
+    }
+    lo.anisotropyRotation = mat::strandRotation(votes);
+  }
+
   // materials, and the textures they ask for
-  std::map<std::string, int> textureOf;  // request key -> texture index
-  bool                       usesBasisu = false;
-  auto                       texture    = [&](const TextureRequest& req) -> int {
+  std::map<std::string, mat::ResolvedTexture> textureOf;  // request key -> texture
+  bool                                        usesBasisu = false;
+  auto                                        texture    = [&](const TextureRequest& req) -> mat::ResolvedTexture {
     if(req.rel.empty() || !options.texture)
-      return -1;
+      return {};
     const std::string key = requestKey(req);
     if(auto it = textureOf.find(key); it != textureOf.end())
       return it->second;
     const auto image = options.texture(req);
     if(!image)
-      return textureOf[key] = -1;
+      return textureOf[key] = {};
     tinygltf::Image img;
     img.uri      = image->uri;
     img.mimeType = image->mimeType;
@@ -190,7 +268,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     else
       t.source = int(model.images.size()) - 1;
     model.textures.push_back(std::move(t));
-    return textureOf[key] = int(model.textures.size()) - 1;
+    return textureOf[key] = {int(model.textures.size()) - 1, image->flipGreen};
   };
   // strand hair ribbons face one way, so their surfaces are seen from both sides
   std::vector<bool> onRibbon(scene.materials.size(), false);
@@ -201,27 +279,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
           onRibbon[mi] = true;
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
-    const Material&     m = scene.materials[mi];
-    tinygltf::Material g;
-    g.name = m.name;
-    g.pbrMetallicRoughness.baseColorFactor = {m.baseColor[0], m.baseColor[1], m.baseColor[2], m.opacityMap.empty() ? m.opacity : 1.0};
-    g.pbrMetallicRoughness.metallicFactor  = 0;
-    g.pbrMetallicRoughness.roughnessFactor = std::clamp<double>(m.roughness, 0, 1);
-    const bool cutout = !m.opacityMap.empty();
-    if(auto req = baseColorRequest(m))
-      if(const int t = texture(*req); t >= 0)
-        g.pbrMetallicRoughness.baseColorTexture.index = t;
-    if(cutout)
-    {
-      g.alphaMode   = "MASK";
-      g.alphaCutoff = 0.5;
-      g.doubleSided = true;
-    }
-    else if(m.opacity < 1)
-    {
-      g.alphaMode   = "BLEND";
-      g.doubleSided = true;
-    }
+    tinygltf::Material g = materialToGltf(scene.materials[mi], out.lowering[mi], texture, model.extensionsUsed);
     if(onRibbon[mi])
       g.doubleSided = true;
     g.extras = extras("m:" + std::to_string(mi));
@@ -316,6 +374,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     }
   }
   model.buffers[0].name = "figure";
+  out.textureOf         = std::move(textureOf);
   return out;
 }
 

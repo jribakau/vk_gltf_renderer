@@ -44,12 +44,14 @@
 #include <nvutils/logger.hpp>
 #include <nvutils/parameter_registry.hpp>
 
+#include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
 
 #include "env_image_loader.hpp"
 #include "fv_lighting.hpp"
+#include "fv_materials.hpp"
 #include "fv_protocol.hpp"
 #include "fv_view.hpp"
 #include "gltf_environment_sky.hpp"
@@ -116,6 +118,19 @@ std::string encodeComponent(std::string_view s)
       out += hex[c & 15];
     }
   }
+  return out;
+}
+
+// A number as the cooker parses it, five decimals at most.
+std::string fmtNumber(double v)
+{
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%.5f", v);
+  std::string out = buf;
+  while(out.size() > 1 && out.back() == '0')
+    out.pop_back();
+  if(!out.empty() && out.back() == '.')
+    out.pop_back();
   return out;
 }
 
@@ -211,8 +226,23 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
                     + "&flip=" + (flip ? "1" : "0") + "&max=" + std::to_string(s.maxTextureSize);
   if(req.normal)
     url += "&nm=1";
+  if(!req.channels.empty())
+    url += "&ch=" + req.channels;
+  // a source in a query value: <rootId>/<path>, percent-encoded
+  const auto source = [&](const std::string& rel) { return encodeComponent(s.rootId + "/" + normRel(rel)); };
   if(!req.alphaRel.empty())
-    url += "&alpha=" + encodeComponent(s.rootId + "/" + normRel(req.alphaRel));
+    url += "&alpha=" + source(req.alphaRel);
+  if(!req.bumpRel.empty())
+    url += "&bump=" + source(req.bumpRel) + "&bs=" + fmtNumber(req.bumpStrength);
+  if(req.makeup)
+  {
+    // mk=<base 1|0>|<colour source>|<weight source>|<weight>|<r,g,b tint>|<r,g,b factor>, percent-encoded as a whole
+    const fv::mat::MakeupRequest& m = *req.makeup;
+    const auto                    rgb = [](const std::array<float, 3>& c) { return fmtNumber(c[0]) + "," + fmtNumber(c[1]) + "," + fmtNumber(c[2]); };
+    const std::string             mk = std::string(m.baseIsSource ? "1" : "0") + "|" + (m.colorRel.empty() ? "-" : source(m.colorRel)) + "|"
+                           + (m.weightRel.empty() ? "-" : source(m.weightRel)) + "|" + fmtNumber(m.weightFactor) + "|" + rgb(m.tint) + "|" + rgb(m.factor);
+    url += "&mk=" + encodeComponent(mk);
+  }
   url += cachedOnly ? "&path=1&cached=1" : "&path=1";
   auto res = cli.Get(url);
   if(res && res->status == 202 && cachedOnly)
@@ -251,6 +281,23 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
     return std::nullopt;
   const std::string p = utf8Of(*path);
   return fv::build::TextureImage{uriOfPath(p), mimeOf(p), false};
+}
+
+// A texture without waiting for the cooker: the source image as it is, where that shows the right
+// thing. A normal map keeps its green (the material tells the renderer to flip it) and loses the
+// bump blended onto it; a height map and a roughness map need the cooker, so the surface goes
+// without them until a later load finds them cooked. A cutout alone changes the picture too much
+// for that: it and makeup (and formats the renderer cannot read) are cooked, unflipped, and waited for.
+std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker)
+{
+  if(cooker && (!req.alphaRel.empty() || req.makeup || !readable(req.rel)))
+    return cookedTexture(s, req, false, false).image;
+  if(req.channels == "mr" || req.channels == "bn")
+    return std::nullopt;
+  auto image = sourceTexture(lib, req);
+  if(image && req.channels == "ng")
+    image->flipGreen = true;
+  return image;
 }
 
 // The library folder a .duf sits in: one of the configured roots, else the nearest folder above it
@@ -425,7 +472,8 @@ struct FvHost::Impl
   void job(uint64_t id, const Json& state) { protocol->events().patch("jobs", {{std::to_string(id), state}}); }
 
   Json load(const Json& args);
-  void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId);
+  void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
+               fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib);
   Json poseSet(const Json& args);
   void applyNodes(const std::set<int>& moved);
   void applyMesh(const fv::morph::MeshChange& change);
@@ -476,6 +524,10 @@ struct FvHost::Impl
   void publishLighting();
 
   std::unique_ptr<FvView> view;
+  // the materials of the loaded figure (fv_materials.hpp), and how skin is shaded for the render mode
+  std::unique_ptr<FvMaterials>       materials;
+  std::atomic<fv::mat::SkinMode>     skinMode{fv::mat::SkinMode::eRaster};
+  std::shared_ptr<fv::dson::Library> libraryOfFigure;  // the loaded figure's, for source textures (settingsMutex)
   // figure loads only: a preset must not take a generation, or it would cancel a figure load
   std::mutex figureLoads;
   uint64_t   latestFigureSeq = 0;
@@ -561,11 +613,13 @@ Json FvHost::Impl::load(const Json& args)
       // textures: every one the build asks for, resolved in parallel. The cooked ones when all are
       // cooked; the build flips the UVs for every texture or none, so otherwise the source images,
       // with cutouts (only the cooker folds them into alpha) and .tif and such cooked unflipped.
+      // the path tracer gets the skin's volume; the rasterizer would show it see-through
+      const fv::mat::SkinMode skin = skinMode.load();
       job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
       bool cooked = !s.texServer.empty() && !s.rootId.empty();
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
       {
-        const auto                                          requests = fv::build::textureRequests(f->loaded.scene);
+        const auto                                          requests = fv::build::textureRequests(f->loaded.scene, skin);
         std::vector<std::optional<fv::build::TextureImage>> found(requests.size());
         std::atomic<bool>                                   uncooked{false};
         const auto resolve = [&](const std::function<std::optional<fv::build::TextureImage>(const fv::build::TextureRequest&)>& one) {
@@ -588,10 +642,7 @@ Json FvHost::Impl::load(const Json& args)
           });
         if(!cooked || uncooked)
         {
-          resolve([&](const fv::build::TextureRequest& req) {
-            const bool cook = cooked && (!req.alphaRel.empty() || !readable(req.rel));
-            return cook ? cookedTexture(s, req, false, false).image : sourceTexture(*lib, req);
-          });
+          resolve([&](const fv::build::TextureRequest& req) { return fallbackTexture(s, *lib, req, cooked); });
           if(cooked)
             cookLater(s, requests);
           cooked = false;
@@ -601,6 +652,7 @@ Json FvHost::Impl::load(const Json& args)
       }
       fv::build::BuildOptions options;
       options.texturesFlipped = cooked;
+      options.skin            = skin;
       options.texture         = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
         auto it = images.find(fv::build::requestKey(req));
         return it == images.end() ? std::nullopt : it->second;
@@ -611,7 +663,10 @@ Json FvHost::Impl::load(const Json& args)
            built.model.materials.size(), built.model.images.size(), built.model.buffers.empty() ? size_t(0) : built.model.buffers[0].data.size());
       // the renderer takes it on the application thread
       auto shared = std::make_shared<std::pair<std::unique_ptr<fv::Figure>, fv::build::BuildResult>>(std::move(f), std::move(built));
-      post([this, shared, generation, jobId] { install(std::move(shared->first), std::move(shared->second), generation, jobId); });
+      const bool flipped = cooked;
+      post([this, shared, generation, jobId, flipped, skin, lib] {
+        install(std::move(shared->first), std::move(shared->second), generation, jobId, flipped, skin, lib);
+      });
     }
     catch(const std::exception& e)
     {
@@ -622,7 +677,8 @@ Json FvHost::Impl::load(const Json& args)
   return {{"job", jobId}};
 }
 
-void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResult built, uint64_t generation, uint64_t jobId)
+void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
+                           fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib)
 {
   if(generation != loadGeneration)
     return;
@@ -659,6 +715,11 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     job(figure->busyJob, {{"state", "done"}});
   f->id  = "fig:" + std::to_string(++figures);
   figure = std::move(f);
+  {
+    std::lock_guard lock(settingsMutex);
+    libraryOfFigure = std::move(lib);
+  }
+  materials->attach(figure->id, &figure->fig->loaded.scene, built, texturesFlipped, skin);
   {
     std::lock_guard lock(morphMutex);
     figureId = figure->id;
@@ -770,6 +831,20 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         notice("Applied pose " + name + ". " + std::to_string(r.skipped.size()) + " pose controls aren't supported yet and were skipped.", "info");
       else
         notice("Applied pose " + name, "info");
+    }
+  }
+  else if(kind == "material preset")
+  {
+    if(!figure)
+      notice(name + " is a DAZ material preset. Load a DAZ figure first, then open the preset.");
+    else
+    {
+      const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
+      materials->surfacesChanged(r.changed);
+      if(r.changed.empty())
+        notice(name + ": none of its surfaces match the loaded figure.");
+      else
+        notice("Applied material preset " + name + " to " + std::to_string(r.changed.size()) + " surfaces.", "info");
     }
   }
   else
@@ -1292,7 +1367,30 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     st.subdivision    = args.value("subdivision", st.subdivision);
     return Json{{"ok", true}};
   });
+  s.materials = std::make_unique<FvMaterials>(FvMaterials::Hooks{
+      .renderer = renderer,
+      .events   = &s.protocol->events(),
+      .post     = [impl](std::function<void()> f) { impl->post(std::move(f)); },
+      .notice   = [impl](const std::string& text, const char* level) { impl->notice(text, level); },
+      .nextJob  = [impl] { return ++impl->jobs; },
+      .job      = [impl](uint64_t id, const Json& state) { impl->job(id, state); },
+      .texture =
+          [impl](const fv::build::TextureRequest& req, bool flipped) -> std::optional<fv::build::TextureImage> {
+        HostSettings                       st;
+        std::shared_ptr<fv::dson::Library> lib;
+        {
+          std::lock_guard lock(impl->settingsMutex);
+          st  = impl->settings;
+          lib = impl->libraryOfFigure;
+        }
+        if(!st.texServer.empty() && !st.rootId.empty())
+          return cookedTexture(st, req, flipped, false).image;
+        return lib ? fallbackTexture(st, *lib, req, false) : std::nullopt;
+      },
+  });
   cmds.add("load", [impl](const Json& args) { return impl->load(args); });
+  cmds.add("material.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->set(args); }); });
+  cmds.add("material.reset", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->reset(args); }); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
   cmds.add("pose.eyes", [impl](const Json& args) {
     return impl->onApp([impl, args] {
@@ -1355,6 +1453,8 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       throw std::runtime_error("mode is raster or rtx");
     return impl->onApp([impl, mode] {
       impl->renderer->setRenderSystem(mode == "rtx" ? RenderingMode::ePathtracer : RenderingMode::eRasterizer);
+      impl->skinMode = mode == "rtx" ? fv::mat::SkinMode::eVolume : fv::mat::SkinMode::eRaster;
+      impl->materials->setSkinMode(impl->skinMode);
       impl->protocol->events().snapshot("render", {{"mode", mode}});
       return Json{{"mode", mode}};
     });
@@ -1441,6 +1541,7 @@ void FvHost::onDetach()
   s.renderer->setPickObserver({});
   if(s.view)
     s.view->clearFigure();
+  s.materials->detach();
   s.figure.reset();
   {
     std::lock_guard morphLock(s.morphMutex);

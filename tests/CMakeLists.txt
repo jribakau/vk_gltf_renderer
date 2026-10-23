@@ -75,6 +75,7 @@ set(TEST_SOURCES
     figure/test_eyes.cpp
     figure/test_pose_gizmo.cpp
     figure/test_presets.cpp
+    figure/test_materials.cpp
     # Figure Viewer host protocol: commands and the event stream, without a server
     test_fv_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_events.cpp

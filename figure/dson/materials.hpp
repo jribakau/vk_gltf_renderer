@@ -15,36 +15,11 @@
 #include <vector>
 
 #include <figure/dson/store.hpp>
+#include <figure/dson/channels.hpp>
+#include <figure/materials/surface.hpp>
 #include <figure/scene/graph.hpp>
 
 namespace fv::dson {
-
-struct Channel
-{
-  Json                       value;  // null when unset
-  std::optional<std::string> image;  // library path
-  // every name it was stored under, so an override finds them
-  std::vector<std::string> keys;
-};
-
-// Channels by normalised name, in the order first stored (as a Map iterates).
-class Channels
-{
-public:
-  const Channel* get(const std::string& normName) const;
-  // the first of `names` (not normalised) present
-  const Channel* find(std::initializer_list<const char*> names) const;
-  void           set(const std::string& key, std::shared_ptr<Channel> c);
-  std::shared_ptr<Channel> shared(const std::string& key) const;
-  const std::vector<std::string>& order() const { return m_order; }
-
-private:
-  std::vector<std::string>                                  m_order;
-  std::unordered_map<std::string, std::shared_ptr<Channel>> m_map;
-};
-
-// Lower case, letters and digits only.
-std::string norm(std::string_view s);
 
 // Collects channels from a DSON material definition into `into`. Later calls override.
 void collectChannels(const Json* def, Channels& into, const std::unordered_map<std::string, std::string>& images, const std::string& file);
@@ -55,10 +30,27 @@ void collectImages(const Json& doc, std::unordered_map<std::string, std::string>
 // Identifies the material a surface name and its channels make, so equal ones share.
 std::string materialKey(const std::string& name, const Channels& ch);
 
-// The surface's look from its channels: base colour, its map, cutout opacity.
-Material buildMaterial(const std::string& name, const Channels& ch);
+// The surface a material's channels describe: an Iray Uber, PBRSkin or legacy material (a port of
+// materials/parse/dson.ts parseDsonSurface).
+mat::Surface parseSurface(const std::string& name, const Channels& ch);
 
-// three's SRGBToLinear.
-float srgbToLinear(double c);
+// OmniHair's colour, linear, or none for any other shader (omniHairColor in parse/dson.ts).
+std::optional<mat::Rgb> omniHairColor(const Channels& ch);
+
+// A channel a preset sets: its value, and/or its image (an empty image removes the map).
+struct ChannelOverride
+{
+  std::string                channel;  // id or label
+  std::optional<Json>        value;
+  std::optional<std::string> image;
+};
+
+// Lays channel overrides over a material's own and parses its surface again. False when nothing
+// changed. Material edits (m.edits) stay.
+bool overrideChannels(Material& m, const std::vector<ChannelOverride>& overrides);
+
+// The material a surface name and its channels make: the surface, and the channels kept for what
+// reads them directly (strand widths).
+Material buildMaterial(const std::string& name, const Channels& ch);
 
 }  // namespace fv::dson

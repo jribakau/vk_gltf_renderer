@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include <figure/dson/channels.hpp>
+#include <figure/materials/surface.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/mesh/mesh_build.hpp>
 
@@ -69,19 +71,15 @@ struct Node
   int mesh = -1;
 };
 
-// A surface's look, for now its base colour and cutout (the full Surface comes with the material port).
+// A surface: what DAZ describes (materials/surface.hpp), the Material panel's edits laid over it,
+// and the merged DSON channels it was parsed from, for what reads them directly and for presets
+// that override some of them.
 struct Material
 {
-  std::string name;
-  // linear RGB, from the sRGB the DSON colour pickers hold
-  std::array<float, 3> baseColor{1, 1, 1};
-  // library-relative image paths, empty when none
-  std::string baseColorMap;
-  float       opacity = 1;
-  std::string opacityMap;
-  float       roughness = 0.6f;
-  // the merged DSON channels, by normalised name: value as JSON text, and image path
-  std::map<std::string, std::pair<std::string, std::string>> channels;
+  std::string                           name;
+  mat::Surface                          surface;
+  mat::Edits                            edits;
+  std::shared_ptr<const dson::Channels> channels;
 };
 
 struct Mesh
