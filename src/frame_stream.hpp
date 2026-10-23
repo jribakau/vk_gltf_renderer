@@ -37,9 +37,13 @@
 //   GET /stats          JSON: frames rendered/encoded/sent, size, render fps, average encode
 //                       time in ms, connected clients
 //
+// A host can add routes of its own to the same server (`routes`, e.g. fv_protocol.hpp), and
+// require a token: with `token` set, every request but a CORS preflight must carry ?t=<token>.
+//
 // Headless only: there is no window, and the viewport is whatever --size and /size say.
 //
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -48,6 +52,10 @@
 #include <nvapp/application.hpp>
 
 #include "latency_trace.hpp"
+
+namespace httplib {
+class Server;
+}
 
 struct FrameStreamCreateInfo
 {
@@ -67,6 +75,14 @@ struct FrameStreamCreateInfo
   // Stores a binary payload a host posts to /blob for a later live edit and returns its id
   // (blob_store.hpp). Called on an HTTP thread. Optional: without it /blob answers 404.
   std::function<uint64_t(std::string)> upload;
+
+  // Required on every request (?t=) when not empty: the server is on loopback, but any local
+  // process or web page could reach it otherwise.
+  std::string token;
+
+  // Adds a host's own routes before the server starts. `running` turns false when it stops, which
+  // is when long-lived responses (event streams) must end. Optional.
+  std::function<void(httplib::Server&, const std::atomic<bool>& running)> routes;
 };
 
 class FrameStream : public nvapp::IAppElement

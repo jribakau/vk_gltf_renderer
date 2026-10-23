@@ -511,6 +511,15 @@ void FrameStream::Impl::serve()
 {
   http.set_default_headers({{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-store"}});
   http.set_payload_max_length(BlobStore::kMaxBytes);
+  if(!info.token.empty())
+  {
+    http.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+      if(req.method == "OPTIONS" || req.get_param_value("t") == info.token)
+        return httplib::Server::HandlerResponse::Unhandled;
+      res.status = 403;
+      return httplib::Server::HandlerResponse::Handled;
+    });
+  }
 
   http.Get("/stream", [this](const httplib::Request&, httplib::Response& res) {
     clients++;
@@ -592,6 +601,9 @@ void FrameStream::Impl::serve()
                              + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load()) + "}";
     res.set_content(body, "application/json");
   });
+
+  if(info.routes)
+    info.routes(http, running);
 
   if(!http.bind_to_port("127.0.0.1", info.port))
   {

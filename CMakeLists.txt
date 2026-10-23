@@ -175,6 +175,12 @@ message(STATUS "Application version: ${APP_VERSION_STRING}")
 
 
 #####################################################################################
+# Figure Viewer scene logic (figure/): before the tests, which link it too.
+#####################################################################################
+add_subdirectory(figure)
+
+
+#####################################################################################
 # Testing framework (opt-in — see BUILD_TESTING knob at the top).
 #####################################################################################
 if(BUILD_TESTING)
@@ -240,6 +246,7 @@ endif()
 add_executable(${PROJECT_NAME} ${EXE_SOURCES})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
+  fv_figure
   nvpro2::nvapp
   nvpro2::nvgui
   nvpro2::nvslang

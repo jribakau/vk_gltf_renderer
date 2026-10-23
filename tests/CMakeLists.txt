@@ -65,6 +65,11 @@ set(TEST_SOURCES
     test_frame_pacing.cpp
     # Binary payloads posted for live edits (/blob): taken once, oldest dropped past the cap
     test_blob_store.cpp
+    # Figure Viewer scene logic (figure/)
+    figure/test_gzip.cpp
+    # Figure Viewer host protocol: commands and the event stream, without a server
+    test_fv_protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_events.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough
     test_environment_sky.cpp
     # Phase 5c: .sky.json presets -- round trip, the sun angle OMI has no field for, strangers' keys
@@ -125,6 +130,8 @@ endif()
 target_link_libraries(${TEST_NAME} PRIVATE
     GTest::gtest
     GTest::gtest_main
+    fv_figure
+    zlib
     # Same libraries as main project
     nvpro2::nvutils
     nvpro2::nvvk

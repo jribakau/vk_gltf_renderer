@@ -47,6 +47,7 @@
 #include "ui_dock_layout.hpp"
 #include "mcp_timing.hpp"
 #include "frame_stream.hpp"
+#include "fv_protocol.hpp"
 #include "mcp_scene.hpp"
 
 #include <algorithm>
@@ -256,6 +257,10 @@ auto main(int argc, char** argv) -> int
                          }},
                         &streamFullChroma);
   parameterRegistry.add({"streamFps", "Frame-rate cap of a --stream run"}, &streamFps);
+  // Figure Viewer: its UI talks to the --stream server directly (fv_protocol.hpp); the token keeps
+  // other local processes and pages out.
+  std::string fvToken;
+  parameterRegistry.add({"fvToken", "Token every --stream request must carry (?t=); empty: none"}, &fvToken);
   // Live editing by a host (src/mcp_scene.cpp): keep every BLAS refittable instead of compacting it.
   bool editable = false;
   parameterRegistry.add({"editable", "Keep geometry refittable for live edits over --mcp (implied by --stream)"}, &editable, true);
@@ -613,6 +618,7 @@ auto main(int argc, char** argv) -> int
     else
     {
       GltfRenderer* r = elemGltfRenderer.get();
+      auto          protocol = std::make_shared<FvProtocol>();
       // after the renderer, so the copy sees the frame it just rendered
       frameStream = std::make_shared<FrameStream>(FrameStreamCreateInfo{
           .port      = uint16_t(streamPort),
@@ -622,6 +628,8 @@ auto main(int argc, char** argv) -> int
           .imageSize = [r] { return r->renderSize(); },
           .refining  = [r] { return r->isRefiningStill(); },
           .upload    = [r](std::string bytes) { return r->blobs().put(std::move(bytes)); },
+          .token     = fvToken,
+          .routes    = [protocol](httplib::Server& http, const std::atomic<bool>& running) { protocol->registerRoutes(http, running); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
