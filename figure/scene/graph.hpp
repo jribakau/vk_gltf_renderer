@@ -94,6 +94,8 @@ struct Mesh
   // SkinnedMesh.bind makes it (bindMatrix = the mesh's world, boneInverses = inverse bone worlds)
   std::vector<int>       bones;
   mesh::SkinOutput       skin;
+  // the influences per cage vertex the skin was made from (bone indices into `bones`), for fitting
+  mesh::SkinInput        cageSkin;
   Mat4                   bindMatrix;
   std::vector<Mat4>      boneInverses;
   bool                   skinned() const { return !bones.empty(); }

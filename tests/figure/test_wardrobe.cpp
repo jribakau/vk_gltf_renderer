@@ -9,6 +9,9 @@
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/wardrobe/bind.hpp>
+#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/wardrobe/fit/generation.hpp>
+#include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
 
 namespace {
@@ -113,6 +116,67 @@ TEST(Wardrobe, HiddenPolygonsLeaveTheDrawnTriangles)
   EXPECT_EQ(drawn.groups[0].count, drawn.index.size());
   mesh.hiddenPolys.erase("w1");
   EXPECT_EQ(fv::mesh::drawnTriangles(mesh).index.size(), all);
+}
+
+TEST(Fit, BonesAliasAcrossGenerationsByAnatomicalSlot)
+{
+  using fv::wardrobe::matchBone;
+  const std::vector<std::string> g9{"hip", "l_thigh", "r_thigh", "l_shin", "l_foot", "l_toes", "l_upperarm", "l_forearm", "l_shoulder", "l_hand"};
+  // the exact name wins
+  EXPECT_EQ(matchBone("l_shin", g9), std::optional<std::string>("l_shin"));
+  // Genesis 8 names reduce to the same slots; left never matches right
+  EXPECT_EQ(matchBone("lThighBend", g9), std::optional<std::string>("l_thigh"));
+  EXPECT_EQ(matchBone("rThighBend", g9), std::optional<std::string>("r_thigh"));
+  EXPECT_EQ(matchBone("lShldrBend", g9), std::optional<std::string>("l_upperarm"));
+  EXPECT_EQ(matchBone("lCollar", g9), std::optional<std::string>("l_shoulder"));
+  EXPECT_EQ(matchBone("lToe", g9), std::optional<std::string>("l_toes"));
+  // a toe the figure lacks falls back toward the foot
+  EXPECT_EQ(matchBone("lBigToe", g9), std::optional<std::string>("l_toes"));
+  EXPECT_FALSE(matchBone("lThighBend", {"r_thigh"}));
+}
+
+TEST(Fit, TwistBonesInheritTheirBendParentInsteadOfCopyingTheLeaderTwice)
+{
+  using namespace fv::wardrobe;
+  const std::vector<std::string> g9{"l_thigh"};
+  const auto plan = planLeaders({{"lThighBend", std::nullopt}, {"lThighTwist", std::string("lThighBend")}}, g9);
+  EXPECT_EQ(plan.follow.count("lThighBend"), 1u);
+  EXPECT_EQ(plan.follow.count("lThighTwist"), 0u);
+  EXPECT_EQ(plan.inherit.count("lThighTwist"), 1u);
+}
+
+TEST(Fit, IdentifiesTheGenerationAnOutfitWasMadeFor)
+{
+  using namespace fv::wardrobe;
+  EXPECT_EQ(generationFromPath("data/DAZ 3D/Genesis 8/Female/Wardrobe/Dress.dsf"), std::optional<Generation>(Generation::eG8));
+  EXPECT_EQ(generationFromPath("data/Genesis%209/Clothing/Top.duf"), std::optional<Generation>(Generation::eG9));
+  EXPECT_EQ(generationFromBones({"hip", "l_thigh", "l_shin"}), std::optional<Generation>(Generation::eG9));
+  EXPECT_EQ(generationFromBones({"hip", "lThighBend", "lThighTwist"}), std::optional<Generation>(Generation::eG8));
+  EXPECT_TRUE(sameRig(Generation::eG8, Generation::eG81));
+  EXPECT_FALSE(sameRig(Generation::eG8, Generation::eG9));
+  EXPECT_TRUE(sameTopology(Generation::eG3, Generation::eG81));
+}
+
+TEST(Fit, ARigidPlanMovesABoneToTheLeadersJointAndTurnsItOntoItsLimb)
+{
+  using namespace fv::wardrobe;
+  // a source leg straight down from (0, 90, 0); the target's hip is at (5, 100, 0) and its knee leans out
+  const std::vector<SkelBone> source{{"lThighBend", std::nullopt, {0, 90, 0}}, {"lShin", std::string("lThighBend"), {0, 50, 0}}};
+  const std::vector<SkelBone> target{{"l_thigh", std::nullopt, {5, 100, 0}}, {"l_shin", std::string("l_thigh"), {10, 60, 0}}};
+  const auto plan = rigidPlan(source, target);
+  ASSERT_EQ(plan.count("lThighBend"), 1u);
+  const Rigid& r = plan.at("lThighBend");
+  EXPECT_NEAR(r.to[0], 5, 1e-9);
+  EXPECT_NEAR(r.to[1], 100, 1e-9);
+  // the source knee, put through it, lands on the target knee (the limb is about the same length)
+  const std::vector<float> knee{0, 50, 0};
+  fv::mesh::SkinInput      skin;
+  skin.start  = {0, 1};
+  skin.bone   = {0};
+  skin.weight = {1.f};
+  const auto moved = rigidPositions(knee, skin, {&r});
+  EXPECT_NEAR(moved[0], 10, 0.5f);
+  EXPECT_NEAR(moved[1], 60, 0.5f);
 }
 
 }  // namespace

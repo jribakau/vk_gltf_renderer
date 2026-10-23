@@ -18,6 +18,7 @@
 #include <figure/dson/rig.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/scene/graph.hpp>
+#include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/follow.hpp>
 
 namespace fv::dson {
@@ -32,6 +33,9 @@ struct Item
   std::set<std::string> nodeNames;
   // "file#id" of the node definitions it was built from
   std::set<std::string> sources;
+  // a URL in the file that names the figure it was authored on, and the foot poses it sets (a heel)
+  std::string                          conformTarget;
+  std::vector<wardrobe::FootChannel>   footPose;
   // its skeletons (indices into LoadResult::rigs), which follow the figure's pose
   std::vector<int> rigs;
   // its meshes (indices into SceneGraph::meshes)

@@ -111,13 +111,15 @@ PoseRig::PoseRig(SceneGraph& scene, const dson::Rig& main, const std::vector<con
     addFollowers(*f);
 }
 
-// A follower bone moves with the figure bone of the same name, or with the figure itself for its
-// root (src/lib/pose/PoseRig.ts leaderOf; cross-generation aliases come with fitting).
-void PoseRig::addFollowers(const dson::Rig& rig)
+// A follower bone moves with the figure bone of the same name, then the cross-generation alias, or
+// with the figure itself for its root (src/lib/pose/PoseRig.ts leaderOf).
+std::pair<int, int> PoseRig::addFollowers(const dson::Rig& rig, const FollowPlan& plan)
 {
   std::set<size_t> touched;
+  int              matched = 0, total = 0;
   for(const auto& [id, node] : rig.bones)
   {
+    total++;
     size_t leader = SIZE_MAX;
     if(node == rig.root)
     {
@@ -126,8 +128,17 @@ void PoseRig::addFollowers(const dson::Rig& rig)
     }
     else if(auto it = m_byName.find(m_scene.nodes[node].name); it != m_byName.end())
       leader = it->second;
+    else if(plan.follow)
+      if(auto alias = plan.follow->find(m_scene.nodes[node].name); alias != plan.follow->end())
+        if(auto it = m_byName.find(alias->second); it != m_byName.end())
+          leader = it->second;
     if(leader == SIZE_MAX)
+    {
+      if(plan.inherit && plan.inherit->count(m_scene.nodes[node].name))
+        matched++;
       continue;
+    }
+    matched++;
     PoseBone& pb = m_bones[leader];
     pb.followers.push_back(node);
     // an item fitted after the joints moved was built at the moved centres: its base is without them
@@ -137,6 +148,7 @@ void PoseRig::addFollowers(const dson::Rig& rig)
   }
   for(size_t i : touched)
     apply(m_bones[i]);
+  return {matched, total};
 }
 
 void PoseRig::removeFollowers(const dson::Rig& rig)

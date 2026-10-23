@@ -124,8 +124,16 @@ public:
   std::function<void()> afterPose;
 
   // A worn item's skeleton follows the figure's bones of the same name (and its root the figure
-  // itself); the bones are re-posed. Cross-generation aliases come with fitting.
-  void addFollowers(const dson::Rig& rig);
+  // itself), or `plan->follow` when it was made for another generation; the bones are re-posed.
+  // Bones in `plan->inherit` already move with a parent that follows, so they count as matched and
+  // are not given the leader's rotation a second time. Returns {matched, total} bones.
+  struct FollowPlan
+  {
+    const std::map<std::string, std::string>* follow  = nullptr;
+    const std::set<std::string>*              inherit = nullptr;
+  };
+  std::pair<int, int> addFollowers(const dson::Rig& rig, const FollowPlan& plan);
+  std::pair<int, int> addFollowers(const dson::Rig& rig) { return addFollowers(rig, FollowPlan{}); }
   // An item taken off: its bones stop following.
   void removeFollowers(const dson::Rig& rig);
 

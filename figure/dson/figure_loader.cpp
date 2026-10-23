@@ -8,6 +8,8 @@
 
 #include <figure/dson/materials.hpp>
 #include <figure/mesh/normals.hpp>
+#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/wardrobe/fit/generation.hpp>
 
 namespace fv::dson {
 
@@ -253,6 +255,9 @@ Centers fitCenters(const SceneGraph& scene, const Json& nodeLibrary, const Cente
   Centers out = own ? *own : Centers{};
   if(!nodeLibrary.is_array())
     return out;
+  std::vector<std::string> figureNames;
+  for(const auto& [id, node] : figure.bones)
+    figureNames.push_back(scene.nodes[size_t(node)].name);
   for(const Json& n : nodeLibrary)
   {
     const std::string id = getString(&n, "id");
@@ -262,7 +267,10 @@ Centers fitCenters(const SceneGraph& scene, const Json& nodeLibrary, const Cente
     if(b < 0)
       if(const std::string name = getString(&n, "name"); !name.empty())
         b = figure.find(scene, name);
-    // TODO(native-scene P5): cross-generation aliases (wardrobe/fit/bones.ts matchBone)
+    if(b < 0)
+      if(const std::string name = getString(&n, "name"); !name.empty())
+        if(const auto alias = wardrobe::matchBone(name, figureNames))
+          b = figure.find(scene, *alias);
     if(b >= 0 && scene.nodes[b].joint)
       out[id] = scene.nodes[b].joint->center;
   }
@@ -776,8 +784,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           if(skinMod)
             if(auto binding = skinBinding(*gres->doc, *skinMod, rig, meshOut.geo->dsonVertexCount))
             {
-              meshOut.skin  = mesh::skin(*meshOut.geo, binding->input);
-              meshOut.bones = binding->order;
+              meshOut.skin     = mesh::skin(*meshOut.geo, binding->input);
+              meshOut.cageSkin = binding->input;
+              meshOut.bones    = binding->order;
             }
         }
 
@@ -873,6 +882,16 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     out.morphs.previewCenters = previewCenters.count(mainNode) > 0;
   }
 
+  // what an item was authored for, for the wardrobe's fit
+  {
+    const std::string conform = wardrobe::conformTargetOf(doc);
+    const auto        feet    = wardrobe::footChannels(doc);
+    for(Item& item : out.items)
+    {
+      item.conformTarget = conform;
+      item.footPose      = feet;
+    }
+  }
   out.missing = store.missing();
   if(!built)
   {

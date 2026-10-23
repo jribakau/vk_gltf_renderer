@@ -11,6 +11,8 @@
 #include <figure/dson/listing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/wardrobe/bind.hpp>
+#include <figure/wardrobe/fit/fit.hpp>
+#include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/follow.hpp>
 
 namespace fv {
@@ -98,6 +100,8 @@ WornItem record(const dson::Item& it, const std::string& rel, int id)
 struct Figure::PreparedWear
 {
   dson::LoadResult loaded;
+  // per item of `loaded`: how it was refitted when it was made for another generation
+  std::vector<std::optional<wardrobe::FitDetail>> fits;
   // per entry of loaded.parts: the surface binding of a conforming part
   std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>> bindings;
   std::string                                                  key;
@@ -142,8 +146,17 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   if(out->loaded.items.empty())
     throw std::runtime_error("Nothing in this file can be worn.");
 
+  // an item made for another generation is refitted first: its cage moves onto this figure's skeleton
+  // and shape, and the bindings below are made against the cage it ends with
+  const int bodyMesh = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
+  {
+    const std::string  morphDir = loaded.morphs.morphDir;
+    wardrobe::FitFigure figure{loaded.scene, loaded.rigs[size_t(loaded.mainRig)], bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
+    for(const dson::Item& it : out->loaded.items)
+      out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
+  }
   // every conforming part is bound to the body's unmorphed cage, in parallel
-  const auto& body = *loaded.scene.meshes[size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh)].geo;
+  const auto& body = *loaded.scene.meshes[size_t(bodyMesh)].geo;
   out->bindings.resize(out->loaded.parts.size());
   std::vector<std::future<void>> jobs;
   for(size_t i = 0; i < out->loaded.parts.size(); i++)
@@ -280,21 +293,59 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
 
   // ---- skeletons follow the figure's bones; the match is how well it was made for this figure
   int matched = 0, total = 0;
-  for(int id : added)
-    if(const WornItem* worn = item(id))
-      for(int r : worn->rigs)
+  for(size_t k = 0; k < added.size(); k++)
+    if(const WornItem* worn = item(added[k]))
+    {
+      const auto& fit = k < p.fits.size() ? p.fits[k] : std::optional<wardrobe::FitDetail>{};
+      pose::PoseRig::FollowPlan plan;
+      if(fit)
       {
-        const dson::Rig& rig = loaded.rigs[size_t(r)];
-        for(const auto& [bid, node] : rig.bones)
-        {
-          total++;
-          if(pose && pose->get(dst.nodes[size_t(node)].name))
-            matched++;
-        }
-        if(pose)
-          pose->addFollowers(rig);
+        plan.follow  = &fit->plan.follow;
+        plan.inherit = &fit->plan.inherit;
+        result.notes.push_back(fit->note);
       }
+      for(int r : worn->rigs)
+        if(pose)
+        {
+          const auto [m, t] = pose->addFollowers(loaded.rigs[size_t(r)], plan);
+          matched += m;
+          total += t;
+        }
+    }
   result.fit = total ? double(matched) / double(total) : 1.0;
+
+  // A heel's file poses the figure's feet, as DAZ Studio applies its scene animations to the figure
+  // it goes on. Only a refitted item takes it: the refit moves the shoe's bones onto the figure's
+  // joints, flattening a heel whose rest is its pointed shape, and the pose points it again.
+  if(pose)
+    for(size_t k = 0; k < added.size() && k < p.fits.size(); k++)
+    {
+      if(!p.fits[k])
+        continue;
+      WornItem* worn = nullptr;
+      for(WornItem& i : items)
+        if(i.id == added[k])
+          worn = &i;
+      if(!worn)
+        continue;
+      std::vector<std::string> names;
+      for(const auto& [id, node] : loaded.rigs[size_t(loaded.mainRig)].bones)
+        names.push_back(dst.nodes[size_t(node)].name);
+      std::vector<pose::ChannelValue> set;
+      for(const wardrobe::FootChannel& c : wardrobe::retargetFootPose(w.items[k].footPose, names))
+        if(const auto before = pose->posed(c.bone, "rotation", c.axis))
+        {
+          set.push_back({c.bone, pose::ChannelKind::eRotation, c.axis, c.value});
+          worn->footSet.push_back({c.bone, c.axis, c.value, *before});
+        }
+      if(set.empty())
+        continue;
+      pose->setMany(set);
+      // what the rig kept after its limits, so undoing compares like with like
+      for(WornItem::FootSet& f : worn->footSet)
+        if(const auto now = pose->posed(f.bone, "rotation", f.axis))
+          f.value = *now;
+    }
 
   // ---- the wearable's own morph dials, then the items' fitting to the body's shape
   const std::set<std::string> before = [&] {
@@ -429,8 +480,17 @@ bool Figure::removeItem(int id)
   for(const auto& [node, bone] : gone.objects)
     scene.nodes[size_t(node)].removed = true;
   if(pose)
+  {
     for(int r : gone.rigs)
       pose->removeFollowers(loaded.rigs[size_t(r)]);
+    // the feet go back where they were before the item posed them, unless they were moved since
+    std::vector<pose::ChannelValue> back;
+    for(const WornItem::FootSet& f : gone.footSet)
+      if(const auto now = pose->posed(f.bone, "rotation", f.axis); now && *now == f.value)
+        back.push_back({f.bone, pose::ChannelKind::eRotation, f.axis, f.before});
+    if(!back.empty())
+      pose->setMany(back);
+  }
   morphs->removeChannels(gone.channels);
   morphs->removeMeshes(std::set<int>(gone.meshes.begin(), gone.meshes.end()));
   if(!loaded.morphs.mainMeshes.empty())

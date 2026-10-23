@@ -53,6 +53,13 @@ struct WornItem
   std::vector<std::string> channels;
   // body polygons a geograft hides while it is worn and shown
   std::vector<int32_t> hiddenPolys;
+  // foot channels it set on the figure (a heel poses the feet), and the values they had before
+  struct FootSet
+  {
+    std::string bone, axis;
+    double      value = 0, before = 0;
+  };
+  std::vector<FootSet> footSet;
 };
 
 struct WearResult
@@ -62,6 +69,8 @@ struct WearResult
   // share of the items' bones that found a figure bone: low means it was made for another figure
   double                   fit = 1;
   std::vector<std::string> missingBones, warnings;
+  // how items made for another generation were refitted ("Genesis 8 outfit on Genesis 9, ...")
+  std::vector<std::string> notes;
 };
 
 class Figure

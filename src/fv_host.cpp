@@ -972,6 +972,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
               target->images.insert_or_assign(key, std::move(image));
             for(const std::string& w : r.warnings)
               notice(w);
+            for(const std::string& n : r.notes)
+              notice(n, "info");
             if(!r.missingBones.empty())
               notice(utf8Of(pathOf(rel).stem()) + ": this figure has no " + r.missingBones.front()
                      + (r.missingBones.size() > 1 ? " and " + std::to_string(r.missingBones.size() - 1) + " other bones" : "") + " to hang it from.");
