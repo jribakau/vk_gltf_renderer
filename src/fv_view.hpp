@@ -48,6 +48,9 @@
 #include "fv_events.hpp"
 
 class GltfRenderer;
+namespace tinygltf {
+class Model;
+}
 
 namespace fv {
 class SceneGraph;
@@ -71,6 +74,9 @@ public:
   // dial count the panel shows.
   void setFigure(const std::string& id, const std::string& name, const fv::SceneGraph& scene, int root,
                  const std::vector<int>& nodeOf, int morphs, Bones posable);
+  // The same for a model the renderer loaded from a glTF or OBJ file: node i of the topic is glTF
+  // node i, there are no bones, and the stats come from the model.
+  void setModel(const std::string& id, const std::string& name, const tinygltf::Model& model);
   void clearFigure();
 
   // Pointer events, in device pixels. The gizmo takes its own (a drag on a handle); a left click

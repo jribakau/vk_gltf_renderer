@@ -56,7 +56,9 @@
 #include "fv_protocol.hpp"
 #include "fv_view.hpp"
 #include "gltf_environment_sky.hpp"
+#include "gltf_scene.hpp"
 #include "renderer.hpp"
+#include "ui_animation.hpp"
 
 using fv::Json;
 using namespace std::chrono_literals;
@@ -493,6 +495,14 @@ struct FvHost::Impl
   // `beforeBuild` runs on the application thread once everything is on, before the scene is built
   // again; `after` once it has been.
   uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild = {}, std::function<void()> after = {});
+  // glTF, GLB and OBJ files: the renderer's own loader, with the figure's state cleared
+  Json importModel(const std::string& path);
+  void runImport(const std::string& path, uint64_t jobId);
+  Json animationTopic();
+  void publishAnimation(bool force);
+  Json animationCommand(const std::string& cmd, const Json& args);
+  Json lastAnimation;
+  std::chrono::steady_clock::time_point animationAt{};
   Json sceneState();
   Json sceneRestore(const Json& args);
   std::mutex wearMutex;
@@ -568,6 +578,13 @@ Json FvHost::Impl::load(const Json& args)
   {
     std::lock_guard lock(settingsMutex);
     s = settings;
+  }
+  if(args.contains("path"))
+  {
+    std::string ext = pathOf(args["path"].get<std::string>()).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if(ext == ".gltf" || ext == ".glb" || ext == ".obj")
+      return importModel(args["path"].get<std::string>());
   }
   // an absolute path, or a path in the content folders (a library item)
   std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;
@@ -769,6 +786,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   // the renderer sets its own camera up over the next frames; frame the figure after that
   frameIn = 2;
   publishFigure();
+  publishAnimation(true);
   job(jobId, {{"state", "done"}, {"figure", figure->id}});
   // Genesis 9 leaves its eyes, mouth and lashes to add-ons the scene file lists
   if(!figure->fig->addons.empty() && figure->fig->pose)
@@ -1054,6 +1072,158 @@ Json FvHost::Impl::wardrobeVisible(const Json& args)
   if(!figure->fig->setItemVisible(itemId(args), args.at("visible").get<bool>()))
     throw std::runtime_error("no such item");
   rebuildScene("Showing");
+  return {{"ok", true}};
+}
+
+//--------------------------------------------------------------------------------------------------
+// Imported models and animation
+
+Json FvHost::Impl::importModel(const std::string& path)
+{
+  const uint64_t    jobId = ++jobs;
+  const std::string label = "Loading " + utf8Of(pathOf(path).filename());
+  job(jobId, {{"label", label}, {"state", "running"}});
+  post([this, path, jobId] { runImport(path, jobId); });
+  return {{"job", jobId}};
+}
+
+void FvHost::Impl::runImport(const std::string& path, uint64_t jobId)
+{
+  const std::string label = "Loading " + utf8Of(pathOf(path).filename());
+  // the figure goes: its panels' topics are emptied, since topics cannot be removed
+  if(figure)
+  {
+    if(figure->busyOn)
+      job(figure->busyJob, {{"state", "done"}});
+    protocol->events().snapshot("pose/" + figure->id, {{"figure", figure->id}, {"bones", Json::object()}});
+    protocol->events().snapshot("morphs/" + figure->id, {{"figure", figure->id}, {"channels", Json::object()}});
+    protocol->events().snapshot("wardrobe", {{"figure", nullptr}, {"items", Json::object()}});
+  }
+  materials->detach();
+  if(view)
+    view->clearFigure();
+  figure.reset();
+  {
+    std::lock_guard lock(morphMutex);
+    figureId.clear();
+    pendingMorphs.clear();
+  }
+  sunNode = sunLight = -1;
+  loadGeneration++;  // a figure load still running drops its result
+  bool ok = false;
+  try
+  {
+    ok = renderer->loadSceneFile(pathOf(path));
+  }
+  catch(const std::exception& e)
+  {
+    notice(label + ": " + e.what(), "error");
+  }
+  nvvkgltf::Scene* scn = renderer->editScene();
+  if(!ok || !scn || !scn->valid())
+  {
+    job(jobId, {{"label", label}, {"state", "failed"}, {"error", "the renderer could not open the file"}});
+    notice("Could not open " + utf8Of(pathOf(path).filename()), "error");
+    return;
+  }
+  for(const nvutils::ParameterBase* p : exposedParameters(registry))
+    if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
+      autoGround = *static_cast<const float*>(p->destination.raw);
+  appliedParams.erase("infinitePlaneDistance");
+  applyLighting(false);
+  const std::string id = "model:" + std::to_string(++figures);
+  materials->attachModel(id);
+  if(view)
+    view->setModel(id, utf8Of(pathOf(path).stem()), scn->getModel());
+  publishAnimation(true);
+  frameIn = 2;
+  job(jobId, {{"label", label}, {"state", "done"}, {"figure", id}});
+}
+
+// The clips of the loaded model, and where playback is.
+Json FvHost::Impl::animationTopic()
+{
+  Json                    clips = Json::object();
+  nvvkgltf::Scene*        scn   = renderer->editScene();
+  const AnimationControl& ctrl  = renderer->editAnimationControl();
+  Json                    out   = {{"clips", clips}, {"current", -1}, {"playing", false}, {"time", 0.0}, {"speed", ctrl.speed}, {"loop", ctrl.loop}};
+  if(!scn || !scn->valid() || !scn->animation().hasAnimation())
+    return out;
+  const int n = scn->animation().getNumAnimations();
+  for(int i = 0; i < n; i++)
+  {
+    const nvvkgltf::AnimationInfo& info = scn->animation().getAnimationInfo(i);
+    clips[std::to_string(i)]            = {{"name", info.name.empty() ? "Clip " + std::to_string(i + 1) : info.name}, {"duration", std::max(0.f, info.end - info.start)}, {"order", i}};
+  }
+  out["clips"]   = clips;
+  out["current"] = ctrl.currentAnimation >= 0 && ctrl.currentAnimation < n ? ctrl.currentAnimation : -1;
+  out["playing"] = ctrl.play;
+  if(out["current"] >= 0)
+  {
+    const nvvkgltf::AnimationInfo& info = scn->animation().getAnimationInfo(out["current"].get<int>());
+    out["time"]                         = std::round(std::max(0.f, info.currentTime - info.start) * 1000.f) / 1000.0;
+  }
+  return out;
+}
+
+void FvHost::Impl::publishAnimation(bool force)
+{
+  const auto now = std::chrono::steady_clock::now();
+  if(!force && now - animationAt < 100ms)
+    return;
+  animationAt = now;
+  Json topic  = animationTopic();
+  if(!force && topic == lastAnimation)
+    return;
+  lastAnimation = topic;
+  protocol->events().snapshot("animation", std::move(topic));
+}
+
+Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
+{
+  nvvkgltf::Scene* scn  = renderer->editScene();
+  AnimationControl& ctrl = renderer->editAnimationControl();
+  if(!scn || !scn->valid() || !scn->animation().hasAnimation())
+    throw std::runtime_error("this model has no animations");
+  const int n = scn->animation().getNumAnimations();
+  if(cmd == "select")
+  {
+    const int clip = args.at("clip").get<int>();
+    if(clip < 0 || clip >= n)
+      throw std::runtime_error("no such clip");
+    ctrl.currentAnimation = clip;
+    ctrl.reset            = true;
+    ctrl.play             = args.value("play", true);
+    ctrl.runOnce          = !ctrl.play;
+  }
+  else if(cmd == "play")
+  {
+    if(ctrl.currentAnimation < 0 || ctrl.currentAnimation >= n)
+      ctrl.currentAnimation = 0;
+    const nvvkgltf::AnimationInfo& info = scn->animation().getAnimationInfo(ctrl.currentAnimation);
+    // playing from the end starts over
+    if(info.currentTime >= info.end - 1e-3f && !ctrl.loop)
+      ctrl.reset = true;
+    ctrl.play = true;
+  }
+  else if(cmd == "pause")
+    ctrl.play = false;
+  else if(cmd == "stop")
+  {
+    ctrl.play  = false;
+    ctrl.reset = true;
+  }
+  else if(cmd == "seek")
+  {
+    if(ctrl.currentAnimation < 0 || ctrl.currentAnimation >= n)
+      ctrl.currentAnimation = 0;
+    ctrl.scrubTo(scn->animation().getAnimationInfo(ctrl.currentAnimation).start + args.at("time").get<float>(), scn);
+  }
+  else if(cmd == "speed")
+    ctrl.speed = std::clamp(args.at("speed").get<float>(), 0.f, 100.f);
+  else if(cmd == "loop")
+    ctrl.loop = args.at("loop").get<bool>();
+  publishAnimation(true);
   return {{"ok", true}};
 }
 
@@ -1805,6 +1975,10 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       },
   });
   cmds.add("load", [impl](const Json& args) { return impl->load(args); });
+  for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
+    cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
+      return impl->onApp([impl, cmd, args] { return impl->animationCommand(cmd, args); });
+    });
   cmds.add("scene.state", [impl](const Json&) { return impl->onApp([impl] { return impl->sceneState(); }); });
   cmds.add("scene.restore", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->sceneRestore(args); }); });
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
@@ -2027,6 +2201,7 @@ void FvHost::onUpdate()
     s.publishBusy();
     s.publishMorphs();
   }
+  s.publishAnimation(false);
   if(s.frameIn > 0 && --s.frameIn == 0)
   {
     if(s.cameraRestore)

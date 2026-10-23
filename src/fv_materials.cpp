@@ -236,6 +236,7 @@ FvMaterials::~FvMaterials()
 void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped, fv::mat::SkinMode skin)
 {
   m_generation++;
+  m_model    = false;
   m_figure   = figureId;
   m_scene    = scene;
   m_options  = built.lowering;
@@ -266,8 +267,157 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
   publish({}, true);
 }
 
+void FvMaterials::attachModel(const std::string& id)
+{
+  m_generation++;
+  nvvkgltf::Scene* scn = m_hooks.renderer->editScene();
+  m_model              = true;
+  m_figure             = id;
+  m_options.clear();
+  m_textures.clear();
+  m_waiting.clear();
+  m_baking.clear();
+  m_modelScene = {};
+  m_originals.clear();
+  if(scn && scn->valid())
+    for(const tinygltf::Material& g : scn->getModel().materials)
+    {
+      fv::Material m;
+      m.name = g.name;
+      m_modelScene.materials.push_back(std::move(m));
+      m_originals.push_back(g);
+    }
+  m_scene = &m_modelScene;
+  m_meshesOf.assign(m_modelScene.materials.size(), {});
+  if(scn && scn->valid())
+    for(size_t i = 0; i < scn->getModel().meshes.size(); i++)
+      for(const tinygltf::Primitive& p : scn->getModel().meshes[i].primitives)
+        if(p.material >= 0 && size_t(p.material) < m_meshesOf.size() && (m_meshesOf[size_t(p.material)].empty() || m_meshesOf[size_t(p.material)].back() != int(i)))
+          m_meshesOf[size_t(p.material)].push_back(int(i));
+  publish({}, true);
+}
+
+namespace {
+
+float linearOf(const std::vector<double>& v, size_t i, float d = 1)
+{
+  return i < v.size() ? float(v[i]) : d;
+}
+
+// An extension's number, made if need be.
+void setExtNumber(tinygltf::ExtensionMap& ext, const char* name, const char* key, double value)
+{
+  tinygltf::Value::Object obj;
+  if(auto it = ext.find(name); it != ext.end() && it->second.IsObject())
+    obj = it->second.Get<tinygltf::Value::Object>();
+  obj[key]  = tinygltf::Value(value);
+  ext[name] = tinygltf::Value(obj);
+}
+
+double extNumber(const tinygltf::ExtensionMap& ext, const char* name, const char* key, double d)
+{
+  const auto it = ext.find(name);
+  if(it == ext.end() || !it->second.IsObject() || !it->second.Has(key))
+    return d;
+  const tinygltf::Value& v = it->second.Get(key);
+  return v.IsNumber() ? v.GetNumberAsDouble() : d;
+}
+
+}  // namespace
+
+// The original glTF material with the edits laid over it.
+void FvMaterials::writeModel(int index)
+{
+  nvvkgltf::Scene* scn = m_hooks.renderer->editScene();
+  if(!scn || !scn->valid() || index >= int(scn->getModel().materials.size()) || index >= int(m_originals.size()))
+    return;
+  const fv::mat::Edits& e = m_scene->materials[size_t(index)].edits;
+  tinygltf::Material    m = m_originals[size_t(index)];
+  auto&                 f = m.pbrMetallicRoughness.baseColorFactor;
+  f.resize(4, 1.0);
+  if(e.color)
+    for(int i = 0; i < 3; i++)
+      f[size_t(i)] = double((*e.color)[size_t(i)]);
+  if(e.opacity)
+    f[3] = double(*e.opacity);
+  if(e.roughness)
+    m.pbrMetallicRoughness.roughnessFactor = double(*e.roughness);
+  if(e.metalness)
+    m.pbrMetallicRoughness.metallicFactor = double(*e.metalness);
+  if(e.alphaMode)
+    m.alphaMode = *e.alphaMode == "opaque" ? "OPAQUE" : *e.alphaMode == "cutout" ? "MASK" : "BLEND";
+  if(e.doubleSided)
+    m.doubleSided = *e.doubleSided;
+  if(e.emissive)
+    m.emissiveFactor = {double((*e.emissive)[0]), double((*e.emissive)[1]), double((*e.emissive)[2])};
+  if(e.emissiveIntensity)
+    setExtNumber(m.extensions, "KHR_materials_emissive_strength", "emissiveStrength", double(*e.emissiveIntensity));
+  if(e.specular)
+    setExtNumber(m.extensions, "KHR_materials_specular", "specularFactor", double(*e.specular));
+  if(e.clearcoat)
+    setExtNumber(m.extensions, "KHR_materials_clearcoat", "clearcoatFactor", double(*e.clearcoat));
+  if(e.clearcoatRoughness)
+    setExtNumber(m.extensions, "KHR_materials_clearcoat", "clearcoatRoughnessFactor", double(*e.clearcoatRoughness));
+  if(e.normalStrength && m.normalTexture.index >= 0)
+    m.normalTexture.scale = double(*e.normalStrength);
+  for(const char* name : {"KHR_materials_emissive_strength", "KHR_materials_specular", "KHR_materials_clearcoat"})
+    if(m.extensions.count(name) && std::find(scn->getModel().extensionsUsed.begin(), scn->getModel().extensionsUsed.end(), name) == scn->getModel().extensionsUsed.end())
+      scn->getModel().extensionsUsed.push_back(name);
+  tinygltf::Material& mat    = scn->editor().getMaterialForEdit(index);
+  const auto          before = instanceInputs(mat);
+  m.extras                   = mat.extras;
+  mat                        = std::move(m);
+  scn->markMaterialDirty(index);
+  if(!(instanceInputs(mat) == before))
+    scn->markRenderNodeRtxDirtyForMaterials({index});
+}
+
+Json FvMaterials::modelItem(int index) const
+{
+  nvvkgltf::Scene*          scn = m_hooks.renderer->editScene();
+  const fv::Material&       m   = m_scene->materials[size_t(index)];
+  const tinygltf::Material& g   = scn->getModel().materials[size_t(index)];
+  const auto&               f   = g.pbrMetallicRoughness.baseColorFactor;
+  Json                      values = {{"color", hexOf({linearOf(f, 0), linearOf(f, 1), linearOf(f, 2)})},
+                                      {"roughness", g.pbrMetallicRoughness.roughnessFactor},
+                                      {"metalness", g.pbrMetallicRoughness.metallicFactor},
+                                      {"opacity", linearOf(f, 3)},
+                                      {"alphaMode", g.alphaMode == "MASK" ? "cutout" : g.alphaMode == "BLEND" ? "blend" : "opaque"},
+                                      {"doubleSided", g.doubleSided},
+                                      {"specular", extNumber(g.extensions, "KHR_materials_specular", "specularFactor", 1)},
+                                      {"clearcoat", extNumber(g.extensions, "KHR_materials_clearcoat", "clearcoatFactor", 0)},
+                                      {"clearcoatRoughness", extNumber(g.extensions, "KHR_materials_clearcoat", "clearcoatRoughnessFactor", 0)},
+                                      {"emissive", hexOf({float(g.emissiveFactor.size() > 0 ? g.emissiveFactor[0] : 0), float(g.emissiveFactor.size() > 1 ? g.emissiveFactor[1] : 0),
+                                                         float(g.emissiveFactor.size() > 2 ? g.emissiveFactor[2] : 0)})},
+                                      {"emissiveIntensity", extNumber(g.extensions, "KHR_materials_emissive_strength", "emissiveStrength", 1)}};
+  if(g.normalTexture.index >= 0)
+    values["normalStrength"] = g.normalTexture.scale;
+  Json textures = Json::array();
+  const auto add = [&](const char* label, int texture) {
+    if(texture >= 0 && texture < int(scn->getModel().textures.size()))
+    {
+      const int source = scn->getModel().textures[size_t(texture)].source;
+      if(source >= 0 && source < int(scn->getModel().images.size()))
+      {
+        const tinygltf::Image& img = scn->getModel().images[size_t(source)];
+        textures.push_back({{"label", label}, {"file", baseName(img.uri.empty() ? img.name : img.uri)}});
+      }
+    }
+  };
+  add("Base colour", g.pbrMetallicRoughness.baseColorTexture.index);
+  add("Metallic roughness", g.pbrMetallicRoughness.metallicRoughnessTexture.index);
+  add("Normal", g.normalTexture.index);
+  add("Emissive", g.emissiveTexture.index);
+  add("Occlusion", g.occlusionTexture.index);
+  return {{"name", m.name}, {"kind", "other"}, {"shader", "gltf"}, {"meshes", m_meshesOf[size_t(index)]}, {"textures", textures}, {"values", values},
+          {"edited", editedKeys(m.edits)}};
+}
+
 void FvMaterials::detach()
 {
+  m_model = false;
+  m_originals.clear();
+  m_modelScene = {};
   m_generation++;
   m_scene = nullptr;
   m_options.clear();
@@ -433,7 +583,7 @@ void FvMaterials::setSkinMode(fv::mat::SkinMode skin)
   if(skin == m_skin)
     return;
   m_skin = skin;
-  if(!m_scene)
+  if(!m_scene || m_model)
     return;
   // the ones that differ: refresh() skips what it would write unchanged
   std::set<int> all;
@@ -444,6 +594,14 @@ void FvMaterials::setSkinMode(fv::mat::SkinMode skin)
 
 void FvMaterials::refresh(const std::set<int>& materials)
 {
+  if(m_model)
+  {
+    for(int mi : materials)
+      if(mi >= 0 && mi < int(m_scene->materials.size()))
+        writeModel(mi);
+    publish(materials, false);
+    return;
+  }
   std::vector<fv::build::TextureRequest> missing;
   std::set<std::string>                  asked;
   std::set<int>                          shown;
@@ -583,6 +741,8 @@ void FvMaterials::baked(std::vector<std::pair<fv::build::TextureRequest, std::op
 
 Json FvMaterials::item(int index) const
 {
+  if(m_model)
+    return modelItem(index);
   const fv::Material& m = m_scene->materials[index];
   const fv::mat::Surface&    s = m.surface;
   const fv::mat::Lowered     lowered = fv::mat::lower(s, m.edits, m_options[index]);

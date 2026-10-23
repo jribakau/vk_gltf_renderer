@@ -84,6 +84,9 @@ public:
   // the build made of its materials. Publishes the topic. Application thread.
   void attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped,
               fv::mat::SkinMode skin);
+  // A model the renderer loaded from a glTF or OBJ file: its materials as they are, with the same
+  // edits laid over them directly (there is no Surface to lower). Application thread.
+  void attachModel(const std::string& id);
   void detach();
 
   fv::Json set(const fv::Json& args);
@@ -104,6 +107,8 @@ public:
 private:
   void refresh(const std::set<int>& materials);
   void write(int index, const fv::mat::Lowered& lowered);
+  void writeModel(int index);
+  fv::Json modelItem(int index) const;
   void bake(std::vector<fv::build::TextureRequest> requests);
   void baked(std::vector<std::pair<fv::build::TextureRequest, std::optional<fv::build::TextureImage>>> results, uint64_t generation);
   void publish(const std::set<int>& materials, bool all);
@@ -116,6 +121,11 @@ private:
   // application thread
   std::string                                         m_figure;
   fv::SceneGraph*                                     m_scene = nullptr;
+  // an imported model: its materials stand in a scene graph of their own (names and edits), and the
+  // glTF materials the edits are laid over are kept as they loaded
+  bool                                                m_model = false;
+  fv::SceneGraph                                      m_modelScene;
+  std::vector<tinygltf::Material>                     m_originals;
   std::vector<fv::mat::LowerOptions>                  m_options;
   std::map<std::string, fv::mat::ResolvedTexture>     m_textures;  // request key -> glTF texture
   std::set<std::string>                               m_failed;    // keys a cook could not make

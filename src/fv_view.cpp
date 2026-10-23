@@ -19,6 +19,8 @@
 
 #include "fv_view.hpp"
 
+#include <tinygltf/tiny_gltf.h>
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -250,6 +252,67 @@ void FvView::setFigure(const std::string& id, const std::string& name, const fv:
                                           {"materials", scene.materials.size()},
                                           {"bones", bones},
                                           {"morphs", morphs}}}});
+  m_lastGltf = -2;
+  publishSelection(true);
+}
+
+void FvView::setModel(const std::string& id, const std::string& name, const tinygltf::Model& model)
+{
+  const int count = int(model.nodes.size());
+  m_id            = id;
+  m_bones         = {};
+  m_gltfOf.resize(size_t(count));
+  m_figureOf.clear();
+  for(int i = 0; i < count; i++)
+  {
+    m_gltfOf[size_t(i)] = i;
+    m_figureOf[i]       = i;
+  }
+  std::vector<int> parent(size_t(count), -1);
+  for(int i = 0; i < count; i++)
+    for(int c : model.nodes[size_t(i)].children)
+      if(c >= 0 && c < count)
+        parent[size_t(c)] = i;
+  m_nodes.assign(size_t(count), {});
+  fv::Json nodes     = fv::Json::object();
+  int      order     = 0;
+  size_t   triangles = 0;
+  std::vector<bool> counted(model.meshes.size(), false);
+  const std::function<void(int, int)> walk = [&](int node, int depth) {
+    if(node < 0 || node >= count || depth > 512)
+      return;
+    const tinygltf::Node& n    = model.nodes[size_t(node)];
+    std::string           kind = n.mesh >= 0 ? (n.skin >= 0 ? "skinned" : "mesh") : "group";
+    const std::string     label = n.name.empty() ? (n.mesh >= 0 && !model.meshes[size_t(n.mesh)].name.empty() ? model.meshes[size_t(n.mesh)].name : kind) : n.name;
+    m_nodes[size_t(node)]       = {label, kind, n.mesh};
+    nodes[std::to_string(node)] = {{"name", label}, {"parent", parent[size_t(node)]}, {"kind", kind}, {"order", order++}, {"depth", depth}};
+    if(n.mesh >= 0 && n.mesh < int(model.meshes.size()) && !counted[size_t(n.mesh)])
+    {
+      counted[size_t(n.mesh)] = true;
+      for(const tinygltf::Primitive& p : model.meshes[size_t(n.mesh)].primitives)
+      {
+        const int acc = p.indices >= 0 ? p.indices : (p.attributes.count("POSITION") ? p.attributes.at("POSITION") : -1);
+        if(acc >= 0 && acc < int(model.accessors.size()))
+          triangles += model.accessors[size_t(acc)].count / 3;
+      }
+    }
+    for(int c : n.children)
+      walk(c, depth + 1);
+  };
+  const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
+  if(sceneIndex < int(model.scenes.size()))
+    for(int root : model.scenes[size_t(sceneIndex)].nodes)
+      walk(root, 0);
+  m_events->snapshot("scene", {{"figure", id},
+                               {"name", name},
+                               {"figures", {{id, {{"name", name}}}}},
+                               {"nodes", nodes},
+                               {"stats", {{"meshes", model.meshes.size()},
+                                          {"triangles", triangles},
+                                          {"materials", model.materials.size()},
+                                          {"bones", 0},
+                                          {"morphs", 0}}},
+                               {"format", "glTF"}});
   m_lastGltf = -2;
   publishSelection(true);
 }
