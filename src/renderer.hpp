@@ -424,6 +424,22 @@ public:
   /// load parameters use. Application thread only: it reads scene and model state.
   bool save(const std::filesystem::path& filename, bool selfContained = false);
 
+  /// Ray-pick at a normalized viewport position (0..1, origin top-left): the viewport click path
+  /// without ImGui. `center` recenters the camera on the hit instead of selecting. The result is
+  /// applied a frame or two later, once the pick's frame has finished (see m_pendingClickPick).
+  void pickAt(glm::vec2 uv, bool center);
+  /// Shaded, clay, normals and the other debug views (shaderio::Visualization).
+  void setVisualization(shaderio::Visualization mode);
+  void setWireframe(bool on);
+  void setShowGrid(bool on);
+  void setShowAxis(bool on);
+  /// Path-tracer depth of field. `aperture` is the lens radius squared in metres (0: pinhole).
+  /// `autoFocus` keeps the orbit target sharp and ignores `focalDistance`.
+  void setDepthOfField(float focalDistance, float aperture, bool autoFocus);
+  int  selectedNodeIndex();  // The node of a node or primitive selection, or -1
+  void fitCamera(bool wholeScene);
+  void selectSceneNodeFromScript(int nodeIndex);  // Script-driven selection (Inspector/Scene Browser)
+
 #ifdef USE_NVMCP
   /// Automation surface for the optional MCP endpoint (src/mcp_timing.cpp), which is where both
   /// of these are defined. Thread-safe: they only read the profiler's mutex-guarded snapshots.
@@ -466,7 +482,6 @@ private:
   void buildAccelerationStructures();                              // Helper for BLAS/TLAS building
   void destroyResources();
   void resetFrame();
-  void selectSceneNodeFromScript(int nodeIndex);  // Script-driven selection (Inspector/Scene Browser)
   // Script-driven *ray-pick* selection (`pickrendernode`): selects the given glTF node's
   // first render primitive the same way a real 3D-viewport click would - unlike
   // selectSceneNodeFromScript() above, this supplies finite (camera-eye/node-position) selectionPoint/
@@ -566,8 +581,6 @@ private:
   void renderBenchmarkViewport();  // Minimal fullscreen image (benchmark mode)
   void registerCommands();         // The menu, toolbar and keyboard commands (m_commands), once at attach
   bool hasValidScene();
-  int  selectedNodeIndex();  // The node of a node or primitive selection, or -1
-  void fitCamera(bool wholeScene);
   void renderMenu();
   void renderFileMenu(std::filesystem::path& sceneToLoadFilename);
   void renderViewMenu();

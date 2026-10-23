@@ -156,6 +156,14 @@ int main(int argc, char** argv)
         loaded->pose->setMany(values);
         loaded->settle();
       }
+      else if(step.contains("preset"))
+      {
+        if(!loaded)
+          throw std::runtime_error("preset before a figure loads");
+        auto doc = store->load(step["preset"].get<std::string>());
+        loaded->applyPosePreset(doc->json);
+        loaded->settle();
+      }
       else if(step.contains("dump"))
       {
         if(!loaded)

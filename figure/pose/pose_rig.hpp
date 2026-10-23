@@ -60,6 +60,9 @@ struct ChannelValue
 // The panel group a bone is listed under ("Torso", "Left arm", ...), from its name.
 std::string groupOf(const std::string& name, bool isRoot);
 
+// Eyeball bones: Genesis `lEye`/`rEye`, and the "Left Eye" names older figures use. Not lids or lashes.
+bool isEyeBone(const std::string& name);
+
 class PoseRig
 {
 public:
@@ -77,6 +80,14 @@ public:
   std::vector<int> reset();
   // How many bones differ from how they loaded.
   int changed() const;
+
+  // Whether the figure has eyeball bones with a rotation channel to aim.
+  bool hasEyes() const;
+  // Points the eyeballs at a world-space point, such as the camera. The rotation channels become
+  // the joint-frame Euler that turns each bone's rest gaze (+Z) onto that point. A formula already
+  // bending an eye is left in place: the channel is set so the two together still land on the aim.
+  // Returns how many eyes were aimed. `worldPoint` is in the same space as the scene graph.
+  int aimEyes(const Vec3& worldPoint);
 
   // The bone nodes that are posed bones or followers (to know which scene nodes the rig drives).
   std::set<int> drivenNodes() const;
@@ -110,6 +121,8 @@ private:
   Axis*            axis(PoseBone& pb, ChannelKind kind, const std::string& axis);
   const Axis*      axis(const PoseBone& pb, ChannelKind kind, const std::string& axis) const;
   std::vector<int> apply(PoseBone& pb);
+  // Rotation channels, in degrees, that turn this bone's local +Z toward `worldPoint`.
+  std::optional<std::array<double, 3>> aimAngles(const PoseBone& pb, const Vec3& worldPoint) const;
   void             addFollowers(const dson::Rig& rig);
   Vec3             localOffset(const PoseBone& pb) const;
 

@@ -416,4 +416,118 @@ std::vector<std::string> Figure::takeWarnings()
   return out;
 }
 
+namespace {
+
+// The last key's value, or none when the animation has no numeric key.
+std::optional<double> lastKey(const dson::Json& animation)
+{
+  const dson::Json* keys = dson::get(&animation, "keys");
+  if(!keys || !keys->is_array() || keys->empty())
+    return std::nullopt;
+  const dson::Json& key = keys->back();
+  if(!key.is_array() || key.size() < 2 || !key[1].is_number())
+    return std::nullopt;
+  return key[1].get<double>();
+}
+
+std::string withoutValue(std::string prop)
+{
+  const std::string suffix = "/value";
+  if(prop.size() >= suffix.size() && prop.compare(prop.size() - suffix.size(), suffix.size(), suffix) == 0)
+    prop.resize(prop.size() - suffix.size());
+  return prop;
+}
+
+}  // namespace
+
+PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc)
+{
+  PosePresetResult result;
+  if(!pose)
+    return result;
+  const dson::Json* animations = dson::get(dson::get(&doc, "scene"), "animations");
+  if(!animations || !animations->is_array())
+    return result;
+
+  std::vector<pose::ChannelValue>         values;
+  std::vector<std::pair<std::string, double>> morphValues;
+  const pose::PoseBone* root = nullptr;
+  for(const pose::PoseBone& pb : pose->bones())
+    if(pb.group == "Figure")
+    {
+      root = &pb;
+      break;
+    }
+
+  static const std::regex selection(R"(^name://@selection(?:/([^:#]*))?(?:#([^:]*))?:\?(.*)$)");
+  static const std::regex hierarchical(R"(^[^:]*:[^#]*#([^?]+)\?(.*)$)");
+  static const std::regex channel(R"(^(rotation|translation|scale)/(x|y|z|general)$)");
+
+  for(const dson::Json& a : *animations)
+  {
+    const auto value = lastKey(a);
+    if(!value)
+      continue;
+    const std::string url = dson::getString(&a, "url");
+    std::smatch       m;
+    std::string       boneName, modifier, prop;
+    if(std::regex_match(url, m, selection))
+    {
+      boneName = m[1].matched ? dson::decodeUri(m[1].str()) : "";
+      modifier = m[2].matched ? dson::decodeUri(m[2].str()) : "";
+      prop     = m[3].str();
+    }
+    else if(std::regex_match(url, m, hierarchical))
+    {
+      boneName = dson::decodeUri(m[1].str());
+      prop     = m[2].str();
+    }
+    else
+    {
+      result.skipped.push_back(url);
+      continue;
+    }
+    prop = withoutValue(prop);
+    if(!modifier.empty())
+    {
+      if(prop != "value")
+        continue;
+      const morph::Channel* ch = morphs ? morphs->channel(modifier) : nullptr;
+      if(ch)
+        morphValues.emplace_back(modifier, *value);
+      else if(*value != 0)
+        result.skipped.push_back(modifier);
+      continue;
+    }
+    const pose::PoseBone* pb = boneName.empty() ? root : pose->get(boneName);
+    std::smatch           pm;
+    const bool            propOk = std::regex_match(prop, pm, channel);
+    if(!pb || !propOk)
+    {
+      if(*value != 0 && propOk)
+        result.skipped.push_back((boneName.empty() ? "figure" : boneName) + " " + prop);
+      continue;
+    }
+    pose::ChannelKind kind;
+    if(!pose::parseKind(pm[1].str(), kind))
+      continue;
+    bool has = false;
+    for(const pose::Axis& axis : pb->axes)
+      if(axis.kind == kind && axis.axis == pm[2].str())
+        has = true;
+    if(has)
+      values.push_back({pb->name, kind, pm[2].str(), *value});
+  }
+  pose->setMany(values);
+  if(morphs && !morphValues.empty())
+    morphs->setMany(morphValues);
+  result.applied = int(values.size() + morphValues.size());
+  return result;
+}
+
+PosePresetResult Figure::applyPosePreset(const dson::Json& doc)
+{
+  return fv::applyPosePreset(pose.get(), morphs.get(), doc);
+}
+
 }  // namespace fv

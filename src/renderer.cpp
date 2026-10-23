@@ -1542,7 +1542,9 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
                            .isDoubleClick  = m_pendingClickPick->isDoubleClick};
     m_pendingClickPick.reset();
   }
-  if(!isAutomatedRun())
+  // The grid and transform gizmo are drawn into the frame. Benchmarks keep them out (they would
+  // change the measured image); a headless --stream is the native viewport, so the grid shows there.
+  if(!isBenchmarkMode())
   {
     renderVisualHelpers(cmd);
   }
@@ -4072,6 +4074,19 @@ void GltfRenderer::selectSceneNodeFromScript(int nodeIndex)
   if(nodeIndex >= 0 && nodeIndex < count)
   {
     m_sceneSelection.selectNode(nodeIndex);
+    // The silhouette reads selectedRenderNodes, which the UI's selection callback fills. A headless
+    // stream has no UI pass, so fill it here too (the callback, when it runs, fills the same set).
+    m_resources.selectedRenderNodes.clear();
+    std::vector<int> renderNodeIDs;
+    scene->getRenderNodeRegistry().getAllRenderNodesForNodeRecursive(
+        nodeIndex,
+        [scene](int nid) {
+          const auto& node = scene->getModel().nodes[static_cast<size_t>(nid)];
+          return node.children;
+        },
+        renderNodeIDs);
+    for(int id : renderNodeIDs)
+      m_resources.selectedRenderNodes.insert(id);
   }
   else
   {

@@ -28,6 +28,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <map>
 #include <mutex>
@@ -39,10 +40,12 @@
 #include <nvapp/elem_camera.hpp>
 #include <nvutils/logger.hpp>
 
+#include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
 
 #include "fv_protocol.hpp"
+#include "fv_view.hpp"
 #include "renderer.hpp"
 
 using fv::Json;
@@ -263,7 +266,17 @@ Json poseSnapshot(const Loaded& f)
                           {"value", a.value}, {"initial", a.initial}, {"order", i++}};
     bones[pb.id] = {{"name", pb.name}, {"label", pb.label}, {"group", pb.group}, {"order", order++}, {"axes", axes}};
   }
-  return {{"figure", f.id}, {"changed", f.fig->pose->changed()}, {"bones", bones}};
+  return {{"figure", f.id}, {"changed", f.fig->pose->changed()}, {"eyes", f.fig->pose->hasEyes()}, {"bones", bones}};
+}
+
+std::string fileStem(const std::string& rel)
+{
+  const size_t slash = rel.find_last_of("/\\");
+  std::string  name  = slash == std::string::npos ? rel : rel.substr(slash + 1);
+  const size_t dot   = name.find_last_of('.');
+  if(dot != std::string::npos)
+    name.resize(dot);
+  return name;
 }
 
 }  // namespace
@@ -348,6 +361,14 @@ struct FvHost::Impl
   void publishBusy();
   void frameCamera();
   void applyInput(const std::vector<Json>& events);
+  void patchPose(const std::vector<std::string>& boneIds);
+  void applyPreset(const fv::dson::Json& doc, const std::string& kind, uint64_t jobId, const std::string& rel);
+
+  std::unique_ptr<FvView> view;
+  // figure loads only: a preset must not take a generation, or it would cancel a figure load
+  std::mutex figureLoads;
+  uint64_t   latestFigureSeq = 0;
+  std::atomic<uint64_t> requestSeq{0};
 };
 
 Json FvHost::Impl::load(const Json& args)
@@ -374,23 +395,44 @@ Json FvHost::Impl::load(const Json& args)
       throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
     name = path;
   }
-  const uint64_t    generation = ++loadGeneration;
-  const uint64_t    jobId      = ++jobs;
-  const std::string label      = "Loading " + utf8Of(pathOf(name).filename());
+  const uint64_t    seq   = ++requestSeq;
+  const uint64_t    jobId = ++jobs;
+  const std::string label = "Loading " + utf8Of(pathOf(name).filename());
   job(jobId, {{"label", label}, {"state", "running"}});
 
   std::lock_guard lock(loadMutex);
-  loaders.emplace_back([this, s, roots = library->first, rel = library->second, generation, jobId, label] {
+  loaders.emplace_back([this, s, roots = library->first, rel = library->second, seq, jobId, label] {
     try
     {
-      const auto t0  = std::chrono::steady_clock::now();
-      auto       lib = std::make_shared<fv::dson::Library>(roots);
-      auto       store = std::make_shared<fv::dson::Store>(lib);
+      auto lib   = std::make_shared<fv::dson::Library>(roots);
+      auto store = std::make_shared<fv::dson::Store>(lib);
+      // a preset is applied to the loaded figure; it must not replace it or cancel a figure load
+      if(auto doc = store->load(rel))
+        if(auto preset = fv::dson::describePreset(doc->json))
+        {
+          post([this, body = doc->json, kind = preset->kind, jobId, rel] { applyPreset(body, kind, jobId, rel); });
+          return;
+        }
+      uint64_t generation = 0;
+      {
+        std::lock_guard gate(figureLoads);
+        if(seq < latestFigureSeq)
+        {
+          job(jobId, {{"label", label}, {"state", "done"}});
+          return;
+        }
+        latestFigureSeq = seq;
+        generation      = ++loadGeneration;
+      }
+      const auto t0 = std::chrono::steady_clock::now();
       auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision}, [this, jobId, label](const std::string& step) {
         job(jobId, {{"label", label + ": " + step}, {"state", "running"}});
       });
       if(generation != loadGeneration)
+      {
+        job(jobId, {{"label", label}, {"state", "done"}});
         return;  // a newer load replaced this one
+      }
       for(const auto& w : f->takeWarnings())
         notice(w);
       // centimetres to metres, after the skins were bound (as loaders/index.ts scales). A later
@@ -473,11 +515,54 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   morphTouched = true;
   // the renderer sets its own camera up over the next frames; frame the figure after that
   frameIn = 2;
-  auto& events = protocol->events();
-  events.snapshot("scene", {{"figures", {{figure->id, {{"name", figure->fig->loaded.name}}}}}});
+  // the pose first: a panel that sees the figure in "scene" finds its pose already there
   if(figure->fig->pose)
-    events.snapshot("pose/" + figure->id, poseSnapshot(*figure));
+    protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
+  if(view)
+    view->setFigure(figure->id, figure->fig->loaded.name, figure->fig->loaded.scene, figure->fig->loaded.root, figure->nodeOf,
+                    figure->fig->morphs ? figure->fig->morphs->size() : 0);
   job(jobId, {{"state", "done"}, {"figure", figure->id}});
+}
+
+void FvHost::Impl::patchPose(const std::vector<std::string>& boneIds)
+{
+  if(!figure || !figure->fig->pose)
+    return;
+  Json bones = Json::object();
+  for(const std::string& id : boneIds)
+    if(const auto* pb = figure->fig->pose->get(id))
+    {
+      Json axes = Json::object();
+      for(const auto& a : pb->axes)
+        axes[axisKey(a)] = {{"value", a.value}};
+      bones[pb->id] = {{"axes", axes}};
+    }
+  protocol->events().patch("pose/" + figure->id, {{"changed", figure->fig->pose->changed()}, {"bones", bones}});
+}
+
+void FvHost::Impl::applyPreset(const fv::dson::Json& doc, const std::string& kind, uint64_t jobId, const std::string& rel)
+{
+  const std::string name = fileStem(rel);
+  if(kind == "pose preset")
+  {
+    if(!figure || !figure->fig->pose)
+      notice(name + " is a DAZ pose preset. Load a DAZ figure first, then open the pose.");
+    else
+    {
+      const fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
+      morphTouched                 = true;
+      protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
+      if(!r.applied)
+        notice(name + ": nothing in this pose matches the loaded figure.");
+      else if(!r.skipped.empty())
+        notice("Applied pose " + name + ". " + std::to_string(r.skipped.size()) + " pose controls aren't supported yet and were skipped.", "info");
+      else
+        notice("Applied pose " + name, "info");
+    }
+  }
+  else
+    notice(name + " is a DAZ " + kind + " and isn't supported in the native viewport yet.");
+  job(jobId, {{"state", "done"}, {"preset", kind}});
 }
 
 void FvHost::Impl::applyNodes(const std::set<int>& moved)
@@ -683,17 +768,15 @@ Json FvHost::Impl::poseSet(const Json& args)
       continue;
     values.push_back({key.substr(0, k), kind, key.substr(a + 1), it.value().get<double>()});
   }
+  std::vector<std::string> bones;
+  for(const auto& v : values)
+    if(std::find(bones.begin(), bones.end(), v.bone) == bones.end())
+      bones.push_back(v.bone);
   // nodes, corrective morphs and rebound skins go out with this frame's pump()
   figure->fig->pose->setMany(values);
   morphTouched = true;
   // the values as the rig took them (clamped), for every panel showing the pose
-  Json bones = Json::object();
-  for(const auto& v : values)
-    if(const auto* pb = figure->fig->pose->get(v.bone))
-      for(const auto& a : pb->axes)
-        if(a.kind == v.kind && a.axis == v.axis)
-          bones[pb->id]["axes"][axisKey(a)]["value"] = a.value;
-  protocol->events().patch("pose/" + figure->id, {{"changed", figure->fig->pose->changed()}, {"bones", bones}});
+  patchPose(bones);
   return {{"changed", figure->fig->pose->changed()}};
 }
 
@@ -787,6 +870,24 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
   });
   cmds.add("load", [impl](const Json& args) { return impl->load(args); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
+  cmds.add("pose.eyes", [impl](const Json& args) {
+    return impl->onApp([impl, args] {
+      if(!impl->figure || !impl->figure->fig->pose || args.value("figure", impl->figure->id) != impl->figure->id)
+        throw std::runtime_error("no such figure");
+      auto manip = impl->renderer->getCameraManipulator();
+      if(!manip)
+        throw std::runtime_error("no camera");
+      const glm::dvec3 eye = manip->getEye();
+      const int        n   = impl->figure->fig->pose->aimEyes({eye.x, eye.y, eye.z});
+      std::vector<std::string> bones;
+      for(const auto& pb : impl->figure->fig->pose->bones())
+        if(fv::pose::isEyeBone(pb.name))
+          bones.push_back(pb.id);
+      impl->morphTouched = true;
+      impl->patchPose(bones);
+      return Json{{"aimed", n}};
+    });
+  });
   cmds.add("pose.reset", [impl](const Json& args) {
     return impl->onApp([impl, args] {
       if(!impl->figure || !impl->figure->fig->pose || args.value("figure", impl->figure->id) != impl->figure->id)
@@ -834,12 +935,6 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
       return Json{{"mode", mode}};
     });
   });
-  cmds.add("camera.frame", [impl](const Json&) {
-    return impl->onApp([impl] {
-      impl->frameCamera();
-      return Json{{"ok", true}};
-    });
-  });
   // a clean exit (DLSS/NGX shut down), which the host asks for before it ends the process
   cmds.add("session.shutdown", [impl](const Json&) {
     impl->post([impl] {
@@ -847,6 +942,9 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
         impl->app->close();
     });
     return Json{{"ok", true}};
+  });
+  s.view = std::make_unique<FvView>(renderer, s.protocol->events(), s.protocol->commands(), [impl](std::function<Json()> f) {
+    return impl->onApp(std::move(f));
   });
   s.protocol->setInputSink([impl](const Json& events) {
     std::lock_guard lock(impl->inputMutex);
@@ -878,6 +976,8 @@ void FvHost::onDetach()
       t.join();
   s.loaders.clear();
   s.queue.clear();
+  if(s.view)
+    s.view->clearFigure();
   s.figure.reset();
   {
     std::lock_guard morphLock(s.morphMutex);
@@ -913,11 +1013,17 @@ void FvHost::onUpdate()
   }
   if(s.frameIn > 0 && --s.frameIn == 0)
     s.frameCamera();
+  if(s.view)
+    s.view->onFrame();
   std::vector<Json> events;
   {
     std::lock_guard lock(s.inputMutex);
     events.swap(s.input);
   }
   if(!events.empty())
+  {
+    if(s.view)
+      s.view->onInput(events);
     s.applyInput(events);
+  }
 }

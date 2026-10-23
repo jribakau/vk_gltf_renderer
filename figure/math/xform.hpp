@@ -21,6 +21,22 @@ struct Vec3
   Vec3 operator*(double s) const { return {x * s, y * s, z * s}; }
 };
 
+inline double dot(const Vec3& a, const Vec3& b)
+{
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+inline double length(const Vec3& v)
+{
+  return std::sqrt(dot(v, v));
+}
+
+inline Vec3 normalize(const Vec3& v)
+{
+  const double l = length(v);
+  return l == 0 ? Vec3{} : v * (1 / l);
+}
+
 struct Quat
 {
   double x = 0, y = 0, z = 0, w = 1;
@@ -62,6 +78,24 @@ inline Quat quatFromEuler(double ex, double ey, double ez, std::string_view orde
     return {s1 * c2 * c3 - c1 * s2 * s3, c1 * s2 * c3 - s1 * c2 * s3, c1 * c2 * s3 + s1 * s2 * c3, c1 * c2 * c3 + s1 * s2 * s3};
   // XYZ
   return {s1 * c2 * c3 + c1 * s2 * s3, c1 * s2 * c3 - s1 * c2 * s3, c1 * c2 * s3 + s1 * s2 * c3, c1 * c2 * c3 - s1 * s2 * s3};
+}
+
+// three's Quaternion.setFromUnitVectors: the rotation taking a unit vector onto another.
+inline Quat quatFromUnitVectors(const Vec3& vFrom, const Vec3& vTo)
+{
+  double r = dot(vFrom, vTo) + 1;
+  Quat   q;
+  if(r < 1e-8)
+  {
+    r = 0;
+    if(std::abs(vFrom.x) > std::abs(vFrom.z))
+      q = {-vFrom.y, vFrom.x, 0, r};
+    else
+      q = {0, -vFrom.z, vFrom.y, r};
+  }
+  else
+    q = {vFrom.y * vTo.z - vFrom.z * vTo.y, vFrom.z * vTo.x - vFrom.x * vTo.z, vFrom.x * vTo.y - vFrom.y * vTo.x, r};
+  return q.normalized();
 }
 
 // v rotated by q (three's Vector3.applyQuaternion).
@@ -139,6 +173,149 @@ inline Mat4 inverse(const Mat4& m)
            (n22 * t8 - n12 * t10 - n32 * t7) * d,   (n11 * t10 - n21 * t8 + n31 * t7) * d, (n24 * t2 - n14 * t4 - n34 * t1) * d,
            (n13 * t4 - n23 * t2 + n33 * t1) * d};
   return out;
+}
+
+// three's Quaternion.setFromRotationMatrix. The upper 3x3 must be a pure rotation.
+inline Quat quatFromRotationMatrix(const Mat4& m)
+{
+  const double m11 = m.e[0], m12 = m.e[4], m13 = m.e[8];
+  const double m21 = m.e[1], m22 = m.e[5], m23 = m.e[9];
+  const double m31 = m.e[2], m32 = m.e[6], m33 = m.e[10];
+  const double trace = m11 + m22 + m33;
+  Quat         q;
+  if(trace > 0)
+  {
+    const double s = 0.5 / std::sqrt(trace + 1.0);
+    q              = {(m32 - m23) * s, (m13 - m31) * s, (m21 - m12) * s, 0.25 / s};
+  }
+  else if(m11 > m22 && m11 > m33)
+  {
+    const double s = 2.0 * std::sqrt(1.0 + m11 - m22 - m33);
+    q              = {0.25 * s, (m12 + m21) / s, (m13 + m31) / s, (m32 - m23) / s};
+  }
+  else if(m22 > m33)
+  {
+    const double s = 2.0 * std::sqrt(1.0 + m22 - m11 - m33);
+    q              = {(m12 + m21) / s, 0.25 * s, (m23 + m32) / s, (m13 - m31) / s};
+  }
+  else
+  {
+    const double s = 2.0 * std::sqrt(1.0 + m33 - m11 - m22);
+    q              = {(m13 + m31) / s, (m23 + m32) / s, 0.25 * s, (m21 - m12) / s};
+  }
+  return q;
+}
+
+// The rotation of a world matrix, scale divided out (three's Matrix4.decompose, the quaternion).
+inline Quat rotationOf(const Mat4& m)
+{
+  const Vec3   c0{m.e[0], m.e[1], m.e[2]};
+  const Vec3   c1{m.e[4], m.e[5], m.e[6]};
+  const Vec3   c2{m.e[8], m.e[9], m.e[10]};
+  const double det = c0.x * (c1.y * c2.z - c1.z * c2.y) - c0.y * (c1.x * c2.z - c1.z * c2.x) + c0.z * (c1.x * c2.y - c1.y * c2.x);
+  double       sx = length(c0), sy = length(c1), sz = length(c2);
+  if(sx == 0)
+    sx = 1;
+  if(sy == 0)
+    sy = 1;
+  if(sz == 0)
+    sz = 1;
+  if(det < 0)
+    sx = -sx;
+  Mat4 r = m;
+  r.e[0] /= sx;
+  r.e[1] /= sx;
+  r.e[2] /= sx;
+  r.e[4] /= sy;
+  r.e[5] /= sy;
+  r.e[6] /= sy;
+  r.e[8] /= sz;
+  r.e[9] /= sz;
+  r.e[10] /= sz;
+  return quatFromRotationMatrix(r);
+}
+
+// three's Euler.setFromRotationMatrix, in radians, for a three order ("XYZ", ...).
+inline std::array<double, 3> eulerFromMatrix(const Mat4& m, std::string_view order)
+{
+  const double m11 = m.e[0], m12 = m.e[4], m13 = m.e[8];
+  const double m21 = m.e[1], m22 = m.e[5], m23 = m.e[9];
+  const double m31 = m.e[2], m32 = m.e[6], m33 = m.e[10];
+  auto         clamp1 = [](double v) { return std::min(1.0, std::max(-1.0, v)); };
+  double       x = 0, y = 0, z = 0;
+  if(order == "YXZ")
+  {
+    x = std::asin(-clamp1(m23));
+    if(std::abs(m23) < 0.9999999)
+    {
+      y = std::atan2(m13, m33);
+      z = std::atan2(m21, m22);
+    }
+    else
+      y = std::atan2(-m31, m11);
+  }
+  else if(order == "ZXY")
+  {
+    x = std::asin(clamp1(m32));
+    if(std::abs(m32) < 0.9999999)
+    {
+      y = std::atan2(-m31, m33);
+      z = std::atan2(-m12, m22);
+    }
+    else
+      z = std::atan2(m21, m11);
+  }
+  else if(order == "ZYX")
+  {
+    y = std::asin(-clamp1(m31));
+    if(std::abs(m31) < 0.9999999)
+    {
+      x = std::atan2(m32, m33);
+      z = std::atan2(m21, m11);
+    }
+    else
+      z = std::atan2(-m12, m22);
+  }
+  else if(order == "YZX")
+  {
+    z = std::asin(clamp1(m21));
+    if(std::abs(m21) < 0.9999999)
+    {
+      x = std::atan2(-m23, m22);
+      y = std::atan2(-m31, m11);
+    }
+    else
+      y = std::atan2(m13, m33);
+  }
+  else if(order == "XZY")
+  {
+    z = std::asin(-clamp1(m12));
+    if(std::abs(m12) < 0.9999999)
+    {
+      x = std::atan2(m32, m22);
+      y = std::atan2(m13, m11);
+    }
+    else
+      x = std::atan2(-m23, m33);
+  }
+  else
+  {
+    y = std::asin(clamp1(m13));
+    if(std::abs(m13) < 0.9999999)
+    {
+      x = std::atan2(-m23, m33);
+      z = std::atan2(-m12, m11);
+    }
+    else
+      x = std::atan2(m32, m22);
+  }
+  return {x, y, z};
+}
+
+// three's Euler.setFromQuaternion: a rotation matrix from the quaternion, then the Euler.
+inline std::array<double, 3> eulerFromQuat(const Quat& q, std::string_view order)
+{
+  return eulerFromMatrix(compose({}, q, {1, 1, 1}), order);
 }
 
 constexpr double kDeg = 3.14159265358979323846 / 180.0;

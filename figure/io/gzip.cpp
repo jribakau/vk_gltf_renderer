@@ -20,17 +20,46 @@ static bool isZlib(std::span<const uint8_t> bytes)
   return bytes.size() >= 2 && (bytes[0] & 0x0f) == 8 && ((bytes[0] << 8) | bytes[1]) % 31 == 0;
 }
 
+// Bytes to skip to reach the deflate stream of a gzip member. 0 when it isn't gzip.
+static size_t gzipPayload(std::span<const uint8_t> bytes)
+{
+  if(!isGzip(bytes) || bytes.size() < 10 || bytes[2] != 8)
+    return 0;
+  const uint8_t flags = bytes[3];
+  size_t        i     = 10;
+  if(flags & 4)
+  {
+    if(i + 2 > bytes.size())
+      return 0;
+    i += 2u + (size_t(bytes[i]) | size_t(bytes[i + 1]) << 8);
+  }
+  if(flags & 8)
+    while(i < bytes.size() && bytes[i++])
+      ;
+  if(flags & 16)
+    while(i < bytes.size() && bytes[i++])
+      ;
+  if(flags & 2)
+    i += 2;
+  return i < bytes.size() ? i : 0;
+}
+
 std::string inflateIfCompressed(std::span<const uint8_t> bytes)
 {
-  if(!isGzip(bytes) && !isZlib(bytes))
+  const size_t gzipAt = gzipPayload(bytes);
+  if(!gzipAt && isGzip(bytes))
+    throw std::runtime_error("inflate: truncated or unsupported gzip header");
+  const bool zlib = !gzipAt && isZlib(bytes);
+  if(!gzipAt && !zlib)
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 
   z_stream s{};
-  // 15 window bits + 32: detect gzip or zlib from the header
-  if(inflateInit2(&s, 15 + 32) != Z_OK)
+  // Raw deflate for gzip (the header is parsed above). Window 47, which asks zlib to detect gzip
+  // itself, is rejected by the zlib libjpeg ships, and the renderer links that one too.
+  if(inflateInit2(&s, gzipAt ? -15 : 15) != Z_OK)
     throw std::runtime_error("inflate: could not initialise zlib");
-  s.next_in  = const_cast<Bytef*>(bytes.data());
-  s.avail_in = uInt(bytes.size());
+  s.next_in  = const_cast<Bytef*>(bytes.data() + gzipAt);
+  s.avail_in = uInt(bytes.size() - gzipAt);
 
   std::string out;
   out.resize(bytes.size() * 4 + 4096);

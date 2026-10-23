@@ -21,6 +21,7 @@
 
 #include "settings_registry.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -84,6 +85,13 @@ public:
   void setBusyWindow(BusyWindow* busy) { m_busyWindow = busy; }
   // --cacheDir. Empty (the default) keeps the caches next to the executable. Set before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
+  // Lens radius squared in metres (0: a pinhole). autoFocus uses the eye-to-target distance.
+  void setDepthOfField(float focalDistance, float aperture, bool autoFocus)
+  {
+    m_pushConst.focalDistance = std::max(1e-9f, focalDistance);
+    m_pushConst.aperture      = std::max(0.f, aperture);
+    m_autoFocus               = autoFocus;
+  }
 
   // Register command line parameters
   /// Declare this subsystem's settings (command line + benchmark + MCP + persistence).

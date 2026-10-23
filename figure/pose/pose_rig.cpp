@@ -1,6 +1,7 @@
 #include <figure/pose/pose_rig.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 #include <regex>
 
@@ -56,6 +57,12 @@ std::string groupOf(const std::string& name, bool isRoot)
   if(!side.empty() && std::regex_search(n, leg))
     return side + " leg";
   return "Other";
+}
+
+bool isEyeBone(const std::string& name)
+{
+  static const std::regex eye(R"(^(l|r|left|right)[\s_-]?eye(ball)?$)", std::regex::icase);
+  return std::regex_match(name, eye);
 }
 
 PoseRig::PoseRig(SceneGraph& scene, const dson::Rig& main, const std::vector<const dson::Rig*>& followers)
@@ -208,6 +215,67 @@ int PoseRig::changed() const
   for(const PoseBone& pb : m_bones)
     if(std::any_of(pb.axes.begin(), pb.axes.end(), [](const Axis& a) { return a.value != a.initial; }))
       n++;
+  return n;
+}
+
+bool PoseRig::hasEyes() const
+{
+  for(const PoseBone& pb : m_bones)
+    if(isEyeBone(pb.name) && std::any_of(pb.axes.begin(), pb.axes.end(), [](const Axis& a) { return a.kind == ChannelKind::eRotation; }))
+      return true;
+  return false;
+}
+
+std::optional<std::array<double, 3>> PoseRig::aimAngles(const PoseBone& pb, const Vec3& worldPoint) const
+{
+  const int parent = pb.bone >= 0 && pb.bone < int(m_scene.nodes.size()) ? m_scene.nodes[pb.bone].parent : -1;
+  if(parent < 0)
+    return std::nullopt;
+  const Mat4 eye    = m_scene.world(pb.bone);
+  const Vec3 at{eye.e[12], eye.e[13], eye.e[14]};
+  Vec3       dir = worldPoint - at;
+  if(dot(dir, dir) < 1e-12)
+    return std::nullopt;
+  dir = normalize(dir);
+  // the bone quaternion rotates in the parent's frame
+  dir = rotate(dir, rotationOf(m_scene.world(parent)).inverse());
+  const Quat aim = quatFromUnitVectors({0, 0, 1}, dir);
+  // q = orient · R · orient⁻¹, so the channel Euler is R
+  const Quat                 q     = pb.orient.inverse() * aim * pb.orient;
+  const std::array<double, 3> euler = eulerFromQuat(q, pb.order);
+  const double               deg   = 1.0 / kDeg;
+  return std::array<double, 3>{euler[0] * deg, euler[1] * deg, euler[2] * deg};
+}
+
+int PoseRig::aimEyes(const Vec3& worldPoint)
+{
+  std::vector<ChannelValue> values;
+  int                       n = 0;
+  for(const PoseBone& pb : m_bones)
+  {
+    if(!isEyeBone(pb.name))
+      continue;
+    const auto angles = aimAngles(pb, worldPoint);
+    if(!angles)
+      continue;
+    bool wrote = false;
+    for(const char* axisName : {"x", "y", "z"})
+    {
+      const Axis* a = axis(pb, ChannelKind::eRotation, axisName);
+      if(!a)
+        continue;
+      const std::string key    = pb.id + "|rotation|" + axisName;
+      const auto        driven = m_driven.find(key);
+      const double      add    = driven == m_driven.end() ? 0 : driven->second;
+      const int         i      = axisName[0] == 'x' ? 0 : axisName[0] == 'y' ? 1 : 2;
+      const double      total  = a->clamped ? std::clamp((*angles)[i], a->min, a->max) : (*angles)[i];
+      values.push_back({pb.name, ChannelKind::eRotation, axisName, total - add});
+      wrote = true;
+    }
+    if(wrote)
+      n++;
+  }
+  setMany(values);
   return n;
 }
 

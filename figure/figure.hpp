@@ -21,6 +21,18 @@
 
 namespace fv {
 
+struct PosePresetResult
+{
+  int                      applied = 0;
+  // Addresses this figure can't apply: dials it doesn't have, other figures' bones.
+  std::vector<std::string> skipped;
+};
+
+// Applies a DAZ pose preset (.duf `scene.animations`) to a rig and its morphs: the last key of each
+// animation, `name://@selection` urls and hierarchical `#bone?rotation/x/value` urls. Figure::applyPosePreset
+// is this, on the figure's own pose and morphs.
+PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc);
+
 class Figure
 {
 public:
@@ -62,6 +74,9 @@ public:
 
   // Starts loading the joint correctives, once (they join on the first pose change).
   void loadCorrectivesOnce();
+
+  // Applies a DAZ pose preset to this figure's bones and morph dials.
+  PosePresetResult applyPosePreset(const dson::Json& doc);
 
 private:
   Figure() = default;

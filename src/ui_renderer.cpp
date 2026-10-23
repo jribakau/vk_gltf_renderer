@@ -1495,6 +1495,52 @@ void GltfRenderer::fitCamera(bool wholeScene)
     m_cameraManip->fit(bbox.min(), bbox.max(), false, true, m_cameraManip->getAspectRatio());
 }
 
+void GltfRenderer::pickAt(glm::vec2 uv, bool center)
+{
+  if(!m_cameraManip || !hasValidScene())
+    return;
+  m_pendingClickPick = PendingClickPick{
+      .modelViewInv   = glm::inverse(m_cameraManip->getViewMatrix()),
+      .perspectiveInv = glm::inverse(m_cameraManip->getPerspectiveMatrix()),
+      .isOrthographic = (m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic) ? 1 : 0,
+      .pickPos        = uv,
+      .isDoubleClick  = center,
+  };
+}
+
+void GltfRenderer::setVisualization(shaderio::Visualization mode)
+{
+  if(m_resources.settings.visualization == mode)
+    return;
+  m_resources.settings.visualization = mode;
+  resetFrame();
+}
+
+void GltfRenderer::setWireframe(bool on)
+{
+  if(m_resources.settings.wireframe == on)
+    return;
+  m_resources.settings.wireframe = on;
+  resetFrame();
+}
+
+void GltfRenderer::setShowGrid(bool on)
+{
+  m_resources.settings.showGrid = on;
+  resetFrame();
+}
+
+void GltfRenderer::setShowAxis(bool on)
+{
+  m_resources.settings.showAxis = on;
+}
+
+void GltfRenderer::setDepthOfField(float focalDistance, float aperture, bool autoFocus)
+{
+  m_pathTracer.setDepthOfField(focalDistance, aperture, autoFocus);
+  resetFrame();
+}
+
 void GltfRenderer::renderMenu()
 {
   // The global key bindings; the viewport's are polled by the viewport window, F11 by
