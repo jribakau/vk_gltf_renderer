@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 
 #include <nvutils/logger.hpp>
 
@@ -357,6 +358,68 @@ Json FvMaterials::reset(const Json& args)
     }
   refresh(changed);
   return {{"ok", true}, {"materials", changed.size()}};
+}
+
+namespace {
+
+// "<name>", or "<name>#n" for the n-th material of that name in scene order.
+std::vector<std::string> materialKeys(const fv::SceneGraph& scene)
+{
+  std::map<std::string, int> counts;
+  std::vector<std::string>   keys;
+  for(const fv::Material& m : scene.materials)
+  {
+    const int n = counts[m.name]++;
+    keys.push_back(n > 0 ? m.name + "#" + std::to_string(n) : m.name);
+  }
+  return keys;
+}
+
+}  // namespace
+
+Json FvMaterials::editState() const
+{
+  Json out = Json::object();
+  if(!m_scene)
+    return out;
+  const auto keys = materialKeys(*m_scene);
+  for(size_t i = 0; i < m_scene->materials.size(); i++)
+  {
+    if(m_scene->materials[i].edits.empty())
+      continue;
+    const Json shown = item(int(i));
+    Json       edited = Json::object();
+    for(const Json& k : shown["edited"])
+      edited[k.get<std::string>()] = shown["values"][k.get<std::string>()];
+    out[keys[i]] = std::move(edited);
+  }
+  return out;
+}
+
+std::vector<std::string> FvMaterials::restoreEdits(const Json& state)
+{
+  std::vector<std::string> problems;
+  if(!m_scene || !state.is_object())
+    return problems;
+  const auto keys = materialKeys(*m_scene);
+  for(auto it = state.begin(); it != state.end(); ++it)
+  {
+    const auto at = std::find(keys.begin(), keys.end(), it.key());
+    if(at == keys.end())
+    {
+      problems.push_back("material " + it.key() + " not found");
+      continue;
+    }
+    try
+    {
+      set({{"material", int(at - keys.begin())}, {"values", it.value()}});
+    }
+    catch(const std::exception& e)
+    {
+      problems.push_back("material " + it.key() + ": " + e.what());
+    }
+  }
+  return problems;
 }
 
 void FvMaterials::surfacesChanged(const std::set<int>& materials)

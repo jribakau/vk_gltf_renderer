@@ -89,6 +89,12 @@ public:
   fv::Json set(const fv::Json& args);
   fv::Json reset(const fv::Json& args);
 
+  // The edits of every material that has any, by "<name>" or "<name>#n" (the n-th material of that
+  // name), as material.set values: for a scene file.
+  fv::Json editState() const;
+  // Puts such edits back; returns what could not be: materials that are not there any more.
+  std::vector<std::string> restoreEdits(const fv::Json& state);
+
   // Surfaces that were parsed again (a material preset): lowers them and publishes.
   void surfacesChanged(const std::set<int>& materials);
   // Real-time and RTX shade skin differently; lowers the materials that differ.
