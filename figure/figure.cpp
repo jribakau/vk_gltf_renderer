@@ -451,7 +451,7 @@ std::string withoutValue(std::string prop)
 
 }  // namespace
 
-PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc)
+PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc, const std::function<std::string(const std::string&)>& channelOf)
 {
   PosePresetResult result;
   if(!pose)
@@ -503,9 +503,16 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
     {
       if(prop != "value")
         continue;
-      const morph::Channel* ch = morphs ? morphs->channel(modifier) : nullptr;
+      // the figure's dial of that name, or the one a worn item made for it
+      std::string           name = modifier;
+      const morph::Channel* ch   = morphs ? morphs->channel(name) : nullptr;
+      if(!ch && morphs && channelOf)
+      {
+        name = channelOf(modifier);
+        ch   = name.empty() ? nullptr : morphs->channel(name);
+      }
       if(ch)
-        morphValues.emplace_back(modifier, *value);
+        morphValues.emplace_back(name, *value);
       else if(*value != 0)
         result.skipped.push_back(modifier);
       continue;
@@ -538,7 +545,13 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
 
 PosePresetResult Figure::applyPosePreset(const dson::Json& doc)
 {
-  return fv::applyPosePreset(pose.get(), morphs.get(), doc);
+  return fv::applyPosePreset(pose.get(), morphs.get(), doc, [this](const std::string& id) -> std::string {
+    // a worn item's dial: "Loosen Neck" is stored as "<id>@<item key>"
+    for(const WornItem& i : items)
+      if(morphs->channel(id + "@" + i.key))
+        return id + "@" + i.key;
+    return {};
+  });
 }
 
 }  // namespace fv

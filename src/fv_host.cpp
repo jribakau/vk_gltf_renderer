@@ -1112,21 +1112,21 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
     job(jobId, {{"state", "done"}, {"preset", kind}});
     return;
   }
-  if(kind == "pose preset")
+  if(kind == "pose preset" || kind == "shape preset" || kind == "property preset")
   {
     if(!figure || !figure->fig->pose)
-      notice(name + " is a DAZ pose preset. Load a DAZ figure first, then open the pose.");
+      notice(name + " is a DAZ " + kind + ". Load a DAZ figure first, then open it.");
     else
     {
       const fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
       morphTouched                 = true;
       protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
       if(!r.applied)
-        notice(name + ": nothing in this pose matches the loaded figure.");
+        notice(name + ": nothing in this " + kind + " matches the loaded figure.");
       else if(!r.skipped.empty())
-        notice("Applied pose " + name + ". " + std::to_string(r.skipped.size()) + " pose controls aren't supported yet and were skipped.", "info");
+        notice("Applied " + name + ". " + std::to_string(r.skipped.size()) + " of its controls aren't on this figure and were skipped.", "info");
       else
-        notice("Applied pose " + name, "info");
+        notice("Applied " + name, "info");
     }
   }
   else if(kind == "material preset")

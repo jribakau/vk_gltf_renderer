@@ -33,7 +33,9 @@ struct PosePresetResult
 // Applies a DAZ pose preset (.duf `scene.animations`) to a rig and its morphs: the last key of each
 // animation, `name://@selection` urls and hierarchical `#bone?rotation/x/value` urls. Figure::applyPosePreset
 // is this, on the figure's own pose and morphs.
-PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc);
+// `channelOf` finds the dial a modifier id means when the figure has none of that name (a worn item's).
+PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc,
+                                 const std::function<std::string(const std::string&)>& channelOf = {});
 
 // What the figure wears: one wearable's nodes, which go on and come off together. Items that came
 // with the scene file are listed too, with no library path.
