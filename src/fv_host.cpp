@@ -207,7 +207,14 @@ std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> librar
     const auto r   = std::filesystem::weakly_canonical(root, ec);
     const auto rel = abs.lexically_relative(r);
     if(!rel.empty() && *rel.begin() != "..")
-      return std::make_pair(s.roots, utf8Of(rel));
+    {
+      // the file's own library first, then the other content folders for whatever it references
+      std::vector<std::filesystem::path> roots{root};
+      for(const auto& other : s.roots)
+        if(other != root)
+          roots.push_back(other);
+      return std::make_pair(roots, utf8Of(rel));
+    }
   }
   auto dir = abs.parent_path();
   for(int i = 0; i < 8 && !dir.empty(); i++, dir = dir.parent_path())
@@ -324,18 +331,31 @@ struct FvHost::Impl
 
 Json FvHost::Impl::load(const Json& args)
 {
-  const std::string path = args.at("path").get<std::string>();
-  HostSettings          s;
+  HostSettings s;
   {
     std::lock_guard lock(settingsMutex);
     s = settings;
   }
-  auto library = libraryFor(s, pathOf(path));
-  if(!library)
-    throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
-  const uint64_t generation = ++loadGeneration;
-  const uint64_t jobId      = ++jobs;
-  const std::string label   = "Loading " + utf8Of(pathOf(path).filename());
+  // an absolute path, or a path in the content folders (a library item)
+  std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;
+  std::string                                                              name;
+  if(args.contains("rel"))
+  {
+    const std::string rel = args["rel"].get<std::string>();
+    library               = std::make_pair(s.roots, rel);
+    name                  = rel;
+  }
+  else
+  {
+    const std::string path = args.at("path").get<std::string>();
+    library                = libraryFor(s, pathOf(path));
+    if(!library)
+      throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
+    name = path;
+  }
+  const uint64_t    generation = ++loadGeneration;
+  const uint64_t    jobId      = ++jobs;
+  const std::string label      = "Loading " + utf8Of(pathOf(name).filename());
   job(jobId, {{"label", label}, {"state", "running"}});
 
   std::lock_guard lock(loadMutex);
@@ -585,6 +605,14 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
       impl->frameCamera();
       return Json{{"ok", true}};
     });
+  });
+  // a clean exit (DLSS/NGX shut down), which the host asks for before it ends the process
+  cmds.add("session.shutdown", [impl](const Json&) {
+    impl->post([impl] {
+      if(impl->app)
+        impl->app->close();
+    });
+    return Json{{"ok", true}};
   });
   s.protocol->setInputSink([impl](const Json& events) {
     std::lock_guard lock(impl->inputMutex);

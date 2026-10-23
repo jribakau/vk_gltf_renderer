@@ -30,11 +30,12 @@
 //
 // Commands (args):
 //   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision}
-//   load            {path}                       -> {job}; the figure replaces the scene when done
+//   load            {path} or {rel}              -> {job}; the figure replaces the scene when done
 //   pose.set        {figure, values: {"bone/kind/axis": value}}
 //   pose.reset      {figure}
 //   render.mode     {mode: "raster" | "rtx"}
 //   camera.frame    {}
+//   session.shutdown {}                          a clean exit, before the host ends the process
 //
 // Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "render".
 //
