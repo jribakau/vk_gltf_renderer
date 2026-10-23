@@ -172,32 +172,67 @@ std::string mimeOf(const std::string& path)
   return "image/jpeg";
 }
 
-// Where a cooked texture is: the texture server cooks it (BC7 KTX2, flipped for the DSON UVs,
-// cutout folded into alpha) and answers with the file's path.
-std::optional<fv::build::TextureImage> cookedTexture(const HostSettings& s, const fv::build::TextureRequest& req)
+// Whether the renderer reads this image itself (else only the cooker can: .tif, .bmp, ...).
+bool readable(const std::string& path)
+{
+  std::string ext = path.substr(path.find_last_of('.') + 1);
+  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp";
+}
+
+struct CookedTexture
+{
+  std::optional<fv::build::TextureImage> image;
+  bool                                   uncooked = false;  // asked cachedOnly, and not cooked yet
+};
+
+// Where a cooked texture is (BC7 KTX2, cutout folded into alpha, rows bottom-up for the DSON UVs
+// when `flip`). The texture server cooks it first, which takes seconds per 4K map; `cachedOnly`
+// answers at once instead, `uncooked` when it isn't cooked.
+CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureRequest& req, bool flip, bool cachedOnly, bool quiet = false)
 {
   // http://127.0.0.1:<port>/<token>
   const std::string& base = s.texServer;
   const size_t       hostAt = base.find("://");
   const size_t       pathAt = base.find('/', hostAt == std::string::npos ? 0 : hostAt + 3);
   if(hostAt == std::string::npos || pathAt == std::string::npos)
-    return std::nullopt;
+    return {};
   httplib::Client cli(base.substr(0, pathAt));
-  cli.set_read_timeout(120s);
+  cli.set_read_timeout(cachedOnly ? 30s : 600s);
   std::string url = base.substr(pathAt) + "/" + s.rootId + "/" + encodeRel(normRel(req.rel)) + "?srgb=" + (req.srgb ? "1" : "0")
-                    + "&flip=1&max=" + std::to_string(s.maxTextureSize);
+                    + "&flip=" + (flip ? "1" : "0") + "&max=" + std::to_string(s.maxTextureSize);
   if(req.normal)
     url += "&nm=1";
   if(!req.alphaRel.empty())
     url += "&alpha=" + encodeComponent(s.rootId + "/" + normRel(req.alphaRel));
-  url += "&path=1";
+  url += cachedOnly ? "&path=1&cached=1" : "&path=1";
   auto res = cli.Get(url);
+  if(res && res->status == 202 && cachedOnly)
+    return {.uncooked = true};
   if(!res || res->status != 200)
   {
-    LOGW("texture %s: %s\n", req.rel.c_str(), res ? (std::to_string(res->status) + " " + res->body).c_str() : "no answer");
-    return std::nullopt;
+    if(!quiet)
+      LOGW("texture %s: %s\n", req.rel.c_str(), res ? (std::to_string(res->status) + " " + res->body).c_str() : "no answer");
+    return {};
   }
-  return fv::build::TextureImage{uriOfPath(res->body), "image/ktx2", true};
+  return {.image = fv::build::TextureImage{uriOfPath(res->body), "image/ktx2", flip}};
+}
+
+// Cooks textures for a later load, on a thread of its own: a figure shows with its source images
+// rather than wait for these.
+void cookLater(const HostSettings& s, std::vector<fv::build::TextureRequest> requests)
+{
+  std::thread([s, requests = std::move(requests)] {
+    std::atomic<size_t>      next{0};
+    std::vector<std::thread> workers;
+    for(int w = 0; w < std::min<int>(4, int(requests.size())); w++)
+      workers.emplace_back([&] {
+        for(size_t i; (i = next++) < requests.size();)
+          cookedTexture(s, requests[i], true, false, true);
+      });
+    for(auto& w : workers)
+      w.join();
+  }).detach();
 }
 
 // The source image as it is, for a renderer without a texture server (tests, a standalone run).
@@ -440,21 +475,44 @@ Json FvHost::Impl::load(const Json& args)
       auto& root = f->loaded.scene.nodes[f->loaded.root];
       root.scale = root.scale * kCentimetre;
 
-      // textures: every one the build asks for, resolved in parallel
-      const bool cooked = !s.texServer.empty() && !s.rootId.empty();
+      // textures: every one the build asks for, resolved in parallel. The cooked ones when all are
+      // cooked; the build flips the UVs for every texture or none, so otherwise the source images,
+      // with cutouts (only the cooker folds them into alpha) and .tif and such cooked unflipped.
+      job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
+      bool cooked = !s.texServer.empty() && !s.rootId.empty();
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
       {
-        const auto                                                requests = fv::build::textureRequests(f->loaded.scene);
-        std::atomic<size_t>                                       next{0};
-        std::vector<std::optional<fv::build::TextureImage>>      found(requests.size());
-        std::vector<std::thread>                                  workers;
-        for(int w = 0; w < std::min<int>(8, int(requests.size())); w++)
-          workers.emplace_back([&] {
-            for(size_t i; (i = next++) < requests.size();)
-              found[i] = cooked ? cookedTexture(s, requests[i]) : sourceTexture(*lib, requests[i]);
+        const auto                                          requests = fv::build::textureRequests(f->loaded.scene);
+        std::vector<std::optional<fv::build::TextureImage>> found(requests.size());
+        std::atomic<bool>                                   uncooked{false};
+        const auto resolve = [&](const std::function<std::optional<fv::build::TextureImage>(const fv::build::TextureRequest&)>& one) {
+          std::atomic<size_t>      next{0};
+          std::vector<std::thread> workers;
+          for(int w = 0; w < std::min<int>(8, int(requests.size())); w++)
+            workers.emplace_back([&] {
+              for(size_t i; (i = next++) < requests.size();)
+                found[i] = one(requests[i]);
+            });
+          for(auto& w : workers)
+            w.join();
+        };
+        if(cooked)
+          resolve([&](const fv::build::TextureRequest& req) {
+            CookedTexture c = cookedTexture(s, req, true, true);
+            if(c.uncooked)
+              uncooked = true;
+            return c.image;
           });
-        for(auto& w : workers)
-          w.join();
+        if(!cooked || uncooked)
+        {
+          resolve([&](const fv::build::TextureRequest& req) {
+            const bool cook = cooked && (!req.alphaRel.empty() || !readable(req.rel));
+            return cook ? cookedTexture(s, req, false, false).image : sourceTexture(*lib, req);
+          });
+          if(cooked)
+            cookLater(s, requests);
+          cooked = false;
+        }
         for(size_t i = 0; i < requests.size(); i++)
           images[fv::build::requestKey(requests[i])] = found[i];
       }
