@@ -67,6 +67,7 @@ set(TEST_SOURCES
     test_blob_store.cpp
     # Figure Viewer scene logic (figure/)
     figure/test_gzip.cpp
+    figure/test_catmark.cpp
     # Figure Viewer host protocol: commands and the event stream, without a server
     test_fv_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_events.cpp
@@ -114,6 +115,8 @@ add_executable(${TEST_NAME} ${TEST_SOURCES})
 # Add compile definitions for tinygltf
 target_compile_definitions(${TEST_NAME} PRIVATE
     GLTF_SAMPLE_ASSETS_PATH="${GLTF_SAMPLE_ASSETS_PATH}"
+    # the figure library's fixtures (DAZ library, subdivision references)
+    FV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/figure/data"
 )
 
 # Add Draco support if enabled
