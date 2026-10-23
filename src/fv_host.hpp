@@ -38,6 +38,12 @@
 //   morph.reset     {figure}
 //   render.mode     {mode: "raster" | "rtx"}
 //   material.set    {material, values}           edit a surface (fv_materials.hpp); material.reset {material?}
+//   wear            {rel | path}                 put a wearable on the loaded figure -> {job}
+//   wardrobe.remove {item}, wardrobe.visible {item, visible}
+//   dforce.enable   {on}; dforce.resimulate      cloth drapes over the body (figure/dforce)
+//   scene.state / scene.restore                  a scene file's contents: source, worn, dials, pose, material edits
+//   anim.select|play|pause|stop|seek|speed|loop  the clips of an imported glTF or OBJ model
+//   export.glb      {path, ...}                  a GLB of the figure (or the imported model) -> {job}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
@@ -52,7 +58,8 @@
 // applied by `load` to the figure already loaded; other presets are reported and left alone.
 //
 // Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "morphs/<figure>", "render",
-// "selection", "materials" (fv_materials.hpp), "lighting" (the lighting.set shape, plus read-only env.name, env.size, env.loading). "pose/<figure>" carries `eyes` (whether the figure can look at the camera).
+// "selection", "materials" (fv_materials.hpp), "wardrobe", "dforce" ({figure, enabled, active, busy, draped}),
+// "animation" (clips and playback of an imported model), "lighting" (the lighting.set shape, plus read-only env.name, env.size, env.loading). "pose/<figure>" carries `eyes` (whether the figure can look at the camera).
 // "morphs/<figure>" is the visible channels ({label, group, value, min, max, weight, order}); a new
 // channel list replaces it, and value or weight changes arrive as a merge patch. A figure's busy()
 // line is a "jobs" entry, and takeWarnings() goes to "notices".
