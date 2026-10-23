@@ -3820,6 +3820,58 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
   return true;
 }
 
+bool GltfRenderer::loadModel(tinygltf::Model&& model)
+{
+  if(!m_app)
+    return false;
+  // the teardown loadSceneFile runs, for the same reasons
+  vkQueueWaitIdle(m_app->getQueue(0).queue);
+  m_loadPipeline.clear();
+  cleanupScene(/*keepImagesForReuse=*/true);
+  m_sceneSelection.clearSelection();
+  m_resources.selectedRenderNodes.clear();
+
+  auto scn = std::make_unique<nvvkgltf::Scene>();
+  scn->supportedExtensions().insert(EXT_TEXTURE_WEBP_EXTENSION_NAME);
+  scn->takeModel(std::move(model));
+  if(!scn->valid())
+  {
+    LOGW("The model a host built is not a valid scene\n");
+    m_resources.sceneVk.releaseRetainedImages();
+    return false;
+  }
+  m_resources.scene = std::move(scn);
+  finalizeSceneSetup({});
+  return true;
+}
+
+void GltfRenderer::setNodeTransforms(std::span<const NodeTransform> transforms)
+{
+  nvvkgltf::Scene* scn = m_resources.getScene();
+  if(!scn || !scn->valid())
+    return;
+  const int nodeCount = int(scn->getModel().nodes.size());
+  bool      any       = false;
+  for(const NodeTransform& t : transforms)
+  {
+    if(t.node < 0 || t.node >= nodeCount)
+      continue;
+    scn->editor().setNodeTRS(t.node, t.translation, t.rotation, t.scale);
+    scn->markSkinsBelowRtxDirty(t.node);
+    any = true;
+  }
+  if(any && scn->animation().hasSkinning())
+    requestAnimationReconcile();
+}
+
+void GltfRenderer::setRenderSystem(RenderingMode mode)
+{
+  if(m_resources.settings.renderSystem == mode)
+    return;
+  m_resources.settings.renderSystem = mode;
+  resetFrame();
+}
+
 //--------------------------------------------------------------------------------------------------
 // Programmatic merge for a host that adds objects to the scene it mirrors (see the header). The
 // interactive merge (addSceneFromFile) runs on a worker behind the busy indicator; a host needs the

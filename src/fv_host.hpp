@@ -1,0 +1,63 @@
+/*
+ * Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#pragma once
+
+//
+// The Figure Viewer's scene, hosted in the renderer: DAZ figures load here (figure/), are built
+// into the renderer's glTF scene, and are posed, morphed and dressed here, while the UI only sends
+// commands and shows the streamed frames (fv_protocol.hpp). One element per renderer.
+//
+// Threads: a load runs on a worker; everything that touches the renderer's scene or the loaded
+// figure runs on the application thread, in onUpdate, before the frame renders. Commands that need
+// the scene wait for that (a frame at most); the rest answer on the HTTP thread.
+//
+// Commands (args):
+//   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision}
+//   load            {path}                       -> {job}; the figure replaces the scene when done
+//   pose.set        {figure, values: {"bone/kind/axis": value}}
+//   pose.reset      {figure}
+//   render.mode     {mode: "raster" | "rtx"}
+//   camera.frame    {}
+//
+// Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "render".
+//
+
+#include <memory>
+#include <string>
+
+#include <nvapp/application.hpp>
+
+class GltfRenderer;
+class FvProtocol;
+
+class FvHost : public nvapp::IAppElement
+{
+public:
+  FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol);
+  ~FvHost() override;
+
+  void onAttach(nvapp::Application* app) override;
+  void onDetach() override;
+  void onUpdate() override;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> m_impl;
+};

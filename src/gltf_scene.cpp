@@ -1714,6 +1714,36 @@ void nvvkgltf::Scene::markRenderNodeRtxDirtyForMaterials(const std::unordered_se
     m_dirtyFlags.renderNodesRtx.insert(rn);
 }
 
+void nvvkgltf::Scene::markSkinRenderNodesRtxDirty(int skin)
+{
+  const auto& renderNodes = getRenderNodes();
+  for(size_t rn = 0; rn < renderNodes.size(); rn++)
+    if(renderNodes[rn].skinID == skin)
+      markRenderNodeDirty(int(rn), /*forVk=*/false, /*forRtx=*/true);
+}
+
+void nvvkgltf::Scene::markSkinsBelowRtxDirty(int node)
+{
+  std::vector<bool> below(m_model.nodes.size(), false);
+  std::vector<int>  stack{node};
+  while(!stack.empty())
+  {
+    const int n = stack.back();
+    stack.pop_back();
+    if(n < 0 || n >= int(below.size()) || below[n])
+      continue;
+    below[n] = true;
+    stack.insert(stack.end(), m_model.nodes[n].children.begin(), m_model.nodes[n].children.end());
+  }
+  for(size_t s = 0; s < m_model.skins.size(); s++)
+    for(int joint : m_model.skins[s].joints)
+      if(joint >= 0 && joint < int(below.size()) && below[joint])
+      {
+        markSkinRenderNodesRtxDirty(int(s));
+        break;
+      }
+}
+
 // Set the default names for the scene elements if they are empty
 void nvvkgltf::Scene::setSceneElementsDefaultNames()
 {

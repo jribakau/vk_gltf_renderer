@@ -338,6 +338,24 @@ public:
   /// parse, where main() does the load itself). Application thread only.
   [[nodiscard]] bool loadHdrEnvironment(const std::filesystem::path& filename);
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);
+  /// Replace the scene with a model a host built in memory (the Figure Viewer, fv_host.hpp), as
+  /// loadSceneFile does with a file: synchronous, application thread only. Image URIs are absolute.
+  [[nodiscard]] bool loadModel(tinygltf::Model&& model);
+
+  /// New local transforms for nodes of the loaded scene, as a host poses a figure: skins re-run and
+  /// every skin with a joint at or below a moved node refits. Application thread only.
+  struct NodeTransform
+  {
+    int       node = -1;
+    glm::vec3 translation{0.f};
+    glm::quat rotation{1.f, 0.f, 0.f, 0.f};
+    glm::vec3 scale{1.f};
+  };
+  void setNodeTransforms(std::span<const NodeTransform> transforms);
+
+  /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
+  void          setRenderSystem(RenderingMode mode);
+  RenderingMode renderSystem() const { return m_resources.settings.renderSystem; }
 
   // The tonemapped output and its size, for the headless frame stream (src/frame_stream.hpp). The
   // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.

@@ -465,42 +465,6 @@ Json opSetMaterial(Ctx& c, const Json& op)
   return {{"material", idx}};
 }
 
-// The render nodes drawn with `skin`: their skinned geometry moves, so the TLAS needs their
-// instances refit to the BLAS's new bounds.
-void markSkinRenderNodes(Ctx& c, int skin)
-{
-  const auto& renderNodes = c.scene.getRenderNodes();
-  for(size_t rn = 0; rn < renderNodes.size(); rn++)
-    if(renderNodes[rn].skinID == skin)
-      c.scene.markRenderNodeDirty(int(rn), /*forVk=*/false, /*forRtx=*/true);
-}
-
-// A transform on `node` moves every joint at or below it: the skins using any of them deform.
-// Moving a bone marks no render node by itself (bones have no mesh), so without this the TLAS
-// would keep the rest-pose boxes and rays would miss whatever was posed out of them.
-void markSkinsBelow(Ctx& c, int node)
-{
-  const tinygltf::Model& model = c.scene.getModel();
-  std::vector<bool>      below(model.nodes.size(), false);
-  std::vector<int>       stack{node};
-  while(!stack.empty())
-  {
-    const int n = stack.back();
-    stack.pop_back();
-    if(n < 0 || n >= int(below.size()) || below[n])
-      continue;
-    below[n] = true;
-    stack.insert(stack.end(), model.nodes[n].children.begin(), model.nodes[n].children.end());
-  }
-  for(size_t s = 0; s < model.skins.size(); s++)
-    for(int joint : model.skins[s].joints)
-      if(joint >= 0 && joint < int(below.size()) && below[joint])
-      {
-        markSkinRenderNodes(c, int(s));
-        break;
-      }
-}
-
 Json opSetNode(Ctx& c, const Json& op)
 {
   tinygltf::Model& model = c.scene.getModel();
@@ -532,7 +496,7 @@ Json opSetNode(Ctx& c, const Json& op)
     // Joints (or anything above them) moved: skinning and the skinned BLAS must be recomputed.
     if(c.scene.animation().hasSkinning())
     {
-      markSkinsBelow(c, idx);
+      c.scene.markSkinsBelowRtxDirty(idx);
       c.renderer.requestAnimationReconcile();
     }
   }
@@ -796,7 +760,7 @@ Json opSetSkin(Ctx& c, const Json& op)
   std::memcpy(ibm.data(), bytes.data(), bytes.size());
   if(!c.scene.animation().setInverseBindMatrices(skin, ibm))
     fail("got " + std::to_string(ibm.size()) + " matrices, the skin has " + std::to_string(model.skins[skin].joints.size()) + " joints");
-  markSkinRenderNodes(c, skin);
+  c.scene.markSkinRenderNodesRtxDirty(skin);
   c.renderer.requestAnimationReconcile();
   return {{"skin", skin}, {"joints", ibm.size()}};
 }

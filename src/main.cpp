@@ -47,6 +47,7 @@
 #include "ui_dock_layout.hpp"
 #include "mcp_timing.hpp"
 #include "frame_stream.hpp"
+#include "fv_host.hpp"
 #include "fv_protocol.hpp"
 #include "mcp_scene.hpp"
 
@@ -633,6 +634,8 @@ auto main(int argc, char** argv) -> int
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
+      // the Figure Viewer's scene, driven over the protocol the stream serves
+      app.addElement(std::make_shared<FvHost>(r, protocol));
       // a traced live edit is logged once the frame showing it is encoded
       r->setEditTraceSink([weak = std::weak_ptr<FrameStream>(frameStream)](LatencyTrace t) {
         if(auto fs = weak.lock())

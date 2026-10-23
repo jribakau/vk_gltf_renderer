@@ -605,6 +605,13 @@ public:
   void markNodeDirty(int nodeIndex);
   void markSamplerDirty(int samplerIndex);  // In-place wrap/filter edit; SceneVk updates the VkSampler only
   void markRenderNodeRtxDirtyForMaterials(const std::unordered_set<int>& materialIds);  // For TLAS instance flags
+  // The render nodes drawn with `skin`: their skinned geometry moves, so the TLAS refits their
+  // instances to the BLAS's new bounds.
+  void markSkinRenderNodesRtxDirty(int skin);
+  // A transform on `node` moves every joint at or below it: the skins using any of them deform.
+  // Moving a bone marks no render node by itself (bones have no mesh), so without this the TLAS
+  // would keep the rest-pose boxes and rays would miss whatever was posed out of them.
+  void markSkinsBelowRtxDirty(int node);
 
 private:
   friend class SceneEditor;
