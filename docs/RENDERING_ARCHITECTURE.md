@@ -617,7 +617,12 @@ The BLAS array is stable across hierarchy-only edits (reparent, duplicate, delet
 existing meshes). It is rebuilt when the deduplicated primitive set changes
 (`primitivesChanged`), and individual BLAS may be *updated* in place for animated
 geometry (skinning / morph via `SceneRtx::updateBottomLevelAS()`). The TLAS is rebuilt
-or updated when instances move, appear, or disappear.
+or updated when instances move, appear, or disappear, and also when a refit BLAS changes its
+bounds: the instances drawing deformed geometry must be marked RTX-dirty, or the TLAS keeps their
+old boxes and rays miss whatever deformed out of them. Animation playback marks the skinned nodes
+whose joints moved (`AnimationSystem::updateAnimation`); host edits mark them in `mcp_scene.cpp`
+(`set_node` for skins with a joint at or below the moved node, `set_skin`, `set_morph_weights`
+and vertex uploads for their own primitives).
 
 Animated scenes build their BLAS with `ALLOW_UPDATE` and skip compaction; only static scenes
 compact (see `GltfRenderer::buildAccelerationStructures()`). Vulkan permits compacting an
