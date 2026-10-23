@@ -89,6 +89,9 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   shaders and time a GPU pass, so an agent can measure a shader change. Loading
   and every other setting go through the parameter registry instead. Built only
   when `NVPRO2_ENABLE_nvmcp` is on. See [docs/mcp.md](docs/mcp.md).
+- `figure/` (target `fv_figure`, Vulkan-free) and `src/fv_*` — the Figure Viewer's native scene: DAZ figures, morphs,
+  posing, wardrobe, materials, dForce and GLB export, hosted in the renderer and driven over a loopback protocol.
+  The design and per-phase status live in the `daz-viewer` repo's `docs/native-scene.md`.
 - `src/dlss*`, `src/optix_denoiser*`, `src/vk_cuda*` — AI denoisers + CUDA interop.
 - `src/gizmo_*` — transform gizmo, grid, overlays.
 - `shaders/*.slang` + `shaders/shaderio.h` — GPU code and host/device structs.
