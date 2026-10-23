@@ -43,6 +43,8 @@ struct BuildOptions
   bool texturesFlipped = false;
   // How skin is sent to the path tracer.
   mat::SkinMode skin = mat::SkinMode::eVolume;
+  // A file for other tools (see mat::LowerOptions::forFile).
+  bool forFile = false;
   // The scene's camera exposure, which sets how bright Iray emitters are.
   double exposureValue = 13, iso = 100;
 };

@@ -39,6 +39,9 @@ struct LowerOptions
   float emission = 1;
   // Hair: the anisotropy rotation measured from the cards, in the renderer's convention.
   std::optional<float> anisotropyRotation;
+  // A file for other tools: cutouts are MASK (they sort blended surfaces), the renderer's own
+  // extensions are left out and the anisotropy turns the way the spec's does.
+  bool forFile = false;
 };
 
 // The values the Material panel shows for a surface: what the lowering used, edits included.

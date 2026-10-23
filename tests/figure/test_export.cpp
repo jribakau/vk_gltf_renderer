@@ -1,0 +1,103 @@
+// The GLB export composes each texture a material asks for as the texture cooker does: green
+// inverted for a normal map, the cutout folded into alpha, rows bottom-up.
+
+#include <gtest/gtest.h>
+
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb/stb_image.h>
+#include <stb/stb_image_write.h>
+
+#include <filesystem>
+#include <map>
+
+#include <figure/gltf/export_glb.hpp>
+
+namespace {
+
+namespace fs = std::filesystem;
+
+struct Dir
+{
+  fs::path path = fs::temp_directory_path() / "fv_test_export";
+  Dir() { fs::create_directories(path); }
+  ~Dir() { std::error_code ec; fs::remove_all(path, ec); }
+  // a 2 x 2 image, each pixel an RGBA
+  std::string write(const std::string& name, const std::vector<uint8_t>& rgba) const
+  {
+    const std::string file = (path / name).generic_string();
+    stbi_write_png(file.c_str(), 2, 2, 4, rgba.data(), 8);
+    return name;
+  }
+};
+
+std::vector<uint8_t> decoded(const std::vector<uint8_t>& png, int* channels = nullptr)
+{
+  int w, h, n;
+  unsigned char* d = stbi_load_from_memory(png.data(), int(png.size()), &w, &h, &n, 4);
+  EXPECT_NE(d, nullptr);
+  EXPECT_EQ(w, 2);
+  std::vector<uint8_t> out(d, d + 16);
+  stbi_image_free(d);
+  if(channels)
+    *channels = n;
+  return out;
+}
+
+TEST(Export, ANormalMapGetsItsGreenInvertedAndItsRowsFlipped)
+{
+  Dir  dir;
+  // top row: (10, 20, 30), (40, 50, 60); bottom row: (70, 80, 90), (100, 110, 120)
+  const auto rel = dir.write("n.png", {10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255});
+  fv::build::ExportOptions options;
+  options.find = [&](const std::string& r) -> std::optional<fs::path> { return dir.path / r; };
+  fv::mat::TextureRequest req;
+  req.rel      = rel;
+  req.srgb     = false;
+  req.channels = "ng";
+  const auto png = fv::build::composeImage(req, options);
+  ASSERT_TRUE(png);
+  const auto px = decoded(*png);
+  // rows swapped: the first pixel is the old bottom-left, green inverted
+  EXPECT_EQ(px[0], 70);
+  EXPECT_EQ(px[1], 255 - 80);
+  EXPECT_EQ(px[2], 90);
+  EXPECT_EQ(px[8], 10);
+  EXPECT_EQ(px[9], 255 - 20);
+}
+
+TEST(Export, ACutoutMapBecomesTheAlphaOfTheBaseColour)
+{
+  Dir  dir;
+  const auto base  = dir.write("b.png", {200, 100, 50, 255, 200, 100, 50, 255, 200, 100, 50, 255, 200, 100, 50, 255});
+  const auto alpha = dir.write("a.png", {0, 0, 0, 255, 0, 128, 0, 255, 0, 255, 0, 255, 0, 64, 0, 255});
+  fv::build::ExportOptions options;
+  options.find = [&](const std::string& r) -> std::optional<fs::path> { return dir.path / r; };
+  fv::mat::TextureRequest req;
+  req.rel      = base;
+  req.alphaRel = alpha;
+  const auto png = fv::build::composeImage(req, options);
+  ASSERT_TRUE(png);
+  const auto px = decoded(*png);
+  // rows flipped: the bottom row of the cutout comes first; alpha is its green channel
+  EXPECT_EQ(px[3], 255);
+  EXPECT_EQ(px[7], 64);
+  EXPECT_EQ(px[11], 0);
+  EXPECT_EQ(px[15], 128);
+  EXPECT_EQ(px[0], 200);
+}
+
+TEST(Export, AMissingSourceSaysSo)
+{
+  fv::build::ExportOptions options;
+  options.find = [](const std::string&) -> std::optional<fs::path> { return std::nullopt; };
+  fv::mat::TextureRequest req;
+  req.rel = "nowhere.png";
+  std::string why;
+  EXPECT_FALSE(fv::build::composeImage(req, options, &why));
+  EXPECT_NE(why.find("nowhere.png"), std::string::npos);
+}
+
+}  // namespace

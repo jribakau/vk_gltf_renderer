@@ -48,6 +48,7 @@
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
+#include <figure/gltf/export_glb.hpp>
 #include <figure/gltf/gltf_build.hpp>
 
 #include "env_image_loader.hpp"
@@ -503,6 +504,7 @@ struct FvHost::Impl
   Json animationCommand(const std::string& cmd, const Json& args);
   Json lastAnimation;
   std::chrono::steady_clock::time_point animationAt{};
+  Json exportGlb(const Json& args);
   Json sceneState();
   Json sceneRestore(const Json& args);
   std::mutex wearMutex;
@@ -1225,6 +1227,53 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
     ctrl.loop = args.at("loop").get<bool>();
   publishAnimation(true);
   return {{"ok", true}};
+}
+
+// The figure as a GLB for other tools, as it stands: pose, dials, worn items and material edits.
+// The glTF is built here (the scene belongs to this thread); composing the textures, which takes
+// the time, and writing the file run on a worker.
+Json FvHost::Impl::exportGlb(const Json& args)
+{
+  if(!figure)
+    throw std::runtime_error("Open a figure first: there is nothing to export.");
+  const std::string                  path = args.at("path").get<std::string>();
+  std::shared_ptr<fv::dson::Library> lib;
+  {
+    std::lock_guard lock(settingsMutex);
+    lib = libraryOfFigure;
+  }
+  auto              prepared = std::make_shared<fv::build::GlbExport>(fv::build::prepareGlb(figure->fig->loaded.scene, figure->fig->loaded.root));
+  const uint64_t    jobId    = ++jobs;
+  const std::string label    = "Exporting " + utf8Of(pathOf(path).filename());
+  job(jobId, {{"label", label}, {"state", "running"}});
+  std::lock_guard lock(loadMutex);
+  loaders.emplace_back([this, prepared, lib, path, jobId, label] {
+    try
+    {
+      fv::build::ExportOptions options;
+      options.find = [lib](const std::string& rel) -> std::optional<std::filesystem::path> {
+        if(!lib)
+          return std::nullopt;
+        std::string r = fv::dson::decodeUri(rel);
+        std::replace(r.begin(), r.end(), '\\', '/');
+        const size_t at = r.find_first_not_of('/');
+        return lib->find(at == std::string::npos ? std::string() : r.substr(at));
+      };
+      const auto notes = fv::build::finishGlb(*prepared, pathOf(path), options);
+      for(size_t i = 0; i < notes.size() && i < 5; i++)
+        notice("Export: " + notes[i]);
+      if(notes.size() > 5)
+        notice("Export: " + std::to_string(notes.size() - 5) + " more textures could not be made");
+      job(jobId, {{"label", label}, {"state", "done"}});
+      notice("Exported " + utf8Of(pathOf(path).filename()) + (notes.empty() ? "" : " with " + std::to_string(notes.size()) + " textures replaced by neutral ones"), "info");
+    }
+    catch(const std::exception& e)
+    {
+      job(jobId, {{"label", label}, {"state", "failed"}, {"error", e.what()}});
+      notice(std::string("Export failed: ") + e.what(), "error");
+    }
+  });
+  return {{"job", jobId}};
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1979,6 +2028,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
       return impl->onApp([impl, cmd, args] { return impl->animationCommand(cmd, args); });
     });
+  cmds.add("export.glb", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->exportGlb(args); }); });
   cmds.add("scene.state", [impl](const Json&) { return impl->onApp([impl] { return impl->sceneState(); }); });
   cmds.add("scene.restore", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->sceneRestore(args); }); });
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });

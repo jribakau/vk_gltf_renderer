@@ -114,7 +114,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   // which is alpha hashing by another name, so they keep their soft edges. Refractive surfaces
   // (corneas) go out opaque with transmission doing the work.
   const bool hashed = !s.opacity.map.empty() || (s.opacity.value < 1 && !refractive);
-  std::string alphaMode = hashed ? "BLEND" : "OPAQUE";
+  std::string alphaMode = hashed ? (opts.forFile ? "MASK" : "BLEND") : "OPAQUE";
   float       opacity   = e.opacity.value_or(s.opacity.value);
   if(refractive && s.opacity.map.empty() && !e.opacity)
   {
@@ -123,7 +123,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   }
   // an inspector edit of the alpha mode: hashed and blended alike are BLEND for this renderer
   if(e.alphaMode)
-    alphaMode = *e.alphaMode == "opaque" ? "OPAQUE" : *e.alphaMode == "cutout" ? "MASK" : "BLEND";
+    alphaMode = *e.alphaMode == "opaque" ? "OPAQUE" : *e.alphaMode == "cutout" ? "MASK" : opts.forFile ? "MASK" : "BLEND";
 
   Effective eff;
   eff.color       = baseColor;
@@ -362,7 +362,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 
   // PBRSkin's detail layer: a tiled normal map in glTF's convention bending the normal on top of the
   // normal map, with a roughness multiplier, under a weight
-  if(s.detail)
+  if(s.detail && !opts.forFile)
   {
     const DetailLayer& d = *s.detail;
     TextureRequest     r;
@@ -383,7 +383,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   // the mesh in the renderer's convention. An authored Glossy Anisotropy of 0 keeps it round.
   if(s.kind == Kind::eHair && opts.anisotropyRotation)
     if(const auto strength = strandStrength(s, roughnessFactor, lobes.glossyShare))
-      ext["KHR_materials_anisotropy"] = {{"anisotropyStrength", *strength}, {"anisotropyRotation", *opts.anisotropyRotation}};
+      ext["KHR_materials_anisotropy"] = {{"anisotropyStrength", *strength}, {"anisotropyRotation", opts.forFile ? -*opts.anisotropyRotation : *opts.anisotropyRotation}};
 
   out["extensions"] = ext;
   return {std::move(out), std::move(b.requests), std::move(eff)};

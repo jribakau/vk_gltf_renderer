@@ -240,6 +240,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   {
     mat::LowerOptions& lo = out.lowering[mi];
     lo.skin               = options.skin;
+    lo.forFile            = options.forFile;
     lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
     // one material on several meshes is one glTF material, so those meshes vote together
     std::vector<mat::StrandVote> votes;
