@@ -1234,9 +1234,18 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
 // the time, and writing the file run on a worker.
 Json FvHost::Impl::exportGlb(const Json& args)
 {
+  const std::string path = args.at("path").get<std::string>();
   if(!figure)
-    throw std::runtime_error("Open a figure first: there is nothing to export.");
-  const std::string                  path = args.at("path").get<std::string>();
+  {
+    // an imported model: the renderer writes its own scene
+    nvvkgltf::Scene* scn = renderer->editScene();
+    if(!scn || !scn->valid())
+      throw std::runtime_error("Open a model first: there is nothing to export.");
+    if(!renderer->save(pathOf(path), true))
+      throw std::runtime_error("the renderer could not write " + path);
+    notice("Exported " + utf8Of(pathOf(path).filename()), "info");
+    return {{"ok", true}};
+  }
   std::shared_ptr<fv::dson::Library> lib;
   {
     std::lock_guard lock(settingsMutex);
@@ -2102,6 +2111,12 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       impl->materials->setSkinMode(impl->skinMode);
       impl->protocol->events().snapshot("render", {{"mode", mode}});
       return Json{{"mode", mode}};
+    });
+  });
+  // whether the renderer is still refining a still, for an image export that waits for it
+  cmds.add("render.status", [impl](const Json&) {
+    return impl->onApp([impl] {
+      return Json{{"refining", impl->renderer->isRefiningStill()}, {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer}};
     });
   });
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingSet(args); }); });
