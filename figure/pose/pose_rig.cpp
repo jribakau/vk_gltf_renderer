@@ -279,6 +279,136 @@ int PoseRig::aimEyes(const Vec3& worldPoint)
   return n;
 }
 
+std::vector<int> PoseRig::setLocalTransform(const std::string& bone, const Quat& q, const std::optional<Vec3>& position)
+{
+  const PoseBone* pb = get(bone);
+  if(!pb)
+    return {};
+  auto drivenOf = [&](ChannelKind kind, const char* axisName) {
+    const auto it = m_driven.find(pb->id + "|" + kindName(kind) + "|" + axisName);
+    return it == m_driven.end() ? 0.0 : it->second;
+  };
+  std::vector<ChannelValue> values;
+  const char*               names[3] = {"x", "y", "z"};
+  // where the bone's Euler is now, formulas included
+  std::array<double, 3> now{};
+  for(int i = 0; i < 3; i++)
+  {
+    const Axis* a = axis(*pb, ChannelKind::eRotation, names[i]);
+    now[i]        = (a ? a->value : 0) + drivenOf(ChannelKind::eRotation, names[i]);
+  }
+  // q = orient · R · orient⁻¹, so the channel Euler is R. R has two Euler forms, (a, b, c) and
+  // (a + 180, 180 - b, c + 180) with b the middle axis, each any number of turns round: take the
+  // one nearest where the bone is, so a drag past ±90 or ±180 keeps going the same way
+  const std::array<double, 3> euler = eulerFromQuat(pb->orient.inverse() * q.normalized() * pb->orient, pb->order);
+  const int                   mid   = pb->order.size() == 3 ? pb->order[1] - 'X' : 1;
+  auto nearest = [&](bool other, double& cost) {
+    std::array<double, 3> out{};
+    cost = 0;
+    for(int i = 0; i < 3; i++)
+    {
+      out[i] = (other ? (i == mid ? 180 - euler[i] / kDeg : euler[i] / kDeg + 180) : euler[i] / kDeg);
+      out[i] += 360 * std::round((now[i] - out[i]) / 360);
+      cost += (out[i] - now[i]) * (out[i] - now[i]);
+    }
+    return out;
+  };
+  double                      costA = 0, costB = 0;
+  const std::array<double, 3> a     = nearest(false, costA);
+  const std::array<double, 3> b     = nearest(true, costB);
+  const std::array<double, 3> total = costB < costA ? b : a;
+  // a transform that round-trips through the renderer's floats comes back a hair off: a channel
+  // that only moved that much stays as it was, so a bone isn't posed by a click
+  auto push = [&](ChannelKind kind, const char* axisName, double value, double noise) {
+    const Axis* a = axis(*pb, kind, axisName);
+    if(a && std::abs(a->value - value) > noise)
+      values.push_back({pb->name, kind, axisName, value});
+  };
+  for(int i = 0; i < 3; i++)
+    push(ChannelKind::eRotation, names[i], total[i] - drivenOf(ChannelKind::eRotation, names[i]), 1e-3);
+  if(position && !pb->rest.empty())
+  {
+    const Vec3   t      = *position - pb->rest.front().second;
+    const double xyz[3] = {t.x, t.y, t.z};
+    for(int i = 0; i < 3; i++)
+      push(ChannelKind::eTranslation, names[i], xyz[i] - drivenOf(ChannelKind::eTranslation, names[i]), 1e-4);
+  }
+  return setMany(values);
+}
+
+const PoseBone* PoseRig::boneForNode(int node) const
+{
+  const auto it = m_byNode.find(node);
+  return it == m_byNode.end() ? nullptr : &m_bones[it->second];
+}
+
+const PoseBone* PoseRig::nearestBone(const Vec3& worldPoint) const
+{
+  // the face rig: everything under the head (names vary by generation: lEye, l_eye, r_infraorbital...)
+  std::set<int> face;
+  for(const PoseBone& pb : m_bones)
+  {
+    std::string n = pb.name;
+    std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if(n != "head")
+      continue;
+    std::vector<int> stack(m_scene.nodes[pb.bone].children);
+    while(!stack.empty())
+    {
+      const int c = stack.back();
+      stack.pop_back();
+      face.insert(c);
+      stack.insert(stack.end(), m_scene.nodes[c].children.begin(), m_scene.nodes[c].children.end());
+    }
+  }
+  auto isFace  = [&](const PoseBone& pb) { return pb.group == "Face" || face.count(pb.bone) > 0; };
+  auto posable = [&](const PoseBone& pb) { return !pb.axes.empty() && !isFace(pb) && pb.group != "Figure"; };
+  auto toSegment = [&](const Vec3& a, const Vec3& b) {
+    const Vec3   ab = b - a;
+    const double l2 = dot(ab, ab);
+    const double t  = l2 > 0 ? std::clamp(dot(worldPoint - a, ab) / l2, 0.0, 1.0) : 0.0;
+    const Vec3   d  = worldPoint - (a + ab * t);
+    return dot(d, d);
+  };
+  const PoseBone* best     = nullptr;
+  double          bestDist = 0;
+  for(const PoseBone& pb : m_bones)
+  {
+    if(!posable(pb) || pb.bone < 0 || pb.bone >= int(m_scene.nodes.size()))
+      continue;
+    const Node& node = m_scene.nodes[pb.bone];
+    const Mat4  w    = m_scene.world(pb.bone);
+    const Vec3  joint{w.e[12], w.e[13], w.e[14]};
+    std::vector<Vec3> ends;
+    for(int c : node.children)
+      if(auto it = m_byNode.find(c); it != m_byNode.end() && !isFace(m_bones[it->second]))
+      {
+        const Mat4 cw = m_scene.world(c);
+        ends.push_back({cw.e[12], cw.e[13], cw.e[14]});
+      }
+    // the bone's end, from its rest centre: at rest a bone's frame is the figure's, at its centre
+    if(const auto& d = node.joint)
+    {
+      const Vec3 tail{d->endPoint[0] - d->center[0], d->endPoint[1] - d->center[1], d->endPoint[2] - d->center[2]};
+      if(dot(tail, tail) > 1e-8)
+        ends.push_back(w.transformPoint(tail));
+    }
+    double dist = ends.empty() ? toSegment(joint, joint) : -1;
+    for(const Vec3& e : ends)
+    {
+      const double de = toSegment(joint, e);
+      if(dist < 0 || de < dist)
+        dist = de;
+    }
+    if(!best || dist < bestDist)
+    {
+      best     = &pb;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
 std::set<int> PoseRig::drivenNodes() const
 {
   std::set<int> out;

@@ -190,7 +190,7 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
 
   // Set or de-select the selected object (primitive-level selection)
   // pickResult.instanceID is the TLAS instance index = render node index
-  if(!isDoubleClick)
+  if(!isDoubleClick && !(m_pickObserver && m_pickObserver(pickResult.instanceID, worldPos)))
   {
     updateSelectionFromPick(pickResult.instanceID, worldPos, pickResult.worldRayOrigin);
   }
@@ -1533,6 +1533,39 @@ void GltfRenderer::setShowGrid(bool on)
 void GltfRenderer::setShowAxis(bool on)
 {
   m_resources.settings.showAxis = on;
+}
+
+void GltfRenderer::setGizmoHooks(GizmoHooks hooks)
+{
+  m_gizmoHooks = std::move(hooks);
+  // Reattach on the next frame so the handles come from the new attach hook
+  m_visualHelpers.transform.clearAttachment();
+  m_gizmoNodeIndex = -1;
+}
+
+void GltfRenderer::setShowGizmo(bool on)
+{
+  m_resources.settings.showGizmo = on;
+}
+
+bool GltfRenderer::gizmoInput(glm::vec2 px, bool down, bool pressed, bool released)
+{
+  const glm::vec2 delta = pressed ? glm::vec2(0.f) : px - m_gizmoInputLast;
+  m_gizmoInputLast      = px;
+  if(!m_cameraManip || !m_resources.settings.showGizmo || !m_visualHelpers.transform.isAttached())
+    return false;
+  const VkExtent2D size     = renderSize();
+  const bool       dragging = m_visualHelpers.transform.isDragging();
+  const bool took = m_visualHelpers.transform.processInput(px, delta, down, pressed, released, m_cameraManip->getViewMatrix(),
+                                                           m_cameraManip->getPerspectiveMatrix(),
+                                                           glm::vec2(float(size.width), float(size.height)));
+  // processInput reports the release that ends a drag as not taken; it still belongs to the drag
+  return took || dragging;
+}
+
+void GltfRenderer::setPickObserver(std::function<bool(int renderNode, const glm::vec3& hit)> observer)
+{
+  m_pickObserver = std::move(observer);
 }
 
 void GltfRenderer::setDepthOfField(float focalDistance, float aperture, bool autoFocus)

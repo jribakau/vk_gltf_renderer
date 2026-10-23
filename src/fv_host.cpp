@@ -35,8 +35,10 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <nvapp/elem_camera.hpp>
 #include <nvutils/logger.hpp>
 
@@ -71,6 +73,7 @@ struct Loaded
   std::string                 id;
   std::unique_ptr<fv::Figure> fig;
   std::vector<int>            nodeOf;   // scene node -> glTF node
+  std::unordered_map<int, int> sceneOf;  // glTF node -> scene node
   std::vector<int>            meshOf;   // scene mesh -> glTF mesh
   std::vector<int>            skinOf;   // scene mesh -> glTF skin
   std::vector<std::vector<int>> primsOf;  // glTF mesh -> render primitives
@@ -299,7 +302,7 @@ Json poseSnapshot(const Loaded& f)
     for(const auto& a : pb.axes)
       axes[axisKey(a)] = {{"label", a.label}, {"kind", fv::pose::kindName(a.kind)}, {"axis", a.axis}, {"min", a.min}, {"max", a.max},
                           {"value", a.value}, {"initial", a.initial}, {"order", i++}};
-    bones[pb.id] = {{"name", pb.name}, {"label", pb.label}, {"group", pb.group}, {"order", order++}, {"axes", axes}};
+    bones[pb.id] = {{"name", pb.name}, {"label", pb.label}, {"group", pb.group}, {"order", order++}, {"node", pb.bone}, {"axes", axes}};
   }
   return {{"figure", f.id}, {"changed", f.fig->pose->changed()}, {"eyes", f.fig->pose->hasEyes()}, {"bones", bones}};
 }
@@ -346,6 +349,14 @@ struct FvHost::Impl
   bool                           morphTouched = false;
   // frames until the camera frames a newly loaded figure (0: none pending)
   int frameIn = 0;
+  // the gizmo's latest drag on a bone: the rig takes it once a frame, however many events came
+  struct GizmoEdit
+  {
+    std::string             bone;
+    fv::Quat                rotation;
+    std::optional<fv::Vec3> position;
+  };
+  std::optional<GizmoEdit> gizmoEdit;
 
   std::mutex               loadMutex;
   std::vector<std::thread> loaders;
@@ -397,6 +408,9 @@ struct FvHost::Impl
   void frameCamera();
   void applyInput(const std::vector<Json>& events);
   void patchPose(const std::vector<std::string>& boneIds);
+  // the main figure's posed bone at a glTF node, or nullptr
+  const fv::pose::PoseBone* boneAt(int gltf) const;
+  void                      applyGizmoEdit();
   void applyPreset(const fv::dson::Json& doc, const std::string& kind, uint64_t jobId, const std::string& rel);
 
   std::unique_ptr<FvView> view;
@@ -546,6 +560,9 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   auto f     = std::make_unique<Loaded>();
   f->fig     = std::move(fig);
   f->nodeOf  = std::move(built.nodeOf);
+  for(int i = 0; i < int(f->nodeOf.size()); i++)
+    if(f->nodeOf[i] >= 0)
+      f->sceneOf[f->nodeOf[i]] = i;
   f->meshOf  = std::move(built.meshOf);
   f->skinOf  = std::move(built.skinOf);
   if(!renderer->loadModel(std::move(built.model)))
@@ -577,9 +594,44 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   if(figure->fig->pose)
     protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
   if(view)
+  {
+    FvView::Bones bones;
+    if(figure->fig->pose)
+    {
+      for(const auto& pb : figure->fig->pose->bones())
+        if(!pb.axes.empty())
+          bones.idOf[pb.bone] = pb.id;
+      bones.nearest = [this](const glm::vec3& hit) {
+        const auto* pb = figure && figure->fig->pose ? figure->fig->pose->nearestBone({hit.x, hit.y, hit.z}) : nullptr;
+        return pb ? pb->bone : -1;
+      };
+    }
     view->setFigure(figure->id, figure->fig->loaded.name, figure->fig->loaded.scene, figure->fig->loaded.root, figure->nodeOf,
-                    figure->fig->morphs ? figure->fig->morphs->size() : 0);
+                    figure->fig->morphs ? figure->fig->morphs->size() : 0, std::move(bones));
+  }
   job(jobId, {{"state", "done"}, {"figure", figure->id}});
+}
+
+const fv::pose::PoseBone* FvHost::Impl::boneAt(int gltf) const
+{
+  if(!figure || !figure->fig->pose)
+    return nullptr;
+  const auto it = figure->sceneOf.find(gltf);
+  const auto* pb = it == figure->sceneOf.end() ? nullptr : figure->fig->pose->boneForNode(it->second);
+  return pb && !pb->axes.empty() ? pb : nullptr;
+}
+
+void FvHost::Impl::applyGizmoEdit()
+{
+  if(!gizmoEdit)
+    return;
+  const GizmoEdit edit = *std::exchange(gizmoEdit, std::nullopt);
+  if(!figure || !figure->fig->pose)
+    return;
+  // nodes, correctives and rebound skins go out with this frame's pump()
+  figure->fig->pose->setLocalTransform(edit.bone, edit.rotation, edit.position);
+  morphTouched = true;
+  patchPose({edit.bone});
 }
 
 void FvHost::Impl::patchPose(const std::vector<std::string>& boneIds)
@@ -1009,6 +1061,33 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol)
     for(const auto& e : events)
       impl->input.push_back(e);
   });
+  // the gizmo poses the main figure's bones through the rig, so limits and formulas apply
+  auto hasKind = [](const fv::pose::PoseBone& pb, fv::pose::ChannelKind kind) {
+    return std::any_of(pb.axes.begin(), pb.axes.end(), [kind](const fv::pose::Axis& a) { return a.kind == kind; });
+  };
+  renderer->setGizmoHooks({
+      .attach =
+          [impl, hasKind](int gltf) {
+            const auto* pb    = impl->boneAt(gltf);
+            uint32_t    flags = 0;
+            if(pb && hasKind(*pb, fv::pose::ChannelKind::eRotation))
+              flags |= TransformHelperVk::ShowRotation;
+            if(pb && hasKind(*pb, fv::pose::ChannelKind::eTranslation))
+              flags |= TransformHelperVk::ShowTranslation;
+            return flags;
+          },
+      .edit =
+          [impl, hasKind](int gltf, const glm::vec3& t, const glm::quat& r, bool done) {
+            // the release repeats the last move's transform; a click on a handle with no drag has only the release
+            const auto* pb = done ? nullptr : impl->boneAt(gltf);
+            if(!pb)
+              return;
+            impl->gizmoEdit = Impl::GizmoEdit{pb->id, fv::Quat{r.x, r.y, r.z, r.w},
+                                              hasKind(*pb, fv::pose::ChannelKind::eTranslation) ?
+                                                  std::optional<fv::Vec3>(fv::Vec3{t.x, t.y, t.z}) :
+                                                  std::nullopt};
+          },
+  });
 }
 
 FvHost::~FvHost() = default;
@@ -1034,6 +1113,8 @@ void FvHost::onDetach()
       t.join();
   s.loaders.clear();
   s.queue.clear();
+  s.renderer->setGizmoHooks({});
+  s.renderer->setPickObserver({});
   if(s.view)
     s.view->clearFigure();
   s.figure.reset();
@@ -1054,6 +1135,15 @@ void FvHost::onUpdate()
   }
   for(auto& f : work)
     f();
+  // input first: a gizmo drag poses this frame, and what the gizmo didn't take moves the camera
+  std::vector<Json> events;
+  {
+    std::lock_guard lock(s.inputMutex);
+    events.swap(s.input);
+  }
+  if(!events.empty())
+    s.applyInput(s.view ? s.view->onInput(events) : events);
+  s.applyGizmoEdit();
   s.applyPendingMorphs();
   if(s.figure)
   {
@@ -1073,15 +1163,4 @@ void FvHost::onUpdate()
     s.frameCamera();
   if(s.view)
     s.view->onFrame();
-  std::vector<Json> events;
-  {
-    std::lock_guard lock(s.inputMutex);
-    events.swap(s.input);
-  }
-  if(!events.empty())
-  {
-    if(s.view)
-      s.view->onInput(events);
-    s.applyInput(events);
-  }
 }

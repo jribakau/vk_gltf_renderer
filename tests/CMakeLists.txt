@@ -73,6 +73,7 @@ set(TEST_SOURCES
     figure/test_morph_set.cpp
     figure/test_figure_driver.cpp
     figure/test_eyes.cpp
+    figure/test_pose_gizmo.cpp
     figure/test_presets.cpp
     # Figure Viewer host protocol: commands and the event stream, without a server
     test_fv_protocol.cpp

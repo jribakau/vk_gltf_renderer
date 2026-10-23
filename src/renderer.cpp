@@ -866,7 +866,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     m_visualHelpers.init(helperRes);
 
     m_visualHelpers.transform.setOnTransformBegin([this]() {
-      if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
+      if(m_gizmoNodeIndex >= 0 && m_resources.getScene() && !m_gizmoHooks.edit)
       {
         const auto& node = m_resources.getScene()->editor().getNode(m_gizmoNodeIndex);
         tinygltf::utils::getNodeTRS(node, m_gizmoSnapshotT, m_gizmoSnapshotR, m_gizmoSnapshotS);
@@ -874,7 +874,9 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     });
 
     m_visualHelpers.transform.setOnTransformChange([this]() {
-      if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
+      if(m_gizmoNodeIndex >= 0 && m_gizmoHooks.edit)
+        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), false);
+      else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
       {
         glm::quat rotation = glm::quat(glm::radians(m_gizmoRotation));
         m_resources.getScene()->editor().setNodeTRS(m_gizmoNodeIndex, m_gizmoPosition, rotation, m_gizmoScale);
@@ -883,7 +885,9 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     });
 
     m_visualHelpers.transform.setOnTransformEnd([this]() {
-      if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
+      if(m_gizmoNodeIndex >= 0 && m_gizmoHooks.edit)
+        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), true);
+      else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
       {
         glm::vec3   newT, newS;
         glm::quat   newR;
@@ -2970,7 +2974,8 @@ void GltfRenderer::updateGizmoAttachment()
     }
   }
 
-  if(nodeIdx < 0)
+  const uint32_t flags = nodeIdx < 0 ? 0 : m_gizmoHooks.attach ? m_gizmoHooks.attach(nodeIdx) : TransformHelperVk::ShowAll;
+  if(flags == 0)
   {
     if(m_gizmoNodeIndex >= 0)
     {
@@ -2980,6 +2985,7 @@ void GltfRenderer::updateGizmoAttachment()
     return;
   }
 
+  const int parentIdx = m_resources.getScene()->editor().getNodeParent(nodeIdx);
   // Attach or update if selection changed
   if(nodeIdx != m_gizmoNodeIndex)
   {
@@ -2989,18 +2995,19 @@ void GltfRenderer::updateGizmoAttachment()
     tinygltf::utils::getNodeTRS(m_resources.getScene()->editor().getNode(nodeIdx), m_gizmoPosition, rotation, m_gizmoScale);
     m_gizmoRotation = glm::degrees(glm::eulerAngles(rotation));
 
-    int parentIdx = m_resources.getScene()->editor().getNodeParent(nodeIdx);
     m_gizmoParentWorldMatrix = (parentIdx >= 0) ? m_resources.getScene()->computeNodeWorldMatrix(parentIdx) : glm::mat4(1.f);
 
-    m_visualHelpers.transform.attachTransform(&m_gizmoPosition, &m_gizmoRotation, &m_gizmoScale);
+    m_visualHelpers.transform.attachTransform(&m_gizmoPosition, &m_gizmoRotation, &m_gizmoScale, flags);
     m_visualHelpers.transform.setParentWorldMatrix(&m_gizmoParentWorldMatrix);
   }
   else if(!m_visualHelpers.transform.isDragging())
   {
-    // Re-read TRS from the scene node so inspector edits are reflected immediately
+    // Re-read TRS from the scene node so inspector edits are reflected immediately; the parent
+    // moves too when something above the node is posed
     glm::quat rotation;
     tinygltf::utils::getNodeTRS(m_resources.getScene()->editor().getNode(nodeIdx), m_gizmoPosition, rotation, m_gizmoScale);
     m_gizmoRotation = glm::degrees(glm::eulerAngles(rotation));
+    m_gizmoParentWorldMatrix = (parentIdx >= 0) ? m_resources.getScene()->computeNodeWorldMatrix(parentIdx) : glm::mat4(1.f);
   }
 }
 

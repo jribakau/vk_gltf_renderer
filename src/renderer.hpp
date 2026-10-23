@@ -440,6 +440,25 @@ public:
   void fitCamera(bool wholeScene);
   void selectSceneNodeFromScript(int nodeIndex);  // Script-driven selection (Inspector/Scene Browser)
 
+  /// Lets a host own what the transform gizmo edits. `attach` gives the handles a node shows
+  /// (TransformHelperVk::ShowRotation, ShowTranslation, ...), 0 for no gizmo on it. `edit` gets the
+  /// node's new local translation and rotation instead of the scene and undo stack taking them;
+  /// `done` on the release that ends the drag.
+  struct GizmoHooks
+  {
+    std::function<uint32_t(int node)>                                                attach;
+    std::function<void(int node, const glm::vec3& t, const glm::quat& r, bool done)> edit;
+  };
+  void setGizmoHooks(GizmoHooks hooks);
+  void setShowGizmo(bool on);
+  /// The transform gizmo's pointer input without ImGui (a headless stream): `px` in render pixels,
+  /// origin top-left. True when the gizmo took the event (a press on a handle, a drag, its release),
+  /// so the camera and click selection should not see it.
+  bool gizmoInput(glm::vec2 px, bool down, bool pressed, bool released);
+  /// Sees every click pick first: the render node hit (-1 for none) and the hit point in world space.
+  /// Returning true keeps the renderer from changing the selection.
+  void setPickObserver(std::function<bool(int renderNode, const glm::vec3& hit)> observer);
+
 #ifdef USE_NVMCP
   /// Automation surface for the optional MCP endpoint (src/mcp_timing.cpp), which is where both
   /// of these are defined. Thread-safe: they only read the profiler's mutex-guarded snapshots.
@@ -741,6 +760,9 @@ private:
   glm::vec3 m_gizmoScale{1.f};
   glm::mat4 m_gizmoParentWorldMatrix{1.f};
   int       m_gizmoNodeIndex = -1;
+  GizmoHooks m_gizmoHooks;
+  glm::vec2  m_gizmoInputLast{0.f};
+  std::function<bool(int renderNode, const glm::vec3& hit)> m_pickObserver;
 
   // Gizmo TRS snapshot for undo (captured at drag start)
   glm::vec3 m_gizmoSnapshotT{0.f};

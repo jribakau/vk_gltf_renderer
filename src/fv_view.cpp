@@ -71,6 +71,16 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     , m_events(&events)
     , m_onApp(std::move(onApp))
 {
+  m_renderer->setPickObserver([this](int renderNode, const glm::vec3& hit) {
+    if(!m_pickBones || renderNode < 0 || !m_bones.nearest)
+      return false;
+    const int node = m_bones.nearest(hit);
+    const int gltf = node >= 0 && node < int(m_gltfOf.size()) ? m_gltfOf[node] : -1;
+    if(gltf < 0)
+      return false;
+    m_renderer->selectSceneNodeFromScript(gltf);
+    return true;
+  });
   commands.add("select", [this](const fv::Json& args) {
     return m_onApp([this, args] {
       if(!args.contains("node") || args["node"].is_null())
@@ -135,7 +145,7 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         throw std::runtime_error("no camera");
       glm::dvec3 eye, center, up;
       manip->getLookat(eye, center, up);
-      return fv::Json{{"position", vec3(eye)}, {"target", vec3(center)}, {"focalLength", m_focal}};
+      return fv::Json{{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}, {"focalLength", m_focal}};
     });
   });
   commands.add("camera.goto", [this](const fv::Json& args) {
@@ -183,15 +193,25 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         m_renderer->setShowGrid(args["grid"].get<bool>());
       if(args.contains("gizmo"))
         m_renderer->setShowAxis(args["gizmo"].get<bool>());
+      if(args.contains("pick"))
+      {
+        const std::string pick = args["pick"].get<std::string>();
+        if(pick != "bone" && pick != "mesh")
+          throw std::runtime_error("pick is bone or mesh");
+        m_pickBones = pick == "bone";
+        m_renderer->setShowGizmo(m_pickBones);
+      }
       return fv::Json{{"ok", true}};
     });
   });
 }
 
-void FvView::setFigure(const std::string& id, const std::string& name, const fv::SceneGraph& scene, int root, const std::vector<int>& nodeOf, int morphs)
+void FvView::setFigure(const std::string& id, const std::string& name, const fv::SceneGraph& scene, int root,
+                       const std::vector<int>& nodeOf, int morphs, Bones posable)
 {
   m_id     = id;
   m_gltfOf = nodeOf;
+  m_bones  = std::move(posable);
   m_figureOf.clear();
   for(int i = 0; i < int(nodeOf.size()); i++)
     if(nodeOf[i] >= 0)
@@ -240,18 +260,34 @@ void FvView::clearFigure()
   m_gltfOf.clear();
   m_figureOf.clear();
   m_nodes.clear();
+  m_bones    = {};
   m_lastGltf = -1;
   m_events->snapshot("scene", {{"figures", fv::Json::object()}});
   m_events->snapshot("selection", {{"node", nullptr}});
 }
 
-void FvView::onInput(const std::vector<fv::Json>& events)
+std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
 {
+  std::vector<fv::Json> rest;
+  rest.reserve(events.size());
   for(const fv::Json& e : events)
   {
     const std::string type = e.value("t", "");
     const double      x = e.value("x", m_x0), y = e.value("y", m_y0);
-    if(type == "down" && e.value("b", 0) == 0)
+    const bool        left     = e.value("b", 0) == 0;
+    const bool        pressed  = type == "down" && left;
+    const bool        released = (type == "up" && left) || (type == "leave" && m_lmb);
+    if(pressed || released)
+      m_lmb = pressed;
+    // a press on a handle, its drag and its release are the gizmo's: no orbit, no pick
+    if((type == "down" || type == "up" || type == "move" || type == "leave")
+       && m_renderer->gizmoInput({float(x), float(y)}, m_lmb, pressed, released))
+    {
+      m_click = false;
+      continue;
+    }
+    rest.push_back(e);
+    if(pressed)
     {
       m_click = true;
       m_x0    = x;
@@ -271,12 +307,30 @@ void FvView::onInput(const std::vector<fv::Json>& events)
     else if(type == "leave")
       m_click = false;
   }
+  return rest;
 }
 
 void FvView::onFrame()
 {
   applyLens();
   publishSelection(false);
+  publishCamera();
+}
+
+void FvView::publishCamera()
+{
+  auto manip = m_renderer->getCameraManipulator();
+  const auto now = std::chrono::steady_clock::now();
+  if(!manip || now - m_cameraAt < std::chrono::milliseconds(33))
+    return;
+  glm::dvec3 eye, center, up;
+  manip->getLookat(eye, center, up);
+  fv::Json camera{{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}, {"focalLength", m_focal}};
+  if(camera == m_camera)
+    return;
+  m_camera   = std::move(camera);
+  m_cameraAt = now;
+  m_events->snapshot("camera", m_camera);
 }
 
 void FvView::applyLens()
@@ -287,10 +341,12 @@ void FvView::applyLens()
   const glm::uvec2 size = manip->getWindowSize();
   if(size.y == 0)
     return;
+  // the renderer sets up its own camera for a loaded scene, so check the camera's fov, not just the aspect
   const double aspect = double(size.x) / double(size.y);
-  if(std::abs(aspect - m_aspect) < 1e-4)
+  const double fov    = fovForFocalLength(m_focal, aspect);
+  if(std::abs(aspect - m_aspect) < 1e-4 && std::abs(manip->getFov() - fov) < 1e-4)
     return;
-  manip->setFov(fovForFocalLength(m_focal, aspect));
+  manip->setFov(fov);
   m_aspect = aspect;
 }
 
@@ -317,6 +373,9 @@ void FvView::publishSelection(bool force)
     m_events->snapshot("selection", {{"node", nullptr}});
     return;
   }
-  const NodeRec& n = m_nodes[it->second];
-  m_events->snapshot("selection", {{"figure", m_id}, {"node", it->second}, {"name", n.name}, {"mesh", n.mesh}, {"kind", n.kind}});
+  const NodeRec& n   = m_nodes[it->second];
+  fv::Json       sel = {{"figure", m_id}, {"node", it->second}, {"name", n.name}, {"mesh", n.mesh}, {"kind", n.kind}};
+  if(const auto bone = m_bones.idOf.find(it->second); bone != m_bones.idOf.end())
+    sel["bone"] = bone->second;
+  m_events->snapshot("selection", sel);
 }

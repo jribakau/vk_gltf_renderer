@@ -89,6 +89,17 @@ public:
   // Returns how many eyes were aimed. `worldPoint` is in the same space as the scene graph.
   int aimEyes(const Vec3& worldPoint);
 
+  // Poses a bone to a local rotation (in its parent's frame) and, where it has translation
+  // channels, a local position: the inverse of how channels pose it. Formula offsets stay in place
+  // and limits apply, so the bone may stop short of `q`. Returns the bone nodes moved, as setMany.
+  std::vector<int> setLocalTransform(const std::string& bone, const Quat& q, const std::optional<Vec3>& position);
+  // The posed bone a scene node is (its followers are not), or nullptr.
+  const PoseBone* boneForNode(int node) const;
+  // The posable bone whose segment, from its joint to its child joints and end point, passes
+  // closest to a world point (a click on the body). The face rig (every bone under the head) and
+  // the figure root are left out, so a click on the face picks the head.
+  const PoseBone* nearestBone(const Vec3& worldPoint) const;
+
   // The bone nodes that are posed bones or followers (to know which scene nodes the rig drives).
   std::set<int> drivenNodes() const;
 
