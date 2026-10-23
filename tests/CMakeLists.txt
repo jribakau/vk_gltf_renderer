@@ -78,6 +78,7 @@ set(TEST_SOURCES
     figure/test_materials.cpp
     figure/test_wardrobe.cpp
     figure/test_export.cpp
+    figure/test_dforce.cpp
     # Figure Viewer host protocol: commands and the event stream, without a server
     test_fv_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_events.cpp

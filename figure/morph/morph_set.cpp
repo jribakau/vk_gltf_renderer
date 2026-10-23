@@ -144,6 +144,56 @@ void MorphSet::addTarget(const std::string& name, int mesh, dson::TargetPtr targ
   }
 }
 
+std::vector<std::pair<dson::TargetPtr, double>> MorphSet::activeTargets(int mesh, const mesh::RenderTarget* except) const
+{
+  std::vector<std::pair<dson::TargetPtr, double>> out;
+  const auto it = m_cpu.find(mesh);
+  if(it == m_cpu.end())
+    return out;
+  for(const auto& [key, a] : it->second.active)
+    if(key != except)
+      out.emplace_back(a.target, a.weight);
+  return out;
+}
+
+dson::TargetPtr MorphSet::cpuTarget(const std::string& name, int mesh) const
+{
+  const auto it = m_bindings.find(name);
+  if(it == m_bindings.end())
+    return nullptr;
+  for(const Binding& b : it->second)
+    if(b.mesh == mesh)
+      return b.target;
+  return nullptr;
+}
+
+void MorphSet::replaceCpuTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts)
+{
+  MeshState& st = ensureCpu(mesh);
+  auto       it = m_bindings.find(name);
+  if(it == m_bindings.end())
+  {
+    addTarget(name, mesh, std::move(target), opts);
+    m_listVersion++;
+    return;
+  }
+  for(auto b = it->second.begin(); b != it->second.end();)
+  {
+    if(b->mesh == mesh)
+    {
+      st.active.erase(b->target.get());
+      b = it->second.erase(b);
+    }
+    else
+      ++b;
+  }
+  it->second.push_back({mesh, target});
+  const double v = weightOf(name);
+  if(v != 0)
+    st.active[target.get()] = {target, v};
+  st.dirty = true;
+}
+
 void MorphSet::addLazy(const std::string& name, Loader loader, const ChannelOptions& opts)
 {
   if(m_bindings.count(name) || m_lazy.count(name))

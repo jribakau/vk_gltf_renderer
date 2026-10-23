@@ -212,8 +212,9 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         in.baseToTarget = pair ? &*pair : nullptr;
         positions       = shapeCorrection(positions, m.geo->dsonTris, *base, bodySurface, in);
       }
-      // (a dynamic surface owns its collision; dForce is not ported yet, so every surface is pushed out)
-      positions = collide(positions, m.geo->dsonTris, bodySurface);
+      // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
+      if(!(m.dforce && m.dforce->simulated()))
+        positions = collide(positions, m.geo->dsonTris, bodySurface);
     }
     writeCage(*m.geo, positions);
   }

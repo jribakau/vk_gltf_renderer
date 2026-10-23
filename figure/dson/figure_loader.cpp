@@ -687,6 +687,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
 
         // materials, one per polygon material group
         const Json* libMaterials = get(&gres->doc->json, "material_library");
+        std::map<std::string, Channels> groupChannels;
         for(const std::string& name : meshOut.materialGroups)
         {
           const Json* lib = nullptr;
@@ -738,6 +739,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           Channels ch;
           for(const auto& [def, from] : layers)
             collectChannels(def, ch, images, from);
+          groupChannels[name]   = ch;
           const std::string key = materialKey(name, ch);
           auto              hit = materialCache.find(key);
           if(hit == materialCache.end())
@@ -747,6 +749,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           }
           meshOut.materials.push_back(hit->second);
         }
+        // dForce settings, where the scene (or a material) asks for a simulation
+        meshOut.dforce = buildDforce(*docPtr, gres->doc.get(), getString(job.node, "id"), gid, *gres->doc, geo, groupChannels);
         if(meshOut.geo->ribbon)
         {
           std::vector<std::array<double, 2>> widths;

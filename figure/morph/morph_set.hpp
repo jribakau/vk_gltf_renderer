@@ -155,6 +155,15 @@ public:
   // Removes channels outright, loaded or not.
   void removeChannels(const std::vector<std::string>& names);
 
+  // The targets applied to a mesh now and the weight of each, except `except` (a mesh's own drape
+  // is left out when a simulation reads the shape underneath it).
+  std::vector<std::pair<dson::TargetPtr, double>> activeTargets(int mesh, const mesh::RenderTarget* except = nullptr) const;
+  // The target a channel binds on a mesh, or null.
+  dson::TargetPtr cpuTarget(const std::string& name, int mesh) const;
+  // Binds `target` as the channel's target on a mesh, making the channel when it is new and
+  // dropping the target it had there. The channel's weight applies to it at once.
+  void replaceCpuTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts = {});
+
 private:
   struct Binding
   {

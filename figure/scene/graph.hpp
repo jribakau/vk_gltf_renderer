@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <figure/dson/channels.hpp>
+#include <figure/dson/dforce.hpp>
 #include <figure/materials/surface.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/mesh/mesh_build.hpp>
@@ -96,6 +97,8 @@ struct Mesh
   mesh::SkinOutput       skin;
   // the influences per cage vertex the skin was made from (bone indices into `bones`), for fitting
   mesh::SkinInput        cageSkin;
+  // dForce cloth settings, when the scene made this a simulation object (per cage vertex)
+  std::shared_ptr<const dson::DforceData> dforce;
   Mat4                   bindMatrix;
   std::vector<Mat4>      boneInverses;
   bool                   skinned() const { return !bones.empty(); }
