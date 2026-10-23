@@ -110,6 +110,16 @@ void Figure::indexItems()
     items.push_back(record(it, "", m_nextItem++));
 }
 
+const SceneGraph& Figure::preparedScene(const PreparedWear& wear)
+{
+  return wear.loaded.scene;
+}
+
+SceneGraph& Figure::preparedScene(PreparedWear& wear)
+{
+  return wear.loaded.scene;
+}
+
 const WornItem* Figure::item(int id) const
 {
   for(const WornItem& w : items)

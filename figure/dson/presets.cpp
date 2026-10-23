@@ -168,4 +168,20 @@ std::optional<PresetInfo> describePreset(const Json& doc)
   return info;
 }
 
+bool isWearable(const Json& doc)
+{
+  if(getString(get(&doc, "asset_info"), "type") == "wearable")
+    return true;
+  const Json* nodes = get(get(&doc, "scene"), "nodes");
+  if(!nodes || !nodes->is_array())
+    return false;
+  for(const Json& n : *nodes)
+  {
+    const Json* geos = get(&n, "geometries");
+    if(getString(&n, "parent").rfind("name://@selection", 0) == 0 && geos && geos->is_array() && !geos->empty())
+      return true;
+  }
+  return false;
+}
+
 }  // namespace fv::dson

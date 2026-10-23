@@ -30,6 +30,10 @@ struct PresetInfo
   std::optional<EnvironmentPreset>   environment;
 };
 
+// A .duf meant to be put on a figure that is loaded (clothing, hair, anatomy, hand props): marked a
+// wearable, or with geometry nodes parented to the selection.
+bool isWearable(const Json& doc);
+
 // None when the file builds geometry; otherwise what kind of preset it is and any environment it sets.
 std::optional<PresetInfo> describePreset(const Json& doc);
 

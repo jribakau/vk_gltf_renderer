@@ -68,6 +68,8 @@ std::unique_ptr<Figure> Figure::load(std::shared_ptr<dson::Store> store, const s
   f->loaded  = dson::loadDson(*store, rel, options);
   f->setup(progress);
   f->indexItems();
+  if(auto doc = store->load(rel.substr(std::min(rel.find_first_not_of('/'), rel.size()))))
+    f->addons = dson::postLoadAddons(doc->json);
   return f;
 }
 

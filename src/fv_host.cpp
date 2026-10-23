@@ -23,6 +23,7 @@
 #include "fv_host.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -89,6 +90,10 @@ struct Loaded
   std::unordered_map<std::string, std::pair<double, double>> published;
   uint64_t                                                     busyJob = 0;
   bool                                                         busyOn  = false;
+  // the textures the glTF was built with, by request key, and whether their rows run bottom-up:
+  // a wardrobe change builds the glTF again with these and the new items' own
+  std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
+  bool                                                                    texturesFlipped = false;
 };
 
 std::filesystem::path pathOf(const std::string& utf8)
@@ -415,7 +420,7 @@ struct FvHost::Impl
   bool              lmb = false, mmb = false;
 
   // application thread only
-  std::unique_ptr<Loaded> figure;
+  std::shared_ptr<Loaded> figure;
   int                     figures = 0;
   // morph.set merges here (any thread); onUpdate applies it as one setMany
   std::mutex                     morphMutex;
@@ -473,7 +478,24 @@ struct FvHost::Impl
 
   Json load(const Json& args);
   void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
-               fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib);
+               fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
+               std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images);
+  // wardrobe: what the figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
+  struct WearRequest
+  {
+    std::string              rel;
+    std::string              name;     // the DSON node name an add-on has, so it is not put on twice
+    std::vector<std::string> presets;  // material presets applied to it first
+  };
+  Json     wear(const Json& args);
+  uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests);
+  std::mutex wearMutex;
+  Json wardrobeRemove(const Json& args);
+  Json wardrobeVisible(const Json& args);
+  void rebuildScene(const std::string& label);
+  void publishFigure();
+  void publishWardrobe();
+  std::optional<std::array<glm::dvec3, 3>> cameraRestore;
   Json poseSet(const Json& args);
   void applyNodes(const std::set<int>& moved);
   void applyMesh(const fv::morph::MeshChange& change);
@@ -570,7 +592,8 @@ Json FvHost::Impl::load(const Json& args)
       auto lib   = std::make_shared<fv::dson::Library>(roots);
       auto store = std::make_shared<fv::dson::Store>(lib);
       // a preset is applied to the loaded figure; it must not replace it or cancel a figure load
-      if(auto doc = store->load(rel))
+      auto doc = store->load(rel);
+      if(doc)
         if(auto preset = fv::dson::describePreset(doc->json))
         {
           // an environment preset's HDR, found through the preset's own library
@@ -583,6 +606,13 @@ Json FvHost::Impl::load(const Json& args)
           });
           return;
         }
+      // clothing, hair and anatomy go on the figure that is loaded, as in DAZ Studio
+      if(doc && fv::dson::isWearable(doc->json) && onApp([this] { return figure && figure->fig->pose; }))
+      {
+        wear({{"rel", rel}});
+        job(jobId, {{"label", label}, {"state", "done"}});
+        return;
+      }
       uint64_t generation = 0;
       {
         std::lock_guard gate(figureLoads);
@@ -664,8 +694,8 @@ Json FvHost::Impl::load(const Json& args)
       // the renderer takes it on the application thread
       auto shared = std::make_shared<std::pair<std::unique_ptr<fv::Figure>, fv::build::BuildResult>>(std::move(f), std::move(built));
       const bool flipped = cooked;
-      post([this, shared, generation, jobId, flipped, skin, lib] {
-        install(std::move(shared->first), std::move(shared->second), generation, jobId, flipped, skin, lib);
+      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images)]() mutable {
+        install(std::move(shared->first), std::move(shared->second), generation, jobId, flipped, skin, lib, std::move(images));
       });
     }
     catch(const std::exception& e)
@@ -678,12 +708,15 @@ Json FvHost::Impl::load(const Json& args)
 }
 
 void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
-                           fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib)
+                           fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
+                           std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images)
 {
   if(generation != loadGeneration)
     return;
-  auto f     = std::make_unique<Loaded>();
+  auto f     = std::make_shared<Loaded>();
   f->fig     = std::move(fig);
+  f->images  = std::move(images);
+  f->texturesFlipped = texturesFlipped;
   f->nodeOf  = std::move(built.nodeOf);
   for(int i = 0; i < int(f->nodeOf.size()); i++)
     if(f->nodeOf[i] >= 0)
@@ -728,6 +761,22 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   morphTouched = true;
   // the renderer sets its own camera up over the next frames; frame the figure after that
   frameIn = 2;
+  publishFigure();
+  job(jobId, {{"state", "done"}, {"figure", figure->id}});
+  // Genesis 9 leaves its eyes, mouth and lashes to add-ons the scene file lists
+  if(!figure->fig->addons.empty() && figure->fig->pose)
+  {
+    std::vector<WearRequest> requests;
+    for(const fv::dson::PostLoadAddon& a : figure->fig->addons)
+      requests.push_back({a.file, a.name, a.presets});
+    startWear(figure, std::move(requests));
+  }
+}
+
+// What the panels learn when a figure is installed or built again: its pose, its hierarchy and
+// stats, what it wears.
+void FvHost::Impl::publishFigure()
+{
   // the pose first: a panel that sees the figure in "scene" finds its pose already there
   if(figure->fig->pose)
     protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
@@ -747,7 +796,252 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     view->setFigure(figure->id, figure->fig->loaded.name, figure->fig->loaded.scene, figure->fig->loaded.root, figure->nodeOf,
                     figure->fig->morphs ? figure->fig->morphs->size() : 0, std::move(bones));
   }
-  job(jobId, {{"state", "done"}, {"figure", figure->id}});
+  publishWardrobe();
+}
+
+//--------------------------------------------------------------------------------------------------
+// Wardrobe
+
+void FvHost::Impl::publishWardrobe()
+{
+  if(!figure)
+    return;
+  Json items = Json::object();
+  for(const fv::WornItem& w : figure->fig->items)
+    items["i:" + std::to_string(w.id)] = {{"label", w.label}, {"kind", w.kind}, {"rel", w.rel},      {"visible", w.visible},
+                                          {"own", w.rel.empty()}, {"channels", w.channels.size()}};
+  protocol->events().snapshot("wardrobe", {{"figure", figure->id}, {"items", items}});
+}
+
+// The glTF built again from the scene graph, after a wardrobe change, and handed to the renderer in
+// place of the old one: the figure, its pose, morphs and edits are in the graph, so it comes back as
+// it was. The camera stays where it was.
+void FvHost::Impl::rebuildScene(const std::string& label)
+{
+  Loaded& f = *figure;
+  fv::build::BuildOptions options;
+  options.texturesFlipped = f.texturesFlipped;
+  options.skin            = skinMode.load();
+  options.texture         = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+    auto it = f.images.find(fv::build::requestKey(req));
+    return it == f.images.end() ? std::nullopt : it->second;
+  };
+  fv::Figure&      fig   = *f.fig;
+  fv::build::BuildResult built = fv::build::buildGltf(fig.loaded.scene, fig.loaded.root, options);
+  if(auto manip = renderer->getCameraManipulator())
+  {
+    glm::dvec3 eye, center, up;
+    manip->getLookat(eye, center, up);
+    cameraRestore = std::array<glm::dvec3, 3>{eye, center, up};
+  }
+  f.nodeOf = std::move(built.nodeOf);
+  f.sceneOf.clear();
+  for(int i = 0; i < int(f.nodeOf.size()); i++)
+    if(f.nodeOf[i] >= 0)
+      f.sceneOf[f.nodeOf[i]] = i;
+  f.meshOf = std::move(built.meshOf);
+  f.skinOf = std::move(built.skinOf);
+  addSun(built.model);
+  if(!renderer->loadModel(std::move(built.model)))
+  {
+    sunNode = sunLight = -1;
+    notice(label + ": the renderer could not take the scene.", "error");
+    return;
+  }
+  applyLighting(false);
+  int meshes = 0;
+  for(int m : f.meshOf)
+    meshes = std::max(meshes, m + 1);
+  f.primsOf.assign(size_t(meshes), {});
+  for(int i = 0; i < meshes; i++)
+    f.primsOf[size_t(i)] = renderer->renderPrimitivesOfMesh(i);
+  // the glTF already holds the scene's dials and binds
+  fig.drain();
+  materials->attach(f.id, &fig.loaded.scene, built, f.texturesFlipped, options.skin);
+  morphTouched = true;
+  frameIn      = 2;
+  publishFigure();
+}
+
+Json FvHost::Impl::wear(const Json& args)
+{
+  HostSettings s;
+  {
+    std::lock_guard lock(settingsMutex);
+    s = settings;
+  }
+  std::string rel;
+  if(args.contains("rel"))
+    rel = args["rel"].get<std::string>();
+  else
+  {
+    const std::string path = args.at("path").get<std::string>();
+    const auto        lib  = libraryFor(s, pathOf(path));
+    if(!lib)
+      throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
+    rel = lib->second;
+  }
+  std::shared_ptr<Loaded> target = onApp([this] { return figure; });
+  if(!target || !target->fig->pose)
+    throw std::runtime_error("Load a figure first: clothing and hair go on a figure with a skeleton.");
+  return {{"job", startWear(target, {{rel, "", {}}})}};
+}
+
+// Puts wearables on a figure, one after the other: each is loaded and bound on a worker, merged on
+// the application thread, and the renderer's scene is built again once at the end. Wears are
+// serial: a merge grows the scene the next one reads.
+uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests)
+{
+  HostSettings s;
+  std::shared_ptr<fv::dson::Library> lib;
+  {
+    std::lock_guard lock(settingsMutex);
+    s   = settings;
+    lib = libraryOfFigure;
+  }
+  const uint64_t    jobId = ++jobs;
+  const std::string label = "Wearing " + utf8Of(pathOf(requests.front().rel).stem());
+  job(jobId, {{"label", label}, {"state", "running"}});
+  const fv::mat::SkinMode skin = skinMode.load();
+  std::lock_guard         lock(loadMutex);
+  loaders.emplace_back([this, s, requests = std::move(requests), target, lib, jobId, label, skin] {
+    std::lock_guard serial(wearMutex);
+    bool            any = false;
+    auto            fail = [&](const std::string& what) {
+      notice(what, "error");
+      job(jobId, {{"label", label}, {"state", "failed"}, {"error", what}});
+    };
+    for(const WearRequest& request : requests)
+    {
+      if(!accepting)
+        return;
+      try
+      {
+        // an add-on whose node the figure already has is not put on twice
+        if(!request.name.empty() && onApp([&] {
+             return figure == target
+                    && std::any_of(target->fig->items.begin(), target->fig->items.end(),
+                                   [&](const fv::WornItem& i) { return i.nodeNames.count(request.name) > 0; });
+           }))
+          continue;
+        job(jobId, {{"label", utf8Of(pathOf(request.rel).stem()) + ": loading"}, {"state", "running"}});
+        auto prepared = target->fig->prepareWear(request.rel, s.subdivision);
+        // the material presets that go with it, applied to the wearable before its textures are looked up
+        for(const std::string& presetRel : request.presets)
+          try
+          {
+            if(auto doc = target->fig->store().load(presetRel))
+              fv::dson::applyMaterialPreset(doc->json, fv::Figure::preparedScene(*prepared));
+          }
+          catch(const std::exception& e)
+          {
+            notice(presetRel + ": " + e.what());
+          }
+        // the wearable's textures, the way the figure's were made: bottom-up cooked, or the sources
+        job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
+        std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
+        {
+          const auto requestsOf = fv::build::textureRequests(fv::Figure::preparedScene(*prepared), skin);
+          std::vector<std::optional<fv::build::TextureImage>> found(requestsOf.size());
+          std::atomic<size_t>                                 next{0};
+          std::vector<std::thread>                            workers;
+          const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
+          for(int w = 0; w < std::min<int>(8, int(requestsOf.size())); w++)
+            workers.emplace_back([&] {
+              for(size_t i; (i = next++) < requestsOf.size();)
+                found[i] = target->texturesFlipped ? (cooker ? cookedTexture(s, requestsOf[i], true, false).image : std::nullopt) :
+                                                     (lib ? fallbackTexture(s, *lib, requestsOf[i], cooker) : std::nullopt);
+            });
+          for(auto& w : workers)
+            w.join();
+          for(size_t i = 0; i < requestsOf.size(); i++)
+            images[fv::build::requestKey(requestsOf[i])] = found[i];
+        }
+        auto done = std::make_shared<std::promise<bool>>();
+        auto ok   = done->get_future();
+        post([this, target, prepared, rel = request.rel, label, images = std::move(images), done]() mutable {
+          if(figure != target)
+          {
+            done->set_value(false);
+            return;
+          }
+          try
+          {
+            const fv::WearResult r = target->fig->commitWear(prepared, rel);
+            for(auto& [key, image] : images)
+              target->images.insert_or_assign(key, std::move(image));
+            for(const std::string& w : r.warnings)
+              notice(w);
+            if(!r.missingBones.empty())
+              notice(utf8Of(pathOf(rel).stem()) + ": this figure has no " + r.missingBones.front()
+                     + (r.missingBones.size() > 1 ? " and " + std::to_string(r.missingBones.size() - 1) + " other bones" : "") + " to hang it from.");
+            if(r.fit < 0.5)
+              notice(utf8Of(pathOf(rel).stem())
+                     + ": most of its bones found no match on this figure, so it was probably made for another figure and will not follow the pose.");
+            done->set_value(true);
+          }
+          catch(const std::exception& e)
+          {
+            notice(e.what(), "error");
+            done->set_value(false);
+          }
+        });
+        // the application thread merges it; a renderer that is closing never will
+        while(ok.wait_for(100ms) != std::future_status::ready)
+          if(!accepting)
+            return;
+        any = ok.get() || any;
+      }
+      catch(const std::exception& e)
+      {
+        notice(utf8Of(pathOf(request.rel).stem()) + ": " + e.what(), "error");
+      }
+    }
+    if(!any)
+      return fail("Nothing was put on.");
+    post([this, target, jobId, label] {
+      if(figure != target)
+      {
+        job(jobId, {{"label", label}, {"state", "failed"}, {"error", "the figure was replaced"}});
+        return;
+      }
+      rebuildScene(label);
+      job(jobId, {{"label", label}, {"state", "done"}});
+    });
+  });
+  return jobId;
+}
+
+namespace {
+int itemId(const Json& args)
+{
+  const Json& v = args.at("item");
+  if(v.is_number_integer())
+    return v.get<int>();
+  const std::string s = v.get<std::string>();
+  return std::atoi(s.c_str() + (s.rfind("i:", 0) == 0 ? 2 : 0));
+}
+}  // namespace
+
+Json FvHost::Impl::wardrobeRemove(const Json& args)
+{
+  if(!figure)
+    throw std::runtime_error("no figure loaded");
+  const int id = itemId(args);
+  if(!figure->fig->removeItem(id))
+    throw std::runtime_error("no such item");
+  rebuildScene("Taking off");
+  return {{"ok", true}};
+}
+
+Json FvHost::Impl::wardrobeVisible(const Json& args)
+{
+  if(!figure)
+    throw std::runtime_error("no figure loaded");
+  if(!figure->fig->setItemVisible(itemId(args), args.at("visible").get<bool>()))
+    throw std::runtime_error("no such item");
+  rebuildScene("Showing");
+  return {{"ok", true}};
 }
 
 const fv::pose::PoseBone* FvHost::Impl::boneAt(int gltf) const
@@ -1389,6 +1683,9 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       },
   });
   cmds.add("load", [impl](const Json& args) { return impl->load(args); });
+  cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
+  cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
+  cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeVisible(args); }); });
   cmds.add("material.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->set(args); }); });
   cmds.add("material.reset", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->reset(args); }); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
@@ -1607,7 +1904,16 @@ void FvHost::onUpdate()
     s.publishMorphs();
   }
   if(s.frameIn > 0 && --s.frameIn == 0)
-    s.frameCamera();
+  {
+    if(s.cameraRestore)
+    {
+      if(auto manip = s.renderer->getCameraManipulator())
+        manip->setLookat((*s.cameraRestore)[0], (*s.cameraRestore)[1], (*s.cameraRestore)[2], true);
+      s.cameraRestore.reset();
+    }
+    else
+      s.frameCamera();
+  }
   if(s.view)
     s.view->onFrame();
 }

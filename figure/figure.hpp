@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include <figure/dson/addons.hpp>
 #include <figure/dson/figure_loader.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/pose/figure_driver.hpp>
@@ -105,12 +106,18 @@ public:
   // Starts loading the joint correctives, once (they join on the first pose change).
   void loadCorrectivesOnce();
 
+  // the add-ons the scene file asks to be worn after the load (Genesis 9 eyes, mouth, lashes)
+  std::vector<dson::PostLoadAddon> addons;
+
   // ---- wardrobe (figure_wardrobe.cpp)
   std::vector<WornItem> items;
 
   // A wearable loaded and bound to the body. Reads the figure (its skeleton, its body's cage) and
   // changes nothing, so it can run on a worker while the figure is in use; commitWear puts it on.
   struct PreparedWear;
+  // The wearable's own scene, for resolving its textures before it is merged.
+  static const SceneGraph& preparedScene(const PreparedWear& wear);
+  static SceneGraph&       preparedScene(PreparedWear& wear);
   std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision);
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
   // figure's owning thread. The renderer's model has to be built again afterwards.
@@ -120,6 +127,7 @@ public:
   bool removeItem(int id);
   bool setItemVisible(int id, bool visible);
   const WornItem* item(int id) const;
+  dson::Store&    store() const { return *m_store; }
   // Lists the items the scene file came with (Figure::load does).
   void indexItems();
 
