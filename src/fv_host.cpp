@@ -316,15 +316,17 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
 
 // A texture without waiting for the cooker: the source image as it is, where that shows the right
 // thing. A normal map keeps its green (the material tells the renderer to flip it) and loses the
-// bump blended onto it; a height map and a roughness map need the cooker, so the surface goes
-// without them until a later load finds them cooked. A cutout alone changes the picture too much
-// for that: it and makeup (and formats the renderer cannot read) are cooked, unflipped, and waited for.
+// bump blended onto it. A roughness map (its grey into glTF's channels) and a height map (turned
+// into a normal map) are composed here: without them skin loses its sheen and its pores. A cutout
+// alone changes the picture too much: it and makeup (and formats the renderer cannot read) are
+// cooked, unflipped, and waited for; without a cooker they are composed here too.
 std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker)
 {
-  if(cooker && (!req.alphaRel.empty() || req.makeup || !readable(req.rel)))
+  const bool derived = req.channels == "mr" || req.channels == "bn";
+  if(cooker && (!readable(req.rel) || (!derived && (!req.alphaRel.empty() || req.makeup))))
     return cookedTexture(s, req, false, false).image;
-  // no cooker: a cutout or makeup is composed here, into a PNG beside the others made this way
-  if(!cooker && (!req.alphaRel.empty() || req.makeup) && readable(req.rel))
+  // composed into a PNG beside the others made this way
+  if((derived || (!cooker && (!req.alphaRel.empty() || req.makeup))) && readable(req.rel))
   {
     std::error_code ec;
     const auto      dir  = std::filesystem::temp_directory_path(ec) / "fv-composed";
@@ -339,7 +341,7 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
       if(!png)
       {
         LOGW("texture %s: %s\n", req.rel.c_str(), why.c_str());
-        return sourceTexture(lib, req);
+        return derived ? std::nullopt : sourceTexture(lib, req);
       }
       std::filesystem::create_directories(dir, ec);
       const auto    tmp = file.string() + "." + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
