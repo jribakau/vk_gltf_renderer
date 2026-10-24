@@ -614,10 +614,12 @@ Json FvHost::Impl::load(const Json& args)
   const uint64_t    seq   = ++requestSeq;
   const uint64_t    jobId = ++jobs;
   const std::string label = "Loading " + utf8Of(pathOf(name).filename());
+  // `replace`: a wearable opens on its own instead of going on the loaded figure
+  const bool replace = args.value("replace", false);
   job(jobId, {{"label", label}, {"state", "running"}});
 
   std::lock_guard lock(loadMutex);
-  loaders.emplace_back([this, s, roots = library->first, rel = library->second, seq, jobId, label] {
+  loaders.emplace_back([this, s, roots = library->first, rel = library->second, seq, jobId, label, replace] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
@@ -638,7 +640,7 @@ Json FvHost::Impl::load(const Json& args)
           return;
         }
       // clothing, hair and anatomy go on the figure that is loaded, as in DAZ Studio
-      if(doc && fv::dson::isWearable(doc->json) && onApp([this] { return figure && figure->fig->pose; }))
+      if(!replace && doc && fv::dson::isWearable(doc->json) && onApp([this] { return figure && figure->fig->pose; }))
       {
         wear({{"rel", rel}});
         job(jobId, {{"label", label}, {"state", "done"}});
@@ -2153,9 +2155,11 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     const std::string mode = args.at("mode").get<std::string>();
     if(mode != "raster" && mode != "rtx")
       throw std::runtime_error("mode is raster or rtx");
-    return impl->onApp([impl, mode] {
+    // RTX skin: Iray's volume under the surface (the default), or thin-walled scattering at it
+    const bool thin = args.value("skin", std::string("volume")) == "thin";
+    return impl->onApp([impl, mode, thin] {
       impl->renderer->setRenderSystem(mode == "rtx" ? RenderingMode::ePathtracer : RenderingMode::eRasterizer);
-      impl->skinMode = mode == "rtx" ? fv::mat::SkinMode::eVolume : fv::mat::SkinMode::eRaster;
+      impl->skinMode = mode == "rtx" ? (thin ? fv::mat::SkinMode::eThin : fv::mat::SkinMode::eVolume) : fv::mat::SkinMode::eRaster;
       impl->materials->setSkinMode(impl->skinMode);
       impl->protocol->events().snapshot("render", {{"mode", mode}});
       return Json{{"mode", mode}};

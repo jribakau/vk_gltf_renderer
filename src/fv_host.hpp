@@ -30,13 +30,14 @@
 //
 // Commands (args):
 //   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision}
-//   load            {path} or {rel}              -> {job}; the figure replaces the scene when done
+//   load            {path} or {rel}, replace?    -> {job}; the figure replaces the scene when done (a wearable
+//                                                goes on the loaded figure unless `replace`)
 //   pose.set        {figure, values: {"bone/kind/axis": value}}
 //   pose.reset      {figure}
 //   pose.eyes       {figure}                     aim the eyeballs at the camera
 //   morph.set       {figure, values: {name: value}}   coalesced, one setMany per frame
 //   morph.reset     {figure}
-//   render.mode     {mode: "raster" | "rtx"}
+//   render.mode     {mode: "raster" | "rtx", skin?: "volume" | "thin"}
 //   material.set    {material, values}           edit a surface (fv_materials.hpp); material.reset {material?}
 //   wear            {rel | path}                 put a wearable on the loaded figure -> {job}
 //   wardrobe.remove {item}, wardrobe.visible {item, visible}
