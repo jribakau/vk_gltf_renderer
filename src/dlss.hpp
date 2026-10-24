@@ -394,6 +394,7 @@ private:
   Kind       m_kind;  // RR or SR
   InitStatus m_state         = InitStatus::eNotChecked;
   int        m_builtSizeMode = -1;  // RR: Settings::sizeMode the inner GBuffer was last sized with (-1 = never)
+  VkExtent2D m_builtOutput{};       // RR: viewport size the feature was created to upscale to. 0 until the first build.
   bool m_needsRecreate = false;  // true when the NGX feature must be torn down + recreated (UI preset / size-mode / quality change)
   uint32_t m_preset = 0;  // NGX preset hint (RR or SR table; 0 = NGX default)
   uint32_t m_presetIndex = 0;  // `dlssPreset` parameter: index into the RR preset table, mirrored into m_preset

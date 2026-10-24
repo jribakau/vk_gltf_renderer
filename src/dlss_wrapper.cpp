@@ -352,6 +352,10 @@ NVSDK_NGX_Result DlssFeature::cmdInit(VkCommandBuffer cmd, NgxContext& context, 
     dlssdParams.InHeight       = info.inputSize.height;
     dlssdParams.InTargetWidth  = info.outputSize.width;
     dlssdParams.InTargetHeight = info.outputSize.height;
+    // Zero-init would leave this at MaxPerf (enum value 0). The input size above comes from a
+    // MaxQuality query; a MaxPerf feature then refuses to upscale it and writes the input
+    // rectangle into the corner of the viewport.
+    dlssdParams.InPerfQualityValue = info.quality;
 
     // Though marked as 'optional', these are absolutely needed
     dlssdParams.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;

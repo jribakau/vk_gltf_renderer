@@ -169,9 +169,11 @@ public:
     // RR-only fields (ignored when kind == SR):
     bool packedNormalRoughness = true;
     bool hardwareDepth         = true;
-    // SR-only field (ignored when kind == RR); typical values: MaxQuality (upscale) or DLAA
-    // (native-resolution antialias). For RR, the perf-quality preset is set per-creation via
-    // RayReconstruction_Hint_Render_Preset NGX parameters in cmdInit.
+    // Perf-quality mode of the NGX feature (MaxQuality, Balanced, DLAA, ...). SR takes it from the
+    // Quality combo. RR has no combo: updateSizeRr queries input sizes at MaxQuality and passes that
+    // same value here. Leaving it at zero selects MaxPerf, which will not upscale a MaxQuality input
+    // and writes that input into the corner of the output. The letter preset below is a different
+    // knob (which network), set through the RayReconstruction / DLSS hint parameters.
     NVSDK_NGX_PerfQuality_Value quality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
     // Network/model preset hint. Reinterpreted at cmdInit time as either
     // NVSDK_NGX_RayReconstruction_Hint_Render_Preset (RR) or NVSDK_NGX_DLSS_Hint_Render_Preset

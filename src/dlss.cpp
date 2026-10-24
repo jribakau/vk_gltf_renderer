@@ -1223,13 +1223,22 @@ VkExtent2D Dlss::updateSizeRr(VkCommandBuffer cmd, VkExtent2D size)
 {
   if(!isAvailable())
     return size;
-  // Skip update if DLSS-RR is disabled to avoid crashes and unnecessary memory use.
+  // Skip the rebuild while RR is off. A resize during the still view still has to be remembered:
+  // otherwise the feature keeps the previous viewport, and the next pan writes that rectangle
+  // into the corner of the new frame.
   if(!m_settings.enableRr)
+  {
+    if(m_builtOutput.width != 0 && (m_builtOutput.width != size.width || m_builtOutput.height != size.height))
+      m_needsRecreate = true;
     return size;
+  }
 
   // RR-flavored wrapper routes querySupportedInputSizes to NGX_DLSSD_GET_OPTIMAL_SETTINGS.
+  // The feature is created at this same mode (InitInfo::quality). The two must stay together:
+  // the input size is only valid for the mode that was queried.
+  constexpr auto              kRrQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
   DlssFeature::SupportedSizes supportedSizes{};
-  NVSDK_NGX_Result result = m_dlss.querySupportedInputSizes(m_ngx, {size, NVSDK_NGX_PerfQuality_Value_MaxQuality}, &supportedSizes);
+  NVSDK_NGX_Result result = m_dlss.querySupportedInputSizes(m_ngx, {size, kRrQuality}, &supportedSizes);
   if(NVSDK_NGX_FAILED(result))
   {
     LOGE("DLSS-RR: Failed to query supported input sizes: %d\n", result);
@@ -1254,12 +1263,11 @@ VkExtent2D Dlss::updateSizeRr(VkCommandBuffer cmd, VkExtent2D size)
   // A new input size restarts the Halton sequence and drops the temporal history.
   if(m_builtSizeMode >= 0 && m_builtSizeMode != m_settings.sizeMode)
     notifyReset();
-  m_builtSizeMode = m_settings.sizeMode;
   LOGI("DLSS-RR: input %ux%u for output %ux%u (input size mode %d)\n", renderingSize.width, renderingSize.height,
        size.width, size.height, m_settings.sizeMode);
-  m_needsRecreate = false;
 
   DlssFeature::InitInfo initInfo{
+      .quality    = kRrQuality,
       .preset     = m_preset,
       .inputSize  = renderingSize,
       .outputSize = size,
@@ -1267,7 +1275,21 @@ VkExtent2D Dlss::updateSizeRr(VkCommandBuffer cmd, VkExtent2D size)
   m_dlss.deinit();
   if(m_graphicsQueue)
     NVVK_CHECK(vkQueueWaitIdle(m_graphicsQueue));
-  m_dlss.cmdInit(cmd, m_ngx, initInfo);
+  const NVSDK_NGX_Result initRes = m_dlss.cmdInit(cmd, m_ngx, initInfo);
+  if(NVSDK_NGX_FAILED(initRes))
+  {
+    // deinit() already dropped the old feature. Keep the previous built size and ask again next
+    // frame; recording this size now would treat the failed create as done.
+    LOGE("DLSS-RR: feature create failed: %d (in=%ux%u, out=%ux%u)\n", initRes, renderingSize.width,
+         renderingSize.height, size.width, size.height);
+    m_needsRecreate = true;
+  }
+  else
+  {
+    m_builtSizeMode = m_settings.sizeMode;
+    m_needsRecreate = false;
+    m_builtOutput   = size;
+  }
 
   // Recreate the G-Buffers
   const uint32_t dlssColorCount = static_cast<uint32_t>(kindConfig(Kind::RR).innerColorFormats.size());
