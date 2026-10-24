@@ -155,6 +155,29 @@ TEST_P(FigureMorphSet, IncrementalFlushMatchesARebuild)
 
 INSTANTIATE_TEST_SUITE_P(Subdivision, FigureMorphSet, testing::Values(0, 1));
 
+// The host republishes the morph topic when version() moved: a dial's value, or a weight a driver
+// applied (a corrective after a pose). The same value again, or an unknown dial, is not a change.
+TEST(FigureMorphSet, VersionMovesOnlyWhenAValueOrAWeightChanges)
+{
+  auto                geo = std::make_shared<fv::mesh::BuiltMesh>(grid(4, 0));
+  fv::morph::MorphSet morphs([&](int) { return geo.get(); });
+  morphs.addTarget("m0", 0, targetOf(*geo, {0, 1}, {0.1f, 0, 0, 0.1f, 0, 0}));
+  const int v0 = morphs.version();
+  morphs.set("m0", 0.5);
+  EXPECT_GT(morphs.version(), v0);
+  const int v1 = morphs.version();
+  morphs.set("m0", 0.5);
+  morphs.set("not a dial", 1.0);
+  EXPECT_EQ(morphs.version(), v1);
+  morphs.applyWeights({{"m0", 0.5}});  // the dial's own value: the weight did not change
+  EXPECT_EQ(morphs.version(), v1);
+  morphs.applyWeights({{"m0", 0.25}});  // a driver's weight
+  EXPECT_GT(morphs.version(), v1);
+  const int v2 = morphs.version();
+  morphs.applyWeights({{"m0", 0.25}});
+  EXPECT_EQ(morphs.version(), v2);
+}
+
 TEST(FigureMorphSet, ALocalMorphReportsOnlyWhatItMoved)
 {
   auto                  geo = std::make_shared<fv::mesh::BuiltMesh>(grid(20, 0));

@@ -74,6 +74,23 @@ TEST(FramePacing, RefiningFramesFeedTheStreamOncePerPeriod)
   EXPECT_LE(copies, 63);
 }
 
+TEST(FramePacing, RefiningFramesFeedTheStreamAtTheCopyPeriod)
+{
+  FramePacer p(16ms);
+  p.setCopyPeriod(50ms);
+  int copies = 0;
+  for(auto t = t0; t < t0 + 1000ms; t += 1ms)
+    copies += p.begin(p.startTime(t, true), true) ? 1 : 0;
+  EXPECT_GE(copies, 20);
+  EXPECT_LE(copies, 21);
+  // paced frames are not held to the copy period: one period apart, every one is copied
+  const auto t = p.startTime(t0 + 1000ms, false);
+  EXPECT_TRUE(p.begin(t, false));
+  const auto next = p.startTime(t + 1ms, false);
+  EXPECT_EQ(next, t + 16ms);
+  EXPECT_TRUE(p.begin(next, false));
+}
+
 TEST(FramePacing, ASlowRefiningFrameIsAlwaysCopied)
 {
   FramePacer p(16ms);

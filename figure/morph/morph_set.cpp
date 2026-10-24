@@ -388,7 +388,7 @@ void MorphSet::setMany(const std::vector<std::pair<std::string, double>>& values
   for(const auto& [name, value] : values)
   {
     Channel* ch = channelMut(name);
-    if(!ch)
+    if(!ch || ch->value == value)
       continue;
     // the buffers still hold the old weight until the driver says otherwise
     if(driver && !m_weights.count(name))
@@ -398,6 +398,7 @@ void MorphSet::setMany(const std::vector<std::pair<std::string, double>>& values
   }
   if(changed.empty())
     return;
+  m_version++;
   if(driver)
     driver->update();
   else
@@ -409,6 +410,12 @@ bool MorphSet::apply(const std::string& name, double value)
   const Channel* ch = channel(name);
   if(!ch)
     return false;
+  {
+    const auto   old    = m_weights.find(name);
+    const double before = old == m_weights.end() ? ch->value : old->second;
+    if(value != before)
+      m_version++;
+  }
   if(value == ch->value)
     m_weights.erase(name);
   else

@@ -418,6 +418,15 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
   const auto&                   vertexBufs   = scnVk.vertexBuffers();
   const auto&                   skinTasks    = scn.animation().getSkinTasks();
 
+  // The frame still in flight may be reading the vertex buffers this pass writes and the matrix and
+  // weight buffers its upload overwrites (its raster, its ray tracing, its AS builds): order those
+  // reads before this frame's writes. The static vertex uploads (GltfRenderer::applyPendingVertexUploads)
+  // do the same before their copy.
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+
   // Primitives that are BOTH morphed and skinned must compose morph -> skin: the skin pass
   // reads the morphed vertex buffers (Phase 2 output) as its base geometry rather than the
   // static skin base. Build the set of morph-target primitive IDs to detect this overlap.

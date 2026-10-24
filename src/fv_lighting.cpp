@@ -411,6 +411,13 @@ double tmExposure(const std::string& method, double exposure)
   return method == "aces" ? exposure / 0.6 : exposure;
 }
 
+// The path tracer scales a path down when its mean radiance, before exposure, passes the firefly
+// clamp. 16 after exposure: with the ACES, AgX and filmic curves everything above comes out white,
+// so no highlight that could be seen is cut (sun catchlights, lip speculars) while the outliers Ray
+// Reconstruction smears still are. The renderer's own calibration (`calibrateFireflyClamp`, from the
+// environment's peak) dulls catchlights on a figure.
+constexpr double kFireflyClamp = 16.0;
+
 int tmMethod(const std::string& method)
 {
   if(method == "aces")
@@ -522,6 +529,9 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"tmVignette", t.vignette},
       {"tmTemperature", t.temperature},
       {"tmTint", t.tint},
+      // the renderer recalibrates this on every load, so the host drops it from what it has applied
+      // after a load or an environment change and sends it again
+      {"ptFireflyClamp", kFireflyClamp / tmExposure(t.method, t.exposure)},
       {"rasterShadows", s.sun.enabled && s.sun.shadows},
       {"shadowMapSize", s.shadow.size},
       {"shadowContactHardening", s.shadow.contactHardening},

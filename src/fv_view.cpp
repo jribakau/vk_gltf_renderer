@@ -421,14 +421,16 @@ void FvView::publishCamera()
   const auto now = std::chrono::steady_clock::now();
   if(!manip || now - m_cameraAt < std::chrono::milliseconds(33))
     return;
+  // the throttle counts from this look, so an unchanged camera is built and compared once per
+  // period, not every frame
+  m_cameraAt = now;
   glm::dvec3 eye, center, up;
   manip->getLookat(eye, center, up);
   fv::Json camera{{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}, {"focalLength", m_lens.focalLength}};
   camera.update(m_cameraExtra);
   if(camera == m_camera)
     return;
-  m_camera   = std::move(camera);
-  m_cameraAt = now;
+  m_camera = std::move(camera);
   m_events->snapshot("camera", m_camera);
 }
 

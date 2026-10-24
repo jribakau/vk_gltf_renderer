@@ -237,6 +237,11 @@ TEST(FvLighting, RendererParamsFollowTheState)
   EXPECT_EQ(p["rasterShadows"], false);
   EXPECT_EQ(p["tmMethod"], 4);
   EXPECT_EQ(p["tmExposure"], 1.5);
+  // the firefly clamp goes with the lighting, 16 before the tone mapper's exposure
+  EXPECT_DOUBLE_EQ(p["ptFireflyClamp"].get<double>(), 16.0 / 1.5);
+  s.tonemap.method = "aces";
+  EXPECT_DOUBLE_EQ(L::rendererParams(s, {})["ptFireflyClamp"].get<double>(), 16.0 / (1.5 / 0.6));
+  s.tonemap.method = "agx";
   s.ground.mode = "off";
   s.env.source  = "plain";
   EXPECT_EQ(L::rendererParams(s, {})["useInfinitePlane"], false);

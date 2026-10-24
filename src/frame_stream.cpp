@@ -84,8 +84,8 @@ struct FrameStream::Impl
   VkPhysicalDevice      physicalDevice{};
   std::vector<Readback> ring;
 
-  // raw frames: application thread -> encoder thread (one slot; a frame is dropped if the
-  // encoder is still busy with the previous one)
+  // raw frames: application thread -> encoder thread (one slot: a frame that arrives while the
+  // encoder is still busy replaces the one waiting, so the newest is the one encoded)
   std::mutex              rawMutex;
   std::condition_variable rawCv;
   std::vector<uint8_t>    rawPending;
@@ -107,6 +107,7 @@ struct FrameStream::Impl
   std::atomic<uint64_t> framesRendered{0};
   std::atomic<uint64_t> framesEncoded{0};
   std::atomic<uint64_t> framesSent{0};
+  std::atomic<uint64_t> framesReplaced{0};  // copied out, then replaced by a newer frame before the encoder took them
   std::atomic<double>   renderFps{0.0};
   std::atomic<double>   encodeMs{0.0};
   // live encoder settings, read by the encoder thread each frame
@@ -208,6 +209,8 @@ void FrameStream::onUpdate()
   // Nobody watching: keep to the cap, the host needs the machine more than a still needs to converge.
   const bool refining = s.clients > 0 && s.info.refining && s.info.refining();
   s.pacer.setPeriod(period);
+  s.pacer.setCopyPeriod(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / std::clamp(s.info.refineFps, 1, fps))));
   auto       now   = std::chrono::steady_clock::now();
   const auto start = s.pacer.startTime(now, refining);
   if(now < start)
@@ -222,7 +225,7 @@ void FrameStream::onUpdate()
       s.renderFps = s.renderFps * 0.9 + (1.0 / dt) * 0.1;
   }
   s.lastFrame = now;
-  s.copyFrame = s.pacer.begin(now);
+  s.copyFrame = s.pacer.begin(now, refining);
 }
 
 void FrameStream::onRender(VkCommandBuffer cmd)
@@ -386,21 +389,19 @@ void FrameStream::Impl::destroyRing()
   ring.clear();
 }
 
-// Application thread: the slot's copy has completed. Hand the pixels to the encoder unless it is
-// still busy with the previous frame, in which case this one is dropped (the next will do).
+// Application thread: the slot's copy has completed. Hand the pixels to the encoder. If it is still
+// busy with an earlier frame and one is already waiting, this one takes its place: at 4K an encode
+// takes longer than a frame, and the frame that waits should be the newest, not the stalest.
 void FrameStream::Impl::harvest(Readback& rb)
 {
   std::unique_lock lock(rawMutex);
   if(rawReady)
   {
-    // dropped: a traced edit rides on the next frame copied out instead
-    if(!rb.trace.empty())
-    {
-      rb.trace.pop_back();
-      pendingTrace = std::move(rb.trace);
-      rb.trace.clear();
-    }
-    return;
+    framesReplaced++;
+    // the replaced frame's trace rides on this one, which shows its edit too
+    if(rb.trace.empty())
+      rb.trace = std::move(rawTrace);
+    rawTrace.clear();
   }
   if(!rb.trace.empty())
   {
@@ -454,11 +455,12 @@ void FrameStream::Impl::encodeLoop()
     const int  wantQuality = quality.load();
     const bool wantFull    = fullChroma.load();
     // A converged path trace repeats the same image frame after frame; don't re-send it, except
-    // once with full chroma (or the quality the host raised to), since the frame that was sent
-    // was encoded for speed.
+    // once with full chroma, or when the quality rose above the one it went out at, since the frame
+    // that was sent was encoded for speed. A quality lowered while it stands (the first touch after
+    // a still) is no reason to encode the image already on screen again.
     const bool repeat = extent.width == lastExtent.width && extent.height == lastExtent.height
                         && raw.size() == last.size() && std::memcmp(raw.data(), last.data(), raw.size()) == 0;
-    if(repeat && lastFullChroma && lastQuality == wantQuality)
+    if(repeat && lastFullChroma && wantQuality <= lastQuality)
     {
       if(!trace.empty())
         LOGI("%s (frame repeated, not re-sent)\n", formatTrace(trace).c_str());
@@ -526,7 +528,7 @@ void FrameStream::Impl::serve()
     uint64_t seen = 0;
     res.set_content_provider(
         "multipart/x-mixed-replace; boundary=frame",
-        [this, seen](size_t, httplib::DataSink& sink) mutable -> bool {
+        [this, seen, first = true](size_t, httplib::DataSink& sink) mutable -> bool {
           std::shared_ptr<const std::string> frame;
           {
             std::unique_lock lock(jpgMutex);
@@ -537,8 +539,14 @@ void FrameStream::Impl::serve()
             seen  = jpgSeq;
             frame = jpg;
           }
-          const std::string head = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + std::to_string(frame->size()) + "\r\n\r\n";
-          if(!sink.write(head.data(), head.size()) || !sink.write(frame->data(), frame->size()) || !sink.write("\r\n", 2))
+          // The boundary that ends a part follows the frame's bytes at once, so a browser that
+          // waits for it shows the frame now rather than when the next one arrives; the opening
+          // boundary goes once, on connect.
+          std::string head = first ? "--frame\r\n" : "";
+          first            = false;
+          head += "Content-Type: image/jpeg\r\nContent-Length: " + std::to_string(frame->size()) + "\r\n\r\n";
+          static constexpr char tail[] = "\r\n--frame\r\n";
+          if(!sink.write(head.data(), head.size()) || !sink.write(frame->data(), frame->size()) || !sink.write(tail, sizeof(tail) - 1))
             return false;
           framesSent++;
           return true;
@@ -596,7 +604,8 @@ void FrameStream::Impl::serve()
       extent = jpgExtent;
     }
     const std::string body = "{\"rendered\":" + std::to_string(framesRendered.load()) + ",\"encoded\":" + std::to_string(framesEncoded.load())
-                             + ",\"sent\":" + std::to_string(framesSent.load()) + ",\"width\":" + std::to_string(extent.width)
+                             + ",\"sent\":" + std::to_string(framesSent.load()) + ",\"replaced\":" + std::to_string(framesReplaced.load())
+                             + ",\"width\":" + std::to_string(extent.width)
                              + ",\"height\":" + std::to_string(extent.height) + ",\"fps\":" + std::to_string(renderFps.load())
                              + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load()) + "}";
     res.set_content(body, "application/json");

@@ -26,6 +26,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <chrono>
 #include <cstring>
 #include <deque>
@@ -111,7 +112,7 @@ struct Loaded
   // morph topic: -1 until the channel list has been published, then the value and weight last sent
   int                                                          morphList = -1;
   std::unordered_map<std::string, std::pair<double, double>> published;
-  bool                                                         touched = true;  // dials or pose changed: publish
+  int                                                          morphsSeen = -1;  // MorphSet::version() last published
   uint64_t                                                     busyJob = 0;
   bool                                                         busyOn  = false;
   // the textures the glTF was built with, by request key, and whether their rows run bottom-up:
@@ -599,6 +600,51 @@ Json toolJson(const nvmcp::ToolResult& r)
   return Json::parse(r.json);
 }
 
+// A dial drag's cost on the application thread, summed over a second and logged once (`[fv-time]`):
+// the morph apply (the formula graph, the deltas and the re-welded normals) and the vertex uploads
+// it queues for the renderer. Phase 6 of docs/pipeline-roadmap.md wants these before it starts.
+struct DialTiming
+{
+  enum Kind
+  {
+    eSetMany,
+    eApplyMesh,
+    eCount
+  };
+  struct Sum
+  {
+    int    n     = 0;
+    double ms    = 0;
+    double maxMs = 0;
+  };
+  std::array<Sum, eCount>               sums{};
+  std::chrono::steady_clock::time_point since{};
+
+  void add(Kind k, double ms)
+  {
+    if(since == std::chrono::steady_clock::time_point{})
+      since = std::chrono::steady_clock::now();
+    Sum& s = sums[size_t(k)];
+    s.n++;
+    s.ms += ms;
+    s.maxMs = std::max(s.maxMs, ms);
+  }
+
+  // The line to log once a second has passed since the first sample, else empty; clears the sums.
+  std::string report(std::chrono::steady_clock::time_point now)
+  {
+    if(since == std::chrono::steady_clock::time_point{} || now - since < std::chrono::seconds(1))
+      return {};
+    const Sum& a = sums[eSetMany];
+    const Sum& b = sums[eApplyMesh];
+    char       line[256];
+    snprintf(line, sizeof line, "[fv-time] dial: %d steps, setMany %.1f ms mean, %.1f max; %d frames of mesh changes, applyMesh %.1f ms mean, %.1f max",
+             a.n, a.n ? a.ms / a.n : 0.0, a.maxMs, b.n, b.n ? b.ms / b.n : 0.0, b.maxMs);
+    *this = DialTiming{};
+    return line;
+  }
+};
+
 }  // namespace
 
 std::string figureSource(const Loaded& figure);
@@ -846,6 +892,7 @@ struct FvHost::Impl
   fv::lighting::State         lighting;
   bool                        lightingStarted = false;
   Json                        appliedParams   = Json::object();  // what the renderer was last given
+  DialTiming                  dialTiming;
   Json                        appliedSun;                        // the sun light as last written
   Json                        publishedLighting;
   // the environment image in the renderer ("studio", "hdr:<path>"), and the one asked for
@@ -1641,6 +1688,7 @@ void FvHost::Impl::compose()
     if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
       autoGround = *static_cast<const float*>(p->destination.raw);
   appliedParams.erase("infinitePlaneDistance");
+  appliedParams.erase("ptFireflyClamp");  // the load recalibrated it (calibrateFireflyClamp); ours goes again
   applyLighting(false);
 
   std::vector<FvView::PropNodes> views;
@@ -1702,7 +1750,6 @@ void FvHost::Impl::compose()
       }
       p.stats = described["stats"];
       protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
-      f.touched = true;
     }
     else if(p.figure)
     {
@@ -2665,7 +2712,6 @@ Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
     figure->dforce->setEnabled(args.value("on", true));
   else
     figure->dforce->resimulate();
-  figure->touched = true;
   publishDforce(*figure, true);
   return {{"ok", true}};
 }
@@ -3069,7 +3115,6 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         problems.push_back(p);
     if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
       target->dforce->setEnabled(args["dforce"].get<bool>());
-    target->touched = true;
     for(size_t i = 0; i < problems.size() && i < 5; i++)
       notice(prop->name + ": " + problems[i]);
     if(problems.size() > 5)
@@ -3154,7 +3199,6 @@ void FvHost::Impl::applyGizmoEdit()
     return;
   // nodes, correctives and rebound skins go out with this frame's pump()
   edit.figure->fig->pose->setLocalTransform(edit.bone, edit.rotation, edit.position);
-  edit.figure->touched = true;
   patchPose(*edit.figure, {edit.bone});
 }
 
@@ -3212,7 +3256,6 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
     else
     {
       fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
-      figure->touched        = true;
       protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
       // a property preset can also set surfaces ("#materials/<surface>:?<channel>" urls)
       const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
@@ -3349,6 +3392,7 @@ void FvHost::Impl::requestEnvironment()
       loadedEnv = want;
       envName   = kStudioName;
       envSize   = {kStudioWidth, kStudioHeight};
+      appliedParams.erase("ptFireflyClamp");  // an environment load recalibrates it; applyLighting sends ours
     }
     return;
   }
@@ -3388,6 +3432,7 @@ void FvHost::Impl::requestEnvironment()
       envSize   = size;
       job(jobId, {{"label", label}, {"state", "done"}});
       appliedParams.erase("envSystem");
+      appliedParams.erase("ptFireflyClamp");  // the load recalibrated it
       applyLighting(false);  // hdrBlur depends on the image's size
     });
   });
@@ -3593,8 +3638,9 @@ void FvHost::Impl::applyPendingMorphs()
     if(!p || !p->figure || !p->figure->fig->morphs || dials.empty())
       continue;
     std::vector<std::pair<std::string, double>> values(dials.begin(), dials.end());
+    const auto                                  t0 = std::chrono::steady_clock::now();
     p->figure->fig->morphs->setMany(values);
-    p->figure->touched = true;
+    dialTiming.add(DialTiming::eSetMany, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
   }
 }
 
@@ -3604,9 +3650,9 @@ void FvHost::Impl::publishMorphs(Loaded& f)
     return;
   fv::morph::MorphSet& morphs      = *f.fig->morphs;
   const bool           listChanged = morphs.listVersion() != f.morphList;
-  if(!listChanged && !f.touched)
+  if(!listChanged && f.morphsSeen == morphs.version())
     return;
-  f.touched    = false;
+  f.morphsSeen = morphs.version();
   auto& events = protocol->events();
   if(listChanged)
   {
@@ -3684,7 +3730,6 @@ Json FvHost::Impl::poseSet(const Json& args)
       bones.push_back(v.bone);
   // nodes, corrective morphs and rebound skins go out with this frame's pump()
   figure->fig->pose->setMany(values);
-  figure->touched = true;
   // the values as the rig took them (clamped), for every panel showing the pose
   patchPose(*figure, bones);
   return {{"changed", figure->fig->pose->changed()}};
@@ -3877,7 +3922,6 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       for(const auto& pb : p->figure->fig->pose->bones())
         if(fv::pose::isEyeBone(pb.name))
           bones.push_back(pb.id);
-      p->figure->touched = true;
       impl->patchPose(*p->figure, bones);
       return Json{{"aimed", n}};
     });
@@ -3888,7 +3932,6 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       if(!figure || !figure->fig->pose)
         throw std::runtime_error("no such figure");
       figure->fig->pose->reset();
-      figure->touched = true;
       impl->protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
       return Json{{"changed", 0}};
     });
@@ -3917,7 +3960,6 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
         impl->pendingMorphs.erase(figure->id);
       }
       figure->fig->morphs->resetAll();
-      figure->touched = true;
       return Json{{"ok", true}};
     });
   });
@@ -4158,16 +4200,22 @@ void FvHost::onUpdate()
       s.publishDforce(f, false);
     }
     s.applyNodes(f, changes.nodes);
-    for(const fv::morph::MeshChange& mesh : changes.meshes)
-      s.applyMesh(f, mesh);
+    if(!changes.meshes.empty())
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      for(const fv::morph::MeshChange& mesh : changes.meshes)
+        s.applyMesh(f, mesh);
+      s.dialTiming.add(DialTiming::eApplyMesh, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
     s.applyRebind(f, changes.rebound);
-    if(!changes.empty())
-      f.touched = true;
     for(const std::string& w : f.fig->takeWarnings())
       s.notice(p->name + ": " + w);
     s.publishBusy(f);
     s.publishMorphs(f);
   }
+  if(fv::timing::enabled())
+    if(const std::string line = s.dialTiming.report(std::chrono::steady_clock::now()); !line.empty())
+      LOGI("%s\n", line.c_str());
   // props the gizmo moved: one patch a frame
   if(!s.movedProps.empty())
   {

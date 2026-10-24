@@ -141,6 +141,9 @@ public:
 
   // Counts up when channels were added, removed or relabelled.
   int listVersion() const { return m_listVersion; }
+  // Bumped when a dial's value or a channel's applied weight changes (a driver's correctives
+  // included), so a reader republishes the values only then. The list's own changes are listVersion().
+  int version() const { return m_version; }
   // Loads that failed, worth telling the user about (missing files are reported separately).
   std::vector<std::string> takeErrors();
 
@@ -234,6 +237,7 @@ private:
   std::chrono::steady_clock::time_point                 m_driverSince;
   bool                                                  m_running = false;
   int                                                   m_listVersion = 0;
+  int                                                   m_version     = 0;
   std::vector<std::string>                              m_errors;
   std::map<int, MeshChange>                             m_changes;
   std::vector<std::unique_ptr<FollowerState>>           m_followers;

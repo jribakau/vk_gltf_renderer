@@ -62,6 +62,9 @@ struct FrameStreamCreateInfo
   uint16_t port{7672};
   int      quality{92};  // JPEG quality 1-100
   int      maxFps{60};   // frame-rate cap while a client is connected (10 fps without one)
+  // frames a second the stream gets while a still refines (its frames run unpaced): fewer than
+  // maxFps, so the encoder is idle when the next drag's frames arrive
+  int refineFps{20};
 
   // The image to stream and its size: the renderer's tonemapped output, in
   // VK_IMAGE_LAYOUT_GENERAL after the renderer's onRender. Called on the application thread.

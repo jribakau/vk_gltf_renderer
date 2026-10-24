@@ -36,10 +36,16 @@ public:
 
   explicit FramePacer(Clock::duration period)
       : m_period(period)
+      , m_copyPeriod(period)
   {
   }
 
   void setPeriod(Clock::duration period) { m_period = period; }
+
+  // How often a refining still's frames go to the stream. A converging image needs fewer than the
+  // paced rate, and a stream fed at the paced rate with full-chroma frames keeps the encoder busy
+  // just when the next drag's first frames arrive.
+  void setCopyPeriod(Clock::duration period) { m_copyPeriod = period; }
 
   // When the next frame may start. `refining`: the renderer is accumulating a still.
   Clock::time_point startTime(Clock::time_point now, bool refining) const
@@ -49,12 +55,13 @@ public:
     return std::max(now, m_lastFrame + m_period);
   }
 
-  // A frame starts at `at`. Returns whether its image goes to the stream: always at the paced rate,
-  // and when refining, once per period.
-  bool begin(Clock::time_point at)
+  // A frame starts at `at`. Returns whether its image goes to the stream: every paced frame, and
+  // when refining, one per copy period.
+  bool begin(Clock::time_point at, bool refining = false)
   {
-    m_lastFrame   = at;
-    const bool due = m_lastCopy == Clock::time_point{} || at >= m_lastCopy + m_period;
+    m_lastFrame       = at;
+    const auto period = refining ? m_copyPeriod : m_period;
+    const bool due    = m_lastCopy == Clock::time_point{} || at >= m_lastCopy + period;
     if(due)
       m_lastCopy = at;
     return due;
@@ -62,6 +69,7 @@ public:
 
 private:
   Clock::duration   m_period;
+  Clock::duration   m_copyPeriod;
   Clock::time_point m_lastFrame{};
   Clock::time_point m_lastCopy{};
 };
