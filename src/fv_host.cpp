@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <deque>
@@ -51,6 +52,7 @@
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
+#include <figure/wardrobe/fit/generation.hpp>
 #include <figure/gltf/export_glb.hpp>
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/io/timing.hpp>
@@ -961,6 +963,41 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   }
 }
 
+// The library path the figure was opened from, a rel when it came from the library.
+std::string figureSource(const Loaded& figure)
+{
+  if(!figure.source.is_object())
+    return {};
+  if(figure.source.contains("rel"))
+    return figure.source.value("rel", "");
+  if(figure.source.contains("path"))
+    return figure.source.value("path", "");
+  return {};
+}
+
+// "Genesis 9", plus " Female" or " Male" when the path says. Bones cover a file whose path never does.
+std::string figureGeneration(const Loaded& figure)
+{
+  const std::string source = figureSource(figure);
+  std::vector<std::string> bones;
+  if(figure.fig && figure.fig->pose)
+    for(const auto& pb : figure.fig->pose->bones())
+      if(!pb.name.empty())
+        bones.push_back(pb.name);
+  const auto gen = fv::wardrobe::identifyGeneration(source, bones, {});
+  if(!gen)
+    return {};
+  std::string label = fv::wardrobe::label(*gen);
+  const std::string gender = fv::wardrobe::genderHint(source);
+  if(!gender.empty())
+  {
+    label.push_back(' ');
+    label.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(gender[0]))));
+    label.append(gender, 1, std::string::npos);
+  }
+  return label;
+}
+
 // What the panels learn when a figure is installed or built again: its pose, its hierarchy and
 // stats, what it wears.
 void FvHost::Impl::publishFigure()
@@ -982,7 +1019,7 @@ void FvHost::Impl::publishFigure()
       };
     }
     view->setFigure(figure->id, figure->fig->loaded.name, figure->fig->loaded.scene, figure->fig->loaded.root, figure->nodeOf,
-                    figure->fig->morphs ? figure->fig->morphs->size() : 0, std::move(bones));
+                    figure->fig->morphs ? figure->fig->morphs->size() : 0, std::move(bones), figureSource(*figure), figureGeneration(*figure));
   }
   publishWardrobe();
 }

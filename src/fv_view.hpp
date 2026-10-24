@@ -72,8 +72,9 @@ public:
 
   // Publishes the scene topic and remembers how glTF nodes map back to the figure. `morphs` is the
   // dial count the panel shows.
+  // `source` is the figure's library path; `generation` is "Genesis 9" plus " Female" or " Male" when known.
   void setFigure(const std::string& id, const std::string& name, const fv::SceneGraph& scene, int root,
-                 const std::vector<int>& nodeOf, int morphs, Bones posable);
+                 const std::vector<int>& nodeOf, int morphs, Bones posable, const std::string& source, const std::string& generation);
   // The same for a model the renderer loaded from a glTF or OBJ file: node i of the topic is glTF
   // node i, there are no bones, and the stats come from the model.
   void setModel(const std::string& id, const std::string& name, const tinygltf::Model& model);

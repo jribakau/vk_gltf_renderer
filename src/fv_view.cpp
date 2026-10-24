@@ -209,7 +209,7 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
 }
 
 void FvView::setFigure(const std::string& id, const std::string& name, const fv::SceneGraph& scene, int root,
-                       const std::vector<int>& nodeOf, int morphs, Bones posable)
+                       const std::vector<int>& nodeOf, int morphs, Bones posable, const std::string& source, const std::string& generation)
 {
   m_id     = id;
   m_gltfOf = nodeOf;
@@ -245,6 +245,8 @@ void FvView::setFigure(const std::string& id, const std::string& name, const fv:
       triangles += int((mesh.geo->fullIndex.empty() ? mesh.geo->renderTris.size() : mesh.geo->fullIndex.size()) / 3);
   m_events->snapshot("scene", {{"figure", id},
                                {"name", name},
+                               {"source", source},
+                               {"generation", generation},
                                {"figures", {{id, {{"name", name}}}}},
                                {"nodes", nodes},
                                {"stats", {{"meshes", scene.meshes.size()},
