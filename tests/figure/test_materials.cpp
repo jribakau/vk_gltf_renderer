@@ -87,6 +87,12 @@ TEST(Materials, SkinGoesOutAsAVolumeForTheRendererAndPlainForTheRasterizer)
     EXPECT_TRUE(ext.contains("KHR_materials_volume"));
     EXPECT_TRUE(ext.contains("KHR_materials_scatter"));
     EXPECT_NEAR(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 0.6f, 1e-5f);
+    // the medium warms what scatters; the base colour, which the walk leaves through, is the one
+    // the rasterizer shows, not tinted again
+    const auto  plain = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+    const auto& base  = lowered.material["pbrMetallicRoughness"]["baseColorFactor"];
+    for(int i = 0; i < 3; i++)
+      EXPECT_FLOAT_EQ(base[i].get<float>(), plain.material["pbrMetallicRoughness"]["baseColorFactor"][i].get<float>());
   }
   {
     const auto lowered = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
@@ -172,6 +178,130 @@ TEST(Materials, AMaterialPresetOverridesChannelsOfTheSurfacesItNames)
   EXPECT_EQ(scene.materials[1].surface.base.map, "/Runtime/Textures/face_d.jpg");
   // the shared channels of the untouched material are not changed through the copy
   EXPECT_FLOAT_EQ(scene.materials[1].surface.glossy.roughness.value, 0.4f);
+}
+
+// Two worn items under a body group, each a figure with its own surfaces: "Eyelashes Upper" and
+// "Eyelashes Lower" on the lashes, "Base" on the hair, and a "Base" of the body's own.
+fv::SceneGraph wornScene()
+{
+  fv::SceneGraph scene;
+  const auto     addFigure = [&](const std::string& dson, int parent, const std::vector<std::string>& surfaces) {
+    fv::Mesh mesh;
+    for(const std::string& s : surfaces)
+    {
+      mesh.materials.push_back(int(scene.materials.size()));
+      scene.materials.push_back(fv::dson::buildMaterial(s, channelsOf(kSkin)));
+    }
+    scene.meshes.push_back(mesh);
+    fv::Node group;
+    group.dsonNode = dson;
+    group.parent   = parent;
+    scene.nodes.push_back(group);
+    const int groupId = int(scene.nodes.size()) - 1;
+    fv::Node shape;
+    shape.parent = groupId;
+    shape.mesh   = int(scene.meshes.size()) - 1;
+    scene.nodes.push_back(shape);
+    return groupId;
+  };
+  const int body = addFigure("Genesis9", -1, {"Body", "Base"});
+  addFigure("Genesis9Eyelashes", body, {"Eyelashes Upper", "Eyelashes Lower"});
+  addFigure("FEMessyHair", body, {"Base", "Transition"});
+  return scene;
+}
+
+TEST(Materials, APresetSurfaceLandsUnderTheNodeItNames)
+{
+  const fv::SceneGraph scene = wornScene();
+  // the hair's Base, not the body's, though the hair hangs under the body
+  EXPECT_EQ(fv::dson::presetTargets(scene, "FEMessyHair", "Base"), std::vector<int>({4}));
+  EXPECT_EQ(fv::dson::presetTargets(scene, "Genesis9", "Base"), std::vector<int>({1}));
+  // a node the scene doesn't have: every surface of the name
+  EXPECT_EQ(fv::dson::presetTargets(scene, "SomeOtherHair", "Base"), std::vector<int>({1, 4}));
+}
+
+TEST(Materials, APresetSurfaceFallsBackToTheSurfacesItWasSplitInto)
+{
+  const fv::SceneGraph scene = wornScene();
+  EXPECT_EQ(fv::dson::presetTargets(scene, "Genesis9Eyelashes", "Eyelashes"), std::vector<int>({2, 3}));
+  // "Eyelashes" is not a prefix of "EyelashesX": only whole words split off
+  EXPECT_TRUE(fv::dson::presetTargets(scene, "Genesis9Eyelashes", "Eyelash").empty());
+}
+
+TEST(Materials, APresetSurfaceFallsBackToItsNameWithoutAProductPrefix)
+{
+  fv::SceneGraph scene = wornScene();
+  EXPECT_EQ(fv::dson::presetTargets(scene, "FEMessyHair", "FE Transition"), std::vector<int>({5}));
+  const Json preset = Json::parse(R"({"scene":{"animations":[
+    {"url":"FEMessyHair#materials/FE%20Base:?Glossy%20Roughness/value","keys":[[0,0.15]]},
+    {"url":"FEMessyHair#materials/FE%20Cap:?Glossy%20Roughness/value","keys":[[0,0.15]]}
+  ]}})");
+  const auto result = fv::dson::applyMaterialPreset(preset, scene);
+  EXPECT_EQ(result.changed, std::set<int>({4}));
+  EXPECT_EQ(result.matched, std::set<std::string>({"FE Base"}));
+  EXPECT_EQ(result.missing, std::set<std::string>({"FE Cap"}));
+  EXPECT_FLOAT_EQ(scene.materials[4].surface.glossy.roughness.value, 0.15f);
+  EXPECT_FLOAT_EQ(scene.materials[1].surface.glossy.roughness.value, 0.4f);
+}
+
+// OmniHair at FE Messy High Ponytail's defaults: Custom melanin 0.5 at redness 0.5, undyed.
+std::string omniHair(const std::string& more = "")
+{
+  return R"({"extra":[{"type":"studio/material/omnihair","channels":[
+    {"channel":{"id":"Melanin Presets","type":"enum","current_value":7}},
+    {"channel":{"id":"Melanin","type":"float","current_value":0.5}},
+    {"channel":{"id":"Melanin Redness","type":"float","current_value":0.5}},
+    {"channel":{"id":"Azimuthal Roughness","type":"float","current_value":0.2}})"
+         + more + "]}]}";
+}
+
+TEST(Materials, OmniHairMelaninReadsAsTheBrownItIs)
+{
+  // the albedo measured for medium brown hair, not the near-black a lit ribbon showed
+  const auto c = fv::dson::omniHairColor(channelsOf(omniHair().c_str()));
+  ASSERT_TRUE(c.has_value());
+  EXPECT_NEAR((*c)[0], 0.259f, 0.003f);
+  EXPECT_NEAR((*c)[1], 0.159f, 0.003f);
+  EXPECT_NEAR((*c)[2], 0.062f, 0.003f);
+  // the darkest preset stays darker than that, and the lightest lighter
+  const auto black = fv::dson::omniHairColor(channelsOf(omniHair().replace(omniHair().find("\"current_value\":7"), 17, "\"current_value\":6").c_str()));
+  const auto white = fv::dson::omniHairColor(channelsOf(omniHair().replace(omniHair().find("\"current_value\":7"), 17, "\"current_value\":1").c_str()));
+  EXPECT_LT((*black)[0], 0.1f);
+  EXPECT_GT((*white)[2], 0.9f);
+}
+
+TEST(Materials, OmniHairDiffuseStrengthBlendsTheDyeIn)
+{
+  const std::string dye = R"(,{"channel":{"id":"Hair Root Color","type":"color","current_value":[0.8,0.1,0.1]}},
+    {"channel":{"id":"Hair Tip Color","type":"color","current_value":[0.8,0.1,0.1]}})";
+  const auto weight = [&](double w) {
+    return *fv::dson::omniHairColor(channelsOf(
+        omniHair(dye + R"(,{"channel":{"id":"Diffuse Strength","type":"float","current_value":)" + std::to_string(w) + "}}").c_str()));
+  };
+  const auto undyed = *fv::dson::omniHairColor(channelsOf(omniHair().c_str()));
+  // none of the dye at 0, all of it at 1, and in between half way
+  for(int i = 0; i < 3; i++)
+    EXPECT_FLOAT_EQ(weight(0)[i], undyed[i]);
+  EXPECT_GT(weight(1)[0] / weight(1)[1], undyed[0] / undyed[1]);
+  EXPECT_GT(weight(0.5)[0] / weight(0.5)[1], undyed[0] / undyed[1]);
+  EXPECT_LT(weight(0.5)[0] / weight(0.5)[1], weight(1)[0] / weight(1)[1]);
+}
+
+TEST(Materials, RibbonHairLetsLightThroughAndReflectsAsAFibre)
+{
+  const auto s = fv::dson::parseSurface("FE Base", channelsOf(omniHair().c_str()));
+  ASSERT_TRUE(s.twoSided);
+  const auto  lowered = fv::mat::lower(s, {}, {});
+  const auto& ext     = lowered.material["extensions"];
+  EXPECT_NEAR(ext["KHR_materials_ior"]["ior"].get<float>(), 1.55f, 1e-6f);
+  EXPECT_NEAR(ext["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
+  const auto& dt = ext["KHR_materials_diffuse_transmission"];
+  EXPECT_NEAR(dt["diffuseTransmissionFactor"].get<float>(), 0.4f, 1e-6f);
+  // in the hair's colour
+  EXPECT_NEAR(dt["diffuseTransmissionColorFactor"][0].get<float>(), lowered.material["pbrMetallicRoughness"]["baseColorFactor"][0].get<float>(), 1e-6f);
+  // card hair is not a ribbon
+  const auto cards = fv::mat::lower(fv::dson::parseSurface("Scalp Hair", channelsOf(kSkin)), {}, {});
+  EXPECT_FALSE(cards.material["extensions"].contains("KHR_materials_diffuse_transmission"));
 }
 
 TEST(Materials, ChangingTheBumpStrengthChangesTheBakedTexture)

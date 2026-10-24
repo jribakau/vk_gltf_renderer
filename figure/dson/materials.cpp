@@ -257,10 +257,13 @@ std::optional<mat::Rgb> omniHairColor(const Channels& ch)
     return std::nullopt;
   // Iray renders OmniHair as Chiang's hair fibre with the absorption OmniHairBase.mdl builds:
   // melanin (Melanin^2 x 2.4, split by Melanin Redness, with Bitterli's eumelanin and pheomelanin
-  // spectra), and the dye colour (Hair Root and Tip Color x Diffuse Strength x 2.4, through
-  // Chiang's colour-to-absorption fit), the two mixed by sqrt(Melanin). A surface has no fibres for
-  // light to scatter through, so the colour is read back through the same fit with its exponent
-  // scaled by 0.6. Root and tip are averaged: a ribbon has no colour along the strand.
+  // spectra), and the dye colour (Hair Root and Tip Color through Chiang's colour-to-absorption
+  // fit), the two mixed by sqrt(Melanin). Diffuse Strength ("Hair Color Weight") blends from
+  // melanin alone to that mix; a white dye is no dye. A surface has no fibres for light to scatter
+  // through, so the colour is read back through the same fit with its exponent scaled down to stand
+  // for the light the fibres pass on to one another: at 0.45, melanin 0.5 at redness 0.5 gives
+  // (0.26, 0.16, 0.06) linear, the albedo measured for medium brown hair, and melanin 1 a near-black
+  // dark brown. Root and tip are averaged: a ribbon has no colour along the strand.
   constexpr int    kPresets = int(sizeof(kMelaninPresets) / sizeof(kMelaninPresets[0]));
   const double     preset   = num(find({"Melanin Presets"}), kPresets);
   const double     m        = preset >= 0 && preset < kPresets ? kMelaninPresets[int(preset)] : clamp01(num(melaninCh, 0.5));
@@ -275,20 +278,19 @@ std::optional<mat::Rgb> omniHairColor(const Channels& ch)
   const double     fit          = chiangFit(anisotropic ? clamp01(num(find({"Azimuthal Roughness"}), 0.2)) : longitudinal);
   const Rgb        root         = colorOr(find({"Hair Root Color"})), tip = colorOr(find({"Hair Tip Color"}));
   const Rgb        dye{(root[0] + tip[0]) / 2, (root[1] + tip[1]) / 2, (root[2] + tip[2]) / 2};
-  const double     weight = num(find({"Diffuse Strength"}), 0.8);
-  const bool       plain  = dye[0] == 1 && dye[1] == 1 && dye[2] == 1 && weight == 1;
+  const double     weight = clamp01(num(find({"Diffuse Strength"}), 0.8));
+  const bool       undyed = dye[0] >= 1 && dye[1] >= 1 && dye[2] >= 1;
   Rgb              out;
   for(int i = 0; i < 3; i++)
   {
-    double sigma;
-    if(plain)
-      sigma = sigmaMelanin[i];
-    else
+    double sigma = sigmaMelanin[i];
+    if(!undyed)
     {
-      const double sigmaDye = std::pow(std::log(std::clamp(dye[i] * weight * 2.4, 0.001, 1.0)) / fit, 2);
-      sigma                 = sigmaDye + (sigmaMelanin[i] - sigmaDye) * std::sqrt(m);
+      const double sigmaDye = std::pow(std::log(std::clamp(double(dye[i]), 0.001, 1.0)) / fit, 2);
+      const double mixed    = sigmaDye + (sigmaMelanin[i] - sigmaDye) * std::sqrt(m);
+      sigma += (mixed - sigma) * weight;
     }
-    out[i] = float(std::exp(-0.6 * std::sqrt(sigma) * fit));
+    out[i] = float(std::exp(-0.45 * std::sqrt(sigma) * fit));
   }
   return out;
 }

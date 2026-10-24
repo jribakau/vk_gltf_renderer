@@ -242,7 +242,8 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
   }
   if(req.channels == "bn")
     img = bumpToNormal(img, true);
-  flipRows(img);
+  if(o.bottomUp)
+    flipRows(img);
   if(req.channels == "ng" && !greenDone)
     for(size_t i = 0; i < img.px.size() / 4; i++)
       img.px[i * 4 + 1] = uint8_t(255 - img.px[i * 4 + 1]);

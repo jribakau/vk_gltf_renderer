@@ -1087,19 +1087,20 @@ NVSDK_NGX_PerfQuality_Value Dlss::qualityToNgx(Quality q)
 }
 
 
-void Dlss::blitInnerToOuter(VkCommandBuffer cmd, VkImage innerSrc, VkImage outerDst, VkExtent2D outerExtent) const
+void Dlss::blitInnerToOuter(VkCommandBuffer cmd, VkImage innerSrc, VkImage outerDst, VkExtent2D outerExtent, VkImageAspectFlags aspect) const
 {
   assertKind(Kind::SR);
   const VkExtent2D innerSz = getRenderSize();
 
-  nvvk::cmdImageMemoryBarrier(cmd, {innerSrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL});
-  nvvk::cmdImageMemoryBarrier(cmd, {outerDst, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL});
+  const VkImageSubresourceRange range{aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+  nvvk::cmdImageMemoryBarrier(cmd, {innerSrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, range});
+  nvvk::cmdImageMemoryBarrier(cmd, {outerDst, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, range});
 
   VkImageBlit2 region{
       .sType          = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
-      .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .srcSubresource = {aspect, 0, 0, 1},
       .srcOffsets     = {{0, 0, 0}, {int32_t(innerSz.width), int32_t(innerSz.height), 1}},
-      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .dstSubresource = {aspect, 0, 0, 1},
       .dstOffsets     = {{0, 0, 0}, {int32_t(outerExtent.width), int32_t(outerExtent.height), 1}},
   };
   VkBlitImageInfo2 blitInfo{
@@ -1110,13 +1111,13 @@ void Dlss::blitInnerToOuter(VkCommandBuffer cmd, VkImage innerSrc, VkImage outer
       .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
       .regionCount    = 1,
       .pRegions       = &region,
-      // NEAREST: selection is an object-ID texture; the no-DLSS color path is 1:1.
+      // NEAREST: selection is an object-ID texture, depth can't be filtered; the no-DLSS color path is 1:1.
       .filter = VK_FILTER_NEAREST,
   };
   vkCmdBlitImage2(cmd, &blitInfo);
 
-  nvvk::cmdImageMemoryBarrier(cmd, {innerSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL});
-  nvvk::cmdImageMemoryBarrier(cmd, {outerDst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL});
+  nvvk::cmdImageMemoryBarrier(cmd, {innerSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, range});
+  nvvk::cmdImageMemoryBarrier(cmd, {outerDst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, range});
 }
 
 

@@ -95,6 +95,7 @@ public:
                     VkDescriptorSet  helperDescriptorSet,
                     const glm::mat4& viewMatrix,
                     const glm::mat4& projMatrix,
+                    const glm::mat4& sceneViewProj,
                     const glm::vec2& viewportSize,
                     const glm::vec2& depthBufferSize);
 

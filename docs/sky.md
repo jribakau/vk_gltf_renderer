@@ -141,6 +141,10 @@ for anyone who wants absolute units and will carry the exposure themselves.
 Everything derived scales with that one constant: sky, ground, the solar disk, and the sun light
 built from the disk. No ratio the model computes is affected.
 
+The band is matched by sky and sun together, since an HDR file's integral includes its sun: the
+sky alone integrates to about a third of it, and the sun light makes up the rest. Calibrating the
+sky alone into the band lit scenes about three times as strongly as a daylight HDR.
+
 > The sky this replaced did the same thing, with two unexplained constants in its parameter block.
 > The difference is that this one says so.
 

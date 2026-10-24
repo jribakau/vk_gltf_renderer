@@ -61,8 +61,9 @@ struct GridUBO
 //--------------------------------------------------------------------------------------------------
 struct GridPushConstants
 {
-  float4x4 viewProj;   // Combined view-projection
-  float3   cameraPos;  // For steep-angle V and clip fade
+  float4x4 viewProj;       // Combined view-projection the lines are drawn with (wide depth range)
+  float4x4 sceneViewProj;  // The scene camera's: the depth test reprojects into it to compare with scene depth
+  float3   cameraPos;      // For steep-angle V and clip fade
   float    farClip;    // Far clip distance
   float2   viewportSize;
   float2   depthBufferSize;

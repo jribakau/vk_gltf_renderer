@@ -561,6 +561,8 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.shadowCatcherDarkness, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name = "groundFade", .help = "Ground: fade the plane out over a disk of this many scene radii (0: no fade)", .callbackSuccess = groundChanged},
                  &m_resources.settings.groundFade, Persist::eYes, 0.0F, 100.0F);
+  m_settings.add({.name = "skySunScale", .help = "Sky: multiplier on the light the sky's sun gives (0: no sun light)", .callbackSuccess = groundChanged},
+                 &m_resources.settings.skySunScale, Persist::eNo, 0.0F, 100.0F);
 
   // The rasterizer's sun shadow map.
   const auto shadowChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };
@@ -1520,6 +1522,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
                                                                                                   glm::vec3(0.0F),
         .envSamplingGridWidth  = m_resources.hdrIbl.getSamplingGrid().width,
         .envSamplingGridHeight = m_resources.hdrIbl.getSamplingGrid().height,
+        .skySunScale           = m_resources.settings.skySunScale,
     };
     fillShadowAndGround(finfo);
     // Update the camera information
@@ -3100,13 +3103,15 @@ void GltfRenderer::renderVisualHelpers(VkCommandBuffer cmd)
   glm::vec2        viewportSize(static_cast<float>(size.width), static_cast<float>(size.height));
   glm::vec2        depthBufferSize = viewportSize;
 #if defined(USE_DLSS)
-  // Align the depth-buffer extent the gizmo grid samples to whichever DLSS instance is active.
-  // isActive() is strict (false during async init), so we never pick up a 0x0 inner extent.
-  if(const Dlss* dlss = activeDlss(); dlss && dlss->isActive())
-  {
-    const VkExtent2D rs = dlss->getRenderSize();
-    depthBufferSize     = {static_cast<float>(rs.width), static_cast<float>(rs.height)};
-  }
+  // The path tracer writes depth at the DLSS render size into the corner of the G-buffer depth; the
+  // rasterizer blits DLSS's inner depth up to full size. isActive() is strict (false during async
+  // init), so we never pick up a 0x0 inner extent.
+  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer)
+    if(const Dlss* dlss = activeDlss(); dlss && dlss->isActive())
+    {
+      const VkExtent2D rs = dlss->getRenderSize();
+      depthBufferSize     = {static_cast<float>(rs.width), static_cast<float>(rs.height)};
+    }
 #endif
 
   m_visualHelpers.render(cmd, m_resources.gBuffers.getColorImage(Resources::eImgTonemapped),

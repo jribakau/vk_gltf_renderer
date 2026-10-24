@@ -21,10 +21,13 @@ struct ExportOptions
 {
   // Finds a library image by its (decoded) path.
   std::function<std::optional<std::filesystem::path>(const std::string& rel)> find;
+  // rows bottom-up, as the cooked images are; a figure built on the source images wants them as they are
+  bool bottomUp = true;
 };
 
-// PNG bytes of the image a request asks for, rows bottom-up (as the cooked ones are, for the DSON
-// UVs); none when a source is missing or a format cannot be read. `why` says what.
+// PNG bytes of the image a request asks for, rows bottom-up unless the options say otherwise (as
+// the cooked ones are, for the DSON UVs); none when a source is missing or a format cannot be
+// read. `why` says what.
 std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& request, const ExportOptions& options, std::string* why = nullptr);
 
 // The export in two parts, so the slow one can run off the thread that owns the scene: the glTF is

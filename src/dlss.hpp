@@ -316,7 +316,11 @@ public:
   // outer-extent target. Used by the rasterizer post-pass to land inner.selection -> outer
   // and inner.color -> outer (when DLSS evaluate did not run). Source/dest both transition
   // GENERAL -> TRANSFER_SRC/DST -> GENERAL.
-  void blitInnerToOuter(VkCommandBuffer cmd, VkImage innerSrc, VkImage outerDst, VkExtent2D outerExtent) const;
+  void blitInnerToOuter(VkCommandBuffer    cmd,
+                        VkImage            innerSrc,
+                        VkImage            outerDst,
+                        VkExtent2D         outerExtent,
+                        VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const;
 
 private:
   // Internal NGX-init lifecycle. Three values that track the asynchronous worker.

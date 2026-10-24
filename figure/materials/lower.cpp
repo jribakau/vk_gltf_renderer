@@ -258,9 +258,16 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 
   // A top coat occupies the only clearcoat slot, so a tight lobe that would have been the coat
   // stays in the base specular.
-  const float specular = s.topCoat && lobes.clearcoat ? std::min(1.f, lobes.intensity + lobes.clearcoat->weight) : lobes.intensity;
+  // Strand hair, drawn as flat ribbons (OmniHair only is two-sided): the specular of a fibre's
+  // cuticle, a dielectric of refractive index 1.55, at full strength.
+  const bool  ribbonHair = s.kind == Kind::eHair && s.twoSided;
+  const float specular   = ribbonHair ? 1.f
+                           : s.topCoat && lobes.clearcoat ? std::min(1.f, lobes.intensity + lobes.clearcoat->weight)
+                                                          : lobes.intensity;
   eff.specular                  = e.specular.value_or(specular);
   ext["KHR_materials_specular"] = {{"specularFactor", eff.specular}, {"specularColorFactor", Json::array({1, 1, 1})}};
+  if(ribbonHair)
+    ext["KHR_materials_ior"] = {{"ior", 1.55}};
 
   // clearcoat: Iray's top coat, else the tighter dual lobe, on the same surface detail as the base
   struct Coat
@@ -346,12 +353,8 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       ext["KHR_materials_ior"]    = {{"ior", 1.4}};
       ext["KHR_materials_volume"] = {{"thicknessFactor", 1}, {"attenuationDistance", v.distance}, {"attenuationColor", rgbJson(v.attenuation)}};
       ext["KHR_materials_scatter"] = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", rgbJson(v.multiscatter)}, {"scatterAnisotropy", v.anisotropy}};
-      // the translucency tint on the share that scatters
-      const Rgb tinted = lerp(kWhite, scatterColor, transmission);
-      Json&     base   = out["pbrMetallicRoughness"]["baseColorFactor"];
-      base[0]          = base[0].get<float>() * tinted[0];
-      base[1]          = base[1].get<float>() * tinted[1];
-      base[2]          = base[2].get<float>() * tinted[2];
+      // The base colour stays the skin map's own. The medium already warms what scatters, and the
+      // walk leaves through the base colour, so a translucency tint here would be applied twice.
     }
     else if(weight > 0)
     {
@@ -400,6 +403,16 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   if(s.kind == Kind::eHair && opts.anisotropyRotation)
     if(const auto strength = strandStrength(s, roughnessFactor, lobes.glossyShare))
       ext["KHR_materials_anisotropy"] = {{"anisotropyStrength", *strength}, {"anisotropyRotation", opts.forFile ? -*opts.anisotropyRotation : *opts.anisotropyRotation}};
+
+  // A ribbon stands for a tuft of fibres light passes through: some of what lands on it goes on
+  // through, in the hair's colour, as it does between the fibres of a real head of hair. Opaque, the
+  // ribbons shade one another to near black.
+  if(ribbonHair)
+  {
+    const Json& c = out["pbrMetallicRoughness"]["baseColorFactor"];
+    ext["KHR_materials_diffuse_transmission"] = {{"diffuseTransmissionFactor", 0.4},
+                                                 {"diffuseTransmissionColorFactor", Json::array({c[0], c[1], c[2]})}};
+  }
 
   out["extensions"] = ext;
   return {std::move(out), std::move(b.requests), std::move(eff)};

@@ -43,9 +43,10 @@
 //    The app first renders the 3D scene into the color (and depth) buffer.
 //    Then it runs this grid helper: we draw our lines with blending ON, so
 //    our line fragments are blended onto that same color buffer. We also
-//    read the scene depth in the fragment shader to discard grid pixels
-//    that are behind geometry. Result: the grid appears on the floor and
-//    behind objects, and the X/Y/Z axis lines appear on top.
+//    read the scene depth in the fragment shader to discard grid and axis
+//    pixels that are behind geometry, reprojecting each point with the
+//    scene camera so both depths come from the same projection. Result:
+//    the grid and the X/Y/Z axis lines appear on the floor and behind objects.
 //
 //=============================================================================
 
@@ -261,6 +262,7 @@ void GridHelperVk::renderRaster(VkCommandBuffer  cmd,
                                 VkDescriptorSet  helperDescriptorSet,
                                 const glm::mat4& viewMatrix,
                                 const glm::mat4& projMatrix,
+                                const glm::mat4& sceneViewProj,
                                 const glm::vec2& viewportSize,
                                 const glm::vec2& depthBufferSize)
 {
@@ -292,6 +294,7 @@ void GridHelperVk::renderRaster(VkCommandBuffer  cmd,
 
   GridPushConstants pc = {};
   pc.viewProj          = viewProj;
+  pc.sceneViewProj     = sceneViewProj;
   pc.cameraPos         = cameraPos;
   pc.farClip           = kGridFar;
   pc.viewportSize      = viewportSize;

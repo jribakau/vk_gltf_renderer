@@ -165,7 +165,7 @@ void VisualHelpers::render(VkCommandBuffer  cmd,
   const glm::mat4 unclippedProj = makeUnclippedProjection(projMatrix);
 
   // Grid renders behind gizmo
-  grid.renderRaster(cmd, m_helperDescriptorSet, viewMatrix, unclippedProj, viewportSize, depthBufferSize);
+  grid.renderRaster(cmd, m_helperDescriptorSet, viewMatrix, unclippedProj, projMatrix * viewMatrix, viewportSize, depthBufferSize);
 
   // Gizmo renders on top
   transform.renderRaster(cmd, m_helperDescriptorSet, viewMatrix, unclippedProj, viewportSize, depthBufferSize);

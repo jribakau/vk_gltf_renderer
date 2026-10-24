@@ -29,6 +29,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <map>
@@ -308,12 +309,55 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
 {
   if(cooker && (!req.alphaRel.empty() || req.makeup || !readable(req.rel)))
     return cookedTexture(s, req, false, false).image;
+  // no cooker: a cutout or makeup is composed here, into a PNG beside the others made this way
+  if(!cooker && (!req.alphaRel.empty() || req.makeup) && readable(req.rel))
+  {
+    std::error_code ec;
+    const auto      dir  = std::filesystem::temp_directory_path(ec) / "fv-composed";
+    const auto      file = dir / (std::to_string(std::hash<std::string>{}(fv::build::requestKey(req))) + ".png");
+    if(!std::filesystem::exists(file, ec))
+    {
+      fv::build::ExportOptions o;
+      o.find     = [&](const std::string& rel) { return lib.find(normRel(rel)); };
+      o.bottomUp = false;
+      std::string why;
+      const auto  png = fv::build::composeImage(req, o, &why);
+      if(!png)
+      {
+        LOGW("texture %s: %s\n", req.rel.c_str(), why.c_str());
+        return sourceTexture(lib, req);
+      }
+      std::filesystem::create_directories(dir, ec);
+      const auto    tmp = file.string() + "." + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+      std::ofstream out(std::filesystem::path(tmp), std::ios::binary);
+      out.write(reinterpret_cast<const char*>(png->data()), std::streamsize(png->size()));
+      out.close();
+      std::filesystem::rename(tmp, file, ec);
+    }
+    return fv::build::TextureImage{uriOfPath(utf8Of(file)), "image/png", false};
+  }
   if(req.channels == "mr" || req.channels == "bn")
     return std::nullopt;
   auto image = sourceTexture(lib, req);
   if(image && req.channels == "ng")
     image->flipGreen = true;
   return image;
+}
+
+// Genesis 9's brows ship a grey placeholder surface; DAZ's post-load script (Remove Duplicate
+// Eyebrows.dse, encrypted) lays the default brow material over it, which a character's own preset
+// may then change. The preset for the brows a wearable holds, or none.
+std::string defaultBrowMaterial(const fv::SceneGraph& scene)
+{
+  static const std::string dir = "data/DAZ 3D/Genesis 9/Base/Tools/Script Loads/Eyebrows/";
+  for(const fv::Node& n : scene.nodes)
+  {
+    if(n.dsonNode.rfind("G9EyebrowCards", 0) == 0)
+      return dir + "Card Eyebrows MAT.duf";
+    if(n.dsonNode.rfind("G9EyebrowFibers", 0) == 0)
+      return dir + "Fiber Eyebrows MAT.duf";
+  }
+  return {};
 }
 
 // The library folder a .duf sits in: one of the configured roots, else the nearest folder above it
@@ -975,6 +1019,34 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       notice(what, "error");
       job(jobId, {{"label", label}, {"state", "failed"}, {"error", what}});
     };
+    // A character lists material presets with its add-ons, but one preset often covers several (an
+    // "all add-ons" preset on the eyebrows holds the eyes' and lashes' surfaces too), as DAZ applies
+    // them to the whole figure: every add-on takes all of them, each surface where its node is.
+    std::vector<std::string> addonPresets;
+    for(const WearRequest& r : requests)
+      if(!r.name.empty())
+        for(const std::string& p : r.presets)
+          if(std::find(addonPresets.begin(), addonPresets.end(), p) == addonPresets.end())
+            addonPresets.push_back(p);
+    std::set<std::string> presetMissing, presetMatched;
+    auto applyPreset = [&](const std::string& presetRel, fv::SceneGraph& scene, bool report) {
+      try
+      {
+        if(auto doc = target->fig->store().load(presetRel))
+        {
+          const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, scene);
+          if(report)
+          {
+            presetMissing.insert(r.missing.begin(), r.missing.end());
+            presetMatched.insert(r.matched.begin(), r.matched.end());
+          }
+        }
+      }
+      catch(const std::exception& e)
+      {
+        notice(presetRel + ": " + e.what());
+      }
+    };
     for(const WearRequest& request : requests)
     {
       if(!accepting)
@@ -994,16 +1066,11 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         auto base = onApp([target] { return target->fig->wearBase(); });
         auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base);
         // the material presets that go with it, applied to the wearable before its textures are looked up
-        for(const std::string& presetRel : request.presets)
-          try
-          {
-            if(auto doc = target->fig->store().load(presetRel))
-              fv::dson::applyMaterialPreset(doc->json, fv::Figure::preparedScene(*prepared));
-          }
-          catch(const std::exception& e)
-          {
-            notice(presetRel + ": " + e.what());
-          }
+        fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
+        if(const std::string brows = defaultBrowMaterial(preparedScene); !brows.empty())
+          applyPreset(brows, preparedScene, false);
+        for(const std::string& presetRel : request.name.empty() ? request.presets : addonPresets)
+          applyPreset(presetRel, preparedScene, true);
         // the wearable's textures, the way the figure's were made: bottom-up cooked, or the sources
         job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
         std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
@@ -1064,6 +1131,29 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       catch(const std::exception& e)
       {
         notice(utf8Of(pathOf(request.rel).stem()) + ": " + e.what(), "error");
+      }
+    }
+    // surfaces no worn item had; those of the figure itself took the character's preset at load
+    for(const std::string& s : presetMatched)
+      presetMissing.erase(s);
+    if(!presetMissing.empty())
+    {
+      const auto unknown = onApp([target, names = presetMissing] {
+        std::vector<std::string> out;
+        for(const std::string& n : names)
+          if(std::none_of(target->fig->loaded.scene.materials.begin(), target->fig->loaded.scene.materials.end(),
+                          [&](const fv::Material& m) { return m.name == n; }))
+            out.push_back(n);
+        return out;
+      });
+      if(!unknown.empty())
+      {
+        std::string list;
+        for(size_t i = 0; i < unknown.size() && i < 6; i++)
+          list += (i ? ", " : "") + unknown[i];
+        if(unknown.size() > 6)
+          list += " and " + std::to_string(unknown.size() - 6) + " more";
+        notice("Material presets name surfaces nothing worn has: " + list, "info");
       }
     }
     // `after` runs whatever happened, so a restore waiting on this wear still finishes

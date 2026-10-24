@@ -534,6 +534,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"infinitePlaneMetallic", 0.0},
       {"shadowCatcherDarkness", g.darkness},
       {"groundFade", g.fade},
+      // the physical sky measures its own sun; the panel's strength scales it, from the default up
+      {"skySunScale", s.sun.enabled ? s.sun.intensity / Sun{}.intensity : 0.0},
   };
 }
 

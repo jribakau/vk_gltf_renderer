@@ -283,6 +283,8 @@ struct Settings
   // The ground fades out over a disk of this many scene radii around the scene (0: no fade), in
   // both renderers, as the Figure Viewer's floor does.
   float groundFade = 0.0f;
+  // A multiplier on the light the sky's sun gives (SceneFrameInfo::skySunScale).
+  float skySunScale = 1.0f;
   // The rasterizer's sun shadow map. `shadowLight` is a scene light index, or -1 for the sun: the
   // light the scene marks as the sky's sun, else the renderer's own sun, else the brightest
   // directional light. Biases are in shadow-map texels, so they hold at any map size and scene scale.

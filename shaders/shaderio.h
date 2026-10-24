@@ -276,6 +276,11 @@ struct SceneFrameInfo
   float groundFadeCenterX = 0.0F;
   float groundFadeCenterZ = 0.0F;
   float groundFadeRadius  = 0.0F;
+
+  // A multiplier on the sky's sun light, on top of what the sky measures: a host's sun dimmer (0
+  // turns the sun off and leaves the sky). The disk drawn in the background keeps the sky's own.
+  // (Appended, per the note above.)
+  float skySunScale = 1.0F;
 };
 
 enum PathtracerFlags

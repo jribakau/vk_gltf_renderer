@@ -133,7 +133,7 @@ GltfLight makeSkySunLight(SceneFrameInfo* frameInfo)
   light.iesProfile            = -1;
   // The illuminance is carried in `color` so the sun's colour survives; `intensity` is the scalar
   // the two would otherwise be squeezed into.
-  light.color     = illuminance * frameInfo->envIntensity;
+  light.color     = illuminance * frameInfo->envIntensity * frameInfo->skySunScale;
   light.intensity = 1.0F;
   return light;
 }

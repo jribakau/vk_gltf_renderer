@@ -179,9 +179,13 @@ struct SkyBrunetonPushConstant
 // Bruneton sky integrates to 90.6 at the default sun elevation, so it arrives roughly nine times
 // hot and every scene needs its exposure pulled down to 0.1 before it looks like daylight.
 //
-// Nine is therefore the number: it puts the default sky at an integral of 10, in the middle of
-// that band, and the whole sky scales together -- ground, aureole, solar disk, and the sun light
-// derived from it -- so every ratio the model computes survives.
+// An HDR file's integral includes its sun, though, and this sky's does not: the sun is a light of
+// its own, which at the default elevation brings about twice the sky's illuminance again. Matching
+// the sky alone (a factor of nine, an integral of 10) lit a scene about three times as strongly as
+// a daylight HDR, and with exposure left at 1.0 skin and other warm, bright surfaces clipped in the
+// tone map. Twenty-seven matches sky and sun together: the sky integrates to about 3.4, the sun
+// adds about 6.5, about 10 in all. The whole sky scales together -- ground, aureole, solar disk,
+// and the sun light derived from it -- so every ratio the model computes survives.
 //
 // The previous MDL sky did exactly this with two constants of its own (rgbUnitConversion 1/80000
 // times multiplier 0.1). This is the same decision, stated once and explained.
@@ -189,7 +193,7 @@ struct SkyBrunetonPushConstant
 // For physical output: 683.0F gives luminance in cd/m^2 and illuminance in lux, at which point
 // exposure has to carry the remaining five orders of magnitude. 1.0F gives upstream's
 // precomputed-illuminance units.
-#define SKY_LUMINANCE_CALIBRATION (1.0F / 9.0F)
+#define SKY_LUMINANCE_CALIBRATION (1.0F / 27.0F)
 
 #define SKY_RADIANCE_TO_LUMINANCE (SKY_SPECTRAL_TO_LUMINANCE * SKY_LUMINANCE_CALIBRATION)
 // Same calibration, so the disk and the sky it sits in stay in one another's units.

@@ -91,7 +91,7 @@ struct Ground
 
 struct Tonemap
 {
-  std::string method      = "aces";
+  std::string method      = "neutral";
   double      exposure    = 1.0;
   double      contrast    = 1.0;
   double      saturation  = 1.0;

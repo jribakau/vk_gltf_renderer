@@ -809,7 +809,8 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // Post-raster blits when the rasterizer rendered into the inner GBuffer:
   //   1. inner.selection -> eImgSelection (always; silhouette + picking sample at outer extent).
-  //   2. inner.color     -> eImgRendered  (only when DLSS evaluate did not run; in that case
+  //   2. inner.depth     -> outer depth   (always; the grid and gizmo overlays test against it).
+  //   3. inner.color     -> eImgRendered  (only when DLSS evaluate did not run; in that case
   //                                        updateSize() sized inner == outer so it's 1:1).
   // In SR fallback mode the rasterizer wrote to outer.{color,selection,depth} directly, so the
   // blits are skipped entirely (the inner GBuffer holds only the motion attachment).
@@ -819,6 +820,8 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
     const VkExtent2D outerSz = resources.gBuffers.getSize();
     m_dlss->blitInnerToOuter(cmd, m_dlss->getSrImage(SrSlot::eSelection),
                              resources.gBuffers.getColorImage(Resources::eImgSelection), outerSz);
+    m_dlss->blitInnerToOuter(cmd, m_dlss->getSrImage(SrSlot::eDepth), resources.gBuffers.getDepthImage(), outerSz,
+                             VK_IMAGE_ASPECT_DEPTH_BIT);
     if(!dlssActive)
       m_dlss->blitInnerToOuter(cmd, m_dlss->getSrImage(SrSlot::eColor),
                                resources.gBuffers.getColorImage(Resources::eImgRendered), outerSz);

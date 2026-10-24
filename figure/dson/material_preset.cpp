@@ -1,7 +1,9 @@
 #include <figure/dson/material_preset.hpp>
 
+#include <algorithm>
 #include <map>
 #include <regex>
+#include <set>
 
 #include <figure/dson/materials.hpp>
 
@@ -51,7 +53,54 @@ std::vector<std::string> split(const std::string& s, char sep)
   }
 }
 
+// The DSON node each material belongs to: the nearest figure or prop over every mesh using it (a
+// worn item hangs under the body's group, which is not its owner).
+std::vector<std::set<std::string>> ownersOf(const SceneGraph& scene)
+{
+  std::vector<std::set<std::string>> owners(scene.materials.size());
+  for(size_t i = 0; i < scene.nodes.size(); i++)
+  {
+    const Node& n = scene.nodes[i];
+    if(n.mesh < 0 || n.mesh >= int(scene.meshes.size()))
+      continue;
+    int p = int(i);
+    while(p >= 0 && scene.nodes[size_t(p)].dsonNode.empty())
+      p = scene.nodes[size_t(p)].parent;
+    if(p < 0)
+      continue;
+    for(int m : scene.meshes[size_t(n.mesh)].materials)
+      if(m >= 0 && m < int(owners.size()))
+        owners[size_t(m)].insert(scene.nodes[size_t(p)].dsonNode);
+  }
+  return owners;
+}
+
 }  // namespace
+
+std::vector<int> presetTargets(const SceneGraph& scene, const std::string& node, const std::string& surface)
+{
+  const auto owners    = ownersOf(scene);
+  const bool nodeKnown = !node.empty() && std::any_of(owners.begin(), owners.end(), [&](const auto& o) { return o.count(node) > 0; });
+  const auto pick      = [&](const auto& matches) {
+    std::vector<int> out;
+    for(size_t i = 0; i < scene.materials.size(); i++)
+      if((!nodeKnown || owners[i].count(node)) && matches(scene.materials[i].name))
+        out.push_back(int(i));
+    return out;
+  };
+  if(auto exact = pick([&](const std::string& name) { return name == surface; }); !exact.empty())
+    return exact;
+  // "Eyelashes" for the "Eyelashes Upper" and "Eyelashes Lower" a geometry splits it into
+  const std::string stem = surface + " ";
+  if(auto parts = pick([&](const std::string& name) { return name.rfind(stem, 0) == 0; }); !parts.empty())
+    return parts;
+  // "FE Base" for "Base": a product prefix the surfaces of another version of the item don't carry
+  const size_t space = surface.find(' ');
+  if(space == std::string::npos || space + 1 >= surface.size())
+    return {};
+  const std::string bare = surface.substr(space + 1);
+  return pick([&](const std::string& name) { return name == bare; });
+}
 
 MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
 {
@@ -62,8 +111,8 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
   std::unordered_map<std::string, std::string> images;
   collectImages(doc, images);
 
-  // surface -> channel -> override, in the order the preset lists them
-  std::map<std::string, std::vector<ChannelOverride>> bySurface;
+  // (node, surface) -> channel -> override, in the order the preset lists them
+  std::map<std::pair<std::string, std::string>, std::vector<ChannelOverride>> bySurface;
   static const std::regex url(R"(^(.*?)#materials/([^:]+):\?(.+)$)");
   for(const Json& a : *animations)
   {
@@ -83,7 +132,13 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
     if(channel.empty() || segs.size() > rest || (field != "value" && field != "image_file" && field != "image"))
       continue;
     const std::string surface = dec(m[2].str());
-    auto&             list    = bySurface[surface];
+    // the node: "Genesis9Eyelashes", or the last segment of a "name://@selection/<node>" chain
+    std::string node = m[1].str();
+    if(const size_t slash = node.rfind('/'); slash != std::string::npos)
+      node = node.substr(slash + 1);
+    if(!node.empty() && node.back() == ':')
+      node.pop_back();
+    auto& list = bySurface[{dec(node), surface}];
     auto              it      = std::find_if(list.begin(), list.end(), [&](const ChannelOverride& o) { return o.channel == channel; });
     if(it == list.end())
       it = list.insert(list.end(), ChannelOverride{channel, std::nullopt, std::nullopt});
@@ -105,18 +160,17 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
     result.edits++;
   }
 
-  for(const auto& [surface, overrides] : bySurface)
+  for(const auto& [key, overrides] : bySurface)
   {
-    bool hit = false;
-    for(size_t i = 0; i < scene.materials.size(); i++)
-      if(scene.materials[i].name == surface)
-      {
-        hit = true;
-        if(overrideChannels(scene.materials[i], overrides))
-          result.changed.insert(int(i));
-      }
-    if(!hit)
+    const auto& [node, surface] = key;
+    const std::vector<int> targets = presetTargets(scene, node, surface);
+    if(targets.empty())
       result.missing.insert(surface);
+    else
+      result.matched.insert(surface);
+    for(int i : targets)
+      if(overrideChannels(scene.materials[size_t(i)], overrides))
+        result.changed.insert(i);
   }
   return result;
 }
