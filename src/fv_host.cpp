@@ -3982,7 +3982,11 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // whether the renderer is still refining a still, for an image export that waits for it
   cmds.add("render.status", [impl](const Json&) {
     return impl->onApp([impl] {
-      return Json{{"refining", impl->renderer->isRefiningStill()}, {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer}};
+      return Json{{"refining", impl->renderer->isRefiningStill()},
+                  {"still", impl->renderer->isStill()},
+                  {"converged", impl->renderer->isStillConverged()},
+                  {"complete", impl->renderer->accumulationComplete()},
+                  {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer}};
     });
   });
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingSet(args); }); });

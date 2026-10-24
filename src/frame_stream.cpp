@@ -121,9 +121,12 @@ struct FrameStream::Impl
   std::atomic<uint64_t> framesReplaced{0};  // copied out, then replaced by a newer frame before the encoder took them
   std::atomic<double>   renderFps{0.0};
   std::atomic<double>   encodeMs{0.0};
-  // live encoder settings, read by the encoder thread each frame
+  // live encoder settings, read by the encoder thread each frame: the host's for a moving view,
+  // the still's while the renderer accumulates or holds one (onUpdate)
   std::atomic<int>  quality{92};
   std::atomic<bool> fullChroma{false};
+  std::atomic<int>  hostQuality{92};
+  std::atomic<bool> hostFullChroma{false};
 
   std::thread     encoder;
   std::thread     server;
@@ -159,18 +162,23 @@ FrameStream::FrameStream(FrameStreamCreateInfo info)
 {
   m_impl->info = std::move(info);
   m_impl->quality.store(m_impl->info.quality);
+  m_impl->hostQuality.store(m_impl->info.quality);
 }
 
 FrameStream::~FrameStream() = default;
 
 void FrameStream::setQuality(int quality)
 {
-  m_impl->quality.store(std::clamp(quality, 1, 100));
+  m_impl->hostQuality.store(std::clamp(quality, 1, 100));
+  if(!m_impl->info.still)
+    m_impl->quality.store(m_impl->hostQuality.load());
 }
 
 void FrameStream::setFullChroma(bool fullChroma)
 {
-  m_impl->fullChroma.store(fullChroma);
+  m_impl->hostFullChroma.store(fullChroma);
+  if(!m_impl->info.still)
+    m_impl->fullChroma.store(fullChroma);
 }
 
 void FrameStream::traceNextFrame(LatencyTrace trace)
@@ -254,6 +262,13 @@ void FrameStream::onUpdate()
   const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
   // Nobody watching: keep to the cap, the host needs the machine more than a still needs to converge.
   const bool refining = s.clients > 0 && s.info.refining && s.info.refining();
+  // A still's frames at full chroma and the still quality; a moving view's as the host set them
+  if(s.info.still)
+  {
+    const bool still = s.info.still();
+    s.quality.store(still ? std::max(s.hostQuality.load(), s.info.stillQuality) : s.hostQuality.load());
+    s.fullChroma.store(still || s.hostFullChroma.load());
+  }
   s.pacer.setPeriod(period);
   s.pacer.setCopyPeriod(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / std::clamp(s.info.refineFps, 1, fps))));
   s.pacer.setIdlePeriod(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / std::max(1, s.info.idleFps))));

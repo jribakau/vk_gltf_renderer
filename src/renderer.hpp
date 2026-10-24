@@ -389,11 +389,18 @@ public:
 
   /// The path tracer is accumulating a still: the camera and scene have held for a frame, and
   /// the image does not yet hold maxSamples samples per pixel. Every further frame improves it.
-  bool isRefiningStill() const
+  bool isRefiningStill() const { return isStill() && !m_resources.accumulationComplete(); }
+  // The path tracer is accumulating a still, or holds a finished one: every frame since the view
+  // stopped added samples to one image. Not while DLSS renders (every frame without an accumulation
+  // denoiser, or the hand-off delay's frames with one): its frames rebuild the image each time.
+  bool isStill() const
   {
     return m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.frameCount >= 1
-           && !m_resources.accumulationComplete();
+           && !m_pathTracer.dlssFrame();
   }
+  bool isStillConverged() const { return isStill() && m_resources.accumulationComplete(); }
+  // The sample cap is reached, whatever renders (a DLSS view counts its frames too)
+  bool accumulationComplete() const { return m_resources.accumulationComplete(); }
 
   // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.
   nvvkgltf::Scene*  editScene() { return m_resources.getScene(); }

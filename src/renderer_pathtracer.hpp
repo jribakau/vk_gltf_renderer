@@ -153,9 +153,12 @@ public:
   // through an opening (an eye socket, a mouth) it meets a figure's skin from inside and every path
   // starts in the skin; a host whose camera is never inside a medium turns it off.
   bool m_probeCameraMedium = true;
+  // scatterAsThin: 0 the volume walk, 1 the thin-walled preview, 2 the preview on the frames DLSS
+  // renders (every frame while the camera moves) and the walk on the frames an accumulation traces,
+  // so a host need not switch it (and reset the accumulation) when the view stops
+  int m_scatterAsThin = 0;
   bool               m_useSER{true};         // Requested SER state; clamped to m_supportSER each frame.
   bool m_shadowTransmission{true};  // Shadow rays pass through transmissive surfaces (biased; see ePtShadowTransmission).
-  bool m_scatterAsThin{false};      // Volumetric scatter shades as the thin-walled preview (ePtScatterAsThin).
   bool m_volumeDiffuseExit{false};  // Scatter walks gather light only where they leave the surface (ePtVolumeDiffuseExit).
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
@@ -240,6 +243,17 @@ public:
   // frames after it: DLSS's image is no sample of the accumulation, and the hand-off blends from it
   bool                       m_dlssFrame0{false};
   DenoiserHandoff            m_handoff;
+  // Whether DLSS renders this frame (dlssFrame(), set at the frame's start), whether it rendered the
+  // one before, and whether this is the hand-off frame: the first the accumulation traces after DLSS's.
+  // With dlssHandoffDelayMs DLSS renders on past frame 0 until the view has been still that long
+  // (input arrives slower than frames render; a pause of a frame would otherwise start an
+  // accumulation and a denoise that the next input throws away).
+  bool                                  m_dlssFrame{false};
+  bool                                  m_prevDlssFrame{false};
+  bool                                  m_handoffFrame{false};
+  int                                   m_dlssHandoffDelayMs{0};
+  std::chrono::steady_clock::time_point m_accumulationStart{};
+  int                                   m_accumulationFrames{0};  // frames the accumulation traced (not DLSS's)
   std::atomic<uint32_t>      m_pipelineGeneration{0};   // Bumped whenever a new or swapped pipeline is installed
   uint64_t                   m_adaptivePipelineKey{0};  // Pipeline (generation, technique) Auto SPP was found with
   nvutils::ProfilerTimeline* m_profilerTimeline{nullptr};
@@ -303,6 +317,16 @@ public:
   // DLSS-RR renders every frame, one sample each. Not with OptiX or OIDN also on: DLSS renders only
   // frame 0, and the frames they take trace the samples Auto SPP or Samples per Frame ask for.
   bool isDlssEveryFrame() const { return isDlssEnabled() && !isAccumulationDenoiserEnabled(); }
+  // DLSS rendered the last frame (every frame, frame 0, or the frames of the hand-off delay)
+  bool dlssFrame() const { return m_dlssFrame; }
+  // DLSS renders on while the hand-off delay runs: those frames are no part of the accumulation,
+  // so the renderer holds its frame count (GltfRenderer::updateFrameCounter) and no sample of
+  // theirs is counted (updateStatistics); neither bound can end the still before it begins
+  bool dlssHandoffDelayPending() const
+  {
+    return m_dlssFrame && isAccumulationDenoiserEnabled() && m_dlssHandoffDelayMs > 0
+           && std::chrono::steady_clock::now() - m_accumulationStart < std::chrono::milliseconds(m_dlssHandoffDelayMs);
+  }
 
   // True when the user has DLSS-RR enabled
   bool isDlssEnabled() const

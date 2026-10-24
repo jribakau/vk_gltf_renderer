@@ -240,13 +240,20 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .callbackSuccess = reset},
                 &m_shadowTransmission, Persist::eYes);
   // Not persisted: the viewer turns it on while the camera moves and off once the view is still.
+  settings->add({"dlssHandoffDelayMs",
+                 "Denoisers: With DLSS-RR and OptiX or OIDN, milliseconds the view must have been still before the "
+                 "accumulation takes over from DLSS (0: the frame after it stops)"},
+                &m_dlssHandoffDelayMs, Persist::eYes, 0, 5000);
   settings->add({.name            = "ptCameraMedium",
                  .help            = "PathTracer: Probe which medium the camera is in when an accumulation starts [Off:0, On:1]. "
                                     "Off, camera paths start in clear air",
                  .callbackSuccess = reset},
                 &m_probeCameraMedium, Persist::eYes);
-  settings->add({.name = "scatterAsThin", .help = "PathTracer: Shade volumetric scatter as the thin-walled preview", .callbackSuccess = reset},
-                &m_scatterAsThin, Persist::eNo);
+  settings->add({.name            = "scatterAsThin",
+                 .help            = "PathTracer: Shade volumetric scatter as the thin-walled preview [Off:0, On:1, "
+                                    "On the frames DLSS renders and off on the frames an accumulation traces:2]",
+                 .callbackSuccess = reset},
+                &m_scatterAsThin, Persist::eNo, 0, 2);
   // Dense subsurface (skin): next-event estimation at interior scatter points, straight through the
   // boundary, counts light that would be internally reflected and keeps counting after it is, so a
   // dense medium returns more light than it gets, from a handful of near-surface events (grainy).
@@ -791,15 +798,30 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   {
     m_dlssFrame0 = false;
     m_handoff.cancel();
+    m_prevDlssFrame     = false;
+    m_accumulationStart = std::chrono::steady_clock::now();
   }
 
   if(!prepareFrame(resources))
     return;
 
 #if defined(USE_DLSS)
-  // Drive the DLSS state machine.
-  if(m_dlss->tick(resources))
+  // Drive the DLSS state machine, then decide the frame: DLSS renders it (every frame without an
+  // accumulation denoiser; frame 0 and the delay's frames with one), or the accumulation does, this
+  // being the hand-off frame when DLSS rendered the one before.
+  const bool dlssTicked = m_dlss->tick(resources);
+  m_prevDlssFrame       = m_dlssFrame;
+  {
+    const bool dlssActive = m_dlss->isActive();
+    const bool inDelay    = m_dlssHandoffDelayMs > 0
+                         && std::chrono::steady_clock::now() - m_accumulationStart < std::chrono::milliseconds(m_dlssHandoffDelayMs);
+    m_dlssFrame = dlssActive && (!isAccumulationDenoiserEnabled() || resources.frameCount == 0 || inDelay);
+  }
+  m_handoffFrame = !m_dlssFrame && m_prevDlssFrame && resources.frameCount >= 1;
+  if(dlssTicked)
     updateDlssResources(cmd, resources);
+#else
+  m_prevDlssFrame = m_dlssFrame = m_handoffFrame = false;
 #endif
 
   // Reset display buffer to rendered on first frame: the denoised image is stale until denoised again
@@ -833,9 +855,9 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   // Setting up the push constant
   const shaderio::PathtracePushConstant pushConst = setupPushConstant(cmd, resources, renderingSize);
 
-  // Frame 1 after DLSS's frame 0: keep DLSS's image for the hand-off before the path tracer overwrites
-  // it. The barrier below orders that write after the copy.
-  if(resources.frameCount == 1 && m_dlssFrame0)
+  // The hand-off frame, after DLSS's: keep DLSS's image for the hand-off before the path tracer
+  // overwrites it. The barrier below orders that write after the copy.
+  if(m_handoffFrame)
     if(const std::optional<DenoiserHandoff::Denoiser> denoiser = handoffDenoiser(resources))
       m_handoff.cmdCapture(cmd, resources, *denoiser);
 
@@ -869,7 +891,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   if(getEffectiveDlssEnabled(resources))
   {
     denoiseDlss(cmd, resources);
-    m_dlssFrame0 = isAccumulationDenoiserEnabled();  // only on frame 0, then OptiX or OIDN takes over
+    m_dlssFrame0 = isAccumulationDenoiserEnabled();  // frame 0 and the delay's frames, then OptiX or OIDN takes over
   }
 #endif
 
@@ -2242,9 +2264,9 @@ void PathTracer::restartAdaptiveSampling()
 // Update adaptive sampling based on frame timing
 void PathTracer::updateAdaptiveSampling(Resources& resources)
 {
-  // DLSS alone traces one sample per frame. With OptiX or OIDN, its frame 0 does (setupPushConstant),
-  // and Auto SPP climbs over the frames after it from the reset below.
-  if(isDlssEveryFrame())
+  // DLSS alone traces one sample per frame. With OptiX or OIDN, the frames it renders do
+  // (setupPushConstant), and Auto SPP climbs over the frames after them from the reset below.
+  if(m_dlssFrame)
     return;
 
   if(!m_adaptiveSampling || !m_profilerTimeline)
@@ -2267,18 +2289,23 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
 
   // Reset samples when frame count resets to 0 (scene change, etc.), so the first frames after a change
   // stay responsive. The throughput search keeps what it found: it serves runs nobody interacts with.
-  if(resources.frameCount == 0)
+  if(resources.frameCount == 0 || m_handoffFrame)
   {
+    m_accumulationFrames = 0;
     if(m_performanceTarget != PerformanceTarget::eThroughput)
     {
-      m_adaptiveSamples = MIN_SAMPLES_PER_PIXEL;
+      // Half the count the last view settled on: a frame of it still costs under the target, and the
+      // climb from there to this view's count is half as long. A view much dearer than the last
+      // steps down from it, one a frame.
+      m_adaptiveSamples = std::max(MIN_SAMPLES_PER_PIXEL, m_adaptiveSamples / 2);
       m_frameRateControl.restart();  // a new view: climb again to its count
     }
     return;
   }
 
-  // Don't adjust on the first few frames to allow for stabilization
-  if(resources.frameCount < 5)
+  // Don't adjust on the first few frames to allow for stabilization (the accumulation's frames: the
+  // GPU time of a DLSS frame before them is no measure of a sample)
+  if(++m_accumulationFrames < 5)
     return;
 
   // The profiler reports a GPU time frames after it was recorded. The throughput search compares counts,
@@ -2336,8 +2363,10 @@ void PathTracer::updateStatistics(Resources& resources)
     m_throughputRollingAvg.addValue(megaSamplePixelsPerSecond);
   }
 
-  // Track total samples accumulated
-  m_totalSamplesAccumulated += m_frameSamples;
+  // Track total samples accumulated. DLSS's frames before a hand-off (frame 0, the delay's) add
+  // nothing to it: the hand-off frame starts it over, and their count must not reach the cap first.
+  if(!(m_dlssFrame && isAccumulationDenoiserEnabled()))
+    m_totalSamplesAccumulated += m_frameSamples;
   std::rotate(m_recentFrameSamples.begin(), m_recentFrameSamples.begin() + 1, m_recentFrameSamples.end());
   m_recentFrameSamples.back()  = m_frameSamples;
   resources.accumulatedSamples = m_totalSamplesAccumulated;
@@ -2473,9 +2502,9 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   // Current frame count, can be overridden by DLSS
   int frameCount = resources.frameCount;
 
-  // Handle frame reset detection (needed for both adaptive and non-adaptive modes). Frame 1 after
-  // DLSS's frame 0 starts over too: DLSS's denoised image is no sample of the accumulation.
-  if(resources.frameCount == 0 || (resources.frameCount == 1 && m_dlssFrame0))
+  // Handle frame reset detection (needed for both adaptive and non-adaptive modes). The hand-off
+  // frame after DLSS's starts over too: DLSS's denoised image is no sample of the accumulation.
+  if(resources.frameCount == 0 || m_handoffFrame)
   {
     // Reset sample counter when scene/camera changes. Resources' copy too: what runs before
     // updateStatistics() this frame (the OptiX denoiser) must not see the previous accumulation's count.
@@ -2491,9 +2520,10 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   }
 
   // Samples per frame: the setting (ptSamples), Auto SPP's count, or 1 with DLSS
-  int samplesPerFrame = m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples;
+  int  samplesPerFrame = m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples;
+  bool useDlss         = false;
 #if defined(USE_DLSS)
-  const bool useDlss = getEffectiveDlssEnabled(resources);
+  useDlss = getEffectiveDlssEnabled(resources);
   if(useDlss)
     samplesPerFrame = 1;
 
@@ -2519,7 +2549,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   // is on and never resets; using it for ePtFirstFrame would only write depth once and break selection/depth.
   m_pushConst.flags = (resources.frameCount == 0 ? shaderio::ePtFirstFrame : 0);
   m_pushConst.flags |= m_shadowTransmission ? shaderio::ePtShadowTransmission : 0;
-  m_pushConst.flags |= m_scatterAsThin ? shaderio::ePtScatterAsThin : 0;
+  m_pushConst.flags |= (m_scatterAsThin == 1 || (m_scatterAsThin == 2 && useDlss)) ? shaderio::ePtScatterAsThin : 0;
   m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;
 #if defined(USE_DLSS)
   m_pushConst.flags |= useDlss ? shaderio::ePtUseDlss : 0;
@@ -2594,11 +2624,11 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
 bool PathTracer::getEffectiveDlssEnabled(const Resources& resources) const
 {
 #if defined(USE_DLSS)
-  const bool dlssActive = m_dlss->isActive();
-  if(dlssActive && isAccumulationDenoiserEnabled())
-    return resources.frameCount == 0;
-  return dlssActive;
+  // decided at the frame's start (onRender); outside a frame, the last frame's
+  (void)resources;
+  return m_dlssFrame;
 #else
+  (void)resources;
   return false;
 #endif
 }
@@ -2695,7 +2725,7 @@ bool PathTracer::getEffectiveOptixEnabled(const Resources& resources) const
   const bool dlssEngaged = (s == Dlss::State::eLoading || s == Dlss::State::eActive);
   if(dlssEngaged && optixEnabled)
   {
-    return resources.frameCount > 0;
+    return resources.frameCount > 0 && !m_dlssFrame;
   }
 #endif
 
@@ -2717,7 +2747,7 @@ bool PathTracer::getEffectiveOidnEnabled(const Resources& resources) const
   const auto s           = m_dlss->state();
   const bool dlssEngaged = (s == Dlss::State::eLoading || s == Dlss::State::eActive);
   if(dlssEngaged && oidnEnabled)
-    return resources.frameCount > 0;
+    return resources.frameCount > 0 && !m_dlssFrame;
 #endif
   return oidnEnabled;
 #else
