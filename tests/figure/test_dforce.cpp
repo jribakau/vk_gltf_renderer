@@ -279,3 +279,36 @@ TEST(Dforce, settlesInTheFiguresCentimetresWhenTheRootIsScaledToMetres)
     EXPECT_GT(pos[v * 3 + 1], 0.0f) << v;
   }
 }
+
+TEST(Dforce, anEditToADrapedMeshSettlesAgain)
+{
+  // the host reports a frame's edits before the drape is written, so a mesh just draped that an edit
+  // also moved is a reason to settle again, not an echo to ignore
+  fv::SceneGraph scene;
+  const int      rootNode = scene.add(fv::Node{});
+  const Grid     body = grid(8, 0), veil = grid(4, 3);
+  scene.meshes.push_back(sceneMesh(body, false));
+  scene.meshes.push_back(sceneMesh(veil, true));
+  scene.materials.push_back({});
+  for(int i = 0; i < 2; i++)
+  {
+    fv::Node n;
+    n.kind = fv::NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, rootNode);
+  }
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+  d.resimulate();
+  bool wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+  {
+    wrote = d.pump();
+    if(!wrote)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(wrote);
+  EXPECT_FALSE(d.busy());
+  d.changed({1}, false);
+  EXPECT_TRUE(d.busy());
+}

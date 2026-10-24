@@ -47,8 +47,8 @@ public:
 
   // Schedules a settle once the pose or shape stops changing; drops one that is running.
   void poke();
-  // Something the figure shows changed: nodes (bones) moved, or these meshes' vertices did. Pokes,
-  // except for the echo of a drape just written.
+  // Something the figure shows changed: nodes (bones) moved, or these meshes' vertices did. Pokes.
+  // The host reports what it flushed before pump() writes a drape, so a drape is never its own cause.
   void changed(const std::vector<int>& meshes, bool nodesMoved);
   // Runs now, still dropping the result if a newer edit arrives while it runs.
   void resimulate();
@@ -85,8 +85,6 @@ private:
   std::shared_ptr<Job>                           m_snapshot;
   std::future<std::vector<std::vector<float>>>   m_job;
   uint64_t                                       m_jobGen = 0;
-  // meshes whose drape was just written: their change is not a reason to settle again
-  std::set<int> m_echo;
   std::set<int> m_draped;
   int           m_version = 0;
 };

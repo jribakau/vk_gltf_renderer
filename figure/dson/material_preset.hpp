@@ -3,9 +3,11 @@
 // A DAZ material preset (.duf `scene.animations` addressing `#materials/<surface>:?<channel>/value`)
 // applied to a scene's materials: each surface of the name gets the preset's channels laid over its
 // own and is parsed again. A port of the materials half of Wardrobe.applyPreset
-// (src/lib/wardrobe/Wardrobe.ts). The URL's node ("Genesis9Eyelashes#materials/...") narrows the
-// surfaces to those under that node when the scene has it; otherwise every surface of the name
-// takes it. A name the scene lacks falls back to the surfaces it was split into ("Eyelashes" for
+// (src/lib/wardrobe/Wardrobe.ts). The URL's node ("Genesis9Eyelashes#materials/...", or a chain
+// "name://@selection/Genesis9:/Genesis9Eyelashes:#materials/...", outermost first) narrows the
+// surfaces to those whose owning node ends the longest part of the chain the scene has, ending at
+// its last node; failing that, to those under the innermost node of the chain the scene has;
+// otherwise every surface of the name takes it. A name the scene lacks falls back to the surfaces it was split into ("Eyelashes" for
 // "Eyelashes Upper" and "Eyelashes Lower"), then to the name without a product prefix ("FE Base"
 // for "Base").
 
@@ -31,7 +33,10 @@ struct MaterialPresetResult
 
 MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene);
 
-// The scene materials a preset's (node, surface) lands on, by the rules above.
+// The scene materials a preset's (node chain, surface) lands on, by the rules above. An empty chain
+// (`@selection` alone) means every surface of the name.
+std::vector<int> presetTargets(const SceneGraph& scene, const std::vector<std::string>& chain, const std::string& surface);
+// The same for a single node.
 std::vector<int> presetTargets(const SceneGraph& scene, const std::string& node, const std::string& surface);
 
 }  // namespace fv::dson

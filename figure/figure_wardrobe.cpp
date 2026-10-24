@@ -5,6 +5,7 @@
 #include <figure/figure.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <regex>
 
@@ -524,10 +525,32 @@ bool Figure::removeItem(int id)
     if(!back.empty())
       pose->setMany(back);
   }
+  const std::set<int> goneMeshes(gone.meshes.begin(), gone.meshes.end());
   morphs->removeChannels(gone.channels);
-  morphs->removeMeshes(std::set<int>(gone.meshes.begin(), gone.meshes.end()));
+  morphs->removeMeshes(goneMeshes);
   if(!loaded.morphs.mainMeshes.empty())
     scene.meshes[size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh)].geo->hiddenPolys.erase(gone.key);
+  // its morph meshes and owner ids leave the load's morph context; the main meshes' indices follow
+  dson::MorphContext&        ctx = loaded.morphs;
+  std::vector<dson::MeshRef> kept;
+  std::vector<size_t>        newIndex(ctx.meshes.size(), SIZE_MAX);
+  for(size_t i = 0; i < ctx.meshes.size(); i++)
+  {
+    if(goneMeshes.count(ctx.meshes[i].mesh))
+    {
+      for(const std::string& owner : ctx.meshes[i].owners)
+        ctx.itemOf.erase(owner);
+      continue;
+    }
+    newIndex[i] = kept.size();
+    kept.push_back(std::move(ctx.meshes[i]));
+  }
+  ctx.meshes = std::move(kept);
+  std::vector<size_t> mains;
+  for(size_t i : ctx.mainMeshes)
+    if(i < newIndex.size() && newIndex[i] != SIZE_MAX)
+      mains.push_back(newIndex[i]);
+  ctx.mainMeshes = std::move(mains);
   return true;
 }
 

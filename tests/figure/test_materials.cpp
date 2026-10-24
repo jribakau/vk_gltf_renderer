@@ -220,6 +220,37 @@ TEST(Materials, APresetSurfaceLandsUnderTheNodeItNames)
   EXPECT_EQ(fv::dson::presetTargets(scene, "SomeOtherHair", "Base"), std::vector<int>({1, 4}));
 }
 
+TEST(Materials, APresetNodeChainNarrowsToTheLongestPartTheSceneHas)
+{
+  fv::SceneGraph scene = wornScene();
+  // a prop beside the figure with a surface of the same name
+  fv::Mesh chair;
+  chair.materials.push_back(int(scene.materials.size()));
+  scene.materials.push_back(fv::dson::buildMaterial("Base", channelsOf(kSkin)));
+  scene.meshes.push_back(chair);
+  fv::Node group;
+  group.dsonNode = "Chair";
+  scene.nodes.push_back(group);
+  fv::Node shape;
+  shape.parent = int(scene.nodes.size()) - 1;
+  shape.mesh   = int(scene.meshes.size()) - 1;
+  scene.nodes.push_back(shape);
+
+  // the whole chain: the hair under the figure
+  EXPECT_EQ(fv::dson::presetTargets(scene, std::vector<std::string>{"Genesis9", "FEMessyHair"}, "Base"), std::vector<int>({4}));
+  // an outer node the scene lacks: the part it has, the hair
+  EXPECT_EQ(fv::dson::presetTargets(scene, std::vector<std::string>{"Genesis8Female", "FEMessyHair"}, "Base"), std::vector<int>({4}));
+  // an item the scene lacks under the figure: the surfaces under the figure, not the chair's
+  EXPECT_EQ(fv::dson::presetTargets(scene, std::vector<std::string>{"Genesis9", "OtherHair"}, "Base"), std::vector<int>({1, 4}));
+  // nothing known: every surface of the name
+  EXPECT_EQ(fv::dson::presetTargets(scene, std::vector<std::string>{"Nobody"}, "Base"), std::vector<int>({1, 4, 6}));
+
+  const Json preset = Json::parse(R"({"scene":{"animations":[
+    {"url":"name://@selection/Genesis9:/FEMessyHair:#materials/Base:?Glossy%20Roughness/value","keys":[[0,0.15]]}
+  ]}})");
+  EXPECT_EQ(fv::dson::applyMaterialPreset(preset, scene).changed, std::set<int>({4}));
+}
+
 TEST(Materials, APresetSurfaceFallsBackToTheSurfacesItWasSplitInto)
 {
   const fv::SceneGraph scene = wornScene();

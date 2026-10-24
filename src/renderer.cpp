@@ -1806,7 +1806,7 @@ void GltfRenderer::onFileDrop(const std::filesystem::path& filename)
 
 //--------------------------------------------------------------------------------------------------
 // Save the scene
-bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContained)
+bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContained, const std::function<void(tinygltf::Model&)>& edit)
 {
   if(m_resources.getScene() && m_resources.getScene()->valid() && !filename.empty())
   {
@@ -1838,7 +1838,9 @@ bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContaine
 
     // Install the environment-sky writer for this save. Done here rather than at scene creation
     // so that no load path can forget it -- there is exactly one place a scene is saved.
-    m_resources.getScene()->setPreSaveHook([this](tinygltf::Model& outModel, const std::filesystem::path& destination) {
+    m_resources.getScene()->setPreSaveHook([this, edit](tinygltf::Model& outModel, const std::filesystem::path& destination) {
+      if(edit)
+        edit(outModel);
       writeEnvironmentSky(outModel, destination);
     });
 

@@ -110,3 +110,35 @@ TEST(Presets, appliesTheThreeUrlFormsTheLastKeyAndSkipsTheRest)
   const fv::PosePresetResult none = g.pose ? fv::applyPosePreset(nullptr, g.morphs.get(), doc) : fv::PosePresetResult{};
   EXPECT_EQ(none.applied, 0);
 }
+
+TEST(Presets, aShapeOrPropertyPresetReachesNamedNodesAndReportsVisibility)
+{
+  Rig g = rig();
+  g.morphs->addLazy("Anus Down@w1", []() -> fv::morph::Finish { return [] { return fv::morph::LazyResult{}; }; });
+  auto doc = fv::dson::Json::parse(R"({
+    "scene": {"animations": [
+      {"url": "name://Anatomy_1006#Anus%20Down:?value/value", "keys": [[0, 0.7]]},
+      {"url": "name://Anatomy_1006#Smile:?value/value", "keys": [[0, 0.2]]},
+      {"url": "name://Anatomy_1006/head:?rotation/x/value", "keys": [[0, 40]]},
+      {"url": "name://@selection/Anatomy_1006:?extra/studio_node_channels/channels/Visible/value", "keys": [[0, false]]},
+      {"url": "name://@selection:?extra/studio_node_channels/channels/Visible/value", "keys": [[0, true]]}
+    ]}
+  })");
+  std::vector<std::pair<std::string, std::string>> asked;
+  const fv::PosePresetResult r = fv::applyPosePreset(g.pose.get(), g.morphs.get(), doc, [&](const std::string& node, const std::string& id) {
+    asked.emplace_back(node, id);
+    return node == "Anatomy_1006" && id == "Anus Down" ? std::string("Anus Down@w1") : std::string();
+  });
+  // the item's dial; not the figure's own Smile, which the url doesn't name
+  EXPECT_EQ(g.morphs->get("Anus Down@w1"), 0.7);
+  EXPECT_EQ(g.morphs->get("Smile"), 0.0);
+  ASSERT_EQ(r.skipped.size(), 1u);
+  EXPECT_EQ(r.skipped[0], "Anatomy_1006 Smile");
+  // another node's bone is left to its skeleton, which follows the figure's
+  EXPECT_EQ(g.pose->posed("head", "rotation", "x").value_or(0), 0);
+  EXPECT_EQ(r.applied, 1);
+  // a boolean key: the named node hidden; the selection itself has no node to report
+  ASSERT_EQ(r.visibility.size(), 1u);
+  EXPECT_EQ(r.visibility[0], std::make_pair(std::string("Anatomy_1006"), false));
+  EXPECT_EQ(asked.size(), 2u);
+}

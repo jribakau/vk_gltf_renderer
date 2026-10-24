@@ -429,16 +429,25 @@ std::vector<std::string> Figure::takeWarnings()
 
 namespace {
 
-// The last key's value, or none when the animation has no numeric key.
-std::optional<double> lastKey(const dson::Json& animation)
+// The last key's value, or none when the animation has no key.
+const dson::Json* lastKeyJson(const dson::Json& animation)
 {
   const dson::Json* keys = dson::get(&animation, "keys");
   if(!keys || !keys->is_array() || keys->empty())
-    return std::nullopt;
+    return nullptr;
   const dson::Json& key = keys->back();
-  if(!key.is_array() || key.size() < 2 || !key[1].is_number())
+  if(!key.is_array() || key.size() < 2)
+    return nullptr;
+  return &key[1];
+}
+
+// The last key's value, or none when the animation has no numeric key.
+std::optional<double> lastKey(const dson::Json& animation)
+{
+  const dson::Json* v = lastKeyJson(animation);
+  if(!v || !v->is_number())
     return std::nullopt;
-  return key[1].get<double>();
+  return v->get<double>();
 }
 
 std::string withoutValue(std::string prop)
@@ -451,7 +460,8 @@ std::string withoutValue(std::string prop)
 
 }  // namespace
 
-PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc, const std::function<std::string(const std::string&)>& channelOf)
+PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc,
+                                 const std::function<std::string(const std::string&, const std::string&)>& channelOf)
 {
   PosePresetResult result;
   if(!pose)
@@ -471,22 +481,32 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
     }
 
   static const std::regex selection(R"(^name://@selection(?:/([^:#]*))?(?:#([^:]*))?:\?(.*)$)");
+  // a node by its DAZ name: "name://Advanced Natural Anatomy Layer_1006#PG_ANAL%20Anus%20Down:?value/value"
+  static const std::regex named(R"(^name://([^@/#:][^/#:]*)(?:/([^:#]*))?(?:#([^:]*))?:\?(.*)$)");
   static const std::regex hierarchical(R"(^[^:]*:[^#]*#([^?]+)\?(.*)$)");
   static const std::regex channel(R"(^(rotation|translation|scale)/(x|y|z|general)$)");
+  static const std::string visibleProp = "extra/studio_node_channels/channels/Visible";
 
   for(const dson::Json& a : *animations)
   {
-    const auto value = lastKey(a);
-    if(!value)
+    const dson::Json* raw = lastKeyJson(a);
+    if(!raw || !(raw->is_number() || raw->is_boolean()))
       continue;
     const std::string url = dson::getString(&a, "url");
     std::smatch       m;
-    std::string       boneName, modifier, prop;
+    std::string       nodeName, boneName, modifier, prop;
     if(std::regex_match(url, m, selection))
     {
       boneName = m[1].matched ? dson::decodeUri(m[1].str()) : "";
       modifier = m[2].matched ? dson::decodeUri(m[2].str()) : "";
       prop     = m[3].str();
+    }
+    else if(std::regex_match(url, m, named))
+    {
+      nodeName = dson::decodeUri(m[1].str());
+      boneName = m[2].matched ? dson::decodeUri(m[2].str()) : "";
+      modifier = m[3].matched ? dson::decodeUri(m[3].str()) : "";
+      prop     = m[4].str();
     }
     else if(std::regex_match(url, m, hierarchical))
     {
@@ -499,30 +519,44 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
       continue;
     }
     prop = withoutValue(prop);
+    if(prop == visibleProp && modifier.empty())
+    {
+      // shown or hidden: the node under the selection, or the one named
+      const std::string node = !boneName.empty() ? boneName : nodeName;
+      if(!node.empty())
+        result.visibility.emplace_back(node, raw->is_boolean() ? raw->get<bool>() : raw->get<double>() != 0);
+      continue;
+    }
+    if(!raw->is_number())
+      continue;
+    const double value = raw->get<double>();
     if(!modifier.empty())
     {
-      if(prop != "value")
+      if(prop != "value" || !boneName.empty())
         continue;
-      // the figure's dial of that name, or the one a worn item made for it
+      // the figure's dial of that name (unless the url names another node), or the one a worn item made for it
       std::string           name = modifier;
-      const morph::Channel* ch   = morphs ? morphs->channel(name) : nullptr;
+      const morph::Channel* ch   = morphs && nodeName.empty() ? morphs->channel(name) : nullptr;
       if(!ch && morphs && channelOf)
       {
-        name = channelOf(modifier);
+        name = channelOf(nodeName, modifier);
         ch   = name.empty() ? nullptr : morphs->channel(name);
       }
       if(ch)
-        morphValues.emplace_back(name, *value);
-      else if(*value != 0)
-        result.skipped.push_back(modifier);
+        morphValues.emplace_back(name, value);
+      else if(value != 0)
+        result.skipped.push_back(nodeName.empty() ? modifier : nodeName + " " + modifier);
       continue;
     }
+    // a bone of another node: its skeleton follows the figure's
+    if(!nodeName.empty())
+      continue;
     const pose::PoseBone* pb = boneName.empty() ? root : pose->get(boneName);
     std::smatch           pm;
     const bool            propOk = std::regex_match(prop, pm, channel);
     if(!pb || !propOk)
     {
-      if(*value != 0 && propOk)
+      if(value != 0 && propOk)
         result.skipped.push_back((boneName.empty() ? "figure" : boneName) + " " + prop);
       continue;
     }
@@ -534,7 +568,7 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
       if(axis.kind == kind && axis.axis == pm[2].str())
         has = true;
     if(has)
-      values.push_back({pb->name, kind, pm[2].str(), *value});
+      values.push_back({pb->name, kind, pm[2].str(), value});
   }
   pose->setMany(values);
   if(morphs && !morphValues.empty())
@@ -545,13 +579,38 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
 
 PosePresetResult Figure::applyPosePreset(const dson::Json& doc)
 {
-  return fv::applyPosePreset(pose.get(), morphs.get(), doc, [this](const std::string& id) -> std::string {
-    // a worn item's dial: "Loosen Neck" is stored as "<id>@<item key>"
+  // a worn item by one of its nodes' DAZ names
+  const auto itemNamed = [this](const std::string& node) -> WornItem* {
+    for(WornItem& i : items)
+      if(i.nodeNames.count(node) || i.label == node)
+        return &i;
+    return nullptr;
+  };
+  PosePresetResult result = fv::applyPosePreset(pose.get(), morphs.get(), doc, [&](const std::string& node, const std::string& id) -> std::string {
+    // a worn item's dial: "Loosen Neck" is stored as "<id>@<item key>"; on a named node, that item's
+    if(!node.empty())
+    {
+      if(node == loaded.morphs.mainNode)
+        return morphs->channel(id) ? id : std::string();
+      const WornItem* i = itemNamed(node);
+      return i && morphs->channel(id + "@" + i->key) ? id + "@" + i->key : std::string();
+    }
     for(const WornItem& i : items)
       if(morphs->channel(id + "@" + i.key))
         return id + "@" + i.key;
     return {};
   });
+  // nodes shown or hidden: the worn items they are (a geograft's "Apply" and "Remove" presets)
+  for(const auto& [node, visible] : result.visibility)
+  {
+    WornItem* i = itemNamed(node);
+    if(!i)
+      continue;
+    if(i->visible != visible && setItemVisible(i->id, visible))
+      result.itemsShown.push_back(i->id);
+    result.applied++;
+  }
+  return result;
 }
 
 }  // namespace fv

@@ -3,7 +3,12 @@
 // (test/parity/dump.parity.ts), for scripts/parity/compare.mjs to diff.
 //
 //   fv_parity <case.json> <out.json> [--root <dir for relative library paths>]
+//
+// Steps: {"load"}, {"morph"}, {"pose"}, {"preset"}, {"dump"}, and for the wardrobe {"wear": rel},
+// {"remove": item id} and {"fit": label}, which measures how the worn items sit on the body: for
+// each item vertex, its signed distance to the nearest body vertex along that vertex's normal.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -11,7 +16,9 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <unordered_map>
 
+#include <figure/dson/material_preset.hpp>
 #include <figure/figure.hpp>
 
 using fv::dson::Json;
@@ -80,6 +87,110 @@ Json dumpScene(const fv::SceneGraph& scene, int root, const fv::morph::MorphSet*
       if(const double w = morphs->weightOf(ch.name); w != 0)
         weights[ch.name] = r(w);
   return {{"bones", bones}, {"meshes", meshes}, {"weights", weights}};
+}
+
+// How each worn item sits on the body, in the rest pose: the signed distance (cm) of every drawn item
+// vertex to the nearest body vertex, along that body vertex's normal. Negative is under the skin.
+Json fitReport(const fv::Figure& fig)
+{
+  const fv::SceneGraph& scene  = fig.loaded.scene;
+  const auto            worlds = scene.worlds();
+  std::vector<int>      nodeOf(scene.meshes.size(), -1);
+  for(size_t n = 0; n < scene.nodes.size(); n++)
+    if(scene.nodes[n].kind == fv::NodeKind::eMesh && scene.nodes[n].mesh >= 0)
+      nodeOf[size_t(scene.nodes[n].mesh)] = int(n);
+  const auto& ctx = fig.loaded.morphs;
+  if(ctx.mainMeshes.empty())
+    throw std::runtime_error("fit without a figure body");
+  const int             bodyMesh = ctx.meshes[ctx.mainMeshes[0]].mesh;
+  const fv::mesh::BuiltMesh& body = *scene.meshes[size_t(bodyMesh)].geo;
+  const fv::Mat4        bodyWorld = nodeOf[size_t(bodyMesh)] >= 0 ? worlds[size_t(nodeOf[size_t(bodyMesh)])] : fv::Mat4{};
+  const size_t          nb        = body.position.size() / 3;
+  std::vector<fv::Vec3> bp(nb), bn(nb);
+  for(size_t v = 0; v < nb; v++)
+  {
+    bp[v] = bodyWorld.transformPoint({body.position[v * 3], body.position[v * 3 + 1], body.position[v * 3 + 2]});
+    const fv::Vec3 tip = bodyWorld.transformPoint({body.position[v * 3] + body.normal[v * 3], body.position[v * 3 + 1] + body.normal[v * 3 + 1],
+                                                   body.position[v * 3 + 2] + body.normal[v * 3 + 2]});
+    fv::Vec3       d   = {tip.x - bp[v].x, tip.y - bp[v].y, tip.z - bp[v].z};
+    const double   len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    bn[v]              = len > 0 ? fv::Vec3{d.x / len, d.y / len, d.z / len} : fv::Vec3{0, 1, 0};
+  }
+  // body vertices in 2 cm cells
+  const double                                        cell = 2.0;
+  std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+  const auto key = [](int64_t x, int64_t y, int64_t z) { return (x & 0x1FFFFF) | ((y & 0x1FFFFF) << 21) | ((z & 0x1FFFFF) << 42); };
+  const auto cellOf = [&](double c) { return int64_t(std::floor(c / cell)); };
+  for(size_t v = 0; v < nb; v++)
+    grid[key(cellOf(bp[v].x), cellOf(bp[v].y), cellOf(bp[v].z))].push_back(uint32_t(v));
+  const auto nearest = [&](const fv::Vec3& q) -> int64_t {
+    const int64_t cx = cellOf(q.x), cy = cellOf(q.y), cz = cellOf(q.z);
+    int64_t       best = -1;
+    double        bestD = 1e30;
+    for(int r = 0; r <= 8; r++)
+    {
+      for(int64_t x = cx - r; x <= cx + r; x++)
+        for(int64_t y = cy - r; y <= cy + r; y++)
+          for(int64_t z = cz - r; z <= cz + r; z++)
+          {
+            if(std::max({std::llabs(x - cx), std::llabs(y - cy), std::llabs(z - cz)}) != r)
+              continue;
+            auto it = grid.find(key(x, y, z));
+            if(it == grid.end())
+              continue;
+            for(uint32_t v : it->second)
+            {
+              const double dx = bp[v].x - q.x, dy = bp[v].y - q.y, dz = bp[v].z - q.z;
+              const double d  = dx * dx + dy * dy + dz * dz;
+              if(d < bestD)
+                bestD = d, best = v;
+            }
+          }
+      // a vertex found within r cells is the nearest once the next ring can't be closer
+      if(best >= 0 && std::sqrt(bestD) <= r * cell)
+        break;
+    }
+    return best;
+  };
+  Json items = Json::array();
+  for(const fv::WornItem& item : fig.items)
+  {
+    std::vector<double> dist;
+    size_t              far = 0;
+    for(int m : item.meshes)
+    {
+      const fv::mesh::BuiltMesh* geo = scene.meshes[size_t(m)].geo.get();
+      if(!geo || nodeOf[size_t(m)] < 0)
+        continue;
+      const fv::Mat4& w = worlds[size_t(nodeOf[size_t(m)])];
+      for(size_t v = 0; v < geo->position.size() / 3; v++)
+      {
+        const fv::Vec3 q = w.transformPoint({geo->position[v * 3], geo->position[v * 3 + 1], geo->position[v * 3 + 2]});
+        const int64_t  b = nearest(q);
+        if(b < 0)
+        {
+          far++;
+          continue;
+        }
+        dist.push_back((q.x - bp[size_t(b)].x) * bn[size_t(b)].x + (q.y - bp[size_t(b)].y) * bn[size_t(b)].y + (q.z - bp[size_t(b)].z) * bn[size_t(b)].z);
+      }
+    }
+    std::sort(dist.begin(), dist.end());
+    const auto pct = [&](double q) { return dist.empty() ? 0.0 : r(dist[size_t(q * double(dist.size() - 1))]); };
+    const auto under = [&](double depth) {
+      return dist.empty() ? 0.0 : r(double(std::count_if(dist.begin(), dist.end(), [&](double d) { return d < -depth; })) / double(dist.size()));
+    };
+    items.push_back({{"label", item.label},
+                     {"kind", item.kind},
+                     {"vertices", dist.size()},
+                     {"farFromBody", far},
+                     {"underSkin0.1cm", under(0.1)},
+                     {"underSkin0.5cm", under(0.5)},
+                     {"p05", pct(0.05)},
+                     {"median", pct(0.5)},
+                     {"p95", pct(0.95)}});
+  }
+  return items;
 }
 
 }  // namespace
@@ -160,9 +271,39 @@ int main(int argc, char** argv)
       {
         if(!loaded)
           throw std::runtime_error("preset before a figure loads");
-        auto doc = store->load(step["preset"].get<std::string>());
-        loaded->applyPosePreset(doc->json);
+        auto                       doc = store->load(step["preset"].get<std::string>());
+        const fv::PosePresetResult r   = loaded->applyPosePreset(doc->json);
+        // as the host does: a property preset's surfaces too
+        const fv::dson::MaterialPresetResult m = fv::dson::applyMaterialPreset(doc->json, loaded->loaded.scene);
         loaded->settle();
+        std::cerr << "preset " << step["preset"].get<std::string>() << ": applied " << r.applied << ", skipped " << r.skipped.size()
+                  << ", visibility " << r.visibility.size() << ", items shown or hidden " << r.itemsShown.size() << ", surfaces "
+                  << m.changed.size() << "\n";
+        for(const std::string& s : r.skipped)
+          std::cerr << "  skipped " << s << "\n";
+      }
+      else if(step.contains("wear"))
+      {
+        if(!loaded)
+          throw std::runtime_error("wear before a figure loads");
+        const std::string rel = step["wear"].get<std::string>();
+        auto              prepared = loaded->prepareWear(rel, step.value("subdivision", 0));
+        const fv::WearResult w = loaded->commitWear(prepared, rel);
+        loaded->settle();
+        Json report = {{"items", w.items}, {"fit", r(w.fit)}, {"notes", w.notes}, {"warnings", w.warnings}, {"missingBones", w.missingBones}};
+        std::cerr << "wear " << rel << ": " << report.dump() << "\n";
+      }
+      else if(step.contains("remove"))
+      {
+        if(!loaded || !loaded->removeItem(step["remove"].get<int>()))
+          throw std::runtime_error("no such item to remove");
+        loaded->settle();
+      }
+      else if(step.contains("fit"))
+      {
+        if(!loaded)
+          throw std::runtime_error("fit before a figure loads");
+        dumps[step["fit"].get<std::string>()] = {{"fit", fitReport(*loaded)}};
       }
       else if(step.contains("dump"))
       {

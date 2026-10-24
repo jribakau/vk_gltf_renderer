@@ -53,38 +53,87 @@ std::vector<std::string> split(const std::string& s, char sep)
   }
 }
 
-// The DSON node each material belongs to: the nearest figure or prop over every mesh using it (a
-// worn item hangs under the body's group, which is not its owner).
-std::vector<std::set<std::string>> ownersOf(const SceneGraph& scene)
+// The DSON nodes each material belongs to, each as its chain of DSON nodes from the outermost down:
+// the nearest figure or prop over every mesh using it (a worn item hangs under the body's group,
+// which is not its owner), then the DSON nodes above that.
+std::vector<std::set<std::vector<std::string>>> ownersOf(const SceneGraph& scene)
 {
-  std::vector<std::set<std::string>> owners(scene.materials.size());
+  std::vector<std::set<std::vector<std::string>>> owners(scene.materials.size());
   for(size_t i = 0; i < scene.nodes.size(); i++)
   {
     const Node& n = scene.nodes[i];
     if(n.mesh < 0 || n.mesh >= int(scene.meshes.size()))
       continue;
-    int p = int(i);
-    while(p >= 0 && scene.nodes[size_t(p)].dsonNode.empty())
-      p = scene.nodes[size_t(p)].parent;
-    if(p < 0)
+    std::vector<std::string> chain;
+    for(int p = int(i); p >= 0; p = scene.nodes[size_t(p)].parent)
+      if(!scene.nodes[size_t(p)].dsonNode.empty())
+        chain.push_back(scene.nodes[size_t(p)].dsonNode);
+    if(chain.empty())
       continue;
+    std::reverse(chain.begin(), chain.end());
     for(int m : scene.meshes[size_t(n.mesh)].materials)
       if(m >= 0 && m < int(owners.size()))
-        owners[size_t(m)].insert(scene.nodes[size_t(p)].dsonNode);
+        owners[size_t(m)].insert(chain);
   }
   return owners;
 }
 
+bool endsWith(const std::vector<std::string>& chain, const std::vector<std::string>& tail)
+{
+  return tail.size() <= chain.size() && std::equal(tail.rbegin(), tail.rend(), chain.rbegin());
+}
+
+// The node chain of a preset URL's node part: "Genesis9Eyelashes", "name://@selection" (none), or
+// "name://@selection/Genesis9:/Genesis9Eyelashes:".
+std::vector<std::string> nodeChain(std::string node)
+{
+  if(node.rfind("name://", 0) == 0)
+    node = node.substr(7);
+  std::vector<std::string> chain;
+  for(std::string seg : split(node, '/'))
+  {
+    while(!seg.empty() && seg.back() == ':')
+      seg.pop_back();
+    if(!seg.empty() && seg != "@selection")
+      chain.push_back(seg);
+  }
+  return chain;
+}
+
 }  // namespace
 
-std::vector<int> presetTargets(const SceneGraph& scene, const std::string& node, const std::string& surface)
+std::vector<int> presetTargets(const SceneGraph& scene, const std::vector<std::string>& chain, const std::string& surface)
 {
-  const auto owners    = ownersOf(scene);
-  const bool nodeKnown = !node.empty() && std::any_of(owners.begin(), owners.end(), [&](const auto& o) { return o.count(node) > 0; });
-  const auto pick      = [&](const auto& matches) {
+  const auto        owners = ownersOf(scene);
+  std::vector<bool> inScope(scene.materials.size(), true);
+  const auto        narrow = [&](const auto& owned) {
+    std::vector<bool> scope(scene.materials.size(), false);
+    bool              any = false;
+    for(size_t i = 0; i < scene.materials.size(); i++)
+      for(const auto& c : owners[i])
+        if(owned(c))
+        {
+          scope[i] = any = true;
+          break;
+        }
+    if(any)
+      inScope = std::move(scope);
+    return any;
+  };
+  bool found = false;
+  // the longest end of the chain some owner ends with
+  for(size_t len = chain.size(); len > 0 && !found; len--)
+  {
+    const std::vector<std::string> tail(chain.end() - std::ptrdiff_t(len), chain.end());
+    found = narrow([&](const std::vector<std::string>& c) { return endsWith(c, tail); });
+  }
+  // else under the innermost node of the chain the scene has
+  for(size_t k = chain.size(); k > 0 && !found; k--)
+    found = narrow([&](const std::vector<std::string>& c) { return std::find(c.begin(), c.end(), chain[k - 1]) != c.end(); });
+  const auto pick = [&](const auto& matches) {
     std::vector<int> out;
     for(size_t i = 0; i < scene.materials.size(); i++)
-      if((!nodeKnown || owners[i].count(node)) && matches(scene.materials[i].name))
+      if(inScope[i] && matches(scene.materials[i].name))
         out.push_back(int(i));
     return out;
   };
@@ -102,6 +151,11 @@ std::vector<int> presetTargets(const SceneGraph& scene, const std::string& node,
   return pick([&](const std::string& name) { return name == bare; });
 }
 
+std::vector<int> presetTargets(const SceneGraph& scene, const std::string& node, const std::string& surface)
+{
+  return presetTargets(scene, node.empty() ? std::vector<std::string>{} : std::vector<std::string>{node}, surface);
+}
+
 MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
 {
   MaterialPresetResult result;
@@ -111,8 +165,8 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
   std::unordered_map<std::string, std::string> images;
   collectImages(doc, images);
 
-  // (node, surface) -> channel -> override, in the order the preset lists them
-  std::map<std::pair<std::string, std::string>, std::vector<ChannelOverride>> bySurface;
+  // (node chain, surface) -> channel -> override, in the order the preset lists them
+  std::map<std::pair<std::vector<std::string>, std::string>, std::vector<ChannelOverride>> bySurface;
   static const std::regex url(R"(^(.*?)#materials/([^:]+):\?(.+)$)");
   for(const Json& a : *animations)
   {
@@ -132,13 +186,7 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
     if(channel.empty() || segs.size() > rest || (field != "value" && field != "image_file" && field != "image"))
       continue;
     const std::string surface = dec(m[2].str());
-    // the node: "Genesis9Eyelashes", or the last segment of a "name://@selection/<node>" chain
-    std::string node = m[1].str();
-    if(const size_t slash = node.rfind('/'); slash != std::string::npos)
-      node = node.substr(slash + 1);
-    if(!node.empty() && node.back() == ':')
-      node.pop_back();
-    auto& list = bySurface[{dec(node), surface}];
+    auto& list = bySurface[{nodeChain(m[1].str()), surface}];
     auto              it      = std::find_if(list.begin(), list.end(), [&](const ChannelOverride& o) { return o.channel == channel; });
     if(it == list.end())
       it = list.insert(list.end(), ChannelOverride{channel, std::nullopt, std::nullopt});
@@ -162,8 +210,8 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
 
   for(const auto& [key, overrides] : bySurface)
   {
-    const auto& [node, surface] = key;
-    const std::vector<int> targets = presetTargets(scene, node, surface);
+    const auto& [chain, surface] = key;
+    const std::vector<int> targets = presetTargets(scene, chain, surface);
     if(targets.empty())
       result.missing.insert(surface);
     else

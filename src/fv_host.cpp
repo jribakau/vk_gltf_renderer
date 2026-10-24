@@ -234,6 +234,52 @@ bool readable(const std::string& path)
   return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp";
 }
 
+// Texture server requests in flight. A cook can take minutes (the read timeout is 600 s), so a
+// stopping renderer cuts them off instead of joining workers that wait on one; a request that starts
+// afterwards is not sent.
+class TextureCalls
+{
+public:
+  bool add(httplib::Client* cli)
+  {
+    std::lock_guard lock(m_mutex);
+    if(m_stopped)
+      return false;
+    m_live.insert(cli);
+    return true;
+  }
+  void remove(httplib::Client* cli)
+  {
+    std::lock_guard lock(m_mutex);
+    m_live.erase(cli);
+  }
+  bool stopped()
+  {
+    std::lock_guard lock(m_mutex);
+    return m_stopped;
+  }
+  // Client::stop is the one call that is safe while another thread is inside a request: it shuts
+  // the socket down and the request fails at once.
+  void stopAll()
+  {
+    std::lock_guard lock(m_mutex);
+    m_stopped = true;
+    for(httplib::Client* cli : m_live)
+      cli->stop();
+  }
+
+private:
+  std::mutex                 m_mutex;
+  std::set<httplib::Client*> m_live;
+  bool                       m_stopped = false;
+};
+
+TextureCalls& textureCalls()
+{
+  static TextureCalls calls;
+  return calls;
+}
+
 struct CookedTexture
 {
   std::optional<fv::build::TextureImage> image;
@@ -275,12 +321,15 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
     url += "&mk=" + encodeComponent(mk);
   }
   url += cachedOnly ? "&path=1&cached=1" : "&path=1";
+  if(!textureCalls().add(&cli))
+    return {};
   auto res = cli.Get(url);
+  textureCalls().remove(&cli);
   if(res && res->status == 202 && cachedOnly)
     return {.uncooked = true};
   if(!res || res->status != 200)
   {
-    if(!quiet)
+    if(!quiet && !textureCalls().stopped())
       LOGW("texture %s: %s\n", req.rel.c_str(), res ? (std::to_string(res->status) + " " + res->body).c_str() : "no answer");
     return {};
   }
@@ -630,6 +679,8 @@ struct FvHost::Impl
   void requestEnvironment();
   void applySun(bool force);
   void addSun(tinygltf::Model& model);
+  void addSun(nvvkgltf::Scene& scene);
+  void fillSun(tinygltf::Light& light, tinygltf::Node& node, int lightIndex);
   void setParams(const Json& values);
   void publishLighting();
 
@@ -1323,6 +1374,7 @@ void FvHost::Impl::runImport(const std::string& path, uint64_t jobId)
     if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
       autoGround = *static_cast<const float*>(p->destination.raw);
   appliedParams.erase("infinitePlaneDistance");
+  addSun(*scn);
   applyLighting(false);
   const std::string id = "model:" + std::to_string(++figures);
   materials->attachModel(id);
@@ -1434,7 +1486,22 @@ Json FvHost::Impl::exportGlb(const Json& args)
     nvvkgltf::Scene* scn = renderer->editScene();
     if(!scn || !scn->valid())
       throw std::runtime_error("Open a model first: there is nothing to export.");
-    if(!renderer->save(pathOf(path), true))
+    // without the sun the host added: the file describes the model, not this session's lighting
+    const int node = sunNode, light = sunLight;
+    const auto withoutSun = [node, light](tinygltf::Model& m) {
+      if(node < 0 || node >= int(m.nodes.size()))
+        return;
+      for(tinygltf::Scene& scene : m.scenes)
+        scene.nodes.erase(std::remove(scene.nodes.begin(), scene.nodes.end(), node), scene.nodes.end());
+      // appended last on import, so it goes without renumbering anything; else it stays, emptied and unreferenced
+      if(node == int(m.nodes.size()) - 1)
+        m.nodes.pop_back();
+      else
+        m.nodes[size_t(node)] = tinygltf::Node{};
+      if(light >= 0 && light == int(m.lights.size()) - 1)
+        m.lights.pop_back();
+    };
+    if(!renderer->save(pathOf(path), true, withoutSun))
       throw std::runtime_error("the renderer could not write " + path);
     notice("Exported " + utf8Of(pathOf(path).filename()), "info");
     return {{"ok", true}};
@@ -1724,9 +1791,22 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
       notice(name + " is a DAZ " + kind + ". Load a DAZ figure first, then open it.");
     else
     {
-      const fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
-      morphTouched                 = true;
+      fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
+      morphTouched           = true;
       protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
+      // a property preset can also set surfaces ("#materials/<surface>:?<channel>" urls)
+      const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
+      if(!surfaces.changed.empty())
+      {
+        materials->surfacesChanged(surfaces.changed);
+        auto& presets = figure->materialPresets;
+        presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
+        presets.push_back(rel);
+        r.applied += int(surfaces.changed.size());
+      }
+      // it showed or hid worn items (a geograft's Apply and Remove presets)
+      if(!r.itemsShown.empty())
+        rebuildScene("Showing");
       if(!r.applied)
         notice(name + ": nothing in this " + kind + " matches the loaded figure.");
       else if(!r.skipped.empty())
@@ -1921,13 +2001,12 @@ void FvHost::Impl::applySun(bool force)
   appliedSun = {{"light", light}, {"aim", aim}};
 }
 
-// A directional "Sun" on a root node of a model about to be loaded, marked as the sky's sun so a
-// physical sky follows it. Written with the current state, so the load shows it as it is.
-void FvHost::Impl::addSun(tinygltf::Model& model)
+// The "Sun" light and its node as the current state has them: directional, marked as the sky's sun
+// so a physical sky follows it.
+void FvHost::Impl::fillSun(tinygltf::Light& light, tinygltf::Node& node, int lightIndex)
 {
   const fv::lighting::Sun& s     = lighting.sun;
   const glm::vec3          color = fv::lighting::linearColor(s.color);
-  tinygltf::Light          light;
   light.name      = "Sun";
   light.type      = "directional";
   light.color     = {color.x, color.y, color.z};
@@ -1935,18 +2014,26 @@ void FvHost::Impl::addSun(tinygltf::Model& model)
   tinygltf::Value::Object lightExtras;
   lightExtras["radius"] = tinygltf::Value(fv::lighting::sunRadiusKm(s.softness));
   light.extras          = tinygltf::Value(lightExtras);
-  model.lights.push_back(light);
-  sunLight = int(model.lights.size()) - 1;
 
-  tinygltf::Node node;
-  node.name  = "Sun";
-  node.light = sunLight;
+  node.name         = "Sun";
+  node.light        = lightIndex;
   const glm::quat r = fv::lighting::sunRotation(s.azimuth, s.elevation);
   node.rotation     = {r.x, r.y, r.z, r.w};
-  tinygltf::Value::Object nodeExtras;
-  nodeExtras["fvId"] = tinygltf::Value(std::string("l:sun"));
-  node.extras        = tinygltf::Value(nodeExtras);
+  tinygltf::Value::Object nodeExtras = node.extras.IsObject() ? node.extras.Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
+  nodeExtras["fvId"]                 = tinygltf::Value(std::string("l:sun"));
+  node.extras                        = tinygltf::Value(nodeExtras);
   gltf_environment_sky::setSkySunMarker(node, gltf_environment_sky::kSkySunOwnerScene);
+}
+
+// The sun on a root node of a model about to be loaded, written with the current state, so the load
+// shows it as it is.
+void FvHost::Impl::addSun(tinygltf::Model& model)
+{
+  tinygltf::Light light;
+  tinygltf::Node  node;
+  fillSun(light, node, int(model.lights.size()));
+  model.lights.push_back(light);
+  sunLight = int(model.lights.size()) - 1;
   model.nodes.push_back(node);
   sunNode = int(model.nodes.size()) - 1;
 
@@ -1956,8 +2043,23 @@ void FvHost::Impl::addSun(tinygltf::Model& model)
   model.scenes[scene].nodes.push_back(sunNode);
   if(std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), "KHR_lights_punctual") == model.extensionsUsed.end())
     model.extensionsUsed.push_back("KHR_lights_punctual");
+  const fv::lighting::Sun& s     = lighting.sun;
+  const glm::vec3          color = fv::lighting::linearColor(s.color);
   appliedSun = {{"light", {{"color", {color.x, color.y, color.z}}, {"intensity", light.intensity}, {"radius", fv::lighting::sunRadiusKm(s.softness)}}},
                 {"aim", {s.azimuth, s.elevation}}};
+}
+
+// The sun added to a scene the renderer loaded itself (an imported file), as a new root node.
+void FvHost::Impl::addSun(nvvkgltf::Scene& scene)
+{
+  const int node = scene.editor().addLightNode("directional", "Sun");
+  if(node < 0)
+    return;
+  sunNode  = node;
+  sunLight = scene.getModel().nodes[size_t(node)].light;
+  fillSun(scene.editor().getLightForEdit(sunLight), scene.editor().getNodeForEdit(sunNode), sunLight);
+  // the light and the node's rotation reach the GPU the way a live sun edit does
+  applySun(true);
 }
 
 // A batch of renderer parameters, validated whole before any is applied; callbacks fire as over MCP.
@@ -2462,6 +2564,7 @@ void FvHost::onDetach()
     s.accepting = false;
   }
   s.loadGeneration++;  // loads still running drop their result
+  textureCalls().stopAll();  // and don't wait out a cook
   s.loaders.joinAll();
   s.queue.clear();
   s.renderer->setGizmoHooks({});
@@ -2521,17 +2624,23 @@ void FvHost::onUpdate()
   s.applyPendingMorphs();
   if(s.figure)
   {
-    // a settle that finished writes its drape first, so this frame's pump flushes it
-    if(s.figure->dforce)
-      s.figure->dforce->pump();
-    const fv::Figure::Changes changes = s.figure->fig->pump();
+    fv::Figure::Changes changes = s.figure->fig->pump();
     if(s.figure->dforce)
     {
+      // this frame's edits first, then a settle that finished writes its drape and is drained on its
+      // own: the drape's vertices never hide an edit to the same mesh, and are no reason to settle again
       std::vector<int> moved;
       for(const fv::morph::MeshChange& m : changes.meshes)
         moved.push_back(m.mesh);
       if(!changes.nodes.empty() || !moved.empty())
         s.figure->dforce->changed(moved, !changes.nodes.empty());
+      if(s.figure->dforce->pump())
+      {
+        fv::Figure::Changes drape = s.figure->fig->drain();
+        changes.nodes.insert(drape.nodes.begin(), drape.nodes.end());
+        changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(drape.meshes.begin()), std::make_move_iterator(drape.meshes.end()));
+        changes.rebound.insert(changes.rebound.end(), drape.rebound.begin(), drape.rebound.end());
+      }
       s.publishDforce(false);
     }
     s.applyNodes(changes.nodes);

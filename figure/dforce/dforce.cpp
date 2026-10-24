@@ -131,18 +131,7 @@ void Dforce::poke()
 
 void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
 {
-  bool other = nodesMoved;
-  bool echoed = false;
-  for(int m : meshes)
-  {
-    if(m_echo.count(m))
-      echoed = true;
-    else
-      other = true;
-  }
-  if(echoed)
-    m_echo.clear();
-  if(other)
+  if(nodesMoved || !meshes.empty())
     poke();
 }
 
@@ -175,7 +164,6 @@ void Dforce::setEnabled(bool on)
       continue;
     }
     names.emplace_back(channelOf(*it), on ? 1.0 : 0.0);
-    m_echo.insert(*it);
     ++it;
   }
   if(!names.empty())
@@ -391,7 +379,6 @@ bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positi
     opts.min    = 0.0;
     opts.max    = 1.0;
     m_morphs.replaceCpuTarget(channelOf(d.mesh), d.mesh, std::move(target), opts);
-    m_echo.insert(d.mesh);
     m_draped.insert(d.mesh);
     wrote = true;
   }

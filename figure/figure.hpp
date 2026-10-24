@@ -28,14 +28,20 @@ struct PosePresetResult
   int                      applied = 0;
   // Addresses this figure can't apply: dials it doesn't have, other figures' bones.
   std::vector<std::string> skipped;
+  // Nodes, by DAZ name, the preset shows or hides (`extra/studio_node_channels/channels/Visible`).
+  std::vector<std::pair<std::string, bool>> visibility;
+  // Worn items Figure::applyPosePreset showed or hid for them (ids): the scene needs building again.
+  std::vector<int> itemsShown;
 };
 
-// Applies a DAZ pose preset (.duf `scene.animations`) to a rig and its morphs: the last key of each
-// animation, `name://@selection` urls and hierarchical `#bone?rotation/x/value` urls. Figure::applyPosePreset
-// is this, on the figure's own pose and morphs.
-// `channelOf` finds the dial a modifier id means when the figure has none of that name (a worn item's).
+// Applies a DAZ pose, shape or property preset (.duf `scene.animations`) to a rig and its morphs:
+// the last key of each animation, `name://@selection` urls, `name://<node>#<modifier>` urls (a dial
+// of a worn item, a geograft's say) and hierarchical `#bone?rotation/x/value` urls. Node visibility
+// is reported, not applied. Figure::applyPosePreset is this, on the figure's own pose and morphs.
+// `channelOf` finds the dial a modifier id means on a node (empty: the selection) when the figure
+// has none of that name: a worn item's.
 PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc,
-                                 const std::function<std::string(const std::string&)>& channelOf = {});
+                                 const std::function<std::string(const std::string& node, const std::string& modifier)>& channelOf = {});
 
 // What the figure wears: one wearable's nodes, which go on and come off together. Items that came
 // with the scene file are listed too, with no library path.
@@ -147,7 +153,8 @@ public:
   // Lists the items the scene file came with (Figure::load does).
   void indexItems();
 
-  // Applies a DAZ pose preset to this figure's bones and morph dials.
+  // Applies a DAZ pose, shape or property preset to this figure's bones, morph dials and the
+  // visibility of what it wears.
   PosePresetResult applyPosePreset(const dson::Json& doc);
 
 private:
