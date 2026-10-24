@@ -143,8 +143,22 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     SceneFrameInfo* frameInfo = pushConst.frameInfo;
     HitPayload      payload   = {};
 
+    // Inside a scattering medium, draw the step's free-flight distance first and trace only that
+    // far: a miss is the scatter, and the traversal to the surface (and its hit state) is paid only
+    // by the steps that reach it. See FreeFlight.
+    FreeFlight freeFlight = {};
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+    if(pt.isInside && hasVolumeMedium(pt.volumeMedium))
+    {
+      freeFlight = sampleFreeFlight(pt.volumeMedium, pt.throughput, seed);
+      if(freeFlight.drawn && isfinite(freeFlight.dist))
+        ray.TMax = freeFlight.dist;
+    }
+#endif
+
     // Trace the ray through the scene
     raytracer.Trace(ray, payload, seed);
+    ray.TMax = INFINITE;
 
     // Getting the scene information
     GltfRenderNode*      renderNodes     = pushConst.gltfScene->renderNodes;
@@ -175,7 +189,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       // A walk that leaves the mesh pays for the unbounded segment before the sky is considered.
       // With scattering an event is sampled; with absorption only the transmittance is 0.
-      PathStepResult escaped = processVolumeSegment(raytracer, INFINITE, ray, pt, seed);
+      PathStepResult escaped = processVolumeSegment(raytracer, INFINITE, ray, pt, seed, freeFlight);
       if(escaped != PathStepResult.eOutOfVolume)
         return escaped;
 
@@ -256,7 +270,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // shaded. A walk that survives to an eyeball or a tooth has paid for the trip, and the
     // front-face clear below then drops the medium.
     {
-      PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed);
+      PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
       if(volumeStep != PathStepResult.eOutOfVolume)
         return volumeStep;
     }
@@ -283,7 +297,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // The medium in front of the plane, as for a mesh (see below): the ray may scatter before
         // it reaches the catcher, and the catcher's shadow ray starts in that medium.
-        PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed);
+        PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
         if(volumeStep != PathStepResult.eOutOfVolume)
           return volumeStep;
         float3 shadowExtinction = float3(0.0F);
@@ -495,7 +509,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     //-----------------------------------------------------------------------
     // Before anything the surface gives: the ray may scatter on its way and never reach it, and what
     // does reach it -- its emission included -- comes through the medium's transmittance.
-    PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed);
+    PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
     if(volumeStep != PathStepResult.eOutOfVolume)
       return volumeStep;  // Skip the surface bounce if the ray is still in the volume (ray is scattered)
 

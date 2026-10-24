@@ -1001,7 +1001,73 @@ bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout
 // applied. The bounce-loop caller uses the return value to decide whether to
 // run scatter-only follow-up work (NEE at the scatter point, scatterBounces++).
 #if GLTF_USE_VOLUME
-bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc ray, inout float3 throughput, inout float lastSamplePdf, inout uint seed)
+// The free-flight distance of a step through a scattering medium, and the channel weights it was
+// drawn with. Drawn before the step's ray is traced (pathTraceOneBounce), so the ray is traced only
+// that far: with a free path well under a millimetre almost every step scatters, and a traversal to
+// the surface, the any-hit on the way and a hit state for it would all be thrown away. A miss of
+// such a ray is the scatter. `drawn` is false for a medium that only absorbs: no distance to draw.
+struct FreeFlight
+{
+  float  dist;         // INFINITE when the channel drawn has no extinction
+  float3 channelProb;  // the balance heuristic's weights, from the throughput
+  bool   drawn;
+};
+
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+FreeFlight sampleFreeFlight(VolumeMedium medium, float3 throughput, inout uint seed)
+{
+  FreeFlight ff = {};
+  float3 scatterCoeff = float3(medium.scatterCoefficient);
+  float  maxScatter   = max(scatterCoeff.x, max(scatterCoeff.y, scatterCoeff.z));
+  if(!(maxScatter > VOLUME_MIN_SCATTER))
+    return ff;
+  float3 extinction = volumeExtinction(medium);
+
+  // KHR_materials_volume media are homogeneous, so the free-flight distance can be sampled
+  // analytically -- no delta tracking and no majorant. The medium is chromatic (sigma_t and
+  // sigma_s are per-channel), so one channel is picked to sample the distance and the three
+  // per-channel distance pdfs are combined with the balance heuristic (spectral MIS). Every
+  // channel then keeps exactly its own transmittance and its own scattering rate.
+  //
+  // A single-majorant tracker would instead scatter every channel at the majorant's rate:
+  // the low-extinction channels would random-walk far too often, and since their extra
+  // "collisions" are lossless null collisions, their effective per-collision albedo -- which
+  // is what sets the perceived color of a dense medium -- would drift towards 1. That breaks
+  // the multi-scatter albedo mapping the extension is built on (a yellow multiscatterColor
+  // over a slightly red attenuationColor came out pink).
+  float3 channelProb = max(throughput, float3(0.0));
+  float  probSum     = channelProb.x + channelProb.y + channelProb.z;
+  channelProb        = (probSum > 0.0) ? channelProb / probSum : float3(1.0 / 3.0);
+
+  // Pick the channel whose free-flight distribution is sampled, then draw the distance. The
+  // selection consumes only the bucket it lands in, so rescaling within that bucket recovers a
+  // fresh uniform for the distance -- one rand() per scatter event instead of two, and in a
+  // dense medium there is one of these per event.
+  float u             = min(rand(seed), VOLUME_RAND_CEIL);
+  float sigmaTChannel = extinction.z;
+  if(u < channelProb.x)
+  {
+    sigmaTChannel = extinction.x;
+    u /= channelProb.x;
+  }
+  else if(u < channelProb.x + channelProb.y)
+  {
+    sigmaTChannel = extinction.y;
+    u             = (u - channelProb.x) / channelProb.y;
+  }
+  else
+  {
+    u = (u - channelProb.x - channelProb.y) / channelProb.z;
+  }
+  ff.dist        = (sigmaTChannel > 0.0) ? -log(max(u, VOLUME_RAND_FLOOR)) / sigmaTChannel : INFINITE;
+  ff.channelProb = channelProb;
+  ff.drawn       = true;
+  return ff;
+}
+#endif
+
+// `freeFlight`: the step's distance, drawn before the trace; not drawn, it is drawn here.
+bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc ray, inout float3 throughput, inout float lastSamplePdf, inout uint seed, FreeFlight freeFlight)
 {
   float3 extinction = volumeExtinction(medium);
 
@@ -1010,43 +1076,9 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
   float  maxScatter   = max(scatterCoeff.x, max(scatterCoeff.y, scatterCoeff.z));
   if(maxScatter > VOLUME_MIN_SCATTER)
   {
-    // KHR_materials_volume media are homogeneous, so the free-flight distance can be sampled
-    // analytically -- no delta tracking and no majorant. The medium is chromatic (sigma_t and
-    // sigma_s are per-channel), so one channel is picked to sample the distance and the three
-    // per-channel distance pdfs are combined with the balance heuristic (spectral MIS). Every
-    // channel then keeps exactly its own transmittance and its own scattering rate.
-    //
-    // A single-majorant tracker would instead scatter every channel at the majorant's rate:
-    // the low-extinction channels would random-walk far too often, and since their extra
-    // "collisions" are lossless null collisions, their effective per-collision albedo -- which
-    // is what sets the perceived color of a dense medium -- would drift towards 1. That breaks
-    // the multi-scatter albedo mapping the extension is built on (a yellow multiscatterColor
-    // over a slightly red attenuationColor came out pink).
-    float3 channelProb = max(throughput, float3(0.0));
-    float  probSum     = channelProb.x + channelProb.y + channelProb.z;
-    channelProb        = (probSum > 0.0) ? channelProb / probSum : float3(1.0 / 3.0);
-
-    // Pick the channel whose free-flight distribution is sampled, then draw the distance. The
-    // selection consumes only the bucket it lands in, so rescaling within that bucket recovers a
-    // fresh uniform for the distance -- one rand() per scatter event instead of two, and in a
-    // dense medium there is one of these per event.
-    float u             = min(rand(seed), VOLUME_RAND_CEIL);
-    float sigmaTChannel = extinction.z;
-    if(u < channelProb.x)
-    {
-      sigmaTChannel = extinction.x;
-      u /= channelProb.x;
-    }
-    else if(u < channelProb.x + channelProb.y)
-    {
-      sigmaTChannel = extinction.y;
-      u             = (u - channelProb.x) / channelProb.y;
-    }
-    else
-    {
-      u = (u - channelProb.x - channelProb.y) / channelProb.z;
-    }
-    float scatterDist = (sigmaTChannel > 0.0) ? -log(max(u, VOLUME_RAND_FLOOR)) / sigmaTChannel : hitDistance;
+    const FreeFlight ff          = freeFlight.drawn ? freeFlight : sampleFreeFlight(medium, throughput, seed);
+    const float3     channelProb = ff.channelProb;
+    const float      scatterDist = ff.dist;
 
     // A finite free path is a scatter, including when the ray left the mesh (hitDistance is
     // INFINITE). Both unbounded means this channel has no extinction: fall through and let the
@@ -1519,7 +1551,8 @@ bool ptIsInside(PathTracerState pt)
 // Handles the in-volume segment before normal surface shading:
 // - Always applies segment transmittance when GLTF_USE_VOLUME is enabled.
 // - Handles scatter-only follow-up (cone advance, NEE, RR) when a real scatter happens.
-PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, inout RayDesc ray, inout PathTracerState pt, inout uint seed)
+// `freeFlight`: the step's free-flight distance when it was drawn before the trace (FreeFlight).
+PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, inout RayDesc ray, inout PathTracerState pt, inout uint seed, FreeFlight freeFlight)
 {
 #if GLTF_USE_VOLUME
   if(pt.isInside && hasVolumeMedium(pt.volumeMedium))
@@ -1531,7 +1564,7 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
     const float3 originBeforeScatter = ray.Origin;
 #endif
 
-    if(handleVolumeScatter(pt.volumeMedium, hitDistance, ray, pt.throughput, pt.lastSamplePdf, seed))
+    if(handleVolumeScatter(pt.volumeMedium, hitDistance, ray, pt.throughput, pt.lastSamplePdf, seed, freeFlight))
     {
 #if GLTF_USE_SCATTER
       pt.scatterBounces++;
