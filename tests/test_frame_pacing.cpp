@@ -18,7 +18,8 @@
  */
 
 // Frame pacing of a --stream run: paced to the stream's rate, except a still being refined, which
-// runs unpaced and hands the stream a frame once per period.
+// runs unpaced and hands the stream a frame once per period, and a view where nothing happens,
+// which slows to the idle period until something does.
 
 #include <gtest/gtest.h>
 
@@ -97,6 +98,69 @@ TEST(FramePacing, ASlowRefiningFrameIsAlwaysCopied)
   EXPECT_TRUE(p.begin(t0));
   EXPECT_TRUE(p.begin(t0 + 50ms));  // a frame longer than the period: every frame is due
   EXPECT_TRUE(p.begin(t0 + 100ms));
+}
+
+TEST(FramePacing, IdleSlowsTheLoopOnceNothingHappensForAWhile)
+{
+  FramePacer p(16ms);
+  p.setIdlePeriod(100ms);
+  p.setIdleAfter(500ms);
+  p.noteDrawn(t0);
+  p.noteActivity(t0);
+  p.begin(t0);
+  EXPECT_FALSE(p.idle(t0 + 100ms));
+  EXPECT_EQ(p.startTime(t0 + 1ms, false), t0 + 16ms);
+  // half a second after the last draw and request: idle, and the next frame waits the idle period
+  const auto last = t0 + 600ms;
+  p.begin(last);
+  EXPECT_TRUE(p.idle(last + 1ms));
+  EXPECT_EQ(p.startTime(last + 1ms, false), last + 100ms);
+}
+
+TEST(FramePacing, ADrawOrARequestEndsTheIdle)
+{
+  FramePacer p(16ms);
+  p.noteDrawn(t0);
+  p.noteActivity(t0);
+  const auto later = t0 + 1s;
+  p.begin(later);
+  ASSERT_TRUE(p.idle(later + 1ms));
+  p.noteActivity(later + 1ms);
+  EXPECT_FALSE(p.idle(later + 1ms));
+  EXPECT_EQ(p.startTime(later + 1ms, false), later + 16ms);
+
+  FramePacer q(16ms);
+  q.noteDrawn(t0);
+  q.noteActivity(t0);
+  q.begin(later);
+  ASSERT_TRUE(q.idle(later + 1ms));
+  q.noteDrawn(later);
+  EXPECT_FALSE(q.idle(later + 1ms));
+}
+
+TEST(FramePacing, RefiningIsNeverIdle)
+{
+  FramePacer p(16ms);
+  p.noteDrawn(t0);
+  p.noteActivity(t0);
+  EXPECT_TRUE(p.idle(t0 + 10s));
+  EXPECT_FALSE(p.idle(t0 + 10s, true));
+  p.begin(t0 + 10s);
+  EXPECT_EQ(p.startTime(t0 + 10s + 1ms, true), t0 + 10s + 1ms);
+}
+
+TEST(FramePacing, IdleFramesAreAllCopied)
+{
+  FramePacer p(16ms);
+  p.noteDrawn(t0);
+  p.noteActivity(t0);
+  auto t = t0 + 1s;
+  for(int i = 0; i < 5; i++)
+  {
+    t = p.startTime(t, false);
+    EXPECT_TRUE(p.begin(t)) << i;
+    t += 1ms;
+  }
 }
 
 TEST(FramePacing, PacingResumesWhenTheStillHasConverged)

@@ -383,6 +383,9 @@ public:
   // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.
   VkImage    tonemappedImage() const { return m_resources.gBuffers.getColorImage(Resources::eImgTonemapped); }
   VkExtent2D renderSize() const { return m_resources.gBuffers.getSize(); }
+  // Frames that ran a renderer so far (Resources::drawnFrameCount): a count that stands still is a
+  // view with nothing to draw, which the frame stream slows the loop for.
+  uint64_t drawnFrameCount() const { return m_resources.drawnFrameCount; }
 
   /// The path tracer is accumulating a still: the camera and scene have held for a frame, and
   /// the image does not yet hold maxSamples samples per pixel. Every further frame improves it.

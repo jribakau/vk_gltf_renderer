@@ -35,7 +35,12 @@
 //   GET /frame          the latest frame as one image/jpeg
 //   GET /size?w=&h=     resize the offscreen viewport (applied before the next frame)
 //   GET /stats          JSON: frames rendered/encoded/sent, size, render fps, average encode
-//                       time in ms, connected clients
+//                       time in ms, connected clients, whether the loop is idle
+//
+// The element also paces the headless loop (frame_pacing.hpp) and waits for the GPU there, before
+// the host element behind it takes its input; copies that completed are handed to the encoder
+// during that wait rather than when their ring slot comes round again. When nothing has drawn and
+// no request has come in for a while the loop slows to `idleFps`; any request wakes it.
 //
 // A host can add routes of its own to the same server (`routes`, e.g. fv_protocol.hpp), and
 // require a token: with `token` set, every request but a CORS preflight must carry ?t=<token>.
@@ -65,6 +70,8 @@ struct FrameStreamCreateInfo
   // frames a second the stream gets while a still refines (its frames run unpaced): fewer than
   // maxFps, so the encoder is idle when the next drag's frames arrive
   int refineFps{20};
+  // the loop's rate once nothing has drawn and nothing has come in for half a second
+  int idleFps{10};
 
   // The image to stream and its size: the renderer's tonemapped output, in
   // VK_IMAGE_LAYOUT_GENERAL after the renderer's onRender. Called on the application thread.
@@ -74,6 +81,10 @@ struct FrameStreamCreateInfo
   // True while the renderer accumulates a still, where every frame improves the image. With a
   // client connected such frames run unpaced; the stream still gets maxFps. Optional.
   std::function<bool()> refining;
+
+  // Frames the renderer has drawn so far: while the count stands still and no request comes in,
+  // the loop slows to idleFps. Optional: without it the loop never idles.
+  std::function<uint64_t()> drawn;
 
   // Stores a binary payload a host posts to /blob for a later live edit and returns its id
   // (blob_store.hpp). Called on an HTTP thread. Optional: without it /blob answers 404.

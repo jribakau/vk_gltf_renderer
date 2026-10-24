@@ -658,6 +658,7 @@ auto main(int argc, char** argv) -> int
           .image     = [r] { return r->tonemappedImage(); },
           .imageSize = [r] { return r->renderSize(); },
           .refining  = [r] { return r->isRefiningStill(); },
+          .drawn     = [r] { return r->drawnFrameCount(); },
           .upload    = [r](std::string bytes) { return r->blobs().put(std::move(bytes)); },
           .token     = fvToken,
           .routes    = [protocol](httplib::Server& http, const std::atomic<bool>& running) { protocol->registerRoutes(http, running); },

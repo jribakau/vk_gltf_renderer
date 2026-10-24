@@ -4601,6 +4601,20 @@ bool GltfRenderer::updateFrameCounter()
   {
     return false;
   }
+  // The rasterizer's image is complete after one frame: drawing it again changes nothing, and a
+  // drawn-frame count that stands still is what lets the frame stream idle (frame_stream.cpp). A
+  // dirty scene still draws (the caller ORs this with its dirty flags). Not with DLSS on, whose
+  // super-resolution accumulates its jittered frames.
+  if(m_resources.settings.renderSystem == RenderingMode::eRasterizer && m_resources.frameCount >= 1)
+  {
+#if defined(USE_DLSS)
+    const bool dlssActive = m_rasterizer.getDlss() && m_rasterizer.getDlss()->isActive();
+#else
+    const bool dlssActive = false;
+#endif
+    if(!dlssActive)
+      return false;
+  }
   m_resources.frameCount++;
   return true;
 }

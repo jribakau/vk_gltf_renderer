@@ -18,7 +18,15 @@
  */
 
 // httplib pulls in winsock2; it has to come before anything that includes windows.h.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <httplib.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
+#endif
 
 #include <volk.h>
 
@@ -31,6 +39,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -43,9 +52,10 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// One host-visible buffer per frame in flight. The copy recorded in frame N is read back when the
-// ring slot comes around again: the application waits for that frame to complete before it
-// re-records the slot's command buffer, so by then the data is there.
+// One host-visible buffer per frame in flight. The copy recorded in frame N is read back once the
+// application's frame timeline reaches that frame's value (`signal`): the next onUpdate waits for
+// it while the loop would otherwise sleep. At the latest it is read when the ring slot comes
+// around again, which the application waits for before it re-records the slot's command buffer.
 struct Readback
 {
   VkBuffer       buffer{};
@@ -55,7 +65,8 @@ struct Readback
   VkExtent2D     extent{};
   bool           coherent{true};
   bool           pending{false};
-  LatencyTrace   trace;  // A traced edit this frame shows (latency_trace.hpp)
+  uint64_t       signal{};  // the frame's timeline value: the copy is in once the semaphore reached it
+  LatencyTrace   trace;     // A traced edit this frame shows (latency_trace.hpp)
 };
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeBits, VkMemoryPropertyFlags wanted, bool* found)
@@ -122,10 +133,21 @@ struct FrameStream::Impl
   FramePacer                            pacer{std::chrono::milliseconds(16)};
   // this frame's image goes to the stream (set in onUpdate, read in onRender)
   bool copyFrame{true};
+  // the application's frame timeline (set on the first copy) and the drawn-frame count last seen
+  VkSemaphore timeline{};
+  uint64_t    lastDrawn{~uint64_t(0)};
+  // a request came in since the last frame: it ends an idle, and cuts the pacing sleep short
+  std::atomic<bool>       activity{false};
+  std::mutex              wakeMutex;
+  std::condition_variable wakeCv;
+  std::atomic<bool>       idle{false};
 
   void createRing(const VkExtent2D& extent);
   void destroyRing();
+  bool waitSlot(const Readback& rb, uint64_t timeoutNs) const;
+  void collect(std::chrono::steady_clock::time_point deadline, uint32_t reuseSlot);
   void harvest(Readback& rb);
+  void wake();
   void encodeLoop();
   void serve();
 };
@@ -168,6 +190,10 @@ void FrameStream::onAttach(nvapp::Application* app)
     return;
   }
   s.running = true;
+#ifdef _WIN32
+  // the pacing sleeps are a frame long; at the default 15.6 ms timer they would each overshoot by one
+  timeBeginPeriod(1);
+#endif
   s.encoder = std::thread([&s] { s.encodeLoop(); });
   s.server  = std::thread([&s] { s.serve(); });
 }
@@ -180,10 +206,14 @@ void FrameStream::onDetach()
     s.http.stop();
     s.rawCv.notify_all();
     s.jpgCv.notify_all();
+    s.wakeCv.notify_all();
     if(s.encoder.joinable())
       s.encoder.join();
     if(s.server.joinable())
       s.server.join();
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
   }
   vkDeviceWaitIdle(s.device);
   s.destroyRing();
@@ -197,26 +227,60 @@ void FrameStream::onResize(VkCommandBuffer /*cmd*/, const VkExtent2D& size)
   s.createRing(size);
 }
 
-// Frame pacing. A headless run has no v-sync and would otherwise spin as fast as the GPU allows;
-// the cap also keeps the renderer from starving the host while nobody is watching.
+// Frame pacing, the GPU wait and the readbacks. A headless run has no v-sync and would otherwise
+// spin as fast as the GPU allows; the cap also keeps the renderer from starving the host while
+// nobody is watching. The wait for the frame this one's ring slot last held happens here rather
+// than in the application, so the host element behind this one takes its input after it; the
+// copies the GPU has finished are handed to the encoder while the loop would otherwise sleep.
 void FrameStream::onUpdate()
 {
   Impl& s = *m_impl;
   if(!s.running)
     return;
+  using Clock = std::chrono::steady_clock;
+  auto now    = Clock::now();
+  if(s.info.drawn)
+  {
+    const uint64_t drawn = s.info.drawn();
+    if(drawn != s.lastDrawn)
+    {
+      s.lastDrawn = drawn;
+      s.pacer.noteDrawn(now);
+    }
+  }
+  if(s.activity.exchange(false))
+    s.pacer.noteActivity(now);
   const int  fps    = s.clients > 0 ? std::max(1, s.info.maxFps) : std::min(std::max(1, s.info.maxFps), 10);
-  const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / fps));
+  const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
   // Nobody watching: keep to the cap, the host needs the machine more than a still needs to converge.
   const bool refining = s.clients > 0 && s.info.refining && s.info.refining();
   s.pacer.setPeriod(period);
-  s.pacer.setCopyPeriod(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(1.0 / std::clamp(s.info.refineFps, 1, fps))));
-  auto       now   = std::chrono::steady_clock::now();
-  const auto start = s.pacer.startTime(now, refining);
-  if(now < start)
+  s.pacer.setCopyPeriod(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / std::clamp(s.info.refineFps, 1, fps))));
+  s.pacer.setIdlePeriod(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / std::max(1, s.info.idleFps))));
+  Clock::time_point start = s.pacer.startTime(now, refining);
+  s.idle                  = s.pacer.idle(now, refining);
+
+  // The copies that are in, oldest first; the one in the slot this frame records into however long
+  // it takes (the application waits for that frame right after onUpdate anyway), the others until
+  // the frame's start time.
+  if(!s.ring.empty())
+    s.collect(start, s.app->getFrameCycleIndex());
+
+  // The rest of the wait is a sleep a request cuts short: an idle loop wakes at once, a paced one
+  // keeps its start time.
+  for(now = Clock::now(); now < start; now = Clock::now())
   {
-    std::this_thread::sleep_until(start);
-    now = std::chrono::steady_clock::now();
+    {
+      std::unique_lock lock(s.wakeMutex);
+      s.wakeCv.wait_until(lock, start, [&] { return s.activity.load() || !s.running; });
+    }
+    if(s.activity.exchange(false))
+    {
+      now = Clock::now();
+      s.pacer.noteActivity(now);
+      start  = s.pacer.startTime(now, refining);
+      s.idle = false;
+    }
   }
   if(s.lastFrame.time_since_epoch().count() != 0)
   {
@@ -237,6 +301,7 @@ void FrameStream::onRender(VkCommandBuffer cmd)
   if(slot >= s.ring.size())
     return;
   Readback& rb = s.ring[slot];
+  // onUpdate waited for this slot's frame; a copy still here was recorded before the timeline was known
   if(rb.pending)
   {
     rb.pending = false;
@@ -302,8 +367,11 @@ void FrameStream::onRender(VkCommandBuffer cmd)
   dep.pImageMemoryBarriers     = &fromTransfer;
   vkCmdPipelineBarrier2(cmd, &dep);
 
-  rb.extent  = extent;
-  rb.pending = true;
+  const nvvk::SemaphoreInfo signal = s.app->getFrameSignalSemaphore();
+  s.timeline                       = signal.semaphore;
+  rb.signal                        = signal.value;
+  rb.extent                        = extent;
+  rb.pending                       = true;
   if(!s.pendingTrace.empty())
   {
     rb.trace = std::move(s.pendingTrace);
@@ -387,6 +455,56 @@ void FrameStream::Impl::destroyRing()
       vkFreeMemory(device, rb.memory, nullptr);
   }
   ring.clear();
+}
+
+// Whether the frame that recorded the slot's copy has completed, waiting up to `timeoutNs` for it.
+bool FrameStream::Impl::waitSlot(const Readback& rb, uint64_t timeoutNs) const
+{
+  if(timeline == VK_NULL_HANDLE)
+    return true;
+  const VkSemaphoreWaitInfo wait{
+      .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+      .semaphoreCount = 1,
+      .pSemaphores    = &timeline,
+      .pValues        = &rb.signal,
+  };
+  return vkWaitSemaphores(device, &wait, timeoutNs) == VK_SUCCESS;
+}
+
+// Application thread: hands the encoder the copies whose frames the GPU has finished, oldest first
+// (a newer frame replaces an older one still waiting for the encoder, so the order matters). The
+// copy in `reuseSlot` is waited for however long it takes, the others until `deadline`; frames
+// complete in order, so the first one not in ends the pass.
+void FrameStream::Impl::collect(std::chrono::steady_clock::time_point deadline, uint32_t reuseSlot)
+{
+  std::vector<Readback*> pending;
+  for(Readback& rb : ring)
+    if(rb.pending)
+      pending.push_back(&rb);
+  std::sort(pending.begin(), pending.end(), [](const Readback* a, const Readback* b) { return a->signal < b->signal; });
+  for(Readback* rb : pending)
+  {
+    uint64_t timeout = std::numeric_limits<uint64_t>::max();
+    if(reuseSlot >= ring.size() || rb != &ring[reuseSlot])
+    {
+      const auto left = deadline - std::chrono::steady_clock::now();
+      timeout         = left.count() > 0 ? uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(left).count()) : 0;
+    }
+    if(!waitSlot(*rb, timeout))
+      break;
+    rb->pending = false;
+    harvest(*rb);
+  }
+}
+
+// Any thread: a request came in. Ends an idle and cuts the pacing sleep short (onUpdate).
+void FrameStream::Impl::wake()
+{
+  {
+    std::lock_guard lock(wakeMutex);
+    activity = true;
+  }
+  wakeCv.notify_all();
 }
 
 // Application thread: the slot's copy has completed. Hand the pixels to the encoder. If it is still
@@ -513,15 +631,22 @@ void FrameStream::Impl::serve()
 {
   http.set_default_headers({{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-store"}});
   http.set_payload_max_length(BlobStore::kMaxBytes);
-  if(!info.token.empty())
-  {
-    http.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
-      if(req.method == "OPTIONS" || req.get_param_value("t") == info.token)
-        return httplib::Server::HandlerResponse::Unhandled;
+  // a frame is one write; Nagle would hold its tail for the next one
+  http.set_tcp_nodelay(true);
+  // Every request but a CORS preflight carries the token when one is set. A request that changes
+  // something (a command, input, a blob, a resize, a client arriving) also ends an idle loop.
+  http.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+    if(req.method == "OPTIONS")
+      return httplib::Server::HandlerResponse::Unhandled;
+    if(!info.token.empty() && req.get_param_value("t") != info.token)
+    {
       res.status = 403;
       return httplib::Server::HandlerResponse::Handled;
-    });
-  }
+    }
+    if(req.method == "POST" || req.path == "/size" || req.path == "/stream")
+      wake();
+    return httplib::Server::HandlerResponse::Unhandled;
+  });
 
   http.Get("/stream", [this](const httplib::Request&, httplib::Response& res) {
     clients++;
@@ -541,12 +666,13 @@ void FrameStream::Impl::serve()
           }
           // The boundary that ends a part follows the frame's bytes at once, so a browser that
           // waits for it shows the frame now rather than when the next one arrives; the opening
-          // boundary goes once, on connect.
-          std::string head = first ? "--frame\r\n" : "";
+          // boundary goes once, on connect. Head, frame and tail go as one write.
+          std::string part = first ? "--frame\r\n" : "";
           first            = false;
-          head += "Content-Type: image/jpeg\r\nContent-Length: " + std::to_string(frame->size()) + "\r\n\r\n";
-          static constexpr char tail[] = "\r\n--frame\r\n";
-          if(!sink.write(head.data(), head.size()) || !sink.write(frame->data(), frame->size()) || !sink.write(tail, sizeof(tail) - 1))
+          part += "Content-Type: image/jpeg\r\nContent-Length: " + std::to_string(frame->size()) + "\r\n\r\n";
+          part += *frame;
+          part += "\r\n--frame\r\n";
+          if(!sink.write(part.data(), part.size()))
             return false;
           framesSent++;
           return true;
@@ -607,7 +733,8 @@ void FrameStream::Impl::serve()
                              + ",\"sent\":" + std::to_string(framesSent.load()) + ",\"replaced\":" + std::to_string(framesReplaced.load())
                              + ",\"width\":" + std::to_string(extent.width)
                              + ",\"height\":" + std::to_string(extent.height) + ",\"fps\":" + std::to_string(renderFps.load())
-                             + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load()) + "}";
+                             + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load())
+                             + ",\"idle\":" + (idle.load() ? "true" : "false") + "}";
     res.set_content(body, "application/json");
   });
 
