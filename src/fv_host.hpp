@@ -20,53 +20,75 @@
 #pragma once
 
 //
-// The Figure Viewer's scene, hosted in the renderer: DAZ figures load here (figure/), are built
-// into the renderer's glTF scene, and are posed, morphed and dressed here, while the UI only sends
-// commands and shows the streamed frames (fv_protocol.hpp). One element per renderer.
+// The Figure Viewer's scene, hosted in the renderer: a scene of props, any number of DAZ figures,
+// models read from glTF, GLB or OBJ files, cameras and lights. Figures load here (figure/) and are
+// posed, morphed and dressed here; every prop sits under a prop root node of its own in the
+// renderer's one glTF (fv_compose.hpp), which carries where it stands. The UI only sends commands
+// and shows the streamed frames (fv_protocol.hpp). One element per renderer.
 //
-// Threads: a load runs on a worker; everything that touches the renderer's scene or the loaded
-// figure runs on the application thread, in onUpdate, before the frame renders. Commands that need
-// the scene wait for that (a frame at most); the rest answer on the HTTP thread.
+// Threads: a load runs on a worker; everything that touches the renderer's scene or a figure runs
+// on the application thread, in onUpdate, before the frame renders. Commands that need the scene
+// wait for that (a frame at most); the rest answer on the HTTP thread. A change to the scene's
+// structure (a prop added or removed, something worn, a new parent) composes the scene again, once
+// a frame however many asked; moving, showing and hiding a prop, dials, poses and material and light
+// edits apply in place.
+//
+// A command for a prop names it as {prop: "p:3"} ({figure} is read the same way); without one it is
+// for the selected prop, and a figure command then for the only figure, if there is one.
 //
 // Commands (args):
 //   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision}
-//   load            {path} or {rel}, replace?    -> {job}; the figure replaces the scene when done (a wearable
-//                                                goes on the loaded figure unless `replace`)
-//   pose.set        {figure, values: {"bone/kind/axis": value}}
-//   pose.reset      {figure}
-//   pose.eyes       {figure}                     aim the eyeballs at the camera
-//   morph.set       {figure, values: {name: value}}   coalesced, one setMany per frame
-//   morph.reset     {figure}
+//   load            {path} or {rel}, prop?, as?   -> {job}; a figure or model becomes a new prop (the job's
+//                                                end state has its {prop}); a wearable goes on the figure
+//                                                (`prop`, or the selected or only one) unless `as` is "prop";
+//                                                a pose, shape or material preset applies to that figure
+//   prop.add        {path|rel} as load; or {kind: "camera"|"light", type?: point|spot|directional,
+//                   name?, camera?, transform?}  -> {prop}; a camera stands where the view is
+//   prop.set        {prop, name?, visible?, transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},
+//                   parent?: prop id | null, order?, camera?: {focalLength, dof, fStop, focusMode,
+//                   focusDistance, locked, targetDistance}, light?: {type, color, intensity, radius, inner, outer}}
+//   prop.remove     {prop}                       what rode on it stays where it was in the world
+//   prop.duplicate  {prop}                       -> {prop}, or {job} for a figure (loaded again, its state put back)
+//   scene.clear     {}                           every prop goes
+//   pose.set        {prop, values: {"bone/kind/axis": value}}
+//   pose.reset      {prop}
+//   pose.eyes       {prop}                       aim the eyeballs at the camera
+//   morph.set       {prop, values: {name: value}}   coalesced, one setMany per frame
+//   morph.reset     {prop}
 //   render.mode     {mode: "raster" | "rtx", skin?: "volume" | "thin"}
-//   material.set    {material, values}           edit a surface (fv_materials.hpp); material.reset {material?}
-//   wear            {rel | path}                 put a wearable on the loaded figure -> {job}
-//   wardrobe.remove {item}, wardrobe.visible {item, visible}   hidden in place; a removed item leaves
-//                                                the renderer's scene at the next rebuild, and a geograft rebuilds
-//   dforce.enable   {on}; dforce.resimulate      cloth drapes over the body (figure/dforce)
-//   scene.state / scene.restore                  a scene file's contents: source, worn, dials, pose, material edits
-//   anim.select|play|pause|stop|seek|speed|loop  the clips of an imported glTF or OBJ model
-//   export.glb      {path, ...}                  a GLB of the figure -> {job}; of an imported model, saved
-//                                                by the renderer at once -> {ok}
+//   material.set    {prop, material, values}     edit a surface (fv_materials.hpp); material.reset {prop, material?}
+//   wear            {prop, rel | path}           put a wearable on a figure -> {job}
+//   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
+//                                                leaves the renderer's scene at the next composition, and a geograft composes
+//   dforce.enable   {prop, on}; dforce.resimulate {prop}   cloth drapes over the body (figure/dforce)
+//   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
+//                                                material edits
+//   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models')
+//   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
+//                                                whole scene, written at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
 // Lighting: the environment, tone mapping, the raster shadow map and the ground are renderer
-// parameters; the sun is a directional light the host adds to every figure it builds, marked as the
-// sky's sun. An imported glTF or OBJ is loaded by the renderer as it is, with its own lights and no
-// sun of the host's, so the sun settings don't reach it. An HDR decodes on a worker (a "jobs" entry) and uploads on the application thread. An
-// environment preset .duf sets the HDR from its library and turns the sun off.
+// parameters; the sun is a directional light the host adds to every scene it composes, marked as the
+// sky's sun. Light props are lights of their own beside it. An HDR decodes on a worker (a "jobs"
+// entry) and uploads on the application thread. An environment preset .duf sets the HDR from its
+// library and turns the sun off.
 //
-// Camera, selection and display commands live in fv_view.hpp. A .duf that is a pose preset is
-// applied by `load` to the figure already loaded; other presets are reported and left alone.
+// Camera, selection and display commands live in fv_view.hpp.
 //
-// Topics: "session", "jobs", "notices", "scene", "pose/<figure>", "morphs/<figure>", "render",
-// "selection", "materials" (fv_materials.hpp), "wardrobe", "dforce" ({figure, enabled, active, busy, draped}),
-// "animation" (clips and playback of an imported model), "lighting" (the lighting.set shape, plus read-only env.name, env.size, env.loading). "pose/<figure>" carries `eyes` (whether the figure can look at the camera).
-// "morphs/<figure>" is the visible channels ({label, group, value, min, max, weight, order}); a new
-// channel list replaces it, and value or weight changes arrive as a merge patch. A figure's busy()
-// line is a "jobs" entry, and takeWarnings() goes to "notices".
+// Topics: "session", "jobs", "notices", "render", "lighting", "animation", "selection", "camera",
+// "scene" ({props: {id: {kind, name, parent, visible, order, transform: {t, r, e, s}, stats?, source?,
+// format?, generation?, posable?, camera?, light?}}, order: [id]}), and per prop "nodes/<prop>"
+// (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
+// "wardrobe/<prop>", "dforce/<prop>" ({figure, enabled, active, busy, draped}); a prop's topics
+// are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
+// env.name, env.size, env.loading. "pose/<prop>" carries `eyes` (whether the figure can look at
+// the camera). "morphs/<prop>" is the visible channels ({label, group, value, min, max, weight,
+// order}); a new channel list replaces it, and value or weight changes arrive as a merge patch. A
+// figure's busy() line is a "jobs" entry, and takeWarnings() goes to "notices".
 //
 
 #include <memory>

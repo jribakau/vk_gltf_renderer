@@ -917,7 +917,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
 
     m_visualHelpers.transform.setOnTransformChange([this]() {
       if(m_gizmoNodeIndex >= 0 && m_gizmoHooks.edit)
-        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), false);
+        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, false);
       else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
       {
         glm::quat rotation = glm::quat(glm::radians(m_gizmoRotation));
@@ -928,7 +928,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
 
     m_visualHelpers.transform.setOnTransformEnd([this]() {
       if(m_gizmoNodeIndex >= 0 && m_gizmoHooks.edit)
-        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), true);
+        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, true);
       else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
       {
         glm::vec3   newT, newS;
@@ -3157,10 +3157,11 @@ void GltfRenderer::updateGizmoAttachment()
   }
 
   const int parentIdx = m_resources.getScene()->editor().getNodeParent(nodeIdx);
-  // Attach or update if selection changed
-  if(nodeIdx != m_gizmoNodeIndex)
+  // Attach or update if the selection or its handles changed
+  if(nodeIdx != m_gizmoNodeIndex || (flags != m_gizmoFlags && !m_visualHelpers.transform.isDragging()))
   {
     m_gizmoNodeIndex = nodeIdx;
+    m_gizmoFlags     = flags;
 
     glm::quat rotation;
     tinygltf::utils::getNodeTRS(m_resources.getScene()->editor().getNode(nodeIdx), m_gizmoPosition, rotation, m_gizmoScale);

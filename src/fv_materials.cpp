@@ -230,14 +230,22 @@ FvMaterials::~FvMaterials()
   m_threads.joinAll();
 }
 
-void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped, fv::mat::SkinMode skin)
+void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped,
+                         fv::mat::SkinMode skin, Placement at)
 {
   m_generation++;
+  // bakes still running were for the scene before this one, whose result is dropped: their materials ask again
+  const std::set<std::string> inflight = m_figure == figureId && !m_model ? m_baking : std::set<std::string>{};
   m_model    = false;
   m_figure   = figureId;
+  m_at       = at;
   m_scene    = scene;
   m_options  = built.lowering;
+  // the build's textures are the figure's own; in the scene they start at at.textures
   m_textures = built.textureOf;
+  for(auto& [key, t] : m_textures)
+    if(t.index >= 0)
+      t.index += at.textures;
   m_failed.clear();
   m_baking.clear();
   m_waiting.clear();
@@ -247,8 +255,21 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
   m_meshesOf.assign(scene->materials.size(), {});
   m_forceDouble.assign(scene->materials.size(), false);
   m_count = scene->materials.size();
+  std::set<int> again;
   for(size_t mi = 0; mi < scene->materials.size(); mi++)
-    m_applied[mi] = stateOf(fv::mat::lower(scene->materials[mi].surface, scene->materials[mi].edits, m_options[mi]));
+  {
+    const fv::mat::Lowered lowered = fv::mat::lower(scene->materials[mi].surface, scene->materials[mi].edits, m_options[mi]);
+    m_applied[mi]                  = stateOf(lowered);
+    for(const fv::mat::TextureRequest& r : lowered.requests)
+    {
+      const auto it = m_textures.find(fv::mat::requestKey(r));
+      if(inflight.count(fv::mat::requestKey(r)) && (it == m_textures.end() || it->second.index < 0))
+      {
+        m_applied[mi].clear();
+        again.insert(int(mi));
+      }
+    }
+  }
   for(size_t i = 0; i < scene->meshes.size(); i++)
   {
     const fv::Mesh& m = scene->meshes[i];
@@ -263,36 +284,53 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
       }
   }
   publish({}, true);
+  if(!again.empty())
+    refresh(again);
 }
 
-void FvMaterials::attachModel(const std::string& id)
+void FvMaterials::attachModel(const std::string& id, Placement at, int count, int meshes)
 {
   m_generation++;
   nvvkgltf::Scene* scn = m_hooks.renderer->editScene();
-  m_model              = true;
-  m_figure             = id;
+  // the same model composed again keeps the edits made to it
+  const bool again = m_model && m_figure == id;
+  m_model          = true;
+  m_figure         = id;
+  m_at             = at;
   m_options.clear();
   m_textures.clear();
   m_waiting.clear();
   m_baking.clear();
+  std::vector<fv::mat::Edits> edits;
+  if(again)
+    for(const fv::Material& m : m_modelScene.materials)
+      edits.push_back(m.edits);
   m_modelScene = {};
   m_originals.clear();
-  if(scn && scn->valid())
-    for(const tinygltf::Material& g : scn->getModel().materials)
-    {
-      fv::Material m;
-      m.name = g.name;
-      m_modelScene.materials.push_back(std::move(m));
-      m_originals.push_back(g);
-    }
+  const tinygltf::Model* model = scn && scn->valid() ? &scn->getModel() : nullptr;
+  for(int i = 0; model && i < count && at.materials + i < int(model->materials.size()); i++)
+  {
+    const tinygltf::Material& g = model->materials[size_t(at.materials + i)];
+    fv::Material              m;
+    m.name = g.name;
+    if(size_t(i) < edits.size())
+      m.edits = edits[size_t(i)];
+    m_modelScene.materials.push_back(std::move(m));
+    m_originals.push_back(g);
+  }
   m_scene = &m_modelScene;
   m_meshesOf.assign(m_modelScene.materials.size(), {});
   m_count = m_modelScene.materials.size();
-  if(scn && scn->valid())
-    for(size_t i = 0; i < scn->getModel().meshes.size(); i++)
-      for(const tinygltf::Primitive& p : scn->getModel().meshes[i].primitives)
-        if(p.material >= 0 && size_t(p.material) < m_meshesOf.size() && (m_meshesOf[size_t(p.material)].empty() || m_meshesOf[size_t(p.material)].back() != int(i)))
-          m_meshesOf[size_t(p.material)].push_back(int(i));
+  for(int i = 0; model && i < meshes && at.meshes + i < int(model->meshes.size()); i++)
+    for(const tinygltf::Primitive& p : model->meshes[size_t(at.meshes + i)].primitives)
+    {
+      const int mi = p.material - at.materials;
+      if(mi >= 0 && size_t(mi) < m_meshesOf.size() && (m_meshesOf[size_t(mi)].empty() || m_meshesOf[size_t(mi)].back() != i))
+        m_meshesOf[size_t(mi)].push_back(i);
+    }
+  for(size_t i = 0; i < m_count; i++)
+    if(!m_modelScene.materials[i].edits.empty())
+      writeModel(int(i));
   publish({}, true);
 }
 
@@ -328,7 +366,8 @@ double extNumber(const tinygltf::ExtensionMap& ext, const char* name, const char
 void FvMaterials::writeModel(int index)
 {
   nvvkgltf::Scene* scn = m_hooks.renderer->editScene();
-  if(!scn || !scn->valid() || index >= int(scn->getModel().materials.size()) || index >= int(m_originals.size()))
+  const int        g   = m_at.materials + index;
+  if(!scn || !scn->valid() || g >= int(scn->getModel().materials.size()) || index >= int(m_originals.size()))
     return;
   const fv::mat::Edits& e = m_scene->materials[size_t(index)].edits;
   tinygltf::Material    m = m_originals[size_t(index)];
@@ -362,20 +401,20 @@ void FvMaterials::writeModel(int index)
   for(const char* name : {"KHR_materials_emissive_strength", "KHR_materials_specular", "KHR_materials_clearcoat"})
     if(m.extensions.count(name) && std::find(scn->getModel().extensionsUsed.begin(), scn->getModel().extensionsUsed.end(), name) == scn->getModel().extensionsUsed.end())
       scn->getModel().extensionsUsed.push_back(name);
-  tinygltf::Material& mat    = scn->editor().getMaterialForEdit(index);
+  tinygltf::Material& mat    = scn->editor().getMaterialForEdit(g);
   const auto          before = instanceInputs(mat);
   m.extras                   = mat.extras;
   mat                        = std::move(m);
-  scn->markMaterialDirty(index);
+  scn->markMaterialDirty(g);
   if(!(instanceInputs(mat) == before))
-    scn->markRenderNodeRtxDirtyForMaterials({index});
+    scn->markRenderNodeRtxDirtyForMaterials({g});
 }
 
 Json FvMaterials::modelItem(int index) const
 {
   nvvkgltf::Scene*          scn = m_hooks.renderer->editScene();
   const fv::Material&       m   = m_scene->materials[size_t(index)];
-  const tinygltf::Material& g   = scn->getModel().materials[size_t(index)];
+  const tinygltf::Material& g   = scn->getModel().materials[size_t(m_at.materials + index)];
   const auto&               f   = g.pbrMetallicRoughness.baseColorFactor;
   Json                      values = {{"color", hexOf({linearOf(f, 0), linearOf(f, 1), linearOf(f, 2)})},
                                       {"roughness", g.pbrMetallicRoughness.roughnessFactor},
@@ -427,7 +466,9 @@ void FvMaterials::detach()
   m_forceDouble.clear();
   m_waiting.clear();
   m_baking.clear();
-  m_hooks.events->snapshot("materials", {{"figure", nullptr}, {"items", Json::object()}});
+  if(!m_figure.empty())
+    m_hooks.events->drop("materials/" + m_figure);
+  m_figure.clear();
 }
 
 std::string FvMaterials::stateOf(const fv::mat::Lowered& lowered) const
@@ -641,10 +682,11 @@ void FvMaterials::refresh(const std::set<int>& materials)
 void FvMaterials::write(int index, const fv::mat::Lowered& lowered)
 {
   nvvkgltf::Scene* scn = m_hooks.renderer->editScene();
-  if(!scn || !scn->valid() || index >= int(scn->getModel().materials.size()))
+  const int        g   = m_at.materials + index;
+  if(!scn || !scn->valid() || g >= int(scn->getModel().materials.size()))
     return;
   tinygltf::Model&    model  = scn->getModel();
-  tinygltf::Material& mat    = scn->editor().getMaterialForEdit(index);
+  tinygltf::Material& mat    = scn->editor().getMaterialForEdit(g);
   const auto          before = instanceInputs(mat);
   tinygltf::Material  next   = fv::mat::toGltf(
       lowered,
@@ -658,9 +700,9 @@ void FvMaterials::write(int index, const fv::mat::Lowered& lowered)
   if(m_forceDouble[index])
     next.doubleSided = true;
   mat = std::move(next);
-  scn->markMaterialDirty(index);
+  scn->markMaterialDirty(g);
   if(!(instanceInputs(mat) == before))
-    scn->markRenderNodeRtxDirtyForMaterials({index});
+    scn->markRenderNodeRtxDirtyForMaterials({g});
   m_applied[index] = stateOf(lowered);
 }
 
@@ -723,8 +765,8 @@ void FvMaterials::baked(std::vector<std::pair<fv::build::TextureRequest, std::op
       {
         tinygltf::Model& model = scn->getModel();
         // Genesis UVs use one 0..1 tile per surface group; the figure's sampler repeats
-        if(!model.samplers.empty())
-          model.textures[texture].sampler = 0;
+        if(m_at.samplers < int(model.samplers.size()))
+          model.textures[texture].sampler = m_at.samplers;
         m_textures[key] = {texture, image->flipGreen};
         if(m_hooks.remember)
           m_hooks.remember(req, *image);
@@ -810,7 +852,7 @@ void FvMaterials::publish(const std::set<int>& materials, bool all)
         items["m:" + std::to_string(i)] = std::move(it);
       }
   if(all)
-    m_hooks.events->snapshot("materials", {{"figure", m_figure}, {"items", items}});
+    m_hooks.events->snapshot("materials/" + m_figure, {{"figure", m_figure}, {"items", items}});
   else if(!items.empty())
-    m_hooks.events->patch("materials", {{"items", items}});
+    m_hooks.events->patch("materials/" + m_figure, {{"items", items}});
 }

@@ -1487,10 +1487,22 @@ int GltfRenderer::selectedNodeIndex()
 }
 
 // Frame the whole scene, or the selected render nodes. A selection with no readable bounds leaves the camera alone.
+nvutils::Bbox GltfRenderer::visibleSceneBounds()
+{
+  nvvkgltf::Scene* scene = m_resources.getScene();
+  if(!scene || !scene->valid())
+    return {};
+  nvutils::Bbox box;
+  const auto&   nodes = scene->getRenderNodes();
+  for(int i = 0; i < int(nodes.size()); i++)
+    if(nodes[size_t(i)].visible)
+      box.insert(getRenderNodeBbox(i));
+  return box.isEmpty() ? scene->getSceneBounds() : box;
+}
+
 void GltfRenderer::fitCamera(bool wholeScene)
 {
-  const nvutils::Bbox bbox = wholeScene ? m_resources.getScene()->getSceneBounds() :
-                                          GltfRenderer::getRenderNodesBbox(m_resources.selectedRenderNodes);
+  const nvutils::Bbox bbox = wholeScene ? visibleSceneBounds() : GltfRenderer::getRenderNodesBbox(m_resources.selectedRenderNodes);
   if(!bbox.isEmpty())
     m_cameraManip->fit(bbox.min(), bbox.max(), false, true, m_cameraManip->getAspectRatio());
 }
@@ -1546,6 +1558,11 @@ void GltfRenderer::setGizmoHooks(GizmoHooks hooks)
 void GltfRenderer::setShowGizmo(bool on)
 {
   m_resources.settings.showGizmo = on;
+}
+
+void GltfRenderer::setHelperLines(std::vector<shaderio::lines::LineVertex> vertices)
+{
+  m_visualHelpers.lines.setLines(std::move(vertices));
 }
 
 bool GltfRenderer::gizmoInput(glm::vec2 px, bool down, bool pressed, bool released)

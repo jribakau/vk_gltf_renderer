@@ -72,6 +72,7 @@ void VisualHelpers::init(const Resources& res)
       .helperDescriptorSetLayout = transform.getDescriptorSetLayout(),
   };
   grid.init(gridHelperRes);
+  lines.init({.app = res.app, .alloc = res.alloc, .device = res.device, .helperDescriptorSetLayout = transform.getDescriptorSetLayout()});
 
   LOGI("VisualHelpers initialized\n");
 }
@@ -82,6 +83,7 @@ void VisualHelpers::deinit()
   destroyHelperDepthBuffer();
 
   transform.deinit();
+  lines.deinit();
   grid.deinit();
 
   m_app     = nullptr;
@@ -111,7 +113,7 @@ bool VisualHelpers::shouldRender() const
   bool gridVisible  = grid.isVisible();
   bool gizmoVisible = transform.isAttached();
 
-  return gridVisible || gizmoVisible;
+  return gridVisible || gizmoVisible || lines.hasLines();
 }
 
 void VisualHelpers::render(VkCommandBuffer  cmd,
@@ -166,6 +168,9 @@ void VisualHelpers::render(VkCommandBuffer  cmd,
 
   // Grid renders behind gizmo
   grid.renderRaster(cmd, m_helperDescriptorSet, viewMatrix, unclippedProj, projMatrix * viewMatrix, viewportSize, depthBufferSize);
+
+  // Then a host's lines, under the gizmo
+  lines.renderRaster(cmd, m_helperDescriptorSet, unclippedProj * viewMatrix, projMatrix * viewMatrix, projMatrix[3][3] < 1e-6f, viewportSize, depthBufferSize);
 
   // Gizmo renders on top
   transform.renderRaster(cmd, m_helperDescriptorSet, viewMatrix, unclippedProj, viewportSize, depthBufferSize);

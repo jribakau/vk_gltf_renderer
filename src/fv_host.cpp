@@ -41,7 +41,9 @@
 #include <utility>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <nvapp/elem_camera.hpp>
 #include <nvmcp/parameter_tools.hpp>
 #include <nvutils/logger.hpp>
@@ -58,6 +60,7 @@
 #include <figure/io/timing.hpp>
 
 #include "env_image_loader.hpp"
+#include "fv_compose.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_protocol.hpp"
@@ -66,6 +69,7 @@
 #include "gltf_environment_sky.hpp"
 #include "gltf_scene.hpp"
 #include "gltf_scene_animation.hpp"
+#include "gizmo_lines_vk.hpp"
 #include "gltf_scene_editor.hpp"
 #include "renderer.hpp"
 #include "tinygltf_utils.hpp"
@@ -91,25 +95,31 @@ struct HostSettings
 // A loaded figure and what the renderer made of it. Lives on the application thread.
 struct Loaded
 {
-  std::string                 id;
+  std::string                 id;  // its prop's
   std::unique_ptr<fv::Figure> fig;
   // drapes the worn dynamic surfaces (it works on `fig`, so it goes first); null without a body
   std::unique_ptr<fv::dforce::Dforce> dforce;
   int                                 dforceVersion = -1;
-  std::vector<int>            nodeOf;   // scene node -> glTF node
-  std::unordered_map<int, int> sceneOf;  // glTF node -> scene node
-  std::vector<int>            meshOf;   // scene mesh -> glTF mesh
-  std::vector<int>            skinOf;   // scene mesh -> glTF skin
-  std::vector<std::vector<int>> primsOf;  // glTF mesh -> render primitives
+  // where it is in the renderer's scene, set when the scene is composed (fv_compose.hpp)
+  std::vector<int>              nodeOf;   // scene node -> glTF node
+  std::unordered_map<int, int>  sceneOf;  // glTF node -> scene node
+  std::vector<int>              meshOf;   // scene mesh -> glTF mesh
+  std::vector<int>              skinOf;   // scene mesh -> glTF skin
+  std::vector<std::vector<int>> primsOf;  // scene mesh -> render primitives
+  // the glTF its load built on the worker, which the next composition takes instead of building it again
+  std::optional<fv::build::BuildResult> prebuilt;
   // morph topic: -1 until the channel list has been published, then the value and weight last sent
   int                                                          morphList = -1;
   std::unordered_map<std::string, std::pair<double, double>> published;
+  bool                                                         touched = true;  // dials or pose changed: publish
   uint64_t                                                     busyJob = 0;
   bool                                                         busyOn  = false;
   // the textures the glTF was built with, by request key, and whether their rows run bottom-up:
   // a wardrobe change builds the glTF again with these and the new items' own
   std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
   bool                                                                    texturesFlipped = false;
+  // its DAZ library, for source textures and what it wears (the settings mutex)
+  std::shared_ptr<fv::dson::Library> lib;
   // how it was opened ({rel} or {path}), for a scene file
   Json source;
   // material presets opened onto it, library paths in order, for a scene file
@@ -118,6 +128,72 @@ struct Loaded
   // wear them a second time without their presets
   bool                               addonsPending = false;
   std::vector<std::function<void()>> afterAddons;
+};
+
+enum class PropKind
+{
+  eFigure,
+  eModel,
+  eCamera,
+  eLight
+};
+
+const char* kindName(PropKind k)
+{
+  switch(k)
+  {
+    case PropKind::eFigure:
+      return "figure";
+    case PropKind::eModel:
+      return "model";
+    case PropKind::eCamera:
+      return "camera";
+    case PropKind::eLight:
+      return "light";
+  }
+  return "model";
+}
+
+// A camera prop: a lens of its own, and how far ahead its orbit target is.
+struct CameraProp
+{
+  FvView::Lens lens{.focalLength = 50};
+  bool         locked         = false;
+  double       targetDistance = 3;
+};
+
+// A light prop (KHR_lights_punctual): colour in sRGB as the colour pickers hold it, intensity in
+// candela (point, spot) or lux (directional), the radius its shadows soften with, a spot's cones.
+struct LightProp
+{
+  std::string type      = "point";
+  std::string color     = "#ffffff";
+  double      intensity = 20;
+  double      radius    = 0.05;
+  double      inner     = 0;
+  double      outer     = 0.785398;
+};
+
+// One thing in the scene. Its prop root (fv_compose.hpp) carries `transform` and `visible`; under
+// it is a figure, a model read from a file, a camera or a light.
+struct Prop
+{
+  std::string             id, name;
+  PropKind                kind = PropKind::eModel;
+  fv::composer::Trs        transform;
+  std::optional<glm::vec3> euler;  // the rotation as the panel typed it, degrees XYZ; a gizmo turn drops it
+  bool                    visible = true;
+  std::string             parent;  // a prop id, "" at the scene's root
+  std::shared_ptr<Loaded> figure;
+  // a model: as its file holds it (shared by duplicates) and where it came from
+  std::shared_ptr<const tinygltf::Model> model;
+  std::string                            path;
+  std::string                            format;
+  CameraProp                             camera;
+  LightProp                              light;
+  std::unique_ptr<FvMaterials>           materials;  // a figure's or a model's
+  fv::composer::Placed                    placed;     // where the last composition put it
+  Json                                   stats = Json::object();
 };
 
 std::filesystem::path pathOf(const std::string& utf8)
@@ -525,6 +601,9 @@ Json toolJson(const nvmcp::ToolResult& r)
 
 }  // namespace
 
+std::string figureSource(const Loaded& figure);
+std::string figureGeneration(const Loaded& figure);
+
 struct FvHost::Impl
 {
   GltfRenderer*               renderer = nullptr;
@@ -545,27 +624,54 @@ struct FvHost::Impl
   double            mouseX = 0, mouseY = 0;
   bool              lmb = false, mmb = false;
 
-  // application thread only
-  std::shared_ptr<Loaded> figure;
-  int                     figures = 0;
-  // morph.set merges here (any thread); onUpdate applies it as one setMany
-  std::mutex                     morphMutex;
-  std::string                    figureId;
-  std::map<std::string, double>  pendingMorphs;
-  bool                           morphTouched = false;
-  // frames until the camera frames a newly loaded figure (0: none pending)
+  // application thread only: the scene's props in order; prop root i of the renderer's scene is props[i]'s
+  std::vector<std::shared_ptr<Prop>> props;
+  int                                propCount = 0;
+  // morph.set merges here (any thread); onUpdate applies it as one setMany per figure
+  std::mutex                                           morphMutex;
+  std::set<std::string>                                morphFigures;  // the figures morph.set may name
+  std::map<std::string, std::map<std::string, double>> pendingMorphs;
+  // frames until the camera frames the scene (0: none pending)
   int frameIn = 0;
   // the gizmo's latest drag on a bone: the rig takes it once a frame, however many events came
   struct GizmoEdit
   {
+    std::shared_ptr<Loaded> figure;
     std::string             bone;
     fv::Quat                rotation;
     std::optional<fv::Vec3> position;
   };
   std::optional<GizmoEdit> gizmoEdit;
+  // props the gizmo or prop.set moved this frame, published once in onUpdate
+  std::set<std::string> movedProps;
+  // the camera prop the viewport looks through ("" for the free view), and where the free view was
+  // left meanwhile, with its lens
+  std::string viewCamera;
+  struct FreeView
+  {
+    glm::dvec3   eye{0, 1, 3}, center{0, 1, 0}, up{0, 1, 0};
+    FvView::Lens lens;
+  };
+  FreeView freeView;
+  bool     lockedNoticed = false;
+  // where the camera looked through stood in the world when the view last matched it: when it is
+  // somewhere else now (its parent moved, the gizmo, prop.set), the view follows it
+  glm::mat4 viewWorld{1.f};
+
+  // A change that needs the scene composed again (fv_compose.hpp): collected over a frame and run
+  // once in onUpdate. `after` runs once it is composed (or failed to be).
+  struct ComposeRequest
+  {
+    std::vector<std::string>           labels;
+    std::vector<std::function<void()>> after;
+    std::set<Loaded*>                  settle;  // figures whose cloth settles again: what they wear changed
+  };
+  std::optional<ComposeRequest> pendingCompose;
+  bool                          composedAny = false;  // the last composition had a figure or model in it
 
   // loads, wears, exports and environment decodes, each on a thread of its own
   FvWorkers loaders;
+  // bumped by scene.clear and on shutdown: a load still running drops its result
   std::atomic<uint64_t>    loadGeneration{0};
   std::atomic<uint64_t>    jobs{0};
   std::atomic<uint64_t>    notices{0};
@@ -588,6 +694,11 @@ struct FvHost::Impl
     return result.get();
   }
 
+  std::string uniqueName(const std::string& name, const Prop* self) const;
+  bool        shown(const Prop& p) const;
+  bool        ridesOn(const Prop& q, const std::string& id) const;
+  void        applyLightShown(const Prop& p);
+
   void post(std::function<void()> f)
   {
     std::lock_guard lock(queueMutex);
@@ -602,11 +713,49 @@ struct FvHost::Impl
 
   void job(uint64_t id, const Json& state) { protocol->events().patch("jobs", {{std::to_string(id), state}}); }
 
+  // ---- props (application thread)
+  std::shared_ptr<Prop> findProp(const std::string& id) const;
+  // The prop a command names ({prop}, or {figure} as panels used to send it), else the selected one.
+  std::shared_ptr<Prop> propArg(const Json& args) const;
+  // The figure a command is for: the one it names, else the selected prop when that is a figure,
+  // else the only figure in the scene. Null when there is none of those.
+  std::shared_ptr<Prop> figureProp(const Json& args) const;
+  std::shared_ptr<Loaded> figureArg(const Json& args) const;
+  bool                    inScene(const std::shared_ptr<Loaded>& f) const;
+  std::shared_ptr<Prop>   addProp(PropKind kind, const std::string& name);
+  void                    removeProp(const std::shared_ptr<Prop>& p);
+  std::unique_ptr<FvMaterials> makeMaterials(const std::shared_ptr<Prop>& p);
+  glm::mat4               worldOf(const Prop& p) const;
+  void                    applyTransform(const Prop& p);
+  void                    applyVisible(const Prop& p);
+  Json                    propJson(const Prop& p) const;
+  void                    publishScene();
+  // camera frustums and light markers, drawn over the image (GltfRenderer::setHelperLines), and the
+  // one at a pixel
+  void        drawHelpers();
+  std::string helperAt(const glm::vec2& px) const;
+  void                    selectProp(const std::string& id);
+  void                    requestCompose(const std::string& label, std::function<void()> after = {}, Loaded* settle = nullptr);
+  void                    compose();
+  Json                    propAdd(const Json& args);
+  Json                    propSet(const Json& args);
+  Json                    propDuplicate(const Json& args);
+  Json                    sceneClear();
+  // the view: looking through a camera prop, or the free view
+  Json viewUse(const Json& args);
+  void viewFromCamera(const Prop& p);
+  void cameraFromView();
+  void publishView();
+
   Json load(const Json& args);
+  // A figure or prop from a DAZ library, as a new prop; `then` runs once it is in the scene.
+  Json loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
+                  std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {});
   void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
                fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
-               std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source);
-  // wardrobe: what the figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
+               std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source,
+               std::function<void(std::shared_ptr<Prop>)> then);
+  // wardrobe: what a figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
   struct WearRequest
   {
     std::string              rel;
@@ -617,48 +766,45 @@ struct FvHost::Impl
   // `beforeBuild` runs on the application thread once everything is on, before the scene is built
   // again; `after` once it has been.
   uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild = {}, std::function<void()> after = {});
-  // glTF, GLB and OBJ files: the renderer's own loader, with the figure's state cleared
-  Json importModel(const std::string& path);
-  void runImport(const std::string& path, uint64_t jobId);
+  // glTF, GLB and OBJ files, read on a worker, as a new prop
+  Json importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then = {});
   Json animationTopic();
   void publishAnimation(bool force);
   Json animationCommand(const std::string& cmd, const Json& args);
   Json lastAnimation;
   std::chrono::steady_clock::time_point animationAt{};
   Json exportGlb(const Json& args);
-  Json sceneState();
+  Json sceneState(const Json& args);
   Json sceneRestore(const Json& args);
   std::mutex wearMutex;
   Json wardrobeRemove(const Json& args);
   Json wardrobeVisible(const Json& args);
-  void showItem(const std::vector<std::pair<int, std::string>>& objects, bool visible);
-  void publishDforce(bool force);
+  void showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible);
+  void publishDforce(Loaded& f, bool force);
   Json dforceCommand(const std::string& cmd, const Json& args);
-  void rebuildScene(const std::string& label);
-  void publishFigure();
-  void publishWardrobe();
+  void publishFigure(Prop& p);
+  void publishWardrobe(const Loaded& f);
   std::optional<std::array<glm::dvec3, 3>> cameraRestore;
-  // the file of the imported model shown (glTF, GLB, OBJ); empty while a figure is shown
-  std::string modelPath;
   Json poseSet(const Json& args);
-  void applyNodes(const std::set<int>& moved);
-  void applyMesh(const fv::morph::MeshChange& change);
-  void applyRebind(const std::vector<int>& meshes);
+  void applyNodes(Loaded& f, const std::set<int>& moved);
+  void applyMesh(Loaded& f, const fv::morph::MeshChange& change);
+  void applyRebind(Loaded& f, const std::vector<int>& meshes);
   void applyPendingMorphs();
-  void publishMorphs();
-  void publishBusy();
+  void publishMorphs(Loaded& f);
+  void publishBusy(Loaded& f);
   void frameCamera();
   void applyInput(const std::vector<Json>& events);
-  void patchPose(const std::vector<std::string>& boneIds);
-  // the main figure's posed bone at a glTF node, or nullptr
-  const fv::pose::PoseBone* boneAt(int gltf) const;
+  void patchPose(const Loaded& f, const std::vector<std::string>& boneIds);
+  // a figure's posed bone at a glTF node, or {nullptr, nullptr}
+  std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> boneAt(int gltf) const;
   void                      applyGizmoEdit();
   void applyPreset(const fv::dson::Json&                             doc,
                    const std::string&                                kind,
                    uint64_t                                          jobId,
                    const std::string&                                rel,
                    const std::optional<fv::dson::EnvironmentPreset>& environment,
-                   const std::string&                                environmentPath);
+                   const std::string&                                environmentPath,
+                   const std::string&                                target);
 
   // ---- lighting (fv_lighting.hpp), application thread only
   nvutils::ParameterRegistry* registry = nullptr;
@@ -686,21 +832,1167 @@ struct FvHost::Impl
   void requestEnvironment();
   void applySun(bool force);
   void addSun(tinygltf::Model& model);
-  void addSun(nvvkgltf::Scene& scene);
   void fillSun(tinygltf::Light& light, tinygltf::Node& node, int lightIndex);
   void setParams(const Json& values);
   void publishLighting();
 
   std::unique_ptr<FvView> view;
-  // the materials of the loaded figure (fv_materials.hpp), and how skin is shaded for the render mode
-  std::unique_ptr<FvMaterials>       materials;
-  std::atomic<fv::mat::SkinMode>     skinMode{fv::mat::SkinMode::eRaster};
-  std::shared_ptr<fv::dson::Library> libraryOfFigure;  // the loaded figure's, for source textures (settingsMutex)
-  // figure loads only: a preset must not take a generation, or it would cancel a figure load
-  std::mutex figureLoads;
-  uint64_t   latestFigureSeq = 0;
-  std::atomic<uint64_t> requestSeq{0};
+  // how skin is shaded for the render mode
+  std::atomic<fv::mat::SkinMode> skinMode{fv::mat::SkinMode::eRaster};
+  // a texture a material bake needs, from the cooker or a library (worker threads)
+  std::optional<fv::build::TextureImage> bakeTexture(const std::shared_ptr<fv::dson::Library>& lib, const fv::build::TextureRequest& req, bool flipped);
 };
+
+//--------------------------------------------------------------------------------------------------
+// Props
+
+std::shared_ptr<Prop> FvHost::Impl::findProp(const std::string& id) const
+{
+  for(const auto& p : props)
+    if(p->id == id)
+      return p;
+  return nullptr;
+}
+
+std::shared_ptr<Prop> FvHost::Impl::propArg(const Json& args) const
+{
+  for(const char* key : {"prop", "figure"})
+    if(args.contains(key) && args[key].is_string())
+    {
+      auto p = findProp(args[key].get<std::string>());
+      if(!p)
+        throw std::runtime_error("no such prop");
+      return p;
+    }
+  return view ? findProp(view->selectedProp()) : nullptr;
+}
+
+std::shared_ptr<Prop> FvHost::Impl::figureProp(const Json& args) const
+{
+  for(const char* key : {"prop", "figure"})
+    if(args.contains(key) && args[key].is_string())
+    {
+      auto p = findProp(args[key].get<std::string>());
+      return p && p->figure ? p : nullptr;
+    }
+  if(view)
+    if(auto p = findProp(view->selectedProp()); p && p->figure)
+      return p;
+  std::shared_ptr<Prop> only;
+  for(const auto& p : props)
+    if(p->figure)
+    {
+      if(only)
+        return nullptr;
+      only = p;
+    }
+  return only;
+}
+
+std::shared_ptr<Loaded> FvHost::Impl::figureArg(const Json& args) const
+{
+  auto p = figureProp(args);
+  return p ? p->figure : nullptr;
+}
+
+bool FvHost::Impl::inScene(const std::shared_ptr<Loaded>& f) const
+{
+  return f && std::any_of(props.begin(), props.end(), [&](const auto& p) { return p->figure == f; });
+}
+
+std::shared_ptr<Prop> FvHost::Impl::addProp(PropKind kind, const std::string& name)
+{
+  auto p  = std::make_shared<Prop>();
+  p->id   = "p:" + std::to_string(++propCount);
+  p->kind = kind;
+  p->name = uniqueName(name.empty() ? kindName(kind) : name, nullptr);
+  props.push_back(p);
+  return p;
+}
+
+// A name the scene doesn't have yet: "Camera", "Camera 2", ... (`self` keeps its own)
+std::string FvHost::Impl::uniqueName(const std::string& name, const Prop* self) const
+{
+  std::string unique = name;
+  for(int n = 2; std::any_of(props.begin(), props.end(), [&](const auto& q) { return q.get() != self && q->name == unique; }); n++)
+    unique = name + " " + std::to_string(n);
+  return unique;
+}
+
+// It shows: it and everything it rides on are visible.
+bool FvHost::Impl::shown(const Prop& p) const
+{
+  const Prop* at = &p;
+  for(int steps = 0; at && steps <= int(props.size()); steps++)
+  {
+    if(!at->visible)
+      return false;
+    at = at->parent.empty() ? nullptr : findProp(at->parent).get();
+  }
+  return true;
+}
+
+// `q` rides on the prop `id`, however far up.
+bool FvHost::Impl::ridesOn(const Prop& q, const std::string& id) const
+{
+  const Prop* at = q.parent.empty() ? nullptr : findProp(q.parent).get();
+  for(int steps = 0; at && steps <= int(props.size()); steps++)
+  {
+    if(at->id == id)
+      return true;
+    at = at->parent.empty() ? nullptr : findProp(at->parent).get();
+  }
+  return false;
+}
+
+std::unique_ptr<FvMaterials> FvHost::Impl::makeMaterials(const std::shared_ptr<Prop>& p)
+{
+  std::weak_ptr<Prop> weak = p;
+  return std::make_unique<FvMaterials>(FvMaterials::Hooks{
+      .renderer = renderer,
+      .events   = &protocol->events(),
+      .post     = [this](std::function<void()> f) { post(std::move(f)); },
+      .notice   = [this](const std::string& text, const char* level) { notice(text, level); },
+      .nextJob  = [this] { return ++jobs; },
+      .job      = [this](uint64_t id, const Json& state) { job(id, state); },
+      .texture =
+          [this, weak](const fv::build::TextureRequest& req, bool flipped) -> std::optional<fv::build::TextureImage> {
+        std::shared_ptr<fv::dson::Library> lib;
+        {
+          std::lock_guard lock(settingsMutex);
+          if(auto p = weak.lock(); p && p->figure)
+            lib = p->figure->lib;
+        }
+        return bakeTexture(lib, req, flipped);
+      },
+      .remember =
+          [weak](const fv::build::TextureRequest& req, const fv::build::TextureImage& image) {
+            if(auto p = weak.lock(); p && p->figure)
+              p->figure->images.insert_or_assign(fv::build::requestKey(req), image);
+          },
+  });
+}
+
+std::optional<fv::build::TextureImage> FvHost::Impl::bakeTexture(const std::shared_ptr<fv::dson::Library>& lib, const fv::build::TextureRequest& req, bool flipped)
+{
+  HostSettings st;
+  {
+    std::lock_guard lock(settingsMutex);
+    st = settings;
+  }
+  if(!st.texServer.empty() && !st.rootId.empty())
+    return cookedTexture(st, req, flipped, false).image;
+  return lib ? fallbackTexture(st, *lib, req, false) : std::nullopt;
+}
+
+// Out of the scene: its topics go, a busy line or a load waiting on it ends. The scene is composed again.
+void FvHost::Impl::removeProp(const std::shared_ptr<Prop>& p)
+{
+  if(p->id == viewCamera)
+    viewUse({{"camera", nullptr}});
+  auto& events = protocol->events();
+  if(p->materials)
+    p->materials->detach();
+  for(const char* topic : {"nodes/", "pose/", "morphs/", "wardrobe/", "dforce/"})
+    events.drop(topic + p->id);
+  if(p->figure && p->figure->busyOn)
+    job(p->figure->busyJob, {{"state", "done"}});
+  {
+    std::lock_guard lock(morphMutex);
+    morphFigures.erase(p->id);
+    pendingMorphs.erase(p->id);
+  }
+  if(gizmoEdit && gizmoEdit->figure == p->figure)
+    gizmoEdit.reset();
+  // the selection goes with it now, not when the composition runs: a second Delete has nothing to remove
+  if(view)
+    view->deselect(p->id);
+  // what rode on it stays where it was in the world
+  for(const auto& q : props)
+    if(q->parent == p->id)
+    {
+      const glm::mat4 world = worldOf(*q);
+      q->parent.clear();
+      glm::vec3 skew;
+      glm::vec4 perspective;
+      glm::decompose(world, q->transform.scale, q->transform.rotation, q->transform.translation, skew, perspective);
+      q->euler.reset();
+    }
+  props.erase(std::remove(props.begin(), props.end(), p), props.end());
+  // hidden now; gone from the GPU when the composition runs
+  if(p->placed.root >= 0)
+  {
+    Prop hidden    = {};
+    hidden.placed  = p->placed;
+    hidden.visible = false;
+    applyVisible(hidden);
+  }
+}
+
+glm::mat4 FvHost::Impl::worldOf(const Prop& p) const
+{
+  glm::mat4   m(1.f);
+  const Prop* at = &p;
+  for(int steps = 0; at && steps <= int(props.size()); steps++)
+  {
+    const glm::mat4 local = glm::translate(glm::mat4(1.f), at->transform.translation) * glm::mat4_cast(at->transform.rotation)
+                            * glm::scale(glm::mat4(1.f), at->transform.scale);
+    m = local * m;
+    at = at->parent.empty() ? nullptr : findProp(at->parent).get();
+  }
+  return m;
+}
+
+void FvHost::Impl::applyTransform(const Prop& p)
+{
+  if(p.placed.root < 0)
+    return;
+  const GltfRenderer::NodeTransform t{p.placed.root, p.transform.translation, p.transform.rotation, p.transform.scale};
+  renderer->setNodeTransforms({&t, 1});
+}
+
+void FvHost::Impl::applyVisible(const Prop& p)
+{
+  nvvkgltf::Scene* scene = renderer->editScene();
+  if(!scene || !scene->valid() || p.placed.root < 0 || p.placed.root >= int(scene->getModel().nodes.size()))
+    return;
+  tinygltf::utils::setNodeVisibility(scene->getModel().nodes[size_t(p.placed.root)], {p.visible});
+  // from the prop at the top of what it rides on: a prop under a hidden one stays hidden, whatever its own flag
+  const Prop* top = &p;
+  for(int steps = 0; !top->parent.empty() && steps <= int(props.size()); steps++)
+  {
+    const auto up = findProp(top->parent);
+    if(!up || up->placed.root < 0)
+      break;
+    top = up.get();
+  }
+  scene->editor().updateVisibility(top->placed.root);
+  // a light shows nothing, but lights; hidden, or riding on something hidden, it goes dark
+  applyLightShown(p);
+  for(const auto& q : props)
+    if(q.get() != &p && ridesOn(*q, p.id))
+      applyLightShown(*q);
+}
+
+void FvHost::Impl::applyLightShown(const Prop& p)
+{
+  nvvkgltf::Scene* scene = renderer->editScene();
+  if(!scene || !scene->valid() || p.placed.light < 0 || p.placed.light >= int(scene->getModel().lights.size()))
+    return;
+  scene->editor().getLightForEdit(p.placed.light).intensity = shown(p) ? p.light.intensity : 0.0;
+  scene->markLightDirty(p.placed.light);
+}
+
+namespace {
+
+Json vec3Json(const glm::vec3& v)
+{
+  return Json::array({v.x, v.y, v.z});
+}
+
+glm::vec3 vec3Arg(const Json& v)
+{
+  if(v.is_number())
+    return glm::vec3(v.get<float>());
+  if(!v.is_array() || v.size() < 3)
+    throw std::runtime_error("expected [x, y, z]");
+  return {v[0].get<float>(), v[1].get<float>(), v[2].get<float>()};
+}
+
+// Degrees about X, then Y, then Z, as the panel shows them.
+glm::quat eulerQuat(const glm::vec3& deg)
+{
+  return glm::quat(glm::radians(deg));
+}
+
+glm::vec3 quatEuler(const glm::quat& q)
+{
+  return glm::degrees(glm::eulerAngles(q));
+}
+
+}  // namespace
+
+Json FvHost::Impl::propJson(const Prop& p) const
+{
+  const int order = int(std::find_if(props.begin(), props.end(), [&](const auto& q) { return q.get() == &p; }) - props.begin());
+  Json      out   = {{"kind", kindName(p.kind)},
+                     {"name", p.name},
+                     {"parent", p.parent.empty() ? Json() : Json(p.parent)},
+                     {"visible", p.visible},
+                     {"order", order},
+                     {"transform",
+                      {{"t", vec3Json(p.transform.translation)},
+                       {"r", Json::array({p.transform.rotation.x, p.transform.rotation.y, p.transform.rotation.z, p.transform.rotation.w})},
+                       {"e", vec3Json(p.euler ? *p.euler : quatEuler(p.transform.rotation))},
+                       {"s", vec3Json(p.transform.scale)}}}};
+  if(!p.stats.empty())
+    out["stats"] = p.stats;
+  if(p.figure)
+  {
+    out["source"]     = figureSource(*p.figure);
+    out["generation"] = figureGeneration(*p.figure);
+    out["posable"]    = bool(p.figure->fig->pose);
+    out["format"]     = "DAZ";
+  }
+  if(p.model)
+  {
+    out["source"] = p.path;
+    out["format"] = p.format;
+  }
+  if(p.kind == PropKind::eCamera)
+  {
+    Json camera              = FvView::lensJson(p.camera.lens);
+    camera["locked"]         = p.camera.locked;
+    camera["targetDistance"] = p.camera.targetDistance;
+    out["camera"]            = camera;
+  }
+  if(p.kind == PropKind::eLight)
+    out["light"] = {{"type", p.light.type},           {"color", p.light.color}, {"intensity", p.light.intensity},
+                    {"radius", p.light.radius},       {"inner", p.light.inner}, {"outer", p.light.outer}};
+  return out;
+}
+
+namespace {
+
+// Where a prop's marker is, in the world: a camera's eye, a light's position.
+glm::vec3 anchorOf(const glm::mat4& world)
+{
+  return glm::vec3(world[3]);
+}
+
+}  // namespace
+
+// What has no mesh shows as lines: a camera as its frustum, a short pyramid along its -Z with a
+// triangle on the side that is up; a point light as a star, a spot as its cone, a directional light
+// as an arrow along its -Z. The selected one is orange; the camera looked through isn't drawn.
+void FvHost::Impl::drawHelpers()
+{
+  std::vector<shaderio::lines::LineVertex> lines;
+  auto manip = renderer->getCameraManipulator();
+  if(view && view->helpersShown() && manip)
+  {
+    const glm::vec2 size(renderer->renderSize().width, renderer->renderSize().height);
+    const float     aspect   = size.y > 0 ? size.x / size.y : 1.5f;
+    const std::string selected = view->selectedProp();
+    // markers keep their size on screen: scaled with the distance from the eye
+    const glm::vec3 eye = glm::vec3(manip->getEye());
+    for(const auto& p : props)
+    {
+      if(!p->visible || (p->kind != PropKind::eCamera && p->kind != PropKind::eLight) || p->id == viewCamera)
+        continue;
+      const glm::mat4 world = worldOf(*p);
+      const glm::vec3 at    = anchorOf(world);
+      const glm::vec3 x     = glm::normalize(glm::vec3(world[0])), y = glm::normalize(glm::vec3(world[1])), z = glm::normalize(glm::vec3(world[2]));
+      const float     scale = std::clamp(glm::length(at - eye) * 0.06f, 0.05f, 2.f);
+      glm::vec4       color = p->kind == PropKind::eCamera ? glm::vec4(0.85f, 0.88f, 0.92f, 0.9f) : glm::vec4(fv::lighting::linearColor(p->light.color), 0.95f);
+      if(p->kind == PropKind::eLight)
+        color = glm::vec4(glm::pow(glm::vec3(color), glm::vec3(1.f / 2.2f)), color.w);  // drawn over the tonemapped image
+      if(p->id == selected)
+        color = {1.f, 0.62f, 0.2f, 1.f};
+      const uint32_t c    = LineHelperVk::pack(color);
+      const auto     line = [&](const glm::vec3& a, const glm::vec3& b) {
+        lines.push_back({a, c});
+        lines.push_back({b, c});
+      };
+      if(p->kind == PropKind::eCamera)
+      {
+        const double    film = 35.0 / std::max(double(aspect), 1.0);
+        const float     h    = float(film / 2.0 / std::max(p->camera.lens.focalLength, 1.0));  // tan of half the vertical field
+        const float     d    = 1.2f * scale;
+        const glm::vec3 centre = at - z * d;
+        const glm::vec3 u = y * (h * d), r = x * (h * d * aspect);
+        const glm::vec3 corners[4] = {centre - r - u, centre + r - u, centre + r + u, centre - r + u};
+        for(int i = 0; i < 4; i++)
+        {
+          line(at, corners[i]);
+          line(corners[i], corners[(i + 1) % 4]);
+        }
+        // which way is up
+        const glm::vec3 top = centre + u * 1.6f;
+        line(centre - r * 0.4f + u * 1.1f, top);
+        line(top, centre + r * 0.4f + u * 1.1f);
+        line(centre + r * 0.4f + u * 1.1f, centre - r * 0.4f + u * 1.1f);
+      }
+      else if(p->light.type == "point")
+      {
+        const float k = 0.35f * scale;
+        line(at - x * k, at + x * k);
+        line(at - y * k, at + y * k);
+        line(at - z * k, at + z * k);
+        const glm::vec3 diag[4] = {glm::normalize(x + y + z), glm::normalize(x - y + z), glm::normalize(-x + y + z), glm::normalize(-x - y + z)};
+        for(const glm::vec3& v : diag)
+          line(at - v * (k * 0.6f), at + v * (k * 0.6f));
+      }
+      else
+      {
+        const glm::vec3 dir = -z;
+        if(p->light.type == "spot")
+        {
+          const float     length = 1.6f * scale;
+          const float     radius = length * float(std::tan(std::clamp(p->light.outer, 0.01, 1.5)));
+          const glm::vec3 base   = at + dir * length;
+          glm::vec3       prev   = base + x * radius;
+          for(int i = 1; i <= 24; i++)
+          {
+            const float     a    = float(i) / 24.f * 6.2831853f;
+            const glm::vec3 next = base + (x * std::cos(a) + y * std::sin(a)) * radius;
+            line(prev, next);
+            if(i % 6 == 0)
+              line(at, next);
+            prev = next;
+          }
+        }
+        else
+        {
+          const float length = 1.6f * scale, head = 0.3f * scale;
+          const glm::vec3 tip = at + dir * length;
+          line(at, tip);
+          line(tip, tip - dir * head + x * head * 0.6f);
+          line(tip, tip - dir * head - x * head * 0.6f);
+          line(tip, tip - dir * head + y * head * 0.6f);
+          line(tip, tip - dir * head - y * head * 0.6f);
+          glm::vec3 prev = at + x * head;
+          for(int i = 1; i <= 16; i++)
+          {
+            const float     a    = float(i) / 16.f * 6.2831853f;
+            const glm::vec3 next = at + (x * std::cos(a) + y * std::sin(a)) * head;
+            line(prev, next);
+            prev = next;
+          }
+        }
+      }
+    }
+  }
+  renderer->setHelperLines(std::move(lines));
+}
+
+// The camera or light whose marker is nearest a pixel, within 14 of them: its anchor projected as
+// the view sees it.
+std::string FvHost::Impl::helperAt(const glm::vec2& px) const
+{
+  auto manip = renderer->getCameraManipulator();
+  if(!manip)
+    return {};
+  const VkExtent2D extent = renderer->renderSize();
+  const glm::mat4  viewProj = manip->getPerspectiveMatrix() * manip->getViewMatrix();
+  std::string      best;
+  float            nearest = 14.f;
+  for(const auto& p : props)
+  {
+    if(!p->visible || (p->kind != PropKind::eCamera && p->kind != PropKind::eLight) || p->id == viewCamera)
+      continue;
+    const glm::vec4 clip = viewProj * glm::vec4(anchorOf(worldOf(*p)), 1.f);
+    if(clip.w <= 1e-6f)
+      continue;
+    const glm::vec2 at = (glm::vec2(clip) / clip.w * 0.5f + 0.5f) * glm::vec2(float(extent.width), float(extent.height));
+    const float     d  = glm::length(at - px);
+    if(d < nearest)
+    {
+      nearest = d;
+      best    = p->id;
+    }
+  }
+  return best;
+}
+
+// Topic "scene": {props: {id: ...}, order: [id]}.
+void FvHost::Impl::publishScene()
+{
+  Json all   = Json::object();
+  Json order = Json::array();
+  for(const auto& p : props)
+  {
+    all[p->id] = propJson(*p);
+    order.push_back(p->id);
+  }
+  protocol->events().snapshot("scene", {{"props", all}, {"order", order}, {"view", viewCamera.empty() ? Json() : Json(viewCamera)}});
+  movedProps.clear();
+}
+
+// The view looks through a camera prop: from where it stands, along its -Z, its orbit target
+// targetDistance ahead.
+void FvHost::Impl::viewFromCamera(const Prop& p)
+{
+  auto manip = renderer->getCameraManipulator();
+  if(!manip)
+    return;
+  const glm::mat4  world   = worldOf(p);
+  const glm::dvec3 eye     = glm::dvec3(world[3]);
+  const glm::dvec3 forward = -glm::normalize(glm::dvec3(world[2]));
+  const glm::dvec3 up      = glm::normalize(glm::dvec3(world[1]));
+  manip->setLookat(eye, eye + forward * p.camera.targetDistance, up, true);
+  viewWorld = world;
+}
+
+// Orbiting, panning and zooming through an unlocked camera move it: where the view went is written
+// back to the camera prop. A locked camera takes the view back instead.
+void FvHost::Impl::cameraFromView()
+{
+  const auto p     = findProp(viewCamera);
+  auto       manip = renderer->getCameraManipulator();
+  if(!p || !manip)
+    return;
+  glm::dvec3 eye, center, up;
+  manip->getLookat(eye, center, up);
+  const glm::mat4 world = worldOf(*p);
+  // the camera moved (its parent, the gizmo, prop.set): the view goes with it
+  for(int c = 0; c < 4; c++)
+    if(glm::length(glm::vec4(world[c]) - glm::vec4(viewWorld[c])) > 1e-5f)
+    {
+      viewFromCamera(*p);
+      return;
+    }
+  const double     distance = glm::length(center - eye);
+  const glm::dvec3 forward  = (center - eye) / std::max(distance, 1e-9);
+  // the view's up need not be square to where it looks; the camera's is
+  const glm::dvec3 square = glm::normalize(up - glm::dot(up, forward) * forward);
+  const bool       same   = glm::length(glm::dvec3(world[3]) - eye) < 1e-5 && glm::length(-glm::normalize(glm::dvec3(world[2])) - forward) < 1e-5
+                    && glm::length(glm::normalize(glm::dvec3(world[1])) - square) < 1e-4 && std::abs(distance - p->camera.targetDistance) < 1e-5;
+  if(same)
+    return;
+  if(p->camera.locked)
+  {
+    viewFromCamera(*p);
+    return;
+  }
+  const glm::mat4 view   = glm::lookAt(glm::vec3(eye), glm::vec3(center), glm::vec3(up));
+  const auto      parent = p->parent.empty() ? nullptr : findProp(p->parent);
+  const glm::mat4 local  = (parent ? glm::inverse(worldOf(*parent)) : glm::mat4(1.f)) * glm::inverse(view);
+  glm::vec3       scale, skew;
+  glm::vec4       perspective;
+  glm::decompose(local, scale, p->transform.rotation, p->transform.translation, skew, perspective);
+  p->transform.scale       = glm::vec3(1.f);
+  p->euler.reset();
+  p->camera.targetDistance = std::max(distance, 1e-3);
+  applyTransform(*p);
+  viewWorld = worldOf(*p);
+  movedProps.insert(p->id);
+}
+
+void FvHost::Impl::publishView()
+{
+  if(view)
+  {
+    Json extra = {{"view", viewCamera.empty() ? Json() : Json(viewCamera)}};
+    if(!viewCamera.empty())
+      extra["free"] = {{"position", Json::array({freeView.eye.x, freeView.eye.y, freeView.eye.z})},
+                       {"target", Json::array({freeView.center.x, freeView.center.y, freeView.center.z})},
+                       {"up", Json::array({freeView.up.x, freeView.up.y, freeView.up.z})}};
+    view->setCameraExtra(extra);
+  }
+  protocol->events().patch("scene", {{"view", viewCamera.empty() ? Json() : Json(viewCamera)}});
+}
+
+// view.use {camera}: the viewport looks through a camera prop, with its lens; {camera: null} goes
+// back to the free view where it was left.
+Json FvHost::Impl::viewUse(const Json& args)
+{
+  const std::string id = args.contains("camera") && args["camera"].is_string() ? args["camera"].get<std::string>() : "";
+  if(id == viewCamera)
+    return {{"view", id.empty() ? Json() : Json(id)}};
+  std::shared_ptr<Prop> camera;
+  if(!id.empty())
+  {
+    camera = findProp(id);
+    if(!camera || camera->kind != PropKind::eCamera)
+      throw std::runtime_error("no such camera");
+  }
+  auto manip = renderer->getCameraManipulator();
+  if(viewCamera.empty() && manip)
+  {
+    manip->getLookat(freeView.eye, freeView.center, freeView.up);
+    if(view)
+      freeView.lens = view->lens();
+  }
+  viewCamera    = id;
+  lockedNoticed = false;
+  if(camera)
+  {
+    if(view)
+      view->setLens(camera->camera.lens);
+    viewFromCamera(*camera);
+  }
+  else
+  {
+    if(manip)
+      manip->setLookat(freeView.eye, freeView.center, freeView.up, true);
+    if(view)
+      view->setLens(freeView.lens);
+  }
+  publishView();
+  return {{"view", id.empty() ? Json() : Json(id)}};
+}
+
+void FvHost::Impl::selectProp(const std::string& id)
+{
+  const auto p = findProp(id);
+  if(p && p->placed.root >= 0)
+    renderer->selectSceneNodeFromScript(p->placed.root);
+}
+
+void FvHost::Impl::requestCompose(const std::string& label, std::function<void()> after, Loaded* settle)
+{
+  if(!pendingCompose)
+    pendingCompose.emplace();
+  pendingCompose->labels.push_back(label);
+  if(after)
+    pendingCompose->after.push_back(std::move(after));
+  if(settle)
+    pendingCompose->settle.insert(settle);
+}
+
+// The scene built again from its props and handed to the renderer in place of the old one: every
+// figure's glTF from its scene graph (its pose, dials, worn items and edits are in the graph, so it
+// comes back as it was), each on a thread of its own; every model as its file had it, with its
+// material edits laid over again. The camera stays where it was, unless the scene was empty.
+void FvHost::Impl::compose()
+{
+  ComposeRequest request = std::move(*pendingCompose);
+  pendingCompose.reset();
+  std::string label;
+  for(const std::string& l : request.labels)
+    if(label.find(l) == std::string::npos)
+      label += (label.empty() ? "" : ", ") + l;
+  nvutils::ScopedTimer timer("[fv] compose: " + label + "\n");
+  bool       finished = false;
+  const auto finish   = [&] {
+    finished = true;
+    for(auto& f : request.after)
+      f();
+  };
+  // a throw part way still ends what waits on this composition (load jobs, selections), each on its own
+  struct Unwind
+  {
+    std::function<void()> f;
+    ~Unwind() { f(); }
+  } unwind{[&] {
+    if(finished)
+      return;
+    finished = true;
+    for(auto& f : request.after)
+      try
+      {
+        f();
+      }
+      catch(const std::exception& e)
+      {
+        LOGW("[fv] compose: %s\n", e.what());
+      }
+  }};
+
+  // figures built again, in parallel: each fv::Figure on one thread, and this one waits
+  std::vector<std::optional<fv::build::BuildResult>> builds(props.size());
+  {
+    nvutils::ScopedTimer             t("buildGltf");
+    std::vector<std::future<void>>   work;
+    const fv::mat::SkinMode          skin = skinMode.load();
+    for(size_t i = 0; i < props.size(); i++)
+    {
+      Loaded* f = props[i]->figure.get();
+      if(!f)
+        continue;
+      if(f->prebuilt)
+      {
+        builds[i] = std::move(*f->prebuilt);
+        f->prebuilt.reset();
+        continue;
+      }
+      work.push_back(std::async(std::launch::async, [f, skin, &out = builds[i]] {
+        fv::build::BuildOptions options;
+        options.texturesFlipped = f->texturesFlipped;
+        options.skin            = skin;
+        options.texture         = [f](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+          auto it = f->images.find(fv::build::requestKey(req));
+          return it == f->images.end() ? std::nullopt : it->second;
+        };
+        out = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, options);
+      }));
+    }
+    for(auto& w : work)
+    {
+      try
+      {
+        w.get();
+      }
+      catch(const std::exception& e)
+      {
+        notice(std::string("A figure could not be built: ") + e.what(), "error");
+      }
+    }
+  }
+
+  std::vector<fv::composer::Part> parts(props.size());
+  for(size_t i = 0; i < props.size(); i++)
+  {
+    const Prop&        p    = *props[i];
+    fv::composer::Part& part = parts[i];
+    part.id                 = p.id;
+    part.name               = p.name;
+    part.transform          = p.transform;
+    part.visible            = p.visible;
+    for(size_t j = 0; j < props.size(); j++)
+      if(!p.parent.empty() && props[j]->id == p.parent)
+        part.parent = int(j);
+    if(p.figure && builds[i])
+      part.model = &builds[i]->model;
+    else if(p.model)
+      part.model = p.model.get();
+    else if(p.kind == PropKind::eCamera)
+      part.camera = fv::composer::perspectiveCamera(p.camera.lens.focalLength);
+    else if(p.kind == PropKind::eLight)
+    {
+      tinygltf::Light l;
+      l.name                   = p.name;
+      l.type                   = p.light.type;
+      const glm::vec3 c        = fv::lighting::linearColor(p.light.color);
+      l.color                  = {c.x, c.y, c.z};
+      l.intensity              = shown(p) ? p.light.intensity : 0.0;
+      l.spot.innerConeAngle    = p.light.inner;
+      l.spot.outerConeAngle    = p.light.outer;
+      tinygltf::Value::Object extras;
+      extras["radius"] = tinygltf::Value(p.light.radius);
+      l.extras         = tinygltf::Value(extras);
+      part.light       = l;
+    }
+  }
+  std::vector<fv::composer::Placed> placed;
+  tinygltf::Model                  composed = fv::composer::compose(parts, placed);
+  addSun(composed);
+
+  const bool hasGeometry = std::any_of(props.begin(), props.end(), [](const auto& p) { return p->figure || p->model; });
+  if(auto manip = renderer->getCameraManipulator())
+  {
+    glm::dvec3 eye, center, up;
+    manip->getLookat(eye, center, up);
+    cameraRestore = std::array<glm::dvec3, 3>{eye, center, up};
+  }
+  // the first thing in an empty scene is framed; after that the camera stays, and so does a camera looked through
+  if(hasGeometry && !composedAny && viewCamera.empty())
+    cameraRestore.reset();
+  composedAny = hasGeometry;
+  const int selected = renderer->selectedNodeIndex();
+  const std::string selectedProp = view ? view->selectedProp() : "";
+  // the clip playing, its speed and loop: loadModel starts the animation over from the first clip
+  struct Clip
+  {
+    std::string prop, name;
+    float       speed = 1.f;
+    bool        loop = true, play = false;
+  };
+  std::optional<Clip> clip;
+  {
+    const Json a = animationTopic();
+    const int  c = a.value("current", -1);
+    if(c >= 0 && a["clips"].contains(std::to_string(c)))
+    {
+      const Json&             info = a["clips"][std::to_string(c)];
+      const AnimationControl& ctrl = renderer->editAnimationControl();
+      clip = Clip{info["prop"].is_string() ? info["prop"].get<std::string>() : "", info.value("name", ""), ctrl.speed, ctrl.loop, ctrl.play};
+    }
+  }
+  const bool loaded = [&] {
+    nvutils::ScopedTimer t("loadModel");
+    return renderer->loadModel(std::move(composed));
+  }();
+  if(!loaded)
+  {
+    sunNode = sunLight = -1;
+    notice(label + ": the renderer could not take the scene.", "error");
+    finish();
+    return;
+  }
+  // the renderer put the ground at the scene's lowest point; "auto" keeps that
+  for(const nvutils::ParameterBase* p : exposedParameters(registry))
+    if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
+      autoGround = *static_cast<const float*>(p->destination.raw);
+  appliedParams.erase("infinitePlaneDistance");
+  applyLighting(false);
+
+  std::vector<FvView::PropNodes> views;
+  nvvkgltf::Scene*               scn = renderer->editScene();
+  for(size_t i = 0; i < props.size(); i++)
+  {
+    Prop& p  = *props[i];
+    p.placed = placed[i];
+    const nvvkgltf::IndexRemapping& base = p.placed.base;
+    const FvMaterials::Placement    at{base.materials, base.textures, base.samplers, base.meshes};
+    FvView::PropNodes               nodes;
+    nodes.id   = p.id;
+    nodes.root = p.placed.root;
+    if(p.figure && builds[i])
+    {
+      Loaded&                 f     = *p.figure;
+      fv::build::BuildResult& built = *builds[i];
+      f.nodeOf                      = std::move(built.nodeOf);
+      for(int& n : f.nodeOf)
+        if(n >= 0)
+          n += base.nodes;
+      f.sceneOf.clear();
+      for(int n = 0; n < int(f.nodeOf.size()); n++)
+        if(f.nodeOf[n] >= 0)
+          f.sceneOf[f.nodeOf[n]] = n;
+      f.meshOf = std::move(built.meshOf);
+      for(int& m : f.meshOf)
+        if(m >= 0)
+          m += base.meshes;
+      f.skinOf = std::move(built.skinOf);
+      for(int& k : f.skinOf)
+        if(k >= 0)
+          k += base.skins;
+      f.primsOf.assign(f.meshOf.size(), {});
+      for(size_t m = 0; m < f.meshOf.size(); m++)
+        if(f.meshOf[m] >= 0)
+          f.primsOf[m] = renderer->renderPrimitivesOfMesh(f.meshOf[m]);
+      // the glTF already holds the scene's dials and binds; don't upload them again
+      f.fig->drain();
+      if(!p.materials)
+        p.materials = makeMaterials(props[i]);
+      p.materials->attach(p.id, &f.fig->loaded.scene, built, f.texturesFlipped, skinMode.load(), at);
+      Json described = FvView::describeFigure(nodes, f.fig->loaded.scene, f.fig->loaded.root, f.nodeOf, f.fig->morphs ? f.fig->morphs->size() : 0);
+      if(f.fig->pose)
+      {
+        for(const auto& pb : f.fig->pose->bones())
+          if(!pb.axes.empty())
+            nodes.bones.idOf[pb.bone] = pb.id;
+        // a world hit, in the figure's own space under its prop root
+        std::weak_ptr<Prop> weak = props[i];
+        nodes.bones.nearest      = [this, weak](const glm::vec3& hit) {
+          const auto p = weak.lock();
+          if(!p || !p->figure || !p->figure->fig->pose)
+            return -1;
+          const glm::vec3 local = glm::vec3(glm::inverse(worldOf(*p)) * glm::vec4(hit, 1.f));
+          const auto*     pb    = p->figure->fig->pose->nearestBone({local.x, local.y, local.z});
+          return pb ? pb->bone : -1;
+        };
+      }
+      p.stats = described["stats"];
+      protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
+      f.touched = true;
+    }
+    else if(p.figure)
+    {
+      // its build failed, so none of it is in this scene: nothing may address the scene before
+      Loaded& f = *p.figure;
+      std::fill(f.nodeOf.begin(), f.nodeOf.end(), -1);
+      std::fill(f.meshOf.begin(), f.meshOf.end(), -1);
+      std::fill(f.skinOf.begin(), f.skinOf.end(), -1);
+      f.sceneOf.clear();
+      f.primsOf.assign(f.meshOf.size(), {});
+      if(p.materials)
+        p.materials->detach();
+    }
+    else if(p.model && scn && scn->valid())
+    {
+      if(!p.materials)
+        p.materials = makeMaterials(props[i]);
+      p.materials->attachModel(p.id, at, int(p.model->materials.size()), int(p.model->meshes.size()));
+      Json described = FvView::describeModel(nodes, scn->getModel(), p.placed.root, p.placed.firstNode, p.placed.lastNode, base.meshes);
+      p.stats        = described["stats"];
+      protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
+    }
+    views.push_back(std::move(nodes));
+  }
+  if(view)
+    view->setProps(std::move(views));
+  for(const auto& p : props)
+    if(p->figure)
+    {
+      publishFigure(*p);
+      if(p->figure->dforce && request.settle.count(p->figure.get()))
+        p->figure->dforce->poke();
+    }
+  // the selection was the node of a prop; it is again where that prop is now
+  if(const auto p = findProp(selectedProp))
+    renderer->selectSceneNodeFromScript(selected >= 0 && p->placed.root >= 0 ? p->placed.root : -1);
+  if(clip)
+  {
+    // the same clip of the same prop, if it is still in the scene
+    AnimationControl& ctrl  = renderer->editAnimationControl();
+    const Json        a     = animationTopic();
+    bool              found = false;
+    for(auto it = a["clips"].begin(); it != a["clips"].end() && !found; ++it)
+      if((it.value()["prop"].is_string() ? it.value()["prop"].get<std::string>() : "") == clip->prop && it.value().value("name", "") == clip->name)
+      {
+        ctrl.currentAnimation = std::stoi(it.key());
+        ctrl.reset            = true;
+        ctrl.speed            = clip->speed;
+        ctrl.loop             = clip->loop;
+        ctrl.play             = clip->play;
+        ctrl.runOnce          = !clip->play;
+        found                 = true;
+      }
+    if(!found)
+      ctrl.play = false;
+  }
+  publishScene();
+  publishAnimation(true);
+  frameIn = 2;
+  finish();
+}
+
+Json FvHost::Impl::propAdd(const Json& args)
+{
+  if(args.contains("path") || args.contains("rel"))
+  {
+    Json asProp  = args;
+    asProp["as"] = "prop";
+    return load(asProp);
+  }
+  const std::string kind = args.value("kind", "");
+  if(kind != "camera" && kind != "light")
+    throw std::runtime_error("prop.add wants a path, a rel, or kind camera or light");
+  const std::string type = args.value("type", "point");
+  if(kind == "light" && type != "point" && type != "spot" && type != "directional")
+    throw std::runtime_error("a light is point, spot or directional");
+  const std::string label = kind == "camera" ? "Camera" : type == "point" ? "Point light" : type == "spot" ? "Spot light" : "Directional light";
+  auto              manip = renderer->getCameraManipulator();
+  auto              p     = addProp(kind == "camera" ? PropKind::eCamera : PropKind::eLight, args.value("name", label));
+  if(kind == "camera")
+  {
+    p->camera.lens = view ? view->lens() : FvView::Lens{};
+    if(args.contains("camera"))
+      p->camera.lens = FvView::lensOf(args["camera"], p->camera.lens);
+    // where the view is: a camera made from it frames what it shows
+    if(manip)
+    {
+      glm::dvec3 eye, center, up;
+      manip->getLookat(eye, center, up);
+      const glm::mat4 look         = glm::inverse(glm::lookAt(glm::vec3(eye), glm::vec3(center), glm::vec3(up)));
+      p->transform.translation     = glm::vec3(eye);
+      p->transform.rotation        = glm::quat_cast(glm::mat3(look));
+      p->camera.targetDistance     = std::max(glm::length(center - eye), 1e-3);
+    }
+  }
+  else
+  {
+    p->light.type = type;
+    if(type == "directional")
+      p->light.intensity = 3;
+    // above the orbit target, a little towards the camera, aimed down at it
+    if(manip)
+    {
+      glm::dvec3 eye, center, up;
+      manip->getLookat(eye, center, up);
+      const glm::vec3 target(center);
+      const glm::vec3 at = target + glm::vec3(0.f, 1.5f, 0.f) + glm::normalize(glm::vec3(eye - center)) * 1.f;
+      p->transform.translation = at;
+      p->transform.rotation    = glm::quat_cast(glm::mat3(glm::inverse(glm::lookAt(at, target, glm::vec3(0, 1, 0)))));
+    }
+  }
+  if(args.contains("transform"))
+    propSet({{"prop", p->id}, {"transform", args["transform"]}});
+  requestCompose("Adding " + p->name, [this, id = p->id] { selectProp(id); });
+  return {{"prop", p->id}};
+}
+
+// What the panels change about a prop: a name, whether it shows, where it is, what it rides on, a
+// camera's lens and lock, a light's colour and strength. Only a new parent composes the scene again.
+Json FvHost::Impl::propSet(const Json& args)
+{
+  auto p = findProp(args.at("prop").get<std::string>());
+  if(!p)
+    throw std::runtime_error("no such prop");
+  if(args.contains("name") && args["name"].is_string() && !args["name"].get<std::string>().empty())
+    p->name = args["name"].get<std::string>();
+  if(args.contains("transform"))
+  {
+    const Json& t = args["transform"];
+    if(t.contains("t"))
+      p->transform.translation = vec3Arg(t["t"]);
+    const bool quat = t.contains("r") && t["r"].is_array() && t["r"].size() == 4;
+    if(quat)
+    {
+      // the rotation itself; degrees with it (a scene file) are kept for the panel when they say the same
+      p->transform.rotation = glm::normalize(glm::quat(t["r"][3].get<float>(), t["r"][0].get<float>(), t["r"][1].get<float>(), t["r"][2].get<float>()));
+      p->euler.reset();
+      if(t.contains("e"))
+      {
+        const glm::vec3 e = vec3Arg(t["e"]);
+        if(std::abs(glm::dot(eulerQuat(e), p->transform.rotation)) > 1.f - 1e-6f)
+          p->euler = e;
+      }
+    }
+    else if(t.contains("e"))
+    {
+      p->euler              = vec3Arg(t["e"]);
+      p->transform.rotation = eulerQuat(*p->euler);
+    }
+    if(t.contains("s"))
+    {
+      p->transform.scale = vec3Arg(t["s"]);
+      for(int i = 0; i < 3; i++)
+        if(std::abs(p->transform.scale[i]) < 1e-4f)
+          p->transform.scale[i] = 1e-4f;
+    }
+    applyTransform(*p);
+    if(p->id == viewCamera)
+      viewFromCamera(*p);
+  }
+  if(args.contains("visible"))
+  {
+    p->visible = args["visible"].get<bool>();
+    applyVisible(*p);
+  }
+  if(args.contains("camera") && p->kind == PropKind::eCamera)
+  {
+    const Json& c  = args["camera"];
+    p->camera.lens = FvView::lensOf(c, p->camera.lens);
+    if(c.contains("locked"))
+      p->camera.locked = c["locked"].get<bool>();
+    if(c.contains("targetDistance"))
+      p->camera.targetDistance = std::max(c["targetDistance"].get<double>(), 1e-3);
+    if(p->id == viewCamera && view)
+    {
+      view->setLens(p->camera.lens);
+      viewFromCamera(*p);
+    }
+  }
+  if(args.contains("light") && p->kind == PropKind::eLight)
+  {
+    const Json& l = args["light"];
+    if(l.contains("color"))
+    {
+      fv::lighting::linearColor(l["color"].get<std::string>());  // throws on a bad colour
+      p->light.color = l["color"].get<std::string>();
+    }
+    if(l.contains("intensity"))
+      p->light.intensity = std::max(l["intensity"].get<double>(), 0.0);
+    if(l.contains("radius"))
+      p->light.radius = std::max(l["radius"].get<double>(), 0.0);
+    if(l.contains("inner"))
+      p->light.inner = std::clamp(l["inner"].get<double>(), 0.0, 1.5707);
+    if(l.contains("outer"))
+      p->light.outer = std::clamp(l["outer"].get<double>(), 0.0, 1.5707);
+    p->light.inner = std::min(p->light.inner, p->light.outer);
+    if(l.contains("type") && l["type"].get<std::string>() != p->light.type)
+    {
+      const std::string type = l["type"].get<std::string>();
+      if(type != "point" && type != "spot" && type != "directional")
+        throw std::runtime_error("a light is point, spot or directional");
+      p->light.type = type;
+      requestCompose("Changing " + p->name);
+    }
+    nvvkgltf::Scene* scene = renderer->editScene();
+    if(scene && scene->valid() && p->placed.light >= 0 && p->placed.light < int(scene->getModel().lights.size()))
+    {
+      tinygltf::Light& light       = scene->editor().getLightForEdit(p->placed.light);
+      const glm::vec3  c           = fv::lighting::linearColor(p->light.color);
+      light.color                  = {c.x, c.y, c.z};
+      light.intensity              = shown(*p) ? p->light.intensity : 0.0;
+      light.spot.innerConeAngle    = p->light.inner;
+      light.spot.outerConeAngle    = p->light.outer;
+      tinygltf::Value::Object extras = light.extras.IsObject() ? light.extras.Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
+      extras["radius"]               = tinygltf::Value(p->light.radius);
+      light.extras                   = tinygltf::Value(extras);
+      scene->markLightDirty(p->placed.light);
+    }
+  }
+  if(args.contains("parent"))
+  {
+    const std::string parent = args["parent"].is_string() ? args["parent"].get<std::string>() : "";
+    if(parent != p->parent)
+    {
+      // it stays where it is in the world, now relative to its new parent
+      auto at = parent.empty() ? nullptr : findProp(parent);
+      if(!parent.empty() && !at)
+        throw std::runtime_error("no such parent");
+      for(Prop* up = at.get(); up; up = up->parent.empty() ? nullptr : findProp(up->parent).get())
+        if(up == p.get())
+          throw std::runtime_error(p->name + " can't ride on something that rides on it");
+      const glm::mat4 world = worldOf(*p);
+      const glm::mat4 local = at ? glm::inverse(worldOf(*at)) * world : world;
+      glm::vec3       skew;
+      glm::vec4       perspective;
+      glm::decompose(local, p->transform.scale, p->transform.rotation, p->transform.translation, skew, perspective);
+      p->euler.reset();
+      p->parent = parent;
+      if(p->id == viewCamera)
+        viewFromCamera(*p);
+      requestCompose("Parenting " + p->name);
+    }
+  }
+  if(args.contains("order") && args["order"].is_number_integer())
+  {
+    const int to = std::clamp(args["order"].get<int>(), 0, int(props.size()) - 1);
+    props.erase(std::remove(props.begin(), props.end(), p), props.end());
+    props.insert(props.begin() + to, p);
+    requestCompose("Reordering");
+  }
+  publishScene();
+  return {{"ok", true}};
+}
+
+// A copy beside the original: a camera or light as it is, a model sharing the file's data with its
+// material edits, a figure loaded again from its source with its state put back.
+Json FvHost::Impl::propDuplicate(const Json& args)
+{
+  auto src = findProp(args.at("prop").get<std::string>());
+  if(!src)
+    throw std::runtime_error("no such prop");
+  const auto place = [this, src](const std::shared_ptr<Prop>& p) {
+    p->transform = src->transform;
+    p->euler     = src->euler;
+    p->visible   = src->visible;
+    p->parent    = src->parent;
+  };
+  if(src->figure)
+  {
+    const Json state = sceneState({{"prop", src->id}});
+    HostSettings s;
+    {
+      std::lock_guard lock(settingsMutex);
+      s = settings;
+    }
+    std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;
+    const Json& source = src->figure->source;
+    if(source.contains("rel"))
+      library = std::make_pair(s.roots, source["rel"].get<std::string>());
+    else if(source.contains("path"))
+      library = libraryFor(s, pathOf(source["path"].get<std::string>()));
+    if(!library)
+      throw std::runtime_error(src->name + " can't be loaded again: where it came from isn't known");
+    return loadFigure(s, library->first, library->second, src->name, source, "", true, [this, state, place, name = src->name](std::shared_ptr<Prop> p) {
+      place(p);
+      p->name = uniqueName(name, p.get());
+      applyTransform(*p);
+      applyVisible(*p);
+      // it was composed at the scene's root: under its parent it needs composing again
+      if(!p->parent.empty())
+        requestCompose("Duplicating " + p->name);
+      Json restore = state;
+      restore["prop"] = p->id;
+      sceneRestore(restore);
+      publishScene();
+    });
+  }
+  auto p    = addProp(src->kind, src->name);
+  p->model  = src->model;
+  p->path   = src->path;
+  p->format = src->format;
+  p->camera = src->camera;
+  p->light  = src->light;
+  place(p);
+  Json edits = src->materials ? src->materials->editState() : Json::object();
+  requestCompose("Duplicating " + src->name, [this, id = p->id, edits] {
+    const auto p = findProp(id);
+    if(!p)
+      return;
+    if(p->materials && !edits.empty())
+      p->materials->restoreEdits(edits);
+    selectProp(id);
+  });
+  return {{"prop", p->id}};
+}
+
+Json FvHost::Impl::sceneClear()
+{
+  loadGeneration++;  // loads still running drop their result
+  for(auto p : std::vector(props))
+    removeProp(p);
+  propCount = 0;
+  requestCompose("Clearing the scene");
+  return {{"ok", true}};
+}
 
 Json FvHost::Impl::load(const Json& args)
 {
@@ -733,21 +2025,29 @@ Json FvHost::Impl::load(const Json& args)
       throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
     name = path;
   }
-  const uint64_t    seq   = ++requestSeq;
-  const uint64_t    jobId = ++jobs;
-  const std::string label = "Loading " + utf8Of(pathOf(name).filename());
-  // `replace`: a wearable opens on its own instead of going on the loaded figure
-  const bool replace = args.value("replace", false);
   // how it was opened, for a scene file
   const Json source = args.contains("rel") ? Json{{"rel", args["rel"]}} : Json{{"path", args["path"]}};
+  // a wearable goes on the figure named or selected, unless it is to be a prop of its own
+  const bool asProp = args.value("as", "") == "prop" || args.value("replace", false);
+  std::string target = args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "";
+  return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp);
+}
+
+Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
+                              std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then)
+{
+  const uint64_t    jobId      = ++jobs;
+  const uint64_t    generation = loadGeneration;
+  const std::string label      = "Loading " + utf8Of(pathOf(rel).filename());
   job(jobId, {{"label", label}, {"state", "running"}});
 
-  loaders.spawn([this, s, roots = library->first, rel = library->second, seq, jobId, label, replace, source] {
+  loaders.spawn([this, s, roots = std::move(roots), rel = std::move(rel), jobId, label, asProp, source = std::move(source), target = std::move(target),
+                 generation, then = std::move(then)] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
       auto store = std::make_shared<fv::dson::Store>(lib);
-      // a preset is applied to the loaded figure; it must not replace it or cancel a figure load
+      // a preset is applied to a figure in the scene
       auto doc = store->load(rel);
       if(doc)
         if(auto preset = fv::dson::describePreset(doc->json))
@@ -757,28 +2057,26 @@ Json FvHost::Impl::load(const Json& args)
           if(preset->environment)
             if(auto found = lib->find(normRel(preset->environment->image)))
               envPath = utf8Of(*found);
-          post([this, body = doc->json, kind = preset->kind, jobId, rel, env = preset->environment, envPath] {
-            applyPreset(body, kind, jobId, rel, env, envPath);
+          post([this, body = doc->json, kind = preset->kind, jobId, rel, env = preset->environment, envPath, target] {
+            applyPreset(body, kind, jobId, rel, env, envPath, target);
           });
           return;
         }
-      // clothing, hair and anatomy go on the figure that is loaded, as in DAZ Studio
-      if(!replace && doc && fv::dson::isWearable(doc->json) && onApp([this] { return figure && figure->fig->pose; }))
+      // clothing, hair and anatomy go on a figure in the scene, as in DAZ Studio
+      if(!asProp && doc && fv::dson::isWearable(doc->json))
       {
-        wear({{"rel", rel}});
-        job(jobId, {{"label", label}, {"state", "done"}});
-        return;
-      }
-      uint64_t generation = 0;
-      {
-        std::lock_guard gate(figureLoads);
-        if(seq < latestFigureSeq)
+        const std::string wearer = onApp([this, target] {
+          const auto p = figureProp(target.empty() ? Json::object() : Json{{"prop", target}});
+          return p && p->figure->fig->pose ? p->id : std::string();
+        });
+        if(!wearer.empty())
         {
+          wear({{"rel", rel}, {"prop", wearer}});
           job(jobId, {{"label", label}, {"state", "done"}});
           return;
         }
-        latestFigureSeq = seq;
-        generation      = ++loadGeneration;
+        if(onApp([this] { return std::count_if(props.begin(), props.end(), [](const auto& p) { return p->figure && p->figure->fig->pose; }) > 1; }))
+          throw std::runtime_error("Select the figure to put " + fileStem(rel) + " on.");
       }
       const auto t0 = std::chrono::steady_clock::now();
       auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision}, [this, jobId, label](const std::string& step) {
@@ -787,7 +2085,7 @@ Json FvHost::Impl::load(const Json& args)
       if(generation != loadGeneration)
       {
         job(jobId, {{"label", label}, {"state", "done"}});
-        return;  // a newer load replaced this one
+        return;  // the scene was cleared meanwhile
       }
       for(const auto& w : f->takeWarnings())
         notice(w);
@@ -854,8 +2152,8 @@ Json FvHost::Impl::load(const Json& args)
       // the renderer takes it on the application thread
       auto shared = std::make_shared<std::pair<std::unique_ptr<fv::Figure>, fv::build::BuildResult>>(std::move(f), std::move(built));
       const bool flipped = cooked;
-      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source]() mutable {
-        install(std::move(shared->first), std::move(shared->second), generation, jobId, flipped, skin, lib, std::move(images), std::move(source));
+      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source, then]() mutable {
+        install(std::move(shared->first), std::move(shared->second), generation, jobId, flipped, skin, lib, std::move(images), std::move(source), then);
       });
     }
     catch(const std::exception& e)
@@ -869,55 +2167,28 @@ Json FvHost::Impl::load(const Json& args)
 
 void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
                            fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
-                           std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source)
+                           std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source,
+                           std::function<void(std::shared_ptr<Prop>)> then)
 {
-  // a newer load or import took over meanwhile: this one is dropped, and its job ends
+  // the scene was cleared meanwhile: this one is dropped, and its job ends
   if(generation != loadGeneration)
   {
     job(jobId, {{"state", "done"}});
     return;
   }
-  auto f     = std::make_shared<Loaded>();
-  f->fig     = std::move(fig);
-  f->images  = std::move(images);
-  f->source  = std::move(source);
+  auto f             = std::make_shared<Loaded>();
+  f->fig             = std::move(fig);
+  f->images          = std::move(images);
+  f->source          = std::move(source);
   f->texturesFlipped = texturesFlipped;
-  f->nodeOf  = std::move(built.nodeOf);
-  for(int i = 0; i < int(f->nodeOf.size()); i++)
-    if(f->nodeOf[i] >= 0)
-      f->sceneOf[f->nodeOf[i]] = i;
-  f->meshOf  = std::move(built.meshOf);
-  f->skinOf  = std::move(built.skinOf);
-  addSun(built.model);
-  if(!renderer->loadModel(std::move(built.model)))
-  {
-    sunNode = sunLight = -1;
-    job(jobId, {{"state", "failed"}, {"error", "the renderer could not take the scene"}});
-    return;
-  }
-  // the renderer put the ground at the scene's lowest point; "auto" keeps that
-  for(const nvutils::ParameterBase* p : exposedParameters(registry))
-    if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
-      autoGround = *static_cast<const float*>(p->destination.raw);
-  appliedParams.erase("infinitePlaneDistance");
-  applyLighting(false);
-  int meshes = 0;
-  for(int m : f->meshOf)
-    meshes = std::max(meshes, m + 1);
-  f->primsOf.resize(meshes);
-  for(int i = 0; i < meshes; i++)
-    f->primsOf[i] = renderer->renderPrimitivesOfMesh(i);
-  // the glTF already holds the scene's dials and binds; don't upload them again
-  f->fig->drain();
-  if(figure && figure->busyOn)
-    job(figure->busyJob, {{"state", "done"}});
-  f->id  = "fig:" + std::to_string(++figures);
-  // the figure it replaces: its panels' topics are emptied, since topics cannot be removed
-  if(figure)
-  {
-    protocol->events().snapshot("pose/" + figure->id, {{"figure", figure->id}, {"bones", Json::object()}});
-    protocol->events().snapshot("morphs/" + figure->id, {{"figure", figure->id}, {"channels", Json::object()}});
-  }
+  f->lib             = std::move(lib);
+  // the render mode may have changed while it loaded: built for another, it is built again
+  if(skin == skinMode.load())
+    f->prebuilt = std::move(built);
+  // "Mirel.duf" reads as "Mirel"
+  auto p    = addProp(PropKind::eFigure, fileStem(f->fig->loaded.name));
+  f->id     = p->id;
+  p->figure = f;
   if(f->fig->morphs && !f->fig->loaded.morphs.mainMeshes.empty())
   {
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
@@ -926,41 +2197,34 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     // off until the Wardrobe toggle (or a scene file) turns it on: its drape still mangles garments
     f->dforce->setEnabled(false);
   }
-  figure = std::move(f);
-  modelPath.clear();
-  {
-    std::lock_guard lock(settingsMutex);
-    libraryOfFigure = std::move(lib);
-  }
-  materials->attach(figure->id, &figure->fig->loaded.scene, built, texturesFlipped, skin);
-  // the render mode may have changed while it loaded
-  materials->setSkinMode(skinMode.load());
   {
     std::lock_guard lock(morphMutex);
-    figureId = figure->id;
-    pendingMorphs.clear();
+    morphFigures.insert(p->id);
   }
-  morphTouched = true;
-  // the renderer sets its own camera up over the next frames; frame the figure after that (not
-  // where a wardrobe rebuild of the figure before it left the camera)
-  frameIn = 2;
-  cameraRestore.reset();
-  publishFigure();
-  publishAnimation(true);
-  job(jobId, {{"state", "done"}, {"figure", figure->id}});
-  // Genesis 9 leaves its eyes, mouth and lashes to add-ons the scene file lists
-  if(!figure->fig->addons.empty() && figure->fig->pose)
-  {
-    std::vector<WearRequest> requests;
-    for(const fv::dson::PostLoadAddon& a : figure->fig->addons)
-      requests.push_back({a.file, a.name, a.presets});
-    figure->addonsPending = true;
-    startWear(figure, std::move(requests), {}, [target = figure] {
-      target->addonsPending = false;
-      for(const auto& f : std::exchange(target->afterAddons, {}))
-        f();
-    });
-  }
+  requestCompose("Adding " + p->name, [this, p, f, jobId, then] {
+    if(!inScene(f))
+    {
+      job(jobId, {{"state", "done"}});
+      return;
+    }
+    job(jobId, {{"state", "done"}, {"prop", p->id}, {"figure", p->id}});
+    selectProp(p->id);
+    // Genesis 9 leaves its eyes, mouth and lashes to add-ons the scene file lists
+    if(!f->fig->addons.empty() && f->fig->pose)
+    {
+      std::vector<WearRequest> requests;
+      for(const fv::dson::PostLoadAddon& a : f->fig->addons)
+        requests.push_back({a.file, a.name, a.presets});
+      f->addonsPending = true;
+      startWear(f, std::move(requests), {}, [f] {
+        f->addonsPending = false;
+        for(const auto& after : std::exchange(f->afterAddons, {}))
+          after();
+      });
+    }
+    if(then)
+      then(p);
+  });
 }
 
 // The library path the figure was opened from, a rel when it came from the library.
@@ -998,105 +2262,25 @@ std::string figureGeneration(const Loaded& figure)
   return label;
 }
 
-// What the panels learn when a figure is installed or built again: its pose, its hierarchy and
-// stats, what it wears.
-void FvHost::Impl::publishFigure()
+// What the panels learn when a figure is composed into the scene: its pose and what it wears.
+void FvHost::Impl::publishFigure(Prop& p)
 {
-  // the pose first: a panel that sees the figure in "scene" finds its pose already there
-  if(figure->fig->pose)
-    protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
-  if(view)
-  {
-    FvView::Bones bones;
-    if(figure->fig->pose)
-    {
-      for(const auto& pb : figure->fig->pose->bones())
-        if(!pb.axes.empty())
-          bones.idOf[pb.bone] = pb.id;
-      bones.nearest = [this](const glm::vec3& hit) {
-        const auto* pb = figure && figure->fig->pose ? figure->fig->pose->nearestBone({hit.x, hit.y, hit.z}) : nullptr;
-        return pb ? pb->bone : -1;
-      };
-    }
-    view->setFigure(figure->id, figure->fig->loaded.name, figure->fig->loaded.scene, figure->fig->loaded.root, figure->nodeOf,
-                    figure->fig->morphs ? figure->fig->morphs->size() : 0, std::move(bones), figureSource(*figure), figureGeneration(*figure));
-  }
-  publishWardrobe();
+  if(p.figure->fig->pose)
+    protocol->events().snapshot("pose/" + p.id, poseSnapshot(*p.figure));
+  publishWardrobe(*p.figure);
+  publishDforce(*p.figure, true);
 }
 
 //--------------------------------------------------------------------------------------------------
 // Wardrobe
 
-void FvHost::Impl::publishWardrobe()
+void FvHost::Impl::publishWardrobe(const Loaded& f)
 {
-  if(!figure)
-    return;
   Json items = Json::object();
-  for(const fv::WornItem& w : figure->fig->items)
+  for(const fv::WornItem& w : f.fig->items)
     items["i:" + std::to_string(w.id)] = {{"label", w.label}, {"kind", w.kind}, {"rel", w.rel},      {"visible", w.visible},
                                           {"own", w.rel.empty()}, {"channels", w.channels.size()}};
-  protocol->events().snapshot("wardrobe", {{"figure", figure->id}, {"items", items}});
-}
-
-// The glTF built again from the scene graph, after a wardrobe change, and handed to the renderer in
-// place of the old one: the figure, its pose, morphs and edits are in the graph, so it comes back as
-// it was. The camera stays where it was. Timed, to tell the glTF build from the renderer's load.
-void FvHost::Impl::rebuildScene(const std::string& label)
-{
-  nvutils::ScopedTimer timer("[fv] rebuild: " + label + "\n");
-  Loaded& f = *figure;
-  fv::build::BuildOptions options;
-  options.texturesFlipped = f.texturesFlipped;
-  options.skin            = skinMode.load();
-  options.texture         = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
-    auto it = f.images.find(fv::build::requestKey(req));
-    return it == f.images.end() ? std::nullopt : it->second;
-  };
-  fv::Figure&      fig   = *f.fig;
-  fv::build::BuildResult built = [&] {
-    nvutils::ScopedTimer t("buildGltf");
-    return fv::build::buildGltf(fig.loaded.scene, fig.loaded.root, options);
-  }();
-  if(auto manip = renderer->getCameraManipulator())
-  {
-    glm::dvec3 eye, center, up;
-    manip->getLookat(eye, center, up);
-    cameraRestore = std::array<glm::dvec3, 3>{eye, center, up};
-  }
-  f.nodeOf = std::move(built.nodeOf);
-  f.sceneOf.clear();
-  for(int i = 0; i < int(f.nodeOf.size()); i++)
-    if(f.nodeOf[i] >= 0)
-      f.sceneOf[f.nodeOf[i]] = i;
-  f.meshOf = std::move(built.meshOf);
-  f.skinOf = std::move(built.skinOf);
-  addSun(built.model);
-  const bool loaded = [&] {
-    nvutils::ScopedTimer t("loadModel");
-    return renderer->loadModel(std::move(built.model));
-  }();
-  if(!loaded)
-  {
-    sunNode = sunLight = -1;
-    notice(label + ": the renderer could not take the scene.", "error");
-    return;
-  }
-  applyLighting(false);
-  int meshes = 0;
-  for(int m : f.meshOf)
-    meshes = std::max(meshes, m + 1);
-  f.primsOf.assign(size_t(meshes), {});
-  for(int i = 0; i < meshes; i++)
-    f.primsOf[size_t(i)] = renderer->renderPrimitivesOfMesh(i);
-  // the glTF already holds the scene's dials and binds
-  fig.drain();
-  materials->attach(f.id, &fig.loaded.scene, built, f.texturesFlipped, options.skin);
-  morphTouched = true;
-  frameIn      = 2;
-  publishFigure();
-  // what is worn changed: its cloth settles again
-  if(f.dforce)
-    f.dforce->poke();
+  protocol->events().snapshot("wardrobe/" + f.id, {{"figure", f.id}, {"items", items}});
 }
 
 Json FvHost::Impl::wear(const Json& args)
@@ -1117,14 +2301,14 @@ Json FvHost::Impl::wear(const Json& args)
       throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
     rel = lib->second;
   }
-  std::shared_ptr<Loaded> target = onApp([this] { return figure; });
+  std::shared_ptr<Loaded> target = onApp([this, args] { return figureArg(args); });
   if(!target || !target->fig->pose)
-    throw std::runtime_error("Load a figure first: clothing and hair go on a figure with a skeleton.");
+    throw std::runtime_error("Select a figure first: clothing and hair go on a figure with a skeleton.");
   return {{"job", startWear(target, {{rel, "", {}}})}};
 }
 
 // Puts wearables on a figure, one after the other: each is loaded and bound on a worker, merged on
-// the application thread, and the renderer's scene is built again once at the end. Wears are
+// the application thread, and the renderer's scene is composed again once at the end. Wears are
 // serial: a merge grows the scene the next one reads.
 uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild, std::function<void()> after)
 {
@@ -1133,7 +2317,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
   {
     std::lock_guard lock(settingsMutex);
     s   = settings;
-    lib = libraryOfFigure;
+    lib = target->lib;
   }
   const uint64_t    jobId = ++jobs;
   const std::string label = "Wearing " + utf8Of(pathOf(requests.front().rel).stem());
@@ -1183,7 +2367,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         // an add-on whose node the figure already has is not put on twice
         // by value: a timed-out onApp leaves the task queued after this loop moves on
         if(!request.name.empty() && onApp([this, target, name = request.name] {
-             return figure == target
+             return inScene(target)
                     && std::any_of(target->fig->items.begin(), target->fig->items.end(),
                                    [&](const fv::WornItem& i) { return i.nodeNames.count(name) > 0; });
            }))
@@ -1205,7 +2389,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           for(const std::string& presetRel : request.name.empty() ? request.presets : addonPresets)
             applyPreset(presetRel, preparedScene, true);
         }
-        // a strand hair's direction is measured here, so the rebuild on the render thread finds it
+        // a strand hair's direction is measured here, so the composition on the render thread finds it
         {
           fv::timing::Scope t("strand directions");
           fv::build::measureStrands(preparedScene, target->texturesFlipped);
@@ -1234,7 +2418,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         auto done = std::make_shared<std::promise<bool>>();
         auto ok   = done->get_future();
         post([this, target, prepared, rel = request.rel, label, images = std::move(images), done]() mutable {
-          if(figure != target)
+          if(!inScene(target))
           {
             done->set_value(false);
             return;
@@ -1306,19 +2490,20 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       return;
     }
     post([this, target, jobId, label, beforeBuild, after] {
-      if(figure != target)
+      if(!inScene(target))
       {
-        job(jobId, {{"label", label}, {"state", "failed"}, {"error", "the figure was replaced"}});
+        job(jobId, {{"label", label}, {"state", "failed"}, {"error", "the figure left the scene"}});
         if(after)
           after();
         return;
       }
       if(beforeBuild)
         beforeBuild();
-      rebuildScene(label);
-      job(jobId, {{"label", label}, {"state", "done"}});
-      if(after)
-        after();
+      requestCompose(label, [this, jobId, label, after] {
+        job(jobId, {{"label", label}, {"state", "done"}});
+        if(after)
+          after();
+      }, target.get());
     });
   });
   return jobId;
@@ -1344,12 +2529,13 @@ const fv::WornItem* wornItem(const fv::Figure& fig, int id)
 }  // namespace
 
 // Taken off, an item is hidden in the renderer's scene and stays there, buffers and BLAS, until the
-// next rebuild (a wear, a geograft shown or hidden, a load) leaves it out. A geograft gives the body
-// its polygons back, which changes the body's indices: that still takes a rebuild.
+// next composition (a wear, a geograft shown or hidden, a prop added) leaves it out. A geograft gives
+// the body its polygons back, which changes the body's indices: that still composes the scene again.
 Json FvHost::Impl::wardrobeRemove(const Json& args)
 {
+  auto figure = figureArg(args);
   if(!figure)
-    throw std::runtime_error("no figure loaded");
+    throw std::runtime_error("no such figure");
   const int           id   = itemId(args);
   const fv::WornItem* item = wornItem(*figure->fig, id);
   if(!item)
@@ -1357,13 +2543,16 @@ Json FvHost::Impl::wardrobeRemove(const Json& args)
   const bool geograft = !item->hiddenPolys.empty();
   const auto objects  = item->objects;
   figure->fig->removeItem(id);
+  // shoes give the feet their pose back
+  if(figure->fig->pose)
+    protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
   if(geograft)
   {
-    rebuildScene("Taking off");
+    requestCompose("Taking off", {}, figure.get());
     return {{"ok", true}};
   }
-  showItem(objects, false);
-  publishWardrobe();
+  showItem(*figure, objects, false);
+  publishWardrobe(*figure);
   if(figure->dforce)
     figure->dforce->poke();
   return {{"ok", true}};
@@ -1371,8 +2560,9 @@ Json FvHost::Impl::wardrobeRemove(const Json& args)
 
 Json FvHost::Impl::wardrobeVisible(const Json& args)
 {
+  auto figure = figureArg(args);
   if(!figure)
-    throw std::runtime_error("no figure loaded");
+    throw std::runtime_error("no such figure");
   const int           id      = itemId(args);
   const bool          visible = args.at("visible").get<bool>();
   const fv::WornItem* item    = wornItem(*figure->fig, id);
@@ -1381,19 +2571,19 @@ Json FvHost::Impl::wardrobeVisible(const Json& args)
   figure->fig->setItemVisible(id, visible);
   if(!item->hiddenPolys.empty())
   {
-    rebuildScene("Showing");
+    requestCompose("Showing", {}, figure.get());
     return {{"ok", true}};
   }
-  showItem(item->objects, visible);
-  publishWardrobe();
+  showItem(*figure, item->objects, visible);
+  publishWardrobe(*figure);
   if(figure->dforce)
     figure->dforce->poke();
   return {{"ok", true}};
 }
 
 // An item's nodes shown or hidden in the renderer's scene as they are (KHR_node_visibility, as
-// buildGltf writes it), without building it again.
-void FvHost::Impl::showItem(const std::vector<std::pair<int, std::string>>& objects, bool visible)
+// buildGltf writes it), without composing it again.
+void FvHost::Impl::showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible)
 {
   nvvkgltf::Scene* scene = renderer->editScene();
   if(!scene || !scene->valid())
@@ -1401,7 +2591,7 @@ void FvHost::Impl::showItem(const std::vector<std::pair<int, std::string>>& obje
   tinygltf::Model& model = scene->getModel();
   for(const auto& [node, bone] : objects)
   {
-    const int g = node >= 0 && node < int(figure->nodeOf.size()) ? figure->nodeOf[node] : -1;
+    const int g = node >= 0 && node < int(f.nodeOf.size()) ? f.nodeOf[node] : -1;
     if(g < 0 || g >= int(model.nodes.size()))
       continue;
     tinygltf::utils::setNodeVisibility(model.nodes[g], {visible});
@@ -1412,103 +2602,81 @@ void FvHost::Impl::showItem(const std::vector<std::pair<int, std::string>>& obje
 //--------------------------------------------------------------------------------------------------
 // dForce
 
-// Topic "dforce": {figure, enabled, active, busy, draped}, when it changes.
-void FvHost::Impl::publishDforce(bool force)
+// Topic "dforce/<prop>": {figure, enabled, active, busy, draped}, when it changes.
+void FvHost::Impl::publishDforce(Loaded& f, bool force)
 {
-  if(!figure || !figure->dforce)
+  if(!f.dforce)
     return;
-  const fv::dforce::Dforce& d = *figure->dforce;
-  if(!force && figure->dforceVersion == d.version())
+  const fv::dforce::Dforce& d = *f.dforce;
+  if(!force && f.dforceVersion == d.version())
     return;
-  figure->dforceVersion = d.version();
-  protocol->events().snapshot("dforce", {{"figure", figure->id}, {"enabled", d.enabled()}, {"active", d.active()}, {"busy", d.busy()}, {"draped", d.draped()}});
+  f.dforceVersion = d.version();
+  protocol->events().snapshot("dforce/" + f.id, {{"figure", f.id}, {"enabled", d.enabled()}, {"active", d.active()}, {"busy", d.busy()}, {"draped", d.draped()}});
 }
 
-// dforce.enable {on}: cloth drapes (true) or shows the conforming shape (false); dforce.resimulate
-// settles the cloth now.
+// dforce.enable {prop, on}: cloth drapes (true) or shows the conforming shape (false);
+// dforce.resimulate {prop} settles the cloth now.
 Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
 {
+  auto figure = figureArg(args);
   if(!figure || !figure->dforce)
-    throw std::runtime_error("no figure with dynamic clothing is loaded");
+    throw std::runtime_error("no figure with dynamic clothing is selected");
   if(cmd == "enable")
     figure->dforce->setEnabled(args.value("on", true));
   else
     figure->dforce->resimulate();
-  morphTouched = true;
-  publishDforce(true);
+  figure->touched = true;
+  publishDforce(*figure, true);
   return {{"ok", true}};
 }
 
 //--------------------------------------------------------------------------------------------------
 // Imported models and animation
 
-Json FvHost::Impl::importModel(const std::string& path)
+Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then)
 {
-  const uint64_t    jobId = ++jobs;
-  const std::string label = "Loading " + utf8Of(pathOf(path).filename());
+  const uint64_t    jobId      = ++jobs;
+  const uint64_t    generation = loadGeneration;
+  const std::string label      = "Loading " + utf8Of(pathOf(path).filename());
   job(jobId, {{"label", label}, {"state", "running"}});
-  post([this, path, jobId] { runImport(path, jobId); });
+  loaders.spawn([this, path, jobId, label, generation, then = std::move(then)] {
+    auto        model = std::make_shared<tinygltf::Model>();
+    std::string error;
+    if(!fv::composer::readModelFile(pathOf(path), *model, error))
+    {
+      job(jobId, {{"label", label}, {"state", "failed"}, {"error", error}});
+      notice("Could not open " + utf8Of(pathOf(path).filename()) + ": " + error, "error");
+      return;
+    }
+    post([this, model, path, jobId, label, generation, then] {
+      if(generation != loadGeneration)
+      {
+        job(jobId, {{"label", label}, {"state", "done"}});
+        return;
+      }
+      std::string ext = pathOf(path).extension().string();
+      std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::toupper(c)); });
+      auto p    = addProp(PropKind::eModel, utf8Of(pathOf(path).stem()));
+      p->model  = model;
+      p->path   = path;
+      p->format = ext == ".OBJ" ? "OBJ" : "glTF";
+      requestCompose("Adding " + p->name, [this, p, jobId, label, then] {
+        if(!findProp(p->id))
+        {
+          job(jobId, {{"label", label}, {"state", "done"}});
+          return;
+        }
+        job(jobId, {{"label", label}, {"state", "done"}, {"prop", p->id}, {"figure", p->id}});
+        selectProp(p->id);
+        if(then)
+          then(p);
+      });
+    });
+  });
   return {{"job", jobId}};
 }
 
-void FvHost::Impl::runImport(const std::string& path, uint64_t jobId)
-{
-  const std::string label = "Loading " + utf8Of(pathOf(path).filename());
-  // the figure goes: its panels' topics are emptied, since topics cannot be removed
-  if(figure)
-  {
-    if(figure->busyOn)
-      job(figure->busyJob, {{"state", "done"}});
-    protocol->events().snapshot("pose/" + figure->id, {{"figure", figure->id}, {"bones", Json::object()}});
-    protocol->events().snapshot("morphs/" + figure->id, {{"figure", figure->id}, {"channels", Json::object()}});
-    protocol->events().snapshot("wardrobe", {{"figure", nullptr}, {"items", Json::object()}});
-  }
-  materials->detach();
-  if(view)
-    view->clearFigure();
-  figure.reset();
-  modelPath.clear();
-  {
-    std::lock_guard lock(morphMutex);
-    figureId.clear();
-    pendingMorphs.clear();
-  }
-  sunNode = sunLight = -1;
-  loadGeneration++;  // a figure load still running drops its result
-  bool ok = false;
-  try
-  {
-    ok = renderer->loadSceneFile(pathOf(path));
-  }
-  catch(const std::exception& e)
-  {
-    notice(label + ": " + e.what(), "error");
-  }
-  nvvkgltf::Scene* scn = renderer->editScene();
-  if(!ok || !scn || !scn->valid())
-  {
-    job(jobId, {{"label", label}, {"state", "failed"}, {"error", "the renderer could not open the file"}});
-    notice("Could not open " + utf8Of(pathOf(path).filename()), "error");
-    return;
-  }
-  for(const nvutils::ParameterBase* p : exposedParameters(registry))
-    if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
-      autoGround = *static_cast<const float*>(p->destination.raw);
-  appliedParams.erase("infinitePlaneDistance");
-  addSun(*scn);
-  applyLighting(false);
-  const std::string id = "model:" + std::to_string(++figures);
-  materials->attachModel(id);
-  modelPath = path;
-  if(view)
-    view->setModel(id, utf8Of(pathOf(path).stem()), scn->getModel());
-  publishAnimation(true);
-  frameIn = 2;
-  cameraRestore.reset();
-  job(jobId, {{"label", label}, {"state", "done"}, {"figure", id}});
-}
-
-// The clips of the loaded model, and where playback is.
+// The clips in the scene, each with the prop whose nodes it moves, and where playback is.
 Json FvHost::Impl::animationTopic()
 {
   Json                    clips = Json::object();
@@ -1517,11 +2685,22 @@ Json FvHost::Impl::animationTopic()
   Json                    out   = {{"clips", clips}, {"current", -1}, {"playing", false}, {"time", 0.0}, {"speed", ctrl.speed}, {"loop", ctrl.loop}};
   if(!scn || !scn->valid() || !scn->animation().hasAnimation())
     return out;
-  const int n = scn->animation().getNumAnimations();
+  std::vector<fv::composer::Placed> placed;
+  for(const auto& p : props)
+    placed.push_back(p->placed);
+  const tinygltf::Model& model = scn->getModel();
+  const int              n     = scn->animation().getNumAnimations();
   for(int i = 0; i < n; i++)
   {
     const nvvkgltf::AnimationInfo& info = scn->animation().getAnimationInfo(i);
-    clips[std::to_string(i)]            = {{"name", info.name.empty() ? "Clip " + std::to_string(i + 1) : info.name}, {"duration", std::max(0.f, info.end - info.start)}, {"order", i}};
+    Json                           clip = {{"name", info.name.empty() ? "Clip " + std::to_string(i + 1) : info.name}, {"duration", std::max(0.f, info.end - info.start)}, {"order", i}, {"prop", nullptr}};
+    if(i < int(model.animations.size()) && !model.animations[size_t(i)].channels.empty())
+    {
+      const int part = fv::composer::partOfNode(placed, model.animations[size_t(i)].channels[0].target_node);
+      if(part >= 0)
+        clip["prop"] = props[size_t(part)]->id;
+    }
+    clips[std::to_string(i)] = clip;
   }
   out["clips"]   = clips;
   out["current"] = ctrl.currentAnimation >= 0 && ctrl.currentAnimation < n ? ctrl.currentAnimation : -1;
@@ -1549,10 +2728,10 @@ void FvHost::Impl::publishAnimation(bool force)
 
 Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
 {
-  nvvkgltf::Scene* scn  = renderer->editScene();
+  nvvkgltf::Scene*  scn  = renderer->editScene();
   AnimationControl& ctrl = renderer->editAnimationControl();
   if(!scn || !scn->valid() || !scn->animation().hasAnimation())
-    throw std::runtime_error("this model has no animations");
+    throw std::runtime_error("nothing in the scene has animations");
   const int n = scn->animation().getNumAnimations();
   if(cmd == "select")
   {
@@ -1595,26 +2774,26 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
   return {{"ok", true}};
 }
 
-// The figure as a GLB for other tools, as it stands: pose, dials, worn items and material edits.
-// The glTF is built here (the scene belongs to this thread); composing the textures, which takes
-// the time, and writing the file run on a worker.
+// A prop as a GLB for other tools, as it stands. A figure: pose, dials, worn items and material
+// edits; the glTF is built here (the scene belongs to this thread), composing the textures, which
+// takes the time, and writing the file run on a worker. A model: its file's contents with its
+// material edits. {scene: true}: everything in the scene, as the renderer has it, but the sun.
 Json FvHost::Impl::exportGlb(const Json& args)
 {
   const std::string path = args.at("path").get<std::string>();
-  if(!figure)
+  if(args.value("scene", false))
   {
-    // an imported model: the renderer writes its own scene
     nvvkgltf::Scene* scn = renderer->editScene();
-    if(!scn || !scn->valid())
-      throw std::runtime_error("Open a model first: there is nothing to export.");
-    // without the sun the host added: the file describes the model, not this session's lighting
+    if(!scn || !scn->valid() || props.empty())
+      throw std::runtime_error("The scene is empty: there is nothing to export.");
+    // without the sun the host added: the file describes the scene, not this session's lighting
     const int node = sunNode, light = sunLight;
     const auto withoutSun = [node, light](tinygltf::Model& m) {
       if(node < 0 || node >= int(m.nodes.size()))
         return;
       for(tinygltf::Scene& scene : m.scenes)
         scene.nodes.erase(std::remove(scene.nodes.begin(), scene.nodes.end(), node), scene.nodes.end());
-      // appended last on import, so it goes without renumbering anything; else it stays, emptied and unreferenced
+      // appended last, so it goes without renumbering anything; else it stays, emptied and unreferenced
       if(node == int(m.nodes.size()) - 1)
         m.nodes.pop_back();
       else
@@ -1627,10 +2806,56 @@ Json FvHost::Impl::exportGlb(const Json& args)
     notice("Exported " + utf8Of(pathOf(path).filename()), "info");
     return {{"ok", true}};
   }
+  const auto prop = propArg(args);
+  if(!prop || (!prop->figure && !prop->model))
+    throw std::runtime_error("Select a figure or a model to export.");
+  if(prop->model)
+  {
+    // the file's model with the factors material edits change (FvMaterials::writeModel) as the
+    // scene shows them; its textures stay the file's own
+    tinygltf::Model  copy = *prop->model;
+    nvvkgltf::Scene* scn  = renderer->editScene();
+    const auto&      base = prop->placed.base;
+    for(size_t i = 0; scn && scn->valid() && i < copy.materials.size() && base.materials + i < scn->getModel().materials.size(); i++)
+    {
+      const tinygltf::Material& live      = scn->getModel().materials[base.materials + i];
+      tinygltf::Material&       m         = copy.materials[i];
+      m.pbrMetallicRoughness.baseColorFactor = live.pbrMetallicRoughness.baseColorFactor;
+      m.pbrMetallicRoughness.roughnessFactor = live.pbrMetallicRoughness.roughnessFactor;
+      m.pbrMetallicRoughness.metallicFactor  = live.pbrMetallicRoughness.metallicFactor;
+      m.alphaMode                            = live.alphaMode;
+      m.doubleSided                          = live.doubleSided;
+      m.emissiveFactor                       = live.emissiveFactor;
+      if(m.normalTexture.index >= 0)
+        m.normalTexture.scale = live.normalTexture.scale;
+      for(const char* ext : {"KHR_materials_emissive_strength", "KHR_materials_specular", "KHR_materials_clearcoat"})
+      {
+        const auto it = live.extensions.find(ext);
+        if(it == live.extensions.end() || !it->second.IsObject())
+          continue;
+        tinygltf::Value::Object o = m.extensions.count(ext) && m.extensions[ext].IsObject() ? m.extensions[ext].Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
+        for(const auto& [key, value] : it->second.Get<tinygltf::Value::Object>())
+          if(value.IsNumber())
+            o[key] = value;
+        m.extensions[ext] = tinygltf::Value(o);
+        if(std::find(copy.extensionsUsed.begin(), copy.extensionsUsed.end(), ext) == copy.extensionsUsed.end())
+          copy.extensionsUsed.push_back(ext);
+      }
+    }
+    std::string error;
+    if(!fv::composer::packForGlb(copy, error))
+      throw std::runtime_error(error);
+    tinygltf::TinyGLTF writer;
+    if(!writer.WriteGltfSceneToFile(&copy, utf8Of(pathOf(path)), false, true, false, true))
+      throw std::runtime_error("could not write " + path);
+    notice("Exported " + utf8Of(pathOf(path).filename()), "info");
+    return {{"ok", true}};
+  }
+  const auto&                        figure = prop->figure;
   std::shared_ptr<fv::dson::Library> lib;
   {
     std::lock_guard lock(settingsMutex);
-    lib = libraryOfFigure;
+    lib = figure->lib;
   }
   auto              prepared = std::make_shared<fv::build::GlbExport>(fv::build::prepareGlb(figure->fig->loaded.scene, figure->fig->loaded.root));
   const uint64_t    jobId    = ++jobs;
@@ -1668,21 +2893,24 @@ Json FvHost::Impl::exportGlb(const Json& args)
 //--------------------------------------------------------------------------------------------------
 // Scene state
 
-// What the host owns of a scene file: how the figure was opened, what it wears, its dials, its
-// pose where it differs from how it loaded, and the edits of its materials. The app adds lighting,
-// camera and render options, which it holds itself.
-Json FvHost::Impl::sceneState()
+// What the host owns of a prop in a scene file: how a figure was opened, what it wears, its dials,
+// its pose where it differs from how it loaded, and the edits of its materials; for a model, its
+// file and material edits. The app adds the prop's place, cameras, lights and lighting from the
+// scene topic and its own settings.
+Json FvHost::Impl::sceneState(const Json& args)
 {
-  // an imported model: where it came from, and the Material panel's edits
-  if(!figure && !modelPath.empty())
-    return {{"source", {{"path", utf8Of(pathOf(modelPath))}}},
+  const auto prop = propArg(args);
+  if(!prop)
+    throw std::runtime_error("no such prop");
+  if(prop->model)
+    return {{"source", {{"path", utf8Of(pathOf(prop->path))}}},
             {"worn", Json::array()},
             {"morphs", Json::object()},
             {"pose", Json::array()},
-            {"materials", materials->editState()}};
-  if(!figure)
-    throw std::runtime_error("no figure loaded");
-  fv::Figure& fig = *figure->fig;
+            {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  if(!prop->figure)
+    return Json::object();
+  fv::Figure& fig  = *prop->figure->fig;
   Json        worn = Json::array();
   for(const fv::WornItem& w : fig.items)
     if(!w.rel.empty())
@@ -1697,43 +2925,45 @@ Json FvHost::Impl::sceneState()
       for(const auto& a : pb.axes)
         if(a.value != a.initial)
           pose.push_back({{"bone", pb.id}, {"kind", fv::pose::kindName(a.kind)}, {"axis", a.axis}, {"value", std::round(a.value * 1e5) / 1e5}});
-  Json state = {{"source", figure->source},
+  Json state = {{"source", prop->figure->source},
                 {"worn", worn},
                 {"morphs", morphs},
                 {"pose", pose},
-                {"materialPresets", figure->materialPresets},
-                {"materials", materials->editState()}};
-  if(figure->dforce)
-    state["dforce"] = figure->dforce->enabled();
+                {"materialPresets", prop->figure->materialPresets},
+                {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  if(prop->figure->dforce)
+    state["dforce"] = prop->figure->dforce->enabled();
   return state;
 }
 
-// Puts a scene file's state on the figure that is loaded: what it wears first (items before dials,
-// since an item brings dials of its own), then dials, pose, material presets and material edits,
-// and dForce last, so it drapes the finished figure. The figure's own add-ons are already going on
+// Puts a scene file's state on a prop: for a figure, what it wears first (items before dials, since
+// an item brings dials of its own), then dials, pose, material presets and material edits, and
+// dForce last, so it drapes the finished figure. The figure's own add-ons are already going on
 // with their presets; they are waited for, not worn again.
 Json FvHost::Impl::sceneRestore(const Json& args)
 {
-  // an imported model takes back its material edits; it has no wardrobe, dials or pose
-  if(!figure && !modelPath.empty())
+  const auto prop = propArg(args);
+  if(!prop)
+    throw std::runtime_error("no such prop");
+  // a model takes back its material edits; it has no wardrobe, dials or pose
+  if(!prop->figure)
   {
     std::vector<std::string> problems;
-    if(args.contains("materials") && args["materials"].is_object())
-      problems = materials->restoreEdits(args["materials"]);
+    if(prop->materials && args.contains("materials") && args["materials"].is_object())
+      problems = prop->materials->restoreEdits(args["materials"]);
     for(size_t i = 0; i < problems.size() && i < 5; i++)
       notice(problems[i]);
     return {{"ok", true}};
   }
-  if(!figure)
-    throw std::runtime_error("no figure loaded");
-  std::shared_ptr<Loaded> target = figure;
+  std::shared_ptr<Loaded> target = prop->figure;
   const uint64_t          jobId  = ++jobs;
-  job(jobId, {{"label", "Restoring the scene"}, {"state", "running"}});
-  const Json worn = args.value("worn", Json::array());
+  job(jobId, {{"label", "Restoring " + prop->name}, {"state", "running"}});
+  const Json worn  = args.value("worn", Json::array());
   auto       apply = [this, target, args, jobId] {
-    if(figure != target)
+    const auto prop = findProp(target->id);
+    if(!prop || prop->figure != target)
     {
-      job(jobId, {{"label", "Restoring the scene"}, {"state", "failed"}, {"error", "the figure was replaced"}});
+      job(jobId, {{"state", "failed"}, {"error", "the figure left the scene"}});
       return;
     }
     std::vector<std::string> problems;
@@ -1784,7 +3014,8 @@ Json FvHost::Impl::sceneRestore(const Json& args)
             continue;
           }
           const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, fig.loaded.scene);
-          materials->surfacesChanged(r.changed);
+          if(prop->materials)
+            prop->materials->surfacesChanged(r.changed);
           if(!r.changed.empty())
             target->materialPresets.push_back(rel);
         }
@@ -1793,27 +3024,33 @@ Json FvHost::Impl::sceneRestore(const Json& args)
           problems.push_back("material preset " + fileStem(rel) + ": " + e.what());
         }
       }
-    if(args.contains("materials") && args["materials"].is_object())
-      for(const std::string& p : materials->restoreEdits(args["materials"]))
+    if(prop->materials && args.contains("materials") && args["materials"].is_object())
+      for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
         problems.push_back(p);
     if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
       target->dforce->setEnabled(args["dforce"].get<bool>());
-    morphTouched = true;
+    target->touched = true;
     for(size_t i = 0; i < problems.size() && i < 5; i++)
-      notice(problems[i]);
+      notice(prop->name + ": " + problems[i]);
     if(problems.size() > 5)
-      notice(std::to_string(problems.size() - 5) + " more problems restoring the scene");
-    job(jobId, {{"label", "Restoring the scene"}, {"state", "done"}});
+      notice(std::to_string(problems.size() - 5) + " more problems restoring " + prop->name);
+    job(jobId, {{"state", "done"}});
   };
   auto wear = [this, target, worn, apply] {
     // one file can put on several items (an outfit's "Full Load"): each is listed, the file is worn once
-    auto hide = [target, worn] {
+    auto hidden = [target, worn] {
+      std::vector<int> ids;
       for(const Json& w : worn)
         if(!w.value("visible", true))
           for(const fv::WornItem& i : target->fig->items)
             if(relKey(i.rel) == relKey(w.value("rel", "")) && (w.value("label", "").empty() || i.label == w.value("label", "")))
+            {
               target->fig->setItemVisible(i.id, false);
+              ids.push_back(i.id);
+            }
+      return ids;
     };
+    auto hide = [hidden] { hidden(); };
     std::set<std::string> skip;
     for(const fv::dson::PostLoadAddon& a : target->fig->addons)
       skip.insert(relKey(a.file));
@@ -1827,7 +3064,19 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       }
     if(requests.empty())
     {
-      hide();
+      // no composition follows: the renderer's scene hides them now, as wardrobe.visible does
+      bool graft = false;
+      for(int id : hidden())
+        if(const fv::WornItem* item = wornItem(*target->fig, id))
+        {
+          if(!item->hiddenPolys.empty())
+            graft = true;
+          else
+            showItem(*target, item->objects, false);
+        }
+      if(graft)
+        requestCompose("Showing", {}, target.get());
+      publishWardrobe(*target);
       apply();
       return;
     }
@@ -1840,13 +3089,20 @@ Json FvHost::Impl::sceneRestore(const Json& args)
   return {{"job", jobId}};
 }
 
-const fv::pose::PoseBone* FvHost::Impl::boneAt(int gltf) const
+std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> FvHost::Impl::boneAt(int gltf) const
 {
-  if(!figure || !figure->fig->pose)
-    return nullptr;
-  const auto it = figure->sceneOf.find(gltf);
-  const auto* pb = it == figure->sceneOf.end() ? nullptr : figure->fig->pose->boneForNode(it->second);
-  return pb && !pb->axes.empty() ? pb : nullptr;
+  for(const auto& p : props)
+  {
+    const auto& f = p->figure;
+    if(!f || !f->fig->pose)
+      continue;
+    const auto it = f->sceneOf.find(gltf);
+    if(it == f->sceneOf.end())
+      continue;
+    const auto* pb = f->fig->pose->boneForNode(it->second);
+    return pb && !pb->axes.empty() ? std::pair{f, pb} : std::pair{nullptr, nullptr};
+  }
+  return {nullptr, nullptr};
 }
 
 void FvHost::Impl::applyGizmoEdit()
@@ -1854,28 +3110,28 @@ void FvHost::Impl::applyGizmoEdit()
   if(!gizmoEdit)
     return;
   const GizmoEdit edit = *std::exchange(gizmoEdit, std::nullopt);
-  if(!figure || !figure->fig->pose)
+  if(!inScene(edit.figure) || !edit.figure->fig->pose)
     return;
   // nodes, correctives and rebound skins go out with this frame's pump()
-  figure->fig->pose->setLocalTransform(edit.bone, edit.rotation, edit.position);
-  morphTouched = true;
-  patchPose({edit.bone});
+  edit.figure->fig->pose->setLocalTransform(edit.bone, edit.rotation, edit.position);
+  edit.figure->touched = true;
+  patchPose(*edit.figure, {edit.bone});
 }
 
-void FvHost::Impl::patchPose(const std::vector<std::string>& boneIds)
+void FvHost::Impl::patchPose(const Loaded& f, const std::vector<std::string>& boneIds)
 {
-  if(!figure || !figure->fig->pose)
+  if(!f.fig->pose)
     return;
   Json bones = Json::object();
   for(const std::string& id : boneIds)
-    if(const auto* pb = figure->fig->pose->get(id))
+    if(const auto* pb = f.fig->pose->get(id))
     {
       Json axes = Json::object();
       for(const auto& a : pb->axes)
         axes[axisKey(a)] = {{"value", a.value}};
       bones[pb->id] = {{"axes", axes}};
     }
-  protocol->events().patch("pose/" + figure->id, {{"changed", figure->fig->pose->changed()}, {"bones", bones}});
+  protocol->events().patch("pose/" + f.id, {{"changed", f.fig->pose->changed()}, {"bones", bones}});
 }
 
 void FvHost::Impl::applyPreset(const fv::dson::Json&                             doc,
@@ -1883,7 +3139,8 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
                                uint64_t                                          jobId,
                                const std::string&                                rel,
                                const std::optional<fv::dson::EnvironmentPreset>& environment,
-                               const std::string&                                environmentPath)
+                               const std::string&                                environmentPath,
+                               const std::string&                                target)
 {
   const std::string name = fileStem(rel);
   if(environment)
@@ -1906,20 +3163,23 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
     job(jobId, {{"state", "done"}, {"preset", kind}});
     return;
   }
+  const auto prop   = figureProp(target.empty() ? Json::object() : Json{{"prop", target}});
+  const auto figure = prop ? prop->figure : nullptr;
   if(kind == "pose preset" || kind == "shape preset" || kind == "property preset")
   {
     if(!figure || !figure->fig->pose)
-      notice(name + " is a DAZ " + kind + ". Load a DAZ figure first, then open it.");
+      notice(name + " is a DAZ " + kind + ". Select a DAZ figure first, then open it.");
     else
     {
       fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
-      morphTouched           = true;
+      figure->touched        = true;
       protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
       // a property preset can also set surfaces ("#materials/<surface>:?<channel>" urls)
       const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
       if(!surfaces.changed.empty())
       {
-        materials->surfacesChanged(surfaces.changed);
+        if(prop->materials)
+          prop->materials->surfacesChanged(surfaces.changed);
         auto& presets = figure->materialPresets;
         presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
         presets.push_back(rel);
@@ -1927,25 +3187,27 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
       }
       // it showed or hid worn items (a geograft's Apply and Remove presets)
       if(!r.itemsShown.empty())
-        rebuildScene("Showing");
+        requestCompose("Showing", {}, figure.get());
       if(!r.applied)
-        notice(name + ": nothing in this " + kind + " matches the loaded figure.");
+        notice(name + ": nothing in this " + kind + " matches " + prop->name + ".");
       else if(!r.skipped.empty())
         notice("Applied " + name + ". " + std::to_string(r.skipped.size()) + " of its controls aren't on this figure and were skipped.", "info");
       else
-        notice("Applied " + name, "info");
+        notice("Applied " + name + " to " + prop->name, "info");
     }
   }
   else if(kind == "material preset")
   {
     if(!figure)
-      notice(name + " is a DAZ material preset. Load a DAZ figure first, then open the preset.");
+      notice(name + " is a DAZ material preset. Select a DAZ figure first, then open the preset.");
     else
     {
       const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
-      materials->surfacesChanged(r.changed);
+      // not composed yet, the composition lowers the surfaces as they are now
+      if(prop->materials)
+        prop->materials->surfacesChanged(r.changed);
       if(r.changed.empty())
-        notice(name + ": none of its surfaces match the loaded figure.");
+        notice(name + ": none of its surfaces match " + prop->name + ".");
       else
       {
         auto& presets = figure->materialPresets;
@@ -2170,19 +3432,6 @@ void FvHost::Impl::addSun(tinygltf::Model& model)
                 {"aim", {s.azimuth, s.elevation}}};
 }
 
-// The sun added to a scene the renderer loaded itself (an imported file), as a new root node.
-void FvHost::Impl::addSun(nvvkgltf::Scene& scene)
-{
-  const int node = scene.editor().addLightNode("directional", "Sun");
-  if(node < 0)
-    return;
-  sunNode  = node;
-  sunLight = scene.getModel().nodes[size_t(node)].light;
-  fillSun(scene.editor().getLightForEdit(sunLight), scene.editor().getNodeForEdit(sunNode), sunLight);
-  // the light and the node's rotation reach the GPU the way a live sun edit does
-  applySun(true);
-}
-
 // A batch of renderer parameters, validated whole before any is applied; callbacks fire as over MCP.
 void FvHost::Impl::setParams(const Json& values)
 {
@@ -2192,16 +3441,16 @@ void FvHost::Impl::setParams(const Json& values)
   toolJson(nvmcp::detail::setParameters(params, Json{{"values", values}}.dump()));
 }
 
-void FvHost::Impl::applyNodes(const std::set<int>& moved)
+void FvHost::Impl::applyNodes(Loaded& f, const std::set<int>& moved)
 {
-  if(moved.empty() || !figure)
+  if(moved.empty())
     return;
   std::vector<GltfRenderer::NodeTransform> transforms;
   transforms.reserve(moved.size());
-  const fv::SceneGraph& scene = figure->fig->loaded.scene;
+  const fv::SceneGraph& scene = f.fig->loaded.scene;
   for(int n : moved)
   {
-    const int g = n >= 0 && n < int(figure->nodeOf.size()) ? figure->nodeOf[n] : -1;
+    const int g = n >= 0 && n < int(f.nodeOf.size()) ? f.nodeOf[n] : -1;
     if(g < 0 || n >= int(scene.nodes.size()))
       continue;
     const fv::Node& node = scene.nodes[n];
@@ -2213,14 +3462,11 @@ void FvHost::Impl::applyNodes(const std::set<int>& moved)
     renderer->setNodeTransforms(transforms);
 }
 
-void FvHost::Impl::applyMesh(const fv::morph::MeshChange& change)
+void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
 {
-  if(!figure || change.mesh < 0 || change.mesh >= int(figure->fig->loaded.scene.meshes.size()))
+  if(change.mesh < 0 || change.mesh >= int(f.fig->loaded.scene.meshes.size()) || change.mesh >= int(f.primsOf.size()) || f.primsOf[change.mesh].empty())
     return;
-  const int gltfMesh = change.mesh < int(figure->meshOf.size()) ? figure->meshOf[change.mesh] : -1;
-  if(gltfMesh < 0 || gltfMesh >= int(figure->primsOf.size()) || figure->primsOf[gltfMesh].empty())
-    return;
-  const auto& geo = figure->fig->loaded.scene.meshes[change.mesh].geo;
+  const auto& geo = f.fig->loaded.scene.meshes[change.mesh].geo;
   if(!geo)
     return;
   const size_t count = geo->position.size() / 3;
@@ -2265,7 +3511,7 @@ void FvHost::Impl::applyMesh(const fv::morph::MeshChange& change)
     if(upload.indices.empty())
       return;
   }
-  const auto& prims = figure->primsOf[gltfMesh];
+  const auto& prims = f.primsOf[change.mesh];
   for(size_t i = 0; i < prims.size(); i++)
   {
     GltfRenderer::VertexUpload one = i + 1 == prims.size() ? std::move(upload) : upload;
@@ -2274,18 +3520,16 @@ void FvHost::Impl::applyMesh(const fv::morph::MeshChange& change)
   }
 }
 
-void FvHost::Impl::applyRebind(const std::vector<int>& meshes)
+void FvHost::Impl::applyRebind(Loaded& f, const std::vector<int>& meshes)
 {
-  if(!figure)
-    return;
   for(int mesh : meshes)
   {
-    if(mesh < 0 || mesh >= int(figure->skinOf.size()) || mesh >= int(figure->fig->loaded.scene.meshes.size()))
+    if(mesh < 0 || mesh >= int(f.skinOf.size()) || mesh >= int(f.fig->loaded.scene.meshes.size()))
       continue;
-    const int skin = figure->skinOf[mesh];
+    const int skin = f.skinOf[mesh];
     if(skin < 0)
       continue;
-    const fv::Mesh&          m   = figure->fig->loaded.scene.meshes[mesh];
+    const fv::Mesh&          m   = f.fig->loaded.scene.meshes[mesh];
     const std::vector<float> ibm = fv::build::inverseBindMatrices(m);
     if(ibm.size() != m.bones.size() * 16)
       continue;
@@ -2298,36 +3542,36 @@ void FvHost::Impl::applyRebind(const std::vector<int>& meshes)
 
 void FvHost::Impl::applyPendingMorphs()
 {
-  std::vector<std::pair<std::string, double>> values;
+  std::map<std::string, std::map<std::string, double>> pending;
   {
     std::lock_guard lock(morphMutex);
-    if(pendingMorphs.empty())
-      return;
-    values.reserve(pendingMorphs.size());
-    for(const auto& [name, value] : pendingMorphs)
-      values.emplace_back(name, value);
-    pendingMorphs.clear();
+    pending.swap(pendingMorphs);
   }
-  if(!figure || !figure->fig->morphs)
-    return;
-  figure->fig->morphs->setMany(values);
-  morphTouched = true;
+  for(const auto& [id, dials] : pending)
+  {
+    const auto p = findProp(id);
+    if(!p || !p->figure || !p->figure->fig->morphs || dials.empty())
+      continue;
+    std::vector<std::pair<std::string, double>> values(dials.begin(), dials.end());
+    p->figure->fig->morphs->setMany(values);
+    p->figure->touched = true;
+  }
 }
 
-void FvHost::Impl::publishMorphs()
+void FvHost::Impl::publishMorphs(Loaded& f)
 {
-  if(!figure || !figure->fig->morphs)
+  if(!f.fig->morphs)
     return;
-  fv::morph::MorphSet& morphs = *figure->fig->morphs;
-  const bool           listChanged = morphs.listVersion() != figure->morphList;
-  if(!listChanged && !morphTouched)
+  fv::morph::MorphSet& morphs      = *f.fig->morphs;
+  const bool           listChanged = morphs.listVersion() != f.morphList;
+  if(!listChanged && !f.touched)
     return;
-  morphTouched = false;
+  f.touched    = false;
   auto& events = protocol->events();
   if(listChanged)
   {
     Json channels = Json::object();
-    figure->published.clear();
+    f.published.clear();
     int order = 0;
     for(const fv::morph::Channel& ch : morphs.channels())
     {
@@ -2336,10 +3580,10 @@ void FvHost::Impl::publishMorphs()
       const double w = morphs.weightOf(ch.name);
       channels[ch.name] = {{"label", ch.label}, {"group", ch.group}, {"value", ch.value}, {"min", ch.min},
                            {"max", ch.max},     {"weight", w},       {"order", order++}};
-      figure->published[ch.name] = {ch.value, w};
+      f.published[ch.name] = {ch.value, w};
     }
-    figure->morphList = morphs.listVersion();
-    events.snapshot("morphs/" + figure->id, {{"figure", figure->id}, {"channels", channels}});
+    f.morphList = morphs.listVersion();
+    events.snapshot("morphs/" + f.id, {{"figure", f.id}, {"channels", channels}});
     return;
   }
   Json channels = Json::object();
@@ -2348,40 +3592,39 @@ void FvHost::Impl::publishMorphs()
     if(ch.hidden)
       continue;
     const double w  = morphs.weightOf(ch.name);
-    const auto   it = figure->published.find(ch.name);
-    if(it != figure->published.end() && it->second.first == ch.value && it->second.second == w)
+    const auto   it = f.published.find(ch.name);
+    if(it != f.published.end() && it->second.first == ch.value && it->second.second == w)
       continue;
-    channels[ch.name]          = {{"value", ch.value}, {"weight", w}};
-    figure->published[ch.name] = {ch.value, w};
+    channels[ch.name]    = {{"value", ch.value}, {"weight", w}};
+    f.published[ch.name] = {ch.value, w};
   }
   if(!channels.empty())
-    events.patch("morphs/" + figure->id, {{"channels", channels}});
+    events.patch("morphs/" + f.id, {{"channels", channels}});
 }
 
-void FvHost::Impl::publishBusy()
+void FvHost::Impl::publishBusy(Loaded& f)
 {
-  if(!figure)
-    return;
-  const std::string b = figure->fig->busy();
+  const std::string b = f.fig->busy();
   if(!b.empty())
   {
-    if(!figure->busyOn)
+    if(!f.busyOn)
     {
-      figure->busyJob = ++jobs;
-      figure->busyOn  = true;
-      job(figure->busyJob, {{"label", b}, {"state", "running"}});
+      f.busyJob = ++jobs;
+      f.busyOn  = true;
+      job(f.busyJob, {{"label", b}, {"state", "running"}});
     }
   }
-  else if(figure->busyOn)
+  else if(f.busyOn)
   {
-    job(figure->busyJob, {{"state", "done"}});
-    figure->busyOn = false;
+    job(f.busyJob, {{"state", "done"}});
+    f.busyOn = false;
   }
 }
 
 Json FvHost::Impl::poseSet(const Json& args)
 {
-  if(!figure || !figure->fig->pose || args.value("figure", figure->id) != figure->id)
+  auto figure = figureArg(args);
+  if(!figure || !figure->fig->pose)
     throw std::runtime_error("no such figure");
   std::vector<fv::pose::ChannelValue> values;
   for(auto it = args.at("values").begin(); it != args.at("values").end(); ++it)
@@ -2401,9 +3644,9 @@ Json FvHost::Impl::poseSet(const Json& args)
       bones.push_back(v.bone);
   // nodes, corrective morphs and rebound skins go out with this frame's pump()
   figure->fig->pose->setMany(values);
-  morphTouched = true;
+  figure->touched = true;
   // the values as the rig took them (clamped), for every panel showing the pose
-  patchPose(bones);
+  patchPose(*figure, bones);
   return {{"changed", figure->fig->pose->changed()}};
 }
 
@@ -2413,7 +3656,7 @@ void FvHost::Impl::frameCamera()
   auto             manip = renderer->getCameraManipulator();
   if(!scene || !manip)
     return;
-  const nvutils::Bbox box  = scene->getSceneBounds();
+  const nvutils::Bbox box  = renderer->visibleSceneBounds();
   const VkExtent2D    size = renderer->renderSize();
   manip->fit(box.min(), box.max(), true, false, size.height ? double(size.width) / size.height : 1.0);
 }
@@ -2423,9 +3666,19 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
   auto manip = renderer->getCameraManipulator();
   if(!manip)
     return;
+  // looking through a locked camera, the view stays put
+  const auto camera = findProp(viewCamera);
+  const bool locked = camera && camera->camera.locked;
   for(const Json& e : events)
   {
     const std::string type = e.value("t", "");
+    if(locked && ((type == "move" && (lmb || mmb)) || type == "wheel"))
+    {
+      if(!lockedNoticed)
+        notice(camera->name + " is locked: unlock it in the Scene tab to move it, or go back to the free view.", "info");
+      lockedNoticed = true;
+      continue;
+    }
     const double      x = e.value("x", mouseX), y = e.value("y", mouseY);
     // the old viewer's mapping: left orbits, middle and right pan, the wheel dollies
     nvutils::CameraManipulator::Inputs inputs{.lmb = lmb, .mmb = mmb, .shift = e.value("shift", false), .ctrl = e.value("ctrl", false),
@@ -2498,100 +3751,112 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     st.subdivision    = args.value("subdivision", st.subdivision);
     return Json{{"ok", true}};
   });
-  s.materials = std::make_unique<FvMaterials>(FvMaterials::Hooks{
-      .renderer = renderer,
-      .events   = &s.protocol->events(),
-      .post     = [impl](std::function<void()> f) { impl->post(std::move(f)); },
-      .notice   = [impl](const std::string& text, const char* level) { impl->notice(text, level); },
-      .nextJob  = [impl] { return ++impl->jobs; },
-      .job      = [impl](uint64_t id, const Json& state) { impl->job(id, state); },
-      .texture =
-          [impl](const fv::build::TextureRequest& req, bool flipped) -> std::optional<fv::build::TextureImage> {
-        HostSettings                       st;
-        std::shared_ptr<fv::dson::Library> lib;
-        {
-          std::lock_guard lock(impl->settingsMutex);
-          st  = impl->settings;
-          lib = impl->libraryOfFigure;
-        }
-        if(!st.texServer.empty() && !st.rootId.empty())
-          return cookedTexture(st, req, flipped, false).image;
-        return lib ? fallbackTexture(st, *lib, req, false) : std::nullopt;
-      },
-      .remember =
-          [impl](const fv::build::TextureRequest& req, const fv::build::TextureImage& image) {
-            if(impl->figure)
-              impl->figure->images.insert_or_assign(fv::build::requestKey(req), image);
-          },
-  });
+  // load works out on a worker what the file is, and comes to the application thread for the rest
   cmds.add("load", [impl](const Json& args) { return impl->load(args); });
+  cmds.add("prop.add", [impl](const Json& args) {
+    if(args.contains("path") || args.contains("rel"))
+    {
+      Json asProp  = args;
+      asProp["as"] = "prop";
+      return impl->load(asProp);
+    }
+    return impl->onApp([impl, args] { return impl->propAdd(args); });
+  });
+  cmds.add("prop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propSet(args); }); });
+  cmds.add("prop.remove", [impl](const Json& args) {
+    return impl->onApp([impl, args] {
+      auto p = impl->findProp(args.at("prop").get<std::string>());
+      if(!p)
+        throw std::runtime_error("no such prop");
+      impl->removeProp(p);
+      impl->publishScene();
+      impl->requestCompose("Removing " + p->name);
+      return Json{{"ok", true}};
+    });
+  });
+  cmds.add("prop.duplicate", [impl](const Json& args) {
+    // a figure loads again, which waits on workers: answered with its job
+    return impl->onApp([impl, args] { return impl->propDuplicate(args); });
+  });
+  cmds.add("scene.clear", [impl](const Json&) { return impl->onApp([impl] { return impl->sceneClear(); }); });
+  cmds.add("view.use", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->viewUse(args); }); });
   for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
     cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
       return impl->onApp([impl, cmd, args] { return impl->animationCommand(cmd, args); });
     });
   cmds.add("export.glb", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->exportGlb(args); }); });
-  cmds.add("scene.state", [impl](const Json&) { return impl->onApp([impl] { return impl->sceneState(); }); });
+  cmds.add("scene.state", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->sceneState(args); }); });
   cmds.add("scene.restore", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->sceneRestore(args); }); });
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
   cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeVisible(args); }); });
   cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("enable", args); }); });
   cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
-  cmds.add("material.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->set(args); }); });
-  cmds.add("material.reset", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materials->reset(args); }); });
+  const auto materialsOf = [impl](const Json& args) -> FvMaterials& {
+    auto p = impl->propArg(args);
+    if(!p || !p->materials)
+      throw std::runtime_error("Select a figure or a model: its surfaces are edited here.");
+    return *p->materials;
+  };
+  cmds.add("material.set", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).set(args); }); });
+  cmds.add("material.reset", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).reset(args); }); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
   cmds.add("pose.eyes", [impl](const Json& args) {
     return impl->onApp([impl, args] {
-      if(!impl->figure || !impl->figure->fig->pose || args.value("figure", impl->figure->id) != impl->figure->id)
+      const auto p = impl->figureProp(args);
+      if(!p || !p->figure->fig->pose)
         throw std::runtime_error("no such figure");
       auto manip = impl->renderer->getCameraManipulator();
       if(!manip)
         throw std::runtime_error("no camera");
-      const glm::dvec3 eye = manip->getEye();
-      const int        n   = impl->figure->fig->pose->aimEyes({eye.x, eye.y, eye.z});
+      // the eye in the figure's own space, under its prop root
+      const glm::vec3 eye = glm::vec3(glm::inverse(impl->worldOf(*p)) * glm::vec4(glm::vec3(manip->getEye()), 1.f));
+      const int       n   = p->figure->fig->pose->aimEyes({eye.x, eye.y, eye.z});
       std::vector<std::string> bones;
-      for(const auto& pb : impl->figure->fig->pose->bones())
+      for(const auto& pb : p->figure->fig->pose->bones())
         if(fv::pose::isEyeBone(pb.name))
           bones.push_back(pb.id);
-      impl->morphTouched = true;
-      impl->patchPose(bones);
+      p->figure->touched = true;
+      impl->patchPose(*p->figure, bones);
       return Json{{"aimed", n}};
     });
   });
   cmds.add("pose.reset", [impl](const Json& args) {
     return impl->onApp([impl, args] {
-      if(!impl->figure || !impl->figure->fig->pose || args.value("figure", impl->figure->id) != impl->figure->id)
-        throw std::runtime_error("no figure loaded");
-      impl->figure->fig->pose->reset();
-      impl->morphTouched = true;
-      impl->protocol->events().snapshot("pose/" + impl->figure->id, poseSnapshot(*impl->figure));
+      auto figure = impl->figureArg(args);
+      if(!figure || !figure->fig->pose)
+        throw std::runtime_error("no such figure");
+      figure->fig->pose->reset();
+      figure->touched = true;
+      impl->protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
       return Json{{"changed", 0}};
     });
   });
   // answered at once: the values merge with whatever else arrived this frame and apply in onUpdate
   cmds.add("morph.set", [impl](const Json& args) {
-    std::lock_guard lock(impl->morphMutex);
-    const std::string fig = args.value("figure", impl->figureId);
-    if(impl->figureId.empty() || fig != impl->figureId)
+    std::lock_guard   lock(impl->morphMutex);
+    const std::string fig = args.contains("prop") ? args.value("prop", "") : args.value("figure", "");
+    if(!impl->morphFigures.count(fig))
       throw std::runtime_error("no such figure");
     const Json* values = args.contains("values") ? &args["values"] : nullptr;
     if(!values || !values->is_object())
       throw std::runtime_error("morph.set wants values: {name: value}");
     for(auto it = values->begin(); it != values->end(); ++it)
       if(it.value().is_number())
-        impl->pendingMorphs[it.key()] = it.value().get<double>();
+        impl->pendingMorphs[fig][it.key()] = it.value().get<double>();
     return Json{{"ok", true}};
   });
   cmds.add("morph.reset", [impl](const Json& args) {
     return impl->onApp([impl, args] {
-      if(!impl->figure || !impl->figure->fig->morphs || args.value("figure", impl->figure->id) != impl->figure->id)
-        throw std::runtime_error("no figure loaded");
+      auto figure = impl->figureArg(args);
+      if(!figure || !figure->fig->morphs)
+        throw std::runtime_error("no such figure");
       {
         std::lock_guard lock(impl->morphMutex);
-        impl->pendingMorphs.clear();
+        impl->pendingMorphs.erase(figure->id);
       }
-      impl->figure->fig->morphs->resetAll();
-      impl->morphTouched = true;
+      figure->fig->morphs->resetAll();
+      figure->touched = true;
       return Json{{"ok", true}};
     });
   });
@@ -2604,7 +3869,9 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return impl->onApp([impl, mode, thin] {
       impl->renderer->setRenderSystem(mode == "rtx" ? RenderingMode::ePathtracer : RenderingMode::eRasterizer);
       impl->skinMode = mode == "rtx" ? (thin ? fv::mat::SkinMode::eThin : fv::mat::SkinMode::eVolume) : fv::mat::SkinMode::eRaster;
-      impl->materials->setSkinMode(impl->skinMode);
+      for(const auto& p : impl->props)
+        if(p->figure && p->materials)
+          p->materials->setSkinMode(impl->skinMode);
       impl->protocol->events().snapshot("render", {{"mode", mode}});
       return Json{{"mode", mode}};
     });
@@ -2636,20 +3903,44 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   s.view = std::make_unique<FvView>(renderer, s.protocol->events(), s.protocol->commands(), [impl](std::function<Json()> f) {
     return impl->onApp(std::move(f));
   });
+  s.view->onHelperPick([impl](const glm::vec2& px) { return impl->helperAt(px); });
+  // camera.set edits the lens of the view in use: the camera looked through keeps it, else the free view
+  s.view->onLensChange([impl](const FvView::Lens& lens) {
+    if(const auto p = impl->findProp(impl->viewCamera))
+    {
+      p->camera.lens = lens;
+      impl->publishScene();
+    }
+    else
+      impl->freeView.lens = lens;
+  });
   s.protocol->setInputSink([impl](const Json& events) {
     std::lock_guard lock(impl->inputMutex);
     for(const auto& e : events)
       impl->input.push_back(e);
   });
-  // the gizmo poses the main figure's bones through the rig, so limits and formulas apply
+  // The gizmo moves, turns and scales a selected prop (object picking), and poses a figure's bones
+  // through its rig (bone picking), so limits and formulas apply.
   auto hasKind = [](const fv::pose::PoseBone& pb, fv::pose::ChannelKind kind) {
     return std::any_of(pb.axes.begin(), pb.axes.end(), [kind](const fv::pose::Axis& a) { return a.kind == kind; });
   };
   renderer->setGizmoHooks({
       .attach =
-          [impl, hasKind](int gltf) {
-            const auto* pb    = impl->boneAt(gltf);
-            uint32_t    flags = 0;
+          [impl, hasKind](int gltf) -> uint32_t {
+            if(!impl->view)
+              return 0;
+            const std::string& pick = impl->view->pickMode();
+            if(pick == "object")
+            {
+              if(!impl->view->propOfRoot(gltf))
+                return 0;
+              const std::string& t = impl->view->transformMode();
+              return t == "rotate" ? TransformHelperVk::ShowRotation : t == "scale" ? TransformHelperVk::ShowScale : TransformHelperVk::ShowTranslation;
+            }
+            if(pick != "bone")
+              return 0;
+            const auto [figure, pb] = impl->boneAt(gltf);
+            uint32_t flags          = 0;
             if(pb && hasKind(*pb, fv::pose::ChannelKind::eRotation))
               flags |= TransformHelperVk::ShowRotation;
             if(pb && hasKind(*pb, fv::pose::ChannelKind::eTranslation))
@@ -2657,12 +3948,25 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
             return flags;
           },
       .edit =
-          [impl, hasKind](int gltf, const glm::vec3& t, const glm::quat& r, bool done) {
+          [impl, hasKind](int gltf, const glm::vec3& t, const glm::quat& r, const glm::vec3& scale, bool done) {
+            if(const FvView::PropNodes* nodes = impl->view ? impl->view->propOfRoot(gltf) : nullptr)
+            {
+              auto p = impl->findProp(nodes->id);
+              if(!p)
+                return;
+              p->transform = {t, glm::normalize(r), p->kind == PropKind::eCamera ? glm::vec3(1.f) : scale};
+              p->euler.reset();
+              impl->applyTransform(*p);
+              impl->movedProps.insert(p->id);
+              if(p->id == impl->viewCamera)
+                impl->viewFromCamera(*p);
+              return;
+            }
             // the release repeats the last move's transform; a click on a handle with no drag has only the release
-            const auto* pb = done ? nullptr : impl->boneAt(gltf);
+            const auto [figure, pb] = done ? std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*>{} : impl->boneAt(gltf);
             if(!pb)
               return;
-            impl->gizmoEdit = Impl::GizmoEdit{pb->id, fv::Quat{r.x, r.y, r.z, r.w},
+            impl->gizmoEdit = Impl::GizmoEdit{figure, pb->id, fv::Quat{r.x, r.y, r.z, r.w},
                                               hasKind(*pb, fv::pose::ChannelKind::eTranslation) ?
                                                   std::optional<fv::Vec3>(fv::Vec3{t.x, t.y, t.z}) :
                                                   std::nullopt};
@@ -2677,15 +3981,20 @@ void FvHost::onAttach(nvapp::Application* app)
   m_impl->app = app;
   m_impl->protocol->events().snapshot(
       "render", {{"mode", m_impl->renderer->renderSystem() == RenderingMode::ePathtracer ? "rtx" : "raster"}});
+  m_impl->publishScene();
 }
 
 void FvHost::onDetach()
 {
   Impl& s = *m_impl;
+  std::deque<std::function<void()>> dropped;
   {
     std::lock_guard lock(s.queueMutex);
     s.accepting = false;
+    dropped.swap(s.queue);
   }
+  // a worker waiting on one of these (onApp) wakes now, with an error, instead of after its timeout
+  dropped.clear();
   s.loadGeneration++;  // loads still running drop their result
   textureCalls().stopAll();  // and don't wait out a cook
   s.loaders.joinAll();
@@ -2693,12 +4002,15 @@ void FvHost::onDetach()
   s.renderer->setGizmoHooks({});
   s.renderer->setPickObserver({});
   if(s.view)
-    s.view->clearFigure();
-  s.materials->detach();
-  s.figure.reset();
+    s.view->setProps({});
+  for(const auto& p : s.props)
+    if(p->materials)
+      p->materials->detach();
+  s.props.clear();
+  s.pendingCompose.reset();
   {
     std::lock_guard morphLock(s.morphMutex);
-    s.figureId.clear();
+    s.morphFigures.clear();
     s.pendingMorphs.clear();
   }
 }
@@ -2735,7 +4047,19 @@ void FvHost::onUpdate()
       s.notice(e.what(), "error");
     }
   }
-  // input first: a gizmo drag poses this frame, and what the gizmo didn't take moves the camera
+  // what this frame's work changed in the scene's structure, composed once
+  if(s.pendingCompose)
+  {
+    try
+    {
+      s.compose();
+    }
+    catch(const std::exception& e)
+    {
+      s.notice(std::string("The scene could not be built: ") + e.what(), "error");
+    }
+  }
+  // input first: a gizmo drag poses or moves this frame, and what the gizmo didn't take moves the camera
   std::vector<Json> events;
   {
     std::lock_guard lock(s.inputMutex);
@@ -2744,11 +4068,17 @@ void FvHost::onUpdate()
   if(!events.empty())
     s.applyInput(s.view ? s.view->onInput(events) : events);
   s.applyGizmoEdit();
+  // not while a composition settles: the renderer moves the view to a scene camera for a frame or two
+  if(!s.viewCamera.empty() && s.frameIn == 0)
+    s.cameraFromView();
   s.applyPendingMorphs();
-  if(s.figure)
+  for(const auto& p : s.props)
   {
-    fv::Figure::Changes changes = s.figure->fig->pump();
-    if(s.figure->dforce)
+    if(!p->figure)
+      continue;
+    Loaded&             f       = *p->figure;
+    fv::Figure::Changes changes = f.fig->pump();
+    if(f.dforce)
     {
       // this frame's edits first, then a settle that finished writes its drape and is drained on its
       // own: the drape's vertices never hide an edit to the same mesh, and are no reason to settle again
@@ -2756,26 +4086,41 @@ void FvHost::onUpdate()
       for(const fv::morph::MeshChange& m : changes.meshes)
         moved.push_back(m.mesh);
       if(!changes.nodes.empty() || !moved.empty())
-        s.figure->dforce->changed(moved, !changes.nodes.empty());
-      if(s.figure->dforce->pump())
+        f.dforce->changed(moved, !changes.nodes.empty());
+      if(f.dforce->pump())
       {
-        fv::Figure::Changes drape = s.figure->fig->drain();
+        fv::Figure::Changes drape = f.fig->drain();
         changes.nodes.insert(drape.nodes.begin(), drape.nodes.end());
         changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(drape.meshes.begin()), std::make_move_iterator(drape.meshes.end()));
         changes.rebound.insert(changes.rebound.end(), drape.rebound.begin(), drape.rebound.end());
       }
-      s.publishDforce(false);
+      s.publishDforce(f, false);
     }
-    s.applyNodes(changes.nodes);
+    s.applyNodes(f, changes.nodes);
     for(const fv::morph::MeshChange& mesh : changes.meshes)
-      s.applyMesh(mesh);
-    s.applyRebind(changes.rebound);
+      s.applyMesh(f, mesh);
+    s.applyRebind(f, changes.rebound);
     if(!changes.empty())
-      s.morphTouched = true;
-    for(const std::string& w : s.figure->fig->takeWarnings())
-      s.notice(w);
-    s.publishBusy();
-    s.publishMorphs();
+      f.touched = true;
+    for(const std::string& w : f.fig->takeWarnings())
+      s.notice(p->name + ": " + w);
+    s.publishBusy(f);
+    s.publishMorphs(f);
+  }
+  // props the gizmo moved: one patch a frame
+  if(!s.movedProps.empty())
+  {
+    Json moved = Json::object();
+    for(const std::string& id : s.movedProps)
+      if(const auto p = s.findProp(id))
+      {
+        const Json now = s.propJson(*p);
+        moved[id]      = {{"transform", now["transform"]}};
+        if(now.contains("camera"))
+          moved[id]["camera"] = now["camera"];
+      }
+    s.movedProps.clear();
+    s.protocol->events().patch("scene", {{"props", moved}});
   }
   s.publishAnimation(false);
   if(s.frameIn > 0 && --s.frameIn == 0)
@@ -2789,6 +4134,7 @@ void FvHost::onUpdate()
     else
       s.frameCamera();
   }
+  s.drawHelpers();
   if(s.view)
     s.view->onFrame();
 }

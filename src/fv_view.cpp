@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -74,25 +75,44 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     , m_onApp(std::move(onApp))
 {
   m_renderer->setPickObserver([this](int renderNode, const glm::vec3& hit) {
-    if(!m_pickBones || renderNode < 0 || !m_bones.nearest)
+    if(renderNode < 0 || m_pick == "mesh")
       return false;
-    const int node = m_bones.nearest(hit);
-    const int gltf = node >= 0 && node < int(m_gltfOf.size()) ? m_gltfOf[node] : -1;
-    if(gltf < 0)
+    nvvkgltf::Scene* scene = m_renderer->editScene();
+    if(!scene || !scene->valid() || renderNode >= int(scene->getRenderNodes().size()))
       return false;
-    m_renderer->selectSceneNodeFromScript(gltf);
+    const auto [prop, node] = locate(scene->getRenderNodes()[size_t(renderNode)].refNodeID);
+    if(prop < 0)
+      return false;
+    const PropNodes& p = m_props[size_t(prop)];
+    if(m_pick == "bone")
+    {
+      // the posed bone nearest the hit, of the figure hit; a prop without bones is selected whole
+      const int bone = p.bones.nearest ? p.bones.nearest(hit) : -1;
+      const int gltf = bone >= 0 && bone < int(p.gltfOf.size()) ? p.gltfOf[size_t(bone)] : -1;
+      m_renderer->selectSceneNodeFromScript(gltf >= 0 ? gltf : p.root);
+      return true;
+    }
+    m_renderer->selectSceneNodeFromScript(p.root);
     return true;
   });
   commands.add("select", [this](const fv::Json& args) {
     return m_onApp([this, args] {
-      if(!args.contains("node") || args["node"].is_null())
+      const std::string prop = args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "";
+      if(prop.empty())
         m_renderer->selectSceneNodeFromScript(-1);
       else
       {
-        const int node = args["node"].get<int>();
-        const int gltf = node >= 0 && node < int(m_gltfOf.size()) ? m_gltfOf[node] : -1;
-        if(gltf < 0)
-          throw std::runtime_error("no such node");
+        const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
+        if(it == m_props.end())
+          throw std::runtime_error("no such prop");
+        int gltf = it->root;
+        if(args.contains("node") && !args["node"].is_null())
+        {
+          const int node = args["node"].get<int>();
+          gltf           = node >= 0 && node < int(it->gltfOf.size()) ? it->gltfOf[size_t(node)] : -1;
+          if(gltf < 0)
+            throw std::runtime_error("no such node");
+        }
         m_renderer->selectSceneNodeFromScript(gltf);
       }
       publishSelection(true);
@@ -118,25 +138,27 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
   });
   commands.add("camera.frame", [this](const fv::Json& args) {
     return m_onApp([this, args] {
-      m_renderer->fitCamera(!args.value("selected", false));
+      if(args.contains("prop") && args["prop"].is_string())
+      {
+        // the prop's subtree, by selecting it for the fit and putting the selection back
+        const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == args["prop"].get<std::string>(); });
+        if(it == m_props.end())
+          throw std::runtime_error("no such prop");
+        const int was = m_renderer->selectedNodeIndex();
+        m_renderer->selectSceneNodeFromScript(it->root);
+        m_renderer->fitCamera(false);
+        m_renderer->selectSceneNodeFromScript(was);
+      }
+      else
+        m_renderer->fitCamera(!args.value("selected", false));
       return fv::Json{{"ok", true}};
     });
   });
   commands.add("camera.set", [this](const fv::Json& args) {
     return m_onApp([this, args] {
-      if(args.contains("focalLength"))
-        m_focal = args["focalLength"].get<double>();
-      if(args.contains("dof"))
-        m_dof = args["dof"].get<bool>();
-      if(args.contains("fStop"))
-        m_fStop = args["fStop"].get<double>();
-      if(args.contains("focusMode"))
-        m_focus = args["focusMode"].get<std::string>();
-      if(args.contains("focusDistance"))
-        m_focusDistance = args["focusDistance"].get<double>();
-      m_aspect = -1;
-      applyLens();
-      applyDof();
+      setLens(lensOf(args, m_lens));
+      if(m_onLens)
+        m_onLens(m_lens);
       return fv::Json{{"ok", true}};
     });
   });
@@ -147,7 +169,7 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         throw std::runtime_error("no camera");
       glm::dvec3 eye, center, up;
       manip->getLookat(eye, center, up);
-      return fv::Json{{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}, {"focalLength", m_focal}};
+      return fv::Json{{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}, {"focalLength", m_lens.focalLength}};
     });
   });
   commands.add("camera.goto", [this](const fv::Json& args) {
@@ -156,10 +178,15 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       if(!manip)
         throw std::runtime_error("no camera");
       if(args.contains("focalLength"))
-        m_focal = args["focalLength"].get<double>();
-      manip->setLookat(vec3Of(args.at("position")), vec3Of(args.at("target")), {0, 1, 0}, true);
-      m_aspect = -1;
-      applyLens();
+      {
+        Lens lens        = m_lens;
+        lens.focalLength = args["focalLength"].get<double>();
+        setLens(lens);
+        if(m_onLens)
+          m_onLens(m_lens);
+      }
+      const glm::dvec3 up = args.contains("up") ? vec3Of(args["up"]) : glm::dvec3(0, 1, 0);
+      manip->setLookat(vec3Of(args.at("position")), vec3Of(args.at("target")), up, true);
       return fv::Json{{"ok", true}};
     });
   });
@@ -198,33 +225,37 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       if(args.contains("pick"))
       {
         const std::string pick = args["pick"].get<std::string>();
-        if(pick != "bone" && pick != "mesh")
-          throw std::runtime_error("pick is bone or mesh");
-        m_pickBones = pick == "bone";
-        m_renderer->setShowGizmo(m_pickBones);
+        if(pick != "object" && pick != "bone" && pick != "mesh")
+          throw std::runtime_error("pick is object, mesh or bone");
+        m_pick = pick;
+        // the gizmo moves props and poses bones; a mesh pick only shows what was hit
+        m_renderer->setShowGizmo(m_pick != "mesh");
+      }
+      if(args.contains("helpers"))
+        m_helpers = args["helpers"].get<bool>();
+      if(args.contains("transform"))
+      {
+        const std::string t = args["transform"].get<std::string>();
+        if(t != "move" && t != "rotate" && t != "scale")
+          throw std::runtime_error("transform is move, rotate or scale");
+        m_transform = t;
       }
       return fv::Json{{"ok", true}};
     });
   });
+  m_renderer->setShowGizmo(true);
 }
 
-void FvView::setFigure(const std::string& id, const std::string& name, const fv::SceneGraph& scene, int root,
-                       const std::vector<int>& nodeOf, int morphs, Bones posable, const std::string& source, const std::string& generation)
+fv::Json FvView::describeFigure(PropNodes& out, const fv::SceneGraph& scene, int root, const std::vector<int>& nodeOf, int morphs)
 {
-  m_id     = id;
-  m_gltfOf = nodeOf;
-  m_bones  = std::move(posable);
-  m_figureOf.clear();
-  for(int i = 0; i < int(nodeOf.size()); i++)
-    if(nodeOf[i] >= 0)
-      m_figureOf[nodeOf[i]] = i;
-  m_nodes.assign(scene.nodes.size(), {});
+  out.gltfOf = nodeOf;
+  out.nodes.assign(scene.nodes.size(), {});
   fv::Json nodes = fv::Json::object();
   int      order = 0, bones = 0, triangles = 0;
   const std::function<void(int, int)> walk = [&](int node, int depth) {
     if(node < 0 || node >= int(scene.nodes.size()))
       return;
-    const fv::Node& n = scene.nodes[node];
+    const fv::Node& n    = scene.nodes[node];
     std::string     kind = "group";
     if(n.kind == fv::NodeKind::eBone)
     {
@@ -233,8 +264,8 @@ void FvView::setFigure(const std::string& id, const std::string& name, const fv:
     }
     else if(n.kind == fv::NodeKind::eMesh)
       kind = n.mesh >= 0 && n.mesh < int(scene.meshes.size()) && scene.meshes[n.mesh].skinned() ? "skinned" : "mesh";
-    m_nodes[node] = {n.name.empty() ? kind : n.name, kind, n.kind == fv::NodeKind::eMesh ? n.mesh : -1};
-    nodes[std::to_string(node)] = {{"name", m_nodes[node].name}, {"parent", n.parent}, {"kind", kind}, {"order", order++}, {"depth", depth}};
+    out.nodes[node] = {n.name.empty() ? kind : n.name, kind, n.kind == fv::NodeKind::eMesh ? n.mesh : -1};
+    nodes[std::to_string(node)] = {{"name", out.nodes[node].name}, {"parent", n.parent}, {"kind", kind}, {"order", order++}, {"depth", depth}};
     for(int child : n.children)
       walk(child, depth + 1);
   };
@@ -243,95 +274,83 @@ void FvView::setFigure(const std::string& id, const std::string& name, const fv:
   for(const fv::Mesh& mesh : scene.meshes)
     if(mesh.geo)
       triangles += int((mesh.geo->fullIndex.empty() ? mesh.geo->renderTris.size() : mesh.geo->fullIndex.size()) / 3);
-  m_events->snapshot("scene", {{"figure", id},
-                               {"name", name},
-                               {"source", source},
-                               {"generation", generation},
-                               {"figures", {{id, {{"name", name}}}}},
-                               {"nodes", nodes},
-                               {"stats", {{"meshes", scene.meshes.size()},
-                                          {"triangles", triangles},
-                                          {"materials", scene.materials.size()},
-                                          {"bones", bones},
-                                          {"morphs", morphs}}}});
-  m_lastGltf = -2;
-  publishSelection(true);
+  return {{"nodes", nodes},
+          {"stats", {{"meshes", scene.meshes.size()}, {"triangles", triangles}, {"materials", scene.materials.size()}, {"bones", bones}, {"morphs", morphs}}}};
 }
 
-void FvView::setModel(const std::string& id, const std::string& name, const tinygltf::Model& model)
+fv::Json FvView::describeModel(PropNodes& out, const tinygltf::Model& model, int root, int firstNode, int lastNode, int meshBase)
 {
-  const int count = int(model.nodes.size());
-  m_id            = id;
-  m_bones         = {};
-  m_gltfOf.resize(size_t(count));
-  m_figureOf.clear();
+  const int count = std::max(0, lastNode - firstNode);
+  out.gltfOf.resize(size_t(count));
   for(int i = 0; i < count; i++)
-  {
-    m_gltfOf[size_t(i)] = i;
-    m_figureOf[i]       = i;
-  }
+    out.gltfOf[size_t(i)] = firstNode + i;
+  out.bones = {};
+  // parents as topic nodes: the prop root above the model's roots is no topic node
   std::vector<int> parent(size_t(count), -1);
   for(int i = 0; i < count; i++)
-    for(int c : model.nodes[size_t(i)].children)
-      if(c >= 0 && c < count)
-        parent[size_t(c)] = i;
-  m_nodes.assign(size_t(count), {});
-  fv::Json nodes     = fv::Json::object();
-  int      order     = 0;
-  size_t   triangles = 0;
-  std::vector<bool> counted(model.meshes.size(), false);
+    for(int c : model.nodes[size_t(firstNode + i)].children)
+      if(c >= firstNode && c < lastNode)
+        parent[size_t(c - firstNode)] = i;
+  out.nodes.assign(size_t(count), {});
+  fv::Json          nodes     = fv::Json::object();
+  int               order     = 0;
+  size_t            triangles = 0;
+  std::set<int>     meshes;
+  std::set<int>     materials;
   const std::function<void(int, int)> walk = [&](int node, int depth) {
     if(node < 0 || node >= count || depth > 512)
       return;
-    const tinygltf::Node& n    = model.nodes[size_t(node)];
-    // the host's sun (fv_host addSun) is lighting, not part of the model
-    if(n.extras.Has("fvId") && n.extras.Get("fvId").IsString() && n.extras.Get("fvId").Get<std::string>() == "l:sun")
-      return;
-    std::string           kind = n.mesh >= 0 ? (n.skin >= 0 ? "skinned" : "mesh") : "group";
+    const tinygltf::Node& n     = model.nodes[size_t(firstNode + node)];
+    std::string           kind  = n.mesh >= 0 ? (n.skin >= 0 ? "skinned" : "mesh") : n.camera >= 0 ? "camera" : n.light >= 0 ? "light" : "group";
     const std::string     label = n.name.empty() ? (n.mesh >= 0 && n.mesh < int(model.meshes.size()) && !model.meshes[size_t(n.mesh)].name.empty() ? model.meshes[size_t(n.mesh)].name : kind) : n.name;
-    m_nodes[size_t(node)]       = {label, kind, n.mesh};
+    out.nodes[size_t(node)]     = {label, kind, n.mesh >= 0 ? n.mesh - meshBase : -1};
     nodes[std::to_string(node)] = {{"name", label}, {"parent", parent[size_t(node)]}, {"kind", kind}, {"order", order++}, {"depth", depth}};
-    if(n.mesh >= 0 && n.mesh < int(model.meshes.size()) && !counted[size_t(n.mesh)])
-    {
-      counted[size_t(n.mesh)] = true;
+    if(n.mesh >= 0 && n.mesh < int(model.meshes.size()) && meshes.insert(n.mesh).second)
       for(const tinygltf::Primitive& p : model.meshes[size_t(n.mesh)].primitives)
       {
+        materials.insert(p.material);
         const int acc = p.indices >= 0 ? p.indices : (p.attributes.count("POSITION") ? p.attributes.at("POSITION") : -1);
         if(acc >= 0 && acc < int(model.accessors.size()))
           triangles += model.accessors[size_t(acc)].count / 3;
       }
-    }
     for(int c : n.children)
-      walk(c, depth + 1);
+      walk(c - firstNode, depth + 1);
   };
-  const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
-  if(sceneIndex < int(model.scenes.size()))
-    for(int root : model.scenes[size_t(sceneIndex)].nodes)
-      walk(root, 0);
-  m_events->snapshot("scene", {{"figure", id},
-                               {"name", name},
-                               {"figures", {{id, {{"name", name}}}}},
-                               {"nodes", nodes},
-                               {"stats", {{"meshes", model.meshes.size()},
-                                          {"triangles", triangles},
-                                          {"materials", model.materials.size()},
-                                          {"bones", 0},
-                                          {"morphs", 0}}},
-                               {"format", "glTF"}});
+  if(root >= 0 && root < int(model.nodes.size()))
+    for(int c : model.nodes[size_t(root)].children)
+      if(c >= firstNode && c < lastNode)
+        walk(c - firstNode, 0);
+  materials.erase(-1);
+  return {{"nodes", nodes},
+          {"stats", {{"meshes", meshes.size()}, {"triangles", triangles}, {"materials", materials.size()}, {"bones", 0}, {"morphs", 0}}}};
+}
+
+void FvView::setProps(std::vector<PropNodes> props)
+{
+  m_props = std::move(props);
+  m_where.clear();
+  for(int p = 0; p < int(m_props.size()); p++)
+  {
+    m_where[m_props[size_t(p)].root] = {p, -1};
+    const auto& gltfOf = m_props[size_t(p)].gltfOf;
+    for(int i = 0; i < int(gltfOf.size()); i++)
+      if(gltfOf[size_t(i)] >= 0)
+        m_where[gltfOf[size_t(i)]] = {p, i};
+  }
   m_lastGltf = -2;
   publishSelection(true);
 }
 
-void FvView::clearFigure()
+const FvView::PropNodes* FvView::propOfRoot(int gltf) const
 {
-  m_id.clear();
-  m_gltfOf.clear();
-  m_figureOf.clear();
-  m_nodes.clear();
-  m_bones    = {};
-  m_lastGltf = -1;
-  m_events->snapshot("scene", {{"figures", fv::Json::object()}});
-  m_events->snapshot("selection", {{"node", nullptr}});
+  const auto it = m_where.find(gltf);
+  return it == m_where.end() || it->second.second != -1 ? nullptr : &m_props[size_t(it->second.first)];
+}
+
+std::pair<int, int> FvView::locate(int gltf) const
+{
+  const auto it = m_where.find(gltf);
+  return it == m_where.end() ? std::pair{-1, -1} : it->second;
 }
 
 std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
@@ -370,6 +389,17 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
       const VkExtent2D size = m_renderer->renderSize();
       if(size.width == 0 || size.height == 0)
         continue;
+      // a camera or light marker under the pointer is the pick; they have nothing the ray could hit
+      if(m_helpers && m_helperPick)
+        if(const std::string prop = m_helperPick({float(x), float(y)}); !prop.empty())
+        {
+          const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
+          if(it != m_props.end())
+          {
+            m_renderer->selectSceneNodeFromScript(it->root);
+            continue;
+          }
+        }
       m_renderer->pickAt({float(x / size.width), float(y / size.height)}, false);
     }
     else if(type == "leave")
@@ -393,7 +423,8 @@ void FvView::publishCamera()
     return;
   glm::dvec3 eye, center, up;
   manip->getLookat(eye, center, up);
-  fv::Json camera{{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}, {"focalLength", m_focal}};
+  fv::Json camera{{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}, {"focalLength", m_lens.focalLength}};
+  camera.update(m_cameraExtra);
   if(camera == m_camera)
     return;
   m_camera   = std::move(camera);
@@ -401,17 +432,56 @@ void FvView::publishCamera()
   m_events->snapshot("camera", m_camera);
 }
 
+void FvView::setCameraExtra(fv::Json extra)
+{
+  m_cameraExtra = extra.is_object() ? std::move(extra) : fv::Json::object();
+  m_camera      = nullptr;
+  m_cameraAt    = {};
+}
+
+fv::Json FvView::lensJson(const Lens& lens)
+{
+  return {{"focalLength", lens.focalLength}, {"dof", lens.dof}, {"fStop", lens.fStop}, {"focusMode", lens.focusMode}, {"focusDistance", lens.focusDistance}};
+}
+
+FvView::Lens FvView::lensOf(const fv::Json& args, Lens base)
+{
+  if(args.contains("focalLength"))
+    base.focalLength = std::clamp(args["focalLength"].get<double>(), 1.0, 2000.0);
+  if(args.contains("dof"))
+    base.dof = args["dof"].get<bool>();
+  if(args.contains("fStop"))
+    base.fStop = std::max(args["fStop"].get<double>(), 0.1);
+  if(args.contains("focusMode"))
+  {
+    base.focusMode = args["focusMode"].get<std::string>();
+    if(base.focusMode != "target" && base.focusMode != "manual")
+      throw std::runtime_error("focusMode is target or manual");
+  }
+  if(args.contains("focusDistance"))
+    base.focusDistance = std::max(args["focusDistance"].get<double>(), 1e-3);
+  return base;
+}
+
+void FvView::setLens(const Lens& lens)
+{
+  m_lens   = lens;
+  m_aspect = -1;
+  applyLens();
+  applyDof();
+}
+
 void FvView::applyLens()
 {
   auto manip = m_renderer->getCameraManipulator();
-  if(!manip || m_focal <= 0)
+  if(!manip || m_lens.focalLength <= 0)
     return;
   const glm::uvec2 size = manip->getWindowSize();
   if(size.y == 0)
     return;
   // the renderer sets up its own camera for a loaded scene, so check the camera's fov, not just the aspect
   const double aspect = double(size.x) / double(size.y);
-  const double fov    = fovForFocalLength(m_focal, aspect);
+  const double fov    = fovForFocalLength(m_lens.focalLength, aspect);
   if(std::abs(aspect - m_aspect) < 1e-4 && std::abs(manip->getFov() - fov) < 1e-4)
     return;
   manip->setFov(fov);
@@ -421,12 +491,20 @@ void FvView::applyLens()
 void FvView::applyDof()
 {
   float aperture = 0;
-  if(m_dof && m_fStop > 0)
+  if(m_lens.dof && m_lens.fStop > 0)
   {
-    const double radius = (m_focal / (2.0 * m_fStop)) * 1e-3;
+    const double radius = (m_lens.focalLength / (2.0 * m_lens.fStop)) * 1e-3;
     aperture            = float(radius * radius);
   }
-  m_renderer->setDepthOfField(float(std::max(m_focusDistance, 1e-3)), aperture, m_focus != "manual");
+  m_renderer->setDepthOfField(float(std::max(m_lens.focusDistance, 1e-3)), aperture, m_lens.focusMode != "manual");
+}
+
+void FvView::deselect(const std::string& prop)
+{
+  if(prop.empty() || m_selectedProp != prop)
+    return;
+  m_renderer->selectSceneNodeFromScript(-1);
+  publishSelection(true);
 }
 
 void FvView::publishSelection(bool force)
@@ -434,16 +512,24 @@ void FvView::publishSelection(bool force)
   const int gltf = m_renderer->selectedNodeIndex();
   if(!force && gltf == m_lastGltf)
     return;
-  m_lastGltf = gltf;
-  const auto it = m_figureOf.find(gltf);
-  if(gltf < 0 || it == m_figureOf.end() || it->second < 0 || it->second >= int(m_nodes.size()))
+  m_lastGltf                 = gltf;
+  const auto [prop, node] = locate(gltf);
+  if(gltf < 0 || prop < 0)
   {
-    m_events->snapshot("selection", {{"node", nullptr}});
+    m_selectedProp.clear();
+    m_events->snapshot("selection", {{"prop", nullptr}, {"node", nullptr}});
     return;
   }
-  const NodeRec& n   = m_nodes[it->second];
-  fv::Json       sel = {{"figure", m_id}, {"node", it->second}, {"name", n.name}, {"mesh", n.mesh}, {"kind", n.kind}};
-  if(const auto bone = m_bones.idOf.find(it->second); bone != m_bones.idOf.end())
+  const PropNodes& p = m_props[size_t(prop)];
+  m_selectedProp     = p.id;
+  if(node < 0 || node >= int(p.nodes.size()))
+  {
+    m_events->snapshot("selection", {{"prop", p.id}, {"node", nullptr}});
+    return;
+  }
+  const NodeRec& n   = p.nodes[size_t(node)];
+  fv::Json       sel = {{"prop", p.id}, {"node", node}, {"name", n.name}, {"mesh", n.mesh}, {"kind", n.kind}};
+  if(const auto bone = p.bones.idOf.find(node); bone != p.bones.idOf.end())
     sel["bone"] = bone->second;
   m_events->snapshot("selection", sel);
 }

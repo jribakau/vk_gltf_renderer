@@ -89,6 +89,22 @@ uint64_t EventHub::patch(const std::string& topic, const Json& data)
   return publish(topic, "patch", data);
 }
 
+uint64_t EventHub::drop(const std::string& topic)
+{
+  uint64_t rev = 0;
+  {
+    std::lock_guard lock(m_mutex);
+    if(!m_state.erase(topic))
+      return 0;
+    rev = ++m_rev;
+    m_events.push_back({rev, topic, "drop", nullptr});
+    while(m_events.size() > m_keep)
+      m_events.pop_front();
+  }
+  m_cv.notify_all();
+  return rev;
+}
+
 uint64_t EventHub::publish(const std::string& topic, const char* kind, Json data)
 {
   uint64_t rev = 0;
@@ -139,6 +155,8 @@ std::vector<Event> EventHub::next(uint64_t& rev, std::chrono::milliseconds timeo
   // the oldest event kept is m_events.front(); the subscriber needs rev + 1
   if(m_events.empty() || m_events.front().rev > rev + 1)
   {
+    // what it holds may include topics dropped since: it starts over
+    out.push_back({m_rev, "", "reset", nullptr});
     for(const auto& [topic, data] : m_state)
       out.push_back({m_rev, topic, "snapshot", data});
     rev = m_rev;

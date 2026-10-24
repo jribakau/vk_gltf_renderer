@@ -28,7 +28,8 @@
 using namespace std::chrono_literals;
 
 namespace {
-constexpr int kProtocolVersion = 1;
+// 2: the scene of props (fv_host.hpp). An app checks it against what it was built for.
+constexpr int kProtocolVersion = 2;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

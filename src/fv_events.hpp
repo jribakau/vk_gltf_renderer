@@ -31,6 +31,9 @@
 // hub also applies to the snapshot it keeps, so a later subscriber starts from the current state.
 // Merge patches replace arrays whole, so snapshots are objects keyed by id, not lists.
 //
+// A topic can also be dropped (a prop that left the scene takes its panels' topics with it): a
+// "drop" event, after which the topic has no state and later subscribers don't see it.
+//
 // Every event carries a sequence number (rev) increasing across topics. A command's answer carries
 // the rev current when it finished, so the UI can tell which events already include its effect.
 //
@@ -71,7 +74,7 @@ struct Event
 {
   uint64_t    rev{};
   std::string topic;
-  std::string kind;  // "snapshot" or "patch"
+  std::string kind;  // "snapshot", "patch", "drop", or "reset" before a lagging subscriber's resync
   Json        data;
 };
 
@@ -84,13 +87,16 @@ public:
   uint64_t snapshot(const std::string& topic, Json data);
   // A merge patch on the topic's state (an empty snapshot if it has none yet). Returns the rev.
   uint64_t patch(const std::string& topic, const Json& data);
+  // The topic goes, state and all. Returns the rev, or 0 when there was no such topic.
+  uint64_t drop(const std::string& topic);
 
   // The latest rev published (0 before any).
   uint64_t rev() const;
   // Every topic's current state as snapshot events, and the rev they are current up to.
   std::vector<Event> snapshots(uint64_t* upTo) const;
   // The events after `rev`, waiting up to `timeout` for one. A subscriber so far behind that the
-  // events it missed are gone gets every snapshot instead, and `rev` moves to their rev. Empty
+  // events it missed are gone gets a "reset" event (no topic: forget every topic) and every
+  // snapshot instead, and `rev` moves to their rev. Empty
   // when nothing happened in time, or once closed.
   std::vector<Event> next(uint64_t& rev, std::chrono::milliseconds timeout);
   // Wakes every waiting subscriber and makes `next` return at once from now on.

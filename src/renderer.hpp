@@ -56,6 +56,7 @@
 
 // Shader Input/Output
 #include "shaders/shaderio.h"  // Shared between host and device
+#include "shaders/gizmo_lines_shaderio.h.slang"
 
 #include "benchmarking.hpp"
 #include "renderer_pathtracer.hpp"
@@ -453,19 +454,26 @@ public:
   void setDepthOfField(float focalDistance, float aperture, bool autoFocus);
   int  selectedNodeIndex();  // The node of a node or primitive selection, or -1
   void fitCamera(bool wholeScene);
+  /// What is shown, where it is now: the union of the visible render nodes' boxes through their
+  /// current node transforms (getSceneBounds is the scene as it loaded).
+  nvutils::Bbox visibleSceneBounds();
   void selectSceneNodeFromScript(int nodeIndex);  // Script-driven selection (Inspector/Scene Browser)
 
   /// Lets a host own what the transform gizmo edits. `attach` gives the handles a node shows
-  /// (TransformHelperVk::ShowRotation, ShowTranslation, ...), 0 for no gizmo on it. `edit` gets the
-  /// node's new local translation and rotation instead of the scene and undo stack taking them;
-  /// `done` on the release that ends the drag.
+  /// (TransformHelperVk::ShowRotation, ShowTranslation, ...), 0 for no gizmo on it; asked every
+  /// frame, and new handles attach at once. `edit` gets the node's new local translation, rotation
+  /// and scale instead of the scene and undo stack taking them; `done` on the release that ends the drag.
   struct GizmoHooks
   {
-    std::function<uint32_t(int node)>                                                attach;
-    std::function<void(int node, const glm::vec3& t, const glm::quat& r, bool done)> edit;
+    std::function<uint32_t(int node)>                                                                    attach;
+    std::function<void(int node, const glm::vec3& t, const glm::quat& r, const glm::vec3& s, bool done)> edit;
   };
   void setGizmoHooks(GizmoHooks hooks);
   void setShowGizmo(bool on);
+  /// World-space line segments a host draws over the image (two vertices each), for what has no
+  /// mesh: a camera's frustum, a light's marker. Drawn in both renderers, never in the path-traced
+  /// image itself. Application thread only.
+  void setHelperLines(std::vector<shaderio::lines::LineVertex> vertices);
   /// The transform gizmo's pointer input without ImGui (a headless stream): `px` in render pixels,
   /// origin top-left. True when the gizmo took the event (a press on a handle, a drag, its release),
   /// so the camera and click selection should not see it.
@@ -776,6 +784,7 @@ private:
   glm::vec3 m_gizmoScale{1.f};
   glm::mat4 m_gizmoParentWorldMatrix{1.f};
   int       m_gizmoNodeIndex = -1;
+  uint32_t  m_gizmoFlags     = 0;
   GizmoHooks m_gizmoHooks;
   glm::vec2  m_gizmoInputLast{0.f};
   std::function<bool(int renderNode, const glm::vec3& hit)> m_pickObserver;

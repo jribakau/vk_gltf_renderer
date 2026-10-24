@@ -83,6 +83,9 @@ set(TEST_SOURCES
     # Figure Viewer host protocol: commands and the event stream, without a server
     test_fv_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_events.cpp
+    # Figure Viewer scene of props composed into the renderer's one glTF
+    test_fv_compose.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_compose.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough
     test_environment_sky.cpp
     # Phase 5c: .sky.json presets -- round trip, the sun angle OMI has no field for, strangers' keys

@@ -28,6 +28,7 @@
 
 #include "gizmo_transform_vk.hpp"
 #include "gizmo_grid_vk.hpp"
+#include "gizmo_lines_vk.hpp"
 
 //--------------------------------------------------------------------------------------------------
 // VisualHelpers: Manages 3D transform gizmo and grid visualization helpers
@@ -40,6 +41,7 @@ class VisualHelpers
 {
 public:
   GridHelperVk      grid;
+  LineHelperVk      lines;  // a host's world-space lines: camera frustums, light markers
   TransformHelperVk transform;
 
   struct Resources

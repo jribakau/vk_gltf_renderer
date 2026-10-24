@@ -35,9 +35,13 @@
 //   material.reset  {material}                    drops the edits of a material (or of all, if none)
 //   Colours are "#rrggbb" in sRGB, as the colour pickers hold them. alphaMode: opaque, cutout, blend.
 //
-// Topic "materials": {figure, items: {"m:3": {name, kind, shader, meshes, textures, values, edited}}}
-// as a snapshot when a figure loads, then merge patches; `values` are what the renderer was given
-// (edits included), `edited` lists the values that are edits, `meshes` the scene meshes using it.
+// One per prop with materials (a figure, a model). Its materials sit in the renderer's scene at
+// `Placement::materials` on (fv_compose.hpp), and "m:3" is the prop's own third material.
+//
+// Topic "materials/<prop>": {figure, items: {"m:3": {name, kind, shader, meshes, textures, values,
+// edited}}} as a snapshot when the prop is attached, then merge patches; `values` are what the
+// renderer was given (edits included), `edited` lists the values that are edits, `meshes` the
+// prop's meshes using it. The topic is dropped on detach.
 //
 
 #include <atomic>
@@ -81,16 +85,24 @@ public:
     std::function<void(const fv::build::TextureRequest&, const fv::build::TextureImage&)> remember;
   };
 
+  // Where a prop's own arrays start in the renderer's scene.
+  struct Placement
+  {
+    int materials = 0, textures = 0, samplers = 0, meshes = 0;
+  };
+
   explicit FvMaterials(Hooks hooks);
   ~FvMaterials();
 
-  // A figure was loaded: `scene` is its scene graph (which outlives the attachment), `built` what
-  // the build made of its materials. Publishes the topic. Application thread.
+  // A figure was built into the scene: `scene` is its scene graph (which outlives the attachment),
+  // `built` what the build made of its materials. Publishes the topic. Application thread.
   void attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped,
-              fv::mat::SkinMode skin);
-  // A model the renderer loaded from a glTF or OBJ file: its materials as they are, with the same
-  // edits laid over them directly (there is no Surface to lower). Application thread.
-  void attachModel(const std::string& id);
+              fv::mat::SkinMode skin, Placement at);
+  // A model read from a glTF or OBJ file, `count` materials and `meshes` meshes of it at `at`: its
+  // materials as they are, with the same edits laid over them directly (there is no Surface to
+  // lower). Attached again (the scene was composed again), it keeps its edits and writes them.
+  void attachModel(const std::string& id, Placement at, int count, int meshes);
+  // The topic goes too.
   void detach();
 
   fv::Json set(const fv::Json& args);
@@ -124,6 +136,7 @@ private:
 
   // application thread
   std::string                                         m_figure;
+  Placement                                           m_at;
   fv::SceneGraph*                                     m_scene = nullptr;
   // the materials attached: a wear appends to the scene graph before the scene is built again, and
   // what it appended has no lowering here until the next attach
