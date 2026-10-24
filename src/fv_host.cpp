@@ -706,12 +706,47 @@ struct FvHost::Impl
       queue.push_back(std::move(f));
   }
 
+  // The jobs and notices topics keep the latest few finished jobs and notices, not every one of the
+  // session: each patch merges the whole topic on both ends, and a reconnect resends it. A finished
+  // job stays a while, so a client that waits on it after the answer still sees how it ended.
+  static constexpr size_t kKeptJobs    = 32;
+  static constexpr size_t kKeptNotices = 20;
+  std::mutex              keptMutex;
+  std::deque<uint64_t>    finishedJobs;
+  std::deque<uint64_t>    shownNotices;
+
   void notice(const std::string& text, const char* level = "warning")
   {
-    protocol->events().patch("notices", {{std::to_string(++notices), {{"text", text}, {"level", level}}}});
+    const uint64_t id    = ++notices;
+    Json           patch = {{std::to_string(id), {{"text", text}, {"level", level}}}};
+    {
+      std::lock_guard lock(keptMutex);
+      shownNotices.push_back(id);
+      while(shownNotices.size() > kKeptNotices)
+      {
+        patch[std::to_string(shownNotices.front())] = nullptr;
+        shownNotices.pop_front();
+      }
+    }
+    protocol->events().patch("notices", patch);
   }
 
-  void job(uint64_t id, const Json& state) { protocol->events().patch("jobs", {{std::to_string(id), state}}); }
+  void job(uint64_t id, const Json& state)
+  {
+    Json patch = {{std::to_string(id), state}};
+    if(state.contains("state") && state["state"] != "running")
+    {
+      std::lock_guard lock(keptMutex);
+      if(std::find(finishedJobs.begin(), finishedJobs.end(), id) == finishedJobs.end())
+        finishedJobs.push_back(id);
+      while(finishedJobs.size() > kKeptJobs)
+      {
+        patch[std::to_string(finishedJobs.front())] = nullptr;
+        finishedJobs.pop_front();
+      }
+    }
+    protocol->events().patch("jobs", patch);
+  }
 
   // ---- props (application thread)
   std::shared_ptr<Prop> findProp(const std::string& id) const;
@@ -1913,10 +1948,15 @@ Json FvHost::Impl::propSet(const Json& args)
   }
   if(args.contains("order") && args["order"].is_number_integer())
   {
-    const int to = std::clamp(args["order"].get<int>(), 0, int(props.size()) - 1);
-    props.erase(std::remove(props.begin(), props.end(), p), props.end());
-    props.insert(props.begin() + to, p);
-    requestCompose("Reordering");
+    // a scene file sends every prop's place; only one that moves needs the scene composed again
+    const int to   = std::clamp(args["order"].get<int>(), 0, int(props.size()) - 1);
+    const int from = int(std::find(props.begin(), props.end(), p) - props.begin());
+    if(from != to)
+    {
+      props.erase(props.begin() + from);
+      props.insert(props.begin() + to, p);
+      requestCompose("Reordering");
+    }
   }
   publishScene();
   return {{"ok", true}};
