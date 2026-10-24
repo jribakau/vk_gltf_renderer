@@ -57,6 +57,7 @@
 #include "fv_materials.hpp"
 #include "fv_protocol.hpp"
 #include "fv_view.hpp"
+#include "fv_workers.hpp"
 #include "gltf_environment_sky.hpp"
 #include "gltf_scene.hpp"
 #include "gltf_scene_animation.hpp"
@@ -448,8 +449,8 @@ struct FvHost::Impl
   };
   std::optional<GizmoEdit> gizmoEdit;
 
-  std::mutex               loadMutex;
-  std::vector<std::thread> loaders;
+  // loads, wears, exports and environment decodes, each on a thread of its own
+  FvWorkers loaders;
   std::atomic<uint64_t>    loadGeneration{0};
   std::atomic<uint64_t>    jobs{0};
   std::atomic<uint64_t>    notices{0};
@@ -621,8 +622,7 @@ Json FvHost::Impl::load(const Json& args)
   const Json source = args.contains("rel") ? Json{{"rel", args["rel"]}} : Json{{"path", args["path"]}};
   job(jobId, {{"label", label}, {"state", "running"}});
 
-  std::lock_guard lock(loadMutex);
-  loaders.emplace_back([this, s, roots = library->first, rel = library->second, seq, jobId, label, replace, source] {
+  loaders.spawn([this, s, roots = library->first, rel = library->second, seq, jobId, label, replace, source] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
@@ -747,8 +747,12 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
                            fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
                            std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source)
 {
+  // a newer load or import took over meanwhile: this one is dropped, and its job ends
   if(generation != loadGeneration)
+  {
+    job(jobId, {{"state", "done"}});
     return;
+  }
   auto f     = std::make_shared<Loaded>();
   f->fig     = std::move(fig);
   f->images  = std::move(images);
@@ -784,6 +788,12 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   if(figure && figure->busyOn)
     job(figure->busyJob, {{"state", "done"}});
   f->id  = "fig:" + std::to_string(++figures);
+  // the figure it replaces: its panels' topics are emptied, since topics cannot be removed
+  if(figure)
+  {
+    protocol->events().snapshot("pose/" + figure->id, {{"figure", figure->id}, {"bones", Json::object()}});
+    protocol->events().snapshot("morphs/" + figure->id, {{"figure", figure->id}, {"channels", Json::object()}});
+  }
   if(f->fig->morphs && !f->fig->loaded.morphs.mainMeshes.empty())
   {
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
@@ -797,14 +807,18 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     libraryOfFigure = std::move(lib);
   }
   materials->attach(figure->id, &figure->fig->loaded.scene, built, texturesFlipped, skin);
+  // the render mode may have changed while it loaded
+  materials->setSkinMode(skinMode.load());
   {
     std::lock_guard lock(morphMutex);
     figureId = figure->id;
     pendingMorphs.clear();
   }
   morphTouched = true;
-  // the renderer sets its own camera up over the next frames; frame the figure after that
+  // the renderer sets its own camera up over the next frames; frame the figure after that (not
+  // where a wardrobe rebuild of the figure before it left the camera)
   frameIn = 2;
+  cameraRestore.reset();
   publishFigure();
   publishAnimation(true);
   job(jobId, {{"state", "done"}, {"figure", figure->id}});
@@ -951,8 +965,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
   const std::string label = "Wearing " + utf8Of(pathOf(requests.front().rel).stem());
   job(jobId, {{"label", label}, {"state", "running"}});
   const fv::mat::SkinMode skin = skinMode.load();
-  std::lock_guard         lock(loadMutex);
-  loaders.emplace_back([this, s, requests = std::move(requests), target, lib, jobId, label, skin, beforeBuild = std::move(beforeBuild), after = std::move(after)] {
+  loaders.spawn([this, s, requests = std::move(requests), target, lib, jobId, label, skin, beforeBuild = std::move(beforeBuild), after = std::move(after)] {
     std::lock_guard serial(wearMutex);
     bool            any = false;
     auto            fail = [&](const std::string& what) {
@@ -966,14 +979,17 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       try
       {
         // an add-on whose node the figure already has is not put on twice
-        if(!request.name.empty() && onApp([&] {
+        // by value: a timed-out onApp leaves the task queued after this loop moves on
+        if(!request.name.empty() && onApp([this, target, name = request.name] {
              return figure == target
                     && std::any_of(target->fig->items.begin(), target->fig->items.end(),
-                                   [&](const fv::WornItem& i) { return i.nodeNames.count(request.name) > 0; });
+                                   [&](const fv::WornItem& i) { return i.nodeNames.count(name) > 0; });
            }))
           continue;
         job(jobId, {{"label", utf8Of(pathOf(request.rel).stem()) + ": loading"}, {"state", "running"}});
-        auto prepared = target->fig->prepareWear(request.rel, s.subdivision);
+        // the figure as it is now, copied on the application thread: dials move its joint centres meanwhile
+        auto base = onApp([target] { return target->fig->wearBase(); });
+        auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base);
         // the material presets that go with it, applied to the wearable before its textures are looked up
         for(const std::string& presetRel : request.presets)
           try
@@ -1047,12 +1063,20 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         notice(utf8Of(pathOf(request.rel).stem()) + ": " + e.what(), "error");
       }
     }
+    // `after` runs whatever happened, so a restore waiting on this wear still finishes
     if(!any)
-      return fail("Nothing was put on.");
+    {
+      fail("Nothing was put on.");
+      if(after)
+        post(after);
+      return;
+    }
     post([this, target, jobId, label, beforeBuild, after] {
       if(figure != target)
       {
         job(jobId, {{"label", label}, {"state", "failed"}, {"error", "the figure was replaced"}});
+        if(after)
+          after();
         return;
       }
       if(beforeBuild)
@@ -1190,6 +1214,7 @@ void FvHost::Impl::runImport(const std::string& path, uint64_t jobId)
     view->setModel(id, utf8Of(pathOf(path).stem()), scn->getModel());
   publishAnimation(true);
   frameIn = 2;
+  cameraRestore.reset();
   job(jobId, {{"label", label}, {"state", "done"}, {"figure", id}});
 }
 
@@ -1306,8 +1331,7 @@ Json FvHost::Impl::exportGlb(const Json& args)
   const uint64_t    jobId    = ++jobs;
   const std::string label    = "Exporting " + utf8Of(pathOf(path).filename());
   job(jobId, {{"label", label}, {"state", "running"}});
-  std::lock_guard lock(loadMutex);
-  loaders.emplace_back([this, prepared, lib, path, jobId, label] {
+  loaders.spawn([this, prepared, lib, path, jobId, label] {
     try
     {
       fv::build::ExportOptions options;
@@ -1376,7 +1400,10 @@ Json FvHost::Impl::sceneRestore(const Json& args)
   const Json worn = args.value("worn", Json::array());
   auto       apply = [this, target, args, jobId] {
     if(figure != target)
+    {
+      job(jobId, {{"label", "Restoring the scene"}, {"state", "failed"}, {"error", "the figure was replaced"}});
       return;
+    }
     std::vector<std::string> problems;
     fv::Figure&              fig = *target->fig;
     if(args.contains("morphs") && args["morphs"].is_object())
@@ -1642,8 +1669,7 @@ void FvHost::Impl::requestEnvironment()
   envLoading              = true;
   envJob                  = ++jobs;
   job(envJob, {{"label", label}, {"state", "running"}});
-  std::lock_guard lock(loadMutex);
-  loaders.emplace_back([this, path, want, req, jobId = envJob, label] {
+  loaders.spawn([this, path, want, req, jobId = envJob, label] {
     auto image = std::make_shared<EnvImage>(loadEnvImage(pathOf(path)));
     post([this, image, path, want, req, jobId, label] {
       if(req != envRequest)
@@ -2082,6 +2108,11 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
           return cookedTexture(st, req, flipped, false).image;
         return lib ? fallbackTexture(st, *lib, req, false) : std::nullopt;
       },
+      .remember =
+          [impl](const fv::build::TextureRequest& req, const fv::build::TextureImage& image) {
+            if(impl->figure)
+              impl->figure->images.insert_or_assign(fv::build::requestKey(req), image);
+          },
   });
   cmds.add("load", [impl](const Json& args) { return impl->load(args); });
   for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
@@ -2246,11 +2277,7 @@ void FvHost::onDetach()
     s.accepting = false;
   }
   s.loadGeneration++;  // loads still running drop their result
-  std::lock_guard lock(s.loadMutex);
-  for(auto& t : s.loaders)
-    if(t.joinable())
-      t.join();
-  s.loaders.clear();
+  s.loaders.joinAll();
   s.queue.clear();
   s.renderer->setGizmoHooks({});
   s.renderer->setPickObserver({});

@@ -44,15 +44,17 @@
 //   dforce.enable   {on}; dforce.resimulate      cloth drapes over the body (figure/dforce)
 //   scene.state / scene.restore                  a scene file's contents: source, worn, dials, pose, material edits
 //   anim.select|play|pause|stop|seek|speed|loop  the clips of an imported glTF or OBJ model
-//   export.glb      {path, ...}                  a GLB of the figure (or the imported model) -> {job}
+//   export.glb      {path, ...}                  a GLB of the figure -> {job}; of an imported model, saved
+//                                                by the renderer at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
 // Lighting: the environment, tone mapping, the raster shadow map and the ground are renderer
-// parameters; the sun is a directional light the host adds to every model it loads, marked as the
-// sky's sun. An HDR decodes on a worker (a "jobs" entry) and uploads on the application thread. An
+// parameters; the sun is a directional light the host adds to every figure it builds, marked as the
+// sky's sun. An imported glTF or OBJ is loaded by the renderer as it is, with its own lights and no
+// sun of the host's, so the sun settings don't reach it. An HDR decodes on a worker (a "jobs" entry) and uploads on the application thread. An
 // environment preset .duf sets the HDR from its library and turns the sun off.
 //
 // Camera, selection and display commands live in fv_view.hpp. A .duf that is a pose preset is

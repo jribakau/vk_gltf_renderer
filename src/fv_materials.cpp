@@ -227,10 +227,7 @@ FvMaterials::FvMaterials(Hooks hooks)
 FvMaterials::~FvMaterials()
 {
   *m_alive = false;
-  std::lock_guard lock(m_threadsMutex);
-  for(std::thread& t : m_threads)
-    if(t.joinable())
-      t.join();
+  m_threads.joinAll();
 }
 
 void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped, fv::mat::SkinMode skin)
@@ -249,6 +246,7 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
   m_applied.assign(scene->materials.size(), {});
   m_meshesOf.assign(scene->materials.size(), {});
   m_forceDouble.assign(scene->materials.size(), false);
+  m_count = scene->materials.size();
   for(size_t mi = 0; mi < scene->materials.size(); mi++)
     m_applied[mi] = stateOf(fv::mat::lower(scene->materials[mi].surface, scene->materials[mi].edits, m_options[mi]));
   for(size_t i = 0; i < scene->meshes.size(); i++)
@@ -289,6 +287,7 @@ void FvMaterials::attachModel(const std::string& id)
     }
   m_scene = &m_modelScene;
   m_meshesOf.assign(m_modelScene.materials.size(), {});
+  m_count = m_modelScene.materials.size();
   if(scn && scn->valid())
     for(size_t i = 0; i < scn->getModel().meshes.size(); i++)
       for(const tinygltf::Primitive& p : scn->getModel().meshes[i].primitives)
@@ -420,6 +419,7 @@ void FvMaterials::detach()
   m_modelScene = {};
   m_generation++;
   m_scene = nullptr;
+  m_count = 0;
   m_options.clear();
   m_textures.clear();
   m_applied.clear();
@@ -448,7 +448,7 @@ std::vector<int> FvMaterials::targets(const Json& args) const
       index = v.get<int>();
     else if(v.is_string() && v.get<std::string>().rfind("m:", 0) == 0)
       index = std::atoi(v.get<std::string>().c_str() + 2);
-    if(!m_scene || index < 0 || index >= int(m_scene->materials.size()))
+    if(!m_scene || index < 0 || index >= int(m_count))
       throw std::runtime_error("no such material " + v.dump());
     out.push_back(index);
   };
@@ -496,7 +496,7 @@ Json FvMaterials::reset(const Json& args)
     throw std::runtime_error("no figure loaded");
   std::vector<int> index = targets(args);
   if(index.empty())
-    for(size_t i = 0; i < m_scene->materials.size(); i++)
+    for(size_t i = 0; i < m_count; i++)
       if(!m_scene->materials[i].edits.empty())
         index.push_back(int(i));
   std::set<int> changed;
@@ -533,14 +533,14 @@ Json FvMaterials::editState() const
   if(!m_scene)
     return out;
   const auto keys = materialKeys(*m_scene);
-  for(size_t i = 0; i < m_scene->materials.size(); i++)
+  for(size_t i = 0; i < m_count; i++)
   {
     if(m_scene->materials[i].edits.empty())
       continue;
     const Json shown = item(int(i));
     Json       edited = Json::object();
     for(const Json& k : shown["edited"])
-      edited[k.get<std::string>()] = shown["values"][k.get<std::string>()];
+      edited[k.get<std::string>()] = shown["values"].value(k.get<std::string>(), Json());
     out[keys[i]] = std::move(edited);
   }
   return out;
@@ -587,7 +587,7 @@ void FvMaterials::setSkinMode(fv::mat::SkinMode skin)
     return;
   // the ones that differ: refresh() skips what it would write unchanged
   std::set<int> all;
-  for(size_t i = 0; i < m_scene->materials.size(); i++)
+  for(size_t i = 0; i < m_count; i++)
     all.insert(int(i));
   refresh(all);
 }
@@ -597,7 +597,7 @@ void FvMaterials::refresh(const std::set<int>& materials)
   if(m_model)
   {
     for(int mi : materials)
-      if(mi >= 0 && mi < int(m_scene->materials.size()))
+      if(mi >= 0 && mi < int(m_count))
         writeModel(mi);
     publish(materials, false);
     return;
@@ -607,7 +607,7 @@ void FvMaterials::refresh(const std::set<int>& materials)
   std::set<int>                          shown;
   for(int mi : materials)
   {
-    if(mi < 0 || mi >= int(m_scene->materials.size()))
+    if(mi < 0 || mi >= int(m_count))
       continue;
     m_options[mi].skin = m_skin;
     const fv::Material& m = m_scene->materials[mi];
@@ -674,8 +674,7 @@ void FvMaterials::bake(std::vector<fv::build::TextureRequest> requests)
     m_hooks.job(jobId, {{"label", "Baking " + std::to_string(requests.size()) + (requests.size() == 1 ? " texture" : " textures")}, {"state", "running"}});
   const bool flipped = m_flipped;
   auto       alive   = m_alive;
-  std::lock_guard lock(m_threadsMutex);
-  m_threads.emplace_back([this, requests = std::move(requests), generation, jobId, flipped, alive] {
+  m_threads.spawn([this, requests = std::move(requests), generation, jobId, flipped, alive] {
     std::vector<std::pair<fv::build::TextureRequest, std::optional<fv::build::TextureImage>>> results;
     for(const auto& r : requests)
     {
@@ -727,6 +726,8 @@ void FvMaterials::baked(std::vector<std::pair<fv::build::TextureRequest, std::op
         if(!model.samplers.empty())
           model.textures[texture].sampler = 0;
         m_textures[key] = {texture, image->flipGreen};
+        if(m_hooks.remember)
+          m_hooks.remember(req, *image);
         continue;
       }
     }
@@ -798,11 +799,11 @@ void FvMaterials::publish(const std::set<int>& materials, bool all)
     return;
   Json items = Json::object();
   if(all)
-    for(size_t i = 0; i < m_scene->materials.size(); i++)
+    for(size_t i = 0; i < m_count; i++)
       items["m:" + std::to_string(i)] = item(int(i));
   else
     for(int i : materials)
-      if(i >= 0 && i < int(m_scene->materials.size()))
+      if(i >= 0 && i < int(m_count))
       {
         Json it = item(i);
         // a merge patch: an edit list that emptied replaces the old one, whole

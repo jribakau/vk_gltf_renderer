@@ -56,6 +56,7 @@
 #include <figure/scene/graph.hpp>
 
 #include "fv_events.hpp"
+#include "fv_workers.hpp"
 
 class GltfRenderer;
 
@@ -75,6 +76,9 @@ public:
     // a texture for a request, cooked if need be: blocks, so only worker threads call it. `flipped`
     // says whether the figure's UVs expect rows bottom-up (the build's texturesFlipped).
     std::function<std::optional<fv::build::TextureImage>(const fv::build::TextureRequest&, bool flipped)> texture;
+    // a texture a bake made and the renderer took: kept with the figure, so the scene built again
+    // after a wardrobe change has it too (application thread)
+    std::function<void(const fv::build::TextureRequest&, const fv::build::TextureImage&)> remember;
   };
 
   explicit FvMaterials(Hooks hooks);
@@ -121,6 +125,9 @@ private:
   // application thread
   std::string                                         m_figure;
   fv::SceneGraph*                                     m_scene = nullptr;
+  // the materials attached: a wear appends to the scene graph before the scene is built again, and
+  // what it appended has no lowering here until the next attach
+  size_t                                              m_count = 0;
   // an imported model: its materials stand in a scene graph of their own (names and edits), and the
   // glTF materials the edits are laid over are kept as they loaded
   bool                                                m_model = false;
@@ -139,6 +146,5 @@ private:
   uint64_t                                            m_generation = 0;
 
   std::shared_ptr<std::atomic<bool>> m_alive;  // false once destroyed, for work still queued
-  std::mutex               m_threadsMutex;
-  std::vector<std::thread> m_threads;
+  FvWorkers m_threads;  // texture bakes
 };

@@ -132,7 +132,16 @@ const WornItem* Figure::item(int id) const
   return nullptr;
 }
 
-std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision)
+std::shared_ptr<const SceneGraph> Figure::wearBase() const
+{
+  auto out = std::make_shared<SceneGraph>(loaded.scene);
+  for(Node& n : out->nodes)
+    if(n.joint)
+      n.joint = std::make_shared<JointData>(*n.joint);
+  return out;
+}
+
+std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base)
 {
   if(loaded.mainRig < 0 || loaded.morphs.mainMeshes.empty())
     throw std::runtime_error("Load a figure first: clothing and hair go on a figure with a skeleton.");
@@ -140,7 +149,9 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   out->key = "w" + std::to_string(++m_wears);
   dson::LoadOptions options;
   options.subdivision = subdivision;
-  options.attach      = dson::AttachTarget{&loaded.scene, &loaded.rigs[size_t(loaded.mainRig)], out->key};
+  // the figure as it was when the wear started, or as it is when the caller owns it now
+  const SceneGraph& scene = base ? *base : loaded.scene;
+  options.attach      = dson::AttachTarget{&scene, &loaded.rigs[size_t(loaded.mainRig)], out->key};
   const std::string file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()));
   out->loaded            = dson::loadDson(*m_store, file, options);
   if(out->loaded.items.empty())
@@ -151,12 +162,12 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   const int bodyMesh = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
   {
     const std::string  morphDir = loaded.morphs.morphDir;
-    wardrobe::FitFigure figure{loaded.scene, loaded.rigs[size_t(loaded.mainRig)], bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
+    wardrobe::FitFigure figure{scene, loaded.rigs[size_t(loaded.mainRig)], bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
     for(const dson::Item& it : out->loaded.items)
       out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
   }
   // every conforming part is bound to the body's unmorphed cage, in parallel
-  const auto& body = *loaded.scene.meshes[size_t(bodyMesh)].geo;
+  const auto& body = *scene.meshes[size_t(bodyMesh)].geo;
   out->bindings.resize(out->loaded.parts.size());
   std::vector<std::future<void>> jobs;
   for(size_t i = 0; i < out->loaded.parts.size(); i++)
@@ -170,6 +181,9 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs));
     }));
   }
+  // every job ends before any error is rethrown: they write into `out`
+  for(auto& j : jobs)
+    j.wait();
   for(auto& j : jobs)
     j.get();
   return out;

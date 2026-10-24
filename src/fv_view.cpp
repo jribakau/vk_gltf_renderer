@@ -283,7 +283,7 @@ void FvView::setModel(const std::string& id, const std::string& name, const tiny
       return;
     const tinygltf::Node& n    = model.nodes[size_t(node)];
     std::string           kind = n.mesh >= 0 ? (n.skin >= 0 ? "skinned" : "mesh") : "group";
-    const std::string     label = n.name.empty() ? (n.mesh >= 0 && !model.meshes[size_t(n.mesh)].name.empty() ? model.meshes[size_t(n.mesh)].name : kind) : n.name;
+    const std::string     label = n.name.empty() ? (n.mesh >= 0 && n.mesh < int(model.meshes.size()) && !model.meshes[size_t(n.mesh)].name.empty() ? model.meshes[size_t(n.mesh)].name : kind) : n.name;
     m_nodes[size_t(node)]       = {label, kind, n.mesh};
     nodes[std::to_string(node)] = {{"name", label}, {"parent", parent[size_t(node)]}, {"kind", kind}, {"order", order++}, {"depth", depth}};
     if(n.mesh >= 0 && n.mesh < int(model.meshes.size()) && !counted[size_t(n.mesh)])

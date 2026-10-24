@@ -123,13 +123,18 @@ public:
   // ---- wardrobe (figure_wardrobe.cpp)
   std::vector<WornItem> items;
 
-  // A wearable loaded and bound to the body. Reads the figure (its skeleton, its body's cage) and
-  // changes nothing, so it can run on a worker while the figure is in use; commitWear puts it on.
+  // A wearable loaded and bound to the body; commitWear puts it on. It reads the figure's skeleton,
+  // joint centres and body cage and changes nothing. On a worker while the figure is in use, pass
+  // `base`, a wearBase() taken on the figure's thread: formulas move joint centres as dials change,
+  // so the live scene graph is not safe to read from another thread.
   struct PreparedWear;
+  // The scene graph a wear reads, copied: joints copied, built meshes shared (only commitWear,
+  // on the owning thread, changes a cage). Owning thread.
+  std::shared_ptr<const SceneGraph> wearBase() const;
   // The wearable's own scene, for resolving its textures before it is merged.
   static const SceneGraph& preparedScene(const PreparedWear& wear);
   static SceneGraph&       preparedScene(PreparedWear& wear);
-  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision);
+  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base = nullptr);
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
   // figure's owning thread. The renderer's model has to be built again afterwards.
   WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel);
