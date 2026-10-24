@@ -106,6 +106,12 @@ struct Loaded
   bool                                                                    texturesFlipped = false;
   // how it was opened ({rel} or {path}), for a scene file
   Json source;
+  // material presets opened onto it, library paths in order, for a scene file
+  std::vector<std::string> materialPresets;
+  // the add-ons its file lists are still going on; a restore waits for them, as it would otherwise
+  // wear them a second time without their presets
+  bool                               addonsPending = false;
+  std::vector<std::function<void()>> afterAddons;
 };
 
 std::filesystem::path pathOf(const std::string& utf8)
@@ -178,6 +184,14 @@ std::string normRel(const std::string& path)
   std::replace(rel.begin(), rel.end(), '\\', '/');
   const size_t at = rel.find_first_not_of('/');
   return at == std::string::npos ? std::string{} : rel.substr(at);
+}
+
+// normRel, compared as the library compares paths: without case
+std::string relKey(const std::string& path)
+{
+  std::string key = normRel(path);
+  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return key;
 }
 
 // encodeURI for an absolute path used as an image URI (the renderer percent-decodes URIs).
@@ -845,7 +859,8 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
     f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
     f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
-    f->dforce->poke();
+    // off until the Wardrobe toggle (or a scene file) turns it on: its drape still mangles garments
+    f->dforce->setEnabled(false);
   }
   figure = std::move(f);
   modelPath.clear();
@@ -875,7 +890,12 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     std::vector<WearRequest> requests;
     for(const fv::dson::PostLoadAddon& a : figure->fig->addons)
       requests.push_back({a.file, a.name, a.presets});
-    startWear(figure, std::move(requests));
+    figure->addonsPending = true;
+    startWear(figure, std::move(requests), {}, [target = figure] {
+      target->addonsPending = false;
+      for(const auto& f : std::exchange(target->afterAddons, {}))
+        f();
+    });
   }
 }
 
@@ -1487,11 +1507,21 @@ Json FvHost::Impl::sceneState()
       for(const auto& a : pb.axes)
         if(a.value != a.initial)
           pose.push_back({{"bone", pb.id}, {"kind", fv::pose::kindName(a.kind)}, {"axis", a.axis}, {"value", std::round(a.value * 1e5) / 1e5}});
-  return {{"source", figure->source}, {"worn", worn}, {"morphs", morphs}, {"pose", pose}, {"materials", materials->editState()}};
+  Json state = {{"source", figure->source},
+                {"worn", worn},
+                {"morphs", morphs},
+                {"pose", pose},
+                {"materialPresets", figure->materialPresets},
+                {"materials", materials->editState()}};
+  if(figure->dforce)
+    state["dforce"] = figure->dforce->enabled();
+  return state;
 }
 
 // Puts a scene file's state on the figure that is loaded: what it wears first (items before dials,
-// since an item brings dials of its own), then dials, pose and material edits.
+// since an item brings dials of its own), then dials, pose, material presets and material edits,
+// and dForce last, so it drapes the finished figure. The figure's own add-ons are already going on
+// with their presets; they are waited for, not worn again.
 Json FvHost::Impl::sceneRestore(const Json& args)
 {
   // an imported model takes back its material edits; it has no wardrobe, dials or pose
@@ -1549,9 +1579,35 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         protocol->events().snapshot("pose/" + target->id, poseSnapshot(*target));
       }
     }
+    if(args.contains("materialPresets") && args["materialPresets"].is_array())
+      for(const Json& p : args["materialPresets"])
+      {
+        const std::string rel = p.is_string() ? p.get<std::string>() : "";
+        if(rel.empty())
+          continue;
+        try
+        {
+          auto doc = fig.store().load(rel);
+          if(!doc)
+          {
+            problems.push_back("material preset " + fileStem(rel) + " isn't in the content library");
+            continue;
+          }
+          const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, fig.loaded.scene);
+          materials->surfacesChanged(r.changed);
+          if(!r.changed.empty())
+            target->materialPresets.push_back(rel);
+        }
+        catch(const std::exception& e)
+        {
+          problems.push_back("material preset " + fileStem(rel) + ": " + e.what());
+        }
+      }
     if(args.contains("materials") && args["materials"].is_object())
       for(const std::string& p : materials->restoreEdits(args["materials"]))
         problems.push_back(p);
+    if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
+      target->dforce->setEnabled(args["dforce"].get<bool>());
     morphTouched = true;
     for(size_t i = 0; i < problems.size() && i < 5; i++)
       notice(problems[i]);
@@ -1559,28 +1615,37 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       notice(std::to_string(problems.size() - 5) + " more problems restoring the scene");
     job(jobId, {{"label", "Restoring the scene"}, {"state", "done"}});
   };
-  if(worn.empty() || !worn.is_array())
-  {
-    apply();
-    return {{"job", jobId}};
-  }
-  std::vector<WearRequest> requests;
-  std::vector<std::pair<std::string, bool>> visibility;
-  for(const Json& w : worn)
-  {
-    requests.push_back({w.value("rel", ""), "", {}});
-    visibility.emplace_back(w.value("rel", ""), w.value("visible", true));
-  }
-  startWear(
-      target, std::move(requests),
-      [this, target, visibility] {
-        for(const auto& [rel, visible] : visibility)
-          if(!visible)
-            for(const fv::WornItem& i : target->fig->items)
-              if(i.rel == rel)
-                target->fig->setItemVisible(i.id, false);
-      },
-      apply);
+  auto wear = [this, target, worn, apply] {
+    auto hide = [target, worn] {
+      for(const Json& w : worn)
+        if(!w.value("visible", true))
+          for(const fv::WornItem& i : target->fig->items)
+            if(i.rel == w.value("rel", ""))
+              target->fig->setItemVisible(i.id, false);
+    };
+    std::set<std::string> addons;
+    for(const fv::dson::PostLoadAddon& a : target->fig->addons)
+      addons.insert(relKey(a.file));
+    std::vector<WearRequest> requests;
+    if(worn.is_array())
+      for(const Json& w : worn)
+      {
+        const std::string rel = w.value("rel", "");
+        if(!rel.empty() && !addons.count(relKey(rel)))
+          requests.push_back({rel, "", {}});
+      }
+    if(requests.empty())
+    {
+      hide();
+      apply();
+      return;
+    }
+    startWear(target, std::move(requests), hide, apply);
+  };
+  if(target->addonsPending)
+    target->afterAddons.push_back(std::move(wear));
+  else
+    wear();
   return {{"job", jobId}};
 }
 
@@ -1678,7 +1743,12 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
       if(r.changed.empty())
         notice(name + ": none of its surfaces match the loaded figure.");
       else
+      {
+        auto& presets = figure->materialPresets;
+        presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
+        presets.push_back(rel);
         notice("Applied material preset " + name + " to " + std::to_string(r.changed.size()) + " surfaces.", "info");
+      }
     }
   }
   else
