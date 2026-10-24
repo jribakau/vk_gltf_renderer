@@ -267,8 +267,8 @@ struct GltfShadeMaterial
 #endif
 
 #if MAT_EXT_DIFFUSE_TRANSMISSION
-  float3 diffuseTransmissionColor  = float3(1);
-  float  diffuseTransmissionFactor = 0;
+  float3 diffuseTransmissionColorFactor = float3(1);
+  float  diffuseTransmissionFactor      = 0;
 #endif
 
 #if MAT_EXT_RETROREFLECTION

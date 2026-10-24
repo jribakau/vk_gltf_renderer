@@ -355,11 +355,16 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   pbrMat.attenuationColor    = material.attenuationColor;
   pbrMat.attenuationDistance = material.attenuationDistance;
   pbrMat.thickness           = material.thicknessFactor;
+#ifdef RASTER_PIPELINE
+  // KHR_materials_volume: per-fragment thickness = thicknessFactor * thicknessTexture.g. It stands
+  // in for the path length through the medium, which only the rasterizer cannot measure; a traced
+  // ray gets it from hitT. thicknessFactor alone selects thin-walled vs. volume, so the path
+  // tracer must not let a zero texel turn a volume thin-walled.
   if(isTexturePresent(material.thicknessTexture))
   {
-    // KHR_materials_volume spec: per-fragment thickness = thicknessFactor * thicknessTexture.g.
     pbrMat.thickness *= getTexture(images, samplers, texInfos[material.thicknessTexture], state.tc, state.texGrad).g;
   }
+#endif
 #endif
 
 #if GLTF_USE_SPECULAR
@@ -539,10 +544,10 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     pbrMat.diffuseTransmissionFactor *=
         getTexture(images, samplers, texInfos[material.diffuseTransmissionTexture], state.tc, state.texGrad).a;
   }
-  pbrMat.diffuseTransmissionColor = material.diffuseTransmissionColor;
+  pbrMat.diffuseTransmissionColorFactor = material.diffuseTransmissionColorFactor;
   if(isTexturePresent(material.diffuseTransmissionColorTexture))
   {
-    pbrMat.diffuseTransmissionColor *=
+    pbrMat.diffuseTransmissionColorFactor *=
         getTexture(images, samplers, texInfos[material.diffuseTransmissionColorTexture], state.tc, state.texGrad).rgb;
   }
 #endif
@@ -584,15 +589,14 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
       // Volumetric mode (KHR_materials_volume, thickness > 0): split the attenuation coefficient
       // sigma_t into scattering (sigma_s) and absorption via the strength-scaled single-scatter
       // albedo. sigma_s drives the in-volume Henyey-Greenstein scattering in pathtrace_functions.
-      // The sigma_t expression must stay identical to volumeExtinctionCoefficient() in
-      // nvpro_core2's bsdf_functions.h.slang (not included here), which is what the path tracer
-      // uses for the same medium -- if the two drift, sigma_s no longer belongs to sigma_t.
-      float3 singleScatterAlbedo = multiToSingleScatterAlbedo(scatterStrength * multiscatterColor, g);
+      // sigma_t is volumeExtinctionCoefficient(), the same call the path tracer's medium makes
+      // (makeVolumeMedium) -- if the two drift, sigma_s no longer belongs to sigma_t.
       // CPU sanitizes attenuationDistance to FLT_MAX when the spec-invalid value 0 is present;
       // dividing by FLT_MAX gives ~0 extinction (= no attenuation), so no branch needed here.
-      float3 attenuationCoef    = -log(max(pbrMat.attenuationColor, float3(0.001))) / pbrMat.attenuationDistance;
-      pbrMat.scatterCoefficient = attenuationCoef * singleScatterAlbedo;
-      pbrMat.scatterAnisotropy  = g;  // consumed by the phase function; only meaningful with sigma_s
+      float3 singleScatterAlbedo = multiToSingleScatterAlbedo(scatterStrength * multiscatterColor, g);
+      float3 attenuationCoef     = volumeExtinctionCoefficient(pbrMat.attenuationColor, pbrMat.attenuationDistance);
+      pbrMat.scatterCoefficient  = attenuationCoef * singleScatterAlbedo;
+      pbrMat.scatterAnisotropy   = g;  // consumed by the phase function; only meaningful with sigma_s
       // The specular BTDF is tinted by baseColor. Cancelling that leaves the base map on the
       // (1 - transmission) diffuse reflection only; the medium carries the skin colour, read
       // once where the walk enters (multiscatterColor).
@@ -645,9 +649,9 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
         // Each of the two diffuse lobes now carries contributions the spec colors differently, so
         // each takes the energy-weighted average of its own two shares. Both shares of a lobe have
         // the same Lambertian shape, so averaging their colors is exact, not an approximation.
-        float3 diffuseBaseColor         = pbrMat.baseColor;
-        pbrMat.diffuseTransmissionColor = lerp(pbrMat.diffuseTransmissionColor, multiscatterColor,
-                                               forwardWeight / max(baseTransWeight + forwardWeight, 1e-6));
+        float3 diffuseBaseColor               = pbrMat.baseColor;
+        pbrMat.diffuseTransmissionColorFactor = lerp(pbrMat.diffuseTransmissionColorFactor, multiscatterColor,
+                                                     forwardWeight / max(baseTransWeight + forwardWeight, 1e-6));
         pbrMat.baseColor = lerp(diffuseBaseColor, multiscatterColor, backwardWeight / max(baseReflWeight + backwardWeight, 1e-6));
 
         // ...but baseColor also tints the residual specular BTDF, which the spec leaves at the
@@ -697,7 +701,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     pbrMat.specular = 1.0;
     pbrMat.ior2 = 1.55;
     pbrMat.diffuseTransmissionFactor = 0.25;
-    pbrMat.diffuseTransmissionColor = pbrMat.baseColor;
+    pbrMat.diffuseTransmissionColorFactor = pbrMat.baseColor;
 #endif
   }
 #endif

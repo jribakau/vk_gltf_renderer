@@ -21,6 +21,7 @@
 
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <tinygltf/tiny_gltf.h>
@@ -46,8 +47,6 @@ struct IndexRemapping
   int micromaps   = 0;  // EXT_mesh_opacity_micromap root micromaps[] array
 };
 
-// Result of merging/instancing a subtree into a base model: the half-open range of appended
-// node indices [firstNode, lastNode) and the appended roots (children attached to the target).
 struct MergeResult
 {
   int              firstNode = -1;
@@ -70,33 +69,35 @@ public:
                    const std::string&      importedSceneName,
                    std::optional<uint32_t> maxTextureCount = std::nullopt);
 
-  // Merge importedModel into baseModel for glTF 2.1 external assets. Appends all imported
-  // resources and attaches the imported default-scene root nodes as children of an EXISTING
-  // node (targetNodeIndex) -- no wrapper node is created and baseModel.scenes is left untouched.
-  // If maxTextureCount is set and the combined texture count would exceed it, returns an invalid
-  // MergeResult. On success returns the appended node range + roots (for read-only tagging).
-  static MergeResult mergeIntoNode(tinygltf::Model&        baseModel,
-                                   const tinygltf::Model&  importedModel,
-                                   int                     targetNodeIndex,
-                                   std::optional<uint32_t> maxTextureCount = std::nullopt);
+  // Append the resources of importedModel that nodes point at (buffers to meshes, materials,
+  // cameras, lights, micromaps), with their indices rebased, and the animations' samplers. Nodes,
+  // skins and animation channels are NOT appended: the caller makes node copies of its own, remaps
+  // them with remapNodeResources(), and adds the skins and channels those copies need. Returns the
+  // offsets the imported resources were appended at.
+  // sharedImages[i] >= 0 says imported image i is already base image sharedImages[i]: its textures
+  // point there and it is not appended, so the imported images after it are not at offsets.images + i.
+  // sharedBuffers works the same way for buffers: the imported bufferViews read the base buffer.
+  static IndexRemapping appendResources(tinygltf::Model&       baseModel,
+                                        const tinygltf::Model& importedModel,
+                                        std::span<const int>   sharedImages  = {},
+                                        std::span<const int>   sharedBuffers = {});
 
-  // Like mergeIntoNode, but each imported default-scene root picks its own parent: parentOf(root)
+  // Rebase the resource indices a node of the imported model holds (mesh, camera, light,
+  // EXT_mesh_gpu_instancing accessors) by `offsets`. Children and skin are left to the caller.
+  static void remapNodeResources(tinygltf::Node& node, const IndexRemapping& offsets);
+
+  // appendResources with the imported nodes too, then each imported default-scene root picks its own parent: parentOf(root)
   // returns an existing baseModel node to attach it under, or -1 to make it a root of
   // baseModel.scenes[sceneIndex]. For a host adding objects to a scene it mirrors (Figure Viewer
-  // putting an item on a figure, under the node it hangs from). Same failure rules as mergeIntoNode;
-  // a parent past the end of baseModel.nodes also refuses the merge, before anything is appended.
+  // putting an item on a figure, under the node it hangs from). An empty import, a texture count
+  // over maxTextureCount or a parent past the end of baseModel.nodes refuses the merge, before
+  // anything is appended, and returns an invalid MergeResult.
   static MergeResult mergeUnder(tinygltf::Model&                                 baseModel,
                                 const tinygltf::Model&                           importedModel,
                                 const std::function<int(const tinygltf::Node&)>& parentOf,
                                 int                                              sceneIndex,
                                 std::optional<uint32_t>                          maxTextureCount = std::nullopt);
 
-  // Instance an existing merged subtree (already in baseModel, described by `source`) as a new
-  // copy attached to targetNodeIndex. Node hierarchy is copied and skins/animation channels are
-  // duplicated so instances are independent, but meshes/materials/accessors are SHARED -- so the
-  // instances reuse the same render primitives / BLAS instead of duplicating geometry.
-  // Returns the appended node range + roots of the new instance, or an invalid MergeResult.
-  static MergeResult instanceSubtree(tinygltf::Model& baseModel, const MergeResult& source, int targetNodeIndex);
 
 private:
   // Implementation in .cpp (helpers in anonymous namespace).

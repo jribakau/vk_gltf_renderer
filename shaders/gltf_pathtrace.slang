@@ -32,6 +32,7 @@
 #ifndef USE_OMM
 #define USE_OMM 0
 #endif
+// clang-format off: the SPIR-V ids (%ommEnable) must stay as written
 #if USE_OMM
 #define RAYQUERY_USE_OPACITY_MICROMAP(entryPoint)                                                                      \
   spirv_asm                                                                                                            \
@@ -44,6 +45,7 @@
 #else
 #define RAYQUERY_USE_OPACITY_MICROMAP(entryPoint)
 #endif
+// clang-format on
 
 // This is a debug flag to enable/disable debug output
 // For example, to use print statements in the shader, set this to true.
@@ -70,7 +72,6 @@ static bool doDebug = false;
 #include "nvshaders/bsdf_functions.h.slang"
 #include "nvshaders/hdr_env_sampling.h.slang"
 #include "nvshaders/light_contrib.h.slang"
-#include "nvshaders/normal_compress.h.slang"
 #include "nvshaders/pbr_ggx_microfacet.h.slang"
 #include "nvshaders/ray_utils.h.slang"
 #include "nvshaders/sample_blur.h.slang"
@@ -134,15 +135,9 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
 // and bounce scratch data accordingly. It manages ray-scene intersections, material retrieval, handling
 // of missed rays (e.g., environment hits), and prepares data for direct/indirect lighting and next events.
 //-----------------------------------------------------------------------
-PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout uint seed, inout PathTracerState pt, out BounceScratch bounce)
+// `bounce` arrives default-initialized (BounceScratch's member defaults) and is filled in here.
+PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout uint seed, inout PathTracerState pt, inout BounceScratch bounce)
 {
-  // Initialize the bounce scratch data
-  bounce.nextEventValid = false;
-  bounce.contribution   = float3(0);
-  bounce.shadowRayPos   = float3(0);
-  bounce.shadowRayDir   = float3(0);
-  bounce.shadowRayDist  = 0.0f;
-
   {
     //DirectLight directLight;
     SceneFrameInfo* frameInfo = pushConst.frameInfo;
@@ -286,14 +281,24 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Shadow catcher: invisible plane that shows only shadows for compositing
       if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
       {
+        // The medium in front of the plane, as for a mesh (see below): the ray may scatter before
+        // it reaches the catcher, and the catcher's shadow ray starts in that medium.
+        PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed);
+        if(volumeStep != PathStepResult.eOutOfVolume)
+          return volumeStep;
+        float3 shadowExtinction = float3(0.0F);
+#if GLTF_USE_VOLUME
+        shadowExtinction = volumeExtinction(pt.volumeMedium);
+#endif
+
         // Propagate cone through plane bounce before potential early continue from shadow-catcher path.
         pt.cone.width = worldFoot;
         // What the catcher shows is the environment behind it, which already carries the whole
         // atmosphere; aerial perspective at the plane would haze it a second time.
         if(firstRay)
           pt.firstHitHazed = false;
-        bool continuePath =
-            handleShadowCatcher(raytracer, hit, pbrMat, ray, pt.radiance, pt.throughput, pt.lastSamplePdf, seed, frameInfo);
+        bool continuePath = handleShadowCatcher(raytracer, hit, pbrMat, ray, pt.radiance, pt.throughput,
+                                                pt.lastSamplePdf, seed, ptIsInside(pt), shadowExtinction, frameInfo);
         if(!continuePath)
           return PathStepResult.eBreak;
         return PathStepResult.eEarlyContinue;  // On through the plane, as if it were not there
@@ -401,12 +406,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif  // USE_DLSS_SHADER
 
     //-----------------------------------------------------------------------
-    // First-hit captures (NDC-depth always; DLSS/OptiX guide buffers when on).
+    // First-hit captures (NDC-depth always; denoiser guide buffers when on).
     //-----------------------------------------------------------------------
     if(firstRay)
     {
       // Always record the first hit position; drives the NDC depth output used by
-      // selection/picking, independent of DLSS/OptiX.
+      // selection/picking, independent of the denoisers.
       pt.firstHitPos = hit.pos;
 
 #if USE_GUIDE_SHADER
@@ -418,12 +423,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         pt.firstHitPosPrev = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos);
       }
 
-      // Base-color guide albedo (shared by DLSS and OptiX). Stored temporarily, written at end to
+      // Base-color guide albedo (shared by DLSS and the other denoisers). Stored temporarily, written at end to
       // reduce live state.
       float3 guideAlbedo = pbrMat.baseColor.xyz;
 #if USE_DLSS_SHADER
       // #DLSS specular guide - specular albedo + clear-glass albedo refinement. DLSS-only quality
-      // path; OptiX needs neither, so it is compiled out of the OptiX/no-denoiser variant.
+      // path; the other denoisers need neither, so it is compiled out of their variant.
       // Apply KHR_materials_specular energy conservation clamping for DLSS guide buffer
       // Spec formula: dielectric_f0 = min(f0_from_ior * specularColor, 1.0) * specular
       float  f0_from_ior          = pow((pbrMat.ior2 - pbrMat.ior1) / (pbrMat.ior2 + pbrMat.ior1), 2.0F);
@@ -431,7 +436,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float3 specularAlbedo = EnvBRDFApprox2(specularColorClamped, pbrMat.roughness.x, dot(pbrMat.N, ray.Direction));
       float3 guideNormal    = pbrMat.N;
       float  guideRoughness = pbrMat.roughness.x;
-      if(USE_DLSS_TRANSP == 1 && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseOptixDenoiser) && dlssIsClearGlass(pbrMat))
+      if(USE_DLSS_TRANSP == 1 && !hasFlag(pushConst.flags, PathtracerFlags::ePtDenoiserGuides) && dlssIsClearGlass(pbrMat))
       {
         // #DLSS primary surface replacement: describe what is seen through the glass. The albedo
         // keeps the glass's Fresnel share; depth and motion come from the replaced surface.
@@ -484,6 +489,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
     }
 #endif
+
+    //-----------------------------------------------------------------------
+    // The medium in front of the surface
+    //-----------------------------------------------------------------------
+    // Before anything the surface gives: the ray may scatter on its way and never reach it, and what
+    // does reach it -- its emission included -- comes through the medium's transmittance.
+    PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed);
+    if(volumeStep != PathStepResult.eOutOfVolume)
+      return volumeStep;  // Skip the surface bounce if the ray is still in the volume (ray is scattered)
 
     //-----------------------------------------------------------------------
     // Adding emissive
@@ -579,6 +593,24 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         bounce.contribution += w * evalData.bsdf_diffuse;
         bounce.contribution += w * evalData.bsdf_glossy;
       }
+      else
+      {
+        // The BSDF cannot scatter toward the light, so the shadow ray could only multiply zero
+        bounce.nextEventValid = false;
+      }
+
+#if GLTF_USE_VOLUME
+      // The medium the shadow ray starts in, read before the BSDF sample below moves the path into
+      // another one: the medium the ray arrived through, unless the light is behind a surface that
+      // bounds a volume (diffuse transmission), which the shadow ray then starts on the far side of.
+      bounce.shadowRayInside     = pt.isInside;
+      bounce.shadowRayExtinction = volumeExtinction(pt.volumeMedium);
+      if(dot(directLight.direction, hit.nrm) <= 0.0F && pbrMat.thickness > 0.0F)
+      {
+        bounce.shadowRayInside     = !pt.isInside;
+        bounce.shadowRayExtinction = volumeExtinction(makeVolumeMedium(pbrMat));
+      }
+#endif
     }
 
     //-----------------------------------------------------------------------
@@ -621,11 +653,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
         // Compute the offset position for the next bounce
         float3 offsetDir = dot(ray.Direction, hit.geonrm) > 0 ? hit.geonrm : -hit.geonrm;
-        ray.Origin       = safeOffsetRay(hit.pos, offsetDir);
+        ray.Origin       = safeOffsetRay(hit.pos, offsetDir, hit.offsetDistance);
 
         // Toggle 'pt.isInside' to track whether the ray is currently inside or outside geometry.
         // This update is necessary for correctly handling transmission (refraction) through solid (non-thin-walled) materials.
-        // For thin-walled surfaces - like decals or leaves - this state isn't toggled, because there's no real "inside".
+        // For thin-walled surfaces - like decals or leaves - this state isn't toggled, because there's no real "inside":
+        // thickness 0 is the same test the BSDF uses to pass straight through instead of refracting, and the one shadow
+        // rays use to count boundaries.
         //
         // Gated on GLTF_USE_TRANSMISSION: scenes without transmission never produce
         // BSDF_EVENT_TRANSMISSION, so this branch is dead. makeVolumeMedium only when
@@ -664,23 +698,26 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 
     //-----------------------------------------------------------------------
-    // Finding the shadow ray position and direction
+    // Finding the shadow ray position and direction (only for a shadow ray pathTrace() will trace)
     //-----------------------------------------------------------------------
-    bool   shadowSideForward = dot(directLight.direction, hit.nrm) > 0.0F;
-    float3 shadowOffsetDir   = shadowSideForward ? hit.geonrm : -hit.geonrm;
-    float3 shadowOffsetBase  = shadowSideForward ? hit.shadowPos : hit.pos;
-    bounce.shadowRayPos      = safeOffsetRay(shadowOffsetBase, shadowOffsetDir);
-    bounce.shadowRayDir      = directLight.direction;
-    bounce.shadowRayDist     = directLight.distance;
-
-    // The light was sampled from `hit.pos`, stopping just short of the emitter. The terminator
-    // offset moves the origin, so aim at that same end point: keeping direction and distance would
-    // shift it through a grazing emissive triangle, which then shadows itself.
-    if(directLight.distance < INFINITE)
+    if(bounce.nextEventValid)
     {
-      const float3 toTarget = hit.pos + directLight.direction * directLight.distance - bounce.shadowRayPos;
-      bounce.shadowRayDist  = length(toTarget);
-      bounce.shadowRayDir   = toTarget / max(bounce.shadowRayDist, 1e-12F);
+      bool   shadowSideForward = dot(directLight.direction, hit.nrm) > 0.0F;
+      float3 shadowOffsetDir   = shadowSideForward ? hit.geonrm : -hit.geonrm;
+      float3 shadowOffsetBase  = shadowSideForward ? hit.shadowPos : hit.pos;
+      bounce.shadowRayPos      = safeOffsetRay(shadowOffsetBase, shadowOffsetDir, hit.offsetDistance);
+      bounce.shadowRayDir      = directLight.direction;
+      bounce.shadowRayDist     = directLight.distance;
+
+      // The light was sampled from `hit.pos`, stopping just short of the emitter. The terminator
+      // offset moves the origin, so aim at that same end point: keeping direction and distance would
+      // shift it through a grazing emissive triangle, which then shadows itself.
+      if(directLight.distance < INFINITE)
+      {
+        const float3 toTarget = hit.pos + directLight.direction * directLight.distance - bounce.shadowRayPos;
+        bounce.shadowRayDist  = length(toTarget);
+        bounce.shadowRayDir   = toTarget / max(bounce.shadowRayDist, 1e-12F);
+      }
     }
   }
 
@@ -700,6 +737,19 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
 {
   PathTracerState pt = {};
 
+#if GLTF_USE_VOLUME
+  // A camera path starts in the medium the camera is in (probeCameraMedium). No pointer: the scene
+  // has no medium to be in.
+  if(pushConst.cameraMedium != nullptr && pushConst.cameraMedium->inside != 0)
+  {
+    const CameraMedium cameraMedium    = *pushConst.cameraMedium;
+    pt.isInside                        = true;
+    pt.volumeMedium.absorption         = float32_t3(cameraMedium.absorption);
+    pt.volumeMedium.scatterCoefficient = float32_t3(cameraMedium.scattering);
+    pt.volumeMedium.scatterAnisotropy  = float32_t(cameraMedium.anisotropy);
+  }
+#endif
+
   while(pt.surfaceDepth < pushConst.maxDepth)
   {
     ray.Direction = normalize(ray.Direction);
@@ -707,8 +757,8 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     //-----------------------------------------------------------------------
     // Tracing the ray and finding the radiance, the throughput and the next event valid flag
     //-----------------------------------------------------------------------
-    BounceScratch  bounce;
-    PathStepResult step = pathTraceOneBounce(raytracer, ray, seed, pt, bounce);
+    BounceScratch  bounce = {};
+    PathStepResult step   = pathTraceOneBounce(raytracer, ray, seed, pt, bounce);
     if(step == PathStepResult.eBreak)
       break;
     if(step == PathStepResult.eVolumeContinue || step == PathStepResult.eEarlyContinue)
@@ -724,7 +774,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       shadowRay.Direction = bounce.shadowRayDir;
       shadowRay.TMin      = 0.0;
       shadowRay.TMax      = bounce.shadowRayDist;
-      float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed);
+      float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, bounce.shadowRayInside, bounce.shadowRayExtinction);
       pt.radiance += bounce.contribution * shadowFactor;
     }
 
@@ -831,6 +881,33 @@ SampleResult samplePixel(IRaytracer raytracer,
 }
 
 //-----------------------------------------------------------------------
+// Antialiasing: position of a sample inside the pixel, a Gaussian around its center. Every sample
+// of a pixel uses it, so the converged image does not depend on the samples per frame.
+//-----------------------------------------------------------------------
+float2 gaussianSubpixelJitter(inout uint seed)
+{
+  return float2(0.5f, 0.5f) + ANTIALIASING_STANDARD_DEVIATION * sampleGaussian(float2(rand(seed), rand(seed)));
+}
+
+#if USE_GUIDE_SHADER
+// Adds one sample's denoiser guides. The normal is the world-space shading normal, zero on a miss.
+// Where nothing is hit, the albedo is the normalized background color, as Open Image Denoise
+// recommends for emitters: that radiance is signal, not noise.
+void addDenoiserGuides(SampleResult sampleResult, inout float3 albedoSum, inout float3 normalSum)
+{
+  float3 albedo = sampleResult.guideOutput.albedo.xyz;
+  if(sampleResult.radiance.w <= 0.0f)
+  {
+    const float3 background = max(sampleResult.radiance.xyz, float3(0.0f));
+    const float  maxComp    = max(background.x, max(background.y, background.z));
+    albedo                  = maxComp > 0.0f ? saturate(background / maxComp) : float3(0.0f);
+  }
+  albedoSum += albedo;
+  normalSum += sampleResult.guideOutput.normalRoughness.xyz;
+}
+#endif  // USE_GUIDE_SHADER
+
+//-----------------------------------------------------------------------
 // Per-pixel accumulation and GBuffer output
 //-----------------------------------------------------------------------
 void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
@@ -847,7 +924,8 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   }
 
   // Initialize the random number
-  uint seed = xxhash32(uint3(uint2(samplePos.xy), pushConst.frameCount));
+  // pushConst.seed selects another sequence (0: the default one), e.g. for a reference independent of a test render
+  uint seed = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.frameCount) + uint(pushConst.seed) * 0x9E3779B9u));
 
   bool firstFrame = hasFlag(pushConst.flags, PathtracerFlags::ePtFirstFrame);
 
@@ -862,8 +940,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   }
   else
   {
-    // Add the jitter to the subpixel jitter
-    subpixelJitter += ANTIALIASING_STANDARD_DEVIATION * sampleGaussian(float2(rand(seed), rand(seed)));
+    subpixelJitter = gaussianSubpixelJitter(seed);
   }
 
   // Sampling n times the pixel
@@ -871,20 +948,37 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
                                           pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
   float4 pixelColor = sampleResult.radiance;
 
-  // DLSS uses only one sample per pixel (it does its own temporal accumulation), so the
-  // multi-sample loop is compiled out in the DLSS variant to reduce register pressure.
-  // USE_DLSS_SHADER is true only when DLSS is actually active; for the OptiX and no-denoiser
-  // paths it is 0, so the loop is compiled in and honors the user's samples-per-pixel setting.
-#if !USE_DLSS_SHADER
+#if USE_GUIDE_SHADER
+  // The denoiser guides average every sample of the frame, like the color
+  const bool denoiserGuides = hasFlag(pushConst.flags, PathtracerFlags::ePtDenoiserGuides);
+  float3     albedoSum      = float3(0.0f);
+  float3     normalSum      = float3(0.0f);
+  int        guideCount     = 0;
+  if(denoiserGuides)
+  {
+    addDenoiserGuides(sampleResult, albedoSum, normalSum);
+    guideCount++;
+  }
+#endif
+
+  // The frame traces exactly the samples the host counts (numSamples): the host decides, per frame.
+  // A frame DLSS denoises gets 1 (DLSS does its own temporal accumulation); with OptiX or OIDN also
+  // on, the frames after DLSS's frame 0 get Auto SPP's or ptSamples' count.
   for(int s = 1; s < pushConst.numSamples; s++)
   {
-    subpixelJitter = float2(rand(seed), rand(seed));
+    subpixelJitter = gaussianSubpixelJitter(seed);  // the same pixel filter as the first sample
     sampleResult   = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,
                                  pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
     pixelColor += sampleResult.radiance;
+#if USE_GUIDE_SHADER
+    if(denoiserGuides)
+    {
+      addDenoiserGuides(sampleResult, albedoSum, normalSum);
+      guideCount++;
+    }
+#endif
   }
   pixelColor /= pushConst.numSamples;
-#endif  // !USE_DLSS_SHADER
 
 
   // NDC depth from first-hit world position (Vulkan [0,1] range, 1.0 = far/miss).
@@ -906,8 +1000,10 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   }
 
   // Saving result
-  if(firstFrame || hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
-  {  // First frame, replace the value in the buffer
+  // Nothing accumulated yet (the first frame, or the first after DLSS's frame 0): replace the value in
+  // the buffer, never weigh it by 0, which an infinite value would turn into NaN
+  if(firstFrame || pushConst.totalSamples == 0 || hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+  {
     outImages[int(OutputImage::eResultImage)][int2(samplePos)] = pixelColor;
   }
   else
@@ -921,7 +1017,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 
 #if USE_DLSS_SHADER
   // #DLSS - Storing the GBuffer for the DLSS denoiser (DLSS-only variant; the specular guide targets
-  // do not exist in the OptiX/no-denoiser build).
+  // do not exist in the build for the other denoisers or none).
   if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
   {
     // Combined camera + instance motion. w selects the projection model: surface hits use w=1 (the
@@ -954,36 +1050,125 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 #endif  // USE_DLSS_SHADER
 
 #if USE_GUIDE_SHADER
-  if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseOptixDenoiser))
+  if(denoiserGuides)
   {
-    // Transform normal from world space to camera space for OptiX denoiser
-    // OptiX requires normals in camera space (right-handed, -Z forward, Y up, X right).
-    // On primary misses the guide normal is zero, so fall back to a valid forward-facing
-    // normal to avoid normalizing/compressing a degenerate vector.
-    float3 cameraNormal = float3(0.0f, 0.0f, 1.0f);
-    if(hasSolidHit)
+    // The guides of the denoiser of the accumulation are averaged over the samples like the color,
+    // so their edges are anti-aliased (and blurred by depth of field) the same way. They have their
+    // own sample count: they restart when the denoiser is turned on, while the color goes on. Each
+    // denoiser converts them to what it reads.
+    const float3 albedo = albedoSum / float(guideCount);
+    const float3 normal = normalSum / float(guideCount);
+    const int2   pixel  = int2(samplePos);
+    if(firstFrame || pushConst.guideSamples == 0)
     {
-      float3 worldNormal = sampleResult.guideOutput.normalRoughness.xyz;
-      cameraNormal       = normalize(mul(float3x3(pushConst.frameInfo->viewMatrix), worldNormal));
+      outImages[int(OutputImage::eDenoiserAlbedo)][pixel] = float4(albedo, 1.0f);
+      outImages[int(OutputImage::eDenoiserNormal)][pixel] = float4(normal, 1.0f);
     }
-    uint normalEncoded = compressUnitVec(cameraNormal);
-    outImages[int(OutputImage::eOptixAlbedoNormal)][int2(samplePos)] =
-        float4(sampleResult.guideOutput.albedo.xyz, asfloat(normalEncoded));
+    else
+    {
+      const float weight = float(guideCount) / float(pushConst.guideSamples + guideCount);
+      outImages[int(OutputImage::eDenoiserAlbedo)][pixel] =
+          lerp(outImages[int(OutputImage::eDenoiserAlbedo)][pixel], float4(albedo, 1.0f), weight);
+      outImages[int(OutputImage::eDenoiserNormal)][pixel] =
+          lerp(outImages[int(OutputImage::eDenoiserNormal)][pixel], float4(normal, 1.0f), weight);
+    }
   }
 #endif  // USE_GUIDE_SHADER
+}
+
+//-----------------------------------------------------------------------
+// The medium the camera is in
+//
+// A path knows it is inside a volume only by having crossed into one, and a camera ray starts in
+// clear air. From a camera inside a fog, the path would take the fog's far wall for its near one:
+// no fog in front of the camera, and fog behind the wall. So once per accumulation of a scene with a
+// KHR_materials_volume material, the host runs the path tracer's own pipeline with
+// ePtProbeCameraMedium, and one thread follows the center camera ray to the nearest surface that
+// bounds a medium: met from behind, the camera is inside it. Other surfaces are passed through, so
+// an object between the camera and the wall does not hide it. A path is in one medium at a time, so
+// the nearest boundary is the only one that counts. Depth of field moves the origin within the
+// aperture, which is assumed to stay in the same medium.
+//
+// It traces and evaluates surfaces exactly as the paths do. Being compiled into the path-tracing
+// kernel costs it 1-2% of ray-query throughput (Sponza), most of it for the branch alone: a leaner
+// probe (opaque, material factors only) measured the same, so only a pipeline of its own would
+// remove it.
+//-----------------------------------------------------------------------
+static const int CAMERA_MEDIUM_MAX_SURFACES = 32;  // Surfaces passed through before giving up (clear air)
+
+void probeCameraMedium(IRaytracer raytracer)
+{
+  CameraMedium result = {};
+
+#if GLTF_USE_VOLUME
+  GltfShadeMaterial*   materials       = pushConst.gltfScene->materials;
+  GltfTextureInfo*     texInfos        = pushConst.gltfScene->textureInfos;
+  GltfRenderNode*      renderNodes     = pushConst.gltfScene->renderNodes;
+  GltfRenderPrimitive* renderPrimitive = pushConst.gltfScene->renderPrimitives;
+
+  const float2 imageSize      = float2(pushConst.renderSize);
+  const bool   isOrthographic = hasFlag(pushConst.frameInfo->flags, SceneFrameInfoFlags::eSceneIsOrthographic);
+  RayDesc      ray            = getRay(imageSize * 0.5F, float2(0.0F), imageSize, pushConst.frameInfo->projInv,
+                                       pushConst.frameInfo->viewInv, isOrthographic);
+  uint         seed           = xxhash32(uint3(0, 0, uint(pushConst.frameCount)));
+
+  for(int i = 0; i < CAMERA_MEDIUM_MAX_SURFACES; i++)
+  {
+    HitPayload payload;
+    raytracer.Trace(ray, payload, seed);
+    if(payload.hitT == INFINITE)
+      break;
+
+    GltfRenderNode      node  = renderNodes[payload.rnodeID];
+    GltfRenderPrimitive prim  = renderPrimitive[payload.rprimID];
+    float3              barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+    HitState hit = getHitState(prim, barys, node.worldToObject, node.objectToWorld, payload.primitiveID, ray.Direction);
+    MeshState mesh          = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, !hit.frontFace, 0.0F);
+    mesh.baseColorVertexMul = hit.color;
+    // the thin preview has no medium to be inside of
+    PbrMaterial mat = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
+                                       hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
+
+    // A boundary the path would cross into a medium through (see the pt.isInside toggle)
+    if(mat.thickness > 0.0F && (mat.transmission > 0.0F || mat.diffuseTransmissionFactor > 0.0F))
+    {
+      if(!hit.frontFace)
+      {
+        const VolumeMedium medium = makeVolumeMedium(mat);
+        result.inside             = 1;
+        result.absorption         = float3(medium.absorption);
+        result.scattering         = float3(medium.scatterCoefficient);
+        result.anisotropy         = float(medium.scatterAnisotropy);
+      }
+      break;
+    }
+
+    // Past this surface: the same ray, from just beyond the hit. The hardware finds the same distance
+    // to the same triangle again, so the next float excludes it, with no offset to size.
+    ray.TMin = nextFloatUp(payload.hitT);
+  }
+#endif
+
+  *pushConst.cameraMedium = result;
 }
 
 //-----------------------------------------------------------------------
 // RAY-QUERY COMPUTE
 //-----------------------------------------------------------------------
 [shader("compute")]
-[numthreads(WORKGROUP_SIZE, WORKGROUP_SIZE, 1)]
+[numthreads(PT_WORKGROUP_X, PT_WORKGROUP_Y, 1)]
 void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 {
   RAYQUERY_USE_OPACITY_MICROMAP(computeMain);
   // The render size, not the output image's: OptiX 2x upscale traces only its top-left quarter.
   RayQueryRaytracer raytracer;
-  float2            samplePos = (float2)threadIdx.xy;
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtProbeCameraMedium))
+  {
+    if(all(threadIdx.xy == 0))
+      probeCameraMedium(raytracer);
+    return;
+  }
+  float2 samplePos = (float2)threadIdx.xy;
   processPixel(raytracer, samplePos, (float2)pushConst.renderSize);
 }
 
@@ -995,7 +1180,13 @@ void rgenMain()
 {
   RAYQUERY_USE_OPACITY_MICROMAP(rgenMain);  // Ray queries here too (e.g. dlssTraceSkipThinGlass)
   TraditionalRaytracer raytracer;
-  float2               samplePos = (float2)DispatchRaysIndex().xy;
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtProbeCameraMedium))
+  {
+    if(all(DispatchRaysIndex().xy == 0))
+      probeCameraMedium(raytracer);
+    return;
+  }
+  float2 samplePos = (float2)DispatchRaysIndex().xy;
   processPixel(raytracer, samplePos, (float2)pushConst.renderSize);
 }
 
@@ -1089,19 +1280,20 @@ void rahitShadow(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttr
   float r       = stochasticOpacityU(instanceID, primitiveID, barycentrics, payload.seed);
   if(r < opacity)
   {
-    // Segment length for Beer's law inside getShadowTransmission (only used when isInside == true).
+    // Segment length for Beer's law (only used when isInside == true).
     // abs() guards against any-hit invocations arriving out of spatial order, which Vulkan/DXR
     // do not guarantee. This is an approximation; a fully correct version would chain
     // closest-hit traces along the ray instead of accumulating in any-hit.
     float segmentLength = abs(hitT - payload.prevHitT);
+    payload.prevHitT    = hitT;  // keep the actual previous hit T, not the segment length
 
-    bool   isInside     = payload.isInside;
-    float3 transmission = getShadowTransmission(renderNode, renderPrim, primitiveID, barycentrics, segmentLength,
-                                                worldToObject, worldRayDir, isInside);
-
-    payload.isInside = isInside;
-    payload.prevHitT = hitT;  // keep the actual previous hit T, not the segment length
-    payload.totalTransmission *= transmission;
+    bool   isInside   = payload.isInside;
+    float3 extinction = payload.extinction;
+    payload.totalTransmission *= shadowMediumTransmittance(isInside, extinction, segmentLength);
+    payload.totalTransmission *= getShadowTransmission(renderNode, renderPrim, primitiveID, barycentrics, worldToObject,
+                                                       worldRayDir, isInside, extinction);
+    payload.isInside   = isInside;
+    payload.extinction = extinction;
 
     if(max(max(payload.totalTransmission.r, payload.totalTransmission.g), payload.totalTransmission.b) <= MIN_TRANSMISSION)
     {

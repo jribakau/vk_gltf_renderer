@@ -29,7 +29,9 @@ using namespace std::chrono_literals;
 
 namespace {
 // 2: the scene of props (fv_host.hpp). An app checks it against what it was built for.
-constexpr int kProtocolVersion = 2;
+// 3: the upstream merge of 2026-10-24 renamed ptMaxFrames to ptMaxSamples and optixAutoDenoiseInterval
+// to optixAutoDenoiseSpp, which the app sends.
+constexpr int kProtocolVersion = 3;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

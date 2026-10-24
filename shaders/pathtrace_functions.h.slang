@@ -58,17 +58,17 @@ static const int   VOLUME_HARD_CAP     = 256;     // Scatter events at which the
 static const float RR_PCONT_CAP_VOLUME = 0.999f;  // Maximum Russian Roulette probability inside a volume
 
 //-----------------------------------------------------------------------
-// Denoiser guide buffers (shared by DLSS and OptiX)
+// Denoiser guide buffers (shared by DLSS, OptiX and OIDN)
 //
 // Guide-buffer scratch (GuideOutput / GuideScratch + the helpers further down + the
 // per-bounce captures in pathTraceOneBounce) only exists when USE_GUIDE_SHADER is
-// defined (set by CMake when USE_DLSS or USE_OPTIX_DENOISER is ON, or by the runtime
+// defined (set by CMake when USE_DLSS, USE_OPTIX_DENOISER or USE_OIDN_DENOISER is ON, or by the runtime
 // scene-aware variant rebuild). When it's off we drop those scratch fields from
 // PathTracerState and SampleResult to shrink per-thread live state.
 //
 // Two-tier split inside the guide block:
-//   USE_GUIDE_SHADER : albedo + normalRoughness (+ motion/depth). Consumed by DLSS and
-//                      OptiX, so present whenever any denoiser guide is required.
+//   USE_GUIDE_SHADER : albedo + normalRoughness (+ motion/depth). Consumed by DLSS, OptiX
+//                      and OIDN, so present whenever any denoiser guide is required.
 //   USE_DLSS_SHADER  : specularAlbedo + specularHitDist (+ their per-bounce capture).
 //                      DLSS-only; OptiX needs neither, so they are compiled out of the
 //                      OptiX/no-denoiser variant to shrink live state further.
@@ -183,32 +183,44 @@ bool hasVolumeMedium(VolumeMedium medium)
 //-----------------------------------------------------------------------
 
 //-----------------------------------------------------------------------
-// Self-intersection offset (Wächter & Binder, Ray Tracing Gems 2019).
+// The next float above / below `v` (PBRT's NextFloatUp / NextFloatDown).
 //-----------------------------------------------------------------------
-float3 safeOffsetRay(float3 worldPosition, float3 offsetDirection)
+float nextFloatUp(float v)
 {
-  const float scaleValue = 256.0f;
-  const int3  scaleInt   = int3(scaleValue * offsetDirection);
+  if(isinf(v) && v > 0.0F)
+    return v;
+  v = (v == 0.0F) ? 0.0F : v;  // -0 steps up like +0
+  return asfloat(v >= 0.0F ? asuint(v) + 1u : asuint(v) - 1u);
+}
 
-  const float3 offsetPosition = float3(  //
-      asfloat(asint(worldPosition.x) + ((worldPosition.x < 0) ? -scaleInt.x : scaleInt.x)),
-      asfloat(asint(worldPosition.y) + ((worldPosition.y < 0) ? -scaleInt.y : scaleInt.y)),
-      asfloat(asint(worldPosition.z) + ((worldPosition.z < 0) ? -scaleInt.z : scaleInt.z)));
+float nextFloatDown(float v)
+{
+  if(isinf(v) && v < 0.0F)
+    return v;
+  v = (v == 0.0F) ? -0.0F : v;  // +0 steps down like -0
+  return asfloat(v > 0.0F ? asuint(v) - 1u : asuint(v) + 1u);
+}
 
-  // A component near zero gets a fixed step instead of an ulp step, which the paper sizes for a
-  // point near the origin. It is not enough when only *that* component is near zero: the
-  // intersection test's error follows the triangle's largest coordinate, not this one. A lake at
-  // y = 0 viewed kilometres from the origin has an exact y = 0 hit, a 1.5e-5 step up, and an
-  // intersection error around 5e-4 -- so reflected rays re-hit the water they left, in horizontal
-  // bands that step with the rounding. Scaling that step by the largest coordinate keeps it
-  // proportionate to the error; at the origin (largest coordinate below 1) nothing changes.
-  const float origin     = 1.0f / 32.0f;
-  const float floatScale = 1.0f / 65536.0f;
-  const float nearZero = floatScale * max(1.0f, max(abs(worldPosition.x), max(abs(worldPosition.y), abs(worldPosition.z))));
-  return float3(  //
-      abs(worldPosition.x) < origin ? worldPosition.x + nearZero * offsetDirection.x : offsetPosition.x,
-      abs(worldPosition.y) < origin ? worldPosition.y + nearZero * offsetDirection.y : offsetPosition.y,
-      abs(worldPosition.z) < origin ? worldPosition.z + nearZero * offsetDirection.z : offsetPosition.z);
+//-----------------------------------------------------------------------
+// Self-intersection offset (PBRT 6.8.6, OffsetRayOrigin). `offsetDistance` covers the rounding errors
+// between the computed hit point and the surface, and the hardware's test of the next ray against it
+// (HitState::offsetDistance); `offsetDirection` is the geometric normal, turned to the side the ray
+// leaves on. Stepping that far puts the surface behind the ray, and rounding the result one float
+// further away keeps the step from being lost to the addition's own rounding.
+//-----------------------------------------------------------------------
+float3 safeOffsetRay(float3 worldPosition, float3 offsetDirection, float offsetDistance)
+{
+  const float3 offset = offsetDistance * offsetDirection;
+  float3       origin = worldPosition + offset;
+  [unroll]
+  for(int i = 0; i < 3; i++)
+  {
+    if(offset[i] > 0.0F)
+      origin[i] = nextFloatUp(origin[i]);
+    else if(offset[i] < 0.0F)
+      origin[i] = nextFloatDown(origin[i]);
+  }
+  return origin;
 }
 
 
@@ -253,7 +265,9 @@ float getOpacity(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int 
       GltfTextureInfo texInfo = texInfos[mat.pbrDiffuseTexture];
       float2          uv = getInterpolatedVertexTexCoord(renderPrim, texInfo.texCoord, triangleIndex, barycentrics);
       uv                 = applyTextureTransform(texInfo, uv);
-      baseColorAlpha *= allImages[NonUniformResourceIndex(texInfo.index)].SampleLevel(allSamplers[NonUniformResourceIndex(texInfo.samplerIndex)], uv, 0.0f).a;
+      baseColorAlpha *= allImages[NonUniformResourceIndex(texInfo.index)]
+                            .SampleLevel(allSamplers[NonUniformResourceIndex(texInfo.samplerIndex)], uv, 0.0f)
+                            .a;
     }
   }
   else
@@ -266,7 +280,9 @@ float getOpacity(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int 
       float2          uv = getInterpolatedVertexTexCoord(renderPrim, texInfo.texCoord, triangleIndex, barycentrics);
       uv                 = applyTextureTransform(texInfo, uv);
 
-      baseColorAlpha *= allImages[NonUniformResourceIndex(texInfo.index)].SampleLevel(allSamplers[NonUniformResourceIndex(texInfo.samplerIndex)], uv, 0.0f).a;
+      baseColorAlpha *= allImages[NonUniformResourceIndex(texInfo.index)]
+                            .SampleLevel(allSamplers[NonUniformResourceIndex(texInfo.samplerIndex)], uv, 0.0f)
+                            .a;
     }
   }
 
@@ -346,16 +362,29 @@ float stochasticOpacityU(uint renderNodeID, uint triangleID, float3 barycentrics
 //-----------------------------------------------------------------------
 
 //-----------------------------------------------------------------------
-// Calculate the transmission of a ray through a surface
+// Sample a material texture at a shadow-ray hit (LOD 0: a shadow ray carries no footprint)
+//-----------------------------------------------------------------------
+float4 sampleShadowTexture(GltfRenderPrimitive renderPrim, GltfTextureInfo texInfo, uint3 indices, float3 barycentrics)
+{
+  float2 uv = getInterpolatedVertexTexCoord(renderPrim, texInfo.texCoord, indices, barycentrics);
+  uv        = applyTextureTransform(texInfo, uv);
+  return allImages[NonUniformResourceIndex(texInfo.index)].SampleLevel(allSamplers[NonUniformResourceIndex(texInfo.samplerIndex)],
+                                                                       uv, 0.0f);
+}
+
+//-----------------------------------------------------------------------
+// Calculate the transmission of a ray through a surface. The medium behind the surface is the
+// caller's to apply (shadowMediumTransmittance); crossing a volume boundary flips `isInside`, and
+// entering one sets `extinction` to the medium the ray travels through next.
 //-----------------------------------------------------------------------
 float3 getShadowTransmission(GltfRenderNode      renderNode,
                              GltfRenderPrimitive renderPrim,
                              int                 triangleID,
                              float3              barycentrics,
-                             float               hitT,
                              float4x3            worldToObject,
                              float3              rayDirection,
-                             inout bool          isInside)
+                             inout bool          isInside,
+                             inout float3        extinction)
 {
 #if !GLTF_USE_TRANSMISSION
   return float3(0.0);
@@ -371,40 +400,57 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   GltfShadeMaterial  mat       = materials[matIndex];
   GltfTextureInfo*   texInfos  = pushConst.gltfScene->textureInfos;
 
+  // Textures only scale the factors down, so a low factor is final without sampling.
   float tFactor = mat.transmissionFactor;
-  // The preview flag shades a volumetric scatter material as thin-walled, so its shadow must too:
-  // Beer-Lambert through the measured medium would blacken a lobe the camera path never enters.
-  bool scatterPreview = false;
-#if GLTF_USE_SCATTER
-  scatterPreview = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin) && mat.scatterStrengthFactor > 0.0;
-#if GLTF_USE_VOLUME
-  // Volumetric scatter is not a window. A shadow ray that hits the shell from outside stops.
-  // A ray already in the medium (the walk's next-event connection) carries only the remaining
-  // Beer-Lambert. Tinting that ray by the base colour, Fresnel and roughness was a second colour
-  // on top of the walk, and the noisy samples accumulated once the view stopped moving.
-  if(mat.thicknessFactor > 0.0 && mat.scatterStrengthFactor > 0.0 && !scatterPreview)
-  {
-    if(!isInside)
-      return float3(0.0);
-    float3 extinction = -log(max(mat.attenuationColor, float3(0.001))) / mat.attenuationDistance;
-    isInside           = false;
-    return exp(-hitT * extinction);
-  }
-#endif
-  // Thin-walled KHR_materials_scatter turns transmission * scatterStrength into a diffuse lobe
-  // (evaluateMaterial): only the rest is a specular BTDF a shadow ray can pass straight through.
-  // Without this, skin (transmission 0.7 under full scatter) let most of the light through, and an
-  // occluder's shadow kept only its grazing-angle silhouette, like a see-through outline.
-  if(mat.thicknessFactor == 0.0 || scatterPreview)
-    tFactor *= 1.0 - saturate(mat.scatterStrengthFactor);
-#endif
-
   if(tFactor <= MIN_TRANSMISSION)
   {
     return float3(0.0);
   }
 
   uint3 indices = getTriangleIndices(renderPrim, triangleID);
+
+  // From here on, follow evaluateMaterial texel by texel, so the shadow ray agrees with the surface.
+  if(isTexturePresent(mat.transmissionTexture))
+    tFactor *= sampleShadowTexture(renderPrim, texInfos[mat.transmissionTexture], indices, barycentrics).r;
+
+  // thicknessFactor alone selects thin-walled vs. volume; the thickness texture is a rasterizer
+  // stand-in for the path length, which a traced ray measures (hitT).
+  float thickness = 0.0;
+#if GLTF_USE_VOLUME
+  thickness = mat.thicknessFactor;
+#endif
+
+#if GLTF_USE_SCATTER
+  // The preview flag shades a volumetric scatter material as thin-walled, so its shadow must too:
+  // Beer-Lambert through the measured medium would blacken a lobe the camera path never enters.
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin) && mat.scatterStrengthFactor > 0.0)
+    thickness = 0.0;
+  // Volumetric scatter is not a window. A shadow ray that hits the shell from outside stops; one
+  // already in the medium (the walk's next-event connection) leaves it carrying only the
+  // Beer-Lambert the caller applied over its segment: tinting it by the base colour, Fresnel and
+  // roughness was a second colour on top of the walk.
+  if(thickness > 0.0 && mat.scatterStrengthFactor > 0.0)
+  {
+    if(!isInside)
+      return float3(0.0);
+    isInside = false;
+    return float3(1.0);
+  }
+  // Thin-walled KHR_materials_scatter turns `scatterStrength` of the transmission into a diffuse
+  // lobe (see evaluateMaterial), which a straight-through shadow ray must not pass.
+  if(thickness <= 0.0 && mat.scatterStrengthFactor > 0.0)
+  {
+    float scatterStrength = mat.scatterStrengthFactor;
+    if(isTexturePresent(mat.scatterStrengthTexture))
+      scatterStrength *= sampleShadowTexture(renderPrim, texInfos[mat.scatterStrengthTexture], indices, barycentrics).a;
+    tFactor *= 1.0 - scatterStrength;
+  }
+#endif
+
+  if(tFactor <= MIN_TRANSMISSION)
+  {
+    return float3(0.0);
+  }
 
   float3 normal;
   {
@@ -428,18 +474,16 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   currentTransmission *= (1.0F - fresnel);
 
 #if GLTF_USE_VOLUME
-  if(mat.thicknessFactor > 0.0 && !scatterPreview)
+  if(thickness > 0.0)
   {
-    if(isInside)
+    if(!isInside)
     {
-      // Beer-Lambert transmittance through the medium interior. -log(c)/d is the TOTAL
-      // extinction sigma_t = sigma_a + sigma_s: the out-scattering portion is already
-      // included, so the scatter coefficient must not be added on top (that would
-      // double-count it and over-darken the ray). See volumeExtinctionCoefficient()
-      // in nvpro_core2's bsdf_functions.h.slang. CPU sanitizes attenuationDistance to FLT_MAX
-      // for the spec-invalid value 0; dividing by FLT_MAX gives ~0 (= no attenuation).
-      float3 extinction = -log(max(mat.attenuationColor, float3(0.001))) / mat.attenuationDistance;
-      currentTransmission *= exp(-hitT * extinction);
+      // The TOTAL extinction sigma_t = sigma_a + sigma_s: the out-scattering portion is already
+      // included, so the scatter coefficient must not be added on top (that would double-count it
+      // and over-darken the ray). The same call as the path's medium (makeVolumeMedium), so the
+      // shadow ray sees the medium the random walk does. CPU sanitizes attenuationDistance to
+      // FLT_MAX for the spec-invalid value 0; dividing by FLT_MAX gives ~0 (= no attenuation).
+      extinction = volumeExtinctionCoefficient(mat.attenuationColor, mat.attenuationDistance);
     }
     isInside = !isInside;
   }
@@ -451,11 +495,7 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
     float metallic  = mat.pbrMetallicFactor;
     if(isTexturePresent(mat.pbrMetallicRoughnessTexture))
     {
-      GltfTextureInfo texInfo = texInfos[mat.pbrMetallicRoughnessTexture];
-      float2          uv      = getInterpolatedVertexTexCoord(renderPrim, texInfo.texCoord, indices, barycentrics);
-      uv                      = applyTextureTransform(texInfo, uv);
-
-      float4 mr_sample = allImages[NonUniformResourceIndex(texInfo.index)].SampleLevel(allSamplers[NonUniformResourceIndex(texInfo.samplerIndex)], uv, 0.0f);
+      float4 mr_sample = sampleShadowTexture(renderPrim, texInfos[mat.pbrMetallicRoughnessTexture], indices, barycentrics);
       roughness *= mr_sample.g;
       metallic *= mr_sample.b;
     }
@@ -469,6 +509,22 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
 
   return currentTransmission;
 #endif
+}
+
+// Beer-Lambert transmittance of a shadow-ray segment: every segment travelled inside a medium,
+// whatever ends it -- a boundary, another surface, or the light itself.
+float3 shadowMediumTransmittance(bool isInside, float3 extinction, float segmentLength)
+{
+  return isInside ? exp(-segmentLength * extinction) : float3(1.0);
+}
+
+// The last segment, from the last boundary (or the origin) to the end of a shadow ray that ends
+// inside a medium: a light in a fog, or a surface and its light in the same medium. A ray to
+// infinity cannot end inside a closed medium; one that thinks it does crossed an open mesh, and is
+// left unattenuated rather than black.
+float3 shadowTailTransmittance(RayDesc ray, bool isInside, float3 extinction, float lastHitT)
+{
+  return shadowMediumTransmittance(isInside && ray.TMax < INFINITE, extinction, ray.TMax - lastHitT);
 }
 
 
@@ -862,6 +918,8 @@ bool handleShadowCatcher(IRaytracer      raytracer,
                          inout float3    throughput,
                          inout float     lastSamplePdf,
                          inout uint      seed,
+                         bool            shadowInside,      // the catcher lies inside a medium...
+                         float3          shadowExtinction,  // ...of this extinction
                          SceneFrameInfo* frameInfo)
 {
   DirectLight directLight;
@@ -871,7 +929,7 @@ bool handleShadowCatcher(IRaytracer      raytracer,
   if(dot(directLight.direction, hit.nrm) > 0.0F && directLight.pdf != 0.0F && any(directLight.radianceOverPdf > 0.0F))
   {
     RayDesc shadowRay;
-    shadowRay.Origin    = safeOffsetRay(hit.pos, hit.geonrm);
+    shadowRay.Origin    = safeOffsetRay(hit.pos, hit.geonrm, hit.offsetDistance);
     shadowRay.Direction = directLight.direction;
     shadowRay.TMin      = 0.0;
     shadowRay.TMax      = INFINITE;
@@ -880,7 +938,7 @@ bool handleShadowCatcher(IRaytracer      raytracer,
   }
 
   throughput *= 1.0F - groundCatcherStrength(frameInfo) * (1.0F - visibility);
-  ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm);
+  ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);
   return true;
 }
 
@@ -918,6 +976,9 @@ bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout
   hit.geonrm    = normal;
   hit.tangent   = float3(1, 0, 0);
   hit.bitangent = float3(0, 0, 1);
+  // Intersected here, analytically, never by a traced ray: the only error is the rounding of
+  // origin + direction * t
+  hit.offsetDistance = roundingGamma(3) * dot(abs(normal), abs(ray.Origin) + abs(ray.Direction * payload.hitT));
 
   return true;
 }
@@ -1054,7 +1115,10 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
   DirectLight directLight;
   sampleLights(scatterPos, /*normal=*/wiBeforeScatter, wiBeforeScatter, seed, directLight, /*isVolumeSample=*/true);
 
-  if(directLight.pdf <= 0.0F)
+  // pdf 0 is a failed sample; a punctual light is DIRAC (negative) and must go through, since no
+  // phase-sampled ray can reach it. Skip lights that give nothing here (a spot whose cone misses
+  // this point) before paying for the shadow ray.
+  if(directLight.pdf == 0.0F || all(directLight.radianceOverPdf == 0.0F))
     return float3(0.0F);
 
   float cosTheta = dot(wiBeforeScatter, directLight.direction);
@@ -1069,7 +1133,7 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
   shadowRay.Direction = directLight.direction;
   shadowRay.TMin      = 0.0F;
   shadowRay.TMax      = directLight.distance;
-  float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, /*initialInside=*/true);
+  float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, /*initialInside=*/true, volumeExtinction(medium));
 
   return throughput * directLight.radianceOverPdf * misWeight * phase * shadowFactor;
 }
@@ -1249,9 +1313,11 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
 
   DlssGlassPsr result = {false, float3(0.5f), float3(0.0f), 0.0f, 0.0f, float3(0.0f)};
 
-  PbrMaterial mat        = glassMat;
-  float3      origin     = glassHit.pos;
-  int         glassCount = 1;  // Glass surfaces crossed, the primary hit included
+  PbrMaterial mat          = glassMat;
+  float3      origin       = glassHit.pos;
+  float3      originNormal = glassHit.geonrm;          // The geometric normal at `origin`...
+  float       originOffset = glassHit.offsetDistance;  // ...and the step off it (safeOffsetRay)
+  int         glassCount   = 1;                        // Glass surfaces crossed, the primary hit included
   for(int layer = 0; layer < DLSS_MAX_GLASS_LAYERS; layer++)
   {
     // Smooth thin-walled transmission does not bend the ray (see bsdfSample); a volume refracts,
@@ -1270,7 +1336,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     }
 
     RayDesc guideRay;
-    guideRay.Origin    = safeOffsetRay(origin, dir);
+    guideRay.Origin    = safeOffsetRay(origin, dot(dir, originNormal) > 0.0f ? originNormal : -originNormal, originOffset);
     guideRay.Direction = dir;
     guideRay.TMin      = 0.0f;
     guideRay.TMax      = INFINITE;
@@ -1286,8 +1352,10 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     MeshState mesh = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, isInside, 0.0f);
     mesh.baseColorVertexMul = hit.color;
     mat    = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
-                          hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
-    origin = hit.pos;
+                              hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
+    origin       = hit.pos;
+    originNormal = hit.geonrm;
+    originOffset = hit.offsetDistance;
 
     if(dlssIsClearGlass(mat))
     {
@@ -1341,9 +1409,13 @@ float computeMeshWireframe(float4x4 objectToWorld, float3 v0, float3 v1, float3 
 // Camera and selection ray
 //-----------------------------------------------------------------------
 
+// Box-Muller transform: two uniform numbers in [0, 1] to two independent standard normal values.
+// rand() returns exactly 0 once in 2^32 draws, and log(0) would make the sample infinite and the
+// camera ray NaN. The floor is the smallest non-zero value rand() returns, which keeps r finite
+// (about 6.7). It must be a normal float: a denormal such as 1e-38 is flushed to zero on the GPU.
 float2 sampleGaussian(float2 u)
 {
-  const float r     = sqrt(-2.0f * log(max(1e-38f, u.x)));
+  const float r     = sqrt(-2.0f * log(max(u.x, 2.3283064e-10f)));
   const float theta = 2.0f * M_PI * u.y;
   return r * float2(cos(theta), sin(theta));
 }
@@ -1421,12 +1493,14 @@ struct PathTracerState
 
 struct BounceScratch
 {
-  bool   nextEventValid;
-  float3 contribution;
+  bool   nextEventValid = false;
+  float3 contribution   = float3(0.0F);
   // Keep shadow rays full precision: half packing erases the self-intersection offset.
-  float3 shadowRayPos;
-  float3 shadowRayDir;
-  float  shadowRayDist;
+  float3 shadowRayPos        = float3(0.0F);
+  float3 shadowRayDir        = float3(0.0F);
+  float  shadowRayDist       = 0.0F;
+  bool   shadowRayInside     = false;         // The shadow ray starts inside a medium...
+  float3 shadowRayExtinction = float3(0.0F);  // ...of this extinction.
 };
 
 // Safe accessor for pt.isInside. The field only exists when GLTF_USE_TRANSMISSION or
