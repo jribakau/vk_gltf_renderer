@@ -59,6 +59,7 @@
 #include "fv_view.hpp"
 #include "gltf_environment_sky.hpp"
 #include "gltf_scene.hpp"
+#include "gltf_scene_animation.hpp"
 #include "renderer.hpp"
 #include "ui_animation.hpp"
 
@@ -616,10 +617,12 @@ Json FvHost::Impl::load(const Json& args)
   const std::string label = "Loading " + utf8Of(pathOf(name).filename());
   // `replace`: a wearable opens on its own instead of going on the loaded figure
   const bool replace = args.value("replace", false);
+  // how it was opened, for a scene file
+  const Json source = args.contains("rel") ? Json{{"rel", args["rel"]}} : Json{{"path", args["path"]}};
   job(jobId, {{"label", label}, {"state", "running"}});
 
   std::lock_guard lock(loadMutex);
-  loaders.emplace_back([this, s, roots = library->first, rel = library->second, seq, jobId, label, replace] {
+  loaders.emplace_back([this, s, roots = library->first, rel = library->second, seq, jobId, label, replace, source] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
@@ -727,7 +730,7 @@ Json FvHost::Impl::load(const Json& args)
       // the renderer takes it on the application thread
       auto shared = std::make_shared<std::pair<std::unique_ptr<fv::Figure>, fv::build::BuildResult>>(std::move(f), std::move(built));
       const bool flipped = cooked;
-      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source = args]() mutable {
+      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source]() mutable {
         install(std::move(shared->first), std::move(shared->second), generation, jobId, flipped, skin, lib, std::move(images), std::move(source));
       });
     }
