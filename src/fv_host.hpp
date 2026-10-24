@@ -50,6 +50,7 @@
 //   prop.remove     {prop}                       what rode on it stays where it was in the world
 //   prop.duplicate  {prop}                       -> {prop}, or {job} for a figure (loaded again, its state put back)
 //   scene.clear     {}                           every prop goes
+//   scene.order     {order: [prop]}              the props in this order (the ones it leaves out after them), one composition
 //   pose.set        {prop, values: {"bone/kind/axis": value}}
 //   pose.reset      {prop}
 //   pose.eyes       {prop}                       aim the eyeballs at the camera

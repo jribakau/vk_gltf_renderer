@@ -3819,6 +3819,27 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return impl->onApp([impl, args] { return impl->propDuplicate(args); });
   });
   cmds.add("scene.clear", [impl](const Json&) { return impl->onApp([impl] { return impl->sceneClear(); }); });
+  // every prop's place at once, as a scene file opens: one composition, not one per prop that moves
+  cmds.add("scene.order", [impl](const Json& args) {
+    return impl->onApp([impl, args] {
+      std::vector<std::shared_ptr<Prop>> next;
+      for(const Json& id : args.at("order"))
+        if(id.is_string())
+          if(auto p = impl->findProp(id.get<std::string>()); p && std::find(next.begin(), next.end(), p) == next.end())
+            next.push_back(p);
+      // what the list leaves out keeps its order, after what it names
+      for(const auto& p : impl->props)
+        if(std::find(next.begin(), next.end(), p) == next.end())
+          next.push_back(p);
+      if(next != impl->props)
+      {
+        impl->props = std::move(next);
+        impl->requestCompose("Reordering");
+        impl->publishScene();
+      }
+      return Json{{"ok", true}};
+    });
+  });
   cmds.add("view.use", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->viewUse(args); }); });
   for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
     cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
