@@ -1616,22 +1616,23 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     job(jobId, {{"label", "Restoring the scene"}, {"state", "done"}});
   };
   auto wear = [this, target, worn, apply] {
+    // one file can put on several items (an outfit's "Full Load"): each is listed, the file is worn once
     auto hide = [target, worn] {
       for(const Json& w : worn)
         if(!w.value("visible", true))
           for(const fv::WornItem& i : target->fig->items)
-            if(i.rel == w.value("rel", ""))
+            if(relKey(i.rel) == relKey(w.value("rel", "")) && (w.value("label", "").empty() || i.label == w.value("label", "")))
               target->fig->setItemVisible(i.id, false);
     };
-    std::set<std::string> addons;
+    std::set<std::string> skip;
     for(const fv::dson::PostLoadAddon& a : target->fig->addons)
-      addons.insert(relKey(a.file));
+      skip.insert(relKey(a.file));
     std::vector<WearRequest> requests;
     if(worn.is_array())
       for(const Json& w : worn)
       {
         const std::string rel = w.value("rel", "");
-        if(!rel.empty() && !addons.count(relKey(rel)))
+        if(!rel.empty() && skip.insert(relKey(rel)).second)
           requests.push_back({rel, "", {}});
       }
     if(requests.empty())
