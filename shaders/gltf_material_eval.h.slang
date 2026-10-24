@@ -602,14 +602,13 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
 #endif  // !RASTER_PIPELINE
     {
       // The preview keeps the thin lobe's fixed back-scatter, whatever anisotropy the medium
-      // authored, and leaves through the base colour as the volume walk does (ptVolumeDiffuseExit),
-      // under the medium's multiple-scattering albedo: multiscatterColor carries no map in this
-      // mode (it is what the walk's per-event albedo is inverted from), and it is close to what the
-      // walk hands back from a thick medium, so the preview takes the colour the still view will have.
+      // authored, and leaves in the base colour as the volume walk does lit from the front
+      // (ptVolumeDiffuseExit divides the medium's own multiple-scattering albedo back out), so the
+      // preview takes the colour the still view will have.
       if(scatterAsThin && pbrMat.thickness > 0.0)
       {
         g                 = -0.8;
-        multiscatterColor = pbrMat.baseColor * multiscatterColor;
+        multiscatterColor = pbrMat.baseColor;
       }
       // Thin-walled mode (no volume / thickness = 0). The spec replaces the transmissive part of
       // the dielectric base with

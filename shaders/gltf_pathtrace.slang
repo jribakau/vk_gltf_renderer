@@ -353,10 +353,14 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
       if(diffuseExit)
       {
-        // The exit lobe: Lambertian in the surface's colour map (the medium carried the measured
-        // scattering colour; the map is the skin's own), with no specular layer, since the walk
-        // already paid the boundary's share on the way in.
-        const float3 exitAlbedo = pbrMat.baseColor;
+        // The exit lobe: Lambertian with no specular layer, since the walk already paid the
+        // boundary's share on the way in. The walk hands back about the medium's multiple-scattering
+        // albedo, already a skin colour; the exit divides it out, so lit from the front the skin is
+        // its colour map (as a random walk with albedo inversion renders it), while how far each
+        // channel spread under the surface still shows at shadow edges and through thin parts.
+        const float3 walkAlbedo =
+            max(materials[materialIndex].multiscatterColorFactor * materials[materialIndex].scatterStrengthFactor, float3(0.05F));
+        const float3 exitAlbedo = pbrMat.baseColor / walkAlbedo;
         const float3 N          = pbrMat.N;
         const float3 Ng         = pbrMat.Ng;
         const float3 T          = pbrMat.T;
