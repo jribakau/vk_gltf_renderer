@@ -53,6 +53,7 @@
 #include <figure/figure.hpp>
 #include <figure/gltf/export_glb.hpp>
 #include <figure/gltf/gltf_build.hpp>
+#include <figure/io/timing.hpp>
 
 #include "env_image_loader.hpp"
 #include "fv_lighting.hpp"
@@ -802,6 +803,7 @@ Json FvHost::Impl::load(const Json& args)
       bool cooked = !s.texServer.empty() && !s.rootId.empty();
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
       {
+        fv::timing::Scope                                   timeTextures("textures");
         const auto                                          requests = fv::build::textureRequests(f->loaded.scene, skin);
         std::vector<std::optional<fv::build::TextureImage>> found(requests.size());
         std::atomic<bool>                                   uncooked{false};
@@ -840,7 +842,10 @@ Json FvHost::Impl::load(const Json& args)
         auto it = images.find(fv::build::requestKey(req));
         return it == images.end() ? std::nullopt : it->second;
       };
-      auto built = fv::build::buildGltf(f->loaded.scene, f->loaded.root, options);
+      auto built = [&] {
+        fv::timing::Scope t("buildGltf");
+        return fv::build::buildGltf(f->loaded.scene, f->loaded.root, options);
+      }();
       LOGI("[fv] %s built in %.2f s: %zu nodes, %zu meshes, %zu materials, %zu images, %zu bytes of geometry\n", rel.c_str(),
            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), built.model.nodes.size(), built.model.meshes.size(),
            built.model.materials.size(), built.model.images.size(), built.model.buffers.empty() ? size_t(0) : built.model.buffers[0].data.size());
@@ -1147,19 +1152,32 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
            }))
           continue;
         job(jobId, {{"label", utf8Of(pathOf(request.rel).stem()) + ": loading"}, {"state", "running"}});
+        fv::timing::Scope timeWear("wear " + utf8Of(pathOf(request.rel).stem()));
         // the figure as it is now, copied on the application thread: dials move its joint centres meanwhile
-        auto base = onApp([target] { return target->fig->wearBase(); });
+        auto base = [&] {
+          fv::timing::Scope t("wearBase (render thread)");
+          return onApp([target] { return target->fig->wearBase(); });
+        }();
         auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base);
         // the material presets that go with it, applied to the wearable before its textures are looked up
         fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
-        if(const std::string brows = defaultBrowMaterial(preparedScene); !brows.empty())
-          applyPreset(brows, preparedScene, false);
-        for(const std::string& presetRel : request.name.empty() ? request.presets : addonPresets)
-          applyPreset(presetRel, preparedScene, true);
+        {
+          fv::timing::Scope t("material presets");
+          if(const std::string brows = defaultBrowMaterial(preparedScene); !brows.empty())
+            applyPreset(brows, preparedScene, false);
+          for(const std::string& presetRel : request.name.empty() ? request.presets : addonPresets)
+            applyPreset(presetRel, preparedScene, true);
+        }
+        // a strand hair's direction is measured here, so the rebuild on the render thread finds it
+        {
+          fv::timing::Scope t("strand directions");
+          fv::build::measureStrands(preparedScene, target->texturesFlipped);
+        }
         // the wearable's textures, the way the figure's were made: bottom-up cooked, or the sources
         job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
         std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
         {
+          fv::timing::Scope t("textures");
           const auto requestsOf = fv::build::textureRequests(fv::Figure::preparedScene(*prepared), skin);
           std::vector<std::optional<fv::build::TextureImage>> found(requestsOf.size());
           std::atomic<size_t>                                 next{0};
@@ -1208,6 +1226,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           }
         });
         // the application thread merges it; a renderer that is closing never will
+        fv::timing::Scope timeCommit("commit (render thread)");
         while(ok.wait_for(100ms) != std::future_status::ready)
           if(!accepting)
             return;
@@ -2424,6 +2443,8 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   s.registry  = registry;
   auto& cmds  = s.protocol->commands();
   Impl* impl  = m_impl.get();
+  // the figure library's phase timers (loads, wears, glTF builds) go to the log
+  fv::timing::setSink([](const std::string& line) { LOGI("%s\n", line.c_str()); });
 
   cmds.add("settings.apply", [impl](const Json& args) {
     std::lock_guard lock(impl->settingsMutex);

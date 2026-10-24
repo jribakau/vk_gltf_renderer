@@ -1,0 +1,24 @@
+{
+  "about": "The app's samples/nativeTest.fvscene as the host loads it: Mirel, her four Genesis 9 add-ons, the She Is The Boss outfit and strand hair, her dials, then the glTF built twice (the add-ons' rebuild and the restore's). Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"wear": "data/Daz 3D/Genesis 9/Genesis 9 Eyelashes/Tools/Script Loads/Genesis 9 Eyelashes.duf"},
+    {"wear": "data/Daz 3D/Genesis 9/Genesis 9 Tear/Tools/Script Loads/Genesis 9 Tear.duf"},
+    {"wear": "data/Daz 3D/Genesis 9/Genesis 9 Eyes/Tools/Script Loads/Genesis 9 Eyes.duf"},
+    {"wear": "data/Daz 3D/Genesis 9/Genesis 9 Mouth/Tools/Script Loads/Genesis 9 Mouth.duf"},
+    {"build": 1},
+    {"wear": "People/Genesis 9/Clothing/Modu8/She Is The Boss/M8 SITB !Full Load.duf"},
+    {"wear": "People/Genesis 9/Hair/Out Of Touch/OOT Summer Style Wavy Long Bob Hair/Summer Style Wavy Long Bob Hair.duf", "measure": true},
+    {"morph": {
+      "Mirel_figure_ctrl_Character-0xa98fd7a": 1,
+      "Offset-0xa30f381": 1,
+      "body_bs_Navel_HD3": 1,
+      "head_bs_MouthRealism_HD3": 1,
+      "pJCM_FrontFix-0xa7e45e5": 1,
+      "pJCM_shoulder_z55n_r-0xa7e44cc": -0.00001
+    }},
+    {"build": 2},
+    {"dump": "final"}
+  ]
+}

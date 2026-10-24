@@ -10,6 +10,7 @@
 #include <regex>
 
 #include <figure/dson/listing.hpp>
+#include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
@@ -154,7 +155,11 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   const SceneGraph& scene = base ? *base : loaded.scene;
   options.attach      = dson::AttachTarget{&scene, &loaded.rigs[size_t(loaded.mainRig)], out->key};
   const std::string file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()));
-  out->loaded            = dson::loadDson(*m_store, file, options);
+  timing::Scope     t("prepareWear " + file);
+  {
+    timing::Scope tl("loadDson");
+    out->loaded = dson::loadDson(*m_store, file, options);
+  }
   if(out->loaded.items.empty())
     throw std::runtime_error("Nothing in this file can be worn.");
 
@@ -162,13 +167,15 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   // and shape, and the bindings below are made against the cage it ends with
   const int bodyMesh = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
   {
+    timing::Scope      tf("fitItem");
     const std::string  morphDir = loaded.morphs.morphDir;
     wardrobe::FitFigure figure{scene, loaded.rigs[size_t(loaded.mainRig)], bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
     for(const dson::Item& it : out->loaded.items)
       out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
   }
   // every conforming part is bound to the body's unmorphed cage, in parallel
-  const auto& body = *scene.meshes[size_t(bodyMesh)].geo;
+  timing::Scope tb("bindToSurface");
+  const auto&   body = *scene.meshes[size_t(bodyMesh)].geo;
   out->bindings.resize(out->loaded.parts.size());
   std::vector<std::future<void>> jobs;
   for(size_t i = 0; i < out->loaded.parts.size(); i++)
@@ -192,6 +199,7 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
 
 WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel)
 {
+  timing::Scope     t("commitWear " + rel);
   PreparedWear&     p   = *wear;
   dson::LoadResult& w   = p.loaded;
   SceneGraph&       dst = loaded.scene;
@@ -370,6 +378,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     return names;
   }();
   {
+    timing::Scope                       td("other dials");
     std::vector<const dson::SceneDial*> dials;
     for(const dson::SceneDial& d : w.morphs.dials)
       dials.push_back(&d);
@@ -393,7 +402,8 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     }
     return it->second;
   };
-  const auto& bodyGeoPtr = dst.meshes[size_t(body)].geo;
+  const auto&   bodyGeoPtr = dst.meshes[size_t(body)].geo;
+  timing::Scope tp("followers and own morphs");
   for(size_t i = 0; i < w.parts.size(); i++)
   {
     const dson::ItemPart& part = w.parts[i];
@@ -497,8 +507,11 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
         owner->channels.push_back(c.name);
     }
   }
-  morphs->flush();
-  morphs->sort();
+  {
+    timing::Scope tf("flush");
+    morphs->flush();
+    morphs->sort();
+  }
   result.items = added;
   return result;
 }

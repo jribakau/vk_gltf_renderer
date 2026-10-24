@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -801,8 +802,13 @@ Level refineLevel(const Level& p, Stencils& stencils)
 // ------------------------------------------------------------------------------------------------
 // public
 
+// morph loads run on pool threads and share one refinement: the first to need the table builds it,
+// and the others wait for it rather than build a second one over it
+static std::mutex g_transposeMutex;
+
 const Stencils::Transpose& Stencils::transpose() const
 {
+  std::lock_guard lock(g_transposeMutex);
   if(m_transpose)
     return *m_transpose;
   auto t = std::make_shared<Transpose>();

@@ -1,5 +1,6 @@
 #include <figure/io/gzip.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <vector>
@@ -61,8 +62,15 @@ std::string inflateIfCompressed(std::span<const uint8_t> bytes)
   s.next_in  = const_cast<Bytef*>(bytes.data() + gzipAt);
   s.avail_in = uInt(bytes.size() - gzipAt);
 
+  // a gzip member ends with its inflated size (mod 4 GiB): room for all of it at once, and a little
+  // more so the end of the stream fits without another round
   std::string out;
-  out.resize(bytes.size() * 4 + 4096);
+  const size_t isize = gzipAt && bytes.size() >= 4
+                           ? size_t(bytes[bytes.size() - 4]) | size_t(bytes[bytes.size() - 3]) << 8 | size_t(bytes[bytes.size() - 2]) << 16
+                                 | size_t(bytes[bytes.size() - 1]) << 24
+                           : 0;
+  // (deflate expands at most about 1032:1, so a damaged trailer can't ask for more than that)
+  out.resize(isize && isize <= bytes.size() * 1032 ? isize + 64 : bytes.size() * 4 + 4096);
   int ret = Z_OK;
   while(true)
   {
@@ -88,11 +96,19 @@ std::string inflateIfCompressed(std::span<const uint8_t> bytes)
 
 std::string readMaybeCompressed(const std::filesystem::path& path)
 {
-  std::ifstream f(path, std::ios::binary);
+  // one read into the string that is returned: a strand hair's geometry is tens of MB of plain JSON
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
   if(!f)
     throw std::runtime_error("cannot read " + path.string());
-  std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  return inflateIfCompressed(bytes);
+  const std::streamoff size = f.tellg();
+  f.seekg(0);
+  std::string bytes(size_t(std::max<std::streamoff>(size, 0)), '\0');
+  if(!bytes.empty() && !f.read(bytes.data(), std::streamsize(bytes.size())))
+    throw std::runtime_error("cannot read " + path.string());
+  const std::span<const uint8_t> raw(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+  if(!isGzip(raw) && !isZlib(raw))
+    return bytes;
+  return inflateIfCompressed(raw);
 }
 
 }  // namespace fv

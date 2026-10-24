@@ -72,6 +72,12 @@ std::vector<float> inverseBindMatrices(const Mesh& m);
 // Every node reachable from `root`, in the order traversal meets them.
 BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& options);
 
+// Measures the strand direction of the scene's hair cards ahead of a build, in parallel, and keeps
+// it with each geometry: the build, which a host runs on its application thread after a wardrobe
+// change, then finds it measured instead of welding a strand hair's cards (about a second) itself.
+// `texturesFlipped` as the build will have it. A build measures what it doesn't find.
+void measureStrands(const SceneGraph& scene, bool texturesFlipped);
+
 // The textures buildGltf asks options.texture for, each once: a host resolves them ahead, in
 // parallel (cooking one can take seconds), and answers the build from what it found.
 std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMode skin = mat::SkinMode::eVolume);

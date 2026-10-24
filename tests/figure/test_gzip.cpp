@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -45,7 +47,7 @@ TEST(FigureGzip, PlainJsonPassesThrough)
 
 TEST(FigureGzip, InflatesGzip)
 {
-  // larger than the first output guess (4x the input), so the buffer has to grow
+  // far larger than its input: the trailer's size sets the buffer
   std::string json = "{\"a\":[";
   for(int i = 0; i < 20000; i++)
     json += "0,";
@@ -54,6 +56,35 @@ TEST(FigureGzip, InflatesGzip)
   ASSERT_TRUE(fv::isGzip(packed));
   EXPECT_LT(packed.size() * 4, json.size());
   EXPECT_EQ(fv::inflateIfCompressed(packed), json);
+}
+
+TEST(FigureGzip, ATrailerThatSaysTooLittleStillInflatesEverything)
+{
+  std::string json = "{\"a\":[";
+  for(int i = 0; i < 20000; i++)
+    json += "1,";
+  json += "1]}";
+  auto packed = gzip(json);
+  // ISIZE, the last four bytes: 10
+  packed[packed.size() - 4] = 10;
+  packed[packed.size() - 3] = packed[packed.size() - 2] = packed[packed.size() - 1] = 0;
+  EXPECT_EQ(fv::inflateIfCompressed(packed), json);
+}
+
+TEST(FigureGzip, ReadsPlainAndCompressedFilesAlike)
+{
+  const std::string           json = "{\"file_version\":\"0.6.0.0\",\"x\":[1,2,3]}";
+  const std::filesystem::path dir  = std::filesystem::temp_directory_path() / "fv_gzip_test";
+  std::filesystem::create_directories(dir);
+  std::ofstream(dir / "plain.dsf", std::ios::binary) << json;
+  const auto packed = gzip(json);
+  std::ofstream(dir / "packed.dsf", std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), std::streamsize(packed.size()));
+  EXPECT_EQ(fv::readMaybeCompressed(dir / "plain.dsf"), json);
+  EXPECT_EQ(fv::readMaybeCompressed(dir / "packed.dsf"), json);
+  std::ofstream(dir / "empty.dsf", std::ios::binary).flush();
+  EXPECT_EQ(fv::readMaybeCompressed(dir / "empty.dsf"), "");
+  EXPECT_THROW(fv::readMaybeCompressed(dir / "missing.dsf"), std::runtime_error);
+  std::filesystem::remove_all(dir);
 }
 
 TEST(FigureGzip, TruncatedStreamThrows)

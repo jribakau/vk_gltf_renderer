@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include <figure/dson/materials.hpp>
+#include <figure/io/timing.hpp>
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
@@ -642,7 +643,12 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         auto gref = parseRef(getString(&g, "url"), file);
         if(!gref)
           continue;
-        auto gres = store.resolve(*gref, "geometry_library");
+        // a mesh that costs something is timed: its file, its build, its dForce data, its skin
+        timing::Scope tm("mesh " + getString(&g, "id"), 10);
+        auto          gres = [&] {
+          timing::Scope tr("resolve geometry", 10);
+          return store.resolve(*gref, "geometry_library");
+        }();
         if(!gres)
         {
           warn("Missing geometry " + getString(&g, "url"));
@@ -683,7 +689,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         // DSON marks SubD meshes; others (strand hair cards, props modelled as polygons) stay as they are
         const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(options.subdivision, 0, 3) : 0;
         Mesh      meshOut;
-        meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, meshOut.materialGroups)));
+        {
+          timing::Scope tb("mesh::build", 10);
+          meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, meshOut.materialGroups)));
+        }
 
         // materials, one per polygon material group
         const Json* libMaterials = get(&gres->doc->json, "material_library");
@@ -750,7 +759,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           meshOut.materials.push_back(hit->second);
         }
         // dForce settings, where the scene (or a material) asks for a simulation
-        meshOut.dforce = buildDforce(*docPtr, gres->doc.get(), getString(job.node, "id"), gid, *gres->doc, geo, groupChannels);
+        {
+          timing::Scope td("buildDforce", 10);
+          meshOut.dforce = buildDforce(*docPtr, gres->doc.get(), getString(job.node, "id"), gid, *gres->doc, geo, groupChannels);
+        }
         if(meshOut.geo->ribbon)
         {
           std::vector<std::array<double, 2>> widths;
@@ -769,7 +781,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         // skin binding lives in the geometry's file, keyed to the geometry id
         if(job.rig >= 0)
         {
-          const Rig&  rig  = out.rigs[job.rig];
+          timing::Scope ts("skin", 10);
+          const Rig&    rig = out.rigs[job.rig];
           const Json* mods = get(&gres->doc->json, "modifier_library");
           const Json* skinMod = nullptr;
           if(mods && mods->is_array())

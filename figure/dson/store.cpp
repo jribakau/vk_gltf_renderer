@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include <figure/io/gzip.hpp>
+#include <figure/io/timing.hpp>
 
 namespace fv::dson {
 
@@ -278,7 +279,17 @@ std::shared_ptr<const Doc> Store::fetch(const std::string& file)
     }
     throw MissingFileError(file);
   }
-  return parseDoc(readMaybeCompressed(*path));
+  // a large file (strand hair runs to tens of MB of JSON) is timed: reading and parsing apart
+  std::error_code ec;
+  if(!timing::enabled() || std::filesystem::file_size(*path, ec) < (2u << 20) || ec)
+    return parseDoc(readMaybeCompressed(*path));
+  std::string text;
+  {
+    timing::Scope t("read " + file);
+    text = readMaybeCompressed(*path);
+  }
+  timing::Scope t("parse " + std::to_string(text.size() >> 20) + " MB");
+  return parseDoc(std::move(text));
 }
 
 std::shared_ptr<const Doc> Store::loadShared(const std::string& file)

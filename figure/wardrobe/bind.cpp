@@ -1,5 +1,7 @@
 #include <figure/wardrobe/bind.hpp>
 
+#include <figure/jobs/pool.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -72,7 +74,6 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
           tris[fill[(size_t(k) * ny + j) * nx + i]++] = uint32_t(t);
   }
 
-  std::vector<int32_t> stamp(nt, -1);
   // shaved off the cell-wall distance so float error cannot hide a strictly closer triangle on the face
   constexpr double kWallSlack = 1e-4;
   const int        maxR       = std::max({nx, ny, nz});
@@ -89,8 +90,7 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
     return false;
   };
   // closest point on a triangle (Ericson, Real-Time Collision Detection 5.1.5), as barycentric u, v, w
-  double bu = 0, bv = 0, bw = 0;
-  const auto closest = [&](double px, double py, double pz, size_t a, size_t b, size_t c) {
+  const auto closest = [&](double px, double py, double pz, size_t a, size_t b, size_t c, double& bu, double& bv, double& bw) {
     const double ax = P[a], ay = P[a + 1], az = P[a + 2];
     const double abx = P[b] - ax, aby = P[b + 1] - ay, abz = P[b + 2] - az;
     const double acx = P[c] - ax, acy = P[c + 1] - ay, acz = P[c + 2] - az;
@@ -135,75 +135,83 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
     return qx * qx + qy * qy + qz * qz;
   };
 
-  for(size_t v = 0; v < nvDst; v++)
-  {
-    const double  px = D[v * 3], py = D[v * 3 + 1], pz = D[v * 3 + 2];
-    const int32_t mask = filter && v < filter->itemMask.size() ? filter->itemMask[v] : 0;
-    const int     ci = cellOf(px, minX, nx), cj = cellOf(py, minY, ny), ck = cellOf(pz, minZ, nz);
-    // clamped in from outside the grid: the cell does not contain the point, so its walls are not a bound
-    const bool contained = int(std::floor((px - minX) / cell)) == ci && int(std::floor((py - minY) / cell)) == cj && int(std::floor((pz - minZ) / cell)) == ck;
-    double     best      = INFINITY;
-    int64_t    bestTri   = -1;
-    double     wu = 1, wv = 0, ww = 0;
-    for(int r = 0; r <= maxR; r++)
+  // each vertex is found on its own, so the vertices are split among threads (strand hair has
+  // hundreds of thousands, many far from the body, where the ring search goes wide); `stamp` marks
+  // the triangles one vertex's search has seen, so each chunk has its own
+  const auto bindRange = [&](size_t begin, size_t end) {
+    std::vector<int32_t> stamp(nt, -1);
+    double               bu = 0, bv = 0, bw = 0;
+    for(size_t v = begin; v < end; v++)
     {
-      // cells r rings out are at least (r - 1) cells away
-      if(bestTri >= 0 && r > 1 && best <= std::pow((r - 1) * cell, 2))
-        break;
-      for(int k = ck - r; k <= ck + r; k++)
+      const double  px = D[v * 3], py = D[v * 3 + 1], pz = D[v * 3 + 2];
+      const int32_t mask = filter && v < filter->itemMask.size() ? filter->itemMask[v] : 0;
+      const int     ci = cellOf(px, minX, nx), cj = cellOf(py, minY, ny), ck = cellOf(pz, minZ, nz);
+      // clamped in from outside the grid: the cell does not contain the point, so its walls are not a bound
+      const bool contained = int(std::floor((px - minX) / cell)) == ci && int(std::floor((py - minY) / cell)) == cj && int(std::floor((pz - minZ) / cell)) == ck;
+      double     best      = INFINITY;
+      int64_t    bestTri   = -1;
+      double     wu = 1, wv = 0, ww = 0;
+      for(int r = 0; r <= maxR; r++)
       {
-        if(k < 0 || k >= nz)
-          continue;
-        for(int j = cj - r; j <= cj + r; j++)
+        // cells r rings out are at least (r - 1) cells away
+        if(bestTri >= 0 && r > 1 && best <= std::pow((r - 1) * cell, 2))
+          break;
+        for(int k = ck - r; k <= ck + r; k++)
         {
-          if(j < 0 || j >= ny)
+          if(k < 0 || k >= nz)
             continue;
-          const bool shell = std::abs(k - ck) == r || std::abs(j - cj) == r;
-          for(int i = ci - r; i <= ci + r; i += shell ? 1 : std::max(1, 2 * r))
+          for(int j = cj - r; j <= cj + r; j++)
           {
-            if(i < 0 || i >= nx)
+            if(j < 0 || j >= ny)
               continue;
-            const size_t c = (size_t(k) * ny + j) * nx + i;
-            for(uint32_t s = start[c], e = start[c + 1]; s < e; s++)
+            const bool shell = std::abs(k - ck) == r || std::abs(j - cj) == r;
+            for(int i = ci - r; i <= ci + r; i += shell ? 1 : std::max(1, 2 * r))
             {
-              const uint32_t t = tris[s];
-              if(stamp[t] == int32_t(v))
+              if(i < 0 || i >= nx)
                 continue;
-              stamp[t] = int32_t(v);
-              if(!triOk(t, mask))
-                continue;
-              const double d = closest(px, py, pz, T[t * 3] * 3ull, T[t * 3 + 1] * 3ull, T[t * 3 + 2] * 3ull);
-              if(d < best)
+              const size_t c = (size_t(k) * ny + j) * nx + i;
+              for(uint32_t s = start[c], e = start[c + 1]; s < e; s++)
               {
-                best    = d;
-                bestTri = t;
-                wu = bu, wv = bv, ww = bw;
+                const uint32_t t = tris[s];
+                if(stamp[t] == int32_t(v))
+                  continue;
+                stamp[t] = int32_t(v);
+                if(!triOk(t, mask))
+                  continue;
+                const double d = closest(px, py, pz, T[t * 3] * 3ull, T[t * 3 + 1] * 3ull, T[t * 3 + 2] * 3ull, bu, bv, bw);
+                if(d < best)
+                {
+                  best    = d;
+                  bestTri = t;
+                  wu = bu, wv = bv, ww = bw;
+                }
               }
             }
           }
         }
+        // ring 0 holds every triangle that meets the cell: a point inside it, closer to its hit than
+        // to the nearest wall, has no strictly closer triangle outside it
+        if(r == 0 && contained && bestTri >= 0)
+        {
+          const double dx   = std::min(px - (minX + ci * cell), minX + (ci + 1) * cell - px);
+          const double dy   = std::min(py - (minY + cj * cell), minY + (cj + 1) * cell - py);
+          const double dz   = std::min(pz - (minZ + ck * cell), minZ + (ck + 1) * cell - pz);
+          const double wall = std::min({dx, dy, dz}) - kWallSlack;
+          if(wall > 0 && best <= wall * wall)
+            break;
+        }
       }
-      // ring 0 holds every triangle that meets the cell: a point inside it, closer to its hit than
-      // to the nearest wall, has no strictly closer triangle outside it
-      if(r == 0 && contained && bestTri >= 0)
-      {
-        const double dx   = std::min(px - (minX + ci * cell), minX + (ci + 1) * cell - px);
-        const double dy   = std::min(py - (minY + cj * cell), minY + (cj + 1) * cell - py);
-        const double dz   = std::min(pz - (minZ + ck * cell), minZ + (ck + 1) * cell - pz);
-        const double wall = std::min({dx, dy, dz}) - kWallSlack;
-        if(wall > 0 && best <= wall * wall)
-          break;
-      }
+      if(bestTri < 0)
+        continue;
+      out.verts[v * 3]       = T[bestTri * 3];
+      out.verts[v * 3 + 1]   = T[bestTri * 3 + 1];
+      out.verts[v * 3 + 2]   = T[bestTri * 3 + 2];
+      out.weights[v * 3]     = float(wu);
+      out.weights[v * 3 + 1] = float(wv);
+      out.weights[v * 3 + 2] = float(ww);
     }
-    if(bestTri < 0)
-      continue;
-    out.verts[v * 3]       = T[bestTri * 3];
-    out.verts[v * 3 + 1]   = T[bestTri * 3 + 1];
-    out.verts[v * 3 + 2]   = T[bestTri * 3 + 2];
-    out.weights[v * 3]     = float(wu);
-    out.weights[v * 3 + 1] = float(wv);
-    out.weights[v * 3 + 2] = float(ww);
-  }
+  };
+  jobs::parallelFor(nvDst, 4096, bindRange);
   for(size_t k = 0; k + 1 < pairs.size(); k += 2)
   {
     const int32_t g = pairs[k], b = pairs[k + 1];

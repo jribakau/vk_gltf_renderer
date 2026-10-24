@@ -1,25 +1,35 @@
-// Parity harness, native side: runs a case (test/parity/cases/*.json in the app repository) through
-// the figure library and writes what it built in the shape the TypeScript dumper writes
-// (test/parity/dump.parity.ts), for scripts/parity/compare.mjs to diff.
+// Runs a case (cases/*.json; the app repository's parity cases before the TypeScript side was
+// deleted) through the figure library, with no GPU, and writes what it built: bones, meshes and morph
+// weights in the shape the TypeScript dumper wrote, so two runs can be diffed.
 //
 //   fv_parity <case.json> <out.json> [--root <dir for relative library paths>]
 //
 // Steps: {"load"}, {"morph"}, {"pose"}, {"preset"}, {"dump"}, and for the wardrobe {"wear": rel},
 // {"remove": item id} and {"fit": label}, which measures how the worn items sit on the body: for
 // each item vertex, its signed distance to the nearest body vertex along that vertex's normal.
+// {"build": n} builds the glTF the renderer would get (without textures) n times, as the host
+// builds it again after each wardrobe change, and prints the hair strand directions it measured;
+// {"wear": rel, "measure": true} measures a wearable's strands ahead, as the host's wear does.
+//
+// Every step's time goes to stderr ("[step] ..."), with the library's phase timers ("[fv-time] ...")
+// inside it: the case in cases/native_test.json is the profile of a scene file's load.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <unordered_map>
 
 #include <figure/dson/material_preset.hpp>
 #include <figure/figure.hpp>
+#include <figure/gltf/gltf_build.hpp>
+#include <figure/io/timing.hpp>
 
 using fv::dson::Json;
 
@@ -230,11 +240,15 @@ int main(int argc, char** argv)
       libraryDir = pathOf(lib.c_str());
     if(libraryDir.is_relative())
       libraryDir = root / libraryDir;
+    fv::timing::setSink([](const std::string& line) { std::cerr << line << "\n"; });
     auto store = std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{libraryDir}));
     std::unique_ptr<fv::Figure>         loaded;
     Json                                dumps = Json::object();
+    int                                 stepNo = 0;
+    const auto                          caseStart = std::chrono::steady_clock::now();
     for(const Json& step : c.at("steps"))
     {
+      const auto stepStart = std::chrono::steady_clock::now();
       if(step.contains("load"))
         {
           loaded = fv::Figure::load(store, step["load"].get<std::string>(), {.subdivision = step.value("subdivision", 0)});
@@ -288,6 +302,12 @@ int main(int argc, char** argv)
           throw std::runtime_error("wear before a figure loads");
         const std::string rel = step["wear"].get<std::string>();
         auto              prepared = loaded->prepareWear(rel, step.value("subdivision", 0));
+        // as the host does on its worker, so the build after the wear finds the strands measured
+        if(step.value("measure", false))
+        {
+          fv::timing::Scope t("measureStrands");
+          fv::build::measureStrands(fv::Figure::preparedScene(*prepared), false);
+        }
         const fv::WearResult w = loaded->commitWear(prepared, rel);
         loaded->settle();
         Json report = {{"items", w.items}, {"fit", r(w.fit)}, {"notes", w.notes}, {"warnings", w.warnings}, {"missingBones", w.missingBones}};
@@ -311,7 +331,32 @@ int main(int argc, char** argv)
           throw std::runtime_error("dump before load");
         dumps[step["dump"].get<std::string>()] = dumpScene(loaded->loaded.scene, loaded->loaded.root, loaded->morphs.get());
       }
+      else if(step.contains("build"))
+      {
+        if(!loaded)
+          throw std::runtime_error("build before a figure loads");
+        for(int k = 0; k < std::max(1, step["build"].get<int>()); k++)
+        {
+          fv::build::BuildResult built;
+          {
+            fv::timing::Scope t("buildGltf");
+            built = fv::build::buildGltf(loaded->loaded.scene, loaded->loaded.root, {});
+          }
+          // the measured strand directions, to compare runs by
+          std::cerr << "strands";
+          for(size_t mi = 0; mi < built.lowering.size(); mi++)
+            if(const auto& a = built.lowering[mi].anisotropyRotation)
+              std::cerr << " " << loaded->loaded.scene.materials[mi].name << "=" << std::setprecision(6) << *a;
+          std::cerr << std::defaultfloat << "\n";
+        }
+      }
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stepStart).count();
+      std::cerr << "[step] " << ++stepNo << " " << step.begin().key() << " " << std::fixed << std::setprecision(1) << ms << " ms\n"
+                << std::defaultfloat;
     }
+    std::cerr << "[step] total " << std::fixed << std::setprecision(1)
+              << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - caseStart).count() << " ms\n"
+              << std::defaultfloat;
     std::filesystem::create_directories(outPath.parent_path());
     std::ofstream o(outPath);
     o << Json{{"case", casePath.stem().u8string()}, {"dumps", dumps}}.dump();

@@ -1,12 +1,18 @@
 #include <figure/gltf/gltf_build.hpp>
 
+#include <figure/io/timing.hpp>
+#include <figure/jobs/pool.hpp>
 #include <figure/materials/hair_strands.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
+#include <span>
 
 namespace fv::build {
 
@@ -77,6 +83,74 @@ private:
   mesh::Drawn            m_own;
 };
 
+// The strand votes of one hair part (a mesh's drawn ranges of one material), measured once per
+// geometry: a strand hair's cards take about a second to weld and measure, and the host builds the
+// glTF again after every wardrobe change. A part is kept while its geometry lives; a dial that moves
+// the hair leaves its cards' layout, and so the strand direction, as it was measured.
+struct StrandPart
+{
+  std::weak_ptr<const mesh::BuiltMesh>                geo;
+  std::vector<mat::StrandMesh::Range>                 ranges;
+  size_t                                              indexCount = 0;
+  bool                                                flipV      = false;
+  std::shared_ptr<const std::vector<mat::StrandVote>> votes;
+};
+std::mutex                                                g_strandMutex;
+std::map<const mesh::BuiltMesh*, std::vector<StrandPart>> g_strands;
+
+bool sameRanges(const std::vector<mat::StrandMesh::Range>& a, const std::vector<mat::StrandMesh::Range>& b)
+{
+  return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                    [](const mat::StrandMesh::Range& x, const mat::StrandMesh::Range& y) { return x.start == y.start && x.count == y.count; });
+}
+
+// The votes of `ranges` of `index`, with the UVs flipped as a build without cooked textures sends them.
+std::shared_ptr<const std::vector<mat::StrandVote>> strandVotesOf(const std::shared_ptr<mesh::BuiltMesh>& geo,
+                                                                  const std::vector<uint32_t>&           index,
+                                                                  const std::vector<mat::StrandMesh::Range>& ranges,
+                                                                  bool                                   flipV)
+{
+  {
+    std::lock_guard lock(g_strandMutex);
+    if(auto it = g_strands.find(geo.get()); it != g_strands.end())
+      for(const StrandPart& p : it->second)
+        if(p.geo.lock() == geo && p.flipV == flipV && p.indexCount == index.size() && sameRanges(p.ranges, ranges))
+          return p.votes;
+  }
+  std::vector<float>     flipped;
+  std::span<const float> uv = geo->uv;
+  if(flipV)
+  {
+    flipped = geo->uv;
+    for(size_t v = 1; v < flipped.size(); v += 2)
+      flipped[v] = 1 - flipped[v];
+    uv = flipped;
+  }
+  auto votes = std::make_shared<const std::vector<mat::StrandVote>>(mat::strandVotes({geo->position, uv, index, ranges}));
+  std::lock_guard lock(g_strandMutex);
+  // geometry that is gone takes its parts with it (and an address used again starts afresh)
+  std::erase_if(g_strands, [](const auto& kv) {
+    return std::all_of(kv.second.begin(), kv.second.end(), [](const StrandPart& p) { return p.geo.expired(); });
+  });
+  auto& parts = g_strands[geo.get()];
+  std::erase_if(parts, [&](const StrandPart& p) { return p.geo.lock() != geo; });
+  parts.push_back({geo, ranges, index.size(), flipV, votes});
+  return votes;
+}
+
+// The drawn ranges of each hair material of a mesh, by scene material.
+std::map<int, std::vector<mat::StrandMesh::Range>> hairRanges(const SceneGraph& scene, const Mesh& m, const DrawnView& drawn)
+{
+  std::map<int, std::vector<mat::StrandMesh::Range>> out;
+  for(const mesh::Group& group : drawn.groups())
+  {
+    const int mi = group.materialIndex < int(m.materials.size()) ? m.materials[group.materialIndex] : -1;
+    if(mi >= 0 && mi < int(scene.materials.size()) && scene.materials[mi].surface.kind == mat::Kind::eHair)
+      out[mi].push_back({group.start, group.count});
+  }
+  return out;
+}
+
 tinygltf::Value extras(const std::string& fvId)
 {
   tinygltf::Value::Object o;
@@ -122,6 +196,29 @@ std::vector<float> inverseBindMatrices(const Mesh& m)
       ibm.push_back(float(e));
   }
   return ibm;
+}
+
+void measureStrands(const SceneGraph& scene, bool texturesFlipped)
+{
+  struct Part
+  {
+    const Mesh*                         mesh;
+    std::shared_ptr<DrawnView>          drawn;
+    std::vector<mat::StrandMesh::Range> ranges;
+  };
+  std::vector<Part> parts;
+  for(const Mesh& m : scene.meshes)
+  {
+    if(!m.geo)
+      continue;
+    auto drawn = std::make_shared<DrawnView>(*m.geo);
+    for(auto& [mi, ranges] : hairRanges(scene, m, *drawn))
+      parts.push_back({&m, drawn, std::move(ranges)});
+  }
+  jobs::parallelFor(parts.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+      strandVotesOf(parts[i].mesh->geo, parts[i].drawn->index(), parts[i].ranges, !texturesFlipped);
+  });
 }
 
 BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& options)
@@ -182,16 +279,11 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
 
   // what the materials need from the meshes: the area an emitter spreads its flux over, and the
   // direction of hair strands, which is measured from the cards' UVs as the glTF carries them
+  std::optional<timing::Scope> phase;
+  phase.emplace("emitters and strand votes");
   const std::vector<Mat4> worlds = scene.worlds();
   std::vector<double>     emitArea(scene.materials.size(), 0.0);
-  struct HairPart
-  {
-    std::vector<float>              uv;
-    std::vector<mat::StrandMesh::Range> ranges;
-    const mesh::BuiltMesh*          geo;
-    std::vector<uint32_t>           index;
-  };
-  std::vector<std::vector<HairPart>> hairParts(scene.materials.size());
+  std::vector<std::vector<std::shared_ptr<const std::vector<mat::StrandVote>>>> hairVotes(scene.materials.size());
   for(int i : order)
   {
     const Node& n = scene.nodes[i];
@@ -204,7 +296,6 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     double s2 = 0;
     for(int c = 0; c < 3; c++)
       s2 = std::max(s2, w4.e[c * 4] * w4.e[c * 4] + w4.e[c * 4 + 1] * w4.e[c * 4 + 1] + w4.e[c * 4 + 2] * w4.e[c * 4 + 2]);
-    std::map<int, std::vector<mat::StrandMesh::Range>> byMaterial;
     const DrawnView drawn(geo);
     for(const mesh::Group& group : drawn.groups())
     {
@@ -226,17 +317,9 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
         }
         emitArea[mi] += area * s2;
       }
-      if(sf.kind == mat::Kind::eHair)
-        byMaterial[mi].push_back({group.start, group.count});
     }
-    for(auto& [mi, ranges] : byMaterial)
-    {
-      HairPart part{geo.uv, std::move(ranges), &geo, drawn.index()};
-      if(!options.texturesFlipped)
-        for(size_t v = 1; v < part.uv.size(); v += 2)
-          part.uv[v] = 1 - part.uv[v];
-      hairParts[mi].push_back(std::move(part));
-    }
+    for(const auto& [mi, ranges] : hairRanges(scene, m, drawn))
+      hairVotes[mi].push_back(strandVotesOf(m.geo, drawn.index(), ranges, !options.texturesFlipped));
   }
   out.lowering.assign(scene.materials.size(), {});
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
@@ -248,16 +331,14 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
     // one material on several meshes is one glTF material, so those meshes vote together
     std::vector<mat::StrandVote> votes;
-    for(const HairPart& p : hairParts[mi])
-    {
-      mat::StrandMesh part{p.geo->position, p.uv, p.index, p.ranges};
-      const auto      v = mat::strandVotes(part);
-      votes.insert(votes.end(), v.begin(), v.end());
-    }
+    for(const auto& v : hairVotes[mi])
+      votes.insert(votes.end(), v->begin(), v->end());
     lo.anisotropyRotation = mat::strandRotation(votes);
   }
 
   // materials, and the textures they ask for
+  phase.reset();
+  phase.emplace("materials");
   std::map<std::string, mat::ResolvedTexture> textureOf;  // request key -> texture
   bool                                        usesBasisu = false;
   auto                                        texture    = [&](const TextureRequest& req) -> mat::ResolvedTexture {
@@ -320,6 +401,8 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   }
 
   // meshes and skins
+  phase.reset();
+  phase.emplace("meshes and skins");
   for(int i : order)
   {
     const Node& n = scene.nodes[i];

@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include <figure/dson/listing.hpp>
+#include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 
 namespace fv {
@@ -63,9 +64,13 @@ private:
 
 std::unique_ptr<Figure> Figure::load(std::shared_ptr<dson::Store> store, const std::string& rel, const dson::LoadOptions& options, const Progress& progress)
 {
+  timing::Scope           t("Figure::load " + rel);
   std::unique_ptr<Figure> f(new Figure());
   f->m_store = store;
-  f->loaded  = dson::loadDson(*store, rel, options);
+  {
+    timing::Scope tl("loadDson");
+    f->loaded = dson::loadDson(*store, rel, options);
+  }
   f->setup(progress);
   f->indexItems();
   if(auto doc = store->load(rel.substr(std::min(rel.find_first_not_of('/'), rel.size()))))
@@ -97,6 +102,7 @@ void Figure::setup(const Progress& progress)
   if(!ctx.morphDir.empty())
   {
     say("Indexing morphs");
+    timing::Scope t("index morphs");
     for(const std::string& f : dson::listFiles(store.library(), ctx.morphDir, ".dsf"))
     {
       const std::string stem = stemOf(f);
@@ -146,6 +152,7 @@ void Figure::setup(const Progress& progress)
   if(!mainDials.empty())
   {
     say("Resolving character morphs");
+    timing::Scope t("character dials");
     prefetch(mainDials);
     std::vector<std::pair<std::string, double>> values;
     for(const dson::SceneDial* d : mainDials)
@@ -164,13 +171,17 @@ void Figure::setup(const Progress& progress)
   }
 
   // other figures' and props' dials: their controllers are followed through linear formulas
-  applyOtherDials(ctx, loaded.items, otherDials, progress);
+  {
+    timing::Scope t("other dials");
+    applyOtherDials(ctx, loaded.items, otherDials, progress);
+  }
   morphs->flush();
   morphs->sort();
 
   // posing for the main figure; other figures (conforming clothing) follow its bones by name
   if(loaded.mainRig >= 0)
   {
+    timing::Scope                 t("pose rig");
     std::vector<const dson::Rig*> followers;
     for(size_t i = 0; i < loaded.rigs.size(); i++)
       if(int(i) != loaded.mainRig)

@@ -52,6 +52,24 @@ TEST(Wardrobe, BindsEachItemVertexToTheClosestBodyPoint)
   EXPECT_EQ(b.used[6], 1);
 }
 
+TEST(Wardrobe, ALargeItemIsBoundInChunksAsItWouldBeWhole)
+{
+  // more item vertices than one chunk: each still lands on the body vertex under it
+  const int  n    = 80;
+  const auto body = fv::mesh::build(grid(n, 0));
+  const auto item = fv::mesh::build(grid(n, 0.5f));
+  ASSERT_GT(item.cagePositions.size() / 3, 4096u);
+  const auto b = fv::wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions);
+  for(size_t v = 0; v < item.cagePositions.size() / 3; v++)
+  {
+    float under = 0;
+    for(int k = 0; k < 3; k++)
+      if(b.verts[v * 3 + k] == v)
+        under += b.weights[v * 3 + k];
+    ASSERT_NEAR(under, 1.0f, 1e-4f) << v;
+  }
+}
+
 TEST(Wardrobe, GraftPairsOverrideTheClosestPoint)
 {
   const auto           body  = fv::mesh::build(grid(4, 0));

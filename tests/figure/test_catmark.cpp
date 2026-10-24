@@ -5,9 +5,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <fstream>
 #include <set>
+#include <thread>
 
 #include <tinygltf/json.hpp>
 
@@ -144,6 +146,57 @@ TEST(FigureCatmark, SparseEqualsDense)
     for(size_t i = 0; i < full.size(); i++)
       worst = std::max(worst, std::abs(double(back[i]) - full[i]));
     EXPECT_LT(worst, 1e-6);
+  }
+}
+
+TEST(FigureCatmark, MorphsRefinedOnSeveralThreadsAtOnceAgree)
+{
+  // HD morphs load on pool threads and share one refinement; the first sparse use builds its tables
+  const int            n = 24;
+  std::vector<int32_t> faceStart{0}, faceVerts;
+  for(int j = 0; j < n; j++)
+    for(int i = 0; i < n; i++)
+    {
+      for(int v : {j * (n + 1) + i, j * (n + 1) + i + 1, (j + 1) * (n + 1) + i + 1, (j + 1) * (n + 1) + i})
+        faceVerts.push_back(v);
+      faceStart.push_back(int32_t(faceVerts.size()));
+    }
+  const int nv = (n + 1) * (n + 1);
+  for(int round = 0; round < 20; round++)
+  {
+    // a new refinement each round: its tables are not built yet
+    const Refinement      grid = refine({nv, faceStart, faceVerts, {}, {}}, 2);
+    std::vector<uint32_t> idx{40, 41, 300, 450};
+    std::vector<float>    deltas, dense(size_t(nv) * 3, 0.f);
+    for(uint32_t v : idx)
+    {
+      const float d[3] = {float(std::sin(double(v))), float(std::cos(double(v))), float(int(v % 5) - 2)};
+      deltas.insert(deltas.end(), d, d + 3);
+      std::copy(d, d + 3, dense.begin() + v * 3);
+    }
+    const auto                   full = refineDense(grid, dense, 3);
+    std::atomic<bool>            go{false};
+    std::atomic<int>             wrong{0};
+    std::vector<std::thread>     threads;
+    for(int t = 0; t < 8; t++)
+      threads.emplace_back([&] {
+        while(!go)
+          std::this_thread::yield();
+        const auto sparse = refineSparse(grid, idx, deltas, 3);
+        std::vector<float> back(full.size(), 0.f);
+        for(size_t i = 0; i < sparse.indices.size(); i++)
+          std::copy_n(sparse.data.begin() + i * 3, 3, back.begin() + sparse.indices[i] * 3);
+        for(size_t i = 0; i < full.size(); i++)
+          if(std::abs(double(back[i]) - full[i]) > 1e-6)
+          {
+            wrong++;
+            return;
+          }
+      });
+    go = true;
+    for(std::thread& t : threads)
+      t.join();
+    ASSERT_EQ(wrong.load(), 0);
   }
 }
 

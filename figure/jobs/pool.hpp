@@ -38,6 +38,8 @@ public:
     return fut;
   }
 
+  size_t size() const { return m_threads.size(); }
+
 private:
   void run();
 
@@ -50,5 +52,10 @@ private:
 
 // The process-wide pool, sized to the machine (leaving the application thread its core).
 Pool& pool();
+
+// Calls fn(begin, end) over [0, count) in chunks of `chunk`, on the pool and on the calling thread,
+// and returns when every chunk is done. The caller takes chunks too, so a pool job may call it: the
+// work finishes even when every pool thread is busy. The first exception is rethrown at the end.
+void parallelFor(size_t count, size_t chunk, const std::function<void(size_t begin, size_t end)>& fn);
 
 }  // namespace fv::jobs
