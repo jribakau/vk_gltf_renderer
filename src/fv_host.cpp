@@ -522,6 +522,8 @@ struct FvHost::Impl
   void publishFigure();
   void publishWardrobe();
   std::optional<std::array<glm::dvec3, 3>> cameraRestore;
+  // the file of the imported model shown (glTF, GLB, OBJ); empty while a figure is shown
+  std::string modelPath;
   Json poseSet(const Json& args);
   void applyNodes(const std::set<int>& moved);
   void applyMesh(const fv::morph::MeshChange& change);
@@ -802,6 +804,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     f->dforce->poke();
   }
   figure = std::move(f);
+  modelPath.clear();
   {
     std::lock_guard lock(settingsMutex);
     libraryOfFigure = std::move(lib);
@@ -1180,6 +1183,7 @@ void FvHost::Impl::runImport(const std::string& path, uint64_t jobId)
   if(view)
     view->clearFigure();
   figure.reset();
+  modelPath.clear();
   {
     std::lock_guard lock(morphMutex);
     figureId.clear();
@@ -1210,6 +1214,7 @@ void FvHost::Impl::runImport(const std::string& path, uint64_t jobId)
   applyLighting(false);
   const std::string id = "model:" + std::to_string(++figures);
   materials->attachModel(id);
+  modelPath = path;
   if(view)
     view->setModel(id, utf8Of(pathOf(path).stem()), scn->getModel());
   publishAnimation(true);
@@ -1368,6 +1373,13 @@ Json FvHost::Impl::exportGlb(const Json& args)
 // camera and render options, which it holds itself.
 Json FvHost::Impl::sceneState()
 {
+  // an imported model: where it came from, and the Material panel's edits
+  if(!figure && !modelPath.empty())
+    return {{"source", {{"path", utf8Of(pathOf(modelPath))}}},
+            {"worn", Json::array()},
+            {"morphs", Json::object()},
+            {"pose", Json::array()},
+            {"materials", materials->editState()}};
   if(!figure)
     throw std::runtime_error("no figure loaded");
   fv::Figure& fig = *figure->fig;
@@ -1392,6 +1404,16 @@ Json FvHost::Impl::sceneState()
 // since an item brings dials of its own), then dials, pose and material edits.
 Json FvHost::Impl::sceneRestore(const Json& args)
 {
+  // an imported model takes back its material edits; it has no wardrobe, dials or pose
+  if(!figure && !modelPath.empty())
+  {
+    std::vector<std::string> problems;
+    if(args.contains("materials") && args["materials"].is_object())
+      problems = materials->restoreEdits(args["materials"]);
+    for(size_t i = 0; i < problems.size() && i < 5; i++)
+      notice(problems[i]);
+    return {{"ok", true}};
+  }
   if(!figure)
     throw std::runtime_error("no figure loaded");
   std::shared_ptr<Loaded> target = figure;
