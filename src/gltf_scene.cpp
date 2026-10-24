@@ -1593,11 +1593,12 @@ void nvvkgltf::Scene::parseScene()
       for(size_t i = 0; i < newRN.size(); i++)
       {
         // A transform change alters a triangle's world area (its emitter selection weight), and a
-        // material/primitive reassignment changes which triangles emit -- both change the emissive
-        // list. Flag it independently of the render-node sync so the GPU-transform path (which skips
-        // the render-node upload, using only eSyncMaterials | eSyncLights) still rebuilds it.
+        // material/primitive reassignment or a visibility change changes which triangles emit -- all
+        // change the emissive list. Flag it independently of the render-node sync so the
+        // GPU-transform path (which skips the render-node upload, using only eSyncMaterials |
+        // eSyncLights) still rebuilds it.
         if(newRN[i].worldMatrix != prevRN[i].worldMatrix || newRN[i].materialID != prevRN[i].materialID
-           || newRN[i].renderPrimID != prevRN[i].renderPrimID)
+           || newRN[i].renderPrimID != prevRN[i].renderPrimID || newRN[i].visible != prevRN[i].visible)
           m_dirtyFlags.emissiveDirty = true;
 
         if(newRN[i].worldMatrix != prevRN[i].worldMatrix || newRN[i].materialID != prevRN[i].materialID

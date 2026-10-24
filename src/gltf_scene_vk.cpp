@@ -866,7 +866,8 @@ void nvvkgltf::SceneVk::uploadEmissiveTriangles(nvvk::CmdUploaderInterface& stag
   for(uint32_t nodeIdx = 0; nodeIdx < static_cast<uint32_t>(renderNodes.size()); ++nodeIdx)
   {
     const nvvkgltf::RenderNode& rn = renderNodes[nodeIdx];
-    if(rn.materialID < 0 || rn.materialID >= static_cast<int>(materials.size()) || rn.renderPrimID < 0
+    // a hidden node (KHR_node_visibility) is not in the TLAS, so it must not be a light either
+    if(!rn.visible || rn.materialID < 0 || rn.materialID >= static_cast<int>(materials.size()) || rn.renderPrimID < 0
        || rn.renderPrimID >= static_cast<int>(renderPrims.size()))
       continue;
 

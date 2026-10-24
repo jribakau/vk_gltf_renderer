@@ -202,7 +202,8 @@ std::optional<int> SceneEditor::getNodeSkin(int nodeIndex) const
 // GPU transform path: toggling visibility can dirty a huge fraction of render nodes; staging a full
 // mapping SSBO would allocate proportional to the scene (OOM risk). We set tlasVisibilityNeedsCpuSync
 // so dispatchTransformUpdate skips that upload and runs SceneRtx::syncTopLevelAS once to refresh
-// TLAS instance references from CPU (same as the all-CPU path).
+// TLAS instance references from CPU (same as the all-CPU path). Hidden nodes leave the emissive
+// area-light list, so it is rebuilt too.
 //--------------------------------------------------------------------------------------------------
 
 void SceneEditor::updateVisibility(int nodeIndex)
@@ -233,6 +234,7 @@ void SceneEditor::updateVisibility(int nodeIndex)
   m_scene.markNodeDirty(nodeIndex);
 
   m_scene.m_dirtyFlags.tlasVisibilityNeedsCpuSync = true;
+  m_scene.m_dirtyFlags.emissiveDirty              = true;
 }
 
 //--------------------------------------------------------------------------------------------------

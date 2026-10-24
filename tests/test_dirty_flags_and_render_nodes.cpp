@@ -160,6 +160,38 @@ TEST_F(DirtyFlagsTest, DirtyNodesReachGeometryOnlyWhenASubtreeHoldsAMesh)
   EXPECT_TRUE(scene.dirtyNodesReachGeometry()) << "visibility change";
 }
 
+// Hiding a node hides the meshes below it without a rebuild (the Figure Viewer's wardrobe shows and
+// hides items this way): the render nodes turn invisible, the TLAS is resynced, and the emissive
+// area-light list is rebuilt so a hidden emitter stops lighting the scene.
+TEST_F(DirtyFlagsTest, UpdateVisibilityHidesTheSubtreeAndRebuildsEmitters)
+{
+  nvvkgltf::Scene scene;
+  ASSERT_TRUE(scene.load(writeLightAndMeshScene(tempDir)));
+  scene.setCurrentScene(0);
+  const auto& rnIds = scene.getRenderNodeRegistry().getRenderNodesForNode(3);
+  ASSERT_FALSE(rnIds.empty());
+  for(int rn : rnIds)
+    EXPECT_TRUE(scene.getRenderNodes()[rn].visible);
+
+  scene.clearDirtyFlags();
+  tinygltf::utils::setNodeVisibility(scene.getModel().nodes[1], {false});
+  scene.editor().updateVisibility(1);
+  for(int rn : rnIds)
+  {
+    EXPECT_FALSE(scene.getRenderNodes()[rn].visible) << "the mesh two levels below the hidden group";
+    EXPECT_GE(scene.getDirtyFlags().renderNodesVk.count(rn), 1u);
+  }
+  EXPECT_TRUE(scene.getDirtyFlags().tlasVisibilityNeedsCpuSync);
+  EXPECT_TRUE(scene.getDirtyFlags().emissiveDirty);
+
+  scene.clearDirtyFlags();
+  tinygltf::utils::setNodeVisibility(scene.getModel().nodes[1], {true});
+  scene.editor().updateVisibility(1);
+  for(int rn : rnIds)
+    EXPECT_TRUE(scene.getRenderNodes()[rn].visible);
+  EXPECT_TRUE(scene.getDirtyFlags().emissiveDirty);
+}
+
 TEST_F(DirtyFlagsTest, MarkMaterialDirtySetsMaterials)
 {
   auto assetsPath = TestResources::getSampleAssetsPath();

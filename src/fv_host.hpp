@@ -40,7 +40,8 @@
 //   render.mode     {mode: "raster" | "rtx", skin?: "volume" | "thin"}
 //   material.set    {material, values}           edit a surface (fv_materials.hpp); material.reset {material?}
 //   wear            {rel | path}                 put a wearable on the loaded figure -> {job}
-//   wardrobe.remove {item}, wardrobe.visible {item, visible}
+//   wardrobe.remove {item}, wardrobe.visible {item, visible}   hidden in place; a removed item leaves
+//                                                the renderer's scene at the next rebuild, and a geograft rebuilds
 //   dforce.enable   {on}; dforce.resimulate      cloth drapes over the body (figure/dforce)
 //   scene.state / scene.restore                  a scene file's contents: source, worn, dials, pose, material edits
 //   anim.select|play|pause|stop|seek|speed|loop  the clips of an imported glTF or OBJ model

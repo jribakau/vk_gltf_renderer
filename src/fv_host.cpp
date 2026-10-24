@@ -45,6 +45,7 @@
 #include <nvmcp/parameter_tools.hpp>
 #include <nvutils/logger.hpp>
 #include <nvutils/parameter_registry.hpp>
+#include <nvutils/timers.hpp>
 
 #include <figure/dforce/dforce.hpp>
 #include <figure/dson/material_preset.hpp>
@@ -62,7 +63,9 @@
 #include "gltf_environment_sky.hpp"
 #include "gltf_scene.hpp"
 #include "gltf_scene_animation.hpp"
+#include "gltf_scene_editor.hpp"
 #include "renderer.hpp"
+#include "tinygltf_utils.hpp"
 #include "ui_animation.hpp"
 
 using fv::Json;
@@ -625,6 +628,7 @@ struct FvHost::Impl
   std::mutex wearMutex;
   Json wardrobeRemove(const Json& args);
   Json wardrobeVisible(const Json& args);
+  void showItem(const std::vector<std::pair<int, std::string>>& objects, bool visible);
   void publishDforce(bool force);
   Json dforceCommand(const std::string& cmd, const Json& args);
   void rebuildScene(const std::string& label);
@@ -994,9 +998,10 @@ void FvHost::Impl::publishWardrobe()
 
 // The glTF built again from the scene graph, after a wardrobe change, and handed to the renderer in
 // place of the old one: the figure, its pose, morphs and edits are in the graph, so it comes back as
-// it was. The camera stays where it was.
+// it was. The camera stays where it was. Timed, to tell the glTF build from the renderer's load.
 void FvHost::Impl::rebuildScene(const std::string& label)
 {
+  nvutils::ScopedTimer timer("[fv] rebuild: " + label + "\n");
   Loaded& f = *figure;
   fv::build::BuildOptions options;
   options.texturesFlipped = f.texturesFlipped;
@@ -1006,7 +1011,10 @@ void FvHost::Impl::rebuildScene(const std::string& label)
     return it == f.images.end() ? std::nullopt : it->second;
   };
   fv::Figure&      fig   = *f.fig;
-  fv::build::BuildResult built = fv::build::buildGltf(fig.loaded.scene, fig.loaded.root, options);
+  fv::build::BuildResult built = [&] {
+    nvutils::ScopedTimer t("buildGltf");
+    return fv::build::buildGltf(fig.loaded.scene, fig.loaded.root, options);
+  }();
   if(auto manip = renderer->getCameraManipulator())
   {
     glm::dvec3 eye, center, up;
@@ -1021,7 +1029,11 @@ void FvHost::Impl::rebuildScene(const std::string& label)
   f.meshOf = std::move(built.meshOf);
   f.skinOf = std::move(built.skinOf);
   addSun(built.model);
-  if(!renderer->loadModel(std::move(built.model)))
+  const bool loaded = [&] {
+    nvutils::ScopedTimer t("loadModel");
+    return renderer->loadModel(std::move(built.model));
+  }();
+  if(!loaded)
   {
     sunNode = sunLight = -1;
     notice(label + ": the renderer could not take the scene.", "error");
@@ -1267,14 +1279,37 @@ int itemId(const Json& args)
 }
 }  // namespace
 
+namespace {
+const fv::WornItem* wornItem(const fv::Figure& fig, int id)
+{
+  const auto it = std::find_if(fig.items.begin(), fig.items.end(), [&](const fv::WornItem& i) { return i.id == id; });
+  return it == fig.items.end() ? nullptr : &*it;
+}
+}  // namespace
+
+// Taken off, an item is hidden in the renderer's scene and stays there, buffers and BLAS, until the
+// next rebuild (a wear, a geograft shown or hidden, a load) leaves it out. A geograft gives the body
+// its polygons back, which changes the body's indices: that still takes a rebuild.
 Json FvHost::Impl::wardrobeRemove(const Json& args)
 {
   if(!figure)
     throw std::runtime_error("no figure loaded");
-  const int id = itemId(args);
-  if(!figure->fig->removeItem(id))
+  const int           id   = itemId(args);
+  const fv::WornItem* item = wornItem(*figure->fig, id);
+  if(!item)
     throw std::runtime_error("no such item");
-  rebuildScene("Taking off");
+  const bool geograft = !item->hiddenPolys.empty();
+  const auto objects  = item->objects;
+  figure->fig->removeItem(id);
+  if(geograft)
+  {
+    rebuildScene("Taking off");
+    return {{"ok", true}};
+  }
+  showItem(objects, false);
+  publishWardrobe();
+  if(figure->dforce)
+    figure->dforce->poke();
   return {{"ok", true}};
 }
 
@@ -1282,10 +1317,40 @@ Json FvHost::Impl::wardrobeVisible(const Json& args)
 {
   if(!figure)
     throw std::runtime_error("no figure loaded");
-  if(!figure->fig->setItemVisible(itemId(args), args.at("visible").get<bool>()))
+  const int           id      = itemId(args);
+  const bool          visible = args.at("visible").get<bool>();
+  const fv::WornItem* item    = wornItem(*figure->fig, id);
+  if(!item)
     throw std::runtime_error("no such item");
-  rebuildScene("Showing");
+  figure->fig->setItemVisible(id, visible);
+  if(!item->hiddenPolys.empty())
+  {
+    rebuildScene("Showing");
+    return {{"ok", true}};
+  }
+  showItem(item->objects, visible);
+  publishWardrobe();
+  if(figure->dforce)
+    figure->dforce->poke();
   return {{"ok", true}};
+}
+
+// An item's nodes shown or hidden in the renderer's scene as they are (KHR_node_visibility, as
+// buildGltf writes it), without building it again.
+void FvHost::Impl::showItem(const std::vector<std::pair<int, std::string>>& objects, bool visible)
+{
+  nvvkgltf::Scene* scene = renderer->editScene();
+  if(!scene || !scene->valid())
+    return;
+  tinygltf::Model& model = scene->getModel();
+  for(const auto& [node, bone] : objects)
+  {
+    const int g = node >= 0 && node < int(figure->nodeOf.size()) ? figure->nodeOf[node] : -1;
+    if(g < 0 || g >= int(model.nodes.size()))
+      continue;
+    tinygltf::utils::setNodeVisibility(model.nodes[g], {visible});
+    scene->editor().updateVisibility(g);
+  }
 }
 
 //--------------------------------------------------------------------------------------------------
