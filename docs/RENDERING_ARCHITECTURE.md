@@ -323,7 +323,7 @@ cmdCreateBuildTopLevelAccelerationStructure(cmd, staging, scene):
       instanceCustomIndex    = renderNode.renderPrimID  -- read in shader via InstanceID()
       accelerationStructureReference = blasAddress       -- which BLAS to use
       mask                   = 0x01
-      flags                  = getInstanceFlag(material) -- cull mode from material
+      flags                  = getInstanceFlag(material) -- opaque + cull mode from material
 
     append to m_tlasInstances[]
 
@@ -357,6 +357,26 @@ When a ray hits TLAS instance[i] (Slang RT / ray query builtins):
     renderNodes[InstanceIndex()]        → transform, materialID
     renderPrimitives[InstanceID()]      → vertex/index buffer info
 ```
+
+### Shadow rays
+
+A shadow ray (`TraceShadow` in `shaders/raytracer_interface.h.slang`, one implementation per
+technique) answers one question: how much light gets through to the sample point. Every technique
+treats a **committed hit as fully blocked**, which shapes the traversal:
+
+- **Opaque instances** (`getInstanceFlag` sets `VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR` for
+  materials with no transmission, alpha mode `OPAQUE`, no diffuse transmission) never run any-hit.
+  Hitting one commits, and the rays use `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`, so traversal
+  stops at the first such hit instead of searching for the closest.
+- **Other instances** run the any-hit logic (`rahitShadow`, or the candidate loop in the ray-query
+  path). It multiplies in each surface's transmission (`getShadowTransmission`) and ignores the
+  hit, so the ray keeps going. Once the transmission falls below `MIN_TRANSMISSION` it accepts the
+  hit and ends the search, which counts as blocked.
+
+The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-SER path traces with
+`RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and reads the result from `rmissShadow`, which sets
+`ShadowPayload::missed`: if the miss shader never ran, the ray was blocked. The SER path checks
+`HitObject::IsHit()` instead and never runs closest-hit or miss shaders.
 
 ---
 

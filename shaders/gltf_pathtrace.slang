@@ -1012,15 +1012,6 @@ void rchitMain(inout HitPayload payload, in BuiltInTriangleIntersectionAttribute
   payload.bary        = attr.barycentrics;
 }
 
-[shader("closesthit")]
-void rchitShadow(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttributes attr)
-{
-  // When we reach the closest hit for shadow rays, it means we've accepted a hit
-  // in rahitShadow due to low transmission. The transmission has already been
-  // processed in rahitShadow, so we just ensure it's set to fully occluded.
-  payload.totalTransmission = float3(0.0);
-}
-
 
 //-----------------------------------------------------------------------
 // MISS
@@ -1036,7 +1027,9 @@ void rmissShadow(inout ShadowPayload payload)
 {
   // When we miss, we've passed through all surfaces along the ray.
   // Keep the accumulated transmission -- don't reset it. totalTransmission already contains
-  // the accumulated value from rahitShadow.
+  // the accumulated value from rahitShadow. Shadow rays skip closest-hit (TraceShadow), so this
+  // flag is the only way the caller tells a clear path from a blocked one.
+  payload.missed = true;
 }
 
 //-----------------------------------------------------------------------

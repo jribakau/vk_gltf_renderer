@@ -53,7 +53,13 @@ struct ShadowPayload
   float prevHitT = 0.0f;  // The previous accepted any-hit's absolute RayT. rahitShadow takes abs(hitT - prevHitT) as the in-volume segment length for Beer's-law attenuation between consecutive transmissive hits. Spatial ordering of any-hit invocations is not guaranteed; abs() is an approximation that works well for thin/convex volumes.
   bool   isInside          = false;         // If true, the shadow ray is considered to start INSIDE a volume
   float3 totalTransmission = float3(1.0f);  // The total transmission of the shadow ray through the volume
+  bool   missed            = false;         // Set by rmissShadow; shadow rays skip closest-hit, so a hit leaves it false
 };
+
+// Shadow rays only ask whether anything blocks the light: any committed hit (an opaque instance,
+// or rahitShadow's AcceptHitAndEndSearch at low transmission) means fully occluded, so traversal
+// can stop at the first one instead of searching for the closest.
+static const uint SHADOW_RAY_FLAGS = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 
 // Raytracer interface definition
 interface IRaytracer
@@ -144,7 +150,7 @@ struct RayQueryRaytracer : IRaytracer
     float       prevHitT          = 0;
 
     RayQuery rayQuery;
-    rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_NONE, 0xFF, ray);
+    rayQuery.TraceRayInline(topLevelAS, SHADOW_RAY_FLAGS, 0xFF, ray);
 
     while(rayQuery.Proceed())
     {
@@ -259,7 +265,7 @@ struct TraditionalRaytracer : IRaytracer
     {
       // Any-hit (rahitShadow) still runs during HitObject traversal and accumulates transmission;
       // only closest-hit/miss are deferred, so a committed hit means the ray was blocked.
-      HitObject hitObj = HitObject::TraceRay(topLevelAS, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
+      HitObject hitObj = HitObject::TraceRay(topLevelAS, SHADOW_RAY_FLAGS, 0xFF, 1, 0, 1, ray, shadowPayload);
       if(hitObj.IsHit())
       {
         shadowPayload.totalTransmission = float3(0.0);
@@ -267,7 +273,12 @@ struct TraditionalRaytracer : IRaytracer
     }
     else
     {
-      TraceRay(topLevelAS, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
+      // No closest-hit shader runs; the miss shader reports a clear path instead.
+      TraceRay(topLevelAS, SHADOW_RAY_FLAGS | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, 1, 0, 1, ray, shadowPayload);
+      if(!shadowPayload.missed)
+      {
+        shadowPayload.totalTransmission = float3(0.0);
+      }
     }
     seed = shadowPayload.seed;  // any-hit consumed random numbers; propagate on every path
 

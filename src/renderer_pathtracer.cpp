@@ -1014,14 +1014,13 @@ void PathTracer::createRtxPipeline(Resources& resources)
     eMiss,
     eShadowMiss,
     eClosestHit,
-    eShadowClosestHit,
     eAnyHit,
     eShadowAnyHit,
     eShaderGroupCount
   };
 
   // RTX Pipeline
-  std::array<VkPipelineShaderStageCreateInfo, 7> stages{};
+  std::array<VkPipelineShaderStageCreateInfo, eShaderGroupCount> stages{};
   for(auto& stage : stages)
   {
     stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1042,9 +1041,6 @@ void PathTracer::createRtxPipeline(Resources& resources)
   //Shadow
   stages[eShadowMiss].pName = "rmissShadow";
   stages[eShadowMiss].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
-
-  stages[eShadowClosestHit].pName = "rchitShadow";
-  stages[eShadowClosestHit].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
   stages[eShadowAnyHit].pName = "rahitShadow";
   stages[eShadowAnyHit].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
@@ -1081,10 +1077,10 @@ void PathTracer::createRtxPipeline(Resources& resources)
   group.anyHitShader     = eAnyHit;
   shader_groups.push_back(group);
 
-  // Hit Group-1
+  // Hit Group-1 (shadow): any-hit only -- shadow rays skip closest-hit (TraceShadow)
   group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
   group.generalShader    = VK_SHADER_UNUSED_KHR;
-  group.closestHitShader = eShadowClosestHit;
+  group.closestHitShader = VK_SHADER_UNUSED_KHR;
   group.anyHitShader     = eShadowAnyHit;
   shader_groups.push_back(group);
 
