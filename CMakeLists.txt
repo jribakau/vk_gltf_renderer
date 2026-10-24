@@ -64,6 +64,7 @@ option(USE_OPTIX_DENOISER     "Enable OptiX denoiser as alternative to DLSS (req
 option(USE_OIDN_DENOISER      "Enable the vk_oidn denoiser (Open Image Denoise on Vulkan; downloads its SDK package)." ON)
 option(USE_DRACO              "Enable Draco mesh compression when importing glTF."                    ON)
 option(USE_AGENTIC            "Build the optional Agentic bridge (ComfyUI HDRI + beautify)."          ON)
+option(FV_DFORCE_GPU          "Build the experimental GPU dForce cloth solver (src/fv_dforce_gpu, shaders/dforce_cloth)." OFF)
 option(USE_DEFAULT_SCENE      "Load a bundled default scene at startup."                              OFF)
 option(BUILD_TESTING          "Build unit tests and benchmarks (GoogleTest + Google Benchmark)."      OFF)
 option(REQUIRE_NVML_MONITOR   "Fail configure if NVML support is unavailable in nvpro_core2."         OFF)
@@ -248,6 +249,12 @@ if(NOT NVPRO2_ENABLE_nvmcp)
   list(FILTER EXE_SOURCES EXCLUDE REGEX "src/mcp_")
 endif()
 
+# The experimental GPU cloth solver: its source and shader stay out of the build unless asked for;
+# fv_host.cpp guards its integration points on FV_DFORCE_GPU.
+if(NOT FV_DFORCE_GPU)
+  list(FILTER EXE_SOURCES EXCLUDE REGEX "fv_dforce_gpu")
+endif()
+
 add_executable(${PROJECT_NAME} ${EXE_SOURCES})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -350,6 +357,9 @@ if(USE_DEFAULT_SCENE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE USE_DEFAULT_SCENE)
 endif()
 
+if(FV_DFORCE_GPU)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE FV_DFORCE_GPU)
+endif()
 if(USE_AGENTIC)
   target_compile_definitions(${PROJECT_NAME} PRIVATE USE_AGENTIC)
 endif()
@@ -365,6 +375,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_BINARY_DIR}/${PROJECT
 # Collect local shaders (exclude header-only .h.slang files).
 file(GLOB_RECURSE _ALL_SLANG_FILES "shaders/*.slang")
 list(FILTER _ALL_SLANG_FILES EXCLUDE REGEX ".*\\.h\\.slang$")
+if(NOT FV_DFORCE_GPU)
+  list(FILTER _ALL_SLANG_FILES EXCLUDE REGEX "dforce_cloth")
+endif()
 set(SHADER_SRC_SLANG_FILES ${_ALL_SLANG_FILES})
 file(GLOB SHADER_H_FILES "shaders/*.h" "shaders/*.h.slang")
 

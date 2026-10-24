@@ -181,7 +181,7 @@ void Dforce::poke()
 
 void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
 {
-  if(m_mode == Mode::eLive)
+  if(m_mode != Mode::eSettle)
   {
     // bones are read again next frame; a changed mesh is a new rest shape, so the simulation is
     // built again once the dial stops
@@ -409,7 +409,7 @@ std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const
 
 bool Dforce::pump()
 {
-  if(m_mode == Mode::eLive)
+  if(m_mode != Mode::eSettle)
     return pumpLive();
   bool wrote = false;
   if(m_job.valid() && m_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
@@ -492,13 +492,24 @@ bool Dforce::pumpLive()
       return wrote;
     SettleOptions opts;
     opts.air = kAir;
-    m_live         = std::make_shared<ClothSim>(m_liveJob->bodies, opts);
+    if(m_mode == Mode::eLiveGpu && makeGpuSim)
+      m_live = makeGpuSim(m_liveJob->bodies, opts);
+    if(!m_live)
+      m_live = std::make_shared<ClothSim>(m_liveJob->bodies, opts);
     m_liveBones    = currentBones(*m_liveJob);
     m_liveGen      = m_gen;
     m_liveSettling = true;
     m_liveMoving   = true;
     m_version++;
-    auto sim   = m_live;
+    auto sim = m_live;
+    if(sim->ownerThreadOnly())
+    {
+      // a GPU simulation runs here, on the thread that owns its queue: the settle blocks this frame
+      sim->settle();
+      m_liveSettling = false;
+      wrote          = apply(*m_liveJob, sim->positions()) || wrote;
+      return wrote;
+    }
     m_liveStep = jobs::pool().submit([sim] {
       sim->settle();
       return sim->positions();
@@ -528,7 +539,12 @@ bool Dforce::pumpLive()
   m_liveMoving = moved;
   auto        sim     = m_live;
   const float damping = moved ? 0.f : kLiveRestDamping;
-  m_liveStep          = jobs::pool().submit([sim, damping] {
+  if(sim->ownerThreadOnly())
+  {
+    sim->step(damping);
+    return apply(*m_liveJob, sim->positions()) || wrote;
+  }
+  m_liveStep = jobs::pool().submit([sim, damping] {
     sim->step(damping);
     return sim->positions();
   });

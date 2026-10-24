@@ -43,29 +43,6 @@ constexpr float kPassSpacing        = 0.5f * kDepth;
 // again until that much has moved.
 constexpr float kSearch = 0.5f;
 
-enum class EdgeKind
-{
-  eStretch,
-  eShear,
-  eBend,
-};
-
-struct Edge
-{
-  int      a, b;
-  float    rest, alpha;
-  EdgeKind kind;
-  float    ratio, buckle;
-};
-
-struct Tri
-{
-  int   mesh, a, b, c;
-  int   layer;
-  float offset, friction;
-  bool  self, dynamic;
-};
-
 using V3 = std::array<float, 3>;
 
 // A 3x4 float matrix (column-major, 3 rows), for skinning in bulk.
@@ -305,12 +282,17 @@ Closest closest(float qx, float qy, float qz, const std::vector<float>& tri, int
   return {dx * n[0] + dy * n[1] + dz * n[2], std::sqrt(dx * dx + dy * dy + dz * dz), interior};
 }
 
-// A bone's skin matrix taken apart, so a sweep between two poses can turn it.
-struct BonePose
+// How a mesh's kinematic vertices (colliders, pinned cloth) move with the pose: a sweep of its
+// bones from one pose to another.
+struct Kinematic
 {
-  Vec3 t, s;
-  Quat r;
+  bool                  skinned = false;
+  std::vector<BonePose> from, to;
+  std::vector<Mat34>    at;     // toSpace * bone(t), per bone, for the current t
+  std::vector<int>      verts;  // global indices of the vertices this moves
 };
+
+}  // namespace
 
 BonePose poseOf(const Mat4& m)
 {
@@ -332,43 +314,52 @@ Mat4 sweepAt(const BonePose& from, const BonePose& to, float t)
   return compose(from.t + (to.t - from.t) * t, slerp(from.r, to.r, t), from.s + (to.s - from.s) * t);
 }
 
-// How a mesh's kinematic vertices (colliders, pinned cloth) move with the pose: a sweep of its
-// bones from one pose to another.
-struct Kinematic
+
+void skinMesh(const SettleMesh& m, const std::vector<Mat4>& bones, float* out)
 {
-  bool                  skinned = false;
-  std::vector<BonePose> from, to;
-  std::vector<Mat34>    at;     // toSpace * bone(t), per bone, for the current t
-  std::vector<int>      verts;  // global indices of the vertices this moves
-};
+  const size_t n = m.vertexCount();
+  if(!m.skinned() || bones.size() != m.bones.size())
+  {
+    std::copy(m.posed.begin(), m.posed.end(), out);
+    return;
+  }
+  std::vector<Mat34> at(bones.size());
+  for(size_t b = 0; b < bones.size(); b++)
+    at[b] = Mat34::of(m.toSpace * bones[b]);
+  for(size_t v = 0; v < n; v++)
+  {
+    float blend[12] = {};
+    float wsum      = 0;
+    for(size_t j = 0; j < 4; j++)
+    {
+      const float  w    = m.skinWeight[v * 4 + j];
+      const size_t bone = m.skinIndex[v * 4 + j];
+      if(w == 0 || bone >= at.size())
+        continue;
+      wsum += w;
+      for(int c = 0; c < 12; c++)
+        blend[c] += at[bone].m[c] * w;
+    }
+    const float px = m.restLocal[v * 3], py = m.restLocal[v * 3 + 1], pz = m.restLocal[v * 3 + 2];
+    if(wsum <= 0)
+    {
+      const Vec3 p = m.toSpace.transformPoint({px, py, pz});
+      out[v * 3]     = float(p.x);
+      out[v * 3 + 1] = float(p.y);
+      out[v * 3 + 2] = float(p.z);
+      continue;
+    }
+    out[v * 3]     = blend[0] * px + blend[3] * py + blend[6] * pz + blend[9];
+    out[v * 3 + 1] = blend[1] * px + blend[4] * py + blend[7] * pz + blend[10];
+    out[v * 3 + 2] = blend[2] * px + blend[5] * py + blend[8] * pz + blend[11];
+  }
+}
 
-}  // namespace
-
-struct ClothSim::Impl
+struct ClothSim::Impl : ClothModel
 {
   std::vector<SettleMesh> meshes;
   SettleOptions           opts;
-
-  int                  nv = 0;
-  std::vector<int>     base, meshOf;
-  std::vector<float>   rest, posed, strength, dampRate, friction, offset, grav, inv;
-  std::vector<int>     layer;
-  std::vector<uint8_t> visible, collides, dynamic;
-  std::vector<Edge>    edges;
-  // the sweep in parallel: edges whose free vertices all lie in one block of the vertex range run
-  // block by block on the pool, the few that cross blocks after them on one thread
-  std::vector<std::vector<int>> blockEdges;
-  std::vector<int>              crossingEdges;
-  std::vector<Tri>     tris;
-  // faces the pose moves (built into a grid once a frame, over their sweep) and faces the cloth
-  // moves (built again at every collision pass, where they are then)
-  std::vector<int>       staticTris, dynamicTris, allTris;
-  // each vertex's neighbours over stretch edges, and the neighbours of those, sorted: a cloth does
-  // not collide with the faces around a vertex, whose planes it is in or next to
-  std::vector<int> ringStart, ring, ring2Start, ring2;
-  std::vector<Kinematic> kin;
-  std::vector<int>       kinematicVerts;  // every vertex a pose moves
-  std::vector<int>       freeVerts;       // every vertex the cloth moves
+  std::vector<Kinematic>  kin;
 
   // state: `cprev` is where everything was at the last collision pass and `tested` where each free
   // vertex was when it last looked for faces, which decide the side it is on; `prev` is the substep
@@ -391,10 +382,11 @@ struct ClothSim::Impl
   float               minOffset  = 0.05f;
 
   Impl(std::vector<SettleMesh> in, const SettleOptions& o)
-      : meshes(std::move(in))
+      : ClothModel(ClothModel::build(in, o.air))
+      , meshes(std::move(in))
       , opts(o)
   {
-    build();
+    bindKinematics();
     x = rest;
     separateStart();
     prev   = x;
@@ -413,8 +405,7 @@ struct ClothSim::Impl
     plan();
   }
 
-  void build();
-  void partitionEdges();
+  void bindKinematics();
   void plan();
   // Writes the pose at fraction t of the kinematic vertices into `out` (only those entries).
   void kinematicAt(float t, std::vector<float>& out);
@@ -424,8 +415,65 @@ struct ClothSim::Impl
   void frame(float t0, float t1, float extraDamping);
 };
 
-void ClothSim::Impl::build()
+namespace {
+
+// blocks of the vertex range, two per pool thread for balance; DSON vertex order is spatially
+// coherent, so few edges cross blocks. An edge belongs to the block of its free vertices; one
+// with a kinematic end goes with its free end, since the other is never written.
+void partitionEdges(ClothModel& model)
 {
+  const int blocks = int(std::max<size_t>(1, 2 * (jobs::pool().size() + 1)));
+  model.blockEdges.assign(size_t(blocks), {});
+  model.crossingEdges.clear();
+  const auto blockOf = [&](int v) { return int(size_t(v) * size_t(blocks) / size_t(std::max(1, model.nv))); };
+  for(size_t e = 0; e < model.edges.size(); e++)
+  {
+    const Edge& edge = model.edges[e];
+    const bool  fa = model.inv[edge.a] > 0, fb = model.inv[edge.b] > 0;
+    if(!fa && !fb)
+      continue;
+    const int ba = blockOf(edge.a), bb = blockOf(edge.b);
+    if(fa && fb && ba != bb)
+      model.crossingEdges.push_back(int(e));
+    else
+      model.blockEdges[size_t(fa ? ba : bb)].push_back(int(e));
+  }
+}
+
+}  // namespace
+
+ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air)
+{
+  ClothModel model;
+  // the model's members by their plain names below
+  auto& nv = model.nv;
+  auto& base = model.base;
+  auto& meshOf = model.meshOf;
+  auto& rest = model.rest;
+  auto& posed = model.posed;
+  auto& strength = model.strength;
+  auto& dampRate = model.dampRate;
+  auto& friction = model.friction;
+  auto& offset = model.offset;
+  auto& grav = model.grav;
+  auto& inv = model.inv;
+  auto& layer = model.layer;
+  auto& visible = model.visible;
+  auto& collides = model.collides;
+  auto& dynamic = model.dynamic;
+  auto& edges = model.edges;
+  auto& tris = model.tris;
+  auto& staticTris = model.staticTris;
+  auto& dynamicTris = model.dynamicTris;
+  auto& allTris = model.allTris;
+  auto& ringStart = model.ringStart;
+  auto& ring = model.ring;
+  auto& ring2Start = model.ring2Start;
+  auto& ring2 = model.ring2;
+  auto& kinematicVerts = model.kinematicVerts;
+  auto& freeVerts = model.freeVerts;
+  auto& maxOffset = model.maxOffset;
+  auto& minOffset = model.minOffset;
   nv = 0;
   for(const SettleMesh& m : meshes)
   {
@@ -457,7 +505,7 @@ void ClothSim::Impl::build()
       strength[i]   = sim && m.visible[v] ? m.strength[v] : 0;
       density[i]    = m.density[v] > 1 ? m.density[v] : 180;
       const float d = std::max(30.f, density[i]);
-      dampRate[i]   = m.damping[v] * 8 + opts.air * (180 / d);
+      dampRate[i]   = m.damping[v] * 8 + air * (180 / d);
       friction[i]   = std::isfinite(m.friction[v]) ? m.friction[v] : 0.4f;
       offset[i]     = m.offset[v] > 0 ? m.offset[v] : 0.05f;
       layer[i]      = m.layer[v];
@@ -613,24 +661,6 @@ void ClothSim::Impl::build()
   }
   if(!std::isfinite(minOffset) || minOffset < 0.05f)
     minOffset = 0.05f;
-  // the pose's hold on each mesh
-  kin.resize(meshes.size());
-  for(size_t mi = 0; mi < meshes.size(); mi++)
-  {
-    const SettleMesh& m = meshes[mi];
-    Kinematic&        k = kin[mi];
-    k.skinned           = m.skinned();
-    if(k.skinned)
-    {
-      k.to.reserve(m.bones.size());
-      for(const Mat4& b : m.bones)
-        k.to.push_back(poseOf(b));
-      k.from.assign(m.bones.size(), poseOf(Mat4{}));
-      k.at.resize(m.bones.size());
-    }
-  }
-  for(int i : kinematicVerts)
-    kin[size_t(meshOf[i])].verts.push_back(i);
   for(size_t t = 0; t < tris.size(); t++)
   {
     allTris.push_back(int(t));
@@ -670,30 +700,31 @@ void ClothSim::Impl::build()
     ring2.insert(ring2.end(), two.begin(), two.end());
     ring2Start[size_t(i) + 1] = int(ring2.size());
   }
-  partitionEdges();
+  partitionEdges(model);
+  return model;
 }
 
-void ClothSim::Impl::partitionEdges()
+// The pose's hold on each mesh: its bones, swept from the identity (the memorized pose) to the
+// target the mesh came with.
+void ClothSim::Impl::bindKinematics()
 {
-  // blocks of the vertex range, two per pool thread for balance; DSON vertex order is spatially
-  // coherent, so few edges cross blocks. An edge belongs to the block of its free vertices; one
-  // with a kinematic end goes with its free end, since the other is never written.
-  const int blocks = int(std::max<size_t>(1, 2 * (jobs::pool().size() + 1)));
-  blockEdges.assign(size_t(blocks), {});
-  crossingEdges.clear();
-  const auto blockOf = [&](int v) { return int(size_t(v) * size_t(blocks) / size_t(std::max(1, nv))); };
-  for(size_t e = 0; e < edges.size(); e++)
+  kin.resize(meshes.size());
+  for(size_t mi = 0; mi < meshes.size(); mi++)
   {
-    const Edge& edge = edges[e];
-    const bool  fa = inv[edge.a] > 0, fb = inv[edge.b] > 0;
-    if(!fa && !fb)
-      continue;
-    const int ba = blockOf(edge.a), bb = blockOf(edge.b);
-    if(fa && fb && ba != bb)
-      crossingEdges.push_back(int(e));
-    else
-      blockEdges[size_t(fa ? ba : bb)].push_back(int(e));
+    const SettleMesh& m = meshes[mi];
+    Kinematic&        k = kin[mi];
+    k.skinned           = m.skinned();
+    if(k.skinned)
+    {
+      k.to.reserve(m.bones.size());
+      for(const Mat4& b : m.bones)
+        k.to.push_back(poseOf(b));
+      k.from.assign(m.bones.size(), poseOf(Mat4{}));
+      k.at.resize(m.bones.size());
+    }
   }
+  for(int i : kinematicVerts)
+    kin[size_t(meshOf[i])].verts.push_back(i);
 }
 
 void ClothSim::Impl::plan()
@@ -1161,6 +1192,11 @@ void ClothSim::setTarget(size_t mesh, const std::vector<Mat4>& bones)
 float ClothSim::lastMove() const
 {
   return m_impl->lastMove;
+}
+
+const ClothModel& ClothSim::model() const
+{
+  return *m_impl;
 }
 
 int ClothSim::substepsPerFrame() const

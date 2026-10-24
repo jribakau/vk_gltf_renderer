@@ -382,6 +382,8 @@ public:
   // The tonemapped output and its size, for the headless frame stream (src/frame_stream.hpp). The
   // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.
   VkImage    tonemappedImage() const { return m_resources.gBuffers.getColorImage(Resources::eImgTonemapped); }
+  // The allocator, for a host element that owns GPU work of its own (the dForce GPU solver)
+  nvvk::ResourceAllocator& allocator() { return m_resources.allocator; }
   VkExtent2D renderSize() const { return m_resources.gBuffers.getSize(); }
   // Frames that ran a renderer so far (Resources::drawnFrameCount): a count that stands still is a
   // view with nothing to draw, which the frame stream slows the loop for.

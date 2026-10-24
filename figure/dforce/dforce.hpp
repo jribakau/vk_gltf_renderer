@@ -10,6 +10,9 @@
 //   the pool and writing the drape the frame after, so the cloth follows a drag or a playing clip.
 //   It starts with a settle, and builds itself again (after a short wait) when a dial changes a rest
 //   shape or something is worn or taken off.
+// - Live on the GPU: the same, on a simulation the host provides through `makeGpuSim` (the
+//   renderer's compute solver). One that must stay on its thread is stepped in pump() itself, so
+//   its drape is written the same frame.
 //
 // The drape is a hidden channel per mesh ("dforce:<mesh>", weight 1) holding the cage deltas whose
 // skinning gives the simulated shape, so the renderer sees it as any other morph, and turning
@@ -32,7 +35,9 @@
 
 namespace fv::dforce {
 
-class ClothSim;
+class ClothBackend;
+struct SettleMesh;
+struct SettleOptions;
 
 // The hidden channel a mesh's drape is stored as.
 std::string channelOf(int mesh);
@@ -41,7 +46,11 @@ enum class Mode
 {
   eSettle,
   eLive,
+  eLiveGpu,
 };
+
+// Makes a simulation for live mode on the GPU; null when the build has none (live then runs on the CPU).
+using MakeSim = std::function<std::shared_ptr<ClothBackend>(std::vector<SettleMesh>, const SettleOptions&)>;
 
 class Dforce
 {
@@ -53,6 +62,8 @@ public:
 
   // True while a clip is playing: in settle mode the last drape stays until playback stops.
   std::function<bool()> playing;
+  // The GPU simulation, when the renderer offers one.
+  MakeSim makeGpuSim;
 
   // Whether anything worn would be draped.
   bool active() const;
@@ -72,7 +83,8 @@ public:
   void resimulate();
   // Weight 1 drapes, weight 0 restores the conforming meshes. Turning it on settles again.
   void setEnabled(bool on);
-  // Settle or live; switching to live starts with a settle.
+  // Settle or live; switching to live starts with a settle. Live on the GPU without `makeGpuSim`
+  // runs on the CPU.
   void setMode(Mode mode);
   // Drops a pending or running settle (live: the simulation).
   void cancel();
@@ -112,7 +124,7 @@ private:
   std::future<std::vector<std::vector<float>>>   m_job;
   uint64_t                                       m_jobGen = 0;
   // live: the simulation, what it was built from, the step in flight and the bones it was given
-  std::shared_ptr<ClothSim>                      m_live;
+  std::shared_ptr<ClothBackend>                  m_live;
   std::shared_ptr<Job>                           m_liveJob;
   std::future<std::vector<std::vector<float>>>   m_liveStep;
   std::vector<std::vector<Mat4>>                 m_liveBones;

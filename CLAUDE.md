@@ -245,5 +245,7 @@ Key CMake options: `USE_DLSS`, `USE_OPTIX_DENOISER`, `USE_OIDN_DENOISER`, `USE_D
 cpp-mcp at configure time — see [docs/mcp.md](docs/mcp.md)),
 `BUILD_TESTING` (`OFF` — turn on to build unit tests + benchmarks; `ctest` runs the
 unit tests, run the benchmark executable directly), `USE_SOFTWARE_VULKAN` (`OFF` — a
-path-tracer-only build that starts on Mesa's lavapipe, for headless CI and benchmarks).
+path-tracer-only build that starts on Mesa's lavapipe, for headless CI and benchmarks),
+`FV_DFORCE_GPU` (`OFF` — the experimental GPU dForce cloth solver, `src/fv_dforce_gpu*`; not yet
+brought up on a GPU).
 See `tests/README.md` and `docs/benchmarking.md`.

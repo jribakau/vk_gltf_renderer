@@ -76,6 +76,70 @@ struct SettleMesh
 // The figure's layer: below any a surface can set, so cloth always lies outside the body.
 constexpr int kBodyLayer = -0x8000;
 
+// What a settle is made of, built once from the meshes' rest shapes: every vertex of every mesh
+// in one index space, the distance constraints, the collision faces and who moves what. Shared by
+// the CPU solver and a GPU one, so both simulate the same cloth.
+enum class EdgeKind
+{
+  eStretch,
+  eShear,
+  eBend,
+};
+
+struct Edge
+{
+  int      a, b;
+  float    rest, alpha;  // compliance, cm per dyne
+  EdgeKind kind;
+  float    ratio, buckle;
+};
+
+struct Tri
+{
+  int   mesh, a, b, c;
+  int   layer;
+  float offset, friction;
+  bool  self, dynamic;
+};
+
+struct ClothModel
+{
+  int                  nv = 0;
+  std::vector<int>     base, meshOf;
+  std::vector<float>   rest, posed, strength, dampRate, friction, offset, grav, inv;
+  std::vector<int>     layer;
+  std::vector<uint8_t> visible, collides, dynamic;
+  std::vector<Edge>    edges;
+  // the sweep in parallel: edges whose free vertices all lie in one block of the vertex range run
+  // block by block on the pool, the few that cross blocks after them on one thread
+  std::vector<std::vector<int>> blockEdges;
+  std::vector<int>              crossingEdges;
+  std::vector<Tri>              tris;
+  // faces the pose moves and faces the cloth moves
+  std::vector<int> staticTris, dynamicTris, allTris;
+  // each vertex's neighbours over stretch edges, and the neighbours of those, sorted: a cloth does
+  // not collide with the faces around a vertex, whose planes it is in or next to
+  std::vector<int> ringStart, ring, ring2Start, ring2;
+  std::vector<int> kinematicVerts;  // every vertex a pose moves
+  std::vector<int> freeVerts;       // every vertex the cloth moves
+  float            maxOffset = 0, minOffset = 0.05f;
+
+  static ClothModel build(const std::vector<SettleMesh>& meshes, float air);
+};
+
+// A bone's skin matrix taken apart, so a sweep between two poses can turn it.
+struct BonePose
+{
+  Vec3 t, s;
+  Quat r;
+};
+BonePose poseOf(const Mat4& m);
+Mat4     sweepAt(const BonePose& from, const BonePose& to, float t);
+
+// A skinned mesh's vertices at these bones (its skin matrices in the mesh's space), in the job's
+// space; an unskinned mesh gives its `posed`. `out` is xyz per vertex.
+void skinMesh(const SettleMesh& m, const std::vector<Mat4>& bones, float* out);
+
 struct SettleOptions
 {
   // Air resistance, DAZ's 0.15
@@ -94,35 +158,49 @@ struct SettleOptions
   float restMove = 0.01f;
 };
 
+// A simulation, however it runs: the CPU solver below, or a GPU one the renderer provides.
+class ClothBackend
+{
+public:
+  virtual ~ClothBackend() = default;
+  virtual void  frame(float t0, float t1, float extraDamping = 0) = 0;
+  virtual void  setTarget(size_t mesh, const std::vector<Mat4>& bones) = 0;
+  virtual void  step(float extraDamping = 0) { frame(0, 1, extraDamping); }
+  virtual void  settle() = 0;
+  virtual float lastMove() const = 0;
+  virtual std::vector<std::vector<float>> positions() const = 0;
+  // True when it must be driven on the thread that made it (a GPU queue), never on the pool.
+  virtual bool ownerThreadOnly() const { return false; }
+};
+
 // The simulation state: constraints built once from the rest shapes, then advanced a frame at a time.
-class ClothSim
+class ClothSim final : public ClothBackend
 {
 public:
   ClothSim(std::vector<SettleMesh> meshes, const SettleOptions& opts = {});
-  ~ClothSim();
+  ~ClothSim() override;
   ClothSim(const ClothSim&)            = delete;
   ClothSim& operator=(const ClothSim&) = delete;
 
   // Advances one frame: the colliders and pinned vertices sweep from pose fraction `t0` to `t1`
   // (0 the pose they set out from, 1 the target) while the cloth integrates. `extraDamping` is a
   // further velocity decay per second, for bringing a held pose to rest quickly.
-  void frame(float t0, float t1, float extraDamping = 0);
+  void frame(float t0, float t1, float extraDamping = 0) override;
   // Live: a new target for a skinned mesh's bones (its skin matrices in the mesh's space, as
   // `SettleMesh::bones`). The pose its kinematic vertices have reached becomes where they set out
   // from, so the next frame(0, 1) sweeps them to the new target. Meshes not given keep theirs.
-  void setTarget(size_t mesh, const std::vector<Mat4>& bones);
-  // Live: one frame toward the current targets, from wherever the sweep had got to.
-  void step(float extraDamping = 0) { frame(0, 1, extraDamping); }
+  void setTarget(size_t mesh, const std::vector<Mat4>& bones) override;
   // The pose transition over its frames, then the hold until the cloth is still (or `maxHold`).
-  void settle();
+  void settle() override;
   // How far the fastest dynamic vertex moved over the last frame, cm.
-  float lastMove() const;
+  float lastMove() const override;
   // Substeps a frame takes and the seconds the transition takes, as the options or the motion set them.
   int   substepsPerFrame() const;
   float transitionSeconds() const;
   // Positions for every mesh, in the same order and space as `rest` / `posed`, with partial
   // strengths blended toward the target pose.
-  std::vector<std::vector<float>> positions() const;
+  std::vector<std::vector<float>> positions() const override;
+  const ClothModel&               model() const;
 
 private:
   struct Impl;

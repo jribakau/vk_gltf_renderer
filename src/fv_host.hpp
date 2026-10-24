@@ -62,7 +62,8 @@
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
 //                                                leaves the renderer's scene at the next composition, and a geograft composes
 //   dforce.enable   {prop, on}; dforce.resimulate {prop}   cloth drapes over the body (figure/dforce)
-//   dforce.mode     {prop, mode: "settle" | "live"}   one settle once the pose stops, or a step every frame
+//   dforce.mode     {prop, mode: "settle" | "live" | "gpu"}   one settle once the pose stops, a step every
+//                                                frame, or that on the experimental GPU solver (FV_DFORCE_GPU builds)
 //   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
 //                                                material edits, dForce on/off and its mode
 //   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models')

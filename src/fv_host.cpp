@@ -52,6 +52,9 @@
 #include <nvutils/timers.hpp>
 
 #include <figure/dforce/dforce.hpp>
+#ifdef FV_DFORCE_GPU
+#include "fv_dforce_gpu.hpp"
+#endif
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
@@ -2281,6 +2284,21 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
     f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
     f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
+#ifdef FV_DFORCE_GPU
+    // the experimental GPU solver, for mode "gpu": made and stepped on the application thread
+    f->dforce->makeGpuSim = [this](std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts)
+        -> std::shared_ptr<fv::dforce::ClothBackend> {
+      if(!app)
+        return nullptr;
+      auto sim = std::make_shared<DforceGpu>(&renderer->allocator(), app, std::move(meshes), opts);
+      if(!sim->valid())
+      {
+        notice("dForce: the GPU solver could not start; simulating on the CPU");
+        return nullptr;
+      }
+      return sim;
+    };
+#endif
     // off until the Wardrobe toggle (or a scene file) turns it on: a settle costs seconds on a dressed figure
     f->dforce->setEnabled(false);
   }
@@ -2689,6 +2707,22 @@ void FvHost::Impl::showItem(const Loaded& f, const std::vector<std::pair<int, st
 //--------------------------------------------------------------------------------------------------
 // dForce
 
+// A dForce mode by its name; "gpu" needs the build to have the GPU solver.
+static fv::dforce::Mode dforceMode(const std::string& name)
+{
+  if(name == "live")
+    return fv::dforce::Mode::eLive;
+  if(name == "gpu")
+  {
+#ifdef FV_DFORCE_GPU
+    return fv::dforce::Mode::eLiveGpu;
+#else
+    throw std::runtime_error("this renderer was built without the GPU cloth solver (FV_DFORCE_GPU)");
+#endif
+  }
+  return fv::dforce::Mode::eSettle;
+}
+
 // Topic "dforce/<prop>": {figure, enabled, mode, active, busy, draped}, when it changes.
 void FvHost::Impl::publishDforce(Loaded& f, bool force)
 {
@@ -2700,14 +2734,15 @@ void FvHost::Impl::publishDforce(Loaded& f, bool force)
   f.dforceVersion = d.version();
   protocol->events().snapshot("dforce/" + f.id, {{"figure", f.id},
                                                  {"enabled", d.enabled()},
-                                                 {"mode", d.mode() == fv::dforce::Mode::eLive ? "live" : "settle"},
+                                                 {"mode", d.mode() == fv::dforce::Mode::eLive ? "live" : d.mode() == fv::dforce::Mode::eLiveGpu ? "gpu" : "settle"},
                                                  {"active", d.active()},
                                                  {"busy", d.busy()},
                                                  {"draped", d.draped()}});
 }
 
 // dforce.enable {prop, on}: cloth drapes (true) or shows the conforming shape (false);
-// dforce.mode {prop, mode}: "settle" (once the pose stops changing) or "live" (every frame);
+// dforce.mode {prop, mode}: "settle" (once the pose stops changing), "live" (every frame) or "gpu"
+// (every frame, on the experimental GPU solver, in a build with FV_DFORCE_GPU);
 // dforce.resimulate {prop} settles the cloth now.
 Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
 {
@@ -2717,7 +2752,7 @@ Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
   if(cmd == "enable")
     figure->dforce->setEnabled(args.value("on", true));
   else if(cmd == "mode")
-    figure->dforce->setMode(args.value("mode", "settle") == "live" ? fv::dforce::Mode::eLive : fv::dforce::Mode::eSettle);
+    figure->dforce->setMode(dforceMode(args.value("mode", "settle")));
   else
     figure->dforce->resimulate();
   publishDforce(*figure, true);
@@ -3028,7 +3063,9 @@ Json FvHost::Impl::sceneState(const Json& args)
   if(prop->figure->dforce)
   {
     state["dforce"]     = prop->figure->dforce->enabled();
-    state["dforceMode"] = prop->figure->dforce->mode() == fv::dforce::Mode::eLive ? "live" : "settle";
+    state["dforceMode"] = prop->figure->dforce->mode() == fv::dforce::Mode::eLive    ? "live" :
+                          prop->figure->dforce->mode() == fv::dforce::Mode::eLiveGpu ? "gpu" :
+                                                                                       "settle";
   }
   return state;
 }
@@ -3125,7 +3162,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
         problems.push_back(p);
     if(target->dforce && args.contains("dforceMode") && args["dforceMode"].is_string())
-      target->dforce->setMode(args["dforceMode"].get<std::string>() == "live" ? fv::dforce::Mode::eLive : fv::dforce::Mode::eSettle);
+      target->dforce->setMode(dforceMode(args["dforceMode"].get<std::string>()));
     if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
       target->dforce->setEnabled(args["dforce"].get<bool>());
     for(size_t i = 0; i < problems.size() && i < 5; i++)
