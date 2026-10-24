@@ -132,6 +132,9 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     alphaMode = *e.alphaMode == "opaque" ? "OPAQUE" : *e.alphaMode == "cutout"           ? "MASK" :
                 (opts.forFile && *e.alphaMode == "hash") ? "MASK" :
                                                             "BLEND";
+  // A live ribbon keeps the alpha mode it was given. The root narrows in the mesh, so the body does
+  // not have to be blended just to soften the hairline; a cutout that is already blended still fades.
+  const bool liveRibbon = s.hairFibre && s.twoSided && !opts.forFile;
 
   Effective eff;
   eff.color       = baseColor;
@@ -258,15 +261,15 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 
   // A top coat occupies the only clearcoat slot, so a tight lobe that would have been the coat
   // stays in the base specular.
-  // Strand hair, drawn as flat ribbons (OmniHair only is two-sided): the specular of a fibre's
-  // cuticle, a dielectric of refractive index 1.55, at full strength.
+  // A file of strand hair (no fibre BSDF in other tools) is a dielectric sheet of index 1.55.
+  // The live path shades the fibre itself and does not also put that sheet on it.
   const bool  ribbonHair = s.kind == Kind::eHair && s.twoSided;
-  const float specular   = ribbonHair ? 1.f
+  const float specular   = ribbonHair && !liveRibbon ? 1.f
                            : s.topCoat && lobes.clearcoat ? std::min(1.f, lobes.intensity + lobes.clearcoat->weight)
                                                           : lobes.intensity;
   eff.specular                  = e.specular.value_or(specular);
   ext["KHR_materials_specular"] = {{"specularFactor", eff.specular}, {"specularColorFactor", Json::array({1, 1, 1})}};
-  if(ribbonHair)
+  if(ribbonHair && !liveRibbon)
     ext["KHR_materials_ior"] = {{"ior", 1.55}};
 
   // clearcoat: Iray's top coat, else the tighter dual lobe, on the same surface detail as the base
@@ -400,15 +403,42 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 
   // Hair cards: the highlight stretches across the strands, a band. The rotation is measured from
   // the mesh in the renderer's convention. An authored Glossy Anisotropy of 0 keeps it round.
-  if(s.kind == Kind::eHair && opts.anisotropyRotation)
+  // A live ribbon uses the per-hit strand instead of one angle for the whole material.
+  if(s.kind == Kind::eHair && !liveRibbon && opts.anisotropyRotation)
     if(const auto strength = strandStrength(s, roughnessFactor, lobes.glossyShare))
       ext["KHR_materials_anisotropy"] = {{"anisotropyStrength", *strength}, {"anisotropyRotation", opts.forFile ? -*opts.anisotropyRotation : *opts.anisotropyRotation}};
 
-  // A ribbon stands for a tuft of fibres light passes through: some of what lands on it goes on
-  // through, in the hair's colour, as it does between the fibres of a real head of hair. Opaque, the
-  // ribbons shade one another to near black.
-  if(ribbonHair)
+  if(liveRibbon)
   {
+    // Root and tip stay apart. The shader blends them by the ribbon's along-UV. rootV is 1 when
+    // the build flipped V, so the fade and the colour still start at the scalp. A roughness or
+    // specular edit from the panel moves the fibre, not only the unused sheet lobe.
+    const Surface::HairFibre& f = *s.hairFibre;
+    float betaM = f.longitudinal;
+    float betaN = f.azimuthal;
+    if(e.roughness)
+    {
+      const float ratio = f.longitudinal > 1e-4f ? f.azimuthal / f.longitudinal : 1.f;
+      betaM = clamp(*e.roughness, 0.f, 1.f);
+      betaN = clamp(betaM * ratio, 0.f, 1.f);
+    }
+    const float hairSpecular = clamp(e.specular.value_or(1.f), 0.f, 1.f);
+    eff.roughness = betaM;
+    eff.specular  = hairSpecular;
+    out["pbrMetallicRoughness"]["roughnessFactor"] = betaM;
+    ext["KHR_materials_specular"]["specularFactor"] = hairSpecular;
+    ext["FV_materials_hair"] = {{"longitudinalRoughness", betaM},
+                                {"azimuthalRoughness", betaN},
+                                {"rootAbsorption", rgbJson(f.rootSigma)},
+                                {"tipAbsorption", rgbJson(f.tipSigma)},
+                                {"rootFade", 0.06f},
+                                {"rootV", opts.flipV ? 1.f : 0.f},
+                                {"specularFactor", hairSpecular}};
+  }
+  else if(ribbonHair)
+  {
+    // A file for other tools has no fibre BSDF. A flat transmission keeps a stack of ribbons from
+    // shading itself black; the live path gets that from the transmitted lobe instead.
     const Json& c = out["pbrMetallicRoughness"]["baseColorFactor"];
     ext["KHR_materials_diffuse_transmission"] = {{"diffuseTransmissionFactor", 0.4},
                                                  {"diffuseTransmissionColorFactor", Json::array({c[0], c[1], c[2]})}};

@@ -168,6 +168,16 @@ struct Surface
   std::optional<float> glossyAnisotropy;
   // Seen from both sides: strand hair, drawn as flat ribbons that face one way
   bool twoSided = false;
+  // OmniHair fibre, when this surface is strand hair. Absorption is Chiang's σ_a at the root and
+  // the tip; the ribbon's along-UV blends them. None for card hair and for every other shader.
+  struct HairFibre
+  {
+    float longitudinal = 0.2f;  // OmniHair Roughness, 0..1, the longitudinal β
+    float azimuthal    = 0.2f;  // Azimuthal Roughness, 0..1
+    Rgb   rootSigma{0, 0, 0};
+    Rgb   tipSigma{0, 0, 0};
+  };
+  std::optional<HairFibre> hairFibre;
 };
 
 // What the Material panel can change on a surface. Each field is set only once edited, so the glTF

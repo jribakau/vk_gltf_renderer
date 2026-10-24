@@ -673,6 +673,35 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   }
 #endif
 
+#if GLTF_USE_HAIR
+  if(material.hairFactor > 0.0)
+  {
+    // The root is UV.y == hairRootV. The body stays opaque; only the first stretch thins.
+    // Opaque ribbons narrow at the root in the mesh, so they stay off the any-hit path. A cutout
+    // (already blended) also thins there.
+    if(material.hairRootFade > 0.0 && material.alphaMode != AlphaMode::eAlphaModeOpaque)
+    {
+      float along = abs(state.tc[0].y - material.hairRootV);
+      pbrMat.opacity *= smoothstep(0.0, material.hairRootFade, along);
+    }
+#ifdef RASTER_PIPELINE
+    // The path tracer replaces these lobes with the fibre BSDF. The preview only stretches the
+    // highlight across the strand (the bitangent) and lets a little light through the sheet.
+    float bm = clamp(material.hairLongitudinal, 0.05, 1.0);
+    float bn = clamp(material.hairAzimuthal, 0.05, 1.0);
+    float alphaM = bm * bm;
+    pbrMat.T = normalize(pbrMat.B);
+    pbrMat.B = normalize(cross(pbrMat.N, pbrMat.T));
+    pbrMat.roughness = float2(lerp(alphaM, 1.0, saturate(0.5 + 0.5 * bn)), alphaM);
+    pbrMat.metallic = 0.0;
+    pbrMat.specular = 1.0;
+    pbrMat.ior2 = 1.55;
+    pbrMat.diffuseTransmissionFactor = 0.25;
+    pbrMat.diffuseTransmissionColor = pbrMat.baseColor;
+#endif
+  }
+#endif
+
   return pbrMat;
 }
 

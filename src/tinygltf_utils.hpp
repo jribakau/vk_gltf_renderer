@@ -289,6 +289,23 @@ struct FV_materials_detail
   tinygltf::TextureInfo detailRoughnessTexture = {};
 };
 
+// FV_materials_hair (Figure Viewer): an OmniHair ribbon shaded as a fibre. longitudinalRoughness
+// and azimuthalRoughness are OmniHair's β_m and β_n. rootAbsorption and tipAbsorption are Chiang's
+// σ_a; the shader blends them by the ribbon's along-UV. rootFade is that UV's ramp at the scalp.
+// rootV is the UV.y of the root (1 when the mesh build flipped V).
+#define FV_MATERIALS_HAIR_EXTENSION_NAME "FV_materials_hair"
+struct FV_materials_hair
+{
+  float     longitudinalRoughness = 0.2f;
+  float     azimuthalRoughness    = 0.2f;
+  glm::vec3 rootAbsorption        = {0.0f, 0.0f, 0.0f};
+  glm::vec3 tipAbsorption         = {0.0f, 0.0f, 0.0f};
+  float     rootFade              = 0.0f;
+  float     rootV                 = 0.0f;
+  float     specularFactor        = 1.0f;  // scales the reflecting orders
+  bool      active                = false;  // the extension is present
+};
+
 // https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_retroreflection/README.md
 #define KHR_MATERIALS_RETROREFLECTION_EXTENSION_NAME "KHR_materials_retroreflection"
 struct KHR_materials_retroreflection
@@ -1328,6 +1345,8 @@ KHR_materials_retroreflection getRetroreflection(const tinygltf::Material& tmat)
 void                          setRetroreflection(tinygltf::Material& tmat, const KHR_materials_retroreflection& retro);
 FV_materials_detail           getDetail(const tinygltf::Material& tmat);
 void                          setDetail(tinygltf::Material& tmat, const FV_materials_detail& detail);
+FV_materials_hair             getHair(const tinygltf::Material& tmat);
+void                          setHair(tinygltf::Material& tmat, const FV_materials_hair& hair);
 EXT_DLSS_NR                   getExtDlssNr(const tinygltf::Material& tmat);
 void                          setExtDlssNr(tinygltf::Material& tmat, const EXT_DLSS_NR& ext);
 

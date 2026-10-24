@@ -52,6 +52,9 @@ static bool doDebug = false;
 
 #include "gltf_material_eval.h.slang"
 #include "gltf_scene_io.h.slang"
+#if GLTF_USE_HAIR
+#include "hair_bsdf.h.slang"
+#endif
 #include "gltf_vertex_access.h.slang"
 #include "shaderio.h"
 #include "get_hit.h.slang"
@@ -529,13 +532,22 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // Sampling the lights
     // - Get the light contribution from one light source or the HDR environment
     //-----------------------------------------------------------------------
+    // A ribbon fibre is lit from both sides: the transmitted lobe leaves through the sheet.
+    bool hairOn = false;
+#if GLTF_USE_HAIR
+    HairHit hairHit = hairHitZero();
+    if(materialIndex >= 0 && materials[materialIndex].hairFactor > 0.0)
+      hairOn = makeHairHit(materials[materialIndex], hit.uv[0], hit.bitangent, hit.tangent, pbrMat.N, pbrMat.T, pbrMat.B, hairHit);
+#endif
+    const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
+
     DirectLight directLight;
     sampleLights(hit.pos, pbrMat.N, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
-                 /*lightsFromBothSides=*/pbrMat.diffuseTransmissionFactor > 0.0f);
+                 /*lightsFromBothSides=*/bothSides);
 
     // This checks if the light could contribute, but doesn't send a next event estimation (NEE) shadow ray yet.
     // The actual test and contribution are delayed to minimize per-bounce state.
-    bounce.nextEventValid = (dot(directLight.direction, hit.nrm) > 0.0f || pbrMat.diffuseTransmissionFactor > 0.0f)
+    bounce.nextEventValid = (dot(directLight.direction, hit.nrm) > 0.0f || bothSides)
                             && directLight.pdf != 0.0f;
 
     //-----------------------------------------------------------------------
@@ -548,7 +560,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       evalData.k1 = -ray.Direction;
       evalData.k2 = directLight.direction;
       evalData.xi = float3(rand(seed), rand(seed), rand(seed));
-      bsdfEvaluate(evalData, pbrMat);
+#if GLTF_USE_HAIR
+      if(hairOn)
+        hairBsdfEvaluate(evalData, hairHit);
+      else
+#endif
+        bsdfEvaluate(evalData, pbrMat);
       // bsdfEvaluateSimple(evalData, pbrMat);
 
       // If the PDF is greater than 0, then we can sample the BSDF
@@ -573,7 +590,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       BsdfSampleData sampleData;
       sampleData.k1 = -ray.Direction;                              // outgoing direction
       sampleData.xi = float3(rand(seed), rand(seed), rand(seed));  // random number
-      bsdfSample(sampleData, pbrMat);
+#if GLTF_USE_HAIR
+      if(hairOn)
+        hairBsdfSample(sampleData, hairHit, rand(seed), rand(seed), rand(seed));
+      else
+#endif
+        bsdfSample(sampleData, pbrMat);
       // bsdfSampleSimple(sampleData, pbrMat);
 
       // Update the pt.throughput

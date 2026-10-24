@@ -446,6 +446,62 @@ void tinygltf::utils::setDetail(tinygltf::Material& tmat, const FV_materials_det
   setOrEraseTexture("detailRoughnessTexture", detail.detailRoughnessTexture);
 }
 
+namespace {
+
+glm::vec3 hairRgb(const tinygltf::Value& ext, const char* key)
+{
+  glm::vec3 c(0.0f);
+  if(!ext.Has(key))
+    return c;
+  const tinygltf::Value& a = ext.Get(key);
+  if(!a.IsArray() || a.ArrayLen() < 3)
+    return c;
+  for(int i = 0; i < 3; i++)
+    if(a.Get(i).IsNumber())
+      c[i] = static_cast<float>(a.Get(i).Get<double>());
+  return c;
+}
+
+void setHairRgb(tinygltf::Value& ext, const char* key, const glm::vec3& c)
+{
+  tinygltf::Value::Array a;
+  a.push_back(tinygltf::Value(double(c.x)));
+  a.push_back(tinygltf::Value(double(c.y)));
+  a.push_back(tinygltf::Value(double(c.z)));
+  ext.Get<tinygltf::Value::Object>()[key] = tinygltf::Value(a);
+}
+
+}  // namespace
+
+FV_materials_hair tinygltf::utils::getHair(const tinygltf::Material& tmat)
+{
+  FV_materials_hair gmat;
+  if(const auto* ext = tinygltf::utils::findExtension(tmat.extensions, FV_MATERIALS_HAIR_EXTENSION_NAME))
+  {
+    gmat.active = true;
+    tinygltf::utils::getValue(*ext, "longitudinalRoughness", gmat.longitudinalRoughness);
+    tinygltf::utils::getValue(*ext, "azimuthalRoughness", gmat.azimuthalRoughness);
+    tinygltf::utils::getValue(*ext, "rootFade", gmat.rootFade);
+    tinygltf::utils::getValue(*ext, "rootV", gmat.rootV);
+    tinygltf::utils::getValue(*ext, "specularFactor", gmat.specularFactor);
+    gmat.rootAbsorption = hairRgb(*ext, "rootAbsorption");
+    gmat.tipAbsorption  = hairRgb(*ext, "tipAbsorption");
+  }
+  return gmat;
+}
+
+void tinygltf::utils::setHair(tinygltf::Material& tmat, const FV_materials_hair& hair)
+{
+  tinygltf::Value& ext = tinygltf::utils::ensureExtension(tmat.extensions, FV_MATERIALS_HAIR_EXTENSION_NAME);
+  tinygltf::utils::setValue(ext, "longitudinalRoughness", hair.longitudinalRoughness);
+  tinygltf::utils::setValue(ext, "azimuthalRoughness", hair.azimuthalRoughness);
+  tinygltf::utils::setValue(ext, "rootFade", hair.rootFade);
+  tinygltf::utils::setValue(ext, "rootV", hair.rootV);
+  tinygltf::utils::setValue(ext, "specularFactor", hair.specularFactor);
+  setHairRgb(ext, "rootAbsorption", hair.rootAbsorption);
+  setHairRgb(ext, "tipAbsorption", hair.tipAbsorption);
+}
+
 KHR_materials_retroreflection tinygltf::utils::getRetroreflection(const tinygltf::Material& tmat)
 {
   KHR_materials_retroreflection gmat;

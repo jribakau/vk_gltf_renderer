@@ -272,6 +272,16 @@ float getOpacity(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int 
 
   baseColorAlpha *= getInterpolatedVertexColor(renderPrim, triangleIndex, barycentrics).a;
 
+#if GLTF_USE_HAIR
+  // Ribbon roots fade in along the strand. Opacity 1 (the rest of the ribbon) is always kept.
+  if(mat.hairFactor > 0.0 && mat.hairRootFade > 0.0 && mat.alphaMode != AlphaMode::eAlphaModeOpaque)
+  {
+    float2 uv    = getInterpolatedVertexTexCoord(renderPrim, 0, triangleIndex, barycentrics);
+    float  along = abs(uv.y - mat.hairRootV);
+    baseColorAlpha *= smoothstep(0.0, mat.hairRootFade, along);
+  }
+#endif
+
   if(mat.alphaMode == AlphaMode::eAlphaModeMask)
   {
     return baseColorAlpha >= mat.alphaCutoff ? 1.0 : 0.0;

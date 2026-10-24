@@ -287,6 +287,20 @@ struct GltfShadeMaterial
   float detailRoughnessFactor = 1;
 #endif
 
+#if MAT_EXT_HAIR
+  // FV_materials_hair. hairFactor is 0 unless the extension is present: a ribbon fibre, shaded
+  // with a hair BSDF instead of the glTF lobes. Absorption is Chiang's σ_a; the hit's along-UV
+  // blends root to tip. rootV is the UV.y of the root (1 when the build flipped V).
+  float  hairFactor        = 0;
+  float  hairLongitudinal  = 0.2f;  // β_m, 0..1
+  float  hairAzimuthal     = 0.2f;  // β_n, 0..1
+  float  hairRootFade      = 0;    // along-UV width of the root opacity ramp; 0 = none
+  float  hairRootV         = 0;    // UV.y at the root
+  float  hairSpecular      = 1.f;  // scales the reflecting orders; 1 is the fibre's Fresnel
+  float3 hairRootSigma     = float3(0);
+  float3 hairTipSigma      = float3(0);
+#endif
+
   // Texture infos (uint16_t, 2 bytes each). Index 0 is the sentinel "no texture" slot
   // (textureInfos[0] is reserved as invalid on the host), so all texture members default to 0.
   // Base (always-on) texture slots come first so their offsets within the texture section

@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <string>
 
 #include <figure/dson/material_preset.hpp>
@@ -322,17 +323,113 @@ TEST(Materials, RibbonHairLetsLightThroughAndReflectsAsAFibre)
 {
   const auto s = fv::dson::parseSurface("FE Base", channelsOf(omniHair().c_str()));
   ASSERT_TRUE(s.twoSided);
+  ASSERT_TRUE(s.hairFibre);
+  // OmniHair's own roughness, not the glossy fallback a sheet would use
+  EXPECT_NEAR(s.hairFibre->longitudinal, 0.2f, 1e-5f);
+  EXPECT_NEAR(s.hairFibre->azimuthal, 0.2f, 1e-5f);
+  // undyed: the root and the tip are the same fibre
+  EXPECT_NEAR(s.hairFibre->rootSigma[1], s.hairFibre->tipSigma[1], 1e-5f);
+  EXPECT_GT(s.hairFibre->rootSigma[2], s.hairFibre->rootSigma[0]);
+
   const auto  lowered = fv::mat::lower(s, {}, {});
   const auto& ext     = lowered.material["extensions"];
-  EXPECT_NEAR(ext["KHR_materials_ior"]["ior"].get<float>(), 1.55f, 1e-6f);
-  EXPECT_NEAR(ext["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
-  const auto& dt = ext["KHR_materials_diffuse_transmission"];
+  EXPECT_EQ(lowered.material["alphaMode"].get<std::string>(), "OPAQUE");
+  EXPECT_FALSE(ext.contains("KHR_materials_diffuse_transmission"));
+  EXPECT_FALSE(ext.contains("KHR_materials_ior"));
+  ASSERT_TRUE(ext.contains("FV_materials_hair"));
+  const auto& hair = ext["FV_materials_hair"];
+  EXPECT_NEAR(hair["longitudinalRoughness"].get<float>(), 0.2f, 1e-5f);
+  EXPECT_NEAR(hair["azimuthalRoughness"].get<float>(), 0.2f, 1e-5f);
+  EXPECT_NEAR(hair["rootFade"].get<float>(), 0.06f, 1e-5f);
+  EXPECT_NEAR(hair["specularFactor"].get<float>(), 1.f, 1e-5f);
+  EXPECT_NEAR(hair["rootAbsorption"][1].get<float>(), s.hairFibre->rootSigma[1], 1e-5f);
+  EXPECT_NEAR(hair["tipAbsorption"][2].get<float>(), s.hairFibre->tipSigma[2], 1e-5f);
+
+  // a file for other tools has no fibre BSDF, so it keeps the sheet that lets light through
+  fv::mat::LowerOptions fileOpts;
+  fileOpts.forFile = true;
+  const auto  filed = fv::mat::lower(s, {}, fileOpts);
+  const auto& fileExt = filed.material["extensions"];
+  EXPECT_FALSE(fileExt.contains("FV_materials_hair"));
+  EXPECT_NEAR(fileExt["KHR_materials_ior"]["ior"].get<float>(), 1.55f, 1e-6f);
+  EXPECT_NEAR(fileExt["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
+  const auto& dt = fileExt["KHR_materials_diffuse_transmission"];
   EXPECT_NEAR(dt["diffuseTransmissionFactor"].get<float>(), 0.4f, 1e-6f);
-  // in the hair's colour
-  EXPECT_NEAR(dt["diffuseTransmissionColorFactor"][0].get<float>(), lowered.material["pbrMetallicRoughness"]["baseColorFactor"][0].get<float>(), 1e-6f);
+  EXPECT_NEAR(dt["diffuseTransmissionColorFactor"][0].get<float>(), filed.material["pbrMetallicRoughness"]["baseColorFactor"][0].get<float>(), 1e-6f);
+
   // card hair is not a ribbon
   const auto cards = fv::mat::lower(fv::dson::parseSurface("Scalp Hair", channelsOf(kSkin)), {}, {});
   EXPECT_FALSE(cards.material["extensions"].contains("KHR_materials_diffuse_transmission"));
+  EXPECT_FALSE(cards.material["extensions"].contains("FV_materials_hair"));
+}
+
+TEST(Materials, RibbonHairKeepsRootAndTipAbsorptionApart)
+{
+  const std::string dye = R"(,{"channel":{"id":"Hair Root Color","type":"color","current_value":[0.05,0.02,0.01]}},
+    {"channel":{"id":"Hair Tip Color","type":"color","current_value":[0.8,0.6,0.3]}})";
+  const auto s = fv::dson::parseSurface("FE Base", channelsOf(omniHair(dye).c_str()));
+  ASSERT_TRUE(s.hairFibre);
+  // a darker root absorbs more, in every channel
+  for(int i = 0; i < 3; i++)
+    EXPECT_GT(s.hairFibre->rootSigma[i], s.hairFibre->tipSigma[i]);
+  // the sheet colour stays the average of the two dyes, which is what the melanin fit returns
+  const auto averaged = fv::dson::omniHairColor(channelsOf(omniHair(dye).c_str()));
+  ASSERT_TRUE(averaged);
+  EXPECT_NEAR(s.base.color[0], (*averaged)[0], 1e-5f);
+}
+
+TEST(Materials, RibbonHairEditsMoveTheFibreAndCanStayOpaque)
+{
+  const auto s = fv::dson::parseSurface("FE Base", channelsOf(omniHair().c_str()));
+  fv::mat::Edits e;
+  e.roughness = 0.5f;
+  e.specular  = 0.25f;
+  e.alphaMode = "opaque";
+  const auto  lowered = fv::mat::lower(s, e, {});
+  const auto& hair    = lowered.material["extensions"]["FV_materials_hair"];
+  EXPECT_EQ(lowered.material["alphaMode"].get<std::string>(), "OPAQUE");
+  EXPECT_NEAR(hair["longitudinalRoughness"].get<float>(), 0.5f, 1e-5f);
+  // azimuthal started equal to longitudinal, so it keeps that ratio
+  EXPECT_NEAR(hair["azimuthalRoughness"].get<float>(), 0.5f, 1e-5f);
+  EXPECT_NEAR(hair["specularFactor"].get<float>(), 0.25f, 1e-5f);
+  EXPECT_NEAR(lowered.effective.roughness, 0.5f, 1e-5f);
+  EXPECT_NEAR(lowered.effective.specular, 0.25f, 1e-5f);
+}
+
+// The orders of one fibre at its centre, the part of hair_bsdf.h.slang that decides whether light
+// reflects or goes through. h = 0, the ray square to the strand, eta 1.55.
+TEST(Materials, AFibreTransmitsUntilAbsorptionClosesIt)
+{
+  const auto fresnel = [](double cosI, double eta) {
+    const double sin2T = (1.0 / (eta * eta)) * (1.0 - cosI * cosI);
+    const double cosT  = std::sqrt(1.0 - sin2T);
+    const double rPar  = (eta * cosI - cosT) / (eta * cosI + cosT);
+    const double rPerp = (cosI - eta * cosT) / (cosI + eta * cosT);
+    return 0.5 * (rPar * rPar + rPerp * rPerp);
+  };
+  const double F = fresnel(1.0, 1.55);
+  // nothing to absorb: the transmitted order carries the fibre, the primary is only the Fresnel
+  const double openTT = (1.0 - F) * (1.0 - F);
+  EXPECT_GT(openTT, F * 5.0);
+  // a dark fibre: one trip through kills the transmitted order, the primary Fresnel remains
+  const double absorbed = std::exp(-8.0 * 2.0);
+  EXPECT_LT(openTT * absorbed, F * 0.1);
+}
+
+// Longitudinal M_p peaks when the incoming angle mirrors the tilted outgoing one (pbrt's Mp:
+// exp(-sinI * sinOp / v) is largest when those sines have opposite sign).
+TEST(Materials, ThePrimaryLobeFacesTheMirrorAndTheTransmittedOneDoesNot)
+{
+  const auto mp = [](double sinI, double sinO) {
+    constexpr double v = 0.05;
+    const double     b = sinI * sinO / v;
+    return std::exp(-b);
+  };
+  // square to the strand, primary tilt of about -4 degrees (two cuticle angles)
+  const double sinOp = -std::sin(4.0 * 3.14159265358979323846 / 180.0);
+  const double mirror = mp(-sinOp, sinOp);
+  const double through = mp(0.0, sinOp);
+  EXPECT_GT(mirror, through);
 }
 
 TEST(Materials, ChangingTheBumpStrengthChangesTheBakedTexture)

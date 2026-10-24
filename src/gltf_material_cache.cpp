@@ -264,6 +264,21 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf:
   handleTexture(dstMat.detailRoughnessTexture, detail.detailRoughnessTexture);
 #endif
 
+#if MAT_EXT_HAIR
+  FV_materials_hair hair = tinygltf::utils::getHair(srcMat);
+  if(hair.active)
+  {
+    dstMat.hairFactor       = 1.0f;
+    dstMat.hairLongitudinal = hair.longitudinalRoughness;
+    dstMat.hairAzimuthal    = hair.azimuthalRoughness;
+    dstMat.hairRootFade     = hair.rootFade;
+    dstMat.hairRootV        = hair.rootV;
+    dstMat.hairSpecular     = hair.specularFactor;
+    dstMat.hairRootSigma    = hair.rootAbsorption;
+    dstMat.hairTipSigma     = hair.tipAbsorption;
+  }
+#endif
+
 #if MAT_EXT_DLSS_NR
   EXT_DLSS_NR dlssNr = tinygltf::utils::getExtDlssNr(srcMat);
   dstMat.nrMask      = dlssNr.nrMask;

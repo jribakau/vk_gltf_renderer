@@ -240,7 +240,16 @@ void widenRibbons(mesh::BuiltMesh& m, const std::vector<std::array<double, 2>>& 
   {
     const int  mat = r.material[i];
     const auto w   = mat >= 0 && mat < int(widths.size()) ? widths[mat] : (widths.empty() ? std::array<double, 2>{0.1, 0.05} : widths[0]);
-    const double half = (w[0] + (w[1] - w[0]) * r.along[i]) / 2;
+    // The first 6% of the strand grows from nothing, so the root is not a full-width sheet and the
+    // body can stay opaque (no any-hit on every card). along is 0 at the root.
+    constexpr double kRoot = 0.06;
+    double           gate  = 1;
+    if(r.along[i] < kRoot)
+    {
+      const double t = r.along[i] / kRoot;
+      gate           = t * t * (3.0 - 2.0 * t);
+    }
+    const double half = (w[0] + (w[1] - w[0]) * r.along[i]) / 2 * gate;
     for(int k = 0; k < 3; k++)
       m.position[i * 3 + k] = float(m.position[i * 3 + k] + r.side[i * 3 + k] * half);
   }
