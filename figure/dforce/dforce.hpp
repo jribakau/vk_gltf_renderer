@@ -32,7 +32,8 @@ class Dforce
 {
 public:
   // `bodyMesh` is the figure's body (always a collider, under every cloth layer); -1 without one.
-  Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh);
+  // `root` is the figure's root node: the settle runs in its space (centimetres, the figure upright).
+  Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root);
   ~Dforce();
 
   // True while a clip is playing: the last drape stays until playback stops.
@@ -74,6 +75,7 @@ private:
   SceneGraph&      m_scene;
   morph::MorphSet& m_morphs;
   int              m_bodyMesh;
+  int              m_root;
 
   bool                                  m_enabled   = true;
   bool                                  m_scheduled = false;

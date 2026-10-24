@@ -158,6 +158,8 @@ public:
   // The targets applied to a mesh now and the weight of each, except `except` (a mesh's own drape
   // is left out when a simulation reads the shape underneath it).
   std::vector<std::pair<dson::TargetPtr, double>> activeTargets(int mesh, const mesh::RenderTarget* except = nullptr) const;
+  // The meshes a channel's targets move (none while it is not loaded).
+  std::set<int> meshesOf(const std::string& name) const;
   // The target a channel binds on a mesh, or null.
   dson::TargetPtr cpuTarget(const std::string& name, int mesh) const;
   // Binds `target` as the channel's target on a mesh, making the channel when it is new and
@@ -191,7 +193,8 @@ private:
   {
     Follower f;
     // the source target (by identity) -> its projection, null for one that moves nothing
-    std::unordered_map<const mesh::RenderTarget*, dson::TargetPtr> projected;
+    // (the source is kept with it: a freed target's address could come back for another)
+    std::unordered_map<const mesh::RenderTarget*, std::pair<dson::TargetPtr, dson::TargetPtr>> projected;
     struct Own
     {
       enum class State { ePending, eNone, eReady } state = State::eNone;

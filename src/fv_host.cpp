@@ -797,7 +797,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   if(f->fig->morphs && !f->fig->loaded.morphs.mainMeshes.empty())
   {
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
-    f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body);
+    f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
     f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
     f->dforce->poke();
   }

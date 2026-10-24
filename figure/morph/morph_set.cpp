@@ -117,6 +117,13 @@ void MorphSet::bind(const std::string& name, Binding b, double value, const Chan
   if(it == m_bindings.end())
   {
     it = m_bindings.emplace(name, std::vector<Binding>{}).first;
+    // a lazy channel of that name (a figure morph not read yet, which a worn item ships a fitted
+    // copy of) takes the binding: one dial, at its own value
+    if(m_index.count(name))
+    {
+      it->second.push_back(std::move(b));
+      return;
+    }
     Channel c;
     c.name   = name;
     c.label  = opts.label.value_or(prettyLabel(name));
@@ -153,6 +160,15 @@ std::vector<std::pair<dson::TargetPtr, double>> MorphSet::activeTargets(int mesh
   for(const auto& [key, a] : it->second.active)
     if(key != except)
       out.emplace_back(a.target, a.weight);
+  return out;
+}
+
+std::set<int> MorphSet::meshesOf(const std::string& name) const
+{
+  std::set<int> out;
+  if(const auto it = m_bindings.find(name); it != m_bindings.end())
+    for(const Binding& b : it->second)
+      out.insert(b.mesh);
   return out;
 }
 
@@ -232,7 +248,8 @@ void MorphSet::finishLoad(const std::string& name, std::future<Finish>& fut)
     Channel* ch = channelMut(name);
     if(!ch)
       return;
-    if(result.parts.empty() && !result.keep)
+    // nothing in the file, and nothing else bound to it (a worn item's copy of the morph)
+    if(result.parts.empty() && !result.keep && !m_bindings.count(name))
     {
       m_channels.erase(m_channels.begin() + std::ptrdiff_t(ch - m_channels.data()));
       reindex();
@@ -496,9 +513,9 @@ std::vector<dson::TargetPtr> MorphSet::followerTargets(FollowerState& st, const 
   {
     auto it = st.projected.find(b.target.get());
     if(it == st.projected.end())
-      it = st.projected.emplace(b.target.get(), st.f.project ? st.f.project(*b.target) : nullptr).first;
-    if(it->second)
-      out.push_back(it->second);
+      it = st.projected.emplace(b.target.get(), std::make_pair(b.target, st.f.project ? st.f.project(*b.target) : nullptr)).first;
+    if(it->second.second)
+      out.push_back(it->second.second);
   }
   return out;
 }
@@ -523,7 +540,10 @@ void MorphSet::removeMeshes(const std::set<int>& gone)
       const std::string name = it->first;
       it                     = m_bindings.erase(it);
       if(!m_lazy.count(name))
+      {
         m_channels.erase(std::remove_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return c.name == name; }), m_channels.end());
+        m_weights.erase(name);
+      }
     }
     else
       ++it;
@@ -537,6 +557,25 @@ void MorphSet::removeChannels(const std::vector<std::string>& names)
   const std::set<std::string> gone(names.begin(), names.end());
   for(const std::string& n : gone)
   {
+    // what the channel applied comes off the meshes: its own targets and its followers' versions
+    if(auto it = m_bindings.find(n); it != m_bindings.end())
+      for(const Binding& b : it->second)
+        if(auto cpu = m_cpu.find(b.mesh); cpu != m_cpu.end())
+        {
+          cpu->second.active.erase(b.target.get());
+          cpu->second.dirty = true;
+        }
+    for(auto& f : m_followers)
+      if(auto prev = f->applied.find(n); prev != f->applied.end())
+      {
+        if(auto cpu = m_cpu.find(f->f.mesh); cpu != m_cpu.end())
+        {
+          for(const auto& t : prev->second)
+            cpu->second.active.erase(t.get());
+          cpu->second.dirty = true;
+        }
+        f->applied.erase(prev);
+      }
     m_bindings.erase(n);
     m_lazy.erase(n);
     m_weights.erase(n);
@@ -545,6 +584,7 @@ void MorphSet::removeChannels(const std::vector<std::string>& names)
   m_channels.erase(std::remove_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return gone.count(c.name) > 0; }), m_channels.end());
   reindex();
   m_listVersion++;
+  flush();
 }
 
 void MorphSet::applyWeights(const std::vector<std::pair<std::string, double>>& values)

@@ -173,6 +173,9 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     }
     model.nodes.push_back(std::move(g));
   }
+  if(std::any_of(model.nodes.begin(), model.nodes.end(), [](const tinygltf::Node& g) { return g.extensions.count("KHR_node_visibility") > 0; })
+     && std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), "KHR_node_visibility") == model.extensionsUsed.end())
+    model.extensionsUsed.push_back("KHR_node_visibility");
   model.scenes.emplace_back();
   model.scenes[0].nodes = {out.nodeOf[root]};
   model.defaultScene    = 0;
@@ -241,6 +244,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     mat::LowerOptions& lo = out.lowering[mi];
     lo.skin               = options.skin;
     lo.forFile            = options.forFile;
+    lo.flipV              = !options.texturesFlipped;
     lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
     // one material on several meshes is one glTF material, so those meshes vote together
     std::vector<mat::StrandVote> votes;

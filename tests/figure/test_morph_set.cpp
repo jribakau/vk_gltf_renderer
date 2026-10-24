@@ -11,6 +11,7 @@
 #include <cmath>
 #include <future>
 #include <memory>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -252,4 +253,36 @@ TEST(FigureMorphSet, DriverRunsAgainWhileLoadsKeepArriving)
   gates[1].set_value();
   morphs.settled();
   EXPECT_EQ(driver.calls, 2);
+}
+
+TEST(FigureMorphSet, RemovedChannelsTakeTheirShapeBackOffTheMesh)
+{
+  fv::mesh::BuiltMesh geo  = grid(3, 0);
+  const auto          rest = geo.position;
+  fv::morph::MorphSet set([&](int) { return &geo; });
+  fv::morph::ChannelOptions opts;
+  opts.value = 0.6;
+  set.addTarget("Pants Loose", 0, targetOf(geo, {5}, {0, 0, 1}), opts);
+  set.flush();
+  EXPECT_GT(worst(geo.position, rest), 0.5);
+  // the item it came with is taken off: the dial goes, and so does what it applied
+  set.removeChannels({"Pants Loose"});
+  EXPECT_LT(worst(geo.position, rest), 1e-6);
+  EXPECT_FALSE(set.has("Pants Loose"));
+}
+
+TEST(FigureMorphSet, AnItemsCopyOfALazyFigureMorphJoinsTheFiguresDial)
+{
+  fv::mesh::BuiltMesh body = grid(3, 0), shirt = grid(3, 0);
+  fv::morph::MorphSet set([&](int m) { return m == 0 ? &body : &shirt; });
+  set.addLazy("FBMHeavy", []() -> fv::morph::Finish { return [] { return fv::morph::LazyResult{}; }; });
+  // the shirt ships its own fitted copy, stored at the value it was saved with
+  fv::morph::ChannelOptions opts;
+  opts.value = 0.5;
+  set.addTarget("FBMHeavy", 1, targetOf(shirt, {5}, {0, 0, 1}), opts);
+  const auto named = std::count_if(set.channels().begin(), set.channels().end(), [](const fv::morph::Channel& c) { return c.name == "FBMHeavy"; });
+  EXPECT_EQ(named, 1);
+  // one dial, at the figure's value: the shirt doesn't take a shape the body hasn't
+  EXPECT_EQ(set.get("FBMHeavy"), 0);
+  EXPECT_EQ(set.meshesOf("FBMHeavy"), std::set<int>{1});
 }

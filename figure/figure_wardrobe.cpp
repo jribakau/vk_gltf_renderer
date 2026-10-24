@@ -471,12 +471,31 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       worn->channels.push_back(name);
     }
   }
-  // dials the wearable brought, besides its adjustments: they leave with it
+  // dials the wearable brought, besides its adjustments: each leaves with the item whose meshes it
+  // moves (the first item when it moves none yet, a file not read)
   if(!added.empty())
-    if(WornItem* first = &*std::find_if(items.begin(), items.end(), [&](const WornItem& i) { return i.id == added[0]; }))
-      for(const morph::Channel& c : morphs->channels())
-        if(!before.count(c.name) && std::find(first->channels.begin(), first->channels.end(), c.name) == first->channels.end())
-          first->channels.push_back(c.name);
+  {
+    std::vector<WornItem*> wornNow;
+    for(int id : added)
+      for(WornItem& i : items)
+        if(i.id == id)
+          wornNow.push_back(&i);
+    for(const morph::Channel& c : morphs->channels())
+    {
+      if(before.count(c.name) || wornNow.empty())
+        continue;
+      const std::set<int> moved = morphs->meshesOf(c.name);
+      WornItem*           owner = wornNow.front();
+      for(WornItem* w : wornNow)
+        if(std::any_of(w->meshes.begin(), w->meshes.end(), [&](int m) { return moved.count(m) > 0; }))
+        {
+          owner = w;
+          break;
+        }
+      if(std::find(owner->channels.begin(), owner->channels.end(), c.name) == owner->channels.end())
+        owner->channels.push_back(c.name);
+    }
+  }
   morphs->flush();
   morphs->sort();
   result.items = added;

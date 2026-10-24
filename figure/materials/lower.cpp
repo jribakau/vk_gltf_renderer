@@ -33,6 +33,7 @@ Rgb lerp(const Rgb& a, const Rgb& b, float t)
 struct Builder
 {
   std::vector<TextureRequest> requests;
+  bool                        flipV = false;  // LowerOptions::flipV
 
   // A texture info for a request. `tiles`/`offset` tile the texture through KHR_texture_transform.
   Json info(TextureRequest req, std::optional<float> scale = std::nullopt, std::optional<std::array<float, 2>> tiles = std::nullopt,
@@ -43,7 +44,11 @@ struct Builder
     if(scale)
       out["scale"] = *scale;
     if(tiles && offset && ((*tiles)[0] != 1 || (*tiles)[1] != 1 || (*offset)[0] != 0 || (*offset)[1] != 0))
-      out["extensions"] = {{"KHR_texture_transform", {{"scale", Json::array({(*tiles)[0], (*tiles)[1]})}, {"offset", Json::array({(*offset)[0], (*offset)[1]})}}}};
+    {
+      // DAZ samples at tiles·v + offset; with v' = 1 − v and the image unflipped that is tiles·v' + (1 − tiles − offset)
+      const float offsetV = flipV ? 1 - (*tiles)[1] - (*offset)[1] : (*offset)[1];
+      out["extensions"] = {{"KHR_texture_transform", {{"scale", Json::array({(*tiles)[0], (*tiles)[1]})}, {"offset", Json::array({(*offset)[0], offsetV})}}}};
+    }
     return out;
   }
 
@@ -92,6 +97,7 @@ float clamp(float v, float lo, float hi)
 Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 {
   Builder        b;
+  b.flipV = opts.flipV;
   Json           ext   = Json::object();
   Json           out   = {{"name", s.name}};
   const auto     lobes = specularLobes(s);
@@ -123,7 +129,9 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   }
   // an inspector edit of the alpha mode: hashed and blended alike are BLEND for this renderer
   if(e.alphaMode)
-    alphaMode = *e.alphaMode == "opaque" ? "OPAQUE" : *e.alphaMode == "cutout" ? "MASK" : opts.forFile ? "MASK" : "BLEND";
+    alphaMode = *e.alphaMode == "opaque" ? "OPAQUE" : *e.alphaMode == "cutout"           ? "MASK" :
+                (opts.forFile && *e.alphaMode == "hash") ? "MASK" :
+                                                            "BLEND";
 
   Effective eff;
   eff.color       = baseColor;
@@ -133,8 +141,9 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   eff.metalness   = e.metalness.value_or(s.metallic.value);
 
   Json pbr = Json::object();
-  // a flat colour baked into the image (no base map) must not tint it again
-  const bool bakedFlat = s.base.map.empty() && (makeup || !s.opacity.map.empty());
+  // a flat colour baked into the image (no base map) must not tint it again; with no image at all
+  // (makeup with no maps of its own) the factor is the colour
+  const bool bakedFlat = anyMap && s.base.map.empty() && (makeup || !s.opacity.map.empty());
   pbr["baseColorFactor"] = Json::array({(anyMap && makeup) || bakedFlat ? 1.f : factor[0], (anyMap && makeup) || bakedFlat ? 1.f : factor[1],
                                         (anyMap && makeup) || bakedFlat ? 1.f : factor[2], opacity});
   pbr["metallicFactor"]  = e.metalness.value_or(s.metallic.value);
@@ -151,7 +160,8 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     roughness = std::min(roughness, 0.1f);
   else if(s.kind == Kind::eEye)
     roughness = std::min(roughness, 0.35f);
-  const float roughnessFactor = e.roughness.value_or(roughness);
+  // glTF's range: PBRSkin's lobe multipliers and panel edits can pass it
+  const float roughnessFactor = clamp(e.roughness.value_or(roughness), 0, 1);
   eff.roughness               = roughnessFactor;
   pbr["roughnessFactor"]      = roughnessFactor;
   // glTF metallic-roughness from a roughness map (roughness in green, full metalness in blue); a
@@ -210,12 +220,18 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   // emission: an Iray emitter at its physical brightness
   if(s.emission)
   {
-    out["emissiveFactor"] = rgbJson(mul(s.emission->color.color, temperatureTint(s.emission->temperature)));
+    // the temperature tint is normalised to luminance, so a warm light's red passes 1: glTF's
+    // emissiveFactor stops there, and the excess goes into the strength
+    Rgb         color = mul(s.emission->color.color, temperatureTint(s.emission->temperature));
+    const float peak  = std::max({color[0], color[1], color[2]});
+    const float scale = peak > 1 ? peak : 1.f;
+    color             = {color[0] / scale, color[1] / scale, color[2] / scale};
+    out["emissiveFactor"] = rgbJson(color);
     if(!s.emission->color.map.empty())
       out["emissiveTexture"] = b.plain(s.emission->color.map, true);
-    ext["KHR_materials_emissive_strength"] = {{"emissiveStrength", opts.emission}};
-    eff.emissive          = mul(s.emission->color.color, temperatureTint(s.emission->temperature));
-    eff.emissiveIntensity = opts.emission;
+    ext["KHR_materials_emissive_strength"] = {{"emissiveStrength", opts.emission * scale}};
+    eff.emissive          = color;
+    eff.emissiveIntensity = opts.emission * scale;
   }
   // an emissive colour given in the panel to a surface that had none
   if(e.emissive && !s.emission && ((*e.emissive)[0] > 0 || (*e.emissive)[1] > 0 || (*e.emissive)[2] > 0))
@@ -260,7 +276,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   if(coat || e.clearcoat)
   {
     Json cc = {{"clearcoatFactor", e.clearcoat.value_or(coat ? coat->weight : 0.f)},
-               {"clearcoatRoughnessFactor", e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f)}};
+               {"clearcoatRoughnessFactor", clamp(e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f), 0, 1)}};
     if(coat && !coat->roughness.map.empty())
       cc["clearcoatRoughnessTexture"] = b.plain(coat->roughness.map, false);
     if(!normal.is_null())

@@ -4,9 +4,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
 #include <memory>
+#include <thread>
 
+#include <figure/dforce/dforce.hpp>
 #include <figure/dforce/skin.hpp>
 #include <figure/dforce/solver.hpp>
 #include <figure/dson/dforce.hpp>
@@ -41,7 +44,9 @@ Grid grid(int n, float y)
   return g;
 }
 
-dforce::SettleMesh cloth(const Grid& g)
+dforce::SettleMesh cloth_(const Grid& g);
+dforce::SettleMesh cloth(const Grid& g) { return cloth_(g); }
+dforce::SettleMesh cloth_(const Grid& g)
 {
   dforce::SettleMesh m;
   const size_t       n = g.pos.size() / 3;
@@ -191,4 +196,86 @@ TEST(Dforce, aMorphChannelsTargetIsReplacedInPlace)
   morphs.set("dforce:0", 0);
   morphs.flush();
   EXPECT_NEAR(geo.position[4], 0, 1e-6);
+}
+
+namespace {
+
+// A grid as a scene mesh: its built geometry and, for the cloth, dForce settings on every vertex.
+fv::Mesh sceneMesh(const Grid& g, bool cloth)
+{
+  fv::mesh::MeshInput in;
+  in.positions = g.pos;
+  in.polyStart = g.polyStart;
+  in.polyVerts = g.polyVerts;
+  in.polyMaterial.assign(g.polyStart.size() - 1, 0);
+  fv::Mesh m;
+  m.geo = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(in));
+  m.materialGroups = {"Default"};
+  m.materials      = {0};
+  if(cloth)
+  {
+    const auto s   = dforce::SettleMesh(cloth_(g));
+    auto       d   = std::make_shared<fv::dson::DforceData>();
+    d->strength    = s.strength;
+    d->stretch     = s.stretch;
+    d->shear       = s.shear;
+    d->bend        = s.bend;
+    d->buckling    = s.buckling;
+    d->bucklingRatio = s.bucklingRatio;
+    d->density     = s.density;
+    d->contraction = s.contraction;
+    d->damping     = s.damping;
+    d->friction    = s.friction;
+    d->offset      = s.offset;
+    d->layer       = s.layer;
+    d->selfCollide = s.selfCollide;
+    d->surfaceVisible = s.visible;
+    d->surfaceCollide = s.collide;
+    d->polyStart   = g.polyStart;
+    d->polyVerts   = g.polyVerts;
+    m.dforce       = d;
+  }
+  return m;
+}
+
+}  // namespace
+
+TEST(Dforce, settlesInTheFiguresCentimetresWhenTheRootIsScaledToMetres)
+{
+  // as the host has it: the figure root scaled to metres after the load, a body and a cloth under it
+  fv::SceneGraph scene;
+  fv::Node       root;
+  root.scale = {0.01, 0.01, 0.01};
+  const int rootNode = scene.add(root);
+  const Grid body = grid(8, 0), veil = grid(4, 3);
+  scene.meshes.push_back(sceneMesh(body, false));
+  scene.meshes.push_back(sceneMesh(veil, true));
+  scene.materials.push_back({});
+  for(int i = 0; i < 2; i++)
+  {
+    fv::Node n;
+    n.kind = fv::NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, rootNode);
+  }
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+  ASSERT_TRUE(d.active());
+  d.resimulate();
+  bool wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+  {
+    wrote = d.pump();
+    if(!wrote)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(wrote);
+  EXPECT_EQ(d.draped(), 1);
+  // the drape is a morph on the cloth: it came down from 3 cm to rest just above the body, in cm
+  const auto& pos = scene.meshes[1].geo->position;
+  for(size_t v = 0; v < pos.size() / 3; v++)
+  {
+    EXPECT_LT(pos[v * 3 + 1], 1.0f) << v;
+    EXPECT_GT(pos[v * 3 + 1], 0.0f) << v;
+  }
 }

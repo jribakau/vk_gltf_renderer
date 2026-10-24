@@ -83,7 +83,13 @@ struct Dforce::Job
   std::vector<Drape> drapes;
 };
 
-Dforce::Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh) : m_scene(scene), m_morphs(morphs), m_bodyMesh(bodyMesh) {}
+Dforce::Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root)
+    : m_scene(scene)
+    , m_morphs(morphs)
+    , m_bodyMesh(bodyMesh)
+    , m_root(root)
+{
+}
 
 Dforce::~Dforce()
 {
@@ -218,16 +224,23 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       return s;
     }
     s.skin = top4(m.cageSkin);
+    // three's 'attached' skinning: matrixWorld⁻¹ · bone · inverse · bindMatrix, with the mesh's world as
+    // it is now (the host scales the root to metres after the bind, and rebinds read that scale)
     s.pose.bind        = m.bindMatrix;
-    s.pose.bindInverse = inverse(m.bindMatrix);
+    s.pose.bindInverse = inverse(nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : m.bindMatrix);
     for(size_t k = 0; k < m.bones.size(); k++)
       s.pose.bones.push_back(worlds[size_t(m.bones[k])] * (k < m.boneInverses.size() ? m.boneInverses[k] : Mat4{}));
     s.posed = skinLocal(s.rest, s.skin, s.pose);
     return s;
   };
-  const auto toSpace = [&](int mesh) { return nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{}; };
+  // The job's space is the figure root's, in centimetres as the solver's constants are, whatever
+  // scale and placement the root has in the world (the host draws in metres).
+  const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
+  const Mat4 fromWorld = inverse(rootWorld);
+  const auto toSpace   = [&](int mesh) { return fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{}); };
 
-  const Vec3 g{0, -980, 0};
+  // world down, turned into the root's frame
+  const Vec3 g = rotate(Vec3{0, -980, 0}, rotationOf(rootWorld).inverse());
   const std::array<float, 3> gravity{float(g.x), float(g.y), float(g.z)};
 
   // the body is always a collider, in the same space as the cloth, and under every cloth layer

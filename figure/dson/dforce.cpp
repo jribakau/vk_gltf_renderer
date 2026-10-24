@@ -422,13 +422,24 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
     out->surfaceVisible[size_t(v)] = a.n ? (a.visible > 0 ? 1 : 0) : 1;
     out->surfaceCollide[size_t(v)] = a.n ? (a.collide > 0 ? 1 : 0) : 1;
   }
-  out->polyStart.assign(size_t(np) + 1, 0);
+  // polygon loops for the constraints, without vertices the geometry doesn't have (a malformed
+  // row would index past the per-vertex arrays) or loops left with fewer than two corners
+  out->polyStart.assign(1, 0);
+  out->polyVerts.clear();
   for(int pi = 0; pi < np; pi++)
-    out->polyStart[size_t(pi) + 1] = out->polyStart[size_t(pi)] + polys->start[pi + 1] - polys->start[pi] - 2;
-  out->polyVerts.resize(size_t(out->polyStart[size_t(np)]));
-  for(int pi = 0, at = 0; pi < np; pi++)
+  {
+    const size_t at = out->polyVerts.size();
     for(int k = polys->start[pi] + 2; k < polys->start[pi + 1]; k++)
-      out->polyVerts[size_t(at++)] = int32_t(polys->data[k]);
+    {
+      const double d = polys->data[k];
+      if(d >= 0 && d < nv)
+        out->polyVerts.push_back(int32_t(d));
+    }
+    if(out->polyVerts.size() - at < 2)
+      out->polyVerts.resize(at);
+    else
+      out->polyStart.push_back(int32_t(out->polyVerts.size()));
+  }
   return out;
 }
 

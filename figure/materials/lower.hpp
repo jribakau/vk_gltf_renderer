@@ -42,6 +42,9 @@ struct LowerOptions
   // A file for other tools: cutouts are MASK (they sort blended surfaces), the renderer's own
   // extensions are left out and the anisotropy turns the way the spec's does.
   bool forFile = false;
+  // The build turned V over (the textures are used as their files have them): a tiled texture's
+  // V offset is mirrored to match.
+  bool flipV = false;
 };
 
 // The values the Material panel shows for a surface: what the lowering used, edits included.
