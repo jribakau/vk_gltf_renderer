@@ -107,7 +107,7 @@ TEST(Dforce, aPinnedSurfaceStaysOnTheSkinnedPose)
 TEST(Dforce, aDrapeSkinsBackToTheSimulatedShape)
 {
   // one bone turned a quarter about y, and scaled: the blend has a 3x3 that is not a rotation
-  Mat4 bone = compose({1, 2, 3}, quatFromEuler(0, M_PI / 2, 0, "XYZ"), {1.5, 1, 1});
+  Mat4 bone = compose({1, 2, 3}, quatFromEuler(0, std::acos(-1.0) / 2, 0, "XYZ"), {1.5, 1, 1});
   dforce::SkinPose pose;
   pose.bones = {bone};
   mesh::SkinInput in;

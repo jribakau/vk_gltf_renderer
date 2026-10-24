@@ -227,7 +227,7 @@ std::vector<float> laplacian(std::vector<float> field, std::span<const uint32_t>
     }
   for(size_t v = 0; v < n; v++)
     deg[v + 1] += deg[v];
-  std::vector<int32_t> nbr(size_t(deg[n]));
+  std::vector<int32_t> nbr(static_cast<size_t>(deg[n]));
   std::vector<int32_t> fill(deg.begin(), deg.begin() + std::ptrdiff_t(n));
   for(size_t t = 0; t + 2 < tris.size(); t += 3)
     for(int i = 0; i < 3; i++)
