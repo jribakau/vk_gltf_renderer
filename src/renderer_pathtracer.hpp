@@ -149,6 +149,10 @@ public:
   nvvk::RenderTarget m_depthStaging;         // R32_SFLOAT, G-buffer size
   nvvk::Buffer       m_depthCopyBuffer;      // Bridge for the color -> depth copy (no direct image copy between them)
   nvvk::Buffer       m_cameraMediumBuffer;   // shaderio::CameraMedium: the medium camera paths start in
+  // ptCameraMedium: whether to probe it. The probe passes through surfaces that bound no medium, so
+  // through an opening (an eye socket, a mouth) it meets a figure's skin from inside and every path
+  // starts in the skin; a host whose camera is never inside a medium turns it off.
+  bool m_probeCameraMedium = true;
   bool               m_useSER{true};         // Requested SER state; clamped to m_supportSER each frame.
   bool m_shadowTransmission{true};  // Shadow rays pass through transmissive surfaces (biased; see ePtShadowTransmission).
   bool m_scatterAsThin{false};      // Volumetric scatter shades as the thin-walled preview (ePtScatterAsThin).

@@ -240,6 +240,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .callbackSuccess = reset},
                 &m_shadowTransmission, Persist::eYes);
   // Not persisted: the viewer turns it on while the camera moves and off once the view is still.
+  settings->add({.name            = "ptCameraMedium",
+                 .help            = "PathTracer: Probe which medium the camera is in when an accumulation starts [Off:0, On:1]. "
+                                    "Off, camera paths start in clear air",
+                 .callbackSuccess = reset},
+                &m_probeCameraMedium, Persist::eYes);
   settings->add({.name = "scatterAsThin", .help = "PathTracer: Shade volumetric scatter as the thin-walled preview", .callbackSuccess = reset},
                 &m_scatterAsThin, Persist::eNo);
   // Dense subsurface (skin): next-event estimation at interior scatter points, straight through the
@@ -2548,7 +2553,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.gltfScene    = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
   m_pushConst.mouseCoord   = nvapp::ElementDbgPrintf::getMouseCoord();  // Use for debugging: printf in shader
   // Only a scene with a KHR_materials_volume material has a medium the camera can be in
-  m_pushConst.cameraMedium = resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eVolume) ?
+  m_pushConst.cameraMedium = (m_probeCameraMedium && resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eVolume)) ?
                                  (shaderio::CameraMedium*)m_cameraMediumBuffer.address :
                                  nullptr;
 
