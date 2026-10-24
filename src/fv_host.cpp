@@ -2281,7 +2281,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
     f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
     f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
-    // off until the Wardrobe toggle (or a scene file) turns it on: its drape still mangles garments
+    // off until the Wardrobe toggle (or a scene file) turns it on: a settle costs seconds on a dressed figure
     f->dforce->setEnabled(false);
   }
   {

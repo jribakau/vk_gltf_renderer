@@ -1,6 +1,6 @@
-// dForce: the settle drapes cloth over a collider and keeps it outside, the drape is the cage delta
-// whose skinning gives the simulated shape, and the cloth settings are read from the scene's
-// modifiers. A port of the TypeScript solver and skin tests.
+// dForce: the settle drapes cloth over a collider and keeps it outside, holds cloth together under
+// its own weight, turns colliders along their bones, the drape is the cage delta whose skinning
+// gives the simulated shape, and the cloth settings are read from the scene's modifiers.
 
 #include <gtest/gtest.h>
 
@@ -90,6 +90,130 @@ TEST(Dforce, clothFallsOntoAColliderAndStaysOutsideIt)
     EXPECT_LT(y, 1.0f) << v;
     EXPECT_GT(y, 0.0f) << v;
   }
+}
+
+TEST(Dforce, aHangingStripKeepsItsLength)
+{
+  // a 4 x 30 cm strip pinned along its top edge: it hangs about its rest length. The one-sweep
+  // solver leaves a little sag, bounded here; the old solver let it hang several times its length
+  const int w = 4, h = 30;
+  Grid      strip;
+  for(int r = 0; r <= h; r++)
+    for(int c = 0; c <= w; c++)
+      strip.pos.insert(strip.pos.end(), {float(c), float(-r), 0.f});
+  const auto at = [&](int c, int r) { return uint32_t(r * (w + 1) + c); };
+  for(int r = 0; r < h; r++)
+    for(int c = 0; c < w; c++)
+    {
+      strip.tris.insert(strip.tris.end(), {at(c, r), at(c, r + 1), at(c + 1, r), at(c + 1, r), at(c, r + 1), at(c + 1, r + 1)});
+      strip.polyVerts.insert(strip.polyVerts.end(), {int32_t(at(c, r)), int32_t(at(c, r + 1)), int32_t(at(c + 1, r + 1)), int32_t(at(c + 1, r))});
+      strip.polyStart.push_back(int32_t(strip.polyVerts.size()));
+    }
+  auto m = cloth(strip);
+  for(int c = 0; c <= w; c++)
+    m.strength[at(c, 0)] = 0;
+  const auto out = dforce::settle({m});
+  for(int c = 0; c <= w; c++)
+  {
+    const float bottom = -out[0][at(c, h) * 3 + 1];
+    EXPECT_GT(bottom, h * 0.98f) << c;
+    EXPECT_LT(bottom, h * 1.05f) << c;
+  }
+}
+
+TEST(Dforce, aSkinnedColliderSweepsAlongItsBone)
+{
+  // a collider skinned to one bone that turns a quarter about y: half way through the transition it
+  // is at the quarter's half, on the arc, not half way along the chord
+  const std::vector<float> rest{10, 0, 0, 10, 1, 0};
+  dforce::SettleMesh       c = dforce::SettleMesh::collider(rest, {0, 0, -10, 0, 1, -10}, {}, dforce::kBodyLayer, 0.2f, 0.4f);
+  c.skinIndex.assign(8, 0);
+  c.skinWeight = {1, 0, 0, 0, 1, 0, 0, 0};
+  c.bones      = {compose({}, quatFromEuler(0, std::acos(-1.0) / 2, 0, "XYZ"), {1, 1, 1})};
+  c.restLocal  = rest;
+  dforce::ClothSim sim({c});
+  sim.frame(0, 0.5f);
+  const auto p = sim.positions();
+  EXPECT_NEAR(p[0][0], 10 * std::cos(std::acos(-1.0) / 4), 1e-3);
+  EXPECT_NEAR(p[0][2], -10 * std::sin(std::acos(-1.0) / 4), 1e-3);
+  sim.frame(0.5f, 1);
+  const auto q = sim.positions();
+  EXPECT_NEAR(q[0][0], 0, 1e-3);
+  EXPECT_NEAR(q[0][2], -10, 1e-3);
+}
+
+TEST(Dforce, aSkirtDrapesOverALegThatSwings)
+{
+  // a tube skirt pinned at the waist over a thigh that swings forward 45 degrees about the hip: the
+  // skirt stays outside the leg and its edges stay near their rest length
+  const int   around = 24, rows = 15;
+  const float R = 14, r = 10, len = 45, swing = 45 * float(std::acos(-1.0)) / 180;
+  Grid        skirt;
+  for(int i = 0; i <= rows; i++)
+    for(int j = 0; j < around; j++)
+    {
+      const float a = 2 * float(std::acos(-1.0)) * j / around;
+      skirt.pos.insert(skirt.pos.end(), {R * std::cos(a), -float(i) * (len / rows), R * std::sin(a)});
+    }
+  const auto at = [&](int j, int i) { return uint32_t(i * around + (j % around)); };
+  for(int i = 0; i < rows; i++)
+    for(int j = 0; j < around; j++)
+    {
+      skirt.tris.insert(skirt.tris.end(), {at(j, i), at(j, i + 1), at(j + 1, i), at(j + 1, i), at(j, i + 1), at(j + 1, i + 1)});
+      skirt.polyVerts.insert(skirt.polyVerts.end(), {int32_t(at(j, i)), int32_t(at(j, i + 1)), int32_t(at(j + 1, i + 1)), int32_t(at(j + 1, i))});
+      skirt.polyStart.push_back(int32_t(skirt.polyVerts.size()));
+    }
+  auto m = cloth(skirt);
+  for(int j = 0; j < around; j++)
+    m.strength[at(j, 0)] = 0;
+  // the thigh: a cylinder from just under the hip, skinned to one bone that turns about x
+  const int             la = 24, lr = 30;
+  std::vector<float>    lrest, lposed;
+  std::vector<uint32_t> ltris;
+  const float           sn = std::sin(swing), cs = std::cos(swing);
+  for(int i = 0; i <= lr; i++)
+    for(int j = 0; j < la; j++)
+    {
+      const float a = 2 * float(std::acos(-1.0)) * j / la;
+      const float x = r * std::cos(a), y = -float(i) * (len + 15) / lr - 3, z = r * std::sin(a);
+      lrest.insert(lrest.end(), {x, y, z});
+      lposed.insert(lposed.end(), {x, cs * y - sn * z, sn * y + cs * z});
+    }
+  const auto lat = [&](int j, int i) { return uint32_t(i * la + (j % la)); };
+  for(int i = 0; i < lr; i++)
+    for(int j = 0; j < la; j++)
+      ltris.insert(ltris.end(), {lat(j, i), lat(j + 1, i), lat(j, i + 1), lat(j + 1, i), lat(j + 1, i + 1), lat(j, i + 1)});
+  dforce::SettleMesh leg = dforce::SettleMesh::collider(lrest, lposed, ltris, dforce::kBodyLayer, 0.2f, 0.4f);
+  leg.skinIndex.assign(lrest.size() / 3 * 4, 0);
+  leg.skinWeight.assign(lrest.size() / 3 * 4, 0.f);
+  for(size_t v = 0; v < lrest.size() / 3; v++)
+    leg.skinWeight[v * 4] = 1;
+  leg.bones     = {compose({}, quatFromEuler(swing, 0, 0, "XYZ"), {1, 1, 1})};
+  leg.restLocal = lrest;
+  const auto out = dforce::settle({leg, m});
+  ASSERT_EQ(out.size(), 2u);
+  // every free skirt vertex alongside the thigh is outside it (distance from the swung axis; the
+  // pinned waist cannot move out of its way), and no vertical edge is stretched past a fifth
+  const float ax = 0, ay = -cs, az = -sn;
+  for(size_t v = 0; v < out[1].size() / 3; v++)
+  {
+    if(m.strength[v] == 0)
+      continue;
+    const float* p = &out[1][v * 3];
+    const float  d = p[0] * ax + p[1] * ay + p[2] * az;
+    if(d < 3 || d > len + 12)
+      continue;
+    const float dx = p[0] - d * ax, dy = p[1] - d * ay, dz = p[2] - d * az;
+    EXPECT_GT(std::sqrt(dx * dx + dy * dy + dz * dz), r - 0.05f) << v;
+  }
+  for(int i = 0; i < rows; i++)
+    for(int j = 0; j < around; j++)
+    {
+      const float* a = &out[1][at(j, i) * 3];
+      const float* b = &out[1][at(j, i + 1) * 3];
+      const float  e = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+      EXPECT_LT(e, (len / rows) * 1.2f) << i << " " << j;
+    }
 }
 
 TEST(Dforce, aPinnedSurfaceStaysOnTheSkinnedPose)

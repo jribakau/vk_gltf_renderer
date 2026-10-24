@@ -32,6 +32,9 @@ struct Top4
 };
 Top4 top4(const mesh::SkinInput& in);
 
+// Each bone's skin matrix in the mesh's space: bindInverse * bone * bind.
+std::vector<Mat4> skinMatrices(const SkinPose& pose);
+
 // Mesh-local skinned positions: bindInverse * (sum w_i bone_i) * bind * p. `index` and `weight` are
 // four per vertex.
 std::vector<float> skinLocal(const std::vector<float>& rest, const Top4& skin, const SkinPose& pose);

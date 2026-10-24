@@ -32,16 +32,6 @@ bool invertBlend(const std::array<double, 3>& offset, const std::array<double, 9
   return true;
 }
 
-// bindInverse * bone * bind, per bone
-std::vector<Mat4> skinMatrices(const SkinPose& pose)
-{
-  std::vector<Mat4> out;
-  out.reserve(pose.bones.size());
-  for(const Mat4& bone : pose.bones)
-    out.push_back(pose.bindInverse * (bone * pose.bind));
-  return out;
-}
-
 // the weighted sum of the vertex's four skin matrices; the weight total says whether it has any
 double blend(const std::vector<Mat4>& S, const Top4& skin, size_t v, std::array<double, 16>& out)
 {
@@ -61,6 +51,15 @@ double blend(const std::vector<Mat4>& S, const Top4& skin, size_t v, std::array<
 }
 
 }  // namespace
+
+std::vector<Mat4> skinMatrices(const SkinPose& pose)
+{
+  std::vector<Mat4> out;
+  out.reserve(pose.bones.size());
+  for(const Mat4& bone : pose.bones)
+    out.push_back(pose.bindInverse * (bone * pose.bind));
+  return out;
+}
 
 Top4 top4(const mesh::SkinInput& in)
 {

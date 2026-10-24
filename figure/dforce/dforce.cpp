@@ -192,6 +192,19 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     std::vector<float> rest, posed;
     Top4               skin;
     SkinPose           pose;
+    bool               skinned = false;
+  };
+  // The skin as the solver takes it, so the pose transition turns the mesh's bones rather than
+  // sliding its vertices along chords: the bones' skin matrices in the mesh's space, the rest cage
+  // there, and the matrix into the job's space.
+  const auto attachSkin = [](SettleMesh& out, const Skinned& s, const Mat4& to) {
+    if(!s.skinned)
+      return;
+    out.skinIndex  = s.skin.index;
+    out.skinWeight = s.skin.weight;
+    out.bones      = skinMatrices(s.pose);
+    out.restLocal  = s.rest;
+    out.toSpace    = to;
   };
   // The cage's rest shape and its skinned pose, both in the mesh's local centimetres.
   const auto skinCage = [&](int mesh, const mesh::RenderTarget* except) -> std::optional<Skinned> {
@@ -211,7 +224,8 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       s.posed      = s.rest;
       return s;
     }
-    s.skin = top4(m.cageSkin);
+    s.skinned = true;
+    s.skin    = top4(m.cageSkin);
     // three's 'attached' skinning: matrixWorld⁻¹ · bone · inverse · bindMatrix, with the mesh's world as
     // it is now (the host scales the root to metres after the bind, and rebinds read that scale)
     s.pose.bind        = m.bindMatrix;
@@ -236,8 +250,10 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     if(auto body = skinCage(m_bodyMesh, nullptr))
     {
       const Mat4 to = toSpace(m_bodyMesh);
-      job->bodies.push_back(SettleMesh::collider(transformPoints(to, body->rest), transformPoints(to, body->posed),
-                                                 m_scene.meshes[size_t(m_bodyMesh)].geo->dsonTris, kBodyLayer, 0.2f, 0.4f));
+      SettleMesh collider = SettleMesh::collider(transformPoints(to, body->rest), transformPoints(to, body->posed),
+                                                 m_scene.meshes[size_t(m_bodyMesh)].geo->dsonTris, kBodyLayer, 0.2f, 0.4f);
+      attachSkin(collider, *body, to);
+      job->bodies.push_back(std::move(collider));
     }
 
   const auto shown = shownNodes(m_scene);
@@ -280,6 +296,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       s.collide = data.surfaceCollide;
       s.visible = data.surfaceVisible;
       s.gravity = gravity;
+      attachSkin(s, *skinned, to);
       Job::Drape d;
       d.mesh = mesh;
       d.slot = job->bodies.size();
@@ -292,10 +309,12 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     }
     else if(data.visible)
     {
-      job->bodies.push_back(SettleMesh::collider(std::move(rest), std::move(posed),
+      SettleMesh collider = SettleMesh::collider(std::move(rest), std::move(posed),
                                                  data.kind == dson::DforceKind::eAddon ? std::vector<uint32_t>{} : m.geo->dsonTris,
                                                  data.layer.empty() ? 0 : data.layer[0], data.offset.empty() ? 0.2f : data.offset[0],
-                                                 data.friction.empty() ? 0.4f : data.friction[0], data.surfaceCollide));
+                                                 data.friction.empty() ? 0.4f : data.friction[0], data.surfaceCollide);
+      attachSkin(collider, *skinned, to);
+      job->bodies.push_back(std::move(collider));
     }
   };
   for(int mesh = 0; mesh < int(m_scene.meshes.size()); mesh++)

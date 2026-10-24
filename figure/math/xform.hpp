@@ -80,6 +80,35 @@ inline Quat quatFromEuler(double ex, double ey, double ez, std::string_view orde
   return {s1 * c2 * c3 + c1 * s2 * s3, c1 * s2 * c3 - s1 * c2 * s3, c1 * c2 * s3 + s1 * s2 * c3, c1 * c2 * c3 - s1 * s2 * s3};
 }
 
+// three's Quaternion.slerp: the rotation `t` of the way from `a` to `b` along the shorter arc.
+inline Quat slerp(const Quat& a, const Quat& b, double t)
+{
+  if(t <= 0)
+    return a;
+  if(t >= 1)
+    return b;
+  double cosHalf = a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z;
+  Quat   to      = b;
+  if(cosHalf < 0)
+  {
+    to      = {-b.x, -b.y, -b.z, -b.w};
+    cosHalf = -cosHalf;
+  }
+  if(cosHalf >= 1)
+    return a;
+  const double sqrSinHalf = 1 - cosHalf * cosHalf;
+  if(sqrSinHalf <= 1e-12)
+  {
+    const double s = 1 - t;
+    return Quat{s * a.x + t * to.x, s * a.y + t * to.y, s * a.z + t * to.z, s * a.w + t * to.w}.normalized();
+  }
+  const double sinHalf = std::sqrt(sqrSinHalf);
+  const double half    = std::atan2(sinHalf, cosHalf);
+  const double ra      = std::sin((1 - t) * half) / sinHalf;
+  const double rb      = std::sin(t * half) / sinHalf;
+  return {a.x * ra + to.x * rb, a.y * ra + to.y * rb, a.z * ra + to.z * rb, a.w * ra + to.w * rb};
+}
+
 // three's Quaternion.setFromUnitVectors: the rotation taking a unit vector onto another.
 inline Quat quatFromUnitVectors(const Vec3& vFrom, const Vec3& vTo)
 {
