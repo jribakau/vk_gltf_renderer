@@ -15,6 +15,8 @@ using namespace std::chrono_literals;
 
 constexpr auto  kDebounce = 400ms;
 constexpr float kAir      = 0.15f;
+// Velocity decay per second a live step adds while the pose stands still, so the cloth comes to rest.
+constexpr float kLiveRestDamping = 6.f;
 
 std::vector<float> transformPoints(const Mat4& m, const std::vector<float>& src)
 {
@@ -60,6 +62,42 @@ std::vector<bool> shownNodes(const SceneGraph& scene)
   return shown;
 }
 
+// The node each mesh is drawn by, or -1.
+std::vector<int> nodeOfMesh(const SceneGraph& scene)
+{
+  std::vector<int> nodeOf(scene.meshes.size(), -1);
+  for(size_t n = 0; n < scene.nodes.size(); n++)
+    if(scene.nodes[n].kind == NodeKind::eMesh && scene.nodes[n].mesh >= 0)
+      nodeOf[size_t(scene.nodes[n].mesh)] = int(n);
+  return nodeOf;
+}
+
+// A skinned mesh's pose as the figure has it now: three's 'attached' skinning, matrixWorld⁻¹ ·
+// bone · inverse · bindMatrix, with the mesh's world as it is now (the host scales the root to
+// metres after the bind, and rebinds read that scale).
+SkinPose currentSkin(const SceneGraph& scene, const std::vector<Mat4>& worlds, const std::vector<int>& nodeOf, int mesh)
+{
+  const Mesh& m = scene.meshes[size_t(mesh)];
+  SkinPose    pose;
+  pose.bind        = m.bindMatrix;
+  pose.bindInverse = inverse(nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : m.bindMatrix);
+  pose.bones.reserve(m.bones.size());
+  for(size_t k = 0; k < m.bones.size(); k++)
+    pose.bones.push_back(worlds[size_t(m.bones[k])] * (k < m.boneInverses.size() ? m.boneInverses[k] : Mat4{}));
+  return pose;
+}
+
+bool samePose(const std::vector<Mat4>& a, const std::vector<Mat4>& b)
+{
+  if(a.size() != b.size())
+    return false;
+  for(size_t k = 0; k < a.size(); k++)
+    for(size_t c = 0; c < 16; c++)
+      if(std::fabs(a[k].e[c] - b[k].e[c]) > 1e-6)
+        return false;
+  return true;
+}
+
 }  // namespace
 
 std::string channelOf(int mesh)
@@ -71,14 +109,17 @@ std::string channelOf(int mesh)
 struct Dforce::Job
 {
   std::vector<SettleMesh> bodies;
+  // the mesh each body is, for reading its bones again; -1 when it has no skin
+  std::vector<int> slotMesh;
   struct Drape
   {
     int                mesh = -1;
     size_t             slot = 0;  // into bodies and the settle's result
     std::vector<float> rest;
     Top4               skin;
-    SkinPose           pose;
-    Mat4               back;  // job space -> mesh-local
+    // the pose the positions are read back through: the job's, or the live step's
+    SkinPose pose;
+    Mat4     back;  // job space -> mesh-local
   };
   std::vector<Drape> drapes;
 };
@@ -96,6 +137,8 @@ Dforce::~Dforce()
   // the pool keeps the snapshot it was given; only wait so a late result cannot outlive the owner
   if(m_job.valid())
     m_job.wait();
+  if(m_liveStep.valid())
+    m_liveStep.wait();
 }
 
 std::vector<int> Dforce::dynamics() const
@@ -119,9 +162,16 @@ bool Dforce::active() const
   return !dynamics().empty();
 }
 
+bool Dforce::busy() const
+{
+  return m_scheduled || m_job.valid() || m_liveSettling;
+}
+
 void Dforce::poke()
 {
-  if(!m_enabled || (playing && playing()) || !active())
+  if(!m_enabled || !active())
+    return;
+  if(m_mode == Mode::eSettle && playing && playing())
     return;
   m_gen++;
   m_scheduled = true;
@@ -131,6 +181,14 @@ void Dforce::poke()
 
 void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
 {
+  if(m_mode == Mode::eLive)
+  {
+    // bones are read again next frame; a changed mesh is a new rest shape, so the simulation is
+    // built again once the dial stops
+    if(!meshes.empty())
+      poke();
+    return;
+  }
   if(nodesMoved || !meshes.empty())
     poke();
 }
@@ -147,9 +205,13 @@ void Dforce::resimulate()
 void Dforce::cancel()
 {
   m_gen++;
-  if(m_scheduled || m_job.valid())
+  if(m_scheduled || m_job.valid() || m_live)
     m_version++;
   m_scheduled = false;
+  // a live step in flight is dropped when it lands; the simulation goes
+  m_live.reset();
+  m_liveJob.reset();
+  m_liveSettling = false;
 }
 
 void Dforce::setEnabled(bool on)
@@ -175,17 +237,25 @@ void Dforce::setEnabled(bool on)
   m_version++;
 }
 
+void Dforce::setMode(Mode mode)
+{
+  if(mode == m_mode)
+    return;
+  m_mode = mode;
+  cancel();
+  m_version++;
+  if(m_enabled)
+    resimulate();
+}
+
 std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
 {
   const std::vector<int> dyn = dynamics();
   if(dyn.empty())
     return nullptr;
-  auto               job    = std::make_shared<Job>();
-  const auto         worlds = m_scene.worlds();
-  std::vector<int>   nodeOf(m_scene.meshes.size(), -1);
-  for(size_t n = 0; n < m_scene.nodes.size(); n++)
-    if(m_scene.nodes[n].kind == NodeKind::eMesh && m_scene.nodes[n].mesh >= 0)
-      nodeOf[size_t(m_scene.nodes[n].mesh)] = int(n);
+  auto       job    = std::make_shared<Job>();
+  const auto worlds = m_scene.worlds();
+  const auto nodeOf = nodeOfMesh(m_scene);
 
   struct Skinned
   {
@@ -226,13 +296,8 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     }
     s.skinned = true;
     s.skin    = top4(m.cageSkin);
-    // three's 'attached' skinning: matrixWorld⁻¹ · bone · inverse · bindMatrix, with the mesh's world as
-    // it is now (the host scales the root to metres after the bind, and rebinds read that scale)
-    s.pose.bind        = m.bindMatrix;
-    s.pose.bindInverse = inverse(nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : m.bindMatrix);
-    for(size_t k = 0; k < m.bones.size(); k++)
-      s.pose.bones.push_back(worlds[size_t(m.bones[k])] * (k < m.boneInverses.size() ? m.boneInverses[k] : Mat4{}));
-    s.posed = skinLocal(s.rest, s.skin, s.pose);
+    s.pose    = currentSkin(m_scene, worlds, nodeOf, mesh);
+    s.posed   = skinLocal(s.rest, s.skin, s.pose);
     return s;
   };
   // The job's space is the figure root's, in centimetres as the solver's constants are, whatever
@@ -254,6 +319,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
                                                  m_scene.meshes[size_t(m_bodyMesh)].geo->dsonTris, kBodyLayer, 0.2f, 0.4f);
       attachSkin(collider, *body, to);
       job->bodies.push_back(std::move(collider));
+      job->slotMesh.push_back(body->skinned ? m_bodyMesh : -1);
     }
 
   const auto shown = shownNodes(m_scene);
@@ -305,6 +371,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       d.pose = std::move(skinned->pose);
       d.back = inverse(to);
       job->bodies.push_back(std::move(s));
+      job->slotMesh.push_back(skinned->skinned ? mesh : -1);
       job->drapes.push_back(std::move(d));
     }
     else if(data.visible)
@@ -315,6 +382,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
                                                  data.friction.empty() ? 0.4f : data.friction[0], data.surfaceCollide);
       attachSkin(collider, *skinned, to);
       job->bodies.push_back(std::move(collider));
+      job->slotMesh.push_back(skinned->skinned ? mesh : -1);
     }
   };
   for(int mesh = 0; mesh < int(m_scene.meshes.size()); mesh++)
@@ -324,8 +392,25 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   return job;
 }
 
+std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const
+{
+  std::vector<std::vector<Mat4>> out(job.slotMesh.size());
+  const auto                     worlds = m_scene.worlds();
+  const auto                     nodeOf = nodeOfMesh(m_scene);
+  for(size_t slot = 0; slot < job.slotMesh.size(); slot++)
+  {
+    const int mesh = job.slotMesh[slot];
+    if(mesh < 0 || size_t(mesh) >= m_scene.meshes.size() || !m_scene.meshes[size_t(mesh)].skinned())
+      continue;
+    out[slot] = currentSkin(m_scene, worlds, nodeOf, mesh).bones;
+  }
+  return out;
+}
+
 bool Dforce::pump()
 {
+  if(m_mode == Mode::eLive)
+    return pumpLive();
   bool wrote = false;
   if(m_job.valid() && m_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
   {
@@ -366,6 +451,90 @@ bool Dforce::pump()
   return wrote;
 }
 
+// Live: the step in flight lands and is written; then, unless the simulation is to be built again
+// or nothing has moved, the figure's bones now go to the simulation and it steps once more.
+bool Dforce::pumpLive()
+{
+  bool wrote = false;
+  if(m_liveStep.valid())
+  {
+    if(m_liveStep.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+      return false;
+    std::vector<std::vector<float>> positions;
+    try
+    {
+      positions = m_liveStep.get();
+    }
+    catch(const std::exception&)
+    {
+      positions.clear();
+    }
+    if(m_liveSettling)
+    {
+      m_liveSettling = false;
+      m_version++;
+    }
+    if(m_liveGen == m_gen && m_enabled && m_liveJob && m_live && !positions.empty())
+      wrote = apply(*m_liveJob, positions);
+  }
+  if(!m_enabled)
+    return wrote;
+  // a rebuild that is due: a dial changed a rest shape, something was worn, or live was just turned on
+  if(m_scheduled && std::chrono::steady_clock::now() >= m_due)
+  {
+    m_scheduled = false;
+    m_live.reset();
+    m_liveJob.reset();
+    if(!active())
+      return wrote;
+    m_liveJob = prepare(m_gen);
+    if(!m_liveJob)
+      return wrote;
+    SettleOptions opts;
+    opts.air = kAir;
+    m_live         = std::make_shared<ClothSim>(m_liveJob->bodies, opts);
+    m_liveBones    = currentBones(*m_liveJob);
+    m_liveGen      = m_gen;
+    m_liveSettling = true;
+    m_liveMoving   = true;
+    m_version++;
+    auto sim   = m_live;
+    m_liveStep = jobs::pool().submit([sim] {
+      sim->settle();
+      return sim->positions();
+    });
+    return wrote;
+  }
+  if(!m_live || m_scheduled)
+    return wrote;
+  // the pose now; a pose that stands still with the cloth at rest needs no step
+  auto bones = currentBones(*m_liveJob);
+  bool moved = false;
+  for(size_t slot = 0; slot < bones.size(); slot++)
+    if(!samePose(bones[slot], m_liveBones[slot]))
+    {
+      moved = true;
+      m_live->setTarget(slot, bones[slot]);
+    }
+  if(!moved && !m_liveMoving && m_live->lastMove() < 0.01f)
+    return wrote;
+  // the drape of this step is read back through the pose it was stepped to
+  const auto worlds = m_scene.worlds();
+  const auto nodeOf = nodeOfMesh(m_scene);
+  for(Job::Drape& d : m_liveJob->drapes)
+    if(m_liveJob->slotMesh[d.slot] >= 0)
+      d.pose = currentSkin(m_scene, worlds, nodeOf, d.mesh);
+  m_liveBones  = std::move(bones);
+  m_liveMoving = moved;
+  auto        sim     = m_live;
+  const float damping = moved ? 0.f : kLiveRestDamping;
+  m_liveStep          = jobs::pool().submit([sim, damping] {
+    sim->step(damping);
+    return sim->positions();
+  });
+  return wrote;
+}
+
 bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positions)
 {
   bool wrote = false;
@@ -398,10 +567,11 @@ bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positi
     opts.min    = 0.0;
     opts.max    = 1.0;
     m_morphs.replaceCpuTarget(channelOf(d.mesh), d.mesh, std::move(target), opts);
-    m_draped.insert(d.mesh);
+    if(m_draped.insert(d.mesh).second)
+      m_version++;
     wrote = true;
   }
-  if(wrote)
+  if(wrote && m_mode == Mode::eSettle)
     m_version++;
   return wrote;
 }

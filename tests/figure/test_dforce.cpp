@@ -142,6 +142,38 @@ TEST(Dforce, aSkinnedColliderSweepsAlongItsBone)
   EXPECT_NEAR(q[0][2], -10, 1e-3);
 }
 
+TEST(Dforce, aLiveSimulationFollowsATargetThatMovesEveryFrame)
+{
+  // a veil over a skinned collider whose bone is given a new target every frame, as a drag does:
+  // the veil rides the collider and comes to rest once the targets stop
+  const Grid body = grid(8, 0), veil = grid(4, 3);
+  auto       c    = dforce::SettleMesh::collider(body.pos, body.pos, body.tris, dforce::kBodyLayer, 0.2f, 0.4f);
+  const size_t n = body.pos.size() / 3;
+  c.skinIndex.assign(n * 4, 0);
+  c.skinWeight.assign(n * 4, 0.f);
+  for(size_t v = 0; v < n; v++)
+    c.skinWeight[v * 4] = 1;
+  c.bones     = {Mat4{}};
+  c.restLocal = body.pos;
+  dforce::ClothSim sim({c, cloth(veil)});
+  // the collider rises 0.2 cm a frame for 20 frames, then holds
+  for(int f = 1; f <= 40; f++)
+  {
+    const double lift = std::min(f, 20) * 0.2;
+    sim.setTarget(0, {compose({0, lift, 0}, Quat{}, {1, 1, 1})});
+    sim.step(f > 20 ? 6.f : 0.f);
+    const auto p = sim.positions();
+    EXPECT_NEAR(p[0][1], lift, 1e-4) << "collider at frame " << f;
+    if(f >= 10)
+      for(size_t v = 0; v < p[1].size() / 3; v++)
+        EXPECT_GT(p[1][v * 3 + 1], lift) << "veil vertex " << v << " at frame " << f;
+  }
+  EXPECT_LT(sim.lastMove(), 0.05f);
+  const auto p = sim.positions();
+  for(size_t v = 0; v < p[1].size() / 3; v++)
+    EXPECT_LT(p[1][v * 3 + 1], 4 + 1.0f) << v;
+}
+
 TEST(Dforce, aSkirtDrapesOverALegThatSwings)
 {
   // a tube skirt pinned at the waist over a thigh that swings forward 45 degrees about the hip: the
@@ -402,6 +434,64 @@ TEST(Dforce, settlesInTheFiguresCentimetresWhenTheRootIsScaledToMetres)
     EXPECT_LT(pos[v * 3 + 1], 1.0f) << v;
     EXPECT_GT(pos[v * 3 + 1], 0.0f) << v;
   }
+}
+
+TEST(Dforce, liveModeDrapesThenStepsOnlyWhileSomethingMoves)
+{
+  fv::SceneGraph scene;
+  const int      rootNode = scene.add(fv::Node{});
+  const Grid     body = grid(8, 0), veil = grid(4, 3);
+  scene.meshes.push_back(sceneMesh(body, false));
+  scene.meshes.push_back(sceneMesh(veil, true));
+  scene.materials.push_back({});
+  for(int i = 0; i < 2; i++)
+  {
+    fv::Node n;
+    n.kind = fv::NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, rootNode);
+  }
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+  d.setMode(dforce::Mode::eLive);
+  EXPECT_EQ(d.mode(), dforce::Mode::eLive);
+  // live starts with a settle, written when it lands
+  bool wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+  {
+    wrote = d.pump();
+    if(!wrote)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(wrote);
+  EXPECT_EQ(d.draped(), 1);
+  const auto& pos = scene.meshes[1].geo->position;
+  for(size_t v = 0; v < pos.size() / 3; v++)
+  {
+    EXPECT_LT(pos[v * 3 + 1], 1.0f) << v;
+    EXPECT_GT(pos[v * 3 + 1], 0.0f) << v;
+  }
+  // nothing moves and the cloth is at rest: within a few frames the steps stop
+  int writes = 0;
+  for(int i = 0; i < 400; i++)
+  {
+    if(d.pump())
+      writes++;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_LT(writes, 60);
+  EXPECT_FALSE(d.busy());
+  // a changed mesh builds the simulation again after the debounce, and it drapes once more
+  d.changed({1}, false);
+  EXPECT_TRUE(d.busy());
+  wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+  {
+    wrote = d.pump();
+    if(!wrote)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(wrote);
 }
 
 TEST(Dforce, anEditToADrapedMeshSettlesAgain)

@@ -305,16 +305,16 @@ Closest closest(float qx, float qy, float qz, const std::vector<float>& tri, int
   return {dx * n[0] + dy * n[1] + dz * n[2], std::sqrt(dx * dx + dy * dy + dz * dz), interior};
 }
 
-// A bone's skin matrix at the target pose, taken apart so the transition can turn it.
-struct BoneSweep
+// A bone's skin matrix taken apart, so a sweep between two poses can turn it.
+struct BonePose
 {
   Vec3 t, s;
   Quat r;
 };
 
-BoneSweep sweepOf(const Mat4& m)
+BonePose poseOf(const Mat4& m)
 {
-  BoneSweep b;
+  BonePose b;
   b.t = {m.e[12], m.e[13], m.e[14]};
   b.r = rotationOf(m);
   const Vec3   c0{m.e[0], m.e[1], m.e[2]}, c1{m.e[4], m.e[5], m.e[6]}, c2{m.e[8], m.e[9], m.e[10]};
@@ -323,20 +323,23 @@ BoneSweep sweepOf(const Mat4& m)
   return b;
 }
 
-Mat4 sweepAt(const BoneSweep& b, float t)
+Mat4 sweepAt(const BonePose& from, const BonePose& to, float t)
 {
   if(t >= 1)
-    return compose(b.t, b.r, b.s);
-  return compose(b.t * t, slerp(Quat{}, b.r, t), Vec3{1 + (b.s.x - 1) * t, 1 + (b.s.y - 1) * t, 1 + (b.s.z - 1) * t});
+    return compose(to.t, to.r, to.s);
+  if(t <= 0)
+    return compose(from.t, from.r, from.s);
+  return compose(from.t + (to.t - from.t) * t, slerp(from.r, to.r, t), from.s + (to.s - from.s) * t);
 }
 
-// How a mesh's kinematic vertices (colliders, pinned cloth) move with the pose.
+// How a mesh's kinematic vertices (colliders, pinned cloth) move with the pose: a sweep of its
+// bones from one pose to another.
 struct Kinematic
 {
-  bool                   skinned = false;
-  std::vector<BoneSweep> bones;
-  std::vector<Mat34>     at;  // toSpace * bone(t), per bone, for the current t
-  std::vector<int>       verts;  // global indices of the vertices this moves
+  bool                  skinned = false;
+  std::vector<BonePose> from, to;
+  std::vector<Mat34>    at;     // toSpace * bone(t), per bone, for the current t
+  std::vector<int>      verts;  // global indices of the vertices this moves
 };
 
 }  // namespace
@@ -352,6 +355,10 @@ struct ClothSim::Impl
   std::vector<int>     layer;
   std::vector<uint8_t> visible, collides, dynamic;
   std::vector<Edge>    edges;
+  // the sweep in parallel: edges whose free vertices all lie in one block of the vertex range run
+  // block by block on the pool, the few that cross blocks after them on one thread
+  std::vector<std::vector<int>> blockEdges;
+  std::vector<int>              crossingEdges;
   std::vector<Tri>     tris;
   // faces the pose moves (built into a grid once a frame, over their sweep) and faces the cloth
   // moves (built again at every collision pass, where they are then)
@@ -378,8 +385,8 @@ struct ClothSim::Impl
   int                 collisions = kMinCollisionPasses;
   float               transition = kMinTransition;
   float               lastMove   = 0;
-  // how far the pose moves what it holds over the whole transition, along the chord
-  float               kinematicChord = 0;
+  // where the kinematic vertices are heading this frame, and how far the furthest of them goes
+  float               kinematicMove = 0;
   float               maxOffset  = 0;
   float               minOffset  = 0.05f;
 
@@ -407,6 +414,7 @@ struct ClothSim::Impl
   }
 
   void build();
+  void partitionEdges();
   void plan();
   // Writes the pose at fraction t of the kinematic vertices into `out` (only those entries).
   void kinematicAt(float t, std::vector<float>& out);
@@ -614,9 +622,10 @@ void ClothSim::Impl::build()
     k.skinned           = m.skinned();
     if(k.skinned)
     {
-      k.bones.reserve(m.bones.size());
+      k.to.reserve(m.bones.size());
       for(const Mat4& b : m.bones)
-        k.bones.push_back(sweepOf(b));
+        k.to.push_back(poseOf(b));
+      k.from.assign(m.bones.size(), poseOf(Mat4{}));
       k.at.resize(m.bones.size());
     }
   }
@@ -661,6 +670,30 @@ void ClothSim::Impl::build()
     ring2.insert(ring2.end(), two.begin(), two.end());
     ring2Start[size_t(i) + 1] = int(ring2.size());
   }
+  partitionEdges();
+}
+
+void ClothSim::Impl::partitionEdges()
+{
+  // blocks of the vertex range, two per pool thread for balance; DSON vertex order is spatially
+  // coherent, so few edges cross blocks. An edge belongs to the block of its free vertices; one
+  // with a kinematic end goes with its free end, since the other is never written.
+  const int blocks = int(std::max<size_t>(1, 2 * (jobs::pool().size() + 1)));
+  blockEdges.assign(size_t(blocks), {});
+  crossingEdges.clear();
+  const auto blockOf = [&](int v) { return int(size_t(v) * size_t(blocks) / size_t(std::max(1, nv))); };
+  for(size_t e = 0; e < edges.size(); e++)
+  {
+    const Edge& edge = edges[e];
+    const bool  fa = inv[edge.a] > 0, fb = inv[edge.b] > 0;
+    if(!fa && !fb)
+      continue;
+    const int ba = blockOf(edge.a), bb = blockOf(edge.b);
+    if(fa && fb && ba != bb)
+      crossingEdges.push_back(int(e));
+    else
+      blockEdges[size_t(fa ? ba : bb)].push_back(int(e));
+  }
 }
 
 void ClothSim::Impl::plan()
@@ -672,8 +705,7 @@ void ClothSim::Impl::plan()
     const float dx = posed[i * 3] - rest[i * 3], dy = posed[i * 3 + 1] - rest[i * 3 + 1], dz = posed[i * 3 + 2] - rest[i * 3 + 2];
     maxMove = std::max(maxMove, std::sqrt(dx * dx + dy * dy + dz * dz));
   }
-  kinematicChord = maxMove;
-  transition     = opts.transition > 0 ? opts.transition : std::min(kMaxTransition, std::max(kMinTransition, maxMove / kTransitionSpeed));
+  transition = opts.transition > 0 ? opts.transition : std::min(kMaxTransition, std::max(kMinTransition, maxMove / kTransitionSpeed));
   const int   frames   = std::max(1, int(std::lround(transition / opts.frameDt)));
   const int   byMotion = int(std::ceil(maxMove / float(frames) / kPassSpacing));
   if(opts.substeps > 0)
@@ -698,8 +730,8 @@ void ClothSim::Impl::kinematicAt(float t, std::vector<float>& out)
           out[i * 3 + c] = (1 - t) * rest[i * 3 + c] + t * posed[i * 3 + c];
       continue;
     }
-    for(size_t b = 0; b < k.bones.size(); b++)
-      k.at[b] = Mat34::of(m.toSpace * sweepAt(k.bones[b], t));
+    for(size_t b = 0; b < k.to.size(); b++)
+      k.at[b] = Mat34::of(m.toSpace * sweepAt(k.from[b], k.to[b], t));
     const int o = base[mi];
     jobs::parallelFor(k.verts.size(), 2048, [&](size_t begin, size_t end) {
       for(size_t vi = begin; vi < end; vi++)
@@ -796,21 +828,15 @@ void ClothSim::Impl::separateStart()
 void ClothSim::Impl::solveEdges(float dt)
 {
   const float atScale = 1.f / (dt * dt);
-  const size_t count = edges.size();
-  for(size_t k = 0; k < count; k++)
-  {
-    // sweeps alternate direction, so a correction reaches both ends of a chain in two of them
-    const size_t e    = forward ? k : count - 1 - k;
-    const Edge&  edge = edges[e];
+  const auto  project = [&](int e) {
+    const Edge& edge = edges[size_t(e)];
     const int   a = edge.a, b = edge.b;
     const float wa = inv[a], wb = inv[b];
     const float w = wa + wb;
-    if(w <= 0)
-      continue;
     const float dx = x[b * 3] - x[a * 3], dy = x[b * 3 + 1] - x[a * 3 + 1], dz = x[b * 3 + 2] - x[a * 3 + 2];
     const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
     if(len < 1e-8f)
-      continue;
+      return;
     float alpha = edge.alpha;
     // a bend strut shorter than its buckling length folds at the buckling stiffness
     if(edge.kind == EdgeKind::eBend && len < edge.rest * edge.ratio)
@@ -818,8 +844,8 @@ void ClothSim::Impl::solveEdges(float dt)
     const float C  = len - edge.rest;
     const float nx = dx / len, ny = dy / len, nz = dz / len;
     const float at = alpha * atScale;
-    const float dl = float((-C - at * lam[e]) / (w + at));
-    lam[e] += dl;
+    const float dl = float((-C - at * lam[size_t(e)]) / (w + at));
+    lam[size_t(e)] += dl;
     if(wa > 0)
     {
       x[a * 3] -= nx * wa * dl;
@@ -832,7 +858,21 @@ void ClothSim::Impl::solveEdges(float dt)
       x[b * 3 + 1] += ny * wb * dl;
       x[b * 3 + 2] += nz * wb * dl;
     }
-  }
+  };
+  // sweeps alternate direction, so a correction reaches both ends of a chain in two of them
+  const auto sweep = [&](const std::vector<int>& list) {
+    if(forward)
+      for(int e : list)
+        project(e);
+    else
+      for(size_t k = list.size(); k-- > 0;)
+        project(list[k]);
+  };
+  jobs::parallelFor(blockEdges.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t b = begin; b < end; b++)
+      sweep(blockEdges[b]);
+  });
+  sweep(crossingEdges);
   forward = !forward;
 }
 
@@ -1030,18 +1070,23 @@ void ClothSim::Impl::frame(float t0, float t1, float extraDamping)
 {
   const int   n  = substeps;
   const float dt = opts.frameDt / float(n);
-  // the colliders' cells for the whole frame, over their sweep
-  if(!staticTris.empty())
+  // where the pose takes what it holds by the end of the frame, and how far: the colliders' cells
+  // for the whole frame cover that sweep
+  endPos = x;
+  kinematicAt(t1, endPos);
+  kinematicMove = 0;
+  for(int i : kinematicVerts)
   {
-    endPos = x;
-    kinematicAt(t1, endPos);
-    staticGrid.build(tris, staticTris, x, endPos, 0.f);
+    const float dx = endPos[i * 3] - x[i * 3], dy = endPos[i * 3 + 1] - x[i * 3 + 1], dz = endPos[i * 3 + 2] - x[i * 3 + 2];
+    kinematicMove = std::max(kinematicMove, dx * dx + dy * dy + dz * dz);
   }
+  kinematicMove = std::sqrt(kinematicMove);
+  if(!staticTris.empty())
+    staticGrid.build(tris, staticTris, x, endPos, 0.f);
   std::vector<float> frameStart = x;
   // which substeps collide: enough passes that nothing moves more than kPassSpacing between two,
   // spread over the frame with the last one at its end
-  const float kinematicMove = std::fabs(t1 - t0) * kinematicChord;
-  const int   passes = std::min(n, std::max(collisions, int(std::ceil(std::max(lastMove, kinematicMove) / kPassSpacing))));
+  const int passes = std::min(n, std::max(collisions, int(std::ceil(std::max(lastMove, kinematicMove) / kPassSpacing))));
   int       nextCollision = n - 1 - (passes - 1) * (n / passes);
   for(int s = 0; s < n; s++)
   {
@@ -1098,6 +1143,19 @@ ClothSim::~ClothSim() = default;
 void ClothSim::frame(float t0, float t1, float extraDamping)
 {
   m_impl->frame(t0, t1, extraDamping);
+}
+
+void ClothSim::setTarget(size_t mesh, const std::vector<Mat4>& bones)
+{
+  Impl& s = *m_impl;
+  if(mesh >= s.kin.size() || !s.kin[mesh].skinned || bones.size() != s.kin[mesh].to.size())
+    return;
+  Kinematic& k = s.kin[mesh];
+  // the kinematic vertices are where the last frame left them, at its t1 of the old sweep: that
+  // pose is where the new one sets out from. A sweep cut short keeps the pose it reached.
+  k.from = k.to;
+  for(size_t b = 0; b < bones.size(); b++)
+    k.to[b] = poseOf(bones[b]);
 }
 
 float ClothSim::lastMove() const
@@ -1163,19 +1221,25 @@ SettleMesh SettleMesh::collider(std::vector<float> rest, std::vector<float> pose
   return m;
 }
 
-std::vector<std::vector<float>> settle(const std::vector<SettleMesh>& meshes, const SettleOptions& opts)
+void ClothSim::settle()
 {
-  ClothSim  sim(meshes, opts);
-  const int frames = std::max(1, int(std::lround(sim.transitionSeconds() / opts.frameDt)));
+  const SettleOptions& opts   = m_impl->opts;
+  const int            frames = std::max(1, int(std::lround(transitionSeconds() / opts.frameDt)));
   for(int f = 0; f < frames; f++)
-    sim.frame(float(f) / float(frames), float(f + 1) / float(frames));
+    frame(float(f) / float(frames), float(f + 1) / float(frames));
   const int hold = std::max(1, int(std::ceil(opts.maxHold / opts.frameDt)));
   for(int h = 0; h < hold; h++)
   {
-    sim.frame(1, 1, kHoldDamping);
-    if(sim.lastMove() < opts.restMove)
+    frame(1, 1, kHoldDamping);
+    if(lastMove() < opts.restMove)
       break;
   }
+}
+
+std::vector<std::vector<float>> settle(const std::vector<SettleMesh>& meshes, const SettleOptions& opts)
+{
+  ClothSim sim(meshes, opts);
+  sim.settle();
   return sim.positions();
 }
 

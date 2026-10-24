@@ -2689,7 +2689,7 @@ void FvHost::Impl::showItem(const Loaded& f, const std::vector<std::pair<int, st
 //--------------------------------------------------------------------------------------------------
 // dForce
 
-// Topic "dforce/<prop>": {figure, enabled, active, busy, draped}, when it changes.
+// Topic "dforce/<prop>": {figure, enabled, mode, active, busy, draped}, when it changes.
 void FvHost::Impl::publishDforce(Loaded& f, bool force)
 {
   if(!f.dforce)
@@ -2698,10 +2698,16 @@ void FvHost::Impl::publishDforce(Loaded& f, bool force)
   if(!force && f.dforceVersion == d.version())
     return;
   f.dforceVersion = d.version();
-  protocol->events().snapshot("dforce/" + f.id, {{"figure", f.id}, {"enabled", d.enabled()}, {"active", d.active()}, {"busy", d.busy()}, {"draped", d.draped()}});
+  protocol->events().snapshot("dforce/" + f.id, {{"figure", f.id},
+                                                 {"enabled", d.enabled()},
+                                                 {"mode", d.mode() == fv::dforce::Mode::eLive ? "live" : "settle"},
+                                                 {"active", d.active()},
+                                                 {"busy", d.busy()},
+                                                 {"draped", d.draped()}});
 }
 
 // dforce.enable {prop, on}: cloth drapes (true) or shows the conforming shape (false);
+// dforce.mode {prop, mode}: "settle" (once the pose stops changing) or "live" (every frame);
 // dforce.resimulate {prop} settles the cloth now.
 Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
 {
@@ -2710,6 +2716,8 @@ Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
     throw std::runtime_error("no figure with dynamic clothing is selected");
   if(cmd == "enable")
     figure->dforce->setEnabled(args.value("on", true));
+  else if(cmd == "mode")
+    figure->dforce->setMode(args.value("mode", "settle") == "live" ? fv::dforce::Mode::eLive : fv::dforce::Mode::eSettle);
   else
     figure->dforce->resimulate();
   publishDforce(*figure, true);
@@ -3018,7 +3026,10 @@ Json FvHost::Impl::sceneState(const Json& args)
                 {"materialPresets", prop->figure->materialPresets},
                 {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
   if(prop->figure->dforce)
-    state["dforce"] = prop->figure->dforce->enabled();
+  {
+    state["dforce"]     = prop->figure->dforce->enabled();
+    state["dforceMode"] = prop->figure->dforce->mode() == fv::dforce::Mode::eLive ? "live" : "settle";
+  }
   return state;
 }
 
@@ -3113,6 +3124,8 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     if(prop->materials && args.contains("materials") && args["materials"].is_object())
       for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
         problems.push_back(p);
+    if(target->dforce && args.contains("dforceMode") && args["dforceMode"].is_string())
+      target->dforce->setMode(args["dforceMode"].get<std::string>() == "live" ? fv::dforce::Mode::eLive : fv::dforce::Mode::eSettle);
     if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
       target->dforce->setEnabled(args["dforce"].get<bool>());
     for(size_t i = 0; i < problems.size() && i < 5; i++)
@@ -3897,6 +3910,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeVisible(args); }); });
   cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("enable", args); }); });
+  cmds.add("dforce.mode", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("mode", args); }); });
   cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
   const auto materialsOf = [impl](const Json& args) -> FvMaterials& {
     auto p = impl->propArg(args);

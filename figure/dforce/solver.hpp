@@ -15,8 +15,9 @@
 // Because the side is kept, a vertex that starts inside a lower layer (a fitted shape overlapping
 // the body) would stay inside; those are moved out along the nearest face before the first step.
 //
-// `ClothSim` is the persistent state a live simulation advances a frame at a time; `settle()` runs
-// the pose transition on it and then holds the pose until the cloth is still.
+// `ClothSim` is the persistent state: `settle()` runs the pose transition on it and then holds the
+// pose until the cloth is still, and a live simulation gives it the pose the figure has now every
+// frame and steps it once, so the cloth follows a drag.
 
 #include <array>
 #include <cstdint>
@@ -103,9 +104,17 @@ public:
   ClothSim& operator=(const ClothSim&) = delete;
 
   // Advances one frame: the colliders and pinned vertices sweep from pose fraction `t0` to `t1`
-  // (0 the memorized pose, 1 the target) while the cloth integrates. `extraDamping` is a further
-  // velocity decay per second, for bringing a held pose to rest quickly.
+  // (0 the pose they set out from, 1 the target) while the cloth integrates. `extraDamping` is a
+  // further velocity decay per second, for bringing a held pose to rest quickly.
   void frame(float t0, float t1, float extraDamping = 0);
+  // Live: a new target for a skinned mesh's bones (its skin matrices in the mesh's space, as
+  // `SettleMesh::bones`). The pose its kinematic vertices have reached becomes where they set out
+  // from, so the next frame(0, 1) sweeps them to the new target. Meshes not given keep theirs.
+  void setTarget(size_t mesh, const std::vector<Mat4>& bones);
+  // Live: one frame toward the current targets, from wherever the sweep had got to.
+  void step(float extraDamping = 0) { frame(0, 1, extraDamping); }
+  // The pose transition over its frames, then the hold until the cloth is still (or `maxHold`).
+  void settle();
   // How far the fastest dynamic vertex moved over the last frame, cm.
   float lastMove() const;
   // Substeps a frame takes and the seconds the transition takes, as the options or the motion set them.
