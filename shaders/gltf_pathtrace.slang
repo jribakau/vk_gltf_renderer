@@ -595,7 +595,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
 
     DirectLight directLight;
-    sampleLights(hit.pos, pbrMat.N, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
+    // The normal only culls directional lights below the surface (singleLightContribution). Give it
+    // the one bounce.nextEventValid tests, so NEE and the BSDF side (R4) agree on which directions
+    // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
+    sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
                  /*lightsFromBothSides=*/bothSides);
 
     // This checks if the light could contribute, but doesn't send a next event estimation (NEE) shadow ray yet.
@@ -613,19 +616,29 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       evalData.k1 = -ray.Direction;
       evalData.k2 = directLight.direction;
       evalData.xi = float3(rand(seed), rand(seed), rand(seed));
+      // Every lobe for a punctual light (no BSDF ray reaches it; its weight is 1 whatever the pdf), and
+      // for every light when MIS weighs against the lobe mixture on both sides (bsdfSampleCore below).
+      const bool allLobes = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture)
+                            || (directLight.pdf == DIRAC && hasFlag(pushConst.flags, PathtracerFlags::ePtLobeSumPunctual));
 #if GLTF_USE_HAIR
       if(hairOn)
-        hairBsdfEvaluate(evalData, hairHit);
+        hairBsdfEvaluate(evalData, hairHit);  // already the whole fibre BSDF, with its mixture pdf
       else
 #endif
+      if(allLobes)
+        bsdfEvaluateAll(evalData, pbrMat);
+      else
         bsdfEvaluate(evalData, pbrMat);
       // bsdfEvaluateSimple(evalData, pbrMat);
 
-      // If the PDF is greater than 0, then we can sample the BSDF
+      // Some lobe can scatter toward the light (in every mode): the shadow ray is worth tracing
       if(evalData.pdf > 0.0)
       {
-        // Weight for combining light and BSDF sampling strategies (Multiple Importance Sampling)
-        const float mis_weight = (directLight.pdf == DIRAC) ? 1.0F : directLight.pdf / (directLight.pdf + evalData.pdf);
+        // Weight for combining light and BSDF sampling strategies (Multiple Importance Sampling).
+        // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
+        // have no BSDF-sampled partner: weight 1, as for a punctual light.
+        const bool  lastVertex = pt.surfaceDepth + 1 >= pushConst.maxDepth;
+        const float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : directLight.pdf / (directLight.pdf + evalData.pdf);
 
         // sample weight
         const float3 w = pt.throughput * directLight.radianceOverPdf * mis_weight;
@@ -668,13 +681,28 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         hairBsdfSample(sampleData, hairHit, rand(seed), rand(seed), rand(seed));
       else
 #endif
-        bsdfSample(sampleData, pbrMat);
+      {
+        // The lobe mixture's pdf, which next-event estimation's bsdfEvaluateAll weighs against. Not at
+        // the last vertex: the loop ends before this ray is traced, so nothing reads it.
+        const bool mixturePdf = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && pt.surfaceDepth + 1 < pushConst.maxDepth;
+        bsdfSampleCore(sampleData, pbrMat, mixturePdf);
+      }
       // bsdfSampleSimple(sampleData, pbrMat);
 
       // Update the pt.throughput
       pt.throughput *= sampleData.bsdf_over_pdf;
       ray.Direction    = sampleData.k2;  // new direction
       pt.lastSamplePdf = sampleData.pdf;
+      // Next-event estimation above samples a light only where this holds (bounce.nextEventValid), so a
+      // light this ray reaches elsewhere has no light-sample partner: its weight is 1, as after a delta
+      // lobe (the env hit's delta branch rests on the same fact). Rough thin glass lit from behind, a
+      // refractive exit from inside a volume. Not with straight-through shadow rays past the first
+      // surface: the previous vertex's shadow ray already counted light behind this one (biased, see
+      // getShadowTransmission), and weight 1 would count more of it twice.
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && sampleData.event_type != BSDF_EVENT_ABSORB
+         && (!hasFlag(pushConst.flags, PathtracerFlags::ePtShadowTransmission) || pt.surfaceDepth == 0)
+         && !(dot(sampleData.k2, hit.nrm) > 0.0f || bothSides))
+        pt.lastSamplePdf = DIRAC;
 
 #if USE_DLSS_SHADER
       // #DLSS - Enable specular hit distance capture on first bounce if this is a glossy reflection

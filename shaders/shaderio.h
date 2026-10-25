@@ -311,6 +311,8 @@ enum PathtracerFlags
   ePtVolumeDiffuseExit   = 1 << 7,  // A scatter walk gathers no light inside; it leaves the surface as a Lambertian point
   ePtClampIndirect       = 1 << 8,  // The firefly clamp cuts each indirect contribution on its own, never direct light
   ePtApproximateCaustics = 1 << 9,  // Every lobe after a rough bounce is at least as rough as the path (biased)
+  ePtLobeSumPunctual     = 1 << 10,  // A punctual (DIRAC) light sample evaluates every BSDF lobe, each by its weight
+  ePtLobeMixture         = 1 << 11,  // Every light sample does, and MIS uses the lobe-mixture pdf on both sides
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

@@ -1624,6 +1624,8 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
         addRadiance(pt, volumeScatterNEE(raytracer, pt.volumeMedium, ray.Origin, wiBeforeScatter, pt.throughput, seed),
                     pt.pathRoughness > DIRECT_PATH_ROUGHNESS);
       }
+      else
+        pt.lastSamplePdf = DIRAC;  // no light sample at this scatter: a light the next segment reaches has weight 1
       // A scatter in a medium no surface walk entered (the camera's) is a diffuse event like any other
       if(pt.volumeMaterial < 0)
       {

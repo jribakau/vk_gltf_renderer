@@ -280,6 +280,17 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: What the firefly clamp scales [Whole path:0, Each indirect contribution:1]",
                  .callbackSuccess = reset},
                 &m_fireflyClampMode, Persist::eNo, 0, 1);
+  // A light sample evaluated one BSDF lobe, picked at random like a BSDF sample: a cornea (transmission 1)
+  // picks its transmission 97.5% of the time, which gives nothing for a light on the viewer's side, so
+  // a point light's catchlight came in one sample in forty at forty times its value. Every lobe, each by
+  // its weight, gives the same mean in every sample. A punctual light has no BSDF-sampled partner, so
+  // that alone is unbiased (1); for the environment, the sky's sun and emitters both sides of MIS move
+  // to the lobe mixture's pdf together (2; Unreal's path tracer, AddLobeWithMIS).
+  settings->add({.name            = "ptFullLobeEval",
+                 .help            = "PathTracer: BSDF lobes a light sample evaluates [One, picked at random:0, "
+                                    "All for punctual lights:1, All, with the lobe-mixture pdf in MIS:2]",
+                 .callbackSuccess = reset},
+                &m_fullLobeEval, Persist::eNo, 0, 2);
   settings->add({.name            = "ptApproximateCaustics",
                  .help            = "PathTracer: After a diffuse or glossy bounce, every later lobe is at least as rough as the path "
                                     "so far (biased, fewer fireflies; off: as rough as the roughest material so far)",
@@ -2555,6 +2566,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;
   m_pushConst.flags |= m_fireflyClampMode == 1 ? shaderio::ePtClampIndirect : 0;
   m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
+  m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;
+  m_pushConst.flags |= m_fullLobeEval >= 2 ? shaderio::ePtLobeMixture : 0;
 #if defined(USE_DLSS)
   m_pushConst.flags |= useDlss ? shaderio::ePtUseDlss : 0;
 #endif
