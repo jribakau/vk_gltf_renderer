@@ -113,7 +113,7 @@ struct Loaded
   std::unordered_map<int, int>  sceneOf;  // glTF node -> scene node
   std::vector<int>              meshOf;   // scene mesh -> glTF mesh
   std::vector<int>              skinOf;   // scene mesh -> glTF skin
-  std::vector<std::vector<int>> primsOf;  // scene mesh -> render primitives
+  std::vector<std::vector<int>> primsOf;  // scene mesh -> the render primitives owning its vertex sets (one per pose)
   // the glTF its load built on the worker, which the next composition takes instead of building it again
   std::optional<fv::build::BuildResult> prebuilt;
   // morph topic: -1 until the channel list has been published, then the value and weight last sent
@@ -1755,10 +1755,12 @@ void FvHost::Impl::compose()
       for(int& k : f.skinOf)
         if(k >= 0)
           k += base.skins;
+      // one entry per vertex set: the mesh's material groups read one set of buffers, so a dial's
+      // vertices go up once, not once per group
       f.primsOf.assign(f.meshOf.size(), {});
       for(size_t m = 0; m < f.meshOf.size(); m++)
         if(f.meshOf[m] >= 0)
-          f.primsOf[m] = renderer->renderPrimitivesOfMesh(f.meshOf[m]);
+          f.primsOf[m] = renderer->vertexSetOwnersOfMesh(f.meshOf[m]);
       // the glTF already holds the scene's dials and binds; don't upload them again
       f.fig->drain();
       if(!p.materials)

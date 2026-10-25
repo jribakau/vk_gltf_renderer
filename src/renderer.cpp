@@ -4298,6 +4298,46 @@ bool GltfRenderer::setInverseBindMatrices(int skin, std::span<const glm::mat4> i
   return true;
 }
 
+namespace {
+constexpr uint32_t kUploadRunGap   = 64;    // vertices between two touched ones that are staged along with them
+constexpr size_t   kUploadRunMax   = 1024;  // more runs than this: one copy of the whole buffer is cheaper
+constexpr float    kUploadRunRatio = 0.5f;  // runs covering more of the buffer than this: the whole buffer
+}  // namespace
+
+std::vector<std::pair<uint32_t, uint32_t>> GltfRenderer::uploadRuns(std::span<const uint32_t> indices, size_t vertexCount)
+{
+  std::vector<std::pair<uint32_t, uint32_t>> runs;
+  if(indices.empty() || vertexCount == 0)
+    return runs;
+  std::vector<uint32_t> sorted;
+  if(!std::is_sorted(indices.begin(), indices.end()))
+  {
+    sorted.assign(indices.begin(), indices.end());
+    std::sort(sorted.begin(), sorted.end());
+    indices = sorted;
+  }
+  size_t covered = 0;
+  for(uint32_t v : indices)
+  {
+    if(v >= vertexCount)
+      continue;
+    if(!runs.empty() && v < runs.back().first + runs.back().second + kUploadRunGap)
+    {
+      const uint32_t end = std::max(runs.back().first + runs.back().second, v + 1);
+      covered += end - (runs.back().first + runs.back().second);
+      runs.back().second = end - runs.back().first;
+      continue;
+    }
+    runs.emplace_back(v, 1u);
+    covered++;
+    if(runs.size() > kUploadRunMax)
+      return {};
+  }
+  if(float(covered) > float(vertexCount) * kUploadRunRatio)
+    return {};
+  return runs;
+}
+
 std::vector<int> GltfRenderer::renderPrimitivesOfMesh(int gltfMesh) const
 {
   std::vector<int>       out;
@@ -4985,9 +5025,12 @@ bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
     }
     const std::span<const glm::vec3> pos(live->positions);
     const std::span<const glm::vec3> nrm = sendNormals ? std::span<const glm::vec3>(live->normals) : std::span<const glm::vec3>();
-    if(m_resources.animationVk.updateBaseGeometry(m_resources.staging, *scn, u.renderPrimID, pos, nrm))
+    // a sparse upload stages the runs it touched; empty means the whole buffer
+    const std::vector<std::pair<uint32_t, uint32_t>> runs = u.indices.empty() ? std::vector<std::pair<uint32_t, uint32_t>>{} :
+                                                                                uploadRuns(u.indices, live->positions.size());
+    if(m_resources.animationVk.updateBaseGeometry(m_resources.staging, *scn, u.renderPrimID, pos, nrm, runs))
     {
-      scn->animation().setBaseGeometry(u.renderPrimID, pos, nrm);
+      scn->animation().setBaseGeometry(u.renderPrimID, pos, nrm, runs);
       m_pendingAnimReconcile = true;
     }
     else
@@ -4998,9 +5041,18 @@ bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
         LOGW("Vertex upload for primitive %d: %zu positions do not match the buffer; skipped\n", u.renderPrimID, pos.size());
         continue;
       }
-      NVVK_CHECK(m_resources.staging.appendBuffer(vb.position, 0, pos.size_bytes(), pos.data()));
+      const auto stage = [&](const nvvk::Buffer& dst, std::span<const glm::vec3> src) {
+        if(runs.empty())
+        {
+          NVVK_CHECK(m_resources.staging.appendBuffer(dst, 0, src.size_bytes(), src.data()));
+          return;
+        }
+        for(const auto& [first, count] : runs)
+          NVVK_CHECK(m_resources.staging.appendBuffer(dst, first * sizeof(glm::vec3), count * sizeof(glm::vec3), src.data() + first));
+      };
+      stage(vb.position, pos);
       if(!nrm.empty() && vb.normal.buffer != VK_NULL_HANDLE && vb.normal.bufferSize == nrm.size_bytes())
-        NVVK_CHECK(m_resources.staging.appendBuffer(vb.normal, 0, nrm.size_bytes(), nrm.data()));
+        stage(vb.normal, nrm);
       // every member of the set reads the buffers just written: each has a BLAS to refit
       const std::span<const int> members = scn->vertexSetMembers(u.renderPrimID);
       if(members.empty())

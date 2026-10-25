@@ -591,17 +591,26 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
                          VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 }
 
-bool AnimationVk::updateBaseGeometry(nvvk::CmdUploaderInterface& staging,
-                                     const Scene&                scn,
-                                     int                         renderPrimID,
-                                     std::span<const glm::vec3>  positions,
-                                     std::span<const glm::vec3>  normals)
+bool AnimationVk::updateBaseGeometry(nvvk::CmdUploaderInterface&                    staging,
+                                     const Scene&                                   scn,
+                                     int                                            renderPrimID,
+                                     std::span<const glm::vec3>                     positions,
+                                     std::span<const glm::vec3>                     normals,
+                                     std::span<const std::pair<uint32_t, uint32_t>> runs)
 {
   renderPrimID = scn.vertexSetOwner(renderPrimID);
   bool found   = false;
   auto upload  = [&](const nvvk::Buffer& dst, std::span<const glm::vec3> src) {
-    if(dst.buffer != VK_NULL_HANDLE && !src.empty() && dst.bufferSize == src.size_bytes())
+    if(dst.buffer == VK_NULL_HANDLE || src.empty() || dst.bufferSize != src.size_bytes())
+      return;
+    if(runs.empty())
+    {
       NVVK_CHECK(staging.appendBuffer(dst, 0, src.size_bytes(), src.data()));
+      return;
+    }
+    for(const auto& [first, count] : runs)
+      if(size_t(first) + count <= src.size())
+        NVVK_CHECK(staging.appendBuffer(dst, first * sizeof(glm::vec3), count * sizeof(glm::vec3), src.data() + first));
   };
   const auto& skinTasks = scn.animation().getSkinTasks();
   for(size_t i = 0; i < skinTasks.size() && i < m_skinGpuData.size(); i++)

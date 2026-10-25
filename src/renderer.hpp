@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -374,6 +375,10 @@ public:
   /// False when the skin or the matrix count does not match. Application thread only.
   bool             setInverseBindMatrices(int skin, std::span<const glm::mat4> ibm);
   std::vector<int> renderPrimitivesOfMesh(int gltfMesh) const;
+  // The runs of vertices a sparse upload touched, [first, count) pairs: what it stages, instead of
+  // the whole buffer. Gaps under kUploadRunGap vertices are bridged; more than kUploadRunMax runs,
+  // or runs covering over kUploadRunRatio of the vertices, mean the whole buffer (empty result).
+  static std::vector<std::pair<uint32_t, uint32_t>> uploadRuns(std::span<const uint32_t> indices, size_t vertexCount);
   // The vertex buffers a glTF mesh's render primitives read, one entry per set (Scene::vertexSets):
   // a vertex upload to any of them reaches every member, so a host uploads once per entry.
   std::vector<int> vertexSetOwnersOfMesh(int gltfMesh) const;

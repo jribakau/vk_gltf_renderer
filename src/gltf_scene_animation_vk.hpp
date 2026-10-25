@@ -67,11 +67,13 @@ public:
   // vertex buffers are compute outputs, rewritten from these on every dispatch). Sizes must match
   // the buffers createGpuBuffers() made. Returns false when the primitive is neither skinned nor
   // morphed; the caller then uploads into the SceneVk buffers directly.
-  bool updateBaseGeometry(nvvk::CmdUploaderInterface& staging,
-                          const Scene&                scn,
-                          int                         renderPrimID,
-                          std::span<const glm::vec3>  positions,
-                          std::span<const glm::vec3>  normals);
+  // `runs`: the [first, count) vertex runs that changed, staged alone; empty means the whole buffer
+  bool updateBaseGeometry(nvvk::CmdUploaderInterface&                    staging,
+                          const Scene&                                   scn,
+                          int                                            renderPrimID,
+                          std::span<const glm::vec3>                     positions,
+                          std::span<const glm::vec3>                     normals,
+                          std::span<const std::pair<uint32_t, uint32_t>> runs = {});
 
   // --- Per-frame animation (call each frame when animation is active) ---
   void dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, Scene& scn, const SceneVk& scnVk);

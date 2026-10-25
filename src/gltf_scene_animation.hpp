@@ -113,7 +113,11 @@ public:
   const std::vector<SkinTask>& getSkinTasks() const { return m_skinTasks; }
   // Live edits: replace the cached base geometry of a skinned / morphed primitive (same sizes), so
   // the CPU fallback and later GPU buffer rebuilds agree with AnimationVk::updateBaseGeometry().
-  bool setBaseGeometry(int renderPrimID, std::span<const glm::vec3> positions, std::span<const glm::vec3> normals);
+  // `runs`: the [first, count) vertex runs that changed; empty means all of them
+  bool setBaseGeometry(int                                                renderPrimID,
+                       std::span<const glm::vec3>                         positions,
+                       std::span<const glm::vec3>                         normals,
+                       std::span<const std::pair<uint32_t, uint32_t>> runs = {});
 
   // Replaces a skin's inverse bind matrices (one per joint), in the model, so a rebuild or a merge
   // keeps them, and in the cached skin tasks, which the next skinning pass reads. False when the

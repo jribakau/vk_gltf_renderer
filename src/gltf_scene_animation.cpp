@@ -1010,13 +1010,24 @@ bool AnimationSystem::setInverseBindMatrices(int skinID, std::span<const glm::ma
 
 //--------------------------------------------------------------------------------------------------
 // Find the morph result associated with a render primitive, or nullptr if it has no morph targets.
-bool AnimationSystem::setBaseGeometry(int renderPrimID, std::span<const glm::vec3> positions, std::span<const glm::vec3> normals)
+bool AnimationSystem::setBaseGeometry(int                                            renderPrimID,
+                                      std::span<const glm::vec3>                     positions,
+                                      std::span<const glm::vec3>                     normals,
+                                      std::span<const std::pair<uint32_t, uint32_t>> runs)
 {
   renderPrimID = m_scene.vertexSetOwner(renderPrimID);
   bool found   = false;
-  auto assign = [](std::vector<glm::vec3>& dst, std::span<const glm::vec3> src) {
-    if(!src.empty() && dst.size() == src.size())
+  auto assign  = [&runs](std::vector<glm::vec3>& dst, std::span<const glm::vec3> src) {
+    if(src.empty() || dst.size() != src.size())
+      return;
+    if(runs.empty())
+    {
       std::copy(src.begin(), src.end(), dst.begin());
+      return;
+    }
+    for(const auto& [first, count] : runs)
+      if(size_t(first) + count <= dst.size())
+        std::copy(src.begin() + first, src.begin() + first + count, dst.begin() + first);
   };
   for(SkinTask& task : m_skinTasks)
   {
