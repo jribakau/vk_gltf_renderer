@@ -121,10 +121,7 @@ Json fitReport(const fv::Figure& fig)
 {
   const fv::SceneGraph& scene  = fig.loaded.scene;
   const auto            worlds = scene.worlds();
-  std::vector<int>      nodeOf(scene.meshes.size(), -1);
-  for(size_t n = 0; n < scene.nodes.size(); n++)
-    if(scene.nodes[n].kind == fv::NodeKind::eMesh && scene.nodes[n].mesh >= 0)
-      nodeOf[size_t(scene.nodes[n].mesh)] = int(n);
+  const std::vector<int> nodeOf = fv::dforce::nodeOfMesh(scene);
   const auto& ctx = fig.loaded.morphs;
   if(ctx.mainMeshes.empty())
     throw std::runtime_error("fit without a figure body");

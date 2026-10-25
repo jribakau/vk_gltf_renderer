@@ -323,11 +323,14 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   const std::vector<Mat4> worlds = scene.worlds();
   std::vector<double>     emitArea(scene.materials.size(), 0.0);
   std::vector<std::vector<std::shared_ptr<const std::vector<mat::StrandVote>>>> hairVotes(scene.materials.size());
+  // a mesh drawn from several nodes (DAZ Studio instances) counts once: each copy emits as the one it copies
+  std::vector<bool> counted(scene.meshes.size(), false);
   for(int i : order)
   {
     const Node& n = scene.nodes[i];
-    if(n.kind != NodeKind::eMesh || n.mesh < 0 || !scene.meshes[n.mesh].geo)
+    if(n.kind != NodeKind::eMesh || n.mesh < 0 || !scene.meshes[n.mesh].geo || counted[n.mesh])
       continue;
+    counted[n.mesh] = true;
     const Mesh&            m   = scene.meshes[n.mesh];
     const mesh::BuiltMesh& geo = *m.geo;
     const Mat4&            w4  = worlds[i];
@@ -447,6 +450,12 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     const Node& n = scene.nodes[i];
     if(n.kind != NodeKind::eMesh || n.mesh < 0)
       continue;
+    // drawn from another node already (a DAZ Studio instance, never skinned): the same glTF mesh
+    if(out.meshOf[n.mesh] >= 0)
+    {
+      model.nodes[out.nodeOf[i]].mesh = out.meshOf[n.mesh];
+      continue;
+    }
     const Mesh&            m   = scene.meshes[n.mesh];
     const mesh::BuiltMesh& geo = *m.geo;
     const size_t           count = geo.position.size() / 3;

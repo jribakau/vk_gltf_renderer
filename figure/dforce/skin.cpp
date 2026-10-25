@@ -55,8 +55,9 @@ double blend(const std::vector<Mat4>& S, const Top4& skin, size_t v, std::array<
 std::vector<int> nodeOfMesh(const SceneGraph& scene)
 {
   std::vector<int> nodeOf(scene.meshes.size(), -1);
+  // the first node: a mesh drawn again by a DAZ Studio instance has the copy's node added after it
   for(size_t n = 0; n < scene.nodes.size(); n++)
-    if(scene.nodes[n].kind == NodeKind::eMesh && scene.nodes[n].mesh >= 0)
+    if(scene.nodes[n].kind == NodeKind::eMesh && scene.nodes[n].mesh >= 0 && nodeOf[size_t(scene.nodes[n].mesh)] < 0)
       nodeOf[size_t(scene.nodes[n].mesh)] = int(n);
   return nodeOf;
 }

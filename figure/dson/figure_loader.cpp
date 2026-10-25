@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <optional>
 #include <regex>
 #include <stdexcept>
 #include <unordered_map>
@@ -127,6 +129,57 @@ bool isDazInstance(const Json* node)
       }
   }
   return false;
+}
+
+// A channel in a node's extra channel lists (DAZ Studio's own: Visible, Instance Target, ...).
+const Json* extraChannel(const Json* node, std::string_view id)
+{
+  const Json* extra = get(node, "extra");
+  if(!extra || !extra->is_array())
+    return nullptr;
+  for(const Json& e : *extra)
+    if(const Json* chans = get(&e, "channels"); chans && chans->is_array())
+      for(const Json& c : *chans)
+      {
+        const Json* inner = get(&c, "channel");
+        const Json& ch    = inner && !inner->is_null() ? *inner : c;
+        if(getString(&ch, "id") == id)
+          return &ch;
+      }
+  return nullptr;
+}
+
+// A DAZ Studio node instance: another scene node drawn again where the instance stands (its
+// transform takes the target's place), with that node's children when its Instance Mode is "Node
+// and Children" (0) rather than "Single Node" (1).
+struct NodeInstance
+{
+  std::string id;  // the instance's scene node
+  int         group = -1;
+  std::string target;  // the scene node it draws; empty when it names none
+  bool        children = false;
+  bool        visible  = true;
+};
+
+std::optional<NodeInstance> nodeInstance(const Json* node, const Json* def)
+{
+  const Json* target = extraChannel(node, "Instance Target");
+  if(!target)
+    target = extraChannel(def, "Instance Target");
+  if(!target)
+    return std::nullopt;
+  const Json* mode = extraChannel(node, "Instance Mode");
+  if(!mode)
+    mode = extraChannel(def, "Instance Mode");
+  const Json* value = pick(mode, mode, "current_value");
+  if(!value)
+    value = get(mode, "value");
+  NodeInstance out;
+  out.id       = getString(node, "id");
+  out.target   = decodeUri(lastSegment(firstString({{target, "node"}, {target, "current_value"}}), '#'));
+  out.children = value && value->is_number() && value->get<double>() == 0;
+  out.visible  = !hiddenNode(node);
+  return out;
 }
 
 struct UvSet
@@ -463,7 +516,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   std::unordered_map<std::string, int>       rigOf;  // figure scene node -> rig
   std::unordered_map<std::string, int>       instanceGroups;
   std::string                                mainNode;
-  std::vector<std::string>                   dazInstances;
+  std::vector<std::string>                   dazInstances;  // instance groups, which aren't drawn
+  std::vector<NodeInstance>                  nodeInstances;
+  std::unordered_map<std::string, std::vector<std::string>> childrenOf;  // scene node -> its child nodes with groups
+  std::unordered_map<std::string, std::vector<int>>         meshNodesOf;  // scene node -> its mesh nodes
   auto newItem = [&](const Json& node) {
     Item item;
     item.key   = options.attach ? options.attach->key + (out.items.empty() ? std::string() : "." + std::to_string(out.items.size()))
@@ -580,10 +636,16 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             itemOf[gid] = item;
     }
     instanceGroups[id] = group;
+    childrenOf[parentId].push_back(id);
     const Json* geos   = get(&node, "geometries");
     if(!geos || !geos->is_array() || geos->empty())
     {
-      if(isDazInstance(&node) || isDazInstance(def))
+      if(auto ni = nodeInstance(&node, def))
+      {
+        ni->group = group;
+        nodeInstances.push_back(std::move(*ni));
+      }
+      else if(isDazInstance(&node) || isDazInstance(def))
         dazInstances.push_back(scene.nodes[group].name);
       continue;
     }
@@ -633,15 +695,17 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     }
     jobs.push_back({&node, group, type, rig, int(scene.nodes[group].children.size()), item, resolved ? resolved->file : std::string()});
   }
-  if(!dazInstances.empty())
-  {
+  // the first three names and how many more
+  auto someOf = [](const std::vector<std::string>& list) {
     std::string names;
-    for(size_t i = 0; i < std::min<size_t>(3, dazInstances.size()); i++)
-      names += (i ? ", " : "") + dazInstances[i];
-    if(dazInstances.size() > 3)
-      names += " and " + std::to_string(dazInstances.size() - 3) + " more";
-    warn("DAZ Studio instances aren't drawn yet, so these are missing: " + names);
-  }
+    for(size_t i = 0; i < std::min<size_t>(3, list.size()); i++)
+      names += (i ? ", " : "") + list[i];
+    if(list.size() > 3)
+      names += " and " + std::to_string(list.size() - 3) + " more";
+    return names;
+  };
+  if(!dazInstances.empty())
+    warn("DAZ Studio instance groups aren't drawn yet, so these are missing: " + someOf(dazInstances));
 
   // ---- meshes, one per geometry of each node, in file order
   std::unordered_map<std::string, int> materialCache;
@@ -884,6 +948,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
       if(scene.meshes[scene.nodes[made[k]].mesh].geo->fullIndex.empty())
         warn(scene.nodes[job.group].name + " has no polygons or strands, so it isn't drawn");
     }
+    meshNodesOf[getString(job.node, "id")] = std::move(made);
   }
 
   // bind: as three's SkinnedMesh.bind(skeleton, mesh.matrixWorld) does with the scene at rest
@@ -900,6 +965,93 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     m.boneInverses.clear();
     for(int b : m.bones)
       m.boneInverses.push_back(inverse(worlds[b]));
+  }
+
+  // DAZ Studio node instances: what the target draws, drawn again under the instance's group. The
+  // instance's transform takes the target's place, as DAZ Studio places it, and geometry is in rest
+  // world space, so hanging the copies under the instance is all it takes. A copy shares its Mesh:
+  // the glTF draws it from every node, and morphs and edits reach every copy.
+  if(!nodeInstances.empty())
+  {
+    timing::Scope                                        ti("instances", 10);
+    std::unordered_map<std::string, const NodeInstance*> instanceById;
+    for(const NodeInstance& ni : nodeInstances)
+      instanceById[ni.id] = &ni;
+    // a drawn node copied under `parent`: a mesh node shares its Mesh, a group brings what hangs from it
+    std::function<int(int, int, bool)> copy = [&](int src, int parent, bool visible) {
+      Node n    = scene.nodes[src];
+      n.visible = n.visible && visible;
+      const std::vector<int> kids = n.children;
+      const int              id   = scene.add(std::move(n), parent);
+      for(int c : kids)
+        copy(c, id, visible);
+      return id;
+    };
+    std::unordered_map<std::string, std::vector<int>>   drawnOf;  // an instance -> the copies under its group
+    std::unordered_map<std::string, std::string>        failed;   // an instance -> why it isn't drawn
+    std::unordered_set<std::string>                     resolving;
+    static const std::string                            kLoop = "they draw themselves";
+    std::function<std::string(const std::string&)>      resolve;
+    // scene node `x` drawn under `parent`: what it draws itself and, with `children`, its child nodes
+    // (not the instances among them, which draw themselves); else why it can't be
+    std::function<std::string(const std::string&, int, bool, bool, std::vector<int>&)> draw =
+        [&](const std::string& x, int parent, bool children, bool visible, std::vector<int>& top) -> std::string {
+      std::vector<int> source;
+      if(instanceById.count(x))
+      {
+        if(std::string why = resolve(x); !why.empty())
+          return why == kLoop ? why : "the instances they copy aren't drawn";
+        source = drawnOf[x];
+      }
+      else if(auto it = meshNodesOf.find(x); it != meshNodesOf.end())
+      {
+        // a skinned node ignores its own transform, so a copy would stand where the figure does
+        for(int n : it->second)
+          if(scene.meshes[scene.nodes[n].mesh].skinned())
+            return "they draw a posed figure";
+        source = it->second;
+      }
+      else if(!instanceGroups.count(x))
+        return "their target isn't in the scene";
+      for(int n : source)
+        top.push_back(copy(n, parent, visible));
+      if(auto it = children ? childrenOf.find(x) : childrenOf.end(); it != childrenOf.end())
+        for(const std::string& c : std::vector<std::string>(it->second))
+        {
+          if(instanceById.count(c))
+            continue;
+          Node g    = scene.nodes[instanceGroups.at(c)];
+          g.visible = g.visible && visible;
+          const int at = scene.add(std::move(g), parent);
+          top.push_back(at);
+          std::vector<int> under;
+          draw(c, at, true, visible, under);  // a child that can't be drawn leaves an empty group
+        }
+      return {};
+    };
+    resolve = [&](const std::string& id) -> std::string {
+      if(drawnOf.count(id))
+        return {};
+      if(auto it = failed.find(id); it != failed.end())
+        return it->second;
+      if(!resolving.insert(id).second)
+        return kLoop;
+      const NodeInstance& ni = *instanceById.at(id);
+      std::vector<int>    top;
+      std::string         why = ni.target.empty() ? "they name no target" : draw(ni.target, ni.group, ni.children, ni.visible, top);
+      resolving.erase(id);
+      if(why.empty())
+        drawnOf[id] = std::move(top);
+      else
+        failed[id] = why;
+      return why;
+    };
+    std::map<std::string, std::vector<std::string>> notDrawn;
+    for(const NodeInstance& ni : nodeInstances)
+      if(std::string why = resolve(ni.id); !why.empty())
+        notDrawn[why].push_back(scene.nodes[ni.group].name);
+    for(const auto& [why, names] : notDrawn)
+      warn("Some DAZ Studio instances aren't drawn because " + why + ": " + someOf(names));
   }
 
   // what the morph engine works from

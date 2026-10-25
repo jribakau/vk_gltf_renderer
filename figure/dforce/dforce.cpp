@@ -95,7 +95,8 @@ std::vector<int> Dforce::dynamics() const
     if(node.kind != NodeKind::eMesh || node.mesh < 0 || !shown[n])
       continue;
     const Mesh& m = m_scene.meshes[size_t(node.mesh)];
-    if(m.dforce && m.dforce->simulated() && node.mesh != m_bodyMesh)
+    // once, though DAZ Studio instances may draw it from more nodes
+    if(m.dforce && m.dforce->simulated() && node.mesh != m_bodyMesh && std::find(out.begin(), out.end(), node.mesh) == out.end())
       out.push_back(node.mesh);
   }
   return out;
