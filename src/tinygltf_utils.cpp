@@ -1120,14 +1120,8 @@ void tinygltf::utils::createTangentAttribute(tinygltf::Model& model, tinygltf::P
 // http://foundationsofgameenginedev.com/FGED2-sample.pdf
 void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive)
 {
-  const size_t  indexCount  = tinygltf::utils::getIndexCount(model, primitive);
-  const size_t  numVertices = tinygltf::utils::getVertexCount(model, primitive);
-  const int32_t numFaces    = static_cast<int32_t>(indexCount / 3);
-
+  const size_t              numVertices = tinygltf::utils::getVertexCount(model, primitive);
   std::vector<uint32_t>     indexStorage;
-  std::vector<glm::vec3>    positionStorage;
-  std::vector<glm::vec3>    normalStorage;
-  std::vector<glm::vec2>    uvStorage;
   std::span<const uint32_t> indices;
   if(primitive.indices >= 0)
   {
@@ -1140,6 +1134,18 @@ void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Pri
     std::iota(indexStorage.begin(), indexStorage.end(), 0u);
     indices = indexStorage;
   }
+  simpleCreateTangents(model, primitive, indices);
+}
+
+void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive, std::span<const uint32_t> indices)
+{
+  const size_t  indexCount  = indices.size();
+  const size_t  numVertices = tinygltf::utils::getVertexCount(model, primitive);
+  const int32_t numFaces    = static_cast<int32_t>(indexCount / 3);
+
+  std::vector<glm::vec3>     positionStorage;
+  std::vector<glm::vec3>     normalStorage;
+  std::vector<glm::vec2>     uvStorage;
   std::span<const glm::vec3> positions = getAttributeData3(model, primitive, "POSITION", &positionStorage);
   std::span<const glm::vec3> normals   = getAttributeData3(model, primitive, "NORMAL", &normalStorage);
   std::span<const glm::vec2> uvs       = getAttributeData3(model, primitive, "TEXCOORD_0", &uvStorage);

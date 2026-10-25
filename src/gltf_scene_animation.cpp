@@ -209,6 +209,9 @@ void AnimationSystem::parseMorphPrimitives()
   {
     const RenderPrimitive&     renderPrimitive = m_scene.getRenderPrimitive(renderPrimID);
     const tinygltf::Primitive& primitive       = *renderPrimitive.pPrimitive;
+    // one result per vertex set: its owner blends the buffers every member reads
+    if(m_scene.vertexSetOwner(static_cast<int>(renderPrimID)) != static_cast<int>(renderPrimID))
+      continue;
     if(!primitive.targets.empty())
     {
       m_morphPrimitives.push_back(uint32_t(renderPrimID));
@@ -216,6 +219,10 @@ void AnimationSystem::parseMorphPrimitives()
       MorphResult            mr;
       const tinygltf::Model& mdl = m_scene.getModel();
       mr.renderPrimID            = static_cast<int>(renderPrimID);
+      const std::span<const int> members = m_scene.vertexSetMembers(static_cast<int>(renderPrimID));
+      mr.renderPrimIDs.assign(members.begin(), members.end());
+      if(mr.renderPrimIDs.empty())
+        mr.renderPrimIDs.push_back(static_cast<int>(renderPrimID));
 
       auto posIt = primitive.attributes.find("POSITION");
       if(posIt != primitive.attributes.end() && posIt->second >= 0 && posIt->second < static_cast<int>(mdl.accessors.size()))
@@ -280,16 +287,22 @@ void AnimationSystem::parseSkinTasks()
   for(size_t rnID = 0; rnID < rnodes.size(); rnID++)
   {
     const auto& rn = rnodes[rnID];
-    if(rn.skinID < 0 || !seenPrimIDs.insert(rn.renderPrimID).second)
+    // one task per vertex set: its owner's buffers are the ones every member reads
+    const int owner = m_scene.vertexSetOwner(rn.renderPrimID);
+    if(rn.skinID < 0 || !seenPrimIDs.insert(owner).second)
       continue;
-    const tinygltf::Primitive& primitive = *m_scene.getRenderPrimitive(rn.renderPrimID).pPrimitive;
+    const tinygltf::Primitive& primitive = *m_scene.getRenderPrimitive(owner).pPrimitive;
     if(rn.skinID >= static_cast<int>(model.skins.size()) || !primitive.attributes.contains("JOINTS_0"))
       continue;
 
     SkinTask task;
-    task.renderPrimID = rn.renderPrimID;
+    task.renderPrimID = owner;
     task.skinID       = rn.skinID;
     task.refNodeID    = rn.refNodeID;
+    const std::span<const int> members = m_scene.vertexSetMembers(owner);
+    task.renderPrimIDs.assign(members.begin(), members.end());
+    if(task.renderPrimIDs.empty())
+      task.renderPrimIDs.push_back(owner);
 
     std::vector<glm::vec4> tempW;
     auto                   wSpan = tinygltf::utils::getAttributeData3(model, primitive, "WEIGHTS_0", &tempW);
@@ -999,7 +1012,8 @@ bool AnimationSystem::setInverseBindMatrices(int skinID, std::span<const glm::ma
 // Find the morph result associated with a render primitive, or nullptr if it has no morph targets.
 bool AnimationSystem::setBaseGeometry(int renderPrimID, std::span<const glm::vec3> positions, std::span<const glm::vec3> normals)
 {
-  bool found  = false;
+  renderPrimID = m_scene.vertexSetOwner(renderPrimID);
+  bool found   = false;
   auto assign = [](std::vector<glm::vec3>& dst, std::span<const glm::vec3> src) {
     if(!src.empty() && dst.size() == src.size())
       std::copy(src.begin(), src.end(), dst.begin());
@@ -1025,6 +1039,7 @@ bool AnimationSystem::setBaseGeometry(int renderPrimID, std::span<const glm::vec
 
 bool AnimationSystem::getBaseGeometry(int renderPrimID, std::vector<glm::vec3>& positions, std::vector<glm::vec3>& normals) const
 {
+  renderPrimID = m_scene.vertexSetOwner(renderPrimID);
   for(const SkinTask& task : m_skinTasks)
   {
     if(task.renderPrimID != renderPrimID)

@@ -374,6 +374,9 @@ public:
   /// False when the skin or the matrix count does not match. Application thread only.
   bool             setInverseBindMatrices(int skin, std::span<const glm::mat4> ibm);
   std::vector<int> renderPrimitivesOfMesh(int gltfMesh) const;
+  // The vertex buffers a glTF mesh's render primitives read, one entry per set (Scene::vertexSets):
+  // a vertex upload to any of them reaches every member, so a host uploads once per entry.
+  std::vector<int> vertexSetOwnersOfMesh(int gltfMesh) const;
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
   void          setRenderSystem(RenderingMode mode);

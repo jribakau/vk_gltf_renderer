@@ -584,20 +584,33 @@ bool nvvkgltf::SceneRtx::syncTopLevelAS(VkCommandBuffer cmd, nvvk::CmdUploaderIn
 // Update BLAS for morph targets and skinned primitives (vertex data changed).
 void nvvkgltf::SceneRtx::updateBottomLevelAS(VkCommandBuffer cmd, const nvvkgltf::Scene& scene)
 {
-  for(auto& primID : scene.animation().getMorphPrimitives())
+  // Every render primitive whose vertices a morph or a skin pass wrote this frame, once each: the
+  // members of each deformed vertex set (a primitive that is both morphed and skinned is listed by
+  // both and refit once).
+  std::vector<uint32_t> prims;
+  std::vector<bool>     seen(m_blasAccel.size(), false);
+  const auto            add = [&](int primID) {
+    if(primID < 0 || primID >= static_cast<int>(seen.size()) || seen[primID])
+      return;
+    seen[primID] = true;
+    prims.push_back(static_cast<uint32_t>(primID));
+  };
+  for(uint32_t primID : scene.animation().getMorphPrimitives())
   {
-    m_blasBuildData[primID].cmdUpdateAccelerationStructure(cmd, m_blasAccel[primID].accel, m_blasScratchBuffer.address);
-    // Add synchronization between consecutive acceleration structure updates that use the same scratch buffer
-    nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-                                       VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    const std::span<const int> members = scene.vertexSetMembers(static_cast<int>(primID));
+    if(members.empty())
+      add(static_cast<int>(primID));
+    for(int member : members)
+      add(member);
   }
   for(const auto& task : scene.animation().getSkinTasks())
   {
-    m_blasBuildData[task.renderPrimID].cmdUpdateAccelerationStructure(cmd, m_blasAccel[task.renderPrimID].accel,
-                                                                      m_blasScratchBuffer.address);
-    nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-                                       VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    if(task.renderPrimIDs.empty())
+      add(task.renderPrimID);
+    for(int member : task.renderPrimIDs)
+      add(member);
   }
+  updateBottomLevelAS(cmd, prims);
 }
 
 void nvvkgltf::SceneRtx::updateBottomLevelAS(VkCommandBuffer cmd, std::span<const uint32_t> renderPrimIDs)

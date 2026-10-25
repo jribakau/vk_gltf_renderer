@@ -41,9 +41,12 @@ struct SkinningResult
 // by AnimationVk, and also used by the CPU fallback path in computeSkinning().
 struct SkinTask
 {
-  int renderPrimID;
+  int renderPrimID;  // the owner of the vertex set the task skins (Scene::vertexSetOwner)
   int skinID;
   int refNodeID;
+  // Every render primitive of that vertex set, the owner first: they read the buffers the task
+  // writes, so each has a BLAS to refit after it runs (a figure's material groups).
+  std::vector<int> renderPrimIDs;
 
   // Static data cached at parse time (never changes per frame)
   std::vector<glm::vec4>  weights;              // WEIGHTS_0
@@ -63,7 +66,8 @@ struct SkinTask
 
 struct MorphResult
 {
-  int                    renderPrimID = -1;
+  int                    renderPrimID = -1;  // the owner of the vertex set (Scene::vertexSetOwner)
+  std::vector<int>       renderPrimIDs;      // every render primitive of that set, the owner first
   std::vector<glm::vec3> basePositions;     // Cached at parse time
   std::vector<glm::vec3> baseNormals;       // Cached at parse time (empty if absent)
   std::vector<glm::vec4> baseTangents;      // Cached at parse time (empty if absent)

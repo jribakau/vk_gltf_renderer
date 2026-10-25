@@ -1540,6 +1540,9 @@ void createTangentAttribute(tinygltf::Model& model, tinygltf::Primitive& primiti
 Compute tangents based on the texture coordinates, using also position and normal attributes
 -------------------------------------------------------------------------------------------------*/
 void simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive);
+// The same over `indices` into the primitive's vertices instead of its own: the triangles of
+// every primitive sharing its attributes, so one tangent accessor serves them all.
+void simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive, std::span<const uint32_t> indices);
 
 /*------------------------------------------------------------------------------------------------*/
 bool getMeshoptCompression(const tinygltf::BufferView& bview, KHR_meshopt_compression& mcomp);

@@ -2284,7 +2284,69 @@ nvvkgltf::Scene::PrimitiveKeyMap nvvkgltf::Scene::buildPrimitiveKeyMap()
     }
   }
   assignDeformedRenderPrimitives();
+  buildVertexSets();
   return primMap;
+}
+
+std::string nvvkgltf::Scene::attributeKey(const tinygltf::Primitive& primitive) const
+{
+  std::string key;
+  for(const auto& [name, accessor] : primitive.attributes)
+    key += name + ':' + std::to_string(accessor) + ';';
+  for(const auto& target : primitive.targets)
+  {
+    key += '|';
+    for(const auto& [name, accessor] : target)
+      key += name + ':' + std::to_string(accessor) + ';';
+  }
+  return key;
+}
+
+// Groups the render primitives into vertex sets: the same attribute accessors in the same pose
+// (the node that deforms them, so the pose copies of assignDeformedRenderPrimitives stay apart;
+// morphed ones also the mesh whose weights they blend with). Render primitives that only differ in
+// their indices, a figure's material groups, then read one set of vertex buffers.
+void nvvkgltf::Scene::buildVertexSets()
+{
+  m_vertexSets.clear();
+  std::unordered_map<std::string, int> sets;
+  for(size_t r = 0; r < m_renderPrimitives.size(); r++)
+  {
+    nvvkgltf::RenderPrimitive& rp = m_renderPrimitives[r];
+    if(!rp.pPrimitive)
+      continue;
+    std::string key = attributeKey(*rp.pPrimitive) + "|node=" + std::to_string(rp.nodeID);
+    if(!rp.pPrimitive->targets.empty())
+      key += "|mesh=" + std::to_string(rp.meshID);
+    const auto [it, inserted] = sets.try_emplace(std::move(key), static_cast<int>(m_vertexSets.size()));
+    if(inserted)
+      m_vertexSets.emplace_back();
+    rp.vertexSet = it->second;
+    m_vertexSets[it->second].renderPrimIDs.push_back(static_cast<int>(r));
+  }
+}
+
+int nvvkgltf::Scene::vertexSetOf(int renderPrimID) const
+{
+  if(renderPrimID < 0 || renderPrimID >= static_cast<int>(m_renderPrimitives.size()))
+    return -1;
+  return m_renderPrimitives[renderPrimID].vertexSet;
+}
+
+int nvvkgltf::Scene::vertexSetOwner(int renderPrimID) const
+{
+  const int set = vertexSetOf(renderPrimID);
+  if(set < 0 || set >= static_cast<int>(m_vertexSets.size()) || m_vertexSets[set].renderPrimIDs.empty())
+    return renderPrimID;
+  return m_vertexSets[set].renderPrimIDs.front();
+}
+
+std::span<const int> nvvkgltf::Scene::vertexSetMembers(int renderPrimID) const
+{
+  const int set = vertexSetOf(renderPrimID);
+  if(set < 0 || set >= static_cast<int>(m_vertexSets.size()))
+    return {};
+  return m_vertexSets[set].renderPrimIDs;
 }
 
 // Skinning and morphing write a RenderPrimitive's own vertex buffers, for one pose. Drawers of a
@@ -2929,8 +2991,11 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
       if(!primitiveGeometryError(m_model, primitive).empty())
         continue;  // not renderable, so it needs no tangents (and its positions can't be read)
 
-      // The render-primitive key: primitives drawn by one render primitive get one tangent accessor.
-      keyToPrimitives[primitiveKey(primitive)].push_back(&primitive);
+      // Primitives over the same attribute accessors (a mesh's material groups, drawers sharing
+      // one render primitive) get one tangent accessor, built over all their triangles: they will
+      // share vertex buffers (Scene::vertexSets), and a tangent made from one group's triangles
+      // alone would leave the other groups' vertices with none.
+      keyToPrimitives[attributeKey(primitive)].push_back(&primitive);
     }
   }
 
@@ -2940,10 +3005,31 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
       continue;
     tinygltf::Primitive* first = primitives[0];
     tinygltf::utils::createTangentAttribute(m_model, *first);
-    tinygltf::utils::simpleCreateTangents(m_model, *first);
     const int tangentAccessorIndex = first->attributes["TANGENT"];
     for(size_t i = 1; i < primitives.size(); ++i)
       primitives[i]->attributes["TANGENT"] = tangentAccessorIndex;
+    if(primitives.size() == 1)
+    {
+      tinygltf::utils::simpleCreateTangents(m_model, *first);
+      continue;
+    }
+    std::vector<uint32_t> indices;
+    for(tinygltf::Primitive* primitive : primitives)
+    {
+      std::vector<uint32_t> storage;
+      if(primitive->indices >= 0 && primitive->indices < static_cast<int>(m_model.accessors.size()))
+      {
+        const std::span<const uint32_t> own = tinygltf::utils::getAccessorData(m_model, m_model.accessors[primitive->indices], &storage);
+        indices.insert(indices.end(), own.begin(), own.end());
+      }
+      else
+      {
+        const size_t count = tinygltf::utils::getVertexCount(m_model, *primitive);
+        for(size_t v = 0; v < count; v++)
+          indices.push_back(static_cast<uint32_t>(v));
+      }
+    }
+    tinygltf::utils::simpleCreateTangents(m_model, *first, indices);
   }
 }
 

@@ -4311,6 +4311,18 @@ std::vector<int> GltfRenderer::renderPrimitivesOfMesh(int gltfMesh) const
   return out;
 }
 
+std::vector<int> GltfRenderer::vertexSetOwnersOfMesh(int gltfMesh) const
+{
+  std::vector<int> out;
+  for(int prim : renderPrimitivesOfMesh(gltfMesh))
+  {
+    const int owner = m_resources.getScene()->vertexSetOwner(prim);
+    if(std::find(out.begin(), out.end(), owner) == out.end())
+      out.push_back(owner);
+  }
+  return out;
+}
+
 void GltfRenderer::setRenderSystem(RenderingMode mode)
 {
   if(m_resources.settings.renderSystem == mode)
@@ -4924,10 +4936,24 @@ bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
   std::vector<uint32_t> staticPrims;
   bool                  any = false;
 
-  for(VertexUpload& u : m_pendingVertexUploads)
+  // An upload names any render primitive of a vertex set; it lands on the set's owner, whose buffers
+  // every member reads. A host that sends the same whole mesh to every member (one upload per
+  // material group) stages it once: of several whole uploads to one owner only the last applies.
+  std::unordered_map<int, size_t> lastFull;
+  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
   {
+    VertexUpload& u = m_pendingVertexUploads[i];
+    u.renderPrimID  = scn->vertexSetOwner(u.renderPrimID);
+    if(u.indices.empty())
+      lastFull[u.renderPrimID] = i;
+  }
+  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
+  {
+    VertexUpload& u = m_pendingVertexUploads[i];
     if(u.renderPrimID < 0 || u.renderPrimID >= int(vertexBufs.size()))
       continue;
+    if(u.indices.empty() && lastFull[u.renderPrimID] != i)
+      continue;  // a whole upload a later one to the same set replaces
     LiveVertices* live = liveVerticesOf(*scn, u.renderPrimID);
     if(!live)
       continue;
@@ -4975,11 +5001,21 @@ bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
       NVVK_CHECK(m_resources.staging.appendBuffer(vb.position, 0, pos.size_bytes(), pos.data()));
       if(!nrm.empty() && vb.normal.buffer != VK_NULL_HANDLE && vb.normal.bufferSize == nrm.size_bytes())
         NVVK_CHECK(m_resources.staging.appendBuffer(vb.normal, 0, nrm.size_bytes(), nrm.data()));
-      staticPrims.push_back(uint32_t(u.renderPrimID));
+      // every member of the set reads the buffers just written: each has a BLAS to refit
+      const std::span<const int> members = scn->vertexSetMembers(u.renderPrimID);
+      if(members.empty())
+        staticPrims.push_back(uint32_t(u.renderPrimID));
+      for(int member : members)
+        staticPrims.push_back(uint32_t(member));
     }
+    // the render nodes of every member of the set
+    const std::span<const int> members = scn->vertexSetMembers(u.renderPrimID);
     for(size_t rn = 0; rn < renderNodes.size(); rn++)
-      if(renderNodes[rn].renderPrimID == u.renderPrimID)
+    {
+      const int rp = renderNodes[rn].renderPrimID;
+      if(rp == u.renderPrimID || std::find(members.begin(), members.end(), rp) != members.end())
         scn->markRenderNodeDirty(int(rn), /*forVk=*/false, /*forRtx=*/true);
+    }
     any = true;
   }
   m_pendingVertexUploads.clear();

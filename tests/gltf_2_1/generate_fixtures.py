@@ -549,6 +549,29 @@ def shared_deformers(out_dir: Path) -> None:
     single_scene(m, range(5))
     write(out_dir, "deform/two_skins.gltf", m)
 
+    # deform/two_groups_skinned.gltf: one skinned mesh of two material groups over the same vertex
+    # accessors (one triangle of the quad each, with its own indices), both normal-mapped, drawn by
+    # body (skin 0), second (skin 1) and unskinned by still. The groups of one drawer read one
+    # vertex set: one skin task, shared vertex buffers, one tangent accessor over both triangles.
+    m = new_model("2.0")
+    base = skinned_quad(m)
+    tri_a = add_accessor(m, [0, 1, 2], 5123, "SCALAR", False)
+    tri_b = add_accessor(m, [0, 2, 3], 5123, "SCALAR", False)
+    m["images"] = [{"uri": data_uri("image/png", png_1x1((128, 128, 255, 255)))}]
+    m["textures"] = [{"source": 0}]
+    m["materials"] = [{"name": "group_a", "normalTexture": {"index": 0}}, {"name": "group_b", "normalTexture": {"index": 0}}]
+    m["meshes"] = [{"name": "two_groups", "primitives": [
+        {"attributes": dict(base["attributes"]), "indices": tri_a, "material": 0},
+        {"attributes": dict(base["attributes"]), "indices": tri_b, "material": 1}]}]
+    m["skins"] = [{"joints": [1]}, {"joints": [3]}]
+    m["nodes"] = [{"name": "body", "mesh": 0, "skin": 0},
+                  {"name": "joint_a", "translation": [0.0, 1.0, 0.0]},
+                  {"name": "second", "mesh": 0, "skin": 1, "translation": [4.0, 0.0, 0.0]},
+                  {"name": "joint_b", "translation": [4.0, 3.0, 0.0]},
+                  {"name": "still", "mesh": 0, "translation": [8.0, 0.0, 0.0]}]
+    single_scene(m, range(5))
+    write(out_dir, "deform/two_groups_skinned.gltf", m)
+
     # deform/two_weights.gltf: one morphed mesh (one target moving the quad up by 1, mesh weight 0)
     # drawn by three nodes: rest (the mesh's weights), raised (node weight 1, animated from 1 to 0
     # over one second) and half (node weight 0.5). Expected quad centres at y = 0, 1, 0.5; at

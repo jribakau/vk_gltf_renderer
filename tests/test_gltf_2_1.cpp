@@ -622,6 +622,44 @@ TEST_F(Gltf21Test, Deform_EachSkinDrawsItsOwnPose)
             (std::vector<std::string>{"body_a@0.00,1.00,0.00", "body_b@4.00,3.00,0.00", "still@8.00,0.00,0.00"}));
 }
 
+// deform/two_groups_skinned.gltf: a mesh of two material groups over one set of vertex accessors,
+// drawn unskinned and by two skinned nodes. Each drawer's groups are one vertex set: one skin task
+// per skinned drawer, listing both groups; one tangent accessor over both triangles, so the vertex
+// only the second group's triangle touches (3) has a tangent too.
+TEST_F(Gltf21Test, Deform_MaterialGroupsShareOneVertexSet)
+{
+  nvvkgltf::Scene scene;
+  ASSERT_TRUE(scene.load(kFixtures / "deform/two_groups_skinned.gltf"));
+  // two groups, each for the static drawer and for the two skinned poses
+  EXPECT_EQ(scene.getRenderPrimitives().size(), 6u);
+  EXPECT_EQ(scene.vertexSets().size(), 3u);
+  for(const nvvkgltf::VertexSet& set : scene.vertexSets())
+  {
+    ASSERT_EQ(set.renderPrimIDs.size(), 2u);
+    EXPECT_EQ(scene.vertexSetOwner(set.renderPrimIDs[1]), set.renderPrimIDs[0]);
+    EXPECT_EQ(scene.getRenderPrimitive(set.renderPrimIDs[0]).nodeID, scene.getRenderPrimitive(set.renderPrimIDs[1]).nodeID);
+  }
+  const auto& tasks = scene.animation().getSkinTasks();
+  ASSERT_EQ(tasks.size(), 2u);
+  for(const nvvkgltf::SkinTask& task : tasks)
+  {
+    ASSERT_EQ(task.renderPrimIDs.size(), 2u);
+    EXPECT_EQ(task.renderPrimIDs[0], task.renderPrimID);
+    EXPECT_EQ(scene.vertexSetOwner(task.renderPrimIDs[1]), task.renderPrimID);
+  }
+  const tinygltf::Model& model = scene.getModel();
+  ASSERT_EQ(model.meshes[0].primitives.size(), 2u);
+  const tinygltf::Primitive& a = model.meshes[0].primitives[0];
+  const tinygltf::Primitive& b = model.meshes[0].primitives[1];
+  ASSERT_TRUE(a.attributes.contains("TANGENT"));
+  EXPECT_EQ(a.attributes.at("TANGENT"), b.attributes.at("TANGENT"));
+  std::vector<glm::vec4>           storage;
+  const std::span<const glm::vec4> tangents = tinygltf::utils::getAttributeData3(model, a, "TANGENT", &storage);
+  ASSERT_EQ(tangents.size(), 4u);
+  for(size_t v = 0; v < 4; v++)
+    EXPECT_GT(glm::length(glm::vec3(tangents[v])), 0.5f) << "vertex " << v;
+}
+
 // deform/two_weights.gltf: one morphed mesh drawn by three nodes. A node's weights override the
 // mesh's, and a weights channel animates the node it targets, not the other nodes drawing the mesh.
 TEST_F(Gltf21Test, Deform_EachNodeDrawsItsOwnMorphWeights)

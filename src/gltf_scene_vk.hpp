@@ -168,6 +168,12 @@ public:
   const nvvk::Buffer&               renderNodeBuffer() const { return m_bRenderNode; }
   const nvvk::Buffer&               sceneDesc() const { return m_bSceneDesc; }
   const std::vector<VertexBuffers>& vertexBuffers() const { return m_vertexBuffers; }
+  // The render primitive whose vertex buffers `renderPrimID` reads: itself, or the owner of its
+  // vertex set (Scene::vertexSets), whose handles its entry repeats. Owners create and destroy.
+  [[nodiscard]] int vertexBufferOwner(int renderPrimID) const
+  {
+    return renderPrimID >= 0 && renderPrimID < static_cast<int>(m_vertexBufferOwner.size()) ? m_vertexBufferOwner[renderPrimID] : renderPrimID;
+  }
   const std::vector<nvvk::Buffer>&  indices() const { return m_bIndices; }
   const SceneOmm&                   opacityMicromap() const { return m_sceneOmm; }
 
@@ -349,6 +355,7 @@ protected:
   nvvk::Buffer m_bSceneDesc;
   std::vector<nvvk::Buffer>  m_bIndices;
   std::vector<VertexBuffers> m_vertexBuffers;
+  std::vector<int>           m_vertexBufferOwner;  // per render primitive: itself, or the one whose buffers it repeats
   std::vector<SceneImage>    m_images;
   // File-backed images held across destroy() so the next createTextureImages() can adopt them.
   // One entry per glTF image: two images of the same file each own a VkImage.

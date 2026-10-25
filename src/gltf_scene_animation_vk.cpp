@@ -597,8 +597,9 @@ bool AnimationVk::updateBaseGeometry(nvvk::CmdUploaderInterface& staging,
                                      std::span<const glm::vec3>  positions,
                                      std::span<const glm::vec3>  normals)
 {
-  bool found = false;
-  auto upload = [&](const nvvk::Buffer& dst, std::span<const glm::vec3> src) {
+  renderPrimID = scn.vertexSetOwner(renderPrimID);
+  bool found   = false;
+  auto upload  = [&](const nvvk::Buffer& dst, std::span<const glm::vec3> src) {
     if(dst.buffer != VK_NULL_HANDLE && !src.empty() && dst.bufferSize == src.size_bytes())
       NVVK_CHECK(staging.appendBuffer(dst, 0, src.size_bytes(), src.data()));
   };

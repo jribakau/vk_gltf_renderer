@@ -91,8 +91,10 @@ void PrevPositionsVk::cmdCopy(VkCommandBuffer cmd, const SceneVk& scnVk, std::sp
   }
 
   std::vector<int> toCopy;
-  for(int id : renderPrimIDs)
+  for(int named : renderPrimIDs)
   {
+    // the members of a vertex set read one position buffer: one copy, kept under the owner's id
+    const int id = scnVk.vertexBufferOwner(named);
     if(id < 0 || id >= int(vertexBufs.size()))
       continue;
     const nvvk::Buffer& src = vertexBufs[id].position;
@@ -128,9 +130,13 @@ void PrevPositionsVk::cmdCopy(VkCommandBuffer cmd, const SceneVk& scnVk, std::sp
 
   if(tableDirty)
   {
+    // every render primitive points at its owner's copy
     std::vector<VkDeviceAddress> addresses(m_prev.size(), 0);
     for(size_t i = 0; i < m_prev.size(); i++)
-      addresses[i] = m_prev[i].address;
+    {
+      const int owner = scnVk.vertexBufferOwner(static_cast<int>(i));
+      addresses[i]    = (owner >= 0 && owner < static_cast<int>(m_prev.size())) ? m_prev[owner].address : m_prev[i].address;
+    }
     const VkDeviceSize total = addresses.size() * sizeof(VkDeviceAddress);
     for(VkDeviceSize offset = 0; offset < total; offset += kMaxUpdateBytes)
     {

@@ -30,6 +30,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <span>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -67,6 +68,16 @@ struct RenderPrimitive
   int                  indexCount  = 0;
   int                  meshID      = 0;
   int                  nodeID      = -1;  // the node it is skinned or morphed for; -1 if only static nodes draw it
+  int                  vertexSet   = -1;  // the VertexSet it reads (Scene::vertexSets)
+};
+
+// Render primitives that read one set of vertex attributes in one pose: a mesh's material groups,
+// each with its own indices over the mesh's accessors. They share one set of vertex buffers
+// (SceneVk), one skin task and one previous-positions copy; each keeps its own index buffer, BLAS
+// and TLAS instance. `renderPrimIDs` ascend; the first owns the buffers.
+struct VertexSet
+{
+  std::vector<int> renderPrimIDs;
 };
 
 // glTF 2.1 external assets: what a placing node draws when the file it places is static (nothing
@@ -543,6 +554,13 @@ public:
   const std::vector<nvvkgltf::RenderPrimitive>& getRenderPrimitives() const { return m_renderPrimitives; }
   const nvvkgltf::RenderPrimitive&              getRenderPrimitive(size_t ID) const { return m_renderPrimitives[ID]; }
   [[nodiscard]] size_t                          getNumRenderPrimitives() const { return m_renderPrimitives.size(); }
+  // The vertex sets (see VertexSet), the set a render primitive reads (-1 for an invalid id), and
+  // the render primitive that owns the set's buffers (the id itself when it is in no set).
+  const std::vector<nvvkgltf::VertexSet>& vertexSets() const { return m_vertexSets; }
+  [[nodiscard]] int                       vertexSetOf(int renderPrimID) const;
+  [[nodiscard]] int                       vertexSetOwner(int renderPrimID) const;
+  // The render primitives of `renderPrimID`'s vertex set (just itself when it is in none).
+  [[nodiscard]] std::span<const int> vertexSetMembers(int renderPrimID) const;
   // The render primitive drawing primitive `primitive` of mesh `mesh`, or -1 (not renderable, or a
   // mesh added since the last parse). Several mesh primitives may share one render primitive. A node
   // that skins or morphs the primitive may draw a render primitive of its own instead.
@@ -707,6 +725,9 @@ private:
 
   PrimitiveKeyMap buildPrimitiveKeyMap();
   std::string     primitiveKey(const tinygltf::Primitive& primitive) const;
+  // What the primitives of one vertex set share: the attribute and target accessors, not the indices.
+  std::string attributeKey(const tinygltf::Primitive& primitive) const;
+  void        buildVertexSets();
   int             getMaterialVariantIndex(const tinygltf::Primitive& primitive, int currentVariant);
   void createRenderNodesForNode(int nodeID, const glm::mat4& worldMatrix, bool visible, const PrimitiveKeyMap& primMap);
   bool handleRenderNode(int nodeID, glm::mat4 worldMatrix, const PrimitiveKeyMap& primMap);
@@ -785,6 +806,7 @@ private:
 
   RenderNodeRegistry                     m_renderNodeRegistry;   // Centralized renderNode mappings
   std::vector<nvvkgltf::RenderPrimitive> m_renderPrimitives;     // Unique primitives
+  std::vector<nvvkgltf::VertexSet>       m_vertexSets;           // buildVertexSets(): shared vertex attributes
   std::vector<glm::vec3>                 m_renderPrimCenterObj;  // Object-space AABB centroid per render primitive
   std::vector<nvvkgltf::RenderCamera>    m_cameras;              // Cameras
   std::vector<nvvkgltf::RenderLight>     m_lights;               // Lights

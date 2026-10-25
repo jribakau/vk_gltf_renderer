@@ -810,9 +810,16 @@ Json sceneInfo(Ctx& c)
   }
   std::unordered_set<int> skinned, morphed;
   for(const auto& t : anim.getSkinTasks())
+  {
     skinned.insert(t.renderPrimID);
+    skinned.insert(t.renderPrimIDs.begin(), t.renderPrimIDs.end());
+  }
   for(uint32_t p : anim.getMorphPrimitives())
+  {
     morphed.insert(int(p));
+    const std::span<const int> members = c.scene.vertexSetMembers(int(p));
+    morphed.insert(members.begin(), members.end());
+  }
   Json        meshes      = Json::array();
   const auto& renderPrims = c.scene.getRenderPrimitives();
   for(size_t m = 0; m < model.meshes.size(); m++)

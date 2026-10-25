@@ -1173,6 +1173,7 @@ void nvvkgltf::SceneVk::createVertexBuffers(VkCommandBuffer cmd, nvvk::CmdUpload
   size_t numUniquePrimitive = scn.getNumRenderPrimitives();
   m_bIndices.resize(numUniquePrimitive);
   m_vertexBuffers.resize(numUniquePrimitive);
+  m_vertexBufferOwner.resize(numUniquePrimitive);
   renderPrim.resize(numUniquePrimitive);
 
   for(size_t primID = 0; primID < scn.getNumRenderPrimitives(); primID++)
@@ -1181,6 +1182,17 @@ void nvvkgltf::SceneVk::createVertexBuffers(VkCommandBuffer cmd, nvvk::CmdUpload
     const tinygltf::Mesh&      mesh          = model.meshes[scn.getRenderPrimitive(primID).meshID];
     VertexBuffers&             vertexBuffers = m_vertexBuffers[primID];
 
+    // A render primitive of a vertex set repeats the owner's buffer handles (the owner has the
+    // lowest id, so it was created first); only its indices are its own.
+    const int owner             = scn.vertexSetOwner(static_cast<int>(primID));
+    m_vertexBufferOwner[primID] = owner;
+    if(owner != static_cast<int>(primID) && owner >= 0 && owner < static_cast<int>(primID))
+    {
+      vertexBuffers = m_vertexBuffers[owner];
+    }
+    else
+    {
+    m_vertexBufferOwner[primID] = static_cast<int>(primID);
     updateAttributeBuffer<glm::vec3>("POSITION", model, primitive, m_alloc, &staging, vertexBuffers.position);
     updateAttributeBuffer<glm::vec3>("NORMAL", model, primitive, m_alloc, &staging, vertexBuffers.normal);
     updateAttributeBuffer<glm::vec2>("TEXCOORD_0", model, primitive, m_alloc, &staging, vertexBuffers.texCoord0);
@@ -1232,7 +1244,7 @@ void nvvkgltf::SceneVk::createVertexBuffers(VkCommandBuffer cmd, nvvk::CmdUpload
       NVVK_DBG_NAME(vertexBuffers.tangent.buffer);
     if(vertexBuffers.color.buffer != VK_NULL_HANDLE)
       NVVK_DBG_NAME(vertexBuffers.color.buffer);
-
+    }
 
     // Buffer of indices
     std::vector<uint32_t> indexBuffer;
@@ -1304,16 +1316,31 @@ void nvvkgltf::SceneVk::uploadVertexBuffers(nvvk::CmdUploaderInterface& staging,
 {
   const auto& model = scene.getModel();
 
+  std::vector<bool> fresh(scene.getNumRenderPrimitives(), false);  // owners that created a buffer
   for(size_t primID = 0; primID < scene.getNumRenderPrimitives(); primID++)
   {
     const tinygltf::Primitive& primitive     = *scene.getRenderPrimitive(primID).pPrimitive;
     VertexBuffers&             vertexBuffers = m_vertexBuffers[primID];
     bool                       newBuffer     = false;
-    updateAttributeBuffer<glm::vec3>("POSITION", model, primitive, m_alloc, &staging, vertexBuffers.position);
-    newBuffer |= updateAttributeBuffer<glm::vec3>("NORMAL", model, primitive, m_alloc, &staging, vertexBuffers.normal);
-    newBuffer |= updateAttributeBuffer<glm::vec2>("TEXCOORD_0", model, primitive, m_alloc, &staging, vertexBuffers.texCoord0);
-    newBuffer |= updateAttributeBuffer<glm::vec2>("TEXCOORD_1", model, primitive, m_alloc, &staging, vertexBuffers.texCoord1);
-    newBuffer |= updateAttributeBuffer<glm::vec4>("TANGENT", model, primitive, m_alloc, &staging, vertexBuffers.tangent);
+    const int                  owner         = vertexBufferOwner(static_cast<int>(primID));
+    if(owner != static_cast<int>(primID))
+    {
+      // an alias: the owner (a lower id, done above) created a buffer, so its handles are new
+      if(owner >= 0 && owner < static_cast<int>(primID) && fresh[owner])
+      {
+        vertexBuffers = m_vertexBuffers[owner];
+        newBuffer     = true;
+      }
+    }
+    else
+    {
+      updateAttributeBuffer<glm::vec3>("POSITION", model, primitive, m_alloc, &staging, vertexBuffers.position);
+      newBuffer |= updateAttributeBuffer<glm::vec3>("NORMAL", model, primitive, m_alloc, &staging, vertexBuffers.normal);
+      newBuffer |= updateAttributeBuffer<glm::vec2>("TEXCOORD_0", model, primitive, m_alloc, &staging, vertexBuffers.texCoord0);
+      newBuffer |= updateAttributeBuffer<glm::vec2>("TEXCOORD_1", model, primitive, m_alloc, &staging, vertexBuffers.texCoord1);
+      newBuffer |= updateAttributeBuffer<glm::vec4>("TANGENT", model, primitive, m_alloc, &staging, vertexBuffers.tangent);
+      fresh[primID] = newBuffer;
+    }
 
     // A buffer was created (most likely tangent buffer), we need to update the RenderPrimitive buffer
     if(newBuffer)
@@ -2380,8 +2407,12 @@ std::vector<shaderio::GltfLight> getShaderLights(const std::vector<nvvkgltf::Ren
 // Preserves textures and materials. Use for geometry-only rebuilds (e.g. tangent generation).
 void nvvkgltf::SceneVk::destroyGeometry()
 {
-  for(auto& vertexBuffer : m_vertexBuffers)
+  for(size_t primID = 0; primID < m_vertexBuffers.size(); primID++)
   {
+    // an alias repeats its owner's handles: the owner destroys them
+    if(primID < m_vertexBufferOwner.size() && m_vertexBufferOwner[primID] != static_cast<int>(primID))
+      continue;
+    VertexBuffers& vertexBuffer = m_vertexBuffers[primID];
     if(vertexBuffer.position.buffer != VK_NULL_HANDLE)
     {
       m_memoryTracker.untrack(kMemCategoryGeometry, vertexBuffer.position.allocation);
@@ -2414,6 +2445,7 @@ void nvvkgltf::SceneVk::destroyGeometry()
     }
   }
   m_vertexBuffers.clear();
+  m_vertexBufferOwner.clear();
 
   for(auto& indicesBuffer : m_bIndices)
   {
