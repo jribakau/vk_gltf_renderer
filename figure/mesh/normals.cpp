@@ -2,9 +2,15 @@
 
 #include <cmath>
 
+#include <figure/jobs/pool.hpp>
+
 namespace fv::mesh {
 
 namespace {
+
+// a full weld below this many triangles runs on the calling thread
+constexpr size_t kParallelTris  = 4096;
+constexpr size_t kParallelVerts = 8192;
 
 // Writes (x, y, z) at unit length into `out` at vertex s; a zero sum stays zero.
 void unit(std::span<float> out, size_t s, double x, double y, double z)
@@ -66,7 +72,43 @@ NormalWelder::NormalWelder(std::span<const uint32_t> renderIndex, std::span<cons
 
 void NormalWelder::full(std::span<const float> position, std::span<float> out)
 {
-  weldNormals(position, m_renderIndex, m_firstSplit, m_renderTris, m_renderCount, out);
+  const size_t triCount = m_renderTris.size() / 3;
+  if(triCount < kParallelTris)
+  {
+    weldNormals(position, m_renderIndex, m_firstSplit, m_renderTris, m_renderCount, out);
+    return;
+  }
+  adjacency();
+  m_triNormal.resize(triCount * 3);
+  const auto& tris = m_renderTris;
+  jobs::parallelFor(triCount, kParallelTris, [&](size_t begin, size_t end) {
+    for(size_t ti = begin; ti < end; ti++)
+    {
+      const size_t t = ti * 3;
+      const size_t a = size_t(m_firstSplit[tris[t]]) * 3, b = size_t(m_firstSplit[tris[t + 1]]) * 3, c = size_t(m_firstSplit[tris[t + 2]]) * 3;
+      const double e1x = double(position[b]) - position[a], e1y = double(position[b + 1]) - position[a + 1], e1z = double(position[b + 2]) - position[a + 2];
+      const double e2x = double(position[c]) - position[a], e2y = double(position[c + 1]) - position[a + 1], e2z = double(position[c + 2]) - position[a + 2];
+      m_triNormal[t]     = e1y * e2z - e1z * e2y;
+      m_triNormal[t + 1] = e1z * e2x - e1x * e2z;
+      m_triNormal[t + 2] = e1x * e2y - e1y * e2x;
+    }
+  });
+  // each render vertex sums its triangles in triangle order, as the serial weld adds them
+  jobs::parallelFor(size_t(m_renderCount), kParallelVerts, [&](size_t begin, size_t end) {
+    for(size_t v = begin; v < end; v++)
+    {
+      double x = 0, y = 0, z = 0;
+      for(int k = m_adjStart[v]; k < m_adjStart[v + 1]; k++)
+      {
+        const size_t t = size_t(m_adjTris[k]) * 3;
+        x += m_triNormal[t];
+        y += m_triNormal[t + 1];
+        z += m_triNormal[t + 2];
+      }
+      for(int32_t s = m_firstSplit[v]; s >= 0; s = m_nextSplit[s])
+        unit(out, size_t(s), x, y, z);
+    }
+  });
 }
 
 void NormalWelder::adjacency()

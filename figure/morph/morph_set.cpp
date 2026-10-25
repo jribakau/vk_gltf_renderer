@@ -13,6 +13,8 @@ namespace {
 
 // Incremental flushes before the buffer is rebuilt from the base positions, so rounding can't build up.
 constexpr int kRebuildEvery = 400;
+// a target with at least this many vertices adds its deltas in parallel chunks of this size
+constexpr size_t kParallelDeltas = 16384;
 // How long a lazy file waits for others before the driver runs for it.
 constexpr auto kDriverDelay = std::chrono::milliseconds(100);
 
@@ -731,19 +733,33 @@ MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
   const auto            deltasStart = std::chrono::steady_clock::now();
   auto                  add = [&](const mesh::RenderTarget& t, double dw) {
     const size_t count = t.indices.size();
-    for(size_t i = 0; i < count; i++)
-    {
-      const uint32_t v = t.indices[i];
-      const size_t   o = size_t(v) * 3, d = i * 3;
-      pos[o]     = float(pos[o] + t.deltas[d] * dw);
-      pos[o + 1] = float(pos[o + 1] + t.deltas[d + 1] * dw);
-      pos[o + 2] = float(pos[o + 2] + t.deltas[d + 2] * dw);
-      if(!st.mark[v])
+    const auto   run   = [&](size_t begin, size_t end, std::vector<uint32_t>& found) {
+      for(size_t i = begin; i < end; i++)
       {
-        st.mark[v] = 1;
-        moved.push_back(v);
+        const uint32_t v = t.indices[i];
+        const size_t   o = size_t(v) * 3, d = i * 3;
+        pos[o]     = float(pos[o] + t.deltas[d] * dw);
+        pos[o + 1] = float(pos[o + 1] + t.deltas[d + 1] * dw);
+        pos[o + 2] = float(pos[o + 2] + t.deltas[d + 2] * dw);
+        if(!st.mark[v])
+        {
+          st.mark[v] = 1;
+          found.push_back(v);
+        }
       }
+    };
+    if(count < kParallelDeltas)
+    {
+      run(0, count, moved);
+      return;
     }
+    // A target lists each vertex once, so its chunks write disjoint positions and marks; the
+    // vertices each chunk found moved go onto the list in chunk order, which is the order one
+    // thread would have found them in.
+    std::vector<std::vector<uint32_t>> found((count + kParallelDeltas - 1) / kParallelDeltas);
+    jobs::parallelFor(count, kParallelDeltas, [&](size_t begin, size_t end) { run(begin, end, found[begin / kParallelDeltas]); });
+    for(const auto& f : found)
+      moved.insert(moved.end(), f.begin(), f.end());
   };
   for(const auto& [key, a] : st.active)
   {

@@ -26,6 +26,8 @@ public:
   NormalWelder(std::span<const uint32_t> renderIndex, std::span<const int32_t> firstSplit, std::span<const int32_t> nextSplit,
                std::span<const uint32_t> renderTris, int renderCount);
 
+  // Every normal again. A mesh of any size runs it in parallel chunks (triangle normals, then each
+  // render vertex's sum over its triangles in triangle order), which writes what weldNormals writes.
   void full(std::span<const float> position, std::span<float> out);
 
   // Recomputes the normals the moved drawn vertices `moved` affect: every vertex of a triangle that
@@ -44,8 +46,10 @@ private:
   std::span<const uint32_t> m_renderTris;
   int                       m_renderCount;
 
-  // render vertex -> its triangles, built on first partial use
+  // render vertex -> its triangles, built on first use
   std::vector<int32_t> m_adjStart, m_adjTris;
+  // a full weld's triangle normals, kept between welds
+  std::vector<double> m_triNormal;
   // partial updates' working space: which vertices and triangles this pass met, and the sums
   std::vector<int32_t> m_vertexPass, m_triPass, m_affected;
   std::vector<double>  m_sum;

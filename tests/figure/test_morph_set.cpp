@@ -196,6 +196,69 @@ TEST(FigureMorphSet, ALocalMorphReportsOnlyWhatItMoved)
   EXPECT_NEAR(geo->position[200 * 3 + 2], grid(20, 0).position[200 * 3 + 2] + 0.5f, 1e-5);
 }
 
+// The parallel full weld writes exactly what the serial weld writes: the same triangle normals
+// summed per render vertex in the same order.
+TEST(FigureMorphSet, ParallelFullWeldMatchesTheSerialWeld)
+{
+  auto geo = grid(80, 1);  // 51 200 triangles, 25 921 render vertices: several chunks of each
+  fv::mesh::NormalWelder welder(geo.renderIndex, geo.firstSplit, geo.nextSplit, geo.renderTris, geo.renderVertexCount);
+  std::vector<float>     parallel(geo.normal.size(), 0.f), serial(geo.normal.size(), 0.f);
+  welder.full(geo.position, parallel);
+  fv::mesh::weldNormals(geo.position, geo.renderIndex, geo.firstSplit, geo.renderTris, geo.renderVertexCount, serial);
+  size_t different = 0;
+  for(size_t i = 0; i < serial.size(); i++)
+    different += parallel[i] != serial[i];
+  EXPECT_EQ(different, 0u);
+  // and twice over, the second time with the adjacency and triangle buffer already built
+  welder.full(geo.position, parallel);
+  for(size_t i = 0; i < serial.size(); i++)
+    different += parallel[i] != serial[i];
+  EXPECT_EQ(different, 0u);
+}
+
+// A target over more vertices than one parallel chunk moves every vertex it lists, once, and
+// reports them in index order: the moved list drives the normal weld around them.
+TEST(FigureMorphSet, ALargeTargetAddsItsDeltasInChunks)
+{
+  auto geo = std::make_shared<fv::mesh::BuiltMesh>(grid(200, 1));  // 160 801 render vertices
+  // a band of 50 cage rows: about 24 000 drawn vertices, over one chunk and under a quarter of the mesh
+  std::vector<int32_t> verts;
+  std::vector<float>   deltas;
+  for(int j = 60; j < 110; j++)
+    for(int i = 0; i <= 200; i++)
+    {
+      verts.push_back(j * 201 + i);
+      deltas.insert(deltas.end(), {0.f, 0.f, 0.01f * float(i % 7 + 1)});
+    }
+  const auto          t = targetOf(*geo, verts, deltas);
+  ASSERT_GT(t->indices.size(), 16384u);
+  ASSERT_LT(t->indices.size(), geo->position.size() / 3 / 4);
+  const std::vector<float> base = geo->position;
+  fv::morph::MorphSet      morphs([&](int) { return geo.get(); });
+  morphs.addTarget("band", 0, t);
+  morphs.takeChanges();
+  morphs.set("band", 0.5);
+  const auto changes = morphs.takeChanges();
+  ASSERT_EQ(changes.size(), 1u);
+  EXPECT_FALSE(changes[0].all);
+  EXPECT_TRUE(std::is_sorted(changes[0].indices.begin(), changes[0].indices.end()));
+  // every listed vertex moved by half its delta, and is among the changed
+  std::set<uint32_t> changed(changes[0].indices.begin(), changes[0].indices.end());
+  double             worstPos = 0;
+  for(size_t i = 0; i < t->indices.size(); i++)
+  {
+    const size_t o = size_t(t->indices[i]) * 3;
+    worstPos       = std::max<double>(worstPos, std::fabs(double(geo->position[o + 2]) - (double(base[o + 2]) + 0.5 * t->deltas[i * 3 + 2])));
+    EXPECT_TRUE(changed.count(t->indices[i])) << t->indices[i];
+  }
+  EXPECT_LT(worstPos, 1e-5);
+  // the normals around them agree with a weld of the whole mesh
+  fv::mesh::NormalWelder welder(geo->renderIndex, geo->firstSplit, geo->nextSplit, geo->renderTris, geo->renderVertexCount);
+  std::vector<float>     full(geo->normal.size());
+  welder.full(geo->position, full);
+  EXPECT_LT(worst(geo->normal, full), 1e-4);
+}
+
 TEST(FigureMorphSet, DriverRunsOnceForFilesThatArriveTogether)
 {
   std::atomic<int> arrived{0};
