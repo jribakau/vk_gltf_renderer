@@ -1038,7 +1038,7 @@ struct FvHost::Impl
   void presetChangedEyes(Prop& prop, const std::string& rel, const std::set<int>& changed);
   // a worn item's colour (fv_host.hpp wardrobe.color): `rel` "" and no `doc` for the item as it was worn
   Json wardrobeColor(const Json& args);
-  Json applyItemColor(Prop& prop, int item, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
+  Json applyItemColor(Prop& prop, const std::vector<int>& items, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
   void publishEyes(Prop& p);
   // skin and makeup (fv_host.hpp material.skin, material.makeup): `rel` "" and no `doc` for the
   // character's own
@@ -2894,13 +2894,30 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
 }
 
 namespace {
-int itemId(const Json& args)
+int itemIdOf(const Json& v)
 {
-  const Json& v = args.at("item");
   if(v.is_number_integer())
     return v.get<int>();
   const std::string s = v.get<std::string>();
   return std::atoi(s.c_str() + (s.rfind("i:", 0) == 0 ? 2 : 0));
+}
+
+int itemId(const Json& args)
+{
+  return itemIdOf(args.at("item"));
+}
+
+// `item` as one id or a list of them ("i:3", 3, ["i:3", "i:4"]).
+std::vector<int> itemIds(const Json& args)
+{
+  const Json&      v = args.at("item");
+  std::vector<int> out;
+  if(v.is_array())
+    for(const Json& x : v)
+      out.push_back(itemIdOf(x));
+  else
+    out.push_back(itemIdOf(v));
+  return out;
 }
 }  // namespace
 
@@ -3559,7 +3576,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
             if(!rel.empty() && !(doc = fig.store().load(rel)))
               problems.push_back("the colour " + fileStem(rel) + " of " + i.label + " isn't in the content library");
             else
-              applyItemColor(*prop, i.id, rel, doc ? &doc->json : nullptr, true);
+              applyItemColor(*prop, {i.id}, rel, doc ? &doc->json : nullptr, true);
           }
           catch(const std::exception& e)
           {
@@ -3880,31 +3897,42 @@ std::set<int> itemSurfaces(const fv::SceneGraph& scene, const fv::WornItem& w)
 
 }  // namespace
 
-// The colour `rel` on a worn item, `doc` its preset (null, with `rel` "", for the item as it was
-// worn): the item's surfaces back to how it was worn, then the preset's part on them, so nothing of
-// the colour before stays and nothing else it sets is touched. Unless `keepEdits`, the panel's edits
-// of those surfaces go too (a recolour sets the mean, so kept it would make every colour look the
-// same). Throws, changing nothing, when nothing of the preset lands on the item.
-Json FvHost::Impl::applyItemColor(Prop& prop, int item, const std::string& rel, const fv::dson::Json* doc, bool keepEdits)
+// The colour `rel` on worn items, `doc` its preset (null, with `rel` "", for the items as they were
+// worn): the items' surfaces back to how they were worn, then the preset's part on them, so nothing
+// of the colour before stays and nothing else it sets is touched. Several items go as one (a hair
+// worn as a cap, a base and its curls), so a preset that colours only some of them still applies.
+// Unless `keepEdits`, the panel's edits of those surfaces go too (a recolour sets the mean, so kept
+// it would make every colour look the same). Throws, changing nothing, when nothing of the preset
+// lands on the items.
+Json FvHost::Impl::applyItemColor(Prop& prop, const std::vector<int>& items, const std::string& rel, const fv::dson::Json* doc, bool keepEdits)
 {
-  Loaded&             f     = *prop.figure;
-  fv::SceneGraph&     scene = f.fig->loaded.scene;
-  const fv::WornItem* w     = wornItem(*f.fig, item);
-  if(!w)
-    throw std::runtime_error(prop.name + " doesn't wear that item any more.");
-  const std::set<int> surfaces = itemSurfaces(scene, *w);
+  Loaded&                          f     = *prop.figure;
+  fv::SceneGraph&                  scene = f.fig->loaded.scene;
+  std::vector<const fv::WornItem*> worn;
+  std::set<int>                    surfaces, previous;
+  for(int item : items)
+  {
+    const fv::WornItem* w = wornItem(*f.fig, item);
+    if(!w)
+      throw std::runtime_error(prop.name + " doesn't wear that item any more.");
+    worn.push_back(w);
+    const std::set<int> own = itemSurfaces(scene, *w);
+    surfaces.insert(own.begin(), own.end());
+    if(const auto was = f.colors.find(item); was != f.colors.end())
+      previous.insert(was->second.owned.begin(), was->second.owned.end());
+  }
+  const std::string label = worn.empty() ? std::string("The item") : worn.front()->label;
   if(surfaces.empty())
-    throw std::runtime_error(w->label + " has no surfaces to colour.");
+    throw std::runtime_error(label + " has no surfaces to colour.");
   std::set<int> targets;
   if(doc)
   {
     targets = fv::dson::materialPresetTargets(*doc, scene);
     if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
-      throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + w->label + "'s.");
+      throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + label + "'s.");
   }
-  const auto                     was     = f.colors.find(item);
-  const fv::dson::PresetChoice   r       = fv::dson::choosePreset(scene, surfaces, doc, was != f.colors.end() ? was->second.owned : std::set<int>{});
-  std::set<int>                  changed = r.changed;
+  const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, previous);
+  std::set<int>                changed = r.changed;
   if(!keepEdits)
     for(int i : surfaces)
       if(!scene.materials[size_t(i)].edits.empty())
@@ -3914,8 +3942,15 @@ Json FvHost::Impl::applyItemColor(Prop& prop, int item, const std::string& rel, 
       }
   if(prop.materials)
     prop.materials->surfacesChanged(changed);
-  f.colors[item] = {rel, r.owned};
-  // the scene file replays it as the item's colour, not as a preset; one that also set other
+  // each item owns what the choice changed on its own surfaces
+  for(const fv::WornItem* w : worn)
+  {
+    const std::set<int> own = itemSurfaces(scene, *w);
+    std::set<int>       owned;
+    std::set_intersection(own.begin(), own.end(), r.owned.begin(), r.owned.end(), std::inserter(owned, owned.end()));
+    f.colors[w->id] = {rel, owned};
+  }
+  // the scene file replays it as the items' colour, not as a preset; one that also set other
   // surfaces (a character's skin and hair) stays a preset for those
   if(std::includes(surfaces.begin(), surfaces.end(), targets.begin(), targets.end()))
     f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
@@ -3923,9 +3958,9 @@ Json FvHost::Impl::applyItemColor(Prop& prop, int item, const std::string& rel, 
   return {{"color", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
 }
 
-// wardrobe.color {prop, item, rel}: the preset is read on a worker and applied on the application
-// thread. The job fails, changing nothing, for an item the figure no longer wears or a preset none of
-// whose surfaces are the item's.
+// wardrobe.color {prop, item | [item...], rel}: the preset is read on a worker and applied on the
+// application thread. The job fails, changing nothing, for an item the figure no longer wears or a
+// preset none of whose surfaces are the items'.
 Json FvHost::Impl::wardrobeColor(const Json& args)
 {
   if(!args.contains("rel") || !(args["rel"].is_string() || args["rel"].is_null()))
@@ -3933,22 +3968,25 @@ Json FvHost::Impl::wardrobeColor(const Json& args)
   auto figure = figureArg(args);
   if(!figure)
     throw std::runtime_error("no such figure");
-  const int           item = itemId(args);
-  const fv::WornItem* w    = wornItem(*figure->fig, item);
-  if(!w)
-    throw std::runtime_error("no such item");
-  const std::string rel   = args["rel"].is_string() ? args["rel"].get<std::string>() : std::string();
-  const uint64_t    jobId = ++jobs;
-  const std::string label = w->label + ": " + (rel.empty() ? std::string("its own colour") : fileStem(rel));
+  const std::vector<int> items = itemIds(args);
+  if(items.empty())
+    throw std::runtime_error("wardrobe.color wants an item");
+  for(int item : items)
+    if(!wornItem(*figure->fig, item))
+      throw std::runtime_error("no such item");
+  const fv::WornItem* w     = wornItem(*figure->fig, items.front());
+  const std::string   rel   = args["rel"].is_string() ? args["rel"].get<std::string>() : std::string();
+  const uint64_t      jobId = ++jobs;
+  const std::string   label = w->label + ": " + (rel.empty() ? std::string("its own colour") : fileStem(rel));
   job(jobId, {{"label", label}, {"state", "running"}});
   const auto fail  = [this, jobId, label](const std::string& why) { job(jobId, {{"label", label}, {"state", "failed"}, {"error", why}}); };
-  const auto apply = [this, figure, item, rel, jobId, label, fail](const std::optional<fv::dson::Json>& doc) {
+  const auto apply = [this, figure, items, rel, jobId, label, fail](const std::optional<fv::dson::Json>& doc) {
     const auto p = findProp(figure->id);
     if(!p || p->figure != figure)
       return fail("the figure left the scene");
     try
     {
-      Json done     = applyItemColor(*p, item, rel, doc ? &*doc : nullptr, false);
+      Json done     = applyItemColor(*p, items, rel, doc ? &*doc : nullptr, false);
       done["label"] = label;
       done["state"] = "done";
       job(jobId, done);

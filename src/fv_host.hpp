@@ -92,12 +92,13 @@
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
 //                                                leaves the renderer's scene at the next composition, and a geograft composes
-//   wardrobe.color  {prop, item, rel: string | null}   -> {job}: the item's colour becomes the material preset
-//                                                `rel` (null: the item as it was worn). Each choice starts
-//                                                from the item as it was worn, so colours don't stack, takes
-//                                                only the preset's part on the item's surfaces and drops the
-//                                                panel's edits of them. The job ends {state: "done", color, changed},
-//                                                or "failed" when nothing of the preset lands on the item. Kept
+//   wardrobe.color  {prop, item | [item...], rel: string | null}   -> {job}: the item's colour becomes the
+//                                                material preset `rel` (null: the item as it was worn). Each
+//                                                choice starts from the item as it was worn, so colours don't
+//                                                stack, takes only the preset's part on the item's surfaces and
+//                                                drops the panel's edits of them. Several items go as one (a hair
+//                                                worn as three pieces). The job ends {state: "done", color, changed},
+//                                                or "failed" when nothing of the preset lands on the items. Kept
 //                                                in the scene file (worn[].color); a preset opened later that
 //                                                reaches the item becomes its colour
 //   wardrobe.collision {prop, on}                 worn conforming meshes are pushed out of the posed body
