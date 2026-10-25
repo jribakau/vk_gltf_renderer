@@ -52,20 +52,34 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// One host-visible buffer per frame in flight. The copy recorded in frame N is read back once the
-// application's frame timeline reaches that frame's value (`signal`): the next onUpdate waits for
-// it while the loop would otherwise sleep. At the latest it is read when the ring slot comes
-// around again, which the application waits for before it re-records the slot's command buffer.
+// A host-visible buffer a frame is copied into, read by the encoder in place: no copy of the
+// pixels is made on the application thread. Its states, every change under Impl::rawMutex:
+//   eFree      available for the next copy
+//   eCopying   the copy is recorded; it is in once the application's frame timeline reaches `signal`
+//              (the next onUpdate waits for it while the loop would otherwise sleep)
+//   eWaiting   handed to the encoder, not yet taken. One at a time: a newer frame that arrives while
+//              the encoder is busy takes the place of the one waiting, so the newest is encoded
+//   eEncoding  the encoder reads its pixels
+//   eLast      the last frame encoded, kept so the next one can be told a repeat; freed by the next
 struct Readback
 {
+  enum class State
+  {
+    eFree,
+    eCopying,
+    eWaiting,
+    eEncoding,
+    eLast
+  };
   VkBuffer       buffer{};
   VkDeviceMemory memory{};
   void*          mapped{};
   VkDeviceSize   size{};
   VkExtent2D     extent{};
   bool           coherent{true};
-  bool           pending{false};
+  State          state{State::eFree};
   uint64_t       signal{};  // the frame's timeline value: the copy is in once the semaphore reached it
+  uint64_t       drawn{};   // the renderer's drawn-frame count when the frame was copied (0 without the callback)
   LatencyTrace   trace;     // A traced edit this frame shows (latency_trace.hpp)
 };
 
@@ -93,15 +107,17 @@ struct FrameStream::Impl
   nvapp::Application*   app{};
   VkDevice              device{};
   VkPhysicalDevice      physicalDevice{};
+  // Frames in flight, plus one waiting for the encoder, one being encoded, one kept as the last
+  // encoded (see Readback): enough for every frame to find a free buffer. Rebuilt on resize.
   std::vector<Readback> ring;
 
-  // raw frames: application thread -> encoder thread (one slot: a frame that arrives while the
-  // encoder is still busy replaces the one waiting, so the newest is the one encoded)
+  // The ring's states, the frame waiting for the encoder and the last one it encoded, and the
+  // trace riding on the waiting frame: application thread <-> encoder thread, under rawMutex.
+  // rawCv wakes the encoder for a waiting frame, and the application thread when an encode ends.
   std::mutex              rawMutex;
   std::condition_variable rawCv;
-  std::vector<uint8_t>    rawPending;
-  VkExtent2D              rawExtent{};
-  bool                    rawReady{false};
+  Readback*               waiting{nullptr};
+  Readback*               lastEncoded{nullptr};
   LatencyTrace            rawTrace;
   // a traced edit waiting for the next frame copied out (application thread)
   LatencyTrace pendingTrace;
@@ -119,6 +135,7 @@ struct FrameStream::Impl
   std::atomic<uint64_t> framesEncoded{0};
   std::atomic<uint64_t> framesSent{0};
   std::atomic<uint64_t> framesReplaced{0};  // copied out, then replaced by a newer frame before the encoder took them
+  std::atomic<uint64_t> framesSkipped{0};   // not copied: every buffer of the ring was in use
   std::atomic<double>   renderFps{0.0};
   std::atomic<double>   encodeMs{0.0};
   // live encoder settings, read by the encoder thread each frame: the host's for a moving view,
@@ -148,8 +165,11 @@ struct FrameStream::Impl
   void createRing(const VkExtent2D& extent);
   void destroyRing();
   bool waitSlot(const Readback& rb, uint64_t timeoutNs) const;
-  void collect(std::chrono::steady_clock::time_point deadline, uint32_t reuseSlot);
+  // Hands the encoder the copies that are in: those of frames up to `waitedSignal` however long they
+  // take (the application waits for that frame before it records anyway), the others until `deadline`.
+  void collect(std::chrono::steady_clock::time_point deadline, uint64_t waitedSignal);
   void harvest(Readback& rb);
+  Readback* freeBuffer();  // a buffer for the next copy, or null when every one is in use
   void wake();
   void encodeLoop();
   void serve();
@@ -282,11 +302,11 @@ void FrameStream::onUpdate()
   Clock::time_point start = s.pacer.startTime(now, refining);
   s.idle                  = s.pacer.idle(now, refining);
 
-  // The copies that are in, oldest first; the one in the slot this frame records into however long
-  // it takes (the application waits for that frame right after onUpdate anyway), the others until
-  // the frame's start time.
+  // The copies that are in, oldest first. The frame this one's ring slot last held is waited for
+  // however long it takes: the application waits for it right after onUpdate anyway, and doing it
+  // here puts the host element's input after that wait. The others wait until the frame's start time.
   if(!s.ring.empty())
-    s.collect(start, s.app->getFrameCycleIndex());
+    s.collect(start, s.app->getFrameSignalSemaphore().value);
 
   // The rest of the wait is a sleep a request cuts short: an idle loop wakes at once, a paced one
   // keeps its start time.
@@ -319,16 +339,6 @@ void FrameStream::onRender(VkCommandBuffer cmd)
   Impl& s = *m_impl;
   if(!s.running || s.ring.empty() || !s.info.image || !s.info.imageSize)
     return;
-  const uint32_t slot = s.app->getFrameCycleIndex();
-  if(slot >= s.ring.size())
-    return;
-  Readback& rb = s.ring[slot];
-  // onUpdate waited for this slot's frame; a copy still here was recorded before the timeline was known
-  if(rb.pending)
-  {
-    rb.pending = false;
-    s.harvest(rb);
-  }
   // an unpaced frame the stream is not due: nothing to copy out
   if(!s.copyFrame)
     return;
@@ -337,6 +347,15 @@ void FrameStream::onRender(VkCommandBuffer cmd)
   const VkExtent2D extent = s.info.imageSize();
   if(image == VK_NULL_HANDLE || extent.width == 0 || extent.height == 0)
     return;
+  // Copies that completed since onUpdate free their buffers (no waiting); the first free one takes this frame
+  s.collect(std::chrono::steady_clock::now(), 0);
+  Readback* rbp = s.freeBuffer();
+  if(rbp == nullptr)
+  {
+    s.framesSkipped++;  // the ring is sized so this does not happen in a steady state
+    return;
+  }
+  Readback& rb = *rbp;
   if(VkDeviceSize(extent.width) * extent.height * 4 > rb.size)
     return;  // a resize is on its way; the ring is rebuilt in onResize
 
@@ -393,7 +412,11 @@ void FrameStream::onRender(VkCommandBuffer cmd)
   s.timeline                       = signal.semaphore;
   rb.signal                        = signal.value;
   rb.extent                        = extent;
-  rb.pending                       = true;
+  rb.drawn                         = s.info.drawn ? s.info.drawn() : 0;
+  {
+    std::lock_guard lock(s.rawMutex);
+    rb.state = Readback::State::eCopying;
+  }
   if(!s.pendingTrace.empty())
   {
     rb.trace = std::move(s.pendingTrace);
@@ -410,7 +433,10 @@ void FrameStream::Impl::createRing(const VkExtent2D& extent)
   if(extent.width == 0 || extent.height == 0)
     return;
   const VkDeviceSize size = VkDeviceSize(extent.width) * extent.height * 4;
-  ring.resize(std::max(1u, app->getFrameCycleSize()));
+  // Before frame N is recorded the application has waited for frame N - K (K frames in flight), so
+  // at most K copies are on the GPU, plus one waiting, one being encoded and the last encoded; one
+  // more for a copy that completed after the frame's poll for it.
+  ring.resize(std::max(1u, app->getFrameCycleSize()) + 4);
   for(Readback& rb : ring)
   {
     const VkBufferCreateInfo bufferInfo{
@@ -459,14 +485,25 @@ void FrameStream::Impl::createRing(const VkExtent2D& extent)
       destroyRing();
       return;
     }
-    rb.size    = size;
-    rb.extent  = extent;
-    rb.pending = false;
+    rb.size   = size;
+    rb.extent = extent;
+    rb.state  = Readback::State::eFree;
   }
 }
 
+// Application thread, with the device idle. The encoder reads the ring in place, so a frame it is
+// encoding is waited for, and the frames waiting for it or kept as the last encoded are dropped.
 void FrameStream::Impl::destroyRing()
 {
+  {
+    std::unique_lock lock(rawMutex);
+    rawCv.wait(lock, [&] {
+      return std::none_of(ring.begin(), ring.end(), [](const Readback& rb) { return rb.state == Readback::State::eEncoding; });
+    });
+    waiting     = nullptr;
+    lastEncoded = nullptr;
+    rawTrace.clear();
+  }
   for(Readback& rb : ring)
   {
     if(rb.mapped)
@@ -494,29 +531,41 @@ bool FrameStream::Impl::waitSlot(const Readback& rb, uint64_t timeoutNs) const
 }
 
 // Application thread: hands the encoder the copies whose frames the GPU has finished, oldest first
-// (a newer frame replaces an older one still waiting for the encoder, so the order matters). The
-// copy in `reuseSlot` is waited for however long it takes, the others until `deadline`; frames
-// complete in order, so the first one not in ends the pass.
-void FrameStream::Impl::collect(std::chrono::steady_clock::time_point deadline, uint32_t reuseSlot)
+// (a newer frame replaces an older one still waiting for the encoder, so the order matters). A copy
+// of a frame up to `waitedSignal` is waited for however long it takes, the others until `deadline`;
+// frames complete in order, so the first one not in ends the pass.
+void FrameStream::Impl::collect(std::chrono::steady_clock::time_point deadline, uint64_t waitedSignal)
 {
-  std::vector<Readback*> pending;
-  for(Readback& rb : ring)
-    if(rb.pending)
-      pending.push_back(&rb);
-  std::sort(pending.begin(), pending.end(), [](const Readback* a, const Readback* b) { return a->signal < b->signal; });
-  for(Readback* rb : pending)
+  std::vector<Readback*> copying;
+  {
+    std::lock_guard lock(rawMutex);
+    for(Readback& rb : ring)
+      if(rb.state == Readback::State::eCopying)
+        copying.push_back(&rb);
+  }
+  std::sort(copying.begin(), copying.end(), [](const Readback* a, const Readback* b) { return a->signal < b->signal; });
+  for(Readback* rb : copying)
   {
     uint64_t timeout = std::numeric_limits<uint64_t>::max();
-    if(reuseSlot >= ring.size() || rb != &ring[reuseSlot])
+    if(rb->signal > waitedSignal)
     {
       const auto left = deadline - std::chrono::steady_clock::now();
       timeout         = left.count() > 0 ? uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(left).count()) : 0;
     }
     if(!waitSlot(*rb, timeout))
       break;
-    rb->pending = false;
     harvest(*rb);
   }
+}
+
+// Application thread: the first free buffer of the ring, or null.
+Readback* FrameStream::Impl::freeBuffer()
+{
+  std::lock_guard lock(rawMutex);
+  for(Readback& rb : ring)
+    if(rb.state == Readback::State::eFree)
+      return &rb;
+  return nullptr;
 }
 
 // Any thread: a request came in. Ends an idle and cuts the pacing sleep short (onUpdate).
@@ -529,14 +578,21 @@ void FrameStream::Impl::wake()
   wakeCv.notify_all();
 }
 
-// Application thread: the slot's copy has completed. Hand the pixels to the encoder. If it is still
-// busy with an earlier frame and one is already waiting, this one takes its place: at 4K an encode
-// takes longer than a frame, and the frame that waits should be the newest, not the stalest.
+// Application thread: the buffer's copy has completed. Hand it to the encoder, which reads it in
+// place. If the encoder is still busy with an earlier frame and one is already waiting, this one
+// takes its place: at 4K an encode takes longer than a frame, and the frame that waits should be
+// the newest, not the stalest.
 void FrameStream::Impl::harvest(Readback& rb)
 {
-  std::unique_lock lock(rawMutex);
-  if(rawReady)
+  if(!rb.coherent)
   {
+    const VkMappedMemoryRange range{.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = rb.memory, .size = VK_WHOLE_SIZE};
+    vkInvalidateMappedMemoryRanges(device, 1, &range);
+  }
+  std::unique_lock lock(rawMutex);
+  if(waiting != nullptr)
+  {
+    waiting->state = Readback::State::eFree;
     framesReplaced++;
     // the replaced frame's trace rides on this one, which shows its edit too
     if(rb.trace.empty())
@@ -549,18 +605,10 @@ void FrameStream::Impl::harvest(Readback& rb)
     rawTrace = std::move(rb.trace);
     rb.trace.clear();
   }
-  const size_t bytes = size_t(rb.extent.width) * rb.extent.height * 4;
-  if(!rb.coherent)
-  {
-    const VkMappedMemoryRange range{.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = rb.memory, .size = VK_WHOLE_SIZE};
-    vkInvalidateMappedMemoryRanges(device, 1, &range);
-  }
-  rawPending.resize(bytes);
-  std::memcpy(rawPending.data(), rb.mapped, bytes);
-  rawExtent = rb.extent;
-  rawReady  = true;
+  rb.state = Readback::State::eWaiting;
+  waiting  = &rb;
   lock.unlock();
-  rawCv.notify_one();
+  rawCv.notify_all();
 }
 
 void FrameStream::Impl::encodeLoop()
@@ -572,38 +620,54 @@ void FrameStream::Impl::encodeLoop()
     return;
   }
   int appliedQuality = -1;
+  // The fast integer DCT: a tenth to a fifth off the encode, no difference a viewer can see at
+  // these qualities.
+  tj3Set(tj, TJPARAM_FASTDCT, 1);
 
-  std::vector<uint8_t> raw;
-  std::vector<uint8_t> last;
-  VkExtent2D           lastExtent{};
-  bool                 lastFullChroma = false;
-  int                  lastQuality    = -1;
+  bool lastFullChroma = false;
+  int  lastQuality    = -1;
+  // Release a buffer to the ring, waking a destroyRing() that waits for the encode to end
+  auto release = [&](Readback* rb, Readback::State state) {
+    {
+      std::lock_guard lock(rawMutex);
+      rb->state = state;
+    }
+    rawCv.notify_all();
+  };
   while(running)
   {
-    VkExtent2D   extent{};
+    Readback*    cur  = nullptr;
+    Readback*    last = nullptr;
     LatencyTrace trace;
     {
       std::unique_lock lock(rawMutex);
-      rawCv.wait(lock, [&] { return rawReady || !running; });
+      rawCv.wait(lock, [&] { return waiting != nullptr || !running; });
       if(!running)
         break;
-      raw.swap(rawPending);
-      extent   = rawExtent;
-      rawReady = false;
+      cur        = waiting;
+      waiting    = nullptr;
+      cur->state = Readback::State::eEncoding;
+      last       = lastEncoded;  // stays allocated while cur is encoding: destroyRing() waits for that
       trace.swap(rawTrace);
     }
-    const int  wantQuality = quality.load();
-    const bool wantFull    = fullChroma.load();
+    const VkExtent2D extent      = cur->extent;
+    const size_t     bytes       = size_t(extent.width) * extent.height * 4;
+    const int        wantQuality = quality.load();
+    const bool       wantFull    = fullChroma.load();
     // A converged path trace repeats the same image frame after frame; don't re-send it, except
     // once with full chroma, or when the quality rose above the one it went out at, since the frame
     // that was sent was encoded for speed. A quality lowered while it stands (the first touch after
-    // a still) is no reason to encode the image already on screen again.
-    const bool repeat = extent.width == lastExtent.width && extent.height == lastExtent.height
-                        && raw.size() == last.size() && std::memcmp(raw.data(), last.data(), raw.size()) == 0;
+    // a still) is no reason to encode the image already on screen again. A frame the renderer drew
+    // is never a repeat, so the compare runs only while the drawn count stands still (a still, an
+    // idle loop), where a tonemapper or denoiser change can still alter the image without a draw.
+    const bool sameDrawn = !info.drawn || (last != nullptr && cur->drawn == last->drawn);
+    const bool repeat    = last != nullptr && sameDrawn && extent.width == last->extent.width
+                        && extent.height == last->extent.height && std::memcmp(cur->mapped, last->mapped, bytes) == 0;
     if(repeat && lastFullChroma && wantQuality <= lastQuality)
     {
       if(!trace.empty())
         LOGI("%s (frame repeated, not re-sent)\n", formatTrace(trace).c_str());
+      release(cur, Readback::State::eFree);
       continue;
     }
 
@@ -617,10 +681,13 @@ void FrameStream::Impl::encodeLoop()
     }
     const bool full = repeat || wantFull;
     tj3Set(tj, TJPARAM_SUBSAMP, full ? TJSAMP_444 : TJSAMP_420);
-    if(tj3Compress8(tj, raw.data(), int(extent.width), 0, int(extent.height), TJPF_RGBX, &jpeg, &size) != 0)
+    if(tj3Compress8(tj, static_cast<const unsigned char*>(cur->mapped), int(extent.width), 0, int(extent.height), TJPF_RGBX,
+                    &jpeg, &size)
+       != 0)
     {
       LOGW("frame stream: JPEG encoding failed: %s\n", tj3GetErrorStr(tj));
       tj3Free(jpeg);
+      release(cur, Readback::State::eFree);
       continue;
     }
     auto out = std::make_shared<std::string>(reinterpret_cast<const char*>(jpeg), size);
@@ -628,8 +695,15 @@ void FrameStream::Impl::encodeLoop()
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     encodeMs        = encodeMs == 0.0 ? ms : encodeMs * 0.9 + ms * 0.1;
 
-    last.swap(raw);
-    lastExtent     = extent;
+    // This frame is now the last encoded; the previous one goes back to the ring
+    {
+      std::lock_guard lock(rawMutex);
+      if(lastEncoded != nullptr)
+        lastEncoded->state = Readback::State::eFree;
+      lastEncoded = cur;
+      cur->state  = Readback::State::eLast;
+    }
+    rawCv.notify_all();
     lastFullChroma = full;
     lastQuality    = wantQuality;
     {
@@ -761,6 +835,7 @@ void FrameStream::Impl::serve()
     }
     const std::string body = "{\"rendered\":" + std::to_string(framesRendered.load()) + ",\"encoded\":" + std::to_string(framesEncoded.load())
                              + ",\"sent\":" + std::to_string(framesSent.load()) + ",\"replaced\":" + std::to_string(framesReplaced.load())
+                             + ",\"skipped\":" + std::to_string(framesSkipped.load())
                              + ",\"width\":" + std::to_string(extent.width)
                              + ",\"height\":" + std::to_string(extent.height) + ",\"fps\":" + std::to_string(renderFps.load())
                              + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load())
