@@ -1036,4 +1036,20 @@ TEST(Materials, AToneAndAMakeupColourLowerIntoTheBaseMap)
   EXPECT_TRUE(merged.tone && merged.makeupColor && merged.makeupWeight && merged.toneStrength);
 }
 
+// Tri-X's eye presets give the eye moisture the eye's own map; Iray refracts through it untinted, so
+// the glTF material, which tints what it transmits by its base colour, leaves the map out.
+TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)
+{
+  const auto moisture = fv::dson::parseSurface("EyeMoisture Left", channelsOf(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+    {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/Eyes_TX_Svetlana9_02.jpg"}},
+    {"channel":{"id":"Refraction Weight","type":"float","current_value":1}},
+    {"channel":{"id":"Refraction Index","type":"float","current_value":1.38}}]}]})"));
+  const auto lowered = fv::mat::lower(moisture, {}, {});
+  EXPECT_TRUE(lowered.requests.empty());
+  const Json& pbr = lowered.material["pbrMetallicRoughness"];
+  EXPECT_FALSE(pbr.contains("baseColorTexture"));
+  EXPECT_FLOAT_EQ(pbr["baseColorFactor"][0].get<float>(), 1.f);
+  EXPECT_FLOAT_EQ(lowered.material["extensions"]["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.f);
+}
+
 }  // namespace

@@ -177,6 +177,10 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   const SkinRole role  = skinRole(s);
   const bool     refractive = s.refraction && s.refraction->weight > 0.05f;
   const Rgb      baseColor  = e.color.value_or(s.base.color);
+  // Iray's refraction shows none of the base colour where it refracts, but glTF tints transmitted
+  // light by it, so a map on a refracting surface would be looked through, on the way in and out
+  // (Tri-X's eye presets put the whole eye's map on the eye moisture). Its colour goes as a flat one does.
+  const std::string baseMap = refractive ? std::string() : s.base.map;
 
   // base colour: cutouts ride in its alpha, PBRSkin makeup is baked into it (glTF has one base
   // colour), blended in linear light
@@ -194,7 +198,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     if(e.makeupWeight)
       makeup->weight = clamp(*e.makeupWeight, 0, 1);
   }
-  const bool anyMap = !s.base.map.empty() || !s.opacity.map.empty() || (makeup && (!makeup->map.empty() || !makeup->weightMap.empty()));
+  const bool anyMap = !baseMap.empty() || !s.opacity.map.empty() || (makeup && (!makeup->map.empty() || !makeup->weightMap.empty()));
   Rgb        factor = baseColor;
   if(makeup)
     factor = anyMap ? kWhite : lerp(baseColor, makeup->color, makeup->weight);
@@ -248,13 +252,13 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   Json pbr = Json::object();
   // a flat colour baked into the image (no base map) must not tint it again; with no image at all
   // (makeup with no maps of its own) the factor is the colour
-  const bool bakedFlat = anyMap && s.base.map.empty() && (makeup || !s.opacity.map.empty());
+  const bool bakedFlat = anyMap && baseMap.empty() && (makeup || !s.opacity.map.empty());
   pbr["baseColorFactor"] = Json::array({(anyMap && makeup) || bakedFlat ? 1.f : factor[0], (anyMap && makeup) || bakedFlat ? 1.f : factor[1],
                                         (anyMap && makeup) || bakedFlat ? 1.f : factor[2], opacity});
   pbr["metallicFactor"]  = e.metalness.value_or(s.metallic.value);
   if(anyMap)
   {
-    const Json info = b.base(s.base.map, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor);
+    const Json info = b.base(baseMap, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor);
     if(!info.is_null())
       pbr["baseColorTexture"] = info;
   }
