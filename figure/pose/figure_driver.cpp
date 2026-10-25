@@ -1,4 +1,5 @@
 #include <figure/pose/figure_driver.hpp>
+#include <figure/io/timing.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -148,7 +149,8 @@ void FigureDriver::update()
 
 void FigureDriver::run()
 {
-  auto value = graph.evaluator([this](const KeyInfo& k) { return base(k); });
+  fv::timing::Accum whole("driver.run");
+  auto              value = graph.evaluator([this](const KeyInfo& k) { return base(k); });
   // channels that are dialled or applied, in order, then the ones formulas move
   std::vector<std::string>        names;
   std::unordered_set<std::string> seen;
@@ -162,6 +164,8 @@ void FigureDriver::run()
   std::map<std::string, double> driven;
   std::map<std::string, Vec3>   centers;
   const std::vector<KeyId>      outputs = graph.outputs();
+  {
+  fv::timing::Accum outputsTime("driver.outputs");
   for(KeyId key : outputs)
   {
     const KeyInfo info = graph.info(key);
@@ -212,7 +216,10 @@ void FigureDriver::run()
       (info.axis == "x" ? c.x : info.axis == "y" ? c.y : c.z) = d;
     }
   }
+  }
   std::vector<std::pair<std::string, double>> weights;
+  {
+  fv::timing::Accum weightsTime("driver.weights");
   for(const std::string& name : names)
   {
     auto              it = m_idOf.find(name);
@@ -222,10 +229,15 @@ void FigureDriver::run()
     if(std::abs(weight - m_morphs.weightOf(name)) > kEps)
       weights.emplace_back(name, weight);
   }
+  }
   if(!weights.empty())
+  {
+    fv::timing::Accum applyTime("driver.applyWeights");
     m_morphs.applyWeights(weights);
+  }
   if(rig)
   {
+    fv::timing::Accum rigTime("driver.rig");
     rig->setDriven(driven);
     rig->setCenterOffsets(centers);
     // controllers that bend joints want the correctives as much as posing does

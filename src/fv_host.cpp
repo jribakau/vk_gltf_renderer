@@ -607,15 +607,20 @@ Json toolJson(const nvmcp::ToolResult& r)
   return Json::parse(r.json);
 }
 
-// A dial drag's cost on the application thread, summed over a second and logged once (`[fv-time]`):
-// the morph apply (the formula graph, the deltas and the re-welded normals) and the vertex uploads
-// it queues for the renderer. Phase 6 of docs/pipeline-roadmap.md wants these before it starts.
+// A drag's cost on the application thread, summed over a second and logged once (`[fv-time]`): a
+// dial's morph apply (the formula graph, the deltas and the re-welded normals; the phases inside are
+// fv::timing::Accum lines), a pose step, the node transforms, the vertex uploads it queues for the
+// renderer (and how many vertices, how many of them whole meshes) and the rebinds. Phase 6 of
+// docs/pipeline-roadmap.md reads these.
 struct DialTiming
 {
   enum Kind
   {
     eSetMany,
     eApplyMesh,
+    ePoseSet,
+    eApplyNodes,
+    eApplyRebind,
     eCount
   };
   struct Sum
@@ -626,6 +631,9 @@ struct DialTiming
   };
   std::array<Sum, eCount>               sums{};
   std::chrono::steady_clock::time_point since{};
+  size_t                                vertices    = 0;  // uploaded this second, meshes summed
+  int                                   uploads     = 0;
+  int                                   fullUploads = 0;  // of them whole meshes (`all`)
 
   void add(Kind k, double ms)
   {
@@ -637,16 +645,32 @@ struct DialTiming
     s.maxMs = std::max(s.maxMs, ms);
   }
 
+  void addUpload(size_t vertexCount, bool all)
+  {
+    if(since == std::chrono::steady_clock::time_point{})
+      since = std::chrono::steady_clock::now();
+    vertices += vertexCount;
+    uploads++;
+    fullUploads += all ? 1 : 0;
+  }
+
   // The line to log once a second has passed since the first sample, else empty; clears the sums.
   std::string report(std::chrono::steady_clock::time_point now)
   {
     if(since == std::chrono::steady_clock::time_point{} || now - since < std::chrono::seconds(1))
       return {};
-    const Sum& a = sums[eSetMany];
-    const Sum& b = sums[eApplyMesh];
-    char       line[256];
-    snprintf(line, sizeof line, "[fv-time] dial: %d steps, setMany %.1f ms mean, %.1f max; %d frames of mesh changes, applyMesh %.1f ms mean, %.1f max",
-             a.n, a.n ? a.ms / a.n : 0.0, a.maxMs, b.n, b.n ? b.ms / b.n : 0.0, b.maxMs);
+    const auto mean = [](const Sum& s) { return s.n ? s.ms / s.n : 0.0; };
+    const Sum& a    = sums[eSetMany];
+    const Sum& b    = sums[eApplyMesh];
+    const Sum& p    = sums[ePoseSet];
+    const Sum& nd   = sums[eApplyNodes];
+    const Sum& rb   = sums[eApplyRebind];
+    char       line[512];
+    snprintf(line, sizeof line,
+             "[fv-time] dial: %d steps, setMany %.1f ms mean, %.1f max; %d pose steps, poseSet %.1f ms mean, %.1f max; "
+             "%d frames of mesh changes, applyMesh %.1f ms mean, %.1f max (%d uploads, %d whole meshes, %zu vertices); "
+             "applyNodes %.1f ms mean over %d, applyRebind %.1f ms mean over %d",
+             a.n, mean(a), a.maxMs, p.n, mean(p), p.maxMs, b.n, mean(b), b.maxMs, uploads, fullUploads, vertices, mean(nd), nd.n, mean(rb), rb.n);
     *this = DialTiming{};
     return line;
   }
@@ -868,6 +892,7 @@ struct FvHost::Impl
   Json wardrobeRemove(const Json& args);
   Json wardrobeVisible(const Json& args);
   Json wardrobeCollision(const Json& args);
+  Json wardrobeCloth(const Json& args);
   void showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible);
   void publishDforce(Loaded& f, bool force);
   Json dforceCommand(const std::string& cmd, const Json& args);
@@ -2420,9 +2445,17 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
 {
   Json items = Json::object();
   for(const fv::WornItem& w : f.fig->items)
-    items["i:" + std::to_string(w.id)] = {{"label", w.label},   {"kind", w.kind},       {"rel", w.rel},
-                                          {"visible", w.visible}, {"own", w.rel.empty()}, {"channels", w.channels.size()},
-                                          {"collision", !w.collision.empty()}};
+  {
+    const fv::ClothState cloth = f.fig->clothOf(w);
+    items["i:" + std::to_string(w.id)] = {{"label", w.label},
+                                          {"kind", w.kind},
+                                          {"rel", w.rel},
+                                          {"visible", w.visible},
+                                          {"own", w.rel.empty()},
+                                          {"channels", w.channels.size()},
+                                          {"collision", !w.collision.empty()},
+                                          {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}}}};
+  }
   Json topic = {{"figure", f.id}, {"items", items}};
   if(f.collider)
   {
@@ -2718,6 +2751,39 @@ Json FvHost::Impl::wardrobeRemove(const Json& args)
   publishWardrobe(*figure);
   if(figure->dforce)
     figure->dforce->poke();
+  return {{"ok", true}};
+}
+
+// wardrobe.cloth {prop, item, on?: bool | null, strength?}: dForce on one item (figure.hpp,
+// clothSettings): true drapes it, at the defaults when its file has no simulation settings, false
+// holds it, null leaves it to the file; `strength` scales the weights. Turning an item on turns the
+// figure's dForce on, so the choice shows.
+Json FvHost::Impl::wardrobeCloth(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure)
+    throw std::runtime_error("no such figure");
+  const int           id   = itemId(args);
+  const fv::WornItem* item = wornItem(*figure->fig, id);
+  if(!item)
+    throw std::runtime_error("no such item");
+  std::optional<bool> on = item->cloth.on;
+  if(args.contains("on"))
+    on = args["on"].is_boolean() ? std::optional<bool>(args["on"].get<bool>()) : std::nullopt;
+  const float strength = args.value("strength", item->cloth.strength);
+  const auto  changed  = figure->fig->setItemCloth(id, on, strength);
+  if(figure->dforce)
+  {
+    if(on && *on && !figure->dforce->enabled())
+      figure->dforce->setEnabled(true);
+    figure->dforce->changed(changed, false);
+    figure->dforce->poke();
+  }
+  if(figure->collider)
+    figure->collider->poke();
+  publishWardrobe(*figure);
+  if(figure->dforce)
+    publishDforce(*figure, true);
   return {{"ok", true}};
 }
 
@@ -3108,7 +3174,13 @@ Json FvHost::Impl::sceneState(const Json& args)
   Json        worn = Json::array();
   for(const fv::WornItem& w : fig.items)
     if(!w.rel.empty())
-      worn.push_back({{"rel", w.rel}, {"visible", w.visible}, {"label", w.label}});
+    {
+      Json entry = {{"rel", w.rel}, {"visible", w.visible}, {"label", w.label}};
+      // dForce on the item as the user set it, when they did
+      if(w.cloth.on || w.cloth.strength != 1.f)
+        entry["cloth"] = {{"on", w.cloth.on ? Json(*w.cloth.on) : Json(nullptr)}, {"strength", std::round(w.cloth.strength * 1e3) / 1e3}};
+      worn.push_back(std::move(entry));
+    }
   Json morphs = Json::object();
   for(const fv::morph::Channel& c : fig.morphs->channels())
     if(!c.hidden && c.value != 0)
@@ -3228,6 +3300,27 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     if(prop->materials && args.contains("materials") && args["materials"].is_object())
       for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
         problems.push_back(p);
+    // dForce on each item as the file set it; the items are worn by now
+    bool clothChanged = false;
+    for(const Json& w : args.value("worn", Json::array()))
+    {
+      if(!w.is_object() || !w.contains("cloth") || !w["cloth"].is_object())
+        continue;
+      const Json&         c = w["cloth"];
+      std::optional<bool> on;
+      if(c.contains("on") && c["on"].is_boolean())
+        on = c["on"].get<bool>();
+      for(const fv::WornItem& i : fig.items)
+        if(relKey(i.rel) == relKey(w.value("rel", "")) && (w.value("label", "").empty() || i.label == w.value("label", "")))
+          if(!fig.setItemCloth(i.id, on, c.value("strength", 1.f)).empty())
+            clothChanged = true;
+    }
+    if(clothChanged)
+    {
+      if(target->dforce)
+        target->dforce->poke();
+      publishWardrobe(*target);
+    }
     if(target->collider && args.contains("collision") && args["collision"].is_boolean())
       target->collider->setEnabled(args["collision"].get<bool>());
     if(target->dforce && args.contains("dforceMode") && args["dforceMode"].is_string())
@@ -3730,6 +3823,7 @@ void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
     if(upload.indices.empty())
       return;
   }
+  dialTiming.addUpload(change.all ? count : upload.indices.size(), change.all);
   const auto& prims = f.primsOf[change.mesh];
   for(size_t i = 0; i < prims.size(); i++)
   {
@@ -3863,7 +3957,11 @@ Json FvHost::Impl::poseSet(const Json& args)
     if(std::find(bones.begin(), bones.end(), v.bone) == bones.end())
       bones.push_back(v.bone);
   // nodes, corrective morphs and rebound skins go out with this frame's pump()
-  figure->fig->pose->setMany(values);
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    figure->fig->pose->setMany(values);
+    dialTiming.add(DialTiming::ePoseSet, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
   // the values as the rig took them (clamped), for every panel showing the pose
   patchPose(*figure, bones);
   return {{"changed", figure->fig->pose->changed()}};
@@ -4037,6 +4135,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeVisible(args); }); });
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeCollision(args); }); });
+  cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeCloth(args); }); });
   cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("enable", args); }); });
   cmds.add("dforce.mode", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("mode", args); }); });
   cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
@@ -4356,7 +4455,12 @@ void FvHost::onUpdate()
       if(f.collisionVersion != f.collider->version())
         s.publishWardrobe(f);
     }
-    s.applyNodes(f, changes.nodes);
+    if(!changes.nodes.empty())
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      s.applyNodes(f, changes.nodes);
+      s.dialTiming.add(DialTiming::eApplyNodes, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
     if(!changes.meshes.empty())
     {
       const auto t0 = std::chrono::steady_clock::now();
@@ -4364,7 +4468,12 @@ void FvHost::onUpdate()
         s.applyMesh(f, mesh);
       s.dialTiming.add(DialTiming::eApplyMesh, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
-    s.applyRebind(f, changes.rebound);
+    if(!changes.rebound.empty())
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      s.applyRebind(f, changes.rebound);
+      s.dialTiming.add(DialTiming::eApplyRebind, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
     for(const std::string& w : f.fig->takeWarnings())
       s.notice(p->name + ": " + w);
     s.publishBusy(f);
@@ -4372,7 +4481,11 @@ void FvHost::onUpdate()
   }
   if(fv::timing::enabled())
     if(const std::string line = s.dialTiming.report(std::chrono::steady_clock::now()); !line.empty())
+    {
       LOGI("%s\n", line.c_str());
+      for(const std::string& phase : fv::timing::takeSummary())
+        LOGI("%s\n", phase.c_str());
+    }
   // props the gizmo moved: one patch a frame
   if(!s.movedProps.empty())
   {

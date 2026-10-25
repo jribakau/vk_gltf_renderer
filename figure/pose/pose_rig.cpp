@@ -1,4 +1,5 @@
 #include <figure/pose/pose_rig.hpp>
+#include <figure/io/timing.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -184,6 +185,7 @@ Axis* PoseRig::axis(PoseBone& pb, ChannelKind kind, const std::string& axisName)
 
 std::vector<int> PoseRig::setMany(const std::vector<ChannelValue>& values)
 {
+  fv::timing::Accum   setTime("pose.setMany");
   std::vector<size_t> touched;
   for(const ChannelValue& v : values)
   {
@@ -615,6 +617,7 @@ void PoseRig::setCenterOffsets(const std::map<std::string, Vec3>& offsets)
 
 std::vector<int> PoseRig::rebind()
 {
+  fv::timing::Accum rebindTime("pose.rebind");
   struct Saved
   {
     int  node;

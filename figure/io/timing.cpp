@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <mutex>
 
@@ -12,7 +13,61 @@ std::mutex                                                 g_mutex;
 std::shared_ptr<const std::function<void(const std::string&)>> g_sink;
 std::atomic<bool>                                          g_on{false};
 thread_local int                                           t_depth = 0;
+struct Sum
+{
+  int    n     = 0;
+  double ms    = 0;
+  double maxMs = 0;
+};
+std::map<std::string, Sum, std::less<>> g_accum;  // under g_mutex
 }  // namespace
+
+void accumulate(std::string_view name, double ms)
+{
+  if(!enabled())
+    return;
+  std::lock_guard lock(g_mutex);
+  auto            it = g_accum.find(name);
+  if(it == g_accum.end())
+    it = g_accum.emplace(std::string(name), Sum{}).first;
+  Sum& s = it->second;
+  s.n++;
+  s.ms += ms;
+  if(ms > s.maxMs)
+    s.maxMs = ms;
+}
+
+std::vector<std::string> takeSummary()
+{
+  std::map<std::string, Sum, std::less<>> taken;
+  {
+    std::lock_guard lock(g_mutex);
+    taken.swap(g_accum);
+  }
+  std::vector<std::string> lines;
+  for(const auto& [name, s] : taken)
+  {
+    char tail[96];
+    std::snprintf(tail, sizeof tail, ": %d calls, %.2f ms mean, %.2f max", s.n, s.n ? s.ms / s.n : 0.0, s.maxMs);
+    lines.push_back("[fv-time] " + name + tail);
+  }
+  return lines;
+}
+
+Accum::Accum(const char* name)
+    : m_name(name)
+    , m_on(enabled())
+{
+  if(m_on)
+    m_start = std::chrono::steady_clock::now();
+}
+
+Accum::~Accum()
+{
+  if(!m_on)
+    return;
+  accumulate(m_name, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m_start).count());
+}
 
 void setSink(std::function<void(const std::string&)> sink)
 {

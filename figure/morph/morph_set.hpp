@@ -223,9 +223,19 @@ private:
   void ensureLoaded(const std::string& name);
   void finishLoad(const std::string& name, std::future<Finish>& fut);
   void runDriver();
-  void rebuild(int mesh, MeshState& st);
-  void update(int mesh, MeshState& st);
-  void change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written);
+  // What a flush did to one mesh's buffers: the whole mesh, or the vertices moved and re-welded.
+  // Computed per mesh on the pool (a dial moves a body and everything that follows it: a dozen
+  // meshes, each a delta sum and a normal weld), then recorded on the owner's thread.
+  struct MeshUpdate
+  {
+    int                   mesh    = -1;
+    bool                  changed = false;
+    bool                  all     = false;
+    std::vector<uint32_t> moved, written;
+  };
+  MeshUpdate rebuild(int mesh, MeshState& st);
+  MeshUpdate update(int mesh, MeshState& st);
+  void       change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written);
 
   std::function<mesh::BuiltMesh*(int)>                  m_geo;
   std::vector<Channel>                                  m_channels;

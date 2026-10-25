@@ -7,6 +7,8 @@
 #include <chrono>
 #include <functional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace fv::timing {
 
@@ -29,6 +31,27 @@ private:
   std::string                           m_name;
   std::chrono::steady_clock::time_point m_start;
   double                                m_minMs;
+  bool                                  m_on;
+};
+
+// Phases that run many times a second (a dial step's formula graph, its deltas, its normals): one
+// line each would flood the log, so `Accum a("driver.run");` adds its scope's time under the name,
+// and takeSummary() returns one "[fv-time] <name>: <n> calls, <mean> ms mean, <max> max" line per
+// name seen since the last call (the host logs them once a second), and clears. Off without a sink.
+void                     accumulate(std::string_view name, double ms);
+std::vector<std::string> takeSummary();
+
+class Accum
+{
+public:
+  explicit Accum(const char* name);
+  ~Accum();
+  Accum(const Accum&)            = delete;
+  Accum& operator=(const Accum&) = delete;
+
+private:
+  const char*                           m_name;
+  std::chrono::steady_clock::time_point m_start;
   bool                                  m_on;
 };
 

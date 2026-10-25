@@ -1,4 +1,5 @@
 #include <figure/morph/morph_set.hpp>
+#include <figure/io/timing.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -693,28 +694,41 @@ std::vector<MeshChange> MorphSet::takeChanges()
 
 void MorphSet::flush()
 {
+  std::vector<std::pair<int, MeshState*>> dirty;
   for(auto& [mesh, st] : m_cpu)
-  {
-    if(!st.dirty)
-      continue;
-    st.dirty = false;
-    if(++st.sinceRebuild > kRebuildEvery)
-      rebuild(mesh, st);
-    else
-      update(mesh, st);
-    st.applied = st.active;
-  }
+    if(st.dirty)
+      dirty.emplace_back(mesh, &st);
+  if(dirty.empty())
+    return;
+  // Each mesh's buffers, welder and state are its own, so the meshes update side by side; the
+  // changes are recorded afterwards, in mesh order, as one thread's work would have.
+  std::vector<MeshUpdate> updates(dirty.size());
+  jobs::parallelFor(dirty.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      auto& [mesh, st] = dirty[i];
+      st->dirty        = false;
+      updates[i]       = ++st->sinceRebuild > kRebuildEvery ? rebuild(mesh, *st) : update(mesh, *st);
+      st->applied      = st->active;
+    }
+  });
+  for(const MeshUpdate& u : updates)
+    if(u.changed)
+      change(u.mesh, u.all, u.moved, u.written);
 }
 
 // Adds each changed target's weight difference; re-welds normals around the moved vertices.
-void MorphSet::update(int mesh, MeshState& st)
+MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
 {
+  MeshUpdate       out;
+  out.mesh = mesh;
   mesh::BuiltMesh& geo = *m_geo(mesh);
   float*           pos = geo.position.data();
   const uint32_t   n   = uint32_t(geo.position.size() / 3);
   if(st.mark.size() != n)
     st.mark.assign(n, 0);
   std::vector<uint32_t> moved;
+  const auto            deltasStart = std::chrono::steady_clock::now();
   auto                  add = [&](const mesh::RenderTarget& t, double dw) {
     const size_t count = t.indices.size();
     for(size_t i = 0; i < count; i++)
@@ -743,16 +757,26 @@ void MorphSet::update(int mesh, MeshState& st)
       add(*prev.target, -prev.weight);
   for(uint32_t v : moved)
     st.mark[v] = 0;
+  fv::timing::accumulate("morph.deltas", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - deltasStart).count());
   if(moved.empty())
-    return;
+    return out;
   std::vector<uint32_t> written;
-  const auto            range = st.welder->partial(geo.position, geo.normal, moved, &written);
-  change(mesh, range && written.empty(), moved, written);
+  const auto            weldStart = std::chrono::steady_clock::now();
+  const auto            range     = st.welder->partial(geo.position, geo.normal, moved, &written);
+  // a weld of the whole mesh (more than a quarter of it moved) makes the change `all`
+  const bool full = range && written.empty();
+  fv::timing::accumulate(full ? "morph.weld.full" : "morph.weld.partial", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - weldStart).count());
+  out.changed = true;
+  out.all     = full;
+  out.moved   = std::move(moved);
+  out.written = std::move(written);
+  return out;
 }
 
 // Rebuilds the buffers from the base positions and normals plus every active target.
-void MorphSet::rebuild(int mesh, MeshState& st)
+MorphSet::MeshUpdate MorphSet::rebuild(int mesh, MeshState& st)
 {
+  fv::timing::Accum rebuildTime("morph.rebuild");
   st.sinceRebuild      = 0;
   mesh::BuiltMesh& geo = *m_geo(mesh);
   geo.position         = st.basePos;
@@ -770,7 +794,11 @@ void MorphSet::rebuild(int mesh, MeshState& st)
     }
   }
   st.welder->full(geo.position, geo.normal);
-  change(mesh, true, {}, {});
+  MeshUpdate out;
+  out.mesh    = mesh;
+  out.changed = true;
+  out.all     = true;
+  return out;
 }
 
 }  // namespace fv::morph
