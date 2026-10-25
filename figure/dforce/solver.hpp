@@ -129,6 +129,9 @@ struct ClothModel
   // each vertex's neighbours over stretch edges, and the neighbours of those, sorted: a cloth does
   // not collide with the faces around a vertex, whose planes it is in or next to
   std::vector<int> ringStart, ring, ring2Start, ring2;
+  // per face, the faces of its mesh across each of its three edges (-1 at a border): a vertex held
+  // on a face hands the hold to the next face when it slides across an edge
+  std::vector<int> triNext;
   std::vector<int> kinematicVerts;  // every vertex a pose moves
   std::vector<int> freeVerts;       // every vertex the cloth moves
   // the free vertices of partial strength, tethered to their skinned position: each one's tether

@@ -255,8 +255,9 @@ bool triNormal(const std::vector<float>& p, int a, int b, int c, V3& n)
 struct Closest
 {
   float signedDistance, dist;
-  // the closest point is well inside the face, not on its rim
-  bool interior;
+  // the vertex projects onto the face: it rests on the face, and a face holding it keeps it while
+  // this holds (a vertex crossing an edge is held by one face or the next all the way)
+  bool over;
 };
 
 // Closest point of `q` on the triangle in `tri`, and the signed distance along `n`.
@@ -272,12 +273,12 @@ Closest closest(float qx, float qy, float qz, const std::vector<float>& tri, int
   const float d21 = acx * aqx + acy * aqy + acz * aqz;
   const float den = d00 * d11 - d01 * d01;
   float       bv = 0, cv = 0;
-  bool        interior = false;
+  bool        over = false;
   if(den > 1e-12f)
   {
     bv       = (d11 * d20 - d01 * d21) / den;
     cv       = (d00 * d21 - d01 * d20) / den;
-    interior = bv > 0.05f && cv > 0.05f && bv + cv < 0.95f;
+    over     = bv >= -1e-3f && cv >= -1e-3f && bv + cv <= 1 + 1e-3f;
     bv       = std::min(1.f, std::max(0.f, bv));
     cv       = std::min(1.f, std::max(0.f, cv));
     if(bv + cv > 1)
@@ -291,7 +292,7 @@ Closest closest(float qx, float qy, float qz, const std::vector<float>& tri, int
   const float cy = tri[a * 3 + 1] + aby * bv + acy * cv;
   const float cz = tri[a * 3 + 2] + abz * bv + acz * cv;
   const float dx = qx - cx, dy = qy - cy, dz = qz - cz;
-  return {dx * n[0] + dy * n[1] + dz * n[2], std::sqrt(dx * dx + dy * dy + dz * dz), interior};
+  return {dx * n[0] + dy * n[1] + dz * n[2], std::sqrt(dx * dx + dy * dy + dz * dz), over};
 }
 
 // How a mesh's kinematic vertices (colliders, pinned cloth) move with the pose: a sweep of its
@@ -402,7 +403,10 @@ struct ClothSim::Impl : ClothModel
   // look for faces again (0 while it touches one). `anchor` is where the pose would put each soft
   // vertex at the current substep (only those entries are kept up to date).
   std::vector<float>  x, prev, cprev, tested, budget, vel, snap, endPos, anchor;
-  std::vector<int>    contact;  // the face a vertex last rested on, or -1
+  // the face of the pose (a limb, a belt) and the face of cloth a vertex last rested on, or -1. Two,
+  // since a vertex between a limb and a fold over it rests on both: with one, it swapped between
+  // them every pass and was held against neither
+  std::vector<int>    contact, clothContact;
   int                 passCount = 0;
   std::vector<double> lam, lamAtt;
   std::vector<V3>     n0, n1, boxLo, boxHi;
@@ -431,6 +435,7 @@ struct ClothSim::Impl : ClothModel
     tested = x;
     budget.assign(size_t(nv), 0.f);
     contact.assign(size_t(nv), -1);
+    clothContact.assign(size_t(nv), -1);
     vel.assign(size_t(nv) * 3, 0.f);
     snap.resize(size_t(nv) * 3);
     endPos.resize(size_t(nv) * 3);
@@ -451,6 +456,9 @@ struct ClothSim::Impl : ClothModel
   void kinematicAt(float t, std::vector<float>& out, std::vector<float>* anchors);
   void separateStart();
   void recoverLost();
+  // The face a vertex resting on face `t` is over now: `t`, or the nearest face two edges around it
+  // that the vertex slid onto; -1 when it is over none (it left the surface). Fills `now` and `n`.
+  int  followContact(int i, int t, Closest& now, V3& n) const;
   void holdContacts();
   // One sweep over the constraints (the stretch edges alone when `stretchOnly`) and the tethers.
   void solveEdges(float dt, bool stretchOnly = false);
@@ -727,6 +735,30 @@ ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air)
   {
     allTris.push_back(int(t));
     (tris[t].dynamic ? dynamicTris : staticTris).push_back(int(t));
+  }
+  {
+    // two faces share an edge when they share its two vertices (the global index includes the mesh)
+    std::unordered_map<uint64_t, int> open;
+    open.reserve(tris.size() * 2);
+    model.triNext.assign(tris.size() * 3, -1);
+    for(size_t t = 0; t < tris.size(); t++)
+    {
+      const int v[3] = {tris[t].a, tris[t].b, tris[t].c};
+      for(int k = 0; k < 3; k++)
+      {
+        const uint32_t lo = uint32_t(std::min(v[k], v[(k + 1) % 3])), hi = uint32_t(std::max(v[k], v[(k + 1) % 3]));
+        const uint64_t key = uint64_t(lo) << 32 | hi;
+        const auto [it, fresh] = open.try_emplace(key, int(t * 3 + size_t(k)));
+        if(fresh)
+          continue;
+        const int other = it->second;
+        if(model.triNext[size_t(other)] < 0)
+        {
+          model.triNext[size_t(other)]      = int(t);
+          model.triNext[t * 3 + size_t(k)] = other / 3;
+        }
+      }
+    }
   }
   ringStart.assign(size_t(nv) + 1, 0);
   for(const Edge& e : edges)
@@ -1016,32 +1048,74 @@ void ClothSim::Impl::recoverLost()
 // it every substep: its edges can pull it centimetres into the limb between two passes, past the
 // depth the next pass pushes back from, and the frame after puts it back, a tug of war that never
 // settles. The face as the pose has it this substep holds it, while it stays over the face.
+int ClothSim::Impl::followContact(int i, int t, Closest& now, V3& n) const
+{
+  const float qx = x[i * 3], qy = x[i * 3 + 1], qz = x[i * 3 + 2];
+  const Tri&  tri = tris[size_t(t)];
+  if(triNormal(x, tri.a, tri.b, tri.c, n))
+  {
+    now = closest(qx, qy, qz, x, tri.a, tri.b, tri.c, n);
+    if(now.over)
+      return t;
+  }
+  int cand[12], nc = 0;
+  for(int k = 0; k < 3; k++)
+  {
+    const int a = triNext[size_t(t) * 3 + size_t(k)];
+    if(a < 0)
+      continue;
+    cand[nc++] = a;
+    for(int l = 0; l < 3; l++)
+    {
+      const int b = triNext[size_t(a) * 3 + size_t(l)];
+      if(b >= 0 && b != t)
+        cand[nc++] = b;
+    }
+  }
+  int   at   = -1;
+  float best = INFINITY;
+  for(int k = 0; k < nc; k++)
+  {
+    const Tri& nt = tris[size_t(cand[k])];
+    V3         nn;
+    if(!triNormal(x, nt.a, nt.b, nt.c, nn))
+      continue;
+    const Closest c = closest(qx, qy, qz, x, nt.a, nt.b, nt.c, nn);
+    if(c.over && c.dist < best)
+    {
+      best = c.dist;
+      now  = c;
+      n    = nn;
+      at   = cand[k];
+    }
+  }
+  return at;
+}
+
 void ClothSim::Impl::holdContacts()
 {
   jobs::parallelFor(freeVerts.size(), 1024, [&](size_t begin, size_t end) {
     for(size_t fi = begin; fi < end; fi++)
     {
       const int i = freeVerts[fi];
+      // a cloth face moves with the solve; its passes handle it
       const int t = contact[i];
       if(t < 0)
         continue;
-      const Tri& tri = tris[size_t(t)];
-      // a cloth face moves with the solve; its passes handle it
-      if(tri.dynamic)
+      Closest   now{};
+      V3        n{};
+      const int at = followContact(i, t, now, n);
+      if(at < 0)
         continue;
-      V3 n;
-      if(!triNormal(x, tri.a, tri.b, tri.c, n))
-        continue;
-      const float   gap = std::max(tri.offset, offset[i]);
-      const Closest now = closest(x[i * 3], x[i * 3 + 1], x[i * 3 + 2], x, tri.a, tri.b, tri.c, n);
-      if(!now.interior)
-        continue;
+      contact[i]      = at;
+      const Tri& held = tris[size_t(at)];
+      const float gap = std::max(held.offset, offset[i]);
       int direction;
-      if(layer[i] != tri.layer)
-        direction = layer[i] > tri.layer ? 1 : -1;
+      if(layer[i] != held.layer)
+        direction = layer[i] > held.layer ? 1 : -1;
       else
       {
-        const float side = (tested[i * 3] - x[tri.a * 3]) * n[0] + (tested[i * 3 + 1] - x[tri.a * 3 + 1]) * n[1] + (tested[i * 3 + 2] - x[tri.a * 3 + 2]) * n[2];
+        const float side = (tested[i * 3] - x[held.a * 3]) * n[0] + (tested[i * 3 + 1] - x[held.a * 3 + 1]) * n[1] + (tested[i * 3 + 2] - x[held.a * 3 + 2]) * n[2];
         direction        = side >= 0 ? 1 : -1;
       }
       const float target = float(direction) * gap;
@@ -1130,7 +1204,7 @@ void ClothSim::Impl::solveEdges(float dt, bool stretchOnly)
 // is where everything is now, so the faces of a cloth that collides with itself are read from one
 // moment while its vertices move. A vertex far from every face looks again only once it or the
 // colliders could have closed that distance; one resting on a face tests that face alone while it
-// stays over its interior, and looks around every few passes.
+// stays over it (or the face it slid onto), and looks around every few passes.
 void ClothSim::Impl::collide(float kinematicStep)
 {
   if(tris.empty())
@@ -1184,7 +1258,7 @@ void ClothSim::Impl::collide(float kinematicStep)
       const float qx = x[i * 3], qy = x[i * 3 + 1], qz = x[i * 3 + 2];
       bool        pushed = false;
       // The narrow phase against one face: whether it pushed, and whether the vertex is over the
-      // face's interior and close enough to count as resting on it.
+      // face and close enough to count as resting on it.
       const auto narrow = [&](int t, bool& resting) {
         resting        = false;
         const Tri& tri = tris[size_t(t)];
@@ -1221,7 +1295,7 @@ void ClothSim::Impl::collide(float kinematicStep)
           direction = was.signedDistance >= 0 ? 1 : -1;
         const Closest now    = closest(px, py, pz, snap, tri.a, tri.b, tri.c, nb);
         const float   target = float(direction) * gap;
-        resting              = now.interior && now.dist <= gap + near;
+        resting              = now.over && now.dist <= gap + near;
         if(direction > 0 ? now.signedDistance >= target : now.signedDistance <= target)
           return;
         if(now.dist > kDepth)
@@ -1229,9 +1303,9 @@ void ClothSim::Impl::collide(float kinematicStep)
         // past the edge, not under the face: the closest point is mostly sideways of the vertex
         if(std::fabs(now.signedDistance) < 0.6f * now.dist)
           return;
-        pushed            = true;
         const float push  = std::min(std::fabs(target - now.signedDistance), kCap);
         const float along = target - now.signedDistance > 0 ? 1.f : -1.f;
+        pushed = true;
         for(int k = 0; k < 3; k++)
           x[i * 3 + k] += nb[size_t(k)] * push * along;
         // friction sheds the part of this step's motion that slid along the face. Velocity is rebuilt
@@ -1248,19 +1322,35 @@ void ClothSim::Impl::collide(float kinematicStep)
         prev[i * 3 + 1] = x[i * 3 + 1] - (dy - nb[1] * dn) * (1 - fr);
         prev[i * 3 + 2] = x[i * 3 + 2] - (dz - nb[2] * dn) * (1 - fr);
       };
-      // still riding the face it rested on: that face alone, most passes
-      if(contact[i] >= 0 && !lookAround)
+      // still riding the faces it rested on (or the one of the pose it slid onto): those alone, most
+      // passes, the cloth's first so the body has the last word. Resting on cloth alone, the pose's
+      // faces are still looked for (below), so a fold never presses the vertex into a limb unseen
+      if((contact[i] >= 0 || clothContact[i] >= 0) && !lookAround)
       {
         bool resting = false;
-        narrow(contact[i], resting);
-        if(resting)
+        if(clothContact[i] >= 0)
         {
-          budget[i] = 0;
-          for(int c = 0; c < 3; c++)
-            tested[i * 3 + c] = x[i * 3 + c];
-          continue;
+          narrow(clothContact[i], resting);
+          if(!resting)
+            clothContact[i] = -1;
         }
-        contact[i] = -1;
+        if(contact[i] >= 0)
+        {
+          Closest   now{};
+          V3        n{};
+          const int at = followContact(i, contact[i], now, n);
+          if(at >= 0)
+            contact[i] = at;
+          narrow(contact[i], resting);
+          if(resting)
+          {
+            budget[i] = 0;
+            for(int c = 0; c < 3; c++)
+              tested[i * 3 + c] = x[i * 3 + c];
+            continue;
+          }
+          contact[i] = -1;
+        }
       }
       const float reach = std::max(offset[i], maxOffset) + kSearch;
       float       lo[3], hi[3];
@@ -1299,16 +1389,17 @@ void ClothSim::Impl::collide(float kinematicStep)
         bool resting           = false;
         narrow(item.tri, resting);
         if(resting)
-          contact[i] = item.tri;
+          (tris[size_t(item.tri)].dynamic ? clothContact : contact)[i] = item.tri;
       };
-      if(!staticGrid.empty())
-        staticGrid.query(lo, hi, test);
       // new contacts with cloth are looked for every few passes: a face a vertex rests on is kept
-      // above, and what is near a vertex of a cloth is mostly its own neighbourhood
+      // above, and what is near a vertex of a cloth is mostly its own neighbourhood. The pose's faces
+      // come last, so the body has the last word over a fold pressing the vertex into it
       if(!dynamicGrid.empty() && lookAround)
         dynamicGrid.query(lo, hi, test);
+      if(!staticGrid.empty())
+        staticGrid.query(lo, hi, test);
       // clear of everything by `nearest`: no need to look again until that much has moved
-      budget[i] = pushed || contact[i] >= 0 ? 0.f : std::max(0.f, nearest - std::max(offset[i], maxOffset) - 0.05f);
+      budget[i] = pushed || contact[i] >= 0 || clothContact[i] >= 0 ? 0.f : std::max(0.f, nearest - std::max(offset[i], maxOffset) - 0.05f);
       for(int c = 0; c < 3; c++)
         tested[i * 3 + c] = x[i * 3 + c];
     }

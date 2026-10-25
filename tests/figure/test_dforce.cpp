@@ -425,6 +425,93 @@ TEST(Dforce, aSkirtDrapesOverALegThatSwings)
     }
 }
 
+TEST(Dforce, aTightSkirtInAStrideStaysOutOfBothThighs)
+{
+  // a tube skirt too tight for the stride over two thighs, one swung forward and one back: the hem
+  // rides up and the tube wraps the legs like a band, folding over itself. No cloth may end inside
+  // a thigh, and none is lost and put back at the end (a vertex crossing a face's edge, or caught
+  // between a thigh and a fold over it, used to slip in and be recovered every frame)
+  const float pi = float(std::acos(-1.0));
+  const int   around = 36, rows = 14;
+  const float R = 17, r = 7, len = 45, legLen = 70, stride = 25 * pi / 180;
+  Grid        skirt;
+  for(int i = 0; i <= rows; i++)
+    for(int j = 0; j < around; j++)
+    {
+      const float a = 2 * pi * j / around;
+      skirt.pos.insert(skirt.pos.end(), {R * std::cos(a), -float(i) * (len / rows), 0.75f * R * std::sin(a)});
+    }
+  const auto at = [&](int j, int i) { return uint32_t(i * around + (j % around)); };
+  for(int i = 0; i < rows; i++)
+    for(int j = 0; j < around; j++)
+    {
+      skirt.tris.insert(skirt.tris.end(), {at(j, i), at(j, i + 1), at(j + 1, i), at(j + 1, i), at(j, i + 1), at(j + 1, i + 1)});
+      skirt.polyVerts.insert(skirt.polyVerts.end(), {int32_t(at(j, i)), int32_t(at(j, i + 1)), int32_t(at(j + 1, i + 1)), int32_t(at(j + 1, i))});
+      skirt.polyStart.push_back(int32_t(skirt.polyVerts.size()));
+    }
+  auto m = cloth(skirt);
+  for(int j = 0; j < around; j++)
+    m.strength[at(j, 0)] = 0;
+  struct Leg
+  {
+    float hx, hy, angle;
+  };
+  const Leg                       legs[2] = {{-8.f, -3.f, stride}, {8.f, -3.f, -stride}};
+  std::vector<dforce::SettleMesh> meshes;
+  for(const Leg& L : legs)
+  {
+    const int             la = 32, lr = 40;
+    std::vector<float>    lrest, lposed;
+    std::vector<uint32_t> ltris;
+    const float           sn = std::sin(L.angle), cs = std::cos(L.angle);
+    for(int i = 0; i <= lr; i++)
+      for(int j = 0; j < la; j++)
+      {
+        const float a = 2 * pi * j / la;
+        const float x = L.hx + r * std::cos(a), y = L.hy - float(i) * legLen / lr, z = r * std::sin(a);
+        lrest.insert(lrest.end(), {x, y, z});
+        lposed.insert(lposed.end(), {x, L.hy + cs * (y - L.hy) - sn * z, sn * (y - L.hy) + cs * z});
+      }
+    const auto lat = [&](int j, int i) { return uint32_t(i * la + (j % la)); };
+    for(int i = 0; i < lr; i++)
+      for(int j = 0; j < la; j++)
+        ltris.insert(ltris.end(), {lat(j, i), lat(j + 1, i), lat(j, i + 1), lat(j + 1, i), lat(j + 1, i + 1), lat(j, i + 1)});
+    dforce::SettleMesh leg = dforce::SettleMesh::collider(lrest, lposed, ltris, dforce::kBodyLayer, 0.2f, 0.4f);
+    leg.skinIndex.assign(lrest.size() / 3 * 4, 0);
+    leg.skinWeight.assign(lrest.size() / 3 * 4, 0.f);
+    for(size_t v = 0; v < lrest.size() / 3; v++)
+      leg.skinWeight[v * 4] = 1;
+    // the bone turns about the hip joint
+    leg.bones = {compose({0, L.hy, 0}, {}, {1, 1, 1}) * compose({}, quatFromEuler(L.angle, 0, 0, "XYZ"), {1, 1, 1}) * compose({0, -L.hy, 0}, {}, {1, 1, 1})};
+    leg.restLocal = lrest;
+    meshes.push_back(std::move(leg));
+  }
+  meshes.push_back(m);
+  dforce::ClothSim sim(meshes);
+  sim.settle();
+  EXPECT_EQ(sim.recovered(), 0);
+  const auto out = sim.positions();
+  int        inside = 0;
+  for(size_t v = 0; v < out[2].size() / 3; v++)
+  {
+    if(m.strength[v] == 0)
+      continue;
+    const float* p = &out[2][v * 3];
+    for(const Leg& L : legs)
+    {
+      const float ax = 0, ay = -std::cos(L.angle), az = -std::sin(L.angle);
+      const float qx = p[0] - L.hx, qy = p[1] - L.hy, qz = p[2];
+      const float d  = qx * ax + qy * ay + qz * az;
+      if(d < 2 || d > legLen - 2)
+        continue;
+      const float ex = qx - d * ax, ey = qy - d * ay, ez = qz - d * az;
+      if(std::sqrt(ex * ex + ey * ey + ez * ez) < r - 0.05f)
+        inside++;
+    }
+  }
+  EXPECT_EQ(inside, 0);
+}
+
 TEST(Dforce, aPinnedSurfaceStaysOnTheSkinnedPose)
 {
   const Grid veil = grid(3, 3);
