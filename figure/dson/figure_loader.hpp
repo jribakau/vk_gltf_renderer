@@ -16,6 +16,7 @@
 
 #include <figure/dson/morphs.hpp>
 #include <figure/dson/rig.hpp>
+#include <figure/dson/modifiers.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/scene/graph.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
@@ -99,6 +100,8 @@ struct ItemPart
   bool                           conforms = false;
   std::optional<wardrobe::Graft>    graft;
   std::optional<wardrobe::Rigidity> rigidity;
+  // DAZ Studio's smoothing modifier on the item's node, when the file puts one there
+  std::optional<Smoothing> smoothing;
   // the library file of its node definition, whose Morphs folder holds the item's own morphs
   std::string defFile;
 };

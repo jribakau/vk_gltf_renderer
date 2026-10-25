@@ -14,6 +14,7 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
+#include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/follow.hpp>
 
@@ -81,7 +82,9 @@ std::string prettyMorphName(const std::string& id)
   return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
 
-WornItem record(const dson::Item& it, const std::string& rel, int id)
+// `parts` are the load's, with their meshes `meshBase` before the item's own (0 for the scene file's
+// items, the merge offset for a wear); `index` is the item's place in that load.
+WornItem record(const dson::Item& it, int index, const std::vector<dson::ItemPart>& parts, int meshBase, const std::string& rel, int id)
 {
   WornItem w;
   w.id        = id;
@@ -94,6 +97,17 @@ WornItem record(const dson::Item& it, const std::string& rel, int id)
   w.nodeNames = it.nodeNames;
   w.sources   = it.sources;
   w.kind      = kindOf(rel, it.label, it.objects);
+  // what the collider keeps out of the body: a conforming mesh with the file's smoothing modifier, or
+  // clothing with the modifier's defaults (DAZ Studio adds one to clothing as it is fitted)
+  for(const dson::ItemPart& part : parts)
+  {
+    if(part.item != index || !part.conforms)
+      continue;
+    if(part.smoothing)
+      w.collision[part.mesh + meshBase] = *part.smoothing;
+    else if(w.kind == "Clothing")
+      w.collision[part.mesh + meshBase] = dson::Smoothing{};
+  }
   return w;
 }
 
@@ -112,8 +126,8 @@ struct Figure::PreparedWear
 void Figure::indexItems()
 {
   items.clear();
-  for(const dson::Item& it : loaded.items)
-    items.push_back(record(it, "", m_nextItem++));
+  for(size_t i = 0; i < loaded.items.size(); i++)
+    items.push_back(record(loaded.items[i], int(i), loaded.parts, 0, "", m_nextItem++));
 }
 
 const SceneGraph& Figure::preparedScene(const PreparedWear& wear)
@@ -173,9 +187,12 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     for(const dson::Item& it : out->loaded.items)
       out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
   }
-  // every conforming part is bound to the body's unmorphed cage, in parallel
+  // every conforming part is bound to the body's unmorphed cage, in parallel. A skinned part binds
+  // limb to limb (its left-thigh vertices to the left thigh): a legging's inner seam is as close to
+  // the other leg, and a body morph that moves one leg would then drag the other's cloth
   timing::Scope tb("bindToSurface");
-  const auto&   body = *scene.meshes[size_t(bodyMesh)].geo;
+  const auto&   body      = *scene.meshes[size_t(bodyMesh)].geo;
+  const auto    bodyLimbs = wardrobe::meshLimbs(scene, scene.meshes[size_t(bodyMesh)]);
   out->bindings.resize(out->loaded.parts.size());
   std::vector<std::future<void>> jobs;
   for(size_t i = 0; i < out->loaded.parts.size(); i++)
@@ -183,10 +200,13 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     const dson::ItemPart& part = out->loaded.parts[i];
     if(!part.conforms)
       continue;
-    const mesh::BuiltMesh& item = *out->loaded.scene.meshes[size_t(part.mesh)].geo;
-    jobs.push_back(jobs::pool().submit([&body, &item, &part, slot = &out->bindings[i]] {
+    const Mesh&            itemMesh = out->loaded.scene.meshes[size_t(part.mesh)];
+    const mesh::BuiltMesh& item     = *itemMesh.geo;
+    auto filter = std::make_shared<std::optional<wardrobe::BindFilter>>(wardrobe::limbFilter(bodyLimbs, wardrobe::meshLimbs(out->loaded.scene, itemMesh)));
+    jobs.push_back(jobs::pool().submit([&body, &item, &part, filter, slot = &out->bindings[i]] {
       const std::span<const int32_t> pairs = part.graft ? std::span<const int32_t>(part.graft->pairs) : std::span<const int32_t>();
-      *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs));
+      *slot = std::make_shared<wardrobe::SurfaceBinding>(
+          wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, *filter ? &**filter : nullptr));
     }));
   }
   // every job ends before any error is rethrown: they write into `out`
@@ -256,8 +276,9 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   const int        body      = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
 
   std::vector<int> added;
-  for(dson::Item it : w.items)
+  for(size_t k = 0; k < w.items.size(); k++)
   {
+    dson::Item it = w.items[k];
     for(auto& [node, bone] : it.objects)
     {
       node += nodeBase;
@@ -286,7 +307,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     for(int& m : it.meshes)
       m += meshBase;
     loaded.items.push_back(it);
-    WornItem worn = record(it, rel, m_nextItem++);
+    WornItem worn = record(it, int(k), w.parts, meshBase, rel, m_nextItem++);
     added.push_back(worn.id);
     items.push_back(std::move(worn));
   }

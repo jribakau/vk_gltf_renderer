@@ -13,6 +13,7 @@
 
 #include <figure/math/xform.hpp>
 #include <figure/mesh/mesh_build.hpp>
+#include <figure/scene/graph.hpp>
 
 namespace fv::dforce {
 
@@ -23,6 +24,17 @@ struct SkinPose
   std::vector<Mat4> bones;
   Mat4              bind, bindInverse;
 };
+
+// The node each mesh is drawn by, or -1.
+std::vector<int> nodeOfMesh(const SceneGraph& scene);
+
+// A skinned mesh's pose as the figure has it now: three's 'attached' skinning, matrixWorld⁻¹ ·
+// bone · inverse · bindMatrix, with the mesh's world as it is now (the host scales the root to
+// metres after the bind, and rebinds read that scale). `worlds` is scene.worlds().
+SkinPose currentSkin(const SceneGraph& scene, const std::vector<Mat4>& worlds, const std::vector<int>& nodeOf, int mesh);
+
+// Points through a matrix, xyz per point.
+std::vector<float> transformPoints(const Mat4& m, const std::vector<float>& src);
 
 // The four strongest influences per cage vertex, renormalised.
 struct Top4

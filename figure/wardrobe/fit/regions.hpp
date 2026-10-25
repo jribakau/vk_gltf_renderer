@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <figure/mesh/mesh_build.hpp>
+#include <figure/scene/graph.hpp>
 #include <figure/wardrobe/bind.hpp>
 
 namespace fv::wardrobe {
@@ -37,6 +38,8 @@ FitRegion regionOf(const std::string& path, const std::vector<std::string>& bone
 
 // Per cage vertex: the limb of its strongest bone, or 0. `boneLimb` is per bone of the skin.
 std::vector<int16_t> vertexLimbs(size_t count, const mesh::SkinInput* skin, const std::vector<int16_t>& boneLimb);
+// The same for a scene mesh, from its cage skin and the names of its bones; all 0 for one with no skin.
+std::vector<int16_t> meshLimbs(const SceneGraph& scene, const Mesh& mesh);
 
 // Binds a vertex with a limb only to faces of that limb (or of no limb). None when the body has none.
 std::optional<BindFilter> limbFilter(const std::vector<int16_t>& bodyLimbs, const std::vector<int16_t>& itemLimbs);

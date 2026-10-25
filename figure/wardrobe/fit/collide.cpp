@@ -56,12 +56,12 @@ std::vector<float> pushOut(std::span<const float> positions, const Surface& body
   return out;
 }
 
-std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris)
+std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris, int passes)
 {
   std::vector<float> corr(prev.size());
   for(size_t i = 0; i < corr.size(); i++)
     corr[i] = next[i] - prev[i];
-  const std::vector<float> smooth = laplacian(std::move(corr), tris, prev.size() / 3, 2);
+  const std::vector<float> smooth = laplacian(std::move(corr), tris, prev.size() / 3, passes);
   std::vector<float>       out(prev.size());
   for(size_t i = 0; i < out.size(); i++)
     out[i] = prev[i] + smooth[i];

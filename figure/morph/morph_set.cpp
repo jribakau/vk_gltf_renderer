@@ -172,6 +172,25 @@ std::set<int> MorphSet::meshesOf(const std::string& name) const
   return out;
 }
 
+std::vector<float> MorphSet::morphedCage(int mesh, const mesh::RenderTarget* except) const
+{
+  const mesh::BuiltMesh* geo = m_geo(mesh);
+  if(!geo)
+    return {};
+  std::vector<float> out = geo->cagePositions;
+  for(const auto& [target, weight] : activeTargets(mesh, except))
+    for(size_t i = 0; i < target->cageIndices.size(); i++)
+    {
+      const size_t v = target->cageIndices[i];
+      if(v * 3 + 2 >= out.size())
+        continue;
+      out[v * 3] += float(target->cageDeltas[i * 3] * weight);
+      out[v * 3 + 1] += float(target->cageDeltas[i * 3 + 1] * weight);
+      out[v * 3 + 2] += float(target->cageDeltas[i * 3 + 2] * weight);
+    }
+  return out;
+}
+
 dson::TargetPtr MorphSet::cpuTarget(const std::string& name, int mesh) const
 {
   const auto it = m_bindings.find(name);

@@ -51,16 +51,6 @@ std::vector<SkelBone> skeletonOf(const SceneGraph& scene, const std::vector<cons
   return out;
 }
 
-std::vector<int16_t> limbsOf(const SceneGraph& scene, const Mesh& mesh)
-{
-  if(mesh.cageSkin.start.empty())
-    return std::vector<int16_t>(size_t(mesh.geo->dsonVertexCount), 0);
-  std::vector<int16_t> boneLimb;
-  for(int b : mesh.bones)
-    boneLimb.push_back(limbOfBone(scene.nodes[size_t(b)].name));
-  return vertexLimbs(size_t(mesh.geo->dsonVertexCount), &mesh.cageSkin, boneLimb);
-}
-
 // Replaces a mesh's cage and moves the drawn vertices with it (morphs have not been applied to a
 // wearable yet, so there is nothing to carry along).
 void writeCage(mesh::BuiltMesh& geo, const std::vector<float>& positions)
@@ -145,7 +135,7 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     baseLimbs = vertexLimbs(baseMoved.size() / 3, &cage->skin, boneLimb);
     base      = Surface{baseMoved, cage->tris};
   }
-  const std::vector<int16_t> bodyLimbs = limbsOf(figure.scene, bodyMesh);
+  const std::vector<int16_t> bodyLimbs = meshLimbs(figure.scene, bodyMesh);
   const bool footwear = region == FitRegion::eShoe || region == FitRegion::eBoot || region == FitRegion::eBootThigh;
   // the base-to-target search does not depend on the garment; footwear never asks for it
   std::optional<SurfaceBinding> pair;
@@ -197,12 +187,13 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
       });
     }
     // footwear keeps the bone transfer and the foot box: a heel's rest is often its posed shape (the
-    // foot already pointed), which a correction measured against the flat base would bend
+    // foot already pointed), which a correction measured against the flat base would bend. It is
+    // still pushed out of the foot: a sole stays, lying off the foot's faces rather than behind them
     if(!footwear)
     {
       if(base)
       {
-        const std::vector<int16_t> itemLimbs = limbsOf(w.scene, m);
+        const std::vector<int16_t> itemLimbs = meshLimbs(w.scene, m);
         const auto baseFilter = limbFilter(bodyLimbs, baseLimbs);
         const auto itemFilter = limbFilter(baseLimbs, itemLimbs);
         ShapeInputs in;
@@ -212,10 +203,10 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         in.baseToTarget = pair ? &*pair : nullptr;
         positions       = shapeCorrection(positions, m.geo->dsonTris, *base, bodySurface, in);
       }
-      // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
-      if(!(m.dforce && m.dforce->simulated()))
-        positions = collide(positions, m.geo->dsonTris, bodySurface);
     }
+    // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
+    if(!(m.dforce && m.dforce->simulated()))
+      positions = collide(positions, m.geo->dsonTris, bodySurface);
     writeCage(*m.geo, positions);
   }
   detail.shaped = base.has_value();

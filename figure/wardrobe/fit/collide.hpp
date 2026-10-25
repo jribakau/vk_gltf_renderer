@@ -18,7 +18,7 @@ namespace fv::wardrobe {
 // of one vertex is capped, so a bad binding cannot throw it across the figure.
 std::vector<float> pushOut(std::span<const float> positions, const Surface& body, const SurfaceBinding& binding, float margin, float depth = 3);
 
-// Two Laplacian steps on the correction (`next` - `prev`), leaving the garment's cut in place.
-std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris);
+// Laplacian steps on the correction (`next` - `prev`), leaving the garment's cut in place.
+std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris, int passes = 2);
 
 }  // namespace fv::wardrobe

@@ -1,5 +1,7 @@
 #include <figure/dson/dforce.hpp>
 
+#include <figure/dson/modifiers.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -13,8 +15,7 @@ namespace {
 const char* const kNodeType    = "studio/modifier/dynamic_simulation";
 const char* const kSurfaceType = "studio/simulation_settings/dynamic_simulation";
 
-// channel id -> current value (number, flag or text)
-using Values = std::map<std::string, Json>;
+using Values = ChannelValues;
 
 struct Surface
 {
@@ -42,62 +43,6 @@ struct Found
   const Doc*  doc  = nullptr;
 };
 
-std::string parentId(const Json& mod)
-{
-  std::string p = getString(&mod, "parent");
-  if(p.empty() || p[0] != '#')
-    return p;
-  std::string out;
-  for(size_t i = 1; i < p.size(); i++)
-  {
-    if(p[i] == '%' && i + 2 < p.size() + 0 && std::isxdigit((unsigned char)p[i + 1]) && std::isxdigit((unsigned char)p[i + 2]))
-    {
-      out += char(std::stoi(p.substr(i + 1, 2), nullptr, 16));
-      i += 2;
-    }
-    else
-      out += p[i];
-  }
-  return out;
-}
-
-bool hasExtra(const Json& mod, const char* type)
-{
-  const Json* extra = get(&mod, "extra");
-  if(!extra || !extra->is_array())
-    return false;
-  for(const Json& e : *extra)
-    if(getString(&e, "type") == type)
-      return true;
-  return false;
-}
-
-// Channel id -> current value, from studio_modifier_channels and the modifier's own channel.
-Values channelMap(const Json& mod)
-{
-  Values     out;
-  const auto put = [&](const Json& ch) {
-    const Json* c  = get(&ch, "channel");
-    const Json& cc = c && c->is_object() ? *c : ch;
-    const Json* id = get(&cc, "id");
-    if(!id || !id->is_string())
-      return;
-    const Json* v = get(&cc, "current_value");
-    if(!v || v->is_null())
-      v = get(&cc, "value");
-    if(v && (v->is_number() || v->is_boolean() || v->is_string()))
-      out[id->get<std::string>()] = *v;
-  };
-  if(const Json* extra = get(&mod, "extra"); extra && extra->is_array())
-    for(const Json& ex : *extra)
-      if(const Json* chans = get(&ex, "channels"); chans && chans->is_array())
-        for(const Json& c : *chans)
-          put(c);
-  if(get(&mod, "channel"))
-    put(mod);
-  return out;
-}
-
 std::optional<Found> lookup(const Doc& scene, const Doc* geo, const std::string& url)
 {
   if(url.empty())
@@ -119,33 +64,14 @@ std::optional<Found> lookup(const Doc& scene, const Doc* geo, const std::string&
   return std::nullopt;
 }
 
-// The definition's channels, then the scene instance's over any it repeats.
-Values mergedChannels(const Json& instance, const Doc& scene, const Doc* geo)
-{
-  Values out;
-  if(const auto def = lookup(scene, geo, getString(&instance, "url")))
-    out = channelMap(*def->json);
-  for(auto& [k, v] : channelMap(instance))
-    out[k] = v;
-  return out;
-}
-
 float num(const Values& ch, const char* id, float fallback)
 {
-  const auto it = ch.find(id);
-  return it != ch.end() && it->second.is_number() ? it->second.get<float>() : fallback;
+  return float(numberOf(ch, id, fallback));
 }
 
 bool flag(const Values& ch, const char* id, bool fallback)
 {
-  const auto it = ch.find(id);
-  if(it == ch.end())
-    return fallback;
-  if(it->second.is_boolean())
-    return it->second.get<bool>();
-  if(it->second.is_number())
-    return it->second.get<double>() != 0;
-  return fallback;
+  return flagOf(ch, id, fallback);
 }
 
 Surface surfaceFrom(const Values& ch)
@@ -244,9 +170,9 @@ std::optional<NodeSim> nodeSim(const Doc& scene, const Doc* geo, const std::stri
     return std::nullopt;
   for(const Json& m : *mods)
   {
-    if(!hasExtra(m, kNodeType) || parentId(m) != nodeId)
+    if(!hasExtraType(m, kNodeType) || modifierParent(m) != nodeId)
       continue;
-    const Values ch  = mergedChannels(m, scene, geo);
+    const Values ch  = mergedModifierChannels(m, scene, geo);
     const auto   def = lookup(scene, geo, getString(&m, "url"));
     NodeSim      out;
     out.kind      = kindOf(ch);
@@ -266,9 +192,9 @@ std::map<std::string, Surface> surfacesFor(const Doc& scene, const Doc* geo, con
     return out;
   for(const Json& m : *mods)
   {
-    if(!hasExtra(m, kSurfaceType) || parentId(m) != geomId)
+    if(!hasExtraType(m, kSurfaceType) || modifierParent(m) != geomId)
       continue;
-    const Surface surface = surfaceFrom(mergedChannels(m, scene, geo));
+    const Surface surface = surfaceFrom(mergedModifierChannels(m, scene, geo));
     if(const Json* groups = get(&m, "groups"); groups && groups->is_array())
       for(const Json& g : *groups)
         if(g.is_string())

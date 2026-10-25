@@ -52,6 +52,41 @@ double blend(const std::vector<Mat4>& S, const Top4& skin, size_t v, std::array<
 
 }  // namespace
 
+std::vector<int> nodeOfMesh(const SceneGraph& scene)
+{
+  std::vector<int> nodeOf(scene.meshes.size(), -1);
+  for(size_t n = 0; n < scene.nodes.size(); n++)
+    if(scene.nodes[n].kind == NodeKind::eMesh && scene.nodes[n].mesh >= 0)
+      nodeOf[size_t(scene.nodes[n].mesh)] = int(n);
+  return nodeOf;
+}
+
+SkinPose currentSkin(const SceneGraph& scene, const std::vector<Mat4>& worlds, const std::vector<int>& nodeOf, int mesh)
+{
+  const Mesh& m = scene.meshes[size_t(mesh)];
+  SkinPose    pose;
+  pose.bind        = m.bindMatrix;
+  pose.bindInverse = inverse(nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : m.bindMatrix);
+  pose.bones.reserve(m.bones.size());
+  for(size_t k = 0; k < m.bones.size(); k++)
+    pose.bones.push_back(worlds[size_t(m.bones[k])] * (k < m.boneInverses.size() ? m.boneInverses[k] : Mat4{}));
+  return pose;
+}
+
+std::vector<float> transformPoints(const Mat4& m, const std::vector<float>& src)
+{
+  std::vector<float> out(src.size());
+  const auto&        e = m.e;
+  for(size_t i = 0; i + 2 < src.size(); i += 3)
+  {
+    const double x = src[i], y = src[i + 1], z = src[i + 2];
+    out[i]     = float(e[0] * x + e[4] * y + e[8] * z + e[12]);
+    out[i + 1] = float(e[1] * x + e[5] * y + e[9] * z + e[13]);
+    out[i + 2] = float(e[2] * x + e[6] * y + e[10] * z + e[14]);
+  }
+  return out;
+}
+
 std::vector<Mat4> skinMatrices(const SkinPose& pose)
 {
   std::vector<Mat4> out;

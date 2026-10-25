@@ -61,11 +61,13 @@
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
 //                                                leaves the renderer's scene at the next composition, and a geograft composes
+//   wardrobe.collision {prop, on}                 worn conforming meshes are pushed out of the posed body
+//                                                (figure/wardrobe/collider.hpp), on by default
 //   dforce.enable   {prop, on}; dforce.resimulate {prop}   cloth drapes over the body (figure/dforce)
 //   dforce.mode     {prop, mode: "settle" | "live" | "gpu"}   one settle once the pose stops, a step every
 //                                                frame, or that on the experimental GPU solver (FV_DFORCE_GPU builds)
 //   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
-//                                                material edits, dForce on/off and its mode
+//                                                material edits, collision and dForce on/off, dForce's mode
 //   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models')
 //   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
 //                                                whole scene, written at once -> {ok}
@@ -86,7 +88,8 @@
 // "scene" ({props: {id: {kind, name, parent, visible, order, transform: {t, r, e, s}, stats?, source?,
 // format?, generation?, posable?, camera?, light?}}, order: [id]}), and per prop "nodes/<prop>"
 // (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
-// "wardrobe/<prop>", "dforce/<prop>" ({figure, enabled, mode, active, busy, draped}); a prop's topics
+// "wardrobe/<prop>" ({figure, items, collision: {enabled, busy, corrected}}), "dforce/<prop>" ({figure,
+// enabled, mode, active, busy, draped}); a prop's topics
 // are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
 // env.name, env.size, env.loading. "pose/<prop>" carries `eyes` (whether the figure can look at
 // the camera). "morphs/<prop>" is the visible channels ({label, group, value, min, max, weight,

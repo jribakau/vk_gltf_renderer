@@ -831,8 +831,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           part.defFile  = job.defFile;
           if(job.item >= 0)
           {
-            part.graft    = wardrobe::parseGraft(*gres->doc, geo);
-            part.rigidity = wardrobe::parseRigidity(*gres->doc, geo, meshOut.geo->dsonVertexCount);
+            part.graft     = wardrobe::parseGraft(*gres->doc, geo);
+            part.rigidity  = wardrobe::parseRigidity(*gres->doc, geo, meshOut.geo->dsonVertexCount);
+            part.smoothing = parseSmoothing(*docPtr, gres->doc.get(), getString(job.node, "id"));
           }
           pendingParts.push_back(std::move(part));
         }

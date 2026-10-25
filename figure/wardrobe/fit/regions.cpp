@@ -100,6 +100,17 @@ std::vector<int16_t> vertexLimbs(size_t count, const mesh::SkinInput* skin, cons
   return out;
 }
 
+std::vector<int16_t> meshLimbs(const SceneGraph& scene, const Mesh& mesh)
+{
+  const size_t count = mesh.geo ? size_t(mesh.geo->dsonVertexCount) : 0;
+  if(mesh.cageSkin.start.empty())
+    return std::vector<int16_t>(count, 0);
+  std::vector<int16_t> boneLimb;
+  for(int b : mesh.bones)
+    boneLimb.push_back(limbOfBone(scene.nodes[size_t(b)].name));
+  return vertexLimbs(count, &mesh.cageSkin, boneLimb);
+}
+
 std::optional<BindFilter> limbFilter(const std::vector<int16_t>& bodyLimbs, const std::vector<int16_t>& itemLimbs)
 {
   if(std::none_of(bodyLimbs.begin(), bodyLimbs.end(), [](int16_t l) { return l != 0; }))

@@ -165,6 +165,9 @@ public:
   std::set<int> meshesOf(const std::string& name) const;
   // The target a channel binds on a mesh, or null.
   dson::TargetPtr cpuTarget(const std::string& name, int mesh) const;
+  // The mesh's cage with every active target's cage deltas applied, except `except` (a mesh's own
+  // drape or collision correction is left out when a simulation reads the shape underneath it).
+  std::vector<float> morphedCage(int mesh, const mesh::RenderTarget* except = nullptr) const;
   // Binds `target` as the channel's target on a mesh, making the channel when it is new and
   // dropping the target it had there. The channel's weight applies to it at once.
   void replaceCpuTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts = {});

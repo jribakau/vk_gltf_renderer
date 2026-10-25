@@ -18,37 +18,6 @@ constexpr float kAir      = 0.15f;
 // Velocity decay per second a live step adds while the pose stands still, so the cloth comes to rest.
 constexpr float kLiveRestDamping = 6.f;
 
-std::vector<float> transformPoints(const Mat4& m, const std::vector<float>& src)
-{
-  std::vector<float> out(src.size());
-  const auto&        e = m.e;
-  for(size_t i = 0; i + 2 < src.size(); i += 3)
-  {
-    const double x = src[i], y = src[i + 1], z = src[i + 2];
-    out[i]     = float(e[0] * x + e[4] * y + e[8] * z + e[12]);
-    out[i + 1] = float(e[1] * x + e[5] * y + e[9] * z + e[13]);
-    out[i + 2] = float(e[2] * x + e[6] * y + e[10] * z + e[14]);
-  }
-  return out;
-}
-
-// Morphed cage: the fitted base plus every active morph's cage deltas, except the drape itself.
-std::vector<float> morphedCage(const morph::MorphSet& morphs, int mesh, const mesh::BuiltMesh& geo, const mesh::RenderTarget* except)
-{
-  std::vector<float> out = geo.cagePositions;
-  for(const auto& [target, weight] : morphs.activeTargets(mesh, except))
-    for(size_t i = 0; i < target->cageIndices.size(); i++)
-    {
-      const size_t v = target->cageIndices[i];
-      if(v * 3 + 2 >= out.size())
-        continue;
-      out[v * 3] += float(target->cageDeltas[i * 3] * weight);
-      out[v * 3 + 1] += float(target->cageDeltas[i * 3 + 1] * weight);
-      out[v * 3 + 2] += float(target->cageDeltas[i * 3 + 2] * weight);
-    }
-  return out;
-}
-
 // Whether the node of every mesh is shown: not taken off, not hidden, nor anything above it.
 std::vector<bool> shownNodes(const SceneGraph& scene)
 {
@@ -60,31 +29,6 @@ std::vector<bool> shownNodes(const SceneGraph& scene)
     shown[i]      = n.visible && !n.removed && (n.parent < 0 || shown[size_t(n.parent)]);
   }
   return shown;
-}
-
-// The node each mesh is drawn by, or -1.
-std::vector<int> nodeOfMesh(const SceneGraph& scene)
-{
-  std::vector<int> nodeOf(scene.meshes.size(), -1);
-  for(size_t n = 0; n < scene.nodes.size(); n++)
-    if(scene.nodes[n].kind == NodeKind::eMesh && scene.nodes[n].mesh >= 0)
-      nodeOf[size_t(scene.nodes[n].mesh)] = int(n);
-  return nodeOf;
-}
-
-// A skinned mesh's pose as the figure has it now: three's 'attached' skinning, matrixWorld⁻¹ ·
-// bone · inverse · bindMatrix, with the mesh's world as it is now (the host scales the root to
-// metres after the bind, and rebinds read that scale).
-SkinPose currentSkin(const SceneGraph& scene, const std::vector<Mat4>& worlds, const std::vector<int>& nodeOf, int mesh)
-{
-  const Mesh& m = scene.meshes[size_t(mesh)];
-  SkinPose    pose;
-  pose.bind        = m.bindMatrix;
-  pose.bindInverse = inverse(nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : m.bindMatrix);
-  pose.bones.reserve(m.bones.size());
-  for(size_t k = 0; k < m.bones.size(); k++)
-    pose.bones.push_back(worlds[size_t(m.bones[k])] * (k < m.boneInverses.size() ? m.boneInverses[k] : Mat4{}));
-  return pose;
 }
 
 bool samePose(const std::vector<Mat4>& a, const std::vector<Mat4>& b)
@@ -282,7 +226,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     if(!m.geo || m.geo->cagePositions.empty())
       return std::nullopt;
     Skinned s;
-    s.rest = morphedCage(m_morphs, mesh, *m.geo, except);
+    s.rest = m_morphs.morphedCage(mesh, except);
     if(!m.skinned() || m.cageSkin.start.size() != s.rest.size() / 3 + 1)
     {
       const size_t n = s.rest.size() / 3;

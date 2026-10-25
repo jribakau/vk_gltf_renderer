@@ -52,6 +52,7 @@
 #include <nvutils/timers.hpp>
 
 #include <figure/dforce/dforce.hpp>
+#include <figure/wardrobe/collider.hpp>
 #ifdef FV_DFORCE_GPU
 #include "fv_dforce_gpu.hpp"
 #endif
@@ -104,6 +105,9 @@ struct Loaded
   // drapes the worn dynamic surfaces (it works on `fig`, so it goes first); null without a body
   std::unique_ptr<fv::dforce::Dforce> dforce;
   int                                 dforceVersion = -1;
+  // keeps the worn conforming meshes out of the posed body (figure/wardrobe/collider.hpp); null without a body
+  std::unique_ptr<fv::wardrobe::Collider> collider;
+  int                                     collisionVersion = -1;
   // where it is in the renderer's scene, set when the scene is composed (fv_compose.hpp)
   std::vector<int>              nodeOf;   // scene node -> glTF node
   std::unordered_map<int, int>  sceneOf;  // glTF node -> scene node
@@ -863,11 +867,12 @@ struct FvHost::Impl
   std::mutex wearMutex;
   Json wardrobeRemove(const Json& args);
   Json wardrobeVisible(const Json& args);
+  Json wardrobeCollision(const Json& args);
   void showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible);
   void publishDforce(Loaded& f, bool force);
   Json dforceCommand(const std::string& cmd, const Json& args);
   void publishFigure(Prop& p);
-  void publishWardrobe(const Loaded& f);
+  void publishWardrobe(Loaded& f);
   std::optional<std::array<glm::dvec3, 3>> cameraRestore;
   Json poseSet(const Json& args);
   void applyNodes(Loaded& f, const std::set<int>& moved);
@@ -1785,6 +1790,8 @@ void FvHost::Impl::compose()
       publishFigure(*p);
       if(p->figure->dforce && request.settle.count(p->figure.get()))
         p->figure->dforce->poke();
+      if(p->figure->collider && request.settle.count(p->figure.get()))
+        p->figure->collider->poke();
     }
   // the selection was the node of a prop; it is again where that prop is now
   if(const auto p = findProp(selectedProp))
@@ -2301,6 +2308,20 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
 #endif
     // off until the Wardrobe toggle (or a scene file) turns it on: a settle costs seconds on a dressed figure
     f->dforce->setEnabled(false);
+    // on from the start: a pass is a fraction of a second on the pool, and it is what keeps a garment
+    // fitted to another shape or generation out of the body
+    f->collider = std::make_unique<fv::wardrobe::Collider>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
+    f->collider->settings = [fig = f->fig.get()] {
+      std::map<int, fv::dson::Smoothing> all;
+      for(const fv::WornItem& w : fig->items)
+        if(w.visible)
+          all.insert(w.collision.begin(), w.collision.end());
+      return all;
+    };
+    f->collider->owned = [raw = f.get()](int mesh) {
+      const fv::Mesh& m = raw->fig->loaded.scene.meshes[size_t(mesh)];
+      return raw->dforce && raw->dforce->enabled() && m.dforce && m.dforce->simulated();
+    };
   }
   {
     std::lock_guard lock(morphMutex);
@@ -2379,13 +2400,34 @@ void FvHost::Impl::publishFigure(Prop& p)
 //--------------------------------------------------------------------------------------------------
 // Wardrobe
 
-void FvHost::Impl::publishWardrobe(const Loaded& f)
+// Topic "wardrobe/<prop>": {figure, items, collision: {enabled, busy, corrected}}; `collision` is the
+// collider's state (meshes it holds out of the body now), when the figure has one.
+void FvHost::Impl::publishWardrobe(Loaded& f)
 {
   Json items = Json::object();
   for(const fv::WornItem& w : f.fig->items)
-    items["i:" + std::to_string(w.id)] = {{"label", w.label}, {"kind", w.kind}, {"rel", w.rel},      {"visible", w.visible},
-                                          {"own", w.rel.empty()}, {"channels", w.channels.size()}};
-  protocol->events().snapshot("wardrobe/" + f.id, {{"figure", f.id}, {"items", items}});
+    items["i:" + std::to_string(w.id)] = {{"label", w.label},   {"kind", w.kind},       {"rel", w.rel},
+                                          {"visible", w.visible}, {"own", w.rel.empty()}, {"channels", w.channels.size()},
+                                          {"collision", !w.collision.empty()}};
+  Json topic = {{"figure", f.id}, {"items", items}};
+  if(f.collider)
+  {
+    f.collisionVersion = f.collider->version();
+    topic["collision"] = {{"enabled", f.collider->enabled()}, {"busy", f.collider->busy()}, {"corrected", f.collider->corrected()}};
+  }
+  protocol->events().snapshot("wardrobe/" + f.id, topic);
+}
+
+// wardrobe.collision {prop, on}: the worn conforming meshes are pushed out of the posed body (true)
+// or shown as they conform (false).
+Json FvHost::Impl::wardrobeCollision(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure || !figure->collider)
+    throw std::runtime_error("no figure with a body is selected");
+  figure->collider->setEnabled(args.value("on", true));
+  publishWardrobe(*figure);
+  return {{"ok", true}};
 }
 
 Json FvHost::Impl::wear(const Json& args)
@@ -2657,6 +2699,8 @@ Json FvHost::Impl::wardrobeRemove(const Json& args)
     return {{"ok", true}};
   }
   showItem(*figure, objects, false);
+  if(figure->collider)
+    figure->collider->poke();
   publishWardrobe(*figure);
   if(figure->dforce)
     figure->dforce->poke();
@@ -2680,6 +2724,8 @@ Json FvHost::Impl::wardrobeVisible(const Json& args)
     return {{"ok", true}};
   }
   showItem(*figure, item->objects, visible);
+  if(figure->collider)
+    figure->collider->poke();
   publishWardrobe(*figure);
   if(figure->dforce)
     figure->dforce->poke();
@@ -2750,7 +2796,12 @@ Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
   if(!figure || !figure->dforce)
     throw std::runtime_error("no figure with dynamic clothing is selected");
   if(cmd == "enable")
+  {
     figure->dforce->setEnabled(args.value("on", true));
+    // a mesh the simulation takes over (or gives back) changes hands with the collider
+    if(figure->collider)
+      figure->collider->poke();
+  }
   else if(cmd == "mode")
     figure->dforce->setMode(dforceMode(args.value("mode", "settle")));
   else
@@ -3060,6 +3111,8 @@ Json FvHost::Impl::sceneState(const Json& args)
                 {"pose", pose},
                 {"materialPresets", prop->figure->materialPresets},
                 {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  if(prop->figure->collider)
+    state["collision"] = prop->figure->collider->enabled();
   if(prop->figure->dforce)
   {
     state["dforce"]     = prop->figure->dforce->enabled();
@@ -3161,10 +3214,16 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     if(prop->materials && args.contains("materials") && args["materials"].is_object())
       for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
         problems.push_back(p);
+    if(target->collider && args.contains("collision") && args["collision"].is_boolean())
+      target->collider->setEnabled(args["collision"].get<bool>());
     if(target->dforce && args.contains("dforceMode") && args["dforceMode"].is_string())
       target->dforce->setMode(dforceMode(args["dforceMode"].get<std::string>()));
     if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
+    {
       target->dforce->setEnabled(args["dforce"].get<bool>());
+      if(target->collider)
+        target->collider->poke();
+    }
     for(size_t i = 0; i < problems.size() && i < 5; i++)
       notice(prop->name + ": " + problems[i]);
     if(problems.size() > 5)
@@ -3946,6 +4005,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
   cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeVisible(args); }); });
+  cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeCollision(args); }); });
   cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("enable", args); }); });
   cmds.add("dforce.mode", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("mode", args); }); });
   cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
@@ -4236,23 +4296,34 @@ void FvHost::onUpdate()
       continue;
     Loaded&             f       = *p->figure;
     fv::Figure::Changes changes = f.fig->pump();
+    // this frame's edits first, then a settle or a collision pass that finished writes its result
+    // and is drained on its own: its vertices never hide an edit to the same mesh, and are no
+    // reason to run again
+    std::vector<int> moved;
+    for(const fv::morph::MeshChange& m : changes.meshes)
+      moved.push_back(m.mesh);
+    const auto drainInto = [&] {
+      fv::Figure::Changes more = f.fig->drain();
+      changes.nodes.insert(more.nodes.begin(), more.nodes.end());
+      changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(more.meshes.begin()), std::make_move_iterator(more.meshes.end()));
+      changes.rebound.insert(changes.rebound.end(), more.rebound.begin(), more.rebound.end());
+    };
     if(f.dforce)
     {
-      // this frame's edits first, then a settle that finished writes its drape and is drained on its
-      // own: the drape's vertices never hide an edit to the same mesh, and are no reason to settle again
-      std::vector<int> moved;
-      for(const fv::morph::MeshChange& m : changes.meshes)
-        moved.push_back(m.mesh);
       if(!changes.nodes.empty() || !moved.empty())
         f.dforce->changed(moved, !changes.nodes.empty());
       if(f.dforce->pump())
-      {
-        fv::Figure::Changes drape = f.fig->drain();
-        changes.nodes.insert(drape.nodes.begin(), drape.nodes.end());
-        changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(drape.meshes.begin()), std::make_move_iterator(drape.meshes.end()));
-        changes.rebound.insert(changes.rebound.end(), drape.rebound.begin(), drape.rebound.end());
-      }
+        drainInto();
       s.publishDforce(f, false);
+    }
+    if(f.collider)
+    {
+      if(!changes.nodes.empty() || !moved.empty())
+        f.collider->changed(moved, !changes.nodes.empty());
+      if(f.collider->pump())
+        drainInto();
+      if(f.collisionVersion != f.collider->version())
+        s.publishWardrobe(f);
     }
     s.applyNodes(f, changes.nodes);
     if(!changes.meshes.empty())

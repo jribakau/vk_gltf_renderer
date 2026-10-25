@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <set>
 #include <atomic>
@@ -61,6 +62,9 @@ struct WornItem
   std::vector<std::string> channels;
   // body polygons a geograft hides while it is worn and shown
   std::vector<int32_t> hiddenPolys;
+  // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
+  // (the file's modifier, or defaults for clothing): empty for hair, anatomy and props without one
+  std::map<int, dson::Smoothing> collision;
   // foot channels it set on the figure (a heel poses the feet), and the values they had before
   struct FootSet
   {
