@@ -60,19 +60,7 @@ bool isEyePreset(const Json& doc, const SceneGraph& scene)
 
 EyesResult chooseEyes(SceneGraph& scene, const Json* doc, const std::set<int>& previous)
 {
-  EyesResult    r;
-  std::set<int> eyes = eyeSurfaces(scene);
-  std::set<int> back = eyes;
-  back.insert(previous.begin(), previous.end());
-  r.changed = restoreBaseline(scene, back);
-  if(doc)
-  {
-    // only its eye part: lashes or a face it also sets would wipe what was chosen for them since
-    r.preset = applyMaterialPreset(*doc, scene, &eyes);
-    r.owned  = r.preset.changed;
-    r.changed.insert(r.preset.changed.begin(), r.preset.changed.end());
-  }
-  return r;
+  return choosePreset(scene, eyeSurfaces(scene), doc, previous);
 }
 
 }  // namespace fv::dson

@@ -127,9 +127,13 @@ float numberOf(const Json& v, const char* key, float lo, float hi)
 void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
 {
   const bool drop = v.is_null();
-  if(key == "color" || key == "emissive" || key == "irisColor" || key == "scleraColor")
+  if(key == "color" || key == "emissive" || key == "irisColor" || key == "scleraColor" || key == "recolor")
   {
-    std::optional<Rgb>& slot = key == "color" ? e.color : key == "emissive" ? e.emissive : key == "irisColor" ? e.irisColor : e.scleraColor;
+    std::optional<Rgb>& slot = key == "color"     ? e.color :
+                               key == "emissive"  ? e.emissive :
+                               key == "irisColor" ? e.irisColor :
+                               key == "recolor"   ? e.recolor :
+                                                    e.scleraColor;
     if(drop)
       slot.reset();
     else if(const auto c = parseHex(v))
@@ -174,6 +178,7 @@ void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
         {"clearcoatRoughness", &fv::mat::Edits::clearcoatRoughness, 0, 1},
         {"emissiveIntensity", &fv::mat::Edits::emissiveIntensity, 0, 1000},
         {"irisStrength", &fv::mat::Edits::irisStrength, 0, 1},
+        {"recolorStrength", &fv::mat::Edits::recolorStrength, 0, 1},
     };
     for(const Field& f : fields)
       if(key == f.name)
@@ -211,6 +216,8 @@ Json editedKeys(const fv::mat::Edits& e)
   add(e.irisColor.has_value(), "irisColor");
   add(e.irisStrength.has_value(), "irisStrength");
   add(e.scleraColor.has_value(), "scleraColor");
+  add(e.recolor.has_value(), "recolor");
+  add(e.recolorStrength.has_value(), "recolorStrength");
   return out;
 }
 
@@ -551,6 +558,9 @@ Json FvMaterials::set(const Json& args)
                                      "irisColor is for an eye's iris, and " + m.name + " is not one");
       if(scratch.scleraColor && !roles.sclera)
         throw std::runtime_error("scleraColor is for the white of an eye, and " + m.name + " is not one");
+      // a model's materials take their edits as they are, with no image to bake the colour into
+      if(m_model && (scratch.recolor || scratch.recolorStrength))
+        throw std::runtime_error("recolor is for a figure's surfaces, and " + m.name + " belongs to a model");
     }
   }
   std::set<int> changed;
@@ -887,6 +897,9 @@ Json FvMaterials::item(int index) const
     if(roles.sclera)
       out["values"]["scleraColor"] = hex(m.edits.scleraColor);
   }
+  // the colour a hair (or any surface) is moved to, null when unset so a merge patch takes it away
+  out["values"]["recolor"]         = m.edits.recolor ? Json(hexOf(*m.edits.recolor)) : Json(nullptr);
+  out["values"]["recolorStrength"] = m.edits.recolorStrength.value_or(1.f);
   return out;
 }
 

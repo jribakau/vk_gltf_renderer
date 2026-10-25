@@ -34,8 +34,9 @@
 //                                               transform: the gizmo's "move", "rotate" or "scale";
 //                                               helpers: whether camera and light markers show
 //
-// Topics: "selection" ({prop, node, name, mesh, kind, bone}: `node` is null when the prop itself
-// is selected; `bone`, the pose bone id, when a posable bone is), "camera" ({position, target, up,
+// Topics: "selection" ({prop, node, name, mesh, kind, bone, surface}: `node` is null when the prop itself
+// is selected; `bone`, the pose bone id, when a posable bone is; `surface`, after a click on the prop,
+// the surface it hit as its "materials/<prop>" topic names it, "m:<i>"), "camera" ({position, target, up,
 // focalLength, view, free?}, at most every 33 ms while it moves: `view` is the camera prop looked
 // through or null, and `free` where the free view was left meanwhile). The host publishes "scene" and "nodes/<prop>"
 // with what describeFigure and describeModel make.
@@ -88,6 +89,8 @@ public:
     std::vector<int>     gltfOf;     // topic node -> glTF node
     std::vector<NodeRec> nodes;      // per topic node
     Bones                bones;
+    // its glTF materials, [materials, materials + materialCount): "m:<i>" of its materials topic
+    int materials = 0, materialCount = 0;
   };
 
   // A figure's "nodes/<prop>" topic ({nodes: {"<i>": {name, parent, kind, order, depth}}, stats})
@@ -148,6 +151,8 @@ private:
   void publishCamera();
   // the prop and topic node of a glTF node (node -1: the prop root), or {-1, -1}
   std::pair<int, int> locate(int gltf) const;
+  // A click hit `renderNode` (-1: nothing): the surface it hit, for the next selection published
+  void notePick(int renderNode);
 
   GltfRenderer*                                      m_renderer = nullptr;
   fv::EventHub*                                      m_events   = nullptr;
@@ -157,6 +162,7 @@ private:
   std::unordered_map<int, std::pair<int, int>> m_where;  // glTF node -> {prop, topic node}
   std::string                                   m_selectedProp;
   int                                           m_lastGltf = -2;
+  std::string                                   m_surfaceProp, m_surface;  // what the last click hit
   std::string                                   m_pick      = "object";
   std::string                                   m_transform = "move";
   bool                                          m_helpers   = true;

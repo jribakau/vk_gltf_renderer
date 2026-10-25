@@ -278,4 +278,21 @@ std::set<int> restoreBaseline(SceneGraph& scene, const std::set<int>& which)
   return changed;
 }
 
+PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous)
+{
+  PresetChoice  r;
+  std::set<int> back = surfaces;
+  back.insert(previous.begin(), previous.end());
+  r.changed = restoreBaseline(scene, back);
+  if(doc)
+  {
+    // only its part on these: what else it sets (lashes with eyes, the body with a garment) keeps
+    // what was chosen for it since
+    r.preset = applyMaterialPreset(*doc, scene, &surfaces);
+    r.owned  = r.preset.changed;
+    r.changed.insert(r.preset.changed.begin(), r.preset.changed.end());
+  }
+  return r;
+}
+
 }  // namespace fv::dson

@@ -195,6 +195,10 @@ struct Edits
   // multiplied by scleraColor (eyeLayout says which surfaces have them)
   std::optional<Rgb>         irisColor, scleraColor;
   std::optional<float>       irisStrength;
+  // the base colour's mean moved to this, its detail kept (a hair colour), by recolorStrength (0..1,
+  // 1 when unset): baked into the base map, or the flat colour lerped when there is none
+  std::optional<Rgb>         recolor;
+  std::optional<float>       recolorStrength;
 
   bool empty() const;
   // Fields set in `o` replace those here.

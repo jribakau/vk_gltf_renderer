@@ -45,7 +45,8 @@ float linearToSrgb(double c)
 bool Edits::empty() const
 {
   return !color && !roughness && !metalness && !opacity && !alphaMode && !doubleSided && !normalStrength && !bumpStrength && !specular
-         && !clearcoat && !clearcoatRoughness && !emissive && !emissiveIntensity && !irisColor && !scleraColor && !irisStrength;
+         && !clearcoat && !clearcoatRoughness && !emissive && !emissiveIntensity && !irisColor && !scleraColor && !irisStrength
+         && !recolor && !recolorStrength;
 }
 
 void Edits::merge(const Edits& o)
@@ -70,6 +71,8 @@ void Edits::merge(const Edits& o)
   take(irisColor, o.irisColor);
   take(scleraColor, o.scleraColor);
   take(irisStrength, o.irisStrength);
+  take(recolor, o.recolor);
+  take(recolorStrength, o.recolorStrength);
 }
 
 EyeLayout eyeLayout(const Surface& s)

@@ -80,6 +80,14 @@
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
 //                                                leaves the renderer's scene at the next composition, and a geograft composes
+//   wardrobe.color  {prop, item, rel: string | null}   -> {job}: the item's colour becomes the material preset
+//                                                `rel` (null: the item as it was worn). Each choice starts
+//                                                from the item as it was worn, so colours don't stack, takes
+//                                                only the preset's part on the item's surfaces and drops the
+//                                                panel's edits of them. The job ends {state: "done", color, changed},
+//                                                or "failed" when nothing of the preset lands on the item. Kept
+//                                                in the scene file (worn[].color); a preset opened later that
+//                                                reaches the item becomes its colour
 //   wardrobe.collision {prop, on}                 worn conforming meshes are pushed out of the posed body
 //                                                (figure/wardrobe/collider.hpp), on by default
 //   wardrobe.cloth  {prop, item, on?: bool | null, strength?}   dForce on one item: true drapes it (at the
@@ -116,7 +124,9 @@
 // format?, generation?, posable?, camera?, light?}}, order: [id]}), and per prop "nodes/<prop>"
 // (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
 // "wardrobe/<prop>" ({figure, items: {id: {label, kind, rel, visible, own, channels, collision,
-// cloth: {able, native, on, strength}}}, collision: {enabled, busy, corrected}}), "dforce/<prop>"
+// cloth: {able, native, on, strength}, meshes: [scene mesh], color?: rel | null}}, collision: {enabled,
+// busy, corrected}}; `color` is the colour preset on the item, from wardrobe.color or the last preset that
+// reached it, null for its own; absent, it is as it was worn), "dforce/<prop>"
 // ({figure, enabled, mode, active, busy, draped}); a prop's topics
 // are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
 // env.name, env.size, env.loading. "pose/<prop>" carries `eyes` (whether the figure can look at

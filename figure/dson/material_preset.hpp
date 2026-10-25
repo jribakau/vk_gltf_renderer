@@ -46,6 +46,19 @@ void keepBaseline(SceneGraph& scene);
 // Their edits stay.
 std::set<int> restoreBaseline(SceneGraph& scene, const std::set<int>& which);
 
+struct PresetChoice
+{
+  std::set<int>        changed;  // surfaces parsed again
+  std::set<int>        owned;    // what this choice changed, for the next one
+  MaterialPresetResult preset;
+};
+
+// A preset chosen for some surfaces (a pair of eyes, a worn item's colour) that replaces the last
+// choice instead of stacking on it: `surfaces` and `previous` (what the last choice changed) back to
+// their baseline, then the part of `doc` on `surfaces` over them; null `doc` leaves them as they
+// came. Edits stay.
+PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous = {});
+
 // The scene materials a preset's (node chain, surface) lands on, by the rules above. An empty chain
 // (`@selection` alone) means every surface of the name. `stray`: set when the scene lacks the item the
 // chain ends at, so the surfaces are another item's; a preset there keeps the maps it would remove.

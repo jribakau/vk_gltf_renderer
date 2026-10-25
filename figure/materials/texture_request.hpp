@@ -2,7 +2,7 @@
 
 // One texture a glTF material asks for: a library image, how it is read, and what the cooker (the
 // Rust texture server) lays over or converts in it. The cooker's own queries are the vocabulary:
-// `alpha=`, `mk=` (makeup), `ir=` (iris), `bump=` and `ch=` (see src-tauri/src/protocol.rs).
+// `alpha=`, `mk=` (makeup), `ir=` (iris), `rc=` (recolour), `bump=` and `ch=` (see src-tauri/src/protocol.rs).
 
 #include <array>
 #include <optional>
@@ -51,6 +51,22 @@ struct IrisRequest
 // <iris r,g,b | ->|<strength>|<eye | iris>|<x,y,r>[;<x,y,r>...]|<sclera r,g,b | ->
 std::string irisQuery(const IrisRequest& r);
 
+// A whole base colour image moved to another colour, in Oklab, as the cooker's recolour does it
+// (texcache.rs), after makeup (a hair's translucency colour) is laid over it. The mean is taken over
+// the image weighted by its alpha (a cutout's gaps count for nothing); a pixel's lightness becomes the
+// target's plus its departure from the mean, scaled by the target's over the mean (clamped to
+// 0.5..1.5), and its hue and chroma the target's plus half its own departure, scaled by its
+// lightness over the target's, so strands, roots and highlights stay. Blended in by `strength`, in
+// linear light; alpha is kept.
+struct RecolorRequest
+{
+  std::array<float, 3> color{1, 1, 1};  // linear
+  float                strength = 1;
+};
+
+// The cooker's rc= value, before it is percent-encoded as a whole: <r,g,b>|<strength>
+std::string recolorQuery(const RecolorRequest& r);
+
 struct TextureRequest
 {
   std::string rel;
@@ -64,6 +80,7 @@ struct TextureRequest
   float       bumpStrength = 1;
   std::optional<MakeupRequest> makeup;
   std::optional<IrisRequest>   iris;
+  std::optional<RecolorRequest> recolor;
   // A DAZ layered image's upper layers, laid over `rel` by their own alpha before anything else
   // (Genesis 9's default eyes: the iris over the sclera)
   std::vector<std::string> layers;
@@ -71,7 +88,8 @@ struct TextureRequest
   // Whether only the cooker can make it (the renderer reads plain png/jpg/webp itself).
   bool composed() const
   {
-    return !alphaRel.empty() || !channels.empty() || !bumpRel.empty() || makeup.has_value() || iris.has_value() || !layers.empty();
+    return !alphaRel.empty() || !channels.empty() || !bumpRel.empty() || makeup.has_value() || iris.has_value() || recolor.has_value()
+           || !layers.empty();
   }
 };
 

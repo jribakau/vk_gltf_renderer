@@ -75,6 +75,7 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     , m_onApp(std::move(onApp))
 {
   m_renderer->setPickObserver([this](int renderNode, const glm::vec3& hit) {
+    notePick(renderNode);
     if(renderNode < 0 || m_pick == "mesh")
       return false;
     nvvkgltf::Scene* scene = m_renderer->editScene();
@@ -115,6 +116,9 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         }
         m_renderer->selectSceneNodeFromScript(gltf);
       }
+      // chosen in a panel, not clicked: no surface
+      m_surfaceProp.clear();
+      m_surface.clear();
       publishSelection(true);
       return fv::Json{{"ok", true}};
     });
@@ -396,6 +400,7 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
           const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
           if(it != m_props.end())
           {
+            notePick(-1);
             m_renderer->selectSceneNodeFromScript(it->root);
             continue;
           }
@@ -509,6 +514,27 @@ void FvView::deselect(const std::string& prop)
   publishSelection(true);
 }
 
+void FvView::notePick(int renderNode)
+{
+  m_surfaceProp.clear();
+  m_surface.clear();
+  // published again even when the node is the same: another surface of it
+  m_lastGltf             = -2;
+  nvvkgltf::Scene* scene = m_renderer->editScene();
+  if(renderNode < 0 || !scene || !scene->valid() || renderNode >= int(scene->getRenderNodes().size()))
+    return;
+  const nvvkgltf::RenderNode& rn      = scene->getRenderNodes()[size_t(renderNode)];
+  const auto [prop, node]             = locate(rn.refNodeID);
+  if(prop < 0)
+    return;
+  const PropNodes& p = m_props[size_t(prop)];
+  const int        i = rn.materialID - p.materials;
+  if(i < 0 || i >= p.materialCount)
+    return;
+  m_surfaceProp = p.id;
+  m_surface     = "m:" + std::to_string(i);
+}
+
 void FvView::publishSelection(bool force)
 {
   const int gltf = m_renderer->selectedNodeIndex();
@@ -524,14 +550,19 @@ void FvView::publishSelection(bool force)
   }
   const PropNodes& p = m_props[size_t(prop)];
   m_selectedProp     = p.id;
+  const auto withSurface = [&](fv::Json sel) {
+    if(m_surfaceProp == p.id && !m_surface.empty())
+      sel["surface"] = m_surface;
+    return sel;
+  };
   if(node < 0 || node >= int(p.nodes.size()))
   {
-    m_events->snapshot("selection", {{"prop", p.id}, {"node", nullptr}});
+    m_events->snapshot("selection", withSurface({{"prop", p.id}, {"node", nullptr}}));
     return;
   }
   const NodeRec& n   = p.nodes[size_t(node)];
   fv::Json       sel = {{"prop", p.id}, {"node", node}, {"name", n.name}, {"mesh", n.mesh}, {"kind", n.kind}};
   if(const auto bone = p.bones.idOf.find(node); bone != p.bones.idOf.end())
     sel["bone"] = bone->second;
-  m_events->snapshot("selection", sel);
+  m_events->snapshot("selection", withSurface(std::move(sel)));
 }

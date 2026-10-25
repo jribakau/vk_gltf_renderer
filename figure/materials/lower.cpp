@@ -69,17 +69,18 @@ struct Builder
   }
 
   // The base colour image: the colour map with its iris recoloured, a cutout in its alpha and makeup
-  // laid over it; or, with a flat base colour, the colour baked into the image.
+  // laid over it, then the whole recoloured; or, with a flat base colour, the colour baked into the image.
   Json base(const std::string& color, const Rgb& factor, const std::string& alpha, const std::optional<MakeupLayer>& makeup,
-            const std::optional<IrisRequest>& iris = std::nullopt)
+            const std::optional<IrisRequest>& iris = std::nullopt, const std::optional<RecolorRequest>& recolor = std::nullopt)
   {
-    if(alpha.empty() && !makeup && !iris)
+    if(alpha.empty() && !makeup && !iris && !recolor)
       return color.empty() ? Json() : plain(color, true);
     TextureRequest r;
     r.srgb     = true;
     r.rel      = !color.empty() ? color : makeup && !makeup->map.empty() ? makeup->map : makeup && !makeup->weightMap.empty() ? makeup->weightMap : alpha;
     r.alphaRel = alpha;
     r.iris     = iris;
+    r.recolor  = recolor;
     // a flat base colour (no base map) is a makeup bake with nothing laid over it
     if(makeup || color.empty())
     {
@@ -99,6 +100,34 @@ struct Builder
 float clamp(float v, float lo, float hi)
 {
   return std::clamp(v, lo, hi);
+}
+
+// Chiang et al.'s fit between a fibre's colour and its absorption, by azimuthal roughness, as the
+// hair shader (hair_bsdf.h.slang) and the DSON reader use it: colour = exp(-0.45 sqrt(sigma) fit).
+float chiangFit(float b)
+{
+  b = clamp(b, 0, 1);
+  return 5.969f - 0.215f * b + 2.532f * b * b - 10.73f * b * b * b + 5.574f * b * b * b * b + 0.245f * b * b * b * b * b;
+}
+
+// A fibre's root and tip absorption moved so their mean colour goes to `target` by `strength`, each
+// scaled by the same ratio, so a dark root and a light tip stay apart. The path tracer shades a
+// fibre from these, not from its map, so a recolour has to move them too.
+void recolorFibre(Rgb& root, Rgb& tip, float azimuthal, const Rgb& target, float strength)
+{
+  const float fit    = chiangFit(azimuthal);
+  const auto  colour = [&](float sigma) { return std::exp(-0.45f * std::sqrt(std::max(sigma, 0.f)) * fit); };
+  const auto  sigma  = [&](float c) {
+    const float s = std::log(clamp(c, 1e-3f, 0.999f)) / (-0.45f * fit);
+    return s * s;
+  };
+  for(int i = 0; i < 3; i++)
+  {
+    const float r = colour(root[i]), t = colour(tip[i]);
+    const float k = target[i] / std::max(0.5f * (r + t), 1e-3f);
+    root[i]       = sigma(r + (r * k - r) * strength);
+    tip[i]        = sigma(t + (t * k - t) * strength);
+  }
 }
 
 // Genesis 9's eye UVs put both irises in the top half of one map. These are the nominal discs
@@ -163,6 +192,12 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     factor = lerp(factor, *e.irisColor, clamp(e.irisStrength.value_or(1.f), 0, 1));
   if(eye == EyeLayout::eSclera && e.scleraColor)
     factor = mul(factor, *e.scleraColor);
+  // a recolour: baked into the image when there is one, else the flat colour goes towards it
+  std::optional<RecolorRequest> recolor;
+  if(e.recolor)
+    recolor = RecolorRequest{*e.recolor, clamp(e.recolorStrength.value_or(1.f), 0, 1)};
+  if(recolor && !anyMap)
+    factor = lerp(factor, recolor->color, recolor->strength);
   // glTF tints transmitted light by the base colour; Iray's refraction doesn't (the eye moisture's
   // grey diffuse colour, passed through twice, left a quarter of the light to reach the iris)
   if(refractive && !anyMap)
@@ -203,7 +238,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   pbr["metallicFactor"]  = e.metalness.value_or(s.metallic.value);
   if(anyMap)
   {
-    const Json info = b.base(s.base.map, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts));
+    const Json info = b.base(s.base.map, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor);
     if(!info.is_null())
       pbr["baseColorTexture"] = info;
   }
@@ -474,14 +509,18 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       betaN = clamp(betaM * ratio, 0.f, 1.f);
     }
     const float hairSpecular = clamp(e.specular.value_or(1.f), 0.f, 1.f);
+    Rgb         rootSigma    = f.rootSigma;
+    Rgb         tipSigma     = f.tipSigma;
+    if(recolor)
+      recolorFibre(rootSigma, tipSigma, betaN, recolor->color, recolor->strength);
     eff.roughness = betaM;
     eff.specular  = hairSpecular;
     out["pbrMetallicRoughness"]["roughnessFactor"] = betaM;
     ext["KHR_materials_specular"]["specularFactor"] = hairSpecular;
     ext["FV_materials_hair"] = {{"longitudinalRoughness", betaM},
                                 {"azimuthalRoughness", betaN},
-                                {"rootAbsorption", rgbJson(f.rootSigma)},
-                                {"tipAbsorption", rgbJson(f.tipSigma)},
+                                {"rootAbsorption", rgbJson(rootSigma)},
+                                {"tipAbsorption", rgbJson(tipSigma)},
                                 {"rootFade", 0.06f},
                                 {"rootV", opts.flipV ? 1.f : 0.f},
                                 {"specularFactor", hairSpecular}};

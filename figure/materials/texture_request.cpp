@@ -44,6 +44,11 @@ std::string irisQuery(const IrisRequest& r)
   return shortRgb(r.iris) + "|" + shortNum(r.strength) + "|" + (r.mode == IrisRequest::Mode::eIris ? "iris" : "eye") + "|" + discs + "|" + shortRgb(r.sclera);
 }
 
+std::string recolorQuery(const RecolorRequest& r)
+{
+  return shortRgb(r.color) + "|" + shortNum(r.strength);
+}
+
 std::string requestKey(const TextureRequest& req)
 {
   std::string key = req.rel + "|" + (req.srgb ? "1" : "0") + (req.normal ? "n" : "") + "|" + req.alphaRel + "|" + req.channels;
@@ -57,6 +62,8 @@ std::string requestKey(const TextureRequest& req)
   }
   if(req.iris)
     key += "|ir:" + irisQuery(*req.iris);
+  if(req.recolor)
+    key += "|rc:" + recolorQuery(*req.recolor);
   for(const std::string& layer : req.layers)
     key += "|ly:" + layer;
   return key;

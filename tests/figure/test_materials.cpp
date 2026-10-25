@@ -450,6 +450,32 @@ TEST(Materials, RibbonHairEditsMoveTheFibreAndCanStayOpaque)
   EXPECT_NEAR(lowered.effective.specular, 0.25f, 1e-5f);
 }
 
+// A fibre hair's tint reaches the path tracer through its absorption: the mean of root and tip goes
+// to the target and the root stays darker than the tip.
+TEST(Materials, ARecolourMovesAFibresAbsorptionAndKeepsRootAndTipApart)
+{
+  const std::string dye = R"(,{"channel":{"id":"Hair Root Color","type":"color","current_value":[0.05,0.02,0.01]}},
+    {"channel":{"id":"Hair Tip Color","type":"color","current_value":[0.3,0.2,0.1]}})";
+  const auto s = fv::dson::parseSurface("FE Base", channelsOf(omniHair(dye).c_str()));
+  ASSERT_TRUE(s.hairFibre);
+  fv::mat::Edits e;
+  e.recolor                = fv::mat::Rgb{0.6f, 0.45f, 0.25f};
+  const auto   lowered     = fv::mat::lower(s, e, {});
+  const auto&  hair        = lowered.material["extensions"]["FV_materials_hair"];
+  const float  b           = hair["azimuthalRoughness"].get<float>();
+  const float  fit         = 5.969f - 0.215f * b + 2.532f * b * b - 10.73f * b * b * b + 5.574f * b * b * b * b + 0.245f * b * b * b * b * b;
+  const auto   colour      = [&](float sigma) { return std::exp(-0.45f * std::sqrt(sigma) * fit); };
+  for(int i = 0; i < 3; i++)
+  {
+    const float root = colour(hair["rootAbsorption"][i].get<float>()), tip = colour(hair["tipAbsorption"][i].get<float>());
+    EXPECT_NEAR(0.5f * (root + tip), (*e.recolor)[i], 0.02f) << i;
+    EXPECT_LT(root, tip) << i;
+  }
+  // none of it: the fibre as it was
+  e.recolorStrength = 0.f;
+  EXPECT_NEAR(fv::mat::lower(s, e, {}).material["extensions"]["FV_materials_hair"]["rootAbsorption"][0].get<float>(), s.hairFibre->rootSigma[0], 1e-3f);
+}
+
 // The orders of one fibre at its centre, the part of hair_bsdf.h.slang that decides whether light
 // reflects or goes through. h = 0, the ray square to the strand, eta 1.55.
 TEST(Materials, AFibreTransmitsUntilAbsorptionClosesIt)
@@ -830,6 +856,69 @@ TEST(Materials, AnIrisSurfacesDiscsAreItsUVIslands)
       EXPECT_EQ(r.iris->discs.size(), 2u);
     }
   EXPECT_EQ(asked, 1);
+}
+
+// A worn item's colour: only its surfaces take the preset, each choice starts from how it was worn,
+// and null puts it back. The lashes stand in for a hair here.
+TEST(Materials, ChoosingAnItemsColourTouchesItsSurfacesAloneAndDoesNotStack)
+{
+  fv::SceneGraph      scene  = eyeScene();
+  const std::set<int> lashes = {7};
+  const auto          preset = [](const std::string& map, const std::string& more = "") {
+    return Json::parse(R"({"scene":{"animations":[{"url":"name://@selection/Genesis9:/Genesis9Eyelashes:#materials/Eyelashes:?diffuse/image_file","keys":[[0,")"
+                       + map + R"("]]})" + more + "]}}");
+  };
+  // a colour that also sets the body: the body is left alone
+  const Json a  = preset("/brown.jpg", R"(,{"url":"name://@selection/Genesis9:#materials/Body:?diffuse/image_file","keys":[[0,"/tan.jpg"]]})");
+  const auto ra = fv::dson::choosePreset(scene, lashes, &a);
+  EXPECT_EQ(ra.owned, lashes);
+  EXPECT_EQ(scene.materials[7].surface.base.map, "/brown.jpg");
+  EXPECT_EQ(scene.materials[0].surface.base.map, "/Runtime/Textures/face_d.jpg");
+  // the next replaces it
+  const Json b = preset("/blonde.jpg");
+  fv::dson::choosePreset(scene, lashes, &b, ra.owned);
+  EXPECT_EQ(scene.materials[7].surface.base.map, "/blonde.jpg");
+  // null: as it was worn, with its edits
+  scene.materials[7].edits.recolor = fv::mat::Rgb{1, 0, 0};
+  const auto own                   = fv::dson::choosePreset(scene, lashes, nullptr, ra.owned);
+  EXPECT_TRUE(own.changed.count(7));
+  EXPECT_TRUE(own.owned.empty());
+  EXPECT_EQ(scene.materials[7].surface.base.map, "/Runtime/Textures/face_d.jpg");
+  EXPECT_TRUE(scene.materials[7].edits.recolor.has_value());
+}
+
+// A recolour (a hair colour) bakes into the base map after the rest of it; a flat colour goes
+// towards the target instead.
+TEST(Materials, ARecolourBakesTheBaseMapOrMovesAFlatColour)
+{
+  const auto     hair = fv::dson::parseSurface("Hair", channelsOf(kSkin));
+  fv::mat::Edits e;
+  e.recolor          = fv::mat::Rgb{0.2f, 0.4f, 0.6f};
+  e.recolorStrength  = 0.5f;
+  const auto lowered = fv::mat::lower(hair, e, {});
+  ASSERT_FALSE(lowered.requests.empty());
+  const fv::mat::TextureRequest& base = lowered.requests[0];
+  ASSERT_TRUE(base.recolor);
+  EXPECT_TRUE(base.composed());
+  EXPECT_EQ(base.rel, "/Runtime/Textures/face_d.jpg");
+  // the cooker's rc= (texcache.rs Recolour::parse), before the host percent-encodes it whole
+  EXPECT_EQ(fv::mat::recolorQuery(*base.recolor), "0.2,0.4,0.6|0.5");
+  EXPECT_NE(fv::mat::requestKey(base).find("|rc:0.2,0.4,0.6|0.5"), std::string::npos);
+  EXPECT_FALSE(fv::mat::lower(hair, {}, {}).requests[0].recolor);
+
+  // no map: the flat colour, half way to the target
+  const auto flat = fv::dson::parseSurface("Hair", channelsOf(kEyeMoisture));
+  fv::mat::Edits half;
+  half.recolor         = fv::mat::Rgb{1.f, 0.f, 0.f};
+  half.recolorStrength = 0.5f;
+  const Json factor    = fv::mat::lower(flat, half, {}).material["pbrMetallicRoughness"]["baseColorFactor"];
+  EXPECT_GT(factor[0].get<float>(), factor[1].get<float>());
+
+  // an edit like the rest: merged, and empty without it
+  fv::mat::Edits merged;
+  merged.merge(e);
+  EXPECT_TRUE(merged.recolor.has_value());
+  EXPECT_FALSE(merged.empty());
 }
 
 }  // namespace

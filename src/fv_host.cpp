@@ -23,6 +23,7 @@
 #include "fv_host.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -140,6 +141,14 @@ struct Loaded
   std::optional<std::string> eyes;
   std::set<int>              eyesOwned;   // what those eyes changed
   std::string                eyesPreset;  // a mixed material preset that set the eye surfaces since
+  // worn item id -> the colour preset chosen for it (wardrobe.color): its library path, "" for the
+  // item as it was worn, and what that changed, for the next choice
+  struct ItemColor
+  {
+    std::string   rel;
+    std::set<int> owned;
+  };
+  std::map<int, ItemColor> colors;
   // the add-ons its file lists are still going on; a restore waits for them, as it would otherwise
   // wear them a second time without their presets
   bool                               addonsPending = false;
@@ -413,6 +422,9 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   // ir=<iris r,g,b | ->|<strength>|<eye | iris>|<x,y,r;...>|<sclera r,g,b | ->, percent-encoded as a whole
   if(req.iris)
     url += "&ir=" + encodeComponent(fv::mat::irisQuery(*req.iris));
+  // rc=<r,g,b>|<strength>, percent-encoded as a whole
+  if(req.recolor)
+    url += "&rc=" + encodeComponent(fv::mat::recolorQuery(*req.recolor));
   // ly=<source>;<source>..., percent-encoded as a whole
   if(!req.layers.empty())
   {
@@ -475,8 +487,10 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
 {
   using fv::textures::Fallback;
   const bool     derived = req.channels == "mr" || req.channels == "bn";
-  const bool     laid    = !req.alphaRel.empty() || req.makeup || req.iris || !req.layers.empty();
-  const Fallback route   = fv::textures::fallbackOf(req.rel, derived, laid, cooker, s.originalTextures);
+  const bool     laid    = !req.alphaRel.empty() || req.makeup || req.iris || req.recolor || !req.layers.empty();
+  // an iris or a recolour only the cooker makes (composeImage has neither): cooked under Original textures too
+  const Fallback route =
+      cooker && (req.iris || req.recolor) ? Fallback::eCook : fv::textures::fallbackOf(req.rel, derived, laid, cooker, s.originalTextures);
   if(route == Fallback::eCook)
     return cookedTexture(s, req, false, false).image;
   // composed into a PNG beside the others made this way (composeImage recolours the iris)
@@ -1012,6 +1026,9 @@ struct FvHost::Impl
   Json applyEyes(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
   // a material preset that is not a pair of eyes changed `changed`: if that reached the eyes, they are its now
   void presetChangedEyes(Prop& prop, const std::string& rel, const std::set<int>& changed);
+  // a worn item's colour (fv_host.hpp wardrobe.color): `rel` "" and no `doc` for the item as it was worn
+  Json wardrobeColor(const Json& args);
+  Json applyItemColor(Prop& prop, int item, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
   void publishEyes(Prop& p);
 
   // ---- lighting (fv_lighting.hpp), application thread only
@@ -1871,6 +1888,8 @@ void FvHost::Impl::compose()
         p.materials = makeMaterials(props[i]);
       p.materials->attach(p.id, &f.fig->loaded.scene, built, f.texturesFlipped, skinMode.load(), at);
       publishEyes(p);
+      nodes.materials     = at.materials;
+      nodes.materialCount = int(f.fig->loaded.scene.materials.size());
       Json described = FvView::describeFigure(nodes, f.fig->loaded.scene, f.fig->loaded.root, f.nodeOf, f.fig->morphs ? f.fig->morphs->size() : 0);
       if(f.fig->pose)
       {
@@ -1908,6 +1927,8 @@ void FvHost::Impl::compose()
       if(!p.materials)
         p.materials = makeMaterials(props[i]);
       p.materials->attachModel(p.id, at, int(p.model->materials.size()), int(p.model->meshes.size()));
+      nodes.materials     = at.materials;
+      nodes.materialCount = int(p.model->materials.size());
       Json described = FvView::describeModel(nodes, scn->getModel(), p.placed.root, p.placed.firstNode, p.placed.lastNode, base.meshes);
       p.stats        = described["stats"];
       protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
@@ -2571,6 +2592,11 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
                                           {"channels", w.channels.size()},
                                           {"collision", !w.collision.empty()},
                                           {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}}}};
+    // its scene meshes, as the materials topic's items list theirs: which surfaces are this item's
+    items["i:" + std::to_string(w.id)]["meshes"] = w.meshes;
+    // the colour preset on it, null for its own; absent, as it was worn
+    if(const auto c = f.colors.find(w.id); c != f.colors.end())
+      items["i:" + std::to_string(w.id)]["color"] = c->second.rel.empty() ? Json(nullptr) : Json(c->second.rel);
   }
   Json topic = {{"figure", f.id}, {"items", items}};
   if(f.collider)
@@ -3318,6 +3344,9 @@ Json FvHost::Impl::sceneState(const Json& args)
       // dForce on the item as the user set it, when they did
       if(w.cloth.on || w.cloth.strength != 1.f)
         entry["cloth"] = {{"on", w.cloth.on ? Json(*w.cloth.on) : Json(nullptr)}, {"strength", std::round(w.cloth.strength * 1e3) / 1e3}};
+      // the colour chosen for it, null for its own
+      if(const auto c = prop->figure->colors.find(w.id); c != prop->figure->colors.end())
+        entry["color"] = c->second.rel.empty() ? Json(nullptr) : Json(c->second.rel);
       worn.push_back(std::move(entry));
     }
   Json morphs = Json::object();
@@ -3464,6 +3493,27 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       {
         problems.push_back(std::string("eyes: ") + e.what());
       }
+    }
+    // each worn item's colour, over the presets and under the edits (a hair's recolour is an edit)
+    for(const Json& w : args.value("worn", Json::array()))
+    {
+      if(!w.is_object() || !w.contains("color") || !(w["color"].is_string() || w["color"].is_null()))
+        continue;
+      const std::string rel = w["color"].is_string() ? w["color"].get<std::string>() : std::string();
+      for(const fv::WornItem& i : fig.items)
+        if(relKey(i.rel) == relKey(w.value("rel", "")) && (w.value("label", "").empty() || i.label == w.value("label", "")))
+          try
+          {
+            std::shared_ptr<const fv::dson::Doc> doc;
+            if(!rel.empty() && !(doc = fig.store().load(rel)))
+              problems.push_back("the colour " + fileStem(rel) + " of " + i.label + " isn't in the content library");
+            else
+              applyItemColor(*prop, i.id, rel, doc ? &doc->json : nullptr, true);
+          }
+          catch(const std::exception& e)
+          {
+            problems.push_back(i.label + ": " + e.what());
+          }
     }
     if(prop->materials && args.contains("materials") && args["materials"].is_object())
       for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
@@ -3763,9 +3813,141 @@ Json FvHost::Impl::applyEyes(Prop& prop, const std::string& rel, const fv::dson:
   return {{"eyes", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
 }
 
+namespace {
+
+// The surfaces a worn item's meshes use.
+std::set<int> itemSurfaces(const fv::SceneGraph& scene, const fv::WornItem& w)
+{
+  std::set<int> out;
+  for(int m : w.meshes)
+    if(m >= 0 && m < int(scene.meshes.size()))
+      for(int mi : scene.meshes[size_t(m)].materials)
+        if(mi >= 0 && mi < int(scene.materials.size()))
+          out.insert(mi);
+  return out;
+}
+
+}  // namespace
+
+// The colour `rel` on a worn item, `doc` its preset (null, with `rel` "", for the item as it was
+// worn): the item's surfaces back to how it was worn, then the preset's part on them, so nothing of
+// the colour before stays and nothing else it sets is touched. Unless `keepEdits`, the panel's edits
+// of those surfaces go too (a recolour sets the mean, so kept it would make every colour look the
+// same). Throws, changing nothing, when nothing of the preset lands on the item.
+Json FvHost::Impl::applyItemColor(Prop& prop, int item, const std::string& rel, const fv::dson::Json* doc, bool keepEdits)
+{
+  Loaded&             f     = *prop.figure;
+  fv::SceneGraph&     scene = f.fig->loaded.scene;
+  const fv::WornItem* w     = wornItem(*f.fig, item);
+  if(!w)
+    throw std::runtime_error(prop.name + " doesn't wear that item any more.");
+  const std::set<int> surfaces = itemSurfaces(scene, *w);
+  if(surfaces.empty())
+    throw std::runtime_error(w->label + " has no surfaces to colour.");
+  std::set<int> targets;
+  if(doc)
+  {
+    targets = fv::dson::materialPresetTargets(*doc, scene);
+    if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
+      throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + w->label + "'s.");
+  }
+  const auto                     was     = f.colors.find(item);
+  const fv::dson::PresetChoice   r       = fv::dson::choosePreset(scene, surfaces, doc, was != f.colors.end() ? was->second.owned : std::set<int>{});
+  std::set<int>                  changed = r.changed;
+  if(!keepEdits)
+    for(int i : surfaces)
+      if(!scene.materials[size_t(i)].edits.empty())
+      {
+        scene.materials[size_t(i)].edits = {};
+        changed.insert(i);
+      }
+  if(prop.materials)
+    prop.materials->surfacesChanged(changed);
+  f.colors[item] = {rel, r.owned};
+  // the scene file replays it as the item's colour, not as a preset; one that also set other
+  // surfaces (a character's skin and hair) stays a preset for those
+  if(std::includes(surfaces.begin(), surfaces.end(), targets.begin(), targets.end()))
+    f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
+  publishWardrobe(f);
+  return {{"color", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
+}
+
+// wardrobe.color {prop, item, rel}: the preset is read on a worker and applied on the application
+// thread. The job fails, changing nothing, for an item the figure no longer wears or a preset none of
+// whose surfaces are the item's.
+Json FvHost::Impl::wardrobeColor(const Json& args)
+{
+  if(!args.contains("rel") || !(args["rel"].is_string() || args["rel"].is_null()))
+    throw std::runtime_error("wardrobe.color wants rel: a library path, or null for the item as it was worn");
+  auto figure = figureArg(args);
+  if(!figure)
+    throw std::runtime_error("no such figure");
+  const int           item = itemId(args);
+  const fv::WornItem* w    = wornItem(*figure->fig, item);
+  if(!w)
+    throw std::runtime_error("no such item");
+  const std::string rel   = args["rel"].is_string() ? args["rel"].get<std::string>() : std::string();
+  const uint64_t    jobId = ++jobs;
+  const std::string label = w->label + ": " + (rel.empty() ? std::string("its own colour") : fileStem(rel));
+  job(jobId, {{"label", label}, {"state", "running"}});
+  const auto fail  = [this, jobId, label](const std::string& why) { job(jobId, {{"label", label}, {"state", "failed"}, {"error", why}}); };
+  const auto apply = [this, figure, item, rel, jobId, label, fail](const std::optional<fv::dson::Json>& doc) {
+    const auto p = findProp(figure->id);
+    if(!p || p->figure != figure)
+      return fail("the figure left the scene");
+    try
+    {
+      Json done     = applyItemColor(*p, item, rel, doc ? &*doc : nullptr, false);
+      done["label"] = label;
+      done["state"] = "done";
+      job(jobId, done);
+    }
+    catch(const std::exception& e)
+    {
+      fail(e.what());
+    }
+  };
+  if(rel.empty())
+  {
+    apply(std::nullopt);
+    return {{"job", jobId}};
+  }
+  loaders.spawn([this, figure, rel, apply, fail] {
+    try
+    {
+      auto doc = figure->fig->store().load(rel);
+      if(!doc)
+        throw std::runtime_error(fileStem(rel) + " isn't in the content library.");
+      const auto preset = fv::dson::describePreset(doc->json);
+      if(!preset || preset->kind != "material preset")
+        throw std::runtime_error(fileStem(rel) + " is not a material preset.");
+      post([apply, body = doc->json] { apply(body); });
+    }
+    catch(const std::exception& e)
+    {
+      fail(e.what());
+    }
+  });
+  return {{"job", jobId}};
+}
+
 void FvHost::Impl::presetChangedEyes(Prop& prop, const std::string& rel, const std::set<int>& changed)
 {
-  Loaded&             f    = *prop.figure;
+  Loaded& f = *prop.figure;
+  // a worn item the preset reached has it for its colour now: undo and a scene file put that back
+  bool colors = false;
+  for(const fv::WornItem& w : f.fig->items)
+  {
+    const std::set<int> surfaces = itemSurfaces(f.fig->loaded.scene, w);
+    std::set<int>       owned;
+    std::set_intersection(surfaces.begin(), surfaces.end(), changed.begin(), changed.end(), std::inserter(owned, owned.end()));
+    if(owned.empty())
+      continue;
+    f.colors[w.id] = {rel, owned};
+    colors         = true;
+  }
+  if(colors)
+    publishWardrobe(f);
   const std::set<int> eyes = fv::dson::eyeSurfaces(f.fig->loaded.scene);
   if(std::none_of(changed.begin(), changed.end(), [&](int i) { return eyes.count(i) > 0; }))
     return;
@@ -4523,6 +4705,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("material.set", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).set(args); }); });
   cmds.add("material.reset", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).reset(args); }); });
   cmds.add("material.eyes", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialEyes(args); }); });
+  cmds.add("wardrobe.color", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeColor(args); }); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
   cmds.add("pose.eyes", [impl](const Json& args) {
     return impl->onApp([impl, args] {
