@@ -337,7 +337,8 @@ private:
     bool enableRr         = false;                                         // RR only
     int  sizeMode         = static_cast<int>(SizeMode::eOptimal);          // RR only (int for SettingsHandler)
     int  qualityMode      = static_cast<int>(Quality::eOff);               // SR only (int for SettingsHandler)
-    int  transparencyMode = static_cast<int>(TransparencyMode::eDefault);  // RR only (int for SettingsHandler)
+    // RR only (int for SettingsHandler). Improved in the fork: a figure's corneas and eye moisture are clear glass
+    int  transparencyMode = static_cast<int>(TransparencyMode::eImproved);
   };
 
   // ---- Internal predicates (callers consume state() / isActive() instead) -------------------

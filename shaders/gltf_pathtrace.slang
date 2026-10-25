@@ -463,19 +463,31 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
 
       // Base-color guide albedo (shared by DLSS and the other denoisers). Stored temporarily, written at end to
-      // reduce live state.
+      // reduce live state. OptiX and OIDN take the surface colour, metal included; DLSS-RR the diffuse
+      // albedo, its specular share going to the specular guide (NVIDIA's RR guide). Transmission is not
+      // taken off: skin's (up to 0.95) would leave RR a near-black albedo.
       float3 guideAlbedo = pbrMat.baseColor.xyz;
 #if USE_DLSS_SHADER
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+        guideAlbedo *= 1.0F - pbrMat.metallic;
       // #DLSS specular guide - specular albedo + clear-glass albedo refinement. DLSS-only quality
       // path; the other denoisers need neither, so it is compiled out of their variant.
-      // Apply KHR_materials_specular energy conservation clamping for DLSS guide buffer
-      // Spec formula: dielectric_f0 = min(f0_from_ior * specularColor, 1.0) * specular
-      float  f0_from_ior          = pow((pbrMat.ior2 - pbrMat.ior1) / (pbrMat.ior2 + pbrMat.ior1), 2.0F);
-      float3 specularColorClamped = min(f0_from_ior * pbrMat.specularColor, float3(1.0F));
-      float3 specularAlbedo = EnvBRDFApprox2(specularColorClamped, pbrMat.roughness.x, dot(pbrMat.N, ray.Direction));
+      // KHR_materials_specular: dielectric_f0 = min(f0_from_ior * specularColor, 1.0) * specular; a metal's
+      // F0 is its base colour; the clearcoat (DAZ skin's top lobe) adds its own at 0.04.
+      float  f0_from_ior = pow((pbrMat.ior2 - pbrMat.ior1) / (pbrMat.ior2 + pbrMat.ior1), 2.0F);
+      float3 dielectricF0 = min(f0_from_ior * pbrMat.specularColor, float3(1.0F)) * pbrMat.specular;
+      float3 f0           = lerp(dielectricF0, pbrMat.baseColor.xyz, pbrMat.metallic);
+      const float ndotv   = dot(pbrMat.N, ray.Direction);
+      float3 specularAlbedo = EnvBRDFApprox2(f0, pbrMat.roughness.x, ndotv);
+      if(pbrMat.clearcoat > 0.0F)
+        specularAlbedo = saturate(specularAlbedo
+                                  + pbrMat.clearcoat * EnvBRDFApprox2(float3(0.04F), pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness, ndotv));
       float3 guideNormal    = pbrMat.N;
-      float  guideRoughness = pbrMat.roughness.x;
-      if(USE_DLSS_TRANSP == 1 && !hasFlag(pushConst.flags, PathtracerFlags::ePtDenoiserGuides) && dlssIsClearGlass(pbrMat))
+      // RR reads linear (perceptual) roughness; the material keeps GGX alpha
+      float  guideRoughness = sqrt(pbrMat.roughness.x);
+      // also on the accumulation's frames, so OptiX and OIDN see the iris behind a cornea too (only DLSS
+      // reads the replaced depth and motion)
+      if(USE_DLSS_TRANSP == 1 && dlssIsClearGlass(pbrMat))
       {
         // #DLSS primary surface replacement: describe what is seen through the glass. The albedo
         // keeps the glass's Fresnel share; depth and motion come from the replaced surface.
@@ -486,7 +498,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         if(psr.valid)
         {
           guideNormal        = psr.normal;
-          guideRoughness     = psr.roughness;
+          guideRoughness     = sqrt(psr.roughness);
           pt.guide.psrValid  = true;
           pt.guide.psrPos    = hit.pos + ray.Direction * psr.pathLength;
           pt.firstHitPosPrev = pt.guide.psrPos + psr.posDelta;
@@ -1188,7 +1200,11 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     outImages[int(OutputImage::eDlssDepth)][int2(samplePos)]           = float4(guideDepth);
     outImages[int(OutputImage::eDlssMotion)][int2(samplePos)]          = float4(motionVec, 0, 0);
     outImages[int(OutputImage::eDlssNormalRoughness)][int2(samplePos)] = sampleResult.guideOutput.normalRoughness;
-    outImages[int(OutputImage::eDlssAlbedo)][int2(samplePos)]          = sampleResult.guideOutput.albedo;
+    // the sky's albedo is 0.5, as NVIDIA's RR guide asks: 0 makes it boil at the silhouette
+    float4 guideAlbedo = sampleResult.guideOutput.albedo;
+    if(!hasSolidHit)
+      guideAlbedo = float4(0.5f);
+    outImages[int(OutputImage::eDlssAlbedo)][int2(samplePos)] = guideAlbedo;
     outImages[int(OutputImage::eDlssSpecAlbedo)][int2(samplePos)] = float4(sampleResult.guideOutput.specularAlbedo.xyz, 1.0f);
     outImages[int(OutputImage::eDlssSpecularHitDist)][int2(samplePos)] = float4(sampleResult.guideOutput.specularHitDist);
     outImages[int(OutputImage::eNrMask)][int2(samplePos)] = float4(sampleResult.guideOutput.nrMask);
