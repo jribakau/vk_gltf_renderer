@@ -669,6 +669,7 @@ auto main(int argc, char** argv) -> int
           .routes    = [protocol](httplib::Server& http, const std::atomic<bool>& running) { protocol->registerRoutes(http, running); },
           .stopping  = [protocol] { protocol->stop(); },
           .refuseSize = [r](VkExtent2D size) { return r->refuseFrameSize(size); },
+          .profile    = [r] { return r->frameProfileJson(); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);

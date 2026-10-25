@@ -36,7 +36,9 @@
 //   GET /frame          the latest frame as one image/jpeg
 //   GET /size?w=&h=     resize the offscreen viewport (applied before the next frame)
 //   GET /stats          JSON: frames rendered/encoded/sent, size, render fps, average encode
-//                       time in ms, connected clients, whether the loop is idle
+//                       time in ms, connected clients, whether the loop is idle; the input latency
+//                       (an /input request's arrival to the end of the encode of the first frame
+//                       drawn after it, average and last, in ms) and the host's `profile`
 //
 // The element also paces the headless loop (frame_pacing.hpp) and waits for the GPU there, before
 // the host element behind it takes its input; copies that completed are handed to the encoder
@@ -112,6 +114,11 @@ struct FrameStreamCreateInfo
   // Why a /size must be refused (GPU memory the frame would not have), or empty. Called on an HTTP
   // thread, so it may read only what the renderer keeps for any thread. Optional.
   std::function<std::string(VkExtent2D)> refuseSize;
+
+  // The host's frame profile as a JSON value for /stats (the renderer's profiler sections, its GPU
+  // memory). Called on the application thread a few times a second; /stats serves the last value.
+  // Optional.
+  std::function<std::string()> profile;
 };
 
 class FrameStream : public nvapp::IAppElement

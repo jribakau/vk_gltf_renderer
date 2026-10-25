@@ -1459,6 +1459,44 @@ GltfRenderer::MemoryBudget GltfRenderer::deviceMemoryBudget() const
   return b;
 }
 
+std::string GltfRenderer::frameProfileJson() const
+{
+  std::string out = "{\"sections\":[";
+  if(m_profilerTimeline)
+  {
+    nvutils::ProfilerTimeline::Snapshot snapshot;
+    m_profilerTimeline->getFrameSnapshot(snapshot);
+    bool first = true;
+    for(size_t i = 0; i < snapshot.timerInfos.size(); i++)
+    {
+      const auto& info = snapshot.timerInfos[i];
+      if(info.numAveraged == 0)
+        continue;
+      std::string name;
+      for(char c : snapshot.timerNames[i])
+        if(c == '"' || c == '\\')
+          name += {'\\', c};
+        else if(uint8_t(c) >= 0x20)
+          name += c;
+      char buf[96];
+      // the profiler keeps microseconds
+      std::snprintf(buf, sizeof(buf), "\",\"level\":%u,\"cpu\":%.3f,\"gpu\":%.3f}", info.level, info.cpu.average * 1e-3,
+                    info.gpu.average * 1e-3);
+      out += (first ? "{\"name\":\"" : ",{\"name\":\"") + name + buf;
+      first = false;
+    }
+  }
+  out += "]";
+  const MemoryBudget b = deviceMemoryBudget();
+  if(b.known)
+  {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), ",\"gpuMemoryMB\":%.0f,\"gpuBudgetMB\":%.0f", double(b.usage) / (1 << 20), double(b.budget) / (1 << 20));
+    out += buf;
+  }
+  return out + "}";
+}
+
 std::string GltfRenderer::refuseFrameSize(VkExtent2D size) const
 {
   const MemoryBudget b = deviceMemoryBudget();

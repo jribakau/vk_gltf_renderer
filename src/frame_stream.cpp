@@ -81,7 +81,14 @@ struct Readback
   uint64_t       signal{};  // the frame's timeline value: the copy is in once the semaphore reached it
   uint64_t       drawn{};   // the renderer's drawn-frame count when the frame was copied (0 without the callback)
   LatencyTrace   trace;     // A traced edit this frame shows (latency_trace.hpp)
+  int64_t        inputNs{};  // The first /input this frame shows arrived then (steady clock), or 0
 };
+
+// Now on the steady clock, in nanoseconds: the input latency's timestamps
+int64_t steadyNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeBits, VkMemoryPropertyFlags wanted, bool* found)
 {
@@ -119,8 +126,23 @@ struct FrameStream::Impl
   Readback*               waiting{nullptr};
   Readback*               lastEncoded{nullptr};
   LatencyTrace            rawTrace;
+  int64_t                 rawInputNs{0};  // the input riding on the waiting frame, as rawTrace
   // a traced edit waiting for the next frame copied out (application thread)
   LatencyTrace pendingTrace;
+
+  // Input latency. inputNs: the oldest /input not yet taken by a frame (HTTP threads -> application
+  // thread). frameInputNs: the input the frames from now on show, until one is copied out
+  // (application thread). The averages: encoder thread -> /stats.
+  std::atomic<int64_t> inputNs{0};
+  int64_t              frameInputNs{0};
+  std::atomic<double>  inputMs{0.0};
+  std::atomic<double>  inputMsLast{0.0};
+  std::atomic<uint64_t> inputSamples{0};
+
+  // The host's profile (info.profile), refreshed on the application thread for /stats
+  std::mutex                            profileMutex;
+  std::string                           profileJson{"null"};
+  std::chrono::steady_clock::time_point profileAt{};
 
   // encoded frames: encoder thread -> HTTP client threads
   std::mutex                         jpgMutex;
@@ -332,6 +354,18 @@ void FrameStream::onUpdate()
   }
   s.lastFrame = now;
   s.copyFrame = s.pacer.begin(now, refining);
+
+  // Input that came in by now is the host element's this frame (it runs after this one): the frame
+  // drawn next shows it. One arriving between here and the host's update counts a frame short.
+  if(const int64_t t = s.inputNs.exchange(0); t != 0 && s.frameInputNs == 0)
+    s.frameInputNs = t;
+  if(s.info.profile && now - s.profileAt >= std::chrono::milliseconds(250))
+  {
+    s.profileAt         = now;
+    std::string profile = s.info.profile();
+    std::lock_guard lock(s.profileMutex);
+    s.profileJson = profile.empty() ? "null" : std::move(profile);
+  }
 }
 
 void FrameStream::onRender(VkCommandBuffer cmd)
@@ -413,6 +447,8 @@ void FrameStream::onRender(VkCommandBuffer cmd)
   rb.signal                        = signal.value;
   rb.extent                        = extent;
   rb.drawn                         = s.info.drawn ? s.info.drawn() : 0;
+  rb.inputNs                       = s.frameInputNs;
+  s.frameInputNs                   = 0;
   {
     std::lock_guard lock(s.rawMutex);
     rb.state = Readback::State::eCopying;
@@ -598,7 +634,11 @@ void FrameStream::Impl::harvest(Readback& rb)
     if(rb.trace.empty())
       rb.trace = std::move(rawTrace);
     rawTrace.clear();
+    if(rb.inputNs == 0)
+      rb.inputNs = rawInputNs;
   }
+  rawInputNs = rb.inputNs;
+  rb.inputNs = 0;
   if(!rb.trace.empty())
   {
     rb.trace.emplace_back("harvested", traceNowMs());
@@ -639,6 +679,7 @@ void FrameStream::Impl::encodeLoop()
     Readback*    cur  = nullptr;
     Readback*    last = nullptr;
     LatencyTrace trace;
+    int64_t      inputAt = 0;
     {
       std::unique_lock lock(rawMutex);
       rawCv.wait(lock, [&] { return waiting != nullptr || !running; });
@@ -649,6 +690,8 @@ void FrameStream::Impl::encodeLoop()
       cur->state = Readback::State::eEncoding;
       last       = lastEncoded;  // stays allocated while cur is encoding: destroyRing() waits for that
       trace.swap(rawTrace);
+      inputAt    = rawInputNs;
+      rawInputNs = 0;
     }
     const VkExtent2D extent      = cur->extent;
     const size_t     bytes       = size_t(extent.width) * extent.height * 4;
@@ -714,6 +757,12 @@ void FrameStream::Impl::encodeLoop()
     }
     framesEncoded++;
     jpgCv.notify_all();
+    if(inputAt != 0)
+    {
+      const double inMs = double(steadyNs() - inputAt) * 1e-6;
+      inputMsLast       = inMs;
+      inputMs           = inputSamples++ == 0 ? inMs : inputMs * 0.8 + inMs * 0.2;
+    }
     if(!trace.empty())
     {
       trace.emplace_back("encoded", traceNowMs());
@@ -741,6 +790,11 @@ void FrameStream::Impl::serve()
     }
     if(req.method == "POST" || req.path == "/size" || req.path == "/stream")
       wake();
+    if(req.path == "/input")
+    {
+      int64_t none = 0;  // the oldest input not yet shown is the one the latency counts from
+      inputNs.compare_exchange_strong(none, steadyNs());
+    }
     return httplib::Server::HandlerResponse::Unhandled;
   });
 
@@ -833,13 +887,20 @@ void FrameStream::Impl::serve()
       std::lock_guard lock(jpgMutex);
       extent = jpgExtent;
     }
+    std::string profile;
+    {
+      std::lock_guard lock(profileMutex);
+      profile = profileJson;
+    }
     const std::string body = "{\"rendered\":" + std::to_string(framesRendered.load()) + ",\"encoded\":" + std::to_string(framesEncoded.load())
                              + ",\"sent\":" + std::to_string(framesSent.load()) + ",\"replaced\":" + std::to_string(framesReplaced.load())
                              + ",\"skipped\":" + std::to_string(framesSkipped.load())
                              + ",\"width\":" + std::to_string(extent.width)
                              + ",\"height\":" + std::to_string(extent.height) + ",\"fps\":" + std::to_string(renderFps.load())
                              + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load())
-                             + ",\"idle\":" + (idle.load() ? "true" : "false") + "}";
+                             + ",\"idle\":" + (idle.load() ? "true" : "false")
+                             + ",\"inputMs\":" + std::to_string(inputMs.load()) + ",\"inputMsLast\":" + std::to_string(inputMsLast.load())
+                             + ",\"inputSamples\":" + std::to_string(inputSamples.load()) + ",\"profile\":" + profile + "}";
     res.set_content(body, "application/json");
   });
 

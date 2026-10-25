@@ -418,6 +418,11 @@ public:
   // Frames that ran a renderer so far (Resources::drawnFrameCount): a count that stands still is a
   // view with nothing to draw, which the frame stream slows the loop for.
   uint64_t drawnFrameCount() const { return m_resources.drawnFrameCount; }
+  // The frame's profile as a JSON object for the viewport's stats (the frame stream's /stats):
+  // `sections`, the profiler's frame sections in the order they ran (name, nesting level, CPU and
+  // GPU ms averaged over its recent frames), and the device-local memory in use and its budget, in
+  // MB. Application thread.
+  std::string frameProfileJson() const;
 
   /// The path tracer is accumulating a still: the camera and scene have held for a frame, and
   /// the image does not yet hold maxSamples samples per pixel. Every further frame improves it.
