@@ -102,7 +102,7 @@ std::vector<std::string> nodeChain(std::string node)
 
 }  // namespace
 
-std::vector<int> presetTargets(const SceneGraph& scene, const std::vector<std::string>& chain, const std::string& surface)
+std::vector<int> presetTargets(const SceneGraph& scene, const std::vector<std::string>& chain, const std::string& surface, bool* stray)
 {
   const auto        owners = ownersOf(scene);
   std::vector<bool> inScope(scene.materials.size(), true);
@@ -127,6 +127,8 @@ std::vector<int> presetTargets(const SceneGraph& scene, const std::vector<std::s
     const std::vector<std::string> tail(chain.end() - std::ptrdiff_t(len), chain.end());
     found = narrow([&](const std::vector<std::string>& c) { return endsWith(c, tail); });
   }
+  if(stray)
+    *stray = !chain.empty() && !found;
   // else under the innermost node of the chain the scene has
   for(size_t k = chain.size(); k > 0 && !found; k--)
     found = narrow([&](const std::vector<std::string>& c) { return std::find(c.begin(), c.end(), chain[k - 1]) != c.end(); });
@@ -211,13 +213,21 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
   for(const auto& [key, overrides] : bySurface)
   {
     const auto& [chain, surface] = key;
-    const std::vector<int> targets = presetTargets(scene, chain, surface);
+    bool                   stray   = false;
+    const std::vector<int> targets = presetTargets(scene, chain, surface, &stray);
     if(targets.empty())
       result.missing.insert(surface);
     else
       result.matched.insert(surface);
+    // made for an item the scene doesn't have (fiber brows' colour on card brows): its values, but
+    // not the maps it removes, which that item never had and this one is drawn by
+    std::vector<ChannelOverride> kept = overrides;
+    if(stray)
+      for(ChannelOverride& o : kept)
+        if(o.image && o.image->empty())
+          o.image.reset();
     for(int i : targets)
-      if(overrideChannels(scene.materials[size_t(i)], overrides))
+      if(overrideChannels(scene.materials[size_t(i)], kept))
         result.changed.insert(i);
   }
   return result;

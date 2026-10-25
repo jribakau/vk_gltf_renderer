@@ -252,6 +252,27 @@ TEST(Materials, APresetNodeChainNarrowsToTheLongestPartTheSceneHas)
   EXPECT_EQ(fv::dson::applyMaterialPreset(preset, scene).changed, std::set<int>({4}));
 }
 
+TEST(Materials, APresetForAnItemTheSceneLacksKeepsTheMapsItWouldRemove)
+{
+  // fiber brows' colour preset on card brows: the cards' cutout and normal maps are what draw them
+  const auto apply = [](const char* node) {
+    fv::SceneGraph scene = wornScene();
+    const Json     preset = Json::parse(std::string(R"({"scene":{"animations":[
+      {"url":")") + node + R"(#materials/Base:?extra/studio_material_channels/channels/Normal%20Map/image","keys":[[0,null]]},
+      {"url":")" + node + R"(#materials/Base:?extra/studio_material_channels/channels/Glossy%20Roughness/value","keys":[[0,0.15]]}
+    ]}})");
+    fv::dson::applyMaterialPreset(preset, scene);
+    return scene.materials[4].surface;
+  };
+  const auto stray = apply("G9EyebrowFibers");
+  EXPECT_EQ(stray.normalMap, "/Runtime/Textures/face_n.jpg");
+  EXPECT_FLOAT_EQ(stray.glossy.roughness.value, 0.15f);
+  // its own item loses the map as the preset says
+  const auto own = apply("FEMessyHair");
+  EXPECT_TRUE(own.normalMap.empty());
+  EXPECT_FLOAT_EQ(own.glossy.roughness.value, 0.15f);
+}
+
 TEST(Materials, APresetSurfaceFallsBackToTheSurfacesItWasSplitInto)
 {
   const fv::SceneGraph scene = wornScene();

@@ -9,7 +9,8 @@
 // its last node; failing that, to those under the innermost node of the chain the scene has;
 // otherwise every surface of the name takes it. A name the scene lacks falls back to the surfaces it was split into ("Eyelashes" for
 // "Eyelashes Upper" and "Eyelashes Lower"), then to the name without a product prefix ("FE Base"
-// for "Base").
+// for "Base"). A preset made for an item the scene lacks sets its values there but keeps the maps it
+// would remove.
 
 #include <set>
 #include <string>
@@ -34,8 +35,9 @@ struct MaterialPresetResult
 MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene);
 
 // The scene materials a preset's (node chain, surface) lands on, by the rules above. An empty chain
-// (`@selection` alone) means every surface of the name.
-std::vector<int> presetTargets(const SceneGraph& scene, const std::vector<std::string>& chain, const std::string& surface);
+// (`@selection` alone) means every surface of the name. `stray`: set when the scene lacks the item the
+// chain ends at, so the surfaces are another item's; a preset there keeps the maps it would remove.
+std::vector<int> presetTargets(const SceneGraph& scene, const std::vector<std::string>& chain, const std::string& surface, bool* stray = nullptr);
 // The same for a single node.
 std::vector<int> presetTargets(const SceneGraph& scene, const std::string& node, const std::string& surface);
 
