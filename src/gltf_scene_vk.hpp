@@ -129,6 +129,13 @@ public:
   // copy, or destroy() would free the image the pool now owns. Allocations stay tracked.
   // destroy() does not touch the pool.
   void retainImagesForReuse();
+  // What the last createTextureImages() did: images adopted from the pool against decoded, and the time
+  struct TextureLoadStats
+  {
+    size_t adopted = 0, decoded = 0;
+    double decodeMs = 0, uploadMs = 0;
+  };
+  const TextureLoadStats& lastTextureStats() const { return m_textureStats; }
   // Destroy every pooled image immediately. Callers have already waited for the queue, the same
   // assumption destroy() makes. Also the failed-load path, so a load that never reaches
   // createTextureImages() does not pin the previous scene's textures.
@@ -360,6 +367,7 @@ protected:
   // File-backed images held across destroy() so the next createTextureImages() can adopt them.
   // One entry per glTF image: two images of the same file each own a VkImage.
   std::multimap<ReuseKey, SceneImage> m_retainedImages;
+  TextureLoadStats                    m_textureStats;
   std::vector<nvvk::Image>   m_textures;  // One per glTF texture; bound as a SAMPLED_IMAGE array (image views only)
   std::vector<VkSampler> m_samplers;  // Deduplicated samplers; slot 0 = default, 1..N = model.samplers (SAMPLER array)
   TextureSlotTable       m_textureSlots;  // Per-glTF-texture sampler slot + source-format flags (fed to MaterialCache)

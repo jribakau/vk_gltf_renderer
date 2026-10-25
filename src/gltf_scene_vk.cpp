@@ -24,6 +24,7 @@
 // and maintains descriptor sets. Handles resource updates for animations.
 //
 
+#include <chrono>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -1761,6 +1762,7 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
             [](const ImageLoadItem& a, const ImageLoadItem& b) { return a.numBytes > b.numBytes; });
 
   std::atomic<uint32_t> failedImageCount{0};
+  const auto            tDecode = std::chrono::steady_clock::now();
   nvutils::parallel_batches<1>(  // Not batching
       imageLoadItems.size(), [&](uint64_t i) {
         const ImageLoadItem& item = imageLoadItems[i];
@@ -1769,6 +1771,10 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
           ++failedImageCount;
         }
       });
+  m_textureStats          = {};
+  m_textureStats.adopted  = reused;
+  m_textureStats.decoded  = imageLoadItems.size();
+  m_textureStats.decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tDecode).count();
   if(failedImageCount > 0)
   {
     LOGW("%" PRIu32 " of %zu image(s) failed to load.\n", failedImageCount.load(), imageLoadItems.size());
@@ -1778,12 +1784,14 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
 
   // Create Vulkan images (magenta default substituted for unused / failed slots). Adopted slots
   // already hold a VkImage and an empty mipData; createImage() would index that mipData.
+  const auto tUpload = std::chrono::steady_clock::now();
   for(size_t i = 0; i < m_images.size(); i++)
   {
     if(m_images[i].imageTexture.image != VK_NULL_HANDLE)
       continue;
     materializeImage(cmd, staging, i);
   }
+  m_textureStats.uploadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tUpload).count();
 
   // Key only a real file-backed image. createDefaultImage() replaces the SceneImage, so a dummy
   // or an unsupported format stays unkeyed and will not be retained next time.

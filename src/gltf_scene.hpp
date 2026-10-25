@@ -340,6 +340,12 @@ public:
   //--------------------------------------------------------------------------------------------------
 
   const tinygltf::Model& getModel() const { return m_model; }
+  // What the last parse cost where it is worth knowing (a host logs it)
+  struct ParseStats
+  {
+    double tangentsMs = 0;  // createMissingTangentsForModel
+  };
+  const ParseStats& parseStats() const { return m_parseStats; }
   tinygltf::Model&       getModel() { return m_model; }
   [[nodiscard]] bool     valid() const { return m_validSceneParsed; }
 
@@ -759,6 +765,7 @@ private:
   // Creates missing tangents for all primitives that need them (normal map, no TANGENT).
   // Deduplicates by primitive key so shared geometry keeps one TANGENT accessor. Safe to call anytime.
   void createMissingTangentsForModel();
+  ParseStats m_parseStats;
 
   // For each image whose URI doesn't resolve on disk, try common alternative extensions
   // (.dds, .ktx2, etc.) and update the URI if a match is found. Called after load/import

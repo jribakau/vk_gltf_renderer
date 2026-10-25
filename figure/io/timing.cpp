@@ -92,24 +92,39 @@ Scope::Scope(std::string name, double minMs)
   t_depth++;
 }
 
+double Scope::elapsedMs() const
+{
+  return m_on ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m_start).count() : 0.0;
+}
+
 Scope::~Scope()
 {
   if(!m_on)
     return;
   t_depth--;
-  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m_start).count();
-  if(ms < m_minMs)
+  report(m_name, elapsedMs(), m_minMs);
+}
+
+void line(std::string_view text)
+{
+  if(!enabled())
     return;
   std::shared_ptr<const std::function<void(const std::string&)>> sink;
   {
     std::lock_guard lock(g_mutex);
     sink = g_sink;
   }
-  if(!sink)
+  if(sink)
+    (*sink)("[fv-time] " + std::string(size_t(t_depth) * 2, ' ') + std::string(text));
+}
+
+void report(std::string_view name, double ms, double minMs)
+{
+  if(!enabled() || ms < minMs)
     return;
   char tail[32];
   std::snprintf(tail, sizeof tail, " %.1f ms", ms);
-  (*sink)("[fv-time] " + std::string(size_t(t_depth) * 2, ' ') + m_name + tail);
+  line(std::string(name) + tail);
 }
 
 }  // namespace fv::timing

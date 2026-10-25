@@ -5,6 +5,7 @@
 #include <figure/figure.hpp>
 
 #include <algorithm>
+#include <memory>
 #include <cstdint>
 #include <map>
 #include <regex>
@@ -150,7 +151,8 @@ const WornItem* Figure::item(int id) const
 
 std::shared_ptr<const SceneGraph> Figure::wearBase() const
 {
-  auto out = std::make_shared<SceneGraph>(loaded.scene);
+  timing::Scope t("wearBase copy");
+  auto          out = std::make_shared<SceneGraph>(loaded.scene);
   for(Node& n : out->nodes)
     if(n.joint)
       n.joint = std::make_shared<JointData>(*n.joint);
@@ -192,9 +194,13 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   // the other leg, and a body morph that moves one leg would then drag the other's cloth
   timing::Scope tb("bindToSurface");
   const auto&   body      = *scene.meshes[size_t(bodyMesh)].geo;
-  const auto    bodyLimbs = wardrobe::meshLimbs(scene, scene.meshes[size_t(bodyMesh)]);
+  const auto    bodyLimbs = [&] {
+    timing::Scope tl("body limbs", 5);
+    return wardrobe::meshLimbs(scene, scene.meshes[size_t(bodyMesh)]);
+  }();
   out->bindings.resize(out->loaded.parts.size());
   std::vector<std::future<void>> jobs;
+  auto                           tItems = std::make_unique<timing::Scope>("item limbs", 5);  // the filters, built here before each job
   for(size_t i = 0; i < out->loaded.parts.size(); i++)
   {
     const dson::ItemPart& part = out->loaded.parts[i];
@@ -209,6 +215,7 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
           wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, *filter ? &**filter : nullptr));
     }));
   }
+  tItems.reset();
   // every job ends before any error is rethrown: they write into `out`
   for(auto& j : jobs)
     j.wait();
@@ -417,6 +424,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     {
       std::map<std::string, std::string> found;
       if(!defFile.empty())
+        timing::Scope tl("list own morphs", 1);
         for(const std::string& f : dson::listFiles(m_store->library(), dir, ".dsf"))
           found[lowerCase(stemOf(f))] = f;
       it = ownMorphs.emplace(dir, std::move(found)).first;
@@ -469,7 +477,10 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
             })
             .share();
       };
-      morphs->addFollower(std::move(f));
+      {
+        timing::Scope ta("addFollower", 5);
+        morphs->addFollower(std::move(f));
+      }
       if(part.graft && !part.graft->hidden.empty())
       {
         auto& hidden = dst.meshes[size_t(body)].geo->hiddenPolys[worn->key];
@@ -478,6 +489,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       }
     }
     // morphs that aren't copies of a figure morph: fit adjustments ("Loosen Neck") and styles
+    timing::Scope tAdj("adjustment dials", 5);
     for(const auto& [stem, file] : own)
     {
       const std::string id = stemOf(file);

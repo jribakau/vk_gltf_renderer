@@ -104,6 +104,8 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "renderer.hpp"
+
+#include <figure/io/timing.hpp>
 #include "env_image_loader.hpp"
 #include "gltf_environment_sky.hpp"
 #include "sun_position.hpp"
@@ -3939,11 +3941,19 @@ void GltfRenderer::createVulkanScene()
 
     // Create and queue command buffer for scene data upload (vertices, indices, materials, etc.)
     // This work happens asynchronously via the command buffer queue
-    VkCommandBuffer cmd{};
+    fv::timing::Scope timeBuffers("scene buffers");
+    VkCommandBuffer   cmd{};
     nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
     m_resources.sceneGpu.create(cmd, *m_resources.getScene(), true);
     NVVK_CHECK(vkEndCommandBuffer(cmd));
     m_loadPipeline.enqueue(cmd);
+  }
+  if(fv::timing::enabled())
+  {
+    const auto& ts = m_resources.sceneVk.lastTextureStats();
+    char        buf[160];
+    std::snprintf(buf, sizeof buf, "textures: %zu decoded, %zu adopted, decode %.1f ms, upload %.1f ms", ts.decoded, ts.adopted, ts.decodeMs, ts.uploadMs);
+    fv::timing::line(buf);
   }
 
   buildAccelerationStructures();
@@ -3980,6 +3990,7 @@ void GltfRenderer::buildAccelerationStructures()
   {
     bool finished = false;
 
+    fv::timing::Scope timeBlas("BLAS record");
     // Building BLAS within a memory budget, which could involve multiple calls to cmdBuildBottomLevelAccelerationStructure
     do
     {
@@ -4011,7 +4022,8 @@ void GltfRenderer::buildAccelerationStructures()
     // Queue TLAS building for after all BLAS work completes
     // TLAS is the top-level structure referencing all bottom-level acceleration structures
     {
-      VkCommandBuffer cmd{};
+      fv::timing::Scope timeTlas("TLAS record");
+      VkCommandBuffer   cmd{};
       nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
       m_resources.sceneRtx.cmdCreateBuildTopLevelAccelerationStructure(cmd, m_resources.staging, *m_resources.getScene());
       m_resources.staging.cmdUploadAppended(cmd);
@@ -4247,16 +4259,24 @@ bool GltfRenderer::loadModel(tinygltf::Model&& model)
 {
   if(!m_app)
     return false;
-  // the teardown loadSceneFile runs, for the same reasons
-  vkQueueWaitIdle(m_app->getQueue(0).queue);
-  m_loadPipeline.clear();
-  cleanupScene(/*keepImagesForReuse=*/true);
-  m_sceneSelection.clearSelection();
-  m_resources.selectedRenderNodes.clear();
+  fv::timing::Scope timeLoad("loadModel (renderer)");
+  {
+    fv::timing::Scope t("wait idle + cleanup");
+    // the teardown loadSceneFile runs, for the same reasons
+    vkQueueWaitIdle(m_app->getQueue(0).queue);
+    m_loadPipeline.clear();
+    cleanupScene(/*keepImagesForReuse=*/true);
+    m_sceneSelection.clearSelection();
+    m_resources.selectedRenderNodes.clear();
+  }
 
   auto scn = std::make_unique<nvvkgltf::Scene>();
   scn->supportedExtensions().insert(EXT_TEXTURE_WEBP_EXTENSION_NAME);
-  scn->takeModel(std::move(model));
+  {
+    fv::timing::Scope t("parseScene");
+    scn->takeModel(std::move(model));
+  }
+  fv::timing::report("tangents", scn->parseStats().tangentsMs);
   if(!scn->valid())
   {
     LOGW("The model a host built is not a valid scene\n");

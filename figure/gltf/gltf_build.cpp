@@ -126,7 +126,10 @@ std::shared_ptr<const std::vector<mat::StrandVote>> strandVotesOf(const std::sha
       flipped[v] = 1 - flipped[v];
     uv = flipped;
   }
-  auto votes = std::make_shared<const std::vector<mat::StrandVote>>(mat::strandVotes({geo->position, uv, index, ranges}));
+  auto votes = [&] {
+    timing::Scope t("strand votes", 20);
+    return std::make_shared<const std::vector<mat::StrandVote>>(mat::strandVotes({geo->position, uv, index, ranges}));
+  }();
   std::lock_guard lock(g_strandMutex);
   // geometry that is gone takes its parts with it (and an address used again starts afresh)
   std::erase_if(g_strands, [](const auto& kv) {

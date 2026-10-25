@@ -1569,6 +1569,7 @@ void FvHost::Impl::compose()
     if(label.find(l) == std::string::npos)
       label += (label.empty() ? "" : ", ") + l;
   nvutils::ScopedTimer timer("[fv] compose: " + label + "\n");
+  fv::timing::Scope    timeCompose("compose " + label);
   bool       finished = false;
   const auto finish   = [&] {
     finished = true;
@@ -1623,6 +1624,7 @@ void FvHost::Impl::compose()
         out = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, options);
       }));
     }
+    fv::timing::Scope timeWait("buildGltf wait");
     for(auto& w : work)
     {
       try
@@ -1671,8 +1673,12 @@ void FvHost::Impl::compose()
     }
   }
   std::vector<fv::composer::Placed> placed;
-  tinygltf::Model                  composed = fv::composer::compose(parts, placed);
-  addSun(composed);
+  tinygltf::Model                  composed = [&] {
+    fv::timing::Scope timeMerge("merge");
+    tinygltf::Model   m = fv::composer::compose(parts, placed);
+    addSun(m);
+    return m;
+  }();
 
   const bool hasGeometry = std::any_of(props.begin(), props.end(), [](const auto& p) { return p->figure || p->model; });
   if(auto manip = renderer->getCameraManipulator())
@@ -1707,6 +1713,7 @@ void FvHost::Impl::compose()
   }
   const bool loaded = [&] {
     nvutils::ScopedTimer t("loadModel");
+    fv::timing::Scope    ts("loadModel");
     return renderer->loadModel(std::move(composed));
   }();
   if(!loaded)
@@ -1724,6 +1731,7 @@ void FvHost::Impl::compose()
   appliedParams.erase("ptFireflyClamp");  // the load recalibrated it (calibrateFireflyClamp); ours goes again
   applyLighting(false);
 
+  fv::timing::Scope              timeAttach("attach");
   std::vector<FvView::PropNodes> views;
   nvvkgltf::Scene*               scn = renderer->editScene();
   for(size_t i = 0; i < props.size(); i++)
@@ -2570,12 +2578,18 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           continue;
         job(jobId, {{"label", utf8Of(pathOf(request.rel).stem()) + ": loading"}, {"state", "running"}});
         fv::timing::Scope timeWear("wear " + utf8Of(pathOf(request.rel).stem()));
+        using Clock = std::chrono::steady_clock;
+        const auto msSince = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
+        const auto tWear = Clock::now();
         // the figure as it is now, copied on the application thread: dials move its joint centres meanwhile
         auto base = [&] {
           fv::timing::Scope t("wearBase (render thread)");
           return onApp([target] { return target->fig->wearBase(); });
         }();
+        const double msBase = msSince(tWear);
+        const auto   tPrep  = Clock::now();
         auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base);
+        const double msPrep = msSince(tPrep);
         // the material presets that go with it, applied to the wearable before its textures are looked up
         fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
         {
@@ -2586,10 +2600,12 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
             applyPreset(presetRel, preparedScene, true);
         }
         // a strand hair's direction is measured here, so the composition on the render thread finds it
+        const auto tStrands = Clock::now();
         {
           fv::timing::Scope t("strand directions");
           fv::build::measureStrands(preparedScene, target->texturesFlipped);
         }
+        const double msStrands = msSince(tStrands);
         // the wearable's textures, the way the figure's were made: bottom-up cooked, or the sources
         job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
         std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
@@ -2643,11 +2659,22 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           }
         });
         // the application thread merges it; a renderer that is closing never will
-        fv::timing::Scope timeCommit("commit (render thread)");
-        while(ok.wait_for(100ms) != std::future_status::ready)
-          if(!accepting)
-            return;
+        const auto tCommit = Clock::now();
+        {
+          fv::timing::Scope timeCommit("commit (render thread)");
+          while(ok.wait_for(100ms) != std::future_status::ready)
+            if(!accepting)
+              return;
+        }
         any = ok.get() || any;
+        if(fv::timing::enabled())
+        {
+          const double msCommit = msSince(tCommit), msAll = msSince(tWear);
+          char         buf[256];
+          std::snprintf(buf, sizeof buf, "wear summary: worker %.0f ms (prepare %.0f, strands %.0f), render thread %.0f ms (wearBase %.0f, commit %.0f)",
+                        msAll - msBase - msCommit, msPrep, msStrands, msBase + msCommit, msBase, msCommit);
+          fv::timing::line(buf);
+        }
       }
       catch(const std::exception& e)
       {

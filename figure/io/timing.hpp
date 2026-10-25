@@ -26,6 +26,8 @@ public:
   ~Scope();
   Scope(const Scope&)            = delete;
   Scope& operator=(const Scope&) = delete;
+  // How long the scope has been open, for a summary its owner prints.
+  double elapsedMs() const;
 
 private:
   std::string                           m_name;
@@ -33,6 +35,11 @@ private:
   double                                m_minMs;
   bool                                  m_on;
 };
+
+// One line for a duration measured elsewhere (code that must stay free of this header reports its
+// own clock), at the calling thread's depth; `minMs` as for Scope. `line` writes a text as it is.
+void report(std::string_view name, double ms, double minMs = 0);
+void line(std::string_view text);
 
 // Phases that run many times a second (a dial step's formula graph, its deltas, its normals): one
 // line each would flood the log, so `Accum a("driver.run");` adds its scope's time under the name,

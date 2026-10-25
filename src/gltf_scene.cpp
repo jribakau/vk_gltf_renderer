@@ -24,6 +24,7 @@
 // data model that SceneVk uploads to the GPU for rendering.
 //
 
+#include <chrono>
 #include <algorithm>
 #include <execution>
 #include <filesystem>
@@ -1301,7 +1302,11 @@ void nvvkgltf::Scene::parseScene()
   clearParsedData();
   setSceneElementsDefaultNames();
   // Create tangents from model meshes so primitive keys are stable (no render nodes yet).
-  createMissingTangentsForModel();
+  {
+    const auto t0 = std::chrono::steady_clock::now();
+    createMissingTangentsForModel();
+    m_parseStats.tangentsMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  }
 
   // Build the list of unique RenderPrimitives in deterministic order (by mesh index, then primitive index).
   // CRITICAL: There is a direct correlation between BLAS and primitive index. BLAS are built once

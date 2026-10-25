@@ -1,8 +1,10 @@
 #include <figure/wardrobe/bind.hpp>
 
+#include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -23,6 +25,7 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
   out.used.assign(nvSrc, 0);
   if(!nt)
     return out;
+  const auto tGrid = std::chrono::steady_clock::now();
 
   float minX = INFINITY, minY = INFINITY, minZ = INFINITY, maxX = -INFINITY, maxY = -INFINITY, maxZ = -INFINITY;
   for(uint32_t i : T)
@@ -73,6 +76,8 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
         for(int i = r[0]; i <= r[1]; i++)
           tris[fill[(size_t(k) * ny + j) * nx + i]++] = uint32_t(t);
   }
+
+  timing::report("grid", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tGrid).count(), 5);
 
   // shaved off the cell-wall distance so float error cannot hide a strictly closer triangle on the face
   constexpr double kWallSlack = 1e-4;
@@ -211,7 +216,9 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
       out.weights[v * 3 + 2] = float(ww);
     }
   };
+  const auto tSearch = std::chrono::steady_clock::now();
   jobs::parallelFor(nvDst, 4096, bindRange);
+  timing::report("search", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tSearch).count(), 5);
   for(size_t k = 0; k + 1 < pairs.size(); k += 2)
   {
     const int32_t g = pairs[k], b = pairs[k + 1];
