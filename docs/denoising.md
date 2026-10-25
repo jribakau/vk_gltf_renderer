@@ -30,7 +30,9 @@ it always shows the fully denoised result.
 require a loaded scene: the worker only initializes NGX and probes feature availability. The actual
 DLSS feature handle and sized render targets are still created later from `Dlss::updateSize`, where
 a command buffer and display extent are available. Disabled DLSS-RR therefore reports **Ready** once
-NGX is warmed, but its heavier guide buffers stay unsized until the user enables it.
+NGX is warmed, but its heavier guide buffers stay unsized until the user enables it. A feature create
+that fails leaves DLSS in **Loading** (no frame evaluates) and is asked again on the next resize or
+DLSS setting change, not every frame.
 
 ## DLSS-RR input resolution
 

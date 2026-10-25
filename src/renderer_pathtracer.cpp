@@ -2451,9 +2451,10 @@ void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources)
 
   m_dlss->evaluate(cmd, view, proj);
 
-  // Memory barrier to ensure DLSS operations are complete before blit operations
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                         VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+  // The selection image the blit reads was written by the path tracer's ray-tracing or compute
+  // stage (the barrier after traceRays only made it visible to compute)
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                         VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 
   {
     // Blit the selection image from the DLSS GBuffer (different resolution) to the Renderer GBuffer Selection
@@ -2469,9 +2470,11 @@ void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources)
                    resources.gBuffers.getColorImage(Resources::eImgSelection), VK_IMAGE_LAYOUT_GENERAL, 1, &blitRegions,
                    VK_FILTER_NEAREST);  // ObjectID in .r, no interpolation
 
-    // Ensure the blit operation completes before any subsequent reads from this image
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+    // The blit's write, and DLSS's compute write of the rendered image, before the compute passes
+    // that read them (the hand-off, the tonemapper)
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                           VK_ACCESS_2_SHADER_READ_BIT);
   }
 #endif
 }

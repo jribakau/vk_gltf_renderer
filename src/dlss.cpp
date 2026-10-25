@@ -332,6 +332,7 @@ bool Dlss::consumePendingInitResult()
 void Dlss::teardownNgx()
 {
   m_dlss.deinit();
+  m_dlssCreated = false;
   m_ngx.deinit();
 }
 
@@ -368,8 +369,10 @@ Dlss::State Dlss::state() const
   if(m_innerGBuffer.getSize().width == 0)
     return State::eLoading;
 
-  // (5) SR-only: cmdInit() may have failed at updateSize() time even though NGX itself is up.
-  if(m_kind == Kind::SR && !m_dlssCreated)
+  // (5) The feature itself: cmdInit() can fail at updateSize() time even though NGX is up. Then no
+  //     frame evaluates (a null handle would), and the next resize or DLSS setting change asks again
+  //     (updateSizeRr / updateSizeSr).
+  if(!m_dlssCreated)
     return State::eLoading;
 
   return State::eActive;
@@ -1272,24 +1275,28 @@ VkExtent2D Dlss::updateSizeRr(VkCommandBuffer cmd, VkExtent2D size)
       .inputSize  = renderingSize,
       .outputSize = size,
   };
-  m_dlss.deinit();
+  // The frame in flight may still evaluate the old feature: drain the queue before releasing it
   if(m_graphicsQueue)
     NVVK_CHECK(vkQueueWaitIdle(m_graphicsQueue));
+  m_dlss.deinit();
+  m_dlssCreated                  = false;
   const NVSDK_NGX_Result initRes = m_dlss.cmdInit(cmd, m_ngx, initInfo);
   if(NVSDK_NGX_FAILED(initRes))
   {
-    // deinit() already dropped the old feature. Keep the previous built size and ask again next
-    // frame; recording this size now would treat the failed create as done.
-    LOGE("DLSS-RR: feature create failed: %d (in=%ux%u, out=%ux%u)\n", initRes, renderingSize.width,
-         renderingSize.height, size.width, size.height);
-    m_needsRecreate = true;
-  }
-  else
-  {
+    // No feature: state() reports eLoading and no frame evaluates. Not asked again every frame
+    // (each try drains the queue): the next resize (onResize) or DLSS setting change (needsRecreate)
+    // does, so the mode asked for is recorded as built. The GBuffer keeps its size; nothing renders
+    // into it until a create succeeds.
+    LOGE("DLSS-RR: feature create failed: %d (in=%ux%u, out=%ux%u); DLSS stays off until the next resize or setting change\n",
+         initRes, renderingSize.width, renderingSize.height, size.width, size.height);
     m_builtSizeMode = m_settings.sizeMode;
     m_needsRecreate = false;
-    m_builtOutput   = size;
+    return size;
   }
+  m_dlssCreated   = true;
+  m_builtSizeMode = m_settings.sizeMode;
+  m_needsRecreate = false;
+  m_builtOutput   = size;
 
   // Recreate the G-Buffers
   const uint32_t dlssColorCount = static_cast<uint32_t>(kindConfig(Kind::RR).innerColorFormats.size());

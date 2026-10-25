@@ -42,7 +42,6 @@
 #include <glm/ext.hpp>
 
 #include <filesystem>
-#include <stdexcept>
 #include <sstream>
 #include <cstring>  // memset
 #include <mutex>
@@ -59,15 +58,15 @@
 
 
 // Function taken from stack overflow https://stackoverflow.com/questions/4804298/how-to-convert-wstring-into-string
+// Non-throwing: it formats NGX's error strings inside the logging helper, also on the NGX init
+// worker thread, where an exception would end the process.
 static std::string wstringToString(const std::wstring& wstr)
 {
   std::mbstate_t state{};
   const wchar_t* src = wstr.c_str();
   std::size_t    len = std::wcsrtombs(nullptr, &src, 0, &state);
   if(len == static_cast<std::size_t>(-1))
-  {
-    throw std::runtime_error("Conversion failed");
-  }
+    return "<NGX message not convertible to the current locale>";
 
   std::string str(len, '\0');
   std::wcsrtombs(&str[0], &src, len, &state);

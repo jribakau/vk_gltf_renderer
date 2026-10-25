@@ -396,6 +396,9 @@ private:
   int        m_builtSizeMode = -1;  // RR: Settings::sizeMode the inner GBuffer was last sized with (-1 = never)
   VkExtent2D m_builtOutput{};       // RR: viewport size the feature was created to upscale to. 0 until the first build.
   bool m_needsRecreate = false;  // true when the NGX feature must be torn down + recreated (UI preset / size-mode / quality change)
+  // m_dlss holds a feature (cmdInit succeeded). Both kinds: without it state() stays eLoading and no
+  // frame evaluates; a failed create is asked again on the next resize or DLSS setting change.
+  bool m_dlssCreated = false;
   uint32_t m_preset = 0;  // NGX preset hint (RR or SR table; 0 = NGX default)
   uint32_t m_presetIndex = 0;  // `dlssPreset` parameter: index into the RR preset table, mirrored into m_preset
   Settings m_settings{};  // persisted settings (per kind)
@@ -457,7 +460,6 @@ private:
 #endif  // USE_DLSSNR
 
   // ---- SR-only state --------------------------------------------------------------------------
-  bool     m_dlssCreated      = false;                // m_dlss has a valid feature handle (cmdInit succeeded)
   bool     m_fallback         = false;                // SR HW/extensions unavailable; inner GBuffer carries motion only
   VkFormat m_innerDepthFormat = VK_FORMAT_UNDEFINED;  // captured from outer at init time (SR only)
 
