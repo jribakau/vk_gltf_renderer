@@ -40,6 +40,8 @@ struct HairHit
   float3 msT;
   float3 msB;
   float  specular;  // scales the reflecting orders (R, TRT); 1 is the fibre's own Fresnel
+  float  h;         // where across the fibre this hit is, -1..1: one offset per hit, shared by its light
+                    // sample, its BSDF sample and the pdf the next hit's MIS reads (pbrt, Unreal)
 };
 
 struct HairResponse
@@ -51,13 +53,6 @@ struct HairResponse
 float hairSafeSqrt(float x)
 {
   return sqrt(max(x, 0.0));
-}
-
-// The four offsets the marginal response averages. Sampling picks one of these, so the density of a
-// sampled direction is that average.
-float hairOffset(int i)
-{
-  return -0.75 + float(i) * 0.5;
 }
 
 float hairLuma(float3 c)
@@ -120,21 +115,24 @@ float hairLogistic(float x, float s)
   return e / (s * (1.0 + e) * (1.0 + e));
 }
 
-float hairLogisticCDF(float x, float s)
+// The logistic's mass on [-pi, pi], in closed form: CDF(pi) - CDF(-pi) = (1 - e) / (1 + e), e = exp(-pi/s)
+float hairLogisticMassPi(float s)
 {
-  return 1.0 / (1.0 + exp(-x / s));
+  const float e = exp(-M_PI / s);
+  return (1.0 - e) / (1.0 + e);
 }
 
-float hairTrimmedLogistic(float x, float s, float a, float b)
+// The logistic trimmed to [-pi, pi], the only range the azimuth uses
+float hairTrimmedLogistic(float x, float s)
 {
-  return hairLogistic(x, s) / (hairLogisticCDF(b, s) - hairLogisticCDF(a, s));
+  return hairLogistic(x, s) / hairLogisticMassPi(s);
 }
 
-float hairSampleTrimmedLogistic(float u, float s, float a, float b)
+float hairSampleTrimmedLogistic(float u, float s)
 {
-  float k = hairLogisticCDF(b, s) - hairLogisticCDF(a, s);
-  float x = -s * log(1.0 / (u * k + hairLogisticCDF(a, s)) - 1.0);
-  return clamp(x, a, b);
+  const float k = hairLogisticMassPi(s);
+  const float x = -s * log(1.0 / (u * k + 0.5 * (1.0 - k)) - 1.0);
+  return clamp(x, -M_PI, M_PI);
 }
 
 float hairWrapPi(float dphi)
@@ -154,7 +152,7 @@ float hairWrapPi(float dphi)
 float hairNp(float phi, int p, float s, float gammaO, float gammaT)
 {
   float dphi = hairWrapPi(phi - (2.0 * float(p) * gammaT - 2.0 * gammaO + float(p) * M_PI));
-  return hairTrimmedLogistic(dphi, s, -M_PI, M_PI);
+  return hairTrimmedLogistic(dphi, s);
 }
 
 struct HairScales
@@ -298,25 +296,6 @@ HairResponse hairFibreAt(float h, float3 wo, float3 wi, HairHit hair, HairScales
   return r;
 }
 
-HairResponse hairMarginal(float3 wo, float3 wi, HairHit hair, HairScales sc)
-{
-  HairResponse m;
-  m.f   = float3(0.0);
-  m.pdf = 0.0;
-  // Four offsets across the fibre. A ribbon is a lock, not one cylinder.
-  [unroll]
-  for(int i = 0; i < 4; i++)
-  {
-    float        h = hairOffset(i);
-    HairResponse c = hairFibreAt(h, wo, wi, hair, sc);
-    m.f += c.f;
-    m.pdf += c.pdf;
-  }
-  m.f *= 0.25;
-  m.pdf *= 0.25;
-  return m;
-}
-
 float3 hairMsF(float3 wi, HairHit hair)
 {
   return hair.albedo * (HAIR_MS * 0.5) * abs(dot(wi, hair.normal)) * M_1_PI;
@@ -330,7 +309,7 @@ float hairMsPdf(float3 wi, HairHit hair)
 HairResponse hairCombined(float3 wo, float3 wi, HairHit hair)
 {
   HairScales   sc = hairScales(hair.betaM, hair.betaN);
-  HairResponse m  = hairMarginal(wo, wi, hair, sc);
+  HairResponse m  = hairFibreAt(hair.h, wo, wi, hair, sc);
   HairResponse r;
   r.f   = (1.0 - HAIR_MS) * m.f + hairMsF(wi, hair);
   r.pdf = (1.0 - HAIR_MS) * m.pdf + hairMsPdf(wi, hair);
@@ -351,6 +330,7 @@ HairHit hairHitZero()
   hair.msT      = float3(1.0, 0.0, 0.0);
   hair.msB      = float3(0.0, 1.0, 0.0);
   hair.specular = 1.0;
+  hair.h        = 0.0;
   return hair;
 }
 
@@ -434,7 +414,7 @@ float3 hairSampleDirection(float h, float3 wo, HairHit hair, HairScales sc, floa
 
   float dphi;
   if(lobe < HAIR_PMAX)
-    dphi = (2.0 * float(lobe) * ord.gammaT - 2.0 * ord.gammaO + float(lobe) * M_PI) + hairSampleTrimmedLogistic(saturate(uAzimuth), sc.s, -M_PI, M_PI);
+    dphi = (2.0 * float(lobe) * ord.gammaT - 2.0 * ord.gammaO + float(lobe) * M_PI) + hairSampleTrimmedLogistic(saturate(uAzimuth), sc.s);
   else
     dphi = M_TWO_PI * uAzimuth;
 
@@ -443,7 +423,7 @@ float3 hairSampleDirection(float h, float3 wo, HairHit hair, HairScales sc, floa
   return sinI * hair.strand + (cosI * cos(phiI)) * hair.phiY + (cosI * sin(phiI)) * hair.phiZ;
 }
 
-void hairBsdfSample(inout BsdfSampleData data, HairHit hair, float uPick, float uH, float uAzimuth)
+void hairBsdfSample(inout BsdfSampleData data, HairHit hair, float uPick, float uAzimuth)
 {
   data.pdf           = 0.0;
   data.bsdf_over_pdf = float3(0.0);
@@ -460,10 +440,9 @@ void hairBsdfSample(inout BsdfSampleData data, HairHit hair, float uPick, float 
   }
   else
   {
-    // The same four offsets hairMarginal averages, so the density of this direction is that average.
-    int   lobe = 0;
-    int   bin  = min(int(saturate(uH) * 4.0), 3);
-    data.k2    = hairSampleDirection(hairOffset(bin), data.k1, hair, sc, data.xi.x, uAzimuth, data.xi.y, data.xi.z, lobe);
+    // At the hit's offset, which hairCombined evaluates the density at
+    int lobe = 0;
+    data.k2  = hairSampleDirection(hair.h, data.k1, hair, sc, data.xi.x, uAzimuth, data.xi.y, data.xi.z, lobe);
   }
   data.k2 = normalize(data.k2);
 

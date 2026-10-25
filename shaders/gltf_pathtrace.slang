@@ -607,6 +607,19 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       hairOn = makeHairHit(materials[materialIndex], hit.uv[0], hit.bitangent, hit.tangent, pbrMat.N, pbrMat.T, pbrMat.B, hairHit);
     if(hairOn && hasFlag(pushConst.flags, PathtracerFlags::ePtApproximateCaustics))
       hairHit.betaM = max(hairHit.betaM, pt.pathRoughness);  // the fibre's longitudinal roughness, as the lobes above
+    // One offset across the fibre for this hit: the samples average over it to the fibre's response,
+    // at a quarter of the cost of evaluating four fixed offsets in both the light and the BSDF sample
+    if(hairOn)
+      hairHit.h = 2.0 * rand(seed) - 1.0;
+#if USE_DLSS_SHADER
+    // RR's guides describe the fibre, not the sheet's GGX: the base colour stays the albedo, the
+    // specular is the R lobe's (Fresnel at the fibre's 1.55, about 4.6%), the roughness its longitudinal one
+    if(firstRay && hairOn)
+    {
+      pt.guide.specularAlbedo  = float16_t3(float3(0.046F * saturate(hairHit.specular)));
+      pt.guide.normalRoughness = float16_t4(pt.guide.normalRoughness.xyz, float16_t(saturate(hairHit.betaM)));
+    }
+#endif
 #endif
     const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
 
@@ -699,7 +712,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       sampleData.xi = float3(rand(seed), rand(seed), rand(seed));  // random number
 #if GLTF_USE_HAIR
       if(hairOn)
-        hairBsdfSample(sampleData, hairHit, rand(seed), rand(seed), rand(seed));
+        hairBsdfSample(sampleData, hairHit, rand(seed), rand(seed));
       else
 #endif
       {
