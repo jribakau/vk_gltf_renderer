@@ -187,6 +187,10 @@ public:
     bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }
   };
   VariantKey m_compiled{};  // The variant the live shader module and pipelines were built as. Guarded by m_compileMutex.
+  // The live module is the embedded SPIR-V standing in for a variant whose compile failed. It is not
+  // parked in the variant cache, so the variant compiles again when it is next asked for after a
+  // change; until then no frame retries it. Guarded by m_compileMutex.
+  bool m_compiledIsFallback{false};
 
   // Variant cache entry: stores a shader module, RTX/RQ pipelines, and SBT for a given VariantKey.
   struct VariantCacheEntry
@@ -204,8 +208,9 @@ public:
 
   // Saves active shader/pipeline/SBT to cache by VariantKey; switches to `newKey`.
   // On hit, restores cached handles and returns true; on miss, clears handles for rebuild.
-  // LRU-evicted SBTs are freed via Resources.
-  bool       swapVariant(Resources& resources, const VariantKey& newKey);
+  // gpuIdle: the caller drained the queue, so whatever it destroys goes at once; otherwise handles a
+  // frame in flight may still use are released through the app's frame ring (submitResourceFree).
+  bool       swapVariant(Resources& resources, const VariantKey& newKey, bool gpuIdle);
   void       destroyVariantCache(Resources& resources);
   VariantKey makeVariantKey(const Resources& resources) const;  // The variant the current settings ask for.
   // True when that variant is the embedded DLSS build (gltf_pathtrace.slang_dlss.h): DLSS and the
@@ -322,9 +327,11 @@ public:
   // DLSS renders on while the hand-off delay runs: those frames are no part of the accumulation,
   // so the renderer holds its frame count (GltfRenderer::updateFrameCounter) and no sample of
   // theirs is counted (updateStatistics); neither bound can end the still before it begins
-  bool dlssHandoffDelayPending() const
+  bool dlssHandoffDelayPending() const { return m_dlssFrame && isAccumulationDenoiserEnabled() && inHandoffDelay(); }
+  // The view has been still for less than dlssHandoffDelayMs (false when there is no delay)
+  bool inHandoffDelay() const
   {
-    return m_dlssFrame && isAccumulationDenoiserEnabled() && m_dlssHandoffDelayMs > 0
+    return m_dlssHandoffDelayMs > 0
            && std::chrono::steady_clock::now() - m_accumulationStart < std::chrono::milliseconds(m_dlssHandoffDelayMs);
   }
 
@@ -382,12 +389,13 @@ private:
   void               ensureShadersAndPipelines(Resources& resources);
   void               startAsyncCompile(Resources& resources);
   void               updateStatistics(Resources& resources);
-  // Bind the technique's pipeline and launch it over `renderingSize`; the caller times it.
-  void renderRayQuery(VkCommandBuffer cmd, VkExtent2D renderingSize, Resources& resources);
-  void renderRayTrace(VkCommandBuffer cmd, VkExtent2D renderingSize, Resources& resources);
-  void traceRays(VkCommandBuffer cmd, VkExtent2D renderingSize, Resources& resources);  // The selected technique
-  // Find the medium the camera is in (ePtProbeCameraMedium), then push `pushConst` back for the frame.
-  void probeCameraMedium(VkCommandBuffer cmd, Resources& resources, const shaderio::PathtracePushConstant& pushConst);
+  // Bind the selected technique's pipeline and descriptors once per frame (false: it has no
+  // pipeline), then launch it over `size`, once per launch; the caller times each launch.
+  bool bindTechnique(VkCommandBuffer cmd, Resources& resources);
+  void dispatchRays(VkCommandBuffer cmd, VkExtent2D size) const;
+  // Find the medium the camera is in (ePtProbeCameraMedium) on the bound pipeline, then push
+  // `pushConst` back for the frame.
+  void probeCameraMedium(VkCommandBuffer cmd, const shaderio::PathtracePushConstant& pushConst);
   void denoiseDlss(VkCommandBuffer cmd, Resources& resources);
   // Push this frame's constants; returns what was pushed.
   shaderio::PathtracePushConstant setupPushConstant(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize);

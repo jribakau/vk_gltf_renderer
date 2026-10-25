@@ -142,7 +142,9 @@ blends from one to the other instead of switching:
 - **The frames after it run the regular shader.** DLSS's guide captures (`USE_DLSS_SHADER`) cost
   every sample, so they are compiled in only for the frames DLSS renders
   (`PathTracer::makeVariantKey`). Each camera start and stop swaps the two cached variants in
-  `PathTracer::prepareFrame`: a queue wait, no recompile. A moving camera stays on DLSS's. The first
+  `PathTracer::prepareFrame`: handles move, nothing is destroyed, so there is no queue wait and no
+  recompile (what a swap does evict is released through the app's frame ring once the frame in flight
+  has passed). A moving camera stays on DLSS's. The first
   time a combination is used, the missing variant compiles behind the BusyWindow, which restarts the
   accumulation.
 - **The image shown** is `lerp(dlss, denoised, handoffWeight(spp, end))` (`denoiser_schedule.hpp`),

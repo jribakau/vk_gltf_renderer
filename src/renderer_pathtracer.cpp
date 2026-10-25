@@ -26,6 +26,7 @@
 
 #include <fmt/format.h>
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -70,6 +71,13 @@
 #ifndef USE_DEFERRED_RTX_COMPILE
 #define USE_DEFERRED_RTX_COMPILE 0
 #endif
+
+namespace {
+// The path-trace profiler sections. Named once: cmdFrameSection() and getFrameTimerInfo() take a
+// std::string, and both are called every frame.
+const std::string kTimerPathTraceRq  = "Path Trace (RQ)";
+const std::string kTimerPathTraceRtx = "Path Trace (RTX)";
+}  // namespace
 
 PathTracer::PathTracer()
 {
@@ -179,12 +187,9 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   // capability only ever turns it off.
   m_useSER         = m_useSER && m_supportSER;
   m_pipelineUseSER = m_useSER;  // no pipelines exist yet; keep the first frame from invalidating
-#if defined(USE_DLSS)
-  m_compiled.dlssTransparency = static_cast<int>(m_dlss->getTransparencyMode());
-#endif
 
-  // If SER is not supported, force recompiling without SER
-  compileShader(resources, (m_supportSER == true) ? false : true);
+  // The embedded build has AVAILABLE_SER=1: a device without SER compiles from source instead
+  compileShader(resources, !m_supportSER);
 
   // #DLSS - Fast initialization: create GBuffers if hardware available
 #if defined(USE_DLSS)
@@ -695,8 +700,11 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
   // pipeline, so it goes with it.
   if(work.stalePipeline)
   {
-    // SYNC NOTE: pipelines may still be in use by the previous frame.
-    NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
+    // SYNC NOTE: the previous frame may still use these pipelines. prepareFrame() (or reloadShader())
+    // drained the queue on the application thread before this ran, and no path-tracer frame is
+    // recorded until it is done (the BusyWindow gates GltfRenderer::onRender). No wait here: this
+    // runs on the compile worker while the application thread submits the BusyWindow's frames, and
+    // host access to a queue must be externally synchronized.
     const int wantDlssTransparency = makeVariantKey(resources).dlssTransparency;
     {
       std::lock_guard<std::mutex> lock(m_compileMutex);
@@ -738,11 +746,15 @@ void PathTracer::startAsyncCompile(Resources& resources)
   if(m_compileThread.joinable())
     m_compileThread.join();
 
-  m_busyWindow->start("Preparing path tracer...");
+  // Without a BusyWindow nothing gates the next frame, which then joins this thread in
+  // startAsyncCompile(): the compile still completes, synchronously.
+  if(m_busyWindow)
+    m_busyWindow->start("Preparing path tracer...");
 
   m_compileThread = std::thread([this, &resources]() {
     ensureShadersAndPipelines(resources);
-    m_busyWindow->stop();
+    if(m_busyWindow)
+      m_busyWindow->stop();
   });
 }
 
@@ -752,20 +764,18 @@ void PathTracer::startAsyncCompile(Resources& resources)
 // match. Returns false when this frame must be skipped because an async build was started.
 bool PathTracer::prepareFrame(Resources& resources)
 {
-  // A variant already in the cache is swapped in right here: only handles move, so there is no
+  // A variant already in the cache is swapped in right here: only handles move (what the previous
+  // frame may still use is released through the app's frame ring), so there is no queue wait, no
   // BusyWindow and no accumulation reset. Anything else goes to an async job that shows the BusyWindow.
   PendingCompileWork work = getPendingCompileWork(resources);
-  if(work.any())
-  {
-    // SYNC NOTE: old pipelines may be in flight from the previous frame — wait before
-    // they are parked, destroyed, or recreated.
-    NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
-    if(work.recompile && tryRestoreCachedVariant(resources))
-      work = getPendingCompileWork(resources);  // the cached pipelines may still need a rebuild (SER, technique)
-  }
+  if(work.recompile && tryRestoreCachedVariant(resources))
+    work = getPendingCompileWork(resources);  // the cached pipelines may still need a rebuild (SER, technique)
 
   if(work.any())
   {
+    // SYNC NOTE: a rebuild destroys live handles the previous frame may still use. The wait is here,
+    // on the application thread, before the worker starts; the worker itself never touches the queue.
+    NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
     if(!resources.app->isHeadless())
     {
       startAsyncCompile(resources);
@@ -813,9 +823,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   m_prevDlssFrame       = m_dlssFrame;
   {
     const bool dlssActive = m_dlss->isActive();
-    const bool inDelay    = m_dlssHandoffDelayMs > 0
-                         && std::chrono::steady_clock::now() - m_accumulationStart < std::chrono::milliseconds(m_dlssHandoffDelayMs);
-    m_dlssFrame = dlssActive && (!isAccumulationDenoiserEnabled() || resources.frameCount == 0 || inDelay);
+    m_dlssFrame = dlssActive && (!isAccumulationDenoiserEnabled() || resources.frameCount == 0 || inHandoffDelay());
   }
   m_handoffFrame = !m_dlssFrame && m_prevDlssFrame && resources.frameCount >= 1;
   if(dlssTicked)
@@ -865,16 +873,20 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
 
+  // The technique's pipeline and descriptors, bound once for the probe and the frame's paths
+  if(!bindTechnique(cmd, resources))
+    return;
+
   // Every change to the camera or the scene starts a new accumulation; a scene without a medium
   // has no camera medium to find (setupPushConstant leaves the pointer null)
   if(resources.frameCount == 0 && pushConst.cameraMedium != nullptr)
-    probeCameraMedium(cmd, resources, pushConst);
+    probeCameraMedium(cmd, pushConst);
 
   // Tracing the rays: Ray Query or Ray Tracing
   {
     auto timerSection =
-        m_profiler->cmdFrameSection(cmd, m_renderTechnique == RenderTechnique::RayQuery ? "Path Trace (RQ)" : "Path Trace (RTX)");
-    traceRays(cmd, renderingSize, resources);
+        m_profiler->cmdFrameSection(cmd, m_renderTechnique == RenderTechnique::RayQuery ? kTimerPathTraceRq : kTimerPathTraceRtx);
+    dispatchRays(cmd, renderingSize);
   }
 
   // Making sure the rendered image is ready to be used by tonemapper (written by ray query compute or the RTX pipeline)
@@ -1059,11 +1071,12 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   nvvk::WriteSetContainer write{};
   write.append(resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eTlas), resources.sceneRtx.topLevelAS());
 
-  // Normal rendering: output images (ObjectID written to eSelectImage slot as float in .r)
-  std::vector<VkDescriptorImageInfo> outputImages = {
-      resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered),   // eResultImage
-      resources.gBuffers.getColorStorageImageInfo(Resources::eImgSelection),  // eSelectImage (ObjectID)
-  };
+  // Output images by shaderio::OutputImage slot, the first outputCount of them bound. Fixed storage:
+  // this runs every frame (twice on frame 0). ObjectID is written to the eSelectImage slot as float in .r.
+  std::array<VkDescriptorImageInfo, shaderio::eNrMask + 1> outputImages{};
+  uint32_t                                                 outputCount = 2;
+  outputImages[shaderio::eResultImage] = resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered);
+  outputImages[shaderio::eSelectImage] = resources.gBuffers.getColorStorageImageInfo(Resources::eImgSelection);
 
 #if defined(USE_DLSS)
   if(getEffectiveDlssEnabled(resources))
@@ -1076,7 +1089,7 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
         eResultImage, eSelectImage, eDlssAlbedo,          eDlssSpecAlbedo, eDlssNormalRoughness,
         eDlssMotion,  eDlssDepth,   eDlssSpecularHitDist, eNrMask,
     };
-    outputImages.resize(static_cast<size_t>(kRrSlots[std::size(kRrSlots) - 1]) + 1);
+    outputCount = static_cast<uint32_t>(kRrSlots[std::size(kRrSlots) - 1]) + 1;
     for(OutputImage slot : kRrSlots)
       outputImages[slot] = m_dlss->getRrAttachment(slot);
   }
@@ -1088,7 +1101,7 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   if(getEffectiveOptixEnabled(resources))
   {
     using namespace shaderio;
-    outputImages.resize(eDenoiserNormal + 1);
+    outputCount                   = std::max<uint32_t>(outputCount, eDenoiserNormal + 1);
     outputImages[eDenoiserAlbedo] = m_optix->getDescriptorImageInfo(OptiXDenoiser::eGBufferAlbedo);
     outputImages[eDenoiserNormal] = m_optix->getDescriptorImageInfo(OptiXDenoiser::eGBufferNormal);
   }
@@ -1097,7 +1110,7 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   if(getEffectiveOidnEnabled(resources))
   {
     using namespace shaderio;
-    outputImages.resize(eDenoiserNormal + 1);
+    outputCount                   = std::max<uint32_t>(outputCount, eDenoiserNormal + 1);
     outputImages[eDenoiserAlbedo] = m_oidn->getDescriptorImageInfo(OidnDenoiser::eGBufferAlbedo);
     outputImages[eDenoiserNormal] = m_oidn->getDescriptorImageInfo(OidnDenoiser::eGBufferNormal);
   }
@@ -1105,7 +1118,7 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
 
 
   VkWriteDescriptorSet allTextures = resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eOutImages);
-  allTextures.descriptorCount      = uint32_t(outputImages.size());
+  allTextures.descriptorCount      = outputCount;
   write.append(allTextures, outputImages.data());
 
   // Bind GBuffer depth as storage image for writing hardware depth from path tracer (frame 0)
@@ -1774,18 +1787,14 @@ void PathTracer::storeCachedSpirv(uint64_t key, const Resources& resources, std:
     return;
 
   std::vector<std::filesystem::path> deps;
+  std::unordered_set<std::string>    seen;  // canonical paths already in deps
   auto                               addDep = [&](const std::filesystem::path& path) {
     if(path.empty())
       return;
     const std::filesystem::path canon = canonicalDep(path);
     const std::string           utf8  = nvutils::utf8FromPath(canon);
-    if(utf8.empty())
+    if(utf8.empty() || !seen.insert(utf8).second)
       return;
-    for(const std::filesystem::path& existing : deps)
-    {
-      if(nvutils::utf8FromPath(existing) == utf8)
-        return;
-    }
     deps.push_back(canon);
   };
 
@@ -1896,7 +1905,8 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
   const VariantKey key = makeVariantKey(resources);
   if(fromFile && !m_skipVariantCache)
   {
-    if(swapVariant(resources, key))
+    // Every caller drained the queue first (prepareFrame, reloadShader) or has rendered nothing yet (onAttach)
+    if(swapVariant(resources, key, /*gpuIdle=*/true))
     {
       LOGI("[PathTracer] Variant cache hit.\n");
       return true;
@@ -1904,32 +1914,13 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     // Cache miss: handles were cleared; will rebuild below.
   }
 
-  VkPushConstantRange pushConstant{VK_SHADER_STAGE_ALL, 0, sizeof(shaderio::PathtracePushConstant)};
-
-  // Set 3 is the physical sky's scattering LUTs, read by aerial perspective. Always in the layout,
-  // even for a scene that never selects that sky: a pipeline layout is built once and the
-  // environment changes at runtime, so making the layout depend on it would mean rebuilding the
-  // pipeline every time someone switched to an HDR.
-  std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.descriptorSetLayout[1],
-                                                          resources.hdrIbl.getDescriptorSetLayout(),
-                                                          resources.skyLutDescriptorSetLayout};
-
-  VkShaderCreateInfoEXT shaderInfo{
-      .sType                  = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
-      .stage                  = VK_SHADER_STAGE_COMPUTE_BIT,
-      .codeType               = VK_SHADER_CODE_TYPE_SPIRV_EXT,
-      .codeSize               = gltf_pathtrace_slang_sizeInBytes,
-      .pCode                  = gltf_pathtrace_slang,
-      .pName                  = "computeMain",
-      .setLayoutCount         = uint32_t(descriptorSetLayouts.size()),
-      .pSetLayouts            = descriptorSetLayouts.data(),
-      .pushConstantRangeCount = 1,
-      .pPushConstantRanges    = &pushConstant,
-  };
+  // The SPIR-V the module is created from: the embedded build unless the embedded DLSS build, the
+  // disk cache or a from-file compile replaces it below
+  std::span<const uint32_t> spirv(gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t));
 
   // Compile from shader file if requested, used when reloading the shader
   bool                  compiledFromFile = false;
-  std::vector<uint32_t> cachedSpirv;  // A disk-cache hit; shaderInfo.pCode points here until the module exists
+  std::vector<uint32_t> cachedSpirv;  // A disk-cache hit; spirv points here until the module exists
   if(fromFile)
   {
     SCOPED_TIMER("Slang compile from file");
@@ -1971,17 +1962,15 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     if(!m_skipVariantCache && isEmbeddedDlssVariant(resources))
     {
 #if defined(USE_DLSS)
-      shaderInfo.codeSize = gltf_pathtrace_slang_dlss_sizeInBytes;
-      shaderInfo.pCode    = gltf_pathtrace_slang_dlss;
-      compiledFromFile    = true;
+      spirv            = {gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t)};
+      compiledFromFile = true;
       LOGI("Slang: embedded DLSS path tracer, no compile\n");
 #endif
     }
     else if(!m_skipVariantCache && loadCachedSpirv(key, cachedSpirv))
     {
-      shaderInfo.codeSize = cachedSpirv.size() * sizeof(uint32_t);
-      shaderInfo.pCode    = cachedSpirv.data();
-      compiledFromFile    = true;
+      spirv            = cachedSpirv;
+      compiledFromFile = true;
       LOGI("Slang SPIR-V cache hit %016llx\n", static_cast<unsigned long long>(key));
 #if defined(AFTERMATH_AVAILABLE)
       // The compile callback in GltfRenderer does not run when the SPIR-V is loaded from disk.
@@ -1992,17 +1981,17 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
             resources.slangCompiler.compileFile("gltf_pathtrace.slang"))
     {
       LOGI("Slang SPIR-V cache %s %016llx\n", m_skipVariantCache ? "bypassed (reload)" : "miss", static_cast<unsigned long long>(key));
-      shaderInfo.codeSize = resources.slangCompiler.getSpirvSize();
-      shaderInfo.pCode    = resources.slangCompiler.getSpirv();
-      compiledFromFile    = true;
+      spirv            = {resources.slangCompiler.getSpirv(), resources.slangCompiler.getSpirvSize() / sizeof(uint32_t)};
+      compiledFromFile = true;
       storeCachedSpirv(key, resources, compileStart);
     }
     else
     {
       LOGI("Slang SPIR-V cache miss %016llx\n", static_cast<unsigned long long>(key));
       // Falls back to the embedded SPIR-V, which is built with USE_OMM=0: in a scene with
-      // micromaps its ray queries lack the OpacityMicromapIdKHR opt-in until a compile succeeds.
-      LOGW("Error compiling gltf_pathtrace.slang\n");
+      // micromaps its ray queries lack the OpacityMicromapIdKHR opt-in. The fallback stands in for
+      // the wanted variant (m_compiledIsFallback) until a setting changes or the user reloads.
+      LOGW("Error compiling gltf_pathtrace.slang; the embedded shader stands in until the next change or reload\n");
     }
   }
 
@@ -2013,8 +2002,8 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
 
     VkShaderModuleCreateInfo moduleInfo{
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = shaderInfo.codeSize,
-        .pCode    = static_cast<const uint32_t*>(shaderInfo.pCode),
+        .codeSize = spirv.size_bytes(),
+        .pCode    = spirv.data(),
     };
     NVVK_CHECK(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &m_shaderModule));
     NVVK_DBG_NAME(m_shaderModule);
@@ -2022,10 +2011,12 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
 
   // Record which variant this compile is, so getPendingCompileWork() can tell whether the settings
   // still match it. A from-file compile (or the embedded DLSS build standing in for one) follows
-  // the live settings. The embedded SPIR-V fallback mirrors the CMake build (see CMakeLists.txt):
-  // not optimal, all-on features, USE_GUIDE_SHADER=1 iff DLSS/OptiX/OIDN is available at build time,
-  // and USE_DLSS_SHADER=0 (DLSS is never active at startup; when it engages, the next compile
-  // takes the embedded DLSS build).
+  // the live settings; so does a failed one, as the variant its fallback stands in for, or every
+  // frame would retry the compile. The embedded SPIR-V at startup mirrors the CMake build (see
+  // CMakeLists.txt): not optimal, all-on features, USE_GUIDE_SHADER=1 iff DLSS/OptiX/OIDN is
+  // available at build time, and USE_DLSS_SHADER=0 (DLSS is never active at startup; when it
+  // engages, the next compile takes the embedded DLSS build). Its pipelines are specialized with
+  // the live transparency mode, which the key keeps.
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);
 #if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
@@ -2033,10 +2024,11 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
 #else
     constexpr bool kEmbeddedDlssGuide = false;
 #endif
-    if(compiledFromFile)
+    m_compiledIsFallback = fromFile && !compiledFromFile;
+    if(compiledFromFile || m_compiledIsFallback)
       m_compiled = key;
     else
-      m_compiled = VariantKey{.dlssGuide = kEmbeddedDlssGuide};
+      m_compiled = VariantKey{.dlssGuide = kEmbeddedDlssGuide, .dlssTransparency = key.dlssTransparency};
 
     // Destroy pipeline since there is a new shader
     destroyPipelinesLocked();
@@ -2100,7 +2092,7 @@ bool PathTracer::tryRestoreCachedVariant(Resources& resources)
                     [&](const VariantCacheEntry& e) { return e.key == key; }))
       return false;
   }
-  const bool hit = swapVariant(resources, key);
+  const bool hit = swapVariant(resources, key, /*gpuIdle=*/false);  // the previous frame may be in flight
   if(hit)  // debug level: with DLSS-RR and OptiX or OIDN, every camera start and stop swaps
     LOGD("[PathTracer] Variant cache hit (swapped in place).\n");
   return hit;
@@ -2127,15 +2119,42 @@ void PathTracer::destroyPipelinesLocked()
 // The SBT belongs to the RTX pipeline that built it (shader group handles are pipeline-specific)
 // so we have to swap them together. Forgetting to swap the SBT causes a crash on the first
 // dispatched ray because traversal jumps to handles from a different pipeline.
-bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey)
+//
+// Nothing is destroyed on a plain hit, which is why the per-frame swap needs no queue wait. What is
+// destroyed (a duplicate parked entry, pipelines built with the other SER value, an LRU victim) may
+// still be used by the frame in flight, so without gpuIdle it is released through the app's frame
+// ring, which runs the callback once that frame's fence has been waited on.
+bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey, bool gpuIdle)
 {
   std::lock_guard<std::mutex> lock(m_compileMutex);
 
-  // 1) Park the currently-active shader/pipelines/SBT so we don't leak them.
+  auto release = [&](VkShaderModule module, VkPipeline rtx, VkPipeline rq, nvvk::Buffer sbt) {
+    if(module == VK_NULL_HANDLE && rtx == VK_NULL_HANDLE && rq == VK_NULL_HANDLE && sbt.buffer == VK_NULL_HANDLE)
+      return;
+    auto destroy = [device = m_device, alloc = &resources.allocator, module, rtx, rq, sbt]() mutable {
+      vkDestroyShaderModule(device, module, nullptr);
+      vkDestroyPipeline(device, rtx, nullptr);
+      vkDestroyPipeline(device, rq, nullptr);
+      if(sbt.buffer != VK_NULL_HANDLE)
+        alloc->destroyBuffer(sbt);
+    };
+    if(gpuIdle || resources.app == nullptr)
+      destroy();
+    else
+      resources.app->submitResourceFree(std::move(destroy));
+  };
+
+  // 1) Park the currently-active shader/pipelines/SBT so we don't leak them. The embedded fallback
+  // standing in for a variant that failed to compile is not that variant: it is released instead,
+  // so the next request for the variant compiles it again.
   const VariantKey currentKey = m_compiled;
   const bool       hasLive    = m_shaderModule != VK_NULL_HANDLE || m_rtxPipeline != VK_NULL_HANDLE
                        || m_rqPipeline != VK_NULL_HANDLE || m_sbtBuffer.buffer != VK_NULL_HANDLE;
-  if(hasLive)
+  if(hasLive && m_compiledIsFallback)
+  {
+    release(m_shaderModule, m_rtxPipeline, m_rqPipeline, m_sbtBuffer);
+  }
+  else if(hasLive)
   {
     // If the current variant already exists in the cache (possible after a switch that
     // happened without our knowledge), update it in place rather than duplicating.
@@ -2145,14 +2164,10 @@ bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey)
       if(e.key == currentKey)
       {
         // Reclaim any stale handles already cached for this key before overwriting.
-        if(e.shaderModule != VK_NULL_HANDLE && e.shaderModule != m_shaderModule)
-          vkDestroyShaderModule(m_device, e.shaderModule, nullptr);
-        if(e.rtxPipeline != VK_NULL_HANDLE && e.rtxPipeline != m_rtxPipeline)
-          vkDestroyPipeline(m_device, e.rtxPipeline, nullptr);
-        if(e.rqPipeline != VK_NULL_HANDLE && e.rqPipeline != m_rqPipeline)
-          vkDestroyPipeline(m_device, e.rqPipeline, nullptr);
-        if(e.sbtBuffer.buffer != VK_NULL_HANDLE && e.sbtBuffer.buffer != m_sbtBuffer.buffer)
-          resources.allocator.destroyBuffer(e.sbtBuffer);
+        release(e.shaderModule != m_shaderModule ? e.shaderModule : VK_NULL_HANDLE,
+                e.rtxPipeline != m_rtxPipeline ? e.rtxPipeline : VK_NULL_HANDLE,
+                e.rqPipeline != m_rqPipeline ? e.rqPipeline : VK_NULL_HANDLE,
+                e.sbtBuffer.buffer != m_sbtBuffer.buffer ? e.sbtBuffer : nvvk::Buffer{});
         e.shaderModule = m_shaderModule;
         e.rtxPipeline  = m_rtxPipeline;
         e.rqPipeline   = m_rqPipeline;
@@ -2173,7 +2188,8 @@ bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey)
 
   // Detach handles from the live slots; if we find a hit we'll fill them from cache,
   // otherwise the caller will rebuild fresh.
-  m_shaderModule = VK_NULL_HANDLE;
+  m_compiledIsFallback = false;
+  m_shaderModule       = VK_NULL_HANDLE;
   m_rtxPipeline  = VK_NULL_HANDLE;
   m_rqPipeline   = VK_NULL_HANDLE;
   m_sbtBuffer    = {};
@@ -2198,9 +2214,7 @@ bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey)
       {
         // Cached with the other SER setting: discard the pipelines (and the SBT built from the RTX
         // one) and let ensureShadersAndPipelines() rebuild them at the current setting.
-        vkDestroyPipeline(m_device, it->rtxPipeline, nullptr);
-        vkDestroyPipeline(m_device, it->rqPipeline, nullptr);
-        resources.allocator.destroyBuffer(it->sbtBuffer);
+        release(VK_NULL_HANDLE, it->rtxPipeline, it->rqPipeline, it->sbtBuffer);
         m_rtxPipeline = VK_NULL_HANDLE;
         m_rqPipeline  = VK_NULL_HANDLE;
         m_sbtBuffer   = {};
@@ -2215,15 +2229,8 @@ bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey)
   // 3) Enforce LRU bound: drop oldest entries if over capacity.
   while(m_variantCache.size() > kVariantCacheMaxEntries)
   {
-    auto& victim = m_variantCache.back();
-    if(victim.shaderModule != VK_NULL_HANDLE)
-      vkDestroyShaderModule(m_device, victim.shaderModule, nullptr);
-    if(victim.rtxPipeline != VK_NULL_HANDLE)
-      vkDestroyPipeline(m_device, victim.rtxPipeline, nullptr);
-    if(victim.rqPipeline != VK_NULL_HANDLE)
-      vkDestroyPipeline(m_device, victim.rqPipeline, nullptr);
-    if(victim.sbtBuffer.buffer != VK_NULL_HANDLE)
-      resources.allocator.destroyBuffer(victim.sbtBuffer);
+    const VariantCacheEntry& victim = m_variantCache.back();
+    release(victim.shaderModule, victim.rtxPipeline, victim.rqPipeline, victim.sbtBuffer);
     m_variantCache.pop_back();
   }
 
@@ -2316,12 +2323,10 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
                     [&](int samples) { return samples != m_adaptiveSamples; }))
     return;
 
-  // Get timing information for the path tracing section
+  // Get timing information for the path tracing section (the technique's timer)
   nvutils::ProfilerTimeline::TimerInfo timerInfo;
-  std::string                          apiName;
-
-  // Try both possible timer names based on rendering technique
-  const char* timerName = (m_renderTechnique == RenderTechnique::RayQuery) ? "Path Trace (RQ)" : "Path Trace (RTX)";
+  static std::string apiName;  // an output nobody reads; kept so the per-frame call allocates nothing
+  const std::string& timerName = (m_renderTechnique == RenderTechnique::RayQuery) ? kTimerPathTraceRq : kTimerPathTraceRtx;
 
   if(m_profilerTimeline->getFrameTimerInfo(timerName, timerInfo, apiName))
   {
@@ -2372,18 +2377,52 @@ void PathTracer::updateStatistics(Resources& resources)
   resources.accumulatedSamples = m_totalSamplesAccumulated;
 }
 
-void PathTracer::traceRays(VkCommandBuffer cmd, VkExtent2D renderingSize, Resources& resources)
+//--------------------------------------------------------------------------------------------------
+// Bind the selected technique: its pipeline, descriptor sets 0 (TLAS, output images, textures), 2 (the
+// HDR environment) and 3 (the physical sky's LUTs for aerial perspective, bound whatever the
+// environment is; the shader reads them only when the frame says the sky is the physical one), and
+// the pushed set 1. Once per frame; dispatchRays() launches it, for the probe and for the paths.
+// prepareFrame() builds the pipeline before a frame is recorded, so a missing one is a logic error,
+// not something to build here, inside command recording and with no BusyWindow.
+bool PathTracer::bindTechnique(VkCommandBuffer cmd, Resources& resources)
+{
+  const bool                rayQuery  = m_renderTechnique == RenderTechnique::RayQuery;
+  const VkPipelineBindPoint bindPoint = rayQuery ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
+  const VkPipeline          pipeline  = rayQuery ? m_rqPipeline : m_rtxPipeline;
+  assert(pipeline != VK_NULL_HANDLE && "PathTracer: no pipeline at record time; prepareFrame() builds it first");
+  if(pipeline == VK_NULL_HANDLE)
+  {
+    LOGW("PathTracer: no %s pipeline at record time; frame skipped\n", rayQuery ? "ray-query" : "ray-tracing");
+    return false;
+  }
+
+  vkCmdBindPipeline(cmd, bindPoint, pipeline);
+  vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 0, 1, &resources.descriptorSet, 0, nullptr);
+  const VkDescriptorSet hdrDescSet = resources.hdrIbl.getDescriptorSet();
+  vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 2, 1, &hdrDescSet, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 3, 1, &resources.skyLutDescriptorSet, 0, nullptr);
+  pushDescriptorSet(cmd, resources, bindPoint);
+  return true;
+}
+
+void PathTracer::dispatchRays(VkCommandBuffer cmd, VkExtent2D size) const
 {
   if(m_renderTechnique == RenderTechnique::RayQuery)
-    renderRayQuery(cmd, renderingSize, resources);
+  {
+    const VkExtent2D numGroups = nvvk::getGroupCounts(size, VkExtent2D{PT_WORKGROUP_X, PT_WORKGROUP_Y});
+    vkCmdDispatch(cmd, numGroups.width, numGroups.height, 1);
+  }
   else
-    renderRayTrace(cmd, renderingSize, resources);
+  {
+    vkCmdTraceRaysKHR(cmd, &m_sbtRegions.raygen, &m_sbtRegions.miss, &m_sbtRegions.hit, &m_sbtRegions.callable,
+                      size.width, size.height, 1);
+  }
 }
 
 //--------------------------------------------------------------------------------------------------
 // The medium the camera is in, for every camera path to start in (probeCameraMedium in
-// gltf_pathtrace.slang): one thread of the path tracer's own pipeline, before the frame's paths.
-void PathTracer::probeCameraMedium(VkCommandBuffer cmd, Resources& resources, const shaderio::PathtracePushConstant& pushConst)
+// gltf_pathtrace.slang): one thread of the bound pipeline, before the frame's paths.
+void PathTracer::probeCameraMedium(VkCommandBuffer cmd, const shaderio::PathtracePushConstant& pushConst)
 {
   auto timerSection = m_profiler->cmdFrameSection(cmd, "Camera medium");
 
@@ -2394,71 +2433,11 @@ void PathTracer::probeCameraMedium(VkCommandBuffer cmd, Resources& resources, co
   shaderio::PathtracePushConstant probe = pushConst;
   probe.flags |= shaderio::ePtProbeCameraMedium;
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(probe), &probe);
-  traceRays(cmd, {1, 1}, resources);
+  dispatchRays(cmd, {1, 1});
 
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(pushConst), &pushConst);
-}
-
-void PathTracer::renderRayQuery(VkCommandBuffer cmd, VkExtent2D renderingSize, Resources& resources)
-{
-  // Create pipeline if it doesn't exist
-  if(m_rqPipeline == VK_NULL_HANDLE)
-  {
-    createRqPipeline(resources);
-  }
-
-  // Bind the shader to use
-  VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_rqPipeline);
-
-
-  // Bind the descriptor set: TLAS, output image, textures, etc. (Set: 0)
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &resources.descriptorSet, 0, nullptr);
-
-  // Set the Descriptor for HDR (Set: 2)
-  VkDescriptorSet hdrDescSet = resources.hdrIbl.getDescriptorSet();
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 2, 1, &hdrDescSet, 0, nullptr);
-
-  // Set the Descriptor for the physical sky's LUTs (Set: 3) -- aerial perspective. Bound whatever
-  // the environment is; the shader reads it only when the frame says the sky is the physical one.
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 3, 1, &resources.skyLutDescriptorSet, 0, nullptr);
-
-  pushDescriptorSet(cmd, resources, VK_PIPELINE_BIND_POINT_COMPUTE);
-
-  // Dispatch the compute shader
-  VkExtent2D numGroups = nvvk::getGroupCounts(renderingSize, VkExtent2D{PT_WORKGROUP_X, PT_WORKGROUP_Y});
-  vkCmdDispatch(cmd, numGroups.width, numGroups.height, 1);
-}
-
-void PathTracer::renderRayTrace(VkCommandBuffer cmd, VkExtent2D renderingSize, Resources& resources)
-{
-  // Create pipeline if it doesn't exist
-  if(m_rtxPipeline == VK_NULL_HANDLE)
-  {
-    createRtxPipeline(resources);
-  }
-
-  // Bind the ray tracing pipeline
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_rtxPipeline);
-
-  // Bind the descriptor set: TLAS, output image, textures, etc. (Set: 0)
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 0, 1, &resources.descriptorSet, 0, nullptr);
-
-  // Set the Descriptor for HDR (Set: 2)
-  VkDescriptorSet hdrDescSet = resources.hdrIbl.getDescriptorSet();
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 2, 1, &hdrDescSet, 0, nullptr);
-
-  // Set the Descriptor for the physical sky's LUTs (Set: 3) -- aerial perspective.
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 3, 1,
-                          &resources.skyLutDescriptorSet, 0, nullptr);
-
-  pushDescriptorSet(cmd, resources, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
-
-
-  vkCmdTraceRaysKHR(cmd, &m_sbtRegions.raygen, &m_sbtRegions.miss, &m_sbtRegions.hit, &m_sbtRegions.callable,
-                    renderingSize.width, renderingSize.height, 1);
 }
 
 void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources)
@@ -2527,19 +2506,22 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   if(useDlss)
     samplesPerFrame = 1;
 
-  // Halton jitter and frame-index counter.
+  // Halton jitter and frame-index counter. GltfRenderer::renderFrame writes the frame info with a
+  // zero jitter every frame; only a DLSS frame patches it.
   const Dlss::FrameContext fc = m_dlss->beginFrame();
   if(useDlss)
+  {
     frameCount = static_cast<int>(fc.frameIndex);
 
-  // That earlier full-struct write is a prior transfer write to the same buffer, so order this second
-  // update after it (and after the compute-visibility barrier that followed it) to avoid a WRITE_AFTER_WRITE.
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                         VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    // That earlier full-struct write is a prior transfer write to the same buffer, so order this second
+    // update after it (and after the compute-visibility barrier that followed it) to avoid a WRITE_AFTER_WRITE.
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
-  // Patch only the 8-byte jitter slot; the rest of SceneFrameInfo was already written by renderer.cpp::renderFrame this frame.
-  vkCmdUpdateBuffer(cmd, resources.bFrameInfo.buffer, offsetof(shaderio::SceneFrameInfo, jitter), sizeof(glm::vec2), &fc.jitter);
+    // Patch only the 8-byte jitter slot; the rest of SceneFrameInfo was already written this frame.
+    vkCmdUpdateBuffer(cmd, resources.bFrameInfo.buffer, offsetof(shaderio::SceneFrameInfo, jitter), sizeof(glm::vec2), &fc.jitter);
+  }
 #endif
 
   m_pushConst.frameCount = frameCount;
@@ -2605,11 +2587,12 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.prevVertexPositions         = nullptr;
 #endif
 
-  // Angular size of one pixel (radians). Same formula as the previous shader-side computePixelAngle():
-  //   2 * |projInv[1][1]| / viewportHeight     where projInv[1][1] == tan(fovY/2) for a pinhole camera.
-  // Constant across the dispatch, so we compute it once on the CPU instead of per ray.
-  const glm::mat4 projInv = glm::inverse(resources.cameraManip->getPerspectiveMatrix());
-  m_pushConst.pixelAngle  = 2.0f * std::abs(projInv[1][1]) / std::max(static_cast<float>(renderingSize.height), 1.0f);
+  // Angular size of one pixel (radians): 2 * tan(fovY/2) / viewportHeight, the shader's former
+  // computePixelAngle(). The camera's projection is a symmetric perspective (or orthographic)
+  // matrix with a Y flip, so tan(fovY/2) (the half height, orthographic) is 1 / |proj[1][1]| and no
+  // inverse is needed. Constant across the dispatch, so it is computed once here instead of per ray.
+  const double projYY    = resources.cameraManip->getPerspectiveMatrix()[1][1];
+  m_pushConst.pixelAngle = static_cast<float>(2.0 / (std::max(std::abs(projYY), 1e-9) * std::max(double(renderingSize.height), 1.0)));
 
   // numSamples is the setting (ptSamples); the shader gets this frame's count
   shaderio::PathtracePushConstant pushConst = m_pushConst;
