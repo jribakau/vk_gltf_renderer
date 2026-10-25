@@ -72,6 +72,57 @@ TEST(Wardrobe, ALargeItemIsBoundInChunksAsItWouldBeWhole)
   }
 }
 
+TEST(Wardrobe, AStrandBindsAlongItsLengthToTheBodyItLiesOn)
+{
+  // a strand lying 1 cm over the body binds point by point as bindToSurface does; once it hangs
+  // away past the reach, its points ride with the last point that was within reach
+  const auto body = fv::mesh::build(grid(10, 0));
+  std::vector<float> strand;
+  for(int k = 0; k <= 12; k++)
+  {
+    // along x at 1 cm for the first six points, then rising away from the body
+    const float x = 0.5f + 0.75f * float(k), z = k <= 6 ? 1.f : 1.f + 2.f * float(k - 6);
+    strand.insert(strand.end(), {x, 4.3f, z});
+  }
+  std::vector<int32_t> start{0, 13}, verts;
+  for(int k = 0; k <= 12; k++)
+    verts.push_back(k);
+  const auto exact = fv::wardrobe::bindToSurface(body.cagePositions, body.dsonTris, strand);
+  const auto along = fv::wardrobe::bindStrands(body.cagePositions, body.dsonTris, strand, start, verts, 3.f);
+  // within 3 cm (z up to 3): the same triangle and weights
+  for(int k = 0; k <= 7; k++)
+    for(int c = 0; c < 3; c++)
+    {
+      EXPECT_EQ(along.verts[k * 3 + c], exact.verts[k * 3 + c]) << k;
+      EXPECT_FLOAT_EQ(along.weights[k * 3 + c], exact.weights[k * 3 + c]) << k;
+    }
+  // past it: the binding of point 7, the last within reach
+  for(int k = 8; k <= 12; k++)
+    for(int c = 0; c < 3; c++)
+    {
+      EXPECT_EQ(along.verts[k * 3 + c], along.verts[7 * 3 + c]) << k;
+      EXPECT_FLOAT_EQ(along.weights[k * 3 + c], along.weights[7 * 3 + c]) << k;
+    }
+}
+
+TEST(Wardrobe, AStrandWhoseRootIsFarFromTheBodyStillBinds)
+{
+  const auto         body = fv::mesh::build(grid(4, 0));
+  const std::vector<float> strand{2, 2, 10, 2, 2, 11};
+  const std::vector<int32_t> start{0, 2}, verts{0, 1};
+  const auto exact = fv::wardrobe::bindToSurface(body.cagePositions, body.dsonTris, strand);
+  const auto along = fv::wardrobe::bindStrands(body.cagePositions, body.dsonTris, strand, start, verts, 3.f);
+  for(int c = 0; c < 3; c++)
+  {
+    EXPECT_EQ(along.verts[c], exact.verts[c]);
+    EXPECT_EQ(along.verts[3 + c], along.verts[c]);
+  }
+  float w = 0;
+  for(int c = 0; c < 3; c++)
+    w += along.weights[c];
+  EXPECT_NEAR(w, 1.f, 1e-5f);
+}
+
 TEST(Wardrobe, GraftPairsOverrideTheClosestPoint)
 {
   const auto           body  = fv::mesh::build(grid(4, 0));

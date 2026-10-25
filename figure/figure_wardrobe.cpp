@@ -53,6 +53,11 @@ std::string kindOf(const std::string& rel, const std::string& label, const std::
   return "Clothing";
 }
 
+// How near the body a strand point binds to the body under it, cm; further out it moves with the
+// point above it on its strand. Hair lying on a shoulder or over the chest is within this; a strand
+// hanging free past it follows where it last touched.
+constexpr float kStrandReach = 3.f;
+
 // An item morph whose deltas address vertices the item does not have belongs to another generation.
 bool targetFits(const mesh::RenderTarget& t, int count)
 {
@@ -243,9 +248,16 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     const mesh::BuiltMesh& item     = *itemMesh.geo;
     auto filter = std::make_shared<std::optional<wardrobe::BindFilter>>(wardrobe::limbFilter(bodyLimbs, wardrobe::meshLimbs(out->loaded.scene, itemMesh)));
     jobs.push_back(jobs::pool().submit([&body, &item, &part, filter, slot = &out->bindings[i]] {
+      const wardrobe::BindFilter* f = *filter ? &**filter : nullptr;
+      // strand hair binds along each strand (see bindStrands); everything else point by point
+      if(!item.cageLineStart.empty())
+      {
+        *slot = std::make_shared<wardrobe::SurfaceBinding>(
+            wardrobe::bindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, kStrandReach, f));
+        return;
+      }
       const std::span<const int32_t> pairs = part.graft ? std::span<const int32_t>(part.graft->pairs) : std::span<const int32_t>();
-      *slot = std::make_shared<wardrobe::SurfaceBinding>(
-          wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, *filter ? &**filter : nullptr));
+      *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, f));
     }));
   }
   tItems.reset();

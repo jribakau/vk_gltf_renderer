@@ -363,6 +363,11 @@ BuiltMesh build(const MeshInput& m)
     out.cagePolyStart = m.polyStart;
     out.cagePolyVerts = m.polyVerts;
   }
+  else if(m.lines && m.lines->start.size() > 1)
+  {
+    out.cageLineStart = m.lines->start;
+    out.cageLineVerts = m.lines->verts;
+  }
   const std::vector<int32_t> uvOfCorner = cornerUvs(m);
 
   // the faces drawn: the cage's polygons, or the refined quads with the cage polygon each came from

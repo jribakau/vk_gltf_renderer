@@ -91,6 +91,9 @@ struct BuiltMesh
   // the cage's polygon loops as the file has them (polygon i is cagePolyVerts[cagePolyStart[i] ..
   // cagePolyStart[i + 1])), for cloth constraints on a mesh whose file carries no simulation settings
   std::vector<int32_t> cagePolyStart{0}, cagePolyVerts;
+  // strand hair's polylines over the cage, root first (line i is cageLineVerts[cageLineStart[i] ..
+  // cageLineStart[i + 1])), for binding a strand to the body along its length; empty otherwise
+  std::vector<int32_t> cageLineStart, cageLineVerts;
   // the cage positions (updated by shiftCage) and its subdivision, null when drawn unrefined
   std::vector<float>                         cagePositions;
   std::shared_ptr<const subdiv::Refinement> refinement;
