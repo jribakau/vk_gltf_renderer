@@ -613,8 +613,26 @@ void nvvkgltf::SceneRtx::updateBottomLevelAS(VkCommandBuffer cmd, const nvvkgltf
   updateBottomLevelAS(cmd, prims);
 }
 
+// The refits go out as one build command for as many of them as the scratch buffer holds side by
+// side, each at its own offset, with one barrier per batch: a figure's thirty refits then overlap
+// on the GPU instead of each waiting for the one before on a shared scratch address.
 void nvvkgltf::SceneRtx::updateBottomLevelAS(VkCommandBuffer cmd, std::span<const uint32_t> renderPrimIDs)
 {
+  const VkDeviceSize alignment = std::max<VkDeviceSize>(1, m_rtASProperties.minAccelerationStructureScratchOffsetAlignment);
+  const VkDeviceSize scratchSize = m_blasScratchBuffer.bufferSize;
+  std::vector<VkAccelerationStructureBuildGeometryInfoKHR>     infos;
+  std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> ranges;
+  VkDeviceSize                                                 offset = 0;
+  const auto                                                   flush  = [&] {
+    if(infos.empty())
+      return;
+    vkCmdBuildAccelerationStructuresKHR(cmd, static_cast<uint32_t>(infos.size()), infos.data(), ranges.data());
+    nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                                       VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    infos.clear();
+    ranges.clear();
+    offset = 0;
+  };
   for(uint32_t primID : renderPrimIDs)
   {
     if(!isBlasUpdatable(primID))
@@ -622,10 +640,27 @@ void nvvkgltf::SceneRtx::updateBottomLevelAS(VkCommandBuffer cmd, std::span<cons
       LOGW("BLAS of primitive %u is not updatable (built without ALLOW_UPDATE); edit not visible to ray tracing\n", primID);
       continue;
     }
-    m_blasBuildData[primID].cmdUpdateAccelerationStructure(cmd, m_blasAccel[primID].accel, m_blasScratchBuffer.address);
-    nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-                                       VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    nvvk::AccelerationStructureBuildData& data    = m_blasBuildData[primID];
+    const VkDeviceSize                    scratch = nvutils::align_up(std::max<VkDeviceSize>(data.sizeInfo.updateScratchSize, 1), alignment);
+    if(scratch > scratchSize)
+    {
+      // too large to share the buffer: alone, as before
+      flush();
+      data.cmdUpdateAccelerationStructure(cmd, m_blasAccel[primID].accel, m_blasScratchBuffer.address);
+      continue;
+    }
+    if(offset + scratch > scratchSize)
+      flush();
+    data.buildInfo.mode                      = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+    data.buildInfo.srcAccelerationStructure  = m_blasAccel[primID].accel;
+    data.buildInfo.dstAccelerationStructure  = m_blasAccel[primID].accel;
+    data.buildInfo.scratchData.deviceAddress = m_blasScratchBuffer.address + offset;
+    data.buildInfo.pGeometries               = data.asGeometry.data();
+    infos.push_back(data.buildInfo);
+    ranges.push_back(data.asBuildRangeInfo.data());
+    offset += scratch;
   }
+  flush();
 }
 
 bool nvvkgltf::SceneRtx::isBlasUpdatable(uint32_t renderPrimID) const
