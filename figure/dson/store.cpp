@@ -7,6 +7,7 @@
 
 #include <figure/io/gzip.hpp>
 #include <figure/io/timing.hpp>
+#include <figure/jobs/pool.hpp>
 
 namespace fv::dson {
 
@@ -279,17 +280,38 @@ std::shared_ptr<const Doc> Store::fetch(const std::string& file)
     }
     throw MissingFileError(file);
   }
-  // a large file (strand hair runs to tens of MB of JSON) is timed: reading and parsing apart
   std::error_code ec;
-  if(!timing::enabled() || std::filesystem::file_size(*path, ec) < (2u << 20) || ec)
-    return parseDoc(readMaybeCompressed(*path));
-  std::string text;
+  const uintmax_t size  = std::filesystem::file_size(*path, ec);
+  const bool      large = !ec && size >= (2u << 20);
+  // a large file goes through the parsed cache when there is one
+  std::filesystem::path cacheFile;
+  ParsedStamp           stamp;
+  if(large)
+    if(const std::filesystem::path dir = parsedCacheDir(); !dir.empty())
+    {
+      stamp     = stampOf(*path);
+      cacheFile = parsedCacheFile(dir, stamp);
+      timing::Scope t("cached " + std::to_string(size >> 20) + " MB", 1);
+      if(auto doc = readParsed(cacheFile, stamp))
+        return doc;
+    }
+  // a large file (strand hair runs to tens of MB of JSON) is timed: reading and parsing apart
+  std::shared_ptr<Doc> doc;
+  if(!timing::enabled() || !large)
+    doc = parseDoc(readMaybeCompressed(*path));
+  else
   {
-    timing::Scope t("read " + file);
-    text = readMaybeCompressed(*path);
+    std::string text;
+    {
+      timing::Scope t("read " + file);
+      text = readMaybeCompressed(*path);
+    }
+    timing::Scope t("parse " + std::to_string(text.size() >> 20) + " MB");
+    doc = parseDoc(std::move(text));
   }
-  timing::Scope t("parse " + std::to_string(text.size() >> 20) + " MB");
-  return parseDoc(std::move(text));
+  if(!cacheFile.empty())
+    jobs::pool().submit([doc, cacheFile, stamp] { writeParsed(cacheFile, *doc, stamp); });
+  return doc;
 }
 
 std::shared_ptr<const Doc> Store::loadShared(const std::string& file)

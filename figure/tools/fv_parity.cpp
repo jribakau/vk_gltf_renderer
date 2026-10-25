@@ -2,7 +2,7 @@
 // deleted) through the figure library, with no GPU, and writes what it built: bones, meshes and morph
 // weights in the shape the TypeScript dumper wrote, so two runs can be diffed.
 //
-//   fv_parity <case.json> <out.json> [--root <dir for relative library paths>]
+//   fv_parity <case.json> <out.json> [--root <dir for relative library paths>] [--cache <parsed-file cache dir>]
 //
 // Steps: {"load"}, {"morph"}, {"pose"}, {"preset"}, {"dump"}, and for the wardrobe {"wear": rel},
 // {"remove": item id} and {"fit": label}, which measures how the worn items sit on the body: for
@@ -36,6 +36,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include <figure/dson/store.hpp>
 #include <figure/dforce/dforce.hpp>
 #include <figure/dforce/skin.hpp>
 #include <figure/dforce/solver.hpp>
@@ -413,15 +414,19 @@ int main(int argc, char** argv)
 {
   if(argc < 3)
   {
-    std::cerr << "usage: fv_parity <case.json> <out.json> [--root <dir>]\n";
+    std::cerr << "usage: fv_parity <case.json> <out.json> [--root <dir>] [--cache <dir>]\n";
     return 2;
   }
   const std::filesystem::path casePath = pathOf(argv[1]);
   const std::filesystem::path outPath  = pathOf(argv[2]);
   std::filesystem::path       root     = std::filesystem::current_path();
   for(int i = 3; i + 1 < argc; i++)
+  {
     if(std::string(argv[i]) == "--root")
       root = pathOf(argv[i + 1]);
+    if(std::string(argv[i]) == "--cache")  // the parsed-file cache, as the renderer's --cacheDir/dson
+      fv::dson::setParsedCacheDir(pathOf(argv[i + 1]));
+  }
   try
   {
     std::ifstream f(casePath);

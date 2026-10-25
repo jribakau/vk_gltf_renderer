@@ -1,12 +1,14 @@
 // The streaming DSON parse (parse_sax.cpp) gives the same document as the tree parse: the same
 // JSON with every table packed, the same rows bit for bit. Over the test library's files, over the
-// cases that make it fall back, and, with DAZ_LIBRARY set, over the real files a wear reads.
+// cases that make it fall back, and, with DAZ_LIBRARY set, over the real files a wear reads. The
+// parsed cache (parsed_cache.cpp) gives the document back as it was and misses when the file changed.
 
 #include <gtest/gtest.h>
 
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -79,6 +81,29 @@ void expectSame(const std::string& text, const std::string& what)
   EXPECT_EQ(a->bytes, b->bytes) << what;
 }
 
+// Written to the cache and read back: the same tree, the same tables bit for bit, the same size.
+void expectCacheRoundTrip(const Doc& doc, const std::string& what)
+{
+  const fs::path dir = fs::temp_directory_path() / "fv-parsed-cache-test";
+  fs::create_directories(dir);
+  const fv::dson::ParsedStamp stamp{.pathHash = 42, .size = 1234, .mtime = 5678};
+  const fs::path              file = fv::dson::parsedCacheFile(dir, stamp);
+  ASSERT_TRUE(fv::dson::writeParsed(file, doc, stamp)) << what;
+  const auto back = fv::dson::readParsed(file, stamp);
+  ASSERT_TRUE(back) << what;
+  EXPECT_EQ(back->json.dump(), doc.json.dump()) << what;
+  EXPECT_EQ(back->bytes, doc.bytes) << what;
+  ASSERT_EQ(back->tables.size(), doc.tables.size()) << what;
+  for(size_t i = 0; i < doc.tables.size(); i++)
+  {
+    EXPECT_EQ(back->tables[i].count, doc.tables[i].count) << what;
+    EXPECT_EQ(back->tables[i].start, doc.tables[i].start) << what;
+    ASSERT_EQ(back->tables[i].data.size(), doc.tables[i].data.size()) << what;
+    EXPECT_EQ(std::memcmp(back->tables[i].data.data(), doc.tables[i].data.data(), doc.tables[i].data.size() * sizeof(double)), 0) << what;
+  }
+  fs::remove_all(dir);
+}
+
 }  // namespace
 
 TEST(DsonParse, StreamedTablesMatchTheTreeParseOverTheTestLibrary)
@@ -149,6 +174,52 @@ TEST(DsonParse, RealFilesMatchWhenTheLibraryIsAvailable)
       ADD_FAILURE() << "missing " << p;
       continue;
     }
-    expectSame(readFile(p), rel);
+    const std::string text = readFile(p);
+    expectSame(text, rel);
+    expectCacheRoundTrip(*fv::dson::parseDoc(text), rel);
   }
+}
+
+TEST(DsonParse, TheParsedCacheGivesTheDocumentBackAndMissesWhenTheFileChanged)
+{
+  const std::string text = R"({"a": 1, "b": 1.5, "c": "x", "d": [true, null, -0.0, 1e3, 2.5e-7, 18446744073709551615, -9007199254740993],)"
+                           R"( "geometry_library": [{"id": "g", "vertices": {"count": 2, "values": [[0, 1, 2], [3.5, 4, 5]]},)"
+                           R"( "polylist": {"values": []}, "polyline_list": {"values": [[0, 1, 2, 3, 4]]}}]})";
+  const auto doc = fv::dson::parseDoc(text);
+  ASSERT_EQ(doc->tables.size(), 3u);
+  expectCacheRoundTrip(*doc, "fixture");
+  // another size, another time, another path: a miss; so is a file that is not there
+  const fs::path dir = fs::temp_directory_path() / "fv-parsed-cache-test-stale";
+  fs::create_directories(dir);
+  const fv::dson::ParsedStamp stamp{.pathHash = 7, .size = text.size(), .mtime = 99};
+  const fs::path              file = fv::dson::parsedCacheFile(dir, stamp);
+  ASSERT_TRUE(fv::dson::writeParsed(file, *doc, stamp));
+  EXPECT_TRUE(fv::dson::readParsed(file, stamp));
+  EXPECT_FALSE(fv::dson::readParsed(file, fv::dson::ParsedStamp{.pathHash = 7, .size = text.size() + 1, .mtime = 99}));
+  EXPECT_FALSE(fv::dson::readParsed(file, fv::dson::ParsedStamp{.pathHash = 7, .size = text.size(), .mtime = 100}));
+  EXPECT_FALSE(fv::dson::readParsed(file, fv::dson::ParsedStamp{.pathHash = 8, .size = text.size(), .mtime = 99}));
+  EXPECT_FALSE(fv::dson::readParsed(dir / "missing.fvd", stamp));
+  // a damaged file is a miss, not a crash
+  {
+    std::ofstream cut(file, std::ios::binary | std::ios::trunc);
+    cut << "FVD1 but nothing after the magic";
+  }
+  EXPECT_FALSE(fv::dson::readParsed(file, stamp));
+  fs::remove_all(dir);
+  // the stamp of a real file follows its size and time
+  const fs::path src = dir.parent_path() / "fv-parsed-cache-src.json";
+  {
+    std::ofstream out(src, std::ios::binary | std::ios::trunc);
+    out << text;
+  }
+  const auto s1 = fv::dson::stampOf(src);
+  EXPECT_EQ(s1.size, text.size());
+  EXPECT_NE(s1.pathHash, 0u);
+  {
+    std::ofstream out(src, std::ios::binary | std::ios::trunc);
+    out << text << " ";
+  }
+  EXPECT_NE(fv::dson::stampOf(src).size, s1.size);
+  EXPECT_EQ(fv::dson::stampOf(src).pathHash, s1.pathHash);
+  fs::remove(src);
 }
