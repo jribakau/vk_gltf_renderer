@@ -31,6 +31,7 @@ public:
   // the first of `names` (not normalised) present
   const Channel* find(std::initializer_list<const char*> names) const;
   void           set(const std::string& key, std::shared_ptr<Channel> c);
+  void           erase(const std::string& key);
   std::shared_ptr<Channel> shared(const std::string& key) const;
   const std::vector<std::string>& order() const { return m_order; }
 

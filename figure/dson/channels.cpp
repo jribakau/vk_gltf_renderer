@@ -1,5 +1,6 @@
 #include <figure/dson/channels.hpp>
 
+#include <algorithm>
 #include <cctype>
 
 namespace fv::dson {
@@ -35,6 +36,12 @@ const Channel* Channels::find(std::initializer_list<const char*> names) const
     if(const Channel* c = get(norm(n)))
       return c;
   return nullptr;
+}
+
+void Channels::erase(const std::string& key)
+{
+  if(m_map.erase(key))
+    m_order.erase(std::find(m_order.begin(), m_order.end(), key));
 }
 
 void Channels::set(const std::string& key, std::shared_ptr<Channel> c)

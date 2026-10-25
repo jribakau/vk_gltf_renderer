@@ -48,6 +48,9 @@ struct LowerOptions
   // An iris surface (EyeLayout::eIris): where each eye's iris is in its map, centre x, y and radius
   // as fractions of the image, y down (build::irisDiscs, from its UVs). None: its colour can't be changed.
   std::vector<std::array<float, 3>> irisDiscs;
+  // The figure's skin map a skin tone shifts every skin surface against (dson::toneReference): the
+  // same for all of them, so they move together. Empty: each against its own map.
+  std::string toneReference;
 };
 
 // The values the Material panel shows for a surface: what the lowering used, edits included.

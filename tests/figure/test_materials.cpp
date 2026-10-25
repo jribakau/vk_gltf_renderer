@@ -11,6 +11,7 @@
 #include <figure/dson/eye_materials.hpp>
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/materials.hpp>
+#include <figure/dson/skin_materials.hpp>
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/materials/lobes.hpp>
 #include <figure/materials/lower.hpp>
@@ -919,6 +920,120 @@ TEST(Materials, ARecolourBakesTheBaseMapOrMovesAFlatColour)
   merged.merge(e);
   EXPECT_TRUE(merged.recolor.has_value());
   EXPECT_FALSE(merged.empty());
+}
+
+// The skin a skin or makeup preset may change: the character's, but its eyes, what was taken off and
+// what the host leaves out (worn items); a tone shifts every skin surface against the body's map.
+TEST(Materials, TheSkinIsTheCharactersSurfacesButItsEyesAndWornItems)
+{
+  const fv::SceneGraph scene = eyeScene();
+  // the lashes stand in for a worn item; the tear film is no eye
+  EXPECT_EQ(fv::dson::skinSurfaces(scene, {7}), (std::set<int>{0, 1, 6}));
+  EXPECT_EQ(fv::dson::toneReference(scene), "/Runtime/Textures/face_d.jpg");
+  EXPECT_EQ(fv::dson::toneReference(scene, {0, 1}), "");
+}
+
+// Makeup is a layer: the next one takes off only the channels the last one set, so a skin preset
+// applied under it stays, and a channel something else set since keeps that.
+TEST(Materials, MakeupComesOffAloneLeavingTheSkinUnderIt)
+{
+  fv::SceneGraph scene = eyeScene();
+  const auto     head  = [](const std::string& channel, const std::string& field, const std::string& value) {
+    return R"({"url":"name://@selection/Genesis9:#materials/Head:?extra/studio_material_channels/channels/)" + channel + "/" + field
+           + R"(","keys":[[0,)" + value + "]]}";
+  };
+  const auto doc = [](const std::vector<std::string>& anims) {
+    std::string all;
+    for(const std::string& a : anims)
+      all += (all.empty() ? "" : ",") + a;
+    return Json::parse(R"({"scene":{"animations":[)" + all + "]}}");
+  };
+  const auto image = [&](const char* channel) {
+    const fv::dson::Channel* c = scene.materials[1].channels->get(fv::dson::norm(channel));
+    return c && c->image ? *c->image : std::string("none");
+  };
+  // a skin under it, not a layer
+  const Json skin = doc({head("diffuse", "image_file", R"("/tan.jpg")")});
+  fv::dson::applyMaterialPreset(skin, scene);
+  const std::set<int> surfaces = fv::dson::skinSurfaces(scene, {7});
+
+  const Json a  = doc({head("Makeup%20Weight", "image_file", R"("/maskA.png")"), head("Makeup%20Base%20Color", "image_file", R"("/lipsA.jpg")")});
+  const auto ra = fv::dson::chooseLayer(scene, surfaces, &a, {});
+  EXPECT_EQ(ra.changed, std::set<int>{1});
+  EXPECT_EQ(image("Makeup Base Color"), "/lipsA.jpg");
+  EXPECT_EQ(image("Makeup Weight"), "/maskA.png");
+
+  // the next: only its colour, so A's mask comes off with it; the skin stays
+  const Json b  = doc({head("Makeup%20Base%20Color", "image_file", R"("/lipsB.jpg")")});
+  const auto rb = fv::dson::chooseLayer(scene, surfaces, &b, ra.layer);
+  EXPECT_EQ(image("Makeup Base Color"), "/lipsB.jpg");
+  EXPECT_EQ(image("Makeup Weight"), "none");
+  EXPECT_EQ(scene.materials[1].surface.base.map, "/tan.jpg");
+
+  // something else sets B's channel since: taking B off keeps that
+  fv::dson::applyMaterialPreset(doc({head("Makeup%20Base%20Color", "image_file", R"("/mine.jpg")")}), scene);
+  const auto off = fv::dson::chooseLayer(scene, surfaces, nullptr, rb.layer);
+  EXPECT_TRUE(off.changed.empty());
+  EXPECT_EQ(image("Makeup Base Color"), "/mine.jpg");
+
+  // with nothing in between, null takes the makeup off to the skin under it
+  const auto rc = fv::dson::chooseLayer(scene, surfaces, &a, {});
+  fv::dson::chooseLayer(scene, surfaces, nullptr, rc.layer);
+  EXPECT_EQ(image("Makeup Base Color"), "/mine.jpg");
+  EXPECT_EQ(image("Makeup Weight"), "none");
+}
+
+const char* kMadeUp = R"({"extra":[{"type":"studio/material/daz_brick","channels":[
+  {"channel":{"id":"Diffuse Enable","type":"bool","current_value":true}},
+  {"channel":{"id":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/face_d.jpg"}},
+  {"channel":{"id":"Makeup Enable","type":"bool","current_value":true}},
+  {"channel":{"id":"Makeup Weight","type":"float","current_value":0.8,"image_file":"/mask.png"}},
+  {"channel":{"id":"Makeup Base Color","type":"color","current_value":[1,1,1],"image_file":"/lips.png"}}
+]}]})";
+
+// A lipstick's colour replaces its colour map over the weight map, and its weight is the panel's; a
+// skin tone recolours the base map against the tone reference, the scattering colour as well.
+TEST(Materials, AToneAndAMakeupColourLowerIntoTheBaseMap)
+{
+  const auto lips = fv::dson::parseSurface("Lips", channelsOf(kMadeUp));
+  ASSERT_TRUE(lips.makeup);
+  fv::mat::Edits e;
+  e.makeupColor = fv::mat::Rgb{0.6f, 0.05f, 0.1f};
+  e.makeupWeight = 0.5f;
+  const auto m  = fv::mat::lower(lips, e, {});
+  ASSERT_TRUE(m.requests[0].makeup);
+  EXPECT_EQ(m.requests[0].makeup->colorRel, "");
+  EXPECT_EQ(m.requests[0].makeup->weightRel, "/mask.png");
+  EXPECT_FLOAT_EQ(m.requests[0].makeup->weightFactor, 0.5f);
+  EXPECT_FLOAT_EQ(m.requests[0].makeup->tint[0], 0.6f);
+  EXPECT_EQ(fv::mat::lower(lips, {}, {}).requests[0].makeup->colorRel, "/lips.png");
+
+  fv::mat::Edits tone;
+  tone.tone         = fv::mat::Rgb{0.3f, 0.2f, 0.15f};
+  tone.toneStrength = 0.75f;
+  fv::mat::LowerOptions o;
+  o.toneReference = "/body_d.jpg";
+  o.skin          = fv::mat::SkinMode::eThin;
+  const auto face = fv::mat::lower(fv::dson::parseSurface("Face", channelsOf(kSkin)), tone, o);
+  int        toned = 0;
+  for(const fv::mat::TextureRequest& r : face.requests)
+    if(r.recolor)
+    {
+      toned++;
+      EXPECT_EQ(r.recolor->reference, "/body_d.jpg");
+      EXPECT_FLOAT_EQ(r.recolor->strength, 0.75f);
+      EXPECT_NE(fv::mat::requestKey(r).find("/body_d.jpg"), std::string::npos);
+    }
+  // the base colour and the thin skin's scattering colour
+  EXPECT_EQ(toned, 2);
+  // without a reference, against its own map
+  const auto own = fv::mat::lower(fv::dson::parseSurface("Face", channelsOf(kSkin)), tone, {});
+  ASSERT_TRUE(own.requests[0].recolor);
+  EXPECT_EQ(own.requests[0].recolor->reference, "/Runtime/Textures/face_d.jpg");
+  fv::mat::Edits merged;
+  merged.merge(tone);
+  merged.merge(e);
+  EXPECT_TRUE(merged.tone && merged.makeupColor && merged.makeupWeight && merged.toneStrength);
 }
 
 }  // namespace

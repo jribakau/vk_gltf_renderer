@@ -59,6 +59,10 @@ struct PresetChoice
 // came. Edits stay.
 PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous = {});
 
+// Which scene materials are in use: those a node that wasn't taken off draws with, and those no node
+// uses (the scene's own). Taken-off items' surfaces are not.
+std::vector<bool> liveMaterials(const SceneGraph& scene);
+
 // The scene materials a preset's (node chain, surface) lands on, by the rules above. An empty chain
 // (`@selection` alone) means every surface of the name. `stray`: set when the scene lacks the item the
 // chain ends at, so the surfaces are another item's; a preset there keeps the maps it would remove.

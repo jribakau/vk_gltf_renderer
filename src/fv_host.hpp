@@ -77,6 +77,18 @@
 //                                                `preset`. Material presets wait for the add-ons as well.
 //                                                "materials/<prop>".eyes = {rel, preset, own: [rel] (the add-on
 //                                                presets), ready (the add-ons are on), surfaces: ["m:N"]}
+//   material.skin   {prop, rel: string | null}   -> {job}: the same for the character's skin: its surfaces
+//                                                but the eyes and those of worn clothing, props and hair (a
+//                                                hair's brows and lashes are the character's; skin_materials.hpp).
+//                                                Drops the panel's colours on them (base colour, tone, recolour,
+//                                                makeup) and the makeup chosen. The job ends {state: "done",
+//                                                skin, changed}. A material preset that reaches the skin is
+//                                                recorded as the skin's `preset`
+//   material.makeup {prop, rel: string | null}   -> {job}: makeup laid over the skin on now: the channels the
+//                                                last makeup set go back (null: only that), then the preset's
+//                                                part on the skin; drops the panel's makeup colours. Ends {state:
+//                                                "done", makeup, changed}. "materials/<prop>".skin = {rel, preset,
+//                                                makeup, ready, surfaces: ["m:N"]}
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
 //                                                leaves the renderer's scene at the next composition, and a geograft composes
@@ -100,9 +112,10 @@
 //                                                "session" topic's features.dforceGpu says, and a scene file's
 //                                                "gpu" restores as live without it)
 //   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
-//                                                material presets, eyes (rel | null, once chosen), material
-//                                                edits, collision and dForce on/off, dForce's mode; restored
-//                                                after the add-ons: presets (eye-only ones as eyes), eyes, edits
+//                                                material presets, skin, eyes and makeup (rel | null, once
+//                                                chosen), material edits, collision and dForce on/off, dForce's
+//                                                mode; restored after the add-ons: presets (eye-only ones as
+//                                                eyes), skin, eyes, makeup, worn items' colours, edits
 //   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models')
 //   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
 //                                                whole scene, written at once -> {ok}

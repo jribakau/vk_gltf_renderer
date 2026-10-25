@@ -27,6 +27,8 @@
 
 #include <nvutils/logger.hpp>
 
+#include <figure/dson/skin_materials.hpp>
+
 #include "gltf_scene.hpp"
 #include "gltf_scene_editor.hpp"
 #include "renderer.hpp"
@@ -127,13 +129,15 @@ float numberOf(const Json& v, const char* key, float lo, float hi)
 void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
 {
   const bool drop = v.is_null();
-  if(key == "color" || key == "emissive" || key == "irisColor" || key == "scleraColor" || key == "recolor")
+  if(key == "color" || key == "emissive" || key == "irisColor" || key == "scleraColor" || key == "recolor" || key == "tone" || key == "makeupColor")
   {
-    std::optional<Rgb>& slot = key == "color"     ? e.color :
-                               key == "emissive"  ? e.emissive :
-                               key == "irisColor" ? e.irisColor :
-                               key == "recolor"   ? e.recolor :
-                                                    e.scleraColor;
+    std::optional<Rgb>& slot = key == "color"       ? e.color :
+                               key == "emissive"    ? e.emissive :
+                               key == "irisColor"   ? e.irisColor :
+                               key == "recolor"     ? e.recolor :
+                               key == "tone"        ? e.tone :
+                               key == "makeupColor" ? e.makeupColor :
+                                                      e.scleraColor;
     if(drop)
       slot.reset();
     else if(const auto c = parseHex(v))
@@ -179,6 +183,8 @@ void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
         {"emissiveIntensity", &fv::mat::Edits::emissiveIntensity, 0, 1000},
         {"irisStrength", &fv::mat::Edits::irisStrength, 0, 1},
         {"recolorStrength", &fv::mat::Edits::recolorStrength, 0, 1},
+        {"toneStrength", &fv::mat::Edits::toneStrength, 0, 1},
+        {"makeupWeight", &fv::mat::Edits::makeupWeight, 0, 1},
     };
     for(const Field& f : fields)
       if(key == f.name)
@@ -218,6 +224,10 @@ Json editedKeys(const fv::mat::Edits& e)
   add(e.scleraColor.has_value(), "scleraColor");
   add(e.recolor.has_value(), "recolor");
   add(e.recolorStrength.has_value(), "recolorStrength");
+  add(e.tone.has_value(), "tone");
+  add(e.toneStrength.has_value(), "toneStrength");
+  add(e.makeupColor.has_value(), "makeupColor");
+  add(e.makeupWeight.has_value(), "makeupWeight");
   return out;
 }
 
@@ -494,6 +504,7 @@ void FvMaterials::detach()
   m_waiting.clear();
   m_baking.clear();
   m_eyes = nullptr;
+  m_skinState = nullptr;
   if(!m_figure.empty())
     m_hooks.events->drop("materials/" + m_figure);
   m_figure.clear();
@@ -559,8 +570,11 @@ Json FvMaterials::set(const Json& args)
       if(scratch.scleraColor && !roles.sclera)
         throw std::runtime_error("scleraColor is for the white of an eye, and " + m.name + " is not one");
       // a model's materials take their edits as they are, with no image to bake the colour into
-      if(m_model && (scratch.recolor || scratch.recolorStrength))
-        throw std::runtime_error("recolor is for a figure's surfaces, and " + m.name + " belongs to a model");
+      if(m_model && (scratch.recolor || scratch.recolorStrength || scratch.tone || scratch.toneStrength))
+        throw std::runtime_error(std::string(scratch.tone || scratch.toneStrength ? "tone" : "recolor") + " is for a figure's surfaces, and " + m.name
+                                 + " belongs to a model");
+      if((scratch.makeupColor || scratch.makeupWeight) && (m_model || !m.surface.makeup))
+        throw std::runtime_error("makeupColor is for a surface with a makeup layer, and " + m.name + " has none");
     }
   }
   std::set<int> changed;
@@ -663,6 +677,13 @@ void FvMaterials::setEyes(Json eyes)
     m_hooks.events->patch("materials/" + m_figure, {{"eyes", m_eyes}});
 }
 
+void FvMaterials::setSkin(Json skin)
+{
+  m_skinState = std::move(skin);
+  if(m_scene && !m_model && !m_figure.empty())
+    m_hooks.events->patch("materials/" + m_figure, {{"skin", m_skinState}});
+}
+
 void FvMaterials::surfacesChanged(const std::set<int>& materials)
 {
   if(m_scene && !materials.empty())
@@ -696,11 +717,14 @@ void FvMaterials::refresh(const std::set<int>& materials)
   std::vector<fv::build::TextureRequest> missing;
   std::set<std::string>                  asked;
   std::set<int>                          shown;
+  // every skin surface tones against the same map, whichever of them changed
+  const std::string toneReference = fv::dson::toneReference(*m_scene);
   for(int mi : materials)
   {
     if(mi < 0 || mi >= int(m_count))
       continue;
-    m_options[mi].skin = m_skin;
+    m_options[mi].skin          = m_skin;
+    m_options[mi].toneReference = toneReference;
     const fv::Material& m = m_scene->materials[mi];
     const fv::mat::Lowered     lowered = fv::mat::lower(m.surface, m.edits, m_options[mi]);
     bool                       wait    = false;
@@ -900,6 +924,15 @@ Json FvMaterials::item(int index) const
   // the colour a hair (or any surface) is moved to, null when unset so a merge patch takes it away
   out["values"]["recolor"]         = m.edits.recolor ? Json(hexOf(*m.edits.recolor)) : Json(nullptr);
   out["values"]["recolorStrength"] = m.edits.recolorStrength.value_or(1.f);
+  out["values"]["tone"]            = m.edits.tone ? Json(hexOf(*m.edits.tone)) : Json(nullptr);
+  out["values"]["toneStrength"]    = m.edits.toneStrength.value_or(1.f);
+  // PBRSkin makeup: its colour once changed (null: as the preset made it) and its weight
+  if(s.makeup)
+  {
+    out["makeup"]                  = {{"mapped", !s.makeup->weightMap.empty() || !s.makeup->map.empty()}};
+    out["values"]["makeupColor"]   = m.edits.makeupColor ? Json(hexOf(*m.edits.makeupColor)) : Json(nullptr);
+    out["values"]["makeupWeight"]  = std::clamp(m.edits.makeupWeight.value_or(s.makeup->weight), 0.f, 1.f);
+  }
   return out;
 }
 
@@ -924,6 +957,8 @@ void FvMaterials::publish(const std::set<int>& materials, bool all)
     Json topic = {{"figure", m_figure}, {"items", items}};
     if(!m_eyes.is_null() && !m_model)
       topic["eyes"] = m_eyes;
+    if(!m_skinState.is_null() && !m_model)
+      topic["skin"] = m_skinState;
     m_hooks.events->snapshot("materials/" + m_figure, topic);
   }
   else if(!items.empty())

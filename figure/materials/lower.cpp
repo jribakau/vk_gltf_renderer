@@ -181,6 +181,19 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   // base colour: cutouts ride in its alpha, PBRSkin makeup is baked into it (glTF has one base
   // colour), blended in linear light
   std::optional<MakeupLayer> makeup = s.makeup ? s.makeup : hairTranslucency(s);
+  // the panel's makeup: a colour over a weight map replaces the colour map (a lipstick's shape is the
+  // weight map's); without one the colour map is the shape, and the colour tints it
+  if(s.makeup && (e.makeupColor || e.makeupWeight))
+  {
+    if(e.makeupColor)
+    {
+      if(!makeup->weightMap.empty())
+        makeup->map.clear();
+      makeup->color = *e.makeupColor;
+    }
+    if(e.makeupWeight)
+      makeup->weight = clamp(*e.makeupWeight, 0, 1);
+  }
   const bool anyMap = !s.base.map.empty() || !s.opacity.map.empty() || (makeup && (!makeup->map.empty() || !makeup->weightMap.empty()));
   Rgb        factor = baseColor;
   if(makeup)
@@ -192,9 +205,12 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     factor = lerp(factor, *e.irisColor, clamp(e.irisStrength.value_or(1.f), 0, 1));
   if(eye == EyeLayout::eSclera && e.scleraColor)
     factor = mul(factor, *e.scleraColor);
-  // a recolour: baked into the image when there is one, else the flat colour goes towards it
+  // a recolour: baked into the image when there is one, else the flat colour goes towards it. A
+  // skin tone is one against the figure's tone reference, or the surface's own map without one.
   std::optional<RecolorRequest> recolor;
-  if(e.recolor)
+  if(e.tone)
+    recolor = RecolorRequest{*e.tone, clamp(e.toneStrength.value_or(1.f), 0, 1), !opts.toneReference.empty() ? opts.toneReference : s.base.map};
+  else if(e.recolor)
     recolor = RecolorRequest{*e.recolor, clamp(e.recolorStrength.value_or(1.f), 0, 1)};
   if(recolor && !anyMap)
     factor = lerp(factor, recolor->color, recolor->strength);
@@ -412,12 +428,12 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       v /= hueMax;
     const Rgb scatterColor = t ? mul(tint.value_or(kWhite), t->reflectanceTint) : lerp(kWhite, hue, 0.25f);
     // the base map: a Translucency Color map is often a pale scattering map that washes the skin
-    // out lit from the front
+    // out lit from the front. A skin tone recolours it as it does the base colour.
     const std::string scatterMap = !s.base.map.empty() ? s.base.map : t ? t->map : std::string();
     const auto        scatterTexture = [&](const Rgb& color) -> Json {
       if(scatterMap.empty())
         return Json();
-      return makeup ? b.base(scatterMap, color, {}, makeup) : b.plain(scatterMap, true);
+      return makeup || recolor ? b.base(scatterMap, color, {}, makeup, std::nullopt, recolor) : b.plain(scatterMap, true);
     };
     // The same albedo for both modes. A map or makeup already carries the colour, so the factor
     // stays white and the shader does not apply it twice.

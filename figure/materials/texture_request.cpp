@@ -63,7 +63,7 @@ std::string requestKey(const TextureRequest& req)
   if(req.iris)
     key += "|ir:" + irisQuery(*req.iris);
   if(req.recolor)
-    key += "|rc:" + recolorQuery(*req.recolor);
+    key += "|rc:" + recolorQuery(*req.recolor) + ":" + req.recolor->reference;
   for(const std::string& layer : req.layers)
     key += "|ly:" + layer;
   return key;

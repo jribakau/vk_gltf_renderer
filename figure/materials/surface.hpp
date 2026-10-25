@@ -199,6 +199,15 @@ struct Edits
   // 1 when unset): baked into the base map, or the flat colour lerped when there is none
   std::optional<Rgb>         recolor;
   std::optional<float>       recolorStrength;
+  // a skin tone: the tone reference's mean (LowerOptions::toneReference) moved to this by
+  // toneStrength (0..1, 1 when unset), every skin surface by the same shift so their seams stay
+  // matched; baked into the base map
+  std::optional<Rgb>         tone;
+  std::optional<float>       toneStrength;
+  // PBRSkin makeup: its colour (a lipstick's; over a weight map it replaces the colour map) and its
+  // weight, 0..1. Only on a surface with a makeup layer.
+  std::optional<Rgb>         makeupColor;
+  std::optional<float>       makeupWeight;
 
   bool empty() const;
   // Fields set in `o` replace those here.

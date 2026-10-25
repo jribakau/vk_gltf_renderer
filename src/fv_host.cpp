@@ -58,6 +58,7 @@
 #include "fv_dforce_gpu.hpp"
 #endif
 #include <figure/dson/eye_materials.hpp>
+#include <figure/dson/skin_materials.hpp>
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
@@ -149,6 +150,15 @@ struct Loaded
     std::set<int> owned;
   };
   std::map<int, ItemColor> colors;
+  // the skin chosen (material.skin), as `eyes`, with what it changed and a mixed material preset
+  // that set skin surfaces since
+  std::optional<std::string> skin;
+  std::set<int>              skinOwned;
+  std::string                skinPreset;
+  // the makeup chosen (material.makeup), "" for the skin's own, and the channels it set, which the
+  // next choice takes off; a skin choice takes it off with the rest
+  std::optional<std::string> makeup;
+  fv::dson::PresetLayer      makeupLayer;
   // the add-ons its file lists are still going on; a restore waits for them, as it would otherwise
   // wear them a second time without their presets
   bool                               addonsPending = false;
@@ -422,9 +432,9 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   // ir=<iris r,g,b | ->|<strength>|<eye | iris>|<x,y,r;...>|<sclera r,g,b | ->, percent-encoded as a whole
   if(req.iris)
     url += "&ir=" + encodeComponent(fv::mat::irisQuery(*req.iris));
-  // rc=<r,g,b>|<strength>, percent-encoded as a whole
+  // rc=<r,g,b>|<strength>[|<reference source>], percent-encoded as a whole
   if(req.recolor)
-    url += "&rc=" + encodeComponent(fv::mat::recolorQuery(*req.recolor));
+    url += "&rc=" + encodeComponent(fv::mat::recolorQuery(*req.recolor) + (req.recolor->reference.empty() ? "" : "|" + source(req.recolor->reference)));
   // ly=<source>;<source>..., percent-encoded as a whole
   if(!req.layers.empty())
   {
@@ -1030,6 +1040,17 @@ struct FvHost::Impl
   Json wardrobeColor(const Json& args);
   Json applyItemColor(Prop& prop, int item, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
   void publishEyes(Prop& p);
+  // skin and makeup (fv_host.hpp material.skin, material.makeup): `rel` "" and no `doc` for the
+  // character's own
+  Json materialSkin(const Json& args);
+  Json materialMakeup(const Json& args);
+  Json applySkin(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
+  Json applyMakeup(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
+  void publishSkin(Prop& p);
+  std::set<int> wornSurfaces(const Loaded& f);
+  // a preset chosen for part of a figure, read on a worker and applied by `apply` once the add-ons are on
+  using ChoiceApply = std::function<Json(Prop&, const std::string& rel, const fv::dson::Json* doc)>;
+  Json choiceJob(const Json& args, const std::string& command, const std::string& part, ChoiceApply apply);
 
   // ---- lighting (fv_lighting.hpp), application thread only
   nvutils::ParameterRegistry* registry = nullptr;
@@ -1888,6 +1909,7 @@ void FvHost::Impl::compose()
         p.materials = makeMaterials(props[i]);
       p.materials->attach(p.id, &f.fig->loaded.scene, built, f.texturesFlipped, skinMode.load(), at);
       publishEyes(p);
+      publishSkin(p);
       nodes.materials     = at.materials;
       nodes.materialCount = int(f.fig->loaded.scene.materials.size());
       Json described = FvView::describeFigure(nodes, f.fig->loaded.scene, f.fig->loaded.root, f.nodeOf, f.fig->morphs ? f.fig->morphs->size() : 0);
@@ -2519,7 +2541,10 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
       startWear(f, std::move(requests), {}, [this, f] {
         f->addonsPending = false;
         if(const auto p = findProp(f->id); p && p->figure == f)
+        {
           publishEyes(*p);
+          publishSkin(*p);
+        }
         for(const auto& after : std::exchange(f->afterAddons, {}))
           after();
       });
@@ -3368,6 +3393,11 @@ Json FvHost::Impl::sceneState(const Json& args)
   // the eyes chosen, null for the character's own; none when nothing was chosen
   if(prop->figure->eyes)
     state["eyes"] = prop->figure->eyes->empty() ? Json(nullptr) : Json(*prop->figure->eyes);
+  // the same for the skin and the makeup
+  if(prop->figure->skin)
+    state["skin"] = prop->figure->skin->empty() ? Json(nullptr) : Json(*prop->figure->skin);
+  if(prop->figure->makeup)
+    state["makeup"] = prop->figure->makeup->empty() ? Json(nullptr) : Json(*prop->figure->makeup);
   if(prop->figure->collider)
     state["collision"] = prop->figure->collider->enabled();
   if(prop->figure->dforce)
@@ -3477,6 +3507,26 @@ Json FvHost::Impl::sceneRestore(const Json& args)
           problems.push_back("material preset " + fileStem(rel) + ": " + e.what());
         }
       }
+    // the skin, eyes and makeup chosen, over the presets and under the edits (a tone, an iris colour
+    // and a lipstick's are edits); the skin first, as it takes the makeup off
+    const auto restoreChoice = [&](const char* key, const char* what, auto apply) {
+      if(!args.contains(key) || !(args[key].is_string() || args[key].is_null()))
+        return;
+      const std::string rel = args[key].is_string() ? args[key].get<std::string>() : std::string();
+      try
+      {
+        std::shared_ptr<const fv::dson::Doc> doc;
+        if(!rel.empty() && !(doc = fig.store().load(rel)))
+          problems.push_back(std::string(what) + " " + fileStem(rel) + " isn't in the content library");
+        else
+          (this->*apply)(*prop, rel, doc ? &doc->json : nullptr, true);
+      }
+      catch(const std::exception& e)
+      {
+        problems.push_back(std::string(key) + ": " + e.what());
+      }
+    };
+    restoreChoice("skin", "the skin", &Impl::applySkin);
     // the eyes chosen, over the presets and under the edits (an iris colour is an edit)
     if(args.contains("eyes") && (args["eyes"].is_string() || args["eyes"].is_null()))
     {
@@ -3494,6 +3544,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         problems.push_back(std::string("eyes: ") + e.what());
       }
     }
+    restoreChoice("makeup", "the makeup", &Impl::applyMakeup);
     // each worn item's colour, over the presets and under the edits (a hair's recolour is an edit)
     for(const Json& w : args.value("worn", Json::array()))
     {
@@ -3948,6 +3999,14 @@ void FvHost::Impl::presetChangedEyes(Prop& prop, const std::string& rel, const s
   }
   if(colors)
     publishWardrobe(f);
+  const std::set<int> skin = fv::dson::skinSurfaces(f.fig->loaded.scene, wornSurfaces(f));
+  if(std::any_of(changed.begin(), changed.end(), [&](int i) { return skin.count(i) > 0; }))
+  {
+    f.skin.reset();
+    f.skinOwned.clear();
+    f.skinPreset = rel;
+    publishSkin(prop);
+  }
   const std::set<int> eyes = fv::dson::eyeSurfaces(f.fig->loaded.scene);
   if(std::none_of(changed.begin(), changed.end(), [&](int i) { return eyes.count(i) > 0; }))
     return;
@@ -3978,46 +4037,47 @@ void FvHost::Impl::publishEyes(Prop& p)
                         {"surfaces", surfaces}});
 }
 
-// material.eyes {prop, rel}: the preset is read on a worker, and applied once the figure's add-ons
-// (Genesis 9's eyes) are on. The job fails, changing nothing, for a prop that is not a figure, a
-// figure with no eyes, or a preset none of whose surfaces are its eyes.
-Json FvHost::Impl::materialEyes(const Json& args)
+// A preset chosen for part of a figure (material.eyes, material.skin, material.makeup) {prop, rel}:
+// read on a worker, and applied by `apply` on the application thread once the figure's add-ons
+// (Genesis 9's eyes and mouth) are on. The job fails, changing nothing, for a prop that is not a
+// figure, or when `apply` throws.
+Json FvHost::Impl::choiceJob(const Json& args, const std::string& command, const std::string& part, ChoiceApply apply)
 {
   if(!args.contains("rel") || !(args["rel"].is_string() || args["rel"].is_null()))
-    throw std::runtime_error("material.eyes wants rel: a library path, or null for the character's own eyes");
+    throw std::runtime_error(command + " wants rel: a library path, or null for the character's own");
   const std::string rel   = args["rel"].is_string() ? args["rel"].get<std::string>() : std::string();
   const uint64_t    jobId = ++jobs;
-  const std::string label = rel.empty() ? std::string("Eyes: the character's own") : "Eyes: " + fileStem(rel);
+  const std::string label = part + ": " + (rel.empty() ? std::string("the character's own") : fileStem(rel));
   job(jobId, {{"label", label}, {"state", "running"}});
   const auto fail = [this, jobId, label](const std::string& why) { job(jobId, {{"label", label}, {"state", "failed"}, {"error", why}}); };
   const auto prop = figureProp(args);
   if(!prop)
   {
-    fail("Eyes go on a figure: select one first.");
+    fail("Select a figure first.");
     return {{"job", jobId}};
   }
   std::shared_ptr<Loaded> target = prop->figure;
   // on the application thread, the add-ons on
-  const auto apply = [this, target, rel, jobId, label, fail](const std::optional<fv::dson::Json>& doc) {
+  const auto done = [this, target, rel, jobId, label, fail, apply](const std::optional<fv::dson::Json>& doc) {
     const auto p = findProp(target->id);
     if(!p || p->figure != target)
       return fail("the figure left the scene");
     try
     {
-      Json done     = applyEyes(*p, rel, doc ? &*doc : nullptr, false);
-      done["label"] = label;
-      done["state"] = "done";
-      job(jobId, done);
+      Json out     = apply(*p, rel, doc ? &*doc : nullptr);
+      out["label"] = label;
+      out["state"] = "done";
+      job(jobId, out);
     }
     catch(const std::exception& e)
     {
       fail(e.what());
     }
   };
-  auto choose = [this, target, rel, apply, fail] {
+  auto choose = [this, target, rel, done, fail] {
     if(rel.empty())
-      return apply(std::nullopt);
-    loaders.spawn([this, target, rel, apply, fail] {
+      return done(std::nullopt);
+    loaders.spawn([this, target, rel, done, fail] {
       try
       {
         auto doc = target->fig->store().load(rel);
@@ -4026,7 +4086,7 @@ Json FvHost::Impl::materialEyes(const Json& args)
         const auto preset = fv::dson::describePreset(doc->json);
         if(!preset || preset->kind != "material preset")
           throw std::runtime_error(fileStem(rel) + " is not a material preset.");
-        post([apply, body = doc->json] { apply(body); });
+        post([done, body = doc->json] { done(body); });
       }
       catch(const std::exception& e)
       {
@@ -4039,6 +4099,156 @@ Json FvHost::Impl::materialEyes(const Json& args)
   else
     choose();
   return {{"job", jobId}};
+}
+
+// material.eyes {prop, rel}: fails for a figure with no eyes, or a preset none of whose surfaces are its eyes.
+Json FvHost::Impl::materialEyes(const Json& args)
+{
+  return choiceJob(args, "material.eyes", "Eyes", [this](Prop& p, const std::string& rel, const fv::dson::Json* doc) { return applyEyes(p, rel, doc, false); });
+}
+
+// material.skin {prop, rel}: fails for a preset none of whose surfaces are the character's skin.
+Json FvHost::Impl::materialSkin(const Json& args)
+{
+  return choiceJob(args, "material.skin", "Skin", [this](Prop& p, const std::string& rel, const fv::dson::Json* doc) { return applySkin(p, rel, doc, false); });
+}
+
+// material.makeup {prop, rel}: as material.skin.
+Json FvHost::Impl::materialMakeup(const Json& args)
+{
+  return choiceJob(args, "material.makeup", "Makeup", [this](Prop& p, const std::string& rel, const fv::dson::Json* doc) { return applyMakeup(p, rel, doc, false); });
+}
+
+namespace {
+
+// A colour the panel gave a surface: what a skin or makeup choice takes away, as a kept tone would
+// make every skin the same. Roughness and the like stay. True when there was one.
+bool clearColours(fv::mat::Edits& e, bool makeupOnly)
+{
+  const bool had = e.makeupColor || e.makeupWeight || (!makeupOnly && (e.color || e.tone || e.toneStrength || e.recolor || e.recolorStrength));
+  e.makeupColor.reset();
+  e.makeupWeight.reset();
+  if(!makeupOnly)
+  {
+    e.color.reset();
+    e.tone.reset();
+    e.toneStrength.reset();
+    e.recolor.reset();
+    e.recolorStrength.reset();
+  }
+  return had;
+}
+
+}  // namespace
+
+// The surfaces of a figure's worn clothing, props and hair, which its skin leaves alone; a hair's
+// brows and lashes are the character's.
+std::set<int> FvHost::Impl::wornSurfaces(const Loaded& f)
+{
+  const fv::SceneGraph& scene = f.fig->loaded.scene;
+  std::set<int>         out;
+  for(const fv::WornItem& w : f.fig->items)
+  {
+    if(w.kind == "Anatomy")
+      continue;
+    for(int i : itemSurfaces(scene, w))
+    {
+      const fv::Material& m = scene.materials[size_t(i)];
+      std::string         name = m.name;
+      std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+      if(w.kind == "Hair" && (m.surface.kind == fv::mat::Kind::eLashes || name.find("brow") != std::string::npos))
+        continue;
+      out.insert(i);
+    }
+  }
+  return out;
+}
+
+// The skin `rel` on a figure, `doc` its preset (null, with `rel` "", for the character's own): the
+// skin surfaces back to the character's own, then the preset's part on them, so nothing of the skin
+// before stays; the makeup laid on it goes with it. Unless `keepEdits`, the panel's colours on them
+// go too (a tone sets the skin's mean). Throws, changing nothing, when nothing of the preset lands
+// on the skin.
+Json FvHost::Impl::applySkin(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits)
+{
+  Loaded&             f        = *prop.figure;
+  fv::SceneGraph&     scene    = f.fig->loaded.scene;
+  const std::set<int> surfaces = fv::dson::skinSurfaces(scene, wornSurfaces(f));
+  if(surfaces.empty())
+    throw std::runtime_error(prop.name + " has no skin to change.");
+  if(doc)
+  {
+    const std::set<int> targets = fv::dson::materialPresetTargets(*doc, scene);
+    if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
+      throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s skin.");
+  }
+  const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, f.skinOwned);
+  std::set<int>                changed = r.changed;
+  if(!keepEdits)
+  {
+    std::set<int> cleared = surfaces;
+    cleared.insert(f.skinOwned.begin(), f.skinOwned.end());
+    for(int i : cleared)
+      if(i >= 0 && i < int(scene.materials.size()) && clearColours(scene.materials[size_t(i)].edits, false))
+        changed.insert(i);
+  }
+  if(prop.materials)
+    prop.materials->surfacesChanged(changed);
+  f.skin      = rel;
+  f.skinOwned = r.owned;
+  f.skinPreset.clear();
+  // back to the baseline, the makeup is the skin's own
+  f.makeup.reset();
+  f.makeupLayer.clear();
+  f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
+  publishSkin(prop);
+  return {{"skin", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
+}
+
+// The makeup `rel` over the skin on now (null `doc`, `rel` "": the skin's own makeup): the channels
+// the last makeup set go back, then the preset's part on the skin goes over. Unless `keepEdits`, the
+// panel's makeup colours and weights go too. Throws, changing nothing, when nothing of the preset
+// lands on the skin.
+Json FvHost::Impl::applyMakeup(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits)
+{
+  Loaded&             f        = *prop.figure;
+  fv::SceneGraph&     scene    = f.fig->loaded.scene;
+  const std::set<int> surfaces = fv::dson::skinSurfaces(scene, wornSurfaces(f));
+  if(doc)
+  {
+    const std::set<int> targets = fv::dson::materialPresetTargets(*doc, scene);
+    if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
+      throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s skin.");
+  }
+  const fv::dson::LayerChoice r       = fv::dson::chooseLayer(scene, surfaces, doc, f.makeupLayer);
+  std::set<int>               changed = r.changed;
+  if(!keepEdits)
+    for(int i : surfaces)
+      if(clearColours(scene.materials[size_t(i)].edits, true))
+        changed.insert(i);
+  if(prop.materials)
+    prop.materials->surfacesChanged(changed);
+  f.makeup      = rel;
+  f.makeupLayer = r.layer;
+  f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
+  publishSkin(prop);
+  return {{"makeup", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
+}
+
+// "materials/<prop>".skin: {rel, preset, makeup, ready, surfaces} (fv_host.hpp material.skin)
+void FvHost::Impl::publishSkin(Prop& p)
+{
+  if(!p.figure || !p.materials)
+    return;
+  const Loaded& f        = *p.figure;
+  Json          surfaces = Json::array();
+  for(int i : fv::dson::skinSurfaces(f.fig->loaded.scene, wornSurfaces(f)))
+    surfaces.push_back("m:" + std::to_string(i));
+  p.materials->setSkin({{"rel", f.skin && !f.skin->empty() ? Json(*f.skin) : Json(nullptr)},
+                        {"preset", f.skinPreset.empty() ? Json(nullptr) : Json(f.skinPreset)},
+                        {"makeup", f.makeup && !f.makeup->empty() ? Json(*f.makeup) : Json(nullptr)},
+                        {"ready", !f.addonsPending},
+                        {"surfaces", surfaces}});
 }
 
 Json FvHost::Impl::lightingTopic() const
@@ -4708,6 +4918,8 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("material.reset", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).reset(args); }); });
   cmds.add("material.eyes", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialEyes(args); }); });
   cmds.add("wardrobe.color", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeColor(args); }); });
+  cmds.add("material.skin", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialSkin(args); }); });
+  cmds.add("material.makeup", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialMakeup(args); }); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
   cmds.add("pose.eyes", [impl](const Json& args) {
     return impl->onApp([impl, args] {

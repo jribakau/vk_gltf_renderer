@@ -20,31 +20,10 @@ bool isEyeSurface(const Material& m)
 
 std::set<int> eyeSurfaces(const SceneGraph& scene)
 {
-  // a node is gone when it or a node above it was taken off
-  const auto isGone = [&](int n) {
-    for(; n >= 0 && n < int(scene.nodes.size()); n = scene.nodes[size_t(n)].parent)
-      if(scene.nodes[size_t(n)].removed)
-        return true;
-    return false;
-  };
-  // materials no node uses count as the scene's own
-  std::vector<int> users(scene.materials.size(), 0), live(scene.materials.size(), 0);
-  for(size_t i = 0; i < scene.nodes.size(); i++)
-  {
-    const int mesh = scene.nodes[i].mesh;
-    if(mesh < 0 || mesh >= int(scene.meshes.size()))
-      continue;
-    const bool out = isGone(int(i));
-    for(int m : scene.meshes[size_t(mesh)].materials)
-      if(m >= 0 && m < int(scene.materials.size()))
-      {
-        users[size_t(m)]++;
-        live[size_t(m)] += out ? 0 : 1;
-      }
-  }
-  std::set<int> out;
+  const std::vector<bool> live = liveMaterials(scene);
+  std::set<int>           out;
   for(size_t i = 0; i < scene.materials.size(); i++)
-    if((users[i] == 0 || live[i] > 0) && isEyeSurface(scene.materials[i]))
+    if(live[i] && isEyeSurface(scene.materials[i]))
       out.insert(int(i));
   return out;
 }

@@ -58,13 +58,19 @@ std::string irisQuery(const IrisRequest& r);
 // 0.5..1.5), and its hue and chroma the target's plus half its own departure, scaled by its
 // lightness over the target's, so strands, roots and highlights stay. Blended in by `strength`, in
 // linear light; alpha is kept.
+//
+// With a `reference` (a skin tone) the mean is that image's instead, and a pixel keeps all of its
+// own hue and chroma departure: every image toned against the same reference moves by the same
+// shift, so the seams between a figure's skin maps stay matched and lips stay redder than cheeks.
 struct RecolorRequest
 {
   std::array<float, 3> color{1, 1, 1};  // linear
   float                strength = 1;
+  std::string          reference;  // library image; empty: the image's own mean
 };
 
-// The cooker's rc= value, before it is percent-encoded as a whole: <r,g,b>|<strength>
+// The cooker's rc= value, before it is percent-encoded as a whole: <r,g,b>|<strength>, then
+// |<reference source> when there is one (the host adds it: a source is the host's to encode).
 std::string recolorQuery(const RecolorRequest& r);
 
 struct TextureRequest
