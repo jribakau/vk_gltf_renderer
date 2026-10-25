@@ -143,8 +143,9 @@ of the current task** — fix it in the same change instead of only reporting it
 known-bad code or docs behind. ("Keep the docs true" below is the docs-specific instance of this.)
 
 - **Fix it now:** typos, stale/incorrect docs, dead code, obvious bugs, missing null checks, wrong
-  comments. Root-cause it (no symptom patches), prefer the elegant fix, and verify (build / test /
-  inspect) before claiming done.
+  comments. Root-cause it (no symptom patches), prefer the elegant fix, and make sure it builds
+  before claiming done. In Figure Viewer, tests are by request: see "Testing is by request" in the
+  app repository's `CLAUDE.md`.
 - **Ask first:** scope-expanding or architectural changes, public API / on-disk-format / behavior
   changes, anything destructive (deleting files, migrations, history rewrites), or anything that
   would break an **Invariant** above.
