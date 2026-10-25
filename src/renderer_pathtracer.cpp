@@ -231,6 +231,10 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
                 &m_pushConst.numSamples, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
   settings->add({.name = "ptFireflyClamp", .help = "PathTracer: Firefly clamp threshold", .callbackSuccess = reset}, &m_pushConst.fireflyClampThreshold, Persist::eYes);
+  settings->add({.name            = "ptFireflyClampStill",
+                 .help            = "PathTracer: Firefly clamp threshold for the frames that accumulate a still (0: ptFireflyClamp)",
+                 .callbackSuccess = reset},
+                &m_pushConst.fireflyClampStill, Persist::eYes);
   // Not persisted: a different value only changes the noise pattern, which nobody wants carried into the next session.
   settings->add({"ptSeed",
                  "PathTracer: Random sequence (0 = default); another value gives statistically independent noise, "

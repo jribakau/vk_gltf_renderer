@@ -753,22 +753,48 @@ struct FvHost::Impl
   std::atomic<uint64_t>    jobs{0};
   std::atomic<uint64_t>    notices{0};
 
-  // Runs `f` on the application thread and waits for it (from an HTTP thread).
+  // Runs `f` on the application thread and waits for it (from an HTTP thread). A task that has not
+  // started within 30 s is dropped and the caller told so; one that is running is waited for, however
+  // long, so no command is reported failed and then applied (a retry would apply it twice).
   template <class F>
   auto onApp(F f) -> decltype(f())
   {
     using R     = decltype(f());
     auto task   = std::make_shared<std::packaged_task<R()>>(std::move(f));
+    auto state  = std::make_shared<std::atomic<int>>(0);  // 0 queued, 1 running, 2 dropped
     auto result = task->get_future();
     {
       std::lock_guard lock(queueMutex);
       if(!accepting)
         throw std::runtime_error("the renderer is stopping");
-      queue.emplace_back([task] { (*task)(); });
+      queue.emplace_back([task, state] {
+        int queued = 0;
+        if(state->compare_exchange_strong(queued, 1))
+          (*task)();
+      });
     }
     if(result.wait_for(30s) != std::future_status::ready)
-      throw std::runtime_error("timed out waiting for the renderer");
+    {
+      int queued = 0;
+      if(state->compare_exchange_strong(queued, 2))
+        throw std::runtime_error("timed out waiting for the renderer; the command was dropped");
+      result.wait();  // started meanwhile: its result is the truth
+    }
     return result.get();
+  }
+
+  // No more work for the application thread: what is queued is dropped, and every HTTP thread
+  // waiting on it (onApp) wakes with an error instead of after its timeout. Called when the stream
+  // stops (before its server joins the threads those requests hold) and on detach.
+  void stopAccepting()
+  {
+    std::deque<std::function<void()>> dropped;
+    {
+      std::lock_guard lock(queueMutex);
+      accepting = false;
+      dropped.swap(queue);
+    }
+    dropped.clear();
   }
 
   std::string uniqueName(const std::string& name, const Prop* self) const;
@@ -2572,7 +2598,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       try
       {
         // an add-on whose node the figure already has is not put on twice
-        // by value: a timed-out onApp leaves the task queued after this loop moves on
+        // by value: a timed-out onApp drops its task, but one already running finishes after this loop moves on
         if(!request.name.empty() && onApp([this, target, name = request.name] {
              return inScene(target)
                     && std::any_of(target->fig->items.begin(), target->fig->items.end(),
@@ -4272,11 +4298,15 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // whether the renderer is still refining a still, for an image export that waits for it
   cmds.add("render.status", [impl](const Json&) {
     return impl->onApp([impl] {
+      const VkExtent2D size = impl->renderer->renderSize();
       return Json{{"refining", impl->renderer->isRefiningStill()},
                   {"still", impl->renderer->isStill()},
                   {"converged", impl->renderer->isStillConverged()},
                   {"complete", impl->renderer->accumulationComplete()},
-                  {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer}};
+                  {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer},
+                  // the frame's size: a /size lands before the next frame, and until then the rest is the old frame's
+                  {"width", size.width},
+                  {"height", size.height}};
     });
   });
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingSet(args); }); });
@@ -4316,6 +4346,8 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     for(const auto& e : events)
       impl->input.push_back(e);
   });
+  // the stream stops before this element detaches: its server joins the HTTP threads, which must not wait on this queue
+  s.protocol->setStopHook([impl] { impl->stopAccepting(); });
   // The gizmo moves, turns and scales a selected prop (object picking), and poses a figure's bones
   // through its rig (bone picking), so limits and formulas apply.
   auto hasKind = [](const fv::pose::PoseBone& pb, fv::pose::ChannelKind kind) {
@@ -4384,14 +4416,8 @@ void FvHost::onAttach(nvapp::Application* app)
 void FvHost::onDetach()
 {
   Impl& s = *m_impl;
-  std::deque<std::function<void()>> dropped;
-  {
-    std::lock_guard lock(s.queueMutex);
-    s.accepting = false;
-    dropped.swap(s.queue);
-  }
-  // a worker waiting on one of these (onApp) wakes now, with an error, instead of after its timeout
-  dropped.clear();
+  s.stopAccepting();
+  s.protocol->setStopHook({});
   s.loadGeneration++;  // loads still running drop their result
   textureCalls().stopAll();  // and don't wait out a cook
   s.loaders.joinAll();

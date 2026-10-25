@@ -635,10 +635,9 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                     .resetFrame = [this]() { resetFrame(); },
                     .saveScreenshot =
                         [this](const std::filesystem::path& filename) {
+                          // the next frame is drawn without its overlays and saved once submitted (onPostRender)
                           if(m_app)
-                          {
-                            saveViewportImage(filename);
-                          }
+                            m_screenshotPending = filename;
                         },
                     .saveUiScreenshot =
                         [this](const std::filesystem::path& filename) {
@@ -1222,7 +1221,14 @@ void GltfRenderer::updateSampleCaptures()
 // its copy on the same queue and waits for it, so it sees this frame's tonemapped image.
 void GltfRenderer::onPostRender()
 {
-  if(m_sampleCapture.pending.empty() || !m_app)
+  if(!m_app)
+    return;
+  if(!m_screenshotPending.empty())
+  {
+    saveViewportImage(m_screenshotPending);
+    m_screenshotPending.clear();
+  }
+  if(m_sampleCapture.pending.empty())
     return;
   saveViewportImage(m_sampleCapture.pending);
   m_sampleCapture.pending.clear();
@@ -1732,7 +1738,11 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
         dlss->evaluateNr(cmd);
       }
 #endif
-  silhouette(cmd);
+  // The overlays go into the tonemapped image; a frame a screenshot takes is drawn without them
+  // (the stream shows that one frame bare, the next has them again)
+  const bool overlays = m_screenshotPending.empty();
+  if(overlays)
+    silhouette(cmd);
   updateSampleCaptures();  // --outputSamples: the image is final for this frame
   // KHR_interactivity hover detection: record this frame's cursor readback after silhouette's own
   // read of eImgSelection (see HoverPicker::requestReadback's comment for why that ordering avoids
@@ -1763,7 +1773,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   }
   // The grid and transform gizmo are drawn into the frame. Benchmarks keep them out (they would
   // change the measured image); a headless --stream is the native viewport, so the grid shows there.
-  if(!isBenchmarkMode())
+  if(!isBenchmarkMode() && overlays)
   {
     renderVisualHelpers(cmd);
   }

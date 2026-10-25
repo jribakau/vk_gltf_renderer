@@ -329,6 +329,8 @@ struct PathtracePushConstant
   int             frameCount            = 0;       // Frame number
   float           fireflyClampThreshold = 10.f;    // Firefly clamp threshold
   float           texGradScale          = 0.f;     // Ray-footprint gradient scale
+  float           fireflyClampStill     = 0.f;     // Clamp for the frames that accumulate a still (0: fireflyClampThreshold)
+  int             _pad0                 = 0;       // keeps mouseCoord 8-byte aligned on both sides
   int             numSamples            = 1;       // Number of samples per pixel per frame
   int             totalSamples          = 0;       // Total samples accumulated so far
   float           focalDistance         = 0.0f;    // Focal distance for depth of field

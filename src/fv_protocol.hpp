@@ -55,6 +55,15 @@ public:
   // `hello` and the "session" topic, so an app shows only what the renderer has.
   void setFeatures(fv::Json features);
 
+  // Called by stop(): the server is about to join its threads, so whoever holds a request waiting on
+  // the application thread must let it go. Set and called on the application thread.
+  void setStopHook(std::function<void()> hook) { m_stop = std::move(hook); }
+  void stop()
+  {
+    if(m_stop)
+      m_stop();
+  }
+
   // Adds the routes. `running` turns false when the server stops; open event streams end then.
   void registerRoutes(httplib::Server& http, const std::atomic<bool>& running);
 
@@ -62,5 +71,6 @@ private:
   fv::CommandRegistry                         m_commands;
   fv::EventHub                                m_events;
   std::function<void(const fv::Json& events)> m_input;
+  std::function<void()>                       m_stop;
   fv::Json                                    m_features = fv::Json::object();
 };

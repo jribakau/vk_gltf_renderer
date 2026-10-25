@@ -211,7 +211,14 @@ void FrameStream::onDetach()
   Impl& s = *m_impl;
   if(s.running.exchange(false))
   {
+    if(s.info.stopping)
+      s.info.stopping();
     s.http.stop();
+    // the encoder tests `running` under rawMutex: taking the lock here means it has either seen the
+    // change or is blocked in its wait, where the notify reaches it (no lost wakeup)
+    {
+      std::lock_guard lock(s.rawMutex);
+    }
     s.rawCv.notify_all();
     s.jpgCv.notify_all();
     s.wakeCv.notify_all();

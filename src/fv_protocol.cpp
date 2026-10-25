@@ -32,7 +32,7 @@ namespace {
 // 3: the upstream merge of 2026-10-24 renamed ptMaxFrames to ptMaxSamples and optixAutoDenoiseInterval
 // to optixAutoDenoiseSpp, which the app sends.
 // 5: dforce.mode. 6: wardrobe.collision, and the wardrobe topic's collision state.
-constexpr int kProtocolVersion = 6;
+constexpr int kProtocolVersion = 7;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

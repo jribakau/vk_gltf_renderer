@@ -57,6 +57,8 @@
 //   morph.set       {prop, values: {name: value}}   coalesced, one setMany per frame
 //   morph.reset     {prop}
 //   render.mode     {mode: "raster" | "rtx", skin?: "volume" | "thin"}
+//   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
+//                                                frame's size (a /size lands before the next frame)
 //   material.set    {prop, material, values}     edit a surface (fv_materials.hpp); material.reset {prop, material?}
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item

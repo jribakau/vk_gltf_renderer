@@ -268,7 +268,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // Charge the in-volume segment up to this hit before the front-face escape test, material
     // evaluation or emission. A scatter returns here, so a surface the walk never reaches is not
     // shaded. A walk that survives to an eyeball or a tooth has paid for the trip, and the
-    // front-face clear below then drops the medium.
+    // front-face clear below then drops the medium. This is the segment's one charge: what reaches
+    // the surface -- its emission included -- comes through the medium's transmittance once, and
+    // nothing below may charge it again (a second call squared the transmittance of every
+    // absorbing medium and of a walk's refractive exit).
     {
       PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
       if(volumeStep != PathStepResult.eOutOfVolume)
@@ -295,11 +298,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Shadow catcher: invisible plane that shows only shadows for compositing
       if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
       {
-        // The medium in front of the plane, as for a mesh (see below): the ray may scatter before
-        // it reaches the catcher, and the catcher's shadow ray starts in that medium.
-        PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
-        if(volumeStep != PathStepResult.eOutOfVolume)
-          return volumeStep;
+        // The medium in front of the plane was charged above, as for a mesh; the catcher's shadow
+        // ray starts in it.
         float3 shadowExtinction = float3(0.0F);
 #if GLTF_USE_VOLUME
         shadowExtinction = volumeExtinction(pt.volumeMedium);
@@ -503,15 +503,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
     }
 #endif
-
-    //-----------------------------------------------------------------------
-    // The medium in front of the surface
-    //-----------------------------------------------------------------------
-    // Before anything the surface gives: the ray may scatter on its way and never reach it, and what
-    // does reach it -- its emission included -- comes through the medium's transmittance.
-    PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
-    if(volumeStep != PathStepResult.eOutOfVolume)
-      return volumeStep;  // Skip the surface bounce if the ray is still in the volume (ray is scattered)
 
     //-----------------------------------------------------------------------
     // Adding emissive
@@ -884,11 +875,22 @@ SampleResult samplePixel(IRaytracer raytracer,
 
   SampleResult sampleResult = pathTrace(raytracer, ray, seed);
 
-  // Removing fireflies (threshold <= 0 disables the clamp)
+  // A non-finite sample would stick in the accumulation for the rest of the still and reach the
+  // denoiser: it is dropped (the clamp below passes NaN, and Inf times 0 is NaN in the mean)
+  if(any(isnan(sampleResult.radiance.xyz)) || any(isinf(sampleResult.radiance.xyz)))
+    sampleResult.radiance.xyz = float3(0.0F);
+
+  // Removing fireflies (threshold <= 0 disables the clamp). The clamp biases the mean wherever rare
+  // bright paths carry the light (a small emitter in a glossy reflection, a caustic), so a frame that
+  // accumulates a still may use its own, looser threshold (fireflyClampStill; 0: the same): a still
+  // has its samples and its denoiser against the outliers, where a DLSS frame has one sample.
+  float threshold = pushConst.fireflyClampThreshold;
+  if(pushConst.fireflyClampStill > 0.0F && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    threshold = pushConst.fireflyClampStill;
   float lum = dot(sampleResult.radiance.xyz, float3(1.0F / 3.0F));
-  if(pushConst.fireflyClampThreshold > 0.0F && lum > pushConst.fireflyClampThreshold)
+  if(threshold > 0.0F && lum > threshold)
   {
-    sampleResult.radiance *= pushConst.fireflyClampThreshold / lum;
+    sampleResult.radiance *= threshold / lum;
   }
 
   return sampleResult;

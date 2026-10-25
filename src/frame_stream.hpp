@@ -21,8 +21,9 @@
 
 //
 // Headless frame server (--stream): a host application embeds this renderer as a render process.
-// Every frame the tonemapped output is copied to the CPU, JPEG-encoded (libjpeg-turbo) on a worker
-// thread and pushed to HTTP clients as a multipart/x-mixed-replace (MJPEG) stream, which a browser
+// Every frame the tonemapped output is copied into one of a ring of host-visible buffers, which a
+// worker thread JPEG-encodes in place (libjpeg-turbo; no copy of the pixels on the application
+// thread) and pushes to HTTP clients as a multipart/x-mixed-replace (MJPEG) stream, which a browser
 // <img> displays as is. The host drives everything else (camera, scene, settings) over --mcp.
 //
 // Changing frames are encoded with 4:2:0 chroma, which halves the encode time. Once the image
@@ -103,6 +104,10 @@ struct FrameStreamCreateInfo
   // Adds a host's own routes before the server starts. `running` turns false when it stops, which
   // is when long-lived responses (event streams) must end. Optional.
   std::function<void(httplib::Server&, const std::atomic<bool>& running)> routes;
+
+  // Called first when the stream stops, before the server joins its threads: a request a host holds
+  // waiting on the application thread (a command) must end now, not at its own timeout. Optional.
+  std::function<void()> stopping;
 };
 
 class FrameStream : public nvapp::IAppElement

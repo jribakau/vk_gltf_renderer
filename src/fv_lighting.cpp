@@ -417,6 +417,11 @@ double tmExposure(const std::string& method, double exposure)
 // Reconstruction smears still are. The renderer's own calibration (`calibrateFireflyClamp`, from the
 // environment's peak) dulls catchlights on a figure.
 constexpr double kFireflyClamp = 16.0;
+// The frames that accumulate a still clamp four times looser: the clamp biases the converged mean
+// wherever rare bright paths carry the light (the sun in a rough glossy reflection, a caustic, light
+// to the iris through the eye's moisture), and a still has its samples and the denoiser against
+// the outliers one DLSS sample cannot afford.
+constexpr double kFireflyClampStill = 4.0 * kFireflyClamp;
 
 int tmMethod(const std::string& method)
 {
@@ -532,6 +537,7 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       // the renderer recalibrates this on every load, so the host drops it from what it has applied
       // after a load or an environment change and sends it again
       {"ptFireflyClamp", kFireflyClamp / tmExposure(t.method, t.exposure)},
+      {"ptFireflyClampStill", kFireflyClampStill / tmExposure(t.method, t.exposure)},
       {"rasterShadows", s.sun.enabled && s.sun.shadows},
       {"shadowMapSize", s.shadow.size},
       {"shadowContactHardening", s.shadow.contactHardening},

@@ -810,6 +810,9 @@ private:
     int                   lastSource{-1};   // DisplayBuffer of the previous frame
     std::filesystem::path pending;          // Saved in onPostRender, once the frame is submitted
   } m_sampleCapture;
+  // `screenshot`: saved in onPostRender from a frame drawn without the selection silhouette, the
+  // grid, the gizmo and the helper lines, which otherwise go into the tonemapped image
+  std::filesystem::path m_screenshotPending;
   bool                  m_envPreviewPending{false};  // Record a colour-only re-bake into this frame
   bool                  m_envCommitOwed{false};      // Previewed at least once; owes a commit once the edits stop
   bool                  m_envOwnedByBaker{false};    // hdrIbl currently points at EnvBaker's image, not a loaded file

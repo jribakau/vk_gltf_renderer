@@ -666,6 +666,7 @@ auto main(int argc, char** argv) -> int
           .upload    = [r](std::string bytes) { return r->blobs().put(std::move(bytes)); },
           .token     = fvToken,
           .routes    = [protocol](httplib::Server& http, const std::atomic<bool>& running) { protocol->registerRoutes(http, running); },
+          .stopping  = [protocol] { protocol->stop(); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
