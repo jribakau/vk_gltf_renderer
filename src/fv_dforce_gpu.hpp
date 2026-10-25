@@ -28,13 +28,13 @@
 // a step costs the frame its GPU time; the proper pipelining into the renderer's frame is left
 // for when it has been measured.
 //
-// Not done here: the cloth does not collide with itself, vertices keep no clearance budgets or
-// contact caches (every free vertex looks around on every pass; the GPU has the threads for it), a
-// vertex lost inside a limb is not put back nor held on its face between passes (the CPU solver's
-// recoverLost and holdContacts), and the kinematic vertices move along straight lines within a
-// frame (the host sweeps them along their bones between frames). What the two share: the model,
-// the tethers of partial strength, the sweeps over the stretch edges, the start separated from the
-// body, and the sweep after a collision pass.
+// Not done here: the cloth does not collide with itself, vertices keep no clearance budgets (every
+// free vertex looks around on every pass; the GPU has the threads for it), and the kinematic
+// vertices move along straight lines within a frame (the host sweeps them along their bones
+// between frames). What the two share: the model, the tethers of partial strength, the sweeps over
+// the stretch edges, the start separated from the body, the sweep after a collision pass, a vertex
+// lost behind a face of a lower layer put back at a frame's start and a resting vertex held on its
+// face every substep (recoverMain, holdMain).
 
 #include <memory>
 #include <vector>

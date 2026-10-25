@@ -9,6 +9,7 @@
 
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -61,5 +62,11 @@ struct DforceData
 std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId,
                                         const Doc& geometryDoc, const Json& geometry,
                                         const std::map<std::string, Channels>& overrides);
+
+// Settings for a mesh whose file carries none, as DAZ Studio's "Add dForce Modifier: Dynamic
+// Surface" gives it: a dynamic surface at the default values on every vertex (the collision layer
+// as given; DAZ's default is 0), over the cage's polygon loops (polygon i is
+// polyVerts[polyStart[i] .. polyStart[i + 1])).
+std::shared_ptr<DforceData> defaultDforce(int vertexCount, std::span<const int32_t> polyStart, std::span<const int32_t> polyVerts, int layer = 0);
 
 }  // namespace fv::dson

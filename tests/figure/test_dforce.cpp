@@ -13,6 +13,7 @@
 #include <figure/dforce/skin.hpp>
 #include <figure/dforce/solver.hpp>
 #include <figure/dson/dforce.hpp>
+#include <figure/figure.hpp>
 #include <figure/morph/morph_set.hpp>
 
 namespace {
@@ -632,6 +633,39 @@ TEST(Dforce, aWornItemWithoutSimulationSettingsIsACollider)
   const float onBody = rig(false);
   EXPECT_GT(onBody, 0.f);
   EXPECT_LT(onBody, 1.0f);
+}
+
+TEST(Dforce, anItemWithoutSimulationSettingsCanBeMadeCloth)
+{
+  // a worn mesh whose file gives no dForce settings: switched on, it simulates at the defaults over
+  // the cage's polygons, at the strength asked; switched off, a file's dynamic surface is held
+  const Grid g    = grid(4, 3);
+  const auto mesh = sceneMesh(g, false);
+  ASSERT_GT(mesh.geo->cagePolyStart.size(), 1u);
+  EXPECT_FALSE(clothSettings(*mesh.geo, nullptr, std::nullopt, 1.f));
+  const auto cloth = clothSettings(*mesh.geo, nullptr, true, 0.5f);
+  ASSERT_TRUE(cloth);
+  EXPECT_TRUE(cloth->simulated());
+  EXPECT_EQ(cloth->polyStart.size(), size_t(16 + 1));
+  ASSERT_EQ(cloth->strength.size(), g.pos.size() / 3);
+  for(float s : cloth->strength)
+    EXPECT_NEAR(s, 0.5f, 1e-6);
+  EXPECT_NEAR(cloth->stretch[0], 0.8f, 1e-6);
+  // a file's own settings, held and let go
+  const auto file = sceneMesh(g, true).dforce;
+  ASSERT_TRUE(file && file->simulated());
+  EXPECT_EQ(clothSettings(*mesh.geo, file, std::nullopt, 1.f), file);
+  const auto held = clothSettings(*mesh.geo, file, false, 1.f);
+  ASSERT_TRUE(held);
+  EXPECT_FALSE(held->simulated());
+  EXPECT_TRUE(held->freeze);
+  const auto scaled = clothSettings(*mesh.geo, file, true, 0.25f);
+  ASSERT_TRUE(scaled && scaled->simulated());
+  EXPECT_NEAR(scaled->strength[0], 0.25f, 1e-6);
+  // no polygons: nothing to simulate
+  fv::mesh::BuiltMesh bare;
+  bare.dsonVertexCount = 3;
+  EXPECT_FALSE(clothSettings(bare, nullptr, true, 1.f));
 }
 
 TEST(Dforce, liveModeDrapesThenStepsOnlyWhileSomethingMoves)

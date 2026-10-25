@@ -80,8 +80,9 @@ struct DforceModel
   int*        softVerts;  // the free vertices of partial strength, tethered to where the pose would put them
   float*      attAlpha;   // each one's tether compliance, by vertex index (0 for the rest)
   float*      lamAtt;     // and its multiplier, by soft index
+  int*        contact;    // the face each free vertex rests on (set by the last collision pass, or a recovery), or -1
   uint        nv, numKinematic, numFree, numEdges, numTris, cellMask, numSoft, pad0;
-  float       cellSize, depth, cap, maxSpeed, searchReach, pad1;
+  float       cellSize, depth, cap, maxSpeed, searchReach, recoverDepth;
 };
 
 struct DforcePushConstant

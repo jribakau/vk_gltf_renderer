@@ -358,6 +358,11 @@ BuiltMesh build(const MeshInput& m)
   out.dsonVertexCount = nv;
   out.polyCount       = std::max(np, 0);
   out.cagePositions   = m.positions;
+  if(np > 0)
+  {
+    out.cagePolyStart = m.polyStart;
+    out.cagePolyVerts = m.polyVerts;
+  }
   const std::vector<int32_t> uvOfCorner = cornerUvs(m);
 
   // the faces drawn: the cage's polygons, or the refined quads with the cage polygon each came from

@@ -371,4 +371,40 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
   return out;
 }
 
+std::shared_ptr<DforceData> defaultDforce(int vertexCount, std::span<const int32_t> polyStart, std::span<const int32_t> polyVerts, int layer)
+{
+  const Surface d;
+  const size_t  nv  = size_t(std::max(0, vertexCount));
+  auto          out = std::make_shared<DforceData>();
+  out->kind         = DforceKind::eDynamic;
+  out->strength.assign(nv, d.strength);
+  out->stretch.assign(nv, d.stretch);
+  out->shear.assign(nv, d.shear);
+  out->bend.assign(nv, d.bend);
+  out->buckling.assign(nv, d.buckling);
+  out->bucklingRatio.assign(nv, d.bucklingRatio);
+  out->density.assign(nv, d.density);
+  out->contraction.assign(nv, d.contraction);
+  out->damping.assign(nv, d.damping);
+  out->friction.assign(nv, d.friction);
+  out->offset.assign(nv, d.offset);
+  out->layer.assign(nv, int16_t(layer));
+  out->selfCollide.assign(nv, d.selfCollide ? 1 : 0);
+  out->surfaceVisible.assign(nv, 1);
+  out->surfaceCollide.assign(nv, d.collide ? 1 : 0);
+  out->polyStart.assign(1, 0);
+  for(size_t p = 0; p + 1 < polyStart.size(); p++)
+  {
+    const size_t at = out->polyVerts.size();
+    for(int32_t k = polyStart[p]; k < polyStart[p + 1]; k++)
+      if(polyVerts[size_t(k)] >= 0 && polyVerts[size_t(k)] < vertexCount)
+        out->polyVerts.push_back(polyVerts[size_t(k)]);
+    if(out->polyVerts.size() - at < 2)
+      out->polyVerts.resize(at);
+    else
+      out->polyStart.push_back(int32_t(out->polyVerts.size()));
+  }
+  return out;
+}
+
 }  // namespace fv::dson

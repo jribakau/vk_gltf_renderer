@@ -523,6 +523,30 @@ int main(int argc, char** argv)
           throw std::runtime_error("no such item to remove");
         loaded->settle();
       }
+      else if(step.contains("cloth"))
+      {
+        // {"cloth": {"item": label substring, "on": true | false | null, "strength": 1}}: dForce on
+        // one worn item as the Wardrobe row sets it
+        if(!loaded)
+          throw std::runtime_error("cloth before a figure loads");
+        const Json&         c    = step["cloth"];
+        const std::string   what = c.value("item", "");
+        std::optional<bool> on;
+        if(c.contains("on") && c["on"].is_boolean())
+          on = c["on"].get<bool>();
+        int found = 0;
+        for(const fv::WornItem& w : loaded->items)
+          if(w.label.find(what) != std::string::npos)
+          {
+            const auto changed = loaded->setItemCloth(w.id, on, c.value("strength", 1.f));
+            const auto state   = loaded->clothOf(w);
+            std::cerr << "cloth " << w.label << ": " << changed.size() << " mesh(es) changed, able " << state.able << " native " << state.native
+                      << " on " << state.on << " strength " << state.strength << "\n";
+            found++;
+          }
+        if(!found)
+          throw std::runtime_error("no worn item matches \"" + what + "\"");
+      }
       else if(step.contains("fit"))
       {
         if(!loaded)

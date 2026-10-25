@@ -588,6 +588,97 @@ bool Figure::removeItem(int id)
   return true;
 }
 
+std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
+                                                      std::optional<bool> on, float strength, int layer)
+{
+  const bool fileSimulates = file && file->simulated();
+  const bool simulate      = on ? *on : fileSimulates;
+  if(!simulate)
+  {
+    if(!fileSimulates)
+      return file;
+    // the file's dynamic surface, held: it conforms and the cloth over it collides with it
+    auto held    = std::make_shared<dson::DforceData>(*file);
+    held->freeze = true;
+    return held;
+  }
+  // as the file has it, untouched
+  if(fileSimulates && !on && strength >= 1.f)
+    return file;
+  std::shared_ptr<dson::DforceData> data;
+  if(file && file->hasPolygons())
+    data = std::make_shared<dson::DforceData>(*file);
+  else if(geo.cagePolyStart.size() > 1)
+    data = dson::defaultDforce(geo.dsonVertexCount, geo.cagePolyStart, geo.cagePolyVerts, layer);
+  else
+    return file;
+  data->freeze  = false;
+  data->visible = true;
+  if(data->kind == dson::DforceKind::eStatic)
+    data->kind = dson::DforceKind::eDynamic;
+  const float s = std::clamp(strength, 0.f, 1.f);
+  for(float& w : data->strength)
+    w *= s;
+  return data;
+}
+
+std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float strength)
+{
+  const auto it = std::find_if(items.begin(), items.end(), [&](WornItem& i) { return i.id == id; });
+  if(it == items.end())
+    return {};
+  it->cloth.on       = on;
+  it->cloth.strength = std::clamp(strength, 0.f, 1.f);
+  // an item given settings here joins the top collision layer the figure's garments use, so it
+  // keeps the side of each it started on (a belt over the skirt, a bra under the shirt) rather than
+  // being pushed under a garment on a higher layer
+  int layer = 0;
+  for(const Mesh& mesh : loaded.scene.meshes)
+    if(mesh.dforce && mesh.dforce->hasPolygons())
+      for(int16_t l : mesh.dforce->layer)
+        layer = std::max<int>(layer, l);
+  std::vector<int> changed;
+  for(int m : it->meshes)
+  {
+    if(m < 0 || size_t(m) >= loaded.scene.meshes.size())
+      continue;
+    Mesh& mesh = loaded.scene.meshes[size_t(m)];
+    if(!mesh.geo)
+      continue;
+    // the file's own settings, kept the first time the user changes this item
+    if(!it->fileDforce.count(m))
+      it->fileDforce[m] = mesh.dforce;
+    auto next = clothSettings(*mesh.geo, it->fileDforce[m], on, it->cloth.strength, layer);
+    if(next != mesh.dforce)
+    {
+      mesh.dforce = std::move(next);
+      changed.push_back(m);
+    }
+  }
+  return changed;
+}
+
+ClothState Figure::clothOf(const WornItem& item) const
+{
+  ClothState s;
+  s.strength = item.cloth.strength;
+  for(int m : item.meshes)
+  {
+    if(m < 0 || size_t(m) >= loaded.scene.meshes.size())
+      continue;
+    const Mesh& mesh = loaded.scene.meshes[size_t(m)];
+    if(!mesh.geo || mesh.geo->cagePolyStart.size() < 2)
+      continue;
+    s.able          = true;
+    const auto file = item.fileDforce.count(m) ? item.fileDforce.at(m) : mesh.dforce;
+    if(file && file->hasPolygons())
+      s.native = true;
+    if(mesh.dforce && mesh.dforce->simulated())
+      s.on = true;
+  }
+  return s;
+}
+
 bool Figure::setItemVisible(int id, bool visible)
 {
   const auto it = std::find_if(items.begin(), items.end(), [&](WornItem& i) { return i.id == id; });

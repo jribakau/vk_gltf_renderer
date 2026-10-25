@@ -11,6 +11,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <atomic>
 #include <string>
@@ -65,6 +66,17 @@ struct WornItem
   // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
   // (the file's modifier, or defaults for clothing): empty for hair, anatomy and props without one
   std::map<int, dson::Smoothing> collision;
+  // dForce on this item as the user set it (Figure::setItemCloth): whether its meshes simulate
+  // (unset: as the file says, a Dynamic Surface does and anything else conforms) and a dynamics
+  // strength that scales the file's weights, or is every vertex's for an item the file gave none
+  struct Cloth
+  {
+    std::optional<bool> on;
+    float               strength = 1.f;
+  };
+  Cloth cloth;
+  // each mesh's settings as its file had them (null: none), kept once the user first changes them
+  std::map<int, std::shared_ptr<const dson::DforceData>> fileDforce;
   // foot channels it set on the figure (a heel poses the feet), and the values they had before
   struct FootSet
   {
@@ -72,6 +84,24 @@ struct WornItem
     double      value = 0, before = 0;
   };
   std::vector<FootSet> footSet;
+};
+
+// The settings a worn mesh simulates with, as the user's choice makes them: `on` unset keeps what
+// the file says (a Dynamic Surface drapes, anything else conforms), true drapes the mesh (at the
+// defaults of DAZ Studio's "Add dForce Modifier" when the file gives none, over the cage's polygon
+// loops), false leaves it conforming (a file's dynamic surface held frozen, so it still collides).
+// `strength` scales the weights; `layer` is the collision layer settings made here get. Null when
+// the mesh has no polygons (strand hair) or is left as the file has it with none.
+std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
+                                                      std::optional<bool> on, float strength, int layer = 0);
+
+// How a worn item stands with dForce, for the panels.
+struct ClothState
+{
+  bool  able     = false;  // it has polygons to simulate
+  bool  native   = false;  // its file carries simulation settings
+  bool  on       = false;  // a mesh of it drapes now
+  float strength = 1.f;
 };
 
 struct WearResult
@@ -152,7 +182,11 @@ public:
   // stops following, its meshes stop following the body. False for an unknown id.
   bool removeItem(int id);
   bool setItemVisible(int id, bool visible);
-  const WornItem* item(int id) const;
+  // dForce on one item: see clothSettings. The meshes it changed are returned (the simulation and
+  // the collider are to be told); empty for an unknown id or an item with nothing to simulate.
+  std::vector<int> setItemCloth(int id, std::optional<bool> on, float strength);
+  ClothState       clothOf(const WornItem& item) const;
+  const WornItem*  item(int id) const;
   dson::Store&    store() const { return *m_store; }
   // Lists the items the scene file came with (Figure::load does).
   void indexItems();

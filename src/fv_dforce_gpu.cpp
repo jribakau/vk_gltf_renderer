@@ -51,6 +51,7 @@ constexpr float kHoldDamping      = 6.f;
 constexpr int   kMinCollisionPasses = 4;
 constexpr float kPassSpacing      = 0.5f * kDepth;
 constexpr float kSearch           = 0.5f;
+constexpr float kRecoverDepth     = 3.f;
 
 constexpr VkBufferUsageFlags2 kUsage = VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
                                        | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT;
@@ -89,11 +90,11 @@ struct DforceGpu::Impl
   int              stretchColours = 0;
 
   VkPipelineLayout layout{};
-  VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, collidePipe{}, velocityPipe{};
+  VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{};
 
   // the model's buffers; `cells` and `items` grow with the grid
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
-      lam, tris, cells, items, softVerts, attAlpha, lamAtt, modelBuf, readback;
+      lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback;
   size_t cellCapacity = 0, itemCapacity = 0;
   bool   gridFailed = false;
 
@@ -243,7 +244,7 @@ bool DforceGpu::Impl::init()
   std::vector<float> zeros(n * 3, 0.f);
   std::vector<float> lamZero(std::max<size_t>(1, sorted.size()), 0.f);
   std::vector<float> lamAttZero(std::max<size_t>(1, model.softVerts.size()), 0.f);
-  std::vector<int>   collideFlags(n), layers(n);
+  std::vector<int>   collideFlags(n), layers(n), noContact(n, -1);
   for(size_t i = 0; i < n; i++)
   {
     collideFlags[i] = model.collides[i] ? 1 : 0;
@@ -274,6 +275,7 @@ bool DforceGpu::Impl::init()
   ok &= mapped(softVerts, model.softVerts.empty() ? std::vector<int>{0} : model.softVerts);
   ok &= mapped(attAlpha, model.attAlpha);
   ok &= mapped(lamAtt, lamAttZero);
+  ok &= mapped(contact, noContact);
   ok &= mappedBytes(modelBuf, nullptr, sizeof(shaderio::DforceModel), VMA_MEMORY_USAGE_CPU_TO_GPU);
   ok &= mappedBytes(readback, nullptr, n * 3 * sizeof(float), VMA_MEMORY_USAGE_GPU_TO_CPU);
   if(!ok)
@@ -285,7 +287,8 @@ bool DforceGpu::Impl::init()
     return false;
   NVVK_DBG_NAME(layout);
   if(!makePipeline("integrateMain", integratePipe) || !makePipeline("edgesMain", edgesPipe) || !makePipeline("attachMain", attachPipe)
-     || !makePipeline("collideMain", collidePipe) || !makePipeline("velocityMain", velocityPipe))
+     || !makePipeline("recoverMain", recoverPipe) || !makePipeline("holdMain", holdPipe) || !makePipeline("collideMain", collidePipe)
+     || !makePipeline("velocityMain", velocityPipe))
     return false;
 
   // the transition's length and the frame's substeps, from how far the pose moves what it holds
@@ -311,7 +314,7 @@ void DforceGpu::Impl::destroy()
   if(!alloc)
     return;
   VkDevice device = alloc->getDevice();
-  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &collidePipe, &velocityPipe})
+  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe})
     if(*p)
     {
       vkDestroyPipeline(device, *p, nullptr);
@@ -323,7 +326,7 @@ void DforceGpu::Impl::destroy()
     layout = VK_NULL_HANDLE;
   }
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
-                         &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &modelBuf, &readback})
+                         &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
@@ -494,6 +497,8 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
   m.softVerts    = reinterpret_cast<int*>(softVerts.address);
   m.attAlpha     = reinterpret_cast<float*>(attAlpha.address);
   m.lamAtt       = reinterpret_cast<float*>(lamAtt.address);
+  m.contact      = reinterpret_cast<int*>(contact.address);
+  m.recoverDepth = kRecoverDepth;
   m.nv           = uint32_t(n);
   m.numKinematic = uint32_t(model.kinematicVerts.size());
   m.numFree      = uint32_t(model.freeVerts.size());
@@ -554,6 +559,24 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
     }
   };
   const size_t allColours = colourStart.size() - 1;
+  // resting vertices held on their faces where the pose has them at pc.t
+  const auto hold = [&] {
+    if(m.numTris == 0)
+      return;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, holdPipe);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
+    barrier();
+  };
+  // the frame's start: cloth lost behind a face of a lower layer is put back, as on the CPU
+  if(m.numTris > 0 && opts.recoverLost)
+  {
+    pc.t = 0;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, recoverPipe);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
+    barrier();
+  }
   for(int s = 0; s < steps; s++)
   {
     pc.t      = float(s + 1) / float(steps);
@@ -566,6 +589,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
       sweep(0, allColours);
     for(int it = 0; it < opts.stretchSweeps; it++)
       sweep(0, size_t(stretchColours));
+    hold();
     if(s == next && m.numTris > 0)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, collidePipe);
@@ -574,6 +598,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
       barrier();
       // the pushes stretched edges; one more sweep shares them out before velocities are read
       sweep(0, allColours);
+      hold();
       tFaces = pc.t;
       next += std::max(1, steps / passes);
     }

@@ -24,8 +24,10 @@
 // (figure/dforce/solver.cpp): XPBD with small steps, kinematic vertices swept through the frame,
 // the side of a face read from the vertex's last pass, contacts absorbing normal motion.
 // Differences: the cloth does not collide with itself here, every free vertex looks for faces on
-// every pass, the kinematic vertices move along straight lines within a frame (the host sweeps
-// them along their bones between frames), and a vertex lost inside a limb is not put back.
+// every pass, and the kinematic vertices move along straight lines within a frame (the host sweeps
+// them along their bones between frames). As on the CPU, a vertex lost behind the nearest face of
+// a lower layer is put back at the frame's start (recoverMain), and one resting on a face is held
+// outside it every substep (holdMain).
 
 #include "dforce_cloth_io.h.slang"
 
@@ -181,7 +183,117 @@ void edgesMain(uint3 tid: SV_DispatchThreadID)
     m.x[ed.b] = m.x[ed.b] + n * (wb * dl);
 }
 
-// Pushes a free vertex out of the faces it was outside of at its last pass.
+// The nearest face of a lower layer within `reach` of q, with the faces where the pose has them at
+// fraction t: its index (-1 for none), the signed distance along its normal, and that normal.
+int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out float signedDist, out float3 normal)
+{
+  int    best     = -1;
+  float  bestDist = reach;
+  signedDist      = 0;
+  normal          = float3(0);
+  float3 lo = q - reach, hi = q + reach;
+  for(int ix = cellOf(lo.x, m.cellSize); ix <= cellOf(hi.x, m.cellSize); ix++)
+    for(int iy = cellOf(lo.y, m.cellSize); iy <= cellOf(hi.y, m.cellSize); iy++)
+      for(int iz = cellOf(lo.z, m.cellSize); iz <= cellOf(hi.z, m.cellSize); iz++)
+      {
+        uint s = cellHash(ix, iy, iz) & m.cellMask;
+        for(uint probe = 0; probe <= m.cellMask; probe++)
+        {
+          DforceCell cell = m.cells[(s + probe) & m.cellMask];
+          if(cell.start < 0)
+            break;
+          if(cell.x != ix || cell.y != iy || cell.z != iz)
+            continue;
+          for(int k = 0; k < cell.count; k++)
+          {
+            int       f   = m.items[cell.start + k];
+            DforceTri tri = m.tris[f];
+            if(tri.layer >= layer)
+              continue;
+            float3 a, b, c, n;
+            faceAt(m, tri, t, a, b, c);
+            if(!faceNormal(a, b, c, n))
+              continue;
+            float sd, dist;
+            bool  interior;
+            closestOn(q, a, b, c, n, sd, dist, interior);
+            if(dist < bestDist)
+            {
+              best       = f;
+              bestDist   = dist;
+              signedDist = sd;
+              normal     = n;
+            }
+          }
+          break;
+        }
+      }
+  return best;
+}
+
+// At a frame's start: a free vertex touching nothing that lies behind the nearest face of a lower
+// layer within recoverDepth is put back outside it, and rests on that face from now on.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+void recoverMain(uint3 tid: SV_DispatchThreadID)
+{
+  DforceModel m = *pc.model;
+  if(tid.x >= m.numFree)
+    return;
+  int i = m.freeVerts[tid.x];
+  if(m.collides[i] == 0 || m.contact[i] >= 0)
+    return;
+  float  sd;
+  float3 n;
+  int    t = nearestFace(m, m.x[i], m.recoverDepth, m.layer[i], pc.t, sd, n);
+  if(t < 0 || sd >= 0)
+    return;
+  DforceTri tri = m.tris[t];
+  float     gap = max(tri.offset, m.offset[i]);
+  m.x[i]       = m.x[i] + n * (gap - sd);
+  m.cprev[i]   = m.x[i];
+  m.contact[i] = t;
+}
+
+// Every substep: a vertex resting on a face is held outside it where the pose has the face now,
+// while it stays over the face, so its edges cannot pull it into the limb between two passes.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+void holdMain(uint3 tid: SV_DispatchThreadID)
+{
+  DforceModel m = *pc.model;
+  if(tid.x >= m.numFree)
+    return;
+  int i = m.freeVerts[tid.x];
+  int t = m.contact[i];
+  if(t < 0)
+    return;
+  DforceTri tri = m.tris[t];
+  float3    a, b, c, n;
+  faceAt(m, tri, pc.t, a, b, c);
+  if(!faceNormal(a, b, c, n))
+    return;
+  float sd, dist;
+  bool  interior;
+  closestOn(m.x[i], a, b, c, n, sd, dist, interior);
+  if(!interior)
+    return;
+  int layer = m.layer[i];
+  int direction;
+  if(layer != tri.layer)
+    direction = layer > tri.layer ? 1 : -1;
+  else
+    direction = dot(m.cprev[i] - a, n) >= 0 ? 1 : -1;
+  float gap    = max(tri.offset, m.offset[i]);
+  float target = float(direction) * gap;
+  if(direction > 0 ? sd >= target : sd <= target)
+    return;
+  float push = min(abs(target - sd), m.cap) * (target - sd > 0 ? 1.0 : -1.0);
+  m.x[i]     = m.x[i] + n * push;
+}
+
+// Pushes a free vertex out of the faces it was outside of at its last pass, and notes the face it
+// rests on, if any.
 [shader("compute")]
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void collideMain(uint3 tid: SV_DispatchThreadID)
@@ -201,6 +313,7 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
   int    layer = m.layer[i];
   float  off   = m.offset[i];
   float  fri   = m.friction[i];
+  int    resting = -1;
   for(int ix = cellOf(lo.x, m.cellSize); ix <= cellOf(hi.x, m.cellSize); ix++)
     for(int iy = cellOf(lo.y, m.cellSize); iy <= cellOf(hi.y, m.cellSize); iy++)
       for(int iz = cellOf(lo.z, m.cellSize); iz <= cellOf(hi.z, m.cellSize); iz++)
@@ -216,7 +329,8 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
             continue;
           for(int k = 0; k < cell.count; k++)
           {
-            DforceTri tri = m.tris[m.items[cell.start + k]];
+            int       f   = m.items[cell.start + k];
+            DforceTri tri = m.tris[f];
             float3    a0, b0, c0, a1, b1, c1;
             faceAt(m, tri, pc.tFaces, a0, b0, c0);
             faceAt(m, tri, pc.t, a1, b1, c1);
@@ -252,6 +366,8 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
             float nowSigned, nowDist;
             bool  nowInterior;
             closestOn(p, a1, b1, c1, n1, nowSigned, nowDist, nowInterior);
+            if(nowInterior && nowDist <= gap + near)
+              resting = f;
             float target = float(direction) * gap;
             if(direction > 0 ? nowSigned >= target : nowSigned <= target)
               continue;
@@ -274,7 +390,8 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
           break;
         }
       }
-  m.cprev[i] = m.x[i];
+  m.cprev[i]   = m.x[i];
+  m.contact[i] = resting;
 }
 
 // Velocities from the substep's motion.

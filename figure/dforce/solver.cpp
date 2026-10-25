@@ -27,10 +27,12 @@ constexpr float kStretchCompliance = 3e-5f;
 constexpr float kShearCompliance   = 3e-3f;
 constexpr float kBendCompliance    = 2e-3f;
 // A vertex of partial strength s is tethered to its skinned position with compliance
-// kAttachSag * s / (1 - s) per unit of inverse mass, s^2: under gravity it hangs g * kAttachSag *
-// s / (1 - s) below that position whatever its mass, about a centimetre at s = 0.5, a couple of
-// millimetres at 0.16 (a skirt's band), free as s nears 1.
-constexpr float kAttachSag = 1e-3f;
+// kAttachSag * (s / (1 - s))^2 per unit of inverse mass, s^2: under gravity it hangs g * kAttachSag
+// * (s / (1 - s))^2 below that position whatever its mass. A band painted at 0.2 keeps within a
+// millimetre, 0.5 gives a centimetre and a half, and a garment whose surfaces are set to 0.7-0.9
+// throughout (common: the Kai Dress is 0.7-0.88) drapes as freely as it does in DAZ Studio, 8 cm
+// of give at 0.7 and 80 at 0.88.
+constexpr float kAttachSag = 1.5e-3f;
 // Mass floor, grams, and the area credited to a vertex no polygon touches, cm^2.
 constexpr float kMinMass     = 1e-4f;
 constexpr float kDefaultArea = 1.f;
@@ -702,7 +704,8 @@ ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air)
       if(strength[i] < 1 - 1e-3f)
       {
         const float s = std::clamp(strength[i], 1e-4f, 0.999f);
-        attAlpha[i]   = kAttachSag * inv[i] * s / (1 - s);
+        const float r = s / (1 - s);
+        attAlpha[i]   = kAttachSag * inv[i] * r * r;
         softVerts.push_back(i);
       }
     }

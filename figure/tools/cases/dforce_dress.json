@@ -1,0 +1,11 @@
+{
+  "about": "dForce on a loose garment whose surfaces carry a dynamics strength of 0.7-0.88 throughout (the ZK Kai Dress on Mirel): it must drape as freely as in DAZ Studio, standing and in a stepping pose, not hang on a leash to the skin. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"wear": "People/Genesis 9/Clothing/ZKuro/ZK Kai Dress/ZK Kai Dress.duf"},
+    {"dforce": "standing", "obj": "_out/dforce"},
+    {"preset": "People/Genesis 9/Poses/3D Sugar/Lifestyle Walk/LW G9 Feminine 04 Long Strides.duf"},
+    {"dforce": "striding", "obj": "_out/dforce"}
+  ]
+}

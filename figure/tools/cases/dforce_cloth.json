@@ -1,0 +1,12 @@
+{
+  "about": "Cloth given to items whose files carry no dForce settings (the SITB bra and belt) and taken from one that does (the shirt, held as a collider), then the settle standing: the bra and belt must drape without falling off or tearing, the skirt as before. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"wear": "People/Genesis 9/Clothing/Modu8/She Is The Boss/M8 SITB !Full Load.duf"},
+    {"cloth": {"item": "Bra", "on": true, "strength": 1}},
+    {"cloth": {"item": "Belt", "on": true, "strength": 0.5}},
+    {"cloth": {"item": "Shirt", "on": false}},
+    {"dforce": "standing", "obj": "_out/dforce"}
+  ]
+}
