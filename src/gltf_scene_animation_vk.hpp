@@ -80,6 +80,15 @@ public:
 
   [[nodiscard]] bool isInitialized() const { return m_alloc != nullptr && m_skinPipeline != VK_NULL_HANDLE; }
 
+  // --- What the last dispatch wrote ---
+  // A task whose joint matrices (or morph weights) and base geometry are what they were when it last
+  // ran is skipped: its vertex buffers already hold the result. This lists the render primitives the
+  // last dispatchAnimation() wrote, every member of each set it skinned or morphed, sorted and
+  // unique: the BLASes to refit.
+  const std::vector<uint32_t>& primitivesWritten() const { return m_written; }
+  // Every task runs again on the next dispatch: after something else rewrote the vertex buffers.
+  void invalidateOutputs();
+
   const GpuMemoryTracker& getMemoryTracker() const { return m_memoryTracker; }
   GpuMemoryTracker&       getMemoryTracker() { return m_memoryTracker; }
 
@@ -126,6 +135,11 @@ private:
   nvvk::Buffer m_morphWeightsBuffer;
 
   GpuMemoryTracker m_memoryTracker;
+
+  // The inputs each task last ran with (empty: it must run), and what the last dispatch wrote
+  std::vector<std::vector<glm::mat4>> m_lastJointMatrices;  // per skin task
+  std::vector<std::vector<float>>     m_lastMorphWeights;   // per morph task
+  std::vector<uint32_t>               m_written;
 
   void createPipelines();
   void destroyPipelines();

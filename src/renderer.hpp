@@ -585,6 +585,7 @@ private:
   bool                      m_editable{false};
   bool                      m_pendingAnimReconcile{false};
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
+  bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off
   LatencyTrace                       m_editTrace;      // See traceEdit()
   std::function<void(LatencyTrace)>  m_editTraceSink;
   BlobStore                          m_blobs;

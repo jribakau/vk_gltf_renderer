@@ -242,6 +242,7 @@ void AnimationVk::createGpuBuffers(nvvk::CmdUploaderInterface& staging, const Sc
   size_t      totalMorphWeightsBytes = 0;
   const auto& morphResultsVec        = scn.animation().getMorphPrimitives();
   m_morphGpuData.resize(morphResultsVec.size());
+  invalidateOutputs();
   for(size_t mi = 0; mi < morphResultsVec.size(); mi++)
   {
     const MorphResult& mr  = scn.animation().getMorphResult(mi);
@@ -392,6 +393,15 @@ void AnimationVk::destroyGpuBuffers()
   destroySkin(m_jointMatricesBuffer);
   destroySkin(m_normalMatricesBuffer);
   destroyMorph(m_morphWeightsBuffer);
+  m_lastJointMatrices.clear();
+  m_lastMorphWeights.clear();
+  m_written.clear();
+}
+
+void AnimationVk::invalidateOutputs()
+{
+  m_lastJointMatrices.assign(m_skinGpuData.size(), {});
+  m_lastMorphWeights.assign(m_morphGpuData.size(), {});
 }
 
 //========== Per-Frame Dispatch ==========
@@ -418,15 +428,6 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
   const auto&                   vertexBufs   = scnVk.vertexBuffers();
   const auto&                   skinTasks    = scn.animation().getSkinTasks();
 
-  // The frame still in flight may be reading the vertex buffers this pass writes and the matrix and
-  // weight buffers its upload overwrites (its raster, its ray tracing, its AS builds): order those
-  // reads before this frame's writes. The static vertex uploads (GltfRenderer::applyPendingVertexUploads)
-  // do the same before their copy.
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
-                         VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
-
   // Primitives that are BOTH morphed and skinned must compose morph -> skin: the skin pass
   // reads the morphed vertex buffers (Phase 2 output) as its base geometry rather than the
   // static skin base. Build the set of morph-target primitive IDs to detect this overlap.
@@ -438,57 +439,110 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
       morphPrimIDs.insert(mr.renderPrimID);
   }
 
-  // === Phase 1: Batch-upload all per-frame data (morph weights + joint/normal matrices) ===
-
-  // Pack all morph weights into the pre-allocated buffer at per-task offsets
+  // === Phase 0: which tasks run. A task whose weights or joint matrices equal what it last ran
+  // with, on the base geometry it last ran on, leaves its result in the vertex buffers (a skin
+  // runs again when the morph it composes on ran). ===
+  if(m_lastJointMatrices.size() != skinTasks.size() || m_lastMorphWeights.size() != m_morphGpuData.size())
+    invalidateOutputs();
+  std::vector<uint8_t>                morphRuns(m_morphGpuData.size(), 0), skinRuns(skinTasks.size(), 0);
+  std::vector<std::vector<float>>     morphWeights(m_morphGpuData.size());
+  std::vector<std::vector<glm::mat4>> jointMatrices(skinTasks.size());
+  std::unordered_set<int>             morphWrote;
+  m_written.clear();
+  const auto writes = [&](const std::vector<int>& members, int owner) {
+    if(members.empty())
+      m_written.push_back(static_cast<uint32_t>(owner));
+    for(int member : members)
+      m_written.push_back(static_cast<uint32_t>(member));
+  };
   for(size_t mi = 0; mi < m_morphGpuData.size(); mi++)
   {
     const MorphGpuData& gpu = m_morphGpuData[mi];
     const MorphResult&  mr  = scn.animation().getMorphResult(mi);
     if(mr.renderPrimID < 0 || mr.basePositions.empty() || gpu.numTargets == 0)
       continue;
-
     // A target without a weight has weight 0, as on the CPU path (computeMorphTargets).
-    const std::vector<double>& source = scn.getMorphWeights(scn.getRenderPrimitive(mr.renderPrimID));
-    std::vector<float>         weights(gpu.numTargets, 0.0f);
+    const std::vector<double>& source  = scn.getMorphWeights(scn.getRenderPrimitive(mr.renderPrimID));
+    std::vector<float>&        weights = morphWeights[mi];
+    weights.assign(gpu.numTargets, 0.0f);
     for(uint32_t t = 0; t < std::min(gpu.numTargets, static_cast<uint32_t>(source.size())); t++)
       weights[t] = static_cast<float>(source[t]);
-
-    assert(gpu.weightsOffset + weights.size() * sizeof(float) <= m_morphWeightsBuffer.bufferSize);
-    staging.appendBuffer(m_morphWeightsBuffer, gpu.weightsOffset, std::span(weights));
+    if(m_lastMorphWeights[mi] == weights)
+      continue;
+    morphRuns[mi] = 1;
+    morphWrote.insert(mr.renderPrimID);
+    writes(mr.renderPrimIDs, mr.renderPrimID);
   }
-
-  // Compute and pack all joint + normal matrices into pre-allocated buffers at per-task offsets
   for(size_t ti = 0; ti < skinTasks.size(); ti++)
   {
     const SkinTask&    task = skinTasks[ti];
     const SkinGpuData& gpu  = m_skinGpuData[ti];
-
     if(task.skinID < 0 || task.skinID >= static_cast<int>(model.skins.size()))
       continue;
     if(task.refNodeID < 0 || task.refNodeID >= static_cast<int>(nodeMatrices.size()))
       continue;
-
-    const tinygltf::Skin& skin      = model.skins[task.skinID];
-    const size_t          numJoints = skin.joints.size();
-
-    std::vector<glm::mat4> jointMats(numJoints);
-    std::vector<glm::mat3> normalMats(numJoints);
-    glm::mat4              invNode = glm::inverse(nodeMatrices[task.refNodeID]);
+    if(!gpu.basePositions.buffer || !gpu.weights.buffer || !gpu.joints.buffer)
+      continue;
+    const tinygltf::Skin&   skin      = model.skins[task.skinID];
+    const size_t            numJoints = skin.joints.size();
+    std::vector<glm::mat4>& jointMats = jointMatrices[ti];
+    jointMats.assign(numJoints, glm::mat4(1));
+    const glm::mat4 invNode = glm::inverse(nodeMatrices[task.refNodeID]);
     for(size_t i = 0; i < numJoints; ++i)
     {
-      int jointNodeID = skin.joints[i];
+      const int jointNodeID = skin.joints[i];
       if(jointNodeID < 0 || jointNodeID >= static_cast<int>(nodeMatrices.size()))
         continue;
       jointMats[i] = invNode * nodeMatrices[jointNodeID]
                      * (i < task.inverseBindMatrices.size() ? task.inverseBindMatrices[i] : glm::mat4(1));
-      normalMats[i] = glm::transpose(glm::inverse(glm::mat3(jointMats[i])));
     }
+    if(!morphWrote.count(task.renderPrimID) && m_lastJointMatrices[ti] == jointMats)
+      continue;
+    skinRuns[ti] = 1;
+    writes(task.renderPrimIDs, task.renderPrimID);
+  }
+  std::sort(m_written.begin(), m_written.end());
+  m_written.erase(std::unique(m_written.begin(), m_written.end()), m_written.end());
+  if(m_written.empty())
+    return;  // nothing to write; the base-geometry uploads appended earlier go out with the frame's staging flush
 
+  // The frame still in flight may be reading the vertex buffers this pass writes and the matrix and
+  // weight buffers its upload overwrites (its raster, its ray tracing, its AS builds): order those
+  // reads before this frame's writes. The static vertex uploads (GltfRenderer::applyPendingVertexUploads)
+  // do the same before their copy.
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+
+  // === Phase 1: Batch-upload the per-frame data of the tasks that run (morph weights + joint/normal matrices) ===
+  bool anyMorph = false, anySkin = false;
+  for(size_t mi = 0; mi < m_morphGpuData.size(); mi++)
+  {
+    if(!morphRuns[mi])
+      continue;
+    const MorphGpuData&       gpu     = m_morphGpuData[mi];
+    const std::vector<float>& weights = morphWeights[mi];
+    assert(gpu.weightsOffset + weights.size() * sizeof(float) <= m_morphWeightsBuffer.bufferSize);
+    staging.appendBuffer(m_morphWeightsBuffer, gpu.weightsOffset, std::span(weights));
+    m_lastMorphWeights[mi] = weights;
+    anyMorph               = true;
+  }
+  for(size_t ti = 0; ti < skinTasks.size(); ti++)
+  {
+    if(!skinRuns[ti])
+      continue;
+    const SkinGpuData&            gpu       = m_skinGpuData[ti];
+    const std::vector<glm::mat4>& jointMats = jointMatrices[ti];
+    std::vector<glm::mat3>        normalMats(jointMats.size());
+    for(size_t i = 0; i < jointMats.size(); ++i)
+      normalMats[i] = glm::transpose(glm::inverse(glm::mat3(jointMats[i])));
     assert(gpu.jointMatOffset + jointMats.size() * sizeof(glm::mat4) <= m_jointMatricesBuffer.bufferSize);
     assert(gpu.normalMatOffset + normalMats.size() * sizeof(glm::mat3) <= m_normalMatricesBuffer.bufferSize);
     staging.appendBuffer(m_jointMatricesBuffer, gpu.jointMatOffset, std::span(jointMats));
     staging.appendBuffer(m_normalMatricesBuffer, gpu.normalMatOffset, std::span(normalMats));
+    m_lastJointMatrices[ti] = jointMats;
+    anySkin                 = true;
   }
 
   // Single transfer + single barrier for all per-frame data
@@ -496,8 +550,8 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 
-  // === Phase 2: Dispatch all morph compute shaders ===
-  if(!m_morphGpuData.empty())
+  // === Phase 2: Dispatch the morph compute shaders that run ===
+  if(anyMorph)
   {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_morphPipeline);
 
@@ -505,7 +559,7 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
     {
       const MorphGpuData& gpu = m_morphGpuData[mi];
       const MorphResult&  mr  = scn.animation().getMorphResult(mi);
-      if(mr.renderPrimID < 0 || mr.basePositions.empty() || gpu.numTargets == 0)
+      if(!morphRuns[mi])
         continue;
 
       const auto& vb = vertexBufs[mr.renderPrimID];
@@ -530,13 +584,13 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
 
     // Morph writes may feed the skin pass (for primitives that are both morphed and skinned),
     // which reads the same vertex buffers. Ensure morph is complete before skinning reads them.
-    if(!m_skinGpuData.empty())
+    if(anySkin)
       nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT);
   }
 
-  // === Phase 3: Dispatch all skinning compute shaders ===
-  if(!m_skinGpuData.empty())
+  // === Phase 3: Dispatch the skinning compute shaders that run ===
+  if(anySkin)
   {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_skinPipeline);
 
@@ -544,12 +598,7 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
     {
       const SkinTask&    task = skinTasks[ti];
       const SkinGpuData& gpu  = m_skinGpuData[ti];
-
-      if(task.skinID < 0 || task.skinID >= static_cast<int>(model.skins.size()))
-        continue;
-      if(task.refNodeID < 0 || task.refNodeID >= static_cast<int>(nodeMatrices.size()))
-        continue;
-      if(!gpu.basePositions.buffer || !gpu.weights.buffer || !gpu.joints.buffer)
+      if(!skinRuns[ti])
         continue;
 
       const tinygltf::Skin& skin = model.skins[task.skinID];
@@ -619,6 +668,8 @@ bool AnimationVk::updateBaseGeometry(nvvk::CmdUploaderInterface&                
       continue;
     upload(m_skinGpuData[i].basePositions, positions);
     upload(m_skinGpuData[i].baseNormals, normals);
+    if(i < m_lastJointMatrices.size())
+      m_lastJointMatrices[i].clear();  // new base geometry: the next dispatch skins it
     found = true;
   }
   for(size_t mi = 0; mi < m_morphGpuData.size(); mi++)
@@ -627,6 +678,8 @@ bool AnimationVk::updateBaseGeometry(nvvk::CmdUploaderInterface&                
       continue;
     upload(m_morphGpuData[mi].basePositions, positions);
     upload(m_morphGpuData[mi].baseNormals, normals);
+    if(mi < m_lastMorphWeights.size())
+      m_lastMorphWeights[mi].clear();
     found = true;
   }
   return found;

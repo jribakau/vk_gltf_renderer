@@ -1585,7 +1585,8 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // #DLSS deformation motion: every writer of vertex positions has run. Their reconcile may have
   // skinned or morphed, and an edit uploaded; the copy snapshotPrevPositions() kept is what the
   // surface was before them.
-  const bool verticesWritten           = interactivityAnimationApplied || verticesEdited || animated;
+  const bool verticesWritten = interactivityAnimationApplied || verticesEdited
+                               || (animated && !m_resources.animationVk.primitivesWritten().empty());
   m_resources.dlssDeformMotionActive   = verticesWritten && m_resources.prevPositions.hasBuffers();
   m_verticesWrittenLastFrame           = verticesWritten;
 
@@ -4934,8 +4935,15 @@ void GltfRenderer::snapshotPrevPositions(VkCommandBuffer cmd)
 {
   nvvkgltf::Scene* scn = m_resources.getScene();
   const bool dlss = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled();
-  if(!scn || (!dlss && !m_resources.prevPositions.hasBuffers()))
+  if(!scn)
     return;
+  if(!dlss)
+  {
+    // Only DLSS reads the copies. Buffers kept from an earlier DLSS session go stale here and are
+    // copied whole on its first frame back, which is what keeping them current would have left.
+    m_prevPositionsStale = m_prevPositionsStale || m_resources.prevPositions.hasBuffers();
+    return;
+  }
 
   std::vector<int> prims;
   for(uint32_t p : scn->animation().getMorphPrimitives())
@@ -4950,7 +4958,8 @@ void GltfRenderer::snapshotPrevPositions(VkCommandBuffer cmd)
     return;
 
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Snapshot prev positions");
-  m_resources.prevPositions.cmdCopy(cmd, m_resources.sceneVk, prims, m_verticesWrittenLastFrame);
+  m_resources.prevPositions.cmdCopy(cmd, m_resources.sceneVk, prims, m_verticesWrittenLastFrame || m_prevPositionsStale);
+  m_prevPositionsStale = false;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -5154,7 +5163,7 @@ void GltfRenderer::reconcileAnimationGpuState(VkCommandBuffer cmd)
   {
     auto timerSectionAS = m_profilerGpuTimer.cmdFrameSection(cmd, "AS update");
     if(hasMorphOrSkin)
-      scnRtx.updateBottomLevelAS(cmd, scn);
+      scnRtx.updateBottomLevelAS(cmd, m_resources.animationVk.primitivesWritten());  // the sets this dispatch wrote
     if(gpuTransform)
     {
       m_resources.transformCompute.dispatchTransformUpdate(cmd, m_resources.staging, scn, scnVk, scnRtx);
@@ -5411,6 +5420,9 @@ void GltfRenderer::updateSceneChanges_TangentUpload(VkCommandBuffer cmd, nvvkglt
   {
     m_resources.sceneVk.uploadVertexBuffers(m_resources.staging, *scene);
     m_resources.dirtyFlags.reset(DirtyFlags::eDirtyTangents);
+    // the upload put the base geometry back into deformed primitives' buffers: skin and morph them again
+    m_resources.animationVk.invalidateOutputs();
+    m_pendingAnimReconcile = true;
     changed = true;
   }
 }
