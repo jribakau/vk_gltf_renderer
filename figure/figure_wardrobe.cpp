@@ -122,6 +122,10 @@ struct Figure::PreparedWear
   // per entry of loaded.parts: the surface binding of a conforming part
   std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>> bindings;
   std::string                                                  key;
+  // per entry of loaded.parts: the body targets prepareWear was given, projected onto the part
+  std::vector<std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>>> preprojected;
+  // the wearable's own morph files, per Morphs folder: stem (lowercase) -> file
+  std::map<std::string, std::map<std::string, std::string>> ownMorphs;
 };
 
 void Figure::indexItems()
@@ -159,7 +163,36 @@ std::shared_ptr<const SceneGraph> Figure::wearBase() const
   return out;
 }
 
-std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base)
+std::vector<dson::TargetPtr> Figure::activeBodyTargets() const
+{
+  std::vector<dson::TargetPtr> out;
+  if(!morphs || loaded.morphs.mainMeshes.empty())
+    return out;
+  for(const auto& [target, weight] : morphs->activeTargets(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh))
+    out.push_back(target);
+  return out;
+}
+
+// The wearable's own morph files in defFile's Morphs folder: stem (lowercase) -> file, listed once
+// per folder into `ownMorphs`.
+const std::map<std::string, std::string>& ownMorphsOf(const dson::Store& store, const std::string& defFile,
+                                                      std::map<std::string, std::map<std::string, std::string>>& ownMorphs)
+{
+  const size_t      slash = defFile.rfind('/');
+  const std::string dir   = (slash == std::string::npos ? std::string() : defFile.substr(0, slash)) + "/Morphs";
+  auto              it    = ownMorphs.find(dir);
+  if(it == ownMorphs.end())
+  {
+    std::map<std::string, std::string> found;
+    for(const std::string& f : dson::listFiles(store.library(), dir, ".dsf"))
+      found[lowerCase(stemOf(f))] = f;
+    it = ownMorphs.emplace(dir, std::move(found)).first;
+  }
+  return it->second;
+}
+
+std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base,
+                                                          std::vector<dson::TargetPtr> bodyTargets)
 {
   if(loaded.mainRig < 0 || loaded.morphs.mainMeshes.empty())
     throw std::runtime_error("Load a figure first: clothing and hair go on a figure with a skeleton.");
@@ -192,7 +225,7 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   // every conforming part is bound to the body's unmorphed cage, in parallel. A skinned part binds
   // limb to limb (its left-thigh vertices to the left thigh): a legging's inner seam is as close to
   // the other leg, and a body morph that moves one leg would then drag the other's cloth
-  timing::Scope tb("bindToSurface");
+  auto          tb        = std::make_unique<timing::Scope>("bindToSurface");
   const auto&   body      = *scene.meshes[size_t(bodyMesh)].geo;
   const auto    bodyLimbs = [&] {
     timing::Scope tl("body limbs", 5);
@@ -221,6 +254,39 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     j.wait();
   for(auto& j : jobs)
     j.get();
+  tb.reset();
+  // the wearable's own morph folders, listed here rather than at commit
+  {
+    timing::Scope tl("list own morphs", 1);
+    for(const dson::ItemPart& part : out->loaded.parts)
+      ownMorphsOf(*m_store, part.defFile, out->ownMorphs);
+  }
+  // the body's dialled-in targets projected onto every conforming part, each on a pool thread:
+  // what the followers would otherwise project at commit, on the owning thread
+  out->preprojected.resize(out->loaded.parts.size());
+  if(!bodyTargets.empty())
+  {
+    timing::Scope                  tp("project followers");
+    std::vector<std::future<void>> projections;
+    for(size_t i = 0; i < out->loaded.parts.size(); i++)
+    {
+      const dson::ItemPart& part = out->loaded.parts[i];
+      if(!part.conforms || !out->bindings[i])
+        continue;
+      auto& slot = out->preprojected[i];
+      slot.resize(bodyTargets.size());
+      const auto item = out->loaded.scene.meshes[size_t(part.mesh)].geo;
+      for(size_t k = 0; k < bodyTargets.size(); k++)
+        projections.push_back(jobs::pool().submit([&body, item, &part, binding = out->bindings[i], target = bodyTargets[k], cell = &slot[k]] {
+          std::vector<float> scratch;
+          *cell = {target, wardrobe::projectTarget(*binding, part.rigidity ? &*part.rigidity : nullptr, body, *item, *target, scratch)};
+        }));
+    }
+    for(auto& j : projections)
+      j.wait();
+    for(auto& j : projections)
+      j.get();
+  }
   return out;
 }
 
@@ -415,21 +481,9 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     // itemOf indexes the wearable's own items
     applyOtherDials(ctx, w.items, dials, {});
   }
-  std::map<std::string, std::map<std::string, std::string>> ownMorphs;  // dir -> stem (lowercase) -> file
+  // the wearable's own morph files, listed by prepareWear (or here, for a folder it did not meet)
   const auto listOwn = [&](const std::string& defFile) -> const std::map<std::string, std::string>& {
-    const size_t      slash = defFile.rfind('/');
-    const std::string dir   = (slash == std::string::npos ? std::string() : defFile.substr(0, slash)) + "/Morphs";
-    auto              it    = ownMorphs.find(dir);
-    if(it == ownMorphs.end())
-    {
-      std::map<std::string, std::string> found;
-      if(!defFile.empty())
-        timing::Scope tl("list own morphs", 1);
-        for(const std::string& f : dson::listFiles(m_store->library(), dir, ".dsf"))
-          found[lowerCase(stemOf(f))] = f;
-      it = ownMorphs.emplace(dir, std::move(found)).first;
-    }
-    return it->second;
+    return ownMorphsOf(*m_store, defFile, p.ownMorphs);
   };
   const auto&   bodyGeoPtr = dst.meshes[size_t(body)].geo;
   timing::Scope tp("followers and own morphs");
@@ -477,6 +531,8 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
             })
             .share();
       };
+      if(i < p.preprojected.size())
+        f.preprojected = std::move(p.preprojected[i]);
       {
         timing::Scope ta("addFollower", 5);
         morphs->addFollower(std::move(f));

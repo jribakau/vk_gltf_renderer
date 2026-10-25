@@ -81,6 +81,10 @@ struct Follower
   // The follower's own targets for a channel, used instead of projecting (an item ships fitted
   // copies of the body shapes); an invalid future when it has none. Read on a pool thread.
   std::function<std::shared_future<std::vector<dson::TargetPtr>>(const std::string&)> own;
+  // Projections made ahead, off the owner's thread, of the source's targets dialled in when the
+  // wear began: (source target, its projection, null when it moves nothing). addFollower() takes
+  // them instead of calling project() for those; any other target is projected as usual.
+  std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>> preprojected;
 };
 
 // Vertices of one mesh whose position or normal changed since the last takeChanges().

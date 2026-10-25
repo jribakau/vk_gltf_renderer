@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 #include <memory>
 
 #include <figure/mesh/mesh_build.hpp>
@@ -121,6 +123,56 @@ TEST(Wardrobe, AMorphOnTheBodyMovesTheItemThatFollowsIt)
   morphs.set("Lift", 1.0);
   morphs.flush();
   EXPECT_NEAR(z(), before, 1e-4f);
+}
+
+// A follower given its projections ahead (a wear's worker makes them) moves exactly as one that
+// projects at commit, and project() is not asked for those targets.
+TEST(Wardrobe, AFollowerWithProjectionsMadeAheadMovesLikeOneProjectingAtCommit)
+{
+  const auto build = [] {
+    return std::vector<std::shared_ptr<fv::mesh::BuiltMesh>>{std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(4, 0))),
+                                                             std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(2, 0.5f)))};
+  };
+  const auto           fresh = build();
+  fv::mesh::CageDeltas d;
+  d.verts  = {6, 7};
+  d.deltas = {0.f, 0.f, 2.f, 0.f, 0.5f, 1.f};
+  std::vector<float> after[2];
+  for(int which = 0; which < 2; which++)
+  {
+    auto                meshes = build();
+    fv::morph::MorphSet morphs([&](int i) { return meshes[size_t(i)].get(); });
+    auto                target = std::make_shared<fv::mesh::RenderTarget>(fv::mesh::target(*meshes[0], d));
+    morphs.addTarget("Lift", 0, target);
+    morphs.set("Lift", 0.75);
+    morphs.flush();
+    const auto binding = std::make_shared<fv::wardrobe::SurfaceBinding>(
+        fv::wardrobe::bindToSurface(meshes[0]->cagePositions, meshes[0]->dsonTris, meshes[1]->cagePositions));
+    const auto project = [binding, body = meshes[0], item = meshes[1]](const fv::mesh::RenderTarget& t) {
+      std::vector<float> scratch;
+      return fv::wardrobe::projectTarget(*binding, nullptr, *body, *item, t, scratch);
+    };
+    fv::morph::Follower f;
+    f.mesh   = 1;
+    f.source = 0;
+    if(which == 0)
+      f.project = project;
+    else
+    {
+      f.preprojected.emplace_back(target, project(*target));  // as the worker does, before the commit
+      f.project = [](const fv::mesh::RenderTarget&) -> fv::dson::TargetPtr {
+        ADD_FAILURE() << "a target projected ahead was projected again";
+        return nullptr;
+      };
+    }
+    morphs.addFollower(f);
+    morphs.flush();
+    after[which] = meshes[1]->position;
+  }
+  ASSERT_EQ(after[0].size(), after[1].size());
+  EXPECT_EQ(std::memcmp(after[0].data(), after[1].data(), after[0].size() * sizeof(float)), 0);
+  // and the item did move
+  EXPECT_NE(std::memcmp(after[0].data(), fresh[1]->position.data(), after[0].size() * sizeof(float)), 0);
 }
 
 TEST(Wardrobe, HiddenPolygonsLeaveTheDrawnTriangles)

@@ -470,6 +470,9 @@ void MorphSet::addFollower(Follower f)
   ensureCpu(f.mesh);
   auto st = std::make_unique<FollowerState>();
   st->f   = std::move(f);
+  for(auto& [source, projection] : st->f.preprojected)
+    st->projected.emplace(source.get(), std::make_pair(source, projection));
+  st->f.preprojected.clear();
   FollowerState& ref = *st;
   m_followers.push_back(std::move(st));
   bool moved = false;

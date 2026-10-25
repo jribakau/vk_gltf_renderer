@@ -2585,13 +2585,14 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         const auto msSince = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
         const auto tWear = Clock::now();
         // the figure as it is now, copied on the application thread: dials move its joint centres meanwhile
-        auto base = [&] {
+        // ... with the body's dialled-in targets, projected onto the wearable on this thread
+        auto [base, bodyTargets] = [&] {
           fv::timing::Scope t("wearBase (render thread)");
-          return onApp([target] { return target->fig->wearBase(); });
+          return onApp([target] { return std::make_pair(target->fig->wearBase(), target->fig->activeBodyTargets()); });
         }();
         const double msBase = msSince(tWear);
         const auto   tPrep  = Clock::now();
-        auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base);
+        auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base, std::move(bodyTargets));
         const double msPrep = msSince(tPrep);
         // the material presets that go with it, applied to the wearable before its textures are looked up
         fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
