@@ -5,6 +5,7 @@
 #include <regex>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <figure/dson/materials.hpp>
 #include <figure/io/timing.hpp>
@@ -370,11 +371,18 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
       sceneMaterialsById[ref ? ref->id : std::string("\x01")].push_back(int(sceneMaterials.size()));
       sceneMaterials.push_back(&m);
     }
+  // a library geometry id that is also another instance's id names that instance, not this one
+  // (props whose geometries are all called "geometry", where the first copy keeps the bare id)
+  std::unordered_set<std::string> instanceIds;
+  for(const Json& n : nodes)
+    if(const Json* geos = get(&n, "geometries"); geos && geos->is_array())
+      for(const Json& g : *geos)
+        instanceIds.insert(getString(&g, "id"));
   auto sceneMaterialsFor = [&](const std::string& instanceId, const std::string& geometryId) {
     std::vector<int> list;
     if(auto it = sceneMaterialsById.find(instanceId); it != sceneMaterialsById.end())
       list = it->second;
-    if(instanceId != geometryId)
+    if(instanceId != geometryId && !instanceIds.count(geometryId))
       if(auto it = sceneMaterialsById.find(geometryId); it != sceneMaterialsById.end())
         list.insert(list.end(), it->second.begin(), it->second.end());
     std::sort(list.begin(), list.end());
