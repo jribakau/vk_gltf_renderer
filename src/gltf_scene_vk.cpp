@@ -1762,19 +1762,49 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
             [](const ImageLoadItem& a, const ImageLoadItem& b) { return a.numBytes > b.numBytes; });
 
   std::atomic<uint32_t> failedImageCount{0};
+  std::atomic<size_t>   prefetchedCount{0};
   const auto            tDecode = std::chrono::steady_clock::now();
   nvutils::parallel_batches<1>(  // Not batching
       imageLoadItems.size(), [&](uint64_t i) {
         const ImageLoadItem& item = imageLoadItems[i];
+        // decoded already on a host's worker: take it
+        if(item.reuseKey)
+        {
+          std::optional<LoadedImageData> ready;
+          {
+            std::lock_guard lock(m_prefetchMutex);
+            if(auto it = m_prefetched.find(prefetchKey(*item.reuseKey)); it != m_prefetched.end())
+            {
+              ready = std::move(it->second);
+              m_prefetched.erase(it);
+            }
+          }
+          if(ready)
+          {
+            SceneImage& image      = m_images[item.imageId];
+            image.srgb             = item.reuseKey->srgb;
+            image.format           = ready->format;
+            image.size             = ready->size;
+            image.mipData          = std::move(ready->mipData);
+            image.componentMapping = ready->componentMapping;
+            ++prefetchedCount;
+            return;
+          }
+        }
         if(!loadImage(item.diskPath, model, item.imageId))
         {
           ++failedImageCount;
         }
       });
-  m_textureStats          = {};
-  m_textureStats.adopted  = reused;
-  m_textureStats.decoded  = imageLoadItems.size();
-  m_textureStats.decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tDecode).count();
+  {
+    std::lock_guard lock(m_prefetchMutex);
+    m_prefetched.clear();  // what this scene did not take would never be taken
+  }
+  m_textureStats            = {};
+  m_textureStats.adopted    = reused;
+  m_textureStats.prefetched = prefetchedCount;
+  m_textureStats.decoded    = imageLoadItems.size() - prefetchedCount;
+  m_textureStats.decodeMs   = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tDecode).count();
   if(failedImageCount > 0)
   {
     LOGW("%" PRIu32 " of %zu image(s) failed to load.\n", failedImageCount.load(), imageLoadItems.size());
@@ -2161,6 +2191,35 @@ bool nvvkgltf::SceneVk::loadImage(const std::filesystem::path& diskPath, const t
 //--------------------------------------------------------------------------------------------------
 // Load image from memory (e.g. embedded glTF buffer). Fills m_images[imageID] size, format, mipData.
 // Custom callback is tried first; then ImageLoader decodes DDS, KTX, WebP, or stb_image formats.
+// The pool's key: the reuse key without the mipmap flag, which create() sets only once it runs
+// (a first load's prefetch would miss) and which the decoded bytes do not depend on.
+nvvkgltf::SceneVk::ReuseKey nvvkgltf::SceneVk::prefetchKey(ReuseKey key)
+{
+  key.generateMipmaps = false;
+  return key;
+}
+
+void nvvkgltf::SceneVk::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
+{
+  std::optional<ReuseKey> key = makeReuseKey(diskPath, srgb);
+  if(!key)
+    return;
+  *key = prefetchKey(*key);
+  {
+    std::lock_guard lock(m_prefetchMutex);
+    if(m_prefetched.count(*key))
+      return;
+  }
+  nvutils::FileReadMapping fileMapping;
+  if(!fileMapping.open(diskPath))
+    return;
+  LoadedImageData loaded;
+  if(!nvvkgltf::loadFromMemory(loaded, fileMapping.data(), fileMapping.size(), srgb))
+    return;
+  std::lock_guard lock(m_prefetchMutex);
+  m_prefetched[*key] = std::move(loaded);
+}
+
 void nvvkgltf::SceneVk::loadImageFromMemory(uint64_t imageID, const void* data, size_t byteLength)
 {
   SceneImage& image = m_images[imageID];

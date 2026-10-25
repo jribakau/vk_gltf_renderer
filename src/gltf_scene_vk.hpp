@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <unordered_set>
@@ -38,6 +39,7 @@
 #include "nvvk/sampler_pool.hpp"
 #include <nvvk/uploader_interface.hpp>
 #include "gpu_memory_tracker.hpp"
+#include "gltf_image_loader.hpp"
 #include "shaders/gltf_scene_io.h.slang"
 
 
@@ -132,7 +134,7 @@ public:
   // What the last createTextureImages() did: images adopted from the pool against decoded, and the time
   struct TextureLoadStats
   {
-    size_t adopted = 0, decoded = 0;
+    size_t adopted = 0, decoded = 0, prefetched = 0;  // decoded counts the ones decoded here, not the prefetched
     double decodeMs = 0, uploadMs = 0;
   };
   const TextureLoadStats& lastTextureStats() const { return m_textureStats; }
@@ -140,6 +142,11 @@ public:
   // assumption destroy() makes. Also the failed-load path, so a load that never reaches
   // createTextureImages() does not pin the previous scene's textures.
   void releaseRetainedImages();
+  // Decodes a file-backed image on the calling thread into a pool the next createTextureImages()
+  // takes from (keyed as the reuse pool is: path, mtime, size, sRGB, mipmaps), so a host decodes a
+  // wear's new textures on its worker and the reload on the render thread only adopts them. Safe
+  // from any thread; what the next createTextureImages() does not take is dropped.
+  void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
   // track() each pooled allocation. cleanupScene() resets the memory tracker after destroy(), which
   // zeroes current bytes while the pool is still alive; without this a later untrack is a no-op and
   // a reused scene reports no image memory. eFull does not reset the tracker and does not call this.
@@ -368,6 +375,9 @@ protected:
   // One entry per glTF image: two images of the same file each own a VkImage.
   std::multimap<ReuseKey, SceneImage> m_retainedImages;
   TextureLoadStats                    m_textureStats;
+  static ReuseKey                     prefetchKey(ReuseKey key);
+  std::mutex                          m_prefetchMutex;
+  std::map<ReuseKey, LoadedImageData> m_prefetched;  // under m_prefetchMutex, keyed by prefetchKey()
   std::vector<nvvk::Image>   m_textures;  // One per glTF texture; bound as a SAMPLED_IMAGE array (image views only)
   std::vector<VkSampler> m_samplers;  // Deduplicated samplers; slot 0 = default, 1..N = model.samplers (SAMPLER array)
   TextureSlotTable       m_textureSlots;  // Per-glTF-texture sampler slot + source-format flags (fed to MaterialCache)

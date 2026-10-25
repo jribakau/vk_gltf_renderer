@@ -382,6 +382,9 @@ public:
   // The vertex buffers a glTF mesh's render primitives read, one entry per set (Scene::vertexSets):
   // a vertex upload to any of them reaches every member, so a host uploads once per entry.
   std::vector<int> vertexSetOwnersOfMesh(int gltfMesh) const;
+  // Decodes an image file now, on the calling thread, for the next loadModel() to take ready
+  // (SceneVk::prefetchImage): a host's wear worker calls it for the textures it resolved.
+  void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
   void          setRenderSystem(RenderingMode mode);

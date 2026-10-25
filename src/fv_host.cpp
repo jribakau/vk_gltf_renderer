@@ -900,6 +900,8 @@ struct FvHost::Impl
   void publishWardrobe(Loaded& f);
   std::optional<std::array<glm::dvec3, 3>> cameraRestore;
   Json poseSet(const Json& args);
+  // the images a load or a wear resolved, decoded on this worker's threads so the reload takes them ready
+  void prefetchImages(const std::vector<fv::build::TextureRequest>& requests, const std::vector<std::optional<fv::build::TextureImage>>& found);
   void applyNodes(Loaded& f, const std::set<int>& moved);
   void applyMesh(Loaded& f, const fv::morph::MeshChange& change);
   void applyRebind(Loaded& f, const std::vector<int>& meshes);
@@ -2264,6 +2266,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
             cookLater(s, requests);
           cooked = false;
         }
+        prefetchImages(requests, found);
         for(size_t i = 0; i < requests.size(); i++)
           images[fv::build::requestKey(requests[i])] = found[i];
       }
@@ -2624,6 +2627,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
             });
           for(auto& w : workers)
             w.join();
+          prefetchImages(requestsOf, found);
           for(size_t i = 0; i < requestsOf.size(); i++)
             images[fv::build::requestKey(requestsOf[i])] = found[i];
         }
@@ -3880,6 +3884,21 @@ void FvHost::Impl::applyRebind(Loaded& f, const std::vector<int>& meshes)
     std::memcpy(mats.data(), ibm.data(), ibm.size() * sizeof(float));
     renderer->setInverseBindMatrices(skin, mats);
   }
+}
+
+void FvHost::Impl::prefetchImages(const std::vector<fv::build::TextureRequest>& requests, const std::vector<std::optional<fv::build::TextureImage>>& found)
+{
+  fv::timing::Scope        t("decode textures");
+  std::atomic<size_t>      next{0};
+  std::vector<std::thread> workers;
+  for(int w = 0; w < std::min<int>(8, int(found.size())); w++)
+    workers.emplace_back([&] {
+      for(size_t i; (i = next++) < found.size();)
+        if(found[i] && !found[i]->uri.empty())
+          renderer->prefetchImage(pathOf(found[i]->uri), requests[i].srgb);
+    });
+  for(auto& w : workers)
+    w.join();
 }
 
 void FvHost::Impl::applyPendingMorphs()

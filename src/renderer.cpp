@@ -3952,7 +3952,8 @@ void GltfRenderer::createVulkanScene()
   {
     const auto& ts = m_resources.sceneVk.lastTextureStats();
     char        buf[160];
-    std::snprintf(buf, sizeof buf, "textures: %zu decoded, %zu adopted, decode %.1f ms, upload %.1f ms", ts.decoded, ts.adopted, ts.decodeMs, ts.uploadMs);
+    std::snprintf(buf, sizeof buf, "textures: %zu decoded, %zu adopted, decode %.1f ms, upload %.1f ms, %zu prefetched", ts.decoded, ts.adopted,
+                  ts.decodeMs, ts.uploadMs, ts.prefetched);
     fv::timing::line(buf);
   }
 
@@ -4370,6 +4371,11 @@ std::vector<int> GltfRenderer::renderPrimitivesOfMesh(int gltfMesh) const
     if(prims[i].meshID == gltfMesh)
       out.push_back(int(i));
   return out;
+}
+
+void GltfRenderer::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
+{
+  m_resources.sceneVk.prefetchImage(diskPath, srgb);
 }
 
 std::vector<int> GltfRenderer::vertexSetOwnersOfMesh(int gltfMesh) const
