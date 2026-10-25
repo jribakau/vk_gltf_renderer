@@ -284,6 +284,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     GltfTextureInfo*   texInfos      = pushConst.gltfScene->textureInfos;
     int                materialIndex = -1;
     PbrMaterial        pbrMat;
+    // Volumetric scatter shades as the thin preview at this hit: the preview flag, or a rough path
+    // arriving from outside any medium (a walk's own exit, from inside, stays volumetric)
+    bool simplifyScatter = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin)
+                           || (hasFlag(pushConst.flags, PathtracerFlags::ePtSimplifyScatter) && !ptIsInside(pt)
+                               && pt.pathRoughness >= SCATTER_SIMPLIFY_ROUGHNESS);
 
     // Compute the ray-cone footprint at the hit point which is used to compute the texture-LOD gradient
     float worldFoot = rayConeWorldFootprint(pt.cone, payload.hitT, hit.geonrm, -ray.Direction);
@@ -383,8 +388,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float     texGrad = worldFoot * hit.texelDensity * pushConst.texGradScale;
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;
-      pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials,
-                                                hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
+      pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials, simplifyScatter);
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
       if(diffuseExit)
       {
@@ -659,7 +663,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // bounds a volume (diffuse transmission), which the shadow ray then starts on the far side of.
       bounce.shadowRayInside     = pt.isInside;
       bounce.shadowRayExtinction = volumeExtinction(pt.volumeMedium);
-      if(dot(directLight.direction, hit.nrm) <= 0.0F && pbrMat.thickness > 0.0F)
+      // (not a scatter material shaded thin here: it has no far side to start on)
+      bool thinScatter = false;
+#if GLTF_USE_SCATTER
+      thinScatter = simplifyScatter && materialIndex >= 0 && materials[materialIndex].scatterStrengthFactor > 0.0F;
+#endif
+      if(dot(directLight.direction, hit.nrm) <= 0.0F && pbrMat.thickness > 0.0F && !thinScatter)
       {
         bounce.shadowRayInside     = !pt.isInside;
         bounce.shadowRayExtinction = volumeExtinction(makeVolumeMedium(pbrMat));
@@ -771,8 +780,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         {
           bool previewThin = false;
 #if GLTF_USE_SCATTER
-          previewThin = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin) && materialIndex >= 0
-                        && materials[materialIndex].scatterStrengthFactor > 0.0f;
+          previewThin = simplifyScatter && materialIndex >= 0 && materials[materialIndex].scatterStrengthFactor > 0.0f;
 #endif
           if(!previewThin)
           {

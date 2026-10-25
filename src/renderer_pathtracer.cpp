@@ -296,6 +296,15 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "so far (biased, fewer fireflies; off: as rough as the roughest material so far)",
                  .callbackSuccess = reset},
                 &m_approximateCaustics, Persist::eNo);
+  // Light that reaches skin after a rough bounce is blurred by that bounce: a random walk there costs
+  // tens of events for detail nothing shows, so the medium shades as the thin preview's diffuse lobes
+  // (Unreal's bSimplifySSS, at path roughness 0.15). Skin seen directly, or through a mirror or a
+  // cornea, still walks.
+  settings->add({.name            = "ptSimplifyScatter",
+                 .help            = "PathTracer: After a rough bounce, a scattering medium shades as its thin preview "
+                                    "instead of a random walk",
+                 .callbackSuccess = reset},
+                &m_simplifyScatter, Persist::eNo);
   settings->add({"ptAutoFocus", "PathTracer: Enable auto focus"}, &m_autoFocus, Persist::eYes);
   settings->add({"ptTechnique", "PathTracer: Rendering technique [RayQuery:0, RayTracing:1]"}, (int*)&m_renderTechnique,
                 Persist::eYes, 0, 1);
@@ -2566,6 +2575,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;
   m_pushConst.flags |= m_fireflyClampMode == 1 ? shaderio::ePtClampIndirect : 0;
   m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
+  m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;
   m_pushConst.flags |= m_fullLobeEval >= 2 ? shaderio::ePtLobeMixture : 0;
 #if defined(USE_DLSS)

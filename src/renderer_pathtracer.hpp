@@ -161,6 +161,7 @@ public:
   bool m_shadowTransmission{true};  // Shadow rays pass through transmissive surfaces (biased; see ePtShadowTransmission).
   bool m_volumeDiffuseExit{false};  // Scatter walks gather light only where they leave the surface (ePtVolumeDiffuseExit).
   int  m_fireflyClampMode{1};       // 0: the whole path; 1: each indirect contribution (ePtClampIndirect).
+  bool m_simplifyScatter{true};     // A rough path meets a scattering medium as its thin preview (ePtSimplifyScatter).
   int  m_fullLobeEval{2};           // 0: one random lobe per light sample; 1: every lobe, punctual lights; 2: every lobe, mixture-pdf MIS (ePtLobe*).
   // Lobes after a rough bounce are as rough as the path (ePtApproximateCaustics). Off: on a DAZ figure
   // it darkens the irises, whose light comes through the cornea, itself a caustic.

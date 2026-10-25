@@ -1552,6 +1552,9 @@ struct BounceScratch
 // Light that reaches the path while its roughness is at most this is direct: the first surface's, and
 // that of surfaces seen through a mirror, glass or a cornea. Above it, light came by a rough bounce.
 static const float DIRECT_PATH_ROUGHNESS = 0.1F;
+// A path at least this rough meets a scattering medium as the thin-walled preview's diffuse lobes, not
+// a random walk (ePtSimplifyScatter; Unreal's bSimplifySSS): its light is a bounce's, which blurs it anyway.
+static const float SCATTER_SIMPLIFY_ROUGHNESS = 0.15F;
 
 // The firefly clamp's level for this frame: an accumulation's frames may have their own, looser one
 // (fireflyClampStill; 0: the same), a still having its samples and its denoiser against the outliers
