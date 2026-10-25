@@ -95,6 +95,8 @@ set(TEST_SOURCES
     # Figure Viewer scene of props composed into the renderer's one glTF
     test_fv_compose.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_compose.cpp
+    # Figure Viewer texture sources outside the cooked set, Original textures (header only)
+    test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough
     test_environment_sky.cpp
     # Phase 5c: .sky.json presets -- round trip, the sun angle OMI has no field for, strangers' keys

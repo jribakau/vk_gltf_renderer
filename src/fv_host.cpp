@@ -69,6 +69,7 @@
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_protocol.hpp"
+#include "fv_textures.hpp"
 #include "fv_view.hpp"
 #include "fv_workers.hpp"
 #include "gltf_environment_sky.hpp"
@@ -95,6 +96,7 @@ struct HostSettings
   std::string                        texServer;  // http://127.0.0.1:<port>/<token>
   int                                maxTextureSize = 4096;
   int                                subdivision    = 0;
+  bool originalTextures = false;  // the source images, not the BC7 cache: only what the renderer cannot read is cooked
 };
 
 // A loaded figure and what the renderer made of it. Lives on the application thread.
@@ -316,14 +318,6 @@ std::string mimeOf(const std::string& path)
   return "image/jpeg";
 }
 
-// Whether the renderer reads this image itself (else only the cooker can: .tif, .bmp, ...).
-bool readable(const std::string& path)
-{
-  std::string ext = path.substr(path.find_last_of('.') + 1);
-  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-  return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp";
-}
-
 // Texture server requests in flight. A cook can take minutes (the read timeout is 600 s), so a
 // stopping renderer cuts them off instead of joining workers that wait on one; a request that starts
 // afterwards is not sent.
@@ -458,14 +452,18 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
 // bump blended onto it. A roughness map (its grey into glTF's channels) and a height map (turned
 // into a normal map) are composed here: without them skin loses its sheen and its pores. A cutout
 // alone changes the picture too much: it and makeup (and formats the renderer cannot read) are
-// cooked, unflipped, and waited for; without a cooker they are composed here too.
+// cooked, unflipped, and waited for; without a cooker, or with Original textures (only what the
+// renderer cannot read is cooked then), they are composed here too (fv_textures.hpp).
 std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker)
 {
-  const bool derived = req.channels == "mr" || req.channels == "bn";
-  if(cooker && (!readable(req.rel) || (!derived && (!req.alphaRel.empty() || req.makeup))))
+  using fv::textures::Fallback;
+  const bool     derived = req.channels == "mr" || req.channels == "bn";
+  const bool     laid    = !req.alphaRel.empty() || req.makeup;
+  const Fallback route   = fv::textures::fallbackOf(req.rel, derived, laid, cooker, s.originalTextures);
+  if(route == Fallback::eCook)
     return cookedTexture(s, req, false, false).image;
   // composed into a PNG beside the others made this way
-  if((derived || (!cooker && (!req.alphaRel.empty() || req.makeup))) && readable(req.rel))
+  if(route == Fallback::eCompose)
   {
     std::error_code ec;
     const auto      dir = std::filesystem::temp_directory_path(ec) / "fv-composed";
@@ -533,7 +531,7 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
     }
     return fv::build::TextureImage{uriOfPath(utf8Of(file)), "image/png", false};
   }
-  if(req.channels == "mr" || req.channels == "bn")
+  if(route == Fallback::eNone)
     return std::nullopt;
   auto image = sourceTexture(lib, req);
   if(image && req.channels == "ng")
@@ -1167,9 +1165,11 @@ std::optional<fv::build::TextureImage> FvHost::Impl::bakeTexture(const std::shar
     std::lock_guard lock(settingsMutex);
     st = settings;
   }
-  if(!st.texServer.empty() && !st.rootId.empty())
+  // a figure loaded from its sources (Original textures, or not cooked yet) bakes from them too
+  const bool cooker = !st.texServer.empty() && !st.rootId.empty();
+  if(cooker && (flipped || !st.originalTextures))
     return cookedTexture(st, req, flipped, false).image;
-  return lib ? fallbackTexture(st, *lib, req, false) : std::nullopt;
+  return lib ? fallbackTexture(st, *lib, req, cooker) : std::nullopt;
 }
 
 // Out of the scene: its topics go, a busy line or a load waiting on it ends. The scene is composed again.
@@ -2301,10 +2301,12 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       // textures: every one the build asks for, resolved in parallel. The cooked ones when all are
       // cooked; the build flips the UVs for every texture or none, so otherwise the source images,
       // with cutouts (only the cooker folds them into alpha) and .tif and such cooked unflipped.
+      // Original textures skips the cooked set: the sources, cutouts composed here.
       // the path tracer gets the skin's volume; the rasterizer would show it see-through
       const fv::mat::SkinMode skin = skinMode.load();
       job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
-      bool cooked = !s.texServer.empty() && !s.rootId.empty();
+      const bool cooker = !s.texServer.empty() && !s.rootId.empty();
+      bool       cooked = cooker && !s.originalTextures;
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
       {
         fv::timing::Scope                                   timeTextures("textures");
@@ -2331,7 +2333,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           });
         if(!cooked || uncooked)
         {
-          resolve([&](const fv::build::TextureRequest& req) { return fallbackTexture(s, *lib, req, cooked); });
+          resolve([&](const fv::build::TextureRequest& req) { return fallbackTexture(s, *lib, req, cooker); });
           if(cooked)
             cookLater(s, requests);
           cooked = false;
@@ -4223,6 +4225,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     st.texServer      = args.value("texServer", st.texServer);
     st.maxTextureSize = args.value("maxTextureSize", st.maxTextureSize);
     st.subdivision    = args.value("subdivision", st.subdivision);
+    st.originalTextures = args.value("originalTextures", st.originalTextures);
     return Json{{"ok", true}};
   });
   // load works out on a worker what the file is, and comes to the application thread for the rest

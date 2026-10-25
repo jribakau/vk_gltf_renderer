@@ -37,7 +37,7 @@
 // for the selected prop, and a figure command then for the only figure, if there is one.
 //
 // Commands (args):
-//   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision}
+//   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision, originalTextures}
 //   load            {path} or {rel}, prop?, as?   -> {job}; a figure or model becomes a new prop (the job's
 //                                                end state has its {prop}); a wearable goes on the figure
 //                                                (`prop`, or the selected or only one) unless `as` is "prop";
