@@ -512,6 +512,48 @@ TEST(Dforce, aTightSkirtInAStrideStaysOutOfBothThighs)
   EXPECT_EQ(inside, 0);
 }
 
+// DISABLED: self-collision lets a falling fold through. Looking for cloth contacts every fourth
+// collision pass misses it (505 edges through the lower half at 1 cm, 84 at 2 cm); looking every
+// pass catches it (12 and 0) but makes a crumpled pile inflate, since a vertex-face push moves the
+// vertex alone and an edge crossing an edge is never seen. Needs edge-edge contacts and one side per
+// pair first (app docs/improvements.md, "Self-collision lets a fold through").
+TEST(Dforce, DISABLED_aFoldFallingOntoItselfStaysOnTop)
+{
+  // a ribbon folded in half: the lower half on the floor, the upper half 4 cm over it, falling
+  const float h = 1, W = 12, L = 60, half = L / 2;
+  const int   nw = int(W / h), nl = int(L / h);
+  Grid        g;
+  for(int i = 0; i <= nl; i++)
+    for(int j = 0; j <= nw; j++)
+    {
+      const float s = float(i) * h;
+      const float z = s <= half ? s : 2 * half - s;
+      const float y = s <= half ? 0.4f : 0.4f + 4.f * std::min(1.f, (s - half) / 4.f);
+      g.pos.insert(g.pos.end(), {float(j) * h - W / 2, y, z - half / 2});
+    }
+  const auto at = [&](int j, int i) { return uint32_t(i * (nw + 1) + j); };
+  for(int i = 0; i < nl; i++)
+    for(int j = 0; j < nw; j++)
+    {
+      g.tris.insert(g.tris.end(), {at(j, i), at(j, i + 1), at(j + 1, i), at(j + 1, i), at(j, i + 1), at(j + 1, i + 1)});
+      g.polyVerts.insert(g.polyVerts.end(), {int32_t(at(j, i)), int32_t(at(j, i + 1)), int32_t(at(j + 1, i + 1)), int32_t(at(j + 1, i))});
+      g.polyStart.push_back(int32_t(g.polyVerts.size()));
+    }
+  const Grid floor = grid(24, 0);
+  // the floor grid faces up; scaled out to 72 cm
+  std::vector<float> fp = floor.pos;
+  for(float& c : fp)
+    c *= 3;
+  dforce::ClothSim sim({dforce::SettleMesh::collider(fp, fp, floor.tris, dforce::kBodyLayer, 0.2f, 0.4f), cloth(g)});
+  for(int f = 0; f < 60; f++)
+    sim.frame(1, 1, f > 30 ? 6.f : 0.f);
+  // the upper half lies over the lower: every upper vertex above the lower half's height
+  const auto p = sim.positions()[1];
+  for(int i = nl / 2 + 5; i <= nl; i++)
+    for(int j = 0; j <= nw; j++)
+      EXPECT_GT(p[at(j, i) * 3 + 1], 0.45f) << i << " " << j;
+}
+
 TEST(Dforce, aPinnedSurfaceStaysOnTheSkinnedPose)
 {
   const Grid veil = grid(3, 3);
