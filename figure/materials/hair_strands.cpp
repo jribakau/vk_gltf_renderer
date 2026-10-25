@@ -6,6 +6,8 @@
 #include <numbers>
 #include <unordered_map>
 
+#include <figure/jobs/pool.hpp>
+
 namespace fv::mat {
 
 namespace {
@@ -101,7 +103,8 @@ std::vector<uint32_t> weldPositions(std::span<const float> position)
     }
   };
   std::unordered_map<Key, uint32_t, Hash> seen;
-  std::vector<uint32_t>                   ids(n);
+  seen.reserve(n);
+  std::vector<uint32_t> ids(n);
   for(size_t i = 0; i < n; i++)
   {
     const Key key{int64_t(std::llround(position[i * 3] / q)), int64_t(std::llround(position[i * 3 + 1] / q)),
@@ -142,53 +145,65 @@ std::vector<StrandVote> strandVotes(const StrandMesh& part, std::span<const uint
     return ids[a] < ids[b] ? uint64_t(ids[a]) * vertexCount + ids[b] : uint64_t(ids[b]) * vertexCount + ids[a];
   };
   std::unordered_map<uint64_t, int> shared;
+  shared.reserve(tris.size());
   for(size_t k = 0; k < tris.size(); k += 3)
     for(int e = 0; e < 3; e++)
       shared[edgeKey(tris[k + e], tris[k + (e + 1) % 3])]++;
   const auto pos = [&](uint32_t i) -> Vec3 { return {part.position[i * 3], part.position[i * 3 + 1], part.position[i * 3 + 2]}; };
-  std::vector<StrandVote> votes;
-  for(size_t k = 0; k < tris.size(); k += 3)
-  {
-    const uint32_t corner[3] = {tris[k], tris[k + 1], tris[k + 2]};
-    const Vec3     p[3]      = {pos(corner[0]), pos(corner[1]), pos(corner[2])};
-    const auto     frame     = tangentFrame(p, part.uv, corner);
-    if(!frame)
-      continue;
-    // the candidates are the triangle's least-shared edges: once per card, or twice where a card is
-    // doubled at the same place (both sides), while the diagonal and the steps of a strip count more
-    int uses[3], least = 1 << 30;
-    for(int e = 0; e < 3; e++)
+  // the triangles' votes in triangle order, counted in parallel chunks that each write their own
+  // list (the edge counts are only read now); the lists concatenated are what one pass would make
+  constexpr size_t                     kChunk   = 16384;  // triangles
+  const size_t                         triCount = tris.size() / 3;
+  std::vector<std::vector<StrandVote>> chunks((triCount + kChunk - 1) / kChunk);
+  jobs::parallelFor(triCount, kChunk, [&](size_t begin, size_t end) {
+    std::vector<StrandVote>& votes = chunks[begin / kChunk];
+    for(size_t t = begin; t < end; t++)
     {
-      uses[e] = shared[edgeKey(corner[e], corner[(e + 1) % 3])];
-      least   = std::min(least, uses[e]);
-    }
-    bool   haveBest = false;
-    double bestLen = 0, second = 0;
-    Vec3   bestEdge{};
-    for(int e = 0; e < 3; e++)
-    {
-      if(uses[e] != least)
+      const size_t   k         = t * 3;
+      const uint32_t corner[3] = {tris[k], tris[k + 1], tris[k + 2]};
+      const Vec3     p[3]      = {pos(corner[0]), pos(corner[1]), pos(corner[2])};
+      const auto     frame     = tangentFrame(p, part.uv, corner);
+      if(!frame)
         continue;
-      const uint32_t a = corner[e], b = corner[(e + 1) % 3];
-      const Vec3     edge = sub(p[(e + 1) % 3], p[e]);
-      const double   l    = len(edge);
-      if(l <= 1e-8 || std::hypot(double(part.uv[b * 2]) - part.uv[a * 2], double(part.uv[b * 2 + 1]) - part.uv[a * 2 + 1]) <= 1e-8)
-        continue;
-      if(!haveBest || l > bestLen)
+      // the candidates are the triangle's least-shared edges: once per card, or twice where a card is
+      // doubled at the same place (both sides), while the diagonal and the steps of a strip count more
+      int uses[3], least = 1 << 30;
+      for(int e = 0; e < 3; e++)
       {
-        second   = haveBest ? bestLen : 0;
-        haveBest = true;
-        bestLen  = l;
-        bestEdge = edge;
+        uses[e] = shared.find(edgeKey(corner[e], corner[(e + 1) % 3]))->second;  // every edge was counted
+        least   = std::min(least, uses[e]);
       }
-      else if(l > second)
-        second = l;
+      bool   haveBest = false;
+      double bestLen = 0, second = 0;
+      Vec3   bestEdge{};
+      for(int e = 0; e < 3; e++)
+      {
+        if(uses[e] != least)
+          continue;
+        const uint32_t a = corner[e], b = corner[(e + 1) % 3];
+        const Vec3     edge = sub(p[(e + 1) % 3], p[e]);
+        const double   l    = len(edge);
+        if(l <= 1e-8 || std::hypot(double(part.uv[b * 2]) - part.uv[a * 2], double(part.uv[b * 2 + 1]) - part.uv[a * 2 + 1]) <= 1e-8)
+          continue;
+        if(!haveBest || l > bestLen)
+        {
+          second   = haveBest ? bestLen : 0;
+          haveBest = true;
+          bestLen  = l;
+          bestEdge = edge;
+        }
+        else if(l > second)
+          second = l;
+      }
+      if(!haveBest || bestLen < second * kEdgeRatio)
+        continue;
+      if(const auto theta = rotationOf(bestEdge, *frame))
+        votes.push_back({float(bestLen), float(*theta)});
     }
-    if(!haveBest || bestLen < second * kEdgeRatio)
-      continue;
-    if(const auto theta = rotationOf(bestEdge, *frame))
-      votes.push_back({float(bestLen), float(*theta)});
-  }
+  });
+  std::vector<StrandVote> votes;
+  for(auto& c : chunks)
+    votes.insert(votes.end(), c.begin(), c.end());
   return votes;
 }
 
