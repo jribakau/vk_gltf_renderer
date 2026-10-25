@@ -290,6 +290,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   pbrMat.T                = state.T;
   pbrMat.B                = state.B;
   pbrMat.Ng               = state.Ng;
+  pbrMat.Ns               = state.N;
   bool needsTangentUpdate = false;
 
   if(isTexturePresent(material.normalTexture))

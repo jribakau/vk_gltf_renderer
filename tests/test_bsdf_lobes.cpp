@@ -84,8 +84,20 @@ std::vector<Case> cases()
   film.iridescence          = 0.7f;
   film.iridescenceThickness = 0.4f;
   out.push_back({"iridescence", film});
+  PbrMaterial bumped        = base(0.4f);
+  bumped.clearcoat          = 0.5f;
+  bumped.clearcoatRoughness = 0.3f;
+  bumped.sheenColor         = vec3(0.3f);
+  bumped.sheenRoughness     = 0.5f;
+  bumped.N                  = normalize(vec3(0.7f, 0.0f, 1.0f));  // a normal map, 35 degrees off the smooth normal
+  bumped.Nc                 = bumped.N;
+  orthonormalBasis(bumped.N, bumped.T, bumped.B);
+  out.push_back({"normal map", bumped});
   return out;
 }
+
+// The "normal map" case's: a view above the surface that its bent normal faces away from.
+const vec3 kBehindTheBump = normalize(vec3(-1.0f, 0.0f, 0.3f));
 
 vec3 sphere(std::mt19937& rng)
 {
@@ -211,4 +223,57 @@ TEST(BsdfLobes, AReflectionLobeIsDarkBelowItsNormal)
   bsdfEvaluateAll(e, metal);
   EXPECT_EQ(sum(e.bsdf_glossy + e.bsdf_diffuse), 0.0f);
   EXPECT_EQ(e.pdf, 0.0f);
+}
+
+// A view the normal map's normal faces away from still reflects: the specular lobes bend that
+// normal back toward the view, and before they did, every specular sample was absorbed.
+TEST(BsdfLobes, ABumpTiltedAwayFromTheViewStillReflects)
+{
+  PbrMaterial metal = cases()[1].mat;
+  metal.N           = cases().back().mat.N;
+  orthonormalBasis(metal.N, metal.T, metal.B);
+  ASSERT_LT(dot(kBehindTheBump, metal.N), 0.0f);
+  ASSERT_GT(dot(kBehindTheBump, metal.Ng), 0.0f);
+
+  std::mt19937                          rng(17);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const int                             N       = 20000;
+  float                                 carried = 0.0f;
+  for(int i = 0; i < N; i++)
+  {
+    BsdfSampleData s;
+    s.k1 = kBehindTheBump;
+    s.xi = vec3(u(rng), u(rng), u(rng));
+    bsdfSample(s, metal);
+    if(s.event_type != BSDF_EVENT_ABSORB)
+      carried += sum(s.bsdf_over_pdf) / 3.0f / N;
+  }
+  EXPECT_GT(carried, 0.3f);
+}
+
+// The shadow-terminator term is 1 without a bump and toward a light along the bent normal, and fades
+// a bumped Lambert lobe to 0 at its shadow line.
+TEST(BsdfLobes, TheTerminatorTermFadesOnlyABumpedLobe)
+{
+  const vec3 Ns(0.0f, 0.0f, 1.0f);
+  const vec3 N = cases().back().mat.N;
+  for(float cosI : {0.05f, 0.3f, 0.7f, 1.0f})
+  {
+    const vec3 L(std::sqrt(1.0f - cosI * cosI), 0.0f, cosI);
+    EXPECT_FLOAT_EQ(shadowTerminatorTerm(L, Ns, Ns), 1.0f) << cosI;
+  }
+  EXPECT_FLOAT_EQ(shadowTerminatorTerm(N, N, Ns), 1.0f);
+
+  float last = 1.0f;
+  for(float cosI : {0.9f, 0.6f, 0.3f, 0.1f, 0.01f})
+  {
+    // around the bent normal, away from the smooth one
+    const vec3  L = normalize(cosI * N + std::sqrt(1.0f - cosI * cosI) * normalize(vec3(1.0f, 0.0f, -0.7f)));
+    const float g = shadowTerminatorTerm(L, N, Ns);
+    EXPECT_LT(g, last) << cosI;
+    EXPECT_GT(g, 0.0f) << cosI;
+    last = g;
+  }
+  EXPECT_LT(last, 0.5f);
+  EXPECT_EQ(shadowTerminatorTerm(-N, N, Ns), 0.0f);
 }

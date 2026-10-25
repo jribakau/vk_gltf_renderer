@@ -412,11 +412,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         const float3 Ng         = pbrMat.Ng;
         const float3 T          = pbrMat.T;
         const float3 B          = pbrMat.B;
+        const float3 Ns         = pbrMat.Ns;
         pbrMat                  = defaultPbrMaterial(exitAlbedo, 0.0F, 1.0F, N, Ng);
         pbrMat.specular         = 0.0F;
         pbrMat.ior2             = 1.0F;
         pbrMat.T                = T;
         pbrMat.B                = B;
+        pbrMat.Ns               = Ns;
       }
 #endif
 
