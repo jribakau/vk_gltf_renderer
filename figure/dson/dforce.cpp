@@ -106,10 +106,12 @@ DforceKind kindOf(const Values& ch)
   return DforceKind::eDynamic;
 }
 
-// Pair rows [vertex, weight] on an extra whose id, name or type mentions an influence map.
+// Pair rows [vertex, weight] on an extra whose id, name or type mentions an influence map. The map
+// is sparse: a vertex it leaves out has weight 0 and follows the skin (a skirt's waistband is never
+// listed). Without a map every vertex is free.
 std::vector<float> influenceMap(const Found& mod, int vertexCount)
 {
-  std::vector<float> out(size_t(vertexCount), 1.f);
+  std::vector<float> out(size_t(vertexCount), 0.f);
   bool               any = false;
   static const std::regex re("influence", std::regex::icase);
   const auto take = [&](const Json* table) {

@@ -92,6 +92,26 @@ TEST(Dforce, clothFallsOntoAColliderAndStaysOutsideIt)
   }
 }
 
+TEST(Dforce, clothLostInsideAColliderIsBroughtBackOut)
+{
+  // a veil that starts 2.5 cm under the body, deeper than the start separates: every frame puts
+  // what lies behind the nearest body face back outside it, so it ends resting on the body
+  const Grid body = grid(8, 0), veil = grid(4, -2.5f);
+  const auto collider = dforce::SettleMesh::collider(body.pos, body.pos, body.tris, dforce::kBodyLayer, 0.2f, 0.4f);
+  const auto out      = dforce::settle({collider, cloth(veil)});
+  for(size_t v = 0; v < out[1].size() / 3; v++)
+  {
+    EXPECT_GT(out[1][v * 3 + 1], 0.0f) << v;
+    EXPECT_LT(out[1][v * 3 + 1], 1.0f) << v;
+  }
+  // without it, the cloth stays under and falls
+  dforce::SettleOptions opts;
+  opts.recoverLost = false;
+  const auto under  = dforce::settle({collider, cloth(veil)}, opts);
+  for(size_t v = 0; v < under[1].size() / 3; v++)
+    EXPECT_LT(under[1][v * 3 + 1], -2.5f) << v;
+}
+
 TEST(Dforce, aHangingStripKeepsItsLength)
 {
   // a 4 x 30 cm strip pinned along its top edge: it hangs about its rest length. The one-sweep
@@ -121,6 +141,83 @@ TEST(Dforce, aHangingStripKeepsItsLength)
   }
 }
 
+TEST(Dforce, aSoftBandFollowsItsBoneAndAStrengthGradientDoesNotTear)
+{
+  // a 4 x 30 cm strip skinned to one bone: its top row pinned, the next three at a fifth of the
+  // strength (a skirt's band), then a ramp to free cloth. The bone moves 5 cm and turns 45 degrees:
+  // the band goes with it, the rest hangs under gravity, and no edge tears at the gradient
+  const int w = 4, h = 30;
+  Grid      strip;
+  for(int r = 0; r <= h; r++)
+    for(int c = 0; c <= w; c++)
+      strip.pos.insert(strip.pos.end(), {float(c), float(-r), 0.f});
+  const auto at = [&](int c, int r) { return uint32_t(r * (w + 1) + c); };
+  for(int r = 0; r < h; r++)
+    for(int c = 0; c < w; c++)
+    {
+      strip.tris.insert(strip.tris.end(), {at(c, r), at(c, r + 1), at(c + 1, r), at(c + 1, r), at(c, r + 1), at(c + 1, r + 1)});
+      strip.polyVerts.insert(strip.polyVerts.end(), {int32_t(at(c, r)), int32_t(at(c, r + 1)), int32_t(at(c + 1, r + 1)), int32_t(at(c + 1, r))});
+      strip.polyStart.push_back(int32_t(strip.polyVerts.size()));
+    }
+  auto m = cloth(strip);
+  for(int c = 0; c <= w; c++)
+  {
+    m.strength[at(c, 0)] = 0;
+    for(int r = 1; r <= 3; r++)
+      m.strength[at(c, r)] = 0.2f;
+    for(int r = 4; r <= 8; r++)
+      m.strength[at(c, r)] = 0.3f + 0.7f * float(r - 4) / 4;
+  }
+  const size_t n = strip.pos.size() / 3;
+  m.skinIndex.assign(n * 4, 0);
+  m.skinWeight.assign(n * 4, 0.f);
+  for(size_t v = 0; v < n; v++)
+    m.skinWeight[v * 4] = 1;
+  const Mat4 bone = compose({5, 0, 0}, quatFromEuler(0, 0, std::acos(-1.0) / 4, "XYZ"), {1, 1, 1});
+  m.bones          = {bone};
+  m.restLocal      = m.rest;
+  m.posed.resize(n * 3);
+  dforce::skinMesh(m, m.bones, m.posed.data());
+
+  // half way through the transition the band is at the bone's half turn, on the arc
+  {
+    dforce::ClothSim sim({m});
+    sim.frame(0, 0.5f);
+    const auto p    = sim.positions();
+    const Mat4 half = dforce::sweepAt(dforce::poseOf(Mat4{}), dforce::poseOf(bone), 0.5f);
+    for(int c = 0; c <= w; c++)
+    {
+      const uint32_t v = at(c, 2);
+      const Vec3     a = half.transformPoint({m.rest[v * 3], m.rest[v * 3 + 1], m.rest[v * 3 + 2]});
+      const double   d = std::hypot(p[0][v * 3] - a.x, p[0][v * 3 + 1] - a.y, p[0][v * 3 + 2] - a.z);
+      EXPECT_LT(d, 1.0) << c;
+    }
+  }
+  const auto out = dforce::settle({m});
+  for(int c = 0; c <= w; c++)
+  {
+    for(int r = 1; r <= 3; r++)
+    {
+      const uint32_t v = at(c, r);
+      const double   d = std::hypot(out[0][v * 3] - m.posed[v * 3], out[0][v * 3 + 1] - m.posed[v * 3 + 1], out[0][v * 3 + 2] - m.posed[v * 3 + 2]);
+      EXPECT_LT(d, 1.5) << c << " " << r;
+    }
+    // the free end hangs below where the turned bone would hold it
+    EXPECT_LT(out[0][at(c, h) * 3 + 1], m.posed[at(c, h) * 3 + 1] - 5) << c;
+  }
+  for(int r = 0; r <= h; r++)
+    for(int c = 0; c <= w; c++)
+    {
+      const auto len = [&](uint32_t a, uint32_t b) {
+        return std::hypot(out[0][a * 3] - out[0][b * 3], out[0][a * 3 + 1] - out[0][b * 3 + 1], out[0][a * 3 + 2] - out[0][b * 3 + 2]);
+      };
+      if(r < h)
+        EXPECT_LT(len(at(c, r), at(c, r + 1)), 1.25) << c << " " << r;
+      if(c < w)
+        EXPECT_LT(len(at(c, r), at(c + 1, r)), 1.25) << c << " " << r;
+    }
+}
+
 TEST(Dforce, aSkinnedColliderSweepsAlongItsBone)
 {
   // a collider skinned to one bone that turns a quarter about y: half way through the transition it
@@ -140,6 +237,28 @@ TEST(Dforce, aSkinnedColliderSweepsAlongItsBone)
   const auto q = sim.positions();
   EXPECT_NEAR(q[0][0], 0, 1e-3);
   EXPECT_NEAR(q[0][2], -10, 1e-3);
+}
+
+TEST(Dforce, aSweepTurnsABoneAboutItsJoint)
+{
+  // a skin matrix is a turn about the joint: half way through the sweep the joint has not moved and
+  // a point beside it is at the half turn about the joint, not about the mesh's origin
+  const Vec3 joint{0, 100, 0};
+  const Mat4 bone = compose(joint, {}, {1, 1, 1}) * compose({}, quatFromEuler(0, std::acos(-1.0) / 2, 0, "XYZ"), {1, 1, 1})
+                    * compose({0, -100, 0}, {}, {1, 1, 1});
+  const Mat4 half = dforce::sweepAt(dforce::poseOf(Mat4{}), dforce::poseOf(bone), 0.5f);
+  const Vec3 j    = half.transformPoint(joint);
+  EXPECT_NEAR(j.x, joint.x, 1e-3);
+  EXPECT_NEAR(j.y, joint.y, 1e-3);
+  EXPECT_NEAR(j.z, joint.z, 1e-3);
+  const Vec3 p = half.transformPoint({10, 100, 0});
+  EXPECT_NEAR(p.x, 10 * std::cos(std::acos(-1.0) / 4), 1e-3);
+  EXPECT_NEAR(p.y, 100, 1e-3);
+  EXPECT_NEAR(p.z, -10 * std::sin(std::acos(-1.0) / 4), 1e-3);
+  // the ends are exact
+  const Vec3 end = dforce::sweepAt(dforce::poseOf(Mat4{}), dforce::poseOf(bone), 1).transformPoint({10, 100, 0});
+  EXPECT_NEAR(end.x, 0, 1e-3);
+  EXPECT_NEAR(end.z, -10, 1e-3);
 }
 
 TEST(Dforce, aLiveSimulationFollowsATargetThatMovesEveryFrame)
@@ -321,6 +440,45 @@ TEST(Dforce, readsTheSettingsOfASimulationSurface)
   EXPECT_FALSE(dson::buildDforce(*scene, nullptr, "Other", "Other-1", *geo, geo->json, {}));
 }
 
+TEST(Dforce, aSparseInfluenceMapLeavesUnlistedVerticesOnTheSkin)
+{
+  // DAZ writes the influence map sparsely: a vertex it leaves out (a skirt's waistband) has weight
+  // 0 and follows the skin; without a map every vertex is free
+  const auto geo = dson::parseDoc(R"({
+    "vertices": {"count": 4, "values": [[0,0,0],[1,0,0],[1,0,1],[0,0,1]]},
+    "polylist": {"count": 1, "values": [[0, 0, 0, 1, 2, 3]]},
+    "polygon_material_groups": {"count": 1, "values": ["Skirt"]}
+  })");
+  const auto sceneWith = [](const char* mapExtra) {
+    return dson::parseDoc(std::string(R"({
+      "scene": {"modifiers": [
+        {"id": "sim", "url": "#dyn", "parent": "#Dress", "extra": [{"type": "studio/modifier/dynamic_simulation"}]},
+        {"id": "surf", "url": "#set", "parent": "#Dress-1", "groups": ["Skirt"], "extra": [{"type": "studio/simulation_settings/dynamic_simulation"}],
+         "channel": {"id": "Dynamics Strength", "current_value": 0.5}}
+      ]},
+      "modifier_library": [
+        {"id": "dyn", "extra": [{"type": "studio/modifier/dynamic_simulation", "vertex_count": 4)") + mapExtra + R"(}]},
+        {"id": "set", "extra": [{"type": "studio/simulation_settings/dynamic_simulation", "channels": []}]}
+      ]
+    })");
+  };
+  const auto mapped = dson::buildDforce(*sceneWith(R"(, "influence_weights": {"count": 2, "values": [[0, 1.0], [1, 0.5]]})"), nullptr,
+                                        "Dress", "Dress-1", *geo, geo->json, {});
+  ASSERT_TRUE(mapped);
+  ASSERT_EQ(mapped->influence.size(), 4u);
+  ASSERT_EQ(mapped->strength.size(), 4u);
+  EXPECT_NEAR(mapped->strength[0], 0.5f, 1e-6);
+  EXPECT_NEAR(mapped->strength[1], 0.25f, 1e-6);
+  EXPECT_NEAR(mapped->strength[2], 0.f, 1e-6);
+  EXPECT_NEAR(mapped->strength[3], 0.f, 1e-6);
+
+  const auto mapless = dson::buildDforce(*sceneWith(""), nullptr, "Dress", "Dress-1", *geo, geo->json, {});
+  ASSERT_TRUE(mapless);
+  EXPECT_TRUE(mapless->influence.empty());
+  for(float s : mapless->strength)
+    EXPECT_NEAR(s, 0.5f, 1e-6);
+}
+
 TEST(Dforce, aMorphChannelsTargetIsReplacedInPlace)
 {
   mesh::BuiltMesh geo;
@@ -434,6 +592,46 @@ TEST(Dforce, settlesInTheFiguresCentimetresWhenTheRootIsScaledToMetres)
     EXPECT_LT(pos[v * 3 + 1], 1.0f) << v;
     EXPECT_GT(pos[v * 3 + 1], 0.0f) << v;
   }
+}
+
+TEST(Dforce, aWornItemWithoutSimulationSettingsIsACollider)
+{
+  // a plain mesh between the body and the veil (a belt, a bra): the veil rests on it, not on the
+  // body, unless the host says it is not one of the figure's colliders
+  const auto rig = [](std::optional<bool> plainCollides) {
+    fv::SceneGraph scene;
+    const int      rootNode = scene.add(fv::Node{});
+    const Grid     body = grid(8, 0), belt = grid(6, 1.5f), veil = grid(4, 3);
+    scene.meshes.push_back(sceneMesh(body, false));
+    scene.meshes.push_back(sceneMesh(belt, false));
+    scene.meshes.push_back(sceneMesh(veil, true));
+    scene.materials.push_back({});
+    for(int i = 0; i < 3; i++)
+    {
+      fv::Node n;
+      n.kind = fv::NodeKind::eMesh;
+      n.mesh = i;
+      scene.add(n, rootNode);
+    }
+    morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+    dforce::Dforce  d(scene, morphs, 0, rootNode);
+    if(plainCollides)
+      d.collidesWith = [on = *plainCollides](int) { return on; };
+    const auto p = d.prepared();
+    if(!p)
+      return -1.f;
+    const auto out = dforce::settle(p->bodies);
+    float      low = 1e9f;
+    for(const auto& [mesh, slot] : p->drapes)
+      for(size_t v = 0; v < out[size_t(slot)].size() / 3; v++)
+        low = std::min(low, out[size_t(slot)][v * 3 + 1]);
+    return low;
+  };
+  EXPECT_GT(rig(std::nullopt), 1.5f);
+  EXPECT_GT(rig(true), 1.5f);
+  const float onBody = rig(false);
+  EXPECT_GT(onBody, 0.f);
+  EXPECT_LT(onBody, 1.0f);
 }
 
 TEST(Dforce, liveModeDrapesThenStepsOnlyWhileSomethingMoves)

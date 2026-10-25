@@ -32,7 +32,8 @@ struct DforceData
   bool freeze = false;
   // Node "Visible in Simulation"
   bool visible = true;
-  // 0 sticks to the skinned vertex, 1 is free; empty means every vertex is free
+  // 0 sticks to the skinned vertex, 1 is free (a vertex the file's sparse map leaves out is 0);
+  // empty means every vertex is free
   std::vector<float> influence;
   // Dynamics Strength x influence, already multiplied
   std::vector<float> strength, stretch, shear, bend, buckling, bucklingRatio, density, contraction, damping, friction, offset;

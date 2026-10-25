@@ -1,0 +1,11 @@
+{
+  "about": "dForce on a real garment: Mirel in the She Is The Boss outfit (a dForce shirt and skirt over a plain bra and belt), settled standing and in a stepping pose. Run with DAZ_LIBRARY set to the content library; the drapes go to _out/dforce as OBJ files.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"wear": "People/Genesis 9/Clothing/Modu8/She Is The Boss/M8 SITB !Full Load.duf"},
+    {"dforce": "standing", "trace": true, "obj": "_out/dforce"},
+    {"preset": "People/Genesis 9/Poses/3D Sugar/Lifestyle Walk/LW G9 Feminine 04 Long Strides.duf"},
+    {"dforce": "striding", "trace": true, "obj": "_out/dforce", "apply": true}
+  ]
+}

@@ -269,8 +269,27 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   const auto shown = shownNodes(m_scene);
   const auto consider = [&](int mesh) {
     const Mesh& m = m_scene.meshes[size_t(mesh)];
-    if(mesh == m_bodyMesh || !m.dforce || !m.dforce->hasPolygons() || !m.geo || nodeOf[size_t(mesh)] < 0 || !shown[size_t(nodeOf[size_t(mesh)])])
+    if(mesh == m_bodyMesh || !m.geo || nodeOf[size_t(mesh)] < 0 || !shown[size_t(nodeOf[size_t(mesh)])])
       return;
+    if(!m.dforce || !m.dforce->hasPolygons())
+    {
+      // no simulation settings of its own (a belt, a bra, shoes): a collider at the surface
+      // default layer, as DAZ collides with every visible object, when the host says it is one
+      if(collidesWith && !collidesWith(mesh))
+        return;
+      if(m.geo->cagePositions.empty() || m.geo->dsonTris.empty())
+        return;
+      auto skinned = skinCage(mesh, nullptr);
+      if(!skinned)
+        return;
+      const Mat4 to       = toSpace(mesh);
+      SettleMesh collider = SettleMesh::collider(transformPoints(to, skinned->rest), transformPoints(to, skinned->posed), m.geo->dsonTris,
+                                                 kPlainLayer, 0.2f, 0.4f);
+      attachSkin(collider, *skinned, to);
+      job->bodies.push_back(std::move(collider));
+      job->slotMesh.push_back(skinned->skinned ? mesh : -1);
+      return;
+    }
     const dson::DforceData& data = *m.dforce;
     if(data.strength.size() * 3 != m.geo->cagePositions.size())
       return;
@@ -334,6 +353,19 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   if(job->drapes.empty())
     return nullptr;
   return job;
+}
+
+std::optional<Dforce::Prepared> Dforce::prepared() const
+{
+  const auto job = prepare(m_gen);
+  if(!job)
+    return std::nullopt;
+  Prepared p;
+  p.bodies   = job->bodies;
+  p.slotMesh = job->slotMesh;
+  for(const Job::Drape& d : job->drapes)
+    p.drapes.emplace_back(d.mesh, int(d.slot));
+  return p;
 }
 
 std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const

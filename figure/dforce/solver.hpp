@@ -10,7 +10,9 @@
 // sweep from the memorized pose to the target pose along their bones (a limb turns instead of
 // shrinking along a chord), and the side a vertex is on is taken from where it was, so a limb
 // sweeping through cloth pushes it out the side it started on. Pinning does not scale with the
-// step count: strength 0 is infinite mass, and a partial strength is blended once after the solve.
+// step count: strength 0 is infinite mass, and a partial strength is a tether to the skinned
+// position solved with the edges every substep, as compliant as the strength makes it (a skirt's
+// band fades from pinned to free over a few rows without tearing).
 //
 // Because the side is kept, a vertex that starts inside a lower layer (a fitted shape overlapping
 // the body) would stay inside; those are moved out along the nearest face before the first step.
@@ -75,6 +77,10 @@ struct SettleMesh
 
 // The figure's layer: below any a surface can set, so cloth always lies outside the body.
 constexpr int kBodyLayer = -0x8000;
+// The layer of a worn item with no simulation settings, DAZ's default "Collision Layer": the same
+// as a surface that leaves it, so a belt over a skirt keeps the skirt under it and a bra under a
+// dress keeps the dress outside, by the side each started on.
+constexpr int kPlainLayer = 0;
 
 // What a settle is made of, built once from the meshes' rest shapes: every vertex of every mesh
 // in one index space, the distance constraints, the collision faces and who moves what. Shared by
@@ -111,9 +117,12 @@ struct ClothModel
   std::vector<uint8_t> visible, collides, dynamic;
   std::vector<Edge>    edges;
   // the sweep in parallel: edges whose free vertices all lie in one block of the vertex range run
-  // block by block on the pool, the few that cross blocks after them on one thread
+  // block by block on the pool, the few that cross blocks after them on one thread. Each list
+  // starts with its stretch edges, this many, so a sweep over those alone is a prefix
   std::vector<std::vector<int>> blockEdges;
   std::vector<int>              crossingEdges;
+  std::vector<int>              blockStretch;
+  int                           crossingStretch = 0;
   std::vector<Tri>              tris;
   // faces the pose moves and faces the cloth moves
   std::vector<int> staticTris, dynamicTris, allTris;
@@ -122,7 +131,11 @@ struct ClothModel
   std::vector<int> ringStart, ring, ring2Start, ring2;
   std::vector<int> kinematicVerts;  // every vertex a pose moves
   std::vector<int> freeVerts;       // every vertex the cloth moves
-  float            maxOffset = 0, minOffset = 0.05f;
+  // the free vertices of partial strength, tethered to their skinned position: each one's tether
+  // compliance (cm per dyne, 0 for the rest), from kAttachSag and its strength
+  std::vector<int>   softVerts;
+  std::vector<float> attAlpha;
+  float              maxOffset = 0, minOffset = 0.05f;
 
   static ClothModel build(const std::vector<SettleMesh>& meshes, float air);
 };
@@ -150,10 +163,19 @@ struct SettleOptions
   int substeps = 0;
   // Constraint sweeps per substep
   int iterations = 1;
+  // Further sweeps per substep over the stretch edges alone: one sweep leaves a hanging cloth's
+  // rows stretched where they carry what hangs below (twice their length under a real skirt's
+  // band), and the stretch edges are a third of the constraints, so these converge it at a third
+  // of a sweep's cost each. Five bring that skirt's worst edge to 1.3x and its 99th centile to 1.07.
+  int stretchSweeps = 5;
   // Seconds the pose transition takes; 0 picks them from how far the colliders move
   float transition = 0;
   // Seconds the cloth may take to come to rest once the pose is reached
   float maxHold = 3.f;
+  // Every frame, a free vertex touching nothing that lies behind the nearest face of a lower layer
+  // within reach is put back outside it: cloth pulled through a limb by its edges between two
+  // collision passes, or carried through by the sweep, would otherwise stay inside for good
+  bool recoverLost = true;
   // The largest move of a vertex over a frame, in cm, under which the cloth counts as still
   float restMove = 0.01f;
 };
@@ -194,11 +216,12 @@ public:
   void settle() override;
   // How far the fastest dynamic vertex moved over the last frame, cm.
   float lastMove() const override;
+  // Vertices the last frame found lost inside a lower layer and put back (SettleOptions::recoverLost).
+  int recovered() const;
   // Substeps a frame takes and the seconds the transition takes, as the options or the motion set them.
   int   substepsPerFrame() const;
   float transitionSeconds() const;
-  // Positions for every mesh, in the same order and space as `rest` / `posed`, with partial
-  // strengths blended toward the target pose.
+  // Positions for every mesh, in the same order and space as `rest` / `posed`.
   std::vector<std::vector<float>> positions() const override;
   const ClothModel&               model() const;
 

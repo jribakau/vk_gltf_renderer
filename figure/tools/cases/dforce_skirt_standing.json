@@ -1,0 +1,14 @@
+{
+  "about": "The standing half of dforce_skirt.json alone, for quick solver experiments: sweeps over the stretch edges, full sweeps, substeps. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"wear": "People/Genesis 9/Clothing/Modu8/She Is The Boss/M8 SITB !Full Load.duf"},
+    {"dforce": "stretch0", "stretchSweeps": 0},
+    {"dforce": "stretch2", "stretchSweeps": 2},
+    {"dforce": "stretch3", "stretchSweeps": 3, "obj": "_out/dforce"},
+    {"dforce": "stretch5", "stretchSweeps": 5},
+    {"dforce": "stretch8", "stretchSweeps": 8},
+    {"dforce": "iter4", "stretchSweeps": 0, "iterations": 4}
+  ]
+}

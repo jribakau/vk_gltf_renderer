@@ -25,6 +25,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -64,6 +65,9 @@ public:
   std::function<bool()> playing;
   // The GPU simulation, when the renderer offers one.
   MakeSim makeGpuSim;
+  // Whether a shown mesh with no simulation modifier is a collider the cloth meets (a belt, a bra,
+  // shoes): DAZ collides with every visible object. Unset: every one.
+  std::function<bool(int mesh)> collidesWith;
 
   // Whether anything worn would be draped.
   bool active() const;
@@ -99,6 +103,16 @@ public:
   int version() const { return m_version; }
   // Meshes holding a drape now.
   int draped() const { return int(m_draped.size()); }
+
+  // What a settle would be built from now, for a tool that runs the solver itself: the meshes in
+  // the job's space, slot by slot, and which slots are drapes (mesh, slot). None when nothing drapes.
+  struct Prepared
+  {
+    std::vector<SettleMesh>          bodies;
+    std::vector<int>                 slotMesh;
+    std::vector<std::pair<int, int>> drapes;
+  };
+  std::optional<Prepared> prepared() const;
 
 private:
   struct Job;
