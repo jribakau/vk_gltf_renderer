@@ -97,6 +97,29 @@ struct StrandPart
 };
 std::mutex                                                g_strandMutex;
 std::map<const mesh::BuiltMesh*, std::vector<StrandPart>> g_strands;
+// a geometry's weld, shared by its materials' votes (each used to weld the whole mesh again)
+struct StrandWeld
+{
+  std::weak_ptr<const mesh::BuiltMesh>         geo;
+  std::shared_ptr<const std::vector<uint32_t>> ids;
+};
+std::map<const mesh::BuiltMesh*, StrandWeld> g_welds;  // under g_strandMutex
+
+std::shared_ptr<const std::vector<uint32_t>> weldOf(const std::shared_ptr<mesh::BuiltMesh>& geo)
+{
+  {
+    std::lock_guard lock(g_strandMutex);
+    if(auto it = g_welds.find(geo.get()); it != g_welds.end() && it->second.geo.lock() == geo)
+      return it->second.ids;
+  }
+  auto ids = std::make_shared<const std::vector<uint32_t>>(mat::weldPositions(geo->position));
+  std::lock_guard lock(g_strandMutex);
+  std::erase_if(g_welds, [](const auto& kv) { return kv.second.geo.expired(); });
+  auto& slot = g_welds[geo.get()];
+  if(slot.geo.lock() != geo)  // first here (two parts of one mesh may have welded side by side: the first stays)
+    slot = {geo, ids};
+  return slot.ids;
+}
 
 bool sameRanges(const std::vector<mat::StrandMesh::Range>& a, const std::vector<mat::StrandMesh::Range>& b)
 {
@@ -126,9 +149,10 @@ std::shared_ptr<const std::vector<mat::StrandVote>> strandVotesOf(const std::sha
       flipped[v] = 1 - flipped[v];
     uv = flipped;
   }
-  auto votes = [&] {
+  const auto weld  = weldOf(geo);
+  auto       votes = [&] {
     timing::Scope t("strand votes", 20);
-    return std::make_shared<const std::vector<mat::StrandVote>>(mat::strandVotes({geo->position, uv, index, ranges}));
+    return std::make_shared<const std::vector<mat::StrandVote>>(mat::strandVotes({geo->position, uv, index, ranges}, *weld));
   }();
   std::lock_guard lock(g_strandMutex);
   // geometry that is gone takes its parts with it (and an address used again starts afresh)
@@ -218,6 +242,18 @@ void measureStrands(const SceneGraph& scene, bool texturesFlipped)
     for(auto& [mi, ranges] : hairRanges(scene, m, *drawn))
       parts.push_back({&m, drawn, std::move(ranges)});
   }
+  // each hair mesh welded once, side by side, then every part's votes
+  std::vector<std::shared_ptr<mesh::BuiltMesh>> meshes;
+  for(const Part& p : parts)
+    if(std::find(meshes.begin(), meshes.end(), p.mesh->geo) == meshes.end())
+      meshes.push_back(p.mesh->geo);
+  jobs::parallelFor(meshes.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      timing::Scope t("strand weld", 20);
+      weldOf(meshes[i]);
+    }
+  });
   jobs::parallelFor(parts.size(), 1, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
       strandVotesOf(parts[i].mesh->geo, parts[i].drawn->index(), parts[i].ranges, !texturesFlipped);

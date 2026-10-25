@@ -38,6 +38,10 @@ struct StrandVote
   float weight, theta;
 };
 std::vector<StrandVote> strandVotes(const StrandMesh& part);
+// Each vertex's id among the distinct positions (cards split per triangle and UV seams repeat a
+// position): what strandVotes welds first. A mesh's materials share one weld through the overload.
+std::vector<uint32_t>   weldPositions(std::span<const float> position);
+std::vector<StrandVote> strandVotes(const StrandMesh& part, std::span<const uint32_t> weldIds);
 
 // The anisotropy rotation (radians, across the strand, in -pi/2..pi/2) of the votes, or none when
 // the long edges do not agree.
