@@ -65,6 +65,27 @@ double median(std::vector<double> values)
   return (high + *std::max_element(values.begin(), values.begin() + mid)) * 0.5;
 }
 
+// The distribution of a timer's samples, in milliseconds.
+TimerMeasurement summarize(const std::string& name, const std::vector<double>& samples)
+{
+  const double mean     = std::accumulate(samples.begin(), samples.end(), 0.0) / double(samples.size());
+  const double variance = std::accumulate(samples.begin(), samples.end(), 0.0,
+                                          [mean](double acc, double v) { return acc + (v - mean) * (v - mean); })
+                          / double(samples.size());
+  const auto [low, high] = std::minmax_element(samples.begin(), samples.end());
+
+  return {.timer             = name,
+          .samples           = samples.size(),
+          .mean              = mean,
+          .median            = median(samples),
+          .standardDeviation = std::sqrt(variance),
+          .minimum           = *low,
+          .maximum           = *high};
+}
+
+// Upper bound on the timers one vk_gltf_measure call samples together.
+constexpr size_t kMaxTimers = 64;
+
 }  // namespace
 
 //--------------------------------------------------------------------------------------------------
@@ -107,28 +128,8 @@ TimerMeasurement GltfRenderer::measureTimer(const std::string& name, int warmup,
 {
   if(frames < 1)
     return TimerMeasurement::failure("'frames' must be at least 1");
-  {
-    const std::lock_guard<std::mutex> lock(m_profilerTimelineMutex);
-    if(!m_profilerTimeline)
-      return TimerMeasurement::failure(kNoTimeline);
-  }
-
-  // Wait out any UI-initiated load (drag-and-drop / File menu) that set m_busy: those still run
-  // on a worker thread with a "Loading" overlay, and frames drawn during that window would time a
-  // partial scene. The scenefile/hdrfile parameter path is now synchronous and does NOT set
-  // m_busy, so this wait is a no-op for MCP-driven loads -- the safeguard for those is the
-  // per-sample budget below, which refuses to return until the requested timer produces a
-  // non-zero sample (the target section does not run until the pipeline it needs is live).
-  // Measured on Sponza, sampling into an un-warmed scene understates cost by ~4x.
-  const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
-  while(m_busy.isBusy() && std::chrono::steady_clock::now() < busyDeadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  // Still loading when the wait ran out: sampling now would time a partial scene and report that
-  // understatement as a result. Fail instead -- a timeout the caller can retry beats a wrong number.
-  if(m_busy.isBusy())
-    return TimerMeasurement::failure(
-        "the renderer was still loading after 120 s; measuring now would time a "
-        "partially loaded scene. Retry once the load completes.");
+  if(const std::string notReady = waitUntilMeasurable(); !notReady.empty())
+    return TimerMeasurement::failure(notReady);
 
   uint32_t lastIndex    = 0;
   bool     haveIndex    = false;
@@ -201,19 +202,150 @@ TimerMeasurement GltfRenderer::measureTimer(const std::string& name, int warmup,
     samples.push_back(sample * 0.001);  // the profiler reports microseconds
   }
 
-  const double mean     = std::accumulate(samples.begin(), samples.end(), 0.0) / double(samples.size());
-  const double variance = std::accumulate(samples.begin(), samples.end(), 0.0,
-                                          [mean](double acc, double v) { return acc + (v - mean) * (v - mean); })
-                          / double(samples.size());
-  const auto [low, high] = std::minmax_element(samples.begin(), samples.end());
+  return summarize(name, samples);
+}
 
-  return {.timer             = name,
-          .samples           = samples.size(),
-          .mean              = mean,
-          .median            = median(samples),
-          .standardDeviation = std::sqrt(variance),
-          .minimum           = *low,
-          .maximum           = *high};
+// The timeline is there and no UI-initiated load is running; otherwise why not, for the caller to
+// return as its error.
+std::string GltfRenderer::waitUntilMeasurable() const
+{
+  {
+    const std::lock_guard<std::mutex> lock(m_profilerTimelineMutex);
+    if(!m_profilerTimeline)
+      return kNoTimeline;
+  }
+
+  // Wait out any UI-initiated load (drag-and-drop / File menu) that set m_busy: those still run
+  // on a worker thread with a "Loading" overlay, and frames drawn during that window would time a
+  // partial scene. The scenefile/hdrfile parameter path is now synchronous and does NOT set
+  // m_busy, so this wait is a no-op for MCP-driven loads -- the safeguard for those is the
+  // per-sample budget of the measurement, which refuses to return until the requested timer produces a
+  // non-zero sample (the target section does not run until the pipeline it needs is live).
+  // Measured on Sponza, sampling into an un-warmed scene understates cost by ~4x.
+  const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+  while(m_busy.isBusy() && std::chrono::steady_clock::now() < busyDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  // Still loading when the wait ran out: sampling now would time a partial scene and report that
+  // understatement as a result. Fail instead -- a timeout the caller can retry beats a wrong number.
+  if(m_busy.isBusy())
+    return "the renderer was still loading after 120 s; measuring now would time a "
+           "partially loaded scene. Retry once the load completes.";
+  return {};
+}
+
+// Blocking, off the application thread like measureTimer: samples several timers on the same
+// rendered frames, so a short window (a drag, an orbit) times all of them while it lasts instead
+// of one after another, the later ones after it ended.
+//
+// A frame records only the sections that ran, so some timers never tick in a given window (the
+// raster's blend sort with nothing to sort, DLSS under accumulation). Such a timer is reported
+// with an error once every timer that did tick has its samples, instead of holding the call for
+// the first-sample budget. One that stops ticking for the per-sample budget (the motion ended)
+// keeps the samples it has; `samples` says how many.
+std::vector<TimerMeasurement> GltfRenderer::measureTimers(const std::vector<std::string>& names, int warmup, int frames) const
+{
+  std::vector<TimerMeasurement> results(names.size());
+  if(frames < 1)
+  {
+    std::fill(results.begin(), results.end(), TimerMeasurement::failure("'frames' must be at least 1"));
+    return results;
+  }
+  if(const std::string notReady = waitUntilMeasurable(); !notReady.empty())
+  {
+    std::fill(results.begin(), results.end(), TimerMeasurement::failure(notReady));
+    return results;
+  }
+
+  struct Series
+  {
+    bool                                  seen      = false;  // a first frame index was read
+    bool                                  finished  = false;  // all its samples, or it stopped ticking
+    uint32_t                              lastIndex = 0;
+    int                                   skipped   = 0;  // warmup frames passed over
+    std::vector<double>                   samples;
+    std::chrono::steady_clock::time_point lastTick;
+  };
+  std::vector<Series> series(names.size());
+
+  // The same budgets as measureTimer: the first tick of any timer may take a while after a load,
+  // a timer that ticked and then waits this long between frames has stopped.
+  const auto start        = std::chrono::steady_clock::now();
+  const auto firstBudget  = std::chrono::seconds(60);
+  const auto sampleBudget = std::chrono::seconds(5);
+  bool       timelineGone = false;
+  while(true)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    for(size_t i = 0; i < names.size() && !timelineGone; i++)
+    {
+      Series& s = series[i];
+      if(s.finished)
+        continue;
+      nvutils::ProfilerTimeline::TimerInfo info{};
+      std::string                          apiName;
+      bool                                 haveInfo = false;
+      {
+        // One profiler call per lock, as measureTimer does
+        const std::lock_guard<std::mutex> lock(m_profilerTimelineMutex);
+        if(!m_profilerTimeline)
+        {
+          timelineGone = true;
+          break;
+        }
+        haveInfo = m_profilerTimeline->getFrameTimerInfo(names[i], info, apiName);
+      }
+      if(!haveInfo || info.numAveraged == 0)
+        continue;
+      if(!s.seen)
+      {
+        s.seen      = true;
+        s.lastIndex = info.gpu.index;
+        s.lastTick  = now;
+        continue;
+      }
+      if(info.gpu.index == s.lastIndex)
+        continue;
+      s.lastIndex = info.gpu.index;
+      s.lastTick  = now;
+      if(s.skipped < warmup)
+        s.skipped++;
+      else
+        s.samples.push_back(info.gpu.last * 0.001);  // the profiler reports microseconds
+      s.finished = int(s.samples.size()) >= frames;
+    }
+    if(timelineGone)
+      break;
+
+    bool anySeen = false, allSeenFinished = true;
+    for(Series& s : series)
+    {
+      if(s.seen && !s.finished && now - s.lastTick > sampleBudget)
+        s.finished = true;
+      anySeen |= s.seen;
+      allSeenFinished &= !s.seen || s.finished;
+    }
+    // Done when every timer that ticked has finished: the ones that never did are not running in
+    // these frames. Nothing ticking at all is a renderer that is idle or still warming up.
+    if(anySeen && allSeenFinished)
+      break;
+    if(!anySeen && now - start > firstBudget)
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  for(size_t i = 0; i < names.size(); i++)
+  {
+    if(timelineGone)
+      results[i] = TimerMeasurement::failure(kNoTimeline);
+    else if(!series[i].samples.empty())
+      results[i] = summarize(names[i], series[i].samples);
+    else
+      results[i] = TimerMeasurement::failure("timer '" + names[i]
+                                             + "' produced no GPU samples in these frames: the section did not run, the "
+                                               "name is wrong (see vk_gltf_list_timers), or the renderer is idle");
+    results[i].timer = names[i];
+  }
+  return results;
 }
 
 
@@ -295,8 +427,12 @@ std::shared_ptr<nvmcp::Element> createTimingMcpServer(const McpTimingCreateInfo&
                      "distribution in milliseconds. Discards `warmup` frames, then samples one value "
                      "per rendered frame, so the result describes only what is running now. Compare "
                      "runs on MEDIAN: it reproduces to about 1%, while mean and standardDeviation are "
-                     "inflated by occasional scheduling outliers and will hide a real change.",
+                     "inflated by occasional scheduling outliers and will hide a real change. Pass "
+                     "`timers` (a list) instead of `timer` to sample several on the same frames: the "
+                     "result is {timers: [...]}, one entry per name, and a timer that does not run in "
+                     "those frames gets an `error` once the others are done instead of a timeout.",
       .inputSchema = R"({"type":"object","properties":{"timer":{"type":"string"},)"
+                     R"("timers":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},)"
                      R"("frames":{"type":"integer","minimum":1,"maximum":10000},)"
                      R"("warmup":{"type":"integer","minimum":0,"maximum":10000}},"additionalProperties":false})",
       .handler =
@@ -318,6 +454,17 @@ std::shared_ptr<nvmcp::Element> createTimingMcpServer(const McpTimingCreateInfo&
               if(!it->is_string())
                 return nvmcp::ToolResult::error(R"({"error":"'timer' must be a string"})");
               timer = it->get<std::string>();
+            }
+            std::vector<std::string> timers;
+            if(const auto it = input.find("timers"); it != input.end())
+            {
+              if(input.contains("timer"))
+                return nvmcp::ToolResult::error(R"({"error":"pass 'timer' or 'timers', not both"})");
+              if(!it->is_array() || it->empty() || it->size() > kMaxTimers
+                 || !std::all_of(it->begin(), it->end(), [](const Json& name) { return name.is_string(); }))
+                return nvmcp::ToolResult::error(
+                    Json{{"error", "'timers' must be a list of 1 to " + std::to_string(kMaxTimers) + " names"}}.dump());
+              timers = it->get<std::vector<std::string>>();
             }
 
             const auto readCount = [&input](const char* key, int64_t defaultValue, int64_t low, int64_t& out) -> bool {
@@ -344,19 +491,31 @@ std::shared_ptr<nvmcp::Element> createTimingMcpServer(const McpTimingCreateInfo&
               return nvmcp::ToolResult::error(
                   Json{{"error", "'frames' must be an integer between 1 and " + std::to_string(kMaxFrames)}}.dump());
 
+            const auto toJson = [](const TimerMeasurement& result) {
+              return Json{{"timer", result.timer},
+                          {"samples", result.samples},
+                          {"median", result.median},
+                          {"mean", result.mean},
+                          {"standardDeviation", result.standardDeviation},
+                          {"minimum", result.minimum},
+                          {"maximum", result.maximum},
+                          {"unit", "milliseconds"}};
+            };
+
+            if(!timers.empty())
+            {
+              // One entry per name: a timer that did not run is an entry with its error, not a
+              // failed call, since the others were measured.
+              Json list = Json::array();
+              for(const TimerMeasurement& result : renderer->measureTimers(timers, int(warmup), int(frames)))
+                list.push_back(result.error.empty() ? toJson(result) : Json{{"timer", result.timer}, {"error", result.error}});
+              return nvmcp::ToolResult::success(Json{{"timers", list}}.dump());
+            }
+
             const TimerMeasurement result = renderer->measureTimer(timer, int(warmup), int(frames));
             if(!result.error.empty())
               return nvmcp::ToolResult::error(Json{{"error", result.error}}.dump());
-
-            return nvmcp::ToolResult::success(Json{{"timer", result.timer},
-                                                   {"samples", result.samples},
-                                                   {"median", result.median},
-                                                   {"mean", result.mean},
-                                                   {"standardDeviation", result.standardDeviation},
-                                                   {"minimum", result.minimum},
-                                                   {"maximum", result.maximum},
-                                                   {"unit", "milliseconds"}}
-                                                  .dump());
+            return nvmcp::ToolResult::success(toJson(result).dump());
           },
       .annotations = {.readOnlyHint = true, .destructiveHint = false},
       // Blocks on rendered frames, so it must stay off the thread producing them.

@@ -532,6 +532,9 @@ public:
   /// Blocks for `warmup + frames` rendered frames, so it must be called off the application
   /// thread -- that is the thread producing the frames it waits on.
   [[nodiscard]] TimerMeasurement measureTimer(const std::string& name, int warmup, int frames) const;
+  /// Several timers over the same rendered frames, one result per name in order. A timer that does
+  /// not tick in those frames gets an error once the others are done, not after a timeout.
+  [[nodiscard]] std::vector<TimerMeasurement> measureTimers(const std::vector<std::string>& names, int warmup, int frames) const;
 #endif
 
 private:
@@ -771,6 +774,8 @@ private:
   // timeline while the MCP element is still serving: a worker thread can be inside a profiler read
   // at that moment. Held for one profiler call at a time, never across a wait for a frame.
   mutable std::mutex m_profilerTimelineMutex;
+  // Waits out a UI-initiated load before a measurement; the reason it cannot measure, or empty.
+  [[nodiscard]] std::string waitUntilMeasurable() const;
 #endif
   nvvk::ProfilerGpuTimer                   m_profilerGpuTimer{};  // GPU profiler
   std::shared_ptr<AnchorCameraManipulator> m_cameraManip;         // Camera manipulator

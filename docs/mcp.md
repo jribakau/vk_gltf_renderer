@@ -40,7 +40,7 @@ authoritative names, schemas and descriptions:
 |---|---|
 | `vk_gltf_reload_shaders` | Recompile Slang shaders from source and swap in the new pipelines |
 | `vk_gltf_list_timers` | GPU profiler timer names available right now |
-| `vk_gltf_measure` | Time one timer over a controlled window and return the distribution |
+| `vk_gltf_measure` | Time one timer, or several on the same frames, over a controlled window and return the distribution |
 
 Live scene edits for a host application (materials, nodes, lights, animation, morph weights and
 vertex positions, several per call landing in one frame) are a second set of tools, the
@@ -105,6 +105,20 @@ inflated by occasional scheduling outliers and will hide a real change.
 The window is sampled per frame after a reset, so it describes only what is running now — unlike
 the profiler's own running average, which spans the whole session.
 
+**Time a short window's timers together.** `timers` instead of `timer` samples several on the same
+frames and returns `{"timers": [...]}`, one entry per name in order:
+
+```jsonc
+vk_gltf_measure {"timers": ["Frame", "Path Trace (RTX)", "DLSS", "GltfRenderer::tonemap"], "frames": 40, "warmup": 3}
+```
+
+Measured one after another during a drag or an orbit, the later timers are read after the motion
+ended, from other frames (the parts then do not add up to the frame), and a timer that never ticks
+(DLSS under accumulation, the raster's blend sort with nothing to sort) holds the call for the
+first-sample budget, 60 s. Together, each comes from the same frames, and one that does not tick
+comes back as an entry with an `error` as soon as the others have their samples. One that stops
+ticking for 5 s keeps the samples it has: check `samples`.
+
 **Read the register count too.** When the device has `VK_KHR_pipeline_executable_properties`, every
 path-tracer pipeline build logs what the driver compiled — `RQ pipeline executable 0 (CS): Register
 Count=…, Local Memory Size=…, Shared Memory Size=…` (`PathTracer::logPipelineStatistics`; read it
@@ -120,7 +134,8 @@ that.
   The server instructions list the settings that do take effect live.
 - **An idle renderer records no timers.** The profiler rebuilds its snapshot each frame from the
   sections that actually ran, so once accumulation stops at `ptMaxSamples` the timer list goes empty
-  and `vk_gltf_measure` times out. Raise `ptMaxSamples` to keep drawing.
+  and `vk_gltf_measure` times out (with `timers`, every entry reports the error after the same 60 s).
+  Raise `ptMaxSamples` to keep drawing.
 - **The scene keeps warming up after the write returns.** `scenefile` completes CPU-side and
   installs the Vulkan resources before the write returns, but BLAS/TLAS builds and the initial
   data uploads are queued into a background pipeline that drains one submission per frame in
