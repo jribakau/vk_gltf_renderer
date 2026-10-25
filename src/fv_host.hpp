@@ -63,6 +63,20 @@
 //                                                driver's budget and what a pixel of the frame costs, so an
 //                                                export size is judged before /size refuses it (507)
 //   material.set    {prop, material, values}     edit a surface (fv_materials.hpp); material.reset {prop, material?}
+//   material.eyes   {prop, rel: string | null}   -> {job}: a figure's eyes become the eye preset `rel` (null: the
+//                                                character's own, its file's and its add-ons' presets). Each
+//                                                choice starts from the character's own, so eyes don't stack,
+//                                                takes only the preset's eye surfaces (kind eye, corneas but
+//                                                the tear film) and drops the panel's edits of them. Read on a
+//                                                worker, applied once the add-ons are on. The job ends {state:
+//                                                "done", eyes: rel | null, changed: n}, or "failed" with the
+//                                                error for a prop that is no figure, a figure without eyes, or
+//                                                a preset none of whose surfaces are its eyes. A material
+//                                                preset opened with `load` that is only eyes goes this way too;
+//                                                one that also sets other surfaces is recorded as the eyes'
+//                                                `preset`. Material presets wait for the add-ons as well.
+//                                                "materials/<prop>".eyes = {rel, preset, own: [rel] (the add-on
+//                                                presets), ready (the add-ons are on), surfaces: ["m:N"]}
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
 //                                                leaves the renderer's scene at the next composition, and a geograft composes
@@ -78,7 +92,9 @@
 //                                                "session" topic's features.dforceGpu says, and a scene file's
 //                                                "gpu" restores as live without it)
 //   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
-//                                                material edits, collision and dForce on/off, dForce's mode
+//                                                material presets, eyes (rel | null, once chosen), material
+//                                                edits, collision and dForce on/off, dForce's mode; restored
+//                                                after the add-ons: presets (eye-only ones as eyes), eyes, edits
 //   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models')
 //   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
 //                                                whole scene, written at once -> {ok}

@@ -59,7 +59,8 @@ struct BuildResult
   // scene mesh -> glTF skin, -1 for an unskinned mesh
   std::vector<int> skinOf;
   // scene material -> the options its glTF material was lowered with (emission from the exposure
-  // and the emitting area, the hair strand direction measured from the meshes), for later edits
+  // and the emitting area, the hair strand direction measured from the meshes, an iris's discs),
+  // for later edits
   std::vector<mat::LowerOptions> lowering;
   // request key -> the glTF texture made for it, so a later edit reuses what the build already has
   std::map<std::string, mat::ResolvedTexture> textureOf;
@@ -90,5 +91,11 @@ tinygltf::Material materialToGltf(const Material& m, const mat::LowerOptions& op
 
 // The requests of one material (what textureRequests collects for the scene).
 std::vector<TextureRequest> textureRequests(const Material& m, mat::SkinMode skin = mat::SkinMode::eVolume);
+
+// Where a material's UV islands lie in its maps, one disc per eye: centre x, y and radius as
+// fractions of the image, y down, in the tile the island is in; islands that overlap are one, the
+// four largest are kept. For an iris surface of its own (Genesis 8 "Irises"), whose map it shares
+// with nothing it can be told apart from without them (LowerOptions::irisDiscs).
+std::vector<std::array<float, 3>> irisDiscs(const SceneGraph& scene, int material);
 
 }  // namespace fv::build

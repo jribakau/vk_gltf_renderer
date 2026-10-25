@@ -158,17 +158,20 @@ std::vector<int> presetTargets(const SceneGraph& scene, const std::string& node,
   return presetTargets(scene, node.empty() ? std::vector<std::string>{} : std::vector<std::string>{node}, surface);
 }
 
-MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
+namespace {
+
+// (node chain, surface) -> channel -> override, in the order the preset lists them
+using Overrides = std::map<std::pair<std::vector<std::string>, std::string>, std::vector<ChannelOverride>>;
+
+// The channel values and images a material preset sets, by the surface it addresses; `edits` counts them.
+Overrides parseOverrides(const Json& doc, int* edits)
 {
-  MaterialPresetResult result;
-  const Json*          animations = get(get(&doc, "scene"), "animations");
+  Overrides   bySurface;
+  const Json* animations = get(get(&doc, "scene"), "animations");
   if(!animations || !animations->is_array())
-    return result;
+    return bySurface;
   std::unordered_map<std::string, std::string> images;
   collectImages(doc, images);
-
-  // (node chain, surface) -> channel -> override, in the order the preset lists them
-  std::map<std::pair<std::vector<std::string>, std::string>, std::vector<ChannelOverride>> bySurface;
   static const std::regex url(R"(^(.*?)#materials/([^:]+):\?(.+)$)");
   for(const Json& a : *animations)
   {
@@ -207,14 +210,24 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
       }
       it->image = file;
     }
-    result.edits++;
+    if(edits)
+      (*edits)++;
   }
+  return bySurface;
+}
 
-  for(const auto& [key, overrides] : bySurface)
+}  // namespace
+
+MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only)
+{
+  MaterialPresetResult result;
+  for(const auto& [key, overrides] : parseOverrides(doc, &result.edits))
   {
     const auto& [chain, surface] = key;
-    bool                   stray   = false;
-    const std::vector<int> targets = presetTargets(scene, chain, surface, &stray);
+    bool             stray   = false;
+    std::vector<int> targets = presetTargets(scene, chain, surface, &stray);
+    if(only)
+      std::erase_if(targets, [&](int i) { return !only->count(i); });
     if(targets.empty())
       result.missing.insert(surface);
     else
@@ -231,6 +244,38 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene)
         result.changed.insert(i);
   }
   return result;
+}
+
+std::set<int> materialPresetTargets(const Json& doc, const SceneGraph& scene)
+{
+  std::set<int> out;
+  for(const auto& [key, overrides] : parseOverrides(doc, nullptr))
+    for(int i : presetTargets(scene, key.first, key.second))
+      out.insert(i);
+  return out;
+}
+
+void keepBaseline(SceneGraph& scene)
+{
+  for(Material& m : scene.materials)
+    m.baseline = m.channels;
+}
+
+std::set<int> restoreBaseline(SceneGraph& scene, const std::set<int>& which)
+{
+  std::set<int> changed;
+  for(int i : which)
+  {
+    if(i < 0 || i >= int(scene.materials.size()))
+      continue;
+    Material& m = scene.materials[size_t(i)];
+    if(!m.baseline || m.channels == m.baseline)
+      continue;
+    m.channels = m.baseline;
+    m.surface  = parseSurface(m.name, *m.baseline);
+    changed.insert(i);
+  }
+  return changed;
 }
 
 }  // namespace fv::dson

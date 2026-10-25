@@ -46,11 +46,11 @@ struct ChannelOverride
 };
 
 // Lays channel overrides over a material's own and parses its surface again. False when nothing
-// changed. Material edits (m.edits) stay.
+// changed. Material edits (m.edits) and the baseline stay.
 bool overrideChannels(Material& m, const std::vector<ChannelOverride>& overrides);
 
 // The material a surface name and its channels make: the surface, and the channels kept for what
-// reads them directly (strand widths).
+// reads them directly (strand widths), which are also its baseline.
 Material buildMaterial(const std::string& name, const Channels& ch);
 
 }  // namespace fv::dson

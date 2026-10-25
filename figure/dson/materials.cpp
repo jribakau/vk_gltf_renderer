@@ -1,4 +1,5 @@
 #include <figure/dson/materials.hpp>
+#include <figure/materials/texture_request.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -89,21 +90,24 @@ void collectImages(const Json& doc, std::unordered_map<std::string, std::string>
   for(const Json& img : *lib)
   {
     const Json* layers = get(&img, "map");
-    if(!layers || !layers->is_array())
+    const std::string id = getString(&img, "id");
+    if(!layers || !layers->is_array() || id.empty())
       continue;
+    // A layered image (Genesis 9's default eyes: the iris, a disc with alpha, over the sclera)
+    // keeps its file layers bottom up; the cooker lays them over each other. A colour layer with no
+    // file (the white under the sclera) is covered by the first file.
+    std::string map;
     for(const Json& l : *layers)
     {
       const Json* active = get(&l, "active");
       if(active && active->is_boolean() && !active->get<bool>())
         continue;
       const std::string url = getString(&l, "url");
-      if(url.empty())
-        continue;
-      const std::string id = getString(&img, "id");
-      if(!id.empty())
-        into[id] = url;
-      break;
+      if(!url.empty())
+        map += (map.empty() ? "" : std::string(1, mat::kLayerSeparator)) + url;
     }
+    if(!map.empty())
+      into[id] = map;
   }
 }
 
@@ -512,6 +516,7 @@ Material buildMaterial(const std::string& name, const Channels& ch)
   m.name    = name;
   m.surface  = parseSurface(name, ch);
   m.channels = std::make_shared<const Channels>(ch);
+  m.baseline = m.channels;
   return m;
 }
 

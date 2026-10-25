@@ -45,6 +45,9 @@ struct LowerOptions
   // The build turned V over (the textures are used as their files have them): a tiled texture's
   // V offset is mirrored to match.
   bool flipV = false;
+  // An iris surface (EyeLayout::eIris): where each eye's iris is in its map, centre x, y and radius
+  // as fractions of the image, y down (build::irisDiscs, from its UVs). None: its colour can't be changed.
+  std::vector<std::array<float, 3>> irisDiscs;
 };
 
 // The values the Material panel shows for a surface: what the lowering used, edits included.

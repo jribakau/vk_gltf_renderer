@@ -848,6 +848,11 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
     m_prevDlssFrame     = false;
     m_accumulationStart = std::chrono::steady_clock::now();
   }
+  // Whether DLSS draws this frame, decided once: the shader variant prepareFrame() picks and the frame
+  // must agree. The hand-off delay's frames are DLSS's with the count held at 1; on the regular variant
+  // they wrote no guides, and DLSS reapplied the last moving frame's motion vectors to the still view,
+  // smearing it along that motion until the accumulation took over.
+  m_dlssShaderFrame = !isAccumulationDenoiserEnabled() || resources.frameCount == 0 || inHandoffDelay();
 
   if(!prepareFrame(resources))
     return;
@@ -860,7 +865,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   m_prevDlssFrame       = m_dlssFrame;
   {
     const bool dlssActive = m_dlss->isActive();
-    m_dlssFrame = dlssActive && (!isAccumulationDenoiserEnabled() || resources.frameCount == 0 || inHandoffDelay());
+    m_dlssFrame = dlssActive && m_dlssShaderFrame;
   }
   m_handoffFrame = !m_dlssFrame && m_prevDlssFrame && resources.frameCount >= 1;
   if(dlssTicked)
@@ -2092,8 +2097,9 @@ bool PathTracer::isEmbeddedDlssVariant(const Resources& resources) const
 //--------------------------------------------------------------------------------------------------
 // The variant the current settings ask for -- the variant-cache key compileShader() looks up.
 // DLSS's guide captures cost every sample, so they are compiled in only for the frames DLSS renders:
-// with OptiX or OIDN also on, frame 0, while the frames after it run the regular variant. Each camera
-// start and stop is then a cached-variant swap in prepareFrame(); a moving camera stays on DLSS's.
+// with OptiX or OIDN also on, frame 0 and the hand-off delay's (m_dlssShaderFrame), while the
+// accumulation's frames after them run the regular variant. Each camera start and stop is then a
+// cached-variant swap in prepareFrame(); a moving camera stays on DLSS's.
 // While DLSS is still loading, its variant is compiled ahead of its first frame.
 PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) const
 {
@@ -2102,7 +2108,7 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
       resources.settings.visualization != shaderio::Visualization::eRendered,
       wantOpacityMicromapShader(resources),
       resources.settings.optimalShader,
-      isDlssEnabled() && (!isAccumulationDenoiserEnabled() || resources.frameCount == 0),
+      isDlssEnabled() && m_dlssShaderFrame,
       resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eDlssGuide),
       resources.settings.optimalShader ? resources.currentFeatureSet : nvvkgltf::SceneFeatureSet{},
 #if defined(USE_DLSS)

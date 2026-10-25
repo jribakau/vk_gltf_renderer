@@ -264,6 +264,8 @@ public:
   bool                                  m_handoffFrame{false};
   int                                   m_dlssHandoffDelayMs{0};
   std::chrono::steady_clock::time_point m_accumulationStart{};
+  // DLSS draws this frame (onRender decides it before the variant is picked: they must agree)
+  bool m_dlssShaderFrame = true;
   int                                   m_accumulationFrames{0};  // frames the accumulation traced (not DLSS's)
   std::atomic<uint32_t>      m_pipelineGeneration{0};   // Bumped whenever a new or swapped pipeline is installed
   uint64_t                   m_adaptivePipelineKey{0};  // Pipeline (generation, technique) Auto SPP was found with

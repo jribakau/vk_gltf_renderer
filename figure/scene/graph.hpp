@@ -83,6 +83,9 @@ struct Material
   mat::Surface                          surface;
   mat::Edits                            edits;
   std::shared_ptr<const dson::Channels> channels;
+  // the channels as the character came: its file's own and the presets its add-ons were worn with.
+  // Choosing other eyes, or the character's own, puts these back; presets opened later leave it.
+  std::shared_ptr<const dson::Channels> baseline;
 };
 
 struct Mesh

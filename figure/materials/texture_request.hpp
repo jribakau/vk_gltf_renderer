@@ -2,11 +2,12 @@
 
 // One texture a glTF material asks for: a library image, how it is read, and what the cooker (the
 // Rust texture server) lays over or converts in it. The cooker's own queries are the vocabulary:
-// `alpha=`, `mk=` (makeup), `bump=` and `ch=` (see src-tauri/src/protocol.rs).
+// `alpha=`, `mk=` (makeup), `ir=` (iris), `bump=` and `ch=` (see src-tauri/src/protocol.rs).
 
 #include <array>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace fv::mat {
 
@@ -23,6 +24,33 @@ struct MakeupRequest
   float                weightFactor = 0;
 };
 
+// An eye's colour map with its iris recoloured, in Oklab, as the cooker's recolour_iris does it
+// (texcache.rs; figure/materials/iris.hpp for a GLB). In each disc the pupil (fading out from
+// lightness 0.35 to 0.2) is left out of the iris's mean; a pixel's lightness is scaled by the
+// target's over that mean (clamped to 0.5..2), and its hue and chroma become the target's plus half
+// its own departure from the mean, scaled by its lightness over the mean, so fibres and the limbal
+// ring stay. Blended in by `strength`, in linear light; outside the irises the image is multiplied
+// by `sclera`.
+struct IrisRequest
+{
+  enum class Mode
+  {
+    eEye,   // iris and white in one image: each disc is a nominal iris the cooker fits the limbus around,
+            // its edge feathered from 0.9 to 1.1 of the radius
+    eIris,  // the image is iris: all of it changes, the discs only say where its mean is taken
+  };
+  std::optional<std::array<float, 3>> iris;  // linear; none: the iris as it is
+  float                               strength = 1;
+  Mode                                mode     = Mode::eEye;
+  // centre x, y and radius, fractions of the image as its file has it (y down, r of the width)
+  std::vector<std::array<float, 3>>   discs;
+  std::optional<std::array<float, 3>> sclera;  // linear multiplier; none: the white as it is
+};
+
+// The cooker's ir= value, before it is percent-encoded as a whole:
+// <iris r,g,b | ->|<strength>|<eye | iris>|<x,y,r>[;<x,y,r>...]|<sclera r,g,b | ->
+std::string irisQuery(const IrisRequest& r);
+
 struct TextureRequest
 {
   std::string rel;
@@ -35,10 +63,22 @@ struct TextureRequest
   std::string bumpRel;  // a height map blended onto the normal map; empty: none
   float       bumpStrength = 1;
   std::optional<MakeupRequest> makeup;
+  std::optional<IrisRequest>   iris;
+  // A DAZ layered image's upper layers, laid over `rel` by their own alpha before anything else
+  // (Genesis 9's default eyes: the iris over the sclera)
+  std::vector<std::string> layers;
 
   // Whether only the cooker can make it (the renderer reads plain png/jpg/webp itself).
-  bool composed() const { return !alphaRel.empty() || !channels.empty() || !bumpRel.empty() || makeup.has_value(); }
+  bool composed() const
+  {
+    return !alphaRel.empty() || !channels.empty() || !bumpRel.empty() || makeup.has_value() || iris.has_value() || !layers.empty();
+  }
 };
+
+// A layered image's map: its layers' files bottom up, joined by this (no path holds it).
+constexpr char kLayerSeparator = '|';
+// The files of a map, bottom up: one for a plain image.
+std::vector<std::string> mapLayers(const std::string& map);
 
 // Two requests with the same key cook the same image.
 std::string requestKey(const TextureRequest& req);

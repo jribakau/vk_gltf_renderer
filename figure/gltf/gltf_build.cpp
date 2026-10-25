@@ -198,10 +198,112 @@ std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMo
 {
   std::vector<TextureRequest> out;
   std::set<std::string>       seen;
-  for(const Material& m : scene.materials)
-    for(TextureRequest& req : textureRequests(m, skin))
+  for(size_t mi = 0; mi < scene.materials.size(); mi++)
+  {
+    const Material&   m = scene.materials[mi];
+    mat::LowerOptions o;
+    o.skin = skin;
+    // as the build lowers it: an iris's colour asks for a texture only where its discs are known
+    if(m.edits.irisColor && mat::eyeLayout(m.surface) == mat::EyeLayout::eIris)
+      o.irisDiscs = irisDiscs(scene, int(mi));
+    for(TextureRequest& req : mat::lower(m.surface, m.edits, o).requests)
       if(seen.insert(requestKey(req)).second)
         out.push_back(std::move(req));
+  }
+  return out;
+}
+
+std::vector<std::array<float, 3>> irisDiscs(const SceneGraph& scene, int material)
+{
+  struct Disc
+  {
+    double x = 0, y = 0, r = 0;
+  };
+  std::vector<Disc> discs;
+  for(const Mesh& m : scene.meshes)
+  {
+    if(!m.geo)
+      continue;
+    const mesh::BuiltMesh& geo = *m.geo;
+    // its triangles join their vertices into islands (union-find on drawn vertices, which are split
+    // at UV seams)
+    std::map<uint32_t, uint32_t> parent;
+    const auto find = [&](uint32_t v) {
+      while(parent[v] != v)
+        v = parent[v] = parent[parent[v]];
+      return v;
+    };
+    for(const mesh::Group& g : geo.groups)
+    {
+      if(g.materialIndex < 0 || g.materialIndex >= int(m.materials.size()) || m.materials[size_t(g.materialIndex)] != material)
+        continue;
+      for(uint32_t t = g.start; t + 2 < g.start + g.count && t + 2 < geo.fullIndex.size(); t += 3)
+      {
+        const uint32_t a = geo.fullIndex[t];
+        for(uint32_t k = 0; k < 3; k++)
+          parent.try_emplace(geo.fullIndex[t + k], geo.fullIndex[t + k]);
+        for(uint32_t k = 1; k < 3; k++)
+          parent[find(geo.fullIndex[t + k])] = find(a);
+      }
+    }
+    std::map<uint32_t, std::vector<uint32_t>> islands;
+    for(const auto& [v, p] : parent)
+      if(size_t(v) * 2 + 1 < geo.uv.size())
+        islands[find(v)].push_back(v);
+    for(const auto& [root, verts] : islands)
+    {
+      // image space: x = u, y = 1 - v
+      Disc d;
+      for(uint32_t v : verts)
+      {
+        d.x += geo.uv[v * 2];
+        d.y += 1.0 - geo.uv[v * 2 + 1];
+      }
+      d.x /= double(verts.size());
+      d.y /= double(verts.size());
+      for(uint32_t v : verts)
+        d.r = std::max(d.r, std::hypot(geo.uv[v * 2] - d.x, 1.0 - geo.uv[v * 2 + 1] - d.y));
+      // the tile it is in maps onto the image like the first
+      d.x -= std::floor(d.x);
+      d.y -= std::floor(d.y);
+      discs.push_back(d);
+    }
+  }
+  // islands that overlap are one eye (an iris cut into rings, or both eyes on one place in the map)
+  for(bool merged = true; merged;)
+  {
+    merged = false;
+    for(size_t i = 0; i < discs.size() && !merged; i++)
+      for(size_t j = i + 1; j < discs.size() && !merged; j++)
+      {
+        const Disc&  a = discs[i];
+        const Disc&  b = discs[j];
+        const double d = std::hypot(a.x - b.x, a.y - b.y);
+        if(d >= a.r + b.r)
+          continue;
+        // the smallest disc around both
+        Disc c;
+        if(d + b.r <= a.r)
+          c = a;
+        else if(d + a.r <= b.r)
+          c = b;
+        else
+        {
+          c.r          = (d + a.r + b.r) / 2;
+          const double t = (c.r - a.r) / d;
+          c.x          = a.x + (b.x - a.x) * t;
+          c.y          = a.y + (b.y - a.y) * t;
+        }
+        discs[i] = c;
+        discs.erase(discs.begin() + std::ptrdiff_t(j));
+        merged = true;
+      }
+  }
+  std::sort(discs.begin(), discs.end(), [](const Disc& a, const Disc& b) { return a.r > b.r; });
+  std::vector<std::array<float, 3>> out;
+  for(const Disc& d : discs)
+    if(d.r > 1e-4 && out.size() < 4)
+      out.push_back({float(d.x), float(d.y), float(std::min(d.r, 0.5))});
   return out;
 }
 
@@ -376,6 +478,8 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     for(const auto& v : hairVotes[mi])
       votes.insert(votes.end(), v->begin(), v->end());
     lo.anisotropyRotation = mat::strandRotation(votes);
+    if(mat::eyeLayout(scene.materials[mi].surface) == mat::EyeLayout::eIris)
+      lo.irisDiscs = irisDiscs(scene, int(mi));
   }
 
   // materials, and the textures they ask for

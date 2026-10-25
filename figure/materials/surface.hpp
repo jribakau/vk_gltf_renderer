@@ -191,11 +191,27 @@ struct Edits
   std::optional<float>       normalStrength, bumpStrength, specular, clearcoat, clearcoatRoughness;
   std::optional<Rgb>         emissive;
   std::optional<float>       emissiveIntensity;
+  // an eye's iris recoloured towards this, by irisStrength (0..1, 1 when unset), and its white
+  // multiplied by scleraColor (eyeLayout says which surfaces have them)
+  std::optional<Rgb>         irisColor, scleraColor;
+  std::optional<float>       irisStrength;
 
   bool empty() const;
   // Fields set in `o` replace those here.
   void merge(const Edits& o);
 };
+
+// How a surface's colour map holds an eye: only the iris (Genesis 8 "Irises"), the iris and the
+// white in one image (Genesis 9 "Eye Left"/"Eye Right", both irises in one map), only the white
+// (Genesis 8 "Sclera"); none for the rest (pupils, corneas, everything else).
+enum class EyeLayout
+{
+  eNone,
+  eIris,
+  eShared,
+  eSclera,
+};
+EyeLayout eyeLayout(const Surface& s);
 
 // three's SRGBToLinear and its inverse, for the colours the panel exchanges as #rrggbb.
 float srgbToLinear(double c);

@@ -209,6 +209,27 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
       return std::nullopt;
     return resized(*i, img.w, img.h);
   };
+  // a layered image's upper layers over it by their alpha, first, as the cooker does: each at its
+  // own size from the top left (Genesis 9's iris layer is the top half of the sclera's square)
+  for(const std::string& rel : req.layers)
+  {
+    const auto top = decode(o, rel, why);
+    if(!top)
+      return std::nullopt;
+    for(int y = 0; y < std::min(top->h, img.h); y++)
+      for(int x = 0; x < std::min(top->w, img.w); x++)
+      {
+        const uint8_t* t = top->at(x, y);
+        uint8_t*       b = img.at(x, y);
+        const unsigned a = t[3];
+        for(int c = 0; c < 3; c++)
+          b[c] = uint8_t((t[c] * a + b[c] * (255 - a) + 127) / 255);
+        b[3] = uint8_t(a + (b[3] * (255 - a) + 127) / 255);
+      }
+  }
+  // TODO(iris): req.iris goes here, before makeup as in the cooker's cook(): recolorIris
+  // (figure/materials/iris.hpp, the port of texcache.rs recolour_iris). Until then a GLB, or a
+  // texture composed without the cooker, keeps the eye's own iris colour.
   if(req.makeup)
   {
     std::optional<Image> color, weight;

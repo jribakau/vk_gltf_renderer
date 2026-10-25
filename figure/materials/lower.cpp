@@ -39,6 +39,13 @@ struct Builder
   Json info(TextureRequest req, std::optional<float> scale = std::nullopt, std::optional<std::array<float, 2>> tiles = std::nullopt,
             std::optional<std::array<float, 2>> offset = std::nullopt)
   {
+    // a layered image: the bottom layer is the source, the rest go over it
+    if(req.rel.find(kLayerSeparator) != std::string::npos)
+    {
+      req.layers = mapLayers(req.rel);
+      req.rel    = req.layers.front();
+      req.layers.erase(req.layers.begin());
+    }
     requests.push_back(std::move(req));
     Json out{{"slot", int(requests.size()) - 1}, {"texCoord", 0}};
     if(scale)
@@ -61,16 +68,18 @@ struct Builder
     return info(std::move(r), scale, tiles, offset);
   }
 
-  // The base colour image: the colour map with a cutout in its alpha and makeup laid over it; or,
-  // with a flat base colour, the colour baked into the image.
-  Json base(const std::string& color, const Rgb& factor, const std::string& alpha, const std::optional<MakeupLayer>& makeup)
+  // The base colour image: the colour map with its iris recoloured, a cutout in its alpha and makeup
+  // laid over it; or, with a flat base colour, the colour baked into the image.
+  Json base(const std::string& color, const Rgb& factor, const std::string& alpha, const std::optional<MakeupLayer>& makeup,
+            const std::optional<IrisRequest>& iris = std::nullopt)
   {
-    if(alpha.empty() && !makeup)
+    if(alpha.empty() && !makeup && !iris)
       return color.empty() ? Json() : plain(color, true);
     TextureRequest r;
     r.srgb     = true;
     r.rel      = !color.empty() ? color : makeup && !makeup->map.empty() ? makeup->map : makeup && !makeup->weightMap.empty() ? makeup->weightMap : alpha;
     r.alphaRel = alpha;
+    r.iris     = iris;
     // a flat base colour (no base map) is a makeup bake with nothing laid over it
     if(makeup || color.empty())
     {
@@ -90,6 +99,41 @@ struct Builder
 float clamp(float v, float lo, float hi)
 {
   return std::clamp(v, lo, hi);
+}
+
+// Genesis 9's eye UVs put both irises in the top half of one map. These are the nominal discs
+// (centre x, y and radius, fractions of the image, y down) the cooker fits each limbus around:
+// measured on Addy Florence's, Rachael's, CJ's and Ava's maps, radii 0.096 to 0.124 and pupils up to
+// 0.011 off centre.
+constexpr std::array<float, 3> kG9IrisLeft{0.249f, 0.249f, 0.108f};
+constexpr std::array<float, 3> kG9IrisRight{0.749f, 0.249f, 0.108f};
+
+// The recolour an eye's base map needs for its iris and sclera colours, none when it needs none.
+// A Genesis 8 sclera is a surface of its own: its colour multiplies the factor, no bake.
+std::optional<IrisRequest> irisRequest(const Surface& s, const Edits& e, const LowerOptions& o)
+{
+  const EyeLayout layout = eyeLayout(s);
+  if(s.base.map.empty() || (layout != EyeLayout::eShared && layout != EyeLayout::eIris))
+    return std::nullopt;
+  IrisRequest r;
+  r.iris = e.irisColor;
+  // a strength alone changes nothing to cook
+  r.strength = e.irisColor ? clamp(e.irisStrength.value_or(1.f), 0, 1) : 1.f;
+  if(layout == EyeLayout::eShared)
+  {
+    if(!e.irisColor && !e.scleraColor)
+      return std::nullopt;
+    r.mode   = IrisRequest::Mode::eEye;
+    r.discs  = {kG9IrisLeft, kG9IrisRight};
+    r.sclera = e.scleraColor;
+    return r;
+  }
+  // without the discs the cooker has nowhere to take the iris's mean (material.set refuses it)
+  if(!e.irisColor || o.irisDiscs.empty())
+    return std::nullopt;
+  r.mode  = IrisRequest::Mode::eIris;
+  r.discs = o.irisDiscs;
+  return r;
 }
 
 }  // namespace
@@ -112,6 +156,13 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   Rgb        factor = baseColor;
   if(makeup)
     factor = anyMap ? kWhite : lerp(baseColor, makeup->color, makeup->weight);
+  // an eye's colours that need no bake: an iris with no map takes the iris colour, a sclera surface
+  // of its own is multiplied by the sclera colour
+  const EyeLayout eye = eyeLayout(s);
+  if(eye == EyeLayout::eIris && s.base.map.empty() && e.irisColor)
+    factor = lerp(factor, *e.irisColor, clamp(e.irisStrength.value_or(1.f), 0, 1));
+  if(eye == EyeLayout::eSclera && e.scleraColor)
+    factor = mul(factor, *e.scleraColor);
   // glTF tints transmitted light by the base colour; Iray's refraction doesn't (the eye moisture's
   // grey diffuse colour, passed through twice, left a quarter of the light to reach the iris)
   if(refractive && !anyMap)
@@ -152,7 +203,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   pbr["metallicFactor"]  = e.metalness.value_or(s.metallic.value);
   if(anyMap)
   {
-    const Json info = b.base(s.base.map, baseColor, s.opacity.map, makeup);
+    const Json info = b.base(s.base.map, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts));
     if(!info.is_null())
       pbr["baseColorTexture"] = info;
   }

@@ -32,7 +32,19 @@ struct MaterialPresetResult
   std::set<std::string> matched;
 };
 
-MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene);
+// `only`: the materials that may take it (the rest of the preset is left out, and its surfaces count
+// as missing when none of theirs is among them).
+MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only = nullptr);
+
+// The scene materials a material preset would change, without changing them.
+std::set<int> materialPresetTargets(const Json& doc, const SceneGraph& scene);
+
+// The scene's channels as they are now become its materials' baseline: a wearable with the presets
+// of the add-on it was worn as.
+void keepBaseline(SceneGraph& scene);
+// The materials `which` back to their baseline channels, parsed again; returns those that differed.
+// Their edits stay.
+std::set<int> restoreBaseline(SceneGraph& scene, const std::set<int>& which);
 
 // The scene materials a preset's (node chain, surface) lands on, by the rules above. An empty chain
 // (`@selection` alone) means every surface of the name. `stray`: set when the scene lacks the item the

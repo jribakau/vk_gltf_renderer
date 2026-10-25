@@ -31,17 +31,25 @@
 // Commands (application thread):
 //   material.set    {material: "m:3" | ["m:3", ...], values: {color, roughness, metalness, opacity,
 //                    alphaMode, doubleSided, normalStrength, bumpStrength, specular, clearcoat,
-//                    clearcoatRoughness, emissive, emissiveIntensity}}   null resets a value
+//                    clearcoatRoughness, emissive, emissiveIntensity, irisColor, irisStrength,
+//                    scleraColor}}   null resets a value
 //   material.reset  {material}                    drops the edits of a material (or of all, if none)
 //   Colours are "#rrggbb" in sRGB, as the colour pickers hold them. alphaMode: opaque, cutout, blend.
+//   irisColor and irisStrength (0..1) recolour an eye's iris in its map (the cooker's ir=), and are
+//   refused on a surface that isn't one, or a Genesis 8 iris whose UVs gave no discs; scleraColor
+//   multiplies the white: baked into a Genesis 9 eye's map, a factor on a Genesis 8 "Sclera".
 //
 // One per prop with materials (a figure, a model). Its materials sit in the renderer's scene at
 // `Placement::materials` on (fv_compose.hpp), and "m:3" is the prop's own third material.
 //
 // Topic "materials/<prop>": {figure, items: {"m:3": {name, kind, shader, meshes, textures, values,
-// edited}}} as a snapshot when the prop is attached, then merge patches; `values` are what the
-// renderer was given (edits included), `edited` lists the values that are edits, `meshes` the
-// prop's meshes using it. The topic is dropped on detach.
+// edited, eye?}}, eyes?} as a snapshot when the prop is attached, then merge patches; `values` are
+// what the renderer was given (edits included), `edited` lists the values that are edits, `meshes`
+// the prop's meshes using it. An eye's surface has `eye: {iris, sclera, baked}` (the colours it
+// takes, and whether changing them cooks its map) and always has irisColor/irisStrength or
+// scleraColor in `values`, a colour null when unset. A figure's `eyes` is what the host set
+// (setEyes, fv_host.hpp material.eyes): {rel, preset, own, ready, surfaces}. The topic is dropped
+// on detach.
 //
 
 #include <atomic>
@@ -116,6 +124,8 @@ public:
 
   // Surfaces that were parsed again (a material preset): lowers them and publishes.
   void surfacesChanged(const std::set<int>& materials);
+  // The figure's eyes for the topic (fv_host.cpp eyesJson); kept across attachments, dropped on detach.
+  void setEyes(fv::Json eyes);
   // Real-time and RTX shade skin differently; lowers the materials that differ.
   void setSkinMode(fv::mat::SkinMode skin);
   fv::mat::SkinMode skinMode() const { return m_skin; }
@@ -157,6 +167,7 @@ private:
   bool                                                m_flipped = false;
   fv::mat::SkinMode                                   m_skin    = fv::mat::SkinMode::eRaster;
   uint64_t                                            m_generation = 0;
+  fv::Json                                            m_eyes;  // the topic's `eyes`, null for none
 
   std::shared_ptr<std::atomic<bool>> m_alive;  // false once destroyed, for work still queued
   FvWorkers m_threads;  // texture bakes

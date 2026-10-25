@@ -56,6 +56,7 @@
 #ifdef FV_DFORCE_GPU
 #include "fv_dforce_gpu.hpp"
 #endif
+#include <figure/dson/eye_materials.hpp>
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
@@ -134,6 +135,11 @@ struct Loaded
   Json source;
   // material presets opened onto it, library paths in order, for a scene file
   std::vector<std::string> materialPresets;
+  // the eyes chosen (material.eyes, or an eye-only material preset): its library path, "" for the
+  // character's own; set only once chosen, so a scene file without a choice replays its presets alone
+  std::optional<std::string> eyes;
+  std::set<int>              eyesOwned;   // what those eyes changed
+  std::string                eyesPreset;  // a mixed material preset that set the eye surfaces since
   // the add-ons its file lists are still going on; a restore waits for them, as it would otherwise
   // wear them a second time without their presets
   bool                               addonsPending = false;
@@ -404,6 +410,17 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
                            + (m.weightRel.empty() ? "-" : source(m.weightRel)) + "|" + fmtNumber(m.weightFactor) + "|" + rgb(m.tint) + "|" + rgb(m.factor);
     url += "&mk=" + encodeComponent(mk);
   }
+  // ir=<iris r,g,b | ->|<strength>|<eye | iris>|<x,y,r;...>|<sclera r,g,b | ->, percent-encoded as a whole
+  if(req.iris)
+    url += "&ir=" + encodeComponent(fv::mat::irisQuery(*req.iris));
+  // ly=<source>;<source>..., percent-encoded as a whole
+  if(!req.layers.empty())
+  {
+    std::string ly;
+    for(const std::string& layer : req.layers)
+      ly += (ly.empty() ? "" : ";") + source(layer);
+    url += "&ly=" + encodeComponent(ly);
+  }
   url += cachedOnly ? "&path=1&cached=1" : "&path=1";
   if(!textureCalls().add(&cli))
     return {};
@@ -451,18 +468,18 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
 // thing. A normal map keeps its green (the material tells the renderer to flip it) and loses the
 // bump blended onto it. A roughness map (its grey into glTF's channels) and a height map (turned
 // into a normal map) are composed here: without them skin loses its sheen and its pores. A cutout
-// alone changes the picture too much: it and makeup (and formats the renderer cannot read) are
-// cooked, unflipped, and waited for; without a cooker, or with Original textures (only what the
-// renderer cannot read is cooked then), they are composed here too (fv_textures.hpp).
+// alone changes the picture too much: it, makeup and an iris colour (and formats the renderer cannot
+// read) are cooked, unflipped, and waited for; without a cooker, or with Original textures (only
+// what the renderer cannot read is cooked then), they are composed here too (fv_textures.hpp).
 std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker)
 {
   using fv::textures::Fallback;
   const bool     derived = req.channels == "mr" || req.channels == "bn";
-  const bool     laid    = !req.alphaRel.empty() || req.makeup;
+  const bool     laid    = !req.alphaRel.empty() || req.makeup || req.iris || !req.layers.empty();
   const Fallback route   = fv::textures::fallbackOf(req.rel, derived, laid, cooker, s.originalTextures);
   if(route == Fallback::eCook)
     return cookedTexture(s, req, false, false).image;
-  // composed into a PNG beside the others made this way
+  // composed into a PNG beside the others made this way (composeImage recolours the iris)
   if(route == Fallback::eCompose)
   {
     std::error_code ec;
@@ -483,6 +500,7 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
     mix(fv::build::requestKey(req));
     {
       std::vector<std::string> sources = {req.rel, req.alphaRel, req.bumpRel};
+      sources.insert(sources.end(), req.layers.begin(), req.layers.end());
       if(req.makeup)
         sources.insert(sources.end(), {req.makeup->colorRel, req.makeup->weightRel});
       for(const std::string& rel : sources)
@@ -989,6 +1007,12 @@ struct FvHost::Impl
                    const std::optional<fv::dson::EnvironmentPreset>& environment,
                    const std::string&                                environmentPath,
                    const std::string&                                target);
+  // eyes (fv_host.hpp material.eyes): `rel` "" and no `doc` for the character's own
+  Json materialEyes(const Json& args);
+  Json applyEyes(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
+  // a material preset that is not a pair of eyes changed `changed`: if that reached the eyes, they are its now
+  void presetChangedEyes(Prop& prop, const std::string& rel, const std::set<int>& changed);
+  void publishEyes(Prop& p);
 
   // ---- lighting (fv_lighting.hpp), application thread only
   nvutils::ParameterRegistry* registry = nullptr;
@@ -1846,6 +1870,7 @@ void FvHost::Impl::compose()
       if(!p.materials)
         p.materials = makeMaterials(props[i]);
       p.materials->attach(p.id, &f.fig->loaded.scene, built, f.texturesFlipped, skinMode.load(), at);
+      publishEyes(p);
       Json described = FvView::describeFigure(nodes, f.fig->loaded.scene, f.fig->loaded.root, f.nodeOf, f.fig->morphs ? f.fig->morphs->size() : 0);
       if(f.fig->pose)
       {
@@ -2275,8 +2300,10 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
         });
         if(!wearer.empty())
         {
-          wear({{"rel", rel}, {"prop", wearer}});
-          job(jobId, {{"label", label}, {"state", "done"}});
+          // done once it is on: the app waits on this job to lay a colour preset over the piece,
+          // which finds none of its surfaces while the wear is still loading
+          const auto worn = onApp([this, wearer] { return figureArg(Json{{"prop", wearer}}); });
+          startWear(worn, {{rel, "", {}}}, {}, [this, jobId, label] { job(jobId, {{"label", label}, {"state", "done"}}); });
           return;
         }
         if(onApp([this] { return std::count_if(props.begin(), props.end(), [](const auto& p) { return p->figure && p->figure->fig->pose; }) > 1; }))
@@ -2392,6 +2419,8 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   // the render mode may have changed while it loaded: built for another, it is built again
   if(skin == skinMode.load())
     f->prebuilt = std::move(built);
+  // its add-ons go on once it is in the scene; until then the eyes it will have aren't there to choose
+  f->addonsPending = !f->fig->addons.empty() && f->fig->pose;
   // "Mirel.duf" reads as "Mirel"
   auto p    = addProp(PropKind::eFigure, fileStem(f->fig->loaded.name));
   f->id     = p->id;
@@ -2466,8 +2495,10 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
       for(const fv::dson::PostLoadAddon& a : f->fig->addons)
         requests.push_back({a.file, a.name, a.presets});
       f->addonsPending = true;
-      startWear(f, std::move(requests), {}, [f] {
+      startWear(f, std::move(requests), {}, [this, f] {
         f->addonsPending = false;
+        if(const auto p = findProp(f->id); p && p->figure == f)
+          publishEyes(*p);
         for(const auto& after : std::exchange(f->afterAddons, {}))
           after();
       });
@@ -2674,6 +2705,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
             applyPreset(brows, preparedScene, false);
           for(const std::string& presetRel : request.name.empty() ? request.presets : addonPresets)
             applyPreset(presetRel, preparedScene, true);
+          // as the character came: "Character's own" eyes are these (Genesis 9's are an add-on's)
+          fv::dson::keepBaseline(preparedScene);
         }
         // a strand hair's direction is measured here, so the composition on the render thread finds it
         const auto tStrands = Clock::now();
@@ -3303,6 +3336,9 @@ Json FvHost::Impl::sceneState(const Json& args)
                 {"pose", pose},
                 {"materialPresets", prop->figure->materialPresets},
                 {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  // the eyes chosen, null for the character's own; none when nothing was chosen
+  if(prop->figure->eyes)
+    state["eyes"] = prop->figure->eyes->empty() ? Json(nullptr) : Json(*prop->figure->eyes);
   if(prop->figure->collider)
     state["collision"] = prop->figure->collider->enabled();
   if(prop->figure->dforce)
@@ -3392,17 +3428,43 @@ Json FvHost::Impl::sceneRestore(const Json& args)
             problems.push_back("material preset " + fileStem(rel) + " isn't in the content library");
             continue;
           }
+          // eyes replace the eyes before them instead of stacking on them (older files list each one tried)
+          if(fv::dson::isEyePreset(doc->json, fig.loaded.scene))
+          {
+            applyEyes(*prop, rel, &doc->json, true);
+            continue;
+          }
           const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, fig.loaded.scene);
           if(prop->materials)
             prop->materials->surfacesChanged(r.changed);
           if(!r.changed.empty())
+          {
             target->materialPresets.push_back(rel);
+            presetChangedEyes(*prop, rel, r.changed);
+          }
         }
         catch(const std::exception& e)
         {
           problems.push_back("material preset " + fileStem(rel) + ": " + e.what());
         }
       }
+    // the eyes chosen, over the presets and under the edits (an iris colour is an edit)
+    if(args.contains("eyes") && (args["eyes"].is_string() || args["eyes"].is_null()))
+    {
+      const std::string rel = args["eyes"].is_string() ? args["eyes"].get<std::string>() : std::string();
+      try
+      {
+        std::shared_ptr<const fv::dson::Doc> doc;
+        if(!rel.empty() && !(doc = fig.store().load(rel)))
+          problems.push_back("the eyes " + fileStem(rel) + " aren't in the content library");
+        else
+          applyEyes(*prop, rel, doc ? &doc->json : nullptr, true);
+      }
+      catch(const std::exception& e)
+      {
+        problems.push_back(std::string("eyes: ") + e.what());
+      }
+    }
     if(prop->materials && args.contains("materials") && args["materials"].is_object())
       for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
         problems.push_back(p);
@@ -3599,6 +3661,7 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         auto& presets = figure->materialPresets;
         presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
         presets.push_back(rel);
+        presetChangedEyes(*prop, rel, surfaces.changed);
         r.applied += int(surfaces.changed.size());
       }
       // it showed or hid worn items (a geograft's Apply and Remove presets)
@@ -3616,6 +3679,25 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
   {
     if(!figure)
       notice(name + " is a DAZ material preset. Select a DAZ figure first, then open the preset.");
+    else if(figure->addonsPending)
+    {
+      // Genesis 9's eyes, mouth and lashes are add-ons still going on: the preset waits for their surfaces
+      figure->afterAddons.push_back([this, doc, kind, jobId, rel, id = prop->id] { applyPreset(doc, kind, jobId, rel, std::nullopt, {}, id); });
+      return;
+    }
+    else if(fv::dson::isEyePreset(doc, figure->fig->loaded.scene))
+    {
+      // eyes swap cleanly, as the Material tab's chooser does
+      try
+      {
+        applyEyes(*prop, rel, &doc, false);
+        notice("Eyes " + name + " on " + prop->name + ".", "info");
+      }
+      catch(const std::exception& e)
+      {
+        notice(e.what());
+      }
+    }
     else
     {
       const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
@@ -3629,6 +3711,7 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         auto& presets = figure->materialPresets;
         presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
         presets.push_back(rel);
+        presetChangedEyes(*prop, rel, r.changed);
         notice("Applied material preset " + name + " to " + std::to_string(r.changed.size()) + " surfaces.", "info");
       }
     }
@@ -3636,6 +3719,144 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
   else
     notice(name + " is a DAZ " + kind + " and isn't supported in the native viewport yet.");
   job(jobId, {{"state", "done"}, {"preset", kind}});
+}
+
+// The eyes `rel` on a figure, `doc` its preset (null, with `rel` "", for the character's own): the eye
+// surfaces back to the character's own, then the preset's eye part over them, so nothing of the eyes
+// before stays. Unless `keepEdits`, the panel's edits of the eye surfaces go too (an iris colour sets
+// the iris's mean, so kept it would make every pair look the same). Throws, changing nothing, when
+// the figure has no eyes or nothing of the preset lands on them.
+Json FvHost::Impl::applyEyes(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits)
+{
+  Loaded&             f     = *prop.figure;
+  fv::SceneGraph&     scene = f.fig->loaded.scene;
+  const std::set<int> eyes  = fv::dson::eyeSurfaces(scene);
+  if(eyes.empty())
+    throw std::runtime_error(prop.name + " has no eyes to change.");
+  if(doc)
+  {
+    const std::set<int> targets = fv::dson::materialPresetTargets(*doc, scene);
+    if(std::none_of(targets.begin(), targets.end(), [&](int i) { return eyes.count(i) > 0; }))
+      throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s eyes.");
+  }
+  const fv::dson::EyesResult r       = fv::dson::chooseEyes(scene, doc, f.eyesOwned);
+  std::set<int>              changed = r.changed;
+  if(!keepEdits)
+  {
+    std::set<int> cleared = eyes;
+    cleared.insert(f.eyesOwned.begin(), f.eyesOwned.end());
+    for(int i : cleared)
+      if(i >= 0 && i < int(scene.materials.size()) && !scene.materials[size_t(i)].edits.empty())
+      {
+        scene.materials[size_t(i)].edits = {};
+        changed.insert(i);
+      }
+  }
+  if(prop.materials)
+    prop.materials->surfacesChanged(changed);
+  f.eyes      = rel;
+  f.eyesOwned = r.owned;
+  f.eyesPreset.clear();
+  // the scene file replays it as its eyes, not as a preset
+  f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
+  publishEyes(prop);
+  return {{"eyes", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
+}
+
+void FvHost::Impl::presetChangedEyes(Prop& prop, const std::string& rel, const std::set<int>& changed)
+{
+  Loaded&             f    = *prop.figure;
+  const std::set<int> eyes = fv::dson::eyeSurfaces(f.fig->loaded.scene);
+  if(std::none_of(changed.begin(), changed.end(), [&](int i) { return eyes.count(i) > 0; }))
+    return;
+  f.eyes.reset();
+  f.eyesOwned.clear();
+  f.eyesPreset = rel;
+  publishEyes(prop);
+}
+
+// "materials/<prop>".eyes: {rel, preset, own, ready, surfaces} (fv_host.hpp material.eyes)
+void FvHost::Impl::publishEyes(Prop& p)
+{
+  if(!p.figure || !p.materials)
+    return;
+  const Loaded& f   = *p.figure;
+  Json          own = Json::array();
+  for(const fv::dson::PostLoadAddon& a : f.fig->addons)
+    for(const std::string& rel : a.presets)
+      if(std::find(own.begin(), own.end(), Json(rel)) == own.end())
+        own.push_back(rel);
+  Json surfaces = Json::array();
+  for(int i : fv::dson::eyeSurfaces(f.fig->loaded.scene))
+    surfaces.push_back("m:" + std::to_string(i));
+  p.materials->setEyes({{"rel", f.eyes && !f.eyes->empty() ? Json(*f.eyes) : Json(nullptr)},
+                        {"preset", f.eyesPreset.empty() ? Json(nullptr) : Json(f.eyesPreset)},
+                        {"own", own},
+                        {"ready", !f.addonsPending},
+                        {"surfaces", surfaces}});
+}
+
+// material.eyes {prop, rel}: the preset is read on a worker, and applied once the figure's add-ons
+// (Genesis 9's eyes) are on. The job fails, changing nothing, for a prop that is not a figure, a
+// figure with no eyes, or a preset none of whose surfaces are its eyes.
+Json FvHost::Impl::materialEyes(const Json& args)
+{
+  if(!args.contains("rel") || !(args["rel"].is_string() || args["rel"].is_null()))
+    throw std::runtime_error("material.eyes wants rel: a library path, or null for the character's own eyes");
+  const std::string rel   = args["rel"].is_string() ? args["rel"].get<std::string>() : std::string();
+  const uint64_t    jobId = ++jobs;
+  const std::string label = rel.empty() ? std::string("Eyes: the character's own") : "Eyes: " + fileStem(rel);
+  job(jobId, {{"label", label}, {"state", "running"}});
+  const auto fail = [this, jobId, label](const std::string& why) { job(jobId, {{"label", label}, {"state", "failed"}, {"error", why}}); };
+  const auto prop = figureProp(args);
+  if(!prop)
+  {
+    fail("Eyes go on a figure: select one first.");
+    return {{"job", jobId}};
+  }
+  std::shared_ptr<Loaded> target = prop->figure;
+  // on the application thread, the add-ons on
+  const auto apply = [this, target, rel, jobId, label, fail](const std::optional<fv::dson::Json>& doc) {
+    const auto p = findProp(target->id);
+    if(!p || p->figure != target)
+      return fail("the figure left the scene");
+    try
+    {
+      Json done     = applyEyes(*p, rel, doc ? &*doc : nullptr, false);
+      done["label"] = label;
+      done["state"] = "done";
+      job(jobId, done);
+    }
+    catch(const std::exception& e)
+    {
+      fail(e.what());
+    }
+  };
+  auto choose = [this, target, rel, apply, fail] {
+    if(rel.empty())
+      return apply(std::nullopt);
+    loaders.spawn([this, target, rel, apply, fail] {
+      try
+      {
+        auto doc = target->fig->store().load(rel);
+        if(!doc)
+          throw std::runtime_error(fileStem(rel) + " isn't in the content library.");
+        const auto preset = fv::dson::describePreset(doc->json);
+        if(!preset || preset->kind != "material preset")
+          throw std::runtime_error(fileStem(rel) + " is not a material preset.");
+        post([apply, body = doc->json] { apply(body); });
+      }
+      catch(const std::exception& e)
+      {
+        fail(e.what());
+      }
+    });
+  };
+  if(target->addonsPending)
+    target->afterAddons.push_back(std::move(choose));
+  else
+    choose();
+  return {{"job", jobId}};
 }
 
 Json FvHost::Impl::lightingTopic() const
@@ -4301,6 +4522,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   };
   cmds.add("material.set", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).set(args); }); });
   cmds.add("material.reset", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).reset(args); }); });
+  cmds.add("material.eyes", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialEyes(args); }); });
   cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
   cmds.add("pose.eyes", [impl](const Json& args) {
     return impl->onApp([impl, args] {

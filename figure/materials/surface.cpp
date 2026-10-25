@@ -45,7 +45,7 @@ float linearToSrgb(double c)
 bool Edits::empty() const
 {
   return !color && !roughness && !metalness && !opacity && !alphaMode && !doubleSided && !normalStrength && !bumpStrength && !specular
-         && !clearcoat && !clearcoatRoughness && !emissive && !emissiveIntensity;
+         && !clearcoat && !clearcoatRoughness && !emissive && !emissiveIntensity && !irisColor && !scleraColor && !irisStrength;
 }
 
 void Edits::merge(const Edits& o)
@@ -67,6 +67,26 @@ void Edits::merge(const Edits& o)
   take(clearcoatRoughness, o.clearcoatRoughness);
   take(emissive, o.emissive);
   take(emissiveIntensity, o.emissiveIntensity);
+  take(irisColor, o.irisColor);
+  take(scleraColor, o.scleraColor);
+  take(irisStrength, o.irisStrength);
+}
+
+EyeLayout eyeLayout(const Surface& s)
+{
+  if(s.kind != Kind::eEye)
+    return EyeLayout::eNone;
+  using R = std::regex;
+  const auto f = R::ECMAScript | R::icase;
+  // shared: Genesis 9's names only, since the iris discs the bake looks in are where its UVs put them
+  static const R shared("^eye (left|right)$", f), iris("iris", f), sclera("sclera", f);
+  if(std::regex_search(s.name, shared))
+    return EyeLayout::eShared;
+  if(std::regex_search(s.name, iris))
+    return EyeLayout::eIris;
+  if(std::regex_search(s.name, sclera))
+    return EyeLayout::eSclera;
+  return EyeLayout::eNone;
 }
 
 }  // namespace fv::mat

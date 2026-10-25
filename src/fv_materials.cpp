@@ -127,9 +127,9 @@ float numberOf(const Json& v, const char* key, float lo, float hi)
 void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
 {
   const bool drop = v.is_null();
-  if(key == "color" || key == "emissive")
+  if(key == "color" || key == "emissive" || key == "irisColor" || key == "scleraColor")
   {
-    std::optional<Rgb>& slot = key == "color" ? e.color : e.emissive;
+    std::optional<Rgb>& slot = key == "color" ? e.color : key == "emissive" ? e.emissive : key == "irisColor" ? e.irisColor : e.scleraColor;
     if(drop)
       slot.reset();
     else if(const auto c = parseHex(v))
@@ -173,6 +173,7 @@ void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
         {"clearcoat", &fv::mat::Edits::clearcoat, 0, 1},
         {"clearcoatRoughness", &fv::mat::Edits::clearcoatRoughness, 0, 1},
         {"emissiveIntensity", &fv::mat::Edits::emissiveIntensity, 0, 1000},
+        {"irisStrength", &fv::mat::Edits::irisStrength, 0, 1},
     };
     for(const Field& f : fields)
       if(key == f.name)
@@ -207,7 +208,26 @@ Json editedKeys(const fv::mat::Edits& e)
   add(e.clearcoatRoughness.has_value(), "clearcoatRoughness");
   add(e.emissive.has_value(), "emissive");
   add(e.emissiveIntensity.has_value(), "emissiveIntensity");
+  add(e.irisColor.has_value(), "irisColor");
+  add(e.irisStrength.has_value(), "irisStrength");
+  add(e.scleraColor.has_value(), "scleraColor");
   return out;
+}
+
+// Which of an eye's colours a surface takes: an iris colour where the bake knows where the iris is
+// (a Genesis 8 iris map needs its discs; a flat iris takes it as its colour), a sclera colour on a
+// white of its own or one shared with the iris.
+struct EyeRoles
+{
+  bool iris = false, sclera = false;
+};
+
+EyeRoles eyeRoles(const fv::mat::Surface& s, const fv::mat::LowerOptions* o)
+{
+  using L            = fv::mat::EyeLayout;
+  const L    layout  = fv::mat::eyeLayout(s);
+  const bool located = layout == L::eShared || (layout == L::eIris && (s.base.map.empty() || (o && !o->irisDiscs.empty())));
+  return {located, layout == L::eShared || layout == L::eSclera};
 }
 
 std::filesystem::path pathOfUri(const std::string& uri)
@@ -466,6 +486,7 @@ void FvMaterials::detach()
   m_forceDouble.clear();
   m_waiting.clear();
   m_baking.clear();
+  m_eyes = nullptr;
   if(!m_figure.empty())
     m_hooks.events->drop("materials/" + m_figure);
   m_figure.clear();
@@ -519,6 +540,18 @@ Json FvMaterials::set(const Json& args)
     fv::mat::Edits scratch;
     for(auto it = values->begin(); it != values->end(); ++it)
       applyValue(scratch, it.key(), it.value());
+    // an eye's colours only where the surface holds that part of the eye
+    for(int mi : index)
+    {
+      const fv::Material& m     = m_scene->materials[mi];
+      const EyeRoles      roles = m_model ? EyeRoles{} : eyeRoles(m.surface, mi < int(m_options.size()) ? &m_options[mi] : nullptr);
+      if((scratch.irisColor || scratch.irisStrength) && !roles.iris)
+        throw std::runtime_error(fv::mat::eyeLayout(m.surface) == fv::mat::EyeLayout::eIris ?
+                                     "Where the irises of " + m.name + " are in its texture isn't known, so their colour can't be changed" :
+                                     "irisColor is for an eye's iris, and " + m.name + " is not one");
+      if(scratch.scleraColor && !roles.sclera)
+        throw std::runtime_error("scleraColor is for the white of an eye, and " + m.name + " is not one");
+    }
   }
   std::set<int> changed;
   for(int mi : index)
@@ -611,6 +644,13 @@ std::vector<std::string> FvMaterials::restoreEdits(const Json& state)
     }
   }
   return problems;
+}
+
+void FvMaterials::setEyes(Json eyes)
+{
+  m_eyes = std::move(eyes);
+  if(m_scene && !m_model && !m_figure.empty())
+    m_hooks.events->patch("materials/" + m_figure, {{"eyes", m_eyes}});
 }
 
 void FvMaterials::surfacesChanged(const std::set<int>& materials)
@@ -808,7 +848,7 @@ Json FvMaterials::item(int index) const
   Json textures = Json::array();
   const auto add = [&](const char* label, const std::string& rel) {
     if(!rel.empty())
-      textures.push_back({{"label", label}, {"file", baseName(rel)}});
+      textures.push_back({{"label", label}, {"file", baseName(fv::mat::mapLayers(rel).front())}});
   };
   add("Base colour", s.base.map);
   add("Cutout", s.opacity.map);
@@ -832,6 +872,21 @@ Json FvMaterials::item(int index) const
               {"edited", editedKeys(m.edits)}};
   if(s.translucency && s.translucency->weight > 0)
     out["translucency"] = s.translucency->weight;
+  // an eye: which of its colours it takes, and whether a change cooks its map (else it is live). The
+  // colours go out as null when unset, so a merge patch takes an old one away.
+  if(const EyeRoles roles = eyeRoles(s, &m_options[index]); roles.iris || roles.sclera)
+  {
+    // a Genesis 9 eye's white is in the iris's map, so it bakes too; a sclera of its own is a factor
+    out["eye"]     = {{"iris", roles.iris}, {"sclera", roles.sclera}, {"baked", roles.iris && !s.base.map.empty()}};
+    const auto hex = [](const std::optional<Rgb>& c) { return c ? Json(hexOf(*c)) : Json(nullptr); };
+    if(roles.iris)
+    {
+      out["values"]["irisColor"]    = hex(m.edits.irisColor);
+      out["values"]["irisStrength"] = m.edits.irisStrength.value_or(1.f);
+    }
+    if(roles.sclera)
+      out["values"]["scleraColor"] = hex(m.edits.scleraColor);
+  }
   return out;
 }
 
@@ -852,7 +907,12 @@ void FvMaterials::publish(const std::set<int>& materials, bool all)
         items["m:" + std::to_string(i)] = std::move(it);
       }
   if(all)
-    m_hooks.events->snapshot("materials/" + m_figure, {{"figure", m_figure}, {"items", items}});
+  {
+    Json topic = {{"figure", m_figure}, {"items", items}};
+    if(!m_eyes.is_null() && !m_model)
+      topic["eyes"] = m_eyes;
+    m_hooks.events->snapshot("materials/" + m_figure, topic);
+  }
   else if(!items.empty())
     m_hooks.events->patch("materials/" + m_figure, {{"items", items}});
 }
