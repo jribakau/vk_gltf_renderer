@@ -253,10 +253,12 @@ HairOrders hairOrders(float h, float sinThetaO, float cosThetaO, float3 sigma, f
   [unroll]
   for(int i = 0; i < 4; i++)
     sum += hairLuma(o.ap[i]);
-  sum = max(sum, 1e-6);
+  // Each lobe's probability is its share of the weight the sum is of, so the four sum to 1 and the
+  // remainder the sampler gives lobe 3 is pdf[3]. With no weight at all (no specular, opaque
+  // fibre) the sampler's remainder is all of lobe 3, and the density says so.
   [unroll]
   for(int j = 0; j < 4; j++)
-    o.pdf[j] = o.ap[j].g / sum;
+    o.pdf[j] = sum > 1e-6 ? hairLuma(o.ap[j]) / sum : (j == HAIR_PMAX ? 1.0 : 0.0);
   return o;
 }
 

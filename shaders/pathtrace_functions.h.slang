@@ -52,8 +52,9 @@ static const float RR_PCONT_CAP   = 0.95f;   // Maximum probability for Russian 
 // culls 5% of the fully energetic paths at every scatter and the medium renders far too dark.
 // Following the throughput (cap 0.999) leaves those paths alone until VOLUME_HARD_CAP ends the walk.
 // Without that stop an unbounded walk in a non-absorbing medium does not terminate (measured:
-// device loss, not merely a slow frame).
-static const int   VOLUME_FREE_BUDGET  = 64;      // Scatter events before Russian Roulette starts culling a volume path
+// device loss, not merely a slow frame). Both count the events of one walk: entering a medium starts
+// the count again, so a path's second walk is not cut short by its first.
+static const int   VOLUME_FREE_BUDGET  = 64;      // Scatter events of a walk before Russian Roulette starts culling it
 static const int   VOLUME_HARD_CAP     = 256;     // Scatter events at which the walk is ended outright
 static const float RR_PCONT_CAP_VOLUME = 0.999f;  // Maximum Russian Roulette probability inside a volume
 
@@ -1512,7 +1513,12 @@ struct PathTracerState
   bool exitedVolumeWalk = false;
 #endif
 #if GLTF_USE_SCATTER
-  int scatterBounces = 0;
+  int scatterBounces = 0;  // Scatter events of the current walk
+#endif
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+  // The material whose medium the path entered (-1: none, or the camera's medium). The diffuse exit
+  // divides out this medium's albedo, whatever surface the walk leaves through.
+  int volumeMaterial = -1;
 #endif
 #if USE_GUIDE_SHADER
   GuideScratch guide           = {};

@@ -336,6 +336,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         pt.isInside     = false;
         pt.volumeMedium = {};
+#if GLTF_USE_SCATTER
+        pt.volumeMaterial = -1;
+#endif
       }
 #endif
 
@@ -349,6 +352,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // refractive exit: this is for scattering media.
       bool diffuseExit = false;
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+      const int walkMaterial = pt.volumeMaterial;
       if(ptIsInside(pt) && !hit.frontFace && hasFlag(pushConst.flags, PathtracerFlags::ePtVolumeDiffuseExit))
       {
         const float3 sigmaS = float3(pt.volumeMedium.scatterCoefficient);
@@ -358,6 +362,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         pt.isInside         = false;
         pt.volumeMedium     = {};
+        pt.volumeMaterial   = -1;
         pt.exitedVolumeWalk = false;
         // getHitState turned the normals towards the ray, i.e. into the medium; the exit faces out
         hit.nrm       = -hit.nrm;
@@ -380,8 +385,16 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // albedo, already a skin colour; the exit divides it out, so lit from the front the skin is
         // its colour map (as a random walk with albedo inversion renders it), while how far each
         // channel spread under the surface still shows at shadow edges and through thin parts.
-        const float3 walkAlbedo =
-            max(materials[materialIndex].multiscatterColorFactor * materials[materialIndex].scatterStrengthFactor, float3(0.05F));
+        // The albedo divided out is the walk's own medium's, the one its throughput carries, not
+        // that of the surface it leaves through: a walk in the face that reaches the back of a lash
+        // card (no medium: the 0.05 floor made it twenty times its colour) or the lips' boundary
+        // leaves in that surface's colour with the face's tint taken out. Only a path that started
+        // in the camera's medium has no material to name and falls back to the surface's. Factors
+        // only: a scatter strength or multiscatter texture (which the figures don't use) is not in it.
+        const int    albedoMaterial = walkMaterial >= 0 ? walkMaterial : materialIndex;
+        const float3 walkAlbedo     = max(materials[albedoMaterial].multiscatterColorFactor
+                                              * materials[albedoMaterial].scatterStrengthFactor,
+                                          float3(0.05F));
         const float3 exitAlbedo = pbrMat.baseColor / walkAlbedo;
         const float3 N          = pbrMat.N;
         const float3 Ng         = pbrMat.Ng;
@@ -687,6 +700,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
               pt.volumeMedium = makeVolumeMedium(pbrMat);  // Entering volume: capture the medium for scatter/absorption
             else
               pt.volumeMedium = {};
+#if GLTF_USE_SCATTER
+            // A walk starts here: its material for the diffuse exit, and a fresh event budget
+            pt.volumeMaterial = pt.isInside ? materialIndex : -1;
+            if(pt.isInside)
+              pt.scatterBounces = 0;
+#endif
 #endif
           }
         }
@@ -860,11 +879,17 @@ SampleResult samplePixel(IRaytracer raytracer,
   // Depth-of-Field (disabled for orthographic cameras)
   if(!isOrthographic)
   {
-    float3 focalPoint        = focalDist * ray.Direction;
+    // The focal distance is measured along the view axis, as autofocus measures it: everything on
+    // the plane at that depth is sharp, not on a sphere around the eye (which focused the frame's
+    // corners short of the plane).
+    // The matrices are row-major, applied as mul(v, M) (as getRay does): mul(M, v) is the
+    // transpose, which only an unturned camera does not tell apart, and which tilted the aperture.
+    const float3 camForward  = normalize(mul(float4(0, 0, -1, 0), viewMatrixI).xyz);
+    float3 focalPoint        = (focalDist / max(dot(ray.Direction, camForward), 1e-4F)) * ray.Direction;
     float  cam_r1            = rand(seed) * M_TWO_PI;
     float  cam_r2            = rand(seed) * aperture;
-    float4 cam_right         = mul(viewMatrixI, float4(1, 0, 0, 0));
-    float4 cam_up            = mul(viewMatrixI, float4(0, 1, 0, 0));
+    float4 cam_right         = mul(float4(1, 0, 0, 0), viewMatrixI);
+    float4 cam_up            = mul(float4(0, 1, 0, 0), viewMatrixI);
     float3 randomAperturePos = (cos(cam_r1) * cam_right.xyz + sin(cam_r1) * cam_up.xyz) * sqrt(cam_r2);
     float3 finalRayDir       = normalize(focalPoint - randomAperturePos);
 
