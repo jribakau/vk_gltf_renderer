@@ -230,7 +230,16 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Samples per pixel traced each frame (see ptMaxSamples for the total)",
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
                 &m_pushConst.numSamples, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
-  settings->add({.name = "ptFireflyClamp", .help = "PathTracer: Firefly clamp threshold", .callbackSuccess = reset}, &m_pushConst.fireflyClampThreshold, Persist::eYes);
+  // An accumulation's frames clamp at ptFireflyClampStill when it is set, so a new ptFireflyClamp (the
+  // host sends one with every exposure change) restarts only an accumulation that reads it; DLSS frames
+  // pick it up as they come (Unreal keeps a still across small exposure changes too)
+  settings->add({.name            = "ptFireflyClamp",
+                 .help            = "PathTracer: Firefly clamp threshold",
+                 .callbackSuccess = [this, reset](const nvutils::ParameterBase* const p) {
+                   if(m_pushConst.fireflyClampStill <= 0.0F)
+                     reset(p);
+                 }},
+                &m_pushConst.fireflyClampThreshold, Persist::eYes);
   settings->add({.name            = "ptFireflyClampStill",
                  .help            = "PathTracer: Firefly clamp threshold for the frames that accumulate a still (0: ptFireflyClamp)",
                  .callbackSuccess = reset},

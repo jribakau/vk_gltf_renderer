@@ -500,6 +500,11 @@ std::vector<float> studioImage(uint32_t width, uint32_t height)
   return data;
 }
 
+double stillFireflyClamp(double wanted, double applied)
+{
+  return applied > 0.0 && wanted <= 4.0 * applied && applied <= 4.0 * wanted ? applied : wanted;
+}
+
 Json rendererParams(const State& s, glm::uvec2 envSize)
 {
   const Env&     e = s.env;

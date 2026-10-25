@@ -241,6 +241,15 @@ TEST(FvLighting, RendererParamsFollowTheState)
   EXPECT_DOUBLE_EQ(p["ptFireflyClamp"].get<double>(), 16.0 / 1.5);
   s.tonemap.method = "aces";
   EXPECT_DOUBLE_EQ(L::rendererParams(s, {})["ptFireflyClamp"].get<double>(), 16.0 / (1.5 / 0.6));
+  // the still's clamp stays while the exposure keeps within 4x of the one it was sent for (a new one
+  // restarts the still): a tone-curve change or a few slider ticks keep a converged still
+  EXPECT_DOUBLE_EQ(L::stillFireflyClamp(64.0 / 1.5, 64.0), 64.0);
+  EXPECT_DOUBLE_EQ(L::stillFireflyClamp(64.0 * 0.6, 64.0), 64.0);
+  EXPECT_DOUBLE_EQ(L::stillFireflyClamp(64.0 / 4.0, 64.0), 64.0);
+  EXPECT_DOUBLE_EQ(L::stillFireflyClamp(64.0 * 4.0, 64.0), 64.0);
+  EXPECT_DOUBLE_EQ(L::stillFireflyClamp(64.0 / 5.0, 64.0), 64.0 / 5.0);
+  EXPECT_DOUBLE_EQ(L::stillFireflyClamp(64.0 * 5.0, 64.0), 64.0 * 5.0);
+  EXPECT_DOUBLE_EQ(L::stillFireflyClamp(40.0, 0.0), 40.0);
   s.tonemap.method = "agx";
   s.ground.mode = "off";
   s.env.source  = "plain";

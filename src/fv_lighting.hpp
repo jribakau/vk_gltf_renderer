@@ -163,4 +163,10 @@ std::vector<float> studioImage(uint32_t width = 512, uint32_t height = 256);
 // the scene), so it isn't here.
 Json rendererParams(const State& s, glm::uvec2 envSize);
 
+// The still's firefly clamp to send, given the one the exposure asks for (rendererParams'
+// ptFireflyClampStill) and the one the renderer has: the one it has while it is within 4x of the one
+// asked for, since a new value restarts the still. Inside that band its 64 display units stay 16-256,
+// white under every tone curve, so exposure and tone-curve edits keep a converged still.
+double stillFireflyClamp(double wanted, double applied);
+
 }  // namespace fv::lighting
