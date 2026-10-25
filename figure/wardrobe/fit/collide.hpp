@@ -12,6 +12,9 @@
 
 namespace fv::wardrobe {
 
+// The unit normal of a triangle of `p` (xyz per vertex); up when it is degenerate.
+V3 triNormal(std::span<const float> p, size_t a, size_t b, size_t c);
+
 // Pushes `positions` out of `body` to `margin` centimetres. Only a vertex within `depth` of the
 // skin, and behind the face it is closest to rather than off to one side of its edge, counts as
 // inside: a heel's stem below the sole is outside, though it lies behind the sole's plane. The push

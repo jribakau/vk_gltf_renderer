@@ -5,8 +5,6 @@
 
 namespace fv::wardrobe {
 
-namespace {
-
 V3 triNormal(std::span<const float> p, size_t a, size_t b, size_t c)
 {
   const double ax = p[b * 3] - p[a * 3], ay = p[b * 3 + 1] - p[a * 3 + 1], az = p[b * 3 + 2] - p[a * 3 + 2];
@@ -17,8 +15,6 @@ V3 triNormal(std::span<const float> p, size_t a, size_t b, size_t c)
     return {0, 1, 0};
   return {x / len, y / len, z / len};
 }
-
-}  // namespace
 
 std::vector<float> pushOut(std::span<const float> positions, const Surface& body, const SurfaceBinding& binding, float margin, float depth)
 {

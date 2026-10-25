@@ -44,6 +44,34 @@ std::string collideChannelOf(int mesh)
   return "collide:" + std::to_string(mesh);
 }
 
+// How far an item lies from the body in its rest shape: the median signed distance of its cage from
+// the body's, along the skin. The layer order: a bra lies closer than the shirt over it.
+double restClearance(std::span<const float> body, std::span<const uint32_t> bodyTris, std::span<const float> item)
+{
+  const SurfaceBinding binding = bindToSurface(body, bodyTris, item);
+  std::vector<double>  dist;
+  for(size_t v = 0; v * 3 + 2 < item.size(); v++)
+  {
+    const size_t k = v * 3;
+    const double w = double(binding.weights[k]) + binding.weights[k + 1] + binding.weights[k + 2];
+    if(w <= 0)
+      continue;
+    const size_t ia = binding.verts[k], ib = binding.verts[k + 1], ic = binding.verts[k + 2];
+    const V3     n  = triNormal(body, ia, ib, ic);
+    double       d  = 0;
+    for(size_t c = 0; c < 3; c++)
+    {
+      const double s = body[ia * 3 + c] * binding.weights[k] + body[ib * 3 + c] * binding.weights[k + 1] + body[ic * 3 + c] * binding.weights[k + 2];
+      d += (item[k + c] - s) * n[c];
+    }
+    dist.push_back(d);
+  }
+  if(dist.empty())
+    return 0;
+  std::nth_element(dist.begin(), dist.begin() + long(dist.size() / 2), dist.end());
+  return dist[dist.size() / 2];
+}
+
 // What a pass needs and where each result goes, taken on the owning thread.
 struct Collider::Job
 {
@@ -51,11 +79,14 @@ struct Collider::Job
   std::vector<float>    body;
   std::vector<uint32_t> bodyTris;
   std::vector<int16_t>  bodyLimbs;
+  // the items inside out: each is pushed out of the body and of the items before it
   struct Item
   {
     int                   mesh = -1;
     dson::Smoothing       settings;
-    std::vector<float>    posed;  // in the root's space
+    double                clearance = 0;  // from the body at rest, cm; the layer order
+    int                   worn      = 0;  // its place in the order worn, for ties
+    std::vector<float>    posed;          // in the root's space
     std::vector<uint32_t> tris;
     std::vector<int16_t>  limbs;
     // for the write-back: the rest cage, its skin and pose in the mesh's space, and the way back there
@@ -152,10 +183,21 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     return posed;
   };
 
-  auto job       = std::make_shared<Job>();
-  job->body      = dforce::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, m_morphs.morphedCage(m_bodyMesh), nullptr, nullptr));
-  job->bodyTris  = body.geo->dsonTris;
-  job->bodyLimbs = meshLimbs(m_scene, body);
+  auto       job      = std::make_shared<Job>();
+  const auto bodyRest = m_morphs.morphedCage(m_bodyMesh);
+  job->body           = dforce::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, bodyRest, nullptr, nullptr));
+  job->bodyTris       = body.geo->dsonTris;
+  job->bodyLimbs      = meshLimbs(m_scene, body);
+  // the body's rest shape in the root's space, to order the items by how far from it each lies
+  const auto bodyRestInSpace = dforce::transformPoints(toSpace(m_bodyMesh), bodyRest);
+
+  std::vector<int> order;
+  if(wornOrder)
+    order = wornOrder();
+  const auto placeWorn = [&](int mesh) {
+    const auto it = std::find(order.begin(), order.end(), mesh);
+    return it == order.end() ? int(order.size()) + mesh : int(it - order.begin());
+  };
 
   const auto shown = shownNodes(m_scene);
   for(const auto& [mesh, s] : settings())
@@ -178,10 +220,18 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     item.tris      = m.geo->dsonTris;
     item.limbs     = meshLimbs(m_scene, m);
     item.back      = inverse(to);
+    item.clearance = restClearance(bodyRestInSpace, job->bodyTris, dforce::transformPoints(to, item.rest));
+    item.worn      = placeWorn(mesh);
     job->items.push_back(std::move(item));
   }
   if(job->items.empty())
     return nullptr;
+  // inside out: closer to the skin first; two within a millimetre in the order worn
+  std::stable_sort(job->items.begin(), job->items.end(), [](const Job::Item& a, const Job::Item& b) {
+    if(std::fabs(a.clearance - b.clearance) > 0.1)
+      return a.clearance < b.clearance;
+    return a.worn < b.worn;
+  });
   return job;
 }
 
@@ -227,21 +277,30 @@ bool Collider::pump()
   m_snapshot = job;
   m_job      = jobs::pool().submit([job] {
     std::vector<std::vector<float>> out;
-    const Surface body{job->body, job->bodyTris};
+    // what lies under the item being pushed: the body, then every item pushed before it
+    std::vector<float>    under      = job->body;
+    std::vector<uint32_t> underTris  = job->bodyTris;
+    std::vector<int16_t>  underLimbs = job->bodyLimbs;
     for(const Job::Item& item : job->items)
     {
       std::vector<float> positions = item.posed;
-      const auto         filter    = limbFilter(job->bodyLimbs, item.limbs);
-      const int          passes    = std::clamp(item.settings.collision, 1, 8);
-      const int          smooth    = std::clamp(item.settings.smoothing, 1, 8);
+      const Surface      surface{under, underTris};
+      const auto         filter = limbFilter(underLimbs, item.limbs);
+      const int          passes = std::clamp(item.settings.collision, 1, 8);
+      const int          smooth = std::clamp(item.settings.smoothing, 1, 8);
       for(int pass = 0; pass < passes; pass++)
       {
-        const SurfaceBinding binding = bindToSurface(body.positions, body.tris, positions, {}, filter ? &*filter : nullptr);
-        std::vector<float>   pushed  = pushOut(positions, body, binding, kMargin, kDepth);
+        const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, positions, {}, filter ? &*filter : nullptr);
+        std::vector<float>   pushed  = pushOut(positions, surface, binding, kMargin, kDepth);
         if(std::equal(pushed.begin(), pushed.end(), positions.begin()))
           break;
         positions = smoothCorrection(positions, pushed, item.tris, smooth);
       }
+      const uint32_t offset = uint32_t(under.size() / 3);
+      under.insert(under.end(), positions.begin(), positions.end());
+      for(uint32_t t : item.tris)
+        underTris.push_back(t + offset);
+      underLimbs.insert(underLimbs.end(), item.limbs.begin(), item.limbs.end());
       out.push_back(std::move(positions));
     }
     return out;

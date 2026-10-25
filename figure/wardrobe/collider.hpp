@@ -8,9 +8,13 @@
 // Once the pose or shape stops changing for a moment, each item the figure wears is pushed out of
 // the body in pose space: bound to the closest body point (left limbs to left limbs), pushed out
 // along the skin's normal to a small clearance, and the push smoothed over the garment so it reads
-// as cloth stretched over the body rather than a dent. The result is written back as a hidden
-// morph channel per mesh ("collide:<mesh>", weight 1) holding the cage deltas whose skinning gives
-// the pushed shape; the renderer sees it as any other morph, and turning collision off clears it.
+// as cloth stretched over the body rather than a dent. Items are layered, inside out: each is
+// pushed out of the body and of every item already pushed under it, so a shirt clears the bra by
+// the same clearance it clears the skin. The order is each item's clearance from the body in its
+// rest shape (a bra lies closer than a shirt), and the order worn where that is a tie. The result
+// is written back as a hidden morph channel per mesh ("collide:<mesh>", weight 1) holding the cage
+// deltas whose skinning gives the pushed shape; the renderer sees it as any other morph, and
+// turning collision off clears it.
 //
 // A mesh dForce drapes is left alone (the simulation collides it); the body itself is never moved.
 // Each item's settings come from its file's smoothing modifier when it carries one, else from the
@@ -47,6 +51,9 @@ public:
   // wardrobe's per-item collision settings. A mesh that is not listed, is hidden, or is unskinned is
   // left alone.
   std::function<std::map<int, dson::Smoothing>()> settings;
+  // The meshes in the order worn, for layering two that lie equally close to the body; unset or a
+  // mesh not listed: mesh order.
+  std::function<std::vector<int>()> wornOrder;
   // True for a mesh a simulation owns (dForce drapes it), which is not pushed here.
   std::function<bool(int mesh)> owned;
 

@@ -2306,6 +2306,14 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
       return sim;
     };
 #endif
+    // the figure's shown clothing collides in the simulation (a belt, a bra, shoes); its anatomy,
+    // hair and props do not
+    f->dforce->collidesWith = [fig = f->fig.get()](int mesh) {
+      for(const fv::WornItem& w : fig->items)
+        if(w.visible && w.kind == "Clothing" && std::find(w.meshes.begin(), w.meshes.end(), mesh) != w.meshes.end())
+          return true;
+      return false;
+    };
     // off until the Wardrobe toggle (or a scene file) turns it on: a settle costs seconds on a dressed figure
     f->dforce->setEnabled(false);
     // on from the start: a pass is a fraction of a second on the pool, and it is what keeps a garment
@@ -2317,6 +2325,12 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
         if(w.visible)
           all.insert(w.collision.begin(), w.collision.end());
       return all;
+    };
+    f->collider->wornOrder = [fig = f->fig.get()] {
+      std::vector<int> order;
+      for(const fv::WornItem& w : fig->items)
+        order.insert(order.end(), w.meshes.begin(), w.meshes.end());
+      return order;
     };
     f->collider->owned = [raw = f.get()](int mesh) {
       const fv::Mesh& m = raw->fig->loaded.scene.meshes[size_t(mesh)];

@@ -133,6 +133,65 @@ TEST(Collider, pushesAGarmentOutOfTheBodyAndClearsItWhenTurnedOff)
   EXPECT_GT(minY(geo), 0.1f);
 }
 
+namespace {
+
+// A body with two garments inside it: the inner half a centimetre under the skin, the outer three
+// millimetres under it, in the mesh order given. Returns the lowest and highest y of each garment
+// after a pass, inner then outer.
+std::array<std::pair<float, float>, 2> layered(bool innerFirst)
+{
+  SceneGraph scene;
+  const int  root = scene.add(Node{});
+  Node       b;
+  b.kind         = NodeKind::eBone;
+  const int bone = scene.add(b, root);
+  scene.meshes.push_back(sceneMesh(grid(8, 0), -1));
+  scene.meshes.push_back(sceneMesh(grid(4, innerFirst ? -0.5f : -0.3f), bone));
+  scene.meshes.push_back(sceneMesh(grid(4, innerFirst ? -0.3f : -0.5f), bone));
+  scene.materials.push_back({});
+  for(int i = 0; i < 3; i++)
+  {
+    Node n;
+    n.kind = NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, root);
+  }
+  morph::MorphSet    morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  wardrobe::Collider c(scene, morphs, 0, root);
+  c.settings = [] { return std::map<int, dson::Smoothing>{{1, dson::Smoothing{}}, {2, dson::Smoothing{}}}; };
+  c.poke();
+  if(!pumpUntilWritten(c))
+    return {};
+  const auto range = [&](int mesh) {
+    const auto& p = scene.meshes[size_t(mesh)].geo->position;
+    float       lo = 1e9f, hi = -1e9f;
+    for(size_t v = 0; v < p.size() / 3; v++)
+    {
+      lo = std::min(lo, p[v * 3 + 1]);
+      hi = std::max(hi, p[v * 3 + 1]);
+    }
+    return std::pair{lo, hi};
+  };
+  const int inner = innerFirst ? 1 : 2, outer = innerFirst ? 2 : 1;
+  return {range(inner), range(outer)};
+}
+
+}  // namespace
+
+TEST(Collider, layersItemsInsideOutByTheirClearanceFromTheBody)
+{
+  // the inner garment ends above the skin, the outer above the inner by about the same clearance,
+  // whichever order their meshes come in
+  for(bool innerFirst : {true, false})
+  {
+    const auto [inner, outer] = layered(innerFirst);
+    EXPECT_GT(inner.first, 0.1f) << innerFirst;
+    EXPECT_LT(inner.second, 0.6f) << innerFirst;
+    EXPECT_GT(outer.first, inner.second + 0.1f) << innerFirst;
+    EXPECT_LT(outer.first, inner.second + 0.6f) << innerFirst;
+  }
+}
+
 TEST(Collider, leavesAMeshASimulationOwnsAndOneWithCollisionOff)
 {
   Rig             r;
