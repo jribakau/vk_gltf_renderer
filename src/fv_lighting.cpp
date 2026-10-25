@@ -411,16 +411,16 @@ double tmExposure(const std::string& method, double exposure)
   return method == "aces" ? exposure / 0.6 : exposure;
 }
 
-// The path tracer scales a path down when its mean radiance, before exposure, passes the firefly
-// clamp. 16 after exposure: with the ACES, AgX and filmic curves everything above comes out white,
-// so no highlight that could be seen is cut (sun catchlights, lip speculars) while the outliers Ray
-// Reconstruction smears still are. The renderer's own calibration (`calibrateFireflyClamp`, from the
-// environment's peak) dulls catchlights on a figure.
+// The path tracer scales each contribution of indirect light (light that reached the path after a
+// diffuse or glossy bounce) down by its largest channel, before exposure, when it passes the firefly
+// clamp (ptFireflyClampMode 1, the renderer's default); direct light, catchlights included, is never
+// clamped. 16 after exposure: with the ACES, AgX and filmic curves everything above comes out white,
+// so no bounce that could be seen is cut while the outliers Ray Reconstruction smears still are. The
+// renderer's own calibration (`calibrateFireflyClamp`, from the environment's peak) is far tighter.
 constexpr double kFireflyClamp = 16.0;
 // The frames that accumulate a still clamp four times looser: the clamp biases the converged mean
-// wherever rare bright paths carry the light (the sun in a rough glossy reflection, a caustic, light
-// to the iris through the eye's moisture), and a still has its samples and the denoiser against
-// the outliers one DLSS sample cannot afford.
+// wherever rare bright bounces carry the light (the sun in a rough glossy reflection, a caustic), and
+// a still has its samples and the denoiser against the outliers one DLSS sample cannot afford.
 constexpr double kFireflyClampStill = 4.0 * kFireflyClamp;
 
 int tmMethod(const std::string& method)

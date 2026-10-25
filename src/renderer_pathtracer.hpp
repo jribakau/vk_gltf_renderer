@@ -160,6 +160,10 @@ public:
   bool               m_useSER{true};         // Requested SER state; clamped to m_supportSER each frame.
   bool m_shadowTransmission{true};  // Shadow rays pass through transmissive surfaces (biased; see ePtShadowTransmission).
   bool m_volumeDiffuseExit{false};  // Scatter walks gather light only where they leave the surface (ePtVolumeDiffuseExit).
+  int  m_fireflyClampMode{1};       // 0: the whole path; 1: each indirect contribution (ePtClampIndirect).
+  // Lobes after a rough bounce are as rough as the path (ePtApproximateCaustics). Off: on a DAZ figure
+  // it darkens the irises, whose light comes through the cornea, itself a caustic.
+  bool m_approximateCaustics{false};
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
   // Variant pipeline cache: avoids slow pipeline (re)compilation by reusing previously built

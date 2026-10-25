@@ -302,13 +302,15 @@ struct SceneFrameInfo
 
 enum PathtracerFlags
 {
-  ePtUseDlss            = 1 << 0,
-  ePtFirstFrame         = 1 << 2,
-  ePtShadowTransmission = 1 << 3,  // Biased: shadow rays pass straight through transmissive surfaces
-  ePtDenoiserGuides     = 1 << 4,  // Accumulate the albedo/normal guides (eDenoiserAlbedo, eDenoiserNormal)
-  ePtProbeCameraMedium  = 1 << 5,  // Trace nothing but the camera's medium, into PathtracePushConstant::cameraMedium
-  ePtScatterAsThin      = 1 << 6,  // Volumetric scatter shades as the thin-walled preview (no random walk)
-  ePtVolumeDiffuseExit  = 1 << 7,  // A scatter walk gathers no light inside; it leaves the surface as a Lambertian point
+  ePtUseDlss             = 1 << 0,
+  ePtFirstFrame          = 1 << 2,
+  ePtShadowTransmission  = 1 << 3,  // Biased: shadow rays pass straight through transmissive surfaces
+  ePtDenoiserGuides      = 1 << 4,  // Accumulate the albedo/normal guides (eDenoiserAlbedo, eDenoiserNormal)
+  ePtProbeCameraMedium   = 1 << 5,  // Trace nothing but the camera's medium, into PathtracePushConstant::cameraMedium
+  ePtScatterAsThin       = 1 << 6,  // Volumetric scatter shades as the thin-walled preview (no random walk)
+  ePtVolumeDiffuseExit   = 1 << 7,  // A scatter walk gathers no light inside; it leaves the surface as a Lambertian point
+  ePtClampIndirect       = 1 << 8,  // The firefly clamp cuts each indirect contribution on its own, never direct light
+  ePtApproximateCaustics = 1 << 9,  // Every lobe after a rough bounce is at least as rough as the path (biased)
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

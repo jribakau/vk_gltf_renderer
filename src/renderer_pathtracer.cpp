@@ -272,6 +272,19 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Scatter walks gather light only where they leave the surface, as a diffuse exit (dense media)",
                  .callbackSuccess = reset},
                 &m_volumeDiffuseExit, Persist::eYes);
+  // The clamp scaled a camera sample's whole path, so one bright bounce cut the direct light of the
+  // same path too and a tight clamp dulled every catchlight. Clamping each contribution on its own,
+  // and only light that reached the path after a rough bounce, keeps the surfaces seen directly or
+  // through a mirror or a cornea as they are (Unreal's path tracer: FPathState::AccumulateRadiance).
+  settings->add({.name            = "ptFireflyClampMode",
+                 .help            = "PathTracer: What the firefly clamp scales [Whole path:0, Each indirect contribution:1]",
+                 .callbackSuccess = reset},
+                &m_fireflyClampMode, Persist::eNo, 0, 1);
+  settings->add({.name            = "ptApproximateCaustics",
+                 .help            = "PathTracer: After a diffuse or glossy bounce, every later lobe is at least as rough as the path "
+                                    "so far (biased, fewer fireflies; off: as rough as the roughest material so far)",
+                 .callbackSuccess = reset},
+                &m_approximateCaustics, Persist::eNo);
   settings->add({"ptAutoFocus", "PathTracer: Enable auto focus"}, &m_autoFocus, Persist::eYes);
   settings->add({"ptTechnique", "PathTracer: Rendering technique [RayQuery:0, RayTracing:1]"}, (int*)&m_renderTechnique,
                 Persist::eYes, 0, 1);
@@ -2540,6 +2553,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_shadowTransmission ? shaderio::ePtShadowTransmission : 0;
   m_pushConst.flags |= (m_scatterAsThin == 1 || (m_scatterAsThin == 2 && useDlss)) ? shaderio::ePtScatterAsThin : 0;
   m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;
+  m_pushConst.flags |= m_fireflyClampMode == 1 ? shaderio::ePtClampIndirect : 0;
+  m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
 #if defined(USE_DLSS)
   m_pushConst.flags |= useDlss ? shaderio::ePtUseDlss : 0;
 #endif

@@ -249,7 +249,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif
       if(!walkOwnsSky)
       {
-        pt.radiance += pt.throughput * misWeight * envColor;
+        // The partner of the last vertex's light sample, so the same class: the path before that vertex
+        const bool indirect = pt.prefixIndirect;
+        addRadiance(pt, pt.throughput * misWeight * envColor, indirect);
 
         // The sun the lighting field leaves out. Without it a lobe narrower than the disk -- smooth
         // glass, a polished mirror -- shows no sun at all, as NEE's cone samples almost never land in it.
@@ -258,7 +260,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
           const float3 disk  = evalSkySunDisk(bgDir, frameInfo);
           if(any(disk > 0.0F))
-            pt.radiance += pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf) * disk * frameInfo->envIntensity;
+            addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf) * disk * frameInfo->envIntensity, indirect);
         }
       }
 
@@ -338,6 +340,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         pt.volumeMedium = {};
 #if GLTF_USE_SCATTER
         pt.volumeMaterial = -1;
+        // Light that leaves a walk has scattered: the path is rough from here, as after the diffuse exit
+        if(pt.scatterBounces > 0)
+        {
+          pt.prefixIndirect = true;
+          pt.pathRoughness  = 1.0F;
+        }
 #endif
       }
 #endif
@@ -493,9 +501,20 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif  // USE_GUIDE_SHADER
     }
 
-    // Keep track of the maximum roughness to prevent firefly artifacts by forcing subsequent bounces to be at least as rough
-    pt.maxRoughness  = max(pbrMat.roughness, pt.maxRoughness);
-    pbrMat.roughness = pt.maxRoughness;
+    // Regularisation: later bounces are made at least as rough as the path, against fireflies.
+    // Approximate caustics (Unreal's): as rough as the path's scattering, a diffuse bounce making
+    // every later lobe fully rough. Otherwise (upstream): as rough as the roughest material so far,
+    // whichever of its lobes the path took.
+    if(hasFlag(pushConst.flags, PathtracerFlags::ePtApproximateCaustics))
+    {
+      pbrMat.roughness          = max(pbrMat.roughness, float2(pt.pathRoughness * pt.pathRoughness));
+      pbrMat.clearcoatRoughness = max(pbrMat.clearcoatRoughness, pt.pathRoughness);
+    }
+    else
+    {
+      pt.maxRoughness  = max(pbrMat.roughness, pt.maxRoughness);
+      pbrMat.roughness = pt.maxRoughness;
+    }
 
     //-----------------------------------------------------------------------
     // Visualization override (Debug mode)
@@ -541,7 +560,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // W_total (the area cancels) -- no per-triangle lookup.
         emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pbrMat.emissive, hit.geonrm, ray.Direction, payload.hitT);
       }
-      pt.radiance += emissiveMis * pbrMat.emissive * pt.throughput;
+      addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
     }
 
     //-----------------------------------------------------------------------
@@ -570,6 +589,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     HairHit hairHit = hairHitZero();
     if(materialIndex >= 0 && materials[materialIndex].hairFactor > 0.0)
       hairOn = makeHairHit(materials[materialIndex], hit.uv[0], hit.bitangent, hit.tangent, pbrMat.N, pbrMat.T, pbrMat.B, hairHit);
+    if(hairOn && hasFlag(pushConst.flags, PathtracerFlags::ePtApproximateCaustics))
+      hairHit.betaM = max(hairHit.betaM, pt.pathRoughness);  // the fibre's longitudinal roughness, as the lobes above
 #endif
     const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
 
@@ -610,6 +631,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         const float3 w = pt.throughput * directLight.radianceOverPdf * mis_weight;
         bounce.contribution += w * evalData.bsdf_diffuse;
         bounce.contribution += w * evalData.bsdf_glossy;
+        // Classed by the path before this vertex, as the sample below is about to change it
+        bounce.indirect = pt.pathRoughness > DIRECT_PATH_ROUGHNESS;
       }
       else
       {
@@ -665,6 +688,37 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // The ray wasn't absorbed, so we can continue the path
       if(sampleData.event_type != BSDF_EVENT_ABSORB)
       {
+        // How rough this scattering was (perceptual): a diffuse lobe 1, an impulse 0, a glossy one
+        // its own roughness. The event does not say which glossy lobe it was: take the smoother of
+        // the specular and the clearcoat, so a wrong guess clamps less, not more. A fibre: its
+        // longitudinal roughness.
+        float eventRoughness = 1.0F;
+        if((sampleData.event_type & BSDF_EVENT_IMPULSE) != 0)
+          eventRoughness = 0.0F;
+        else if((sampleData.event_type & BSDF_EVENT_GLOSSY) != 0)
+        {
+          float alpha = max(pbrMat.roughness.x, pbrMat.roughness.y);
+          if(pbrMat.clearcoat > 0.0F)
+            alpha = min(alpha, pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness);
+          eventRoughness = sqrt(alpha);
+        }
+#if GLTF_USE_HAIR
+        if(hairOn && (sampleData.event_type & BSDF_EVENT_GLOSSY) != 0)
+          eventRoughness = hairHit.betaM;  // the fibre lobes; its multiple-scattering lobe is diffuse
+#endif
+        // A walk's own events are no bounce: entering the medium, and reflecting back into it at its
+        // boundary. Leaving it by refraction after it scattered is diffuse light, as the diffuse exit is.
+        bool entersWalk = false;  // set below
+        bool inWalk     = false;
+        int  walkEvents = 0;
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+        {
+          const float3 walkSigmaS = float3(pt.volumeMedium.scatterCoefficient);
+          inWalk     = ptIsInside(pt) && max(walkSigmaS.x, max(walkSigmaS.y, walkSigmaS.z)) > VOLUME_MIN_SCATTER;
+          walkEvents = pt.scatterBounces;
+        }
+#endif
+
         // Continue path (bounce)
         bool isSpecular     = (sampleData.event_type & BSDF_EVENT_IMPULSE) != 0;
         bool isTransmission = (sampleData.event_type & BSDF_EVENT_TRANSMISSION) != 0;
@@ -705,11 +759,21 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
             pt.volumeMaterial = pt.isInside ? materialIndex : -1;
             if(pt.isInside)
               pt.scatterBounces = 0;
+            const float3 sigmaS = float3(pt.volumeMedium.scatterCoefficient);
+            entersWalk          = pt.isInside && max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
 #endif
 #endif
           }
         }
 #endif
+
+        // A walk entered from a surface seen directly keeps the path direct until it leaves, as in
+        // Unreal: the skin's light is the walk's, and the exit's own diffuse sample makes the path rough.
+        if(inWalk && !ptIsInside(pt) && walkEvents > 0)
+          eventRoughness = 1.0F;
+        pt.prefixIndirect = pt.pathRoughness > DIRECT_PATH_ROUGHNESS;
+        if(!entersWalk && !(inWalk && ptIsInside(pt)))
+          pt.pathRoughness = max(pt.pathRoughness, eventRoughness);
       }
       else if(sampleData.event_type == BSDF_EVENT_ABSORB)  // If the ray is absorbed , then break
       {
@@ -799,7 +863,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       shadowRay.TMin      = 0.0;
       shadowRay.TMax      = bounce.shadowRayDist;
       float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, bounce.shadowRayInside, bounce.shadowRayExtinction);
-      pt.radiance += bounce.contribution * shadowFactor;
+      addRadiance(pt, bounce.contribution * shadowFactor, bounce.indirect);
     }
 
     //-----------------------------------------------------------------------
@@ -905,17 +969,22 @@ SampleResult samplePixel(IRaytracer raytracer,
   if(any(isnan(sampleResult.radiance.xyz)) || any(isinf(sampleResult.radiance.xyz)))
     sampleResult.radiance.xyz = float3(0.0F);
 
-  // Removing fireflies (threshold <= 0 disables the clamp). The clamp biases the mean wherever rare
-  // bright paths carry the light (a small emitter in a glossy reflection, a caustic), so a frame that
-  // accumulates a still may use its own, looser threshold (fireflyClampStill; 0: the same): a still
-  // has its samples and its denoiser against the outliers, where a DLSS frame has one sample.
-  float threshold = pushConst.fireflyClampThreshold;
-  if(pushConst.fireflyClampStill > 0.0F && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
-    threshold = pushConst.fireflyClampStill;
-  float lum = dot(sampleResult.radiance.xyz, float3(1.0F / 3.0F));
-  if(threshold > 0.0F && lum > threshold)
+  // Removing fireflies. With ePtClampIndirect each indirect contribution was clamped as it was added
+  // (addRadiance), and what is left here is a cap that keeps a sample within half float, which the
+  // DLSS input is. Otherwise (upstream) the whole path is scaled to the clamp's level by its mean,
+  // direct light and all. Only the colour: the alpha says whether the camera ray hit something.
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtClampIndirect))
   {
-    sampleResult.radiance *= threshold / lum;
+    const float largest = max(sampleResult.radiance.x, max(sampleResult.radiance.y, sampleResult.radiance.z));
+    if(largest > 60000.0F)
+      sampleResult.radiance.xyz *= 60000.0F / largest;
+  }
+  else
+  {
+    const float threshold = fireflyClampLevel();
+    const float lum       = dot(sampleResult.radiance.xyz, float3(1.0F / 3.0F));
+    if(threshold > 0.0F && lum > threshold)
+      sampleResult.radiance.xyz *= threshold / lum;
   }
 
   return sampleResult;

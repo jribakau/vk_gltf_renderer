@@ -1498,6 +1498,13 @@ struct PathTracerState
   float3  firstHitPos   = float3(1e34f);  // matches SampleResult::hitPosition sentinel
   float   lastSamplePdf = DIRAC;
   float2  maxRoughness  = float2(0.0);
+  // How rough the path's scattering has been (perceptual roughness, 0..1): the largest of the lobes
+  // it sampled, a diffuse one and a scattering walk counting as 1 (Unreal's path roughness). It decides
+  // which light the firefly clamp may cut (ePtClampIndirect) and, with ePtApproximateCaustics, how
+  // rough later lobes are. `prefixIndirect`: the path was already indirect before its last event, which
+  // is the class of the light that event's own ray reaches.
+  float pathRoughness  = 0.0F;
+  bool  prefixIndirect = false;
   bool    solid         = true;
   bool    firstHitHazed = true;  // false when the camera ray landed on the shadow catcher
   RayCone cone          = {0.0F, pushConst.pixelAngle};
@@ -1532,6 +1539,7 @@ struct PathTracerState
 struct BounceScratch
 {
   bool   nextEventValid = false;
+  bool   indirect       = false;  // The contribution reached the path after a rough bounce: the clamp may cut it
   float3 contribution   = float3(0.0F);
   // Keep shadow rays full precision: half packing erases the self-intersection offset.
   float3 shadowRayPos        = float3(0.0F);
@@ -1540,6 +1548,36 @@ struct BounceScratch
   bool   shadowRayInside     = false;         // The shadow ray starts inside a medium...
   float3 shadowRayExtinction = float3(0.0F);  // ...of this extinction.
 };
+
+// Light that reaches the path while its roughness is at most this is direct: the first surface's, and
+// that of surfaces seen through a mirror, glass or a cornea. Above it, light came by a rough bounce.
+static const float DIRECT_PATH_ROUGHNESS = 0.1F;
+
+// The firefly clamp's level for this frame: an accumulation's frames may have their own, looser one
+// (fireflyClampStill; 0: the same), a still having its samples and its denoiser against the outliers
+// where a DLSS frame has one sample. 0 or less: no clamp.
+float fireflyClampLevel()
+{
+  if(pushConst.fireflyClampStill > 0.0F && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    return pushConst.fireflyClampStill;
+  return pushConst.fireflyClampThreshold;
+}
+
+// Adds a contribution to the path's radiance. With ePtClampIndirect, an indirect one (`indirect`: the
+// path's roughness before it is above DIRECT_PATH_ROUGHNESS) is scaled down to the clamp's level by
+// its largest channel, keeping its colour; direct light never is (Unreal's FPathState::AccumulateRadiance).
+// The clamp biases the mean where rare bright paths carry the light, so it cuts only bounced light.
+void addRadiance(inout PathTracerState pt, float3 contribution, bool indirect)
+{
+  if(indirect && hasFlag(pushConst.flags, PathtracerFlags::ePtClampIndirect))
+  {
+    const float level   = fireflyClampLevel();
+    const float largest = max(contribution.x, max(contribution.y, contribution.z));
+    if(level > 0.0F && largest > level)
+      contribution *= level / largest;
+  }
+  pt.radiance += contribution;
+}
 
 // Safe accessor for pt.isInside. The field only exists when GLTF_USE_TRANSMISSION or
 // GLTF_USE_VOLUME is compiled in (without those, a ray can never enter a medium so the
@@ -1582,7 +1620,15 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
       if(!hasFlag(pushConst.flags, PathtracerFlags::ePtVolumeDiffuseExit))
       {
         pt.exitedVolumeWalk = true;
-        pt.radiance += volumeScatterNEE(raytracer, pt.volumeMedium, ray.Origin, wiBeforeScatter, pt.throughput, seed);
+        // A walk leaves the path's roughness as it was: under a surface seen directly, its light is direct
+        addRadiance(pt, volumeScatterNEE(raytracer, pt.volumeMedium, ray.Origin, wiBeforeScatter, pt.throughput, seed),
+                    pt.pathRoughness > DIRECT_PATH_ROUGHNESS);
+      }
+      // A scatter in a medium no surface walk entered (the camera's) is a diffuse event like any other
+      if(pt.volumeMaterial < 0)
+      {
+        pt.prefixIndirect = pt.pathRoughness > DIRECT_PATH_ROUGHNESS;
+        pt.pathRoughness  = 1.0F;
       }
 
       if(pt.scatterBounces >= VOLUME_FREE_BUDGET)
