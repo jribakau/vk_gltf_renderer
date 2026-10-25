@@ -221,10 +221,10 @@ TEST(FigureMorphSet, ParallelFullWeldMatchesTheSerialWeld)
 TEST(FigureMorphSet, ALargeTargetAddsItsDeltasInChunks)
 {
   auto geo = std::make_shared<fv::mesh::BuiltMesh>(grid(200, 1));  // 160 801 render vertices
-  // a band of 50 cage rows: about 24 000 drawn vertices, over one chunk and under a quarter of the mesh
+  // a band of 30 cage rows: about 24 000 drawn vertices, over one chunk and under a quarter of the mesh
   std::vector<int32_t> verts;
   std::vector<float>   deltas;
-  for(int j = 60; j < 110; j++)
+  for(int j = 60; j < 90; j++)
     for(int i = 0; i <= 200; i++)
     {
       verts.push_back(j * 201 + i);

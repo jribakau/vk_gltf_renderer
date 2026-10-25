@@ -65,8 +65,12 @@ struct Doc
   bool hasRows(const Json* node) const;
 };
 
-// Parses DSON text and packs its tables.
+// Parses DSON text and packs its tables: the bulk tables stream into Rows as the text is read
+// (parse_sax.cpp), the rest becomes the tree. parseDocDom builds the whole tree first and packs
+// afterwards; parseDoc falls back to it for a table that holds anything but rows of numbers, and
+// the tests hold the two to the same result.
 std::shared_ptr<Doc> parseDoc(std::string text);
+std::shared_ptr<Doc> parseDocDom(std::string text);
 
 struct Ref
 {

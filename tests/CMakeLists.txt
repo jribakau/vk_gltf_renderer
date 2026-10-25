@@ -73,6 +73,7 @@ set(TEST_SOURCES
     test_blob_store.cpp
     # Figure Viewer scene logic (figure/)
     figure/test_gzip.cpp
+    figure/test_dson_parse.cpp
     figure/test_jobs.cpp
     figure/test_catmark.cpp
     figure/test_formulas.cpp

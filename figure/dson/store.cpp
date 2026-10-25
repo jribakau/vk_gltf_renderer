@@ -177,7 +177,7 @@ bool Doc::hasRows(const Json* node) const
   return node->is_array() && !node->empty();
 }
 
-std::shared_ptr<Doc> parseDoc(std::string text)
+std::shared_ptr<Doc> parseDocDom(std::string text)
 {
   auto doc   = std::make_shared<Doc>();
   doc->bytes = text.size();
