@@ -1625,9 +1625,9 @@ void GltfRenderer::setPickObserver(std::function<bool(int renderNode, const glm:
   m_pickObserver = std::move(observer);
 }
 
-void GltfRenderer::setDepthOfField(float focalDistance, float aperture, bool autoFocus)
+void GltfRenderer::setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades, float bladeRotation)
 {
-  m_pathTracer.setDepthOfField(focalDistance, aperture, autoFocus);
+  m_pathTracer.setDepthOfField(focalDistance, aperture, autoFocus, blades, bladeRotation);
   resetFrame();
 }
 

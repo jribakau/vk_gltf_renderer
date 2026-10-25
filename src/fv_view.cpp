@@ -448,7 +448,8 @@ void FvView::setCameraExtra(fv::Json extra)
 
 fv::Json FvView::lensJson(const Lens& lens)
 {
-  return {{"focalLength", lens.focalLength}, {"dof", lens.dof}, {"fStop", lens.fStop}, {"focusMode", lens.focusMode}, {"focusDistance", lens.focusDistance}};
+  return {{"focalLength", lens.focalLength}, {"dof", lens.dof}, {"fStop", lens.fStop}, {"focusMode", lens.focusMode},
+          {"focusDistance", lens.focusDistance}, {"blades", lens.blades}, {"bladeRotation", lens.bladeRotation}};
 }
 
 FvView::Lens FvView::lensOf(const fv::Json& args, Lens base)
@@ -467,6 +468,14 @@ FvView::Lens FvView::lensOf(const fv::Json& args, Lens base)
   }
   if(args.contains("focusDistance"))
     base.focusDistance = std::max(args["focusDistance"].get<double>(), 1e-3);
+  if(args.contains("blades"))
+  {
+    base.blades = args["blades"].get<int>();
+    if(base.blades != 0 && (base.blades < 3 || base.blades > 16))
+      throw std::runtime_error("blades is 0 (round) or 3 to 16");
+  }
+  if(args.contains("bladeRotation"))
+    base.bladeRotation = args["bladeRotation"].get<double>();
   return base;
 }
 
@@ -503,7 +512,8 @@ void FvView::applyDof()
     const double radius = (m_lens.focalLength / (2.0 * m_lens.fStop)) * 1e-3;
     aperture            = float(radius * radius);
   }
-  m_renderer->setDepthOfField(float(std::max(m_lens.focusDistance, 1e-3)), aperture, m_lens.focusMode != "manual");
+  m_renderer->setDepthOfField(float(std::max(m_lens.focusDistance, 1e-3)), aperture, m_lens.focusMode != "manual",
+                              m_lens.blades, float(glm::radians(m_lens.bladeRotation)));
 }
 
 void FvView::deselect(const std::string& prop)

@@ -499,7 +499,7 @@ public:
   void setShowAxis(bool on);
   /// Path-tracer depth of field. `aperture` is the lens radius squared in metres (0: pinhole).
   /// `autoFocus` keeps the orbit target sharp and ignores `focalDistance`.
-  void setDepthOfField(float focalDistance, float aperture, bool autoFocus);
+  void setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades = 0, float bladeRotation = 0);
   int  selectedNodeIndex();  // The node of a node or primitive selection, or -1
   void fitCamera(bool wholeScene);
   /// What is shown, where it is now: the union of the visible render nodes' boxes through their

@@ -106,11 +106,14 @@ public:
   void setBusyWindow(BusyWindow* busy) { m_busyWindow = busy; }
   // --cacheDir. Empty (the default) keeps the caches next to the executable. Set before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
-  // Lens radius squared in metres (0: a pinhole). autoFocus uses the eye-to-target distance.
-  void setDepthOfField(float focalDistance, float aperture, bool autoFocus)
+  // Lens radius squared in metres (0: a pinhole). autoFocus uses the eye-to-target distance. Blades:
+  // below 3 a round aperture, else a polygon with a corner at bladeRotation (radians).
+  void setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades = 0, float bladeRotation = 0)
   {
     m_pushConst.focalDistance = std::max(1e-9f, focalDistance);
     m_pushConst.aperture      = std::max(0.f, aperture);
+    m_pushConst.bladeCount    = blades;
+    m_pushConst.bladeRotation = bladeRotation;
     m_autoFocus               = autoFocus;
   }
 

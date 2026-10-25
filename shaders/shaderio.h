@@ -346,6 +346,8 @@ struct PathtracePushConstant
   int             guideSamples          = 0;       // Samples in the denoiser guides (0: replace them)
   float2          mouseCoord            = {0, 0};  // Mouse coordinates (use for debug)
   uint2           renderSize = {0, 0};          // Traced region: smaller than the output images under OptiX 2x upscale
+  int             bladeCount    = 0;            // Aperture blades: below 3 a round aperture (aperture.h.slang)
+  float           bladeRotation = 0.0f;         // Angle of the first blade's corner, radians from the camera's right
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node

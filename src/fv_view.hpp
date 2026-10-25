@@ -25,7 +25,7 @@
 //   select        {prop, node?} or {prop: null}   a prop (its root), or a node of its "nodes/<prop>" topic
 //   camera.view   {name}                     front, back, left, right, top, bottom, threeQuarter
 //   camera.frame  {prop?, selected?}         the whole scene, a prop, or the selection
-//   camera.set    {focalLength, dof, fStop, focusMode, focusDistance}   the lens of the view in use
+//   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
 //   view.set      {display, grid, gizmo, pick, transform, helpers}  display: shaded, clay, wireframe, normals;
@@ -126,6 +126,8 @@ public:
     double      fStop         = 2.8;
     std::string focusMode     = "target";
     double      focusDistance = 3;
+    int         blades        = 0;  // aperture blades: 0 a round aperture, else 3 to 16 straight blades
+    double      bladeRotation = 0;  // degrees, the first blade's corner from the camera's right toward its up
   };
   const Lens& lens() const { return m_lens; }
   void        setLens(const Lens& lens);

@@ -237,9 +237,10 @@ set_target_properties(${TEST_NAME} PROPERTIES
     FOLDER "Tests"
 )
 
-# nvshaders' BSDF compiled as C++: its own executable, since the header needs GLM's swizzles
+# Shader code compiled as C++ (nvshaders' BSDF, the aperture sampler): its own executable, since
+# the BSDF header needs GLM's swizzles
 set(BSDF_TEST_NAME ${PROJECT_NAME}_bsdf_tests)
-add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp)
+add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp)
 target_link_libraries(${BSDF_TEST_NAME} PRIVATE GTest::gtest GTest::gtest_main glm)
 target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})
 gtest_discover_tests(${BSDF_TEST_NAME})

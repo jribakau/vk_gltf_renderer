@@ -63,6 +63,7 @@ static bool doDebug = false;
 #include "dlss_util.h"
 #include "common.h.slang"
 #include "aerial_perspective.h.slang"
+#include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 
 // NVSHADERS are under: https://github.com/nvpro-samples/nvpro_core2/tree/main/nvshaders
@@ -1013,11 +1014,13 @@ SampleResult samplePixel(IRaytracer raytracer,
     // transpose, which only an unturned camera does not tell apart, and which tilted the aperture.
     const float3 camForward  = normalize(mul(float4(0, 0, -1, 0), viewMatrixI).xyz);
     float3 focalPoint        = (focalDist / max(dot(ray.Direction, camForward), 1e-4F)) * ray.Direction;
-    float  cam_r1            = rand(seed) * M_TWO_PI;
-    float  cam_r2            = rand(seed) * aperture;
+    // `aperture` is the radius squared; the blades shape it (aperture.h.slang)
+    const float  u1          = rand(seed);
+    const float  u2          = rand(seed);
+    const float2 lens        = sampleAperture(u1, u2, pushConst.bladeCount, pushConst.bladeRotation) * sqrt(aperture);
     float4 cam_right         = mul(float4(1, 0, 0, 0), viewMatrixI);
     float4 cam_up            = mul(float4(0, 1, 0, 0), viewMatrixI);
-    float3 randomAperturePos = (cos(cam_r1) * cam_right.xyz + sin(cam_r1) * cam_up.xyz) * sqrt(cam_r2);
+    float3 randomAperturePos = lens.x * cam_right.xyz + lens.y * cam_up.xyz;
     float3 finalRayDir       = normalize(focalPoint - randomAperturePos);
 
     // Set the new ray origin and direction with depth-of-field
