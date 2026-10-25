@@ -468,8 +468,38 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
   if((derived || (!cooker && (!req.alphaRel.empty() || req.makeup))) && readable(req.rel))
   {
     std::error_code ec;
-    const auto      dir  = std::filesystem::temp_directory_path(ec) / "fv-composed";
-    const auto      file = dir / (std::to_string(std::hash<std::string>{}(fv::build::requestKey(req))) + ".png");
+    const auto      dir = std::filesystem::temp_directory_path(ec) / "fv-composed";
+    // named by the request and by where its sources are, their size and their time (FNV-1a, the
+    // same from build to build): a texture edited in place, or the same relative path in another
+    // library, composes again instead of showing the old picture
+    uint64_t   h   = 1469598103934665603ULL;
+    const auto mix = [&h](const std::string& s) {
+      for(unsigned char c : s)
+      {
+        h ^= c;
+        h *= 1099511628211ULL;
+      }
+      h ^= '|';
+      h *= 1099511628211ULL;
+    };
+    mix(fv::build::requestKey(req));
+    {
+      std::vector<std::string> sources = {req.rel, req.alphaRel, req.bumpRel};
+      if(req.makeup)
+        sources.insert(sources.end(), {req.makeup->colorRel, req.makeup->weightRel});
+      for(const std::string& rel : sources)
+        if(!rel.empty())
+          if(auto src = lib.find(normRel(rel)))
+          {
+            std::error_code e2;
+            mix(utf8Of(*src));
+            mix(std::to_string(std::filesystem::file_size(*src, e2)));
+            mix(std::to_string(std::filesystem::last_write_time(*src, e2).time_since_epoch().count()));
+          }
+    }
+    char name[32];
+    std::snprintf(name, sizeof name, "%016llx", static_cast<unsigned long long>(h));
+    const auto file = dir / (std::string(name) + ".png");
     if(!std::filesystem::exists(file, ec))
     {
       fv::build::ExportOptions o;
@@ -487,7 +517,19 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
       std::ofstream out(std::filesystem::path(tmp), std::ios::binary);
       out.write(reinterpret_cast<const char*>(png->data()), std::streamsize(png->size()));
       out.close();
+      if(!out)
+      {
+        LOGW("texture %s: could not write %s\n", req.rel.c_str(), tmp.c_str());
+        std::filesystem::remove(tmp, ec);
+        return derived ? std::nullopt : sourceTexture(lib, req);
+      }
       std::filesystem::rename(tmp, file, ec);
+      if(ec)
+      {
+        LOGW("texture %s: could not place %s: %s\n", req.rel.c_str(), utf8Of(file).c_str(), ec.message().c_str());
+        std::filesystem::remove(tmp, ec);
+        return derived ? std::nullopt : sourceTexture(lib, req);
+      }
     }
     return fv::build::TextureImage{uriOfPath(utf8Of(file)), "image/png", false};
   }
@@ -698,6 +740,7 @@ struct FvHost::Impl
   // viewport input, applied in onUpdate
   std::mutex        inputMutex;
   std::vector<Json> input;
+  uint64_t          lastInputSeq = 0;  // the newest batch applied (normalizeInput)
   double            mouseX = 0, mouseY = 0;
   bool              lmb = false, mmb = false;
 
@@ -935,6 +978,7 @@ struct FvHost::Impl
   void publishMorphs(Loaded& f);
   void publishBusy(Loaded& f);
   void frameCamera();
+  void normalizeInput(std::vector<Json>& events);
   void applyInput(const std::vector<Json>& events);
   void patchPose(const Loaded& f, const std::vector<std::string>& boneIds);
   // a figure's posed bone at a glTF node, or {nullptr, nullptr}
@@ -4053,6 +4097,38 @@ void FvHost::Impl::frameCamera()
   manip->fit(box.min(), box.max(), true, false, size.height ? double(size.width) / size.height : 1.0);
 }
 
+// Input events as the frame has them. The app maps a pointer to the frame size it asked for last
+// and tags each event with it (`w`, `h`) and with its batch's number (`seq`): a batch mapped to
+// another size (a /size still in flight) is scaled to this frame; batches are put in order; and a
+// batch that arrived after a later one (two POSTs on two server threads) keeps its presses,
+// releases and wheel but loses its moves, whose positions are stale.
+void FvHost::Impl::normalizeInput(std::vector<Json>& events)
+{
+  const auto seqOf = [](const Json& e) { return e.value("seq", uint64_t(0)); };
+  std::stable_sort(events.begin(), events.end(), [&](const Json& a, const Json& b) { return seqOf(a) < seqOf(b); });
+  const VkExtent2D  size = renderer->renderSize();
+  uint64_t          newest = lastInputSeq;
+  std::vector<Json> kept;
+  kept.reserve(events.size());
+  for(Json& e : events)
+  {
+    const uint64_t seq = seqOf(e);
+    if(seq && seq < lastInputSeq && e.value("t", "") == "move")
+      continue;
+    newest = std::max(newest, seq);
+    const double w = e.value("w", 0.0), h = e.value("h", 0.0);
+    if(w > 0 && h > 0 && size.width && size.height && e.contains("x") && e.contains("y")
+       && (uint32_t(std::lround(w)) != size.width || uint32_t(std::lround(h)) != size.height))
+    {
+      e["x"] = e["x"].get<double>() * size.width / w;
+      e["y"] = e["y"].get<double>() * size.height / h;
+    }
+    kept.push_back(std::move(e));
+  }
+  lastInputSeq = newest;
+  events.swap(kept);
+}
+
 void FvHost::Impl::applyInput(const std::vector<Json>& events)
 {
   auto manip = renderer->getCameraManipulator();
@@ -4309,6 +4385,17 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   {"height", size.height}};
     });
   });
+  // GPU memory, for the Export dialog: the budget (VK_EXT_memory_budget; `known` false without it)
+  // and what a pixel of the frame costs in the mode drawn, so a size is judged before it is asked for
+  cmds.add("render.budget", [impl](const Json&) {
+    return impl->onApp([impl] {
+      const auto       b    = impl->renderer->deviceMemoryBudget();
+      const VkExtent2D size = impl->renderer->renderSize();
+      return Json{{"known", b.known},   {"budgetBytes", b.budget},
+                  {"usageBytes", b.usage}, {"bytesPerPixel", impl->renderer->frameBytesPerPixel()},
+                  {"width", size.width},   {"height", size.height}};
+    });
+  });
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingSet(args); }); });
   // any registered renderer parameter, read or written as nvmcp's parameter tools do
   cmds.add("params.get", [impl](const Json& args) {
@@ -4489,7 +4576,10 @@ void FvHost::onUpdate()
     events.swap(s.input);
   }
   if(!events.empty())
+  {
+    s.normalizeInput(events);
     s.applyInput(s.view ? s.view->onInput(events) : events);
+  }
   s.applyGizmoEdit();
   // not while a composition settles: the renderer moves the view to a scene camera for a frame or two
   if(!s.viewCamera.empty() && s.frameIn == 0)

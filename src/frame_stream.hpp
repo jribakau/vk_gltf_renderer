@@ -108,6 +108,10 @@ struct FrameStreamCreateInfo
   // Called first when the stream stops, before the server joins its threads: a request a host holds
   // waiting on the application thread (a command) must end now, not at its own timeout. Optional.
   std::function<void()> stopping;
+
+  // Why a /size must be refused (GPU memory the frame would not have), or empty. Called on an HTTP
+  // thread, so it may read only what the renderer keeps for any thread. Optional.
+  std::function<std::string(VkExtent2D)> refuseSize;
 };
 
 class FrameStream : public nvapp::IAppElement

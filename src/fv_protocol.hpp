@@ -25,7 +25,10 @@
 //
 //   POST /cmd      {id, cmd, args} -> {id, ok, rev, result | error}       (fv_events.hpp)
 //   GET  /events   server-sent events: every topic's snapshot, then each change
-//   POST /input    [{type, ...}, ...] pointer, wheel and key events for the viewport
+//   POST /input    [{t, x, y, w, h, seq, ...}, ...] pointer, wheel and key events for the viewport: x and y in
+//                  the pixels of the frame of w by h the app mapped them to (scaled to the frame drawn when a
+//                  /size is in flight), seq the batch's number (batches are put in order; a late one loses its
+//                  moves); both optional
 //
 // The UI sends its JSON as text/plain, which a browser posts without a CORS preflight.
 //

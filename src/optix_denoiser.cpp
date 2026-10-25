@@ -260,23 +260,40 @@ bool OptiXDenoiser::createSharedBuffers()
   VkBufferUsageFlags2KHR usage =
       VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT;
 
+  // A buffer the device memory cannot give (a large frame) leaves the denoiser unavailable: the
+  // VkResult went unread, and CUDA then imported null memory
+  const auto exportBuffer = [&](auto& buffer, size_t bytes, const char* name) {
+    const VkResult result = m_allocExport.createBufferExport(buffer, bytes, usage);
+    if(result != VK_SUCCESS)
+    {
+      LOGE("OptiXDenoiser: %s (%zu bytes) could not be created (%d); the denoiser is unavailable\n", name, bytes, int(result));
+      m_availability = Availability::eUnavailable;
+      return false;
+    }
+    return true;
+  };
+
   // Input buffers at render (input) resolution
-  m_allocExport.createBufferExport(m_rgbBuffer.vkBuffer, inputBufferSize, usage);
+  if(!exportBuffer(m_rgbBuffer.vkBuffer, inputBufferSize, "the colour buffer"))
+    return false;
   m_rgbBuffer.cudaBuffer = vkcuda::createCudaBuffer(m_allocExport, m_rgbBuffer.vkBuffer);
   NVVK_DBG_NAME_STR(m_rgbBuffer.vkBuffer.buffer, "Optix::m_rgbBuffer");
 
   // Albedo buffer
-  m_allocExport.createBufferExport(m_albedoBuffer.vkBuffer, inputBufferSize, usage);
+  if(!exportBuffer(m_albedoBuffer.vkBuffer, inputBufferSize, "the albedo buffer"))
+    return false;
   m_albedoBuffer.cudaBuffer = vkcuda::createCudaBuffer(m_allocExport, m_albedoBuffer.vkBuffer);
   NVVK_DBG_NAME_STR(m_albedoBuffer.vkBuffer.buffer, "Optix::m_albedoBuffer");
 
   // Normal buffer
-  m_allocExport.createBufferExport(m_normalBuffer.vkBuffer, inputBufferSize, usage);
+  if(!exportBuffer(m_normalBuffer.vkBuffer, inputBufferSize, "the normal buffer"))
+    return false;
   m_normalBuffer.cudaBuffer = vkcuda::createCudaBuffer(m_allocExport, m_normalBuffer.vkBuffer);
   NVVK_DBG_NAME_STR(m_normalBuffer.vkBuffer.buffer, "Optix::m_normalBuffer");
 
   // Output buffer at display (output) resolution
-  m_allocExport.createBufferExport(m_outputBuffer.vkBuffer, outputBufferSize, usage);
+  if(!exportBuffer(m_outputBuffer.vkBuffer, outputBufferSize, "the output buffer"))
+    return false;
   m_outputBuffer.cudaBuffer = vkcuda::createCudaBuffer(m_allocExport, m_outputBuffer.vkBuffer);
   NVVK_DBG_NAME_STR(m_outputBuffer.vkBuffer.buffer, "Optix::m_outputBuffer");
 

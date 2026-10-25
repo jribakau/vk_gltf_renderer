@@ -725,6 +725,14 @@ void FrameStream::Impl::serve()
       res.set_content("w and h must be 16..16384", "text/plain");
       return;
     }
+    // a frame the GPU memory cannot hold would end the process at its first allocation
+    if(info.refuseSize)
+      if(const std::string why = info.refuseSize({uint32_t(w), uint32_t(h)}); !why.empty())
+      {
+        res.status = 507;
+        res.set_content(why, "text/plain");
+        return;
+      }
     app->requestHeadlessResize({uint32_t(w), uint32_t(h)});
     res.set_content("ok", "text/plain");
   });
@@ -766,6 +774,8 @@ void FrameStream::Impl::serve()
   if(!http.bind_to_port("127.0.0.1", info.port))
   {
     LOGE("frame stream: could not bind 127.0.0.1:%u\n", unsigned(info.port));
+    // nothing reaches a renderer without its port: end the run, so the host sees the exit and the log
+    app->close();
     return;
   }
   LOGI("frame stream: http://127.0.0.1:%u/stream\n", unsigned(info.port));

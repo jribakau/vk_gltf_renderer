@@ -59,6 +59,9 @@
 //   render.mode     {mode: "raster" | "rtx", skin?: "volume" | "thin"}
 //   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame)
+//   render.budget   {}  -> {known, budgetBytes, usageBytes, bytesPerPixel, width, height}   GPU memory: the
+//                                                driver's budget and what a pixel of the frame costs, so an
+//                                                export size is judged before /size refuses it (507)
 //   material.set    {prop, material, values}     edit a surface (fv_materials.hpp); material.reset {prop, material?}
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item

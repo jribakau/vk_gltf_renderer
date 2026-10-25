@@ -673,6 +673,18 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_resources.app      = app;
   registerCommands();
 
+  // VK_EXT_memory_budget is asked for as an optional extension (main.cpp), so a device that has it
+  // has it enabled: deviceMemoryBudget() may chain its query then
+  {
+    uint32_t count = 0;
+    vkEnumerateDeviceExtensionProperties(app->getPhysicalDevice(), nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> extensions(count);
+    vkEnumerateDeviceExtensionProperties(app->getPhysicalDevice(), nullptr, &count, extensions.data());
+    m_memoryBudgetExtension = std::any_of(extensions.begin(), extensions.end(), [](const VkExtensionProperties& e) {
+      return std::strcmp(e.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0;
+    });
+  }
+
   // ===== Settings Handler (ImGui persistent) =====
   // The list lives with the declarations in the constructor; this replays the persisted ones now
   // that the handler exists. Nothing to keep in sync by hand.
@@ -1421,10 +1433,61 @@ ImTextureID GltfRenderer::thumbnailForImage(int imageIndex)
 
 //--------------------------------------------------------------------------------------------------
 // Render the scene
+// What a pixel of the frame holds in GPU memory, for refuseFrameSize. Measured at 4K on 2026-10-25:
+// the rasterizer's G-buffers (RGBA8, RGBA32F, R32F, depth: 28 B), and under RTX those plus the DLSS
+// guides and output (72 B), OptiX's three images and four CUDA-shared float4 buffers (112 B) and
+// the hand-off's two targets (24 B), about 244 B of buffers the renderer owns, plus the upscaler's
+// own history, which the driver holds. Estimates: a refusal keeps the process alive, nothing more.
+constexpr uint32_t kRasterBytesPerPixel     = 48;
+constexpr uint32_t kPathTracerBytesPerPixel = 300;
+
+GltfRenderer::MemoryBudget GltfRenderer::deviceMemoryBudget() const
+{
+  MemoryBudget b;
+  if(!m_memoryBudgetExtension || !m_app)
+    return b;
+  VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+  VkPhysicalDeviceMemoryProperties2 props{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &budget};
+  vkGetPhysicalDeviceMemoryProperties2(m_app->getPhysicalDevice(), &props);
+  for(uint32_t i = 0; i < props.memoryProperties.memoryHeapCount; i++)
+    if(props.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+    {
+      b.budget += budget.heapBudget[i];
+      b.usage += budget.heapUsage[i];
+    }
+  b.known = true;
+  return b;
+}
+
+std::string GltfRenderer::refuseFrameSize(VkExtent2D size) const
+{
+  const MemoryBudget b = deviceMemoryBudget();
+  if(!b.known)
+    return {};
+  const uint64_t packed = m_frameSizePacked.load();
+  const int64_t  pixelsNow  = int64_t(packed >> 32) * int64_t(packed & 0xffffffffu);
+  const int64_t  pixelsMore = int64_t(size.width) * size.height - pixelsNow;
+  if(pixelsMore <= 0)
+    return {};
+  const double need = double(pixelsMore) * frameBytesPerPixel();
+  const double free = double(b.budget) - double(b.usage);
+  // a tenth of what is free stays for the scene's own growth (a BLAS refit, a texture)
+  if(need <= free * 0.9)
+    return {};
+  return fmt::format("a {}x{} frame needs about {:.1f} GB more of GPU memory and {:.1f} GB is free ({:.1f} of {:.1f} GB in use)",
+                     size.width, size.height, need / 1e9, std::max(free, 0.0) / 1e9, b.usage / 1e9, b.budget / 1e9);
+}
+
 void GltfRenderer::onRender(VkCommandBuffer cmd)
 {
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
   m_profilerTimeline->frameAdvance();
+  // for refuseFrameSize on the stream's thread
+  m_frameBytesPerPixel.store(m_resources.settings.renderSystem == RenderingMode::ePathtracer ? kPathTracerBytesPerPixel : kRasterBytesPerPixel);
+  {
+    const VkExtent2D s = renderSize();
+    m_frameSizePacked.store(uint64_t(s.width) << 32 | s.height);
+  }
   // Before anything reads the sun: if the scene marks a light as the sky's sun, that light owns
   // its direction.
   m_skySun.syncFromMarkedLight();

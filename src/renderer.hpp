@@ -396,6 +396,25 @@ public:
   // The allocator, for a host element that owns GPU work of its own (the dForce GPU solver)
   nvvk::ResourceAllocator& allocator() { return m_resources.allocator; }
   VkExtent2D renderSize() const { return m_resources.gBuffers.getSize(); }
+
+  // The device's VRAM budget (VK_EXT_memory_budget): the bytes the driver allows this process over
+  // its device-local heaps and the bytes in use; `known` is false on a device without the
+  // extension. A physical-device query: any thread.
+  struct MemoryBudget
+  {
+    VkDeviceSize budget = 0;
+    VkDeviceSize usage  = 0;
+    bool         known  = false;
+  };
+  MemoryBudget deviceMemoryBudget() const;
+  // What a pixel of the frame costs in the mode drawn, an estimate of the per-pixel buffers (the
+  // G-buffers; under RTX the DLSS guides and output, OptiX's images and shared buffers, the hand-off
+  // and the upscaler's own history). Updated each frame; any thread.
+  uint32_t frameBytesPerPixel() const { return m_frameBytesPerPixel.load(); }
+  // Why a frame of this size must not be asked for (the budget cannot hold what it adds over the
+  // frame drawn now), or empty. Any allocation that fails ends the process (NVVK_CHECK), so the
+  // stream's /size asks here first. Any thread.
+  std::string refuseFrameSize(VkExtent2D size) const;
   // Frames that ran a renderer so far (Resources::drawnFrameCount): a count that stands still is a
   // view with nothing to draw, which the frame stream slows the loop for.
   uint64_t drawnFrameCount() const { return m_resources.drawnFrameCount; }
@@ -813,6 +832,10 @@ private:
   // `screenshot`: saved in onPostRender from a frame drawn without the selection silhouette, the
   // grid, the gizmo and the helper lines, which otherwise go into the tonemapped image
   std::filesystem::path m_screenshotPending;
+  // for refuseFrameSize on another thread: the frame's per-pixel cost and size, written each frame
+  std::atomic<uint32_t> m_frameBytesPerPixel{0};
+  std::atomic<uint64_t> m_frameSizePacked{0};  // width << 32 | height
+  bool                  m_memoryBudgetExtension = false;  // the device has VK_EXT_memory_budget (onAttach)
   bool                  m_envPreviewPending{false};  // Record a colour-only re-bake into this frame
   bool                  m_envCommitOwed{false};      // Previewed at least once; owes a commit once the edits stop
   bool                  m_envOwnedByBaker{false};    // hdrIbl currently points at EnvBaker's image, not a loaded file

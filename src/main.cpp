@@ -408,6 +408,7 @@ auto main(int argc, char** argv) -> int
       {VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME, &addressCmdFeature, false},  // Optional: required by VK_KHR_opacity_micromap
       {VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME, &ommFeature, false},                // Optional: Opacity Micromap (OMM)
       {VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, &pipelineExecFeature, false},  // Optional: path-tracer register counts in the log
+      {VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, nullptr, false},  // Optional: the VRAM budget a frame size is checked against (GltfRenderer::refuseFrameSize)
   };
 
   // Only request the graphics queue
@@ -667,6 +668,7 @@ auto main(int argc, char** argv) -> int
           .token     = fvToken,
           .routes    = [protocol](httplib::Server& http, const std::atomic<bool>& running) { protocol->registerRoutes(http, running); },
           .stopping  = [protocol] { protocol->stop(); },
+          .refuseSize = [r](VkExtent2D size) { return r->refuseFrameSize(size); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
