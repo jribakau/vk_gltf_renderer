@@ -47,8 +47,9 @@ cd build
 ctest -C Release --output-on-failure
 ```
 
-> CTest runs the **unit tests** only (`vk_gltf_renderer_tests`, registered via
-> `gtest_discover_tests`). The Google Benchmark microbenchmarks
+> CTest runs the **unit tests** only (`vk_gltf_renderer_tests`, and `vk_gltf_renderer_bsdf_tests`:
+> nvshaders' BSDF compiled as C++, its own executable because the header needs GLM's swizzles;
+> both registered via `gtest_discover_tests`). The Google Benchmark microbenchmarks
 > (`vk_gltf_renderer_benchmarks`) are not registered with CTest — run that executable directly
 > (see [Running Benchmarks](#running-benchmarks)).
 
@@ -170,6 +171,7 @@ tests/
 ├── test_extensions_metadata.cpp # Extension metadata
 ├── test_primitives.cpp         # Procedural primitives
 ├── test_interactivity_engine.cpp # KHR_interactivity graph parsing, flow scheduling, node eval
+├── test_bsdf_lobes.cpp         # nvshaders' BSDF on the CPU: every-lobe NEE, its MIS pair, sample vs eval (own exe)
 ├── render/                     # GPU render checks driven by Python (see Render Tests)
 └── common/
     ├── test_utils.hpp          # Test utilities header
