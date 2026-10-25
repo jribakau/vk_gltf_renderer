@@ -51,6 +51,10 @@ public:
   // Receives each /input batch (a JSON array), on an HTTP thread. Unset: input is dropped.
   void setInputSink(std::function<void(const fv::Json& events)> sink) { m_input = std::move(sink); }
 
+  // What this build can do beyond the protocol's commands ({dforceGpu: bool}, ...), carried by
+  // `hello` and the "session" topic, so an app shows only what the renderer has.
+  void setFeatures(fv::Json features);
+
   // Adds the routes. `running` turns false when the server stops; open event streams end then.
   void registerRoutes(httplib::Server& http, const std::atomic<bool>& running);
 
@@ -58,4 +62,5 @@ private:
   fv::CommandRegistry                         m_commands;
   fv::EventHub                                m_events;
   std::function<void(const fv::Json& events)> m_input;
+  fv::Json                                    m_features = fv::Json::object();
 };

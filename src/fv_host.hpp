@@ -65,7 +65,9 @@
 //                                                (figure/wardrobe/collider.hpp), on by default
 //   dforce.enable   {prop, on}; dforce.resimulate {prop}   cloth drapes over the body (figure/dforce)
 //   dforce.mode     {prop, mode: "settle" | "live" | "gpu"}   one settle once the pose stops, a step every
-//                                                frame, or that on the experimental GPU solver (FV_DFORCE_GPU builds)
+//                                                frame, or that on the GPU solver (FV_DFORCE_GPU builds; the
+//                                                "session" topic's features.dforceGpu says, and a scene file's
+//                                                "gpu" restores as live without it)
 //   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
 //                                                material edits, collision and dForce on/off, dForce's mode
 //   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models')

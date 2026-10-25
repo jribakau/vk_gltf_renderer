@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -82,16 +83,19 @@ struct DforceGpu::Impl
   ClothModel               model;
   std::vector<Kinematic>   kin;
 
-  // edges sorted by colour, and where each colour starts
+  // edges sorted by colour, and where each colour starts; the stretch edges have the first colours
+  // to themselves, so a sweep over them alone is those colours
   std::vector<int> colourStart;
+  int              stretchColours = 0;
 
   VkPipelineLayout layout{};
-  VkPipeline       integratePipe{}, edgesPipe{}, collidePipe{}, velocityPipe{};
+  VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, collidePipe{}, velocityPipe{};
 
   // the model's buffers; `cells` and `items` grow with the grid
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
-      lam, tris, cells, items, modelBuf, readback;
+      lam, tris, cells, items, softVerts, attAlpha, lamAtt, modelBuf, readback;
   size_t cellCapacity = 0, itemCapacity = 0;
+  bool   gridFailed = false;
 
   // host copies: every position (the kinematic ones kept where the last frame ended them)
   std::vector<float> xHost;
@@ -113,7 +117,7 @@ struct DforceGpu::Impl
 
   // ---- a frame
   void kinematicAt(float t, std::vector<float>& out);
-  void buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m);
+  bool buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m);
   void frame(float t0, float t1, float extraDamping);
 };
 
@@ -177,24 +181,43 @@ bool DforceGpu::Impl::init()
     }
   }
 
-  // greedy colouring: no two edges of a colour share a vertex, so a colour projects in parallel
-  std::vector<uint64_t> used(size_t(model.nv), 0);
-  std::vector<int>      colourOf(model.edges.size(), -1);
-  int                   colours = 0;
-  for(size_t e = 0; e < model.edges.size(); e++)
-  {
-    const Edge& ed = model.edges[e];
-    if(model.inv[ed.a] <= 0 && model.inv[ed.b] <= 0)
-      continue;
-    const uint64_t taken = used[size_t(ed.a)] | used[size_t(ed.b)];
-    int            c     = 0;
-    while(c < 63 && (taken >> c) & 1)
-      c++;
-    colourOf[e] = c;
-    used[size_t(ed.a)] |= uint64_t(1) << c;
-    used[size_t(ed.b)] |= uint64_t(1) << c;
-    colours = std::max(colours, c + 1);
-  }
+  // greedy colouring: no two edges of a colour share a vertex, so a colour projects in parallel.
+  // The stretch edges are coloured first, among themselves, so the sweeps over them alone (as the
+  // CPU solver's stretchSweeps) are the first colours
+  std::vector<int> colourOf(model.edges.size(), -1);
+  int              colours = 0;
+  const auto       colourKind = [&](bool stretch) {
+    std::vector<uint64_t> used(size_t(model.nv), 0);
+    for(size_t e = 0; e < model.edges.size(); e++)
+    {
+      const Edge& ed = model.edges[e];
+      if((ed.kind == EdgeKind::eStretch) != stretch || (model.inv[ed.a] <= 0 && model.inv[ed.b] <= 0))
+        continue;
+      const uint64_t taken = used[size_t(ed.a)] | used[size_t(ed.b)];
+      int            c     = 0;
+      while(c < 63 && (taken >> c) & 1)
+        c++;
+      if(c >= 63)
+      {
+        LOGE("dForce GPU: a vertex has more than 63 edges of one kind; the CPU solver takes this one\n");
+        return false;
+      }
+      colourOf[e] = colours + c;
+      used[size_t(ed.a)] |= uint64_t(1) << c;
+      used[size_t(ed.b)] |= uint64_t(1) << c;
+    }
+    int most = 0;
+    for(size_t e = 0; e < model.edges.size(); e++)
+      if(colourOf[e] >= colours)
+        most = std::max(most, colourOf[e] - colours + 1);
+    colours += most;
+    return true;
+  };
+  if(!colourKind(true))
+    return false;
+  stretchColours = colours;
+  if(!colourKind(false))
+    return false;
   std::vector<shaderio::DforceEdge> sorted;
   colourStart.assign(size_t(colours) + 1, 0);
   for(int c = 0; c < colours; c++)
@@ -219,13 +242,16 @@ bool DforceGpu::Impl::init()
   const size_t       n = size_t(model.nv);
   std::vector<float> zeros(n * 3, 0.f);
   std::vector<float> lamZero(std::max<size_t>(1, sorted.size()), 0.f);
+  std::vector<float> lamAttZero(std::max<size_t>(1, model.softVerts.size()), 0.f);
   std::vector<int>   collideFlags(n), layers(n);
   for(size_t i = 0; i < n; i++)
   {
     collideFlags[i] = model.collides[i] ? 1 : 0;
     layers[i]       = model.layer[i];
   }
+  // the start: the rest shape, with what overlaps the body moved out of it, as the CPU solver starts
   xHost = model.rest;
+  separateStart(model, xHost);
   bool ok = true;
   ok &= mapped(x, xHost);
   ok &= mapped(prev, xHost);
@@ -245,6 +271,9 @@ bool DforceGpu::Impl::init()
   ok &= mapped(edges, sorted);
   ok &= mapped(lam, lamZero);
   ok &= mapped(tris, faces);
+  ok &= mapped(softVerts, model.softVerts.empty() ? std::vector<int>{0} : model.softVerts);
+  ok &= mapped(attAlpha, model.attAlpha);
+  ok &= mapped(lamAtt, lamAttZero);
   ok &= mappedBytes(modelBuf, nullptr, sizeof(shaderio::DforceModel), VMA_MEMORY_USAGE_CPU_TO_GPU);
   ok &= mappedBytes(readback, nullptr, n * 3 * sizeof(float), VMA_MEMORY_USAGE_GPU_TO_CPU);
   if(!ok)
@@ -255,8 +284,8 @@ bool DforceGpu::Impl::init()
   if(vkCreatePipelineLayout(alloc->getDevice(), &layoutInfo, nullptr, &layout) != VK_SUCCESS)
     return false;
   NVVK_DBG_NAME(layout);
-  if(!makePipeline("integrateMain", integratePipe) || !makePipeline("edgesMain", edgesPipe) || !makePipeline("collideMain", collidePipe)
-     || !makePipeline("velocityMain", velocityPipe))
+  if(!makePipeline("integrateMain", integratePipe) || !makePipeline("edgesMain", edgesPipe) || !makePipeline("attachMain", attachPipe)
+     || !makePipeline("collideMain", collidePipe) || !makePipeline("velocityMain", velocityPipe))
     return false;
 
   // the transition's length and the frame's substeps, from how far the pose moves what it holds
@@ -272,8 +301,8 @@ bool DforceGpu::Impl::init()
   const int byMotion   = int(std::ceil(maxMove / float(frames) / kPassSpacing));
   substeps             = opts.substeps > 0 ? std::min(240, opts.substeps) : std::min(kMaxSubsteps, std::max(kMinSubsteps, byMotion));
   collisions           = std::min(substeps, std::max(kMinCollisionPasses, byMotion));
-  LOGI("dForce GPU: %d vertices (%zu free), %zu edges in %d colours, %zu collision faces\n", model.nv, model.freeVerts.size(), sorted.size(),
-       colours, faces.size());
+  LOGI("dForce GPU: %d vertices (%zu free, %zu soft), %zu edges in %d colours (%d stretch), %zu collision faces\n", model.nv,
+       model.freeVerts.size(), model.softVerts.size(), sorted.size(), colours, stretchColours, faces.size());
   return true;
 }
 
@@ -282,7 +311,7 @@ void DforceGpu::Impl::destroy()
   if(!alloc)
     return;
   VkDevice device = alloc->getDevice();
-  for(VkPipeline* p : {&integratePipe, &edgesPipe, &collidePipe, &velocityPipe})
+  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &collidePipe, &velocityPipe})
     if(*p)
     {
       vkDestroyPipeline(device, *p, nullptr);
@@ -294,12 +323,13 @@ void DforceGpu::Impl::destroy()
     layout = VK_NULL_HANDLE;
   }
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
-                         &collides, &grav, &edges, &lam, &tris, &cells, &items, &modelBuf, &readback})
+                         &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &modelBuf, &readback})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
 
-// Writes the pose at fraction t of the kinematic vertices into `out` (only those entries).
+// Writes the pose at fraction t of the kinematic vertices, and of the soft ones (their tethers'
+// anchors), into `out` (only those entries).
 void DforceGpu::Impl::kinematicAt(float t, std::vector<float>& out)
 {
   std::vector<float> tmp;
@@ -319,7 +349,7 @@ void DforceGpu::Impl::kinematicAt(float t, std::vector<float>& out)
     for(size_t v = 0; v < n; v++)
     {
       const int i = o + int(v);
-      if(model.dynamic[i] && model.inv[i] > 0)
+      if(model.dynamic[i] && model.inv[i] > 0 && model.attAlpha[size_t(i)] <= 0)
         continue;
       for(int c = 0; c < 3; c++)
         out[size_t(i) * 3 + c] = kin[mi].skinned ? tmp[v * 3 + c] : (1 - t) * model.rest[size_t(i) * 3 + c] + t * model.posed[size_t(i) * 3 + c];
@@ -327,8 +357,9 @@ void DforceGpu::Impl::kinematicAt(float t, std::vector<float>& out)
   }
 }
 
-// The body's faces over their sweep through the frame, into the open-addressed cell table.
-void DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m)
+// The body's faces over their sweep through the frame, into the open-addressed cell table. False
+// when the table's buffers could not be made: the frame then runs without collisions.
+bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m)
 {
   const size_t                 n = model.staticTris.size();
   std::vector<std::array<int, 6>> range(n);
@@ -397,14 +428,22 @@ void DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
         }
   if(slots > cellCapacity)
   {
-    mapped(cells, table);
+    if(!mapped(cells, table))
+    {
+      cellCapacity = 0;
+      return false;
+    }
     cellCapacity = slots;
   }
   else
     std::memcpy(cells.mapping, table.data(), slots * sizeof(shaderio::DforceCell));
   if(list.size() > itemCapacity)
   {
-    mapped(items, list);
+    if(!mapped(items, list))
+    {
+      itemCapacity = 0;
+      return false;
+    }
     itemCapacity = list.size();
   }
   else
@@ -412,6 +451,7 @@ void DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
   m.cells    = reinterpret_cast<shaderio::DforceCell*>(cells.address);
   m.items    = reinterpret_cast<int*>(items.address);
   m.cellMask = uint32_t(slots - 1);
+  return true;
 }
 
 void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
@@ -451,20 +491,25 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
   m.edges        = reinterpret_cast<shaderio::DforceEdge*>(edges.address);
   m.lam          = reinterpret_cast<float*>(lam.address);
   m.tris         = reinterpret_cast<shaderio::DforceTri*>(tris.address);
+  m.softVerts    = reinterpret_cast<int*>(softVerts.address);
+  m.attAlpha     = reinterpret_cast<float*>(attAlpha.address);
+  m.lamAtt       = reinterpret_cast<float*>(lamAtt.address);
   m.nv           = uint32_t(n);
   m.numKinematic = uint32_t(model.kinematicVerts.size());
   m.numFree      = uint32_t(model.freeVerts.size());
   m.numEdges     = uint32_t(colourStart.back());
   m.numTris      = uint32_t(model.staticTris.size());
+  m.numSoft      = uint32_t(model.softVerts.size());
   m.cellSize     = kCell;
   m.depth        = kDepth;
   m.cap          = kCap;
   m.maxSpeed     = kMaxSpeed;
   m.searchReach  = model.maxOffset + kSearch;
-  if(!model.staticTris.empty())
-    buildGrid(start, end, m);
-  else
+  if(model.staticTris.empty() || !buildGrid(start, end, m))
   {
+    if(!model.staticTris.empty() && !gridFailed)
+      LOGE("dForce GPU: the collision grid's buffers could not be made; the cloth collides with nothing\n");
+    gridFailed = !model.staticTris.empty();
     m.cells    = nullptr;
     m.items    = nullptr;
     m.cellMask = 0;
@@ -487,16 +532,10 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
   pc.model        = reinterpret_cast<shaderio::DforceModel*>(modelBuf.address);
   pc.dt           = dt;
   pc.extraDamping = extraDamping;
-  for(int s = 0; s < steps; s++)
-  {
-    pc.t      = float(s + 1) / float(steps);
-    pc.tFaces = tFaces;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, integratePipe);
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, groups(std::max({m.numKinematic, m.numFree, m.numEdges})), 1, 1);
-    barrier();
+  // one sweep: the colours in [first, last), then the tethers
+  const auto sweep = [&](size_t first, size_t last) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, edgesPipe);
-    for(size_t c = 0; c + 1 < colourStart.size(); c++)
+    for(size_t c = first; c < last && c + 1 < colourStart.size(); c++)
     {
       pc.edgeStart = uint32_t(colourStart[c]);
       pc.edgeCount = uint32_t(colourStart[c + 1] - colourStart[c]);
@@ -506,12 +545,35 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
       vkCmdDispatch(cmd, groups(pc.edgeCount), 1, 1);
       barrier();
     }
+    if(m.numSoft > 0)
+    {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, attachPipe);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      vkCmdDispatch(cmd, groups(m.numSoft), 1, 1);
+      barrier();
+    }
+  };
+  const size_t allColours = colourStart.size() - 1;
+  for(int s = 0; s < steps; s++)
+  {
+    pc.t      = float(s + 1) / float(steps);
+    pc.tFaces = tFaces;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, integratePipe);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, groups(std::max({m.numKinematic, m.numFree, m.numEdges, m.numSoft})), 1, 1);
+    barrier();
+    for(int it = 0; it < std::max(1, opts.iterations); it++)
+      sweep(0, allColours);
+    for(int it = 0; it < opts.stretchSweeps; it++)
+      sweep(0, size_t(stretchColours));
     if(s == next && m.numTris > 0)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, collidePipe);
       vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
       vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
       barrier();
+      // the pushes stretched edges; one more sweep shares them out before velocities are read
+      sweep(0, allColours);
       tFaces = pc.t;
       next += std::max(1, steps / passes);
     }
@@ -578,36 +640,31 @@ void DforceGpu::settle()
 {
   if(!m_valid)
     return;
-  const int frames = std::max(1, int(std::lround(m_impl->transition / m_impl->opts.frameDt)));
-  for(int f = 0; f < frames; f++)
+  const auto start  = std::chrono::steady_clock::now();
+  const int  frames = std::max(1, int(std::lround(m_impl->transition / m_impl->opts.frameDt)));
+  int        run    = 0;
+  for(int f = 0; f < frames; f++, run++)
     frame(float(f) / float(frames), float(f + 1) / float(frames));
   const int hold = std::max(1, int(std::ceil(m_impl->opts.maxHold / m_impl->opts.frameDt)));
   for(int h = 0; h < hold; h++)
   {
     frame(1, 1, kHoldDamping);
+    run++;
     if(m_lastMove < m_impl->opts.restMove)
       break;
   }
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms (%.1f ms a frame, %d substeps)\n", run, ms, ms / std::max(1, run), m_impl->substeps);
 }
 
 std::vector<std::vector<float>> DforceGpu::positions() const
 {
-  const Impl&        s = *m_impl;
-  std::vector<float> x = s.xHost;
-  // a partial strength pulls back toward the skinned pose once, as the CPU solver does
-  for(int i : s.model.freeVerts)
-  {
-    const float st = s.model.strength[i];
-    if(st >= 1)
-      continue;
-    for(int k = 0; k < 3; k++)
-      x[size_t(i) * 3 + k] = s.model.posed[size_t(i) * 3 + k] + (x[size_t(i) * 3 + k] - s.model.posed[size_t(i) * 3 + k]) * st;
-  }
+  const Impl&                     s = *m_impl;
   std::vector<std::vector<float>> out;
   for(size_t mi = 0; mi < s.meshes.size(); mi++)
   {
     const size_t o = size_t(s.model.base[mi]) * 3;
-    out.emplace_back(x.begin() + long(o), x.begin() + long(o + s.meshes[mi].rest.size()));
+    out.emplace_back(s.xHost.begin() + long(o), s.xHost.begin() + long(o + s.meshes[mi].rest.size()));
   }
   return out;
 }

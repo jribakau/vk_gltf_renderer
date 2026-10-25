@@ -61,7 +61,7 @@ struct DforceModel
   float3* prev;
   float3* vel;
   float3* cprev;  // where each free vertex was at its last collision pass: decides the side it is on
-  float3* kinStart;  // kinematic vertices at the frame's start and end, by vertex index
+  float3* kinStart;  // kinematic and soft vertices at the frame's start and end, by vertex index
   float3* kinEnd;
   int*    kinematic;  // the vertices the pose moves
   int*    freeVerts;  // the vertices the cloth moves
@@ -77,8 +77,11 @@ struct DforceModel
   DforceTri*  tris;  // the faces the pose moves (the body); the cloth's own faces are not collided with here
   DforceCell* cells;
   int*        items;
-  uint        nv, numKinematic, numFree, numEdges, numTris, cellMask;
-  float       cellSize, depth, cap, maxSpeed, searchReach, pad;
+  int*        softVerts;  // the free vertices of partial strength, tethered to where the pose would put them
+  float*      attAlpha;   // each one's tether compliance, by vertex index (0 for the rest)
+  float*      lamAtt;     // and its multiplier, by soft index
+  uint        nv, numKinematic, numFree, numEdges, numTris, cellMask, numSoft, pad0;
+  float       cellSize, depth, cap, maxSpeed, searchReach, pad1;
 };
 
 struct DforcePushConstant

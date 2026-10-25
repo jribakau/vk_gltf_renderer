@@ -64,7 +64,7 @@ option(USE_OPTIX_DENOISER     "Enable OptiX denoiser as alternative to DLSS (req
 option(USE_OIDN_DENOISER      "Enable the vk_oidn denoiser (Open Image Denoise on Vulkan; downloads its SDK package)." ON)
 option(USE_DRACO              "Enable Draco mesh compression when importing glTF."                    ON)
 option(USE_AGENTIC            "Build the optional Agentic bridge (ComfyUI HDRI + beautify)."          ON)
-option(FV_DFORCE_GPU          "Build the experimental GPU dForce cloth solver (src/fv_dforce_gpu, shaders/dforce_cloth)." OFF)
+option(FV_DFORCE_GPU          "Build the GPU dForce cloth solver (src/fv_dforce_gpu, shaders/dforce_cloth)."    ON)
 option(USE_DEFAULT_SCENE      "Load a bundled default scene at startup."                              OFF)
 option(BUILD_TESTING          "Build unit tests and benchmarks (GoogleTest + Google Benchmark)."      OFF)
 option(REQUIRE_NVML_MONITOR   "Fail configure if NVML support is unavailable in nvpro_core2."         OFF)

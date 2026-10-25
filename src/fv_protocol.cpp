@@ -40,9 +40,15 @@ constexpr auto kHeartbeat = 15s;
 FvProtocol::FvProtocol()
 {
   m_commands.add("hello", [this](const fv::Json&) {
-    return fv::Json{{"protocol", kProtocolVersion}, {"commands", m_commands.names()}};
+    return fv::Json{{"protocol", kProtocolVersion}, {"commands", m_commands.names()}, {"features", m_features}};
   });
-  m_events.snapshot("session", {{"protocol", kProtocolVersion}});
+  m_events.snapshot("session", {{"protocol", kProtocolVersion}, {"features", m_features}});
+}
+
+void FvProtocol::setFeatures(fv::Json features)
+{
+  m_features = std::move(features);
+  m_events.snapshot("session", {{"protocol", kProtocolVersion}, {"features", m_features}});
 }
 
 void FvProtocol::registerRoutes(httplib::Server& http, const std::atomic<bool>& running)

@@ -875,11 +875,21 @@ void ClothSim::Impl::kinematicAt(float t, std::vector<float>& out, std::vector<f
 // the fitted shape.
 void ClothSim::Impl::separateStart()
 {
-  TriGrid grid;
-  grid.build(tris, allTris, x, x, 0.f);
+  dforce::separateStart(*this, x);
+}
+
+void separateStart(const ClothModel& model, std::vector<float>& x)
+{
+  const auto& tris     = model.tris;
+  const auto& meshOf   = model.meshOf;
+  const auto& layer    = model.layer;
+  const auto& offset   = model.offset;
+  const auto& collides = model.collides;
+  TriGrid     grid;
+  grid.build(tris, model.allTris, x, x, 0.f);
   std::vector<uint32_t> seen(tris.size(), 0);
   uint32_t              stamp = 0;
-  for(int i : freeVerts)
+  for(int i : model.freeVerts)
   {
     if(!collides[i])
       continue;

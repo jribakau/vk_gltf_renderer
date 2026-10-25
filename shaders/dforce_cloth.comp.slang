@@ -17,13 +17,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// The dForce cloth solver on the GPU: one substep is integrate, one dispatch per colour of edges,
-// a collision pass on some substeps, then velocities. The host (src/fv_dforce_gpu.cpp) records the
-// substeps of a frame and reads the positions back. The physics follows the CPU solver
+// The dForce cloth solver on the GPU: one substep is integrate, one dispatch per colour of edges
+// (then the stretch colours again, a few times), the tethers of partial strength, a collision pass
+// on some substeps, then velocities. The host (src/fv_dforce_gpu.cpp) records the substeps of a
+// frame and reads the positions back. The physics follows the CPU solver
 // (figure/dforce/solver.cpp): XPBD with small steps, kinematic vertices swept through the frame,
 // the side of a face read from the vertex's last pass, contacts absorbing normal motion.
-// Differences: the cloth does not collide with itself here, and every free vertex looks for faces
-// on every pass.
+// Differences: the cloth does not collide with itself here, every free vertex looks for faces on
+// every pass, the kinematic vertices move along straight lines within a frame (the host sweeps
+// them along their bones between frames), and a vertex lost inside a limb is not put back.
 
 #include "dforce_cloth_io.h.slang"
 
@@ -121,6 +123,30 @@ void integrateMain(uint3 tid: SV_DispatchThreadID)
   }
   if(k < m.numEdges)
     m.lam[k] = 0;
+  if(k < m.numSoft)
+    m.lamAtt[k] = 0;
+}
+
+// A vertex of partial strength is tethered to where the pose would put it: a distance-0 XPBD
+// constraint as compliant as its strength makes it. Each writes its own vertex only.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+void attachMain(uint3 tid: SV_DispatchThreadID)
+{
+  DforceModel m = *pc.model;
+  if(tid.x >= m.numSoft)
+    return;
+  int    i      = m.softVerts[tid.x];
+  float3 anchor = kinematicAt(m, i, pc.t);
+  float3 d      = m.x[i] - anchor;
+  float  C      = length(d);
+  if(C < 1e-8)
+    return;
+  float w  = m.inv[i];
+  float at = m.attAlpha[i] / (pc.dt * pc.dt);
+  float dl = (-C - at * m.lamAtt[tid.x]) / (w + at);
+  m.lamAtt[tid.x] += dl;
+  m.x[i] = m.x[i] + d * (w * dl / C);
 }
 
 // One colour of edges: an XPBD projection each, no two touching a vertex.

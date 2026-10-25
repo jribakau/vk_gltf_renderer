@@ -246,6 +246,7 @@ cpp-mcp at configure time — see [docs/mcp.md](docs/mcp.md)),
 `BUILD_TESTING` (`OFF` — turn on to build unit tests + benchmarks; `ctest` runs the
 unit tests, run the benchmark executable directly), `USE_SOFTWARE_VULKAN` (`OFF` — a
 path-tracer-only build that starts on Mesa's lavapipe, for headless CI and benchmarks),
-`FV_DFORCE_GPU` (`OFF` — the experimental GPU dForce cloth solver, `src/fv_dforce_gpu*`; not yet
-brought up on a GPU).
+`FV_DFORCE_GPU` (`ON` — the GPU dForce cloth solver, `src/fv_dforce_gpu*` and
+`shaders/dforce_cloth*.slang`, the app's "Live (GPU)" mode; a build without it says so in the
+protocol's `features` and the app hides the mode).
 See `tests/README.md` and `docs/benchmarking.md`.

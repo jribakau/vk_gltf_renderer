@@ -153,6 +153,11 @@ Mat4     sweepAt(const BonePose& from, const BonePose& to, float t);
 // space; an unskinned mesh gives its `posed`. `out` is xyz per vertex.
 void skinMesh(const SettleMesh& m, const std::vector<Mat4>& bones, float* out);
 
+// Moves the free vertices of `x` (the model's rest shape, usually) that start inside, or within the
+// gap of, a lower layer out to the gap along the nearest face of that layer, so a fitted shape that
+// overlaps the body does not start inside it. Both solvers do this once before their first step.
+void separateStart(const ClothModel& model, std::vector<float>& x);
+
 struct SettleOptions
 {
   // Air resistance, DAZ's 0.15

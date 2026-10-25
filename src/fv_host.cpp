@@ -3231,7 +3231,18 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     if(target->collider && args.contains("collision") && args["collision"].is_boolean())
       target->collider->setEnabled(args["collision"].get<bool>());
     if(target->dforce && args.contains("dforceMode") && args["dforceMode"].is_string())
-      target->dforce->setMode(dforceMode(args["dforceMode"].get<std::string>()));
+    {
+      // a mode this build lacks (the GPU solver) falls back to live on the CPU, and the job still ends
+      try
+      {
+        target->dforce->setMode(dforceMode(args["dforceMode"].get<std::string>()));
+      }
+      catch(const std::exception& e)
+      {
+        target->dforce->setMode(fv::dforce::Mode::eLive);
+        problems.push_back(std::string("dForce: ") + e.what() + "; simulating live on the CPU");
+      }
+    }
     if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
     {
       target->dforce->setEnabled(args["dforce"].get<bool>());
@@ -3943,6 +3954,12 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   Impl* impl  = m_impl.get();
   // the figure library's phase timers (loads, wears, glTF builds) go to the log
   fv::timing::setSink([](const std::string& line) { LOGI("%s\n", line.c_str()); });
+  // what this build has beyond the protocol, so the app offers only that
+#ifdef FV_DFORCE_GPU
+  s.protocol->setFeatures({{"dforceGpu", true}});
+#else
+  s.protocol->setFeatures({{"dforceGpu", false}});
+#endif
 
   cmds.add("settings.apply", [impl](const Json& args) {
     std::lock_guard lock(impl->settingsMutex);
