@@ -104,6 +104,12 @@ struct DforceGpu::Impl
   int                collisions = kMinCollisionPasses;
   float              transition = kMinTransition;
   float              lastMove   = 0;
+  // a frame that came back with a position that is not a number: the frame is dropped and the
+  // simulation stops, so one bad step cannot take the device down with it
+  bool broken = false;
+  // FV_DFORCE_GPU_DEBUG, bits: 1 leaves the recovery out, 2 the hold between passes; for finding
+  // which kernel a device loss comes from
+  int debug = 0;
 
   // ---- setup
   bool init();
@@ -168,6 +174,9 @@ bool DforceGpu::Impl::init()
   model = ClothModel::build(meshes, opts.air);
   if(model.nv == 0 || model.freeVerts.empty())
     return false;
+#pragma warning(suppress : 4996)  // getenv: read once, at start-up
+  if(const char* env = std::getenv("FV_DFORCE_GPU_DEBUG"); env && *env)
+    debug = std::atoi(env);
 
   // the pose's hold on each mesh, swept from the memorized pose to the target it came with
   kin.resize(meshes.size());
@@ -528,7 +537,8 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
   int         next   = steps - 1 - (passes - 1) * (steps / passes);
   float       tFaces = 0;
 
-  VkCommandBuffer cmd = app->createTempCmdBuffer();
+  const auto      frameStartTime = std::chrono::steady_clock::now();
+  VkCommandBuffer cmd            = app->createTempCmdBuffer();
   const auto      groups = [](uint32_t count) { return (count + DFORCE_WORKGROUP_SIZE - 1) / DFORCE_WORKGROUP_SIZE; };
   const auto      barrier = [&] {
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
@@ -561,7 +571,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
   const size_t allColours = colourStart.size() - 1;
   // resting vertices held on their faces where the pose has them at pc.t
   const auto hold = [&] {
-    if(m.numTris == 0)
+    if(m.numTris == 0 || (debug & 2))
       return;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, holdPipe);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
@@ -569,7 +579,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
     barrier();
   };
   // the frame's start: cloth lost behind a face of a lower layer is put back, as on the CPU
-  if(m.numTris > 0 && opts.recoverLost)
+  if(m.numTris > 0 && opts.recoverLost && !(debug & 1))
   {
     pc.t = 0;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, recoverPipe);
@@ -616,6 +626,13 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
   std::vector<float> frameStart = std::move(xHost);
   xHost.resize(n * 3);
   std::memcpy(xHost.data(), readback.mapping, n * 3 * sizeof(float));
+  if(std::any_of(xHost.begin(), xHost.end(), [](float v) { return !std::isfinite(v); }))
+  {
+    LOGE("dForce GPU: a position came back that is not a number; the step is dropped and the simulation stopped\n");
+    xHost  = std::move(frameStart);
+    broken = true;
+    return;
+  }
   float moved = 0;
   for(int i : model.freeVerts)
   {
@@ -624,6 +641,16 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
     moved = std::max(moved, dx * dx + dy * dy + dz * dz);
   }
   lastMove = std::sqrt(moved);
+  // a frame that took far longer than a frame should is the one before a device loss: say what it saw
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frameStartTime).count();
+  if(ms > 250)
+  {
+    float farthest = 0;
+    for(float v : xHost)
+      farthest = std::max(farthest, std::fabs(v));
+    LOGW("dForce GPU: a frame took %.0f ms (%d substeps, %d collision passes, the fastest vertex moved %.1f cm, the farthest position %.0f cm)\n", ms,
+         steps, passes, lastMove, farthest);
+  }
 }
 
 DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<SettleMesh> meshes, const SettleOptions& opts)
@@ -645,10 +672,10 @@ DforceGpu::~DforceGpu()
 
 void DforceGpu::frame(float t0, float t1, float extraDamping)
 {
-  if(!m_valid)
+  if(!m_valid || m_impl->broken)
     return;
   m_impl->frame(t0, t1, extraDamping);
-  m_lastMove = m_impl->lastMove;
+  m_lastMove = m_impl->broken ? 0.f : m_impl->lastMove;
 }
 
 void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
@@ -659,6 +686,7 @@ void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
   s.kin[mesh].from = s.kin[mesh].to;
   for(size_t b = 0; b < bones.size(); b++)
     s.kin[mesh].to[b] = poseOf(bones[b]);
+  targetSet();
 }
 
 void DforceGpu::settle()

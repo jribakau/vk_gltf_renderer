@@ -34,7 +34,12 @@
 // between frames). What the two share: the model, the tethers of partial strength, the sweeps over
 // the stretch edges, the start separated from the body, the sweep after a collision pass, a vertex
 // lost behind a face of a lower layer put back at a frame's start and a resting vertex held on its
-// face every substep (recoverMain, holdMain).
+// face every substep (recoverMain, holdMain), and a live step that holds the pose reached until a
+// new target comes (ClothBackend::step).
+//
+// A frame that takes over 250 ms is logged with what it saw (such a frame is the one before a
+// device loss: Windows resets a GPU held for about two seconds). FV_DFORCE_GPU_DEBUG in the
+// environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold.
 
 #include <memory>
 #include <vector>

@@ -294,6 +294,63 @@ TEST(Dforce, aLiveSimulationFollowsATargetThatMovesEveryFrame)
     EXPECT_LT(p[1][v * 3 + 1], 4 + 1.0f) << v;
 }
 
+TEST(Dforce, aLiveStepAfterASettleHoldsThePoseItReached)
+{
+  // a strip pinned along its top row to a bone that has moved 20 cm from the rest pose: settled,
+  // it hangs still from the moved bone. A live step with no new target holds that pose; it must not
+  // set the pinned row out from the rest pose again and sweep it to the bone every frame, which
+  // would drag the hanging cloth centimetres a frame for good
+  const int w = 4, h = 10;
+  Grid      strip;
+  for(int r = 0; r <= h; r++)
+    for(int c = 0; c <= w; c++)
+      strip.pos.insert(strip.pos.end(), {float(c), float(-r), 0.f});
+  const auto at = [&](int c, int r) { return uint32_t(r * (w + 1) + c); };
+  for(int r = 0; r < h; r++)
+    for(int c = 0; c < w; c++)
+    {
+      strip.tris.insert(strip.tris.end(), {at(c, r), at(c, r + 1), at(c + 1, r), at(c + 1, r), at(c, r + 1), at(c + 1, r + 1)});
+      strip.polyVerts.insert(strip.polyVerts.end(), {int32_t(at(c, r)), int32_t(at(c, r + 1)), int32_t(at(c + 1, r + 1)), int32_t(at(c + 1, r))});
+      strip.polyStart.push_back(int32_t(strip.polyVerts.size()));
+    }
+  auto m = cloth(strip);
+  for(int c = 0; c <= w; c++)
+    m.strength[at(c, 0)] = 0;
+  const size_t n = strip.pos.size() / 3;
+  m.skinIndex.assign(n * 4, 0);
+  m.skinWeight.assign(n * 4, 0.f);
+  for(size_t v = 0; v < n; v++)
+    m.skinWeight[v * 4] = 1;
+  const Mat4 bone = compose({20, 0, 0}, Quat{}, {1, 1, 1});
+  m.bones          = {bone};
+  m.restLocal      = m.rest;
+  m.posed.resize(n * 3);
+  dforce::skinMesh(m, m.bones, m.posed.data());
+
+  dforce::ClothSim sim({m});
+  sim.settle();
+  const auto settled = sim.positions();
+  for(int f = 0; f < 5; f++)
+  {
+    sim.step(6.f);
+    EXPECT_LT(sim.lastMove(), 0.1f) << "step " << f;
+    const auto p = sim.positions();
+    for(size_t v = 0; v < n; v++)
+    {
+      const double d = std::hypot(p[0][v * 3] - settled[0][v * 3], p[0][v * 3 + 1] - settled[0][v * 3 + 1], p[0][v * 3 + 2] - settled[0][v * 3 + 2]);
+      EXPECT_LT(d, 0.5) << "vertex " << v << " at step " << f;
+    }
+    for(int c = 0; c <= w; c++)
+      EXPECT_NEAR(p[0][at(c, 0) * 3], 20 + c, 1e-3) << "pinned " << c << " at step " << f;
+  }
+  // a new target sweeps again: the bone back 10 cm over one step, the pinned row with it
+  sim.setTarget(0, {compose({10, 0, 0}, Quat{}, {1, 1, 1})});
+  sim.step();
+  const auto p = sim.positions();
+  for(int c = 0; c <= w; c++)
+    EXPECT_NEAR(p[0][at(c, 0) * 3], 10 + c, 1e-3) << "pinned " << c;
+}
+
 TEST(Dforce, aSkirtDrapesOverALegThatSwings)
 {
   // a tube skirt pinned at the waist over a thigh that swings forward 45 degrees about the hip: the

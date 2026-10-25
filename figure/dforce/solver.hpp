@@ -192,12 +192,28 @@ public:
   virtual ~ClothBackend() = default;
   virtual void  frame(float t0, float t1, float extraDamping = 0) = 0;
   virtual void  setTarget(size_t mesh, const std::vector<Mat4>& bones) = 0;
-  virtual void  step(float extraDamping = 0) { frame(0, 1, extraDamping); }
   virtual void  settle() = 0;
   virtual float lastMove() const = 0;
   virtual std::vector<std::vector<float>> positions() const = 0;
   // True when it must be driven on the thread that made it (a GPU queue), never on the pool.
   virtual bool ownerThreadOnly() const { return false; }
+  // Live: one frame. After a setTarget the pose sweeps from the one it reached to the new target
+  // (0 to 1); otherwise it holds where the last sweep ended (1), as a settle's hold frames do. A
+  // sweep from 0 on every frame would set the colliders and the pinned cloth out from the pose
+  // they memorized (the rest pose, after a settle) each frame and drag them through the cloth to
+  // the target again.
+  void step(float extraDamping = 0)
+  {
+    frame(m_targetPending ? 0.f : 1.f, 1, extraDamping);
+    m_targetPending = false;
+  }
+
+protected:
+  // For setTarget: the next step sweeps.
+  void targetSet() { m_targetPending = true; }
+
+private:
+  bool m_targetPending = false;
 };
 
 // The simulation state: constraints built once from the rest shapes, then advanced a frame at a time.

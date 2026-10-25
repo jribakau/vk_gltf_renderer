@@ -1413,6 +1413,7 @@ void ClothSim::setTarget(size_t mesh, const std::vector<Mat4>& bones)
   k.from = k.to;
   for(size_t b = 0; b < bones.size(); b++)
     k.to[b] = poseOf(bones[b]);
+  targetSet();
 }
 
 float ClothSim::lastMove() const

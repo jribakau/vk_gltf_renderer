@@ -308,6 +308,15 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
   float3 was   = m.cprev[i];
   float  moved = length(x0 - was);
   float  reach = m.searchReach;
+  // the cells between where the vertex was and where it is: a vertex that moved further since its
+  // last pass than the depth it can be pushed back from is looked at where it is alone, or the
+  // cells to walk grow with the cube of the move (a frame of them took two seconds and lost the
+  // device); such a vertex is past what a pass recovers anyway, and recoverMain puts it back
+  if(moved > m.depth)
+  {
+    was   = x0;
+    moved = 0;
+  }
   float3 lo    = min(x0, was) - reach;
   float3 hi    = max(x0, was) + reach;
   int    layer = m.layer[i];
