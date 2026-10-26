@@ -603,10 +603,11 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
         // Scattering for Production Path Tracing"). The base colour where the walk enters is the
         // multiple-scattering albedo A, so lit from the front the surface is its colour map, and
         // the walk leaves white (ptVolumeDiffuseExit). The scatter distance d sets the extinction,
-        // sigma_t = 1 / (d s(A)) with their fit s(A), and the scattering is isotropic: their fit is
-        // for g = 0, and the forward scattering of real tissue is folded into the distance.
+        // sigma_t = 1 / (d s(A)) with their random-walk fit s(A) (as Cycles has it), and the
+        // scattering is isotropic: their fit is for g = 0, and the forward scattering of real
+        // tissue is folded into the distance.
         const float3 A = clamp(pbrMat.baseColor, float3(1e-3), float3(0.999));
-        const float3 s = 1.85 - A + 7.0 * pow(abs(A - 0.8), float3(3.0));
+        const float3 s = 1.9 - A + 3.5 * (A - 0.8) * (A - 0.8);
         g               = 0.0;
         attenuationCoef = 1.0 / (max(material.scatterDistance, float3(1e-7)) * s);
         singleScatterAlbedo = multiToSingleScatterAlbedo(A, g);
