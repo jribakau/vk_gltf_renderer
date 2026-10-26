@@ -37,6 +37,7 @@
 #include <future>
 #include <map>
 #include <mutex>
+#include <source_location>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -842,7 +843,7 @@ struct FvHost::Impl
   // started within 30 s is dropped and the caller told so; one that is running is waited for, however
   // long, so no command is reported failed and then applied (a retry would apply it twice).
   template <class F>
-  auto onApp(F f) -> decltype(f())
+  auto onApp(F f, std::source_location where = std::source_location::current()) -> decltype(f())
   {
     using R     = decltype(f());
     auto task   = std::make_shared<std::packaged_task<R()>>(std::move(f));
@@ -852,10 +853,16 @@ struct FvHost::Impl
       std::lock_guard lock(queueMutex);
       if(!accepting)
         throw std::runtime_error("the renderer is stopping");
-      queue.emplace_back([task, state] {
+      queue.emplace_back([task, state, line = where.line()] {
         int queued = 0;
-        if(state->compare_exchange_strong(queued, 1))
-          (*task)();
+        if(!state->compare_exchange_strong(queued, 1))
+          return;
+        // one that holds the application thread up shows in the timing log, by the line that sent it
+        const auto start = std::chrono::steady_clock::now();
+        (*task)();
+        if(fv::timing::enabled())
+          fv::timing::report("command run, sent at fv_host.cpp:" + std::to_string(line),
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), 50);
       });
     }
     if(result.wait_for(30s) != std::future_status::ready)
@@ -887,11 +894,19 @@ struct FvHost::Impl
   bool        ridesOn(const Prop& q, const std::string& id) const;
   void        applyLightShown(const Prop& p);
 
-  void post(std::function<void()> f)
+  void post(std::function<void()> f, std::source_location where = std::source_location::current())
   {
+    // one that holds the application thread up shows in the timing log, by the line that posted it
+    auto timed = [f = std::move(f), line = where.line()] {
+      const auto start = std::chrono::steady_clock::now();
+      f();
+      if(fv::timing::enabled())
+        fv::timing::report("posted at fv_host.cpp:" + std::to_string(line),
+                           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), 50);
+    };
     std::lock_guard lock(queueMutex);
     if(accepting)
-      queue.push_back(std::move(f));
+      queue.push_back(std::move(timed));
   }
 
   // The jobs and notices topics keep the latest few finished jobs and notices, not every one of the
