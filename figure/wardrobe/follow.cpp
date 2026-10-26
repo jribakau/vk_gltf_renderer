@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
+#include <optional>
+
+#include <figure/io/timing.hpp>
+#include <figure/jobs/pool.hpp>
 
 namespace fv::wardrobe {
 
@@ -95,16 +100,22 @@ dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rig
     clear();
     return nullptr;
   }
-  const size_t       nv = size_t(item.dsonVertexCount);
+  std::optional<fv::timing::Accum> step;
+  step.emplace("project: item verts");
+  // a long item (a hair's strands) is worked a chunk at a time side by side; each vertex is its own
+  constexpr size_t   kChunk = 32768;
+  const size_t       nv = size_t(item.dsonVertexCount), chunks = (nv + kChunk - 1) / kChunk;
   std::vector<float> out(nv * 3);
-  for(size_t v = 0; v < nv; v++)
-  {
-    const size_t k = v * 3;
-    const size_t a = binding.verts[k] * 3ull, b = binding.verts[k + 1] * 3ull, c = binding.verts[k + 2] * 3ull;
-    const float  wa = binding.weights[k], wb = binding.weights[k + 1], wc = binding.weights[k + 2];
-    for(int i = 0; i < 3; i++)
-      out[k + i] = scratch[a + i] * wa + scratch[b + i] * wb + scratch[c + i] * wc;
-  }
+  jobs::parallelFor(nv, kChunk, [&](size_t begin, size_t end) {
+    for(size_t v = begin; v < end; v++)
+    {
+      const size_t k = v * 3;
+      const size_t a = binding.verts[k] * 3ull, b = binding.verts[k + 1] * 3ull, c = binding.verts[k + 2] * 3ull;
+      const float  wa = binding.weights[k], wb = binding.weights[k + 1], wc = binding.weights[k + 2];
+      for(int i = 0; i < 3; i++)
+        out[k + i] = scratch[a + i] * wa + scratch[b + i] * wb + scratch[c + i] * wc;
+    }
+  });
   clear();
   if(rigidity)
     for(const Rigidity::Group& g : rigidity->groups)
@@ -127,19 +138,30 @@ dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rig
         out[m * 3ull + 2] += (z - out[m * 3ull + 2]) * w;
       }
     }
-  // the vertices it moves
-  mesh::CageDeltas moved;
-  for(size_t v = 0; v < nv; v++)
-  {
-    const float x = out[v * 3], y = out[v * 3 + 1], z = out[v * 3 + 2];
-    if(std::abs(x) + std::abs(y) + std::abs(z) < 1e-5f)
-      continue;
-    moved.verts.push_back(int32_t(v));
-    moved.deltas.insert(moved.deltas.end(), {x, y, z});
-  }
-  if(moved.verts.empty())
+  // the vertices it moves, in order: counted a chunk at a time, then written where each chunk's go
+  const auto          moves = [&](size_t v) { return !(std::abs(out[v * 3]) + std::abs(out[v * 3 + 1]) + std::abs(out[v * 3 + 2]) < 1e-5f); };
+  std::vector<size_t> at(chunks + 1, 0);
+  jobs::parallelFor(nv, kChunk, [&](size_t begin, size_t end) {
+    for(size_t v = begin; v < end; v++)
+      at[begin / kChunk + 1] += moves(v);
+  });
+  std::partial_sum(at.begin(), at.end(), at.begin());
+  if(!at[chunks])
     return nullptr;
-  auto target = std::make_shared<mesh::RenderTarget>(mesh::target(item, moved));
+  std::vector<uint32_t> cageIndices(at[chunks]);
+  std::vector<float>    cageDeltas(at[chunks] * 3);
+  jobs::parallelFor(nv, kChunk, [&](size_t begin, size_t end) {
+    size_t o = at[begin / kChunk];
+    for(size_t v = begin; v < end; v++)
+      if(moves(v))
+      {
+        cageIndices[o] = uint32_t(v);
+        std::copy_n(&out[v * 3], 3, &cageDeltas[o * 3]);
+        o++;
+      }
+  });
+  step.emplace("project: refine");
+  auto target = std::make_shared<mesh::RenderTarget>(mesh::target(item, std::move(cageIndices), std::move(cageDeltas)));
   if(target->indices.empty())
     return nullptr;
   return target;

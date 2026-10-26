@@ -459,6 +459,8 @@ int main(int argc, char** argv)
     const auto                          caseStart = std::chrono::steady_clock::now();
     for(const Json& step : c.at("steps"))
     {
+      for(const std::string& line : fv::timing::takeSummary())
+        std::cerr << line << "\n";
       const auto stepStart = std::chrono::steady_clock::now();
       if(step.contains("load"))
         {

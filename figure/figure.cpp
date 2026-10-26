@@ -371,6 +371,8 @@ void Figure::finishCorrectives()
   for(auto& job : m_correctiveJobs)
     files.push_back(job.get());
   m_correctiveJobs.clear();
+  std::optional<timing::Scope> step;
+  step.emplace("correctives: targets", 1);
   for(CorrectiveFile& f : files)
   {
     if(!f.doc)
@@ -391,6 +393,7 @@ void Figure::finishCorrectives()
       }
     }
   }
+  step.emplace("correctives: driver", 1);
   driver->update();
 }
 
@@ -398,11 +401,18 @@ void Figure::settle()
 {
   for(;;)
   {
-    morphs->settled();
+    {
+      timing::Scope t("settle: dials", 1);
+      morphs->settled();
+    }
     if(m_correctiveJobs.empty())
       return;
-    for(auto& job : m_correctiveJobs)
-      job.wait();
+    {
+      timing::Scope t("settle: corrective files", 1);
+      for(auto& job : m_correctiveJobs)
+        job.wait();
+    }
+    timing::Scope t("settle: correctives added", 1);
     finishCorrectives();
   }
 }

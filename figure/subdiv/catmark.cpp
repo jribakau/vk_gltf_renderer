@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -891,56 +894,108 @@ std::vector<float> refineDense(const Refinement& r, std::span<const float> data,
   return src;
 }
 
+namespace {
+
+// The positions of the set flags, in order: counted, then listed, a chunk at a time side by side.
+std::vector<uint32_t> setPositions(const std::vector<uint8_t>& flags)
+{
+  constexpr size_t    kChunk = 65536;
+  const size_t        chunks = (flags.size() + kChunk - 1) / kChunk;
+  std::vector<size_t> at(chunks + 1, 0);
+  jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
+    for(size_t c = begin; c < end; c++)
+      at[c + 1] = size_t(std::count(flags.begin() + c * kChunk, flags.begin() + std::min(flags.size(), (c + 1) * kChunk), uint8_t(1)));
+  });
+  std::partial_sum(at.begin(), at.end(), at.begin());
+  std::vector<uint32_t> out(at[chunks]);
+  jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
+    for(size_t c = begin; c < end; c++)
+    {
+      size_t o = at[c];
+      for(size_t i = c * kChunk; i < std::min(flags.size(), (c + 1) * kChunk); i++)
+        if(flags[i])
+          out[o++] = uint32_t(i);
+    }
+  });
+  return out;
+}
+
+}  // namespace
+
 Sparse refineSparse(const Refinement& r, std::span<const uint32_t> indices, std::span<const float> data, int width)
 {
-  std::vector<uint32_t> idx(indices.begin(), indices.end());
-  std::vector<float>    vals(data.begin(), data.end());
+  // the first level reads the caller's lists where they are, each further one the level before's
+  std::vector<uint32_t>     idxStore;
+  std::vector<float>        valsStore;
+  std::span<const uint32_t> idx  = indices;
+  std::span<const float>    vals = data;
   for(const Stencils& s : r.levels)
   {
-    const auto&          t    = s.transpose();
-    const int            rows = s.rows();
-    std::vector<float>   parent(size_t(s.parentCount) * width, 0.f);
-    std::vector<uint8_t> has(s.parentCount, 0), touched(rows, 0);
+    const auto& t    = s.transpose();
+    const int   rows = s.rows();
+    // a parent's value is only read where `has` lists it, so the rest is never written (or touched)
+    std::unique_ptr<float[]> parent(new float[size_t(s.parentCount) * width]);
+    std::vector<uint8_t>     has(s.parentCount, 0), touched(rows, 0);
     for(size_t i = 0; i < idx.size(); i++)
     {
       has[idx[i]] = 1;
       for(int x = 0; x < width; x++)
         parent[size_t(idx[i]) * width + x] = vals[i * width + x];
     }
-    // the child rows that read a listed vertex, in order
+    // the child rows that read a listed vertex, in order: a long list (a correction on a whole
+    // garment) marks them side by side and reads them off in order, a short one sorts what it found
     std::vector<uint32_t> found;
-    for(uint32_t p : idx)
-      for(int k = t.start[p]; k < t.start[p + 1]; k++)
-      {
-        const int row = t.row[k];
-        if(!touched[row])
-        {
-          touched[row] = 1;
-          found.push_back(uint32_t(row));
-        }
-      }
-    std::sort(found.begin(), found.end());
-    std::vector<float> out(found.size() * width, 0.f);
-    for(size_t i = 0; i < found.size(); i++)
+    if(idx.size() >= 4096 && idx.size() * 32 >= size_t(rows))
     {
-      const uint32_t row = found[i];
-      for(int k = s.rowStart[row]; k < s.rowStart[row + 1]; k++)
-      {
-        const int c = s.col[k];
-        if(!has[c])
-          continue;
-        const double w = s.weight[k];
-        for(int x = 0; x < width; x++)
+      jobs::parallelFor(idx.size(), 4096, [&](size_t begin, size_t end) {
+        for(size_t i = begin; i < end; i++)
+          for(int k = t.start[idx[i]]; k < t.start[idx[i] + 1]; k++)
+            std::atomic_ref<uint8_t>(touched[size_t(t.row[k])]).store(1, std::memory_order_relaxed);
+      });
+      found = setPositions(touched);
+    }
+    else
+    {
+      for(uint32_t p : idx)
+        for(int k = t.start[p]; k < t.start[p + 1]; k++)
         {
-          float& d = out[i * width + x];
-          d        = float(double(d) + double(parent[size_t(c) * width + x]) * w);
+          const int row = t.row[k];
+          if(!touched[row])
+          {
+            touched[row] = 1;
+            found.push_back(uint32_t(row));
+          }
+        }
+      std::sort(found.begin(), found.end());
+    }
+    // each row sums in its own order, so chunks side by side give the serial result
+    std::vector<float> out(found.size() * width, 0.f);
+    jobs::parallelFor(found.size(), 4096, [&](size_t begin, size_t end) {
+      for(size_t i = begin; i < end; i++)
+      {
+        const uint32_t row = found[i];
+        for(int k = s.rowStart[row]; k < s.rowStart[row + 1]; k++)
+        {
+          const int c = s.col[k];
+          if(!has[c])
+            continue;
+          const double w = s.weight[k];
+          for(int x = 0; x < width; x++)
+          {
+            float& d = out[i * width + x];
+            d        = float(double(d) + double(parent[size_t(c) * width + x]) * w);
+          }
         }
       }
-    }
-    idx  = std::move(found);
-    vals = std::move(out);
+    });
+    idxStore  = std::move(found);
+    valsStore = std::move(out);
+    idx       = idxStore;
+    vals      = valsStore;
   }
-  return {std::move(idx), std::move(vals)};
+  if(r.levels.empty())
+    return {std::vector<uint32_t>(indices.begin(), indices.end()), std::vector<float>(data.begin(), data.end())};
+  return {std::move(idxStore), std::move(valsStore)};
 }
 
 }  // namespace fv::subdiv

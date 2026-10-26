@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <set>
+#include <span>
 #include <thread>
 
 #include <tinygltf/json.hpp>
@@ -146,6 +148,86 @@ TEST(FigureCatmark, SparseEqualsDense)
     for(size_t i = 0; i < full.size(); i++)
       worst = std::max(worst, std::abs(double(back[i]) - full[i]));
     EXPECT_LT(worst, 1e-6);
+  }
+}
+
+namespace {
+
+// refineSparse as it was, on one thread: the long lists are now marked and listed side by side
+Sparse serialSparse(const Refinement& r, std::span<const uint32_t> indices, std::span<const float> data, int width)
+{
+  std::vector<uint32_t> idx(indices.begin(), indices.end());
+  std::vector<float>    vals(data.begin(), data.end());
+  for(const Stencils& s : r.levels)
+  {
+    const auto&          t    = s.transpose();
+    const int            rows = s.rows();
+    std::vector<float>   parent(size_t(s.parentCount) * width, 0.f);
+    std::vector<uint8_t> has(s.parentCount, 0), touched(rows, 0);
+    for(size_t i = 0; i < idx.size(); i++)
+    {
+      has[idx[i]] = 1;
+      for(int x = 0; x < width; x++)
+        parent[size_t(idx[i]) * width + x] = vals[i * width + x];
+    }
+    std::vector<uint32_t> found;
+    for(uint32_t p : idx)
+      for(int k = t.start[p]; k < t.start[p + 1]; k++)
+        if(!touched[t.row[k]])
+        {
+          touched[t.row[k]] = 1;
+          found.push_back(uint32_t(t.row[k]));
+        }
+    std::sort(found.begin(), found.end());
+    std::vector<float> out(found.size() * width, 0.f);
+    for(size_t i = 0; i < found.size(); i++)
+      for(int k = s.rowStart[found[i]]; k < s.rowStart[found[i] + 1]; k++)
+      {
+        const int c = s.col[k];
+        if(!has[c])
+          continue;
+        for(int x = 0; x < width; x++)
+          out[i * width + x] = float(double(out[i * width + x]) + double(parent[size_t(c) * width + x]) * s.weight[k]);
+      }
+    idx  = std::move(found);
+    vals = std::move(out);
+  }
+  return {std::move(idx), std::move(vals)};
+}
+
+}  // namespace
+
+TEST(FigureCatmark, SparseOnALongListIsTheOneThreadsResultBitForBit)
+{
+  // a 160 x 160 grid: every vertex but each seventh, a band across it, and a few
+  const int            n = 160;
+  std::vector<int32_t> faceStart{0}, faceVerts;
+  for(int j = 0; j < n; j++)
+    for(int i = 0; i < n; i++)
+    {
+      for(int v : {j * (n + 1) + i, j * (n + 1) + i + 1, (j + 1) * (n + 1) + i + 1, (j + 1) * (n + 1) + i})
+        faceVerts.push_back(v);
+      faceStart.push_back(int32_t(faceVerts.size()));
+    }
+  const int             nv   = (n + 1) * (n + 1);
+  const Refinement      grid = refine({nv, faceStart, faceVerts, {}, {}}, 2);
+  std::vector<uint32_t> most, band;
+  for(int v = 0; v < nv; v++)
+  {
+    if(v % 7)
+      most.push_back(uint32_t(v));
+    if(v / (n + 1) >= 40 && v / (n + 1) < 80)
+      band.push_back(uint32_t(v));
+  }
+  for(const auto& idx : {most, band, std::vector<uint32_t>{40, 41, 300, 900}})
+  {
+    std::vector<float> deltas;
+    for(uint32_t v : idx)
+      deltas.insert(deltas.end(), {float(std::sin(double(v))), float(std::cos(double(v) * 0.37)), float(int(v % 5) - 2) * 0.1f});
+    const Sparse got = refineSparse(grid, idx, deltas, 3), want = serialSparse(grid, idx, deltas, 3);
+    ASSERT_EQ(got.indices, want.indices) << idx.size() << " listed";
+    ASSERT_EQ(got.data.size(), want.data.size());
+    EXPECT_EQ(std::memcmp(got.data.data(), want.data.data(), got.data.size() * sizeof(float)), 0) << idx.size() << " listed";
   }
 }
 

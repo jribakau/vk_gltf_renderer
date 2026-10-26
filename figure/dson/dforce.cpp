@@ -281,7 +281,9 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
            friction = 0, offset = 0, layer = 0, self = 0, visible = 0, collide = 0;
     int n = 0;
   };
-  std::vector<Sum> sum(static_cast<size_t>(nv));
+  // a vertex no polygon has takes the defaults: a strand hair's million points (lines, no polygons)
+  // go without a sum each
+  std::vector<Sum> sum(np ? static_cast<size_t>(nv) : 0);
   for(int pi = 0; pi < np; pi++)
   {
     const Surface& s = perPoly[size_t(pi)];
@@ -311,6 +313,8 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
   }
   const Surface d;
   const auto    fill = [&](double Sum::*field, float fallback) {
+    if(sum.empty())
+      return std::vector<float>(static_cast<size_t>(nv), fallback);
     std::vector<float> a(static_cast<size_t>(nv));
     for(int v = 0; v < nv; v++)
       a[size_t(v)] = sum[size_t(v)].n ? float(sum[size_t(v)].*field / sum[size_t(v)].n) : fallback;
@@ -339,10 +343,12 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
   out->offset        = fill(&Sum::offset, d.offset);
   const auto layers  = fill(&Sum::layer, d.layer);
   out->layer.resize(size_t(nv));
-  out->selfCollide.resize(size_t(nv));
-  out->surfaceVisible.resize(size_t(nv));
-  out->surfaceCollide.resize(size_t(nv));
-  for(int v = 0; v < nv; v++)
+  out->selfCollide.resize(size_t(nv), 1);
+  out->surfaceVisible.resize(size_t(nv), 1);
+  out->surfaceCollide.resize(size_t(nv), 1);
+  if(sum.empty())
+    out->layer.assign(size_t(nv), int16_t(std::lround(float(d.layer))));
+  for(int v = 0; v < int(sum.size()); v++)
   {
     const Sum& a = sum[size_t(v)];
     out->layer[size_t(v)]          = int16_t(std::lround(layers[size_t(v)]));

@@ -152,6 +152,9 @@ struct RenderTarget
 
 // A morph target from cage deltas: refined onto the render vertices, then spread to every UV split.
 RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d);
+// The same from cage vertices already in range, taken over rather than copied (a projection onto a
+// hair's strands lists a million).
+RenderTarget target(const BuiltMesh& mesh, std::vector<uint32_t> cageIndices, std::vector<float> cageDeltas);
 
 // Replaces the cage positions and returns the delta of the drawn vertices (xyz each), so a fit can
 // move the rest shape without discarding morphs already applied.

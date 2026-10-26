@@ -16,6 +16,7 @@
 #include <figure/gltf/gltf_check.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
+#include <figure/subdiv/catmark.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
@@ -231,6 +232,93 @@ TEST(Wardrobe, AMorphOnTheBodyMovesTheItemThatFollowsIt)
   morphs.set("Lift", 1.0);
   morphs.flush();
   EXPECT_NEAR(z(), before, 1e-4f);
+}
+
+// A body morph projected onto a long item (a hair's strands, a gown at SubD) is worked a chunk at a
+// time side by side: the result is the one-thread loop's, bit for bit, through the refinement and
+// every UV split of a seam.
+TEST(Wardrobe, AProjectionOntoALongItemIsTheOneThreadsResultBitForBit)
+{
+  const auto body = fv::mesh::build(grid(40, 0));
+  // 70,000 cage vertices over the body, refined once, with a seam down column 100
+  constexpr int       n = 263;
+  fv::mesh::MeshInput in = grid(n, 0.5f);
+  for(size_t i = 0; i < in.positions.size(); i += 3)
+  {
+    in.positions[i] *= 40.f / n;
+    in.positions[i + 1] *= 40.f / n;
+  }
+  for(int y = 0; y < n; y++)
+  {
+    const int poly = y * n + 100, a = y * (n + 1) + 100;
+    for(int v : {a, a + n + 1})
+    {
+      in.overrides.insert(in.overrides.end(), {poly, v, int(in.uvs.size() / 2)});
+      in.uvs.insert(in.uvs.end(), {0.5f, float(y) / n});
+    }
+  }
+  in.level        = 1;
+  const auto item = fv::mesh::build(in);
+  ASSERT_GT(item.renderIndex.size(), item.cagePositions.size() / 3);  // the seam split some
+  const auto binding = fv::wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions);
+  // a morph over most of the body
+  fv::mesh::CageDeltas d;
+  for(int v = 0; v < 41 * 41; v++)
+    if(v % 41 < 30)
+    {
+      d.verts.push_back(v);
+      d.deltas.insert(d.deltas.end(), {float(std::sin(v * 0.3)), 0.25f, float(v % 7) * 0.1f});
+    }
+  const auto bodyTarget = fv::mesh::target(body, d);
+
+  // as projectTarget was: one loop over the item, then the target made from what moves
+  std::vector<float> scratch(size_t(body.dsonVertexCount) * 3, 0.f);
+  for(size_t i = 0; i < bodyTarget.cageIndices.size(); i++)
+    std::copy_n(&bodyTarget.cageDeltas[i * 3], 3, &scratch[size_t(bodyTarget.cageIndices[i]) * 3]);
+  const size_t       nv = size_t(item.dsonVertexCount);
+  std::vector<float> out(nv * 3);
+  for(size_t v = 0; v < nv; v++)
+  {
+    const size_t k = v * 3;
+    const size_t a = binding.verts[k] * 3ull, b = binding.verts[k + 1] * 3ull, c = binding.verts[k + 2] * 3ull;
+    for(int i = 0; i < 3; i++)
+      out[k + i] = scratch[a + i] * binding.weights[k] + scratch[b + i] * binding.weights[k + 1] + scratch[c + i] * binding.weights[k + 2];
+  }
+  fv::mesh::CageDeltas moved;
+  for(size_t v = 0; v < nv; v++)
+    if(std::abs(out[v * 3]) + std::abs(out[v * 3 + 1]) + std::abs(out[v * 3 + 2]) >= 1e-5f)
+    {
+      moved.verts.push_back(int32_t(v));
+      moved.deltas.insert(moved.deltas.end(), {out[v * 3], out[v * 3 + 1], out[v * 3 + 2]});
+    }
+  fv::mesh::RenderTarget want;
+  for(size_t i = 0; i < moved.verts.size(); i++)
+  {
+    want.cageIndices.push_back(uint32_t(moved.verts[i]));
+    want.cageDeltas.insert(want.cageDeltas.end(), &moved.deltas[i * 3], &moved.deltas[i * 3] + 3);
+  }
+  const auto render = fv::subdiv::refineSparse(*item.refinement, want.cageIndices, want.cageDeltas, 3);
+  for(size_t i = 0; i < render.indices.size(); i++)
+  {
+    const float x = render.data[i * 3], y = render.data[i * 3 + 1], z = render.data[i * 3 + 2];
+    if(x == 0 && y == 0 && z == 0)
+      continue;
+    for(int32_t s = item.firstSplit[render.indices[i]]; s >= 0; s = item.nextSplit[s])
+    {
+      want.indices.push_back(uint32_t(s));
+      want.deltas.insert(want.deltas.end(), {x, y, z});
+    }
+  }
+
+  std::vector<float> scratchNow;
+  const auto         got = fv::wardrobe::projectTarget(binding, nullptr, body, item, bodyTarget, scratchNow);
+  ASSERT_TRUE(got);
+  ASSERT_GT(moved.verts.size(), 40000u);
+  const auto same = [](const auto& a, const auto& b) { return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0; };
+  EXPECT_TRUE(same(got->cageIndices, want.cageIndices));
+  EXPECT_TRUE(same(got->cageDeltas, want.cageDeltas));
+  EXPECT_TRUE(same(got->indices, want.indices));
+  EXPECT_TRUE(same(got->deltas, want.deltas));
 }
 
 // A follower given its projections ahead (a wear's worker makes them) moves exactly as one that

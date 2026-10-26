@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 
 #include <figure/io/timing.hpp>
+#include <figure/jobs/pool.hpp>
 #include <figure/mesh/normals.hpp>
 
 namespace fv::mesh {
@@ -296,20 +298,67 @@ void strongestFirst(Influences& inf, int from, int to)
   }
 }
 
+// Rows worked a chunk at a time side by side, each chunk into lists of its own, then put one after
+// another: `row(r, out)` appends row r's entries to the chunk's lists. What comes out is what one
+// pass over the rows makes.
+template <class Row>
+Influences rowsSideBySide(int rows, Row&& row)
+{
+  constexpr int           kChunk = 8192;
+  const int               chunks = (rows + kChunk - 1) / kChunk;
+  std::vector<Influences> parts(size_t(std::max(chunks, 0)));
+  jobs::parallelFor(parts.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t c = begin; c < end; c++)
+    {
+      Influences& part  = parts[c];
+      const int   first = int(c) * kChunk, last = std::min(rows, first + kChunk);
+      part.start.assign(size_t(last - first) + 1, 0);
+      for(int r = first; r < last; r++)
+      {
+        row(r, part);
+        part.start[size_t(r - first) + 1] = int32_t(part.bone.size());
+      }
+    }
+  });
+  std::vector<size_t> base(parts.size() + 1, 0);
+  for(size_t c = 0; c < parts.size(); c++)
+    base[c + 1] = base[c] + parts[c].bone.size();
+  Influences out;
+  out.start.assign(size_t(std::max(rows, 0)) + 1, 0);
+  out.bone.resize(base.back());
+  out.weight.resize(base.back());
+  jobs::parallelFor(parts.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t c = begin; c < end; c++)
+    {
+      const Influences& part = parts[c];
+      std::copy(part.bone.begin(), part.bone.end(), out.bone.begin() + base[c]);
+      std::copy(part.weight.begin(), part.weight.end(), out.weight.begin() + base[c]);
+      for(size_t r = 1; r < part.start.size(); r++)
+        out.start[c * kChunk + r] = int32_t(base[c] + size_t(part.start[r]));
+    }
+  });
+  return out;
+}
+
 // One subdivision level's influences: each child vertex sums its parents' by the stencil weights,
 // bones in the order first met. Under 1e-6 is dropped, and past eight only the strongest stay.
 Influences refineInfluences(const Influences& src, const subdiv::Stencils& lv, int bones)
 {
-  const int  rows = lv.rows();
-  Influences out;
-  out.start.assign(size_t(rows) + 1, 0);
-  out.bone.reserve(size_t(rows) * 4);
-  out.weight.reserve(size_t(rows) * 4);
-  // per bone: its sum in this row, and the row it was last met in
-  std::vector<double>  acc(bones, 0.0);
-  std::vector<int32_t> seen(bones, -1), order(bones, 0);
-  for(int row = 0; row < rows; row++)
+  // per bone, on each thread: its sum in this row, and the row it was last met in
+  struct Scratch
   {
+    std::vector<double>  acc;
+    std::vector<int32_t> seen, order;
+  };
+  thread_local Scratch t;
+  return rowsSideBySide(lv.rows(), [&](int row, Influences& out) {
+    if(t.acc.size() < size_t(bones))
+    {
+      t.acc.resize(size_t(bones), 0.0);
+      t.seen.resize(size_t(bones), -1);
+      t.order.resize(size_t(bones), 0);
+    }
+    // the bones a row met are unmarked when it is done, so the next row (or call) starts clean
     int met = 0;
     for(int k = lv.rowStart[row]; k < lv.rowStart[row + 1]; k++)
     {
@@ -318,23 +367,25 @@ Influences refineInfluences(const Influences& src, const subdiv::Stencils& lv, i
       for(int j = src.start[p]; j < src.start[p + 1]; j++)
       {
         const int b = src.bone[j];
-        if(seen[b] != row)
+        if(t.seen[b] != row)
         {
-          seen[b]      = row;
-          acc[b]       = 0;
-          order[met++] = b;
+          t.seen[b]      = row;
+          t.acc[b]       = 0;
+          t.order[met++] = b;
         }
-        acc[b] += src.weight[j] * w;
+        t.acc[b] += src.weight[j] * w;
       }
     }
+    for(int i = 0; i < met; i++)
+      t.seen[t.order[i]] = -1;
     const int from = int(out.bone.size());
     for(int i = 0; i < met; i++)
     {
-      const int b = order[i];
-      if(acc[b] > 1e-6)
+      const int b = t.order[i];
+      if(t.acc[b] > 1e-6)
       {
         out.bone.push_back(b);
-        out.weight.push_back(acc[b]);
+        out.weight.push_back(t.acc[b]);
       }
     }
     if(int(out.bone.size()) - from > 8)
@@ -343,9 +394,7 @@ Influences refineInfluences(const Influences& src, const subdiv::Stencils& lv, i
       out.bone.resize(from + 8);
       out.weight.resize(from + 8);
     }
-    out.start[row + 1] = int32_t(out.bone.size());
-  }
-  return out;
+  });
 }
 
 }  // namespace
@@ -558,89 +607,116 @@ BuiltMesh build(const MeshInput& m)
 SkinOutput skin(const BuiltMesh& mesh, const SkinInput& s)
 {
   // the cage's influences, without the zero ones
-  const int  rows = int(s.start.size()) - 1;
-  Influences inf;
-  inf.start.assign(size_t(std::max(rows, 0)) + 1, 0);
-  int bones = s.rootBone + 1;
-  for(int v = 0; v < rows; v++)
-  {
+  const int rows  = int(s.start.size()) - 1;
+  int       bones = s.rootBone + 1;
+  for(size_t k = 0; k < s.bone.size(); k++)
+    if(s.weight[k] > 0)
+      bones = std::max(bones, s.bone[k] + 1);
+  Influences inf = rowsSideBySide(std::max(rows, 0), [&](int v, Influences& out) {
     for(int k = s.start[v]; k < s.start[v + 1]; k++)
       if(s.weight[k] > 0)
       {
-        inf.bone.push_back(s.bone[k]);
-        inf.weight.push_back(s.weight[k]);
-        bones = std::max(bones, s.bone[k] + 1);
+        out.bone.push_back(s.bone[k]);
+        out.weight.push_back(s.weight[k]);
       }
-    inf.start[v + 1] = int32_t(inf.bone.size());
-  }
+  });
   if(mesh.refinement)
     for(const auto& lv : mesh.refinement->levels)
       inf = refineInfluences(inf, lv, bones);
 
-  const size_t         count = mesh.renderIndex.size();
-  SkinOutput           out;
+  // the rows that keep four of more, strongest first; then each drawn vertex (a vertex's splits
+  // share its row) takes its row's first four, side by side
+  const int ninf = int(inf.start.size()) - 1;
+  jobs::parallelFor(size_t(std::max(ninf, 0)), 16384, [&](size_t begin, size_t end) {
+    for(size_t v = begin; v < end; v++)
+      if(inf.start[v + 1] - inf.start[v] > 4)
+        strongestFirst(inf, inf.start[v], inf.start[v + 1]);
+  });
+  const size_t count = mesh.renderIndex.size();
+  SkinOutput   out;
   out.skinIndex.assign(count * 4, 0);
   out.skinWeight.assign(count * 4, 0.f);
-  std::vector<uint8_t> sorted(inf.start.size(), 0);
-  for(size_t i = 0; i < count; i++)
-  {
-    const uint32_t v    = mesh.renderIndex[i];
-    const bool     has  = v + 1 < inf.start.size();
-    const int      from = has ? inf.start[v] : 0;
-    const int      n    = has ? inf.start[v + 1] - from : 0;
-    // the splits of a vertex share its row: sorted once
-    if(n > 4 && !sorted[v])
+  jobs::parallelFor(count, 16384, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
     {
-      strongestFirst(inf, from, from + n);
-      sorted[v] = 1;
+      const uint32_t v    = mesh.renderIndex[i];
+      const bool     has  = v + 1 < inf.start.size();
+      const int      from = has ? inf.start[v] : 0;
+      const int      n    = has ? inf.start[v + 1] - from : 0;
+      const int      m    = std::min(4, n);
+      double         sum  = 0;
+      for(int k = 0; k < m; k++)
+        sum += inf.weight[from + k];
+      if(sum <= 0)
+      {
+        out.skinIndex[i * 4]  = uint16_t(s.rootBone);
+        out.skinWeight[i * 4] = 1;
+        continue;
+      }
+      for(int k = 0; k < m; k++)
+      {
+        out.skinIndex[i * 4 + k]  = uint16_t(inf.bone[from + k]);
+        out.skinWeight[i * 4 + k] = float(inf.weight[from + k] / sum);
+      }
     }
-    const int m   = std::min(4, n);
-    double    sum = 0;
-    for(int k = 0; k < m; k++)
-      sum += inf.weight[from + k];
-    if(sum <= 0)
-    {
-      out.skinIndex[i * 4]  = uint16_t(s.rootBone);
-      out.skinWeight[i * 4] = 1;
-      continue;
-    }
-    for(int k = 0; k < m; k++)
-    {
-      out.skinIndex[i * 4 + k]  = uint16_t(inf.bone[from + k]);
-      out.skinWeight[i * 4 + k] = float(inf.weight[from + k] / sum);
-    }
-  }
+  });
   return out;
 }
 
 RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d)
 {
-  RenderTarget out;
+  std::vector<uint32_t> cageIndices;
+  std::vector<float>    cageDeltas;
   for(size_t i = 0; i < d.verts.size(); i++)
   {
     const int v = d.verts[i];
     if(v < 0 || v >= mesh.dsonVertexCount)
       continue;
-    out.cageIndices.push_back(uint32_t(v));
-    out.cageDeltas.insert(out.cageDeltas.end(), d.deltas.begin() + i * 3, d.deltas.begin() + i * 3 + 3);
+    cageIndices.push_back(uint32_t(v));
+    cageDeltas.insert(cageDeltas.end(), d.deltas.begin() + i * 3, d.deltas.begin() + i * 3 + 3);
   }
+  return target(mesh, std::move(cageIndices), std::move(cageDeltas));
+}
+
+RenderTarget target(const BuiltMesh& mesh, std::vector<uint32_t> cageIndices, std::vector<float> cageDeltas)
+{
+  RenderTarget out;
+  out.cageIndices = std::move(cageIndices);
+  out.cageDeltas  = std::move(cageDeltas);
   subdiv::Sparse render;
   if(mesh.refinement)
     render = subdiv::refineSparse(*mesh.refinement, out.cageIndices, out.cageDeltas, 3);
   else
     render = {out.cageIndices, out.cageDeltas};
-  // every split of a vertex that moves takes its delta
-  for(size_t i = 0; i < render.indices.size(); i++)
-  {
-    const float x = render.data[i * 3], y = render.data[i * 3 + 1], z = render.data[i * 3 + 2];
-    if(x == 0 && y == 0 && z == 0)
-      continue;
-    for(int32_t s = mesh.firstSplit[render.indices[i]]; s >= 0; s = mesh.nextSplit[s])
+  // every split of a vertex that moves takes its delta: counted, then written, a chunk at a time
+  // side by side, in the order one pass would write them
+  constexpr size_t    kChunk = 16384;
+  const size_t        n = render.indices.size(), chunks = (n + kChunk - 1) / kChunk;
+  std::vector<size_t> at(chunks + 1, 0);
+  const auto          moves = [&](size_t i) { return render.data[i * 3] != 0 || render.data[i * 3 + 1] != 0 || render.data[i * 3 + 2] != 0; };
+  jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
+    for(size_t c = begin; c < end; c++)
+      for(size_t i = c * kChunk; i < std::min(n, (c + 1) * kChunk); i++)
+        if(moves(i))
+          for(int32_t s = mesh.firstSplit[render.indices[i]]; s >= 0; s = mesh.nextSplit[s])
+            at[c + 1]++;
+  });
+  std::partial_sum(at.begin(), at.end(), at.begin());
+  out.indices.resize(at[chunks]);
+  out.deltas.resize(at[chunks] * 3);
+  jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
+    for(size_t c = begin; c < end; c++)
     {
-      out.indices.push_back(uint32_t(s));
-      out.deltas.insert(out.deltas.end(), {x, y, z});
+      size_t o = at[c];
+      for(size_t i = c * kChunk; i < std::min(n, (c + 1) * kChunk); i++)
+        if(moves(i))
+          for(int32_t s = mesh.firstSplit[render.indices[i]]; s >= 0; s = mesh.nextSplit[s], o++)
+          {
+            out.indices[o] = uint32_t(s);
+            std::copy_n(&render.data[i * 3], 3, &out.deltas[o * 3]);
+          }
     }
-  }
+  });
   return out;
 }
 

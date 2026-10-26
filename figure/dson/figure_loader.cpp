@@ -1058,19 +1058,30 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           a.uvDecided     = true;
           const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(options.subdivision, 0, 3) : 0;
           // built by a prefetch from the same geometry, UV set and level, or here
-          if(auto early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level)))
+          std::optional<EarlyMesh> early;
+          {
+            timing::Accum tt("ahead: an early mesh taken");
+            early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level));
+          }
+          if(early)
           {
             g_earlyTaken++;
             a.mesh.geo            = std::move(early->geo);
             a.mesh.materialGroups = std::move(early->materialGroups);
           }
           else
+          {
+            timing::Accum tb("ahead: a mesh built");
             a.mesh.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups)));
+          }
           if(job.rig >= 0)
           {
+            std::optional<timing::Accum> ts;
+            ts.emplace("ahead: skin binding");
             if(const Json* skinMod = skinModifierOf(*a.gres, geo))
               if(auto binding = skinBinding(*a.gres->doc, *skinMod, out.rigs[job.rig], a.mesh.geo->dsonVertexCount))
               {
+                ts.emplace("ahead: skin weights");
                 a.mesh.skin     = mesh::skin(*a.mesh.geo, binding->input);
                 a.mesh.cageSkin = binding->input;
                 a.mesh.bones    = binding->order;

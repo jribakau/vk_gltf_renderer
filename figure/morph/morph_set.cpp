@@ -390,11 +390,16 @@ void MorphSet::settled()
   {
     while(!m_loading.empty())
     {
-      m_loading.begin()->second.wait();
+      {
+        fv::timing::Accum t("settled: wait for a load");
+        m_loading.begin()->second.wait();
+      }
+      fv::timing::Accum t("settled: pump");
       pump();
     }
     if(!m_driverDirty)
       return;
+    fv::timing::Accum t("settled: driver");
     runDriver();
   }
 }
