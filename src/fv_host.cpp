@@ -5196,6 +5196,14 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return toolJson(nvmcp::detail::setParameters(exposedParameters(impl->registry), args.dump()));
     });
   });
+  // the app's own timings (an open's phases, measured where the user waits), into the timing log
+  cmds.add("app.timing", [](const Json& args) {
+    if(args.contains("lines") && args["lines"].is_array())
+      for(const Json& l : args["lines"])
+        if(l.is_string())
+          fv::timing::line("app: " + l.get<std::string>());
+    return Json::object();
+  });
   // a clean exit (DLSS/NGX shut down), which the host asks for before it ends the process
   cmds.add("session.shutdown", [impl](const Json&) {
     impl->post([impl] {

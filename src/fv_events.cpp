@@ -19,7 +19,10 @@
 
 #include "fv_events.hpp"
 
+#include <chrono>
 #include <exception>
+
+#include <figure/io/timing.hpp>
 
 namespace fv {
 
@@ -60,6 +63,14 @@ Json CommandRegistry::dispatch(const Json& request) const
     handler = it->second;
   }
   const Json args = request.contains("args") ? request["args"] : Json::object();
+  // a command that holds its caller up shows in the timing log (the app sends them one at a time)
+  const auto start = std::chrono::steady_clock::now();
+  struct Report
+  {
+    const std::string&                    name;
+    std::chrono::steady_clock::time_point start;
+    ~Report() { timing::report("cmd " + name, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), 10); }
+  } report{name, start};
   try
   {
     out["result"] = handler(args);
