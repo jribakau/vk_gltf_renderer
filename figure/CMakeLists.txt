@@ -10,6 +10,12 @@ target_include_directories(fv_figure PUBLIC ${FV_FIGURE_ROOT})
 # tinygltf for the glTF model it builds and for nlohmann::json (<tinygltf/json.hpp>)
 target_link_libraries(fv_figure PUBLIC glm tinygltf PRIVATE zlib)
 set_property(TARGET fv_figure PROPERTY FOLDER "figure")
+# The bind cache's key (wardrobe/bind_cache.cpp): xxHash as zstd ships it, and bind.cpp's hash, so a
+# change to the binding code is another key. bind.cpp is a configure dependency for that.
+target_include_directories(fv_figure PRIVATE ${nvpro_core2_SOURCE_DIR}/third_party/zstd/lib/common)
+file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/wardrobe/bind.cpp FV_BIND_SOURCE_SHA)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/wardrobe/bind.cpp)
+set_source_files_properties(wardrobe/bind_cache.cpp PROPERTIES COMPILE_DEFINITIONS "FV_BIND_SOURCE_SHA=\"${FV_BIND_SOURCE_SHA}\"")
 
 # The parity harness's native side (see tools/fv_parity.cpp): no GPU, the library alone.
 add_executable(fv_parity tools/fv_parity.cpp)

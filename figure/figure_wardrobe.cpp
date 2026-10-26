@@ -16,6 +16,7 @@
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/wardrobe/bind.hpp>
+#include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
 #include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
@@ -283,11 +284,11 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       if(!item.cageLineStart.empty())
       {
         *slot = std::make_shared<wardrobe::SurfaceBinding>(
-            wardrobe::bindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, kStrandReach, f));
+            wardrobe::cachedBindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, kStrandReach, f));
         return;
       }
       const std::span<const int32_t> pairs = part.graft ? std::span<const int32_t>(part.graft->pairs) : std::span<const int32_t>();
-      *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, f));
+      *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::cachedBindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, f));
     }));
   }
   tItems.reset();

@@ -49,6 +49,7 @@
 #include "frame_stream.hpp"
 #include "fv_host.hpp"
 #include <figure/dson/store.hpp>
+#include <figure/wardrobe/bind_cache.hpp>
 #include "fv_protocol.hpp"
 #include "mcp_scene.hpp"
 
@@ -316,6 +317,7 @@ auto main(int argc, char** argv) -> int
   cacheDirApplied = true;
   // parsed DSON files (a strand hair's 76 MB geometry) beside the pipeline cache
   fv::dson::setParsedCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "dson");
+  fv::wardrobe::setBindCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "bind");
   elemGltfRenderer->setEditable(editable || enableStream);
 
   if(appInfo.headless)

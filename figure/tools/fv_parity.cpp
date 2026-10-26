@@ -3,6 +3,7 @@
 // weights in the shape the TypeScript dumper wrote, so two runs can be diffed.
 //
 //   fv_parity <case.json> <out.json> [--root <dir for relative library paths>] [--cache <parsed-file cache dir>]
+//             [--bind-cache <surface-binding cache dir>]
 //
 // Steps: {"load"}, {"morph"}, {"pose"}, {"preset"}, {"dump"}, and for the wardrobe {"wear": rel},
 // {"remove": item id} and {"fit": label}, which measures how the worn items sit on the body: for
@@ -45,6 +46,7 @@
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/wardrobe/bind.hpp>
+#include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/fit/collide.hpp>
 
 using fv::dson::Json;
@@ -423,6 +425,8 @@ int main(int argc, char** argv)
       root = pathOf(argv[i + 1]);
     if(std::string(argv[i]) == "--cache")  // the parsed-file cache, as the renderer's --cacheDir/dson
       fv::dson::setParsedCacheDir(pathOf(argv[i + 1]));
+    if(std::string(argv[i]) == "--bind-cache")  // the surface-binding cache, as the renderer's --cacheDir/bind
+      fv::wardrobe::setBindCacheDir(pathOf(argv[i + 1]));
   }
   try
   {
