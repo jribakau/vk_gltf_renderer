@@ -865,12 +865,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // this one by an exponential radial profile of mean d (the diffusion length, averaged over
       // the channels), in the tangent plane. Thin shadows, the lashes' on the eye, blur as they do
       // in tissue; no walk, so nothing is lost in an eyeball that is not one closed medium. The tail
-      // is cut at 3 d, short of most lid margins.
+      // is cut at 2.5 d, short of most lid margins.
       if(materialIndex >= 0 && pbrMat.thickness <= 0.0F && any(materials[materialIndex].scatterDistance > 0.0F) && shadowSideForward)
       {
         const float3 dist = materials[materialIndex].scatterDistance;
         const float  d    = (dist.x + dist.y + dist.z) / 3.0F;
-        const float  r    = min(-d * log(max(1.0F - rand(seed), 1e-6F)), 3.0F * d);
+        const float  r    = min(-d * log(max(1.0F - rand(seed), 1e-6F)), 2.5F * d);
         const float  phi  = rand(seed) * M_TWO_PI;
         // a frame of its own: hit.bitangent carries the tangent's handedness, 0 without tangents
         float3 t, b;
