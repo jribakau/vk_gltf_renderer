@@ -104,7 +104,8 @@ float clamp(float v, float lo, float hi)
 }
 
 // Chiang et al.'s fit between a fibre's colour and its absorption, by azimuthal roughness, as the
-// hair shader (hair_bsdf.h.slang) and the DSON reader use it: colour = exp(-0.45 sqrt(sigma) fit).
+// DSON reader uses it: colour = exp(-0.45 sqrt(sigma) fit). The hair shader's own inverse for cards
+// (hairColorToAbsorption) has no 0.45; which one is right is open (docs/lighting-audit.md, hair).
 float chiangFit(float b)
 {
   b = clamp(b, 0, 1);

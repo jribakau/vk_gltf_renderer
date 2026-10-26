@@ -179,6 +179,10 @@ public:
   // Path regularisation (ePtRegularize): 0 never, 1 on DLSS frames, 2 always. The still has the indirect
   // clamp and the denoiser; regularising it blurred smooth objects in glossy floors and the eyes' corneas.
   int m_regularize{1};
+  // Fibre events before they count as surface bounces (PathtracePushConstant::hairBudget): the still's,
+  // and the DLSS frames', fewer, since white hair keeps its energy through every one.
+  int m_hairBounces{16};
+  int m_hairBouncesDlss{4};
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
   // Variant pipeline cache: avoids slow pipeline (re)compilation by reusing previously built

@@ -681,8 +681,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if GLTF_USE_HAIR
     HairHit hairHit = hairHitZero();
     if(materialIndex >= 0 && materials[materialIndex].hairFactor > 0.0)
-      hairOn = makeHairHit(materials[materialIndex], hit.uv[0], hit.bitangent, hit.tangent, pbrMat.N, pbrMat.T, pbrMat.B,
-                           pbrMat.baseColor, hairHit);
+      hairOn = makeHairHit(materials[materialIndex], hit.uv[0], hit.bitangent, hit.tangent, pbrMat.N, pbrMat.baseColor, hairHit);
     if(hairOn && hasFlag(pushConst.flags, PathtracerFlags::ePtApproximateCaustics))
       hairHit.betaM = max(hairHit.betaM, pt.pathRoughness);  // the fibre's longitudinal roughness, as the lobes above
     // One offset across the fibre for this hit: the samples average over it to the fibre's response,
@@ -702,9 +701,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
 
     DirectLight directLight;
+    // A fibre event spends the hair's own budget while it lasts, not a surface bounce
+#if GLTF_USE_HAIR
+    bounce.hairEvent = hairOn && pt.hairBounces < pushConst.hairBudget;
+#endif
     // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
     // have no BSDF-sampled partner: weight 1, as for a punctual light, and the full environment table.
-    const bool lastVertex = pt.surfaceDepth + 1 >= pushConst.maxDepth;
+    const bool lastVertex = !bounce.hairEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth;
     // The normal only culls directional lights below the surface (singleLightContribution). Give it
     // the one bounce.nextEventValid tests, so NEE and the BSDF side (R4) agree on which directions
     // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
@@ -793,21 +796,20 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Sampling the BSDF at the hit point
       BsdfSampleData sampleData;
       sampleData.k1 = -ray.Direction;                              // outgoing direction
-      // random numbers: a Sobol point's, the fourth for the hair's lobe
+      // random numbers: a Sobol point's, the fourth for the fibre's azimuth
       const float4 bsdfXi = g_sobol ? nextSobolDecision() : float4(rand(seed), rand(seed), rand(seed), 0.0F);
       sampleData.xi       = bsdfXi.xyz;
 #if GLTF_USE_HAIR
       if(hairOn)
       {
-        const float u1 = g_sobol ? bsdfXi.w : rand(seed);
-        hairBsdfSample(sampleData, hairHit, u1, rand(seed));
+        hairBsdfSample(sampleData, hairHit, g_sobol ? bsdfXi.w : rand(seed));
       }
       else
 #endif
       {
         // The lobe mixture's pdf, which next-event estimation's bsdfEvaluateAll weighs against. Not at
         // the last vertex: the loop ends before this ray is traced, so nothing reads it.
-        const bool mixturePdf = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && pt.surfaceDepth + 1 < pushConst.maxDepth;
+        const bool mixturePdf = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && !lastVertex;
         bsdfSampleCore(sampleData, pbrMat, mixturePdf);
       }
       // bsdfSampleSimple(sampleData, pbrMat);
@@ -1065,9 +1067,18 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     // Not at the last vertex: the loop ends there whatever the roulette says. No cap below 1: a path
     // that keeps its energy (a white wall, blond hair) is cut by the bounce limit, not culled at
     // random and weighted up, which only made its survivors brighter and noisier.
-    if(pt.surfaceDepth >= RR_MIN_DEPTH && pt.surfaceDepth + 1 < pushConst.maxDepth)
+    int depth = pt.surfaceDepth;
+#if GLTF_USE_HAIR
+    depth += pt.hairBounces;
+#endif
+    if(depth >= RR_MIN_DEPTH && (bounce.hairEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
     {
-      const float rrPcont = max(pt.throughput.x, max(pt.throughput.y, pt.throughput.z)) + RR_PCONT_FLOOR;
+      float rrCap = 1.0F;
+#if GLTF_USE_HAIR
+      if(bounce.hairEvent && pt.hairBounces >= HAIR_FREE_EVENTS)
+        rrCap = HAIR_RR_CAP;  // a clear fibre's path, bounded (HAIR_FREE_EVENTS)
+#endif
+      const float rrPcont = min(max(pt.throughput.x, max(pt.throughput.y, pt.throughput.z)) + RR_PCONT_FLOOR, rrCap);
       if(rrPcont < 1.0F)  // (rand() can return 1, which would end a path that has to survive)
       {
         if(rand(seed) >= rrPcont)
@@ -1076,8 +1087,13 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       }
     }
 
-    // Consume one surface bounce
-    pt.surfaceDepth++;
+    // Consume one surface bounce, or one of the hair's
+#if GLTF_USE_HAIR
+    if(bounce.hairEvent)
+      pt.hairBounces++;
+    else
+#endif
+      pt.surfaceDepth++;
   }
 
 #if WIREFRAME

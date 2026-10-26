@@ -1609,6 +1609,9 @@ struct PathTracerState
   bool    firstHitHazed = true;  // false when the camera ray landed on the shadow catcher
   RayCone cone          = {0.0F, pushConst.pixelAngle};
   int     surfaceDepth  = 0;
+#if GLTF_USE_HAIR
+  int hairBounces = 0;  // fibre events, on the hair's own budget (PathtracePushConstant::hairBudget)
+#endif
 #if GLTF_USE_TRANSMISSION || GLTF_USE_VOLUME
   bool isInside = false;
 #endif
@@ -1647,7 +1650,19 @@ struct BounceScratch
   float  shadowRayDist       = 0.0F;
   bool   shadowRayInside     = false;         // The shadow ray starts inside a medium...
   float3 shadowRayExtinction = float3(0.0F);  // ...of this extinction.
+  bool   hairEvent           = false;         // This vertex was a fibre's and spent the hair budget, not a surface bounce
 };
+
+// The hair's own budget (PathtracePushConstant::hairBudget, the host's ptHairBounces and
+// ptHairBouncesDlss): fibre events a path may take before they count as surface bounces. The light a
+// lock scatters between its fibres is the path's own (hair_bsdf.h.slang has no stand-in for it), and
+// light hair sends most of it forward through the lock: under the surface limit it was cut after a
+// few fibres. A clear fibre keeps its energy, so the roulette that follows the throughput never ended
+// it and white hair took every event of the budget, each with a shadow ray through the hair: past the
+// first HAIR_FREE_EVENTS a fibre's path continues at most with HAIR_RR_CAP, bounding its expected
+// length whatever the hair's colour.
+static const int   HAIR_FREE_EVENTS = 4;
+static const float HAIR_RR_CAP      = 0.85F;
 
 // Light that reaches the path while its roughness is at most this is direct: the first surface's, and
 // that of surfaces seen through a mirror, glass or a cornea. Above it, light came by a rough bounce.

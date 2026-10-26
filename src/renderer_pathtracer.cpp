@@ -380,6 +380,14 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "(biased; never a clear refraction) [Never:0, DLSS frames:1, Always:2]",
                  .callbackSuccess = reset},
                 &m_regularize, Persist::eNo, 0, 2);
+  settings->add({.name            = "ptHairBounces",
+                 .help            = "PathTracer: Fibre events a path takes through hair before they count as surface bounces (stills)",
+                 .callbackSuccess = reset},
+                &m_hairBounces, Persist::eNo, 0, 64);
+  settings->add({.name            = "ptHairBouncesDlss",
+                 .help            = "PathTracer: Fibre events a path takes through hair before they count as surface bounces (DLSS frames)",
+                 .callbackSuccess = reset},
+                &m_hairBouncesDlss, Persist::eNo, 0, 64);
   // Light that reaches skin after a rough bounce is blurred by that bounce: a random walk there costs
   // tens of events for detail nothing shows, so the medium shades as the thin preview's diffuse lobes
   // (Unreal's bSimplifySSS, at path roughness 0.15). Skin seen directly, or through a mirror or a
@@ -2741,6 +2749,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_fireflyClampMode == 1 ? shaderio::ePtClampIndirect : 0;
   m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
   m_pushConst.flags |= (m_regularize == 2 || (m_regularize == 1 && useDlss)) ? shaderio::ePtRegularize : 0;
+  m_pushConst.hairBudget = useDlss ? m_hairBouncesDlss : m_hairBounces;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;
