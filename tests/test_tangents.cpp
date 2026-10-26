@@ -12,6 +12,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
 
+#include "gltf_scene.hpp"
 #include "tinygltf_utils.hpp"
 #include "nvshaders/functions.h.slang"
 
@@ -126,4 +127,65 @@ TEST(Tangents, MadeSideBySideTheyAreTheSerialOnesBitForBit)
     ASSERT_EQ(got.size(), want.size());
     EXPECT_EQ(std::memcmp(got.data(), want.data(), got.size() * sizeof(glm::vec4)), 0) << faces << " faces";
   }
+}
+
+// A scene whose normal-mapped mesh has no tangents gets them in a buffer of its own: the scene's own
+// buffers stay as they were (appending copied a dressed figure's hundreds of MB again), the
+// primitives over one set of attributes share one accessor, made over all their triangles.
+TEST(Tangents, AScenesMissingTangentsGoInABufferOfTheirOwn)
+{
+  const Soup s = soup(20000, 40000, 7);
+  const auto half = s.indices.size() / 6 * 3;
+  tinygltf::Model model;
+  model.buffers.emplace_back();
+  const auto add = [&](const void* data, size_t bytes, int component, int type, size_t count) {
+    return tinygltf::utils::appendAccessor(model, 0, data, bytes, component, type, count);
+  };
+  const int position = add(s.positions.data(), s.positions.size() * 12, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC3, s.positions.size());
+  const int normal   = add(s.normals.data(), s.normals.size() * 12, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC3, s.normals.size());
+  const int uv       = add(s.uvs.data(), s.uvs.size() * 8, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC2, s.uvs.size());
+  tinygltf::Mesh mesh;
+  for(const auto& [from, to] : {std::pair<size_t, size_t>{0, half}, {half, s.indices.size()}})
+  {
+    tinygltf::Primitive p;
+    p.attributes = {{"POSITION", position}, {"NORMAL", normal}, {"TEXCOORD_0", uv}};
+    p.indices    = add(s.indices.data() + from, (to - from) * 4, TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT, TINYGLTF_TYPE_SCALAR, to - from);
+    p.material   = 0;
+    mesh.primitives.push_back(p);
+  }
+  model.meshes.push_back(mesh);
+  tinygltf::Material material;
+  material.normalTexture.index = 0;
+  model.materials.push_back(material);
+  tinygltf::Image image;
+  image.uri = "normal.png";
+  model.images.push_back(image);
+  tinygltf::Texture texture;
+  texture.source = 0;
+  model.textures.push_back(texture);
+  tinygltf::Node node;
+  node.mesh = 0;
+  model.nodes.push_back(node);
+  model.scenes.emplace_back().nodes = {0};
+  const std::vector<unsigned char> before = model.buffers[0].data;
+
+  nvvkgltf::Scene scene;
+  scene.takeModel(std::move(model));
+  scene.setCurrentScene(0);
+  const tinygltf::Model& m = scene.getModel();
+  ASSERT_EQ(m.meshes.size(), 1u);
+  const auto& prims = m.meshes[0].primitives;
+  ASSERT_EQ(prims.size(), 2u);
+  ASSERT_TRUE(prims[0].attributes.count("TANGENT"));
+  const int tangent = prims[0].attributes.at("TANGENT");
+  EXPECT_EQ(prims[1].attributes.at("TANGENT"), tangent);
+  const tinygltf::BufferView& view = m.bufferViews[size_t(m.accessors[size_t(tangent)].bufferView)];
+  ASSERT_GT(view.buffer, 0);
+  EXPECT_EQ(m.buffers[size_t(view.buffer)].name, "tangents");
+  EXPECT_EQ(m.buffers[0].data, before);
+  // what the utility makes over both primitives' triangles
+  std::vector<glm::vec4> got(s.positions.size());
+  std::memcpy(got.data(), m.buffers[size_t(view.buffer)].data.data() + view.byteOffset, got.size() * sizeof(glm::vec4));
+  const auto want = utilsTangents(s);
+  EXPECT_EQ(std::memcmp(got.data(), want.data(), got.size() * sizeof(glm::vec4)), 0);
 }

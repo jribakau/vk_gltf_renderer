@@ -3009,17 +3009,41 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
     }
   }
 
-  // the tangents go at the end of the scene's buffer (hundreds of MB for a dressed figure): room for
-  // all of them first, so it is not copied again each time a group's are added
+  // The tangents in a buffer of their own, made at its size once: appended to the scene's first
+  // buffer (a dressed figure's, hundreds of MB) they copied all of it again (50-90 ms).
   find.reset();
   {
-    fv::timing::Scope t("tangents: room", 1);
-    size_t room = m_model.buffers.empty() ? 0 : m_model.buffers[0].data.size();
+    fv::timing::Scope t("tangents: buffer", 1);
+    size_t            size = 0;
     for(auto& [key, primitives] : keyToPrimitives)
       if(!primitives.empty())
-        room += tinygltf::utils::getVertexCount(m_model, *primitives[0]) * 4 * sizeof(float);
-    if(!m_model.buffers.empty())
-      m_model.buffers[0].data.reserve(room);
+        size += tinygltf::utils::getVertexCount(m_model, *primitives[0]) * 4 * sizeof(float);
+    if(size)
+    {
+      const int buffer = static_cast<int>(m_model.buffers.size());
+      m_model.buffers.emplace_back();
+      m_model.buffers.back().name = "tangents";
+      m_model.buffers.back().data.resize(size, 0);
+      size_t offset = 0;
+      for(auto& [key, primitives] : keyToPrimitives)
+      {
+        if(primitives.empty())
+          continue;
+        tinygltf::Accessor accessor{};
+        accessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+        accessor.type          = TINYGLTF_TYPE_VEC4;
+        accessor.count         = tinygltf::utils::getVertexCount(m_model, *primitives[0]);
+        tinygltf::BufferView view{};
+        view.buffer     = buffer;
+        view.byteOffset = offset;
+        view.byteLength = accessor.count * 4 * sizeof(float);
+        offset += view.byteLength;
+        accessor.bufferView = static_cast<int>(m_model.bufferViews.size());
+        m_model.bufferViews.push_back(view);
+        primitives[0]->attributes["TANGENT"] = static_cast<int>(m_model.accessors.size());
+        m_model.accessors.push_back(accessor);
+      }
+    }
   }
   for(auto& [key, primitives] : keyToPrimitives)
   {
@@ -3029,7 +3053,6 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
     fv::timing::Scope    t("tangents: " + std::to_string(primitives.size()) + " primitives, "
                                + std::to_string(tinygltf::utils::getVertexCount(m_model, *first)) + " vertices",
                            5);
-    tinygltf::utils::createTangentAttribute(m_model, *first);
     const int tangentAccessorIndex = first->attributes["TANGENT"];
     for(size_t i = 1; i < primitives.size(); ++i)
       primitives[i]->attributes["TANGENT"] = tangentAccessorIndex;
