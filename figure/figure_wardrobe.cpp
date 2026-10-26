@@ -555,9 +555,10 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       morph::Follower f;
       f.mesh   = mesh;
       f.source = body;
-      f.project = [binding = p.bindings[i], rigidity = part.rigidity, bodyGeo = bodyGeoPtr, itemGeo,
-                   scratch = std::make_shared<std::vector<float>>()](const mesh::RenderTarget& t) -> dson::TargetPtr {
-        return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, *itemGeo, t, *scratch);
+      // the scratch is the calling thread's: the morph set projects several targets side by side
+      f.project = [binding = p.bindings[i], rigidity = part.rigidity, bodyGeo = bodyGeoPtr, itemGeo](const mesh::RenderTarget& t) -> dson::TargetPtr {
+        thread_local std::vector<float> scratch;
+        return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, *itemGeo, t, scratch);
       };
       // DAZ's morph tools tag each file's modifier id with a hex suffix ("Mirel Head-0xa98947a" on the
       // body, "-0xa989482" on the eyes); the copies share the name and the file stem

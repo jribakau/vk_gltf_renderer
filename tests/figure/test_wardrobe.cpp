@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 
@@ -278,6 +280,85 @@ TEST(Wardrobe, AFollowerWithProjectionsMadeAheadMovesLikeOneProjectingAtCommit)
   EXPECT_EQ(std::memcmp(after[0].data(), after[1].data(), after[0].size() * sizeof(float)), 0);
   // and the item did move
   EXPECT_NE(std::memcmp(after[0].data(), fresh[1]->position.data(), after[0].size() * sizeof(float)), 0);
+}
+
+// Many channels dialled at once (a pose's correctives): the followers' projections are made side by
+// side before the weights go in, each once, and the items end where projecting one at a time, as a
+// follower added afterwards does, puts them.
+TEST(Wardrobe, ProjectionsMadeSideBySideMoveTheItemsAsOneAtATime)
+{
+  constexpr int kItems = 3, kChannels = 5;
+  const auto    build  = [] {
+    std::vector<std::shared_ptr<fv::mesh::BuiltMesh>> m{std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(6, 0)))};
+    for(int k = 0; k < kItems; k++)
+      m.push_back(std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(3, 0.5f + 0.25f * float(k)))));
+    return m;
+  };
+  std::vector<std::pair<std::string, double>> dials;
+  for(int c = 0; c < kChannels; c++)
+    dials.emplace_back("Lift" + std::to_string(c), 0.25 + 0.2 * c);
+  std::vector<float> after[2][kItems];
+  int                calls[2][kItems] = {};
+  for(int which = 0; which < 2; which++)
+  {
+    auto                meshes = build();
+    fv::morph::MorphSet morphs([&](int i) { return meshes[size_t(i)].get(); });
+    for(int c = 0; c < kChannels; c++)
+    {
+      fv::mesh::CageDeltas d;
+      d.verts  = {8 + c, 16 + c};
+      d.deltas = {0.f, 0.f, 1.f + float(c), 0.5f, 0.f, 0.25f * float(c)};
+      morphs.addTarget(dials[size_t(c)].first, 0, std::make_shared<fv::mesh::RenderTarget>(fv::mesh::target(*meshes[0], d)));
+    }
+    std::atomic<int> counted[kItems] = {};
+    const auto       follow          = [&](int k) {
+      const auto binding = std::make_shared<fv::wardrobe::SurfaceBinding>(
+          fv::wardrobe::bindToSurface(meshes[0]->cagePositions, meshes[0]->dsonTris, meshes[size_t(k) + 1]->cagePositions));
+      fv::morph::Follower f;
+      f.mesh    = k + 1;
+      f.source  = 0;
+      f.project = [binding, body = meshes[0], item = meshes[size_t(k) + 1], n = &counted[k]](const fv::mesh::RenderTarget& t) {
+        (*n)++;
+        std::vector<float> scratch;
+        return fv::wardrobe::projectTarget(*binding, nullptr, *body, *item, t, scratch);
+      };
+      morphs.addFollower(f);
+    };
+    if(which == 0)
+    {
+      // followers first, then every dial in one batch: the projections are made ahead
+      for(int k = 0; k < kItems; k++)
+        follow(k);
+      morphs.setMany(dials);
+    }
+    else
+    {
+      // the dials first, then each follower, which projects what is dialled one at a time
+      morphs.setMany(dials);
+      for(int k = 0; k < kItems; k++)
+        follow(k);
+    }
+    morphs.flush();
+    for(int k = 0; k < kItems; k++)
+    {
+      after[which][k] = meshes[size_t(k) + 1]->position;
+      calls[which][k] = counted[k].load();
+    }
+  }
+  const auto fresh = build();
+  for(int k = 0; k < kItems; k++)
+  {
+    EXPECT_EQ(calls[0][k], kChannels) << "item " << k;  // each target once
+    EXPECT_EQ(calls[1][k], kChannels) << "item " << k;
+    ASSERT_EQ(after[0][k].size(), after[1][k].size());
+    float moved = 0;
+    for(size_t i = 0; i < after[0][k].size(); i++)
+    {
+      EXPECT_NEAR(after[0][k][i], after[1][k][i], 1e-5f) << "item " << k << " coordinate " << i;
+      moved = std::max(moved, std::abs(after[0][k][i] - fresh[size_t(k) + 1]->position[i]));
+    }
+    EXPECT_GT(moved, 0.1f) << "item " << k;  // and it did move
+  }
 }
 
 TEST(Wardrobe, HiddenPolygonsLeaveTheDrawnTriangles)

@@ -523,6 +523,54 @@ bool MorphSet::follow(FollowerState& st, const std::string& name, double value)
   return true;
 }
 
+// A pose drives dozens of correctives at once, and each worn item needs its own version of every
+// body target they move: projected one at a time that was most of a restore's pose (0.5 s on a
+// dressed figure). Each projection is a pure function of one follower's binding and one source
+// target, so they are made side by side here, into the cache followerTargets() reads, and what
+// follow() then applies is what it would have made itself. The conditions are follow()'s: a
+// channel that is loaded and bound, a follower with no binding of its own for it and no shapes of
+// its own that arrived.
+void MorphSet::projectAhead(const std::vector<std::pair<std::string, double>>& values)
+{
+  struct Work
+  {
+    FollowerState*  st;
+    dson::TargetPtr source, out;
+  };
+  std::vector<Work>                                                    work;
+  std::set<std::pair<const FollowerState*, const mesh::RenderTarget*>> seen;
+  for(const auto& [name, value] : values)
+  {
+    if(value == 0 || m_lazy.count(name))
+      continue;
+    const auto list = m_bindings.find(name);
+    if(list == m_bindings.end())
+      continue;
+    for(auto& f : m_followers)
+    {
+      FollowerState& st = *f;
+      if(!st.f.project || !m_cpu.count(st.f.mesh))
+        continue;
+      if(const auto own = st.own.find(name); own != st.own.end() && own->second.state == FollowerState::Own::State::eReady)
+        continue;
+      if(std::any_of(list->second.begin(), list->second.end(), [&](const Binding& b) { return b.mesh == st.f.mesh; }))
+        continue;
+      for(const Binding& b : list->second)
+        if(b.mesh == st.f.source && !st.projected.count(b.target.get()) && seen.insert({&st, b.target.get()}).second)
+          work.push_back({&st, b.target, nullptr});
+    }
+  }
+  if(work.size() < 2)
+    return;  // one is made where it is asked for
+  fv::timing::Accum t("morph.project");
+  jobs::parallelFor(work.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+      work[i].out = work[i].st->f.project(*work[i].source);
+  });
+  for(Work& w : work)
+    w.st->projected.emplace(w.source.get(), std::make_pair(w.source, std::move(w.out)));
+}
+
 std::vector<dson::TargetPtr> MorphSet::followerTargets(FollowerState& st, const std::string& name, const std::vector<Binding>& sources)
 {
   auto own = st.own.find(name);
@@ -621,6 +669,7 @@ void MorphSet::removeChannels(const std::vector<std::string>& names)
 
 void MorphSet::applyWeights(const std::vector<std::pair<std::string, double>>& values)
 {
+  projectAhead(values);
   for(const auto& [name, weight] : values)
     apply(name, weight);
   flush();

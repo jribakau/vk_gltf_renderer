@@ -75,8 +75,9 @@ public:
 struct Follower
 {
   int mesh = -1, source = -1;
-  // The follower's version of one of the source's targets, or null when it moves nothing. Runs on
-  // the owner's thread, so it must be quick (the surface binding is made before).
+  // The follower's version of one of the source's targets, or null when it moves nothing. Called
+  // from the owner's thread and, several at once, from pool threads (the surface binding is made
+  // before).
   std::function<dson::TargetPtr(const mesh::RenderTarget&)> project;
   // The follower's own targets for a channel, used instead of projecting (an item ships fitted
   // copies of the body shapes); an invalid future when it has none. Read on a pool thread.
@@ -216,6 +217,8 @@ private:
     std::unordered_map<std::string, std::vector<dson::TargetPtr>> applied;
   };
   bool follow(FollowerState& st, const std::string& name, double value);
+  // makes, side by side, the projections that applying `values` will ask the followers for
+  void projectAhead(const std::vector<std::pair<std::string, double>>& values);
   std::vector<dson::TargetPtr> followerTargets(FollowerState& st, const std::string& name, const std::vector<Binding>& sources);
 
   Channel* channelMut(const std::string& name);
