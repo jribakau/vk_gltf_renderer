@@ -109,6 +109,40 @@ struct Lowered
 
 Lowered lower(const Surface& s, const Edits& edits, const LowerOptions& options);
 
+// The surface with the edits' map slots laid over it (Edits::baseMap and the rest; "" takes a map
+// away), what lower() starts from. The roughness map is not a Surface field of its own: it is
+// specularLobes' (lobes.hpp), and lowerRoughnessMap gives it with the edit.
+Surface withMapEdits(const Surface& s, const Edits& e);
+std::string lowerRoughnessMap(const Surface& s, const Edits& e);
+
+// One map of a surface as lower() uses it: the Clothes tab's texture list.
+struct MapSlot
+{
+  std::string slot;   // base | opacity | normal | bump | roughness | translucency | emission | detail | makeup
+  std::string label;  // "Base colour", "Cutout", ...
+  std::string rel;    // the library-relative image (a layered map's bottom layer); "" when an edit took it away
+  bool        edited = false;  // the image is an edit's (replaced or taken away)
+};
+// The surface's maps with the edits applied, in that order: a slot with no map and no edit is left out.
+std::vector<MapSlot> mapSlots(const Surface& s, const Edits& e);
+
+// KHR_texture_transform's offset, rotation (radians) and scale: uv' = offset + R(rotation) · scale · uv,
+// with R(θ) = [[cos θ, sin θ], [−sin θ, cos θ]] (the spec's example and sample viewer, not the
+// matrix its README prints).
+struct UvTransform
+{
+  std::array<float, 2> scale{1, 1};
+  std::array<float, 2> offset{0, 0};
+  float                rotation = 0;
+  bool                 identity() const;
+};
+// Where a surface's own maps sample (every slot but a detail layer's maps): the edits' transform
+// laid after the authored tiling, uv' = T_e + R_e · S_e · (S_a · uv + T_a).
+UvTransform surfaceUv(const Surface& s, const Edits& e);
+// The same transform for UVs whose V is turned over (v' = 1 − v) on both sides, with the images as
+// their files have them (LowerOptions::flipV): the picture lands where it did.
+UvTransform mirroredV(const UvTransform& t);
+
 // What resolving one request gave.
 struct ResolvedTexture
 {

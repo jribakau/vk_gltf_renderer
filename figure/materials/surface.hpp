@@ -99,6 +99,9 @@ struct DetailLayer
   std::array<float, 2> offset{0, 0};
   float       roughness = 1;  // Detail Specular Roughness Mult
   std::string roughnessMap;
+  // A height map's relief as a fraction of one texture tile (TextureRequest::bumpHeight), fixed
+  // instead of derived from the tiling: a built-in fabric's, so changing its scale cooks nothing.
+  std::optional<float> bumpHeight;
 };
 
 // PBRSkin's makeup layer: a colour laid over the base colour by Makeup Weight.
@@ -139,6 +142,9 @@ struct Surface
 
   ColorMap  base;
   ScalarMap opacity{1, {}};  // Cutout Opacity
+  // Iray Uber's Horizontal/Vertical Tiles and Offset: every map samples at uv * tiles + offset
+  std::array<float, 2> tiles{1, 1};
+  std::array<float, 2> offset{0, 0};
   // normal map with its strength, and the bump map with DAZ's Bump Strength
   std::string normalMap;
   float       normalStrength = 1;
@@ -210,6 +216,19 @@ struct Edits
   std::optional<float>       makeupWeight;
   // measured skin: how far light spreads under it, times human skin's (kSkinScatterDistance)
   std::optional<float>       scatterScale;
+  // A map slot's image replaced by another library-relative image ("/Runtime/Textures/..."), or
+  // taken away by "". The roughness map is the one the lowering uses (specularLobes).
+  std::optional<std::string> baseMap, opacityMap, normalMap, bumpMap, roughnessMap;
+  // The surface's maps tiled, moved and turned over its own tiling (Surface::tiles, offset): the
+  // tiles times its own, an offset in UV units, a rotation in degrees (KHR_texture_transform's sense)
+  std::optional<float>       uvScaleU, uvScaleV, uvOffsetU, uvOffsetV, uvRotation;
+  // A built-in fabric's weave as a detail layer (fabric.hpp; "" none), its size times its natural
+  // size and its normal's strength
+  std::optional<std::string> fabric;
+  std::optional<float>       fabricScale, fabricStrength;
+  // KHR_materials_sheen: its colour (none or black: no sheen) and roughness (0.5 when unset)
+  std::optional<Rgb>         sheenColor;
+  std::optional<float>       sheenRoughness;
 
   bool empty() const;
   // Fields set in `o` replace those here.

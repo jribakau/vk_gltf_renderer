@@ -87,17 +87,23 @@ struct KHR_texture_transform
   float     rotation    = 0.0f;
   glm::vec2 scale       = {1.0f, 1.0f};
   int       texCoord    = 0;
-  glm::mat3 uvTransform = glm::mat3(1);  // Computed transform of offset, rotation, scale
+  // Computed transform of offset, rotation, scale. Stored transposed: uvTransform[i] is the row of
+  // output i, so u' = dot(uvTransform[0], (u, v, 1)) and v' = dot(uvTransform[1], (u, v, 1)), as
+  // getTextureInfoImpl packs it for the shader's mul(float3(uv, 1), M).
+  glm::mat3 uvTransform = glm::mat3(1);
   void      updateTransform()
   {
-    // Compute combined transformation matrix
+    // The spec's T * R * S: scale first, then rotate, then offset. Its rotation turns the UVs
+    // counter-clockwise in its v-down frame, u' = cos*u + sin*v, v' = -sin*u + cos*v, which is what
+    // its example gives ("the lower left quadrant ... rotated clockwise 90 degrees", offset [0, 1]). The
+    // README's GLSL rotation matrix is the transpose of that and disagrees with its own example.
     float cosR  = cos(rotation);
     float sinR  = sin(rotation);
     float tx    = offset.x;
     float ty    = offset.y;
     float sx    = scale.x;
     float sy    = scale.y;
-    uvTransform = glm::mat3(sx * cosR, sx * sinR, tx, -sy * sinR, sy * cosR, ty, 0, 0, 1);
+    uvTransform = glm::mat3(sx * cosR, sy * sinR, tx, -sx * sinR, sy * cosR, ty, 0, 0, 1);
   }
 };
 

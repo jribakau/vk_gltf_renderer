@@ -4181,11 +4181,23 @@ Json FvHost::Impl::applyItemColor(Prop& prop, const std::vector<int>& items, con
   }
   const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, previous);
   std::set<int>                changed = r.changed;
+  // the preset's colours replace the edits, all but the tiling, the fabric and the sheen (no colours)
   if(!keepEdits)
     for(int i : surfaces)
-      if(!scene.materials[size_t(i)].edits.empty())
+      if(fv::mat::Edits& was = scene.materials[size_t(i)].edits; !was.empty())
       {
-        scene.materials[size_t(i)].edits = {};
+        fv::mat::Edits kept;
+        kept.uvScaleU       = was.uvScaleU;
+        kept.uvScaleV       = was.uvScaleV;
+        kept.uvOffsetU      = was.uvOffsetU;
+        kept.uvOffsetV      = was.uvOffsetV;
+        kept.uvRotation     = was.uvRotation;
+        kept.fabric         = was.fabric;
+        kept.fabricScale    = was.fabricScale;
+        kept.fabricStrength = was.fabricStrength;
+        kept.sheenColor     = was.sheenColor;
+        kept.sheenRoughness = was.sheenRoughness;
+        was                 = kept;
         changed.insert(i);
       }
   if(prop.materials)

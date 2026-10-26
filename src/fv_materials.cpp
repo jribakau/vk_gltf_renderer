@@ -28,6 +28,7 @@
 #include <nvutils/logger.hpp>
 
 #include <figure/dson/skin_materials.hpp>
+#include <figure/materials/edits_json.hpp>
 #include <figure/materials/lobes.hpp>
 
 #include "gltf_scene.hpp"
@@ -69,35 +70,9 @@ const char* shaderName(fv::mat::Surface::Shader s)
   return "legacy";
 }
 
-// "#rrggbb" of a linear colour, in sRGB as the colour pickers hold it
-std::string hexOf(const Rgb& linear)
-{
-  char buf[8];
-  int  c[3];
-  for(int i = 0; i < 3; i++)
-    c[i] = int(std::lround(std::clamp(fv::mat::linearToSrgb(std::clamp(linear[i], 0.f, 1.f)), 0.f, 1.f) * 255.f));
-  std::snprintf(buf, sizeof buf, "#%02x%02x%02x", c[0], c[1], c[2]);
-  return buf;
-}
-
-std::optional<Rgb> parseHex(const Json& v)
-{
-  if(!v.is_string())
-    return std::nullopt;
-  const std::string s = v.get<std::string>();
-  if(s.size() != 7 || s[0] != '#')
-    return std::nullopt;
-  Rgb out;
-  for(int i = 0; i < 3; i++)
-  {
-    char*      end = nullptr;
-    const auto n   = std::strtol(s.substr(1 + i * 2, 2).c_str(), &end, 16);
-    if(*end)
-      return std::nullopt;
-    out[i] = fv::mat::srgbToLinear(n / 255.0);
-  }
-  return out;
-}
+using fv::mat::applyValue;
+using fv::mat::editedKeys;
+using fv::mat::hexOf;
 
 std::string baseName(const std::string& rel)
 {
@@ -117,121 +92,6 @@ InstanceInputs instanceInputs(const tinygltf::Material& m)
 {
   return {m.alphaMode, m.doubleSided, tinygltf::utils::getTransmission(m).factor > 0.f, tinygltf::utils::getVolume(m).thicknessFactor > 0.f,
           tinygltf::utils::getDiffuseTransmission(m).diffuseTransmissionFactor > 0.f};
-}
-
-float numberOf(const Json& v, const char* key, float lo, float hi)
-{
-  if(!v.is_number())
-    throw std::runtime_error(std::string(key) + " must be a number");
-  return std::clamp(v.get<float>(), lo, hi);
-}
-
-// One value of material.set onto the edits; null drops the edit.
-void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
-{
-  const bool drop = v.is_null();
-  if(key == "color" || key == "emissive" || key == "irisColor" || key == "scleraColor" || key == "recolor" || key == "tone" || key == "makeupColor")
-  {
-    std::optional<Rgb>& slot = key == "color"       ? e.color :
-                               key == "emissive"    ? e.emissive :
-                               key == "irisColor"   ? e.irisColor :
-                               key == "recolor"     ? e.recolor :
-                               key == "tone"        ? e.tone :
-                               key == "makeupColor" ? e.makeupColor :
-                                                      e.scleraColor;
-    if(drop)
-      slot.reset();
-    else if(const auto c = parseHex(v))
-      slot = *c;
-    else
-      throw std::runtime_error(key + " must be a #rrggbb colour");
-  }
-  else if(key == "alphaMode")
-  {
-    if(drop)
-      e.alphaMode.reset();
-    else if(v == "opaque" || v == "cutout" || v == "blend")
-      e.alphaMode = v.get<std::string>();
-    else
-      throw std::runtime_error("alphaMode is opaque, cutout or blend");
-  }
-  else if(key == "doubleSided")
-  {
-    if(drop)
-      e.doubleSided.reset();
-    else if(v.is_boolean())
-      e.doubleSided = v.get<bool>();
-    else
-      throw std::runtime_error("doubleSided must be a boolean");
-  }
-  else
-  {
-    struct Field
-    {
-      const char*                       name;
-      std::optional<float> fv::mat::Edits::*member;
-      float                             lo, hi;
-    };
-    static const Field fields[] = {
-        {"roughness", &fv::mat::Edits::roughness, 0, 1},
-        {"metalness", &fv::mat::Edits::metalness, 0, 1},
-        {"opacity", &fv::mat::Edits::opacity, 0, 1},
-        {"normalStrength", &fv::mat::Edits::normalStrength, 0, 3},
-        {"bumpStrength", &fv::mat::Edits::bumpStrength, 0, 2},
-        {"specular", &fv::mat::Edits::specular, 0, 1},
-        {"clearcoat", &fv::mat::Edits::clearcoat, 0, 1},
-        {"clearcoatRoughness", &fv::mat::Edits::clearcoatRoughness, 0, 1},
-        {"emissiveIntensity", &fv::mat::Edits::emissiveIntensity, 0, 1000},
-        {"irisStrength", &fv::mat::Edits::irisStrength, 0, 1},
-        {"recolorStrength", &fv::mat::Edits::recolorStrength, 0, 1},
-        {"toneStrength", &fv::mat::Edits::toneStrength, 0, 1},
-        {"makeupWeight", &fv::mat::Edits::makeupWeight, 0, 1},
-        {"scatterScale", &fv::mat::Edits::scatterScale, 0.1f, 4},
-    };
-    for(const Field& f : fields)
-      if(key == f.name)
-      {
-        if(drop)
-          (e.*f.member).reset();
-        else
-          e.*f.member = numberOf(v, f.name, f.lo, f.hi);
-        return;
-      }
-    throw std::runtime_error("unknown material value " + key);
-  }
-}
-
-Json editedKeys(const fv::mat::Edits& e)
-{
-  Json out = Json::array();
-  const auto add = [&](bool set, const char* name) {
-    if(set)
-      out.push_back(name);
-  };
-  add(e.color.has_value(), "color");
-  add(e.roughness.has_value(), "roughness");
-  add(e.metalness.has_value(), "metalness");
-  add(e.opacity.has_value(), "opacity");
-  add(e.alphaMode.has_value(), "alphaMode");
-  add(e.doubleSided.has_value(), "doubleSided");
-  add(e.normalStrength.has_value(), "normalStrength");
-  add(e.bumpStrength.has_value(), "bumpStrength");
-  add(e.specular.has_value(), "specular");
-  add(e.clearcoat.has_value(), "clearcoat");
-  add(e.clearcoatRoughness.has_value(), "clearcoatRoughness");
-  add(e.emissive.has_value(), "emissive");
-  add(e.emissiveIntensity.has_value(), "emissiveIntensity");
-  add(e.irisColor.has_value(), "irisColor");
-  add(e.irisStrength.has_value(), "irisStrength");
-  add(e.scleraColor.has_value(), "scleraColor");
-  add(e.recolor.has_value(), "recolor");
-  add(e.recolorStrength.has_value(), "recolorStrength");
-  add(e.tone.has_value(), "tone");
-  add(e.toneStrength.has_value(), "toneStrength");
-  add(e.makeupColor.has_value(), "makeupColor");
-  add(e.makeupWeight.has_value(), "makeupWeight");
-  add(e.scatterScale.has_value(), "scatterScale");
-  return out;
 }
 
 // Which of an eye's colours a surface takes: an iris colour where the bake knows where the iris is
@@ -383,14 +243,34 @@ float linearOf(const std::vector<double>& v, size_t i, float d = 1)
   return i < v.size() ? float(v[i]) : d;
 }
 
-// An extension's number, made if need be.
-void setExtNumber(tinygltf::ExtensionMap& ext, const char* name, const char* key, double value)
+// An extension's value, made if need be.
+void setExtValue(tinygltf::ExtensionMap& ext, const char* name, const char* key, tinygltf::Value value)
 {
   tinygltf::Value::Object obj;
   if(auto it = ext.find(name); it != ext.end() && it->second.IsObject())
     obj = it->second.Get<tinygltf::Value::Object>();
-  obj[key]  = tinygltf::Value(value);
+  obj[key]  = std::move(value);
   ext[name] = tinygltf::Value(obj);
+}
+
+void setExtNumber(tinygltf::ExtensionMap& ext, const char* name, const char* key, double value)
+{
+  setExtValue(ext, name, key, tinygltf::Value(value));
+}
+
+// An extension's colour, none when it has none.
+std::optional<Rgb> extColor(const tinygltf::ExtensionMap& ext, const char* name, const char* key)
+{
+  const auto it = ext.find(name);
+  if(it == ext.end() || !it->second.IsObject() || !it->second.Has(key))
+    return std::nullopt;
+  const tinygltf::Value& v = it->second.Get(key);
+  if(!v.IsArray() || v.ArrayLen() < 3)
+    return std::nullopt;
+  Rgb out;
+  for(int i = 0; i < 3; i++)
+    out[size_t(i)] = v.Get(i).IsNumber() ? float(v.Get(i).GetNumberAsDouble()) : 0.f;
+  return out;
 }
 
 double extNumber(const tinygltf::ExtensionMap& ext, const char* name, const char* key, double d)
@@ -440,7 +320,14 @@ void FvMaterials::writeModel(int index)
     setExtNumber(m.extensions, "KHR_materials_clearcoat", "clearcoatRoughnessFactor", double(*e.clearcoatRoughness));
   if(e.normalStrength && m.normalTexture.index >= 0)
     m.normalTexture.scale = double(*e.normalStrength);
-  for(const char* name : {"KHR_materials_emissive_strength", "KHR_materials_specular", "KHR_materials_clearcoat"})
+  // sheen over the model's own: black is none, and a roughness alone changes only a sheen it has
+  if(e.sheenColor)
+    setExtValue(m.extensions, "KHR_materials_sheen", "sheenColorFactor",
+                tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(double((*e.sheenColor)[0])), tinygltf::Value(double((*e.sheenColor)[1])),
+                                                       tinygltf::Value(double((*e.sheenColor)[2]))}));
+  if(e.sheenRoughness && m.extensions.count("KHR_materials_sheen"))
+    setExtNumber(m.extensions, "KHR_materials_sheen", "sheenRoughnessFactor", double(*e.sheenRoughness));
+  for(const char* name : {"KHR_materials_emissive_strength", "KHR_materials_specular", "KHR_materials_clearcoat", "KHR_materials_sheen"})
     if(m.extensions.count(name) && std::find(scn->getModel().extensionsUsed.begin(), scn->getModel().extensionsUsed.end(), name) == scn->getModel().extensionsUsed.end())
       scn->getModel().extensionsUsed.push_back(name);
   tinygltf::Material& mat    = scn->editor().getMaterialForEdit(g);
@@ -472,23 +359,29 @@ Json FvMaterials::modelItem(int index) const
                                       {"emissiveIntensity", extNumber(g.extensions, "KHR_materials_emissive_strength", "emissiveStrength", 1)}};
   if(g.normalTexture.index >= 0)
     values["normalStrength"] = g.normalTexture.scale;
+  // sheen: the edit as it was given (black included), else the model's own; null for none
+  const std::optional<Rgb> sheen = m.edits.sheenColor ? m.edits.sheenColor : extColor(g.extensions, "KHR_materials_sheen", "sheenColorFactor");
+  values["sheenColor"] = sheen && (m.edits.sheenColor || (*sheen)[0] > 0 || (*sheen)[1] > 0 || (*sheen)[2] > 0) ? Json(hexOf(*sheen)) : Json(nullptr);
+  values["sheenRoughness"] = m.edits.sheenRoughness ? double(*m.edits.sheenRoughness) :
+                                                      extNumber(g.extensions, "KHR_materials_sheen", "sheenRoughnessFactor", 0.5);
+  // a model's images are its file's, not the library's: no rel, and none of them can be replaced
   Json textures = Json::array();
-  const auto add = [&](const char* label, int texture) {
+  const auto add = [&](const char* slot, const char* label, int texture) {
     if(texture >= 0 && texture < int(scn->getModel().textures.size()))
     {
       const int source = scn->getModel().textures[size_t(texture)].source;
       if(source >= 0 && source < int(scn->getModel().images.size()))
       {
         const tinygltf::Image& img = scn->getModel().images[size_t(source)];
-        textures.push_back({{"label", label}, {"file", baseName(img.uri.empty() ? img.name : img.uri)}});
+        textures.push_back({{"slot", slot}, {"label", label}, {"file", baseName(img.uri.empty() ? img.name : img.uri)}, {"edited", false}});
       }
     }
   };
-  add("Base colour", g.pbrMetallicRoughness.baseColorTexture.index);
-  add("Metallic roughness", g.pbrMetallicRoughness.metallicRoughnessTexture.index);
-  add("Normal", g.normalTexture.index);
-  add("Emissive", g.emissiveTexture.index);
-  add("Occlusion", g.occlusionTexture.index);
+  add("base", "Base colour", g.pbrMetallicRoughness.baseColorTexture.index);
+  add("roughness", "Metallic roughness", g.pbrMetallicRoughness.metallicRoughnessTexture.index);
+  add("normal", "Normal", g.normalTexture.index);
+  add("emission", "Emissive", g.emissiveTexture.index);
+  add("occlusion", "Occlusion", g.occlusionTexture.index);
   return {{"name", m.name}, {"kind", "other"}, {"shader", "gltf"}, {"meshes", m_meshesOf[size_t(index)]}, {"textures", textures}, {"values", values},
           {"edited", editedKeys(m.edits)}};
 }
@@ -580,14 +473,26 @@ Json FvMaterials::set(const Json& args)
                                  + " belongs to a model");
       if((scratch.makeupColor || scratch.makeupWeight) && (m_model || !m.surface.makeup))
         throw std::runtime_error("makeupColor is for a surface with a makeup layer, and " + m.name + " has none");
+      // a model has no Surface to lower: its images, their tiling and a detail layer stay its file's
+      if(m_model)
+        for(auto it = values->begin(); it != values->end(); ++it)
+          if(fv::mat::figureOnlyKey(it.key()))
+            throw std::runtime_error(it.key() + " is for a figure's surfaces, and " + m.name + " belongs to a model");
     }
   }
+  bool images = false;
+  for(auto it = values->begin(); it != values->end(); ++it)
+    images = images || fv::mat::mapKey(it.key()) || it.key() == "fabric";
   std::set<int> changed;
   for(int mi : index)
   {
     for(auto it = values->begin(); it != values->end(); ++it)
       applyValue(m_scene->materials[mi].edits, it.key(), it.value());
     changed.insert(mi);
+    // an image chosen again is tried again, though it could not be made before
+    if(images && !m_model && mi < int(m_options.size()))
+      for(const fv::mat::TextureRequest& r : fv::mat::lower(m_scene->materials[mi].surface, m_scene->materials[mi].edits, m_options[mi]).requests)
+        m_failed.erase(fv::mat::requestKey(r));
   }
   refresh(changed);
   return {{"ok", true}, {"materials", index.size()}};
@@ -899,28 +804,14 @@ Json FvMaterials::item(int index) const
                                        {"clearcoatRoughness", v.clearcoatRoughness},
                                        {"emissive", hexOf(v.emissive)},
                                        {"emissiveIntensity", v.emissiveIntensity}};
-  if(v.normalStrength)
-    values["normalStrength"] = *v.normalStrength;
-  if(v.bumpStrength)
-    values["bumpStrength"] = *v.bumpStrength;
+  // null without such a map, so a merge patch takes the strength away when an edit removes the map
+  values["normalStrength"] = v.normalStrength ? Json(*v.normalStrength) : Json(nullptr);
+  values["bumpStrength"]   = v.bumpStrength ? Json(*v.bumpStrength) : Json(nullptr);
+  fv::mat::clothesValues(m.edits, values);
+  // the maps as lowering uses them, the edits' included; one an edit took away has rel ""
   Json textures = Json::array();
-  const auto add = [&](const char* label, const std::string& rel) {
-    if(!rel.empty())
-      textures.push_back({{"label", label}, {"file", baseName(fv::mat::mapLayers(rel).front())}});
-  };
-  add("Base colour", s.base.map);
-  add("Cutout", s.opacity.map);
-  add("Normal", s.normalMap);
-  add("Bump", s.bumpMap);
-  add("Roughness", s.glossy.roughness.map);
-  if(s.translucency)
-    add("Translucency", s.translucency->map);
-  if(s.emission)
-    add("Emission", s.emission->color.map);
-  if(s.detail)
-    add("Detail", s.detail->map);
-  if(s.makeup)
-    add("Makeup", s.makeup->map);
+  for(const fv::mat::MapSlot& t : fv::mat::mapSlots(s, m.edits))
+    textures.push_back({{"slot", t.slot}, {"label", t.label}, {"file", baseName(t.rel)}, {"rel", t.rel}, {"edited", t.edited}});
   Json out = {{"name", m.name},
               {"kind", kindName(s.kind)},
               {"shader", shaderName(s.shader)},

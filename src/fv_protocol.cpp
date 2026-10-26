@@ -31,8 +31,10 @@ namespace {
 // 2: the scene of props (fv_host.hpp). An app checks it against what it was built for.
 // 3: the upstream merge of 2026-10-24 renamed ptMaxFrames to ptMaxSamples and optixAutoDenoiseInterval
 // to optixAutoDenoiseSpp, which the app sends.
-// 5: dforce.mode. 6: wardrobe.collision, and the wardrobe topic's collision state.
-constexpr int kProtocolVersion = 7;
+// 5: dforce.mode. 6: wardrobe.collision, and the wardrobe topic's collision state. 7: render.status's
+// width and height. 8: the Clothes tab's material values (maps, UV transform, fabric, sheen) and the
+// texture slots in the materials topic (fv_materials.hpp).
+constexpr int kProtocolVersion = 8;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

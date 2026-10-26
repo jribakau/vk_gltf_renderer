@@ -480,6 +480,10 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   s.base.color = shade ? shade->albedo : colorOr(base);
   s.base.map   = omniHair ? std::string() : imageOf(base);
   s.opacity    = scalar(cut, 1);
+  // Iray Uber's own tiling, for every map of the surface (a detail layer's is its own)
+  const double tilesU = num(find({"Horizontal Tiles"}), 1), tilesV = num(find({"Vertical Tiles"}), 1);
+  s.tiles  = {float(tilesU != 0 ? tilesU : 1), float(tilesV != 0 ? tilesV : 1)};
+  s.offset = {float(num(find({"Horizontal Offset"}), 0)), float(num(find({"Vertical Offset"}), 0))};
   if(!imageOf(normalCh).empty())
   {
     s.normalMap      = imageOf(normalCh);

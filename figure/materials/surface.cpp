@@ -47,7 +47,8 @@ bool Edits::empty() const
   return !color && !roughness && !metalness && !opacity && !alphaMode && !doubleSided && !normalStrength && !bumpStrength && !specular
          && !clearcoat && !clearcoatRoughness && !emissive && !emissiveIntensity && !irisColor && !scleraColor && !irisStrength
          && !recolor && !recolorStrength && !tone && !toneStrength && !makeupColor && !makeupWeight
-         && !scatterScale;
+         && !scatterScale && !baseMap && !opacityMap && !normalMap && !bumpMap && !roughnessMap && !uvScaleU && !uvScaleV && !uvOffsetU
+         && !uvOffsetV && !uvRotation && !fabric && !fabricScale && !fabricStrength && !sheenColor && !sheenRoughness;
 }
 
 void Edits::merge(const Edits& o)
@@ -79,6 +80,21 @@ void Edits::merge(const Edits& o)
   take(makeupColor, o.makeupColor);
   take(makeupWeight, o.makeupWeight);
   take(scatterScale, o.scatterScale);
+  take(baseMap, o.baseMap);
+  take(opacityMap, o.opacityMap);
+  take(normalMap, o.normalMap);
+  take(bumpMap, o.bumpMap);
+  take(roughnessMap, o.roughnessMap);
+  take(uvScaleU, o.uvScaleU);
+  take(uvScaleV, o.uvScaleV);
+  take(uvOffsetU, o.uvOffsetU);
+  take(uvOffsetV, o.uvOffsetV);
+  take(uvRotation, o.uvRotation);
+  take(fabric, o.fabric);
+  take(fabricScale, o.fabricScale);
+  take(fabricStrength, o.fabricStrength);
+  take(sheenColor, o.sheenColor);
+  take(sheenRoughness, o.sheenRoughness);
 }
 
 EyeLayout eyeLayout(const Surface& s)

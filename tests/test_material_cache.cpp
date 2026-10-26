@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include "gltf_material_cache.hpp"
 #include "gltf_image_loader.hpp"
+#include "tinygltf_utils.hpp"
 
 // M7d: MaterialCache tests — conversion, incremental updates, topology change detection
 
@@ -256,3 +257,44 @@ TEST(MaterialCache, AnImagesMeanLuminanceIsLinear)
   EXPECT_LT(nvvkgltf::imageMeanLuminance(VK_FORMAT_BC7_SRGB_BLOCK, {4, 4}, grey), 0.0f);
   EXPECT_LT(nvvkgltf::imageMeanLuminance(VK_FORMAT_R8G8B8A8_SRGB, {64, 64}, grey), 0.0f);  // too few bytes
 }
+
+#if MAT_EXT_TEXTURE_TRANSFORM
+// KHR_texture_transform as the shader applies it (mul(float3(uv, 1), M): rows 0 and 1 by u and v,
+// plus row 2) is the spec's offset + R * scale * uv. Its example samples the lower-left quadrant of
+// the image turned clockwise by 90 degrees; a non-uniform scale is applied before the rotation.
+TEST(MaterialCache, ATextureTransformIsTranslationRotationScale)
+{
+  const auto transformed = [](glm::vec2 offset, float rotation, glm::vec2 scale, glm::vec2 uv) {
+    tinygltf::Material    mat;
+    KHR_texture_transform tt;
+    tt.offset   = offset;
+    tt.rotation = rotation;
+    tt.scale    = scale;
+    mat.pbrMetallicRoughness.baseColorTexture.index = 0;
+    tinygltf::utils::setTextureTransform(mat.pbrMetallicRoughness.baseColorTexture, tt);
+    nvvkgltf::MaterialCache cache;
+    cache.buildFromMaterials({mat}, {});
+    const auto& m = cache.getTextureInfos()[cache.getShadeMaterials()[0].pbrBaseColorTexture].uvTransform;
+    return glm::vec2(uv.x * m[0] + uv.y * m[1] + m[2]);
+  };
+  const float quarter = 1.57079632679f;
+  // the example: (0, 0) samples the quadrant's bottom-left corner, (1, 0) its top-left, (1, 1) its top-right
+  const glm::vec2 corner = transformed({0, 1}, quarter, {0.5f, 0.5f}, {0, 0});
+  const glm::vec2 centre = transformed({0, 1}, quarter, {0.5f, 0.5f}, {1, 1});
+  const glm::vec2 top    = transformed({0, 1}, quarter, {0.5f, 0.5f}, {1, 0});
+  EXPECT_NEAR(corner.x, 0, 1e-6f);
+  EXPECT_NEAR(corner.y, 1, 1e-6f);
+  EXPECT_NEAR(centre.x, 0.5f, 1e-6f);
+  EXPECT_NEAR(centre.y, 0.5f, 1e-6f);
+  EXPECT_NEAR(top.x, 0, 1e-6f);
+  EXPECT_NEAR(top.y, 0.5f, 1e-6f);
+
+  // T * R * S with a non-uniform scale: the scale lies along u and v before the turn
+  const float     r = 0.3f, c = std::cos(r), s = std::sin(r);
+  const glm::vec2 uv{0.7f, 0.2f}, scale{2.0f, 0.5f}, offset{0.1f, -0.4f};
+  const glm::vec2 su  = scale * uv;
+  const glm::vec2 got = transformed(offset, r, scale, uv);
+  EXPECT_NEAR(got.x, offset.x + c * su.x + s * su.y, 1e-5f);
+  EXPECT_NEAR(got.y, offset.y - s * su.x + c * su.y, 1e-5f);
+}
+#endif

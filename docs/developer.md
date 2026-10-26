@@ -456,6 +456,25 @@ documented on `FV_materials_detail` in [`src/tinygltf_utils.hpp`](../src/tinyglt
 The tiling is the detail textures' own `KHR_texture_transform`, so `getTexture()` scales the
 sampling gradient with it; the weight texture uses the surface's UVs.
 
+Figure Viewer also writes it for a garment's built-in fabric (the Clothes tab's `fabric` edit): the
+fabric table in [`figure/materials/fabric.cpp`](../figure/materials/fabric.cpp) gives each weave a
+tileable height map and roughness map in the assets library, its physical tile size and its relief.
+Lowering (`fabricDetail`) replaces the surface's detail layer with one at weight 1 whose tiling
+comes from the material's measured `metresPerUv`, so the weave keeps its real size whatever the
+garment's UV layout. The relief is fixed per fabric rather than derived from the tiling, so a
+change of the fabric's scale only changes the texture transform and cooks nothing new. A GLB export
+leaves the detail layer out, as it does PBRSkin's.
+
+Every other texture a figure surface samples gets the surface's UV transform as
+`KHR_texture_transform` from lowering (`surfaceUv` in
+[`figure/materials/lower.cpp`](../figure/materials/lower.cpp)): Iray Uber's authored Horizontal /
+Vertical Tiles and Offset, with the Clothes tab's tile, offset and rotation edit laid after it. The
+detail layer's normal and roughness textures keep their own tiling. A build whose textures are not
+row-flipped (`LowerOptions::flipV`) mirrors the transform in V (`mirroredV`), so the picture lands
+where it does in a flipped build. The matrix the renderer builds (`KHR_texture_transform::
+updateTransform`) is the spec's offset, rotation, scale order with the rotation sense of the spec's
+own example; `tests/test_material_cache.cpp` pins it.
+
 In `evaluateMaterial()` the detail block runs right after the base normal map: it bends the
 already bent normal in the surface's tangent frame (`applyDetailNormal()`), so the detail layers
 on top of the normal map instead of replacing it, and scales roughness under the same weight. The

@@ -98,7 +98,8 @@
 //                                                material preset `rel` (null: the item as it was worn). Each
 //                                                choice starts from the item as it was worn, so colours don't
 //                                                stack, takes only the preset's part on the item's surfaces and
-//                                                drops the panel's edits of them. Several items go as one (a hair
+//                                                drops the panel's edits of them but the tiling, fabric and
+//                                                sheen (uv*, fabric*, sheen*). Several items go as one (a hair
 //                                                worn as three pieces). The job ends {state: "done", color, changed},
 //                                                or "failed" when nothing of the preset lands on the items. Kept
 //                                                in the scene file (worn[].color); a preset opened later that

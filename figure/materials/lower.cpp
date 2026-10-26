@@ -5,6 +5,7 @@
 #include <cmath>
 #include <numbers>
 
+#include <figure/materials/fabric.hpp>
 #include <figure/materials/hair_strands.hpp>
 #include <figure/materials/lobes.hpp>
 
@@ -35,10 +36,11 @@ struct Builder
 {
   std::vector<TextureRequest> requests;
   bool                        flipV = false;  // LowerOptions::flipV
+  UvTransform                 uv;             // where the surface's own maps sample (surfaceUv)
 
-  // A texture info for a request. `tiles`/`offset` tile the texture through KHR_texture_transform.
-  Json info(TextureRequest req, std::optional<float> scale = std::nullopt, std::optional<std::array<float, 2>> tiles = std::nullopt,
-            std::optional<std::array<float, 2>> offset = std::nullopt)
+  // A texture info for a request, sampled through `own` (a detail layer's tiling) or else the
+  // surface's transform: KHR_texture_transform when that is not the identity.
+  Json info(TextureRequest req, std::optional<float> scale = std::nullopt, std::optional<UvTransform> own = std::nullopt)
   {
     // a layered image: the bottom layer is the source, the rest go over it
     if(req.rel.find(kLayerSeparator) != std::string::npos)
@@ -51,22 +53,24 @@ struct Builder
     Json out{{"slot", int(requests.size()) - 1}, {"texCoord", 0}};
     if(scale)
       out["scale"] = *scale;
-    if(tiles && offset && ((*tiles)[0] != 1 || (*tiles)[1] != 1 || (*offset)[0] != 0 || (*offset)[1] != 0))
+    if(const UvTransform& daz = own ? *own : uv; !daz.identity())
     {
-      // DAZ samples at tiles·v + offset; with v' = 1 − v and the image unflipped that is tiles·v' + (1 − tiles − offset)
-      const float offsetV = flipV ? 1 - (*tiles)[1] - (*offset)[1] : (*offset)[1];
-      out["extensions"] = {{"KHR_texture_transform", {{"scale", Json::array({(*tiles)[0], (*tiles)[1]})}, {"offset", Json::array({(*offset)[0], offsetV})}}}};
+      // DAZ samples at offset + R·S·v; with v' = 1 − v and the image unflipped that is its mirror
+      const UvTransform t  = flipV ? mirroredV(daz) : daz;
+      Json              tt = {{"scale", Json::array({t.scale[0], t.scale[1]})}, {"offset", Json::array({t.offset[0], t.offset[1]})}};
+      if(t.rotation != 0)
+        tt["rotation"] = t.rotation;
+      out["extensions"] = {{"KHR_texture_transform", tt}};
     }
     return out;
   }
 
-  Json plain(const std::string& rel, bool srgb, std::optional<float> scale = std::nullopt, std::optional<std::array<float, 2>> tiles = std::nullopt,
-             std::optional<std::array<float, 2>> offset = std::nullopt)
+  Json plain(const std::string& rel, bool srgb, std::optional<float> scale = std::nullopt, std::optional<UvTransform> own = std::nullopt)
   {
     TextureRequest r;
     r.rel  = rel;
     r.srgb = srgb;
-    return info(std::move(r), scale, tiles, offset);
+    return info(std::move(r), scale, own);
   }
 
   // The base colour image: the colour map with its iris recoloured, a cutout in its alpha and makeup
@@ -188,13 +192,20 @@ float tearFilmIor(const Surface& s)
   return ior >= 1.30f && ior <= 1.40f ? ior : 1.376f;
 }
 
-Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
+Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
 {
-  Builder        b;
+  // the panel's maps in place of the surface's, and its fabric in place of a detail layer
+  Surface s = withMapEdits(surface, e);
+  if(auto fabric = fabricDetail(e, opts.metresPerUv))
+    s.detail = std::move(fabric);
+  Builder b;
   b.flipV = opts.flipV;
+  b.uv    = surfaceUv(s, e);
   Json           ext   = Json::object();
   Json           out   = {{"name", s.name}};
-  const auto     lobes = specularLobes(s);
+  auto           lobes = specularLobes(s);
+  if(e.roughnessMap)
+    lobes.roughness.map = *e.roughnessMap;
   const SkinRole role  = skinRole(s);
   const bool     refractive = s.refraction && s.refraction->weight > 0.05f;
   const Rgb      baseColor  = e.color.value_or(s.base.color);
@@ -322,8 +333,10 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 
   // normal: the normal map and the bump map together when a surface has both (glTF has one slot),
   // else whichever one it has. DAZ skin keeps pores in the bump map. The bump strength is baked
-  // into the blend; the normal map's strength stays the glTF scale.
-  Json normal;
+  // into the blend; the normal map's strength stays the glTF scale. A bump's height is per the
+  // authored tile, so the panel's tiling changes no bake.
+  const float authoredTiles = std::sqrt(std::abs(s.tiles[0] * s.tiles[1]));
+  Json        normal;
   if(!s.normalMap.empty() && !s.bumpMap.empty())
   {
     TextureRequest r;
@@ -332,7 +345,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     r.channels     = "ng";
     r.bumpRel      = s.bumpMap;
     r.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
-    r.bumpHeight   = bumpHeightInUv(opts.metresPerUv);
+    r.bumpHeight   = bumpHeightInUv(opts.metresPerUv, authoredTiles);
     normal         = b.info(std::move(r), e.normalStrength.value_or(s.normalStrength));
     eff.normalStrength = e.normalStrength.value_or(s.normalStrength);
     eff.bumpStrength   = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
@@ -352,7 +365,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     r.rel        = s.bumpMap;
     r.srgb       = false;
     r.channels   = "bn";
-    r.bumpHeight = bumpHeightInUv(opts.metresPerUv);
+    r.bumpHeight = bumpHeightInUv(opts.metresPerUv, authoredTiles);
     normal     = b.info(std::move(r), clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2));
     eff.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
   }
@@ -419,6 +432,10 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   ext["KHR_materials_specular"] = {{"specularFactor", eff.specular}, {"specularColorFactor", Json::array({1, 1, 1})}};
   if(ribbonHair && !liveRibbon)
     ext["KHR_materials_ior"] = {{"ior", 1.55}};
+  // sheen: the panel's, a cloth's soft rim of light at grazing angles
+  if(e.sheenColor && ((*e.sheenColor)[0] > 0 || (*e.sheenColor)[1] > 0 || (*e.sheenColor)[2] > 0))
+    ext["KHR_materials_sheen"] = {{"sheenColorFactor", rgbJson(*e.sheenColor)},
+                                  {"sheenRoughnessFactor", clamp(e.sheenRoughness.value_or(0.5f), 0, 1)}};
 
   // clearcoat: Iray's top coat, else the tighter dual lobe, on the same surface detail as the base
   struct Coat
@@ -569,13 +586,14 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       r.srgb                   = false;
       r.channels               = d.heightMap ? "bn" : "ng";
       if(d.heightMap)
-        r.bumpHeight = bumpHeightInUv(opts.metresPerUv, std::sqrt(d.tiles[0] * d.tiles[1]));
-      de["detailNormalTexture"] = b.info(std::move(r), d.strength, d.tiles, d.offset);
+        r.bumpHeight = d.bumpHeight ? *d.bumpHeight : bumpHeightInUv(opts.metresPerUv, std::sqrt(d.tiles[0] * d.tiles[1]));
+      de["detailNormalTexture"] = b.info(std::move(r), d.strength, UvTransform{d.tiles, d.offset});
     }
+    // the weight map lies on the surface's UVs; the detail's own maps keep their tiling (a weave its size)
     if(!d.weightMap.empty())
       de["detailWeightTexture"] = b.plain(d.weightMap, false);
     if(!d.roughnessMap.empty())
-      de["detailRoughnessTexture"] = b.plain(d.roughnessMap, false, std::nullopt, d.tiles, d.offset);
+      de["detailRoughnessTexture"] = b.plain(d.roughnessMap, false, std::nullopt, UvTransform{d.tiles, d.offset});
     ext["FV_materials_detail"] = de;
   }
 
@@ -658,6 +676,79 @@ float bumpHeightInUv(float metresPerUv, float tiles)
   const double h    = double(kBumpHeight) * tiles / metresPerUv;
   const double step = std::pow(10.0, std::floor(std::log10(h)) - 1);
   return float(std::round(h / step) * step);
+}
+
+Surface withMapEdits(const Surface& s, const Edits& e)
+{
+  Surface out = s;
+  if(e.baseMap)
+    out.base.map = *e.baseMap;
+  if(e.opacityMap)
+    out.opacity.map = *e.opacityMap;
+  if(e.normalMap)
+    out.normalMap = *e.normalMap;
+  if(e.bumpMap)
+    out.bumpMap = *e.bumpMap;
+  return out;
+}
+
+std::string lowerRoughnessMap(const Surface& s, const Edits& e)
+{
+  return e.roughnessMap ? *e.roughnessMap : specularLobes(s).roughness.map;
+}
+
+std::vector<MapSlot> mapSlots(const Surface& surface, const Edits& e)
+{
+  const Surface        s = withMapEdits(surface, e);
+  std::vector<MapSlot> out;
+  const auto           add = [&](const char* slot, const char* label, const std::string& rel, bool edited) {
+    if(!rel.empty() || edited)
+      out.push_back({slot, label, mapLayers(rel).front(), edited});
+  };
+  add("base", "Base colour", s.base.map, e.baseMap.has_value());
+  add("opacity", "Cutout", s.opacity.map, e.opacityMap.has_value());
+  add("normal", "Normal", s.normalMap, e.normalMap.has_value());
+  add("bump", "Bump", s.bumpMap, e.bumpMap.has_value());
+  add("roughness", "Roughness", lowerRoughnessMap(s, e), e.roughnessMap.has_value());
+  if(s.translucency)
+    add("translucency", "Translucency", s.translucency->map, false);
+  if(s.emission)
+    add("emission", "Emission", s.emission->color.map, false);
+  if(const Fabric* f = e.fabric ? findFabric(*e.fabric) : nullptr)
+    add("detail", "Fabric", fabricHeightMap(*f), true);
+  else if(s.detail)
+    add("detail", "Detail", s.detail->map, false);
+  if(s.makeup)
+    add("makeup", "Makeup", s.makeup->map, false);
+  return out;
+}
+
+bool UvTransform::identity() const
+{
+  return scale[0] == 1 && scale[1] == 1 && offset[0] == 0 && offset[1] == 0 && rotation == 0;
+}
+
+UvTransform surfaceUv(const Surface& s, const Edits& e)
+{
+  const std::array<float, 2> scale{e.uvScaleU.value_or(1.f), e.uvScaleV.value_or(1.f)};
+  const float                theta = e.uvRotation.value_or(0.f) * float(std::numbers::pi / 180);
+  const float                c = std::cos(theta), sn = std::sin(theta);
+  // the authored offset, scaled and turned by the edit: T_e + R_e · S_e · T_a
+  const float x = scale[0] * s.offset[0], y = scale[1] * s.offset[1];
+  UvTransform t;
+  t.scale    = {scale[0] * s.tiles[0], scale[1] * s.tiles[1]};
+  t.rotation = theta;
+  t.offset   = {e.uvOffsetU.value_or(0.f) + c * x + sn * y, e.uvOffsetV.value_or(0.f) - sn * x + c * y};
+  return t;
+}
+
+UvTransform mirroredV(const UvTransform& t)
+{
+  // M(v) = (u, 1 − v) on both sides: M·(T + R(θ)·S·M(uv)) = (T_u + s_v·sin θ, 1 − T_v − s_v·cos θ) + R(−θ)·S·uv
+  UvTransform out = t;
+  out.rotation    = -t.rotation;
+  out.offset      = {t.offset[0] + t.scale[1] * std::sin(t.rotation), 1 - t.offset[1] - t.scale[1] * std::cos(t.rotation)};
+  return out;
 }
 
 float emissionStrength(const Surface& s, double areaM2, double exposureValue, double iso)

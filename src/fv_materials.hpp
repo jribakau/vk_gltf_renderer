@@ -33,7 +33,9 @@
 //                    alphaMode, doubleSided, normalStrength, bumpStrength, specular, clearcoat,
 //                    clearcoatRoughness, emissive, emissiveIntensity, irisColor, irisStrength,
 //                    scleraColor, recolor, recolorStrength, tone, toneStrength, makeupColor,
-//                    makeupWeight, scatterScale}}   null resets a value
+//                    makeupWeight, scatterScale, baseMap, opacityMap, normalMap, bumpMap,
+//                    roughnessMap, uvScaleU, uvScaleV, uvOffsetU, uvOffsetV, uvRotation, fabric,
+//                    fabricScale, fabricStrength, sheenColor, sheenRoughness}}   null resets a value
 //   material.reset  {material}                    drops the edits of a material (or of all, if none)
 //   Colours are "#rrggbb" in sRGB, as the colour pickers hold them. alphaMode: opaque, cutout, blend.
 //   irisColor and irisStrength (0..1) recolour an eye's iris in its map (the cooker's ir=), and are
@@ -44,6 +46,15 @@
 //   (dson::toneReference), so every skin surface moves by the same shift. Both are refused on a
 //   model. makeupColor and makeupWeight (0..1) change a PBRSkin makeup layer, refused on a surface
 //   without one. scatterScale (0.1..4) scales how far light spreads under measured skin.
+//   The Clothes tab's keys (figure/materials/edits_json.hpp holds the ranges): baseMap ... roughnessMap
+//   put another library-relative image ("/Runtime/Textures/...") in a slot, or "" none; a disk path is
+//   refused (the app copies a picked file into the library first). uvScale*, uvOffset* and uvRotation
+//   (degrees) tile, move and turn every map on the surface's UVs over its authored tiling
+//   (mat::surfaceUv), KHR_texture_transform. fabric (fabric.hpp's keys, "" none) lays a built-in
+//   weave over the surface as its detail layer, fabricScale its size and fabricStrength its normal's
+//   strength. These are refused on a model. sheenColor and sheenRoughness (0..1) are
+//   KHR_materials_sheen, on figures and models alike. A map chosen again that could not be made
+//   before is tried again.
 //
 // One per prop with materials (a figure, a model). Its materials sit in the renderer's scene at
 // `Placement::materials` on (fv_compose.hpp), and "m:3" is the prop's own third material.
@@ -56,7 +67,12 @@
 // scleraColor in `values`, a colour null when unset. A surface with a makeup layer has
 // `makeup: {mapped}` (whether a map shapes it) and makeupColor (null when unset) and makeupWeight
 // in `values`; every surface has recolor and tone (null when unset) with their strengths; flesh
-// under measured skin (SkinMode::eMeasured) has scatterScale. A figure's
+// under measured skin (SkinMode::eMeasured) has scatterScale. normalStrength and bumpStrength are
+// null when the surface has no such map. A figure surface has every Clothes key (mat::clothesValues:
+// the maps, fabric and sheenColor null when unset, the numbers their defaults), and a model's has
+// sheenColor and sheenRoughness. `textures` lists the maps: a figure surface's as lowering uses them
+// (mat::mapSlots), {slot, label, file, rel, edited}, rel "" for one an edit took away; a model's
+// {slot, label, file, edited: false}, with no rel (its images are its file's). A figure's
 // `eyes` is what the host set (setEyes, fv_host.hpp material.eyes): {rel, preset, own, ready,
 // surfaces}; its `skin` the same for skin and makeup (setSkin, fv_host.hpp material.skin). The
 // topic is dropped on detach.
