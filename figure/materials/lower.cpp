@@ -511,17 +511,19 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   }
 
   // PBRSkin's detail layer: a tiled normal map in glTF's convention bending the normal on top of the
-  // normal map, with a roughness multiplier, under a weight
+  // normal map, with a roughness multiplier, under a weight. No map: the roughness multiplier alone
   if(s.detail && !opts.forFile)
   {
-    const DetailLayer& d = *s.detail;
-    TextureRequest     r;
-    r.rel      = d.map;
-    r.srgb     = false;
-    r.channels = d.heightMap ? "bn" : "ng";
-    Json de    = {{"detailNormalTexture", b.info(std::move(r), d.strength, d.tiles, d.offset)},
-                  {"detailWeightFactor", d.weight},
-                  {"detailRoughnessFactor", d.roughness}};
+    const DetailLayer& d  = *s.detail;
+    Json               de = {{"detailWeightFactor", d.weight}, {"detailRoughnessFactor", d.roughness}};
+    if(!d.map.empty())
+    {
+      TextureRequest r;
+      r.rel                    = d.map;
+      r.srgb                   = false;
+      r.channels               = d.heightMap ? "bn" : "ng";
+      de["detailNormalTexture"] = b.info(std::move(r), d.strength, d.tiles, d.offset);
+    }
     if(!d.weightMap.empty())
       de["detailWeightTexture"] = b.plain(d.weightMap, false);
     if(!d.roughnessMap.empty())

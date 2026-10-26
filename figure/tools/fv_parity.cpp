@@ -710,6 +710,57 @@ int main(int argc, char** argv)
           throw std::runtime_error("dump before load");
         dumps[step["dump"].get<std::string>()] = dumpScene(loaded->loaded.scene, loaded->loaded.root, loaded->morphs.get());
       }
+      else if(step.contains("surfaces"))
+      {
+        // {"surfaces": label}: each material's relief maps as the figure loaded them (normal map and
+        // strength, bump map and strength, PBRSkin's detail layer), with the surface it covers in
+        // figure units and in UV units, so a texel's size on the body can be told from the maps
+        if(!loaded)
+          throw std::runtime_error("surfaces before a figure loads");
+        const fv::SceneGraph& scene = loaded->loaded.scene;
+        std::vector<double>   area(scene.materials.size(), 0.0), uvArea(scene.materials.size(), 0.0);
+        for(const fv::Mesh& m : scene.meshes)
+        {
+          if(!m.geo)
+            continue;
+          const auto& g = *m.geo;
+          for(const auto& group : g.groups)
+          {
+            const int mi = group.materialIndex < int(m.materials.size()) ? m.materials[size_t(group.materialIndex)] : -1;
+            if(mi < 0 || mi >= int(scene.materials.size()) || g.uv.empty())
+              continue;
+            for(uint32_t t = group.start; t + 2 < group.start + group.count; t += 3)
+            {
+              const uint32_t a = g.fullIndex[t], b = g.fullIndex[t + 1], c = g.fullIndex[t + 2];
+              const auto     p = [&](uint32_t v, int k) { return double(g.position[size_t(v) * 3 + size_t(k)]); };
+              const auto     q = [&](uint32_t v, int k) { return double(g.uv[size_t(v) * 2 + size_t(k)]); };
+              const double   e1[3] = {p(b, 0) - p(a, 0), p(b, 1) - p(a, 1), p(b, 2) - p(a, 2)};
+              const double   e2[3] = {p(c, 0) - p(a, 0), p(c, 1) - p(a, 1), p(c, 2) - p(a, 2)};
+              const double   n[3]  = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+              area[size_t(mi)] += 0.5 * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+              uvArea[size_t(mi)] += 0.5 * std::abs((q(b, 0) - q(a, 0)) * (q(c, 1) - q(a, 1)) - (q(c, 0) - q(a, 0)) * (q(b, 1) - q(a, 1)));
+            }
+          }
+        }
+        Json list = Json::array();
+        for(size_t mi = 0; mi < scene.materials.size(); mi++)
+        {
+          const fv::Material& mat = scene.materials[mi];
+          const auto&         s   = mat.surface;
+          Json                e   = {{"name", mat.name},
+                                     {"normalMap", s.normalMap},
+                                     {"normalStrength", s.normalStrength},
+                                     {"bumpMap", s.bumpMap},
+                                     {"bumpStrength", s.bumpStrength},
+                                     {"area", area[mi]},
+                                     {"uvArea", uvArea[mi]}};
+          if(s.detail)
+            e["detail"] = {{"map", s.detail->map},           {"heightMap", s.detail->heightMap}, {"strength", s.detail->strength},
+                           {"weight", s.detail->weight},     {"weightMap", s.detail->weightMap}, {"tiles", s.detail->tiles}};
+          list.push_back(e);
+        }
+        dumps[step["surfaces"].get<std::string>()] = list;
+      }
       else if(step.contains("build"))
       {
         if(!loaded)

@@ -500,7 +500,15 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     s.topCoat        = Surface::TopCoat{float(num(coat, 0)), float(gloss ? *gloss : num(find({"Top Coat Roughness"}), 0.1))};
   }
   if(pbrSkin && enabled("Detail Enable"))
+  {
     s.detail = readDetail(find);
+    // A detail layer that is the surface's own normal map again, untiled, is no relief of its own:
+    // stacked on the normal map it doubles every tilt (Leyla 9's skin, every surface). Iray stacks
+    // it too; the skin is rendered for what it would look like instead. Its normal goes, its
+    // roughness multiplier stays.
+    if(s.detail && !s.normalMap.empty() && s.detail->map == s.normalMap && s.detail->tiles == std::array<float, 2>{1, 1})
+      s.detail->map.clear();
+  }
   if(pbrSkin && enabled("Makeup Enable"))
     s.makeup = readMakeup(find);
   // 0 is authored: the highlight stays round. Absent is not the same thing.

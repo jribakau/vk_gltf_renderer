@@ -1100,3 +1100,35 @@ TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)
 }
 
 }  // namespace
+
+// PBRSkin's detail layer is a relief of its own when it is another map or the same one tiled; the
+// surface's own normal map again, untiled, would only double every tilt, so its normal is dropped
+// and its roughness multiplier kept.
+TEST(Materials, ADetailLayerRepeatingTheNormalMapAddsNoRelief)
+{
+  const auto skin = [](const char* detailMap, int tiles) {
+    const std::string text = std::string(R"({"extra":[{"type":"studio/material/daz_brick","channels":[
+      {"channel":{"id":"Detail Enable","type":"bool","current_value":true}},
+      {"channel":{"id":"Normal Map","type":"image","current_value":1.0,"image_file":"/Runtime/Textures/body_nm.jpg"}},
+      {"channel":{"id":"Detail Weight","type":"float","current_value":1}},
+      {"channel":{"id":"Detail Normal Map","type":"float","current_value":1,"image_file":")") + detailMap + R"("}},
+      {"channel":{"id":"Detail Normal Map Mode","type":"enum","current_value":1}},
+      {"channel":{"id":"Detail Horizontal Tiles","type":"float","current_value":)" + std::to_string(tiles) + R"(}},
+      {"channel":{"id":"Detail Vertical Tiles","type":"float","current_value":)" + std::to_string(tiles) + R"(}},
+      {"channel":{"id":"Detail Specular Roughness Mult","type":"float","current_value":0.8}}
+    ]}]})";
+    return fv::dson::parseSurface("Body", channelsOf(text.c_str()));
+  };
+
+  const auto duplicate = skin("/Runtime/Textures/body_nm.jpg", 1);
+  ASSERT_TRUE(duplicate.detail);
+  EXPECT_TRUE(duplicate.detail->map.empty());
+  EXPECT_FLOAT_EQ(duplicate.detail->roughness, 0.8f);
+  const auto lowered = fv::mat::lower(duplicate, {}, {});
+  const auto& ext    = lowered.material["extensions"]["FV_materials_detail"];
+  EXPECT_FALSE(ext.contains("detailNormalTexture"));
+  EXPECT_FLOAT_EQ(ext["detailRoughnessFactor"].get<float>(), 0.8f);
+
+  EXPECT_EQ(skin("/Runtime/Textures/body_nm.jpg", 8).detail->map, "/Runtime/Textures/body_nm.jpg");  // tiled: fine detail
+  EXPECT_EQ(skin("/Runtime/Textures/pores_nm.jpg", 1).detail->map, "/Runtime/Textures/pores_nm.jpg");  // a map of its own
+}
