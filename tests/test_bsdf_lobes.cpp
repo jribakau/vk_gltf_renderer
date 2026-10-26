@@ -323,3 +323,139 @@ TEST(BsdfLobes, ASoftenedDiffuseLobeTurnsTowardTheSmoothNormal)
     }
   }
 }
+
+namespace {
+
+// The mean of what sampling `mat` from a view at cosine `NoV` carries, per event kind: reflected
+// (glossy reflection) and transmitted (glossy transmission) and everything.
+struct Carried
+{
+  vec3 reflected{0.0f}, transmitted{0.0f}, all{0.0f};
+};
+
+Carried carriedAt(const PbrMaterial& mat, float NoV, int N = 200000)
+{
+  std::mt19937                          rng(17);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const vec3 k1 = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+  Carried    c;
+  for(int i = 0; i < N; i++)
+  {
+    BsdfSampleData s;
+    s.k1 = k1;
+    s.xi = vec3(u(rng), u(rng), u(rng));
+    bsdfSample(s, mat);
+    if(s.event_type == BSDF_EVENT_ABSORB)
+      continue;
+    const vec3 v = s.bsdf_over_pdf / float(N);
+    c.all += v;
+    if(s.event_type == BSDF_EVENT_GLOSSY_REFLECTION)
+      c.reflected += v;
+    if(s.event_type == BSDF_EVENT_GLOSSY_TRANSMISSION)
+      c.transmitted += v;
+  }
+  return c;
+}
+
+}  // namespace
+
+// The albedo the lobe weights split the light by is the GGX lobe's with Schlick's Fresnel, as
+// integrating the lobe gives it, over the roughness and angles skin, cloth and metal have.
+TEST(BsdfLobes, TheGgxAlbedoFitIsTheLobesIntegral)
+{
+  std::mt19937                          rng(19);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float alpha : {0.02f, 0.1f, 0.3f, 0.6f})
+    for(float NoV : {0.1f, 0.3f, 0.6f, 1.0f})
+      for(float f0 : {0.04f, 0.6f})
+      {
+        PbrMaterial mat = base(std::sqrt(alpha));
+        const vec3  k1  = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+        const int   N   = 100000;
+        double      albedo = 0.0;
+        for(int i = 0; i < N; i++)
+        {
+          BsdfSampleData s;
+          s.k1 = k1;
+          s.xi = vec3(u(rng), u(rng), u(rng));
+          brdf_ggx_smith_sample(s, mat, LOBE_METAL_REFLECTION, vec3(f0), BSDF_FRESNEL_SCHLICK, 1.0f);
+          if(s.event_type != BSDF_EVENT_ABSORB)
+            albedo += s.bsdf_over_pdf.x / N;
+        }
+        EXPECT_NEAR(ggxSchlickAlbedo(f0, alpha, NoV), albedo, 0.03) << "alpha " << alpha << " NoV " << NoV << " f0 " << f0;
+      }
+}
+
+// A dielectric over a white base reflects more toward grazing, as each microfacet's Fresnel says,
+// and what it reflects comes out of the base: the whole stays within the light that arrived.
+TEST(BsdfLobes, ADielectricReflectsMoreAtGrazingAndTakesItFromTheBase)
+{
+  PbrMaterial plastic = defaultPbrMaterial(vec3(1.0f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+  float       last    = 0.0f;
+  for(float NoV : {1.0f, 0.6f, 0.3f, 0.1f})
+  {
+    const Carried c = carriedAt(plastic, NoV);
+    EXPECT_GT(c.reflected.x, last) << NoV;
+    EXPECT_LE(c.all.x, 1.01f) << NoV;
+    EXPECT_GT(c.all.x, 0.9f) << NoV;
+    last = c.reflected.x;
+  }
+  // a smooth one reflects the dielectric's Fresnel at the view
+  PbrMaterial smooth = defaultPbrMaterial(vec3(1.0f), 0.0f, 0.05f, vec3(0, 0, 1), vec3(0, 0, 1));
+  for(float NoV : {1.0f, 0.5f, 0.2f})
+    EXPECT_NEAR(carriedAt(smooth, NoV).reflected.x, ior_fresnel(1.5f, NoV), 0.01f) << NoV;
+}
+
+// glTF's metal reflects its base colour head-on and white at grazing (Schlick's from the base colour).
+TEST(BsdfLobes, AMetalTurnsWhiteAtGrazing)
+{
+  PbrMaterial gold = defaultPbrMaterial(vec3(1.0f, 0.7f, 0.3f), 1.0f, 0.3f, vec3(0, 0, 1), vec3(0, 0, 1));
+  const vec3  head = carriedAt(gold, 1.0f).all, graze = carriedAt(gold, 0.15f).all;
+  EXPECT_GT(graze.z / graze.x, 1.5f * head.z / head.x);
+  EXPECT_LE(graze.x, 1.01f);
+}
+
+// Glass splits each microfacet's light by its Fresnel: reflection and refraction together keep
+// what the rough lobes do not lose, and the reflection grows toward grazing.
+TEST(BsdfLobes, GlassReflectsAndRefractsByEachMicrofacetsFresnel)
+{
+  PbrMaterial glass  = defaultPbrMaterial(vec3(1.0f), 0.0f, 0.2f, vec3(0, 0, 1), vec3(0, 0, 1));
+  glass.transmission = 1.0f;
+  glass.thickness    = 0.01f;
+  float last         = 0.0f;
+  for(float NoV : {1.0f, 0.5f, 0.2f})
+  {
+    const Carried c = carriedAt(glass, NoV);
+    EXPECT_GT(c.reflected.x, last) << NoV;
+    EXPECT_LE(c.reflected.x + c.transmitted.x, 1.01f) << NoV;
+    EXPECT_GT(c.reflected.x + c.transmitted.x, 0.93f) << NoV;
+    last = c.reflected.x;
+  }
+}
+
+// What a rough dielectric reflects is its GGX lobe weighed by each microfacet's own Fresnel, exactly:
+// the albedo fit only decides how often the lobe is picked. One Fresnel at an estimated angle for the
+// whole lobe was off at grazing views.
+TEST(BsdfLobes, ARoughDielectricReflectsItsMicrofacetFresnel)
+{
+  std::mt19937                          rng(23);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float roughness : {0.4f, 0.7f})
+    for(float NoV : {0.15f, 0.5f})
+    {
+      PbrMaterial mat = defaultPbrMaterial(vec3(1.0f), 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1));
+      const vec3  k1  = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      const int   N   = 200000;
+      double      microfacet = 0.0;
+      for(int i = 0; i < N; i++)
+      {
+        BsdfSampleData s;
+        s.k1 = k1;
+        s.xi = vec3(u(rng), u(rng), u(rng));
+        brdf_ggx_smith_sample(s, mat, LOBE_SPECULAR_REFLECTION, vec3(1.0f), BSDF_FRESNEL_DIELECTRIC, 1.5f);
+        if(s.event_type != BSDF_EVENT_ABSORB)
+          microfacet += s.bsdf_over_pdf.x / N;
+      }
+      EXPECT_NEAR(carriedAt(mat, NoV).reflected.x, microfacet, 0.02 * microfacet + 2e-3) << roughness << ", " << NoV;
+    }
+}
