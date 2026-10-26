@@ -394,6 +394,11 @@ Some things about the transport are worth knowing before touching it:
   pick, and an emitter it reaches converts its pdf by the summed distance (`nullDistance`). The
   light behind glass is then counted once, as that vertex's shadow ray or its BSDF ray. A rough or
   scattering surface blocks shadow rays, and the BSDF ray that reaches a light behind it has weight 1.
+- The GGX reflection lobes use the **height-correlated** Smith term; their albedo (the layering's
+  `ggxSchlickAlbedo`, the metal's multiple-scattering compensation `ggxMultiScatterFactor`) comes
+  from a table baked from the lobe (`nvshaders/ggx_albedo_table.h.slang`). Change the lobe, rerun
+  `utils/ggx_albedo_table.py`: `BsdfLobes.TheGgxAlbedoFitIsTheLobesIntegral` checks them against
+  each other.
 - The **diffuse exit** (`ePtVolumeDiffuseExit`) is Lambertian times the boundary's Fresnel
   transmittance toward the light, over its cosine-weighted mean (`diffuseExitFresnelWeight`,
   `ePtExitFresnel`): the entry paid (1 − F) on the camera's side, so the exit pays it on the

@@ -360,12 +360,13 @@ Carried carriedAt(const PbrMaterial& mat, float NoV, int N = 200000)
 }  // namespace
 
 // The albedo the lobe weights split the light by is the GGX lobe's with Schlick's Fresnel, as
-// integrating the lobe gives it, over the roughness and angles skin, cloth and metal have.
+// integrating the lobe gives it, over every roughness and angle: the baked table is the lobe's own
+// (height-correlated Smith). The specular lobe, as the metal's adds its multiple scattering.
 TEST(BsdfLobes, TheGgxAlbedoFitIsTheLobesIntegral)
 {
   std::mt19937                          rng(19);
   std::uniform_real_distribution<float> u(0.0f, 1.0f);
-  for(float alpha : {0.02f, 0.1f, 0.3f, 0.6f})
+  for(float alpha : {0.02f, 0.1f, 0.3f, 0.6f, 1.0f})
     for(float NoV : {0.1f, 0.3f, 0.6f, 1.0f})
       for(float f0 : {0.04f, 0.6f})
       {
@@ -378,11 +379,11 @@ TEST(BsdfLobes, TheGgxAlbedoFitIsTheLobesIntegral)
           BsdfSampleData s;
           s.k1 = k1;
           s.xi = vec3(u(rng), u(rng), u(rng));
-          brdf_ggx_smith_sample(s, mat, LOBE_METAL_REFLECTION, vec3(f0), BSDF_FRESNEL_SCHLICK, 1.0f);
+          brdf_ggx_smith_sample(s, mat, LOBE_SPECULAR_REFLECTION, vec3(f0), BSDF_FRESNEL_SCHLICK, 1.0f);
           if(s.event_type != BSDF_EVENT_ABSORB)
             albedo += s.bsdf_over_pdf.x / N;
         }
-        EXPECT_NEAR(ggxSchlickAlbedo(f0, alpha, NoV), albedo, 0.03) << "alpha " << alpha << " NoV " << NoV << " f0 " << f0;
+        EXPECT_NEAR(ggxSchlickAlbedo(f0, alpha, NoV), albedo, 0.01) << "alpha " << alpha << " NoV " << NoV << " f0 " << f0;
       }
 }
 
@@ -413,6 +414,41 @@ TEST(BsdfLobes, AMetalTurnsWhiteAtGrazing)
   const vec3  head = carriedAt(gold, 1.0f).all, graze = carriedAt(gold, 0.15f).all;
   EXPECT_GT(graze.z / graze.x, 1.5f * head.z / head.x);
   EXPECT_LE(graze.x, 1.01f);
+}
+
+// A white metal reflects all the light at every roughness: the multiple scattering a single-scatter
+// lobe loses (30-50% at alpha 1) is given back (Turquin). A coloured one gets back less, by its
+// colour. Sampling and evaluation agree on it (SamplingCarriesWhatEvaluationIntegratesTo).
+TEST(BsdfLobes, ARoughWhiteMetalKeepsItsEnergy)
+{
+  std::mt19937                          rng(23);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float alpha : {0.1f, 0.3f, 0.6f, 1.0f})
+    for(float NoV : {0.2f, 0.5f, 1.0f})
+    {
+      PbrMaterial white = defaultPbrMaterial(vec3(1.0f), 1.0f, std::sqrt(alpha), vec3(0, 0, 1), vec3(0, 0, 1));
+      const vec3  k1    = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      const int   N     = 100000;
+      double      albedo = 0.0, single = 0.0;
+      for(int i = 0; i < N; i++)
+      {
+        BsdfSampleData s;
+        s.k1 = k1;
+        s.xi = vec3(u(rng), u(rng), u(rng));
+        BsdfSampleData t = s;
+        brdf_ggx_smith_sample(s, white, LOBE_METAL_REFLECTION, vec3(1.0f), BSDF_FRESNEL_SCHLICK, 1.0f);
+        brdf_ggx_smith_sample(t, white, LOBE_SPECULAR_REFLECTION, vec3(1.0f), BSDF_FRESNEL_SCHLICK, 1.0f);
+        if(s.event_type != BSDF_EVENT_ABSORB)
+          albedo += s.bsdf_over_pdf.x / N;
+        if(t.event_type != BSDF_EVENT_ABSORB)
+          single += t.bsdf_over_pdf.x / N;
+      }
+      EXPECT_NEAR(albedo, 1.0, 0.015) << "alpha " << alpha << " NoV " << NoV;
+      if(alpha >= 0.6f)
+        EXPECT_LT(single, 0.9) << "alpha " << alpha << " NoV " << NoV;  // what it would lose
+    }
+  // A dark metal gets back its colour's share of the loss only
+  EXPECT_NEAR(ggxMultiScatterFactor(vec3(0.1f), 1.0f, 1.0f).x, 1.0f + 0.1f * (1.0f / ggxSchlickAlbedo(1.0f, 1.0f, 1.0f) - 1.0f), 1e-5f);
 }
 
 // Glass splits each microfacet's light by its Fresnel: reflection and refraction together keep

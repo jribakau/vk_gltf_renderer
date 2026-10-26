@@ -560,6 +560,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float3 f0           = lerp(dielectricF0, pbrMat.baseColor.xyz, pbrMat.metallic);
       const float ndotv   = dot(pbrMat.N, ray.Direction);
       float3 specularAlbedo = EnvBRDFApprox2(f0, pbrMat.roughness.x, ndotv);
+      // A metal's multiple scattering, as its lobe gives it back (ggxMultiScatterFactor)
+      specularAlbedo *= lerp(float3(1.0F), ggxMultiScatterFactor(pbrMat.baseColor, pbrMat.roughness.x, abs(ndotv)), pbrMat.metallic);
       if(pbrMat.clearcoat > 0.0F)
         specularAlbedo = saturate(specularAlbedo
                                   + pbrMat.clearcoat * EnvBRDFApprox2(float3(0.04F), pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness, ndotv));
