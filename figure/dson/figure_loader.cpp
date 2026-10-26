@@ -1,8 +1,11 @@
 #include <figure/dson/figure_loader.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <regex>
 #include <stdexcept>
@@ -11,6 +14,7 @@
 
 #include <figure/dson/materials.hpp>
 #include <figure/io/timing.hpp>
+#include <figure/jobs/pool.hpp>
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
@@ -290,24 +294,27 @@ void widenRibbons(mesh::BuiltMesh& m, const std::vector<std::array<double, 2>>& 
   if(!m.ribbon)
     return;
   const auto& r = *m.ribbon;
-  for(size_t i = 0; i < r.along.size(); i++)
-  {
-    const int  mat = r.material[i];
-    const auto w   = mat >= 0 && mat < int(widths.size()) ? widths[mat] : (widths.empty() ? std::array<double, 2>{0.1, 0.05} : widths[0]);
-    // The first 6% of the strand grows from nothing, so the root is not a full-width sheet and the
-    // body can stay opaque (no any-hit on every card). along is 0 at the root.
-    constexpr double kRoot = 0.06;
-    double           gate  = 1;
-    if(r.along[i] < kRoot)
+  // each vertex moves on its own, and a hair has millions of them
+  jobs::parallelFor(r.along.size(), 16384, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
     {
-      const double t = r.along[i] / kRoot;
-      gate           = t * t * (3.0 - 2.0 * t);
+      const int  mat = r.material[i];
+      const auto w   = mat >= 0 && mat < int(widths.size()) ? widths[mat] : (widths.empty() ? std::array<double, 2>{0.1, 0.05} : widths[0]);
+      // The first 6% of the strand grows from nothing, so the root is not a full-width sheet and the
+      // body can stay opaque (no any-hit on every card). along is 0 at the root.
+      constexpr double kRoot = 0.06;
+      double           gate  = 1;
+      if(r.along[i] < kRoot)
+      {
+        const double t = r.along[i] / kRoot;
+        gate           = t * t * (3.0 - 2.0 * t);
+      }
+      const double half = (w[0] + (w[1] - w[0]) * r.along[i]) / 2 * gate;
+      for(int k = 0; k < 3; k++)
+        m.position[i * 3 + k] = float(m.position[i * 3 + k] + r.side[i * 3 + k] * half);
     }
-    const double half = (w[0] + (w[1] - w[0]) * r.along[i]) / 2 * gate;
-    for(int k = 0; k < 3; k++)
-      m.position[i * 3 + k] = float(m.position[i * 3 + k] + r.side[i * 3 + k] * half);
-  }
-  mesh::weldNormals(m.position, m.renderIndex, m.firstSplit, m.renderTris, m.renderVertexCount, m.normal);
+  });
+  mesh::NormalWelder(m.renderIndex, m.firstSplit, m.nextSplit, m.renderTris, m.renderVertexCount).full(m.position, m.normal);
 }
 
 using Centers = std::map<std::string, std::array<double, 3>>;
@@ -352,6 +359,88 @@ std::string missingMessage(const std::string& fileName, const std::vector<std::s
     sample += " and " + std::to_string(missing.size() - 2) + " more";
   return name + " needs " + std::to_string(missing.size()) + " library file" + (missing.size() == 1 ? "" : "s")
          + " that aren't installed in the assets folder or the DAZ library: " + sample + ".";
+}
+
+// Reads the library files a scene names on the pool while the loader walks it, so a strand hair's
+// node, geometry and material files (tens of MB each) arrive at once instead of one after another.
+// The Store is borrowed: finish() loads whatever no pool thread has started and waits for the rest,
+// so nothing touches the Store after loadDson returns, and nothing waits on a job that never ran.
+class Prefetch
+{
+public:
+  Prefetch(Store& store, std::vector<std::string> files)
+      : m_state(std::make_shared<State>())
+  {
+    m_state->store = &store;
+    m_state->files = std::move(files);
+    for(size_t i = 0; i < std::min<size_t>(m_state->files.size(), jobs::pool().size()); i++)
+      jobs::pool().submit([st = m_state] { st->run(); });
+  }
+  ~Prefetch() { finish(); }
+  void finish()
+  {
+    m_state->run();
+    std::unique_lock lock(m_state->mutex);
+    m_state->done.wait(lock, [&] { return m_state->running == 0; });
+  }
+
+private:
+  struct State
+  {
+    Store*                   store = nullptr;
+    std::vector<std::string> files;
+    std::atomic<size_t>      next{0};
+    std::mutex               mutex;
+    std::condition_variable  done;
+    int                      running = 0;
+
+    void run()
+    {
+      {
+        std::lock_guard lock(mutex);
+        running++;
+      }
+      // a job that starts after finish() claims nothing and leaves the Store alone
+      for(size_t i; (i = next++) < files.size();)
+        try
+        {
+          store->load(files[i]);
+        }
+        catch(const std::exception&)
+        {
+          // the loader meets the file again and reports it in order
+        }
+      std::lock_guard lock(mutex);
+      if(--running == 0)
+        done.notify_all();
+    }
+  };
+  std::shared_ptr<State> m_state;
+};
+
+// The other library files a scene's nodes, geometries and materials point at, that are installed.
+std::vector<std::string> referencedFiles(const Store& store, const Json& nodes, const Json* materials, const std::string& file)
+{
+  std::vector<std::string>        out;
+  std::unordered_set<std::string> seen{lowerCase(file)};
+  auto                            add = [&](const Json* url) {
+    if(!url || !url->is_string())
+      return;
+    const auto ref = parseRef(url->get<std::string>(), file);
+    if(ref && !ref->file.empty() && seen.insert(lowerCase(ref->file)).second && store.library().find(ref->file))
+      out.push_back(ref->file);
+  };
+  for(const Json& n : nodes)
+  {
+    add(get(&n, "url"));
+    if(const Json* geos = get(&n, "geometries"); geos && geos->is_array())
+      for(const Json& g : *geos)
+        add(get(&g, "url"));
+  }
+  if(materials && materials->is_array())
+    for(const Json& m : *materials)
+      add(get(&m, "url"));
+  return out;
 }
 
 }  // namespace
@@ -413,6 +502,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     nodesJson = &synthetic;
   }
   const Json& nodes = *nodesJson;
+  Prefetch    prefetch(store, referencedFiles(store, nodes, get(sceneJson, "materials"), file));
 
   // scene materials by the geometry instance (or library geometry) they apply to, in file order
   std::vector<const Json*>                                   sceneMaterials;
@@ -753,6 +843,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         std::optional<UvSet> uvSet;
         if(!uvUri.empty())
         {
+          timing::Scope                  tu("uv set", 10);
           std::optional<Store::Resolved> ures;
           try
           {
@@ -778,6 +869,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         // materials, one per polygon material group
         const Json* libMaterials = get(&gres->doc->json, "material_library");
         std::map<std::string, Channels> groupChannels;
+        std::optional<timing::Scope>    tmat(std::in_place, "materials", 10);
         for(const std::string& name : meshOut.materialGroups)
         {
           const Json* lib = nullptr;
@@ -839,6 +931,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           }
           meshOut.materials.push_back(hit->second);
         }
+        tmat.reset();
         // dForce settings, where the scene (or a material) asks for a simulation
         {
           timing::Scope td("buildDforce", 10);
@@ -846,6 +939,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         }
         if(meshOut.geo->ribbon)
         {
+          timing::Scope                      tw("widen", 10);
           std::vector<std::array<double, 2>> widths;
           for(int mi : meshOut.materials)
           {
@@ -903,6 +997,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           part.defFile  = job.defFile;
           if(job.item >= 0)
           {
+            timing::Scope tg("graft and rigidity", 10);
             part.graft     = wardrobe::parseGraft(*gres->doc, geo);
             part.rigidity  = wardrobe::parseRigidity(*gres->doc, geo, meshOut.geo->dsonVertexCount);
             part.smoothing = parseSmoothing(*docPtr, gres->doc.get(), getString(job.node, "id"));

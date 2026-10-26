@@ -279,6 +279,34 @@ SurfaceBinding blank(size_t nvDst, size_t nvSrc)
   return out;
 }
 
+// A search marks the triangles it has looked at with its id. Each thread keeps one buffer for every
+// chunk and binding it runs, and ids only grow, so a small chunk allocates nothing and no mark left
+// by an earlier search can match.
+struct Stamps
+{
+  std::vector<int32_t> stamp;
+  int32_t              last = 0;
+
+  int32_t next(size_t triangles)
+  {
+    if(stamp.size() < triangles || last == std::numeric_limits<int32_t>::max())
+    {
+      stamp.assign(std::max(stamp.size(), triangles), -1);
+      last = 0;
+    }
+    return ++last;
+  }
+};
+thread_local Stamps t_stamps;
+
+// Chunks of about a quarter of an even share per thread: an add-on of 2,000 vertices is searched on
+// many threads, not as one chunk.
+size_t chunkFor(size_t count, size_t least)
+{
+  const size_t share = (count + 4 * (jobs::pool().size() + 1) - 1) / (4 * (jobs::pool().size() + 1));
+  return std::max(least, share);
+}
+
 }  // namespace
 
 SurfaceBinding bindToSurface(std::span<const float>    P,
@@ -296,12 +324,12 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
   timing::report("grid", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tGrid).count(), 5);
   // each vertex is found on its own, so the vertices are split among threads
   const auto tSearch = std::chrono::steady_clock::now();
-  jobs::parallelFor(nvDst, 4096, [&](size_t begin, size_t end) {
-    std::vector<int32_t> stamp(index.triangles(), -1);
+  jobs::parallelFor(nvDst, chunkFor(nvDst, 64), [&](size_t begin, size_t end) {
     for(size_t v = begin; v < end; v++)
     {
       const int32_t mask = filter && v < filter->itemMask.size() ? filter->itemMask[v] : 0;
-      const auto    hit  = index.search(D[v * 3], D[v * 3 + 1], D[v * 3 + 2], mask, INFINITY, stamp, int32_t(v));
+      const int32_t id   = t_stamps.next(index.triangles());
+      const auto    hit  = index.search(D[v * 3], D[v * 3 + 1], D[v * 3 + 2], mask, INFINITY, t_stamps.stamp, id);
       if(hit.tri >= 0)
         write(out, v, T, hit);
     }
@@ -332,12 +360,11 @@ SurfaceBinding bindStrands(std::span<const float>    P,
     const int32_t v = lineVerts[size_t(c)];
     return v >= 0 && size_t(v) < nvDst ? v : -1;
   };
-  jobs::parallelFor(lines, 256, [&](size_t begin, size_t end) {
-    std::vector<int32_t> stamp(index.triangles(), -1);
-    int32_t              id   = 0;
-    auto                 find = [&](int32_t v, double maxDist2) {
+  jobs::parallelFor(lines, std::clamp<size_t>(chunkFor(lines, 16), 16, 256), [&](size_t begin, size_t end) {
+    auto find = [&](int32_t v, double maxDist2) {
       const int32_t mask = filter && size_t(v) < filter->itemMask.size() ? filter->itemMask[size_t(v)] : 0;
-      return index.search(D[size_t(v) * 3], D[size_t(v) * 3 + 1], D[size_t(v) * 3 + 2], mask, maxDist2, stamp, ++id);
+      const int32_t id   = t_stamps.next(index.triangles());
+      return index.search(D[size_t(v) * 3], D[size_t(v) * 3 + 1], D[size_t(v) * 3 + 2], mask, maxDist2, t_stamps.stamp, id);
     };
     for(size_t l = begin; l < end; l++)
     {
@@ -389,13 +416,13 @@ SurfaceBinding bindStrands(std::span<const float>    P,
   for(size_t v = 0; v < nvDst; v++)
     if(!onLine[v])
       loose.push_back(uint32_t(v));
-  jobs::parallelFor(loose.size(), 4096, [&](size_t begin, size_t end) {
-    std::vector<int32_t> stamp(index.triangles(), -1);
+  jobs::parallelFor(loose.size(), chunkFor(loose.size(), 64), [&](size_t begin, size_t end) {
     for(size_t k = begin; k < end; k++)
     {
       const size_t  v    = loose[k];
       const int32_t mask = filter && v < filter->itemMask.size() ? filter->itemMask[v] : 0;
-      const auto    hit  = index.search(D[v * 3], D[v * 3 + 1], D[v * 3 + 2], mask, INFINITY, stamp, int32_t(k));
+      const int32_t id   = t_stamps.next(index.triangles());
+      const auto    hit  = index.search(D[v * 3], D[v * 3 + 1], D[v * 3 + 2], mask, INFINITY, t_stamps.stamp, id);
       if(hit.tri >= 0)
         write(out, v, T, hit);
     }

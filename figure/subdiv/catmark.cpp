@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include <figure/jobs/pool.hpp>
+
 namespace fv::subdiv {
 
 namespace {
@@ -868,19 +870,22 @@ std::vector<float> refineDense(const Refinement& r, std::span<const float> data,
   {
     const int          n = s.rows();
     std::vector<float> dst(size_t(n) * width, 0.f);
-    for(int row = 0; row < n; row++)
-    {
-      for(int k = s.rowStart[row]; k < s.rowStart[row + 1]; k++)
+    // rows are independent and each sums in its own order, so chunks give the serial result
+    jobs::parallelFor(size_t(n), 8192, [&](size_t begin, size_t end) {
+      for(size_t row = begin; row < end; row++)
       {
-        const double w = s.weight[k];
-        const size_t c = size_t(s.col[k]) * width;
-        for(int x = 0; x < width; x++)
+        for(int k = s.rowStart[row]; k < s.rowStart[row + 1]; k++)
         {
-          float& d = dst[size_t(row) * width + x];
-          d        = float(double(d) + double(src[c + x]) * w);
+          const double w = s.weight[k];
+          const size_t c = size_t(s.col[k]) * width;
+          for(int x = 0; x < width; x++)
+          {
+            float& d = dst[row * width + x];
+            d        = float(double(d) + double(src[c + x]) * w);
+          }
         }
       }
-    }
+    });
     src = std::move(dst);
   }
   return src;

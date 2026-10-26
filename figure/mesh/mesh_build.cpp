@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 
+#include <figure/io/timing.hpp>
 #include <figure/mesh/normals.hpp>
 
 namespace fv::mesh {
@@ -521,7 +522,13 @@ BuiltMesh build(const MeshInput& m)
   }
 
   out.normal.assign(size_t(count) * 3, 0.f);
-  weldNormals(out.position, out.renderIndex, out.firstSplit, out.renderTris, renderCount, out.normal);
+  // Strand ribbons have no width yet, so every triangle is degenerate and a weld would write zeros:
+  // widenRibbons welds them once it has opened them.
+  if(!strands)
+  {
+    timing::Scope tw("weld", 10);
+    NormalWelder(out.renderIndex, out.firstSplit, out.nextSplit, out.renderTris, renderCount).full(out.position, out.normal);
+  }
 
   // drawn vertex 2c is point c's edge on the -side, 2c + 1 on the +side
   if(strands)
