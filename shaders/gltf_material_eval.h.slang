@@ -599,18 +599,18 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
       if(any(material.scatterDistance > 0.0))
       {
         // FV_materials_subsurface: the medium from what the surface looks like and how far light
-        // spreads in it (Chiang, Kutz and Burley 2016, "Practical and Controllable Subsurface
-        // Scattering for Production Path Tracing"). The base colour where the walk enters is the
-        // multiple-scattering albedo A, so lit from the front the surface is its colour map, and
-        // the walk leaves white (ptVolumeDiffuseExit). The scatter distance d sets the extinction,
-        // sigma_t = 1 / (d s(A)) with their random-walk fit s(A) (as Cycles has it), and the
-        // scattering is isotropic: their fit is for g = 0, and the forward scattering of real
-        // tissue is folded into the distance.
+        // spreads in it. The base colour where the walk enters is the multiple-scattering albedo
+        // A, inverted to a single-scattering albedo alpha (Chiang, Kutz and Burley 2016), so lit
+        // from the front the surface is its colour map and the walk leaves white
+        // (ptVolumeDiffuseExit). The scatter distance d is the diffusion length 1 / sigma_tr, the
+        // distance over which light under the surface falls off (what Jensen et al. measured), so
+        // with sigma_tr = sigma_t sqrt(3 (1 - alpha)) the extinction is
+        // sigma_t = 1 / (d sqrt(3 (1 - alpha))). Isotropic, in reduced coefficients: tissue's
+        // forward scattering is folded into them, as the measurements are.
         const float3 A = clamp(pbrMat.baseColor, float3(1e-3), float3(0.999));
-        const float3 s = 1.9 - A + 3.5 * (A - 0.8) * (A - 0.8);
-        g               = 0.0;
-        attenuationCoef = 1.0 / (max(material.scatterDistance, float3(1e-7)) * s);
+        g                   = 0.0;
         singleScatterAlbedo = multiToSingleScatterAlbedo(A, g);
+        attenuationCoef     = 1.0 / (max(material.scatterDistance, float3(1e-7)) * sqrt(3.0 * max(1.0 - singleScatterAlbedo, float3(1e-6))));
         // as KHR_materials_volume, for makeVolumeMedium: the densest channel at exp(-1) over its own
         // distance, the rest nearer 1, clear of volumeExtinctionCoefficient's floor
         pbrMat.attenuationDistance = 1.0 / max(attenuationCoef.x, max(attenuationCoef.y, attenuationCoef.z));
