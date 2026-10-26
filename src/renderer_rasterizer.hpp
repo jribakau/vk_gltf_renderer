@@ -175,8 +175,10 @@ private:
   nvvk::DescriptorBindings   m_tlasBindings;
   VkDescriptorSetLayout      m_tlasLayout{};
   int                        m_rtShadowRays = 4;  // rasterShadowRays: rays per light, 0 none
+  int                        m_aoRays       = 4;  // rasterAoRays: ambient occlusion rays per pixel, 0 none
   VkAccelerationStructureKHR m_recordedTlas{};
   int                        m_recordedRtShadowRays = -1;
+  int                        m_recordedAoRays       = -1;
 
   // ---- DLSS-SR (DLAA / Quality / Balanced / Performance / Ultra) ----
 #if defined(USE_DLSS)

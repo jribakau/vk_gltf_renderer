@@ -132,6 +132,10 @@ void Rasterizer::registerParameters(SettingsRegistry* settings)
                  .help            = "Rasterizer: rays per light for the traced shadows of the lights the shadow map does not cover (0: none)",
                  .callbackSuccess = [invalidateRecordedCmd](const nvutils::ParameterBase* const) { invalidateRecordedCmd(); }},
                 &m_rtShadowRays, Persist::eNo, 0, 16);
+  settings->add({.name            = "rasterAoRays",
+                 .help            = "Rasterizer: rays per pixel for the traced ambient occlusion of the environment light (0: none)",
+                 .callbackSuccess = [invalidateRecordedCmd](const nvutils::ParameterBase* const) { invalidateRecordedCmd(); }},
+                &m_aoRays, Persist::eNo, 0, 16);
   settings->add(
       {.name            = "rasterUseRecordedCmd",
        .help            = "Rasterizer: Use recorded command buffers",
@@ -529,15 +533,17 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
     m_recordedSceneCmdDirty = false;
   }
 
-  // The traced shadows: rays per light when the scene has a TLAS. Both are baked into the recorded
-  // commands (the push constants, the pushed TLAS), and a rebuilt TLAS is a new handle.
+  // The traced shadows and occlusion: rays when the scene has a TLAS. All are baked into the
+  // recorded commands (the push constants, the pushed TLAS), and a rebuilt TLAS is a new handle.
   const VkAccelerationStructureKHR tlas = resources.sceneRtx.topLevelAS();
   m_pushConst.rtShadowRays              = tlas != VK_NULL_HANDLE ? m_rtShadowRays : 0;
-  if(tlas != m_recordedTlas || m_pushConst.rtShadowRays != m_recordedRtShadowRays)
+  m_pushConst.aoRays                    = tlas != VK_NULL_HANDLE ? m_aoRays : 0;
+  if(tlas != m_recordedTlas || m_pushConst.rtShadowRays != m_recordedRtShadowRays || m_pushConst.aoRays != m_recordedAoRays)
   {
     freeRecordCommandBuffer(resources);
     m_recordedTlas         = tlas;
     m_recordedRtShadowRays = m_pushConst.rtShadowRays;
+    m_recordedAoRays       = m_pushConst.aoRays;
   }
 
   bool dlssActive = false;

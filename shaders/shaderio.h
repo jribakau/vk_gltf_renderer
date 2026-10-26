@@ -370,7 +370,7 @@ struct RasterPushConstant
   int             renderPrimID     = 0;       // Primitive used by the rendering instance
   int             opaqueColorReady = 0;       // 1 = transmission framebuffer ready (mip chain valid)
   int             rtShadowRays     = 0;       // Rays per light for the traced shadows (0: none, no TLAS bound)
-  int             _pad0            = 0;       // keeps mouseCoord 8-byte aligned on both sides
+  int             aoRays           = 0;       // Rays per pixel for the traced ambient occlusion (0: none, no TLAS bound)
   float2          mouseCoord       = {0, 0};  // Mouse coordinates (use for debug)
   SceneFrameInfo* frameInfo;                  // Camera info (incl. viewProjMatrix, prevMVP, jitter)
   GltfScene*      gltfScene;                  // GLTF scene

@@ -238,6 +238,52 @@ float lightShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNorma
   return rayTracedShadow(lightIndex, light, hit, geoNormal, pixel);
 }
 
+// How open the hemisphere over `N` is within `radius`: pushConst.aoRays cosine-distributed rays on
+// a Vogel disk turned per pixel, alpha-tested hits letting (1 - opacity) through. 1 without a TLAS.
+float rayTracedOcclusion(HitState hit, float3 N, float radius, float2 pixel)
+{
+  const int rays = pushConst.aoRays;
+  if(rays <= 0)
+    return 1.0;
+  const float3 n      = dot(hit.geonrm, N) < 0.0 ? -hit.geonrm : hit.geonrm;
+  const float3 origin = hit.pos + n * max(2.0 * hit.offsetDistance, 1e-5);
+  float3       t, b;
+  orthonormalBasis(N, t, b);
+  const float phi  = interleavedGradientNoise(pixel + float2(3.0, 11.0)) * 6.28318531;
+  float       open = 0.0;
+  for(int i = 0; i < rays; ++i)
+  {
+    // a point on the unit disk lifted onto the hemisphere: cosine-distributed directions
+    const float2 d   = vogelDisk(i, rays, phi);
+    const float3 dir = d.x * t + d.y * b + sqrt(saturate(1.0 - dot(d, d))) * N;
+    // a direction under the geometry (a normal-mapped N) sees the surface itself
+    open += dot(dir, n) > 0.0 ? rayVisibility(origin, dir, radius) : 0.0;
+  }
+  return open / float(rays);
+}
+
+// What occlusion `ao` leaves of a diffuse lobe of `albedo` once the light it blocks bounces back off
+// the nearby surfaces (Jimenez et al. 2016, "Practical Real-Time Strategies for Accurate Indirect
+// Occlusion"; Unreal's AOMultiBounce).
+float3 aoMultiBounce(float ao, float3 albedo)
+{
+  const float3 a = 2.0404 * albedo - 0.3324;
+  const float3 b = -4.7951 * albedo + 0.6417;
+  const float3 c = 2.7552 * albedo + 0.6903;
+  return max(float3(ao), ((ao * a + b) * ao + c) * ao);
+}
+
+// The share of a specular lobe's environment light that occlusion `ao` leaves, at the view's angle
+// and the lobe's GGX alpha (Lagarde and de Rousiers 2014, "Moving Frostbite to PBR").
+float specularOcclusion(float NoV, float ao, float alpha)
+{
+  return saturate(pow(NoV + ao, exp2(-16.0 * alpha - 1.0)) - 1.0 + ao);
+}
+
+// How far the traced ambient occlusion reaches, in metres
+static const float AO_RADIUS_SURFACE = 0.3;  // the figure: folds, the chin, under the arms
+static const float AO_RADIUS_FLOOR   = 1.0;  // the floor: the figure's contact shadow
+
 
 // Define the vertex attributes that will be provided by the vertex buffer
 // Note: In Slang, we use semantic annotations (: POSITION, etc.) to specify
@@ -339,20 +385,22 @@ float3 evalKhronosIBLMRM(PbrMaterial mat,
                          float       envIntensity,
                          float       dttThickness,
                          float3      f_specular_transmission,
-                         bool        haveTransmissionSample)
+                         bool        haveTransmissionSample,
+                         float3      diffuseOcclusion,
+                         float       specularOcclusion)
 {
   float3 cf = evalKhronosIBL(mat, V, diffuseCube, glossyCube, lut, sheenLUT, envRotation, envIntensity, dttThickness,
-                             f_specular_transmission, haveTransmissionSample);
+                             f_specular_transmission, haveTransmissionSample, diffuseOcclusion, specularOcclusion);
   if(mat.retroreflection <= 0.0f)
     return cf;
 
   PbrMaterial matBrdf = disableExcludedRetroLobes(mat);
   float3      cfBrdf  = evalKhronosIBL(matBrdf, V, diffuseCube, glossyCube, lut, sheenLUT, envRotation, envIntensity,
-                                       dttThickness, float3(0.0f), false);
+                                       dttThickness, float3(0.0f), false, diffuseOcclusion, specularOcclusion);
 
   float3 Vp     = reflect(-V, mat.N);
   float3 crBrdf = evalKhronosIBL(matBrdf, Vp, diffuseCube, glossyCube, lut, sheenLUT, envRotation, envIntensity,
-                                 dttThickness, float3(0.0f), false);
+                                 dttThickness, float3(0.0f), false, diffuseOcclusion, specularOcclusion);
   return (cf - cfBrdf) + lerp(cfBrdf, crBrdf, mat.retroreflection);
 }
 #endif
@@ -603,6 +651,13 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
   }
   else
   {
+    // Occlusion per lobe: the material's map times the traced occlusion, multi-bounce on the
+    // diffuse lobes and specular occlusion on the glossy ones (Unreal's AOMultiBounce and
+    // GetSpecularOcclusion), instead of one factor over the whole IBL.
+    const float  ao        = pbrMat.occlusion * rayTracedOcclusion(hit, pbrMat.N, AO_RADIUS_SURFACE, input.position.xy);
+    const float3 diffuseAO = aoMultiBounce(ao, pbrMat.baseColor);
+    const float  specAO    = specularOcclusion(saturate(dot(pbrMat.N, V)), ao, pbrMat.roughness.y);
+
     // Single-call Khronos split-sum evaluator (matches `pbr.frag:162-228`).
     // Handles diffuse, specular (isotropic/anisotropic), sheen, clearcoat, iridescence,
     // diffuse-transmission volume attenuation, and optional screen-space transmission mixing.
@@ -610,12 +665,12 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     contribution += evalKhronosIBLMRM(pbrMat, V, texturesCube[HDR_DIFFUSE_INDEX], texturesCube[HDR_GLOSSY_INDEX],
                                       texturesHdr[HDR_LUT_INDEX], texturesHdr[HDR_SHEEN_INDEX],
                                       pushConst.frameInfo.envRotation, pushConst.frameInfo.envIntensity, dttThickness,
-                                      f_specular_transmission, haveTransmissionSample);
+                                      f_specular_transmission, haveTransmissionSample, diffuseAO, specAO);
 #else
-    contribution +=
-        evalKhronosIBL(pbrMat, V, texturesCube[HDR_DIFFUSE_INDEX], texturesCube[HDR_GLOSSY_INDEX],
-                       texturesHdr[HDR_LUT_INDEX], texturesHdr[HDR_SHEEN_INDEX], pushConst.frameInfo.envRotation,
-                       pushConst.frameInfo.envIntensity, dttThickness, f_specular_transmission, haveTransmissionSample);
+    contribution += evalKhronosIBL(pbrMat, V, texturesCube[HDR_DIFFUSE_INDEX], texturesCube[HDR_GLOSSY_INDEX],
+                                   texturesHdr[HDR_LUT_INDEX], texturesHdr[HDR_SHEEN_INDEX], pushConst.frameInfo.envRotation,
+                                   pushConst.frameInfo.envIntensity, dttThickness, f_specular_transmission,
+                                   haveTransmissionSample, diffuseAO, specAO);
 #endif
 
     // KHR_materials_scatter needs no separate term here: evaluateMaterial() maps it onto the
@@ -624,8 +679,10 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     // accounts for it.
   }
 
-  // Apply ambient occlusion to indirect lighting only (matches Khronos pbr.frag).
-  contribution *= pbrMat.occlusion;
+  // Ambient occlusion is applied to the indirect lighting only (Khronos pbr.frag), per lobe in the
+  // environment branch above; with no environment, to the screen-space transmission alone.
+  if(hasFlag(pushConst.frameInfo.flags, SceneFrameInfoFlags::eSceneUseNoEnvironment))
+    contribution *= pbrMat.occlusion;
 
   // Emissive under the clearcoat layer (`pbr.frag:373`).
   contribution += pbrMat.emissive * (float3(1.0) - pbrMat.clearcoat * khronosClearcoatFresnel(pbrMat, V));
@@ -874,9 +931,18 @@ GroundOutput fragmentGroundMain(GroundVertexOutput input)
   float3 contribution = float3(0.0);
   if(!hasFlag(fi.flags, SceneFrameInfoFlags::eSceneUseNoEnvironment))
   {
+    // the figure's contact shadow: the floor's environment light occluded within a metre
+    HitState floorHit;
+    floorHit.pos            = P;
+    floorHit.nrm            = up;
+    floorHit.geonrm         = up;
+    floorHit.shadowPos      = P;
+    floorHit.offsetDistance = 1e-6 * max(1.0, max(abs(P.x), max(abs(P.y), abs(P.z))));
+    const float ao          = rayTracedOcclusion(floorHit, up, AO_RADIUS_FLOOR, input.position.xy);
     contribution += evalKhronosIBL(mat, V, texturesCube[HDR_DIFFUSE_INDEX], texturesCube[HDR_GLOSSY_INDEX],
                                    texturesHdr[HDR_LUT_INDEX], texturesHdr[HDR_SHEEN_INDEX], fi.envRotation,
-                                   fi.envIntensity, 0.0, float3(0.0), false);
+                                   fi.envIntensity, 0.0, float3(0.0), false, aoMultiBounce(ao, mat.baseColor),
+                                   specularOcclusion(saturate(dot(up, V)), ao, mat.roughness.y));
   }
 
   // the floor as a hit for the traced shadows: flat, its rounding bound a float's at that distance
