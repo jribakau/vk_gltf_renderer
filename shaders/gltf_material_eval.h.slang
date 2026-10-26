@@ -222,6 +222,10 @@ float3 convertSGToMR(float3 diffuseColor, float3 specularColor, float glossiness
 # Function `evaluateMaterial`
 > From the incoming `material` and `mesh` info, return a `PbrMaterial` struct for the BSDF system.
 -------------------------------------------------------------------------------------------------*/
+// The size of the bumps a skin's normal map draws (pores, fine wrinkles), in metres: what the thin
+// preview of a FV_materials_subsurface medium measures its scatter distance against
+static const float PREVIEW_BUMP_SCALE = 0.0005;
+
 PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, bool scatterAsThin = false)
 {
   // Start from a fully-initialized material so that gating out any extension with MAT_EXT_*
@@ -635,6 +639,12 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
       {
         g                 = -0.8;
         multiscatterColor = pbrMat.baseColor;
+        // Light the walk spreads under the skin evens out the normal map's bumps on the way: over
+        // a diffusion length d, against bumps of about PREVIEW_BUMP_SCALE, 1 - exp(-d / scale) of
+        // each channel's diffuse turns about the smooth normal (measured skin: red nearly all,
+        // green 0.94, blue 0.74). The specular keeps the map, as on the walk.
+        if(any(material.scatterDistance > 0.0))
+          pbrMat.diffuseSoftening = scatterStrength * (1.0 - exp(-material.scatterDistance / PREVIEW_BUMP_SCALE));
       }
       // Thin-walled mode (no volume / thickness = 0). The spec replaces the transmissive part of
       // the dielectric base with

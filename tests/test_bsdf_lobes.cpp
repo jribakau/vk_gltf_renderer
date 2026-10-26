@@ -93,6 +93,13 @@ std::vector<Case> cases()
   bumped.Nc                 = bumped.N;
   orthonormalBasis(bumped.N, bumped.T, bumped.B);
   out.push_back({"normal map", bumped});
+  // The thin skin preview: a bumped diffuse lobe turned toward the smooth normal, red the most
+  PbrMaterial softened      = base(0.45f);
+  softened.N                = normalize(vec3(0.7f, 0.0f, 1.0f));
+  softened.Nc               = softened.N;
+  orthonormalBasis(softened.N, softened.T, softened.B);
+  softened.diffuseSoftening = vec3(0.99f, 0.9f, 0.7f);
+  out.push_back({"softened diffuse", softened});
   return out;
 }
 
@@ -276,4 +283,43 @@ TEST(BsdfLobes, TheTerminatorTermFadesOnlyABumpedLobe)
   }
   EXPECT_LT(last, 0.5f);
   EXPECT_EQ(shadowTerminatorTerm(-N, N, Ns), 0.0f);
+}
+
+// The softened diffuse lobe is, per channel, its share of a Lambert lobe about the smooth normal and
+// the rest about the map's: all of it about Ns at softening 1, and the plain lobe at softening 0.
+TEST(BsdfLobes, ASoftenedDiffuseLobeTurnsTowardTheSmoothNormal)
+{
+  PbrMaterial mat = cases().back().mat;
+  const vec3  Ns  = mat.Ns;
+  std::mt19937 rng(21);
+  for(int i = 0; i < 200; i++)
+  {
+    const vec3 L = sphere(rng);
+    mat.diffuseSoftening = vec3(1.0f);
+    BsdfEvaluateData full{};
+    full.k1 = vec3(0, 0, 1);
+    full.k2 = L;
+    brdf_diffuse_eval(full, mat, vec3(1.0f));
+    EXPECT_NEAR(full.bsdf_diffuse.x, std::max(dot(L, Ns), 0.0f) / 3.14159265f, 1e-6f);
+
+    mat.diffuseSoftening = vec3(0.0f);
+    BsdfEvaluateData none{};
+    none.k1 = vec3(0, 0, 1);
+    none.k2 = L;
+    brdf_diffuse_eval(none, mat, vec3(1.0f));
+    const float cosN = std::max(dot(L, mat.N), 0.0f);
+    EXPECT_NEAR(none.bsdf_diffuse.x, cosN / 3.14159265f * (cosN > 0.0f ? shadowTerminatorTerm(L, mat.N, Ns) : 0.0f), 1e-6f);
+
+    // between the two, channel by channel
+    mat.diffuseSoftening = vec3(0.25f, 0.5f, 0.75f);
+    BsdfEvaluateData mix{};
+    mix.k1 = vec3(0, 0, 1);
+    mix.k2 = L;
+    brdf_diffuse_eval(mix, mat, vec3(1.0f));
+    for(int c = 0; c < 3; c++)
+    {
+      const float s = mat.diffuseSoftening[c];
+      EXPECT_NEAR(mix.bsdf_diffuse[c], (1.0f - s) * none.bsdf_diffuse.x + s * full.bsdf_diffuse.x, 1e-6f) << c;
+    }
+  }
 }
