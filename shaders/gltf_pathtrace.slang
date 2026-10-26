@@ -404,11 +404,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // leaves in that surface's colour with the face's tint taken out. Only a path that started
         // in the camera's medium has no material to name and falls back to the surface's. Factors
         // only: a scatter strength or multiscatter texture (which the figures don't use) is not in it.
+        // A medium made from its surface's colour (FV_materials_subsurface) already carries the
+        // colour of where the walk entered: the walk leaves white.
         const int    albedoMaterial = walkMaterial >= 0 ? walkMaterial : materialIndex;
         const float3 walkAlbedo     = max(materials[albedoMaterial].multiscatterColorFactor
                                               * materials[albedoMaterial].scatterStrengthFactor,
                                           float3(0.05F));
-        const float3 exitAlbedo = pbrMat.baseColor / walkAlbedo;
+        const float3 exitAlbedo = any(materials[albedoMaterial].scatterDistance > 0.0F) ? float3(1.0F) : pbrMat.baseColor / walkAlbedo;
         const float3 N          = pbrMat.N;
         const float3 Ng         = pbrMat.Ng;
         const float3 T          = pbrMat.T;

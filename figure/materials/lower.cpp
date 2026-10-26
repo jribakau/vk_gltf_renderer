@@ -451,7 +451,20 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
         return b.base({}, scatterColor, {}, makeup);
       return Json();
     };
-    if(role == SkinRole::eFlesh && opts.skin == SkinMode::eVolume)
+    if(role == SkinRole::eFlesh && opts.skin == SkinMode::eMeasured)
+    {
+      // Skin as measured, whatever the file's Iray medium says. Every bit of diffuse light enters
+      // (skin has no diffuse layer above its tissue, only the oily film the specular lobes are),
+      // and the renderer makes the medium from the skin map where the walk enters and how far
+      // light spreads in skin per channel: the map is the colour lit from the front, the distance
+      // how soft pores and shadow edges are and how far red glows through ears and fingers.
+      transmission                   = 1;
+      ext["KHR_materials_ior"]       = {{"ior", 1.4}};
+      ext["KHR_materials_volume"]    = {{"thicknessFactor", 1}, {"attenuationDistance", 1}, {"attenuationColor", Json::array({1, 1, 1})}};
+      ext["KHR_materials_scatter"]   = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", Json::array({1, 1, 1})}, {"scatterAnisotropy", 0}};
+      ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson(kSkinScatterDistance)}};
+    }
+    else if(role == SkinRole::eFlesh && opts.skin == SkinMode::eVolume)
     {
       // Volumetric subsurface scattering, Iray's way: the translucent share enters (transmission =
       // weight) and random-walks through a medium with Iray's own scattering and absorption per

@@ -200,6 +200,11 @@ KHR_materials_scatter tinygltf::utils::getScatter(const tinygltf::Material& tmat
       tinygltf::utils::getArrayValue(*ext, "multiscatterColor", gmat.multiscatterColorFactor);
     }
   }
+  if(const auto* sub = tinygltf::utils::findExtension(tmat.extensions, FV_MATERIALS_SUBSURFACE_EXTENSION_NAME))
+  {
+    tinygltf::utils::getArrayValue(*sub, "scatterDistance", gmat.scatterDistance);
+    gmat.scatterDistance = glm::max(gmat.scatterDistance, glm::vec3(0.0f));
+  }
   return gmat;
 }
 

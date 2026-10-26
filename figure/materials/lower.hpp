@@ -24,12 +24,14 @@ namespace fv::mat {
 
 // How skin is sent to the renderer. Volume is the path tracer's converged look; thin is its preview
 // while the camera moves. The rasterizer would show transmission as see-through skin, so a
-// real-time view takes none of it: plain diffuse and specular under the base colour.
+// real-time view takes none of it: plain diffuse and specular under the base colour. Measured is
+// a volume too, made from measured human skin instead of the file's Iray medium (kSkinScatterDistance).
 enum class SkinMode
 {
   eRaster,
   eThin,
   eVolume,
+  eMeasured,
 };
 
 struct LowerOptions

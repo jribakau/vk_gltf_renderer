@@ -279,6 +279,7 @@ struct GltfShadeMaterial
   float3 multiscatterColorFactor = float3(1);
   float  scatterStrengthFactor   = 0;
   float  scatterAnisotropy       = 0;
+  float3 scatterDistance         = float3(0);  // FV_materials_subsurface; 0: the medium as authored
 #endif
 
 #if MAT_EXT_DETAIL

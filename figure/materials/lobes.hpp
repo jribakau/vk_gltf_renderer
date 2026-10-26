@@ -59,6 +59,11 @@ struct VolumeMedium
   Rgb   multiscatter{1, 1, 1};  // multiscatterColorFactor: what the renderer's albedo inversion turns back into `albedo`
 };
 
+// How far light spreads in human skin, per channel, in metres: the diffuse mean free path
+// 1 / sqrt(3 sigma_a sigma_t') of Jensen et al.'s measured skin1 (2001), red 3.7 mm, green 1.4 mm,
+// blue 0.7 mm. Pores, about 0.1 to 0.3 mm, are far smaller: their shading melts into the skin.
+constexpr Rgb kSkinScatterDistance{0.00367f, 0.00137f, 0.00068f};
+
 // The medium under a volume skin, from Iray's measurements when the surface has them, otherwise
 // Jensen's skin1.
 VolumeMedium volumeMedium(const std::optional<Subsurface>& sss);

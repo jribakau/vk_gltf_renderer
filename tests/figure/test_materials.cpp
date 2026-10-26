@@ -106,6 +106,30 @@ TEST(Materials, SkinGoesOutAsAVolumeForTheRendererAndPlainForTheRasterizer)
   }
 }
 
+// Measured skin ignores the file's Iray medium: every bit of diffuse light enters, the medium is
+// white for the renderer to make from the skin map, and light spreads as far as in human skin.
+TEST(Materials, MeasuredSkinEntersWhollyAndSpreadsAsHumanSkin)
+{
+  const auto  s       = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  const auto  lowered = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto& ext     = lowered.material["extensions"];
+  EXPECT_FLOAT_EQ(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.0f);
+  EXPECT_GT(ext["KHR_materials_volume"]["thicknessFactor"].get<float>(), 0.0f);
+  EXPECT_FLOAT_EQ(ext["KHR_materials_scatter"]["scatterStrengthFactor"].get<float>(), 1.0f);
+  EXPECT_FLOAT_EQ(ext["KHR_materials_scatter"]["scatterAnisotropy"].get<float>(), 0.0f);
+  const auto& d = ext["FV_materials_subsurface"]["scatterDistance"];
+  for(int i = 0; i < 3; i++)
+  {
+    EXPECT_FLOAT_EQ(ext["KHR_materials_scatter"]["multiscatterColorFactor"][i].get<float>(), 1.0f);
+    EXPECT_FLOAT_EQ(d[i].get<float>(), fv::mat::kSkinScatterDistance[i]);
+  }
+  // red spreads furthest
+  EXPECT_GT(d[0].get<float>(), d[1].get<float>());
+  EXPECT_GT(d[1].get<float>(), d[2].get<float>());
+  // the Iray volume has none of it
+  EXPECT_FALSE(fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
+}
+
 TEST(Materials, AsksTheCookerForTheBlendedNormalMap)
 {
   const auto s       = fv::dson::parseSurface("Face", channelsOf(kSkin));

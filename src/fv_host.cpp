@@ -5019,11 +5019,17 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     const std::string mode = args.at("mode").get<std::string>();
     if(mode != "raster" && mode != "rtx")
       throw std::runtime_error("mode is raster or rtx");
-    // RTX skin: Iray's volume under the surface (the default), or thin-walled scattering at it
-    const bool thin = args.value("skin", std::string("volume")) == "thin";
-    return impl->onApp([impl, mode, thin] {
+    // RTX skin: Iray's volume under the surface (the default), thin-walled scattering at it, or a
+    // volume of measured human skin
+    const std::string skin = args.value("skin", std::string("volume"));
+    if(skin != "volume" && skin != "thin" && skin != "measured")
+      throw std::runtime_error("skin is volume, thin or measured");
+    const fv::mat::SkinMode rtxSkin = skin == "thin"       ? fv::mat::SkinMode::eThin :
+                                      skin == "measured" ? fv::mat::SkinMode::eMeasured :
+                                                           fv::mat::SkinMode::eVolume;
+    return impl->onApp([impl, mode, rtxSkin] {
       impl->renderer->setRenderSystem(mode == "rtx" ? RenderingMode::ePathtracer : RenderingMode::eRasterizer);
-      impl->skinMode = mode == "rtx" ? (thin ? fv::mat::SkinMode::eThin : fv::mat::SkinMode::eVolume) : fv::mat::SkinMode::eRaster;
+      impl->skinMode = mode == "rtx" ? rtxSkin : fv::mat::SkinMode::eRaster;
       for(const auto& p : impl->props)
         if(p->figure && p->materials)
           p->materials->setSkinMode(impl->skinMode);

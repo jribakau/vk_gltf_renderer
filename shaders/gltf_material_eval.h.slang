@@ -596,6 +596,26 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
       // dividing by FLT_MAX gives ~0 extinction (= no attenuation), so no branch needed here.
       float3 singleScatterAlbedo = multiToSingleScatterAlbedo(scatterStrength * multiscatterColor, g);
       float3 attenuationCoef     = volumeExtinctionCoefficient(pbrMat.attenuationColor, pbrMat.attenuationDistance);
+      if(any(material.scatterDistance > 0.0))
+      {
+        // FV_materials_subsurface: the medium from what the surface looks like and how far light
+        // spreads in it (Chiang, Kutz and Burley 2016, "Practical and Controllable Subsurface
+        // Scattering for Production Path Tracing"). The base colour where the walk enters is the
+        // multiple-scattering albedo A, so lit from the front the surface is its colour map, and
+        // the walk leaves white (ptVolumeDiffuseExit). The scatter distance d sets the extinction,
+        // sigma_t = 1 / (d s(A)) with their fit s(A), and the scattering is isotropic: their fit is
+        // for g = 0, and the forward scattering of real tissue is folded into the distance.
+        const float3 A = clamp(pbrMat.baseColor, float3(1e-3), float3(0.999));
+        const float3 s = 1.85 - A + 7.0 * pow(abs(A - 0.8), float3(3.0));
+        g               = 0.0;
+        attenuationCoef = 1.0 / (max(material.scatterDistance, float3(1e-7)) * s);
+        singleScatterAlbedo = multiToSingleScatterAlbedo(A, g);
+        // as KHR_materials_volume, for makeVolumeMedium: the densest channel at exp(-1) over its own
+        // distance, the rest nearer 1, clear of volumeExtinctionCoefficient's floor
+        pbrMat.attenuationDistance = 1.0 / max(attenuationCoef.x, max(attenuationCoef.y, attenuationCoef.z));
+        pbrMat.attenuationColor    = exp(-attenuationCoef * pbrMat.attenuationDistance);
+        attenuationCoef            = volumeExtinctionCoefficient(pbrMat.attenuationColor, pbrMat.attenuationDistance);
+      }
       pbrMat.scatterCoefficient  = attenuationCoef * singleScatterAlbedo;
       pbrMat.scatterAnisotropy   = g;  // consumed by the phase function; only meaningful with sigma_s
       // The specular BTDF is tinted by baseColor. Cancelling that leaves the base map on the

@@ -250,6 +250,7 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf:
   dstMat.scatterStrengthFactor   = scatter.scatterStrengthFactor;
   dstMat.multiscatterColorFactor = scatter.multiscatterColorFactor;
   dstMat.scatterAnisotropy       = scatter.scatterAnisotropy;
+  dstMat.scatterDistance         = scatter.scatterDistance;
   handleTexture(dstMat.scatterStrengthTexture, scatter.scatterStrengthTexture);
   handleTexture(dstMat.multiscatterColorTexture, scatter.multiscatterColorTexture);
 #endif

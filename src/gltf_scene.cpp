@@ -305,6 +305,7 @@ nvvkgltf::Scene::Scene()
       "EXT_meshopt_compression",
       "FV_materials_detail",
       "FV_materials_hair",
+      "FV_materials_subsurface",
       "FV_texture_flip_green",
       "KHR_accessor_float64",
       "KHR_animation_pointer",

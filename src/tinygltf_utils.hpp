@@ -175,7 +175,12 @@ struct KHR_materials_scatter
   glm::vec3             multiscatterColorFactor  = {1.0f, 1.0f, 1.0f};
   tinygltf::TextureInfo multiscatterColorTexture = {};
   float                 scatterAnisotropy        = 0.0f;
+  // FV_materials_subsurface (Figure Viewer): how far light spreads under the surface per channel,
+  // in scene units; 0 is none. With it, a volume's medium comes from the base colour and this
+  // distance (shaders/gltf_material_eval.h.slang), not from its attenuation and multiscatter colour.
+  glm::vec3 scatterDistance = {0.0f, 0.0f, 0.0f};
 };
+#define FV_MATERIALS_SUBSURFACE_EXTENSION_NAME "FV_materials_subsurface"
 
 
 // https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_texture_basisu/README.md
