@@ -86,6 +86,7 @@ set(TEST_SOURCES
     figure/test_materials.cpp
     figure/test_wardrobe.cpp
     figure/test_bind_cache.cpp
+    figure/test_hair_strands.cpp
     figure/test_collider.cpp
     figure/test_export.cpp
     figure/test_dforce.cpp

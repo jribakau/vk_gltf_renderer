@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <numbers>
-#include <unordered_map>
 
 #include <figure/jobs/pool.hpp>
 
@@ -67,6 +66,90 @@ std::optional<double> rotationOf(const Vec3& edge, const Frame& frame)
   return std::atan2(-ty, tx);
 }
 
+// splitmix64's finaliser: a key's bits spread over the table
+uint64_t mix(uint64_t x)
+{
+  x ^= x >> 30;
+  x *= 0xbf58476d1ce4e5b9ull;
+  x ^= x >> 27;
+  x *= 0x94d049bb133111ebull;
+  return x ^ (x >> 31);
+}
+
+// For each of `count` keys, the first index whose key is equal to it (so first[i] <= i). The keys are
+// spread over shards by hash, each shard matched on a thread of its own in index order, which gives
+// what one pass in order gives. hash(i) is key i's hash, same(i, j) whether two keys are equal.
+template <class Hash, class Same>
+std::vector<uint32_t> firstOfEqual(size_t count, const Hash& hash, const Same& same)
+{
+  constexpr int    kShardBits = 6;
+  constexpr size_t kShards    = size_t(1) << kShardBits;
+  constexpr size_t kChunk     = 65536;
+  std::vector<uint64_t> h(count);
+  // per chunk, its indices per shard, and then where they go
+  std::vector<std::array<uint32_t, kShards>> at((count + kChunk - 1) / kChunk);
+  jobs::parallelFor(count, kChunk, [&](size_t begin, size_t end) {
+    auto& c = at[begin / kChunk];
+    c.fill(0);
+    for(size_t i = begin; i < end; i++)
+    {
+      h[i] = hash(i);
+      c[h[i] >> (64 - kShardBits)]++;
+    }
+  });
+  std::array<size_t, kShards + 1> shardStart{};
+  for(size_t s = 0, running = 0; s < kShards; s++)
+  {
+    shardStart[s] = running;
+    for(auto& c : at)
+    {
+      const uint32_t n = c[s];
+      c[s]             = uint32_t(running);
+      running += n;
+    }
+    shardStart[s + 1] = running;
+  }
+  // each shard's indices in order: chunk after chunk, each chunk's in order
+  std::vector<uint32_t> order(count);
+  jobs::parallelFor(count, kChunk, [&](size_t begin, size_t end) {
+    auto& c = at[begin / kChunk];
+    for(size_t i = begin; i < end; i++)
+      order[c[h[i] >> (64 - kShardBits)]++] = uint32_t(i);
+  });
+  std::vector<uint32_t> first(count);
+  jobs::parallelFor(kShards, 1, [&](size_t begin, size_t end) {
+    std::vector<uint32_t> table;
+    for(size_t s = begin; s < end; s++)
+    {
+      const size_t n    = shardStart[s + 1] - shardStart[s];
+      size_t       size = 16;
+      while(size < n * 2)
+        size *= 2;
+      table.assign(size, UINT32_MAX);
+      const size_t mask = size - 1;
+      for(size_t k = shardStart[s]; k < shardStart[s + 1]; k++)
+      {
+        const uint32_t i = order[k];
+        for(size_t p = h[i] & mask;; p = (p + 1) & mask)
+        {
+          const uint32_t j = table[p];
+          if(j == UINT32_MAX)
+          {
+            table[p] = first[i] = i;
+            break;
+          }
+          if(h[j] == h[i] && same(j, i))
+          {
+            first[i] = j;
+            break;
+          }
+        }
+      }
+    }
+  });
+  return first;
+}
+
 // Smaller angle between two undirected axes, in 0..pi/2.
 double axisDelta(double a, double b)
 {
@@ -95,23 +178,21 @@ std::vector<uint32_t> weldPositions(std::span<const float> position)
     int64_t x, y, z;
     bool    operator==(const Key&) const = default;
   };
-  struct Hash
-  {
-    size_t operator()(const Key& k) const
-    {
-      return size_t(k.x * 73856093LL) ^ size_t(k.y * 19349663LL) ^ size_t(k.z * 83492791LL);
-    }
-  };
-  std::unordered_map<Key, uint32_t, Hash> seen;
-  seen.reserve(n);
-  std::vector<uint32_t> ids(n);
-  for(size_t i = 0; i < n; i++)
-  {
-    const Key key{int64_t(std::llround(position[i * 3] / q)), int64_t(std::llround(position[i * 3 + 1] / q)),
+  std::vector<Key> keys(n);
+  const auto       first = firstOfEqual(
+      n,
+      [&](size_t i) {
+        Key& k = keys[i];
+        k      = {int64_t(std::llround(position[i * 3] / q)), int64_t(std::llround(position[i * 3 + 1] / q)),
                   int64_t(std::llround(position[i * 3 + 2] / q))};
-    auto [it, fresh] = seen.try_emplace(key, uint32_t(seen.size()));
-    ids[i]           = it->second;
-  }
+        return mix(uint64_t(k.x) + mix(uint64_t(k.y) + mix(uint64_t(k.z))));
+      },
+      [&](size_t a, size_t b) { return keys[a] == keys[b]; });
+  // ids in the order the positions are first met
+  std::vector<uint32_t> ids(n);
+  uint32_t              next = 0;
+  for(size_t i = 0; i < n; i++)
+    ids[i] = first[i] == i ? next++ : ids[first[i]];
   return ids;
 }
 
@@ -140,15 +221,22 @@ std::vector<StrandVote> strandVotes(const StrandMesh& part, std::span<const uint
       tris.insert(tris.end(), {i0, i1, i2});
     }
   }
-  // edges by welded ends
+  // edges by welded ends, edge e of triangle t at 3t + e: how many triangles share each
   const auto edgeKey = [&](uint32_t a, uint32_t b) -> uint64_t {
     return ids[a] < ids[b] ? uint64_t(ids[a]) * vertexCount + ids[b] : uint64_t(ids[b]) * vertexCount + ids[a];
   };
-  std::unordered_map<uint64_t, int> shared;
-  shared.reserve(tris.size());
-  for(size_t k = 0; k < tris.size(); k += 3)
-    for(int e = 0; e < 3; e++)
-      shared[edgeKey(tris[k + e], tris[k + (e + 1) % 3])]++;
+  std::vector<uint64_t> edges(tris.size());
+  const auto            firstEdge = firstOfEqual(
+      edges.size(),
+      [&](size_t i) {
+        const size_t k = i - i % 3;
+        edges[i]       = edgeKey(tris[i], tris[k + (i - k + 1) % 3]);
+        return mix(edges[i]);
+      },
+      [&](size_t a, size_t b) { return edges[a] == edges[b]; });
+  std::vector<int> shared(edges.size(), 0);
+  for(uint32_t f : firstEdge)
+    shared[f]++;
   const auto pos = [&](uint32_t i) -> Vec3 { return {part.position[i * 3], part.position[i * 3 + 1], part.position[i * 3 + 2]}; };
   // the triangles' votes in triangle order, counted in parallel chunks that each write their own
   // list (the edge counts are only read now); the lists concatenated are what one pass would make
@@ -170,7 +258,7 @@ std::vector<StrandVote> strandVotes(const StrandMesh& part, std::span<const uint
       int uses[3], least = 1 << 30;
       for(int e = 0; e < 3; e++)
       {
-        uses[e] = shared.find(edgeKey(corner[e], corner[(e + 1) % 3]))->second;  // every edge was counted
+        uses[e] = shared[firstEdge[k + e]];
         least   = std::min(least, uses[e]);
       }
       bool   haveBest = false;
