@@ -55,6 +55,8 @@
 #include "tinygltf_utils.hpp"
 #include "version.hpp"
 
+#include <figure/io/timing.hpp>
+
 using namespace nvvkgltf::detail;
 
 //--------------------------------------------------------------------------------------------------
@@ -2978,6 +2980,8 @@ void nvvkgltf::Scene::materializeInstanceSets(tinygltf::Model& model, const std:
 // remain deduplicated in the unique-primitive list.
 void nvvkgltf::Scene::createMissingTangentsForModel()
 {
+  std::optional<fv::timing::Scope> find;
+  find.emplace("tangents: find", 1);
   std::unordered_map<std::string, std::vector<tinygltf::Primitive*>> keyToPrimitives;
 
   for(size_t i = 0; i < m_model.meshes.size(); ++i)
@@ -3007,7 +3011,9 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
 
   // the tangents go at the end of the scene's buffer (hundreds of MB for a dressed figure): room for
   // all of them first, so it is not copied again each time a group's are added
+  find.reset();
   {
+    fv::timing::Scope t("tangents: room", 1);
     size_t room = m_model.buffers.empty() ? 0 : m_model.buffers[0].data.size();
     for(auto& [key, primitives] : keyToPrimitives)
       if(!primitives.empty())
@@ -3020,6 +3026,9 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
     if(primitives.empty())
       continue;
     tinygltf::Primitive* first = primitives[0];
+    fv::timing::Scope    t("tangents: " + std::to_string(primitives.size()) + " primitives, "
+                               + std::to_string(tinygltf::utils::getVertexCount(m_model, *first)) + " vertices",
+                           5);
     tinygltf::utils::createTangentAttribute(m_model, *first);
     const int tangentAccessorIndex = first->attributes["TANGENT"];
     for(size_t i = 1; i < primitives.size(); ++i)
