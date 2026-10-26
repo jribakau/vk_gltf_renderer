@@ -859,6 +859,22 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       bool   shadowSideForward = dot(directLight.direction, hit.nrm) > 0.0F;
       float3 shadowOffsetDir   = shadowSideForward ? hit.geonrm : -hit.geonrm;
       float3 shadowOffsetBase  = shadowSideForward ? hit.shadowPos : hit.pos;
+#if GLTF_USE_SCATTER
+      // FV_materials_subsurface on a surface with no volume (the white of an eye): light that enters
+      // it comes back out a short way off, so what the light sees is taken at a point spread from
+      // this one by an exponential radial profile of mean d (the diffusion length, averaged over
+      // the channels), in the tangent plane. Thin shadows, the lashes' on the eye, blur as they do
+      // in tissue; no walk, so nothing is lost in an eyeball that is not one closed medium. The tail
+      // is cut at 3 d, short of most lid margins.
+      if(materialIndex >= 0 && pbrMat.thickness <= 0.0F && any(materials[materialIndex].scatterDistance > 0.0F) && shadowSideForward)
+      {
+        const float3 dist = materials[materialIndex].scatterDistance;
+        const float  d    = (dist.x + dist.y + dist.z) / 3.0F;
+        const float  r    = min(-d * log(max(1.0F - rand(seed), 1e-6F)), 3.0F * d);
+        const float  phi  = rand(seed) * M_TWO_PI;
+        shadowOffsetBase += r * (cos(phi) * hit.tangent + sin(phi) * hit.bitangent);
+      }
+#endif
       bounce.shadowRayPos      = safeOffsetRay(shadowOffsetBase, shadowOffsetDir, hit.offsetDistance);
       bounce.shadowRayDir      = directLight.direction;
       bounce.shadowRayDist     = directLight.distance;

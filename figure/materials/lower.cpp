@@ -495,6 +495,14 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       ext["KHR_materials_scatter"] = sc;
     }
   }
+  // The white of an eye under measured skin: dense scattering tissue, so light comes back out a few
+  // tenths of a millimetre from where it went in and the lashes' shadows soften instead of printing
+  // as stripes. The eyeball's surfaces are no closed medium for a walk (one darkened the eyes), so
+  // the renderer spreads where its light samples look for shadow over the surface instead
+  // (FV_materials_subsurface with no volume). A Genesis 9 eye's iris is in the same surface.
+  if(const EyeLayout eye = eyeLayout(s);
+     !refractive && opts.skin == SkinMode::eMeasured && (eye == EyeLayout::eShared || eye == EyeLayout::eSclera))
+    ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson(kScleraScatterDistance)}};
   if(transmission > 0)
   {
     ext["KHR_materials_transmission"] = {{"transmissionFactor", transmission}};

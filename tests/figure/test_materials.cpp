@@ -740,6 +740,21 @@ TEST(Materials, EyeLayoutsFollowTheSurfaceNames)
   EXPECT_EQ(layout("Face"), EyeLayout::eNone);
 }
 
+TEST(Materials, AnEyesWhiteSpreadsItsLightUnderMeasuredSkinWithNoWalk)
+{
+  const auto  eye     = fv::dson::parseSurface("Eye Left", channelsOf(kEye));
+  const auto  lowered = fv::mat::lower(eye, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto& ext     = lowered.material["extensions"];
+  ASSERT_TRUE(ext.contains("FV_materials_subsurface"));
+  for(int i = 0; i < 3; i++)
+    EXPECT_FLOAT_EQ(ext["FV_materials_subsurface"]["scatterDistance"][i].get<float>(), fv::mat::kScleraScatterDistance[i]);
+  // no medium: the eyeball is no closed volume
+  EXPECT_FALSE(ext.contains("KHR_materials_volume"));
+  EXPECT_FALSE(ext.contains("KHR_materials_transmission"));
+  // the Iray volume leaves the eye as it was
+  EXPECT_FALSE(fv::mat::lower(eye, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
+}
+
 TEST(Materials, AnIrisColourAsksForARecolouredBaseMap)
 {
   const auto     eye = fv::dson::parseSurface("Eye Left", channelsOf(kEye));

@@ -63,6 +63,9 @@ struct VolumeMedium
 // 1 / sqrt(3 sigma_a sigma_t') of Jensen et al.'s measured skin1 (2001), red 3.7 mm, green 1.4 mm,
 // blue 0.7 mm. Pores, about 0.1 to 0.3 mm, are far smaller: their shading melts into the skin.
 constexpr Rgb kSkinScatterDistance{0.00367f, 0.00137f, 0.00068f};
+// The same for the white of the eye, in metres: a rough diffusion length from published optical
+// properties of sclera (strong scattering, little absorption).
+constexpr Rgb kScleraScatterDistance{0.0004f, 0.0003f, 0.00025f};
 
 // The medium under a volume skin, from Iray's measurements when the surface has them, otherwise
 // Jensen's skin1.
