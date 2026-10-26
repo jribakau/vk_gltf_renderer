@@ -33,7 +33,7 @@
 //                    alphaMode, doubleSided, normalStrength, bumpStrength, specular, clearcoat,
 //                    clearcoatRoughness, emissive, emissiveIntensity, irisColor, irisStrength,
 //                    scleraColor, recolor, recolorStrength, tone, toneStrength, makeupColor,
-//                    makeupWeight}}   null resets a value
+//                    makeupWeight, scatterScale}}   null resets a value
 //   material.reset  {material}                    drops the edits of a material (or of all, if none)
 //   Colours are "#rrggbb" in sRGB, as the colour pickers hold them. alphaMode: opaque, cutout, blend.
 //   irisColor and irisStrength (0..1) recolour an eye's iris in its map (the cooker's ir=), and are
@@ -43,7 +43,7 @@
 //   cooker's rc=). tone and toneStrength do it for skin against the figure's tone reference
 //   (dson::toneReference), so every skin surface moves by the same shift. Both are refused on a
 //   model. makeupColor and makeupWeight (0..1) change a PBRSkin makeup layer, refused on a surface
-//   without one.
+//   without one. scatterScale (0.1..4) scales how far light spreads under measured skin.
 //
 // One per prop with materials (a figure, a model). Its materials sit in the renderer's scene at
 // `Placement::materials` on (fv_compose.hpp), and "m:3" is the prop's own third material.
@@ -55,7 +55,8 @@
 // takes, and whether changing them cooks its map) and always has irisColor/irisStrength or
 // scleraColor in `values`, a colour null when unset. A surface with a makeup layer has
 // `makeup: {mapped}` (whether a map shapes it) and makeupColor (null when unset) and makeupWeight
-// in `values`; every surface has recolor and tone (null when unset) with their strengths. A figure's
+// in `values`; every surface has recolor and tone (null when unset) with their strengths; flesh
+// under measured skin (SkinMode::eMeasured) has scatterScale. A figure's
 // `eyes` is what the host set (setEyes, fv_host.hpp material.eyes): {rel, preset, own, ready,
 // surfaces}; its `skin` the same for skin and makeup (setSkin, fv_host.hpp material.skin). The
 // topic is dropped on detach.

@@ -208,6 +208,8 @@ struct Edits
   // weight, 0..1. Only on a surface with a makeup layer.
   std::optional<Rgb>         makeupColor;
   std::optional<float>       makeupWeight;
+  // measured skin: how far light spreads under it, times human skin's (kSkinScatterDistance)
+  std::optional<float>       scatterScale;
 
   bool empty() const;
   // Fields set in `o` replace those here.

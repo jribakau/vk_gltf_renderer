@@ -128,6 +128,14 @@ TEST(Materials, MeasuredSkinEntersWhollyAndSpreadsAsHumanSkin)
   EXPECT_GT(d[1].get<float>(), d[2].get<float>());
   // the Iray volume has none of it
   EXPECT_FALSE(fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
+  // an edit scales the distance
+  fv::mat::Edits e;
+  e.scatterScale = 0.5f;
+  EXPECT_FALSE(e.empty());
+  const auto  halved = fv::mat::lower(s, e, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto& hd     = halved.material["extensions"]["FV_materials_subsurface"]["scatterDistance"];
+  for(int i = 0; i < 3; i++)
+    EXPECT_FLOAT_EQ(hd[i].get<float>(), 0.5f * fv::mat::kSkinScatterDistance[i]);
 }
 
 TEST(Materials, AsksTheCookerForTheBlendedNormalMap)

@@ -28,6 +28,7 @@
 #include <nvutils/logger.hpp>
 
 #include <figure/dson/skin_materials.hpp>
+#include <figure/materials/lobes.hpp>
 
 #include "gltf_scene.hpp"
 #include "gltf_scene_editor.hpp"
@@ -185,6 +186,7 @@ void applyValue(fv::mat::Edits& e, const std::string& key, const Json& v)
         {"recolorStrength", &fv::mat::Edits::recolorStrength, 0, 1},
         {"toneStrength", &fv::mat::Edits::toneStrength, 0, 1},
         {"makeupWeight", &fv::mat::Edits::makeupWeight, 0, 1},
+        {"scatterScale", &fv::mat::Edits::scatterScale, 0.1f, 4},
     };
     for(const Field& f : fields)
       if(key == f.name)
@@ -228,6 +230,7 @@ Json editedKeys(const fv::mat::Edits& e)
   add(e.toneStrength.has_value(), "toneStrength");
   add(e.makeupColor.has_value(), "makeupColor");
   add(e.makeupWeight.has_value(), "makeupWeight");
+  add(e.scatterScale.has_value(), "scatterScale");
   return out;
 }
 
@@ -933,6 +936,9 @@ Json FvMaterials::item(int index) const
     out["values"]["makeupColor"]   = m.edits.makeupColor ? Json(hexOf(*m.edits.makeupColor)) : Json(nullptr);
     out["values"]["makeupWeight"]  = std::clamp(m.edits.makeupWeight.value_or(s.makeup->weight), 0.f, 1.f);
   }
+  // measured skin's scatter distance, times human skin's: only where it applies
+  if(m_options[index].skin == fv::mat::SkinMode::eMeasured && fv::mat::skinRole(s) == fv::mat::SkinRole::eFlesh)
+    out["values"]["scatterScale"] = m.edits.scatterScale.value_or(1.f);
   return out;
 }
 

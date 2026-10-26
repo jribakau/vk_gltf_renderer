@@ -46,7 +46,8 @@ bool Edits::empty() const
 {
   return !color && !roughness && !metalness && !opacity && !alphaMode && !doubleSided && !normalStrength && !bumpStrength && !specular
          && !clearcoat && !clearcoatRoughness && !emissive && !emissiveIntensity && !irisColor && !scleraColor && !irisStrength
-         && !recolor && !recolorStrength && !tone && !toneStrength && !makeupColor && !makeupWeight;
+         && !recolor && !recolorStrength && !tone && !toneStrength && !makeupColor && !makeupWeight
+         && !scatterScale;
 }
 
 void Edits::merge(const Edits& o)
@@ -77,6 +78,7 @@ void Edits::merge(const Edits& o)
   take(toneStrength, o.toneStrength);
   take(makeupColor, o.makeupColor);
   take(makeupWeight, o.makeupWeight);
+  take(scatterScale, o.scatterScale);
 }
 
 EyeLayout eyeLayout(const Surface& s)

@@ -56,7 +56,7 @@
 //   pose.eyes       {prop}                       aim the eyeballs at the camera
 //   morph.set       {prop, values: {name: value}}   coalesced, one setMany per frame
 //   morph.reset     {prop}
-//   render.mode     {mode: "raster" | "rtx", skin?: "volume" | "thin" | "measured"}
+//   render.mode     {mode: "raster" | "rtx", skin?: "measured" | "volume" | "thin"}
 //   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame)
 //   render.budget   {}  -> {known, budgetBytes, usageBytes, bytesPerPixel, width, height}   GPU memory: the

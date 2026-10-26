@@ -462,7 +462,8 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       ext["KHR_materials_ior"]       = {{"ior", 1.4}};
       ext["KHR_materials_volume"]    = {{"thicknessFactor", 1}, {"attenuationDistance", 1}, {"attenuationColor", Json::array({1, 1, 1})}};
       ext["KHR_materials_scatter"]   = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", Json::array({1, 1, 1})}, {"scatterAnisotropy", 0}};
-      ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson(kSkinScatterDistance)}};
+      const float scale              = e.scatterScale.value_or(1.f);
+      ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson({kSkinScatterDistance[0] * scale, kSkinScatterDistance[1] * scale, kSkinScatterDistance[2] * scale})}};
     }
     else if(role == SkinRole::eFlesh && opts.skin == SkinMode::eVolume)
     {

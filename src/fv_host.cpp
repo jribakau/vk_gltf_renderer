@@ -5019,9 +5019,9 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     const std::string mode = args.at("mode").get<std::string>();
     if(mode != "raster" && mode != "rtx")
       throw std::runtime_error("mode is raster or rtx");
-    // RTX skin: Iray's volume under the surface (the default), thin-walled scattering at it, or a
-    // volume of measured human skin
-    const std::string skin = args.value("skin", std::string("volume"));
+    // RTX skin: a volume of measured human skin (the default), the file's Iray volume, or
+    // thin-walled scattering at the surface
+    const std::string skin = args.value("skin", std::string("measured"));
     if(skin != "volume" && skin != "thin" && skin != "measured")
       throw std::runtime_error("skin is volume, thin or measured");
     const fv::mat::SkinMode rtxSkin = skin == "thin"       ? fv::mat::SkinMode::eThin :
