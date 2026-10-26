@@ -33,9 +33,8 @@ float3 sampleSphereCone(float3 center, float radius, float3 pos, float u1, float
 {
   const float3 toLight = center - pos;
   const float  d       = length(toLight);
-  const float  r       = std::min(radius / d, 1.0f);
-  const float  r2p1    = r * r + 1.0f;
-  const float  omc     = r * r / (r2p1 + std::sqrt(r2p1));
+  const float  sin2    = std::min(radius * radius / (d * d), 1.0f);
+  const float  omc     = sin2 / (1.0f + std::sqrt(1.0f - sin2));
   const float  z       = 1.0f - u2 * omc;
   const float  s       = std::sqrt(std::max(1.0f - z * z, 0.0f));
   const float3 w       = toLight / d;
@@ -54,8 +53,8 @@ TEST(LightPick, EstimatesAreTheIrradianceAtNormalIncidence)
   const float3 pos(0, 0, 0), up(0, 1, 0);
   EXPECT_NEAR(pointEstimate(float3(0, 2, 0), 0.0f, 100.0f, pos, up), 25.0f, 1e-4f);
   EXPECT_NEAR(pointEstimate(float3(0, 200, 0), 0.01f, 1e6f, pos, up), 25.0f, 0.01f);
-  // Inside its sphere a light gives a hemisphere of its radiance (I / r^2 * pi), not infinity
-  EXPECT_NEAR(pointEstimate(float3(0, 0.01f, 0), 0.5f, 1.0f, pos, up), 4.0f * (2.0f - std::sqrt(2.0f)), 1e-4f);
+  // Inside its sphere a light fills the hemisphere: its radiance I / (pi r^2) over 2 pi, not infinity
+  EXPECT_NEAR(pointEstimate(float3(0, 0.01f, 0), 0.5f, 1.0f, pos, up), 8.0f, 1e-4f);
 
   // range 4 at distance 2: 1 - (1/2)^4
   const float ranged = punctualLightPickEstimate(false, false, float3(0, 2, 0), float3(0, -1, 0), 0.0f, 100.0f, 0.25f, 0, 0, pos, up, true);
@@ -115,6 +114,49 @@ TEST(LightPick, ACulledSphereHasNoSampleAboveTheHorizon)
   }
   EXPECT_GT(culled, 100);
   EXPECT_GT(kept, 100);
+}
+
+// A sphere light's samples average to its irradiance, intensity / distance^2 at normal incidence,
+// however near it is: its cone has the half-angle the sphere subtends, sin = radius / distance. The
+// atan cone it had gave intensity / (distance^2 + radius^2), 20% low at twice the radius.
+TEST(LightPick, ASphereLightsSamplesGiveItsIrradiance)
+{
+  const float3 pos(0), up(0, 1, 0);
+  const float  radius = 0.2f, intensity = 3.0f;
+  for(const float dOverR : {1.05f, 2.0f, 10.0f})
+  {
+    const float3 center(0, dOverR * radius, 0);
+    const float  estimate = pointEstimate(center, radius, intensity, pos, up);  // radiance times solid angle
+    const int    n        = 512;
+    double       cosSum   = 0.0;
+    for(int i = 0; i < n; i++)
+      for(int j = 0; j < n; j++)
+        cosSum += std::max(dot(sampleSphereCone(center, radius, pos, (i + 0.5f) / n, (j + 0.5f) / n), up), 0.0f);
+    const float irradiance = estimate * float(cosSum / (double(n) * n));
+    const float expected   = intensity / (center.y * center.y);
+    EXPECT_NEAR(irradiance, expected, 0.002f * expected) << "distance " << dOverR << " radii";
+  }
+}
+
+// A sphere's sample ends on the sphere: at its silhouette the centre's distance would run past it
+TEST(LightPick, ASphereSampleEndsOnTheSphere)
+{
+  const float3 pos(0), center(0, 2, 0);
+  const float  radius = 0.5f;
+  // Straight at it: the near side
+  EXPECT_NEAR(sphereLightSampleDistance(pos, float3(0, 1, 0), center, radius), 1.5f, 1e-3f);
+  // Every direction of its cone ends on the sphere's near side, a hair short; the centre's
+  // distance ends 4 mm off it at the silhouette
+  for(int i = 0; i <= 16; i++)
+    for(int j = 0; j < 8; j++)
+    {
+      const float3 dir = sampleSphereCone(center, radius, pos, j / 8.0f, i / 16.0f);
+      const float  t   = sphereLightSampleDistance(pos, dir, center, radius);
+      EXPECT_NEAR(length(pos + dir * t - center), radius, 1e-3f) << i << " " << j;
+      EXPECT_LE(t, length(center - pos));
+    }
+  // From inside, the light is all around: to its far side
+  EXPECT_NEAR(sphereLightSampleDistance(float3(0, 1.9f, 0), float3(0, 1, 0), center, radius), 0.6f, 1e-3f);
 }
 
 // Over the candidates the probabilities sum to one, each at least the defensive share; a light that

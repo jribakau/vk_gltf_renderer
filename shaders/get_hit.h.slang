@@ -73,6 +73,22 @@ float roundingGamma(int n)
 // still lets a ray from a 100 m floor pass under an object 0.5 mm above it (a leak from about 59).
 static const float RAY_TEST_ERROR_ULPS = 16.0F;
 
+// How far a ray leaving a point of a triangle must step off it along the geometric normal not to
+// hit it again (getHitState says why). `pos0..2`: the triangle in object space; `worldNormal`: its
+// geometric normal in world space; `triangleSize`: its longest edge in world space.
+float triangleOffsetDistance(float3 pos0, float3 pos1, float3 pos2, float3 barycentrics, float4x4 objectToWorld, float3 worldNormal, float triangleSize)
+{
+  const float3 position    = pos0 * barycentrics.x + pos1 * barycentrics.y + pos2 * barycentrics.z;
+  const float3 objectError = roundingGamma(7) * (abs(barycentrics.x * pos0) + abs(barycentrics.y * pos1) + abs(barycentrics.z * pos2));
+  // The world error is |objectToWorld| applied to the object error (and to |position|, 1 for the
+  // translation); along the normal, dot(|n|, |M| e) = dot(|M|^T |n|, e), so the normal goes through
+  // the matrix once instead of each error. Rows 0-2 weigh the object axes, row 3 the translation.
+  const float4 normalWeight = mul(abs(objectToWorld), float4(abs(worldNormal), 0.0));
+  const float  pointError   = (1.0F + roundingGamma(3)) * dot(normalWeight.xyz, objectError)
+                           + roundingGamma(3) * (dot(normalWeight.xyz, abs(position)) + normalWeight.w);
+  return pointError + RAY_TEST_ERROR_ULPS * FLOAT_UNIT_ROUNDOFF * triangleSize;
+}
+
 //-----------------------------------------------------------------------
 // Return hit information: position, normal, geonormal, uv, tangent, bitangent
 HitState getHitState(GltfRenderPrimitive renderPrim,  //
@@ -115,15 +131,8 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
   //    coordinates the test works with: the triangle's extent around the ray origin.
   // Every term is a length of the scene's own, so the step scales with the scene.
   {
-    const float3 objectError = roundingGamma(7) * (abs(barycentrics.x * pos0) + abs(barycentrics.y * pos1) + abs(barycentrics.z * pos2));
-    // The world error is |objectToWorld| applied to the object error (and to |position|, 1 for the
-    // translation); along the normal, dot(|n|, |M| e) = dot(|M|^T |n|, e), so the normal goes through
-    // the matrix once instead of each error. Rows 0-2 weigh the object axes, row 3 the translation.
-    const float4 normalWeight = mul(abs(objectToWorld), float4(abs(hit.geonrm), 0.0));
-    const float  pointError   = (1.0F + roundingGamma(3)) * dot(normalWeight.xyz, objectError)
-                             + roundingGamma(3) * (dot(normalWeight.xyz, abs(position)) + normalWeight.w);
-    const float  triangleSize = sqrt(max(dot(worldEdge1, worldEdge1), max(dot(worldEdge2, worldEdge2), dot(worldEdge3, worldEdge3))));
-    hit.offsetDistance = pointError + RAY_TEST_ERROR_ULPS * FLOAT_UNIT_ROUNDOFF * triangleSize;
+    const float triangleSize = sqrt(max(dot(worldEdge1, worldEdge1), max(dot(worldEdge2, worldEdge2), dot(worldEdge3, worldEdge3))));
+    hit.offsetDistance = triangleOffsetDistance(pos0, pos1, pos2, barycentrics, objectToWorld, hit.geonrm, triangleSize);
   }
 
   // Normal

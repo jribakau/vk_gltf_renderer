@@ -18,6 +18,19 @@ static const int LIGHT_PICK_MAX_LIGHTS = 16;
 // figure shades, or a glossy lobe's reflection of a light the irradiance calls dim.
 static const float LIGHT_PICK_DEFENSIVE = 0.1F;
 
+// How far a sample of a sphere light, in `direction` from `pos`, travels to the light: to its near
+// side from outside, to its far side from within. A hair short, so the shadow ray ends on this side.
+float sphereLightSampleDistance(float3 pos, float3 direction, float3 center, float radius)
+{
+  const float3 toCenter = center - pos;
+  const float  along    = dot(direction, toCenter);
+  const float  d2       = dot(toCenter, toCenter);
+  const float  r2       = radius * radius;
+  const float  half     = sqrt(max(r2 - (d2 - along * along), 0.0F));  // 0 at the silhouette
+  const float  t        = (d2 > r2) ? along - half : along + half;
+  return max(t, 0.0F) * (1.0F - 1e-4F);
+}
+
 // A directional light travelling along `lightDir`, or a point or spot light at `lightPos` of radius
 // `radius` aiming along `lightDir`. `power`: the largest channel of colour times intensity;
 // `invRange`: 1 / the KHR_lights_punctual range, 0 for none; the spot's cone in radians.
@@ -54,9 +67,8 @@ float punctualLightPickEstimate(bool   directional,
   if(radius > 0.0F)
   {
     // The sphere's solid angle, as singleLightContribution computes it; the point inside it sees a hemisphere
-    const float r                    = (d > 0.0F) ? min(radius / d, 1.0F) : 1.0F;
-    const float r2p1                 = r * r + 1.0F;
-    const float oneMinusCosHalfAngle = r * r / (r2p1 + sqrt(r2p1));
+    const float sin2                 = (d > 0.0F) ? min(radius * radius / d2, 1.0F) : 1.0F;
+    const float oneMinusCosHalfAngle = sin2 / (1.0F + sqrt(1.0F - sin2));
     irradiance                       = power / (radius * radius) * 2.0F * oneMinusCosHalfAngle;
   }
   else

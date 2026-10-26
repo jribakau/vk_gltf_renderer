@@ -50,11 +50,11 @@ static const float VOLUME_MIN_SCATTER              = 0.001f;      // Minimum sca
 static const float VOLUME_RAND_FLOOR               = 1.0e-10f;    // Minimum random floor for volume rendering
 static const float VOLUME_RAND_CEIL = 1.0f - 1.0e-7f;  // rand() can return exactly 1.0; keep u in the half-open [0,1) the bucket remap assumes
 static const float RR_PCONT_FLOOR = 0.001f;  // Minimum probability for Russian Roulette
-static const float RR_PCONT_CAP   = 0.95f;   // Maximum probability for Russian Roulette
-// In-volume Russian Roulette, then a hard stop. Scattering is bounded by an event budget rather
-// than by the surface cap: a dense, high-albedo medium keeps the throughput near 1, so a 0.95 cap
-// culls 5% of the fully energetic paths at every scatter and the medium renders far too dark.
-// Following the throughput (cap 0.999) leaves those paths alone until VOLUME_HARD_CAP ends the walk.
+// In-volume Russian Roulette, then a hard stop. A walk has no bounce limit, so its scattering is
+// bounded by an event budget. A dense, high-albedo medium keeps the throughput near 1, so a capped
+// continuation probability (the 0.95 the surface loop once used) culls 5% of the fully energetic
+// paths at every scatter and the medium renders far too dark. Following the throughput (cap 0.999)
+// leaves those paths alone until VOLUME_HARD_CAP ends the walk.
 // Without that stop an unbounded walk in a non-absorbing medium does not terminate (measured:
 // device loss, not merely a slow frame). Both count the events of one walk: entering a medium starts
 // the count again, so a path's second walk is not cut short by its first.
@@ -467,6 +467,82 @@ float3 shadowTailTransmittance(RayDesc ray, bool isInside, float3 extinction, fl
   return shadowMediumTransmittance(isInside && ray.TMax < INFINITE, extinction, ray.TMax - lastHitT);
 }
 
+// Whether a shadow ray crossing this surface enters or leaves a medium (getShadowTransmission's
+// thickness test): the rest of the ray then travels through something else.
+bool shadowSurfaceBoundsMedium(GltfRenderNode renderNode)
+{
+#if GLTF_USE_TRANSMISSION && GLTF_USE_VOLUME
+  if(!hasFlag(pushConst.flags, PathtracerFlags::ePtShadowTransmission))
+    return false;
+  GltfShadeMaterial* materials = pushConst.gltfScene->materials;
+  const uint         matIndex  = max(0, renderNode.materialID);
+#if GLTF_USE_SCATTER
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin) && materials[matIndex].scatterStrengthFactor > 0.0)
+    return false;
+#endif
+  return materials[matIndex].thicknessFactor > 0.0;
+#else
+  return false;
+#endif
+}
+
+// Below this a shadow ray's transmission is rouletted rather than carried on
+static const float SHADOW_ROULETTE_BELOW = 0.05F;
+
+// One surface a shadow ray meets: the medium segment before it, then what the surface lets
+// through. A surface that only filters the light (alpha, thin glass) passes its expected
+// transmission, (1 - opacity) + opacity * T, exact and noise-free: the stochastic test made lash
+// and hair-card shadows noisy in stills and froze them into a stipple on DLSS frames (alphaHashU).
+// One that bounds a medium is either crossed or not, as the rest of the ray depends on it, so it
+// keeps the stochastic test. Returns false once the ray is blocked.
+bool shadowCrossSurface(GltfRenderNode      renderNode,
+                        GltfRenderPrimitive renderPrim,
+                        uint                instanceID,
+                        int                 triangleID,
+                        float3              barycentrics,
+                        float4x3            worldToObject,
+                        float3              rayDirection,
+                        float               hitT,
+                        inout float3        transmission,
+                        inout bool          isInside,
+                        inout float3        extinction,
+                        inout float         prevHitT,
+                        inout uint          seed)
+{
+  const float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics);
+  if(opacity <= 0.0F)
+    return true;
+  const bool boundsMedium = shadowSurfaceBoundsMedium(renderNode);
+  if(boundsMedium && stochasticOpacityU(instanceID, uint(triangleID), barycentrics, seed) >= opacity)
+    return true;
+
+  // The medium changes only at a boundary, so the segment travelled in it is charged there, from
+  // the boundary before. Candidates are not guaranteed to arrive in spatial order: abs() keeps one
+  // that comes back out of order from zeroing the segment (exact for a single convex crossing), and
+  // charging only at boundaries keeps that approximation off the surfaces in between. A lash card
+  // met before the skin's exit would otherwise charge the skin's extinction past the exit.
+  if(boundsMedium)
+  {
+    transmission *= shadowMediumTransmittance(isInside, extinction, abs(hitT - prevHitT));
+    prevHitT = hitT;
+  }
+  const float3 surface =
+      getShadowTransmission(renderNode, renderPrim, triangleID, barycentrics, worldToObject, rayDirection, isInside, extinction);
+  transmission *= boundsMedium ? surface : (1.0F - opacity) + opacity * surface;
+
+  // Russian roulette instead of a cut: a ray through many faint layers is still unbiased
+  const float largest = max(transmission.x, max(transmission.y, transmission.z));
+  if(largest >= SHADOW_ROULETTE_BELOW)
+    return true;
+  if(largest <= 0.0F || rand(seed) * SHADOW_ROULETTE_BELOW >= largest)
+  {
+    transmission = float3(0.0F);
+    return false;
+  }
+  transmission *= SHADOW_ROULETTE_BELOW / largest;
+  return true;
+}
+
 
 //-----------------------------------------------------------------------
 // Raytracer interface
@@ -625,17 +701,6 @@ struct EmissiveSample
   float  pdf;        // solid-angle pdf of the sample; 0 when the sample is invalid
 };
 
-// World-space vertices of a referenced emissive triangle.
-void getEmissiveTriangleWorld(EmissiveTriangle et, out float3 p0, out float3 p1, out float3 p2)
-{
-  GltfRenderNode      node = pushConst.gltfScene.renderNodes[et.renderNodeID];
-  GltfRenderPrimitive prim = pushConst.gltfScene.renderPrimitives[et.renderPrimID];
-  uint3               idx  = getTriangleIndices(prim, int(et.triangleID));
-  p0                       = mul(float4(getVertexPosition(prim, idx.x), 1.0), node.objectToWorld).xyz;
-  p1                       = mul(float4(getVertexPosition(prim, idx.y), 1.0), node.objectToWorld).xyz;
-  p2                       = mul(float4(getVertexPosition(prim, idx.z), 1.0), node.objectToWorld).xyz;
-}
-
 // Select an emissive triangle proportional to its selection weight in O(1) via a Vose alias table.
 // One uniform picks a bin; its fractional part chooses between that bin and its alias.
 int selectEmissiveTriangle(float u01)
@@ -654,15 +719,20 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
 {
   EmissiveSample es = {float3(0, 0, 1), 0.0, float3(0), 0.0};
 
-  EmissiveTriangle et = pushConst.gltfScene.emissiveTriangles[emissiveIndex];
-  float3           p0, p1, p2;
-  getEmissiveTriangleWorld(et, p0, p1, p2);
+  EmissiveTriangle    et   = pushConst.gltfScene.emissiveTriangles[emissiveIndex];
+  GltfRenderNode      node = pushConst.gltfScene.renderNodes[et.renderNodeID];
+  GltfRenderPrimitive prim = pushConst.gltfScene.renderPrimitives[et.renderPrimID];
+  uint3               idx  = getTriangleIndices(prim, int(et.triangleID));
+  const float3        o0   = getVertexPosition(prim, idx.x);
+  const float3        o1   = getVertexPosition(prim, idx.y);
+  const float3        o2   = getVertexPosition(prim, idx.z);
 
-  // Uniform barycentric sample over the triangle area.
-  float  su0      = sqrt(u.x);
-  float  b1       = 1.0 - su0;
-  float  b2       = u.y * su0;
-  float3 lightPos = p0 * (1.0 - b1 - b2) + p1 * b1 + p2 * b2;
+  // Uniform barycentric sample over the triangle area, placed as getHitState places a hit
+  const float  su0      = sqrt(u.x);
+  const float  b1       = 1.0 - su0;
+  const float  b2       = u.y * su0;
+  const float3 bary     = float3(1.0 - b1 - b2, b1, b2);
+  const float3 lightPos = mul(float4(o0 * bary.x + o1 * bary.y + o2 * bary.z, 1.0), node.objectToWorld).xyz;
 
   float3 toLight = lightPos - shadingPos;
   float  dist2   = dot(toLight, toLight);
@@ -671,8 +741,10 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
   float  dist = sqrt(dist2);
   float3 dir  = toLight / dist;
 
-  float3 ng      = cross(p1 - p0, p2 - p0);
-  float  twoArea = length(ng);
+  const float3 we1     = mul(float4(o1 - o0, 0.0), node.objectToWorld).xyz;
+  const float3 we2     = mul(float4(o2 - o0, 0.0), node.objectToWorld).xyz;
+  float3       ng      = cross(we1, we2);
+  float        twoArea = length(ng);
   if(twoArea <= 1e-12)
     return es;  // degenerate triangle
   float3 lightN = ng / twoArea;
@@ -688,10 +760,15 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
     return es;
 
   es.direction = dir;
-  // Stop short of the emitter surface so the shadow ray does not self-intersect it. Use a small
-  // absolute offset rather than a dist-relative one: scaling by dist skips a large segment in front
-  // of a far emitter (missed occluders -> light leak). Clamp so very near emitters stay positive.
-  es.distance = dist - min(dist * 0.5f, 1e-2f);
+  // Stop short of the emitter by no more than the rounding of the sampled point (as a hit's offset,
+  // HitState::offsetDistance) and of the shadow ray's end, shadingPos + dir * distance, so the ray
+  // does not hit the emitter itself. The fixed centimetre it stopped short by let light through an
+  // occluder that close: a lamp's housing, a panel's backing. Half the way for a grazing emitter.
+  const float3 we3          = we2 - we1;
+  const float  triangleSize = sqrt(max(dot(we1, we1), max(dot(we2, we2), dot(we3, we3))));
+  const float  surfaceError = triangleOffsetDistance(o0, o1, o2, bary, node.objectToWorld, lightN, triangleSize)
+                             + roundingGamma(8) * (dot(abs(lightN), abs(shadingPos)) + dist);
+  es.distance = max(dist - surfaceError / cosLight, 0.5F * dist);
   es.radiance = et.radiance;
   // Power-weighted solid-angle pdf; the triangle area cancels (see header). Uses the defensive
   // luminance so it matches the host selection weight.
@@ -857,6 +934,10 @@ void sampleLights(in float3       pos,
   directLight.direction       = -contrib.incidentVector;
   directLight.distance        = contrib.distance;
   directLight.radianceOverPdf = contrib.intensity / selectionPdf;
+  // A sphere's sample ends on the sphere: the cone reaches its silhouette, where the centre's
+  // distance runs past the light into whatever is behind it
+  if(light.type != LightType::eLightTypeDirectional && light.radius > 0.0F)
+    directLight.distance = sphereLightSampleDistance(pos, directLight.direction, light.position, light.radius);
 
   // DIRAC even for a sphere light sampled over a cone: no BSDF ray can reach it, so this is
   // the only technique that produces its radiance and its MIS weight is 1. The sky's sun is
@@ -964,23 +1045,10 @@ bool handleShadowCatcher(IRaytracer      raytracer,
 // ray hits it with probability equal to the fade there, and otherwise passes on to whatever is behind.
 bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout HitState hit, SceneFrameInfo* frameInfo, inout uint seed)
 {
-  if(!hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseInfinitePlane))
+  const float intersectionDist = infinitePlaneCrossing(ray.Origin, ray.Direction, payload.hitT, frameInfo);
+  if(intersectionDist < 0.0F)
     return false;
-
-  float3 normal      = float3(0, 1, 0);
-  float  planeHeight = frameInfo->infinitePlaneDistance;
-
-  if(ray.Origin.y <= planeHeight)
-    return false;
-
-  float Dn = dot(ray.Direction, normal);
-  if(abs(Dn) <= 1e-6)
-    return false;
-
-  float On               = dot(ray.Origin, normal);
-  float intersectionDist = (-On + planeHeight) / Dn;
-  if(intersectionDist <= 0 || (intersectionDist >= payload.hitT))
-    return false;
+  const float3 normal = float3(0, 1, 0);
 
   const float3 planePos = ray.Origin + ray.Direction * intersectionDist;
   const float  fade     = groundFadeWeight(planePos, frameInfo);
@@ -1018,18 +1086,20 @@ bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout
 // must be on for that to be possible). Returns false when only absorption was
 // applied. The bounce-loop caller uses the return value to decide whether to
 // run scatter-only follow-up work (NEE at the scatter point, scatterBounces++).
-#if GLTF_USE_VOLUME
 // The free-flight distance of a step through a scattering medium, and the channel weights it was
 // drawn with. Drawn before the step's ray is traced (pathTraceOneBounce), so the ray is traced only
 // that far: with a free path well under a millimetre almost every step scatters, and a traversal to
 // the surface, the any-hit on the way and a hit state for it would all be thrown away. A miss of
 // such a ray is the scatter. `drawn` is false for a medium that only absorbs: no distance to draw.
+// Declared without GLTF_USE_VOLUME too: the bounce passes one (never drawn) whatever the scene has.
 struct FreeFlight
 {
   float  dist;         // INFINITE when the channel drawn has no extinction
   float3 channelProb;  // the balance heuristic's weights, from the throughput
   bool   drawn;
 };
+
+#if GLTF_USE_VOLUME
 
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
 FreeFlight sampleFreeFlight(VolumeMedium medium, float3 throughput, inout uint seed)

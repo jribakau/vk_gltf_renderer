@@ -376,9 +376,17 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   Hitting one commits, and the rays use `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`, so traversal
   stops at the first such hit instead of searching for the closest.
 - **Other instances** run the any-hit logic (`rahitShadow`, or the candidate loop in the ray-query
-  path). It multiplies in each surface's transmission (`getShadowTransmission`) and ignores the
-  hit, so the ray keeps going. Once the transmission falls below `MIN_TRANSMISSION` it accepts the
-  hit and ends the search, which counts as blocked.
+  path), both through `shadowCrossSurface`, and ignore the hit, so the ray keeps going:
+  - A surface that only filters the light (alpha, thin glass) multiplies in its expected
+    transmission, `(1 - opacity) + opacity * getShadowTransmission`.
+  - A surface that bounds a medium (`shadowSurfaceBoundsMedium`) keeps the stochastic opacity
+    test, since what the rest of the ray travels through depends on it. It is also where the
+    Beer-Lambert segment since the previous boundary is charged.
+  - Below `SHADOW_ROULETTE_BELOW` the transmission is rouletted. A lost roulette accepts the hit
+    and ends the search, which counts as blocked.
+- **The ground.** The infinite plane is analytic, not in the TLAS. `TraceShadow` multiplies in
+  `infinitePlaneShadowTransmittance` (`shaders/ground.h.slang`): what a path's own ray would miss
+  where the shadow ray crosses the floor, and 1 for the shadow catcher.
 
 The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-SER path traces with
 `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and reads the result from `rmissShadow`, which sets

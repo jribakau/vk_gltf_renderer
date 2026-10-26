@@ -612,6 +612,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 #endif
 
+    // glTF's occlusion map stands in for the indirect light a rasterizer cannot trace. A path tracer
+    // traces that occlusion, and the BSDF only applied the map to light samples, never to the BSDF
+    // rays: sunlit cavities were painted dark while the light MIS gave the BSDF side kept its own.
+    pbrMat.occlusion = 1.0F;
+
     //-----------------------------------------------------------------------
     // Adding emissive
     //-----------------------------------------------------------------------
@@ -645,7 +650,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if GLTF_USE_UNLIT
     if(materialIndex >= 0 && materials[materialIndex].unlit > 0)
     {
-      pt.radiance += pbrMat.baseColor;
+      // Through the path's throughput, like any emission: an unlit backdrop seen in a 4% reflection
+      // is 4% of itself
+      addRadiance(pt, pt.throughput * pbrMat.baseColor, pt.prefixIndirect);
       return PathStepResult.eBreak;
     }
 #endif
@@ -1018,12 +1025,18 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     //-----------------------------------------------------------------------
     // Russian Roulette
     //-----------------------------------------------------------------------
-    if(pt.surfaceDepth >= RR_MIN_DEPTH)
+    // Not at the last vertex: the loop ends there whatever the roulette says. No cap below 1: a path
+    // that keeps its energy (a white wall, blond hair) is cut by the bounce limit, not culled at
+    // random and weighted up, which only made its survivors brighter and noisier.
+    if(pt.surfaceDepth >= RR_MIN_DEPTH && pt.surfaceDepth + 1 < pushConst.maxDepth)
     {
-      float rrPcont = min(max(pt.throughput.x, max(pt.throughput.y, pt.throughput.z)) + RR_PCONT_FLOOR, RR_PCONT_CAP);
-      if(rand(seed) >= rrPcont)
-        break;
-      pt.throughput /= rrPcont;
+      const float rrPcont = max(pt.throughput.x, max(pt.throughput.y, pt.throughput.z)) + RR_PCONT_FLOOR;
+      if(rrPcont < 1.0F)  // (rand() can return 1, which would end a path that has to survive)
+      {
+        if(rand(seed) >= rrPcont)
+          break;
+        pt.throughput /= rrPcont;
+      }
     }
 
     // Consume one surface bounce
@@ -1554,31 +1567,11 @@ void rahitShadow(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttr
   GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
   GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
 
-  float opacity = getOpacity(renderNode, renderPrim, primitiveID, barycentrics);
-  float r       = stochasticOpacityU(instanceID, primitiveID, barycentrics, payload.seed);
-  if(r < opacity)
-  {
-    // Segment length for Beer's law (only used when isInside == true).
-    // abs() guards against any-hit invocations arriving out of spatial order, which Vulkan/DXR
-    // do not guarantee. This is an approximation; a fully correct version would chain
-    // closest-hit traces along the ray instead of accumulating in any-hit.
-    float segmentLength = abs(hitT - payload.prevHitT);
-    payload.prevHitT    = hitT;  // keep the actual previous hit T, not the segment length
-
-    bool   isInside   = payload.isInside;
-    float3 extinction = payload.extinction;
-    payload.totalTransmission *= shadowMediumTransmittance(isInside, extinction, segmentLength);
-    payload.totalTransmission *= getShadowTransmission(renderNode, renderPrim, primitiveID, barycentrics, worldToObject,
-                                                       worldRayDir, isInside, extinction);
-    payload.isInside   = isInside;
-    payload.extinction = extinction;
-
-    if(max(max(payload.totalTransmission.r, payload.totalTransmission.g), payload.totalTransmission.b) <= MIN_TRANSMISSION)
-    {
-      payload.totalTransmission = float3(0.0);
-      AcceptHitAndEndSearch();
-    }
-  }
+  // Any-hit order along the ray is not guaranteed; a fully correct version would chain
+  // closest-hit traces instead of accumulating here (see shadowCrossSurface's segment).
+  if(!shadowCrossSurface(renderNode, renderPrim, instanceID, int(primitiveID), barycentrics, worldToObject, worldRayDir,
+                         hitT, payload.totalTransmission, payload.isInside, payload.extinction, payload.prevHitT, payload.seed))
+    AcceptHitAndEndSearch();
   // We want all possible intersections
   IgnoreHit();
 }

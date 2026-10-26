@@ -260,7 +260,10 @@ alone, because there the glass surface is what the camera sees.
 
 Hair and lashes are `BLEND`. The path tracer keeps a hit when a uniform draw falls within the
 opacity. `stochasticOpacityU` (`shaders/pathtrace_functions.h.slang`) supplies that draw to
-`rahitMain`, the ray-query trace, and both shadow paths.
+`rahitMain` and the ray-query trace. Shadow rays draw only at a surface that bounds a medium,
+since the rest of the ray depends on whether it crossed. A surface that only filters the light
+passes its expected transmission, `(1 - opacity) + opacity * T` (`shadowCrossSurface`): exact, so a
+lash's shadow is neither noisy in a still nor a frozen stipple on DLSS frames.
 
 While DLSS denoises the frame (`PathtracerFlags::ePtUseDlss`) the draw is a hash of the hit,
 `alphaHashU`. Its inputs are the render node, the triangle, and the two independent barycentrics
@@ -287,7 +290,8 @@ gate. A frozen hash averages to 0 or 1 across those frames and never to the soft
 
 Every test keeps a hit when the draw is below the opacity, and the draw is in [0, 1): the hash
 keeps its top 24 bits and the path draw is clamped below 1. An opaque or mask-on texel is always
-kept and a cut-out texel never is, for camera and shadow rays alike.
+kept and a cut-out texel never is, for camera and shadow rays alike (the expected transmission
+gives the same at opacity 1 and 0).
 
 `dlssTraceSkipThinGlass` calls `alphaHashU` directly, so the clear-glass guides commit the cells
 the color keeps rather than cutting at half opacity.

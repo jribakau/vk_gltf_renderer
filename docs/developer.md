@@ -265,6 +265,7 @@ shaders/
 ├── gltf_eval_config.h          # GLTF_USE_* runtime behavior gates
 ├── gltf_scene_io.h.slang       # GltfShadeMaterial / GltfLight / GltfScene shaderio structs
 ├── gltf_vertex_access.h.slang  # Vertex buffer accessors
+├── thin_scatter.h.slang        # KHR_materials_scatter's thin-walled lobe split (unit-tested as C++)
 └── gltf_material_eval.h.slang  # evaluateMaterial(): GltfShadeMaterial -> PbrMaterial
 ```
 
@@ -376,10 +377,10 @@ Some things about the transport are worth knowing before touching it:
 - `VolumeMedium` stores **absorption**, not extinction, alongside the scattering coefficient. A
   medium authored near white has σa as a tiny difference of two large numbers — recovering it by
   subtraction under limited precision quantizes the albedo straight to 1.
-- In-volume Russian roulette has its **own** probability cap (`RR_PCONT_CAP_VOLUME`). A dense,
-  high-albedo medium keeps the throughput near 1, so the surface cap would cull fully energetic
-  paths at every scatter event and the medium would render far too dark. The cap must stay below
-  1 all the same: without roulette such a path never terminates.
+- In-volume Russian roulette has its **own** probability cap (`RR_PCONT_CAP_VOLUME`). The surface
+  loop's roulette follows the throughput up to 1, since the bounce limit ends a path that keeps its
+  energy. A walk has no such limit (a dense, high-albedo medium keeps the throughput near 1 for
+  hundreds of events), so its cap must stay below 1: without roulette such a path never terminates.
 - Surfaces with a diffuse transmission lobe are lit from **both** hemispheres, so `sampleLights()`
   takes a flag that disables the punctual-light hemisphere rejection in
   `singleLightContribution()`. Without it, a light behind a backlit leaf or sheet contributes
