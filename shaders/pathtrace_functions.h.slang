@@ -409,6 +409,14 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
 #else
   float fresnel = schlickFresnel(1.5F, cosTheta);
 #endif
+  // What the surface reflects, as the BSDF has it: KHR_materials_specular weighs Fresnel (a cornea
+  // under the eye's tear film reflects none), and a clearcoat reflects its share over that.
+#if GLTF_USE_SPECULAR
+  fresnel *= saturate(mat.specularFactor * max(mat.specularColorFactor.x, max(mat.specularColorFactor.y, mat.specularColorFactor.z)));
+#endif
+#if GLTF_USE_CLEARCOAT
+  fresnel = 1.0F - (1.0F - fresnel) * (1.0F - mat.clearcoatFactor * schlickFresnel(1.5F, cosTheta));
+#endif
 
   float3 currentTransmission = tFactor * mat.pbrBaseColorFactor.rgb;
   currentTransmission *= (1.0F - fresnel);

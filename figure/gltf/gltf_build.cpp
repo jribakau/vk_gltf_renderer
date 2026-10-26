@@ -232,6 +232,14 @@ tinygltf::Value extras(const std::string& fvId)
 
 }  // namespace
 
+// Whether the figure's eyes have a tear film over them, a refracting moisture shell (mat::eyeShell):
+// the eye surfaces and corneas under it are lowered without their own specular (LowerOptions::underTearFilm)
+static bool hasTearFilm(const SceneGraph& scene)
+{
+  return std::any_of(scene.materials.begin(), scene.materials.end(),
+                     [](const Material& m) { return mat::eyeShell(m.surface) == mat::EyeShell::eMoisture; });
+}
+
 std::vector<TextureRequest> textureRequests(const Material& m, mat::SkinMode skin)
 {
   mat::LowerOptions o;
@@ -244,12 +252,14 @@ std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMo
 {
   std::vector<TextureRequest> out;
   std::set<std::string>       seen;
+  const bool                  tearFilm = hasTearFilm(scene);
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
     const Material&   m = scene.materials[mi];
     mat::LowerOptions o;
-    o.skin        = skin;
-    o.metresPerUv = m.metresPerUv;
+    o.skin          = skin;
+    o.metresPerUv   = m.metresPerUv;
+    o.underTearFilm = tearFilm;
     // as the build lowers it: an iris's colour asks for a texture only where its discs are known
     if(m.edits.irisColor && mat::eyeLayout(m.surface) == mat::EyeLayout::eIris)
       o.irisDiscs = irisDiscs(scene, int(mi));
@@ -536,9 +546,11 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       hairVotes[mi].push_back(strandVotesOf(m.geo, drawn.index(), ranges, !options.texturesFlipped));
   }
   out.lowering.assign(scene.materials.size(), {});
+  const bool tearFilm = hasTearFilm(scene);
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
     mat::LowerOptions& lo = out.lowering[mi];
+    lo.underTearFilm      = tearFilm;
     lo.skin               = options.skin;
     lo.forFile            = options.forFile;
     lo.flipV              = !options.texturesFlipped;

@@ -1,6 +1,7 @@
 #include <figure/materials/lower.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <numbers>
 
@@ -167,6 +168,25 @@ std::optional<IrisRequest> irisRequest(const Surface& s, const Edits& e, const L
 
 }  // namespace
 
+EyeShell eyeShell(const Surface& s)
+{
+  if(s.kind != Kind::eCornea || !s.refraction || s.refraction->weight <= 0.05f)
+    return EyeShell::eNone;
+  std::string name = s.name;
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  if(name.find("moisture") != std::string::npos)
+    return EyeShell::eMoisture;
+  if(name.find("tear") != std::string::npos)
+    return EyeShell::eMeniscus;
+  return EyeShell::eCornea;
+}
+
+float tearFilmIor(const Surface& s)
+{
+  const float ior = s.refraction ? s.refraction->ior : 0.f;
+  return ior >= 1.30f && ior <= 1.40f ? ior : 1.376f;
+}
+
 Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 {
   Builder        b;
@@ -264,8 +284,18 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   }
 
   // roughness and metalness: one lobe from Iray's layers, with the limits the real-time view has
+  // The eye's wet shells. The tear film reflects at Fresnel's full strength from a smooth surface:
+  // Iray's glossy weight on G9's moisture (0.40, so 1% head-on and 40% of Fresnel at grazing) left
+  // catchlights about 2.5 times too dim. Under it, tissue in water is close to index-matched and
+  // reflects next to nothing, so the iris and sclera's own lobes (a second, broader sheen through
+  // the film) and a stacked cornea's go.
+  const EyeShell shell    = eyeShell(s);
+  const bool     tearFilm = shell == EyeShell::eMoisture || shell == EyeShell::eMeniscus || (shell == EyeShell::eCornea && !opts.underTearFilm);
+  const bool     underFilm = opts.underTearFilm && (shell == EyeShell::eCornea || s.kind == Kind::eEye);
   float roughness = lobes.roughness.value;
-  if(refractive)
+  if(tearFilm)
+    roughness = std::min(roughness, 0.02f);
+  else if(refractive)
     roughness = std::min(roughness, 0.1f);
   else if(s.kind == Kind::eEye)
     roughness = std::min(roughness, 0.35f);
@@ -325,6 +355,15 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     normal     = b.info(std::move(r), clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2));
     eff.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
   }
+  // A tear film is smooth water: the normal map a preset hands it is the iris's own (Addy Florence's
+  // eyes put the iris map on the moisture), which rippled the catchlight. The meniscus keeps its map,
+  // the shape of the water along the lid.
+  if(tearFilm && shell != EyeShell::eMeniscus)
+  {
+    normal = Json();
+    eff.normalStrength = 0;
+    eff.bumpStrength   = 0;
+  }
   if(!normal.is_null())
     out["normalTexture"] = normal;
 
@@ -375,7 +414,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   const float specular   = ribbonHair && !liveRibbon ? 1.f
                            : s.topCoat && lobes.clearcoat ? std::min(1.f, lobes.intensity + lobes.clearcoat->weight)
                                                           : lobes.intensity;
-  eff.specular                  = e.specular.value_or(specular);
+  eff.specular                  = e.specular.value_or(tearFilm ? 1.f : underFilm ? 0.f : specular);
   ext["KHR_materials_specular"] = {{"specularFactor", eff.specular}, {"specularColorFactor", Json::array({1, 1, 1})}};
   if(ribbonHair && !liveRibbon)
     ext["KHR_materials_ior"] = {{"ior", 1.55}};
@@ -387,7 +426,9 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     ScalarMap roughness;
   };
   std::optional<Coat> coat;
-  if(s.topCoat)
+  if(tearFilm || underFilm)
+    ;  // one interface, already the specular lobe; nothing reflects under it
+  else if(s.topCoat)
     coat = Coat{s.topCoat->weight, {s.topCoat->roughness, {}}};
   else if(lobes.clearcoat)
     coat = Coat{lobes.clearcoat->weight, lobes.clearcoat->roughness};
@@ -412,7 +453,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   if(refractive)
   {
     transmission               = s.refraction->weight;
-    ext["KHR_materials_ior"]   = {{"ior", s.refraction->ior}};
+    ext["KHR_materials_ior"]   = {{"ior", tearFilm ? tearFilmIor(s) : s.refraction->ior}};
   }
 
   // Refraction wins over skin: a cornea with a translucency weight stays glass.

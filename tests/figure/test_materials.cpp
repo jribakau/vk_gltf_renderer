@@ -225,6 +225,92 @@ TEST(Materials, ACorneaIsGlassNotSkin)
   EXPECT_EQ(lowered.material["alphaMode"], "OPAQUE");
 }
 
+// Genesis 9's eye as Addy Florence's eyes give it: a thin-walled moisture shell over the eye with
+// Iray's glossy weight 0.40 and the iris's normal map, and the eye under it with a mapped dual lobe.
+const char* kG9Moisture = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+  {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1]}},
+  {"channel":{"id":"Refraction Weight","type":"float","current_value":1}},
+  {"channel":{"id":"Refraction Index","type":"float","current_value":1.38}},
+  {"channel":{"id":"Thin Walled","type":"bool","current_value":true}},
+  {"channel":{"id":"Glossy Layered Weight","type":"float","current_value":0.4016393}},
+  {"channel":{"id":"Glossy Reflectivity","type":"float","current_value":0.5}},
+  {"channel":{"id":"Glossy Roughness","type":"float","current_value":0}},
+  {"channel":{"id":"Normal Map","type":"image","current_value":1.0,"image_file":"/Runtime/Textures/eyes_nm.jpg"}}
+]}]})";
+
+const char* kG9Eye = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+  {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/Runtime/Textures/eyes_d.jpg"}},
+  {"channel":{"id":"Translucency Weight","type":"float","current_value":0.8}},
+  {"channel":{"id":"Dual Lobe Specular Enable","type":"bool","current_value":true}},
+  {"channel":{"id":"Dual Lobe Specular Weight","type":"float","current_value":1,"image_file":"/Runtime/Textures/eyes_s.jpg"}},
+  {"channel":{"id":"Dual Lobe Specular Reflectivity","type":"float","current_value":0.5}},
+  {"channel":{"id":"Dual Lobe Specular Ratio","type":"float","current_value":0.15}},
+  {"channel":{"id":"Specular Lobe 1 Roughness","type":"float","current_value":0.6}},
+  {"channel":{"id":"Specular Lobe 2 Roughness Mult","type":"float","current_value":0.4}},
+  {"channel":{"id":"Normal Map","type":"image","current_value":1.0,"image_file":"/Runtime/Textures/eyes_nm.jpg"}}
+]}]})";
+
+// The tear film is the eye's one reflecting interface, at Fresnel's full strength and smooth: G9's
+// glossy weight 0.40 left its catchlights 2.5 times too dim, and the iris's normal map on it rippled them
+TEST(Materials, TheTearFilmReflectsAtFullFresnelFromASmoothSurface)
+{
+  const auto  s       = fv::dson::parseSurface("EyeMoisture Left", channelsOf(kG9Moisture));
+  ASSERT_EQ(fv::mat::eyeShell(s), fv::mat::EyeShell::eMoisture);
+  const auto  lowered = fv::mat::lower(s, {}, {.underTearFilm = true});
+  const auto& m       = lowered.material;
+  const auto& ext     = m["extensions"];
+  EXPECT_NEAR(ext["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
+  EXPECT_NEAR(ext["KHR_materials_ior"]["ior"].get<float>(), 1.38f, 1e-6f);  // the authored, a watery eye's
+  EXPECT_FALSE(ext.contains("KHR_materials_clearcoat"));
+  EXPECT_FALSE(m.contains("normalTexture"));
+  EXPECT_LE(m["pbrMetallicRoughness"]["roughnessFactor"].get<float>(), 0.02f);
+  EXPECT_NEAR(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.0f, 1e-6f);
+}
+
+// What lies under the film reflects next to nothing: the iris and sclera lose their own lobes. The
+// same eye with no film over it keeps them.
+TEST(Materials, AnEyeUnderTheTearFilmHasNoSpecularOfItsOwn)
+{
+  const auto s     = fv::dson::parseSurface("Eye Left", channelsOf(kG9Eye));
+  const auto under = fv::mat::lower(s, {}, {.underTearFilm = true}).material["extensions"];
+  EXPECT_NEAR(under["KHR_materials_specular"]["specularFactor"].get<float>(), 0.0f, 1e-6f);
+  EXPECT_FALSE(under.contains("KHR_materials_clearcoat"));
+  const auto bare = fv::mat::lower(s, {}, {}).material["extensions"];
+  EXPECT_GT(bare["KHR_materials_specular"]["specularFactor"].get<float>(), 0.0f);
+  EXPECT_TRUE(bare.contains("KHR_materials_clearcoat"));
+  // a panel edit still wins
+  fv::mat::Edits e;
+  e.specular = 0.3f;
+  EXPECT_NEAR(fv::mat::lower(s, e, {.underTearFilm = true}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(),
+              0.3f, 1e-6f);
+}
+
+// Genesis 8's two shells: the moisture over the whole eye is the film, the cornea under it is
+// index-matched. A cornea with no moisture over it is the film itself. An index that is not a
+// watery eye's (glass at 1.5) becomes the cornea's.
+TEST(Materials, OneReflectingShellPerEye)
+{
+  const auto cornea = fv::dson::parseSurface("Cornea", channelsOf(kG9Moisture));
+  ASSERT_EQ(fv::mat::eyeShell(cornea), fv::mat::EyeShell::eCornea);
+  EXPECT_NEAR(fv::mat::lower(cornea, {}, {.underTearFilm = true}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(),
+              0.0f, 1e-6f);
+  EXPECT_NEAR(fv::mat::lower(cornea, {}, {}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
+
+  auto glass = fv::dson::parseSurface("EyeMoisture", channelsOf(kG9Moisture));
+  glass.refraction->ior = 1.5f;
+  EXPECT_NEAR(fv::mat::lower(glass, {}, {}).material["extensions"]["KHR_materials_ior"]["ior"].get<float>(), 1.376f, 1e-6f);
+}
+
+// The lid margin's tear meniscus is the same water, but its normal map is its shape and stays
+TEST(Materials, TheTearMeniscusKeepsItsShape)
+{
+  const auto s = fv::dson::parseSurface("Tear", channelsOf(kG9Moisture));
+  ASSERT_EQ(fv::mat::eyeShell(s), fv::mat::EyeShell::eMeniscus);
+  const auto lowered = fv::mat::lower(s, {}, {.underTearFilm = true});
+  EXPECT_TRUE(lowered.material.contains("normalTexture"));
+  EXPECT_NEAR(lowered.material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
+}
+
 TEST(Materials, ResolvesSlotsIntoTextureInfosAndDropsTheMissing)
 {
   const auto s       = fv::dson::parseSurface("Face", channelsOf(kSkin));

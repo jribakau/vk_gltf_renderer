@@ -56,7 +56,26 @@ struct LowerOptions
   // How much surface one UV unit covers, in metres (Material::metresPerUv): a bump map's height
   // becomes slopes against it. 0: the bump maps keep the fixed slope per texel they had before.
   float metresPerUv = 0;
+  // An eye surface, or a cornea, that the eye's tear film covers (a refracting moisture shell on the
+  // figure, eyeShell): tissue under water reflects next to nothing, so it takes no specular.
+  bool underTearFilm = false;
 };
+
+// The eye's wet shells. The tear film (a refracting moisture shell over the whole eye, or a
+// refracting cornea where there is none) is the one interface of an eye in air that reflects, at
+// Fresnel's full strength; the lid margin's meniscus is the same water. Surfaces of other kinds,
+// and an eye shell that does not refract, are eNone.
+enum class EyeShell
+{
+  eNone,
+  eMoisture,
+  eCornea,
+  eMeniscus,
+};
+EyeShell eyeShell(const Surface& s);
+
+// The tear film's index: the authored one where it is a watery eye's, else the cornea's
+float tearFilmIor(const Surface& s);
 
 // A bump map's full height range at Bump Strength 1, in metres. Calibrated once: a Genesis 9 face
 // map at 4K (about 0.43 m per UV unit) keeps about the slope the fixed bake gave it.
