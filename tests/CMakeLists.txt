@@ -47,6 +47,8 @@ set(TEST_SOURCES
     test_materials_diffuse_transmission.cpp
     # Procedural primitives (plane/cube/sphere) + new/empty-scene workflow
     test_primitives.cpp
+    # Tangents made side by side match the serial loop bit for bit
+    test_tangents.cpp
     # Agentic workflow bridge contract
     test_agentic_bridge.cpp
     # Geometry compaction preserves EXT_mesh_opacity_micromap payload

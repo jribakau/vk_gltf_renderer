@@ -3005,6 +3005,16 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
     }
   }
 
+  // the tangents go at the end of the scene's buffer (hundreds of MB for a dressed figure): room for
+  // all of them first, so it is not copied again each time a group's are added
+  {
+    size_t room = m_model.buffers.empty() ? 0 : m_model.buffers[0].data.size();
+    for(auto& [key, primitives] : keyToPrimitives)
+      if(!primitives.empty())
+        room += tinygltf::utils::getVertexCount(m_model, *primitives[0]) * 4 * sizeof(float);
+    if(!m_model.buffers.empty())
+      m_model.buffers[0].data.reserve(room);
+  }
   for(auto& [key, primitives] : keyToPrimitives)
   {
     if(primitives.empty())

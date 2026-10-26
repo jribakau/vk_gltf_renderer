@@ -1184,8 +1184,66 @@ void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Pri
     geoNormal.resize(numVertices);
   }
 
+  // Many faces with UVs and normals (a strand hair at SubD 2 has millions): each face's tangent is
+  // made side by side, then each vertex adds its faces' in face order, through the list of corners
+  // that touch it, so every sum is the one the loop below makes, bit for bit. Without UVs or normals
+  // a face overwrites its vertices instead, which the loop keeps doing.
+  constexpr int32_t kParallelFaces = 16384;
+  bool              sideBySide     = hasUV && hasNormal && numFaces >= kParallelFaces;
+  std::vector<uint32_t> start;
+  if(sideBySide)
+  {
+    start.assign(numVertices + 1, 0);
+    for(size_t c = 0; c < size_t(numFaces) * 3 && sideBySide; c++)
+      if(indices[c] < numVertices)
+        start[indices[c] + 1]++;
+      else
+        sideBySide = false;  // the loop reads what it reads
+  }
+  if(sideBySide)
+  {
+    std::vector<glm::vec4> faceTangent(static_cast<size_t>(numFaces));  // xyz the tangent, w the handedness
+    nvutils::parallel_batches(uint64_t(numFaces), [&](uint64_t i) {
+      const uint32_t   i0 = indices[i * 3 + 0], i1 = indices[i * 3 + 1], i2 = indices[i * 3 + 2];
+      const glm::vec3& p0 = positions[i0];
+      const glm::vec3& p1 = positions[i1];
+      const glm::vec3& p2 = positions[i2];
+      const glm::vec3  n0 = normals[i0];
+      const glm::vec2& uv0 = uvs[i0];
+      const glm::vec2& uv1 = uvs[i1];
+      const glm::vec2& uv2 = uvs[i2];
+      glm::vec3        edge1    = p1 - p0;
+      glm::vec3        edge2    = p2 - p0;
+      glm::vec2        deltaUV1 = uv1 - uv0;
+      glm::vec2        deltaUV2 = uv2 - uv0;
+      float            f        = 1.0F;
+      float            a        = deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y;
+      if(fabs(a) > 0.0F)
+        f = 1.0f / a;
+      glm::vec3 tangent   = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
+      glm::vec3 bitangent = f * (deltaUV2.x * edge1 - deltaUV1.x * edge2);
+      float     handedness = (glm::dot(glm::cross(tangent, bitangent), n0) > 0.0F) ? 1.0F : -1.0F;
+      faceTangent[i]       = glm::vec4(tangent, handedness);
+    });
+    for(size_t v = 0; v < numVertices; v++)
+      start[v + 1] += start[v];
+    std::vector<uint32_t> corners(size_t(numFaces) * 3);
+    {
+      std::vector<uint32_t> next(start.begin(), start.end() - 1);
+      for(uint32_t c = 0; c < uint32_t(corners.size()); c++)
+        corners[next[indices[c]]++] = c;
+    }
+    nvutils::parallel_batches(numVertices, [&](uint64_t v) {
+      glm::vec4& t = tangents[v];
+      for(uint32_t k = start[v]; k < start[v + 1]; k++)
+      {
+        const glm::vec4& ft = faceTangent[corners[k] / 3];
+        t                   = glm::vec4(glm::vec3(ft) + glm::vec3(t), ft.w);
+      }
+    });
+  }
 
-  for(int32_t i = 0; i < numFaces; i++)
+  for(int32_t i = 0; i < numFaces && !sideBySide; i++)
   {
     // local index
     uint32_t i0 = indices[i * 3 + 0];
