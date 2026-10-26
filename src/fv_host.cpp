@@ -4435,6 +4435,7 @@ Json FvHost::Impl::lightingSet(const Json& patch)
   if(next.env.source == "hdr" && next.env.path.empty())
     throw std::invalid_argument("lighting: env.path is required for an hdr environment");
   lighting = std::move(next);
+  fv::timing::Scope t("lighting.set", 20);
   applyLighting(false);
   return lightingTopic();
 }
@@ -4448,7 +4449,10 @@ void FvHost::Impl::applyLighting(bool everything)
     appliedParams = Json::object();
     appliedSun    = nullptr;
   }
-  requestEnvironment();
+  {
+    fv::timing::Scope t("requestEnvironment", 20);
+    requestEnvironment();
+  }
 
   Json params                     = fv::lighting::rendererParams(lighting, envSize);
   params["infinitePlaneDistance"] = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
@@ -4460,10 +4464,17 @@ void FvHost::Impl::applyLighting(bool everything)
       changed[it.key()] = it.value();
   if(!changed.empty())
   {
+    std::string keys;
+    for(auto it = changed.begin(); it != changed.end(); ++it)
+      keys += (keys.empty() ? "" : ",") + it.key();
+    fv::timing::Scope t("setParams " + keys, 20);
     setParams(changed);
     appliedParams.update(changed);
   }
-  applySun(everything);
+  {
+    fv::timing::Scope t("applySun", 20);
+    applySun(everything);
+  }
   publishLighting();
 }
 
@@ -5056,7 +5067,12 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return Json{{"ok", true}};
     });
   });
-  cmds.add("view.use", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->viewUse(args); }); });
+  cmds.add("view.use", [impl](const Json& args) {
+    return impl->onApp([impl, args] {
+      fv::timing::Scope t("view.use", 20);
+      return impl->viewUse(args);
+    });
+  });
   for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
     cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
       return impl->onApp([impl, cmd, args] { return impl->animationCommand(cmd, args); });
@@ -5359,6 +5375,7 @@ void FvHost::onUpdate()
   {
     try
     {
+      fv::timing::Scope task("frame: one queued task", 100);
       f();
     }
     catch(const std::exception& e)
