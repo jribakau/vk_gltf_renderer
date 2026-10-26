@@ -76,24 +76,12 @@
 // Set 3 is the scene's TLAS (a push descriptor), for the ray-traced shadows of the lights the
 // shadow map does not cover. Pushed only when the scene has one; pushConst.rtShadowRays is 0 then.
 [[vk::binding(0, 3)]] RaytracingAccelerationStructure g_tlas;
+// ...and the occlusion pass's result (raster_occlusion.slang), when pushConst.occlusionReady
+[[vk::binding(1, 3)]] Texture2DArray<float4>          g_occlusion;
 // clang-format on
 
 #include "surface_opacity.h.slang"
-
-// Interleaved gradient noise (Jimenez 2014): a per-pixel rotation that turns the filter's banding
-// into fine grain.
-float interleavedGradientNoise(float2 pixel)
-{
-  return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
-}
-
-// The i-th of n points of a Vogel (golden-angle) disk of radius 1, turned by `phi`.
-float2 vogelDisk(int i, int n, float phi)
-{
-  const float r     = sqrt((float(i) + 0.5) / float(n));
-  const float theta = float(i) * 2.39996323 + phi;
-  return r * float2(cos(theta), sin(theta));
-}
+#include "raster_rays.h.slang"
 
 // The slope of the receiver's plane in the shadow map, d(depth)/d(u, v), from the screen-space
 // derivatives of its shadow-map coordinates (receiver-plane depth bias): sunShadow tilts each tap's
@@ -187,124 +175,75 @@ float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angular
   return lit / 32.0;
 }
 
-// How much of a ray from `origin` along `dir` gets past the scene within `maxT`: 0 at an opaque hit,
-// the product of (1 - opacity) over the alpha-tested ones (lash and hair cards, cutouts) otherwise,
-// so their shadows are soft and need no noise. The path tracer's any-hit opacity (getOpacity).
-// A ray through a hair's cards meets dozens of them, each an opacity fetch: the walk stops once
-// less than 1/64 gets through (as blocked), or after RAY_VISIBILITY_MAX_CANDIDATES cards (with what
-// has got through so far), so a hair's fragments cost a bounded number of fetches per ray.
-static const int RAY_VISIBILITY_MAX_CANDIDATES = 8;
-float rayVisibility(float3 origin, float3 dir, float maxT)
+// The occlusion pass's result at a fragment: a bilinear upsample of its half-resolution texels,
+// each weighted by how near its distance from the eye is to the fragment's, so nothing comes across
+// a silhouette; where none is within 1% (a hair's ribbons, thinner than a texel, over each other),
+// the nearest in depth. False where no texel has a surface (the edge of a thin surface over the
+// background) or the pass did not run.
+bool rasterOcclusion(float2 fragCoord, float3 worldPos, out float4 layer0, out float4 layer1)
 {
-  RayDesc ray;
-  ray.Origin    = origin;
-  ray.Direction = dir;
-  ray.TMin      = 0.0;
-  ray.TMax      = maxT;
-  RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
-  q.TraceRayInline(g_tlas, RAY_FLAG_NONE, 0xFF, ray);
-  float transmit   = 1.0;
-  int   candidates = 0;
-  while(q.Proceed())
+  layer0 = float4(1.0);
+  layer1 = float4(1.0);
+  if(pushConst.occlusionReady == 0)
+    return false;
+  uint3 size;
+  g_occlusion.GetDimensions(size.x, size.y, size.z);
+  const float3 eye = float3(pushConst.frameInfo.viewInv[3].x, pushConst.frameInfo.viewInv[3].y, pushConst.frameInfo.viewInv[3].z);
+  const float  d   = length(worldPos - eye);
+  // a texel stands for the top-left pixel of its 2x2 block (traceMain): its centre is at +0.25
+  const float2 u    = fragCoord * 0.5 - 0.25;
+  const int2   base = int2(floor(u));
+  const float2 f    = u - float2(base);
+  float4       sum0 = float4(0.0);
+  float4       sum1 = float4(0.0);
+  float        wsum = 0.0;
+  int2         nearest      = int2(-1);
+  float        nearestDelta = 1e30;
+  for(int i = 0; i < 4; i++)
   {
-    if(q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
+    const int2 o = int2(i & 1, i >> 1);
+    const int2 q = clamp(base + o, int2(0), int2(size.xy) - 1);
+    const float4 a = g_occlusion.Load(int4(q, 0, 0));
+    if(a.y <= 0.0)
       continue;
-    const float2 b       = q.CandidateTriangleBarycentrics();
-    const float  opacity = getOpacity(pushConst.gltfScene->renderNodes[q.CandidateInstanceIndex()],
-                                      pushConst.gltfScene->renderPrimitives[q.CandidateInstanceID()],
-                                      int(q.CandidatePrimitiveIndex()), float3(1.0 - b.x - b.y, b.x, b.y));
-    if(opacity >= 0.999)
+    if(abs(a.y - d) < nearestDelta)
     {
-      q.CommitNonOpaqueTriangleHit();  // the search ends here (RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH)
+      nearestDelta = abs(a.y - d);
+      nearest      = q;
+    }
+    const float w = (o.x != 0 ? f.x : 1.0 - f.x) * (o.y != 0 ? f.y : 1.0 - f.y) * saturate(1.0 - abs(a.y - d) / (0.01 * d));
+    if(w <= 0.0)
       continue;
-    }
-    transmit *= 1.0 - opacity;
-    if(transmit < 1.0 / 64.0)
-    {
-      q.Abort();
-      return 0.0;
-    }
-    if(++candidates >= RAY_VISIBILITY_MAX_CANDIDATES)
-    {
-      q.Abort();
-      return transmit;
-    }
+    sum0 += w * a;
+    sum1 += w * g_occlusion.Load(int4(q, 1, 0));
+    wsum += w;
   }
-  return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : transmit;
-}
-
-// A light's shadow traced against the scene: pushConst.rtShadowRays rays over the light's sphere
-// (point, spot: GltfLight.radius) or the sun's disc (directional: its angular size), a Vogel disk
-// turned per pixel, so the penumbra is the one the path tracer gives. From the hit's terminator-safe
-// point, stepped off the surface on the light's side by the hit's own rounding bound.
-float rayTracedShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNormal, float2 pixel)
-{
-  float3 toLight;
-  float  maxT, tanHalf;
-  if(light.type == LightType::eLightTypeDirectional)
+  if(wsum < 1e-3)
   {
-    toLight = -light.direction;
-    maxT    = 1e30;
-    tanHalf = tan(0.5 * light.angularSizeOrInvRange);
+    if(nearest.x < 0)
+      return false;
+    layer0 = g_occlusion.Load(int4(nearest, 0, 0));
+    layer1 = g_occlusion.Load(int4(nearest, 1, 0));
+    return true;
   }
-  else
-  {
-    const float3 d    = light.position - hit.pos;
-    const float  dist = length(d);
-    if(dist <= light.radius)
-      return 1.0;
-    toLight = d / dist;
-    maxT    = dist - light.radius;
-    tanHalf = light.radius / dist;
-  }
-  const float3 n      = dot(geoNormal, toLight) < 0.0 ? -geoNormal : geoNormal;
-  const float3 origin = (dot(hit.nrm, toLight) > 0.0 ? hit.shadowPos : hit.pos) + n * max(2.0 * hit.offsetDistance, 1e-5);
-  float3       t, b;
-  orthonormalBasis(toLight, t, b);
-  const int   rays = pushConst.rtShadowRays;
-  const float phi  = interleavedGradientNoise(pixel + float2(float(lightIndex) * 7.0, 0.0)) * 6.28318531;
-  float       lit  = 0.0;
-  for(int i = 0; i < rays; ++i)
-  {
-    const float2 o = vogelDisk(i, rays, phi) * tanHalf;
-    lit += rayVisibility(origin, normalize(toLight + o.x * t + o.y * b), maxT);
-  }
-  return lit / float(rays);
+  layer0 = sum0 / wsum;
+  layer1 = sum1 / wsum;
+  return true;
 }
 
 // The shadow term for light `lightIndex` of the raster light loop: the shadow map's for the shadow
-// light, traced for every other light when the scene has a TLAS, else 1.
-float lightShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNormal, float2 pixel, float2 receiverSlope = float2(0.0))
+// light; for the others, the occlusion pass's when it has this fragment, else traced here when the
+// scene has a TLAS, else 1.
+float lightShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNormal, float2 pixel, float2 receiverSlope,
+                  bool haveOcclusion, float4 occ0, float4 occ1)
 {
   if(lightIndex == pushConst.frameInfo.shadowLightIndex && light.type == LightType::eLightTypeDirectional)
     return sunShadow(hit.pos, geoNormal, -light.direction, light.angularSizeOrInvRange, pixel, receiverSlope);
   if(pushConst.rtShadowRays <= 0)
     return 1.0;
-  return rayTracedShadow(lightIndex, light, hit, geoNormal, pixel);
-}
-
-// How open the hemisphere over `N` is within `radius`: pushConst.aoRays cosine-distributed rays on
-// a Vogel disk turned per pixel, alpha-tested hits letting (1 - opacity) through. 1 without a TLAS.
-float rayTracedOcclusion(HitState hit, float3 N, float radius, float2 pixel)
-{
-  const int rays = pushConst.aoRays;
-  if(rays <= 0)
-    return 1.0;
-  const float3 n      = dot(hit.geonrm, N) < 0.0 ? -hit.geonrm : hit.geonrm;
-  const float3 origin = hit.pos + n * max(2.0 * hit.offsetDistance, 1e-5);
-  float3       t, b;
-  orthonormalBasis(N, t, b);
-  const float phi  = interleavedGradientNoise(pixel + float2(3.0, 11.0)) * 6.28318531;
-  float       open = 0.0;
-  for(int i = 0; i < rays; ++i)
-  {
-    // a point on the unit disk lifted onto the hemisphere: cosine-distributed directions
-    const float2 d   = vogelDisk(i, rays, phi);
-    const float3 dir = d.x * t + d.y * b + sqrt(saturate(1.0 - dot(d, d))) * N;
-    // a direction under the geometry (a normal-mapped N) sees the surface itself
-    open += dot(dir, n) > 0.0 ? rayVisibility(origin, dir, radius) : 0.0;
-  }
-  return open / float(rays);
+  if(haveOcclusion && lightIndex < RASTER_OCCLUSION_LIGHTS)
+    return rasterOcclusionShadow(occ0, occ1, lightIndex);
+  return rayTracedShadow(lightIndex, light, hit, geoNormal, pixel, pushConst.rtShadowRays);
 }
 
 // What occlusion `ao` leaves of a diffuse lobe of `albedo` once the light it blocks bounces back off
@@ -325,9 +264,6 @@ float specularOcclusion(float NoV, float ao, float alpha)
   return saturate(pow(NoV + ao, exp2(-16.0 * alpha - 1.0)) - 1.0 + ao);
 }
 
-// How far the traced ambient occlusion reaches, in metres
-static const float AO_RADIUS_SURFACE = 0.3;  // the figure: folds, the chin, under the arms
-static const float AO_RADIUS_FLOOR   = 1.0;  // the floor: the figure's contact shadow
 
 
 // Define the vertex attributes that will be provided by the vertex buffer
@@ -619,7 +555,8 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     }
   }
 
-  if(material.alphaMode == AlphaMode::eAlphaModeMask)
+  // A cutout's test, unless the prepass made it already: its depth, tested EQUAL, is the test then
+  if(material.alphaMode == AlphaMode::eAlphaModeMask && pushConst.prepassDepth == 0)
   {
     if(pbrMat.opacity < material.alphaCutoff)
       discard;
@@ -641,6 +578,13 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
 #endif
 
   const float3 V = -worldRayDirection;
+
+  // The occlusion pass's ambient occlusion and shadows. A blended surface (the prepass does not draw
+  // one) traces its own where the pass has nothing; anything else takes none there: the pass covers
+  // it but at the edge of a thin surface over the background, and a trace here costs ~60 ms a ray.
+  float4     occ0, occ1;
+  const bool haveOcclusion = rasterOcclusion(input.position.xy, hit.pos, occ0, occ1)
+                             || (pushConst.occlusionReady != 0 && material.alphaMode != AlphaMode::eAlphaModeBlend);
 
   // Result
   float3 contribution = float3(0);
@@ -706,7 +650,16 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     // Occlusion per lobe: the material's map times the traced occlusion, multi-bounce on the
     // diffuse lobes and specular occlusion on the glossy ones (Unreal's AOMultiBounce and
     // GetSpecularOcclusion), instead of one factor over the whole IBL.
-    const float  ao        = pbrMat.occlusion * rayTracedOcclusion(hit, pbrMat.N, AO_RADIUS_SURFACE, input.position.xy);
+    // (an if, not ?:, which evaluates both sides: the rays would be traced anyway)
+    float traced = occ0.x;
+    if(!haveOcclusion)
+      traced = rayTracedOcclusion(hit, pbrMat.N, AO_RADIUS_SURFACE, input.position.xy, pushConst.aoRays);
+    // Hair takes none: the rays see its ribbons as solid, where real fibres pass most of the light
+    // on (the path tracer's hair BSDF), so the volume went far too dark, and blotchy where a texel
+    // falls on another ribbon. The surfaces under it still see the hair as an occluder.
+    if(material.hairFactor > 0.0)
+      traced = 1.0;
+    const float  ao        = pbrMat.occlusion * traced;
     const float3 diffuseAO = aoMultiBounce(ao, pbrMat.baseColor);
     const float  specAO    = specularOcclusion(saturate(dot(pbrMat.N, V)), ao, pbrMat.roughness.y);
 
@@ -762,7 +715,7 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, hit.pos);  // EXT_lights_ies
     if(all(contrib.intensity == 0.0))
       continue;
-    contrib.intensity *= lightShadow(i, light, hit, hit.geonrm, input.position.xy, shadowSlope);
+    contrib.intensity *= lightShadow(i, light, hit, hit.geonrm, input.position.xy, shadowSlope, haveOcclusion, occ0, occ1);
     if(all(contrib.intensity == 0.0))
       continue;
 
@@ -828,6 +781,44 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
 
 
   return output;
+}
+
+//------------------------------------------------------------------------------
+// Depth prepass (Rasterizer::renderPrepass): the opaque and cutout surfaces' final depth, cutouts
+// tested here once, so the main pass draws them with EQUAL and no depth write: the GPU's early depth
+// test rejects every hidden fragment (a hair's ribbons are dozens deep) before it shades. And the
+// G-buffer the occlusion pass traces from: the world position and the geometric normal turned
+// toward the eye.
+[shader("fragment")]
+uint4 fragmentPrepassMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, float3 baryWeights: SV_Barycentrics) : SV_TARGET0
+{
+  // Derivatives first, where control flow is uniform: within a triangle they lie in its plane
+  const float3      n0       = cross(ddx(input.worldPos), ddy(input.worldPos));
+  GltfShadeMaterial material = pushConst.gltfScene->materials[pushConst.materialID];
+  // Blended and transmitting surfaces are the blend pass's (a cornea is in both an opaque bucket
+  // and that one): their depth here would hide the iris behind them from the main pass's EQUAL test
+  if(material.alphaMode == AlphaMode::eAlphaModeBlend || material.transmissionFactor > 0.0)
+    discard;
+  if(material.alphaMode == AlphaMode::eAlphaModeMask)
+  {
+    // the main pass's own evaluation of the cutout (fragmentMain)
+    GltfRenderNode      renderNode      = pushConst.gltfScene->renderNodes[pushConst.renderNodeID];
+    GltfRenderPrimitive renderPrimitive = pushConst.gltfScene->renderPrimitives[pushConst.renderPrimID];
+    const float3        cameraPos =
+        float3(pushConst.frameInfo.viewInv[3].x, pushConst.frameInfo.viewInv[3].y, pushConst.frameInfo.viewInv[3].z);
+    HitState hit = getHitState(renderPrimitive, baryWeights, renderNode.worldToObject, renderNode.objectToWorld,
+                               primitiveID, normalize(input.worldPos - cameraPos));
+    MeshState mesh          = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false, 0.0f);
+    mesh.baseColorVertexMul = hit.color;
+    PbrMaterial pbrMat      = evaluateMaterial(material, mesh, allImages, allSamplers, pushConst.gltfScene->textureInfos);
+    if(pbrMat.opacity < material.alphaCutoff)
+      discard;
+  }
+  const float3 eye = float3(pushConst.frameInfo.viewInv[3].x, pushConst.frameInfo.viewInv[3].y, pushConst.frameInfo.viewInv[3].z);
+  float3       n   = dot(n0, n0) > 1e-30 ? normalize(n0) : normalize(eye - input.worldPos);
+  if(dot(n, eye - input.worldPos) < 0.0)
+    n = -n;
+  return uint4(asuint(input.worldPos), packOctNormal(n));
 }
 
 //------------------------------------------------------------------------------
@@ -975,6 +966,12 @@ GroundOutput fragmentGroundMain(GroundVertexOutput input)
 
   const int lightCount = pushConst.gltfScene.numLights + (fi.rendererSunLight != 0 ? 1 : 0);
 
+  // The occlusion pass traced the floor wherever no surface covers it. This pass runs at every
+  // pixel under the horizon (its depth is its own), so where the pass has no floor texel the floor
+  // is behind the figure, out of sight: it takes no occlusion and traces nothing.
+  float4     occ0, occ1;
+  const bool haveOcclusion = rasterOcclusion(input.position.xy, P, occ0, occ1) || pushConst.occlusionReady != 0;
+
   if(hasFlag(fi.flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
   {
     float shadow = 1.0;
@@ -1005,7 +1002,9 @@ GroundOutput fragmentGroundMain(GroundVertexOutput input)
     floorHit.geonrm         = up;
     floorHit.shadowPos      = P;
     floorHit.offsetDistance = 1e-6 * max(1.0, max(abs(P.x), max(abs(P.y), abs(P.z))));
-    const float ao          = rayTracedOcclusion(floorHit, up, AO_RADIUS_FLOOR, input.position.xy);
+    float ao = occ0.x;
+    if(!haveOcclusion)
+      ao = rayTracedOcclusion(floorHit, up, AO_RADIUS_FLOOR, input.position.xy, pushConst.aoRays);
     contribution += evalKhronosIBL(mat, V, texturesCube[HDR_DIFFUSE_INDEX], texturesCube[HDR_GLOSSY_INDEX],
                                    texturesHdr[HDR_LUT_INDEX], texturesHdr[HDR_SHEEN_INDEX], fi.envRotation,
                                    fi.envIntensity, 0.0, float3(0.0), false, aoMultiBounce(ao, mat.baseColor),
@@ -1027,7 +1026,7 @@ GroundOutput fragmentGroundMain(GroundVertexOutput input)
     contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, P);
     if(all(contrib.intensity == 0.0))
       continue;
-    contrib.intensity *= lightShadow(i, light, groundHit, up, input.position.xy);
+    contrib.intensity *= lightShadow(i, light, groundHit, up, input.position.xy, float2(0.0), haveOcclusion, occ0, occ1);
     if(all(contrib.intensity == 0.0))
       continue;
     const float3 pointToLight =

@@ -396,12 +396,36 @@ struct RasterPushConstant
   int             rtShadowRays     = 0;       // Rays per light for the traced shadows (0: none, no TLAS bound)
   int             aoRays           = 0;       // Rays per pixel for the traced ambient occlusion (0: none, no TLAS bound)
   int             blendPass        = 0;       // RasterBlendPass: which texels of a blended surface this draw keeps
-  int             blendPassPad     = 0;
+  int             occlusionReady   = 0;       // 1 = the occlusion pass traced this frame (set 3, binding 1)
+  int             prepassDepth     = 0;       // 1 = the depth prepass drew the opaque buckets: cutouts are tested
+  int             prepassPad       = 0;
   float2          mouseCoord       = {0, 0};  // Mouse coordinates (use for debug)
   SceneFrameInfo* frameInfo;                  // Camera info (incl. viewProjMatrix, prevMVP, jitter)
   GltfScene*      gltfScene;                  // GLTF scene
 };
 
+
+// The rasterizer's occlusion pass (raster_occlusion.slang, Rasterizer::traceOcclusion): after a
+// depth prepass writes each pixel's position and normal (the G-buffer), it traces the ambient
+// occlusion and the shadows of the lights the shadow map does not cover once per half-resolution
+// texel, then filters them; the raster's light loop reads the result (set 3, binding 1).
+enum RasterOcclusionBindings
+{
+  eRasterOccTlas     = 0,  // the scene's TLAS
+  eRasterOccGbuffer  = 1,  // the prepass's G-buffer: world position (xyz, float bits), octahedral normal (w)
+  eRasterOccRaw      = 2,  // the traced texels, two layers (raster_rays.h.slang)
+  eRasterOccFiltered = 3,  // the same after the depth-aware filter: what the raster reads
+};
+
+struct RasterOcclusionPushConstant
+{
+  SceneFrameInfo* frameInfo;
+  GltfScene*      gltfScene;
+  int             aoRays     = 0;  // occlusion rays per texel (0: none)
+  int             shadowRays = 0;  // rays per light (0: none)
+  int             groundOn   = 0;  // the infinite plane is drawn: texels without a surface trace the floor
+  int             pad        = 0;
+};
 
 // Background pass for authored skies (rasterizer). The sky parameters ride in SceneFrameInfo
 // rather than in the push constant: SkyOmiParameters plus a 4x4 matrix would exceed the 128-byte

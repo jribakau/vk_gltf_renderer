@@ -175,10 +175,32 @@ private:
   nvvk::DescriptorBindings   m_tlasBindings;
   VkDescriptorSetLayout      m_tlasLayout{};
   int                        m_rtShadowRays = 4;  // rasterShadowRays: rays per light, 0 none
-  int                        m_aoRays       = 0;  // rasterAoRays: ambient occlusion rays per fragment, 0 none (each ~60 ms at 4K)
+  int                        m_aoRays       = 4;  // rasterAoRays: ambient occlusion rays per texel, 0 none
   VkAccelerationStructureKHR m_recordedTlas{};
   int                        m_recordedRtShadowRays = -1;
   int                        m_recordedAoRays       = -1;
+
+  // Depth prepass and occlusion pass (raster_occlusion.slang). The prepass draws the opaque surfaces'
+  // depth and a G-buffer (position, normal), so the main pass shades each pixel once; the occlusion
+  // pass traces the ambient occlusion and the shadows of the lights the shadow map does not cover
+  // once per half-resolution texel and filters them, and the main pass reads them through set 3.
+  // Tracing them in the fragment shader instead cost about 60 ms per ray at 4K.
+  VkShaderEXT              m_prepassFragmentShader{};
+  nvvk::Image              m_occGbuffer{};   // R32G32B32A32_UINT at the render extent
+  nvvk::Image              m_occRaw{};       // R16G16B16A16_SFLOAT, 2 layers, half the render extent
+  nvvk::Image              m_occFiltered{};  // the same, filtered: what the main pass reads
+  VkExtent2D               m_occExtent{};
+  nvvk::DescriptorBindings m_occBindings;
+  VkDescriptorSetLayout    m_occDescLayout{};
+  VkPipelineLayout         m_occLayout{};
+  VkPipeline               m_occTracePipeline{};
+  VkPipeline               m_occBlurPipeline{};
+  VkImageView              m_recordedOcclusionView{};  // the view the recorded commands bake (set 3)
+  void                     initOcclusion(Resources& resources);
+  void                     deinitOcclusion(Resources& resources);
+  void                     ensureOcclusionImages(VkCommandBuffer cmd, Resources& resources, VkExtent2D extent);
+  void                     renderPrepass(VkCommandBuffer cmd, Resources& resources, VkExtent2D extent, VkImageView depthView);
+  void                     traceOcclusion(VkCommandBuffer cmd, Resources& resources);
 
   // ---- DLSS-SR (DLAA / Quality / Balanced / Performance / Ultra) ----
 #if defined(USE_DLSS)

@@ -64,6 +64,7 @@
 #include <nvvk/compute_pipeline.hpp>
 
 #include "_autogen/sky_background.slang.h"
+#include "_autogen/raster_occlusion.slang.h"
 #include "_autogen/hdr_charlie_brdf_lut.slang.h"
 
 #include "nvvk/default_structs.hpp"
@@ -100,6 +101,7 @@ void Rasterizer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   m_commandPool = resources.commandPool;
   initSkyBackground(resources);
   initShadowResources(resources);   // before the shaders: their layouts include its set
+  initOcclusion(resources);
   compileShader(resources, false);  // Compile the shader
   createOpaqueColorImage(resources);
   createSheenLut(resources);
@@ -259,7 +261,9 @@ void Rasterizer::onDetach(Resources& resources)
   vkDestroyShaderEXT(m_device, m_shadowFragmentShader, nullptr);
   vkDestroyShaderEXT(m_device, m_groundVertexShader, nullptr);
   vkDestroyShaderEXT(m_device, m_groundFragmentShader, nullptr);
+  vkDestroyShaderEXT(m_device, m_prepassFragmentShader, nullptr);
 
+  deinitOcclusion(resources);
   deinitShadowResources(resources);
   deinitSkyBackground(resources);
 }
@@ -278,6 +282,8 @@ void Rasterizer::initShadowResources(Resources& resources)
 
   // Set 3: the TLAS, a push descriptor
   m_tlasBindings.addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+  // ...and the occlusion pass's filtered image, pushed with it
+  m_tlasBindings.addBinding(1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
   NVVK_CHECK(m_tlasBindings.createDescriptorSetLayout(m_device, VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, &m_tlasLayout));
   NVVK_DBG_NAME(m_tlasLayout);
 
@@ -727,11 +733,34 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 
+  // The depth prepass and, when there are rays to trace, the occlusion pass. The G-buffer and the
+  // pass's images follow the render extent; a remade filtered image is a new view for set 3.
+  const bool prepass   = resources.getScene() != nullptr;
+  const bool occlusion = prepass && tlas != VK_NULL_HANDLE && (m_pushConst.aoRays > 0 || m_pushConst.rtShadowRays > 0);
+  if(prepass)
+    ensureOcclusionImages(cmd, resources, targets.extent);
+  m_pushConst.occlusionReady = occlusion ? 1 : 0;
+  m_pushConst.prepassDepth   = prepass ? 1 : 0;
+  const VkImageView occlusionView = occlusion ? m_occFiltered.descriptor.imageView : VK_NULL_HANDLE;
+  if(occlusionView != m_recordedOcclusionView)
+  {
+    freeRecordCommandBuffer(resources);
+    m_recordedOcclusionView = occlusionView;
+  }
+
   // Setting up the push constant.
   m_pushConst.frameInfo  = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
   m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
   m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();  // Use for debugging: printf in shader
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
+
+  if(prepass)
+  {
+    renderPrepass(cmd, resources, targets.extent, targets.depthView);
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;  // the prepass's depth
+  }
+  if(occlusion)
+    traceOcclusion(cmd, resources);
 
 
   // Create the rendering info. We do not use secondary command buffer recording when running
@@ -1036,6 +1065,7 @@ bool Rasterizer::compileShader(Resources& resources, bool fromFile)
   vkDestroyShaderEXT(device, m_shadowFragmentShader, nullptr);
   vkDestroyShaderEXT(device, m_groundVertexShader, nullptr);
   vkDestroyShaderEXT(device, m_groundFragmentShader, nullptr);
+  vkDestroyShaderEXT(device, m_prepassFragmentShader, nullptr);
 
   const auto create = [&](const char* entry, VkShaderStageFlagBits stage, VkShaderEXT* out) {
     shaderInfo.pName     = entry;
@@ -1057,6 +1087,8 @@ bool Rasterizer::compileShader(Resources& resources, bool fromFile)
   NVVK_DBG_NAME(m_groundVertexShader);
   create("fragmentGroundMain", VK_SHADER_STAGE_FRAGMENT_BIT, &m_groundFragmentShader);
   NVVK_DBG_NAME(m_groundFragmentShader);
+  create("fragmentPrepassMain", VK_SHADER_STAGE_FRAGMENT_BIT, &m_prepassFragmentShader);
+  NVVK_DBG_NAME(m_prepassFragmentShader);
 
   return !fromFile || compiledFromFile;
 }
@@ -1115,7 +1147,8 @@ static void cmdSetCommonRasterState(VkCommandBuffer              cmd,
                                     VkShaderEXT                  vs,
                                     VkShaderEXT                  fs,
                                     VkDescriptorSet              shadowSet,
-                                    const nvvk::DescriptorBindings& tlasBindings)
+                                    const nvvk::DescriptorBindings& tlasBindings,
+                                    VkImageView                  occlusionView)
 {
   dyn.cmdApplyAllStates(cmd);
   dyn.cmdSetViewportAndScissor(cmd, renderExtent);
@@ -1128,6 +1161,10 @@ static void cmdSetCommonRasterState(VkCommandBuffer              cmd,
   {
     nvvk::WriteSetContainer write;
     write.append(tlasBindings.getWriteSet(0), tlas);
+    // the occlusion pass's result, for the passes that read it (pushConst.occlusionReady)
+    const VkDescriptorImageInfo occlusion{.imageView = occlusionView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+    if(occlusionView != VK_NULL_HANDLE)
+      write.append(tlasBindings.getWriteSet(1), occlusion);
     vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 3, uint32_t(write.size()), write.data());
   }
 
@@ -1149,6 +1186,212 @@ static void cmdSetCommonRasterState(VkCommandBuffer              cmd,
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &resources.skyLutDescriptorSet, 0, nullptr);
 }
 
+//--------------------------------------------------------------------------------------------------
+// The occlusion pass's two compute pipelines (raster_occlusion.slang): set 0 is the scene's, for the
+// textures the opacity test reads; set 1 a push descriptor with the TLAS and the pass's images.
+void Rasterizer::initOcclusion(Resources& resources)
+{
+  m_occBindings.addBinding(shaderio::eRasterOccTlas, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  m_occBindings.addBinding(shaderio::eRasterOccGbuffer, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  m_occBindings.addBinding(shaderio::eRasterOccRaw, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  m_occBindings.addBinding(shaderio::eRasterOccFiltered, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+  NVVK_CHECK(m_occBindings.createDescriptorSetLayout(m_device, VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, &m_occDescLayout));
+  NVVK_DBG_NAME(m_occDescLayout);
+
+  const std::array<VkDescriptorSetLayout, 2> layouts{resources.descriptorSetLayout[0], m_occDescLayout};
+  const VkPushConstantRange                  pushConstant{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                          .offset     = 0,
+                                                          .size       = sizeof(shaderio::RasterOcclusionPushConstant)};
+  const VkPipelineLayoutCreateInfo           plCreateInfo{
+                .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount         = uint32_t(layouts.size()),
+                .pSetLayouts            = layouts.data(),
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges    = &pushConstant,
+  };
+  NVVK_CHECK(vkCreatePipelineLayout(m_device, &plCreateInfo, nullptr, &m_occLayout));
+  NVVK_DBG_NAME(m_occLayout);
+
+  VkShaderModuleCreateInfo shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                      .codeSize = uint32_t(raster_occlusion_slang_sizeInBytes),
+                                      .pCode    = raster_occlusion_slang};
+  const auto create = [&](const char* entry, VkPipeline* out) {
+    VkComputePipelineCreateInfo compInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    compInfo.stage       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    compInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    compInfo.stage.pName = entry;
+    compInfo.stage.pNext = &shaderInfo;
+    compInfo.layout      = m_occLayout;
+    NVVK_CHECK(vkCreateComputePipelines(m_device, nullptr, 1, &compInfo, nullptr, out));
+  };
+  create("traceMain", &m_occTracePipeline);
+  NVVK_DBG_NAME(m_occTracePipeline);
+  create("blurMain", &m_occBlurPipeline);
+  NVVK_DBG_NAME(m_occBlurPipeline);
+}
+
+void Rasterizer::deinitOcclusion(Resources& resources)
+{
+  for(nvvk::Image* image : {&m_occGbuffer, &m_occRaw, &m_occFiltered})
+    if(image->image != VK_NULL_HANDLE)
+      resources.allocator.destroyImage(*image);
+  m_occExtent = {};
+  vkDestroyPipeline(m_device, m_occTracePipeline, nullptr);
+  vkDestroyPipeline(m_device, m_occBlurPipeline, nullptr);
+  vkDestroyPipelineLayout(m_device, m_occLayout, nullptr);
+  vkDestroyDescriptorSetLayout(m_device, m_occDescLayout, nullptr);
+  m_occTracePipeline = {};
+  m_occBlurPipeline  = {};
+  m_occLayout        = {};
+  m_occDescLayout    = {};
+  m_occBindings.clear();
+}
+
+// The G-buffer at the render extent and the pass's two half-size images, (re)made when the extent
+// changes. The old ones go once the frames in flight that use them are done.
+void Rasterizer::ensureOcclusionImages(VkCommandBuffer cmd, Resources& resources, VkExtent2D extent)
+{
+  if(extent.width == m_occExtent.width && extent.height == m_occExtent.height && m_occGbuffer.image != VK_NULL_HANDLE)
+    return;
+  for(nvvk::Image* image : {&m_occGbuffer, &m_occRaw, &m_occFiltered})
+  {
+    if(image->image == VK_NULL_HANDLE)
+      continue;
+    nvvk::ResourceAllocator* allocator = &resources.allocator;
+    resources.app->submitResourceFree([allocator, old = *image]() mutable { allocator->destroyImage(old); });
+    *image = {};
+  }
+  freeRecordCommandBuffer(resources);  // it bakes the filtered image's view (set 3)
+
+  const auto make = [&](nvvk::Image& image, VkFormat format, VkExtent2D size, uint32_t layers, VkImageUsageFlags usage) {
+    const VkImageCreateInfo imageInfo{
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType     = VK_IMAGE_TYPE_2D,
+        .format        = format,
+        .extent        = {size.width, size.height, 1},
+        .mipLevels     = 1,
+        .arrayLayers   = layers,
+        .samples       = VK_SAMPLE_COUNT_1_BIT,
+        .tiling        = VK_IMAGE_TILING_OPTIMAL,
+        .usage         = usage,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    const VkImageViewCreateInfo viewInfo{
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .viewType         = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+        .format           = format,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers},
+    };
+    NVVK_CHECK(resources.allocator.createImage(image, imageInfo, viewInfo));
+    nvvk::cmdImageMemoryBarrier(cmd, {image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                      {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers}});
+  };
+  const VkExtent2D half{(extent.width + 1) / 2, (extent.height + 1) / 2};
+  make(m_occGbuffer, VK_FORMAT_R32G32B32A32_UINT, extent, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+  NVVK_DBG_NAME(m_occGbuffer.image);
+  make(m_occRaw, VK_FORMAT_R16G16B16A16_SFLOAT, half, 2, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  NVVK_DBG_NAME(m_occRaw.image);
+  make(m_occFiltered, VK_FORMAT_R16G16B16A16_SFLOAT, half, 2, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  NVVK_DBG_NAME(m_occFiltered.image);
+  m_occExtent = extent;
+}
+
+//--------------------------------------------------------------------------------------------------
+// The opaque buckets' depth, and the G-buffer the occlusion pass traces from, with the same vertex
+// shader, culling and depth bias as renderOpaqueOnly, so the main pass's fragments meet the depth
+// they wrote (LESS_OR_EQUAL) and the hidden ones are rejected before they shade.
+void Rasterizer::renderPrepass(VkCommandBuffer cmd, Resources& resources, VkExtent2D extent, VkImageView depthView)
+{
+  auto section = m_profiler->cmdFrameSection(cmd, "Raster Prepass");
+
+  // the previous frame's occlusion pass read the G-buffer
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+  VkRenderingAttachmentInfo gbuffer  = DEFAULT_VkRenderingAttachmentInfo;
+  gbuffer.imageView                  = m_occGbuffer.descriptor.imageView;
+  gbuffer.imageLayout                = VK_IMAGE_LAYOUT_GENERAL;
+  gbuffer.loadOp                     = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  gbuffer.storeOp                    = VK_ATTACHMENT_STORE_OP_STORE;
+  gbuffer.clearValue                 = {};
+  gbuffer.clearValue.color.uint32[3] = 0xFFFFFFFFu;  // RASTER_GBUFFER_EMPTY
+
+  VkRenderingAttachmentInfo depth = DEFAULT_VkRenderingAttachmentInfo;
+  depth.imageView                 = depthView;
+  depth.loadOp                    = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.storeOp                   = VK_ATTACHMENT_STORE_OP_STORE;
+  depth.clearValue                = {.depthStencil = DEFAULT_VkClearDepthStencilValue};
+
+  VkRenderingInfo renderingInfo      = DEFAULT_VkRenderingInfo;
+  renderingInfo.renderArea           = DEFAULT_VkRect2D(extent);
+  renderingInfo.colorAttachmentCount = 1;
+  renderingInfo.pColorAttachments    = &gbuffer;
+  renderingInfo.pDepthAttachment     = &depth;
+  vkCmdBeginRendering(cmd, &renderingInfo);
+
+  cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, extent, m_graphicPipelineLayout, m_vertexShader,
+                          m_prepassFragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings, VK_NULL_HANDLE);
+  vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
+  vkCmdSetDepthBias(cmd, -1.0f, 0.0f, 1.0f);
+  renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolid));
+  vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+  vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+  renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolidDoubleSided));
+  vkCmdEndRendering(cmd);
+
+  // the depth for the main pass's tests, the G-buffer for the occlusion pass
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Trace the occlusion and the shadows once per half-size texel, then filter them for the main pass.
+void Rasterizer::traceOcclusion(VkCommandBuffer cmd, Resources& resources)
+{
+  auto section = m_profiler->cmdFrameSection(cmd, "Raster Occlusion");
+
+  // the previous frame's main pass read the filtered image
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+  const VkDescriptorImageInfo gbuffer{.imageView = m_occGbuffer.descriptor.imageView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+  const VkDescriptorImageInfo raw{.imageView = m_occRaw.descriptor.imageView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+  const VkDescriptorImageInfo filtered{.imageView = m_occFiltered.descriptor.imageView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
+  nvvk::WriteSetContainer     writes;
+  writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccTlas), resources.sceneRtx.topLevelAS());
+  writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccGbuffer), gbuffer);
+  writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccRaw), raw);
+  writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccFiltered), filtered);
+  vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_occLayout, 1, uint32_t(writes.size()), writes.data());
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_occLayout, 0, 1, &resources.descriptorSet, 0, nullptr);
+
+  shaderio::RasterOcclusionPushConstant push{};
+  push.frameInfo  = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
+  push.gltfScene  = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
+  push.aoRays     = m_pushConst.aoRays;
+  push.shadowRays = m_pushConst.rtShadowRays;
+  push.groundOn   = resources.settings.useInfinitePlane ? 1 : 0;
+  vkCmdPushConstants(cmd, m_occLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+
+  const VkExtent2D half{(m_occExtent.width + 1) / 2, (m_occExtent.height + 1) / 2};
+  const VkExtent2D groups = nvvk::getGroupCounts(half, WORKGROUP_SIZE);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_occTracePipeline);
+  vkCmdDispatch(cmd, groups.width, groups.height, 1);
+
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_occBlurPipeline);
+  vkCmdDispatch(cmd, groups.width, groups.height, 1);
+
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
 void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderExtent)
 {
   // No profiler section here: this function is also recorded into a secondary command buffer
@@ -1162,8 +1405,15 @@ void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkE
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
 
   cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader,
-                          m_fragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings);
+                          m_fragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings, m_pushConst.occlusionReady != 0 ? m_occFiltered.descriptor.imageView : VK_NULL_HANDLE);
 
+  // The prepass's depth is final for these buckets (cutouts tested there): EQUAL, unwritten, so the
+  // early depth test rejects every hidden fragment before it shades
+  if(m_pushConst.prepassDepth != 0)
+  {
+    vkCmdSetDepthCompareOp(cmd, VK_COMPARE_OP_EQUAL);
+    vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
+  }
   vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
   vkCmdSetDepthBias(cmd, -1.0f, 0.0f, 1.0f);
   renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolid));
@@ -1171,6 +1421,8 @@ void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkE
   vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolidDoubleSided));
+  vkCmdSetDepthCompareOp(cmd, m_dynamicPipeline.depthStencilState.depthCompareOp);
+  vkCmdSetDepthWriteEnable(cmd, VK_TRUE);
 
   // After the opaque buckets, so the figure has written its depth, and before the blend nodes,
   // which then sort over a floor already in the image.
@@ -1242,7 +1494,7 @@ void Rasterizer::renderShadowMap(VkCommandBuffer cmd, Resources& resources)
   m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
   cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, extent, m_graphicPipelineLayout, m_shadowVertexShader,
-                          m_shadowFragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings);
+                          m_shadowFragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings, VK_NULL_HANDLE);
   vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
   // Slope-scaled: grazing surfaces need more than the shader's constant bias to stay out of their
   // own shadow. Positive is away from the light.
@@ -1263,7 +1515,7 @@ void Rasterizer::renderBlendOnly(VkCommandBuffer cmd, Resources& resources, VkEx
   // No profiler section here: see comment in renderOpaqueOnly() -- this is also called from
   // a secondary command buffer recorded once and replayed every frame.
   cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader,
-                          m_fragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings);
+                          m_fragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings, m_pushConst.occlusionReady != 0 ? m_occFiltered.descriptor.imageView : VK_NULL_HANDLE);
 
   VkBool32 blendEnable  = VK_TRUE;
   VkBool32 blendDisable = VK_FALSE;
