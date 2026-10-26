@@ -387,7 +387,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         hit.nrm       = -hit.nrm;
         hit.geonrm    = -hit.geonrm;
         hit.tangent   = -hit.tangent;
-        hit.shadowPos = hit.pos;  // the terminator offset was made for the inner side
+        hit.shadowPos = hit.shadowPosOther;  // the terminator offset for the outer side, which the light is on
       }
 #endif
 

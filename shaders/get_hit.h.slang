@@ -30,6 +30,7 @@ struct HitState
   float4 color;                // Vertex color
   float3 geonrm;               // Geometric normal (face normal, for back-face detection)
   float3 shadowPos;            // Shadow position
+  float3 shadowPosOther = float3(0.0);  // The same for a ray leaving through the other side: a walk's exit, met from inside
   float2 uv[2];                // UV0 and UV1
   float3 tangent;              // Tangent
   float3 bitangent;            // Bitangent
@@ -150,6 +151,11 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
   // side for back-face hits on doubleSided meshes.
   float3 shadowPos = pointOffset(position, pos0, pos1, pos2, nrm0 * sideFlip, nrm1 * sideFlip, nrm2 * sideFlip, barycentrics);
   hit.shadowPos = mul(float4(shadowPos, 1.0), objectToWorld).xyz;
+  // A subsurface walk that reaches this surface from inside leaves through it and lights its exit
+  // from outside: without the offset on that side, its shadow rays start on the flat triangle and
+  // the smooth surface around shadows them a face at a time (squares a face wide on lit skin).
+  shadowPos          = pointOffset(position, pos0, pos1, pos2, -nrm0 * sideFlip, -nrm1 * sideFlip, -nrm2 * sideFlip, barycentrics);
+  hit.shadowPosOther = mul(float4(shadowPos, 1.0), objectToWorld).xyz;
 
   // TexCoord
   hit.uv[0] = getInterpolatedVertexTexCoord(renderPrim, 0, triangleIndex, barycentrics);
