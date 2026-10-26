@@ -50,9 +50,15 @@ std::optional<MakeupLayer> hairTranslucency(const Surface& s);
 // cap or brows (hair by name too) are painted surfaces lying on the skin, not locks of fibres.
 bool hairCards(const Surface& s);
 
-// The longitudinal and azimuthal roughness (β_m, β_n) a card fibre gets: the glossy lobe's
-// roughness along the strand and pbrt's default across it, which DAZ cards do not author.
+// The azimuthal roughness (β_n) a card fibre gets: pbrt's default, which DAZ cards do not author.
 constexpr float kCardAzimuthalRoughness = 0.3f;
+
+// The longitudinal roughness (β_m) whose highlight is as wide along the strand as the GGX lobe of
+// glTF roughness `roughness` it stands for: the fibre's longitudinal spread (Chiang 2016,
+// 0.726 β + 0.812 β² + 3.7 β^20 radians) set to the Gaussian of the same full width at half maximum
+// as GGX's reflected lobe at α = roughness² (2.57 α), i.e. 1.09 α. Roughness 0.4 is β_m 0.2; taking
+// the roughness as β_m made the highlight about 2.4 times as wide.
+float cardLongitudinalRoughness(float roughness);
 
 // The colour that stands in for a skin's Translucency Color when the file gives none.
 Rgb fallbackTranslucencyColor();

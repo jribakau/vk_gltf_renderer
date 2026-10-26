@@ -576,7 +576,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     // shade, with a white R highlight, a tinted TRT band and light through the lock. The strand
     // runs across the measured anisotropy rotation, along UV v without one. The real-time view
     // keeps the GGX sheet above (it lowers with SkinMode::eRaster).
-    const float betaM = clamp(roughnessFactor, 0.f, 1.f);
+    const float betaM = cardLongitudinalRoughness(roughnessFactor);
     Json        hair  = {{"longitudinalRoughness", betaM},
                          {"azimuthalRoughness", kCardAzimuthalRoughness},
                          {"specularFactor", clamp(e.specular.value_or(1.f), 0.f, 1.f)},

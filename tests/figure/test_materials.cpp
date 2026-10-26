@@ -469,7 +469,17 @@ TEST(Materials, HairCardsAreFibresInThePathTracer)
   // the absorption is the colour each hit shows, the strand across the measured rotation
   EXPECT_TRUE(hair["absorptionFromColor"].get<bool>());
   EXPECT_NEAR(hair["strandRotation"].get<float>(), 0.3f, 1e-6f);
-  EXPECT_NEAR(hair["longitudinalRoughness"].get<float>(), lowered.material["pbrMetallicRoughness"]["roughnessFactor"].get<float>(), 1e-6f);
+  const float roughness = lowered.material["pbrMetallicRoughness"]["roughnessFactor"].get<float>();
+  EXPECT_NEAR(hair["longitudinalRoughness"].get<float>(), fv::mat::cardLongitudinalRoughness(roughness), 1e-6f);
+  // the fibre's highlight as wide along the strand as the GGX lobe: glossy 0.4 is beta_m 0.2, and
+  // its spread is GGX's half-maximum width as a Gaussian, at every roughness
+  EXPECT_NEAR(fv::mat::cardLongitudinalRoughness(0.4f), 0.2f, 0.01f);
+  for(float r : {0.1f, 0.3f, 0.5f, 0.8f})
+  {
+    const double bm = fv::mat::cardLongitudinalRoughness(r);
+    EXPECT_NEAR(0.726 * bm + 0.812 * bm * bm + 3.7 * std::pow(bm, 20), 2.57 * r * r / 2.355, 1e-4) << r;
+    EXPECT_LT(bm, r) << r;
+  }
   EXPECT_NEAR(hair["azimuthalRoughness"].get<float>(), fv::mat::kCardAzimuthalRoughness, 1e-6f);
   EXPECT_NEAR(hair["specularFactor"].get<float>(), 1.f, 1e-6f);
   EXPECT_FALSE(hair.contains("rootFade"));

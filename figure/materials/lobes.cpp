@@ -85,6 +85,17 @@ bool hairCards(const Surface& s)
   return true;
 }
 
+float cardLongitudinalRoughness(float roughness)
+{
+  const double alpha  = std::clamp(double(roughness), 0.0, 1.0) * std::clamp(double(roughness), 0.0, 1.0);
+  const double target = 2.57 * alpha / 2.355;
+  const auto   spread = [](double b) { return 0.726 * b + 0.812 * b * b + 3.7 * std::pow(b, 20); };
+  double       lo = 0, hi = 1;
+  for(int i = 0; i < 40; i++)
+    (spread(0.5 * (lo + hi)) < target ? lo : hi) = 0.5 * (lo + hi);
+  return float(0.5 * (lo + hi));
+}
+
 Rgb fallbackTranslucencyColor()
 {
   // defaultSkin.sssColor, '#ff5a3c'

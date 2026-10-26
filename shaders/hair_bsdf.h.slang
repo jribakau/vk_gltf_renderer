@@ -370,6 +370,15 @@ bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 g
   if(len2 < 1e-8)
     return false;
   float3 strand = geoBitangent * rsqrt(len2);
+  // A card's normal map tilts its strands: they lie in the plane of the shading normal, so a bump
+  // along a strand moves its highlight along it and the band breaks up strand by strand. (Turning a
+  // fibre about its own axis changes nothing; only the tilt along it shows.)
+  if(mat.hairFromColor > 0.0)
+  {
+    const float3 tilted = strand - normal * dot(strand, normal);
+    if(dot(tilted, tilted) > 1e-8)
+      strand = normalize(tilted);
+  }
   float3 across = geoTangent - strand * dot(geoTangent, strand);
   if(dot(across, across) < 1e-8)
     across = normal - strand * dot(normal, strand);
