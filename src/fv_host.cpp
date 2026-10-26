@@ -1003,11 +1003,18 @@ struct FvHost::Impl
     std::vector<std::string> presets;  // material presets applied to it first
   };
   Json     wear(const Json& args);
+  // What a restore sets on the figure besides its wardrobe, put on before the wear's composition so
+  // it is built once (both run on the application thread): `surfaces` after the commits, with the
+  // materials held, and `shape` (dials and pose) right before the build.
+  struct WearLooks
+  {
+    std::function<void()> surfaces, shape;
+  };
   // `beforeBuild` runs on the application thread once everything is on, before the scene is built
   // again; `after` once it has been. With `commitAfter`, the requests are prepared at once and put
-  // on once it is ready (a restore's worn items after the figure's add-ons).
+  // on once it is ready (a restore's worn items after the figure's add-ons). `looks`, a restore's.
   uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild = {}, std::function<void()> after = {},
-                     std::shared_future<void> commitAfter = {});
+                     std::shared_future<void> commitAfter = {}, WearLooks looks = {});
   // glTF, GLB and OBJ files, read on a worker, as a new prop
   Json importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then = {});
   Json animationTopic();
@@ -2709,7 +2716,7 @@ Json FvHost::Impl::wear(const Json& args)
 // scene is composed again once at the end. A prepare reads only that copy, so the order of the
 // merges (and the keys they give) is the order of the requests.
 uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild, std::function<void()> after,
-                                 std::shared_future<void> commitAfter)
+                                 std::shared_future<void> commitAfter, WearLooks looks)
 {
   HostSettings s;
   std::shared_ptr<fv::dson::Library> lib;
@@ -2723,7 +2730,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
   job(jobId, {{"label", label}, {"state", "running"}});
   const fv::mat::SkinMode skin = skinMode.load();
   loaders.spawn([this, s, requests = std::move(requests), target, lib, jobId, label, skin, beforeBuild = std::move(beforeBuild), after = std::move(after),
-                 commitAfter] {
+                 commitAfter, looks = std::move(looks)] {
     // A batch that commits after something else (a restore after the figure's add-ons) prepares at
     // once and takes the wear lock only to commit; any other batch holds it throughout.
     std::unique_lock serial(wearMutex, std::defer_lock);
@@ -2766,6 +2773,23 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
     };
     using Clock          = std::chrono::steady_clock;
     const auto msSince   = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
+    // textures, the way the figure's were made: bottom-up cooked, or the sources; several at once
+    const auto cook = [&](const std::vector<fv::build::TextureRequest>& requestsOf) {
+      std::vector<std::optional<fv::build::TextureImage>> found(requestsOf.size());
+      std::atomic<size_t>                                 next{0};
+      std::vector<std::thread>                            workers;
+      const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
+      for(int w = 0; w < std::min<int>(8, int(requestsOf.size())); w++)
+        workers.emplace_back([&] {
+          for(size_t k; (k = next++) < requestsOf.size();)
+            found[k] = target->texturesFlipped ? (cooker ? cookedTexture(s, requestsOf[k], true, false).image : std::nullopt) :
+                                                 (lib ? fallbackTexture(s, *lib, requestsOf[k], cooker) : std::nullopt);
+        });
+      for(auto& w : workers)
+        w.join();
+      prefetchImages(requestsOf, found);
+      return found;
+    };
     const auto tBatch    = Clock::now();
     // what is put on: an add-on whose node the figure already has is not put on twice
     // (by value: a timed-out onApp drops its task, but one already running finishes after this moves on)
@@ -2846,23 +2870,11 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           fv::build::measureStrands(preparedScene, target->texturesFlipped);
         }
         slot.msStrands = msSince(tStrands);
-        // the wearable's textures, the way the figure's were made: bottom-up cooked, or the sources
+        // the wearable's textures
         job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
         fv::timing::Scope t("textures");
         const auto        requestsOf = fv::build::textureRequests(preparedScene, skin);
-        std::vector<std::optional<fv::build::TextureImage>> found(requestsOf.size());
-        std::atomic<size_t>                                 next{0};
-        std::vector<std::thread>                            workers;
-        const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
-        for(int w = 0; w < std::min<int>(8, int(requestsOf.size())); w++)
-          workers.emplace_back([&] {
-            for(size_t k; (k = next++) < requestsOf.size();)
-              found[k] = target->texturesFlipped ? (cooker ? cookedTexture(s, requestsOf[k], true, false).image : std::nullopt) :
-                                                   (lib ? fallbackTexture(s, *lib, requestsOf[k], cooker) : std::nullopt);
-          });
-        for(auto& w : workers)
-          w.join();
-        prefetchImages(requestsOf, found);
+        const auto        found      = cook(requestsOf);
         for(size_t k = 0; k < requestsOf.size(); k++)
           slot.images[fv::build::requestKey(requestsOf[k])] = found[k];
       }
@@ -2980,11 +2992,62 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
     if(!any)
     {
       fail("Nothing was put on.");
-      if(after)
-        post(after);
+      post([looks, after] {
+        if(looks.shape)
+          looks.shape();
+        if(looks.surfaces)
+          looks.surfaces();
+        if(after)
+          after();
+      });
       return;
     }
-    post([this, target, jobId, label, beforeBuild, after] {
+    // A restore's surfaces go on now, held from the scene that is about to go, and the textures
+    // they ask for are made here; its dials and pose go on, settled, just before the build. The
+    // composition then builds the figure as the file has it: nothing is lowered, uploaded or
+    // imported again on the application thread after it.
+    std::vector<fv::build::TextureRequest>              lookRequests;
+    std::vector<std::optional<fv::build::TextureImage>> lookImages;
+    if(looks.surfaces)
+    {
+      fv::timing::Scope t("restore surfaces and their textures");
+      try
+      {
+        lookRequests = onApp([this, target, surfaces = looks.surfaces] {
+          std::vector<fv::build::TextureRequest> missing;
+          if(!inScene(target))
+            return missing;
+          if(const auto p = findProp(target->id); p && p->materials)
+            p->materials->hold();
+          surfaces();
+          for(fv::build::TextureRequest& r : fv::build::textureRequests(target->fig->loaded.scene, skinMode.load()))
+            if(!target->images.count(fv::build::requestKey(r)))
+              missing.push_back(std::move(r));
+          return missing;
+        });
+        // as the materials would have baked them, side by side
+        lookImages.resize(lookRequests.size());
+        std::atomic<size_t>      next{0};
+        std::vector<std::thread> workers;
+        for(int w = 0; w < std::min<int>(8, int(lookRequests.size())); w++)
+          workers.emplace_back([&] {
+            for(size_t k; (k = next++) < lookRequests.size();)
+              lookImages[k] = bakeTexture(lib, lookRequests[k], target->texturesFlipped);
+          });
+        for(auto& w : workers)
+          w.join();
+        prefetchImages(lookRequests, lookImages);
+      }
+      catch(const std::exception& e)
+      {
+        notice(e.what(), "error");
+      }
+    }
+    post([this, target, jobId, label, beforeBuild, after, looks, lookRequests = std::move(lookRequests), lookImages = std::move(lookImages)]() mutable {
+      const auto releaseHeld = [&](bool refresh) {
+        if(const auto p = findProp(target->id); p && p->figure == target && p->materials)
+          p->materials->release(refresh);
+      };
       if(!inScene(target))
       {
         job(jobId, {{"label", label}, {"state", "failed"}, {"error", "the figure left the scene"}});
@@ -2992,6 +3055,17 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           after();
         return;
       }
+      for(size_t k = 0; k < lookRequests.size() && k < lookImages.size(); k++)
+        target->images.insert_or_assign(fv::build::requestKey(lookRequests[k]), std::move(lookImages[k]));
+      if(looks.shape)
+      {
+        fv::timing::Scope t("restore dials and pose, settled");
+        looks.shape();
+        target->fig->settle();
+        target->fig->pump();  // into the meshes and binds the build reads; the composition drains the rest
+      }
+      // the composition's attach takes the surfaces from the build
+      releaseHeld(false);
       if(beforeBuild)
         beforeBuild();
       requestCompose(label, [this, jobId, label, after] {
@@ -3568,15 +3642,17 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       if(w.is_object() && w.contains("rel") && w["rel"].is_string() && started.insert(relKey(w["rel"].get<std::string>())).second)
         target->fig->prefetchWear(w["rel"].get<std::string>());
   }
-  auto       apply = [this, target, args, jobId] {
+  // What the file sets on the figure, in three steps: its dials and pose, its surfaces (presets,
+  // skin, eyes, makeup, colours, edits) and dForce, and the end, which reports what could not be
+  // put back. A restore that wears something does the first two before its composition, so the
+  // figure is built once as the file has it (wears.looks); one that wears nothing does all three now.
+  auto problemList = std::make_shared<std::vector<std::string>>();
+  auto shape       = [this, target, args, problemList] {
     const auto prop = findProp(target->id);
     if(!prop || prop->figure != target)
-    {
-      job(jobId, {{"state", "failed"}, {"error", "the figure left the scene"}});
       return;
-    }
-    std::vector<std::string> problems;
-    fv::Figure&              fig = *target->fig;
+    std::vector<std::string>& problems = *problemList;
+    fv::Figure&               fig      = *target->fig;
     if(args.contains("morphs") && args["morphs"].is_object())
     {
       std::vector<std::pair<std::string, double>> dials;
@@ -3608,6 +3684,13 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         protocol->events().snapshot("pose/" + target->id, poseSnapshot(*target));
       }
     }
+  };
+  auto surfaces = [this, target, args, problemList] {
+    const auto prop = findProp(target->id);
+    if(!prop || prop->figure != target)
+      return;
+    std::vector<std::string>& problems = *problemList;
+    fv::Figure&               fig      = *target->fig;
     if(args.contains("materialPresets") && args["materialPresets"].is_array())
       for(const Json& p : args["materialPresets"])
       {
@@ -3746,11 +3829,25 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       if(target->collider)
         target->collider->poke();
     }
+  };
+  auto finish = [this, target, jobId, problemList] {
+    const auto prop = findProp(target->id);
+    if(!prop || prop->figure != target)
+    {
+      job(jobId, {{"state", "failed"}, {"error", "the figure left the scene"}});
+      return;
+    }
+    const std::vector<std::string>& problems = *problemList;
     for(size_t i = 0; i < problems.size() && i < 5; i++)
       notice(prop->name + ": " + problems[i]);
     if(problems.size() > 5)
       notice(std::to_string(problems.size() - 5) + " more problems restoring " + prop->name);
     job(jobId, {{"state", "done"}});
+  };
+  auto apply = [shape, surfaces, finish] {
+    shape();
+    surfaces();
+    finish();
   };
   // one file can put on several items (an outfit's "Full Load"): each is listed, the file is worn once;
   // the figure's add-ons are put on by its load
@@ -3767,7 +3864,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
           requests.push_back({rel, "", {}});
       }
   }
-  auto wear = [this, target, worn, apply, requests](std::shared_future<void> commitAfter) mutable {
+  auto wear = [this, target, worn, apply, shape, surfaces, finish, requests](std::shared_future<void> commitAfter) mutable {
     auto hidden = [target, worn] {
       std::vector<int> ids;
       for(const Json& w : worn)
@@ -3799,7 +3896,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       apply();
       return;
     }
-    startWear(target, std::move(requests), hide, apply, std::move(commitAfter));
+    startWear(target, std::move(requests), hide, finish, std::move(commitAfter), {surfaces, shape});
   };
   if(target->addonsPending && !requests.empty())
   {

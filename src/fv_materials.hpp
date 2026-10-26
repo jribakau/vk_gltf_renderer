@@ -134,6 +134,13 @@ public:
 
   // Surfaces that were parsed again (a material preset): lowers them and publishes.
   void surfacesChanged(const std::set<int>& materials);
+
+  // While held, a change is only noted: a composition that follows builds the surfaces as they are
+  // and attach() takes them from there, so lowering, writing and baking each change into the scene
+  // that is about to go would be work thrown away (a restore's presets, skin, eyes and edits).
+  // release() ends it; `refresh` lowers what was noted, for when no composition came.
+  void hold();
+  void release(bool refresh);
   // The figure's eyes for the topic (fv_host.cpp eyesJson); kept across attachments, dropped on detach.
   void setEyes(fv::Json eyes);
   // The same for its skin and makeup (fv_host.cpp publishSkin).
@@ -173,6 +180,8 @@ private:
   std::set<std::string>                               m_failed;    // keys a cook could not make
   std::set<std::string>                               m_baking;    // keys in flight
   std::set<int>                                       m_waiting;   // materials that need them
+  bool                                                m_held = false;
+  std::set<int>                                       m_heldChanges;  // noted while held
   std::vector<std::string>                            m_applied;   // per material, the glTF last written (as JSON text)
   std::vector<std::vector<int>>                       m_meshesOf;  // per material, the scene meshes using it
   std::vector<bool>                                   m_forceDouble;  // strand ribbons are seen from both sides

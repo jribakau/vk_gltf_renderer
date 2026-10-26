@@ -274,6 +274,8 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
                          fv::mat::SkinMode skin, Placement at)
 {
   m_generation++;
+  // the build lowered every surface as it is now
+  m_heldChanges.clear();
   // bakes still running were for the scene before this one, whose result is dropped: their materials ask again
   const std::set<std::string> inflight = m_figure == figureId && !m_model ? m_baking : std::set<std::string>{};
   m_model    = false;
@@ -707,8 +709,27 @@ void FvMaterials::setSkinMode(fv::mat::SkinMode skin)
   refresh(all);
 }
 
+void FvMaterials::hold()
+{
+  m_held = true;
+}
+
+void FvMaterials::release(bool refreshNow)
+{
+  m_held = false;
+  std::set<int> noted;
+  noted.swap(m_heldChanges);
+  if(refreshNow && m_scene && !noted.empty())
+    refresh(noted);
+}
+
 void FvMaterials::refresh(const std::set<int>& materials)
 {
+  if(m_held)
+  {
+    m_heldChanges.insert(materials.begin(), materials.end());
+    return;
+  }
   if(m_model)
   {
     for(int mi : materials)

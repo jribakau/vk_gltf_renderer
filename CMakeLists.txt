@@ -257,6 +257,11 @@ endif()
 
 add_executable(${PROJECT_NAME} ${EXE_SOURCES})
 
+# fv_host.cpp holds the host's commands as lambdas: more sections than an object file allows by default
+if(MSVC)
+  set_source_files_properties(src/fv_host.cpp TARGET_DIRECTORY ${PROJECT_NAME} PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
+
 target_link_libraries(${PROJECT_NAME} PRIVATE
   fv_figure
   nvpro2::nvapp
