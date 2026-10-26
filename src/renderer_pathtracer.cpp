@@ -344,6 +344,13 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Scatter walks gather light only where they leave the surface, as a diffuse exit (dense media)",
                  .callbackSuccess = reset},
                 &m_volumeDiffuseExit, Persist::eYes);
+  // The walk's way in to match its way out: through a Lambertian lobe, as Unreal's path tracer
+  // enters subsurface (and Iray's translucency is a diffuse transmission), not by a rough refraction
+  // whose direction follows the view.
+  settings->add({.name            = "ptDiffuseEntry",
+                 .help            = "PathTracer: Light enters a scatter walk through a Lambertian lobe instead of by refraction",
+                 .callbackSuccess = reset},
+                &m_diffuseEntry, Persist::eYes);
   // The clamp scaled a camera sample's whole path, so one bright bounce cut the direct light of the
   // same path too and a tight clamp dulled every catchlight. Clamping each contribution on its own,
   // and only light that reached the path after a rough bounce, keeps the surfaces seen directly or
@@ -2725,6 +2732,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_shadowTransmission ? shaderio::ePtShadowTransmission : 0;
   m_pushConst.flags |= (m_scatterAsThin == 1 || (m_scatterAsThin == 2 && useDlss)) ? shaderio::ePtScatterAsThin : 0;
   m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;
+  m_pushConst.flags |= m_diffuseEntry ? shaderio::ePtDiffuseEntry : 0;
   m_pushConst.flags |= m_fireflyClampMode == 1 ? shaderio::ePtClampIndirect : 0;
   m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;

@@ -473,8 +473,10 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       // weight) and random-walks through a medium with Iray's own scattering and absorption per
       // channel, which is where the warmth comes from; the light leaves through the skin map as a
       // diffuse exit, which also serves the share that reflects as plain diffuse.
+      // All of it at weight 1, as Iray's translucency: the renderer enters the walk through a
+      // diffuse lobe (ptDiffuseEntry), so the share no longer needs a diffuse layer left above it.
       const VolumeMedium v = volumeMedium(t ? t->subsurface : std::nullopt);
-      transmission         = std::min(0.95f, weight);
+      transmission         = std::min(1.0f, weight);
       ext["KHR_materials_ior"]    = {{"ior", 1.4}};
       ext["KHR_materials_volume"] = {{"thicknessFactor", 1}, {"attenuationDistance", v.distance}, {"attenuationColor", rgbJson(v.attenuation)}};
       ext["KHR_materials_scatter"] = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", rgbJson(v.multiscatter)}, {"scatterAnisotropy", v.anisotropy}};
@@ -489,7 +491,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       // sockets and mouths stay clean. Anisotropy -0.8 sends a tenth of it on through, so backlit
       // ears and fingers glow. Makeup lies over the whole skin, so the light that scatters back
       // leaves through it too: it is baked into the scatter colour as into the base colour.
-      transmission                = std::min(0.95f, weight);
+      transmission                = std::min(1.0f, weight);
       ext["KHR_materials_volume"] = {{"thicknessFactor", 0}, {"attenuationColor", Json::array({1, 1, 1})}};
       Json sc = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", rgbJson(bakedFactor)}, {"scatterAnisotropy", -0.8}};
       if(Json tex = albedoTexture(); !tex.is_null())

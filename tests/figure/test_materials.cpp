@@ -106,6 +106,20 @@ TEST(Materials, SkinGoesOutAsAVolumeForTheRendererAndPlainForTheRasterizer)
   }
 }
 
+// Iray's translucency at weight 1 sends all of the diffuse light in: no 0.95 cap left over from
+// when the walk was entered by refraction (the renderer enters it through a diffuse lobe now)
+TEST(Materials, FullTranslucencyEntersWhollyInEveryScatterMode)
+{
+  auto s = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  ASSERT_TRUE(s.translucency);
+  s.translucency->weight = 1.0f;
+  for(const auto mode : {fv::mat::SkinMode::eVolume, fv::mat::SkinMode::eThin})
+  {
+    const auto lowered = fv::mat::lower(s, {}, {.skin = mode});
+    EXPECT_FLOAT_EQ(lowered.material["extensions"]["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.0f);
+  }
+}
+
 // Measured skin ignores the file's Iray medium: every bit of diffuse light enters, the medium is
 // white for the renderer to make from the skin map, and light spreads as far as in human skin.
 TEST(Materials, MeasuredSkinEntersWhollyAndSpreadsAsHumanSkin)

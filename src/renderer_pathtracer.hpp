@@ -168,6 +168,7 @@ public:
   bool               m_useSER{true};         // Requested SER state; clamped to m_supportSER each frame.
   bool m_shadowTransmission{true};  // Shadow rays pass through transmissive surfaces (biased; see ePtShadowTransmission).
   bool m_volumeDiffuseExit{false};  // Scatter walks gather light only where they leave the surface (ePtVolumeDiffuseExit).
+  bool m_diffuseEntry{true};        // Light enters a scatter walk through a Lambertian lobe (ePtDiffuseEntry).
   int  m_fireflyClampMode{1};       // 0: the whole path; 1: each indirect contribution (ePtClampIndirect).
   bool m_simplifyScatter{true};     // A rough path meets a scattering medium as its thin preview (ePtSimplifyScatter).
   int  m_sampler{1};                // The accumulation's sampler: 0 PCG, 1 Owen-scrambled Sobol (ePtSobol). DLSS frames: PCG.

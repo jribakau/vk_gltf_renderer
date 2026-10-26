@@ -454,6 +454,25 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         pbrMat.B                = B;
         pbrMat.Ns               = Ns;
       }
+
+      // Diffuse entry (ePtDiffuseEntry): light from outside enters a scatter walk through a
+      // Lambertian lobe, as the walk leaves through one, and not by a rough refraction whose
+      // direction follows the view. A dense medium forgets where its light came from within a few
+      // events, and the boundary of skin is no smooth glass: it is the light that gets past the
+      // specular layer that matters, and that the lobe weights keep. Unreal's path tracer enters
+      // subsurface this way; Iray's translucency is a diffuse transmission. The transmission's share
+      // moves to the diffuse-transmission lobe whole (the BTDF's tint was already white for a walk,
+      // see evaluateMaterial): diffuse transmission T, diffuse reflection 1 - T, as before.
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtDiffuseEntry) && !ptIsInside(pt) && !simplifyScatter
+         && pbrMat.thickness > 0.0F && pbrMat.transmission > 0.0F
+         && max(pbrMat.scatterCoefficient.x, max(pbrMat.scatterCoefficient.y, pbrMat.scatterCoefficient.z)) > VOLUME_MIN_SCATTER)
+      {
+        const float t                         = pbrMat.transmission;
+        const float dt                        = t + (1.0F - t) * pbrMat.diffuseTransmissionFactor;
+        pbrMat.diffuseTransmissionColorFactor = lerp(pbrMat.diffuseTransmissionColorFactor, float3(1.0F), t / dt);
+        pbrMat.diffuseTransmissionFactor      = dt;
+        pbrMat.transmission                   = 0.0F;
+      }
 #endif
 
 #if WIREFRAME
