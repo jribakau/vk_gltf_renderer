@@ -648,8 +648,9 @@ int selectEmissiveTriangle(float u01)
   return (uf < et.aliasProb) ? bin : int(et.aliasIndex);
 }
 
-// Power-weighted sample of emissive triangle `emissiveIndex` as seen from `shadingPos`.
-EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, inout uint seed)
+// Power-weighted sample of emissive triangle `emissiveIndex` as seen from `shadingPos`, at the
+// uniform point `u`.
+EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, float2 u)
 {
   EmissiveSample es = {float3(0, 0, 1), 0.0, float3(0), 0.0};
 
@@ -658,7 +659,6 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, inou
   getEmissiveTriangleWorld(et, p0, p1, p2);
 
   // Uniform barycentric sample over the triangle area.
-  float2 u        = float2(rand(seed), rand(seed));
   float  su0      = sqrt(u.x);
   float  b1       = 1.0 - su0;
   float  b2       = u.y * su0;
@@ -749,8 +749,13 @@ void sampleLights(in float3       pos,
                   out DirectLight directLight,
                   in bool         isVolumeSample      = false,
                   in bool         lightsFromBothSides = false,
-                  in bool         compensatedEnv      = false)
+                  in bool         compensatedEnv      = false,
+                  in float4       xi                  = float4(-1.0F))
 {
+  // `xi`: the sample's random numbers (x picks the light, yz place the sample, w is the
+  // environment's third and the emitter triangle's pick), e.g. a Sobol point; negative: drawn from
+  // `seed`, in the order they are used
+  const bool given = xi.x >= 0.0F;
   directLight.direction       = float3(0.0f, 0.0f, 1.0f);
   directLight.pdf             = 0.0f;
   directLight.distance        = INFINITE;
@@ -763,13 +768,19 @@ void sampleLights(in float3       pos,
     return;  // nothing can light this point
 
   // rand() can return exactly 1.0; the walk below wants [0, 1)
-  float u = min(rand(seed), 0.99999994f);
+  float u = min(given ? xi.x : rand(seed), 0.99999994f);
 
   if(set.pick.emissive > 0.0f && (u < set.pick.emissive || set.candidates == 0))
   {
     // Emissive triangle (area light): power-weighted selection, then divide by the solid-angle pdf.
-    int            tri    = selectEmissiveTriangle(rand(seed));
-    EmissiveSample es     = sampleEmissiveTriangle(tri, pos, seed);
+    int            tri    = selectEmissiveTriangle(given ? xi.w : rand(seed));
+    float2         uTri   = given ? xi.yz : float2(0.0F);
+    if(!given)
+    {
+      uTri.x = rand(seed);
+      uTri.y = rand(seed);
+    }
+    EmissiveSample es     = sampleEmissiveTriangle(tri, pos, uTri);
     directLight.direction = es.direction;
     directLight.distance  = es.distance;
     if(es.pdf > 0.0)
@@ -788,7 +799,7 @@ void sampleLights(in float3       pos,
     // One environment representation, whatever the sky is. Every EnvSystem that reaches this point
     // is a lat-long image by now: the HDR file is one, and the analytic skies are baked into one
     // (see GltfRenderer::isBakedEnvironment). eNone has no estimate and is never picked.
-    float3 rand_val = float3(rand(seed), rand(seed), rand(seed));
+    float3 rand_val = given ? xi.yzw : float3(rand(seed), rand(seed), rand(seed));
     // The alias table may be coarser than the image (a baked sky), so sample on its own grid.
     const uint2 samplingGrid = uint2(pushConst.frameInfo->envSamplingGridWidth, pushConst.frameInfo->envSamplingGridHeight);
     float4 radiance_pdf;
@@ -840,7 +851,7 @@ void sampleLights(in float3       pos,
   {
     cullNormal = (light.type == LightType::eLightTypeDirectional) ? -light.direction : normalize(light.position - pos);
   }
-  LightContrib contrib = singleLightContribution(light, pos, cullNormal, float2(rand(seed), rand(seed)));
+  LightContrib contrib = singleLightContribution(light, pos, cullNormal, given ? xi.yz : float2(rand(seed), rand(seed)));
   contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, pos);  // EXT_lights_ies
 
   directLight.direction       = -contrib.incidentVector;

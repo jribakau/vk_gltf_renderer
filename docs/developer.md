@@ -241,6 +241,7 @@ shaders/
 ├── world_matrix_io.h.slang     # World-matrix compute shader I/O
 ├── shaderio.h                  # Host/device shared structures
 ├── pathtrace_functions.h.slang # Path-tracer hit/shading helpers (getShadowTransmission, etc.)
+├── sobol.h.slang               # Owen-scrambled Sobol points for the accumulation's sampling decisions (ptSampler)
 ├── common.h.slang              # Shared shader utilities
 ├── get_hit.h.slang             # Hit state interpolation
 ├── raytracer_interface.h.slang # RayQuery vs traditional RT abstraction

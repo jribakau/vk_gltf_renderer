@@ -377,6 +377,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "instead of a random walk",
                  .callbackSuccess = reset},
                 &m_simplifyScatter, Persist::eNo);
+  settings->add({.name            = "ptSampler",
+                 .help            = "PathTracer: The accumulation's random numbers for the pixel, the lens and each "
+                                    "vertex's light and BSDF samples: 0=PCG, 1=Owen-scrambled Sobol (default; DLSS frames keep PCG)",
+                 .callbackSuccess = reset},
+                &m_sampler, Persist::eNo, 0, 1);
   settings->add({"ptAutoFocus", "PathTracer: Enable auto focus"}, &m_autoFocus, Persist::eYes);
   settings->add({"ptTechnique", "PathTracer: Rendering technique [RayQuery:0, RayTracing:1]"}, (int*)&m_renderTechnique,
                 Persist::eYes, 0, 1);
@@ -2723,6 +2728,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_fireflyClampMode == 1 ? shaderio::ePtClampIndirect : 0;
   m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
+  m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;
   m_pushConst.flags |= m_fullLobeEval >= 2 ? shaderio::ePtLobeMixture : 0;
 #if defined(USE_DLSS)

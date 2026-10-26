@@ -327,6 +327,7 @@ enum PathtracerFlags
   ePtLobeSumPunctual     = 1 << 10,  // A punctual (DIRAC) light sample evaluates every BSDF lobe, each by its weight
   ePtLobeMixture         = 1 << 11,  // Every light sample does, and MIS uses the lobe-mixture pdf on both sides
   ePtSimplifyScatter     = 1 << 12,  // After a rough bounce, a scattering medium shades as the thin preview (no walk)
+  ePtSobol               = 1 << 13,  // An accumulation frame draws its fixed sampling decisions from Owen-scrambled Sobol points
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

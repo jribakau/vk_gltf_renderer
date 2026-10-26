@@ -129,6 +129,31 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
 // clang-format on
 
 #include "pathtrace_functions.h.slang"
+#include "sobol.h.slang"
+
+//-----------------------------------------------------------------------
+// The sample's fixed sampling decisions (ePtSobol): the pixel's jitter, the lens, and at every
+// surface vertex its light sample and its BSDF sample, each one 4D Owen-scrambled Sobol point at the
+// pixel's sample index (sobol.h.slang). They are numbered in the order a path meets them, so two
+// vertices never share one. Everything that draws a varying number of times -- the opacity test, a
+// walk, Russian roulette, the hair's offset -- keeps `seed`. Thread-private.
+//-----------------------------------------------------------------------
+static bool g_sobol         = false;
+static uint g_sobolIndex    = 0u;  // the pixel's sample index: the accumulation's samples before it
+static uint g_sobolPixel    = 0u;  // the pixel's scramble, the same in every frame
+static uint g_sobolDecision = 0u;
+
+void beginSobolSample(uint index)
+{
+  g_sobolIndex    = index;
+  g_sobolDecision = 0u;
+}
+
+// The next decision's point (only while g_sobol: otherwise the caller draws from `seed`)
+float4 nextSobolDecision()
+{
+  return sobolOwen4(g_sobolIndex, sobolHash(sobolHashCombine(g_sobolPixel, g_sobolDecision++)));
+}
 
 //-----------------------------------------------------------------------
 // PATH TRACE ONE BOUNCE
@@ -643,7 +668,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // the one bounce.nextEventValid tests, so NEE and the BSDF side (R4) agree on which directions
     // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
     sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
-                 /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex);
+                 /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex, g_sobol ? nextSobolDecision() : float4(-1.0F));
     // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
     pt.lightPick = directLight.pick;
 
@@ -724,10 +749,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Sampling the BSDF at the hit point
       BsdfSampleData sampleData;
       sampleData.k1 = -ray.Direction;                              // outgoing direction
-      sampleData.xi = float3(rand(seed), rand(seed), rand(seed));  // random number
+      // random numbers: a Sobol point's, the fourth for the hair's lobe
+      const float4 bsdfXi = g_sobol ? nextSobolDecision() : float4(rand(seed), rand(seed), rand(seed), 0.0F);
+      sampleData.xi       = bsdfXi.xyz;
 #if GLTF_USE_HAIR
       if(hairOn)
-        hairBsdfSample(sampleData, hairHit, rand(seed), rand(seed));
+      {
+        const float u1 = g_sobol ? bsdfXi.w : rand(seed);
+        hairBsdfSample(sampleData, hairHit, u1, rand(seed));
+      }
       else
 #endif
       {
@@ -1046,9 +1076,15 @@ SampleResult samplePixel(IRaytracer raytracer,
     const float3 camForward  = normalize(mul(float4(0, 0, -1, 0), viewMatrixI).xyz);
     float3 focalPoint        = (focalDist / max(dot(ray.Direction, camForward), 1e-4F)) * ray.Direction;
     // `aperture` is the radius squared; the blades shape it (aperture.h.slang)
-    const float  u1          = rand(seed);
-    const float  u2          = rand(seed);
-    const float2 lens        = sampleAperture(u1, u2, pushConst.bladeCount, pushConst.bladeRotation) * sqrt(aperture);
+    float2 u = float2(0.0F);
+    if(g_sobol)
+      u = nextSobolDecision().xy;
+    else
+    {
+      u.x = rand(seed);
+      u.y = rand(seed);
+    }
+    const float2 lens        = sampleAperture(u.x, u.y, pushConst.bladeCount, pushConst.bladeRotation) * sqrt(aperture);
     float4 cam_right         = mul(float4(1, 0, 0, 0), viewMatrixI);
     float4 cam_up            = mul(float4(0, 1, 0, 0), viewMatrixI);
     float3 randomAperturePos = lens.x * cam_right.xyz + lens.y * cam_up.xyz;
@@ -1093,6 +1129,8 @@ SampleResult samplePixel(IRaytracer raytracer,
 //-----------------------------------------------------------------------
 float2 gaussianSubpixelJitter(inout uint seed)
 {
+  if(g_sobol)
+    return float2(0.5f, 0.5f) + ANTIALIASING_STANDARD_DEVIATION * sampleGaussian(nextSobolDecision().xy);
   return float2(0.5f, 0.5f) + ANTIALIASING_STANDARD_DEVIATION * sampleGaussian(float2(rand(seed), rand(seed)));
 }
 
@@ -1133,6 +1171,10 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   // Initialize the random number
   // pushConst.seed selects another sequence (0: the default one), e.g. for a reference independent of a test render
   uint seed = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.frameCount) + uint(pushConst.seed) * 0x9E3779B9u));
+  // A Sobol pixel draws its points at its sample index, under a scramble of its own that every frame keeps
+  g_sobol      = hasFlag(pushConst.flags, PathtracerFlags::ePtSobol) && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
+  g_sobolPixel = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.seed) + 0x5bd1e995u));
+  beginSobolSample(uint(pushConst.totalSamples));
 
   bool firstFrame = hasFlag(pushConst.flags, PathtracerFlags::ePtFirstFrame);
 
@@ -1173,6 +1215,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   // on, the frames after DLSS's frame 0 get Auto SPP's or ptSamples' count.
   for(int s = 1; s < pushConst.numSamples; s++)
   {
+    beginSobolSample(uint(pushConst.totalSamples + s));
     subpixelJitter = gaussianSubpixelJitter(seed);  // the same pixel filter as the first sample
     sampleResult   = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,
                                  pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
