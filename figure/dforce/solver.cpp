@@ -1258,8 +1258,10 @@ void ClothSim::Impl::collide(float kinematicStep)
       const float qx = x[i * 3], qy = x[i * 3 + 1], qz = x[i * 3 + 2];
       bool        pushed = false;
       // The narrow phase against one face: whether it pushed, and whether the vertex is over the
-      // face and close enough to count as resting on it.
-      const auto narrow = [&](int t, bool& resting) {
+      // face and close enough to count as resting on it. `known` is the closest point on a face of the
+      // pose that followContact found just before: a pass moves only the cloth, so it is the one
+      // this would find in `snap`.
+      const auto narrow = [&](int t, bool& resting, const Closest* known = nullptr) {
         resting        = false;
         const Tri& tri = tris[size_t(t)];
         if(tri.a == i || tri.b == i || tri.c == i)
@@ -1293,7 +1295,7 @@ void ClothSim::Impl::collide(float kinematicStep)
         }
         else
           direction = was.signedDistance >= 0 ? 1 : -1;
-        const Closest now    = closest(px, py, pz, snap, tri.a, tri.b, tri.c, nb);
+        const Closest now    = known ? *known : closest(px, py, pz, snap, tri.a, tri.b, tri.c, nb);
         const float   target = float(direction) * gap;
         resting              = now.over && now.dist <= gap + near;
         if(direction > 0 ? now.signedDistance >= target : now.signedDistance <= target)
@@ -1341,7 +1343,7 @@ void ClothSim::Impl::collide(float kinematicStep)
           const int at = followContact(i, contact[i], now, n);
           if(at >= 0)
             contact[i] = at;
-          narrow(contact[i], resting);
+          narrow(contact[i], resting, &now);
           if(resting)
           {
             budget[i] = 0;

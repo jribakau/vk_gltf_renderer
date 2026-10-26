@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstring>
 
 #include <memory>
@@ -121,6 +122,57 @@ TEST(Wardrobe, AStrandWhoseRootIsFarFromTheBodyStillBinds)
   for(int c = 0; c < 3; c++)
     w += along.weights[c];
   EXPECT_NEAR(w, 1.f, 1e-5f);
+}
+
+TEST(Wardrobe, AStrandStoredTipFirstBindsAsItWouldRootFirst)
+{
+  // the strand above, its points listed from the tip: the tip, 13 cm off the body, would otherwise
+  // bind to the body under it and the points out of reach would ride with that
+  const auto         body = fv::mesh::build(grid(10, 0));
+  std::vector<float> strand;
+  for(int k = 0; k <= 12; k++)
+  {
+    const float x = 0.5f + 0.75f * float(k), z = k <= 6 ? 1.f : 1.f + 2.f * float(k - 6);
+    strand.insert(strand.end(), {x, 4.3f, z});
+  }
+  std::vector<int32_t> start{0, 13}, rootFirst, tipFirst;
+  for(int k = 0; k <= 12; k++)
+  {
+    rootFirst.push_back(k);
+    tipFirst.push_back(12 - k);
+  }
+  const auto a = fv::wardrobe::bindStrands(body.cagePositions, body.dsonTris, strand, start, rootFirst, 3.f);
+  const auto b = fv::wardrobe::bindStrands(body.cagePositions, body.dsonTris, strand, start, tipFirst, 3.f);
+  EXPECT_EQ(a.verts, b.verts);
+  EXPECT_EQ(a.weights, b.weights);
+}
+
+TEST(Wardrobe, AStrandWithBothEndsOnTheBodyKeepsTheOrderItIsStoredIn)
+{
+  // an arch from 1 cm over the body up to 10 cm and down to a tip nearer the body than its root:
+  // the points out of reach ride with the last one within reach before them, on the root's side
+  const auto         body = fv::mesh::build(grid(10, 0));
+  std::vector<float> strand;
+  for(int k = 0; k <= 12; k++)
+  {
+    const float x = 0.5f + 0.75f * float(k), z = k == 12 ? 0.5f : 1.f + 9.f * std::sin(3.14159265f * float(k) / 12.f);
+    strand.insert(strand.end(), {x, 4.3f, z});
+  }
+  std::vector<int32_t> start{0, 13}, verts;
+  for(int k = 0; k <= 12; k++)
+    verts.push_back(k);
+  const auto exact = fv::wardrobe::bindToSurface(body.cagePositions, body.dsonTris, strand);
+  const auto along = fv::wardrobe::bindStrands(body.cagePositions, body.dsonTris, strand, start, verts, 3.f);
+  // z = 1 + 9 sin(pi k / 12) is within 3 cm at the two ends alone
+  for(int k : {0, 12})
+    for(int c = 0; c < 3; c++)
+      EXPECT_EQ(along.verts[k * 3 + c], exact.verts[k * 3 + c]) << k;
+  for(int k = 1; k <= 11; k++)
+    for(int c = 0; c < 3; c++)
+    {
+      EXPECT_EQ(along.verts[k * 3 + c], along.verts[c]) << k;
+      EXPECT_FLOAT_EQ(along.weights[k * 3 + c], along.weights[c]) << k;
+    }
 }
 
 TEST(Wardrobe, GraftPairsOverrideTheClosestPoint)

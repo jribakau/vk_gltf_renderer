@@ -83,6 +83,8 @@ public:
   {
     int64_t tri = -1;
     double  u = 1, v = 0, w = 0;
+    // squared distance to the point found
+    double d2 = INFINITY;
   };
 
   // The closest acceptable triangle to p, if one lies within sqrt(maxDist2). `stamp` (one entry per
@@ -159,6 +161,8 @@ public:
     }
     if(best > maxDist2)
       hit.tri = -1;
+    else
+      hit.d2 = best;
     return hit;
   }
 
@@ -320,29 +324,55 @@ SurfaceBinding bindStrands(std::span<const float>    P,
   const SurfaceIndex index(P, T, filter);
   if(index.empty())
     return out;
-  const auto        tSearch = std::chrono::steady_clock::now();
-  const double      reach2  = double(reach) * reach;
-  const size_t      lines   = lineStart.empty() ? 0 : lineStart.size() - 1;
-  std::vector<char> onLine(nvDst, 0);
-  for(int32_t v : lineVerts)
-    if(v >= 0 && size_t(v) < nvDst)
-      onLine[size_t(v)] = 1;
+  const auto   tSearch = std::chrono::steady_clock::now();
+  const double reach2  = double(reach) * reach;
+  const size_t lines   = lineStart.empty() ? 0 : lineStart.size() - 1;
+  // line point c's vertex, or -1 when it has none
+  auto at = [&](int32_t c) {
+    const int32_t v = lineVerts[size_t(c)];
+    return v >= 0 && size_t(v) < nvDst ? v : -1;
+  };
   jobs::parallelFor(lines, 256, [&](size_t begin, size_t end) {
     std::vector<int32_t> stamp(index.triangles(), -1);
-    int32_t              id = 0;
+    int32_t              id   = 0;
+    auto                 find = [&](int32_t v, double maxDist2) {
+      const int32_t mask = filter && size_t(v) < filter->itemMask.size() ? filter->itemMask[size_t(v)] : 0;
+      return index.search(D[size_t(v) * 3], D[size_t(v) * 3 + 1], D[size_t(v) * 3 + 2], mask, maxDist2, stamp, ++id);
+    };
     for(size_t l = begin; l < end; l++)
     {
-      SurfaceIndex::Hit above;
-      for(int32_t c = lineStart[l]; c < lineStart[l + 1]; c++)
+      int32_t first = lineStart[l], last = lineStart[l + 1] - 1;
+      while(first <= last && at(first) < 0)
+        first++;
+      while(last > first && at(last) < 0)
+        last--;
+      if(first > last)
+        continue;
+      // the root binds first, wherever the body is. Files store strands root first, but nothing
+      // promises it, and a strand bound from its tip rides with whatever the tip hangs over. A root
+      // within reach of the body is taken as stored; one further out gives way to the other end if
+      // that one is nearer. A strand whose two ends both lie on the body keeps its order: a tip
+      // resting on the back can be nearer the body than the root is to the scalp.
+      SurfaceIndex::Hit above = find(at(first), INFINITY);
+      int32_t           from = first, to = last, step = 1;
+      if(last != first && above.d2 > reach2)
       {
-        const int32_t v = lineVerts[size_t(c)];
-        if(v < 0 || size_t(v) >= nvDst)
+        const auto other = find(at(last), above.d2);
+        if(other.tri >= 0 && other.d2 < above.d2)
+        {
+          above = other;
+          from = last, to = first, step = -1;
+        }
+      }
+      if(above.tri >= 0)
+        write(out, size_t(at(from)), T, above);
+      // the rest bind where the body is within reach, and further out ride with the point above them
+      for(int32_t c = from + step; c != to + step; c += step)
+      {
+        const int32_t v = at(c);
+        if(v < 0)
           continue;
-        const int32_t mask = filter && size_t(v) < filter->itemMask.size() ? filter->itemMask[size_t(v)] : 0;
-        // the root always binds; the rest bind where the body is within reach, and further out
-        // ride with the point above them
-        const bool root = above.tri < 0;
-        const auto hit  = index.search(D[size_t(v) * 3], D[size_t(v) * 3 + 1], D[size_t(v) * 3 + 2], mask, root ? INFINITY : reach2, stamp, ++id);
+        const auto hit = find(v, above.tri < 0 ? INFINITY : reach2);
         if(hit.tri >= 0)
           above = hit;
         if(above.tri >= 0)
@@ -350,15 +380,22 @@ SurfaceBinding bindStrands(std::span<const float>    P,
       }
     }
   });
-  // points on no line bind on their own
-  jobs::parallelFor(nvDst, 4096, [&](size_t begin, size_t end) {
+  // points on no line bind on their own (strand hair has none, or next to none)
+  std::vector<char> onLine(nvDst, 0);
+  for(int32_t v : lineVerts)
+    if(v >= 0 && size_t(v) < nvDst)
+      onLine[size_t(v)] = 1;
+  std::vector<uint32_t> loose;
+  for(size_t v = 0; v < nvDst; v++)
+    if(!onLine[v])
+      loose.push_back(uint32_t(v));
+  jobs::parallelFor(loose.size(), 4096, [&](size_t begin, size_t end) {
     std::vector<int32_t> stamp(index.triangles(), -1);
-    for(size_t v = begin; v < end; v++)
+    for(size_t k = begin; k < end; k++)
     {
-      if(onLine[v])
-        continue;
+      const size_t  v    = loose[k];
       const int32_t mask = filter && v < filter->itemMask.size() ? filter->itemMask[v] : 0;
-      const auto    hit  = index.search(D[v * 3], D[v * 3 + 1], D[v * 3 + 2], mask, INFINITY, stamp, int32_t(v));
+      const auto    hit  = index.search(D[v * 3], D[v * 3 + 1], D[v * 3 + 2], mask, INFINITY, stamp, int32_t(k));
       if(hit.tri >= 0)
         write(out, v, T, hit);
     }

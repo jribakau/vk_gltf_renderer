@@ -37,11 +37,13 @@ SurfaceBinding bindToSurface(std::span<const float>    bodyPositions,
                              std::span<const int32_t>  pairs  = {},
                              const BindFilter*         filter = nullptr);
 
-// The same for strand hair, polyline by polyline (`lineStart`/`lineVerts`, root first): each root is
-// bound as above, and each later point to the closest body point if one lies within `reach` cm (the
-// same answer the search above gives there), else as the point above it on its strand. Hair lying on
-// the body follows the body under it; a strand hanging away from it moves with where it last touched,
-// and the search for those points stops at `reach` instead of widening until it meets the body.
+// The same for strand hair, polyline by polyline (`lineStart`/`lineVerts`, root first as files store
+// them; a strand whose first point is out of `reach` of the body and whose last is nearer is taken
+// tip first): each root is bound as above, and each later point to the closest body point if one lies
+// within `reach` cm (the same answer the search above gives there), else as the point above it on its
+// strand. Hair lying on the body follows the body under it; a strand hanging away from it moves with
+// where it last touched, and the search for those points stops at `reach` instead of widening until
+// it meets the body.
 SurfaceBinding bindStrands(std::span<const float>    bodyPositions,
                            std::span<const uint32_t> bodyTris,
                            std::span<const float>    itemPositions,
