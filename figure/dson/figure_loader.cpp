@@ -361,6 +361,24 @@ std::string missingMessage(const std::string& fileName, const std::vector<std::s
          + " that aren't installed in the assets folder or the DAZ library: " + sample + ".";
 }
 
+// The skin modifier in a geometry's file that binds it: one naming this geometry, or none.
+const Json* skinModifierOf(const Store::Resolved& gres, const Json& geo)
+{
+  const Json* mods = get(&gres.doc->json, "modifier_library");
+  if(!mods || !mods->is_array())
+    return nullptr;
+  for(const Json& m : *mods)
+  {
+    const Json* skin = get(&m, "skin");
+    if(!skin || skin->is_null())
+      continue;
+    auto ref = parseRef(getString(skin, "geometry"), gres.file);
+    if(!ref || ref->id.empty() || ref->id == getString(&geo, "id"))
+      return skin;
+  }
+  return nullptr;
+}
+
 // Reads the library files a scene names on the pool while the loader walks it, so a strand hair's
 // node, geometry and material files (tens of MB each) arrive at once instead of one after another.
 // The Store is borrowed: finish() loads whatever no pool thread has started and waits for the rest,
@@ -463,6 +481,27 @@ std::vector<std::string> referencedFiles(const Store& store, const Json& nodes, 
 }
 
 }  // namespace
+
+void prefetchScene(std::shared_ptr<Store> store, const std::string& rel)
+{
+  jobs::pool().submit([store, file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()))] {
+    try
+    {
+      const auto  doc   = store->load(file);
+      const Json* scene = get(&doc->json, "scene");
+      const Json* nodes = get(scene, "nodes");
+      if(!nodes || !nodes->is_array())
+        return;
+      std::unordered_set<std::string> seen;
+      auto                            files = referencedFiles(*store, *nodes, get(scene, "materials"), file, seen);
+      // waits only for jobs already running, so a pool thread may run it
+      Prefetch(*store, std::move(files), std::move(seen)).finish();
+    }
+    catch(const std::exception&)
+    {
+    }
+  });
+}
 
 LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& options)
 {
@@ -818,6 +857,86 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   if(!dazInstances.empty())
     warn("DAZ Studio instance groups aren't drawn yet, so these are missing: " + someOf(dazInstances));
 
+  // ---- each geometry's own work ahead, all of them at once: its file, UV set, build and skin read
+  // nothing the loop below changes. The loop takes the results in file order and does the rest as
+  // before. A geometry or UV set whose file isn't installed, or whose work throws, is left to the
+  // loop, which reports it where it always did.
+  struct Ahead
+  {
+    std::optional<Store::Resolved> gres;
+    std::optional<UvSet>           uvSet;
+    bool                           uvDecided = false;
+    Mesh                           mesh;  // geo, materialGroups and the skin
+    bool                           skinned = false;
+  };
+  std::unordered_map<const Json*, Ahead> ahead;
+  {
+    std::vector<std::pair<const MeshJob*, const Json*>> work;
+    for(const MeshJob& job : jobs)
+      if(const Json* geos = get(job.node, "geometries"); geos && geos->is_array())
+        for(const Json& g : *geos)
+          work.emplace_back(&job, &g);
+    std::vector<std::optional<Ahead>> results(work.size());
+    timing::Scope                     ta("meshes ahead", 10);
+    jobs::parallelFor(work.size(), 1, [&](size_t begin, size_t end) {
+      for(size_t i = begin; i < end; i++)
+        try
+        {
+          const MeshJob& job  = *work[i].first;
+          const Json&    g    = *work[i].second;
+          const auto     gref = parseRef(getString(&g, "url"), file);
+          if(!gref || !store.library().find(gref->file))
+            continue;
+          Ahead a;
+          a.gres = store.resolve(*gref, "geometry_library");
+          if(!a.gres)
+            continue;
+          const Json& geo = *a.gres->entry;
+          std::string uvUri;
+          for(const Json* m : sceneMaterialsFor(getString(&g, "id"), getString(&geo, "id")))
+            if(const Json* u = get(m, "uv_set"); u && u->is_string())
+            {
+              uvUri = u->get<std::string>();
+              break;
+            }
+          if(uvUri.empty())
+            uvUri = getString(&geo, "default_uv_set");
+          if(!uvUri.empty())
+          {
+            const auto uref = parseRef(uvUri, a.gres->file);
+            if(!uref || !store.library().find(uref->file))
+              continue;
+            const auto ures = store.resolve(*uref, "uv_set_library");
+            if(!ures)
+              continue;
+            a.uvSet = parseUvSet(*ures->doc, *ures->entry);
+          }
+          a.uvDecided     = true;
+          const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(options.subdivision, 0, 3) : 0;
+          a.mesh.geo      = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups)));
+          if(job.rig >= 0)
+          {
+            if(const Json* skinMod = skinModifierOf(*a.gres, geo))
+              if(auto binding = skinBinding(*a.gres->doc, *skinMod, out.rigs[job.rig], a.mesh.geo->dsonVertexCount))
+              {
+                a.mesh.skin     = mesh::skin(*a.mesh.geo, binding->input);
+                a.mesh.cageSkin = binding->input;
+                a.mesh.bones    = binding->order;
+              }
+            a.skinned = true;
+          }
+          results[i] = std::move(a);
+        }
+        catch(const std::exception&)
+        {
+          // done again in order, where the error is reported
+        }
+    });
+    for(size_t i = 0; i < work.size(); i++)
+      if(results[i])
+        ahead.emplace(work[i].second, std::move(*results[i]));
+  }
+
   // ---- meshes, one per geometry of each node, in file order
   std::unordered_map<std::string, int> materialCache;
   int                                  built = 0;
@@ -837,7 +956,11 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           continue;
         // a mesh that costs something is timed: its file, its build, its dForce data, its skin
         timing::Scope tm("mesh " + getString(&g, "id"), 10);
+        const auto    pre  = ahead.find(&g);
+        Ahead*        a    = pre != ahead.end() ? &pre->second : nullptr;
         auto          gres = [&] {
+          if(a)
+            return a->gres;
           timing::Scope tr("resolve geometry", 10);
           return store.resolve(*gref, "geometry_library");
         }();
@@ -862,7 +985,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         if(uvUri.empty())
           uvUri = getString(&geo, "default_uv_set");
         std::optional<UvSet> uvSet;
-        if(!uvUri.empty())
+        if(a && a->uvDecided)
+          uvSet = std::move(a->uvSet);
+        else if(!uvUri.empty())
         {
           timing::Scope                  tu("uv set", 10);
           std::optional<Store::Resolved> ures;
@@ -882,6 +1007,12 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         // DSON marks SubD meshes; others (strand hair cards, props modelled as polygons) stay as they are
         const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(options.subdivision, 0, 3) : 0;
         Mesh      meshOut;
+        if(a && a->mesh.geo)
+        {
+          meshOut.geo            = a->mesh.geo;
+          meshOut.materialGroups = std::move(a->mesh.materialGroups);
+        }
+        else
         {
           timing::Scope tb("mesh::build", 10);
           meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, meshOut.materialGroups)));
@@ -975,26 +1106,17 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         }
 
         // skin binding lives in the geometry's file, keyed to the geometry id
-        if(job.rig >= 0)
+        if(job.rig >= 0 && a && a->skinned)
+        {
+          meshOut.skin     = std::move(a->mesh.skin);
+          meshOut.cageSkin = std::move(a->mesh.cageSkin);
+          meshOut.bones    = std::move(a->mesh.bones);
+        }
+        else if(job.rig >= 0)
         {
           timing::Scope ts("skin", 10);
           const Rig&    rig = out.rigs[job.rig];
-          const Json* mods = get(&gres->doc->json, "modifier_library");
-          const Json* skinMod = nullptr;
-          if(mods && mods->is_array())
-            for(const Json& m : *mods)
-            {
-              const Json* skin = get(&m, "skin");
-              if(!skin || skin->is_null())
-                continue;
-              auto ref = parseRef(getString(skin, "geometry"), gres->file);
-              if(!ref || ref->id.empty() || ref->id == getString(&geo, "id"))
-              {
-                skinMod = skin;
-                break;
-              }
-            }
-          if(skinMod)
+          if(const Json* skinMod = skinModifierOf(*gres, geo))
             if(auto binding = skinBinding(*gres->doc, *skinMod, rig, meshOut.geo->dsonVertexCount))
             {
               meshOut.skin     = mesh::skin(*meshOut.geo, binding->input);

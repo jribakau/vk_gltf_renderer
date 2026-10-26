@@ -182,11 +182,16 @@ public:
   // The body's morph targets dialled in now: given to prepareWear(), it projects them onto the
   // wearable on its thread, so commitWear() finds the followers' shapes ready. Owning thread.
   std::vector<dson::TargetPtr> activeBodyTargets() const;
+  // Starts reading a wearable's library files on the pool, for a prepareWear() that comes later.
+  // Any thread.
+  void prefetchWear(const std::string& rel) const { dson::prefetchScene(m_store, rel); }
   // The wearable's own scene, for resolving its textures before it is merged.
   static const SceneGraph& preparedScene(const PreparedWear& wear);
   static SceneGraph&       preparedScene(PreparedWear& wear);
+  // `strandsFlipped`, when given, measures a strand hair's directions (build::measureStrands with
+  // that flag) beside the binding, so the host's measure after the material presets finds them done.
   std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base = nullptr,
-                                            std::vector<dson::TargetPtr> bodyTargets = {});
+                                            std::vector<dson::TargetPtr> bodyTargets = {}, std::optional<bool> strandsFlipped = std::nullopt);
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
   // figure's owning thread. The renderer's model has to be built again afterwards.
   WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel);

@@ -9,8 +9,10 @@
 #include <cstdint>
 #include <map>
 #include <regex>
+#include <utility>
 
 #include <figure/dson/listing.hpp>
+#include <figure/gltf/gltf_build.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/wardrobe/bind.hpp>
@@ -197,7 +199,7 @@ const std::map<std::string, std::string>& ownMorphsOf(const dson::Store& store, 
 }
 
 std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base,
-                                                          std::vector<dson::TargetPtr> bodyTargets)
+                                                          std::vector<dson::TargetPtr> bodyTargets, std::optional<bool> strandsFlipped)
 {
   if(loaded.mainRig < 0 || loaded.morphs.mainMeshes.empty())
     throw std::runtime_error("Load a figure first: clothing and hair go on a figure with a skeleton.");
@@ -227,6 +229,21 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     for(const dson::Item& it : out->loaded.items)
       out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
   }
+  // A strand hair's directions, measured beside the binding: their weld runs on one thread while the
+  // bind keeps the pool busy. Both only read the item's scene. The future waits in its destructor,
+  // so an error below cannot leave it reading a scene that is gone.
+  std::future<void> strands;
+  if(strandsFlipped)
+    strands = std::async(std::launch::async, [&scene = std::as_const(out->loaded.scene), flipped = *strandsFlipped] {
+      try
+      {
+        build::measureStrands(scene, flipped);
+      }
+      catch(const std::exception&)
+      {
+        // measured again after the presets, where an error is reported
+      }
+    });
   // every conforming part is bound to the body's unmorphed cage, in parallel. A skinned part binds
   // limb to limb (its left-thigh vertices to the left thigh): a legging's inner seam is as close to
   // the other leg, and a body morph that moves one leg would then drag the other's cloth
@@ -298,6 +315,11 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       j.wait();
     for(auto& j : projections)
       j.get();
+  }
+  if(strands.valid())
+  {
+    timing::Scope ts("strands beside the bind (wait)", 1);
+    strands.get();
   }
   return out;
 }

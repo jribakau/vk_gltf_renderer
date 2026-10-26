@@ -9,6 +9,7 @@
 // The scene is in centimetres, as DSON is; the host scales it to metres.
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -126,5 +127,10 @@ struct LoadResult
 // Loads `rel` (library-relative). Throws when nothing could be built, with the reason (a missing
 // base figure names the product to install).
 LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& options = {});
+
+// Starts reading `rel` and the library files its scene names (nodes, geometries, materials, their
+// UV sets) on the pool and returns at once, so a wear's files are on their way while the figure is
+// still busy. loadDson then finds them in `store`. Errors are left for loadDson to report.
+void prefetchScene(std::shared_ptr<Store> store, const std::string& rel);
 
 }  // namespace fv::dson

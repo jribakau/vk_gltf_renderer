@@ -2748,7 +2748,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         }();
         const double msBase = msSince(tWear);
         const auto   tPrep  = Clock::now();
-        auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base, std::move(bodyTargets));
+        auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base, std::move(bodyTargets), target->texturesFlipped);
         const double msPrep = msSince(tPrep);
         // the material presets that go with it, applied to the wearable before its textures are looked up
         fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
@@ -3452,6 +3452,13 @@ Json FvHost::Impl::sceneRestore(const Json& args)
   const uint64_t          jobId  = ++jobs;
   job(jobId, {{"label", "Restoring " + prop->name}, {"state", "running"}});
   const Json worn  = args.value("worn", Json::array());
+  // the worn files start reading now: they are put on only after the figure's add-ons
+  {
+    std::set<std::string> started;
+    for(const Json& w : worn)
+      if(w.is_object() && w.contains("rel") && w["rel"].is_string() && started.insert(relKey(w["rel"].get<std::string>())).second)
+        target->fig->prefetchWear(w["rel"].get<std::string>());
+  }
   auto       apply = [this, target, args, jobId] {
     const auto prop = findProp(target->id);
     if(!prop || prop->figure != target)
