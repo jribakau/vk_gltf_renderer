@@ -82,8 +82,10 @@ float3 evalSunDiskBackground(float3 dir, SceneFrameInfo* frameInfo)
   if(dir.y <= disk.horizonMu)
     return float3(0.0F);
 
+  // skySunScale as makeSkySunLight() has it: the disk is that light seen, by the camera, a mirror or
+  // an escaped BSDF ray, so it must be as bright as the light NEE samples (0: the sun is off)
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
-  return (dot(dir, sunDir) >= disk.cosAngularRadius) ? disk.radiance : float3(0.0F);
+  return (dot(dir, sunDir) >= disk.cosAngularRadius) ? disk.radiance * frameInfo->skySunScale : float3(0.0F);
 }
 
 // The sky's own sun, as a light.
@@ -176,10 +178,12 @@ bool gradientSunDisk(float3 dir, SceneFrameInfo* frameInfo, out float3 radiance)
   radiance                               = float3(0.0F);
   const SkyGradientParameters g          = frameInfo->skyOmi.gradient;
   const float                 solidAngle = M_TWO_PI * (1.0F - cos(g.sunAngularRadius));
-  if(solidAngle <= 0.0F || dir.y <= 0.0F || dot(dir, g.sunDirection) < cos(g.sunAngularRadius))
+  // a sun switched off (skySunScale 0) has no disk: the glow shows where it was
+  if(solidAngle <= 0.0F || !(frameInfo->skySunScale > 0.0F) || dir.y <= 0.0F || dot(dir, g.sunDirection) < cos(g.sunAngularRadius))
     return false;
+  // scaled as makeSkySunLight() scales the light it is
   if(g.sunDirection.y > 0.0F)
-    radiance = frameInfo->skySunIlluminance / solidAngle;
+    radiance = frameInfo->skySunIlluminance * frameInfo->skySunScale / solidAngle;
   return true;
 }
 

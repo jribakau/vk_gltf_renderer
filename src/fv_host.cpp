@@ -1074,6 +1074,9 @@ struct FvHost::Impl
   bool        envLoading = false;
   std::string envName    = kStudioName;
   glm::uvec2  envSize{kStudioWidth, kStudioHeight};
+  // the loaded HDR's sun, toward it in the image's frame (fv::lighting::environmentSun); none for
+  // the studio and for an image without one
+  std::optional<glm::vec3> envSun;
   // the host's sun in the renderer's model, and the ground height the renderer chose at load
   int   sunNode    = -1;
   int   sunLight   = -1;
@@ -4403,6 +4406,14 @@ Json FvHost::Impl::lightingTopic() const
   t["env"]["name"]    = envName;
   t["env"]["size"]    = {envSize.x, envSize.y};
   t["env"]["loading"] = envLoading;
+  // where the HDR's own sun is, as the panel's sun angles at the current rotation
+  if(envSun && lighting.env.source == "hdr")
+  {
+    const glm::dvec2 a = fv::lighting::environmentSunAngles(*envSun, lighting.env.rotation);
+    t["env"]["sun"]    = {{"azimuth", std::round(a.x * 10.0) / 10.0}, {"elevation", std::round(a.y * 10.0) / 10.0}};
+  }
+  else
+    t["env"]["sun"] = nullptr;
   return t;
 }
 
@@ -4484,6 +4495,7 @@ void FvHost::Impl::requestEnvironment()
     if(renderer->loadHdrEnvironment(std::move(img), {}))
     {
       loadedEnv = want;
+      envSun.reset();
       envName   = kStudioName;
       envSize   = {kStudioWidth, kStudioHeight};
       appliedParams.erase("ptFireflyClamp");  // an environment load recalibrates it; applyLighting sends ours
@@ -4497,7 +4509,10 @@ void FvHost::Impl::requestEnvironment()
   job(envJob, {{"label", label}, {"state", "running"}});
   loaders.spawn([this, path, want, req, jobId = envJob, label] {
     auto image = std::make_shared<EnvImage>(loadEnvImage(pathOf(path)));
-    post([this, image, path, want, req, jobId, label] {
+    // before the renderer takes the pixels: it writes the sampling pdf into alpha
+    const std::optional<glm::vec3> sun =
+        image->valid() ? fv::lighting::environmentSun(image->pixels.data(), image->size.width, image->size.height) : std::nullopt;
+    post([this, image, path, want, req, jobId, label, sun] {
       if(req != envRequest)
         return;  // another environment was chosen meanwhile, and closed this job
       envLoading = false;
@@ -4522,6 +4537,7 @@ void FvHost::Impl::requestEnvironment()
         return;
       }
       loadedEnv = want;
+      envSun    = sun;
       envName   = utf8Of(pathOf(path).filename());
       envSize   = size;
       job(jobId, {{"label", label}, {"state", "done"}});

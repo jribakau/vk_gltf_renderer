@@ -36,6 +36,7 @@
 //
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -130,6 +131,19 @@ glm::vec3 sunDirection(double azimuthDeg, double elevationDeg);
 
 // The sun node's rotation: glTF aims a directional light down its -Z, so +Z goes to the sun.
 glm::quat sunRotation(double azimuthDeg, double elevationDeg);
+
+// sunDirection's inverse: the panel's azimuth (-180..180) and elevation, in degrees, of a unit
+// vector toward the sun.
+glm::dvec2 sunAngles(const glm::vec3& toSun);
+
+// The sun in a lat-long environment image (RGBA32F, rows from the top, the renderer's mapping:
+// latlongToDir): the unit direction toward it in the environment's own frame, or none when no spot
+// stands out as one (an overcast sky, a studio). Read before the renderer takes the pixels.
+std::optional<glm::vec3> environmentSun(const float* rgba, uint32_t width, uint32_t height);
+
+// That direction in the world for an environment turned by `rotationDeg` (envRotation), as the
+// panel's angles.
+glm::dvec2 environmentSunAngles(const glm::vec3& envSun, double rotationDeg);
 
 // The light's `extras.radius`: its disc radius in km at the sun's distance, 0.15 degrees of angular
 // diameter per unit of softness (sunRadiusKm).

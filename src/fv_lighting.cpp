@@ -388,6 +388,82 @@ glm::quat sunRotation(double azimuthDeg, double elevationDeg)
   return glm::rotation(glm::vec3(0.0F, 0.0F, 1.0F), glm::normalize(sunDirection(azimuthDeg, elevationDeg)));
 }
 
+glm::dvec2 sunAngles(const glm::vec3& toSun)
+{
+  const glm::dvec3 d = glm::normalize(glm::dvec3(toSun));
+  return {std::atan2(d.x, d.z) * 180.0 / 3.14159265358979323846, std::asin(std::clamp(d.y, -1.0, 1.0)) * 180.0 / 3.14159265358979323846};
+}
+
+std::optional<glm::vec3> environmentSun(const float* rgba, uint32_t width, uint32_t height)
+{
+  if(!rgba || width < 2 || height < 2)
+    return std::nullopt;
+  constexpr double pi = 3.14159265358979323846;
+  const auto luminance = [&](size_t i) { return 0.2126 * rgba[i * 4] + 0.7152 * rgba[i * 4 + 1] + 0.0722 * rgba[i * 4 + 2]; };
+  // the renderer's latlongToDir at a texel's centre
+  const auto direction = [&](double x, double y) {
+    const double phi = 2.0 * pi * (x + 0.5) / width - pi, theta = pi * (y + 0.5) / height;
+    return glm::dvec3(std::cos(phi) * std::sin(theta), std::cos(theta), std::sin(phi) * std::sin(theta));
+  };
+  // the brightest cell of a grid at most 512 wide, so one hot texel is not the sun, and the image's
+  // mean over the sphere (each row by its solid angle)
+  const uint32_t cell = std::max(1u, width / 512);
+  const uint32_t cw = width / cell, ch = std::max(1u, height / cell);
+  double         peak = 0, total = 0, weight = 0;
+  uint32_t       px = 0, py = 0;
+  std::vector<double> rowSum(ch, 0.0);
+  for(uint32_t cy = 0; cy < ch; cy++)
+    for(uint32_t cx = 0; cx < cw; cx++)
+    {
+      double sum = 0;
+      for(uint32_t y = cy * cell; y < (cy + 1) * cell && y < height; y++)
+        for(uint32_t x = cx * cell; x < (cx + 1) * cell; x++)
+          sum += luminance(size_t(y) * width + x);
+      sum /= double(cell) * cell;
+      const double w = std::sin(pi * (cy + 0.5) / ch);
+      total += sum * w;
+      weight += w;
+      if(sum > peak)
+      {
+        peak = sum;
+        px   = cx;
+        py   = cy;
+      }
+    }
+  const double mean = weight > 0 ? total / weight : 0;
+  // a sun is many times the sky's mean, even averaged over a cell; an overcast sky or a studio's
+  // softboxes are a few times it
+  constexpr double kSunOverMean = 20;
+  if(!(peak > 0) || !(peak > kSunOverMean * mean))
+    return std::nullopt;
+  // the disc: texels within 3 degrees of that cell at a quarter of its brightness or more, weighed
+  // by their light
+  const glm::dvec3 centre = direction((px + 0.5) * cell - 0.5, (py + 0.5) * cell - 0.5);
+  const double     cosMax = std::cos(3.0 * pi / 180.0);
+  const double     span   = 3.0 / 360.0 * width / std::max(std::sin(pi * (py + 0.5) / ch), 0.05) + cell;
+  const int64_t    x0 = int64_t((px + 0.5) * cell - span), x1 = int64_t((px + 0.5) * cell + span);
+  const int64_t    y0 = std::max<int64_t>(0, int64_t((py + 0.5) * cell - 3.0 / 180.0 * height - cell));
+  const int64_t    y1 = std::min<int64_t>(height - 1, int64_t((py + 0.5) * cell + 3.0 / 180.0 * height + cell));
+  glm::dvec3       sum(0.0);
+  for(int64_t y = y0; y <= y1; y++)
+    for(int64_t xx = x0; xx <= x1; xx++)
+    {
+      const uint32_t   x = uint32_t(((xx % int64_t(width)) + width) % width);
+      const glm::dvec3 d = direction(x, double(y));
+      const double     l = luminance(size_t(y) * width + x);
+      if(glm::dot(d, centre) >= cosMax && l >= 0.25 * peak)
+        sum += d * l * std::sin(pi * (y + 0.5) / height);
+    }
+  const glm::dvec3 dir = glm::length(sum) > 0 ? glm::normalize(sum) : centre;
+  return glm::vec3(dir);
+}
+
+glm::dvec2 environmentSunAngles(const glm::vec3& envSun, double rotationDeg)
+{
+  const glm::vec4 q = envRotation(rotationDeg);
+  return sunAngles(glm::quat(q.w, q.x, q.y, q.z) * envSun);
+}
+
 double sunRadiusKm(double softness)
 {
   const double diameterDeg = 0.15 * std::max(0.0, softness);

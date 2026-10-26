@@ -256,3 +256,50 @@ TEST(FvLighting, RendererParamsFollowTheState)
   EXPECT_EQ(L::rendererParams(s, {})["useInfinitePlane"], false);
   EXPECT_EQ(L::rendererParams(s, {})["envSystem"], 3);
 }
+
+namespace {
+
+// A lat-long sky of luminance 1 with, optionally, a disc of `sun` around `toSun` (environment frame)
+std::vector<float> latlong(uint32_t w, uint32_t h, glm::vec3 toSun, float sun, float radiusDeg)
+{
+  std::vector<float> px(size_t(w) * h * 4, 1.0F);
+  const double       pi = 3.14159265358979323846;
+  for(uint32_t y = 0; y < h; y++)
+    for(uint32_t x = 0; x < w; x++)
+    {
+      const double    phi = 2.0 * pi * (x + 0.5) / w - pi, theta = pi * (y + 0.5) / h;
+      const glm::vec3 d(float(std::cos(phi) * std::sin(theta)), float(std::cos(theta)), float(std::sin(phi) * std::sin(theta)));
+      if(sun > 0 && glm::dot(d, toSun) >= std::cos(radiusDeg * pi / 180.0))
+        for(int c = 0; c < 3; c++)
+          px[(size_t(y) * w + x) * 4 + c] = sun;
+    }
+  return px;
+}
+
+}  // namespace
+
+// The Light tab's "Aim at the HDR's sun": the bright disc of a lat-long image found as a direction,
+// and that direction as the panel's angles once the environment is turned
+TEST(FvLighting, FindsTheSunInAnEnvironmentImage)
+{
+  const glm::vec3 toSun = glm::normalize(glm::vec3(0.4F, 0.5F, -0.7F));
+  const auto      img   = latlong(1024, 512, toSun, 5000.0F, 1.0F);
+  const auto      found = fv::lighting::environmentSun(img.data(), 1024, 512);
+  ASSERT_TRUE(found);
+  EXPECT_GT(glm::dot(*found, toSun), std::cos(0.3 * 3.14159265358979 / 180.0));
+
+  // the panel's angles aim the sun light there: unturned, and turned 90 degrees about +Y
+  for(double rotation : {0.0, 90.0, -135.0})
+  {
+    const glm::dvec2 a     = fv::lighting::environmentSunAngles(*found, rotation);
+    const glm::vec4  q     = fv::lighting::envRotation(rotation);
+    const glm::vec3  world = glm::quat(q.w, q.x, q.y, q.z) * *found;
+    EXPECT_GT(glm::dot(fv::lighting::sunDirection(a.x, a.y), world), 0.99999F) << rotation;
+    EXPECT_GE(a.x, -180.0);
+    EXPECT_LE(a.x, 180.0);
+  }
+
+  // an overcast sky, and a soft studio light a few times the sky, have no sun
+  EXPECT_FALSE(fv::lighting::environmentSun(latlong(1024, 512, toSun, 0.0F, 0.0F).data(), 1024, 512));
+  EXPECT_FALSE(fv::lighting::environmentSun(latlong(1024, 512, toSun, 6.0F, 20.0F).data(), 1024, 512));
+}
