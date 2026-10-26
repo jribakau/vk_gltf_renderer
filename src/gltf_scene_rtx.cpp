@@ -39,6 +39,7 @@
 #include "gltf_scene_animation.hpp"
 #include "staging_config.hpp"
 #include "tinygltf_utils.hpp"
+#include "shaders/shaderio.h"
 
 // GPU memory category names for RTX resources
 namespace {
@@ -306,6 +307,14 @@ static VkGeometryInstanceFlagsKHR getInstanceFlag(const tinygltf::Material& mat)
   return instanceFlags;
 }
 
+// Instance mask from material: a surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK)
+static uint8_t getInstanceMask(const tinygltf::Material& mat)
+{
+  const bool walkThrough = mat.extras.IsObject() && mat.extras.Has("fvWalkThrough") && mat.extras.Get("fvWalkThrough").IsBool()
+                           && mat.extras.Get("fvWalkThrough").Get<bool>();
+  return walkThrough ? INSTANCE_MASK_OTHER : INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER;
+}
+
 //--------------------------------------------------------------------------------------------------
 // Build TLAS from scene render nodes.
 void nvvkgltf::SceneRtx::cmdCreateBuildTopLevelAccelerationStructure(VkCommandBuffer cmd,
@@ -323,7 +332,7 @@ void nvvkgltf::SceneRtx::cmdCreateBuildTopLevelAccelerationStructure(VkCommandBu
   // Rebuild the full instance flags cache (initial build or size-mismatch rebuild).
   m_instanceFlagsCache.resize(materials.size());
   for(size_t i = 0; i < materials.size(); i++)
-    m_instanceFlagsCache[i] = getInstanceFlag(materials[i]);
+    m_instanceFlagsCache[i] = {getInstanceFlag(materials[i]), getInstanceMask(materials[i])};
 
   m_tlasInstances.clear();
   m_tlasInstances.reserve(instanceCount);
@@ -338,8 +347,8 @@ void nvvkgltf::SceneRtx::cmdCreateBuildTopLevelAccelerationStructure(VkCommandBu
     asInstance.instanceCustomIndex                    = object.renderPrimID;
     asInstance.accelerationStructureReference         = blasAddress;
     asInstance.instanceShaderBindingTableRecordOffset = 0;
-    asInstance.mask                                   = 0x01;
-    asInstance.flags                                  = m_instanceFlagsCache[object.materialID];
+    asInstance.mask                                   = m_instanceFlagsCache[object.materialID].mask;
+    asInstance.flags                                  = m_instanceFlagsCache[object.materialID].flags;
 
     m_tlasInstances.push_back(asInstance);
   }
@@ -412,7 +421,7 @@ void nvvkgltf::SceneRtx::updateInstanceFlagsCache(nvvkgltf::Scene& scene)
   {
     m_instanceFlagsCache.resize(materials.size());
     for(size_t i = 0; i < materials.size(); i++)
-      m_instanceFlagsCache[i] = getInstanceFlag(materials[i]);
+      m_instanceFlagsCache[i] = {getInstanceFlag(materials[i]), getInstanceMask(materials[i])};
   }
   else if(!df.materials.empty())
   {
@@ -421,10 +430,10 @@ void nvvkgltf::SceneRtx::updateInstanceFlagsCache(nvvkgltf::Scene& scene)
     {
       if(idx < 0 || idx >= static_cast<int>(materials.size()))
         continue;
-      const VkGeometryInstanceFlagsKHR flags = getInstanceFlag(materials[idx]);
-      if(flags != m_instanceFlagsCache[idx])
+      const InstanceBits bits = {getInstanceFlag(materials[idx]), getInstanceMask(materials[idx])};
+      if(bits != m_instanceFlagsCache[idx])
       {
-        m_instanceFlagsCache[idx] = flags;
+        m_instanceFlagsCache[idx] = bits;
         changedMats.insert(idx);
       }
     }
@@ -480,7 +489,8 @@ void nvvkgltf::SceneRtx::rebuildTopLevelAS(VkCommandBuffer             cmd,
     const bool      wasVisible  = (m_tlasInstances[idx].accelerationStructureReference != 0);
 
     m_tlasInstances[idx].transform                      = nvvk::toTransformMatrixKHR(object.worldMatrix);
-    m_tlasInstances[idx].flags                          = m_instanceFlagsCache[object.materialID];
+    m_tlasInstances[idx].flags                          = m_instanceFlagsCache[object.materialID].flags;
+    m_tlasInstances[idx].mask                           = m_instanceFlagsCache[object.materialID].mask;
     m_tlasInstances[idx].accelerationStructureReference = isVisible ? blasAddress : 0;
     m_tlasInstances[idx].instanceCustomIndex            = object.renderPrimID;
 

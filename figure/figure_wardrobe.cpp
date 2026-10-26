@@ -668,6 +668,28 @@ bool Figure::removeItem(int id)
   return true;
 }
 
+std::vector<bool> walkThroughMaterials(const SceneGraph& scene, const std::vector<WornItem>& items)
+{
+  std::vector<bool> passes(scene.meshes.size(), false);
+  for(const WornItem& item : items)
+    if(item.kind != "Anatomy" && item.hiddenPolys.empty())
+      for(int m : item.meshes)
+        if(m >= 0 && m < int(passes.size()))
+          passes[size_t(m)] = true;
+  std::vector<bool> through(scene.materials.size(), true), bounds(scene.materials.size(), false);
+  for(size_t m = 0; m < scene.meshes.size(); m++)
+    if(!passes[m])
+      for(int mi : scene.meshes[m].materials)
+        if(mi >= 0 && mi < int(bounds.size()))
+          bounds[size_t(mi)] = true;
+  for(size_t mi = 0; mi < scene.materials.size(); mi++)
+  {
+    const mat::Kind kind = scene.materials[mi].surface.kind;
+    through[mi] = kind == mat::Kind::eLashes || kind == mat::Kind::eHair || kind == mat::Kind::eCornea || !bounds[mi];
+  }
+  return through;
+}
+
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
                                                       std::optional<bool> on, float strength, int layer)
 {

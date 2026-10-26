@@ -95,6 +95,14 @@ struct WornItem
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
                                                       std::optional<bool> on, float strength, int layer = 0);
 
+// Per scene material: whether light scattering under the skin passes through it rather than
+// leaving the skin there (the renderer's "fvWalkThrough"). Lashes, hair, brows and the eyes' wet
+// films are never the skin's boundary, and neither is anything worn but anatomy: clothing, hair and
+// props reach under the skin where they intersect it. The body, its geografts (whatever kind their
+// path gives them) and anatomy add-ons (Genesis 9's eyes and mouth close the head) bound it. A
+// material that a bounding mesh uses too bounds it.
+std::vector<bool> walkThroughMaterials(const SceneGraph& scene, const std::vector<WornItem>& items);
+
 // How a worn item stands with dForce, for the panels.
 struct ClothState
 {

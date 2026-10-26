@@ -159,8 +159,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 #endif
 
-    // Trace the ray through the scene
-    raytracer.Trace(ray, payload, seed);
+    // Trace the ray through the scene. A walk's step sees only what can bound its medium: it
+    // passes through lashes, hair and clothing that reach under the skin (INSTANCE_MASK_WALK).
+    raytracer.Trace(ray, payload, seed, freeFlight.drawn ? INSTANCE_MASK_WALK : 0xFF);
     ray.TMax = INFINITE;
 
     // Getting the scene information
@@ -1324,7 +1325,7 @@ void probeCameraMedium(IRaytracer raytracer)
   for(int i = 0; i < CAMERA_MEDIUM_MAX_SURFACES; i++)
   {
     HitPayload payload;
-    raytracer.Trace(ray, payload, seed);
+    raytracer.Trace(ray, payload, seed, 0xFF);
     if(payload.hitT == INFINITE)
       break;
 

@@ -47,6 +47,9 @@ struct BuildOptions
   bool forFile = false;
   // The scene's camera exposure, which sets how bright Iray emitters are.
   double exposureValue = 13, iso = 100;
+  // Per scene material, the ones light under the skin passes through (walkThroughMaterials): their
+  // glTF materials say `"fvWalkThrough": true` in their extras. Empty: none.
+  std::vector<bool> walkThrough;
 };
 
 struct BuildResult

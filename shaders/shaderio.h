@@ -40,6 +40,13 @@ NAMESPACE_SHADERIO_BEGIN()
 #define PT_WORKGROUP_Y 8
 #define SILHOUETTE_WORKGROUP_SIZE 16
 
+// TLAS instance masks. Every ray sees every instance but the rays of a scatter walk, which see only
+// what can bound the medium: a material whose extras say `"fvWalkThrough": true` (lashes, hair,
+// clothing on a figure) has no INSTANCE_MASK_WALK, so a walk under the skin passes through it
+// instead of leaving the skin early.
+#define INSTANCE_MASK_WALK 0x01
+#define INSTANCE_MASK_OTHER 0x02
+
 
 // Indices into `texturesCube[]` (eTexturesCube binding).
 #define HDR_DIFFUSE_INDEX 0  // Lambert-prefiltered HDR environment cubemap

@@ -1755,6 +1755,7 @@ void FvHost::Impl::compose()
           auto it = f->images.find(fv::build::requestKey(req));
           return it == f->images.end() ? std::nullopt : it->second;
         };
+        options.walkThrough = fv::walkThroughMaterials(f->fig->loaded.scene, f->fig->items);
         out = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, options);
       }));
     }
@@ -2419,6 +2420,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
         auto it = images.find(fv::build::requestKey(req));
         return it == images.end() ? std::nullopt : it->second;
       };
+      options.walkThrough = fv::walkThroughMaterials(f->loaded.scene, f->items);
       auto built = [&] {
         fv::timing::Scope t("buildGltf");
         return fv::build::buildGltf(f->loaded.scene, f->loaded.root, options);

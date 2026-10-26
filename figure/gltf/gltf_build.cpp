@@ -538,6 +538,12 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     if(onRibbon[mi])
       g.doubleSided = true;
     g.extras = extras("m:" + std::to_string(mi));
+    if(mi < options.walkThrough.size() && options.walkThrough[mi])
+    {
+      tinygltf::Value::Object o = g.extras.Get<tinygltf::Value::Object>();
+      o["fvWalkThrough"]        = tinygltf::Value(true);
+      g.extras                  = tinygltf::Value(std::move(o));
+    }
     model.materials.push_back(std::move(g));
   }
   if(usesBasisu)

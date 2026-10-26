@@ -134,7 +134,14 @@ protected:
   nvvk::Buffer m_tlasScratchBuffer;
   nvvk::Buffer m_instancesBuffer;
 
-  std::vector<VkGeometryInstanceFlagsKHR> m_instanceFlagsCache;  // Per-material TLAS instance flags (opaque/double-sided)
+  // Per-material TLAS instance flags (opaque/double-sided) and mask (which rays see it)
+  struct InstanceBits
+  {
+    VkGeometryInstanceFlagsKHR flags = 0;
+    uint8_t                    mask  = 0;
+    bool                       operator==(const InstanceBits&) const = default;
+  };
+  std::vector<InstanceBits> m_instanceFlagsCache;
 
   DeferredFreeFunc m_deferredFree;   // Optional: schedules deferred GPU resource destruction
   GpuMemoryTracker m_memoryTracker;  // GPU memory tracking

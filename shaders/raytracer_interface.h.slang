@@ -65,7 +65,8 @@ static const uint SHADOW_RAY_FLAGS = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 // Raytracer interface definition
 interface IRaytracer
 {
-  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed);
+  // `instanceMask`: the TLAS instances the ray can hit (shaderio.h INSTANCE_MASK_*; 0xFF for all)
+  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask);
   void TraceLow(RayDesc ray, inout HitPayload payload);
   // A shadow ray that starts inside a medium says so, with that medium's extinction: it attenuates
   // every segment it travels inside one, up to TMax.
@@ -75,7 +76,7 @@ interface IRaytracer
 // Implementation using RayQuery
 struct RayQueryRaytracer : IRaytracer
 {
-  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed)
+  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask)
   {
     payload.hitT = INFINITE;  // Default when not hitting anything
 #if USE_VISUALIZE
@@ -86,7 +87,7 @@ struct RayQueryRaytracer : IRaytracer
     // and SceneRtx sets VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR on double-sided
     // (and transmissive/volume) instances to re-enable them (see gltf_scene_rtx.cpp).
     RayQuery rayQuery;
-    rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, ray);
+    rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, instanceMask, ray);
 
     while(rayQuery.Proceed())
     {
@@ -203,7 +204,7 @@ struct RayQueryRaytracer : IRaytracer
 // Implementation using traditional ray tracing
 struct TraditionalRaytracer : IRaytracer
 {
-  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed)
+  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask)
   {
     payload.seed = seed;
 #if USE_VISUALIZE
@@ -211,7 +212,7 @@ struct TraditionalRaytracer : IRaytracer
 #endif
     if(USE_SER == 1 && AVAILABLE_SER == 1)
     {
-      HitObject hitObj = HitObject::TraceRay(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 0, 0, ray, payload);
+      HitObject hitObj = HitObject::TraceRay(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, instanceMask, 0, 0, 0, ray, payload);
 
       // Simple default thread reordering, not coherence hinting
       ReorderThread(hitObj);
@@ -235,7 +236,7 @@ struct TraditionalRaytracer : IRaytracer
     }
     else
     {
-      TraceRay(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 0, 0, ray, payload);
+      TraceRay(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, instanceMask, 0, 0, 0, ray, payload);
     }
     seed = payload.seed;
   }
