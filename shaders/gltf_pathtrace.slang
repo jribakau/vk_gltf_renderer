@@ -936,8 +936,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // this one by an exponential radial profile of mean d (the diffusion length, averaged over
       // the channels), in the tangent plane. Thin shadows, the lashes' on the eye, blur as they do
       // in tissue; no walk, so nothing is lost in an eyeball that is not one closed medium. The tail
-      // is cut at 2.5 d, short of most lid margins.
-      if(materialIndex >= 0 && pbrMat.thickness <= 0.0F && any(materials[materialIndex].scatterDistance > 0.0F) && shadowSideForward)
+      // is cut at 2.5 d, short of most lid margins. The material's thickness, not the lobe's: a walk's
+      // diffuse exit shades with a thin default lobe, and measured skin's exits took the offset too, a
+      // centimetre at twice the scatter distance. In a hollow (the throat, between the breasts, under the
+      // collarbones) the tangent plane runs into the body, the shadow ray started inside it, and the
+      // walk's light was lost there: grey patches in the still.
+      if(materialIndex >= 0 && materials[materialIndex].thicknessFactor <= 0.0F && any(materials[materialIndex].scatterDistance > 0.0F)
+         && shadowSideForward)
       {
         const float3 dist = materials[materialIndex].scatterDistance;
         const float  d    = (dist.x + dist.y + dist.z) / 3.0F;
