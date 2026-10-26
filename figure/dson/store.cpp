@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <fstream>
 #include <list>
 #include <unordered_map>
 
@@ -146,6 +147,21 @@ SharedCache& shared()
   return cache;
 }
 
+// How big a library file is as text: a gzipped one's trailer records its inflated size (mod 4 GiB).
+// A strand hair's UV set is 124 KB on disk and 18 MB of JSON, which is what parsing costs.
+uintmax_t textSize(const std::filesystem::path& path, uintmax_t fileSize)
+{
+  std::ifstream in(path, std::ios::binary);
+  unsigned char magic[2] = {};
+  if(fileSize < 18 || !in.read(reinterpret_cast<char*>(magic), 2) || magic[0] != 0x1f || magic[1] != 0x8b)
+    return fileSize;
+  unsigned char trail[4] = {};
+  if(!in.seekg(-4, std::ios::end) || !in.read(reinterpret_cast<char*>(trail), 4))
+    return fileSize;
+  const uintmax_t isize = uintmax_t(trail[0]) | uintmax_t(trail[1]) << 8 | uintmax_t(trail[2]) << 16 | uintmax_t(trail[3]) << 24;
+  return std::max(fileSize, isize);
+}
+
 }  // namespace
 
 //--------------------------------------------------------------------------------------------------
@@ -281,8 +297,9 @@ std::shared_ptr<const Doc> Store::fetch(const std::string& file)
     throw MissingFileError(file);
   }
   std::error_code ec;
-  const uintmax_t size  = std::filesystem::file_size(*path, ec);
-  const bool      large = !ec && size >= (2u << 20);
+  const uintmax_t onDisk = std::filesystem::file_size(*path, ec);
+  const uintmax_t size   = ec ? 0 : textSize(*path, onDisk);
+  const bool      large  = size >= (2u << 20);
   // a large file goes through the parsed cache when there is one
   std::filesystem::path cacheFile;
   ParsedStamp           stamp;

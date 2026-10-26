@@ -368,11 +368,12 @@ std::string missingMessage(const std::string& fileName, const std::vector<std::s
 class Prefetch
 {
 public:
-  Prefetch(Store& store, std::vector<std::string> files)
+  Prefetch(Store& store, std::vector<std::string> files, std::unordered_set<std::string> seen)
       : m_state(std::make_shared<State>())
   {
     m_state->store = &store;
     m_state->files = std::move(files);
+    m_state->seen  = std::move(seen);
     for(size_t i = 0; i < std::min<size_t>(m_state->files.size(), jobs::pool().size()); i++)
       jobs::pool().submit([st = m_state] { st->run(); });
   }
@@ -393,6 +394,14 @@ private:
     std::mutex               mutex;
     std::condition_variable  done;
     int                      running = 0;
+    // lower-case paths already listed or claimed
+    std::unordered_set<std::string> seen;
+
+    bool claim(const std::string& file)
+    {
+      std::lock_guard lock(mutex);
+      return seen.insert(lowerCase(file)).second;
+    }
 
     void run()
     {
@@ -404,7 +413,15 @@ private:
       for(size_t i; (i = next++) < files.size();)
         try
         {
-          store->load(files[i]);
+          const auto doc = store->load(files[i]);
+          // a geometry's UV set is a file of its own that only the geometry names (a strand hair's is
+          // tens of MB of JSON), so it is read as soon as the geometry is
+          if(const Json* geos = get(&doc->json, "geometry_library"); geos && geos->is_array())
+            for(const Json& g : *geos)
+              if(const Json* uv = get(&g, "default_uv_set"); uv && uv->is_string())
+                if(const auto ref = parseRef(uv->get<std::string>(), files[i]);
+                   ref && !ref->file.empty() && claim(ref->file) && store->library().find(ref->file))
+                  store->load(ref->file);
         }
         catch(const std::exception&)
         {
@@ -418,11 +435,13 @@ private:
   std::shared_ptr<State> m_state;
 };
 
-// The other library files a scene's nodes, geometries and materials point at, that are installed.
-std::vector<std::string> referencedFiles(const Store& store, const Json& nodes, const Json* materials, const std::string& file)
+// The other library files a scene's nodes, geometries and materials point at, that are installed;
+// `seen` collects them (lower case) with the scene's own file.
+std::vector<std::string> referencedFiles(const Store& store, const Json& nodes, const Json* materials, const std::string& file,
+                                         std::unordered_set<std::string>& seen)
 {
-  std::vector<std::string>        out;
-  std::unordered_set<std::string> seen{lowerCase(file)};
+  std::vector<std::string> out;
+  seen.insert(lowerCase(file));
   auto                            add = [&](const Json* url) {
     if(!url || !url->is_string())
       return;
@@ -502,7 +521,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     nodesJson = &synthetic;
   }
   const Json& nodes = *nodesJson;
-  Prefetch    prefetch(store, referencedFiles(store, nodes, get(sceneJson, "materials"), file));
+  std::unordered_set<std::string> prefetched;
+  auto                            files = referencedFiles(store, nodes, get(sceneJson, "materials"), file, prefetched);
+  Prefetch                        prefetch(store, std::move(files), std::move(prefetched));
 
   // scene materials by the geometry instance (or library geometry) they apply to, in file order
   std::vector<const Json*>                                   sceneMaterials;
