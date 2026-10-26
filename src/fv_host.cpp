@@ -985,8 +985,10 @@ struct FvHost::Impl
   };
   Json     wear(const Json& args);
   // `beforeBuild` runs on the application thread once everything is on, before the scene is built
-  // again; `after` once it has been.
-  uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild = {}, std::function<void()> after = {});
+  // again; `after` once it has been. With `commitAfter`, the requests are prepared at once and put
+  // on once it is ready (a restore's worn items after the figure's add-ons).
+  uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild = {}, std::function<void()> after = {},
+                     std::shared_future<void> commitAfter = {});
   // glTF, GLB and OBJ files, read on a worker, as a new prop
   Json importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then = {});
   Json animationTopic();
@@ -2670,10 +2672,12 @@ Json FvHost::Impl::wear(const Json& args)
   return {{"job", startWear(target, {{rel, "", {}}})}};
 }
 
-// Puts wearables on a figure, one after the other: each is loaded and bound on a worker, merged on
-// the application thread, and the renderer's scene is composed again once at the end. Wears are
-// serial: a merge grows the scene the next one reads.
-uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild, std::function<void()> after)
+// Puts wearables on a figure: all of them are loaded and bound side by side on workers against one
+// copy of the figure, then merged on the application thread in request order, and the renderer's
+// scene is composed again once at the end. A prepare reads only that copy, so the order of the
+// merges (and the keys they give) is the order of the requests.
+uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild, std::function<void()> after,
+                                 std::shared_future<void> commitAfter)
 {
   HostSettings s;
   std::shared_ptr<fv::dson::Library> lib;
@@ -2686,10 +2690,15 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
   const std::string label = "Wearing " + utf8Of(pathOf(requests.front().rel).stem());
   job(jobId, {{"label", label}, {"state", "running"}});
   const fv::mat::SkinMode skin = skinMode.load();
-  loaders.spawn([this, s, requests = std::move(requests), target, lib, jobId, label, skin, beforeBuild = std::move(beforeBuild), after = std::move(after)] {
-    std::lock_guard serial(wearMutex);
-    bool            any = false;
-    auto            fail = [&](const std::string& what) {
+  loaders.spawn([this, s, requests = std::move(requests), target, lib, jobId, label, skin, beforeBuild = std::move(beforeBuild), after = std::move(after),
+                 commitAfter] {
+    // A batch that commits after something else (a restore after the figure's add-ons) prepares at
+    // once and takes the wear lock only to commit; any other batch holds it throughout.
+    std::unique_lock serial(wearMutex, std::defer_lock);
+    if(!commitAfter.valid())
+      serial.lock();
+    bool any  = false;
+    auto fail = [&](const std::string& what) {
       notice(what, "error");
       job(jobId, {{"label", label}, {"state", "failed"}, {"error", what}});
     };
@@ -2702,6 +2711,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         for(const std::string& p : r.presets)
           if(std::find(addonPresets.begin(), addonPresets.end(), p) == addonPresets.end())
             addonPresets.push_back(p);
+    std::mutex            presetMutex;  // the prepares run side by side
     std::set<std::string> presetMissing, presetMatched;
     auto applyPreset = [&](const std::string& presetRel, fv::SceneGraph& scene, bool report) {
       try
@@ -2711,6 +2721,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, scene);
           if(report)
           {
+            std::lock_guard lock(presetMutex);
             presetMissing.insert(r.missing.begin(), r.missing.end());
             presetMatched.insert(r.matched.begin(), r.matched.end());
           }
@@ -2721,37 +2732,72 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         notice(presetRel + ": " + e.what());
       }
     };
-    for(const WearRequest& request : requests)
+    using Clock          = std::chrono::steady_clock;
+    const auto msSince   = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
+    const auto tBatch    = Clock::now();
+    // what is put on: an add-on whose node the figure already has is not put on twice
+    // (by value: a timed-out onApp drops its task, but one already running finishes after this moves on)
+    std::vector<const WearRequest*> todo;
+    std::shared_ptr<fv::Figure::WearInputs> inputs;
+    double                                  msBase = 0;
+    try
     {
-      if(!accepting)
-        return;
+      std::vector<std::string> names;
+      for(const WearRequest& r : requests)
+        names.push_back(r.name);
+      const auto worn = onApp([this, target, names] {
+        std::vector<char> out(names.size(), 0);
+        if(inScene(target))
+          for(size_t i = 0; i < names.size(); i++)
+            out[i] = !names[i].empty()
+                     && std::any_of(target->fig->items.begin(), target->fig->items.end(),
+                                    [&](const fv::WornItem& item) { return item.nodeNames.count(names[i]) > 0; });
+        return out;
+      });
+      std::set<std::string> taken;
+      for(size_t i = 0; i < requests.size(); i++)
+        if(!worn[i] && (requests[i].name.empty() || taken.insert(requests[i].name).second))
+          todo.push_back(&requests[i]);
+      // the figure as it is now, copied on the application thread once for every prepare of the
+      // batch: dials move its joint centres meanwhile, and commits grow it
+      if(!todo.empty())
+      {
+        fv::timing::Scope t("wearBase (render thread)");
+        const auto        tBase = Clock::now();
+        inputs                  = std::make_shared<fv::Figure::WearInputs>(onApp([target] { return target->fig->wearInputs(); }));
+        msBase                  = msSince(tBase);
+      }
+    }
+    catch(const std::exception& e)
+    {
+      todo.clear();
+      notice(e.what(), "error");
+    }
+
+    // every request prepared side by side, each on a thread of its own (a prepare waits on pool jobs,
+    // so not on the pool): loaded, fitted and bound, its presets, strands and textures
+    struct Slot
+    {
+      std::shared_ptr<fv::Figure::PreparedWear>                               prepared;
+      std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
+      double                                                                  msPrep = 0, msStrands = 0, msWorker = 0;
+      std::string                                                             error;
+    };
+    std::vector<Slot> slots(todo.size());
+    auto              prepare = [&](size_t i) {
+      const WearRequest& request = *todo[i];
+      Slot&              slot    = slots[i];
+      const auto         tWear   = Clock::now();
       try
       {
-        // an add-on whose node the figure already has is not put on twice
-        // by value: a timed-out onApp drops its task, but one already running finishes after this loop moves on
-        if(!request.name.empty() && onApp([this, target, name = request.name] {
-             return inScene(target)
-                    && std::any_of(target->fig->items.begin(), target->fig->items.end(),
-                                   [&](const fv::WornItem& i) { return i.nodeNames.count(name) > 0; });
-           }))
-          continue;
+        if(!accepting)
+          return;
         job(jobId, {{"label", utf8Of(pathOf(request.rel).stem()) + ": loading"}, {"state", "running"}});
-        fv::timing::Scope timeWear("wear " + utf8Of(pathOf(request.rel).stem()));
-        using Clock = std::chrono::steady_clock;
-        const auto msSince = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
-        const auto tWear = Clock::now();
-        // the figure as it is now, copied on the application thread: dials move its joint centres meanwhile
-        // ... with the body's dialled-in targets, projected onto the wearable on this thread
-        auto [base, bodyTargets] = [&] {
-          fv::timing::Scope t("wearBase (render thread)");
-          return onApp([target] { return std::make_pair(target->fig->wearBase(), target->fig->activeBodyTargets()); });
-        }();
-        const double msBase = msSince(tWear);
-        const auto   tPrep  = Clock::now();
-        auto prepared = target->fig->prepareWear(request.rel, s.subdivision, base, std::move(bodyTargets), target->texturesFlipped);
-        const double msPrep = msSince(tPrep);
+        const auto tPrep = Clock::now();
+        slot.prepared    = target->fig->prepareWear(request.rel, s.subdivision, *inputs, target->texturesFlipped);
+        slot.msPrep      = msSince(tPrep);
         // the material presets that go with it, applied to the wearable before its textures are looked up
-        fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
+        fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*slot.prepared);
         {
           fv::timing::Scope t("material presets");
           if(const std::string brows = defaultBrowMaterial(preparedScene); !brows.empty())
@@ -2767,81 +2813,112 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           fv::timing::Scope t("strand directions");
           fv::build::measureStrands(preparedScene, target->texturesFlipped);
         }
-        const double msStrands = msSince(tStrands);
+        slot.msStrands = msSince(tStrands);
         // the wearable's textures, the way the figure's were made: bottom-up cooked, or the sources
         job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
-        std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
-        {
-          fv::timing::Scope t("textures");
-          const auto requestsOf = fv::build::textureRequests(fv::Figure::preparedScene(*prepared), skin);
-          std::vector<std::optional<fv::build::TextureImage>> found(requestsOf.size());
-          std::atomic<size_t>                                 next{0};
-          std::vector<std::thread>                            workers;
-          const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
-          for(int w = 0; w < std::min<int>(8, int(requestsOf.size())); w++)
-            workers.emplace_back([&] {
-              for(size_t i; (i = next++) < requestsOf.size();)
-                found[i] = target->texturesFlipped ? (cooker ? cookedTexture(s, requestsOf[i], true, false).image : std::nullopt) :
-                                                     (lib ? fallbackTexture(s, *lib, requestsOf[i], cooker) : std::nullopt);
-            });
-          for(auto& w : workers)
-            w.join();
-          prefetchImages(requestsOf, found);
-          for(size_t i = 0; i < requestsOf.size(); i++)
-            images[fv::build::requestKey(requestsOf[i])] = found[i];
-        }
-        auto done = std::make_shared<std::promise<bool>>();
-        auto ok   = done->get_future();
-        post([this, target, prepared, rel = request.rel, label, images = std::move(images), done]() mutable {
-          if(!inScene(target))
-          {
-            done->set_value(false);
-            return;
-          }
-          try
-          {
-            const fv::WearResult r = target->fig->commitWear(prepared, rel);
-            for(auto& [key, image] : images)
-              target->images.insert_or_assign(key, std::move(image));
-            for(const std::string& w : r.warnings)
-              notice(w);
-            for(const std::string& n : r.notes)
-              notice(n, "info");
-            if(!r.missingBones.empty())
-              notice(utf8Of(pathOf(rel).stem()) + ": this figure has no " + r.missingBones.front()
-                     + (r.missingBones.size() > 1 ? " and " + std::to_string(r.missingBones.size() - 1) + " other bones" : "") + " to hang it from.");
-            if(r.fit < 0.5)
-              notice(utf8Of(pathOf(rel).stem())
-                     + ": most of its bones found no match on this figure, so it was probably made for another figure and will not follow the pose.");
-            done->set_value(true);
-          }
-          catch(const std::exception& e)
-          {
-            notice(e.what(), "error");
-            done->set_value(false);
-          }
-        });
-        // the application thread merges it; a renderer that is closing never will
-        const auto tCommit = Clock::now();
-        {
-          fv::timing::Scope timeCommit("commit (render thread)");
-          while(ok.wait_for(100ms) != std::future_status::ready)
-            if(!accepting)
-              return;
-        }
-        any = ok.get() || any;
-        if(fv::timing::enabled())
-        {
-          const double msCommit = msSince(tCommit), msAll = msSince(tWear);
-          char         buf[256];
-          std::snprintf(buf, sizeof buf, "wear summary: worker %.0f ms (prepare %.0f, strands %.0f), render thread %.0f ms (wearBase %.0f, commit %.0f)",
-                        msAll - msBase - msCommit, msPrep, msStrands, msBase + msCommit, msBase, msCommit);
-          fv::timing::line(buf);
-        }
+        fv::timing::Scope t("textures");
+        const auto        requestsOf = fv::build::textureRequests(preparedScene, skin);
+        std::vector<std::optional<fv::build::TextureImage>> found(requestsOf.size());
+        std::atomic<size_t>                                 next{0};
+        std::vector<std::thread>                            workers;
+        const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
+        for(int w = 0; w < std::min<int>(8, int(requestsOf.size())); w++)
+          workers.emplace_back([&] {
+            for(size_t k; (k = next++) < requestsOf.size();)
+              found[k] = target->texturesFlipped ? (cooker ? cookedTexture(s, requestsOf[k], true, false).image : std::nullopt) :
+                                                   (lib ? fallbackTexture(s, *lib, requestsOf[k], cooker) : std::nullopt);
+          });
+        for(auto& w : workers)
+          w.join();
+        prefetchImages(requestsOf, found);
+        for(size_t k = 0; k < requestsOf.size(); k++)
+          slot.images[fv::build::requestKey(requestsOf[k])] = found[k];
       }
       catch(const std::exception& e)
       {
-        notice(utf8Of(pathOf(request.rel).stem()) + ": " + e.what(), "error");
+        slot.prepared.reset();
+        slot.error = e.what();
+      }
+      slot.msWorker = msSince(tWear);
+    };
+    {
+      std::vector<std::thread> threads;
+      for(size_t i = 1; i < todo.size(); i++)
+        threads.emplace_back(prepare, i);
+      if(!todo.empty())
+        prepare(0);
+      for(auto& t : threads)
+        t.join();
+    }
+
+    // committed in request order, after what this batch waits for
+    if(commitAfter.valid())
+    {
+      while(commitAfter.wait_for(100ms) != std::future_status::ready)
+        if(!accepting)
+          return;
+      serial.lock();
+    }
+    for(size_t i = 0; i < todo.size(); i++)
+    {
+      const WearRequest& request = *todo[i];
+      Slot&              slot    = slots[i];
+      if(!accepting)
+        return;
+      if(!slot.prepared)
+      {
+        if(!slot.error.empty())
+          notice(utf8Of(pathOf(request.rel).stem()) + ": " + slot.error, "error");
+        continue;
+      }
+      auto done = std::make_shared<std::promise<bool>>();
+      auto ok   = done->get_future();
+      post([this, target, prepared = slot.prepared, rel = request.rel, label, images = std::move(slot.images), done]() mutable {
+        if(!inScene(target))
+        {
+          done->set_value(false);
+          return;
+        }
+        try
+        {
+          const fv::WearResult r = target->fig->commitWear(prepared, rel);
+          for(auto& [key, image] : images)
+            target->images.insert_or_assign(key, std::move(image));
+          for(const std::string& w : r.warnings)
+            notice(w);
+          for(const std::string& n : r.notes)
+            notice(n, "info");
+          if(!r.missingBones.empty())
+            notice(utf8Of(pathOf(rel).stem()) + ": this figure has no " + r.missingBones.front()
+                   + (r.missingBones.size() > 1 ? " and " + std::to_string(r.missingBones.size() - 1) + " other bones" : "") + " to hang it from.");
+          if(r.fit < 0.5)
+            notice(utf8Of(pathOf(rel).stem())
+                   + ": most of its bones found no match on this figure, so it was probably made for another figure and will not follow the pose.");
+          done->set_value(true);
+        }
+        catch(const std::exception& e)
+        {
+          notice(e.what(), "error");
+          done->set_value(false);
+        }
+      });
+      // the application thread merges it; a renderer that is closing never will
+      const auto tCommit = Clock::now();
+      {
+        fv::timing::Scope timeCommit("commit (render thread)");
+        while(ok.wait_for(100ms) != std::future_status::ready)
+          if(!accepting)
+            return;
+      }
+      any = ok.get() || any;
+      if(fv::timing::enabled())
+      {
+        const double msCommit = msSince(tCommit);
+        char         buf[256];
+        std::snprintf(buf, sizeof buf, "wear summary: worker %.0f ms (prepare %.0f, strands %.0f), render thread %.0f ms (wearBase %.0f, commit %.0f)",
+                      slot.msWorker, slot.msPrep, slot.msStrands, msBase + msCommit, msBase, msCommit);
+        fv::timing::line(buf);
+        fv::timing::report("wear " + utf8Of(pathOf(request.rel).stem()), msSince(tBatch));
       }
     }
     // surfaces no worn item had; those of the figure itself took the character's preset at load
@@ -3643,8 +3720,22 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       notice(std::to_string(problems.size() - 5) + " more problems restoring " + prop->name);
     job(jobId, {{"state", "done"}});
   };
-  auto wear = [this, target, worn, apply] {
-    // one file can put on several items (an outfit's "Full Load"): each is listed, the file is worn once
+  // one file can put on several items (an outfit's "Full Load"): each is listed, the file is worn once;
+  // the figure's add-ons are put on by its load
+  std::vector<WearRequest> requests;
+  {
+    std::set<std::string> skip;
+    for(const fv::dson::PostLoadAddon& a : target->fig->addons)
+      skip.insert(relKey(a.file));
+    if(worn.is_array())
+      for(const Json& w : worn)
+      {
+        const std::string rel = w.value("rel", "");
+        if(!rel.empty() && skip.insert(relKey(rel)).second)
+          requests.push_back({rel, "", {}});
+      }
+  }
+  auto wear = [this, target, worn, apply, requests](std::shared_future<void> commitAfter) mutable {
     auto hidden = [target, worn] {
       std::vector<int> ids;
       for(const Json& w : worn)
@@ -3658,17 +3749,6 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       return ids;
     };
     auto hide = [hidden] { hidden(); };
-    std::set<std::string> skip;
-    for(const fv::dson::PostLoadAddon& a : target->fig->addons)
-      skip.insert(relKey(a.file));
-    std::vector<WearRequest> requests;
-    if(worn.is_array())
-      for(const Json& w : worn)
-      {
-        const std::string rel = w.value("rel", "");
-        if(!rel.empty() && skip.insert(relKey(rel)).second)
-          requests.push_back({rel, "", {}});
-      }
     if(requests.empty())
     {
       // no composition follows: the renderer's scene hides them now, as wardrobe.visible does
@@ -3687,12 +3767,20 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       apply();
       return;
     }
-    startWear(target, std::move(requests), hide, apply);
+    startWear(target, std::move(requests), hide, apply, std::move(commitAfter));
   };
-  if(target->addonsPending)
-    target->afterAddons.push_back(std::move(wear));
+  if(target->addonsPending && !requests.empty())
+  {
+    // the worn items are loaded and bound now, beside the add-ons, and put on after them: the
+    // add-ons come first, so the keys are as before and the material steps find their surfaces
+    auto addonsOn = std::make_shared<std::promise<void>>();
+    target->afterAddons.push_back([addonsOn] { addonsOn->set_value(); });
+    wear(addonsOn->get_future().share());
+  }
+  else if(target->addonsPending)
+    target->afterAddons.push_back([wear]() mutable { wear({}); });
   else
-    wear();
+    wear({});
   return {{"job", jobId}};
 }
 

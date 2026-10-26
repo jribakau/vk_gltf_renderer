@@ -188,10 +188,27 @@ public:
   // The wearable's own scene, for resolving its textures before it is merged.
   static const SceneGraph& preparedScene(const PreparedWear& wear);
   static SceneGraph&       preparedScene(PreparedWear& wear);
+  // Everything a prepareWear() reads of the figure, copied on its owning thread, so prepares can run
+  // while the owner commits other wears (a commit grows the rigs and meshes a live read would use).
+  struct WearInputs
+  {
+    std::shared_ptr<const SceneGraph> scene;  // wearBase()
+    std::shared_ptr<const dson::Rig>  rig;    // the main rig
+    int                               bodyMesh = -1;
+    std::string                       morphDir;
+    std::vector<dson::TargetPtr>      bodyTargets;  // activeBodyTargets()
+  };
+  // Owning thread. Throws when there is no figure with a skeleton to wear things on.
+  WearInputs wearInputs() const;
+  // Loads, fits and binds a wearable against `inputs`; reads nothing else of the figure, so any
+  // thread may run several at once. Its key ("wN", which names its adjustment channels) is drawn
+  // when it is committed, so keys follow the order wears are put on, not the order they finish.
   // `strandsFlipped`, when given, measures a strand hair's directions (build::measureStrands with
   // that flag) beside the binding, so the host's measure after the material presets finds them done.
-  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base = nullptr,
-                                            std::vector<dson::TargetPtr> bodyTargets = {}, std::optional<bool> strandsFlipped = std::nullopt);
+  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision, const WearInputs& inputs,
+                                            std::optional<bool> strandsFlipped = std::nullopt);
+  // The same against the figure as it is now, on its owning thread.
+  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision) { return prepareWear(rel, subdivision, wearInputs()); }
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
   // figure's owning thread. The renderer's model has to be built again afterwards.
   WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel);

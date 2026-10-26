@@ -198,18 +198,31 @@ const std::map<std::string, std::string>& ownMorphsOf(const dson::Store& store, 
   return it->second;
 }
 
-std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision, std::shared_ptr<const SceneGraph> base,
-                                                          std::vector<dson::TargetPtr> bodyTargets, std::optional<bool> strandsFlipped)
+Figure::WearInputs Figure::wearInputs() const
 {
   if(loaded.mainRig < 0 || loaded.morphs.mainMeshes.empty())
     throw std::runtime_error("Load a figure first: clothing and hair go on a figure with a skeleton.");
+  WearInputs in;
+  in.scene       = wearBase();
+  in.rig         = std::make_shared<dson::Rig>(loaded.rigs[size_t(loaded.mainRig)]);
+  in.bodyMesh    = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
+  in.morphDir    = loaded.morphs.morphDir;
+  in.bodyTargets = activeBodyTargets();
+  return in;
+}
+
+std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision, const WearInputs& inputs,
+                                                          std::optional<bool> strandsFlipped)
+{
   auto out = std::make_shared<PreparedWear>();
-  out->key = "w" + std::to_string(++m_wears);
+  // a key of its own until commitWear gives it its place among the worn items
+  static std::atomic<int> s_prepares{0};
+  out->key = "p" + std::to_string(++s_prepares);
   dson::LoadOptions options;
   options.subdivision = subdivision;
-  // the figure as it was when the wear started, or as it is when the caller owns it now
-  const SceneGraph& scene = base ? *base : loaded.scene;
-  options.attach      = dson::AttachTarget{&scene, &loaded.rigs[size_t(loaded.mainRig)], out->key};
+  const SceneGraph& scene = *inputs.scene;
+  options.attach      = dson::AttachTarget{&scene, inputs.rig.get(), out->key};
+  const std::vector<dson::TargetPtr>& bodyTargets = inputs.bodyTargets;
   const std::string file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()));
   timing::Scope     t("prepareWear " + file);
   {
@@ -221,11 +234,11 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
 
   // an item made for another generation is refitted first: its cage moves onto this figure's skeleton
   // and shape, and the bindings below are made against the cage it ends with
-  const int bodyMesh = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
+  const int bodyMesh = inputs.bodyMesh;
   {
     timing::Scope      tf("fitItem");
-    const std::string  morphDir = loaded.morphs.morphDir;
-    wardrobe::FitFigure figure{scene, loaded.rigs[size_t(loaded.mainRig)], bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
+    const std::string& morphDir = inputs.morphDir;
+    wardrobe::FitFigure figure{scene, *inputs.rig, bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
     for(const dson::Item& it : out->loaded.items)
       out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
   }
@@ -332,6 +345,11 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   SceneGraph&       dst = loaded.scene;
   WearResult        result;
   result.warnings = w.warnings;
+  // its key now, in the order wears are put on: item k of the load is key, key.1, key.2 ... as the
+  // loader names them
+  p.key = "w" + std::to_string(++m_wears);
+  for(size_t k = 0; k < w.items.size(); k++)
+    w.items[k].key = p.key + (k ? "." + std::to_string(k) : std::string());
 
   // the same garment again replaces the worn one: the newer copy carries the file's fit settings
   std::set<std::string> sources;
