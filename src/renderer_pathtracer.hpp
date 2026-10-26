@@ -91,8 +91,8 @@ public:
   void onAccumulationComplete(VkCommandBuffer cmd, Resources& resources);
   // The DLSS hand-off's image, to show instead of the denoiser's view (null when not shown)
   const VkDescriptorImageInfo* handoffImage(const Resources& resources) const;
-  void onSceneInvalidated(Resources& resources) override;
-  void notifyDlssContentReset(Resources& resources) override;
+  void                         onSceneInvalidated(Resources& resources) override;
+  void                         notifyDlssContentReset(Resources& resources) override;
 
   void updateDlssResources(VkCommandBuffer cmd, Resources& resources);
   void updateOptiXResources(VkCommandBuffer cmd, Resources& resources);
@@ -198,6 +198,8 @@ public:
              && dlss == o.dlss && dlssGuide == o.dlssGuide && (optimal ? (features == o.features) : true);
     }
     bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }
+    // The fields sameShader() sees differ on, e.g. "omm 0->1, dlss 1->0", for the recompile log.
+    std::string shaderDiff(const VariantKey& to) const;
   };
   VariantKey m_compiled{};  // The variant the live shader module and pipelines were built as. Guarded by m_compileMutex.
   // The live module is the embedded SPIR-V standing in for a variant whose compile failed. It is not
@@ -240,7 +242,7 @@ public:
   void        joinPipelineWarm();
 
   // The default rendering technique
-  RenderTechnique m_renderTechnique{RenderTechnique::RayTracing};
+  RenderTechnique m_renderTechnique{RenderTechnique::RayQuery};
 
   // Adaptive sampling for performance optimization
   void                                  updateAdaptiveSampling(Resources& resources);
@@ -258,8 +260,8 @@ public:
         return true;
       }};
 #endif
-  bool                       m_optixWasOn{false};  // keepOneAccumulationDenoiser(): last frame's state
-  bool                       m_oidnWasOn{false};
+  bool m_optixWasOn{false};  // keepOneAccumulationDenoiser(): last frame's state
+  bool m_oidnWasOn{false};
   // DLSS-RR rendered frame 0 of this accumulation, and an accumulation denoiser (OptiX, OIDN) takes the
   // frames after it: DLSS's image is no sample of the accumulation, and the hand-off blends from it
   bool                       m_dlssFrame0{false};

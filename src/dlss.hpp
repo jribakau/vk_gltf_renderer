@@ -334,7 +334,7 @@ private:
   // Persisted settings (per kind).
   struct Settings
   {
-    bool enableRr         = false;                                         // RR only
+    bool enableRr         = true;                                          // RR only
     int  sizeMode         = static_cast<int>(SizeMode::eOptimal);          // RR only (int for SettingsHandler)
     int  qualityMode      = static_cast<int>(Quality::eOff);               // SR only (int for SettingsHandler)
     // RR only (int for SettingsHandler). Improved in the fork: a figure's corneas and eye moisture are clear glass

@@ -89,14 +89,15 @@ struct PresetEntry
   const char* label;
 };
 
-// RR preset table (NVSDK_NGX_RayReconstruction_Hint_Render_Preset -> label). Only the presets documented as functional in nvsdk_ngx_defs.h are exposed.
+// RR preset table (NVSDK_NGX_RayReconstruction_Hint_Render_Preset -> label). Only the presets documented as functional in nvsdk_ngx_defs_dlssd.h are exposed.
 inline constexpr PresetEntry kRrPresets[] = {
     {NVSDK_NGX_RayReconstruction_Hint_Render_Preset_Default, "Default"},
     {NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D, "D (transformer)"},
     {NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E, "E (latest transformer)"},
+    {NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F, "F (RR2, default model)"},
 };
 
-// SR preset table (NVSDK_NGX_DLSS_Hint_Render_Preset). Only the presets documented as functional in nvsdk_ngx_defs_dlssd.h are exposed.
+// SR preset table (NVSDK_NGX_DLSS_Hint_Render_Preset). Only the presets documented as functional in nvsdk_ngx_defs.h are exposed.
 inline constexpr PresetEntry kSrPresets[] = {
     {NVSDK_NGX_DLSS_Hint_Render_Preset_Default, "Default"},
     {NVSDK_NGX_DLSS_Hint_Render_Preset_J, "J- Similar to preset K"},
@@ -816,7 +817,7 @@ void Dlss::registerParameters(SettingsRegistry* settings, std::function<void()> 
     // writes m_preset directly). NGX bakes the preset at feature creation, so the feature is
     // recreated and its history dropped, as the combo does.
     settings->add({.name            = "dlssPreset",
-                   .help            = "DLSS-RR network preset: 0=Default (NGX chooses), 1=D (transformer), 2=E (latest transformer)",
+                   .help            = "DLSS-RR network preset: 0=Default (NGX chooses), 1=D (transformer), 2=E (transformer), 3=F (RR2)",
                    .callbackSuccess = [this, cb](const nvutils::ParameterBase* const p) {
                      const uint32_t index  = std::min<uint32_t>(m_presetIndex, uint32_t(std::size(kRrPresets)) - 1);
                      const uint32_t preset = kRrPresets[index].value;
