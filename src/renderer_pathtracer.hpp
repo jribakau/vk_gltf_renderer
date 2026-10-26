@@ -232,14 +232,15 @@ public:
   // True when that variant is the embedded DLSS build (gltf_pathtrace.slang_dlss.h): DLSS and the
   // guide buffers on, nothing else, on a GPU with SER (the embedded build has AVAILABLE_SER=1).
   bool isEmbeddedDlssVariant(const Resources& resources) const;
+  bool isEmbeddedBaseVariant(const Resources& resources) const;
   // Swaps in the wanted variant if it is cached (cheap; no BusyWindow). Leaves live handles alone on a miss.
   bool tryRestoreCachedVariant(Resources& resources);
 
   BusyWindow* m_busyWindow{nullptr};  // Modal shown during async shader/pipeline compile.
   std::mutex  m_compileMutex;         // Guards compile metadata and live pipeline handles.
   std::thread m_compileThread;        // Joined in onDetach().
-  std::mutex  m_warmMutex;
-  std::thread m_warmThread;  // startPipelineWarm(); joined before a creation and in onDetach()
+  std::mutex               m_warmMutex;
+  std::vector<std::thread> m_warmThreads;  // startPipelineWarm(); joined before a creation and in onDetach()
   void        joinPipelineWarm();
 
   // The default rendering technique

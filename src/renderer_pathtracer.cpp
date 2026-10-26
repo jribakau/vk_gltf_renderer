@@ -1284,18 +1284,19 @@ void PathTracer::createPipeline(Resources& resources)
 //--------------------------------------------------------------------------------------------------
 // After a renderer update the driver has none of the path tracer's pipelines, and creating one takes
 // 10-25 s (the ray-query one the longest). The first path-traced frame asks for the embedded DLSS
-// build, and everything that pipeline is made from is known at attach: the embedded SPIR-V, the
-// technique, the layout, SER and the DLSS transparency mode. So a thread of its own creates it into
-// the pipeline cache now, while the app starts and a scene loads, and createRtxPipeline() or
-// createRqPipeline() waits for it and finds it there. The thread touches only the device, the
-// pipeline cache (pipeline creation may share one between threads) and the values it was handed.
+// build and a still for the embedded build itself (isEmbeddedBaseVariant), and everything their
+// pipelines are made from is known at attach: the embedded SPIR-V, the technique, the layout, SER and
+// the DLSS transparency mode. So a thread of its own per build creates each into the pipeline cache
+// now, while the app starts and a scene loads, and createRtxPipeline() or createRqPipeline() waits
+// for them and finds it there. The threads touch only the device, the pipeline cache (pipeline
+// creation may share one between threads) and the values they were handed.
 void PathTracer::startPipelineWarm(Resources& resources)
 {
 #if defined(USE_DLSS)
   if(!m_supportSER || m_pipelineLayout == VK_NULL_HANDLE)
     return;
   std::lock_guard lock(m_warmMutex);
-  if(m_warmThread.joinable())
+  if(!m_warmThreads.empty())
     return;
   const bool                  rayQuery     = m_renderTechnique == RenderTechnique::RayQuery;
   const VkPipelineLayout      layout       = m_pipelineLayout;
@@ -1303,12 +1304,12 @@ void PathTracer::startPipelineWarm(Resources& resources)
   const int32_t               transparency = static_cast<int32_t>(m_dlss->getTransparencyMode());
   const VkPipelineCreateFlags flags        = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
   const VkPipelineCreateFlags rqFlags = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u;
-  m_warmThread = std::thread([this, rayQuery, layout, useSER, transparency, flags, rqFlags] {
+  auto warm = [this, rayQuery, layout, useSER, transparency, flags, rqFlags](std::span<const uint32_t> code, const char* build) {
     const auto               start = std::chrono::steady_clock::now();
     VkShaderModuleCreateInfo moduleInfo{
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = gltf_pathtrace_slang_dlss_sizeInBytes,
-        .pCode    = gltf_pathtrace_slang_dlss,
+        .codeSize = code.size_bytes(),
+        .pCode    = code.data(),
     };
     VkShaderModule module = VK_NULL_HANDLE;
     if(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
@@ -1351,24 +1352,27 @@ void PathTracer::startPipelineWarm(Resources& resources)
     }
     vkDestroyPipeline(m_device, pipeline, nullptr);
     vkDestroyShaderModule(m_device, module, nullptr);
-    LOGI("%s pipeline warm-up: %s (%.2f ms)\n", rayQuery ? "RQ" : "RTX", result == VK_SUCCESS ? "done" : "failed",
+    LOGI("%s pipeline warm-up (%s): %s (%.2f ms)\n", rayQuery ? "RQ" : "RTX", build, result == VK_SUCCESS ? "done" : "failed",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     // the creation that follows is a cache hit and saves nothing, so the cache is saved here
     if(result == VK_SUCCESS)
       m_pipelineCache.saveAsync();
-  });
+  };
+  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t)), "DLSS");
+  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)), "still");
 #endif
 }
 
 void PathTracer::joinPipelineWarm()
 {
-  std::thread warm;
+  std::vector<std::thread> warm;
   {
     std::lock_guard lock(m_warmMutex);
-    warm = std::move(m_warmThread);
+    warm.swap(m_warmThreads);
   }
-  if(warm.joinable())
-    warm.join();
+  for(std::thread& t : warm)
+    if(t.joinable())
+      t.join();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2105,6 +2109,13 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
       LOGI("Slang: embedded DLSS path tracer, no compile\n");
 #endif
     }
+    else if(!m_skipVariantCache && isEmbeddedBaseVariant(resources))
+    {
+      // the variant a still hands off from (DLSS off, guides on) is the embedded build itself
+      spirv            = {gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)};
+      compiledFromFile = true;
+      LOGI("Slang: embedded path tracer, no compile\n");
+    }
     else if(!m_skipVariantCache && loadCachedSpirv(key, cachedSpirv))
     {
       spirv            = cachedSpirv;
@@ -2187,6 +2198,22 @@ bool PathTracer::isEmbeddedDlssVariant(const Resources& resources) const
   return makeVariantKey(resources).sameShader(VariantKey{.dlss = true, .dlssGuide = true});
 #else
   return false;
+#endif
+}
+
+//--------------------------------------------------------------------------------------------------
+// The embedded build itself is the same flags without USE_DLSS_SHADER: DLSS off and guide buffers on
+// when a denoiser is built in, which is what a still asks for before it hands off to OptiX. Taking
+// it saves the Slang compile and, as its SPIR-V is the one the warm-up built a pipeline from, the
+// pipeline build too.
+bool PathTracer::isEmbeddedBaseVariant(const Resources& resources) const
+{
+  if(!m_supportSER)
+    return false;
+#if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
+  return makeVariantKey(resources).sameShader(VariantKey{.dlssGuide = true});
+#else
+  return makeVariantKey(resources).sameShader(VariantKey{});
 #endif
 }
 
