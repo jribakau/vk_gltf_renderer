@@ -131,6 +131,12 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
 // Starts reading `rel` and the library files its scene names (nodes, geometries, materials, their
 // UV sets) on the pool and returns at once, so a wear's files are on their way while the figure is
 // still busy. loadDson then finds them in `store`. Errors are left for loadDson to report.
-void prefetchScene(std::shared_ptr<Store> store, const std::string& rel);
+// With `subdivision`, each geometry is also built at that level with its default UV set, so a
+// strand hair's meshes (half a second) are ready before the figure it goes on has loaded; a
+// loadDson of `rel` on the same store takes a build whose geometry, UV set and level are the ones
+// it would use, and builds the rest itself. The future is for tests; callers need not wait on it.
+std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::string& rel, std::optional<int> subdivision = std::nullopt);
+// Meshes loads took from a prefetch since start-up, for tests.
+size_t earlyMeshesTaken();
 
 }  // namespace fv::dson

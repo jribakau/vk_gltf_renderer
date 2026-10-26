@@ -263,3 +263,41 @@ TEST_F(SceneInstances, TheGltfDrawsOneMeshFromEveryNodeThatShowsIt)
   EXPECT_EQ(drawing, 3);
   EXPECT_EQ(built.model.buffers.size(), 1u);
 }
+
+// A wear's meshes built ahead by its prefetch, while the figure it goes on still loads, are the
+// meshes its load would build itself; a load at another level builds its own.
+TEST(SceneLoad, MeshesBuiltAheadAreTheOnesTheLoadBuilds)
+{
+  const fs::path    root = fs::path(FV_TEST_DATA) / "daz-library";
+  const std::string rel  = "People/Test/Box Figure.duf";
+  const auto        lib  = std::make_shared<fv::dson::Library>(std::vector<fs::path>{root});
+  fv::dson::LoadOptions options;
+  options.subdivision = 1;
+  fv::dson::Store plain(lib);
+  const auto      want = fv::dson::loadDson(plain, rel, options);
+
+  auto         store = std::make_shared<fv::dson::Store>(lib);
+  const size_t taken = fv::dson::earlyMeshesTaken();
+  fv::dson::prefetchScene(store, rel, 1).wait();
+  const auto got = fv::dson::loadDson(*store, rel, options);
+  EXPECT_GT(fv::dson::earlyMeshesTaken(), taken);
+  ASSERT_EQ(got.scene.meshes.size(), want.scene.meshes.size());
+  for(size_t i = 0; i < want.scene.meshes.size(); i++)
+  {
+    const auto& a = *got.scene.meshes[i].geo;
+    const auto& b = *want.scene.meshes[i].geo;
+    EXPECT_EQ(a.position, b.position) << i;
+    EXPECT_EQ(a.normal, b.normal) << i;
+    EXPECT_EQ(a.uv, b.uv) << i;
+    EXPECT_EQ(a.fullIndex, b.fullIndex) << i;
+    EXPECT_EQ(got.scene.meshes[i].materialGroups, want.scene.meshes[i].materialGroups) << i;
+  }
+
+  auto other = std::make_shared<fv::dson::Store>(lib);
+  fv::dson::prefetchScene(other, rel, 2).wait();
+  const size_t before = fv::dson::earlyMeshesTaken();
+  const auto   level1 = fv::dson::loadDson(*other, rel, options);
+  EXPECT_EQ(fv::dson::earlyMeshesTaken(), before);
+  ASSERT_EQ(level1.scene.meshes.size(), want.scene.meshes.size());
+  EXPECT_EQ(level1.scene.meshes[0].geo->position, want.scene.meshes[0].geo->position);
+}

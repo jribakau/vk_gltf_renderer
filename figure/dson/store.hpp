@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
@@ -165,6 +166,10 @@ public:
   // Forgets every shared parsed file: the library's contents changed.
   static void clearShared();
 
+  // State a loader keeps with the store, which goes with it (the loader's meshes built ahead):
+  // made by `make` the first time it is asked for.
+  std::shared_ptr<void> attachment(const std::function<std::shared_ptr<void>()>& make);
+
 private:
   std::shared_ptr<const Doc> fetch(const std::string& file);
   std::shared_ptr<const Doc> loadShared(const std::string& file);
@@ -173,6 +178,7 @@ private:
   mutable std::mutex                                                   m_mutex;
   std::map<std::string, std::shared_future<std::shared_ptr<const Doc>>> m_cache;
   std::vector<std::string>                                             m_missing;
+  std::shared_ptr<void>                                                m_attachment;
   // per document and library array, entries by id
   std::map<std::pair<const Doc*, std::string>, std::map<std::string, const Json*>> m_index;
 };

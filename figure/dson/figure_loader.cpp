@@ -453,6 +453,95 @@ private:
   std::shared_ptr<State> m_state;
 };
 
+// Meshes built ahead by prefetchScene, kept with the store, under the inputs each build read: the
+// geometry, the UV set it used and the subdivision level. A load takes the one it would build
+// itself; one it asks for while it is being built is waited for (it is running, so the wait ends),
+// and a load that comes first claims the key so the prefetch skips it. What no load takes goes
+// with the store.
+struct EarlyMesh
+{
+  enum class State
+  {
+    eBuilding,
+    eBuilt,
+    eClaimed,  // a load got there first, or the build failed: nobody builds it here
+  } state = State::eBuilding;
+  std::shared_ptr<mesh::BuiltMesh> geo;
+  std::vector<std::string>         materialGroups;
+};
+
+class EarlyMeshes
+{
+public:
+  // the store's own, which goes with it
+  static EarlyMeshes& of(Store& store)
+  {
+    return *std::static_pointer_cast<EarlyMeshes>(store.attachment([] { return std::make_shared<EarlyMeshes>(); }));
+  }
+  // The prefetch's claim on a key: false when it is there already.
+  bool start(const std::string& key)
+  {
+    std::lock_guard lock(m_mutex);
+    return m_meshes.try_emplace(key).second;
+  }
+  void finish(const std::string& key, std::shared_ptr<mesh::BuiltMesh> geo, std::vector<std::string> groups)
+  {
+    {
+      std::lock_guard lock(m_mutex);
+      const auto      m = m_meshes.find(key);
+      if(m == m_meshes.end() || m->second.state != EarlyMesh::State::eBuilding)
+        return;
+      m->second.state          = geo ? EarlyMesh::State::eBuilt : EarlyMesh::State::eClaimed;
+      m->second.geo            = std::move(geo);
+      m->second.materialGroups = std::move(groups);
+    }
+    m_done.notify_all();
+  }
+  // The load's: the build under `key` if there is one, waiting for it while it runs; claims the key
+  // when there is none yet, so a prefetch that comes later leaves it alone.
+  std::optional<EarlyMesh> take(const std::string& key)
+  {
+    std::unique_lock lock(m_mutex);
+    auto             m = m_meshes.find(key);
+    if(m == m_meshes.end())
+    {
+      m_meshes[key].state = EarlyMesh::State::eClaimed;
+      return std::nullopt;
+    }
+    m_done.wait(lock, [&] { return m->second.state != EarlyMesh::State::eBuilding; });
+    std::optional<EarlyMesh> out;
+    if(m->second.state == EarlyMesh::State::eBuilt)
+      out = std::move(m->second);
+    m->second = {EarlyMesh::State::eClaimed, nullptr, {}};
+    return out;
+  }
+  // Drops what was built for these geometries under another UV set or level than the load used.
+  void forget(const std::vector<std::string>& geometries)
+  {
+    std::lock_guard lock(m_mutex);
+    for(const std::string& g : geometries)
+      for(auto m = m_meshes.lower_bound(g + "|"); m != m_meshes.end() && m->first.starts_with(g + "|"); ++m)
+        if(m->second.state == EarlyMesh::State::eBuilt)
+          m->second = {EarlyMesh::State::eClaimed, nullptr, {}};
+  }
+
+private:
+  std::mutex                       m_mutex;
+  std::condition_variable          m_done;
+  std::map<std::string, EarlyMesh> m_meshes;
+};
+
+// What a mesh build reads, as a key: the geometry entry, the UV set entry (none: empty) and the level.
+std::string geometryKey(const Store::Resolved& geometry)
+{
+  return lowerCase(geometry.file) + "#" + getString(geometry.entry, "id");
+}
+std::string earlyMeshKey(const Store::Resolved& geometry, const std::optional<Store::Resolved>& uv, int level)
+{
+  return geometryKey(geometry) + "|" + (uv ? lowerCase(uv->file) + "#" + getString(uv->entry, "id") : std::string()) + "|"
+         + std::to_string(level);
+}
+
 // The other library files a scene's nodes, geometries and materials point at, that are installed;
 // `seen` collects them (lower case) with the scene's own file.
 std::vector<std::string> referencedFiles(const Store& store, const Json& nodes, const Json* materials, const std::string& file,
@@ -480,11 +569,19 @@ std::vector<std::string> referencedFiles(const Store& store, const Json& nodes, 
   return out;
 }
 
+// meshes loads took from a prefetch
+std::atomic<size_t> g_earlyTaken{0};
+
 }  // namespace
 
-void prefetchScene(std::shared_ptr<Store> store, const std::string& rel)
+size_t earlyMeshesTaken()
 {
-  jobs::pool().submit([store, file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()))] {
+  return g_earlyTaken.load();
+}
+
+std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::string& rel, std::optional<int> subdivision)
+{
+  return jobs::pool().submit([store, file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size())), subdivision] {
     try
     {
       const auto  doc   = store->load(file);
@@ -496,6 +593,52 @@ void prefetchScene(std::shared_ptr<Store> store, const std::string& rel)
       auto                            files = referencedFiles(*store, *nodes, get(scene, "materials"), file, seen);
       // waits only for jobs already running, so a pool thread may run it
       Prefetch(*store, std::move(files), std::move(seen)).finish();
+      if(!subdivision)
+        return;
+      // each geometry built as loadDson's pre-pass builds it, with the UV set it names (a scene
+      // material that switches it makes another key, which the load builds itself)
+      std::vector<const Json*> geometries;
+      for(const Json& n : *nodes)
+        if(const Json* geos = get(&n, "geometries"); geos && geos->is_array())
+          for(const Json& g : *geos)
+            geometries.push_back(&g);
+      timing::Scope t("meshes built early", 10);
+      jobs::parallelFor(geometries.size(), 1, [&](size_t begin, size_t end) {
+        for(size_t i = begin; i < end; i++)
+        {
+          std::string key;
+          try
+          {
+            const auto gref = parseRef(getString(geometries[i], "url"), file);
+            if(!gref || !store->library().find(gref->file))
+              continue;
+            const auto gres = store->resolve(*gref, "geometry_library");
+            if(!gres)
+              continue;
+            const Json&                    geo = *gres->entry;
+            std::optional<Store::Resolved> ures;
+            if(const std::string uvUri = getString(&geo, "default_uv_set"); !uvUri.empty())
+            {
+              const auto uref = parseRef(uvUri, gres->file);
+              if(!uref || !store->library().find(uref->file) || !(ures = store->resolve(*uref, "uv_set_library")))
+                continue;
+            }
+            const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(*subdivision, 0, 3) : 0;
+            key             = earlyMeshKey(*gres, ures, level);
+            if(!EarlyMeshes::of(*store).start(key))
+              continue;
+            const std::optional<UvSet> uvSet = ures ? std::optional<UvSet>(parseUvSet(*ures->doc, *ures->entry)) : std::nullopt;
+            std::vector<std::string>   groups;
+            auto geoOut = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, groups)));
+            EarlyMeshes::of(*store).finish(key, std::move(geoOut), std::move(groups));
+          }
+          catch(const std::exception&)
+          {
+            if(!key.empty())
+              EarlyMeshes::of(*store).finish(key, nullptr, {});  // the load builds it, and reports why not
+          }
+        }
+      });
     }
     catch(const std::exception&)
     {
@@ -901,19 +1044,28 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             }
           if(uvUri.empty())
             uvUri = getString(&geo, "default_uv_set");
+          std::optional<Store::Resolved> ures;
           if(!uvUri.empty())
           {
             const auto uref = parseRef(uvUri, a.gres->file);
             if(!uref || !store.library().find(uref->file))
               continue;
-            const auto ures = store.resolve(*uref, "uv_set_library");
+            ures = store.resolve(*uref, "uv_set_library");
             if(!ures)
               continue;
             a.uvSet = parseUvSet(*ures->doc, *ures->entry);
           }
           a.uvDecided     = true;
           const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(options.subdivision, 0, 3) : 0;
-          a.mesh.geo      = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups)));
+          // built by a prefetch from the same geometry, UV set and level, or here
+          if(auto early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level)))
+          {
+            g_earlyTaken++;
+            a.mesh.geo            = std::move(early->geo);
+            a.mesh.materialGroups = std::move(early->materialGroups);
+          }
+          else
+            a.mesh.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups)));
           if(job.rig >= 0)
           {
             if(const Json* skinMod = skinModifierOf(*a.gres, geo))
@@ -932,9 +1084,14 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           // done again in order, where the error is reported
         }
     });
+    std::vector<std::string> geometries;
     for(size_t i = 0; i < work.size(); i++)
       if(results[i])
+      {
+        geometries.push_back(geometryKey(*results[i]->gres));
         ahead.emplace(work[i].second, std::move(*results[i]));
+      }
+    EarlyMeshes::of(store).forget(geometries);
   }
 
   // ---- meshes, one per geometry of each node, in file order

@@ -2351,8 +2351,9 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
       auto store = std::make_shared<fv::dson::Store>(lib);
+      // and their meshes built, at the level the wears will ask for
       for(const std::string& wear : prefetch)
-        fv::dson::prefetchScene(store, wear);
+        fv::dson::prefetchScene(store, wear, s.subdivision);
       // a preset is applied to a figure in the scene
       auto doc = store->load(rel);
       if(doc)

@@ -458,6 +458,14 @@ std::optional<Store::Resolved> Store::resolve(const Ref& ref, const char* prefer
   return std::nullopt;
 }
 
+std::shared_ptr<void> Store::attachment(const std::function<std::shared_ptr<void>()>& make)
+{
+  std::lock_guard lock(m_mutex);
+  if(!m_attachment)
+    m_attachment = make();
+  return m_attachment;
+}
+
 std::vector<std::string> Store::missing() const
 {
   std::lock_guard lock(m_mutex);
