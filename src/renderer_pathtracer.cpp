@@ -77,6 +77,69 @@ namespace {
 // std::string, and both are called every frame.
 const std::string kTimerPathTraceRq  = "Path Trace (RQ)";
 const std::string kTimerPathTraceRtx = "Path Trace (RTX)";
+
+// The RTX pipeline's shader stages and groups. createRtxPipeline() and the warm-up both build from
+// it, so they ask the driver for the same pipeline (a different one would only miss the cache).
+struct RtxStages
+{
+  enum Stage
+  {
+    eRaygen,
+    eMiss,
+    eShadowMiss,
+    eClosestHit,
+    eAnyHit,
+    eShadowAnyHit,
+    eShaderGroupCount
+  };
+  std::array<VkPipelineShaderStageCreateInfo, eShaderGroupCount> stages{};
+  std::vector<VkRayTracingShaderGroupCreateInfoKHR>             groups;
+
+  explicit RtxStages(VkShaderModule module)
+  {
+    stages[eRaygen]     = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_RAYGEN_BIT_KHR, module, "rgenMain"};
+    stages[eMiss]         = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_MISS_BIT_KHR, module, "rmissMain"};
+    stages[eClosestHit]   = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, module, "rchitMain"};
+    stages[eAnyHit]       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, module, "rahitMain"};
+    stages[eShadowMiss]   = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_MISS_BIT_KHR, module, "rmissShadow"};
+    stages[eShadowAnyHit] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, module, "rahitShadow"};
+
+    VkRayTracingShaderGroupCreateInfoKHR group{
+        .sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+        .generalShader      = VK_SHADER_UNUSED_KHR,
+        .closestHitShader   = VK_SHADER_UNUSED_KHR,
+        .anyHitShader       = VK_SHADER_UNUSED_KHR,
+        .intersectionShader = VK_SHADER_UNUSED_KHR,
+    };
+    // Raygen, Miss-0, Shadow Miss-1
+    group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    for(uint32_t general : {uint32_t(eRaygen), uint32_t(eMiss), uint32_t(eShadowMiss)})
+    {
+      group.generalShader = general;
+      groups.push_back(group);
+    }
+    // Hit Group-0
+    group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    group.generalShader    = VK_SHADER_UNUSED_KHR;
+    group.closestHitShader = eClosestHit;
+    group.anyHitShader     = eAnyHit;
+    groups.push_back(group);
+    // Hit Group-1 (shadow): any-hit only -- shadow rays skip closest-hit (TraceShadow)
+    group.closestHitShader = VK_SHADER_UNUSED_KHR;
+    group.anyHitShader     = eShadowAnyHit;
+    groups.push_back(group);
+  }
+};
+
+VkPipelineCreateFlags rtxPipelineFlags(bool opacityMicromaps, bool captureStatistics)
+{
+  // Allow the pipeline to use opacity micromaps (EXT_mesh_opacity_micromap); harmless when
+  // geometry is not carrying a micromap. Only set when the device supports VK_KHR_opacity_micromap.
+  VkPipelineCreateFlags flags = opacityMicromaps ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR) : VkPipelineCreateFlags(0);
+  if(captureStatistics)
+    flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+  return flags;
+}
 }  // namespace
 
 PathTracer::PathTracer()
@@ -351,6 +414,7 @@ void PathTracer::onDetach(Resources& resources)
   // Wait for any background compile to finish before destroying the Vulkan objects it owns.
   if(m_compileThread.joinable())
     m_compileThread.join();
+  joinPipelineWarm();
 
   resources.allocator.destroyBuffer(m_sbtBuffer);
   resources.allocator.destroyBuffer(m_depthCopyBuffer);
@@ -1212,6 +1276,75 @@ void PathTracer::createPipeline(Resources& resources)
 }
 
 //--------------------------------------------------------------------------------------------------
+// After a renderer update the driver has none of the path tracer's pipelines, and creating the RTX
+// one takes about 10 s. The first RTX frame asks for the embedded DLSS build, and everything that
+// pipeline is made from is known at attach: the embedded SPIR-V, the layout, SER and the DLSS
+// transparency mode. So a thread of its own creates it into the pipeline cache now, while the app
+// starts and a scene loads, and createRtxPipeline() waits for it and finds it there. The thread
+// touches only the device, the pipeline cache (pipeline creation may share one between threads)
+// and the values it was handed.
+void PathTracer::startPipelineWarm(Resources& resources)
+{
+#if defined(USE_DLSS)
+  if(!m_supportSER || m_renderTechnique != RenderTechnique::RayTracing || m_pipelineLayout == VK_NULL_HANDLE)
+    return;
+  std::lock_guard lock(m_warmMutex);
+  if(m_warmThread.joinable())
+    return;
+  const VkPipelineLayout      layout       = m_pipelineLayout;
+  const int32_t               useSER       = m_useSER ? 1 : 0;
+  const int32_t               transparency = static_cast<int32_t>(m_dlss->getTransparencyMode());
+  const VkPipelineCreateFlags flags        = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
+  m_warmThread = std::thread([this, layout, useSER, transparency, flags] {
+    const auto               start = std::chrono::steady_clock::now();
+    VkShaderModuleCreateInfo moduleInfo{
+        .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = gltf_pathtrace_slang_dlss_sizeInBytes,
+        .pCode    = gltf_pathtrace_slang_dlss,
+    };
+    VkShaderModule module = VK_NULL_HANDLE;
+    if(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
+      return;
+    RtxStages            table(module);
+    nvvk::Specialization specialization;
+    specialization.add(0, useSER);        // USE_SER
+    specialization.add(1, transparency);  // USE_DLSS_TRANSP
+    table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
+    VkRayTracingPipelineCreateInfoKHR info{
+        .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+        .flags                        = flags,
+        .stageCount                   = static_cast<uint32_t>(table.stages.size()),
+        .pStages                      = table.stages.data(),
+        .groupCount                   = static_cast<uint32_t>(table.groups.size()),
+        .pGroups                      = table.groups.data(),
+        .maxPipelineRayRecursionDepth = 2,
+        .layout                       = layout,
+    };
+    VkPipeline     pipeline = VK_NULL_HANDLE;
+    const VkResult result   = vkCreateRayTracingPipelinesKHR(m_device, VK_NULL_HANDLE, m_pipelineCache.getCache(), 1, &info, nullptr, &pipeline);
+    vkDestroyPipeline(m_device, pipeline, nullptr);
+    vkDestroyShaderModule(m_device, module, nullptr);
+    LOGI("RTX pipeline warm-up: %s (%.2f ms)\n", result == VK_SUCCESS ? "done" : "failed",
+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    // the creation that follows is a cache hit and saves nothing, so the cache is saved here
+    if(result == VK_SUCCESS)
+      m_pipelineCache.saveAsync();
+  });
+#endif
+}
+
+void PathTracer::joinPipelineWarm()
+{
+  std::thread warm;
+  {
+    std::lock_guard lock(m_warmMutex);
+    warm = std::move(m_warmThread);
+  }
+  if(warm.joinable())
+    warm.join();
+}
+
+//--------------------------------------------------------------------------------------------------
 // Create the compute pipeline
 void PathTracer::createRqPipeline(Resources& /*resources*/)
 {
@@ -1320,82 +1453,13 @@ void PathTracer::logPipelineStatistics(VkPipeline pipeline, const char* label) c
 void PathTracer::createRtxPipeline(Resources& resources)
 {
   SCOPED_TIMER(__FUNCTION__);
+  // A warm-up of this pipeline still running: wait for it and find it in the cache, rather than
+  // have the driver compile it a second time beside it
+  joinPipelineWarm();
   // Creating all shaders
-  enum ShaderStages
-  {
-    eRaygen,
-    eMiss,
-    eShadowMiss,
-    eClosestHit,
-    eAnyHit,
-    eShadowAnyHit,
-    eShaderGroupCount
-  };
-
-  // RTX Pipeline
-  std::array<VkPipelineShaderStageCreateInfo, eShaderGroupCount> stages{};
-  for(auto& stage : stages)
-  {
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.module = m_shaderModule;
-  }
-  stages[eRaygen].pName = "rgenMain";
-  stages[eRaygen].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-
-  stages[eMiss].pName = "rmissMain";
-  stages[eMiss].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
-
-  stages[eClosestHit].pName = "rchitMain";
-  stages[eClosestHit].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-
-  stages[eAnyHit].pName = "rahitMain";
-  stages[eAnyHit].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-
-  //Shadow
-  stages[eShadowMiss].pName = "rmissShadow";
-  stages[eShadowMiss].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
-
-  stages[eShadowAnyHit].pName = "rahitShadow";
-  stages[eShadowAnyHit].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-
-  // Shader groups
-  VkRayTracingShaderGroupCreateInfoKHR group{
-      .sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
-      .generalShader      = VK_SHADER_UNUSED_KHR,
-      .closestHitShader   = VK_SHADER_UNUSED_KHR,
-      .anyHitShader       = VK_SHADER_UNUSED_KHR,
-      .intersectionShader = VK_SHADER_UNUSED_KHR,
-  };
-
-  std::vector<VkRayTracingShaderGroupCreateInfoKHR> shader_groups;
-  // Raygen
-  group.type          = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-  group.generalShader = eRaygen;
-  shader_groups.push_back(group);
-
-  // Miss-0
-  group.type          = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-  group.generalShader = eMiss;
-  shader_groups.push_back(group);
-
-  // Shadow Miss-1
-  group.type          = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-  group.generalShader = eShadowMiss;
-  shader_groups.push_back(group);
-
-  // Hit Group-0
-  group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-  group.generalShader    = VK_SHADER_UNUSED_KHR;
-  group.closestHitShader = eClosestHit;
-  group.anyHitShader     = eAnyHit;
-  shader_groups.push_back(group);
-
-  // Hit Group-1 (shadow): any-hit only -- shadow rays skip closest-hit (TraceShadow)
-  group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-  group.generalShader    = VK_SHADER_UNUSED_KHR;
-  group.closestHitShader = VK_SHADER_UNUSED_KHR;
-  group.anyHitShader     = eShadowAnyHit;
-  shader_groups.push_back(group);
+  RtxStages table(m_shaderModule);
+  auto&     stages        = table.stages;
+  auto&     shader_groups = table.groups;
 
   // Shader Execution Reorder (SER)
   nvvk::Specialization specialization;
@@ -1403,7 +1467,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
 #if defined(USE_DLSS)
   specialization.add(1, static_cast<int32_t>(m_dlss->getTransparencyMode()));  // USE_DLSS_TRANSP
 #endif
-  stages[eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
+  stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
 
 
   // Query the driver about pipeline cache hit / compilation duration (core in Vulkan 1.3)
@@ -1413,13 +1477,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
       .pPipelineCreationFeedback = &feedback,
   };
 
-  // Allow the pipeline to use opacity micromaps (EXT_mesh_opacity_micromap); harmless when
-  // geometry is not carrying a micromap. Only set when the device supports VK_KHR_opacity_micromap.
-  VkPipelineCreateFlags flags = resources.settings.opacityMicromapSupported ?
-                                    VkPipelineCreateFlags(VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR) :
-                                    VkPipelineCreateFlags(0);
-  if(m_capturePipelineStats)
-    flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+  const VkPipelineCreateFlags flags = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
 
   // Assemble the shader stages and recursion depth info into the ray tracing pipeline
   VkRayTracingPipelineCreateInfoKHR rtPipelineCreateInfo{

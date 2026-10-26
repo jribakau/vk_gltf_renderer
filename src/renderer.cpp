@@ -887,6 +887,8 @@ void GltfRenderer::onAttach(nvapp::Application* app)
 
   m_pathTracer.createPipeline(m_resources);
   m_rasterizer.createPipeline(m_resources);
+  // the RTX pipeline the first path-traced frame needs, built on a thread while the app starts
+  m_pathTracer.startPipelineWarm(m_resources);
 
   // Wire the create-catalog hook up front so the menu-bar "Create" works with nothing loaded:
   // it stands up an empty, UI-wired scene on demand (wireSceneToUi re-sets this same hook later).

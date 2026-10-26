@@ -100,6 +100,10 @@ public:
   void createPipeline(Resources& resources) override;
   void createRqPipeline(Resources& resources);
   void createRtxPipeline(Resources& resources);
+  // Creates the embedded DLSS path tracer's RTX pipeline into the pipeline cache on a thread of its
+  // own, so the first RTX frame after a renderer update finds it there instead of building it on the
+  // application thread (~10 s). After createPipeline(); createRtxPipeline() waits for it.
+  void startPipelineWarm(Resources& resources);
   bool compileShader(Resources& resources, bool fromFile = true) override;
   // User-initiated hot reload: drop cached variants and recompile from Slang source.
   bool reloadShader(Resources& resources);
@@ -231,6 +235,9 @@ public:
   BusyWindow* m_busyWindow{nullptr};  // Modal shown during async shader/pipeline compile.
   std::mutex  m_compileMutex;         // Guards compile metadata and live pipeline handles.
   std::thread m_compileThread;        // Joined in onDetach().
+  std::mutex  m_warmMutex;
+  std::thread m_warmThread;  // startPipelineWarm(); joined before a creation and in onDetach()
+  void        joinPipelineWarm();
 
   // The default rendering technique
   RenderTechnique m_renderTechnique{RenderTechnique::RayTracing};
