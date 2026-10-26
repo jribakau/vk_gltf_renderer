@@ -190,6 +190,10 @@ float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angular
 // How much of a ray from `origin` along `dir` gets past the scene within `maxT`: 0 at an opaque hit,
 // the product of (1 - opacity) over the alpha-tested ones (lash and hair cards, cutouts) otherwise,
 // so their shadows are soft and need no noise. The path tracer's any-hit opacity (getOpacity).
+// A ray through a hair's cards meets dozens of them, each an opacity fetch: the walk stops once
+// less than 1/64 gets through (as blocked), or after RAY_VISIBILITY_MAX_CANDIDATES cards (with what
+// has got through so far), so a hair's fragments cost a bounded number of fetches per ray.
+static const int RAY_VISIBILITY_MAX_CANDIDATES = 8;
 float rayVisibility(float3 origin, float3 dir, float maxT)
 {
   RayDesc ray;
@@ -199,7 +203,8 @@ float rayVisibility(float3 origin, float3 dir, float maxT)
   ray.TMax      = maxT;
   RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
   q.TraceRayInline(g_tlas, RAY_FLAG_NONE, 0xFF, ray);
-  float transmit = 1.0;
+  float transmit   = 1.0;
+  int   candidates = 0;
   while(q.Proceed())
   {
     if(q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
@@ -209,9 +214,21 @@ float rayVisibility(float3 origin, float3 dir, float maxT)
                                       pushConst.gltfScene->renderPrimitives[q.CandidateInstanceID()],
                                       int(q.CandidatePrimitiveIndex()), float3(1.0 - b.x - b.y, b.x, b.y));
     if(opacity >= 0.999)
-      q.CommitNonOpaqueTriangleHit();
-    else
-      transmit *= 1.0 - opacity;
+    {
+      q.CommitNonOpaqueTriangleHit();  // the search ends here (RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH)
+      continue;
+    }
+    transmit *= 1.0 - opacity;
+    if(transmit < 1.0 / 64.0)
+    {
+      q.Abort();
+      return 0.0;
+    }
+    if(++candidates >= RAY_VISIBILITY_MAX_CANDIDATES)
+    {
+      q.Abort();
+      return transmit;
+    }
   }
   return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : transmit;
 }
