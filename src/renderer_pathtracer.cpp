@@ -1282,26 +1282,28 @@ void PathTracer::createPipeline(Resources& resources)
 }
 
 //--------------------------------------------------------------------------------------------------
-// After a renderer update the driver has none of the path tracer's pipelines, and creating the RTX
-// one takes about 10 s. The first RTX frame asks for the embedded DLSS build, and everything that
-// pipeline is made from is known at attach: the embedded SPIR-V, the layout, SER and the DLSS
-// transparency mode. So a thread of its own creates it into the pipeline cache now, while the app
-// starts and a scene loads, and createRtxPipeline() waits for it and finds it there. The thread
-// touches only the device, the pipeline cache (pipeline creation may share one between threads)
-// and the values it was handed.
+// After a renderer update the driver has none of the path tracer's pipelines, and creating one takes
+// 10-25 s (the ray-query one the longest). The first path-traced frame asks for the embedded DLSS
+// build, and everything that pipeline is made from is known at attach: the embedded SPIR-V, the
+// technique, the layout, SER and the DLSS transparency mode. So a thread of its own creates it into
+// the pipeline cache now, while the app starts and a scene loads, and createRtxPipeline() or
+// createRqPipeline() waits for it and finds it there. The thread touches only the device, the
+// pipeline cache (pipeline creation may share one between threads) and the values it was handed.
 void PathTracer::startPipelineWarm(Resources& resources)
 {
 #if defined(USE_DLSS)
-  if(!m_supportSER || m_renderTechnique != RenderTechnique::RayTracing || m_pipelineLayout == VK_NULL_HANDLE)
+  if(!m_supportSER || m_pipelineLayout == VK_NULL_HANDLE)
     return;
   std::lock_guard lock(m_warmMutex);
   if(m_warmThread.joinable())
     return;
+  const bool                  rayQuery     = m_renderTechnique == RenderTechnique::RayQuery;
   const VkPipelineLayout      layout       = m_pipelineLayout;
   const int32_t               useSER       = m_useSER ? 1 : 0;
   const int32_t               transparency = static_cast<int32_t>(m_dlss->getTransparencyMode());
   const VkPipelineCreateFlags flags        = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
-  m_warmThread = std::thread([this, layout, useSER, transparency, flags] {
+  const VkPipelineCreateFlags rqFlags = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u;
+  m_warmThread = std::thread([this, rayQuery, layout, useSER, transparency, flags, rqFlags] {
     const auto               start = std::chrono::steady_clock::now();
     VkShaderModuleCreateInfo moduleInfo{
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1311,26 +1313,45 @@ void PathTracer::startPipelineWarm(Resources& resources)
     VkShaderModule module = VK_NULL_HANDLE;
     if(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
       return;
-    RtxStages            table(module);
     nvvk::Specialization specialization;
     specialization.add(0, useSER);        // USE_SER
     specialization.add(1, transparency);  // USE_DLSS_TRANSP
-    table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
-    VkRayTracingPipelineCreateInfoKHR info{
-        .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-        .flags                        = flags,
-        .stageCount                   = static_cast<uint32_t>(table.stages.size()),
-        .pStages                      = table.stages.data(),
-        .groupCount                   = static_cast<uint32_t>(table.groups.size()),
-        .pGroups                      = table.groups.data(),
-        .maxPipelineRayRecursionDepth = 2,
-        .layout                       = layout,
-    };
-    VkPipeline     pipeline = VK_NULL_HANDLE;
-    const VkResult result   = vkCreateRayTracingPipelinesKHR(m_device, VK_NULL_HANDLE, m_pipelineCache.getCache(), 1, &info, nullptr, &pipeline);
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkResult   result   = VK_SUCCESS;
+    if(rayQuery)
+    {
+      // as createRqPipeline() builds it
+      const VkComputePipelineCreateInfo info{
+          .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+          .flags  = rqFlags,
+          .stage  = {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                     .stage               = VK_SHADER_STAGE_COMPUTE_BIT,
+                     .module              = module,
+                     .pName               = "computeMain",
+                     .pSpecializationInfo = specialization.getSpecializationInfo()},
+          .layout = layout,
+      };
+      result = vkCreateComputePipelines(m_device, m_pipelineCache.getCache(), 1, &info, nullptr, &pipeline);
+    }
+    else
+    {
+      RtxStages table(module);
+      table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
+      const VkRayTracingPipelineCreateInfoKHR info{
+          .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+          .flags                        = flags,
+          .stageCount                   = static_cast<uint32_t>(table.stages.size()),
+          .pStages                      = table.stages.data(),
+          .groupCount                   = static_cast<uint32_t>(table.groups.size()),
+          .pGroups                      = table.groups.data(),
+          .maxPipelineRayRecursionDepth = 2,
+          .layout                       = layout,
+      };
+      result = vkCreateRayTracingPipelinesKHR(m_device, VK_NULL_HANDLE, m_pipelineCache.getCache(), 1, &info, nullptr, &pipeline);
+    }
     vkDestroyPipeline(m_device, pipeline, nullptr);
     vkDestroyShaderModule(m_device, module, nullptr);
-    LOGI("RTX pipeline warm-up: %s (%.2f ms)\n", result == VK_SUCCESS ? "done" : "failed",
+    LOGI("%s pipeline warm-up: %s (%.2f ms)\n", rayQuery ? "RQ" : "RTX", result == VK_SUCCESS ? "done" : "failed",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     // the creation that follows is a cache hit and saves nothing, so the cache is saved here
     if(result == VK_SUCCESS)
@@ -1355,6 +1376,8 @@ void PathTracer::joinPipelineWarm()
 void PathTracer::createRqPipeline(Resources& /*resources*/)
 {
   SCOPED_TIMER(__FUNCTION__);
+  // as createRtxPipeline(): a warm-up of this pipeline still running is waited for, not repeated
+  joinPipelineWarm();
 
   nvvk::Specialization specialization;
   specialization.add(0, m_useSER ? 1 : 0);  // USE_SER
