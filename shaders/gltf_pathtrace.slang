@@ -331,6 +331,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     GltfTextureInfo*   texInfos      = pushConst.gltfScene->textureInfos;
     int                materialIndex = -1;
     PbrMaterial        pbrMat;
+    // A diffuse exit's boundary index, for its light-side Fresnel (ePtExitFresnel); 0: none
+    float exitFresnelEta = 0.0F;
     // Volumetric scatter shades as the thin preview at this hit: the preview flag, or a rough path
     // arriving from outside any medium (a walk's own exit, from inside, stays volumetric)
     bool simplifyScatter = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin)
@@ -473,6 +475,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         pbrMat.T                = T;
         pbrMat.B                = B;
         pbrMat.Ns               = Ns;
+        // The boundary the light crosses on its way in, which the camera's side paid at the entry
+        // (diffuseExitFresnelWeight): on the light sample and on the continuation alike
+        if(hasFlag(pushConst.flags, PathtracerFlags::ePtExitFresnel))
+          exitFresnelEta = clamp(materials[materialIndex].ior, 1.0F, 3.0F);
       }
 
       // Diffuse entry (ePtDiffuseEntry): light from outside enters a scatter walk through a
@@ -764,6 +770,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         bsdfEvaluate(evalData, pbrMat);
       // bsdfEvaluateSimple(evalData, pbrMat);
 
+      if(exitFresnelEta > 0.0F)
+        evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, directLight.direction), exitFresnelEta);
+
       // Some lobe can scatter toward the light (in every mode): the shadow ray is worth tracing
       if(evalData.pdf > 0.0)
       {
@@ -828,6 +837,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         bsdfSampleCore(sampleData, pbrMat, mixturePdf);
       }
       // bsdfSampleSimple(sampleData, pbrMat);
+      // The exit's Fresnel weighs the sample, not its pdf: both MIS sides keep the cosine lobe's
+      if(exitFresnelEta > 0.0F && sampleData.event_type != BSDF_EVENT_ABSORB)
+        sampleData.bsdf_over_pdf *= diffuseExitFresnelWeight(dot(pbrMat.N, sampleData.k2), exitFresnelEta);
 
       // Update the pt.throughput
       pt.throughput *= sampleData.bsdf_over_pdf;

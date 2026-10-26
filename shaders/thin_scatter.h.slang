@@ -73,4 +73,36 @@ ThinScatterLobes thinScatterLobes(float  transmission,
   return lobes;
 }
 
+// The diffuse exit's light-side Fresnel (gltf_pathtrace.slang, ePtExitFresnel). A walk that leaves
+// skin as a Lambertian point skipped the boundary on the light's side, while the camera's side paid
+// its (1 - F) on the way in: grazing light was over-counted by about F there. Light refracts in from
+// outside in proportion to Ft(theta) = 1 - F(theta), so the exit is Lambertian times Ft / c, with c
+// the cosine-weighted mean of Ft, which keeps what the walk hands back (the walk's albedo is
+// inverted from the surface's colour) and only moves it from grazing light to head-on light.
+
+// Unpolarised Fresnel reflectance for light from outside (index 1) at `cosI` onto a medium of `eta`.
+float dielectricFresnelOutside(float cosI, float eta)
+{
+  cosI              = clamp(cosI, 0.0F, 1.0F);
+  const float sinT2 = (1.0F - cosI * cosI) / (eta * eta);
+  const float cosT  = sqrt(max(1.0F - sinT2, 0.0F));
+  const float rs    = (cosI - eta * cosT) / (cosI + eta * cosT);
+  const float rp    = (eta * cosI - cosT) / (eta * cosI + cosT);
+  return 0.5F * (rs * rs + rp * rp);
+}
+
+// c = 2 * integral of Ft(mu) mu dmu over [0, 1]: by reciprocity eta^2 (1 - Fdr), Fdr the diffuse
+// reflectance from inside, in Egan and Hilgeman's fit (as Jensen et al. 2001 use it).
+float diffuseExitTransmittance(float eta)
+{
+  const float fdr = -1.440F / (eta * eta) + 0.710F / eta + 0.668F + 0.0636F * eta;
+  return eta * eta * (1.0F - fdr);
+}
+
+// The exit lobe's weight toward a direction at `cosTheta` from its normal, for a boundary of `eta`.
+float diffuseExitFresnelWeight(float cosTheta, float eta)
+{
+  return (1.0F - dielectricFresnelOutside(cosTheta, eta)) / diffuseExitTransmittance(eta);
+}
+
 #endif  // THIN_SCATTER_H_SLANG

@@ -331,6 +331,7 @@ enum PathtracerFlags
   ePtDiffuseEntry        = 1 << 14,  // Light enters a scatter walk through a Lambertian lobe, not by refraction
   ePtRegularize          = 1 << 15,  // Later lobes are at least as rough as the roughest so far, clear refraction aside (biased)
   ePtLightsVisible       = 1 << 16,  // Camera rays see sized lights (sizedLightHits); later rays always do
+  ePtExitFresnel         = 1 << 17,  // A diffuse exit weighs its light by the boundary's Fresnel transmittance
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

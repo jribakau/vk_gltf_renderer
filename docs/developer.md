@@ -394,6 +394,10 @@ Some things about the transport are worth knowing before touching it:
   pick, and an emitter it reaches converts its pdf by the summed distance (`nullDistance`). The
   light behind glass is then counted once, as that vertex's shadow ray or its BSDF ray. A rough or
   scattering surface blocks shadow rays, and the BSDF ray that reaches a light behind it has weight 1.
+- The **diffuse exit** (`ePtVolumeDiffuseExit`) is Lambertian times the boundary's Fresnel
+  transmittance toward the light, over its cosine-weighted mean (`diffuseExitFresnelWeight`,
+  `ePtExitFresnel`): the entry paid (1 − F) on the camera's side, so the exit pays it on the
+  light's. It weighs the sample, not the pdf, so both MIS sides keep the cosine lobe.
 - A **sized light** (a point or spot light with a radius, a directional one with a disc, the sky's
   own sun aside) is reached by both techniques: `sampleLights()` draws its cone with a real pdf, and
   `sizedLightHits()` tests each path segment against the spheres (and, on escape, the discs),

@@ -182,6 +182,8 @@ public:
   // Camera rays see sized lights (ePtLightsVisible). Off: a prop sphere lights and shows in reflections,
   // but is not a ball in the frame.
   bool m_lightsVisible{false};
+  // The diffuse exit's light-side Fresnel (ePtExitFresnel): grazing light on skin as the boundary passes it
+  bool m_exitFresnel{true};
   // Fibre events before they count as surface bounces (PathtracePushConstant::hairBudget): the still's,
   // and the DLSS frames', fewer, since white hair keeps its energy through every one.
   int m_hairBounces{16};

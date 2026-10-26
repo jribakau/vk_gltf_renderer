@@ -384,6 +384,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: The camera sees sized lights (a sphere light, a sun's disc); reflections always do",
                  .callbackSuccess = reset},
                 &m_lightsVisible, Persist::eNo);
+  settings->add({.name            = "ptExitFresnel",
+                 .help            = "PathTracer: A diffuse exit (ptVolumeDiffuseExit) passes light by the boundary's Fresnel "
+                                    "transmittance, less at grazing, more head-on, the same in all",
+                 .callbackSuccess = reset},
+                &m_exitFresnel, Persist::eNo);
   settings->add({.name            = "ptHairBounces",
                  .help            = "PathTracer: Fibre events a path takes through hair before they count as surface bounces (stills)",
                  .callbackSuccess = reset},
@@ -2755,6 +2760,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= (m_regularize == 2 || (m_regularize == 1 && useDlss)) ? shaderio::ePtRegularize : 0;
   m_pushConst.hairBudget = useDlss ? m_hairBouncesDlss : m_hairBounces;
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
+  m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;

@@ -81,3 +81,26 @@ TEST(ThinScatter, TheBaseKeepsItsShareOfTheDiffuseLobes)
   expectNear(lobes.diffuseTransmissionColor, ms);
   expectNear(lobes.baseColor, kSkin + (ms - kSkin) / 3.0f);
 }
+
+// The diffuse exit's light-side Fresnel keeps what the walk hands back under uniform light (its
+// cosine-weighted mean is 1), takes from grazing light and gives to head-on light, and at index 1
+// is no weight at all.
+TEST(ThinScatter, TheExitFresnelMovesLightWithoutAddingAny)
+{
+  for(const float eta : {1.3f, 1.4f, 1.5f})
+  {
+    const int n    = 20000;
+    double    mean = 0.0;
+    for(int i = 0; i < n; i++)
+    {
+      const float mu = (i + 0.5f) / n;
+      mean += 2.0 * diffuseExitFresnelWeight(mu, eta) * mu / n;
+    }
+    EXPECT_NEAR(mean, 1.0, 0.005) << "eta " << eta;
+    EXPECT_GT(diffuseExitFresnelWeight(1.0f, eta), 1.0f);
+    EXPECT_LT(diffuseExitFresnelWeight(0.26f, eta), 1.0f);  // 75 degrees
+  }
+  // Skin at 1.4: head-on 5% more (Ft 0.972 over c 0.922)
+  EXPECT_NEAR(diffuseExitFresnelWeight(1.0f, 1.4f), 1.054f, 0.005f);
+  EXPECT_NEAR(diffuseExitFresnelWeight(1.0f, 1.0f), 1.0f, 0.02f);
+}
