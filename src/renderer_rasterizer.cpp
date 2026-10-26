@@ -1270,7 +1270,19 @@ void Rasterizer::renderBlendOnly(VkCommandBuffer cmd, Resources& resources, VkEx
   vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blendEnable);
+  // Twice (RasterBlendPass): the near-solid texels writing depth, then the sheer ones sorted over
+  // them without, so a card's clear texels do not hide the cards behind it
+  const uint32_t passOffset = uint32_t(offsetof(shaderio::RasterPushConstant, blendPass));
+  const auto     setPass    = [&](int pass) {
+    vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, passOffset, sizeof(int), &pass);
+  };
+  setPass(shaderio::eRasterBlendSolid);
   renderNodes(cmd, resources, m_sortedBlendNodes);
+  setPass(shaderio::eRasterBlendSheer);
+  vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
+  renderNodes(cmd, resources, m_sortedBlendNodes);
+  vkCmdSetDepthWriteEnable(cmd, VK_TRUE);
+  setPass(shaderio::eRasterBlendAll);
 
   if(resources.settings.wireframe)
   {

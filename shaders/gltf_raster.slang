@@ -95,14 +95,35 @@ float2 vogelDisk(int i, int n, float phi)
   return r * float2(cos(theta), sin(theta));
 }
 
-// How much of the shadow light reaches `worldPos`: 1 lit, 0 in shadow.
+// The slope of the receiver's plane in the shadow map, d(depth)/d(u, v), from the screen-space
+// derivatives of its shadow-map coordinates (receiver-plane depth bias): sunShadow tilts each tap's
+// comparison depth along it, so the taps on a curved or tilted surface's far side do not find the
+// surface itself. Derivatives: call it where control flow is uniform, at the top of a fragment
+// shader. No steeper than 85 degrees, where the plane stops being a useful guess.
+float2 shadowReceiverSlope(float3 worldPos)
+{
+  SceneFrameInfo* fi   = pushConst.frameInfo;
+  const float4    clip = mul(float4(worldPos, 1.0), fi.shadowViewProj);
+  const float3    s    = float3(clip.xy * 0.5 + 0.5, clip.z);
+  const float3    dx   = ddx(s);
+  const float3    dy   = ddy(s);
+  const float     det  = dx.x * dy.y - dx.y * dy.x;
+  if(fi.shadowLightIndex < 0 || abs(det) < 1e-14)
+    return float2(0.0);
+  const float2 slope    = float2(dx.z * dy.y - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z) / det;
+  const float  maxSlope = 11.4 * fi.shadowTexelWorld * float(fi.shadowMapSize) / max(fi.shadowDepthRange, 1e-6);
+  return clamp(slope, -maxSlope, maxSlope);
+}
+
+// How much of the shadow light reaches `worldPos`: 1 lit, 0 in shadow. `receiverSlope`:
+// shadowReceiverSlope's, or 0 for the flat comparison.
 //
 // Contact-hardening soft shadows (PCSS). A blocker search finds the average occluder depth, the
 // penumbra is (receiver - blocker) x tan(the light's angular radius) -- the same angular size the
 // path tracer samples the light's disk with, so one softness matches between the two -- and a
 // rotated Vogel-disk PCF filters over it. Without contact hardening the radius is fixed by the
 // light's size at a typical occluder distance. Everything is in metres until the last step.
-float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angularSize, float2 pixel)
+float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angularSize, float2 pixel, float2 receiverSlope = float2(0.0))
 {
   SceneFrameInfo* fi = pushConst.frameInfo;
 
@@ -134,8 +155,9 @@ float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angular
     [unroll]
     for(int i = 0; i < 16; ++i)
     {
-      const float d = g_shadowMap.SampleLevel(g_shadowPoint, uv + vogelDisk(i, 16, phi) * search * uvPerMetre, 0.0);
-      if(d < receiver)
+      const float2 o = vogelDisk(i, 16, phi) * search * uvPerMetre;
+      const float  d = g_shadowMap.SampleLevel(g_shadowPoint, uv + o, 0.0);
+      if(d < receiver + dot(o, receiverSlope))
       {
         sum += d;
         ++count;
@@ -143,6 +165,9 @@ float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angular
     }
     if(count == 0)
       return 1.0;
+    // every tap of the widest penumbra blocked: the umbra, no filter needed
+    if(count == 16)
+      return 0.0;
     const float blocker = sum / float(count);
     radius              = (receiver - blocker) * fi.shadowDepthRange * tanHalf;
   }
@@ -155,7 +180,10 @@ float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angular
   float lit = 0.0;
   [unroll]
   for(int i = 0; i < 32; ++i)
-    lit += g_shadowMap.SampleCmpLevelZero(g_shadowCompare, uv + vogelDisk(i, 32, phi) * radius * uvPerMetre, receiver);
+  {
+    const float2 o = vogelDisk(i, 32, phi) * radius * uvPerMetre;
+    lit += g_shadowMap.SampleCmpLevelZero(g_shadowCompare, uv + o, receiver + dot(o, receiverSlope));
+  }
   return lit / 32.0;
 }
 
@@ -229,10 +257,10 @@ float rayTracedShadow(int lightIndex, GltfLight light, HitState hit, float3 geoN
 
 // The shadow term for light `lightIndex` of the raster light loop: the shadow map's for the shadow
 // light, traced for every other light when the scene has a TLAS, else 1.
-float lightShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNormal, float2 pixel)
+float lightShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNormal, float2 pixel, float2 receiverSlope = float2(0.0))
 {
   if(lightIndex == pushConst.frameInfo.shadowLightIndex && light.type == LightType::eLightTypeDirectional)
-    return sunShadow(hit.pos, geoNormal, -light.direction, light.angularSizeOrInvRange, pixel);
+    return sunShadow(hit.pos, geoNormal, -light.direction, light.angularSizeOrInvRange, pixel, receiverSlope);
   if(pushConst.rtShadowRays <= 0)
     return 1.0;
   return rayTracedShadow(lightIndex, light, hit, geoNormal, pixel);
@@ -360,18 +388,18 @@ PbrMaterial disableExcludedRetroLobes(PbrMaterial mat)
 }
 
 // MRM (Portsmouth et al. 2026): blend reflection lobes only; keep regular BTDF (Portsmouth Sec. 5).
-float3 bsdfEvalPunctualKhronosMRM(PbrMaterial mat, float3 V, float3 pointToLight, float3 lightIntensity, float3 transmissionRay, float dttThickness, Sampler2D sheenLUT)
+float3 bsdfEvalPunctualKhronosMRM(PbrMaterial mat, float3 V, float3 pointToLight, float3 lightIntensity, float3 transmissionRay, float dttThickness, Sampler2D sheenLUT, float lightSinAlpha)
 {
-  float3 cf = bsdfEvaluatePunctualKhronos(mat, V, pointToLight, lightIntensity, transmissionRay, dttThickness, sheenLUT);
+  float3 cf = bsdfEvaluatePunctualKhronos(mat, V, pointToLight, lightIntensity, transmissionRay, dttThickness, sheenLUT, lightSinAlpha);
   if(mat.retroreflection <= 0.0f)
     return cf;
 
   PbrMaterial matBrdf = disableExcludedRetroLobes(mat);
-  float3 cfBrdf = bsdfEvaluatePunctualKhronos(matBrdf, V, pointToLight, lightIntensity, transmissionRay, dttThickness, sheenLUT);
+  float3 cfBrdf = bsdfEvaluatePunctualKhronos(matBrdf, V, pointToLight, lightIntensity, transmissionRay, dttThickness, sheenLUT, lightSinAlpha);
 
   // V is outgoing (toward camera); MRM uses the incident view ray: reflect(-V, N).
   float3 Vp = reflect(-V, mat.N);
-  float3 crBrdf = bsdfEvaluatePunctualKhronos(matBrdf, Vp, pointToLight, lightIntensity, transmissionRay, dttThickness, sheenLUT);
+  float3 crBrdf = bsdfEvaluatePunctualKhronos(matBrdf, Vp, pointToLight, lightIntensity, transmissionRay, dttThickness, sheenLUT, lightSinAlpha);
   return (cf - cfBrdf) + lerp(cfBrdf, crBrdf, mat.retroreflection);
 }
 
@@ -526,6 +554,8 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
 #ifdef HAS_DLSS_MOTION
   output.motion = calculateMotionVector(input.currClipUnjit, input.prevClipUnjit, pushConst.frameInfo.imageSize);
 #endif
+  // Here, before any branch: it takes screen-space derivatives
+  const float2 shadowSlope = shadowReceiverSlope(input.worldPos);
 
   // Setting up scene info
   GltfShadeMaterial material   = pushConst.gltfScene->materials[pushConst.materialID];      // Buffer of materials
@@ -577,6 +607,11 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     if(pbrMat.opacity < material.alphaCutoff)
       discard;
   }
+  // A blended surface's two draws split its texels by its own opacity (RasterBlendPass)
+  if(pushConst.blendPass == int(RasterBlendPass::eRasterBlendSolid) && pbrMat.opacity < RASTER_BLEND_SOLID)
+    discard;
+  if(pushConst.blendPass == int(RasterBlendPass::eRasterBlendSheer) && pbrMat.opacity >= RASTER_BLEND_SOLID)
+    discard;
 
 #if GLTF_USE_UNLIT
   // KHR_materials_unlit: skip lighting entirely. Match Khronos pbr.frag (color = baseColor + emissive).
@@ -710,25 +745,34 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, hit.pos);  // EXT_lights_ies
     if(all(contrib.intensity == 0.0))
       continue;
-    contrib.intensity *= lightShadow(i, light, hit, hit.geonrm, input.position.xy);
+    contrib.intensity *= lightShadow(i, light, hit, hit.geonrm, input.position.xy, shadowSlope);
     if(all(contrib.intensity == 0.0))
       continue;
 
     // contrib.incidentVector points from the light toward the surface (= propagation direction).
     // The evaluator wants the unnormalized surface-to-light vector (length matters for the
     // BTDF transmission-ray shift to match `pbr.frag:303`).
+    // ...and the light's angular size widens its highlight (sphereLightAlpha): the sun's disc, a
+    // sphere light's radius over its distance
     float3 pointToLight;
+    float  lightSinAlpha;
     if(light.type == LightType::eLightTypeDirectional)
-      pointToLight = -contrib.incidentVector;
+    {
+      pointToLight  = -contrib.incidentVector;
+      lightSinAlpha = sin(0.5 * light.angularSizeOrInvRange);
+    }
     else
-      pointToLight = -contrib.incidentVector * contrib.distance;
+    {
+      pointToLight  = -contrib.incidentVector * contrib.distance;
+      lightSinAlpha = min(light.radius / max(contrib.distance, 1e-6), 1.0);
+    }
 
 #if GLTF_USE_RETROREFLECTION
     contribution += bsdfEvalPunctualKhronosMRM(pbrMat, V, pointToLight, contrib.intensity, transmissionRay,
-                                               dttThickness, texturesHdr[HDR_SHEEN_INDEX]);
+                                               dttThickness, texturesHdr[HDR_SHEEN_INDEX], lightSinAlpha);
 #else
     contribution += bsdfEvaluatePunctualKhronos(pbrMat, V, pointToLight, contrib.intensity, transmissionRay,
-                                                dttThickness, texturesHdr[HDR_SHEEN_INDEX]);
+                                                dttThickness, texturesHdr[HDR_SHEEN_INDEX], lightSinAlpha);
 #endif
   }
 

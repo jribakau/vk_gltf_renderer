@@ -377,6 +377,16 @@ struct OptixCopyPushConstant
 };
 
 // Push constant
+// Blended surfaces are drawn twice: their near-solid texels first, writing depth, so a hair card's
+// clear texels hide nothing behind them; then the rest, sorted and blended, without.
+enum RasterBlendPass
+{
+  eRasterBlendAll   = 0,  // every texel (the opaque buckets, the shadow map)
+  eRasterBlendSolid = 1,  // opacity at RASTER_BLEND_SOLID or more, depth written
+  eRasterBlendSheer = 2,  // below it, depth tested only
+};
+#define RASTER_BLEND_SOLID 0.9
+
 struct RasterPushConstant
 {
   int             materialID       = 0;       // Material used by the rendering instance
@@ -385,6 +395,8 @@ struct RasterPushConstant
   int             opaqueColorReady = 0;       // 1 = transmission framebuffer ready (mip chain valid)
   int             rtShadowRays     = 0;       // Rays per light for the traced shadows (0: none, no TLAS bound)
   int             aoRays           = 0;       // Rays per pixel for the traced ambient occlusion (0: none, no TLAS bound)
+  int             blendPass        = 0;       // RasterBlendPass: which texels of a blended surface this draw keeps
+  int             blendPassPad     = 0;
   float2          mouseCoord       = {0, 0};  // Mouse coordinates (use for debug)
   SceneFrameInfo* frameInfo;                  // Camera info (incl. viewProjMatrix, prevMVP, jitter)
   GltfScene*      gltfScene;                  // GLTF scene
