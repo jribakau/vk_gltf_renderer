@@ -409,10 +409,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         pt.volumeMedium     = {};
         pt.volumeMaterial   = -1;
         pt.exitedVolumeWalk = false;
-        // getHitState turned the normals towards the ray, i.e. into the medium; the exit faces out
+        // getHitState turned the normals towards the ray, i.e. into the medium; the exit faces out.
+        // The whole frame turns back, as getHitState turned it: a bitangent left as it was mirrors
+        // the normal map's green channel, turning its relief inside out along one axis, and the
+        // exit's diffuse went dark where that relief faced the light (a still's sternum, collarbones
+        // and neck on measured skin, which the DLSS preview without the walk did not show).
         hit.nrm       = -hit.nrm;
         hit.geonrm    = -hit.geonrm;
         hit.tangent   = -hit.tangent;
+        hit.bitangent = -hit.bitangent;
         hit.shadowPos = hit.shadowPosOther;  // the terminator offset for the outer side, which the light is on
       }
 #endif
