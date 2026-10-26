@@ -41,7 +41,9 @@
 //   load            {path} or {rel}, prop?, as?   -> {job}; a figure or model becomes a new prop (the job's
 //                                                end state has its {prop}); a wearable goes on the figure
 //                                                (`prop`, or the selected or only one) unless `as` is "prop";
-//                                                a pose, shape or material preset applies to that figure
+//                                                a pose, shape or material preset applies to that figure;
+//                                                `prefetch` [rel] names files a figure will wear soon (a
+//                                                scene file's worn list), read from the start of its load
 //   prop.add        {path|rel} as load; or {kind: "camera"|"light", type?: point|spot|directional,
 //                   name?, camera?, transform?}  -> {prop}; a camera stands where the view is
 //   prop.set        {prop, name?, visible?, transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},

@@ -972,8 +972,10 @@ struct FvHost::Impl
 
   Json load(const Json& args);
   // A figure or prop from a DAZ library, as a new prop; `then` runs once it is in the scene.
+  // `prefetch`: library files the figure will wear (a scene file's worn list), read on the pool from
+  // the start of the load so its restore finds them in the figure's store
   Json loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
-                  std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {});
+                  std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {}, std::vector<std::string> prefetch = {});
   void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
                fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
                std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source,
@@ -2307,11 +2309,16 @@ Json FvHost::Impl::load(const Json& args)
   // a wearable goes on the figure named or selected, unless it is to be a prop of its own
   const bool asProp = args.value("as", "") == "prop" || args.value("replace", false);
   std::string target = args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "";
-  return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp);
+  std::vector<std::string> prefetch;
+  if(args.contains("prefetch") && args["prefetch"].is_array())
+    for(const Json& r : args["prefetch"])
+      if(r.is_string())
+        prefetch.push_back(r.get<std::string>());
+  return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp, {}, std::move(prefetch));
 }
 
 Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
-                              std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then)
+                              std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then, std::vector<std::string> prefetch)
 {
   const uint64_t    jobId      = ++jobs;
   const uint64_t    generation = loadGeneration;
@@ -2319,11 +2326,13 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
   job(jobId, {{"label", label}, {"state", "running"}});
 
   loaders.spawn([this, s, roots = std::move(roots), rel = std::move(rel), jobId, label, asProp, source = std::move(source), target = std::move(target),
-                 generation, then = std::move(then)] {
+                 generation, then = std::move(then), prefetch = std::move(prefetch)] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
       auto store = std::make_shared<fv::dson::Store>(lib);
+      for(const std::string& wear : prefetch)
+        fv::dson::prefetchScene(store, wear);
       // a preset is applied to a figure in the scene
       auto doc = store->load(rel);
       if(doc)
