@@ -700,7 +700,13 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     GltfLight light =
         (i >= pushConst.gltfScene.numLights) ? makeSkySunLight(pushConst.frameInfo) : pushConst.gltfScene.lights[i];
     applySkySunLight(light, i, pushConst.frameInfo);  // no-op unless this is the marked sun
-    LightContrib contrib = singleLightContribution(light, hit.pos, pbrMat.N);
+    // singleLightContribution() drops a directional light below the normal's hemisphere. A surface
+    // that lets light through is lit from behind too: hand it a normal facing the light, as the
+    // path tracer does, and the BSDF's lobes decide (the reflection ones clamp N.L to 0).
+    float3 cullNormal = pbrMat.N;
+    if(pbrMat.diffuseTransmissionFactor > 0.0 || pbrMat.transmission > 0.0)
+      cullNormal = light.type == LightType::eLightTypeDirectional ? -light.direction : normalize(light.position - hit.pos);
+    LightContrib contrib = singleLightContribution(light, hit.pos, cullNormal);
     contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, hit.pos);  // EXT_lights_ies
     if(all(contrib.intensity == 0.0))
       continue;
