@@ -378,7 +378,9 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
 - **Other instances** run the any-hit logic (`rahitShadow`, or the candidate loop in the ray-query
   path), both through `shadowCrossSurface`, and ignore the hit, so the ray keeps going:
   - A surface that only filters the light (alpha, thin glass) multiplies in its expected
-    transmission, `(1 - opacity) + opacity * getShadowTransmission`.
+    transmission, `(1 - opacity) + opacity * getShadowTransmission`. Glass passes only where it
+    is smooth (a clear crossing, which the path's own ray crosses as a null event for MIS); rough
+    or scattering glass blocks.
   - A surface that bounds a medium (`shadowSurfaceBoundsMedium`) keeps the stochastic opacity
     test, since what the rest of the ray travels through depends on it. It is also where the
     Beer-Lambert segment since the previous boundary is charged.

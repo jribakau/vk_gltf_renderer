@@ -329,6 +329,7 @@ enum PathtracerFlags
   ePtSimplifyScatter     = 1 << 12,  // After a rough bounce, a scattering medium shades as the thin preview (no walk)
   ePtSobol               = 1 << 13,  // An accumulation frame draws its fixed sampling decisions from Owen-scrambled Sobol points
   ePtDiffuseEntry        = 1 << 14,  // Light enters a scatter walk through a Lambertian lobe, not by refraction
+  ePtRegularize          = 1 << 15,  // Later lobes are at least as rough as the roughest so far, clear refraction aside (biased)
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

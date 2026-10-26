@@ -386,10 +386,17 @@ Some things about the transport are worth knowing before touching it:
   `singleLightContribution()`. Without it, a light behind a backlit leaf or sheet contributes
   nothing. For the same reason `SceneRtx` disables back-face culling on them (`getInstanceFlag()`):
   a diffusely transmitted ray reaches the far wall of a closed object from behind.
-- Straight-through shadow transmission (`getShadowTransmission()`) only passes the **specular**
-  part of the transmission, so in thin-walled mode it is scaled by `1 - scatterStrength`. It samples
-  the transmission and scatter-strength textures at the hit, so a shadow ray agrees with
-  `evaluateMaterial()` texel by texel.
+- Straight-through shadow transmission (`getShadowTransmission()`) passes only a **clear crossing**:
+  smooth (`CLEAR_CROSSING_ALPHA`, from the material's own roughness and its texture) specular
+  transmission with no thin-walled scatter, weighed by what the surface reflects (Fresnel times
+  `specularFactor`, plus the clearcoat). A path's own ray that refracts through such a surface is a
+  null event for MIS (`pathTraceOneBounce`): it keeps the previous vertex's sample pdf and light
+  pick, and an emitter it reaches converts its pdf by the summed distance (`nullDistance`). The
+  light behind glass is then counted once, as that vertex's shadow ray or its BSDF ray. A rough or
+  scattering surface blocks shadow rays, and the BSDF ray that reaches a light behind it has weight 1.
+- Path regularisation (later lobes at least as rough as the roughest material so far) runs only
+  where `ePtRegularize` is set (`ptRegularize`: DLSS frames by default), and never on a surface that
+  refracts without scattering.
 - The thickness texture is a rasterizer-only stand-in for the path length through the medium:
   `evaluateMaterial()` applies it under `RASTER_PIPELINE` only. In the path tracer the ray measures
   that length, and `thicknessFactor` alone selects thin-walled vs. volume. It is also what makes a

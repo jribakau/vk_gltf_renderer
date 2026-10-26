@@ -577,10 +577,16 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif  // USE_GUIDE_SHADER
     }
 
+    // The material's own roughness, before the regularisation below: whether a refraction through it
+    // is a clear crossing (CLEAR_CROSSING_ALPHA) is decided by it, as the shadow rays decide.
+    const float materialAlpha = max(pbrMat.roughness.x, pbrMat.roughness.y);
+
     // Regularisation: later bounces are made at least as rough as the path, against fireflies.
     // Approximate caustics (Unreal's): as rough as the path's scattering, a diffuse bounce making
     // every later lobe fully rough. Otherwise (upstream): as rough as the roughest material so far,
-    // whichever of its lobes the path took.
+    // whichever of its lobes the path took, where ePtRegularize asks for it (ptRegularize: DLSS frames
+    // by default; the still has the indirect clamp and the denoiser) and never on a surface that
+    // refracts without scattering: after a matte bounce the cornea went rough, and the iris behind it.
     if(hasFlag(pushConst.flags, PathtracerFlags::ePtApproximateCaustics))
     {
       pbrMat.roughness          = max(pbrMat.roughness, float2(pt.pathRoughness * pt.pathRoughness));
@@ -588,8 +594,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
     else
     {
-      pt.maxRoughness  = max(pbrMat.roughness, pt.maxRoughness);
-      pbrMat.roughness = pt.maxRoughness;
+      pt.maxRoughness            = max(pbrMat.roughness, pt.maxRoughness);
+      const bool clearRefraction = pbrMat.transmission > 0.0F
+                                   && max(pbrMat.scatterCoefficient.x, max(pbrMat.scatterCoefficient.y, pbrMat.scatterCoefficient.z)) <= VOLUME_MIN_SCATTER;
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtRegularize) && !clearRefraction)
+        pbrMat.roughness = pt.maxRoughness;
     }
 
     //-----------------------------------------------------------------------
@@ -639,7 +648,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // Power-weighted MIS pdf needs only the emitter's own radiance, its geometric normal, and
         // W_total (the area cancels) -- no per-triangle lookup.
-        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, pbrMat.emissive, hit.geonrm, ray.Direction, payload.hitT);
+        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, pbrMat.emissive, hit.geonrm, ray.Direction,
+                                                 pt.nullDistance + payload.hitT);
       }
       addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
     }
@@ -698,6 +708,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // The normal only culls directional lights below the surface (singleLightContribution). Give it
     // the one bounce.nextEventValid tests, so NEE and the BSDF side (R4) agree on which directions
     // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
+    // The vertex before this one, for a ray that crosses this surface clear (below)
+    const float     prevSamplePdf = pt.lastSamplePdf;
+    const LightPick prevLightPick = pt.lightPick;
     sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
                  /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex, g_sobol ? nextSobolDecision() : float4(-1.0F));
     // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
@@ -806,13 +819,32 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Next-event estimation above samples a light only where this holds (bounce.nextEventValid), so a
       // light this ray reaches elsewhere has no light-sample partner: its weight is 1, as after a delta
       // lobe (the env hit's delta branch rests on the same fact). Rough thin glass lit from behind, a
-      // refractive exit from inside a volume. Not with straight-through shadow rays past the first
-      // surface: the previous vertex's shadow ray already counted light behind this one (biased, see
-      // getShadowTransmission), and weight 1 would count more of it twice.
+      // refractive exit from inside a volume: no shadow ray passes them (getShadowTransmission).
       if(hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && sampleData.event_type != BSDF_EVENT_ABSORB
-         && (!hasFlag(pushConst.flags, PathtracerFlags::ePtShadowTransmission) || pt.surfaceDepth == 0)
          && !(dot(sampleData.k2, hit.nrm) > 0.0f || bothSides))
         pt.lastSamplePdf = DIRAC;
+
+      // A clear crossing: a refraction through a smooth surface that shadow rays pass straight
+      // through (getShadowTransmission, CLEAR_CROSSING_ALPHA). The previous vertex's shadow ray already
+      // reached the light behind it, so the light this ray reaches beyond is weighed against that
+      // vertex's light sample: the crossing is a null event for MIS. Weighed against its own (next to
+      // nothing through smooth glass), the light behind a window or a cornea was counted 1 + w times.
+      // A camera ray through it keeps its DIRAC: through a window, the background.
+      bool clearCrossing = false;
+#if GLTF_USE_TRANSMISSION
+      clearCrossing = hasFlag(pushConst.flags, PathtracerFlags::ePtShadowTransmission) && !hairOn && materialIndex >= 0
+                      && (sampleData.event_type & BSDF_EVENT_TRANSMISSION) != 0
+                      && (sampleData.event_type & (BSDF_EVENT_GLOSSY | BSDF_EVENT_IMPULSE)) != 0
+                      && materialAlpha <= CLEAR_CROSSING_ALPHA && materials[materialIndex].scatterStrengthFactor <= 0.0F;
+#endif
+      if(clearCrossing)
+      {
+        pt.lastSamplePdf = prevSamplePdf;
+        pt.lightPick     = prevLightPick;
+        pt.nullDistance += payload.hitT;
+      }
+      else
+        pt.nullDistance = 0.0F;
 
 #if USE_DLSS_SHADER
       // #DLSS - Enable specular hit distance capture on first bounce if this is a glossy reflection

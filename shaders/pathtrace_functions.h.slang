@@ -44,6 +44,11 @@ struct DirectLight
 };
 
 static const float MIN_TRANSMISSION = 0.01f;  // Minimum shadow transmission factor for transparent materials
+// A clear surface this smooth (GGX alpha; perceptual roughness 0.1, the cap the figure's lowering puts
+// on refracting surfaces) passes shadow rays straight through, and a path's ray that refracts through
+// it is a null event for MIS (pathTraceOneBounce). A rougher one blocks shadow rays: the light behind
+// it is the BSDF ray's alone. Both sides read the material's own roughness, never the regularised one.
+static const float CLEAR_CROSSING_ALPHA = 0.01f;
 static const float ANTIALIASING_STANDARD_DEVIATION = 0.4246609f;  // Standard deviation for antialiasing
 static const int   RR_MIN_DEPTH                    = 3;           // Minimum depth for Russian Roulette
 static const float VOLUME_MIN_SCATTER              = 0.001f;      // Minimum scatter for volume rendering
@@ -329,9 +334,10 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
 #if !GLTF_USE_TRANSMISSION
   return float3(0.0);
 #else
-  // Straight-through shadow transmission ignores refraction, so it is biased (and double-counts
-  // with BSDF-sampled paths that reach an env/area light through the surface). When disabled the
-  // surface is opaque to shadow rays; stochastic alpha in the callers is unaffected.
+  // Straight-through shadow transmission ignores refraction: exact through a thin-walled smooth
+  // surface, an approximation through a thick one. The path's own ray crosses the same surfaces as a
+  // null event for MIS, so the light behind them is counted once. When disabled the surface is
+  // opaque to shadow rays; stochastic alpha in the callers is unaffected.
   if(!hasFlag(pushConst.flags, PathtracerFlags::ePtShadowTransmission))
     return float3(0.0);
 
@@ -377,19 +383,30 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
     return float3(1.0);
   }
   // Thin-walled KHR_materials_scatter turns `scatterStrength` of the transmission into a diffuse
-  // lobe (see evaluateMaterial), which a straight-through shadow ray must not pass.
+  // lobe (see evaluateMaterial), which a straight-through shadow ray must not pass. Nor its specular
+  // rest: a path's ray through such a surface is a real vertex (no clear crossing), so light behind
+  // it is the BSDF ray's.
   if(thickness <= 0.0 && mat.scatterStrengthFactor > 0.0)
-  {
-    float scatterStrength = mat.scatterStrengthFactor;
-    if(isTexturePresent(mat.scatterStrengthTexture))
-      scatterStrength *= sampleShadowTexture(renderPrim, texInfos[mat.scatterStrengthTexture], indices, barycentrics).a;
-    tFactor *= 1.0 - scatterStrength;
-  }
+    return float3(0.0);
 #endif
 
   if(tFactor <= MIN_TRANSMISSION)
   {
     return float3(0.0);
+  }
+
+  // Only a smooth surface is straight-through (CLEAR_CROSSING_ALPHA), and only what is not metal
+  float metallic = mat.pbrMetallicFactor;
+  {
+    float roughness = mat.pbrRoughnessFactor;
+    if(isTexturePresent(mat.pbrMetallicRoughnessTexture))
+    {
+      float4 mr_sample = sampleShadowTexture(renderPrim, texInfos[mat.pbrMetallicRoughnessTexture], indices, barycentrics);
+      roughness *= mr_sample.g;
+      metallic *= mr_sample.b;
+    }
+    if(roughness * roughness > CLEAR_CROSSING_ALPHA)
+      return float3(0.0);
   }
 
   float3 normal;
@@ -418,7 +435,7 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   fresnel = 1.0F - (1.0F - fresnel) * (1.0F - mat.clearcoatFactor * schlickFresnel(1.5F, cosTheta));
 #endif
 
-  float3 currentTransmission = tFactor * mat.pbrBaseColorFactor.rgb;
+  float3 currentTransmission = tFactor * (1.0F - metallic) * mat.pbrBaseColorFactor.rgb;
   currentTransmission *= (1.0F - fresnel);
 
 #if GLTF_USE_VOLUME
@@ -436,24 +453,6 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
     isInside = !isInside;
   }
 #endif
-
-  float transmissionAttenuation = 1.0;
-  {
-    float roughness = mat.pbrRoughnessFactor;
-    float metallic  = mat.pbrMetallicFactor;
-    if(isTexturePresent(mat.pbrMetallicRoughnessTexture))
-    {
-      float4 mr_sample = sampleShadowTexture(renderPrim, texInfos[mat.pbrMetallicRoughnessTexture], indices, barycentrics);
-      roughness *= mr_sample.g;
-      metallic *= mr_sample.b;
-    }
-
-    transmissionAttenuation *= (1.0 - metallic);
-
-    float roughnessEffect = 1.0 - (roughness * roughness);
-    transmissionAttenuation *= lerp(0.65, 1.0, roughnessEffect);
-  }
-  currentTransmission *= transmissionAttenuation;
 
   return currentTransmission;
 #endif
@@ -1603,6 +1602,9 @@ struct PathTracerState
   // is the class of the light that event's own ray reaches.
   float pathRoughness  = 0.0F;
   bool  prefixIndirect = false;
+  // The length of the clear crossings (CLEAR_CROSSING_ALPHA) since the vertex whose light sample the
+  // next hit is weighed against: an emitter's MIS pdf converts by the whole distance from there.
+  float nullDistance = 0.0F;
   bool    solid         = true;
   bool    firstHitHazed = true;  // false when the camera ray landed on the shadow catcher
   RayCone cone          = {0.0F, pushConst.pixelAngle};
@@ -1713,6 +1715,7 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
     {
 #if GLTF_USE_SCATTER
       pt.scatterBounces++;
+      pt.nullDistance = 0.0F;  // a scatter is a vertex: the next light hit is weighed from here
 
       // Scatter events translate the cone through the medium segment (no slant correction).
       pt.cone.width += pt.cone.spreadAngle * length(ray.Origin - originBeforeScatter);
