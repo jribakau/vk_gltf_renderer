@@ -661,18 +661,17 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #else
     const bool walkOwnsDirect = false;
 #endif
-    // Emitters that are also sampled as area lights (constant emissive, no emissive texture) get
-    // hit by BSDF rays too; MIS-weight those against the light technique, mirroring the env-hit
-    // MIS above. Textured emitters are not in the light list, so they stay unweighted.
+    // Emitters are also sampled as area lights, textured ones by their texture's mean; a BSDF ray that
+    // hits one is MIS-weighted against the light technique, mirroring the env-hit MIS above.
     if(!walkOwnsDirect && any(pbrMat.emissive > float3(0.0)))
     {
       float emissiveMis = 1.0;
-      if(!hitInfinitePlane && !isTexturePresent(materials[materialIndex].emissiveTexture))
+      if(!hitInfinitePlane)
       {
-        // Power-weighted MIS pdf needs only the emitter's own radiance, its geometric normal, and
-        // W_total (the area cancels) -- no per-triangle lookup.
-        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, pbrMat.emissive, hit.geonrm, ray.Direction,
-                                                 pt.nullDistance + payload.hitT);
+        // Power-weighted MIS pdf needs only the radiance the emitter was picked by, its geometric
+        // normal, and W_total (the area cancels) -- no per-triangle lookup.
+        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelectionRadiance(materialIndex),
+                                                 hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT);
       }
       addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
     }

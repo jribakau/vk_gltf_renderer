@@ -68,6 +68,10 @@ struct TextureSlotTable
   // (BC5, R8G8, ...). Only known once the images exist, hence the separate vector.
   std::vector<uint8_t> twoChannelSource;
 
+  // The source image's mean luminance (linear, Rec. 709), from a grid of its texels; negative where
+  // unknown (a compressed or float format). An emissive texture's weight as a light.
+  std::vector<float> meanLuminance;
+
   int samplerSlot(int texIndex) const
   {
     return (texIndex >= 0 && texIndex < static_cast<int>(samplerSlots.size())) ? samplerSlots[texIndex] : 0;
@@ -78,10 +82,20 @@ struct TextureSlotTable
     return texIndex >= 0 && texIndex < static_cast<int>(twoChannelSource.size()) && twoChannelSource[texIndex] != 0;
   }
 
+  // GltfShadeMaterial::emissiveLightScale for an emissive texture: its mean, or 1 where unknown
+  float emissiveLightScale(int texIndex) const
+  {
+    if(texIndex < 0)
+      return 1.0f;
+    const float mean = texIndex < static_cast<int>(meanLuminance.size()) ? meanLuminance[texIndex] : -1.0f;
+    return mean >= 0.0f ? mean : 1.0f;
+  }
+
   void clear()
   {
     samplerSlots.clear();
     twoChannelSource.clear();
+    meanLuminance.clear();
   }
 };
 

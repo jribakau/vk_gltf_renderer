@@ -24,7 +24,9 @@
 // and conversion to VkFormat-based ImageData structures.
 //
 
+#include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -280,6 +282,43 @@ bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, b
     return true;
 
   return false;
+}
+
+float imageMeanLuminance(VkFormat format, VkExtent2D size, const std::vector<char>& texels)
+{
+  int  channels = 0;
+  bool srgb = false, bgr = false;
+  switch(format)
+  {
+    case VK_FORMAT_R8G8B8A8_SRGB: srgb = true; [[fallthrough]];
+    case VK_FORMAT_R8G8B8A8_UNORM: channels = 4; break;
+    case VK_FORMAT_B8G8R8A8_SRGB: srgb = true; [[fallthrough]];
+    case VK_FORMAT_B8G8R8A8_UNORM: channels = 4; bgr = true; break;
+    case VK_FORMAT_R8G8B8_SRGB: srgb = true; [[fallthrough]];
+    case VK_FORMAT_R8G8B8_UNORM: channels = 3; break;
+    case VK_FORMAT_R8_SRGB: srgb = true; [[fallthrough]];
+    case VK_FORMAT_R8_UNORM: channels = 1; break;
+    default: return -1.0f;
+  }
+  if(size.width == 0 || size.height == 0 || texels.size() < size_t(size.width) * size.height * channels)
+    return -1.0f;
+  const auto linear = [srgb](uint8_t v) {
+    const float c = float(v) / 255.0f;
+    return srgb ? (c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f)) : c;
+  };
+  const uint32_t nx = std::min(size.width, 64u), ny = std::min(size.height, 64u);
+  double         sum = 0.0;
+  for(uint32_t j = 0; j < ny; ++j)
+    for(uint32_t i = 0; i < nx; ++i)
+    {
+      const size_t   x = (size_t(i) * 2 + 1) * size.width / (2 * nx), y = (size_t(j) * 2 + 1) * size.height / (2 * ny);
+      const uint8_t* p = reinterpret_cast<const uint8_t*>(texels.data()) + (y * size.width + x) * channels;
+      if(channels == 1)
+        sum += linear(p[0]);
+      else
+        sum += 0.2126f * linear(p[bgr ? 2 : 0]) + 0.7152f * linear(p[1]) + 0.0722f * linear(p[bgr ? 0 : 2]);
+    }
+  return float(sum / (double(nx) * ny));
 }
 
 }  // namespace nvvkgltf

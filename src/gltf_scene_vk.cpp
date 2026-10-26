@@ -874,7 +874,14 @@ void nvvkgltf::SceneVk::uploadEmissiveTriangles(nvvk::CmdUploaderInterface& stag
 
     const tinygltf::Material& mat = materials[rn.materialID];
 
-    const glm::vec3 radiance = tinygltf::utils::getConstantEmissiveRadiance(mat);  // 0 for textured/non-emitters
+    // The weight it is picked by: emissiveFactor (strength included) times a textured emitter's mean
+    // (emissiveLightScale), exactly what the path tracer's hit side reads back from the material
+    // (emitterSelectionRadiance). A textured emitter's light sample reads its texel; this only picks.
+    const std::vector<shaderio::GltfShadeMaterial>& shadeMaterials = m_materialCache.getShadeMaterials();
+    if(rn.materialID >= static_cast<int>(shadeMaterials.size()))
+      continue;
+    const shaderio::GltfShadeMaterial& shade = shadeMaterials[rn.materialID];
+    const glm::vec3 radiance = glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale;
     // Rec. 709 luminance; must match the shader's luminance() (nvshaders/functions.h.slang) so the
     // pdf's area term cancels.
     const float lum = 0.2126f * radiance.x + 0.7152f * radiance.y + 0.0722f * radiance.z;
@@ -2039,11 +2046,13 @@ static uint32_t vkFormatColorComponentCount(VkFormat format)
 void nvvkgltf::SceneVk::buildTextureFormatFlags(const tinygltf::Model& model)
 {
   m_textureSlots.twoChannelSource.assign(model.textures.size(), 0);
+  m_textureSlots.meanLuminance.assign(model.textures.size(), -1.0f);
   for(size_t i = 0; i < model.textures.size(); ++i)
   {
     const int sourceImage = tinygltf::utils::getTextureImageIndex(model.textures[i]);
     if(sourceImage < 0 || sourceImage >= static_cast<int>(m_images.size()))
       continue;
+    m_textureSlots.meanLuminance[i] = m_images[sourceImage].meanLuminance;
 
     // m_images[].format is the decoded source format; it stays VK_FORMAT_UNDEFINED for images that
     // failed to load (a 4-channel magenta default is substituted), which maps to 4 components below.
@@ -2397,8 +2406,9 @@ bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploade
   }
 
   // Clear image.mipData as it is no longer needed
-  // image.srgb and image.imgName are preserved
-  image.imageTexture = resultImage;
+  // image.srgb and image.imgName are preserved, and the texels' mean
+  image.meanLuminance = image.mipData.empty() ? -1.0f : nvvkgltf::imageMeanLuminance(image.format, image.size, image.mipData[0]);
+  image.imageTexture  = resultImage;
   image.mipData.clear();
 
   return true;

@@ -192,6 +192,11 @@ struct GltfShadeMaterial
 
   float occlusionStrength = 1;
   int   doubleSided       = 0;
+  // An emitter's weight among the light samples is emissiveFactor (strength included) times this:
+  // the emissive texture's mean luminance (SceneVk, from the decoded image), 1 without a texture or
+  // where the mean is unknown, 0 for an all-black texture (not a light). The path tracer's hit side
+  // reads it to recover the pick the light sample made (emitterSelectionRadiance).
+  float emissiveLightScale = 1;
 
 #if MAT_EXT_VOLUME
   float3 attenuationColor = float3(1);

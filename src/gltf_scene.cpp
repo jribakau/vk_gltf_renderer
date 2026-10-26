@@ -1700,7 +1700,7 @@ bool nvvkgltf::Scene::isEmissiveAreaLight(const RenderNode& rn) const
 {
   if(rn.materialID < 0 || rn.materialID >= static_cast<int>(m_model.materials.size()))
     return false;
-  const glm::vec3 radiance = tinygltf::utils::getConstantEmissiveRadiance(m_model.materials[rn.materialID]);
+  const glm::vec3 radiance = tinygltf::utils::getEmissiveFactorRadiance(m_model.materials[rn.materialID]);
   return radiance.x > 0.0f || radiance.y > 0.0f || radiance.z > 0.0f;  // weights are non-negative
 }
 

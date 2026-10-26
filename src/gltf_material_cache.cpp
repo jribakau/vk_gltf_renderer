@@ -306,6 +306,7 @@ void MaterialCache::buildFromMaterials(const std::vector<tinygltf::Material>& ma
     populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const auto& srcTexInfo) {
       texIndex = addTextureInfoImpl(srcTexInfo, m_textureInfos, textureSlots);
     });
+    dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveTexture.index);
     m_shadeMaterials.emplace_back(dstMat);
   }
 }
@@ -339,6 +340,7 @@ MaterialUpdateResult MaterialCache::updateMaterial(int index, const tinygltf::Ma
     result.span.maxIdx = std::max(result.span.maxIdx, texIndex);
     result.span.count++;
   });
+  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveTexture.index);
   return result;
 }
 

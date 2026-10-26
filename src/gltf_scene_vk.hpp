@@ -257,6 +257,8 @@ public:
     VkFormat                       format{VK_FORMAT_UNDEFINED};
     VkExtent2D                     size{0, 0};
     std::vector<std::vector<char>> mipData{};
+    // Mean luminance of the decoded texels (createImage, before mipData is dropped); negative: unknown
+    float meanLuminance{-1.0f};
     // And optionally set the component swizzle for image view (e.g. grayscale expansion):
     VkComponentMapping componentMapping{};
     // Set only for a real GPU image that came from a file. Dummies and embedded images stay empty.
@@ -327,7 +329,7 @@ protected:
   // Fill m_textureSlots.twoChannelSource from the decoded image formats (see TextureSlotTable). Needs
   // m_images populated, so it must run after createTextureImages() / syncTextureTail() and before
   // uploadMaterials(), which bakes the flag into GltfTextureInfo.flags.
-  void buildTextureFormatFlags(const tinygltf::Model& model);
+  void buildTextureFormatFlags(const tinygltf::Model& model);  // also m_textureSlots.meanLuminance
 
   void findSrgbImages(const tinygltf::Model& model);
 

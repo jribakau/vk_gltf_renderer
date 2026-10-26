@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 #include "gltf_material_cache.hpp"
+#include "gltf_image_loader.hpp"
 
 // M7d: MaterialCache tests — conversion, incremental updates, topology change detection
 
@@ -195,4 +196,63 @@ TEST(MaterialCache, ClearResetsAll)
   cache.clear();
   EXPECT_TRUE(cache.getShadeMaterials().empty());
   EXPECT_TRUE(cache.getTextureInfos().empty());
+}
+
+// A textured emitter weighs as a light by its texture's mean (emissiveLightScale): the mean when it
+// is known, 1 when it is not (the factor alone), and none for an all-black texture. A constant
+// emitter's scale is 1. An in-place update keeps it.
+TEST(MaterialCache, AnEmissiveTextureWeighsByItsMean)
+{
+  nvvkgltf::TextureSlotTable slots;
+  slots.meanLuminance = {0.25f, -1.0f, 0.0f};
+
+  tinygltf::Material screen, unknown, black, lamp;
+  screen.emissiveFactor        = {1.0, 1.0, 1.0};
+  screen.emissiveTexture.index = 0;
+  unknown.emissiveFactor        = {1.0, 1.0, 1.0};
+  unknown.emissiveTexture.index = 1;
+  black.emissiveFactor        = {1.0, 1.0, 1.0};
+  black.emissiveTexture.index = 2;
+  lamp.emissiveFactor = {2.0, 2.0, 2.0};
+
+  nvvkgltf::MaterialCache cache;
+  cache.buildFromMaterials({screen, unknown, black, lamp}, slots);
+  const auto& shade = cache.getShadeMaterials();
+  ASSERT_EQ(shade.size(), 4u);
+  EXPECT_FLOAT_EQ(shade[0].emissiveLightScale, 0.25f);
+  EXPECT_FLOAT_EQ(shade[1].emissiveLightScale, 1.0f);
+  EXPECT_FLOAT_EQ(shade[2].emissiveLightScale, 0.0f);
+  EXPECT_FLOAT_EQ(shade[3].emissiveLightScale, 1.0f);
+
+  screen.emissiveFactor = {3.0, 3.0, 3.0};
+  EXPECT_FALSE(cache.updateMaterial(0, screen, slots).topologyChanged);
+  EXPECT_FLOAT_EQ(cache.getShadeMaterials()[0].emissiveLightScale, 0.25f);
+}
+
+// The mean is linear luminance: an sRGB mid grey is 0.214, a half-white checker 0.5 in either channel
+// order, a pure blue Rec. 709's 0.0722; a format it cannot read is unknown.
+TEST(MaterialCache, AnImagesMeanLuminanceIsLinear)
+{
+  const auto image = [](int w, int h, int channels, auto texel) {
+    std::vector<char> t(size_t(w) * h * channels);
+    for(int y = 0; y < h; ++y)
+      for(int x = 0; x < w; ++x)
+        for(int c = 0; c < channels; ++c)
+          t[(size_t(y) * w + x) * channels + c] = char(texel(x, y, c));
+    return t;
+  };
+  const auto grey = image(4, 4, 4, [](int, int, int c) { return c == 3 ? 255 : 128; });
+  EXPECT_NEAR(nvvkgltf::imageMeanLuminance(VK_FORMAT_R8G8B8A8_SRGB, {4, 4}, grey), 0.2158f, 1e-3f);
+  EXPECT_NEAR(nvvkgltf::imageMeanLuminance(VK_FORMAT_R8G8B8A8_UNORM, {4, 4}, grey), 128.0f / 255.0f, 1e-3f);
+
+  // 256 x 256: the 64 x 64 grid lands on every fourth texel, the checker's both colours
+  const auto checker = image(256, 256, 3, [](int x, int y, int) { return ((x / 4 + y / 4) % 2) ? 255 : 0; });
+  EXPECT_NEAR(nvvkgltf::imageMeanLuminance(VK_FORMAT_R8G8B8_SRGB, {256, 256}, checker), 0.5f, 0.02f);
+
+  const auto blue = image(2, 2, 4, [](int, int, int c) { return c == 2 || c == 3 ? 255 : 0; });
+  EXPECT_NEAR(nvvkgltf::imageMeanLuminance(VK_FORMAT_R8G8B8A8_UNORM, {2, 2}, blue), 0.0722f, 1e-4f);
+  EXPECT_NEAR(nvvkgltf::imageMeanLuminance(VK_FORMAT_B8G8R8A8_UNORM, {2, 2}, blue), 0.2126f, 1e-4f);  // read as red
+
+  EXPECT_LT(nvvkgltf::imageMeanLuminance(VK_FORMAT_BC7_SRGB_BLOCK, {4, 4}, grey), 0.0f);
+  EXPECT_LT(nvvkgltf::imageMeanLuminance(VK_FORMAT_R8G8B8A8_SRGB, {64, 64}, grey), 0.0f);  // too few bytes
 }

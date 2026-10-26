@@ -710,9 +710,18 @@ struct EmissiveSample
 {
   float3 direction;  // from the shading point toward the sampled point on the emitter
   float  distance;   // shadow-ray TMax (stops just short of the emitter surface)
-  float3 radiance;   // emitted radiance of the triangle
+  float3 radiance;   // emitted radiance at the sampled point (a textured emitter's texel)
   float  pdf;        // solid-angle pdf of the sample; 0 when the sample is invalid
 };
+
+// The radiance material `materialIndex` was picked by among the emitters: emissiveFactor (strength
+// included) times its emissive texture's mean (emissiveLightScale), as SceneVk::uploadEmissiveTriangles
+// stored it. Not what it emits at any one point of a textured emitter; what the pick's pdf is made of.
+float3 emitterSelectionRadiance(int materialIndex)
+{
+  GltfShadeMaterial* materials = pushConst.gltfScene->materials;
+  return max(materials[materialIndex].emissiveFactor, float3(0.0F)) * materials[materialIndex].emissiveLightScale;
+}
 
 // Select an emissive triangle proportional to its selection weight in O(1) via a Vose alias table.
 // One uniform picks a bin; its fractional part chooses between that bin and its alias.
@@ -783,6 +792,14 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
                              + roundingGamma(8) * (dot(abs(lightN), abs(shadingPos)) + dist);
   es.distance = max(dist - surfaceError / cosLight, 0.5F * dist);
   es.radiance = et.radiance;
+  // A textured emitter emits its texel there; it was picked by its mean (et.radiance), which the pdf keeps
+  GltfShadeMaterial* materials   = pushConst.gltfScene->materials;
+  const int          materialID = max(0, node.materialID);
+  if(isTexturePresent(materials[materialID].emissiveTexture))
+  {
+    const GltfTextureInfo texInfo = pushConst.gltfScene->textureInfos[materials[materialID].emissiveTexture];
+    es.radiance = max(materials[materialID].emissiveFactor, float3(0.0F)) * sampleShadowTexture(prim, texInfo, idx, bary).rgb;
+  }
   // Power-weighted solid-angle pdf; the triangle area cancels (see header). Uses the defensive
   // luminance so it matches the host selection weight.
   es.pdf = emitterDefensiveLuminance(et.radiance) * dist2 / (wtot * cosLight);
@@ -810,9 +827,11 @@ float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, 
 // MIS weight for a BSDF ray that landed on an emissive triangle, weighted against the emissive-NEE
 // technique. Mirrors computeEnvHitMisWeight; the competing NEE pdf is the emissive triangles' pick
 // at the vertex the ray left (`pick`) times the emitter's solid-angle pdf.
+// `radiance`: the emitter's selection radiance (emitterSelectionRadiance), not its texel; black: it is
+// not in the light list, and only BSDF rays reach it.
 float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float3 radiance, float3 geoNormal, float3 rayDir, float hitDist)
 {
-  if(lastSamplePdf == DIRAC)
+  if(lastSamplePdf == DIRAC || !(luminance(radiance) > 0.0f))
     return 1.0f;
   float emitterNeePdf = pick.emissive * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist);
   return misPowerWeight(lastSamplePdf, emitterNeePdf);

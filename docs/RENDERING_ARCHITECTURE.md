@@ -245,10 +245,16 @@ Path tracer only — the rasterizer is unaffected.
 Host — build the emitter list (`SceneVk::uploadEmissiveTriangles`):
 
 1. Walk every **render node** (an instance of a primitive) and look at its material.
-2. Keep it only if it is a **constant emitter**: emissive (`emissiveFactor × emissiveStrength`) is
-   non-black **and** it has no emissive texture. (Textured emitters stay on the BSDF-only path.)
+2. Keep it if it emits: its **selection radiance**, `emissiveFactor × emissiveStrength ×
+   emissiveLightScale`, is non-black. `emissiveLightScale` (`GltfShadeMaterial`) is 1 for a constant
+   emitter and the emissive texture's mean luminance for a textured one (`imageMeanLuminance`, from a
+   64 × 64 grid of the decoded texels; 1 where the format cannot be read, so the factor alone weighs
+   it; 0 for an all-black texture, which is then no light).
 3. For each triangle of that primitive, store a **reference** — render node, primitive, triangle
-   index — plus the **radiance** (not baked vertices, so the shader reads live geometry/transforms).
+   index — plus the selection **radiance** (not baked vertices, so the shader reads live
+   geometry/transforms). A textured emitter's light sample reads the texel at its point; the pdf, and
+   a BSDF hit's MIS weight (`emitterSelectionRadiance`), use the selection radiance, which is what
+   picked it.
 4. Compute the triangle's **world-space area** (verts × node transform) and give it a **selection
    weight = area × luminance** (see the defensive tweak below). Build a **Vose alias table** from the
    weights (`aliasProb` / `aliasIndex` per triangle) for O(1) GPU selection, plus the totals

@@ -43,4 +43,9 @@ struct LoadedImageData
 // Returns true if decoding succeeded and out is filled; false on failure or unsupported format.
 [[nodiscard]] bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog = 0);
 
+// The mean luminance (linear, Rec. 709) of an 8-bit image's texels, from a grid of at most 64 x 64 of
+// them; negative for a format it does not read (compressed, float). An emissive texture's weight as a
+// light (GltfShadeMaterial::emissiveLightScale).
+float imageMeanLuminance(VkFormat format, VkExtent2D size, const std::vector<char>& texels);
+
 }  // namespace nvvkgltf
