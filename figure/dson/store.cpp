@@ -117,10 +117,13 @@ int hexValue(char c)
   return -1;
 }
 
-// The process-wide cache of parsed .dsf files (src/lib/loaders/dson/parse.ts: `shared`).
+// The process-wide cache of parsed .dsf files (src/lib/loaders/dson/parse.ts: `shared`). Big
+// enough for a dressed figure's own files and a strand hair's (one is counted at ~400 MB: its text,
+// which is not kept, and its tables), so opening the scene again or putting the hair on another
+// figure does not read them again (0.5 s for a strand hair, 0.3 s for a Genesis 9 figure).
 struct SharedCache
 {
-  static constexpr size_t kLimit = size_t(256) << 20;
+  static constexpr size_t kLimit = size_t(1) << 30;
 
   std::mutex                                                                     mutex;
   std::list<std::string>                                                         lru;  // most recently used last
