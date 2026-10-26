@@ -3060,8 +3060,15 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       if(looks.shape)
       {
         fv::timing::Scope t("restore dials and pose, settled");
-        looks.shape();
-        target->fig->settle();
+        {
+          fv::timing::Scope ts("set", 5);
+          looks.shape();
+        }
+        {
+          fv::timing::Scope ts("settle (their files)", 5);
+          target->fig->settle();
+        }
+        fv::timing::Scope tp("pump (into the meshes)", 5);
         target->fig->pump();  // into the meshes and binds the build reads; the composition drains the rest
       }
       // the composition's attach takes the surfaces from the build
@@ -3691,6 +3698,9 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       return;
     std::vector<std::string>& problems = *problemList;
     fv::Figure&               fig      = *target->fig;
+    // each step that costs something is timed
+    std::optional<fv::timing::Scope> step;
+    step.emplace("restore: material presets", 5);
     if(args.contains("materialPresets") && args["materialPresets"].is_array())
       for(const Json& p : args["materialPresets"])
       {
@@ -3744,7 +3754,11 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         problems.push_back(std::string(key) + ": " + e.what());
       }
     };
+    step.reset();
+    step.emplace("restore: skin", 5);
     restoreChoice("skin", "the skin", &Impl::applySkin);
+    step.reset();
+    step.emplace("restore: eyes", 5);
     // the eyes chosen, over the presets and under the edits (an iris colour is an edit)
     if(args.contains("eyes") && (args["eyes"].is_string() || args["eyes"].is_null()))
     {
@@ -3762,7 +3776,11 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         problems.push_back(std::string("eyes: ") + e.what());
       }
     }
+    step.reset();
+    step.emplace("restore: makeup", 5);
     restoreChoice("makeup", "the makeup", &Impl::applyMakeup);
+    step.reset();
+    step.emplace("restore: item colours", 5);
     // each worn item's colour, over the presets and under the edits (a hair's recolour is an edit)
     for(const Json& w : args.value("worn", Json::array()))
     {
@@ -3784,9 +3802,13 @@ Json FvHost::Impl::sceneRestore(const Json& args)
             problems.push_back(i.label + ": " + e.what());
           }
     }
+    step.reset();
+    step.emplace("restore: edits", 5);
     if(prop->materials && args.contains("materials") && args["materials"].is_object())
       for(const std::string& p : prop->materials->restoreEdits(args["materials"]))
         problems.push_back(p);
+    step.reset();
+    step.emplace("restore: cloth", 5);
     // dForce on each item as the file set it; the items are worn by now
     bool clothChanged = false;
     for(const Json& w : args.value("worn", Json::array()))
