@@ -5,6 +5,7 @@
 #include <figure/materials/hair_strands.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -18,6 +19,9 @@ namespace fv::build {
 
 namespace {
 
+// The figure's buffer, laid out as views are asked for and filled at the end: a strand hair at SubD 2
+// makes it ~400 MB, and appending view by view zero-filled each and copied everything before it
+// again whenever the buffer grew, on one thread (0.18 s).
 class Writer
 {
 public:
@@ -26,18 +30,17 @@ public:
   {
     if(m_model.buffers.empty())
       m_model.buffers.emplace_back();
+    m_end = m_model.buffers[0].data.size();
   }
 
-  // A buffer view over `bytes`, aligned to 4; returns its index.
+  // A buffer view over `bytes`, aligned to 4; returns its index. The bytes are copied by flush(), so
+  // they stay where they are until then (keep() holds a temporary's).
   int view(const void* bytes, size_t size, int target, int stride = 0)
   {
-    auto& data = m_model.buffers[0].data;
-    while(data.size() % 4)
-      data.push_back(0);
-    const size_t offset = data.size();
-    data.resize(offset + size);
+    const size_t offset = (m_end + 3) & ~size_t(3);
+    m_end               = offset + size;
     if(size)
-      std::memcpy(data.data() + offset, bytes, size);
+      m_copies.push_back({offset, bytes, size});
     tinygltf::BufferView v;
     v.buffer     = 0;
     v.byteOffset = offset;
@@ -61,8 +64,50 @@ public:
     return int(m_model.accessors.size()) - 1;
   }
 
+  // Holds a temporary until flush(); its data.
+  template <class T>
+  const T* keep(std::vector<T> values)
+  {
+    auto held = std::make_shared<std::vector<T>>(std::move(values));
+    m_kept.push_back(held);
+    return held->data();
+  }
+
+  // The buffer at its size once (the padding zeros), and every view's bytes copied side by side.
+  void flush()
+  {
+    auto& data = m_model.buffers[0].data;
+    data.resize(m_end);
+    constexpr size_t kPiece = size_t(4) << 20;
+    struct Piece
+    {
+      unsigned char*       to;
+      const unsigned char* from;
+      size_t               size;
+    };
+    std::vector<Piece> pieces;
+    for(const Copy& c : m_copies)
+      for(size_t at = 0; at < c.size; at += kPiece)
+        pieces.push_back({data.data() + c.offset + at, static_cast<const unsigned char*>(c.from) + at, std::min(kPiece, c.size - at)});
+    jobs::parallelFor(pieces.size(), 1, [&](size_t begin, size_t end) {
+      for(size_t i = begin; i < end; i++)
+        std::memcpy(pieces[i].to, pieces[i].from, pieces[i].size);
+    });
+    m_copies.clear();
+    m_kept.clear();
+  }
+
 private:
-  tinygltf::Model& m_model;
+  struct Copy
+  {
+    size_t      offset;
+    const void* from;
+    size_t      size;
+  };
+  tinygltf::Model&                   m_model;
+  size_t                             m_end = 0;
+  std::vector<Copy>                  m_copies;
+  std::vector<std::shared_ptr<void>> m_kept;
 };
 
 // A mesh's drawn triangles: all of them, or without the polygons a worn item hides.
@@ -423,6 +468,29 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   // what the materials need from the meshes: the area an emitter spreads its flux over, and the
   // direction of hair strands, which is measured from the cards' UVs as the glTF carries them
   std::optional<timing::Scope> phase;
+  phase.emplace("drawn triangles and bounds");
+  // each mesh's drawn triangles (without what worn items hide) and position bounds, side by side;
+  // the emitters, the strand votes and the meshes below all read them
+  std::vector<std::unique_ptr<DrawnView>>      drawnOf(scene.meshes.size());
+  std::vector<std::array<double, 6>>           boundsOf(scene.meshes.size());
+  jobs::parallelFor(scene.meshes.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t mi = begin; mi < end; mi++)
+    {
+      if(!scene.meshes[mi].geo)
+        continue;
+      const mesh::BuiltMesh& geo = *scene.meshes[mi].geo;
+      drawnOf[mi]                = std::make_unique<DrawnView>(geo);
+      std::array<double, 6>& b   = boundsOf[mi];
+      b                          = {1e300, 1e300, 1e300, -1e300, -1e300, -1e300};
+      for(size_t v = 0, count = geo.position.size() / 3; v < count; v++)
+        for(int c = 0; c < 3; c++)
+        {
+          b[c]     = std::min(b[c], double(geo.position[v * 3 + c]));
+          b[c + 3] = std::max(b[c + 3], double(geo.position[v * 3 + c]));
+        }
+    }
+  });
+  phase.reset();
   phase.emplace("emitters and strand votes");
   const std::vector<Mat4> worlds = scene.worlds();
   std::vector<double>     emitArea(scene.materials.size(), 0.0);
@@ -442,7 +510,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     double s2 = 0;
     for(int c = 0; c < 3; c++)
       s2 = std::max(s2, w4.e[c * 4] * w4.e[c * 4] + w4.e[c * 4 + 1] * w4.e[c * 4 + 1] + w4.e[c * 4 + 2] * w4.e[c * 4 + 2]);
-    const DrawnView drawn(geo);
+    const DrawnView& drawn = *drawnOf[n.mesh];
     for(const mesh::Group& group : drawn.groups())
     {
       const int mi = group.materialIndex < int(m.materials.size()) ? m.materials[group.materialIndex] : -1;
@@ -572,26 +640,25 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     const Mesh&            m   = scene.meshes[n.mesh];
     const mesh::BuiltMesh& geo = *m.geo;
     const size_t           count = geo.position.size() / 3;
-    const DrawnView drawn(geo);
+    const DrawnView&       drawn = *drawnOf[n.mesh];
     if(!count || drawn.groups().empty())
       continue;
 
-    std::vector<double> min{1e300, 1e300, 1e300}, max{-1e300, -1e300, -1e300};
-    for(size_t v = 0; v < count; v++)
-      for(int c = 0; c < 3; c++)
-      {
-        min[c] = std::min(min[c], double(geo.position[v * 3 + c]));
-        max[c] = std::max(max[c], double(geo.position[v * 3 + c]));
-      }
+    const std::array<double, 6>& b = boundsOf[n.mesh];
+    const std::vector<double>    min{b[0], b[1], b[2]}, max{b[3], b[4], b[5]};
     const int position = w.accessor(w.view(geo.position.data(), geo.position.size() * 4, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_FLOAT,
                                      count, TINYGLTF_TYPE_VEC3, min, max);
     const int normal = w.accessor(w.view(geo.normal.data(), geo.normal.size() * 4, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_FLOAT,
                                   count, TINYGLTF_TYPE_VEC3);
-    std::vector<float> uv = geo.uv;
+    const float* uv = geo.uv.data();
     if(!options.texturesFlipped)
+    {
+      std::vector<float> flipped = geo.uv;
       for(size_t v = 0; v < count; v++)
-        uv[v * 2 + 1] = 1 - uv[v * 2 + 1];
-    const int texcoord = w.accessor(w.view(uv.data(), uv.size() * 4, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_FLOAT, count, TINYGLTF_TYPE_VEC2);
+        flipped[v * 2 + 1] = 1 - flipped[v * 2 + 1];
+      uv = w.keep(std::move(flipped));
+    }
+    const int texcoord = w.accessor(w.view(uv, geo.uv.size() * 4, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_FLOAT, count, TINYGLTF_TYPE_VEC2);
     int joints = -1, weights = -1;
     if(m.skinned() && m.skin.skinIndex.size() == count * 4)
     {
@@ -610,9 +677,9 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       tinygltf::Primitive p;
       if(count <= 65535)
       {
-        std::vector<uint16_t> idx(first, first + group.count);
-        p.indices = w.accessor(w.view(idx.data(), idx.size() * 2, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT,
-                               idx.size(), TINYGLTF_TYPE_SCALAR);
+        const uint16_t* idx = w.keep(std::vector<uint16_t>(first, first + group.count));
+        p.indices = w.accessor(w.view(idx, size_t(group.count) * 2, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT,
+                               group.count, TINYGLTF_TYPE_SCALAR);
       }
       else
         p.indices = w.accessor(w.view(first, size_t(group.count) * 4, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT,
@@ -639,13 +706,17 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       tinygltf::Skin     skin;
       for(int bone : m.bones)
         skin.joints.push_back(out.nodeOf[bone]);
-      const std::vector<float> ibm = inverseBindMatrices(m);
-      skin.inverseBindMatrices = w.accessor(w.view(ibm.data(), ibm.size() * 4, 0), TINYGLTF_COMPONENT_TYPE_FLOAT, m.bones.size(), TINYGLTF_TYPE_MAT4);
+      std::vector<float> ibm  = inverseBindMatrices(m);
+      const size_t       size = ibm.size() * 4;
+      skin.inverseBindMatrices = w.accessor(w.view(w.keep(std::move(ibm)), size, 0), TINYGLTF_COMPONENT_TYPE_FLOAT, m.bones.size(), TINYGLTF_TYPE_MAT4);
       model.skins.push_back(std::move(skin));
       model.nodes[out.nodeOf[i]].skin = int(model.skins.size()) - 1;
       out.skinOf[n.mesh]              = int(model.skins.size()) - 1;
     }
   }
+  phase.reset();
+  phase.emplace("buffer");
+  w.flush();
   model.buffers[0].name = "figure";
   out.textureOf         = std::move(textureOf);
   return out;

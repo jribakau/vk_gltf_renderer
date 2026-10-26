@@ -13,6 +13,7 @@
 
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
+#include <figure/gltf/gltf_check.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/wardrobe/bind.hpp>
@@ -433,6 +434,41 @@ TEST(Fit, ARigidPlanMovesABoneToTheLeadersJointAndTurnsItOntoItsLimb)
   const auto moved = rigidPositions(knee, skin, {&r});
   EXPECT_NEAR(moved[0], 10, 0.5f);
   EXPECT_NEAR(moved[1], 60, 0.5f);
+}
+
+// The glTF holds each mesh's own bytes: a mesh past 16-bit indices with polygons a worn item hides,
+// a small one beside it, both with UVs flipped and as they are, every view apart and the gaps zero.
+TEST(Wardrobe, TheBuiltGltfHoldsTheScenesMeshes)
+{
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  scene.materials.resize(2);
+  for(int n : {300, 4})
+  {
+    fv::Mesh m;
+    m.geo       = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(n, float(n))));
+    m.materials = {n == 300 ? 0 : 1};
+    if(n == 300)
+      m.geo->hiddenPolys["w1"] = {0, 1, 2, 500, 89999};
+    scene.meshes.push_back(m);
+    fv::Node node;
+    node.kind = fv::NodeKind::eMesh;
+    node.mesh = int(scene.meshes.size()) - 1;
+    scene.add(node, root);
+  }
+  ASSERT_GT(scene.meshes[0].geo->position.size() / 3, 65535u);
+  for(bool flipped : {false, true})
+  {
+    fv::build::BuildOptions options;
+    options.texturesFlipped = flipped;
+    const auto built        = fv::build::buildGltf(scene, root, options);
+    EXPECT_EQ(built.model.meshes.size(), 2u);
+    for(const std::string& p : fv::build::checkBuild(scene, built, options))
+      ADD_FAILURE() << p << (flipped ? " (flipped)" : "");
+    // and the hidden polygons' triangles are not drawn
+    EXPECT_LT(built.model.accessors[size_t(built.model.meshes[size_t(built.meshOf[0])].primitives[0].indices)].count,
+              scene.meshes[0].geo->fullIndex.size());
+  }
 }
 
 TEST(Wardrobe, LightUnderTheSkinPassesThroughWhatIsWornButNotWhatBoundsTheBody)

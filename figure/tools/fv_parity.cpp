@@ -44,6 +44,7 @@
 #include <figure/dson/material_preset.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
+#include <figure/gltf/gltf_check.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -782,6 +783,54 @@ int main(int argc, char** argv)
             if(const auto& a = built.lowering[mi].anisotropyRotation)
               std::cerr << " " << loaded->loaded.scene.materials[mi].name << "=" << std::setprecision(6) << *a;
           std::cerr << std::defaultfloat << "\n";
+          // the glTF's bytes and how they are cut up, to compare builds by: FNV-1a over the buffer,
+          // then over each view, accessor, primitive and skin
+          uint64_t   h    = 1469598103934665603ull;
+          const auto bytes = [&h](const void* p, size_t n) {
+            for(size_t i = 0; i < n; i++)
+              h = (h ^ static_cast<const unsigned char*>(p)[i]) * 1099511628211ull;
+          };
+          const auto num = [&](double v) { bytes(&v, sizeof v); };
+          const tinygltf::Model& gm = built.model;
+          for(const auto& b : gm.buffers)
+            bytes(b.data.data(), b.data.size());
+          const uint64_t bufferHash = h;
+          for(const auto& v : gm.bufferViews)
+            for(double x : {double(v.buffer), double(v.byteOffset), double(v.byteLength), double(v.byteStride), double(v.target)})
+              num(x);
+          for(const auto& a : gm.accessors)
+          {
+            for(double x : {double(a.bufferView), double(a.byteOffset), double(a.componentType), double(a.count), double(a.type)})
+              num(x);
+            for(double x : a.minValues)
+              num(x);
+            for(double x : a.maxValues)
+              num(x);
+          }
+          for(const auto& m : gm.meshes)
+            for(const auto& p : m.primitives)
+            {
+              for(const auto& [name, accessor] : p.attributes)
+              {
+                bytes(name.data(), name.size());
+                num(accessor);
+              }
+              num(p.indices);
+              num(p.material);
+            }
+          for(const auto& s : gm.skins)
+          {
+            num(s.inverseBindMatrices);
+            for(int j : s.joints)
+              num(j);
+          }
+          std::cerr << "glTF " << gm.buffers.front().data.size() << " bytes, " << gm.bufferViews.size() << " views, " << gm.accessors.size()
+                    << " accessors, hash " << std::hex << h << " (buffer " << bufferHash << ")" << std::dec << "\n";
+          // what it holds, read back against the scene (a hash differs from run to run with the figure)
+          const auto problems = fv::build::checkBuild(loaded->loaded.scene, built, {});
+          std::cerr << "glTF check: " << (problems.empty() ? "the scene's own bytes" : std::to_string(problems.size()) + " problems") << "\n";
+          for(const std::string& p : problems)
+            std::cerr << "  " << p << "\n";
         }
       }
       const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stepStart).count();

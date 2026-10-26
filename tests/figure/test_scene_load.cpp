@@ -15,6 +15,7 @@
 #include <figure/dson/figure_loader.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/gltf/gltf_build.hpp>
+#include <figure/gltf/gltf_check.hpp>
 
 namespace {
 
@@ -300,4 +301,18 @@ TEST(SceneLoad, MeshesBuiltAheadAreTheOnesTheLoadBuilds)
   EXPECT_EQ(fv::dson::earlyMeshesTaken(), before);
   ASSERT_EQ(level1.scene.meshes.size(), want.scene.meshes.size());
   EXPECT_EQ(level1.scene.meshes[0].geo->position, want.scene.meshes[0].geo->position);
+}
+
+// A skinned figure built into glTF holds its meshes, skins and inverse binds as the scene has them.
+TEST(SceneLoad, TheBuiltGltfHoldsTheFiguresMeshesAndSkins)
+{
+  const fs::path        root = fs::path(FV_TEST_DATA) / "daz-library";
+  fv::dson::Store       store(std::make_shared<fv::dson::Library>(std::vector<fs::path>{root}));
+  fv::dson::LoadOptions options;
+  options.subdivision = 1;
+  const auto r        = fv::dson::loadDson(store, "People/Test/Box Figure.duf", options);
+  const auto built    = fv::build::buildGltf(r.scene, r.root, {});
+  EXPECT_FALSE(built.model.skins.empty());
+  for(const std::string& p : fv::build::checkBuild(r.scene, built, {}))
+    ADD_FAILURE() << p;
 }
