@@ -26,6 +26,7 @@
 // `--benchmark-env-pipeline` mode runs on the GPU; it pins the *algorithm*, not its use.
 
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -200,4 +201,137 @@ TEST(AliasTable, ZeroImportanceProducesFallbackIntegral)
     EXPECT_FLOAT_EQ(accel[i].q, 0.0F);
     EXPECT_EQ(accel[i].alias, static_cast<uint32_t>(i));
   }
+}
+
+//--------------------------------------------------------------------------------------------------
+// nvvk::buildCompensatedEnvAliasmap: the environment's table for light samples a BSDF sample is
+// weighed against (MIS compensation)
+//--------------------------------------------------------------------------------------------------
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+
+// The sampler's cell solid angles for a `width` x `height` lat-long grid
+std::vector<double> cellSolidAngles(uint32_t width, uint32_t height)
+{
+  std::vector<double> area(size_t(width) * height);
+  for(uint32_t y = 0; y < height; ++y)
+    for(uint32_t x = 0; x < width; ++x)
+      area[y * width + x] = (std::cos(y * kPi / height) - std::cos((y + 1) * kPi / height)) * 2.0 * kPi / width;
+  return area;
+}
+
+// Importance (radiance times solid angle, as HdrIbl feeds it) of a dim sky with a few bright cells
+std::vector<float> skyWithSuns(uint32_t width, uint32_t height, const std::vector<double>& area, uint32_t seed)
+{
+  std::mt19937                          rng(seed);
+  std::uniform_real_distribution<float> dist(0.5F, 1.5F);
+  std::vector<float>                    importance(area.size());
+  for(size_t i = 0; i < area.size(); ++i)
+    importance[i] = float(dist(rng) * area[i]);
+  for(int k = 0; k < 5; ++k)
+    importance[rng() % area.size()] *= 40.0F;
+  return importance;
+}
+
+double powerWeight(double a, double b)
+{
+  return b > 0.0 ? a * a / (a * a + b * b) : 1.0;
+}
+
+}  // namespace
+
+// The pdf integrates to one over the sphere, is 0 where the radiance is below the sphere's mean
+// and in proportion to the excess above it elsewhere, and the alias method picks cells by it.
+TEST(CompensatedAliasTable, ThePdfIsTheExcessOverTheMean)
+{
+  const uint32_t                    W = 16, H = 8;
+  const std::vector<double>         area       = cellSolidAngles(W, H);
+  const std::vector<float>          importance = skyWithSuns(W, H, area, 3);
+  std::vector<shaderio::EnvCompensatedCell> cells(area.size());
+  nvvk::buildCompensatedEnvAliasmap(importance, W, H, cells);
+
+  double total = 0.0;
+  for(float v : importance)
+    total += v;
+  const double mean = total / (4.0 * kPi);
+
+  double integral = 0.0, ratio = -1.0;
+  int    zeros    = 0;
+  for(size_t i = 0; i < cells.size(); ++i)
+  {
+    integral += cells[i].pdf * area[i];
+    const double excess = importance[i] / area[i] - mean;
+    if(excess <= 0.0)
+    {
+      EXPECT_EQ(cells[i].pdf, 0.0F) << i;
+      zeros++;
+    }
+    else
+    {
+      if(ratio < 0.0)
+        ratio = cells[i].pdf / excess;
+      EXPECT_NEAR(cells[i].pdf / excess, ratio, ratio * 1e-3) << i;
+    }
+  }
+  EXPECT_NEAR(integral, 1.0, 1e-4);
+  EXPECT_GT(zeros, int(cells.size()) / 4);
+
+  std::vector<shaderio::EnvAccel> accel(cells.size());
+  for(size_t i = 0; i < cells.size(); ++i)
+    accel[i] = {.alias = cells[i].alias, .q = cells[i].q};
+  const std::vector<double> picked = computeSamplingDistribution(accel);
+  for(size_t i = 0; i < cells.size(); ++i)
+    EXPECT_NEAR(picked[i], cells[i].pdf * area[i], 1e-4) << i;
+}
+
+// A uniform environment has no excess: it keeps the full distribution, 1 / 4pi everywhere.
+TEST(CompensatedAliasTable, AUniformEnvironmentKeepsTheFullOne)
+{
+  const uint32_t                            W = 16, H = 8;
+  const std::vector<double>                 area = cellSolidAngles(W, H);
+  std::vector<float>                        importance(area.size());
+  for(size_t i = 0; i < area.size(); ++i)
+    importance[i] = float(2.0 * area[i]);
+  std::vector<shaderio::EnvCompensatedCell> cells(area.size());
+  nvvk::buildCompensatedEnvAliasmap(importance, W, H, cells);
+  for(const auto& c : cells)
+    EXPECT_NEAR(c.pdf, 1.0 / (4.0 * kPi), 1e-5);
+}
+
+// A furnace of the MIS it is for: light samples from the compensated table and uniform "BSDF"
+// samples over the sphere, power-weighted against each other, estimate the environment's integral
+// without bias -- where the table gives a cell nothing, the BSDF sample carries it alone.
+TEST(CompensatedAliasTable, MisWithTheBsdfSampleIsUnbiased)
+{
+  const uint32_t                            W = 16, H = 8;
+  const std::vector<double>                 area       = cellSolidAngles(W, H);
+  const std::vector<float>                  importance = skyWithSuns(W, H, area, 9);
+  std::vector<shaderio::EnvCompensatedCell> cells(area.size());
+  nvvk::buildCompensatedEnvAliasmap(importance, W, H, cells);
+
+  double exact = 0.0;
+  for(float v : importance)
+    exact += v;
+
+  std::mt19937                           rng(17);
+  std::uniform_real_distribution<double> u(0.0, 1.0);
+  std::discrete_distribution<size_t>     byArea(area.begin(), area.end());
+  const double                           bsdfPdf = 1.0 / (4.0 * kPi);
+  const int                              N       = 400000;
+  double                                 sum     = 0.0;
+  for(int s = 0; s < N; ++s)
+  {
+    // The light sample: the alias method as environmentSampleCompensated runs it
+    const size_t                       idx   = std::min(size_t(u(rng) * cells.size()), cells.size() - 1);
+    const shaderio::EnvCompensatedCell entry = cells[idx];
+    const size_t                       cell  = (u(rng) < entry.q) ? idx : entry.alias;
+    const double                       L     = importance[cell] / area[cell];
+    if(cells[cell].pdf > 0.0F)
+      sum += L / cells[cell].pdf * powerWeight(cells[cell].pdf, bsdfPdf);
+    // The BSDF sample: uniform over the sphere
+    const size_t b = byArea(rng);
+    sum += importance[b] / area[b] / bsdfPdf * powerWeight(bsdfPdf, cells[b].pdf);
+  }
+  EXPECT_NEAR(sum / N / exact, 1.0, 0.01);
 }

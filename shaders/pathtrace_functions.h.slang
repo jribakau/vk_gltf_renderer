@@ -737,13 +737,19 @@ float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float3 rad
 //
 // `directLight.pick` is what the pick gave each light a BSDF ray can also reach, which that ray's MIS
 // weight needs on the next bounce.
+//
+// `compensatedEnv`: a BSDF sample of this vertex is traced and weighed against this one, so the
+// environment is sampled from the MIS-compensated table (EnvCompensatedCell): its bright part, the
+// even rest left to the BSDF sample. Every other caller -- the last vertex, a volume scatter, the
+// shadow catcher -- has no such partner and samples the whole environment.
 void sampleLights(in float3       pos,
                   float3          normal,
                   in float3       worldRayDirection,
                   inout uint      seed,
                   out DirectLight directLight,
                   in bool         isVolumeSample      = false,
-                  in bool         lightsFromBothSides = false)
+                  in bool         lightsFromBothSides = false,
+                  in bool         compensatedEnv      = false)
 {
   directLight.direction       = float3(0.0f, 0.0f, 1.0f);
   directLight.pdf             = 0.0f;
@@ -785,8 +791,12 @@ void sampleLights(in float3       pos,
     float3 rand_val = float3(rand(seed), rand(seed), rand(seed));
     // The alias table may be coarser than the image (a baked sky), so sample on its own grid.
     const uint2 samplingGrid = uint2(pushConst.frameInfo->envSamplingGridWidth, pushConst.frameInfo->envSamplingGridHeight);
-    float4 radiance_pdf =
-        environmentSample(texturesHdr[HDR_IMAGE_INDEX], envSamplingData, samplingGrid, rand_val, directLight.direction);
+    float4 radiance_pdf;
+    if(compensatedEnv)
+      radiance_pdf.xyz = environmentSampleCompensated(texturesHdr[HDR_IMAGE_INDEX], envSamplingCompensated, samplingGrid,
+                                                      rand_val, directLight.direction, radiance_pdf.w);
+    else
+      radiance_pdf = environmentSample(texturesHdr[HDR_IMAGE_INDEX], envSamplingData, samplingGrid, rand_val, directLight.direction);
     const float envPdf = radiance_pdf.w;
     if(envPdf > 0.0)
     {
@@ -865,6 +875,15 @@ void sampleEnvironment(float3 direction, SceneFrameInfo* frameInfo, out float3 e
 
 // MIS weight for a BSDF ray that escaped to the environment, against the environment sample the
 // vertex it left drew with probability `pick.env`.
+// The compensated table's pdf (sampleLights' `compensatedEnv`) of world direction `direction`.
+float environmentCompensatedPdfAt(float3 direction, SceneFrameInfo* frameInfo)
+{
+  if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseNoEnvironment))
+    return 0.0F;
+  const uint2 samplingGrid = uint2(frameInfo->envSamplingGridWidth, frameInfo->envSamplingGridHeight);
+  return environmentCompensatedPdf(envSamplingCompensated, samplingGrid, quatRotateInverse(frameInfo->envRotation, direction));
+}
+
 float computeEnvHitMisWeight(float lastSamplePdf, float envPdf, LightPick pick)
 {
   if(lastSamplePdf == DIRAC)

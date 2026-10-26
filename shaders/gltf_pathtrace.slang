@@ -94,6 +94,8 @@ static bool doDebug = false;
 
 // HDR Environment
 [[vk::binding(EnvBindings::eImpSamples, 2)]]    StructuredBuffer<EnvAccel> envSamplingData;
+// The MIS-compensated table, for light samples a BSDF sample of the same vertex is weighed against
+[[vk::binding(EnvBindings::eImpSamplesCompensated, 2)]] StructuredBuffer<EnvCompensatedCell> envSamplingCompensated;
 
 // Set 3 is SkyBruneton's runtime set -- the four scattering LUTs and the atmosphere they were
 // built from -- bound for aerial perspective alone. The bake reads the same set at index 1 of its
@@ -234,6 +236,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // The lighting field: the baked image for a sky, the file for an HDR.
         sampleEnvironment(ray.Direction, frameInfo, envColor, envPdf);
+        // The vertex this ray left drew its environment sample from the compensated table: it
+        // traced this ray (sampleLights' `compensatedEnv`)
+        envPdf = environmentCompensatedPdfAt(ray.Direction, frameInfo);
       }
 
       // We may hit the environment twice: once via sampleLights() and once when hitting the sky while probing
@@ -629,11 +634,14 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
 
     DirectLight directLight;
+    // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
+    // have no BSDF-sampled partner: weight 1, as for a punctual light, and the full environment table.
+    const bool lastVertex = pt.surfaceDepth + 1 >= pushConst.maxDepth;
     // The normal only culls directional lights below the surface (singleLightContribution). Give it
     // the one bounce.nextEventValid tests, so NEE and the BSDF side (R4) agree on which directions
     // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
     sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
-                 /*lightsFromBothSides=*/bothSides);
+                 /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex);
     // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
     pt.lightPick = directLight.pick;
 
@@ -670,10 +678,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Some lobe can scatter toward the light (in every mode): the shadow ray is worth tracing
       if(evalData.pdf > 0.0)
       {
-        // Weight for combining light and BSDF sampling strategies (Multiple Importance Sampling).
-        // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
-        // have no BSDF-sampled partner: weight 1, as for a punctual light.
-        const bool  lastVertex = pt.surfaceDepth + 1 >= pushConst.maxDepth;
+        // Weight for combining light and BSDF sampling strategies (Multiple Importance Sampling);
+        // 1 at the last vertex (above).
         const float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(directLight.pdf, evalData.pdf);
 
         // sample weight
