@@ -44,6 +44,67 @@ float3 sampleSphereCone(float3 center, float radius, float3 pos, float u1, float
   return normalize(t * (std::cos(2.0f * kPi * u1) * s) + b * (std::sin(2.0f * kPi * u1) * s) + w * z);
 }
 
+// A direction uniform over the cone of `oneMinusCos` around unit `axis`, and the cone's pdf.
+float3 sampleCone(float3 axis, float oneMinusCos, float u1, float u2)
+{
+  const float  z = 1.0f - u2 * oneMinusCos;
+  const float  s = std::sqrt(std::max(1.0f - z * z, 0.0f));
+  const float3 a = std::abs(axis.x) > 0.5f ? float3(0, 1, 0) : float3(1, 0, 0);
+  const float3 t = normalize(cross(a, axis));
+  const float3 b = cross(axis, t);
+  return normalize(t * (std::cos(2.0f * kPi * u1) * s) + b * (std::sin(2.0f * kPi * u1) * s) + axis * z);
+}
+
+float conePdf(float oneMinusCos)
+{
+  return 1.0f / (2.0f * kPi * oneMinusCos);
+}
+
+// A BSDF-like sampler: the cosine lobe about +y, or (`lobeOmc` > 0) a cone of that size about
+// `lobeAxis` -- a glossy lobe narrow enough to see a light's disc in.
+struct TestLobe
+{
+  float3 lobeAxis;
+  float  lobeOmc;  // 0: cosine-weighted hemisphere
+
+  float3 sample(float u1, float u2) const
+  {
+    if(lobeOmc > 0.0f)
+      return sampleCone(lobeAxis, lobeOmc, u1, u2);
+    const float r = std::sqrt(u2), phi = 2.0f * kPi * u1;
+    return float3(r * std::cos(phi), std::sqrt(std::max(1.0f - u2, 0.0f)), r * std::sin(phi));
+  }
+  float pdf(float3 dir) const
+  {
+    if(lobeOmc > 0.0f)
+      return (dot(dir, lobeAxis) >= 1.0f - lobeOmc) ? conePdf(lobeOmc) : 0.0f;
+    return std::max(dir.y, 0.0f) / kPi;
+  }
+};
+
+// The cosine-weighted radiance of a light of radiance 1 at the origin (normal +y), as the path
+// tracer's two techniques estimate it together: the light's cone sample, and the lobe's sample that
+// hits the light (`hits`), each weighed by the power heuristic against the other's pdf.
+template <typename Hits>
+double misIrradiance(float3 lightAxis, float lightOmc, const TestLobe& lobe, Hits hits, int n, unsigned seed)
+{
+  std::mt19937                          rng(seed);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const float                           pl  = conePdf(lightOmc);
+  double                                sum = 0.0;
+  for(int i = 0; i < n; i++)
+  {
+    const float3 l = sampleCone(lightAxis, lightOmc, u(rng), u(rng));
+    if(l.y > 0.0f)
+      sum += l.y / pl * misPowerWeight(pl, lobe.pdf(l));
+    const float3 b  = lobe.sample(u(rng), u(rng));
+    const float  pb = lobe.pdf(b);
+    if(b.y > 0.0f && pb > 0.0f && hits(b))
+      sum += b.y / pb * misPowerWeight(pb, pl);
+  }
+  return sum / n;
+}
+
 }  // namespace
 
 // A small light gives intensity over distance squared, a sphere far away the same, and the range
@@ -241,4 +302,59 @@ TEST(LightPick, PowerHeuristicWeightsSumToOne)
     }
   EXPECT_NEAR(misPowerWeight(3.0f, 1.0f), 0.9f, 1e-6f);
   EXPECT_EQ(misPowerWeight(2.0f, 0.0f), 1.0f);
+}
+
+// A sphere light's cone sample and a BSDF ray that hits the sphere, weighed against each other, give
+// its irradiance once: through a cosine lobe, and through a narrow one off the light's centre that
+// catches part of it (the cornea's case). The hit test and the cone the sample draws from agree.
+TEST(LightPick, ASphereSampleAndItsBsdfHitsGiveItOnce)
+{
+  const float3 pos(0), center(0.3f, 2.0f, 0.1f);
+  const float  radius   = 0.25f;
+  const float  omc      = sizedLightOneMinusCos(false, center, radius, 0.0f, pos);
+  const float3 axis     = normalize(center - pos);
+  const float  sin2     = radius * radius / dot(center, center);
+  const double expected = kPi * sin2 * axis.y;  // a sphere wholly above the horizon: pi L sin^2 cos
+  const auto   hits     = [&](float3 d) { return sphereLightHitDistance(pos, d, center, radius, 1e30f) >= 0.0f; };
+
+  const TestLobe cosine{float3(0, 1, 0), 0.0f};
+  EXPECT_NEAR(misIrradiance(axis, omc, cosine, hits, 400000, 1) / expected, 1.0, 0.01);
+
+  // A cone the light's size, a light's radius off its centre: they overlap by about half
+  const float3   off    = normalize(center + float3(radius, 0, 0) - pos);
+  const TestLobe narrow{off, omc};
+  EXPECT_NEAR(misIrradiance(axis, omc, narrow, hits, 400000, 2) / expected, 1.0, 0.01);
+
+  // The hit is the near side, and nothing past tMax or from inside counts
+  EXPECT_NEAR(sphereLightHitDistance(pos, axis, center, radius, 1e30f), length(center) - radius, 1e-5f);
+  EXPECT_LT(sphereLightHitDistance(pos, axis, center, radius, 1.0f), 0.0f);
+  EXPECT_LT(sphereLightHitDistance(center, axis, center, radius, 1e30f), 0.0f);
+  EXPECT_LT(sphereLightHitDistance(pos, -axis, center, radius, 1e30f), 0.0f);
+}
+
+// The same for a directional light's disc, a soft sun of 6 degrees at 40 degrees from the zenith, and
+// a far, small one, whose disc the sine test still finds where 1 - cos would round away.
+TEST(LightPick, ASunDiscSampleAndItsBsdfHitsGiveItOnce)
+{
+  const float  elevation = 50.0f * kPi / 180.0f;
+  const float3 lightDir  = -float3(std::cos(elevation), std::sin(elevation), 0.0f);  // travelling down
+  const float  size      = 6.0f * kPi / 180.0f;
+  const float  omc       = sizedLightOneMinusCos(true, float3(0), 0.0f, size, float3(0));
+  EXPECT_NEAR(omc, 1.0f - std::cos(0.5f * size), 1e-3f * omc);
+  const float3 axis     = -lightDir;
+  const double expected = kPi * omc * (2.0f - omc) * axis.y;  // pi sin^2 of the half angle, tilted
+  const auto   hits     = [&](float3 d) { return directionalLightHit(d, lightDir, omc); };
+
+  const TestLobe cosine{float3(0, 1, 0), 0.0f};
+  EXPECT_NEAR(misIrradiance(axis, omc, cosine, hits, 1000000, 3) / expected, 1.0, 0.02);
+  const TestLobe narrow{sampleCone(axis, omc, 0.0f, 1.0f), omc};  // centred on the disc's rim
+  EXPECT_NEAR(misIrradiance(axis, omc, narrow, hits, 400000, 4) / expected, 1.0, 0.01);
+
+  // The real sun, 0.53 degrees: on its disc a hair inside the rim, off it a hair outside
+  const float  sunOmc = sizedLightOneMinusCos(true, float3(0), 0.0f, 0.53f * kPi / 180.0f, float3(0));
+  const float3 inside = sampleCone(axis, sunOmc * 0.98f, 0.3f, 1.0f);
+  const float3 beyond = sampleCone(axis, sunOmc * 1.02f, 0.3f, 1.0f);
+  EXPECT_TRUE(directionalLightHit(inside, lightDir, sunOmc));
+  EXPECT_FALSE(directionalLightHit(beyond, lightDir, sunOmc));
+  EXPECT_FALSE(directionalLightHit(lightDir, lightDir, sunOmc));
 }

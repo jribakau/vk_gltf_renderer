@@ -31,6 +31,55 @@ float sphereLightSampleDistance(float3 pos, float3 direction, float3 center, flo
   return max(t, 0.0F) * (1.0F - 1e-4F);
 }
 
+// A sized light: a point or spot light with a sphere's radius, or a directional one with a disc.
+// Next-event estimation samples the cone it subtends uniformly (singleLightContribution), and a BSDF
+// ray can hit it, so the two are weighed against each other. These are both halves' geometry.
+
+// 1 - cos of the half angle of the cone a sized light subtends from `pos`, as singleLightContribution
+// computes it: a sphere of `radius` at `center` (a point inside sees the hemisphere), or with
+// `directional`, a disc `angularSize` radians across. 0 for a light with no size.
+float sizedLightOneMinusCos(bool directional, float3 center, float radius, float angularSize, float3 pos)
+{
+  if(directional)
+  {
+    const float a2 = angularSize * angularSize;
+    return (0.125F - a2 / 384.0F) * a2;
+  }
+  if(!(radius > 0.0F))
+    return 0.0F;
+  const float3 toCenter = center - pos;
+  const float  d2       = dot(toCenter, toCenter);
+  const float  sin2     = (d2 > 0.0F) ? min(radius * radius / d2, 1.0F) : 1.0F;
+  return sin2 / (1.0F + sqrt(1.0F - sin2));
+}
+
+// Where a ray from `origin` along unit `direction` enters the sphere at `center`, if before `tMax`;
+// -1 otherwise, and for an origin inside it (that point's light sample has no ray to compete with).
+float sphereLightHitDistance(float3 origin, float3 direction, float3 center, float radius, float tMax)
+{
+  const float3 toCenter = center - origin;
+  const float  along    = dot(direction, toCenter);
+  const float  r2       = radius * radius;
+  if(along <= 0.0F || dot(toCenter, toCenter) <= r2)
+    return -1.0F;
+  const float3 across = toCenter - direction * along;  // not d^2 - along^2: that cancels for a far light
+  const float  h2     = r2 - dot(across, across);
+  if(h2 < 0.0F)
+    return -1.0F;
+  const float t = along - sqrt(h2);
+  return (t < tMax) ? t : -1.0F;
+}
+
+// A ray along unit `direction` meets the disc of a directional light travelling along `lightDir`,
+// whose cone has `oneMinusCos`. By the sine, which keeps a disc of a few arc minutes apart from cos 1.
+bool directionalLightHit(float3 direction, float3 lightDir, float oneMinusCos)
+{
+  if(dot(direction, lightDir) >= 0.0F)
+    return false;
+  const float3 c = cross(direction, lightDir);
+  return dot(c, c) <= oneMinusCos * (2.0F - oneMinusCos);
+}
+
 // A directional light travelling along `lightDir`, or a point or spot light at `lightPos` of radius
 // `radius` aiming along `lightDir`. `power`: the largest channel of colour times intensity;
 // `invRange`: 1 / the KHR_lights_punctual range, 0 for none; the spot's cone in radians.

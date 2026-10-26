@@ -179,6 +179,9 @@ public:
   // Path regularisation (ePtRegularize): 0 never, 1 on DLSS frames, 2 always. The still has the indirect
   // clamp and the denoiser; regularising it blurred smooth objects in glossy floors and the eyes' corneas.
   int m_regularize{1};
+  // Camera rays see sized lights (ePtLightsVisible). Off: a prop sphere lights and shows in reflections,
+  // but is not a ball in the frame.
+  bool m_lightsVisible{false};
   // Fibre events before they count as surface bounces (PathtracePushConstant::hairBudget): the still's,
   // and the DLSS frames', fewer, since white hair keeps its energy through every one.
   int m_hairBounces{16};

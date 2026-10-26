@@ -394,6 +394,14 @@ Some things about the transport are worth knowing before touching it:
   pick, and an emitter it reaches converts its pdf by the summed distance (`nullDistance`). The
   light behind glass is then counted once, as that vertex's shadow ray or its BSDF ray. A rough or
   scattering surface blocks shadow rays, and the BSDF ray that reaches a light behind it has weight 1.
+- A **sized light** (a point or spot light with a radius, a directional one with a disc, the sky's
+  own sun aside) is reached by both techniques: `sampleLights()` draws its cone with a real pdf, and
+  `sizedLightHits()` tests each path segment against the spheres (and, on escape, the discs),
+  weighed against the light pick of the vertex the ray left. `LightPick` keeps that vertex and its
+  cull normal, and `sizedLightNeePdf()` redoes its pick for the light that was hit. The radiance is
+  the light sample's own (irradiance over the cone, a spot's falloff along the axis), so the two
+  estimate the same light. A volume scatter's light sample stays `DIRAC`, and nothing is gathered in
+  a medium or on a walk's way out. Camera rays see the lights only with `ePtLightsVisible`.
 - Path regularisation (later lobes at least as rough as the roughest material so far) runs only
   where `ePtRegularize` is set (`ptRegularize`: DLSS frames by default), and never on a surface that
   refracts without scattering.

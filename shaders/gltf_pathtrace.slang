@@ -284,6 +284,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // The partner of the last vertex's light sample, so the same class: the path before that vertex
         const bool indirect = pt.prefixIndirect;
         addRadiance(pt, pt.throughput * misWeight * envColor, indirect);
+        // Sized lights it meets on the way out, a sun's disc among them (not in a medium: it scatters there)
+        if(!ptIsInside(pt))
+          addRadiance(pt, pt.throughput * sizedLightHits(ray, INFINITE, /*escaped=*/true, pt), indirect);
 
         // The sun the lighting field leaves out. Without it a lobe narrower than the disk -- smooth
         // glass, a polished mirror -- shows no sun at all, as NEE's cone samples almost never land in it.
@@ -310,6 +313,18 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
       if(volumeStep != PathStepResult.eOutOfVolume)
         return volumeStep;
+    }
+
+    // Sized lights before this hit, by this segment's own state: the medium rules below may leave
+    // the medium it ran through. Not from inside one, where the path scatters, nor on a walk's way
+    // out, whose light volume NEE gathered (as for an emitter, below).
+    {
+      bool walkExit = false;
+#if GLTF_USE_VOLUME
+      walkExit = pt.exitedVolumeWalk;
+#endif
+      if(!ptIsInside(pt) && !walkExit)
+        addRadiance(pt, pt.throughput * sizedLightHits(ray, payload.hitT, /*escaped=*/false, pt), pt.prefixIndirect);
     }
 
     GltfShadeMaterial* materials     = pushConst.gltfScene->materials;

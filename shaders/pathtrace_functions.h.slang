@@ -32,6 +32,10 @@ struct LightPick
   float env;       // the environment
   float sun;       // the sky's sun (0 without one, or below this vertex's horizon)
   float emissive;  // the emissive triangles together
+  // Where the pick was made, for a sized light's share there (sizedLightNeePdf): the vertex, and the
+  // normal it culled lights by (0: lit from both sides, nothing culled)
+  float3 pos;
+  float3 normal;
 };
 
 struct DirectLight
@@ -656,6 +660,8 @@ LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
   const int kinds = (hasEnv ? 1 : 0) + (s.lights > 0 ? 1 : 0);
   s.pick.emissive = (pushConst.gltfScene.numEmissiveTriangles > 0) ? 1.0F / float(1 + kinds) : 0.0F;
   s.restShare     = 1.0F - s.pick.emissive;
+  s.pick.pos      = pos;
+  s.pick.normal   = cull ? normal : float3(0.0F);
 
   if(s.uniform)
   {
@@ -946,12 +952,29 @@ void sampleLights(in float3       pos,
   if(light.type != LightType::eLightTypeDirectional && light.radius > 0.0F)
     directLight.distance = sphereLightSampleDistance(pos, directLight.direction, light.position, light.radius);
 
-  // DIRAC even for a sphere light sampled over a cone: no BSDF ray can reach it, so this is
-  // the only technique that produces its radiance and its MIS weight is 1. The sky's sun is
-  // the exception -- a BSDF ray that escapes onto its disk sees it -- so it carries a pdf, the
-  // same one skySunNeePdf() gives computeSkySunHitMisWeight() from `pick.sun`.
+  // A sized light's cone sample carries its pdf: a BSDF ray can hit the light too (sizedLightHits),
+  // weighed against this with sizedLightNeePdf. The sky's sun is the sky's disk, which a BSDF ray
+  // sees on escape: skySunNeePdf() gives computeSkySunHitMisWeight() the same pdf from `pick.sun`.
+  // A point is DIRAC: no BSDF ray reaches it, so this is its only technique, of weight 1. So is
+  // every light at a volume scatter, whose phase-sampled ray gathers no light (sizedLightHits).
   const float sunSolidAngle = (lightIndex == skySunPunctualIndex()) ? skySunSolidAngle(pushConst.frameInfo) : 0.0F;
-  directLight.pdf           = (sunSolidAngle > 0.0F) ? selectionPdf / sunSolidAngle : DIRAC;
+  if(sunSolidAngle > 0.0F)
+    directLight.pdf = selectionPdf / sunSolidAngle;
+  else if(contrib.pdf != DIRAC && !isVolumeSample)
+    directLight.pdf = selectionPdf * contrib.pdf;
+  else
+    directLight.pdf = DIRAC;
+}
+
+// The pdf with which sampleLights(), at the vertex `pick` was made at, draws a direction in the
+// cone of sized light `light`, of `oneMinusCos` from there: its share of the pick over the cone's
+// solid angle. 0 where that vertex's pick gave it nothing.
+float sizedLightNeePdf(LightPick pick, GltfLight light, float oneMinusCos)
+{
+  const bool         cull  = any(pick.normal != float3(0.0F));
+  const LightPickSet set   = lightPickSet(pick.pos, pick.normal, cull);
+  const float        share = punctualPickShare(set, set.uniform ? 1.0F : punctualPickEstimate(light, pick.pos, pick.normal, cull));
+  return set.restShare * share / (M_TWO_PI * max(oneMinusCos, 1e-10F));
 }
 
 void sampleEnvironment(float3 direction, SceneFrameInfo* frameInfo, out float3 envColor, out float envPdf)
@@ -1593,7 +1616,7 @@ struct PathTracerState
   float   lastSamplePdf = DIRAC;
   // What the last vertex's light pick gave the lights its BSDF ray can also reach, for that ray's MIS
   // weight. Read only when lastSamplePdf is not DIRAC, so only after a vertex that sampled the lights.
-  LightPick lightPick    = {0.0F, 0.0F, 0.0F};
+  LightPick lightPick    = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F)};
   float2  maxRoughness  = float2(0.0);
   // How rough the path's scattering has been (perceptual roughness, 0..1): the largest of the lobes
   // it sampled, a diffuse one and a scattering walk counting as 1 (Unreal's path roughness). It decides
@@ -1708,6 +1731,54 @@ bool ptIsInside(PathTracerState pt)
 #else
   return false;
 #endif
+}
+
+// The light a path's ray meets on sized lights before `tMax` (with `escaped`, the discs of
+// directional ones too), each weighed against the light sample of the vertex the ray left. Without
+// it the cone samples were their only technique, and they almost never land in a smooth lobe: a
+// cornea, wet lips or chrome never showed the key. The sky's sun is the sky's disk, not this.
+//
+// The radiance is what the light sample carries from that vertex -- singleLightContribution's
+// irradiance over the cone's solid angle, a spot's falloff and an IES profile read along the cone's
+// axis -- so both techniques estimate the same light. After a delta event (no light sample to weigh
+// against) the vertex is the ray's origin. A camera ray sees the lights with ePtLightsVisible only.
+float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt)
+{
+  bool cameraRay = pt.surfaceDepth == 0;
+#if GLTF_USE_HAIR
+  cameraRay = cameraRay && pt.hairBounces == 0;
+#endif
+  if(cameraRay && !hasFlag(pushConst.flags, PathtracerFlags::ePtLightsVisible))
+    return float3(0.0F);
+  const bool   delta    = pt.lastSamplePdf == DIRAC;
+  const float3 vertex   = delta ? ray.Origin : pt.lightPick.pos;
+  const int    sunIndex = skySunPunctualIndex();
+  float3       sum      = float3(0.0F);
+  for(int i = 0; i < punctualLightCount(); i++)
+  {
+    const GltfLight light = getPunctualLight(i);
+    if(i == sunIndex || !(light.intensity > 0.0F))
+      continue;
+    const bool directional = light.type == LightType::eLightTypeDirectional;
+    if(directional && !escaped)
+      continue;
+    const float omc = sizedLightOneMinusCos(directional, light.position, light.radius, light.angularSizeOrInvRange, vertex);
+    if(!(omc > 0.0F))
+      continue;
+    const bool hit = directional ? directionalLightHit(ray.Direction, light.direction, omc) :
+                                   sphereLightHitDistance(ray.Origin, ray.Direction, light.position, light.radius, tMax) >= 0.0F;
+    if(!hit)
+      continue;
+    // Facing the light, so nothing is culled: the light sample's own test was its pick's
+    const float3 toLight = directional ? -light.direction : normalize(light.position - vertex);
+    LightContrib contrib = singleLightContribution(light, vertex, toLight, float2(0.0F));
+    if(all(contrib.intensity == float3(0.0F)))
+      continue;
+    const float3 radiance = contrib.intensity * evalIesFactor(pushConst.gltfScene, light, vertex) / (M_TWO_PI * max(omc, 1e-10F));
+    const float  w        = delta ? 1.0F : misPowerWeight(pt.lastSamplePdf, sizedLightNeePdf(pt.lightPick, light, omc));
+    sum += w * radiance;
+  }
+  return sum;
 }
 
 // Handles the in-volume segment before normal surface shading:
