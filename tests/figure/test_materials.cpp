@@ -740,25 +740,6 @@ TEST(Materials, EyeLayoutsFollowTheSurfaceNames)
   EXPECT_EQ(layout("Face"), EyeLayout::eNone);
 }
 
-// Under measured skin the white of an eye scatters under its surface a few tenths of a millimetre;
-// under the Iray volume it stays an opaque surface, and so does an eye's moisture.
-TEST(Materials, AnEyesWhiteScattersUnderMeasuredSkin)
-{
-  const auto  eye      = fv::dson::parseSurface("Eye Left", channelsOf(kEye));
-  const auto  measured = fv::mat::lower(eye, {}, {.skin = fv::mat::SkinMode::eMeasured});
-  const auto& ext      = measured.material["extensions"];
-  EXPECT_FLOAT_EQ(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.0f);
-  const auto& d = ext["FV_materials_subsurface"]["scatterDistance"];
-  for(int i = 0; i < 3; i++)
-  {
-    EXPECT_FLOAT_EQ(d[i].get<float>(), fv::mat::kScleraScatterDistance[i]);
-    EXPECT_LT(d[i].get<float>(), fv::mat::kSkinScatterDistance[i]);
-  }
-  EXPECT_FALSE(fv::mat::lower(eye, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
-  const auto moisture = fv::dson::parseSurface("Eye Moisture Left", channelsOf(kEyeMoisture));
-  EXPECT_FALSE(fv::mat::lower(moisture, {}, {.skin = fv::mat::SkinMode::eMeasured}).material["extensions"].contains("FV_materials_subsurface"));
-}
-
 TEST(Materials, AnIrisColourAsksForARecolouredBaseMap)
 {
   const auto     eye = fv::dson::parseSurface("Eye Left", channelsOf(kEye));

@@ -495,19 +495,6 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       ext["KHR_materials_scatter"] = sc;
     }
   }
-  // The white of an eye under measured skin: the sclera is dense scattering tissue, so light comes
-  // back out a few tenths of a millimetre from where it went in, and the shadows of lashes soften
-  // into shading instead of printing as stripes. A Genesis 9 eye's iris is in the same surface and
-  // takes it too, at a spread short of its fibres.
-  if(const EyeLayout eye = eyeLayout(s);
-     !refractive && opts.skin == SkinMode::eMeasured && (eye == EyeLayout::eShared || eye == EyeLayout::eSclera))
-  {
-    transmission                   = 1;
-    ext["KHR_materials_ior"]       = {{"ior", 1.376}};
-    ext["KHR_materials_volume"]    = {{"thicknessFactor", 1}, {"attenuationDistance", 1}, {"attenuationColor", Json::array({1, 1, 1})}};
-    ext["KHR_materials_scatter"]   = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", Json::array({1, 1, 1})}, {"scatterAnisotropy", 0}};
-    ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson(kScleraScatterDistance)}};
-  }
   if(transmission > 0)
   {
     ext["KHR_materials_transmission"] = {{"transmissionFactor", transmission}};
