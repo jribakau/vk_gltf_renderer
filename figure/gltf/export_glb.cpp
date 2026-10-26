@@ -118,13 +118,18 @@ Image bakeMakeup(const Image& base, const mat::MakeupRequest& mk, const Image* c
   return out;
 }
 
+// The slope per texel a height map gets when its size on the surface is unknown
 constexpr float kBumpSlope = 10.f;
 
 // A normal map from a height map (the pixel's luma), in glTF's green convention for a mesh without
-// tangents; edges wrap, as DAZ maps repeat. `flip`: v runs up the image.
-Image bumpToNormal(const Image& src, bool flip)
+// tangents; edges wrap, as DAZ maps repeat. `flip`: v runs up the image. `bumpHeight`: the map's full
+// range in UV units (TextureRequest::bumpHeight), so a texel's slope is its height step over its
+// width in UV; 0: kBumpSlope per texel.
+Image bumpToNormal(const Image& src, bool flip, float bumpHeight = 0)
 {
   const float        sy = flip ? -1.f : 1.f;
+  const float        su = bumpHeight > 0 ? bumpHeight * float(src.w) : kBumpSlope;
+  const float        sv = bumpHeight > 0 ? bumpHeight * float(src.h) : kBumpSlope;
   std::vector<float> height(size_t(src.w) * size_t(src.h));
   for(size_t i = 0; i < height.size(); i++)
     height[i] = (src.px[i * 4] * 0.299f + src.px[i * 4 + 1] * 0.587f + src.px[i * 4 + 2] * 0.114f) / 255.f;
@@ -140,7 +145,7 @@ Image bumpToNormal(const Image& src, bool flip)
       const int   x0 = (x + src.w - 1) % src.w, x1 = (x + 1) % src.w;
       const float dx = (height[size_t(y) * size_t(src.w) + size_t(x1)] - height[size_t(y) * size_t(src.w) + size_t(x0)]) * 0.5f;
       const float dy = (height[size_t(y1) * size_t(src.w) + size_t(x)] - height[size_t(y0) * size_t(src.w) + size_t(x)]) * 0.5f;
-      const float nx = -dx * kBumpSlope, ny = sy * dy * kBumpSlope, nz = 1.f;
+      const float nx = -dx * su, ny = sy * dy * sv, nz = 1.f;
       const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
       const auto  enc = [&](float v) { return uint8_t(std::lround(std::clamp((v / len * 0.5f + 0.5f) * 255.f, 0.f, 255.f))); };
       uint8_t*    p   = out.at(x, y);
@@ -255,14 +260,14 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
     const auto height = other(req.bumpRel);
     if(!height)
       return std::nullopt;
-    const Image detail = bumpToNormal(*height, true);
+    const Image detail = bumpToNormal(*height, true, req.bumpHeight);
     for(size_t i = 0; i < img.px.size() / 4; i++)
       img.px[i * 4 + 1] = uint8_t(255 - img.px[i * 4 + 1]);
     img = reorientedNormals(img, detail, req.bumpStrength);
     greenDone = true;
   }
   if(req.channels == "bn")
-    img = bumpToNormal(img, true);
+    img = bumpToNormal(img, true, req.bumpHeight);
   if(o.bottomUp)
     flipRows(img);
   if(req.channels == "ng" && !greenDone)

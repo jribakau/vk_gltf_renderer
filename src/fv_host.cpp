@@ -420,6 +420,8 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
     url += "&alpha=" + source(req.alphaRel);
   if(!req.bumpRel.empty())
     url += "&bump=" + source(req.bumpRel) + "&bs=" + fmtNumber(req.bumpStrength);
+  if(req.bumpHeight > 0)
+    url += "&bh=" + fmtNumber(req.bumpHeight);
   if(req.makeup)
   {
     // mk=<base 1|0>|<colour source>|<weight source>|<weight>|<r,g,b tint>|<r,g,b factor>, percent-encoded as a whole

@@ -301,6 +301,7 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
     r.channels     = "ng";
     r.bumpRel      = s.bumpMap;
     r.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
+    r.bumpHeight   = bumpHeightInUv(opts.metresPerUv);
     normal         = b.info(std::move(r), e.normalStrength.value_or(s.normalStrength));
     eff.normalStrength = e.normalStrength.value_or(s.normalStrength);
     eff.bumpStrength   = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
@@ -317,9 +318,10 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
   else if(!s.bumpMap.empty())
   {
     TextureRequest r;
-    r.rel      = s.bumpMap;
-    r.srgb     = false;
-    r.channels = "bn";
+    r.rel        = s.bumpMap;
+    r.srgb       = false;
+    r.channels   = "bn";
+    r.bumpHeight = bumpHeightInUv(opts.metresPerUv);
     normal     = b.info(std::move(r), clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2));
     eff.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
   }
@@ -522,6 +524,8 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
       r.rel                    = d.map;
       r.srgb                   = false;
       r.channels               = d.heightMap ? "bn" : "ng";
+      if(d.heightMap)
+        r.bumpHeight = bumpHeightInUv(opts.metresPerUv, std::sqrt(d.tiles[0] * d.tiles[1]));
       de["detailNormalTexture"] = b.info(std::move(r), d.strength, d.tiles, d.offset);
     }
     if(!d.weightMap.empty())
@@ -601,6 +605,15 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
 bool needsArea(const Surface& s)
 {
   return s.emission && s.emission->luminance && s.emission->luminance->perArea;
+}
+
+float bumpHeightInUv(float metresPerUv, float tiles)
+{
+  if(!(metresPerUv > 0) || !(tiles > 0))
+    return 0;
+  const double h    = double(kBumpHeight) * tiles / metresPerUv;
+  const double step = std::pow(10.0, std::floor(std::log10(h)) - 1);
+  return float(std::round(h / step) * step);
 }
 
 float emissionStrength(const Surface& s, double areaM2, double exposureValue, double iso)

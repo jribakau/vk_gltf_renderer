@@ -1329,6 +1329,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   }
   if(!out.missing.empty())
     warn(missingMessage(out.name, out.missing));
+  measureUvScales(scene);
   return out;
 }
 

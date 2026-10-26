@@ -84,6 +84,9 @@ struct TextureRequest
   std::string channels;
   std::string bumpRel;  // a height map blended onto the normal map; empty: none
   float       bumpStrength = 1;
+  // A height map's full range in UV units (bumpHeightInUv), which the bake turns into slopes against
+  // the map's size: the same bump at any resolution. 0: a fixed slope per texel.
+  float bumpHeight = 0;
   std::optional<MakeupRequest> makeup;
   std::optional<IrisRequest>   iris;
   std::optional<RecolorRequest> recolor;

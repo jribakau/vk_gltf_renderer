@@ -456,6 +456,49 @@ const char* kCardHair = R"({"extra":[{"type":"studio/material/uber_iray","channe
   {"channel":{"id":"Glossy Roughness","type":"float","current_value":0.4}}
 ]}]})";
 
+TEST(Materials, ABumpMapsHeightIsInMillimetresOfSurface)
+{
+  // a 2 m square (DSON centimetres) with UVs over half the unit square: 4 m per UV unit
+  fv::SceneGraph scene;
+  scene.materials.resize(2);
+  scene.materials[1].metresPerUv = 0.5f;  // measured before: kept
+  auto geo      = std::make_shared<fv::mesh::BuiltMesh>();
+  geo->position = {0, 0, 0, 200, 0, 0, 200, 200, 0, 0, 200, 0};
+  geo->uv       = {0, 0, 0.5f, 0, 0.5f, 0.5f, 0, 0.5f};
+  geo->fullIndex = {0, 1, 2, 0, 2, 3, 0, 1, 2};
+  geo->groups    = {{0, 6, 0}, {6, 3, 1}};
+  fv::Mesh m;
+  m.geo       = geo;
+  m.materials = {0, 1};
+  scene.meshes.push_back(m);
+  fv::measureUvScales(scene);
+  EXPECT_NEAR(scene.materials[0].metresPerUv, 4.f, 1e-5f);
+  EXPECT_NEAR(scene.materials[1].metresPerUv, 0.5f, 1e-6f);
+
+  // the full range is kBumpHeight of surface: on a 4K map of a face's 0.43 m per UV unit, the
+  // slope per texel the fixed bake gave (10), within the rounding
+  EXPECT_NEAR(fv::mat::bumpHeightInUv(0.43f) * 4096, 10.f, 1.f);
+  EXPECT_EQ(fv::mat::bumpHeightInUv(0), 0.f);
+  // a detail tiled 4 times covers a quarter of the surface per UV unit
+  EXPECT_NEAR(fv::mat::bumpHeightInUv(0.4f, 4), 4 * fv::mat::bumpHeightInUv(0.4f), 1e-6f);
+
+  // the requests carry it, alone and blended onto a normal map, and the key tells them apart
+  fv::mat::Surface bumped;
+  bumped.bumpMap = "/Runtime/Textures/skin_b.jpg";
+  fv::mat::LowerOptions o;
+  o.metresPerUv = 0.43f;
+  const auto alone = fv::mat::lower(bumped, {}, o).requests;
+  ASSERT_EQ(alone.size(), 1u);
+  EXPECT_EQ(alone[0].channels, "bn");
+  EXPECT_NEAR(alone[0].bumpHeight, fv::mat::bumpHeightInUv(0.43f), 1e-7f);
+  EXPECT_NE(fv::mat::requestKey(alone[0]), fv::mat::requestKey(fv::mat::lower(bumped, {}, {}).requests[0]));
+  bumped.normalMap   = "/Runtime/Textures/skin_n.jpg";
+  const auto blended = fv::mat::lower(bumped, {}, o).requests;
+  ASSERT_EQ(blended.size(), 1u);
+  EXPECT_EQ(blended[0].bumpRel, bumped.bumpMap);
+  EXPECT_NEAR(blended[0].bumpHeight, fv::mat::bumpHeightInUv(0.43f), 1e-7f);
+}
+
 TEST(Materials, HairCardsAreFibresInThePathTracer)
 {
   const auto s = fv::dson::parseSurface("Hair Base", channelsOf(kCardHair));

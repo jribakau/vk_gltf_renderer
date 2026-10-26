@@ -53,7 +53,18 @@ struct LowerOptions
   // The figure's skin map a skin tone shifts every skin surface against (dson::toneReference): the
   // same for all of them, so they move together. Empty: each against its own map.
   std::string toneReference;
+  // How much surface one UV unit covers, in metres (Material::metresPerUv): a bump map's height
+  // becomes slopes against it. 0: the bump maps keep the fixed slope per texel they had before.
+  float metresPerUv = 0;
 };
+
+// A bump map's full height range at Bump Strength 1, in metres. Calibrated once: a Genesis 9 face
+// map at 4K (about 0.43 m per UV unit) keeps about the slope the fixed bake gave it.
+constexpr float kBumpHeight = 0.001f;
+
+// The height a bump map of `metresPerUv` (scaled by `tiles` repeats) gets in UV units, the
+// TextureRequest::bumpHeight the bake divides by; 0 when the size is unknown. Two significant figures.
+float bumpHeightInUv(float metresPerUv, float tiles = 1);
 
 // The values the Material panel shows for a surface: what the lowering used, edits included.
 struct Effective

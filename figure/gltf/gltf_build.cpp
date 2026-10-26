@@ -190,7 +190,8 @@ tinygltf::Value extras(const std::string& fvId)
 std::vector<TextureRequest> textureRequests(const Material& m, mat::SkinMode skin)
 {
   mat::LowerOptions o;
-  o.skin = skin;
+  o.skin        = skin;
+  o.metresPerUv = m.metresPerUv;
   return mat::lower(m.surface, m.edits, o).requests;
 }
 
@@ -202,7 +203,8 @@ std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMo
   {
     const Material&   m = scene.materials[mi];
     mat::LowerOptions o;
-    o.skin = skin;
+    o.skin        = skin;
+    o.metresPerUv = m.metresPerUv;
     // as the build lowers it: an iris's colour asks for a texture only where its discs are known
     if(m.edits.irisColor && mat::eyeLayout(m.surface) == mat::EyeLayout::eIris)
       o.irisDiscs = irisDiscs(scene, int(mi));
@@ -472,6 +474,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     lo.skin               = options.skin;
     lo.forFile            = options.forFile;
     lo.flipV              = !options.texturesFlipped;
+    lo.metresPerUv        = scene.materials[mi].metresPerUv;
     lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
     // one material on several meshes is one glTF material, so those meshes vote together
     std::vector<mat::StrandVote> votes;

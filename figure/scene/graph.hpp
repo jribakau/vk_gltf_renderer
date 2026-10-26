@@ -86,6 +86,9 @@ struct Material
   // the channels as the character came: its file's own and the presets its add-ons were worn with.
   // Choosing other eyes, or the character's own, puts these back; presets opened later leave it.
   std::shared_ptr<const dson::Channels> baseline;
+  // How much surface one UV unit covers, in metres (the square root of area over UV area), on the
+  // unmorphed mesh as it loaded: what turns a bump map's height into slopes. 0: not measured.
+  float metresPerUv = 0;
 };
 
 struct Mesh
@@ -106,6 +109,11 @@ struct Mesh
   std::vector<Mat4>      boneInverses;
   bool                   skinned() const { return !bones.empty(); }
 };
+
+class SceneGraph;
+// Measures Material::metresPerUv for every material still at 0, from the meshes as they are (DSON
+// centimetres), to two significant figures.
+void measureUvScales(SceneGraph& scene);
 
 class SceneGraph
 {
