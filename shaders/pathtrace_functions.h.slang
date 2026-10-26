@@ -12,6 +12,7 @@
 #include "camera_ray.h.slang"
 #include "sky_background.h.slang"
 #include "ground.h.slang"
+#include "light_pick.h.slang"
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -20,23 +21,26 @@
 //-----------------------------------------------------------------------
 // Direct light structure
 //-----------------------------------------------------------------------
-struct DirectLight
+//-----------------------------------------------------------------------
+// Light pick probabilities at a shading vertex (light_pick.h.slang)
+//-----------------------------------------------------------------------
+// The share of next-event estimation's samples that went, at one vertex, to each light a BSDF ray
+// can also reach. They depend on the vertex, and that vertex's BSDF ray is weighed against them on
+// the next bounce, so the path carries them (PathTracerState::lightPick).
+struct LightPick
 {
-  float3 direction;        // Direction to the light
-  float3 radianceOverPdf;  // Radiance over pdf
-  float  distance;         // Distance to the light
-  float  pdf;              // Probability of sampling this light
+  float env;       // the environment
+  float sun;       // the sky's sun (0 without one, or below this vertex's horizon)
+  float emissive;  // the emissive triangles together
 };
 
-//-----------------------------------------------------------------------
-// Lighting technique selection probabilities for MIS
-//-----------------------------------------------------------------------
-struct LightingTechniqueProbabilities
+struct DirectLight
 {
-  float lightWeight;     // Normalized probability of the light technique (vs environment)
-  float envWeight;       // Normalized probability of the environment technique
-  float punctualWeight;  // Within the light technique: probability of a punctual light (punctual + emissive = 1)
-  float emissiveWeight;  // Within the light technique: probability of an emissive triangle
+  float3    direction;        // Direction to the light
+  float3    radianceOverPdf;  // Radiance over pdf
+  float     distance;         // Distance to the light
+  float     pdf;              // Probability of sampling this light
+  LightPick pick;             // What the pick gave each light at this vertex, for the BSDF side's MIS
 };
 
 static const float MIN_TRANSMISSION = 0.01f;  // Minimum shadow transmission factor for transparent materials
@@ -503,35 +507,93 @@ int skySunPunctualIndex()
   return pushConst.frameInfo->sunLightIndex;
 }
 
-LightingTechniqueProbabilities getDirectLightingTechniqueProbabilities()
+// The environment's pick estimate (light_pick.h.slang), 0 where there is none to sample.
+float environmentPickEstimate()
 {
-  LightingTechniqueProbabilities probs;
+  SceneFrameInfo* frameInfo = pushConst.frameInfo;
+  if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseNoEnvironment))
+    return 0.0F;
+  return max(frameInfo->envPickEstimate * frameInfo->envIntensity, 0.0F);
+}
 
-  bool  hasPunctual = punctualLightCount() > 0;
-  bool  hasEmissive = pushConst.gltfScene.numEmissiveTriangles > 0;
-  float lightWeight = (hasPunctual || hasEmissive) ? 0.5f : 0.0f;
-  bool  hasEnv      = !hasFlag(pushConst.frameInfo->flags, SceneFrameInfoFlags::eSceneUseNoEnvironment)
-                && (!hasFlag(pushConst.frameInfo->flags, SceneFrameInfoFlags::eSceneUseHdrEnvironment)
-                    || pushConst.frameInfo->envIntensity.x > 0.0f);
-  float envWeight = hasEnv ? 0.5f : 0.0f;
+float punctualPickEstimate(GltfLight light, float3 pos, float3 normal, bool cull)
+{
+  const bool directional = light.type == LightType::eLightTypeDirectional;
+  return punctualLightPickEstimate(directional, light.type == LightType::eLightTypeSpot, light.position, light.direction,
+                                   light.radius, max(light.color.x, max(light.color.y, light.color.z)) * light.intensity,
+                                   directional ? 0.0F : light.angularSizeOrInvRange, light.innerAngle, light.outerAngle,
+                                   pos, normal, cull);
+}
 
-  float totalWeight = lightWeight + envWeight;
-  if(totalWeight > 0.0f)
+// What next-event estimation picks from at one vertex: the emissive triangles take a fixed share
+// (they have one estimate for all of them and no distance to put it at), and the environment and
+// the punctual lights split the rest by their estimates.
+struct LightPickSet
+{
+  LightPick pick;
+  float     restShare;    // 1 - pick.emissive: the environment's and the punctual lights' together
+  float     envEstimate;  // 0: no environment to pick
+  float     total;        // the candidates' estimates summed
+  int       candidates;   // the environment and the lights that can light the vertex
+  int       lights;       // of those, punctual lights
+  bool      uniform;      // over LIGHT_PICK_MAX_LIGHTS lights: half to the environment, the lights evenly, none culled
+};
+
+// `cull`: drop the lights below the plane of `normal` (not for a vertex lit from both sides).
+LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
+{
+  LightPickSet s;
+  const int numPunctual = punctualLightCount();
+  const int sunIndex    = skySunPunctualIndex();
+  s.envEstimate         = environmentPickEstimate();
+  s.uniform             = numPunctual > LIGHT_PICK_MAX_LIGHTS;
+  s.total               = s.envEstimate;
+  s.lights              = 0;
+  float sunEstimate     = 0.0F;
+  if(s.uniform)
+    s.lights = numPunctual;
+  else
   {
-    lightWeight /= totalWeight;
-    envWeight /= totalWeight;
+    for(int i = 0; i < numPunctual; i++)
+    {
+      const float e = punctualPickEstimate(getPunctualLight(i), pos, normal, cull);
+      if(e > 0.0F)
+      {
+        s.total += e;
+        s.lights++;
+      }
+      if(i == sunIndex)
+        sunEstimate = e;
+    }
   }
+  const bool hasEnv = s.envEstimate > 0.0F;
+  s.candidates      = s.lights + (hasEnv ? 1 : 0);
 
-  // Split the light technique between punctual lights and emissive triangles so that adding many
-  // emissive triangles does not dilute punctual-light sampling (and vice versa).
-  float punctualWeight = hasPunctual ? (hasEmissive ? 0.5f : 1.0f) : 0.0f;
-  float emissiveWeight = hasEmissive ? (hasPunctual ? 0.5f : 1.0f) : 0.0f;
+  // Each kind present gets as much as the emissive triangles: a half beside one, a third beside both
+  const int kinds = (hasEnv ? 1 : 0) + (s.lights > 0 ? 1 : 0);
+  s.pick.emissive = (pushConst.gltfScene.numEmissiveTriangles > 0) ? 1.0F / float(1 + kinds) : 0.0F;
+  s.restShare     = 1.0F - s.pick.emissive;
 
-  probs.lightWeight    = lightWeight;
-  probs.envWeight      = envWeight;
-  probs.punctualWeight = punctualWeight;
-  probs.emissiveWeight = emissiveWeight;
-  return probs;
+  if(s.uniform)
+  {
+    const float envShare = hasEnv ? 0.5F : 0.0F;
+    s.pick.env           = s.restShare * envShare;
+    s.pick.sun           = (sunIndex >= 0) ? s.restShare * (1.0F - envShare) / float(numPunctual) : 0.0F;
+  }
+  else
+  {
+    s.pick.env = s.restShare * lightPickProbability(s.envEstimate, s.total, s.candidates);
+    s.pick.sun = s.restShare * lightPickProbability(sunEstimate, s.total, s.candidates);
+  }
+  return s;
+}
+
+// A light's share of the rest at this vertex, `estimate` its pick estimate there.
+float punctualPickShare(LightPickSet s, float estimate)
+{
+  if(s.uniform)
+    return (s.envEstimate > 0.0F ? 0.5F : 1.0F) / float(s.lights);
+  return lightPickProbability(estimate, s.total, s.candidates);
 }
 
 //-----------------------------------------------------------------------
@@ -656,24 +718,25 @@ float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, 
 }
 
 // MIS weight for a BSDF ray that landed on an emissive triangle, weighted against the emissive-NEE
-// technique. Mirrors computeEnvHitMisWeight; the competing NEE pdf is
-// lightWeight * emissiveWeight * (emitter solid-angle pdf).
-float computeEmitterHitMisWeight(float lastSamplePdf, float3 radiance, float3 geoNormal, float3 rayDir, float hitDist)
+// technique. Mirrors computeEnvHitMisWeight; the competing NEE pdf is the emissive triangles' pick
+// at the vertex the ray left (`pick`) times the emitter's solid-angle pdf.
+float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float3 radiance, float3 geoNormal, float3 rayDir, float hitDist)
 {
   if(lastSamplePdf == DIRAC)
     return 1.0f;
-  LightingTechniqueProbabilities probs = getDirectLightingTechniqueProbabilities();
-  float emitterNeePdf = probs.lightWeight * probs.emissiveWeight * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist);
-  if(emitterNeePdf <= 0.0)
-    return 1.0f;
-  return lastSamplePdf / (lastSamplePdf + emitterNeePdf);
+  float emitterNeePdf = pick.emissive * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist);
+  return misPowerWeight(lastSamplePdf, emitterNeePdf);
 }
 
-// `normal` is used to reject punctual lights that sit below the surface's hemisphere.
+// `normal` is used to reject punctual lights that sit below the surface's hemisphere: the pick
+// gives them nothing (lightPickSet), so their share goes to the lights that can reach the point.
 // `lightsFromBothSides` disables that rejection for shading points that receive light from the
 // back hemisphere as well: volume scattering events, and surfaces with a diffuse transmission
 // lobe (KHR_materials_diffuse_transmission, and the thin-walled mode of KHR_materials_scatter --
 // a backlit leaf or sheet of paper is exactly the case those describe).
+//
+// `directLight.pick` is what the pick gave each light a BSDF ray can also reach, which that ray's MIS
+// weight needs on the next bounce.
 void sampleLights(in float3       pos,
                   float3          normal,
                   in float3       worldRayDirection,
@@ -682,112 +745,104 @@ void sampleLights(in float3       pos,
                   in bool         isVolumeSample      = false,
                   in bool         lightsFromBothSides = false)
 {
-  float3 radiance             = float3(0.0f);
+  directLight.direction       = float3(0.0f, 0.0f, 1.0f);
   directLight.pdf             = 0.0f;
   directLight.distance        = INFINITE;
   directLight.radianceOverPdf = float3(0.0f);
-  float envPdf                = 0.0f;
 
-  LightingTechniqueProbabilities probs          = getDirectLightingTechniqueProbabilities();
-  float                          lightWeight    = probs.lightWeight;
-  float                          envWeight      = probs.envWeight;
-  float                          emissiveWeight = probs.emissiveWeight;
+  const bool         bothSides = isVolumeSample || lightsFromBothSides;
+  const LightPickSet set       = lightPickSet(pos, normal, /*cull=*/!bothSides);
+  directLight.pick             = set.pick;
+  if(set.pick.emissive <= 0.0f && set.candidates == 0)
+    return;  // nothing can light this point
 
-  if(lightWeight == 0.0f && envWeight == 0.0f)
+  // rand() can return exactly 1.0; the walk below wants [0, 1)
+  float u = min(rand(seed), 0.99999994f);
+
+  if(set.pick.emissive > 0.0f && (u < set.pick.emissive || set.candidates == 0))
   {
+    // Emissive triangle (area light): power-weighted selection, then divide by the solid-angle pdf.
+    int            tri    = selectEmissiveTriangle(rand(seed));
+    EmissiveSample es     = sampleEmissiveTriangle(tri, pos, seed);
+    directLight.direction = es.direction;
+    directLight.distance  = es.distance;
+    if(es.pdf > 0.0)
+    {
+      // es.pdf already includes the power-weighted selection; fold in the emissive share.
+      directLight.pdf             = set.pick.emissive * es.pdf;  // left as 0 otherwise -> caller skips NEE
+      directLight.radianceOverPdf = es.radiance / directLight.pdf;
+    }
     return;
   }
+  u = min((u - set.pick.emissive) / set.restShare, 0.99999994f);  // the rest, stretched back over [0, 1)
 
-  bool sampleLight = (rand(seed) < lightWeight);
-
-  if(sampleLight)
-  {
-    // Within the light technique, pick punctual vs emissive (punctualWeight + emissiveWeight = 1).
-    // Guard the categories explicitly: rand() can return exactly 1.0, so never fall into a branch
-    // whose category is empty (e.g. the punctual branch when there are no punctual lights).
-    bool pickEmissive;
-    if(probs.emissiveWeight <= 0.0f)
-      pickEmissive = false;  // no emitters -> punctual
-    else if(probs.punctualWeight <= 0.0f)
-      pickEmissive = true;  // no punctual lights -> emissive
-    else
-      pickEmissive = (rand(seed) < emissiveWeight);
-
-    if(!pickEmissive)
-    {
-      int       numPunctual  = punctualLightCount();
-      float     selectionPdf = probs.punctualWeight / numPunctual;
-      int       lightIndex   = min(int(rand(seed) * numPunctual), numPunctual - 1);
-      GltfLight light        = getPunctualLight(lightIndex);
-
-      // singleLightContribution() drops any punctual light below the hemisphere of the normal it
-      // is given. When the shading point is lit from both sides, hand it a normal pointing at the
-      // light so nothing is rejected; the BSDF (or phase function) decides what the light does.
-      float3 cullNormal = normal;
-      if(isVolumeSample || lightsFromBothSides)
-      {
-        cullNormal = (light.type == LightType::eLightTypeDirectional) ? -light.direction : normalize(light.position - pos);
-      }
-      LightContrib contrib = singleLightContribution(light, pos, cullNormal, float2(rand(seed), rand(seed)));
-      contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, pos);  // EXT_lights_ies
-
-      directLight.direction = -contrib.incidentVector;
-      directLight.distance  = contrib.distance;
-      radiance              = contrib.intensity / (selectionPdf * lightWeight);
-
-      // DIRAC even for a sphere light sampled over a cone: no BSDF ray can reach it, so this is
-      // the only technique that produces its radiance and its MIS weight is 1. The sky's sun is
-      // the exception -- a BSDF ray that escapes onto its disk sees it -- so it carries a pdf, the
-      // same one skySunNeePdf() gives computeSkySunHitMisWeight().
-      const float sunSolidAngle = (lightIndex == skySunPunctualIndex()) ? skySunSolidAngle(pushConst.frameInfo) : 0.0F;
-      directLight.pdf           = (sunSolidAngle > 0.0F) ? selectionPdf / sunSolidAngle : DIRAC;
-    }
-    else
-    {
-      // Emissive triangle (area light): power-weighted selection, then divide by the solid-angle pdf.
-      int            tri    = selectEmissiveTriangle(rand(seed));
-      EmissiveSample es     = sampleEmissiveTriangle(tri, pos, seed);
-      directLight.direction = es.direction;
-      directLight.distance  = es.distance;
-      if(es.pdf > 0.0)
-      {
-        // es.pdf already includes the power-weighted selection; fold in the emissive sub-weight.
-        float pdfLight  = emissiveWeight * es.pdf;
-        radiance        = es.radiance / (lightWeight * pdfLight);
-        directLight.pdf = pdfLight;  // left as 0 otherwise -> caller skips NEE
-      }
-    }
-  }
-
-  if(!sampleLight && envWeight > 0)
+  const float envShare = set.pick.env / set.restShare;
+  if(u < envShare)
   {
     // One environment representation, whatever the sky is. Every EnvSystem that reaches this point
     // is a lat-long image by now: the HDR file is one, and the analytic skies are baked into one
-    // (see GltfRenderer::isBakedEnvironment). eNone returns before here.
+    // (see GltfRenderer::isBakedEnvironment). eNone has no estimate and is never picked.
     float3 rand_val = float3(rand(seed), rand(seed), rand(seed));
     // The alias table may be coarser than the image (a baked sky), so sample on its own grid.
     const uint2 samplingGrid = uint2(pushConst.frameInfo->envSamplingGridWidth, pushConst.frameInfo->envSamplingGridHeight);
     float4 radiance_pdf =
         environmentSample(texturesHdr[HDR_IMAGE_INDEX], envSamplingData, samplingGrid, rand_val, directLight.direction);
-    envPdf = radiance_pdf.w;
+    const float envPdf = radiance_pdf.w;
     if(envPdf > 0.0)
     {
-      radiance              = radiance_pdf.xyz * pushConst.frameInfo->envIntensity / (envPdf * envWeight);
-      directLight.direction = quatRotate(pushConst.frameInfo->envRotation, directLight.direction);
-      directLight.pdf       = envPdf;  // left as 0 otherwise -> caller skips NEE
+      // The pdf the caller weighs against the BSDF: computeEnvHitMisWeight's on the BSDF side
+      directLight.pdf             = set.pick.env * envPdf;  // left as 0 otherwise -> caller skips NEE
+      directLight.radianceOverPdf = radiance_pdf.xyz * pushConst.frameInfo->envIntensity / directLight.pdf;
+      directLight.direction       = quatRotate(pushConst.frameInfo->envRotation, directLight.direction);
     }
+    return;
   }
 
-  // The pdf the caller weighs against the BSDF, which is the only other technique that can produce
-  // this sample's radiance: a BSDF ray can hit the emitter or escape to the environment, but the
-  // light and environment techniques never produce each other's radiance, so they are not weighted
-  // against each other. These are the same pdfs computeEmitterHitMisWeight and
-  // computeEnvHitMisWeight use on the BSDF side. Punctual lights stay DIRAC (weight 1), all but
-  // the sky's sun, whose BSDF side is computeSkySunHitMisWeight.
-  if(directLight.pdf != DIRAC)
-    directLight.pdf *= sampleLight ? lightWeight : envWeight;
+  // A punctual light: walk the lights' shares past the environment's to the one `u` falls in. The
+  // last light that can light the point catches what rounding leaves over.
+  const int numPunctual = punctualLightCount();
+  float     cumulative  = envShare;
+  int       lightIndex  = -1;
+  float     share       = 0.0f;
+  GltfLight light;
+  for(int i = 0; i < numPunctual; i++)
+  {
+    const GltfLight candidate = getPunctualLight(i);
+    const float     p = punctualPickShare(set, set.uniform ? 1.0f : punctualPickEstimate(candidate, pos, normal, !bothSides));
+    if(p <= 0.0f)
+      continue;
+    lightIndex = i;
+    share      = p;
+    light      = candidate;
+    cumulative += p;
+    if(u < cumulative)
+      break;
+  }
+  if(lightIndex < 0)
+    return;
+  const float selectionPdf = set.restShare * share;
 
-  directLight.radianceOverPdf = radiance;
+  // singleLightContribution() drops any punctual light below the hemisphere of the normal it
+  // is given. When the shading point is lit from both sides, hand it a normal pointing at the
+  // light so nothing is rejected; the BSDF (or phase function) decides what the light does.
+  float3 cullNormal = normal;
+  if(bothSides)
+  {
+    cullNormal = (light.type == LightType::eLightTypeDirectional) ? -light.direction : normalize(light.position - pos);
+  }
+  LightContrib contrib = singleLightContribution(light, pos, cullNormal, float2(rand(seed), rand(seed)));
+  contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, pos);  // EXT_lights_ies
+
+  directLight.direction       = -contrib.incidentVector;
+  directLight.distance        = contrib.distance;
+  directLight.radianceOverPdf = contrib.intensity / selectionPdf;
+
+  // DIRAC even for a sphere light sampled over a cone: no BSDF ray can reach it, so this is
+  // the only technique that produces its radiance and its MIS weight is 1. The sky's sun is
+  // the exception -- a BSDF ray that escapes onto its disk sees it -- so it carries a pdf, the
+  // same one skySunNeePdf() gives computeSkySunHitMisWeight() from `pick.sun`.
+  const float sunSolidAngle = (lightIndex == skySunPunctualIndex()) ? skySunSolidAngle(pushConst.frameInfo) : 0.0F;
+  directLight.pdf           = (sunSolidAngle > 0.0F) ? selectionPdf / sunSolidAngle : DIRAC;
 }
 
 void sampleEnvironment(float3 direction, SceneFrameInfo* frameInfo, out float3 envColor, out float envPdf)
@@ -808,31 +863,28 @@ void sampleEnvironment(float3 direction, SceneFrameInfo* frameInfo, out float3 e
   envPdf     = env.w;
 }
 
-float computeEnvHitMisWeight(float lastSamplePdf, float envPdf)
+// MIS weight for a BSDF ray that escaped to the environment, against the environment sample the
+// vertex it left drew with probability `pick.env`.
+float computeEnvHitMisWeight(float lastSamplePdf, float envPdf, LightPick pick)
 {
   if(lastSamplePdf == DIRAC)
     return 1.0f;
-
-  LightingTechniqueProbabilities probs     = getDirectLightingTechniqueProbabilities();
-  float                          envWeight = probs.envWeight;
-
-  return lastSamplePdf / (lastSamplePdf + envWeight * envPdf);
+  return misPowerWeight(lastSamplePdf, pick.env * envPdf);
 }
 
-// Solid-angle pdf with which sampleLights() lands on the sky's sun: its selection terms over the
-// disk's solid angle, exactly as it computes them. Only called where the disk exists, so the
-// solid angle is not zero.
-float skySunNeePdf()
+// Solid-angle pdf with which sampleLights() lands on the sky's sun at a vertex that picked it with
+// probability `pick.sun`: that over the disk's solid angle, exactly as it computes it. Only called
+// where the disk exists, so the solid angle is not zero.
+float skySunNeePdf(LightPick pick)
 {
-  const LightingTechniqueProbabilities probs = getDirectLightingTechniqueProbabilities();
-  return probs.lightWeight * (probs.punctualWeight / punctualLightCount()) / skySunSolidAngle(pushConst.frameInfo);
+  return pick.sun / skySunSolidAngle(pushConst.frameInfo);
 }
 
 // MIS weight for a BSDF ray that escaped onto the sky's sun disk, against the sun's NEE sample.
 // Never called after a delta bounce: the caller adds the disk unweighted there.
-float computeSkySunHitMisWeight(float lastSamplePdf)
+float computeSkySunHitMisWeight(float lastSamplePdf, LightPick pick)
 {
-  return lastSamplePdf / (lastSamplePdf + skySunNeePdf());
+  return misPowerWeight(lastSamplePdf, skySunNeePdf(pick));
 }
 
 //-----------------------------------------------------------------------
@@ -1432,6 +1484,9 @@ struct PathTracerState
   float3  throughput    = float3(1.0F, 1.0F, 1.0F);
   float3  firstHitPos   = float3(1e34f);  // matches SampleResult::hitPosition sentinel
   float   lastSamplePdf = DIRAC;
+  // What the last vertex's light pick gave the lights its BSDF ray can also reach, for that ray's MIS
+  // weight. Read only when lastSamplePdf is not DIRAC, so only after a vertex that sampled the lights.
+  LightPick lightPick    = {0.0F, 0.0F, 0.0F};
   float2  maxRoughness  = float2(0.0);
   // How rough the path's scattering has been (perceptual roughness, 0..1): the largest of the lobes
   // it sampled, a diffuse one and a scattering walk counting as 1 (Unreal's path roughness). It decides

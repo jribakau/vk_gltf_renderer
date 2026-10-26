@@ -298,6 +298,12 @@ struct SceneFrameInfo
   // turns the sun off and leaves the sky). The disk drawn in the background keeps the sky's own.
   // (Appended, per the note above.)
   float skySunScale = 1.0F;
+
+  // The environment's estimate for the path tracer's light pick (light_pick.h.slang), before
+  // `envIntensity`: the integral of its lighting field's largest channel over the sphere
+  // (HdrIbl::getIntegral) over 4, the irradiance a uniform sky of that power gives a surface facing
+  // it. (Appended, per the note above.)
+  float envPickEstimate = 0.0F;
 };
 
 enum PathtracerFlags

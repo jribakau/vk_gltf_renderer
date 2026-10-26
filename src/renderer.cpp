@@ -1784,6 +1784,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
         .envSamplingGridWidth  = m_resources.hdrIbl.getSamplingGrid().width,
         .envSamplingGridHeight = m_resources.hdrIbl.getSamplingGrid().height,
         .skySunScale           = m_resources.settings.skySunScale,
+        .envPickEstimate       = 0.25F * m_resources.hdrIbl.getIntegral(),
     };
     fillShadowAndGround(finfo);
     // Update the camera information

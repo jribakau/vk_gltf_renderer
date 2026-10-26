@@ -238,7 +238,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
       // We may hit the environment twice: once via sampleLights() and once when hitting the sky while probing
       // for more indirect hits. This is the counter part of the MIS weighting in sampleLights()
-      float misWeight = computeEnvHitMisWeight(pt.lastSamplePdf, envPdf);
+      float misWeight = computeEnvHitMisWeight(pt.lastSamplePdf, envPdf, pt.lightPick);
 
       // Volume NEE already estimated direct light for a walk. The sky reached by the phase-sampled
       // path would count it again; that path contributes nothing.
@@ -261,7 +261,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
           const float3 disk  = evalSkySunDisk(bgDir, frameInfo);
           if(any(disk > 0.0F))
-            addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf) * disk * frameInfo->envIntensity, indirect);
+            addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf, pt.lightPick) * disk * frameInfo->envIntensity, indirect);
         }
       }
 
@@ -579,7 +579,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // Power-weighted MIS pdf needs only the emitter's own radiance, its geometric normal, and
         // W_total (the area cancels) -- no per-triangle lookup.
-        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pbrMat.emissive, hit.geonrm, ray.Direction, payload.hitT);
+        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, pbrMat.emissive, hit.geonrm, ray.Direction, payload.hitT);
       }
       addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
     }
@@ -634,6 +634,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
     sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
                  /*lightsFromBothSides=*/bothSides);
+    // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
+    pt.lightPick = directLight.pick;
 
     // This checks if the light could contribute, but doesn't send a next event estimation (NEE) shadow ray yet.
     // The actual test and contribution are delayed to minimize per-bounce state.
@@ -672,7 +674,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
         // have no BSDF-sampled partner: weight 1, as for a punctual light.
         const bool  lastVertex = pt.surfaceDepth + 1 >= pushConst.maxDepth;
-        const float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : directLight.pdf / (directLight.pdf + evalData.pdf);
+        const float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(directLight.pdf, evalData.pdf);
 
         // sample weight
         const float3 w = pt.throughput * directLight.radianceOverPdf * mis_weight;
