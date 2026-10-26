@@ -1064,6 +1064,8 @@ struct FvHost::Impl
   bool                        lightingStarted = false;
   Json                        appliedParams   = Json::object();  // what the renderer was last given
   DialTiming                  dialTiming;
+  // when the last frame's update ended: the renderer's own work in between shows when it is long
+  std::optional<std::chrono::steady_clock::time_point> lastUpdateEnd;
   Json                        appliedSun;                        // the sun light as last written
   Json                        publishedLighting;
   // the environment image in the renderer ("studio", "hdr:<path>"), and the one asked for
@@ -5326,6 +5328,8 @@ void FvHost::onDetach()
 void FvHost::onUpdate()
 {
   Impl& s = *m_impl;
+  if(s.lastUpdateEnd && fv::timing::enabled())
+    fv::timing::report("frame: renderer between updates", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *s.lastUpdateEnd).count(), 100);
   // the default look until the app sends its own: the renderer's remembered settings don't apply here
   if(!s.lightingStarted)
   {
@@ -5344,6 +5348,13 @@ void FvHost::onUpdate()
     std::lock_guard lock(s.queueMutex);
     work.swap(s.queue);
   }
+  // a phase of the frame that holds the application thread up shows in the timing log
+  std::optional<fv::timing::Scope> phase;
+  const auto timePhase = [&phase](const char* name) {
+    phase.reset();
+    phase.emplace(name, 20);
+  };
+  timePhase("frame: queued work");
   for(auto& f : work)
   {
     try
@@ -5355,6 +5366,7 @@ void FvHost::onUpdate()
       s.notice(e.what(), "error");
     }
   }
+  timePhase("frame: compose");
   // what this frame's work changed in the scene's structure, composed once
   if(s.pendingCompose)
   {
@@ -5367,6 +5379,7 @@ void FvHost::onUpdate()
       s.notice(std::string("The scene could not be built: ") + e.what(), "error");
     }
   }
+  timePhase("frame: input and morphs");
   // input first: a gizmo drag poses or moves this frame, and what the gizmo didn't take moves the camera
   std::vector<Json> events;
   {
@@ -5387,7 +5400,8 @@ void FvHost::onUpdate()
   {
     if(!p->figure)
       continue;
-    Loaded&             f       = *p->figure;
+    Loaded& f = *p->figure;
+    timePhase("frame: figure pump");
     fv::Figure::Changes changes = f.fig->pump();
     // this frame's edits first, then a settle or a collision pass that finished writes its result
     // and is drained on its own: its vertices never hide an edit to the same mesh, and are no
@@ -5401,6 +5415,7 @@ void FvHost::onUpdate()
       changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(more.meshes.begin()), std::make_move_iterator(more.meshes.end()));
       changes.rebound.insert(changes.rebound.end(), more.rebound.begin(), more.rebound.end());
     };
+    timePhase("frame: dForce and collision");
     if(f.dforce)
     {
       if(!changes.nodes.empty() || !moved.empty())
@@ -5418,6 +5433,7 @@ void FvHost::onUpdate()
       if(f.collisionVersion != f.collider->version())
         s.publishWardrobe(f);
     }
+    timePhase("frame: figure changes applied");
     if(!changes.nodes.empty())
     {
       const auto t0 = std::chrono::steady_clock::now();
@@ -5442,6 +5458,7 @@ void FvHost::onUpdate()
     s.publishBusy(f);
     s.publishMorphs(f);
   }
+  timePhase("frame: the rest");
   if(fv::timing::enabled())
     if(const std::string line = s.dialTiming.report(std::chrono::steady_clock::now()); !line.empty())
     {
@@ -5479,4 +5496,6 @@ void FvHost::onUpdate()
   s.drawHelpers();
   if(s.view)
     s.view->onFrame();
+  phase.reset();
+  s.lastUpdateEnd = std::chrono::steady_clock::now();
 }
