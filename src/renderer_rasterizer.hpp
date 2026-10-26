@@ -169,6 +169,15 @@ private:
   // can flip DLSS-SR between its inner and the outer extent under a live recording.
   VkExtent2D m_recordedSceneExtent{};
 
+  // Set 3: the scene's TLAS, pushed with the draws, for the ray-traced shadows of the lights the
+  // shadow map does not cover. The recorded commands bake the handle and the ray count, so a change
+  // of either re-records (onRender).
+  nvvk::DescriptorBindings   m_tlasBindings;
+  VkDescriptorSetLayout      m_tlasLayout{};
+  int                        m_rtShadowRays = 4;  // rasterShadowRays: rays per light, 0 none
+  VkAccelerationStructureKHR m_recordedTlas{};
+  int                        m_recordedRtShadowRays = -1;
+
   // ---- DLSS-SR (DLAA / Quality / Balanced / Performance / Ultra) ----
 #if defined(USE_DLSS)
 public:

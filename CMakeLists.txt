@@ -405,6 +405,7 @@ set(SHADER_CAPABILITIES
   spvGroupNonUniformArithmetic   # arithmetic across subgroups
   spvGroupNonUniform             # subgroup ops (required for wave operations)
   nonuniformqualifier            # NonUniformResourceIndex on the bindless texture/sampler arrays
+  spvRayQueryKHR                 # the raster's traced shadows, and the path tracer's ray queries
 )
 
 # Probe DLSS / OptiX / OIDN backend availability here (before compile_slang) so the
@@ -531,9 +532,7 @@ if(DLSS_AVAILABLE)
     EXTRA_FLAGS ${SHADER_EXTRA_FLAGS} -DUSE_DLSS_SHADER=1
     DEBUG_LEVEL ${SHADER_DEBUG_LEVEL}
     OPTIMIZATION_LEVEL ${SHADER_OPT_LEVEL}
-    # The DLSS path traces ray queries from the ray-generation shader too (dlssTraceSkipThinGlass);
-    # the run-time compile adds this capability for every variant (renderer.cpp).
-    CAPABILITIES ${SHADER_CAPABILITIES} spvRayQueryKHR
+    CAPABILITIES ${SHADER_CAPABILITIES}
   )
   list(APPEND GENERATED_SHADER_HEADERS ${GENERATED_DLSS_SHADER_HEADERS})
 endif()

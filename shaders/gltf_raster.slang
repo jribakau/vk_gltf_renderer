@@ -72,7 +72,13 @@
 [[vk::binding(0, 2)]] Texture2D<float>        g_shadowMap;
 [[vk::binding(1, 2)]] SamplerComparisonState  g_shadowCompare;
 [[vk::binding(2, 2)]] SamplerState            g_shadowPoint;
+
+// Set 3 is the scene's TLAS (a push descriptor), for the ray-traced shadows of the lights the
+// shadow map does not cover. Pushed only when the scene has one; pushConst.rtShadowRays is 0 then.
+[[vk::binding(0, 3)]] RaytracingAccelerationStructure g_tlas;
 // clang-format on
+
+#include "surface_opacity.h.slang"
 
 // Interleaved gradient noise (Jimenez 2014): a per-pixel rotation that turns the filter's banding
 // into fine grain.
@@ -153,12 +159,83 @@ float sunShadow(float3 worldPos, float3 geoNormal, float3 toLight, float angular
   return lit / 32.0;
 }
 
-// The shadow term for light `lightIndex` of the raster light loop: 1 unless it is the shadow light.
-float lightShadow(int lightIndex, GltfLight light, float3 worldPos, float3 geoNormal, float2 pixel)
+// How much of a ray from `origin` along `dir` gets past the scene within `maxT`: 0 at an opaque hit,
+// the product of (1 - opacity) over the alpha-tested ones (lash and hair cards, cutouts) otherwise,
+// so their shadows are soft and need no noise. The path tracer's any-hit opacity (getOpacity).
+float rayVisibility(float3 origin, float3 dir, float maxT)
 {
-  if(lightIndex != pushConst.frameInfo.shadowLightIndex || light.type != LightType::eLightTypeDirectional)
+  RayDesc ray;
+  ray.Origin    = origin;
+  ray.Direction = dir;
+  ray.TMin      = 0.0;
+  ray.TMax      = maxT;
+  RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+  q.TraceRayInline(g_tlas, RAY_FLAG_NONE, 0xFF, ray);
+  float transmit = 1.0;
+  while(q.Proceed())
+  {
+    if(q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
+      continue;
+    const float2 b       = q.CandidateTriangleBarycentrics();
+    const float  opacity = getOpacity(pushConst.gltfScene->renderNodes[q.CandidateInstanceIndex()],
+                                      pushConst.gltfScene->renderPrimitives[q.CandidateInstanceID()],
+                                      int(q.CandidatePrimitiveIndex()), float3(1.0 - b.x - b.y, b.x, b.y));
+    if(opacity >= 0.999)
+      q.CommitNonOpaqueTriangleHit();
+    else
+      transmit *= 1.0 - opacity;
+  }
+  return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : transmit;
+}
+
+// A light's shadow traced against the scene: pushConst.rtShadowRays rays over the light's sphere
+// (point, spot: GltfLight.radius) or the sun's disc (directional: its angular size), a Vogel disk
+// turned per pixel, so the penumbra is the one the path tracer gives. From the hit's terminator-safe
+// point, stepped off the surface on the light's side by the hit's own rounding bound.
+float rayTracedShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNormal, float2 pixel)
+{
+  float3 toLight;
+  float  maxT, tanHalf;
+  if(light.type == LightType::eLightTypeDirectional)
+  {
+    toLight = -light.direction;
+    maxT    = 1e30;
+    tanHalf = tan(0.5 * light.angularSizeOrInvRange);
+  }
+  else
+  {
+    const float3 d    = light.position - hit.pos;
+    const float  dist = length(d);
+    if(dist <= light.radius)
+      return 1.0;
+    toLight = d / dist;
+    maxT    = dist - light.radius;
+    tanHalf = light.radius / dist;
+  }
+  const float3 n      = dot(geoNormal, toLight) < 0.0 ? -geoNormal : geoNormal;
+  const float3 origin = (dot(hit.nrm, toLight) > 0.0 ? hit.shadowPos : hit.pos) + n * max(2.0 * hit.offsetDistance, 1e-5);
+  float3       t, b;
+  orthonormalBasis(toLight, t, b);
+  const int   rays = pushConst.rtShadowRays;
+  const float phi  = interleavedGradientNoise(pixel + float2(float(lightIndex) * 7.0, 0.0)) * 6.28318531;
+  float       lit  = 0.0;
+  for(int i = 0; i < rays; ++i)
+  {
+    const float2 o = vogelDisk(i, rays, phi) * tanHalf;
+    lit += rayVisibility(origin, normalize(toLight + o.x * t + o.y * b), maxT);
+  }
+  return lit / float(rays);
+}
+
+// The shadow term for light `lightIndex` of the raster light loop: the shadow map's for the shadow
+// light, traced for every other light when the scene has a TLAS, else 1.
+float lightShadow(int lightIndex, GltfLight light, HitState hit, float3 geoNormal, float2 pixel)
+{
+  if(lightIndex == pushConst.frameInfo.shadowLightIndex && light.type == LightType::eLightTypeDirectional)
+    return sunShadow(hit.pos, geoNormal, -light.direction, light.angularSizeOrInvRange, pixel);
+  if(pushConst.rtShadowRays <= 0)
     return 1.0;
-  return sunShadow(worldPos, geoNormal, -light.direction, light.angularSizeOrInvRange, pixel);
+  return rayTracedShadow(lightIndex, light, hit, geoNormal, pixel);
 }
 
 
@@ -570,7 +647,7 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, hit.pos);  // EXT_lights_ies
     if(all(contrib.intensity == 0.0))
       continue;
-    contrib.intensity *= lightShadow(i, light, hit.pos, hit.geonrm, input.position.xy);
+    contrib.intensity *= lightShadow(i, light, hit, hit.geonrm, input.position.xy);
     if(all(contrib.intensity == 0.0))
       continue;
 
@@ -802,6 +879,13 @@ GroundOutput fragmentGroundMain(GroundVertexOutput input)
                                    fi.envIntensity, 0.0, float3(0.0), false);
   }
 
+  // the floor as a hit for the traced shadows: flat, its rounding bound a float's at that distance
+  HitState groundHit;
+  groundHit.pos            = P;
+  groundHit.nrm            = up;
+  groundHit.geonrm         = up;
+  groundHit.shadowPos      = P;
+  groundHit.offsetDistance = 1e-6 * max(1.0, max(abs(P.x), max(abs(P.y), abs(P.z))));
   for(int i = 0; i < lightCount; i++)
   {
     GltfLight light = (i >= pushConst.gltfScene.numLights) ? makeSkySunLight(fi) : pushConst.gltfScene.lights[i];
@@ -810,7 +894,7 @@ GroundOutput fragmentGroundMain(GroundVertexOutput input)
     contrib.intensity *= evalIesFactor(pushConst.gltfScene, light, P);
     if(all(contrib.intensity == 0.0))
       continue;
-    contrib.intensity *= lightShadow(i, light, P, up, input.position.xy);
+    contrib.intensity *= lightShadow(i, light, groundHit, up, input.position.xy);
     if(all(contrib.intensity == 0.0))
       continue;
     const float3 pointToLight =

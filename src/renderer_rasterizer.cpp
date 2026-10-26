@@ -128,6 +128,10 @@ void Rasterizer::registerParameters(SettingsRegistry* settings)
   // Any invalidation that must also cover those needs a shadow-state check in onRender(): see
   // m_lastWireframe, and m_recordedSceneExtent for the DLSS-driven extent change.
   const auto invalidateRecordedCmd = [this]() { m_recordedSceneCmdDirty = true; };
+  settings->add({.name            = "rasterShadowRays",
+                 .help            = "Rasterizer: rays per light for the traced shadows of the lights the shadow map does not cover (0: none)",
+                 .callbackSuccess = [invalidateRecordedCmd](const nvutils::ParameterBase* const) { invalidateRecordedCmd(); }},
+                &m_rtShadowRays, Persist::eNo, 0, 16);
   settings->add(
       {.name            = "rasterUseRecordedCmd",
        .help            = "Rasterizer: Use recorded command buffers",
@@ -268,6 +272,11 @@ void Rasterizer::initShadowResources(Resources& resources)
   NVVK_CHECK(m_shadowDescPack.init(bindings, m_device, 1));
   NVVK_DBG_NAME(m_shadowDescPack.getLayout());
 
+  // Set 3: the TLAS, a push descriptor
+  m_tlasBindings.addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+  NVVK_CHECK(m_tlasBindings.createDescriptorSetLayout(m_device, VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, &m_tlasLayout));
+  NVVK_DBG_NAME(m_tlasLayout);
+
   const VkSamplerCreateInfo compareInfo{
       .sType         = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter     = VK_FILTER_LINEAR,
@@ -311,6 +320,9 @@ void Rasterizer::deinitShadowResources(Resources& resources)
   m_shadowCompareSampler = {};
   m_shadowPointSampler   = {};
   m_shadowDescPack.deinit();
+  vkDestroyDescriptorSetLayout(m_device, m_tlasLayout, nullptr);
+  m_tlasLayout   = {};
+  m_tlasBindings.clear();
 }
 
 void Rasterizer::createShadowMap(VkCommandBuffer cmd, Resources& resources, int size)
@@ -515,6 +527,17 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
   {
     freeRecordCommandBuffer(resources);
     m_recordedSceneCmdDirty = false;
+  }
+
+  // The traced shadows: rays per light when the scene has a TLAS. Both are baked into the recorded
+  // commands (the push constants, the pushed TLAS), and a rebuilt TLAS is a new handle.
+  const VkAccelerationStructureKHR tlas = resources.sceneRtx.topLevelAS();
+  m_pushConst.rtShadowRays              = tlas != VK_NULL_HANDLE ? m_rtShadowRays : 0;
+  if(tlas != m_recordedTlas || m_pushConst.rtShadowRays != m_recordedRtShadowRays)
+  {
+    freeRecordCommandBuffer(resources);
+    m_recordedTlas         = tlas;
+    m_recordedRtShadowRays = m_pushConst.rtShadowRays;
   }
 
   bool dlssActive = false;
@@ -895,9 +918,9 @@ void Rasterizer::createPipeline(Resources& resources)
   SCOPED_TIMER(__FUNCTION__);
   // Set 1 is the physical sky's scattering LUTs, read by aerial perspective. Always in the layout,
   // even for a scene that never selects that sky: a layout is built once and the environment
-  // changes at runtime. Set 2 is the sun shadow map, the rasterizer's own.
+  // changes at runtime. Set 2 is the sun shadow map, the rasterizer's own; set 3 the TLAS.
   std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.skyLutDescriptorSetLayout,
-                                                          m_shadowDescPack.getLayout()};
+                                                          m_shadowDescPack.getLayout(), m_tlasLayout};
 
   // Push constant is used to pass data to the shader at each frame
   const VkPushConstantRange pushConstantRange{
@@ -961,9 +984,9 @@ bool Rasterizer::compileShader(Resources& resources, bool fromFile)
 
   // Set 1 is the physical sky's scattering LUTs, read by aerial perspective. Always in the layout,
   // even for a scene that never selects that sky: a layout is built once and the environment
-  // changes at runtime. Set 2 is the sun shadow map, the rasterizer's own.
+  // changes at runtime. Set 2 is the sun shadow map, the rasterizer's own; set 3 the TLAS.
   std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.skyLutDescriptorSetLayout,
-                                                          m_shadowDescPack.getLayout()};
+                                                          m_shadowDescPack.getLayout(), m_tlasLayout};
 
   VkShaderCreateInfoEXT shaderInfo{
       .sType                  = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
@@ -1085,7 +1108,8 @@ static void cmdSetCommonRasterState(VkCommandBuffer              cmd,
                                     VkPipelineLayout             layout,
                                     VkShaderEXT                  vs,
                                     VkShaderEXT                  fs,
-                                    VkDescriptorSet              shadowSet)
+                                    VkDescriptorSet              shadowSet,
+                                    const nvvk::DescriptorBindings& tlasBindings)
 {
   dyn.cmdApplyAllStates(cmd);
   dyn.cmdSetViewportAndScissor(cmd, renderExtent);
@@ -1093,6 +1117,13 @@ static void cmdSetCommonRasterState(VkCommandBuffer              cmd,
   vkCmdSetDepthTestEnable(cmd, VK_TRUE);
   // Set 2: the sun shadow map, read by the light loop when the frame names a shadow light.
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1, &shadowSet, 0, nullptr);
+  // Set 3: the TLAS for the traced shadows, when the scene has one (the shader reads it only then)
+  if(VkAccelerationStructureKHR tlas = resources.sceneRtx.topLevelAS())
+  {
+    nvvk::WriteSetContainer write;
+    write.append(tlasBindings.getWriteSet(0), tlas);
+    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 3, uint32_t(write.size()), write.data());
+  }
 
   const auto& bindingDescription    = std::to_array<VkVertexInputBindingDescription2EXT>({
       {.sType     = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
@@ -1125,7 +1156,7 @@ void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkE
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
 
   cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader,
-                          m_fragmentShader, m_shadowDescPack.getSet(0));
+                          m_fragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings);
 
   vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
   vkCmdSetDepthBias(cmd, -1.0f, 0.0f, 1.0f);
@@ -1205,7 +1236,7 @@ void Rasterizer::renderShadowMap(VkCommandBuffer cmd, Resources& resources)
   m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
   cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, extent, m_graphicPipelineLayout, m_shadowVertexShader,
-                          m_shadowFragmentShader, m_shadowDescPack.getSet(0));
+                          m_shadowFragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings);
   vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
   // Slope-scaled: grazing surfaces need more than the shader's constant bias to stay out of their
   // own shadow. Positive is away from the light.
@@ -1226,7 +1257,7 @@ void Rasterizer::renderBlendOnly(VkCommandBuffer cmd, Resources& resources, VkEx
   // No profiler section here: see comment in renderOpaqueOnly() -- this is also called from
   // a secondary command buffer recorded once and replayed every frame.
   cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, renderExtent, m_graphicPipelineLayout, m_vertexShader,
-                          m_fragmentShader, m_shadowDescPack.getSet(0));
+                          m_fragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings);
 
   VkBool32 blendEnable  = VK_TRUE;
   VkBool32 blendDisable = VK_FALSE;
