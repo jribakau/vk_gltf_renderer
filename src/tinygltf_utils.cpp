@@ -490,6 +490,13 @@ FV_materials_hair tinygltf::utils::getHair(const tinygltf::Material& tmat)
     tinygltf::utils::getValue(*ext, "rootFade", gmat.rootFade);
     tinygltf::utils::getValue(*ext, "rootV", gmat.rootV);
     tinygltf::utils::getValue(*ext, "specularFactor", gmat.specularFactor);
+    tinygltf::utils::getValue(*ext, "absorptionFromColor", gmat.absorptionFromColor);
+    if(ext->Has("strandRotation"))
+    {
+      float rotation = 0.0f;
+      tinygltf::utils::getValue(*ext, "strandRotation", rotation);
+      gmat.strandRotation = rotation;
+    }
     gmat.rootAbsorption = hairRgb(*ext, "rootAbsorption");
     gmat.tipAbsorption  = hairRgb(*ext, "tipAbsorption");
   }
@@ -504,6 +511,10 @@ void tinygltf::utils::setHair(tinygltf::Material& tmat, const FV_materials_hair&
   tinygltf::utils::setValue(ext, "rootFade", hair.rootFade);
   tinygltf::utils::setValue(ext, "rootV", hair.rootV);
   tinygltf::utils::setValue(ext, "specularFactor", hair.specularFactor);
+  if(hair.absorptionFromColor)
+    tinygltf::utils::setValue(ext, "absorptionFromColor", true);
+  if(hair.strandRotation)
+    tinygltf::utils::setValue(ext, "strandRotation", *hair.strandRotation);
   setHairRgb(ext, "rootAbsorption", hair.rootAbsorption);
   setHairRgb(ext, "tipAbsorption", hair.tipAbsorption);
 }

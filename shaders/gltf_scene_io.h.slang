@@ -300,6 +300,12 @@ struct GltfShadeMaterial
   float  hairSpecular      = 1.f;  // scales the reflecting orders; 1 is the fibre's Fresnel
   float3 hairRootSigma     = float3(0);
   float3 hairTipSigma      = float3(0);
+  // Hair cards: 1 takes each hit's absorption from its base colour instead of root and tip. The
+  // strand rotation's sine and cosine turn the UV tangent to across the strand as anisotropy does;
+  // both 0, the strand is the UV bitangent.
+  float hairFromColor   = 0;
+  float hairStrandSin   = 0;
+  float hairStrandCos   = 0;
 #endif
 
   // Texture infos (uint16_t, 2 bytes each). Index 0 is the sentinel "no texture" slot

@@ -277,6 +277,12 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf:
     dstMat.hairSpecular     = hair.specularFactor;
     dstMat.hairRootSigma    = hair.rootAbsorption;
     dstMat.hairTipSigma     = hair.tipAbsorption;
+    dstMat.hairFromColor    = hair.absorptionFromColor ? 1.0f : 0.0f;
+    if(hair.strandRotation)
+    {
+      dstMat.hairStrandSin = glm::sin(*hair.strandRotation);
+      dstMat.hairStrandCos = glm::cos(*hair.strandRotation);
+    }
   }
 #endif
 

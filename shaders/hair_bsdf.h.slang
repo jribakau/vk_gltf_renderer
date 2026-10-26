@@ -334,9 +334,38 @@ HairHit hairHitZero()
   return hair;
 }
 
-bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 geoTangent, float3 normal, float3 shadingT, float3 shadingB, out HairHit hair)
+// Chiang et al. 2016's fit of the colour a lock of fibres shows against their absorption, at
+// azimuthal roughness b: colour = exp(-sqrt(σ_a) · fit).
+float hairColorFit(float b)
 {
-  hair       = hairHitZero();
+  b        = saturate(b);
+  float b2 = b * b;
+  float b3 = b2 * b;
+  return 5.969 - 0.215 * b + 2.532 * b2 - 10.73 * b3 + 5.574 * b2 * b2 + 0.245 * b2 * b3;
+}
+
+// The absorption that shows `color`: the fit inverted (Unreal's HairColorToAbsorption). Clamped,
+// since painted root shading near black inverts to an absorption no light gets through, and white
+// to none at all.
+float3 hairColorToAbsorption(float3 color, float b)
+{
+  float3 l = log(clamp(color, float3(0.02), float3(0.98))) / hairColorFit(b);
+  return l * l;
+}
+
+// `baseColor`: the colour the hit shows, for a card's absorption (hairFromColor)
+bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 geoTangent, float3 normal, float3 shadingT,
+                 float3 shadingB, float3 baseColor, out HairHit hair)
+{
+  hair = hairHitZero();
+  // A card's strand is across its measured anisotropy direction, which turns the UV tangent by
+  // (cos t, -sin t) in (tangent, bitangent): the strand is (sin t, cos t), UV v at t = 0
+  if(mat.hairStrandSin != 0.0 || mat.hairStrandCos != 0.0)
+  {
+    const float3 t = geoTangent;
+    geoTangent     = t * mat.hairStrandCos - geoBitangent * mat.hairStrandSin;
+    geoBitangent   = t * mat.hairStrandSin + geoBitangent * mat.hairStrandCos;
+  }
   float len2 = dot(geoBitangent, geoBitangent);
   if(len2 < 1e-8)
     return false;
@@ -349,14 +378,11 @@ bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 g
   across = normalize(across);
 
   float along = saturate(abs(uv.y - mat.hairRootV));
-  hair.sigma  = lerp(mat.hairRootSigma, mat.hairTipSigma, along);
+  hair.sigma  = mat.hairFromColor > 0.0 ? hairColorToAbsorption(baseColor, mat.hairAzimuthal)
+                                        : lerp(mat.hairRootSigma, mat.hairTipSigma, along);
   // The same fit the loader uses to turn absorption into the colour a ribbon shows, so the
   // multiple-scatter body stays the melanin colour and still changes from root to tip.
-  float b   = saturate(mat.hairAzimuthal);
-  float b2  = b * b;
-  float b3  = b2 * b;
-  float fit = 5.969 - 0.215 * b + 2.532 * b2 - 10.73 * b3 + 5.574 * b2 * b2 + 0.245 * b2 * b3;
-  hair.albedo    = exp(-0.45 * sqrt(max(hair.sigma, float3(0.0))) * fit);
+  hair.albedo    = exp(-0.45 * sqrt(max(hair.sigma, float3(0.0))) * hairColorFit(mat.hairAzimuthal));
   hair.betaM     = mat.hairLongitudinal;
   hair.betaN     = mat.hairAzimuthal;
   hair.strand    = strand;

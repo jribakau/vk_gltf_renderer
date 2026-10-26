@@ -450,6 +450,48 @@ TEST(Materials, RibbonHairLetsLightThroughAndReflectsAsAFibre)
   EXPECT_FALSE(cards.material["extensions"].contains("FV_materials_hair"));
 }
 
+const char* kCardHair = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+  {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/Runtime/Textures/hair_d.jpg"}},
+  {"channel":{"id":"Cutout Opacity","type":"float","current_value":1,"image_file":"/Runtime/Textures/hair_a.jpg"}},
+  {"channel":{"id":"Glossy Roughness","type":"float","current_value":0.4}}
+]}]})";
+
+TEST(Materials, HairCardsAreFibresInThePathTracer)
+{
+  const auto s = fv::dson::parseSurface("Hair Base", channelsOf(kCardHair));
+  ASSERT_TRUE(fv::mat::hairCards(s));
+  fv::mat::LowerOptions o;
+  o.anisotropyRotation = 0.3f;
+  const auto  lowered = fv::mat::lower(s, {}, o);
+  const auto& ext     = lowered.material["extensions"];
+  ASSERT_TRUE(ext.contains("FV_materials_hair"));
+  const auto& hair = ext["FV_materials_hair"];
+  // the absorption is the colour each hit shows, the strand across the measured rotation
+  EXPECT_TRUE(hair["absorptionFromColor"].get<bool>());
+  EXPECT_NEAR(hair["strandRotation"].get<float>(), 0.3f, 1e-6f);
+  EXPECT_NEAR(hair["longitudinalRoughness"].get<float>(), lowered.material["pbrMetallicRoughness"]["roughnessFactor"].get<float>(), 1e-6f);
+  EXPECT_NEAR(hair["azimuthalRoughness"].get<float>(), fv::mat::kCardAzimuthalRoughness, 1e-6f);
+  EXPECT_NEAR(hair["specularFactor"].get<float>(), 1.f, 1e-6f);
+  EXPECT_FALSE(hair.contains("rootFade"));
+  // cards whose strands did not agree on a direction run along UV v
+  EXPECT_FALSE(fv::mat::lower(s, {}, {}).material["extensions"]["FV_materials_hair"].contains("strandRotation"));
+
+  // the real-time view and a file for other tools keep the GGX sheet
+  fv::mat::LowerOptions raster;
+  raster.skin = fv::mat::SkinMode::eRaster;
+  EXPECT_FALSE(fv::mat::lower(s, {}, raster).material["extensions"].contains("FV_materials_hair"));
+  fv::mat::LowerOptions file;
+  file.forFile = true;
+  EXPECT_FALSE(fv::mat::lower(s, {}, file).material["extensions"].contains("FV_materials_hair"));
+
+  // a scalp cap and brows are hair by name, painted on the skin; OmniHair ribbons have a fibre of their own
+  EXPECT_FALSE(fv::mat::hairCards(fv::dson::parseSurface("Hair Cap", channelsOf(kCardHair))));
+  EXPECT_FALSE(fv::mat::hairCards(fv::dson::parseSurface("Eyebrows", channelsOf(kCardHair))));
+  EXPECT_FALSE(fv::mat::hairCards(fv::dson::parseSurface("FE Base", channelsOf(omniHair().c_str()))));
+  // hair without a cutout is no card
+  EXPECT_FALSE(fv::mat::hairCards(fv::dson::parseSurface("Hair Base", channelsOf(kSkin))));
+}
+
 TEST(Materials, RibbonHairKeepsRootAndTipAbsorptionApart)
 {
   const std::string dye = R"(,{"channel":{"id":"Hair Root Color","type":"color","current_value":[0.05,0.02,0.01]}},

@@ -1,7 +1,9 @@
 #include <figure/materials/lobes.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string>
 
 namespace fv::mat {
 
@@ -69,6 +71,18 @@ std::optional<MakeupLayer> hairTranslucency(const Surface& s)
   m.map    = t->map;
   m.weight = t->weight;
   return m;
+}
+
+bool hairCards(const Surface& s)
+{
+  if(s.kind != Kind::eHair || s.hairFibre || s.opacity.map.empty())
+    return false;
+  std::string name = s.name;
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  for(const char* painted : {"cap", "scalp", "brow"})
+    if(name.find(painted) != std::string::npos)
+      return false;
+  return true;
 }
 
 Rgb fallbackTranslucencyColor()

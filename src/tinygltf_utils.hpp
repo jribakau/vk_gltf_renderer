@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <tinygltf/json.hpp>  // nlohmann::json, for the Value <-> JSON pair below
 #include <span>
 #include <sstream>
@@ -308,7 +309,12 @@ struct FV_materials_hair
   float     rootFade              = 0.0f;
   float     rootV                 = 0.0f;
   float     specularFactor        = 1.0f;  // scales the reflecting orders
-  bool      active                = false;  // the extension is present
+  // hair cards: the absorption from the colour each hit shows (Chiang's fit inverted), not root/tip
+  bool absorptionFromColor = false;
+  // the strand's direction: across it is the UV tangent turned by this angle as
+  // KHR_materials_anisotropy turns it (radians); unset, the strand is the UV bitangent
+  std::optional<float> strandRotation;
+  bool                 active = false;  // the extension is present
 };
 
 // https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_retroreflection/README.md

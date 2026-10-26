@@ -569,6 +569,22 @@ Lowered lower(const Surface& s, const Edits& e, const LowerOptions& opts)
                                 {"rootV", opts.flipV ? 1.f : 0.f},
                                 {"specularFactor", hairSpecular}};
   }
+  else if(hairCards(s) && !opts.forFile && opts.skin != SkinMode::eRaster)
+  {
+    // DAZ cards as fibres, in the path tracer: each hit's absorption from the colour the card shows
+    // there (Chiang's fit inverted, as Unreal shades cards), so the painted strands keep their
+    // shade, with a white R highlight, a tinted TRT band and light through the lock. The strand
+    // runs across the measured anisotropy rotation, along UV v without one. The real-time view
+    // keeps the GGX sheet above (it lowers with SkinMode::eRaster).
+    const float betaM = clamp(roughnessFactor, 0.f, 1.f);
+    Json        hair  = {{"longitudinalRoughness", betaM},
+                         {"azimuthalRoughness", kCardAzimuthalRoughness},
+                         {"specularFactor", clamp(e.specular.value_or(1.f), 0.f, 1.f)},
+                         {"absorptionFromColor", true}};
+    if(opts.anisotropyRotation)
+      hair["strandRotation"] = *opts.anisotropyRotation;
+    ext["FV_materials_hair"] = hair;
+  }
   else if(ribbonHair)
   {
     // A file for other tools has no fibre BSDF. A flat transmission keeps a stack of ribbons from

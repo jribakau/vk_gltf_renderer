@@ -46,6 +46,14 @@ SkinRole skinRole(const Surface& s);
 // the diffuse light through the strand's Translucency Color. Only from a map of its own.
 std::optional<MakeupLayer> hairTranslucency(const Surface& s);
 
+// Hair cards: a hair surface that is not OmniHair, cut out of its cards by an opacity map. A scalp
+// cap or brows (hair by name too) are painted surfaces lying on the skin, not locks of fibres.
+bool hairCards(const Surface& s);
+
+// The longitudinal and azimuthal roughness (β_m, β_n) a card fibre gets: the glossy lobe's
+// roughness along the strand and pbrt's default across it, which DAZ cards do not author.
+constexpr float kCardAzimuthalRoughness = 0.3f;
+
 // The colour that stands in for a skin's Translucency Color when the file gives none.
 Rgb fallbackTranslucencyColor();
 

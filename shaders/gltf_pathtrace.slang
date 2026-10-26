@@ -615,7 +615,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if GLTF_USE_HAIR
     HairHit hairHit = hairHitZero();
     if(materialIndex >= 0 && materials[materialIndex].hairFactor > 0.0)
-      hairOn = makeHairHit(materials[materialIndex], hit.uv[0], hit.bitangent, hit.tangent, pbrMat.N, pbrMat.T, pbrMat.B, hairHit);
+      hairOn = makeHairHit(materials[materialIndex], hit.uv[0], hit.bitangent, hit.tangent, pbrMat.N, pbrMat.T, pbrMat.B,
+                           pbrMat.baseColor, hairHit);
     if(hairOn && hasFlag(pushConst.flags, PathtracerFlags::ePtApproximateCaustics))
       hairHit.betaM = max(hairHit.betaM, pt.pathRoughness);  // the fibre's longitudinal roughness, as the lobes above
     // One offset across the fibre for this hit: the samples average over it to the fibre's response,
