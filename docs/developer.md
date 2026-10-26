@@ -394,6 +394,11 @@ Some things about the transport are worth knowing before touching it:
   pick, and an emitter it reaches converts its pdf by the summed distance (`nullDistance`). The
   light behind glass is then counted once, as that vertex's shadow ray or its BSDF ray. A rough or
   scattering surface blocks shadow rays, and the BSDF ray that reaches a light behind it has weight 1.
+- The environment's **compensated table** (`EnvCompensatedCell`) carries cumulative tables of its
+  distribution beside the alias method's: each cell's row-conditional CDF in `cdf`, and the row
+  marginal in `height` entries after the grid (`compensatedEnvTableSize`). Sobol frames invert them
+  (`environmentSampleCompensatedStratified`), which keeps the points stratified; DLSS frames take the
+  alias method's O(1) pick. Both give a cell the same pdf.
 - The GGX reflection lobes use the **height-correlated** Smith term; their albedo (the layering's
   `ggxSchlickAlbedo`, the metal's multiple-scattering compensation `ggxMultiScatterFactor`) comes
   from a table baked from the lobe (`nvshaders/ggx_albedo_table.h.slang`). Change the lobe, rerun

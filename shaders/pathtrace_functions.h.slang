@@ -912,7 +912,12 @@ void sampleLights(in float3       pos,
     // The alias table may be coarser than the image (a baked sky), so sample on its own grid.
     const uint2 samplingGrid = uint2(pushConst.frameInfo->envSamplingGridWidth, pushConst.frameInfo->envSamplingGridHeight);
     float4 radiance_pdf;
-    if(compensatedEnv)
+    // A Sobol point inverts the table's CDF, which keeps the points stratified over the environment;
+    // the alias method's O(1) pick scatters them, fine for the independent samples of DLSS frames
+    if(compensatedEnv && given)
+      radiance_pdf.xyz = environmentSampleCompensatedStratified(texturesHdr[HDR_IMAGE_INDEX], envSamplingCompensated, samplingGrid,
+                                                                rand_val, directLight.direction, radiance_pdf.w);
+    else if(compensatedEnv)
       radiance_pdf.xyz = environmentSampleCompensated(texturesHdr[HDR_IMAGE_INDEX], envSamplingCompensated, samplingGrid,
                                                       rand_val, directLight.direction, radiance_pdf.w);
     else

@@ -248,7 +248,7 @@ TEST(CompensatedAliasTable, ThePdfIsTheExcessOverTheMean)
   const uint32_t                    W = 16, H = 8;
   const std::vector<double>         area       = cellSolidAngles(W, H);
   const std::vector<float>          importance = skyWithSuns(W, H, area, 3);
-  std::vector<shaderio::EnvCompensatedCell> cells(area.size());
+  std::vector<shaderio::EnvCompensatedCell> cells(nvvk::compensatedEnvTableSize(W, H));
   nvvk::buildCompensatedEnvAliasmap(importance, W, H, cells);
 
   double total = 0.0;
@@ -258,7 +258,7 @@ TEST(CompensatedAliasTable, ThePdfIsTheExcessOverTheMean)
 
   double integral = 0.0, ratio = -1.0;
   int    zeros    = 0;
-  for(size_t i = 0; i < cells.size(); ++i)
+  for(size_t i = 0; i < area.size(); ++i)
   {
     integral += cells[i].pdf * area[i];
     const double excess = importance[i] / area[i] - mean;
@@ -275,13 +275,13 @@ TEST(CompensatedAliasTable, ThePdfIsTheExcessOverTheMean)
     }
   }
   EXPECT_NEAR(integral, 1.0, 1e-4);
-  EXPECT_GT(zeros, int(cells.size()) / 4);
+  EXPECT_GT(zeros, int(area.size()) / 4);
 
-  std::vector<shaderio::EnvAccel> accel(cells.size());
-  for(size_t i = 0; i < cells.size(); ++i)
+  std::vector<shaderio::EnvAccel> accel(area.size());
+  for(size_t i = 0; i < area.size(); ++i)
     accel[i] = {.alias = cells[i].alias, .q = cells[i].q};
   const std::vector<double> picked = computeSamplingDistribution(accel);
-  for(size_t i = 0; i < cells.size(); ++i)
+  for(size_t i = 0; i < area.size(); ++i)
     EXPECT_NEAR(picked[i], cells[i].pdf * area[i], 1e-4) << i;
 }
 
@@ -293,10 +293,10 @@ TEST(CompensatedAliasTable, AUniformEnvironmentKeepsTheFullOne)
   std::vector<float>                        importance(area.size());
   for(size_t i = 0; i < area.size(); ++i)
     importance[i] = float(2.0 * area[i]);
-  std::vector<shaderio::EnvCompensatedCell> cells(area.size());
+  std::vector<shaderio::EnvCompensatedCell> cells(nvvk::compensatedEnvTableSize(W, H));
   nvvk::buildCompensatedEnvAliasmap(importance, W, H, cells);
-  for(const auto& c : cells)
-    EXPECT_NEAR(c.pdf, 1.0 / (4.0 * kPi), 1e-5);
+  for(size_t i = 0; i < area.size(); ++i)
+    EXPECT_NEAR(cells[i].pdf, 1.0 / (4.0 * kPi), 1e-5);
 }
 
 // A furnace of the MIS it is for: light samples from the compensated table and uniform "BSDF"
@@ -307,7 +307,7 @@ TEST(CompensatedAliasTable, MisWithTheBsdfSampleIsUnbiased)
   const uint32_t                            W = 16, H = 8;
   const std::vector<double>                 area       = cellSolidAngles(W, H);
   const std::vector<float>                  importance = skyWithSuns(W, H, area, 9);
-  std::vector<shaderio::EnvCompensatedCell> cells(area.size());
+  std::vector<shaderio::EnvCompensatedCell> cells(nvvk::compensatedEnvTableSize(W, H));
   nvvk::buildCompensatedEnvAliasmap(importance, W, H, cells);
 
   double exact = 0.0;
@@ -323,7 +323,7 @@ TEST(CompensatedAliasTable, MisWithTheBsdfSampleIsUnbiased)
   for(int s = 0; s < N; ++s)
   {
     // The light sample: the alias method as environmentSampleCompensated runs it
-    const size_t                       idx   = std::min(size_t(u(rng) * cells.size()), cells.size() - 1);
+    const size_t                       idx   = std::min(size_t(u(rng) * area.size()), area.size() - 1);
     const shaderio::EnvCompensatedCell entry = cells[idx];
     const size_t                       cell  = (u(rng) < entry.q) ? idx : entry.alias;
     const double                       L     = importance[cell] / area[cell];
@@ -334,4 +334,55 @@ TEST(CompensatedAliasTable, MisWithTheBsdfSampleIsUnbiased)
     sum += importance[b] / area[b] / bsdfPdf * powerWeight(bsdfPdf, cells[b].pdf);
   }
   EXPECT_NEAR(sum / N / exact, 1.0, 0.01);
+}
+
+// The cumulative tables after the grid (EnvCompensatedCell::cdf) pick each cell with the probability
+// the alias method gives it, pdf times solid angle, as environmentSampleCompensatedStratified inverts
+// them; and the inversion is monotonic, so stratified points stay in order over the rows and along
+// each row.
+TEST(CompensatedAliasTable, TheCumulativeTablesPickWhatTheAliasMethodDoes)
+{
+  const uint32_t                            W = 16, H = 8;
+  const std::vector<double>                 area       = cellSolidAngles(W, H);
+  const std::vector<float>                  importance = skyWithSuns(W, H, area, 5);
+  std::vector<shaderio::EnvCompensatedCell> cells(nvvk::compensatedEnvTableSize(W, H));
+  nvvk::buildCompensatedEnvAliasmap(importance, W, H, cells);
+  const size_t rows = size_t(W) * H;
+
+  // The shader's two searches: the first entry whose cdf passes u
+  const auto search = [&](size_t first, uint32_t count, float u) {
+    uint32_t lo = 0, hi = count - 1;
+    while(lo < hi)
+    {
+      const uint32_t mid = (lo + hi) / 2;
+      if(cells[first + mid].cdf > u)
+        hi = mid;
+      else
+        lo = mid + 1;
+    }
+    return lo;
+  };
+  const int           n = 2048;
+  std::vector<double> picked(rows, 0.0);
+  uint32_t            lastRow = 0;
+  for(int a = 0; a < n; ++a)
+  {
+    const float    ux = (a + 0.5f) / n;
+    const uint32_t y  = search(rows, H, ux);
+    EXPECT_GE(y, lastRow);
+    lastRow           = y;
+    uint32_t lastCell = 0;
+    for(int b = 0; b < n; ++b)
+    {
+      const uint32_t x = search(size_t(y) * W, W, (b + 0.5f) / n);
+      EXPECT_GE(x, lastCell);
+      lastCell = x;
+      picked[size_t(y) * W + x] += 1.0 / (double(n) * n);
+    }
+  }
+  for(size_t i = 0; i < rows; ++i)
+    EXPECT_NEAR(picked[i], cells[i].pdf * area[i], 2e-3) << i;
+  EXPECT_EQ(cells[rows + H - 1].cdf, 1.0F);
+  for(uint32_t y = 0; y < H; ++y)
+    EXPECT_EQ(cells[size_t(y) * W + W - 1].cdf, 1.0F) << y;
 }
