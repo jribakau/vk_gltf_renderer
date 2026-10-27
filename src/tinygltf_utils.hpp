@@ -1567,6 +1567,26 @@ void computeTangents(std::span<const glm::vec3> positions,
                      std::span<const glm::vec2> uvs,
                      std::span<const uint32_t>  indices,
                      std::span<glm::vec4>       tangents);
+// Which triangles touch each vertex, in the order computeTangents meets them, so the tangents near
+// vertices that moved can be made again without the rest (updateTangents). Built once per index set.
+struct TangentAdjacency
+{
+  std::vector<uint32_t> start;    // vertex v's corners are corners[start[v]] up to corners[start[v + 1]]
+  std::vector<uint32_t> corners;  // places in the index list (3 * triangle + corner), in list order
+};
+// The adjacency of `indices`' triangles over `vertexCount` vertices; none when an index is past them.
+std::optional<TangentAdjacency> tangentAdjacency(std::span<const uint32_t> indices, size_t vertexCount);
+// computeTangents again where the `changed` vertices (a position, normal or UV that moved) reach:
+// each of them and every vertex sharing a triangle with one. The rest of `tangents` is left as it
+// is, so tangents computeTangents made before the move come out as it makes them after, bit for bit.
+// `adjacency` is tangentAdjacency(indices, tangents.size()); false (nothing written) when it isn't.
+bool updateTangents(std::span<const glm::vec3> positions,
+                    std::span<const glm::vec3> normals,
+                    std::span<const glm::vec2> uvs,
+                    std::span<const uint32_t>  indices,
+                    const TangentAdjacency&    adjacency,
+                    std::span<const uint32_t>  changed,
+                    std::span<glm::vec4>       tangents);
 
 // Why `primitive` cannot be drawn, or "" when it can: a POSITION the renderer reads, at least one
 // vertex, and SCALAR unsigned indices with at least one index. A scene skips such a primitive.

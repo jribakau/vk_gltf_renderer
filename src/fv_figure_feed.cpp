@@ -311,10 +311,10 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
   return r;
 }
 
-std::vector<glm::vec4> FigureFeed::tangentsOf(const rs::MeshRecord& record, const std::vector<bool>& groups) const
+std::vector<uint32_t> FigureFeed::tangentIndices(const rs::MeshRecord& record, const std::vector<bool>& groups) const
 {
-  // one set over the triangles of every group that needs them (the build's primitives share the
-  // vertices, and nvvkgltf::Scene makes them so per attribute set)
+  // one set of tangents over the triangles of every group that needs them (the build's primitives
+  // share the vertices, and nvvkgltf::Scene makes them so per attribute set)
   std::vector<uint32_t> indices;
   for(size_t k = 0; k < record.submeshes.size() && k < groups.size(); k++)
     if(groups[k])
@@ -322,11 +322,7 @@ std::vector<glm::vec4> FigureFeed::tangentsOf(const rs::MeshRecord& record, cons
       const rs::Submesh& s = record.submeshes[k];
       indices.insert(indices.end(), record.indices.begin() + s.firstIndex, record.indices.begin() + s.firstIndex + s.indexCount);
     }
-  if(indices.empty())
-    return {};
-  std::vector<glm::vec4> tangents(record.positions.size(), glm::vec4(0.f));
-  tinygltf::utils::computeTangents(record.positions, record.normals, record.uv0, indices, tangents);
-  return tangents;
+  return indices;
 }
 
 void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& drawing, std::span<const int> moved)
@@ -363,8 +359,15 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     const bool              flipV    = !m_options.build.texturesFlipped;
     if(f.id.isNone() || f.geo.lock() != m.geo || f.hidden != m.geo->hiddenPolys || f.flipV != flipV || f.tangentGroups != tangents)
     {
-      rs::MeshRecord r = meshRecord(figure, int(mi), drawn);
-      r.tangents       = tangentsOf(r, tangents);
+      rs::MeshRecord r   = meshRecord(figure, int(mi), drawn);
+      f.tangentIndices   = tangentIndices(r, tangents);
+      f.tangentAdjacency = std::nullopt;
+      if(!f.tangentIndices.empty())
+      {
+        r.tangents.assign(r.positions.size(), glm::vec4(0.f));
+        tinygltf::utils::computeTangents(r.positions, r.normals, r.uv0, f.tangentIndices, r.tangents);
+        f.tangentAdjacency = tinygltf::utils::tangentAdjacency(f.tangentIndices, r.positions.size());
+      }
       oldMeshes.push_back(f.id);
       f.id            = m_scene.addMesh(std::move(r));
       f.geo           = m.geo;
@@ -385,15 +388,27 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
         std::memcpy(normals.data(), geo.normal.data(), count * sizeof(glm::vec3));
       }
       std::vector<glm::vec4> t;
-      if(std::find(tangents.begin(), tangents.end(), true) != tangents.end())
+      if(!f.tangentIndices.empty())
       {
-        rs::MeshRecord probe;
-        probe.positions = positions;
-        probe.normals   = normals;
-        probe.uv0       = m_scene.mesh(f.id)->uv0;
-        probe.indices   = m_scene.mesh(f.id)->indices;
-        probe.submeshes = m_scene.mesh(f.id)->submeshes;
-        t               = tangentsOf(probe, tangents);
+        // made again only near the vertices that moved: a vertex's tangent reads the triangles
+        // touching it, and the old ones were made over the same triangles
+        const rs::MeshRecord& had  = *m_scene.mesh(f.id);
+        bool                  made = false;
+        if(f.tangentAdjacency && had.positions.size() == count && had.normals.size() == normals.size() && had.tangents.size() == count)
+        {
+          std::vector<uint32_t> changed;
+          for(uint32_t v = 0; v < uint32_t(count); v++)
+            if(std::memcmp(&had.positions[v], &positions[v], sizeof(glm::vec3)) != 0
+               || (!normals.empty() && std::memcmp(&had.normals[v], &normals[v], sizeof(glm::vec3)) != 0))
+              changed.push_back(v);
+          t    = had.tangents;
+          made = tinygltf::utils::updateTangents(positions, normals, had.uv0, f.tangentIndices, *f.tangentAdjacency, changed, t);
+        }
+        if(!made)
+        {
+          t.assign(count, glm::vec4(0.f));
+          tinygltf::utils::computeTangents(positions, normals, had.uv0, f.tangentIndices, t);
+        }
       }
       m_scene.setMeshVertices(f.id, std::move(positions), std::move(normals), std::move(t));
     }

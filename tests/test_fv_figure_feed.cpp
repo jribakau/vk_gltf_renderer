@@ -20,7 +20,8 @@
 // The figure feed against the build (daz-viewer docs/retained-scene-plan.md, oracle 4): a figure fed
 // straight into the retained scene holds what importing its fv::build::buildGltf model holds, and
 // the importer is held to nvvkgltf::Scene by test_retained_import. Checked after a load, a dial, a
-// pose, hidden polygons, a hidden node and a taken-off one, and for DAZ instances.
+// pose, hidden polygons, a hidden node and a taken-off one, a dial on a normal-mapped body, and for
+// DAZ instances.
 
 #include <gtest/gtest.h>
 
@@ -252,6 +253,36 @@ TEST(FigureFeed, ADialAPoseAndHiddenPolygonsAreFedAsTheBuildHasThem)
   EXPECT_EQ(fed.mesh(body), nullptr);  // the old record went with its last instance
   EXPECT_EQ(fed.mesh(feed.meshOf(0))->submeshes[0].indexCount, 0u);
   {
+    rs::RetainedScene imported;
+    importBuild(imported, f->loaded.scene, f->loaded.root, options);
+    expectSame(fed, imported, true);
+  }
+}
+
+// A normal-mapped body under a dial: its tangents are made again only near the vertices that moved
+// (tinygltf::utils::updateTangents), and they are the ones the build's import makes over all of it.
+TEST(FigureFeed, ADialOnANormalMappedBodyRemakesItsTangentsAsTheBuildHasThem)
+{
+  const auto f = loadBox();
+  for(fv::Material& m : f->loaded.scene.materials)
+    m.surface.normalMap = "/Runtime/Textures/Test/BoxDetail_NM.png";
+  const auto        options = textured();
+  rs::RetainedScene fed;
+  fv::FigureFeed    feed(fed, {.build = options});
+  feed.sync(f->loaded.scene, f->loaded.root);
+  const rs::MeshId body = feed.meshOf(0);
+  ASSERT_FALSE(fed.mesh(body)->tangents.empty());
+
+  for(const double value : {1.0, 0.5})
+  {
+    f->morphs->set("Stretch", value);
+    f->morphs->settled();
+    std::vector<int> moved;
+    for(const auto& c : f->drain().meshes)
+      moved.push_back(c.mesh);
+    ASSERT_FALSE(moved.empty());
+    feed.sync(f->loaded.scene, f->loaded.root, moved);
+    EXPECT_EQ(feed.meshOf(0), body);
     rs::RetainedScene imported;
     importBuild(imported, f->loaded.scene, f->loaded.root, options);
     expectSame(fed, imported, true);

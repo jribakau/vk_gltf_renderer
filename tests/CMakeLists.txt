@@ -119,6 +119,8 @@ set(TEST_SOURCES
     # The figure feed: a figure straight into the retained scene, held to the import of its build
     test_fv_figure_feed.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp
+    # Tangents remade over the one-ring of moved vertices, held to a full recompute
+    test_retained_tangents.cpp
     # Figure Viewer texture sources outside the cooked set, Original textures (header only)
     test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough

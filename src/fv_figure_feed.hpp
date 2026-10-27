@@ -37,6 +37,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -44,6 +45,7 @@
 #include <figure/gltf/gltf_build.hpp>
 
 #include "scene_retained.hpp"
+#include "tinygltf_utils.hpp"
 
 namespace fv {
 
@@ -91,7 +93,11 @@ private:
     std::map<std::string, std::vector<int32_t>> hidden;  // the geometry's hidden polygons
     bool                                        flipV = false;
     std::vector<bool>                           tangentGroups;  // the drawn groups whose materials need tangents
-    rs::SkinId                                  skin;
+    // the triangles its tangents are made over (none: it has none), and which touch each vertex,
+    // so moved vertices make only the tangents near them again
+    std::vector<uint32_t>                            tangentIndices;
+    std::optional<tinygltf::utils::TangentAdjacency> tangentAdjacency;
+    rs::SkinId                                       skin;
   };
   struct FedTexture
   {
@@ -107,7 +113,7 @@ private:
   rs::MaterialId   materialFor(int material);
   std::vector<bool>      tangentGroups(const std::vector<int>& materials) const;
   rs::MeshRecord         meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn) const;
-  std::vector<glm::vec4> tangentsOf(const rs::MeshRecord& record, const std::vector<bool>& groups) const;
+  std::vector<uint32_t>  tangentIndices(const rs::MeshRecord& record, const std::vector<bool>& groups) const;
 
   rs::RetainedScene& m_scene;
   FigureFeedOptions  m_options;

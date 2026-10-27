@@ -219,7 +219,8 @@ src/
 ├── gizmo_visuals_vk.cpp/hpp    # Helper overlay manager
 │
 ├── undo_redo.cpp/hpp           # Full undo/redo system for scene editing
-├── tinygltf_utils.cpp/hpp      # TinyGLTF material + node extension extraction (visibility/selectability/hoverability)
+├── tinygltf_utils.cpp/hpp      # TinyGLTF material + node extension extraction (visibility/selectability/hoverability);
+│                               #   tangents, also over plain arrays and remade near vertices that moved
 ├── tinygltf_converter.cpp/hpp  # OBJ to glTF converter
 ├── tiny_stb_implementation.cpp # STB library implementation (single compilation unit)
 ├── pipeline_cache_util.cpp/hpp # Vulkan pipeline cache persistence
