@@ -149,6 +149,7 @@ src/
 ├── gltf_scene_vk.cpp/hpp       # GPU buffer/texture upload (SceneVk)
 ├── gltf_scene_omm.cpp/hpp      # Opacity micromaps (SceneOmm), EXT_mesh_opacity_micromap → VK_KHR_opacity_micromap
 ├── gltf_scene_rtx.cpp/hpp      # BLAS/TLAS acceleration structures (SceneRtx)
+├── tlas_policy.hpp             # `tlasPolicy`: when a TLAS sync builds rather than updates (unit-tested)
 ├── gltf_scene_gpu.cpp/hpp      # SceneGpu — coordinates SceneVk / AnimationVk / SceneRtx / TransformComputeVk
 ├── gltf_scene_editor.cpp/hpp   # Scene editing (add/delete/duplicate nodes)
 ├── gltf_scene_animation.cpp/hpp# AnimationSystem: playback/interpolation (CPU), via Scene::animation()

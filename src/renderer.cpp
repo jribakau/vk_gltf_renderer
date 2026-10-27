@@ -606,6 +606,24 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   // renaming of those parameters, it is a different model. A persisted .ini still carrying them
   // is handled by SettingsRegistry, which ignores keys it does not know.
 
+  // What a TLAS sync does with the existing structure (tlas_policy.hpp): live, read at the next sync.
+  // Not remembered: it is for measuring BUILD against UPDATE, and `update` stays the default until
+  // that decides it.
+  m_settings.add({.name = "tlasPolicy",
+                  .help = "TLAS sync: build (rebuild it every time) or update (refit it in place where valid)",
+                  .callbackSuccess =
+                      [this](const nvutils::ParameterBase* const) {
+                        if(const std::optional<TlasPolicy> policy = parseTlasPolicy(m_resources.settings.tlasPolicy))
+                        {
+                          m_resources.sceneRtx.setTlasPolicy(*policy);
+                          return;
+                        }
+                        const char* kept = tlasPolicyName(m_resources.sceneRtx.tlasPolicy());
+                        LOGW("--tlasPolicy: '%s' is neither build nor update; it stays %s.\n", m_resources.settings.tlasPolicy.c_str(), kept);
+                        m_resources.settings.tlasPolicy = kept;
+                      }},
+                 &m_resources.settings.tlasPolicy, Persist::eNo);
+
   // Gizmo, grid and snap: previously persisted but unreachable from the command line or MCP.
   m_settings.add({"uiShowGrid", "Show the infinite grid"}, &m_resources.settings.showGrid, Persist::eYes);
   m_settings.add({"uiShowGizmo", "Show the transform gizmo on the selected node"}, &m_resources.settings.showGizmo, Persist::eYes);
@@ -886,6 +904,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     m_profilerTimeline = g_profilerManager.createTimeline({.name = "Primary Timeline"});
     m_profilerGpuTimer.init(m_profilerTimeline, m_app->getDevice(), m_app->getPhysicalDevice(),
                             int32_t(m_app->getQueue(0).familyIndex), false);
+    m_resources.sceneRtx.setProfiler(&m_profilerGpuTimer);
   }
 
 

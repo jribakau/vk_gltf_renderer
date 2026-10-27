@@ -145,6 +145,8 @@ set(TEST_SOURCES
     test_denoiser_schedule.cpp
     # Path tracer samples per frame: ending on stops, the Auto SPP controller (header only)
     test_sample_schedule.cpp
+    # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)
+    test_tlas_policy.cpp
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Optional external generation bridge

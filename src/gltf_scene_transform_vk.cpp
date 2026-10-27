@@ -473,7 +473,7 @@ void TransformComputeVk::createGpuBuffers(nvvk::CmdUploaderInterface& staging, c
 //   3. Phase 2 — write render-node SSBO + TLAS instance transforms (BLAS ref preserved on GPU).
 //      RenderNodeGpuMapping is refreshed only in createGpuBuffers when getSceneGraphRevision() changes
 //      (parseScene(), variant-driven material IDs, etc.).
-//   4. TLAS in-place update from the instance buffer (cmdUpdateTlasFromInstanceBuffer).
+//   4. TLAS build or in-place update from the instance buffer (cmdUpdateTlasFromInstanceBuffer, per tlasPolicy).
 //   5. If tlasVisibilityNeedsCpuSync — syncTopLevelAS refreshes instance BLAS refs from CPU Scene.
 void TransformComputeVk::dispatchTransformUpdate(VkCommandBuffer cmd,
 

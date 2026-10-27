@@ -26,6 +26,7 @@
 
 #include <cinttypes>
 #include <numeric>
+#include <optional>
 
 #include <nvutils/alignment.hpp>
 #include <nvutils/logger.hpp>
@@ -33,6 +34,7 @@
 #include <nvvk/barriers.hpp>
 #include <nvvk/check_error.hpp>
 #include <nvvk/debug_util.hpp>
+#include <nvvk/profiler_vk.hpp>
 
 #include "gltf_scene_rtx.hpp"
 #include "gltf_scene_vk.hpp"
@@ -439,6 +441,11 @@ void nvvkgltf::SceneRtx::rebuildTopLevelAS(VkCommandBuffer             cmd,
                                            const nvvkgltf::Scene&         scene,
                                            const std::unordered_set<int>& dirtyRenderNodes)
 {
+  // Every per-frame TLAS sync, whatever it does (recreate, build, update), in one profiler section.
+  std::optional<nvvk::ProfilerGpuTimer::FrameSection> timerSection;
+  if(m_profiler)
+    timerSection.emplace(*m_profiler, m_profiler->cmdFrameBeginSection(cmd, "TLAS build"), cmd);
+
   const auto& drawObjects = scene.getRenderNodes();
 
   // True the moment any single instance's active status (accelerationStructureReference zero vs.
@@ -511,11 +518,11 @@ void nvvkgltf::SceneRtx::rebuildTopLevelAS(VkCommandBuffer             cmd,
     m_memoryTracker.track(kMemCategoryScratch, m_tlasScratchBuffer.allocation);
   }
 
-  // A fresh BUILD is required whenever any instance's active status changed (see
-  // anyActiveStateChanged's doc comment above for why a net-count check isn't enough) - otherwise
-  // an in-place UPDATE is sufficient (and cheaper) for pure transform/flags changes on already-
-  // active instances.
-  if(anyActiveStateChanged)
+  // A BUILD under the `build` policy. Under `update`, a fresh BUILD is still required whenever any
+  // instance's active status changed (see anyActiveStateChanged's doc comment above for why a
+  // net-count check isn't enough) - otherwise an in-place UPDATE refits pure transform/flags changes
+  // on already-active instances.
+  if(tlasSyncBuilds(m_tlasPolicy, anyActiveStateChanged))
   {
     m_tlasBuildData.cmdBuildAccelerationStructure(cmd, m_tlasAccel.accel, m_tlasScratchBuffer.address);
   }
@@ -528,11 +535,17 @@ void nvvkgltf::SceneRtx::rebuildTopLevelAS(VkCommandBuffer             cmd,
 }
 
 //--------------------------------------------------------------------------------------------------
-// In-place TLAS update after compute wrote instance transforms into `m_instancesBuffer` (CPU shadow vector may be stale).
+// TLAS build or update (the policy's choice) after compute wrote instance transforms into
+// `m_instancesBuffer` (CPU shadow vector may be stale). The compute pass keeps every instance's
+// BLAS reference, so no instance becomes active here and `update` can always refit.
 void nvvkgltf::SceneRtx::cmdUpdateTlasFromInstanceBuffer(VkCommandBuffer cmd)
 {
   if(m_tlasAccel.accel == VK_NULL_HANDLE || m_instancesBuffer.buffer == VK_NULL_HANDLE || m_tlasInstances.empty())
     return;
+
+  std::optional<nvvk::ProfilerGpuTimer::FrameSection> timerSection;
+  if(m_profiler)
+    timerSection.emplace(*m_profiler, m_profiler->cmdFrameBeginSection(cmd, "TLAS build"), cmd);
 
   if(m_tlasScratchBuffer.buffer == VK_NULL_HANDLE)
   {
@@ -545,7 +558,10 @@ void nvvkgltf::SceneRtx::cmdUpdateTlasFromInstanceBuffer(VkCommandBuffer cmd)
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                          VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 
-  m_tlasBuildData.cmdUpdateAccelerationStructure(cmd, m_tlasAccel.accel, m_tlasScratchBuffer.address);
+  if(tlasSyncBuilds(m_tlasPolicy, false))
+    m_tlasBuildData.cmdBuildAccelerationStructure(cmd, m_tlasAccel.accel, m_tlasScratchBuffer.address);
+  else
+    m_tlasBuildData.cmdUpdateAccelerationStructure(cmd, m_tlasAccel.accel, m_tlasScratchBuffer.address);
 
   nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 }

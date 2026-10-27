@@ -33,7 +33,7 @@ For each RenderNode (a mesh instance), the shader computes the final object-to-w
 
 The SceneVk render-node SSBO (used by rasterization/ray-query shaders)
 The TLAS instance buffer (used by ray tracing — BLAS reference is preserved from the GPU, never touched by CPU)
-Then cmdUpdateTlasFromInstanceBuffer() does a fast in-place TLAS rebuild.
+Then cmdUpdateTlasFromInstanceBuffer() builds or refits the TLAS from that buffer, as the `tlasPolicy` setting says.
 
 
 CPU writes once (at load / topo change):

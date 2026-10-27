@@ -26,6 +26,11 @@
 
 #include "gltf_scene_vk.hpp"
 #include "gpu_memory_tracker.hpp"
+#include "tlas_policy.hpp"
+
+namespace nvvk {
+class ProfilerGpuTimer;
+}
 
 /*-------------------------------------------------------------------------------------------------
 # class nvvkgltf::SceneRtx
@@ -54,6 +59,14 @@ public:
   using DeferredFreeFunc = std::function<void(std::function<void()>&&)>;
   void setDeferredFree(DeferredFreeFunc func) { m_deferredFree = std::move(func); }
 
+  // Optional: the frame's GPU profiler, for a "TLAS build" frame section around each TLAS sync.
+  void setProfiler(nvvk::ProfilerGpuTimer* profiler) { m_profiler = profiler; }
+
+  // Whether a TLAS sync that keeps the instance count builds or updates (the `tlasPolicy` setting,
+  // tlas_policy.hpp). Read at each sync.
+  void       setTlasPolicy(TlasPolicy policy) { m_tlasPolicy = policy; }
+  TlasPolicy tlasPolicy() const { return m_tlasPolicy; }
+
   // ---------- Create ----------
   void createBottomLevelAccelerationStructure(const nvvkgltf::Scene& scene, const SceneVk& sceneVk, VkBuildAccelerationStructureFlagsKHR flags);
   // Build BLAS on GPU; may return false if budget exceeded (call again to continue). Returns true when done.
@@ -72,7 +85,8 @@ public:
   // Sync TLAS from Scene dirty flags (reads + clears renderNodesRtx). Returns true if TLAS was updated.
   [[nodiscard]] bool syncTopLevelAS(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, nvvkgltf::Scene& scene);
 
-  // GPU transform path: instance buffer was written by compute — run in-place TLAS update only (no CPU instance upload).
+  // GPU transform path: instance buffer was written by compute — build or update the TLAS from it, as the
+  // policy says (no CPU instance upload).
   void                          cmdUpdateTlasFromInstanceBuffer(VkCommandBuffer cmd);
   [[nodiscard]] VkDeviceAddress getInstancesBufferAddress() const { return m_instancesBuffer.address; }
 
@@ -141,8 +155,10 @@ protected:
   };
   std::vector<InstanceBits> m_instanceFlagsCache;
 
-  DeferredFreeFunc m_deferredFree;   // Optional: schedules deferred GPU resource destruction
-  GpuMemoryTracker m_memoryTracker;  // GPU memory tracking
+  DeferredFreeFunc        m_deferredFree;                       // Optional: schedules deferred GPU resource destruction
+  GpuMemoryTracker        m_memoryTracker;                      // GPU memory tracking
+  nvvk::ProfilerGpuTimer* m_profiler   = nullptr;               // Optional: times the TLAS syncs
+  TlasPolicy              m_tlasPolicy = TlasPolicy::eUpdate;  // See setTlasPolicy()
 };
 
 }  // namespace nvvkgltf
