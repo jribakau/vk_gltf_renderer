@@ -113,6 +113,9 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/scene_import_gltf.cpp
     test_retained_export.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_export_gltf.cpp
+    # Its shader features, counted, against the detector on its export
+    test_retained_features.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_feature_detection.cpp
     # The figure feed: a figure straight into the retained scene, held to the import of its build
     test_fv_figure_feed.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp

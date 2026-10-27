@@ -89,6 +89,9 @@ struct SceneFeatureSet
   // unnecessary recompiles when a smaller scene is merged into the current one.
   bool isSupersetOf(const SceneFeatureSet& other) const;
 
+  // Adds every feature `other` needs (a scene's set is the union of its materials').
+  SceneFeatureSet& operator|=(const SceneFeatureSet& other);
+
   bool operator==(const SceneFeatureSet& o) const;
   bool operator!=(const SceneFeatureSet& o) const { return !(*this == o); }
 
@@ -105,10 +108,15 @@ private:
   std::bitset<kFeatureCount> m_bits{};
 };
 
-// Walk a glTF material list and detect which gated extensions appear. A material is
-// flagged as using an extension if its `extensions` map contains the corresponding
-// KHR_materials_* key. KHR_texture_transform is checked on core material texture
-// infos and texture-info objects nested inside material extension payloads.
+// The gated extensions one material uses. It is flagged as using an extension if its
+// `extensions` map contains the corresponding KHR_materials_* key. KHR_texture_transform
+// is checked on core material texture infos and texture-info objects nested inside
+// material extension payloads. Feature dependencies (scatter => volume => transmission)
+// are promoted, so a scene's set is the union of its materials' sets.
+SceneFeatureSet detectMaterialFeatures(const tinygltf::Material& material);
+
+// Walk a glTF material list and detect which gated extensions appear: the union of
+// detectMaterialFeatures over the list.
 //
 // `model` is retained for signature compatibility and may be nullptr.
 SceneFeatureSet detectSceneFeatures(const std::vector<tinygltf::Material>& materials, const tinygltf::Model* model = nullptr);

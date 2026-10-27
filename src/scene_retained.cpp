@@ -48,7 +48,8 @@ std::array<glm::vec3, 2> MeshRecord::bounds() const
 
 bool SceneChanges::empty() const
 {
-  return !structure && transforms.empty() && visibility.empty() && meshes.empty() && materials.empty() && lights.empty() && skins.empty();
+  return !structure && transforms.empty() && visibility.empty() && meshes.empty() && materials.empty() && lights.empty()
+         && skins.empty() && !features;
 }
 
 RetainedScene::RetainedScene()
@@ -77,7 +78,9 @@ MaterialId RetainedScene::addMaterial(MaterialRecord material)
   if(material.textures)
     for(const TextureRef& ref : *material.textures)
       retain(ref.texture);
-  return m_materials.insert({std::move(material)});
+  // nothing draws with it yet, so it counts for no feature until an instance names it
+  const nvvkgltf::SceneFeatureSet features = nvvkgltf::detectMaterialFeatures(material.payload);
+  return m_materials.insert({.value = std::move(material), .features = features});
 }
 
 TextureId RetainedScene::addTexture(TextureRecord texture)
@@ -150,6 +153,9 @@ void RetainedScene::release(MaterialId id)
   assertOwner();
   if(auto* r = m_materials.get(id); r && --r->refs == 0)
   {
+    // instances hold a reference to what they draw with, so uses are left only after a release
+    // too many; those instances draw nothing with it now, and the export writes nothing for it
+    countFeatures(r->features, -int64_t(r->uses));
     const MaterialRecord gone = std::move(r->value);
     m_materials.erase(id);
     releaseMaterialTextures(gone);
@@ -223,6 +229,10 @@ void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload)
   assertOwner();
   if(auto* r = m_materials.get(id))
   {
+    const nvvkgltf::SceneFeatureSet features = nvvkgltf::detectMaterialFeatures(payload);
+    countFeatures(r->features, -int64_t(r->uses));
+    countFeatures(features, r->uses);
+    r->features      = features;
     r->value.payload = std::move(payload);
     r->value.rev++;
     m_changes.materials.insert(id);
@@ -438,10 +448,13 @@ void RetainedScene::retainInstance(const MeshInstance& instance)
       retain(m);
   }
   retain(instance.skin);
+  countUses(instance, 1);
 }
 
 void RetainedScene::releaseInstance(const MeshInstance& instance)
 {
+  // while its meshes are still there to say which slots their submeshes draw with
+  countUses(instance, -1);
   for(const MeshPart& part : instance.parts)
   {
     release(part.mesh);
@@ -450,6 +463,39 @@ void RetainedScene::releaseInstance(const MeshInstance& instance)
   }
   if(!instance.skin.isNone())
     release(instance.skin);
+}
+
+void RetainedScene::countUses(const MeshInstance& instance, int delta)
+{
+  for(const MeshPart& part : instance.parts)
+    if(const MeshRecord* m = mesh(part.mesh))
+      for(const Submesh& sub : m->submeshes)
+        if(sub.material < part.materials.size())
+          if(CountedMaterial* r = m_materials.get(part.materials[sub.material]))
+          {
+            r->uses += delta;
+            countFeatures(r->features, delta);
+          }
+}
+
+void RetainedScene::countFeatures(const nvvkgltf::SceneFeatureSet& features, int64_t delta)
+{
+  if(delta == 0)
+    return;
+  for(size_t f = 0; f < m_featureUses.size(); f++)
+    if(features.has(nvvkgltf::SceneFeatureSet::Feature(f)))
+    {
+      assert(delta > 0 || m_featureUses[f] >= uint64_t(-delta));
+      m_featureUses[f] = uint32_t(int64_t(m_featureUses[f]) + delta);
+    }
+}
+
+nvvkgltf::SceneFeatureSet RetainedScene::features() const
+{
+  nvvkgltf::SceneFeatureSet out;
+  for(size_t f = 0; f < m_featureUses.size(); f++)
+    out.set(nvvkgltf::SceneFeatureSet::Feature(f), m_featureUses[f] > 0);
+  return out;
 }
 
 void RetainedScene::link(EntityId id, EntityId parent, int index)
@@ -645,6 +691,8 @@ SceneChanges RetainedScene::takeChanges()
   std::erase_if(out.materials, [&](MaterialId id) { return !m_materials.contains(id); });
   std::erase_if(out.lights, [&](LightId id) { return !m_lights.contains(id); });
   std::erase_if(out.skins, [&](SkinId id) { return !m_skins.contains(id); });
+  out.features    = features() != m_featuresTaken;
+  m_featuresTaken = features();
   return out;
 }
 

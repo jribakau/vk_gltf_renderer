@@ -167,7 +167,8 @@ src/
 ├── gltf_animation_pointer.*    # KHR_animation_pointer support
 ├── ies_profile.cpp/hpp         # EXT_lights_ies: IESNA LM-63 photometric profile parser
 ├── scene_retained.cpp/hpp      # RetainedScene: an owned scene of entities and refcounted mesh, material,
-│                               #   texture, skin, light and camera records, with what changed since asked.
+│                               #   texture, skin, light and camera records, with what changed since asked
+│                               #   and the shader features its drawn materials need (counted, not scanned).
 │                               #   In progress for Figure Viewer, not yet on the render path (unit-tested)
 ├── scene_retained_handles.hpp  # Its generational handles and slot map
 ├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws

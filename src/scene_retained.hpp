@@ -30,6 +30,9 @@
 // cameras) are shared by reference count: add*() hands the caller one reference, binding adds
 // one, release() drops one, and a record goes with its last reference.
 //
+// It also keeps which shader features its materials need (features()), counted as instances and
+// payloads change rather than found by a scan.
+//
 
 #include <array>
 #include <cstdint>
@@ -44,6 +47,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <tinygltf/tiny_gltf.h>
 
+#include "scene_feature_detection.hpp"
 #include "scene_retained_handles.hpp"
 
 namespace rs {
@@ -257,6 +261,7 @@ struct SceneChanges
   std::set<MaterialId> materials;          // payload edited
   std::set<LightId>    lights;             // payload, shown or sun edited
   std::set<SkinId>     skins;              // joints or inverse binds edited
+  bool                 features = false;   // features() is not what the last takeChanges() saw
   bool                 empty() const;
 };
 
@@ -343,6 +348,18 @@ public:
   // the drawn positions' world-space bounds; empty (min > max) when nothing is drawn
   std::array<glm::vec3, 2> bounds();
 
+  // ---- shader features
+  // The KHR_materials_* and KHR_texture_transform features the scene's materials use: what
+  // nvvkgltf::detectSceneFeatures finds in exportGltf(*this). The export writes the materials
+  // entities draw with, so a material counts while a submesh of a mesh instance names it (by the
+  // submesh's material slot), hidden or not, and empty or not (a group a geograft hides whole
+  // can fill again); a material only a feed or an importer holds counts for nothing. Kept as a
+  // use count per feature, moved as instances come and go (setMeshInstance, destroyEntity), as
+  // payloads change (setMaterial) and at a material's last release, never by a rescan; a payload's
+  // own bits (nvvkgltf::detectMaterialFeatures) are worked out once per revision. eDlssGuide is
+  // the renderer's (the denoiser's) and never set here.
+  nvvkgltf::SceneFeatureSet features() const;
+
   // ---- change tracking
   SceneChanges takeChanges();
   uint64_t     structureRevision() const { return m_structureRevision; }
@@ -355,6 +372,13 @@ private:
     T        value;
     uint32_t refs = 1;
   };
+  struct CountedMaterial
+  {
+    MaterialRecord            value;
+    uint32_t                  refs = 1;
+    uint32_t                  uses = 0;  // submeshes drawing with it (features())
+    nvvkgltf::SceneFeatureSet features;  // its payload's, per revision
+  };
 
   void assertOwner() const;
   void updateWorld();
@@ -366,11 +390,14 @@ private:
   void retainInstance(const MeshInstance& instance);
   void releaseInstance(const MeshInstance& instance);
   void releaseMaterialTextures(const MaterialRecord& material);
+  // `delta` uses of each material the instance's submeshes draw with
+  void countUses(const MeshInstance& instance, int delta);
+  void countFeatures(const nvvkgltf::SceneFeatureSet& features, int64_t delta);
 
   std::thread::id m_owner;
 
   SlotMap<Counted<MeshRecord>, MeshTag>         m_meshes;
-  SlotMap<Counted<MaterialRecord>, MaterialTag> m_materials;
+  SlotMap<CountedMaterial, MaterialTag>         m_materials;
   SlotMap<Counted<TextureRecord>, TextureTag>   m_textures;
   SlotMap<Counted<SkinRecord>, SkinTag>         m_skins;
   SlotMap<Counted<LightRecord>, LightTag>       m_lights;
@@ -387,6 +414,10 @@ private:
   };
   std::vector<Derived> m_derived;
   bool                 m_anyDirty = false;
+
+  // per SceneFeatureSet feature: submesh uses of materials needing it
+  std::array<uint32_t, nvvkgltf::SceneFeatureSet::kFeatureCount> m_featureUses{};
+  nvvkgltf::SceneFeatureSet m_featuresTaken;  // features() at the last takeChanges()
 
   SceneChanges m_changes;
   uint64_t     m_structureRevision = 0;

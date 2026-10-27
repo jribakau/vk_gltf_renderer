@@ -143,6 +143,14 @@ bool SceneFeatureSet::isSupersetOf(const SceneFeatureSet& o) const
 }
 
 //--------------------------------------------------------------------------------------------------
+// Union: every feature either set needs
+SceneFeatureSet& SceneFeatureSet::operator|=(const SceneFeatureSet& o)
+{
+  m_bits |= o.m_bits;
+  return *this;
+}
+
+//--------------------------------------------------------------------------------------------------
 // Exact equality on all scene-feature toggles
 bool SceneFeatureSet::operator==(const SceneFeatureSet& o) const
 {
@@ -177,55 +185,53 @@ int SceneFeatureSet::unusedExtensionCount() const
 }
 
 //--------------------------------------------------------------------------------------------------
-// Scan materials/model and collect the scene's active feature toggles
-SceneFeatureSet detectSceneFeatures(const std::vector<tinygltf::Material>& materials, const tinygltf::Model* /*model*/)
+// One material's feature toggles, dependencies promoted
+SceneFeatureSet detectMaterialFeatures(const tinygltf::Material& m)
 {
   SceneFeatureSet set{};
 
-  for(const auto& m : materials)
-  {
-    const auto& ext = m.extensions;
-    if(hasExt(ext, KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eTransmission);
-    if(hasExt(ext, KHR_MATERIALS_VOLUME_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eVolume);
-    if(hasExt(ext, KHR_MATERIALS_SCATTER_EXTENSION_NAME) || hasExt(ext, KHR_MATERIALS_VOLUME_SCATTER_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eScatter);
-    if(hasExt(ext, KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eClearcoat);
-    if(hasExt(ext, KHR_MATERIALS_IRIDESCENCE_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eIridescence);
-    if(hasExt(ext, KHR_MATERIALS_ANISOTROPY_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eAnisotropy);
-    if(hasExt(ext, KHR_MATERIALS_SHEEN_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eSheen);
-    if(hasExt(ext, KHR_MATERIALS_DISPERSION_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eDispersion);
-    if(hasExt(ext, KHR_MATERIALS_DIFFUSE_TRANSMISSION_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eDiffuseTransmission);
-    if(hasExt(ext, KHR_MATERIALS_RETROREFLECTION_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eRetroreflection);
-    if(hasExt(ext, KHR_MATERIALS_UNLIT_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eUnlit);
-    if(hasExt(ext, KHR_MATERIALS_SPECULAR_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eSpecular);
-    if(hasExt(ext, KHR_MATERIALS_IOR_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eIor);
-    if(hasExt(ext, KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eSpecularGlossiness);
-    if(hasExt(ext, FV_MATERIALS_DETAIL_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eDetail);
-    if(hasExt(ext, FV_MATERIALS_HAIR_EXTENSION_NAME))
-      set.enable(SceneFeatureSet::eHair);
+  const auto& ext = m.extensions;
+  if(hasExt(ext, KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eTransmission);
+  if(hasExt(ext, KHR_MATERIALS_VOLUME_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eVolume);
+  if(hasExt(ext, KHR_MATERIALS_SCATTER_EXTENSION_NAME) || hasExt(ext, KHR_MATERIALS_VOLUME_SCATTER_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eScatter);
+  if(hasExt(ext, KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eClearcoat);
+  if(hasExt(ext, KHR_MATERIALS_IRIDESCENCE_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eIridescence);
+  if(hasExt(ext, KHR_MATERIALS_ANISOTROPY_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eAnisotropy);
+  if(hasExt(ext, KHR_MATERIALS_SHEEN_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eSheen);
+  if(hasExt(ext, KHR_MATERIALS_DISPERSION_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eDispersion);
+  if(hasExt(ext, KHR_MATERIALS_DIFFUSE_TRANSMISSION_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eDiffuseTransmission);
+  if(hasExt(ext, KHR_MATERIALS_RETROREFLECTION_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eRetroreflection);
+  if(hasExt(ext, KHR_MATERIALS_UNLIT_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eUnlit);
+  if(hasExt(ext, KHR_MATERIALS_SPECULAR_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eSpecular);
+  if(hasExt(ext, KHR_MATERIALS_IOR_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eIor);
+  if(hasExt(ext, KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eSpecularGlossiness);
+  if(hasExt(ext, FV_MATERIALS_DETAIL_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eDetail);
+  if(hasExt(ext, FV_MATERIALS_HAIR_EXTENSION_NAME))
+    set.enable(SceneFeatureSet::eHair);
 
-    if(materialHasTextureTransform(m))
-      set.enable(SceneFeatureSet::eTextureTransform);
-  }
+  if(materialHasTextureTransform(m))
+    set.enable(SceneFeatureSet::eTextureTransform);
 
   // Feature dependency promotion. The path tracer's bounce-loop code paths form a
   // strict containment chain, and consumers of this set should not have to re-derive
   // it. We do it once here so operator== / toString() / unusedExtensionCount()
-  // all see the fully-promoted truth.
+  // all see the fully-promoted truth. Each promoted bit is an OR of bits, so promoting
+  // per material and then taking the union equals promoting the union.
   //
   //   scatter  =>  volume   (volumetric scatter samples Henyey-Greenstein inside a medium -
   //                          the medium has to exist, makeVolumeMedium is gated on volume.
@@ -240,6 +246,16 @@ SceneFeatureSet detectSceneFeatures(const std::vector<tinygltf::Material>& mater
   if(set.has(SceneFeatureSet::eVolume))
     set.enable(SceneFeatureSet::eTransmission);
 
+  return set;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Scan materials/model and collect the scene's active feature toggles
+SceneFeatureSet detectSceneFeatures(const std::vector<tinygltf::Material>& materials, const tinygltf::Model* /*model*/)
+{
+  SceneFeatureSet set{};
+  for(const auto& m : materials)
+    set |= detectMaterialFeatures(m);
   return set;
 }
 
