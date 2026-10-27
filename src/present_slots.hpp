@@ -27,8 +27,9 @@
 // renderer's queue, and the stream with it. Instead a slot is reused only once the CPU sees D3D
 // is done with it, and a frame that finds every slot busy is not presented (counted as dropped).
 //
-// The images only grow: a smaller frame uses the top left of them and the swapchain shows that
-// part (SetSourceSize), so dragging a window edge doesn't reallocate on every step.
+// The images only grow: a smaller frame uses their top left, which D3D copies into the swapchain.
+// The swapchain itself is always the frame's size: a composition swapchain stretches a source
+// region (SetSourceSize) over its whole buffer rather than showing it at its own size.
 
 #pragma once
 

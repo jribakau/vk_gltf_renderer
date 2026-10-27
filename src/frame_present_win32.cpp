@@ -81,14 +81,15 @@ public:
   }
   ~D3D11Target() override;
 
-  std::string init(PresentSize capacity);
+  std::string init(PresentSize frame);
 
   int         slotCount() const override { return int(m_slots.size()); }
   VkImage     slotImage(int slot) const override { return m_slots[size_t(slot)].image; }
   PresentSize capacity() const override { return m_capacity; }
+  PresentSize frameSize() const override { return m_frame; }
   VkSemaphore ready() const override { return m_readySemaphore; }
   uint64_t    completed() override { return m_done ? m_done->GetCompletedValue() : 0; }
-  std::string grow(PresentSize capacity) override;
+  std::string resize(PresentSize frame) override;
   std::string present(int slot, uint64_t value, PresentSize size) override;
   bool        presentable() override;
 
@@ -124,7 +125,7 @@ private:
 
   std::vector<Slot> m_slots;
   PresentSize       m_capacity;
-  PresentSize       m_sourceSize;
+  PresentSize       m_frame;
 };
 
 D3D11Target::~D3D11Target()
@@ -184,7 +185,7 @@ std::string D3D11Target::supported() const
   return "";
 }
 
-std::string D3D11Target::init(PresentSize capacity)
+std::string D3D11Target::init(PresentSize frame)
 {
   if(std::string err = supported(); !err.empty())
     return err;
@@ -246,7 +247,7 @@ std::string D3D11Target::init(PresentSize capacity)
     return failed("CreateFence", hr);
   m_doneEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
-  if(std::string err = makeSlots(capacity); !err.empty())
+  if(std::string err = makeSlots(frame); !err.empty())
     return err;
 
   // the swapchain, on the app's surface
@@ -254,8 +255,8 @@ std::string D3D11Target::init(PresentSize capacity)
   if(FAILED(hr = m_factory.As(&media)))
     return failed("IDXGIFactoryMedia", hr);
   const DXGI_SWAP_CHAIN_DESC1 desc{
-      .Width       = capacity.width,
-      .Height      = capacity.height,
+      .Width       = frame.width,
+      .Height      = frame.height,
       .Format      = kFormat,
       .SampleDesc  = {1, 0},
       .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
@@ -275,6 +276,7 @@ std::string D3D11Target::init(PresentSize capacity)
   m_waitable = m_swapchain->GetFrameLatencyWaitableObject();
   if(ComPtr<IDXGISwapChain3> sc3; SUCCEEDED(m_swapchain.As(&sc3)))
     sc3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+  m_frame = frame;
   return "";
 }
 
@@ -387,19 +389,22 @@ bool D3D11Target::drain(DWORD timeoutMs)
   return WaitForSingleObject(m_doneEvent, timeoutMs) == WAIT_OBJECT_0;
 }
 
-std::string D3D11Target::grow(PresentSize capacity)
+std::string D3D11Target::resize(PresentSize frame)
 {
   if(!drain(1000))
     return "D3D did not finish with the shared images";
-  destroySlots();
   m_context->ClearState();
   m_context->Flush();
-  // grown with the slots: the swapchain shows the frame's part of its buffers (SetSourceSize)
-  const HRESULT hr = m_swapchain->ResizeBuffers(0, capacity.width, capacity.height, DXGI_FORMAT_UNKNOWN, kSwapFlags);
+  // the frame's size exactly: a composition swapchain would stretch a smaller source region over
+  // its whole buffer (SetSourceSize), and the visual would show the frame out of shape
+  const HRESULT hr = m_swapchain->ResizeBuffers(0, frame.width, frame.height, DXGI_FORMAT_UNKNOWN, kSwapFlags);
   if(FAILED(hr))
     return failed("ResizeBuffers", hr);
-  m_sourceSize = {};
-  return makeSlots(capacity);
+  m_frame = frame;
+  if(fits(m_capacity, frame))
+    return "";
+  destroySlots();
+  return makeSlots(growCapacity(m_capacity, frame));
 }
 
 std::string D3D11Target::present(int slot, uint64_t value, PresentSize size)
@@ -412,12 +417,6 @@ std::string D3D11Target::present(int slot, uint64_t value, PresentSize size)
     return failed("IDXGISwapChain::GetBuffer", hr);
   const D3D11_BOX box{0, 0, 0, size.width, size.height, 1};
   m_context->CopySubresourceRegion(back.Get(), 0, 0, 0, 0, m_slots[size_t(slot)].texture.Get(), 0, &box);
-  if(!(size == m_sourceSize))
-  {
-    if(FAILED(hr = m_swapchain->SetSourceSize(size.width, size.height)))
-      return failed("SetSourceSize", hr);
-    m_sourceSize = size;
-  }
   hr = m_swapchain->Present(1, 0);
   // the slot is free once the copy above has run, whatever became of the present
   m_context->Signal(m_done.Get(), value);
@@ -443,7 +442,7 @@ std::unique_ptr<PresentTarget> createPresentTarget(const PresentTargetInfo& info
 {
   // owns the surface handle from here: a target that fails to start closes it
   auto target = std::make_unique<D3D11Target>(info);
-  error       = target->init(info.capacity);
+  error       = target->init(info.frame);
   if(!error.empty())
     return nullptr;
   return target;

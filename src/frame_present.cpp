@@ -135,17 +135,17 @@ void FramePresent::onDetach()
   }
 }
 
-// Called with the device idle (start-up, headless resizes): a frame larger than the shared images
-// grows them, which needs both sides idle.
+// Called with the device idle (start-up, headless resizes): the swapchain takes the frame's new
+// size, which needs both sides idle.
 void FramePresent::onResize(VkCommandBuffer /*cmd*/, const VkExtent2D& extent)
 {
   Impl& s = *m_impl;
   if(!s.target)
     return;
   const PresentSize want{extent.width, extent.height};
-  if(fits(s.target->capacity(), want))
+  if(want == s.target->frameSize())
     return;
-  if(const std::string err = s.target->grow(growCapacity(s.target->capacity(), want)); !err.empty())
+  if(const std::string err = s.target->resize(want); !err.empty())
   {
     s.detach(err);
     return;
@@ -174,8 +174,9 @@ void FramePresent::onRender(VkCommandBuffer cmd)
   const VkImage     image  = s.info.image();
   const VkExtent2D  extent = s.info.imageSize();
   const PresentSize size{extent.width, extent.height};
-  if(image == VK_NULL_HANDLE || size.width == 0 || size.height == 0 || !fits(s.target->capacity(), size))
-    return;  // a resize on its way grows the images (onResize)
+  if(image == VK_NULL_HANDLE || size.width == 0 || size.height == 0 || !(size == s.target->frameSize())
+     || !fits(s.target->capacity(), size))
+    return;  // a resize on its way resizes the swapchain (onResize)
 
   // An unchanged image is presented again only now and then: a change that reached it without a
   // draw (a tonemapper setting) still shows within a tenth of a second.
@@ -329,7 +330,7 @@ std::string FramePresent::Impl::attach(uintptr_t surface)
       .physicalDevice = app->getPhysicalDevice(),
       .device         = app->getDevice(),
       .surface        = surface,
-      .capacity       = {std::max(extent.width, 16u), std::max(extent.height, 16u)},
+      .frame          = {std::max(extent.width, 16u), std::max(extent.height, 16u)},
   };
   std::string err;
   target = createPresentTarget(ti, err);
@@ -341,7 +342,7 @@ std::string FramePresent::Impl::attach(uintptr_t surface)
   }
   slots     = PresentSlots(target->slotCount());
   lastDrawn = ~uint64_t(0);
-  LOGI("native presentation: attached, %ux%u\n", ti.capacity.width, ti.capacity.height);
+  LOGI("native presentation: attached, %ux%u\n", ti.frame.width, ti.frame.height);
   setStatus(visible ? "attached" : "hidden", "");
   if(info.localViewer)
     info.localViewer(visible);

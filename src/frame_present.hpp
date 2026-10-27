@@ -63,14 +63,15 @@ public:
 
   virtual int         slotCount() const         = 0;
   virtual VkImage     slotImage(int slot) const = 0;
-  virtual PresentSize capacity() const          = 0;
+  virtual PresentSize capacity() const          = 0;  // the shared images' size: at least the frame's
+  virtual PresentSize frameSize() const         = 0;  // the swapchain's size: the frame's, exactly
   // Vulkan signals each frame's value on it once the frame's copy into its slot is done
   virtual VkSemaphore ready() const = 0;
   // the last frame value the consumer has finished with (its slot is free again)
   virtual uint64_t completed() = 0;
-  // The images and the swapchain at a new capacity. Both sides must be idle: Vulkan's device and
-  // every frame handed to present(). Returns an error, or empty.
-  virtual std::string grow(PresentSize capacity) = 0;
+  // A new frame size: the swapchain takes it exactly, the images grow to hold it. Both sides must
+  // be idle: Vulkan's device and every frame handed to present(). Returns an error, or empty.
+  virtual std::string resize(PresentSize frame) = 0;
   // After the frame's submit: wait for `value`, show the slot's top left `size`. Returns an error, or empty.
   virtual std::string present(int slot, uint64_t value, PresentSize size) = 0;
   // The swapchain takes another frame now (its frame-latency waitable is signalled). Never blocks:
@@ -85,7 +86,7 @@ struct PresentTargetInfo
   VkPhysicalDevice physicalDevice{};
   VkDevice         device{};
   uintptr_t        surface{};  // the composition surface handle, this process's
-  PresentSize      capacity;
+  PresentSize      frame;      // the frame's size
 };
 
 // Null with `error` set when the platform or the GPU can't present natively.
