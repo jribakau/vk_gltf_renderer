@@ -90,6 +90,12 @@ bool TimelinePipeline::poll()
 // Blocking drain: submit and wait until every pending entry completes.
 // Loops because callbacks may enqueue new work (e.g. compaction after BLAS build).
 // Useful in headless mode to wait for all GPU work to complete
+bool TimelinePipeline::idle()
+{
+  std::lock_guard<std::mutex> lock(m_submitMutex);
+  return m_pending.empty() && m_submitQueue.empty();
+}
+
 void TimelinePipeline::drain()
 {
   while(true)

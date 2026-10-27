@@ -77,6 +77,9 @@ public:
   // Block until all in-flight and queued work completes (for headless / testing).
   void drain();
 
+  // Nothing queued or in flight: a drain would return at once.
+  bool idle();
+
   // Free all queued and pending command buffers. Call after vkQueueWaitIdle.
   void clear();
 

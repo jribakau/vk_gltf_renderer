@@ -57,6 +57,7 @@
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <thread>
@@ -1554,7 +1555,14 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
 
   // Loading pipeline: submit queued work, poll completion, run callbacks
   if(isAutomatedRun())
+  {
+    // The GPU work a load or rebuild enqueued (uploads, BLAS and TLAS builds), which the compose
+    // that enqueued it never waits for: timed here, as its own depth-0 scope.
+    std::optional<fv::timing::Scope> wait;
+    if(fv::timing::enabled() && !m_loadPipeline.idle())
+      wait.emplace("drain load pipeline");
     m_loadPipeline.drain();
+  }
   else if(m_loadPipeline.poll())
     return;  // Still loading -- give control back to the UI
 
@@ -4123,8 +4131,9 @@ void GltfRenderer::createVulkanScene()
   // before compaction, which runs later on non-animated scenes).
   const nvvkgltf::Scene& scene = *m_resources.getScene();
   constexpr double       kMB   = 1024.0 * 1024.0;
-  LOGI("Scene: %zu render primitives (BLAS), %zu render nodes (TLAS instances); GPU memory: scene %.1f MB, ray tracing %.1f MB (BLAS %.1f MB)\n",
-       scene.getRenderPrimitives().size(), scene.getRenderNodes().size(),
+  LOGI("Scene: %zu render primitives (BLAS), %zu render nodes (TLAS instances), %zu materials, %zu textures; GPU memory: scene %.1f MB, "
+       "ray tracing %.1f MB (BLAS %.1f MB)\n",
+       scene.getRenderPrimitives().size(), scene.getRenderNodes().size(), scene.getModel().materials.size(), scene.getModel().textures.size(),
        sumTrackerCurrentBytes(m_resources.sceneVk.getMemoryTracker()) / kMB,
        sumTrackerCurrentBytes(m_resources.sceneRtx.getMemoryTracker()) / kMB,
        m_resources.sceneRtx.getMemoryTracker().getStats("BLAS").currentBytes / kMB);
