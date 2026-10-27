@@ -172,6 +172,57 @@ uint64_t sumTrackerPeakBytes(const nvvkgltf::GpuMemoryTracker& tracker)
   return tracker.getTotalStats().peakBytes;
 }
 
+// Two timestamps around work that runs once (a load's BLAS or TLAS build), read when the GPU has
+// finished it: the profiler's frame sections see only the work of the frames being drawn. Held by
+// the completion callback, so its query pool goes with the callback, or with the pipeline's clear()
+// when the work is dropped (after a queue wait, so never while in use).
+class OneShotGpuTimer
+{
+public:
+  OneShotGpuTimer(VkDevice device, VkPhysicalDevice physicalDevice)
+      : m_device(device)
+  {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &props);
+    m_msPerTick = double(props.limits.timestampPeriod) * 1e-6;
+    const VkQueryPoolCreateInfo info{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2};
+    NVVK_CHECK(vkCreateQueryPool(device, &info, nullptr, &m_pool));
+  }
+  ~OneShotGpuTimer() { vkDestroyQueryPool(m_device, m_pool, nullptr); }
+  OneShotGpuTimer(const OneShotGpuTimer&)            = delete;
+  OneShotGpuTimer& operator=(const OneShotGpuTimer&) = delete;
+
+  void begin(VkCommandBuffer cmd) const
+  {
+    vkCmdResetQueryPool(cmd, m_pool, 0, 2);
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_pool, 0);
+  }
+  void end(VkCommandBuffer cmd) const { vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_pool, 1); }
+
+  // Once the command buffer has completed; 0 if the results are not there.
+  double ms() const
+  {
+    uint64_t stamps[2]{};
+    if(vkGetQueryPoolResults(m_device, m_pool, 0, 2, sizeof(stamps), stamps, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+      return 0.0;
+    return double(stamps[1] - stamps[0]) * m_msPerTick;
+  }
+
+  // An [fv-time] line with three decimals, since a TLAS build of a few hundred instances is
+  // hundredths of a millisecond (fv::timing::report rounds to one).
+  static void report(const char* name, double ms)
+  {
+    char text[96];
+    std::snprintf(text, sizeof(text), "%s %.3f ms", name, ms);
+    fv::timing::line(text);
+  }
+
+private:
+  VkDevice    m_device{};
+  VkQueryPool m_pool{};
+  double      m_msPerTick{};
+};
+
 }  // namespace
 
 // The constructor registers the parameters that can be set from the command line
@@ -4160,6 +4211,16 @@ void GltfRenderer::buildAccelerationStructures()
   {
     bool finished = false;
 
+    // [fv-time] GPU BLAS build / GPU TLAS build: what the GPU spent on the builds themselves, read back
+    // when each command buffer completes (the "drain load pipeline" scope is the CPU's wait for all of
+    // the load's GPU work). The BLAS line sums the passes and comes with the last one; compaction is
+    // not in it. The TLAS line includes the upload of its instances.
+    const bool timeGpu = fv::timing::enabled();
+    auto       makeGpuTimer = [&]() -> std::shared_ptr<OneShotGpuTimer> {
+      return timeGpu ? std::make_shared<OneShotGpuTimer>(m_device, m_app->getPhysicalDevice()) : nullptr;
+    };
+    auto blasGpuMs = std::make_shared<double>(0.0);
+
     fv::timing::Scope timeBlas("BLAS record");
     // Building BLAS within a memory budget, which could involve multiple calls to cmdBuildBottomLevelAccelerationStructure
     do
@@ -4167,22 +4228,29 @@ void GltfRenderer::buildAccelerationStructures()
       VkCommandBuffer cmd{};
       nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
       constexpr VkDeviceSize kBlasBuildMemoryBudget = 512ULL * 1024 * 1024;  // 512 MB per build pass
+      std::shared_ptr<OneShotGpuTimer> gpuTimer = makeGpuTimer();
+      if(gpuTimer)
+        gpuTimer->begin(cmd);
       finished = m_resources.sceneRtx.cmdBuildBottomLevelAccelerationStructure(cmd, kBlasBuildMemoryBudget);
+      if(gpuTimer)
+        gpuTimer->end(cmd);
       NVVK_CHECK(vkEndCommandBuffer(cmd));
-      if(isAnimated)
-      {
-        m_loadPipeline.enqueue(cmd);
-      }
-      else
-      {
-        m_loadPipeline.enqueue(cmd, [this] {
+      m_loadPipeline.enqueue(cmd, [this, isAnimated, gpuTimer, blasGpuMs, last = finished] {
+        if(gpuTimer)
+        {
+          *blasGpuMs += gpuTimer->ms();
+          if(last)
+            OneShotGpuTimer::report("GPU BLAS build", *blasGpuMs);
+        }
+        if(!isAnimated)
+        {
           VkCommandBuffer compactCmd{};
           nvvk::beginSingleTimeCommands(compactCmd, m_device, m_transientCmdPool);
           m_resources.sceneRtx.cmdCompactBlas(compactCmd);
           NVVK_CHECK(vkEndCommandBuffer(compactCmd));
           m_loadPipeline.enqueue(compactCmd);
-        });
-      }
+        }
+      });
 
     } while(!finished);
 
@@ -4195,10 +4263,19 @@ void GltfRenderer::buildAccelerationStructures()
       fv::timing::Scope timeTlas("TLAS record");
       VkCommandBuffer   cmd{};
       nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
+      std::shared_ptr<OneShotGpuTimer> gpuTimer = makeGpuTimer();
+      if(gpuTimer)
+        gpuTimer->begin(cmd);
       m_resources.sceneRtx.cmdCreateBuildTopLevelAccelerationStructure(cmd, m_resources.staging, *m_resources.getScene());
+      if(gpuTimer)
+        gpuTimer->end(cmd);
       m_resources.staging.cmdUploadAppended(cmd);
       NVVK_CHECK(vkEndCommandBuffer(cmd));
-      m_loadPipeline.enqueue(cmd, [this] { m_resources.staging.releaseCompletedAllocations(true); });
+      m_loadPipeline.enqueue(cmd, [this, gpuTimer] {
+        if(gpuTimer)
+          OneShotGpuTimer::report("GPU TLAS build", gpuTimer->ms());
+        m_resources.staging.releaseCompletedAllocations(true);
+      });
     }
   }
 
