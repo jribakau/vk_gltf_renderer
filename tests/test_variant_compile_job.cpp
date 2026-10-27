@@ -113,3 +113,23 @@ TEST(VariantCompileJob, TheNextJobStartsOnceTheLastIsTaken)
   }  // destroyed with job 2 untaken: joined, not crashed
   EXPECT_EQ(built, std::vector<int>{10});
 }
+
+// done() says a result waits, so the renderer draws a frame to install it even with the still
+// converged: not before the build returns, and not after the result is taken
+TEST(VariantCompileJob, DoneMeansAResultWaitsToBeTaken)
+{
+  VariantJobs<FakeJob, int> jobs;
+  EXPECT_FALSE(jobs.done());
+  std::promise<void> release;
+  std::shared_future<void> go = release.get_future().share();
+  ASSERT_TRUE(jobs.start(FakeJob{.key = 3}, [go](const FakeJob& job) {
+    go.wait();
+    return job.key;
+  }));
+  EXPECT_FALSE(jobs.done());  // still building
+  release.set_value();
+  jobs.join();
+  EXPECT_TRUE(jobs.done());
+  ASSERT_TRUE(jobs.take());
+  EXPECT_FALSE(jobs.done());
+}

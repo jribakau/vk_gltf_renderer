@@ -555,6 +555,8 @@ void PathTracer::onResize(VkCommandBuffer cmd, const VkExtent2D& /*size*/, Resou
 // Scene was destroyed/replaced; reset per-scene transient state.
 void PathTracer::onSceneInvalidated(Resources& /*resources*/)
 {
+  // a variant that failed to build off the frame may build for the next scene (it may have run out of memory)
+  m_failedVariant.reset();
 #if defined(USE_DLSS)
   m_dlss->notifyReset();
 #endif

@@ -1880,8 +1880,11 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   }
   refreshSampleTargets();                    // --outputSamples: the stops this frame may end on
   bool frameChanged = updateFrameCounter();  // Check if the frame counter has changed
+  // A shader variant built off the frame goes in only when a frame draws: one draws for it even with
+  // the still converged, or the edits it holds back would wait for an unrelated change
+  const bool variantWaiting = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.variantBuilt();
 
-  if(changed || frameChanged)
+  if(changed || frameChanged || variantWaiting)
   {
     if(m_resources.frameCount == 0)
     {
@@ -4456,16 +4459,21 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
     m_resources.retainedScene  = std::make_unique<rs::RetainedScene>();
     m_resources.retainedBridge = rs::LegacyDirtyBridge(
         rs::importGltf(*m_resources.retainedScene, scene.getModel(), {.imageSearchPaths = scene.getImageSearchPaths()}));
+    // the import took the model's vertices: the dials go on again before this frame draws it
+    for(const auto& [renderPrimID, live] : m_liveVertices)
+      m_resources.retainedBridge.carryVertices(scene, *m_resources.retainedScene, renderPrimID, live.positions,
+                                               live.normals.size() == live.positions.size() ? std::span<const glm::vec3>(live.normals) :
+                                                                                              std::span<const glm::vec3>(),
+                                               {});
     m_resources.retainedGpu->setPlayableAnimation(ui::animation::hasPlayableAnimation(&scene));
     result = m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
-    requeueLiveVertices();  // the import took the model's vertices: the dials go again next frame
   }
   else
     result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   logRetainedNotices();
-  if(reimport)
-    updateRetainedFeatures(false);
-  else if(result.featuresChanged)
+  // a re-import is not a scene replace: the variant only grows (D15), or a removal earlier in the
+  // session would compile a smaller one now, with a queue wait
+  if(reimport || result.featuresChanged)
     updateRetainedFeatures(true);
 
   // The rasterizer's recorded draws name instances and buffers; any change records them again

@@ -282,6 +282,8 @@ public:
   void                      startVariantJob(Resources& resources, const VariantKey& key);
   VariantBuilt              buildVariant(const VariantCompileJob& job);  // on the worker
   void                      installBuiltVariant(Resources& resources);
+  // A variant built off the frame waits to be installed, which only a drawn frame does
+  bool                      variantBuilt() const { return m_variantJobs.done(); }
   void                      discardVariantJob();
 
   BusyWindow* m_busyWindow{nullptr};  // Modal shown during async shader/pipeline compile.

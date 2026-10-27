@@ -65,6 +65,15 @@ public:
   // The job building or built and not taken; none
   const Job* job() const { return m_state ? &m_state->job : nullptr; }
 
+  // Whether a build has returned and its result waits for take()
+  bool done() const
+  {
+    if(!m_state)
+      return false;
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    return m_state->built.has_value();
+  }
+
   // Once the build has returned: the job and what it built, taken
   std::optional<std::pair<Job, Built>> take()
   {
