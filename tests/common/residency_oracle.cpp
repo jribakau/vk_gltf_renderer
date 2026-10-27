@@ -222,18 +222,39 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
   }
 
   // materials (I4): each slot's state is its record's, every texture it samples names a written
-  // slot holding that texture's image, and the tables hold the states converted in slot order
-  nvvkgltf::MaterialCache expected;
-  expected.buildFromMaterials({}, {});
+  // slot holding that texture's image; each slot's row is its state converted at its span, which
+  // holds its texture infos, below the limit and overlapping no other live span (I18); a hole's row
+  // is the default material
+  std::vector<std::pair<uint32_t, uint32_t>> spans;  // live: start, end
   for(uint32_t m = 0; m < residency.materialHighWater(); m++)
   {
-    const Residency::MaterialState* state = residency.materialState(m);
+    const Residency::MaterialState*        state = residency.materialState(m);
+    std::vector<shaderio::GltfTextureInfo> infos;
+    nvvkgltf::TextureSlotTable             slots = state ? state->slots : nvvkgltf::TextureSlotTable{};
+    if(state && state->texturesDropped)  // no room for its span: drawn without its textures
+      slots.gpuIndex.assign(std::max<size_t>(slots.gpuIndex.size(), 1), -1);
+    const shaderio::GltfShadeMaterial row =
+        state ? nvvkgltf::MaterialCache::convertOne(state->payload, slots, state->span, infos) :
+                nvvkgltf::MaterialCache::convertOne(tinygltf::Material{}, {}, 0, infos);
+    constexpr size_t kRow = sizeof(shaderio::GltfShadeMaterial), kInfo = sizeof(shaderio::GltfTextureInfo);
+    if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.materialTable()) + m * kRow, kRow), &row, 1))
+      out.push_back(at("I4", m) + "its row is not its state converted at its span");
     if(!state)
-    {
-      expected.append(tinygltf::Material{}, {});
       continue;
+    if(infos.size() != state->spanCount && state->spanCount)
+      out.push_back(at("I18", m) + "its span is not as long as its texture infos");
+    if(state->spanCount)
+    {
+      if(state->span == 0 || state->span + state->spanCount > residency.textureInfoLimit())
+        out.push_back(at("I18", m) + "its span is not between entry 1 and the limit");
+      if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.textureInfoTable()) + state->span * kInfo, infos.size() * kInfo),
+                    infos.data(), infos.size()))
+        out.push_back(at("I4", m) + "its span does not hold its texture infos");
+      for(const auto& [a, b] : spans)
+        if(state->span < b && a < state->span + state->spanCount)
+          out.push_back(at("I18", m) + "its span overlaps another material's");
+      spans.push_back({state->span, state->span + state->spanCount});
     }
-    expected.append(state->payload, state->slots);
     const MaterialRecord* record = scene.material(state->material);
     if(!record)
     {
@@ -270,14 +291,11 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
         out.push_back(at("I4", m) + "a colour texture was not decoded as sRGB");
     }
   }
-  const auto& shade = expected.getShadeMaterials();
-  const auto& infos = expected.getTextureInfos();
-  if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.materialTable()), shade.size() * sizeof(shade[0])),
-                shade.data(), shade.size()))
-    out.push_back("I4: the material table does not hold the materials converted");
-  if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.textureInfoTable()), infos.size() * sizeof(infos[0])),
-                infos.data(), infos.size()))
-    out.push_back("I4: the texture-info table does not hold the materials' texture infos");
+  // entry 0: no texture
+  const shaderio::GltfTextureInfo none{};
+  if(residency.materialHighWater()
+     && !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.textureInfoTable()), sizeof(none)), &none, 1))
+    out.push_back("I4: the texture-info table's entry 0 is not the empty one");
 
   // the raster lists: the live instances by their material's bits, in slot order
   std::array<std::vector<uint32_t>, 4> lists;

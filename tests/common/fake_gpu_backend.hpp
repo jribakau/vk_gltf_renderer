@@ -133,6 +133,14 @@ public:
   const std::map<uint32_t, ImageHandle>&    textureDescriptors() const { return m_textureDescriptors; }
   const std::map<uint32_t, GpuSamplerDesc>& samplerDescriptors() const { return m_samplerDescriptors; }
   const std::vector<GpuBarrier>&            barriers() const { return m_barriers; }
+  // every upload so far: buffer, offset, size
+  struct UploadRecord
+  {
+    BufferHandle buffer;
+    uint64_t     offset = 0, size = 0;
+  };
+  const std::vector<UploadRecord>&          uploads() const { return m_uploads; }
+  void                                      clearUploads() { m_uploads.clear(); }
   const std::vector<DeformDispatch>&        deforms() const { return m_deforms; }
   uint32_t                                  framesInFlight() const { return m_framesInFlight; }
   uint32_t                                  waitIdleCount() const { return m_waitIdleCount; }
@@ -173,6 +181,7 @@ private:
   std::unordered_map<uint64_t, Buffer>        m_buffers;
   std::unordered_map<uint64_t, Image>         m_images;
   std::vector<size_t>                         m_imageBatches;
+  std::vector<UploadRecord>                   m_uploads;
   std::unordered_map<uint64_t, Blas>          m_blases;
   std::unordered_map<uint64_t, Tlas>          m_tlases;
   std::map<uint32_t, ImageHandle>             m_textureDescriptors;

@@ -126,6 +126,13 @@ public:
   // texture indices index its own table). Its shade material is the next one; its texture infos
   // follow the others'.
   void append(const tinygltf::Material& material, const TextureSlotTable& textureSlots);
+  // One material on its own: its texture infos appended to `infos`, the row naming each at
+  // `base` plus its position there (base 0 when `infos` is the whole table). The retained scene
+  // converts each material into its own span of the table with it.
+  static shaderio::GltfShadeMaterial convertOne(const tinygltf::Material&               material,
+                                                const TextureSlotTable&                 textureSlots,
+                                                uint32_t                                base,
+                                                std::vector<shaderio::GltfTextureInfo>& infos);
 
   // Update one cached material in place. Returns span of texture infos and whether
   // texture slot topology changed (if true, caller should rebuild cache).

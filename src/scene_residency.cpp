@@ -208,7 +208,9 @@ void Residency::clear()
   m_materialStates.clear();
   m_materialHighWater = 0;
   m_materialTable = m_textureInfoTable = {};
-  m_materialsDirty                     = false;
+  m_dirtyMaterials.clear();
+  m_textureInfoPool = poolFromOne(m_options.textureInfoLimit);
+  m_textureInfos.assign(1, {});
   for(auto& list : m_drawLists)
     list.clear();
   m_drawListsRevision++;
@@ -385,7 +387,7 @@ uint32_t Residency::acquireMaterial(const RetainedScene& scene, MaterialId id)
     m_materialStates.resize(size_t(slot) + 1);
   m_materialStates[slot] = MaterialState{.material = id};
   m_materialHighWater    = std::max(m_materialHighWater, slot + 1);
-  m_materialsDirty       = true;
+  m_dirtyMaterials.insert(slot);
   return slot;
 }
 
@@ -397,8 +399,9 @@ void Residency::releaseMaterial(MaterialId id)
   const uint32_t slot = it->second.slot;
   releaseMaterialTextures(it->second);
   m_materials.erase(it);
+  freeSpan(m_materialStates[slot]->span, m_materialStates[slot]->spanCount);
   m_materialStates[slot].reset();
-  m_materialsDirty = true;
+  m_dirtyMaterials.insert(slot);  // a hole's row: the default material
   m_gpu.retire([pool = m_materialPool, slot] { pool->destroyID(slot); });
 }
 
@@ -636,71 +639,159 @@ void Residency::syncMaterials(RetainedScene& scene, const std::set<MaterialId>& 
     MaterialSlot before = it->second;
     acquireMaterialTextures(scene, id, it->second);
     releaseMaterialTextures(before);
-    it->second.rev   = record->rev;
-    m_materialsDirty = result.changed = true;
+    it->second.rev = record->rev;
+    m_dirtyMaterials.insert(it->second.slot);
+    result.changed = true;
   }
 }
 
-// The material and texture-info tables converted whole from the live material slots, a hole as the
-// default material. Notes whether a material's draw bits changed (m_bitsChanged) and whether a
-// table had to be made again (m_tablesMoved).
+// The changed material slots converted, each into its own span of the texture-info table (a hole
+// as the default material), and uploaded: their rows and spans, or both tables whole when one had to
+// be made again (m_tablesMoved) or the spans were repacked. Notes whether a material's draw bits
+// changed (m_bitsChanged).
 void Residency::writeMaterials(const RetainedScene& scene)
 {
-  nvvkgltf::MaterialCache cache;
-  cache.buildFromMaterials({}, {});
-  for(uint32_t s = 0; s < m_materialHighWater; s++)
-  {
-    std::optional<MaterialState>& state = m_materialStates[s];
-    if(!state)
-    {
-      cache.append(tinygltf::Material{}, {});
-      continue;
-    }
-    const MaterialRecord* record      = scene.material(state->material);
-    const MaterialSlot&   slot        = m_materials.at(state->material);
-    state->payload                    = record ? record->payload : tinygltf::Material{};
-    nvvkgltf::TextureSlotTable& table = state->slots;
-    table                             = {};
-    const size_t n                    = slot.textures.size();
-    table.samplerSlots.assign(n, 0);
-    table.twoChannelSource.assign(n, 0);
-    table.meanLuminance.assign(n, -1.f);
-    table.gpuIndex.assign(n, -1);
-    for(size_t i = 0; i < n; i++)
-    {
-      if(!slot.textures[i])
-        continue;
-      const auto& [texture, sampler] = *slot.textures[i];
-      const ImageGpu& image          = m_images.at(texture);
-      table.gpuIndex[i]              = int(m_textureSlots.at({texture, keyOf(sampler)}).slot);
-      table.samplerSlots[i]          = int(m_samplerSlots.at(keyOf(sampler)).slot);
-      table.twoChannelSource[i]      = image.info.twoChannel ? 1 : 0;
-      table.meanLuminance[i]         = image.info.meanLuminance;
-    }
-    const nvvkgltf::MaterialBits before = state->bits;
-    state->bits                         = nvvkgltf::materialBits(state->payload);
-    m_bitsChanged |= state->bits != before;
-    cache.append(state->payload, table);
-  }
+  m_spansRepacked = false;
+  m_shadeMaterials.resize(m_materialHighWater);
+  const std::set<uint32_t> dirty = std::exchange(m_dirtyMaterials, {});
+  for(uint32_t s : dirty)
+    if(s < m_materialHighWater)
+      convertMaterial(scene, s);
+  if(m_spansRepacked)  // every live span moved: every row names its texture infos again
+    for(uint32_t s = 0; s < m_materialHighWater; s++)
+      convertMaterial(scene, s);
 
-  const auto table = [&](BufferHandle& buffer, std::span<const std::byte> bytes, const char* name) {
-    const uint64_t size = std::bit_ceil(std::max<uint64_t>(bytes.size(), 256));
-    if(!buffer || m_gpu.bufferSize(buffer) < bytes.size())
+  const auto table = [&](BufferHandle& buffer, uint64_t bytes, const char* name) {
+    if(!buffer || m_gpu.bufferSize(buffer) < bytes)
     {
       retireBuffer(buffer);
-      buffer = m_gpu.createBuffer({.size = size, .usage = eBufferStorage, .name = name});
+      buffer = m_gpu.createBuffer({.size = std::bit_ceil(std::max<uint64_t>(bytes, 256)), .usage = eBufferStorage, .name = name});
       return true;
     }
     return false;
   };
-  const auto& materials    = cache.getShadeMaterials();
-  const auto& textureInfos = cache.getTextureInfos();
-  m_tablesMoved |= table(m_materialTable, std::as_bytes(std::span(materials)), "materials");
-  m_tablesMoved |= table(m_textureInfoTable, std::as_bytes(std::span(textureInfos)), "texture infos");
-  m_gpu.upload(m_materialTable, 0, std::as_bytes(std::span(materials)));
-  m_shadeMaterials = materials;
-  m_gpu.upload(m_textureInfoTable, 0, std::as_bytes(std::span(textureInfos)));
-  m_materialsDirty = false;
+  constexpr uint64_t kRow      = sizeof(shaderio::GltfShadeMaterial);
+  constexpr uint64_t kInfo     = sizeof(shaderio::GltfTextureInfo);
+  const bool         rowsMade  = table(m_materialTable, m_shadeMaterials.size() * kRow, "materials");
+  const bool         infosMade = table(m_textureInfoTable, m_textureInfos.size() * kInfo, "texture infos");
+  m_tablesMoved |= rowsMade || infosMade;
+  if(rowsMade || m_spansRepacked)
+    m_gpu.upload(m_materialTable, 0, std::as_bytes(std::span(m_shadeMaterials)));
+  if(infosMade || m_spansRepacked)
+    m_gpu.upload(m_textureInfoTable, 0, std::as_bytes(std::span(m_textureInfos)));
+  for(uint32_t s : dirty)
+  {
+    if(s >= m_materialHighWater)
+      continue;
+    if(!rowsMade && !m_spansRepacked)
+      m_gpu.upload(m_materialTable, s * kRow, std::as_bytes(std::span(&m_shadeMaterials[s], 1)));
+    const std::optional<MaterialState>& state = m_materialStates[s];
+    if(!infosMade && !m_spansRepacked && state && state->spanCount)
+      m_gpu.upload(m_textureInfoTable, state->span * kInfo,
+                   std::as_bytes(std::span(m_textureInfos).subspan(state->span, state->spanCount)));
+  }
+}
+
+// One material slot's row and span from its state: the texture slot table its textures resolve
+// through, the span sized to its texture infos (placed again when that changed; the old one freed
+// at retire), the row naming them there
+void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
+{
+  std::optional<MaterialState>&          state = m_materialStates[s];
+  std::vector<shaderio::GltfTextureInfo> infos;
+  if(!state)
+  {
+    m_shadeMaterials[s] = nvvkgltf::MaterialCache::convertOne(tinygltf::Material{}, {}, 0, infos);
+    return;
+  }
+  const MaterialRecord* record      = scene.material(state->material);
+  const MaterialSlot&   slot        = m_materials.at(state->material);
+  state->payload                    = record ? record->payload : tinygltf::Material{};
+  nvvkgltf::TextureSlotTable& table = state->slots;
+  table                             = {};
+  const size_t n                    = slot.textures.size();
+  table.samplerSlots.assign(n, 0);
+  table.twoChannelSource.assign(n, 0);
+  table.meanLuminance.assign(n, -1.f);
+  table.gpuIndex.assign(n, -1);
+  for(size_t i = 0; i < n; i++)
+  {
+    if(!slot.textures[i])
+      continue;
+    const auto& [texture, sampler] = *slot.textures[i];
+    const ImageGpu& image          = m_images.at(texture);
+    table.gpuIndex[i]              = int(m_textureSlots.at({texture, keyOf(sampler)}).slot);
+    table.samplerSlots[i]          = int(m_samplerSlots.at(keyOf(sampler)).slot);
+    table.twoChannelSource[i]      = image.info.twoChannel ? 1 : 0;
+    table.meanLuminance[i]         = image.info.meanLuminance;
+  }
+  const nvvkgltf::MaterialBits before = state->bits;
+  state->bits                         = nvvkgltf::materialBits(state->payload);
+  m_bitsChanged |= state->bits != before;
+
+  nvvkgltf::MaterialCache::convertOne(state->payload, table, 0, infos);  // how many it needs
+  const uint32_t count   = uint32_t(infos.size());
+  state->texturesDropped = false;
+  if(count != state->spanCount)
+  {
+    freeSpan(state->span, state->spanCount);
+    state->span = state->spanCount = 0;
+    if(count && !placeSpan(count, state->span))
+    {
+      // no room below the limit even repacked: drawn without its textures, never a wrapped index
+      m_notices.push_back("the texture-info table is full (" + std::to_string(m_options.textureInfoLimit - 1)
+                          + " entries): material '" + state->payload.name + "' is drawn without its textures");
+      state->texturesDropped             = true;
+      nvvkgltf::TextureSlotTable dropped = table;
+      dropped.gpuIndex.assign(std::max<size_t>(n, 1), -1);
+      infos.clear();
+      m_shadeMaterials[s] = nvvkgltf::MaterialCache::convertOne(state->payload, dropped, 0, infos);
+      return;
+    }
+    state->spanCount = count;
+  }
+  infos.clear();
+  m_shadeMaterials[s] = nvvkgltf::MaterialCache::convertOne(state->payload, table, state->span, infos);
+  if(m_textureInfos.size() < size_t(state->span) + count)
+    m_textureInfos.resize(size_t(state->span) + count);
+  std::copy(infos.begin(), infos.end(), m_textureInfos.begin() + state->span);
+}
+
+// A span of `count` entries; when the pool has no room, every live span is placed again from entry
+// 1 once (a repack: both tables uploaded whole) and it is tried again
+bool Residency::placeSpan(uint32_t count, uint32_t& start)
+{
+  if(m_textureInfoPool->createRangeID(start, count))
+    return true;
+  if(m_spansRepacked)
+    return false;
+  repackSpans();
+  return m_textureInfoPool->createRangeID(start, count);
+}
+
+void Residency::repackSpans()
+{
+  m_spansRepacked   = true;
+  m_textureInfoPool = poolFromOne(m_options.textureInfoLimit);
+  m_textureInfos.assign(1, {});
+  uint32_t entries = 0;
+  for(std::optional<MaterialState>& state : m_materialStates)
+    if(state && state->spanCount)
+    {
+      const bool ok = m_textureInfoPool->createRangeID(state->span, state->spanCount);
+      assert(ok && "the live spans fit the limit they were placed under");
+      (void)ok;
+      entries += state->spanCount;
+    }
+  m_notices.push_back("texture-info spans repacked (" + std::to_string(entries) + " entries)");
+}
+
+// A span given back once no frame in flight reads it (the pool it came from: a repack's or a
+// clear's new pool never takes it)
+void Residency::freeSpan(uint32_t start, uint32_t count)
+{
+  if(count)
+    m_gpu.retire([pool = m_textureInfoPool, start, count] { pool->destroyRangeID(start, count); });
 }
 
 // The raster lists from the live instances' materials, in slot order
@@ -750,8 +841,6 @@ SyncResult Residency::sync(RetainedScene& scene)
     return result;
 
   std::vector<DrawItem> items = scene.drawItems();
-  if(fresh)
-    m_materialsDirty = true;  // the tables exist from the first sync, even with no material in them
   if(fresh || changes.structure)
     syncStructure(scene, items, result);
   if(!changes.materials.empty())
@@ -763,7 +852,8 @@ SyncResult Residency::sync(RetainedScene& scene)
   ensureCapacity(result);
   // textures before materials before geometry (see "The sync"): the textures are written as their
   // materials take them, and every material is converted here, before an instance draws with it
-  if(m_materialsDirty)
+  // the tables exist from the first sync, even with no material in them
+  if(fresh || !m_dirtyMaterials.empty())
   {
     writeMaterials(scene);
     result.changed = true;

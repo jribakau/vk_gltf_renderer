@@ -18,6 +18,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <cstring>
 #include "gltf_material_cache.hpp"
 #include "gltf_image_loader.hpp"
 #include "tinygltf_utils.hpp"
@@ -95,6 +96,30 @@ TEST(MaterialCache, BuildWithBaseColorTexture)
   EXPECT_GT(cache.getShadeMaterials()[0].pbrBaseColorTexture, 0u);
   // Sentinel + at least one real texture info
   EXPECT_GE(cache.getTextureInfos().size(), 2u);
+}
+
+// One material converted on its own names its texture infos from its span's start, the same infos
+// and row (but for the indices) as appending it to a cache
+TEST(MaterialCache, ConvertOneNamesItsInfosFromItsBase)
+{
+  tinygltf::Material mat;
+  mat.pbrMetallicRoughness.baseColorTexture.index = 0;
+  mat.normalTexture.index                         = 1;
+  mat.emissiveFactor                              = {1.0, 0.5, 0.0};
+
+  std::vector<shaderio::GltfTextureInfo> infos;
+  const shaderio::GltfShadeMaterial      row = nvvkgltf::MaterialCache::convertOne(mat, {}, 100, infos);
+  ASSERT_EQ(infos.size(), 2u);
+  EXPECT_EQ(row.normalTexture, 100u);  // normal before base colour, as populateShaderMaterial goes
+  EXPECT_EQ(row.pbrBaseColorTexture, 101u);
+  EXPECT_EQ(row.emissiveTexture, 0u);
+
+  nvvkgltf::MaterialCache cache;
+  cache.append(mat, {});
+  ASSERT_EQ(cache.getTextureInfos().size(), 3u);
+  for(size_t k = 0; k < 2; k++)
+    EXPECT_EQ(std::memcmp(&cache.getTextureInfos()[1 + k], &infos[k], sizeof(infos[k])), 0) << k;
+  EXPECT_EQ(cache.getShadeMaterials()[0].emissiveFactor, row.emissiveFactor);
 }
 
 TEST(MaterialCache, BuildResolvesSamplerIndexFromSlots)

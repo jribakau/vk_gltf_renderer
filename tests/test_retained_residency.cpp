@@ -497,6 +497,116 @@ TEST(RetainedResidency, ATextureKeyIsTheFileAsItIsNow)
   fs::remove_all(dir);
 }
 
+// A material with `count` texture references (base colour, normal, emissive, occlusion,
+// metallic-roughness, in that order) over table entry 0
+MaterialId withTextures(RetainedScene& scene, std::shared_ptr<const TextureTable> table, int count, const char* name)
+{
+  MaterialRecord m;
+  m.payload.name = name;
+  int* fields[]  = {&m.payload.pbrMetallicRoughness.baseColorTexture.index, &m.payload.normalTexture.index,
+                    &m.payload.emissiveTexture.index, &m.payload.occlusionTexture.index,
+                    &m.payload.pbrMetallicRoughness.metallicRoughnessTexture.index};
+  for(int i = 0; i < count; i++)
+    *fields[i] = 0;
+  m.textures = std::move(table);
+  return scene.addMaterial(std::move(m));
+}
+
+// Each material owns a span of the texture-info table: an edit writes its own row and span, and one
+// that needs another span length moves it, the old one freed at retire; no other span moves
+TEST(RetainedResidency, AMaterialEditWritesItsRowAndSpanOnly)
+{
+  RetainedScene    scene;
+  const auto       table = textureTable(scene);
+  const MeshId     grid  = scene.addMesh(gridMesh(2, 0.f));
+  const MaterialId a = withTextures(scene, table, 2, "a"), b = withTextures(scene, table, 3, "b");
+  drawn(scene, "a", grid, {a});
+  drawn(scene, "b", grid, {b});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  const uint32_t slotA = uint32_t(residency.materialSlot(a)), slotB = uint32_t(residency.materialSlot(b));
+  const uint32_t spanB = residency.materialState(slotB)->span;
+  EXPECT_EQ(residency.materialState(slotA)->spanCount, 2u);
+  EXPECT_EQ(residency.materialState(slotB)->spanCount, 3u);
+
+  // a factor: its row and its span, nothing else of the material tables
+  tinygltf::Material payload                   = scene.material(a)->payload;
+  payload.pbrMetallicRoughness.baseColorFactor = {0.5, 0.5, 0.5, 1.0};
+  scene.setMaterial(a, payload);
+  gpu.clearUploads();
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "a factor: ");
+  std::vector<std::pair<uint64_t, uint64_t>> materialUploads;
+  for(const FakeGpuBackend::UploadRecord& u : gpu.uploads())
+    if(u.buffer == residency.materialTable() || u.buffer == residency.textureInfoTable())
+      materialUploads.push_back({u.offset, u.size});
+  const uint64_t kRow = sizeof(shaderio::GltfShadeMaterial), kInfo = sizeof(shaderio::GltfTextureInfo);
+  const std::vector<std::pair<uint64_t, uint64_t>> want = {{slotA * kRow, kRow},
+                                                           {residency.materialState(slotA)->span * kInfo, 2 * kInfo}};
+  EXPECT_EQ(materialUploads, want);
+
+  // two more references: a longer span elsewhere; b's stays
+  payload.emissiveTexture.index  = 0;
+  payload.occlusionTexture.index = 0;
+  scene.setMaterial(a, payload);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "a longer span: ");
+  EXPECT_EQ(residency.materialState(slotA)->spanCount, 4u);
+  EXPECT_EQ(residency.materialState(slotB)->span, spanB);
+  drain(gpu);
+  expectClean(scene, residency, gpu, "after its retires: ");
+}
+
+// Under the limit the spans are placed below, a span that finds no room repacks every span once;
+// one that still doesn't fit is drawn without its textures, with a notice, never a wrapped index
+TEST(RetainedResidency, TextureInfoSpansRepackThenRefuse)
+{
+  RetainedScene    scene;
+  const auto       table = textureTable(scene);
+  const MeshId     grid  = scene.addMesh(gridMesh(2, 0.f));
+  const MaterialId a = withTextures(scene, table, 3, "a"), b = withTextures(scene, table, 3, "b"),
+                   c = withTextures(scene, table, 4, "c"), d = withTextures(scene, table, 2, "d");
+  const EntityId   ea = drawn(scene, "a", grid, {a});
+  drawn(scene, "b", grid, {b});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureInfoLimit = 9});  // entries 1 to 8
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_TRUE(residency.takeNotices().empty());
+
+  // a goes (entries 1-3 free once retired), c needs 4: only a repack finds them
+  scene.destroyEntity(ea);
+  gpu.beginFrame();
+  residency.sync(scene);
+  drain(gpu);
+  drawn(scene, "c", grid, {c});
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "repacked: ");
+  std::vector<std::string> notices = residency.takeNotices();
+  ASSERT_EQ(notices.size(), 1u);
+  EXPECT_NE(notices[0].find("repacked"), std::string::npos);
+  EXPECT_EQ(residency.materialState(uint32_t(residency.materialSlot(c)))->spanCount, 4u);
+
+  // d needs 2 of the 1 left: refused
+  drawn(scene, "d", grid, {d});
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "full: ");
+  notices = residency.takeNotices();
+  ASSERT_FALSE(notices.empty());
+  EXPECT_NE(notices.back().find("material 'd' is drawn without its textures"), std::string::npos);
+  EXPECT_EQ(residency.materialState(uint32_t(residency.materialSlot(d)))->spanCount, 0u);
+  const shaderio::GltfShadeMaterial* row = residency.shadeMaterial(uint32_t(residency.materialSlot(d)));
+  ASSERT_NE(row, nullptr);
+  EXPECT_EQ(row->pbrBaseColorTexture, 0);
+  EXPECT_EQ(row->normalTexture, 0);
+}
+
 TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)
 {
   RetainedScene scene;

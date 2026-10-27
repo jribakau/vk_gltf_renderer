@@ -36,8 +36,9 @@
 //   above the high-water mark, and the TLAS keeps its handle until capacity grows.
 // - A material slot is a GltfShadeMaterial row; the textures its payload samples hold texture
 //   slots, one per (texture, sampler), over one image per texture (slot 0 is the default image);
-//   samplers hold sampler slots (slot 0 the default sampler). Through P3a1 the material and texture
-//   info tables are converted whole when a material or its textures change (P3a2 brings spans).
+//   samplers hold sampler slots (slot 0 the default sampler). Each material slot owns one span of
+//   the texture-info table (entry 0 is "no texture"), placed below the uint16 limit; a sync converts
+//   and uploads only the material slots that changed, their rows and their spans.
 // - Lights are dense, in document order, packed again when one changes; the emissive table is
 //   derived from the shown instances whose materials emit, built again in the frame its emitters
 //   or their slots change. An emitter's vertex writes (a dial, a drape) are the exception: the
@@ -53,7 +54,9 @@
 #include <optional>
 #include <memory>
 #include <set>
+#include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -78,6 +81,8 @@ struct ResidencyOptions
   uint64_t emissiveSettleFrames = 8;
   // textureGraceMB: the images nothing samples that stay decoded, for the next scene or edit to take
   uint64_t textureGraceBytes = 256ull << 20;
+  // the texture-info table's entries, which GltfShadeMaterial names by uint16 (D17)
+  uint32_t textureInfoLimit = 65536;
 };
 
 // What makes two decodes the same image: the file (its path, size and write time) or the bytes or
@@ -174,6 +179,8 @@ public:
     uint32_t reused  = 0;
   };
   ImageCounts imageCounts() const { return m_imageCounts; }
+  // what the last syncs could not do as asked (a material drawn without its textures), once each
+  std::vector<std::string> takeNotices() { return std::exchange(m_notices, {}); }
   uint64_t    graceBytes() const { return m_graceBytes; }
 
   // ---- what the renderers read
@@ -213,6 +220,7 @@ public:
   // a material slot's converted row, the emissive table's radiance source
   const shaderio::GltfShadeMaterial* shadeMaterial(uint32_t slot) const;
   BufferHandle                       textureInfoTable() const { return m_textureInfoTable; }
+  uint32_t                           textureInfoLimit() const { return m_options.textureInfoLimit; }
   // the texture slot of a texture sampled so, -1 for none; the image a texture is, none while unread
   int32_t     textureSlot(TextureId texture, const GpuSamplerDesc& sampler) const;
   ImageHandle image(TextureId texture) const;
@@ -225,6 +233,9 @@ public:
     tinygltf::Material         payload;
     nvvkgltf::TextureSlotTable slots;
     nvvkgltf::MaterialBits     bits;
+    uint32_t                   span            = 0;  // its texture infos' first entry
+    uint32_t                   spanCount       = 0;
+    bool                       texturesDropped = false;  // no room for its span: drawn without them
   };
   const MaterialState* materialState(uint32_t slot) const;
   // what live resources this layer holds (meshes' streams, prims' index buffers and BLASes, the
@@ -284,6 +295,10 @@ private:
   void     trimGrace(uint64_t budget);
   void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);
   void     writeMaterials(const RetainedScene& scene);
+  void     convertMaterial(const RetainedScene& scene, uint32_t slot);
+  bool     placeSpan(uint32_t count, uint32_t& start);
+  void     repackSpans();
+  void     freeSpan(uint32_t start, uint32_t count);
   void     buildDrawLists();
   void     syncLights(RetainedScene& scene);
   void     syncIesProfiles(const RetainedScene& scene);
@@ -331,7 +346,11 @@ private:
   std::vector<std::optional<MaterialState>>            m_materialStates;  // by material slot
   uint32_t                                             m_materialHighWater = 0;
   BufferHandle                                         m_materialTable, m_textureInfoTable;
-  bool                                                 m_materialsDirty = false;
+  std::set<uint32_t>                                   m_dirtyMaterials;         // material slots to convert
+  std::shared_ptr<nvutils::IDPool>                     m_textureInfoPool;        // spans; entry 0 held
+  std::vector<shaderio::GltfTextureInfo>               m_textureInfos;           // the table's contents
+  bool                                                 m_spansRepacked = false;  // this write
+  std::vector<std::string>                             m_notices;
   bool                                                 m_bitsChanged = false;  // a material's TLAS bits or raster lists
   bool                                                 m_tablesMoved = false;  // the material tables were made again
   std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows

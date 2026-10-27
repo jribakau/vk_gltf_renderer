@@ -148,6 +148,7 @@ void FakeGpuBackend::upload(BufferHandle dst, uint64_t offset, std::span<const s
   }
   if(!bytes.empty())
     std::memcpy(b->bytes.data() + offset, bytes.data(), bytes.size());
+  m_uploads.push_back({dst, offset, bytes.size()});
   written(dst);
 }
 

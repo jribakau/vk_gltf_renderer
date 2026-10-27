@@ -900,7 +900,11 @@ host's and the pickers' indices hold) and makes it resident, waited for; with `[
 decoded images it shares with the last scene; the `Scene (retained):` line counts images decoded
 (and of those, taken from the host's prefetches) and reused. A sync decodes the images it needs in
 one batch, side by side on the worker pool (`VulkanGpuBackend::createImages`), a file the host
-prefetched taken from `SceneVk::takePrefetchedFile` instead. Each frame
+prefetched taken from `SceneVk::takePrefetchedFile` instead. Each material slot owns a span of the
+texture-info table (`MaterialCache::convertOne` at its start), so a material edit uploads its row
+and span only; a span that finds no room below the uint16 limit repacks every span once, and one
+that still doesn't fit is drawn without its textures, logged as `Retained scene: the texture-info
+table is full`. Each frame
 `syncRetainedScene` stands in for the legacy per-frame paths listed above: `LegacyDirtyBridge`
 carries the dirty nodes, materials and lights into the store (a re-import when it can't: a new
 texture, a sampler edit, a re-parse), the CPU world matrices are brought up to date, and the

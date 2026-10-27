@@ -583,6 +583,7 @@ private:
   // place of the legacy per-frame GPU paths.
   void                       createRetainedScene();
   bool                       syncRetainedScene(VkCommandBuffer cmd);
+  void                       logRetainedNotices();
   rs::VulkanGpuBackend::Info retainedBackendInfo();
   void finalizeSceneSetup(const std::filesystem::path& filename);  // Shared GPU build + UI wiring after a load
   void wireSceneToUi();                                            // Wire current scene into browser/inspector panels

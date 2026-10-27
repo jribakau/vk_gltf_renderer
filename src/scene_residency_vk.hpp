@@ -232,6 +232,8 @@ public:
   void setBlasScratchBudget(VkDeviceSize bytes) { m_gpu.setBlasScratchBudget(bytes); }
   // textureGraceMB: the decoded images nothing samples that stay for the next replace or edit
   void setTextureGrace(VkDeviceSize bytes) { m_residency.setTextureGrace(bytes); }
+  // what the residency's last syncs could not do as asked, once each
+  std::vector<std::string> takeNotices() { return m_residency.takeNotices(); }
   // the images taken from a host's prefetches since the last call
   uint32_t takePrefetchCount() { return m_gpu.takePrefetchCount(); }
   // Nothing resident (what was is retired), the decoded images kept in grace: a host's scene

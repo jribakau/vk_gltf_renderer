@@ -4351,6 +4351,7 @@ void GltfRenderer::createRetainedScene()
       m_resources.retainedGpu->timeBuilds();
     m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
     m_app->submitAndWaitTempCmdBuffer(cmd);
+    logRetainedNotices();
     m_resources.sceneVk.dropPrefetched();  // what this scene did not take would never be taken
     if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes())
     {
@@ -4366,6 +4367,16 @@ void GltfRenderer::createRetainedScene()
        residency.instanceHighWater(), residency.primHighWater(), residency.materialHighWater(), residency.lightCount(),
        images.decoded, m_resources.retainedGpu->takePrefetchCount(), images.reused,
        m_resources.retainedGpu->memoryStats().usedBytes / kMB);
+}
+
+//--------------------------------------------------------------------------------------------------
+// What the retained scene's last syncs could not do as asked (a repack, a material drawn without its
+// textures), in the log
+//
+void GltfRenderer::logRetainedNotices()
+{
+  for(const std::string& notice : m_resources.retainedGpu->takeNotices())
+    LOGW("Retained scene: %s\n", notice.c_str());
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -4421,6 +4432,7 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   }
   else
     result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
+  logRetainedNotices();
 
   // The rasterizer's recorded draws name instances and buffers; any change records them again
   if(result.changed)

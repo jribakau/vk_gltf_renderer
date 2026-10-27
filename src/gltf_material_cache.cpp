@@ -103,19 +103,6 @@ shaderio::GltfTextureInfo getTextureInfoImpl(const T& tinfo, const TextureSlotTa
   return ti;
 }
 
-template <typename T>
-uint16_t addTextureInfoImpl(const T& tinfo, std::vector<shaderio::GltfTextureInfo>& textureInfos, const TextureSlotTable& textureSlots)
-{
-  shaderio::GltfTextureInfo ti = getTextureInfoImpl(tinfo, textureSlots);
-  if(ti.index != -1)
-  {
-    uint16_t idx = static_cast<uint16_t>(textureInfos.size());
-    textureInfos.push_back(ti);
-    return idx;
-  }
-  return 0;
-}
-
 template <typename TextureHandler>
 void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf::Material& srcMat, TextureHandler handleTexture)
 {
@@ -308,12 +295,26 @@ void MaterialCache::append(const tinygltf::Material& srcMat, const TextureSlotTa
 {
   if(m_textureInfos.empty())
     m_textureInfos.push_back({});  // entry 0: no texture
+  m_shadeMaterials.emplace_back(convertOne(srcMat, textureSlots, 0, m_textureInfos));
+}
+
+shaderio::GltfShadeMaterial MaterialCache::convertOne(const tinygltf::Material&               srcMat,
+                                                      const TextureSlotTable&                 textureSlots,
+                                                      uint32_t                                base,
+                                                      std::vector<shaderio::GltfTextureInfo>& infos)
+{
   shaderio::GltfShadeMaterial dstMat = {};
   populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const auto& srcTexInfo) {
-    texIndex = addTextureInfoImpl(srcTexInfo, m_textureInfos, textureSlots);
+    const shaderio::GltfTextureInfo ti = getTextureInfoImpl(srcTexInfo, textureSlots);
+    texIndex                           = 0;
+    if(ti.index != -1)
+    {
+      texIndex = static_cast<uint16_t>(base + infos.size());
+      infos.push_back(ti);
+    }
   });
   dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveTexture.index);
-  m_shadeMaterials.emplace_back(dstMat);
+  return dstMat;
 }
 
 MaterialUpdateResult MaterialCache::updateMaterial(int index, const tinygltf::Material& srcMat, const TextureSlotTable& textureSlots)
