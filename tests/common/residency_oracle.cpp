@@ -376,6 +376,9 @@ std::vector<std::string> residencyLeaks(const Residency& residency, const FakeGp
   if(gpu.liveBuffers() != residency.liveBuffers())
     out.push_back("I5: the backend holds " + std::to_string(gpu.liveBuffers()) + " buffers, the residency layer "
                   + std::to_string(residency.liveBuffers()));
+  if(gpu.liveImages() != residency.liveImages())
+    out.push_back("I5: the backend holds " + std::to_string(gpu.liveImages()) + " images, the residency layer "
+                  + std::to_string(residency.liveImages()));
   if(gpu.liveAccels() != residency.liveAccels())
     out.push_back("I5: the backend holds " + std::to_string(gpu.liveAccels())
                   + " acceleration structures, the residency layer " + std::to_string(residency.liveAccels()));

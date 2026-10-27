@@ -76,7 +76,23 @@ struct ResidencyOptions
   uint64_t blasScratchBudget = 512ull << 20;  // blasScratchBudgetMB (the Vulkan backend's batches)
   // frames with no vertex write to an emitter before the emissive table takes its new areas
   uint64_t emissiveSettleFrames = 8;
+  // textureGraceMB: the images nothing samples that stay decoded, for the next scene or edit to take
+  uint64_t textureGraceBytes = 256ull << 20;
 };
+
+// What makes two decodes the same image: the file (its path, size and write time) or the bytes or
+// pixels a record holds (their hash and size), and the colour space. None for a file that isn't
+// there or a record with nothing to decode.
+struct TextureKey
+{
+  std::string path;
+  int64_t     mtime                                = 0;
+  uint64_t    size                                 = 0;
+  uint64_t    hash                                 = 0;
+  bool        srgb                                 = false;
+  auto        operator<=>(const TextureKey&) const = default;
+};
+std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb);
 
 // What a sync did, for the renderer (see "The contract")
 struct SyncResult
@@ -146,8 +162,19 @@ public:
   SyncResult replace(RetainedScene& scene);
   // This frame's sync: the store's changes since the last one, brought to the GPU.
   SyncResult sync(RetainedScene& scene);
-  // Everything retired (the backend frees it a frame cycle later); the pools start over.
+  // Everything retired (the backend frees it a frame cycle later); the pools start over. Decoded
+  // images go to the grace list, where the next scene takes what it shares with this one.
   void clear();
+  // textureGraceMB: a smaller budget trims the grace list now
+  void setTextureGrace(uint64_t bytes);
+  // the images the last replace or sync decoded and the ones it took already decoded
+  struct ImageCounts
+  {
+    uint32_t decoded = 0;
+    uint32_t reused  = 0;
+  };
+  ImageCounts imageCounts() const { return m_imageCounts; }
+  uint64_t    graceBytes() const { return m_graceBytes; }
 
   // ---- what the renderers read
   uint64_t    sceneDesc() const;  // GltfScene's address
@@ -204,6 +231,7 @@ public:
   // tables, the TLAS), to tell a leak from what the backend still has to free
   size_t liveBuffers() const;
   size_t liveAccels() const;
+  size_t liveImages() const;  // the grace list's included
 
 private:
   using InstanceKey = std::tuple<EntityId, MeshId, uint32_t, uint32_t>;  // entity, mesh, submesh, copy
@@ -219,9 +247,18 @@ private:
   using SamplerKey = std::tuple<int, int, int, int>;
   struct ImageGpu
   {
+    ImageHandle               image;
+    ImageInfo                 info;
+    uint32_t                  users = 0;
+    std::optional<TextureKey> key;  // shared through m_decoded; none: its own image
+  };
+  // one decode per key, shared by the textures that are that image; one nothing uses is in grace
+  struct DecodedImage
+  {
     ImageHandle image;
     ImageInfo   info;
-    uint32_t    users = 0;
+    uint32_t    users    = 0;
+    uint64_t    released = 0;  // when it went idle, by m_releaseClock (the oldest is trimmed first)
   };
   struct SlotUse
   {
@@ -242,6 +279,8 @@ private:
   void     releaseMaterialTextures(MaterialSlot& slot);
   void     acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler);
+  void     releaseImage(const ImageGpu& image);
+  void     trimGrace(uint64_t budget);
   void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);
   void     writeMaterials(const RetainedScene& scene);
   void     buildDrawLists();
@@ -276,6 +315,10 @@ private:
   std::map<std::tuple<TextureId, SamplerKey>, SlotUse> m_textureSlots;
   std::map<SamplerKey, SlotUse>                        m_samplerSlots;
   std::shared_ptr<nvutils::IDPool>                     m_texturePool, m_samplerPool;
+  std::map<TextureKey, DecodedImage>                   m_decoded;  // across clear()
+  uint64_t                                             m_graceBytes   = 0;
+  uint64_t                                             m_releaseClock = 0;
+  ImageCounts                                          m_imageCounts;
   std::vector<std::optional<MaterialState>>            m_materialStates;  // by material slot
   uint32_t                                             m_materialHighWater = 0;
   BufferHandle                                         m_materialTable, m_textureInfoTable;

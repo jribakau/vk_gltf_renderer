@@ -318,6 +318,8 @@ struct Settings
   uint32_t blasScratchBudgetMB = 512;
   // `residencyMinInstances`: the retained scene's least instance capacity (start-up only)
   uint32_t residencyMinInstances = 256;
+  // `textureGraceMB`: the retained scene's decoded images nothing samples, kept for reuse
+  uint32_t textureGraceMB = 256;
 
   // Enable scene-based shader optimization. When true, only features used by the scene are
   // enabled, reducing shader size and register usage at the cost of a one-time recompile per scene change.
@@ -381,6 +383,10 @@ struct Resources
   std::unique_ptr<rs::RetainedScene>   retainedScene;
   rs::LegacyDirtyBridge                retainedBridge;
   std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
+  // Between a cleanup that keeps images for reuse and the next scene replace: the retained scene,
+  // emptied, its decoded images in grace. The next retained replace takes it; a legacy one, or a
+  // cleanup that keeps nothing, destroys it. Not a session's scene (gpuView() never reads it).
+  std::unique_ptr<rs::RetainedSceneVk> retainedSpare;
 
   // The legacy CPU scene. In a retained session a use from outside the inventory's allow-list logs
   // once per call site (rs::legacySceneUseAllowed), the debug check every by-eye session runs with

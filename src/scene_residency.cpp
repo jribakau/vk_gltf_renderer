@@ -23,12 +23,15 @@
 #include <bit>
 #include <cassert>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <span>
+#include <string_view>
 
 #include <glm/gtc/packing.hpp>
 
 #include <figure/io/timing.hpp>
+#include <nvutils/file_operations.hpp>
 #include <nvutils/id_pool.hpp>
 
 #include "ies_profile.hpp"
@@ -117,6 +120,44 @@ Residency::Residency(GpuBackend& gpu, ResidencyOptions options)
 Residency::~Residency()
 {
   clear();
+  trimGrace(0);
+}
+
+std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb)
+{
+  const auto hashOf = [](const std::vector<unsigned char>& v) {
+    return uint64_t(std::hash<std::string_view>{}(std::string_view(reinterpret_cast<const char*>(v.data()), v.size())));
+  };
+  TextureKey key{.srgb = srgb};
+  if(!record.bytes.empty())
+  {
+    key.size = record.bytes.size();
+    key.hash = hashOf(record.bytes);
+  }
+  else if(!record.pixels.empty())
+  {
+    // the same pixels at another shape are another image
+    key.path = std::to_string(record.width) + "x" + std::to_string(record.height) + "x"
+               + std::to_string(record.component) + "x" + std::to_string(record.bits);
+    key.size = record.pixels.size();
+    key.hash = hashOf(record.pixels);
+  }
+  else if(!record.uri.empty())
+  {
+    std::error_code                        ec;
+    const std::filesystem::path            path = std::filesystem::absolute(nvutils::pathFromUtf8(record.uri), ec);
+    const std::filesystem::directory_entry entry(path, ec);
+    if(ec || !entry.is_regular_file(ec))
+      return std::nullopt;
+    key.path  = nvutils::utf8FromPath(path);
+    key.size  = entry.file_size(ec);
+    key.mtime = int64_t(entry.last_write_time(ec).time_since_epoch().count());
+    if(ec)
+      return std::nullopt;
+  }
+  else
+    return std::nullopt;
+  return key;
 }
 
 void Residency::clear()
@@ -140,8 +181,7 @@ void Residency::clear()
   for(const auto& [key, use] : m_samplerSlots)
     m_gpu.retire([pool = m_samplerPool, slot = use.slot] { pool->destroyID(slot); });
   for(const auto& [id, image] : m_images)
-    if(image.image)
-      m_gpu.retire([&gpu = m_gpu, handle = image.image] { gpu.destroyImage(handle); });
+    releaseImage(image);
   retireBuffer(m_renderNodes);
   retireBuffer(m_renderPrims);
   retireBuffer(m_sceneDesc);
@@ -399,6 +439,22 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
   if(image.users++ == 0)
     if(const TextureRecord* record = scene.texture(id))
     {
+      // decoded already, for another texture or in grace
+      image.key = textureKeyOf(*record, srgb);
+      if(image.key)
+        if(auto it = m_decoded.find(*image.key); it != m_decoded.end())
+        {
+          DecodedImage& decoded = it->second;
+          if(decoded.users++ == 0)
+            m_graceBytes -= decoded.info.bytes;
+          image.image = decoded.image;
+          image.info  = decoded.info;
+          m_imageCounts.reused++;
+        }
+    }
+  if(image.users == 1 && !image.image)
+    if(const TextureRecord* record = scene.texture(id))
+    {
       const ImageSource source{.uri       = record->uri,
                                .bytes     = record->bytes,
                                .mimeType  = record->mimeType,
@@ -410,6 +466,11 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
                                .srgb      = srgb,
                                .name      = record->name};
       image.image = m_gpu.createImage(source, image.info);
+      m_imageCounts.decoded++;
+      if(image.key && image.image)
+        m_decoded[*image.key] = {.image = image.image, .info = image.info, .users = 1};
+      else
+        image.key.reset();  // an unreadable one is tried again next time
     }
 
   SlotUse& use = m_textureSlots[{id, keyOf(sampler)}];
@@ -451,10 +512,52 @@ void Residency::releaseTexture(TextureId id, const GpuSamplerDesc& sampler)
   auto image = m_images.find(id);
   if(image != m_images.end() && --image->second.users == 0)
   {
-    if(image->second.image)
-      m_gpu.retire([&gpu = m_gpu, handle = image->second.image] { gpu.destroyImage(handle); });
+    releaseImage(image->second);
     m_images.erase(image);
   }
+}
+
+// A texture's image let go of: a shared decode goes to grace when nothing uses it (reusing it is
+// safe at once, since its contents never change; destroying it waits for trimGrace's retire), its
+// own image to the backend at retire
+void Residency::releaseImage(const ImageGpu& image)
+{
+  if(image.key)
+  {
+    auto it = m_decoded.find(*image.key);
+    if(it != m_decoded.end() && --it->second.users == 0)
+    {
+      it->second.released = ++m_releaseClock;
+      m_graceBytes += it->second.info.bytes;
+    }
+  }
+  else if(image.image)
+    m_gpu.retire([&gpu = m_gpu, handle = image.image] { gpu.destroyImage(handle); });
+}
+
+// The idle decodes, oldest first, destroyed at retire until the rest fit `budget`
+void Residency::trimGrace(uint64_t budget)
+{
+  while(m_graceBytes > budget)
+  {
+    auto oldest = m_decoded.end();
+    for(auto it = m_decoded.begin(); it != m_decoded.end(); ++it)
+      if(it->second.users == 0 && (oldest == m_decoded.end() || it->second.released < oldest->second.released))
+        oldest = it;
+    if(oldest == m_decoded.end())
+      break;
+    m_graceBytes -= oldest->second.info.bytes;
+    m_gpu.retire([&gpu = m_gpu, handle = oldest->second.image] { gpu.destroyImage(handle); });
+    m_decoded.erase(oldest);
+  }
+  if(m_graceBytes > budget)  // only idle decodes count, so this can't be
+    m_graceBytes = 0;
+}
+
+void Residency::setTextureGrace(uint64_t bytes)
+{
+  m_options.textureGraceBytes = bytes;
+  trimGrace(bytes);
 }
 
 // Materials whose payload was edited take the textures it now samples (the new ones first, so the
@@ -566,6 +669,7 @@ void Residency::buildDrawLists()
 SyncResult Residency::replace(RetainedScene& scene)
 {
   clear();
+  m_imageCounts     = {};
   SyncResult result = sync(scene);
   result.dlssReset  = true;
   result.changed    = true;
@@ -650,6 +754,8 @@ SyncResult Residency::sync(RetainedScene& scene)
   // everything uploaded above, before the frame's shading reads it
   if(result.changed)
     m_gpu.barrier(GpuBarrier::eTransferToShader);
+  // what this sync let go of and didn't take again
+  trimGrace(m_options.textureGraceBytes);
   m_tablesMoved = m_bitsChanged = m_descDirty = false;
   result.featuresChanged                      = changes.features;
   return result;
@@ -1116,8 +1222,17 @@ size_t Residency::liveBuffers() const
       n += b ? 1 : 0;
   for(const std::optional<Prim>& p : m_prims)
     n += p && p->indices ? 1 : 0;
-  for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable, m_emissiveTable})
+  for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
+                        m_emissiveTable, m_iesTable})
     n += b ? 1 : 0;
+  return n;
+}
+
+size_t Residency::liveImages() const
+{
+  size_t n = m_decoded.size();
+  for(const auto& [id, image] : m_images)
+    n += !image.key && image.image ? 1 : 0;
   return n;
 }
 

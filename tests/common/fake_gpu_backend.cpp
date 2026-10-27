@@ -200,6 +200,7 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
   info.width      = uint32_t(std::max(source.width, 1));
   info.height     = uint32_t(std::max(source.height, 1));
   info.twoChannel = source.component == 2;
+  info.bytes      = uint64_t(info.width) * info.height * 4;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, Image{source.name, source.uri, source.srgb, info});
   return handle;

@@ -872,7 +872,7 @@ legacy stream session and are skipped in a retained one, which takes no `KHR_int
 
 ### The retained scene in a stream session
 
-Three settings, none remembered:
+Four settings, none remembered:
 
 - `sceneBackend` (`auto`, `legacy` or `retained`; `auto`) decides at each `loadModel` of a stream
   session; windowed sessions and `--scenefile` stay legacy. `auto` takes the retained scene unless
@@ -883,6 +883,10 @@ Three settings, none remembered:
   recompose (`GltfRenderer::setRecomposeRequest`); the switch is that scene replace.
 - `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
   (`VulkanGpuBackend`); the next batch regrows it. Live.
+- `textureGraceMB` (256): the retained scene's decoded images that nothing samples stay decoded, up
+  to this much, oldest out first, for the next scene replace or edit to take. Live. Images are keyed
+  by file (path, size, write time) or by a hash of held bytes, and the colour space
+  (`rs::textureKeyOf`), and shared by every texture that is that image.
 - `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
   TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
   parameters a host can set (fv_parameter_filter.hpp).
@@ -891,7 +895,10 @@ In a retained session `loadModel` builds the CPU `nvvkgltf::Scene` as before, th
 `createRetainedScene` imports it in document order (instance slot *i* is render node *i*, so the
 host's and the pickers' indices hold) and makes it resident, waited for; with `[fv-time]` on, the
 `GPU BLAS build` and `GPU TLAS build` lines time that replace's builds as legacy's time a load's
-(`VulkanGpuBackend::timeBuilds`). Each frame
+(`VulkanGpuBackend::timeBuilds`). A cleanup that keeps images for reuse (a recompose) keeps the
+`RetainedSceneVk` too, emptied (`Resources::retainedSpare`), so the next retained replace takes the
+decoded images it shares with the last scene; the `Scene (retained):` line counts images decoded
+and reused. Each frame
 `syncRetainedScene` stands in for the legacy per-frame paths listed above: `LegacyDirtyBridge`
 carries the dirty nodes, materials and lights into the store (a re-import when it can't: a new
 texture, a sampler edit, a re-parse), the CPU world matrices are brought up to date, and the

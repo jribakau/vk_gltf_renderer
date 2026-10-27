@@ -369,6 +369,9 @@ ImageHandle VulkanGpuBackend::createImage(const ImageSource& source, ImageInfo& 
   info.height        = loaded.size.height;
   info.twoChannel    = nvvkgltf::formatColorComponentCount(loaded.format) == 2;
   info.meanLuminance = nvvkgltf::imageMeanLuminance(loaded.format, loaded.size, loaded.mipData[0]);
+  VmaAllocationInfo allocation{};
+  vmaGetAllocationInfo(*m_info.alloc, image.allocation, &allocation);
+  info.bytes = allocation.size;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, image);
   return handle;
@@ -710,6 +713,15 @@ SyncResult RetainedSceneVk::sync(VkCommandBuffer cmd, RetainedScene& scene)
   m_gpu.finish();
   afterSync(scene, result);
   return result;
+}
+
+void RetainedSceneVk::clear()
+{
+  m_residency.clear();
+  m_hasScene = false;
+  m_lights.clear();
+  m_bounds = {};
+  m_transformsRevision++;
 }
 
 void RetainedSceneVk::afterSync(RetainedScene& scene, const SyncResult& result)

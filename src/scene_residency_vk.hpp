@@ -219,6 +219,11 @@ public:
   void beginFrame() { m_gpu.beginFrame(); }
   // blasScratchBudgetMB: the next batch regrows the scratch when it needs more
   void setBlasScratchBudget(VkDeviceSize bytes) { m_gpu.setBlasScratchBudget(bytes); }
+  // textureGraceMB: the decoded images nothing samples that stay for the next replace or edit
+  void setTextureGrace(VkDeviceSize bytes) { m_residency.setTextureGrace(bytes); }
+  // Nothing resident (what was is retired), the decoded images kept in grace: a host's scene
+  // between a cleanup and the next retained scene replace, which takes what it shares
+  void clear();
   // The next replace's or sync's AS builds timed on the GPU, read once its command buffer completed
   void                      timeBuilds() { m_gpu.timeBuilds(); }
   std::optional<BuildTimes> buildTimes() { return m_gpu.buildTimes(); }

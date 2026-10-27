@@ -655,6 +655,16 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.blasScratchBudgetMB, Persist::eNo);
   // Start-up only, so not exposed to a host (fv_parameter_filter.hpp): read at each retained scene
   // replace, where a smaller capacity than the scene needs only grows by doubling.
+  // Live: a smaller budget trims the grace list at once.
+  m_settings.add({.name = "textureGraceMB",
+                  .help = "Retained scene: decoded images nothing samples, kept for the next scene or edit, in MB",
+                  .callbackSuccess =
+                      [this](const nvutils::ParameterBase* const) {
+                        for(rs::RetainedSceneVk* retained : {m_resources.retainedGpu.get(), m_resources.retainedSpare.get()})
+                          if(retained)
+                            retained->setTextureGrace(VkDeviceSize(m_resources.settings.textureGraceMB) << 20);
+                      }},
+                 &m_resources.settings.textureGraceMB, Persist::eNo);
   m_settings.add({.name = "residencyMinInstances", .help = "Retained scene: the least instance capacity (start-up only)"},
                  &m_resources.settings.residencyMinInstances, Persist::eNo);
 
@@ -3966,9 +3976,18 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
     m_resources.transformCompute.destroyGpuBuffers();
   m_resources.prevPositions.destroyGpuBuffers();
   m_verticesWrittenLastFrame = false;
-  // The retained scene goes first: its backend waits for the device and runs what it retired (which
-  // writes the default image into its freed texture slots) before a legacy scene writes its own.
+  // The retained scene goes first. Kept, emptied, when images are kept for reuse (retainedSpare);
+  // otherwise destroyed now, its backend waiting for the device and running what it retired (which
+  // writes the default image into its freed texture slots) before a legacy scene writes its own. A
+  // legacy scene replace destroys a kept one first (createVulkanScene).
+  if(m_resources.retainedGpu && keepImagesForReuse)
+  {
+    m_resources.retainedGpu->clear();
+    m_resources.retainedSpare = std::move(m_resources.retainedGpu);
+  }
   m_resources.retainedGpu.reset();
+  if(!keepImagesForReuse)
+    m_resources.retainedSpare.reset();
   m_resources.retainedScene.reset();
   m_resources.retainedBridge = {};
   m_takeRetained             = false;
@@ -4208,6 +4227,8 @@ void GltfRenderer::rebuildVulkanSceneFull()
 // The function is called when the scene is loaded
 void GltfRenderer::createVulkanScene()
 {
+  // a retained scene kept for reuse goes before this one writes the scene's descriptors (cleanupScene)
+  m_resources.retainedSpare.reset();
   {
     // Enable opacity micromap (EXT_mesh_opacity_micromap) build when the device supports it
     m_resources.sceneVk.setOpacityMicromapEnabled(m_resources.settings.opacityMicromapSupported);
@@ -4308,10 +4329,18 @@ void GltfRenderer::createRetainedScene()
   for(const std::string& notice : imported.notices)
     LOGW("Retained scene: %s\n", notice.c_str());
   m_resources.retainedBridge = rs::LegacyDirtyBridge(std::move(imported));
-  m_resources.retainedGpu    = std::make_unique<rs::RetainedSceneVk>(
-      retainedBackendInfo(),
-      rs::ResidencyOptions{.minInstances      = std::max(m_resources.settings.residencyMinInstances, 1u),
-                           .blasScratchBudget = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20});
+  // the previous scene's, emptied, when the cleanup kept it: its decoded images are this one's to take
+  if(m_resources.retainedSpare)
+  {
+    m_resources.retainedGpu = std::move(m_resources.retainedSpare);
+    m_resources.retainedGpu->setBlasScratchBudget(VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20);
+  }
+  else
+    m_resources.retainedGpu = std::make_unique<rs::RetainedSceneVk>(
+        retainedBackendInfo(),
+        rs::ResidencyOptions{.minInstances      = std::max(m_resources.settings.residencyMinInstances, 1u),
+                             .blasScratchBudget = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
+                             .textureGraceBytes = VkDeviceSize(m_resources.settings.textureGraceMB) << 20});
   {
     fv::timing::Scope timeUpload("retained upload");
     VkCommandBuffer   cmd = m_app->createTempCmdBuffer();
@@ -4329,9 +4358,10 @@ void GltfRenderer::createRetainedScene()
 
   const rs::Residency& residency = m_resources.retainedGpu->residency();
   constexpr double     kMB       = 1024.0 * 1024.0;
-  LOGI("Scene (retained): %u instances, %u prims, %u materials, %u lights; GPU memory %.1f MB\n",
+  const rs::Residency::ImageCounts images    = residency.imageCounts();
+  LOGI("Scene (retained): %u instances, %u prims, %u materials, %u lights; images %u decoded, %u reused; GPU memory %.1f MB\n",
        residency.instanceHighWater(), residency.primHighWater(), residency.materialHighWater(), residency.lightCount(),
-       m_resources.retainedGpu->memoryStats().usedBytes / kMB);
+       images.decoded, images.reused, m_resources.retainedGpu->memoryStats().usedBytes / kMB);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -5244,6 +5274,7 @@ void GltfRenderer::destroyResources()
 
   m_loadPipeline.destroy();
   m_resources.retainedGpu.reset();  // while the allocator, the uploader and the sampler pool live
+  m_resources.retainedSpare.reset();
 
   m_resources.allocator.destroyBuffer(m_resources.bFrameInfo);
   if(m_resources.bSelectionBitMask.buffer != VK_NULL_HANDLE)

@@ -24,6 +24,8 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <random>
 
@@ -405,6 +407,92 @@ TEST(RetainedResidency, AReplaceKeepsItsTexturesThroughTheOldOnesRetires)
   expectClean(scene, residency, gpu, "the old scene's retires run: ");
   for(const std::string& p : residencyLeaks(residency, gpu))
     ADD_FAILURE() << p;
+}
+
+// Images are decoded once per key: two records of the same bytes share one, a replace takes the
+// previous scene's from grace, and the grace list keeps what fits textureGraceMB, oldest out first
+TEST(RetainedResidency, ADecodeIsSharedAndOutlivesAReplaceInGrace)
+{
+  const auto record = [](unsigned char fill, int width) {
+    TextureRecord t;
+    t.bytes    = std::vector<unsigned char>(64, fill);
+    t.mimeType = "image/png";
+    t.width    = width;
+    t.height   = width;
+    return t;
+  };
+  RetainedScene scene;
+  const TextureId a = scene.addTexture(record(1, 4)), same = scene.addTexture(record(1, 4)), b = scene.addTexture(record(2, 8));
+  auto table = std::make_shared<TextureTable>();
+  table->push_back({a, {}});
+  table->push_back({same, {}});
+  table->push_back({b, {}});
+  const MeshId grid = scene.addMesh(gridMesh(2, 0.f, 2));
+  drawn(scene, "e", grid, {textured(scene, table, 0), textured(scene, table, 1)});  // both sample b as the normal map
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.image(a), residency.image(same));
+  EXPECT_EQ(gpu.liveImages(), 2u);
+  EXPECT_EQ(residency.imageCounts().decoded, 2u);
+  EXPECT_EQ(residency.imageCounts().reused, 1u);
+
+  // a replace decodes nothing it had
+  const ImageHandle before = residency.image(b);
+  gpu.beginFrame();
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "replaced: ");
+  EXPECT_EQ(residency.imageCounts().decoded, 0u);
+  EXPECT_EQ(residency.imageCounts().reused, 3u);
+  EXPECT_EQ(residency.image(b), before);
+  drain(gpu);
+  expectClean(scene, residency, gpu, "after its retires: ");
+
+  // a scene without textures leaves both in grace; a budget for one keeps the newer release
+  RetainedScene plain;
+  drawn(plain, "e", plain.addMesh(gridMesh(2, 0.f)), {material(plain, "m")});
+  gpu.beginFrame();
+  residency.replace(plain);
+  EXPECT_EQ(gpu.liveImages(), 2u);
+  EXPECT_EQ(residency.graceBytes(), 4u * 4 * 4 + 8u * 8 * 4);
+  residency.setTextureGrace(8 * 8 * 4);
+  EXPECT_EQ(residency.graceBytes(), 8u * 8 * 4);
+  drain(gpu);
+  EXPECT_EQ(gpu.liveImages(), 1u);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+
+  // and taking it back from grace
+  gpu.beginFrame();
+  residency.replace(scene);
+  EXPECT_EQ(residency.imageCounts().reused + residency.imageCounts().decoded, 3u);
+  EXPECT_EQ(residency.graceBytes(), 0u);
+  expectClean(scene, residency, gpu, "back: ");
+}
+
+// A file's key is its path, size and write time, and the colour space; no key for a missing file
+TEST(RetainedResidency, ATextureKeyIsTheFileAsItIsNow)
+{
+  namespace fs       = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "retained_texture_key";
+  fs::create_directories(dir);
+  {
+    std::ofstream(dir / "a.png") << "first";
+  }
+  TextureRecord t;
+  t.uri                                 = (dir / "a.png").string();
+  const std::optional<TextureKey> first = textureKeyOf(t, true);
+  ASSERT_TRUE(first);
+  EXPECT_NE(textureKeyOf(t, false), first);
+  EXPECT_EQ(textureKeyOf(t, true), first);
+  {
+    std::ofstream(dir / "a.png") << "second, longer";
+  }
+  EXPECT_NE(textureKeyOf(t, true), first);
+  t.uri = (dir / "gone.png").string();
+  EXPECT_FALSE(textureKeyOf(t, true));
+  fs::remove_all(dir);
 }
 
 TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)

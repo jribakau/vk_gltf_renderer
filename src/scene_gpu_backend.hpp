@@ -89,6 +89,7 @@ struct ImageInfo
   uint32_t width = 0, height = 0;
   bool     twoChannel    = false;  // exactly two colour channels (BC5, R8G8, ...): a normal map's X and Y
   float    meanLuminance = -1.f;   // linear, Rec. 709, of its texels; negative where unknown
+  uint64_t bytes         = 0;      // the GPU memory it holds (the residency's grace budget)
 };
 
 // glTF sampler values (TINYGLTF_TEXTURE_FILTER_*, TINYGLTF_TEXTURE_WRAP_*); a filter of -1 is unset
