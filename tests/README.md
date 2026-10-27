@@ -175,7 +175,8 @@ tests/
 ├── render/                     # GPU render checks driven by Python (see Render Tests)
 └── common/
     ├── test_utils.hpp          # Test utilities header
-    └── test_utils.cpp          # Test utilities implementation
+    ├── test_utils.cpp          # Test utilities implementation
+    └── fake_gpu_backend.*      # rs::GpuBackend without a GPU: shadow bytes, BLAS/TLAS state, a frame clock
 ```
 
 > The list above is a snapshot; `tests/CMakeLists.txt` is the source of truth for

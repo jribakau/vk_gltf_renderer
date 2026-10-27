@@ -174,6 +174,8 @@ src/
 │                               #   its drawn materials need (counted, not scanned).
 │                               #   In progress for Figure Viewer, not yet on the render path (unit-tested)
 ├── scene_retained_handles.hpp  # Its generational handles and slot map
+├── scene_gpu_backend.hpp       # rs::GpuBackend: all the retained residency layer will call on the GPU,
+│                               #   Vulkan-free (tests/common/fake_gpu_backend.* is its GPU-free twin)
 ├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
 ├── scene_export_gltf.cpp/hpp   # A RetainedScene (or a subtree) out as a fresh glTF model
 ├── scene_clip_player.cpp/hpp   # ClipPlayer: a clip played into entity TRS and morph weights, AnimationSystem's

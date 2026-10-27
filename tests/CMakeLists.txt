@@ -5,6 +5,8 @@ set(TEST_NAME ${PROJECT_NAME}_tests)
 set(TEST_COMMON_SOURCES
     common/test_utils.hpp
     common/test_utils.cpp
+    common/fake_gpu_backend.hpp
+    common/fake_gpu_backend.cpp
     test_main.cpp
 )
 
@@ -149,6 +151,8 @@ set(TEST_SOURCES
     test_tlas_policy.cpp
     # What a selected node puts in selectedRenderNodes, whether or not the UI pass runs (header only)
     test_selection_render_nodes.cpp
+    # The retained scene's GPU seam without a GPU (rs::GpuBackend): the fake's own tests
+    test_fake_gpu_backend.cpp
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Optional external generation bridge
