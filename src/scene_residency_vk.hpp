@@ -49,6 +49,7 @@
 #include "gpu_memory_tracker.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency.hpp"
+#include "scene_residency_vk_util.hpp"
 
 namespace nvvk {
 class ResourceAllocator;
@@ -94,6 +95,12 @@ public:
   void record(VkCommandBuffer cmd);
   void finish();
   void setBlasScratchBudget(VkDeviceSize bytes) { m_info.blasScratchBudget = bytes; }
+  // GPU time of the AS builds recorded from here to finish(): timestamps around each flush of BLAS
+  // builds and refits, and around each TLAS build with its instance upload (as legacy's `GPU BLAS
+  // build` / `GPU TLAS build` lines count them), up to kTimedSpans. buildTimes() reads them once the
+  // command buffer has completed: none before that, or when nothing was timed.
+  void                      timeBuilds() { m_timeBuilds = true; }
+  std::optional<BuildTimes> buildTimes();
 
   // What the renderers bind; null for none or a destroyed handle
   VkBuffer                          vkBuffer(BufferHandle buffer) const;
@@ -167,6 +174,10 @@ private:
   nvvk::AccelerationStructureGeometryInfo geometryOf(const BlasInput& input) const;
   void                                    writeImageDescriptor(uint32_t slot, const nvvk::Image& image);
   void                                    ensureDefaults();
+  bool                                    beginSpan();
+  void                                    endSpan(BuildSpan span);
+
+  static constexpr uint32_t kTimedSpans = 64;
 
   Info                                      m_info;
   VkDeviceSize                              m_scratchAlignment = 256;
@@ -186,6 +197,10 @@ private:
   bool                                      m_defaultsUploaded = false;
   std::shared_ptr<RetireQueue>              m_retired          = std::make_shared<RetireQueue>();
   nvvkgltf::GpuMemoryTracker                m_memory;
+  bool                                      m_timeBuilds = false;  // until finish()
+  VkQueryPool                               m_timestamps = VK_NULL_HANDLE;
+  double                                    m_msPerTick  = 0.0;
+  std::vector<BuildSpan>                    m_spans;  // recorded, not read yet
 };
 
 // The retained scene as the renderers read it: a VulkanGpuBackend and an rs::Residency over a
@@ -204,6 +219,9 @@ public:
   void beginFrame() { m_gpu.beginFrame(); }
   // blasScratchBudgetMB: the next batch regrows the scratch when it needs more
   void setBlasScratchBudget(VkDeviceSize bytes) { m_gpu.setBlasScratchBudget(bytes); }
+  // The next replace's or sync's AS builds timed on the GPU, read once its command buffer completed
+  void                      timeBuilds() { m_gpu.timeBuilds(); }
+  std::optional<BuildTimes> buildTimes() { return m_gpu.buildTimes(); }
 
   const Residency&        residency() const { return m_residency; }
   const VulkanGpuBackend& backend() const { return m_gpu; }

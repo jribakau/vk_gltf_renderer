@@ -72,4 +72,21 @@ struct ScratchPlan
 // `sizes`: each build's scratch size (build or update), in queue order
 ScratchPlan planScratch(std::span<const VkDeviceSize> sizes, VkDeviceSize alignment, VkDeviceSize budget);
 
+// What VulkanGpuBackend::timeBuilds measured, the GPU time of each kind of span summed
+enum class BuildSpan : uint8_t
+{
+  eBlas,  // one flush of queued BLAS builds and refits, every batch
+  eTlas,  // one TLAS build with its instance upload
+};
+struct BuildTimes
+{
+  double   blasMs    = 0.0;
+  double   tlasMs    = 0.0;
+  uint32_t blasSpans = 0;
+  uint32_t tlasSpans = 0;
+};
+// `stamps`: a begin and an end tick per span, in span order; a span whose end precedes its begin
+// counts as 0
+BuildTimes sumBuildSpans(std::span<const BuildSpan> spans, std::span<const uint64_t> stamps, double msPerTick);
+
 }  // namespace rs

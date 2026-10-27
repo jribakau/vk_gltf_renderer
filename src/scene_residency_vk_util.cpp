@@ -179,4 +179,25 @@ ScratchPlan planScratch(std::span<const VkDeviceSize> sizes, VkDeviceSize alignm
   return plan;
 }
 
+BuildTimes sumBuildSpans(std::span<const BuildSpan> spans, std::span<const uint64_t> stamps, double msPerTick)
+{
+  BuildTimes times;
+  for(size_t i = 0; i < spans.size() && 2 * i + 1 < stamps.size(); i++)
+  {
+    const uint64_t begin = stamps[2 * i], end = stamps[2 * i + 1];
+    const double   ms = end > begin ? double(end - begin) * msPerTick : 0.0;
+    if(spans[i] == BuildSpan::eBlas)
+    {
+      times.blasMs += ms;
+      times.blasSpans++;
+    }
+    else
+    {
+      times.tlasMs += ms;
+      times.tlasSpans++;
+    }
+  }
+  return times;
+}
+
 }  // namespace rs

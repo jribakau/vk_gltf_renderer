@@ -37,7 +37,6 @@
 
 #include "gltf_image_loader.hpp"
 #include "gltf_scene_vk.hpp"
-#include "scene_residency_vk_util.hpp"
 #include "staging_config.hpp"
 
 namespace rs {
@@ -94,6 +93,7 @@ VulkanGpuBackend::VulkanGpuBackend(const Info& info)
   VkPhysicalDeviceProperties2 props{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &asProps};
   vkGetPhysicalDeviceProperties2(info.physicalDevice, &props);
   m_scratchAlignment = std::max<VkDeviceSize>(asProps.minAccelerationStructureScratchOffsetAlignment, 1);
+  m_msPerTick        = double(props.properties.limits.timestampPeriod) * 1e-6;
 }
 
 VulkanGpuBackend::~VulkanGpuBackend()
@@ -125,6 +125,8 @@ VulkanGpuBackend::~VulkanGpuBackend()
     m_info.samplerPool->releaseSampler(sampler);
   m_info.alloc->destroyImage(m_white);
   m_info.alloc->destroyImage(m_missing);
+  if(m_timestamps)
+    vkDestroyQueryPool(m_info.device, m_timestamps, nullptr);
 }
 
 void VulkanGpuBackend::record(VkCommandBuffer cmd)
@@ -137,7 +139,48 @@ void VulkanGpuBackend::finish()
 {
   flushBuilds();
   flushUploads();
-  m_cmd = VK_NULL_HANDLE;
+  m_cmd        = VK_NULL_HANDLE;
+  m_timeBuilds = false;
+}
+
+// A timed span's begin; the first of a timeBuilds() resets the pool and what was recorded before
+bool VulkanGpuBackend::beginSpan()
+{
+  if(!m_timeBuilds || !m_cmd)
+    return false;
+  if(!m_timestamps)
+  {
+    const VkQueryPoolCreateInfo info{.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                     .queryType  = VK_QUERY_TYPE_TIMESTAMP,
+                                     .queryCount = 2 * kTimedSpans};
+    NVVK_CHECK(vkCreateQueryPool(m_info.device, &info, nullptr, &m_timestamps));
+  }
+  if(m_spans.size() >= kTimedSpans)
+    return false;
+  if(m_spans.empty())
+    vkCmdResetQueryPool(m_cmd, m_timestamps, 0, 2 * kTimedSpans);
+  vkCmdWriteTimestamp(m_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_timestamps, uint32_t(2 * m_spans.size()));
+  return true;
+}
+
+void VulkanGpuBackend::endSpan(BuildSpan span)
+{
+  vkCmdWriteTimestamp(m_cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_timestamps, uint32_t(2 * m_spans.size() + 1));
+  m_spans.push_back(span);
+}
+
+std::optional<BuildTimes> VulkanGpuBackend::buildTimes()
+{
+  if(m_spans.empty() || m_cmd)
+    return std::nullopt;
+  std::vector<uint64_t> stamps(2 * m_spans.size());
+  if(vkGetQueryPoolResults(m_info.device, m_timestamps, 0, uint32_t(stamps.size()), stamps.size() * sizeof(uint64_t),
+                           stamps.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT)
+     != VK_SUCCESS)
+    return std::nullopt;
+  const BuildTimes times = sumBuildSpans(m_spans, stamps, m_msPerTick);
+  m_spans.clear();
+  return times;
 }
 
 bool VulkanGpuBackend::recording(const char* op) const
@@ -506,6 +549,7 @@ void VulkanGpuBackend::flushBuilds()
     infos.clear();
     ranges.clear();
   };
+  const bool timed = beginSpan();
   for(size_t i = 0; i < m_queued.size(); i++)
   {
     if(i > 0 && plan.places[i].batch != plan.places[i - 1].batch)
@@ -527,6 +571,8 @@ void VulkanGpuBackend::flushBuilds()
     ranges.push_back(blas.data.asBuildRangeInfo.data());
   }
   record();
+  if(timed)
+    endSpan(BuildSpan::eBlas);
   m_queued.clear();
 }
 
@@ -570,6 +616,8 @@ void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> ro
   }
   TlasEntry& tlas = it->second;
   flushBuilds();
+  flushUploads();  // what came before, outside the timed span
+  const bool                                      timed = beginSpan();
   std::vector<VkAccelerationStructureInstanceKHR> instances(rows.size());
   for(size_t i = 0; i < rows.size(); i++)
   {
@@ -595,6 +643,8 @@ void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> ro
     tlas.data.cmdUpdateAccelerationStructure(m_cmd, tlas.accel.accel, tlas.scratch.address);
   else
     tlas.data.cmdBuildAccelerationStructure(m_cmd, tlas.accel.accel, tlas.scratch.address);
+  if(timed)
+    endSpan(BuildSpan::eTlas);
 }
 
 void VulkanGpuBackend::destroyAccel(AccelHandle handle)

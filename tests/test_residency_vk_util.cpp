@@ -131,6 +131,20 @@ TEST(ResidencyVkUtil, AGltfSamplerAsVulkan)
   EXPECT_EQ(odd.addressModeU, VK_SAMPLER_ADDRESS_MODE_REPEAT);
 }
 
+// The GPU build lines: each kind's spans summed, a span that read back out of order counted as 0,
+// and stamps missing for a span leave it out
+TEST(ResidencyVkUtil, BuildSpansSumPerKind)
+{
+  const BuildSpan  spans[] = {BuildSpan::eBlas, BuildSpan::eTlas, BuildSpan::eBlas, BuildSpan::eBlas, BuildSpan::eTlas};
+  const uint64_t   stamps[] = {100, 300, 300, 310, 400, 1000, 2000, 1500};
+  const BuildTimes times    = sumBuildSpans(spans, stamps, 0.5);
+  EXPECT_DOUBLE_EQ(times.blasMs, 400.0);  // (200 + 600 + 0) * 0.5
+  EXPECT_DOUBLE_EQ(times.tlasMs, 5.0);
+  EXPECT_EQ(times.blasSpans, 3u);
+  EXPECT_EQ(times.tlasSpans, 1u);
+  EXPECT_EQ(sumBuildSpans({}, {}, 1.0).blasSpans, 0u);
+}
+
 TEST(ResidencyVkUtil, BufferUsageAndBuildFlags)
 {
   const VkBufferUsageFlags2 indices = vkBufferUsage(eBufferIndex | eBufferAccelInput);

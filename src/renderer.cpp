@@ -4308,8 +4308,16 @@ void GltfRenderer::createRetainedScene()
   {
     fv::timing::Scope timeUpload("retained upload");
     VkCommandBuffer   cmd = m_app->createTempCmdBuffer();
+    // [fv-time] GPU BLAS build / GPU TLAS build, as legacy reports them at a load
+    if(fv::timing::enabled())
+      m_resources.retainedGpu->timeBuilds();
     m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
     m_app->submitAndWaitTempCmdBuffer(cmd);
+    if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes())
+    {
+      OneShotGpuTimer::report("GPU BLAS build", times->blasMs);
+      OneShotGpuTimer::report("GPU TLAS build", times->tlasMs);
+    }
   }
 
   const rs::Residency& residency = m_resources.retainedGpu->residency();

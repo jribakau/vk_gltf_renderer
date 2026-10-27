@@ -873,12 +873,15 @@ Two settings, neither remembered, both live:
 
 In a retained session `loadModel` builds the CPU `nvvkgltf::Scene` as before, then
 `createRetainedScene` imports it in document order (instance slot *i* is render node *i*, so the
-host's and the pickers' indices hold) and makes it resident, waited for. Each frame
+host's and the pickers' indices hold) and makes it resident, waited for; with `[fv-time]` on, the
+`GPU BLAS build` and `GPU TLAS build` lines time that replace's builds as legacy's time a load's
+(`VulkanGpuBackend::timeBuilds`). Each frame
 `syncRetainedScene` stands in for the legacy per-frame paths listed above: `LegacyDirtyBridge`
 carries the dirty nodes, materials and lights into the store (a re-import when it can't: a new
 texture, a sampler edit, a re-parse), the CPU world matrices are brought up to date, and the
 residency syncs. Not on retained yet: DLSS instance and deformation motion (motion is the camera's
-only), opacity micromaps, per-build GPU timing sections. mcp_scene's edit tools are refused (D3).
+only), opacity micromaps, GPU build timing for a frame's re-import. mcp_scene's edit tools are
+refused (D3).
 
 ---
 
