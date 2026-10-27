@@ -441,7 +441,7 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
 
   // === Phase 0: which tasks run. A task whose weights or joint matrices equal what it last ran
   // with, on the base geometry it last ran on, leaves its result in the vertex buffers (a skin
-  // runs again when the morph it composes on ran). ===
+  // runs again when the morph it composes on ran, and that morph whenever the skin runs). ===
   if(m_lastJointMatrices.size() != skinTasks.size() || m_lastMorphWeights.size() != m_morphGpuData.size())
     invalidateOutputs();
   std::vector<uint8_t>                morphRuns(m_morphGpuData.size(), 0), skinRuns(skinTasks.size(), 0);
@@ -500,6 +500,24 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
       continue;
     skinRuns[ti] = 1;
     writes(task.renderPrimIDs, task.renderPrimID);
+  }
+  // The skin of a morphed primitive reads the vertex buffers, which hold the last skin's output
+  // until the morph writes them again: the morph runs whenever the skin does, or a pose alone would
+  // skin the skinned vertices a second time.
+  for(size_t ti = 0; ti < skinTasks.size(); ti++)
+  {
+    const int prim = skinTasks[ti].renderPrimID;
+    if(!skinRuns[ti] || !morphPrimIDs.count(prim) || morphWrote.count(prim))
+      continue;
+    for(size_t mi = 0; mi < m_morphGpuData.size(); mi++)
+    {
+      const MorphResult& mr = scn.animation().getMorphResult(mi);
+      if(mr.renderPrimID != prim || morphWeights[mi].empty())
+        continue;
+      morphRuns[mi] = 1;
+      morphWrote.insert(prim);
+      writes(mr.renderPrimIDs, mr.renderPrimID);
+    }
   }
   std::sort(m_written.begin(), m_written.end());
   m_written.erase(std::unique(m_written.begin(), m_written.end()), m_written.end());
