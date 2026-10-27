@@ -539,8 +539,7 @@ void PathTracer::updateOptiXResources(VkCommandBuffer cmd, Resources& resources)
 bool PathTracer::onUIRender(Resources& resources)
 {
   // Setting the aperture max slider value, based on the scene size
-  float sceneRadius =
-      (resources.getScene() && resources.getScene()->valid()) ? resources.getScene()->getSceneBounds().radius() : 1.0f;
+  float sceneRadius = resources.gpuView().hasContent() ? resources.gpuView().bounds().radius() : 1.0f;
   float scaleFactor = std::log(sceneRadius);
   scaleFactor       = std::max(scaleFactor, 0.0f);   // Prevent negative values when the scene is small
   float apertureMax = 0.0001f + scaleFactor * 5.0f;  // Minimum max aperture is 0.0001
@@ -714,8 +713,7 @@ bool PathTracer::onUIRender(Resources& resources)
     if(resources.settings.useInfinitePlane)
     {
       changed |= PE::Checkbox("Shadow Catcher", (bool*)&resources.settings.isShadowCatcher);
-      const float extentY =
-          (resources.getScene() && resources.getScene()->valid()) ? resources.getScene()->getSceneBounds().extents().y : 10.0f;
+      const float extentY = resources.gpuView().hasContent() ? resources.gpuView().bounds().extents().y : 10.0f;
       if(PE::treeNode("Infinite Plane Settings"))
       {
         changed |= PE::SliderFloat("Height", &resources.settings.infinitePlaneDistance, -extentY, extentY, "%5.9f",
@@ -817,7 +815,7 @@ PathTracer::PendingCompileWork PathTracer::getPendingCompileWork(const Resources
 
 bool PathTracer::wantOpacityMicromapShader(const Resources& resources)
 {
-  return resources.sceneVk.opacityMicromap().hasAny();
+  return resources.gpuView().hasOpacityMicromaps();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1224,7 +1222,7 @@ void PathTracer::cmdCopyStagedDepth(VkCommandBuffer cmd, Resources& resources)
 void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, VkPipelineBindPoint bindPoint) const
 {
   nvvk::WriteSetContainer write{};
-  write.append(resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eTlas), resources.sceneRtx.topLevelAS());
+  write.append(resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eTlas), resources.gpuView().tlas());
 
   // Output images by shaderio::OutputImage slot, the first outputCount of them bound. Fixed storage:
   // this runs every frame (twice on frame 0). ObjectID is written to the eSelectImage slot as float in .r.
@@ -2794,7 +2792,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
                                                            resources.settings.maxSamples, resources.sampleStops);
   m_pushConst.totalSamples = m_totalSamplesAccumulated;
   m_pushConst.frameInfo    = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
-  m_pushConst.gltfScene    = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
+  m_pushConst.gltfScene    = (shaderio::GltfScene*)resources.gpuView().sceneDesc();
   m_pushConst.mouseCoord   = nvapp::ElementDbgPrintf::getMouseCoord();  // Use for debugging: printf in shader
   // Only a scene with a KHR_materials_volume material has a medium the camera can be in
   m_pushConst.cameraMedium = (m_probeCameraMedium && resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eVolume)) ?

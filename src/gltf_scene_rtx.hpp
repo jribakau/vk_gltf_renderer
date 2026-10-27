@@ -80,7 +80,7 @@ public:
   VkResult                                 cmdCompactBlas(VkCommandBuffer cmd);
   void                                     destroyNonCompactedBlas();
   void                                     trackBlasMemory();
-  [[nodiscard]] VkAccelerationStructureKHR topLevelAS();
+  [[nodiscard]] VkAccelerationStructureKHR topLevelAS() const;
 
   // ---------- Sync / Update ----------
   // Update the per-material instance flags cache. Call before syncFromScene() clears df.materials,

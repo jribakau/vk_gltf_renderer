@@ -167,11 +167,6 @@ uint64_t sumTrackerCurrentBytes(const nvvkgltf::GpuMemoryTracker& tracker)
   return tracker.getTotalStats().currentBytes;
 }
 
-uint64_t sumTrackerPeakBytes(const nvvkgltf::GpuMemoryTracker& tracker)
-{
-  return tracker.getTotalStats().peakBytes;
-}
-
 // Two timestamps around work that runs once (a load's BLAS or TLAS build), read when the GPU has
 // finished it: the profiler's frame sections see only the work of the frames being drawn. Held by
 // the completion callback, so its query pool goes with the callback, or with the pipeline's clear()
@@ -1181,17 +1176,10 @@ BenchmarkController::HeadlessFrameInfo GltfRenderer::benchmarkFrameInfo() const
 std::vector<BenchmarkController::MemorySample> GltfRenderer::benchmarkMemorySamples() const
 {
   std::vector<BenchmarkController::MemorySample> samples;
-  if(m_resources.getScene() && m_resources.getScene()->valid())
+  if(m_resources.gpuView().hasContent())
   {
-    const uint64_t sceneUsed = sumTrackerCurrentBytes(m_resources.sceneVk.getMemoryTracker())
-                               + sumTrackerCurrentBytes(m_resources.sceneRtx.getMemoryTracker())
-                               + sumTrackerCurrentBytes(m_resources.transformCompute.getMemoryTracker())
-                               + sumTrackerCurrentBytes(m_resources.animationVk.getMemoryTracker());
-    const uint64_t scenePeak = sumTrackerPeakBytes(m_resources.sceneVk.getMemoryTracker())
-                               + sumTrackerPeakBytes(m_resources.sceneRtx.getMemoryTracker())
-                               + sumTrackerPeakBytes(m_resources.transformCompute.getMemoryTracker())
-                               + sumTrackerPeakBytes(m_resources.animationVk.getMemoryTracker());
-    samples.push_back({.category = "Scene", .deviceUsed = sceneUsed, .deviceAllocated = scenePeak});
+    const SceneGpuView::MemoryStats scene = m_resources.gpuView().memoryStats();
+    samples.push_back({.category = "Scene", .deviceUsed = scene.usedBytes, .deviceAllocated = scene.peakBytes});
   }
   else
   {
@@ -1710,7 +1698,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   m_resources.staging.updateFrameSemaphoreState(nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore()));
 
   // Empty scene, clear the G-Buffer
-  if(!m_resources.getScene() || !m_resources.getScene()->valid())
+  if(!m_resources.gpuView().hasContent())
   {
     clearGbuffer(cmd);
     return;
@@ -1766,7 +1754,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   {
     nvvkgltf::Scene*                   scn = m_resources.getScene();
     const nvvkgltf::Scene::DirtyFlags& df  = scn->getDirtyFlags();
-    const bool animActive = ui::animation::hasPlayableAnimation(scn) && m_resources.animationControl.doAnimation();
+    const bool animActive = m_resources.gpuView().hasPlayableAnimation() && m_resources.animationControl.doAnimation();
     // reconcileAnimationGpuState() (called from updateInteractivityGraphs() above whenever it applied
     // an animation/start-driven pose this tick) already cleared DirtyFlags::nodes as its own tail, so
     // `df.nodes`/`allRenderNodesDirty` can't see that motion here - interactivityAnimationApplied
@@ -1778,7 +1766,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     if(m_resources.dlssInstanceMotionActive)
     {
       auto snapSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Snapshot prev transforms");
-      m_resources.transformCompute.cmdSnapshotPrevObjectToWorld(cmd, m_resources.sceneVk, scn->getRenderNodes().size());
+      m_resources.transformCompute.cmdSnapshotPrevObjectToWorld(cmd, m_resources.sceneVk, m_resources.gpuView().renderNodeCapacity());
     }
   }
 
@@ -1964,7 +1952,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
                           .perspectiveInv = m_pendingClickPick->perspectiveInv,
                           .isOrthographic = m_pendingClickPick->isOrthographic,
                           .pickPos        = m_pendingClickPick->pickPos,
-                          .tlas           = m_resources.sceneRtx.topLevelAS()});
+                          .tlas           = m_resources.gpuView().tlas()});
     m_pendingClickResult =
         PendingClickResult{.semaphoreState = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore()),
                            .isDoubleClick  = m_pendingClickPick->isDoubleClick};
@@ -1972,7 +1960,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   }
   if(m_pendingAnchorPick)
   {
-    m_pendingAnchorPick->tlas = m_resources.sceneRtx.topLevelAS();
+    m_pendingAnchorPick->tlas = m_resources.gpuView().tlas();
     m_anchorPicker.run(cmd, *m_pendingAnchorPick);
     m_pendingAnchorResult = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore());
     m_pendingAnchorPick.reset();
@@ -2940,12 +2928,12 @@ void GltfRenderer::fillShadowAndGround(shaderio::SceneFrameInfo& finfo)
   finfo.shadowLightIndex       = -1;
   finfo.groundFadeRadius       = 0.0F;
   m_resources.shadowPassActive = false;
-  const nvvkgltf::Scene* scene = m_resources.getScene();
-  if(scene == nullptr || !scene->valid() || scene->getRenderNodes().empty())
+  const SceneGpuView& view     = m_resources.gpuView();
+  if(!view.hasContent() || view.renderNodeCapacity() == 0)
     return;
 
   const Settings&     settings = m_resources.settings;
-  const nvutils::Bbox bounds   = scene->getSceneBounds();
+  const nvutils::Bbox bounds   = view.bounds();
   const glm::vec3     center   = bounds.center();
   const float         radius   = std::max(bounds.radius(), 1e-3F);
 
@@ -2966,17 +2954,13 @@ void GltfRenderer::fillShadowAndGround(shaderio::SceneFrameInfo& finfo)
   if(!settings.rasterShadows || settings.renderSystem != RenderingMode::eRasterizer)
     return;
 
-  const tinygltf::Model&                    model   = scene->getModel();
-  const std::vector<nvvkgltf::RenderLight>& rlights = scene->getRenderLights();
+  const std::vector<SceneGpuView::LightInfo> rlights = view.lights();
   // Toward the light, for a directional render light that shines; nullopt for anything else.
   const auto directional = [&](int i) -> std::optional<glm::vec3> {
-    if(i < 0 || i >= int(rlights.size()))
-      return std::nullopt;
-    const int li = rlights[i].light;
-    if(li < 0 || li >= int(model.lights.size()) || model.lights[li].type != "directional")
+    if(i < 0 || i >= int(rlights.size()) || !rlights[i].directional)
       return std::nullopt;
     const bool skyDriven = skyHasSun(settings.envSystem) && i == m_skySun.lightIndex();
-    if(!skyDriven && model.lights[li].intensity <= 0.0)
+    if(!skyDriven && rlights[i].intensity <= 0.0)
       return std::nullopt;
     const glm::vec3 z   = glm::vec3(rlights[i].worldMatrix[2]);
     const float     len = glm::length(z);
@@ -3009,13 +2993,9 @@ void GltfRenderer::fillShadowAndGround(shaderio::SceneFrameInfo& finfo)
     {
       if(!directional(i))
         continue;
-      const tinygltf::Light& l = model.lights[rlights[i].light];
-      double                 c = 1.0;
-      if(l.color.size() == 3)
-        c = std::max({l.color[0], l.color[1], l.color[2]});
-      if(l.intensity * c > brightest)
+      if(rlights[i].intensity * rlights[i].maxColor > brightest)
       {
-        brightest = l.intensity * c;
+        brightest = rlights[i].intensity * rlights[i].maxColor;
         index     = i;
       }
     }
@@ -3262,11 +3242,10 @@ float GltfRenderer::aerialPerspectiveEyeAltitudeKm() const
 {
   const float liftKm = m_resources.settings.atmoObserverAltitude * 0.001F;
 
-  const nvvkgltf::Scene* scene = m_resources.getScene();
-  if(scene == nullptr || !scene->valid() || m_cameraManip == nullptr)
+  if(!m_resources.gpuView().hasContent() || m_cameraManip == nullptr)
     return liftKm;
 
-  const nvutils::Bbox bounds = scene->getSceneBounds();
+  const nvutils::Bbox bounds = m_resources.gpuView().bounds();
   if(!bounds.isEmpty())
   {
     // The scene's floor goes `liftKm` above the planet's surface, so nothing in it is ever
@@ -3461,9 +3440,7 @@ void GltfRenderer::silhouette(VkCommandBuffer cmd)
     auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
 
     // Rebuild selection bitmask and ensure GPU buffer exists and is up to date.
-    int numRenderNodes = m_resources.getScene() && m_resources.getScene()->valid() ?
-                             static_cast<int>(m_resources.getScene()->getRenderNodes().size()) :
-                             0;
+    int numRenderNodes = static_cast<int>(m_resources.gpuView().renderNodeCapacity());
     m_resources.updateSelectionBitMask(numRenderNodes);
     const VkDeviceSize bitmaskBytes = m_resources.selectionBitMask.size() * sizeof(uint32_t);
     if(bitmaskBytes > 0)
@@ -3550,7 +3527,7 @@ void GltfRenderer::renderVisualHelpers(VkCommandBuffer cmd)
 // Update gizmo attachment based on current node selection
 void GltfRenderer::updateGizmoAttachment()
 {
-  if(!m_resources.settings.showGizmo || !m_resources.getScene() || !m_resources.getScene()->valid())
+  if(!m_resources.settings.showGizmo || !m_resources.gpuView().hasContent())
   {
     if(m_gizmoNodeIndex >= 0)
     {
@@ -3723,7 +3700,7 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
   m_pendingAnimReconcile = false;
   // Scene object is set, we can create the Vulkan scene
   createVulkanScene();
-  if(ui::animation::hasPlayableAnimation(m_resources.getScene()))
+  if(m_resources.gpuView().hasPlayableAnimation())
     m_resources.animationControl.showStrip = true;
   // Spec: "When a glTF asset contains a behavior graph, all glTF animations are assumed to be
   // controlled by the graph so they MUST NOT play automatically." Only gates the default - manual
@@ -3894,7 +3871,7 @@ void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descri
   // Publish to resources only when fully constructed (UI thread can now see it)
   m_resources.scene = std::move(scn);
   createVulkanScene();
-  if(ui::animation::hasPlayableAnimation(scene))
+  if(m_resources.gpuView().hasPlayableAnimation())
     m_resources.animationControl.showStrip = true;
   // Spec: KHR_interactivity disables animation autoplay (see finalizeSceneSetup()'s matching comment).
   if(!scene->getInteractivityGraphs().empty())
@@ -4074,7 +4051,7 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
       if(nAnim > 0 && (animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim))
         animCtrl.currentAnimation = 0;
     }
-    if(ui::animation::hasPlayableAnimation(scene))
+    if(m_resources.gpuView().hasPlayableAnimation())
       animCtrl.showStrip = true;
     // Spec: KHR_interactivity disables animation autoplay (see finalizeSceneSetup()'s matching comment).
     if(!scene->getInteractivityGraphs().empty())
@@ -4502,10 +4479,10 @@ bool GltfRenderer::loadHdrEnvironment(EnvImage&& image, const std::filesystem::p
 
 nvutils::Bbox GltfRenderer::sceneBounds() const
 {
-  const nvvkgltf::Scene* scene = m_resources.getScene();
-  if(scene == nullptr || !scene->valid() || scene->getRenderNodes().empty())
+  const SceneGpuView& view = m_resources.gpuView();
+  if(!view.hasContent() || view.renderNodeCapacity() == 0)
     return {};
-  return scene->getSceneBounds();
+  return view.bounds();
 }
 
 bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
@@ -5130,7 +5107,7 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
 
 
   const int nAnim = scn.animation().getNumAnimations();
-  if(nAnim > 0 && ui::animation::hasPlayableAnimation(scnPtr) && animCtrl.doAnimation())
+  if(nAnim > 0 && m_resources.gpuView().hasPlayableAnimation() && animCtrl.doAnimation())
   {
     if(animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim)
       animCtrl.currentAnimation = 0;

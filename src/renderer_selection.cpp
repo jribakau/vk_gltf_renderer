@@ -278,7 +278,7 @@ nvutils::Bbox GltfRenderer::getRenderNodesBbox(const std::unordered_set<int>& re
 
 bool GltfRenderer::hasValidScene()
 {
-  return m_resources.getScene() && m_resources.getScene()->valid();
+  return m_resources.gpuView().hasContent();
 }
 
 int GltfRenderer::selectedNodeIndex()

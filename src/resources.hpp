@@ -50,6 +50,7 @@
 #include <nvvk/frame_uploader.hpp>
 #include "gltf_scene.hpp"
 #include "gltf_scene_gpu.hpp"
+#include "scene_gpu_view.hpp"
 #include "ui_animation.hpp"
 #include "ui_interactivity.hpp"
 #include "gltf_scene_transform_vk.hpp"
@@ -355,6 +356,9 @@ struct Resources
   nvvkgltf::TransformComputeVk     transformCompute{};
   nvvkgltf::SceneGpu sceneGpu{sceneVk, animationVk, sceneRtx, transformCompute, staging};  // Must be declared after its reference dependencies
   nvvkgltf::PrevPositionsVk prevPositions{};  // #DLSS deformation motion: last frame's vertex positions
+  // What the renderers read of the scene on the GPU (scene_gpu_view.hpp); today's objects behind it
+  LegacySceneGpuView  legacyGpuView{scene, sceneVk, sceneRtx, animationVk, transformCompute};
+  const SceneGpuView& gpuView() const { return legacyGpuView; }
 
   nvvkgltf::Scene*       getScene() { return scene.get(); }
   const nvvkgltf::Scene* getScene() const { return scene.get(); }

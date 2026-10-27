@@ -97,7 +97,7 @@ void nvvkgltf::SceneRtx::deinit()
 
 //--------------------------------------------------------------------------------------------------
 // Return the top-level acceleration structure handle for binding in ray tracing pipelines.
-VkAccelerationStructureKHR nvvkgltf::SceneRtx::topLevelAS()
+VkAccelerationStructureKHR nvvkgltf::SceneRtx::topLevelAS() const
 {
   return m_tlasAccel.accel;
 }

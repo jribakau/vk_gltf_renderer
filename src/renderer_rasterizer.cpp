@@ -541,7 +541,7 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // The traced shadows and occlusion: rays when the scene has a TLAS. All are baked into the
   // recorded commands (the push constants, the pushed TLAS), and a rebuilt TLAS is a new handle.
-  const VkAccelerationStructureKHR tlas = resources.sceneRtx.topLevelAS();
+  const VkAccelerationStructureKHR tlas = resources.gpuView().tlas();
   m_pushConst.rtShadowRays              = tlas != VK_NULL_HANDLE ? m_rtShadowRays : 0;
   m_pushConst.aoRays                    = tlas != VK_NULL_HANDLE ? m_aoRays : 0;
   if(tlas != m_recordedTlas || m_pushConst.rtShadowRays != m_recordedRtShadowRays || m_pushConst.aoRays != m_recordedAoRays)
@@ -735,7 +735,7 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // The depth prepass and, when there are rays to trace, the occlusion pass. The G-buffer and the
   // pass's images follow the render extent; a remade filtered image is a new view for set 3.
-  const bool prepass   = resources.getScene() != nullptr;
+  const bool prepass   = resources.gpuView().hasContent();
   const bool occlusion = prepass && tlas != VK_NULL_HANDLE && (m_pushConst.aoRays > 0 || m_pushConst.rtShadowRays > 0);
   if(prepass)
     ensureOcclusionImages(cmd, resources, targets.extent);
@@ -750,7 +750,7 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // Setting up the push constant.
   m_pushConst.frameInfo  = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
-  m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
+  m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.gpuView().sceneDesc();
   m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();  // Use for debugging: printf in shader
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
 
@@ -897,15 +897,7 @@ void Rasterizer::renderNodes(VkCommandBuffer cmd, Resources& resources, const st
 {
   NVVK_DBG_SCOPE(cmd);
 
-  nvvkgltf::Scene* scenePtr = resources.getScene();
-  if(!scenePtr)
-    return;
-  nvvkgltf::Scene&   scene   = *scenePtr;
-  nvvkgltf::SceneVk& sceneVk = resources.sceneVk;
-
-  const VkDeviceSize                            offsets{0};
-  const std::vector<nvvkgltf::RenderNode>&      renderNodes = scene.getRenderNodes();
-  const std::vector<nvvkgltf::RenderPrimitive>& subMeshes   = scene.getRenderPrimitives();
+  const SceneGpuView& view = resources.gpuView();
 
   // Structure to hold only the changing parts
   struct NodeSpecificConstants
@@ -921,24 +913,22 @@ void Rasterizer::renderNodes(VkCommandBuffer cmd, Resources& resources, const st
 
   for(const uint32_t& nodeID : nodeIDs)
   {
-    const nvvkgltf::RenderNode&      renderNode = renderNodes[nodeID];
-    const nvvkgltf::RenderPrimitive& subMesh = subMeshes[renderNode.renderPrimID];  // Mesh referred by the draw object
-
-    if(!renderNode.visible)
+    const SceneGpuView::DrawRecord draw = view.drawRecord(nodeID);  // the mesh the draw object refers to
+    if(!draw.visible || draw.vertexBuffer == VK_NULL_HANDLE)
       continue;
 
     // Update only the changing fields
-    NodeSpecificConstants nodeConstants{.materialID   = renderNode.materialID,
+    NodeSpecificConstants nodeConstants{.materialID   = draw.materialID,
                                         .renderNodeID = static_cast<int>(nodeID),
-                                        .renderPrimID = renderNode.renderPrimID};
+                                        .renderPrimID = draw.renderPrimID};
 
     // Push only the changing parts
     vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, offset, sizeof(NodeSpecificConstants), &nodeConstants);
 
     // Bind vertex and index buffers and draw the mesh
-    vkCmdBindVertexBuffers(cmd, 0, 1, &sceneVk.vertexBuffers()[renderNode.renderPrimID].position.buffer, &offsets);
-    vkCmdBindIndexBuffer(cmd, sceneVk.indices()[renderNode.renderPrimID].buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, subMesh.indexCount, 1, 0, 0, 0);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &draw.vertexBuffer, &draw.vertexOffset);
+    vkCmdBindIndexBuffer(cmd, draw.indexBuffer, draw.indexOffset, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, draw.indexCount, 1, 0, 0, 0);
   }
 }
 
@@ -1157,7 +1147,7 @@ static void cmdSetCommonRasterState(VkCommandBuffer              cmd,
   // Set 2: the sun shadow map, read by the light loop when the frame names a shadow light.
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1, &shadowSet, 0, nullptr);
   // Set 3: the TLAS for the traced shadows, when the scene has one (the shader reads it only then)
-  if(VkAccelerationStructureKHR tlas = resources.sceneRtx.topLevelAS())
+  if(VkAccelerationStructureKHR tlas = resources.gpuView().tlas())
   {
     nvvk::WriteSetContainer write;
     write.append(tlasBindings.getWriteSet(0), tlas);
@@ -1334,10 +1324,10 @@ void Rasterizer::renderPrepass(VkCommandBuffer cmd, Resources& resources, VkExte
                           m_prepassFragmentShader, m_shadowDescPack.getSet(0), m_tlasBindings, VK_NULL_HANDLE);
   vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
   vkCmdSetDepthBias(cmd, -1.0f, 0.0f, 1.0f);
-  renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolid));
+  renderNodes(cmd, resources, resources.gpuView().drawList(SceneGpuView::DrawList::eSolid));
   vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
-  renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolidDoubleSided));
+  renderNodes(cmd, resources, resources.gpuView().drawList(SceneGpuView::DrawList::eSolidDoubleSided));
   vkCmdEndRendering(cmd);
 
   // the depth for the main pass's tests, the G-buffer for the occlusion pass
@@ -1363,7 +1353,7 @@ void Rasterizer::traceOcclusion(VkCommandBuffer cmd, Resources& resources)
   const VkDescriptorImageInfo raw{.imageView = m_occRaw.descriptor.imageView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
   const VkDescriptorImageInfo filtered{.imageView = m_occFiltered.descriptor.imageView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
   nvvk::WriteSetContainer     writes;
-  writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccTlas), resources.sceneRtx.topLevelAS());
+  writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccTlas), resources.gpuView().tlas());
   writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccGbuffer), gbuffer);
   writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccRaw), raw);
   writes.append(m_occBindings.getWriteSet(shaderio::eRasterOccFiltered), filtered);
@@ -1372,7 +1362,7 @@ void Rasterizer::traceOcclusion(VkCommandBuffer cmd, Resources& resources)
 
   shaderio::RasterOcclusionPushConstant push{};
   push.frameInfo  = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
-  push.gltfScene  = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
+  push.gltfScene  = (shaderio::GltfScene*)resources.gpuView().sceneDesc();
   push.aoRays     = m_pushConst.aoRays;
   push.shadowRays = m_pushConst.rtShadowRays;
   push.groundOn   = resources.settings.useInfinitePlane ? 1 : 0;
@@ -1400,7 +1390,7 @@ void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkE
   // VUID-vkCmdWriteTimestamp-None-00830 ("query not reset") on every frame after the first.
   // The two-pass primary path opens its own section at the call site in onRender().
   m_pushConst.frameInfo  = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
-  m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
+  m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.gpuView().sceneDesc();
   m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
 
@@ -1416,11 +1406,11 @@ void Rasterizer::renderOpaqueOnly(VkCommandBuffer cmd, Resources& resources, VkE
   }
   vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
   vkCmdSetDepthBias(cmd, -1.0f, 0.0f, 1.0f);
-  renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolid));
+  renderNodes(cmd, resources, resources.gpuView().drawList(SceneGpuView::DrawList::eSolid));
 
   vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
-  renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterSolidDoubleSided));
+  renderNodes(cmd, resources, resources.gpuView().drawList(SceneGpuView::DrawList::eSolidDoubleSided));
   vkCmdSetDepthCompareOp(cmd, m_dynamicPipeline.depthStencilState.depthCompareOp);
   vkCmdSetDepthWriteEnable(cmd, VK_TRUE);
 
@@ -1457,7 +1447,7 @@ void Rasterizer::renderGround(VkCommandBuffer cmd, Resources& /*resources*/)
 // two alpha-tested in the fragment shader. No culling, so a thin sheet casts whichever way it faces.
 void Rasterizer::renderShadowMap(VkCommandBuffer cmd, Resources& resources)
 {
-  if(resources.getScene() == nullptr)
+  if(!resources.gpuView().hasContent())
     return;
   const int size = std::clamp(resources.settings.shadowMapSize, 1024, 8192);
   if(size != m_shadowMapSize)
@@ -1490,7 +1480,7 @@ void Rasterizer::renderShadowMap(VkCommandBuffer cmd, Resources& resources)
   vkCmdBeginRendering(cmd, &renderingInfo);
 
   m_pushConst.frameInfo  = (shaderio::SceneFrameInfo*)resources.bFrameInfo.address;
-  m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.sceneVk.sceneDesc().address;
+  m_pushConst.gltfScene  = (shaderio::GltfScene*)resources.gpuView().sceneDesc();
   m_pushConst.mouseCoord = nvapp::ElementDbgPrintf::getMouseCoord();
   vkCmdPushConstants(cmd, m_graphicPipelineLayout, VK_SHADER_STAGE_ALL_GRAPHICS, 0, sizeof(shaderio::RasterPushConstant), &m_pushConst);
   cmdSetCommonRasterState(cmd, m_dynamicPipeline, resources, extent, m_graphicPipelineLayout, m_shadowVertexShader,
@@ -1500,10 +1490,10 @@ void Rasterizer::renderShadowMap(VkCommandBuffer cmd, Resources& resources)
   // own shadow. Positive is away from the light.
   vkCmdSetDepthBias(cmd, 1.0f, 0.0f, 2.0f);
 
-  nvvkgltf::Scene& scene = *resources.getScene();
-  renderNodes(cmd, resources, scene.getShadedNodes(nvvkgltf::Scene::eRasterSolid));
-  renderNodes(cmd, resources, scene.getShadedNodes(nvvkgltf::Scene::eRasterSolidDoubleSided));
-  renderNodes(cmd, resources, scene.getShadedNodes(nvvkgltf::Scene::eRasterBlend));
+  const SceneGpuView& view = resources.gpuView();
+  renderNodes(cmd, resources, view.drawList(SceneGpuView::DrawList::eSolid));
+  renderNodes(cmd, resources, view.drawList(SceneGpuView::DrawList::eSolidDoubleSided));
+  renderNodes(cmd, resources, view.drawList(SceneGpuView::DrawList::eBlend));
   vkCmdEndRendering(cmd);
 
   nvvk::cmdImageMemoryBarrier(cmd, {m_shadowMap.image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
@@ -1542,7 +1532,7 @@ void Rasterizer::renderBlendOnly(VkCommandBuffer cmd, Resources& resources, VkEx
     vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blendDisable);
     vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
     vkCmdSetPolygonModeEXT(cmd, VK_POLYGON_MODE_LINE);
-    renderNodes(cmd, resources, resources.getScene()->getShadedNodes(nvvkgltf::Scene::eRasterAll));
+    renderNodes(cmd, resources, resources.gpuView().drawList(SceneGpuView::DrawList::eAll));
   }
 }
 
@@ -1755,8 +1745,8 @@ bool Rasterizer::updateSortedBlendNodes(VkCommandBuffer cmd, Resources& resource
 {
   auto timerSection = m_profiler->cmdFrameSection(cmd, "Sorting blend nodes");
 
-  nvvkgltf::Scene* scenePtr = resources.getScene();
-  if(!scenePtr)
+  const SceneGpuView& view = resources.gpuView();
+  if(!view.hasContent())
   {
     m_sceneHasTransmission = false;
     const bool changed     = !m_sortedBlendNodes.empty();
@@ -1766,11 +1756,11 @@ bool Rasterizer::updateSortedBlendNodes(VkCommandBuffer cmd, Resources& resource
 
   // Scene-wide query: only materials with non-zero KHR_materials_transmission need the
   // screen-space-refraction capture pass. Plain alpha-blend scenes skip the extra pass.
-  m_sceneHasTransmission = scenePtr->hasTransmissionMaterials();
+  m_sceneHasTransmission = view.hasTransmission();
 
-  const std::vector<uint32_t>& blendNodes          = scenePtr->getShadedNodes(nvvkgltf::Scene::eRasterBlend);
-  const uint64_t               shadedNodesRevision = scenePtr->getShadedNodesRevision();
-  const uint64_t               sceneGraphRevision  = scenePtr->getSceneGraphRevision();
+  const std::vector<uint32_t>& blendNodes          = view.drawList(SceneGpuView::DrawList::eBlend);
+  const uint64_t               shadedNodesRevision = view.drawListsRevision();
+  const uint64_t               sceneGraphRevision  = view.transformsRevision();
 
   if(blendNodes.empty())
   {
@@ -1807,9 +1797,6 @@ bool Rasterizer::updateSortedBlendNodes(VkCommandBuffer cmd, Resources& resource
     m_sortedBlendNodes.assign(blendNodes.begin(), blendNodes.end());
   }
 
-  const std::vector<nvvkgltf::RenderNode>& renderNodes = scenePtr->getRenderNodes();
-  const std::vector<glm::vec3>&            primCenters = scenePtr->getRenderPrimCenterObj();
-
   // Row 2 of viewMatrix pulls the view-space Z coordinate out of a vec4 via a single dot product.
   // In glm's column-major layout row r, column c lives at viewMatrix[c][r].
   const glm::vec4 viewRow2{viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2], viewMatrix[3][2]};
@@ -1817,19 +1804,13 @@ bool Rasterizer::updateSortedBlendNodes(VkCommandBuffer cmd, Resources& resource
   std::vector<float> depths(m_sortedBlendNodes.size());
   for(size_t i = 0; i < m_sortedBlendNodes.size(); ++i)
   {
-    const uint32_t nodeID = m_sortedBlendNodes[i];
-    if(nodeID >= renderNodes.size())
+    const std::optional<glm::vec3> centre = view.worldCentre(m_sortedBlendNodes[i]);
+    if(!centre)
     {
       depths[i] = 0.f;
       continue;
     }
-    const nvvkgltf::RenderNode& rnode = renderNodes[nodeID];
-    if(rnode.renderPrimID < 0 || size_t(rnode.renderPrimID) >= primCenters.size())
-    {
-      depths[i] = 0.f;
-      continue;
-    }
-    const glm::vec4 centerWS = rnode.worldMatrix * glm::vec4(primCenters[rnode.renderPrimID], 1.f);
+    const glm::vec4 centerWS(*centre, 1.f);
     // Right-handed view: -Z is forward, so more-negative VS-Z = further. Negate so larger depth
     // = further and the back-to-front order is "descending by depth".
     depths[i] = -glm::dot(viewRow2, centerWS);
