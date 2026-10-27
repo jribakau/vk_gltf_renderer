@@ -20,6 +20,7 @@
 #include "residency_oracle.hpp"
 
 #include <array>
+#include <limits>
 #include <cstring>
 #include <set>
 #include <map>
@@ -71,6 +72,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
   std::vector<std::string> out;
   for(const std::string& e : gpu.errors())
     out.push_back("backend: " + e);
+  for(const std::string& e : gpu.unfencedForTheFrame())
+    out.push_back("barriers: " + e);
 
   const uint32_t hwm = residency.instanceHighWater();
   // I13
@@ -203,6 +206,14 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(prim->input.vertexAddress != gpu.bufferAddress(mesh->positions) || prim->input.indexAddress != gpu.bufferAddress(prim->indices)
        || prim->input.indexCount != run.indexCount || prim->input.vertexCount != record->positions.size())
       out.push_back(at("I3", p) + "its BLAS input is not its buffers");
+    glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
+    for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
+    {
+      lo = glm::min(lo, record->positions[record->indices[i]]);
+      hi = glm::max(hi, record->positions[record->indices[i]]);
+    }
+    if(run.indexCount && (prim->boundsMin != lo || prim->boundsMax != hi))
+      out.push_back(at("I3", p) + "its bounds are not its vertices'");
     const FakeGpuBackend::Blas* blas = gpu.blas(prim->blas);
     if(!blas)
       out.push_back(at("I1", p) + "its BLAS is not built");

@@ -176,7 +176,8 @@ tests/
 └── common/
     ├── test_utils.hpp          # Test utilities header
     ├── test_utils.cpp          # Test utilities implementation
-    ├── fake_gpu_backend.*      # rs::GpuBackend without a GPU: shadow bytes, BLAS/TLAS state, a frame clock
+    ├── fake_gpu_backend.*      # rs::GpuBackend without a GPU: shadow bytes, BLAS/TLAS state, a frame clock,
+    │                           #   and the barriers its builds and the frame's shading need
     └── residency_oracle.*      # ResidencyOracle: rs::Residency's GPU state against the retained scene
 ```
 

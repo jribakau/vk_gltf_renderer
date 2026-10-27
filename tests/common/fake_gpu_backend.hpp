@@ -35,6 +35,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -96,7 +97,7 @@ public:
   uint64_t     bufferSize(BufferHandle buffer) const override;
   void         upload(BufferHandle dst, uint64_t offset, std::span<const std::byte> bytes) override;
   void copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size) override;
-  // "decodes" what it is given: width and height as the source says, two channels below three
+  // "decodes" what it is given: width and height as the source says, two channels for two
   // components; a source with nothing in it, or a uri starting "missing", can't be read
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
   void        destroyImage(ImageHandle image) override;
@@ -133,6 +134,10 @@ public:
   size_t                                    liveImages() const { return m_images.size(); }
   size_t                                    liveAccels() const { return m_blases.size() + m_tlases.size(); }
   const std::vector<std::string>&           errors() const { return m_errors; }
+  // What the work recorded so far leaves unfenced for the frame's shading and tracing: uploads with
+  // no transfer-to-shader barrier after them, builds with no build-to-trace barrier after them. (A
+  // build that reads unfenced bytes, or a TLAS build over unfenced BLAS builds, is an error at once.)
+  std::vector<std::string> unfencedForTheFrame() const;
 
   // The fake's address range: 16-byte units in a 32-bit allocator, from a base that no real buffer
   // address in a test could be confused with
@@ -148,6 +153,9 @@ private:
 
   void    error(std::string message);
   Buffer* liveBuffer(BufferHandle handle, const char* op);
+  void    written(BufferHandle handle);
+  // a build reading [address, address + size): an error when its buffer was written unfenced
+  void readByBuild(uint64_t address, const char* op);
 
   uint32_t m_framesInFlight;
   uint64_t m_frame         = 0;
@@ -162,6 +170,10 @@ private:
   std::map<uint32_t, ImageHandle>             m_textureDescriptors;
   std::map<uint32_t, GpuSamplerDesc>          m_samplerDescriptors;
   std::vector<GpuBarrier>                     m_barriers;
+  // buffers written since the last barrier that fences them for builds, and for shading; BLAS
+  // builds or refits since the last build-to-build, and AS builds since the last build-to-trace
+  std::set<uint64_t>                          m_writtenBeforeBuild, m_writtenBeforeShading;
+  bool                                        m_blasBeforeTlas = false, m_buildsBeforeTrace = false;
   std::vector<DeformDispatch>                 m_deforms;
   std::vector<Retire>                         m_retires;
   std::vector<std::string>                    m_errors;

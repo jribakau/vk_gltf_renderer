@@ -26,10 +26,12 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <span>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <nvutils/file_operations.hpp>
 
 #include "gltf_scene.hpp"
 #include "scene_import_gltf.hpp"
@@ -272,6 +274,34 @@ TEST(RetainedImport, KeepsWhatItDrawsAndLetsTheRestGo)
   // everything goes with the entities
   scene.destroyEntity(r.roots[0]);
   EXPECT_EQ(scene.meshCount() + scene.materialCount() + scene.textureCount(), 0u);
+}
+
+// An image's URI is found in the search paths and kept as its absolute path; one not found, or with
+// no paths given, stays as the file wrote it.
+TEST(RetainedImport, AnImageIsFoundWhereTheFileLives)
+{
+  namespace fs       = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "retained_import_images";
+  fs::create_directories(dir / "maps");
+  {
+    std::ofstream(dir / "maps" / "normal map.png") << "png";
+  }
+  tinygltf::Model model = fixture();
+  model.images[0].uri   = "maps/normal%20map.png";
+
+  rs::RetainedScene        found;
+  const rs::ImportResult   r = rs::importGltf(found, model, {.imageSearchPaths = {dir / "elsewhere", dir}});
+  const rs::TextureRecord* t = found.texture((*found.material(r.materials[0])->textures)[0].texture);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(fs::path(nvutils::pathFromUtf8(t->uri)), fs::absolute(dir / "maps" / "normal map.png"));
+
+  rs::RetainedScene missing, unresolved;
+  model.images[0].uri      = "gone.png";
+  const rs::ImportResult m = rs::importGltf(missing, model, {.imageSearchPaths = {dir}});
+  EXPECT_EQ(missing.texture((*missing.material(m.materials[0])->textures)[0].texture)->uri, "gone.png");
+  const rs::ImportResult u = rs::importGltf(unresolved, fixture());
+  EXPECT_EQ(unresolved.texture((*unresolved.material(u.materials[0])->textures)[0].texture)->uri, "normal.png");
+  fs::remove_all(dir);
 }
 
 // The generated glTF 2.1 fixtures and, when present, the Khronos sample assets: every one the legacy

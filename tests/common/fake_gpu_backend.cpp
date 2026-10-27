@@ -119,6 +119,8 @@ void FakeGpuBackend::destroyBuffer(BufferHandle handle)
     return;
   m_addresses->free({b->allocOffset, b->allocMetadata});
   m_buffers.erase(handle.value);
+  m_writtenBeforeBuild.erase(handle.value);
+  m_writtenBeforeShading.erase(handle.value);
 }
 
 uint64_t FakeGpuBackend::bufferAddress(BufferHandle handle) const
@@ -146,6 +148,30 @@ void FakeGpuBackend::upload(BufferHandle dst, uint64_t offset, std::span<const s
   }
   if(!bytes.empty())
     std::memcpy(b->bytes.data() + offset, bytes.data(), bytes.size());
+  written(dst);
+}
+
+void FakeGpuBackend::written(BufferHandle handle)
+{
+  m_writtenBeforeBuild.insert(handle.value);
+  m_writtenBeforeShading.insert(handle.value);
+}
+
+void FakeGpuBackend::readByBuild(uint64_t address, const char* op)
+{
+  for(const auto& [handle, b] : m_buffers)
+    if(address >= b.address && address < b.address + std::max<uint64_t>(b.desc.size, 1) && m_writtenBeforeBuild.count(handle))
+      error(std::string(op) + ": reads a buffer written with no transfer-to-build barrier between");
+}
+
+std::vector<std::string> FakeGpuBackend::unfencedForTheFrame() const
+{
+  std::vector<std::string> out;
+  if(!m_writtenBeforeShading.empty())
+    out.push_back(std::to_string(m_writtenBeforeShading.size()) + " buffers written with no transfer-to-shader barrier after");
+  if(m_buildsBeforeTrace)
+    out.push_back("acceleration structures built with no build-to-trace barrier after");
+  return out;
 }
 
 void FakeGpuBackend::copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size)
@@ -161,6 +187,7 @@ void FakeGpuBackend::copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHand
   }
   if(size)
     std::memmove(d->bytes.data() + dstOffset, s->bytes.data() + srcOffset, size);
+  written(dst);
 }
 
 // ---------- Images and descriptors ----------
@@ -172,7 +199,7 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
     return {};
   info.width      = uint32_t(std::max(source.width, 1));
   info.height     = uint32_t(std::max(source.height, 1));
-  info.twoChannel = source.component > 0 && source.component < 3;
+  info.twoChannel = source.component == 2;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, Image{source.name, source.uri, source.srgb, info});
   return handle;
@@ -227,6 +254,9 @@ AccelHandle FakeGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags fl
   b.builds      = 1;
   if(!b.contentHash)
     error("buildBlas: its positions or indices are not inside a live buffer");
+  readByBuild(input.vertexAddress, "buildBlas");
+  readByBuild(input.indexAddress, "buildBlas");
+  m_blasBeforeTlas = m_buildsBeforeTrace = true;
   const AccelHandle handle{m_nextHandle++};
   m_blases.emplace(handle.value, b);
   return handle;
@@ -253,6 +283,9 @@ void FakeGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
   b.refits++;
   if(!b.contentHash)
     error("refitBlas: its positions or indices are not inside a live buffer");
+  readByBuild(input.vertexAddress, "refitBlas");
+  readByBuild(input.indexAddress, "refitBlas");
+  m_blasBeforeTlas = m_buildsBeforeTrace = true;
 }
 
 AccelHandle FakeGpuBackend::compactBlas(AccelHandle handle)
@@ -293,6 +326,9 @@ void FakeGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows
   for(size_t i = 0; i < rows.size(); i++)
     if(rows[i].blas && !m_blases.count(rows[i].blas.value))
       error("buildTlas: row " + std::to_string(i) + " references a dead or unknown BLAS");
+  if(m_blasBeforeTlas)
+    error("buildTlas: BLASes built or refitted with no build-to-build barrier before it");
+  m_buildsBeforeTrace = true;
   if(mode == TlasMode::eUpdate)
   {
     const bool sameRows = t.builds + t.updates > 0 && rows.size() == t.rows.size()
@@ -327,6 +363,23 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& dispatch)
 void FakeGpuBackend::barrier(GpuBarrier barrier)
 {
   m_barriers.push_back(barrier);
+  switch(barrier)
+  {
+    case GpuBarrier::eTransferToShader:
+      m_writtenBeforeShading.clear();
+      break;
+    case GpuBarrier::eTransferToBuild:
+      m_writtenBeforeBuild.clear();
+      break;
+    case GpuBarrier::eComputeToBuild:
+      break;
+    case GpuBarrier::eBuildToBuild:
+      m_blasBeforeTlas = false;
+      break;
+    case GpuBarrier::eBuildToTrace:
+      m_buildsBeforeTrace = false;
+      break;
+  }
 }
 
 // ---------- Readback ----------

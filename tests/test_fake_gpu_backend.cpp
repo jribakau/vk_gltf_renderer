@@ -55,6 +55,7 @@ Triangle uploadTriangle(FakeGpuBackend& gpu, float x = 1.0f)
   gpu.upload(t.positions, 0, asBytes(p));
   gpu.upload(t.indices, 0, asBytes(i));
   t.input = {.vertexAddress = gpu.bufferAddress(t.positions), .vertexCount = 3, .indexAddress = gpu.bufferAddress(t.indices), .indexCount = 3};
+  gpu.barrier(GpuBarrier::eTransferToBuild);
   return t;
 }
 
@@ -173,6 +174,7 @@ TEST(FakeGpuBackend, ABlasHashesTheBytesItWasBuiltFrom)
   gpu.upload(t.positions, 0, asBytes(moved));
   EXPECT_NE(gpu.contentHash(t.input), built);
   EXPECT_EQ(gpu.blas(blas)->contentHash, built);
+  gpu.barrier(GpuBarrier::eTransferToBuild);
   gpu.refitBlas(blas, t.input);
   EXPECT_EQ(gpu.blas(blas)->contentHash, gpu.contentHash(t.input));
   EXPECT_EQ(gpu.blas(blas)->refits, 1u);
@@ -213,6 +215,7 @@ TEST(FakeGpuBackend, ATlasKeepsItsRowsAndUpdatesOnlyOverTheSameBlases)
   const AccelHandle a    = gpu.buildBlas(t.input, 0);
   const AccelHandle b    = gpu.buildBlas(t.input, 0);
   const AccelHandle tlas = gpu.createTlas(4);
+  gpu.barrier(GpuBarrier::eBuildToBuild);
 
   std::vector<TlasRow> rows(3);
   rows[0].blas = a;
@@ -243,6 +246,34 @@ TEST(FakeGpuBackend, ATlasKeepsItsRowsAndUpdatesOnlyOverTheSameBlases)
   gpu.buildTlas(tlas, rows, TlasMode::eBuild);  // row 0 names a destroyed BLAS
   EXPECT_EQ(gpu.errors().size(), 3u);
   EXPECT_EQ(gpu.liveAccels(), 2u);
+}
+
+// A build reading bytes written since the last transfer-to-build barrier, and a TLAS build over
+// BLAS work since the last build-to-build, are errors; what the frame's shading and tracing would
+// read unfenced is reported until its barrier
+TEST(FakeGpuBackend, BarriersFenceWhatBuildsAndShadingRead)
+{
+  FakeGpuBackend gpu;
+  Triangle       t = uploadTriangle(gpu);
+  EXPECT_EQ(gpu.unfencedForTheFrame().size(), 1u);  // the uploads, for shading
+  gpu.barrier(GpuBarrier::eTransferToShader);
+  const AccelHandle blas = gpu.buildBlas(t.input, eAccelAllowUpdate);
+  EXPECT_TRUE(gpu.errors().empty());
+
+  const std::vector<float> moved = {0, 0, 0, 2, 0, 0, 0, 1, 0};
+  gpu.upload(t.positions, 0, asBytes(moved));
+  gpu.refitBlas(blas, t.input);  // no barrier since the upload
+  EXPECT_EQ(gpu.errors().size(), 1u);
+
+  const AccelHandle tlas = gpu.createTlas(1);
+  TlasRow           row;
+  row.blas = blas;
+  gpu.buildTlas(tlas, std::span(&row, 1), TlasMode::eBuild);  // no build-to-build since the refit
+  EXPECT_EQ(gpu.errors().size(), 2u);
+  EXPECT_EQ(gpu.unfencedForTheFrame().size(), 2u);  // the upload and the builds
+  gpu.barrier(GpuBarrier::eTransferToShader);
+  gpu.barrier(GpuBarrier::eBuildToTrace);
+  EXPECT_TRUE(gpu.unfencedForTheFrame().empty());
 }
 
 TEST(FakeGpuBackend, AnUpdateBeforeAnyBuildIsAnError)

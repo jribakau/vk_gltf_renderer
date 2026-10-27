@@ -184,6 +184,11 @@ src/
 ├── scene_gpu_tables.cpp/hpp    # Lights as the shaders read them; the emissive triangles' alias table (both scenes)
 ├── scene_gpu_backend.hpp       # rs::GpuBackend: all the retained residency layer will call on the GPU,
 │                               #   Vulkan-free (tests/common/fake_gpu_backend.* is its GPU-free twin)
+├── scene_residency_vk.cpp/hpp  # VulkanGpuBackend (rs::GpuBackend on the allocator, the frame uploader and
+│                               #   the scene descriptor set; BLAS builds in scratch batches) and
+│                               #   RetainedSceneVk, the retained scene's SceneGpuView; not reachable yet
+├── scene_residency_vk_util.cpp/hpp # What VulkanGpuBackend converts and plans apart from the device
+│                               #   (scratch batches, TLAS rows, glTF samplers); unit-tested
 ├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
 ├── scene_export_gltf.cpp/hpp   # A RetainedScene (or a subtree) out as a fresh glTF model
 ├── scene_clip_player.cpp/hpp   # ClipPlayer: a clip played into entity TRS and morph weights, AnimationSystem's

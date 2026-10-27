@@ -98,7 +98,7 @@ public:
     uint32_t             contentRev  = 0;
     std::vector<int32_t> prims;  // per submesh: its prim slot, -1 while nothing draws it
   };
-  // A submesh drawn: its index buffer and BLAS
+  // A submesh drawn: its index buffer, BLAS and bounds
   struct Prim
   {
     MeshId       mesh;
@@ -108,6 +108,7 @@ public:
     AccelHandle  blas;
     BlasInput    input;
     uint32_t     users = 0;  // instances drawing it
+    glm::vec3    boundsMin{0.f}, boundsMax{0.f};  // of the vertices its indices name, in mesh space
   };
   // The raster lists (SceneGpuView::DrawList)
   enum class DrawList

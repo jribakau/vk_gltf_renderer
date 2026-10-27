@@ -26,6 +26,7 @@
 #include <span>
 
 #include <glm/gtc/type_ptr.hpp>
+#include <nvutils/file_operations.hpp>
 
 #include "tinygltf_utils.hpp"
 
@@ -182,6 +183,13 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     // a data URI's bytes or pixels are in img.image (below), never the URI itself
     if(img.uri.rfind("data:", 0) == 0)
       t.uri.clear();
+    else if(!t.uri.empty() && !options.imageSearchPaths.empty())
+    {
+      const std::filesystem::path found =
+          nvutils::findFile(nvutils::pathFromUtf8(tinygltf::utils::decodePathFromUri(t.uri)), options.imageSearchPaths, false);
+      if(!found.empty())
+        t.uri = nvutils::utf8FromPath(std::filesystem::absolute(found));
+    }
     if(t.uri.empty() && img.bufferView < 0 && !img.image.empty())
     {
       // the renderer's loaders keep the encoded file (as_is, or no size decoded); tinygltf's own

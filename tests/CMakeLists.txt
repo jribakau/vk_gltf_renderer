@@ -165,6 +165,9 @@ set(TEST_SOURCES
     test_retained_residency.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_residency.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_gpu_tables.cpp
+    # What the Vulkan backend converts and plans without a device: BLAS scratch batches (I8), TLAS rows, samplers
+    test_residency_vk_util.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_residency_vk_util.cpp
     # The host's addressing on the legacy scene: uploads reach their mesh's prims, picks map back (oracle 8)
     test_fv_scene_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp

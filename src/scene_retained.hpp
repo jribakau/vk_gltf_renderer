@@ -149,7 +149,9 @@ struct SamplerDesc
 struct TextureRecord
 {
   std::string                name;
-  std::string                uri;       // an absolute path or a data URI; empty when the bytes are held
+  // a path, absolute once the import found it (ImportOptions::imageSearchPaths); empty when the
+  // bytes are held
+  std::string                uri;
   std::vector<unsigned char> bytes;     // the encoded image when it came inside the file (a GLB, a data URI)
   std::string                mimeType;
   int                        width = -1, height = -1;  // when known (export reads them here)

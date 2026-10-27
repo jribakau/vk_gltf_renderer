@@ -243,6 +243,21 @@ void Residency::retireMesh(MeshId id)
   m_meshes.erase(it);
 }
 
+// The box around the vertices a prim's indices name; none named: a point at the origin
+static void fitBounds(Residency::Prim& prim, const MeshRecord& record)
+{
+  const Submesh& run = record.submeshes[prim.submesh];
+  glm::vec3      lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
+  for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
+    if(record.indices[i] < record.positions.size())
+    {
+      lo = glm::min(lo, record.positions[record.indices[i]]);
+      hi = glm::max(hi, record.positions[record.indices[i]]);
+    }
+  prim.boundsMin = lo.x <= hi.x ? lo : glm::vec3(0.f);
+  prim.boundsMax = lo.x <= hi.x ? hi : glm::vec3(0.f);
+}
+
 uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh)
 {
   MeshGpu& mesh = acquireMesh(scene, id);
@@ -275,6 +290,7 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
                          .indexAddress  = m_gpu.bufferAddress(prim.indices),
                          .indexCount    = run.indexCount,
                          .opaque        = false};
+  fitBounds(prim, record);
   m_prims[slot]       = std::move(prim);
   mesh.prims[submesh] = int32_t(slot);
   return slot;
@@ -605,6 +621,9 @@ SyncResult Residency::sync(RetainedScene& scene)
     writeSceneDesc();
     result.changed = true;
   }
+  // everything uploaded above, before the frame's shading reads it
+  if(result.changed)
+    m_gpu.barrier(GpuBarrier::eTransferToShader);
   m_tablesMoved = m_bitsChanged = m_descDirty = false;
   result.featuresChanged                      = changes.features;
   return result;
@@ -684,6 +703,7 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
 // stream's buffer had to be replaced (the build data holds its address).
 void Residency::syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result)
 {
+  std::vector<uint32_t> refits;  // after every upload, behind one barrier
   for(MeshId id : meshes)
   {
     auto              it     = m_meshes.find(id);
@@ -701,19 +721,26 @@ void Residency::syncVertices(RetainedScene& scene, const std::set<MeshId>& meshe
       Prim& prim               = *m_prims[size_t(p)];
       prim.input.vertexAddress = m_gpu.bufferAddress(gpu.positions);
       prim.input.vertexCount   = gpu.vertexCount;
+      fitBounds(prim, *record);
       if(moved || !prim.blas)
       {
         retireAccel(prim.blas);
         prim.blas = {};  // built with the others in syncRows
       }
       else
-        m_gpu.refitBlas(prim.blas, prim.input);
+        refits.push_back(uint32_t(p));
     }
     if(moved)
       result.buffersChanged = true;
     result.verticesWritten = true;
     result.changed         = true;
   }
+  if(refits.empty())
+    return;
+  m_gpu.barrier(GpuBarrier::eTransferToBuild);
+  for(uint32_t p : refits)
+    m_gpu.refitBlas(m_prims[p]->blas, m_prims[p]->input);
+  m_gpu.barrier(GpuBarrier::eBuildToBuild);  // the TLAS build reads them
 }
 
 void Residency::ensureCapacity(SyncResult& result)

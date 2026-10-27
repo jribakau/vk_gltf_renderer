@@ -54,6 +54,23 @@ It is using `nvvkgltf::Scene` to create the Vulkan buffers and images.
 
 namespace nvvkgltf {
 
+// A sampled image from decoded mip levels: created, its levels uploaded through `staging` (in row
+// strips under the uploader's block size), the rest of its chain generated when there is one level,
+// `generateMipmaps` is set and the format can be blitted, and left in SHADER_READ_ONLY_OPTIMAL.
+// False, with nothing created, for an empty image or a format the device can't sample. Shared by
+// SceneVk and the retained scene's VulkanGpuBackend.
+bool createSampledImage(VkCommandBuffer                       cmd,
+                        nvvk::CmdUploaderInterface&           staging,
+                        nvvk::ResourceAllocator&              alloc,
+                        VkPhysicalDevice                      physicalDevice,
+                        bool                                  generateMipmaps,
+                        VkFormat                              format,
+                        VkExtent2D                            size,
+                        const std::vector<std::vector<char>>& mipData,
+                        const VkComponentMapping&             componentMapping,
+                        const std::string&                    name,
+                        nvvk::Image&                          out);
+
 // Create the Vulkan version of the Scene
 // Allocate the buffers, etc.
 class SceneVk

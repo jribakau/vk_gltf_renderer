@@ -48,4 +48,10 @@ struct LoadedImageData
 // light (GltfShadeMaterial::emissiveLightScale).
 float imageMeanLuminance(VkFormat format, VkExtent2D size, const std::vector<char>& texels);
 
+// Number of color components a sampled VkFormat actually carries. Vulkan synthesizes the missing
+// ones (0 for G/B, 1 for A), so a consumer that needs a component the format does not store must
+// know. Only the formats the image loaders can produce are listed; anything else counts 4, which
+// disables the special-casing rather than guessing wrong.
+uint32_t formatColorComponentCount(VkFormat format);
+
 }  // namespace nvvkgltf

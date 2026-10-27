@@ -52,6 +52,7 @@
 #include "nvvk/mipmaps.hpp"
 
 #include "gltf_scene_vk.hpp"
+#include "scene_residency_vk_util.hpp"
 #include "scene_gpu_tables.hpp"
 #include "gltf_scene_animation.hpp"
 #include "gltf_image_loader.hpp"
@@ -1297,78 +1298,15 @@ void nvvkgltf::SceneVk::uploadVertexBuffers(nvvk::CmdUploaderInterface& staging,
 
 
 //--------------------------------------------------------------------------------------------------------------
-// glTF filter/wrap enums -> Vulkan. Unknown values fall back to the glTF default instead of
-// throwing (std::map::at) -- a malformed asset should degrade, not abort the load.
-
-static VkFilter toVkFilter(int gltfFilter)
-{
-  switch(gltfFilter)
-  {
-    case TINYGLTF_TEXTURE_FILTER_NEAREST:
-    case TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_NEAREST:
-    case TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR:
-      return VK_FILTER_NEAREST;
-    default:
-      return VK_FILTER_LINEAR;
-  }
-}
-
-// Only minFilter carries mip behaviour in glTF: magFilter is NEAREST or LINEAR and says nothing
-// about mips. The two non-mipmapped minFilters (NEAREST / LINEAR) leave mip selection undefined,
-// so keep trilinear -- the mip chain exists and using it is what avoids minification aliasing.
-static VkSamplerMipmapMode toVkMipmapMode(int gltfMinFilter)
-{
-  switch(gltfMinFilter)
-  {
-    case TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_NEAREST:
-    case TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_NEAREST:
-      return VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    default:
-      return VK_SAMPLER_MIPMAP_MODE_LINEAR;
-  }
-}
-
-static VkSamplerAddressMode toVkAddressMode(int gltfWrap)
-{
-  switch(gltfWrap)
-  {
-    case TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE:
-      return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    case TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT:
-      return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-    default:
-      return VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  }
-}
-
-//--------------------------------------------------------------------------------------------------------------
-// Returning the Vulkan sampler information from the information in the tinygltf
+// The Vulkan sampler of model.samplers[index]; out of range: glTF's default sampler
 //
 static VkSamplerCreateInfo getSampler(const tinygltf::Model& model, int index)
 {
-  VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-  samplerInfo.minFilter  = VK_FILTER_LINEAR;
-  samplerInfo.magFilter  = VK_FILTER_LINEAR;
-  samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-  samplerInfo.maxLod     = VK_LOD_CLAMP_NONE;
-
   if(index < 0 || static_cast<size_t>(index) >= model.samplers.size())
-    return samplerInfo;
-
-  const auto& sampler = model.samplers[index];
-
-  if(sampler.minFilter > -1)
-  {
-    samplerInfo.minFilter  = toVkFilter(sampler.minFilter);
-    samplerInfo.mipmapMode = toVkMipmapMode(sampler.minFilter);
-  }
-  if(sampler.magFilter > -1)
-    samplerInfo.magFilter = toVkFilter(sampler.magFilter);
-
-  samplerInfo.addressModeU = toVkAddressMode(sampler.wrapS);
-  samplerInfo.addressModeV = toVkAddressMode(sampler.wrapT);
-
-  return samplerInfo;
+    return rs::gltfSamplerCreateInfo({});
+  const tinygltf::Sampler& sampler = model.samplers[index];
+  return rs::gltfSamplerCreateInfo(
+      {.magFilter = sampler.magFilter, .minFilter = sampler.minFilter, .wrapS = sampler.wrapS, .wrapT = sampler.wrapT});
 }
 
 //========== Shared image/texture/sampler building blocks ==========
@@ -1915,43 +1853,6 @@ void nvvkgltf::SceneVk::buildTextureSamplerSlots(const tinygltf::Model& model)
   }
 }
 
-//--------------------------------------------------------------------------------------------------
-// Number of color components a sampled VkFormat actually carries. Vulkan synthesizes the missing
-// ones (0 for G/B, 1 for A), so a consumer that needs a component the format does not store must
-// know. Only the formats our image loaders can produce are listed; anything else falls back to 4,
-// which disables the special-casing rather than guessing wrong.
-static uint32_t vkFormatColorComponentCount(VkFormat format)
-{
-  switch(format)
-  {
-    case VK_FORMAT_R8_UNORM:
-    case VK_FORMAT_R8_SNORM:
-    case VK_FORMAT_R8_SRGB:
-    case VK_FORMAT_R16_UNORM:
-    case VK_FORMAT_R16_SNORM:
-    case VK_FORMAT_R16_SFLOAT:
-    case VK_FORMAT_R32_SFLOAT:
-    case VK_FORMAT_BC4_UNORM_BLOCK:
-    case VK_FORMAT_BC4_SNORM_BLOCK:
-    case VK_FORMAT_EAC_R11_UNORM_BLOCK:
-    case VK_FORMAT_EAC_R11_SNORM_BLOCK:
-      return 1;
-    case VK_FORMAT_R8G8_UNORM:
-    case VK_FORMAT_R8G8_SNORM:
-    case VK_FORMAT_R8G8_SRGB:
-    case VK_FORMAT_R16G16_UNORM:
-    case VK_FORMAT_R16G16_SNORM:
-    case VK_FORMAT_R16G16_SFLOAT:
-    case VK_FORMAT_R32G32_SFLOAT:
-    case VK_FORMAT_BC5_UNORM_BLOCK:
-    case VK_FORMAT_BC5_SNORM_BLOCK:
-    case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
-    case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
-      return 2;
-    default:
-      return 4;
-  }
-}
 
 //--------------------------------------------------------------------------------------------------
 // Flag textures whose source image decoded to an exactly two-channel format. Such a texture samples
@@ -1974,7 +1875,7 @@ void nvvkgltf::SceneVk::buildTextureFormatFlags(const tinygltf::Model& model)
 
     // m_images[].format is the decoded source format; it stays VK_FORMAT_UNDEFINED for images that
     // failed to load (a 4-channel magenta default is substituted), which maps to 4 components below.
-    m_textureSlots.twoChannelSource[i] = vkFormatColorComponentCount(m_images[sourceImage].format) == 2 ? 1 : 0;
+    m_textureSlots.twoChannelSource[i] = nvvkgltf::formatColorComponentCount(m_images[sourceImage].format) == 2 ? 1 : 0;
   }
 }
 
@@ -2188,26 +2089,34 @@ void nvvkgltf::SceneVk::loadImageFromMemory(uint64_t imageID, const void* data, 
 }
 
 //--------------------------------------------------------------------------------------------------
-// Create a Vulkan image from a populated SceneImage (size, format, mipData). Returns false if invalid.
-bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploaderInterface& staging, SceneImage& image)
+// A sampled image from decoded mip levels (see the header). Shared by SceneVk::createImage and the
+// retained scene's VulkanGpuBackend.
+bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
+                                  nvvk::CmdUploaderInterface&           staging,
+                                  nvvk::ResourceAllocator&              alloc,
+                                  VkPhysicalDevice                      physicalDevice,
+                                  bool                                  generateMipmaps,
+                                  VkFormat                              format,
+                                  VkExtent2D                            imgSize,
+                                  const std::vector<std::vector<char>>& mipData,
+                                  const VkComponentMapping&             componentMapping,
+                                  const std::string&                    name,
+                                  nvvk::Image&                          out)
 {
-  if(image.size.width == 0 || image.size.height == 0)
+  if(imgSize.width == 0 || imgSize.height == 0 || mipData.empty())
     return false;
-
-  VkFormat   format  = image.format;
-  VkExtent2D imgSize = image.size;
 
   // Check if we can generate mipmap with the the incoming image
   bool               canGenerateMipmaps = false;
   VkFormatProperties formatProperties;
-  vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &formatProperties);
+  vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &formatProperties);
 
   // Skip formats the device cannot sample (e.g. ASTC from EXT_texture_astc on desktop GPUs).
   // Returning false lets the caller substitute a default image instead of crashing in vkCreateImage.
   if((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) == 0)
   {
-    LOGW("Image '%s' uses a format (%d) not supported by this device; skipping (using default image).\n",
-         image.imgName.c_str(), static_cast<int>(format));
+    LOGW("Image '%s' uses a format (%d) not supported by this device; skipping (using default image).\n", name.c_str(),
+         static_cast<int>(format));
     return false;
   }
 
@@ -2221,11 +2130,11 @@ bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploade
   imageCreateInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
   // Mip-mapping images were defined (.ktx, .dds), use the number of levels defined
-  if(image.mipData.size() > 1)
+  if(mipData.size() > 1)
   {
-    imageCreateInfo.mipLevels = static_cast<uint32_t>(image.mipData.size());
+    imageCreateInfo.mipLevels = static_cast<uint32_t>(mipData.size());
   }
-  else if(canGenerateMipmaps && m_generateMipmaps)
+  else if(canGenerateMipmaps && generateMipmaps)
   {
     // Compute the number of mipmaps levels
     imageCreateInfo.mipLevels = nvvk::mipLevels(imgSize);
@@ -2233,15 +2142,12 @@ bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploade
 
   // Use custom view info with component mapping (e.g. for grayscale textures)
   VkImageViewCreateInfo imageViewCreateInfo = DEFAULT_VkImageViewCreateInfo;
-  imageViewCreateInfo.components            = image.componentMapping;
+  imageViewCreateInfo.components            = componentMapping;
 
   nvvk::Image resultImage;
-  NVVK_CHECK(m_alloc->createImage(resultImage, imageCreateInfo, imageViewCreateInfo));
+  NVVK_CHECK(alloc.createImage(resultImage, imageCreateInfo, imageViewCreateInfo));
   NVVK_DBG_NAME(resultImage.image);
   NVVK_DBG_NAME(resultImage.descriptor.imageView);
-
-  // Track the image allocation
-  m_memoryTracker.track(kMemCategoryImages, resultImage.allocation);
 
   // Set the initial layout to TRANSFER_DST_OPTIMAL
   resultImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;  // Setting this, tells the appendImage that the image is in this layout (no need to transfer)
@@ -2285,7 +2191,7 @@ bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploade
     // boundaries: 1 for uncompressed, 4 for BC/ETC/EAC, and 4/5/6/8/10/12 for the
     // various ASTC variants (see getFormatBlockHeight()). Cropping a strip mid-block
     // would send partial blocks to vkCmdCopyBufferToImage and corrupt the upload.
-    const uint32_t blockH       = getFormatBlockHeight(image.format);
+    const uint32_t blockH       = getFormatBlockHeight(format);
     uint32_t       rowsPerStrip = static_cast<uint32_t>(kAppendCap / bytesPerRow);
     rowsPerStrip -= rowsPerStrip % blockH;  // align down to a whole number of block rows
     if(rowsPerStrip == 0)
@@ -2310,11 +2216,11 @@ bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploade
     }
   };
 
-  uploadMipLevel(0, imageCreateInfo.extent, std::span<const char>(image.mipData[0]));
+  uploadMipLevel(0, imageCreateInfo.extent, std::span<const char>(mipData[0]));
   staging.cmdUploadAppended(cmd);  // Upload the first mip level
 
   // The image require to generate the mipmaps
-  if(image.mipData.size() == 1 && (canGenerateMipmaps && m_generateMipmaps))
+  if(mipData.size() == 1 && (canGenerateMipmaps && generateMipmaps))
   {
     nvvk::cmdGenerateMipmaps(cmd, resultImage.image, imgSize, imageCreateInfo.mipLevels, 1, resultImage.descriptor.imageLayout);
   }
@@ -2322,11 +2228,11 @@ bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploade
   {
     for(uint32_t mip = 1; mip < (uint32_t)imageCreateInfo.mipLevels; mip++)
     {
-      const VkExtent3D mipExtent{std::max(1u, image.size.width >> mip), std::max(1u, image.size.height >> mip), 1};
+      const VkExtent3D mipExtent{std::max(1u, imgSize.width >> mip), std::max(1u, imgSize.height >> mip), 1};
 
       if(mipExtent.width > 0 && mipExtent.height > 0)
       {
-        uploadMipLevel(mip, mipExtent, std::span<const char>(image.mipData[mip]));
+        uploadMipLevel(mip, mipExtent, std::span<const char>(mipData[mip]));
       }
     }
     // Upload all the mip levels
@@ -2336,18 +2242,33 @@ bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploade
   resultImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   nvvk::cmdImageMemoryBarrier(cmd, {resultImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, resultImage.descriptor.imageLayout});
 
-  if(!image.imgName.empty())
+  if(!name.empty())
   {
-    nvvk::DebugUtil::getInstance().setObjectName(resultImage.image, image.imgName);
+    nvvk::DebugUtil::getInstance().setObjectName(resultImage.image, name);
   }
   else
   {
     NVVK_DBG_NAME(resultImage.image);
   }
+  out = resultImage;
+  return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Create a Vulkan image from a populated SceneImage (size, format, mipData). Returns false if invalid.
+bool nvvkgltf::SceneVk::createImage(const VkCommandBuffer& cmd, nvvk::CmdUploaderInterface& staging, SceneImage& image)
+{
+  nvvk::Image resultImage;
+  if(!createSampledImage(cmd, staging, *m_alloc, m_physicalDevice, m_generateMipmaps, image.format, image.size,
+                         image.mipData, image.componentMapping, image.imgName, resultImage))
+    return false;
+
+  // Track the image allocation
+  m_memoryTracker.track(kMemCategoryImages, resultImage.allocation);
 
   // Clear image.mipData as it is no longer needed
   // image.srgb and image.imgName are preserved, and the texels' mean
-  image.meanLuminance = image.mipData.empty() ? -1.0f : nvvkgltf::imageMeanLuminance(image.format, image.size, image.mipData[0]);
+  image.meanLuminance = nvvkgltf::imageMeanLuminance(image.format, image.size, image.mipData[0]);
   image.imageTexture  = resultImage;
   image.mipData.clear();
 

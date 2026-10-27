@@ -33,6 +33,7 @@
 //
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,10 @@ struct ImportOptions
   uint32_t prop = 0;   // the owner tags' prop
   EntityId parent;     // where the scene's roots go; none: roots of the retained scene
   int      scene = -1;  // the glTF scene; -1: the default one (or the first)
+  // where an image's relative URI is looked for (the file's folder first, as
+  // nvvkgltf::Scene::getImageSearchPaths): one found is kept as its absolute path, one not found
+  // (or with no paths given) as the file wrote it
+  std::vector<std::filesystem::path> imageSearchPaths;
 };
 
 struct ImportResult

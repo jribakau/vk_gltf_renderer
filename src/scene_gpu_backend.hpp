@@ -87,7 +87,7 @@ struct ImageSource
 struct ImageInfo
 {
   uint32_t width = 0, height = 0;
-  bool     twoChannel    = false;  // fewer than three colour channels (BC5, R8G8, ...)
+  bool     twoChannel    = false;  // exactly two colour channels (BC5, R8G8, ...): a normal map's X and Y
   float    meanLuminance = -1.f;   // linear, Rec. 709, of its texels; negative where unknown
 };
 

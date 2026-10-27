@@ -321,4 +321,37 @@ float imageMeanLuminance(VkFormat format, VkExtent2D size, const std::vector<cha
   return float(sum / (double(nx) * ny));
 }
 
+uint32_t formatColorComponentCount(VkFormat format)
+{
+  switch(format)
+  {
+    case VK_FORMAT_R8_UNORM:
+    case VK_FORMAT_R8_SNORM:
+    case VK_FORMAT_R8_SRGB:
+    case VK_FORMAT_R16_UNORM:
+    case VK_FORMAT_R16_SNORM:
+    case VK_FORMAT_R16_SFLOAT:
+    case VK_FORMAT_R32_SFLOAT:
+    case VK_FORMAT_BC4_UNORM_BLOCK:
+    case VK_FORMAT_BC4_SNORM_BLOCK:
+    case VK_FORMAT_EAC_R11_UNORM_BLOCK:
+    case VK_FORMAT_EAC_R11_SNORM_BLOCK:
+      return 1;
+    case VK_FORMAT_R8G8_UNORM:
+    case VK_FORMAT_R8G8_SNORM:
+    case VK_FORMAT_R8G8_SRGB:
+    case VK_FORMAT_R16G16_UNORM:
+    case VK_FORMAT_R16G16_SNORM:
+    case VK_FORMAT_R16G16_SFLOAT:
+    case VK_FORMAT_R32G32_SFLOAT:
+    case VK_FORMAT_BC5_UNORM_BLOCK:
+    case VK_FORMAT_BC5_SNORM_BLOCK:
+    case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
+    case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+      return 2;
+    default:
+      return 4;
+  }
+}
+
 }  // namespace nvvkgltf
