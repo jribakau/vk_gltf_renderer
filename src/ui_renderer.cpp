@@ -398,60 +398,8 @@ void GltfRenderer::renderUI()
     ui::interactivity::renderWindow(m_resources.getScene(), m_resources.interactivityControl,
                                     &m_resources.settings.showInteractivityWindow);
 
-    // Scene Browser system: translate selection events into Resources for silhouette and fit-object
+    // Scene Browser system (its selection events reach Resources through onSceneSelectionEvent, installed in onAttach)
     {
-      m_sceneSelection.setEventCallback([&](const SceneSelection::Event& event) {
-        switch(event.type)
-        {
-          case SceneSelection::EventType::CameraApply:
-            applyGltfCamera(event.data);
-            break;
-          case SceneSelection::EventType::CameraSetFromView:
-            setGltfCameraFromView(event.data);
-            break;
-          case SceneSelection::EventType::NodeSelected: {
-            m_resources.selectedRenderNodes.clear();
-            nvvkgltf::Scene* scn = m_resources.getScene();
-            if(scn && scn->valid())
-            {
-              const int        nodeIdx = event.data;
-              std::vector<int> renderNodeIDs;
-              scn->getRenderNodeRegistry().getAllRenderNodesForNodeRecursive(
-                  nodeIdx,
-                  [scn](int nid) {
-                    const auto& node = scn->getModel().nodes[static_cast<size_t>(nid)];
-                    return node.children;
-                  },
-                  renderNodeIDs);
-              for(int id : renderNodeIDs)
-                m_resources.selectedRenderNodes.insert(id);
-              // KHR_interactivity event/onSelect: real ray-pick hit point/origin when this selection
-              // was redirected here from an actual 3D-viewport click (e.g. KHR_node_selectability's
-              // nearest-selectable-ancestor fallback in updateSelectionFromPick()) - NaN (the
-              // spec-sanctioned "no ray info" fallback) otherwise (Scene Browser click, script-driven
-              // `selectnode`, ...; SceneSelection::selectNode's default parameters already are NaN).
-              scn->notifyNodeSelected(nodeIdx, event.selectionPoint, event.selectionRayOrigin);
-            }
-            break;
-          }
-          case SceneSelection::EventType::PrimitiveSelected: {
-            m_resources.selectedRenderNodes = {event.renderNodeIndex};
-            nvvkgltf::Scene* scn            = m_resources.getScene();
-            if(scn && scn->valid())
-            {
-              // KHR_interactivity event/onSelect: real ray-pick hit point/origin when this came from
-              // an actual 3D-viewport click (SceneSelection::selectPrimitive's default parameters
-              // are already the spec-sanctioned NaN fallback for callers with no ray - e.g. tests).
-              scn->notifyNodeSelected(event.data, event.selectionPoint, event.selectionRayOrigin);
-            }
-            break;
-          }
-          case SceneSelection::EventType::MaterialSelected:
-            // Material selection event
-            break;
-        }
-      });
-
       m_sceneBrowser.render(&m_resources.settings.showSceneBrowserWindow, m_busy.isBusy());
       m_inspector.render(&m_resources.settings.showInspectorWindow, m_busy.isBusy());
 

@@ -27,6 +27,7 @@
 #include <nvutils/logger.hpp>
 
 #include "renderer.hpp"
+#include "scene_selection_render_nodes.hpp"
 #include "tinygltf_utils.hpp"
 
 // Applies a completed async ray-pick result (see m_pendingClickPick's comment in renderer.hpp for
@@ -82,6 +83,59 @@ bool GltfRenderer::isInteractivityPlaying() const
   return scene && !scene->getInteractivityGraphs().empty() && m_resources.interactivityControl.play;
 }
 
+// SceneSelection's events into Resources, for the silhouette and Fit, and into KHR_interactivity's
+// onSelect. Installed once in onAttach, so a selection fills selectedRenderNodes whether or not the
+// UI pass runs (a stream host skips it).
+void GltfRenderer::onSceneSelectionEvent(const SceneSelection::Event& event)
+{
+  switch(event.type)
+  {
+    case SceneSelection::EventType::CameraApply:
+      applyGltfCamera(event.data);
+      break;
+    case SceneSelection::EventType::CameraSetFromView:
+      setGltfCameraFromView(event.data);
+      break;
+    case SceneSelection::EventType::NodeSelected: {
+      m_resources.selectedRenderNodes.clear();
+      nvvkgltf::Scene* scn = m_resources.getScene();
+      if(scn && scn->valid())
+      {
+        m_resources.selectedRenderNodes = renderNodesOfNode(*scn, event.data);
+        // KHR_interactivity event/onSelect: real ray-pick hit point/origin when this selection
+        // was redirected here from an actual 3D-viewport click (e.g. KHR_node_selectability's
+        // nearest-selectable-ancestor fallback in updateSelectionFromPick()) - NaN (the
+        // spec-sanctioned "no ray info" fallback) otherwise (Scene Browser click, script-driven
+        // `selectnode`, ...; SceneSelection::selectNode's default parameters already are NaN).
+        scn->notifyNodeSelected(event.data, event.selectionPoint, event.selectionRayOrigin);
+      }
+      break;
+    }
+    case SceneSelection::EventType::PrimitiveSelected: {
+      m_resources.selectedRenderNodes = {event.renderNodeIndex};
+      nvvkgltf::Scene* scn            = m_resources.getScene();
+      if(scn && scn->valid())
+      {
+        // KHR_interactivity event/onSelect: real ray-pick hit point/origin when this came from
+        // an actual 3D-viewport click (SceneSelection::selectPrimitive's default parameters
+        // are already the spec-sanctioned NaN fallback for callers with no ray - e.g. tests).
+        scn->notifyNodeSelected(event.data, event.selectionPoint, event.selectionRayOrigin);
+      }
+      break;
+    }
+    case SceneSelection::EventType::MaterialSelected:
+      // Material selection event
+      break;
+  }
+}
+
+// The Scene Browser scrolls to the selection in windowed sessions; elsewhere there is no browser to show it.
+void GltfRenderer::focusSelectionInBrowser()
+{
+  if(m_focusSelectionInBrowser)
+    m_focusSelectionInBrowser();
+}
+
 // Update the current selection from a ray-pick result. `renderNodeIdx` is the TLAS instance index
 // (== render node index), or < 0 when the environment/nothing was hit. `selectionPoint`/
 // `selectionRayOrigin` (global space) are threaded through to SceneSelection::selectPrimitive() for
@@ -123,7 +177,7 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
     if(selectableNodeID >= 0)
     {
       m_sceneSelection.selectNode(selectableNodeID, selectionPoint, selectionRayOrigin);
-      m_sceneBrowser.focusOnSelection();
+      focusSelectionInBrowser();
     }
     else
     {
@@ -143,7 +197,7 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
     if(editableNodeID >= 0)
     {
       m_sceneSelection.selectNode(editableNodeID, selectionPoint, selectionRayOrigin);
-      m_sceneBrowser.focusOnSelection();
+      focusSelectionInBrowser();
     }
     else
     {
@@ -156,7 +210,7 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
   if(scene->isInstanceSetRenderNode(renderNodeIdx))
   {
     m_sceneSelection.selectNode(renderNodes[renderNodeIdx].refNodeID, selectionPoint, selectionRayOrigin);
-    m_sceneBrowser.focusOnSelection();
+    focusSelectionInBrowser();
     return;
   }
 
@@ -168,7 +222,7 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
 
   m_resources.selectedRenderNodes = {renderNodeIdx};
   m_sceneSelection.selectPrimitive(renderNodeIdx, nodeID, primIndex, meshID, selectionPoint, selectionRayOrigin);
-  m_sceneBrowser.focusOnSelection();
+  focusSelectionInBrowser();
 }
 
 nvutils::Bbox GltfRenderer::getRenderNodeBbox(int renderNodeIndex)

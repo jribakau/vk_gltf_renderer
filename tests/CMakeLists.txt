@@ -147,6 +147,8 @@ set(TEST_SOURCES
     test_sample_schedule.cpp
     # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)
     test_tlas_policy.cpp
+    # What a selected node puts in selectedRenderNodes, whether or not the UI pass runs (header only)
+    test_selection_render_nodes.cpp
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Optional external generation bridge

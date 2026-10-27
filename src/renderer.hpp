@@ -446,6 +446,9 @@ public:
   // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
   // geometry edits can refit in place. Must be set before the scene loads.
   void setEditable(bool editable) { m_editable = editable; }
+  // A --stream host (the Figure Viewer): its frames go out through the frame stream, so the ImGui
+  // panels nobody sees are not built. Before the first frame.
+  void setStreamHost(bool streamHost) { m_streamHost = streamHost; }
   // --cacheDir. Empty keeps the pipeline cache and compiled SPIR-V next to the executable.
   // Copied into the path tracer before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
@@ -615,6 +618,7 @@ private:
   // Live edits queued by the host (vertex uploads, reconcile requests); see queueVertexUpload().
   bool                      applyPendingSceneEdits(VkCommandBuffer cmd);
   bool                      m_editable{false};
+  bool                      m_streamHost{false};  // see setStreamHost()
   bool                      m_pendingAnimReconcile{false};
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off
@@ -685,6 +689,10 @@ private:
   void     updateSceneChanges_RasterizerInvalidate(bool renderNodeOrNodeDirty);
   void     updateSceneChanges_TangentUpload(VkCommandBuffer cmd, nvvkgltf::Scene* scene, bool& changed);
   void     updateSceneChanges_Finalize(VkCommandBuffer cmd, bool changed, bool stagingFlushed, nvvkgltf::Scene* scene);
+
+  // Selection (renderer_selection.cpp)
+  void onSceneSelectionEvent(const SceneSelection::Event& event);
+  void focusSelectionInBrowser();
 
   // UI
   void renderUI();
@@ -879,6 +887,8 @@ private:
   GizmoHooks m_gizmoHooks;
   glm::vec2  m_gizmoInputLast{0.f};
   std::function<bool(int renderNode, const glm::vec3& hit)> m_pickObserver;
+  // Set in windowed sessions only: the Scene Browser scrolls to a new selection
+  std::function<void()> m_focusSelectionInBrowser;
 
   // Gizmo TRS snapshot for undo (captured at drag start)
   glm::vec3 m_gizmoSnapshotT{0.f};

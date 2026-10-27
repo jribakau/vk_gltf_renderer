@@ -126,6 +126,7 @@ Primary files grouped by subsystem (not an exhaustive listing — treat `src/` a
 src/
 ├── main.cpp                    # Entry point, Vulkan context, CLI parsing
 ├── renderer.cpp/hpp            # Main renderer orchestrator (GltfRenderer)
+├── renderer_selection.cpp      # What the host calls for picks, selection, Fit and the gizmo; selection events into Resources
 ├── renderer_base.hpp           # BaseRenderer: abstract base for PathTracer / Rasterizer
 ├── renderer_pathtracer.cpp/hpp # Monte Carlo path tracer (Vulkan ray tracing + ray query)
 ├── sample_schedule.hpp         # Samples per frame: ending on stops (cap, --outputSamples), the Auto SPP controller
@@ -229,6 +230,7 @@ src/
 ├── tiny_stb_implementation.cpp # STB library implementation (single compilation unit)
 ├── pipeline_cache_util.cpp/hpp # Vulkan pipeline cache persistence
 ├── scene_selection.cpp/hpp     # Selection state and events
+├── scene_selection_render_nodes.hpp # The render nodes a selected node draws (header only)
 ├── scene_descriptor.cpp/hpp    # Scene descriptor set layout / bindings
 ├── scene_feature_detection.cpp/hpp # Detect which extensions a scene uses
 ├── scene_shader_macros.cpp/hpp # Emit -DGLTF_USE_* macros from detected features

@@ -974,6 +974,13 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // it stands up an empty, UI-wired scene on demand (wireSceneToUi re-sets this same hook later).
   m_sceneBrowser.setBeforeCreateCallback([this] { ensureEmptyScene(); });
 
+  // Selection events reach Resources from here on, whether or not the UI pass runs (B59: installed
+  // inside renderUI, a stream host skipping it would stop filling selectedRenderNodes). Only a
+  // window has a Scene Browser to scroll to the selection.
+  m_sceneSelection.setEventCallback([this](const SceneSelection::Event& event) { onSceneSelectionEvent(event); });
+  if(!app->isHeadless())
+    m_focusSelectionInBrowser = [this] { m_sceneBrowser.focusOnSelection(); };
+
   // The Environment panel. It edits Settings through m_resources directly; everything below is a
   // consequence an edit has for the renderer, which the panel has no business knowing how to do.
   m_uiEnvironment.setResources(&m_resources);
@@ -1490,7 +1497,12 @@ void GltfRenderer::onUIRender()
     renderBenchmarkViewport();
     return;
   }
-  renderUI();
+  // A stream host's panels are never seen, so they are not built (0.5-3 ms of CPU a frame, est.).
+  // The viewport's per-frame camera step still runs: camera transitions and camera.frame need it.
+  if(m_streamHost)
+    m_cameraManip->updateAnim();
+  else
+    renderUI();
   m_toasts.render();  // transient notifications overlay (drawn on top of the panels)
 }
 
@@ -2053,7 +2065,7 @@ void GltfRenderer::addSceneFromFile(const std::filesystem::path& filename, bool 
       m_resources.recomputeSceneFeatures(dlssGuideRequired());
       resetFrame();
       m_sceneSelection.selectNode(nodeIdx);
-      m_sceneBrowser.focusOnSelection();
+      focusSelectionInBrowser();
       LOGI("Scene %s successfully: %s\n", asReference ? "referenced" : "merged", name.c_str());
     }
     else
@@ -4814,8 +4826,8 @@ void GltfRenderer::resetFrame()
 // Select a scene-graph node by index from a script parameter (--selectNode). The index is a glTF node
 // index, exactly as shown in the Scene Browser tree. This routes through the shared SceneSelection so the
 // Scene Browser highlight, the Inspector contents, and the render-node selection set all update precisely
-// as they would from a click in the tree (selectNode emits NodeSelected, which the UI callback turns into
-// the selectedRenderNodes set). A negative or out-of-range index clears the selection. Used by the
+// as they would from a click in the tree (selectNode emits NodeSelected, which onSceneSelectionEvent turns
+// into the selectedRenderNodes set). A negative or out-of-range index clears the selection. Used by the
 // windowed scripted-run harness so UI/UX changes to the scene list and inspector can be exercised and
 // captured with --uiScreenshot.
 void GltfRenderer::selectSceneNodeFromScript(int nodeIndex)
@@ -4825,19 +4837,6 @@ void GltfRenderer::selectSceneNodeFromScript(int nodeIndex)
   if(nodeIndex >= 0 && nodeIndex < count)
   {
     m_sceneSelection.selectNode(nodeIndex);
-    // The silhouette reads selectedRenderNodes, which the UI's selection callback fills. A headless
-    // stream has no UI pass, so fill it here too (the callback, when it runs, fills the same set).
-    m_resources.selectedRenderNodes.clear();
-    std::vector<int> renderNodeIDs;
-    scene->getRenderNodeRegistry().getAllRenderNodesForNodeRecursive(
-        nodeIndex,
-        [scene](int nid) {
-          const auto& node = scene->getModel().nodes[static_cast<size_t>(nid)];
-          return node.children;
-        },
-        renderNodeIDs);
-    for(int id : renderNodeIDs)
-      m_resources.selectedRenderNodes.insert(id);
   }
   else
   {
