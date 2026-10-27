@@ -1130,6 +1130,43 @@ void tinygltf::utils::createTangentAttribute(tinygltf::Model& model, tinygltf::P
 }
 
 
+std::string tinygltf::utils::primitiveGeometryError(const tinygltf::Model& model, const tinygltf::Primitive& primitive)
+{
+  const auto validAccessor = [&model](int index) {
+    return index >= 0 && index < static_cast<int>(model.accessors.size());
+  };
+
+  const auto position = primitive.attributes.find("POSITION");
+  if(position == primitive.attributes.end() || !validAccessor(position->second))
+    return "no POSITION";
+  const tinygltf::Accessor& positions = model.accessors[position->second];
+  // PROVISIONAL(Khronos MR 15): 2.1 allows 32-bit integer vertex attributes, but existing semantics
+  // keep their 2.0 types, so POSITION stays float (or 8/16-bit quantized). int32 positions are skipped.
+  if(!canReadAccessor<glm::vec3>(positions))
+    return "POSITION has unsupported component type " + std::to_string(positions.componentType);
+  // glTF requires count >= 1, but an empty accessor still reaches us (a Figure Viewer surface group
+  // a geograft hides whole): its zero-sized vertex or index buffer fails to allocate
+  if(positions.count == 0)
+    return "no vertices";
+
+  if(primitive.indices >= 0)
+  {
+    if(!validAccessor(primitive.indices))
+      return "invalid indices accessor";
+    // Core glTF allows only SCALAR, unsigned 8/16/32-bit indices.
+    // PROVISIONAL(Khronos MR 6): 2.1 keeps that restriction for indices.
+    const tinygltf::Accessor& indices = model.accessors[primitive.indices];
+    if(indices.type != TINYGLTF_TYPE_SCALAR)
+      return "indices accessor is not SCALAR";
+    if(indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE && indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT
+       && indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT)
+      return "indices have unsupported component type " + std::to_string(indices.componentType);
+    if(indices.count == 0)
+      return "no indices";
+  }
+  return {};
+}
+
 // Current implementation
 // http://foundationsofgameenginedev.com/FGED2-sample.pdf
 void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive)
@@ -1153,10 +1190,6 @@ void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Pri
 
 void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive, std::span<const uint32_t> indices)
 {
-  const size_t  indexCount  = indices.size();
-  const size_t  numVertices = tinygltf::utils::getVertexCount(model, primitive);
-  const int32_t numFaces    = static_cast<int32_t>(indexCount / 3);
-
   std::vector<glm::vec3>     positionStorage;
   std::vector<glm::vec3>     normalStorage;
   std::vector<glm::vec2>     uvStorage;
@@ -1166,14 +1199,26 @@ void tinygltf::utils::simpleCreateTangents(tinygltf::Model& model, tinygltf::Pri
   // Must not be complex, since we write to it
   std::span<glm::vec4> tangents = getAttributeData3<glm::vec4>(model, primitive, "TANGENT", nullptr);
 
-  if(tangents.data() == nullptr || positions.data() == nullptr || indices.size() < indexCount)
+  if(tangents.data() == nullptr || positions.data() == nullptr)
   {
     LOGE("Attributes are missing\n");
     return;
   }
+  computeTangents(positions, normals, uvs, indices, tangents.first(std::min(tangents.size(), positions.size())));
+}
 
-  bool hasUV     = uvs.data() != nullptr;
-  bool hasNormal = normals.data() != nullptr;
+void tinygltf::utils::computeTangents(std::span<const glm::vec3> positions,
+                                      std::span<const glm::vec3> normals,
+                                      std::span<const glm::vec2> uvs,
+                                      std::span<const uint32_t>  indices,
+                                      std::span<glm::vec4>       tangents)
+{
+  const size_t  indexCount  = indices.size();
+  const size_t  numVertices = tangents.size();
+  const int32_t numFaces    = static_cast<int32_t>(indexCount / 3);
+
+  bool hasUV     = !uvs.empty();
+  bool hasNormal = !normals.empty();
 
   // In case the normal is missing, we will compute it
   std::vector<glm::vec3> geoNormal;

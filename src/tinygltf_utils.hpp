@@ -1559,6 +1559,18 @@ void simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive
 // The same over `indices` into the primitive's vertices instead of its own: the triangles of
 // every primitive sharing its attributes, so one tangent accessor serves them all.
 void simpleCreateTangents(tinygltf::Model& model, tinygltf::Primitive& primitive, std::span<const uint32_t> indices);
+// What simpleCreateTangents computes, over plain arrays: `tangents` (one per vertex, zeroed by the
+// caller) from the triangles `indices` lists. `normals` and `uvs` may be empty (none), as the
+// attributes may be missing. A scene that keeps geometry outside a glTF model gets the same bits.
+void computeTangents(std::span<const glm::vec3> positions,
+                     std::span<const glm::vec3> normals,
+                     std::span<const glm::vec2> uvs,
+                     std::span<const uint32_t>  indices,
+                     std::span<glm::vec4>       tangents);
+
+// Why `primitive` cannot be drawn, or "" when it can: a POSITION the renderer reads, at least one
+// vertex, and SCALAR unsigned indices with at least one index. A scene skips such a primitive.
+std::string primitiveGeometryError(const tinygltf::Model& model, const tinygltf::Primitive& primitive);
 
 /*------------------------------------------------------------------------------------------------*/
 bool getMeshoptCompression(const tinygltf::BufferView& bview, KHR_meshopt_compression& mcomp);

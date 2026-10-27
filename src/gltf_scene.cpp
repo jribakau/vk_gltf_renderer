@@ -195,46 +195,6 @@ void nvvkgltf::detail::rebaseImageUris(tinygltf::Model& child, const std::filesy
 
 namespace {
 
-// Why the primitive's geometry cannot be read, or empty if it can. Positions and indices are the
-// two inputs nothing can render without: the GPU upload, the BLAS build and the tangent generator
-// all read them, and an unreadable one would leave them working on missing data. Other attributes
-// are optional and simply treated as absent when unreadable.
-std::string primitiveGeometryError(const tinygltf::Model& model, const tinygltf::Primitive& primitive)
-{
-  const auto validAccessor = [&model](int index) {
-    return index >= 0 && index < static_cast<int>(model.accessors.size());
-  };
-
-  const auto position = primitive.attributes.find("POSITION");
-  if(position == primitive.attributes.end() || !validAccessor(position->second))
-    return "no POSITION";
-  const tinygltf::Accessor& positions = model.accessors[position->second];
-  // PROVISIONAL(Khronos MR 15): 2.1 allows 32-bit integer vertex attributes, but existing semantics
-  // keep their 2.0 types, so POSITION stays float (or 8/16-bit quantized). int32 positions are skipped.
-  if(!tinygltf::utils::canReadAccessor<glm::vec3>(positions))
-    return "POSITION has unsupported component type " + std::to_string(positions.componentType);
-  // glTF requires count >= 1, but an empty accessor still reaches us (a Figure Viewer surface group
-  // a geograft hides whole): its zero-sized vertex or index buffer fails to allocate
-  if(positions.count == 0)
-    return "no vertices";
-
-  if(primitive.indices >= 0)
-  {
-    if(!validAccessor(primitive.indices))
-      return "invalid indices accessor";
-    // Core glTF allows only SCALAR, unsigned 8/16/32-bit indices.
-    // PROVISIONAL(Khronos MR 6): 2.1 keeps that restriction for indices.
-    const tinygltf::Accessor& indices = model.accessors[primitive.indices];
-    if(indices.type != TINYGLTF_TYPE_SCALAR)
-      return "indices accessor is not SCALAR";
-    if(indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE && indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT
-       && indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT)
-      return "indices have unsupported component type " + std::to_string(indices.componentType);
-    if(indices.count == 0)
-      return "no indices";
-  }
-  return {};
-}
 
 }  // namespace
 
@@ -2300,7 +2260,7 @@ nvvkgltf::Scene::PrimitiveKeyMap nvvkgltf::Scene::buildPrimitiveKeyMap()
         continue;
       // Not renderable: leave it out of the render primitives, so neither renderer sees it.
       // createRenderNodesForNode skips the primitives that have no entry here.
-      if(const std::string error = primitiveGeometryError(m_model, primitive); !error.empty())
+      if(const std::string error = tinygltf::utils::primitiveGeometryError(m_model, primitive); !error.empty())
       {
         LOGW("glTF: skipping primitive %zu of mesh %zu (\"%s\"): %s\n", j, i, m_model.meshes[i].name.c_str(), error.c_str());
         skipped.insert(key);
@@ -3024,7 +2984,7 @@ void nvvkgltf::Scene::createMissingTangentsForModel()
         continue;
       if(primitive.attributes.find("TANGENT") != primitive.attributes.end())
         continue;
-      if(!primitiveGeometryError(m_model, primitive).empty())
+      if(!tinygltf::utils::primitiveGeometryError(m_model, primitive).empty())
         continue;  // not renderable, so it needs no tangents (and its positions can't be read)
 
       // Primitives over the same attribute accessors (a mesh's material groups, drawers sharing
