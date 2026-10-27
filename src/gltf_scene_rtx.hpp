@@ -67,6 +67,11 @@ public:
   void       setTlasPolicy(TlasPolicy policy) { m_tlasPolicy = policy; }
   TlasPolicy tlasPolicy() const { return m_tlasPolicy; }
 
+  // Sizes for the `[fv-time] scene counts:` line, once the builds are recorded
+  size_t       blasCount() const { return m_blasAccel.size(); }
+  size_t       tlasInstanceCount() const { return m_tlasInstances.size(); }
+  VkDeviceSize blasScratchBytes() const { return m_blasScratchBuffer.bufferSize; }
+
   // ---------- Create ----------
   void createBottomLevelAccelerationStructure(const nvvkgltf::Scene& scene, const SceneVk& sceneVk, VkBuildAccelerationStructureFlagsKHR flags);
   // Build BLAS on GPU; may return false if budget exceeded (call again to continue). Returns true when done.

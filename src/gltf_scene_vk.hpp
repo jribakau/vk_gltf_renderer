@@ -196,6 +196,8 @@ public:
   void                            setOpacityMicromapEnabled(bool enabled) { m_sceneOmm.setEnabled(enabled); }
   const std::vector<nvvk::Image>& textures() const { return m_textures; }
   [[nodiscard]] uint32_t          textureCount() const { return static_cast<uint32_t>(m_textures.size()); }
+  // GltfTextureInfo entries the materials use (indexed by uint16_t in GltfShadeMaterial)
+  [[nodiscard]] size_t textureInfoCount() const { return m_materialCache.getTextureInfos().size(); }
 
   // Deduplicated glTF samplers, bound as a separate SAMPLER array (eSamplers). Slot 0 is the default
   // sampler; slots 1..N mirror model.samplers. GltfTextureInfo.samplerIndex indexes into this.

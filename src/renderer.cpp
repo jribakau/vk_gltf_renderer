@@ -4219,6 +4219,20 @@ void GltfRenderer::createVulkanScene()
        sumTrackerCurrentBytes(m_resources.sceneVk.getMemoryTracker()) / kMB,
        sumTrackerCurrentBytes(m_resources.sceneRtx.getMemoryTracker()) / kMB,
        m_resources.sceneRtx.getMemoryTracker().getStats("BLAS").currentBytes / kMB);
+  // The same sizes and the rest of what slot capacities and the uint16 texture-info limit are sized
+  // from, read by baseline-report from inside the compose that loaded the scene
+  if(fv::timing::enabled())
+  {
+    const nvvkgltf::SceneRtx& rtx = m_resources.sceneRtx;
+    char                      buf[256];
+    std::snprintf(buf, sizeof buf,
+                  "scene counts: %zu render nodes, %zu TLAS instances, %zu BLASes, %zu render primitives, %zu materials, "
+                  "%zu texture infos, %u textures, %u samplers, %llu BLAS scratch bytes",
+                  scene.getRenderNodes().size(), rtx.tlasInstanceCount(), rtx.blasCount(), scene.getRenderPrimitives().size(),
+                  scene.getModel().materials.size(), m_resources.sceneVk.textureInfoCount(), m_resources.sceneVk.textureCount(),
+                  m_resources.sceneVk.samplerCount(), static_cast<unsigned long long>(rtx.blasScratchBytes()));
+    fv::timing::line(buf);
+  }
 }
 
 //--------------------------------------------------------------------------------------------------
