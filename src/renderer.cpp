@@ -699,9 +699,9 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                     .applyCameraString = [this](const std::string& text) { applyCameraString(text); },
                     .fitScene =
                         [this]() {
-                          if(m_resources.getScene() && m_resources.getScene()->valid())
+                          if(m_resources.gpuView().hasContent())
                           {
-                            const nvutils::Bbox bbox = m_resources.getScene()->getSceneBounds();
+                            const nvutils::Bbox bbox = m_resources.gpuView().bounds();
                             m_cameraManip->fit(bbox.min(), bbox.max(), false, true, m_cameraManip->getAspectRatio());
                             resetFrame();
                           }

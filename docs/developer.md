@@ -174,6 +174,9 @@ src/
 │                               #   its drawn materials need (counted, not scanned).
 │                               #   In progress for Figure Viewer, not yet on the render path (unit-tested)
 ├── scene_retained_handles.hpp  # Its generational handles and slot map
+├── scene_gpu_view.hpp          # SceneGpuView: what the renderers read of the scene on the GPU, and the
+│                               #   per-slot side tables; LegacySceneGpuView (scene_gpu_view_legacy.cpp)
+│                               #   puts Scene, SceneVk and SceneRtx behind it
 ├── scene_gpu_backend.hpp       # rs::GpuBackend: all the retained residency layer will call on the GPU,
 │                               #   Vulkan-free (tests/common/fake_gpu_backend.* is its GPU-free twin)
 ├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
@@ -780,6 +783,61 @@ Use [RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md) as the source of trut
 - render-node dirty propagation
 - GPU buffer synchronization
 - TLAS/BLAS update invariants
+
+---
+
+## The legacy scene and `SceneGpuView`
+
+The Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md) will stand behind
+`SceneGpuView` (src/scene_gpu_view.hpp) in stream sessions. Every use of the legacy scene
+(`Resources::getScene()`, `Scene::getModel()`, `editScene()`, `hasValidScene()`, `sceneVk`,
+`sceneRtx`) outside the frozen `src/ui_*` files has one of these dispositions. A new use picks one.
+
+**Through `SceneGpuView`** (`Resources::gpuView()`):
+- `PathTracer`: the scene descriptor, the TLAS, the bounds for the aperture and ground sliders,
+  opacity micromap presence.
+- `Rasterizer`: draw records (buffer, offset, index count) in `renderNodes`, the draw lists, the
+  scene descriptor, the TLAS, the blend sort (draw-list revision, transform revision, world centres),
+  transmission, the prepass and shadow-map gates.
+- `GltfRenderer`: `onRender`'s empty-scene return; the pickers' TLAS; the DLSS transform snapshot's
+  node count and `hasPlayableAnimation`; the silhouette's node count; `fillShadowAndGround` (bounds
+  and light records); `aerialPerspectiveEyeAltitudeKm`; `sceneBounds`; the `fitScene` command;
+  `benchmarkMemorySamples`; `updateGizmoAttachment`'s gate; `hasValidScene` (and so `pickAt`);
+  the animation-strip and playback checks.
+
+**Legacy-only: the legacy backend itself**, bypassed in a retained session:
+- `src/gltf_scene*` (`Scene`, `SceneVk`, `SceneRtx`, `AnimationVk`, `TransformComputeVk`,
+  `SceneOmm`, `SceneGpu`, the validator), `scene_gpu_view_legacy.cpp`.
+- In `GltfRenderer`: `createVulkanScene`, `buildAccelerationStructures`, `updateSceneChanges*`,
+  `reconcileAnimationGpuState`, `updateAnimation`, `applyPendingSceneEdits`,
+  `snapshotPrevPositions`, `requeueLiveVertices`, `reconcileGeometryIfNeeded`,
+  `rebuildVulkanSceneInternal`, `applyPendingTextureTailSync`, `applyPendingTextureRebuild`,
+  `applyPendingSamplerUpdate`, `updateTextures`, `writeTextureDescriptorRange`, `cleanupScene`,
+  `finalizeSceneSetup`, `ensureEmptyScene`, `refreshCpuSceneGraphFromModel`; `onRender`'s dirty-flag
+  and deform checks for the DLSS motion vectors; the scene-load log line; the settings that
+  configure the backend (`tlasPolicy`, the profiler hook).
+- The scene's sky and sun lights at a scene replace: `applyEnvironmentSkyFromScene`,
+  `applyPendingAuthoredSky`, `sky_sun.cpp`'s light lookup (allowed to change, fork-boundary.md).
+
+**Legacy-only: the host's edits and addressing**, through the legacy-edit bridge in P3a–P3b, on
+handles from P4:
+- `fv_host.cpp` (`compose`, `applyVisible`, `applySun`, `applyLightShown`, `showItem`, `propSet`,
+  the animation topic and commands, `frameCamera`, `exportGlb`), `fv_materials.cpp` (`write`,
+  `baked`, `attachModel`, the model material items), `fv_view.cpp` (picks through
+  `fv::SceneMap::pick`), `fv_compose.cpp`.
+- In `GltfRenderer`: `loadModel`, `appendSceneFile`, `setNodeTransforms`, `setInverseBindMatrices`,
+  `renderPrimitivesOfMesh`, `prefetchImage`, `selectSceneNodeFromScript`,
+  `pickSceneNodeFromScript`, `hoverSceneNodeFromScript`; the selection by glTF node in
+  `renderer_selection.cpp` (`applyClickPickResult`, `updateSelectionFromPick`,
+  `onSceneSelectionEvent`, `selectedNodeIndex`, `getRenderNodeBbox`, `visibleSceneBounds`,
+  `isInteractivityPlaying`); the
+  gizmo's node TRS (`updateGizmoAttachment`, the gizmo hooks in `onAttach`).
+- `mcp_scene.cpp`: the MCP scene tools read the legacy scene; their disposition is P4's.
+
+**Unreachable in stream sessions** (windowed or `--scenefile` only, or refused while `FvHost` is
+attached): `onFileDrop`, `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`,
+`wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `updateInteractivityGraphs`,
+`updateHoverState`, `undo_redo.cpp`, `gltf_interactivity_scene_pointer.cpp`.
 
 ---
 
