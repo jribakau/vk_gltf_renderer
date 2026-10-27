@@ -23,6 +23,8 @@
 #include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
 
+#include "gltf_scene.hpp"
+
 namespace {
 
 // A flat grid of n x n quads in the XY plane at height z, one material.
@@ -461,6 +463,39 @@ TEST(Wardrobe, HiddenPolygonsLeaveTheDrawnTriangles)
   EXPECT_EQ(drawn.groups[0].count, drawn.index.size());
   mesh.hiddenPolys.erase("w1");
   EXPECT_EQ(fv::mesh::drawnTriangles(mesh).index.size(), all);
+}
+
+// A geograft can hide every polygon of a surface group. The build still writes that group's primitive,
+// with no triangles, and the scene leaves it out rather than make an empty index buffer (which fails
+// to allocate and stops the renderer); the other group is drawn.
+TEST(Wardrobe, AGroupAGraftHidesWholeIsNotDrawn)
+{
+  fv::mesh::MeshInput input = grid(2, 0);
+  input.materialCount       = 2;
+  input.polyMaterial        = {0, 0, 1, 1};
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  scene.materials.resize(2);
+  fv::Mesh m;
+  m.geo                     = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(input));
+  m.geo->hiddenPolys["w1"] = {2, 3};
+  m.materials               = {0, 1};
+  scene.meshes.push_back(m);
+  fv::Node node;
+  node.kind = fv::NodeKind::eMesh;
+  node.mesh = 0;
+  scene.add(node, root);
+  auto built = fv::build::buildGltf(scene, root, {});
+  ASSERT_EQ(built.model.meshes.size(), 1u);
+  ASSERT_EQ(built.model.meshes[0].primitives.size(), 2u);
+  EXPECT_EQ(built.model.accessors[size_t(built.model.meshes[0].primitives[1].indices)].count, 0u);
+
+  nvvkgltf::Scene loaded;
+  loaded.takeModel(std::move(built.model));
+  EXPECT_EQ(loaded.getRenderPrimitives().size(), 1u);
+  EXPECT_GE(loaded.getMeshRenderPrimitive(0, 0), 0);
+  EXPECT_EQ(loaded.getMeshRenderPrimitive(0, 1), -1);
+  EXPECT_EQ(loaded.getRenderNodes().size(), 1u);
 }
 
 TEST(Fit, BonesAliasAcrossGenerationsByAnatomicalSlot)

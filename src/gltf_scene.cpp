@@ -213,6 +213,10 @@ std::string primitiveGeometryError(const tinygltf::Model& model, const tinygltf:
   // keep their 2.0 types, so POSITION stays float (or 8/16-bit quantized). int32 positions are skipped.
   if(!tinygltf::utils::canReadAccessor<glm::vec3>(positions))
     return "POSITION has unsupported component type " + std::to_string(positions.componentType);
+  // glTF requires count >= 1, but an empty accessor still reaches us (a Figure Viewer surface group
+  // a geograft hides whole): its zero-sized vertex or index buffer fails to allocate
+  if(positions.count == 0)
+    return "no vertices";
 
   if(primitive.indices >= 0)
   {
@@ -226,6 +230,8 @@ std::string primitiveGeometryError(const tinygltf::Model& model, const tinygltf:
     if(indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE && indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT
        && indices.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT)
       return "indices have unsupported component type " + std::to_string(indices.componentType);
+    if(indices.count == 0)
+      return "no indices";
   }
   return {};
 }
