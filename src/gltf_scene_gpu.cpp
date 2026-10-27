@@ -117,7 +117,7 @@ void SceneGpu::applyAnimation(VkCommandBuffer cmd, Scene& scn)
   if(!scn.animation().hasMorphTargets() && !scn.animation().hasSkinning())
     return;
 
-  if(useComputeAnimation && m_animationVk.isInitialized())
+  if(animatesOnGpu())
     m_animationVk.dispatchAnimation(cmd, m_staging, scn, m_sceneVk);
   else
     m_sceneVk.uploadPrimitives(cmd, m_staging, scn);

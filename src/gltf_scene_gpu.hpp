@@ -101,6 +101,9 @@ public:
   // Dispatches GPU compute shaders or the CPU fallback based on useComputeAnimation.
   // No-op if the scene has no morph targets or skinning.
   void applyAnimation(VkCommandBuffer cmd, Scene& scn);
+  // Whether applyAnimation dispatches the compute passes (AnimationVk::primitivesWritten() then
+  // lists what they wrote) or uploads every morphed and skinned primitive from the CPU.
+  [[nodiscard]] bool animatesOnGpu() const { return useComputeAnimation && m_animationVk.isInitialized(); }
 
   // Returns true when the GPU compute transform path should be used this frame.
   // Checks the user toggle and technical prerequisites (buffers, dirty flags, TLAS state).

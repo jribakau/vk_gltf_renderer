@@ -1704,8 +1704,12 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // #DLSS deformation motion: every writer of vertex positions has run. Their reconcile may have
   // skinned or morphed, and an edit uploaded; the copy snapshotPrevPositions() kept is what the
   // surface was before them.
-  const bool verticesWritten = interactivityAnimationApplied || verticesEdited
-                               || (animated && !m_resources.animationVk.primitivesWritten().empty());
+  // (the CPU fallback uploads every morphed and skinned primitive; the compute passes list theirs)
+  const bool deformed = animated
+                        && (m_resources.sceneGpu.animatesOnGpu() ?
+                                !m_resources.animationVk.primitivesWritten().empty() :
+                                m_resources.getScene()->animation().hasMorphTargets() || m_resources.getScene()->animation().hasSkinning());
+  const bool verticesWritten = interactivityAnimationApplied || verticesEdited || deformed;
   m_resources.dlssDeformMotionActive   = verticesWritten && m_resources.prevPositions.hasBuffers();
   m_verticesWrittenLastFrame           = verticesWritten;
 
@@ -5321,8 +5325,10 @@ void GltfRenderer::reconcileAnimationGpuState(VkCommandBuffer cmd)
 
   {
     auto timerSectionAS = m_profilerGpuTimer.cmdFrameSection(cmd, "AS update");
-    if(hasMorphOrSkin)
+    if(hasMorphOrSkin && m_resources.sceneGpu.animatesOnGpu())
       scnRtx.updateBottomLevelAS(cmd, m_resources.animationVk.primitivesWritten());  // the sets this dispatch wrote
+    else if(hasMorphOrSkin)
+      scnRtx.updateBottomLevelAS(cmd, scn);  // the CPU fallback uploaded every morphed and skinned primitive
     if(gpuTransform)
     {
       m_resources.transformCompute.dispatchTransformUpdate(cmd, m_resources.staging, scn, scnVk, scnRtx);
