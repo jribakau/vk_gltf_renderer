@@ -119,6 +119,7 @@
 #include "utils.hpp"
 #include "tinyobjloader/tiny_obj_loader.h"
 #include "tinygltf_converter.hpp"
+#include "ui_animation.hpp"  // hasPlayableAnimation, which the legacy view asks too
 
 extern nvutils::ProfilerManager g_profilerManager;  // #PROFILER
 
@@ -4365,6 +4366,7 @@ void GltfRenderer::createRetainedScene()
     if(fv::timing::enabled())
       m_resources.retainedGpu->timeBuilds();
     m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
+    m_resources.retainedGpu->setPlayableAnimation(ui::animation::hasPlayableAnimation(m_resources.getScene()));
     m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
     m_app->submitAndWaitTempCmdBuffer(cmd);
     logRetainedNotices();
@@ -4421,6 +4423,9 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   }
   m_pendingVertexUploads.clear();
   m_pendingAnimReconcile = false;
+  // a clip playing, evaluated on the CPU scene as legacy evaluates it (the host and the pickers read
+  // the nodes it moves): the bridge below carries what it wrote
+  evaluateClip(scene, cmd);
 
   const nvvkgltf::Scene::DirtyFlags& df       = scene.getDirtyFlags();
   bool                               reimport = false;
@@ -4451,6 +4456,7 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
     m_resources.retainedScene  = std::make_unique<rs::RetainedScene>();
     m_resources.retainedBridge = rs::LegacyDirtyBridge(
         rs::importGltf(*m_resources.retainedScene, scene.getModel(), {.imageSearchPaths = scene.getImageSearchPaths()}));
+    m_resources.retainedGpu->setPlayableAnimation(ui::animation::hasPlayableAnimation(&scene));
     result = m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
     requeueLiveVertices();  // the import took the model's vertices: the dials go again next frame
   }
@@ -5389,49 +5395,55 @@ void GltfRenderer::destroyResources()
 // - Update the relevant buffers and acceleration structures
 // - Reset the frame counter to restart progressive rendering
 //
+// The current clip moved on by this frame's time and evaluated on the CPU scene: its channels write
+// the nodes' TRS and morph weights (marked dirty) and its pointer targets. False when no clip plays or
+// it changed nothing. Both scene backends start from it: legacy reconciles its GPU state after it,
+// the retained scene's bridge carries the nodes it moved.
+bool GltfRenderer::evaluateClip(nvvkgltf::Scene& scn, VkCommandBuffer cmd)
+{
+  AnimationControl& animCtrl = m_resources.animationControl;
+  const int         nAnim    = scn.animation().getNumAnimations();
+  if(nAnim <= 0 || !m_resources.gpuView().hasPlayableAnimation() || !animCtrl.doAnimation())
+    return false;
+  if(animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim)
+    animCtrl.currentAnimation = 0;
+
+  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Update animation");
+  NVVK_DBG_SCOPE(cmd);
+
+  float                    deltaTime = animCtrl.deltaTime();
+  nvvkgltf::AnimationInfo& animInfo  = scn.animation().getAnimationInfo(animCtrl.currentAnimation);
+  if(animCtrl.isReset())
+    animInfo.reset();
+  else if(!animCtrl.seek)
+  {
+    animInfo.incrementTime(deltaTime, animCtrl.loop);
+    if(!animCtrl.loop && animInfo.currentTime >= animInfo.end)
+      animCtrl.play = false;
+  }
+
+  // Evaluate animation channels (marks Scene nodes dirty internally; also marks
+  // render nodes for skins whose joints moved, and materials/lights for pointer channels)
+  bool evaluated = false;
+  {
+    auto t    = m_profilerGpuTimer.cmdFrameSection(cmd, "Eval channels");
+    evaluated = scn.animation().updateAnimation(animCtrl.currentAnimation);
+  }
+  if(evaluated)
+    animCtrl.clearStates();
+  return evaluated;
+}
+
 bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
 {
   nvvkgltf::Scene* scnPtr = m_resources.getScene();
   if(!scnPtr)
     return false;
-  nvvkgltf::Scene&  scn      = *scnPtr;
-  AnimationControl& animCtrl = m_resources.animationControl;
-
-
-  const int nAnim = scn.animation().getNumAnimations();
-  if(nAnim > 0 && m_resources.gpuView().hasPlayableAnimation() && animCtrl.doAnimation())
+  if(evaluateClip(*scnPtr, cmd))
   {
-    if(animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim)
-      animCtrl.currentAnimation = 0;
-
-    auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Update animation");
-    NVVK_DBG_SCOPE(cmd);
-
-    float                    deltaTime = animCtrl.deltaTime();
-    nvvkgltf::AnimationInfo& animInfo  = scn.animation().getAnimationInfo(animCtrl.currentAnimation);
-    if(animCtrl.isReset())
-      animInfo.reset();
-    else if(!animCtrl.seek)
-    {
-      animInfo.incrementTime(deltaTime, animCtrl.loop);
-      if(!animCtrl.loop && animInfo.currentTime >= animInfo.end)
-        animCtrl.play = false;
-    }
-
-    // Evaluate animation channels (marks Scene nodes dirty internally; also marks
-    // render nodes for skins whose joints moved, and materials/lights for pointer channels)
-    bool evaluated = false;
-    {
-      auto t    = m_profilerGpuTimer.cmdFrameSection(cmd, "Eval channels");
-      evaluated = scn.animation().updateAnimation(animCtrl.currentAnimation);
-    }
-    if(evaluated)
-    {
-      animCtrl.clearStates();
-      reconcileAnimationGpuState(cmd);
-      m_pendingAnimReconcile = false;
-      return true;
-    }
+    reconcileAnimationGpuState(cmd);
+    m_pendingAnimReconcile = false;
+    return true;
   }
 
   // A host changed joint transforms or morph weights without an animation playing, or while the

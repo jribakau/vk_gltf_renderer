@@ -878,7 +878,7 @@ Four settings, none remembered:
   session; windowed sessions and `--scenefile` stay legacy. `auto` takes the retained scene unless
   `rs::retainedCannotTake` (scene_coexistence.hpp) finds what it doesn't take yet: skins, morph
   targets, animation, `KHR_interactivity`, external assets. `retained` takes it regardless, and
-  says what won't draw: it draws skins and morph targets (see below), but plays no clips yet. The `Scene backend:` log line names the
+  says what won't draw: it draws skins, morph targets and clips (see below). The `Scene backend:` log line names the
   choice and why, with the top-level node (a prop) that forced legacy. A change asks the host for a
   recompose (`GltfRenderer::setRecomposeRequest`); the switch is that scene replace.
 - `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
@@ -923,7 +923,9 @@ and refit after each pass. A pass runs only when what it reads changed: the weig
 matrices or the mesh's vertices (`rs::Residency`, "Deformation"). DLSS motion comes from two tables
 the residency keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): positions a sync
 wrote are copied at the top of the next one, and an instance keeps the world it was drawn with for
-one sync after it moves. Not on retained yet: clip playback, GPU build timing for a frame's
+one sync after it moves. A clip is evaluated on the CPU scene as legacy evaluates it
+(`GltfRenderer::evaluateClip`), so the host and the pickers see the nodes it moves, and the bridge
+carries the nodes and morph weights it wrote. Not on retained yet: GPU build timing for a frame's
 re-import. mcp_scene's edit tools are refused (D3).
 
 ---

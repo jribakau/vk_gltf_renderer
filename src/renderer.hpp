@@ -631,6 +631,7 @@ private:
   void snapshotPrevPositions(VkCommandBuffer cmd);
   // Live edits queued by the host (vertex uploads, reconcile requests); see queueVertexUpload().
   bool                      applyPendingSceneEdits(VkCommandBuffer cmd);
+  bool                      evaluateClip(nvvkgltf::Scene& scn, VkCommandBuffer cmd);
   bool                      m_editable{false};
   bool                      m_streamHost{false};  // see setStreamHost()
   rs::SceneBackendSetting            m_sceneBackendSetting{rs::SceneBackendSetting::eAuto};  // the parsed sceneBackend

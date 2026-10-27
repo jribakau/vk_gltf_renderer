@@ -283,7 +283,9 @@ public:
   bool                         hasTransmission() const override { return m_residency.hasTransmission(); }
   bool                         hasOpacityMicromaps() const override { return m_residency.hasOpacityMicromaps(); }
   bool variantMayBuildOffFrame() const override { return !m_residency.drawsBeyondShaderFeatures(); }
-  bool                         hasPlayableAnimation() const override { return false; }  // P3b
+  bool                         hasPlayableAnimation() const override { return m_playableAnimation; }
+  // whether the scene it was imported from has a clip that plays (its clips are evaluated there)
+  void setPlayableAnimation(bool playable) { m_playableAnimation = playable; }
   std::vector<LightInfo>       lights() const override { return m_lights; }
   nvutils::Bbox                bounds() const override { return m_bounds; }
   MemoryStats                  memoryStats() const override;
@@ -299,6 +301,7 @@ private:
   VulkanGpuBackend       m_gpu;
   Residency              m_residency;
   bool                   m_hasScene           = false;
+  bool                   m_playableAnimation  = false;
   uint64_t               m_transformsRevision = 0;
   std::vector<LightInfo> m_lights;
   nvutils::Bbox          m_bounds;

@@ -23,12 +23,14 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <functional>
 #include <source_location>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "gltf_scene.hpp"
+#include "gltf_scene_animation.hpp"
 #include "gltf_scene_editor.hpp"
 #include "scene_coexistence.hpp"
 #include "tinygltf_utils.hpp"
@@ -442,4 +444,54 @@ TEST(SceneCoexistence, TheBridgeCarriesDialsRebindsAndWeights)
   legacy.markNodeDirty(0);
   EXPECT_EQ(bridge.carry(legacy, retained), LegacyDirtyBridge::Result::eCarried);
   EXPECT_EQ(retained.entity(bridge.map().entities[0])->mesh->morphWeights, std::vector<float>{0.75f});
+}
+
+// A clip played on the legacy scene in a retained session (GltfRenderer::evaluateClip): what its
+// channels wrote, nodes and morph weights, carried frame by frame, leaves the retained scene as a
+// fresh import of the posed model
+TEST(SceneCoexistence, TheBridgeCarriesAClipsFrames)
+{
+  namespace fs = std::filesystem;
+  const fs::path models = fs::path(GLTF_SAMPLE_ASSETS_PATH) / "Models";
+  int            tested = 0;
+  for(const char* file : {"RiggedSimple/glTF/RiggedSimple.gltf", "AnimatedMorphCube/glTF/AnimatedMorphCube.gltf",
+                          "CesiumMan/glTF/CesiumMan.gltf"})
+  {
+    std::error_code ec;
+    if(!fs::exists(models / file, ec))
+      continue;
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model    model;
+    std::string        err, warn;
+    ASSERT_TRUE(loader.LoadASCIIFromFile(&model, &err, &warn, (models / file).string())) << file;
+    nvvkgltf::Scene legacy;
+    legacy.takeModel(std::move(model));
+    ASSERT_TRUE(legacy.valid()) << file;
+    RetainedScene     retained;
+    LegacyDirtyBridge bridge(importGltf(retained, legacy.getModel()));
+    legacy.clearDirtyFlags();
+    nvvkgltf::AnimationInfo& info = legacy.animation().getAnimationInfo(0);
+    for(int frame = 0; frame < 5; frame++)
+    {
+      info.incrementTime(std::max(info.end - info.start, 0.1f) / 4.f, true);
+      ASSERT_TRUE(legacy.animation().updateAnimation(0)) << file;
+      EXPECT_EQ(bridge.carry(legacy, retained), LegacyDirtyBridge::Result::eCarried) << file;
+      legacy.clearDirtyFlags();
+      RetainedScene fresh;
+      importGltf(fresh, legacy.getModel());
+      const std::vector<EntityId> a = retained.entitiesInOrder(), b = fresh.entitiesInOrder();
+      ASSERT_EQ(a.size(), b.size()) << file;
+      for(size_t i = 0; i < a.size(); i++)
+      {
+        const Entity &x = *retained.entity(a[i]), &y = *fresh.entity(b[i]);
+        EXPECT_TRUE(x.local == y.local) << file << " frame " << frame << ", " << x.name;
+        if(x.mesh && y.mesh)
+          EXPECT_EQ(x.mesh->morphWeights, y.mesh->morphWeights) << file << " frame " << frame << ", " << x.name;
+      }
+      expectSameDrawing(retained, fresh, file);
+    }
+    tested++;
+  }
+  if(tested == 0)
+    GTEST_SKIP() << "no sample assets";
 }
