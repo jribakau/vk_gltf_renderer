@@ -27,6 +27,7 @@
 #include <thread>
 
 #include "fv_events.hpp"
+#include "fv_parameter_filter.hpp"
 
 using namespace std::chrono_literals;
 using fv::Json;
@@ -163,4 +164,13 @@ TEST(FvEvents, SseMessageIsOneDataLine)
   // the payload's newline is escaped, so only the framing has raw newlines
   EXPECT_EQ(msg.find('\n', std::string("id: 5\ndata: ").size()), msg.size() - 2);
   EXPECT_EQ(msg.substr(msg.size() - 2), "\n\n");
+}
+
+// params.get / params.set leave out what would load or save the scene behind the host
+TEST(FvParameters, TheHostKeepsSceneLoadsAndSavesToItself)
+{
+  EXPECT_FALSE(fv::hostExposesParameter("scenefile"));
+  EXPECT_FALSE(fv::hostExposesParameter("savefile"));
+  EXPECT_TRUE(fv::hostExposesParameter("screenshot"));
+  EXPECT_TRUE(fv::hostExposesParameter("ptFireflyClamp"));
 }

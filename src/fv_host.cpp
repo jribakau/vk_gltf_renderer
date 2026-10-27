@@ -73,6 +73,7 @@
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
+#include "fv_parameter_filter.hpp"
 #include "fv_protocol.hpp"
 #include "fv_textures.hpp"
 #include "fv_view.hpp"
@@ -673,7 +674,8 @@ std::string fileStem(const std::string& rel)
 constexpr const char* kStudioName = "Studio (built-in)";
 constexpr uint32_t    kStudioWidth = 512, kStudioHeight = 256;
 
-// The registered parameters nvmcp can read and write: values, not triggers or custom parsers.
+// The registered parameters nvmcp can read and write: values, not triggers or custom parsers, and
+// none that loads or saves the scene behind the host (fv::hostExposesParameter).
 nvmcp::detail::ParameterList exposedParameters(const nvutils::ParameterRegistry* registry)
 {
   nvmcp::detail::ParameterList out;
@@ -681,7 +683,8 @@ nvmcp::detail::ParameterList exposedParameters(const nvutils::ParameterRegistry*
     return out;
   for(const nvutils::ParameterBase* p : registry->getParameters())
     if(p->destination.raw && p->type != nvutils::ParameterBase::Type::BOOL8_TRIGGER
-       && p->type != nvutils::ParameterBase::Type::CUSTOM && p->type != nvutils::ParameterBase::Type::INVALID)
+       && p->type != nvutils::ParameterBase::Type::CUSTOM && p->type != nvutils::ParameterBase::Type::INVALID
+       && fv::hostExposesParameter(p->info.name))
       out.push_back(p);
   return out;
 }
