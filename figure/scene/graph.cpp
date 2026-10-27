@@ -109,4 +109,29 @@ void measureUvScales(SceneGraph& scene)
   }
 }
 
+bool takenOff(const SceneGraph& scene, int node)
+{
+  for(; node >= 0 && node < int(scene.nodes.size()); node = scene.nodes[size_t(node)].parent)
+    if(scene.nodes[size_t(node)].removed)
+      return true;
+  return false;
+}
+
+std::vector<bool> liveMeshes(const SceneGraph& scene)
+{
+  std::vector<int> users(scene.meshes.size(), 0), live(scene.meshes.size(), 0);
+  for(size_t i = 0; i < scene.nodes.size(); i++)
+  {
+    const int mesh = scene.nodes[i].mesh;
+    if(mesh < 0 || mesh >= int(scene.meshes.size()))
+      continue;
+    users[size_t(mesh)]++;
+    live[size_t(mesh)] += takenOff(scene, int(i)) ? 0 : 1;
+  }
+  std::vector<bool> out(scene.meshes.size());
+  for(size_t m = 0; m < out.size(); m++)
+    out[m] = users[m] == 0 || live[m] > 0;
+  return out;
+}
+
 }  // namespace fv

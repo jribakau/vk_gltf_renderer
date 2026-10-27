@@ -718,9 +718,11 @@ std::vector<bool> walkThroughMaterials(const SceneGraph& scene, const std::vecto
       for(int m : item.meshes)
         if(m >= 0 && m < int(passes.size()))
           passes[size_t(m)] = true;
-  std::vector<bool> through(scene.materials.size(), true), bounds(scene.materials.size(), false);
+  // a taken-off item's meshes bound nothing, though no worn item holds them any more
+  const std::vector<bool> live = liveMeshes(scene);
+  std::vector<bool>       through(scene.materials.size(), true), bounds(scene.materials.size(), false);
   for(size_t m = 0; m < scene.meshes.size(); m++)
-    if(!passes[m])
+    if(!passes[m] && live[m])
       for(int mi : scene.meshes[m].materials)
         if(mi >= 0 && mi < int(bounds.size()))
           bounds[size_t(mi)] = true;

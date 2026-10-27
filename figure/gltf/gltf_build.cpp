@@ -1,5 +1,6 @@
 #include <figure/gltf/gltf_build.hpp>
 
+#include <figure/dson/material_preset.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/materials/hair_strands.hpp>
@@ -223,6 +224,18 @@ std::map<int, std::vector<mat::StrandMesh::Range>> hairRanges(const SceneGraph& 
   return out;
 }
 
+// The figure's one sampler. Genesis UVs use one 0..1 tile per surface group (UDIM-style); repeat
+// maps each tile home.
+tinygltf::Sampler figureSampler()
+{
+  tinygltf::Sampler s;
+  s.wrapS     = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  s.wrapT     = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  s.magFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
+  s.minFilter = TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR;
+  return s;
+}
+
 tinygltf::Value extras(const std::string& fvId)
 {
   tinygltf::Value::Object o;
@@ -233,11 +246,15 @@ tinygltf::Value extras(const std::string& fvId)
 }  // namespace
 
 // Whether the figure's eyes have a tear film over them, a refracting moisture shell (mat::eyeShell):
-// the eye surfaces and corneas under it are lowered without their own specular (LowerOptions::underTearFilm)
+// the eye surfaces and corneas under it are lowered without their own specular (LowerOptions::underTearFilm).
+// A taken-off item's moisture is no film.
 static bool hasTearFilm(const SceneGraph& scene)
 {
-  return std::any_of(scene.materials.begin(), scene.materials.end(),
-                     [](const Material& m) { return mat::eyeShell(m.surface) == mat::EyeShell::eMoisture; });
+  const std::vector<bool> live = dson::liveMaterials(scene);
+  for(size_t mi = 0; mi < scene.materials.size(); mi++)
+    if(live[mi] && mat::eyeShell(scene.materials[mi].surface) == mat::EyeShell::eMoisture)
+      return true;
+  return false;
 }
 
 std::vector<TextureRequest> textureRequests(const Material& m, mat::SkinMode skin)
@@ -276,10 +293,12 @@ std::vector<std::array<float, 3>> irisDiscs(const SceneGraph& scene, int materia
   {
     double x = 0, y = 0, r = 0;
   };
-  std::vector<Disc> discs;
-  for(const Mesh& m : scene.meshes)
+  std::vector<Disc>       discs;
+  const std::vector<bool> live = liveMeshes(scene);
+  for(size_t mesh = 0; mesh < scene.meshes.size(); mesh++)
   {
-    if(!m.geo)
+    const Mesh& m = scene.meshes[mesh];
+    if(!m.geo || !live[mesh])
       continue;
     const mesh::BuiltMesh& geo = *m.geo;
     // its triangles join their vertices into islands (union-find on drawn vertices, which are split
@@ -585,15 +604,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     img.name     = req.rel.substr(req.rel.find_last_of('/') + 1);
     model.images.push_back(std::move(img));
     if(model.samplers.empty())
-    {
-      tinygltf::Sampler s;
-      // Genesis UVs use one 0..1 tile per surface group (UDIM-style); repeat maps each tile home
-      s.wrapS     = TINYGLTF_TEXTURE_WRAP_REPEAT;
-      s.wrapT     = TINYGLTF_TEXTURE_WRAP_REPEAT;
-      s.magFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
-      s.minFilter = TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR;
-      model.samplers.push_back(s);
-    }
+      model.samplers.push_back(figureSampler());
     tinygltf::Texture t;
     t.sampler = 0;
     if(image->mimeType == "image/ktx2")
@@ -609,9 +620,10 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     return textureOf[key] = {int(model.textures.size()) - 1, image->flipGreen};
   };
   // strand hair ribbons face one way, so their surfaces are seen from both sides
-  std::vector<bool> onRibbon(scene.materials.size(), false);
-  for(const Mesh& m : scene.meshes)
-    if(m.geo && m.geo->ribbon)
+  std::vector<bool>       onRibbon(scene.materials.size(), false);
+  const std::vector<bool> liveMesh = liveMeshes(scene);
+  for(size_t mesh = 0; mesh < scene.meshes.size(); mesh++)
+    if(const Mesh& m = scene.meshes[mesh]; liveMesh[mesh] && m.geo && m.geo->ribbon)
       for(int mi : m.materials)
         if(mi >= 0 && mi < int(onRibbon.size()))
           onRibbon[mi] = true;
@@ -629,6 +641,10 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     }
     model.materials.push_back(std::move(g));
   }
+  // the live model keeps it even with no texture yet: a texture baked in later (FvMaterials::baked)
+  // takes the figure's sampler, the first at its place in the composed model, not another prop's
+  if(model.samplers.empty() && !options.forFile)
+    model.samplers.push_back(figureSampler());
   if(usesBasisu)
   {
     model.extensionsUsed.push_back("KHR_texture_basisu");

@@ -114,6 +114,11 @@ class SceneGraph;
 // Measures Material::metresPerUv for every material still at 0, from the meshes as they are (DSON
 // centimetres), to two significant figures.
 void measureUvScales(SceneGraph& scene);
+// Whether a node was taken off: it or a node above it is removed (Node::removed). Hidden is not.
+bool takenOff(const SceneGraph& scene, int node);
+// Per mesh, whether it is still in use: false only when every node that draws it was taken off. A
+// mesh no node draws counts as in use, as liveMaterials counts a material no node uses.
+std::vector<bool> liveMeshes(const SceneGraph& scene);
 
 class SceneGraph
 {

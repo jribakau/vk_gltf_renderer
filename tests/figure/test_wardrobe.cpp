@@ -602,4 +602,168 @@ TEST(Wardrobe, LightUnderTheSkinPassesThroughWhatIsWornButNotWhatBoundsTheBody)
   }
 }
 
+// Taking an item off leaves its meshes and materials in the scene (Node::removed), so nothing it
+// drew still counts: a mesh that only a taken-off item draws is not in use, one no node draws is.
+TEST(Wardrobe, ATakenOffItemsMeshesAreNotInUse)
+{
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  scene.meshes.resize(4);
+  fv::Node shown;
+  shown.kind = fv::NodeKind::eMesh;
+  shown.mesh = 0;
+  scene.add(shown, root);
+  const int item = scene.add(fv::Node{}, root);
+  fv::Node  worn = shown;
+  worn.mesh      = 1;
+  scene.add(worn, item);
+  // mesh 2 is drawn twice, once by the item and once by the figure
+  worn.mesh = 2;
+  scene.add(worn, item);
+  scene.add(worn, root);
+  // mesh 3: no node draws it
+  EXPECT_EQ(fv::liveMeshes(scene), (std::vector<bool>{true, true, true, true}));
+  scene.nodes[size_t(item)].removed = true;
+  EXPECT_TRUE(fv::takenOff(scene, item + 1));
+  EXPECT_FALSE(fv::takenOff(scene, root));
+  EXPECT_EQ(fv::liveMeshes(scene), (std::vector<bool>{true, false, true, true}));
+}
+
+// A worn shirt and a taken-off jacket made with the same surface: the jacket's mesh is still in the
+// scene, but no longer bounds the body, so light keeps passing through the shirt.
+TEST(Wardrobe, ATakenOffItemDoesNotBoundTheBody)
+{
+  using fv::mat::Kind;
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  for(Kind k : {Kind::eSkin, Kind::eOther})
+  {
+    fv::Material m;
+    m.surface.kind = k;
+    scene.materials.push_back(m);
+  }
+  std::vector<int> itemRoot;
+  for(int mat : {0, 1, 1})
+  {
+    fv::Mesh m;
+    m.materials = {mat};
+    scene.meshes.push_back(m);
+    fv::Node node;
+    node.kind = fv::NodeKind::eMesh;
+    node.mesh = int(scene.meshes.size()) - 1;
+    const int parent = mat == 0 ? root : scene.add(fv::Node{}, root);
+    scene.add(node, parent);
+    itemRoot.push_back(parent);
+  }
+  std::vector<fv::WornItem> items(2);
+  items[0].kind   = "Clothing";
+  items[0].meshes = {1};
+  items[1].kind   = "Clothing";
+  items[1].meshes = {2};
+  EXPECT_EQ(fv::walkThroughMaterials(scene, items), (std::vector<bool>{false, true}));
+  // the jacket comes off: out of the worn items, its node taken off
+  items.pop_back();
+  scene.nodes[size_t(itemRoot[2])].removed = true;
+  EXPECT_EQ(fv::walkThroughMaterials(scene, items), (std::vector<bool>{false, true}));
+}
+
+// A taken-off eye moisture is no tear film over the eyes that stay, and a taken-off mesh gives an
+// iris no discs: the build lowers what is left as if the item had never been worn.
+TEST(Wardrobe, ATakenOffItemLeavesNoTearFilmOrIrisDiscs)
+{
+  using fv::mat::Kind;
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  fv::Material   iris;
+  iris.surface.kind = Kind::eEye;
+  iris.surface.name = "Irises";
+  fv::Material moisture;
+  moisture.surface.kind       = Kind::eCornea;
+  moisture.surface.name       = "EyeMoisture";
+  moisture.surface.refraction = fv::mat::Surface::Refraction{1.f, 1.376f};
+  scene.materials = {iris, moisture};
+  // the figure's own iris, a second iris and the moisture on an item
+  const int item = scene.add(fv::Node{}, root);
+  for(auto [mat, parent] : std::vector<std::pair<int, int>>{{0, root}, {0, item}, {1, item}})
+  {
+    fv::Mesh m;
+    m.geo = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(1, float(scene.meshes.size()))));
+    // each mesh a small UV island of its own, side by side
+    const float u0 = 0.1f + 0.3f * float(scene.meshes.size());
+    for(size_t v = 0; v * 2 < m.geo->uv.size(); v++)
+    {
+      m.geo->uv[v * 2]     = u0 + 0.1f * float(v % 2);
+      m.geo->uv[v * 2 + 1] = 0.7f + 0.1f * float(v / 2);
+    }
+    m.materials = {mat};
+    scene.meshes.push_back(m);
+    fv::Node node;
+    node.kind = fv::NodeKind::eMesh;
+    node.mesh = int(scene.meshes.size()) - 1;
+    scene.add(node, parent);
+  }
+  {
+    const auto built = fv::build::buildGltf(scene, root, {});
+    EXPECT_TRUE(built.lowering[0].underTearFilm);
+    EXPECT_EQ(built.lowering[0].irisDiscs.size(), 2u);
+  }
+  scene.nodes[size_t(item)].removed = true;
+  const auto built = fv::build::buildGltf(scene, root, {});
+  EXPECT_FALSE(built.lowering[0].underTearFilm);
+  EXPECT_EQ(built.lowering[0].irisDiscs.size(), 1u);
+  for(const std::string& p : fv::build::checkBuild(scene, built, {}))
+    ADD_FAILURE() << p;
+}
+
+// Strand ribbons make their surface double-sided; a taken-off ribbon item no longer does it to the
+// polygon mesh that shares the surface.
+TEST(Wardrobe, ATakenOffRibbonLeavesItsSurfaceOneSided)
+{
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  scene.materials.resize(1);
+  const int item = scene.add(fv::Node{}, root);
+  for(int parent : {root, item})
+  {
+    fv::Mesh m;
+    m.geo = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(1, float(scene.meshes.size()))));
+    if(parent == item)
+      m.geo->ribbon = fv::mesh::Ribbon{};
+    m.materials = {0};
+    scene.meshes.push_back(m);
+    fv::Node node;
+    node.kind = fv::NodeKind::eMesh;
+    node.mesh = int(scene.meshes.size()) - 1;
+    scene.add(node, parent);
+  }
+  EXPECT_TRUE(fv::build::buildGltf(scene, root, {}).model.materials[0].doubleSided);
+  scene.nodes[size_t(item)].removed = true;
+  EXPECT_FALSE(fv::build::buildGltf(scene, root, {}).model.materials[0].doubleSided);
+}
+
+// A figure built before any of its textures is ready still brings its repeating sampler, the one a
+// texture baked in later takes; a file for other tools has none it doesn't use.
+TEST(Wardrobe, AFigureWithoutTexturesStillHasItsSampler)
+{
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  scene.materials.resize(1);
+  fv::Mesh m;
+  m.geo       = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(1, 0)));
+  m.materials = {0};
+  scene.meshes.push_back(m);
+  fv::Node node;
+  node.kind = fv::NodeKind::eMesh;
+  node.mesh = 0;
+  scene.add(node, root);
+  const auto live = fv::build::buildGltf(scene, root, {});
+  EXPECT_TRUE(live.model.textures.empty());
+  ASSERT_EQ(live.model.samplers.size(), 1u);
+  EXPECT_EQ(live.model.samplers[0].wrapS, TINYGLTF_TEXTURE_WRAP_REPEAT);
+  EXPECT_EQ(live.model.samplers[0].wrapT, TINYGLTF_TEXTURE_WRAP_REPEAT);
+  fv::build::BuildOptions file;
+  file.forFile = true;
+  EXPECT_TRUE(fv::build::buildGltf(scene, root, file).model.samplers.empty());
+}
+
 }  // namespace
