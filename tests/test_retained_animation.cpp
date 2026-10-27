@@ -27,10 +27,6 @@
 // computeSkinning keeps its joint matrices to itself and exposes the skinned vertices, so the joint
 // matrices are held to it through those: RetainedScene::jointMatrices put through computeSkinning's
 // own vertex loop. Both use inverse(world[mesh node]) * world[joint] * IBM; there is no conversion.
-//
-// The one difference allowed: AnimationSystem reads a STEP rotation key through glm::quat(vec4),
-// which glm takes as Euler angles from the key's x, y and z. Where the legacy rotation is that
-// misreading of a key the player wrote as it is, the node (and what hangs under it) is not compared.
 
 #include <gtest/gtest.h>
 
@@ -291,7 +287,7 @@ std::vector<float> sampleTimes(const rs::ClipRecord& clip)
 
 struct Counts
 {
-  int times = 0, nodes = 0, skinned = 0, misread = 0;
+  int times = 0, nodes = 0, skinned = 0;
 };
 
 // A model's clips played on both scenes, compared after every step; the first difference fails the
@@ -324,16 +320,6 @@ void expectAnimationParity(const tinygltf::Model& model, const std::string& what
     skinMeshes.push_back(found);
   }
 
-  // the rotation keys AnimationSystem misreads, per entity, in any clip (a node keeps a rotation
-  // into the next clip played)
-  std::map<rs::EntityId, std::vector<glm::vec4>> stepRotations;
-  for(rs::ClipId id : imported.clips)
-    if(const rs::ClipRecord* clip = retained.clip(id))
-      for(const rs::ClipChannel& c : clip->channels)
-        if(c.path == rs::ClipPath::eRotation && clip->samplers[c.sampler].interpolation == rs::ClipInterpolation::eStep)
-          for(size_t k = 0; k + 4 <= clip->samplers[c.sampler].outputs.size(); k += 4)
-            stepRotations[c.target].push_back(glm::make_vec4(clip->samplers[c.sampler].outputs.data() + k));
-
   for(size_t a = 0; a < model.animations.size(); a++)
   {
     const rs::ClipRecord* clip = retained.clip(imported.clips[a]);
@@ -346,22 +332,12 @@ void expectAnimationParity(const tinygltf::Model& model, const std::string& what
     const auto compare = [&](const std::string& when) -> bool {
       SCOPED_TRACE(what + ", animation " + std::to_string(a) + ", " + when);
       counts.times++;
-      std::vector<bool> misread(lm.nodes.size(), false);  // a node, or one above it, AnimationSystem misread
-      std::vector<int>  parent(lm.nodes.size(), -1);
-      for(size_t n = 0; n < lm.nodes.size(); n++)
-        for(int c : lm.nodes[n].children)
-          parent[size_t(c)] = int(n);
       for(rs::EntityId id : retained.entitiesInOrder())
       {
         const int             n    = retained.entity(id)->owner.local;
         const tinygltf::Node& node = lm.nodes[size_t(n)];
         const rs::Entity&     e    = *retained.entity(id);
         counts.nodes++;
-        if(parent[size_t(n)] >= 0 && misread[size_t(parent[size_t(n)])])
-        {
-          misread[size_t(n)] = true;
-          continue;
-        }
         if(node.matrix.size() == 16)
         {
           EXPECT_TRUE(e.local.matrix && *e.local.matrix == glm::mat4(glm::make_mat4(node.matrix.data()))) << node.name;
@@ -371,21 +347,9 @@ void expectAnimationParity(const tinygltf::Model& model, const std::string& what
           EXPECT_EQ(e.local.translation, legacyVec3(node.translation, 0.f)) << node.name;
           EXPECT_EQ(e.local.scale, legacyVec3(node.scale, 1.f)) << node.name;
           const glm::quat r = legacyRotation(node);
-          if(r != e.local.rotation)
-          {
-            const auto keys = stepRotations.find(id);
-            const bool known = keys != stepRotations.end() && std::any_of(keys->second.begin(), keys->second.end(), [&](const glm::vec4& k) {
-              return r == glm::quat(glm::vec3(k)) && e.local.rotation == glm::make_quat(glm::value_ptr(k));
-            });
-            EXPECT_TRUE(known) << node.name << ": rotation (" << r.x << ", " << r.y << ", " << r.z << ", " << r.w << ") against ("
-                               << e.local.rotation.x << ", " << e.local.rotation.y << ", " << e.local.rotation.z << ", "
-                               << e.local.rotation.w << ")";
-            if(!known)
-              return false;
-            counts.misread++;
-            misread[size_t(n)] = true;
-            continue;
-          }
+          EXPECT_EQ(r, e.local.rotation) << node.name << ": rotation (" << r.x << ", " << r.y << ", " << r.z << ", " << r.w
+                                         << ") against (" << e.local.rotation.x << ", " << e.local.rotation.y << ", "
+                                         << e.local.rotation.z << ", " << e.local.rotation.w << ")";
         }
         if(retained.world(id) != legacy.getNodesWorldMatrices()[size_t(n)])
         {
@@ -410,9 +374,6 @@ void expectAnimationParity(const tinygltf::Model& model, const std::string& what
       {
         const nvvkgltf::SkinTask& task = anim.getSkinTasks()[t];
         const tinygltf::Skin&     s    = lm.skins[size_t(task.skinID)];
-        if(misread[size_t(task.refNodeID)]
-           || std::any_of(s.joints.begin(), s.joints.end(), [&](int j) { return misread[size_t(j)]; }))
-          continue;
         const std::vector<glm::mat4> joints = retained.jointMatrices(imported.entities[size_t(task.refNodeID)]);
         EXPECT_EQ(joints.size(), s.joints.size());
         std::vector<glm::vec3> positions, normals;
@@ -472,8 +433,68 @@ TEST(RetainedAnimation, ClipsPlayAsTheLegacySceneDoes)
   Counts counts;
   expectAnimationParity(fixture(), "fixture", counts);
   EXPECT_GT(counts.skinned, 0);
-  // the STEP rotation the legacy scene misreads came up, and was the only difference
-  EXPECT_GT(counts.misread, 0);
+}
+
+// What glTF says a STEP channel holds, on both scenes: each key's value up to the next key, the last
+// key's value exactly on it, and a rotation key read as the quaternion it is (AnimationSystem once
+// gave the next-to-last key there, and took a rotation key's x, y and z as Euler angles)
+TEST(RetainedAnimation, StepHoldsEachKeyAndTheLastOnIt)
+{
+  const tinygltf::Model model = fixture();
+  const float           h     = 0.7071067811865476f;
+  int                   step = -1, morphStep = -1;
+  for(size_t n = 0; n < model.nodes.size(); n++)
+  {
+    if(model.nodes[n].name == "step")
+      step = int(n);
+    if(model.nodes[n].name == "morph step")
+      morphStep = int(n);
+  }
+  ASSERT_GE(step, 0);
+  ASSERT_GE(morphStep, 0);
+
+  nvvkgltf::Scene legacy;
+  legacy.takeModel(tinygltf::Model(model));
+  ASSERT_TRUE(legacy.valid());
+  nvvkgltf::AnimationSystem& anim = legacy.animation();
+  const tinygltf::Model&     lm   = legacy.getModel();
+  rs::RetainedScene          retained;
+  const rs::ImportResult     imported = rs::importGltf(retained, model, {.prop = 1});
+  rs::ClipPlayer             player(retained, imported.clips[0]);  // "all"
+  const rs::Entity&          stepEntity      = *retained.entity(imported.entities[size_t(step)]);
+  const rs::Entity&          morphStepEntity = *retained.entity(imported.entities[size_t(morphStep)]);
+
+  struct Expected
+  {
+    float              time;
+    glm::quat          rotation;     // keys at 0, 1, 2
+    glm::vec3          translation;  // keys at 0, 0.5, 1.5
+    std::vector<float> weights;      // keys at 0, 1, 2
+  };
+  for(const Expected& x : {Expected{0.5f, glm::quat(1, 0, 0, 0), {1, 0, 0}, {0, 0}},
+                           Expected{1.f, glm::quat(h, 0, h, 0), {1, 0, 0}, {1, 0.5f}},
+                           Expected{1.5f, glm::quat(h, 0, h, 0), {1, 1, 0}, {1, 0.5f}},
+                           Expected{2.f, glm::quat(h, h, 0, 0), {1, 1, 0}, {0.25f, 1}}})
+  {
+    SCOPED_TRACE("t = " + std::to_string(x.time));
+    anim.getAnimationInfo(0).currentTime = x.time;
+    (void)anim.updateAnimation(0);
+    player.setTime(x.time);
+    player.apply(retained);
+
+    EXPECT_EQ(legacyRotation(lm.nodes[size_t(step)]), x.rotation);
+    EXPECT_EQ(stepEntity.local.rotation, x.rotation);
+    if(x.time <= 1.5f)  // the translation's last key; past it the channel leaves the node alone
+    {
+      EXPECT_EQ(legacyVec3(lm.nodes[size_t(step)].translation, 0.f), x.translation);
+      EXPECT_EQ(stepEntity.local.translation, x.translation);
+    }
+    std::vector<float> lw;
+    for(double w : lm.nodes[size_t(morphStep)].weights)
+      lw.push_back(float(w));
+    EXPECT_EQ(lw, x.weights);
+    EXPECT_EQ(morphStepEntity.mesh->morphWeights, x.weights);
+  }
 }
 
 // The Khronos samples with animations, skins and morphs, when present.
@@ -503,8 +524,8 @@ TEST(RetainedAnimation, SampleAssetsPlayAsTheLegacySceneDoes)
   }
   if(tested == 0)
     GTEST_SKIP() << "no sample assets";
-  std::printf("played %d files: %d times, %d node comparisons, %d skinned meshes, %d misread STEP rotations\n", tested,
-              counts.times, counts.nodes, counts.skinned, counts.misread);
+  std::printf("played %d files: %d times, %d node comparisons, %d skinned meshes\n", tested, counts.times, counts.nodes,
+              counts.skinned);
 }
 
 // Playing writes through the store's edits, so takeChanges reports it: the entities moved (and what

@@ -470,8 +470,6 @@ bool AnimationSystem::processAnimationChannel(tinygltf::Node* gltfNode, Animatio
     return false;
 
   size_t i = static_cast<size_t>(std::distance(sampler.inputs.begin(), it)) - 1;
-  // TODO: exactly on the last key this is the segment before it, so STEP gives the next-to-last
-  // key's value where glTF gives the last's (rs::ClipPlayer keeps this, for parity)
   if(i + 1 >= sampler.inputs.size())
     i = sampler.inputs.size() - 2;
 
@@ -487,7 +485,8 @@ bool AnimationSystem::processAnimationChannel(tinygltf::Node* gltfNode, Animatio
       handleLinearInterpolation(gltfNode, sampler, channel, t, i);
       break;
     case AnimationSampler::InterpolationType::eStep:
-      handleStepInterpolation(gltfNode, sampler, channel, i);
+      // exactly on the last key the segment is the one before it, and glTF holds the last key's value
+      handleStepInterpolation(gltfNode, sampler, channel, time >= inputEnd ? i + 1 : i);
       break;
     case AnimationSampler::InterpolationType::eCubicSpline:
       handleCubicSplineInterpolation(gltfNode, sampler, channel, t, inputEnd - inputStart, i);
@@ -622,11 +621,8 @@ void AnimationSystem::handleStepInterpolation(tinygltf::Node* gltfNode, Animatio
     case AnimationChannel::PathType::eRotation: {
       if(index >= sampler.outputsVec4.size())
         break;
-      // TODO: glm::quat(vec4) converts the vec4 to a vec3 and takes it as Euler angles, so a STEP
-      // rotation is not its key; glm::make_quat(glm::value_ptr(...)) reads it as the linear path
-      // does. rs::ClipPlayer reads the key; test_retained_animation allows the difference until here
-      // is fixed.
-      glm::quat q(sampler.outputsVec4[index]);
+      // the key as x, y, z, w, as the linear path reads it (glm::quat(vec4) would take x, y and z as Euler angles)
+      const glm::quat q = glm::make_quat(glm::value_ptr(sampler.outputsVec4[index]));
       if(gltfNode)
         gltfNode->rotation = {q.x, q.y, q.z, q.w};
       break;

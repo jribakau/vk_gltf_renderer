@@ -28,9 +28,7 @@
 //
 // Where the legacy evaluation leaves a channel alone, so does this: before its first key, after its
 // last, and with fewer than two keys; the entity keeps what it had. Exactly on the last key a STEP
-// channel gives the next-to-last key's value, as there. One difference on purpose: a STEP rotation
-// key is read as the quaternion it is, where AnimationSystem's glm::quat(vec4) makes a rotation
-// from the key's x, y and z taken as Euler angles.
+// channel holds that key, as glTF says.
 //
 
 #include "scene_retained.hpp"

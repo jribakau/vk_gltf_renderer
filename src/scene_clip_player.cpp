@@ -38,6 +38,7 @@ struct Segment
   size_t index    = 0;
   float  t        = 0.f;
   float  keyDelta = 0.f;
+  size_t step     = 0;  // the key a STEP channel holds: `index`, or the last exactly on it
 };
 
 std::optional<Segment> segmentAt(const std::vector<float>& inputs, float time)
@@ -56,7 +57,7 @@ std::optional<Segment> segmentAt(const std::vector<float>& inputs, float time)
     return {};
   const float keyDelta = inputEnd - inputStart;
   const float t = std::abs(keyDelta) < std::numeric_limits<float>::epsilon() ? 0.0f : std::clamp((time - inputStart) / keyDelta, 0.0f, 1.0f);
-  return Segment{i, t, keyDelta};
+  return Segment{i, t, keyDelta, time >= inputEnd ? i + 1 : i};
 }
 
 // glTF's cubic Hermite spline between value v0 (out-tangent b) and value v1 (in-tangent a), the
@@ -96,9 +97,9 @@ std::optional<glm::vec3> evalVec3(const ClipSampler& s, const Segment& g)
         return {};
       return glm::mix(vec3At(s.outputs, i), vec3At(s.outputs, i + 1), g.t);
     case ClipInterpolation::eStep:
-      if(i >= count)
+      if(g.step >= count)
         return {};
-      return vec3At(s.outputs, i);
+      return vec3At(s.outputs, g.step);
     case ClipInterpolation::eCubicSpline:
       if(count <= (i + 1) * 3 + 1)
         return {};
@@ -122,9 +123,9 @@ std::optional<glm::quat> evalRotation(const ClipSampler& s, const Segment& g)
       return glm::normalize(glm::slerp(q1, q2, g.t));
     }
     case ClipInterpolation::eStep:
-      if(i >= count)
+      if(g.step >= count)
         return {};
-      return glm::make_quat(s.outputs.data() + 4 * i);
+      return glm::make_quat(s.outputs.data() + 4 * g.step);
     case ClipInterpolation::eCubicSpline: {
       if(count <= (i + 1) * 3 + 1)
         return {};
@@ -151,8 +152,10 @@ std::optional<std::vector<float>> evalWeights(const ClipSampler& s, const Segmen
       for(size_t j = 0; j < perKey; j++)
         out.push_back(glm::mix(key0[j], key1[j], g.t));
       return out;
-    case ClipInterpolation::eStep:
-      return std::vector<float>(key0, key0 + perKey);
+    case ClipInterpolation::eStep: {
+      const float* key = s.outputs.data() + g.step * perKey;
+      return std::vector<float>(key, key + perKey);
+    }
     case ClipInterpolation::eCubicSpline: {
       if(perKey % 3 != 0)
         return {};
