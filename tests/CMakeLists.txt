@@ -310,11 +310,19 @@ add_executable(${BENCHMARK_NAME}
     ${CMAKE_SOURCE_DIR}/src/gltf_interactivity_pointer.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_interactivity_scene_pointer.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_interactivity_scene_animation.cpp
+    # The retained scene (daz-viewer docs/retained-scene-plan.md): store, importer, figure feed
+    ${CMAKE_SOURCE_DIR}/src/scene_retained.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_import_gltf.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_export_gltf.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_clip_player.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_feature_detection.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp
     # MikkTSpace for tangent generation
     ${CMAKE_SOURCE_DIR}/third_party/MikkTSpace/mikktspace.c
 )
 
-
+# the Box Figure the retained-scene benchmarks feed
+target_compile_definitions(${BENCHMARK_NAME} PRIVATE FV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/figure/data")
 
 # Add Draco support if enabled
 if(USE_DRACO)
@@ -330,6 +338,8 @@ target_link_libraries(${BENCHMARK_NAME} PRIVATE
     benchmark::benchmark
     benchmark::benchmark_main
     # Same libraries as test executable
+    fv_figure
+    zlib
     nvpro2::nvutils
     nvpro2::nvvk
     nvpro2::nvapp
