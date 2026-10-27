@@ -106,6 +106,9 @@ set(TEST_SOURCES
     # A prop's nodes topic: taken-off items left out, a model's own names
     test_fv_view_describe.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_view_describe.cpp
+    # The retained scene (daz-viewer docs/retained-scene-plan.md): store, importer
+    test_retained_scene.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_retained.cpp
     # Figure Viewer texture sources outside the cooked set, Original textures (header only)
     test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough

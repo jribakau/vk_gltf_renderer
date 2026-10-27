@@ -1,0 +1,618 @@
+/*
+ * Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "scene_retained.hpp"
+
+#include <algorithm>
+#include <cassert>
+#include <functional>
+#include <limits>
+
+#include <glm/gtc/matrix_transform.hpp>
+
+namespace rs {
+
+glm::mat4 Transform::local() const
+{
+  if(matrix)
+    return *matrix;
+  return glm::translate(glm::mat4(1.0f), translation) * glm::mat4_cast(rotation) * glm::scale(glm::mat4(1.0f), scale);
+}
+
+std::array<glm::vec3, 2> MeshRecord::bounds() const
+{
+  std::array<glm::vec3, 2> b{glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
+  for(const glm::vec3& p : positions)
+  {
+    b[0] = glm::min(b[0], p);
+    b[1] = glm::max(b[1], p);
+  }
+  return b;
+}
+
+bool SceneChanges::empty() const
+{
+  return !structure && transforms.empty() && visibility.empty() && meshes.empty() && materials.empty() && lights.empty();
+}
+
+RetainedScene::RetainedScene()
+    : m_owner(std::this_thread::get_id())
+{
+}
+
+void RetainedScene::assertOwner() const
+{
+  assert(std::this_thread::get_id() == m_owner && "the retained scene belongs to the application thread");
+}
+
+//--------------------------------------------------------------------------------------------------
+// Records
+
+MeshId RetainedScene::addMesh(MeshRecord mesh)
+{
+  assertOwner();
+  m_boundsRevision++;
+  return m_meshes.insert({std::move(mesh)});
+}
+
+MaterialId RetainedScene::addMaterial(MaterialRecord material)
+{
+  assertOwner();
+  if(material.textures)
+    for(const TextureRef& ref : *material.textures)
+      retain(ref.texture);
+  return m_materials.insert({std::move(material)});
+}
+
+TextureId RetainedScene::addTexture(TextureRecord texture)
+{
+  assertOwner();
+  return m_textures.insert({std::move(texture)});
+}
+
+SkinId RetainedScene::addSkin(SkinRecord skin)
+{
+  assertOwner();
+  return m_skins.insert({std::move(skin)});
+}
+
+LightId RetainedScene::addLight(LightRecord light)
+{
+  assertOwner();
+  return m_lights.insert({std::move(light)});
+}
+
+CameraId RetainedScene::addCamera(CameraRecord camera)
+{
+  assertOwner();
+  return m_cameras.insert({std::move(camera)});
+}
+
+void RetainedScene::retain(MeshId id)
+{
+  if(auto* r = m_meshes.get(id))
+    r->refs++;
+}
+void RetainedScene::retain(MaterialId id)
+{
+  if(auto* r = m_materials.get(id))
+    r->refs++;
+}
+void RetainedScene::retain(TextureId id)
+{
+  if(auto* r = m_textures.get(id))
+    r->refs++;
+}
+void RetainedScene::retain(SkinId id)
+{
+  if(auto* r = m_skins.get(id))
+    r->refs++;
+}
+void RetainedScene::retain(LightId id)
+{
+  if(auto* r = m_lights.get(id))
+    r->refs++;
+}
+void RetainedScene::retain(CameraId id)
+{
+  if(auto* r = m_cameras.get(id))
+    r->refs++;
+}
+
+void RetainedScene::release(MeshId id)
+{
+  assertOwner();
+  if(auto* r = m_meshes.get(id); r && --r->refs == 0)
+  {
+    m_meshes.erase(id);
+    m_boundsRevision++;
+  }
+}
+
+void RetainedScene::release(MaterialId id)
+{
+  assertOwner();
+  if(auto* r = m_materials.get(id); r && --r->refs == 0)
+  {
+    const MaterialRecord gone = std::move(r->value);
+    m_materials.erase(id);
+    releaseMaterialTextures(gone);
+  }
+}
+
+void RetainedScene::release(TextureId id)
+{
+  assertOwner();
+  if(auto* r = m_textures.get(id); r && --r->refs == 0)
+    m_textures.erase(id);
+}
+
+void RetainedScene::release(SkinId id)
+{
+  assertOwner();
+  if(auto* r = m_skins.get(id); r && --r->refs == 0)
+    m_skins.erase(id);
+}
+
+void RetainedScene::release(LightId id)
+{
+  assertOwner();
+  if(auto* r = m_lights.get(id); r && --r->refs == 0)
+    m_lights.erase(id);
+}
+
+void RetainedScene::release(CameraId id)
+{
+  assertOwner();
+  if(auto* r = m_cameras.get(id); r && --r->refs == 0)
+    m_cameras.erase(id);
+}
+
+void RetainedScene::releaseMaterialTextures(const MaterialRecord& material)
+{
+  if(material.textures)
+    for(const TextureRef& ref : *material.textures)
+      release(ref.texture);
+}
+
+void RetainedScene::setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals)
+{
+  assertOwner();
+  auto* r = m_meshes.get(id);
+  if(!r || positions.size() != r->value.positions.size() || (!normals.empty() && normals.size() != r->value.normals.size()))
+    return;
+  r->value.positions = std::move(positions);
+  if(!normals.empty())
+    r->value.normals = std::move(normals);
+  r->value.contentRev++;
+  m_changes.meshes.insert(id);
+  m_boundsRevision++;
+}
+
+void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload)
+{
+  assertOwner();
+  if(auto* r = m_materials.get(id))
+  {
+    r->value.payload = std::move(payload);
+    r->value.rev++;
+    m_changes.materials.insert(id);
+  }
+}
+
+void RetainedScene::setLight(LightId id, const tinygltf::Light& payload)
+{
+  assertOwner();
+  if(auto* r = m_lights.get(id))
+  {
+    r->value.payload = payload;
+    m_changes.lights.insert(id);
+  }
+}
+
+void RetainedScene::setLightShown(LightId id, bool shown)
+{
+  assertOwner();
+  if(auto* r = m_lights.get(id); r && r->value.shown != shown)
+  {
+    r->value.shown = shown;
+    m_changes.lights.insert(id);
+  }
+}
+
+void RetainedScene::setSkySun(LightId id, bool skySun)
+{
+  assertOwner();
+  if(auto* r = m_lights.get(id); r && r->value.skySun != skySun)
+  {
+    r->value.skySun = skySun;
+    m_changes.lights.insert(id);
+  }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Entities
+
+EntityId RetainedScene::createEntity(std::string name, OwnerTag owner, EntityId parent, int index)
+{
+  assertOwner();
+  Entity e;
+  e.name  = std::move(name);
+  e.owner = owner;
+  const EntityId id = m_entities.insert(std::move(e));
+  if(m_derived.size() < m_entities.capacity())
+    m_derived.resize(m_entities.capacity());
+  m_derived[id.index] = {};
+  link(id, m_entities.contains(parent) ? parent : EntityId{}, index);
+  markTransformDirty(id);
+  m_changes.structure = true;
+  m_structureRevision++;
+  return id;
+}
+
+void RetainedScene::destroyEntity(EntityId id)
+{
+  assertOwner();
+  Entity* e = m_entities.get(id);
+  if(!e)
+    return;
+  for(EntityId child : std::vector<EntityId>(e->children))
+    destroyEntity(child);
+  e = m_entities.get(id);
+  if(e->mesh)
+  {
+    releaseInstance(*e->mesh);
+    m_boundsRevision++;
+  }
+  if(!e->light.isNone())
+    release(e->light);
+  if(!e->camera.isNone())
+    release(e->camera);
+  unlink(id);
+  m_entities.erase(id);
+  m_changes.transforms.erase(id);
+  m_changes.visibility.erase(id);
+  m_changes.structure = true;
+  m_structureRevision++;
+}
+
+bool RetainedScene::isUnder(EntityId id, EntityId ancestor) const
+{
+  for(const Entity* e = m_entities.get(id); e; e = m_entities.get(e->parent))
+    if(e->parent == ancestor)
+      return true;
+  return false;
+}
+
+bool RetainedScene::setParent(EntityId id, EntityId parent, int index, bool keepWorld)
+{
+  assertOwner();
+  if(!m_entities.contains(id) || (!parent.isNone() && (!m_entities.contains(parent) || parent == id || isUnder(parent, id))))
+    return false;
+  const glm::mat4 before = keepWorld ? world(id) : glm::mat4(1.f);
+  unlink(id);
+  link(id, parent, index);
+  if(keepWorld)
+  {
+    const glm::mat4 parentWorld = parent.isNone() ? glm::mat4(1.f) : world(parent);
+    m_entities[id].local        = Transform{.matrix = glm::inverse(parentWorld) * before};
+  }
+  markTransformDirty(id);
+  markVisibilityDirty(id);
+  m_changes.structure = true;
+  m_structureRevision++;
+  m_boundsRevision++;
+  return true;
+}
+
+void RetainedScene::setLocal(EntityId id, const Transform& local)
+{
+  assertOwner();
+  if(Entity* e = m_entities.get(id))
+  {
+    e->local = local;
+    markTransformDirty(id);
+    m_boundsRevision++;
+  }
+}
+
+void RetainedScene::setVisible(EntityId id, bool visible)
+{
+  assertOwner();
+  if(Entity* e = m_entities.get(id); e && e->visible != visible)
+  {
+    e->visible = visible;
+    markVisibilityDirty(id);
+    m_boundsRevision++;
+  }
+}
+
+void RetainedScene::setMeshInstance(EntityId id, std::optional<MeshInstance> instance)
+{
+  assertOwner();
+  Entity* e = m_entities.get(id);
+  if(!e)
+    return;
+  if(instance)
+    retainInstance(*instance);
+  if(e->mesh)
+    releaseInstance(*e->mesh);
+  e->mesh = std::move(instance);
+  m_changes.structure = true;
+  m_structureRevision++;
+  m_boundsRevision++;
+}
+
+void RetainedScene::setMorphWeights(EntityId id, std::vector<float> weights)
+{
+  assertOwner();
+  if(Entity* e = m_entities.get(id); e && e->mesh)
+  {
+    e->mesh->morphWeights = std::move(weights);
+    for(const MeshPart& part : e->mesh->parts)
+      m_changes.meshes.insert(part.mesh);
+  }
+}
+
+void RetainedScene::setEntityLight(EntityId id, LightId light)
+{
+  assertOwner();
+  Entity* e = m_entities.get(id);
+  if(!e)
+    return;
+  retain(light);
+  if(!e->light.isNone())
+    release(e->light);
+  e->light            = m_lights.contains(light) ? light : LightId{};
+  m_changes.structure = true;
+  m_structureRevision++;
+}
+
+void RetainedScene::setEntityCamera(EntityId id, CameraId camera)
+{
+  assertOwner();
+  Entity* e = m_entities.get(id);
+  if(!e)
+    return;
+  retain(camera);
+  if(!e->camera.isNone())
+    release(e->camera);
+  e->camera           = m_cameras.contains(camera) ? camera : CameraId{};
+  m_changes.structure = true;
+  m_structureRevision++;
+}
+
+void RetainedScene::retainInstance(const MeshInstance& instance)
+{
+  for(const MeshPart& part : instance.parts)
+  {
+    retain(part.mesh);
+    for(MaterialId m : part.materials)
+      retain(m);
+  }
+  retain(instance.skin);
+}
+
+void RetainedScene::releaseInstance(const MeshInstance& instance)
+{
+  for(const MeshPart& part : instance.parts)
+  {
+    release(part.mesh);
+    for(MaterialId m : part.materials)
+      release(m);
+  }
+  if(!instance.skin.isNone())
+    release(instance.skin);
+}
+
+void RetainedScene::link(EntityId id, EntityId parent, int index)
+{
+  m_entities[id].parent         = parent;
+  std::vector<EntityId>& owners = parent.isNone() ? m_roots : m_entities[parent].children;
+  if(index < 0 || index >= int(owners.size()))
+    owners.push_back(id);
+  else
+    owners.insert(owners.begin() + index, id);
+}
+
+void RetainedScene::unlink(EntityId id)
+{
+  Entity&                e      = m_entities[id];
+  std::vector<EntityId>& owners = m_entities.contains(e.parent) ? m_entities[e.parent].children : m_roots;
+  owners.erase(std::remove(owners.begin(), owners.end(), id), owners.end());
+  e.parent = {};
+}
+
+void RetainedScene::markTransformDirty(EntityId id)
+{
+  m_derived[id.index].dirty = true;
+  m_anyDirty                = true;
+  std::vector<EntityId> stack{id};
+  while(!stack.empty())
+  {
+    const EntityId e = stack.back();
+    stack.pop_back();
+    m_changes.transforms.insert(e);
+    for(EntityId c : m_entities[e].children)
+      stack.push_back(c);
+  }
+}
+
+void RetainedScene::markVisibilityDirty(EntityId id)
+{
+  m_derived[id.index].dirty = true;
+  m_anyDirty                = true;
+  std::vector<EntityId> stack{id};
+  while(!stack.empty())
+  {
+    const EntityId e = stack.back();
+    stack.pop_back();
+    m_changes.visibility.insert(e);
+    for(EntityId c : m_entities[e].children)
+      stack.push_back(c);
+  }
+}
+
+void RetainedScene::updateWorld()
+{
+  if(!m_anyDirty)
+    return;
+  const std::function<void(EntityId, const glm::mat4&, bool, bool)> walk = [&](EntityId id, const glm::mat4& parentWorld,
+                                                                               bool parentShown, bool force) {
+    Derived&      d    = m_derived[id.index];
+    const Entity& e    = m_entities[id];
+    const bool    redo = force || d.dirty;
+    if(redo)
+    {
+      d.world = parentWorld * e.local.local();
+      d.shown = parentShown && e.visible;
+      d.dirty = false;
+    }
+    for(EntityId c : e.children)
+      walk(c, d.world, d.shown, redo);
+  };
+  for(EntityId r : m_roots)
+    walk(r, glm::mat4(1.f), true, false);
+  m_anyDirty = false;
+}
+
+glm::mat4 RetainedScene::world(EntityId id)
+{
+  updateWorld();
+  return m_entities.contains(id) ? m_derived[id.index].world : glm::mat4(1.f);
+}
+
+bool RetainedScene::shown(EntityId id)
+{
+  updateWorld();
+  return m_entities.contains(id) && m_derived[id.index].shown;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Views
+
+std::vector<EntityId> RetainedScene::entitiesInOrder() const
+{
+  std::vector<EntityId> out;
+  out.reserve(m_entities.size());
+  std::vector<EntityId> stack(m_roots.rbegin(), m_roots.rend());
+  while(!stack.empty())
+  {
+    const EntityId id = stack.back();
+    stack.pop_back();
+    out.push_back(id);
+    const std::vector<EntityId>& children = m_entities[id].children;
+    stack.insert(stack.end(), children.rbegin(), children.rend());
+  }
+  return out;
+}
+
+std::vector<DrawItem> RetainedScene::drawItems()
+{
+  updateWorld();
+  std::vector<DrawItem> out;
+  for(EntityId id : entitiesInOrder())
+  {
+    const Entity& e = m_entities[id];
+    if(!e.mesh)
+      continue;
+    // the entity's runs in their source order (a glTF mesh's primitive order), then each copy
+    struct Run
+    {
+      int32_t  order;
+      size_t   part;
+      uint32_t submesh;
+    };
+    std::vector<Run> runs;
+    for(size_t p = 0; p < e.mesh->parts.size(); p++)
+      if(const MeshRecord* m = mesh(e.mesh->parts[p].mesh))
+        for(uint32_t s = 0; s < m->submeshes.size(); s++)
+          runs.push_back({m->submeshes[s].order, p, s});
+    std::stable_sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) { return a.order < b.order; });
+    const Derived& d = m_derived[id.index];
+    for(const Run& r : runs)
+    {
+      const MeshPart& part = e.mesh->parts[r.part];
+      const uint32_t  slot = mesh(part.mesh)->submeshes[r.submesh].material;
+      DrawItem        item{.entity = id, .mesh = part.mesh, .submesh = r.submesh,
+                           .material = slot < part.materials.size() ? part.materials[slot] : MaterialId{}, .world = d.world, .shown = d.shown};
+      if(e.mesh->copies.empty())
+      {
+        out.push_back(item);
+        continue;
+      }
+      for(uint32_t c = 0; c < e.mesh->copies.size(); c++)
+      {
+        item.copy  = c;
+        item.world = d.world * e.mesh->copies[c];
+        out.push_back(item);
+      }
+    }
+  }
+  return out;
+}
+
+std::vector<LightItem> RetainedScene::lightItems()
+{
+  updateWorld();
+  std::vector<LightItem> out;
+  for(EntityId id : entitiesInOrder())
+  {
+    const Entity& e = m_entities[id];
+    if(const LightRecord* l = light(e.light))
+      out.push_back({id, e.light, m_derived[id.index].world, m_derived[id.index].shown && l->shown});
+  }
+  return out;
+}
+
+std::array<glm::vec3, 2> RetainedScene::bounds()
+{
+  std::array<glm::vec3, 2> b{glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
+  for(const DrawItem& item : drawItems())
+  {
+    if(!item.shown)
+      continue;
+    const std::array<glm::vec3, 2> mb = mesh(item.mesh)->bounds();
+    if(mb[0].x > mb[1].x)
+      continue;
+    for(int c = 0; c < 8; c++)
+    {
+      const glm::vec3 corner(c & 1 ? mb[1].x : mb[0].x, c & 2 ? mb[1].y : mb[0].y, c & 4 ? mb[1].z : mb[0].z);
+      const glm::vec3 w = glm::vec3(item.world * glm::vec4(corner, 1.f));
+      b[0]              = glm::min(b[0], w);
+      b[1]              = glm::max(b[1], w);
+    }
+  }
+  return b;
+}
+
+SceneChanges RetainedScene::takeChanges()
+{
+  assertOwner();
+  SceneChanges out = std::move(m_changes);
+  m_changes        = {};
+  std::erase_if(out.transforms, [&](EntityId id) { return !m_entities.contains(id); });
+  std::erase_if(out.visibility, [&](EntityId id) { return !m_entities.contains(id); });
+  std::erase_if(out.meshes, [&](MeshId id) { return !m_meshes.contains(id); });
+  std::erase_if(out.materials, [&](MaterialId id) { return !m_materials.contains(id); });
+  std::erase_if(out.lights, [&](LightId id) { return !m_lights.contains(id); });
+  return out;
+}
+
+}  // namespace rs
