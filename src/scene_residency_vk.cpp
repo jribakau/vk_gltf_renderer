@@ -28,6 +28,7 @@
 #include <nvutils/file_operations.hpp>
 #include <nvutils/logger.hpp>
 #include <nvutils/parallel_work.hpp>
+#include <nvvk/barriers.hpp>
 #include <nvvk/check_error.hpp>
 #include <nvvk/debug_util.hpp>
 #include <nvvk/default_structs.hpp>
@@ -50,6 +51,7 @@ constexpr std::string_view kMemBlas      = "Retained/BLAS";
 constexpr std::string_view kMemTlas      = "Retained/TLAS";
 constexpr std::string_view kMemScratch   = "Retained/Scratch";
 constexpr std::string_view kMemInstances = "Retained/Instances";
+constexpr std::string_view kMemMicromaps = "Retained/Micromaps";
 
 // Pixels a loader decoded (`component` channels of `bits` bits) as an image the device samples: two
 // channels stay two (a normal map's X and Y), one or three are widened to four (grey to RRR1)
@@ -115,6 +117,12 @@ VulkanGpuBackend::~VulkanGpuBackend()
     m_info.alloc->destroyImage(image);
   for(auto& [h, b] : m_blases)
     m_info.alloc->destroyAcceleration(b.accel);
+  for(auto& [h, m] : m_micromaps)
+  {
+    vkDestroyAccelerationStructureKHR(m_info.device, m.micromap, nullptr);
+    for(nvvk::Buffer* b : {&m.storage, &m.data, &m.triangles, &m.scratch})
+      m_info.alloc->destroyBuffer(*b);
+  }
   for(auto& [h, t] : m_tlases)
   {
     m_info.alloc->destroyAcceleration(t.accel);
@@ -496,13 +504,18 @@ void VulkanGpuBackend::checkInput(const BlasInput& input, const char* op) const
   const VkDeviceSize vertexBytes = input.vertexCount ? VkDeviceSize(input.vertexCount - 1) * input.vertexStride + 12 : 0;
   if(!inLiveBuffer(input.vertexAddress, vertexBytes) || !inLiveBuffer(input.indexAddress, VkDeviceSize(input.indexCount) * 4))
     LOGE("VulkanGpuBackend::%s: its positions or indices are not inside a live buffer\n", op);
+  if(input.micromap && input.micromapIndexSize
+     && !inLiveBuffer(input.micromapIndexAddress, VkDeviceSize(input.indexCount / 3) * input.micromapIndexSize))
+    LOGE("VulkanGpuBackend::%s: its micromap indices are not inside a live buffer\n", op);
 }
 
-nvvk::AccelerationStructureGeometryInfo VulkanGpuBackend::geometryOf(const BlasInput& input) const
+nvvk::AccelerationStructureGeometryInfo VulkanGpuBackend::geometryOf(const BlasInput& input, const void* micromap) const
 {
-  // as SceneRtx::renderPrimitiveToAsGeometry: float3 positions, uint32 indices
+  // as SceneRtx::renderPrimitiveToAsGeometry: float3 positions, uint32 indices; and the micromap
+  // link, the entry's own
   nvvk::AccelerationStructureGeometryInfo out;
   VkAccelerationStructureGeometryTrianglesDataKHR triangles{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
+  triangles.pNext                    = micromap;
   triangles.vertexFormat             = VK_FORMAT_R32G32B32_SFLOAT;
   triangles.vertexData.deviceAddress = input.vertexAddress;
   triangles.vertexStride             = input.vertexStride;
@@ -521,8 +534,28 @@ AccelHandle VulkanGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags 
 {
   checkInput(input, "buildBlas");
   BlasEntry entry;
+  if(input.micromap)
+  {
+    auto mm = m_micromaps.find(input.micromap.value);
+    if(mm == m_micromaps.end())
+      LOGE("VulkanGpuBackend::buildBlas: a dead or unknown micromap; built without it\n");
+    else
+    {
+      // as SceneRtx::createBottomLevelAccelerationStructure links SceneOmm's (no indices: UINT16 at
+      // address 0, the triangle's own index)
+      entry.micromap = std::make_unique<VkAccelerationStructureTrianglesOpacityMicromapKHR>(
+          VkAccelerationStructureTrianglesOpacityMicromapKHR{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_KHR});
+      entry.micromap->indexType    = input.micromapIndexSize == 1 ? VK_INDEX_TYPE_UINT8_EXT :
+                                     input.micromapIndexSize == 4 ? VK_INDEX_TYPE_UINT32 :
+                                                                    VK_INDEX_TYPE_UINT16;
+      entry.micromap->indexBuffer  = input.micromapIndexAddress;
+      entry.micromap->indexStride  = input.micromapIndexSize;
+      entry.micromap->baseTriangle = input.micromapBaseTriangle;
+      entry.micromap->micromap     = mm->second.micromap;
+    }
+  }
   entry.data.asType = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-  entry.data.addGeometry(geometryOf(input));
+  entry.data.addGeometry(geometryOf(input, entry.micromap.get()));
   entry.data.finalizeGeometry(m_info.device, vkAccelBuildFlags(flags));
   NVVK_CHECK(m_info.alloc->createAcceleration(entry.accel, entry.data.makeCreateInfo()));
   NVVK_DBG_NAME(entry.accel.accel);
@@ -543,8 +576,130 @@ void VulkanGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
   }
   checkInput(input, "refitBlas");
   // the same addresses and index count (the residency builds again otherwise); the vertex count may not move either
-  it->second.data.asGeometry[0] = geometryOf(input).geometry;
+  it->second.data.asGeometry[0] = geometryOf(input, it->second.micromap.get()).geometry;
   m_queued.push_back({handle.value, true});
+}
+
+AccelHandle VulkanGpuBackend::buildMicromap(const MicromapInput& input)
+{
+  if(!m_info.opacityMicromaps)
+  {
+    LOGE("VulkanGpuBackend::buildMicromap: the device does not build opacity micromaps\n");
+    return {};
+  }
+  flushBuilds();  // its inputs' uploads come after what was queued before (call order)
+  MicromapEntry entry;
+  entry.triangleStride = input.triangleStride;
+  for(const MicromapUsage& u : input.usages)
+    entry.usages.push_back(
+        {.count = u.count, .subdivisionLevel = u.subdivisionLevel, .format = VkOpacityMicromapFormatKHR(u.format)});
+
+  // the data and triangle-array addresses must be multiples of 128
+  // (VUID-vkCmdBuildAccelerationStructuresKHR-micromap-11552)
+  constexpr VkDeviceSize kInputAlignment = 128;
+  const auto inputBuffer = [&](nvvk::Buffer& buffer, std::span<const unsigned char> bytes, const char* name) {
+    NVVK_CHECK(m_info.alloc->createBuffer(buffer, std::max<VkDeviceSize>(bytes.size(), 4),
+                                          VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+                                              | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                                          VMA_MEMORY_USAGE_AUTO, {}, kInputAlignment));
+    nvvk::DebugUtil::getInstance().setObjectName(buffer.buffer, name);
+    m_memory.track(kMemMicromaps, buffer.allocation);
+    if(!bytes.empty())
+      NVVK_CHECK(appendBufferChunked(*m_info.staging, buffer, 0, bytes));
+  };
+  inputBuffer(entry.data, input.data, "micromap data");
+  inputBuffer(entry.triangles, input.triangles, "micromap triangles");
+  m_uploadsPending = true;
+
+  // the sizes from the usage histogram and the stride; the addresses are filled when it is recorded
+  VkAccelerationStructureGeometryMicromapDataKHR micromapData{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_MICROMAP_DATA_KHR};
+  micromapData.usageCountsCount    = uint32_t(entry.usages.size());
+  micromapData.pUsageCounts        = entry.usages.data();
+  micromapData.triangleArrayStride = entry.triangleStride;
+  VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+  geometry.pNext        = &micromapData;
+  geometry.geometryType = VK_GEOMETRY_TYPE_MICROMAP_KHR;
+  VkAccelerationStructureBuildGeometryInfoKHR buildInfo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+  buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR;
+  buildInfo.flags         = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+  buildInfo.mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+  buildInfo.geometryCount = 1;
+  buildInfo.pGeometries   = &geometry;
+  VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+  // micromaps take no primitive counts (VUID-vkGetAccelerationStructureBuildSizesKHR-pMaxPrimitiveCounts-11613)
+  vkGetAccelerationStructureBuildSizesKHR(m_info.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo,
+                                          nullptr, &sizes);
+
+  // its address a multiple of 256 (VUID-VkAccelerationStructureCreateInfo2KHR-addressRange-11605)
+  NVVK_CHECK(m_info.alloc->createBuffer(entry.storage, std::max<VkDeviceSize>(sizes.accelerationStructureSize, 4),
+                                        VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                        VMA_MEMORY_USAGE_AUTO, {}, 256));
+  NVVK_DBG_NAME(entry.storage.buffer);
+  m_memory.track(kMemMicromaps, entry.storage.allocation);
+  NVVK_CHECK(m_info.alloc->createBuffer(entry.scratch, std::max<VkDeviceSize>(sizes.buildScratchSize, 4),
+                                        VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                        VMA_MEMORY_USAGE_AUTO, {}, m_scratchAlignment));
+  NVVK_DBG_NAME(entry.scratch.buffer);
+  m_memory.track(kMemScratch, entry.scratch.allocation);
+  // a micromap is created only through the address-range entry point
+  // (VUID-VkAccelerationStructureCreateInfoKHR-type-11600)
+  VkAccelerationStructureCreateInfo2KHR create{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_2_KHR};
+  create.addressRange = {entry.storage.address, sizes.accelerationStructureSize};
+  create.type         = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR;
+  NVVK_CHECK(vkCreateAccelerationStructure2KHR(m_info.device, &create, nullptr, &entry.micromap));
+  NVVK_DBG_NAME(entry.micromap);
+
+  const AccelHandle handle{m_nextHandle++};
+  m_micromaps.emplace(handle.value, std::move(entry));
+  m_queuedMicromaps.push_back(handle.value);
+  return handle;
+}
+
+// The queued micromap builds, behind their inputs' uploads (flushed by the caller), and a barrier
+// before the BLAS builds that link them; then their inputs and scratch retired
+void VulkanGpuBackend::recordMicromaps()
+{
+  if(m_queuedMicromaps.empty())
+    return;
+  // build inputs are read by the build as any AS input: SHADER_READ
+  nvvk::cmdMemoryBarrier(m_cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+  for(uint64_t h : m_queuedMicromaps)
+  {
+    MicromapEntry& mm = m_micromaps.at(h);
+    VkAccelerationStructureGeometryMicromapDataKHR micromapData{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_MICROMAP_DATA_KHR};
+    micromapData.usageCountsCount    = uint32_t(mm.usages.size());
+    micromapData.pUsageCounts        = mm.usages.data();
+    micromapData.data                = mm.data.address;
+    micromapData.triangleArray       = mm.triangles.address;
+    micromapData.triangleArrayStride = mm.triangleStride;
+    VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    geometry.pNext        = &micromapData;
+    geometry.geometryType = VK_GEOMETRY_TYPE_MICROMAP_KHR;
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    buildInfo.type                      = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR;
+    buildInfo.flags                     = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.mode                      = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.dstAccelerationStructure  = mm.micromap;
+    buildInfo.geometryCount             = 1;
+    buildInfo.pGeometries               = &geometry;
+    buildInfo.scratchData.deviceAddress = mm.scratch.address;
+    // micromaps take no build ranges (VUID-vkCmdBuildAccelerationStructuresKHR-ppBuildRangeInfos-11544)
+    const VkAccelerationStructureBuildRangeInfoKHR* noRanges = nullptr;
+    vkCmdBuildAccelerationStructuresKHR(m_cmd, 1, &buildInfo, &noRanges);
+    retire([alloc = m_info.alloc, &memory = m_memory, data = mm.data, triangles = mm.triangles, scratch = mm.scratch]() mutable {
+      memory.untrack(kMemMicromaps, data.allocation);
+      memory.untrack(kMemMicromaps, triangles.allocation);
+      memory.untrack(kMemScratch, scratch.allocation);
+      alloc->destroyBuffer(data);
+      alloc->destroyBuffer(triangles);
+      alloc->destroyBuffer(scratch);
+    });
+    mm.data = mm.triangles = mm.scratch = {};
+  }
+  m_queuedMicromaps.clear();
+  // the BLAS builds read the built micromaps
+  nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 }
 
 AccelHandle VulkanGpuBackend::compactBlas(AccelHandle)
@@ -557,9 +712,12 @@ AccelHandle VulkanGpuBackend::compactBlas(AccelHandle)
 // since they share the buffer
 void VulkanGpuBackend::flushBuilds()
 {
-  if(m_queued.empty() || !recording("flushBuilds"))
+  if((m_queued.empty() && m_queuedMicromaps.empty()) || !recording("flushBuilds"))
     return;
   flushUploads();
+  recordMicromaps();
+  if(m_queued.empty())
+    return;
   std::vector<VkDeviceSize> sizes;
   sizes.reserve(m_queued.size());
   for(const QueuedBuild& q : m_queued)
@@ -693,6 +851,24 @@ void VulkanGpuBackend::destroyAccel(AccelHandle handle)
 {
   // a queued build of it would build into nothing
   std::erase_if(m_queued, [&](const QueuedBuild& q) { return q.blas == handle.value; });
+  std::erase(m_queuedMicromaps, handle.value);
+  if(auto m = m_micromaps.find(handle.value); m != m_micromaps.end())
+  {
+    vkDestroyAccelerationStructureKHR(m_info.device, m->second.micromap, nullptr);
+    m_memory.untrack(kMemMicromaps, m->second.storage.allocation);
+    m_info.alloc->destroyBuffer(m->second.storage);
+    if(m->second.data.buffer)  // never recorded
+    {
+      m_memory.untrack(kMemMicromaps, m->second.data.allocation);
+      m_memory.untrack(kMemMicromaps, m->second.triangles.allocation);
+      m_memory.untrack(kMemScratch, m->second.scratch.allocation);
+      m_info.alloc->destroyBuffer(m->second.data);
+      m_info.alloc->destroyBuffer(m->second.triangles);
+      m_info.alloc->destroyBuffer(m->second.scratch);
+    }
+    m_micromaps.erase(m);
+    return;
+  }
   if(auto b = m_blases.find(handle.value); b != m_blases.end())
   {
     m_memory.untrack(kMemBlas, b->second.accel.buffer.allocation);

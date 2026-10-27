@@ -308,6 +308,90 @@ TEST(RetainedResidency, AVertexEditRefitsTheBlasesOfItsMesh)
     EXPECT_EQ(gpu.blas(residency.prim(p)->blas)->refits, 1u);
 }
 
+// A grid of two submeshes of four triangles over one opacity micromap of eight triangle records: the
+// first takes micromap triangles by a byte index each (the last a special one), the second its own
+// from base 4
+MeshId micromapped(RetainedScene& scene, float z)
+{
+  auto mm                    = std::make_shared<OpacityMicromap>();
+  mm->data                   = std::vector<unsigned char>(32, 0x5a);
+  mm->triangles              = std::vector<unsigned char>(64, 0x01);
+  mm->usages                 = {{.count = 8, .subdivisionLevel = 1, .format = 1}};
+  MeshRecord mesh            = gridMesh(2, z, 2);
+  mesh.submeshes[0].micromap = std::make_shared<MicromapUse>(
+      MicromapUse{.micromap = mm, .indices = {3, 2, 1, 0xff}, .indexComponentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE});
+  mesh.submeshes[1].micromap = std::make_shared<MicromapUse>(MicromapUse{.micromap = mm, .baseTriangle = 4});
+  return scene.addMesh(std::move(mesh));
+}
+
+// A micromap is built once for the prims that link it, each BLAS linking it through its own
+// indices; a vertex edit refits them linked, and the micromap goes after the last of them
+TEST(RetainedResidency, AnOpacityMicromapIsBuiltOnceForThePrimsThatLinkIt)
+{
+  RetainedScene    scene;
+  const MaterialId m         = material(scene, "m");
+  const MeshId     cardsMesh = micromapped(scene, 0.f);
+  const EntityId   cards     = drawn(scene, "cards", cardsMesh, {m, m});
+  drawn(scene, "plain", scene.addMesh(gridMesh(1, 1.f)), {m});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  ASSERT_EQ(residency.micromaps().size(), 1u);
+  EXPECT_EQ(residency.micromaps().begin()->second.users, 2u);
+  EXPECT_TRUE(residency.hasOpacityMicromaps());
+  EXPECT_EQ(residency.prim(0)->input.micromapIndexSize, 1u);
+  EXPECT_EQ(residency.prim(1)->input.micromapBaseTriangle, 4u);
+  EXPECT_FALSE(residency.prim(2)->input.micromap);
+
+  std::vector<glm::vec3> moved = scene.mesh(cardsMesh)->positions;
+  for(glm::vec3& p : moved)
+    p.z += 0.5f;
+  scene.setMeshVertices(cardsMesh, moved, {});
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "refit: ");
+  EXPECT_EQ(gpu.blas(residency.prim(0)->blas)->refits, 1u);
+
+  scene.destroyEntity(cards);
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_FALSE(residency.hasOpacityMicromaps());
+  EXPECT_TRUE(residency.micromaps().empty());
+  drain(gpu);
+  expectClean(scene, residency, gpu, "removed: ");
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
+// A replace retires the micromaps after their BLASes; on a device without them no BLAS links one,
+// and the alpha path draws the cards
+TEST(RetainedResidency, MicromapsGoWithAReplaceAndNeedTheDevice)
+{
+  RetainedScene    scene;
+  const MaterialId m = material(scene, "m");
+  drawn(scene, "cards", micromapped(scene, 0.f), {m, m});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  gpu.beginFrame();
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "replaced: ");
+  EXPECT_TRUE(residency.hasOpacityMicromaps());
+  drain(gpu);
+  expectClean(scene, residency, gpu, "after its retires: ");
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+
+  FakeGpuBackend without(2);
+  without.setOpacityMicromaps(false);
+  Residency plain(without);
+  plain.replace(scene);
+  expectClean(scene, plain, without, "no device support: ");
+  EXPECT_FALSE(plain.hasOpacityMicromaps());
+  EXPECT_EQ(without.liveAccels(), 3u);  // the two BLASes and the TLAS
+}
+
 TEST(RetainedResidency, CapacityGrowsByDoublingWithANewTlas)
 {
   RetainedScene scene;

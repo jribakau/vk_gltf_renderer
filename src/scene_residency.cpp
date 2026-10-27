@@ -169,8 +169,13 @@ void Residency::clear()
     if(p)
     {
       retireBuffer(p->indices);
+      retireBuffer(p->micromapIndices);
       retireAccel(p->blas);
     }
+  for(const auto& [key, mm] : m_micromaps)  // after the BLASes that link them
+    retireAccel(mm.accel);
+  m_micromaps.clear();
+  m_micromapPrims = 0;
   // descriptor slots are the scene descriptor set's, which a frame in flight still reads: each goes
   // back to its pool only at its retire, so the next scene is handed other slots meanwhile
   for(const auto& [key, use] : m_textureSlots)
@@ -342,6 +347,8 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
                          .indexAddress  = m_gpu.bufferAddress(prim.indices),
                          .indexCount    = run.indexCount,
                          .opaque        = false};
+  if(run.micromap && m_gpu.opacityMicromaps())
+    linkMicromap(prim, *run.micromap);
   fitBounds(prim, record);
   m_prims[slot]       = std::move(prim);
   mesh.prims[submesh] = int32_t(slot);
@@ -355,6 +362,7 @@ void Residency::releasePrim(uint32_t slot)
     return;
   retireBuffer(prim.indices);
   retireAccel(prim.blas);
+  unlinkMicromap(prim);  // retired after the BLAS
   auto mesh = m_meshes.find(prim.mesh);
   if(mesh != m_meshes.end())
   {
@@ -364,6 +372,56 @@ void Residency::releasePrim(uint32_t slot)
   }
   m_prims[slot].reset();
   m_gpu.retire([pool = m_primPool, slot] { pool->destroyID(slot); });
+}
+
+// The micromap a prim's triangles take their opacity from, built for the first prim that links it,
+// and the prim's micromap indices uploaded (the BLAS builds read them behind syncRows' barrier)
+void Residency::linkMicromap(Prim& prim, const MicromapUse& use)
+{
+  MicromapGpu& mm = m_micromaps[use.micromap.get()];
+  if(!mm.accel)
+  {
+    std::vector<MicromapUsage> usages;
+    for(const OpacityMicromap::Usage& u : use.micromap->usages)
+      usages.push_back({.count = u.count, .subdivisionLevel = u.subdivisionLevel, .format = u.format});
+    mm.record = use.micromap;
+    mm.accel  = m_gpu.buildMicromap(
+        {.data = use.micromap->data, .triangles = use.micromap->triangles, .triangleStride = use.micromap->triangleStride, .usages = usages});
+    if(!mm.accel)
+    {
+      m_micromaps.erase(use.micromap.get());
+      return;  // drawn without it
+    }
+  }
+  mm.users++;
+  m_micromapPrims++;
+  prim.micromap                   = use.micromap.get();
+  prim.input.micromap             = mm.accel;
+  prim.input.micromapBaseTriangle = use.baseTriangle;
+  if(use.indexComponentType)
+  {
+    prim.micromapIndices =
+        m_gpu.createBuffer({.size = use.indices.size(), .usage = eBufferAccelInput, .name = "micromap indices"});
+    m_gpu.upload(prim.micromapIndices, 0, std::as_bytes(std::span(use.indices)));
+    prim.input.micromapIndexAddress = m_gpu.bufferAddress(prim.micromapIndices);
+    prim.input.micromapIndexSize    = uint32_t(tinygltf::GetComponentSizeInBytes(uint32_t(use.indexComponentType)));
+  }
+}
+
+void Residency::unlinkMicromap(Prim& prim)
+{
+  if(!prim.micromap)
+    return;
+  retireBuffer(prim.micromapIndices);
+  m_micromapPrims--;
+  auto it = m_micromaps.find(prim.micromap);
+  if(it != m_micromaps.end() && --it->second.users == 0)
+  {
+    retireAccel(it->second.accel);
+    m_micromaps.erase(it);
+  }
+  prim.micromap        = nullptr;
+  prim.micromapIndices = {};
 }
 
 uint32_t Residency::acquireMaterial(const RetainedScene& scene, MaterialId id)
@@ -1375,7 +1433,7 @@ size_t Residency::liveBuffers() const
     for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors})
       n += b ? 1 : 0;
   for(const std::optional<Prim>& p : m_prims)
-    n += p && p->indices ? 1 : 0;
+    n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
                         m_emissiveTable, m_iesTable})
     n += b ? 1 : 0;
@@ -1392,7 +1450,7 @@ size_t Residency::liveImages() const
 
 size_t Residency::liveAccels() const
 {
-  size_t n = m_tlas ? 1 : 0;
+  size_t n = (m_tlas ? 1 : 0) + m_micromaps.size();
   for(const std::optional<Prim>& p : m_prims)
     n += p && p->blas ? 1 : 0;
   return n;

@@ -186,7 +186,7 @@ TEST(SceneCoexistence, WhatRetainedCannotTakeIsNamedOnceUnderItsProp)
   m.animations.emplace_back();
   m.animations[0].channels.push_back({});
   m.animations[0].channels[0].target_node = 2;
-  m.extensionsUsed                        = {KHR_INTERACTIVITY_EXTENSION_NAME};
+  m.extensionsUsed = {KHR_INTERACTIVITY_EXTENSION_NAME, EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME};  // micromaps are drawn
   const std::vector<std::string> what     = retainedCannotTake(m, true);
   ASSERT_EQ(what.size(), 5u);
   EXPECT_EQ(what[0], "skinning (under 'propA')");  // once, though propB has one too

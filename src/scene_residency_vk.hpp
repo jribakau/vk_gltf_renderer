@@ -84,6 +84,8 @@ public:
     uint32_t                        maxSamplers       = 0;
     VkDeviceSize                    blasScratchBudget = 512ull << 20;  // blasScratchBudgetMB
     bool                            generateMipmaps   = true;
+    // VK_KHR_opacity_micromap available and on (Settings::opacityMicromapSupported)
+    bool opacityMicromaps = false;
     // a file a host decoded ahead (SceneVk::takePrefetchedFile); any thread. Unset: none.
     std::function<std::optional<nvvkgltf::LoadedImageData>(const std::filesystem::path&, bool srgb)> takePrefetched;
   };
@@ -133,6 +135,9 @@ public:
   // none: the white default in slot 0, the magenta "missing" image elsewhere (as SceneVk shows one)
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
   void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
+  bool        opacityMicromaps() const override { return m_info.opacityMicromaps; }
+  // as SceneOmm::create builds one; its inputs and scratch freed a frame cycle after the build
+  AccelHandle buildMicromap(const MicromapInput& input) override;
   AccelHandle buildBlas(const BlasInput& input, AccelBuildFlags flags) override;
   void        refitBlas(AccelHandle blas, const BlasInput& input) override;
   // not yet: compaction needs the built size read back a frame later (P7); returns none
@@ -154,6 +159,17 @@ private:
   {
     nvvk::AccelerationStructure          accel;
     nvvk::AccelerationStructureBuildData data;
+    // the opacity micromap link its geometry's triangles.pNext points at, where a move of the
+    // entry leaves it
+    std::unique_ptr<VkAccelerationStructureTrianglesOpacityMicromapKHR> micromap;
+  };
+  struct MicromapEntry
+  {
+    VkAccelerationStructureKHR      micromap = VK_NULL_HANDLE;
+    nvvk::Buffer                    storage;
+    nvvk::Buffer                    data, triangles, scratch;  // until the build is recorded and retired
+    uint32_t                        triangleStride = 8;
+    std::vector<VkMicromapUsageKHR> usages;
   };
   struct TlasEntry
   {
@@ -178,9 +194,10 @@ private:
   bool                                    recording(const char* op) const;
   void                                    flushUploads();
   void                                    flushBuilds();
+  void                                    recordMicromaps();
   bool                                    inLiveBuffer(VkDeviceAddress address, VkDeviceSize size) const;
   void                                    checkInput(const BlasInput& input, const char* op) const;
-  nvvk::AccelerationStructureGeometryInfo geometryOf(const BlasInput& input) const;
+  nvvk::AccelerationStructureGeometryInfo geometryOf(const BlasInput& input, const void* micromap) const;
   void                                    writeImageDescriptor(uint32_t slot, const nvvk::Image& image);
   ImageHandle createFromDecoded(const ImageSource& source, nvvkgltf::LoadedImageData& loaded, ImageInfo& info);
   void                                    ensureDefaults();
@@ -199,6 +216,8 @@ private:
   std::map<VkDeviceAddress, VkDeviceSize>   m_ranges;  // live buffers by address, to check BLAS inputs
   std::unordered_map<uint64_t, nvvk::Image> m_images;
   std::unordered_map<uint64_t, BlasEntry>   m_blases;
+  std::unordered_map<uint64_t, MicromapEntry> m_micromaps;
+  std::vector<uint64_t>                       m_queuedMicromaps;  // built ahead of the queued BLASes
   std::unordered_map<uint64_t, TlasEntry>   m_tlases;
   std::vector<QueuedBuild>                  m_queued;
   nvvk::Buffer                              m_blasScratch;
@@ -257,7 +276,7 @@ public:
   DrawRecord                   drawRecord(uint32_t renderNode) const override;
   std::optional<glm::vec3>     worldCentre(uint32_t renderNode) const override;
   bool                         hasTransmission() const override { return m_residency.hasTransmission(); }
-  bool                         hasOpacityMicromaps() const override { return false; }   // not on retained yet
+  bool                         hasOpacityMicromaps() const override { return m_residency.hasOpacityMicromaps(); }
   bool                         hasPlayableAnimation() const override { return false; }  // P3b
   std::vector<LightInfo>       lights() const override { return m_lights; }
   nvutils::Bbox                bounds() const override { return m_bounds; }

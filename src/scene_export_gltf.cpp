@@ -75,6 +75,14 @@ public:
     return tinygltf::utils::appendAccessor(m_model, 0, data.data(), data.size() * sizeof(float), TINYGLTF_COMPONENT_TYPE_FLOAT, type, count);
   }
 
+  // packed bytes as `count` elements of `componentType` and `type`
+  int packed(const std::vector<unsigned char>& bytes, int componentType, int type, size_t count)
+  {
+    if(bytes.empty())
+      return -1;
+    return tinygltf::utils::appendAccessor(m_model, 0, bytes.data(), bytes.size(), componentType, type, count);
+  }
+
   int bufferView(const std::vector<unsigned char>& bytes)
   {
     tinygltf::Buffer& b = m_model.buffers[0];
@@ -223,6 +231,7 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
     std::map<std::string, int>              attributes;
     std::vector<std::map<std::string, int>> targets;
     std::vector<int>                        indices;  // per submesh
+    std::vector<int> micromapIndices;                 // per submesh: its EXT_mesh_opacity_micromap indices; -1 for none
   };
   std::map<MeshId, Streams> streamsOf;
   const auto                streams = [&](MeshId id) -> const Streams& {
@@ -261,8 +270,49 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
     {
       const std::vector<uint32_t> idx(r.indices.begin() + sub.firstIndex, r.indices.begin() + sub.firstIndex + sub.indexCount);
       s.indices.push_back(w.accessor(idx, TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT, TINYGLTF_TYPE_SCALAR, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER));
+      const MicromapUse* use  = sub.micromap.get();
+      const int          size = use ? tinygltf::GetComponentSizeInBytes(uint32_t(use->indexComponentType)) : 0;
+      s.micromapIndices.push_back(size > 0 ? w.packed(use->indices, use->indexComponentType, TINYGLTF_TYPE_SCALAR,
+                                                      use->indices.size() / size_t(size)) :
+                                             -1);
     }
     return streamsOf[id] = std::move(s);
+  };
+
+  // EXT_mesh_opacity_micromap: each micromap a submesh uses, written once in the order first used,
+  // and a primitive's link to it
+  std::map<const OpacityMicromap*, int> micromapOf;
+  tinygltf::Value::Array                micromapsOut;
+  const auto                            micromapLink = [&](const MicromapUse& use, int indices) {
+    auto [it, fresh] = micromapOf.try_emplace(use.micromap.get(), int(micromapsOut.size()));
+    if(fresh)
+    {
+      const OpacityMicromap&  mm = *use.micromap;
+      tinygltf::Value::Object def;
+      def["data"]         = tinygltf::Value(w.bufferView(mm.data));
+      const int triangles = w.bufferView(mm.triangles);
+      if(mm.triangleStride != 8)  // VkMicromapTriangleKHR's, the reader's default
+        out.bufferViews[size_t(triangles)].byteStride = mm.triangleStride;
+      def["triangles"] = tinygltf::Value(triangles);
+      tinygltf::Value::Array counts, levels, formats;
+      for(const OpacityMicromap::Usage& u : mm.usages)
+      {
+        counts.push_back(tinygltf::Value(int(u.count)));
+        levels.push_back(tinygltf::Value(int(u.subdivisionLevel)));
+        formats.push_back(tinygltf::Value(int(u.format)));
+      }
+      def["usageCounts"]  = tinygltf::Value(counts);
+      def["usageLevels"]  = tinygltf::Value(levels);
+      def["usageFormats"] = tinygltf::Value(formats);
+      micromapsOut.push_back(tinygltf::Value(def));
+    }
+    tinygltf::Value::Object link;
+    link["micromap"] = tinygltf::Value(it->second);
+    if(use.baseTriangle)
+      link["micromapBaseTriangle"] = tinygltf::Value(int(use.baseTriangle));
+    if(indices >= 0)
+      link["micromapIndices"] = tinygltf::Value(indices);
+    return tinygltf::Value(link);
   };
 
   // a glTF mesh per distinct instance: the same parts and materials share one
@@ -300,6 +350,8 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
         p.indices    = s.indices[i];
         const uint32_t slot = r->submeshes[i].material;
         p.material          = slot < part.materials.size() ? material(part.materials[slot]) : -1;
+        if(const MicromapUse* use = r->submeshes[i].micromap.get())
+          p.extensions[EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME] = micromapLink(*use, s.micromapIndices[i]);
         runs.push_back({r->submeshes[i].order, std::move(p)});
       }
     }
@@ -489,6 +541,13 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
     tinygltf::Value::Object root;
     root["lights"]                                = tinygltf::Value(profiles);
     out.extensions[EXT_LIGHTS_IES_EXTENSION_NAME] = tinygltf::Value(root);
+  }
+
+  if(!micromapsOut.empty())
+  {
+    tinygltf::Value::Object root;
+    root["micromaps"]                                        = tinygltf::Value(micromapsOut);
+    out.extensions[EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME] = tinygltf::Value(root);
   }
 
   tinygltf::Scene s;

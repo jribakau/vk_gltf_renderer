@@ -19,6 +19,7 @@
 
 #include "residency_oracle.hpp"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <cstring>
@@ -172,7 +173,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I1", s) + "a hole's TLAS row is not null");
   }
 
-  // prims: their rows, bytes and BLASes (I3, I17, the build hashes)
+  // prims: their rows, bytes and BLASes (I3, I17, the build hashes), their micromap links (I21)
+  std::map<const OpacityMicromap*, uint32_t> micromapUsers;
+  uint32_t                                   linking = 0;
   for(uint32_t p = 0; p < residency.primHighWater(); p++)
   {
     const Residency::Prim* prim = residency.prim(p);
@@ -219,7 +222,46 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I1", p) + "its BLAS is not built");
     else if(blas->contentHash != gpu.contentHash(prim->input))
       out.push_back(at("I3", p) + "its BLAS was built from other bytes than its buffers hold");
+    else if(!(blas->input == prim->input))
+      out.push_back(at("I3", p) + "its BLAS was built or refit from another input than its own");
+
+    // its submesh's micromap linked, on a device that builds them (I21)
+    const MicromapUse* use = gpu.opacityMicromaps() ? run.micromap.get() : nullptr;
+    if(!use)
+    {
+      if(prim->input.micromap || prim->micromap || prim->micromapIndices)
+        out.push_back(at("I21", p) + "it links a micromap its submesh has none of");
+      continue;
+    }
+    micromapUsers[use->micromap.get()]++;
+    linking++;
+    const FakeGpuBackend::Micromap* built = gpu.micromap(prim->input.micromap);
+    const OpacityMicromap&          mm    = *use->micromap;
+    std::vector<MicromapUsage>      usages;
+    for(const OpacityMicromap::Usage& u : mm.usages)
+      usages.push_back({.count = u.count, .subdivisionLevel = u.subdivisionLevel, .format = u.format});
+    if(!built || prim->micromap != &mm || built->data != mm.data || built->triangles != mm.triangles
+       || built->triangleStride != mm.triangleStride || built->usages != usages)
+      out.push_back(at("I21", p) + "its BLAS does not link a micromap built from its submesh's");
+    const uint32_t size =
+        use->indexComponentType ? uint32_t(tinygltf::GetComponentSizeInBytes(uint32_t(use->indexComponentType))) : 0;
+    if(prim->input.micromapBaseTriangle != use->baseTriangle || prim->input.micromapIndexSize != size)
+      out.push_back(at("I21", p) + "its micromap base triangle or index size is not its submesh's");
+    if(size ? prim->input.micromapIndexAddress != gpu.bufferAddress(prim->micromapIndices)
+                  || !sameBytes(gpu.bytesAt(prim->input.micromapIndexAddress, use->indices.size()), use->indices.data(),
+                                use->indices.size()) :
+              prim->input.micromapIndexAddress || prim->micromapIndices)
+      out.push_back(at("I21", p) + "its micromap index buffer does not hold its submesh's indices");
   }
+  // one micromap built per record, counting the prims that link it; presence is whether any does
+  for(const auto& [record, mm] : residency.micromaps())
+    if(mm.record.get() != record || mm.users != micromapUsers[record] || !gpu.micromap(mm.accel))
+      out.push_back("I21: a micromap's users are not the prims that link it, or it is not built");
+  if(residency.micromaps().size()
+     != size_t(std::count_if(micromapUsers.begin(), micromapUsers.end(), [](const auto& u) { return u.second > 0; })))
+    out.push_back("I21: a micromap a prim links is not among those built");
+  if(residency.hasOpacityMicromaps() != (linking > 0))
+    out.push_back("I21: hasOpacityMicromaps() is not whether a prim links a micromap");
 
   // materials (I4): each slot's state is its record's, every texture it samples names a written
   // slot holding that texture's image; each slot's row is its state converted at its span, which

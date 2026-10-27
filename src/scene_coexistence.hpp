@@ -69,9 +69,8 @@ struct SceneBackendChoice
 };
 
 // What the retained scene can't draw yet in `model`, once each, naming the top-level node (a
-// composed scene's prop) it was found under: skins, morph targets, animations (P3b), opacity
-// micromaps (P3a2), KHR_interactivity, and glTF 2.1 external assets (`externalAssets`:
-// the legacy scene resolved some)
+// composed scene's prop) it was found under: skins, morph targets, animations (P3b),
+// KHR_interactivity, and glTF 2.1 external assets (`externalAssets`: the legacy scene resolved some)
 std::vector<std::string> retainedCannotTake(const tinygltf::Model& model, bool externalAssets);
 
 // The backend a scene replace takes. Windowed sessions stay legacy; `auto` takes retained unless

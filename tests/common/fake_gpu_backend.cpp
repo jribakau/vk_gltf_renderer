@@ -247,6 +247,36 @@ uint64_t FakeGpuBackend::contentHash(const BlasInput& input) const
   return fnv1a(fnv1a(0xcbf29ce484222325ull, vertices), indices);
 }
 
+AccelHandle FakeGpuBackend::buildMicromap(const MicromapInput& input)
+{
+  if(!m_opacityMicromaps)
+    error("buildMicromap: the device does not build opacity micromaps");
+  if(input.triangleStride < 8 || input.triangleStride % 4 || input.triangles.size() < input.triangleStride)
+    error("buildMicromap: no triangle records at a stride Vulkan takes");
+  m_buildsBeforeTrace = true;
+  const AccelHandle handle{m_nextHandle++};
+  m_micromaps.emplace(handle.value, Micromap{.data           = {input.data.begin(), input.data.end()},
+                                             .triangles      = {input.triangles.begin(), input.triangles.end()},
+                                             .triangleStride = input.triangleStride,
+                                             .usages         = {input.usages.begin(), input.usages.end()}});
+  return handle;
+}
+
+void FakeGpuBackend::checkMicromapLink(const BlasInput& input, const char* op)
+{
+  if(!input.micromap)
+    return;
+  if(!m_micromaps.count(input.micromap.value))
+    error(std::string(op) + ": it links a dead or unknown micromap");
+  if(input.micromapIndexSize)
+  {
+    const uint64_t bytes = uint64_t(input.indexCount / 3) * input.micromapIndexSize;
+    if(bytesAt(input.micromapIndexAddress, bytes).size() != bytes)
+      error(std::string(op) + ": its micromap indices are not inside a live buffer");
+    readByBuild(input.micromapIndexAddress, op);
+  }
+}
+
 AccelHandle FakeGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags flags)
 {
   Blas b;
@@ -258,6 +288,7 @@ AccelHandle FakeGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags fl
     error("buildBlas: its positions or indices are not inside a live buffer");
   readByBuild(input.vertexAddress, "buildBlas");
   readByBuild(input.indexAddress, "buildBlas");
+  checkMicromapLink(input, "buildBlas");
   m_blasBeforeTlas = m_buildsBeforeTrace = true;
   const AccelHandle handle{m_nextHandle++};
   m_blases.emplace(handle.value, b);
@@ -280,6 +311,9 @@ void FakeGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
   if(input.vertexAddress != b.input.vertexAddress || input.indexAddress != b.input.indexAddress
      || input.indexCount != b.input.indexCount)
     error("refitBlas: the addresses or the index count changed (that needs a build)");
+  if(input.micromap != b.input.micromap || input.micromapIndexAddress != b.input.micromapIndexAddress
+     || input.micromapIndexSize != b.input.micromapIndexSize || input.micromapBaseTriangle != b.input.micromapBaseTriangle)
+    error("refitBlas: the micromap link changed (that needs a build)");
   b.input       = input;
   b.contentHash = contentHash(input);
   b.refits++;
@@ -287,6 +321,7 @@ void FakeGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
     error("refitBlas: its positions or indices are not inside a live buffer");
   readByBuild(input.vertexAddress, "refitBlas");
   readByBuild(input.indexAddress, "refitBlas");
+  checkMicromapLink(input, "refitBlas");
   m_blasBeforeTlas = m_buildsBeforeTrace = true;
 }
 
@@ -348,6 +383,14 @@ void FakeGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows
 
 void FakeGpuBackend::destroyAccel(AccelHandle handle)
 {
+  if(m_micromaps.count(handle.value))
+  {
+    for(const auto& [h, b] : m_blases)
+      if(b.input.micromap == handle)
+        error("destroyAccel: micromap " + std::to_string(handle.value) + " goes while a BLAS links it");
+    m_micromaps.erase(handle.value);
+    return;
+  }
   if(!m_blases.erase(handle.value) && !m_tlases.erase(handle.value))
     error("destroyAccel: dead or unknown acceleration structure " + std::to_string(handle.value));
 }
@@ -402,6 +445,12 @@ const FakeGpuBackend::Blas* FakeGpuBackend::blas(AccelHandle handle) const
 {
   auto it = m_blases.find(handle.value);
   return it == m_blases.end() ? nullptr : &it->second;
+}
+
+const FakeGpuBackend::Micromap* FakeGpuBackend::micromap(AccelHandle handle) const
+{
+  auto it = m_micromaps.find(handle.value);
+  return it == m_micromaps.end() ? nullptr : &it->second;
 }
 
 const FakeGpuBackend::Tlas* FakeGpuBackend::tlas(AccelHandle handle) const

@@ -19,6 +19,8 @@
 
 #include "scene_import_gltf.hpp"
 
+#include <cstring>
+#include <functional>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -76,6 +78,159 @@ std::vector<uint32_t> primitiveIndices(const tinygltf::Model& model, const tinyg
   std::vector<uint32_t> out(tinygltf::utils::getVertexCount(model, p));
   std::iota(out.begin(), out.end(), 0u);
   return out;
+}
+
+using Notice = std::function<void(const std::string&)>;
+
+// A bufferView's bytes; none when it or its buffer is out of range (an extension's indices are
+// untrusted)
+std::optional<std::span<const unsigned char>> bufferViewBytes(const tinygltf::Model& model, int view)
+{
+  if(view < 0 || size_t(view) >= model.bufferViews.size())
+    return std::nullopt;
+  const tinygltf::BufferView& bv = model.bufferViews[size_t(view)];
+  if(bv.buffer < 0 || size_t(bv.buffer) >= model.buffers.size()
+     || bv.byteOffset + bv.byteLength > model.buffers[size_t(bv.buffer)].data.size())
+    return std::nullopt;
+  return std::span<const unsigned char>(model.buffers[size_t(bv.buffer)].data).subspan(bv.byteOffset, bv.byteLength);
+}
+
+// EXT_mesh_opacity_micromap's root micromaps, checked as SceneOmm::create checks them, and for at
+// least one triangle record at a stride Vulkan takes (a multiple of 4, at least 8); null for one
+// left out
+std::vector<std::shared_ptr<const OpacityMicromap>> opacityMicromaps(const tinygltf::Model& model, const Notice& notice)
+{
+  std::vector<std::shared_ptr<const OpacityMicromap>> out;
+  const tinygltf::Value* root = tinygltf::utils::findExtension(model.extensions, EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME);
+  if(!root || !root->Has("micromaps") || !root->Get("micromaps").IsArray())
+    return out;
+  const tinygltf::Value& list = root->Get("micromaps");
+  out.resize(list.ArrayLen());
+  for(size_t i = 0; i < out.size(); i++)
+  {
+    const tinygltf::Value& def = list.Get(int(i));
+    const std::string at = std::string(EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME) + ": micromaps[" + std::to_string(i) + "] ";
+    if(!def.Has("data") || !def.Has("triangles") || !def.Has("usageCounts") || !def.Has("usageLevels") || !def.Has("usageFormats"))
+    {
+      notice(at + "misses a required field; left out");
+      continue;
+    }
+    const int  trianglesView = def.Get("triangles").GetNumberAsInt();
+    const auto data          = bufferViewBytes(model, def.Get("data").GetNumberAsInt());
+    const auto triangles     = bufferViewBytes(model, trianglesView);
+    if(!data || !triangles)
+    {
+      notice(at + "names a data or triangles bufferView out of range; left out");
+      continue;
+    }
+    const tinygltf::Value& counts  = def.Get("usageCounts");
+    const tinygltf::Value& levels  = def.Get("usageLevels");
+    const tinygltf::Value& formats = def.Get("usageFormats");
+    if(!counts.IsArray() || !levels.IsArray() || !formats.IsArray() || counts.ArrayLen() != levels.ArrayLen()
+       || counts.ArrayLen() != formats.ArrayLen())
+    {
+      notice(at + "has usage arrays of different lengths; left out");
+      continue;
+    }
+    const size_t stride = model.bufferViews[size_t(trianglesView)].byteStride;
+    auto         mm     = std::make_shared<OpacityMicromap>();
+    mm->triangleStride  = stride ? uint32_t(stride) : 8u;
+    if(mm->triangleStride < 8 || mm->triangleStride % 4 || triangles->size() < mm->triangleStride)
+    {
+      notice(at + "has no triangle records at a stride Vulkan takes; left out");
+      continue;
+    }
+    mm->data.assign(data->begin(), data->end());
+    mm->triangles.assign(triangles->begin(), triangles->end());
+    for(size_t u = 0; u < counts.ArrayLen(); u++)
+      mm->usages.push_back({.count            = uint32_t(counts.Get(int(u)).GetNumberAsInt()),
+                            .subdivisionLevel = uint32_t(levels.Get(int(u)).GetNumberAsInt()),
+                            .format           = uint32_t(formats.Get(int(u)).GetNumberAsInt())});
+    out[i] = std::move(mm);
+  }
+  return out;
+}
+
+// A primitive's EXT_mesh_opacity_micromap link over its `triangles` triangles, checked as
+// SceneOmm::create checks it, and for an index per triangle that names a triangle of the micromap
+// (a special index aside); null for none, or one left out
+std::shared_ptr<const MicromapUse> micromapUseOf(const tinygltf::Model&                                     model,
+                                                 const tinygltf::Primitive&                                 p,
+                                                 size_t                                                     triangles,
+                                                 const std::vector<std::shared_ptr<const OpacityMicromap>>& micromaps,
+                                                 const Notice&                                              notice)
+{
+  const tinygltf::Value* ext = tinygltf::utils::findExtension(p.extensions, EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME);
+  if(!ext || !ext->Has("micromap"))
+    return nullptr;
+  const std::string at    = std::string(EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME) + ": ";
+  const int         index = ext->Get("micromap").GetNumberAsInt();
+  if(index < 0 || size_t(index) >= micromaps.size())
+  {
+    notice(at + "a primitive names a micromap out of range; drawn without it");
+    return nullptr;
+  }
+  if(!micromaps[size_t(index)])
+    return nullptr;  // the micromap's own notice says why
+  const int base = ext->Has("micromapBaseTriangle") ? ext->Get("micromapBaseTriangle").GetNumberAsInt() : 0;
+  if(base < 0)
+  {
+    notice(at + "a primitive has a negative micromapBaseTriangle; drawn without its micromap");
+    return nullptr;
+  }
+  auto use               = std::make_shared<MicromapUse>();
+  use->micromap          = micromaps[size_t(index)];
+  use->baseTriangle      = uint32_t(base);
+  const uint64_t records = use->micromap->triangles.size() / use->micromap->triangleStride;
+  if(!ext->Has("micromapIndices"))
+  {
+    if(uint64_t(base) + triangles > records)
+    {
+      notice(at + "a primitive's triangles run past its micromap's; drawn without it");
+      return nullptr;
+    }
+    return use;
+  }
+  const int accessorIndex = ext->Get("micromapIndices").GetNumberAsInt();
+  if(accessorIndex < 0 || size_t(accessorIndex) >= model.accessors.size())
+  {
+    notice(at + "a primitive names a micromapIndices accessor out of range; drawn without its micromap");
+    return nullptr;
+  }
+  const tinygltf::Accessor& accessor = model.accessors[size_t(accessorIndex)];
+  const int                 bytes    = tinygltf::GetComponentSizeInBytes(uint32_t(accessor.componentType));
+  if(bytes != 1 && bytes != 2 && bytes != 4)
+  {
+    notice(at + "a primitive's micromapIndices are not 8, 16 or 32-bit integers; drawn without its micromap");
+    return nullptr;
+  }
+  const size_t size   = size_t(bytes);
+  const auto   view   = bufferViewBytes(model, accessor.bufferView);
+  const size_t stride = view && model.bufferViews[size_t(accessor.bufferView)].byteStride ?
+                            size_t(model.bufferViews[size_t(accessor.bufferView)].byteStride) :
+                            size;
+  if(!view || accessor.count < triangles
+     || (accessor.count > 0 && accessor.byteOffset + (accessor.count - 1) * stride + size > view->size()))
+  {
+    notice(at + "a primitive's micromapIndices are fewer than its triangles, or run past their bufferView; drawn without its micromap");
+    return nullptr;
+  }
+  use->indexComponentType = accessor.componentType;
+  use->indices.resize(accessor.count * size);
+  for(size_t e = 0; e < accessor.count; e++)  // tightly packed
+    std::memcpy(&use->indices[e * size], view->data() + accessor.byteOffset + e * stride, size);
+  const uint64_t special = (uint64_t(1) << (8 * size)) - 4;  // -4 to -1 in the type's bits
+  for(size_t t = 0; t < triangles; t++)
+  {
+    uint32_t v = 0;
+    std::memcpy(&v, &use->indices[t * size], size);  // little-endian
+    if(v < special && uint64_t(base) + v >= records)
+    {
+      notice(at + "a primitive's micromapIndices name triangles past its micromap's; drawn without it");
+      return nullptr;
+    }
+  }
+  return use;
 }
 
 }  // namespace
@@ -223,7 +378,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     if(noticed.insert(text).second)
       out.notices.push_back(text);
   };
-  for(const char* ext : {KHR_INTERACTIVITY_EXTENSION_NAME, KHR_ANIMATION_POINTER, EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME})
+  for(const char* ext : {KHR_INTERACTIVITY_EXTENSION_NAME, KHR_ANIMATION_POINTER})
     if(std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), ext) != model.extensionsUsed.end())
       notice(std::string(ext) + " is not drawn yet; left out");
 
@@ -283,6 +438,9 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
       all.insert(all.end(), own.begin(), own.end());
     }
 
+  // ---- EXT_mesh_opacity_micromap's micromaps, shared by the submeshes that index them
+  const std::vector<std::shared_ptr<const OpacityMicromap>> micromaps = opacityMicromaps(model, notice);
+
   // ---- meshes: each glTF mesh's drawable primitives, grouped into vertex sets by attribute key
   struct PartPlan
   {
@@ -336,8 +494,11 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
       }
       MeshRecord&                 r   = records[it->second];
       const std::vector<uint32_t> idx = primitiveIndices(model, p);
-      r.submeshes.push_back({.firstIndex = uint32_t(r.indices.size()), .indexCount = uint32_t(idx.size()),
-                             .material = uint32_t(r.submeshes.size()), .order = int32_t(pi)});
+      r.submeshes.push_back({.firstIndex = uint32_t(r.indices.size()),
+                             .indexCount = uint32_t(idx.size()),
+                             .material   = uint32_t(r.submeshes.size()),
+                             .order      = int32_t(pi),
+                             .micromap   = micromapUseOf(model, p, idx.size() / 3, micromaps, notice)});
       r.indices.insert(r.indices.end(), idx.begin(), idx.end());
       plans[mi][it->second].primitives.push_back(int(pi));
       if(p.extensions.count(KHR_MATERIALS_VARIANTS_EXTENSION_NAME))

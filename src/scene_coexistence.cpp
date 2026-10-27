@@ -71,8 +71,6 @@ std::vector<std::string> retainedCannotTake(const tinygltf::Model& model, bool e
     });
     add("animation", target != a.channels.end() ? under(target->target_node) : "");
   }
-  if(used(EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME))
-    add("opacity micromaps", "");
   if(used(KHR_INTERACTIVITY_EXTENSION_NAME))
     add("KHR_interactivity", "");
   if(externalAssets)

@@ -192,6 +192,53 @@ TEST(RetainedExport, IesLightsGoOutWithTheirProfiles)
   EXPECT_EQ(*back->ies, (rs::IesLight{.profile = 0, .multiplier = 4.f, .color = {0.5f, 1.f, 1.f}}));
 }
 
+// EXT_mesh_opacity_micromap goes out once per micromap with each submesh's link (its indices, its
+// base), and comes back one record the submeshes share; a triangle stride other than
+// VkMicromapTriangleKHR's is kept
+TEST(RetainedExport, OpacityMicromapsGoOutAndComeBack)
+{
+  rs::RetainedScene a;
+  auto              mm = std::make_shared<rs::OpacityMicromap>();
+  mm->data             = {9, 8, 7, 6, 5};
+  mm->triangles        = std::vector<unsigned char>(36, 3);  // three records 12 bytes apart
+  mm->triangleStride   = 12;
+  mm->usages           = {{.count = 3, .subdivisionLevel = 2, .format = 2}};
+  rs::MeshRecord mesh;
+  mesh.positions          = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  mesh.indices            = {0, 1, 2, 0, 2, 3};
+  const auto byIndex      = std::make_shared<rs::MicromapUse>(rs::MicromapUse{
+      .micromap = mm, .indices = {0xfe, 0xff, 0xff, 0xff}, .indexComponentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT});  // -2: opaque
+  const auto fromBase     = std::make_shared<rs::MicromapUse>(rs::MicromapUse{.micromap = mm, .baseTriangle = 2});
+  mesh.submeshes          = {{.firstIndex = 0, .indexCount = 3, .material = 0, .order = 0, .micromap = byIndex},
+                             {.firstIndex = 3, .indexCount = 3, .material = 1, .order = 1, .micromap = fromBase}};
+  const rs::MeshId     id = a.addMesh(std::move(mesh));
+  const rs::MaterialId m  = a.addMaterial({});
+  rs::MeshInstance     instance;
+  instance.parts.push_back({id, {m, m}});
+  a.setMeshInstance(a.createEntity("cards", {}), instance);
+
+  const tinygltf::Model out = rs::exportGltf(a);
+  EXPECT_NE(std::find(out.extensionsUsed.begin(), out.extensionsUsed.end(), EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME),
+            out.extensionsUsed.end());
+  rs::RetainedScene      b;
+  const rs::ImportResult r = rs::importGltf(b, throughGlb(out));
+  for(const std::string& n : r.notices)
+    EXPECT_EQ(n.find(EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME), std::string::npos) << n;
+  ASSERT_EQ(r.meshes.size(), 1u);
+  const rs::MeshRecord& back = *b.mesh(r.meshes[0][0]);
+  ASSERT_EQ(back.submeshes.size(), 2u);
+  const rs::MicromapUse* x = back.submeshes[0].micromap.get();
+  const rs::MicromapUse* y = back.submeshes[1].micromap.get();
+  ASSERT_TRUE(x && y);
+  EXPECT_EQ(x->micromap, y->micromap);
+  EXPECT_EQ(*x->micromap, *mm);
+  EXPECT_EQ(x->indices, byIndex->indices);
+  EXPECT_EQ(x->indexComponentType, TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT);
+  EXPECT_EQ(x->baseTriangle, 0u);
+  EXPECT_EQ(y->baseTriangle, 2u);
+  EXPECT_TRUE(y->indices.empty());
+}
+
 TEST(RetainedExport, AnExportImportedAgainIsTheSameScene)
 {
   namespace fs = std::filesystem;

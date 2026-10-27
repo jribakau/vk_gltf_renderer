@@ -52,14 +52,14 @@ struct GpuImageTag;
 struct GpuAccelTag;
 using BufferHandle = GpuHandle<GpuBufferTag>;
 using ImageHandle  = GpuHandle<GpuImageTag>;
-using AccelHandle  = GpuHandle<GpuAccelTag>;  // a BLAS or a TLAS
+using AccelHandle  = GpuHandle<GpuAccelTag>;  // a BLAS, a TLAS or an opacity micromap
 
 enum BufferUsageBits : uint32_t
 {
   eBufferVertex     = 1u << 0,
   eBufferIndex      = 1u << 1,
   eBufferStorage    = 1u << 2,
-  eBufferAccelInput = 1u << 3,  // read by a BLAS build (positions, indices)
+  eBufferAccelInput = 1u << 3,  // read by a BLAS build (positions, indices, micromap indices)
 };
 using BufferUsageFlags = uint32_t;
 
@@ -102,16 +102,38 @@ struct GpuSamplerDesc
   bool operator==(const GpuSamplerDesc&) const = default;
 };
 
-// One triangle geometry: float3 positions at vertexAddress with vertexStride, uint32 indices
+// One triangle geometry: float3 positions at vertexAddress with vertexStride, uint32 indices; and
+// the opacity micromap its triangles take their opacity from, if any: triangle i takes the
+// micromap's triangle micromapBaseTriangle + the i-th micromap index (micromapIndexSize bytes each
+// at micromapIndexAddress), or micromapBaseTriangle + i with no index buffer
 struct BlasInput
 {
-  uint64_t vertexAddress                      = 0;
-  uint32_t vertexStride                       = 12;
-  uint32_t vertexCount                        = 0;
-  uint64_t indexAddress                       = 0;
-  uint32_t indexCount                         = 0;
-  bool     opaque                             = true;
-  bool     operator==(const BlasInput&) const = default;
+  uint64_t    vertexAddress = 0;
+  uint32_t    vertexStride  = 12;
+  uint32_t    vertexCount   = 0;
+  uint64_t    indexAddress  = 0;
+  uint32_t    indexCount    = 0;
+  bool        opaque        = true;
+  AccelHandle micromap;
+  uint64_t    micromapIndexAddress               = 0;
+  uint32_t    micromapIndexSize                  = 0;  // 1, 2 or 4
+  uint32_t    micromapBaseTriangle               = 0;
+  bool        operator==(const BlasInput&) const = default;
+};
+
+// An opacity micromap's build inputs, in VK_KHR_opacity_micromap's layout: the packed opacity bits,
+// the per-triangle records (VkMicromapTriangleKHR, triangleStride bytes apart) and the usage
+// histogram
+struct MicromapUsage
+{
+  uint32_t count = 0, subdivisionLevel = 0, format = 0;  // VkMicromapUsageKHR
+  bool     operator==(const MicromapUsage&) const = default;
+};
+struct MicromapInput
+{
+  std::span<const unsigned char> data, triangles;
+  uint32_t                       triangleStride = 8;
+  std::span<const MicromapUsage> usages;
 };
 
 enum AccelBuildBits : uint32_t
@@ -203,6 +225,11 @@ public:
   virtual void writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) = 0;
 
   // ---------- Acceleration structures ----------
+  // Whether the device builds opacity micromaps (VK_KHR_opacity_micromap); without, no BLAS links one.
+  virtual bool opacityMicromaps() const = 0;
+  // A new opacity micromap, its inputs uploaded and its build recorded in this frame ahead of any
+  // BLAS build that links it; outlives every BLAS that does.
+  virtual AccelHandle buildMicromap(const MicromapInput& input) = 0;
   // A new BLAS, its build recorded in this frame.
   virtual AccelHandle buildBlas(const BlasInput& input, AccelBuildFlags flags) = 0;
   // In place; the BLAS was built with eAccelAllowUpdate, not compacted, and the input keeps its

@@ -392,6 +392,109 @@ TEST(RetainedImport, IesLightsStandAloneWithTheirProfiles)
 
 // The generated glTF 2.1 fixtures and, when present, the Khronos sample assets: every one the legacy
 // scene loads on its own (no external assets) draws the same here.
+namespace {
+
+// fixture() with EXT_mesh_opacity_micromap: micromap 0 of two triangle records, shared by mesh
+// "groups"' two primitives (the first by a 16-bit index `index`, the second by its own triangle
+// from `base`); micromap 1, which has no usage histogram; and "other" naming a micromap out of range
+tinygltf::Model withMicromaps(uint16_t index = 1, int base = 1)
+{
+  tinygltf::Model                  m    = fixture();
+  const std::vector<unsigned char> data = {1, 2, 3, 4}, triangles(16, 7);
+  const int                        dataView =
+      m.accessors[size_t(add(m, data.data(), data.size(), TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE, TINYGLTF_TYPE_SCALAR, 4))]
+          .bufferView;
+  const int trianglesView =
+      m.accessors[size_t(add(m, triangles.data(), triangles.size(), TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE, TINYGLTF_TYPE_SCALAR, 16))]
+          .bufferView;
+  const int               indices = add(m, &index, 2, TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT, TINYGLTF_TYPE_SCALAR, 1);
+  tinygltf::Value::Object micromap, incomplete;
+  micromap["data"] = incomplete["data"] = tinygltf::Value(dataView);
+  micromap["triangles"] = incomplete["triangles"] = tinygltf::Value(trianglesView);
+  micromap["usageCounts"]                         = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(2)});
+  micromap["usageLevels"]                         = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(0)});
+  micromap["usageFormats"]                        = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(1)});
+  tinygltf::Value::Object root;
+  root["micromaps"] = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(micromap), tinygltf::Value(incomplete)});
+  m.extensions[EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME] = tinygltf::Value(root);
+  m.extensionsUsed.push_back(EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME);
+  const auto link = [](int micromap, int baseTriangle, int indexAccessor) {
+    tinygltf::Value::Object o;
+    o["micromap"] = tinygltf::Value(micromap);
+    if(baseTriangle)
+      o["micromapBaseTriangle"] = tinygltf::Value(baseTriangle);
+    if(indexAccessor >= 0)
+      o["micromapIndices"] = tinygltf::Value(indexAccessor);
+    return tinygltf::Value(o);
+  };
+  m.meshes[0].primitives[0].extensions[EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME] = link(0, 0, indices);
+  m.meshes[0].primitives[2].extensions[EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME] = link(0, base, -1);
+  m.meshes[1].primitives[0].extensions[EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME] = link(5, 0, -1);
+  return m;
+}
+
+bool noticed(const rs::ImportResult& r, const std::string& text)
+{
+  return std::any_of(r.notices.begin(), r.notices.end(),
+                     [&](const std::string& n) { return n.find(text) != std::string::npos; });
+}
+
+}  // namespace
+
+// EXT_mesh_opacity_micromap: a micromap is one record the submeshes that index it share; one the
+// extension describes badly is left out with a notice, and so is a link to one out of range
+TEST(RetainedImport, OpacityMicromapsAreSharedByTheSubmeshesThatIndexThem)
+{
+  rs::RetainedScene      scene;
+  const rs::ImportResult r = rs::importGltf(scene, withMicromaps());
+  EXPECT_TRUE(noticed(r, "micromaps[1] misses a required field"));
+  EXPECT_TRUE(noticed(r, "a primitive names a micromap out of range"));
+  EXPECT_FALSE(noticed(r, "not drawn yet"));
+  const rs::MeshRecord& groups = *scene.mesh(r.meshes[0][0]);
+  ASSERT_EQ(groups.submeshes.size(), 2u);
+  const rs::MicromapUse* a = groups.submeshes[0].micromap.get();
+  const rs::MicromapUse* b = groups.submeshes[1].micromap.get();
+  ASSERT_TRUE(a && b);
+  EXPECT_EQ(a->micromap, b->micromap);
+  EXPECT_EQ(a->micromap->data, (std::vector<unsigned char>{1, 2, 3, 4}));
+  EXPECT_EQ(a->micromap->triangles, std::vector<unsigned char>(16, 7));
+  EXPECT_EQ(a->micromap->triangleStride, 8u);
+  EXPECT_EQ(a->micromap->usages, (std::vector<rs::OpacityMicromap::Usage>{{.count = 2, .subdivisionLevel = 0, .format = 1}}));
+  EXPECT_EQ(a->indexComponentType, TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT);
+  EXPECT_EQ(a->indices, (std::vector<unsigned char>{1, 0}));
+  EXPECT_EQ(a->baseTriangle, 0u);
+  EXPECT_EQ(b->baseTriangle, 1u);
+  EXPECT_TRUE(b->indices.empty());
+  EXPECT_EQ(b->indexComponentType, 0);
+  EXPECT_FALSE(scene.mesh(r.meshes[1][0])->submeshes[0].micromap);
+  expectParity(withMicromaps(), "micromaps");
+}
+
+// A link that would read past its micromap's two records is left out with a notice: by its base,
+// or by an index; a special index (-1, 0xffff) names no triangle
+TEST(RetainedImport, AMicromapLinkPastItsMicromapIsLeftOut)
+{
+  {
+    rs::RetainedScene      scene;
+    const rs::ImportResult r = rs::importGltf(scene, withMicromaps(1, 2));
+    EXPECT_TRUE(noticed(r, "triangles run past its micromap's"));
+    EXPECT_TRUE(scene.mesh(r.meshes[0][0])->submeshes[0].micromap);
+    EXPECT_FALSE(scene.mesh(r.meshes[0][0])->submeshes[1].micromap);
+  }
+  {
+    rs::RetainedScene      scene;
+    const rs::ImportResult r = rs::importGltf(scene, withMicromaps(2));
+    EXPECT_TRUE(noticed(r, "micromapIndices name triangles past its micromap's"));
+    EXPECT_FALSE(scene.mesh(r.meshes[0][0])->submeshes[0].micromap);
+  }
+  {
+    rs::RetainedScene      scene;
+    const rs::ImportResult r = rs::importGltf(scene, withMicromaps(0xffff));
+    EXPECT_FALSE(noticed(r, "micromapIndices"));
+    EXPECT_TRUE(scene.mesh(r.meshes[0][0])->submeshes[0].micromap);
+  }
+}
+
 TEST(RetainedImport, DrawsTheFixturesAsTheLegacySceneDoes)
 {
   namespace fs = std::filesystem;

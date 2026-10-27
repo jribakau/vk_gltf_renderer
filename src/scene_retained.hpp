@@ -97,6 +97,36 @@ struct Transform
 //--------------------------------------------------------------------------------------------------
 // Records
 
+// An opacity micromap (EXT_mesh_opacity_micromap): its pre-baked build inputs, in the layout
+// VK_KHR_opacity_micromap builds from: the packed opacity bits, the per-triangle records
+// (VkMicromapTriangleKHR, `triangleStride` bytes apart) and the usage histogram. Shared by the
+// submeshes that index it.
+struct OpacityMicromap
+{
+  struct Usage
+  {
+    uint32_t count = 0, subdivisionLevel = 0, format = 0;  // VkMicromapUsageKHR
+    bool     operator==(const Usage&) const = default;
+  };
+  std::vector<unsigned char> data, triangles;
+  uint32_t                   triangleStride = 8;
+  std::vector<Usage>         usages;
+  bool                       operator==(const OpacityMicromap&) const = default;
+};
+
+// A submesh's triangles over an opacity micromap: triangle i takes the micromap's triangle
+// baseTriangle + indices[i], or baseTriangle + i when there are no indices. An index of -1 to -4
+// (in its component type's bits) is a special one: the whole triangle transparent, opaque, unknown
+// transparent or unknown opaque.
+struct MicromapUse
+{
+  std::shared_ptr<const OpacityMicromap> micromap;
+  uint32_t                               baseTriangle = 0;
+  std::vector<unsigned char>             indices;                 // one per triangle, tightly packed
+  int                                    indexComponentType = 0;  // TINYGLTF_COMPONENT_TYPE_*; 0: no indices
+  bool                                   operator==(const MicromapUse&) const = default;
+};
+
 // One run of a mesh's indices drawn with one material: a glTF primitive over the mesh's vertices.
 struct Submesh
 {
@@ -107,7 +137,9 @@ struct Submesh
   // where the run's primitive sits in its source (its glTF mesh's primitive index), the order an
   // entity draws its runs in
   int32_t order = 0;
-  bool    operator==(const Submesh&) const = default;
+  // EXT_mesh_opacity_micromap: the micromap its triangles take their opacity from; null for none
+  std::shared_ptr<const MicromapUse> micromap;
+  bool                               operator==(const Submesh&) const = default;
 };
 
 struct MorphTarget

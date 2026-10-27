@@ -28,6 +28,10 @@
 //
 // - A mesh record's vertex streams are one buffer each; a submesh drawn somewhere is a prim: its own
 //   uint32 index buffer and BLAS over the mesh's streams.
+// - On a device that builds them, a submesh's opacity micromap (EXT_mesh_opacity_micromap) is built
+//   once for the prims that link it and retired after the last of their BLASes; a prim that links
+//   one holds its micromap indices. hasOpacityMicromaps() (the path tracer's USE_OMM) is whether
+//   any prim does.
 // - A draw item (entity, mesh, submesh, instancing copy) is an instance: a render-node row and a TLAS
 //   row, the TLAS row's custom index its prim slot.
 // - Instance, prim and material slots come lowest-first from pools, so a fresh scene numbers them
@@ -133,6 +137,9 @@ public:
     AccelHandle  blas;
     BlasInput    input;
     uint32_t     users = 0;  // instances drawing it
+    // the opacity micromap its BLAS links (input.micromap) and its micromap index buffer; none for none
+    const OpacityMicromap* micromap = nullptr;
+    BufferHandle           micromapIndices;
     glm::vec3    boundsMin{0.f}, boundsMax{0.f};  // of the vertices its indices name, in mesh space
   };
   // The raster lists (SceneGpuView::DrawList)
@@ -142,6 +149,13 @@ public:
     eSolidDoubleSided,
     eBlend,
     eAll,
+  };
+  // An opacity micromap built, and the prims that link it
+  struct MicromapGpu
+  {
+    std::shared_ptr<const OpacityMicromap> record;  // held while built: its address is the key
+    AccelHandle                            accel;
+    uint32_t                               users = 0;
   };
   // A draw item
   struct Instance
@@ -193,12 +207,14 @@ public:
   const std::vector<uint32_t>& drawList(DrawList list) const { return m_drawLists[size_t(list)]; }
   uint64_t                     drawListsRevision() const { return m_drawListsRevision; }
   bool                         hasTransmission() const { return m_hasTransmission; }
+  bool                         hasOpacityMicromaps() const { return m_micromapPrims > 0; }
 
   // ---- what the oracle reads
   const Instance* instance(uint32_t slot) const;  // nullptr for a hole
   const Prim*     prim(uint32_t slot) const;
   uint32_t        primHighWater() const { return uint32_t(m_prims.size()); }
   const MeshGpu*  meshGpu(MeshId mesh) const;
+  const std::map<const OpacityMicromap*, MicromapGpu>& micromaps() const { return m_micromaps; }
   BufferHandle    renderNodeTable() const { return m_renderNodes; }
   BufferHandle    renderPrimTable() const { return m_renderPrims; }
   BufferHandle    sceneDescBuffer() const { return m_sceneDesc; }
@@ -239,7 +255,8 @@ public:
   };
   const MaterialState* materialState(uint32_t slot) const;
   // what live resources this layer holds (meshes' streams, prims' index buffers and BLASes, the
-  // tables, the TLAS), to tell a leak from what the backend still has to free
+  // micromaps and their prims' indices, the tables, the TLAS), to tell a leak from what the backend
+  // still has to free
   size_t liveBuffers() const;
   size_t liveAccels() const;
   size_t liveImages() const;  // the grace list's included
@@ -284,6 +301,8 @@ private:
   MeshGpu& acquireMesh(const RetainedScene& scene, MeshId id);
   uint32_t acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh);
   void     releasePrim(uint32_t slot);
+  void     linkMicromap(Prim& prim, const MicromapUse& use);
+  void     unlinkMicromap(Prim& prim);
   uint32_t acquireMaterial(const RetainedScene& scene, MaterialId id);
   void     releaseMaterial(MaterialId id);
   void     acquireMaterialTextures(const RetainedScene& scene, MaterialId id, MaterialSlot& slot);
@@ -323,6 +342,8 @@ private:
 
   std::map<MeshId, MeshGpu>            m_meshes;
   std::vector<std::optional<Prim>>     m_prims;      // by prim slot, up to the high-water mark
+  std::map<const OpacityMicromap*, MicromapGpu> m_micromaps;
+  uint32_t                                      m_micromapPrims = 0;  // prims that link one
   std::vector<std::optional<Instance>> m_instances;  // by instance slot, up to the high-water mark
   std::map<InstanceKey, uint32_t>      m_slotOf;
   std::map<MaterialId, MaterialSlot>   m_materials;

@@ -4308,6 +4308,7 @@ rs::VulkanGpuBackend::Info GltfRenderer::retainedBackendInfo()
           .maxTextures        = m_maxTextures,
           .maxSamplers        = m_maxSamplers,
           .blasScratchBudget  = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
+          .opacityMicromaps   = m_resources.settings.opacityMicromapSupported,
           // what a host decoded ahead (prefetchImage) lands in SceneVk's map either way
           .takePrefetched = [this](const std::filesystem::path& path,
                                    bool srgb) { return m_resources.sceneVk.takePrefetchedFile(path, srgb); }};
@@ -4330,6 +4331,11 @@ void GltfRenderer::createRetainedScene()
   }
   for(const std::string& notice : imported.notices)
     LOGW("Retained scene: %s\n", notice.c_str());
+  // as createVulkanScene says it: micromaps only accelerate, so without device support they are left out
+  const std::vector<std::string>& extUsed = scene.getModel().extensionsUsed;
+  if(m_resources.settings.opacityMicromapMissing
+     && std::find(extUsed.begin(), extUsed.end(), EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME) != extUsed.end())
+    LOGW("Scene has opacity micromaps; using them needs an NVIDIA RTX GPU with a recent driver (VK_KHR_opacity_micromap). Rendering is unaffected.\n");
   m_resources.retainedBridge = rs::LegacyDirtyBridge(std::move(imported));
   // the previous scene's, emptied, when the cleanup kept it: its decoded images are this one's to take
   if(m_resources.retainedSpare)

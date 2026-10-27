@@ -24,7 +24,9 @@
 // docs/retained-scene-plan.md, "The seam"). It keeps what the GPU would hold, so a test (and from
 // P3a1 the ResidencyOracle) can read it back:
 //  - shadow bytes per buffer, at fake device addresses from an OffsetAllocator (16-byte units);
-//  - each BLAS's input and a hash of the bytes it was built or refitted from;
+//  - each BLAS's input and a hash of the bytes it was built or refitted from, and each opacity
+//    micromap's inputs (a BLAS linking a dead micromap, or a micromap destroyed while a BLAS links
+//    it, is an error);
 //  - each TLAS's rows and how it was last built;
 //  - the texture and sampler descriptor tables, barriers and deform dispatches in call order;
 //  - a frame clock with N frames in flight that runs a retire closure N frames after it was queued,
@@ -74,6 +76,12 @@ public:
     uint32_t        builds      = 0;
     uint32_t        refits      = 0;
   };
+  struct Micromap
+  {
+    std::vector<unsigned char> data, triangles;
+    uint32_t                   triangleStride = 0;
+    std::vector<MicromapUsage> usages;
+  };
   struct Tlas
   {
     uint32_t             capacity = 0;
@@ -110,6 +118,9 @@ public:
   void        destroyImage(ImageHandle image) override;
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
   void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
+  bool                       opacityMicromaps() const override { return m_opacityMicromaps; }
+  void                       setOpacityMicromaps(bool built) { m_opacityMicromaps = built; }  // on by default
+  AccelHandle                buildMicromap(const MicromapInput& input) override;
   AccelHandle buildBlas(const BlasInput& input, AccelBuildFlags flags) override;
   void        refitBlas(AccelHandle blas, const BlasInput& input) override;
   AccelHandle compactBlas(AccelHandle blas) override;
@@ -122,7 +133,8 @@ public:
   // What the GPU holds; nullptr for a dead or unknown handle
   const Buffer* buffer(BufferHandle buffer) const;
   const Image*  image(ImageHandle image) const;
-  const Blas*   blas(AccelHandle blas) const;
+  const Blas*     blas(AccelHandle blas) const;
+  const Micromap* micromap(AccelHandle micromap) const;
   const Tlas*   tlas(AccelHandle tlas) const;
   // The live buffer bytes [address, address + size) fall in, or an empty span when no single live
   // buffer holds the whole range
@@ -147,7 +159,7 @@ public:
   size_t                                    pendingRetires() const { return m_retires.size(); }
   size_t                                    liveBuffers() const { return m_buffers.size(); }
   size_t                                    liveImages() const { return m_images.size(); }
-  size_t                                    liveAccels() const { return m_blases.size() + m_tlases.size(); }
+  size_t liveAccels() const { return m_blases.size() + m_tlases.size() + m_micromaps.size(); }
   const std::vector<std::string>&           errors() const { return m_errors; }
   // What the work recorded so far leaves unfenced for the frame's shading and tracing: uploads with
   // no transfer-to-shader barrier after them, builds with no build-to-trace barrier after them. (A
@@ -171,11 +183,14 @@ private:
   void    written(BufferHandle handle);
   // a build reading [address, address + size): an error when its buffer was written unfenced
   void readByBuild(uint64_t address, const char* op);
+  // a BLAS input's micromap link: a live micromap, its indices inside a live buffer
+  void checkMicromapLink(const BlasInput& input, const char* op);
 
   uint32_t m_framesInFlight;
   uint64_t m_frame         = 0;
   uint64_t m_nextHandle    = 1;
   uint32_t m_waitIdleCount = 0;
+  bool     m_opacityMicromaps = true;
 
   std::unique_ptr<OffsetAllocator::Allocator> m_addresses;
   std::unordered_map<uint64_t, Buffer>        m_buffers;
@@ -183,6 +198,7 @@ private:
   std::vector<size_t>                         m_imageBatches;
   std::vector<UploadRecord>                   m_uploads;
   std::unordered_map<uint64_t, Blas>          m_blases;
+  std::unordered_map<uint64_t, Micromap>      m_micromaps;
   std::unordered_map<uint64_t, Tlas>          m_tlases;
   std::map<uint32_t, ImageHandle>             m_textureDescriptors;
   std::map<uint32_t, GpuSamplerDesc>          m_samplerDescriptors;
