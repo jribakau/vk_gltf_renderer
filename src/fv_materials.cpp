@@ -185,8 +185,9 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
     refresh(again);
 }
 
-void FvMaterials::attachModel(const std::string& id, Placement at, int count, int meshes)
+void FvMaterials::attachModel(const std::string& id, Placement at, const tinygltf::Model& source)
 {
+  const int count = int(source.materials.size()), meshes = int(source.meshes.size());
   m_generation++;
   nvvkgltf::Scene* scn = m_hooks.renderer->editScene();
   // the same model composed again keeps the edits made to it
@@ -209,7 +210,9 @@ void FvMaterials::attachModel(const std::string& id, Placement at, int count, in
   {
     const tinygltf::Material& g = model->materials[size_t(at.materials + i)];
     fv::Material              m;
-    m.name = g.name;
+    // the composed copy's name may be one the scene made up from its composed index
+    const std::string& own = source.materials[size_t(i)].name;
+    m.name                 = own.empty() ? "Material-" + std::to_string(i) : own;
     if(size_t(i) < edits.size())
       m.edits = edits[size_t(i)];
     m_modelScene.materials.push_back(std::move(m));

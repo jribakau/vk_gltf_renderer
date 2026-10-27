@@ -103,6 +103,9 @@ set(TEST_SOURCES
     # A model prop's material with its edits, for the scene and for an export
     test_fv_model_material.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_model_material.cpp
+    # A prop's nodes topic: taken-off items left out, a model's own names
+    test_fv_view_describe.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_view_describe.cpp
     # Figure Viewer texture sources outside the cooked set, Original textures (header only)
     test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough

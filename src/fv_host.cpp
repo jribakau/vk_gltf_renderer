@@ -1983,10 +1983,10 @@ void FvHost::Impl::compose()
     {
       if(!p.materials)
         p.materials = makeMaterials(props[i]);
-      p.materials->attachModel(p.id, at, int(p.model->materials.size()), int(p.model->meshes.size()));
+      p.materials->attachModel(p.id, at, *p.model);
       nodes.materials     = at.materials;
       nodes.materialCount = int(p.model->materials.size());
-      Json described = FvView::describeModel(nodes, scn->getModel(), p.placed.root, p.placed.firstNode, p.placed.lastNode, base.meshes);
+      Json described = FvView::describeModel(nodes, *p.model, p.placed.firstNode);
       p.stats        = described["stats"];
       protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
     }

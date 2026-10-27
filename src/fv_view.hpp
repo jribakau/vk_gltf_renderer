@@ -94,12 +94,13 @@ public:
   };
 
   // A figure's "nodes/<prop>" topic ({nodes: {"<i>": {name, parent, kind, order, depth}}, stats})
-  // from its scene graph, `nodeOf` its scene nodes in the renderer's scene; fills `out`.
+  // from its scene graph, `nodeOf` its scene nodes in the renderer's scene; fills `out`. Taken-off
+  // items are left out. (fv_view_describe.cpp, as is describeModel.)
   static fv::Json describeFigure(PropNodes& out, const fv::SceneGraph& scene, int root, const std::vector<int>& nodeOf, int morphs);
-  // The same for a model read from a file, nodes [firstNode, lastNode) of the composed `model`
-  // under `root`: topic node i is glTF node firstNode + i, and a node's mesh is the model's own
-  // (the composed one less `meshBase`), as the materials topic counts them.
-  static fv::Json describeModel(PropNodes& out, const tinygltf::Model& model, int root, int firstNode, int lastNode, int meshBase);
+  // The same for a model read from a file, from the file's own `model`: topic node i is its node i,
+  // composed at glTF node firstNode + i, and a node's mesh is the model's own, as the materials
+  // topic counts them. Unnamed nodes are named from their place in the file.
+  static fv::Json describeModel(PropNodes& out, const tinygltf::Model& model, int firstNode);
 
   // The props now in the scene, after a composition; republishes the selection.
   void setProps(std::vector<PropNodes> props);

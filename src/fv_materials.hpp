@@ -132,10 +132,12 @@ public:
   // `built` what the build made of its materials. Publishes the topic. Application thread.
   void attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped,
               fv::mat::SkinMode skin, Placement at);
-  // A model read from a glTF or OBJ file, `count` materials and `meshes` meshes of it at `at`: its
-  // materials as they are, with the same edits laid over them directly (there is no Surface to
-  // lower). Attached again (the scene was composed again), it keeps its edits and writes them.
-  void attachModel(const std::string& id, Placement at, int count, int meshes);
+  // A model read from a glTF or OBJ file, `source` as the file has it, its arrays composed at `at`:
+  // its materials as they are, with the same edits laid over them directly (there is no Surface to
+  // lower), named as the file names them or "Material-<i>" from their place in it, so a scene
+  // file's edits find them whatever else is in the scene. Attached again (the scene was composed
+  // again), it keeps its edits and writes them.
+  void attachModel(const std::string& id, Placement at, const tinygltf::Model& source);
   // The topic goes too.
   void detach();
   // The edits of a model's material `index`, to lay over its file's own (fv::model::editedMaterial)
