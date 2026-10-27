@@ -28,6 +28,7 @@
 
 #include <glm/gtc/packing.hpp>
 
+#include <figure/io/timing.hpp>
 #include <nvutils/id_pool.hpp>
 
 #include "ies_profile.hpp"
@@ -142,6 +143,7 @@ void Residency::clear()
   m_lightTable = m_emissiveTable = {};
   m_lightCount = m_emissiveCount = 0;
   m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
+  m_emissiveStale                           = false;
   m_shadeMaterials.clear();
   m_descDirty = false;
   retireAccel(m_tlas);
@@ -567,7 +569,9 @@ SyncResult Residency::sync(RetainedScene& scene)
   SyncResult         result;
   const SceneChanges changes = scene.takeChanges();
   const bool         fresh   = !m_renderNodes;
-  if(!fresh && changes.empty())
+  // an emitter's vertex writes have stopped long enough: the table takes the areas they left
+  const bool emissiveSettled = m_emissiveStale && m_gpu.frame() >= m_emitterWriteFrame + m_options.emissiveSettleFrames;
+  if(!fresh && changes.empty() && !emissiveSettled)
     return result;
 
   std::vector<DrawItem> items = scene.drawItems();
@@ -577,8 +581,9 @@ SyncResult Residency::sync(RetainedScene& scene)
     syncStructure(scene, items, result);
   if(!changes.materials.empty())
     syncMaterials(scene, changes.materials, result);
+  std::set<MeshId> written;
   if(!changes.meshes.empty())
-    syncVertices(scene, changes.meshes, result);
+    written = syncVertices(scene, changes.meshes, result);
   ensureCapacity(result);
   // textures before materials before geometry (see "The sync"): the textures are written as their
   // materials take them, and every material is converted here, before an instance draws with it
@@ -601,20 +606,28 @@ SyncResult Residency::sync(RetainedScene& scene)
     syncLights(scene);
     result.changed = true;
   }
-  // the emissive table: its emitters came, went, moved, were shown or hidden, or their vertices or
-  // materials changed (any slot change counts, so an entry never names a renumbered slot)
-  bool emitterMoved = false;
+  // the emissive table: its emitters came, went, moved, were shown or hidden, or their materials
+  // changed (any slot change counts, so an entry never names a renumbered slot), this frame. Their
+  // vertex writes only mark it stale: one O(emissive triangles) build once they stop, not one a
+  // dial or drape frame, with the weights lagging meanwhile (the shader reads live geometry).
+  bool emitterMoved = false, emitterWritten = false;
   for(const std::optional<Instance>& inst : m_instances)
-    if(inst && changes.transforms.count(inst->entity) && inst->materialSlot < m_shadeMaterials.size()
-       && nvvkgltf::emissiveLuminance(glm::max(m_shadeMaterials[inst->materialSlot].emissiveFactor, glm::vec3(0.f))) > 0.f)
+    if(inst && emits(*inst))
     {
-      emitterMoved = true;
-      break;
+      emitterMoved |= changes.transforms.count(inst->entity) > 0;
+      emitterWritten |= written.count(inst->mesh) > 0;
     }
-  if(fresh || materialsWritten || result.visibilityChanged || result.verticesWritten || emitterMoved)
+  if(emitterWritten)
   {
+    m_emissiveStale     = true;
+    m_emitterWriteFrame = m_gpu.frame();
+  }
+  if(fresh || materialsWritten || result.visibilityChanged || emitterMoved || (emissiveSettled && !emitterWritten))
+  {
+    fv::timing::Accum time("emissive rebuild");
     syncEmissive(scene);
-    result.changed = true;
+    m_emissiveStale = false;
+    result.changed  = true;
   }
   if(m_descDirty || result.buffersChanged || !m_sceneDesc)
   {
@@ -700,9 +713,10 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
 }
 
 // Every mesh whose vertices were edited, uploaded again; its BLASes refit, or rebuilt when a
-// stream's buffer had to be replaced (the build data holds its address).
-void Residency::syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result)
+// stream's buffer had to be replaced (the build data holds its address). Returns the meshes written.
+std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result)
 {
+  std::set<MeshId>      written;
   std::vector<uint32_t> refits;  // after every upload, behind one barrier
   for(MeshId id : meshes)
   {
@@ -734,13 +748,15 @@ void Residency::syncVertices(RetainedScene& scene, const std::set<MeshId>& meshe
       result.buffersChanged = true;
     result.verticesWritten = true;
     result.changed         = true;
+    written.insert(id);
   }
   if(refits.empty())
-    return;
+    return written;
   m_gpu.barrier(GpuBarrier::eTransferToBuild);
   for(uint32_t p : refits)
     m_gpu.refitBlas(m_prims[p]->blas, m_prims[p]->input);
   m_gpu.barrier(GpuBarrier::eBuildToBuild);  // the TLAS build reads them
+  return written;
 }
 
 void Residency::ensureCapacity(SyncResult& result)
@@ -954,6 +970,15 @@ void Residency::syncLights(RetainedScene& scene)
     m_gpu.upload(m_lightTable, 0, std::as_bytes(std::span(lights)));
   m_descDirty |= m_lightCount != lights.size();
   m_lightCount = uint32_t(lights.size());
+}
+
+// A shown instance whose material emits
+bool Residency::emits(const Instance& inst) const
+{
+  if(!inst.shown || inst.materialSlot >= m_shadeMaterials.size())
+    return false;
+  const shaderio::GltfShadeMaterial& shade = m_shadeMaterials[inst.materialSlot];
+  return nvvkgltf::emissiveLuminance(glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale) > 0.f;
 }
 
 // The shown instances whose material emits, their triangles from their mesh records

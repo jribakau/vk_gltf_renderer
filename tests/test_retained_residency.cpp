@@ -505,6 +505,78 @@ TEST(RetainedResidency, TheEmissiveTableFollowsItsEmitters)
     ADD_FAILURE() << p;
 }
 
+// An emitter's vertex writes (a dial drag) leave the table's areas as they were until the writes
+// stop for emissiveSettleFrames, then one rebuild takes the last ones; a non-emitter's writes don't
+// touch it, and any other emitter change rebuilds at once
+TEST(RetainedResidency, AnEmittersVertexWritesRebuildTheTableOnceTheyStop)
+{
+  RetainedScene scene;
+  const MeshId  glowing = scene.addMesh(gridMesh(2, 0.f));
+  const MeshId  dark    = scene.addMesh(gridMesh(2, 1.f));
+  drawn(scene, "dark", dark, {material(scene, "dark")});
+  const MaterialId glow = emissive(scene, 2.f);
+  drawn(scene, "glow", glowing, {glow});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.emissiveSettleFrames = 3});
+  residency.replace(scene);
+  const float                  weight = residency.emissiveTotalWeight();
+  const std::vector<glm::vec3> base   = scene.mesh(glowing)->positions;
+  const auto                   scaled = [&](float k) {
+    std::vector<glm::vec3> out = base;
+    for(glm::vec3& p : out)
+      p *= k;
+    return out;
+  };
+
+  // the drag: two frames of writes, then quiet ones; the weights lag until the third quiet frame
+  scene.setMeshVertices(glowing, scaled(2.f), {});
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(scene).verticesWritten);
+  EXPECT_TRUE(residency.emissiveSettling());
+  EXPECT_EQ(residency.emissiveTotalWeight(), weight);
+  expectClean(scene, residency, gpu, "dragging: ");
+  scene.setMeshVertices(glowing, scaled(3.f), {});
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(residency.emissiveTotalWeight(), weight);
+  for(int quiet = 1; quiet <= 2; quiet++)
+  {
+    gpu.beginFrame();
+    EXPECT_FALSE(residency.sync(scene).changed) << quiet;
+    EXPECT_EQ(residency.emissiveTotalWeight(), weight) << quiet;
+  }
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(scene).changed);
+  EXPECT_FALSE(residency.emissiveSettling());
+  EXPECT_NEAR(residency.emissiveTotalWeight(), 9.f * weight, 1e-2f);
+  expectClean(scene, residency, gpu, "settled: ");
+  gpu.beginFrame();
+  EXPECT_FALSE(residency.sync(scene).changed);  // once
+
+  // a non-emitter's writes leave the table alone
+  std::vector<glm::vec3> moved = scene.mesh(dark)->positions;
+  for(glm::vec3& p : moved)
+    p.z += 1.f;
+  scene.setMeshVertices(dark, moved, {});
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_FALSE(residency.emissiveSettling());
+
+  // a material edit while settling rebuilds at once, from the latest positions
+  scene.setMeshVertices(glowing, base, {});
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_TRUE(residency.emissiveSettling());
+  tinygltf::Material payload = scene.material(glow)->payload;
+  payload.doubleSided        = !payload.doubleSided;
+  scene.setMaterial(glow, payload);
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_FALSE(residency.emissiveSettling());
+  EXPECT_NEAR(residency.emissiveTotalWeight(), weight, 1e-3f);
+  expectClean(scene, residency, gpu, "material edit: ");
+}
+
 // Oracle 2b: random edits, each synced and checked; at the end the scene made resident afresh holds
 // the same draws, the same geometry and the same transforms (slots may differ, content may not).
 TEST(RetainedResidency, IncrementalEqualsFresh)
@@ -526,7 +598,7 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
     std::vector<EntityId> live;
 
     FakeGpuBackend gpu(2);
-    Residency      residency(gpu, {.minInstances = 4, .minPrims = 4});
+    Residency      residency(gpu, {.minInstances = 4, .minPrims = 4, .emissiveSettleFrames = 3});
     residency.replace(scene);
     const auto pick = [&](auto& v) -> auto& { return v[std::uniform_int_distribution<size_t>(0, v.size() - 1)(rng)]; };
 
@@ -582,6 +654,14 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       residency.sync(scene);
       expectClean(scene, residency, gpu, "seed " + std::to_string(seed) + " step " + std::to_string(step) + ": ");
     }
+    // the emissive table settles once the vertex writes stop
+    for(int frame = 0; frame < 3; frame++)
+    {
+      gpu.beginFrame();
+      residency.sync(scene);
+    }
+    EXPECT_FALSE(residency.emissiveSettling()) << "seed " << seed;
+    expectClean(scene, residency, gpu, "settled, seed " + std::to_string(seed) + ": ");
     EXPECT_EQ(gpu.waitIdleCount(), 0u);
     drain(gpu);
     for(const std::string& p : residencyLeaks(residency, gpu))

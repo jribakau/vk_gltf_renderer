@@ -314,7 +314,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     out.push_back("lights: the light table is not the scene's lights in document order");
 
   // the emissive table (I6): the shown instances whose materials emit, by their slots, built from
-  // their meshes' current positions
+  // their meshes' current positions; not while an emitter's vertex writes settle, when its areas lag
+  // by design (the tests check the table once they have)
   std::vector<nvvkgltf::Emitter> emitters;
   for(uint32_t s = 0; s < hwm; s++)
   {
@@ -334,10 +335,11 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
                         std::span(record->indices).subspan(run.firstIndex, run.indexCount)});
   }
   const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters);
-  if(residency.emissiveCount() != table.triangles.size() || residency.emissiveTotalWeight() != table.totalWeight
-     || residency.emissiveMeanLum() != table.meanLum
-     || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveTable()), table.triangles.size() * sizeof(shaderio::EmissiveTriangle)),
-                   table.triangles.data(), table.triangles.size()))
+  if(!residency.emissiveSettling()
+     && (residency.emissiveCount() != table.triangles.size() || residency.emissiveTotalWeight() != table.totalWeight
+         || residency.emissiveMeanLum() != table.meanLum
+         || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveTable()), table.triangles.size() * sizeof(shaderio::EmissiveTriangle)),
+                       table.triangles.data(), table.triangles.size())))
     out.push_back("I6: the emissive table is not the shown emitters' triangles");
 
   // the scene descriptor

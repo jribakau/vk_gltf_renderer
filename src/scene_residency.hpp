@@ -39,7 +39,9 @@
 //   samplers hold sampler slots (slot 0 the default sampler). Through P3a1 the material and texture
 //   info tables are converted whole when a material or its textures change (P3a2 brings spans).
 // - Lights are dense, in document order, packed again when one changes; the emissive table is
-//   derived from the shown instances whose materials emit, built again whenever its inputs change.
+//   derived from the shown instances whose materials emit, built again in the frame its emitters
+//   or their slots change. An emitter's vertex writes (a dial, a drape) are the exception: the
+//   table's areas lag until the writes stop for emissiveSettleFrames, then it is built once.
 // - Everything freed goes through GpuBackend::retire, a frame cycle later; nothing waits for idle.
 //
 // Application thread only.
@@ -72,6 +74,8 @@ struct ResidencyOptions
   uint32_t minInstances      = 256;           // residencyMinInstances: the least instance capacity
   uint32_t minPrims          = 256;           // and prim capacity
   uint64_t blasScratchBudget = 512ull << 20;  // blasScratchBudgetMB (the Vulkan backend's batches)
+  // frames with no vertex write to an emitter before the emissive table takes its new areas
+  uint64_t emissiveSettleFrames = 8;
 };
 
 // What a sync did, for the renderer (see "The contract")
@@ -174,6 +178,8 @@ public:
   uint32_t     emissiveCount() const { return m_emissiveCount; }
   float        emissiveTotalWeight() const { return m_emissiveTotalWeight; }
   float        emissiveMeanLum() const { return m_emissiveMeanLum; }
+  // an emitter's vertices were written and the table still has the areas from before
+  bool emissiveSettling() const { return m_emissiveStale; }
   // a material slot's converted row, the emissive table's radiance source
   const shaderio::GltfShadeMaterial* shadeMaterial(uint32_t slot) const;
   BufferHandle                       textureInfoTable() const { return m_textureInfoTable; }
@@ -222,7 +228,7 @@ private:
 
   void syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result);
   void syncRows(const std::vector<DrawItem>& items, SyncResult& result);
-  void syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result);
+  std::set<MeshId> syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result);
 
   MeshGpu& acquireMesh(const RetainedScene& scene, MeshId id);
   uint32_t acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh);
@@ -238,6 +244,7 @@ private:
   void     buildDrawLists();
   void     syncLights(RetainedScene& scene);
   void     syncEmissive(const RetainedScene& scene);
+  bool     emits(const Instance& inst) const;
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
   void     retireAccel(AccelHandle accel);
@@ -279,6 +286,8 @@ private:
   float                                m_emissiveTotalWeight = 0.f;
   float                                m_emissiveMeanLum     = 0.f;
   bool                                 m_descDirty           = false;  // a table moved or a count changed
+  bool                                 m_emissiveStale       = false;  // see emissiveSettling()
+  uint64_t                             m_emitterWriteFrame   = 0;      // the last frame that wrote one
   std::array<std::vector<uint32_t>, 4> m_drawLists;
   uint64_t                             m_drawListsRevision = 0;
   bool                                 m_hasTransmission   = false;
