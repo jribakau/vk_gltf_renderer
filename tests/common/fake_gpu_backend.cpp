@@ -185,7 +185,7 @@ void FakeGpuBackend::writeTextureDescriptor(uint32_t slot, ImageHandle handle)
   m_textureDescriptors[slot] = handle;
 }
 
-void FakeGpuBackend::writeSamplerDescriptor(uint32_t slot, const SamplerDesc& desc)
+void FakeGpuBackend::writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc)
 {
   m_samplerDescriptors[slot] = desc;
 }

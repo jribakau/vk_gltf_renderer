@@ -98,7 +98,7 @@ public:
   ImageHandle createImage(const ImageDesc& desc, std::span<const std::byte> pixels) override;
   void        destroyImage(ImageHandle image) override;
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
-  void        writeSamplerDescriptor(uint32_t slot, const SamplerDesc& desc) override;
+  void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
   AccelHandle buildBlas(const BlasInput& input, AccelBuildFlags flags) override;
   void        refitBlas(AccelHandle blas, const BlasInput& input) override;
   AccelHandle compactBlas(AccelHandle blas) override;
@@ -119,17 +119,17 @@ public:
   // The hash a BLAS built from this input now would get; 0 when its ranges don't resolve
   uint64_t contentHash(const BlasInput& input) const;
 
-  const std::map<uint32_t, ImageHandle>& textureDescriptors() const { return m_textureDescriptors; }
-  const std::map<uint32_t, SamplerDesc>& samplerDescriptors() const { return m_samplerDescriptors; }
-  const std::vector<GpuBarrier>&         barriers() const { return m_barriers; }
-  const std::vector<DeformDispatch>&     deforms() const { return m_deforms; }
-  uint32_t                               framesInFlight() const { return m_framesInFlight; }
-  uint32_t                               waitIdleCount() const { return m_waitIdleCount; }
-  size_t                                 pendingRetires() const { return m_retires.size(); }
-  size_t                                 liveBuffers() const { return m_buffers.size(); }
-  size_t                                 liveImages() const { return m_images.size(); }
-  size_t                                 liveAccels() const { return m_blases.size() + m_tlases.size(); }
-  const std::vector<std::string>&        errors() const { return m_errors; }
+  const std::map<uint32_t, ImageHandle>&    textureDescriptors() const { return m_textureDescriptors; }
+  const std::map<uint32_t, GpuSamplerDesc>& samplerDescriptors() const { return m_samplerDescriptors; }
+  const std::vector<GpuBarrier>&            barriers() const { return m_barriers; }
+  const std::vector<DeformDispatch>&        deforms() const { return m_deforms; }
+  uint32_t                                  framesInFlight() const { return m_framesInFlight; }
+  uint32_t                                  waitIdleCount() const { return m_waitIdleCount; }
+  size_t                                    pendingRetires() const { return m_retires.size(); }
+  size_t                                    liveBuffers() const { return m_buffers.size(); }
+  size_t                                    liveImages() const { return m_images.size(); }
+  size_t                                    liveAccels() const { return m_blases.size() + m_tlases.size(); }
+  const std::vector<std::string>&           errors() const { return m_errors; }
 
   // The fake's address range: 16-byte units in a 32-bit allocator, from a base that no real buffer
   // address in a test could be confused with
@@ -157,7 +157,7 @@ private:
   std::unordered_map<uint64_t, Blas>          m_blases;
   std::unordered_map<uint64_t, Tlas>          m_tlases;
   std::map<uint32_t, ImageHandle>             m_textureDescriptors;
-  std::map<uint32_t, SamplerDesc>             m_samplerDescriptors;
+  std::map<uint32_t, GpuSamplerDesc>          m_samplerDescriptors;
   std::vector<GpuBarrier>                     m_barriers;
   std::vector<DeformDispatch>                 m_deforms;
   std::vector<Retire>                         m_retires;

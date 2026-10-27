@@ -7,6 +7,8 @@ set(TEST_COMMON_SOURCES
     common/test_utils.cpp
     common/fake_gpu_backend.hpp
     common/fake_gpu_backend.cpp
+    common/residency_oracle.hpp
+    common/residency_oracle.cpp
     test_main.cpp
 )
 
@@ -153,6 +155,9 @@ set(TEST_SOURCES
     test_selection_render_nodes.cpp
     # The retained scene's GPU seam without a GPU (rs::GpuBackend): the fake's own tests
     test_fake_gpu_backend.cpp
+    # The retained scene on the fake GPU, every sync held to ResidencyOracle (oracles 1 and 2b)
+    test_retained_residency.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_residency.cpp
     # The host's addressing on the legacy scene: uploads reach their mesh's prims, picks map back (oracle 8)
     test_fv_scene_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp

@@ -87,13 +87,13 @@ struct ImageDesc
 };
 
 // glTF sampler values (TINYGLTF_TEXTURE_FILTER_*, TINYGLTF_TEXTURE_WRAP_*); a filter of -1 is unset
-struct SamplerDesc
+struct GpuSamplerDesc
 {
-  int  magFilter                            = -1;
-  int  minFilter                            = -1;
-  int  wrapS                                = 10497;  // REPEAT
-  int  wrapT                                = 10497;
-  bool operator==(const SamplerDesc&) const = default;
+  int  magFilter                               = -1;
+  int  minFilter                               = -1;
+  int  wrapS                                   = 10497;  // REPEAT
+  int  wrapT                                   = 10497;
+  bool operator==(const GpuSamplerDesc&) const = default;
 };
 
 // One triangle geometry: float3 positions at vertexAddress with vertexStride, uint32 indices
@@ -186,8 +186,8 @@ public:
   virtual ImageHandle createImage(const ImageDesc& desc, std::span<const std::byte> pixels) = 0;
   virtual void        destroyImage(ImageHandle image)                                       = 0;
   // A slot of the scene's texture array; no image writes the default one.
-  virtual void writeTextureDescriptor(uint32_t slot, ImageHandle image)       = 0;
-  virtual void writeSamplerDescriptor(uint32_t slot, const SamplerDesc& desc) = 0;
+  virtual void writeTextureDescriptor(uint32_t slot, ImageHandle image)          = 0;
+  virtual void writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) = 0;
 
   // ---------- Acceleration structures ----------
   // A new BLAS, its build recorded in this frame.

@@ -177,6 +177,9 @@ src/
 ├── scene_gpu_view.hpp          # SceneGpuView: what the renderers read of the scene on the GPU, and the
 │                               #   per-slot side tables; LegacySceneGpuView (scene_gpu_view_legacy.cpp)
 │                               #   puts Scene, SceneVk and SceneRtx behind it
+├── scene_residency.cpp/hpp     # rs::Residency: a RetainedScene kept resident through rs::GpuBackend,
+│                               #   synced once a frame (slots with holes, capacity tables, BLAS per
+│                               #   prim, the TLAS); Vulkan-free, held to tests/common/residency_oracle.*
 ├── scene_gpu_backend.hpp       # rs::GpuBackend: all the retained residency layer will call on the GPU,
 │                               #   Vulkan-free (tests/common/fake_gpu_backend.* is its GPU-free twin)
 ├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
