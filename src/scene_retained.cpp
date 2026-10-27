@@ -191,15 +191,18 @@ void RetainedScene::releaseMaterialTextures(const MaterialRecord& material)
       release(ref.texture);
 }
 
-void RetainedScene::setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals)
+void RetainedScene::setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals, std::vector<glm::vec4> tangents)
 {
   assertOwner();
   auto* r = m_meshes.get(id);
-  if(!r || positions.size() != r->value.positions.size() || (!normals.empty() && normals.size() != r->value.normals.size()))
+  if(!r || positions.size() != r->value.positions.size() || (!normals.empty() && normals.size() != r->value.normals.size())
+     || (!tangents.empty() && tangents.size() != r->value.positions.size()))
     return;
   r->value.positions = std::move(positions);
   if(!normals.empty())
     r->value.normals = std::move(normals);
+  if(!tangents.empty())
+    r->value.tangents = std::move(tangents);
   r->value.contentRev++;
   m_changes.meshes.insert(id);
   m_boundsRevision++;
@@ -224,6 +227,24 @@ void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload)
     r->value.rev++;
     m_changes.materials.insert(id);
   }
+}
+
+void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload, std::shared_ptr<const TextureTable> textures)
+{
+  assertOwner();
+  auto* r = m_materials.get(id);
+  if(!r)
+    return;
+  if(textures != r->value.textures)
+  {
+    if(textures)
+      for(const TextureRef& ref : *textures)
+        retain(ref.texture);
+    MaterialRecord old{.textures = std::move(r->value.textures)};
+    r->value.textures = std::move(textures);
+    releaseMaterialTextures(old);
+  }
+  setMaterial(id, std::move(payload));
 }
 
 void RetainedScene::setLight(LightId id, const tinygltf::Light& payload)
@@ -553,7 +574,8 @@ std::vector<DrawItem> RetainedScene::drawItems()
     for(size_t p = 0; p < e.mesh->parts.size(); p++)
       if(const MeshRecord* m = mesh(e.mesh->parts[p].mesh))
         for(uint32_t s = 0; s < m->submeshes.size(); s++)
-          runs.push_back({m->submeshes[s].order, p, s});
+          if(m->submeshes[s].indexCount)
+            runs.push_back({m->submeshes[s].order, p, s});
     std::stable_sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) { return a.order < b.order; });
     const Derived& d = m_derived[id.index];
     for(const Run& r : runs)

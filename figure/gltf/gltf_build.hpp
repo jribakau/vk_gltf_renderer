@@ -9,8 +9,10 @@
 // textures are flipped by the cooker (flip=1, rows bottom-up as the RTX export always had them);
 // a source image read as it is would show upside down, so without the cooker the UVs flip instead.
 
+#include <array>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -68,6 +70,49 @@ struct BuildResult
   // request key -> the glTF texture made for it, so a later edit reuses what the build already has
   std::map<std::string, mat::ResolvedTexture> textureOf;
 };
+
+// A mesh's drawn triangles: all of them, or without the polygons a worn item hides.
+class DrawnView
+{
+public:
+  explicit DrawnView(const mesh::BuiltMesh& g)
+      : m_geo(g)
+  {
+    if(!g.hiddenPolys.empty())
+      m_own = mesh::drawnTriangles(g);
+  }
+  const std::vector<uint32_t>&    index() const { return m_geo.hiddenPolys.empty() ? m_geo.fullIndex : m_own.index; }
+  const std::vector<mesh::Group>& groups() const { return m_geo.hiddenPolys.empty() ? m_geo.groups : m_own.groups; }
+
+private:
+  const mesh::BuiltMesh& m_geo;
+  mesh::Drawn            m_own;
+};
+
+// What a build reads from the meshes before it lowers a material, and the figure feed with it.
+struct Drawing
+{
+  // every node reachable from the root, depth first as traversal meets them (taken-off subtrees left out)
+  std::vector<int> order;
+  // per scene mesh: its drawn triangles, null without geometry, and its position bounds (min x y z, max x y z)
+  std::vector<std::unique_ptr<DrawnView>> drawn;
+  std::vector<std::array<double, 6>>      bounds;
+};
+Drawing drawing(const SceneGraph& scene, int root);
+
+// Per scene material, the options it is lowered with: requestOptions, the UV flip, ribbon
+// double-sidedness, the emission its emitting area gives it and the hair strand direction its cards
+// vote for. The one place the build and the feed take them from.
+std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& drawing, const BuildOptions& options);
+
+// The figure's one sampler (repeat, trilinear).
+tinygltf::Sampler figureSampler();
+
+// Scene material `material` as the build emits it: materialToGltf, with its `m:<i>` id and the
+// walk-through flag in its extras.
+tinygltf::Material figureMaterial(const SceneGraph& scene, int material, const mat::LowerOptions& lowering,
+                                  const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve,
+                                  std::vector<std::string>& extensionsUsed, const BuildOptions& options);
 
 // A skinned mesh's inverse bind matrices as glTF stores them (16 floats per bone, column-major):
 // GLTFExporter's, the bone inverse times the bind matrix.

@@ -111,24 +111,6 @@ private:
   std::vector<std::shared_ptr<void>> m_kept;
 };
 
-// A mesh's drawn triangles: all of them, or without the polygons a worn item hides.
-class DrawnView
-{
-public:
-  explicit DrawnView(const mesh::BuiltMesh& g)
-      : m_geo(g)
-  {
-    if(!g.hiddenPolys.empty())
-      m_own = mesh::drawnTriangles(g);
-  }
-  const std::vector<uint32_t>&    index() const { return m_geo.hiddenPolys.empty() ? m_geo.fullIndex : m_own.index; }
-  const std::vector<mesh::Group>& groups() const { return m_geo.hiddenPolys.empty() ? m_geo.groups : m_own.groups; }
-
-private:
-  const mesh::BuiltMesh& m_geo;
-  mesh::Drawn            m_own;
-};
-
 // The strand votes of one hair part (a mesh's drawn ranges of one material), measured once per
 // geometry: a strand hair's cards take about a second to weld and measure, and the host builds the
 // glTF again after every wardrobe change. A part is kept while its geometry lives; a dial that moves
@@ -222,18 +204,6 @@ std::map<int, std::vector<mat::StrandMesh::Range>> hairRanges(const SceneGraph& 
       out[mi].push_back({group.start, group.count});
   }
   return out;
-}
-
-// The figure's one sampler. Genesis UVs use one 0..1 tile per surface group (UDIM-style); repeat
-// maps each tile home.
-tinygltf::Sampler figureSampler()
-{
-  tinygltf::Sampler s;
-  s.wrapS     = TINYGLTF_TEXTURE_WRAP_REPEAT;
-  s.wrapT     = TINYGLTF_TEXTURE_WRAP_REPEAT;
-  s.magFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
-  s.minFilter = TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR;
-  return s;
 }
 
 tinygltf::Value extras(const std::string& fvId)
@@ -436,19 +406,22 @@ void measureStrands(const SceneGraph& scene, bool texturesFlipped)
   });
 }
 
-BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& options)
+// The figure's one sampler. Genesis UVs use one 0..1 tile per surface group (UDIM-style); repeat
+// maps each tile home.
+tinygltf::Sampler figureSampler()
 {
-  BuildResult      out;
-  tinygltf::Model& model = out.model;
-  model.asset.version   = "2.0";
-  model.asset.generator = "Figure Viewer";
-  Writer w(model);
-  out.nodeOf.assign(scene.nodes.size(), -1);
-  out.meshOf.assign(scene.meshes.size(), -1);
-  out.skinOf.assign(scene.meshes.size(), -1);
+  tinygltf::Sampler s;
+  s.wrapS     = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  s.wrapT     = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  s.magFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
+  s.minFilter = TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR;
+  return s;
+}
 
+Drawing drawing(const SceneGraph& scene, int root)
+{
+  Drawing out;
   // nodes, depth first as traversal meets them
-  std::vector<int> order;
   {
     std::vector<int> stack{root};
     while(!stack.empty())
@@ -457,57 +430,24 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       stack.pop_back();
       if(scene.nodes[i].removed)
         continue;
-      out.nodeOf[i] = int(order.size());
-      order.push_back(i);
+      out.order.push_back(i);
       const auto& children = scene.nodes[i].children;
       for(auto it = children.rbegin(); it != children.rend(); ++it)
         stack.push_back(*it);
     }
   }
-  for(int i : order)
-  {
-    const Node&    n = scene.nodes[i];
-    tinygltf::Node g;
-    g.name        = n.name;
-    g.translation = {n.position.x, n.position.y, n.position.z};
-    g.rotation    = {n.quaternion.x, n.quaternion.y, n.quaternion.z, n.quaternion.w};
-    g.scale       = {n.scale.x, n.scale.y, n.scale.z};
-    g.extras      = extras("n:" + std::to_string(i));
-    for(int c : n.children)
-      if(out.nodeOf[c] >= 0)
-        g.children.push_back(out.nodeOf[c]);
-    if(!n.visible)
-    {
-      // KHR_node_visibility, which the renderer reads
-      tinygltf::Value::Object vis;
-      vis["visible"] = tinygltf::Value(false);
-      g.extensions["KHR_node_visibility"] = tinygltf::Value(vis);
-    }
-    model.nodes.push_back(std::move(g));
-  }
-  if(std::any_of(model.nodes.begin(), model.nodes.end(), [](const tinygltf::Node& g) { return g.extensions.count("KHR_node_visibility") > 0; })
-     && std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), "KHR_node_visibility") == model.extensionsUsed.end())
-    model.extensionsUsed.push_back("KHR_node_visibility");
-  model.scenes.emplace_back();
-  model.scenes[0].nodes = {out.nodeOf[root]};
-  model.defaultScene    = 0;
-
-  // what the materials need from the meshes: the area an emitter spreads its flux over, and the
-  // direction of hair strands, which is measured from the cards' UVs as the glTF carries them
-  std::optional<timing::Scope> phase;
-  phase.emplace("drawn triangles and bounds");
-  // each mesh's drawn triangles (without what worn items hide) and position bounds, side by side;
-  // the emitters, the strand votes and the meshes below all read them
-  std::vector<std::unique_ptr<DrawnView>>      drawnOf(scene.meshes.size());
-  std::vector<std::array<double, 6>>           boundsOf(scene.meshes.size());
+  timing::Scope phase("drawn triangles and bounds");
+  // each mesh's drawn triangles (without what worn items hide) and position bounds, side by side
+  out.drawn.resize(scene.meshes.size());
+  out.bounds.resize(scene.meshes.size());
   jobs::parallelFor(scene.meshes.size(), 1, [&](size_t begin, size_t end) {
     for(size_t mi = begin; mi < end; mi++)
     {
       if(!scene.meshes[mi].geo)
         continue;
       const mesh::BuiltMesh& geo = *scene.meshes[mi].geo;
-      drawnOf[mi]                = std::make_unique<DrawnView>(geo);
-      std::array<double, 6>& b   = boundsOf[mi];
+      out.drawn[mi]              = std::make_unique<DrawnView>(geo);
+      std::array<double, 6>& b   = out.bounds[mi];
       b                          = {1e300, 1e300, 1e300, -1e300, -1e300, -1e300};
       for(size_t v = 0, count = geo.position.size() / 3; v < count; v++)
         for(int c = 0; c < 3; c++)
@@ -517,14 +457,20 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
         }
     }
   });
-  phase.reset();
-  phase.emplace("emitters and strand votes");
+  return out;
+}
+
+std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& drawing, const BuildOptions& options)
+{
+  // what the materials need from the meshes: the area an emitter spreads its flux over, and the
+  // direction of hair strands, which is measured from the cards' UVs as the glTF carries them
+  timing::Scope           phase("emitters and strand votes");
   const std::vector<Mat4> worlds = scene.worlds();
   std::vector<double>     emitArea(scene.materials.size(), 0.0);
   std::vector<std::vector<std::shared_ptr<const std::vector<mat::StrandVote>>>> hairVotes(scene.materials.size());
   // a mesh drawn from several nodes (DAZ Studio instances) counts once: each copy emits as the one it copies
   std::vector<bool> counted(scene.meshes.size(), false);
-  for(int i : order)
+  for(int i : drawing.order)
   {
     const Node& n = scene.nodes[i];
     if(n.kind != NodeKind::eMesh || n.mesh < 0 || !scene.meshes[n.mesh].geo || counted[n.mesh])
@@ -537,7 +483,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     double s2 = 0;
     for(int c = 0; c < 3; c++)
       s2 = std::max(s2, w4.e[c * 4] * w4.e[c * 4] + w4.e[c * 4 + 1] * w4.e[c * 4 + 1] + w4.e[c * 4 + 2] * w4.e[c * 4 + 2]);
-    const DrawnView& drawn = *drawnOf[n.mesh];
+    const DrawnView& drawn = *drawing.drawn[n.mesh];
     for(const mesh::Group& group : drawn.groups())
     {
       const int mi = group.materialIndex < int(m.materials.size()) ? m.materials[group.materialIndex] : -1;
@@ -570,11 +516,11 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       for(int mi : m.materials)
         if(mi >= 0 && mi < int(onRibbon.size()))
           onRibbon[mi] = true;
-  out.lowering.assign(scene.materials.size(), {});
+  std::vector<mat::LowerOptions> out(scene.materials.size());
   const bool tearFilm = hasTearFilm(scene);
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
-    mat::LowerOptions& lo = out.lowering[mi];
+    mat::LowerOptions& lo = out[mi];
     lo                    = requestOptions(scene, int(mi), options.skin, tearFilm);
     lo.forFile            = options.forFile;
     lo.flipV              = !options.texturesFlipped;
@@ -586,9 +532,70 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
       votes.insert(votes.end(), v->begin(), v->end());
     lo.anisotropyRotation = mat::strandRotation(votes);
   }
+  return out;
+}
+
+tinygltf::Material figureMaterial(const SceneGraph& scene, int material, const mat::LowerOptions& lowering,
+                                  const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve,
+                                  std::vector<std::string>& extensionsUsed, const BuildOptions& options)
+{
+  tinygltf::Material g = materialToGltf(scene.materials[size_t(material)], lowering, resolve, extensionsUsed);
+  g.extras             = extras("m:" + std::to_string(material));
+  if(size_t(material) < options.walkThrough.size() && options.walkThrough[size_t(material)])
+  {
+    tinygltf::Value::Object o = g.extras.Get<tinygltf::Value::Object>();
+    o["fvWalkThrough"]        = tinygltf::Value(true);
+    g.extras                  = tinygltf::Value(std::move(o));
+  }
+  return g;
+}
+
+BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& options)
+{
+  BuildResult      out;
+  tinygltf::Model& model = out.model;
+  model.asset.version   = "2.0";
+  model.asset.generator = "Figure Viewer";
+  Writer w(model);
+  out.nodeOf.assign(scene.nodes.size(), -1);
+  out.meshOf.assign(scene.meshes.size(), -1);
+  out.skinOf.assign(scene.meshes.size(), -1);
+
+  const Drawing drawn = drawing(scene, root);
+  for(size_t k = 0; k < drawn.order.size(); k++)
+    out.nodeOf[drawn.order[k]] = int(k);
+  for(int i : drawn.order)
+  {
+    const Node&    n = scene.nodes[i];
+    tinygltf::Node g;
+    g.name        = n.name;
+    g.translation = {n.position.x, n.position.y, n.position.z};
+    g.rotation    = {n.quaternion.x, n.quaternion.y, n.quaternion.z, n.quaternion.w};
+    g.scale       = {n.scale.x, n.scale.y, n.scale.z};
+    g.extras      = extras("n:" + std::to_string(i));
+    for(int c : n.children)
+      if(out.nodeOf[c] >= 0)
+        g.children.push_back(out.nodeOf[c]);
+    if(!n.visible)
+    {
+      // KHR_node_visibility, which the renderer reads
+      tinygltf::Value::Object vis;
+      vis["visible"] = tinygltf::Value(false);
+      g.extensions["KHR_node_visibility"] = tinygltf::Value(vis);
+    }
+    model.nodes.push_back(std::move(g));
+  }
+  if(std::any_of(model.nodes.begin(), model.nodes.end(), [](const tinygltf::Node& g) { return g.extensions.count("KHR_node_visibility") > 0; })
+     && std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), "KHR_node_visibility") == model.extensionsUsed.end())
+    model.extensionsUsed.push_back("KHR_node_visibility");
+  model.scenes.emplace_back();
+  model.scenes[0].nodes = {out.nodeOf[root]};
+  model.defaultScene    = 0;
+
+  out.lowering = lowering(scene, drawn, options);
 
   // materials, and the textures they ask for
-  phase.reset();
+  std::optional<timing::Scope> phase;
   phase.emplace("materials");
   std::map<std::string, mat::ResolvedTexture> textureOf;  // request key -> texture
   bool                                        usesBasisu = false;
@@ -624,15 +631,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   };
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
-    tinygltf::Material g = materialToGltf(scene.materials[mi], out.lowering[mi], texture, model.extensionsUsed);
-    g.extras = extras("m:" + std::to_string(mi));
-    if(mi < options.walkThrough.size() && options.walkThrough[mi])
-    {
-      tinygltf::Value::Object o = g.extras.Get<tinygltf::Value::Object>();
-      o["fvWalkThrough"]        = tinygltf::Value(true);
-      g.extras                  = tinygltf::Value(std::move(o));
-    }
-    model.materials.push_back(std::move(g));
+    model.materials.push_back(figureMaterial(scene, int(mi), out.lowering[mi], texture, model.extensionsUsed, options));
   }
   // the live model keeps it even with no texture yet: a texture baked in later (FvMaterials::baked)
   // takes the figure's sampler, the first at its place in the composed model, not another prop's
@@ -647,7 +646,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   // meshes and skins
   phase.reset();
   phase.emplace("meshes and skins");
-  for(int i : order)
+  for(int i : drawn.order)
   {
     const Node& n = scene.nodes[i];
     if(n.kind != NodeKind::eMesh || n.mesh < 0)
@@ -661,11 +660,11 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     const Mesh&            m   = scene.meshes[n.mesh];
     const mesh::BuiltMesh& geo = *m.geo;
     const size_t           count = geo.position.size() / 3;
-    const DrawnView&       drawn = *drawnOf[n.mesh];
-    if(!count || drawn.groups().empty())
+    const DrawnView&       view  = *drawn.drawn[n.mesh];
+    if(!count || view.groups().empty())
       continue;
 
-    const std::array<double, 6>& b = boundsOf[n.mesh];
+    const std::array<double, 6>& b = drawn.bounds[n.mesh];
     const std::vector<double>    min{b[0], b[1], b[2]}, max{b[3], b[4], b[5]};
     const int position = w.accessor(w.view(geo.position.data(), geo.position.size() * 4, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_FLOAT,
                                      count, TINYGLTF_TYPE_VEC3, min, max);
@@ -692,9 +691,9 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     tinygltf::Mesh gm;
     gm.name   = m.name;
     gm.extras = extras("g:" + std::to_string(n.mesh));
-    for(const mesh::Group& group : drawn.groups())
+    for(const mesh::Group& group : view.groups())
     {
-      const uint32_t* first = drawn.index().data() + group.start;
+      const uint32_t* first = view.index().data() + group.start;
       tinygltf::Primitive p;
       if(count <= 65535)
       {

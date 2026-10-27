@@ -113,6 +113,9 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/scene_import_gltf.cpp
     test_retained_export.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_export_gltf.cpp
+    # The figure feed: a figure straight into the retained scene, held to the import of its build
+    test_fv_figure_feed.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp
     # Figure Viewer texture sources outside the cooked set, Original textures (header only)
     test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough

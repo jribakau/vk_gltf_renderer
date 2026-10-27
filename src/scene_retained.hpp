@@ -226,7 +226,8 @@ struct Entity
 };
 
 // What the scene draws, one per (entity, mesh part, submesh, instancing copy), in the order the
-// entity's runs and copies come: the residency layer's instances.
+// entity's runs and copies come: the residency layer's instances. A submesh with no indices draws
+// nothing (a surface group a geograft hides whole) until it has some.
 struct DrawItem
 {
   EntityId   entity;
@@ -299,10 +300,13 @@ public:
   size_t                textureCount() const { return m_textures.size(); }
 
   // edits
-  void setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals);
+  // (`normals` and `tangents` empty: kept)
+  void setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals, std::vector<glm::vec4> tangents = {});
   // joints, inverse binds and skeleton replaced (a rebind)
   void setSkin(SkinId id, SkinRecord skin);
   void setMaterial(MaterialId id, tinygltf::Material payload);
+  // the payload with the table its texture indices now index (its textures referenced, the old ones released)
+  void setMaterial(MaterialId id, tinygltf::Material payload, std::shared_ptr<const TextureTable> textures);
   void setLight(LightId id, const tinygltf::Light& payload);
   void setLightShown(LightId id, bool shown);
   void setSkySun(LightId id, bool skySun);

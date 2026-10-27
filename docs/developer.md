@@ -155,7 +155,6 @@ src/
 ├── gltf_scene_animation_vk.cpp/hpp # GPU compute skinning / morph target animation
 ├── gltf_scene_transform_vk.cpp/hpp # GPU compute world-matrix propagation
 ├── gltf_scene_prev_positions_vk.cpp/hpp # DLSS: previous-frame positions of deforming primitives
-├── gltf_scene_merger.cpp/hpp   # Merge two glTF scenes
 ├── gltf_scene_merger.cpp/hpp   # Merge two glTF scenes; append a file's resources (external assets)
 ├── gltf_scene_external_assets.cpp # glTF 2.1 external assets: file cache, placement, instance sets (ExternalAssetPlacer)
 ├── gltf_scene_loading.hpp      # Shared file loading helpers (aliases, image rebase, meshopt)
@@ -167,6 +166,12 @@ src/
 ├── gltf_image_loader.cpp/hpp   # Image decoding (DDS, KTX, STB, WebP)
 ├── gltf_animation_pointer.*    # KHR_animation_pointer support
 ├── ies_profile.cpp/hpp         # EXT_lights_ies: IESNA LM-63 photometric profile parser
+├── scene_retained.cpp/hpp      # RetainedScene: an owned scene of entities and refcounted mesh, material,
+│                               #   texture, skin, light and camera records, with what changed since asked.
+│                               #   In progress for Figure Viewer, not yet on the render path (unit-tested)
+├── scene_retained_handles.hpp  # Its generational handles and slot map
+├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
+├── scene_export_gltf.cpp/hpp   # A RetainedScene (or a subtree) out as a fresh glTF model
 │
 ├── ui_inspector.cpp/hpp        # Property inspector (per selection type: node/primitive/material/
 │                               #   mesh/camera/light/texture/image/sampler/animation)
