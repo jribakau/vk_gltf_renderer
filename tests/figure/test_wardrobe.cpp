@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include <memory>
+#include <set>
 
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -771,9 +772,60 @@ TEST(Wardrobe, ATakenOffRibbonLeavesItsSurfaceOneSided)
     node.mesh = int(scene.meshes.size()) - 1;
     scene.add(node, parent);
   }
-  EXPECT_TRUE(fv::build::buildGltf(scene, root, {}).model.materials[0].doubleSided);
+  const auto built = fv::build::buildGltf(scene, root, {});
+  EXPECT_TRUE(built.model.materials[0].doubleSided);
+  // a host lowering the material again with the build's options (an edit) keeps it double-sided,
+  // an edit that says otherwise included
+  scene.materials[0].edits.doubleSided = false;
+  std::vector<std::string> used;
+  EXPECT_TRUE(fv::build::materialToGltf(scene.materials[0], built.lowering[0], {}, used).doubleSided);
+  scene.materials[0].edits.doubleSided.reset();
   scene.nodes[size_t(item)].removed = true;
   EXPECT_FALSE(fv::build::buildGltf(scene, root, {}).model.materials[0].doubleSided);
+}
+
+// The textures a host resolves ahead (textureRequests) are the ones the build then asks for: an
+// iris with no colour edit and a skin under a tear film lower to the same requests either way.
+TEST(Wardrobe, TheTexturesResolvedAheadAreTheOnesTheBuildAsksFor)
+{
+  using fv::mat::Kind;
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{});
+  fv::Material   iris;
+  iris.surface.kind     = Kind::eEye;
+  iris.surface.name     = "Irises";
+  iris.surface.base.map = "/eyes/iris.jpg";
+  fv::Material moisture;
+  moisture.surface.kind       = Kind::eCornea;
+  moisture.surface.name       = "EyeMoisture";
+  moisture.surface.refraction = fv::mat::Surface::Refraction{1.f, 1.376f};
+  fv::Material skin;
+  skin.surface.kind     = Kind::eSkin;
+  skin.surface.base.map = "/skin/torso.jpg";
+  scene.materials       = {iris, moisture, skin};
+  for(int mat : {0, 1, 2})
+  {
+    fv::Mesh m;
+    m.geo       = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(1, float(mat))));
+    m.materials = {mat};
+    scene.meshes.push_back(m);
+    fv::Node node;
+    node.kind = fv::NodeKind::eMesh;
+    node.mesh = mat;
+    scene.add(node, root);
+  }
+  std::set<std::string> ahead;
+  for(const fv::mat::TextureRequest& r : fv::build::textureRequests(scene))
+    ahead.insert(fv::mat::requestKey(r));
+  std::set<std::string> asked;
+  fv::build::BuildOptions options;
+  options.texture = [&](const fv::mat::TextureRequest& r) -> std::optional<fv::build::TextureImage> {
+    asked.insert(fv::mat::requestKey(r));
+    return std::nullopt;
+  };
+  (void)fv::build::buildGltf(scene, root, options);
+  EXPECT_FALSE(asked.empty());
+  EXPECT_EQ(asked, ahead);
 }
 
 // A figure built before any of its textures is ready still brings its repeating sampler, the one a

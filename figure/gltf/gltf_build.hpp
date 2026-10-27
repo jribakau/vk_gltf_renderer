@@ -92,8 +92,10 @@ tinygltf::Material materialToGltf(const Material& m, const mat::LowerOptions& op
                                   const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve,
                                   std::vector<std::string>& extensionsUsed);
 
-// The requests of one material (what textureRequests collects for the scene).
-std::vector<TextureRequest> textureRequests(const Material& m, mat::SkinMode skin = mat::SkinMode::eVolume);
+// The lowering options of scene material `material` that decide which textures it asks for, as
+// both textureRequests and buildGltf set them: a texture resolved ahead is then the one the build
+// looks up. `tearFilm`: the scene's eyes are under a tear film (computed once per scene).
+mat::LowerOptions requestOptions(const SceneGraph& scene, int material, mat::SkinMode skin, bool tearFilm);
 
 // Where a material's UV islands lie in its maps, one disc per eye: centre x, y and radius as
 // fractions of the image, y down, in the tile the island is in; islands that overlap are one, the

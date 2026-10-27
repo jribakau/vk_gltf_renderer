@@ -59,6 +59,9 @@ struct LowerOptions
   // An eye surface, or a cornea, that the eye's tear film covers (a refracting moisture shell on the
   // figure, eyeShell): tissue under water reflects next to nothing, so it takes no specular.
   bool underTearFilm = false;
+  // A surface strand-hair ribbons draw with (mesh::BuiltMesh::ribbon): they face one way, so it is
+  // seen from both sides whatever the surface or an edit says.
+  bool ribbon = false;
 };
 
 // The eye's wet shells. The tear film (a refracting moisture shell over the whole eye, or a

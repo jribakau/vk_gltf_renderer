@@ -257,12 +257,17 @@ static bool hasTearFilm(const SceneGraph& scene)
   return false;
 }
 
-std::vector<TextureRequest> textureRequests(const Material& m, mat::SkinMode skin)
+mat::LowerOptions requestOptions(const SceneGraph& scene, int material, mat::SkinMode skin, bool tearFilm)
 {
+  const Material&   m = scene.materials[size_t(material)];
   mat::LowerOptions o;
-  o.skin        = skin;
-  o.metresPerUv = m.metresPerUv;
-  return mat::lower(m.surface, m.edits, o).requests;
+  o.skin          = skin;
+  o.metresPerUv   = m.metresPerUv;
+  o.underTearFilm = tearFilm;
+  // an iris's colour asks for a texture only where its discs are known
+  if(mat::eyeLayout(m.surface) == mat::EyeLayout::eIris)
+    o.irisDiscs = irisDiscs(scene, material);
+  return o;
 }
 
 std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMode skin)
@@ -272,15 +277,8 @@ std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMo
   const bool                  tearFilm = hasTearFilm(scene);
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
-    const Material&   m = scene.materials[mi];
-    mat::LowerOptions o;
-    o.skin          = skin;
-    o.metresPerUv   = m.metresPerUv;
-    o.underTearFilm = tearFilm;
-    // as the build lowers it: an iris's colour asks for a texture only where its discs are known
-    if(m.edits.irisColor && mat::eyeLayout(m.surface) == mat::EyeLayout::eIris)
-      o.irisDiscs = irisDiscs(scene, int(mi));
-    for(TextureRequest& req : mat::lower(m.surface, m.edits, o).requests)
+    const Material& m = scene.materials[mi];
+    for(TextureRequest& req : mat::lower(m.surface, m.edits, requestOptions(scene, int(mi), skin, tearFilm)).requests)
       if(seen.insert(requestKey(req)).second)
         out.push_back(std::move(req));
   }
@@ -564,24 +562,29 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     for(const auto& [mi, ranges] : hairRanges(scene, m, drawn))
       hairVotes[mi].push_back(strandVotesOf(m.geo, drawn.index(), ranges, !options.texturesFlipped));
   }
+  // strand hair ribbons face one way, so their surfaces are seen from both sides
+  std::vector<bool>       onRibbon(scene.materials.size(), false);
+  const std::vector<bool> liveMesh = liveMeshes(scene);
+  for(size_t mesh = 0; mesh < scene.meshes.size(); mesh++)
+    if(const Mesh& m = scene.meshes[mesh]; liveMesh[mesh] && m.geo && m.geo->ribbon)
+      for(int mi : m.materials)
+        if(mi >= 0 && mi < int(onRibbon.size()))
+          onRibbon[mi] = true;
   out.lowering.assign(scene.materials.size(), {});
   const bool tearFilm = hasTearFilm(scene);
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
     mat::LowerOptions& lo = out.lowering[mi];
-    lo.underTearFilm      = tearFilm;
-    lo.skin               = options.skin;
+    lo                    = requestOptions(scene, int(mi), options.skin, tearFilm);
     lo.forFile            = options.forFile;
     lo.flipV              = !options.texturesFlipped;
-    lo.metresPerUv        = scene.materials[mi].metresPerUv;
+    lo.ribbon             = onRibbon[mi];
     lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
     // one material on several meshes is one glTF material, so those meshes vote together
     std::vector<mat::StrandVote> votes;
     for(const auto& v : hairVotes[mi])
       votes.insert(votes.end(), v->begin(), v->end());
     lo.anisotropyRotation = mat::strandRotation(votes);
-    if(mat::eyeLayout(scene.materials[mi].surface) == mat::EyeLayout::eIris)
-      lo.irisDiscs = irisDiscs(scene, int(mi));
   }
 
   // materials, and the textures they ask for
@@ -619,19 +622,9 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     model.textures.push_back(std::move(t));
     return textureOf[key] = {int(model.textures.size()) - 1, image->flipGreen};
   };
-  // strand hair ribbons face one way, so their surfaces are seen from both sides
-  std::vector<bool>       onRibbon(scene.materials.size(), false);
-  const std::vector<bool> liveMesh = liveMeshes(scene);
-  for(size_t mesh = 0; mesh < scene.meshes.size(); mesh++)
-    if(const Mesh& m = scene.meshes[mesh]; liveMesh[mesh] && m.geo && m.geo->ribbon)
-      for(int mi : m.materials)
-        if(mi >= 0 && mi < int(onRibbon.size()))
-          onRibbon[mi] = true;
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
     tinygltf::Material g = materialToGltf(scene.materials[mi], out.lowering[mi], texture, model.extensionsUsed);
-    if(onRibbon[mi])
-      g.doubleSided = true;
     g.extras = extras("m:" + std::to_string(mi));
     if(mi < options.walkThrough.size() && options.walkThrough[mi])
     {

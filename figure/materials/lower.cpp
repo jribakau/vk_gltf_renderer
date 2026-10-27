@@ -278,7 +278,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   eff.color       = baseColor;
   eff.opacity     = opacity;
   eff.alphaMode   = alphaMode == "OPAQUE" ? "opaque" : alphaMode == "MASK" ? "cutout" : "blend";
-  eff.doubleSided = e.doubleSided.value_or(hashed || s.twoSided);
+  eff.doubleSided = opts.ribbon || e.doubleSided.value_or(hashed || s.twoSided);
   eff.metalness   = e.metalness.value_or(s.metallic.value);
 
   Json pbr = Json::object();
@@ -329,7 +329,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   out["alphaMode"]            = alphaMode;
   if(alphaMode == "MASK")
     out["alphaCutoff"] = 0.5;
-  out["doubleSided"] = e.doubleSided.value_or(hashed || s.twoSided);
+  out["doubleSided"] = eff.doubleSided;
 
   // normal: the normal map and the bump map together when a surface has both (glTF has one slot),
   // else whichever one it has. DAZ skin keeps pores in the bump map. The bump strength is baked

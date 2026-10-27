@@ -156,7 +156,6 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
   m_skin    = skin;
   m_applied.assign(scene->materials.size(), {});
   m_meshesOf.assign(scene->materials.size(), {});
-  m_forceDouble.assign(scene->materials.size(), false);
   m_count = scene->materials.size();
   std::set<int> again;
   for(size_t mi = 0; mi < scene->materials.size(); mi++)
@@ -178,13 +177,8 @@ void FvMaterials::attach(const std::string& figureId, fv::SceneGraph* scene, con
     const fv::Mesh& m = scene->meshes[i];
     for(int mi : m.materials)
       if(mi >= 0 && mi < int(m_meshesOf.size()))
-      {
         if(m_meshesOf[mi].empty() || m_meshesOf[mi].back() != int(i))
           m_meshesOf[mi].push_back(int(i));
-        // strand hair ribbons face one way, so their surfaces are seen from both sides
-        if(m.geo && m.geo->ribbon)
-          m_forceDouble[mi] = true;
-      }
   }
   publish({}, true);
   if(!again.empty())
@@ -357,7 +351,6 @@ void FvMaterials::detach()
   m_textures.clear();
   m_applied.clear();
   m_meshesOf.clear();
-  m_forceDouble.clear();
   m_waiting.clear();
   m_baking.clear();
   m_eyes = nullptr;
@@ -659,8 +652,6 @@ void FvMaterials::write(int index, const fv::mat::Lowered& lowered)
       model.extensionsUsed);
   next.name   = mat.name;
   next.extras = mat.extras;
-  if(m_forceDouble[index])
-    next.doubleSided = true;
   mat = std::move(next);
   scn->markMaterialDirty(g);
   if(!(instanceInputs(mat) == before))

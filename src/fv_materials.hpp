@@ -203,7 +203,6 @@ private:
   std::set<int>                                       m_heldChanges;  // noted while held
   std::vector<std::string>                            m_applied;   // per material, the glTF last written (as JSON text)
   std::vector<std::vector<int>>                       m_meshesOf;  // per material, the scene meshes using it
-  std::vector<bool>                                   m_forceDouble;  // strand ribbons are seen from both sides
   bool                                                m_flipped = false;
   fv::mat::SkinMode                                   m_skin    = fv::mat::SkinMode::eRaster;
   uint64_t                                            m_generation = 0;
