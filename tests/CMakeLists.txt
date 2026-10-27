@@ -125,6 +125,8 @@ set(TEST_SOURCES
     # Clips played and skins posed on the store, held to AnimationSystem
     test_retained_animation.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_clip_player.cpp
+    # Incremental equals fresh (oracle 2a): seeded random ops on the store and the feed, checked after each
+    test_retained_fuzz.cpp
     # Figure Viewer texture sources outside the cooked set, Original textures (header only)
     test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough

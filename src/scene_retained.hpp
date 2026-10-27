@@ -356,9 +356,16 @@ public:
   uint32_t              refs(MeshId id) const { return m_meshes.get(id) ? m_meshes.get(id)->refs : 0; }
   uint32_t              refs(MaterialId id) const { return m_materials.get(id) ? m_materials.get(id)->refs : 0; }
   uint32_t              refs(TextureId id) const { return m_textures.get(id) ? m_textures.get(id)->refs : 0; }
+  uint32_t              refs(SkinId id) const { return m_skins.get(id) ? m_skins.get(id)->refs : 0; }
+  uint32_t              refs(LightId id) const { return m_lights.get(id) ? m_lights.get(id)->refs : 0; }
+  uint32_t              refs(CameraId id) const { return m_cameras.get(id) ? m_cameras.get(id)->refs : 0; }
+  uint32_t              refs(ClipId id) const { return m_clips.get(id) ? m_clips.get(id)->refs : 0; }
   size_t                meshCount() const { return m_meshes.size(); }
   size_t                materialCount() const { return m_materials.size(); }
   size_t                textureCount() const { return m_textures.size(); }
+  size_t                skinCount() const { return m_skins.size(); }
+  size_t                lightCount() const { return m_lights.size(); }
+  size_t                cameraCount() const { return m_cameras.size(); }
   size_t                clipCount() const { return m_clips.size(); }
   std::vector<ClipId>   clips() const;  // in slot order
 
