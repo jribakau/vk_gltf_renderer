@@ -926,6 +926,8 @@ SyncResult Residency::sync(RetainedScene& scene)
   const bool retryHeld       = std::exchange(m_retryHeld, false);
   if(!fresh && changes.empty() && !emissiveSettled && !retryHeld)
     return result;
+  // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
+  m_gpu.barrier(GpuBarrier::eFrameToWrite);
 
   std::vector<DrawItem> items = scene.drawItems();
   if(fresh || changes.structure)

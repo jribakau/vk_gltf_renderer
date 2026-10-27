@@ -31,8 +31,11 @@
 //  - the texture and sampler descriptor tables, barriers and deform dispatches in call order;
 //  - a frame clock with N frames in flight that runs a retire closure N frames after it was queued,
 //    as nvapp::Application's free queue does; and the waitIdle calls.
-// Misuse (a dead handle, a range past a buffer's end, an invalid refit or TLAS update) is recorded
-// in errors() rather than thrown, so a test can assert there was none.
+//  - deform dispatches run on the shadow bytes as the shaders would, so the outputs can be read back.
+// Misuse (a dead handle, a range past a buffer's end, an invalid refit or TLAS update, a write into
+// a buffer an earlier frame may still read with no frame-to-write barrier first, a read of what a
+// pass wrote with no barrier between) is recorded in errors() rather than thrown, so a test can
+// assert there was none.
 //
 
 #include <map>
@@ -60,6 +63,7 @@ public:
     std::vector<std::byte> bytes;
     uint32_t               allocOffset   = 0;  // the OffsetAllocator allocation behind the address
     uint32_t               allocMetadata = 0;
+    uint64_t               createdFrame  = 0;
   };
   struct Image
   {
@@ -75,6 +79,7 @@ public:
     bool            compacted   = false;
     uint32_t        builds      = 0;
     uint32_t        refits      = 0;
+    uint64_t        builtFrame  = 0;  // the frame of its last build or refit
   };
   struct Micromap
   {
@@ -89,6 +94,7 @@ public:
     TlasMode             lastMode = TlasMode::eBuild;
     uint32_t             builds   = 0;
     uint32_t             updates  = 0;
+    uint64_t             builtFrame = 0;
   };
 
   explicit FakeGpuBackend(uint32_t framesInFlight = 3);
@@ -181,6 +187,8 @@ private:
   void    error(std::string message);
   Buffer* liveBuffer(BufferHandle handle, const char* op);
   void    written(BufferHandle handle);
+  // a write into a buffer from an earlier frame, which needs this frame's frame-to-write barrier first
+  void    overwritten(const Buffer& b, const char* op);
   // a build reading [address, address + size): an error when its buffer was written unfenced
   void readByBuild(uint64_t address, const char* op);
   // a BLAS input's micromap link: a live micromap, its indices inside a live buffer
@@ -207,6 +215,10 @@ private:
   // builds or refits since the last build-to-build, and AS builds since the last build-to-trace
   std::set<uint64_t>                          m_writtenBeforeBuild, m_writtenBeforeShading;
   bool                                        m_blasBeforeTlas = false, m_buildsBeforeTrace = false;
+  // deform outputs written since the last barrier that fences them for builds and shading, and for
+  // the next deform pass; whether this frame has its frame-to-write barrier
+  std::set<uint64_t>                          m_computeBeforeBuild, m_computeBeforeCompute;
+  bool                                        m_frameFenced = false;
   std::vector<DeformDispatch>                 m_deforms;
   std::vector<Retire>                         m_retires;
   std::vector<std::string>                    m_errors;

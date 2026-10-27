@@ -165,9 +165,13 @@ enum class GpuBarrier
 {
   eTransferToShader,  // uploads and copies, then shading and the compute passes
   eTransferToBuild,   // uploads and copies, then AS builds
-  eComputeToBuild,    // deform and transform passes, then AS builds
+  eComputeToBuild,    // deform and transform passes, then AS builds and the frame's shading
+  eComputeToCompute,  // a deform pass, then the deform pass that reads what it wrote (morph, then skin)
   eBuildToBuild,      // BLAS builds, then the TLAS build
   eBuildToTrace,      // AS builds, then ray tracing and raster
+  // what the frames still in flight read, then this frame's uploads, copies and deform passes that
+  // overwrite it (a vertex stream, a table row): recorded before the first of them
+  eFrameToWrite,
 };
 
 enum class DeformKind
@@ -176,14 +180,34 @@ enum class DeformKind
   eSkin,
 };
 
-// One deform pass over a mesh's vertices; the buffers bind in order
+// A range of a buffer a pass reads or writes from `offset` on; no buffer: none (the pass skips it)
+struct BufferRange
+{
+  BufferHandle buffer;
+  uint64_t     offset = 0;
+  bool         operator==(const BufferRange&) const = default;
+};
+
+// One deform pass over a mesh's vertices, as shaders/morph.comp.slang and skinning.comp.slang take
+// it (animation_io.h.slang). A morph adds each target's weighted deltas (targetCount blocks of
+// vertexCount deltas, target-major) to the base; a skin blends four joints per vertex. Normals and
+// tangents are written only where both the base and the output name a buffer.
 struct DeformDispatch
 {
-  DeformKind                kind = DeformKind::eMorph;
-  std::vector<BufferHandle> inputs;
-  BufferHandle              output;
-  uint32_t                  vertexCount = 0;
+  DeformKind  kind        = DeformKind::eMorph;
+  uint32_t    vertexCount = 0;
+  BufferRange basePositions, baseNormals, baseTangents;  // float3, float3, float4
+  BufferRange outPositions, outNormals, outTangents;
+  // morph: float3 deltas, and the targets' float weights
+  BufferRange positionDeltas, normalDeltas, tangentDeltas, morphWeights;
+  uint32_t    targetCount = 0;
+  // skin: int4 joints and float4 weights per vertex, then the joints' float4x4 matrices and their
+  // normal matrices as the shader reads float3x3 (36 bytes each, packed)
+  BufferRange joints, weights, jointMatrices, normalMatrices;
+  uint32_t    jointCount = 0;
 };
+// The packed normal matrices are glm::mat3 on the host and float3x3 in the shader: 36 bytes apart
+inline constexpr uint64_t kNormalMatrixStride = 36;
 
 class GpuBackend
 {

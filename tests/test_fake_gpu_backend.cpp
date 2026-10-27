@@ -25,6 +25,8 @@
 #include <cstring>
 #include <set>
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include "common/fake_gpu_backend.hpp"
 
 using namespace rs;
@@ -78,6 +80,7 @@ TEST(FakeGpuBackend, BuffersHoldTheirBytesAtDistinctAlignedAddresses)
   const BufferHandle      b     = gpu.createBuffer({.size = 8});
   const std::vector<char> hello = {'h', 'e', 'l', 'l', 'o', '!', '!', '!'};
   gpu.upload(a, 0, asBytes(hello));
+  gpu.barrier(GpuBarrier::eTransferToShader);  // the copy reads the upload
   gpu.copyBuffer(a, 1, b, 2, 4);
   EXPECT_EQ(std::memcmp(gpu.buffer(b)->bytes.data() + 2, "ello", 4), 0);
   EXPECT_EQ(std::memcmp(gpu.bytesAt(gpu.bufferAddress(a) + 1, 4).data(), "ello", 4), 0);
@@ -308,22 +311,111 @@ TEST(FakeGpuBackend, DescriptorsNameLiveImagesOrTheDefault)
   EXPECT_EQ(gpu.errors().size(), 1u);
 }
 
-TEST(FakeGpuBackend, PassesAreRecordedInOrder)
-{
-  FakeGpuBackend     gpu;
-  const BufferHandle in  = gpu.createBuffer({.size = 16});
-  const BufferHandle out = gpu.createBuffer({.size = 16});
-  gpu.dispatchDeform({.kind = DeformKind::eSkin, .inputs = {in}, .output = out, .vertexCount = 1});
-  gpu.barrier(GpuBarrier::eComputeToBuild);
-  gpu.barrier(GpuBarrier::eBuildToTrace);
-  ASSERT_EQ(gpu.deforms().size(), 1u);
-  EXPECT_EQ(gpu.deforms()[0].kind, DeformKind::eSkin);
-  EXPECT_EQ(gpu.barriers(), (std::vector<GpuBarrier>{GpuBarrier::eComputeToBuild, GpuBarrier::eBuildToTrace}));
-  EXPECT_TRUE(gpu.errors().empty());
+namespace {
 
-  gpu.destroyBuffer(in);
-  gpu.dispatchDeform({.kind = DeformKind::eMorph, .inputs = {in}, .output = out});
+template <class T>
+BufferHandle filled(FakeGpuBackend& gpu, const std::vector<T>& values, const char* name = "input")
+{
+  const BufferHandle b = gpu.createBuffer({.size = values.size() * sizeof(T), .usage = eBufferStorage, .name = name});
+  gpu.upload(b, 0, std::as_bytes(std::span(values)));
+  return b;
+}
+
+template <class T>
+std::vector<T> readBack(const FakeGpuBackend& gpu, BufferHandle b, size_t count, uint64_t offset = 0)
+{
+  std::vector<T> out(count);
+  std::memcpy(out.data(), gpu.buffer(b)->bytes.data() + offset, count * sizeof(T));
+  return out;
+}
+
+}  // namespace
+
+// A deform pass runs on the shadow bytes as the shader would: a morph adds its weighted deltas
+// (target-major), a skin blends its joints, and normals come out normalized.
+TEST(FakeGpuBackend, DeformPassesRunAsTheShadersDo)
+{
+  FakeGpuBackend gpu;
+  const std::vector<glm::vec3> base{{0, 0, 0}, {1, 0, 0}};
+  const std::vector<glm::vec3> normals{{0, 0, 1}, {0, 0, 1}};
+  // two targets of two vertices: target 0 moves both up, target 1 moves the second along x
+  const std::vector<glm::vec3> deltas{{0, 1, 0}, {0, 1, 0}, {0, 0, 0}, {2, 0, 0}};
+  const std::vector<float>     weights{0.5f, 0.25f};
+  const BufferHandle pos = filled(gpu, base), nrm = filled(gpu, normals), dpos = filled(gpu, deltas), w = filled(gpu, weights);
+  const BufferHandle morphed = gpu.createBuffer({.size = 24, .name = "morphed"}), morphedN = gpu.createBuffer({.size = 24});
+  gpu.barrier(GpuBarrier::eTransferToShader);
+  gpu.dispatchDeform({.kind           = DeformKind::eMorph,
+                      .vertexCount    = 2,
+                      .basePositions  = {pos},
+                      .baseNormals    = {nrm},
+                      .outPositions   = {morphed},
+                      .outNormals     = {morphedN},
+                      .positionDeltas = {dpos},
+                      .morphWeights   = {w},
+                      .targetCount    = 2});
+  EXPECT_EQ(readBack<glm::vec3>(gpu, morphed, 2), (std::vector<glm::vec3>{{0, 0.5f, 0}, {1.5f, 0.5f, 0}}));
+
+  // a skin over the morph's output reads it only after a compute-to-compute barrier
+  const std::vector<glm::ivec4> joints{{0, 1, 0, 0}, {1, 0, 0, 0}};
+  const std::vector<glm::vec4>  jointWeights{{0.5f, 0.5f, 0, 0}, {1, 0, 0, 0}};
+  const std::vector<glm::mat4>  matrices{glm::mat4(1.f), glm::translate(glm::mat4(1.f), glm::vec3(0, 0, 2))};
+  const std::vector<glm::mat3>  normalMats{glm::mat3(1.f), glm::mat3(1.f)};
+  const BufferHandle j = filled(gpu, joints), jw = filled(gpu, jointWeights), m = filled(gpu, matrices), nm = filled(gpu, normalMats);
+  const BufferHandle skinned = gpu.createBuffer({.size = 24}), skinnedN = gpu.createBuffer({.size = 24});
+  const DeformDispatch skin{.kind           = DeformKind::eSkin,
+                            .vertexCount    = 2,
+                            .basePositions  = {morphed},
+                            .baseNormals    = {morphedN},
+                            .outPositions   = {skinned},
+                            .outNormals     = {skinnedN},
+                            .joints         = {j},
+                            .weights        = {jw},
+                            .jointMatrices  = {m},
+                            .normalMatrices = {nm},
+                            .jointCount     = 2};
+  gpu.barrier(GpuBarrier::eTransferToShader);
+  gpu.dispatchDeform(skin);
+  // a skin reading the morph's positions and normals with no compute-to-compute barrier
+  EXPECT_EQ(gpu.errors().size(), 2u);
+  gpu.barrier(GpuBarrier::eComputeToCompute);
+  gpu.dispatchDeform(skin);
+  EXPECT_EQ(gpu.errors().size(), 2u);
+  EXPECT_EQ(readBack<glm::vec3>(gpu, skinned, 2), (std::vector<glm::vec3>{{0, 0.5f, 1}, {1.5f, 0.5f, 2}}));
+  EXPECT_EQ(readBack<glm::vec3>(gpu, skinnedN, 2), normals);
+
+  // the outputs are unfenced for builds and the frame until a compute-to-build barrier
+  EXPECT_FALSE(gpu.unfencedForTheFrame().empty());
+  gpu.barrier(GpuBarrier::eComputeToBuild);
+  EXPECT_TRUE(gpu.unfencedForTheFrame().empty());
+  ASSERT_EQ(gpu.deforms().size(), 3u);
+  EXPECT_EQ(gpu.deforms()[0].kind, DeformKind::eMorph);
+
+  // a dead input is an error, and nothing runs
+  gpu.destroyBuffer(dpos);
+  gpu.dispatchDeform({.kind = DeformKind::eMorph, .vertexCount = 2, .basePositions = {pos}, .outPositions = {morphed},
+                      .positionDeltas = {dpos}, .morphWeights = {w}, .targetCount = 2});
+  EXPECT_GT(gpu.errors().size(), 2u);
+}
+
+// What a frame writes into a buffer an earlier frame made (a vertex stream, a table row, a BLAS
+// refit, the TLAS) needs the frame-to-write barrier first: the frames in flight may still read it.
+TEST(FakeGpuBackend, AWriteIntoAnEarlierFramesBufferNeedsTheFrameToWriteBarrier)
+{
+  FakeGpuBackend           gpu;
+  const std::vector<float> one{1.f};
+  const BufferHandle       b = filled(gpu, one);
+  gpu.upload(b, 0, std::as_bytes(std::span(one)));  // made this frame: nothing in flight reads it
+  EXPECT_TRUE(gpu.errors().empty());
+  gpu.beginFrame();
+  gpu.upload(b, 0, std::as_bytes(std::span(one)));
   EXPECT_EQ(gpu.errors().size(), 1u);
+  gpu.beginFrame();
+  gpu.barrier(GpuBarrier::eFrameToWrite);
+  gpu.upload(b, 0, std::as_bytes(std::span(one)));
+  EXPECT_EQ(gpu.errors().size(), 1u);
+  gpu.beginFrame();  // and each frame needs its own
+  gpu.upload(b, 0, std::as_bytes(std::span(one)));
+  EXPECT_EQ(gpu.errors().size(), 2u);
 }
 
 // The residency layer's pattern: a slot id goes back to its pool only in the retire closure that

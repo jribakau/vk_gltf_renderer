@@ -23,6 +23,8 @@
 #include <cstring>
 #include <iterator>
 
+#include <glm/glm.hpp>
+
 #include <nvutils/offset_allocator.hpp>
 
 namespace rs {
@@ -58,6 +60,7 @@ void FakeGpuBackend::error(std::string message)
 void FakeGpuBackend::beginFrame()
 {
   m_frame++;
+  m_frameFenced = false;
   // the ready ones first: a closure may queue another, which waits its own frame cycle
   std::vector<Retire> ready;
   auto split = std::stable_partition(m_retires.begin(), m_retires.end(),
@@ -107,6 +110,7 @@ BufferHandle FakeGpuBackend::createBuffer(const BufferDesc& desc)
   b.bytes         = std::vector<std::byte>(desc.size);
   b.allocOffset   = alloc.offset;
   b.allocMetadata = alloc.metadata;
+  b.createdFrame  = m_frame;
   const BufferHandle handle{m_nextHandle++};
   m_buffers.emplace(handle.value, std::move(b));
   return handle;
@@ -121,6 +125,8 @@ void FakeGpuBackend::destroyBuffer(BufferHandle handle)
   m_buffers.erase(handle.value);
   m_writtenBeforeBuild.erase(handle.value);
   m_writtenBeforeShading.erase(handle.value);
+  m_computeBeforeBuild.erase(handle.value);
+  m_computeBeforeCompute.erase(handle.value);
 }
 
 uint64_t FakeGpuBackend::bufferAddress(BufferHandle handle) const
@@ -149,6 +155,7 @@ void FakeGpuBackend::upload(BufferHandle dst, uint64_t offset, std::span<const s
   if(!bytes.empty())
     std::memcpy(b->bytes.data() + offset, bytes.data(), bytes.size());
   m_uploads.push_back({dst, offset, bytes.size()});
+  overwritten(*b, "upload");
   written(dst);
 }
 
@@ -158,11 +165,23 @@ void FakeGpuBackend::written(BufferHandle handle)
   m_writtenBeforeShading.insert(handle.value);
 }
 
+void FakeGpuBackend::overwritten(const Buffer& b, const char* op)
+{
+  if(b.createdFrame < m_frame && !m_frameFenced)
+    error(std::string(op) + ": overwrites '" + (b.desc.name ? b.desc.name : "?")
+          + "', which a frame in flight may still read, with no frame-to-write barrier before");
+}
+
 void FakeGpuBackend::readByBuild(uint64_t address, const char* op)
 {
   for(const auto& [handle, b] : m_buffers)
-    if(address >= b.address && address < b.address + std::max<uint64_t>(b.desc.size, 1) && m_writtenBeforeBuild.count(handle))
-      error(std::string(op) + ": reads a buffer written with no transfer-to-build barrier between");
+    if(address >= b.address && address < b.address + std::max<uint64_t>(b.desc.size, 1))
+    {
+      if(m_writtenBeforeBuild.count(handle))
+        error(std::string(op) + ": reads a buffer written with no transfer-to-build barrier between");
+      if(m_computeBeforeBuild.count(handle))
+        error(std::string(op) + ": reads a deform output with no compute-to-build barrier between");
+    }
 }
 
 std::vector<std::string> FakeGpuBackend::unfencedForTheFrame() const
@@ -170,6 +189,8 @@ std::vector<std::string> FakeGpuBackend::unfencedForTheFrame() const
   std::vector<std::string> out;
   if(!m_writtenBeforeShading.empty())
     out.push_back(std::to_string(m_writtenBeforeShading.size()) + " buffers written with no transfer-to-shader barrier after");
+  if(!m_computeBeforeBuild.empty())
+    out.push_back(std::to_string(m_computeBeforeBuild.size()) + " deform outputs with no compute-to-build barrier after");
   if(m_buildsBeforeTrace)
     out.push_back("acceleration structures built with no build-to-trace barrier after");
   return out;
@@ -186,8 +207,11 @@ void FakeGpuBackend::copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHand
     error("copyBuffer: " + std::to_string(size) + " bytes out of range");
     return;
   }
+  if(m_writtenBeforeShading.count(src.value) || m_computeBeforeCompute.count(src.value))
+    error("copyBuffer: copies from a buffer written this frame with no barrier between");
   if(size)
     std::memmove(d->bytes.data() + dstOffset, s->bytes.data() + srcOffset, size);
+  overwritten(*d, "copyBuffer");
   written(dst);
 }
 
@@ -284,6 +308,7 @@ AccelHandle FakeGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags fl
   b.flags       = flags;
   b.contentHash = contentHash(input);
   b.builds      = 1;
+  b.builtFrame  = m_frame;
   if(!b.contentHash)
     error("buildBlas: its positions or indices are not inside a live buffer");
   readByBuild(input.vertexAddress, "buildBlas");
@@ -314,8 +339,11 @@ void FakeGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
   if(input.micromap != b.input.micromap || input.micromapIndexAddress != b.input.micromapIndexAddress
      || input.micromapIndexSize != b.input.micromapIndexSize || input.micromapBaseTriangle != b.input.micromapBaseTriangle)
     error("refitBlas: the micromap link changed (that needs a build)");
+  if(b.builtFrame < m_frame && !m_frameFenced)
+    error("refitBlas: rewrites a BLAS a frame in flight may still trace, with no frame-to-write barrier before");
   b.input       = input;
   b.contentHash = contentHash(input);
+  b.builtFrame  = m_frame;
   b.refits++;
   if(!b.contentHash)
     error("refitBlas: its positions or indices are not inside a live buffer");
@@ -365,6 +393,9 @@ void FakeGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows
       error("buildTlas: row " + std::to_string(i) + " references a dead or unknown BLAS");
   if(m_blasBeforeTlas)
     error("buildTlas: BLASes built or refitted with no build-to-build barrier before it");
+  if(t.builds + t.updates > 0 && t.builtFrame < m_frame && !m_frameFenced)
+    error("buildTlas: rebuilds a TLAS a frame in flight may still trace, with no frame-to-write barrier before");
+  t.builtFrame = m_frame;
   m_buildsBeforeTrace = true;
   if(mode == TlasMode::eUpdate)
   {
@@ -397,12 +428,156 @@ void FakeGpuBackend::destroyAccel(AccelHandle handle)
 
 // ---------- Passes ----------
 
-void FakeGpuBackend::dispatchDeform(const DeformDispatch& dispatch)
+namespace {
+
+// What a deform pass reads or writes, as typed elements over a buffer's bytes
+template <class T>
+struct Span
 {
-  for(BufferHandle b : dispatch.inputs)
-    liveBuffer(b, "dispatchDeform input");
-  liveBuffer(dispatch.output, "dispatchDeform output");
-  m_deforms.push_back(dispatch);
+  std::byte* at    = nullptr;
+  uint64_t   count = 0;
+  T          get(uint64_t i) const
+  {
+    T v;
+    std::memcpy(&v, at + i * sizeof(T), sizeof(T));
+    return v;
+  }
+  void set(uint64_t i, const T& v) const { std::memcpy(at + i * sizeof(T), &v, sizeof(T)); }
+  explicit operator bool() const { return at != nullptr; }
+};
+
+}  // namespace
+
+// Runs the pass on the shadow bytes as the shader would: shaders/morph.comp.slang and
+// skinning.comp.slang, element for element
+void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
+{
+  m_deforms.push_back(d);
+  const uint64_t n  = d.vertexCount;
+  bool           ok = true;
+  // `count` elements of `size` bytes at a range; none (and fine) for no buffer
+  const auto range = [&](const BufferRange& r, uint64_t size, uint64_t count, const char* what, bool output) -> std::byte* {
+    if(!r.buffer)
+      return nullptr;
+    Buffer* b = liveBuffer(r.buffer, "dispatchDeform");
+    if(!b)
+    {
+      ok = false;
+      return nullptr;
+    }
+    if(r.offset > b->desc.size || size * count > b->desc.size - r.offset)
+    {
+      error(std::string("dispatchDeform: its ") + what + " run past the end of their buffer");
+      ok = false;
+      return nullptr;
+    }
+    if(r.offset % 4)
+      error(std::string("dispatchDeform: its ") + what + " are not 4-byte aligned");
+    if(output)
+      overwritten(*b, "dispatchDeform");
+    else
+    {
+      if(m_writtenBeforeShading.count(r.buffer.value))
+        error(std::string("dispatchDeform: reads its ") + what + " uploaded with no transfer-to-shader barrier between");
+      if(m_computeBeforeCompute.count(r.buffer.value))
+        error(std::string("dispatchDeform: reads its ") + what + " written by a deform pass with no compute-to-compute barrier between");
+    }
+    return b->bytes.data() + r.offset;
+  };
+  const Span<glm::vec3> basePos{range(d.basePositions, 12, n, "base positions", false), n};
+  const Span<glm::vec3> baseNrm{range(d.baseNormals, 12, n, "base normals", false), n};
+  const Span<glm::vec4> baseTan{range(d.baseTangents, 16, n, "base tangents", false), n};
+  Span<glm::vec3>       posDelta, nrmDelta, tanDelta;
+  Span<float>           weights;
+  Span<glm::ivec4>      joints;
+  Span<glm::vec4>       jointWeights;
+  Span<glm::mat4>       jointMats;
+  Span<glm::mat3>       normalMats;
+  if(d.kind == DeformKind::eMorph)
+  {
+    const uint64_t deltas = n * d.targetCount;
+    posDelta              = {range(d.positionDeltas, 12, deltas, "position deltas", false), deltas};
+    nrmDelta              = {range(d.normalDeltas, 12, deltas, "normal deltas", false), deltas};
+    tanDelta              = {range(d.tangentDeltas, 12, deltas, "tangent deltas", false), deltas};
+    weights               = {range(d.morphWeights, 4, d.targetCount, "morph weights", false), d.targetCount};
+    if(!posDelta || !weights)
+      error("dispatchDeform: a morph without position deltas or weights");
+  }
+  else
+  {
+    joints       = {range(d.joints, 16, n, "joints", false), n};
+    jointWeights = {range(d.weights, 16, n, "weights", false), n};
+    jointMats    = {range(d.jointMatrices, 64, d.jointCount, "joint matrices", false), d.jointCount};
+    normalMats   = {range(d.normalMatrices, kNormalMatrixStride, d.jointCount, "normal matrices", false), d.jointCount};
+    if(!joints || !jointWeights || !jointMats || !normalMats)
+      error("dispatchDeform: a skin without joints, weights or matrices");
+  }
+  const Span<glm::vec3> outPos{range(d.outPositions, 12, n, "output positions", true), n};
+  const Span<glm::vec3> outNrm{range(d.outNormals, 12, n, "output normals", true), n};
+  const Span<glm::vec4> outTan{range(d.outTangents, 16, n, "output tangents", true), n};
+  if(!ok || !basePos || !outPos)
+  {
+    if(ok)
+      error("dispatchDeform: no base or output positions");
+    return;
+  }
+  // a pass reads its whole base before it writes (outputs and bases are never the same buffer)
+  if(d.outPositions.buffer == d.basePositions.buffer)
+    error("dispatchDeform: writes the buffer it reads");
+  const bool hasNormals = baseNrm && outNrm, hasTangents = baseTan && outTan;
+  for(uint64_t v = 0; v < n; v++)
+  {
+    if(d.kind == DeformKind::eMorph)
+    {
+      glm::vec3 pos = basePos.get(v);
+      glm::vec3 nrm = baseNrm ? baseNrm.get(v) : glm::vec3(0.f);
+      glm::vec4 tan = baseTan ? baseTan.get(v) : glm::vec4(0.f);
+      for(uint32_t t = 0; t < d.targetCount; t++)
+      {
+        const float w = weights ? weights.get(t) : 0.f;
+        if(w == 0.f || !posDelta)
+          continue;
+        const uint64_t i = uint64_t(t) * n + v;
+        pos += w * posDelta.get(i);
+        if(baseNrm && nrmDelta)
+          nrm += w * nrmDelta.get(i);
+        if(baseTan && tanDelta)
+          tan = glm::vec4(glm::vec3(tan) + w * tanDelta.get(i), tan.w);
+      }
+      outPos.set(v, pos);
+      if(hasNormals)
+        outNrm.set(v, glm::normalize(nrm));
+      if(hasTangents)
+        outTan.set(v, glm::vec4(glm::normalize(glm::vec3(tan)), tan.w));
+      continue;
+    }
+    if(!joints || !jointWeights || !jointMats || !normalMats)
+      return;
+    const glm::vec4  w = jointWeights.get(v);
+    const glm::ivec4 j = joints.get(v);
+    glm::vec3        pos(0.f), nrm(0.f), tan(0.f);
+    for(int i = 0; i < 4; i++)
+      if(w[i] > 0.f && j[i] >= 0 && uint32_t(j[i]) < d.jointCount)
+      {
+        const glm::mat4 m = jointMats.get(uint64_t(j[i]));
+        pos += w[i] * glm::vec3(m * glm::vec4(basePos.get(v), 1.f));
+        if(hasNormals)
+          nrm += w[i] * (normalMats.get(uint64_t(j[i])) * baseNrm.get(v));
+        if(hasTangents)
+          tan += w[i] * (glm::mat3(m) * glm::vec3(baseTan.get(v)));
+      }
+    outPos.set(v, pos);
+    if(hasNormals)
+      outNrm.set(v, glm::normalize(nrm));
+    if(hasTangents)
+      outTan.set(v, glm::vec4(glm::normalize(tan), baseTan.get(v).w));
+  }
+  for(const BufferRange* r : {&d.outPositions, &d.outNormals, &d.outTangents})
+    if(r->buffer)
+    {
+      m_computeBeforeBuild.insert(r->buffer.value);
+      m_computeBeforeCompute.insert(r->buffer.value);
+    }
 }
 
 void FakeGpuBackend::barrier(GpuBarrier barrier)
@@ -417,6 +592,14 @@ void FakeGpuBackend::barrier(GpuBarrier barrier)
       m_writtenBeforeBuild.clear();
       break;
     case GpuBarrier::eComputeToBuild:
+      m_computeBeforeBuild.clear();
+      m_computeBeforeCompute.clear();
+      break;
+    case GpuBarrier::eComputeToCompute:
+      m_computeBeforeCompute.clear();
+      break;
+    case GpuBarrier::eFrameToWrite:
+      m_frameFenced = true;
       break;
     case GpuBarrier::eBuildToBuild:
       m_blasBeforeTlas = false;

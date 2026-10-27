@@ -146,8 +146,20 @@ VkBarrierScope vkBarrierScope(GpuBarrier barrier)
       return {VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, kBuild,
               VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR};
     case GpuBarrier::eComputeToBuild:
-      return {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, kBuild,
-              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR};
+      // the deform outputs are vertex streams too: the raster and the path tracer read them this frame
+      return {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, kBuild | kShading | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+              kShaderRead | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_TRANSFER_READ_BIT};
+    case GpuBarrier::eComputeToCompute:
+      return {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+              VK_ACCESS_2_SHADER_READ_BIT};
+    case GpuBarrier::eFrameToWrite:
+      // a write after the reads of frames still in flight (a refit or a TLAS build included): an
+      // execution dependency on everything submitted before (AnimationVk::dispatchAnimation's opening barrier)
+      return {VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT
+                  | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_TRANSFER_READ_BIT,
+              VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | kBuild,
+              VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR};
     case GpuBarrier::eBuildToBuild:
       return {kBuild, kBuildRW, kBuild, kBuildRW};
     case GpuBarrier::eBuildToTrace:
