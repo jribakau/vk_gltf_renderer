@@ -251,7 +251,9 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
 {
   if(!recording("dispatchDeform") || !d.vertexCount)
     return;
-  flushBuilds();  // call order: the queued builds come before this pass
+  // call order: the queued builds and uploads are recorded before this pass
+  flushBuilds();
+  flushUploads();
   if(!m_deformPipelines.skin)
     m_deformPipelines.create(m_info.device);
   // a range's device address; null for none, as the shaders test
@@ -888,8 +890,9 @@ void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> ro
     NVVK_CHECK(appendBufferChunked(*m_info.staging, tlas.instances, 0, std::span<const VkAccelerationStructureInstanceKHR>(instances)));
   m_uploadsPending = true;
   flushUploads();
+  // (the destination masks nvvk's helper takes: legacy's SceneRtx passes these too)
   nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_TRANSFER_WRITE_BIT,
-                                     VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
+                                     VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
   tlas.data.asBuildRangeInfo[0].primitiveCount = uint32_t(rows.size());
   if(mode == TlasMode::eUpdate)
     tlas.data.cmdUpdateAccelerationStructure(m_cmd, tlas.accel.accel, tlas.scratch.address);
@@ -1059,7 +1062,9 @@ SceneGpuView::DrawRecord RetainedSceneVk::drawRecord(uint32_t renderNode) const
   const Residency::MeshGpu*  mesh = prim ? m_residency.meshGpu(prim->mesh) : nullptr;
   if(!mesh)
     return {};
-  return {.vertexBuffer = m_gpu.vkBuffer(mesh->positions),
+  // a deformed prim draws its drawer's output, which the deform passes wrote (its row says so too)
+  const Residency::DrawerGpu* drawer = prim->drawer.isNone() ? nullptr : m_residency.drawer(prim->drawer, prim->mesh);
+  return {.vertexBuffer = m_gpu.vkBuffer(drawer ? drawer->positions : mesh->positions),
           .indexBuffer  = m_gpu.vkBuffer(prim->indices),
           .indexCount   = prim->indexCount,
           .materialID   = int32_t(inst->materialSlot),
