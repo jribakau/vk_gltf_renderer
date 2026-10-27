@@ -316,6 +316,8 @@ struct Settings
   std::string sceneBackend = rs::sceneBackendSettingName(rs::SceneBackendSetting::eAuto);
   // `blasScratchBudgetMB`: the retained scene's BLAS builds of one batch share this much scratch
   uint32_t blasScratchBudgetMB = 512;
+  // `residencyMinInstances`: the retained scene's least instance capacity (start-up only)
+  uint32_t residencyMinInstances = 256;
 
   // Enable scene-based shader optimization. When true, only features used by the scene are
   // enabled, reducing shader size and register usage at the cost of a one-time recompile per scene change.

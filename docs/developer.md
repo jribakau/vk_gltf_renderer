@@ -868,7 +868,7 @@ legacy stream session and are skipped in a retained one, which takes no `KHR_int
 
 ### The retained scene in a stream session
 
-Two settings, neither remembered, both live:
+Three settings, none remembered:
 
 - `sceneBackend` (`auto`, `legacy` or `retained`; `auto`) decides at each `loadModel` of a stream
   session; windowed sessions and `--scenefile` stay legacy. `auto` takes the retained scene unless
@@ -878,7 +878,10 @@ Two settings, neither remembered, both live:
   choice and why, with the top-level node (a prop) that forced legacy. A change asks the host for a
   recompose (`GltfRenderer::setRecomposeRequest`); the switch is that scene replace.
 - `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
-  (`VulkanGpuBackend`); the next batch regrows it.
+  (`VulkanGpuBackend`); the next batch regrows it. Live.
+- `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
+  TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
+  parameters a host can set (fv_parameter_filter.hpp).
 
 In a retained session `loadModel` builds the CPU `nvvkgltf::Scene` as before, then
 `createRetainedScene` imports it in document order (instance slot *i* is render node *i*, so the

@@ -653,6 +653,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                           m_resources.retainedGpu->setBlasScratchBudget(VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20);
                       }},
                  &m_resources.settings.blasScratchBudgetMB, Persist::eNo);
+  // Start-up only, so not exposed to a host (fv_parameter_filter.hpp): read at each retained scene
+  // replace, where a smaller capacity than the scene needs only grows by doubling.
+  m_settings.add({.name = "residencyMinInstances", .help = "Retained scene: the least instance capacity (start-up only)"},
+                 &m_resources.settings.residencyMinInstances, Persist::eNo);
 
   // Gizmo, grid and snap: previously persisted but unreachable from the command line or MCP.
   m_settings.add({"uiShowGrid", "Show the infinite grid"}, &m_resources.settings.showGrid, Persist::eYes);
@@ -4306,7 +4310,8 @@ void GltfRenderer::createRetainedScene()
   m_resources.retainedBridge = rs::LegacyDirtyBridge(std::move(imported));
   m_resources.retainedGpu    = std::make_unique<rs::RetainedSceneVk>(
       retainedBackendInfo(),
-      rs::ResidencyOptions{.blasScratchBudget = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20});
+      rs::ResidencyOptions{.minInstances      = std::max(m_resources.settings.residencyMinInstances, 1u),
+                           .blasScratchBudget = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20});
   {
     fv::timing::Scope timeUpload("retained upload");
     VkCommandBuffer   cmd = m_app->createTempCmdBuffer();

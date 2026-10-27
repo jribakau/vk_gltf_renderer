@@ -166,11 +166,13 @@ TEST(FvEvents, SseMessageIsOneDataLine)
   EXPECT_EQ(msg.substr(msg.size() - 2), "\n\n");
 }
 
-// params.get / params.set leave out what would load or save the scene behind the host
+// params.get / params.set leave out what would load or save the scene behind the host, and what is
+// read only at start-up
 TEST(FvParameters, TheHostKeepsSceneLoadsAndSavesToItself)
 {
   EXPECT_FALSE(fv::hostExposesParameter("scenefile"));
   EXPECT_FALSE(fv::hostExposesParameter("savefile"));
+  EXPECT_FALSE(fv::hostExposesParameter("residencyMinInstances"));
   // live, with defined semantics: a sceneBackend change asks the host for a recompose
   EXPECT_TRUE(fv::hostExposesParameter("sceneBackend"));
   EXPECT_TRUE(fv::hostExposesParameter("blasScratchBudgetMB"));
