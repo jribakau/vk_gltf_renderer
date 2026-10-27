@@ -4422,7 +4422,7 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   rs::SyncResult result;
   if(reimport)
   {
-    // what the bridge can't carry (a bake's new texture, a re-parse): the scene imported again,
+    // what the bridge can't carry (an image replaced, a sampler edit, a re-parse): the scene imported again,
     // replaced within this frame
     fv::timing::Scope timeImport("retained re-import");
     m_resources.retainedScene  = std::make_unique<rs::RetainedScene>();

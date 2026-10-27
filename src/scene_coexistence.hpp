@@ -81,9 +81,11 @@ SceneBackendChoice chooseSceneBackend(SceneBackendSetting setting, bool streamHo
 
 // The host's edits to the legacy CPU scene, carried into the retained scene a document-order import
 // made of it, once a frame before the legacy dirty flags are cleared: node transforms and
-// visibility (and an EXT_lights_ies light's multiplier and colour), materials, lights. What it can't
-// carry (a re-parse, a texture or sampler change, a
-// material the import never saw) asks the caller to import the legacy model again.
+// visibility (and an EXT_lights_ies light's multiplier and colour), materials, lights, and textures
+// appended to the model (a bake: the materials carried from then on take the import's texture table
+// with them appended). What it can't carry (a re-parse, an image replaced, a sampler edited, a
+// texture removed, a material the import never saw) asks the caller to import the legacy model
+// again.
 class LegacyDirtyBridge
 {
 public:
@@ -100,11 +102,16 @@ public:
   {
   }
 
-  Result              carry(const nvvkgltf::Scene& legacy, RetainedScene& retained) const;
+  Result              carry(const nvvkgltf::Scene& legacy, RetainedScene& retained);
   const ImportResult& map() const { return m_map; }
 
 private:
-  ImportResult m_map;
+  bool appendTextures(const nvvkgltf::Scene& legacy, RetainedScene& retained);
+
+  ImportResult m_map;  // its texture table extended by the textures carried
+  // the records the bridge added, held while the store lives (a table names its textures but holds
+  // none, so one no material has taken yet would otherwise go)
+  std::vector<TextureId> m_added;
 };
 
 // The legacy-accessor debug check (developer.md, "The legacy scene and `SceneGpuView`"): whether a

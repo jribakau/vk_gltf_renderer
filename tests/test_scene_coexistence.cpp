@@ -95,6 +95,35 @@ tinygltf::Model fixture()
   return m;
 }
 
+// The file a material's base colour samples through its texture table, and the sampler's wrap; "" for none
+std::string baseMap(RetainedScene& scene, MaterialId id)
+{
+  const MaterialRecord* m = scene.material(id);
+  const int             i = m ? m->payload.pbrMetallicRoughness.baseColorTexture.index : -1;
+  if(i < 0 || !m->textures || i >= int(m->textures->size()))
+    return "";
+  const TextureRef&    ref = (*m->textures)[size_t(i)];
+  const TextureRecord* t   = scene.texture(ref.texture);
+  return (t ? t->uri : std::string("?")) + "|" + std::to_string(ref.sampler.wrapS);
+}
+
+// A bake as the host's FvMaterials::baked makes one: an image and a texture appended (the editor's
+// flags: the first textures of a model with none are a full change), a material sampling it
+void bake(nvvkgltf::Scene& legacy, const char* uri, int material)
+{
+  tinygltf::Model& model = legacy.getModel();
+  const bool       first = model.images.empty() || model.textures.empty();
+  tinygltf::Image  image;
+  image.uri = uri;
+  model.images.push_back(image);
+  tinygltf::Texture texture;
+  texture.source = int(model.images.size()) - 1;
+  model.textures.push_back(texture);
+  (first ? legacy.getDirtyFlags().texturesChanged : legacy.getDirtyFlags().texturesTailChanged) = true;
+  legacy.editor().getMaterialForEdit(material).pbrMetallicRoughness.baseColorTexture.index = int(model.textures.size()) - 1;
+  legacy.markMaterialDirty(material);
+}
+
 // What the two retained scenes draw and light, item for item
 void expectSameDrawing(RetainedScene& bridged, RetainedScene& fresh, const char* step)
 {
@@ -107,6 +136,7 @@ void expectSameDrawing(RetainedScene& bridged, RetainedScene& fresh, const char*
         EXPECT_NEAR(a[k].world[c][r], b[k].world[c][r], 1e-5f) << step << ": item " << k;
     EXPECT_EQ(a[k].shown, b[k].shown) << step << ": item " << k;
     EXPECT_EQ(bridged.material(a[k].material)->payload, fresh.material(b[k].material)->payload) << step << ": item " << k;
+    EXPECT_EQ(baseMap(bridged, a[k].material), baseMap(fresh, b[k].material)) << step << ": item " << k;
   }
   const std::vector<LightItem> la = bridged.lightItems(), lb = fresh.lightItems();
   ASSERT_EQ(la.size(), lb.size()) << step;
@@ -194,7 +224,7 @@ TEST(SceneCoexistence, TheBridgeCarriesTheHostsEdits)
   legacy.takeModel(fixture());
   ASSERT_TRUE(legacy.valid());
   RetainedScene           retained;
-  const LegacyDirtyBridge bridge(importGltf(retained, legacy.getModel()));
+  LegacyDirtyBridge       bridge(importGltf(retained, legacy.getModel()));
   legacy.clearDirtyFlags();
 
   const auto step = [&](const char* what, const std::function<void()>& op) {
@@ -236,7 +266,7 @@ TEST(SceneCoexistence, TheBridgeCarriesAnIesLightsTint)
   legacy.takeModel(withIesLamp(fixture()));
   ASSERT_TRUE(legacy.valid());
   RetainedScene           retained;
-  const LegacyDirtyBridge bridge(importGltf(retained, legacy.getModel()));
+  LegacyDirtyBridge       bridge(importGltf(retained, legacy.getModel()));
   legacy.clearDirtyFlags();
   ASSERT_TRUE(retained.light(retained.entity(bridge.map().entities[1])->light)->ies);
 
@@ -284,19 +314,66 @@ TEST(SceneCoexistence, TheLegacyUsesARetainedSessionAllows)
   EXPECT_FALSE(check.firstUnlisted("src/renderer.cpp", 12, "void GltfRenderer::cleanupScene(void)"));
 }
 
+// Over a textured model: an image replaced (a full texture change), a texture removed from the end,
+// a sampler edited, a re-parse
 TEST(SceneCoexistence, WhatTheBridgeCantCarryIsAReimport)
 {
   nvvkgltf::Scene legacy;
   legacy.takeModel(fixture());
-  RetainedScene           retained;
-  const LegacyDirtyBridge bridge(importGltf(retained, legacy.getModel()));
-  for(auto set : std::vector<std::function<void(nvvkgltf::Scene::DirtyFlags&)>>{
-          [](auto& df) { df.texturesChanged = true; }, [](auto& df) { df.texturesTailChanged = true; },
-          [](auto& df) { df.samplers.insert(0); }, [](auto& df) { df.allRenderNodesDirty = true; },
-          [](auto& df) { df.primitivesChanged = true; }})
+  bake(legacy, "maps/first.png", 0);
+  legacy.clearDirtyFlags();
+  for(auto set :
+      std::vector<std::function<void(nvvkgltf::Scene&)>>{[](auto& s) { s.getDirtyFlags().texturesChanged = true; },
+                                                         [](auto& s) {
+                                                           s.getModel().textures.pop_back();
+                                                           s.getDirtyFlags().texturesTailChanged = true;
+                                                         },
+                                                         [](auto& s) { s.getDirtyFlags().samplers.insert(0); },
+                                                         [](auto& s) { s.getDirtyFlags().allRenderNodesDirty = true; },
+                                                         [](auto& s) { s.getDirtyFlags().primitivesChanged = true; }})
   {
-    legacy.clearDirtyFlags();
-    set(legacy.getDirtyFlags());
-    EXPECT_EQ(bridge.carry(legacy, retained), LegacyDirtyBridge::Result::eReimport);
+    nvvkgltf::Scene copy;
+    copy.takeModel(tinygltf::Model(legacy.getModel()));
+    RetainedScene     retained;
+    LegacyDirtyBridge bridge(importGltf(retained, copy.getModel()));
+    copy.clearDirtyFlags();
+    set(copy);
+    EXPECT_EQ(bridge.carry(copy, retained), LegacyDirtyBridge::Result::eReimport);
   }
+}
+
+// Bakes are carried, not re-imported: the first onto a model with no textures, another after it, and
+// a texture over an image the model has; the materials take the table with them appended, and draw
+// as a fresh import of the legacy model does
+TEST(SceneCoexistence, TheBridgeCarriesABake)
+{
+  nvvkgltf::Scene legacy;
+  legacy.takeModel(fixture());
+  RetainedScene     retained;
+  LegacyDirtyBridge bridge(importGltf(retained, legacy.getModel()));
+  legacy.clearDirtyFlags();
+  const auto step = [&](const char* what, const std::function<void()>& op) {
+    op();
+    EXPECT_EQ(bridge.carry(legacy, retained), LegacyDirtyBridge::Result::eCarried) << what;
+    legacy.clearDirtyFlags();
+    RetainedScene fresh;
+    importGltf(fresh, legacy.getModel());
+    expectSameDrawing(retained, fresh, what);
+  };
+  step("onto none", [&] { bake(legacy, "maps/red.png", 0); });
+  step("another", [&] { bake(legacy, "maps/blue.png", 1); });
+  step("a texture over the first image, clamped", [&] {
+    tinygltf::Model&  model = legacy.getModel();
+    tinygltf::Sampler clamp;
+    clamp.wrapS = clamp.wrapT = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+    model.samplers.push_back(clamp);
+    tinygltf::Texture texture;
+    texture.source  = 0;
+    texture.sampler = int(model.samplers.size()) - 1;
+    model.textures.push_back(texture);
+    legacy.getDirtyFlags().texturesTailChanged                                        = true;
+    legacy.editor().getMaterialForEdit(1).pbrMetallicRoughness.baseColorTexture.index = int(model.textures.size()) - 1;
+    legacy.markMaterialDirty(1);
+  });
+  EXPECT_NE(baseMap(retained, retained.drawItems()[1].material).find("|33071"), std::string::npos);  // clamped
 }

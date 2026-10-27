@@ -34,6 +34,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -64,6 +66,10 @@ struct ImportResult
   // holds a clip, so the import hands the caller each one's reference, to release with the prop.
   std::vector<ClipId>              clips;
   std::vector<std::string>         notices;    // what was left out, once each
+  // per glTF image, its record (none once nothing holds it: a material's table holds its textures),
+  // and the texture table every material of the file shares, per glTF texture
+  std::vector<TextureId>              images;
+  std::shared_ptr<const TextureTable> textures;
 };
 
 ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, const ImportOptions& options = {});
@@ -74,5 +80,10 @@ bool materialNeedsTangents(const tinygltf::Material& material);
 
 // A node's local transform: its matrix when it has one, else its TRS
 Transform transformOf(const tinygltf::Node& node);
+
+// A glTF image as the import records it: its file found on `imageSearchPaths` (an absolute path),
+// or the bytes or pixels it holds; and a glTF sampler's values (glTF's defaults for none)
+TextureRecord textureRecordOf(const tinygltf::Model& model, size_t image, std::span<const std::filesystem::path> imageSearchPaths);
+SamplerDesc samplerOf(const tinygltf::Model& model, int sampler);
 
 }  // namespace rs

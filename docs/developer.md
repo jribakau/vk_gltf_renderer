@@ -906,8 +906,11 @@ and span only; a span that finds no room below the uint16 limit repacks every sp
 that still doesn't fit is drawn without its textures, logged as `Retained scene: the texture-info
 table is full`. Each frame
 `syncRetainedScene` stands in for the legacy per-frame paths listed above: `LegacyDirtyBridge`
-carries the dirty nodes, materials and lights into the store (a re-import when it can't: a new
-texture, a sampler edit, a re-parse), the CPU world matrices are brought up to date, and the
+carries the dirty nodes, materials and lights into the store, and textures appended to the model
+(a bake: the materials carried after it take the import's texture table with them appended, and
+the bake's worker prefetches the file, so the sync that decodes it only claims it); a re-import
+when it can't (an image replaced, a texture removed, a sampler edit, a re-parse). The CPU world
+matrices are brought up to date, and the
 residency syncs. Not on retained yet: DLSS instance and deformation motion (motion is the camera's
 only), opacity micromaps, GPU build timing for a frame's re-import. mcp_scene's edit tools are
 refused (D3).

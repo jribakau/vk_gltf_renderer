@@ -78,6 +78,8 @@ std::vector<uint32_t> primitiveIndices(const tinygltf::Model& model, const tinyg
   return out;
 }
 
+}  // namespace
+
 SamplerDesc samplerOf(const tinygltf::Model& model, int sampler)
 {
   SamplerDesc d;
@@ -91,6 +93,70 @@ SamplerDesc samplerOf(const tinygltf::Model& model, int sampler)
   }
   return d;
 }
+
+TextureRecord textureRecordOf(const tinygltf::Model& model, size_t image, std::span<const std::filesystem::path> imageSearchPaths)
+{
+  const tinygltf::Image& img = model.images[image];
+  TextureRecord          t;
+  // an image a texture names through an extension (a KTX2 under KHR_texture_basisu, a WebP) keeps
+  // that extension, so an export names it the same way
+  for(const tinygltf::Texture& texture : model.textures)
+    for(const char* ext : {KHR_TEXTURE_BASISU_EXTENSION_NAME, EXT_TEXTURE_WEBP_EXTENSION_NAME, "MSFT_texture_dds"})
+      if(auto it = texture.extensions.find(ext); it != texture.extensions.end() && it->second.Has("source"))
+        if(it->second.Get("source").GetNumberAsInt() == int(image))
+          t.sourceExtension = ext;
+  t.name     = img.name;
+  t.uri      = img.uri;
+  t.mimeType = img.mimeType;
+  t.width    = img.width;
+  t.height   = img.height;
+  // a data URI's bytes or pixels are in img.image (below), never the URI itself
+  if(img.uri.rfind("data:", 0) == 0)
+    t.uri.clear();
+  else if(!t.uri.empty())
+  {
+    // a URI is %-encoded (fv_compose writes absolute ones so); the record holds the file's path
+    const std::filesystem::path path = nvutils::pathFromUtf8(tinygltf::utils::decodePathFromUri(t.uri));
+    std::error_code             ec;
+    std::filesystem::path       found;
+    if(path.is_absolute() && std::filesystem::is_regular_file(path, ec))
+      found = path;
+    else if(!imageSearchPaths.empty())
+      found = nvutils::findFile(path, std::vector<std::filesystem::path>(imageSearchPaths.begin(), imageSearchPaths.end()), false);
+    if(!found.empty())
+      t.uri = nvutils::utf8FromPath(std::filesystem::absolute(found));
+  }
+  if(t.uri.empty() && img.bufferView < 0 && !img.image.empty())
+  {
+    // the renderer's loaders keep the encoded file (as_is, or no size decoded); tinygltf's own
+    // decodes it to pixels
+    const size_t decoded =
+        img.width > 0 && img.height > 0 && img.component > 0 ?
+            size_t(img.width) * size_t(img.height) * size_t(img.component) * size_t(std::max(img.bits, 8) / 8) :
+            0;
+    if(!img.as_is && decoded == img.image.size())
+    {
+      t.pixels    = img.image;
+      t.component = img.component;
+      t.bits      = img.bits;
+    }
+    else
+      t.bytes = img.image;
+  }
+  if(t.uri.empty() && img.bufferView >= 0 && img.bufferView < int(model.bufferViews.size()))
+  {
+    const tinygltf::BufferView& view = model.bufferViews[size_t(img.bufferView)];
+    if(view.buffer >= 0 && view.buffer < int(model.buffers.size())
+       && view.byteOffset + view.byteLength <= model.buffers[size_t(view.buffer)].data.size())
+    {
+      const auto begin = model.buffers[size_t(view.buffer)].data.begin() + std::ptrdiff_t(view.byteOffset);
+      t.bytes.assign(begin, begin + std::ptrdiff_t(view.byteLength));
+    }
+  }
+  return t;
+}
+
+namespace {
 
 // A sampler's keys as AnimationSystem::parseSamplersAndChannels reads them (an interpolation it
 // does not name is linear); nothing when its accessors can't be read.
@@ -173,75 +239,17 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
   }
 
   // ---- images and the texture table every material of this file shares
-  // an image a texture names through an extension (a KTX2 under KHR_texture_basisu, a WebP) keeps
-  // that extension, so an export names it the same way
-  std::vector<std::string> sourceExtension(model.images.size());
-  for(const tinygltf::Texture& texture : model.textures)
-    for(const char* ext : {KHR_TEXTURE_BASISU_EXTENSION_NAME, EXT_TEXTURE_WEBP_EXTENSION_NAME, "MSFT_texture_dds"})
-      if(auto it = texture.extensions.find(ext); it != texture.extensions.end() && it->second.Has("source"))
-        if(const int src = it->second.Get("source").GetNumberAsInt(); src >= 0 && src < int(model.images.size()))
-          sourceExtension[size_t(src)] = ext;
   std::vector<TextureId> images(model.images.size());
   for(size_t i = 0; i < model.images.size(); i++)
-  {
-    const tinygltf::Image& img = model.images[i];
-    TextureRecord          t;
-    t.sourceExtension = sourceExtension[i];
-    t.name     = img.name;
-    t.uri      = img.uri;
-    t.mimeType = img.mimeType;
-    t.width    = img.width;
-    t.height   = img.height;
-    // a data URI's bytes or pixels are in img.image (below), never the URI itself
-    if(img.uri.rfind("data:", 0) == 0)
-      t.uri.clear();
-    else if(!t.uri.empty())
-    {
-      // a URI is %-encoded (fv_compose writes absolute ones so); the record holds the file's path
-      const std::filesystem::path path = nvutils::pathFromUtf8(tinygltf::utils::decodePathFromUri(t.uri));
-      std::error_code             ec;
-      std::filesystem::path       found;
-      if(path.is_absolute() && std::filesystem::is_regular_file(path, ec))
-        found = path;
-      else if(!options.imageSearchPaths.empty())
-        found = nvutils::findFile(path, options.imageSearchPaths, false);
-      if(!found.empty())
-        t.uri = nvutils::utf8FromPath(std::filesystem::absolute(found));
-    }
-    if(t.uri.empty() && img.bufferView < 0 && !img.image.empty())
-    {
-      // the renderer's loaders keep the encoded file (as_is, or no size decoded); tinygltf's own
-      // decodes it to pixels
-      const size_t decoded = img.width > 0 && img.height > 0 && img.component > 0 ?
-                                 size_t(img.width) * size_t(img.height) * size_t(img.component) * size_t(std::max(img.bits, 8) / 8) :
-                                 0;
-      if(!img.as_is && decoded == img.image.size())
-      {
-        t.pixels    = img.image;
-        t.component = img.component;
-        t.bits      = img.bits;
-      }
-      else
-        t.bytes = img.image;
-    }
-    if(t.uri.empty() && img.bufferView >= 0 && img.bufferView < int(model.bufferViews.size()))
-    {
-      const tinygltf::BufferView& view = model.bufferViews[size_t(img.bufferView)];
-      if(view.buffer >= 0 && view.buffer < int(model.buffers.size())
-         && view.byteOffset + view.byteLength <= model.buffers[size_t(view.buffer)].data.size())
-      {
-        const auto begin = model.buffers[size_t(view.buffer)].data.begin() + std::ptrdiff_t(view.byteOffset);
-        t.bytes.assign(begin, begin + std::ptrdiff_t(view.byteLength));
-      }
-    }
-    images[i] = scene.addTexture(std::move(t));
-  }
+    images[i] = scene.addTexture(textureRecordOf(model, i, options.imageSearchPaths));
   auto table = std::make_shared<TextureTable>();
   for(const tinygltf::Texture& texture : model.textures)
   {
     const int source = tinygltf::utils::getTextureImageIndex(texture);
     table->push_back({source >= 0 && source < int(images.size()) ? images[size_t(source)] : TextureId{}, samplerOf(model, texture.sampler)});
   }
+  out.images   = images;
+  out.textures = table;
 
   // ---- materials, made when a primitive draws with one
   out.materials.assign(model.materials.size(), {});

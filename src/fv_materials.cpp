@@ -690,6 +690,9 @@ void FvMaterials::bake(std::vector<fv::build::TextureRequest> requests)
       {
         LOGW("texture %s: %s\n", r.rel.c_str(), e.what());
       }
+      // decoded here, off the app thread: the scene that takes the texture claims it
+      if(image && m_hooks.renderer)
+        m_hooks.renderer->prefetchImage(pathOfUri(image->uri), r.srgb);
       results.emplace_back(r, std::move(image));
     }
     if(!*alive)

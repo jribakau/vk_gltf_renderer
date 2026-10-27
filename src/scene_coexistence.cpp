@@ -123,13 +123,21 @@ SceneBackendChoice chooseSceneBackend(SceneBackendSetting setting, bool streamHo
   return {SceneBackend::eLegacy, "sceneBackend=auto; retained can't take " + missing};
 }
 
-LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy, RetainedScene& retained) const
+LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy, RetainedScene& retained)
 {
   const nvvkgltf::Scene::DirtyFlags& df = legacy.getDirtyFlags();
   if(df.isEmpty())
     return Result::eNothing;
-  // a re-parse, or images and samplers: the import is redone
-  if(df.allRenderNodesDirty || df.primitivesChanged || df.texturesChanged || df.texturesTailChanged || !df.samplers.empty())
+  // a re-parse, or samplers edited: the import is redone
+  if(df.allRenderNodesDirty || df.primitivesChanged || !df.samplers.empty())
+    return Result::eReimport;
+  // textures: appended ones are carried; anything else (an image replaced or removed, a texture
+  // removed) is a re-import. The editor flags the first textures of a model with none as a full
+  // change, which for an import that had none is an append too.
+  const bool hadNone = !m_map.textures || (m_map.textures->empty() && m_map.images.empty());
+  if(df.texturesChanged && !hadNone)
+    return Result::eReimport;
+  if((df.texturesChanged || df.texturesTailChanged) && !appendTextures(legacy, retained))
     return Result::eReimport;
   const tinygltf::Model& model = legacy.getModel();
 
@@ -162,9 +170,14 @@ LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy
       continue;
     if(size_t(m) >= m_map.materials.size())
       return Result::eReimport;
-    const MaterialId id = m_map.materials[size_t(m)];
-    if(!id.isNone() && retained.material(id))
-      retained.setMaterial(id, model.materials[size_t(m)]);  // over the texture table it has
+    const MaterialId      id     = m_map.materials[size_t(m)];
+    const MaterialRecord* record = retained.material(id);
+    if(!record)
+      continue;
+    if(m_map.textures && record->textures != m_map.textures)  // the table with what was appended since
+      retained.setMaterial(id, model.materials[size_t(m)], m_map.textures);
+    else
+      retained.setMaterial(id, model.materials[size_t(m)]);
   }
 
   // a glTF light is a light record per node that holds it
@@ -182,6 +195,47 @@ LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy
     }
   }
   return Result::eCarried;
+}
+
+// The textures the legacy model gained at its end since the import (or since the last append):
+// records for their images (an image the import has is shared), the texture table extended. False
+// when the model's textures are not the table's with more after them.
+bool LegacyDirtyBridge::appendTextures(const nvvkgltf::Scene& legacy, RetainedScene& retained)
+{
+  const tinygltf::Model& model = legacy.getModel();
+  const size_t           had   = m_map.textures ? m_map.textures->size() : 0;
+  if(model.textures.size() < had)
+    return false;
+  for(size_t t = 0; t < had; t++)  // the textures before keep their images
+  {
+    const int source = tinygltf::utils::getTextureImageIndex(model.textures[t]);
+    const TextureId want = source >= 0 && size_t(source) < m_map.images.size() ? m_map.images[size_t(source)] : TextureId{};
+    if((*m_map.textures)[t].texture != want)
+      return false;
+  }
+  if(model.textures.size() == had)
+    return true;
+  auto table = m_map.textures ? std::make_shared<TextureTable>(*m_map.textures) : std::make_shared<TextureTable>();
+  for(size_t t = had; t < model.textures.size(); t++)
+  {
+    const int source = tinygltf::utils::getTextureImageIndex(model.textures[t]);
+    TextureId image;
+    if(source >= 0 && source < int(model.images.size()))
+    {
+      if(size_t(source) >= m_map.images.size())
+        m_map.images.resize(size_t(source) + 1);
+      TextureId& known = m_map.images[size_t(source)];
+      if(known.isNone() || !retained.texture(known))
+      {
+        known = retained.addTexture(textureRecordOf(model, size_t(source), legacy.getImageSearchPaths()));
+        m_added.push_back(known);
+      }
+      image = known;
+    }
+    table->push_back({image, samplerOf(model, model.textures[t].sampler)});
+  }
+  m_map.textures = std::move(table);
+  return true;
 }
 
 // The inventory's allow-list: whole files of the host and the sky, and GltfRenderer's members
