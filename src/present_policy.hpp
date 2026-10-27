@@ -35,7 +35,7 @@ namespace present_policy {
 
 struct Viewers
 {
-  int  clients{0};         // /stream connections
+  int  clients{0};          // /stream connections
   bool localViewer{false};  // the app presents the frames itself
   bool frameWanted{false};  // a /frame request waits for a frame
 };

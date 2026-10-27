@@ -47,6 +47,7 @@
 #include "ui_dock_layout.hpp"
 #include "mcp_timing.hpp"
 #include "frame_stream.hpp"
+#include "frame_present.hpp"
 #include "fv_host.hpp"
 #include <figure/dson/store.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -440,6 +441,16 @@ auto main(int argc, char** argv) -> int
   vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
 #endif  // WIN32
 #endif  // USE_OPTIX_DENOISER
+#if defined(_WIN32) && !defined(USE_OPTIX_DENOISER)
+  // native presentation (frame_present_win32.cpp) shares images and a fence with D3D11; the
+  // denoiser's block above asks for the same
+  vkSetup.instanceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
+  vkSetup.instanceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
+  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
+  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
+  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+#endif
 
 
 #if defined(USE_NSIGHT_AFTERMATH)
@@ -656,6 +667,18 @@ auto main(int argc, char** argv) -> int
     {
       GltfRenderer* r = elemGltfRenderer.get();
       auto          protocol = std::make_shared<FvProtocol>();
+      // native presentation into the app's window (frame_present.hpp): it tells the stream when the
+      // app shows frames itself, so the stream it needs is set once that exists
+      auto streamRef = std::make_shared<std::weak_ptr<FrameStream>>();
+      auto present   = std::make_shared<FramePresent>(FramePresentCreateInfo{
+          .image       = [r] { return r->tonemappedImage(); },
+          .imageSize   = [r] { return r->renderSize(); },
+          .drawn       = [r] { return r->drawnFrameCount(); },
+          .localViewer = [streamRef](bool local) {
+            if(auto fs = streamRef->lock())
+              fs->setLocalViewer(local);
+          },
+      });
       // after the renderer, so the copy sees the frame it just rendered
       frameStream = std::make_shared<FrameStream>(FrameStreamCreateInfo{
           .port      = uint16_t(streamPort),
@@ -668,13 +691,19 @@ auto main(int argc, char** argv) -> int
           .still     = [r] { return r->isStill(); },
           .upload    = [r](std::string bytes) { return r->blobs().put(std::move(bytes)); },
           .token     = fvToken,
-          .routes    = [protocol](httplib::Server& http, const std::atomic<bool>& running) { protocol->registerRoutes(http, running); },
+          .routes    = [protocol, present](httplib::Server& http, const std::atomic<bool>& running) {
+            protocol->registerRoutes(http, running);
+            present->registerRoutes(http);
+          },
           .stopping  = [protocol] { protocol->stop(); },
           .refuseSize = [r](VkExtent2D size) { return r->refuseFrameSize(size); },
           .profile    = [r] { return r->frameProfileJson(); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
+      *streamRef = frameStream;
+      // after the stream: its pacing and GPU wait come first, and it hands the image back in GENERAL
+      app.addElement(present);
       // the Figure Viewer's scene, driven over the protocol the stream serves
       app.addElement(std::make_shared<FvHost>(r, protocol, &parameterRegistry));
       r->setStreamHost(true);
