@@ -518,14 +518,14 @@ TEST(RetainedResidency, TexturesTakeSlotsPerSamplerOverOneImage)
 
   const TextureId a = (*table)[0].texture, b = (*table)[2].texture;
   EXPECT_EQ(gpu.liveImages(), 2u);
-  const int32_t plain   = residency.textureSlot(a, {}),
-                nearest = residency.textureSlot(a, {.magFilter = TINYGLTF_TEXTURE_FILTER_NEAREST});
+  const int32_t plain   = residency.textureSlot(a, {}, true),
+                nearest = residency.textureSlot(a, {.magFilter = TINYGLTF_TEXTURE_FILTER_NEAREST}, true);
   EXPECT_GT(plain, 0);
   EXPECT_GT(nearest, 0);
   EXPECT_NE(plain, nearest);
   EXPECT_EQ(gpu.textureDescriptors().at(uint32_t(plain)), gpu.textureDescriptors().at(uint32_t(nearest)));  // one image
-  EXPECT_TRUE(gpu.image(residency.image(a))->srgb);
-  EXPECT_FALSE(gpu.image(residency.image(b))->srgb);
+  EXPECT_TRUE(gpu.image(residency.image(a, true))->srgb);
+  EXPECT_FALSE(gpu.image(residency.image(b, false))->srgb);
   EXPECT_EQ(residency.materialHighWater(), 2u);
   // the normal map's two channels reach its texture info
   const Residency::MaterialState* state = residency.materialState(0);
@@ -580,21 +580,21 @@ TEST(RetainedResidency, ADecodeIsSharedAndOutlivesAReplaceInGrace)
   Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
   residency.replace(scene);
   expectClean(scene, residency, gpu);
-  EXPECT_EQ(residency.image(a), residency.image(same));
+  EXPECT_EQ(residency.image(a, true), residency.image(same, true));
   EXPECT_EQ(gpu.liveImages(), 2u);
   EXPECT_EQ(residency.imageCounts().decoded, 2u);
   EXPECT_EQ(residency.imageCounts().reused, 1u);
   EXPECT_EQ(gpu.imageBatches(), std::vector<size_t>{2});  // decoded together, the shared one once
 
   // a replace decodes nothing it had
-  const ImageHandle before = residency.image(b);
+  const ImageHandle before = residency.image(b, false);
   gpu.beginFrame();
   residency.replace(scene);
   expectClean(scene, residency, gpu, "replaced: ");
   EXPECT_EQ(residency.imageCounts().decoded, 0u);
   EXPECT_EQ(residency.imageCounts().reused, 3u);
   EXPECT_EQ(gpu.imageBatches().size(), 1u);  // nothing to decode
-  EXPECT_EQ(residency.image(b), before);
+  EXPECT_EQ(residency.image(b, false), before);
   drain(gpu);
   expectClean(scene, residency, gpu, "after its retires: ");
 
@@ -747,6 +747,8 @@ TEST(RetainedResidency, TextureInfoSpansRepackThenRefuse)
   notices = residency.takeNotices();
   ASSERT_FALSE(notices.empty());
   EXPECT_NE(notices.back().find("material 'd' is drawn without its textures"), std::string::npos);
+  // once, though the repack converted it a second time
+  EXPECT_EQ(std::count_if(notices.begin(), notices.end(), [](const std::string& n) { return n.find("'d'") != std::string::npos; }), 1);
   EXPECT_EQ(residency.materialState(uint32_t(residency.materialSlot(d)))->spanCount, 0u);
   const shaderio::GltfShadeMaterial* row = residency.shadeMaterial(uint32_t(residency.materialSlot(d)));
   ASSERT_NE(row, nullptr);
@@ -797,7 +799,7 @@ TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)
   Residency      residency(gpu);
   residency.replace(scene);
   expectClean(scene, residency, gpu);
-  const int32_t slot = residency.textureSlot((*table)[0].texture, {});
+  const int32_t slot = residency.textureSlot((*table)[0].texture, {}, true);
   ASSERT_GT(slot, 0);
   EXPECT_FALSE(gpu.textureDescriptors().at(uint32_t(slot)));
 }
@@ -815,7 +817,7 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
   Residency      residency(gpu);
   residency.replace(scene);
   EXPECT_EQ(residency.drawList(Residency::DrawList::eSolid), std::vector<uint32_t>{0});
-  const int32_t  before   = residency.textureSlot((*table)[0].texture, {});
+  const int32_t  before   = residency.textureSlot((*table)[0].texture, {}, true);
   const uint64_t revision = residency.drawListsRevision();
 
   tinygltf::Material edited                          = scene.material(mat)->payload;
@@ -826,7 +828,7 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
   const SyncResult r = residency.sync(scene);
   EXPECT_TRUE(r.changed && r.drawListChanged);
   expectClean(scene, residency, gpu);
-  EXPECT_EQ(residency.textureSlot((*table)[0].texture, {}), -1);
+  EXPECT_EQ(residency.textureSlot((*table)[0].texture, {}, true), -1);
   EXPECT_TRUE(gpu.textureDescriptors().at(uint32_t(before)));  // not yet: a frame in flight may sample it
   EXPECT_EQ(residency.drawList(Residency::DrawList::eBlend), std::vector<uint32_t>{0});
   EXPECT_TRUE(residency.drawList(Residency::DrawList::eSolid).empty());
@@ -1039,6 +1041,7 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
     materials.push_back(textured(scene, table, 0));
     materials.push_back(textured(scene, table, 1, "BLEND"));
     materials.push_back(emissive(scene, 3.f));
+    materials.push_back(textured(scene, table, 2));  // the normal map's texture sampled as colour too
     std::vector<EntityId> live;
 
     FakeGpuBackend gpu(2);
@@ -1048,7 +1051,7 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
 
     for(int step = 0; step < 60; step++)
     {
-      const int op = std::uniform_int_distribution<int>(0, 8)(rng);
+      const int op = std::uniform_int_distribution<int>(0, 9)(rng);
       if(op <= 1 || live.empty())
       {
         const MeshId            mesh = pick(meshes);
@@ -1090,6 +1093,19 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       }
       else if(op == 8)
         scene.setMorphWeights(pick(live), {float(rng() % 5) * 0.25f});
+      else if(op == 9)
+      {
+        // a rebinding: the same meshes, other materials
+        const EntityId e = pick(live);
+        if(const Entity* entity = scene.entity(e); entity && entity->mesh)
+        {
+          MeshInstance instance = *entity->mesh;
+          for(MeshPart& part : instance.parts)
+            for(MaterialId& m : part.materials)
+              m = pick(materials);
+          scene.setMeshInstance(e, instance);
+        }
+      }
       else if(op == 6)
       {
         // a material edit: another texture, another alpha mode, sides
@@ -1146,4 +1162,83 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
   }
   EXPECT_GT(morphs, 20u);
   EXPECT_GT(skins, 20u);
+}
+
+// Review findings, 2026-10-27: a rebinding to a material that is already drawn elsewhere moves the
+// instance's raster list and its emitters; a texture sampled as colour by one material and as data by
+// another; a held edit that starts emitting when its variant comes.
+TEST(RetainedResidency, ARebindingToALiveMaterialMovesItsListsAndEmitters)
+{
+  RetainedScene    scene;
+  const MeshId     grid  = scene.addMesh(gridMesh(2, 0.f));
+  const MaterialId plain = material(scene, "plain"), lamp = emissive(scene, 2.f);
+  MaterialRecord   blend;
+  blend.payload.alphaMode  = "BLEND";
+  const MaterialId glassy  = scene.addMaterial(blend);
+  const EntityId   e       = drawn(scene, "e", grid, {plain});
+  drawn(scene, "keep lamp", grid, {lamp});
+  drawn(scene, "keep glassy", grid, {glassy});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  for(MaterialId m : {lamp, plain, glassy, plain})
+  {
+    MeshInstance mi;
+    mi.parts.push_back({grid, {m}});
+    scene.setMeshInstance(e, mi);
+    gpu.beginFrame();
+    residency.sync(scene);
+    expectClean(scene, residency, gpu, "rebound: ");
+  }
+}
+
+TEST(RetainedResidency, ATextureSampledAsColourAnywhereIsDecodedAsColour)
+{
+  RetainedScene scene;
+  const auto    table = textureTable(scene);
+  MaterialRecord normalOnly;
+  normalOnly.payload.normalTexture.index = 2;
+  normalOnly.textures                    = table;
+  const MaterialId n    = scene.addMaterial(normalOnly);
+  const MeshId     grid = scene.addMesh(gridMesh(2, 0.f));
+  drawn(scene, "normal", grid, {n});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "normal only: ");
+  MaterialRecord colour;
+  colour.payload.pbrMetallicRoughness.baseColorTexture.index = 2;
+  colour.textures                                            = table;
+  drawn(scene, "colour", grid, {scene.addMaterial(colour)});
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "colour too: ");
+}
+
+TEST(RetainedResidency, AHeldEditThatEmitsJoinsTheEmissiveTableWhenItIsWritten)
+{
+  RetainedScene    scene;
+  const MaterialId plain = material(scene, "plain");
+  const MeshId     grid  = scene.addMesh(gridMesh(2, 0.f));
+  drawn(scene, "a", grid, {plain});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.setShaderFeatures(nvvkgltf::SceneFeatureSet{});
+  residency.replace(scene);
+  tinygltf::Material glowing = scene.material(plain)->payload;
+  glowing.emissiveFactor     = {2, 2, 2};
+  tinygltf::Value::Object clearcoat;
+  clearcoat["clearcoatFactor"]             = tinygltf::Value(1.0);
+  glowing.extensions["KHR_materials_clearcoat"] = tinygltf::Value(clearcoat);
+  scene.setMaterial(plain, glowing);
+  gpu.beginFrame();
+  residency.sync(scene);
+  ASSERT_EQ(residency.heldMaterials().size(), 1u);
+  expectClean(scene, residency, gpu, "held: ");
+  residency.setShaderFeatures(scene.features());
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_TRUE(residency.heldMaterials().empty());
+  EXPECT_GT(residency.emissiveCount(), 0u);
+  expectClean(scene, residency, gpu, "written: ");
 }

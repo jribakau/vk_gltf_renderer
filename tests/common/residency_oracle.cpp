@@ -491,20 +491,21 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
         continue;
       const TextureRef&    ref = (*record->textures)[size_t(i)];
       const GpuSamplerDesc sampler{ref.sampler.magFilter, ref.sampler.minFilter, ref.sampler.wrapS, ref.sampler.wrapT};
-      const int32_t        slot = residency.textureSlot(ref.texture, sampler);
+      const bool           colour = srgb.count(i) > 0;
+      const int32_t        slot   = residency.textureSlot(ref.texture, sampler, colour);
       if(slot <= 0 || state->slots.gpuTexture(i) != slot)
       {
         out.push_back(at("I4", m) + "texture " + std::to_string(i) + " does not name its texture slot");
         continue;
       }
       const auto descriptor = gpu.textureDescriptors().find(uint32_t(slot));
-      if(descriptor == gpu.textureDescriptors().end() || descriptor->second != residency.image(ref.texture))
+      if(descriptor == gpu.textureDescriptors().end() || descriptor->second != residency.image(ref.texture, colour))
         out.push_back(at("I4", m) + "texture slot " + std::to_string(slot) + " does not hold its texture's image");
       if(state->slots.samplerSlot(i) != residency.samplerSlot(sampler)
          || !gpu.samplerDescriptors().count(uint32_t(residency.samplerSlot(sampler))))
         out.push_back(at("I4", m) + "texture " + std::to_string(i) + " does not name its sampler's written slot");
-      if(const FakeGpuBackend::Image* image = gpu.image(residency.image(ref.texture)); image && srgb.count(i) && !image->srgb)
-        out.push_back(at("I4", m) + "a colour texture was not decoded as sRGB");
+      if(const FakeGpuBackend::Image* image = gpu.image(residency.image(ref.texture, colour)); image && image->srgb != colour)
+        out.push_back(at("I4", m) + (colour ? "a colour texture was not decoded as sRGB" : "a data texture was decoded as sRGB"));
     }
   }
   // entry 0: no texture

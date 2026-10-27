@@ -50,7 +50,9 @@
 //   frame, when it goes back to its pool. The tables are sized by capacity, a power of two at or
 //   above the high-water mark, and the TLAS keeps its handle until capacity grows.
 // - A material slot is a GltfShadeMaterial row; the textures its payload samples hold texture
-//   slots, one per (texture, sampler), over one image per texture (slot 0 is the default image);
+//   slots, one per (texture, colour space, sampler), over one image per texture and colour space (a
+//   map one material samples as colour and another as data is decoded both ways; slot 0 is the
+//   default image);
 //   samplers hold sampler slots (slot 0 the default sampler). Each material slot owns one span of
 //   the texture-info table (entry 0 is "no texture"), placed below the uint16 limit; a sync converts
 //   and uploads only the material slots that changed, their rows and their spans. An edit whose
@@ -305,9 +307,11 @@ public:
   const shaderio::GltfShadeMaterial* shadeMaterial(uint32_t slot) const;
   BufferHandle                       textureInfoTable() const { return m_textureInfoTable; }
   uint32_t                           textureInfoLimit() const { return m_options.textureInfoLimit; }
-  // the texture slot of a texture sampled so, -1 for none; the image a texture is, none while unread
-  int32_t     textureSlot(TextureId texture, const GpuSamplerDesc& sampler) const;
-  ImageHandle image(TextureId texture) const;
+  // the texture slot of a texture sampled so, as colour (sRGB) or as data, -1 for none; the image a
+  // texture is when decoded so, none while unread. A texture one material samples as colour and
+  // another as data (a map used as both) is two images.
+  int32_t     textureSlot(TextureId texture, const GpuSamplerDesc& sampler, bool srgb) const;
+  ImageHandle image(TextureId texture, bool srgb) const;
   int32_t     samplerSlot(const GpuSamplerDesc& sampler) const;
   // what a material slot's row was converted from: its payload, and the slot table its texture
   // indices resolve through
@@ -338,10 +342,12 @@ private:
     uint32_t slot  = 0;
     uint32_t users = 0;
     uint32_t rev   = 0;
-    // per entry of its texture table: what it holds (none for an entry the payload doesn't sample)
-    std::vector<std::optional<std::pair<TextureId, GpuSamplerDesc>>> textures;
+    // per entry of its texture table: what it holds (none for an entry the payload doesn't sample):
+    // the texture, its sampler, and whether it is sampled as colour
+    std::vector<std::optional<std::tuple<TextureId, GpuSamplerDesc, bool>>> textures;
   };
   using SamplerKey = std::tuple<int, int, int, int>;
+  using ImageKey   = std::pair<TextureId, bool>;  // a texture, and whether it is decoded as sRGB
   struct ImageGpu
   {
     ImageHandle               image;
@@ -387,7 +393,7 @@ private:
   void     acquireMaterialTextures(const RetainedScene& scene, MaterialId id, MaterialSlot& slot);
   void     releaseMaterialTextures(MaterialSlot& slot);
   void     acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb);
-  void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler);
+  void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseImage(const ImageGpu& image);
   void     decodeQueued();
   void     trimGrace(uint64_t budget);
@@ -442,15 +448,15 @@ private:
   std::map<InstanceKey, uint32_t>      m_slotOf;
   std::map<MaterialId, MaterialSlot>   m_materials;
 
-  std::map<TextureId, ImageGpu>                        m_images;
-  std::map<std::tuple<TextureId, SamplerKey>, SlotUse> m_textureSlots;
+  std::map<ImageKey, ImageGpu>                               m_images;
+  std::map<std::tuple<TextureId, bool, SamplerKey>, SlotUse> m_textureSlots;
   std::map<SamplerKey, SlotUse>                        m_samplerSlots;
   std::shared_ptr<nvutils::IDPool>                     m_texturePool, m_samplerPool;
   std::map<TextureKey, DecodedImage>                   m_decoded;  // across clear()
   // the images a sync's acquisitions need, decoded in one batch before the materials are converted
   struct QueuedDecode
   {
-    TextureId                 texture;
+    ImageKey                  image;
     ImageSource               source;  // over the store's record, which outlives the sync
     std::optional<TextureKey> key;
   };

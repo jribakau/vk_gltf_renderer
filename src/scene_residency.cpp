@@ -528,7 +528,7 @@ void Residency::acquireMaterialTextures(const RetainedScene& scene, MaterialId i
     const TextureRef&    ref     = (*record->textures)[size_t(i)];
     const GpuSamplerDesc sampler = samplerOf(ref.sampler);
     acquireTexture(scene, ref.texture, sampler, srgb.count(i) > 0);
-    slot.textures[size_t(i)] = std::pair{ref.texture, sampler};
+    slot.textures[size_t(i)] = std::tuple{ref.texture, sampler, srgb.count(i) > 0};
   }
 }
 
@@ -536,13 +536,13 @@ void Residency::releaseMaterialTextures(MaterialSlot& slot)
 {
   for(const auto& t : slot.textures)
     if(t)
-      releaseTexture(t->first, t->second);
+      releaseTexture(std::get<0>(*t), std::get<1>(*t), std::get<2>(*t));
   slot.textures.clear();
 }
 
 void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb)
 {
-  ImageGpu& image  = m_images[id];
+  ImageGpu& image  = m_images[{id, srgb}];
   bool      shared = false;  // the image another texture decoded, or is decoding this sync
   if(image.users++ == 0)
     if(const TextureRecord* record = scene.texture(id))
@@ -575,12 +575,12 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
                                .srgb      = srgb,
                                .name      = record->name};
       // decoded with the sync's others (decodeQueued); its slots hold the default image until then
-      m_decodeQueue.push_back({id, source, image.key});
+      m_decodeQueue.push_back({{id, srgb}, source, image.key});
       if(image.key)
         m_decoded[*image.key] = {.users = 1};
     }
 
-  SlotUse& use = m_textureSlots[{id, keyOf(sampler)}];
+  SlotUse& use = m_textureSlots[{id, srgb, keyOf(sampler)}];
   if(use.users++ > 0)
     return;
   const bool ok = m_texturePool->createID(use.slot);
@@ -599,9 +599,9 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
 
 // A slot nothing samples any more goes back to the default image, and to its pool, at its retire
 // frame: a frame in flight may still sample it.
-void Residency::releaseTexture(TextureId id, const GpuSamplerDesc& sampler)
+void Residency::releaseTexture(TextureId id, const GpuSamplerDesc& sampler, bool srgb)
 {
-  auto slot = m_textureSlots.find({id, keyOf(sampler)});
+  auto slot = m_textureSlots.find({id, srgb, keyOf(sampler)});
   if(slot != m_textureSlots.end() && --slot->second.users == 0)
   {
     m_gpu.retire([&gpu = m_gpu, pool = m_texturePool, s = slot->second.slot] {
@@ -616,7 +616,7 @@ void Residency::releaseTexture(TextureId id, const GpuSamplerDesc& sampler)
       m_samplerSlots.erase(samplerUse);
     }
   }
-  auto image = m_images.find(id);
+  auto image = m_images.find({id, srgb});
   if(image != m_images.end() && --image->second.users == 0)
   {
     releaseImage(image->second);
@@ -677,7 +677,7 @@ void Residency::decodeQueued()
   m_gpu.createImages(sources, images, infos);
   m_imageCounts.decoded += uint32_t(sources.size());
 
-  std::set<TextureId> written;
+  std::set<ImageKey> written;
   for(size_t i = 0; i < m_decodeQueue.size(); i++)
   {
     const QueuedDecode& q = m_decodeQueue[i];
@@ -709,19 +709,19 @@ void Residency::decodeQueued()
           m_graceBytes += infos[i].bytes;
       }
     }
-    else if(auto image = m_images.find(q.texture); image != m_images.end() && !image->second.key)
+    else if(auto image = m_images.find(q.image); image != m_images.end() && !image->second.key)
     {
       image->second.image = images[i];
       image->second.info  = infos[i];
-      written.insert(q.texture);
+      written.insert(q.image);
     }
     else if(images[i])
       m_gpu.retire([&gpu = m_gpu, handle = images[i]] { gpu.destroyImage(handle); });
   }
   m_decodeQueue.clear();
   for(const auto& [slotKey, use] : m_textureSlots)
-    if(written.count(std::get<0>(slotKey)))
-      m_gpu.writeTextureDescriptor(use.slot, m_images.at(std::get<0>(slotKey)).image);
+    if(const ImageKey image{std::get<0>(slotKey), std::get<1>(slotKey)}; written.count(image))
+      m_gpu.writeTextureDescriptor(use.slot, m_images.at(image).image);
 }
 
 void Residency::setTextureGrace(uint64_t bytes)
@@ -830,9 +830,9 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
   {
     if(!slot.textures[i])
       continue;
-    const auto& [texture, sampler] = *slot.textures[i];
-    const ImageGpu& image          = m_images.at(texture);
-    table.gpuIndex[i]              = int(m_textureSlots.at({texture, keyOf(sampler)}).slot);
+    const auto& [texture, sampler, srgb] = *slot.textures[i];
+    const ImageGpu& image                = m_images.at({texture, srgb});
+    table.gpuIndex[i]                    = int(m_textureSlots.at({texture, srgb, keyOf(sampler)}).slot);
     table.samplerSlots[i]          = int(m_samplerSlots.at(keyOf(sampler)).slot);
     table.twoChannelSource[i]      = image.info.twoChannel ? 1 : 0;
     table.meanLuminance[i]         = image.info.meanLuminance;
@@ -851,8 +851,11 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
     if(count && !placeSpan(count, state->span))
     {
       // no room below the limit even repacked: drawn without its textures, never a wrapped index
-      m_notices.push_back("the texture-info table is full (" + std::to_string(m_options.textureInfoLimit - 1)
-                          + " entries): material '" + state->payload.name + "' is drawn without its textures");
+      // once, though a repack converts it a second time in the same sync
+      std::string notice = "the texture-info table is full (" + std::to_string(m_options.textureInfoLimit - 1)
+                           + " entries): material '" + state->payload.name + "' is drawn without its textures";
+      if(std::find(m_notices.begin(), m_notices.end(), notice) == m_notices.end())
+        m_notices.push_back(std::move(notice));
       state->texturesDropped             = true;
       nvvkgltf::TextureSlotTable dropped = table;
       dropped.gpuIndex.assign(std::max<size_t>(n, 1), -1);
@@ -1377,7 +1380,8 @@ SyncResult Residency::sync(RetainedScene& scene)
     buildDrawLists();
     result.drawListChanged = true;
   }
-  const bool materialsWritten = m_tablesMoved || result.drawListChanged || (!changes.materials.empty());
+  // (an edit held until now and written on its retry counts: it may emit, or stop)
+  const bool materialsWritten = m_tablesMoved || result.drawListChanged || !edited.empty();
   syncRows(items, result);
   writeMotionTables(result);
   if(fresh || changes.iesProfiles)
@@ -1490,6 +1494,9 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
         inst.material     = item.material;
         inst.materialSlot = materialSlot;
         m_dirtyNodes.insert(found->second);
+        // its raster list and its emitters follow the material, which may be drawn already (so
+        // nothing is converted that would say so)
+        result.drawListChanged = true;
       }
       continue;
     }
@@ -1901,15 +1908,15 @@ const Residency::MeshGpu* Residency::meshGpu(MeshId mesh) const
   return it == m_meshes.end() ? nullptr : &it->second;
 }
 
-int32_t Residency::textureSlot(TextureId texture, const GpuSamplerDesc& sampler) const
+int32_t Residency::textureSlot(TextureId texture, const GpuSamplerDesc& sampler, bool srgb) const
 {
-  auto it = m_textureSlots.find({texture, keyOf(sampler)});
+  auto it = m_textureSlots.find({texture, srgb, keyOf(sampler)});
   return it == m_textureSlots.end() ? -1 : int32_t(it->second.slot);
 }
 
-ImageHandle Residency::image(TextureId texture) const
+ImageHandle Residency::image(TextureId texture, bool srgb) const
 {
-  auto it = m_images.find(texture);
+  auto it = m_images.find({texture, srgb});
   return it == m_images.end() ? ImageHandle{} : it->second.image;
 }
 
