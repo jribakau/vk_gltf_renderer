@@ -66,6 +66,9 @@ const char* shaderName(fv::mat::Surface::Shader s)
   {
     case fv::mat::Surface::Shader::eIray: return "iray";
     case fv::mat::Surface::Shader::ePbrSkin: return "pbrskin";
+    case fv::mat::Surface::Shader::eDazDefault: return "dazdefault";
+    case fv::mat::Surface::Shader::eUberSurface: return "ubersurface";
+    case fv::mat::Surface::Shader::eAoa: return "aoa";
     case fv::mat::Surface::Shader::eLegacy: break;
   }
   return "legacy";

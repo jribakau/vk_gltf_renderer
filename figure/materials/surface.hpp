@@ -132,11 +132,15 @@ struct Surface
 {
   std::string name;
   Kind        kind = Kind::eOther;
-  // Where the values came from: an Iray Uber or PBRSkin material, or the legacy top-level channels
+  // Where the values came from: an Iray Uber or PBRSkin material, a 3Delight-era shader read for
+  // what its channels mean (dson/legacy_materials.hpp), or another's top-level channels
   enum class Shader
   {
     eIray,
     ePbrSkin,
+    eDazDefault,
+    eUberSurface,
+    eAoa,
     eLegacy,
   } shader = Shader::eLegacy;
 

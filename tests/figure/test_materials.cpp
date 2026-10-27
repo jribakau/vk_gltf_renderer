@@ -10,6 +10,7 @@
 #include <string>
 
 #include <figure/dson/eye_materials.hpp>
+#include <figure/dson/legacy_materials.hpp>
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/materials.hpp>
 #include <figure/dson/skin_materials.hpp>
@@ -1803,4 +1804,209 @@ TEST(Materials, AoaRoughnessIsNotVelvet)
   // AoA's id "roughness" is its Velvet Roughness; the specular lobe's comes from Glossiness
   const auto s = fv::dson::parseSurface("Torso", layered({kAoaBrick}));
   EXPECT_NE(s.glossy.roughness.value, 0.2f);
+}
+
+// The three 3Delight-era shaders, with values from real files: the G8M Basic Wear Boxers and the
+// G3F Basic Wear Top (DAZ Default), Genesis 2 Female's Torso (UberSurface), Genesis 3 Female's
+// Torso (AoA Subsurface, as in kAoaBrick).
+namespace {
+
+const char* kBoxers = R"({
+  "diffuse":{"channel":{"id":"diffuse","label":"Diffuse Color","current_value":[0.7529412,0.7529412,0.7529412],"image_file":"/Runtime/Textures/boxers_d.jpg"}},
+  "diffuse_strength":{"channel":{"id":"diffuse_strength","label":"Diffuse Strength","current_value":1}},
+  "specular":{"channel":{"id":"specular","label":"Specular Color","current_value":[0.6,0.6,0.6]}},
+  "specular_strength":{"channel":{"id":"specular_strength","label":"Specular Strength","current_value":0.3}},
+  "glossiness":{"channel":{"id":"glossiness","label":"Glossiness","current_value":1}},
+  "ambient":{"channel":{"id":"ambient","label":"Ambient Color","current_value":[0,0,0]}},
+  "ambient_strength":{"channel":{"id":"ambient_strength","label":"Ambient Strength","current_value":1}},
+  "reflection_strength":{"channel":{"id":"reflection_strength","label":"Reflection Strength","current_value":0}},
+  "refraction_strength":{"channel":{"id":"refraction_strength","label":"Refraction Strength","current_value":0}},
+  "ior":{"channel":{"id":"ior","label":"Index of Refraction","current_value":0}},
+  "bump_min":{"channel":{"id":"bump_min","label":"Negative Bump","current_value":-0.01}},
+  "bump_max":{"channel":{"id":"bump_max","label":"Positive Bump","current_value":0.01}},
+  "transparency":{"channel":{"id":"transparency","label":"Opacity Strength","current_value":1}},
+  "u_scale":{"channel":{"id":"u_scale","label":"Horizontal Tiles","current_value":1}},
+  "extra":[{"type":"studio_material_channels","channels":[
+    {"channel":{"id":"Lighting Model","label":"Lighting Model","current_value":0}}]}]})";
+
+const char* kG2fTorso = R"({
+  "diffuse":{"channel":{"id":"diffuse","label":"Diffuse Color","current_value":[1,1,1],"image_file":"/Runtime/Textures/g2f_torso.jpg"}},
+  "transparency":{"channel":{"id":"transparency","label":"Opacity Strength","current_value":1}},
+  "extra":[{"type":"studio/material/daz_shader","definition":"support/DAZ/Uber/shaderDefinitions/surface/omUberSurfaceDef.dse","channels":[
+    {"channel":{"id":"Bump Active","current_value":true}},
+    {"channel":{"id":"Bump Strength","current_value":0.25,"image_file":"/Runtime/Textures/g2f_torso_b.jpg"}},
+    {"channel":{"id":"Bump Minimum","current_value":-0.1}},
+    {"channel":{"id":"Bump Maximum","current_value":0.1}},
+    {"channel":{"id":"Diffuse Active","current_value":true}},
+    {"channel":{"id":"Diffuse Strength","current_value":0.9}},
+    {"channel":{"id":"Opacity Active","current_value":true}},
+    {"channel":{"id":"Map Tiling U","current_value":1}},
+    {"channel":{"id":"Map Tiling V","current_value":1}},
+    {"channel":{"id":"Specular Active","current_value":true}},
+    {"channel":{"id":"Specular Color","current_value":[1,0.7882353,0.6627451]}},
+    {"channel":{"id":"Specular Strength","current_value":0.55}},
+    {"channel":{"id":"Glossiness","current_value":0.2}},
+    {"channel":{"id":"Specular2 Active","current_value":true}},
+    {"channel":{"id":"Specular2 Color","current_value":[0.745098,0.8627451,1]}},
+    {"channel":{"id":"Specular2 Strength","current_value":0.3}},
+    {"channel":{"id":"Specular2 Roughness","current_value":0.1}},
+    {"channel":{"id":"Ambient Active","current_value":false}},
+    {"channel":{"id":"Refraction Active","current_value":false}},
+    {"channel":{"id":"Index of Refraction","current_value":1.3}},
+    {"channel":{"id":"Reflection Active","current_value":false}},
+    {"channel":{"id":"Reflection Strength","current_value":1}},
+    {"channel":{"id":"Velvet Active","current_value":true}},
+    {"channel":{"id":"Subsurface Active","current_value":true}},
+    {"channel":{"id":"Subsurface Strength","current_value":0.5}}]}]})";
+
+// The same surface switched to plain cloth: no subsurface, no bump, tiled twice across
+const char* kUberCloth = R"({"extra":[{"channels":[
+    {"channel":{"id":"Subsurface Active","current_value":false}},
+    {"channel":{"id":"Bump Active","current_value":false}},
+    {"channel":{"id":"Map Tiling U","current_value":2}},
+    {"channel":{"id":"Map Tiling V","current_value":2}}]}]})";
+
+// AoA's G3F Torso values over its brick: specular .25 at glossiness .4, specular 2 at .1, a normal map
+const char* kAoaTorso = R"({"extra":[{"channels":[
+    {"channel":{"id":"diffuse","current_value":[1,1,1],"image_file":"/Runtime/Textures/g3f_torso.jpg"}},
+    {"channel":{"id":"Diffuse Strength","current_value":0.5}},
+    {"channel":{"id":"value23","current_value":1}},
+    {"channel":{"id":"Specular Strength","current_value":0.25}},
+    {"channel":{"id":"Glossiness","current_value":0.4}},
+    {"channel":{"id":"value222","current_value":0.1}},
+    {"channel":{"id":"Normal Map","current_value":1,"image_file":"/Runtime/Textures/g3f_torso_n.jpg"}},
+    {"channel":{"id":"alpha","current_value":0.6}}]}]})";
+
+const char* kTopValues = R"({"extra":[{"channels":[
+    {"channel":{"id":"specular_strength","current_value":1}},{"channel":{"id":"glossiness","current_value":0.75}}]}]})";
+const char* kMetallic  = R"({"extra":[{"channels":[{"channel":{"id":"Lighting Model","current_value":1}}]}]})";
+const char* kMatte     = R"({"extra":[{"channels":[{"channel":{"id":"Lighting Model","current_value":4}}]}]})";
+const char* kRefracts  = R"({"extra":[{"channels":[{"channel":{"id":"refraction_strength","current_value":0.8}}]}]})";
+const char* kIrayOver  = R"({"extra":[{"channels":[{"channel":{"id":"Glossy Roughness","current_value":0.4}}]}]})";
+const char* kUberLens  = R"({"transparency":{"channel":{"id":"transparency","current_value":0.1}},
+    "extra":[{"channels":[{"channel":{"id":"Refraction Active","current_value":true}}]}]})";
+
+}  // namespace
+
+TEST(Materials, ClassifyLegacyKeepsIrayFirst)
+{
+  using fv::dson::LegacyShader;
+  EXPECT_EQ(fv::dson::classifyLegacy(channelsOf(kBoxers)), LegacyShader::eDazDefault);
+  EXPECT_EQ(fv::dson::classifyLegacy(channelsOf(kG2fTorso)), LegacyShader::eUberSurface);
+  EXPECT_EQ(fv::dson::classifyLegacy(layered({kAoaBrick, kAoaTorso})), LegacyShader::eAoa);
+  // Iray Uber has a Glossiness and a Diffuse Strength too
+  EXPECT_EQ(fv::dson::classifyLegacy(channelsOf(kSkin)), LegacyShader::eNone);
+  EXPECT_EQ(fv::dson::classifyLegacy(layered({kG2fTorso, kIrayOver})), LegacyShader::eNone);
+}
+
+TEST(Materials, LegacyRoughnessCurve)
+{
+  using fv::dson::LegacyShader;
+  using fv::dson::legacyRoughness;
+  // DAZ Default narrows over the top half only: glossiness 1 is the floor, half is fully rough
+  EXPECT_NEAR(legacyRoughness(LegacyShader::eDazDefault, 1, false), 0.3f, 1e-3f);
+  EXPECT_NEAR(legacyRoughness(LegacyShader::eDazDefault, 0.75f, false), 0.63f, 0.01f);
+  EXPECT_EQ(legacyRoughness(LegacyShader::eDazDefault, 0.4f, false), 1.f);
+  EXPECT_NEAR(legacyRoughness(LegacyShader::eUberSurface, 0.5f, false), 0.5f, 1e-4f);
+  // the same look: Default's 85% and UberSurface's 50%
+  EXPECT_NEAR(legacyRoughness(LegacyShader::eDazDefault, 0.85f, false), legacyRoughness(LegacyShader::eUberSurface, 0.5f, false), 0.02f);
+  float last = 2;
+  for(int i = 0; i <= 20; i++)
+  {
+    const float r = legacyRoughness(LegacyShader::eUberSurface, i / 20.f, false);
+    EXPECT_LE(r, last);
+    EXPECT_GE(r, 0.3f);
+    last = r;
+  }
+  // only a surface that reflects goes below the floor
+  EXPECT_NEAR(legacyRoughness(LegacyShader::eUberSurface, 0.95f, true), 0.05f, 1e-4f);
+  EXPECT_EQ(legacyRoughness(LegacyShader::eUberSurface, 0.95f, false), 0.3f);
+}
+
+TEST(Materials, DazDefaultTranslates)
+{
+  const auto s = fv::dson::parseSurface("Boxers", channelsOf(kBoxers));
+  EXPECT_EQ(s.shader, fv::mat::Surface::Shader::eDazDefault);
+  // DAZ's own Iray Boxers: Glossy Layered Weight 0.325 on a rough cotton, not a mirror
+  EXPECT_NEAR(s.glossy.weight, 0.3f, 1e-4f);
+  EXPECT_NEAR(s.glossy.roughness.value, 0.3f, 1e-3f);
+  EXPECT_EQ(s.glossy.reflectivity, 0.5f);
+  EXPECT_FALSE(s.refraction.has_value());  // ior 0 and no refraction strength
+  EXPECT_EQ(s.metallic.value, 0.f);
+  EXPECT_EQ(s.base.map, "/Runtime/Textures/boxers_d.jpg");
+  EXPECT_NEAR(s.base.color[0], fv::mat::srgbToLinear(0.7529412), 1e-4f);
+  EXPECT_FALSE(s.emission.has_value());  // ambient is no light
+
+  // the G3F Basic Wear Top: full strength at glossiness 0.75 is a satin, not a plastic
+  const auto top = fv::dson::parseSurface("Top", layered({kBoxers, kTopValues}));
+  EXPECT_EQ(top.glossy.weight, 1.f);
+  EXPECT_NEAR(top.glossy.roughness.value, 0.63f, 0.01f);
+
+  // Lighting Model: Metallic is a metal, Matte fully rough; refraction takes an index of its own
+  const auto metal = fv::dson::parseSurface("Buckle", layered({kBoxers, kMetallic}));
+  EXPECT_EQ(metal.metallic.value, 1.f);
+  EXPECT_LT(metal.glossy.roughness.value, 0.3f);
+  const auto matte = fv::dson::parseSurface("Cloth", layered({kBoxers, kMatte}));
+  EXPECT_EQ(matte.glossy.roughness.value, 1.f);
+  const auto glass = fv::dson::parseSurface("Lens", layered({kBoxers, kRefracts}));
+  ASSERT_TRUE(glass.refraction.has_value());
+  EXPECT_NEAR(glass.refraction->weight, 0.8f, 1e-4f);
+  EXPECT_EQ(glass.refraction->ior, 1.5f);
+}
+
+TEST(Materials, UberSurfaceTranslates)
+{
+  // skin: measured skin's specular, whatever the file's strengths and tints
+  const auto torso = fv::dson::parseSurface("Torso", channelsOf(kG2fTorso));
+  EXPECT_EQ(torso.shader, fv::mat::Surface::Shader::eUberSurface);
+  EXPECT_EQ(torso.glossy.weight, 1.f);
+  EXPECT_NEAR(torso.glossy.reflectivity, 0.35f, 1e-4f);
+  EXPECT_NEAR(torso.glossy.roughness.value, 0.4f, 1e-4f);
+  EXPECT_EQ(torso.base.color, (fv::mat::Rgb{1, 1, 1}));  // Diffuse Strength is not the skin's albedo
+  EXPECT_EQ(torso.bumpMap, "/Runtime/Textures/g2f_torso_b.jpg");
+
+  // cloth: both specular lobes in one, from Glossiness; the reflection is switched off
+  const auto cloth = fv::dson::parseSurface("Shirt", layered({kG2fTorso, kUberCloth}));
+  EXPECT_NEAR(cloth.glossy.weight, 0.85f, 1e-4f);
+  EXPECT_NEAR(cloth.glossy.roughness.value, 0.8f, 1e-4f);
+  EXPECT_NEAR(cloth.base.color[0], 0.9f, 1e-4f);
+  EXPECT_EQ(cloth.tiles, (std::array<float, 2>{2, 2}));
+  EXPECT_TRUE(cloth.bumpMap.empty());
+  EXPECT_FALSE(cloth.refraction.has_value());
+
+  // glass: what its opacity lets through refracts
+  const auto lens = fv::dson::parseSurface("Lens", layered({kG2fTorso, kUberCloth, kUberLens}));
+  ASSERT_TRUE(lens.refraction.has_value());
+  EXPECT_NEAR(lens.refraction->weight, 0.9f, 1e-4f);
+  EXPECT_NEAR(lens.refraction->ior, 1.3f, 1e-4f);
+  EXPECT_EQ(lens.opacity.value, 1.f);
+}
+
+TEST(Materials, AoaTranslates)
+{
+  const auto torso = fv::dson::parseSurface("Torso", layered({kAoaBrick, kAoaTorso}));
+  EXPECT_EQ(torso.shader, fv::mat::Surface::Shader::eAoa);
+  EXPECT_NEAR(torso.glossy.roughness.value, 0.4f, 1e-4f);  // measured skin, not its velvet's 0.2
+  EXPECT_EQ(torso.glossy.weight, 1.f);
+  EXPECT_EQ(torso.base.color, (fv::mat::Rgb{1, 1, 1}));  // Diffuse Strength 0.5 is 3Delight's SSS split
+  EXPECT_NEAR(torso.normalStrength, 0.6f, 1e-4f);       // "alpha", the Normal Map Strength
+
+  // the same shader on a nail: its own specular, both lobes
+  const auto nail = fv::dson::parseSurface("Fingernails", layered({kAoaBrick, kAoaTorso}));
+  EXPECT_NEAR(nail.glossy.weight, 0.35f, 1e-4f);
+  EXPECT_NEAR(nail.glossy.roughness.value, 0.6f, 1e-4f);
+}
+
+TEST(Materials, IrayPresetOverLegacyStillReadsIray)
+{
+  // Iray Optimized Genesis 2 Female MAT sets Iray channels over the UberSurface Torso
+  fv::Material m = fv::dson::buildMaterial("Torso", channelsOf(kG2fTorso));
+  ASSERT_EQ(m.surface.shader, fv::mat::Surface::Shader::eUberSurface);
+  ASSERT_TRUE(fv::dson::overrideChannels(m, {{"Glossy Layered Weight", Json(1), std::nullopt},
+                                             {"Glossy Reflectivity", Json(0.35), std::nullopt},
+                                             {"Glossy Roughness", Json(0.45), std::nullopt},
+                                             {"Translucency Weight", Json(0.5), std::nullopt}}));
+  EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::eIray);
+  EXPECT_NEAR(m.surface.glossy.roughness.value, 0.45f, 1e-4f);
+  EXPECT_NEAR(m.surface.glossy.reflectivity, 0.35f, 1e-4f);
 }

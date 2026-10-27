@@ -1,4 +1,5 @@
 #include <figure/dson/materials.hpp>
+#include <figure/dson/legacy_materials.hpp>
 #include <figure/materials/texture_request.hpp>
 
 #include <algorithm>
@@ -531,6 +532,9 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   if(anisoCh)
     s.glossyAnisotropy = float(clamp01(num(anisoCh, 0)));
   s.twoSided = omniHair;
+  // A 3Delight-era shader's own channels, read for what they mean
+  if(s.shader == Surface::Shader::eLegacy)
+    translateLegacy(classifyLegacy(ch), ch, s);
   return s;
 }
 
