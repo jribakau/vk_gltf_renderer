@@ -121,6 +121,9 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp
     # Tangents remade over the one-ring of moved vertices, held to a full recompute
     test_retained_tangents.cpp
+    # Clips played and skins posed on the store, held to AnimationSystem
+    test_retained_animation.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_clip_player.cpp
     # Figure Viewer texture sources outside the cooked set, Original textures (header only)
     test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough

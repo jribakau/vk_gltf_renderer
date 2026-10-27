@@ -46,10 +46,22 @@ std::array<glm::vec3, 2> MeshRecord::bounds() const
   return b;
 }
 
+std::array<float, 2> ClipRecord::range() const
+{
+  std::array<float, 2> r{std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest()};
+  for(const ClipSampler& s : samplers)
+    for(float t : s.inputs)
+    {
+      r[0] = std::min(r[0], t);
+      r[1] = std::max(r[1], t);
+    }
+  return r;
+}
+
 bool SceneChanges::empty() const
 {
-  return !structure && transforms.empty() && visibility.empty() && meshes.empty() && materials.empty() && lights.empty()
-         && skins.empty() && !features;
+  return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty()
+         && materials.empty() && lights.empty() && skins.empty() && !features;
 }
 
 RetainedScene::RetainedScene()
@@ -107,6 +119,12 @@ CameraId RetainedScene::addCamera(CameraRecord camera)
   return m_cameras.insert({std::move(camera)});
 }
 
+ClipId RetainedScene::addClip(ClipRecord clip)
+{
+  assertOwner();
+  return m_clips.insert({std::move(clip)});
+}
+
 void RetainedScene::retain(MeshId id)
 {
   if(auto* r = m_meshes.get(id))
@@ -135,6 +153,11 @@ void RetainedScene::retain(LightId id)
 void RetainedScene::retain(CameraId id)
 {
   if(auto* r = m_cameras.get(id))
+    r->refs++;
+}
+void RetainedScene::retain(ClipId id)
+{
+  if(auto* r = m_clips.get(id))
     r->refs++;
 }
 
@@ -188,6 +211,20 @@ void RetainedScene::release(CameraId id)
   assertOwner();
   if(auto* r = m_cameras.get(id); r && --r->refs == 0)
     m_cameras.erase(id);
+}
+
+void RetainedScene::release(ClipId id)
+{
+  assertOwner();
+  if(auto* r = m_clips.get(id); r && --r->refs == 0)
+    m_clips.erase(id);
+}
+
+std::vector<ClipId> RetainedScene::clips() const
+{
+  std::vector<ClipId> out;
+  m_clips.forEach([&](ClipId id, const auto&) { out.push_back(id); });
+  return out;
 }
 
 void RetainedScene::releaseMaterialTextures(const MaterialRecord& material)
@@ -329,6 +366,7 @@ void RetainedScene::destroyEntity(EntityId id)
   m_entities.erase(id);
   m_changes.transforms.erase(id);
   m_changes.visibility.erase(id);
+  m_changes.morphWeights.erase(id);
   m_changes.structure = true;
   m_structureRevision++;
 }
@@ -406,8 +444,7 @@ void RetainedScene::setMorphWeights(EntityId id, std::vector<float> weights)
   if(Entity* e = m_entities.get(id); e && e->mesh)
   {
     e->mesh->morphWeights = std::move(weights);
-    for(const MeshPart& part : e->mesh->parts)
-      m_changes.meshes.insert(part.mesh);
+    m_changes.morphWeights.insert(id);
   }
 }
 
@@ -581,6 +618,23 @@ bool RetainedScene::shown(EntityId id)
   return m_entities.contains(id) && m_derived[id.index].shown;
 }
 
+std::vector<glm::mat4> RetainedScene::jointMatrices(EntityId id)
+{
+  const Entity* e = m_entities.get(id);
+  if(!e || !e->mesh)
+    return {};
+  const SkinRecord* s = skin(e->mesh->skin);
+  if(!s)
+    return {};
+  updateWorld();
+  std::vector<glm::mat4> out(s->joints.size(), glm::mat4(1.f));
+  const glm::mat4        invNode = glm::inverse(m_derived[id.index].world);
+  for(size_t j = 0; j < s->joints.size(); j++)
+    if(m_entities.contains(s->joints[j]))
+      out[j] = invNode * m_derived[s->joints[j].index].world * (j < s->inverseBind.size() ? s->inverseBind[j] : glm::mat4(1.f));
+  return out;
+}
+
 //--------------------------------------------------------------------------------------------------
 // Views
 
@@ -687,6 +741,7 @@ SceneChanges RetainedScene::takeChanges()
   m_changes        = {};
   std::erase_if(out.transforms, [&](EntityId id) { return !m_entities.contains(id); });
   std::erase_if(out.visibility, [&](EntityId id) { return !m_entities.contains(id); });
+  std::erase_if(out.morphWeights, [&](EntityId id) { return !m_entities.contains(id); });
   std::erase_if(out.meshes, [&](MeshId id) { return !m_meshes.contains(id); });
   std::erase_if(out.materials, [&](MaterialId id) { return !m_materials.contains(id); });
   std::erase_if(out.lights, [&](LightId id) { return !m_lights.contains(id); });

@@ -22,8 +22,8 @@
 //
 // glTF into the retained scene (daz-viewer docs/retained-scene-plan.md, "Imported models"): a
 // tinygltf::Model's default scene as entities, its meshes as vertex sets with submeshes, its
-// materials as payloads over one texture table, its lights, cameras and skins. glTF stays a format
-// at the edge: nothing keeps the Model after the import.
+// materials as payloads over one texture table, its lights, cameras and skins, its animations as
+// clips. glTF stays a format at the edge: nothing keeps the Model after the import.
 //
 // What it draws matches what nvvkgltf::Scene draws of the same model, in the same order (its
 // render nodes, depth first, primitive by primitive, copy by copy), tangents included bit for bit:
@@ -55,6 +55,9 @@ struct ImportResult
   std::vector<EntityId>            roots;      // the scene's roots, in order
   std::vector<MaterialId>          materials;  // per glTF material; none when nothing drew it
   std::vector<std::vector<MeshId>> meshes;     // per glTF mesh: its vertex sets
+  // per glTF animation: its node channels as a clip, none when it has none. Nothing in the scene
+  // holds a clip, so the import hands the caller each one's reference, to release with the prop.
+  std::vector<ClipId>              clips;
   std::vector<std::string>         notices;    // what was left out, once each
 };
 

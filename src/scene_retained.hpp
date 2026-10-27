@@ -27,8 +27,8 @@
 //
 // Entities form the scene graph (a prop root, its nodes, bones). An entity may draw a mesh
 // instance, carry a light or a camera. Records (meshes, materials, textures, skins, lights,
-// cameras) are shared by reference count: add*() hands the caller one reference, binding adds
-// one, release() drops one, and a record goes with its last reference.
+// cameras, clips) are shared by reference count: add*() hands the caller one reference, binding
+// adds one, release() drops one, and a record goes with its last reference.
 //
 // It also keeps which shader features its materials need (features()), counted as instances and
 // payloads change rather than found by a scan.
@@ -59,6 +59,7 @@ struct TextureTag;
 struct SkinTag;
 struct LightTag;
 struct CameraTag;
+struct ClipTag;
 using EntityId   = Handle<EntityTag>;
 using MeshId     = Handle<MeshTag>;
 using MaterialId = Handle<MaterialTag>;
@@ -66,6 +67,7 @@ using TextureId  = Handle<TextureTag>;
 using SkinId     = Handle<SkinTag>;
 using LightId    = Handle<LightTag>;
 using CameraId   = Handle<CameraTag>;
+using ClipId     = Handle<ClipTag>;
 
 // Who an object is to the host: its prop (the number of "p:N"; 0 for none) and its own index there
 // (a figure's scene-graph index, a model file's index), so picks and edits map back without index
@@ -198,6 +200,55 @@ struct CameraRecord
   tinygltf::Camera payload;
 };
 
+// What a clip's channel drives on its entity: glTF's animation target paths, without
+// KHR_animation_pointer's, which stays legacy-only (decision D23).
+enum class ClipPath
+{
+  eTranslation,
+  eRotation,
+  eScale,
+  eWeights,
+};
+
+enum class ClipInterpolation
+{
+  eLinear,
+  eStep,
+  eCubicSpline,
+};
+
+// Keys: their times and values. The values are flat floats, 3 per translation or scale, 4 per
+// rotation (x, y, z, w), one per morph target for weights; a cubic spline key holds its
+// in-tangent, its value and its out-tangent, in that order.
+struct ClipSampler
+{
+  ClipInterpolation  interpolation = ClipInterpolation::eLinear;
+  std::vector<float> inputs;
+  std::vector<float> outputs;
+  bool               operator==(const ClipSampler&) const = default;
+};
+
+struct ClipChannel
+{
+  EntityId target;  // one that is gone is skipped, never dereferenced
+  ClipPath path    = ClipPath::eTranslation;
+  uint32_t sampler = 0;
+  bool     operator==(const ClipChannel&) const = default;
+};
+
+// An animation (a glTF one's node channels): what a ClipPlayer plays. Its keys do not change once
+// it is added.
+struct ClipRecord
+{
+  std::string              name;
+  OwnerTag                 owner;  // the prop, and the animation's index in its file
+  std::vector<ClipSampler> samplers;
+  std::vector<ClipChannel> channels;
+
+  // its samplers' first and last key times; empty (start > end) without keys
+  std::array<float, 2> range() const;
+};
+
 //--------------------------------------------------------------------------------------------------
 // Entities
 
@@ -257,6 +308,7 @@ struct SceneChanges
   bool                 structure = false;  // entities, instances, lights or cameras came or went
   std::set<EntityId>   transforms;         // their world matrices moved (descendants included)
   std::set<EntityId>   visibility;         // their shown state may have changed (descendants included)
+  std::set<EntityId>   morphWeights;       // their mesh instance's morph weights changed
   std::set<MeshId>     meshes;             // vertices edited
   std::set<MaterialId> materials;          // payload edited
   std::set<LightId>    lights;             // payload, shown or sun edited
@@ -277,6 +329,7 @@ public:
   SkinId     addSkin(SkinRecord skin);
   LightId    addLight(LightRecord light);
   CameraId   addCamera(CameraRecord camera);
+  ClipId     addClip(ClipRecord clip);
 
   void retain(MeshId id);
   void retain(MaterialId id);
@@ -284,12 +337,14 @@ public:
   void retain(SkinId id);
   void retain(LightId id);
   void retain(CameraId id);
+  void retain(ClipId id);
   void release(MeshId id);
   void release(MaterialId id);
   void release(TextureId id);
   void release(SkinId id);
   void release(LightId id);
   void release(CameraId id);
+  void release(ClipId id);
 
   const MeshRecord*     mesh(MeshId id) const { return m_meshes.get(id) ? &m_meshes.get(id)->value : nullptr; }
   const MaterialRecord* material(MaterialId id) const { return m_materials.get(id) ? &m_materials.get(id)->value : nullptr; }
@@ -297,12 +352,15 @@ public:
   const SkinRecord*     skin(SkinId id) const { return m_skins.get(id) ? &m_skins.get(id)->value : nullptr; }
   const LightRecord*    light(LightId id) const { return m_lights.get(id) ? &m_lights.get(id)->value : nullptr; }
   const CameraRecord*   camera(CameraId id) const { return m_cameras.get(id) ? &m_cameras.get(id)->value : nullptr; }
+  const ClipRecord*     clip(ClipId id) const { return m_clips.get(id) ? &m_clips.get(id)->value : nullptr; }
   uint32_t              refs(MeshId id) const { return m_meshes.get(id) ? m_meshes.get(id)->refs : 0; }
   uint32_t              refs(MaterialId id) const { return m_materials.get(id) ? m_materials.get(id)->refs : 0; }
   uint32_t              refs(TextureId id) const { return m_textures.get(id) ? m_textures.get(id)->refs : 0; }
   size_t                meshCount() const { return m_meshes.size(); }
   size_t                materialCount() const { return m_materials.size(); }
   size_t                textureCount() const { return m_textures.size(); }
+  size_t                clipCount() const { return m_clips.size(); }
+  std::vector<ClipId>   clips() const;  // in slot order
 
   // edits
   // (`normals` and `tangents` empty: kept)
@@ -340,6 +398,11 @@ public:
   // world matrix and cascaded visibility, brought up to date first
   glm::mat4 world(EntityId id);
   bool      shown(EntityId id);
+  // The joint matrices of the skin an entity's mesh instance draws with, from the world matrices:
+  // inverse(world(id)) * world(joint) * the joint's inverse bind matrix, as
+  // nvvkgltf::AnimationSystem::computeSkinning makes them (identity for a joint that is gone).
+  // Empty when the entity draws no skinned mesh.
+  std::vector<glm::mat4> jointMatrices(EntityId id);
 
   // ---- views, in document order: depth first from the roots, an entity before its children
   std::vector<EntityId>  entitiesInOrder() const;
@@ -402,6 +465,7 @@ private:
   SlotMap<Counted<SkinRecord>, SkinTag>         m_skins;
   SlotMap<Counted<LightRecord>, LightTag>       m_lights;
   SlotMap<Counted<CameraRecord>, CameraTag>     m_cameras;
+  SlotMap<Counted<ClipRecord>, ClipTag>         m_clips;
 
   SlotMap<Entity, EntityTag> m_entities;
   std::vector<EntityId>      m_roots;

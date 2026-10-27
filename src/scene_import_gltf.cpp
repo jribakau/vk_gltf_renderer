@@ -21,6 +21,7 @@
 
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <span>
 
@@ -104,6 +105,39 @@ SamplerDesc samplerOf(const tinygltf::Model& model, int sampler)
     d.wrapT                    = s.wrapT;
   }
   return d;
+}
+
+// A sampler's keys as AnimationSystem::parseSamplersAndChannels reads them (an interpolation it
+// does not name is linear); nothing when its accessors can't be read.
+std::optional<ClipSampler> clipSampler(const tinygltf::Model& model, const tinygltf::AnimationSampler& s)
+{
+  if(s.input < 0 || s.input >= int(model.accessors.size()) || s.output < 0 || s.output >= int(model.accessors.size()))
+    return {};
+  ClipSampler out;
+  out.interpolation = s.interpolation == "STEP"        ? ClipInterpolation::eStep :
+                      s.interpolation == "CUBICSPLINE" ? ClipInterpolation::eCubicSpline :
+                                                         ClipInterpolation::eLinear;
+  if(!tinygltf::utils::copyAccessorData(model, model.accessors[size_t(s.input)], out.inputs))
+    return {};
+  const tinygltf::Accessor& output = model.accessors[size_t(s.output)];
+  const auto                flat   = [&]<class T>(T) {
+    std::vector<T> values;
+    if(!tinygltf::utils::copyAccessorData(model, output, values))
+      return false;
+    const float* f = reinterpret_cast<const float*>(values.data());
+    out.outputs.assign(f, f + values.size() * sizeof(T) / sizeof(float));
+    return true;
+  };
+  switch(output.type)
+  {
+    case TINYGLTF_TYPE_VEC3:
+      return flat(glm::vec3()) ? std::optional(std::move(out)) : std::nullopt;
+    case TINYGLTF_TYPE_VEC4:
+      return flat(glm::vec4()) ? std::optional(std::move(out)) : std::nullopt;
+    case TINYGLTF_TYPE_SCALAR:
+      return flat(float()) ? std::optional(std::move(out)) : std::nullopt;
+  }
+  return {};
 }
 
 }  // namespace
@@ -365,6 +399,46 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     if(skin.skeleton >= 0 && skin.skeleton < int(out.entities.size()))
       record.skeleton = out.entities[size_t(skin.skeleton)];
     scene.setSkin(skins[si], std::move(record));
+  }
+
+  // ---- clips: each animation's channels on the scene's nodes, with the samplers they use. A
+  // KHR_animation_pointer channel is left out (D23, noticed above), as is one whose node is not in
+  // the scene (it moves nothing drawn) or whose values are not its path's type (which
+  // AnimationSystem leaves alone too)
+  out.clips.assign(model.animations.size(), {});
+  for(size_t ai = 0; ai < model.animations.size(); ai++)
+  {
+    const tinygltf::Animation& animation = model.animations[ai];
+    ClipRecord                 clip{.name = animation.name, .owner = {options.prop, int32_t(ai)}};
+    std::map<int, uint32_t>    samplerOf;  // the animation's sampler: the clip's
+    for(const tinygltf::AnimationChannel& c : animation.channels)
+    {
+      static const std::map<std::string, std::pair<ClipPath, int>> paths = {
+          {"translation", {ClipPath::eTranslation, TINYGLTF_TYPE_VEC3}},
+          {"rotation", {ClipPath::eRotation, TINYGLTF_TYPE_VEC4}},
+          {"scale", {ClipPath::eScale, TINYGLTF_TYPE_VEC3}},
+          {"weights", {ClipPath::eWeights, TINYGLTF_TYPE_SCALAR}},
+      };
+      const auto path = paths.find(c.target_path);
+      if(path == paths.end() || c.target_node < 0 || c.target_node >= int(out.entities.size())
+         || out.entities[size_t(c.target_node)].isNone() || c.sampler < 0 || c.sampler >= int(animation.samplers.size()))
+        continue;
+      const int output = animation.samplers[size_t(c.sampler)].output;
+      if(output < 0 || output >= int(model.accessors.size()) || model.accessors[size_t(output)].type != path->second.second)
+        continue;
+      auto it = samplerOf.find(c.sampler);
+      if(it == samplerOf.end())
+      {
+        std::optional<ClipSampler> sampler = clipSampler(model, animation.samplers[size_t(c.sampler)]);
+        if(!sampler)
+          continue;
+        it = samplerOf.emplace(c.sampler, uint32_t(clip.samplers.size())).first;
+        clip.samplers.push_back(std::move(*sampler));
+      }
+      clip.channels.push_back({.target = out.entities[size_t(c.target_node)], .path = path->second.first, .sampler = it->second});
+    }
+    if(!clip.channels.empty())
+      out.clips[ai] = scene.addClip(std::move(clip));
   }
 
   // the import lets go of what it made: the entities hold what they draw, the rest goes

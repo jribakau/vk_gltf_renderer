@@ -26,7 +26,8 @@
 // a glTF mesh (one per distinct instance, shared by the entities that draw the same), a vertex set's
 // streams one set of accessors that its submeshes' primitives share, each material its payload with
 // its texture table's textures appended once, lights at their real intensity (a hidden one's node
-// carries KHR_node_visibility false), cameras, skins, morph targets and instancing copies.
+// carries KHR_node_visibility false), cameras, skins, morph targets, instancing copies, and clips as
+// animations (their channels on the entities written).
 //
 
 #include <vector>

@@ -19,6 +19,7 @@
 
 #include "scene_export_gltf.hpp"
 
+#include <algorithm>
 #include <map>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -63,6 +64,15 @@ public:
       m_model.accessors[size_t(a)].maxValues = {hi.x, hi.y, hi.z};
     }
     return a;
+  }
+
+  // flat floats as `type` elements (VEC3: three floats each)
+  int floats(const std::vector<float>& data, int type)
+  {
+    if(data.empty())
+      return -1;
+    const size_t count = data.size() / size_t(tinygltf::GetNumComponentsInType(uint32_t(type)));
+    return tinygltf::utils::appendAccessor(m_model, 0, data.data(), data.size() * sizeof(float), TINYGLTF_COMPONENT_TYPE_FLOAT, type, count);
   }
 
   int bufferView(const std::vector<unsigned char>& bytes)
@@ -394,6 +404,53 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
     const Entity& e = *scene.entity(order[i]);
     if(e.mesh && !e.mesh->skin.isNone())
       out.nodes[i].skin = skinOf[e.mesh->skin];
+  }
+
+  // clips, in their owners' order: the channels on entities written, with the samplers they use; a
+  // clip with none left is not written
+  std::vector<ClipId> clips = scene.clips();
+  std::stable_sort(clips.begin(), clips.end(), [&](ClipId a, ClipId b) { return scene.clip(a)->owner < scene.clip(b)->owner; });
+  for(ClipId id : clips)
+  {
+    const ClipRecord&   clip = *scene.clip(id);
+    tinygltf::Animation animation;
+    animation.name = clip.name;
+    std::map<uint32_t, int> samplerOf;
+    for(const ClipChannel& c : clip.channels)
+    {
+      const auto node = nodeOf.find(c.target);
+      if(node == nodeOf.end() || c.sampler >= clip.samplers.size())
+        continue;
+      static const char* paths[] = {"translation", "rotation", "scale", "weights"};
+      static const int   types[] = {TINYGLTF_TYPE_VEC3, TINYGLTF_TYPE_VEC4, TINYGLTF_TYPE_VEC3, TINYGLTF_TYPE_SCALAR};
+      auto               it      = samplerOf.find(c.sampler);
+      if(it == samplerOf.end())
+      {
+        const ClipSampler&        s = clip.samplers[c.sampler];
+        tinygltf::AnimationSampler sampler;
+        sampler.input = w.floats(s.inputs, TINYGLTF_TYPE_SCALAR);
+        if(sampler.input >= 0)
+        {
+          // an input accessor has its bounds (glTF requires them)
+          const auto [lo, hi] = std::minmax_element(s.inputs.begin(), s.inputs.end());
+          out.accessors[size_t(sampler.input)].minValues = {*lo};
+          out.accessors[size_t(sampler.input)].maxValues = {*hi};
+        }
+        sampler.output        = w.floats(s.outputs, types[int(c.path)]);
+        sampler.interpolation = s.interpolation == ClipInterpolation::eStep        ? "STEP" :
+                                s.interpolation == ClipInterpolation::eCubicSpline ? "CUBICSPLINE" :
+                                                                                     "LINEAR";
+        it = samplerOf.emplace(c.sampler, int(animation.samplers.size())).first;
+        animation.samplers.push_back(std::move(sampler));
+      }
+      tinygltf::AnimationChannel channel;
+      channel.sampler     = it->second;
+      channel.target_node = node->second;
+      channel.target_path = paths[int(c.path)];
+      animation.channels.push_back(std::move(channel));
+    }
+    if(!animation.channels.empty())
+      out.animations.push_back(std::move(animation));
   }
 
   tinygltf::Scene s;

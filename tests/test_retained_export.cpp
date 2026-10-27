@@ -18,12 +18,15 @@
  */
 
 // The retained scene out as glTF (oracle 9 of daz-viewer docs/retained-scene-plan.md): an export
-// imported again draws the same scene, and the export leaves the scene as it was.
+// imported again draws the same scene and plays the same clips, and the export leaves the scene as
+// it was.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <sstream>
 
 #include "scene_export_gltf.hpp"
@@ -91,6 +94,57 @@ void expectSameScene(rs::RetainedScene& a, rs::RetainedScene& b, const std::stri
   }
 }
 
+// Clips in their owners' order: the same names, each channel on the entity at the same place in
+// document order, along the same path, with the same keys
+std::vector<rs::ClipId> clipsInOrder(const rs::RetainedScene& s)
+{
+  std::vector<rs::ClipId> clips = s.clips();
+  std::stable_sort(clips.begin(), clips.end(), [&](rs::ClipId x, rs::ClipId y) { return s.clip(x)->owner < s.clip(y)->owner; });
+  return clips;
+}
+
+void expectSameClips(const rs::RetainedScene& a, const rs::RetainedScene& b, const std::string& what)
+{
+  const auto place = [](const rs::RetainedScene& s) {
+    std::map<rs::EntityId, size_t> at;
+    for(rs::EntityId id : s.entitiesInOrder())
+      at.emplace(id, at.size());
+    return at;
+  };
+  const std::map<rs::EntityId, size_t> pa = place(a), pb = place(b);
+  const std::vector<rs::ClipId>        ca = clipsInOrder(a), cb = clipsInOrder(b);
+  ASSERT_EQ(ca.size(), cb.size()) << what;
+  for(size_t i = 0; i < ca.size(); i++)
+  {
+    SCOPED_TRACE(what + ", clip " + std::to_string(i));
+    const rs::ClipRecord &x = *a.clip(ca[i]), &y = *b.clip(cb[i]);
+    EXPECT_EQ(x.name, y.name);
+    ASSERT_EQ(x.channels.size(), y.channels.size());
+    for(size_t c = 0; c < x.channels.size(); c++)
+    {
+      const rs::ClipChannel &cx = x.channels[c], &cy = y.channels[c];
+      ASSERT_TRUE(pa.count(cx.target) && pb.count(cy.target));
+      EXPECT_EQ(pa.at(cx.target), pb.at(cy.target));
+      EXPECT_EQ(cx.path, cy.path);
+      EXPECT_TRUE(x.samplers[cx.sampler] == y.samplers[cy.sampler]) << "channel " << c;
+    }
+  }
+}
+
+// written as a GLB and read back, so it is a file other tools can open, not only a Model
+tinygltf::Model throughGlb(tinygltf::Model exported)
+{
+  std::ostringstream glb;
+  tinygltf::TinyGLTF io;
+  EXPECT_TRUE(io.WriteGltfSceneToStream(&exported, glb, false, true));
+  const std::string bytes = glb.str();
+  tinygltf::Model   reread;
+  std::string       err, warn;
+  EXPECT_TRUE(io.LoadBinaryFromMemory(&reread, &err, &warn, reinterpret_cast<const unsigned char*>(bytes.data()), unsigned(bytes.size())))
+      << err;
+  return reread;
+}
+
 tinygltf::Model load(const std::filesystem::path& file, bool& ok)
 {
   tinygltf::TinyGLTF loader;
@@ -123,29 +177,74 @@ TEST(RetainedExport, AnExportImportedAgainIsTheSameScene)
         continue;
       rs::RetainedScene a;
       rs::importGltf(a, model, {.prop = 1});
-      const size_t entities = a.entityCount(), meshes = a.meshCount();
-      tinygltf::Model exported = rs::exportGltf(a);
+      const size_t entities = a.entityCount(), meshes = a.meshCount(), clips = a.clipCount();
+      const tinygltf::Model reread = throughGlb(rs::exportGltf(a));
       // the export changed nothing
       EXPECT_EQ(a.entityCount(), entities);
       EXPECT_EQ(a.meshCount(), meshes);
-      // written as a GLB and read back, so it is a file other tools can open, not only a Model
-      std::ostringstream glb;
-      tinygltf::TinyGLTF io;
-      ASSERT_TRUE(io.WriteGltfSceneToStream(&exported, glb, false, true)) << file;
-      const std::string bytes = glb.str();
-      tinygltf::Model   reread;
-      std::string       err, warn;
-      ASSERT_TRUE(io.LoadBinaryFromMemory(&reread, &err, &warn, reinterpret_cast<const unsigned char*>(bytes.data()), unsigned(bytes.size())))
-          << file << ": " << err;
+      EXPECT_EQ(a.clipCount(), clips);
       rs::RetainedScene b;
       rs::importGltf(b, reread, {.prop = 1});
       expectSameScene(a, b, file.filename().string());
+      expectSameClips(a, b, file.filename().string());
       tested++;
     }
   }
   if(tested == 0)
     GTEST_SKIP() << "no fixtures generated and no sample assets";
   std::printf("round-tripped %d files\n", tested);
+}
+
+// Clips of every path and interpolation go out as animations and come back the same; exporting a
+// subtree keeps the channels on what it writes, and a clip with none left is not written.
+TEST(RetainedExport, ClipsGoOutAndComeBack)
+{
+  rs::RetainedScene  a;
+  const rs::EntityId root  = a.createEntity("root", {});
+  const rs::EntityId arm   = a.createEntity("arm", {}, root);
+  const rs::EntityId other = a.createEntity("other", {});
+  rs::MeshRecord     tri;
+  tri.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+  tri.indices   = {0, 1, 2};
+  tri.submeshes = {{.indexCount = 3}};
+  tri.targets   = {{.positions = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}}};
+  const rs::MeshId     mesh = a.addMesh(tri);
+  const rs::MaterialId mat  = a.addMaterial({});
+  a.setMeshInstance(arm, rs::MeshInstance{.parts = {{mesh, {mat}}}});
+  a.release(mesh);
+  a.release(mat);
+
+  rs::ClipRecord wave{.name = "wave", .owner = {1, 0}};
+  wave.samplers = {{rs::ClipInterpolation::eLinear, {0, 1}, {0, 0, 0, 1, 2, 3}},
+                   {rs::ClipInterpolation::eCubicSpline, {0, 2}, {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0}},
+                   {rs::ClipInterpolation::eStep, {0, 1, 2}, {0, 1, 0.5f}},
+                   {rs::ClipInterpolation::eLinear, {0, 4}, {1, 1, 1, 2, 2, 2}}};
+  wave.channels = {{arm, rs::ClipPath::eTranslation, 0},
+                   {root, rs::ClipPath::eRotation, 1},
+                   {arm, rs::ClipPath::eWeights, 2},
+                   {other, rs::ClipPath::eScale, 3},
+                   {arm, rs::ClipPath::eScale, 3}};
+  a.addClip(wave);
+  a.addClip({.name = "elsewhere", .owner = {1, 1}, .samplers = {wave.samplers[0]}, .channels = {{other, rs::ClipPath::eTranslation, 0}}});
+
+  rs::RetainedScene b;
+  rs::importGltf(b, throughGlb(rs::exportGltf(a)), {.prop = 1});
+  expectSameClips(a, b, "the whole scene");
+  EXPECT_EQ(a.clipCount(), 2u);
+
+  const tinygltf::Model part = rs::exportGltf(a, {.roots = {root}});
+  ASSERT_EQ(part.animations.size(), 1u);
+  EXPECT_EQ(part.animations[0].name, "wave");
+  EXPECT_EQ(part.animations[0].channels.size(), 4u);  // not the one on "other"
+  EXPECT_EQ(part.animations[0].samplers.size(), 4u);
+  rs::RetainedScene      c;
+  const rs::ImportResult r = rs::importGltf(c, throughGlb(part), {.prop = 1});
+  ASSERT_EQ(r.clips.size(), 1u);
+  const rs::ClipRecord* back = c.clip(r.clips[0]);
+  ASSERT_NE(back, nullptr);
+  EXPECT_EQ(back->channels.size(), 4u);
+  EXPECT_TRUE(back->samplers[back->channels[1].sampler] == wave.samplers[1]);
+  EXPECT_EQ(back->range(), (std::array<float, 2>{0, 4}));
 }
 
 TEST(RetainedExport, ASubtreeAndAHiddenLight)
