@@ -674,6 +674,11 @@ auto main(int argc, char** argv) -> int
           .image       = [r] { return r->tonemappedImage(); },
           .imageSize   = [r] { return r->renderSize(); },
           .drawn       = [r] { return r->drawnFrameCount(); },
+          .refining    = [r] { return r->isRefiningStill(); },
+          .takeInput   = [streamRef]() -> int64_t {
+            auto fs = streamRef->lock();
+            return fs ? fs->takeFrameInput() : 0;
+          },
           .localViewer = [streamRef](bool local) {
             if(auto fs = streamRef->lock())
               fs->setLocalViewer(local);
@@ -696,7 +701,7 @@ auto main(int argc, char** argv) -> int
             present->registerRoutes(http);
           },
           .stopping  = [protocol] { protocol->stop(); },
-          .refuseSize = [r](VkExtent2D size) { return r->refuseFrameSize(size); },
+          .refuseSize = [r, present](VkExtent2D size) { return r->refuseFrameSize(size, present->bytesPerPixel()); },
           .profile    = [r] { return r->frameProfileJson(); },
       });
       frameStream->setFullChroma(streamFullChroma);

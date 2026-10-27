@@ -41,11 +41,14 @@ TEST(PresentPolicy, WithoutALocalViewerNothingChanges)
   EXPECT_FALSE(present_policy::frameWaits(nobody));
 }
 
-TEST(PresentPolicy, ALocalViewerRunsAtTheStreamRate)
+TEST(PresentPolicy, ALocalViewerAloneIsPacedByTheDisplay)
 {
   const Viewers local{.localViewer = true};
-  EXPECT_EQ(present_policy::pacedFps(60, local), 60);
-  EXPECT_EQ(present_policy::pacedFps(5, local), 5);  // a cap below 10 stays
+  // the swapchain paces it: the cap is only a ceiling above any refresh
+  EXPECT_EQ(present_policy::pacedFps(60, local), present_policy::kLocalViewerFps);
+  EXPECT_GT(present_policy::kLocalViewerFps, 240);
+  // a stream client as well keeps the stream's rate
+  EXPECT_EQ(present_policy::pacedFps(60, {.clients = 1, .localViewer = true}), 60);
   EXPECT_TRUE(present_policy::refining(true, local));
   EXPECT_FALSE(present_policy::refining(false, local));
 }
@@ -65,5 +68,5 @@ TEST(PresentPolicy, ALocalViewerAloneCopiesNothing)
 TEST(PresentPolicy, ZeroCapIsOneFrameASecond)
 {
   EXPECT_EQ(present_policy::pacedFps(0, {}), 1);
-  EXPECT_EQ(present_policy::pacedFps(0, {.localViewer = true}), 1);
+  EXPECT_EQ(present_policy::pacedFps(0, {.clients = 1, .localViewer = true}), 1);
 }

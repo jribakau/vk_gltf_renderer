@@ -86,12 +86,12 @@ public:
   int         slotCount() const override { return int(m_slots.size()); }
   VkImage     slotImage(int slot) const override { return m_slots[size_t(slot)].image; }
   PresentSize capacity() const override { return m_capacity; }
-  PresentSize frameSize() const override { return m_frame; }
   VkSemaphore ready() const override { return m_readySemaphore; }
   uint64_t    completed() override { return m_done ? m_done->GetCompletedValue() : 0; }
-  std::string resize(PresentSize frame) override;
-  std::string present(int slot, uint64_t value, PresentSize size) override;
+  std::string growSlots(PresentSize frame) override;
+  std::string present(int slot, uint64_t value, PresentSize frame, PresentSize view) override;
   bool        presentable() override;
+  bool        waitPresentable(uint32_t timeoutMs) override;
 
 private:
   struct Slot
@@ -125,7 +125,8 @@ private:
 
   std::vector<Slot> m_slots;
   PresentSize       m_capacity;
-  PresentSize       m_frame;
+  PresentSize       m_buffer;  // the swapchain's buffers
+  PresentSize       m_source;  // the part of them shown, stretched over the whole (SetSourceSize)
 };
 
 D3D11Target::~D3D11Target()
@@ -276,7 +277,7 @@ std::string D3D11Target::init(PresentSize frame)
   m_waitable = m_swapchain->GetFrameLatencyWaitableObject();
   if(ComPtr<IDXGISwapChain3> sc3; SUCCEEDED(m_swapchain.As(&sc3)))
     sc3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-  m_frame = frame;
+  m_buffer = m_source = frame;
   return "";
 }
 
@@ -389,34 +390,49 @@ bool D3D11Target::drain(DWORD timeoutMs)
   return WaitForSingleObject(m_doneEvent, timeoutMs) == WAIT_OBJECT_0;
 }
 
-std::string D3D11Target::resize(PresentSize frame)
+std::string D3D11Target::growSlots(PresentSize frame)
 {
+  if(fits(m_capacity, frame))
+    return "";
   if(!drain(1000))
     return "D3D did not finish with the shared images";
   m_context->ClearState();
   m_context->Flush();
-  // the frame's size exactly: a composition swapchain would stretch a smaller source region over
-  // its whole buffer (SetSourceSize), and the visual would show the frame out of shape
-  const HRESULT hr = m_swapchain->ResizeBuffers(0, frame.width, frame.height, DXGI_FORMAT_UNKNOWN, kSwapFlags);
-  if(FAILED(hr))
-    return failed("ResizeBuffers", hr);
-  m_frame = frame;
-  if(fits(m_capacity, frame))
-    return "";
   destroySlots();
   return makeSlots(growCapacity(m_capacity, frame));
 }
 
-std::string D3D11Target::present(int slot, uint64_t value, PresentSize size)
+std::string D3D11Target::present(int slot, uint64_t value, PresentSize frame, PresentSize view)
 {
+  // The swapchain is the viewport's size, and the frame is its source region: a composition
+  // swapchain stretches that over its whole buffer, so a frame capped by Max resolution, or one
+  // still at its old size while a resize is on its way, fills the viewport in shape. A frame larger
+  // than the viewport (an export) takes a swapchain its own size and shows 1:1.
+  HRESULT           hr;
+  const PresentSize buffer = view.width > 0 && view.height > 0 && fits(view, frame) ? view : frame;
+  if(!(buffer == m_buffer))
+  {
+    if(!drain(1000))
+      return "D3D did not finish with the swapchain";
+    m_context->ClearState();
+    m_context->Flush();
+    if(FAILED(hr = m_swapchain->ResizeBuffers(0, buffer.width, buffer.height, DXGI_FORMAT_UNKNOWN, kSwapFlags)))
+      return failed("ResizeBuffers", hr);
+    m_buffer = m_source = buffer;
+  }
   // D3D's queue waits for Vulkan's copy into the slot; the CPU doesn't
   m_context->Wait(m_ready.Get(), value);
   ComPtr<ID3D11Texture2D> back;
-  HRESULT                 hr = m_swapchain->GetBuffer(0, IID_PPV_ARGS(&back));
-  if(FAILED(hr))
+  if(FAILED(hr = m_swapchain->GetBuffer(0, IID_PPV_ARGS(&back))))
     return failed("IDXGISwapChain::GetBuffer", hr);
-  const D3D11_BOX box{0, 0, 0, size.width, size.height, 1};
+  const D3D11_BOX box{0, 0, 0, frame.width, frame.height, 1};
   m_context->CopySubresourceRegion(back.Get(), 0, 0, 0, 0, m_slots[size_t(slot)].texture.Get(), 0, &box);
+  if(!(frame == m_source))
+  {
+    if(FAILED(hr = m_swapchain->SetSourceSize(frame.width, frame.height)))
+      return failed("SetSourceSize", hr);
+    m_source = frame;
+  }
   hr = m_swapchain->Present(1, 0);
   // the slot is free once the copy above has run, whatever became of the present
   m_context->Signal(m_done.Get(), value);
@@ -433,7 +449,12 @@ std::string D3D11Target::present(int slot, uint64_t value, PresentSize size)
 
 bool D3D11Target::presentable()
 {
-  return WaitForSingleObjectEx(m_waitable, 0, FALSE) == WAIT_OBJECT_0;
+  return waitPresentable(0);
+}
+
+bool D3D11Target::waitPresentable(uint32_t timeoutMs)
+{
+  return WaitForSingleObjectEx(m_waitable, timeoutMs, FALSE) == WAIT_OBJECT_0;
 }
 
 }  // namespace

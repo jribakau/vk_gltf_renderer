@@ -411,7 +411,8 @@ public:
   // Why a frame of this size must not be asked for (the budget cannot hold what it adds over the
   // frame drawn now), or empty. Any allocation that fails ends the process (NVVK_CHECK), so the
   // stream's /size asks here first. Any thread.
-  std::string refuseFrameSize(VkExtent2D size) const;
+  // `extraBytesPerPixel`: what else a pixel of the frame costs outside the renderer (native presentation)
+  std::string refuseFrameSize(VkExtent2D size, double extraBytesPerPixel = 0.0) const;
   // Frames that ran a renderer so far (Resources::drawnFrameCount): a count that stands still is a
   // view with nothing to draw, which the frame stream slows the loop for.
   uint64_t drawnFrameCount() const { return m_resources.drawnFrameCount; }

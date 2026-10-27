@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <future>
 #include <mutex>
 #include <vector>
@@ -60,6 +61,15 @@ std::string jsonString(const std::string& s)
   return out + "\"";
 }
 
+// Now on the steady clock, in nanoseconds, as FrameStream stamps an /input's arrival
+int64_t steadyNs()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Four bytes a pixel in each of the three shared images and the swapchain's two buffers
+constexpr double kBytesPerPixel = 4.0 * (3 + 2);
+
 }  // namespace
 
 struct FramePresent::Impl
@@ -80,6 +90,13 @@ struct FramePresent::Impl
   PresentSize       lastSize;
   uint64_t          lastDrawn{~uint64_t(0)};
   Clock::time_point lastPresent{};
+  // the swapchain's next frame is ours (waited for in onUpdate or found free in onRender)
+  bool    token{false};
+  int64_t pendingInputNs{0};
+
+  // the viewport's size (POST /present/view), packed width << 32 | height: HTTP -> application thread
+  std::atomic<uint64_t> view{0};
+  std::atomic<bool>     attached{false};
 
   // Work for the application thread, from the HTTP threads (onUpdate runs it).
   std::mutex                         mailMutex;
@@ -94,6 +111,9 @@ struct FramePresent::Impl
   std::atomic<uint64_t> presented{0};
   std::atomic<uint64_t> dropped{0};
   std::atomic<uint64_t> skipped{0};
+  std::atomic<double>   inputMs{0.0};
+  std::atomic<double>   inputMsLast{0.0};
+  std::atomic<uint64_t> inputSamples{0};
 
   // HTTP thread: runs `work` on the application thread and returns what it returns.
   std::string run(std::function<std::string()> work);
@@ -135,17 +155,17 @@ void FramePresent::onDetach()
   }
 }
 
-// Called with the device idle (start-up, headless resizes): the swapchain takes the frame's new
-// size, which needs both sides idle.
+// Called with the device idle (start-up, headless resizes): a frame larger than the shared images
+// grows them, which needs Vulkan idle.
 void FramePresent::onResize(VkCommandBuffer /*cmd*/, const VkExtent2D& extent)
 {
   Impl& s = *m_impl;
   if(!s.target)
     return;
   const PresentSize want{extent.width, extent.height};
-  if(want == s.target->frameSize())
+  if(fits(s.target->capacity(), want))
     return;
-  if(const std::string err = s.target->resize(want); !err.empty())
+  if(const std::string err = s.target->growSlots(want); !err.empty())
   {
     s.detach(err);
     return;
@@ -163,6 +183,11 @@ void FramePresent::onUpdate()
   }
   for(auto& w : work)
     w();
+  // Wait for the swapchain to take a frame before the host takes its input: the frame drawn next is
+  // shown at the next refresh, and the loop follows the display's rate. Not while a still refines
+  // (it runs unpaced), and at most 50 ms, so an occluded window can't stall the loop.
+  if(s.target && s.visible && !s.token && !(s.info.refining && s.info.refining()))
+    s.token = s.target->waitPresentable(50);
 }
 
 void FramePresent::onRender(VkCommandBuffer cmd)
@@ -174,9 +199,8 @@ void FramePresent::onRender(VkCommandBuffer cmd)
   const VkImage     image  = s.info.image();
   const VkExtent2D  extent = s.info.imageSize();
   const PresentSize size{extent.width, extent.height};
-  if(image == VK_NULL_HANDLE || size.width == 0 || size.height == 0 || !(size == s.target->frameSize())
-     || !fits(s.target->capacity(), size))
-    return;  // a resize on its way resizes the swapchain (onResize)
+  if(image == VK_NULL_HANDLE || size.width == 0 || size.height == 0 || !fits(s.target->capacity(), size))
+    return;  // a resize on its way grows the images (onResize)
 
   // An unchanged image is presented again only now and then: a change that reached it without a
   // draw (a tonemapper setting) still shows within a tenth of a second.
@@ -191,9 +215,11 @@ void FramePresent::onRender(VkCommandBuffer cmd)
     s.dropped++;
     return;
   }
-  // The loop is paced by the stream (or not at all while a still refines); a frame the swapchain
-  // has no room for is skipped, and the next draw, or the re-present above, goes instead.
-  if(!s.target->presentable())
+  // A refining still isn't waited for (onUpdate): a frame the swapchain has no room for is skipped,
+  // and the next draw, or the re-present above, goes instead.
+  if(!s.token)
+    s.token = s.target->presentable();
+  if(!s.token)
   {
     s.skipped++;
     return;
@@ -276,12 +302,13 @@ void FramePresent::onRender(VkCommandBuffer cmd)
       .value     = value,
       .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
   });
-  s.pendingSlot  = slot;
-  s.pendingValue = value;
-  s.pendingSize  = size;
-  s.lastDrawn    = drawn;
-  s.lastSize     = size;
-  s.lastPresent  = now;
+  s.pendingSlot    = slot;
+  s.pendingValue   = value;
+  s.pendingSize    = size;
+  s.pendingInputNs = s.info.takeInput ? s.info.takeInput() : 0;
+  s.lastDrawn      = drawn;
+  s.lastSize       = size;
+  s.lastPresent    = now;
 }
 
 // After the frame's submit: D3D waits for the copy on its own queue and presents.
@@ -290,14 +317,23 @@ void FramePresent::onPostRender()
   Impl& s = *m_impl;
   if(s.pendingSlot < 0 || !s.target)
     return;
-  const int slot = s.pendingSlot;
-  s.pendingSlot  = -1;
-  if(const std::string err = s.target->present(slot, s.pendingValue, s.pendingSize); !err.empty())
+  const int slot      = s.pendingSlot;
+  s.pendingSlot       = -1;
+  s.token             = false;
+  const uint64_t    v = s.view.load();
+  const PresentSize view{uint32_t(v >> 32), uint32_t(v & 0xffffffffu)};
+  if(const std::string err = s.target->present(slot, s.pendingValue, s.pendingSize, view); !err.empty())
   {
     s.detach(err);
     return;
   }
   s.presented++;
+  if(s.pendingInputNs != 0)
+  {
+    const double ms = double(steadyNs() - s.pendingInputNs) * 1e-6;
+    s.inputMsLast   = ms;
+    s.inputMs       = s.inputSamples++ == 0 ? ms : s.inputMs * 0.8 + ms * 0.2;
+  }
   std::lock_guard lock(s.statusMutex);
   s.size = s.pendingSize;
 }
@@ -342,6 +378,8 @@ std::string FramePresent::Impl::attach(uintptr_t surface)
   }
   slots     = PresentSlots(target->slotCount());
   lastDrawn = ~uint64_t(0);
+  token     = false;
+  attached  = true;
   LOGI("native presentation: attached, %ux%u\n", ti.frame.width, ti.frame.height);
   setStatus(visible ? "attached" : "hidden", "");
   if(info.localViewer)
@@ -358,6 +396,8 @@ void FramePresent::Impl::detach(const std::string& why)
     target.reset();
   }
   pendingSlot = -1;
+  token       = false;
+  attached    = false;
   if(info.localViewer)
     info.localViewer(false);
   if(!why.empty())
@@ -389,6 +429,8 @@ std::string FramePresent::Impl::statusJson()
   return "{\"state\":" + jsonString(state) + ",\"width\":" + std::to_string(size.width)
          + ",\"height\":" + std::to_string(size.height) + ",\"presented\":" + std::to_string(presented.load())
          + ",\"dropped\":" + std::to_string(dropped.load()) + ",\"skipped\":" + std::to_string(skipped.load())
+         + ",\"inputMs\":" + std::to_string(inputMs.load()) + ",\"inputMsLast\":" + std::to_string(inputMsLast.load())
+         + ",\"inputSamples\":" + std::to_string(inputSamples.load())
          + ",\"error\":" + (error.empty() ? std::string("null") : jsonString(error)) + "}";
 }
 
@@ -428,8 +470,26 @@ void FramePresent::registerRoutes(httplib::Server& http)
     });
     res.set_content(s.statusJson(), "application/json");
   });
+  // the viewport's size: taken by the next present, no application-thread work
+  http.Post("/present/view", [&s](const httplib::Request& req, httplib::Response& res) {
+    const int w = std::atoi(req.get_param_value("w").c_str());
+    const int h = std::atoi(req.get_param_value("h").c_str());
+    if(w < 1 || h < 1 || w > 16384 || h > 16384)
+    {
+      res.status = 400;
+      res.set_content("w and h must be 1..16384", "text/plain");
+      return;
+    }
+    s.view = uint64_t(w) << 32 | uint64_t(h);
+    res.set_content("ok", "text/plain");
+  });
   http.Get("/present",
            [&s](const httplib::Request&, httplib::Response& res) { res.set_content(s.statusJson(), "application/json"); });
+}
+
+double FramePresent::bytesPerPixel() const
+{
+  return m_impl->attached ? kBytesPerPixel : 0.0;
 }
 
 #ifndef _WIN32

@@ -146,6 +146,9 @@ public:
   // and frames are copied out and encoded only for a /stream client or a /frame (present_policy.hpp).
   // Thread-safe.
   void setLocalViewer(bool local);
+  // When the first /input the frame being drawn shows arrived (steady clock, ns), taken, or 0: a
+  // native presenter that draws the frame the stream doesn't copy reports its latency (application thread).
+  int64_t takeFrameInput();
   // The next frame copied out carries this latency trace and logs it once encoded (application thread).
   void traceNextFrame(LatencyTrace trace);
 

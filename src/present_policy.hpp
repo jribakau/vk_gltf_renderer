@@ -24,8 +24,9 @@
 // app presents frames natively (roadmap item 1), to a local viewer that is no client of the stream
 // at all. Without a local viewer everything is as it always was: frames are copied out and encoded
 // whether or not anyone is connected, and nobody connected caps the loop at 10 fps. With one, the
-// loop runs at the stream's rate and refines as it would for a client, but the image is copied out
-// and encoded only for a client or a /frame waiting for one: 33 MB a frame at 4K for nobody.
+// loop refines as it would for a client, but the image is copied out and encoded only for a client
+// or a /frame waiting for one: 33 MB a frame at 4K for nobody. With a local viewer alone the loop's
+// cap is only a ceiling: the swapchain paces it to the display's refresh (FramePresent waits for it).
 
 #pragma once
 
@@ -40,11 +41,16 @@ struct Viewers
   bool frameWanted{false};  // a /frame request waits for a frame
 };
 
-// The loop's frame-rate cap: the stream's while someone watches, 10 fps while nobody does.
+// The cap with a local viewer and no stream client: above any display's refresh, which paces it.
+constexpr int kLocalViewerFps = 360;
+
+// The loop's frame-rate cap: the stream's while a client watches, 10 fps while nobody does.
 inline int pacedFps(int maxFps, const Viewers& v)
 {
   const int fps = std::max(1, maxFps);
-  return v.clients > 0 || v.localViewer ? fps : std::min(fps, 10);
+  if(v.clients > 0)
+    return fps;
+  return v.localViewer ? kLocalViewerFps : std::min(fps, 10);
 }
 
 // A refining still runs unpaced only while someone watches it converge.

@@ -239,6 +239,13 @@ void FrameStream::setLocalViewer(bool local)
     m_impl->wake();
 }
 
+int64_t FrameStream::takeFrameInput()
+{
+  const int64_t t        = m_impl->frameInputNs;
+  m_impl->frameInputNs = 0;
+  return t;
+}
+
 void FrameStream::traceNextFrame(LatencyTrace trace)
 {
   m_impl->pendingTrace = std::move(trace);

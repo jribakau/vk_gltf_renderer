@@ -1578,7 +1578,7 @@ std::string GltfRenderer::frameProfileJson() const
   return out + "}";
 }
 
-std::string GltfRenderer::refuseFrameSize(VkExtent2D size) const
+std::string GltfRenderer::refuseFrameSize(VkExtent2D size, double extraBytesPerPixel) const
 {
   const MemoryBudget b = deviceMemoryBudget();
   if(!b.known)
@@ -1588,7 +1588,7 @@ std::string GltfRenderer::refuseFrameSize(VkExtent2D size) const
   const int64_t  pixelsMore = int64_t(size.width) * size.height - pixelsNow;
   if(pixelsMore <= 0)
     return {};
-  const double need = double(pixelsMore) * frameBytesPerPixel();
+  const double need = double(pixelsMore) * (frameBytesPerPixel() + extraBytesPerPixel);
   const double free = double(b.budget) - double(b.usage);
   // a tenth of what is free stays for the scene's own growth (a BLAS refit, a texture)
   if(need <= free * 0.9)

@@ -32,9 +32,20 @@
 //                                           or {"ok":false,"error":...}; the stream goes on as before
 //   POST /present/detach                    back to the stream alone
 //   POST /present/visible?on=0|1            the window is minimized or hidden: skip presenting
+//   POST /present/view?w=&h=                the viewport's size in pixels: the swapchain's (DXGI
+//                                           stretches the frame over it, so a frame capped by Max
+//                                           resolution, or one at its old size while a resize is on
+//                                           its way, fills the viewport in shape)
 //   GET  /present                           JSON: state, size, frames presented, dropped (every
 //                                           shared image busy) and skipped (the swapchain had no
-//                                           room: the next draw goes instead), the last error
+//                                           room: the next draw goes instead), the input latency (an
+//                                           /input's arrival to the Present() of the first frame
+//                                           drawn after it, average and last, in ms), the last error
+//
+// The swapchain paces the loop: before the host element takes its input, the element waits for
+// the swapchain to take a frame, so frames follow the display's refresh (present_policy.hpp lifts
+// the stream's cap). Not while a still refines: that runs unpaced, and a frame the swapchain has no
+// room for then is skipped.
 //
 // While attached and visible the stream is told it has a local viewer (FrameStream::setLocalViewer):
 // it stops copying frames out for nobody, and the loop runs at the stream's rate. A failure while
@@ -64,20 +75,21 @@ public:
   virtual int         slotCount() const         = 0;
   virtual VkImage     slotImage(int slot) const = 0;
   virtual PresentSize capacity() const          = 0;  // the shared images' size: at least the frame's
-  virtual PresentSize frameSize() const         = 0;  // the swapchain's size: the frame's, exactly
   // Vulkan signals each frame's value on it once the frame's copy into its slot is done
   virtual VkSemaphore ready() const = 0;
   // the last frame value the consumer has finished with (its slot is free again)
   virtual uint64_t completed() = 0;
-  // A new frame size: the swapchain takes it exactly, the images grow to hold it. Both sides must
-  // be idle: Vulkan's device and every frame handed to present(). Returns an error, or empty.
-  virtual std::string resize(PresentSize frame) = 0;
-  // After the frame's submit: wait for `value`, show the slot's top left `size`. Returns an error, or empty.
-  virtual std::string present(int slot, uint64_t value, PresentSize size) = 0;
+  // The images grow to hold a frame of this size. Vulkan's device must be idle. Returns an error, or empty.
+  virtual std::string growSlots(PresentSize frame) = 0;
+  // After the frame's submit: wait for `value` and show the slot's top left `frame`, stretched over
+  // `view` (the viewport's size; 0x0 for the frame's own). Returns an error, or empty.
+  virtual std::string present(int slot, uint64_t value, PresentSize frame, PresentSize view) = 0;
   // The swapchain takes another frame now (its frame-latency waitable is signalled). Never blocks:
   // a refining still runs unpaced, and a minimized window takes no frames at all. A true answer
   // claims that frame, so it must be followed by present().
   virtual bool presentable() = 0;
+  // presentable(), waiting up to `timeoutMs` for the swapchain to take a frame.
+  virtual bool waitPresentable(uint32_t timeoutMs) = 0;
 };
 
 struct PresentTargetInfo
@@ -100,6 +112,11 @@ struct FramePresentCreateInfo
   std::function<VkExtent2D()> imageSize;
   // Frames the renderer has drawn so far: an unchanged count presents again only now and then.
   std::function<uint64_t()> drawn;
+  // The renderer accumulates a still: its frames run unpaced, not at the display's rate. Optional.
+  std::function<bool()> refining;
+  // When the first /input the frame being drawn shows arrived (steady clock, ns), taken; 0 for none
+  // (FrameStream::takeFrameInput). Optional: without it there is no input latency.
+  std::function<int64_t()> takeInput;
   // The stream has (or no longer has) a local viewer (FrameStream::setLocalViewer). Optional.
   std::function<void(bool)> localViewer;
 };
@@ -122,6 +139,10 @@ public:
 
   // The /present routes, on the frame stream's server (FrameStreamCreateInfo::routes).
   void registerRoutes(httplib::Server& http);
+
+  // What a frame pixel costs in GPU memory while presenting (the shared images and the swapchain's
+  // buffers), for the frame size check; 0 when not presenting. Any thread.
+  double bytesPerPixel() const;
 
 private:
   struct Impl;
