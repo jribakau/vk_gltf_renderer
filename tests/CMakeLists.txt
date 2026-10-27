@@ -75,6 +75,7 @@ set(TEST_SOURCES
     test_alias_table.cpp
     # --stream frame pacing: paced, except a still being refined
     test_frame_pacing.cpp
+    test_present_policy.cpp
     # Binary payloads posted for live edits (/blob): taken once, oldest dropped past the cap
     test_blob_store.cpp
     # Figure Viewer scene logic (figure/)

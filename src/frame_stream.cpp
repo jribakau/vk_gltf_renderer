@@ -32,6 +32,7 @@
 
 #include "frame_stream.hpp"
 #include "frame_pacing.hpp"
+#include "present_policy.hpp"
 #include "blob_store.hpp"
 
 #include <algorithm>
@@ -149,6 +150,8 @@ struct FrameStream::Impl
   std::condition_variable            jpgCv;
   std::shared_ptr<const std::string> jpg;
   uint64_t                           jpgSeq{0};
+  // frames the encoder finished with, encoded or found a repeat of the last: what a waiting /frame watches
+  uint64_t jpgHandled{0};
   VkExtent2D                         jpgExtent{};
 
   std::atomic<bool>     running{false};
@@ -183,6 +186,13 @@ struct FrameStream::Impl
   std::mutex              wakeMutex;
   std::condition_variable wakeCv;
   std::atomic<bool>       idle{false};
+  // the app presents the frames itself (present_policy.hpp), and a /frame waits for one to be copied
+  std::atomic<bool> localViewer{false};
+  std::atomic<bool> frameWanted{false};
+
+  present_policy::Viewers viewers() const { return {clients.load(), localViewer.load(), frameWanted.load()}; }
+  // The encoder is done with a frame (encoder thread, holding no lock): wakes a waiting /frame.
+  void handled();
 
   void createRing(const VkExtent2D& extent);
   void destroyRing();
@@ -221,6 +231,12 @@ void FrameStream::setFullChroma(bool fullChroma)
   m_impl->hostFullChroma.store(fullChroma);
   if(!m_impl->info.still)
     m_impl->fullChroma.store(fullChroma);
+}
+
+void FrameStream::setLocalViewer(bool local)
+{
+  if(m_impl->localViewer.exchange(local) != local)
+    m_impl->wake();
 }
 
 void FrameStream::traceNextFrame(LatencyTrace trace)
@@ -307,10 +323,11 @@ void FrameStream::onUpdate()
   }
   if(s.activity.exchange(false))
     s.pacer.noteActivity(now);
-  const int  fps    = s.clients > 0 ? std::max(1, s.info.maxFps) : std::min(std::max(1, s.info.maxFps), 10);
+  const present_policy::Viewers viewers = s.viewers();
+  const int                     fps     = present_policy::pacedFps(s.info.maxFps, viewers);
   const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
   // Nobody watching: keep to the cap, the host needs the machine more than a still needs to converge.
-  const bool refining = s.clients > 0 && s.info.refining && s.info.refining();
+  const bool refining = present_policy::refining(s.info.refining && s.info.refining(), viewers);
   // A still's frames at full chroma and the still quality; a moving view's as the host set them
   if(s.info.still)
   {
@@ -353,7 +370,8 @@ void FrameStream::onUpdate()
       s.renderFps = s.renderFps * 0.9 + (1.0 / dt) * 0.1;
   }
   s.lastFrame = now;
-  s.copyFrame = s.pacer.begin(now, refining);
+  // a local viewer alone needs no copy (present_policy.hpp); a /frame that came in by now does
+  s.copyFrame = present_policy::copyOut(s.pacer.begin(now, refining), s.viewers());
 
   // Input that came in by now is the host element's this frame (it runs after this one): the frame
   // drawn next shows it. One arriving between here and the host's update counts a frame short.
@@ -449,6 +467,7 @@ void FrameStream::onRender(VkCommandBuffer cmd)
   rb.drawn                         = s.info.drawn ? s.info.drawn() : 0;
   rb.inputNs                       = s.frameInputNs;
   s.frameInputNs                   = 0;
+  s.frameWanted                    = false;
   {
     std::lock_guard lock(s.rawMutex);
     rb.state = Readback::State::eCopying;
@@ -651,6 +670,15 @@ void FrameStream::Impl::harvest(Readback& rb)
   rawCv.notify_all();
 }
 
+void FrameStream::Impl::handled()
+{
+  {
+    std::lock_guard lock(jpgMutex);
+    jpgHandled++;
+  }
+  jpgCv.notify_all();
+}
+
 void FrameStream::Impl::encodeLoop()
 {
   tjhandle tj = tj3Init(TJINIT_COMPRESS);
@@ -711,6 +739,7 @@ void FrameStream::Impl::encodeLoop()
       if(!trace.empty())
         LOGI("%s (frame repeated, not re-sent)\n", formatTrace(trace).c_str());
       release(cur, Readback::State::eFree);
+      handled();
       continue;
     }
 
@@ -731,6 +760,7 @@ void FrameStream::Impl::encodeLoop()
       LOGW("frame stream: JPEG encoding failed: %s\n", tj3GetErrorStr(tj));
       tj3Free(jpeg);
       release(cur, Readback::State::eFree);
+      handled();
       continue;
     }
     auto out = std::make_shared<std::string>(reinterpret_cast<const char*>(jpeg), size);
@@ -754,6 +784,7 @@ void FrameStream::Impl::encodeLoop()
       jpg       = std::move(out);
       jpgExtent = extent;
       jpgSeq++;
+      jpgHandled++;
     }
     framesEncoded++;
     jpgCv.notify_all();
@@ -832,8 +863,23 @@ void FrameStream::Impl::serve()
 
   http.Get("/frame", [this](const httplib::Request&, httplib::Response& res) {
     std::shared_ptr<const std::string> frame;
+    // Where frames are not copied out on their own (a local viewer and no client), ask for one and
+    // wait for the encoder to finish it; a frame that repeats the last one sent leaves that one.
+    const bool wait = present_policy::frameWaits(viewers());
+    uint64_t   seen = 0;
+    if(wait)
     {
-      std::lock_guard lock(jpgMutex);
+      {
+        std::lock_guard lock(jpgMutex);
+        seen = jpgHandled;
+      }
+      frameWanted = true;
+      wake();
+    }
+    {
+      std::unique_lock lock(jpgMutex);
+      if(wait)
+        jpgCv.wait_for(lock, 2s, [&] { return jpgHandled > seen || !running; });
       frame = jpg;
     }
     if(!frame)

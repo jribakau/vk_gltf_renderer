@@ -33,7 +33,8 @@
 // host's `streamQuality` and `streamFullChroma` are what moving frames get.
 //
 //   GET /stream         MJPEG stream of every new frame (unchanged frames are not re-sent)
-//   GET /frame          the latest frame as one image/jpeg
+//   GET /frame          the latest frame as one image/jpeg (with a local viewer and no client, a
+//                       frame copied and encoded for the request; see setLocalViewer)
 //   GET /size?w=&h=     resize the offscreen viewport (applied before the next frame)
 //   GET /stats          JSON: frames rendered/encoded/sent, size, render fps, average encode
 //                       time in ms, connected clients, whether the loop is idle; the input latency
@@ -141,6 +142,10 @@ public:
   // encoded picks them up, and a converged still is re-sent once when they rise.
   void setQuality(int quality);
   void setFullChroma(bool fullChroma);
+  // The app presents the frames itself (roadmap item 1): the loop runs at maxFps with no client,
+  // and frames are copied out and encoded only for a /stream client or a /frame (present_policy.hpp).
+  // Thread-safe.
+  void setLocalViewer(bool local);
   // The next frame copied out carries this latency trace and logs it once encoded (application thread).
   void traceNextFrame(LatencyTrace trace);
 
