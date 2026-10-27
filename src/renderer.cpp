@@ -607,8 +607,8 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   // is handled by SettingsRegistry, which ignores keys it does not know.
 
   // What a TLAS sync does with the existing structure (tlas_policy.hpp): live, read at the next sync.
-  // Not remembered: it is for measuring BUILD against UPDATE, and `update` stays the default until
-  // that decides it.
+  // Not remembered: `build` is the default (D8: 0.07 ms against 0.02 ms a sync, measured on the
+  // harness scene), and `update` is for measuring the two against each other.
   m_settings.add({.name = "tlasPolicy",
                   .help = "TLAS sync: build (rebuild it every time) or update (refit it in place where valid)",
                   .callbackSuccess =

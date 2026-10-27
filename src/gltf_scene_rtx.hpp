@@ -158,7 +158,7 @@ protected:
   DeferredFreeFunc        m_deferredFree;                       // Optional: schedules deferred GPU resource destruction
   GpuMemoryTracker        m_memoryTracker;                      // GPU memory tracking
   nvvk::ProfilerGpuTimer* m_profiler   = nullptr;               // Optional: times the TLAS syncs
-  TlasPolicy              m_tlasPolicy = TlasPolicy::eUpdate;  // See setTlasPolicy()
+  TlasPolicy              m_tlasPolicy = TlasPolicy::eBuild;   // See setTlasPolicy()
 };
 
 }  // namespace nvvkgltf

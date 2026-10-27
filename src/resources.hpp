@@ -305,7 +305,7 @@ struct Settings
   DisplayBuffer displayBuffer = DisplayBuffer::eRendered;  // Which buffer to display in viewport
 
   // `tlasPolicy`, build or update (tlas_policy.hpp); SceneRtx holds the parsed value.
-  std::string tlasPolicy = tlasPolicyName(TlasPolicy::eUpdate);
+  std::string tlasPolicy = tlasPolicyName(TlasPolicy::eBuild);
 
   // Enable scene-based shader optimization. When true, only features used by the scene are
   // enabled, reducing shader size and register usage at the cost of a one-time recompile per scene change.

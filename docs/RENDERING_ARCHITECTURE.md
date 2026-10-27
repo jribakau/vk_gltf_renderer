@@ -694,8 +694,8 @@ whose joints moved (`AnimationSystem::updateAnimation`); host edits mark them in
 (`set_node` for skins with a joint at or below the moved node, `set_skin`, `set_morph_weights`
 and vertex uploads for their own primitives).
 
-Whether a TLAS sync rebuilds or updates is the `tlasPolicy` setting (`src/tlas_policy.hpp`): `build`
-rebuilds every time; `update` refits in place, and still rebuilds when the instance count changed
+Whether a TLAS sync rebuilds or updates is the `tlasPolicy` setting (`src/tlas_policy.hpp`): `build`,
+the default, rebuilds every time, as NVIDIA advises for a TLAS; `update` refits in place, and still rebuilds when the instance count changed
 or an instance became active or inactive, which an UPDATE cannot express. The per-frame syncs, on
 the CPU and the GPU transform path alike, show in the GPU profiler as one `TLAS build` section.
 
