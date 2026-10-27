@@ -392,15 +392,22 @@ void nvvkgltf::SceneRtx::updateInstanceFlagsCache(nvvkgltf::Scene& scene)
   const std::vector<tinygltf::Material>& materials = scene.getModel().materials;
   nvvkgltf::Scene::DirtyFlags&           df        = scene.getDirtyFlags();
 
+  std::unordered_set<int> changedMats;
   if(m_instanceFlagsCache.size() != materials.size())
   {
+    // materials came or went: every one whose bits differ from what its index held (or that is
+    // new) changes the instances drawn with it, which keep their old flags and masks otherwise
+    const std::vector<InstanceBits> before = std::move(m_instanceFlagsCache);
     m_instanceFlagsCache.resize(materials.size());
     for(size_t i = 0; i < materials.size(); i++)
+    {
       m_instanceFlagsCache[i] = {getInstanceFlag(materials[i]), getInstanceMask(materials[i])};
+      if(i >= before.size() || before[i] != m_instanceFlagsCache[i])
+        changedMats.insert(static_cast<int>(i));
+    }
   }
   else if(!df.materials.empty())
   {
-    std::unordered_set<int> changedMats;
     for(int idx : df.materials)
     {
       if(idx < 0 || idx >= static_cast<int>(materials.size()))
@@ -412,14 +419,14 @@ void nvvkgltf::SceneRtx::updateInstanceFlagsCache(nvvkgltf::Scene& scene)
         changedMats.insert(idx);
       }
     }
-    if(!changedMats.empty())
+  }
+  if(!changedMats.empty())
+  {
+    const std::vector<nvvkgltf::RenderNode>& renderNodes = scene.getRenderNodes();
+    for(size_t i = 0; i < renderNodes.size(); i++)
     {
-      const std::vector<nvvkgltf::RenderNode>& renderNodes = scene.getRenderNodes();
-      for(size_t i = 0; i < renderNodes.size(); i++)
-      {
-        if(changedMats.contains(renderNodes[i].materialID))
-          df.renderNodesRtx.insert(static_cast<int>(i));
-      }
+      if(changedMats.contains(renderNodes[i].materialID))
+        df.renderNodesRtx.insert(static_cast<int>(i));
     }
   }
 }
