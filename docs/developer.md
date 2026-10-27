@@ -213,6 +213,11 @@ src/
 │                               #   host application. Paces the loop to --streamFps, except a still being
 │                               #   refined with a client connected, which runs unpaced
 ├── frame_pacing.hpp            # The pacing decision on its own, free of Vulkan (unit-tested)
+├── frame_present.cpp/hpp       # Native presentation: the frames into a host window's DirectComposition
+│                               #   surface (POST /present/attach), through images shared with D3D11
+├── frame_present_win32.cpp     # Its D3D11 side: the swapchain, the shared textures and fence (Windows)
+├── present_policy.hpp          # Who watches a --stream run, and what FrameStream copies for them (unit-tested)
+├── present_slots.hpp           # The shared images' hand-off between Vulkan and D3D (unit-tested)
 ├── ui_dock_layout.cpp/hpp      # Default docking arrangement, shared by start-up (main.cpp's
 │                               #   dockSetup) and Windows > Reset UI Layout
 ├── ui_presentation_mode.cpp/hpp # Presentation mode (F11): hides panels + menu bar, borderless
