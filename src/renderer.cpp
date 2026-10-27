@@ -4307,7 +4307,10 @@ rs::VulkanGpuBackend::Info GltfRenderer::retainedBackendInfo()
           .samplerBinding     = shaderio::BindingPoints::eSamplers,
           .maxTextures        = m_maxTextures,
           .maxSamplers        = m_maxSamplers,
-          .blasScratchBudget  = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20};
+          .blasScratchBudget  = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
+          // what a host decoded ahead (prefetchImage) lands in SceneVk's map either way
+          .takePrefetched = [this](const std::filesystem::path& path,
+                                   bool srgb) { return m_resources.sceneVk.takePrefetchedFile(path, srgb); }};
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -4319,7 +4322,6 @@ void GltfRenderer::createRetainedScene()
 {
   fv::timing::Scope      timeScene("retained scene");
   const nvvkgltf::Scene& scene = *m_resources.getScene();
-  m_resources.sceneVk.dropPrefetched();  // the backend decodes its own (P3a2 brings the prefetch claim)
   m_resources.retainedScene = std::make_unique<rs::RetainedScene>();
   rs::ImportResult imported;
   {
@@ -4349,6 +4351,7 @@ void GltfRenderer::createRetainedScene()
       m_resources.retainedGpu->timeBuilds();
     m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
     m_app->submitAndWaitTempCmdBuffer(cmd);
+    m_resources.sceneVk.dropPrefetched();  // what this scene did not take would never be taken
     if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes())
     {
       OneShotGpuTimer::report("GPU BLAS build", times->blasMs);
@@ -4359,9 +4362,10 @@ void GltfRenderer::createRetainedScene()
   const rs::Residency& residency = m_resources.retainedGpu->residency();
   constexpr double     kMB       = 1024.0 * 1024.0;
   const rs::Residency::ImageCounts images    = residency.imageCounts();
-  LOGI("Scene (retained): %u instances, %u prims, %u materials, %u lights; images %u decoded, %u reused; GPU memory %.1f MB\n",
+  LOGI("Scene (retained): %u instances, %u prims, %u materials, %u lights; images %u decoded (%u prefetched), %u reused; GPU memory %.1f MB\n",
        residency.instanceHighWater(), residency.primHighWater(), residency.materialHighWater(), residency.lightCount(),
-       images.decoded, images.reused, m_resources.retainedGpu->memoryStats().usedBytes / kMB);
+       images.decoded, m_resources.retainedGpu->takePrefetchCount(), images.reused,
+       m_resources.retainedGpu->memoryStats().usedBytes / kMB);
 }
 
 //--------------------------------------------------------------------------------------------------

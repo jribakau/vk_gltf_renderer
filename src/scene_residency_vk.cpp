@@ -27,6 +27,7 @@
 #include <nvutils/file_mapping.hpp>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/logger.hpp>
+#include <nvutils/parallel_work.hpp>
 #include <nvvk/check_error.hpp>
 #include <nvvk/debug_util.hpp>
 #include <nvvk/default_structs.hpp>
@@ -336,28 +337,66 @@ bool VulkanGpuBackend::inLiveBuffer(VkDeviceAddress address, VkDeviceSize size) 
 
 // ---------- Images and descriptors ----------
 
+// An image source decoded on the calling thread (any): pixels, encoded bytes, or a file
+static bool decodeSource(const ImageSource& source, nvvkgltf::LoadedImageData& loaded)
+{
+  if(!source.pixels.empty())
+    return fromPixels(source, loaded);
+  if(!source.bytes.empty())
+    return nvvkgltf::loadFromMemory(loaded, source.bytes.data(), source.bytes.size(), source.srgb);
+  if(source.uri.empty())
+    return false;
+  nvutils::FileReadMapping file;
+  if(file.open(nvutils::pathFromUtf8(source.uri)))
+    return nvvkgltf::loadFromMemory(loaded, file.data(), file.size(), source.srgb);
+  LOGW("Image '%s' (%s) could not be opened\n", source.name.c_str(), source.uri.c_str());
+  return false;
+}
+
 ImageHandle VulkanGpuBackend::createImage(const ImageSource& source, ImageInfo& info)
 {
   info = {};
   if(!recording("createImage"))
     return {};
   nvvkgltf::LoadedImageData loaded;
-  bool                      decoded = false;
-  if(!source.pixels.empty())
-    decoded = fromPixels(source, loaded);
-  else if(!source.bytes.empty())
-    decoded = nvvkgltf::loadFromMemory(loaded, source.bytes.data(), source.bytes.size(), source.srgb);
-  else if(!source.uri.empty())
-  {
-    nvutils::FileReadMapping file;
-    if(file.open(nvutils::pathFromUtf8(source.uri)))
-      decoded = nvvkgltf::loadFromMemory(loaded, file.data(), file.size(), source.srgb);
-    else
-      LOGW("Image '%s' (%s) could not be opened\n", source.name.c_str(), source.uri.c_str());
-  }
-  if(!decoded || loaded.mipData.empty())
+  if(!decodeSource(source, loaded))
     return {};
+  return createFromDecoded(source, loaded, info);
+}
 
+void VulkanGpuBackend::createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos)
+{
+  if(!recording("createImages"))
+    return;
+  std::vector<nvvkgltf::LoadedImageData> loaded(sources.size());
+  std::vector<uint8_t>                   ok(sources.size(), 0), prefetched(sources.size(), 0);
+  nvutils::parallel_batches<1>(sources.size(), [&](uint64_t i) {
+    const ImageSource& source = sources[i];
+    if(m_info.takePrefetched && source.pixels.empty() && source.bytes.empty() && !source.uri.empty())
+      if(std::optional<nvvkgltf::LoadedImageData> taken =
+             m_info.takePrefetched(nvutils::pathFromUtf8(source.uri), source.srgb))
+      {
+        loaded[i]     = std::move(*taken);
+        ok[i]         = 1;
+        prefetched[i] = 1;
+        return;
+      }
+    ok[i] = decodeSource(source, loaded[i]) ? 1 : 0;
+  });
+  for(size_t i = 0; i < sources.size(); i++)
+  {
+    infos[i]  = {};
+    images[i] = ok[i] ? createFromDecoded(sources[i], loaded[i], infos[i]) : ImageHandle{};
+    loaded[i] = {};  // its texels uploaded: let them go before the next
+    m_prefetchTaken += prefetched[i];
+  }
+}
+
+// An image from its decoded mips, uploaded through the frame uploader in the command buffer
+ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkgltf::LoadedImageData& loaded, ImageInfo& info)
+{
+  if(loaded.mipData.empty())
+    return {};
   flushBuilds();  // createSampledImage records the appended uploads with its own
   nvvk::Image image;
   if(!nvvkgltf::createSampledImage(m_cmd, *m_info.staging, *m_info.alloc, m_info.physicalDevice, m_info.generateMipmaps,

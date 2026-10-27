@@ -1999,6 +1999,20 @@ bool nvvkgltf::SceneVk::takePrefetched(const ReuseKey& key, size_t imageId)
   return true;
 }
 
+std::optional<nvvkgltf::LoadedImageData> nvvkgltf::SceneVk::takePrefetchedFile(const std::filesystem::path& diskPath, bool srgb)
+{
+  std::optional<ReuseKey> key = makeReuseKey(diskPath, srgb);
+  if(!key)
+    return std::nullopt;
+  std::lock_guard lock(m_prefetchMutex);
+  auto            it = m_prefetched.find(prefetchKey(*key));
+  if(it == m_prefetched.end())
+    return std::nullopt;
+  std::optional<LoadedImageData> taken = std::move(it->second);
+  m_prefetched.erase(it);
+  return taken;
+}
+
 void nvvkgltf::SceneVk::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
 {
   std::optional<ReuseKey> key = makeReuseKey(diskPath, srgb);

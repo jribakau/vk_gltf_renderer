@@ -34,11 +34,13 @@
 //
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -46,6 +48,7 @@
 #include <nvvk/acceleration_structures.hpp>
 #include <nvvk/resources.hpp>
 
+#include "gltf_image_loader.hpp"
 #include "gpu_memory_tracker.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency.hpp"
@@ -81,6 +84,8 @@ public:
     uint32_t                        maxSamplers       = 0;
     VkDeviceSize                    blasScratchBudget = 512ull << 20;  // blasScratchBudgetMB
     bool                            generateMipmaps   = true;
+    // a file a host decoded ahead (SceneVk::takePrefetchedFile); any thread. Unset: none.
+    std::function<std::optional<nvvkgltf::LoadedImageData>(const std::filesystem::path&, bool srgb)> takePrefetched;
   };
 
   // The first record() makes the default images and writes texture slot 0 (white) and sampler slot 0
@@ -120,6 +125,10 @@ public:
   void copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size) override;
   // decoded on this thread (a file, encoded bytes, or decoded pixels of 8 or 16 bits), its mips made
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
+  // decoded side by side on the worker pool (a file a host prefetched taken instead), then made in order
+  void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override;
+  // the images createImages took from a host's prefetches, since the last call
+  uint32_t    takePrefetchCount() { return std::exchange(m_prefetchTaken, 0u); }
   void        destroyImage(ImageHandle image) override;
   // none: the white default in slot 0, the magenta "missing" image elsewhere (as SceneVk shows one)
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
@@ -173,6 +182,7 @@ private:
   void                                    checkInput(const BlasInput& input, const char* op) const;
   nvvk::AccelerationStructureGeometryInfo geometryOf(const BlasInput& input) const;
   void                                    writeImageDescriptor(uint32_t slot, const nvvk::Image& image);
+  ImageHandle createFromDecoded(const ImageSource& source, nvvkgltf::LoadedImageData& loaded, ImageInfo& info);
   void                                    ensureDefaults();
   bool                                    beginSpan();
   void                                    endSpan(BuildSpan span);
@@ -201,6 +211,7 @@ private:
   VkQueryPool                               m_timestamps = VK_NULL_HANDLE;
   double                                    m_msPerTick  = 0.0;
   std::vector<BuildSpan>                    m_spans;  // recorded, not read yet
+  uint32_t                                  m_prefetchTaken = 0;
 };
 
 // The retained scene as the renderers read it: a VulkanGpuBackend and an rs::Residency over a
@@ -221,6 +232,8 @@ public:
   void setBlasScratchBudget(VkDeviceSize bytes) { m_gpu.setBlasScratchBudget(bytes); }
   // textureGraceMB: the decoded images nothing samples that stay for the next replace or edit
   void setTextureGrace(VkDeviceSize bytes) { m_residency.setTextureGrace(bytes); }
+  // the images taken from a host's prefetches since the last call
+  uint32_t takePrefetchCount() { return m_gpu.takePrefetchCount(); }
   // Nothing resident (what was is retired), the decoded images kept in grace: a host's scene
   // between a cleanup and the next retained scene replace, which takes what it shares
   void clear();

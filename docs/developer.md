@@ -898,7 +898,9 @@ host's and the pickers' indices hold) and makes it resident, waited for; with `[
 (`VulkanGpuBackend::timeBuilds`). A cleanup that keeps images for reuse (a recompose) keeps the
 `RetainedSceneVk` too, emptied (`Resources::retainedSpare`), so the next retained replace takes the
 decoded images it shares with the last scene; the `Scene (retained):` line counts images decoded
-and reused. Each frame
+(and of those, taken from the host's prefetches) and reused. A sync decodes the images it needs in
+one batch, side by side on the worker pool (`VulkanGpuBackend::createImages`), a file the host
+prefetched taken from `SceneVk::takePrefetchedFile` instead. Each frame
 `syncRetainedScene` stands in for the legacy per-frame paths listed above: `LegacyDirtyBridge`
 carries the dirty nodes, materials and lights into the store (a re-import when it can't: a new
 texture, a sampler edit, a re-parse), the CPU world matrices are brought up to date, and the

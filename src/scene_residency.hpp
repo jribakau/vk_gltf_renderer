@@ -280,6 +280,7 @@ private:
   void     acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler);
   void     releaseImage(const ImageGpu& image);
+  void     decodeQueued();
   void     trimGrace(uint64_t budget);
   void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);
   void     writeMaterials(const RetainedScene& scene);
@@ -316,6 +317,14 @@ private:
   std::map<SamplerKey, SlotUse>                        m_samplerSlots;
   std::shared_ptr<nvutils::IDPool>                     m_texturePool, m_samplerPool;
   std::map<TextureKey, DecodedImage>                   m_decoded;  // across clear()
+  // the images a sync's acquisitions need, decoded in one batch before the materials are converted
+  struct QueuedDecode
+  {
+    TextureId                 texture;
+    ImageSource               source;  // over the store's record, which outlives the sync
+    std::optional<TextureKey> key;
+  };
+  std::vector<QueuedDecode>                            m_decodeQueue;
   uint64_t                                             m_graceBytes   = 0;
   uint64_t                                             m_releaseClock = 0;
   ImageCounts                                          m_imageCounts;

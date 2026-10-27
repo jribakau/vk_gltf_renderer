@@ -437,6 +437,7 @@ TEST(RetainedResidency, ADecodeIsSharedAndOutlivesAReplaceInGrace)
   EXPECT_EQ(gpu.liveImages(), 2u);
   EXPECT_EQ(residency.imageCounts().decoded, 2u);
   EXPECT_EQ(residency.imageCounts().reused, 1u);
+  EXPECT_EQ(gpu.imageBatches(), std::vector<size_t>{2});  // decoded together, the shared one once
 
   // a replace decodes nothing it had
   const ImageHandle before = residency.image(b);
@@ -445,6 +446,7 @@ TEST(RetainedResidency, ADecodeIsSharedAndOutlivesAReplaceInGrace)
   expectClean(scene, residency, gpu, "replaced: ");
   EXPECT_EQ(residency.imageCounts().decoded, 0u);
   EXPECT_EQ(residency.imageCounts().reused, 3u);
+  EXPECT_EQ(gpu.imageBatches().size(), 1u);  // nothing to decode
   EXPECT_EQ(residency.image(b), before);
   drain(gpu);
   expectClean(scene, residency, gpu, "after its retires: ");

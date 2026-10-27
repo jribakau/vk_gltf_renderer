@@ -165,6 +165,9 @@ public:
   // from any thread; what the next createTextureImages() does not take is dropped.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
   // Drops what was prefetched: a retained scene replace decodes its own, so nothing would take it
+  // What a host decoded ahead (prefetchImage) of the file at `diskPath`, taken; none when nothing
+  // was (the retained scene's backend claims prefetches through it). Any thread.
+  std::optional<LoadedImageData> takePrefetchedFile(const std::filesystem::path& diskPath, bool srgb);
   void dropPrefetched()
   {
     std::lock_guard lock(m_prefetchMutex);

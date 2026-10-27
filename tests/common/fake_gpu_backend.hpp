@@ -100,6 +100,13 @@ public:
   // "decodes" what it is given: width and height as the source says, two channels for two
   // components; a source with nothing in it, or a uri starting "missing", can't be read
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
+  void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override
+  {
+    m_imageBatches.push_back(sources.size());
+    GpuBackend::createImages(sources, images, infos);
+  }
+  // the sizes of the createImages calls so far
+  const std::vector<size_t>& imageBatches() const { return m_imageBatches; }
   void        destroyImage(ImageHandle image) override;
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
   void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
@@ -165,6 +172,7 @@ private:
   std::unique_ptr<OffsetAllocator::Allocator> m_addresses;
   std::unordered_map<uint64_t, Buffer>        m_buffers;
   std::unordered_map<uint64_t, Image>         m_images;
+  std::vector<size_t>                         m_imageBatches;
   std::unordered_map<uint64_t, Blas>          m_blases;
   std::unordered_map<uint64_t, Tlas>          m_tlases;
   std::map<uint32_t, ImageHandle>             m_textureDescriptors;

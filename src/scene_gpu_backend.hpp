@@ -190,7 +190,14 @@ public:
   // ---------- Images and descriptors ----------
   // The image decoded, its mips made; none when it can't be read (its slot keeps the default image).
   virtual ImageHandle createImage(const ImageSource& source, ImageInfo& info) = 0;
-  virtual void        destroyImage(ImageHandle image)                         = 0;
+  // Several at once, in order (a backend may decode them side by side); `images` and `infos` as
+  // long as `sources`
+  virtual void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos)
+  {
+    for(size_t i = 0; i < sources.size(); i++)
+      images[i] = createImage(sources[i], infos[i]);
+  }
+  virtual void destroyImage(ImageHandle image) = 0;
   // A slot of the scene's texture array; no image writes the default one.
   virtual void writeTextureDescriptor(uint32_t slot, ImageHandle image)          = 0;
   virtual void writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) = 0;

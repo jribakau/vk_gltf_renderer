@@ -435,7 +435,8 @@ void Residency::releaseMaterialTextures(MaterialSlot& slot)
 
 void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb)
 {
-  ImageGpu& image = m_images[id];
+  ImageGpu& image  = m_images[id];
+  bool      shared = false;  // the image another texture decoded, or is decoding this sync
   if(image.users++ == 0)
     if(const TextureRecord* record = scene.texture(id))
     {
@@ -449,10 +450,11 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
             m_graceBytes -= decoded.info.bytes;
           image.image = decoded.image;
           image.info  = decoded.info;
+          shared      = true;
           m_imageCounts.reused++;
         }
     }
-  if(image.users == 1 && !image.image)
+  if(image.users == 1 && !shared)
     if(const TextureRecord* record = scene.texture(id))
     {
       const ImageSource source{.uri       = record->uri,
@@ -465,12 +467,10 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
                                .bits      = record->bits,
                                .srgb      = srgb,
                                .name      = record->name};
-      image.image = m_gpu.createImage(source, image.info);
-      m_imageCounts.decoded++;
-      if(image.key && image.image)
-        m_decoded[*image.key] = {.image = image.image, .info = image.info, .users = 1};
-      else
-        image.key.reset();  // an unreadable one is tried again next time
+      // decoded with the sync's others (decodeQueued); its slots hold the default image until then
+      m_decodeQueue.push_back({id, source, image.key});
+      if(image.key)
+        m_decoded[*image.key] = {.users = 1};
     }
 
   SlotUse& use = m_textureSlots[{id, keyOf(sampler)}];
@@ -547,11 +547,74 @@ void Residency::trimGrace(uint64_t budget)
     if(oldest == m_decoded.end())
       break;
     m_graceBytes -= oldest->second.info.bytes;
-    m_gpu.retire([&gpu = m_gpu, handle = oldest->second.image] { gpu.destroyImage(handle); });
+    if(oldest->second.image)
+      m_gpu.retire([&gpu = m_gpu, handle = oldest->second.image] { gpu.destroyImage(handle); });
     m_decoded.erase(oldest);
   }
   if(m_graceBytes > budget)  // only idle decodes count, so this can't be
     m_graceBytes = 0;
+}
+
+// The queued images decoded in one batch (side by side where the backend can), handed to every
+// texture that is that image, and written to their slots. One nothing took meanwhile goes to grace;
+// an unreadable one leaves the default image and is tried again at its next acquisition.
+void Residency::decodeQueued()
+{
+  if(m_decodeQueue.empty())
+    return;
+  std::vector<ImageSource> sources;
+  for(const QueuedDecode& q : m_decodeQueue)
+    sources.push_back(q.source);
+  std::vector<ImageHandle> images(sources.size());
+  std::vector<ImageInfo>   infos(sources.size());
+  m_gpu.createImages(sources, images, infos);
+  m_imageCounts.decoded += uint32_t(sources.size());
+
+  std::set<TextureId> written;
+  for(size_t i = 0; i < m_decodeQueue.size(); i++)
+  {
+    const QueuedDecode& q = m_decodeQueue[i];
+    if(q.key)
+    {
+      auto decoded = m_decoded.find(*q.key);
+      if(decoded == m_decoded.end())
+      {
+        if(images[i])
+          m_gpu.retire([&gpu = m_gpu, handle = images[i]] { gpu.destroyImage(handle); });
+        continue;
+      }
+      for(auto& [id, image] : m_images)
+        if(image.key == q.key)
+        {
+          image.image = images[i];
+          image.info  = infos[i];
+          if(!images[i])
+            image.key.reset();
+          written.insert(id);
+        }
+      if(!images[i])
+        m_decoded.erase(decoded);
+      else
+      {
+        decoded->second.image = images[i];
+        decoded->second.info  = infos[i];
+        if(decoded->second.users == 0)
+          m_graceBytes += infos[i].bytes;
+      }
+    }
+    else if(auto image = m_images.find(q.texture); image != m_images.end() && !image->second.key)
+    {
+      image->second.image = images[i];
+      image->second.info  = infos[i];
+      written.insert(q.texture);
+    }
+    else if(images[i])
+      m_gpu.retire([&gpu = m_gpu, handle = images[i]] { gpu.destroyImage(handle); });
+  }
+  m_decodeQueue.clear();
+  for(const auto& [slotKey, use] : m_textureSlots)
+    if(written.count(std::get<0>(slotKey)))
+      m_gpu.writeTextureDescriptor(use.slot, m_images.at(std::get<0>(slotKey)).image);
 }
 
 void Residency::setTextureGrace(uint64_t bytes)
@@ -693,6 +756,7 @@ SyncResult Residency::sync(RetainedScene& scene)
     syncStructure(scene, items, result);
   if(!changes.materials.empty())
     syncMaterials(scene, changes.materials, result);
+  decodeQueued();
   std::set<MeshId> written;
   if(!changes.meshes.empty())
     written = syncVertices(scene, changes.meshes, result);
