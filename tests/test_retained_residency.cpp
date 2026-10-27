@@ -384,6 +384,29 @@ TEST(RetainedResidency, TexturesTakeSlotsPerSamplerOverOneImage)
   EXPECT_EQ(state->slots.isTwoChannelSource(2), true);
 }
 
+// A second scene replace on the same residency (a re-import): once the first scene's retires have
+// run, the new scene's texture slots still hold its images (the old slots' default-image writes must
+// not land on slots handed out again)
+TEST(RetainedResidency, AReplaceKeepsItsTexturesThroughTheOldOnesRetires)
+{
+  RetainedScene scene;
+  const auto    table = textureTable(scene);
+  const MeshId  grid  = scene.addMesh(gridMesh(2, 0.f, 2));
+  drawn(scene, "e", grid, {textured(scene, table, 0), textured(scene, table, 1)});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+
+  gpu.beginFrame();
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "replaced: ");
+  drain(gpu);
+  expectClean(scene, residency, gpu, "the old scene's retires run: ");
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)
 {
   RetainedScene scene;

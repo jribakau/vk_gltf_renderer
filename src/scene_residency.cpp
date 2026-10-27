@@ -108,6 +108,8 @@ TlasRow tlasRowOf(const glm::mat4& world)
 Residency::Residency(GpuBackend& gpu, ResidencyOptions options)
     : m_gpu(gpu)
     , m_options(options)
+    , m_texturePool(poolFromOne(kTexturePoolSize))
+    , m_samplerPool(poolFromOne(kSamplerPoolSize))
 {
   clear();
 }
@@ -128,8 +130,15 @@ void Residency::clear()
       retireBuffer(p->indices);
       retireAccel(p->blas);
     }
+  // descriptor slots are the scene descriptor set's, which a frame in flight still reads: each goes
+  // back to its pool only at its retire, so the next scene is handed other slots meanwhile
   for(const auto& [key, use] : m_textureSlots)
-    m_gpu.retire([&gpu = m_gpu, slot = use.slot] { gpu.writeTextureDescriptor(slot, {}); });
+    m_gpu.retire([&gpu = m_gpu, pool = m_texturePool, slot = use.slot] {
+      gpu.writeTextureDescriptor(slot, {});
+      pool->destroyID(slot);
+    });
+  for(const auto& [key, use] : m_samplerSlots)
+    m_gpu.retire([pool = m_samplerPool, slot = use.slot] { pool->destroyID(slot); });
   for(const auto& [id, image] : m_images)
     if(image.image)
       m_gpu.retire([&gpu = m_gpu, handle = image.image] { gpu.destroyImage(handle); });
@@ -167,14 +176,12 @@ void Residency::clear()
   m_renderNodes = m_renderPrims = m_sceneDesc = {};
   m_tlas                                      = {};
   m_instanceCapacity = m_primCapacity = m_tlasCapacity = 0;
-  // fresh pools: what the old ones handed out is retired with its resources, and never reused
+  // fresh slot pools: their slots index the tables retired above, so they are never read again
   m_dirtyNodes.clear();
   m_allNodes = m_allPrims = false;
   m_instancePool          = std::make_shared<nvutils::IDPool>(kSlotPoolSize);
   m_primPool              = std::make_shared<nvutils::IDPool>(kSlotPoolSize);
   m_materialPool          = std::make_shared<nvutils::IDPool>(kMaterialPoolSize);
-  m_texturePool           = poolFromOne(kTexturePoolSize);
-  m_samplerPool           = poolFromOne(kSamplerPoolSize);
 }
 
 // ---------- Retiring ----------
