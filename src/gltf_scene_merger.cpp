@@ -61,15 +61,10 @@ IndexRemapping computeOffsets(const tinygltf::Model& baseModel)
   o.skins       = static_cast<int>(baseModel.skins.size());
   o.cameras     = static_cast<int>(baseModel.cameras.size());
   o.animations  = static_cast<int>(baseModel.animations.size());
-  o.lights      = 0;
-  if(baseModel.extensions.count(KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME))
-  {
-    const tinygltf::Value& ext = baseModel.extensions.at(KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME);
-    if(ext.Has("lights") && ext.Get("lights").IsArray())
-    {
-      o.lights = static_cast<int>(ext.Get("lights").ArrayLen());
-    }
-  }
+  // model.lights, not the extension's array: the loader fills both, but a light made in memory (the
+  // editor's addLightNode, Figure Viewer's lamps) is only in model.lights, which node.light, Scene
+  // and the writer all index
+  o.lights    = static_cast<int>(baseModel.lights.size());
   o.micromaps = 0;
   if(baseModel.extensions.count(EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME))
   {
@@ -433,40 +428,60 @@ static void remapAndAppendAnimations(tinygltf::Model& base, const tinygltf::Mode
   }
 }
 
+// A light as KHR_lights_punctual's lights[] holds it (the fields tinygltf's writer serializes).
+static tinygltf::Value lightValue(const tinygltf::Light& light)
+{
+  tinygltf::Value::Object o;
+  if(!light.name.empty())
+    o["name"] = tinygltf::Value(light.name);
+  o["intensity"] = tinygltf::Value(light.intensity);
+  if(light.range > 0.0)
+    o["range"] = tinygltf::Value(light.range);
+  tinygltf::Value::Array color;
+  for(double c : light.color)
+    color.push_back(tinygltf::Value(c));
+  o["color"] = tinygltf::Value(std::move(color));
+  o["type"]  = tinygltf::Value(light.type);
+  if(light.type == "spot")
+  {
+    tinygltf::Value::Object spot;
+    spot["innerConeAngle"] = tinygltf::Value(light.spot.innerConeAngle);
+    spot["outerConeAngle"] = tinygltf::Value(light.spot.outerConeAngle);
+    o["spot"]              = tinygltf::Value(std::move(spot));
+  }
+  if(light.extras.IsObject())
+    o["extras"] = light.extras;
+  return tinygltf::Value(std::move(o));
+}
+
+// The imported lights go after base's model.lights. The extension's lights[] is a copy the loader
+// made, which lights made in memory never reach, so each side's entries are taken from it only
+// while it still lists that side's model.lights one for one, and made from model.lights otherwise.
 static void remapAndAppendLights(tinygltf::Model& base, const tinygltf::Model& imported)
 {
-  const char* extName = KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME;
-  if(!imported.extensions.count(extName))
+  if(imported.lights.empty())
     return;
-  const tinygltf::Value& importedExt = imported.extensions.at(extName);
-  if(!importedExt.Has("lights") || !importedExt.Get("lights").IsArray())
-    return;
-
-  tinygltf::Value baseLights;
-  if(base.extensions.count(extName) && base.extensions.at(extName).Has("lights")
-     && base.extensions.at(extName).Get("lights").IsArray())
-  {
-    baseLights = base.extensions.at(extName).Get("lights");
-  }
-
+  const char* extName   = KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME;
+  const auto  listed    = [&](const tinygltf::Model& m) -> const tinygltf::Value* {
+    const auto it = m.extensions.find(extName);
+    if(it == m.extensions.end() || !it->second.Has("lights") || !it->second.Get("lights").IsArray())
+      return nullptr;
+    const tinygltf::Value& lights = it->second.Get("lights");
+    return lights.ArrayLen() == m.lights.size() ? &lights : nullptr;
+  };
   tinygltf::Value::Array arr;
-  if(baseLights.IsArray())
+  for(const tinygltf::Model* m : {static_cast<const tinygltf::Model*>(&base), &imported})
   {
-    for(size_t i = 0; i < baseLights.ArrayLen(); ++i)
-      arr.push_back(baseLights.Get(static_cast<int>(i)));
+    const tinygltf::Value* lights = listed(*m);
+    for(size_t i = 0; i < m->lights.size(); ++i)
+      arr.push_back(lights ? lights->Get(static_cast<int>(i)) : lightValue(m->lights[i]));
   }
-  const tinygltf::Value& importedLights = importedExt.Get("lights");
-  for(size_t i = 0; i < importedLights.ArrayLen(); ++i)
-  {
-    arr.push_back(importedLights.Get(static_cast<int>(i)));
-  }
-
-  tinygltf::Value         newLights(std::move(arr));
   tinygltf::Value::Object extObj;
-  extObj["lights"]         = newLights;
+  if(base.extensions.count(extName) && base.extensions.at(extName).IsObject())
+    extObj = base.extensions.at(extName).Get<tinygltf::Value::Object>();
+  extObj["lights"]         = tinygltf::Value(std::move(arr));
   base.extensions[extName] = tinygltf::Value(std::move(extObj));
 
-  // Keep model.lights in sync with the extension (Scene uses model.lights; loader fills it from extension).
   for(const tinygltf::Light& light : imported.lights)
     base.lights.push_back(light);
 }
@@ -573,6 +588,11 @@ static void appendResourcesAndExtensions(tinygltf::Model&       base,
 }  // anonymous namespace
 
 namespace nvvkgltf {
+
+IndexRemapping SceneMerger::offsetsOf(const tinygltf::Model& baseModel)
+{
+  return computeOffsets(baseModel);
+}
 
 int SceneMerger::merge(tinygltf::Model&        baseModel,
                        const tinygltf::Model&  importedModel,
@@ -695,18 +715,16 @@ void SceneMerger::remapNodeResources(tinygltf::Node& n, const IndexRemapping& of
     n.mesh += offsets.meshes;
   if(n.camera >= 0)
     n.camera += offsets.cameras;
-  if(n.extensions.count(KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME))
+  // node.light is what Scene and the writer read; the extension's copy follows it when present
+  tinygltf::Value* lightExt = n.extensions.count(KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME) ? &n.extensions[KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME] : nullptr;
+  int lightIdx = n.light;
+  if(lightIdx < 0 && lightExt && lightExt->Has("light"))
+    lightIdx = lightExt->Get("light").GetNumberAsInt();
+  if(lightIdx >= 0)
   {
-    tinygltf::Value& ext = n.extensions[KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME];
-    if(ext.Has("light"))
-    {
-      int lightIdx = ext.Get("light").GetNumberAsInt();
-      if(lightIdx >= 0)
-      {
-        ext.Get<tinygltf::Value::Object>()["light"] = tinygltf::Value(lightIdx + offsets.lights);
-        n.light = lightIdx + offsets.lights;  // Scene uses node.light, not only extension
-      }
-    }
+    n.light = lightIdx + offsets.lights;
+    if(lightExt && lightExt->IsObject() && lightExt->Has("light"))
+      lightExt->Get<tinygltf::Value::Object>()["light"] = tinygltf::Value(n.light);
   }
   if(n.extensions.count(EXT_MESH_GPU_INSTANCING_EXTENSION_NAME))
   {

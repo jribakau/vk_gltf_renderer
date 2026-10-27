@@ -23,11 +23,13 @@
 //--------------------------------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include "gltf_scene.hpp"
 #include "gltf_scene_editor.hpp"
+#include "gltf_scene_merger.hpp"
 #include "gltf_scene_animation.hpp"
 #include "gltf_scene_validator.hpp"
 #include "common/test_utils.hpp"
@@ -903,4 +905,71 @@ TEST_F(IndexRemappingTest, MergeRebasesNodeLight)
   ASSERT_TRUE(reloaded.load(saved));
   EXPECT_EQ(nodeLights(reloaded.getModel()), bothLights);
   EXPECT_EQ(reloaded.getModel().lights.size(), 2u);
+}
+
+// A light made in memory is in model.lights only, not in the extension's lights[] the loader fills.
+// A file merged after it keeps its own light: its node points past the in-memory one, the
+// extension's array lists both, and a save and reload still pair each node with its light.
+TEST_F(IndexRemappingTest, MergeAfterALightMadeInMemoryKeepsTheFilesLight)
+{
+  const fs::path file = tempDir / "spot.gltf";
+  {
+    std::ofstream out(file);
+    out << R"({"asset": {"version": "2.0"}, "extensionsUsed": ["KHR_lights_punctual"],
+               "extensions": {"KHR_lights_punctual": {"lights": [{"type": "spot", "intensity": 7.0, "spot": {}}]}},
+               "scene": 0, "scenes": [{"nodes": [0]}],
+               "nodes": [{"name": "spot", "extensions": {"KHR_lights_punctual": {"light": 0}}}]})";
+  }
+  nvvkgltf::Scene scene;
+  ASSERT_TRUE(scene.load(file));
+  tinygltf::Model& model = scene.getModel();
+  tinygltf::Light  lamp;
+  lamp.type      = "point";
+  lamp.intensity = 3.0;
+  tinygltf::Node lampNode;
+  lampNode.name  = "lamp";
+  lampNode.light = int(model.lights.size());
+  model.lights.push_back(lamp);
+  model.nodes.push_back(lampNode);
+  model.scenes[0].nodes.push_back(int(model.nodes.size()) - 1);
+  EXPECT_EQ(nvvkgltf::SceneMerger::offsetsOf(model).lights, 2);
+
+  ASSERT_GE(nvvkgltf::SceneMerger::merge(model, [&] {
+              tinygltf::Model     m;
+              tinygltf::TinyGLTF  loader;
+              std::string         err, warn;
+              EXPECT_TRUE(loader.LoadASCIIFromFile(&m, &err, &warn, file.string()));
+              return m;
+            }(), "again"),
+            0);
+  ASSERT_EQ(model.lights.size(), 3u);
+  EXPECT_EQ(model.lights[2].type, "spot");
+  const auto merged = std::find_if(model.nodes.rbegin(), model.nodes.rend(), [](const tinygltf::Node& n) { return n.name == "spot"; });
+  ASSERT_NE(merged, model.nodes.rend());
+  EXPECT_EQ(merged->light, 2);
+  const tinygltf::Value& listed = model.extensions.at("KHR_lights_punctual").Get("lights");
+  ASSERT_EQ(listed.ArrayLen(), 3u);
+  EXPECT_EQ(listed.Get(1).Get("type").Get<std::string>(), "point");
+  EXPECT_EQ(listed.Get(2).Get("type").Get<std::string>(), "spot");
+
+  const fs::path saved = tempDir / "spot_lamp.gltf";
+  ASSERT_TRUE(scene.save(saved));
+  nvvkgltf::Scene reloaded;
+  ASSERT_TRUE(reloaded.load(saved));
+  ASSERT_EQ(reloaded.getModel().lights.size(), 3u);
+  for(const tinygltf::Node& n : reloaded.getModel().nodes)
+    if(n.light >= 0)
+      EXPECT_EQ(reloaded.getModel().lights[size_t(n.light)].type, n.name == "lamp" ? "point" : "spot") << n.name;
+}
+
+// Where a merge appends: every array's size, micromaps from the root EXT_mesh_opacity_micromap list.
+TEST_F(IndexRemappingTest, OffsetsCountMicromaps)
+{
+  tinygltf::Model         model;
+  tinygltf::Value::Object ext;
+  ext["micromaps"] = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(tinygltf::Value::Object{}), tinygltf::Value(tinygltf::Value::Object{})});
+  model.extensions["EXT_mesh_opacity_micromap"] = tinygltf::Value(ext);
+  model.nodes.resize(3);
+  EXPECT_EQ(nvvkgltf::SceneMerger::offsetsOf(model).micromaps, 2);
+  EXPECT_EQ(nvvkgltf::SceneMerger::offsetsOf(model).nodes, 3);
 }

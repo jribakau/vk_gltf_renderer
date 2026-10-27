@@ -82,6 +82,10 @@ public:
                                         std::span<const int>   sharedImages  = {},
                                         std::span<const int>   sharedBuffers = {});
 
+  // Where a merge into baseModel appends each array: their sizes now, lights counted in
+  // model.lights and micromaps in the root EXT_mesh_opacity_micromap array.
+  static IndexRemapping offsetsOf(const tinygltf::Model& baseModel);
+
   // Rebase the resource indices a node of the imported model holds (mesh, camera, light,
   // EXT_mesh_gpu_instancing accessors) by `offsets`. Children and skin are left to the caller.
   static void remapNodeResources(tinygltf::Node& node, const IndexRemapping& offsets);

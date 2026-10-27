@@ -34,25 +34,6 @@ namespace fv::composer {
 
 namespace {
 
-nvvkgltf::IndexRemapping sizesOf(const tinygltf::Model& m)
-{
-  nvvkgltf::IndexRemapping r;
-  r.nodes       = int(m.nodes.size());
-  r.meshes      = int(m.meshes.size());
-  r.materials   = int(m.materials.size());
-  r.textures    = int(m.textures.size());
-  r.images      = int(m.images.size());
-  r.samplers    = int(m.samplers.size());
-  r.accessors   = int(m.accessors.size());
-  r.bufferViews = int(m.bufferViews.size());
-  r.buffers     = int(m.buffers.size());
-  r.skins       = int(m.skins.size());
-  r.cameras     = int(m.cameras.size());
-  r.animations  = int(m.animations.size());
-  r.lights      = int(m.lights.size());
-  return r;
-}
-
 void useExtension(tinygltf::Model& m, const char* name)
 {
   if(std::find(m.extensionsUsed.begin(), m.extensionsUsed.end(), name) == m.extensionsUsed.end())
@@ -143,7 +124,7 @@ tinygltf::Model compose(const std::vector<Part>& parts, std::vector<Placed>& pla
   {
     const Part& part = parts[i];
     Placed&     at   = placed[i];
-    at.base          = sizesOf(out);
+    at.base          = nvvkgltf::SceneMerger::offsetsOf(out);
     if(part.model && !part.model->nodes.empty() && !part.model->scenes.empty())
     {
       const nvvkgltf::MergeResult r = nvvkgltf::SceneMerger::mergeUnder(out, *part.model, [&](const tinygltf::Node&) { return int(i); }, 0);

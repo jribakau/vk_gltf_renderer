@@ -242,3 +242,43 @@ TEST(FvCompose, ReadModelFileMakesImagesAbsolute)
   EXPECT_FALSE(fv::composer::readModelFile(dir / "missing.gltf", none, error));
   std::filesystem::remove_all(dir);
 }
+
+// A model prop's own lights, after a lamp prop: the composed model holds the lamp's light and then the
+// model's, and the model's node points at its own light, not the lamp's.
+TEST(FvCompose, AModelsLightsFollowALampsLight)
+{
+  const auto dir  = std::filesystem::temp_directory_path() / "fv_compose_lights";
+  const auto file = dir / "lit.gltf";
+  std::filesystem::create_directories(dir);
+  {
+    std::ofstream out(file);
+    out << R"({"asset":{"version":"2.0"},"extensionsUsed":["KHR_lights_punctual"],
+              "extensions":{"KHR_lights_punctual":{"lights":[{"type":"spot","intensity":7,"spot":{}}]}},
+              "scenes":[{"nodes":[0]}],"nodes":[{"name":"lit","extensions":{"KHR_lights_punctual":{"light":0}}}]})";
+  }
+  tinygltf::Model model;
+  std::string     error;
+  ASSERT_TRUE(fv::composer::readModelFile(file, model, error)) << error;
+  ASSERT_EQ(model.lights.size(), 1u);
+
+  std::vector<Part> parts(2);
+  parts[0].id          = "p:1";
+  parts[0].light       = tinygltf::Light{};
+  parts[0].light->type = "point";
+  parts[1].id          = "p:2";
+  parts[1].model       = &model;
+  std::vector<Placed>   placed;
+  const tinygltf::Model out = fv::composer::compose(parts, placed);
+  ASSERT_EQ(out.lights.size(), 2u);
+  EXPECT_EQ(out.lights[0].type, "point");
+  EXPECT_EQ(out.lights[1].type, "spot");
+  EXPECT_EQ(placed[1].base.lights, 1);
+  const tinygltf::Node& lit = out.nodes[size_t(placed[1].firstNode)];
+  EXPECT_EQ(lit.light, 1);
+  // a save writes the extension's array, so it lists both, in the same order
+  ASSERT_TRUE(out.extensions.count("KHR_lights_punctual"));
+  const tinygltf::Value& lights = out.extensions.at("KHR_lights_punctual").Get("lights");
+  ASSERT_EQ(lights.ArrayLen(), 2u);
+  EXPECT_EQ(lights.Get(1).Get("type").Get<std::string>(), "spot");
+  std::filesystem::remove_all(dir);
+}
