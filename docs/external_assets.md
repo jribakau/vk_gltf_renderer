@@ -251,7 +251,10 @@ test fixtures are in `tests/gltf_2_1/generate_fixtures.py` (`external/`, `placem
 > extension defines itself. When an extension owns a root-level array (e.g. `KHR_lights_punctual`
 > `lights[]`, `EXT_mesh_opacity_micromap` `micromaps[]`), that array must be concatenated onto the
 > base's, a new `IndexRemapping` offset added for it, and the per-node / per-primitive references to
-> it (and the bufferView/accessor indices it stores) remapped. A missed remap is silent: it either
+> it (and the bufferView/accessor indices it stores) remapped. Where tinygltf parses the array into a
+> struct, as it does `lights[]` into `model.lights`, offsets count the struct: a light made in memory
+> (the editor's Add light, a Figure Viewer lamp) is there and not in the extension's JSON, and
+> `node.light` and the writer index the struct. A missed remap is silent: it either
 > drops the extension (merged into an empty base, offset 0, so the un-copied root array simply never
 > appears) or cross-links it to the wrong resource (non-empty base). **If you add a glTF extension
 > that stores any index, add its remapping here in the same change.**
