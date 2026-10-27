@@ -2129,20 +2129,27 @@ bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContaine
         camera.yfov = glm::radians(m_cameraManip->getFov());
       }
 
-      // Set all cameras
-      m_resources.getScene()->setSceneCameras(cameras);
     }
 
     // Install the environment-sky writer for this save. Done here rather than at scene creation
     // so that no load path can forget it -- there is exactly one place a scene is saved.
-    m_resources.getScene()->setPreSaveHook([this, edit](tinygltf::Model& outModel, const std::filesystem::path& destination) {
-      if(edit)
-        edit(outModel);
+    nvvkgltf::Scene* scene = m_resources.getScene();
+    scene->setPreSaveHook([this](tinygltf::Model& outModel, const std::filesystem::path& destination) {
       writeEnvironmentSky(outModel, destination);
     });
 
-    // Saving the scene
-    return m_resources.getScene()->save(filename, selfContained);
+    // A host's export writes a copy, cameras and its edit on it, and leaves the scene as it draws
+    if(edit)
+      return scene->saveCopy(filename, selfContained, [&](tinygltf::Model& copy) {
+        if(!cameras.empty())
+          scene->writeSceneCameras(copy, cameras);
+        edit(copy);
+      });
+
+    // File > Save: the viewport's cameras become the scene's, then the scene is written
+    if(!cameras.empty())
+      scene->setSceneCameras(cameras);
+    return scene->save(filename, selfContained);
   }
   return false;
 }

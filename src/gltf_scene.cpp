@@ -630,6 +630,16 @@ bool nvvkgltf::Scene::decompressMeshoptExtension()
 //
 bool nvvkgltf::Scene::save(const std::filesystem::path& filename, bool selfContained)
 {
+  return saveModel(filename, selfContained, nullptr);
+}
+
+bool nvvkgltf::Scene::saveCopy(const std::filesystem::path& filename, bool selfContained, const std::function<void(tinygltf::Model&)>& edit)
+{
+  return saveModel(filename, selfContained, &edit);
+}
+
+bool nvvkgltf::Scene::saveModel(const std::filesystem::path& filename, bool selfContained, const std::function<void(tinygltf::Model&)>* edit)
+{
   namespace fs = std::filesystem;
 
   nvutils::ScopedTimer st(std::string(__FUNCTION__) + "\n");
@@ -666,7 +676,14 @@ bool nvvkgltf::Scene::save(const std::filesystem::path& filename, bool selfConta
       nvvkgltf::removeExternalAssetContent(transformedModel);
     outModelPtr = &transformedModel;
   }
+  else if(edit)
+  {
+    transformedModel = m_model;
+    outModelPtr      = &transformedModel;
+  }
   tinygltf::Model& outModel = *outModelPtr;
+  if(edit && *edit)
+    (*edit)(outModel);
 
   std::filesystem::path saveFilename = filename;
 
@@ -3303,16 +3320,21 @@ void nvvkgltf::Scene::setSceneCamera(const nvvkgltf::RenderCamera& camera)
 // The cameras are stored in the model as nodes, and the camera index is stored in the node
 void nvvkgltf::Scene::setSceneCameras(const std::vector<nvvkgltf::RenderCamera>& cameras)
 {
+  writeSceneCameras(m_model, cameras);
+}
+
+void nvvkgltf::Scene::writeSceneCameras(tinygltf::Model& model, const std::vector<nvvkgltf::RenderCamera>& cameras) const
+{
   assert(!cameras.empty() && "cameras must not be empty");
 
   // Collect the scene's editable camera nodes in traversal order. Cameras embedded in a referenced
   // (read-only) external asset are skipped: they belong to the asset, are re-merged on load and
   // stripped on save, so we must never overwrite them here.
   std::vector<int> cameraNodeIds;
-  for(auto& sceneNode : m_model.scenes[m_currentScene].nodes)
+  for(auto& sceneNode : model.scenes[m_currentScene].nodes)
   {
-    tinygltf::utils::traverseSceneGraph(m_model, sceneNode, glm::mat4(1), [&](int nodeID, const glm::mat4&) {
-      if(m_model.nodes[nodeID].camera >= 0 && !isNodeReadOnly(nodeID))
+    tinygltf::utils::traverseSceneGraph(model, sceneNode, glm::mat4(1), [&](int nodeID, const glm::mat4&) {
+      if(model.nodes[nodeID].camera >= 0 && !isNodeReadOnly(nodeID))
         cameraNodeIds.push_back(nodeID);
       return false;
     });
@@ -3328,27 +3350,27 @@ void nvvkgltf::Scene::setSceneCameras(const std::vector<nvvkgltf::RenderCamera>&
     }
     else
     {
-      tinygltf::Node& tnode = m_model.nodes.emplace_back();
-      nodeIndex             = static_cast<int>(m_model.nodes.size() - 1);
+      tinygltf::Node& tnode = model.nodes.emplace_back();
+      nodeIndex             = static_cast<int>(model.nodes.size() - 1);
       tnode.name            = fmt::format("Camera-{}", i);
-      m_model.scenes[m_currentScene].nodes.push_back(nodeIndex);
+      model.scenes[m_currentScene].nodes.push_back(nodeIndex);
     }
 
     // Write into the node's own camera entry (append one for a brand-new node). Editable camera
     // entries are disjoint from referenced ones, so this leaves the referenced cameras untouched.
-    tinygltf::Node& tnode = m_model.nodes[nodeIndex];
+    tinygltf::Node& tnode = model.nodes[nodeIndex];
     if(tnode.camera < 0)
     {
-      m_model.cameras.emplace_back();
-      tnode.camera = static_cast<int>(m_model.cameras.size() - 1);
+      model.cameras.emplace_back();
+      tnode.camera = static_cast<int>(model.cameras.size() - 1);
     }
-    applyRenderCameraToNode(tnode, m_model.cameras[tnode.camera], cameras[i]);
+    applyRenderCameraToNode(tnode, model.cameras[tnode.camera], cameras[i]);
   }
 
   // Fewer cameras than before (the user removed some): detach the surplus editable camera nodes so
   // they no longer appear as viewport cameras. Their now-unused camera entries are pruned on save.
   for(size_t i = cameras.size(); i < cameraNodeIds.size(); ++i)
-    m_model.nodes[cameraNodeIds[i]].camera = -1;
+    model.nodes[cameraNodeIds[i]].camera = -1;
 }
 
 // Parse the variants of the materials

@@ -303,6 +303,10 @@ public:
   // (default) re-externalizes them (small file, keeps references), while selfContained=true bakes
   // the merged content inline and drops all external references (portable, shareable file).
   [[nodiscard]] bool save(const std::filesystem::path& filename, bool selfContained = false);
+  // save() from a copy of the model, which `edit` changes first (a host leaving out what it added):
+  // the live model is left exactly as it was, so a save never moves, renames or drops anything the
+  // scene still draws.
+  [[nodiscard]] bool saveCopy(const std::filesystem::path& filename, bool selfContained, const std::function<void(tinygltf::Model&)>& edit);
 
   // Called by save() on the model that is actually written, just before extensionsUsed is
   // reconciled. Lets the application add extensions it owns but the scene graph does not hold
@@ -524,6 +528,8 @@ public:
   const std::vector<nvvkgltf::RenderCamera>& getRenderCameras(bool rebuild = false);
   void                                       setSceneCamera(const nvvkgltf::RenderCamera& camera);
   void                                       setSceneCameras(const std::vector<nvvkgltf::RenderCamera>& cameras);
+  // What setSceneCameras does, done to `model`: this scene's model or a copy of it (same nodes).
+  void writeSceneCameras(tinygltf::Model& model, const std::vector<nvvkgltf::RenderCamera>& cameras) const;
 
   //--------------------------------------------------------------------------------------------------
   // Light Management
@@ -694,6 +700,8 @@ private:
 
   // Application-supplied writer run by save() on the serialized model; see setPreSaveHook.
   std::function<void(tinygltf::Model&, const std::filesystem::path& destination)> m_preSaveHook;
+  // save() and saveCopy(): `edit` given means write a copy, edited, and leave m_model untouched
+  bool saveModel(const std::filesystem::path& filename, bool selfContained, const std::function<void(tinygltf::Model&)>* edit);
 
   //--------------------------------------------------------------------------------------------------
   // Private Methods: Load and Extension Handling

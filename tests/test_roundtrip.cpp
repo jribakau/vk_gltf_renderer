@@ -23,6 +23,8 @@
 #include "common/test_utils.hpp"
 #include "nvutils/file_operations.hpp"
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 using namespace gltf_test;
 
@@ -254,4 +256,56 @@ TEST_F(RoundTripTest, SaveRefusesInvalidModel)
 
   // Save should fail due to validation
   EXPECT_FALSE(saveResult);
+}
+
+// A host's export writes a copy: the edit (here, leaving out the last light and its node) and the
+// current view as the first camera land in the file, and the live model is exactly as before, so
+// the scene still draws that light and its camera stays where it was.
+TEST_F(RoundTripTest, SaveCopyLeavesTheLiveModelAsItWas)
+{
+  const auto file = tempDir / "lit.gltf";
+  {
+    std::ofstream out(file);
+    out << R"({"asset": {"version": "2.0"}, "extensionsUsed": ["KHR_lights_punctual"],
+               "extensions": {"KHR_lights_punctual": {"lights": [{"type": "point"}, {"type": "directional"}]}},
+               "cameras": [{"type": "perspective", "perspective": {"yfov": 0.5, "znear": 0.1}}],
+               "scene": 0, "scenes": [{"nodes": [0, 1, 2]}],
+               "nodes": [{"name": "camera", "camera": 0, "translation": [0, 1, 5]},
+                         {"name": "lamp", "extensions": {"KHR_lights_punctual": {"light": 0}}},
+                         {"name": "sun", "extensions": {"KHR_lights_punctual": {"light": 1}}}]})";
+  }
+  nvvkgltf::Scene scene;
+  ASSERT_TRUE(scene.load(file));
+  tinygltf::TinyGLTF writer;
+  const auto         serialized = [&](const tinygltf::Model& m) {
+    std::ostringstream s;
+    tinygltf::Model    copy = m;
+    writer.WriteGltfSceneToStream(&copy, s, false, false);
+    return s.str();
+  };
+  const std::string before = serialized(scene.getModel());
+
+  nvvkgltf::RenderCamera view;
+  view.eye    = {3, 2, 1};
+  view.center = {0, 0, 0};
+  view.yfov   = 0.8;
+  view.znear  = 0.01;
+  view.zfar   = 100;
+  const auto saved = tempDir / "export.gltf";
+  ASSERT_TRUE(scene.saveCopy(saved, true, [&](tinygltf::Model& m) {
+    scene.writeSceneCameras(m, {view});
+    for(tinygltf::Scene& s : m.scenes)
+      std::erase(s.nodes, 2);
+    m.nodes.pop_back();
+    m.lights.pop_back();
+  }));
+  EXPECT_EQ(serialized(scene.getModel()), before);
+
+  const tinygltf::Model written = readRawGltf(saved);
+  EXPECT_EQ(written.nodes.size(), 2u);
+  EXPECT_EQ(written.lights.size(), 1u);
+  ASSERT_EQ(written.cameras.size(), 1u);
+  EXPECT_NEAR(written.cameras[0].perspective.yfov, 0.8, 1e-6);
+  ASSERT_EQ(written.nodes[0].translation.size(), 3u);
+  EXPECT_NEAR(written.nodes[0].translation[0], 3.0, 1e-6);
 }
