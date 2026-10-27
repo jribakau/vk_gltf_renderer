@@ -144,9 +144,12 @@ struct TextureRecord
 {
   std::string                name;
   std::string                uri;       // an absolute path or a data URI; empty when the bytes are held
-  std::vector<unsigned char> bytes;     // the encoded image when it came inside a GLB
+  std::vector<unsigned char> bytes;     // the encoded image when it came inside the file (a GLB, a data URI)
   std::string                mimeType;
   int                        width = -1, height = -1;  // when known (export reads them here)
+  // decoded pixels, when the loader decoded the image itself (`component` channels of `bits`)
+  std::vector<unsigned char> pixels;
+  int                        component = 0, bits = 8;
   // the extension that names it as a source (KHR_texture_basisu, EXT_texture_webp), "" for core
   std::string sourceExtension;
 };

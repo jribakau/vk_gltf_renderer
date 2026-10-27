@@ -86,6 +86,10 @@ public:
   // model.lights and micromaps in the root EXT_mesh_opacity_micromap array.
   static IndexRemapping offsetsOf(const tinygltf::Model& baseModel);
 
+  // Every texture index a material holds, its extensions' included, moved up by `textureOffset`
+  // (a material going into a model whose texture list it is appended to).
+  static void rebaseMaterialTextures(tinygltf::Material& material, int textureOffset);
+
   // Rebase the resource indices a node of the imported model holds (mesh, camera, light,
   // EXT_mesh_gpu_instancing accessors) by `offsets`. Children and skin are left to the caller.
   static void remapNodeResources(tinygltf::Node& node, const IndexRemapping& offsets);

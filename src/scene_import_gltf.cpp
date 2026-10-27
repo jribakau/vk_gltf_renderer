@@ -126,17 +126,45 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
       notice(std::string(ext) + " is not drawn yet; left out");
 
   // ---- images and the texture table every material of this file shares
+  // an image a texture names through an extension (a KTX2 under KHR_texture_basisu, a WebP) keeps
+  // that extension, so an export names it the same way
+  std::vector<std::string> sourceExtension(model.images.size());
+  for(const tinygltf::Texture& texture : model.textures)
+    for(const char* ext : {KHR_TEXTURE_BASISU_EXTENSION_NAME, EXT_TEXTURE_WEBP_EXTENSION_NAME, "MSFT_texture_dds"})
+      if(auto it = texture.extensions.find(ext); it != texture.extensions.end() && it->second.Has("source"))
+        if(const int src = it->second.Get("source").GetNumberAsInt(); src >= 0 && src < int(model.images.size()))
+          sourceExtension[size_t(src)] = ext;
   std::vector<TextureId> images(model.images.size());
   for(size_t i = 0; i < model.images.size(); i++)
   {
     const tinygltf::Image& img = model.images[i];
     TextureRecord          t;
+    t.sourceExtension = sourceExtension[i];
     t.name     = img.name;
     t.uri      = img.uri;
     t.mimeType = img.mimeType;
     t.width    = img.width;
     t.height   = img.height;
-    if(img.uri.empty() && img.bufferView >= 0 && img.bufferView < int(model.bufferViews.size()))
+    // a data URI's bytes or pixels are in img.image (below), never the URI itself
+    if(img.uri.rfind("data:", 0) == 0)
+      t.uri.clear();
+    if(t.uri.empty() && img.bufferView < 0 && !img.image.empty())
+    {
+      // the renderer's loaders keep the encoded file (as_is, or no size decoded); tinygltf's own
+      // decodes it to pixels
+      const size_t decoded = img.width > 0 && img.height > 0 && img.component > 0 ?
+                                 size_t(img.width) * size_t(img.height) * size_t(img.component) * size_t(std::max(img.bits, 8) / 8) :
+                                 0;
+      if(!img.as_is && decoded == img.image.size())
+      {
+        t.pixels    = img.image;
+        t.component = img.component;
+        t.bits      = img.bits;
+      }
+      else
+        t.bytes = img.image;
+    }
+    if(t.uri.empty() && img.bufferView >= 0 && img.bufferView < int(model.bufferViews.size()))
     {
       const tinygltf::BufferView& view = model.bufferViews[size_t(img.bufferView)];
       if(view.buffer >= 0 && view.buffer < int(model.buffers.size())

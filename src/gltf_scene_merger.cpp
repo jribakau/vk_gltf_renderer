@@ -270,13 +270,7 @@ static void remapAndAppendMaterials(tinygltf::Model& base, const tinygltf::Model
   for(const auto& material : imported.materials)
   {
     tinygltf::Material mat = material;
-    remapTextureInfo(mat.pbrMetallicRoughness.baseColorTexture, offsets.textures);
-    remapTextureInfo(mat.pbrMetallicRoughness.metallicRoughnessTexture, offsets.textures);
-    remapNormalTextureInfo(mat.normalTexture, offsets.textures);
-    remapOcclusionTextureInfo(mat.occlusionTexture, offsets.textures);
-    remapTextureInfo(mat.emissiveTexture, offsets.textures);
-    for(auto& ext : mat.extensions)
-      remapTextureIndicesInValue(ext.second, offsets.textures);
+    SceneMerger::rebaseMaterialTextures(mat, offsets.textures);
     base.materials.push_back(std::move(mat));
   }
 }
@@ -588,6 +582,17 @@ static void appendResourcesAndExtensions(tinygltf::Model&       base,
 }  // anonymous namespace
 
 namespace nvvkgltf {
+
+void SceneMerger::rebaseMaterialTextures(tinygltf::Material& mat, int textureOffset)
+{
+  remapTextureInfo(mat.pbrMetallicRoughness.baseColorTexture, textureOffset);
+  remapTextureInfo(mat.pbrMetallicRoughness.metallicRoughnessTexture, textureOffset);
+  remapNormalTextureInfo(mat.normalTexture, textureOffset);
+  remapOcclusionTextureInfo(mat.occlusionTexture, textureOffset);
+  remapTextureInfo(mat.emissiveTexture, textureOffset);
+  for(auto& ext : mat.extensions)
+    remapTextureIndicesInValue(ext.second, textureOffset);
+}
 
 IndexRemapping SceneMerger::offsetsOf(const tinygltf::Model& baseModel)
 {
