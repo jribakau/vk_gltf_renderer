@@ -72,4 +72,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
 // measured from the tangent (as nvvkgltf::Scene::createMissingTangentsForModel decides).
 bool materialNeedsTangents(const tinygltf::Material& material);
 
+// A node's local transform: its matrix when it has one, else its TRS
+Transform transformOf(const tinygltf::Node& node);
+
 }  // namespace rs

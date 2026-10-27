@@ -77,23 +77,6 @@ std::vector<uint32_t> primitiveIndices(const tinygltf::Model& model, const tinyg
   return out;
 }
 
-Transform transformOf(const tinygltf::Node& node)
-{
-  Transform t;
-  if(node.matrix.size() == 16)
-  {
-    t.matrix = glm::make_mat4(node.matrix.data());
-    return t;
-  }
-  if(node.translation.size() == 3)
-    t.translation = glm::vec3(glm::make_vec3(node.translation.data()));
-  if(node.rotation.size() == 4)
-    t.rotation = glm::quat(float(node.rotation[3]), float(node.rotation[0]), float(node.rotation[1]), float(node.rotation[2]));
-  if(node.scale.size() == 3)
-    t.scale = glm::vec3(glm::make_vec3(node.scale.data()));
-  return t;
-}
-
 SamplerDesc samplerOf(const tinygltf::Model& model, int sampler)
 {
   SamplerDesc d;
@@ -142,6 +125,23 @@ std::optional<ClipSampler> clipSampler(const tinygltf::Model& model, const tinyg
 }
 
 }  // namespace
+
+Transform transformOf(const tinygltf::Node& node)
+{
+  Transform t;
+  if(node.matrix.size() == 16)
+  {
+    t.matrix = glm::make_mat4(node.matrix.data());
+    return t;
+  }
+  if(node.translation.size() == 3)
+    t.translation = glm::vec3(glm::make_vec3(node.translation.data()));
+  if(node.rotation.size() == 4)
+    t.rotation = glm::quat(float(node.rotation[3]), float(node.rotation[0]), float(node.rotation[1]), float(node.rotation[2]));
+  if(node.scale.size() == 3)
+    t.scale = glm::vec3(glm::make_vec3(node.scale.data()));
+  return t;
+}
 
 bool materialNeedsTangents(const tinygltf::Material& material)
 {

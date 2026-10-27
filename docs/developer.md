@@ -190,6 +190,8 @@ src/
 ├── scene_residency_vk_util.cpp/hpp # What VulkanGpuBackend converts and plans apart from the device
 │                               #   (scratch batches, TLAS rows, glTF samplers); unit-tested
 ├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
+├── scene_coexistence.cpp/hpp  # Which backend a scene replace takes (sceneBackend), and LegacyDirtyBridge:
+│                               #   the host's legacy-scene edits carried into the retained scene
 ├── scene_export_gltf.cpp/hpp   # A RetainedScene (or a subtree) out as a fresh glTF model
 ├── scene_clip_player.cpp/hpp   # ClipPlayer: a clip played into entity TRS and morph weights, AnimationSystem's
 │                               #   interpolation ported
