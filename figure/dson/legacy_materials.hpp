@@ -3,9 +3,10 @@
 // 3Delight-era shaders read for what their channels mean: DAZ Studio's Default shader, omnifreaker's
 // UberSurface and Age of Armour's Subsurface shader. parseSurface (materials.hpp) reads what every
 // shader shares, the diffuse colour and map, cutout, normal and bump maps; translateLegacy then lays
-// over it what the shader's own channels say about its specular, diffuse, opacity, tiling and
-// refraction, as a physically based surface. DAZ Studio's Iray does the same for a legacy surface
-// it renders (dzirayrenderer translates these shaders' parameters); its exact mapping isn't public.
+// over it what the shader's own channels say about its specular, diffuse, opacity, tiling, bump
+// depth and refraction, as a physically based surface. DAZ Studio's Iray does the same for a legacy
+// surface it renders (dzirayrenderer translates these shaders' parameters); its exact mapping isn't
+// public.
 //
 // Left out on purpose, as 3Delight-era tricks rather than physics: ambient (it multiplies the
 // scene's ambient light, no emitter), reflection as a coat of its own (Fresnel already reflects;

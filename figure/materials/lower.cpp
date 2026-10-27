@@ -345,7 +345,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     r.channels     = "ng";
     r.bumpRel      = s.bumpMap;
     r.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
-    r.bumpHeight   = bumpHeightInUv(opts.metresPerUv, authoredTiles);
+    r.bumpHeight   = bumpHeightInUv(opts.metresPerUv, authoredTiles, s.bumpRange.value_or(kBumpHeight));
     normal         = b.info(std::move(r), e.normalStrength.value_or(s.normalStrength));
     eff.normalStrength = e.normalStrength.value_or(s.normalStrength);
     eff.bumpStrength   = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
@@ -365,7 +365,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     r.rel        = s.bumpMap;
     r.srgb       = false;
     r.channels   = "bn";
-    r.bumpHeight = bumpHeightInUv(opts.metresPerUv, authoredTiles);
+    r.bumpHeight = bumpHeightInUv(opts.metresPerUv, authoredTiles, s.bumpRange.value_or(kBumpHeight));
     normal     = b.info(std::move(r), clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2));
     eff.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
   }
@@ -669,11 +669,11 @@ bool needsArea(const Surface& s)
   return s.emission && s.emission->luminance && s.emission->luminance->perArea;
 }
 
-float bumpHeightInUv(float metresPerUv, float tiles)
+float bumpHeightInUv(float metresPerUv, float tiles, float height)
 {
-  if(!(metresPerUv > 0) || !(tiles > 0))
+  if(!(metresPerUv > 0) || !(tiles > 0) || !(height > 0))
     return 0;
-  const double h    = double(kBumpHeight) * tiles / metresPerUv;
+  const double h    = double(height) * tiles / metresPerUv;
   const double step = std::pow(10.0, std::floor(std::log10(h)) - 1);
   return float(std::round(h / step) * step);
 }

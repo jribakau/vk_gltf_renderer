@@ -2010,3 +2010,29 @@ TEST(Materials, IrayPresetOverLegacyStillReadsIray)
   EXPECT_NEAR(m.surface.glossy.roughness.value, 0.45f, 1e-4f);
   EXPECT_NEAR(m.surface.glossy.reflectivity, 0.35f, 1e-4f);
 }
+
+TEST(Materials, LegacyBumpRangeScalesTheBakedHeight)
+{
+  // DAZ Default's Negative/Positive Bump: +-0.01 cm is a fifth of the fixed 1 mm bake
+  const char* boxersBump = R"({"bump":{"channel":{"id":"bump","label":"Bump Strength","current_value":0.5,"image_file":"/Runtime/Textures/boxers_b.jpg"}}})";
+  const auto  boxers     = fv::dson::parseSurface("Boxers", layered({kBoxers, boxersBump}));
+  ASSERT_TRUE(boxers.bumpRange.has_value());
+  EXPECT_NEAR(*boxers.bumpRange, 0.0002f, 1e-7f);
+  fv::mat::LowerOptions o;
+  o.metresPerUv    = 0.43f;
+  const auto reqs  = fv::mat::lower(boxers, {}, o).requests;
+  const auto bump  = std::find_if(reqs.begin(), reqs.end(), [](const fv::mat::TextureRequest& r) { return r.channels == "bn"; });
+  ASSERT_NE(bump, reqs.end());
+  EXPECT_NEAR(bump->bumpHeight, fv::mat::bumpHeightInUv(0.43f, 1, 0.0002f), 1e-7f);
+  EXPECT_NEAR(bump->bumpHeight, fv::mat::bumpHeightInUv(0.43f) / 5, fv::mat::bumpHeightInUv(0.43f) * 0.05f);
+
+  // UberSurface's Bump Minimum/Maximum, +-0.1 cm: twice the fixed bake
+  const auto torso = fv::dson::parseSurface("Torso", channelsOf(kG2fTorso));
+  ASSERT_TRUE(torso.bumpRange.has_value());
+  EXPECT_NEAR(*torso.bumpRange, 0.002f, 1e-7f);
+
+  // AoA's brick leaves both at 0, and Iray's has none: the fixed bake
+  EXPECT_FALSE(fv::dson::parseSurface("Torso", layered({kAoaBrick, kAoaTorso})).bumpRange.has_value());
+  EXPECT_FALSE(fv::dson::parseSurface("Face", channelsOf(kSkin)).bumpRange.has_value());
+  EXPECT_EQ(fv::mat::bumpHeightInUv(0.43f, 1, 0), 0.f);
+}

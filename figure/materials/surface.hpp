@@ -154,6 +154,9 @@ struct Surface
   float       normalStrength = 1;
   std::string bumpMap;
   float       bumpStrength = 1;
+  // The bump map's full height in metres, as a legacy shader gives it (Negative/Positive Bump,
+  // Bump Minimum/Maximum: DAZ's centimetres). None for Iray's, which bakes kBumpHeight.
+  std::optional<float> bumpRange;
 
   Glossy                  glossy;
   std::optional<DualLobe> dual;  // none when the material has no dual-lobe channels

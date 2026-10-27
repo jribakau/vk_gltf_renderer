@@ -125,6 +125,13 @@ void translateLegacy(LegacyShader shader, const Channels& ch, mat::Surface& s)
   }
   if(uber && !on(find({"Bump Active"}), true))
     s.bumpMap.clear();
+  // The bump map's height range, in DAZ's centimetres: Negative and Positive Bump (DAZ Default's
+  // bump_min and bump_max, AoA's), UberSurface's Bump Minimum and Maximum. Bump Strength scales it
+  // as it does an Iray bump. An empty range (AoA's brick leaves both 0) keeps the fixed bake.
+  const double low   = num(find({"Negative Bump", "Bump Minimum"}), 0);
+  const double high  = num(find({"Positive Bump", "Bump Maximum"}), 0);
+  if(high > low)
+    s.bumpRange = float((high - low) * 0.01);
   // AoA's normal map strength is a channel of its own ("alpha"), not the map channel's value
   if(aoa && !s.normalMap.empty())
     s.normalStrength = float(num(find({"alpha"}), 1));

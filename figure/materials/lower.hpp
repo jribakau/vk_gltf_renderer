@@ -86,7 +86,8 @@ constexpr float kBumpHeight = 0.001f;
 
 // The height a bump map of `metresPerUv` (scaled by `tiles` repeats) gets in UV units, the
 // TextureRequest::bumpHeight the bake divides by; 0 when the size is unknown. Two significant figures.
-float bumpHeightInUv(float metresPerUv, float tiles = 1);
+// `height` is the map's full range in metres: a legacy shader's own (Surface::bumpRange), else kBumpHeight.
+float bumpHeightInUv(float metresPerUv, float tiles = 1, float height = kBumpHeight);
 
 // The values the Material panel shows for a surface: what the lowering used, edits included.
 struct Effective
