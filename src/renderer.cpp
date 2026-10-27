@@ -5007,11 +5007,9 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
   AnimationControl& animCtrl = m_resources.animationControl;
 
 
-  if(ui::animation::hasPlayableAnimation(scnPtr) && animCtrl.doAnimation())
+  const int nAnim = scn.animation().getNumAnimations();
+  if(nAnim > 0 && ui::animation::hasPlayableAnimation(scnPtr) && animCtrl.doAnimation())
   {
-    const int nAnim = scn.animation().getNumAnimations();
-    if(nAnim <= 0)
-      return false;
     if(animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim)
       animCtrl.currentAnimation = 0;
 
@@ -5031,19 +5029,23 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
 
     // Evaluate animation channels (marks Scene nodes dirty internally; also marks
     // render nodes for skins whose joints moved, and materials/lights for pointer channels)
+    bool evaluated = false;
     {
-      auto t = m_profilerGpuTimer.cmdFrameSection(cmd, "Eval channels");
-      if(!scn.animation().updateAnimation(animCtrl.currentAnimation))
-        return false;
+      auto t    = m_profilerGpuTimer.cmdFrameSection(cmd, "Eval channels");
+      evaluated = scn.animation().updateAnimation(animCtrl.currentAnimation);
     }
-
-    animCtrl.clearStates();
-    reconcileAnimationGpuState(cmd);
-    m_pendingAnimReconcile = false;
-    return true;
+    if(evaluated)
+    {
+      animCtrl.clearStates();
+      reconcileAnimationGpuState(cmd);
+      m_pendingAnimReconcile = false;
+      return true;
+    }
   }
 
-  // A host changed joint transforms or morph weights without an animation playing.
+  // A host changed joint transforms or morph weights without an animation playing, or while the
+  // clip changed nothing this frame (its channels hold still or target nothing): a dial on a
+  // figure must not wait for the clip.
   if(m_pendingAnimReconcile)
   {
     m_pendingAnimReconcile = false;
