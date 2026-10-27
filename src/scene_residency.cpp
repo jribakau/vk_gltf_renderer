@@ -163,8 +163,23 @@ std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb)
 void Residency::clear()
 {
   for(auto& [id, mesh] : m_meshes)
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors})
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints,
+                          mesh.weights, mesh.positionDeltas, mesh.normalDeltas, mesh.tangentDeltas, mesh.prevPositions})
       retireBuffer(b);
+  for(auto& [key, d] : m_drawers)
+    for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
+      retireBuffer(b);
+  m_drawers.clear();
+  for(BufferHandle b : {m_jointPack, m_normalPack, m_weightPack, m_prevPositionTable, m_prevWorldTable})
+    retireBuffer(b);
+  m_jointPack = m_normalPack = m_weightPack = m_prevPositionTable = m_prevWorldTable = {};
+  m_packsDirty = false;
+  m_drawersWritten.clear();
+  m_meshesWritten.clear();
+  m_prevWorlds.clear();
+  m_dirtyPrevPrims.clear();
+  m_dirtyPrevNodes.clear();
+  m_movedLast.clear();
   for(const std::optional<Prim>& p : m_prims)
     if(p)
     {
@@ -295,8 +310,9 @@ void Residency::retireMesh(MeshId id)
   auto it = m_meshes.find(id);
   if(it == m_meshes.end())
     return;
-  for(BufferHandle b :
-      {it->second.positions, it->second.normals, it->second.tangents, it->second.uv0, it->second.uv1, it->second.colors})
+  const MeshGpu& m = it->second;
+  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.joints, m.weights, m.positionDeltas,
+                        m.normalDeltas, m.tangentDeltas, m.prevPositions})
     retireBuffer(b);
   m_meshes.erase(it);
 }
@@ -316,13 +332,15 @@ static void fitBounds(Residency::Prim& prim, const MeshRecord& record)
   prim.boundsMax = lo.x <= hi.x ? hi : glm::vec3(0.f);
 }
 
-uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh)
+uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh, EntityId drawer)
 {
-  MeshGpu& mesh = acquireMesh(scene, id);
-  if(submesh < mesh.prims.size() && mesh.prims[submesh] >= 0)
+  MeshGpu&              mesh  = acquireMesh(scene, id);
+  DrawerGpu*            d     = drawer.isNone() ? nullptr : &m_drawers.at({drawer, id});
+  std::vector<int32_t>& slots = d ? d->prims : mesh.prims;
+  if(submesh < slots.size() && slots[submesh] >= 0)
   {
-    m_prims[size_t(mesh.prims[submesh])]->users++;
-    return uint32_t(mesh.prims[submesh]);
+    m_prims[size_t(slots[submesh])]->users++;
+    return uint32_t(slots[submesh]);
   }
   uint32_t   slot = 0;
   const bool ok   = m_primPool->createID(slot);
@@ -335,6 +353,7 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
   const Submesh&    run    = record.submeshes[submesh];
   Prim              prim;
   prim.mesh       = id;
+  prim.drawer     = drawer;
   prim.submesh    = submesh;
   prim.indexCount = run.indexCount;
   prim.users      = 1;
@@ -342,7 +361,7 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
   prim.indices = m_gpu.createBuffer(
       {.size = indices.size_bytes(), .usage = eBufferIndex | eBufferStorage | eBufferAccelInput, .name = "indices"});
   m_gpu.upload(prim.indices, 0, std::as_bytes(indices));
-  prim.input          = {.vertexAddress = m_gpu.bufferAddress(mesh.positions),
+  prim.input          = {.vertexAddress = m_gpu.bufferAddress(d ? d->positions : mesh.positions),
                          .vertexStride  = sizeof(glm::vec3),
                          .vertexCount   = mesh.vertexCount,
                          .indexAddress  = m_gpu.bufferAddress(prim.indices),
@@ -351,8 +370,9 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
   if(run.micromap && m_gpu.opacityMicromaps())
     linkMicromap(prim, *run.micromap);
   fitBounds(prim, record);
-  m_prims[slot]       = std::move(prim);
-  mesh.prims[submesh] = int32_t(slot);
+  m_prims[slot]  = std::move(prim);
+  slots[submesh] = int32_t(slot);
+  m_dirtyPrevPrims.insert(slot);  // its motion row: none until its positions have a previous copy
   return slot;
 }
 
@@ -364,14 +384,20 @@ void Residency::releasePrim(uint32_t slot)
   retireBuffer(prim.indices);
   retireAccel(prim.blas);
   unlinkMicromap(prim);  // retired after the BLAS
-  auto mesh = m_meshes.find(prim.mesh);
-  if(mesh != m_meshes.end())
+  if(!prim.drawer.isNone())
+  {
+    // the drawer goes with its last instance (releaseDrawer), and the mesh with its last drawer
+    if(auto d = m_drawers.find({prim.drawer, prim.mesh}); d != m_drawers.end())
+      d->second.prims[prim.submesh] = -1;
+  }
+  else if(auto mesh = m_meshes.find(prim.mesh); mesh != m_meshes.end())
   {
     mesh->second.prims[prim.submesh] = -1;
-    if(std::all_of(mesh->second.prims.begin(), mesh->second.prims.end(), [](int32_t p) { return p < 0; }))
+    if(!meshInUse(prim.mesh))
       retireMesh(prim.mesh);
   }
   m_prims[slot].reset();
+  m_dirtyPrevPrims.insert(slot);
   m_gpu.retire([pool = m_primPool, slot] { pool->destroyID(slot); });
 }
 
@@ -906,6 +932,387 @@ void Residency::buildDrawLists()
 
 // ---------- The sync ----------
 
+// ---------- Deformation ----------
+
+bool Residency::meshInUse(MeshId id) const
+{
+  if(auto it = m_meshes.find(id); it != m_meshes.end())
+    if(std::any_of(it->second.prims.begin(), it->second.prims.end(), [](int32_t p) { return p >= 0; }))
+      return true;
+  return std::any_of(m_drawers.begin(), m_drawers.end(), [&](const auto& d) { return d.first.second == id; });
+}
+
+// Whether `entity` draws `mesh` deformed: the mesh has morph targets, or the entity skins it (a skin
+// record, and joints and weights for every vertex)
+bool Residency::deforms(const RetainedScene& scene, EntityId entity, MeshId mesh) const
+{
+  const MeshRecord* r = scene.mesh(mesh);
+  const Entity*     e = scene.entity(entity);
+  if(!r || !e || !e->mesh)
+    return false;
+  if(!r->targets.empty())
+    return true;
+  return scene.skin(e->mesh->skin) && !r->positions.empty() && r->joints.size() == r->positions.size()
+         && r->weights.size() == r->positions.size();
+}
+
+// What a mesh's drawers deform from, beside its streams: joints and weights for a skin, the targets'
+// deltas for a morph (a target without normals or tangents adds none of them)
+void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool skin)
+{
+  const auto make = [&](BufferHandle& buffer, std::span<const std::byte> bytes, const char* name) {
+    if(buffer || bytes.empty())
+      return;
+    buffer = m_gpu.createBuffer({.size = bytes.size(), .usage = eBufferStorage, .name = name});
+    m_gpu.upload(buffer, 0, bytes);
+  };
+  if(skin)
+  {
+    make(mesh.joints, bytesOf(record.joints), "skin joints");  // uint4 here, int4 in the shader: the same bits
+    make(mesh.weights, bytesOf(record.weights), "skin weights");
+  }
+  if(record.targets.empty() || mesh.positionDeltas)
+    return;
+  const size_t n = record.positions.size();
+  // target-major, n deltas each; zeros for a target that has none of a stream
+  const auto pack = [&](std::vector<glm::vec3> MorphTarget::*stream) {
+    std::vector<glm::vec3> out;
+    if(std::none_of(record.targets.begin(), record.targets.end(), [&](const MorphTarget& t) { return !(t.*stream).empty(); }))
+      return out;
+    out.assign(n * record.targets.size(), glm::vec3(0.f));
+    for(size_t t = 0; t < record.targets.size(); t++)
+      if((record.targets[t].*stream).size() == n)
+        std::copy((record.targets[t].*stream).begin(), (record.targets[t].*stream).end(), out.begin() + std::ptrdiff_t(t * n));
+    return out;
+  };
+  make(mesh.positionDeltas, bytesOf(pack(&MorphTarget::positions)), "morph position deltas");
+  make(mesh.normalDeltas, bytesOf(pack(&MorphTarget::normals)), "morph normal deltas");
+  make(mesh.tangentDeltas, bytesOf(pack(&MorphTarget::tangents)), "morph tangent deltas");
+  mesh.targetCount = uint32_t(record.targets.size());
+}
+
+Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, EntityId entity, MeshId id)
+{
+  const DrawerKey key{entity, id};
+  if(auto it = m_drawers.find(key); it != m_drawers.end())
+    return it->second;
+  MeshGpu&          mesh   = acquireMesh(scene, id);
+  const MeshRecord& record = *scene.mesh(id);
+  const Entity&     e      = *scene.entity(entity);
+  DrawerGpu&        d      = m_drawers[key];
+  d.entity               = entity;
+  d.mesh                 = id;
+  d.morph                = !record.targets.empty();
+  d.skin = scene.skin(e.mesh->skin) && record.joints.size() == record.positions.size() && record.weights.size() == record.positions.size();
+  makeDeformInputs(record, mesh, d.skin);
+  d.targetCount = d.morph ? mesh.targetCount : 0;
+  d.jointCount  = d.skin ? uint32_t(scene.skin(e.mesh->skin)->joints.size()) : 0;
+  const uint64_t n      = mesh.vertexCount;
+  const auto     output = [&](BufferHandle& buffer, uint64_t element, BufferUsageFlags usage, const char* name) {
+    buffer = m_gpu.createBuffer({.size = n * element, .usage = usage, .name = name});
+  };
+  output(d.positions, sizeof(glm::vec3), eBufferVertex | eBufferStorage | eBufferAccelInput, "deformed positions");
+  if(mesh.normals)
+    output(d.normals, sizeof(glm::vec3), eBufferStorage, "deformed normals");
+  if(mesh.tangents)
+    output(d.tangents, sizeof(glm::vec4), eBufferStorage, "deformed tangents");
+  if(d.morph && d.skin)
+  {
+    output(d.morphedPositions, sizeof(glm::vec3), eBufferStorage, "morphed positions");
+    if(mesh.normals)
+      output(d.morphedNormals, sizeof(glm::vec3), eBufferStorage, "morphed normals");
+    if(mesh.tangents)
+      output(d.morphedTangents, sizeof(glm::vec4), eBufferStorage, "morphed tangents");
+  }
+  output(d.prevPositions, sizeof(glm::vec3), eBufferStorage, "previous positions");
+  d.prims.assign(record.submeshes.size(), -1);
+  m_packsDirty = true;
+  return d;
+}
+
+void Residency::releaseDrawer(const DrawerKey& key)
+{
+  auto it = m_drawers.find(key);
+  if(it == m_drawers.end() || --it->second.users > 0)
+    return;
+  const DrawerGpu& d = it->second;
+  for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
+    retireBuffer(b);
+  m_drawers.erase(it);
+  m_drawersWritten.erase(key);
+  m_packsDirty = true;
+  if(!meshInUse(key.second))
+    retireMesh(key.second);
+}
+
+// The packs laid out again over the drawers there are now: each drawer's joint matrices, normal
+// matrices and morph weights at offsets of their own. Every drawer then runs at the next sync,
+// writing its inputs at their new offsets.
+void Residency::layOutPacks(SyncResult& result)
+{
+  static_assert(sizeof(glm::mat3) == kNormalMatrixStride, "the packed normal matrices are float3x3 in the shader");
+  uint64_t joints = 0, normals = 0, weights = 0;
+  for(auto& [key, d] : m_drawers)
+  {
+    d.jointOffset  = joints;
+    d.normalOffset = normals;
+    d.weightOffset = weights;
+    joints += uint64_t(d.jointCount) * sizeof(glm::mat4);
+    normals += uint64_t(d.jointCount) * kNormalMatrixStride;
+    weights += uint64_t(d.targetCount) * sizeof(float);
+    d.ran = false;
+  }
+  // a pack grows by doubling, so a wear's new drawers seldom make it again
+  const auto fit = [&](BufferHandle& buffer, uint64_t bytes, const char* name) {
+    if(!bytes || (buffer && m_gpu.bufferSize(buffer) >= bytes))
+      return;
+    retireBuffer(buffer);
+    buffer         = m_gpu.createBuffer({.size = std::bit_ceil(std::max<uint64_t>(bytes, 256)), .usage = eBufferStorage, .name = name});
+    result.changed = true;
+  };
+  fit(m_jointPack, joints, "joint matrices");
+  fit(m_normalPack, normals, "normal matrices");
+  fit(m_weightPack, weights, "morph weights");
+  m_packsDirty = false;
+}
+
+// What the last sync wrote, copied to its previous positions before anything writes it again: the
+// frame about to be drawn then reprojects from where the last one drew it
+void Residency::snapshotPrevPositions()
+{
+  bool copied = false;
+  for(const DrawerKey& key : m_drawersWritten)
+    if(auto it = m_drawers.find(key); it != m_drawers.end())
+    {
+      DrawerGpu& d = it->second;
+      m_gpu.copyBuffer(d.positions, 0, d.prevPositions, 0, m_gpu.bufferSize(d.positions));
+      copied = true;
+      if(!std::exchange(d.prevValid, true))
+        for(int32_t p : d.prims)
+          if(p >= 0)
+            m_dirtyPrevPrims.insert(uint32_t(p));
+    }
+  for(MeshId id : m_meshesWritten)
+    if(auto it = m_meshes.find(id); it != m_meshes.end() && it->second.prevPositions)
+    {
+      MeshGpu& mesh = it->second;
+      m_gpu.copyBuffer(mesh.positions, 0, mesh.prevPositions, 0, m_gpu.bufferSize(mesh.positions));
+      copied = true;
+      if(!std::exchange(mesh.prevValid, true))
+        for(int32_t p : mesh.prims)
+          if(p >= 0)
+            m_dirtyPrevPrims.insert(uint32_t(p));
+    }
+  m_drawersWritten.clear();
+  m_meshesWritten.clear();
+  if(copied)
+    m_gpu.barrier(GpuBarrier::eTransferToShader);  // the copies, then the uploads and passes that overwrite what they read
+}
+
+// The deform passes whose inputs changed: the morph weights, the joint matrices, or the mesh's
+// vertices (`written`); their prims' BLASes refit. The meshes it deformed join `written`, for the
+// emissive table's debounce.
+void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, SyncResult& result)
+{
+  m_deformCounts = {};
+  if(m_drawers.empty())
+    return;
+  struct Run
+  {
+    DrawerGpu*             d = nullptr;
+    std::vector<float>     weights;
+    std::vector<glm::mat4> joints;
+    bool                   morph = false, skin = false;
+  };
+  std::vector<Run> runs;
+  for(auto& [key, d] : m_drawers)
+  {
+    const Entity*     e      = scene.entity(d.entity);
+    const MeshRecord* record = scene.mesh(d.mesh);
+    if(!e || !e->mesh || !record)
+      continue;
+    Run run{.d = &d};
+    if(d.morph)
+    {
+      // a target without a weight weighs 0 (AnimationVk); the instance's weights, else the mesh's
+      const std::vector<float>& source = e->mesh->morphWeights.empty() ? record->targetWeights : e->mesh->morphWeights;
+      run.weights.assign(d.targetCount, 0.f);
+      std::copy_n(source.begin(), std::min<size_t>(source.size(), d.targetCount), run.weights.begin());
+    }
+    if(d.skin)
+    {
+      run.joints = scene.jointMatrices(d.entity);
+      if(run.joints.size() != d.jointCount)  // the skin was set again with other joints
+      {
+        d.jointCount = uint32_t(run.joints.size());
+        m_packsDirty = true;
+      }
+    }
+    runs.push_back(std::move(run));
+  }
+  if(m_packsDirty)
+    layOutPacks(result);
+
+  std::vector<Run*> morphs, skins;
+  for(Run& run : runs)
+  {
+    DrawerGpu& d        = *run.d;
+    const bool baseMoved = written.count(d.mesh) > 0;
+    run.morph            = d.morph && (!d.ran || baseMoved || run.weights != d.lastWeights);
+    // a skin over a morph reads the morph's own output, so it runs again only for what it reads
+    run.skin = d.skin && d.jointCount && (!d.ran || baseMoved || run.morph || run.joints != d.lastJoints);
+    if(run.morph)
+      morphs.push_back(&run);
+    if(run.skin)
+      skins.push_back(&run);
+  }
+  if(morphs.empty() && skins.empty())
+    return;
+
+  // this frame's weights and matrices, then the passes
+  for(Run* run : morphs)
+    m_gpu.upload(m_weightPack, run->d->weightOffset, bytesOf(run->weights));
+  for(Run* run : skins)
+  {
+    std::vector<glm::mat3> normalMats(run->joints.size());
+    for(size_t j = 0; j < run->joints.size(); j++)
+      normalMats[j] = glm::transpose(glm::inverse(glm::mat3(run->joints[j])));
+    m_gpu.upload(m_jointPack, run->d->jointOffset, bytesOf(run->joints));
+    m_gpu.upload(m_normalPack, run->d->normalOffset, bytesOf(normalMats));
+  }
+  m_gpu.barrier(GpuBarrier::eTransferToShader);  // the uploads, and the base streams syncVertices wrote
+
+  for(Run* run : morphs)
+  {
+    const DrawerGpu& d    = *run->d;
+    const MeshGpu&   mesh = m_meshes.at(d.mesh);
+    const bool       into = d.skin;  // into the intermediates the skin reads
+    m_gpu.dispatchDeform({.kind           = DeformKind::eMorph,
+                          .vertexCount    = mesh.vertexCount,
+                          .basePositions  = {mesh.positions},
+                          .baseNormals    = {mesh.normals},
+                          .baseTangents   = {mesh.tangents},
+                          .outPositions   = {into ? d.morphedPositions : d.positions},
+                          .outNormals     = {into ? d.morphedNormals : d.normals},
+                          .outTangents    = {into ? d.morphedTangents : d.tangents},
+                          .positionDeltas = {mesh.positionDeltas},
+                          .normalDeltas   = {mesh.normalDeltas},
+                          .tangentDeltas  = {mesh.tangentDeltas},
+                          .morphWeights   = {m_weightPack, d.weightOffset},
+                          .targetCount    = d.targetCount});
+    m_deformCounts.morphs++;
+  }
+  if(std::any_of(skins.begin(), skins.end(), [](const Run* r) { return r->d->morph; }) && !morphs.empty())
+    m_gpu.barrier(GpuBarrier::eComputeToCompute);
+  for(Run* run : skins)
+  {
+    const DrawerGpu& d    = *run->d;
+    const MeshGpu&   mesh = m_meshes.at(d.mesh);
+    m_gpu.dispatchDeform({.kind           = DeformKind::eSkin,
+                          .vertexCount    = mesh.vertexCount,
+                          .basePositions  = {d.morph ? d.morphedPositions : mesh.positions},
+                          .baseNormals    = {d.morph ? d.morphedNormals : mesh.normals},
+                          .baseTangents   = {d.morph ? d.morphedTangents : mesh.tangents},
+                          .outPositions   = {d.positions},
+                          .outNormals     = {d.normals},
+                          .outTangents    = {d.tangents},
+                          .joints         = {mesh.joints},
+                          .weights        = {mesh.weights},
+                          .jointMatrices  = {m_jointPack, d.jointOffset},
+                          .normalMatrices = {m_normalPack, d.normalOffset},
+                          .jointCount     = d.jointCount});
+    m_deformCounts.skins++;
+  }
+  m_gpu.barrier(GpuBarrier::eComputeToBuild);
+
+  // what ran is current; its prims' BLASes follow (the ones not built yet build in syncRows)
+  bool refits = false;
+  for(Run& run : runs)
+  {
+    if(!run.morph && !run.skin)
+      continue;
+    DrawerGpu& d = *run.d;
+    d.ran        = true;
+    if(run.morph)
+      d.lastWeights = run.weights;
+    if(run.skin)
+      d.lastJoints = run.joints;
+    m_drawersWritten.insert({d.entity, d.mesh});
+    written.insert(d.mesh);
+    for(int32_t p : d.prims)
+      if(p >= 0 && m_prims[size_t(p)]->blas)
+      {
+        m_gpu.refitBlas(m_prims[size_t(p)]->blas, m_prims[size_t(p)]->input);
+        refits = true;
+      }
+  }
+  if(refits)
+    m_gpu.barrier(GpuBarrier::eBuildToBuild);  // the TLAS build reads them
+  result.verticesWritten = result.changed = true;
+}
+
+// The motion tables at capacity: per prim slot the address of its previous positions (0 for none),
+// per instance slot the world it was last drawn with
+void Residency::writeMotionTables(SyncResult& result)
+{
+  const auto fit = [&](BufferHandle& buffer, uint64_t bytes, const char* name) {
+    if(buffer && m_gpu.bufferSize(buffer) == bytes)
+      return false;
+    retireBuffer(buffer);
+    buffer                = m_gpu.createBuffer({.size = bytes, .usage = eBufferStorage, .name = name});
+    result.buffersChanged = result.changed = true;
+    return true;
+  };
+  std::set<uint32_t> prims, nodes;
+  prims.swap(m_dirtyPrevPrims);
+  nodes.swap(m_dirtyPrevNodes);
+  if(fit(m_prevPositionTable, uint64_t(m_primCapacity) * sizeof(uint64_t), "previous positions table"))
+    for(uint32_t p = 0; p < m_prims.size(); p++)
+      prims.insert(p);
+  if(fit(m_prevWorldTable, uint64_t(m_instanceCapacity) * sizeof(glm::mat4), "previous worlds"))
+    for(uint32_t s = 0; s < m_instances.size(); s++)
+      nodes.insert(s);
+  for(const auto& [first, count] : runsOf(prims))
+  {
+    std::vector<uint64_t> rows(count, 0);
+    for(uint32_t i = 0; i < count; i++)
+    {
+      const std::optional<Prim>& prim = first + i < m_prims.size() ? m_prims[first + i] : std::nullopt;
+      if(!prim)
+        continue;
+      if(!prim->drawer.isNone())
+      {
+        const DrawerGpu& d = m_drawers.at({prim->drawer, prim->mesh});
+        rows[i]            = d.prevValid ? m_gpu.bufferAddress(d.prevPositions) : 0;
+      }
+      else if(const MeshGpu& mesh = m_meshes.at(prim->mesh); mesh.prevValid)
+        rows[i] = m_gpu.bufferAddress(mesh.prevPositions);
+    }
+    m_gpu.upload(m_prevPositionTable, uint64_t(first) * sizeof(uint64_t), bytesOf(rows));
+  }
+  for(const auto& [first, count] : runsOf(nodes))
+  {
+    std::vector<glm::mat4> rows(count, glm::mat4(0.f));
+    for(uint32_t i = 0; i < count; i++)
+      if(first + i < m_prevWorlds.size() && m_instances[first + i])
+        rows[i] = m_prevWorlds[first + i];
+    m_gpu.upload(m_prevWorldTable, uint64_t(first) * sizeof(glm::mat4), bytesOf(rows));
+  }
+  if(!prims.empty() || !nodes.empty())
+    result.changed = true;
+}
+
+const Residency::DrawerGpu* Residency::drawer(EntityId entity, MeshId mesh) const
+{
+  auto it = m_drawers.find({entity, mesh});
+  return it == m_drawers.end() ? nullptr : &it->second;
+}
+
+const glm::mat4* Residency::prevWorld(uint32_t slot) const
+{
+  return slot < m_prevWorlds.size() && slot < m_instances.size() && m_instances[slot] ? &m_prevWorlds[slot] : nullptr;
+}
+
 SyncResult Residency::replace(RetainedScene& scene)
 {
   clear();
@@ -924,10 +1331,22 @@ SyncResult Residency::sync(RetainedScene& scene)
   // an emitter's vertex writes have stopped long enough: the table takes the areas they left
   const bool emissiveSettled = m_emissiveStale && m_gpu.frame() >= m_emitterWriteFrame + m_options.emissiveSettleFrames;
   const bool retryHeld       = std::exchange(m_retryHeld, false);
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld)
+  // what the last sync wrote or moved still has motion rows to bring back to rest
+  const bool motionToSettle = !m_drawersWritten.empty() || !m_meshesWritten.empty() || !m_movedLast.empty();
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle)
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);
+  // motion: what moved last sync was drawn where it is now, and positions written last sync are
+  // copied before anything writes them again
+  for(uint32_t slot : m_movedLast)
+    if(slot < m_instances.size() && m_instances[slot])
+    {
+      m_prevWorlds[slot] = m_instances[slot]->world;
+      m_dirtyPrevNodes.insert(slot);
+    }
+  m_movedLast.clear();
+  snapshotPrevPositions();
 
   std::vector<DrawItem> items = scene.drawItems();
   if(fresh || changes.structure)
@@ -941,6 +1360,7 @@ SyncResult Residency::sync(RetainedScene& scene)
   std::set<MeshId> written;
   if(!changes.meshes.empty())
     written = syncVertices(scene, changes.meshes, result);
+  syncDeforms(scene, written, result);
   ensureCapacity(result);
   // textures before materials before geometry (see "The sync"): the textures are written as their
   // materials take them, and every material is converted here, before an instance draws with it
@@ -959,6 +1379,7 @@ SyncResult Residency::sync(RetainedScene& scene)
   }
   const bool materialsWritten = m_tablesMoved || result.drawListChanged || (!changes.materials.empty());
   syncRows(items, result);
+  writeMotionTables(result);
   if(fresh || changes.iesProfiles)
   {
     syncIesProfiles(scene);
@@ -1011,14 +1432,29 @@ SyncResult Residency::sync(RetainedScene& scene)
 // and material slots that follow them.
 void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result)
 {
-  std::set<InstanceKey> drawn;
+  // each draw item, and whether its entity draws its mesh deformed
+  std::map<InstanceKey, bool> drawn;
   for(const DrawItem& item : items)
-    drawn.insert({item.entity, item.mesh, item.submesh, item.copy});
+    drawn.try_emplace({item.entity, item.mesh, item.submesh, item.copy}, deforms(scene, item.entity, item.mesh));
 
-  // gone first, so a prim or a material an instance moves to is not retired under it
+  // gone first, so a prim or a material an instance moves to is not retired under it; an instance
+  // that now draws deformed, or no longer does, goes and comes back on the other prim
   for(auto it = m_slotOf.begin(); it != m_slotOf.end();)
   {
-    if(drawn.count(it->first))
+    const auto      wanted = drawn.find(it->first);
+    const Instance& kept   = *m_instances[it->second];
+    // a drawer runs the passes it was made for: one that should run others is made again
+    const auto sameDrawer = [&] {
+      const DrawerGpu* d = kept.deformed ? &m_drawers.at({kept.entity, kept.mesh}) : nullptr;
+      if(!d)
+        return true;
+      const MeshRecord* r = scene.mesh(kept.mesh);
+      const Entity*     e = scene.entity(kept.entity);
+      const bool        skin = r && e && e->mesh && scene.skin(e->mesh->skin) && r->joints.size() == r->positions.size()
+                        && r->weights.size() == r->positions.size();
+      return r && d->morph == !r->targets.empty() && d->skin == skin;
+    };
+    if(wanted != drawn.end() && wanted->second == kept.deformed && sameDrawer())
     {
       ++it;
       continue;
@@ -1026,7 +1462,12 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     const uint32_t slot = it->second;
     Instance&      inst = *m_instances[slot];
     releasePrim(inst.prim);
+    if(inst.deformed)
+      releaseDrawer({inst.entity, inst.mesh});
     releaseMaterial(inst.material);
+    m_prevWorlds[slot] = glm::mat4(0.f);  // a hole's motion row is zeroed with its render node
+    m_dirtyPrevNodes.insert(slot);
+    m_movedLast.erase(slot);
     m_instances[slot].reset();
     m_gpu.retire([pool = m_instancePool, slot] { pool->destroyID(slot); });
     m_dirtyNodes.insert(slot);  // a hole: its row zeroed; the slot goes back to the pool at its retire frame
@@ -1059,11 +1500,14 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     if(slot >= m_instances.size())
       m_instances.resize(size_t(slot) + 1);
     Instance inst;
-    inst.entity       = item.entity;
-    inst.mesh         = item.mesh;
-    inst.submesh      = item.submesh;
-    inst.copy         = item.copy;
-    inst.prim         = acquirePrim(scene, item.mesh, item.submesh);
+    inst.entity   = item.entity;
+    inst.mesh     = item.mesh;
+    inst.submesh  = item.submesh;
+    inst.copy     = item.copy;
+    inst.deformed = drawn.at(key);
+    if(inst.deformed)
+      acquireDrawer(scene, item.entity, item.mesh).users++;
+    inst.prim         = acquirePrim(scene, item.mesh, item.submesh, inst.deformed ? item.entity : EntityId{});
     inst.material     = item.material;
     inst.materialSlot = acquireMaterial(scene, item.material);
     inst.world        = item.world;
@@ -1071,6 +1515,11 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     m_instances[slot] = inst;
     m_slotOf[key]     = slot;
     m_dirtyNodes.insert(slot);
+    // a new slot starts where it is: no motion, never the motion of what had the slot before
+    if(slot >= m_prevWorlds.size())
+      m_prevWorlds.resize(size_t(slot) + 1, glm::mat4(0.f));
+    m_prevWorlds[slot] = item.world;
+    m_dirtyPrevNodes.insert(slot);
     result.drawListChanged = true;
   }
   if(result.drawListChanged)
@@ -1093,6 +1542,21 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
     const BufferHandle before = gpu.positions;
     uploadStreams(*record, gpu);
     const bool moved = gpu.positions != before;
+    // its static prims get motion from here on: their positions are copied at the next sync
+    if(std::any_of(gpu.prims.begin(), gpu.prims.end(), [](int32_t p) { return p >= 0; }))
+    {
+      if(moved || !gpu.prevPositions)
+      {
+        retireBuffer(gpu.prevPositions);
+        gpu.prevPositions = m_gpu.createBuffer(
+            {.size = m_gpu.bufferSize(gpu.positions), .usage = eBufferStorage, .name = "previous positions"});
+        if(std::exchange(gpu.prevValid, false))
+          for(int32_t p : gpu.prims)
+            if(p >= 0)
+              m_dirtyPrevPrims.insert(uint32_t(p));
+      }
+      m_meshesWritten.insert(id);
+    }
     for(int32_t p : gpu.prims)
     {
       if(p < 0)
@@ -1109,6 +1573,12 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
       else
         refits.push_back(uint32_t(p));
     }
+    // its drawers' prims: bounds of the new base (the passes and their refits follow in syncDeforms)
+    for(auto& [key, d] : m_drawers)
+      if(key.second == id)
+        for(int32_t p : d.prims)
+          if(p >= 0)
+            fitBounds(*m_prims[size_t(p)], *record);
     if(moved)
       result.buffersChanged = true;
     result.verticesWritten = true;
@@ -1176,6 +1646,10 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
     }
     if(inst.world != item.world)
     {
+      // drawn last where it was: its motion row, until the next sync brings it to rest
+      m_prevWorlds[slot] = inst.world;
+      m_dirtyPrevNodes.insert(slot);
+      m_movedLast.insert(slot);
       inst.world = item.world;
       nodes.insert(slot);
       tlasRows = true;
@@ -1251,11 +1725,12 @@ void Residency::writeRenderPrims(const std::set<uint32_t>& slots)
       const std::optional<Prim>& prim    = m_prims[first + i];
       if(!prim)
         continue;
-      const MeshGpu& mesh        = m_meshes.at(prim->mesh);
+      const MeshGpu&   mesh      = m_meshes.at(prim->mesh);
+      const DrawerGpu* d         = prim->drawer.isNone() ? nullptr : &m_drawers.at({prim->drawer, prim->mesh});
       row.indices                = (glm::uvec3*)m_gpu.bufferAddress(prim->indices);
-      row.vertexBuffer.positions = (glm::vec3*)m_gpu.bufferAddress(mesh.positions);
-      row.vertexBuffer.normals   = (glm::vec3*)m_gpu.bufferAddress(mesh.normals);
-      row.vertexBuffer.tangents  = (glm::vec4*)m_gpu.bufferAddress(mesh.tangents);
+      row.vertexBuffer.positions = (glm::vec3*)m_gpu.bufferAddress(d ? d->positions : mesh.positions);
+      row.vertexBuffer.normals   = (glm::vec3*)m_gpu.bufferAddress(d ? d->normals : mesh.normals);
+      row.vertexBuffer.tangents  = (glm::vec4*)m_gpu.bufferAddress(d ? d->tangents : mesh.tangents);
       row.vertexBuffer.texCoord0 = (glm::vec2*)m_gpu.bufferAddress(mesh.uv0);
       row.vertexBuffer.texCoord1 = (glm::vec2*)m_gpu.bufferAddress(mesh.uv1);
       row.vertexBuffer.colors    = (glm::uint*)m_gpu.bufferAddress(mesh.colors);
@@ -1464,12 +1939,16 @@ size_t Residency::liveBuffers() const
 {
   size_t n = 0;
   for(const auto& [id, mesh] : m_meshes)
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors})
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints,
+                          mesh.weights, mesh.positionDeltas, mesh.normalDeltas, mesh.tangentDeltas, mesh.prevPositions})
+      n += b ? 1 : 0;
+  for(const auto& [key, d] : m_drawers)
+    for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
       n += b ? 1 : 0;
   for(const std::optional<Prim>& p : m_prims)
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
-                        m_emissiveTable, m_iesTable})
+                        m_emissiveTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_prevPositionTable, m_prevWorldTable})
     n += b ? 1 : 0;
   return n;
 }

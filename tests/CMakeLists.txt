@@ -166,6 +166,8 @@ set(TEST_SOURCES
     test_scene_gpu_tables.cpp
     # The retained scene on the fake GPU, every sync held to ResidencyOracle (oracles 1 and 2b)
     test_retained_residency.cpp
+    # Skinned and morphed meshes drawn through their drawers, the passes run on the fake (I22), DLSS motion (I10)
+    test_retained_deform.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_residency.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_gpu_tables.cpp
     # What the Vulkan backend converts and plans without a device: BLAS scratch batches (I8), TLAS rows, samplers

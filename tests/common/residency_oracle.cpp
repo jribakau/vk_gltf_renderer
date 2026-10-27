@@ -76,6 +76,91 @@ std::string at(const char* invariant, uint32_t slot)
   return std::string(invariant) + " slot " + std::to_string(slot) + ": ";
 }
 
+// Whether the entity draws the mesh deformed, from the scene alone
+bool drawnDeformed(RetainedScene& scene, EntityId entity, const MeshRecord& r)
+{
+  const Entity* e = scene.entity(entity);
+  if(!e || !e->mesh)
+    return false;
+  return !r.targets.empty()
+         || (scene.skin(e->mesh->skin) && !r.positions.empty() && r.joints.size() == r.positions.size() && r.weights.size() == r.positions.size());
+}
+
+// The mesh as the entity draws it: its targets at the instance's weights (else the mesh's), then
+// its skin at the joints' matrices now; arithmetic as shaders/morph.comp.slang and
+// skinning.comp.slang do it
+struct Deformed
+{
+  std::vector<glm::vec3> positions, normals;
+  std::vector<glm::vec4> tangents;
+};
+Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r)
+{
+  Deformed       out{r.positions, r.normals, r.tangents};
+  const Entity&  e = *scene.entity(entity);
+  const size_t   n = r.positions.size();
+  const bool     hasNormals = r.normals.size() == n, hasTangents = r.tangents.size() == n;
+  // a stream no target has is not morphed (its deltas are not uploaded)
+  const bool normalDeltas  = std::any_of(r.targets.begin(), r.targets.end(), [](const MorphTarget& x) { return !x.normals.empty(); });
+  const bool tangentDeltas = std::any_of(r.targets.begin(), r.targets.end(), [](const MorphTarget& x) { return !x.tangents.empty(); });
+  if(!r.targets.empty())
+  {
+    const std::vector<float>& source = e.mesh->morphWeights.empty() ? r.targetWeights : e.mesh->morphWeights;
+    for(size_t v = 0; v < n; v++)
+    {
+      glm::vec3 pos = r.positions[v];
+      glm::vec3 nrm = hasNormals ? r.normals[v] : glm::vec3(0.f);
+      glm::vec4 tan = hasTangents ? r.tangents[v] : glm::vec4(0.f);
+      for(size_t t = 0; t < r.targets.size(); t++)
+      {
+        const float w = t < source.size() ? source[t] : 0.f;
+        if(w == 0.f)
+          continue;
+        const MorphTarget& target = r.targets[t];
+        pos += w * (target.positions.size() == n ? target.positions[v] : glm::vec3(0.f));
+        if(hasNormals && normalDeltas)
+          nrm += w * (target.normals.size() == n ? target.normals[v] : glm::vec3(0.f));
+        if(hasTangents && tangentDeltas)
+          tan = glm::vec4(glm::vec3(tan) + w * (target.tangents.size() == n ? target.tangents[v] : glm::vec3(0.f)), tan.w);
+      }
+      out.positions[v] = pos;
+      if(hasNormals)
+        out.normals[v] = glm::normalize(nrm);
+      if(hasTangents)
+        out.tangents[v] = glm::vec4(glm::normalize(glm::vec3(tan)), tan.w);
+    }
+  }
+  const std::vector<glm::mat4> joints = scene.jointMatrices(entity);
+  if(joints.empty() || r.joints.size() != n || r.weights.size() != n)
+    return out;
+  std::vector<glm::mat3> normalMats;
+  for(const glm::mat4& j : joints)
+    normalMats.push_back(glm::transpose(glm::inverse(glm::mat3(j))));
+  const Deformed base = out;
+  for(size_t v = 0; v < n; v++)
+  {
+    glm::vec3 pos(0.f), nrm(0.f), tan(0.f);
+    for(int i = 0; i < 4; i++)
+    {
+      const int j = int(r.joints[v][i]);
+      if(r.weights[v][i] > 0.f && j >= 0 && size_t(j) < joints.size())
+      {
+        pos += r.weights[v][i] * glm::vec3(joints[size_t(j)] * glm::vec4(base.positions[v], 1.f));
+        if(hasNormals)
+          nrm += r.weights[v][i] * (normalMats[size_t(j)] * base.normals[v]);
+        if(hasTangents)
+          tan += r.weights[v][i] * (glm::mat3(joints[size_t(j)]) * glm::vec3(base.tangents[v]));
+      }
+    }
+    out.positions[v] = pos;
+    if(hasNormals)
+      out.normals[v] = glm::normalize(nrm);
+    if(hasTangents)
+      out.tangents[v] = glm::vec4(glm::normalize(tan), base.tangents[v].w);
+  }
+  return out;
+}
+
 }  // namespace
 
 std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& residency, const FakeGpuBackend& gpu)
@@ -134,6 +219,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I1", s) + "its prim is not its mesh's submesh");
       continue;
     }
+    if(const MeshRecord* r = scene.mesh(item.mesh); r && prim->drawer != (drawnDeformed(scene, item.entity, *r) ? item.entity : EntityId{}))
+      out.push_back(at("I1", s) + "its prim is not deformed for its entity when its mesh is, or is when it isn't");
     if(inst.world != item.world)
       out.push_back(at("I1", s) + "its world matrix is not the entity's");
     if(inst.shown != item.shown)
@@ -198,11 +285,18 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I3", p) + "a prim of a mesh that is not resident or not in the scene");
       continue;
     }
-    const auto row = rowAt<shaderio::GltfRenderPrimitive>(gpu, residency.renderPrimTable(), p);
+    const Residency::DrawerGpu* drawer = prim->drawer.isNone() ? nullptr : residency.drawer(prim->drawer, prim->mesh);
+    if(!prim->drawer.isNone() && !drawer)
+    {
+      out.push_back(at("I3", p) + "a deformed prim whose drawer is not resident");
+      continue;
+    }
+    const BufferHandle positions = drawer ? drawer->positions : mesh->positions;
+    const auto         row       = rowAt<shaderio::GltfRenderPrimitive>(gpu, residency.renderPrimTable(), p);
     if(uint64_t(row.indices) != gpu.bufferAddress(prim->indices)
-       || uint64_t(row.vertexBuffer.positions) != gpu.bufferAddress(mesh->positions)
-       || uint64_t(row.vertexBuffer.normals) != gpu.bufferAddress(mesh->normals)
-       || uint64_t(row.vertexBuffer.tangents) != gpu.bufferAddress(mesh->tangents)
+       || uint64_t(row.vertexBuffer.positions) != gpu.bufferAddress(positions)
+       || uint64_t(row.vertexBuffer.normals) != gpu.bufferAddress(drawer ? drawer->normals : mesh->normals)
+       || uint64_t(row.vertexBuffer.tangents) != gpu.bufferAddress(drawer ? drawer->tangents : mesh->tangents)
        || uint64_t(row.vertexBuffer.texCoord0) != gpu.bufferAddress(mesh->uv0)
        || uint64_t(row.vertexBuffer.texCoord1) != gpu.bufferAddress(mesh->uv1)
        || uint64_t(row.vertexBuffer.colors) != gpu.bufferAddress(mesh->colors))
@@ -214,9 +308,25 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(mesh->positions), record->positions.size() * sizeof(glm::vec3)),
                   record->positions.data(), record->positions.size()))
       out.push_back(at("I3", p) + "its mesh's position buffer does not hold the mesh's positions");
+    if(drawer)
+    {
+      // the passes ran on what the scene says now: the outputs hold the mesh as the entity draws it
+      const Deformed want = deformedNow(scene, prim->drawer, *record);
+      if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(drawer->positions), want.positions.size() * sizeof(glm::vec3)),
+                    want.positions.data(), want.positions.size()))
+        out.push_back(at("I22", p) + "its drawer's positions are not its mesh deformed as the entity draws it now");
+      if(drawer->normals
+         && !sameBytes(gpu.bytesAt(gpu.bufferAddress(drawer->normals), want.normals.size() * sizeof(glm::vec3)),
+                       want.normals.data(), want.normals.size()))
+        out.push_back(at("I22", p) + "its drawer's normals are not its mesh deformed as the entity draws it now");
+      if(drawer->tangents
+         && !sameBytes(gpu.bytesAt(gpu.bufferAddress(drawer->tangents), want.tangents.size() * sizeof(glm::vec4)),
+                       want.tangents.data(), want.tangents.size()))
+        out.push_back(at("I22", p) + "its drawer's tangents are not its mesh deformed as the entity draws it now");
+    }
     if(prim->input.vertexAddress % 4 || prim->input.indexAddress % 4)
       out.push_back(at("I17", p) + "a BLAS input address is not 4-byte aligned");
-    if(prim->input.vertexAddress != gpu.bufferAddress(mesh->positions) || prim->input.indexAddress != gpu.bufferAddress(prim->indices)
+    if(prim->input.vertexAddress != gpu.bufferAddress(positions) || prim->input.indexAddress != gpu.bufferAddress(prim->indices)
        || prim->input.indexCount != run.indexCount || prim->input.vertexCount != record->positions.size())
       out.push_back(at("I3", p) + "its BLAS input is not its buffers");
     glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
@@ -272,6 +382,53 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     out.push_back("I21: a micromap a prim links is not among those built");
   if(residency.hasOpacityMicromaps() != (linking > 0))
     out.push_back("I21: hasOpacityMicromaps() is not whether a prim links a micromap");
+
+  // DLSS motion (I10): per prim slot, its previous positions' address once they have been copied, 0
+  // before and for a hole; per instance slot, the world it was last drawn with, zero for a hole
+  for(uint32_t p = 0; p < residency.primHighWater(); p++)
+  {
+    uint64_t want = 0;
+    if(const Residency::Prim* prim = residency.prim(p))
+    {
+      if(!prim->drawer.isNone())
+      {
+        if(const Residency::DrawerGpu* d = residency.drawer(prim->drawer, prim->mesh); d && d->prevValid)
+          want = gpu.bufferAddress(d->prevPositions);
+      }
+      else if(const Residency::MeshGpu* mesh = residency.meshGpu(prim->mesh); mesh && mesh->prevValid)
+        want = gpu.bufferAddress(mesh->prevPositions);
+    }
+    if(rowAt<uint64_t>(gpu, residency.prevPositionTable(), p) != want)
+      out.push_back(at("I10", p) + "its previous-positions row is not its previous positions' address");
+  }
+  if(gpu.bufferSize(residency.prevPositionTable()) < uint64_t(residency.primCapacity()) * sizeof(uint64_t))
+    out.push_back("I13: the previous-positions table is smaller than the prim capacity");
+  if(gpu.bufferSize(residency.prevWorldTable()) < uint64_t(residency.instanceCapacity()) * sizeof(glm::mat4))
+    out.push_back("I13: the previous-world table is smaller than the instance capacity");
+  for(uint32_t s = 0; s < hwm; s++)
+  {
+    const glm::mat4* prev = residency.prevWorld(s);
+    if(rowAt<glm::mat4>(gpu, residency.prevWorldTable(), s) != (prev ? *prev : glm::mat4(0.f)))
+      out.push_back(at("I10", s) + "its previous-world row is not the world it was last drawn with");
+  }
+
+  // the packs (I12): each drawer's joint matrices, normal matrices and weights inside their pack;
+  // its streams the mesh's own count (I14: a drawer reads its mesh's streams, never a copy)
+  for(const auto& [key, d] : residency.drawers())
+  {
+    const Residency::MeshGpu* mesh = residency.meshGpu(d.mesh);
+    if(!mesh)
+    {
+      out.push_back("I14: a drawer of a mesh that is not resident");
+      continue;
+    }
+    if((d.jointCount && d.jointOffset + uint64_t(d.jointCount) * sizeof(glm::mat4) > gpu.bufferSize(residency.jointPack()))
+       || (d.jointCount && d.normalOffset + uint64_t(d.jointCount) * kNormalMatrixStride > gpu.bufferSize(residency.normalPack()))
+       || (d.targetCount && d.weightOffset + uint64_t(d.targetCount) * sizeof(float) > gpu.bufferSize(residency.weightPack())))
+      out.push_back("I12: a drawer's pack range runs past its pack");
+    if(gpu.bufferSize(d.positions) != uint64_t(mesh->vertexCount) * sizeof(glm::vec3))
+      out.push_back("I14: a drawer's outputs are not its mesh's vertex count");
+  }
 
   // materials (I4): each slot's state is its record's, every texture it samples names a written
   // slot holding that texture's image; each slot's row is its state converted at its span, which

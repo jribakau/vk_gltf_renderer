@@ -34,6 +34,17 @@
 //   any prim does.
 // - A draw item (entity, mesh, submesh, instancing copy) is an instance: a render-node row and a TLAS
 //   row, the TLAS row's custom index its prim slot.
+// - A mesh an entity draws with a skin, or a mesh with morph targets, is deformed for that entity (a
+//   drawer): the drawer owns output positions, normals and tangents, which a morph pass and then a
+//   skin pass write from the mesh's streams, and its own prims, whose BLASes are built over the
+//   outputs and refit after each pass. A pass runs only when what it computes from changed: the
+//   joint matrices, the morph weights, or the mesh's vertices (a dial). The joint matrices, their
+//   normal matrices and the morph weights of every drawer are packed into three buffers.
+// - Motion for DLSS: per prim slot, the address of what its positions held when the last frame was
+//   drawn (0 for none: no deformation motion), copied at the top of a sync from positions written
+//   the sync before, before anything writes them again; per instance slot, the world matrix the
+//   last frame drew it with. A new slot starts with its current values, so it shows no motion,
+//   never another object's.
 // - Instance, prim and material slots come lowest-first from pools, so a fresh scene numbers them
 //   in document order; a freed slot is a hole (a zeroed row, a null TLAS row) until its retire
 //   frame, when it goes back to its pool. The tables are sized by capacity, a power of two at or
@@ -113,7 +124,7 @@ struct SyncResult
   bool buffersChanged    = false;  // a table or stream buffer was replaced
   bool visibilityChanged = false;  // an instance was shown or hidden
   bool tlasHandleChanged = false;  // the TLAS was recreated (capacity grew)
-  bool verticesWritten   = false;  // a mesh's vertices were uploaded again
+  bool verticesWritten   = false;  // a mesh's vertices were uploaded again, or a deform pass ran
   bool featuresChanged   = false;
   bool dlssReset         = false;  // a scene replace
 };
@@ -127,12 +138,41 @@ public:
     BufferHandle         positions, normals, tangents, uv0, uv1, colors;
     uint32_t             vertexCount = 0;
     uint32_t             contentRev  = 0;
-    std::vector<int32_t> prims;  // per submesh: its prim slot, -1 while nothing draws it
+    std::vector<int32_t> prims;  // per submesh: its static prim slot, -1 while nothing draws it so
+    // what its drawers deform with: joints (int4) and weights per vertex, and its targets' deltas
+    // packed target-major; made when the first drawer needs them
+    BufferHandle joints, weights, positionDeltas, normalDeltas, tangentDeltas;
+    uint32_t     targetCount = 0;
+    // its positions as the last frame drew them, kept once a host edit writes them (static prims)
+    BufferHandle prevPositions;
+    bool         prevValid = false;
   };
+  // A mesh one entity draws deformed: what the passes write, its prims, and what they last ran with
+  struct DrawerGpu
+  {
+    EntityId             entity;
+    MeshId               mesh;
+    BufferHandle         positions, normals, tangents;  // the outputs: its prims' vertex streams
+    // with both passes, what the morph writes and the skin reads (the skin never reads its own output)
+    BufferHandle         morphedPositions, morphedNormals, morphedTangents;
+    BufferHandle         prevPositions;
+    bool                 prevValid = false;
+    std::vector<int32_t> prims;  // per submesh
+    uint32_t             users       = 0;  // instances drawing it
+    bool                 morph       = false, skin = false;
+    uint32_t             targetCount = 0, jointCount = 0;
+    uint64_t             weightOffset = 0, jointOffset = 0, normalOffset = 0;  // in the packs
+    // the inputs it last ran with; empty: it runs at the next sync
+    std::vector<float>     lastWeights;
+    std::vector<glm::mat4> lastJoints;
+    bool                   ran = false;
+  };
+  using DrawerKey = std::pair<EntityId, MeshId>;
   // A submesh drawn: its index buffer, BLAS and bounds
   struct Prim
   {
     MeshId       mesh;
+    EntityId     drawer;  // the entity it is deformed for; none: drawn from the mesh's own streams
     uint32_t     submesh = 0;
     BufferHandle indices;
     uint32_t     indexCount = 0;
@@ -171,6 +211,7 @@ public:
     uint32_t   materialSlot = 0;
     glm::mat4  world        = glm::mat4(1.f);
     bool       shown        = true;
+    bool       deformed     = false;  // its prim is its drawer's
   };
 
   explicit Residency(GpuBackend& gpu, ResidencyOptions options = {});
@@ -225,6 +266,22 @@ public:
   const Prim*     prim(uint32_t slot) const;
   uint32_t        primHighWater() const { return uint32_t(m_prims.size()); }
   const MeshGpu*  meshGpu(MeshId mesh) const;
+  const DrawerGpu* drawer(EntityId entity, MeshId mesh) const;
+  const std::map<DrawerKey, DrawerGpu>& drawers() const { return m_drawers; }
+  // the deform passes the last sync ran
+  struct DeformCounts
+  {
+    uint32_t morphs = 0, skins = 0;
+  };
+  DeformCounts deformCounts() const { return m_deformCounts; }
+  BufferHandle jointPack() const { return m_jointPack; }
+  BufferHandle normalPack() const { return m_normalPack; }
+  BufferHandle weightPack() const { return m_weightPack; }
+  // DLSS motion: a device address per prim slot (0: none), and a world matrix per instance slot
+  BufferHandle prevPositionTable() const { return m_prevPositionTable; }
+  BufferHandle prevWorldTable() const { return m_prevWorldTable; }
+  // the world matrix an instance slot was last drawn with (what its prevWorldTable row holds)
+  const glm::mat4* prevWorld(uint32_t slot) const;
   const std::map<const OpacityMicromap*, MicromapGpu>& micromaps() const { return m_micromaps; }
   BufferHandle    renderNodeTable() const { return m_renderNodes; }
   BufferHandle    renderPrimTable() const { return m_renderPrims; }
@@ -309,9 +366,19 @@ private:
   void syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result);
   void syncRows(const std::vector<DrawItem>& items, SyncResult& result);
   std::set<MeshId> syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result);
+  void             snapshotPrevPositions();
+  void             syncDeforms(RetainedScene& scene, std::set<MeshId>& written, SyncResult& result);
+  bool             meshInUse(MeshId id) const;
+  void             layOutPacks(SyncResult& result);
+  void             writeMotionTables(SyncResult& result);
+  bool             deforms(const RetainedScene& scene, EntityId entity, MeshId mesh) const;
+  DrawerGpu&       acquireDrawer(const RetainedScene& scene, EntityId entity, MeshId mesh);
+  void             releaseDrawer(const DrawerKey& key);
+  void             makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool skin);
 
   MeshGpu& acquireMesh(const RetainedScene& scene, MeshId id);
-  uint32_t acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh);
+  // a submesh's prim: the mesh's own, or `drawer`'s when the entity draws it deformed
+  uint32_t acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh, EntityId drawer = {});
   void     releasePrim(uint32_t slot);
   void     linkMicromap(Prim& prim, const MicromapUse& use);
   void     unlinkMicromap(Prim& prim);
@@ -353,6 +420,18 @@ private:
   std::shared_ptr<nvutils::IDPool> m_instancePool, m_primPool, m_materialPool;
 
   std::map<MeshId, MeshGpu>            m_meshes;
+  std::map<DrawerKey, DrawerGpu>       m_drawers;
+  bool                                 m_packsDirty = false;  // drawers came or went: the packs are laid out again
+  BufferHandle                         m_jointPack, m_normalPack, m_weightPack;
+  DeformCounts                         m_deformCounts;
+  // positions written by the last sync, copied to their previous positions at the top of the next
+  std::set<DrawerKey>                  m_drawersWritten;
+  std::set<MeshId>                     m_meshesWritten;
+  BufferHandle                         m_prevPositionTable, m_prevWorldTable;
+  std::vector<glm::mat4>               m_prevWorlds;          // by instance slot: what the table row holds
+  std::set<uint32_t>                   m_dirtyPrevPrims;      // prim slots whose table row changes
+  std::set<uint32_t>                   m_dirtyPrevNodes;      // instance slots whose row changes
+  std::set<uint32_t>                   m_movedLast;           // instance slots whose world the last sync moved
   std::vector<std::optional<Prim>>     m_prims;      // by prim slot, up to the high-water mark
   std::map<const OpacityMicromap*, MicromapGpu> m_micromaps;
   std::optional<nvvkgltf::SceneFeatureSet>      m_shaderFeatures;

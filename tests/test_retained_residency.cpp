@@ -29,6 +29,8 @@
 #include <map>
 #include <random>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include "common/fake_gpu_backend.hpp"
 #include "common/residency_oracle.hpp"
 #include "scene_residency.hpp"
@@ -1009,6 +1011,7 @@ TEST(RetainedResidency, AnEmittersVertexWritesRebuildTheTableOnceTheyStop)
 // the same draws, the same geometry and the same transforms (slots may differ, content may not).
 TEST(RetainedResidency, IncrementalEqualsFresh)
 {
+  uint32_t morphs = 0, skins = 0;  // the passes the seeds ran, so the fuzz is known to reach them
   for(uint32_t seed = 1; seed <= 20; seed++)
   {
     std::mt19937            rng(seed);
@@ -1017,6 +1020,19 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
     std::vector<MaterialId> materials;
     for(int i = 0; i < 4; i++)
       meshes.push_back(scene.addMesh(gridMesh(1 + i, float(i), 1 + i % 2)));
+    // and one that deforms: two bones skin it, one target lifts it
+    MeshRecord deforming = gridMesh(2, 5.f, 2);
+    for(const glm::vec3& p : deforming.positions)
+    {
+      deforming.joints.push_back({0, 1, 0, 0});
+      deforming.weights.push_back({1.f - p.x * 0.5f, p.x * 0.5f, 0.f, 0.f});
+    }
+    deforming.targets.push_back({.positions = std::vector<glm::vec3>(deforming.positions.size(), glm::vec3(0, 0, 1))});
+    deforming.targetWeights = {0.f};
+    const MeshId   deformingMesh = scene.addMesh(deforming);
+    const EntityId bone0 = scene.createEntity("bone0", {}), bone1 = scene.createEntity("bone1", {}, bone0);
+    const SkinId   skin  = scene.addSkin({.name = "skin", .joints = {bone0, bone1}, .inverseBind = {glm::mat4(1.f), glm::mat4(1.f)}});
+    meshes.push_back(deformingMesh);
     for(const char* name : {"a", "b", "c"})
       materials.push_back(material(scene, name));
     const auto table = textureTable(scene);
@@ -1032,7 +1048,7 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
 
     for(int step = 0; step < 60; step++)
     {
-      const int op = std::uniform_int_distribution<int>(0, 6)(rng);
+      const int op = std::uniform_int_distribution<int>(0, 8)(rng);
       if(op <= 1 || live.empty())
       {
         const MeshId            mesh = pick(meshes);
@@ -1041,6 +1057,12 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
           mats.push_back(pick(materials));
         const EntityId parent = !live.empty() && rng() % 3 == 0 ? pick(live) : EntityId{};
         live.push_back(drawn(scene, "e", mesh, mats, parent));
+        if(mesh == deformingMesh && rng() % 2)  // skinned too, not only morphed
+        {
+          MeshInstance instance = *scene.entity(live.back())->mesh;
+          instance.skin         = skin;
+          scene.setMeshInstance(live.back(), instance);
+        }
         if(rng() % 4 == 0)
           live.push_back(lightEntity(scene, rng() % 2 ? "point" : "spot", 10.0, live.back()));
       }
@@ -1058,6 +1080,16 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       }
       else if(op == 4)
         scene.setVisible(pick(live), rng() % 2 == 0);
+      else if(op == 7)
+      {
+        // a pose: the second bone turns
+        Transform t;
+        t.translation = {1, 0, 0};
+        t.rotation    = glm::angleAxis(float(rng() % 90) * 0.01f, glm::vec3(0, 1, 0));
+        scene.setLocal(bone1, t);
+      }
+      else if(op == 8)
+        scene.setMorphWeights(pick(live), {float(rng() % 5) * 0.25f});
       else if(op == 6)
       {
         // a material edit: another texture, another alpha mode, sides
@@ -1080,6 +1112,8 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       }
       gpu.beginFrame();
       residency.sync(scene);
+      morphs += residency.deformCounts().morphs;
+      skins += residency.deformCounts().skins;
       expectClean(scene, residency, gpu, "seed " + std::to_string(seed) + " step " + std::to_string(step) + ": ");
     }
     // the emissive table settles once the vertex writes stop
@@ -1110,4 +1144,6 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
     };
     EXPECT_TRUE(draws(residency, gpu) == draws(again, fresh)) << "seed " << seed;
   }
+  EXPECT_GT(morphs, 20u);
+  EXPECT_GT(skins, 20u);
 }
