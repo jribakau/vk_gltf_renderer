@@ -2185,7 +2185,7 @@ void GltfRenderer::onFileDrop(const std::filesystem::path& filename)
 
 //--------------------------------------------------------------------------------------------------
 // Save the scene
-bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContained, const std::function<void(tinygltf::Model&)>& edit)
+bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContained)
 {
   if(m_resources.getScene() && m_resources.getScene()->valid() && !filename.empty())
   {
@@ -2219,14 +2219,6 @@ bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContaine
     scene->setPreSaveHook([this](tinygltf::Model& outModel, const std::filesystem::path& destination) {
       writeEnvironmentSky(outModel, destination);
     });
-
-    // A host's export writes a copy, cameras and its edit on it, and leaves the scene as it draws
-    if(edit)
-      return scene->saveCopy(filename, selfContained, [&](tinygltf::Model& copy) {
-        if(!cameras.empty())
-          scene->writeSceneCameras(copy, cameras);
-        edit(copy);
-      });
 
     // File > Save: the viewport's cameras become the scene's, then the scene is written
     if(!cameras.empty())

@@ -895,6 +895,11 @@ struct FvHost::Impl
 
   std::string uniqueName(const std::string& name, const Prop* self) const;
   bool        shown(const Prop& p) const;
+  fv::composer::Part partOf(size_t i, const tinygltf::Model* model, bool forFile) const;
+  // a model prop's file with its material edits laid over its own materials
+  tinygltf::Model editedModel(const Prop& p) const;
+  // export.glb {scene: true}: the scene as a file, built fresh from the props
+  Json exportScene(const std::string& path);
   bool        ridesOn(const Prop& q, const std::string& id) const;
   void        applyLightShown(const Prop& p);
 
@@ -1727,6 +1732,57 @@ void FvHost::Impl::requestCompose(const std::string& label, std::function<void()
     pendingCompose->settle.insert(settle);
 }
 
+// How a figure is built for the scene: its textures as resolved (cooked, or baked for an edit),
+// flipped as they arrive, the skin for the renderer, the surfaces light walks through.
+static fv::build::BuildOptions buildOptionsOf(const Loaded& f, fv::mat::SkinMode skin)
+{
+  fv::build::BuildOptions options;
+  options.texturesFlipped = f.texturesFlipped;
+  options.skin            = skin;
+  options.texture         = [&f](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+    auto it = f.images.find(fv::build::requestKey(req));
+    return it == f.images.end() ? std::nullopt : it->second;
+  };
+  options.walkThrough = fv::walkThroughMaterials(f.fig->loaded.scene, f.fig->items);
+  return options;
+}
+
+// Prop i as a part of the composed scene, `model` what goes under its root (its figure's build or
+// its file). A light the scene shows hidden draws at intensity 0; in an export (`forFile`) it keeps
+// its intensity, and its root, hidden like any hidden prop's, says it is off.
+fv::composer::Part FvHost::Impl::partOf(size_t i, const tinygltf::Model* model, bool forFile) const
+{
+  const Prop&        p = *props[i];
+  fv::composer::Part part;
+  part.id        = p.id;
+  part.name      = p.name;
+  part.transform = p.transform;
+  part.visible   = p.visible;
+  for(size_t j = 0; j < props.size(); j++)
+    if(!p.parent.empty() && props[j]->id == p.parent)
+      part.parent = int(j);
+  if(model)
+    part.model = model;
+  else if(p.kind == PropKind::eCamera)
+    part.camera = fv::composer::perspectiveCamera(p.camera.lens.focalLength);
+  else if(p.kind == PropKind::eLight)
+  {
+    tinygltf::Light l;
+    l.name                = p.name;
+    l.type                = p.light.type;
+    const glm::vec3 c     = fv::lighting::linearColor(p.light.color);
+    l.color               = {c.x, c.y, c.z};
+    l.intensity           = forFile || shown(p) ? p.light.intensity : 0.0;
+    l.spot.innerConeAngle = p.light.inner;
+    l.spot.outerConeAngle = p.light.outer;
+    tinygltf::Value::Object extras;
+    extras["radius"] = tinygltf::Value(p.light.radius);
+    l.extras         = tinygltf::Value(extras);
+    part.light       = l;
+  }
+  return part;
+}
+
 // The scene built again from its props and handed to the renderer in place of the old one: every
 // figure's glTF from its scene graph (its pose, dials, worn items and edits are in the graph, so it
 // comes back as it was), each on a thread of its own; every model as its file had it, with its
@@ -1785,15 +1841,7 @@ void FvHost::Impl::compose()
         continue;
       }
       work.push_back(std::async(std::launch::async, [f, skin, &out = builds[i]] {
-        fv::build::BuildOptions options;
-        options.texturesFlipped = f->texturesFlipped;
-        options.skin            = skin;
-        options.texture         = [f](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
-          auto it = f->images.find(fv::build::requestKey(req));
-          return it == f->images.end() ? std::nullopt : it->second;
-        };
-        options.walkThrough = fv::walkThroughMaterials(f->fig->loaded.scene, f->fig->items);
-        out = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, options);
+        out = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, buildOptionsOf(*f, skin));
       }));
     }
     fv::timing::Scope timeWait("buildGltf wait");
@@ -1813,36 +1861,8 @@ void FvHost::Impl::compose()
   std::vector<fv::composer::Part> parts(props.size());
   for(size_t i = 0; i < props.size(); i++)
   {
-    const Prop&        p    = *props[i];
-    fv::composer::Part& part = parts[i];
-    part.id                 = p.id;
-    part.name               = p.name;
-    part.transform          = p.transform;
-    part.visible            = p.visible;
-    for(size_t j = 0; j < props.size(); j++)
-      if(!p.parent.empty() && props[j]->id == p.parent)
-        part.parent = int(j);
-    if(p.figure && builds[i])
-      part.model = &builds[i]->model;
-    else if(p.model)
-      part.model = p.model.get();
-    else if(p.kind == PropKind::eCamera)
-      part.camera = fv::composer::perspectiveCamera(p.camera.lens.focalLength);
-    else if(p.kind == PropKind::eLight)
-    {
-      tinygltf::Light l;
-      l.name                   = p.name;
-      l.type                   = p.light.type;
-      const glm::vec3 c        = fv::lighting::linearColor(p.light.color);
-      l.color                  = {c.x, c.y, c.z};
-      l.intensity              = shown(p) ? p.light.intensity : 0.0;
-      l.spot.innerConeAngle    = p.light.inner;
-      l.spot.outerConeAngle    = p.light.outer;
-      tinygltf::Value::Object extras;
-      extras["radius"] = tinygltf::Value(p.light.radius);
-      l.extras         = tinygltf::Value(extras);
-      part.light       = l;
-    }
+    const Prop& p = *props[i];
+    parts[i]      = partOf(i, p.figure && builds[i] ? &builds[i]->model : p.model.get(), false);
   }
   std::vector<fv::composer::Placed> placed;
   tinygltf::Model                  composed = [&] {
@@ -3427,50 +3447,78 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
 // edits; the glTF is built here (the scene belongs to this thread), composing the textures, which
 // takes the time, and writing the file run on a worker. A model: its file's contents with its
 // material edits. {scene: true}: everything in the scene, as the renderer has it, but the sun.
+// The file's model with its material edits laid over its own materials, as FvMaterials::writeModel
+// lays them over the scene's: its textures stay the file's own.
+tinygltf::Model FvHost::Impl::editedModel(const Prop& p) const
+{
+  tinygltf::Model copy = *p.model;
+  for(size_t i = 0; p.materials && i < copy.materials.size(); i++)
+    if(const fv::mat::Edits* edits = p.materials->modelEdits(int(i)))
+      copy.materials[i] = fv::model::editedMaterial(copy.materials[i], *edits);
+  for(const char* ext : fv::model::kEditedExtensions)
+    if(std::any_of(copy.materials.begin(), copy.materials.end(), [&](const tinygltf::Material& m) { return m.extensions.count(ext) > 0; })
+       && std::find(copy.extensionsUsed.begin(), copy.extensionsUsed.end(), ext) == copy.extensionsUsed.end())
+      copy.extensionsUsed.push_back(ext);
+  return copy;
+}
+
+// The scene as a file (D21: what the renderer draws, FV extensions and all), built fresh from the
+// props rather than copied from the renderer's scene: figures built again with the live options (so
+// their dialled vertices and binds agree, and what was taken off is not there, while a hidden item
+// stays, marked hidden); models with their material edits; cameras at their current lens; lights
+// at their own intensity, a hidden one's root marked hidden; no sun of the host's; the sky. What the
+// composer can't carry over is stripped, with a notice. The figures are built here, on the app
+// thread: a worker would race the dials, which change their meshes in place on this thread.
+Json FvHost::Impl::exportScene(const std::string& path)
+{
+  if(props.empty())
+    throw std::runtime_error("The scene is empty: there is nothing to export.");
+  fv::timing::Scope                                  timeExport("export scene");
+  std::vector<std::optional<fv::build::BuildResult>> builds(props.size());
+  std::vector<std::optional<tinygltf::Model>>        models(props.size());
+  std::vector<fv::composer::Part>                    parts(props.size());
+  for(size_t i = 0; i < props.size(); i++)
+  {
+    const Prop&              p     = *props[i];
+    const tinygltf::Model*   model = nullptr;
+    if(Loaded* f = p.figure.get())
+    {
+      builds[i] = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, buildOptionsOf(*f, skinMode.load()));
+      model     = &builds[i]->model;
+    }
+    else if(p.model)
+      model = &models[i].emplace(editedModel(p));
+    parts[i] = partOf(i, model, true);
+  }
+  std::vector<fv::composer::Placed> placed;
+  tinygltf::Model                   scene = fv::composer::compose(parts, placed);
+  for(const std::string& stripped : fv::composer::stripForFile(scene))
+    notice("Export: " + stripped, "warning");
+  renderer->writeEnvironmentSky(scene, pathOf(path));
+  // tinygltf writes extensionsUsed as it is: what the sky added, and nothing stripped
+  tinygltf::utils::syncExtensionsUsed(scene);
+  std::string error;
+  if(!fv::composer::packForGlb(scene, error))
+    throw std::runtime_error(error);
+  tinygltf::TinyGLTF writer;
+  if(!writer.WriteGltfSceneToFile(&scene, utf8Of(pathOf(path)), false, true, false, true))
+    throw std::runtime_error("could not write " + path);
+  notice("Exported " + utf8Of(pathOf(path).filename()), "info");
+  return {{"ok", true}};
+}
+
 Json FvHost::Impl::exportGlb(const Json& args)
 {
   const std::string path = args.at("path").get<std::string>();
   if(args.value("scene", false))
-  {
-    nvvkgltf::Scene* scn = renderer->editScene();
-    if(!scn || !scn->valid() || props.empty())
-      throw std::runtime_error("The scene is empty: there is nothing to export.");
-    // without the sun the host added: the file describes the scene, not this session's lighting
-    const int node = sunNode, light = sunLight;
-    const auto withoutSun = [node, light](tinygltf::Model& m) {
-      if(node < 0 || node >= int(m.nodes.size()))
-        return;
-      for(tinygltf::Scene& scene : m.scenes)
-        scene.nodes.erase(std::remove(scene.nodes.begin(), scene.nodes.end(), node), scene.nodes.end());
-      // appended last, so it goes without renumbering anything; else it stays, emptied and unreferenced
-      if(node == int(m.nodes.size()) - 1)
-        m.nodes.pop_back();
-      else
-        m.nodes[size_t(node)] = tinygltf::Node{};
-      if(light >= 0 && light == int(m.lights.size()) - 1)
-        m.lights.pop_back();
-    };
-    if(!renderer->save(pathOf(path), true, withoutSun))
-      throw std::runtime_error("the renderer could not write " + path);
-    notice("Exported " + utf8Of(pathOf(path).filename()), "info");
-    return {{"ok", true}};
-  }
+    return exportScene(path);
   const auto prop = propArg(args);
   if(!prop || (!prop->figure && !prop->model))
     throw std::runtime_error("Select a figure or a model to export.");
   if(prop->model)
   {
-    // the file's model with its material edits laid over its own materials, as
-    // FvMaterials::writeModel lays them over the scene's: its textures stay the file's own
-    tinygltf::Model copy = *prop->model;
-    for(size_t i = 0; prop->materials && i < copy.materials.size(); i++)
-      if(const fv::mat::Edits* edits = prop->materials->modelEdits(int(i)))
-        copy.materials[i] = fv::model::editedMaterial(copy.materials[i], *edits);
-    for(const char* ext : fv::model::kEditedExtensions)
-      if(std::any_of(copy.materials.begin(), copy.materials.end(), [&](const tinygltf::Material& m) { return m.extensions.count(ext) > 0; })
-         && std::find(copy.extensionsUsed.begin(), copy.extensionsUsed.end(), ext) == copy.extensionsUsed.end())
-        copy.extensionsUsed.push_back(ext);
-    std::string error;
+    tinygltf::Model copy = editedModel(*prop);
+    std::string     error;
     if(!fv::composer::packForGlb(copy, error))
       throw std::runtime_error(error);
     tinygltf::TinyGLTF writer;

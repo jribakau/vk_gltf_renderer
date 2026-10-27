@@ -484,11 +484,10 @@ public:
 
   /// Write the current scene to `filename`; backs --savefile, so it is reachable from the command
   /// line, a benchmark sequence and nvpro_set_parameters through the same single registration the
-  /// load parameters use. Application thread only: it reads scene and model state. `edit`, when
-  /// given, changes the copy that is written (a host leaving out what it added), before the sky;
-  /// the current view goes into that copy too, and the live scene is left as it was. Without
-  /// `edit` the view becomes the scene's first camera, as File > Save has it.
-  bool save(const std::filesystem::path& filename, bool selfContained = false, const std::function<void(tinygltf::Model&)>& edit = {});
+  /// load parameters use. Application thread only: it reads scene and model state. The view
+  /// becomes the scene's first camera, as File > Save has it. (A host's scene export builds its own
+  /// model instead: FvHost's export.glb.)
+  bool save(const std::filesystem::path& filename, bool selfContained = false);
 
   /// Ray-pick at a normalized viewport position (0..1, origin top-left): the viewport click path
   /// without ImGui. `center` recenters the camera on the hit instead of selecting. The result is

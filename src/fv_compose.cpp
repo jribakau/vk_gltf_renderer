@@ -311,6 +311,67 @@ bool packForGlb(tinygltf::Model& model, std::string& error)
   return true;
 }
 
+std::vector<std::string> stripForFile(tinygltf::Model& model)
+{
+  std::vector<std::string> stripped;
+  const auto               unuse = [&](const char* ext) {
+    for(std::vector<std::string>* list : {&model.extensionsUsed, &model.extensionsRequired})
+      list->erase(std::remove(list->begin(), list->end(), ext), list->end());
+  };
+
+  // KHR_animation_pointer channels; an animation left without channels goes, and the samplers no
+  // channel reads go with them
+  bool pointers = false;
+  for(tinygltf::Animation& a : model.animations)
+  {
+    const size_t before = a.channels.size();
+    a.channels.erase(std::remove_if(a.channels.begin(), a.channels.end(),
+                                    [](const tinygltf::AnimationChannel& c) {
+                                      return c.target_path == "pointer" || c.target_extensions.count("KHR_animation_pointer") > 0;
+                                    }),
+                     a.channels.end());
+    if(a.channels.size() == before)
+      continue;
+    pointers = true;
+    std::vector<int> newIndex(a.samplers.size(), -1);
+    std::vector<tinygltf::AnimationSampler> kept;
+    for(tinygltf::AnimationChannel& c : a.channels)
+    {
+      if(c.sampler < 0 || c.sampler >= int(a.samplers.size()))
+        continue;
+      if(newIndex[size_t(c.sampler)] < 0)
+      {
+        newIndex[size_t(c.sampler)] = int(kept.size());
+        kept.push_back(a.samplers[size_t(c.sampler)]);
+      }
+      c.sampler = newIndex[size_t(c.sampler)];
+    }
+    a.samplers = std::move(kept);
+  }
+  model.animations.erase(std::remove_if(model.animations.begin(), model.animations.end(),
+                                        [](const tinygltf::Animation& a) { return a.channels.empty(); }),
+                         model.animations.end());
+  if(pointers)
+  {
+    unuse("KHR_animation_pointer");
+    stripped.push_back("animations of material and other properties (KHR_animation_pointer) are left out");
+  }
+
+  if(model.extensions.erase("KHR_interactivity") > 0)
+    stripped.push_back("interactive behaviour (KHR_interactivity) is left out");
+  unuse("KHR_interactivity");
+
+  // material variants: each primitive keeps its default material
+  bool variants = model.extensions.erase("KHR_materials_variants") > 0;
+  for(tinygltf::Mesh& mesh : model.meshes)
+    for(tinygltf::Primitive& prim : mesh.primitives)
+      variants |= prim.extensions.erase("KHR_materials_variants") > 0;
+  if(variants)
+    stripped.push_back("material variants (KHR_materials_variants) are left out; each surface keeps its default material");
+  unuse("KHR_materials_variants");
+  return stripped;
+}
+
 tinygltf::Camera perspectiveCamera(double focalLengthMm, double aspect)
 {
   aspect             = std::max(aspect, 1e-3);

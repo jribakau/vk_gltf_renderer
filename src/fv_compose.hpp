@@ -87,6 +87,11 @@ bool readModelFile(const std::filesystem::path& file, tinygltf::Model& model, st
 // file it points at read into it as a bufferView. False with `error` when an image can't be read.
 bool packForGlb(tinygltf::Model& model, std::string& error);
 
+// What a composed scene carries that no file should, stripped for an export (D23): the parts' own
+// KHR_animation_pointer channels, KHR_interactivity graphs and KHR_materials_variants, whose indices
+// SceneMerger does not rebase. One line per kind it took out, for the user.
+std::vector<std::string> stripForFile(tinygltf::Model& model);
+
 // The camera a camera prop puts under its root: perspective, its field of view from a focal length
 // on 35 mm film (the vertical one, for a landscape frame of `aspect`).
 tinygltf::Camera perspectiveCamera(double focalLengthMm, double aspect = 1.5);

@@ -282,3 +282,59 @@ TEST(FvCompose, AModelsLightsFollowALampsLight)
   EXPECT_EQ(lights.Get(1).Get("type").Get<std::string>(), "spot");
   std::filesystem::remove_all(dir);
 }
+
+// A scene export strips what SceneMerger does not rebase (B58, D23): the pointer channels, with the
+// samplers only they read and an animation left with none; interactivity; material variants.
+TEST(FvCompose, AnExportStripsWhatTheComposerCannotRebase)
+{
+  tinygltf::Model m = smallModel("lamp");
+  m.animations.resize(2);
+  tinygltf::Animation& mixed = m.animations[0];
+  mixed.samplers.resize(3);
+  mixed.samplers[2].input = 7;  // read by the node channel: it survives, renumbered
+  tinygltf::AnimationChannel node;
+  node.sampler     = 2;
+  node.target_node = 1;
+  node.target_path = "rotation";
+  tinygltf::AnimationChannel pointer;
+  pointer.sampler     = 0;
+  pointer.target_path = "pointer";
+  tinygltf::Value::Object ptr;
+  ptr["pointer"]                                = tinygltf::Value(std::string("/materials/0/emissiveFactor"));
+  pointer.target_extensions["KHR_animation_pointer"] = tinygltf::Value(ptr);
+  mixed.channels = {pointer, node};
+  m.animations[1].samplers.resize(1);
+  m.animations[1].channels = {pointer};
+
+  m.extensions["KHR_interactivity"]                        = tinygltf::Value(tinygltf::Value::Object{});
+  m.extensions["KHR_materials_variants"]                   = tinygltf::Value(tinygltf::Value::Object{});
+  m.meshes[0].primitives[0].extensions["KHR_materials_variants"] = tinygltf::Value(tinygltf::Value::Object{});
+  m.extensionsUsed     = {"KHR_lights_punctual", "KHR_animation_pointer", "KHR_interactivity", "KHR_materials_variants"};
+  m.extensionsRequired = {"KHR_interactivity"};
+
+  const std::vector<std::string> notes = fv::composer::stripForFile(m);
+  EXPECT_EQ(notes.size(), 3u);
+  ASSERT_EQ(m.animations.size(), 1u);
+  ASSERT_EQ(m.animations[0].channels.size(), 1u);
+  EXPECT_EQ(m.animations[0].channels[0].target_path, "rotation");
+  ASSERT_EQ(m.animations[0].samplers.size(), 1u);
+  EXPECT_EQ(m.animations[0].channels[0].sampler, 0);
+  EXPECT_EQ(m.animations[0].samplers[0].input, 7);
+  EXPECT_TRUE(m.extensions.empty());
+  EXPECT_TRUE(m.meshes[0].primitives[0].extensions.empty());
+  EXPECT_EQ(m.extensionsUsed, std::vector<std::string>{"KHR_lights_punctual"});
+  EXPECT_TRUE(m.extensionsRequired.empty());
+}
+
+TEST(FvCompose, AnExportOfAPlainSceneStripsNothing)
+{
+  std::vector<Part> parts(1);
+  const tinygltf::Model model = smallModel("chair");
+  parts[0].id                 = "p:0";
+  parts[0].model              = &model;
+  std::vector<Placed>   placed;
+  tinygltf::Model       scene  = fv::composer::compose(parts, placed);
+  const tinygltf::Model before = scene;
+  EXPECT_TRUE(fv::composer::stripForFile(scene).empty());
+  EXPECT_TRUE(scene == before);
+}
