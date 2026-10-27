@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include <functional>
+#include <source_location>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -35,6 +36,18 @@
 using namespace rs;
 
 namespace {
+
+// A stand-in for the renderer's class, so the check sees this compiler's own spelling of a member
+// and of a lambda inside one
+struct GltfRenderer
+{
+  std::source_location onAttach() const
+  {
+    return [] { return std::source_location::current(); }();
+  }
+  std::source_location setNodeTransforms() const { return std::source_location::current(); }
+  std::source_location updateAnimation() const { return std::source_location::current(); }
+};
 
 // Two props drawing one quad with their own materials, the first with a lamp below it
 tinygltf::Model fixture()
@@ -191,6 +204,40 @@ TEST(SceneCoexistence, TheBridgeCarriesTheHostsEdits)
     legacy.editor().getLightForEdit(0).intensity = 0.0;
     legacy.markLightDirty(0);
   });
+}
+
+// The legacy-accessor check's allow-list, in MSVC's and clang's spellings of a function, a lambda
+// inside an allowed member, and a member whose name an allowed one prefixes
+TEST(SceneCoexistence, TheLegacyUsesARetainedSessionAllows)
+{
+  EXPECT_TRUE(legacySceneUseAllowed("F:\\x\\src\\fv_host.cpp", "void __cdecl fv::FvHost::Impl::compose(void)"));
+  EXPECT_TRUE(legacySceneUseAllowed("/x/src/sky_sun.cpp", "anything"));
+  EXPECT_TRUE(legacySceneUseAllowed("src/renderer.hpp", "struct nvvkgltf::Scene *__cdecl GltfRenderer::editScene(void)"));
+  EXPECT_TRUE(legacySceneUseAllowed("src/renderer.cpp", "void GltfRenderer::setNodeTransforms(std::span<const int>)"));
+  EXPECT_TRUE(legacySceneUseAllowed("src/renderer.cpp", "auto __cdecl GltfRenderer::onAttach::<lambda_3>::operator ()(int) const"));
+  EXPECT_TRUE(legacySceneUseAllowed("src/renderer.cpp",
+                                    "GltfRenderer::onAttach(nvapp::Application *)::(anonymous class)::operator()() const"));
+
+  EXPECT_FALSE(legacySceneUseAllowed("src/renderer.cpp", "void __cdecl GltfRenderer::updateSceneChanges(struct VkCommandBuffer_T *)"));
+  EXPECT_FALSE(legacySceneUseAllowed("src/renderer.cpp", "void __cdecl GltfRenderer::onAttachSomething(void)"));
+  EXPECT_FALSE(legacySceneUseAllowed("src/rasterizer.cpp", "void __cdecl Rasterizer::onRender(void)"));
+  EXPECT_FALSE(legacySceneUseAllowed("src/not_fv_host.cpp", "f"));
+  EXPECT_TRUE(legacySceneUseAllowed("src/renderer.cpp", "GltfRenderer::setNodeTransforms"));  // no signature
+
+  // as this compiler names them
+  const GltfRenderer stand;
+  EXPECT_TRUE(legacySceneUseAllowed("renderer.cpp", stand.onAttach().function_name())) << stand.onAttach().function_name();
+  EXPECT_TRUE(legacySceneUseAllowed("renderer.cpp", stand.setNodeTransforms().function_name()))
+      << stand.setNodeTransforms().function_name();
+  EXPECT_FALSE(legacySceneUseAllowed("renderer.cpp", stand.updateAnimation().function_name()))
+      << stand.updateAnimation().function_name();
+
+  // once per call site, and never for an allowed one
+  LegacyUseCheck check;
+  EXPECT_TRUE(check.firstUnlisted("src/renderer.cpp", 10, "void GltfRenderer::updateAnimation(void)"));
+  EXPECT_FALSE(check.firstUnlisted("src/renderer.cpp", 10, "void GltfRenderer::updateAnimation(void)"));
+  EXPECT_TRUE(check.firstUnlisted("src/renderer.cpp", 11, "void GltfRenderer::updateAnimation(void)"));
+  EXPECT_FALSE(check.firstUnlisted("src/renderer.cpp", 12, "void GltfRenderer::cleanupScene(void)"));
 }
 
 TEST(SceneCoexistence, WhatTheBridgeCantCarryIsAReimport)

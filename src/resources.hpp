@@ -28,6 +28,7 @@
 #include <bitset>
 #include <cstdint>
 #include <memory>
+#include <source_location>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -42,6 +43,7 @@
 #include <nvshaders_host/tonemapper.hpp>
 #include <nvslang/slang.hpp>
 #include <nvutils/camera_manipulator.hpp>
+#include <nvutils/logger.hpp>
 #include <nvvk/descriptors.hpp>
 #include <nvvk/render_target.hpp>
 #include <nvvk/hdr_ibl.hpp>
@@ -378,8 +380,25 @@ struct Resources
   rs::LegacyDirtyBridge                retainedBridge;
   std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
 
-  nvvkgltf::Scene*       getScene() { return scene.get(); }
-  const nvvkgltf::Scene* getScene() const { return scene.get(); }
+  // The legacy CPU scene. In a retained session a use from outside the inventory's allow-list logs
+  // once per call site (rs::legacySceneUseAllowed), the debug check every by-eye session runs with
+  nvvkgltf::Scene* getScene(std::source_location where = std::source_location::current())
+  {
+    checkLegacyUse(where);
+    return scene.get();
+  }
+  const nvvkgltf::Scene* getScene(std::source_location where = std::source_location::current()) const
+  {
+    checkLegacyUse(where);
+    return scene.get();
+  }
+  void checkLegacyUse(const std::source_location& where) const
+  {
+    if(retainedGpu && legacyUseCheck.firstUnlisted(where.file_name(), where.line(), where.function_name()))
+      LOGW("Retained scene: the legacy scene read at %s:%u (%s), which is not on the allow-list\n", where.file_name(),
+           unsigned(where.line()), where.function_name());
+  }
+  mutable rs::LegacyUseCheck legacyUseCheck;
 
   // Resources
   nvvk::HdrIbl hdrIbl;  // HDR environment map

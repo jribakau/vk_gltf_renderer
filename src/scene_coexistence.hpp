@@ -26,9 +26,12 @@
 // imported from it. GPU-free.
 //
 
+#include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include <tinygltf/tiny_gltf.h>
@@ -101,6 +104,25 @@ public:
 
 private:
   ImportResult m_map;
+};
+
+// The legacy-accessor debug check (developer.md, "The legacy scene and `SceneGpuView`"): whether a
+// retained session may read the legacy CPU scene from `function` in `file` (a std::source_location's,
+// any compiler's spelling). Allowed: the scene replace, the host's edits and addressing that the
+// bridge carries across, and the scene's sky and sun lights. Anything else reads a scene the retained
+// one doesn't keep in step, or a legacy GPU path it bypasses.
+bool legacySceneUseAllowed(std::string_view file, std::string_view function);
+
+// The check's memory: true the first time a call site outside the allow-list is seen, so it logs
+// once. Any thread.
+class LegacyUseCheck
+{
+public:
+  bool firstUnlisted(std::string_view file, uint32_t line, std::string_view function);
+
+private:
+  std::mutex                   m_mutex;
+  std::unordered_set<uint64_t> m_seen;  // call sites decided, either way
 };
 
 }  // namespace rs

@@ -811,6 +811,14 @@ Every use of the legacy scene
 (`Resources::getScene()`, `Scene::getModel()`, `editScene()`, `hasValidScene()`, `sceneVk`,
 `sceneRtx`) outside the frozen `src/ui_*` files has one of these dispositions. A new use picks one.
 
+In a retained session, `Resources::getScene()` checks its caller (a defaulted
+`std::source_location`) against an allow-list, `rs::legacySceneUseAllowed` in
+scene_coexistence.cpp, and logs a call site outside it once: `Retained scene: the legacy scene read
+at <file>:<line> (<function>)`. The list is the host's edits and addressing (below), the scene's sky
+and sun lights, and the scene replace and frame sync (`finalizeSceneSetup`, `cleanupScene`,
+`createRetainedScene`, `syncRetainedScene`). A new legacy-only use that runs in a retained session
+goes on it; anything else that logs reads a scene the retained one doesn't keep in step.
+
 **Through `SceneGpuView`** (`Resources::gpuView()`):
 - `PathTracer`: the scene descriptor, the TLAS, the bounds for the aperture and ground sliders,
   opacity micromap presence.
@@ -854,8 +862,9 @@ handles from P4:
 
 **Unreachable in stream sessions** (windowed or `--scenefile` only, or refused while `FvHost` is
 attached): `onFileDrop`, `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`,
-`wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `updateInteractivityGraphs`,
-`updateHoverState`, `undo_redo.cpp`, `gltf_interactivity_scene_pointer.cpp`.
+`wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `undo_redo.cpp`,
+`gltf_interactivity_scene_pointer.cpp`. `updateInteractivityGraphs` and `updateHoverState` run in a
+legacy stream session and are skipped in a retained one, which takes no `KHR_interactivity`.
 
 ### The retained scene in a stream session
 

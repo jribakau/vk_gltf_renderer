@@ -20,6 +20,8 @@
 #include "scene_coexistence.hpp"
 
 #include <algorithm>
+#include <array>
+#include <functional>
 
 #include "gltf_scene.hpp"
 #include "tinygltf_utils.hpp"
@@ -173,6 +175,60 @@ LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy
     }
   }
   return Result::eCarried;
+}
+
+// The inventory's allow-list: whole files of the host and the sky, and GltfRenderer's members
+// that replace the scene or carry the host's edits and picks
+bool legacySceneUseAllowed(std::string_view file, std::string_view function)
+{
+  static constexpr std::array<std::string_view, 7> kFiles = {
+      "fv_host.cpp",   "fv_materials.cpp",       "fv_view.cpp", "fv_compose.cpp",
+      "mcp_scene.cpp", "renderer_selection.cpp", "sky_sun.cpp",
+  };
+  static constexpr std::array<std::string_view, 16> kMembers = {
+      // the scene replace and the frame's sync
+      "finalizeSceneSetup",
+      "cleanupScene",
+      "createRetainedScene",
+      "syncRetainedScene",
+      "applyEnvironmentSkyFromScene",
+      "applyPendingAuthoredSky",
+      // the host's edits and addressing, and the gizmo (its hooks are onAttach's lambdas)
+      "editScene",
+      "appendSceneFile",
+      "setNodeTransforms",
+      "setInverseBindMatrices",
+      "renderPrimitivesOfMesh",
+      "selectSceneNodeFromScript",
+      "pickSceneNodeFromScript",
+      "hoverSceneNodeFromScript",
+      "updateGizmoAttachment",
+      "onAttach",
+  };
+  const size_t           slash = file.find_last_of("/\\");
+  const std::string_view base  = slash == std::string_view::npos ? file : file.substr(slash + 1);
+  if(std::find(kFiles.begin(), kFiles.end(), base) != kFiles.end())
+    return true;
+  // "GltfRenderer::name" followed by its parameters, by "::" inside a lambda, or by nothing (a
+  // compiler that leaves the signature out)
+  constexpr std::string_view kClass = "GltfRenderer::";
+  for(size_t at = function.find(kClass); at != std::string_view::npos; at = function.find(kClass, at + 1))
+  {
+    const std::string_view rest = function.substr(at + kClass.size());
+    for(std::string_view member : kMembers)
+      if(rest.starts_with(member) && (rest.size() == member.size() || rest[member.size()] == '(' || rest[member.size()] == ':'))
+        return true;
+  }
+  return false;
+}
+
+bool LegacyUseCheck::firstUnlisted(std::string_view file, uint32_t line, std::string_view function)
+{
+  const uint64_t                    site = std::hash<std::string_view>{}(file) * 1000003u + line;
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  if(!m_seen.insert(site).second)
+    return false;
+  return !legacySceneUseAllowed(file, function);
 }
 
 }  // namespace rs

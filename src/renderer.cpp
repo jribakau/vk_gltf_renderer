@@ -1769,7 +1769,9 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // (this is instance-motion-vector territory - see docs/denoising.md). Hover/click are ticked in the
   // same block since they already had to run before the graph tick (a same-frame hover/select feeds
   // this tick), and moving them doesn't change their own correctness.
-  updateHoverState();       // KHR_interactivity: poll HoverPicker, notify onHoverIn/onHoverOut before this tick
+  // (a retained scene takes no KHR_interactivity, so neither interactivity step has anything to do)
+  if(!m_resources.retainedGpu)
+    updateHoverState();     // KHR_interactivity: poll HoverPicker, notify onHoverIn/onHoverOut before this tick
   updateClickPickState();   // Poll the previous click's async ray-pick, apply it once ready (see m_pendingClickPick)
   updateAnchorPickState();  // Same for the camera anchor of a Shift+drag (see m_pendingAnchorPick)
   // KHR_interactivity: pointer/set writes flow into `changed` via the dirty-flags path below
@@ -1777,7 +1779,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // this call via reconcileAnimationGpuState()) clears those same dirty flags before that path ever
   // sees them - so it must feed `changed` directly via this return value instead, or the path
   // tracer's progressive accumulation never restarts and the animated frames blend together.
-  const bool interactivityAnimationApplied = updateInteractivityGraphs(cmd);
+  const bool interactivityAnimationApplied = !m_resources.retainedGpu && updateInteractivityGraphs(cmd);
 
   // #DLSS instance motion vectors: snapshot the previous-frame render-node transforms BEFORE any
   // animation / gizmo edit rewrites them this frame. The previous transforms feed per-instance motion
