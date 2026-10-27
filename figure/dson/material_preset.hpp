@@ -59,6 +59,19 @@ struct PresetChoice
 // came. Edits stay.
 PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous = {});
 
+// Which of an item's installed Iray material presets it takes when worn, so a 3Delight-era item
+// looks as its Iray version does (roadmap item 5); -1 for none. `scene` is the item alone. A
+// candidate qualifies only when it keeps the item's look:
+// - it is Iray's (it sets an Iray Uber or PBRSkin channel);
+// - it is a whole material, at least kFullIrayPreset channels on every surface it reaches, not an
+//   option (a glossiness, a wet look, a bump close-up);
+// - it covers at least half the item's legacy surfaces;
+// - any base colour or normal map it sets is the one the surface already has (the same colour of
+//   Basic Wear Boxers in Iray, not another).
+// Of those, the one that matches most maps, then sets most channels, then comes first.
+constexpr int kFullIrayPreset = 40;
+int           chooseIrayPreset(const SceneGraph& scene, const std::vector<const Json*>& candidates);
+
 // Which scene materials are in use: those a node that wasn't taken off draws with, and those no node
 // uses (the scene's own). Taken-off items' surfaces are not.
 std::vector<bool> liveMaterials(const SceneGraph& scene);

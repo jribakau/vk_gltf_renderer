@@ -2036,3 +2036,81 @@ TEST(Materials, LegacyBumpRangeScalesTheBakedHeight)
   EXPECT_FALSE(fv::dson::parseSurface("Face", channelsOf(kSkin)).bumpRange.has_value());
   EXPECT_EQ(fv::mat::bumpHeightInUv(0.43f, 1, 0), 0.f);
 }
+
+// Installed Iray presets for a 3Delight-era item: the one that keeps its look, or none.
+namespace {
+
+// The G8M Basic Wear Boxers' two surfaces as the item's own scene layer sets them: DAZ Default,
+// the Black textures
+const char* kBoxersBlackMaps = R"({
+  "diffuse":{"channel":{"id":"diffuse","current_value":[1,1,1],"image_file":"/Runtime/Textures/ABen/Basic%20Wear/Black/Boxers_BaseColor.jpg"}},
+  "normal":{"channel":{"id":"normal","current_value":1,"image_file":"/Runtime/Textures/ABen/Basic%20Wear/Black/Boxers_Normal.jpg"}}})";
+
+fv::SceneGraph boxersScene()
+{
+  fv::SceneGraph scene;
+  for(const char* name : {"Boxers", "BoxersWaistband"})
+    scene.materials.push_back(fv::dson::buildMaterial(name, layered({kBoxers, kBoxersBlackMaps})));
+  return scene;
+}
+
+// A material preset on the Boxers' surfaces: `channels` values each (the first an Iray one unless
+// `threeDelight`), the colour's maps unless `folder` is empty, and a dozen maps removed
+Json boxersPreset(const std::string& folder, int channels, bool threeDelight = false)
+{
+  Json animations = Json::array();
+  auto add        = [&](const std::string& surface, const std::string& channel, const std::string& field, const Json& value) {
+    animations.push_back({{"url", "name://@selection#materials/" + surface + ":?extra/studio_material_channels/channels/" + channel + "/" + field},
+                                 {"keys", Json::array({Json::array({0, value})})}});
+  };
+  for(const char* surface : {"Boxers", "BoxersWaistband"})
+  {
+    for(int i = 0; i < channels; i++)
+      add(surface, i == 0 ? (threeDelight ? "glossiness" : "Glossy%20Roughness") : "Channel" + std::to_string(i), "value", 0.5);
+    if(!folder.empty())
+    {
+      add(surface, "diffuse", "image_file", "/Runtime/Textures/ABen/Basic%20Wear/" + folder + "/Boxers_BaseColor.jpg");
+      add(surface, "Normal%20Map", "image_file", "/Runtime/Textures/ABen/Basic%20Wear/" + folder + "/Boxers_Normal.jpg");
+    }
+    for(int i = 0; i < 12; i++)
+      add(surface, "Unused" + std::to_string(i), "image", nullptr);
+  }
+  return {{"asset_info", {{"type", "preset_material"}}}, {"scene", {{"animations", animations}}}};
+}
+
+}  // namespace
+
+TEST(Materials, ChooseIrayPresetKeepsTheItemsLook)
+{
+  const fv::SceneGraph scene = boxersScene();
+  ASSERT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::eDazDefault);
+  const Json black     = boxersPreset("Black", 60);
+  const Json grey      = boxersPreset("Grey", 60);
+  const Json shaderOnly = boxersPreset("", 90);  // Iray Optimized: values only, the item's maps stay
+  const Json option    = boxersPreset("", 10);    // a "Low Glossiness" option on the item
+  const Json delight   = boxersPreset("Black", 60, true);
+  using fv::dson::chooseIrayPreset;
+
+  // the colour the item came in, over a values-only conversion and the other colours
+  EXPECT_EQ(chooseIrayPreset(scene, {&grey, &shaderOnly, &black}), 2);
+  // a values-only conversion when no colour matches
+  EXPECT_EQ(chooseIrayPreset(scene, {&grey, &shaderOnly}), 1);
+  // another colour, an option or a 3Delight preset: none
+  EXPECT_EQ(chooseIrayPreset(scene, {&grey}), -1);
+  EXPECT_EQ(chooseIrayPreset(scene, {&option}), -1);
+  EXPECT_EQ(chooseIrayPreset(scene, {&delight}), -1);
+  EXPECT_EQ(chooseIrayPreset(scene, {nullptr}), -1);
+
+  // an item already in Iray takes none
+  fv::SceneGraph iray;
+  iray.materials.push_back(fv::dson::buildMaterial("Boxers", channelsOf(kSkin)));
+  EXPECT_EQ(chooseIrayPreset(iray, {&black, &shaderOnly}), -1);
+
+  // a preset for half the item's surfaces still covers enough; the maps of the other half stay
+  fv::SceneGraph three = boxersScene();
+  three.materials.push_back(fv::dson::buildMaterial("Band2", layered({kBoxers, kBoxersBlackMaps})));
+  three.materials.push_back(fv::dson::buildMaterial("Band3", layered({kBoxers, kBoxersBlackMaps})));
+  EXPECT_EQ(chooseIrayPreset(three, {&black}), 0);
+  three.materials.push_back(fv::dson::buildMaterial("Band4", layered({kBoxers, kBoxersBlackMaps})));
+  EXPECT_EQ(chooseIrayPreset(three, {&black}), -1);
+}

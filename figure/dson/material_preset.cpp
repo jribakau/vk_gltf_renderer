@@ -1,6 +1,8 @@
 #include <figure/dson/material_preset.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <map>
 #include <regex>
 #include <set>
@@ -266,6 +268,97 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, con
         result.changed.insert(i);
   }
   return result;
+}
+
+namespace {
+
+bool legacySurface(mat::Surface::Shader s)
+{
+  using S = mat::Surface::Shader;
+  return s == S::eDazDefault || s == S::eUberSurface || s == S::eAoa || s == S::eLegacy;
+}
+
+// A channel only an Iray Uber or PBRSkin material has
+bool irayChannel(const std::string& channel)
+{
+  static const std::set<std::string> ids = {"glossyroughness", "glossylayeredweight", "translucencyweight", "metallicweight",
+                                            "duallobespecularweight", "specularlobe1roughness"};
+  return ids.count(norm(channel)) > 0;
+}
+
+// An image path as two files name the same image: percent-decoded, one kind of slash, any case
+std::string imageKey(const std::string& path)
+{
+  std::string s = dec(path);
+  std::replace(s.begin(), s.end(), '\\', '/');
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return s;
+}
+
+}  // namespace
+
+int chooseIrayPreset(const SceneGraph& scene, const std::vector<const Json*>& candidates)
+{
+  std::set<int> legacy;
+  for(size_t i = 0; i < scene.materials.size(); i++)
+    if(legacySurface(scene.materials[i].surface.shader))
+      legacy.insert(int(i));
+  if(legacy.empty())
+    return -1;
+  int     best      = -1;
+  int64_t bestScore = -1;
+  for(size_t k = 0; k < candidates.size(); k++)
+  {
+    if(!candidates[k])
+      continue;
+    bool          iray = false, whole = true, keepsLook = true;
+    std::set<int> covered;
+    int           maps = 0, channels = 0;
+    for(const auto& [key, overrides] : parseOverrides(*candidates[k], nullptr))
+    {
+      const std::vector<int> targets = presetTargets(scene, key.first, key.second);
+      if(targets.empty())
+        continue;
+      // what it sets: a value, or an image (a null image removes a map, which says nothing of a look)
+      int set = 0;
+      for(const ChannelOverride& o : overrides)
+      {
+        if(o.value || (o.image && !o.image->empty()))
+          set++;
+        iray = iray || irayChannel(o.channel);
+      }
+      whole = whole && set >= kFullIrayPreset;
+      channels += set;
+      for(int t : targets)
+      {
+        if(legacy.count(t))
+          covered.insert(t);
+        const mat::Surface& s = scene.materials[size_t(t)].surface;
+        for(const ChannelOverride& o : overrides)
+        {
+          if(!o.image || o.image->empty())
+            continue;
+          const std::string n   = norm(o.channel);
+          const std::string* own = n == "diffuse" || n == "basecolor" ? &s.base.map : n == "normalmap" || n == "normal" ? &s.normalMap : nullptr;
+          if(!own)
+            continue;
+          if(imageKey(*o.image) == imageKey(*own))
+            maps++;
+          else
+            keepsLook = false;
+        }
+      }
+    }
+    if(!iray || !whole || !keepsLook || covered.size() * 2 < legacy.size())
+      continue;
+    const int64_t score = int64_t(maps) * 1000000 + channels;
+    if(score > bestScore)
+    {
+      best      = int(k);
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 std::set<int> materialPresetTargets(const Json& doc, const SceneGraph& scene)

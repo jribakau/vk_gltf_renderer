@@ -151,6 +151,9 @@ struct Loaded
   {
     std::string   rel;
     std::set<int> owned;
+    // the installed Iray preset a 3Delight-era item took as it was worn (WearRequest::iray), not a
+    // colour chosen: the Wardrobe marks it
+    bool automatic = false;
   };
   std::map<int, ItemColor> colors;
   // the skin chosen (material.skin), as `eyes`, with what it changed and a mixed material preset
@@ -998,8 +1001,10 @@ struct FvHost::Impl
   // A figure or prop from a DAZ library, as a new prop; `then` runs once it is in the scene.
   // `prefetch`: library files the figure will wear (a scene file's worn list), read on the pool from
   // the start of the load so its restore finds them in the figure's store
+  // `iray`: installed Iray presets a 3Delight-era wearable may take as it goes on (WearRequest::iray)
   Json loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
-                  std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {}, std::vector<std::string> prefetch = {});
+                  std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {}, std::vector<std::string> prefetch = {},
+                  std::vector<std::string> iray = {});
   void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
                fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
                std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source,
@@ -1010,6 +1015,9 @@ struct FvHost::Impl
     std::string              rel;
     std::string              name;     // the DSON node name an add-on has, so it is not put on twice
     std::vector<std::string> presets;  // material presets applied to it first
+    // installed Iray presets a 3Delight-era item may take as it goes on, the one that keeps its look
+    // (fv::dson::chooseIrayPreset); recorded as its colour, so "own" takes it off again
+    std::vector<std::string> iray;
   };
   Json     wear(const Json& args);
   // What a restore sets on the figure besides its wardrobe, put on before the wear's composition so
@@ -2346,16 +2354,18 @@ Json FvHost::Impl::load(const Json& args)
   // a wearable goes on the figure named or selected, unless it is to be a prop of its own
   const bool asProp = args.value("as", "") == "prop" || args.value("replace", false);
   std::string target = args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "";
-  std::vector<std::string> prefetch;
-  if(args.contains("prefetch") && args["prefetch"].is_array())
-    for(const Json& r : args["prefetch"])
-      if(r.is_string())
-        prefetch.push_back(r.get<std::string>());
-  return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp, {}, std::move(prefetch));
+  std::vector<std::string> prefetch, iray;
+  for(auto [key, into] : {std::pair{"prefetch", &prefetch}, std::pair{"iray", &iray}})
+    if(args.contains(key) && args[key].is_array())
+      for(const Json& r : args[key])
+        if(r.is_string())
+          into->push_back(r.get<std::string>());
+  return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp, {}, std::move(prefetch), std::move(iray));
 }
 
 Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
-                              std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then, std::vector<std::string> prefetch)
+                              std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then, std::vector<std::string> prefetch,
+                              std::vector<std::string> iray)
 {
   const uint64_t    jobId      = ++jobs;
   const uint64_t    generation = loadGeneration;
@@ -2363,7 +2373,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
   job(jobId, {{"label", label}, {"state", "running"}});
 
   loaders.spawn([this, s, roots = std::move(roots), rel = std::move(rel), jobId, label, asProp, source = std::move(source), target = std::move(target),
-                 generation, then = std::move(then), prefetch = std::move(prefetch)] {
+                 generation, then = std::move(then), prefetch = std::move(prefetch), iray = std::move(iray)] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
@@ -2398,7 +2408,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           // done once it is on: the app waits on this job to lay a colour preset over the piece,
           // which finds none of its surfaces while the wear is still loading
           const auto worn = onApp([this, wearer] { return figureArg(Json{{"prop", wearer}}); });
-          startWear(worn, {{rel, "", {}}}, {}, [this, jobId, label] { job(jobId, {{"label", label}, {"state", "done"}}); });
+          startWear(worn, {{rel, "", {}, iray}}, {}, [this, jobId, label] { job(jobId, {{"label", label}, {"state", "done"}}); });
           return;
         }
         if(onApp([this] { return std::count_if(props.begin(), props.end(), [](const auto& p) { return p->figure && p->figure->fig->pose; }) > 1; }))
@@ -2674,7 +2684,11 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
     items["i:" + std::to_string(w.id)]["meshes"] = w.meshes;
     // the colour preset on it, null for its own; absent, as it was worn
     if(const auto c = f.colors.find(w.id); c != f.colors.end())
+    {
       items["i:" + std::to_string(w.id)]["color"] = c->second.rel.empty() ? Json(nullptr) : Json(c->second.rel);
+      if(c->second.automatic)
+        items["i:" + std::to_string(w.id)]["colorAuto"] = true;
+    }
   }
   Json topic = {{"figure", f.id}, {"items", items}};
   if(f.collider)
@@ -2718,7 +2732,12 @@ Json FvHost::Impl::wear(const Json& args)
   std::shared_ptr<Loaded> target = onApp([this, args] { return figureArg(args); });
   if(!target || !target->fig->pose)
     throw std::runtime_error("Select a figure first: clothing and hair go on a figure with a skeleton.");
-  return {{"job", startWear(target, {{rel, "", {}}})}};
+  WearRequest request{rel, "", {}};
+  if(const auto it = args.find("iray"); it != args.end() && it->is_array())
+    for(const Json& c : *it)
+      if(c.is_string())
+        request.iray.push_back(c.get<std::string>());
+  return {{"job", startWear(target, {std::move(request)})}};
 }
 
 // Puts wearables on a figure: all of them are loaded and bound side by side on workers against one
@@ -2848,6 +2867,9 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
       double                                                                  msPrep = 0, msStrands = 0, msWorker = 0;
       std::string                                                             error;
+      // the Iray preset it took as it went on (WearRequest::iray), and its document
+      std::string                                autoColor;
+      std::shared_ptr<const fv::dson::Doc>       autoColorDoc;
     };
     std::vector<Slot> slots(todo.size());
     auto              prepare = [&](size_t i) {
@@ -2872,6 +2894,35 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
             applyPreset(presetRel, preparedScene, true);
           // as the character came: "Character's own" eyes are these (Genesis 9's are an add-on's)
           fv::dson::keepBaseline(preparedScene);
+          // a 3Delight-era item takes the installed Iray preset that keeps its look, over its
+          // baseline: its textures are cooked once, and its colour "own" takes it off again
+          if(!request.iray.empty())
+          {
+            std::vector<std::shared_ptr<const fv::dson::Doc>> docs;
+            std::vector<const fv::dson::Json*>                candidates;
+            for(const std::string& c : request.iray)
+            {
+              std::shared_ptr<const fv::dson::Doc> doc;
+              try
+              {
+                doc = target->fig->store().load(c);
+              }
+              catch(const std::exception&)
+              {
+              }
+              docs.push_back(doc);
+              candidates.push_back(doc ? &doc->json : nullptr);
+            }
+            if(const int k = fv::dson::chooseIrayPreset(preparedScene, candidates); k >= 0)
+            {
+              std::set<int> all;
+              for(size_t m = 0; m < preparedScene.materials.size(); m++)
+                all.insert(int(m));
+              fv::dson::choosePreset(preparedScene, all, &docs[size_t(k)]->json);
+              slot.autoColor    = request.iray[size_t(k)];
+              slot.autoColorDoc = docs[size_t(k)];
+            }
+          }
         }
         // a strand hair's direction is measured here, so the composition on the render thread finds it
         const auto tStrands = Clock::now();
@@ -2927,7 +2978,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       }
       auto done = std::make_shared<std::promise<bool>>();
       auto ok   = done->get_future();
-      post([this, target, prepared = slot.prepared, rel = request.rel, label, images = std::move(slot.images), done]() mutable {
+      post([this, target, prepared = slot.prepared, rel = request.rel, label, images = std::move(slot.images), done, autoColor = slot.autoColor,
+            autoColorDoc = slot.autoColorDoc]() mutable {
         if(!inScene(target))
         {
           done->set_value(false);
@@ -2938,6 +2990,27 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           const fv::WearResult r = target->fig->commitWear(prepared, rel);
           for(auto& [key, image] : images)
             target->images.insert_or_assign(key, std::move(image));
+          // the Iray preset it took is its colour: undo, a scene file and "own" treat it as one
+          if(!autoColor.empty() && autoColorDoc)
+          {
+            const fv::SceneGraph& scene   = target->fig->loaded.scene;
+            const std::set<int>   targets = fv::dson::materialPresetTargets(autoColorDoc->json, scene);
+            for(int id : r.items)
+              for(const fv::WornItem& w : target->fig->items)
+                if(w.id == id)
+                {
+                  std::set<int> owned;
+                  for(int m : w.meshes)
+                    if(m >= 0 && m < int(scene.meshes.size()))
+                      for(int mi : scene.meshes[size_t(m)].materials)
+                        if(targets.count(mi))
+                          owned.insert(mi);
+                  if(!owned.empty())
+                    target->colors[id] = {autoColor, owned, true};
+                }
+            publishWardrobe(*target);
+            notice(utf8Of(pathOf(rel).stem()) + " is a 3Delight item: it took its installed Iray material, " + utf8Of(pathOf(autoColor).stem()) + ".", "info");
+          }
           for(const std::string& w : r.warnings)
             notice(w);
           for(const std::string& n : r.notes)
