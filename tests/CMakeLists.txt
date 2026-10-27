@@ -153,6 +153,9 @@ set(TEST_SOURCES
     test_selection_render_nodes.cpp
     # The retained scene's GPU seam without a GPU (rs::GpuBackend): the fake's own tests
     test_fake_gpu_backend.cpp
+    # The host's addressing on the legacy scene: uploads reach their mesh's prims, picks map back (oracle 8)
+    test_fv_scene_map.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Optional external generation bridge

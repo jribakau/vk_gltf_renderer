@@ -52,6 +52,7 @@
 #include <glm/vec3.hpp>
 
 #include "fv_events.hpp"
+#include "fv_scene_map.hpp"
 
 class GltfRenderer;
 namespace tinygltf {
@@ -82,15 +83,12 @@ public:
     std::string name, kind;
     int         mesh = -1;
   };
-  struct PropNodes
+  // (root, gltfOf and its materials are its fv::PropAddress, what fv::SceneMap reads)
+  struct PropNodes : fv::PropAddress
   {
     std::string          id;
-    int                  root = -1;  // glTF node of the prop root
-    std::vector<int>     gltfOf;     // topic node -> glTF node
-    std::vector<NodeRec> nodes;      // per topic node
+    std::vector<NodeRec> nodes;  // per topic node
     Bones                bones;
-    // its glTF materials, [materials, materials + materialCount): "m:<i>" of its materials topic
-    int materials = 0, materialCount = 0;
   };
 
   // A figure's "nodes/<prop>" topic ({nodes: {"<i>": {name, parent, kind, order, depth}}, stats})
@@ -152,8 +150,6 @@ private:
   void applyDof();
   void publishSelection(bool force);
   void publishCamera();
-  // the prop and topic node of a glTF node (node -1: the prop root), or {-1, -1}
-  std::pair<int, int> locate(int gltf) const;
   // A click hit `renderNode` (-1: nothing): the surface it hit, for the next selection published
   void notePick(int renderNode);
 
@@ -162,7 +158,7 @@ private:
   std::function<fv::Json(std::function<fv::Json()>)> m_onApp;
 
   std::vector<PropNodes>                        m_props;
-  std::unordered_map<int, std::pair<int, int>> m_where;  // glTF node -> {prop, topic node}
+  fv::SceneMap                                  m_map;  // glTF nodes and render nodes -> m_props
   std::string                                   m_selectedProp;
   int                                           m_lastGltf = -2;
   std::string                                   m_surfaceProp, m_surface;  // what the last click hit

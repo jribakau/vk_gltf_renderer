@@ -4667,18 +4667,6 @@ void GltfRenderer::prefetchImage(const std::filesystem::path& diskPath, bool srg
   m_resources.sceneVk.prefetchImage(diskPath, srgb);
 }
 
-std::vector<int> GltfRenderer::vertexSetOwnersOfMesh(int gltfMesh) const
-{
-  std::vector<int> out;
-  for(int prim : renderPrimitivesOfMesh(gltfMesh))
-  {
-    const int owner = m_resources.getScene()->vertexSetOwner(prim);
-    if(std::find(out.begin(), out.end(), owner) == out.end())
-      out.push_back(owner);
-  }
-  return out;
-}
-
 void GltfRenderer::setRenderSystem(RenderingMode mode)
 {
   if(m_resources.settings.renderSystem == mode)

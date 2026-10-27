@@ -79,9 +79,9 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     if(renderNode < 0 || m_pick == "mesh")
       return false;
     nvvkgltf::Scene* scene = m_renderer->editScene();
-    if(!scene || !scene->valid() || renderNode >= int(scene->getRenderNodes().size()))
+    if(!scene)
       return false;
-    const auto [prop, node] = locate(scene->getRenderNodes()[size_t(renderNode)].refNodeID);
+    const int prop = m_map.pick(*scene, renderNode).prop;
     if(prop < 0)
       return false;
     const PropNodes& p = m_props[size_t(prop)];
@@ -253,29 +253,15 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
 void FvView::setProps(std::vector<PropNodes> props)
 {
   m_props = std::move(props);
-  m_where.clear();
-  for(int p = 0; p < int(m_props.size()); p++)
-  {
-    m_where[m_props[size_t(p)].root] = {p, -1};
-    const auto& gltfOf = m_props[size_t(p)].gltfOf;
-    for(int i = 0; i < int(gltfOf.size()); i++)
-      if(gltfOf[size_t(i)] >= 0)
-        m_where[gltfOf[size_t(i)]] = {p, i};
-  }
+  m_map.set(m_props);
   m_lastGltf = -2;
   publishSelection(true);
 }
 
 const FvView::PropNodes* FvView::propOfRoot(int gltf) const
 {
-  const auto it = m_where.find(gltf);
-  return it == m_where.end() || it->second.second != -1 ? nullptr : &m_props[size_t(it->second.first)];
-}
-
-std::pair<int, int> FvView::locate(int gltf) const
-{
-  const auto it = m_where.find(gltf);
-  return it == m_where.end() ? std::pair{-1, -1} : it->second;
+  const int prop = m_map.propOfRoot(gltf);
+  return prop < 0 ? nullptr : &m_props[size_t(prop)];
 }
 
 std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
@@ -452,18 +438,13 @@ void FvView::notePick(int renderNode)
   // published again even when the node is the same: another surface of it
   m_lastGltf             = -2;
   nvvkgltf::Scene* scene = m_renderer->editScene();
-  if(renderNode < 0 || !scene || !scene->valid() || renderNode >= int(scene->getRenderNodes().size()))
+  if(!scene)
     return;
-  const nvvkgltf::RenderNode& rn      = scene->getRenderNodes()[size_t(renderNode)];
-  const auto [prop, node]             = locate(rn.refNodeID);
-  if(prop < 0)
+  const fv::HostAddress at = m_map.pick(*scene, renderNode);
+  if(at.surface < 0)
     return;
-  const PropNodes& p = m_props[size_t(prop)];
-  const int        i = rn.materialID - p.materials;
-  if(i < 0 || i >= p.materialCount)
-    return;
-  m_surfaceProp = p.id;
-  m_surface     = "m:" + std::to_string(i);
+  m_surfaceProp = m_props[size_t(at.prop)].id;
+  m_surface     = "m:" + std::to_string(at.surface);
 }
 
 void FvView::publishSelection(bool force)
@@ -472,7 +453,8 @@ void FvView::publishSelection(bool force)
   if(!force && gltf == m_lastGltf)
     return;
   m_lastGltf                 = gltf;
-  const auto [prop, node] = locate(gltf);
+  const fv::HostAddress at   = m_map.locate(gltf);
+  const int             prop = at.prop, node = at.node;
   if(gltf < 0 || prop < 0)
   {
     m_selectedProp.clear();

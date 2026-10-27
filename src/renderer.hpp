@@ -379,9 +379,6 @@ public:
   // the whole buffer. Gaps under kUploadRunGap vertices are bridged; more than kUploadRunMax runs,
   // or runs covering over kUploadRunRatio of the vertices, mean the whole buffer (empty result).
   static std::vector<std::pair<uint32_t, uint32_t>> uploadRuns(std::span<const uint32_t> indices, size_t vertexCount);
-  // The vertex buffers a glTF mesh's render primitives read, one entry per set (Scene::vertexSets):
-  // a vertex upload to any of them reaches every member, so a host uploads once per entry.
-  std::vector<int> vertexSetOwnersOfMesh(int gltfMesh) const;
   // Decodes an image file now, on the calling thread, for the next loadModel() to take ready
   // (SceneVk::prefetchImage): a host's wear worker calls it for the textures it resolved.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb);

@@ -1915,32 +1915,18 @@ void FvHost::Impl::compose()
     FvView::PropNodes               nodes;
     nodes.id   = p.id;
     nodes.root = p.placed.root;
-    if(p.figure && builds[i])
+    if(p.figure && builds[i] && scn)
     {
       Loaded&                 f     = *p.figure;
       fv::build::BuildResult& built = *builds[i];
-      f.nodeOf                      = std::move(built.nodeOf);
-      for(int& n : f.nodeOf)
-        if(n >= 0)
-          n += base.nodes;
-      f.sceneOf.clear();
-      for(int n = 0; n < int(f.nodeOf.size()); n++)
-        if(f.nodeOf[n] >= 0)
-          f.sceneOf[f.nodeOf[n]] = n;
-      f.meshOf = std::move(built.meshOf);
-      for(int& m : f.meshOf)
-        if(m >= 0)
-          m += base.meshes;
-      f.skinOf = std::move(built.skinOf);
-      for(int& k : f.skinOf)
-        if(k >= 0)
-          k += base.skins;
-      // one entry per vertex set: the mesh's material groups read one set of buffers, so a dial's
-      // vertices go up once, not once per group
-      f.primsOf.assign(f.meshOf.size(), {});
-      for(size_t m = 0; m < f.meshOf.size(); m++)
-        if(f.meshOf[m] >= 0)
-          f.primsOf[m] = renderer->vertexSetOwnersOfMesh(f.meshOf[m]);
+      // one primsOf entry per vertex set: the mesh's material groups read one set of buffers, so a
+      // dial's vertices go up once, not once per group
+      fv::FigureSceneMap mapped = fv::mapFigure(std::move(built.nodeOf), std::move(built.meshOf), std::move(built.skinOf), base, *scn);
+      f.nodeOf                  = std::move(mapped.nodeOf);
+      f.sceneOf                 = std::move(mapped.sceneOf);
+      f.meshOf                  = std::move(mapped.meshOf);
+      f.skinOf                  = std::move(mapped.skinOf);
+      f.primsOf                 = std::move(mapped.primsOf);
       // the glTF already holds the scene's dials and binds; don't upload them again
       f.fig->drain();
       if(!p.materials)
