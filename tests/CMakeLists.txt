@@ -152,6 +152,8 @@ set(TEST_SOURCES
     test_denoiser_schedule.cpp
     # Path tracer samples per frame: ending on stops, the Auto SPP controller (header only)
     test_sample_schedule.cpp
+    # A shader variant built off the application thread, with a fake compiler (header only)
+    test_variant_compile_job.cpp
     # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)
     test_tlas_policy.cpp
     # What a selected node puts in selectedRenderNodes, whether or not the UI pass runs (header only)

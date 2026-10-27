@@ -128,6 +128,10 @@ public:
   virtual bool hasTransmission() const      = 0;
   virtual bool hasOpacityMicromaps() const  = 0;
   virtual bool hasPlayableAnimation() const = 0;
+  // Whether a variant that only adds scene features may be built off the frame (D15): the view
+  // holds the material edits that need them and draws nothing the live variant lacks (retained);
+  // never on legacy, whose edits draw at once
+  virtual bool variantMayBuildOffFrame() const = 0;
   // The render lights, in the light buffer's order
   virtual std::vector<LightInfo> lights() const = 0;
 
@@ -168,6 +172,7 @@ public:
   std::optional<glm::vec3>     worldCentre(uint32_t renderNode) const override;
   bool                         hasTransmission() const override;
   bool                         hasOpacityMicromaps() const override;
+  bool                         variantMayBuildOffFrame() const override { return false; }
   bool                         hasPlayableAnimation() const override;
   std::vector<LightInfo>       lights() const override;
   nvutils::Bbox                bounds() const override;

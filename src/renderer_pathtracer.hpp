@@ -46,6 +46,7 @@
 #include "pipeline_cache_util.hpp"
 #include "scene_feature_detection.hpp"
 #include "ui_busy_window.hpp"
+#include "variant_compile_job.hpp"
 
 // #DLSS
 #if defined(USE_DLSS)
@@ -252,6 +253,36 @@ public:
   bool isEmbeddedBaseVariant(const Resources& resources) const;
   // Swaps in the wanted variant if it is cached (cheap; no BusyWindow). Leaves live handles alone on a miss.
   bool tryRestoreCachedVariant(Resources& resources);
+  // Destroys a variant's handles now (gpuIdle) or through the app's frame ring
+  void releaseVariant(Resources& resources, VkShaderModule module, VkPipeline rtx, VkPipeline rq, nvvk::Buffer sbt, bool gpuIdle);
+  std::vector<std::pair<std::string, std::string>> variantMacros(const VariantKey& key) const;
+  void createSbt(Resources& resources, VkPipeline pipeline, VkShaderModule module, nvvk::Buffer& sbtBuffer, nvvk::SBTGenerator::Regions& regions);
+
+  // D15: a variant that only adds scene features, built off the frame (see buildsOffTheFrame())
+  struct VariantCompileJob
+  {
+    VariantKey                                       key;
+    std::vector<std::pair<std::string, std::string>> macros;  // after applyCommonShaderMacros()'s
+    std::vector<std::filesystem::path>               searchPaths;
+    std::vector<slang::TargetDesc>                   targets;
+    std::vector<slang::CompilerOptionEntry>          options;
+    bool                                             rayQuery = false;
+    bool                                             useSER   = false;
+    VkPipelineLayout      layout   = VK_NULL_HANDLE;  // the path tracer's: a job is discarded before it goes
+    VkPipelineCreateFlags rtxFlags = 0, rqFlags = 0;
+  };
+  struct VariantBuilt
+  {
+    VkShaderModule module   = VK_NULL_HANDLE;  // none: the build failed
+    VkPipeline     pipeline = VK_NULL_HANDLE;  // the job's technique's
+    double         ms       = 0.0;
+  };
+  VariantJobs<VariantCompileJob, VariantBuilt> m_variantJobs;
+  std::optional<VariantKey> m_failedVariant;  // a job that failed: that variant is compiled before the frame
+  void                      startVariantJob(Resources& resources, const VariantKey& key);
+  VariantBuilt              buildVariant(const VariantCompileJob& job);  // on the worker
+  void                      installBuiltVariant(Resources& resources);
+  void                      discardVariantJob();
 
   BusyWindow* m_busyWindow{nullptr};  // Modal shown during async shader/pipeline compile.
   std::mutex  m_compileMutex;         // Guards compile metadata and live pipeline handles.
@@ -424,6 +455,7 @@ private:
     bool any() const { return recompile || stalePipeline || missingPipeline; }
   };
   PendingCompileWork getPendingCompileWork(const Resources& resources);
+  bool               buildsOffTheFrame(Resources& resources, const PendingCompileWork& work);  // D15
   bool               prepareFrame(Resources& resources);  // false: skip this frame (async build started)
   void               ensureShadersAndPipelines(Resources& resources);
   void               startAsyncCompile(Resources& resources);
@@ -465,7 +497,7 @@ private:
   // Disk cache of the from-file path-tracer SPIR-V. A hit fills `spirv`.
   bool loadCachedSpirv(uint64_t key, std::vector<uint32_t>& spirv) const;
   // compileStart is when compileFile began; sources written after it are not trusted.
-  void storeCachedSpirv(uint64_t key, const Resources& resources, std::filesystem::file_time_type compileStart);
+  void storeCachedSpirv(uint64_t key, nvslang::SlangCompiler& compiler, std::filesystem::file_time_type compileStart);
   // Drops old keys, orphaned blobs and stale temporary files from the cache folder.
   void pruneShaderCache() const;
 

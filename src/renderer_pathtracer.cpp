@@ -140,6 +140,66 @@ VkPipelineCreateFlags rtxPipelineFlags(bool opacityMicromaps, bool captureStatis
     flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
   return flags;
 }
+
+// A path-tracer pipeline from `module`, as createRqPipeline() or createRtxPipeline() builds it (no
+// deferred operation): any thread, as it touches only the device and the pipeline cache.
+// VK_NULL_HANDLE when the creation failed (`result` says why).
+VkPipeline createPathTracePipeline(VkDevice              device,
+                                   VkPipelineCache       cache,
+                                   VkPipelineLayout      layout,
+                                   VkShaderModule        module,
+                                   bool                  rayQuery,
+                                   int32_t               useSER,
+                                   int32_t               transparency,
+                                   VkPipelineCreateFlags rtxFlags,
+                                   VkPipelineCreateFlags rqFlags,
+                                   VkResult&             result)
+{
+  nvvk::Specialization specialization;
+  specialization.add(0, useSER);  // USE_SER
+#if defined(USE_DLSS)
+  specialization.add(1, transparency);  // USE_DLSS_TRANSP
+#else
+  (void)transparency;
+#endif
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  if(rayQuery)
+  {
+    const VkComputePipelineCreateInfo info{
+        .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .flags  = rqFlags,
+        .stage  = {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                   .stage               = VK_SHADER_STAGE_COMPUTE_BIT,
+                   .module              = module,
+                   .pName               = "computeMain",
+                   .pSpecializationInfo = specialization.getSpecializationInfo()},
+        .layout = layout,
+    };
+    result = vkCreateComputePipelines(device, cache, 1, &info, nullptr, &pipeline);
+  }
+  else
+  {
+    RtxStages table(module);
+    table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
+    const VkRayTracingPipelineCreateInfoKHR info{
+        .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+        .flags                        = rtxFlags,
+        .stageCount                   = static_cast<uint32_t>(table.stages.size()),
+        .pStages                      = table.stages.data(),
+        .groupCount                   = static_cast<uint32_t>(table.groups.size()),
+        .pGroups                      = table.groups.data(),
+        .maxPipelineRayRecursionDepth = 2,
+        .layout                       = layout,
+    };
+    result = vkCreateRayTracingPipelinesKHR(device, VK_NULL_HANDLE, cache, 1, &info, nullptr, &pipeline);
+  }
+  if(result != VK_SUCCESS)
+  {
+    vkDestroyPipeline(device, pipeline, nullptr);
+    return VK_NULL_HANDLE;
+  }
+  return pipeline;
+}
 }  // namespace
 
 PathTracer::PathTracer()
@@ -449,6 +509,7 @@ void PathTracer::onDetach(Resources& resources)
   if(m_compileThread.joinable())
     m_compileThread.join();
   joinPipelineWarm();
+  discardVariantJob();
 
   resources.allocator.destroyBuffer(m_sbtBuffer);
   resources.allocator.destroyBuffer(m_depthCopyBuffer);
@@ -923,9 +984,12 @@ bool PathTracer::prepareFrame(Resources& resources)
   // A variant already in the cache is swapped in right here: only handles move (what the previous
   // frame may still use is released through the app's frame ring), so there is no queue wait, no
   // BusyWindow and no accumulation reset. Anything else goes to an async job that shows the BusyWindow.
+  installBuiltVariant(resources);  // a variant built off the frame goes into the cache, swapped in below
   PendingCompileWork work = getPendingCompileWork(resources);
   if(work.recompile && tryRestoreCachedVariant(resources))
     work = getPendingCompileWork(resources);  // the cached pipelines may still need a rebuild (SER, technique)
+  if(work.any() && buildsOffTheFrame(resources, work))
+    work = {};  // the live variant, or a cached one standing in, draws this frame
 
   if(work.any())
   {
@@ -1316,6 +1380,7 @@ void PathTracer::createPipeline(Resources& resources)
       .pushConstantRangeCount = 1,
       .pPushConstantRanges    = &pushConstant,
   };
+  discardVariantJob();  // it builds against the layout
   vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
   NVVK_CHECK(vkCreatePipelineLayout(m_device, &plCreateInfo, nullptr, &m_pipelineLayout));
   NVVK_DBG_NAME(m_pipelineLayout);
@@ -1354,42 +1419,9 @@ void PathTracer::startPipelineWarm(Resources& resources)
     VkShaderModule module = VK_NULL_HANDLE;
     if(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
       return;
-    nvvk::Specialization specialization;
-    specialization.add(0, useSER);        // USE_SER
-    specialization.add(1, transparency);  // USE_DLSS_TRANSP
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult   result   = VK_SUCCESS;
-    if(rayQuery)
-    {
-      // as createRqPipeline() builds it
-      const VkComputePipelineCreateInfo info{
-          .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-          .flags  = rqFlags,
-          .stage  = {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                     .stage               = VK_SHADER_STAGE_COMPUTE_BIT,
-                     .module              = module,
-                     .pName               = "computeMain",
-                     .pSpecializationInfo = specialization.getSpecializationInfo()},
-          .layout = layout,
-      };
-      result = vkCreateComputePipelines(m_device, m_pipelineCache.getCache(), 1, &info, nullptr, &pipeline);
-    }
-    else
-    {
-      RtxStages table(module);
-      table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
-      const VkRayTracingPipelineCreateInfoKHR info{
-          .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-          .flags                        = flags,
-          .stageCount                   = static_cast<uint32_t>(table.stages.size()),
-          .pStages                      = table.stages.data(),
-          .groupCount                   = static_cast<uint32_t>(table.groups.size()),
-          .pGroups                      = table.groups.data(),
-          .maxPipelineRayRecursionDepth = 2,
-          .layout                       = layout,
-      };
-      result = vkCreateRayTracingPipelinesKHR(m_device, VK_NULL_HANDLE, m_pipelineCache.getCache(), 1, &info, nullptr, &pipeline);
-    }
+    VkResult         result   = VK_ERROR_UNKNOWN;
+    const VkPipeline pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), layout, module, rayQuery,
+                                                        useSER, transparency, flags, rqFlags, result);
     vkDestroyPipeline(m_device, pipeline, nullptr);
     vkDestroyShaderModule(m_device, module, nullptr);
     LOGI("%s pipeline warm-up (%s): %s (%.2f ms)\n", rayQuery ? "RQ" : "RTX", build, result == VK_SUCCESS ? "done" : "failed",
@@ -1657,28 +1689,9 @@ void PathTracer::createRtxPipeline(Resources& resources)
 
   // Create the Shading Binding Table
   {
-    // Shader Binding Table (SBT) setup
-    nvvk::SBTGenerator sbtGenerator;
-    sbtGenerator.init(m_device, m_rtPipelineProperties);
-
-    // Prepare SBT data from ray pipeline
-    size_t bufferSize = sbtGenerator.calculateSBTBufferSize(rtxPipeline, rtPipelineCreateInfo);
-
-    // Create SBT buffer using the size from above
-    nvvk::Buffer sbtBuffer;
-    NVVK_CHECK(resources.allocator.createBuffer(
-        sbtBuffer, bufferSize, VK_BUFFER_USAGE_2_SHADER_BINDING_TABLE_BIT_KHR, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-        VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, sbtGenerator.getBufferAlignment()));
-    NVVK_DBG_NAME(sbtBuffer.buffer);
-
-    // Pass the manual mapped pointer to fill the SBT data
-    NVVK_CHECK(sbtGenerator.populateSBTBuffer(sbtBuffer.address, bufferSize, sbtBuffer.mapping));
-
-    // Retrieve the regions, which are using addresses based on the m_sbtBuffer.address
-    nvvk::SBTGenerator::Regions sbtRegions = sbtGenerator.getSBTRegions();
-
-    sbtGenerator.deinit();
-
+    nvvk::Buffer                sbtBuffer;
+    nvvk::SBTGenerator::Regions sbtRegions;
+    createSbt(resources, rtxPipeline, m_shaderModule, sbtBuffer, sbtRegions);
     {
       std::lock_guard<std::mutex> lock(m_compileMutex);
       resources.allocator.destroyBuffer(m_sbtBuffer);
@@ -1959,12 +1972,12 @@ bool PathTracer::loadCachedSpirv(uint64_t key, std::vector<uint32_t>& spirv) con
 // gltf_pathtrace.slang itself. The resolved entry path is always recorded. A source written at
 // or after `compileStart` (less kSourceSettleTime) may not be the text the compile read, so that
 // compile is not cached; the next one is.
-void PathTracer::storeCachedSpirv(uint64_t key, const Resources& resources, std::filesystem::file_time_type compileStart)
+void PathTracer::storeCachedSpirv(uint64_t key, nvslang::SlangCompiler& compiler, std::filesystem::file_time_type compileStart)
 {
   if(m_shaderCacheDir.empty())
     return;
-  const uint32_t* spirv      = resources.slangCompiler.getSpirv();
-  const size_t    spirvBytes = resources.slangCompiler.getSpirvSize();
+  const uint32_t* spirv      = compiler.getSpirv();
+  const size_t    spirvBytes = compiler.getSpirvSize();
   if(spirv == nullptr || spirvBytes == 0 || (spirvBytes % sizeof(uint32_t)) != 0 || spirvBytes > kMaxCachedSpirvBytes)
     return;
 
@@ -1980,8 +1993,8 @@ void PathTracer::storeCachedSpirv(uint64_t key, const Resources& resources, std:
     deps.push_back(canon);
   };
 
-  addDep(nvutils::findFile("gltf_pathtrace.slang", resources.slangCompiler.searchPaths(), false));
-  if(slang::IModule* module = resources.slangCompiler.getSlangModule())
+  addDep(nvutils::findFile("gltf_pathtrace.slang", compiler.searchPaths(), false));
+  if(slang::IModule* module = compiler.getSlangModule())
   {
     const int32_t count = static_cast<int32_t>(module->getDependencyFileCount());
     for(int32_t i = 0; i < count; ++i)
@@ -2065,6 +2078,8 @@ bool PathTracer::reloadShader(Resources& resources)
   // SYNC NOTE: User-initiated shader reload — cached pipelines may still be in flight from a
   // recent variant switch; live handles are destroyed in compileShader() below.
   NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
+  discardVariantJob();  // built from the sources before the edit
+  m_failedVariant.reset();
   destroyVariantCache(resources);
   m_skipVariantCache      = true;
   const bool compiledFile = compileShader(resources, true);
@@ -2110,25 +2125,10 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     resources.slangCompiler.clearMacros();
     nvvkgltf::applyCommonShaderMacros(resources.slangCompiler);
 
-    std::vector<std::pair<std::string, std::string>> macros = {
-        {"AVAILABLE_SER", std::to_string(m_supportSER)},
-        {"WIREFRAME", std::to_string((int)resources.settings.wireframe)},
-        // Debug-only visualization (incl. the OMM debug payload field). Compiled out of the normal
-        // render path so it adds no payload/register cost; a mode switch triggers a recompile.
-        {"USE_VISUALIZE", std::to_string(resources.settings.visualization != shaderio::Visualization::eRendered ? 1 : 0)},
-        // Ray queries against a BLAS with an opacity micromap need an explicit opt-in (see gltf_pathtrace.slang).
-        {"USE_OMM", std::to_string(wantOpacityMicromapShader(resources) ? 1 : 0)},
-    };
-    nvvkgltf::appendPathTracerDlssShaderMacro(macros, resources.currentFeatureSet, key.dlss);
-
-    // Scene-aware optimal mode: set every GLTF_USE_* to 0 or 1 from SceneFeatureSet.
-    // Never pass MAT_EXT_X=0 (that would change GltfShadeMaterial layout while the host
-    // uploads the all-on struct).
-    if(resources.settings.optimalShader)
+    const std::vector<std::pair<std::string, std::string>> macros = variantMacros(key);
+    if(key.optimal)
     {
-      const auto& fs = resources.currentFeatureSet;
-      nvvkgltf::appendPathTracerOptimalMacros(macros, fs);
-
+      const auto& fs = key.features;
       LOGI(
           "[PathTracer] Optimal shader: scene uses [%s]; %d GLTF_USE_* gates off "
           "(each set explicitly to 0 or 1).\n",
@@ -2140,7 +2140,7 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
 
     // A user-forced reload (reloadShader) compiles from source even when the embedded DLSS build
     // or the disk cache would serve, and the result replaces that disk entry.
-    const uint64_t key = spirvCacheKey(resources.slangCompiler);
+    const uint64_t spirvKey = spirvCacheKey(resources.slangCompiler);
     if(!m_skipVariantCache && isEmbeddedDlssVariant(resources))
     {
 #if defined(USE_DLSS)
@@ -2156,11 +2156,11 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
       compiledFromFile = true;
       LOGI("Slang: embedded path tracer, no compile\n");
     }
-    else if(!m_skipVariantCache && loadCachedSpirv(key, cachedSpirv))
+    else if(!m_skipVariantCache && loadCachedSpirv(spirvKey, cachedSpirv))
     {
       spirv            = cachedSpirv;
       compiledFromFile = true;
-      LOGI("Slang SPIR-V cache hit %016llx\n", static_cast<unsigned long long>(key));
+      LOGI("Slang SPIR-V cache hit %016llx\n", static_cast<unsigned long long>(spirvKey));
 #if defined(AFTERMATH_AVAILABLE)
       // The compile callback in GltfRenderer does not run when the SPIR-V is loaded from disk.
       AftermathCrashTracker::getInstance().addShaderBinary(std::span<const uint32_t>(cachedSpirv.data(), cachedSpirv.size()));
@@ -2169,14 +2169,15 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     else if(const auto compileStart = std::filesystem::file_time_type::clock::now();
             resources.slangCompiler.compileFile("gltf_pathtrace.slang"))
     {
-      LOGI("Slang SPIR-V cache %s %016llx\n", m_skipVariantCache ? "bypassed (reload)" : "miss", static_cast<unsigned long long>(key));
+      LOGI("Slang SPIR-V cache %s %016llx\n", m_skipVariantCache ? "bypassed (reload)" : "miss",
+           static_cast<unsigned long long>(spirvKey));
       spirv            = {resources.slangCompiler.getSpirv(), resources.slangCompiler.getSpirvSize() / sizeof(uint32_t)};
       compiledFromFile = true;
-      storeCachedSpirv(key, resources, compileStart);
+      storeCachedSpirv(spirvKey, resources.slangCompiler, compileStart);
     }
     else
     {
-      LOGI("Slang SPIR-V cache miss %016llx\n", static_cast<unsigned long long>(key));
+      LOGI("Slang SPIR-V cache miss %016llx\n", static_cast<unsigned long long>(spirvKey));
       // Falls back to the embedded SPIR-V, which is built with USE_OMM=0: in a scene with
       // micromaps its ray queries lack the OpacityMicromapIdKHR opt-in. The fallback stands in for
       // the wanted variant (m_compiledIsFallback) until a setting changes or the user reloads.
@@ -2353,19 +2354,7 @@ bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey, boo
   std::lock_guard<std::mutex> lock(m_compileMutex);
 
   auto release = [&](VkShaderModule module, VkPipeline rtx, VkPipeline rq, nvvk::Buffer sbt) {
-    if(module == VK_NULL_HANDLE && rtx == VK_NULL_HANDLE && rq == VK_NULL_HANDLE && sbt.buffer == VK_NULL_HANDLE)
-      return;
-    auto destroy = [device = m_device, alloc = &resources.allocator, module, rtx, rq, sbt]() mutable {
-      vkDestroyShaderModule(device, module, nullptr);
-      vkDestroyPipeline(device, rtx, nullptr);
-      vkDestroyPipeline(device, rq, nullptr);
-      if(sbt.buffer != VK_NULL_HANDLE)
-        alloc->destroyBuffer(sbt);
-    };
-    if(gpuIdle || resources.app == nullptr)
-      destroy();
-    else
-      resources.app->submitResourceFree(std::move(destroy));
+    releaseVariant(resources, module, rtx, rq, sbt, gpuIdle);
   };
 
   // 1) Park the currently-active shader/pipelines/SBT so we don't leak them. The embedded fallback
@@ -2459,6 +2448,266 @@ bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey, boo
   }
 
   return false;  // miss: caller must (re)compile + (re)build pipelines + (re)build SBT
+}
+
+void PathTracer::releaseVariant(Resources& resources, VkShaderModule module, VkPipeline rtx, VkPipeline rq, nvvk::Buffer sbt, bool gpuIdle)
+{
+  if(module == VK_NULL_HANDLE && rtx == VK_NULL_HANDLE && rq == VK_NULL_HANDLE && sbt.buffer == VK_NULL_HANDLE)
+    return;
+  auto destroy = [device = m_device, alloc = &resources.allocator, module, rtx, rq, sbt]() mutable {
+    vkDestroyShaderModule(device, module, nullptr);
+    vkDestroyPipeline(device, rtx, nullptr);
+    vkDestroyPipeline(device, rq, nullptr);
+    if(sbt.buffer != VK_NULL_HANDLE)
+      alloc->destroyBuffer(sbt);
+  };
+  if(gpuIdle || resources.app == nullptr)
+    destroy();
+  else
+    resources.app->submitResourceFree(std::move(destroy));
+}
+
+//--------------------------------------------------------------------------------------------------
+// The shader macros of a variant, after applyCommonShaderMacros()'s: what compileShader() compiles
+// it with, and a variant job with it, so both find the same SPIR-V in the disk cache.
+std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const VariantKey& key) const
+{
+  std::vector<std::pair<std::string, std::string>> macros = {
+      {"AVAILABLE_SER", std::to_string(m_supportSER)},
+      {"WIREFRAME", std::to_string(int(key.wireframe))},
+      // Debug-only visualization (incl. the OMM debug payload field). Compiled out of the normal
+      // render path so it adds no payload/register cost; a mode switch triggers a recompile.
+      {"USE_VISUALIZE", std::to_string(key.visualize ? 1 : 0)},
+      // Ray queries against a BLAS with an opacity micromap need an explicit opt-in (see gltf_pathtrace.slang).
+      {"USE_OMM", std::to_string(key.omm ? 1 : 0)},
+  };
+  nvvkgltf::SceneFeatureSet guide;
+  guide.set(nvvkgltf::SceneFeatureSet::eDlssGuide, key.dlssGuide);
+  nvvkgltf::appendPathTracerDlssShaderMacro(macros, guide, key.dlss);
+  // Scene-aware optimal mode: every GLTF_USE_* set to 0 or 1 from the feature set. Never
+  // MAT_EXT_X=0 (that would change GltfShadeMaterial layout while the host uploads the all-on struct).
+  if(key.optimal)
+    nvvkgltf::appendPathTracerOptimalMacros(macros, key.features);
+  return macros;
+}
+
+//--------------------------------------------------------------------------------------------------
+// The SBT of a ray tracing pipeline built from `module`
+void PathTracer::createSbt(Resources& resources, VkPipeline pipeline, VkShaderModule module, nvvk::Buffer& sbtBuffer, nvvk::SBTGenerator::Regions& regions)
+{
+  RtxStages                               table(module);
+  const VkRayTracingPipelineCreateInfoKHR info{
+      .sType      = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+      .stageCount = static_cast<uint32_t>(table.stages.size()),
+      .pStages    = table.stages.data(),
+      .groupCount = static_cast<uint32_t>(table.groups.size()),
+      .pGroups    = table.groups.data(),
+  };
+  nvvk::SBTGenerator sbtGenerator;
+  sbtGenerator.init(m_device, m_rtPipelineProperties);
+  const size_t bufferSize = sbtGenerator.calculateSBTBufferSize(pipeline, info);
+  NVVK_CHECK(resources.allocator.createBuffer(
+      sbtBuffer, bufferSize, VK_BUFFER_USAGE_2_SHADER_BINDING_TABLE_BIT_KHR, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+      VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, sbtGenerator.getBufferAlignment()));
+  NVVK_DBG_NAME(sbtBuffer.buffer);
+  NVVK_CHECK(sbtGenerator.populateSBTBuffer(sbtBuffer.address, bufferSize, sbtBuffer.mapping));
+  regions = sbtGenerator.getSBTRegions();
+  sbtGenerator.deinit();
+}
+
+//--------------------------------------------------------------------------------------------------
+// D15 (daz-viewer docs/retained-scene-plan.md, "Shader variants under incremental edits"): on the
+// retained scene, a variant that only adds scene features to the optimal build is built off the
+// frame. The live variant draws meanwhile, or a cached one with the same shader otherwise and
+// features between the live one's and the wanted ones: the residency holds the edits that need
+// more, so nothing drawn does. Anything else (a setting, the variant a scene replace wants, a
+// first compile, a job that failed) is compiled before the frame, as before.
+bool PathTracer::buildsOffTheFrame(Resources& resources, const PendingCompileWork& work)
+{
+  const VariantKey wanted = makeVariantKey(resources);
+  if(!work.recompile || work.stalePipeline || !wanted.optimal || !resources.gpuView().variantMayBuildOffFrame()
+     || (m_failedVariant && *m_failedVariant == wanted))
+    return false;
+  const bool rayQuery = m_renderTechnique == RenderTechnique::RayQuery;
+  VariantKey live;
+  bool       liveDraws = false;
+  {
+    std::lock_guard<std::mutex> lock(m_compileMutex);
+    live      = m_compiled;
+    liveDraws = !m_compiledIsFallback && (rayQuery ? m_rqPipeline : m_rtxPipeline) != VK_NULL_HANDLE;
+  }
+  if(!live.optimal)
+    return false;
+  const auto standsIn = [&](const VariantKey& k) {
+    VariantKey same = k;
+    same.features   = wanted.features;
+    return same == wanted && wanted.features.isSupersetOf(k.features) && k.features.isSupersetOf(live.features);
+  };
+  if(!liveDraws || !standsIn(live))
+  {
+    std::optional<VariantKey> cached;
+    {
+      std::lock_guard<std::mutex> lock(m_compileMutex);
+      for(const VariantCacheEntry& e : m_variantCache)
+        if(standsIn(e.key) && e.useSER == m_pipelineUseSER && (rayQuery ? e.rqPipeline : e.rtxPipeline) != VK_NULL_HANDLE)
+        {
+          cached = e.key;
+          break;
+        }
+    }
+    if(!cached || !swapVariant(resources, *cached, /*gpuIdle=*/false))
+      return false;
+  }
+  if(!m_variantJobs.job())
+    startVariantJob(resources, wanted);
+  return true;
+}
+
+// The job: a snapshot of what the variant is built from, taken on the application thread
+void PathTracer::startVariantJob(Resources& resources, const VariantKey& key)
+{
+  VariantCompileJob job{
+      .key         = key,
+      .macros      = variantMacros(key),
+      .searchPaths = resources.slangCompiler.searchPaths(),
+      .targets     = resources.slangCompiler.targets(),
+      .options     = resources.slangCompiler.options(),
+      .rayQuery    = m_renderTechnique == RenderTechnique::RayQuery,
+      .useSER      = m_useSER && m_supportSER,
+      .layout      = m_pipelineLayout,
+      .rtxFlags    = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats),
+      .rqFlags     = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u,
+  };
+  VariantKey live;
+  {
+    std::lock_guard<std::mutex> lock(m_compileMutex);
+    live = m_compiled;
+  }
+  LOGI("[PathTracer] Variant building off the frame: %s\n", live.shaderDiff(key).c_str());
+  m_variantJobs.start(std::move(job), [this](const VariantCompileJob& j) { return buildVariant(j); });
+}
+
+// On the worker: the job's Slang compile (or the disk cache's SPIR-V) on a compiler of its own, then
+// its module and pipeline. Nothing of Resources, and nothing destroyed but what it made and failed.
+PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
+{
+  const auto             start = std::chrono::steady_clock::now();
+  nvslang::SlangCompiler compiler;  // a global session of its own: the application thread's is not shared
+  compiler.targets() = job.targets;
+  compiler.options() = job.options;
+  compiler.addSearchPaths(job.searchPaths);
+  nvvkgltf::applyCommonShaderMacros(compiler);
+  for(const auto& [name, value] : job.macros)
+    compiler.addMacro({name.c_str(), value.c_str()});
+  const uint64_t        spirvKey = spirvCacheKey(compiler);
+  std::vector<uint32_t> spirv;
+  if(!loadCachedSpirv(spirvKey, spirv))
+  {
+    const auto compileStart = std::filesystem::file_time_type::clock::now();
+    if(!compiler.compileFile("gltf_pathtrace.slang"))
+    {
+      LOGW("[PathTracer] Variant job: Slang compile failed\n%s\n", compiler.getLastDiagnosticMessage().c_str());
+      return {};
+    }
+    spirv.assign(compiler.getSpirv(), compiler.getSpirv() + compiler.getSpirvSize() / sizeof(uint32_t));
+    storeCachedSpirv(spirvKey, compiler, compileStart);
+  }
+  VariantBuilt                   built;
+  const VkShaderModuleCreateInfo moduleInfo{
+      .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+      .codeSize = spirv.size() * sizeof(uint32_t),
+      .pCode    = spirv.data(),
+  };
+  if(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &built.module) != VK_SUCCESS)
+    return {};
+  VkResult result = VK_ERROR_UNKNOWN;
+  built.pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), job.layout, built.module, job.rayQuery,
+                                           job.useSER ? 1 : 0, job.key.dlssTransparency, job.rtxFlags, job.rqFlags, result);
+  if(!built.pipeline)
+  {
+    LOGW("[PathTracer] Variant job: pipeline creation failed (%d)\n", int(result));
+    vkDestroyShaderModule(m_device, built.module, nullptr);
+    return {};
+  }
+  m_pipelineCache.saveAsync();
+  built.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  return built;
+}
+
+// At frame top: a finished job's variant into the cache, with its SBT, where the frame's
+// tryRestoreCachedVariant() swaps it in. With DLSS on, the same features under the other DLSS
+// state is built next, for the next camera start or stop.
+void PathTracer::installBuiltVariant(Resources& resources)
+{
+  std::optional<std::pair<VariantCompileJob, VariantBuilt>> done = m_variantJobs.take();
+  if(!done)
+    return;
+  const VariantCompileJob& job   = done->first;
+  VariantBuilt&            built = done->second;
+  if(!built.module)
+  {
+    LOGW("[PathTracer] The variant built off the frame failed; it is compiled before the frame instead\n");
+    m_failedVariant = job.key;
+    return;
+  }
+  if(job.layout != m_pipelineLayout)  // never used: no frame holds it
+  {
+    vkDestroyPipeline(m_device, built.pipeline, nullptr);
+    vkDestroyShaderModule(m_device, built.module, nullptr);
+    return;
+  }
+  VariantCacheEntry entry{.key = job.key, .shaderModule = built.module, .useSER = job.useSER};
+  if(job.rayQuery)
+    entry.rqPipeline = built.pipeline;
+  else
+  {
+    entry.rtxPipeline = built.pipeline;
+    createSbt(resources, built.pipeline, built.module, entry.sbtBuffer, entry.sbtRegions);
+  }
+  {
+    std::lock_guard<std::mutex> lock(m_compileMutex);
+    for(auto it = m_variantCache.begin(); it != m_variantCache.end(); ++it)
+      if(it->key == job.key)
+      {
+        releaseVariant(resources, it->shaderModule, it->rtxPipeline, it->rqPipeline, it->sbtBuffer, /*gpuIdle=*/false);
+        m_variantCache.erase(it);
+        break;
+      }
+    m_variantCache.insert(m_variantCache.begin(), entry);
+    while(m_variantCache.size() > kVariantCacheMaxEntries)
+    {
+      const VariantCacheEntry& victim = m_variantCache.back();
+      releaseVariant(resources, victim.shaderModule, victim.rtxPipeline, victim.rqPipeline, victim.sbtBuffer, /*gpuIdle=*/false);
+      m_variantCache.pop_back();
+    }
+  }
+  LOGI("[PathTracer] Variant built off the frame in %.0f ms: [%s]\n", built.ms, job.key.features.toString().c_str());
+
+  if(!isDlssEnabled())
+    return;
+  VariantKey sibling = job.key;
+  sibling.dlss       = !job.key.dlss;
+  bool known         = false;
+  {
+    std::lock_guard<std::mutex> lock(m_compileMutex);
+    known = m_compiled == sibling
+            || std::any_of(m_variantCache.begin(), m_variantCache.end(),
+                           [&](const VariantCacheEntry& e) { return e.key == sibling; });
+  }
+  if(!known)
+    startVariantJob(resources, sibling);
+}
+
+// A job's work thrown away (teardown, a shader reload, a new pipeline layout): waited for, and what
+// it built destroyed, which no frame has used
+void PathTracer::discardVariantJob()
+{
+  m_variantJobs.join();
+  if(std::optional<std::pair<VariantCompileJob, VariantBuilt>> done = m_variantJobs.take())
+  {
+    vkDestroyPipeline(m_device, done->second.pipeline, nullptr);
+    vkDestroyShaderModule(m_device, done->second.module, nullptr);
+  }
 }
 
 //--------------------------------------------------------------------------------------------------

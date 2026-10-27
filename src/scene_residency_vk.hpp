@@ -279,6 +279,7 @@ public:
   std::optional<glm::vec3>     worldCentre(uint32_t renderNode) const override;
   bool                         hasTransmission() const override { return m_residency.hasTransmission(); }
   bool                         hasOpacityMicromaps() const override { return m_residency.hasOpacityMicromaps(); }
+  bool variantMayBuildOffFrame() const override { return !m_residency.drawsBeyondShaderFeatures(); }
   bool                         hasPlayableAnimation() const override { return false; }  // P3b
   std::vector<LightInfo>       lights() const override { return m_lights; }
   nvutils::Bbox                bounds() const override { return m_bounds; }
