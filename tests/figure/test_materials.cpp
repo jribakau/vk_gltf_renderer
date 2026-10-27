@@ -1729,3 +1729,78 @@ TEST(Materials, TheEditValuesRoundTrip)
   for(const char* k : {"sheenColor", "sheenRoughness", "color", "roughness"})
     EXPECT_FALSE(fv::mat::figureOnlyKey(k)) << k;
 }
+
+// Legacy (3Delight) surfaces: the channels of Age of Armour's Subsurface shader, as in
+// data/Age of Armour/Subsurface Shaders/AoA_Subsurface/AoA_Subsurface.dsf, where labels name other
+// channels' ids, and the id-only layer a figure's scene lays over them (Genesis 3 Female.duf, Torso).
+namespace {
+
+const char* kAoaBrick = R"({"extra":[{"type":"studio/material/daz_brick","channels":[
+  {"channel":{"id":"Ambient Color","label":"Subsurface Color","type":"color","current_value":[1,0.8,0.7],"image_file":"/Runtime/Textures/torso_d.jpg"}},
+  {"channel":{"id":"Ambient Strength","label":"Subsurface Strength","type":"float","current_value":0.75}},
+  {"channel":{"id":"color4","label":"Ambient Color","type":"color","current_value":[0,0,0]}},
+  {"channel":{"id":"Ambient Strength2","label":"Ambient Strength","type":"float","current_value":0}},
+  {"channel":{"id":"roughness","label":"Velvet Roughness","type":"float","current_value":0.2}},
+  {"channel":{"id":"Glossiness","label":"Specular Glossiness","type":"float","current_value":0.65}},
+  {"channel":{"id":"sssmaterial","label":"SSS Material Type","type":"enum","current_value":9}}
+]}]})";
+
+const char* kAoaSceneLayer = R"({"extra":[{"channels":[
+  {"channel":{"id":"Ambient Color","current_value":[0.9,0.7,0.6]}},
+  {"channel":{"id":"color4","current_value":[0,0,0]}},
+  {"channel":{"id":"Ambient Strength2","current_value":0}}
+]}]})";
+
+// Each layer collected over the ones before, as figure_loader merges a material's layers
+fv::dson::Channels layered(std::initializer_list<const char*> layers)
+{
+  fv::dson::Channels ch;
+  for(const char* text : layers)
+  {
+    const Json def = Json::parse(text);
+    fv::dson::collectChannels(&def, ch, {}, "x.dsf");
+  }
+  return ch;
+}
+
+}  // namespace
+
+TEST(Materials, AnIdOutranksAnotherChannelsLabel)
+{
+  const auto brick = layered({kAoaBrick});
+  // "color4", labelled "Ambient Color", is not the channel whose id is "Ambient Color"
+  const auto* sss = brick.find({"Subsurface Color"});
+  ASSERT_NE(sss, nullptr);
+  EXPECT_EQ(sss->value, Json::parse("[1,0.8,0.7]"));
+  EXPECT_EQ(brick.get("ambientcolor"), sss);
+  EXPECT_EQ(brick.get("color4")->value, Json::parse("[0,0,0]"));
+  EXPECT_EQ(brick.find({"Subsurface Strength"})->value, 0.75);
+  EXPECT_EQ(brick.get("ambientstrength2")->value, 0);
+
+  // the scene's id-only layer reaches each by its id: the subsurface colour keeps its map
+  const auto scene = layered({kAoaBrick, kAoaSceneLayer});
+  const auto* sss2 = scene.find({"Subsurface Color"});
+  ASSERT_NE(sss2, nullptr);
+  EXPECT_EQ(sss2->value, Json::parse("[0.9,0.7,0.6]"));
+  EXPECT_EQ(sss2->image, std::optional<std::string>("/Runtime/Textures/torso_d.jpg"));
+  EXPECT_EQ(scene.find({"Subsurface Strength"})->value, 0.75);
+}
+
+TEST(Materials, AnOverrideByIdStillReplacesEveryName)
+{
+  // a figure's "diffuse"/"Base Color" overridden by a character's "diffuse"/"Diffuse Color"
+  const auto ch = layered({R"({"extra":[{"channels":[{"channel":{"id":"diffuse","label":"Base Color","current_value":[1,1,1]}}]}]})",
+                           R"({"extra":[{"channels":[{"channel":{"id":"diffuse","label":"Diffuse Color","current_value":[0.5,0.4,0.3]}}]}]})"});
+  const auto* byLabel = ch.find({"Base Color"});
+  ASSERT_NE(byLabel, nullptr);
+  EXPECT_EQ(byLabel->value, Json::parse("[0.5,0.4,0.3]"));
+  EXPECT_EQ(ch.find({"Diffuse Color"}), byLabel);
+  EXPECT_EQ(ch.find({"diffuse"}), byLabel);
+}
+
+TEST(Materials, AoaRoughnessIsNotVelvet)
+{
+  // AoA's id "roughness" is its Velvet Roughness; the specular lobe's comes from Glossiness
+  const auto s = fv::dson::parseSurface("Torso", layered({kAoaBrick}));
+  EXPECT_NE(s.glossy.roughness.value, 0.2f);
+}

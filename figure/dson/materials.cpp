@@ -15,12 +15,20 @@ void collectChannels(const Json* def, Channels& into, const std::unordered_map<s
   auto put = [&](const Json& c) {
     const Json* inner = get(&c, "channel");
     const Json& ch    = inner && !inner->is_null() ? *inner : c;
+    const std::string        id = norm(getString(&ch, "id"));
     std::vector<std::string> own;
     for(const char* k : {"id", "label", "name"})
     {
-      const std::string s = getString(&ch, k);
-      if(!s.empty())
-        own.push_back(norm(s));
+      const std::string s = norm(getString(&ch, k));
+      if(s.empty())
+        continue;
+      // A label or name that is another channel's id names that channel, not this one: AoA's
+      // "color4" is labelled "Ambient Color", the id of its Subsurface Color channel. Such a key is
+      // neither matched nor taken, so the two stay apart, and a later layer finds each by its id.
+      if(s != id)
+        if(auto other = into.shared(s); other && other->id == s)
+          continue;
+      own.push_back(s);
     }
     if(own.empty())
       return;
@@ -66,6 +74,7 @@ void collectChannels(const Json* def, Channels& into, const std::unordered_map<s
       }
     }
     entry->keys = keys;
+    entry->id   = !id.empty() ? id : (prev ? prev->id : std::string());
     for(const auto& k : keys)
       into.set(k, entry);
   };
@@ -382,7 +391,10 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
       return clamp01(1 - num(g, 0.5));
     return std::nullopt;
   };
-  const Channel* glossRough = find({"Glossy Roughness", "Specular Lobe 1 Roughness", "roughness"});
+  // A bare "roughness" only where the surface is Iray's: on a legacy one it is AoA's Velvet Roughness.
+  const bool     iray       = find({"Glossy Roughness", "Translucency Weight", "Metallic Weight"}) != nullptr;
+  const Channel* glossRough = iray ? find({"Glossy Roughness", "Specular Lobe 1 Roughness", "roughness"})
+                                   : find({"Glossy Roughness", "Specular Lobe 1 Roughness"});
   const Channel* glossiness = find({"Glossiness"});
   const auto     glossyFromGloss = roughFromGloss("Glossiness");
   ScalarMap      roughness;

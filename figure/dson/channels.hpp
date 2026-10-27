@@ -21,6 +21,8 @@ struct Channel
   std::optional<std::string> image;  // library path
   // every name it was stored under, so an override finds them
   std::vector<std::string> keys;
+  // its normalised id, empty without one: another channel's label or name never takes it over
+  std::string id;
 };
 
 // Channels by normalised name, in the order first stored (as a Map iterates).
