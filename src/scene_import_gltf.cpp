@@ -183,10 +183,16 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     // a data URI's bytes or pixels are in img.image (below), never the URI itself
     if(img.uri.rfind("data:", 0) == 0)
       t.uri.clear();
-    else if(!t.uri.empty() && !options.imageSearchPaths.empty())
+    else if(!t.uri.empty())
     {
-      const std::filesystem::path found =
-          nvutils::findFile(nvutils::pathFromUtf8(tinygltf::utils::decodePathFromUri(t.uri)), options.imageSearchPaths, false);
+      // a URI is %-encoded (fv_compose writes absolute ones so); the record holds the file's path
+      const std::filesystem::path path = nvutils::pathFromUtf8(tinygltf::utils::decodePathFromUri(t.uri));
+      std::error_code             ec;
+      std::filesystem::path       found;
+      if(path.is_absolute() && std::filesystem::is_regular_file(path, ec))
+        found = path;
+      else if(!options.imageSearchPaths.empty())
+        found = nvutils::findFile(path, options.imageSearchPaths, false);
       if(!found.empty())
         t.uri = nvutils::utf8FromPath(std::filesystem::absolute(found));
     }

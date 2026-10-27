@@ -439,6 +439,11 @@ public:
 
   // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.
   nvvkgltf::Scene*  editScene() { return m_resources.getScene(); }
+  // The retained scene draws (sceneBackend): the CPU scene above is still the one a host edits, and
+  // the bridge carries its edits across once a frame; mcp_scene's edit tools are refused.
+  bool drawsRetainedScene() const { return m_resources.retainedGpu != nullptr; }
+  // How the renderer asks the host for a scene replace (a recompose), as a sceneBackend change does
+  void              setRecomposeRequest(std::function<void()> request) { m_recomposeRequest = std::move(request); }
   AnimationControl& editAnimationControl() { return m_resources.animationControl; }
   bool              isBlasUpdatable(uint32_t renderPrimID) const { return m_resources.sceneRtx.isBlasUpdatable(renderPrimID); }
   // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
@@ -573,6 +578,12 @@ private:
   void createDescriptorSets();
   void createResourceBuffers();
   void createVulkanScene();
+  // The retained scene's scene replace, instead of createVulkanScene(): the CPU scene imported in
+  // document order and made resident, waited for. syncRetainedScene() is its per-frame half, in
+  // place of the legacy per-frame GPU paths.
+  void                       createRetainedScene();
+  bool                       syncRetainedScene(VkCommandBuffer cmd);
+  rs::VulkanGpuBackend::Info retainedBackendInfo();
   void finalizeSceneSetup(const std::filesystem::path& filename);  // Shared GPU build + UI wiring after a load
   void wireSceneToUi();                                            // Wire current scene into browser/inspector panels
   void buildAccelerationStructures();                              // Helper for BLAS/TLAS building
@@ -616,6 +627,9 @@ private:
   bool                      applyPendingSceneEdits(VkCommandBuffer cmd);
   bool                      m_editable{false};
   bool                      m_streamHost{false};  // see setStreamHost()
+  rs::SceneBackendSetting            m_sceneBackendSetting{rs::SceneBackendSetting::eAuto};  // the parsed sceneBackend
+  bool                               m_takeRetained{false};  // the scene replace under way takes the retained scene
+  std::function<void()>              m_recomposeRequest;     // see setRecomposeRequest()
   bool                      m_pendingAnimReconcile{false};
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off

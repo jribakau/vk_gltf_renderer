@@ -805,8 +805,9 @@ Use [RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md) as the source of trut
 
 ## The legacy scene and `SceneGpuView`
 
-The Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md) will stand behind
-`SceneGpuView` (src/scene_gpu_view.hpp) in stream sessions. Every use of the legacy scene
+The Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md) stands behind
+`SceneGpuView` (src/scene_gpu_view.hpp) in stream sessions that `sceneBackend` sends there (below).
+Every use of the legacy scene
 (`Resources::getScene()`, `Scene::getModel()`, `editScene()`, `hasValidScene()`, `sceneVk`,
 `sceneRtx`) outside the frozen `src/ui_*` files has one of these dispositions. A new use picks one.
 
@@ -855,6 +856,29 @@ handles from P4:
 attached): `onFileDrop`, `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`,
 `wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `updateInteractivityGraphs`,
 `updateHoverState`, `undo_redo.cpp`, `gltf_interactivity_scene_pointer.cpp`.
+
+### The retained scene in a stream session
+
+Two settings, neither remembered, both live:
+
+- `sceneBackend` (`auto`, `legacy` or `retained`; `auto`) decides at each `loadModel` of a stream
+  session; windowed sessions and `--scenefile` stay legacy. `auto` takes the retained scene unless
+  `rs::retainedCannotTake` (scene_coexistence.hpp) finds what it can't draw yet: skins, morph
+  targets, animation, opacity micromaps, `KHR_interactivity`, IES profiles, external assets.
+  `retained` takes it regardless, and says what won't draw. The `Scene backend:` log line names the
+  choice and why, with the top-level node (a prop) that forced legacy. A change asks the host for a
+  recompose (`GltfRenderer::setRecomposeRequest`); the switch is that scene replace.
+- `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
+  (`VulkanGpuBackend`); the next batch regrows it.
+
+In a retained session `loadModel` builds the CPU `nvvkgltf::Scene` as before, then
+`createRetainedScene` imports it in document order (instance slot *i* is render node *i*, so the
+host's and the pickers' indices hold) and makes it resident, waited for. Each frame
+`syncRetainedScene` stands in for the legacy per-frame paths listed above: `LegacyDirtyBridge`
+carries the dirty nodes, materials and lights into the store (a re-import when it can't: a new
+texture, a sampler edit, a re-parse), the CPU world matrices are brought up to date, and the
+residency syncs. Not on retained yet: DLSS instance and deformation motion (motion is the camera's
+only), opacity micromaps, per-build GPU timing sections. mcp_scene's edit tools are refused (D3).
 
 ---
 

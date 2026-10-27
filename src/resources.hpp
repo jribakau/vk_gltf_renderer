@@ -50,7 +50,9 @@
 #include <nvvk/frame_uploader.hpp>
 #include "gltf_scene.hpp"
 #include "gltf_scene_gpu.hpp"
+#include "scene_coexistence.hpp"
 #include "scene_gpu_view.hpp"
+#include "scene_residency_vk.hpp"
 #include "ui_animation.hpp"
 #include "ui_interactivity.hpp"
 #include "gltf_scene_transform_vk.hpp"
@@ -307,6 +309,11 @@ struct Settings
 
   // `tlasPolicy`, build or update (tlas_policy.hpp); SceneRtx holds the parsed value.
   std::string tlasPolicy = tlasPolicyName(TlasPolicy::eBuild);
+  // `sceneBackend`, auto, legacy or retained (scene_coexistence.hpp): what a stream host's scene
+  // replace draws with
+  std::string sceneBackend = rs::sceneBackendSettingName(rs::SceneBackendSetting::eAuto);
+  // `blasScratchBudgetMB`: the retained scene's BLAS builds of one batch share this much scratch
+  uint32_t blasScratchBudgetMB = 512;
 
   // Enable scene-based shader optimization. When true, only features used by the scene are
   // enabled, reducing shader size and register usage at the cost of a one-time recompile per scene change.
@@ -356,9 +363,20 @@ struct Resources
   nvvkgltf::TransformComputeVk     transformCompute{};
   nvvkgltf::SceneGpu sceneGpu{sceneVk, animationVk, sceneRtx, transformCompute, staging};  // Must be declared after its reference dependencies
   nvvkgltf::PrevPositionsVk prevPositions{};  // #DLSS deformation motion: last frame's vertex positions
-  // What the renderers read of the scene on the GPU (scene_gpu_view.hpp); today's objects behind it
+  // What the renderers read of the scene on the GPU (scene_gpu_view.hpp): the retained scene when a
+  // scene replace took it, else today's objects
   LegacySceneGpuView  legacyGpuView{scene, sceneVk, sceneRtx, animationVk, transformCompute};
-  const SceneGpuView& gpuView() const { return legacyGpuView; }
+  const SceneGpuView& gpuView() const
+  {
+    return retainedGpu ? static_cast<const SceneGpuView&>(*retainedGpu) : legacyGpuView;
+  }
+
+  // The retained scene (scene_coexistence.hpp, scene_residency_vk.hpp), when the scene replace took
+  // it: a store imported in document order from the CPU scene above, the bridge carrying the host's
+  // edits of that scene into it, and its residency. The legacy GPU objects hold nothing meanwhile.
+  std::unique_ptr<rs::RetainedScene>   retainedScene;
+  rs::LegacyDirtyBridge                retainedBridge;
+  std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
 
   nvvkgltf::Scene*       getScene() { return scene.get(); }
   const nvvkgltf::Scene* getScene() const { return scene.get(); }

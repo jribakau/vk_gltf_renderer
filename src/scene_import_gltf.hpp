@@ -49,8 +49,8 @@ struct ImportOptions
   EntityId parent;     // where the scene's roots go; none: roots of the retained scene
   int      scene = -1;  // the glTF scene; -1: the default one (or the first)
   // where an image's relative URI is looked for (the file's folder first, as
-  // nvvkgltf::Scene::getImageSearchPaths): one found is kept as its absolute path, one not found
-  // (or with no paths given) as the file wrote it
+  // nvvkgltf::Scene::getImageSearchPaths). A URI naming a file, absolute or found here, is kept as
+  // its decoded absolute path; one naming none, as the file wrote it.
   std::vector<std::filesystem::path> imageSearchPaths;
 };
 

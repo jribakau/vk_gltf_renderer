@@ -26,7 +26,9 @@
 // imported from it. GPU-free.
 //
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <tinygltf/tiny_gltf.h>
@@ -52,6 +54,10 @@ enum class SceneBackendSetting
   eRetained,
   eAuto,
 };
+
+// The setting's spelling: "auto", "legacy", "retained"; none for anything else
+std::optional<SceneBackendSetting> parseSceneBackendSetting(std::string_view text);
+const char*                        sceneBackendSettingName(SceneBackendSetting setting);
 
 struct SceneBackendChoice
 {

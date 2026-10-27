@@ -93,6 +93,7 @@ public:
   // The command buffer this frame's sync records into, until finish() records what is still queued
   void record(VkCommandBuffer cmd);
   void finish();
+  void setBlasScratchBudget(VkDeviceSize bytes) { m_info.blasScratchBudget = bytes; }
 
   // What the renderers bind; null for none or a destroyed handle
   VkBuffer                          vkBuffer(BufferHandle buffer) const;
@@ -201,6 +202,8 @@ public:
   SyncResult sync(VkCommandBuffer cmd, RetainedScene& scene);
   // Starts the backend's next frame; once per rendered frame, before sync
   void beginFrame() { m_gpu.beginFrame(); }
+  // blasScratchBudgetMB: the next batch regrows the scratch when it needs more
+  void setBlasScratchBudget(VkDeviceSize bytes) { m_gpu.setBlasScratchBudget(bytes); }
 
   const Residency&        residency() const { return m_residency; }
   const VulkanGpuBackend& backend() const { return m_gpu; }

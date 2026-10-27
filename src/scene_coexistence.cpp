@@ -80,6 +80,28 @@ std::vector<std::string> retainedCannotTake(const tinygltf::Model& model, bool e
   return out;
 }
 
+std::optional<SceneBackendSetting> parseSceneBackendSetting(std::string_view text)
+{
+  for(SceneBackendSetting s : {SceneBackendSetting::eAuto, SceneBackendSetting::eLegacy, SceneBackendSetting::eRetained})
+    if(text == sceneBackendSettingName(s))
+      return s;
+  return std::nullopt;
+}
+
+const char* sceneBackendSettingName(SceneBackendSetting setting)
+{
+  switch(setting)
+  {
+    case SceneBackendSetting::eLegacy:
+      return "legacy";
+    case SceneBackendSetting::eRetained:
+      return "retained";
+    case SceneBackendSetting::eAuto:
+      break;
+  }
+  return "auto";
+}
+
 SceneBackendChoice chooseSceneBackend(SceneBackendSetting setting, bool streamHost, const std::vector<std::string>& cannotTake)
 {
   std::string missing;

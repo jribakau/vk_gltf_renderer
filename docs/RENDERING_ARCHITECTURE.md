@@ -42,6 +42,20 @@
 
 **Key Insight:** RenderNodes are **derived structures**, rebuilt from Model whenever hierarchy changes.
 
+### The retained scene (stream sessions)
+
+Everything below describes the legacy scene. In a stream session whose scene replace the
+`sceneBackend` setting sends to the retained scene (developer.md, "The retained scene in a stream
+session"), `loadModel` still parses the model into `nvvkgltf::Scene`, but only on the CPU: the host
+edits it and the gizmo and the pickers read it. The GPU side is `rs::RetainedSceneVk`
+(`scene_residency_vk.*`): the model is imported in document order into an `rs::RetainedScene`, so
+instance slot *i* is RenderNode *i* and the shaders see the same `GltfScene` layout, and
+`rs::Residency` keeps it resident, deriving instances from entities incrementally: slots with holes,
+capacity-sized tables, a BLAS per drawn submesh, the TLAS rebuilt over capacity. Each frame
+`LegacyDirtyBridge` carries the legacy scene's dirty nodes, materials and lights into the store
+before its dirty flags are cleared, and the residency syncs. `SceneVk`, `SceneRtx`, `AnimationVk`
+and `TransformComputeVk` hold nothing in such a session.
+
 ### BLAS ↔ Primitive Index Contract (Critical)
 
 There is a **direct correlation between BLAS and primitive index**:

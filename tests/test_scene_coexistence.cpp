@@ -132,6 +132,10 @@ TEST(SceneCoexistence, WhatRetainedCannotTakeIsNamedOnceUnderItsProp)
 
 TEST(SceneCoexistence, TheBackendASceneTakes)
 {
+  for(SceneBackendSetting s : {SceneBackendSetting::eAuto, SceneBackendSetting::eLegacy, SceneBackendSetting::eRetained})
+    EXPECT_EQ(parseSceneBackendSetting(sceneBackendSettingName(s)), s);
+  EXPECT_FALSE(parseSceneBackendSetting("Retained").has_value());
+
   const std::vector<std::string> none, skin = {"skinning (under 'figure')"};
   EXPECT_EQ(chooseSceneBackend(SceneBackendSetting::eAuto, true, none).backend, SceneBackend::eRetained);
   const SceneBackendChoice fallback = chooseSceneBackend(SceneBackendSetting::eAuto, true, skin);

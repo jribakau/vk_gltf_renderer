@@ -897,6 +897,15 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
     }
   };
 
+  // withScene for the tools that edit: refused while the retained scene draws, since they would
+  // change the legacy CPU scene only (decision D3)
+  auto withEditScene = [weak, withScene](std::string_view payload, auto&& body) -> nvmcp::ToolResult {
+    if(auto r = weak.lock(); r && r->drawsRetainedScene())
+      return nvmcp::ToolResult::error(
+          R"({"error":"the scene backend is retained, which these edits don't reach; run with --sceneBackend legacy"})");
+    return withScene(payload, body);
+  };
+
   mcp.registerTool({
       .name        = "vk_gltf_scene_info",
       .description = "Describe the loaded scene for live editing: nodes, materials, meshes with their primitives "
@@ -914,9 +923,9 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
                      "...the same fields as the single tool}. A failing op is reported and the rest still apply.",
       .inputSchema = R"({"type":"object","properties":{"ops":{"type":"array","items":{"type":"object"}}},"required":["ops"]})",
       .handler =
-          [withScene](std::string_view p) {
+          [withEditScene](std::string_view p) {
             const double handled = traceNowMs();
-            return withScene(p, [handled](Ctx& c, const Json& in) {
+            return withEditScene(p, [handled](Ctx& c, const Json& in) {
               const double parsed = traceNowMs();
               auto ops = in.find("ops");
               if(ops == in.end() || !ops->is_array())
@@ -955,7 +964,7 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
               return Json{{"applied", applied}, {"results", results}};
             });
           },
-      .annotations            = {.readOnlyHint = false, .destructiveHint = false, .idempotentHint = true, .openWorldHint = false},
+      .annotations = {.readOnlyHint = false, .destructiveHint = false, .idempotentHint = true, .openWorldHint = false},
       .runOnApplicationThread = true,
   });
 
@@ -967,8 +976,8 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
                      "nothing, when a named parent is not in the scene.",
       .inputSchema = R"({"type":"object","properties":{"file":{"type":"string"}},"required":["file"]})",
       .handler =
-          [withScene](std::string_view p) {
-            return withScene(p, [](Ctx& c, const Json& in) {
+          [withEditScene](std::string_view p) {
+            return withEditScene(p, [](Ctx& c, const Json& in) {
               if(!c.renderer.isEditable())
                 fail("adding to the scene needs an --editable (or --stream) session");
               auto file = in.find("file");
@@ -1037,8 +1046,11 @@ void registerSceneMcpTools(nvmcp::Element& mcp, const std::shared_ptr<GltfRender
         .name        = s.tool,
         .description = s.description,
         .inputSchema = R"({"type":"object"})",
-        .handler = [withScene, opName](std::string_view p) { return withScene(p, [&](Ctx& c, const Json& in) { return applyOp(c, opName, in); }); },
-        .annotations            = {.readOnlyHint = false, .destructiveHint = false, .idempotentHint = true, .openWorldHint = false},
+        .handler =
+            [withEditScene, opName](std::string_view p) {
+              return withEditScene(p, [&](Ctx& c, const Json& in) { return applyOp(c, opName, in); });
+            },
+        .annotations = {.readOnlyHint = false, .destructiveHint = false, .idempotentHint = true, .openWorldHint = false},
         .runOnApplicationThread = true,
     });
   }

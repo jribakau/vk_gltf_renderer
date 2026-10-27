@@ -164,6 +164,12 @@ public:
   // wear's new textures on its worker and the reload on the render thread only adopts them. Safe
   // from any thread; what the next createTextureImages() does not take is dropped.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
+  // Drops what was prefetched: a retained scene replace decodes its own, so nothing would take it
+  void dropPrefetched()
+  {
+    std::lock_guard lock(m_prefetchMutex);
+    m_prefetched.clear();
+  }
   // track() each pooled allocation. cleanupScene() resets the memory tracker after destroy(), which
   // zeroes current bytes while the pool is still alive; without this a later untrack is a no-op and
   // a reused scene reports no image memory. eFull does not reset the tracker and does not call this.

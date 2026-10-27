@@ -109,11 +109,16 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 - **The two render paths share resources.** Scene buffers, textures, and
   descriptors are built once and consumed by both. A change for one path must
   not fork or duplicate that shared state — if you touch shared resources,
-  verify both paths still work.
+  verify both paths still work. One scene backend owns them per session: the
+  legacy scene or, in a stream session that `sceneBackend` sends there, the
+  retained scene; both renderers read whichever it is through `SceneGpuView`
+  (`Resources::gpuView()`), never the backend's own objects.
 - **RenderNode / RenderPrimitive arrays are derived and regenerated** from the
   glTF model (see RENDERING_ARCHITECTURE.md). Don't hand-mutate them as if they
   were source of truth; drive changes from the model / editor path so GPU SSBO
-  and TLAS stay in sync.
+  and TLAS stay in sync. The retained scene derives its instances from entities
+  instead, incrementally (`rs::Residency`); in a retained session the host still
+  edits the legacy CPU scene, and `LegacyDirtyBridge` carries those edits across.
 - **The path tracer is the material reference.** New glTF material extensions
   land in the path tracer's Slang material eval first
   (`shaders/gltf_material_eval.h.slang`, gated by `MAT_EXT_*` flags in

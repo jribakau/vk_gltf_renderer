@@ -301,6 +301,13 @@ TEST(RetainedImport, AnImageIsFoundWhereTheFileLives)
   EXPECT_EQ(missing.texture((*missing.material(m.materials[0])->textures)[0].texture)->uri, "gone.png");
   const rs::ImportResult u = rs::importGltf(unresolved, fixture());
   EXPECT_EQ(unresolved.texture((*unresolved.material(u.materials[0])->textures)[0].texture)->uri, "normal.png");
+
+  // an absolute URI, %-encoded as fv_compose writes it, needs no search path
+  rs::RetainedScene absolute;
+  model.images[0].uri = tinygltf::utils::encodePathAsUri(nvutils::utf8FromPath(fs::absolute(dir / "maps" / "normal map.png")));
+  const rs::ImportResult a = rs::importGltf(absolute, model);
+  EXPECT_EQ(fs::path(nvutils::pathFromUtf8(absolute.texture((*absolute.material(a.materials[0])->textures)[0].texture)->uri)),
+            fs::absolute(dir / "maps" / "normal map.png"));
   fs::remove_all(dir);
 }
 
