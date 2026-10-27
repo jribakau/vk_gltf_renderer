@@ -21,11 +21,14 @@
 // straight into the retained scene holds what importing its fv::build::buildGltf model holds, and
 // the importer is held to nvvkgltf::Scene by test_retained_import. Checked after a load, a dial, a
 // pose, hidden polygons, a hidden node and a taken-off one, a dial on a normal-mapped body, and for
-// DAZ instances.
+// DAZ instances; fv::checkFeed holds the store to the scene's own bytes after each, and is shown to
+// catch a fed record corrupted through the store.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 
@@ -36,6 +39,7 @@
 #include <figure/pose/pose_rig.hpp>
 
 #include "fv_figure_feed.hpp"
+#include "fv_figure_feed_check.hpp"
 #include "scene_import_gltf.hpp"
 
 namespace {
@@ -181,6 +185,13 @@ void expectSame(rs::RetainedScene& fed, rs::RetainedScene& imported, bool sameTe
   }
 }
 
+// The store holds the scene's own bytes.
+void expectFed(const fv::SceneGraph& scene, int root, const fv::FigureFeed& feed, const rs::RetainedScene& fed,
+               const fv::build::BuildOptions& options)
+{
+  EXPECT_EQ(fv::checkFeed(scene, root, feed, fed, options), std::vector<std::string>{});
+}
+
 // The figure as the build has it, imported.
 void importBuild(rs::RetainedScene& into, const fv::SceneGraph& scene, int root, const fv::build::BuildOptions& options)
 {
@@ -200,6 +211,7 @@ TEST(FigureFeed, AFedFigureIsTheImportOfItsBuild)
     rs::RetainedScene fed, imported;
     fv::FigureFeed    feed(fed, {.build = options});
     feed.sync(f->loaded.scene, f->loaded.root);
+    expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
     importBuild(imported, f->loaded.scene, f->loaded.root, options);
     ASSERT_GT(fed.drawItems().size(), 0u);
     ASSERT_GT(fed.textureCount(), 0u);
@@ -231,6 +243,7 @@ TEST(FigureFeed, ADialAPoseAndHiddenPolygonsAreFedAsTheBuildHasThem)
     moved.push_back(c.mesh);
   (void)fed.takeChanges();
   feed.sync(f->loaded.scene, f->loaded.root, moved);
+  expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
   const rs::SceneChanges after = fed.takeChanges();
   EXPECT_EQ(feed.meshOf(0), body);  // the same record, its vertices set again
   EXPECT_TRUE(after.meshes.count(body));
@@ -249,6 +262,7 @@ TEST(FigureFeed, ADialAPoseAndHiddenPolygonsAreFedAsTheBuildHasThem)
     polys.insert(int32_t(geo.triPoly[t]));
   geo.hiddenPolys["w1"].assign(polys.begin(), polys.end());
   feed.sync(f->loaded.scene, f->loaded.root);
+  expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
   EXPECT_NE(feed.meshOf(0), body);
   EXPECT_EQ(fed.mesh(body), nullptr);  // the old record went with its last instance
   EXPECT_EQ(fed.mesh(feed.meshOf(0))->submeshes[0].indexCount, 0u);
@@ -272,6 +286,7 @@ TEST(FigureFeed, ADialOnANormalMappedBodyRemakesItsTangentsAsTheBuildHasThem)
   feed.sync(f->loaded.scene, f->loaded.root);
   const rs::MeshId body = feed.meshOf(0);
   ASSERT_FALSE(fed.mesh(body)->tangents.empty());
+  expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
 
   for(const double value : {1.0, 0.5})
   {
@@ -283,6 +298,7 @@ TEST(FigureFeed, ADialOnANormalMappedBodyRemakesItsTangentsAsTheBuildHasThem)
     ASSERT_FALSE(moved.empty());
     feed.sync(f->loaded.scene, f->loaded.root, moved);
     EXPECT_EQ(feed.meshOf(0), body);
+    expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
     rs::RetainedScene imported;
     importBuild(imported, f->loaded.scene, f->loaded.root, options);
     expectSame(fed, imported, true);
@@ -313,6 +329,7 @@ TEST(FigureFeed, AHiddenNodeAndATakenOffOneAreFedAsTheBuildHasThem)
   scene.nodes[size_t(leaf)].removed = true;
   const rs::EntityId gone = feed.entityOf(leaf);
   feed.sync(scene, f->loaded.root);
+  expectFed(scene, f->loaded.root, feed, fed, options);
   EXPECT_EQ(fed.entity(gone), nullptr);
   EXPECT_TRUE(feed.entityOf(leaf).isNone());
   rs::RetainedScene imported;
@@ -351,6 +368,7 @@ TEST(FigureFeed, InstancesShareOneMeshWithItsTangents)
   rs::RetainedScene fed, imported;
   fv::FigureFeed    feed(fed, {.build = options});
   feed.sync(scene, root);
+  expectFed(scene, root, feed, fed, options);
   importBuild(imported, scene, root, options);
   expectSame(fed, imported, true);
   EXPECT_EQ(fed.meshCount(), 1u);
@@ -365,6 +383,7 @@ TEST(FigureFeed, InstancesShareOneMeshWithItsTangents)
   scene.add(more, root, 1);
   (void)fed.takeChanges();
   feed.sync(scene, root);
+  expectFed(scene, root, feed, fed, options);
   EXPECT_TRUE(fed.takeChanges().meshes.empty());
   EXPECT_EQ(feed.meshOf(0), floor);
   rs::RetainedScene again;
@@ -382,6 +401,7 @@ TEST(FigureFeed, AMaterialEditSetsThatMaterialOnly)
   (void)fed.takeChanges();
   f->loaded.scene.materials[0].edits.roughness = 0.25f;
   feed.sync(f->loaded.scene, f->loaded.root);
+  expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
   const rs::SceneChanges changes = fed.takeChanges();
   EXPECT_EQ(changes.materials, std::set<rs::MaterialId>{feed.materialOf(0)});
   rs::RetainedScene imported;
@@ -396,6 +416,7 @@ TEST(FigureFeed, TheFeedLetsGoOfEverythingItFed)
   {
     fv::FigureFeed feed(fed, {.build = textured(), .rootScale = 0.01});
     feed.sync(f->loaded.scene, f->loaded.root);
+    expectFed(f->loaded.scene, f->loaded.root, feed, fed, textured());
     EXPECT_GT(fed.entityCount(), 0u);
     const rs::Entity* root = fed.entity(feed.entityOf(f->loaded.root));
     ASSERT_NE(root, nullptr);
@@ -415,14 +436,113 @@ TEST(FigureFeed, ATextureThatComesLaterIsAddedToTheList)
   rs::RetainedScene fed;
   fv::FigureFeed    feed(fed, {.build = {}});
   feed.sync(f->loaded.scene, f->loaded.root);
+  expectFed(f->loaded.scene, f->loaded.root, feed, fed, {});
   EXPECT_EQ(fed.textureCount(), 0u);
   const auto options = textured();
   feed.setOptions(options);
   (void)fed.takeChanges();
   feed.sync(f->loaded.scene, f->loaded.root);
+  expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
   EXPECT_FALSE(fed.takeChanges().materials.empty());
   EXPECT_GT(feed.textures()->size(), 0u);
   rs::RetainedScene imported;
   importBuild(imported, f->loaded.scene, f->loaded.root, options);
   expectSame(fed, imported, false);
+}
+
+// checkFeed bites: a fed record corrupted through the store's edits is caught, each as its problem.
+TEST(FigureFeed, CheckFeedCatchesARecordCorruptedInTheStore)
+{
+  const auto            f       = loadBox();
+  const auto            options = textured();
+  const fv::SceneGraph& scene   = f->loaded.scene;
+  const int             root    = f->loaded.root;
+  ASSERT_TRUE(scene.meshes[0].skinned());
+  ASSERT_GT(scene.meshes[0].bones.size(), 1u);
+
+  // the body's record replaced by an edited copy on every node drawing it (the store has no edit of
+  // indices, UVs or skin weights in place)
+  const auto replaced = [&](rs::RetainedScene& store, const fv::FigureFeed& feed, const std::function<void(rs::MeshRecord&)>& edit) {
+    rs::MeshRecord r = *store.mesh(feed.meshOf(0));
+    edit(r);
+    const rs::MeshId id = store.addMesh(std::move(r));
+    for(size_t i = 0; i < scene.nodes.size(); i++)
+      if(const rs::Entity* e = store.entity(feed.entityOf(int(i))); e && e->mesh && e->mesh->parts[0].mesh == feed.meshOf(0))
+      {
+        rs::MeshInstance instance = *e->mesh;
+        instance.parts[0].mesh    = id;
+        store.setMeshInstance(feed.entityOf(int(i)), std::move(instance));
+      }
+    store.release(id);
+  };
+  // the first node drawing the body: it holds the skin
+  int body = -1;
+  for(size_t i = 0; i < scene.nodes.size() && body < 0; i++)
+    if(scene.nodes[i].kind == fv::NodeKind::eMesh && scene.nodes[i].mesh == 0)
+      body = int(i);
+  ASSERT_GE(body, 0);
+
+  const auto caught = [&](const std::vector<std::string>& want, const std::function<void(rs::RetainedScene&, const fv::FigureFeed&)>& corrupt) {
+    rs::RetainedScene store;
+    fv::FigureFeed    feed(store, {.build = options});
+    feed.sync(scene, root);
+    ASSERT_EQ(fv::checkFeed(scene, root, feed, store, options), std::vector<std::string>{});
+    corrupt(store, feed);
+    const std::vector<std::string> problems = fv::checkFeed(scene, root, feed, store, options);
+    for(const std::string& w : want)
+      EXPECT_NE(std::find(problems.begin(), problems.end(), w), problems.end()) << w;
+  };
+
+  caught({"mesh 0 positions", "mesh 0 bounds"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    std::vector<glm::vec3> positions = store.mesh(feed.meshOf(0))->positions;
+    positions[0].x += 1000;
+    store.setMeshVertices(feed.meshOf(0), std::move(positions), {});
+  });
+  caught({"mesh 0 indices 0"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    replaced(store, feed, [](rs::MeshRecord& r) { std::swap(r.indices[r.submeshes[0].firstIndex], r.indices[r.submeshes[0].firstIndex + 1]); });
+  });
+  caught({"mesh 0 UVs"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    replaced(store, feed, [](rs::MeshRecord& r) { r.uv0[0].y += 0.5f; });
+  });
+  caught({"mesh 0 joints"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    replaced(store, feed, [](rs::MeshRecord& r) { r.joints[0].x += 1; });
+  });
+  caught({"mesh 0 weights"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    replaced(store, feed, [](rs::MeshRecord& r) { r.weights[0].x += 0.25f; });
+  });
+  // a group hidden whole that the scene still draws
+  caught({"mesh 0 indices 0"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    replaced(store, feed, [](rs::MeshRecord& r) { r.submeshes[0].indexCount = 0; });
+  });
+  caught({"mesh 0 inverse binds"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    rs::SkinRecord skin = *store.skin(feed.skinOf(0));
+    skin.inverseBind[0][3][0] += 1;
+    store.setSkin(feed.skinOf(0), std::move(skin));
+  });
+  caught({"mesh 0 joint entities"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    rs::SkinRecord skin = *store.skin(feed.skinOf(0));
+    std::swap(skin.joints[0], skin.joints[1]);
+    store.setSkin(feed.skinOf(0), std::move(skin));
+  });
+  // the body's first submesh drawn with a material that is no scene material's
+  caught({"mesh 0 material 0"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    rs::MeshInstance       instance = *store.entity(feed.entityOf(body))->mesh;
+    const rs::MaterialId   other    = store.addMaterial({.owner = {0, 1000}});
+    instance.parts[0].materials[store.mesh(feed.meshOf(0))->submeshes[0].material] = other;
+    store.setMeshInstance(feed.entityOf(body), std::move(instance));
+    store.release(other);
+  });
+  // an entity under the figure that no node reached has
+  caught({"entity stray is no reached node's"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
+    store.createEntity("stray", {0, int32_t(scene.nodes.size())}, feed.entityOf(root));
+  });
+
+  // and the UVs are held to the flip the options ask for
+  rs::RetainedScene store;
+  fv::FigureFeed    feed(store, {.build = options});
+  feed.sync(scene, root);
+  fv::build::BuildOptions flipped = options;
+  flipped.texturesFlipped         = true;
+  const std::vector<std::string> problems = fv::checkFeed(scene, root, feed, store, flipped);
+  EXPECT_NE(std::find(problems.begin(), problems.end(), "mesh 0 UVs"), problems.end());
 }

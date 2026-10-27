@@ -116,7 +116,8 @@ set(TEST_SOURCES
     # Its shader features, counted, against the detector on its export
     test_retained_features.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_feature_detection.cpp
-    # The figure feed: a figure straight into the retained scene, held to the import of its build
+    # The figure feed: a figure straight into the retained scene, held to the import of its build and to
+    # the scene's own bytes (checkFeed, header only)
     test_fv_figure_feed.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp
     # Tangents remade over the one-ring of moved vertices, held to a full recompute
