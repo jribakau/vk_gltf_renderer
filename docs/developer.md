@@ -876,9 +876,9 @@ Four settings, none remembered:
 
 - `sceneBackend` (`auto`, `legacy` or `retained`; `auto`) decides at each `loadModel` of a stream
   session; windowed sessions and `--scenefile` stay legacy. `auto` takes the retained scene unless
-  `rs::retainedCannotTake` (scene_coexistence.hpp) finds what it can't draw yet: skins, morph
-  targets, animation, opacity micromaps, `KHR_interactivity`, external assets.
-  `retained` takes it regardless, and says what won't draw. The `Scene backend:` log line names the
+  `rs::retainedCannotTake` (scene_coexistence.hpp) finds what it doesn't take yet: skins, morph
+  targets, animation, `KHR_interactivity`, external assets. `retained` takes it regardless, and
+  says what won't draw: it draws skins and morph targets (see below), but plays no clips yet. The `Scene backend:` log line names the
   choice and why, with the top-level node (a prop) that forced legacy. A change asks the host for a
   recompose (`GltfRenderer::setRecomposeRequest`); the switch is that scene replace.
 - `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
@@ -909,11 +909,22 @@ table is full`. Each frame
 carries the dirty nodes, materials and lights into the store, and textures appended to the model
 (a bake: the materials carried after it take the import's texture table with them appended, and
 the bake's worker prefetches the file, so the sync that decodes it only claims it); a re-import
-when it can't (an image replaced, a texture removed, a sampler edit, a re-parse). The CPU world
-matrices are brought up to date, and the
-residency syncs. Not on retained yet: DLSS instance and deformation motion (motion is the camera's
-only), opacity micromaps, GPU build timing for a frame's re-import. mcp_scene's edit tools are
-refused (D3).
+when it can't (an image replaced, a texture removed, a sampler edit, a re-parse). The host's
+vertex uploads (dials, fits, drapes) are laid onto the renderer's live copies, as on legacy, and
+carried onto the import's mesh records with their tangents remade where the moved vertices reach
+(`LegacyDirtyBridge::carryVertices`); a re-import replays the live copies. A rebind's inverse binds
+reach the skin's record (`carryInverseBinds`). The CPU world matrices are brought up to date, and the
+residency syncs.
+
+On retained, a mesh an entity skins, or a mesh with morph targets, is deformed for that entity: its
+drawer owns the output streams the morph pass and then the skin pass write (the shaders legacy's
+`AnimationVk` runs, through `nvvkgltf::DeformPipelines`), and its prims' BLASes are built over them
+and refit after each pass. A pass runs only when what it reads changed: the weights, the joint
+matrices or the mesh's vertices (`rs::Residency`, "Deformation"). DLSS motion comes from two tables
+the residency keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): positions a sync
+wrote are copied at the top of the next one, and an instance keeps the world it was drawn with for
+one sync after it moves. Not on retained yet: clip playback, GPU build timing for a frame's
+re-import. mcp_scene's edit tools are refused (D3).
 
 ---
 

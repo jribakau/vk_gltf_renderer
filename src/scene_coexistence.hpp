@@ -27,6 +27,7 @@
 //
 
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -37,6 +38,7 @@
 #include <tinygltf/tiny_gltf.h>
 
 #include "scene_import_gltf.hpp"
+#include "tinygltf_utils.hpp"
 
 namespace nvvkgltf {
 class Scene;
@@ -104,8 +106,31 @@ public:
   Result              carry(const nvvkgltf::Scene& legacy, RetainedScene& retained);
   const ImportResult& map() const { return m_map; }
 
+  // A host's vertex upload (a dial, a fit, a drape) to a legacy render primitive, carried onto the
+  // records the import made of its vertex set: `positions` (and `normals`, unless empty) whole, as
+  // the renderer's live copy holds them after the upload. A record with tangents has them made again
+  // where `changed` vertices reach (all of them when `changed` is empty), over the submeshes whose
+  // materials need them, as the import made them. False when no record matches the sizes.
+  bool carryVertices(const nvvkgltf::Scene&     legacy,
+                     RetainedScene&             retained,
+                     int                        renderPrimID,
+                     std::span<const glm::vec3> positions,
+                     std::span<const glm::vec3> normals,
+                     std::span<const uint32_t>  changed);
+  // GltfRenderer::setInverseBindMatrices on legacy skin `skin`, carried onto its record. False when
+  // the import made none for it.
+  bool carryInverseBinds(RetainedScene& retained, int skin, std::span<const glm::mat4> inverseBind);
+
 private:
   bool appendTextures(const nvvkgltf::Scene& legacy, RetainedScene& retained);
+
+  // a record's tangent triangles and their adjacency, built at its first carried upload
+  struct TangentRing
+  {
+    std::vector<uint32_t>                             indices;
+    std::optional<tinygltf::utils::TangentAdjacency> adjacency;
+  };
+  std::map<MeshId, TangentRing> m_tangentRings;
 
   ImportResult m_map;  // its texture table extended by the textures carried
   // the records the bridge added, held while the store lives (a table names its textures but holds

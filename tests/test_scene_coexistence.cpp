@@ -377,3 +377,69 @@ TEST(SceneCoexistence, TheBridgeCarriesABake)
   });
   EXPECT_NE(baseMap(retained, retained.drawItems()[1].material).find("|33071"), std::string::npos);  // clamped
 }
+
+// A dial on the legacy scene (a host's vertex upload) carried onto the import's record: positions
+// and normals whole as the live copy holds them, and tangents made again where the moved vertices
+// reach, the same bits a full computeTangents makes; a rebind's inverse binds and a node's morph
+// weights carried as well
+TEST(SceneCoexistence, TheBridgeCarriesDialsRebindsAndWeights)
+{
+  tinygltf::Model model = fixture();
+  // a normal map on the first prop's material, so the import made it tangents; a skin on its node
+  model.materials[0].normalTexture.index = 0;
+  model.images.push_back({});
+  model.images.back().uri = "normal.png";
+  model.textures.push_back({});
+  model.textures.back().source = 0;
+  model.skins.push_back({});
+  model.skins.back().joints = {1};
+  model.nodes[0].skin       = 0;
+  model.nodes[0].weights    = {0.0};
+  nvvkgltf::Scene legacy;
+  legacy.takeModel(std::move(model));
+  ASSERT_TRUE(legacy.valid());
+  RetainedScene     retained;
+  LegacyDirtyBridge bridge(importGltf(retained, legacy.getModel()));
+  legacy.clearDirtyFlags();
+  const MeshId mesh = bridge.map().meshes[0].at(0);
+  ASSERT_FALSE(retained.mesh(mesh)->tangents.empty());
+  const int prim = legacy.getMeshRenderPrimitive(0, 0);
+  ASSERT_GE(prim, 0);
+
+  const auto tangentsOf = [](const MeshRecord& r) {
+    std::vector<glm::vec4> t(r.positions.size(), glm::vec4(0.f));
+    tinygltf::utils::computeTangents(r.positions, r.normals, r.uv0, r.indices, t);
+    return t;
+  };
+  // whole
+  std::vector<glm::vec3> positions = retained.mesh(mesh)->positions;
+  for(glm::vec3& p : positions)
+    p.y *= 2.f;
+  // (the quad has no normals: normals for it are refused)
+  EXPECT_FALSE(bridge.carryVertices(legacy, retained, prim, positions, std::vector<glm::vec3>(positions.size()), {}));
+  ASSERT_TRUE(bridge.carryVertices(legacy, retained, prim, positions, {}, {}));
+  EXPECT_EQ(retained.mesh(mesh)->positions, positions);
+  EXPECT_EQ(retained.mesh(mesh)->tangents, tangentsOf(*retained.mesh(mesh)));
+  // one vertex moved: the one-ring made again, the rest kept, the same bits as a full remake
+  positions[2] = {1.5f, 2.5f, 0.25f};
+  const std::vector<uint32_t> moved{2};
+  ASSERT_TRUE(bridge.carryVertices(legacy, retained, prim, positions, {}, moved));
+  EXPECT_EQ(retained.mesh(mesh)->positions, positions);
+  EXPECT_EQ(retained.mesh(mesh)->tangents, tangentsOf(*retained.mesh(mesh)));
+  // the wrong size is refused, and nothing changes
+  EXPECT_FALSE(bridge.carryVertices(legacy, retained, prim, std::vector<glm::vec3>(3), {}, {}));
+  EXPECT_EQ(retained.mesh(mesh)->positions, positions);
+
+  // a rebind
+  const std::vector<glm::mat4> ibm{glm::translate(glm::mat4(1.f), glm::vec3(0, -2, 0))};
+  ASSERT_TRUE(bridge.carryInverseBinds(retained, 0, ibm));
+  const Entity* propA = retained.entity(bridge.map().entities[0]);
+  EXPECT_EQ(retained.skin(propA->mesh->skin)->inverseBind, ibm);
+  EXPECT_FALSE(bridge.carryInverseBinds(retained, 1, ibm));
+
+  // a node's morph weights
+  legacy.editor().getNodeForEdit(0).weights = {0.75};
+  legacy.markNodeDirty(0);
+  EXPECT_EQ(bridge.carry(legacy, retained), LegacyDirtyBridge::Result::eCarried);
+  EXPECT_EQ(retained.entity(bridge.map().entities[0])->mesh->morphWeights, std::vector<float>{0.75f});
+}

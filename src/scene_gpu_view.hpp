@@ -36,7 +36,8 @@
 //   render prim   GltfRenderPrimitive[] (SceneVk m_bRenderPrim); vertex streams and the index
 //                 buffer (m_vertexBuffers, m_bIndices); its BLAS (SceneRtx m_blasAccel,
 //                 m_blasBuildData); OMM index buffers (SceneOmm m_indexBuffers); previous
-//                 positions and their address table (PrevPositionsVk m_prev, m_table)
+//                 positions and their address table (PrevPositionsVk m_prev, m_table; retained:
+//                 prevPositionTable())
 //   material      GltfShadeMaterial[] (SceneVk m_bMaterial) and its span of GltfTextureInfo
 //                 (m_bTextureInfos)
 //   scene-wide    lights (m_bLights) and IES profiles (m_bIesProfiles), dense; the emissive
@@ -141,6 +142,13 @@ public:
   virtual nvutils::Bbox bounds() const = 0;
   // The scene's GPU memory: geometry, materials, textures, acceleration structures, animation
   virtual MemoryStats memoryStats() const = 0;
+
+  // #DLSS motion the view keeps itself: per render primitive the device address of its positions as
+  // the last frame drew them (0: none), and per render node the objectToWorld it was last drawn
+  // with. 0 when the view keeps none: the legacy scene's are PrevPositionsVk and TransformComputeVk,
+  // which the renderer drives frame by frame.
+  virtual VkDeviceAddress prevPositionTable() const { return 0; }
+  virtual VkDeviceAddress prevObjectToWorldTable() const { return 0; }
 };
 
 // Today's objects behind the view: nvvkgltf::Scene on the CPU, SceneVk, SceneRtx, AnimationVk and

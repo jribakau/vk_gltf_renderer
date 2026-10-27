@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <functional>
+#include <set>
 
 #include "gltf_scene.hpp"
 #include "tinygltf_utils.hpp"
@@ -151,6 +152,14 @@ LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy
       continue;  // not in the scene the import took
     retained.setLocal(e, transformOf(model.nodes[size_t(n)]));
     retained.setVisible(e, tinygltf::utils::getNodeVisibility(model.nodes[size_t(n)]).visible);
+    // its morph weights (a clip's weight channel), when they are not what the entity has
+    if(const Entity* drawer = retained.entity(e); drawer && drawer->mesh && !model.nodes[size_t(n)].weights.empty())
+    {
+      const std::vector<double>& w = model.nodes[size_t(n)].weights;
+      std::vector<float>         weights(w.begin(), w.end());
+      if(weights != drawer->mesh->morphWeights)
+        retained.setMorphWeights(e, std::move(weights));
+    }
     // an EXT_lights_ies light's multiplier and colour are its node's
     const Entity*      entity = retained.entity(e);
     const LightRecord* light  = entity ? retained.light(entity->light) : nullptr;
@@ -193,6 +202,94 @@ LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy
     }
   }
   return Result::eCarried;
+}
+
+bool LegacyDirtyBridge::carryVertices(const nvvkgltf::Scene&     legacy,
+                                      RetainedScene&             retained,
+                                      int                        renderPrimID,
+                                      std::span<const glm::vec3> positions,
+                                      std::span<const glm::vec3> normals,
+                                      std::span<const uint32_t>  changed)
+{
+  if(renderPrimID < 0 || size_t(renderPrimID) >= legacy.getRenderPrimitives().size())
+    return false;
+  const tinygltf::Model& model = legacy.getModel();
+  // every member of the vertex set reads the buffers the upload writes: their glTF meshes' records
+  // over these accessors, each once (two meshes sharing accessors are two records here)
+  std::vector<int> members(legacy.vertexSetMembers(renderPrimID).begin(), legacy.vertexSetMembers(renderPrimID).end());
+  if(members.empty())
+    members.push_back(renderPrimID);
+  std::set<MeshId> records;
+  for(int member : members)
+  {
+    const nvvkgltf::RenderPrimitive& rp = legacy.getRenderPrimitive(size_t(member));
+    if(rp.meshID < 0 || size_t(rp.meshID) >= m_map.meshes.size() || size_t(rp.meshID) >= model.meshes.size() || !rp.pPrimitive)
+      continue;
+    const std::vector<tinygltf::Primitive>& prims = model.meshes[size_t(rp.meshID)].primitives;
+    const int32_t                            order = int32_t(rp.pPrimitive - prims.data());
+    for(MeshId id : m_map.meshes[size_t(rp.meshID)])
+      if(const MeshRecord* r = retained.mesh(id))
+        if(std::any_of(r->submeshes.begin(), r->submeshes.end(), [&](const Submesh& s) { return s.order == order; }))
+          records.insert(id);
+  }
+
+  bool carried = false;
+  for(MeshId id : records)
+  {
+    const MeshRecord& r = *retained.mesh(id);
+    if(r.positions.size() != positions.size() || (!normals.empty() && normals.size() != r.normals.size()))
+      continue;
+    std::vector<glm::vec4> tangents;
+    if(!r.tangents.empty())
+    {
+      // its tangent triangles as the import chose them: the submeshes whose material needs tangents
+      // (a primitive with none weighed as material 0), else all of them for tangents the file brought
+      TangentRing& ring = m_tangentRings[id];
+      if(!ring.adjacency)
+      {
+        const int mesh = legacy.getRenderPrimitive(size_t(members.front())).meshID;
+        for(const Submesh& sm : r.submeshes)
+        {
+          const tinygltf::Primitive& p   = model.meshes[size_t(mesh)].primitives[size_t(sm.order)];
+          const int                  mat = p.material >= 0 ? p.material : 0;
+          if(mat < int(model.materials.size()) && materialNeedsTangents(model.materials[size_t(mat)]))
+            ring.indices.insert(ring.indices.end(), r.indices.begin() + sm.firstIndex, r.indices.begin() + sm.firstIndex + sm.indexCount);
+        }
+        if(ring.indices.empty())
+          ring.indices = r.indices;
+        ring.adjacency = tinygltf::utils::tangentAdjacency(ring.indices, r.positions.size());
+      }
+      const std::span<const glm::vec3> n = normals.empty() ? std::span<const glm::vec3>(r.normals) : normals;
+      if(!changed.empty() && ring.adjacency)
+      {
+        tangents = r.tangents;
+        if(!tinygltf::utils::updateTangents(positions, n, r.uv0, ring.indices, *ring.adjacency, changed, tangents))
+          tangents.clear();
+      }
+      if(tangents.empty())
+      {
+        tangents.assign(r.positions.size(), glm::vec4(0.f));
+        tinygltf::utils::computeTangents(positions, n, r.uv0, ring.indices, tangents);
+      }
+    }
+    retained.setMeshVertices(id, {positions.begin(), positions.end()}, {normals.begin(), normals.end()}, std::move(tangents));
+    carried = true;
+  }
+  return carried;
+}
+
+bool LegacyDirtyBridge::carryInverseBinds(RetainedScene& retained, int skin, std::span<const glm::mat4> inverseBind)
+{
+  if(skin < 0 || size_t(skin) >= m_map.skins.size())
+    return false;
+  const SkinRecord* had = retained.skin(m_map.skins[size_t(skin)]);
+  if(!had)
+    return false;
+  SkinRecord record  = *had;
+  record.inverseBind.assign(inverseBind.begin(), inverseBind.end());
+  record.inverseBind.resize(record.joints.size(), glm::mat4(1.f));
+  retained.setSkin(m_map.skins[size_t(skin)], std::move(record));
+  return true;
 }
 
 // The textures the legacy model gained at its end since the import (or since the last append):

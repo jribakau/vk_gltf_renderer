@@ -48,6 +48,16 @@ The CPU fallback path in `SceneVk::uploadPrimitives()` is preserved and selectab
  -------------------------------------------------------------------------------------------------*/
 namespace nvvkgltf {
 
+// The skinning and morph compute pipelines (push constants only, shaders/animation_io.h.slang), for
+// AnimationVk and the retained scene's Vulkan backend
+struct DeformPipelines
+{
+  VkPipeline       skin{}, morph{};
+  VkPipelineLayout skinLayout{}, morphLayout{};
+  void             create(VkDevice device);
+  void             destroy(VkDevice device);
+};
+
 class AnimationVk
 {
 public:
@@ -78,7 +88,7 @@ public:
   // --- Per-frame animation (call each frame when animation is active) ---
   void dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, Scene& scn, const SceneVk& scnVk);
 
-  [[nodiscard]] bool isInitialized() const { return m_alloc != nullptr && m_skinPipeline != VK_NULL_HANDLE; }
+  [[nodiscard]] bool isInitialized() const { return m_alloc != nullptr && m_pipelines.skin != VK_NULL_HANDLE; }
 
   // --- What the last dispatch wrote ---
   // A task whose joint matrices (or morph weights) and base geometry are what they were when it last
@@ -95,10 +105,7 @@ public:
 private:
   nvvk::ResourceAllocator* m_alloc = nullptr;
 
-  VkPipeline       m_skinPipeline{};
-  VkPipeline       m_morphPipeline{};
-  VkPipelineLayout m_skinPipelineLayout{};
-  VkPipelineLayout m_morphPipelineLayout{};
+  DeformPipelines m_pipelines;
 
   // Per-SkinTask GPU buffers (static, uploaded once)
   struct SkinGpuData
@@ -141,8 +148,6 @@ private:
   std::vector<std::vector<float>>     m_lastMorphWeights;   // per morph task
   std::vector<uint32_t>               m_written;
 
-  void createPipelines();
-  void destroyPipelines();
 
   template <typename T>
   nvvk::Buffer createBufferFromSpan(nvvk::CmdUploaderInterface& staging, std::span<const T> data, const char* debugName = nullptr);

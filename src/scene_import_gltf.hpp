@@ -62,6 +62,7 @@ struct ImportResult
   std::vector<EntityId>            roots;      // the scene's roots, in order
   std::vector<MaterialId>          materials;  // per glTF material; none when nothing drew it
   std::vector<std::vector<MeshId>> meshes;     // per glTF mesh: its vertex sets
+  std::vector<SkinId>              skins;      // per glTF skin; none when nothing skins with it
   // per glTF animation: its node channels as a clip, none when it has none. Nothing in the scene
   // holds a clip, so the import hands the caller each one's reference, to release with the prop.
   std::vector<ClipId>              clips;

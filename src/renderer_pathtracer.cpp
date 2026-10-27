@@ -3061,14 +3061,15 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   // runs this frame AND the snapshot ran (dlssInstanceMotionActive); null otherwise so the shader
   // falls back to exact camera-only motion. The shader null-checks the pointer, so this is crash-safe.
 #if defined(USE_DLSS)
-  m_pushConst.prevRenderNodeObjectToWorld = (useDlss && resources.dlssInstanceMotionActive) ?
-                                                (shaderio::float4x4*)resources.transformCompute.prevObjectToWorldAddress() :
-                                                nullptr;
+  // (a view that keeps its own tables, the retained scene, gives them; legacy's are the renderer's)
+  const VkDeviceAddress prevO2W = resources.gpuView().prevObjectToWorldTable() ? resources.gpuView().prevObjectToWorldTable() :
+                                                                                 resources.transformCompute.prevObjectToWorldAddress();
+  const VkDeviceAddress prevPos = resources.gpuView().prevPositionTable() ? resources.gpuView().prevPositionTable() :
+                                                                            resources.prevPositions.tableAddress();
+  m_pushConst.prevRenderNodeObjectToWorld = (useDlss && resources.dlssInstanceMotionActive) ? (shaderio::float4x4*)prevO2W : nullptr;
   // #DLSS deformation motion: the positions from before this frame's skin / morph / vertex uploads,
   // bound only on frames where those ran (GltfRenderer::snapshotPrevPositions).
-  m_pushConst.prevVertexPositions = (useDlss && resources.dlssDeformMotionActive) ?
-                                        (shaderio::float3**)resources.prevPositions.tableAddress() :
-                                        nullptr;
+  m_pushConst.prevVertexPositions = (useDlss && resources.dlssDeformMotionActive) ? (shaderio::float3**)prevPos : nullptr;
 #else
   m_pushConst.prevRenderNodeObjectToWorld = nullptr;
   m_pushConst.prevVertexPositions         = nullptr;

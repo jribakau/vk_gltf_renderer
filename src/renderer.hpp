@@ -653,6 +653,8 @@ private:
   };
   std::unordered_map<int, LiveVertices> m_liveVertices;
   LiveVertices*                         liveVerticesOf(const nvvkgltf::Scene& scn, int renderPrimID);
+  std::vector<VertexUpload*>            uploadsInEffect(const nvvkgltf::Scene& scn);
+  LiveVertices* mergeVertexUpload(const nvvkgltf::Scene& scn, VertexUpload& upload, bool& normals);
   // After a rebuild that re-created the vertex buffers from the model: queue the live copies again.
   void requeueLiveVertices();
   // KHR_interactivity: ticks the scene's default behavior graph instance, then applies any

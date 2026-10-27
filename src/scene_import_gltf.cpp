@@ -670,6 +670,10 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
       m = {};
   for(auto& meshes : out.meshes)
     std::erase_if(meshes, [&](MeshId id) { return !scene.mesh(id); });
+  out.skins = std::move(skins);
+  for(SkinId& s : out.skins)
+    if(!scene.skin(s))
+      s = {};
   return out;
 }
 

@@ -1767,7 +1767,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
 
   // #DLSS deformation motion: before the interactivity tick, which can pose skins already. (The
-  // retained scene deforms nothing yet.)
+  // retained scene copies its own at the top of its sync.)
   if(!m_resources.retainedGpu)
     snapshotPrevPositions(cmd);
 
@@ -1807,7 +1807,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // DLSS specifically (not dlssGuideRequired(), which also covers OptiX) since only the DLSS path
   // consumes these vectors. See gltf_pathtrace.slang.
   m_resources.dlssInstanceMotionActive = false;
-  // (the retained scene has no previous transforms yet: camera-only motion)
+  // (the retained scene keeps its own previous transforms: set after its sync, below)
   if(m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled() && !m_resources.retainedGpu)
   {
     nvvkgltf::Scene*                   scn = m_resources.getScene();
@@ -1855,6 +1855,13 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   const bool verticesWritten = interactivityAnimationApplied || verticesEdited || deformed;
   m_resources.dlssDeformMotionActive   = verticesWritten && m_resources.prevPositions.hasBuffers();
   m_verticesWrittenLastFrame           = verticesWritten;
+  // the retained scene keeps both motion tables current every sync (a row at rest is no motion)
+  if(m_resources.retainedGpu)
+  {
+    const bool dlss = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled();
+    m_resources.dlssInstanceMotionActive = dlss && m_resources.gpuView().prevObjectToWorldTable() != 0;
+    m_resources.dlssDeformMotionActive   = dlss && m_resources.gpuView().prevPositionTable() != 0;
+  }
 
   // A traced edit is on the GPU's way now: this frame renders it.
   if(!m_editTrace.empty())
@@ -4398,15 +4405,23 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
 {
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Retained sync");
 
-  // Vertex uploads and skin reconciles are for deforming meshes, which a retained scene doesn't take
-  if(!m_pendingVertexUploads.empty())
+  nvvkgltf::Scene& scene = *m_resources.getScene();
+  // The host's vertex uploads (a dial, a fit, a drape): laid onto the live copies, which a re-import
+  // replays, and carried onto the import's records; the residency runs the skins and morphs over
+  // them. (Its skins run on their own: a reconcile request has nothing to do here.)
+  for(VertexUpload* upload : uploadsInEffect(scene))
   {
-    LOGW("Retained scene: %zu vertex uploads dropped (it takes no deforming meshes yet)\n", m_pendingVertexUploads.size());
-    m_pendingVertexUploads.clear();
+    bool          normals = false;
+    LiveVertices* live    = mergeVertexUpload(scene, *upload, normals);
+    if(live
+       && !m_resources.retainedBridge.carryVertices(scene, *m_resources.retainedScene, upload->renderPrimID, live->positions,
+                                                    normals ? std::span<const glm::vec3>(live->normals) : std::span<const glm::vec3>(),
+                                                    upload->indices))
+      LOGW("Retained scene: a vertex upload for primitive %d matches no record; skipped\n", upload->renderPrimID);
   }
+  m_pendingVertexUploads.clear();
   m_pendingAnimReconcile = false;
 
-  nvvkgltf::Scene&                   scene    = *m_resources.getScene();
   const nvvkgltf::Scene::DirtyFlags& df       = scene.getDirtyFlags();
   bool                               reimport = false;
   if(!df.isEmpty())
@@ -4437,6 +4452,7 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
     m_resources.retainedBridge = rs::LegacyDirtyBridge(
         rs::importGltf(*m_resources.retainedScene, scene.getModel(), {.imageSearchPaths = scene.getImageSearchPaths()}));
     result = m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
+    requeueLiveVertices();  // the import took the model's vertices: the dials go again next frame
   }
   else
     result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
@@ -4853,6 +4869,8 @@ bool GltfRenderer::setInverseBindMatrices(int skin, std::span<const glm::mat4> i
     return false;
   if(!scn->animation().setInverseBindMatrices(skin, ibm))
     return false;
+  if(m_resources.retainedGpu)  // its record, which the residency's skin reads at the next sync
+    return m_resources.retainedBridge.carryInverseBinds(*m_resources.retainedScene, skin, ibm);
   scn->markSkinRenderNodesRtxDirty(skin);
   requestAnimationReconcile();
   return true;
@@ -5494,6 +5512,66 @@ void GltfRenderer::snapshotPrevPositions(VkCommandBuffer cmd)
   m_prevPositionsStale = false;
 }
 
+// An upload names any render primitive of a vertex set; it lands on the set's owner, whose buffers
+// every member reads. A host that sends the same whole mesh to every member (one upload per material
+// group) stages it once: of several whole uploads to one owner only the last applies.
+std::vector<GltfRenderer::VertexUpload*> GltfRenderer::uploadsInEffect(const nvvkgltf::Scene& scn)
+{
+  std::unordered_map<int, size_t> lastFull;
+  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
+  {
+    VertexUpload& u = m_pendingVertexUploads[i];
+    u.renderPrimID  = scn.vertexSetOwner(u.renderPrimID);
+    if(u.indices.empty())
+      lastFull[u.renderPrimID] = i;
+  }
+  std::vector<VertexUpload*> out;
+  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
+  {
+    VertexUpload& u = m_pendingVertexUploads[i];
+    if(u.renderPrimID < 0 || u.renderPrimID >= int(scn.getRenderPrimitives().size()))
+      continue;
+    if(u.indices.empty() && lastFull[u.renderPrimID] != i)
+      continue;  // a whole upload a later one to the same set replaces
+    out.push_back(&u);
+  }
+  return out;
+}
+
+// An upload laid onto its primitive's live copy, which both scene backends upload from; null when it
+// doesn't fit. Normals are taken only when the upload brought some (`normals`); otherwise the copy
+// and the GPU keep their own.
+GltfRenderer::LiveVertices* GltfRenderer::mergeVertexUpload(const nvvkgltf::Scene& scn, VertexUpload& u, bool& normals)
+{
+  LiveVertices* live = liveVerticesOf(scn, u.renderPrimID);
+  if(!live)
+    return nullptr;
+  normals = !u.normals.empty() && live->normals.size() == live->positions.size();
+  if(u.indices.empty())
+  {
+    if(u.positions.size() != live->positions.size())
+    {
+      LOGW("Vertex upload for primitive %d: %zu positions, the primitive has %zu; skipped\n", u.renderPrimID,
+           u.positions.size(), live->positions.size());
+      return nullptr;
+    }
+    live->positions = std::move(u.positions);
+    if(normals)
+      live->normals = std::move(u.normals);
+    return live;
+  }
+  for(size_t k = 0; k < u.indices.size() && k < u.positions.size(); k++)
+  {
+    const uint32_t v = u.indices[k];
+    if(v >= live->positions.size())
+      continue;
+    live->positions[v] = u.positions[k];
+    if(normals && k < u.normals.size())
+      live->normals[v] = u.normals[k];
+  }
+  return live;
+}
+
 //--------------------------------------------------------------------------------------------------
 // Apply vertex uploads queued by a host (queueVertexUpload). Skinned / morphed primitives get new
 // base geometry and are recomputed by the reconcile that follows in updateAnimation(); static ones
@@ -5517,53 +5595,15 @@ bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
   std::vector<uint32_t> staticPrims;
   bool                  any = false;
 
-  // An upload names any render primitive of a vertex set; it lands on the set's owner, whose buffers
-  // every member reads. A host that sends the same whole mesh to every member (one upload per
-  // material group) stages it once: of several whole uploads to one owner only the last applies.
-  std::unordered_map<int, size_t> lastFull;
-  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
+  for(VertexUpload* upload : uploadsInEffect(*scn))
   {
-    VertexUpload& u = m_pendingVertexUploads[i];
-    u.renderPrimID  = scn->vertexSetOwner(u.renderPrimID);
-    if(u.indices.empty())
-      lastFull[u.renderPrimID] = i;
-  }
-  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
-  {
-    VertexUpload& u = m_pendingVertexUploads[i];
-    if(u.renderPrimID < 0 || u.renderPrimID >= int(vertexBufs.size()))
+    VertexUpload& u = *upload;
+    if(u.renderPrimID >= int(vertexBufs.size()))
       continue;
-    if(u.indices.empty() && lastFull[u.renderPrimID] != i)
-      continue;  // a whole upload a later one to the same set replaces
-    LiveVertices* live = liveVerticesOf(*scn, u.renderPrimID);
+    bool          sendNormals = false;
+    LiveVertices* live        = mergeVertexUpload(*scn, u, sendNormals);
     if(!live)
       continue;
-    // normals go up only when this upload brought some; otherwise the GPU keeps its own
-    const bool sendNormals = !u.normals.empty() && live->normals.size() == live->positions.size();
-    if(u.indices.empty())
-    {
-      if(u.positions.size() != live->positions.size())
-      {
-        LOGW("Vertex upload for primitive %d: %zu positions, the primitive has %zu; skipped\n", u.renderPrimID,
-             u.positions.size(), live->positions.size());
-        continue;
-      }
-      live->positions = std::move(u.positions);
-      if(sendNormals)
-        live->normals = std::move(u.normals);
-    }
-    else
-    {
-      for(size_t k = 0; k < u.indices.size() && k < u.positions.size(); k++)
-      {
-        const uint32_t v = u.indices[k];
-        if(v >= live->positions.size())
-          continue;
-        live->positions[v] = u.positions[k];
-        if(sendNormals && k < u.normals.size())
-          live->normals[v] = u.normals[k];
-      }
-    }
     const std::span<const glm::vec3> pos(live->positions);
     const std::span<const glm::vec3> nrm = sendNormals ? std::span<const glm::vec3>(live->normals) : std::span<const glm::vec3>();
     // a sparse upload stages the runs it touched; empty means the whole buffer

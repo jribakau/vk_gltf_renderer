@@ -49,6 +49,7 @@
 #include <nvvk/resources.hpp>
 
 #include "gltf_image_loader.hpp"
+#include "gltf_scene_animation_vk.hpp"
 #include "gpu_memory_tracker.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency.hpp"
@@ -145,7 +146,8 @@ public:
   AccelHandle createTlas(uint32_t capacity) override;
   void        buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) override;
   void        destroyAccel(AccelHandle accel) override;
-  // not yet: the deform passes come with P3b; logs and records nothing
+  // shaders/morph.comp.slang or skinning.comp.slang over the dispatch's ranges (the pipelines are
+  // made at the first)
   void dispatchDeform(const DeformDispatch& dispatch) override;
   void barrier(GpuBarrier barrier) override;
 
@@ -231,6 +233,7 @@ private:
   double                                    m_msPerTick  = 0.0;
   std::vector<BuildSpan>                    m_spans;  // recorded, not read yet
   uint32_t                                  m_prefetchTaken = 0;
+  nvvkgltf::DeformPipelines                 m_deformPipelines;
 };
 
 // The retained scene as the renderers read it: a VulkanGpuBackend and an rs::Residency over a
@@ -284,6 +287,8 @@ public:
   std::vector<LightInfo>       lights() const override { return m_lights; }
   nvutils::Bbox                bounds() const override { return m_bounds; }
   MemoryStats                  memoryStats() const override;
+  VkDeviceAddress prevPositionTable() const override { return m_gpu.bufferAddress(m_residency.prevPositionTable()); }
+  VkDeviceAddress prevObjectToWorldTable() const override { return m_gpu.bufferAddress(m_residency.prevWorldTable()); }
 
 private:
   // what the view keeps of a sync: the lights and the bounds, which the store derives on demand

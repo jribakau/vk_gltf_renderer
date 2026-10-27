@@ -130,6 +130,7 @@ VulkanGpuBackend::~VulkanGpuBackend()
     m_info.alloc->destroyBuffer(t.scratch);
   }
   m_info.alloc->destroyBuffer(m_blasScratch);
+  m_deformPipelines.destroy(m_info.device);
   for(auto& [slot, sampler] : m_samplers)
     m_info.samplerPool->releaseSampler(sampler);
   m_info.alloc->destroyImage(m_white);
@@ -246,9 +247,60 @@ void VulkanGpuBackend::barrier(GpuBarrier barrier)
   vkCmdPipelineBarrier2(m_cmd, &dependency);
 }
 
-void VulkanGpuBackend::dispatchDeform(const DeformDispatch&)
+void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
 {
-  LOGE("VulkanGpuBackend::dispatchDeform: the deform passes come with P3b; nothing recorded\n");
+  if(!recording("dispatchDeform") || !d.vertexCount)
+    return;
+  flushBuilds();  // call order: the queued builds come before this pass
+  if(!m_deformPipelines.skin)
+    m_deformPipelines.create(m_info.device);
+  // a range's device address; null for none, as the shaders test
+  const auto at = [&](const BufferRange& r) -> uint64_t {
+    if(!r.buffer)
+      return 0;
+    const uint64_t base = bufferAddress(r.buffer);
+    if(!base)
+      LOGE("VulkanGpuBackend::dispatchDeform: a dead or unknown buffer\n");
+    return base ? base + r.offset : 0;
+  };
+  const uint32_t groups = (d.vertexCount + ANIMATION_WORKGROUP_SIZE - 1) / ANIMATION_WORKGROUP_SIZE;
+  if(d.kind == DeformKind::eMorph)
+  {
+    shaderio::MorphPushConstant pc{};
+    pc.basePositions  = reinterpret_cast<glm::vec3*>(at(d.basePositions));
+    pc.baseNormals    = reinterpret_cast<glm::vec3*>(at(d.baseNormals));
+    pc.baseTangents   = reinterpret_cast<glm::vec4*>(at(d.baseTangents));
+    pc.positionDeltas = reinterpret_cast<glm::vec3*>(at(d.positionDeltas));
+    pc.normalDeltas   = reinterpret_cast<glm::vec3*>(at(d.normalDeltas));
+    pc.tangentDeltas  = reinterpret_cast<glm::vec3*>(at(d.tangentDeltas));
+    pc.morphWeights   = reinterpret_cast<float*>(at(d.morphWeights));
+    pc.outPositions   = reinterpret_cast<glm::vec3*>(at(d.outPositions));
+    pc.outNormals     = reinterpret_cast<glm::vec3*>(at(d.outNormals));
+    pc.outTangents    = reinterpret_cast<glm::vec4*>(at(d.outTangents));
+    pc.vertexCount    = d.vertexCount;
+    pc.numTargets     = d.targetCount;
+    vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.morph);
+    vkCmdPushConstants(m_cmd, m_deformPipelines.morphLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  }
+  else
+  {
+    shaderio::SkinPushConstant pc{};
+    pc.basePositions  = reinterpret_cast<glm::vec3*>(at(d.basePositions));
+    pc.baseNormals    = reinterpret_cast<glm::vec3*>(at(d.baseNormals));
+    pc.baseTangents   = reinterpret_cast<glm::vec4*>(at(d.baseTangents));
+    pc.weights        = reinterpret_cast<glm::vec4*>(at(d.weights));
+    pc.joints         = reinterpret_cast<glm::ivec4*>(at(d.joints));
+    pc.jointMatrices  = reinterpret_cast<glm::mat4*>(at(d.jointMatrices));
+    pc.normalMatrices = reinterpret_cast<glm::mat3*>(at(d.normalMatrices));
+    pc.outPositions   = reinterpret_cast<glm::vec3*>(at(d.outPositions));
+    pc.outNormals     = reinterpret_cast<glm::vec3*>(at(d.outNormals));
+    pc.outTangents    = reinterpret_cast<glm::vec4*>(at(d.outTangents));
+    pc.vertexCount    = d.vertexCount;
+    pc.numJoints      = d.jointCount;
+    vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.skin);
+    vkCmdPushConstants(m_cmd, m_deformPipelines.skinLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  }
+  vkCmdDispatch(m_cmd, groups, 1, 1);
 }
 
 // ---------- Buffers ----------

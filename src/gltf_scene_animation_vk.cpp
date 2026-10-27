@@ -58,7 +58,7 @@ void AnimationVk::init(nvvk::ResourceAllocator* alloc)
 {
   m_alloc = alloc;
   m_memoryTracker.init(alloc);
-  createPipelines();
+  m_pipelines.create(m_alloc->getDevice());
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -68,16 +68,15 @@ void AnimationVk::deinit()
   if(!m_alloc)
     return;
   destroyGpuBuffers();
-  destroyPipelines();
+  m_pipelines.destroy(m_alloc->getDevice());
   m_alloc = nullptr;
 }
 
 //--------------------------------------------------------------------------------------------------
-// Create the skinning and morph compute pipelines. Each uses only push constants
+// The skinning and morph compute pipelines. Each uses only push constants
 // (no descriptor sets) since all buffer addresses are passed via BDA pointers.
-void AnimationVk::createPipelines()
+void DeformPipelines::create(VkDevice device)
 {
-  VkDevice device = m_alloc->getDevice();
 
   // Skinning pipeline (push constants only, no descriptor sets)
   {
@@ -85,8 +84,8 @@ void AnimationVk::createPipelines()
     VkPipelineLayoutCreateInfo layoutInfo{.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                           .pushConstantRangeCount = 1,
                                           .pPushConstantRanges    = &pushRange};
-    NVVK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_skinPipelineLayout));
-    NVVK_DBG_NAME(m_skinPipelineLayout);
+    NVVK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &skinLayout));
+    NVVK_DBG_NAME(skinLayout);
 
     VkShaderModuleCreateInfo shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                         .codeSize = skinning_comp_slang_sizeInBytes,
@@ -97,9 +96,9 @@ void AnimationVk::createPipelines()
                                                     .pNext = &shaderInfo,
                                                     .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                                                     .pName = "main"},
-                                         .layout = m_skinPipelineLayout};
-    NVVK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &m_skinPipeline));
-    NVVK_DBG_NAME(m_skinPipeline);
+                                         .layout = skinLayout};
+    NVVK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &skin));
+    NVVK_DBG_NAME(skin);
   }
 
   // Morph pipeline
@@ -108,8 +107,8 @@ void AnimationVk::createPipelines()
     VkPipelineLayoutCreateInfo layoutInfo{.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                           .pushConstantRangeCount = 1,
                                           .pPushConstantRanges    = &pushRange};
-    NVVK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_morphPipelineLayout));
-    NVVK_DBG_NAME(m_morphPipelineLayout);
+    NVVK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &morphLayout));
+    NVVK_DBG_NAME(morphLayout);
 
     VkShaderModuleCreateInfo shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                         .codeSize = morph_comp_slang_sizeInBytes,
@@ -120,30 +119,29 @@ void AnimationVk::createPipelines()
                                                     .pNext = &shaderInfo,
                                                     .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                                                     .pName = "main"},
-                                         .layout = m_morphPipelineLayout};
+                                         .layout = morphLayout};
 
-    NVVK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &m_morphPipeline));
-    NVVK_DBG_NAME(m_morphPipeline);
+    NVVK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &morph));
+    NVVK_DBG_NAME(morph);
   }
 }
 
 //--------------------------------------------------------------------------------------------------
 // Destroy compute pipelines and layouts.
-void AnimationVk::destroyPipelines()
+void DeformPipelines::destroy(VkDevice device)
 {
-  VkDevice device = m_alloc->getDevice();
-  if(m_skinPipeline)
-    vkDestroyPipeline(device, m_skinPipeline, nullptr);
-  if(m_morphPipeline)
-    vkDestroyPipeline(device, m_morphPipeline, nullptr);
-  if(m_skinPipelineLayout)
-    vkDestroyPipelineLayout(device, m_skinPipelineLayout, nullptr);
-  if(m_morphPipelineLayout)
-    vkDestroyPipelineLayout(device, m_morphPipelineLayout, nullptr);
-  m_skinPipeline        = {};
-  m_morphPipeline       = {};
-  m_skinPipelineLayout  = {};
-  m_morphPipelineLayout = {};
+  if(skin)
+    vkDestroyPipeline(device, skin, nullptr);
+  if(morph)
+    vkDestroyPipeline(device, morph, nullptr);
+  if(skinLayout)
+    vkDestroyPipelineLayout(device, skinLayout, nullptr);
+  if(morphLayout)
+    vkDestroyPipelineLayout(device, morphLayout, nullptr);
+  skin        = {};
+  morph       = {};
+  skinLayout  = {};
+  morphLayout = {};
 }
 
 //========== Buffer Helpers ==========
@@ -571,7 +569,7 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
   // === Phase 2: Dispatch the morph compute shaders that run ===
   if(anyMorph)
   {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_morphPipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.morph);
 
     for(size_t mi = 0; mi < m_morphGpuData.size(); mi++)
     {
@@ -596,7 +594,7 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
       pc.vertexCount = static_cast<uint32_t>(mr.basePositions.size());
       pc.numTargets  = gpu.numTargets;
 
-      vkCmdPushConstants(cmd, m_morphPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      vkCmdPushConstants(cmd, m_pipelines.morphLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
       vkCmdDispatch(cmd, (pc.vertexCount + ANIMATION_WORKGROUP_SIZE - 1) / ANIMATION_WORKGROUP_SIZE, 1, 1);
     }
 
@@ -610,7 +608,7 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
   // === Phase 3: Dispatch the skinning compute shaders that run ===
   if(anySkin)
   {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_skinPipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.skin);
 
     for(size_t ti = 0; ti < skinTasks.size(); ti++)
     {
@@ -646,7 +644,7 @@ void AnimationVk::dispatchAnimation(VkCommandBuffer cmd, nvvk::CmdUploaderInterf
       pc.vertexCount    = static_cast<uint32_t>(task.weights.size());
       pc.numJoints      = static_cast<uint32_t>(skin.joints.size());
 
-      vkCmdPushConstants(cmd, m_skinPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      vkCmdPushConstants(cmd, m_pipelines.skinLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
       vkCmdDispatch(cmd, (pc.vertexCount + ANIMATION_WORKGROUP_SIZE - 1) / ANIMATION_WORKGROUP_SIZE, 1, 1);
     }
   }
