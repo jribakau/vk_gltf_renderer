@@ -100,6 +100,9 @@ set(TEST_SOURCES
     # Figure Viewer scene of props composed into the renderer's one glTF
     test_fv_compose.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_compose.cpp
+    # A model prop's material with its edits, for the scene and for an export
+    test_fv_model_material.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_model_material.cpp
     # Figure Viewer texture sources outside the cooked set, Original textures (header only)
     test_fv_textures.cpp
     # OMI_environment_sky serializer: round-trip incl. unmodelled-key passthrough

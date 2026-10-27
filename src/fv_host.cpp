@@ -72,6 +72,7 @@
 #include "fv_compose.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
+#include "fv_model_material.hpp"
 #include "fv_protocol.hpp"
 #include "fv_textures.hpp"
 #include "fv_view.hpp"
@@ -3470,37 +3471,16 @@ Json FvHost::Impl::exportGlb(const Json& args)
     throw std::runtime_error("Select a figure or a model to export.");
   if(prop->model)
   {
-    // the file's model with the factors material edits change (FvMaterials::writeModel) as the
-    // scene shows them; its textures stay the file's own
-    tinygltf::Model  copy = *prop->model;
-    nvvkgltf::Scene* scn  = renderer->editScene();
-    const auto&      base = prop->placed.base;
-    for(size_t i = 0; scn && scn->valid() && i < copy.materials.size() && base.materials + i < scn->getModel().materials.size(); i++)
-    {
-      const tinygltf::Material& live      = scn->getModel().materials[base.materials + i];
-      tinygltf::Material&       m         = copy.materials[i];
-      m.pbrMetallicRoughness.baseColorFactor = live.pbrMetallicRoughness.baseColorFactor;
-      m.pbrMetallicRoughness.roughnessFactor = live.pbrMetallicRoughness.roughnessFactor;
-      m.pbrMetallicRoughness.metallicFactor  = live.pbrMetallicRoughness.metallicFactor;
-      m.alphaMode                            = live.alphaMode;
-      m.doubleSided                          = live.doubleSided;
-      m.emissiveFactor                       = live.emissiveFactor;
-      if(m.normalTexture.index >= 0)
-        m.normalTexture.scale = live.normalTexture.scale;
-      for(const char* ext : {"KHR_materials_emissive_strength", "KHR_materials_specular", "KHR_materials_clearcoat"})
-      {
-        const auto it = live.extensions.find(ext);
-        if(it == live.extensions.end() || !it->second.IsObject())
-          continue;
-        tinygltf::Value::Object o = m.extensions.count(ext) && m.extensions[ext].IsObject() ? m.extensions[ext].Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
-        for(const auto& [key, value] : it->second.Get<tinygltf::Value::Object>())
-          if(value.IsNumber())
-            o[key] = value;
-        m.extensions[ext] = tinygltf::Value(o);
-        if(std::find(copy.extensionsUsed.begin(), copy.extensionsUsed.end(), ext) == copy.extensionsUsed.end())
-          copy.extensionsUsed.push_back(ext);
-      }
-    }
+    // the file's model with its material edits laid over it, as FvMaterials::writeModel draws
+    // them; its textures stay the file's own
+    tinygltf::Model copy = *prop->model;
+    for(size_t i = 0; prop->materials && i < copy.materials.size(); i++)
+      if(std::optional<tinygltf::Material> edited = prop->materials->modelMaterial(int(i)))
+        copy.materials[i] = std::move(*edited);
+    for(const char* ext : fv::model::kEditedExtensions)
+      if(std::any_of(copy.materials.begin(), copy.materials.end(), [&](const tinygltf::Material& m) { return m.extensions.count(ext) > 0; })
+         && std::find(copy.extensionsUsed.begin(), copy.extensionsUsed.end(), ext) == copy.extensionsUsed.end())
+        copy.extensionsUsed.push_back(ext);
     std::string error;
     if(!fv::composer::packForGlb(copy, error))
       throw std::runtime_error(error);

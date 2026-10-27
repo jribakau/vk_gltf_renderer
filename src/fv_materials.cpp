@@ -18,6 +18,7 @@
  */
 
 #include "fv_materials.hpp"
+#include "fv_model_material.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -244,20 +245,6 @@ float linearOf(const std::vector<double>& v, size_t i, float d = 1)
 }
 
 // An extension's value, made if need be.
-void setExtValue(tinygltf::ExtensionMap& ext, const char* name, const char* key, tinygltf::Value value)
-{
-  tinygltf::Value::Object obj;
-  if(auto it = ext.find(name); it != ext.end() && it->second.IsObject())
-    obj = it->second.Get<tinygltf::Value::Object>();
-  obj[key]  = std::move(value);
-  ext[name] = tinygltf::Value(obj);
-}
-
-void setExtNumber(tinygltf::ExtensionMap& ext, const char* name, const char* key, double value)
-{
-  setExtValue(ext, name, key, tinygltf::Value(value));
-}
-
 // An extension's colour, none when it has none.
 std::optional<Rgb> extColor(const tinygltf::ExtensionMap& ext, const char* name, const char* key)
 {
@@ -291,43 +278,8 @@ void FvMaterials::writeModel(int index)
   const int        g   = m_at.materials + index;
   if(!scn || !scn->valid() || g >= int(scn->getModel().materials.size()) || index >= int(m_originals.size()))
     return;
-  const fv::mat::Edits& e = m_scene->materials[size_t(index)].edits;
-  tinygltf::Material    m = m_originals[size_t(index)];
-  auto&                 f = m.pbrMetallicRoughness.baseColorFactor;
-  f.resize(4, 1.0);
-  if(e.color)
-    for(int i = 0; i < 3; i++)
-      f[size_t(i)] = double((*e.color)[size_t(i)]);
-  if(e.opacity)
-    f[3] = double(*e.opacity);
-  if(e.roughness)
-    m.pbrMetallicRoughness.roughnessFactor = double(*e.roughness);
-  if(e.metalness)
-    m.pbrMetallicRoughness.metallicFactor = double(*e.metalness);
-  if(e.alphaMode)
-    m.alphaMode = *e.alphaMode == "opaque" ? "OPAQUE" : *e.alphaMode == "cutout" ? "MASK" : "BLEND";
-  if(e.doubleSided)
-    m.doubleSided = *e.doubleSided;
-  if(e.emissive)
-    m.emissiveFactor = {double((*e.emissive)[0]), double((*e.emissive)[1]), double((*e.emissive)[2])};
-  if(e.emissiveIntensity)
-    setExtNumber(m.extensions, "KHR_materials_emissive_strength", "emissiveStrength", double(*e.emissiveIntensity));
-  if(e.specular)
-    setExtNumber(m.extensions, "KHR_materials_specular", "specularFactor", double(*e.specular));
-  if(e.clearcoat)
-    setExtNumber(m.extensions, "KHR_materials_clearcoat", "clearcoatFactor", double(*e.clearcoat));
-  if(e.clearcoatRoughness)
-    setExtNumber(m.extensions, "KHR_materials_clearcoat", "clearcoatRoughnessFactor", double(*e.clearcoatRoughness));
-  if(e.normalStrength && m.normalTexture.index >= 0)
-    m.normalTexture.scale = double(*e.normalStrength);
-  // sheen over the model's own: black is none, and a roughness alone changes only a sheen it has
-  if(e.sheenColor)
-    setExtValue(m.extensions, "KHR_materials_sheen", "sheenColorFactor",
-                tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(double((*e.sheenColor)[0])), tinygltf::Value(double((*e.sheenColor)[1])),
-                                                       tinygltf::Value(double((*e.sheenColor)[2]))}));
-  if(e.sheenRoughness && m.extensions.count("KHR_materials_sheen"))
-    setExtNumber(m.extensions, "KHR_materials_sheen", "sheenRoughnessFactor", double(*e.sheenRoughness));
-  for(const char* name : {"KHR_materials_emissive_strength", "KHR_materials_specular", "KHR_materials_clearcoat", "KHR_materials_sheen"})
+  tinygltf::Material m = fv::model::editedMaterial(m_originals[size_t(index)], m_scene->materials[size_t(index)].edits);
+  for(const char* name : fv::model::kEditedExtensions)
     if(m.extensions.count(name) && std::find(scn->getModel().extensionsUsed.begin(), scn->getModel().extensionsUsed.end(), name) == scn->getModel().extensionsUsed.end())
       scn->getModel().extensionsUsed.push_back(name);
   tinygltf::Material& mat    = scn->editor().getMaterialForEdit(g);
@@ -337,6 +289,13 @@ void FvMaterials::writeModel(int index)
   scn->markMaterialDirty(g);
   if(!(instanceInputs(mat) == before))
     scn->markRenderNodeRtxDirtyForMaterials({g});
+}
+
+std::optional<tinygltf::Material> FvMaterials::modelMaterial(int index) const
+{
+  if(!m_model || !m_scene || index < 0 || index >= int(m_originals.size()) || index >= int(m_scene->materials.size()))
+    return std::nullopt;
+  return fv::model::editedMaterial(m_originals[size_t(index)], m_scene->materials[size_t(index)].edits);
 }
 
 Json FvMaterials::modelItem(int index) const
