@@ -3902,6 +3902,30 @@ void GltfRenderer::refreshCpuSceneGraphFromModel()
 // Does not call parseScene — callers that modified the glTF without mergeScene/parseScene must call
 // refreshCpuSceneGraphFromModel() first (e.g. compact, rebuildSceneFromModel).
 //
+//--------------------------------------------------------------------------------------------------
+// Every rebuild re-creates vertex buffers and base geometry from the model, which holds the shapes a
+// host exported, not the ones it uploaded since: their live copies go up again on the next frame,
+// ahead of uploads still queued, which are newer than the copies and must land after them. Render
+// primitives keep their ids through a texture or geometry rebuild of the same model and through a
+// merge (new meshes are appended); an upload whose primitive changed size is dropped when applied.
+// TODO: the copies of a mesh drawn by more than one deforming node (assignDeformedRenderPrimitives)
+// are numbered after every mesh's primitives, so a merge that appends meshes shifts their ids and
+// their live copies land on the wrong primitives. Figure Viewer's figures have none; the retained
+// scene (keyed slots, no replay) removes the replay altogether.
+void GltfRenderer::requeueLiveVertices()
+{
+  if(m_liveVertices.empty())
+    return;
+  std::vector<VertexUpload> restore;
+  restore.reserve(m_liveVertices.size() + m_pendingVertexUploads.size());
+  for(const auto& [renderPrimID, live] : m_liveVertices)
+    restore.push_back({.renderPrimID = renderPrimID, .positions = live.positions, .normals = live.normals});
+  std::move(m_pendingVertexUploads.begin(), m_pendingVertexUploads.end(), std::back_inserter(restore));
+  m_pendingVertexUploads = std::move(restore);
+  // Skinning, morphs and the AS refit run once even when no animation plays.
+  m_pendingAnimReconcile = true;
+}
+
 void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mode)
 {
   using RebuildMode = nvvkgltf::SceneGpu::RebuildMode;
@@ -3934,6 +3958,7 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
   }
 
   buildAccelerationStructures();
+  requeueLiveVertices();
 
   // Update UI system
   scene = m_resources.getScene();
@@ -4558,22 +4583,7 @@ int GltfRenderer::appendSceneFile(const std::filesystem::path& filename, const s
   rebuildVulkanSceneInternal(wasTextured ? nvvkgltf::SceneGpu::RebuildMode::eMergeAppend : nvvkgltf::SceneGpu::RebuildMode::eFull);
   m_resources.recomputeSceneFeatures(dlssGuideRequired());
 
-  // The rebuild re-created vertex buffers and base geometry from the model, which holds the shapes
-  // the host exported, not the ones it sent since. Render primitives of the existing meshes keep
-  // their ids (new meshes are appended), so their live copies go up again on the next frame --
-  // ahead of uploads still queued, which are newer than the copies and must land after them.
-  // TODO: the copies of a mesh drawn by more than one deforming node (assignDeformedRenderPrimitives)
-  // are numbered after every mesh's primitives, so appending meshes shifts their ids and their live
-  // copies land on the wrong primitives. Figure Viewer's figures have none; the retained scene
-  // (keyed slots, no replay) removes the replay altogether.
-  std::vector<VertexUpload> restore;
-  restore.reserve(m_liveVertices.size() + m_pendingVertexUploads.size());
-  for(const auto& [renderPrimID, live] : m_liveVertices)
-    restore.push_back({.renderPrimID = renderPrimID, .positions = live.positions, .normals = live.normals});
-  std::move(m_pendingVertexUploads.begin(), m_pendingVertexUploads.end(), std::back_inserter(restore));
-  m_pendingVertexUploads = std::move(restore);
-  // Skinning, morphs and the AS refit run once even when no animation plays.
-  m_pendingAnimReconcile = true;
+  // rebuildVulkanSceneInternal queued the live vertex copies again (requeueLiveVertices).
   resetFrame();
   return roots < 0 ? -1 : roots;
 }

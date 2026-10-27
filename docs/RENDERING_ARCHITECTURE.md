@@ -779,7 +779,7 @@ primitives of existing meshes keep their ids across a merge, because new meshes 
 primitives are numbered in mesh order (`Scene::buildPrimitiveKeyMap`). The copies a mesh drawn by more
 than one deforming node gets (`Scene::assignDeformedRenderPrimitives`) are numbered after all of them,
 so a merge that adds meshes renumbers those copies, and their live copies are replayed onto the wrong
-primitives (a `TODO` in `appendSceneFile`; Figure Viewer's figures have no such copies).
+primitives (a `TODO` in `GltfRenderer::requeueLiveVertices`; Figure Viewer's figures have no such copies). Every rebuild re-queues the live copies, not only a merge: a texture rebuild or a geometry-only rebuild re-creates the vertex buffers from the model too.
 
 ### Debug Validation (debug builds only)
 

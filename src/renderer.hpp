@@ -632,6 +632,8 @@ private:
   };
   std::unordered_map<int, LiveVertices> m_liveVertices;
   LiveVertices*                         liveVerticesOf(const nvvkgltf::Scene& scn, int renderPrimID);
+  // After a rebuild that re-created the vertex buffers from the model: queue the live copies again.
+  void requeueLiveVertices();
   // KHR_interactivity: ticks the scene's default behavior graph instance, then applies any
   // animation/start-driven pose changes it computed this tick (via reconcileAnimationGpuState()).
   // pointer/set's glTF-model writes flow through Scene::markNodeDirty/markMaterialDirty and are
