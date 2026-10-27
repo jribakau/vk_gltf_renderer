@@ -115,7 +115,30 @@ void expectSameDrawing(RetainedScene& bridged, RetainedScene& fresh, const char*
     EXPECT_EQ(la[k].world, lb[k].world) << step;
     EXPECT_EQ(la[k].shown, lb[k].shown) << step;
     EXPECT_EQ(bridged.light(la[k].light)->payload, fresh.light(lb[k].light)->payload) << step;
+    EXPECT_EQ(bridged.light(la[k].light)->ies, fresh.light(lb[k].light)->ies) << step;
   }
+}
+
+// The fixture's lamp an EXT_lights_ies light too, over a profile in the buffer
+tinygltf::Model withIesLamp(tinygltf::Model m)
+{
+  const std::string    file = "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 1 2 0 0 0\n1 1 100\n0 90 180\n0\n100 50 0\n";
+  tinygltf::Buffer&    b    = m.buffers[0];
+  tinygltf::BufferView view;
+  view.buffer     = 0;
+  view.byteOffset = b.data.size();
+  view.byteLength = file.size();
+  b.data.insert(b.data.end(), file.begin(), file.end());
+  m.bufferViews.push_back(view);
+  tinygltf::Value::Object profile, root, ref;
+  profile["bufferView"]                       = tinygltf::Value(int(m.bufferViews.size()) - 1);
+  root["lights"]                              = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(profile)});
+  m.extensions[EXT_LIGHTS_IES_EXTENSION_NAME] = tinygltf::Value(root);
+  m.extensionsUsed.push_back(EXT_LIGHTS_IES_EXTENSION_NAME);
+  ref["light"]                                         = tinygltf::Value(0);
+  ref["multiplier"]                                    = tinygltf::Value(2.0);
+  m.nodes[1].extensions[EXT_LIGHTS_IES_EXTENSION_NAME] = tinygltf::Value(ref);
+  return m;
 }
 
 }  // namespace
@@ -204,6 +227,27 @@ TEST(SceneCoexistence, TheBridgeCarriesTheHostsEdits)
     legacy.editor().getLightForEdit(0).intensity = 0.0;
     legacy.markLightDirty(0);
   });
+}
+
+// An IES light's multiplier and colour are its node's: an edit to them is carried with the node
+TEST(SceneCoexistence, TheBridgeCarriesAnIesLightsTint)
+{
+  nvvkgltf::Scene legacy;
+  legacy.takeModel(withIesLamp(fixture()));
+  ASSERT_TRUE(legacy.valid());
+  RetainedScene           retained;
+  const LegacyDirtyBridge bridge(importGltf(retained, legacy.getModel()));
+  legacy.clearDirtyFlags();
+  ASSERT_TRUE(retained.light(retained.entity(bridge.map().entities[1])->light)->ies);
+
+  tinygltf::utils::setNodeIesLight(legacy.editor().getNodeForEdit(1), {.light = 0, .multiplier = 5.f, .color = {0.f, 1.f, 0.f}});
+  legacy.markNodeDirty(1);
+  EXPECT_EQ(bridge.carry(legacy, retained), LegacyDirtyBridge::Result::eCarried);
+  legacy.clearDirtyFlags();
+  RetainedScene fresh;
+  importGltf(fresh, legacy.getModel());
+  expectSameDrawing(retained, fresh, "an IES tint");
+  EXPECT_EQ(retained.light(retained.entity(bridge.map().entities[1])->light)->ies->multiplier, 5.f);
 }
 
 // The legacy-accessor check's allow-list, in MSVC's and clang's spellings of a function, a lambda

@@ -32,6 +32,12 @@
 #include <charconv>
 #include <string_view>
 
+#include <nvutils/file_mapping.hpp>
+#include <nvutils/file_operations.hpp>
+#include <tinygltf/tiny_gltf.h>
+
+#include "tinygltf_utils.hpp"
+
 namespace {
 
 // Splits the remainder of an IES file into whitespace-separated tokens. IES data (everything
@@ -89,9 +95,9 @@ private:
 // size candela curve described in ies_profile.hpp (see there for the exact output contract and its
 // azimuthal-averaging / TILT-data simplifications).
 //
-// Downstream usage: SceneVk::loadIesProfiles() (gltf_scene_vk.cpp) calls this once per
-// EXT_lights_ies profile the scene references and copies outSamples into a flat GPU buffer laid
-// out as [profile][sample], one kIesProfileSampleCount-wide row per profile. GltfLight::iesProfile
+// Downstream usage: loadIesProfiles() (below) calls this once per EXT_lights_ies profile of a
+// model; both scenes copy the samples into a flat GPU buffer laid out as [profile][sample], one
+// kIesProfileSampleCount-wide row per profile. GltfLight::iesProfile
 // indexes a row; gltf_light_ies.h.slang's sampleIesProfile()/evalIesFactor() linearly interpolate
 // along it at shading time, producing a [0,1] multiplier that reshapes a KHR_lights_punctual
 // light's angular falloff -- the light's own intensity/color/range come from KHR_lights_punctual
@@ -212,4 +218,59 @@ bool nvvkgltf::parseIesProfile(std::span<const uint8_t> fileBytes, std::vector<f
   }
 
   return true;
+}
+
+// The model's profiles read from a bufferView or a file, sampled; neutral when that fails
+std::vector<nvvkgltf::IesProfileData> nvvkgltf::loadIesProfiles(const tinygltf::Model&                 model,
+                                                                std::span<const std::filesystem::path> searchPaths,
+                                                                std::vector<std::string>&              warnings)
+{
+  std::vector<IesProfileData> out;
+  for(const EXT_lights_ies_profile& profile : tinygltf::utils::getIesProfiles(model))
+  {
+    IesProfileData data{.name = profile.name, .samples = std::vector<float>(size_t(kIesProfileSampleCount), 1.0f)};
+    if(profile.bufferView >= 0)
+    {
+      if(static_cast<size_t>(profile.bufferView) < model.bufferViews.size())
+      {
+        const tinygltf::BufferView& bv = model.bufferViews[profile.bufferView];
+        if(bv.buffer >= 0 && static_cast<size_t>(bv.buffer) < model.buffers.size())
+        {
+          const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+          if(bv.byteOffset < buf.data.size() && bv.byteLength <= buf.data.size() - bv.byteOffset)
+            data.bytes.assign(buf.data.begin() + bv.byteOffset, buf.data.begin() + bv.byteOffset + bv.byteLength);
+        }
+      }
+    }
+    else if(!profile.uri.empty() && (profile.uri.size() < 5 || profile.uri.compare(0, 5, "data:") != 0))
+    {
+      const std::string     uriDecoded = tinygltf::utils::decodePathFromUri(profile.uri);
+      std::filesystem::path diskPath =
+          nvutils::findFile(nvutils::pathFromUtf8(uriDecoded),
+                            std::vector<std::filesystem::path>(searchPaths.begin(), searchPaths.end()), false);
+
+      nvutils::FileReadMapping fileMapping;
+      if(!diskPath.empty() && fileMapping.open(diskPath))
+      {
+        const auto* bytes = reinterpret_cast<const uint8_t*>(fileMapping.data());
+        data.bytes.assign(bytes, bytes + fileMapping.size());
+      }
+      else
+        warnings.push_back("EXT_lights_ies: could not open IES profile file '" + profile.uri + "'");
+    }
+    else if(!profile.uri.empty())
+      warnings.push_back("EXT_lights_ies: data: URIs are not supported for IES profiles ('" + profile.name + "' skipped)");
+
+    if(!data.bytes.empty())
+    {
+      std::vector<float> samples;
+      if(parseIesProfile(data.bytes, samples) && samples.size() == size_t(kIesProfileSampleCount))
+        data.samples = std::move(samples);
+      else
+        warnings.push_back("EXT_lights_ies: failed to parse IES profile '"
+                           + (profile.name.empty() ? profile.uri : profile.name) + "'");
+    }
+    out.push_back(std::move(data));
+  }
+  return out;
 }

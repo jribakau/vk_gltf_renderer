@@ -28,6 +28,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <nvutils/file_operations.hpp>
 
+#include "ies_profile.hpp"
 #include "tinygltf_utils.hpp"
 
 namespace rs {
@@ -159,6 +160,17 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
   for(const char* ext : {KHR_INTERACTIVITY_EXTENSION_NAME, KHR_ANIMATION_POINTER, EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME})
     if(std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), ext) != model.extensionsUsed.end())
       notice(std::string(ext) + " is not drawn yet; left out");
+
+  // ---- EXT_lights_ies profiles, read and sampled here as the legacy scene reads them; by index
+  std::vector<uint32_t> iesProfiles;
+  {
+    std::vector<std::string> warnings;
+    for(nvvkgltf::IesProfileData& profile : nvvkgltf::loadIesProfiles(model, options.imageSearchPaths, warnings))
+      iesProfiles.push_back(scene.addIesProfile(
+          {.name = std::move(profile.name), .bytes = std::move(profile.bytes), .samples = std::move(profile.samples)}));
+    for(const std::string& warning : warnings)
+      notice(warning);
+  }
 
   // ---- images and the texture table every material of this file shares
   // an image a texture names through an extension (a KTX2 under KHR_texture_basisu, a WebP) keeps
@@ -380,9 +392,19 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
       }
       scene.setMeshInstance(e, std::move(instance));
     }
-    if(node.light >= 0 && node.light < int(model.lights.size()))
+    // a light per node: its KHR light, or EXT_lights_ies, which stands alone when both are there
+    const EXT_lights_ies_ref ies      = tinygltf::utils::getNodeIesLight(node);
+    const bool               hasIes   = ies.light >= 0 && ies.light < int(iesProfiles.size());
+    const bool               hasLight = node.light >= 0 && node.light < int(model.lights.size());
+    if(ies.light >= 0 && !hasIes)
+      notice("EXT_lights_ies lights naming no profile");
+    if(hasIes || hasLight)
     {
-      lights.push_back(scene.addLight({.owner = {options.prop, node.light}, .payload = model.lights[size_t(node.light)]}));
+      LightRecord light{.owner   = {options.prop, node.light},
+                        .payload = hasLight ? model.lights[size_t(node.light)] : tinygltf::Light{}};
+      if(hasIes)
+        light.ies = IesLight{.profile = iesProfiles[size_t(ies.light)], .multiplier = ies.multiplier, .color = ies.color};
+      lights.push_back(scene.addLight(std::move(light)));
       scene.setEntityLight(e, lights.back());
     }
     if(node.camera >= 0 && node.camera < int(model.cameras.size()))

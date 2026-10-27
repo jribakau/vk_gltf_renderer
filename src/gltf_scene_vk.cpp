@@ -1381,71 +1381,21 @@ std::optional<nvvkgltf::SceneVk::ReuseKey> nvvkgltf::SceneVk::makeReuseKey(const
 // buffers; `data:` URIs are not decoded (rare for IES profiles) and fall back to a neutral table.
 void nvvkgltf::SceneVk::loadIesProfiles(nvvk::CmdUploaderInterface& staging, const nvvkgltf::Scene& scn)
 {
-  const tinygltf::Model&              model    = scn.getModel();
-  std::vector<EXT_lights_ies_profile> profiles = tinygltf::utils::getIesProfiles(model);
-
   destroyBufferDeferred(m_bIesProfiles);
-  if(profiles.empty())
+  if(tinygltf::utils::getIesProfiles(scn.getModel()).empty())
     return;
 
   std::vector<std::filesystem::path> searchPaths = resolveImageSearchPaths(scn);
+  std::vector<std::string>           warnings;
+  const std::vector<nvvkgltf::IesProfileData> profiles = nvvkgltf::loadIesProfiles(scn.getModel(), searchPaths, warnings);
+  for(const std::string& warning : warnings)
+    LOGW("%s.\n", warning.c_str());
 
   // Neutral (all-1.0) default: a profile that fails to resolve/parse just leaves its referencing
   // lights at their unmodified KHR_lights_punctual distribution instead of erroring out.
-  std::vector<float> table(profiles.size() * size_t(nvvkgltf::kIesProfileSampleCount), 1.0f);
-  for(size_t i = 0; i < profiles.size(); i++)
-  {
-    const auto&          profile = profiles[i];
-    std::vector<uint8_t> bytes;
-
-    if(profile.bufferView >= 0)
-    {
-      if(static_cast<size_t>(profile.bufferView) < model.bufferViews.size())
-      {
-        const tinygltf::BufferView& bv = model.bufferViews[profile.bufferView];
-        if(bv.buffer >= 0 && static_cast<size_t>(bv.buffer) < model.buffers.size())
-        {
-          const tinygltf::Buffer& buf = model.buffers[bv.buffer];
-          if(bv.byteOffset < buf.data.size() && bv.byteLength <= buf.data.size() - bv.byteOffset)
-            bytes.assign(buf.data.begin() + bv.byteOffset, buf.data.begin() + bv.byteOffset + bv.byteLength);
-        }
-      }
-    }
-    else if(!profile.uri.empty() && (profile.uri.size() < 5 || profile.uri.compare(0, 5, "data:") != 0))
-    {
-      const std::string     uriDecoded = tinygltf::utils::decodePathFromUri(profile.uri);
-      std::filesystem::path diskPath   = nvutils::findFile(nvutils::pathFromUtf8(uriDecoded), searchPaths, false);
-
-      nvutils::FileReadMapping fileMapping;
-      if(!diskPath.empty() && fileMapping.open(diskPath))
-      {
-        const auto* data = reinterpret_cast<const uint8_t*>(fileMapping.data());
-        bytes.assign(data, data + fileMapping.size());
-      }
-      else
-      {
-        LOGW("EXT_lights_ies: could not open IES profile file '%s'.\n", profile.uri.c_str());
-      }
-    }
-    else if(!profile.uri.empty())
-    {
-      LOGW("EXT_lights_ies: data: URIs are not supported for IES profiles ('%s' skipped).\n", profile.name.c_str());
-    }
-
-    if(!bytes.empty())
-    {
-      std::vector<float> samples;
-      if(nvvkgltf::parseIesProfile(bytes, samples) && samples.size() == size_t(nvvkgltf::kIesProfileSampleCount))
-      {
-        std::copy(samples.begin(), samples.end(), table.begin() + i * nvvkgltf::kIesProfileSampleCount);
-      }
-      else
-      {
-        LOGW("EXT_lights_ies: failed to parse IES profile '%s'.\n",
-             profile.name.empty() ? profile.uri.c_str() : profile.name.c_str());
-      }
-    }
-  }
+  std::vector<float> table;
+  for(const nvvkgltf::IesProfileData& profile : profiles)
+    table.insert(table.end(), profile.samples.begin(), profile.samples.end());
 
   NVVK_CHECK(m_alloc->createBuffer(m_bIesProfiles, std::span(table).size_bytes(),
                                    VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT));
@@ -2282,20 +2232,11 @@ std::vector<shaderio::GltfLight> getShaderLights(const std::vector<nvvkgltf::Ren
   lightsInfo.reserve(renderlights.size());
   for(auto& l : renderlights)
   {
-    const bool          punctual = l.light >= 0 && l.light < static_cast<int>(gltfLights.size());
-    shaderio::GltfLight info     = nvvkgltf::packLight(punctual ? &gltfLights[l.light] : nullptr, l.worldMatrix);
-
-    // EXT_lights_ies: fold the node's multiplier/color tint into the light's own color/intensity
-    // (the shader only needs the profile index to reshape the angular distribution; see
-    // shaders/gltf_light_ies.h.slang).
-    info.iesProfile = l.iesProfile;
-    if(info.iesProfile >= 0)
-    {
-      info.color *= l.iesColor;
-      info.intensity *= l.iesMultiplier;
-    }
-
-    lightsInfo.emplace_back(info);
+    const bool punctual = l.light >= 0 && l.light < static_cast<int>(gltfLights.size());
+    // EXT_lights_ies stands alone (parseScene drops a KHR light on the same node)
+    lightsInfo.emplace_back(l.iesProfile >= 0 ?
+                                nvvkgltf::packIesLight(l.worldMatrix, l.iesProfile, l.iesMultiplier, l.iesColor) :
+                                nvvkgltf::packLight(punctual ? &gltfLights[l.light] : nullptr, l.worldMatrix));
   }
   return lightsInfo;
 }

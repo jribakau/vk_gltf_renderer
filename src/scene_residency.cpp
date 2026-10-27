@@ -140,8 +140,9 @@ void Residency::clear()
   retireBuffer(m_textureInfoTable);
   retireBuffer(m_lightTable);
   retireBuffer(m_emissiveTable);
-  m_lightTable = m_emissiveTable = {};
-  m_lightCount = m_emissiveCount = 0;
+  retireBuffer(m_iesTable);
+  m_lightTable = m_emissiveTable = m_iesTable = {};
+  m_lightCount = m_emissiveCount = m_iesProfileCount = 0;
   m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
   m_emissiveStale                           = false;
   m_shadeMaterials.clear();
@@ -601,6 +602,11 @@ SyncResult Residency::sync(RetainedScene& scene)
   }
   const bool materialsWritten = m_tablesMoved || result.drawListChanged || (!changes.materials.empty());
   syncRows(items, result);
+  if(fresh || changes.iesProfiles)
+  {
+    syncIesProfiles(scene);
+    result.changed = true;
+  }
   if(fresh || changes.structure || !changes.lights.empty() || !changes.transforms.empty() || !changes.visibility.empty())
   {
     syncLights(scene);
@@ -931,6 +937,7 @@ void Residency::writeSceneDesc()
   desc.textureInfos          = (shaderio::GltfTextureInfo*)m_gpu.bufferAddress(m_textureInfoTable);
   desc.lights                = (shaderio::GltfLight*)m_gpu.bufferAddress(m_lightTable);
   desc.numLights             = int(m_lightCount);
+  desc.iesProfiles           = (float*)m_gpu.bufferAddress(m_iesTable);
   desc.iesProfileSampleCount = nvvkgltf::kIesProfileSampleCount;
   desc.emissiveTriangles     = (shaderio::EmissiveTriangle*)m_gpu.bufferAddress(m_emissiveTable);
   desc.numEmissiveTriangles  = int(m_emissiveCount);
@@ -959,7 +966,10 @@ void Residency::syncLights(RetainedScene& scene)
   for(const LightItem& item : scene.lightItems())
   {
     const LightRecord*  record = scene.light(item.light);
-    shaderio::GltfLight light  = nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
+    shaderio::GltfLight light =
+        record && record->ies ?
+            nvvkgltf::packIesLight(item.world, int(record->ies->profile), record->ies->multiplier, record->ies->color) :
+            nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
     if(!item.shown)
       light.intensity = 0.f;
     lights.push_back(light);
@@ -979,6 +989,23 @@ bool Residency::emits(const Instance& inst) const
     return false;
   const shaderio::GltfShadeMaterial& shade = m_shadeMaterials[inst.materialSlot];
   return nvvkgltf::emissiveLuminance(glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale) > 0.f;
+}
+
+// The profiles' samples end to end, which a light's iesProfile indexes by kIesProfileSampleCount
+void Residency::syncIesProfiles(const RetainedScene& scene)
+{
+  std::vector<float> table;
+  for(const IesProfileRecord& profile : scene.iesProfiles())
+  {
+    table.insert(table.end(), profile.samples.begin(), profile.samples.end());
+    table.resize(table.size() + size_t(nvvkgltf::kIesProfileSampleCount) - profile.samples.size(), 1.f);
+  }
+  const uint64_t bytes = std::span(table).size_bytes();
+  m_descDirty |= fitBuffer(m_gpu, m_iesTable, bytes, "IES profiles", [this](BufferHandle b) { retireBuffer(b); });
+  if(bytes)
+    m_gpu.upload(m_iesTable, 0, std::as_bytes(std::span(table)));
+  m_descDirty |= m_iesProfileCount != scene.iesProfiles().size();
+  m_iesProfileCount = uint32_t(scene.iesProfiles().size());
 }
 
 // The shown instances whose material emits, their triangles from their mesh records

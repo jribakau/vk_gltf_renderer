@@ -39,6 +39,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -188,12 +189,32 @@ struct SkinRecord
   EntityId               skeleton;
 };
 
+// An EXT_lights_ies photometric profile: its file as it came (an export writes it back) and its
+// samples, kIesProfileSampleCount relative intensities from the nadir (all 1 when unreadable)
+struct IesProfileRecord
+{
+  std::string          name;
+  std::vector<uint8_t> bytes;
+  std::vector<float>   samples;
+};
+
+// EXT_lights_ies on a light's node. It stands alone: the light is a point light of this colour and
+// multiplier that the profile reshapes, and a KHR light on the same node is not drawn.
+struct IesLight
+{
+  uint32_t  profile                           = 0;  // into RetainedScene::iesProfiles()
+  float     multiplier                        = 1.f;
+  glm::vec3 color                             = glm::vec3(1.f);
+  bool      operator==(const IesLight&) const = default;
+};
+
 struct LightRecord
 {
-  OwnerTag        owner;
-  tinygltf::Light payload;  // its real intensity even while hidden
-  bool            shown  = true;
-  bool            skySun = false;
+  OwnerTag                owner;
+  tinygltf::Light         payload;  // its real intensity even while hidden
+  bool                    shown  = true;
+  bool                    skySun = false;
+  std::optional<IesLight> ies;  // in place of the payload's light
 };
 
 struct CameraRecord
@@ -315,7 +336,8 @@ struct SceneChanges
   std::set<MaterialId> materials;          // payload edited
   std::set<LightId>    lights;             // payload, shown or sun edited
   std::set<SkinId>     skins;              // joints or inverse binds edited
-  bool                 features = false;   // features() is not what the last takeChanges() saw
+  bool                 features    = false;  // features() is not what the last takeChanges() saw
+  bool                 iesProfiles = false;  // a profile was added
   bool                 empty() const;
 };
 
@@ -380,8 +402,13 @@ public:
   // the payload with the table its texture indices now index (its textures referenced, the old ones released)
   void setMaterial(MaterialId id, tinygltf::Material payload, std::shared_ptr<const TextureTable> textures);
   void setLight(LightId id, const tinygltf::Light& payload);
+  void setLightIes(LightId id, std::optional<IesLight> ies);
   void setLightShown(LightId id, bool shown);
   void setSkySun(LightId id, bool skySun);
+
+  // ---- IES profiles: append-only (a scene replace starts a new store); returns the profile's index
+  uint32_t                          addIesProfile(IesProfileRecord profile);
+  std::span<const IesProfileRecord> iesProfiles() const { return m_iesProfiles; }
 
   // ---- entities
   // A new entity under `parent` (none: a root), at `index` among its siblings (-1: last).
@@ -475,6 +502,7 @@ private:
   SlotMap<Counted<LightRecord>, LightTag>       m_lights;
   SlotMap<Counted<CameraRecord>, CameraTag>     m_cameras;
   SlotMap<Counted<ClipRecord>, ClipTag>         m_clips;
+  std::vector<IesProfileRecord>                 m_iesProfiles;
 
   SlotMap<Entity, EntityTag> m_entities;
   std::vector<EntityId>      m_roots;

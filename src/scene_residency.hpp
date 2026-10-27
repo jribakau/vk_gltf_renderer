@@ -178,6 +178,9 @@ public:
   uint32_t     emissiveCount() const { return m_emissiveCount; }
   float        emissiveTotalWeight() const { return m_emissiveTotalWeight; }
   float        emissiveMeanLum() const { return m_emissiveMeanLum; }
+  // EXT_lights_ies: every profile's samples, end to end, in the store's order
+  BufferHandle iesTable() const { return m_iesTable; }
+  uint32_t     iesProfileCount() const { return m_iesProfileCount; }
   // an emitter's vertices were written and the table still has the areas from before
   bool emissiveSettling() const { return m_emissiveStale; }
   // a material slot's converted row, the emissive table's radiance source
@@ -243,6 +246,7 @@ private:
   void     writeMaterials(const RetainedScene& scene);
   void     buildDrawLists();
   void     syncLights(RetainedScene& scene);
+  void     syncIesProfiles(const RetainedScene& scene);
   void     syncEmissive(const RetainedScene& scene);
   bool     emits(const Instance& inst) const;
   void     retireMesh(MeshId id);
@@ -280,8 +284,9 @@ private:
   bool                                                 m_tablesMoved = false;  // the material tables were made again
   std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows
 
-  BufferHandle                         m_lightTable, m_emissiveTable;
+  BufferHandle                         m_lightTable, m_emissiveTable, m_iesTable;
   uint32_t                             m_lightCount          = 0;
+  uint32_t                             m_iesProfileCount     = 0;
   uint32_t                             m_emissiveCount       = 0;
   float                                m_emissiveTotalWeight = 0.f;
   float                                m_emissiveMeanLum     = 0.f;

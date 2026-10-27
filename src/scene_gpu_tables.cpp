@@ -65,6 +65,15 @@ shaderio::GltfLight packLight(const tinygltf::Light* light, const glm::mat4& wor
   return info;
 }
 
+shaderio::GltfLight packIesLight(const glm::mat4& world, int profile, float multiplier, const glm::vec3& color)
+{
+  shaderio::GltfLight info = packLight(nullptr, world);
+  info.iesProfile          = profile;
+  info.color *= color;
+  info.intensity *= multiplier;
+  return info;
+}
+
 EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters)
 {
   // First pass: gather emissive triangles + per-triangle world area, and accumulate the totals used

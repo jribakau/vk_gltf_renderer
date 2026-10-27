@@ -167,7 +167,7 @@ src/
 ├── gltf_material_cache.cpp/hpp # CPU-side material cache
 ├── gltf_image_loader.cpp/hpp   # Image decoding (DDS, KTX, STB, WebP)
 ├── gltf_animation_pointer.*    # KHR_animation_pointer support
-├── ies_profile.cpp/hpp         # EXT_lights_ies: IESNA LM-63 photometric profile parser
+├── ies_profile.cpp/hpp         # EXT_lights_ies: IESNA LM-63 photometric profile parser, and a model's profiles loaded
 ├── scene_retained.cpp/hpp      # RetainedScene: an owned scene of entities and refcounted mesh, material,
 │                               #   texture, skin, light, camera and clip records, with what changed since
 │                               #   asked, joint matrices from its world matrices, and the shader features
@@ -591,8 +591,12 @@ light entity in `model.lights[]` is preserved, so other nodes referencing it are
 
 [`src/ies_profile.hpp`](../src/ies_profile.hpp) parses the `.ies` file into a normalized,
 azimuthally-averaged 1D candela curve (see its "Simplification" note on why genuinely asymmetric
-fixtures lose their azimuthal variation); `GltfScene.iesProfiles` carries the flattened per-profile
-tables to the GPU, and `GltfLight.iesProfile` indexes into it (see `shaders/gltf_scene_io.h.slang`).
+fixtures lose their azimuthal variation), and `loadIesProfiles` reads a model's profiles for both
+scenes (a `bufferView`, or a `uri` on the image search paths); `GltfScene.iesProfiles` carries the
+flattened per-profile tables to the GPU, and `GltfLight.iesProfile` indexes into it (see
+`shaders/gltf_scene_io.h.slang`). `nvvkgltf::packIesLight` (scene_gpu_tables.hpp) makes the light
+row both scenes upload. The retained scene keeps the profiles in the store
+(`RetainedScene::iesProfiles`) and an IES node's light as a `LightRecord` with `ies` set.
 Both render paths evaluate the profile identically via `evalIesFactor()` in
 [`shaders/gltf_light_ies.h.slang`](../shaders/gltf_light_ies.h.slang).
 
@@ -873,7 +877,7 @@ Three settings, none remembered:
 - `sceneBackend` (`auto`, `legacy` or `retained`; `auto`) decides at each `loadModel` of a stream
   session; windowed sessions and `--scenefile` stay legacy. `auto` takes the retained scene unless
   `rs::retainedCannotTake` (scene_coexistence.hpp) finds what it can't draw yet: skins, morph
-  targets, animation, opacity micromaps, `KHR_interactivity`, IES profiles, external assets.
+  targets, animation, opacity micromaps, `KHR_interactivity`, external assets.
   `retained` takes it regardless, and says what won't draw. The `Scene backend:` log line names the
   choice and why, with the top-level node (a prop) that forced legacy. A change asks the host for a
   recompose (`GltfRenderer::setRecomposeRequest`); the switch is that scene replace.

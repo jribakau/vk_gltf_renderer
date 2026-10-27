@@ -39,6 +39,9 @@ namespace nvvkgltf {
 // A light at `world` (its node's world matrix). No light: a pure EXT_lights_ies light, whose profile
 // shapes it and whose node sets its colour and intensity (the caller folds those in).
 shaderio::GltfLight packLight(const tinygltf::Light* light, const glm::mat4& world);
+// An EXT_lights_ies light, which stands alone: the profile reshapes a point light of the node's
+// colour and multiplier (shaders/gltf_light_ies.h.slang)
+shaderio::GltfLight packIesLight(const glm::mat4& world, int profile, float multiplier, const glm::vec3& color);
 
 // One drawn surface that may emit: its render node and prim, its radiance (emissive factor, strength
 // and a textured emitter's mean, as the hit side reads it), and its triangles in world space through

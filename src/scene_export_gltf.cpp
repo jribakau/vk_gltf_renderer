@@ -315,7 +315,9 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
 
   // nodes
   out.nodes.resize(order.size());
-  std::map<SkinId, int> skinOf;
+  std::map<SkinId, int>   skinOf;
+  std::map<uint32_t, int> iesProfileOf;    // store profile: file profile
+  std::vector<uint32_t>   iesProfilesOut;  // in the file's order
   for(size_t i = 0; i < order.size(); i++)
   {
     const Entity&   e = *scene.entity(order[i]);
@@ -367,7 +369,21 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
         n.extensions[EXT_MESH_GPU_INSTANCING_EXTENSION_NAME] = tinygltf::Value(ext);
       }
     }
-    if(light)
+    if(light && light->ies && light->ies->profile < scene.iesProfiles().size())
+    {
+      // EXT_lights_ies stands alone; its profile goes into the file once
+      auto [it, added] = iesProfileOf.try_emplace(light->ies->profile, int(iesProfilesOut.size()));
+      if(added)
+        iesProfilesOut.push_back(light->ies->profile);
+      tinygltf::Value::Object ext;
+      ext["light"]      = tinygltf::Value(it->second);
+      ext["multiplier"] = tinygltf::Value(double(light->ies->multiplier));
+      ext["color"]      = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(double(light->ies->color.x)),
+                                                                 tinygltf::Value(double(light->ies->color.y)),
+                                                                 tinygltf::Value(double(light->ies->color.z))});
+      n.extensions[EXT_LIGHTS_IES_EXTENSION_NAME] = tinygltf::Value(ext);
+    }
+    else if(light)
     {
       n.light = int(out.lights.size());
       out.lights.push_back(light->payload);
@@ -451,6 +467,28 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
     }
     if(!animation.channels.empty())
       out.animations.push_back(std::move(animation));
+  }
+
+  // the EXT_lights_ies profiles the lights written use, each file's bytes in the buffer
+  if(!iesProfilesOut.empty())
+  {
+    tinygltf::Value::Array profiles;
+    for(uint32_t p : iesProfilesOut)
+    {
+      const IesProfileRecord& record = scene.iesProfiles()[p];
+      tinygltf::Value::Object profile;
+      if(!record.name.empty())
+        profile["name"] = tinygltf::Value(record.name);
+      if(!record.bytes.empty())
+      {
+        profile["bufferView"] = tinygltf::Value(w.bufferView(record.bytes));
+        profile["mimeType"]   = tinygltf::Value(std::string("application/x-ies-lm-63"));
+      }
+      profiles.push_back(tinygltf::Value(profile));
+    }
+    tinygltf::Value::Object root;
+    root["lights"]                                = tinygltf::Value(profiles);
+    out.extensions[EXT_LIGHTS_IES_EXTENSION_NAME] = tinygltf::Value(root);
   }
 
   tinygltf::Scene s;

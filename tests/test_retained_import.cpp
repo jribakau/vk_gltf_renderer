@@ -24,6 +24,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -34,6 +35,7 @@
 #include <nvutils/file_operations.hpp>
 
 #include "gltf_scene.hpp"
+#include "ies_profile.hpp"
 #include "scene_import_gltf.hpp"
 #include "tinygltf_utils.hpp"
 
@@ -309,6 +311,83 @@ TEST(RetainedImport, AnImageIsFoundWhereTheFileLives)
   EXPECT_EQ(fs::path(nvutils::pathFromUtf8(absolute.texture((*absolute.material(a.materials[0])->textures)[0].texture)->uri)),
             fs::absolute(dir / "maps" / "normal map.png"));
   fs::remove_all(dir);
+}
+
+// A small LM-63 profile: 100, 50 and 0 cd at 0, 90 and 180 degrees, so its samples are 1 at the
+// nadir, 0.5 across and 0 straight up
+const std::string kIesFile = "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 1 2 0 0 0\n1 1 100\n0 90 180\n0\n100 50 0\n";
+
+// EXT_lights_ies: the profiles read and sampled into the store; a node's IES light stands alone with
+// its multiplier and colour, even over a KHR light on the same node; a profile that can't be read
+// stays neutral, and a reference to none is left out, each with a notice
+TEST(RetainedImport, IesLightsStandAloneWithTheirProfiles)
+{
+  tinygltf::Model m;
+  m.buffers.emplace_back();
+  m.buffers[0].data.assign(kIesFile.begin(), kIesFile.end());
+  tinygltf::BufferView view;
+  view.buffer     = 0;
+  view.byteLength = kIesFile.size();
+  m.bufferViews   = {view};
+  tinygltf::Value::Object embedded, missing, root;
+  embedded["bufferView"] = tinygltf::Value(0);
+  embedded["mimeType"]   = tinygltf::Value(std::string("application/x-ies-lm-63"));
+  embedded["name"]       = tinygltf::Value(std::string("downlight"));
+  missing["uri"]         = tinygltf::Value(std::string("missing.ies"));
+  root["lights"]         = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(embedded), tinygltf::Value(missing)});
+  m.extensions[EXT_LIGHTS_IES_EXTENSION_NAME] = tinygltf::Value(root);
+  m.extensionsUsed                            = {EXT_LIGHTS_IES_EXTENSION_NAME};
+  tinygltf::Light lamp;
+  lamp.type      = "spot";
+  lamp.intensity = 30.0;
+  m.lights       = {lamp};
+
+  const auto ies = [](int profile, double multiplier) {
+    tinygltf::Value::Object ref;
+    ref["light"]      = tinygltf::Value(profile);
+    ref["multiplier"] = tinygltf::Value(multiplier);
+    ref["color"] = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(1.0), tinygltf::Value(0.5), tinygltf::Value(0.25)});
+    return tinygltf::Value(ref);
+  };
+  tinygltf::Node both, alone, unreadable, dangling;
+  both.light                                           = 0;
+  both.extensions[EXT_LIGHTS_IES_EXTENSION_NAME]       = ies(0, 2.0);
+  alone.extensions[EXT_LIGHTS_IES_EXTENSION_NAME]      = ies(0, 3.0);
+  unreadable.extensions[EXT_LIGHTS_IES_EXTENSION_NAME] = ies(1, 1.0);
+  dangling.extensions[EXT_LIGHTS_IES_EXTENSION_NAME]   = ies(7, 1.0);
+  m.nodes                                              = {both, alone, unreadable, dangling};
+  m.scenes.push_back({});
+  m.scenes[0].nodes = {0, 1, 2, 3};
+  m.defaultScene    = 0;
+
+  rs::RetainedScene      scene;
+  const rs::ImportResult r = rs::importGltf(scene, m);
+  ASSERT_EQ(scene.iesProfiles().size(), 2u);
+  const rs::IesProfileRecord& downlight = scene.iesProfiles()[0];
+  EXPECT_EQ(downlight.name, "downlight");
+  EXPECT_EQ(std::string(downlight.bytes.begin(), downlight.bytes.end()), kIesFile);
+  ASSERT_EQ(downlight.samples.size(), size_t(nvvkgltf::kIesProfileSampleCount));
+  EXPECT_FLOAT_EQ(downlight.samples[0], 1.f);
+  EXPECT_FLOAT_EQ(downlight.samples[90], 0.5f);
+  EXPECT_FLOAT_EQ(downlight.samples[180], 0.f);
+  EXPECT_TRUE(scene.iesProfiles()[1].bytes.empty());
+  EXPECT_EQ(scene.iesProfiles()[1].samples, std::vector<float>(size_t(nvvkgltf::kIesProfileSampleCount), 1.f));
+
+  const auto lightOf = [&](int node) { return scene.light(scene.entity(r.entities[size_t(node)])->light); };
+  ASSERT_NE(lightOf(0), nullptr);
+  ASSERT_TRUE(lightOf(0)->ies);
+  EXPECT_EQ(*lightOf(0)->ies, (rs::IesLight{.profile = 0, .multiplier = 2.f, .color = {1.f, 0.5f, 0.25f}}));
+  EXPECT_EQ(lightOf(0)->payload.type, "spot");  // kept, though not drawn
+  ASSERT_NE(lightOf(1), nullptr);
+  EXPECT_EQ(lightOf(1)->ies->multiplier, 3.f);
+  EXPECT_EQ(lightOf(2)->ies->profile, 1u);
+  EXPECT_EQ(lightOf(3), nullptr);
+  const auto noticed = [&](const char* text) {
+    return std::any_of(r.notices.begin(), r.notices.end(),
+                       [&](const std::string& n) { return n.find(text) != std::string::npos; });
+  };
+  EXPECT_TRUE(noticed("missing.ies"));
+  EXPECT_TRUE(noticed("naming no profile"));
 }
 
 // The generated glTF 2.1 fixtures and, when present, the Khronos sample assets: every one the legacy

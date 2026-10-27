@@ -75,8 +75,6 @@ std::vector<std::string> retainedCannotTake(const tinygltf::Model& model, bool e
     add("opacity micromaps", "");
   if(used(KHR_INTERACTIVITY_EXTENSION_NAME))
     add("KHR_interactivity", "");
-  if(used(EXT_LIGHTS_IES_EXTENSION_NAME))
-    add("IES light profiles", "");
   if(externalAssets)
     add("glTF 2.1 external assets", "");
   return out;
@@ -147,6 +145,15 @@ LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy
       continue;  // not in the scene the import took
     retained.setLocal(e, transformOf(model.nodes[size_t(n)]));
     retained.setVisible(e, tinygltf::utils::getNodeVisibility(model.nodes[size_t(n)]).visible);
+    // an EXT_lights_ies light's multiplier and colour are its node's
+    const Entity*      entity = retained.entity(e);
+    const LightRecord* light  = entity ? retained.light(entity->light) : nullptr;
+    if(light && light->ies)
+    {
+      const EXT_lights_ies_ref ref = tinygltf::utils::getNodeIesLight(model.nodes[size_t(n)]);
+      retained.setLightIes(entity->light,
+                           IesLight{.profile = light->ies->profile, .multiplier = ref.multiplier, .color = ref.color});
+    }
   }
 
   for(int m : df.materials)

@@ -61,7 +61,7 @@ std::array<float, 2> ClipRecord::range() const
 bool SceneChanges::empty() const
 {
   return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty()
-         && materials.empty() && lights.empty() && skins.empty() && !features;
+         && materials.empty() && lights.empty() && skins.empty() && !features && !iesProfiles;
 }
 
 RetainedScene::RetainedScene()
@@ -302,6 +302,24 @@ void RetainedScene::setLight(LightId id, const tinygltf::Light& payload)
     r->value.payload = payload;
     m_changes.lights.insert(id);
   }
+}
+
+void RetainedScene::setLightIes(LightId id, std::optional<IesLight> ies)
+{
+  assertOwner();
+  if(auto* r = m_lights.get(id); r && r->value.ies != ies)
+  {
+    r->value.ies = ies;
+    m_changes.lights.insert(id);
+  }
+}
+
+uint32_t RetainedScene::addIesProfile(IesProfileRecord profile)
+{
+  assertOwner();
+  m_iesProfiles.push_back(std::move(profile));
+  m_changes.iesProfiles = true;
+  return uint32_t(m_iesProfiles.size() - 1);
 }
 
 void RetainedScene::setLightShown(LightId id, bool shown)

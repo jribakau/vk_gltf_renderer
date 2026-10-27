@@ -20,8 +20,14 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <span>
+#include <string>
 #include <vector>
+
+namespace tinygltf {
+class Model;
+}
 
 namespace nvvkgltf {
 
@@ -49,5 +55,22 @@ photometric data in the main file is parsed normally (no inline block to skip).
 Returns false (leaving `outSamples` untouched) if the file cannot be parsed as LM-63.
 -------------------------------------------------------------------------------------------------*/
 bool parseIesProfile(std::span<const uint8_t> fileBytes, std::vector<float>& outSamples);
+
+/*-------------------------------------------------------------------------------------------------
+## Function `loadIesProfiles`
+> EXT_lights_ies's profiles of `model`, in its order, read and sampled: a `bufferView`'s bytes, or a
+> `uri` found on `searchPaths` (a `data:` URI is not read). One that can't be read or parsed keeps
+> all-1 samples, so its lights keep their plain distribution, and `warnings` says why. Both scenes
+> load their profiles through it.
+-------------------------------------------------------------------------------------------------*/
+struct IesProfileData
+{
+  std::string          name;
+  std::vector<uint8_t> bytes;    // the file; empty when it could not be read
+  std::vector<float>   samples;  // kIesProfileSampleCount
+};
+std::vector<IesProfileData> loadIesProfiles(const tinygltf::Model&                 model,
+                                            std::span<const std::filesystem::path> searchPaths,
+                                            std::vector<std::string>&              warnings);
 
 }  // namespace nvvkgltf

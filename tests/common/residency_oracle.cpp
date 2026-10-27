@@ -303,11 +303,21 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
   for(const LightItem& item : scene.lightItems())
   {
     const LightRecord*  record = scene.light(item.light);
-    shaderio::GltfLight light  = nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
+    shaderio::GltfLight light =
+        record && record->ies ?
+            nvvkgltf::packIesLight(item.world, int(record->ies->profile), record->ies->multiplier, record->ies->color) :
+            nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
     if(!item.shown)
       light.intensity = 0.f;
     lights.push_back(light);
   }
+  // EXT_lights_ies: the store's profiles' samples end to end, which the lights' iesProfile index
+  std::vector<float> ies;
+  for(const IesProfileRecord& profile : scene.iesProfiles())
+    ies.insert(ies.end(), profile.samples.begin(), profile.samples.end());
+  if(residency.iesProfileCount() != scene.iesProfiles().size()
+     || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.iesTable()), ies.size() * sizeof(float)), ies.data(), ies.size()))
+    out.push_back("lights: the IES table is not the scene's profiles");
   if(residency.lightCount() != lights.size()
      || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.lightTable()), lights.size() * sizeof(shaderio::GltfLight)),
                    lights.data(), lights.size()))
@@ -345,6 +355,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
   // the scene descriptor
   const auto desc = rowAt<shaderio::GltfScene>(gpu, residency.sceneDescBuffer(), 0);
   if(uint64_t(desc.lights) != gpu.bufferAddress(residency.lightTable()) || desc.numLights != int(residency.lightCount())
+     || uint64_t(desc.iesProfiles) != gpu.bufferAddress(residency.iesTable())
      || uint64_t(desc.emissiveTriangles) != gpu.bufferAddress(residency.emissiveTable())
      || desc.numEmissiveTriangles != int(residency.emissiveCount())
      || desc.emissiveTotalWeight != residency.emissiveTotalWeight() || desc.emissiveMeanLum != residency.emissiveMeanLum())

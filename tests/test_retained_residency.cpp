@@ -505,6 +505,38 @@ TEST(RetainedResidency, TheEmissiveTableFollowsItsEmitters)
     ADD_FAILURE() << p;
 }
 
+// EXT_lights_ies: a light's row names its profile, tinted and scaled by the node's colour and
+// multiplier; the profiles' table follows the store, and a profile added later is uploaded too
+TEST(RetainedResidency, IesLightsNameTheirProfiles)
+{
+  RetainedScene      scene;
+  std::vector<float> shaped(181, 1.f);
+  shaped[180] = 0.f;
+  scene.addIesProfile({.name = "flat", .samples = std::vector<float>(181, 1.f)});
+  const uint32_t profile = scene.addIesProfile({.name = "shaped", .samples = shaped});
+  const EntityId lamp    = lightEntity(scene, "spot", 40.0);
+  const EntityId plain   = lightEntity(scene, "point", 5.0);
+  const LightId  light   = scene.entity(lamp)->light;
+  scene.setLightIes(light, IesLight{.profile = profile, .multiplier = 2.f, .color = {1.f, 0.5f, 0.5f}});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.iesProfileCount(), 2u);
+
+  scene.setLightIes(light, IesLight{.profile = profile, .multiplier = 6.f});
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(scene).changed);
+  expectClean(scene, residency, gpu, "a multiplier: ");
+
+  scene.addIesProfile({.name = "late", .samples = std::vector<float>(181, 0.25f)});
+  scene.setLightIes(scene.entity(plain)->light, IesLight{.profile = 2});
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "a profile added: ");
+  EXPECT_EQ(residency.iesProfileCount(), 3u);
+}
+
 // An emitter's vertex writes (a dial drag) leave the table's areas as they were until the writes
 // stop for emissiveSettleFrames, then one rebuild takes the last ones; a non-emitter's writes don't
 // touch it, and any other emitter change rebuilds at once

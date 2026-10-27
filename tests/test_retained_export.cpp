@@ -157,6 +157,41 @@ tinygltf::Model load(const std::filesystem::path& file, bool& ok)
 
 }  // namespace
 
+// A small LM-63 profile: 100, 50 and 0 cd at 0, 90 and 180 degrees, so its samples are 1 at the
+// nadir, 0.5 across and 0 straight up
+const std::string kIesFile = "IESNA:LM-63-2002\nTILT=NONE\n1 1000 1 3 1 1 2 0 0 0\n1 1 100\n0 90 180\n0\n100 50 0\n";
+
+// An EXT_lights_ies light goes out as its node's reference to its profile, the file in the buffer,
+// and comes back the same; a profile no exported light uses is not written
+TEST(RetainedExport, IesLightsGoOutWithTheirProfiles)
+{
+  rs::RetainedScene a;
+  const uint32_t    unused = a.addIesProfile({.name = "unused", .samples = std::vector<float>(181, 1.f)});
+  const uint32_t    profile =
+      a.addIesProfile({.name = "downlight", .bytes = std::vector<uint8_t>(kIesFile.begin(), kIesFile.end())});
+  rs::LightRecord light;
+  light.payload.type    = "point";
+  light.ies             = rs::IesLight{.profile = profile, .multiplier = 4.f, .color = {0.5f, 1.f, 1.f}};
+  const rs::LightId  id = a.addLight(light);
+  const rs::EntityId e  = a.createEntity("lamp", {});
+  a.setEntityLight(e, id);
+  a.release(id);
+  (void)unused;
+
+  const tinygltf::Model out = rs::exportGltf(a);
+  EXPECT_TRUE(out.lights.empty());  // it stands alone
+  const tinygltf::Model  reread = throughGlb(out);
+  rs::RetainedScene      b;
+  const rs::ImportResult r = rs::importGltf(b, reread);
+  ASSERT_EQ(b.iesProfiles().size(), 1u);
+  EXPECT_EQ(b.iesProfiles()[0].name, "downlight");
+  EXPECT_EQ(std::string(b.iesProfiles()[0].bytes.begin(), b.iesProfiles()[0].bytes.end()), kIesFile);
+  EXPECT_FLOAT_EQ(b.iesProfiles()[0].samples[90], 0.5f);
+  const rs::LightRecord* back = b.light(b.entity(r.entities[0])->light);
+  ASSERT_TRUE(back && back->ies);
+  EXPECT_EQ(*back->ies, (rs::IesLight{.profile = 0, .multiplier = 4.f, .color = {0.5f, 1.f, 1.f}}));
+}
+
 TEST(RetainedExport, AnExportImportedAgainIsTheSameScene)
 {
   namespace fs = std::filesystem;

@@ -117,6 +117,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/scene_retained.cpp
     test_retained_import.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_import_gltf.cpp
+    ${CMAKE_SOURCE_DIR}/src/ies_profile.cpp
     test_retained_export.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_export_gltf.cpp
     # Its shader features, counted, against the detector on its export
@@ -342,6 +343,7 @@ add_executable(${BENCHMARK_NAME}
     # The retained scene (daz-viewer docs/retained-scene-plan.md): store, importer, figure feed
     ${CMAKE_SOURCE_DIR}/src/scene_retained.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_import_gltf.cpp
+    ${CMAKE_SOURCE_DIR}/src/ies_profile.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_export_gltf.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_clip_player.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_feature_detection.cpp

@@ -52,6 +52,19 @@ TEST(SceneGpuTables, ALightTakesItsNodesPlaceAndItsOwnType)
   sun.type = "directional";
   EXPECT_EQ(packLight(&sun, glm::mat4(1.f)).type, shaderio::eLightTypeDirectional);
   EXPECT_EQ(packLight(nullptr, glm::mat4(1.f)).type, shaderio::eLightTypePoint);  // a pure IES light
+  EXPECT_EQ(l.iesProfile, -1);
+}
+
+// EXT_lights_ies: a point light of the node's colour and multiplier, naming its profile
+TEST(SceneGpuTables, AnIesLightIsItsNodesTintedPointLight)
+{
+  const glm::mat4 world = glm::translate(glm::mat4(1.f), {0.f, 3.f, 0.f});
+  const auto      l     = nvvkgltf::packIesLight(world, 2, 4.f, {1.f, 0.5f, 0.f});
+  EXPECT_EQ(l.type, shaderio::eLightTypePoint);
+  EXPECT_EQ(l.iesProfile, 2);
+  EXPECT_FLOAT_EQ(l.intensity, 4.f);
+  EXPECT_EQ(l.color, glm::vec3(1.f, 0.5f, 0.f));
+  EXPECT_EQ(l.position, glm::vec3(0.f, 3.f, 0.f));
 }
 
 // Two quads of different size and brightness, a degenerate triangle, and an emitter that is black
