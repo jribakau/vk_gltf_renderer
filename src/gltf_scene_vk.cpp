@@ -1038,7 +1038,7 @@ void nvvkgltf::SceneVk::uploadEmissiveTriangles(nvvk::CmdUploaderInterface& stag
     m_sceneDescDirty = true;
   }
 
-  staging.appendBuffer(m_bEmissiveTriangles, 0, std::span(tris));
+  NVVK_CHECK(appendBufferChunked(staging, m_bEmissiveTriangles, 0, std::span<const shaderio::EmissiveTriangle>(tris)));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1060,7 +1060,7 @@ void nvvkgltf::SceneVk::uploadPrimitives(VkCommandBuffer cmd, nvvk::CmdUploaderI
                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
     VertexBuffers& vertexBuffers = m_vertexBuffers[morph.renderPrimID];
-    staging.appendBuffer(vertexBuffers.position, 0, std::span(morph.blendedPositions));
+    NVVK_CHECK(appendBufferChunked(staging, vertexBuffers.position, 0, std::span<const glm::vec3>(morph.blendedPositions)));
 
     if(morph.blendedNormals.empty() != (vertexBuffers.normal.buffer == VK_NULL_HANDLE))
       LOGW("Morph prim %d: normal buffer/data mismatch\n", morph.renderPrimID);
@@ -1068,10 +1068,10 @@ void nvvkgltf::SceneVk::uploadPrimitives(VkCommandBuffer cmd, nvvk::CmdUploaderI
       LOGW("Morph prim %d: tangent buffer/data mismatch\n", morph.renderPrimID);
 
     if(!morph.blendedNormals.empty() && vertexBuffers.normal.buffer != VK_NULL_HANDLE)
-      staging.appendBuffer(vertexBuffers.normal, 0, std::span(morph.blendedNormals));
+      NVVK_CHECK(appendBufferChunked(staging, vertexBuffers.normal, 0, std::span<const glm::vec3>(morph.blendedNormals)));
 
     if(!morph.blendedTangents.empty() && vertexBuffers.tangent.buffer != VK_NULL_HANDLE)
-      staging.appendBuffer(vertexBuffers.tangent, 0, std::span(morph.blendedTangents));
+      NVVK_CHECK(appendBufferChunked(staging, vertexBuffers.tangent, 0, std::span<const glm::vec4>(morph.blendedTangents)));
   }
 
   // ** Skin **
@@ -1085,7 +1085,7 @@ void nvvkgltf::SceneVk::uploadPrimitives(VkCommandBuffer cmd, nvvk::CmdUploaderI
                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
     VertexBuffers& vertexBuffers = m_vertexBuffers[task.renderPrimID];
-    staging.appendBuffer(vertexBuffers.position, 0, std::span(skinned.positions));
+    NVVK_CHECK(appendBufferChunked(staging, vertexBuffers.position, 0, std::span<const glm::vec3>(skinned.positions)));
 
     if(skinned.normals.empty() != (vertexBuffers.normal.buffer == VK_NULL_HANDLE))
       LOGW("Skin prim %d: normal buffer/data mismatch\n", task.renderPrimID);
@@ -1093,10 +1093,10 @@ void nvvkgltf::SceneVk::uploadPrimitives(VkCommandBuffer cmd, nvvk::CmdUploaderI
       LOGW("Skin prim %d: tangent buffer/data mismatch\n", task.renderPrimID);
 
     if(!skinned.normals.empty() && vertexBuffers.normal.buffer != VK_NULL_HANDLE)
-      staging.appendBuffer(vertexBuffers.normal, 0, std::span(skinned.normals));
+      NVVK_CHECK(appendBufferChunked(staging, vertexBuffers.normal, 0, std::span<const glm::vec3>(skinned.normals)));
 
     if(!skinned.tangents.empty() && vertexBuffers.tangent.buffer != VK_NULL_HANDLE)
-      staging.appendBuffer(vertexBuffers.tangent, 0, std::span(skinned.tangents));
+      NVVK_CHECK(appendBufferChunked(staging, vertexBuffers.tangent, 0, std::span<const glm::vec4>(skinned.tangents)));
   }
 }
 
@@ -1136,14 +1136,19 @@ bool nvvkgltf::SceneVk::updateAttributeBuffer(const std::string& attributeName,
       // a vertex input binding:
       VkBufferUsageFlags2 bufferUsageFlag = getBufferUsageFlags() | VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT;
       NVVK_CHECK(alloc->createBuffer(attributeBuffer, std::span(data).size_bytes(), bufferUsageFlag));
-      NVVK_CHECK(staging->appendBuffer(attributeBuffer, 0, std::span(data)));
+      NVVK_CHECK(appendBufferChunked(*staging, attributeBuffer, 0, data));
       m_memoryTracker.track(kMemCategoryGeometry, attributeBuffer.allocation);
       return true;
     }
-    else
+    // An accessor that grew since the buffer was made would be written past its end. Larger
+    // buffers come only from a geometry rebuild, which also rebuilds the BLAS that reads them.
+    if(std::span(data).size_bytes() > attributeBuffer.bufferSize)
     {
-      staging->appendBuffer(attributeBuffer, 0, std::span(data));
+      LOGW("%s of a primitive no longer fits its vertex buffer (%zu > %zu bytes): not uploaded until the geometry is rebuilt\n",
+           attributeName.c_str(), size_t(std::span(data).size_bytes()), size_t(attributeBuffer.bufferSize));
+      return false;
     }
+    NVVK_CHECK(appendBufferChunked(*staging, attributeBuffer, 0, data));
   }
   return false;
 }
@@ -1235,7 +1240,7 @@ void nvvkgltf::SceneVk::createVertexBuffers(VkCommandBuffer cmd, nvvk::CmdUpload
     {
       NVVK_CHECK(m_alloc->createBuffer(vertexBuffers.color, std::span(packedColors).size_bytes(),
                                        getBufferUsageFlags() | VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT));
-      NVVK_CHECK(staging.appendBuffer(vertexBuffers.color, 0, std::span(packedColors)));
+      NVVK_CHECK(appendBufferChunked(staging, vertexBuffers.color, 0, std::span<const uint32_t>(packedColors)));
       m_memoryTracker.track(kMemCategoryGeometry, vertexBuffers.color.allocation);
     }
 
@@ -1275,7 +1280,7 @@ void nvvkgltf::SceneVk::createVertexBuffers(VkCommandBuffer cmd, nvvk::CmdUpload
     nvvk::Buffer& i_buffer = m_bIndices[primID];
     NVVK_CHECK(m_alloc->createBuffer(i_buffer, std::span(indexBuffer).size_bytes(),
                                      getBufferUsageFlags() | VK_BUFFER_USAGE_2_INDEX_BUFFER_BIT));
-    NVVK_CHECK(staging.appendBuffer(i_buffer, 0, std::span(indexBuffer)));
+    NVVK_CHECK(appendBufferChunked(staging, i_buffer, 0, std::span<const uint32_t>(indexBuffer)));
     NVVK_DBG_NAME(i_buffer.buffer);
     m_memoryTracker.track(kMemCategoryGeometry, i_buffer.allocation);
 
@@ -1301,7 +1306,7 @@ void nvvkgltf::SceneVk::createVertexBuffers(VkCommandBuffer cmd, nvvk::CmdUpload
   if(!renderPrim.empty())
   {
     NVVK_CHECK(m_alloc->createBuffer(m_bRenderPrim, std::span(renderPrim).size_bytes(), getBufferUsageFlags()));
-    NVVK_CHECK(staging.appendBuffer(m_bRenderPrim, 0, std::span(renderPrim)));
+    NVVK_CHECK(appendBufferChunked(staging, m_bRenderPrim, 0, std::span<const shaderio::GltfRenderPrimitive>(renderPrim)));
     NVVK_DBG_NAME(m_bRenderPrim.buffer);
     m_memoryTracker.track(kMemCategorySceneData, m_bRenderPrim.allocation);
   }
