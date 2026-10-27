@@ -48,7 +48,7 @@ std::array<glm::vec3, 2> MeshRecord::bounds() const
 
 bool SceneChanges::empty() const
 {
-  return !structure && transforms.empty() && visibility.empty() && meshes.empty() && materials.empty() && lights.empty();
+  return !structure && transforms.empty() && visibility.empty() && meshes.empty() && materials.empty() && lights.empty() && skins.empty();
 }
 
 RetainedScene::RetainedScene()
@@ -203,6 +203,16 @@ void RetainedScene::setMeshVertices(MeshId id, std::vector<glm::vec3> positions,
   r->value.contentRev++;
   m_changes.meshes.insert(id);
   m_boundsRevision++;
+}
+
+void RetainedScene::setSkin(SkinId id, SkinRecord skin)
+{
+  assertOwner();
+  if(auto* r = m_skins.get(id))
+  {
+    r->value = std::move(skin);
+    m_changes.skins.insert(id);
+  }
 }
 
 void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload)
@@ -612,6 +622,7 @@ SceneChanges RetainedScene::takeChanges()
   std::erase_if(out.meshes, [&](MeshId id) { return !m_meshes.contains(id); });
   std::erase_if(out.materials, [&](MaterialId id) { return !m_materials.contains(id); });
   std::erase_if(out.lights, [&](LightId id) { return !m_lights.contains(id); });
+  std::erase_if(out.skins, [&](SkinId id) { return !m_skins.contains(id); });
   return out;
 }
 

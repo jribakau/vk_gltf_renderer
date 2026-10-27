@@ -1130,6 +1130,25 @@ void tinygltf::utils::createTangentAttribute(tinygltf::Model& model, tinygltf::P
 }
 
 
+std::vector<glm::mat4> tinygltf::utils::gpuInstancingMatrices(const tinygltf::Model& model, const tinygltf::Value& attributes)
+{
+  std::vector<glm::vec3> tStorage, sStorage;
+  std::vector<glm::quat> rStorage;
+  std::span<const glm::vec3> translations = getAttributeData3(model, attributes, "TRANSLATION", &tStorage);
+  std::span<const glm::quat> rotations    = getAttributeData3(model, attributes, "ROTATION", &rStorage);
+  std::span<const glm::vec3> scales       = getAttributeData3(model, attributes, "SCALE", &sStorage);
+
+  std::vector<glm::mat4> matrices(std::max({translations.size(), rotations.size(), scales.size()}));
+  for(size_t i = 0; i < matrices.size(); i++)
+  {
+    glm::vec3 t = i < translations.size() ? translations[i] : glm::vec3(0.0f);
+    glm::quat r = i < rotations.size() ? rotations[i] : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::vec3 s = i < scales.size() ? scales[i] : glm::vec3(1.0f);
+    matrices[i] = glm::translate(glm::mat4(1.0f), t) * glm::mat4_cast(r) * glm::scale(glm::mat4(1.0f), s);
+  }
+  return matrices;
+}
+
 std::string tinygltf::utils::primitiveGeometryError(const tinygltf::Model& model, const tinygltf::Primitive& primitive)
 {
   const auto validAccessor = [&model](int index) {

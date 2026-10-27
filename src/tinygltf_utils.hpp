@@ -1572,6 +1572,10 @@ void computeTangents(std::span<const glm::vec3> positions,
 // vertex, and SCALAR unsigned indices with at least one index. A scene skips such a primitive.
 std::string primitiveGeometryError(const tinygltf::Model& model, const tinygltf::Primitive& primitive);
 
+// EXT_mesh_gpu_instancing: the local matrix of each instance (T * R * S) from the extension's
+// `attributes`, as many as its longest attribute.
+std::vector<glm::mat4> gpuInstancingMatrices(const tinygltf::Model& model, const tinygltf::Value& attributes);
+
 /*------------------------------------------------------------------------------------------------*/
 bool getMeshoptCompression(const tinygltf::BufferView& bview, KHR_meshopt_compression& mcomp);
 

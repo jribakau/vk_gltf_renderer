@@ -252,6 +252,7 @@ struct SceneChanges
   std::set<MeshId>     meshes;             // vertices edited
   std::set<MaterialId> materials;          // payload edited
   std::set<LightId>    lights;             // payload, shown or sun edited
+  std::set<SkinId>     skins;              // joints or inverse binds edited
   bool                 empty() const;
 };
 
@@ -296,6 +297,8 @@ public:
 
   // edits
   void setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals);
+  // joints, inverse binds and skeleton replaced (a rebind)
+  void setSkin(SkinId id, SkinRecord skin);
   void setMaterial(MaterialId id, tinygltf::Material payload);
   void setLight(LightId id, const tinygltf::Light& payload);
   void setLightShown(LightId id, bool shown);
