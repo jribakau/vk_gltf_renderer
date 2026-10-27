@@ -17,8 +17,17 @@ file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/wardrobe/bind.cpp FV_BIND_SOURCE_SHA)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/wardrobe/bind.cpp)
 set_source_files_properties(wardrobe/bind_cache.cpp PROPERTIES COMPILE_DEFINITIONS "FV_BIND_SOURCE_SHA=\"${FV_BIND_SOURCE_SHA}\"")
 
-# The parity harness's native side (see tools/fv_parity.cpp): no GPU, the library alone.
-add_executable(fv_parity tools/fv_parity.cpp)
-target_link_libraries(fv_parity PRIVATE fv_figure)
+# The parity harness's native side (see tools/fv_parity.cpp): no GPU. The library, and for its feed
+# step the retained scene's Vulkan-free sources: the store, the figure feed, and what they call (the
+# importer's tangent rule, the material feature detector, the tangent helpers, which use nvutils'
+# logger and pool and nvshaders' shared functions), with tinygltf's out-of-line half.
+add_executable(fv_parity tools/fv_parity.cpp tools/fv_parity_tinygltf.cpp
+  ${FV_FIGURE_ROOT}/src/scene_retained.cpp
+  ${FV_FIGURE_ROOT}/src/fv_figure_feed.cpp
+  ${FV_FIGURE_ROOT}/src/scene_import_gltf.cpp
+  ${FV_FIGURE_ROOT}/src/scene_feature_detection.cpp
+  ${FV_FIGURE_ROOT}/src/tinygltf_utils.cpp)
+target_include_directories(fv_parity PRIVATE ${FV_FIGURE_ROOT}/src ${NVSHADERS_DIR})
+target_link_libraries(fv_parity PRIVATE fv_figure nvpro2::nvutils)
 set_target_properties(fv_parity PROPERTIES FOLDER "figure" RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/_bin/Release
                                            RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}/_bin/Debug)

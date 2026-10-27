@@ -11,6 +11,12 @@
 // {"build": n} builds the glTF the renderer would get (without textures) n times, as the host
 // builds it again after each wardrobe change, and prints the hair strand directions it measured;
 // {"wear": rel, "measure": true} measures a wearable's strands ahead, as the host's wear does.
+// {"feed": n} feeds the figure into a fresh retained scene n times (src/fv_figure_feed, with the
+// build's options), and times a second sync with nothing changed, the one every frame would make.
+// Each build and each feed is read back against the scene (checkBuild, checkFeed).
+// {"surfaces": label} records each material's relief maps and the surface they cover.
+// {"cloth": {"item", "on", "strength"}} turns dForce on or off for the worn items it names, as the
+// Wardrobe row does.
 // {"dforce": label} settles the worn dynamic surfaces at the pose the figure is in, on what the
 // app's driver would hand the solver, and measures each drape: who moves it, how far its edges
 // stretch, where it hangs against the skinned pose, and how much of it is through the body.
@@ -49,6 +55,10 @@
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/fit/collide.hpp>
+
+#include "fv_figure_feed.hpp"
+#include "fv_figure_feed_check.hpp"
+#include "scene_retained.hpp"
 
 using fv::dson::Json;
 
@@ -831,6 +841,34 @@ int main(int argc, char** argv)
           // what it holds, read back against the scene (a hash differs from run to run with the figure)
           const auto problems = fv::build::checkBuild(loaded->loaded.scene, built, {});
           std::cerr << "glTF check: " << (problems.empty() ? "the scene's own bytes" : std::to_string(problems.size()) + " problems") << "\n";
+          for(const std::string& p : problems)
+            std::cerr << "  " << p << "\n";
+        }
+      }
+      else if(step.contains("feed"))
+      {
+        if(!loaded)
+          throw std::runtime_error("feed before a figure loads");
+        const fv::SceneGraph& scene = loaded->loaded.scene;
+        const int             root  = loaded->loaded.root;
+        for(int k = 0; k < std::max(1, step["feed"].get<int>()); k++)
+        {
+          rs::RetainedScene store;
+          fv::FigureFeed    feed(store, {});
+          {
+            fv::timing::Scope t("feed");
+            feed.sync(scene, root);
+          }
+          // the sync every frame makes, with nothing changed since
+          {
+            fv::timing::Scope t("feed again");
+            feed.sync(scene, root);
+          }
+          std::cerr << "store " << store.entityCount() << " entities, " << store.meshCount() << " meshes, " << store.materialCount()
+                    << " materials, " << store.drawItems().size() << " draw items\n";
+          // what it holds, read back against the scene
+          const auto problems = fv::checkFeed(scene, root, feed, store, {});
+          std::cerr << "feed check: " << (problems.empty() ? "the scene's own bytes" : std::to_string(problems.size()) + " problems") << "\n";
           for(const std::string& p : problems)
             std::cerr << "  " << p << "\n";
         }
