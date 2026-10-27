@@ -3771,6 +3771,8 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
   // can specialize its shader when settings.optimalShader is on. Safe to call always:
   // when optimalShader is off, the path tracer ignores currentFeatureSet.
   m_resources.recomputeSceneFeatures(dlssGuideRequired());
+  if(m_resources.retainedScene)
+    updateRetainedFeatures(false);
 
   // Calibrate the firefly clamp to the scene: retroreflective materials can produce legitimately
   // high peak radiance that the default clamp of 10 would clip, visibly suppressing the effect.
@@ -4355,6 +4357,7 @@ void GltfRenderer::createRetainedScene()
     // [fv-time] GPU BLAS build / GPU TLAS build, as legacy reports them at a load
     if(fv::timing::enabled())
       m_resources.retainedGpu->timeBuilds();
+    m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
     m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
     m_app->submitAndWaitTempCmdBuffer(cmd);
     logRetainedNotices();
@@ -4410,8 +4413,6 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   {
     if(!df.nodes.empty())
       scene.updateNodeWorldMatrices();
-    if(!df.materials.empty())
-      m_resources.recomputeSceneFeatures(dlssGuideRequired());
     // an appearance change motion vectors can't describe (see updateSceneChanges)
     if(!df.materials.empty() || !df.lights.empty())
     {
@@ -4425,6 +4426,7 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   }
 
   m_resources.retainedGpu->beginFrame();
+  m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
   rs::SyncResult result;
   if(reimport)
   {
@@ -4439,6 +4441,10 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   else
     result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   logRetainedNotices();
+  if(reimport)
+    updateRetainedFeatures(false);
+  else if(result.featuresChanged)
+    updateRetainedFeatures(true);
 
   // The rasterizer's recorded draws name instances and buffers; any change records them again
   if(result.changed)
@@ -4451,6 +4457,26 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
       m_rasterizer.notifyDlssContentReset(m_resources);
   }
   return result.changed;
+}
+
+void GltfRenderer::updateRetainedFeatures(bool grow)
+{
+  nvvkgltf::SceneFeatureSet features = m_resources.retainedScene->features();
+  if(grow)  // a removal never recompiles mid-session: more compiled in still draws the rest
+  {
+    nvvkgltf::SceneFeatureSet had = m_resources.currentFeatureSet;
+    had.set(nvvkgltf::SceneFeatureSet::eDlssGuide, false);
+    features |= had;
+  }
+  features.set(nvvkgltf::SceneFeatureSet::eDlssGuide, dlssGuideRequired());
+  m_resources.currentFeatureSet = features;
+}
+
+std::optional<nvvkgltf::SceneFeatureSet> GltfRenderer::drawableFeatures()
+{
+  if(m_resources.settings.renderSystem != RenderingMode::ePathtracer)
+    return std::nullopt;
+  return m_pathTracer.liveShaderFeatures();
 }
 
 //--------------------------------------------------------------------------------------------------

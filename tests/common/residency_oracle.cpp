@@ -61,6 +61,16 @@ bool allZero(const void* p, size_t n)
   return true;
 }
 
+// The payload a material is drawn with: its record's, or for an edit held (D15) the one its slot has
+const tinygltf::Material* drawnPayload(const RetainedScene& scene, const Residency& residency, MaterialId id)
+{
+  if(residency.heldMaterials().count(id) && residency.materialSlot(id) >= 0)
+    if(const Residency::MaterialState* state = residency.materialState(uint32_t(residency.materialSlot(id))))
+      return &state->payload;
+  const MaterialRecord* m = scene.material(id);
+  return m ? &m->payload : nullptr;
+}
+
 std::string at(const char* invariant, uint32_t slot)
 {
   return std::string(invariant) + " slot " + std::to_string(slot) + ": ";
@@ -147,9 +157,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
           }
       if(row.customIndex != inst.prim || row.customIndex >= (1u << 24))
         out.push_back(at("I2", s) + "its custom index is not its prim slot");
-      if(const MaterialRecord* m = scene.material(item.material))
+      if(const tinygltf::Material* payload = drawnPayload(scene, residency, item.material))
       {
-        const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(m->payload);
+        const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(*payload);
         if(row.mask != bits.instanceMask || row.flags != bits.instanceFlags)
           out.push_back(at("I1", s) + "its TLAS mask or flags are not its material's");
       }
@@ -303,7 +313,14 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I4", m) + "a material slot of a material not in the scene");
       continue;
     }
-    if(!(state->payload == record->payload))
+    if(residency.heldMaterials().count(state->material))
+    {
+      // held (D15): its edit needs a feature the live variant lacks
+      const std::optional<nvvkgltf::SceneFeatureSet>& live = residency.shaderFeatures();
+      if(!live || live->isSupersetOf(nvvkgltf::detectMaterialFeatures(record->payload)))
+        out.push_back(at("I4", m) + "a held material whose edit the live variant could draw");
+    }
+    else if(!(state->payload == record->payload))
       out.push_back(at("I4", m) + "its row is not of the material's current payload");
     if(residency.materialSlot(state->material) != int32_t(m))
       out.push_back(at("I4", m) + "its material's slot is another");
@@ -343,9 +360,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
   std::array<std::vector<uint32_t>, 4> lists;
   for(uint32_t s = 0; s < hwm; s++)
     if(const Residency::Instance* inst = residency.instance(s))
-      if(const MaterialRecord* m = scene.material(inst->material))
+      if(const tinygltf::Material* payload = drawnPayload(scene, residency, inst->material))
       {
-        const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(m->payload);
+        const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(*payload);
         if(bits.solid())
           lists[0].push_back(s);
         if(bits.solidDoubleSided())

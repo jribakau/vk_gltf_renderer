@@ -584,6 +584,11 @@ private:
   void                       createRetainedScene();
   bool                       syncRetainedScene(VkCommandBuffer cmd);
   void                       logRetainedNotices();
+  // The variant's scene features from the retained store (the materials live instances draw with),
+  // grown only, when `grow`, until the next scene replace (D15)
+  void updateRetainedFeatures(bool grow);
+  // What the residency may draw: the live path-tracer variant's features, or every one
+  std::optional<nvvkgltf::SceneFeatureSet> drawableFeatures();
   rs::VulkanGpuBackend::Info retainedBackendInfo();
   void finalizeSceneSetup(const std::filesystem::path& filename);  // Shared GPU build + UI wiring after a load
   void wireSceneToUi();                                            // Wire current scene into browser/inspector panels

@@ -253,6 +253,8 @@ public:
   void setTextureGrace(VkDeviceSize bytes) { m_residency.setTextureGrace(bytes); }
   // what the residency's last syncs could not do as asked, once each
   std::vector<std::string> takeNotices() { return m_residency.takeNotices(); }
+  // the features the live shader variant has compiled in; none: every one (Residency::setShaderFeatures)
+  void setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features) { m_residency.setShaderFeatures(features); }
   // the images taken from a host's prefetches since the last call
   uint32_t takePrefetchCount() { return m_gpu.takePrefetchCount(); }
   // Nothing resident (what was is retired), the decoded images kept in grace: a host's scene

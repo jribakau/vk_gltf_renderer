@@ -106,6 +106,9 @@ public:
   // After createPipeline(); createRtxPipeline() and createRqPipeline() wait for it.
   void startPipelineWarm(Resources& resources);
   bool compileShader(Resources& resources, bool fromFile = true) override;
+  // The scene features the live variant has compiled in: the optimal build's; none when every one
+  // is (the optimal shader off, or the embedded build standing in for a failed compile)
+  std::optional<nvvkgltf::SceneFeatureSet> liveShaderFeatures();
   // User-initiated hot reload: drop cached variants and recompile from Slang source.
   bool reloadShader(Resources& resources);
   void setBusyWindow(BusyWindow* busy) { m_busyWindow = busy; }

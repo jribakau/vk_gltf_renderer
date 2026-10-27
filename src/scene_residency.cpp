@@ -214,6 +214,7 @@ void Residency::clear()
   m_materialHighWater = 0;
   m_materialTable = m_textureInfoTable = {};
   m_dirtyMaterials.clear();
+  m_heldMaterials.clear();
   m_textureInfoPool = poolFromOne(m_options.textureInfoLimit);
   m_textureInfos.assign(1, {});
   for(auto& list : m_drawLists)
@@ -424,6 +425,24 @@ void Residency::unlinkMicromap(Prim& prim)
   prim.micromapIndices = {};
 }
 
+void Residency::setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features)
+{
+  if(features == m_shaderFeatures)
+    return;
+  m_shaderFeatures = features;
+  m_retryHeld      = !m_heldMaterials.empty();
+}
+
+bool Residency::drawsBeyondShaderFeatures() const
+{
+  if(!m_shaderFeatures)
+    return false;
+  for(const std::optional<MaterialState>& state : m_materialStates)
+    if(state && !m_shaderFeatures->isSupersetOf(state->features))
+      return true;
+  return false;
+}
+
 uint32_t Residency::acquireMaterial(const RetainedScene& scene, MaterialId id)
 {
   auto it = m_materials.find(id);
@@ -457,6 +476,7 @@ void Residency::releaseMaterial(MaterialId id)
   const uint32_t slot = it->second.slot;
   releaseMaterialTextures(it->second);
   m_materials.erase(it);
+  m_heldMaterials.erase(id);
   freeSpan(m_materialStates[slot]->span, m_materialStates[slot]->spanCount);
   m_materialStates[slot].reset();
   m_dirtyMaterials.insert(slot);  // a hole's row: the default material
@@ -690,10 +710,16 @@ void Residency::syncMaterials(RetainedScene& scene, const std::set<MaterialId>& 
 {
   for(MaterialId id : edited)
   {
+    m_heldMaterials.erase(id);
     auto                  it     = m_materials.find(id);
     const MaterialRecord* record = scene.material(id);
     if(it == m_materials.end() || !record || it->second.rev == record->rev)
       continue;
+    if(m_shaderFeatures && !m_shaderFeatures->isSupersetOf(nvvkgltf::detectMaterialFeatures(record->payload)))
+    {
+      m_heldMaterials.insert(id);  // tried again each sync
+      continue;
+    }
     MaterialSlot before = it->second;
     acquireMaterialTextures(scene, id, it->second);
     releaseMaterialTextures(before);
@@ -762,9 +788,11 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
     m_shadeMaterials[s] = nvvkgltf::MaterialCache::convertOne(tinygltf::Material{}, {}, 0, infos);
     return;
   }
-  const MaterialRecord* record      = scene.material(state->material);
-  const MaterialSlot&   slot        = m_materials.at(state->material);
-  state->payload                    = record ? record->payload : tinygltf::Material{};
+  const MaterialRecord* record = scene.material(state->material);
+  const MaterialSlot&   slot   = m_materials.at(state->material);
+  if(!m_heldMaterials.count(state->material))  // a held edit: the payload its row has, over the textures it holds
+    state->payload = record ? record->payload : tinygltf::Material{};
+  state->features                   = nvvkgltf::detectMaterialFeatures(state->payload);
   nvvkgltf::TextureSlotTable& table = state->slots;
   table                             = {};
   const size_t n                    = slot.textures.size();
@@ -895,14 +923,18 @@ SyncResult Residency::sync(RetainedScene& scene)
   const bool         fresh   = !m_renderNodes;
   // an emitter's vertex writes have stopped long enough: the table takes the areas they left
   const bool emissiveSettled = m_emissiveStale && m_gpu.frame() >= m_emitterWriteFrame + m_options.emissiveSettleFrames;
-  if(!fresh && changes.empty() && !emissiveSettled)
+  const bool retryHeld       = std::exchange(m_retryHeld, false);
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld)
     return result;
 
   std::vector<DrawItem> items = scene.drawItems();
   if(fresh || changes.structure)
     syncStructure(scene, items, result);
-  if(!changes.materials.empty())
-    syncMaterials(scene, changes.materials, result);
+  std::set<MaterialId> edited = changes.materials;
+  if(retryHeld)
+    edited.insert(m_heldMaterials.begin(), m_heldMaterials.end());
+  if(!edited.empty())
+    syncMaterials(scene, edited, result);
   decodeQueued();
   std::set<MeshId> written;
   if(!changes.meshes.empty())

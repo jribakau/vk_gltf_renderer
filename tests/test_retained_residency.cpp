@@ -74,6 +74,15 @@ MaterialId material(RetainedScene& scene, const char* name)
   return scene.addMaterial(std::move(m));
 }
 
+// The payload with KHR_materials_transmission (factor 1), a feature the shader can compile out
+tinygltf::Material withTransmission(tinygltf::Material payload)
+{
+  tinygltf::Value::Object transmission;
+  transmission["transmissionFactor"]               = tinygltf::Value(1.0);
+  payload.extensions["KHR_materials_transmission"] = tinygltf::Value(transmission);
+  return payload;
+}
+
 // A texture table over three image files: two samplers of the first, and a second image
 std::shared_ptr<const TextureTable> textureTable(RetainedScene& scene)
 {
@@ -392,6 +401,58 @@ TEST(RetainedResidency, MicromapsGoWithAReplaceAndNeedTheDevice)
   EXPECT_EQ(without.liveAccels(), 3u);  // the two BLASes and the TLAS
 }
 
+// An edit needing a feature the live variant lacks is held, its slot keeping the row it had, while
+// an edit within the variant's features goes through; once a sync's variant has the feature the
+// held edit is written. A replace writes every material whatever the variant has, and says so.
+TEST(RetainedResidency, AnEditTheVariantCantDrawIsHeldUntilItCan)
+{
+  RetainedScene    scene;
+  const MaterialId glass = material(scene, "glass"), plain = material(scene, "plain");
+  const MeshId     grid = scene.addMesh(gridMesh(2, 0.f));
+  drawn(scene, "a", grid, {glass});
+  drawn(scene, "b", grid, {plain});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.setShaderFeatures(nvvkgltf::SceneFeatureSet{});  // an optimal build of no features
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_FALSE(residency.drawsBeyondShaderFeatures());
+  const uint32_t slot = uint32_t(residency.materialSlot(glass));
+
+  scene.setMaterial(glass, withTransmission(scene.material(glass)->payload));
+  tinygltf::Material red                   = scene.material(plain)->payload;
+  red.pbrMetallicRoughness.baseColorFactor = {1, 0, 0, 1};
+  scene.setMaterial(plain, red);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "held: ");
+  EXPECT_EQ(residency.heldMaterials(), std::set<MaterialId>{glass});
+  EXPECT_EQ(residency.shadeMaterial(slot)->transmissionFactor, 0.f);
+  EXPECT_EQ(residency.shadeMaterial(uint32_t(residency.materialSlot(plain)))->pbrBaseColorFactor.x, 1.f);
+  EXPECT_FALSE(residency.drawsBeyondShaderFeatures());
+
+  gpu.beginFrame();
+  residency.sync(scene);  // still held
+  EXPECT_EQ(residency.heldMaterials().size(), 1u);
+
+  residency.setShaderFeatures(scene.features());
+  gpu.beginFrame();
+  const SyncResult r = residency.sync(scene);
+  expectClean(scene, residency, gpu, "written: ");
+  EXPECT_TRUE(r.changed);
+  EXPECT_TRUE(residency.heldMaterials().empty());
+  EXPECT_EQ(residency.shadeMaterial(slot)->transmissionFactor, 1.f);
+
+  residency.setShaderFeatures(nvvkgltf::SceneFeatureSet{});
+  gpu.beginFrame();
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "replaced: ");
+  EXPECT_TRUE(residency.heldMaterials().empty());
+  EXPECT_TRUE(residency.drawsBeyondShaderFeatures());
+  residency.setShaderFeatures(std::nullopt);  // every feature
+  EXPECT_FALSE(residency.drawsBeyondShaderFeatures());
+}
+
 TEST(RetainedResidency, CapacityGrowsByDoublingWithANewTlas)
 {
   RetainedScene scene;
@@ -689,6 +750,34 @@ TEST(RetainedResidency, TextureInfoSpansRepackThenRefuse)
   ASSERT_NE(row, nullptr);
   EXPECT_EQ(row->pbrBaseColorTexture, 0);
   EXPECT_EQ(row->normalTexture, 0);
+}
+
+// A repack converts every slot again: a held edit's slot keeps the payload its row has
+TEST(RetainedResidency, AHeldEditSurvivesARepack)
+{
+  RetainedScene    scene;
+  const auto       table = textureTable(scene);
+  const MeshId     grid  = scene.addMesh(gridMesh(2, 0.f));
+  const MaterialId a = withTextures(scene, table, 3, "a"), b = withTextures(scene, table, 3, "b"),
+                   c  = withTextures(scene, table, 4, "c");
+  const EntityId   ea = drawn(scene, "a", grid, {a});
+  drawn(scene, "b", grid, {b});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureInfoLimit = 9});
+  residency.setShaderFeatures(nvvkgltf::SceneFeatureSet{});
+  residency.replace(scene);
+  scene.setMaterial(b, withTransmission(scene.material(b)->payload));
+  scene.destroyEntity(ea);
+  gpu.beginFrame();
+  residency.sync(scene);
+  drain(gpu);
+  drawn(scene, "c", grid, {c});  // only a repack finds c's four entries
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "repacked: ");
+  ASSERT_FALSE(residency.takeNotices().empty());
+  EXPECT_EQ(residency.heldMaterials(), std::set<MaterialId>{b});
+  EXPECT_EQ(residency.shadeMaterial(uint32_t(residency.materialSlot(b)))->transmissionFactor, 0.f);
 }
 
 TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)

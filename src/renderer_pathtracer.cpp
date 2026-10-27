@@ -813,6 +813,14 @@ PathTracer::PendingCompileWork PathTracer::getPendingCompileWork(const Resources
   };
 }
 
+std::optional<nvvkgltf::SceneFeatureSet> PathTracer::liveShaderFeatures()
+{
+  std::lock_guard<std::mutex> lock(m_compileMutex);
+  if(!m_compiled.optimal || m_compiledIsFallback)
+    return std::nullopt;
+  return m_compiled.features;
+}
+
 bool PathTracer::wantOpacityMicromapShader(const Resources& resources)
 {
   return resources.gpuView().hasOpacityMicromaps();

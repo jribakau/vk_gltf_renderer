@@ -42,7 +42,9 @@
 //   slots, one per (texture, sampler), over one image per texture (slot 0 is the default image);
 //   samplers hold sampler slots (slot 0 the default sampler). Each material slot owns one span of
 //   the texture-info table (entry 0 is "no texture"), placed below the uint16 limit; a sync converts
-//   and uploads only the material slots that changed, their rows and their spans.
+//   and uploads only the material slots that changed, their rows and their spans. An edit whose
+//   payload needs a feature the live shader variant lacks (setShaderFeatures) is held: its slot keeps
+//   the row it had until a sync whose variant has them (D15).
 // - Lights are dense, in document order, packed again when one changes; the emissive table is
 //   derived from the shown instances whose materials emit, built again in the frame its emitters
 //   or their slots change. An emitter's vertex writes (a dial, a drape) are the exception: the
@@ -193,6 +195,15 @@ public:
     uint32_t reused  = 0;
   };
   ImageCounts imageCounts() const { return m_imageCounts; }
+  // The scene features the live shader variant has compiled in (the path tracer's optimal build);
+  // none: every feature. A replace writes every material whatever these are.
+  void                                            setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features);
+  const std::optional<nvvkgltf::SceneFeatureSet>& shaderFeatures() const { return m_shaderFeatures; }
+  // whether a material slot is drawn with a feature the shader features lack (what a replace wrote):
+  // the variant then has to be compiled before the frame is traced
+  bool drawsBeyondShaderFeatures() const;
+  // the materials whose last edit is held
+  const std::set<MaterialId>& heldMaterials() const { return m_heldMaterials; }
   // what the last syncs could not do as asked (a material drawn without its textures), once each
   std::vector<std::string> takeNotices() { return std::exchange(m_notices, {}); }
   uint64_t    graceBytes() const { return m_graceBytes; }
@@ -249,6 +260,7 @@ public:
     tinygltf::Material         payload;
     nvvkgltf::TextureSlotTable slots;
     nvvkgltf::MaterialBits     bits;
+    nvvkgltf::SceneFeatureSet  features;             // its payload's (detectMaterialFeatures)
     uint32_t                   span            = 0;  // its texture infos' first entry
     uint32_t                   spanCount       = 0;
     bool                       texturesDropped = false;  // no room for its span: drawn without them
@@ -343,6 +355,9 @@ private:
   std::map<MeshId, MeshGpu>            m_meshes;
   std::vector<std::optional<Prim>>     m_prims;      // by prim slot, up to the high-water mark
   std::map<const OpacityMicromap*, MicromapGpu> m_micromaps;
+  std::optional<nvvkgltf::SceneFeatureSet>      m_shaderFeatures;
+  std::set<MaterialId>                          m_heldMaterials;
+  bool m_retryHeld = false;  // the shader features changed since the held edits were last tried
   uint32_t                                      m_micromapPrims = 0;  // prims that link one
   std::vector<std::optional<Instance>> m_instances;  // by instance slot, up to the high-water mark
   std::map<InstanceKey, uint32_t>      m_slotOf;
