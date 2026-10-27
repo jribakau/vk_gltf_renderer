@@ -285,11 +285,11 @@ void FvMaterials::writeModel(int index)
     scn->markRenderNodeRtxDirtyForMaterials({g});
 }
 
-std::optional<tinygltf::Material> FvMaterials::modelMaterial(int index) const
+const fv::mat::Edits* FvMaterials::modelEdits(int index) const
 {
-  if(!m_model || !m_scene || index < 0 || index >= int(m_originals.size()) || index >= int(m_scene->materials.size()))
-    return std::nullopt;
-  return fv::model::editedMaterial(m_originals[size_t(index)], m_scene->materials[size_t(index)].edits);
+  if(!m_model || !m_scene || index < 0 || index >= int(m_scene->materials.size()))
+    return nullptr;
+  return &m_scene->materials[size_t(index)].edits;
 }
 
 Json FvMaterials::modelItem(int index) const

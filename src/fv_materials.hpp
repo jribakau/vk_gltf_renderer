@@ -138,9 +138,9 @@ public:
   void attachModel(const std::string& id, Placement at, int count, int meshes);
   // The topic goes too.
   void detach();
-  // A model's material `index` as its file has it with the edits laid over it (fv::model::
-  // editedMaterial), for an export; none for a figure or a material it does not hold.
-  std::optional<tinygltf::Material> modelMaterial(int index) const;
+  // The edits of a model's material `index`, to lay over its file's own (fv::model::editedMaterial)
+  // for an export; null for a figure or a material it does not hold.
+  const fv::mat::Edits* modelEdits(int index) const;
 
   fv::Json set(const fv::Json& args);
   fv::Json reset(const fv::Json& args);

@@ -3471,12 +3471,12 @@ Json FvHost::Impl::exportGlb(const Json& args)
     throw std::runtime_error("Select a figure or a model to export.");
   if(prop->model)
   {
-    // the file's model with its material edits laid over it, as FvMaterials::writeModel draws
-    // them; its textures stay the file's own
+    // the file's model with its material edits laid over its own materials, as
+    // FvMaterials::writeModel lays them over the scene's: its textures stay the file's own
     tinygltf::Model copy = *prop->model;
     for(size_t i = 0; prop->materials && i < copy.materials.size(); i++)
-      if(std::optional<tinygltf::Material> edited = prop->materials->modelMaterial(int(i)))
-        copy.materials[i] = std::move(*edited);
+      if(const fv::mat::Edits* edits = prop->materials->modelEdits(int(i)))
+        copy.materials[i] = fv::model::editedMaterial(copy.materials[i], *edits);
     for(const char* ext : fv::model::kEditedExtensions)
       if(std::any_of(copy.materials.begin(), copy.materials.end(), [&](const tinygltf::Material& m) { return m.extensions.count(ext) > 0; })
          && std::find(copy.extensionsUsed.begin(), copy.extensionsUsed.end(), ext) == copy.extensionsUsed.end())
