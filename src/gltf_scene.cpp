@@ -1365,9 +1365,12 @@ void nvvkgltf::Scene::parseScene()
                                  });
   }
 
-  // Search for the first camera in the scene and exit traversal upon finding it. Cameras belonging
-  // to a referenced (read-only) external asset are part of the asset, not the editable scene's
-  // viewport camera, so they are skipped here (an editable default camera is created below instead).
+  // Find the scene's camera. Returning true only skips that camera node's children, so every
+  // other camera is still visited and the last one in depth-first order (not under another
+  // camera) is the one kept, not the first.
+  // Cameras belonging to a referenced (read-only) external asset are part of the asset, not the
+  // editable scene's viewport camera, so they are skipped here (an editable default camera is
+  // created below instead).
   for(auto& sceneNode : m_model.scenes[m_currentScene].nodes)
   {
     tinygltf::utils::traverseSceneGraph(
@@ -1634,7 +1637,7 @@ void nvvkgltf::Scene::createSceneCamera()
 // filtered-root recursive walk when topological levels aren't built yet.
 //
 // Both paths insert affected render nodes into renderNodesVk/Rtx (preserving pre-existing
-// flags from other sources), so callers never need a separate updateRenderNodeDirtyFromNodes().
+// flags from other sources), so callers never need a separate pass from nodes to render nodes.
 //
 void nvvkgltf::Scene::updateNodeWorldMatrices()
 {
@@ -3171,8 +3174,8 @@ void nvvkgltf::Scene::reconcileShadedNodesCache() const
 
   // A scene-graph revision bump captures *bucket-relevant* RenderNode edits: setCurrentVariant
   // flipping materialIDs, SceneEditor::setPrimitiveMaterial, and structural rebuilds. It does
-  // NOT bump on animation world-matrix updates (line ~1073 inserts into renderNodesVk without
-  // bumping the revision), so this signal lets us stay valid across an animated scene.
+  // NOT bump on animation world-matrix updates (updateNodeWorldMatrices inserts into renderNodesVk
+  // without bumping the revision), so this signal lets us stay valid across an animated scene.
   if(m_sceneGraphRevision != m_shadedCacheSceneGraphRevision)
     needsRebuild = true;
 
@@ -3607,29 +3610,6 @@ void nvvkgltf::Scene::expandNodesToRenderNodes(const std::unordered_set<int>&   
 }
 
 //--------------------------------------------------------------------------------------------------
-// Collect the render node indices for the given node indices
-//
-bool nvvkgltf::Scene::collectRenderNodeIndices(const std::unordered_set<int>& nodeIndices,
-                                               std::unordered_set<int>&       outRenderNodeIndices,
-                                               bool                           includeDescendants,
-                                               float                          fullUpdateRatio) const
-{
-  if(nodeIndices.empty())
-  {
-    return true;
-  }
-
-  expandNodesToRenderNodes(nodeIndices, includeDescendants, [&](int rnodeId) { outRenderNodeIndices.insert(rnodeId); });
-
-  if(fullUpdateRatio > float(outRenderNodeIndices.size()) / float(m_renderNodeRegistry.getRenderNodes().size()))
-  {
-    return false;
-  }
-
-  return true;
-}
-
-//--------------------------------------------------------------------------------------------------
 //
 bool nvvkgltf::Scene::dirtyNodesReachGeometry() const
 {
@@ -3656,26 +3636,6 @@ bool nvvkgltf::Scene::dirtyNodesReachGeometry() const
     stack.insert(stack.end(), node.children.begin(), node.children.end());
   }
   return false;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Populate renderNodesVk/Rtx from m_dirtyFlags.nodes (with optional descendant expansion).
-// When dirty ratio is high, SceneVk/SceneRtx update methods do a full upload (heuristic there).
-//
-void nvvkgltf::Scene::updateRenderNodeDirtyFromNodes(bool includeDescendants)
-{
-  if(m_dirtyFlags.nodes.empty())
-  {
-    return;
-  }
-
-  m_dirtyFlags.renderNodesVk.clear();
-  m_dirtyFlags.renderNodesRtx.clear();
-
-  expandNodesToRenderNodes(m_dirtyFlags.nodes, includeDescendants, [&](int rnodeId) {
-    m_dirtyFlags.renderNodesVk.insert(rnodeId);
-    m_dirtyFlags.renderNodesRtx.insert(rnodeId);
-  });
 }
 
 //--------------------------------------------------------------------------------------------------

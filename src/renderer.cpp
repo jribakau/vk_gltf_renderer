@@ -4401,9 +4401,7 @@ bool GltfRenderer::loadModel(tinygltf::Model&& model)
     // the teardown loadSceneFile runs, for the same reasons
     vkQueueWaitIdle(m_app->getQueue(0).queue);
     m_loadPipeline.clear();
-    cleanupScene(/*keepImagesForReuse=*/true);
-    m_sceneSelection.clearSelection();
-    m_resources.selectedRenderNodes.clear();
+    cleanupScene(/*keepImagesForReuse=*/true);  // also clears the selection
   }
 
   auto scn = std::make_unique<nvvkgltf::Scene>();
@@ -4564,6 +4562,10 @@ int GltfRenderer::appendSceneFile(const std::filesystem::path& filename, const s
   // the host exported, not the ones it sent since. Render primitives of the existing meshes keep
   // their ids (new meshes are appended), so their live copies go up again on the next frame --
   // ahead of uploads still queued, which are newer than the copies and must land after them.
+  // TODO: the copies of a mesh drawn by more than one deforming node (assignDeformedRenderPrimitives)
+  // are numbered after every mesh's primitives, so appending meshes shifts their ids and their live
+  // copies land on the wrong primitives. Figure Viewer's figures have none; the retained scene
+  // (keyed slots, no replay) removes the replay altogether.
   std::vector<VertexUpload> restore;
   restore.reserve(m_liveVertices.size() + m_pendingVertexUploads.size());
   for(const auto& [renderPrimID, live] : m_liveVertices)

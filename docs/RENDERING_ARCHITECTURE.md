@@ -60,7 +60,8 @@ If the **order** of primitives (and thus `renderPrimID`) ever changed **without*
 
 1. **RenderPrimitive list** must be built in **deterministic order** (by mesh index, then primitive index), not in traversal order. See `parseScene()`: the unique-primitive list is filled by iterating `m_model.meshes` and their primitives **before** any scene-graph traversal.
 2. **BLAS** are built from that ordered list; `renderPrimID` is stable across hierarchy edits (reparent, duplicate, delete) as long as the mesh set is unchanged.
-3. Do **not** clear and repopulate `m_renderPrimitives` / `m_uniquePrimitiveIndex` in a way that depends on traversal order, or BLAS and TLAS will go out of sync.
+3. Do **not** clear and repopulate `m_renderPrimitives` / `m_meshRenderPrimitives` in a way that depends on traversal order, or BLAS and TLAS will go out of sync.
+4. `primitivesChanged` is set only when the **number** of render primitives changes (`parseScene()`). A change that keeps the count but changes what an id holds (one mesh's geometry replaced by another's) does not set it, so its BLAS must be rebuilt by whoever made the change.
 
 ### Opacity micromaps (optional)
 
@@ -622,7 +623,7 @@ measured benchmarks — profile with the built-in tools (see `docs/benchmarking.
 - **CPU:** O(N) where N = total nodes in scene (parseScene traversal)
 - **GPU Upload:** All RenderNodes (typically 1-100 KB)
 - **TLAS Rebuild:** O(N) instances
-- **Cost:** ~1-5 ms (depends on scene complexity)
+- **Cost:** grows with the node count (the `parseScene` traversal and the TLAS build)
 
 ### Typical Scene Sizes:
 - **Simple:** 10-50 nodes → 20-100 RenderNodes
@@ -773,9 +774,12 @@ merge into a scene with no textures still uses `eFull` (the empty-scene dummy de
 model, same reason as the import fallback above). A host that mirrors the scene (MCP
 `vk_gltf_add_scene`, `GltfRenderer::appendSceneFile`) uses the same rebuild, synchronously; since it
 re-derives vertex buffers from the model, which host vertex edits never write, it re-queues the live
-copies of the edited primitives (`m_liveVertices`) ahead of any upload still pending. Existing render
-primitives keep their ids across a merge, because new meshes are appended and primitives are numbered in
-mesh order (`Scene::buildPrimitiveKeyMap`).
+copies of the edited primitives (`m_liveVertices`) ahead of any upload still pending. The render
+primitives of existing meshes keep their ids across a merge, because new meshes are appended and
+primitives are numbered in mesh order (`Scene::buildPrimitiveKeyMap`). The copies a mesh drawn by more
+than one deforming node gets (`Scene::assignDeformedRenderPrimitives`) are numbered after all of them,
+so a merge that adds meshes renumbers those copies, and their live copies are replayed onto the wrong
+primitives (a `TODO` in `appendSceneFile`; Figure Viewer's figures have no such copies).
 
 ### Debug Validation (debug builds only)
 
@@ -796,7 +800,6 @@ Any mismatch is logged as a warning with a descriptive error message.
 - `createRenderNodesForNode()` - `gltf_scene.cpp`
 - `buildPrimitiveKeyMap()` - `gltf_scene.cpp`
 - `updateNodeWorldMatrices()` - `gltf_scene.cpp`
-- `updateRenderNodeDirtyFromNodes()` - `gltf_scene.cpp` (helper; not in the default transform/animation path — dirty flags are maintained incrementally)
 - `markNodeDirty()` - `gltf_scene.cpp`
 
 ### SceneEditor (Editing)

@@ -94,31 +94,6 @@ void nvvkgltf::SceneRtx::deinit()
 //========== Create ==========
 
 //--------------------------------------------------------------------------------------------------
-// Create BLAS (and optionally build in a loop) then TLAS. Calls destroy() first.
-void nvvkgltf::SceneRtx::create(VkCommandBuffer             cmd,
-                                nvvk::CmdUploaderInterface& staging,
-
-                                const nvvkgltf::Scene&               scn,
-                                const SceneVk&                       scnVk,
-                                VkBuildAccelerationStructureFlagsKHR flags)
-{
-  // Create the bottom-level acceleration structure
-  createBottomLevelAccelerationStructure(scn, scnVk, flags);
-
-  bool finished = false;
-  do
-  {
-    // This won't compact the BLAS, but will create the acceleration structure
-    finished = cmdBuildBottomLevelAccelerationStructure(cmd, 512'000'000);
-  } while(!finished);
-
-  // Track all BLAS allocations after they're all built
-  trackBlasMemory();
-
-  cmdCreateBuildTopLevelAccelerationStructure(cmd, staging, scn);
-}
-
-//--------------------------------------------------------------------------------------------------
 // Return the top-level acceleration structure handle for binding in ray tracing pipelines.
 VkAccelerationStructureKHR nvvkgltf::SceneRtx::topLevelAS()
 {

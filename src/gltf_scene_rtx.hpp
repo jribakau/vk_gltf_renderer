@@ -55,8 +55,6 @@ public:
   void setDeferredFree(DeferredFreeFunc func) { m_deferredFree = std::move(func); }
 
   // ---------- Create ----------
-  // Create BLAS and TLAS for the scene (no compaction). Calls destroy() first.
-  void create(VkCommandBuffer cmd, nvvk::CmdUploaderInterface& staging, const nvvkgltf::Scene& scn, const SceneVk& scnVk, VkBuildAccelerationStructureFlagsKHR flags);
   void createBottomLevelAccelerationStructure(const nvvkgltf::Scene& scene, const SceneVk& sceneVk, VkBuildAccelerationStructureFlagsKHR flags);
   // Build BLAS on GPU; may return false if budget exceeded (call again to continue). Returns true when done.
   [[nodiscard]] bool cmdBuildBottomLevelAccelerationStructure(VkCommandBuffer cmd, VkDeviceSize hintMaxBudget = 512'000'000);

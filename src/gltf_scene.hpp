@@ -544,12 +544,6 @@ public:
   const std::vector<nvvkgltf::RenderNode>& getRenderNodes() const { return m_renderNodeRegistry.getRenderNodes(); }
   const RenderNodeRegistry&                getRenderNodeRegistry() const { return m_renderNodeRegistry; }
   RenderNodeRegistry&                      getRenderNodeRegistry() { return m_renderNodeRegistry; }
-  [[nodiscard]] bool                       collectRenderNodeIndices(const std::unordered_set<int>& nodeIndices,
-                                                                    std::unordered_set<int>&       outRenderNodeIndices,
-                                                                    bool                           includeDescendants = true,
-                                                                    float                          fullUpdateRatio = kFullUpdateRatio) const;
-  // Uses m_dirtyFlags.nodes to populate renderNodesVk/Rtx
-  void updateRenderNodeDirtyFromNodes(bool includeDescendants = true);
   // Whether this frame's dirty state can move geometry: render nodes already marked, a visibility
   // change, or a dirty node whose subtree holds a mesh. False when only mesh-less nodes changed --
   // a light (the sky's sun), a camera, an empty group -- which need a light upload at most, never
