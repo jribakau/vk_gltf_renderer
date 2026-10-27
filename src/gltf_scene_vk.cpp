@@ -1780,28 +1780,10 @@ void nvvkgltf::SceneVk::createTextureImages(VkCommandBuffer             cmd,
       imageLoadItems.size(), [&](uint64_t i) {
         const ImageLoadItem& item = imageLoadItems[i];
         // decoded already on a host's worker: take it
-        if(item.reuseKey)
+        if(item.reuseKey && takePrefetched(*item.reuseKey, item.imageId))
         {
-          std::optional<LoadedImageData> ready;
-          {
-            std::lock_guard lock(m_prefetchMutex);
-            if(auto it = m_prefetched.find(prefetchKey(*item.reuseKey)); it != m_prefetched.end())
-            {
-              ready = std::move(it->second);
-              m_prefetched.erase(it);
-            }
-          }
-          if(ready)
-          {
-            SceneImage& image      = m_images[item.imageId];
-            image.srgb             = item.reuseKey->srgb;
-            image.format           = ready->format;
-            image.size             = ready->size;
-            image.mipData          = std::move(ready->mipData);
-            image.componentMapping = ready->componentMapping;
-            ++prefetchedCount;
-            return;
-          }
+          ++prefetchedCount;
+          return;
         }
         if(!loadImage(item.diskPath, model, item.imageId))
         {
@@ -1925,10 +1907,17 @@ void nvvkgltf::SceneVk::syncTextureTail(VkCommandBuffer cmd, nvvk::CmdUploaderIn
         item.reuseKey = makeReuseKey(item.diskPath, srgb);
       tailItems.push_back(std::move(item));
     }
-    // in parallel, as createTextureImages loads a whole scene's (a merged item brings dozens)
+    // in parallel, as createTextureImages loads a whole scene's (a merged item brings dozens), and
+    // what a host decoded ahead on its worker is taken, not decoded again
     nvutils::parallel_batches<1>(tailItems.size(), [&](uint64_t k) {
-      loadImage(tailItems[k].diskPath, model, tailItems[k].imageId);  // failure -> magenta default below
+      const TailItem& item = tailItems[k];
+      if(!item.reuseKey || !takePrefetched(*item.reuseKey, item.imageId))
+        loadImage(item.diskPath, model, item.imageId);  // failure -> magenta default below
     });
+    {
+      std::lock_guard lock(m_prefetchMutex);
+      m_prefetched.clear();  // as after a full load: what this one did not take would never be taken
+    }
     syncTinyGltfImageDimensionsFromLoadedImages(scn.getModel(), m_images);
     for(const TailItem& item : tailItems)
     {
@@ -2211,6 +2200,28 @@ nvvkgltf::SceneVk::ReuseKey nvvkgltf::SceneVk::prefetchKey(ReuseKey key)
 {
   key.generateMipmaps = false;
   return key;
+}
+
+bool nvvkgltf::SceneVk::takePrefetched(const ReuseKey& key, size_t imageId)
+{
+  std::optional<LoadedImageData> ready;
+  {
+    std::lock_guard lock(m_prefetchMutex);
+    if(auto it = m_prefetched.find(prefetchKey(key)); it != m_prefetched.end())
+    {
+      ready = std::move(it->second);
+      m_prefetched.erase(it);
+    }
+  }
+  if(!ready)
+    return false;
+  SceneImage& image      = m_images[imageId];
+  image.srgb             = key.srgb;
+  image.format           = ready->format;
+  image.size             = ready->size;
+  image.mipData          = std::move(ready->mipData);
+  image.componentMapping = ready->componentMapping;
+  return true;
 }
 
 void nvvkgltf::SceneVk::prefetchImage(const std::filesystem::path& diskPath, bool srgb)

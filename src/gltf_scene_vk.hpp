@@ -378,6 +378,9 @@ protected:
   std::multimap<ReuseKey, SceneImage> m_retainedImages;
   TextureLoadStats                    m_textureStats;
   static ReuseKey                     prefetchKey(ReuseKey key);
+  // Takes the image a host decoded ahead (prefetchImage) for `key` into m_images[imageId]; false
+  // when there is none. Called from the parallel loads.
+  bool takePrefetched(const ReuseKey& key, size_t imageId);
   std::mutex                          m_prefetchMutex;
   std::map<ReuseKey, LoadedImageData> m_prefetched;  // under m_prefetchMutex, keyed by prefetchKey()
   std::vector<nvvk::Image>   m_textures;  // One per glTF texture; bound as a SAMPLED_IMAGE array (image views only)
