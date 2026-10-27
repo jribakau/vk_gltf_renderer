@@ -30,6 +30,7 @@
 #include <cassert>
 #include <cinttypes>
 #include <cstdio>
+#include <deque>
 #include <mutex>
 #include <sstream>
 #include <span>
@@ -51,6 +52,7 @@
 #include "nvvk/mipmaps.hpp"
 
 #include "gltf_scene_vk.hpp"
+#include "scene_gpu_tables.hpp"
 #include "gltf_scene_animation.hpp"
 #include "gltf_image_loader.hpp"
 #include "ies_profile.hpp"
@@ -859,11 +861,10 @@ void nvvkgltf::SceneVk::uploadEmissiveTriangles(nvvk::CmdUploaderInterface& stag
   const std::vector<nvvkgltf::RenderPrimitive>& renderPrims = scn.getRenderPrimitives();
   const std::vector<tinygltf::Material>&        materials   = model.materials;
 
-  // First pass: gather emissive triangles + per-triangle world area, and accumulate the totals used
-  // to derive the area-weighted mean luminance for defensive sampling.
-  std::vector<shaderio::EmissiveTriangle> tris;
-  std::vector<float>                      triArea;  // parallel to tris (used by the CDF pass below)
-  double                                  sumArea = 0.0, sumAreaLum = 0.0;
+  // The emitting draws, their triangles read from the model (scene_gpu_tables.hpp builds the table)
+  std::vector<nvvkgltf::Emitter>     emitters;
+  std::deque<std::vector<glm::vec3>> posStorage;
+  std::deque<std::vector<uint32_t>>  idxStorage;
   for(uint32_t nodeIdx = 0; nodeIdx < static_cast<uint32_t>(renderNodes.size()); ++nodeIdx)
   {
     const nvvkgltf::RenderNode& rn = renderNodes[nodeIdx];
@@ -882,10 +883,7 @@ void nvvkgltf::SceneVk::uploadEmissiveTriangles(nvvk::CmdUploaderInterface& stag
       continue;
     const shaderio::GltfShadeMaterial& shade = shadeMaterials[rn.materialID];
     const glm::vec3 radiance = glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale;
-    // Rec. 709 luminance; must match the shader's luminance() (nvshaders/functions.h.slang) so the
-    // pdf's area term cancels.
-    const float lum = 0.2126f * radiance.x + 0.7152f * radiance.y + 0.0722f * radiance.z;
-    if(lum <= 0.0f)
+    if(nvvkgltf::emissiveLuminance(radiance) <= 0.0f)
       continue;
 
     const tinygltf::Primitive* prim = renderPrims[rn.renderPrimID].pPrimitive;
@@ -895,114 +893,40 @@ void nvvkgltf::SceneVk::uploadEmissiveTriangles(nvvk::CmdUploaderInterface& stag
     if(posIt == prim->attributes.end())
       continue;
 
-    std::vector<glm::vec3>     posStorage;
     std::span<const glm::vec3> positions =
-        tinygltf::utils::getAccessorData<glm::vec3>(model, model.accessors[posIt->second], &posStorage);
+        tinygltf::utils::getAccessorData<glm::vec3>(model, model.accessors[posIt->second], &posStorage.emplace_back());
 
     // Indices: read the accessor, or synthesize 0..N-1 for unindexed primitives. This mirrors the
     // 0..N-1 fallback used when building the GPU index buffer (createVertexBuffers), so host and
     // shader agree on the triangle set; otherwise unindexed emitters would emit but be excluded from
     // NEE, and their BSDF-hit emission would be MIS-weighted against a phantom NEE pdf (energy loss).
-    std::vector<uint32_t>     idxStorage;
+    std::vector<uint32_t>&    ownIndices = idxStorage.emplace_back();
     std::span<const uint32_t> indices;
     if(prim->indices >= 0)
     {
-      indices = tinygltf::utils::getAccessorData<uint32_t>(model, model.accessors[prim->indices], &idxStorage);
+      indices = tinygltf::utils::getAccessorData<uint32_t>(model, model.accessors[prim->indices], &ownIndices);
     }
     else
     {
-      idxStorage.resize(positions.size());
+      ownIndices.resize(positions.size());
       for(uint32_t i = 0; i < static_cast<uint32_t>(positions.size()); ++i)
-        idxStorage[i] = i;
-      indices = idxStorage;
+        ownIndices[i] = i;
+      indices = ownIndices;
     }
-    if(positions.empty() || indices.size() < 3)
-      continue;
-
-    const glm::mat4& worldMatrix = rn.worldMatrix;
-    const uint32_t   numTri      = static_cast<uint32_t>(indices.size() / 3);
-    const uint32_t   doubleSided = mat.doubleSided ? 1u : 0u;
-    for(uint32_t t = 0; t < numTri; ++t)
-    {
-      const uint32_t i0 = indices[3 * t + 0], i1 = indices[3 * t + 1], i2 = indices[3 * t + 2];
-      if(i0 >= positions.size() || i1 >= positions.size() || i2 >= positions.size())
-        continue;
-      const glm::vec3 w0   = glm::vec3(worldMatrix * glm::vec4(positions[i0], 1.0f));
-      const glm::vec3 w1   = glm::vec3(worldMatrix * glm::vec4(positions[i1], 1.0f));
-      const glm::vec3 w2   = glm::vec3(worldMatrix * glm::vec4(positions[i2], 1.0f));
-      const float     area = 0.5f * glm::length(glm::cross(w1 - w0, w2 - w0));
-      if(area <= 0.0f)
-        continue;  // skip degenerate (zero-area) triangles
-      sumArea += area;
-      sumAreaLum += static_cast<double>(area) * lum;
-
-      shaderio::EmissiveTriangle et{};
-      et.radiance     = radiance;
-      et.renderNodeID = nodeIdx;
-      et.renderPrimID = static_cast<uint32_t>(rn.renderPrimID);
-      et.triangleID   = t;
-      et.doubleSided  = doubleSided;
-      // aliasProb / aliasIndex are filled in the alias-table pass below.
-      tris.push_back(et);
-      triArea.push_back(area);
-    }
+    emitters.push_back({.renderNodeID = nodeIdx,
+                        .renderPrimID = static_cast<uint32_t>(rn.renderPrimID),
+                        .radiance     = radiance,
+                        .doubleSided  = mat.doubleSided,
+                        .world        = rn.worldMatrix,
+                        .positions    = positions,
+                        .indices      = indices});
   }
-
-  // Second pass: defensive selection. Pull each emitter's luminance toward the area-weighted mean so
-  // a dim emitter is never starved (lum' = (1-f)*lum + f*meanLum); the weight is area * lum'. The area
-  // still cancels in the solid-angle pdf, so the shader recovers it from radiance + meanLum + totals.
-  const float         meanLum = (sumArea > 0.0) ? static_cast<float>(sumAreaLum / sumArea) : 0.0f;
-  const float         f       = shaderio::EMISSIVE_DEFENSIVE_FRACTION;
-  std::vector<double> triWeight(tris.size());
-  double              totalWeight = 0.0;
-  for(size_t i = 0; i < tris.size(); ++i)
-  {
-    const float lum    = 0.2126f * tris[i].radiance.x + 0.7152f * tris[i].radiance.y + 0.0722f * tris[i].radiance.z;
-    const float lumDef = (1.0f - f) * lum + f * meanLum;
-    triWeight[i]       = static_cast<double>(triArea[i]) * lumDef;
-    totalWeight += triWeight[i];
-  }
-
-  // Third pass: build a Vose alias table so the shader selects a triangle in O(1) (no CDF binary
-  // search). It samples the exact same distribution P(i) = weight_i / totalWeight, so the pdf is
-  // unchanged. See https://en.wikipedia.org/wiki/Alias_method.
-  if(!tris.empty() && totalWeight > 0.0)
-  {
-    const size_t          n = tris.size();
-    std::vector<float>    scaled(n);  // p_i * n; a bin with scaled < 1 borrows from a "large" bin
-    std::vector<uint32_t> smallBins, largeBins;
-    smallBins.reserve(n);
-    largeBins.reserve(n);
-    for(size_t i = 0; i < n; ++i)
-    {
-      scaled[i] = static_cast<float>(triWeight[i] / totalWeight * static_cast<double>(n));
-      (scaled[i] < 1.0f ? smallBins : largeBins).push_back(static_cast<uint32_t>(i));
-    }
-    while(!smallBins.empty() && !largeBins.empty())
-    {
-      const uint32_t l = smallBins.back();
-      smallBins.pop_back();
-      const uint32_t g = largeBins.back();
-      largeBins.pop_back();
-      tris[l].aliasProb  = scaled[l];
-      tris[l].aliasIndex = g;
-      scaled[g]          = (scaled[g] + scaled[l]) - 1.0f;  // g keeps the leftover probability
-      (scaled[g] < 1.0f ? smallBins : largeBins).push_back(g);
-    }
-    for(uint32_t g : largeBins)  // numerical remainder: these bins are always taken as themselves
-    {
-      tris[g].aliasProb  = 1.0f;
-      tris[g].aliasIndex = g;
-    }
-    for(uint32_t l : smallBins)
-    {
-      tris[l].aliasProb  = 1.0f;
-      tris[l].aliasIndex = l;
-    }
-  }
+  nvvkgltf::EmissiveTable                  table = nvvkgltf::buildEmissiveTable(emitters);
+  std::vector<shaderio::EmissiveTriangle>& tris  = table.triangles;
+  const float                              meanLum = table.meanLum;
 
   const uint32_t newCount  = static_cast<uint32_t>(tris.size());
-  const float    newWeight = static_cast<float>(totalWeight);
+  const float    newWeight = table.totalWeight;
   // The scene descriptor carries numEmissiveTriangles + emissiveTotalWeight + emissiveMeanLum; the pdf
   // normalization divides by emissiveTotalWeight and uses emissiveMeanLum. A radiance-only edit (e.g.
   // emissive strength) changes those WITHOUT changing the triangle count, so the buffer isn't resized
@@ -2437,46 +2361,8 @@ std::vector<shaderio::GltfLight> getShaderLights(const std::vector<nvvkgltf::Ren
   lightsInfo.reserve(renderlights.size());
   for(auto& l : renderlights)
   {
-    shaderio::GltfLight info{};
-    info.position  = l.worldMatrix[3];
-    info.direction = glm::normalize(glm::vec3(-l.worldMatrix[2]));
-
-    if(l.light >= 0 && l.light < static_cast<int>(gltfLights.size()))
-    {
-      // KHR_lights_punctual light (possibly also carrying EXT_lights_ies).
-      const auto& gltfLight = gltfLights[l.light];
-      info.innerAngle       = static_cast<float>(gltfLight.spot.innerConeAngle);
-      info.outerAngle       = static_cast<float>(gltfLight.spot.outerConeAngle);
-      info.color = gltfLight.color.size() == 3 ? glm::vec3(gltfLight.color[0], gltfLight.color[1], gltfLight.color[2]) :
-                                                 glm::vec3(1.0f);
-      info.intensity = static_cast<float>(gltfLight.intensity);
-      info.type      = gltfLight.type == "point" ? shaderio::eLightTypePoint :
-                       gltfLight.type == "spot"  ? shaderio::eLightTypeSpot :
-                                                   shaderio::eLightTypeDirectional;
-      info.radius = gltfLight.extras.Has("radius") ? float(gltfLight.extras.Get("radius").GetNumberAsDouble()) : 0.0f;
-      if(info.type == shaderio::eLightTypeDirectional)
-      {
-        const double sun_distance     = 149597870.0;  // km
-        double       angular_size_rad = 2.0 * std::atan(info.radius / sun_distance);
-        info.angularSizeOrInvRange    = static_cast<float>(angular_size_rad);
-      }
-      else
-      {
-        info.angularSizeOrInvRange = (gltfLight.range > 0.0) ? 1.0f / static_cast<float>(gltfLight.range) : 0.0f;
-      }
-    }
-    else
-    {
-      // Pure EXT_lights_ies (no KHR_lights_punctual): IES profile governs angular distribution;
-      // base intensity and color come from the node-level multiplier/color below.
-      info.color                 = glm::vec3(1.0f);
-      info.intensity             = 1.0f;
-      info.type                  = shaderio::eLightTypePoint;
-      info.innerAngle            = 0.0f;
-      info.outerAngle            = glm::radians(90.0f);
-      info.angularSizeOrInvRange = 0.0f;  // infinite range
-      info.radius                = 0.0f;
-    }
+    const bool          punctual = l.light >= 0 && l.light < static_cast<int>(gltfLights.size());
+    shaderio::GltfLight info     = nvvkgltf::packLight(punctual ? &gltfLights[l.light] : nullptr, l.worldMatrix);
 
     // EXT_lights_ies: fold the node's multiplier/color tint into the light's own color/intensity
     // (the shader only needs the profile index to reshape the angular distribution; see

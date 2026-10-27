@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <map>
 #include <random>
 
@@ -100,6 +101,25 @@ MaterialId textured(RetainedScene& scene, std::shared_ptr<const TextureTable> ta
   m.payload.normalTexture.index                         = 2;
   m.textures                                            = std::move(table);
   return scene.addMaterial(std::move(m));
+}
+
+MaterialId emissive(RetainedScene& scene, float strength)
+{
+  MaterialRecord m;
+  m.payload.name           = "lamp";
+  m.payload.emissiveFactor = {strength, strength, strength};
+  return scene.addMaterial(std::move(m));
+}
+
+EntityId lightEntity(RetainedScene& scene, const char* type, double intensity, EntityId parent = {})
+{
+  LightRecord l;
+  l.payload.type       = type;
+  l.payload.intensity  = intensity;
+  const LightId  light = scene.addLight(l);
+  const EntityId e     = scene.createEntity(type, {}, parent);
+  scene.setEntityLight(e, light);
+  return e;
 }
 
 // An entity drawing `mesh` with one material per submesh
@@ -419,6 +439,72 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
     ADD_FAILURE() << p;
 }
 
+// Lights are dense in document order; a hidden one shines with nothing, and a moved one is packed
+// again where it went.
+TEST(RetainedResidency, LightsFollowTheirEntities)
+{
+  RetainedScene  scene;
+  const EntityId sun  = lightEntity(scene, "directional", 3.0);
+  const EntityId lamp = lightEntity(scene, "point", 50.0);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.lightCount(), 2u);
+
+  scene.setVisible(lamp, false);
+  Transform t;
+  t.translation = {0.f, 5.f, 0.f};
+  scene.setLocal(sun, t);
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(scene).changed);
+  expectClean(scene, residency, gpu);
+  shaderio::GltfLight packed[2];
+  std::memcpy(packed, gpu.bytesAt(gpu.bufferAddress(residency.lightTable()), sizeof(packed)).data(), sizeof(packed));
+  EXPECT_EQ(packed[0].position, glm::vec3(0.f, 5.f, 0.f));
+  EXPECT_EQ(packed[1].intensity, 0.f);
+}
+
+// The emissive table holds the shown emitters' triangles under their instance and prim slots, and
+// follows them as they are hidden, moved and removed.
+TEST(RetainedResidency, TheEmissiveTableFollowsItsEmitters)
+{
+  RetainedScene scene;
+  const MeshId  grid = scene.addMesh(gridMesh(2, 0.f));
+  drawn(scene, "dark", grid, {material(scene, "dark")});
+  const EntityId glow = drawn(scene, "glow", grid, {emissive(scene, 2.f)});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.emissiveCount(), 8u);  // a 2 x 2 grid: eight triangles
+  const float weight = residency.emissiveTotalWeight();
+
+  Transform t;
+  t.scale = glm::vec3(2.f);  // four times the area
+  scene.setLocal(glow, t);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_NEAR(residency.emissiveTotalWeight(), 4.f * weight, 1e-3f);
+
+  scene.setVisible(glow, false);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.emissiveCount(), 0u);
+
+  scene.setVisible(glow, true);
+  scene.destroyEntity(scene.roots()[0]);  // the dark one: the glowing instance keeps its slot
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.emissiveCount(), 8u);
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 // Oracle 2b: random edits, each synced and checked; at the end the scene made resident afresh holds
 // the same draws, the same geometry and the same transforms (slots may differ, content may not).
 TEST(RetainedResidency, IncrementalEqualsFresh)
@@ -436,6 +522,7 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
     const auto table = textureTable(scene);
     materials.push_back(textured(scene, table, 0));
     materials.push_back(textured(scene, table, 1, "BLEND"));
+    materials.push_back(emissive(scene, 3.f));
     std::vector<EntityId> live;
 
     FakeGpuBackend gpu(2);
@@ -454,6 +541,8 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
           mats.push_back(pick(materials));
         const EntityId parent = !live.empty() && rng() % 3 == 0 ? pick(live) : EntityId{};
         live.push_back(drawn(scene, "e", mesh, mats, parent));
+        if(rng() % 4 == 0)
+          live.push_back(lightEntity(scene, rng() % 2 ? "point" : "spot", 10.0, live.back()));
       }
       else if(op == 2)
       {

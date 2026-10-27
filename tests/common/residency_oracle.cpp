@@ -26,6 +26,7 @@
 #include <tuple>
 
 #include "gltf_material_cache.hpp"
+#include "scene_gpu_tables.hpp"
 #include "scene_material_bits.hpp"
 #include "shaders/gltf_scene_io.h.slang"
 
@@ -286,8 +287,55 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(residency.drawList(Residency::DrawList(l)) != lists[l])
       out.push_back("raster list " + std::to_string(l) + " is not the live instances by their materials");
 
+  // lights: dense, in document order, a hidden one at intensity 0
+  std::vector<shaderio::GltfLight> lights;
+  for(const LightItem& item : scene.lightItems())
+  {
+    const LightRecord*  record = scene.light(item.light);
+    shaderio::GltfLight light  = nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
+    if(!item.shown)
+      light.intensity = 0.f;
+    lights.push_back(light);
+  }
+  if(residency.lightCount() != lights.size()
+     || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.lightTable()), lights.size() * sizeof(shaderio::GltfLight)),
+                   lights.data(), lights.size()))
+    out.push_back("lights: the light table is not the scene's lights in document order");
+
+  // the emissive table (I6): the shown instances whose materials emit, by their slots, built from
+  // their meshes' current positions
+  std::vector<nvvkgltf::Emitter> emitters;
+  for(uint32_t s = 0; s < hwm; s++)
+  {
+    const Residency::Instance* inst = residency.instance(s);
+    if(!inst || !inst->shown)
+      continue;
+    const shaderio::GltfShadeMaterial* shade  = residency.shadeMaterial(inst->materialSlot);
+    const MeshRecord*                  record = scene.mesh(inst->mesh);
+    const MaterialRecord*              mat    = scene.material(inst->material);
+    if(!shade || !record || !mat)
+      continue;
+    const glm::vec3 radiance = glm::max(shade->emissiveFactor, glm::vec3(0.f)) * shade->emissiveLightScale;
+    if(nvvkgltf::emissiveLuminance(radiance) <= 0.f)
+      continue;
+    const Submesh& run = record->submeshes[inst->submesh];
+    emitters.push_back({s, inst->prim, radiance, mat->payload.doubleSided, inst->world, record->positions,
+                        std::span(record->indices).subspan(run.firstIndex, run.indexCount)});
+  }
+  const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters);
+  if(residency.emissiveCount() != table.triangles.size() || residency.emissiveTotalWeight() != table.totalWeight
+     || residency.emissiveMeanLum() != table.meanLum
+     || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveTable()), table.triangles.size() * sizeof(shaderio::EmissiveTriangle)),
+                   table.triangles.data(), table.triangles.size()))
+    out.push_back("I6: the emissive table is not the shown emitters' triangles");
+
   // the scene descriptor
   const auto desc = rowAt<shaderio::GltfScene>(gpu, residency.sceneDescBuffer(), 0);
+  if(uint64_t(desc.lights) != gpu.bufferAddress(residency.lightTable()) || desc.numLights != int(residency.lightCount())
+     || uint64_t(desc.emissiveTriangles) != gpu.bufferAddress(residency.emissiveTable())
+     || desc.numEmissiveTriangles != int(residency.emissiveCount())
+     || desc.emissiveTotalWeight != residency.emissiveTotalWeight() || desc.emissiveMeanLum != residency.emissiveMeanLum())
+    out.push_back("the scene descriptor does not hold the lights and the emissive table");
   if(uint64_t(desc.renderNodes) != gpu.bufferAddress(residency.renderNodeTable())
      || uint64_t(desc.renderPrimitives) != gpu.bufferAddress(residency.renderPrimTable())
      || uint64_t(desc.materials) != gpu.bufferAddress(residency.materialTable())

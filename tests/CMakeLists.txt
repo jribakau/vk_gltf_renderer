@@ -158,9 +158,12 @@ set(TEST_SOURCES
     test_fake_gpu_backend.cpp
     # What a material decides for its draws: TLAS flags and mask, the raster lists (header only)
     test_material_bits.cpp
+    # Lights and the emissive alias table, as both scenes derive them
+    test_scene_gpu_tables.cpp
     # The retained scene on the fake GPU, every sync held to ResidencyOracle (oracles 1 and 2b)
     test_retained_residency.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_residency.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_gpu_tables.cpp
     # The host's addressing on the legacy scene: uploads reach their mesh's prims, picks map back (oracle 8)
     test_fv_scene_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp

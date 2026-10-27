@@ -38,6 +38,8 @@
 //   slots, one per (texture, sampler), over one image per texture (slot 0 is the default image);
 //   samplers hold sampler slots (slot 0 the default sampler). Through P3a1 the material and texture
 //   info tables are converted whole when a material or its textures change (P3a2 brings spans).
+// - Lights are dense, in document order, packed again when one changes; the emissive table is
+//   derived from the shown instances whose materials emit, built again whenever its inputs change.
 // - Everything freed goes through GpuBackend::retire, a frame cycle later; nothing waits for idle.
 //
 // Application thread only.
@@ -165,7 +167,15 @@ public:
   int32_t      materialSlot(MaterialId material) const;
   uint32_t     materialHighWater() const { return m_materialHighWater; }
   BufferHandle materialTable() const { return m_materialTable; }
-  BufferHandle textureInfoTable() const { return m_textureInfoTable; }
+  BufferHandle lightTable() const { return m_lightTable; }
+  uint32_t     lightCount() const { return m_lightCount; }
+  BufferHandle emissiveTable() const { return m_emissiveTable; }
+  uint32_t     emissiveCount() const { return m_emissiveCount; }
+  float        emissiveTotalWeight() const { return m_emissiveTotalWeight; }
+  float        emissiveMeanLum() const { return m_emissiveMeanLum; }
+  // a material slot's converted row, the emissive table's radiance source
+  const shaderio::GltfShadeMaterial* shadeMaterial(uint32_t slot) const;
+  BufferHandle                       textureInfoTable() const { return m_textureInfoTable; }
   // the texture slot of a texture sampled so, -1 for none; the image a texture is, none while unread
   int32_t     textureSlot(TextureId texture, const GpuSamplerDesc& sampler) const;
   ImageHandle image(TextureId texture) const;
@@ -225,6 +235,8 @@ private:
   void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);
   void     writeMaterials(const RetainedScene& scene);
   void     buildDrawLists();
+  void     syncLights(RetainedScene& scene);
+  void     syncEmissive(const RetainedScene& scene);
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
   void     retireAccel(AccelHandle accel);
@@ -258,9 +270,17 @@ private:
   bool                                                 m_materialsDirty = false;
   bool                                                 m_bitsChanged = false;  // a material's TLAS bits or raster lists
   bool                                                 m_tablesMoved = false;  // the material tables were made again
-  std::array<std::vector<uint32_t>, 4>                 m_drawLists;
-  uint64_t                                             m_drawListsRevision = 0;
-  bool                                                 m_hasTransmission   = false;
+  std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows
+
+  BufferHandle                         m_lightTable, m_emissiveTable;
+  uint32_t                             m_lightCount          = 0;
+  uint32_t                             m_emissiveCount       = 0;
+  float                                m_emissiveTotalWeight = 0.f;
+  float                                m_emissiveMeanLum     = 0.f;
+  bool                                 m_descDirty           = false;  // a table moved or a count changed
+  std::array<std::vector<uint32_t>, 4> m_drawLists;
+  uint64_t                             m_drawListsRevision = 0;
+  bool                                 m_hasTransmission   = false;
 
   uint32_t     m_instanceCapacity = 0;
   uint32_t     m_primCapacity     = 0;

@@ -30,6 +30,8 @@
 
 #include <nvutils/id_pool.hpp>
 
+#include "ies_profile.hpp"
+#include "scene_gpu_tables.hpp"
 #include "shaders/gltf_scene_io.h.slang"
 
 namespace rs {
@@ -135,6 +137,13 @@ void Residency::clear()
   retireBuffer(m_sceneDesc);
   retireBuffer(m_materialTable);
   retireBuffer(m_textureInfoTable);
+  retireBuffer(m_lightTable);
+  retireBuffer(m_emissiveTable);
+  m_lightTable = m_emissiveTable = {};
+  m_lightCount = m_emissiveCount = 0;
+  m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
+  m_shadeMaterials.clear();
+  m_descDirty = false;
   retireAccel(m_tlas);
   m_meshes.clear();
   m_prims.clear();
@@ -497,6 +506,7 @@ void Residency::writeMaterials(const RetainedScene& scene)
   m_tablesMoved |= table(m_materialTable, std::as_bytes(std::span(materials)), "materials");
   m_tablesMoved |= table(m_textureInfoTable, std::as_bytes(std::span(textureInfos)), "texture infos");
   m_gpu.upload(m_materialTable, 0, std::as_bytes(std::span(materials)));
+  m_shadeMaterials = materials;
   m_gpu.upload(m_textureInfoTable, 0, std::as_bytes(std::span(textureInfos)));
   m_materialsDirty = false;
 }
@@ -545,6 +555,8 @@ SyncResult Residency::sync(RetainedScene& scene)
     return result;
 
   std::vector<DrawItem> items = scene.drawItems();
+  if(fresh)
+    m_materialsDirty = true;  // the tables exist from the first sync, even with no material in them
   if(fresh || changes.structure)
     syncStructure(scene, items, result);
   if(!changes.materials.empty())
@@ -566,9 +578,35 @@ SyncResult Residency::sync(RetainedScene& scene)
     buildDrawLists();
     result.drawListChanged = true;
   }
+  const bool materialsWritten = m_tablesMoved || result.drawListChanged || (!changes.materials.empty());
   syncRows(items, result);
-  m_tablesMoved = m_bitsChanged = false;
-  result.featuresChanged        = changes.features;
+  if(fresh || changes.structure || !changes.lights.empty() || !changes.transforms.empty() || !changes.visibility.empty())
+  {
+    syncLights(scene);
+    result.changed = true;
+  }
+  // the emissive table: its emitters came, went, moved, were shown or hidden, or their vertices or
+  // materials changed (any slot change counts, so an entry never names a renumbered slot)
+  bool emitterMoved = false;
+  for(const std::optional<Instance>& inst : m_instances)
+    if(inst && changes.transforms.count(inst->entity) && inst->materialSlot < m_shadeMaterials.size()
+       && nvvkgltf::emissiveLuminance(glm::max(m_shadeMaterials[inst->materialSlot].emissiveFactor, glm::vec3(0.f))) > 0.f)
+    {
+      emitterMoved = true;
+      break;
+    }
+  if(fresh || materialsWritten || result.visibilityChanged || result.verticesWritten || emitterMoved)
+  {
+    syncEmissive(scene);
+    result.changed = true;
+  }
+  if(m_descDirty || result.buffersChanged || !m_sceneDesc)
+  {
+    writeSceneDesc();
+    result.changed = true;
+  }
+  m_tablesMoved = m_bitsChanged = m_descDirty = false;
+  result.featuresChanged                      = changes.features;
   return result;
 }
 
@@ -768,8 +806,6 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
     m_gpu.barrier(GpuBarrier::eBuildToTrace);
     result.changed = true;
   }
-  if(result.buffersChanged || !m_sceneDesc)
-    writeSceneDesc();
   if(!nodes.empty() || !prims.empty())
     result.changed = true;
 }
@@ -846,11 +882,87 @@ void Residency::writeSceneDesc()
   if(!m_sceneDesc)
     m_sceneDesc = m_gpu.createBuffer({.size = sizeof(shaderio::GltfScene), .usage = eBufferStorage, .name = "scene"});
   shaderio::GltfScene desc{};
-  desc.renderNodes      = (shaderio::GltfRenderNode*)m_gpu.bufferAddress(m_renderNodes);
-  desc.renderPrimitives = (shaderio::GltfRenderPrimitive*)m_gpu.bufferAddress(m_renderPrims);
-  desc.materials        = (shaderio::GltfShadeMaterial*)m_gpu.bufferAddress(m_materialTable);
-  desc.textureInfos     = (shaderio::GltfTextureInfo*)m_gpu.bufferAddress(m_textureInfoTable);
+  desc.renderNodes           = (shaderio::GltfRenderNode*)m_gpu.bufferAddress(m_renderNodes);
+  desc.renderPrimitives      = (shaderio::GltfRenderPrimitive*)m_gpu.bufferAddress(m_renderPrims);
+  desc.materials             = (shaderio::GltfShadeMaterial*)m_gpu.bufferAddress(m_materialTable);
+  desc.textureInfos          = (shaderio::GltfTextureInfo*)m_gpu.bufferAddress(m_textureInfoTable);
+  desc.lights                = (shaderio::GltfLight*)m_gpu.bufferAddress(m_lightTable);
+  desc.numLights             = int(m_lightCount);
+  desc.iesProfileSampleCount = nvvkgltf::kIesProfileSampleCount;
+  desc.emissiveTriangles     = (shaderio::EmissiveTriangle*)m_gpu.bufferAddress(m_emissiveTable);
+  desc.numEmissiveTriangles  = int(m_emissiveCount);
+  desc.emissiveTotalWeight   = m_emissiveTotalWeight;
+  desc.emissiveMeanLum       = m_emissiveMeanLum;
   m_gpu.upload(m_sceneDesc, 0, bytesOf(desc));
+}
+
+// ---------- Lights and emitters ----------
+
+// A buffer holding `bytes`, made again only when it is too small (none for nothing)
+static bool fitBuffer(GpuBackend& gpu, BufferHandle& buffer, uint64_t bytes, const char* name, const std::function<void(BufferHandle)>& retire)
+{
+  if(buffer && gpu.bufferSize(buffer) >= bytes && bytes)
+    return false;
+  if(buffer)
+    retire(buffer);
+  buffer = bytes ? gpu.createBuffer({.size = std::bit_ceil(bytes), .usage = eBufferStorage, .name = name}) : BufferHandle{};
+  return true;
+}
+
+// Every light in document order; a hidden one (its entity or the light itself) shines with nothing
+void Residency::syncLights(RetainedScene& scene)
+{
+  std::vector<shaderio::GltfLight> lights;
+  for(const LightItem& item : scene.lightItems())
+  {
+    const LightRecord*  record = scene.light(item.light);
+    shaderio::GltfLight light  = nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
+    if(!item.shown)
+      light.intensity = 0.f;
+    lights.push_back(light);
+  }
+  const uint64_t bytes = std::span(lights).size_bytes();
+  m_descDirty |= fitBuffer(m_gpu, m_lightTable, bytes, "lights", [this](BufferHandle b) { retireBuffer(b); });
+  if(bytes)
+    m_gpu.upload(m_lightTable, 0, std::as_bytes(std::span(lights)));
+  m_descDirty |= m_lightCount != lights.size();
+  m_lightCount = uint32_t(lights.size());
+}
+
+// The shown instances whose material emits, their triangles from their mesh records
+void Residency::syncEmissive(const RetainedScene& scene)
+{
+  std::vector<nvvkgltf::Emitter> emitters;
+  for(uint32_t s = 0; s < m_instances.size(); s++)
+  {
+    const std::optional<Instance>& inst = m_instances[s];
+    if(!inst || !inst->shown || inst->materialSlot >= m_shadeMaterials.size())
+      continue;
+    const shaderio::GltfShadeMaterial& shade = m_shadeMaterials[inst->materialSlot];
+    const glm::vec3   radiance = glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale;
+    const MeshRecord* record   = scene.mesh(inst->mesh);
+    if(nvvkgltf::emissiveLuminance(radiance) <= 0.f || !record)
+      continue;
+    const Submesh& run = record->submeshes[inst->submesh];
+    emitters.push_back({.renderNodeID = s,
+                        .renderPrimID = inst->prim,
+                        .radiance     = radiance,
+                        .doubleSided  = m_materialStates[inst->materialSlot]->payload.doubleSided,
+                        .world        = inst->world,
+                        .positions    = record->positions,
+                        .indices      = std::span(record->indices).subspan(run.firstIndex, run.indexCount)});
+  }
+  const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters);
+  const uint64_t                bytes = std::span(table.triangles).size_bytes();
+  m_descDirty |=
+      fitBuffer(m_gpu, m_emissiveTable, bytes, "emissive triangles", [this](BufferHandle b) { retireBuffer(b); });
+  if(bytes)
+    m_gpu.upload(m_emissiveTable, 0, std::as_bytes(std::span(table.triangles)));
+  m_descDirty |= m_emissiveCount != table.triangles.size() || m_emissiveTotalWeight != table.totalWeight
+                 || m_emissiveMeanLum != table.meanLum;
+  m_emissiveCount       = uint32_t(table.triangles.size());
+  m_emissiveTotalWeight = table.totalWeight;
+  m_emissiveMeanLum     = table.meanLum;
 }
 
 // ---------- Reading ----------
@@ -894,6 +1006,11 @@ int32_t Residency::samplerSlot(const GpuSamplerDesc& sampler) const
   return it == m_samplerSlots.end() ? -1 : int32_t(it->second.slot);
 }
 
+const shaderio::GltfShadeMaterial* Residency::shadeMaterial(uint32_t slot) const
+{
+  return slot < m_shadeMaterials.size() ? &m_shadeMaterials[slot] : nullptr;
+}
+
 const Residency::MaterialState* Residency::materialState(uint32_t slot) const
 {
   return slot < m_materialStates.size() && m_materialStates[slot] ? &*m_materialStates[slot] : nullptr;
@@ -913,7 +1030,7 @@ size_t Residency::liveBuffers() const
       n += b ? 1 : 0;
   for(const std::optional<Prim>& p : m_prims)
     n += p && p->indices ? 1 : 0;
-  for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable})
+  for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable, m_emissiveTable})
     n += b ? 1 : 0;
   return n;
 }
