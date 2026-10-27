@@ -52,6 +52,7 @@
 #include "gltf_scene_loading.hpp"
 #include "gltf_scene_merger.hpp"
 #include "gltf_version.hpp"
+#include "scene_material_bits.hpp"
 #include "tinygltf_utils.hpp"
 #include "version.hpp"
 
@@ -3079,19 +3080,8 @@ std::unordered_set<int> nvvkgltf::Scene::getMaterialRenderNodes(const std::unord
 //
 uint8_t nvvkgltf::Scene::computeMaterialBucketKey(const tinygltf::Material& mat)
 {
-  uint8_t key = 0;
-  if(mat.alphaMode == "OPAQUE")
-    key |= 0x1;
-  if(mat.doubleSided)
-    key |= 0x2;
-  if(const auto* ext = tinygltf::utils::findExtension(mat.extensions, KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME))
-  {
-    float transmissionFactor = 0.f;
-    tinygltf::utils::getValue(*ext, "transmissionFactor", transmissionFactor);
-    if(transmissionFactor > 0.f)
-      key |= 0x4;
-  }
-  return key;
+  const MaterialBits bits = materialBits(mat);
+  return uint8_t((bits.alphaOpaque ? 0x1 : 0) | (bits.doubleSided ? 0x2 : 0) | (bits.transmission ? 0x4 : 0));
 }
 
 //-------------------------------------------------------------------------------------------------

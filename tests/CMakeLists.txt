@@ -155,6 +155,8 @@ set(TEST_SOURCES
     test_selection_render_nodes.cpp
     # The retained scene's GPU seam without a GPU (rs::GpuBackend): the fake's own tests
     test_fake_gpu_backend.cpp
+    # What a material decides for its draws: TLAS flags and mask, the raster lists (header only)
+    test_material_bits.cpp
     # The retained scene on the fake GPU, every sync held to ResidencyOracle (oracles 1 and 2b)
     test_retained_residency.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_residency.cpp

@@ -37,6 +37,7 @@
 #include <nvvk/profiler_vk.hpp>
 
 #include "gltf_scene_rtx.hpp"
+#include "scene_material_bits.hpp"
 #include "gltf_scene_vk.hpp"
 #include "gltf_scene_animation.hpp"
 #include "staging_config.hpp"
@@ -255,41 +256,18 @@ bool nvvkgltf::SceneRtx::cmdBuildBottomLevelAccelerationStructure(VkCommandBuffe
   return result == VK_SUCCESS;
 }
 
-// Instance flags for TLAS (opaque / double-sided) from material.
+static_assert(nvvkgltf::kInstanceCullDisable == VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
+static_assert(nvvkgltf::kInstanceForceOpaque == VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR);
+
+// Instance flags for TLAS (opaque / double-sided) and mask from material (scene_material_bits.hpp)
 static VkGeometryInstanceFlagsKHR getInstanceFlag(const tinygltf::Material& mat)
 {
-  VkGeometryInstanceFlagsKHR         instanceFlags{};
-  KHR_materials_transmission         transmission        = tinygltf::utils::getTransmission(mat);
-  KHR_materials_volume               volume              = tinygltf::utils::getVolume(mat);
-  KHR_materials_diffuse_transmission diffuseTransmission = tinygltf::utils::getDiffuseTransmission(mat);
-
-  // Check if the material is opaque, if so, we can skip the anyhit
-  bool isOpaque = ((transmission.factor == 0.0f) && (mat.alphaMode == "OPAQUE")
-                   && (diffuseTransmission.diffuseTransmissionFactor == 0.0F));
-
-  // Always opaque, no need to use ANYHIT (faster)
-  if(isOpaque)
-  {
-    instanceFlags |= VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-  }
-
-  // Need to skip the cull flag in traceray_rtx for double sided materials, and for any material a
-  // path can transmit through: the ray then reaches the far side of the object from behind.
-  if(mat.doubleSided == 1 || volume.thicknessFactor > 0.0F || transmission.factor > 0.0F
-     || diffuseTransmission.diffuseTransmissionFactor > 0.0F)
-  {
-    instanceFlags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-  }
-
-  return instanceFlags;
+  return VkGeometryInstanceFlagsKHR(nvvkgltf::materialBits(mat).instanceFlags);
 }
 
-// Instance mask from material: a surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK)
 static uint8_t getInstanceMask(const tinygltf::Material& mat)
 {
-  const bool walkThrough = mat.extras.IsObject() && mat.extras.Has("fvWalkThrough") && mat.extras.Get("fvWalkThrough").IsBool()
-                           && mat.extras.Get("fvWalkThrough").Get<bool>();
-  return walkThrough ? INSTANCE_MASK_OTHER : INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER;
+  return nvvkgltf::materialBits(mat).instanceMask;
 }
 
 //--------------------------------------------------------------------------------------------------
