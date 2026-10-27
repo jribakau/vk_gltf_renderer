@@ -165,10 +165,16 @@ void FakeGpuBackend::copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHand
 
 // ---------- Images and descriptors ----------
 
-ImageHandle FakeGpuBackend::createImage(const ImageDesc& desc, std::span<const std::byte> pixels)
+ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& info)
 {
+  info = {};
+  if((source.uri.empty() && source.bytes.empty() && source.pixels.empty()) || source.uri.rfind("missing", 0) == 0)
+    return {};
+  info.width      = uint32_t(std::max(source.width, 1));
+  info.height     = uint32_t(std::max(source.height, 1));
+  info.twoChannel = source.component > 0 && source.component < 3;
   const ImageHandle handle{m_nextHandle++};
-  m_images.emplace(handle.value, Image{desc, {pixels.begin(), pixels.end()}});
+  m_images.emplace(handle.value, Image{source.name, source.uri, source.srgb, info});
   return handle;
 }
 

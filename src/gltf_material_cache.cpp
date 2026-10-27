@@ -73,7 +73,7 @@ template <typename T>
 shaderio::GltfTextureInfo getTextureInfoImpl(const T& tinfo, const TextureSlotTable& textureSlots)
 {
   shaderio::GltfTextureInfo ti{};
-  ti.index        = tinfo.index;
+  ti.index        = textureSlots.gpuTexture(tinfo.index);
   ti.samplerIndex = static_cast<int16_t>(textureSlots.samplerSlot(tinfo.index));
   ti.flags        = textureSlots.isTwoChannelSource(tinfo.index) ?
                         static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoTwoChannelSource) :
@@ -301,14 +301,19 @@ void MaterialCache::buildFromMaterials(const std::vector<tinygltf::Material>& ma
   m_shadeMaterials.clear();
   m_shadeMaterials.reserve(materials.size());
   for(const auto& srcMat : materials)
-  {
-    shaderio::GltfShadeMaterial dstMat = {};
-    populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const auto& srcTexInfo) {
-      texIndex = addTextureInfoImpl(srcTexInfo, m_textureInfos, textureSlots);
-    });
-    dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveTexture.index);
-    m_shadeMaterials.emplace_back(dstMat);
-  }
+    append(srcMat, textureSlots);
+}
+
+void MaterialCache::append(const tinygltf::Material& srcMat, const TextureSlotTable& textureSlots)
+{
+  if(m_textureInfos.empty())
+    m_textureInfos.push_back({});  // entry 0: no texture
+  shaderio::GltfShadeMaterial dstMat = {};
+  populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const auto& srcTexInfo) {
+    texIndex = addTextureInfoImpl(srcTexInfo, m_textureInfos, textureSlots);
+  });
+  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveTexture.index);
+  m_shadeMaterials.emplace_back(dstMat);
 }
 
 MaterialUpdateResult MaterialCache::updateMaterial(int index, const tinygltf::Material& srcMat, const TextureSlotTable& textureSlots)

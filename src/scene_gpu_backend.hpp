@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <functional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace rs {
@@ -69,21 +70,25 @@ struct BufferDesc
   const char*      name  = nullptr;  // debug name
 };
 
-enum class ImageFormat : uint32_t
+// An image as it came, for the backend to decode: a file, encoded bytes (a GLB's, a data URI's), or
+// pixels a loader already decoded
+struct ImageSource
 {
-  eRgba8Unorm,
-  eRgba8Srgb,
-  eRgba16Float,
-  eRgba32Float,
+  std::string                    uri;  // an absolute path or a data URI
+  std::span<const unsigned char> bytes;
+  std::string                    mimeType;
+  std::span<const unsigned char> pixels;  // width x height x component channels of `bits` bits
+  int                            width = -1, height = -1, component = 0, bits = 8;
+  bool                           srgb = false;  // sampled as colour
+  std::string                    name;
 };
 
-struct ImageDesc
+// What decoding found, for the materials that sample the image
+struct ImageInfo
 {
-  uint32_t    width     = 0;
-  uint32_t    height    = 0;
-  uint32_t    mipLevels = 1;  // the backend generates levels past 0
-  ImageFormat format    = ImageFormat::eRgba8Unorm;
-  const char* name      = nullptr;
+  uint32_t width = 0, height = 0;
+  bool     twoChannel    = false;  // fewer than three colour channels (BC5, R8G8, ...)
+  float    meanLuminance = -1.f;   // linear, Rec. 709, of its texels; negative where unknown
 };
 
 // glTF sampler values (TINYGLTF_TEXTURE_FILTER_*, TINYGLTF_TEXTURE_WRAP_*); a filter of -1 is unset
@@ -182,9 +187,9 @@ public:
   virtual void copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size) = 0;
 
   // ---------- Images and descriptors ----------
-  // Level 0 from the pixels, the others generated.
-  virtual ImageHandle createImage(const ImageDesc& desc, std::span<const std::byte> pixels) = 0;
-  virtual void        destroyImage(ImageHandle image)                                       = 0;
+  // The image decoded, its mips made; none when it can't be read (its slot keeps the default image).
+  virtual ImageHandle createImage(const ImageSource& source, ImageInfo& info) = 0;
+  virtual void        destroyImage(ImageHandle image)                         = 0;
   // A slot of the scene's texture array; no image writes the default one.
   virtual void writeTextureDescriptor(uint32_t slot, ImageHandle image)          = 0;
   virtual void writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) = 0;

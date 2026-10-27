@@ -71,6 +71,9 @@ struct TextureSlotTable
   // The source image's mean luminance (linear, Rec. 709), from a grid of its texels; negative where
   // unknown (a compressed or float format). An emissive texture's weight as a light.
   std::vector<float> meanLuminance;
+  // The GPU texture each texture index names (GltfTextureInfo::index); empty: the index itself. The
+  // retained scene's materials index their own texture tables, which this maps to texture slots.
+  std::vector<int> gpuIndex;
 
   int samplerSlot(int texIndex) const
   {
@@ -91,11 +94,18 @@ struct TextureSlotTable
     return mean >= 0.0f ? mean : 1.0f;
   }
 
+  int gpuTexture(int texIndex) const
+  {
+    if(gpuIndex.empty() || texIndex < 0)
+      return texIndex;
+    return texIndex < static_cast<int>(gpuIndex.size()) ? gpuIndex[texIndex] : -1;
+  }
   void clear()
   {
     samplerSlots.clear();
     twoChannelSource.clear();
     meanLuminance.clear();
+    gpuIndex.clear();
   }
 };
 
@@ -112,6 +122,10 @@ public:
   // textureSlots carries the per-texture data baked into each GltfTextureInfo (sampler slot and
   // source-format flags); see TextureSlotTable.
   void buildFromMaterials(const std::vector<tinygltf::Material>& materials, const TextureSlotTable& textureSlots);
+  // One more material after the ones built, with its own slot table (a retained material, whose
+  // texture indices index its own table). Its shade material is the next one; its texture infos
+  // follow the others'.
+  void append(const tinygltf::Material& material, const TextureSlotTable& textureSlots);
 
   // Update one cached material in place. Returns span of texture infos and whether
   // texture slot topology changed (if true, caller should rebuild cache).

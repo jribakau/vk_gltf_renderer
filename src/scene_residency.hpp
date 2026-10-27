@@ -34,13 +34,19 @@
 //   in document order; a freed slot is a hole (a zeroed row, a null TLAS row) until its retire
 //   frame, when it goes back to its pool. The tables are sized by capacity, a power of two at or
 //   above the high-water mark, and the TLAS keeps its handle until capacity grows.
+// - A material slot is a GltfShadeMaterial row; the textures its payload samples hold texture
+//   slots, one per (texture, sampler), over one image per texture (slot 0 is the default image);
+//   samplers hold sampler slots (slot 0 the default sampler). Through P3a1 the material and texture
+//   info tables are converted whole when a material or its textures change (P3a2 brings spans).
 // - Everything freed goes through GpuBackend::retire, a frame cycle later; nothing waits for idle.
 //
 // Application thread only.
 //
 
 #include <cstdint>
+#include <array>
 #include <map>
+#include <optional>
 #include <memory>
 #include <set>
 #include <tuple>
@@ -48,7 +54,9 @@
 
 #include <glm/glm.hpp>
 
+#include "gltf_material_cache.hpp"
 #include "scene_gpu_backend.hpp"
+#include "scene_material_bits.hpp"
 #include "scene_retained.hpp"
 
 namespace nvutils {
@@ -99,6 +107,14 @@ public:
     BlasInput    input;
     uint32_t     users = 0;  // instances drawing it
   };
+  // The raster lists (SceneGpuView::DrawList)
+  enum class DrawList
+  {
+    eSolid,
+    eSolidDoubleSided,
+    eBlend,
+    eAll,
+  };
   // A draw item
   struct Instance
   {
@@ -132,6 +148,10 @@ public:
   uint32_t    instanceCapacity() const { return m_instanceCapacity; }
   uint32_t    instanceHighWater() const { return uint32_t(m_instances.size()); }
   uint32_t    primCapacity() const { return m_primCapacity; }
+  // live instances by how their material draws, in slot order; hidden ones included (a draw skips them)
+  const std::vector<uint32_t>& drawList(DrawList list) const { return m_drawLists[size_t(list)]; }
+  uint64_t                     drawListsRevision() const { return m_drawListsRevision; }
+  bool                         hasTransmission() const { return m_hasTransmission; }
 
   // ---- what the oracle reads
   const Instance* instance(uint32_t slot) const;  // nullptr for a hole
@@ -142,7 +162,24 @@ public:
   BufferHandle    renderPrimTable() const { return m_renderPrims; }
   BufferHandle    sceneDescBuffer() const { return m_sceneDesc; }
   // the material slot a material has, -1 while nothing draws it
-  int32_t materialSlot(MaterialId material) const;
+  int32_t      materialSlot(MaterialId material) const;
+  uint32_t     materialHighWater() const { return m_materialHighWater; }
+  BufferHandle materialTable() const { return m_materialTable; }
+  BufferHandle textureInfoTable() const { return m_textureInfoTable; }
+  // the texture slot of a texture sampled so, -1 for none; the image a texture is, none while unread
+  int32_t     textureSlot(TextureId texture, const GpuSamplerDesc& sampler) const;
+  ImageHandle image(TextureId texture) const;
+  int32_t     samplerSlot(const GpuSamplerDesc& sampler) const;
+  // what a material slot's row was converted from: its payload, and the slot table its texture
+  // indices resolve through
+  struct MaterialState
+  {
+    MaterialId                 material;
+    tinygltf::Material         payload;
+    nvvkgltf::TextureSlotTable slots;
+    nvvkgltf::MaterialBits     bits;
+  };
+  const MaterialState* materialState(uint32_t slot) const;
   // what live resources this layer holds (meshes' streams, prims' index buffers and BLASes, the
   // tables, the TLAS), to tell a leak from what the backend still has to free
   size_t liveBuffers() const;
@@ -155,6 +192,21 @@ private:
   {
     uint32_t slot  = 0;
     uint32_t users = 0;
+    uint32_t rev   = 0;
+    // per entry of its texture table: what it holds (none for an entry the payload doesn't sample)
+    std::vector<std::optional<std::pair<TextureId, GpuSamplerDesc>>> textures;
+  };
+  using SamplerKey = std::tuple<int, int, int, int>;
+  struct ImageGpu
+  {
+    ImageHandle image;
+    ImageInfo   info;
+    uint32_t    users = 0;
+  };
+  struct SlotUse
+  {
+    uint32_t slot  = 0;
+    uint32_t users = 0;
   };
 
   void syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result);
@@ -164,8 +216,15 @@ private:
   MeshGpu& acquireMesh(const RetainedScene& scene, MeshId id);
   uint32_t acquirePrim(const RetainedScene& scene, MeshId id, uint32_t submesh);
   void     releasePrim(uint32_t slot);
-  uint32_t acquireMaterial(MaterialId id);
+  uint32_t acquireMaterial(const RetainedScene& scene, MaterialId id);
   void     releaseMaterial(MaterialId id);
+  void     acquireMaterialTextures(const RetainedScene& scene, MaterialId id, MaterialSlot& slot);
+  void     releaseMaterialTextures(MaterialSlot& slot);
+  void     acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb);
+  void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler);
+  void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);
+  void     writeMaterials(const RetainedScene& scene);
+  void     buildDrawLists();
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
   void     retireAccel(AccelHandle accel);
@@ -188,6 +247,20 @@ private:
   std::vector<std::optional<Instance>> m_instances;  // by instance slot, up to the high-water mark
   std::map<InstanceKey, uint32_t>      m_slotOf;
   std::map<MaterialId, MaterialSlot>   m_materials;
+
+  std::map<TextureId, ImageGpu>                        m_images;
+  std::map<std::tuple<TextureId, SamplerKey>, SlotUse> m_textureSlots;
+  std::map<SamplerKey, SlotUse>                        m_samplerSlots;
+  std::shared_ptr<nvutils::IDPool>                     m_texturePool, m_samplerPool;
+  std::vector<std::optional<MaterialState>>            m_materialStates;  // by material slot
+  uint32_t                                             m_materialHighWater = 0;
+  BufferHandle                                         m_materialTable, m_textureInfoTable;
+  bool                                                 m_materialsDirty = false;
+  bool                                                 m_bitsChanged = false;  // a material's TLAS bits or raster lists
+  bool                                                 m_tablesMoved = false;  // the material tables were made again
+  std::array<std::vector<uint32_t>, 4>                 m_drawLists;
+  uint64_t                                             m_drawListsRevision = 0;
+  bool                                                 m_hasTransmission   = false;
 
   uint32_t     m_instanceCapacity = 0;
   uint32_t     m_primCapacity     = 0;

@@ -255,9 +255,13 @@ TEST(FakeGpuBackend, AnUpdateBeforeAnyBuildIsAnError)
 
 TEST(FakeGpuBackend, DescriptorsNameLiveImagesOrTheDefault)
 {
-  FakeGpuBackend               gpu;
-  const std::vector<std::byte> pixel(4);
-  const ImageHandle image = gpu.createImage({.width = 1, .height = 1, .format = ImageFormat::eRgba8Srgb}, pixel);
+  FakeGpuBackend                   gpu;
+  const std::vector<unsigned char> pixel(4);
+  ImageInfo                        info;
+  const ImageHandle image = gpu.createImage({.pixels = pixel, .width = 1, .height = 1, .component = 4, .srgb = true}, info);
+  EXPECT_EQ(info.width, 1u);
+  EXPECT_FALSE(info.twoChannel);
+  EXPECT_FALSE(gpu.createImage({.uri = "missing.png"}, info));
   gpu.writeTextureDescriptor(3, image);
   gpu.writeSamplerDescriptor(1, {.magFilter = 9728});
   EXPECT_EQ(gpu.textureDescriptors().at(3), image);

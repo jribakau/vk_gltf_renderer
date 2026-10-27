@@ -71,6 +71,37 @@ MaterialId material(RetainedScene& scene, const char* name)
   return scene.addMaterial(std::move(m));
 }
 
+// A texture table over three image files: two samplers of the first, and a second image
+std::shared_ptr<const TextureTable> textureTable(RetainedScene& scene)
+{
+  TextureRecord a, b;
+  a.uri              = "a.png";
+  a.width            = 4;
+  b.uri              = "b.png";
+  b.width            = 8;
+  b.component        = 2;  // a two-channel normal map
+  const TextureId ta = scene.addTexture(a), tb = scene.addTexture(b);
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({ta, {}});
+  SamplerDesc nearest;
+  nearest.magFilter = TINYGLTF_TEXTURE_FILTER_NEAREST;
+  table->push_back({ta, nearest});
+  table->push_back({tb, {}});
+  return table;  // the add references stay the test's: a table names its textures but holds none
+}
+
+// base colour from table entry `base`, a normal map from entry 2
+MaterialId textured(RetainedScene& scene, std::shared_ptr<const TextureTable> table, int base, const char* alpha = "OPAQUE")
+{
+  MaterialRecord m;
+  m.payload.name                                        = "textured";
+  m.payload.alphaMode                                   = alpha;
+  m.payload.pbrMetallicRoughness.baseColorTexture.index = base;
+  m.payload.normalTexture.index                         = 2;
+  m.textures                                            = std::move(table);
+  return scene.addMaterial(std::move(m));
+}
+
 // An entity drawing `mesh` with one material per submesh
 EntityId drawn(RetainedScene& scene, const char* name, MeshId mesh, std::vector<MaterialId> materials, EntityId parent = {})
 {
@@ -301,6 +332,93 @@ TEST(RetainedResidency, ARebindingRewritesTheMaterialSlot)
   EXPECT_GE(residency.materialSlot(b), 0);
 }
 
+// Two materials over one texture table: each texture they sample once per sampler gets a slot past
+// the default image's, its image is read once and decoded as colour where a material samples it as
+// colour; materials that are not drawn hold nothing.
+TEST(RetainedResidency, TexturesTakeSlotsPerSamplerOverOneImage)
+{
+  RetainedScene scene;
+  const auto    table = textureTable(scene);
+  const MeshId  grid  = scene.addMesh(gridMesh(2, 0.f, 2));
+  drawn(scene, "e", grid, {textured(scene, table, 0), textured(scene, table, 1)});
+  textured(scene, table, 1);  // not drawn
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+
+  const TextureId a = (*table)[0].texture, b = (*table)[2].texture;
+  EXPECT_EQ(gpu.liveImages(), 2u);
+  const int32_t plain   = residency.textureSlot(a, {}),
+                nearest = residency.textureSlot(a, {.magFilter = TINYGLTF_TEXTURE_FILTER_NEAREST});
+  EXPECT_GT(plain, 0);
+  EXPECT_GT(nearest, 0);
+  EXPECT_NE(plain, nearest);
+  EXPECT_EQ(gpu.textureDescriptors().at(uint32_t(plain)), gpu.textureDescriptors().at(uint32_t(nearest)));  // one image
+  EXPECT_TRUE(gpu.image(residency.image(a))->srgb);
+  EXPECT_FALSE(gpu.image(residency.image(b))->srgb);
+  EXPECT_EQ(residency.materialHighWater(), 2u);
+  // the normal map's two channels reach its texture info
+  const Residency::MaterialState* state = residency.materialState(0);
+  ASSERT_NE(state, nullptr);
+  EXPECT_EQ(state->slots.isTwoChannelSource(2), true);
+}
+
+TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)
+{
+  RetainedScene scene;
+  TextureRecord missing;
+  missing.uri = "missing.png";
+  auto table  = std::make_shared<TextureTable>();
+  table->push_back({scene.addTexture(missing), {}});
+  MaterialRecord m;
+  m.payload.pbrMetallicRoughness.baseColorTexture.index = 0;
+  m.textures                                            = table;
+  drawn(scene, "e", scene.addMesh(gridMesh(1, 0.f)), {scene.addMaterial(m)});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  const int32_t slot = residency.textureSlot((*table)[0].texture, {});
+  ASSERT_GT(slot, 0);
+  EXPECT_FALSE(gpu.textureDescriptors().at(uint32_t(slot)));
+}
+
+// An edit that swaps a texture frees the old slot only at its retire frame, rewritten to the default
+// image; one that makes the surface a cutout moves its instances to the blend list and its TLAS rows'
+// flags with them.
+TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
+{
+  RetainedScene    scene;
+  const auto       table = textureTable(scene);
+  const MaterialId mat   = textured(scene, table, 0);
+  drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f)), {mat});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  EXPECT_EQ(residency.drawList(Residency::DrawList::eSolid), std::vector<uint32_t>{0});
+  const int32_t  before   = residency.textureSlot((*table)[0].texture, {});
+  const uint64_t revision = residency.drawListsRevision();
+
+  tinygltf::Material edited                          = scene.material(mat)->payload;
+  edited.pbrMetallicRoughness.baseColorTexture.index = 1;  // the other sampler
+  edited.alphaMode                                   = "MASK";
+  scene.setMaterial(mat, edited);
+  gpu.beginFrame();
+  const SyncResult r = residency.sync(scene);
+  EXPECT_TRUE(r.changed && r.drawListChanged);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.textureSlot((*table)[0].texture, {}), -1);
+  EXPECT_TRUE(gpu.textureDescriptors().at(uint32_t(before)));  // not yet: a frame in flight may sample it
+  EXPECT_EQ(residency.drawList(Residency::DrawList::eBlend), std::vector<uint32_t>{0});
+  EXPECT_TRUE(residency.drawList(Residency::DrawList::eSolid).empty());
+  EXPECT_GT(residency.drawListsRevision(), revision);
+  drain(gpu);
+  EXPECT_FALSE(gpu.textureDescriptors().at(uint32_t(before)));
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 // Oracle 2b: random edits, each synced and checked; at the end the scene made resident afresh holds
 // the same draws, the same geometry and the same transforms (slots may differ, content may not).
 TEST(RetainedResidency, IncrementalEqualsFresh)
@@ -315,6 +433,9 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       meshes.push_back(scene.addMesh(gridMesh(1 + i, float(i), 1 + i % 2)));
     for(const char* name : {"a", "b", "c"})
       materials.push_back(material(scene, name));
+    const auto table = textureTable(scene);
+    materials.push_back(textured(scene, table, 0));
+    materials.push_back(textured(scene, table, 1, "BLEND"));
     std::vector<EntityId> live;
 
     FakeGpuBackend gpu(2);
@@ -324,7 +445,7 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
 
     for(int step = 0; step < 60; step++)
     {
-      const int op = std::uniform_int_distribution<int>(0, 5)(rng);
+      const int op = std::uniform_int_distribution<int>(0, 6)(rng);
       if(op <= 1 || live.empty())
       {
         const MeshId            mesh = pick(meshes);
@@ -348,6 +469,18 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       }
       else if(op == 4)
         scene.setVisible(pick(live), rng() % 2 == 0);
+      else if(op == 6)
+      {
+        // a material edit: another texture, another alpha mode, sides
+        const MaterialId   m       = pick(materials);
+        tinygltf::Material payload = scene.material(m)->payload;
+        static const char* modes[] = {"OPAQUE", "MASK", "BLEND"};
+        payload.alphaMode          = modes[rng() % 3];
+        payload.doubleSided        = rng() % 2 == 0;
+        if(scene.material(m)->textures)
+          payload.pbrMetallicRoughness.baseColorTexture.index = int(rng() % 3) - 1;
+        scene.setMaterial(m, payload);
+      }
       else
       {
         const MeshId           mesh  = pick(meshes);

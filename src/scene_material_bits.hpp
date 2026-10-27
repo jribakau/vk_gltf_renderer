@@ -27,6 +27,7 @@
 //
 
 #include <cstdint>
+#include <set>
 
 #include <tinygltf/tiny_gltf.h>
 
@@ -84,6 +85,34 @@ inline MaterialBits materialBits(const tinygltf::Material& mat)
     bits.transmission = factor > 0.f;
   }
   return bits;
+}
+
+// The texture indices a material samples as colour (sRGB), as SceneVk::findSrgbImages decides it:
+// base colour, emission, and the colour textures of specular, sheen, diffuse transmission, scatter
+// and specular-glossiness. (A texture's own `gamma` extra, which findSrgbImages also reads, is a
+// glTF texture's and not the material's.)
+inline std::set<int> srgbTextures(const tinygltf::Material& mat)
+{
+  std::set<int> out;
+  const auto    add = [&](int index) {
+    if(index >= 0)
+      out.insert(index);
+  };
+  const auto fromExtension = [&](const char* ext, const char* name) {
+    const auto it = mat.extensions.find(ext);
+    if(it != mat.extensions.end() && it->second.Has(name) && it->second.Get(name).Has("index"))
+      add(it->second.Get(name).Get("index").GetNumberAsInt());
+  };
+  add(mat.pbrMetallicRoughness.baseColorTexture.index);
+  add(mat.emissiveTexture.index);
+  fromExtension("KHR_materials_specular", "specularColorTexture");
+  fromExtension("KHR_materials_sheen", "sheenColorTexture");
+  fromExtension("KHR_materials_diffuse_transmission", "diffuseTransmissionColorTexture");
+  fromExtension(KHR_MATERIALS_SCATTER_EXTENSION_NAME, "multiscatterColorTexture");
+  fromExtension(KHR_MATERIALS_VOLUME_SCATTER_EXTENSION_NAME, "multiscatterColorTexture");
+  fromExtension("KHR_materials_pbrSpecularGlossiness", "diffuseTexture");
+  fromExtension("KHR_materials_pbrSpecularGlossiness", "specularGlossinessTexture");
+  return out;
 }
 
 }  // namespace nvvkgltf

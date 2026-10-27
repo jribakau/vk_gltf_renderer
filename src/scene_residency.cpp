@@ -39,6 +39,28 @@ namespace {
 // Slot pools: a TLAS row's custom index is 24 bits, so neither instance nor prim slots go past it
 constexpr uint32_t kSlotPoolSize     = 1u << 24;
 constexpr uint32_t kMaterialPoolSize = 1u << 16;
+// the descriptor arrays' slots; 0 is the default image and the default sampler
+constexpr uint32_t kTexturePoolSize = 1u << 16;
+constexpr uint32_t kSamplerPoolSize = 1u << 12;
+
+std::tuple<int, int, int, int> keyOf(const GpuSamplerDesc& s)
+{
+  return {s.magFilter, s.minFilter, s.wrapS, s.wrapT};
+}
+
+GpuSamplerDesc samplerOf(const SamplerDesc& s)
+{
+  return {.magFilter = s.magFilter, .minFilter = s.minFilter, .wrapS = s.wrapS, .wrapT = s.wrapT};
+}
+
+// A pool whose first slot is taken (the default image or sampler)
+std::shared_ptr<nvutils::IDPool> poolFromOne(uint32_t size)
+{
+  auto     pool = std::make_shared<nvutils::IDPool>(size);
+  uint32_t zero = 0;
+  pool->createID(zero);
+  return pool;
+}
 
 template <class T>
 std::span<const std::byte> bytesOf(const std::vector<T>& v)
@@ -103,15 +125,33 @@ void Residency::clear()
       retireBuffer(p->indices);
       retireAccel(p->blas);
     }
+  for(const auto& [key, use] : m_textureSlots)
+    m_gpu.retire([&gpu = m_gpu, slot = use.slot] { gpu.writeTextureDescriptor(slot, {}); });
+  for(const auto& [id, image] : m_images)
+    if(image.image)
+      m_gpu.retire([&gpu = m_gpu, handle = image.image] { gpu.destroyImage(handle); });
   retireBuffer(m_renderNodes);
   retireBuffer(m_renderPrims);
   retireBuffer(m_sceneDesc);
+  retireBuffer(m_materialTable);
+  retireBuffer(m_textureInfoTable);
   retireAccel(m_tlas);
   m_meshes.clear();
   m_prims.clear();
   m_instances.clear();
   m_slotOf.clear();
   m_materials.clear();
+  m_images.clear();
+  m_textureSlots.clear();
+  m_samplerSlots.clear();
+  m_materialStates.clear();
+  m_materialHighWater = 0;
+  m_materialTable = m_textureInfoTable = {};
+  m_materialsDirty                     = false;
+  for(auto& list : m_drawLists)
+    list.clear();
+  m_drawListsRevision++;
+  m_hasTransmission = false;
   m_renderNodes = m_renderPrims = m_sceneDesc = {};
   m_tlas                                      = {};
   m_instanceCapacity = m_primCapacity = m_tlasCapacity = 0;
@@ -121,6 +161,8 @@ void Residency::clear()
   m_instancePool          = std::make_shared<nvutils::IDPool>(kSlotPoolSize);
   m_primPool              = std::make_shared<nvutils::IDPool>(kSlotPoolSize);
   m_materialPool          = std::make_shared<nvutils::IDPool>(kMaterialPoolSize);
+  m_texturePool           = poolFromOne(kTexturePoolSize);
+  m_samplerPool           = poolFromOne(kSamplerPoolSize);
 }
 
 // ---------- Retiring ----------
@@ -247,7 +289,7 @@ void Residency::releasePrim(uint32_t slot)
   m_gpu.retire([pool = m_primPool, slot] { pool->destroyID(slot); });
 }
 
-uint32_t Residency::acquireMaterial(MaterialId id)
+uint32_t Residency::acquireMaterial(const RetainedScene& scene, MaterialId id)
 {
   auto it = m_materials.find(id);
   if(it != m_materials.end())
@@ -259,7 +301,16 @@ uint32_t Residency::acquireMaterial(MaterialId id)
   const bool ok   = m_materialPool->createID(slot);
   assert(ok && "out of material slots");
   (void)ok;
-  m_materials[id] = {slot, 1};
+  MaterialSlot& m = m_materials[id];
+  m.slot          = slot;
+  m.users         = 1;
+  m.rev           = scene.material(id) ? scene.material(id)->rev : 0;
+  acquireMaterialTextures(scene, id, m);
+  if(slot >= m_materialStates.size())
+    m_materialStates.resize(size_t(slot) + 1);
+  m_materialStates[slot] = MaterialState{.material = id};
+  m_materialHighWater    = std::max(m_materialHighWater, slot + 1);
+  m_materialsDirty       = true;
   return slot;
 }
 
@@ -269,8 +320,209 @@ void Residency::releaseMaterial(MaterialId id)
   if(it == m_materials.end() || --it->second.users > 0)
     return;
   const uint32_t slot = it->second.slot;
+  releaseMaterialTextures(it->second);
   m_materials.erase(it);
+  m_materialStates[slot].reset();
+  m_materialsDirty = true;
   m_gpu.retire([pool = m_materialPool, slot] { pool->destroyID(slot); });
+}
+
+// The textures the payload samples (as MaterialCache reads it), each with its texture slot
+void Residency::acquireMaterialTextures(const RetainedScene& scene, MaterialId id, MaterialSlot& slot)
+{
+  const MaterialRecord* record = scene.material(id);
+  slot.textures.clear();
+  if(!record || !record->textures)
+    return;
+  nvvkgltf::MaterialCache sampled;
+  sampled.append(record->payload, {});
+  const std::set<int> srgb = nvvkgltf::srgbTextures(record->payload);
+  slot.textures.resize(record->textures->size());
+  for(size_t t = 1; t < sampled.getTextureInfos().size(); t++)
+  {
+    const int i = sampled.getTextureInfos()[t].index;
+    if(i < 0 || i >= int(record->textures->size()) || slot.textures[size_t(i)])
+      continue;
+    const TextureRef&    ref     = (*record->textures)[size_t(i)];
+    const GpuSamplerDesc sampler = samplerOf(ref.sampler);
+    acquireTexture(scene, ref.texture, sampler, srgb.count(i) > 0);
+    slot.textures[size_t(i)] = std::pair{ref.texture, sampler};
+  }
+}
+
+void Residency::releaseMaterialTextures(MaterialSlot& slot)
+{
+  for(const auto& t : slot.textures)
+    if(t)
+      releaseTexture(t->first, t->second);
+  slot.textures.clear();
+}
+
+void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb)
+{
+  ImageGpu& image = m_images[id];
+  if(image.users++ == 0)
+    if(const TextureRecord* record = scene.texture(id))
+    {
+      const ImageSource source{.uri       = record->uri,
+                               .bytes     = record->bytes,
+                               .mimeType  = record->mimeType,
+                               .pixels    = record->pixels,
+                               .width     = record->width,
+                               .height    = record->height,
+                               .component = record->component,
+                               .bits      = record->bits,
+                               .srgb      = srgb,
+                               .name      = record->name};
+      image.image = m_gpu.createImage(source, image.info);
+    }
+
+  SlotUse& use = m_textureSlots[{id, keyOf(sampler)}];
+  if(use.users++ > 0)
+    return;
+  const bool ok = m_texturePool->createID(use.slot);
+  assert(ok && "out of texture slots");
+  (void)ok;
+  m_gpu.writeTextureDescriptor(use.slot, image.image);  // none: the default image
+  SlotUse& samplerUse = m_samplerSlots[keyOf(sampler)];
+  if(samplerUse.users++ == 0)
+  {
+    const bool okSampler = m_samplerPool->createID(samplerUse.slot);
+    assert(okSampler && "out of sampler slots");
+    (void)okSampler;
+    m_gpu.writeSamplerDescriptor(samplerUse.slot, sampler);
+  }
+}
+
+// A slot nothing samples any more goes back to the default image, and to its pool, at its retire
+// frame: a frame in flight may still sample it.
+void Residency::releaseTexture(TextureId id, const GpuSamplerDesc& sampler)
+{
+  auto slot = m_textureSlots.find({id, keyOf(sampler)});
+  if(slot != m_textureSlots.end() && --slot->second.users == 0)
+  {
+    m_gpu.retire([&gpu = m_gpu, pool = m_texturePool, s = slot->second.slot] {
+      gpu.writeTextureDescriptor(s, {});
+      pool->destroyID(s);
+    });
+    m_textureSlots.erase(slot);
+    auto samplerUse = m_samplerSlots.find(keyOf(sampler));
+    if(samplerUse != m_samplerSlots.end() && --samplerUse->second.users == 0)
+    {
+      m_gpu.retire([pool = m_samplerPool, s = samplerUse->second.slot] { pool->destroyID(s); });
+      m_samplerSlots.erase(samplerUse);
+    }
+  }
+  auto image = m_images.find(id);
+  if(image != m_images.end() && --image->second.users == 0)
+  {
+    if(image->second.image)
+      m_gpu.retire([&gpu = m_gpu, handle = image->second.image] { gpu.destroyImage(handle); });
+    m_images.erase(image);
+  }
+}
+
+// Materials whose payload was edited take the textures it now samples (the new ones first, so the
+// ones kept are not let go of in between).
+void Residency::syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result)
+{
+  for(MaterialId id : edited)
+  {
+    auto                  it     = m_materials.find(id);
+    const MaterialRecord* record = scene.material(id);
+    if(it == m_materials.end() || !record || it->second.rev == record->rev)
+      continue;
+    MaterialSlot before = it->second;
+    acquireMaterialTextures(scene, id, it->second);
+    releaseMaterialTextures(before);
+    it->second.rev   = record->rev;
+    m_materialsDirty = result.changed = true;
+  }
+}
+
+// The material and texture-info tables converted whole from the live material slots, a hole as the
+// default material. Notes whether a material's draw bits changed (m_bitsChanged) and whether a
+// table had to be made again (m_tablesMoved).
+void Residency::writeMaterials(const RetainedScene& scene)
+{
+  nvvkgltf::MaterialCache cache;
+  cache.buildFromMaterials({}, {});
+  for(uint32_t s = 0; s < m_materialHighWater; s++)
+  {
+    std::optional<MaterialState>& state = m_materialStates[s];
+    if(!state)
+    {
+      cache.append(tinygltf::Material{}, {});
+      continue;
+    }
+    const MaterialRecord* record      = scene.material(state->material);
+    const MaterialSlot&   slot        = m_materials.at(state->material);
+    state->payload                    = record ? record->payload : tinygltf::Material{};
+    nvvkgltf::TextureSlotTable& table = state->slots;
+    table                             = {};
+    const size_t n                    = slot.textures.size();
+    table.samplerSlots.assign(n, 0);
+    table.twoChannelSource.assign(n, 0);
+    table.meanLuminance.assign(n, -1.f);
+    table.gpuIndex.assign(n, -1);
+    for(size_t i = 0; i < n; i++)
+    {
+      if(!slot.textures[i])
+        continue;
+      const auto& [texture, sampler] = *slot.textures[i];
+      const ImageGpu& image          = m_images.at(texture);
+      table.gpuIndex[i]              = int(m_textureSlots.at({texture, keyOf(sampler)}).slot);
+      table.samplerSlots[i]          = int(m_samplerSlots.at(keyOf(sampler)).slot);
+      table.twoChannelSource[i]      = image.info.twoChannel ? 1 : 0;
+      table.meanLuminance[i]         = image.info.meanLuminance;
+    }
+    const nvvkgltf::MaterialBits before = state->bits;
+    state->bits                         = nvvkgltf::materialBits(state->payload);
+    m_bitsChanged |= state->bits != before;
+    cache.append(state->payload, table);
+  }
+
+  const auto table = [&](BufferHandle& buffer, std::span<const std::byte> bytes, const char* name) {
+    const uint64_t size = std::bit_ceil(std::max<uint64_t>(bytes.size(), 256));
+    if(!buffer || m_gpu.bufferSize(buffer) < bytes.size())
+    {
+      retireBuffer(buffer);
+      buffer = m_gpu.createBuffer({.size = size, .usage = eBufferStorage, .name = name});
+      return true;
+    }
+    return false;
+  };
+  const auto& materials    = cache.getShadeMaterials();
+  const auto& textureInfos = cache.getTextureInfos();
+  m_tablesMoved |= table(m_materialTable, std::as_bytes(std::span(materials)), "materials");
+  m_tablesMoved |= table(m_textureInfoTable, std::as_bytes(std::span(textureInfos)), "texture infos");
+  m_gpu.upload(m_materialTable, 0, std::as_bytes(std::span(materials)));
+  m_gpu.upload(m_textureInfoTable, 0, std::as_bytes(std::span(textureInfos)));
+  m_materialsDirty = false;
+}
+
+// The raster lists from the live instances' materials, in slot order
+void Residency::buildDrawLists()
+{
+  for(auto& list : m_drawLists)
+    list.clear();
+  m_hasTransmission = false;
+  for(uint32_t s = 0; s < m_instances.size(); s++)
+  {
+    const std::optional<Instance>& inst = m_instances[s];
+    if(!inst)
+      continue;
+    const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
+    if(bits.solid())
+      m_drawLists[size_t(DrawList::eSolid)].push_back(s);
+    if(bits.solidDoubleSided())
+      m_drawLists[size_t(DrawList::eSolidDoubleSided)].push_back(s);
+    if(bits.blend())
+      m_drawLists[size_t(DrawList::eBlend)].push_back(s);
+    m_drawLists[size_t(DrawList::eAll)].push_back(s);
+    m_hasTransmission |= bits.transmission;
+  }
+  m_drawListsRevision++;
 }
 
 // ---------- The sync ----------
@@ -295,11 +547,28 @@ SyncResult Residency::sync(RetainedScene& scene)
   std::vector<DrawItem> items = scene.drawItems();
   if(fresh || changes.structure)
     syncStructure(scene, items, result);
+  if(!changes.materials.empty())
+    syncMaterials(scene, changes.materials, result);
   if(!changes.meshes.empty())
     syncVertices(scene, changes.meshes, result);
   ensureCapacity(result);
+  // textures before materials before geometry (see "The sync"): the textures are written as their
+  // materials take them, and every material is converted here, before an instance draws with it
+  if(m_materialsDirty)
+  {
+    writeMaterials(scene);
+    result.changed = true;
+  }
+  if(m_tablesMoved)
+    result.buffersChanged = true;
+  if(result.drawListChanged || m_bitsChanged)
+  {
+    buildDrawLists();
+    result.drawListChanged = true;
+  }
   syncRows(items, result);
-  result.featuresChanged = changes.features;
+  m_tablesMoved = m_bitsChanged = false;
+  result.featuresChanged        = changes.features;
   return result;
 }
 
@@ -340,7 +609,7 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
       Instance& inst = *m_instances[found->second];
       if(inst.material != item.material)
       {
-        const uint32_t materialSlot = acquireMaterial(item.material);
+        const uint32_t materialSlot = acquireMaterial(scene, item.material);
         releaseMaterial(inst.material);
         inst.material     = item.material;
         inst.materialSlot = materialSlot;
@@ -361,7 +630,7 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     inst.copy         = item.copy;
     inst.prim         = acquirePrim(scene, item.mesh, item.submesh);
     inst.material     = item.material;
-    inst.materialSlot = acquireMaterial(item.material);
+    inst.materialSlot = acquireMaterial(scene, item.material);
     inst.world        = item.world;
     inst.shown        = item.shown;
     m_instances[slot] = inst;
@@ -493,7 +762,7 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   if(!builds.empty())
     m_gpu.barrier(GpuBarrier::eBuildToBuild);
 
-  if(tlasRows || !builds.empty() || result.drawListChanged || result.tlasHandleChanged || result.verticesWritten)
+  if(tlasRows || !builds.empty() || result.drawListChanged || result.tlasHandleChanged || result.verticesWritten || m_bitsChanged)
   {
     buildTlas();
     m_gpu.barrier(GpuBarrier::eBuildToTrace);
@@ -560,10 +829,12 @@ void Residency::buildTlas()
     const std::optional<Instance>& inst = m_instances[s];
     if(!inst)
       continue;
-    TlasRow& row    = rows[s];
-    row             = tlasRowOf(inst->world);
-    row.customIndex = inst->prim;
-    row.mask        = 0xFF;
+    TlasRow& row                       = rows[s];
+    row                                = tlasRowOf(inst->world);
+    row.customIndex                    = inst->prim;
+    const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
+    row.mask                           = bits.instanceMask;
+    row.flags                          = bits.instanceFlags;
     if(inst->shown)
       row.blas = m_prims[inst->prim]->blas;
   }
@@ -577,6 +848,8 @@ void Residency::writeSceneDesc()
   shaderio::GltfScene desc{};
   desc.renderNodes      = (shaderio::GltfRenderNode*)m_gpu.bufferAddress(m_renderNodes);
   desc.renderPrimitives = (shaderio::GltfRenderPrimitive*)m_gpu.bufferAddress(m_renderPrims);
+  desc.materials        = (shaderio::GltfShadeMaterial*)m_gpu.bufferAddress(m_materialTable);
+  desc.textureInfos     = (shaderio::GltfTextureInfo*)m_gpu.bufferAddress(m_textureInfoTable);
   m_gpu.upload(m_sceneDesc, 0, bytesOf(desc));
 }
 
@@ -603,6 +876,29 @@ const Residency::MeshGpu* Residency::meshGpu(MeshId mesh) const
   return it == m_meshes.end() ? nullptr : &it->second;
 }
 
+int32_t Residency::textureSlot(TextureId texture, const GpuSamplerDesc& sampler) const
+{
+  auto it = m_textureSlots.find({texture, keyOf(sampler)});
+  return it == m_textureSlots.end() ? -1 : int32_t(it->second.slot);
+}
+
+ImageHandle Residency::image(TextureId texture) const
+{
+  auto it = m_images.find(texture);
+  return it == m_images.end() ? ImageHandle{} : it->second.image;
+}
+
+int32_t Residency::samplerSlot(const GpuSamplerDesc& sampler) const
+{
+  auto it = m_samplerSlots.find(keyOf(sampler));
+  return it == m_samplerSlots.end() ? -1 : int32_t(it->second.slot);
+}
+
+const Residency::MaterialState* Residency::materialState(uint32_t slot) const
+{
+  return slot < m_materialStates.size() && m_materialStates[slot] ? &*m_materialStates[slot] : nullptr;
+}
+
 int32_t Residency::materialSlot(MaterialId material) const
 {
   auto it = m_materials.find(material);
@@ -617,7 +913,7 @@ size_t Residency::liveBuffers() const
       n += b ? 1 : 0;
   for(const std::optional<Prim>& p : m_prims)
     n += p && p->indices ? 1 : 0;
-  for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc})
+  for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable})
     n += b ? 1 : 0;
   return n;
 }

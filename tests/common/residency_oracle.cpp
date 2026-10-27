@@ -19,10 +19,14 @@
 
 #include "residency_oracle.hpp"
 
+#include <array>
 #include <cstring>
+#include <set>
 #include <map>
 #include <tuple>
 
+#include "gltf_material_cache.hpp"
+#include "scene_material_bits.hpp"
 #include "shaders/gltf_scene_io.h.slang"
 
 namespace rs {
@@ -138,6 +142,12 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
           }
       if(row.customIndex != inst.prim || row.customIndex >= (1u << 24))
         out.push_back(at("I2", s) + "its custom index is not its prim slot");
+      if(const MaterialRecord* m = scene.material(item.material))
+      {
+        const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(m->payload);
+        if(row.mask != bits.instanceMask || row.flags != bits.instanceFlags)
+          out.push_back(at("I1", s) + "its TLAS mask or flags are not its material's");
+      }
     }
 
     // render-node row (I3)
@@ -199,10 +209,89 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I3", p) + "its BLAS was built from other bytes than its buffers hold");
   }
 
+  // materials (I4): each slot's state is its record's, every texture it samples names a written
+  // slot holding that texture's image, and the tables hold the states converted in slot order
+  nvvkgltf::MaterialCache expected;
+  expected.buildFromMaterials({}, {});
+  for(uint32_t m = 0; m < residency.materialHighWater(); m++)
+  {
+    const Residency::MaterialState* state = residency.materialState(m);
+    if(!state)
+    {
+      expected.append(tinygltf::Material{}, {});
+      continue;
+    }
+    expected.append(state->payload, state->slots);
+    const MaterialRecord* record = scene.material(state->material);
+    if(!record)
+    {
+      out.push_back(at("I4", m) + "a material slot of a material not in the scene");
+      continue;
+    }
+    if(!(state->payload == record->payload))
+      out.push_back(at("I4", m) + "its row is not of the material's current payload");
+    if(residency.materialSlot(state->material) != int32_t(m))
+      out.push_back(at("I4", m) + "its material's slot is another");
+    nvvkgltf::MaterialCache sampled;
+    sampled.append(record->payload, {});
+    const std::set<int> srgb = nvvkgltf::srgbTextures(record->payload);
+    for(size_t t = 1; t < sampled.getTextureInfos().size(); t++)
+    {
+      const int i = sampled.getTextureInfos()[t].index;
+      if(!record->textures || i < 0 || i >= int(record->textures->size()))
+        continue;
+      const TextureRef&    ref = (*record->textures)[size_t(i)];
+      const GpuSamplerDesc sampler{ref.sampler.magFilter, ref.sampler.minFilter, ref.sampler.wrapS, ref.sampler.wrapT};
+      const int32_t        slot = residency.textureSlot(ref.texture, sampler);
+      if(slot <= 0 || state->slots.gpuTexture(i) != slot)
+      {
+        out.push_back(at("I4", m) + "texture " + std::to_string(i) + " does not name its texture slot");
+        continue;
+      }
+      const auto descriptor = gpu.textureDescriptors().find(uint32_t(slot));
+      if(descriptor == gpu.textureDescriptors().end() || descriptor->second != residency.image(ref.texture))
+        out.push_back(at("I4", m) + "texture slot " + std::to_string(slot) + " does not hold its texture's image");
+      if(state->slots.samplerSlot(i) != residency.samplerSlot(sampler)
+         || !gpu.samplerDescriptors().count(uint32_t(residency.samplerSlot(sampler))))
+        out.push_back(at("I4", m) + "texture " + std::to_string(i) + " does not name its sampler's written slot");
+      if(const FakeGpuBackend::Image* image = gpu.image(residency.image(ref.texture)); image && srgb.count(i) && !image->srgb)
+        out.push_back(at("I4", m) + "a colour texture was not decoded as sRGB");
+    }
+  }
+  const auto& shade = expected.getShadeMaterials();
+  const auto& infos = expected.getTextureInfos();
+  if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.materialTable()), shade.size() * sizeof(shade[0])),
+                shade.data(), shade.size()))
+    out.push_back("I4: the material table does not hold the materials converted");
+  if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.textureInfoTable()), infos.size() * sizeof(infos[0])),
+                infos.data(), infos.size()))
+    out.push_back("I4: the texture-info table does not hold the materials' texture infos");
+
+  // the raster lists: the live instances by their material's bits, in slot order
+  std::array<std::vector<uint32_t>, 4> lists;
+  for(uint32_t s = 0; s < hwm; s++)
+    if(const Residency::Instance* inst = residency.instance(s))
+      if(const MaterialRecord* m = scene.material(inst->material))
+      {
+        const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(m->payload);
+        if(bits.solid())
+          lists[0].push_back(s);
+        if(bits.solidDoubleSided())
+          lists[1].push_back(s);
+        if(bits.blend())
+          lists[2].push_back(s);
+        lists[3].push_back(s);
+      }
+  for(size_t l = 0; l < lists.size(); l++)
+    if(residency.drawList(Residency::DrawList(l)) != lists[l])
+      out.push_back("raster list " + std::to_string(l) + " is not the live instances by their materials");
+
   // the scene descriptor
   const auto desc = rowAt<shaderio::GltfScene>(gpu, residency.sceneDescBuffer(), 0);
   if(uint64_t(desc.renderNodes) != gpu.bufferAddress(residency.renderNodeTable())
-     || uint64_t(desc.renderPrimitives) != gpu.bufferAddress(residency.renderPrimTable()))
+     || uint64_t(desc.renderPrimitives) != gpu.bufferAddress(residency.renderPrimTable())
+     || uint64_t(desc.materials) != gpu.bufferAddress(residency.materialTable())
+     || uint64_t(desc.textureInfos) != gpu.bufferAddress(residency.textureInfoTable()))
     out.push_back("I13: the scene descriptor does not hold the tables' addresses");
   return out;
 }

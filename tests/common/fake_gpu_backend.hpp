@@ -60,8 +60,9 @@ public:
   };
   struct Image
   {
-    ImageDesc              desc;
-    std::vector<std::byte> pixels;
+    std::string name, uri;
+    bool        srgb = false;
+    ImageInfo   info;
   };
   struct Blas
   {
@@ -95,7 +96,9 @@ public:
   uint64_t     bufferSize(BufferHandle buffer) const override;
   void         upload(BufferHandle dst, uint64_t offset, std::span<const std::byte> bytes) override;
   void copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size) override;
-  ImageHandle createImage(const ImageDesc& desc, std::span<const std::byte> pixels) override;
+  // "decodes" what it is given: width and height as the source says, two channels below three
+  // components; a source with nothing in it, or a uri starting "missing", can't be read
+  ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
   void        destroyImage(ImageHandle image) override;
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
   void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
