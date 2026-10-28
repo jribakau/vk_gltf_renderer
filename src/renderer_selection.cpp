@@ -43,9 +43,19 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
   // README ~110 spec-sanctions NaN when there's no ray, but this IS a ray, so it must be used).
   glm::vec3 worldPos = hasHit ? pickResult.worldRayOrigin + pickResult.worldRayDirection * pickResult.hitT : glm::vec3(0);
 
-  // Set or de-select the selected object (primitive-level selection)
-  // pickResult.instanceID is the TLAS instance index = render node index
-  if(!isDoubleClick && !(m_pickObserver && m_pickObserver(pickResult.instanceID, worldPos)))
+  // Set or de-select the selected object
+  // pickResult.instanceID is the TLAS instance index: a render node, or a stream host's instance slot
+  if(!isDoubleClick && m_resources.hostFed)
+  {
+    std::optional<InstancePick> pick;
+    if(hasHit && m_resources.retainedGpu)
+      if(const rs::Residency::Instance* inst = m_resources.retainedGpu->residency().instance(uint32_t(pickResult.instanceID)))
+        pick = InstancePick{inst->entity, inst->material};
+    // the entity hit, or nothing; the one selected, hit again, is let go
+    if(!(m_pickObserver && m_pickObserver(pick, worldPos)))
+      selectEntity(pick && pick->entity != m_selectedEntity ? pick->entity : rs::EntityId{});
+  }
+  else if(!isDoubleClick)
   {
     updateSelectionFromPick(pickResult.instanceID, worldPos, pickResult.worldRayOrigin);
   }
@@ -61,10 +71,10 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
     m_cameraManip->setSpeed(pickResult.hitT);            // Re-adjust speed based on the new distance
   }
 
+  if(nvvkgltf::Scene* scene = m_resources.getScene())
   {
-    const int        renderNodeIdx = pickResult.instanceID;
-    nvvkgltf::Scene* scene         = m_resources.getScene();
-    const auto&      renderNodes   = scene->getRenderNodes();
+    const int   renderNodeIdx = pickResult.instanceID;
+    const auto& renderNodes   = scene->getRenderNodes();
     if(renderNodeIdx >= 0 && renderNodeIdx < static_cast<int>(renderNodes.size()))
     {
       const nvvkgltf::RenderNode& renderNode = renderNodes[renderNodeIdx];
@@ -225,8 +235,21 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
   focusSelectionInBrowser();
 }
 
+nvutils::Bbox GltfRenderer::instanceWorldBounds(uint32_t slot) const
+{
+  const rs::Residency&           residency = m_resources.retainedGpu->residency();
+  const rs::Residency::Instance* inst      = residency.instance(slot);
+  const rs::Residency::Prim*     prim      = inst ? residency.prim(inst->prim) : nullptr;
+  if(!prim || !prim->indexCount)
+    return {};
+  return nvutils::Bbox(prim->boundsMin, prim->boundsMax).transform(inst->world);
+}
+
 nvutils::Bbox GltfRenderer::getRenderNodeBbox(int renderNodeIndex)
 {
+  // the retained scene's instance slot (a render node until a stream host feeds it)
+  if(m_resources.retainedGpu)
+    return renderNodeIndex < 0 ? nvutils::Bbox{} : instanceWorldBounds(uint32_t(renderNodeIndex));
   // Empty when the render node is invalid or its primitive has no readable bounds, so a union
   // over a selection is never widened by a made-up box.
   nvvkgltf::Scene* scene = m_resources.getScene();
@@ -294,6 +317,9 @@ int GltfRenderer::selectedNodeIndex()
 // Frame the whole scene, or the selected render nodes. A selection with no readable bounds leaves the camera alone.
 nvutils::Bbox GltfRenderer::visibleSceneBounds()
 {
+  // the retained scene's shown instances, where they are now
+  if(m_resources.retainedGpu)
+    return m_resources.gpuView().bounds();
   nvvkgltf::Scene* scene = m_resources.getScene();
   if(!scene || !scene->valid())
     return {};
@@ -358,6 +384,7 @@ void GltfRenderer::setGizmoHooks(GizmoHooks hooks)
   // Reattach on the next frame so the handles come from the new attach hook
   m_visualHelpers.transform.clearAttachment();
   m_gizmoNodeIndex = -1;
+  m_gizmoEntity    = {};
 }
 
 void GltfRenderer::setShowGizmo(bool on)
@@ -385,7 +412,7 @@ bool GltfRenderer::gizmoInput(glm::vec2 px, bool down, bool pressed, bool releas
   return took || dragging;
 }
 
-void GltfRenderer::setPickObserver(std::function<bool(int renderNode, const glm::vec3& hit)> observer)
+void GltfRenderer::setPickObserver(std::function<bool(const std::optional<InstancePick>&, const glm::vec3& hit)> observer)
 {
   m_pickObserver = std::move(observer);
 }

@@ -74,47 +74,43 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     , m_events(&events)
     , m_onApp(std::move(onApp))
 {
-  m_renderer->setPickObserver([this](int renderNode, const glm::vec3& hit) {
-    notePick(renderNode);
-    if(renderNode < 0 || m_pick == "mesh")
+  m_renderer->setPickObserver([this](const std::optional<GltfRenderer::InstancePick>& pick, const glm::vec3& hit) {
+    const fv::HostAddress at = pick ? m_map.pick(pick->entity, pick->material) : fv::HostAddress{};
+    notePick(at);
+    // a mesh pick selects the node hit, which the renderer does
+    if(at.prop < 0 || m_pick == "mesh")
       return false;
-    nvvkgltf::Scene* scene = m_renderer->editScene();
-    if(!scene)
-      return false;
-    const int prop = m_map.pick(*scene, renderNode).prop;
-    if(prop < 0)
-      return false;
-    const PropNodes& p = m_props[size_t(prop)];
+    const PropNodes& p = m_props[size_t(at.prop)];
     if(m_pick == "bone")
     {
       // the posed bone nearest the hit, of the figure hit; a prop without bones is selected whole
       const int bone = p.bones.nearest ? p.bones.nearest(hit) : -1;
-      const int gltf = bone >= 0 && bone < int(p.gltfOf.size()) ? p.gltfOf[size_t(bone)] : -1;
-      m_renderer->selectSceneNodeFromScript(gltf >= 0 ? gltf : p.root);
+      const rs::EntityId entity = bone >= 0 && bone < int(p.entityOf.size()) ? p.entityOf[size_t(bone)] : rs::EntityId{};
+      m_renderer->selectEntity(entity.isNone() ? p.root : entity);
       return true;
     }
-    m_renderer->selectSceneNodeFromScript(p.root);
+    m_renderer->selectEntity(p.root);
     return true;
   });
   commands.add("select", [this](const fv::Json& args) {
     return m_onApp([this, args] {
       const std::string prop = args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "";
       if(prop.empty())
-        m_renderer->selectSceneNodeFromScript(-1);
+        m_renderer->selectEntity({});
       else
       {
         const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
         if(it == m_props.end())
           throw std::runtime_error("no such prop");
-        int gltf = it->root;
+        rs::EntityId entity = it->root;
         if(args.contains("node") && !args["node"].is_null())
         {
           const int node = args["node"].get<int>();
-          gltf           = node >= 0 && node < int(it->gltfOf.size()) ? it->gltfOf[size_t(node)] : -1;
-          if(gltf < 0)
+          entity         = node >= 0 && node < int(it->entityOf.size()) ? it->entityOf[size_t(node)] : rs::EntityId{};
+          if(entity.isNone())
             throw std::runtime_error("no such node");
         }
-        m_renderer->selectSceneNodeFromScript(gltf);
+        m_renderer->selectEntity(entity);
       }
       // chosen in a panel, not clicked: no surface
       m_surfaceProp.clear();
@@ -148,10 +144,10 @@ FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == args["prop"].get<std::string>(); });
         if(it == m_props.end())
           throw std::runtime_error("no such prop");
-        const int was = m_renderer->selectedNodeIndex();
-        m_renderer->selectSceneNodeFromScript(it->root);
+        const rs::EntityId was = m_renderer->selectedEntity();
+        m_renderer->selectEntity(it->root);
         m_renderer->fitCamera(false);
-        m_renderer->selectSceneNodeFromScript(was);
+        m_renderer->selectEntity(was);
       }
       else
         m_renderer->fitCamera(!args.value("selected", false));
@@ -254,13 +250,12 @@ void FvView::setProps(std::vector<PropNodes> props)
 {
   m_props = std::move(props);
   m_map.set(m_props);
-  m_lastGltf = -2;
   publishSelection(true);
 }
 
-const FvView::PropNodes* FvView::propOfRoot(int gltf) const
+const FvView::PropNodes* FvView::propOfRoot(rs::EntityId entity) const
 {
-  const int prop = m_map.propOfRoot(gltf);
+  const int prop = m_map.propOfRoot(entity);
   return prop < 0 ? nullptr : &m_props[size_t(prop)];
 }
 
@@ -307,8 +302,8 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
           const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
           if(it != m_props.end())
           {
-            notePick(-1);
-            m_renderer->selectSceneNodeFromScript(it->root);
+            notePick({});
+            m_renderer->selectEntity(it->root);
             continue;
           }
         }
@@ -427,20 +422,16 @@ void FvView::deselect(const std::string& prop)
 {
   if(prop.empty() || m_selectedProp != prop)
     return;
-  m_renderer->selectSceneNodeFromScript(-1);
+  m_renderer->selectEntity({});
   publishSelection(true);
 }
 
-void FvView::notePick(int renderNode)
+void FvView::notePick(const fv::HostAddress& at)
 {
   m_surfaceProp.clear();
   m_surface.clear();
   // published again even when the node is the same: another surface of it
-  m_lastGltf             = -2;
-  nvvkgltf::Scene* scene = m_renderer->editScene();
-  if(!scene)
-    return;
-  const fv::HostAddress at = m_map.pick(*scene, renderNode);
+  m_publishAgain = true;
   if(at.surface < 0)
     return;
   m_surfaceProp = m_props[size_t(at.prop)].id;
@@ -449,13 +440,14 @@ void FvView::notePick(int renderNode)
 
 void FvView::publishSelection(bool force)
 {
-  const int gltf = m_renderer->selectedNodeIndex();
-  if(!force && gltf == m_lastGltf)
+  const rs::EntityId entity = m_renderer->selectedEntity();
+  if(!force && !m_publishAgain && entity == m_lastEntity)
     return;
-  m_lastGltf                 = gltf;
-  const fv::HostAddress at   = m_map.locate(gltf);
+  m_lastEntity               = entity;
+  m_publishAgain             = false;
+  const fv::HostAddress at   = m_map.locate(entity);
   const int             prop = at.prop, node = at.node;
-  if(gltf < 0 || prop < 0)
+  if(prop < 0)
   {
     m_selectedProp.clear();
     m_events->snapshot("selection", {{"prop", nullptr}, {"node", nullptr}});

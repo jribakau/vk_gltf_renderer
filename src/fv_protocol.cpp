@@ -33,8 +33,9 @@ namespace {
 // to optixAutoDenoiseSpp, which the app sends.
 // 5: dforce.mode. 6: wardrobe.collision, and the wardrobe topic's collision state. 7: render.status's
 // width and height. 8: the Clothes tab's material values (maps, UV transform, fabric, sheen) and the
-// texture slots in the materials topic (fv_materials.hpp).
-constexpr int kProtocolVersion = 8;
+// texture slots in the materials topic (fv_materials.hpp). 9: the animation topic's clips keep their
+// numbers while their prop is in the scene (never reused), and `current` is null without clips.
+constexpr int kProtocolVersion = 9;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

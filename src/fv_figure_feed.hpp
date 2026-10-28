@@ -95,6 +95,10 @@ public:
   bool syncSkins(const SceneGraph& figure, std::span<const int> meshes);
   // `materials` lowered again (an edit, a texture that came), with the options the last sync lowered with
   bool syncMaterials(const SceneGraph& figure, std::span<const int> materials);
+  // ... or with these (a host's own: the skin it shades with, the tone reference of an edit)
+  bool syncMaterials(const SceneGraph& figure, std::span<const std::pair<int, mat::LowerOptions>> materials);
+  // per scene material, the options the last sync lowered it with (empty until one has)
+  const std::vector<mat::LowerOptions>& lowering() const { return m_lowering; }
 
   rs::EntityId   entityOf(int node) const;
   rs::MeshId     meshOf(int mesh) const;

@@ -128,7 +128,7 @@ struct SyncResult
   bool tlasHandleChanged = false;  // the TLAS was recreated (capacity grew)
   bool verticesWritten   = false;  // a mesh's vertices were uploaded again, or a deform pass ran
   bool featuresChanged   = false;
-  bool dlssReset         = false;  // a scene replace
+  bool dlssReset         = false;  // a scene replace, or a material or light edited
 };
 
 class Residency

@@ -188,21 +188,30 @@ bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const int> ma
 {
   if(m_lowering.size() != figure.materials.size())
     return false;
+  std::vector<std::pair<int, mat::LowerOptions>> with;
+  for(int mi : materials)
+    with.emplace_back(mi, mi >= 0 && mi < int(m_lowering.size()) ? m_lowering[size_t(mi)] : mat::LowerOptions{});
+  return syncMaterials(figure, with);
+}
+
+bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const std::pair<int, mat::LowerOptions>> materials)
+{
+  if(m_lowering.size() != figure.materials.size())
+    return false;
   std::shared_ptr<rs::TextureTable> grown;
   std::set<std::string>             missing;
   const auto resolve = [&](const mat::TextureRequest& req) { return resolveTexture(req, grown, missing); };
   std::vector<std::pair<int, tinygltf::Material>> payloads;
   std::vector<std::string>                        extensionsUsed;
   bool                                            all = true;
-  for(int mi : materials)
+  for(const auto& [mi, options] : materials)
   {
     if(mi < 0 || mi >= int(m_materials.size()) || m_materials[size_t(mi)].isNone())
     {
       all = false;
       continue;
     }
-    payloads.emplace_back(mi, build::figureMaterial(figure, mi, m_lowering[size_t(mi)], resolve, extensionsUsed,
-                                                    m_options.build));
+    payloads.emplace_back(mi, build::figureMaterial(figure, mi, options, resolve, extensionsUsed, m_options.build));
   }
   if(grown)
     m_table = std::move(grown);

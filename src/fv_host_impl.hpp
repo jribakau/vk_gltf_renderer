@@ -79,6 +79,7 @@
 
 #include "env_image_loader.hpp"
 #include "fv_compose.hpp"
+#include "fv_figure_feed.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
@@ -93,6 +94,7 @@
 #include "gizmo_lines_vk.hpp"
 #include "gltf_scene_editor.hpp"
 #include "renderer.hpp"
+#include "scene_import_gltf.hpp"
 #include "tinygltf_utils.hpp"
 #include "ui_animation.hpp"
 
@@ -126,14 +128,10 @@ struct Loaded
   // keeps the worn conforming meshes out of the posed body (figure/wardrobe/collider.hpp); null without a body
   std::unique_ptr<fv::wardrobe::Collider> collider;
   int                                     collisionVersion = -1;
-  // where it is in the renderer's scene, set when the scene is composed (fv_compose.hpp)
-  std::vector<int>              nodeOf;   // scene node -> glTF node
-  std::unordered_map<int, int>  sceneOf;  // glTF node -> scene node
-  std::vector<int>              meshOf;   // scene mesh -> glTF mesh
-  std::vector<int>              skinOf;   // scene mesh -> glTF skin
-  std::vector<std::vector<int>> primsOf;  // scene mesh -> the render primitives owning its vertex sets (one per pose)
-  // the glTF its load built on the worker, which the next composition takes instead of building it again
-  std::optional<fv::build::BuildResult> prebuilt;
+  // what it is in the renderer's scene, fed when the scene is composed (fv_figure_feed.hpp), and the
+  // scene node each of the feed's entities is
+  std::unique_ptr<fv::FigureFeed> feed;
+  std::map<rs::EntityId, int>     nodeOf;
   // morph topic: -1 until the channel list has been published, then the value and weight last sent
   int                                                          morphList = -1;
   std::unordered_map<std::string, std::pair<double, double>> published;
@@ -227,7 +225,12 @@ struct Prop
   CameraProp                             camera;
   LightProp                              light;
   std::unique_ptr<FvMaterials>           materials;  // a figure's or a model's
-  fv::composer::Placed                    placed;     // where the last composition put it
+  // what the last composition made of it in the renderer's scene: its prop root, a model's import
+  // (holding its clips' references), a light's record
+  rs::EntityId                           root;
+  rs::ImportResult                       imported;
+  rs::LightId                            lightRecord;
+  bool                                   importNoticed = false;  // what its import leaves out was said
   Json                                   stats = Json::object();
 };
 
@@ -466,7 +469,7 @@ struct FvHost::Impl
   double            mouseX = 0, mouseY = 0;
   bool              lmb = false, mmb = false;
 
-  // application thread only: the scene's props in order; prop root i of the renderer's scene is props[i]'s
+  // application thread only: the scene's props in order
   std::vector<std::shared_ptr<Prop>> props;
   int                                propCount = 0;
   // morph.set merges here (any thread); onUpdate applies it as one setMany per figure
@@ -584,7 +587,10 @@ struct FvHost::Impl
   // export.glb {scene: true}: the scene as a file, built fresh from the props
   Json exportScene(const std::string& path);
   bool        ridesOn(const Prop& q, const std::string& id) const;
-  void        applyLightShown(const Prop& p);
+  // a light prop's record as the prop has it, at its real intensity (hidden, its entity shines with nothing)
+  tinygltf::Light lightPayload(const Prop& p) const;
+  // what the last composition fed goes from the renderer's scene
+  void releaseFed();
 
   void post(std::function<void()> f, std::source_location where = std::source_location::current())
   {
@@ -685,10 +691,15 @@ struct FvHost::Impl
   Json loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
                   std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {}, std::vector<std::string> prefetch = {},
                   std::vector<std::string> iray = {});
-  void install(std::unique_ptr<fv::Figure> f, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
-               fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
-               std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source,
-               std::function<void(std::shared_ptr<Prop>)> then);
+  void install(std::unique_ptr<fv::Figure>                                             f,
+               uint64_t                                                                generation,
+               uint64_t                                                                jobId,
+               bool                                                                    texturesFlipped,
+               fv::mat::SkinMode                                                       skin,
+               std::shared_ptr<fv::dson::Library>                                      lib,
+               std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images,
+               Json                                                                    source,
+               std::function<void(std::shared_ptr<Prop>)>                              then);
   // wardrobe: what a figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
   struct WearRequest
   {
@@ -717,6 +728,16 @@ struct FvHost::Impl
   Json animationTopic();
   void publishAnimation(bool force);
   Json animationCommand(const std::string& cmd, const Json& args);
+  // The clips by the number the "animation" topic gives them: animation i of a model prop's file
+  // keeps its number while the prop is in the scene, and a number is never given again (D4)
+  std::map<std::pair<std::string, int>, int> clipNumbers;
+  int                                        nextClip    = 0;
+  int                                        currentClip = -1;  // the number of the clip the renderer plays
+  int                                        clipNumber(const std::string& prop, int index);
+  // a clip number's record in the scene, none when it isn't there
+  rs::ClipId clipOf(int number) const;
+  // the clips in the scene in display order: their numbers
+  std::vector<int>                      clipOrder() const;
   Json lastAnimation;
   std::chrono::steady_clock::time_point animationAt{};
   Json exportGlb(const Json& args);
@@ -746,8 +767,8 @@ struct FvHost::Impl
   void normalizeInput(std::vector<Json>& events);
   void applyInput(const std::vector<Json>& events);
   void patchPose(const Loaded& f, const std::vector<std::string>& boneIds);
-  // a figure's posed bone at a glTF node, or {nullptr, nullptr}
-  std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> boneAt(int gltf) const;
+  // a figure's posed bone at an entity, or {nullptr, nullptr}
+  std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> boneAt(rs::EntityId entity) const;
   void                      applyGizmoEdit();
   void applyPreset(const fv::dson::Json&                             doc,
                    const std::string&                                kind,
@@ -798,18 +819,19 @@ struct FvHost::Impl
   // the loaded HDR's sun, toward it in the image's frame (fv::lighting::environmentSun); none for
   // the studio and for an image without one
   std::optional<glm::vec3> envSun;
-  // the host's sun in the renderer's model, and the ground height the renderer chose at load
-  int   sunNode    = -1;
-  int   sunLight   = -1;
-  float autoGround = 0.0F;
+  // the host's sun in the renderer's scene, and the ground height the renderer chose at load
+  rs::EntityId sunEntity;
+  rs::LightId  sunLight;
+  float        autoGround = 0.0F;
 
   Json lightingTopic() const;
   Json lightingSet(const Json& patch);
   void applyLighting(bool everything);
   void requestEnvironment();
   void applySun(bool force);
-  void addSun(tinygltf::Model& model);
-  void fillSun(tinygltf::Light& light, tinygltf::Node& node, int lightIndex);
+  // the "Sun" light as the current state has it, and its entity in `scene` (marked as the sky's sun)
+  tinygltf::Light sunPayload() const;
+  void            feedSun(rs::RetainedScene& scene);
   void setParams(const Json& values);
   void publishLighting();
 

@@ -216,7 +216,15 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       impl->skinMode = mode == "rtx" ? rtxSkin : fv::mat::SkinMode::eRaster;
       for(const auto& p : impl->props)
         if(p->figure && p->materials)
+        {
+          // the feed lowers every material with the new skin, then the edits' own lowering goes over it
+          if(p->figure->feed)
+          {
+            p->figure->feed->setOptions(buildOptionsOf(*p->figure, impl->skinMode));
+            p->figure->feed->sync(p->figure->fig->loaded.scene, p->figure->fig->loaded.root);
+          }
           p->materials->setSkinMode(impl->skinMode);
+        }
       impl->protocol->events().snapshot("render", {{"mode", mode}});
       return Json{{"mode", mode}};
     });
@@ -299,31 +307,32 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return std::any_of(pb.axes.begin(), pb.axes.end(), [kind](const fv::pose::Axis& a) { return a.kind == kind; });
   };
   renderer->setGizmoHooks({
-      .attach =
-          [impl, hasKind](int gltf) -> uint32_t {
-            if(!impl->view)
-              return 0;
-            const std::string& pick = impl->view->pickMode();
-            if(pick == "object")
-            {
-              if(!impl->view->propOfRoot(gltf))
-                return 0;
-              const std::string& t = impl->view->transformMode();
-              return t == "rotate" ? TransformHelperVk::ShowRotation : t == "scale" ? TransformHelperVk::ShowScale : TransformHelperVk::ShowTranslation;
-            }
-            if(pick != "bone")
-              return 0;
-            const auto [figure, pb] = impl->boneAt(gltf);
-            uint32_t flags          = 0;
-            if(pb && hasKind(*pb, fv::pose::ChannelKind::eRotation))
-              flags |= TransformHelperVk::ShowRotation;
-            if(pb && hasKind(*pb, fv::pose::ChannelKind::eTranslation))
-              flags |= TransformHelperVk::ShowTranslation;
-            return flags;
-          },
+      .attach = [impl, hasKind](rs::EntityId entity) -> uint32_t {
+        if(!impl->view)
+          return 0;
+        const std::string& pick = impl->view->pickMode();
+        if(pick == "object")
+        {
+          if(!impl->view->propOfRoot(entity))
+            return 0;
+          const std::string& t = impl->view->transformMode();
+          return t == "rotate" ? TransformHelperVk::ShowRotation :
+                 t == "scale"  ? TransformHelperVk::ShowScale :
+                                 TransformHelperVk::ShowTranslation;
+        }
+        if(pick != "bone")
+          return 0;
+        const auto [figure, pb] = impl->boneAt(entity);
+        uint32_t flags          = 0;
+        if(pb && hasKind(*pb, fv::pose::ChannelKind::eRotation))
+          flags |= TransformHelperVk::ShowRotation;
+        if(pb && hasKind(*pb, fv::pose::ChannelKind::eTranslation))
+          flags |= TransformHelperVk::ShowTranslation;
+        return flags;
+      },
       .edit =
-          [impl, hasKind](int gltf, const glm::vec3& t, const glm::quat& r, const glm::vec3& scale, bool done) {
-            if(const FvView::PropNodes* nodes = impl->view ? impl->view->propOfRoot(gltf) : nullptr)
+          [impl, hasKind](rs::EntityId entity, const glm::vec3& t, const glm::quat& r, const glm::vec3& scale, bool done) {
+            if(const FvView::PropNodes* nodes = impl->view ? impl->view->propOfRoot(entity) : nullptr)
             {
               auto p = impl->findProp(nodes->id);
               if(!p)
@@ -337,7 +346,8 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
               return;
             }
             // the release repeats the last move's transform; a click on a handle with no drag has only the release
-            const auto [figure, pb] = done ? std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*>{} : impl->boneAt(gltf);
+            const auto [figure, pb] =
+                done ? std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*>{} : impl->boneAt(entity);
             if(!pb)
               return;
             impl->gizmoEdit = Impl::GizmoEdit{figure, pb->id, fv::Quat{r.x, r.y, r.z, r.w},
@@ -374,6 +384,8 @@ void FvHost::onDetach()
   for(const auto& p : s.props)
     if(p->materials)
       p->materials->detach();
+  // the feeds let go of what they fed while the renderer's scene is still there
+  s.releaseFed();
   s.props.clear();
   s.pendingCompose.reset();
   {

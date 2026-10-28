@@ -120,13 +120,19 @@
 //                                                chosen), material edits, collision and dForce on/off, dForce's
 //                                                mode; restored after the add-ons: presets (eye-only ones as
 //                                                eyes), skin, eyes, makeup, worn items' colours, edits
-//   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models')
+//   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models'), by the
+//                                                number the "animation" topic gives each: it stays the
+//                                                clip's while its prop is in the scene, never reused
 //   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
 //                                                whole scene, written at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
 //   session.shutdown {}                          a clean exit, before the host ends the process
+//
+// The scene: the host feeds the renderer's retained scene itself (GltfRenderer::hostScene): a prop
+// root per prop, a figure through its feed (fv_figure_feed.hpp), a model imported from its file, a
+// camera or a light as a record, and the sun; a composition feeds it all again and makes it resident.
 //
 // Lighting: the environment, tone mapping, the raster shadow map and the ground are renderer
 // parameters; the sun is a directional light the host adds to every scene it composes, marked as the
@@ -136,7 +142,8 @@
 //
 // Camera, selection and display commands live in fv_view.hpp.
 //
-// Topics: "session", "jobs", "notices", "render", "lighting", "animation", "selection", "camera",
+// Topics: "session", "jobs", "notices", "render", "lighting", "animation" ({clips: {number: {name,
+// duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
 // "scene" ({props: {id: {kind, name, parent, visible, order, transform: {t, r, e, s}, stats?, source?,
 // format?, generation?, posable?, camera?, light?}}, order: [id]}), and per prop "nodes/<prop>"
 // (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",

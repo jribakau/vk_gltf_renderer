@@ -135,8 +135,7 @@ std::unique_ptr<FvMaterials> FvHost::Impl::makeMaterials(const std::shared_ptr<P
       .notice   = [this](const std::string& text, const char* level) { notice(text, level); },
       .nextJob  = [this] { return ++jobs; },
       .job      = [this](uint64_t id, const Json& state) { job(id, state); },
-      .texture =
-          [this, weak](const fv::build::TextureRequest& req, bool flipped) -> std::optional<fv::build::TextureImage> {
+      .texture = [this, weak](const fv::build::TextureRequest& req, bool flipped) -> std::optional<fv::build::TextureImage> {
         std::shared_ptr<fv::dson::Library> lib;
         {
           std::lock_guard lock(settingsMutex);
@@ -149,6 +148,31 @@ std::unique_ptr<FvMaterials> FvHost::Impl::makeMaterials(const std::shared_ptr<P
           [weak](const fv::build::TextureRequest& req, const fv::build::TextureImage& image) {
             if(auto p = weak.lock(); p && p->figure)
               p->figure->images.insert_or_assign(fv::build::requestKey(req), image);
+          },
+      .resolves =
+          [weak](const fv::build::TextureRequest& req) {
+            const auto p = weak.lock();
+            if(!p || !p->figure)
+              return false;
+            const auto it = p->figure->images.find(fv::build::requestKey(req));
+            return it != p->figure->images.end() && it->second.has_value();
+          },
+      .writeFigure =
+          [weak](std::vector<std::pair<int, fv::mat::LowerOptions>> materials) {
+            const auto p = weak.lock();
+            if(!p || !p->figure || !p->figure->feed)
+              return;
+            Loaded& f = *p->figure;
+            if(!f.feed->syncMaterials(f.fig->loaded.scene, materials))
+              f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
+          },
+      .writeModel =
+          [this, weak](int index, tinygltf::Material material) {
+            const auto p = weak.lock();
+            if(!p || !renderer->feedsHostScene() || index < 0 || index >= int(p->imported.materials.size()))
+              return;
+            if(const rs::MaterialId id = p->imported.materials[size_t(index)]; renderer->hostScene().material(id))
+              renderer->hostScene().setMaterial(id, std::move(material));
           },
   });
 }
@@ -201,14 +225,10 @@ void FvHost::Impl::removeProp(const std::shared_ptr<Prop>& p)
       q->euler.reset();
     }
   props.erase(std::remove(props.begin(), props.end(), p), props.end());
-  // hidden now; gone from the GPU when the composition runs
-  if(p->placed.root >= 0)
-  {
-    Prop hidden    = {};
-    hidden.placed  = p->placed;
-    hidden.visible = false;
-    applyVisible(hidden);
-  }
+  // hidden now (with what rides on it, until the composition puts that back); gone from the GPU
+  // when the composition runs
+  if(renderer->feedsHostScene() && renderer->hostScene().entity(p->root))
+    renderer->hostScene().setVisible(p->root, false);
 }
 
 glm::mat4 FvHost::Impl::worldOf(const Prop& p) const
@@ -227,42 +247,35 @@ glm::mat4 FvHost::Impl::worldOf(const Prop& p) const
 
 void FvHost::Impl::applyTransform(const Prop& p)
 {
-  if(p.placed.root < 0)
+  if(!renderer->feedsHostScene() || !renderer->hostScene().entity(p.root))
     return;
-  const GltfRenderer::NodeTransform t{p.placed.root, p.transform.translation, p.transform.rotation, p.transform.scale};
-  renderer->setNodeTransforms({&t, 1});
+  renderer->hostScene().setLocal(
+      p.root, {.translation = p.transform.translation, .rotation = p.transform.rotation, .scale = p.transform.scale});
 }
 
+// A prop under a hidden one stays hidden, whatever its own flag, and a light hidden shines with
+// nothing: the scene's visibility cascades so (RetainedScene::shown).
 void FvHost::Impl::applyVisible(const Prop& p)
 {
-  nvvkgltf::Scene* scene = renderer->editScene();
-  if(!scene || !scene->valid() || p.placed.root < 0 || p.placed.root >= int(scene->getModel().nodes.size()))
+  if(!renderer->feedsHostScene() || !renderer->hostScene().entity(p.root))
     return;
-  tinygltf::utils::setNodeVisibility(scene->getModel().nodes[size_t(p.placed.root)], {p.visible});
-  // from the prop at the top of what it rides on: a prop under a hidden one stays hidden, whatever its own flag
-  const Prop* top = &p;
-  for(int steps = 0; !top->parent.empty() && steps <= int(props.size()); steps++)
-  {
-    const auto up = findProp(top->parent);
-    if(!up || up->placed.root < 0)
-      break;
-    top = up.get();
-  }
-  scene->editor().updateVisibility(top->placed.root);
-  // a light shows nothing, but lights; hidden, or riding on something hidden, it goes dark
-  applyLightShown(p);
-  for(const auto& q : props)
-    if(q.get() != &p && ridesOn(*q, p.id))
-      applyLightShown(*q);
+  renderer->hostScene().setVisible(p.root, p.visible);
 }
 
-void FvHost::Impl::applyLightShown(const Prop& p)
+tinygltf::Light FvHost::Impl::lightPayload(const Prop& p) const
 {
-  nvvkgltf::Scene* scene = renderer->editScene();
-  if(!scene || !scene->valid() || p.placed.light < 0 || p.placed.light >= int(scene->getModel().lights.size()))
-    return;
-  scene->editor().getLightForEdit(p.placed.light).intensity = shown(p) ? p.light.intensity : 0.0;
-  scene->markLightDirty(p.placed.light);
+  tinygltf::Light l;
+  l.name                = p.name;
+  l.type                = p.light.type;
+  const glm::vec3 c     = fv::lighting::linearColor(p.light.color);
+  l.color               = {c.x, c.y, c.z};
+  l.intensity           = p.light.intensity;
+  l.spot.innerConeAngle = p.light.inner;
+  l.spot.outerConeAngle = p.light.outer;
+  tinygltf::Value::Object extras;
+  extras["radius"] = tinygltf::Value(p.light.radius);
+  l.extras         = tinygltf::Value(extras);
+  return l;
 }
 
 namespace {
@@ -608,8 +621,8 @@ Json FvHost::Impl::viewUse(const Json& args)
 void FvHost::Impl::selectProp(const std::string& id)
 {
   const auto p = findProp(id);
-  if(p && p->placed.root >= 0)
-    renderer->selectSceneNodeFromScript(p->placed.root);
+  if(p && !p->root.isNone())
+    renderer->selectEntity(p->root);
 }
 
 void FvHost::Impl::requestCompose(const std::string& label, std::function<void()> after, Loaded* settle)
@@ -643,26 +656,46 @@ fv::composer::Part FvHost::Impl::partOf(size_t i, const tinygltf::Model* model, 
     part.camera = fv::composer::perspectiveCamera(p.camera.lens.focalLength);
   else if(p.kind == PropKind::eLight)
   {
-    tinygltf::Light l;
-    l.name                = p.name;
-    l.type                = p.light.type;
-    const glm::vec3 c     = fv::lighting::linearColor(p.light.color);
-    l.color               = {c.x, c.y, c.z};
-    l.intensity           = forFile || shown(p) ? p.light.intensity : 0.0;
-    l.spot.innerConeAngle = p.light.inner;
-    l.spot.outerConeAngle = p.light.outer;
-    tinygltf::Value::Object extras;
-    extras["radius"] = tinygltf::Value(p.light.radius);
-    l.extras         = tinygltf::Value(extras);
-    part.light       = l;
+    tinygltf::Light l = lightPayload(p);
+    l.intensity       = forFile || shown(p) ? p.light.intensity : 0.0;
+    part.light        = l;
   }
   return part;
 }
 
-// The scene built again from its props and handed to the renderer in place of the old one: every
-// figure's glTF from its scene graph (its pose, dials, worn items and edits are in the graph, so it
-// comes back as it was), each on a thread of its own; every model as its file had it, with its
-// material edits laid over again. The camera stays where it was, unless the scene was empty.
+void FvHost::Impl::releaseFed()
+{
+  if(!renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = renderer->hostScene();
+  for(const auto& p : props)
+  {
+    if(p->figure)
+    {
+      p->figure->feed.reset();
+      p->figure->nodeOf.clear();
+    }
+    for(rs::ClipId c : p->imported.clips)
+      scene.release(c);
+    p->imported = {};
+    if(scene.entity(p->root))
+      scene.destroyEntity(p->root);
+    p->root        = {};
+    p->lightRecord = {};
+  }
+  // roots the props above no longer name (a prop removed since): every root is the host's
+  for(const rs::EntityId root : std::vector<rs::EntityId>(scene.roots()))
+    if(scene.entity(root))
+      scene.destroyEntity(root);
+  sunEntity = {};
+  sunLight  = {};
+}
+
+// The scene fed again from its props and made resident in place of the old one: every figure
+// through its feed from its scene graph (its pose, dials, worn items and edits are in the graph, so
+// it comes back as it was); every model imported as its file has it, with its material edits laid
+// over again; cameras, lights and the sun as records. The camera stays where it was, unless the scene
+// was empty.
 void FvHost::Impl::compose()
 {
   ComposeRequest request = std::move(*pendingCompose);
@@ -699,55 +732,6 @@ void FvHost::Impl::compose()
       }
   }};
 
-  // figures built again, in parallel: each fv::Figure on one thread, and this one waits
-  std::vector<std::optional<fv::build::BuildResult>> builds(props.size());
-  {
-    nvutils::ScopedTimer             t("buildGltf");
-    std::vector<std::future<void>>   work;
-    const fv::mat::SkinMode          skin = skinMode.load();
-    for(size_t i = 0; i < props.size(); i++)
-    {
-      Loaded* f = props[i]->figure.get();
-      if(!f)
-        continue;
-      if(f->prebuilt)
-      {
-        builds[i] = std::move(*f->prebuilt);
-        f->prebuilt.reset();
-        continue;
-      }
-      work.push_back(std::async(std::launch::async, [f, skin, &out = builds[i]] {
-        out = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, buildOptionsOf(*f, skin));
-      }));
-    }
-    fv::timing::Scope timeWait("buildGltf wait");
-    for(auto& w : work)
-    {
-      try
-      {
-        w.get();
-      }
-      catch(const std::exception& e)
-      {
-        notice(std::string("A figure could not be built: ") + e.what(), "error");
-      }
-    }
-  }
-
-  std::vector<fv::composer::Part> parts(props.size());
-  for(size_t i = 0; i < props.size(); i++)
-  {
-    const Prop& p = *props[i];
-    parts[i]      = partOf(i, p.figure && builds[i] ? &builds[i]->model : p.model.get(), false);
-  }
-  std::vector<fv::composer::Placed> placed;
-  tinygltf::Model                  composed = [&] {
-    fv::timing::Scope timeMerge("merge");
-    tinygltf::Model   m = fv::composer::compose(parts, placed);
-    addSun(m);
-    return m;
-  }();
-
   const bool hasGeometry = std::any_of(props.begin(), props.end(), [](const auto& p) { return p->figure || p->model; });
   if(auto manip = renderer->getCameraManipulator())
   {
@@ -759,80 +743,121 @@ void FvHost::Impl::compose()
   if(hasGeometry && !composedAny && viewCamera.empty())
     cameraRestore.reset();
   composedAny = hasGeometry;
-  const int selected = renderer->selectedNodeIndex();
+  const bool        selected     = !renderer->selectedEntity().isNone();
   const std::string selectedProp = view ? view->selectedProp() : "";
-  // the clip playing, its speed and loop: loadModel starts the animation over from the first clip
-  struct Clip
+  // the clip playing, where, and how: its number stays its own while its prop is here
+  const AnimationControl played   = renderer->editAnimationControl();
+  const float            clipTime = renderer->hostClipTime();
+  const int              clipWas  = currentClip;
+
+  rs::RetainedScene& scene = renderer->hostScene();
   {
-    std::string prop, name;
-    float       speed = 1.f;
-    bool        loop = true, play = false;
-  };
-  std::optional<Clip> clip;
-  {
-    const Json a = animationTopic();
-    const int  c = a.value("current", -1);
-    if(c >= 0 && a["clips"].contains(std::to_string(c)))
+    fv::timing::Scope t("feed");
+    releaseFed();
+    const fv::mat::SkinMode skin = skinMode.load();
+    // the prop roots first, so a prop can ride on one that comes after it
+    for(const auto& p : props)
     {
-      const Json&             info = a["clips"][std::to_string(c)];
-      const AnimationControl& ctrl = renderer->editAnimationControl();
-      clip = Clip{info["prop"].is_string() ? info["prop"].get<std::string>() : "", info.value("name", ""), ctrl.speed, ctrl.loop, ctrl.play};
+      const uint32_t number = uint32_t(std::atoi(p->id.c_str() + 2));
+      p->root               = scene.createEntity(p->name, {number, -1});
+      scene.setLocal(p->root,
+                     {.translation = p->transform.translation, .rotation = p->transform.rotation, .scale = p->transform.scale});
+      scene.setVisible(p->root, p->visible);
     }
+    for(const auto& p : props)
+      if(const auto parent = p->parent.empty() ? nullptr : findProp(p->parent))
+        scene.setParent(p->root, parent->root);  // refused for a cycle: it stays at the root
+    for(const auto& p : props)
+    {
+      const uint32_t number = uint32_t(std::atoi(p->id.c_str() + 2));
+      if(Loaded* f = p->figure.get())
+      {
+        try
+        {
+          f->feed = std::make_unique<fv::FigureFeed>(
+              scene, fv::FigureFeedOptions{.build = buildOptionsOf(*f, skin), .prop = number, .parent = p->root});
+          f->feed->sync(f->fig->loaded.scene, f->fig->loaded.root);
+        }
+        catch(const std::exception& e)
+        {
+          f->feed.reset();
+          notice(std::string("A figure could not be built: ") + e.what(), "error");
+        }
+      }
+      else if(p->model)
+      {
+        std::vector<std::filesystem::path> search;
+        if(!p->path.empty())
+          search.push_back(pathOf(p->path).parent_path());
+        p->imported = rs::importGltf(scene, *p->model, {.prop = number, .parent = p->root, .imageSearchPaths = search});
+        // what the scene can't draw of it is left out, said once (D23)
+        if(!std::exchange(p->importNoticed, true))
+          for(const std::string& n : p->imported.notices)
+            notice(p->name + ": " + n, "warning");
+        // its clips' numbers, theirs from now on
+        for(int c = 0; c < int(p->imported.clips.size()); c++)
+          if(!p->imported.clips[size_t(c)].isNone())
+            clipNumber(p->id, c);
+      }
+      else if(p->kind == PropKind::eCamera)
+      {
+        const rs::CameraId camera =
+            scene.addCamera({.owner = {number, -1}, .payload = fv::composer::perspectiveCamera(p->camera.lens.focalLength)});
+        scene.setEntityCamera(p->root, camera);
+        scene.release(camera);
+      }
+      else if(p->kind == PropKind::eLight)
+      {
+        p->lightRecord = scene.addLight({.owner = {number, -1}, .payload = lightPayload(*p)});
+        scene.setEntityLight(p->root, p->lightRecord);
+        scene.release(p->lightRecord);
+      }
+    }
+    feedSun(scene);
   }
-  const bool loaded = [&] {
-    nvutils::ScopedTimer t("loadModel");
-    fv::timing::Scope    ts("loadModel");
-    return renderer->loadModel(std::move(composed));
-  }();
-  if(!loaded)
   {
-    sunNode = sunLight = -1;
-    notice(label + ": the renderer could not take the scene.", "error");
-    finish();
-    return;
+    nvutils::ScopedTimer t("upload");
+    fv::timing::Scope    ts("upload");
+    renderer->replaceHostScene();
   }
   // the renderer put the ground at the scene's lowest point; "auto" keeps that
   for(const nvutils::ParameterBase* p : exposedParameters(registry))
     if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
       autoGround = *static_cast<const float*>(p->destination.raw);
   appliedParams.erase("infinitePlaneDistance");
-  appliedParams.erase("ptFireflyClamp");  // the load recalibrated it (calibrateFireflyClamp); ours goes again
+  appliedParams.erase("ptFireflyClamp");  // the replace recalibrated it (calibrateFireflyClamp); ours goes again
   applyLighting(false);
 
   fv::timing::Scope              timeAttach("attach");
   std::vector<FvView::PropNodes> views;
-  nvvkgltf::Scene*               scn = renderer->editScene();
   for(size_t i = 0; i < props.size(); i++)
   {
-    Prop& p  = *props[i];
-    p.placed = placed[i];
-    const nvvkgltf::IndexRemapping& base = p.placed.base;
-    const FvMaterials::Placement    at{base.materials, base.textures, base.samplers, base.meshes};
-    FvView::PropNodes               nodes;
+    Prop&             p = *props[i];
+    FvView::PropNodes nodes;
     nodes.id   = p.id;
-    nodes.root = p.placed.root;
-    if(p.figure && builds[i] && scn)
+    nodes.root = p.root;
+    if(p.figure && p.figure->feed)
     {
-      Loaded&                 f     = *p.figure;
-      fv::build::BuildResult& built = *builds[i];
-      // one primsOf entry per vertex set: the mesh's material groups read one set of buffers, so a
-      // dial's vertices go up once, not once per group
-      fv::FigureSceneMap mapped = fv::mapFigure(std::move(built.nodeOf), std::move(built.meshOf), std::move(built.skinOf), base, *scn);
-      f.nodeOf                  = std::move(mapped.nodeOf);
-      f.sceneOf                 = std::move(mapped.sceneOf);
-      f.meshOf                  = std::move(mapped.meshOf);
-      f.skinOf                  = std::move(mapped.skinOf);
-      f.primsOf                 = std::move(mapped.primsOf);
-      // the glTF already holds the scene's dials and binds; don't upload them again
+      Loaded&                   f     = *p.figure;
+      const fv::SceneGraph&     graph = f.fig->loaded.scene;
+      std::vector<rs::EntityId> entityOf(graph.nodes.size());
+      for(int n = 0; n < int(graph.nodes.size()); n++)
+      {
+        entityOf[size_t(n)] = f.feed->entityOf(n);
+        if(!entityOf[size_t(n)].isNone())
+          f.nodeOf[entityOf[size_t(n)]] = n;
+      }
+      for(int m = 0; m < int(graph.materials.size()); m++)
+        nodes.materials.push_back(f.feed->materialOf(m));
+      // the feed took the scene's dials and binds as they are; don't feed them again
       f.fig->drain();
       if(!p.materials)
         p.materials = makeMaterials(props[i]);
-      p.materials->attach(p.id, &f.fig->loaded.scene, built, f.texturesFlipped, skinMode.load(), at);
+      p.materials->attach(p.id, &f.fig->loaded.scene, f.feed->lowering(), f.texturesFlipped, skinMode.load());
       publishEyes(p);
       publishSkin(p);
-      nodes.materials     = at.materials;
-      nodes.materialCount = int(f.fig->loaded.scene.materials.size());
-      Json described = FvView::describeFigure(nodes, f.fig->loaded.scene, f.fig->loaded.root, f.nodeOf, f.fig->morphs ? f.fig->morphs->size() : 0);
+      Json described = FvView::describeFigure(nodes, graph, f.fig->loaded.root, std::move(entityOf),
+                                              f.fig->morphs ? f.fig->morphs->size() : 0);
       if(f.fig->pose)
       {
         for(const auto& pb : f.fig->pose->bones())
@@ -854,24 +879,18 @@ void FvHost::Impl::compose()
     }
     else if(p.figure)
     {
-      // its build failed, so none of it is in this scene: nothing may address the scene before
-      Loaded& f = *p.figure;
-      std::fill(f.nodeOf.begin(), f.nodeOf.end(), -1);
-      std::fill(f.meshOf.begin(), f.meshOf.end(), -1);
-      std::fill(f.skinOf.begin(), f.skinOf.end(), -1);
-      f.sceneOf.clear();
-      f.primsOf.assign(f.meshOf.size(), {});
+      // its feed failed, so none of it is in this scene
       if(p.materials)
         p.materials->detach();
     }
-    else if(p.model && scn && scn->valid())
+    else if(p.model)
     {
       if(!p.materials)
         p.materials = makeMaterials(props[i]);
-      p.materials->attachModel(p.id, at, *p.model);
-      nodes.materials     = at.materials;
-      nodes.materialCount = int(p.model->materials.size());
-      Json described = FvView::describeModel(nodes, *p.model, p.placed.firstNode);
+      p.materials->attachModel(p.id, *p.model);
+      nodes.materials = p.imported.materials;
+      nodes.materials.resize(p.model->materials.size());
+      Json described = FvView::describeModel(nodes, *p.model, p.imported.entities);
       p.stats        = described["stats"];
       protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
     }
@@ -890,25 +909,17 @@ void FvHost::Impl::compose()
     }
   // the selection was the node of a prop; it is again where that prop is now
   if(const auto p = findProp(selectedProp))
-    renderer->selectSceneNodeFromScript(selected >= 0 && p->placed.root >= 0 ? p->placed.root : -1);
-  if(clip)
+    renderer->selectEntity(selected ? p->root : rs::EntityId{});
+  // the clip that played plays on where it was, if its prop is still here; else the first clip
   {
-    // the same clip of the same prop, if it is still in the scene
-    AnimationControl& ctrl  = renderer->editAnimationControl();
-    const Json        a     = animationTopic();
-    bool              found = false;
-    for(auto it = a["clips"].begin(); it != a["clips"].end() && !found; ++it)
-      if((it.value()["prop"].is_string() ? it.value()["prop"].get<std::string>() : "") == clip->prop && it.value().value("name", "") == clip->name)
-      {
-        ctrl.currentAnimation = std::stoi(it.key());
-        ctrl.reset            = true;
-        ctrl.speed            = clip->speed;
-        ctrl.loop             = clip->loop;
-        ctrl.play             = clip->play;
-        ctrl.runOnce          = !clip->play;
-        found                 = true;
-      }
-    if(!found)
+    AnimationControl& ctrl       = renderer->editAnimationControl();
+    ctrl.speed                   = played.speed;
+    ctrl.loop                    = played.loop;
+    ctrl.play                    = played.play;
+    const std::vector<int> order = clipOrder();
+    currentClip                  = !clipOf(clipWas).isNone() ? clipWas : order.empty() ? -1 : order.front();
+    renderer->setHostClip(clipOf(currentClip), currentClip == clipWas ? clipTime : 0.f);
+    if(currentClip < 0)
       ctrl.play = false;
   }
   publishScene();
@@ -1059,20 +1070,8 @@ Json FvHost::Impl::propSet(const Json& args)
       p->light.type = type;
       requestCompose("Changing " + p->name);
     }
-    nvvkgltf::Scene* scene = renderer->editScene();
-    if(scene && scene->valid() && p->placed.light >= 0 && p->placed.light < int(scene->getModel().lights.size()))
-    {
-      tinygltf::Light& light       = scene->editor().getLightForEdit(p->placed.light);
-      const glm::vec3  c           = fv::lighting::linearColor(p->light.color);
-      light.color                  = {c.x, c.y, c.z};
-      light.intensity              = shown(*p) ? p->light.intensity : 0.0;
-      light.spot.innerConeAngle    = p->light.inner;
-      light.spot.outerConeAngle    = p->light.outer;
-      tinygltf::Value::Object extras = light.extras.IsObject() ? light.extras.Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
-      extras["radius"]               = tinygltf::Value(p->light.radius);
-      light.extras                   = tinygltf::Value(extras);
-      scene->markLightDirty(p->placed.light);
-    }
+    if(renderer->feedsHostScene() && renderer->hostScene().light(p->lightRecord))
+      renderer->hostScene().setLight(p->lightRecord, lightPayload(*p));
   }
   if(args.contains("parent"))
   {

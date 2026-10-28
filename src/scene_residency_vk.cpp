@@ -1008,6 +1008,7 @@ void RetainedSceneVk::afterSync(RetainedScene& scene, const SyncResult& result)
     if(record)
     {
       info.directional = record->payload.type == "directional";
+      info.skySun      = record->skySun;
       info.intensity   = item.shown ? record->payload.intensity : 0.0;  // as the light buffer holds it
       if(record->payload.color.size() == 3)
         info.maxColor = std::max({record->payload.color[0], record->payload.color[1], record->payload.color[2]});

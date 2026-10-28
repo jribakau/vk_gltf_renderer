@@ -32,9 +32,9 @@
 #include <figure/dson/material_preset.hpp>
 #include <figure/scene/graph.hpp>
 
-fv::Json FvView::describeFigure(PropNodes& out, const fv::SceneGraph& scene, int root, const std::vector<int>& nodeOf, int morphs)
+fv::Json FvView::describeFigure(PropNodes& out, const fv::SceneGraph& scene, int root, std::vector<rs::EntityId> entityOf, int morphs)
 {
-  out.gltfOf = nodeOf;
+  out.entityOf = std::move(entityOf);
   out.nodes.assign(scene.nodes.size(), {});
   fv::Json nodes = fv::Json::object();
   int      order = 0, bones = 0, triangles = 0;
@@ -75,13 +75,12 @@ fv::Json FvView::describeFigure(PropNodes& out, const fv::SceneGraph& scene, int
           {"stats", {{"meshes", meshes}, {"triangles", triangles}, {"materials", materials}, {"bones", bones}, {"morphs", morphs}}}};
 }
 
-fv::Json FvView::describeModel(PropNodes& out, const tinygltf::Model& model, int firstNode)
+fv::Json FvView::describeModel(PropNodes& out, const tinygltf::Model& model, std::vector<rs::EntityId> entityOf)
 {
-  // a model the composition could not merge has no nodes in the scene
-  const int count = firstNode >= 0 ? int(model.nodes.size()) : 0;
-  out.gltfOf.resize(size_t(count));
-  for(int i = 0; i < count; i++)
-    out.gltfOf[size_t(i)] = firstNode + i;
+  // a model the import could not take has no nodes in the scene
+  const int count = entityOf.empty() ? 0 : int(model.nodes.size());
+  entityOf.resize(size_t(count));
+  out.entityOf = std::move(entityOf);
   out.bones = {};
   std::vector<int> parent(size_t(count), -1);
   for(int i = 0; i < count; i++)

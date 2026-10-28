@@ -69,39 +69,65 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
   return {{"job", jobId}};
 }
 
-// The clips in the scene, each with the prop whose nodes it moves, and where playback is.
+int FvHost::Impl::clipNumber(const std::string& prop, int index)
+{
+  const auto [it, added] = clipNumbers.try_emplace({prop, index}, nextClip);
+  if(added)
+    nextClip++;
+  return it->second;
+}
+
+rs::ClipId FvHost::Impl::clipOf(int number) const
+{
+  for(const auto& [key, n] : clipNumbers)
+    if(n == number)
+      if(const auto p = findProp(key.first); p && key.second >= 0 && key.second < int(p->imported.clips.size()))
+        return p->imported.clips[size_t(key.second)];
+  return {};
+}
+
+std::vector<int> FvHost::Impl::clipOrder() const
+{
+  std::vector<int> out;
+  for(const auto& p : props)
+    for(int i = 0; i < int(p->imported.clips.size()); i++)
+      if(!p->imported.clips[size_t(i)].isNone())
+        if(const auto it = clipNumbers.find({p->id, i}); it != clipNumbers.end())
+          out.push_back(it->second);
+  return out;
+}
+
+// The clips in the scene by their numbers, which stay theirs while their prop is here (D4), each with
+// the prop it came with, in display order; and where playback is (`current` null without clips).
 Json FvHost::Impl::animationTopic()
 {
   Json                    clips = Json::object();
-  nvvkgltf::Scene*        scn   = renderer->editScene();
   const AnimationControl& ctrl  = renderer->editAnimationControl();
-  Json                    out   = {{"clips", clips}, {"current", -1}, {"playing", false}, {"time", 0.0}, {"speed", ctrl.speed}, {"loop", ctrl.loop}};
-  if(!scn || !scn->valid() || !scn->animation().hasAnimation())
+  Json                    out   = {{"clips", clips}, {"current", nullptr},  {"playing", false},
+                                   {"time", 0.0},    {"speed", ctrl.speed}, {"loop", ctrl.loop}};
+  if(!renderer->feedsHostScene())
     return out;
-  std::vector<fv::composer::Placed> placed;
+  const rs::RetainedScene& scene = renderer->hostScene();
+  int                      order = 0;
   for(const auto& p : props)
-    placed.push_back(p->placed);
-  const tinygltf::Model& model = scn->getModel();
-  const int              n     = scn->animation().getNumAnimations();
-  for(int i = 0; i < n; i++)
-  {
-    const nvvkgltf::AnimationInfo& info = scn->animation().getAnimationInfo(i);
-    Json                           clip = {{"name", info.name.empty() ? "Clip " + std::to_string(i + 1) : info.name}, {"duration", std::max(0.f, info.end - info.start)}, {"order", i}, {"prop", nullptr}};
-    if(i < int(model.animations.size()) && !model.animations[size_t(i)].channels.empty())
+    for(int i = 0; i < int(p->imported.clips.size()); i++)
     {
-      const int part = fv::composer::partOfNode(placed, model.animations[size_t(i)].channels[0].target_node);
-      if(part >= 0)
-        clip["prop"] = props[size_t(part)]->id;
+      const rs::ClipRecord* clip = scene.clip(p->imported.clips[size_t(i)]);
+      if(!clip)
+        continue;
+      const std::array<float, 2> range  = clip->range();
+      const int                  number = clipNumber(p->id, i);
+      clips[std::to_string(number)] = {{"name", clip->name.empty() ? "Clip " + std::to_string(order + 1) : clip->name},
+                                       {"duration", std::max(0.f, range[1] - range[0])},
+                                       {"order", order++},
+                                       {"prop", p->id}};
     }
-    clips[std::to_string(i)] = clip;
-  }
-  out["clips"]   = clips;
-  out["current"] = ctrl.currentAnimation >= 0 && ctrl.currentAnimation < n ? ctrl.currentAnimation : -1;
-  out["playing"] = ctrl.play;
-  if(out["current"] >= 0)
+  out["clips"] = clips;
+  if(currentClip >= 0 && clips.contains(std::to_string(currentClip)))
   {
-    const nvvkgltf::AnimationInfo& info = scn->animation().getAnimationInfo(out["current"].get<int>());
-    out["time"]                         = std::round(std::max(0.f, info.currentTime - info.start) * 1000.f) / 1000.0;
+    out["current"] = currentClip;
+    out["playing"] = ctrl.play;
+    out["time"]    = std::round(renderer->hostClipTime() * 1000.f) / 1000.0;
   }
   return out;
 }
@@ -121,28 +147,34 @@ void FvHost::Impl::publishAnimation(bool force)
 
 Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
 {
-  nvvkgltf::Scene*  scn  = renderer->editScene();
-  AnimationControl& ctrl = renderer->editAnimationControl();
-  if(!scn || !scn->valid() || !scn->animation().hasAnimation())
+  AnimationControl&      ctrl  = renderer->editAnimationControl();
+  const std::vector<int> order = clipOrder();
+  if(order.empty())
     throw std::runtime_error("nothing in the scene has animations");
-  const int n = scn->animation().getNumAnimations();
+  // the clip a command acts on: the current one, else the first
+  const auto current = [&] {
+    if(clipOf(currentClip).isNone())
+    {
+      currentClip = order.front();
+      renderer->setHostClip(clipOf(currentClip));
+    }
+  };
   if(cmd == "select")
   {
     const int clip = args.at("clip").get<int>();
-    if(clip < 0 || clip >= n)
+    if(clipOf(clip).isNone())
       throw std::runtime_error("no such clip");
-    ctrl.currentAnimation = clip;
-    ctrl.reset            = true;
-    ctrl.play             = args.value("play", true);
-    ctrl.runOnce          = !ctrl.play;
+    currentClip = clip;
+    renderer->setHostClip(clipOf(clip));
+    ctrl.reset   = true;
+    ctrl.play    = args.value("play", true);
+    ctrl.runOnce = !ctrl.play;
   }
   else if(cmd == "play")
   {
-    if(ctrl.currentAnimation < 0 || ctrl.currentAnimation >= n)
-      ctrl.currentAnimation = 0;
-    const nvvkgltf::AnimationInfo& info = scn->animation().getAnimationInfo(ctrl.currentAnimation);
+    current();
     // playing from the end starts over
-    if(info.currentTime >= info.end - 1e-3f && !ctrl.loop)
+    if(renderer->hostClipTime() >= renderer->hostClipDuration() - 1e-3f && !ctrl.loop)
       ctrl.reset = true;
     ctrl.play = true;
   }
@@ -155,9 +187,8 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
   }
   else if(cmd == "seek")
   {
-    if(ctrl.currentAnimation < 0 || ctrl.currentAnimation >= n)
-      ctrl.currentAnimation = 0;
-    ctrl.scrubTo(scn->animation().getAnimationInfo(ctrl.currentAnimation).start + args.at("time").get<float>(), scn);
+    current();
+    renderer->seekHostClip(args.at("time").get<float>());
   }
   else if(cmd == "speed")
     ctrl.speed = std::clamp(args.at("speed").get<float>(), 0.f, 100.f);

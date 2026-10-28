@@ -83,7 +83,7 @@ public:
     std::string name, kind;
     int         mesh = -1;
   };
-  // (root, gltfOf and its materials are its fv::PropAddress, what fv::SceneMap reads)
+  // (root, entityOf and its materials are its fv::PropAddress, what fv::SceneMap reads)
   struct PropNodes : fv::PropAddress
   {
     std::string          id;
@@ -92,13 +92,13 @@ public:
   };
 
   // A figure's "nodes/<prop>" topic ({nodes: {"<i>": {name, parent, kind, order, depth}}, stats})
-  // from its scene graph, `nodeOf` its scene nodes in the renderer's scene; fills `out`. Taken-off
-  // items are left out. (fv_view_describe.cpp, as is describeModel.)
-  static fv::Json describeFigure(PropNodes& out, const fv::SceneGraph& scene, int root, const std::vector<int>& nodeOf, int morphs);
+  // from its scene graph, `entityOf` its scene nodes' entities; fills `out`. Taken-off items are
+  // left out. (fv_view_describe.cpp, as is describeModel.)
+  static fv::Json describeFigure(PropNodes& out, const fv::SceneGraph& scene, int root, std::vector<rs::EntityId> entityOf, int morphs);
   // The same for a model read from a file, from the file's own `model`: topic node i is its node i,
-  // composed at glTF node firstNode + i, and a node's mesh is the model's own, as the materials
-  // topic counts them. Unnamed nodes are named from their place in the file.
-  static fv::Json describeModel(PropNodes& out, const tinygltf::Model& model, int firstNode);
+  // imported as entityOf[i] (empty: the import failed), and a node's mesh is the model's own, as the
+  // materials topic counts them. Unnamed nodes are named from their place in the file.
+  static fv::Json describeModel(PropNodes& out, const tinygltf::Model& model, std::vector<rs::EntityId> entityOf);
 
   // The props now in the scene, after a composition; republishes the selection.
   void setProps(std::vector<PropNodes> props);
@@ -106,8 +106,8 @@ public:
   const std::string& selectedProp() const { return m_selectedProp; }
   // the selection, if it is in `prop`, cleared and published (a prop leaving the scene)
   void deselect(const std::string& prop);
-  // Whether a glTF node is a prop root, and which prop's it is.
-  const PropNodes* propOfRoot(int gltf) const;
+  // Whether an entity is a prop root, and which prop's it is.
+  const PropNodes* propOfRoot(rs::EntityId entity) const;
 
   // The pick mode and the gizmo's handles in it, for the host's gizmo hooks.
   const std::string& pickMode() const { return m_pick; }
@@ -150,17 +150,18 @@ private:
   void applyDof();
   void publishSelection(bool force);
   void publishCamera();
-  // A click hit `renderNode` (-1: nothing): the surface it hit, for the next selection published
-  void notePick(int renderNode);
+  // A click hit `at` (prop -1: nothing): the surface it hit, for the next selection published
+  void notePick(const fv::HostAddress& at);
 
   GltfRenderer*                                      m_renderer = nullptr;
   fv::EventHub*                                      m_events   = nullptr;
   std::function<fv::Json(std::function<fv::Json()>)> m_onApp;
 
   std::vector<PropNodes>                        m_props;
-  fv::SceneMap                                  m_map;  // glTF nodes and render nodes -> m_props
+  fv::SceneMap                                  m_map;  // entities and materials -> m_props
   std::string                                   m_selectedProp;
-  int                                           m_lastGltf = -2;
+  rs::EntityId                                  m_lastEntity;
+  bool                                          m_publishAgain = true;
   std::string                                   m_surfaceProp, m_surface;  // what the last click hit
   std::string                                   m_pick      = "object";
   std::string                                   m_transform = "move";

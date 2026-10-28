@@ -101,6 +101,9 @@ private:
   UndoStack* m_undoStack{nullptr};
   Actions    m_actions;
 
+  // light `lightIndex` (its node in the CPU scene, -1 for none) at `world` is the sun
+  void adopt(int lightIndex, int node, const glm::mat4& world);
+
   int m_lightIndex{-1};
   int m_lightNode{-1};
 };

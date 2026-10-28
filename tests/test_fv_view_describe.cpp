@@ -50,10 +50,10 @@ TEST(FvViewDescribe, ATakenOffItemIsNotInTheFiguresTree)
   fv::Node  cloth{.name = "jacket mesh", .kind = fv::NodeKind::eMesh};
   cloth.mesh = 1;
   scene.add(cloth, item);
-  const std::vector<int> nodeOf = {0, 1, 2, 3};
+  const auto entity = [](uint32_t i) { return rs::EntityId{.index = i}; };
 
   FvView::PropNodes worn;
-  fv::Json          all = FvView::describeFigure(worn, scene, root, nodeOf, 0);
+  fv::Json          all = FvView::describeFigure(worn, scene, root, {entity(0), entity(1), entity(2), entity(3)}, 0);
   EXPECT_EQ(all["nodes"].size(), 4u);
   EXPECT_EQ(all["stats"]["meshes"], 2);
   EXPECT_EQ(all["stats"]["triangles"], 4);
@@ -61,7 +61,7 @@ TEST(FvViewDescribe, ATakenOffItemIsNotInTheFiguresTree)
 
   scene.nodes[size_t(item)].removed = true;
   FvView::PropNodes off;
-  fv::Json          left = FvView::describeFigure(off, scene, root, {0, 1, -1, -1}, 0);
+  fv::Json          left = FvView::describeFigure(off, scene, root, {entity(0), entity(1), {}, {}}, 0);
   EXPECT_EQ(left["nodes"].size(), 2u);
   EXPECT_FALSE(left["nodes"].contains(std::to_string(item)));
   EXPECT_FALSE(left["nodes"].contains(std::to_string(item + 1)));
@@ -86,8 +86,9 @@ TEST(FvViewDescribe, AModelsNodesAreItsFilesWithNamesFromThere)
   model.nodes = {car, body, wheel};
 
   FvView::PropNodes out;
-  const fv::Json    d = FvView::describeModel(out, model, 40);
-  EXPECT_EQ(out.gltfOf, (std::vector<int>{40, 41, 42}));
+  const std::vector<rs::EntityId> entities = {{.index = 40}, {.index = 41}, {.index = 42}};
+  const fv::Json                  d        = FvView::describeModel(out, model, entities);
+  EXPECT_EQ(out.entityOf, entities);
   EXPECT_EQ(d["nodes"]["0"]["name"], "Car");
   EXPECT_EQ(d["nodes"]["1"]["name"], "Node-1");
   EXPECT_EQ(d["nodes"]["2"]["name"], "Wheel");
@@ -95,8 +96,8 @@ TEST(FvViewDescribe, AModelsNodesAreItsFilesWithNamesFromThere)
   EXPECT_EQ(out.nodes[2].mesh, 1);
   EXPECT_EQ(d["stats"]["meshes"], 2);
 
-  // a model the composition could not place has no nodes in the scene
+  // a model the import could not take has no nodes in the scene
   FvView::PropNodes none;
-  EXPECT_TRUE(FvView::describeModel(none, model, -1)["nodes"].empty());
-  EXPECT_TRUE(none.gltfOf.empty());
+  EXPECT_TRUE(FvView::describeModel(none, model, {})["nodes"].empty());
+  EXPECT_TRUE(none.entityOf.empty());
 }

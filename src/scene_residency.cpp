@@ -1340,6 +1340,8 @@ SyncResult Residency::sync(RetainedScene& scene)
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);
+  // an appearance change motion vectors can't describe
+  result.dlssReset = !changes.materials.empty() || !changes.lights.empty();
   // motion: what moved last sync was drawn where it is now, and positions written last sync are
   // copied before anything writes them again
   for(uint32_t slot : m_movedLast)

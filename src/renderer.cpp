@@ -49,6 +49,7 @@
   }
 #define IMGUI_DEFINE_MATH_OPERATORS
 
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>  // glm::rotation
 #include <algorithm>
 #include <bit>
@@ -1060,7 +1061,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     m_visualHelpers.init(helperRes);
 
     m_visualHelpers.transform.setOnTransformBegin([this]() {
-      if(m_gizmoNodeIndex >= 0 && m_resources.getScene() && !m_gizmoHooks.edit)
+      if(!m_resources.hostFed && m_gizmoNodeIndex >= 0 && m_resources.getScene())
       {
         const auto& node = m_resources.getScene()->editor().getNode(m_gizmoNodeIndex);
         tinygltf::utils::getNodeTRS(node, m_gizmoSnapshotT, m_gizmoSnapshotR, m_gizmoSnapshotS);
@@ -1068,8 +1069,11 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     });
 
     m_visualHelpers.transform.setOnTransformChange([this]() {
-      if(m_gizmoNodeIndex >= 0 && m_gizmoHooks.edit)
-        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, false);
+      if(m_resources.hostFed)
+      {
+        if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
+          m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, false);
+      }
       else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
       {
         glm::quat rotation = glm::quat(glm::radians(m_gizmoRotation));
@@ -1079,8 +1083,11 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     });
 
     m_visualHelpers.transform.setOnTransformEnd([this]() {
-      if(m_gizmoNodeIndex >= 0 && m_gizmoHooks.edit)
-        m_gizmoHooks.edit(m_gizmoNodeIndex, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, true);
+      if(m_resources.hostFed)
+      {
+        if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
+          m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, true);
+      }
       else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
       {
         glm::vec3   newT, newS;
@@ -3593,11 +3600,17 @@ void GltfRenderer::updateGizmoAttachment()
 {
   if(!m_resources.settings.showGizmo || !m_resources.gpuView().hasContent())
   {
-    if(m_gizmoNodeIndex >= 0)
+    if(m_gizmoNodeIndex >= 0 || !m_gizmoEntity.isNone())
     {
       m_visualHelpers.transform.clearAttachment();
       m_gizmoNodeIndex = -1;
+      m_gizmoEntity    = {};
     }
+    return;
+  }
+  if(m_resources.hostFed)
+  {
+    updateEntityGizmo();
     return;
   }
 
@@ -3611,7 +3624,7 @@ void GltfRenderer::updateGizmoAttachment()
     }
   }
 
-  const uint32_t flags = nodeIdx < 0 ? 0 : m_gizmoHooks.attach ? m_gizmoHooks.attach(nodeIdx) : TransformHelperVk::ShowAll;
+  const uint32_t flags = nodeIdx < 0 ? 0 : TransformHelperVk::ShowAll;
   if(flags == 0)
   {
     if(m_gizmoNodeIndex >= 0)
@@ -3647,6 +3660,51 @@ void GltfRenderer::updateGizmoAttachment()
     m_gizmoRotation = glm::degrees(glm::eulerAngles(rotation));
     m_gizmoParentWorldMatrix = (parentIdx >= 0) ? m_resources.getScene()->computeNodeWorldMatrix(parentIdx) : glm::mat4(1.f);
   }
+}
+
+// The gizmo on a stream host's selected entity: its local TRS and its parent's world matrix from the
+// store, its handles from the host; a drag goes to the host (GizmoHooks::edit), which writes the store.
+void GltfRenderer::updateEntityGizmo()
+{
+  rs::RetainedScene* store  = m_resources.retainedScene.get();
+  const rs::Entity*  entity = store && !m_selectedEntity.isNone() ? store->entity(m_selectedEntity) : nullptr;
+  const uint32_t     flags  = entity && m_gizmoHooks.attach ? m_gizmoHooks.attach(m_selectedEntity) : 0;
+  if(flags == 0)
+  {
+    if(!m_gizmoEntity.isNone())
+    {
+      m_visualHelpers.transform.clearAttachment();
+      m_gizmoEntity = {};
+    }
+    return;
+  }
+  const auto read = [&] {
+    glm::quat rotation;
+    if(entity->local.matrix)
+    {
+      glm::vec3 skew;
+      glm::vec4 perspective;
+      glm::decompose(*entity->local.matrix, m_gizmoScale, rotation, m_gizmoPosition, skew, perspective);
+    }
+    else
+    {
+      m_gizmoPosition = entity->local.translation;
+      rotation        = entity->local.rotation;
+      m_gizmoScale    = entity->local.scale;
+    }
+    m_gizmoRotation          = glm::degrees(glm::eulerAngles(rotation));
+    m_gizmoParentWorldMatrix = entity->parent.isNone() ? glm::mat4(1.f) : store->world(entity->parent);
+  };
+  if(m_selectedEntity != m_gizmoEntity || (flags != m_gizmoFlags && !m_visualHelpers.transform.isDragging()))
+  {
+    m_gizmoEntity = m_selectedEntity;
+    m_gizmoFlags  = flags;
+    read();
+    m_visualHelpers.transform.attachTransform(&m_gizmoPosition, &m_gizmoRotation, &m_gizmoScale, flags);
+    m_visualHelpers.transform.setParentWorldMatrix(&m_gizmoParentWorldMatrix);
+  }
+  else if(!m_visualHelpers.transform.isDragging())
+    read();  // the host's edits and what moves above it show at once
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3998,7 +4056,8 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   m_resources.retainedGpu.reset();
   if(!keepImagesForReuse)
     m_resources.retainedSpare.reset();
-  m_resources.retainedScene.reset();
+  if(!m_resources.hostFed)  // a stream host's store is the session's
+    m_resources.retainedScene.reset();
   m_resources.retainedBridge = {};
   m_takeRetained             = false;
   m_resources.scene.reset();
@@ -4388,6 +4447,172 @@ void GltfRenderer::createRetainedScene()
 }
 
 //--------------------------------------------------------------------------------------------------
+// A stream host's own retained scene (renderer.hpp, hostScene)
+//
+rs::RetainedScene& GltfRenderer::hostScene()
+{
+  if(!m_resources.hostFed)
+  {
+    // the store a loadModel imported, if any, goes at the first replace's cleanup; this one stays
+    m_resources.retainedScene  = std::make_unique<rs::RetainedScene>();
+    m_resources.retainedBridge = {};
+    m_resources.hostFed        = true;
+  }
+  return *m_resources.retainedScene;
+}
+
+namespace {
+// whether a clip of the store has a length to play (ui::animation::hasPlayableAnimation's rule)
+bool hasPlayableClip(const rs::RetainedScene& store)
+{
+  for(rs::ClipId id : store.clips())
+    if(const rs::ClipRecord* clip = store.clip(id))
+    {
+      const std::array<float, 2> range = clip->range();
+      if(range[1] - range[0] > 1e-6f)
+        return true;
+    }
+  return false;
+}
+}  // namespace
+
+void GltfRenderer::replaceHostScene()
+{
+  rs::RetainedScene& store = hostScene();
+  fv::timing::Scope  timeScene("retained scene");
+  {
+    fv::timing::Scope t("wait idle + cleanup");
+    // the teardown loadModel runs, for the same reasons; the host's store and selection stay
+    vkQueueWaitIdle(m_app->getQueue(0).queue);
+    m_loadPipeline.clear();
+    const rs::EntityId selected = m_selectedEntity;
+    cleanupScene(/*keepImagesForReuse=*/true);
+    m_selectedEntity = selected;  // where its entity is still in the scene
+    if(!store.clip(m_hostClip.clip()))
+      m_hostClip = {};
+  }
+  ++m_sceneGeneration;
+  m_pendingVertexUploads.clear();
+  m_liveVertices.clear();
+  m_pendingAnimReconcile = false;
+  // the previous scene's backend, emptied, when the cleanup kept it: its decoded images are this one's to take
+  if(m_resources.retainedSpare)
+  {
+    m_resources.retainedGpu = std::move(m_resources.retainedSpare);
+    m_resources.retainedGpu->setBlasScratchBudget(VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20);
+  }
+  else
+    m_resources.retainedGpu = std::make_unique<rs::RetainedSceneVk>(
+        retainedBackendInfo(),
+        rs::ResidencyOptions{.minInstances      = std::max(m_resources.settings.residencyMinInstances, 1u),
+                             .blasScratchBudget = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
+                             .textureGraceBytes = VkDeviceSize(m_resources.settings.textureGraceMB) << 20});
+  {
+    fv::timing::Scope timeUpload("retained upload");
+    VkCommandBuffer   cmd = m_app->createTempCmdBuffer();
+    if(fv::timing::enabled())
+      m_resources.retainedGpu->timeBuilds();
+    m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
+    m_resources.retainedGpu->setPlayableAnimation(hasPlayableClip(store));
+    m_resources.retainedGpu->replace(cmd, store);
+    m_app->submitAndWaitTempCmdBuffer(cmd);
+    logRetainedNotices();
+    m_resources.sceneVk.dropPrefetched();  // what this scene did not take would never be taken
+    if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes())
+    {
+      OneShotGpuTimer::report("GPU BLAS build", times->blasMs);
+      OneShotGpuTimer::report("GPU TLAS build", times->tlasMs);
+    }
+  }
+  const rs::Residency&             residency = m_resources.retainedGpu->residency();
+  const rs::Residency::ImageCounts images    = residency.imageCounts();
+  LOGI("Scene (retained, host): %u instances, %u prims, %u materials, %u lights; images %u decoded (%u prefetched), %u reused; GPU memory %.1f MB\n",
+       residency.instanceHighWater(), residency.primHighWater(), residency.materialHighWater(), residency.lightCount(),
+       images.decoded, m_resources.retainedGpu->takePrefetchCount(), images.reused,
+       m_resources.retainedGpu->memoryStats().usedBytes / (1024.0 * 1024.0));
+
+  // finalizeSceneSetup's part for a scene with no CPU glTF beside it: no cameras for the widget, no
+  // UI panels, no authored sky or interactivity (a host scene has none); the camera stays
+  m_resources.currentFeatureSet = {};
+  updateRetainedFeatures(false);
+  calibrateFireflyClamp();
+  if(const nvutils::Bbox bounds = m_resources.gpuView().bounds(); !bounds.isEmpty())
+    m_resources.settings.infinitePlaneDistance = bounds.min().y;
+  applyCameraString(m_benchmark.cameraString());
+  refreshEntitySelection();
+  resetFrame();
+}
+
+void GltfRenderer::selectEntity(rs::EntityId entity)
+{
+  m_selectedEntity = entity;
+  refreshEntitySelection();
+  resetFrame();
+}
+
+void GltfRenderer::refreshEntitySelection()
+{
+  if(!m_resources.hostFed)
+    return;
+  m_resources.selectedRenderNodes.clear();
+  rs::RetainedScene& store = *m_resources.retainedScene;
+  if(!m_selectedEntity.isNone() && !store.entity(m_selectedEntity))
+    m_selectedEntity = {};  // gone with what it was in
+  if(m_selectedEntity.isNone() || !m_resources.retainedGpu)
+    return;
+  const rs::Residency& residency = m_resources.retainedGpu->residency();
+  for(uint32_t slot = 0; slot < residency.instanceHighWater(); slot++)
+    if(const rs::Residency::Instance* inst = residency.instance(slot))
+      for(rs::EntityId e = inst->entity; !e.isNone(); e = store.entity(e)->parent)
+        if(e == m_selectedEntity)
+        {
+          m_resources.selectedRenderNodes.insert(int(slot));
+          break;
+        }
+}
+
+void GltfRenderer::setHostClip(rs::ClipId clip, float at)
+{
+  m_hostClip = !clip.isNone() && m_resources.retainedScene && m_resources.retainedScene->clip(clip) ?
+                   rs::ClipPlayer(*m_resources.retainedScene, clip) :
+                   rs::ClipPlayer{};
+  if(!m_hostClip.clip().isNone())
+    m_hostClip.setTime(std::clamp(m_hostClip.start() + at, m_hostClip.start(), std::max(m_hostClip.start(), m_hostClip.end())));
+  m_resources.animationControl.seek = true;  // shown where it is at the next frame
+}
+
+void GltfRenderer::seekHostClip(float time)
+{
+  if(m_hostClip.clip().isNone())
+    return;
+  m_hostClip.setTime(std::clamp(m_hostClip.start() + time, m_hostClip.start(), std::max(m_hostClip.start(), m_hostClip.end())));
+  m_resources.animationControl.play = false;
+  m_resources.animationControl.seek = true;
+}
+
+// The clip playing moved on by this frame's time and written into the store's entities, as
+// evaluateClip does it for a legacy clip.
+bool GltfRenderer::advanceHostClip()
+{
+  AnimationControl&  ctrl  = m_resources.animationControl;
+  rs::RetainedScene& store = *m_resources.retainedScene;
+  if(m_hostClip.clip().isNone() || !store.clip(m_hostClip.clip()) || !ctrl.doAnimation())
+    return false;
+  if(ctrl.isReset())
+    m_hostClip.reset();
+  else if(!ctrl.seek)
+  {
+    m_hostClip.advance(ctrl.deltaTime(), ctrl.loop);
+    if(!ctrl.loop && m_hostClip.time() >= m_hostClip.end())
+      ctrl.play = false;
+  }
+  const bool wrote = m_hostClip.apply(store);
+  if(wrote)
+    ctrl.clearStates();
+  return wrote;
+}
+
+//--------------------------------------------------------------------------------------------------
 // What the retained scene's last syncs could not do as asked (a repack, a material drawn without its
 // textures), in the log
 //
@@ -4406,6 +4631,21 @@ void GltfRenderer::logRetainedNotices()
 bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
 {
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Retained sync");
+
+  // a stream host's own scene: its edits are in the store already
+  if(m_resources.hostFed)
+  {
+    advanceHostClip();
+    m_pendingVertexUploads.clear();
+    m_pendingAnimReconcile = false;
+    m_resources.retainedGpu->beginFrame();
+    m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
+    const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
+    logRetainedNotices();
+    if(result.featuresChanged)
+      updateRetainedFeatures(true);
+    return afterRetainedSync(result);
+  }
 
   nvvkgltf::Scene& scene = *m_resources.getScene();
   // The host's vertex uploads (a dial, a fit, a drape): laid onto the live copies, which a re-import
@@ -4472,10 +4712,18 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   // session would compile a smaller one now, with a queue wait
   if(reimport || result.featuresChanged)
     updateRetainedFeatures(true);
+  return afterRetainedSync(result);
+}
 
+// What a retained sync's result asks of the renderers; true when the frame changed
+bool GltfRenderer::afterRetainedSync(const rs::SyncResult& result)
+{
   // The rasterizer's recorded draws name instances and buffers; any change records them again
   if(result.changed)
     m_rasterizer.freeRecordCommandBuffer(m_resources);
+  // instances came or went: the selection's outline follows
+  if(result.drawListChanged)
+    refreshEntitySelection();
   if(result.dlssReset)
   {
     if(m_resources.settings.renderSystem == RenderingMode::ePathtracer)

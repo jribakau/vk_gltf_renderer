@@ -382,6 +382,9 @@ struct Resources
   // edits of that scene into it, and its residency. The legacy GPU objects hold nothing meanwhile.
   std::unique_ptr<rs::RetainedScene>   retainedScene;
   rs::LegacyDirtyBridge                retainedBridge;
+  // the store is a stream host's own (GltfRenderer::hostScene): fed by the host, kept for the
+  // session, with no CPU scene above
+  bool                                 hostFed = false;
   std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
   // Between a cleanup that keeps images for reuse and the next scene replace: the retained scene,
   // emptied, its decoded images in grace. The next retained replace takes it; a legacy one, or a

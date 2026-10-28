@@ -84,6 +84,7 @@
 #include "gizmo_visuals_vk.hpp"
 #include "timeline_pipeline.hpp"
 #include "undo_redo.hpp"
+#include "scene_clip_player.hpp"
 #ifdef USE_AGENTIC
 #include "agentic.hpp"
 #endif
@@ -442,6 +443,27 @@ public:
   // The retained scene draws (sceneBackend): the CPU scene above is still the one a host edits, and
   // the bridge carries its edits across once a frame; mcp_scene's edit tools are refused.
   bool drawsRetainedScene() const { return m_resources.retainedGpu != nullptr; }
+
+  // ---- A stream host's own retained scene (daz-viewer docs/retained-scene-plan.md, P4): the host
+  // feeds the store, the renderer keeps it resident and draws it, with no CPU glTF scene beside it.
+  // The store lives for the session, so its handles stay unique. Application thread only.
+  rs::RetainedScene& hostScene();
+  bool               feedsHostScene() const { return m_resources.hostFed; }
+  // A scene replace of what the host fed (a composition): waits for the device, drops the pending
+  // picks, and makes the store resident whole. The selection stays where its entity still is.
+  void replaceHostScene();
+  // The host's selection: an entity, drawn outlined with every instance under it; none clears it
+  void         selectEntity(rs::EntityId entity);
+  rs::EntityId selectedEntity() const { return m_selectedEntity; }
+  // The clip that plays (none: none), `at` seconds from its start; AnimationControl plays, pauses,
+  // loops and speeds it as it does a legacy clip
+  void       setHostClip(rs::ClipId clip, float at = 0.f);
+  rs::ClipId hostClip() const { return m_hostClip.clip(); }
+  // its time and length, from its start
+  float hostClipTime() const { return m_hostClip.time() - m_hostClip.start(); }
+  float hostClipDuration() const { return std::max(0.f, m_hostClip.end() - m_hostClip.start()); }
+  // to `time` from its start, paused, shown at once
+  void              seekHostClip(float time);
   AnimationControl& editAnimationControl() { return m_resources.animationControl; }
   bool              isBlasUpdatable(uint32_t renderPrimID) const { return m_resources.sceneRtx.isBlasUpdatable(renderPrimID); }
   // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
@@ -512,14 +534,15 @@ public:
   nvutils::Bbox visibleSceneBounds();
   void selectSceneNodeFromScript(int nodeIndex);  // Script-driven selection (Inspector/Scene Browser)
 
-  /// Lets a host own what the transform gizmo edits. `attach` gives the handles a node shows
-  /// (TransformHelperVk::ShowRotation, ShowTranslation, ...), 0 for no gizmo on it; asked every
-  /// frame, and new handles attach at once. `edit` gets the node's new local translation, rotation
-  /// and scale instead of the scene and undo stack taking them; `done` on the release that ends the drag.
+  /// Lets a stream host own what the transform gizmo edits, on its scene's entities. `attach` gives
+  /// the handles the selected entity shows (TransformHelperVk::ShowRotation, ShowTranslation, ...),
+  /// 0 for no gizmo on it; asked every frame, and new handles attach at once. `edit` gets the
+  /// entity's new local translation, rotation and scale, which the host writes; `done` on the release
+  /// that ends the drag. (A windowed session edits the glTF node selected, with undo.)
   struct GizmoHooks
   {
-    std::function<uint32_t(int node)>                                                                    attach;
-    std::function<void(int node, const glm::vec3& t, const glm::quat& r, const glm::vec3& s, bool done)> edit;
+    std::function<uint32_t(rs::EntityId entity)> attach;
+    std::function<void(rs::EntityId entity, const glm::vec3& t, const glm::quat& r, const glm::vec3& s, bool done)> edit;
   };
   void setGizmoHooks(GizmoHooks hooks);
   void setShowGizmo(bool on);
@@ -531,9 +554,16 @@ public:
   /// origin top-left. True when the gizmo took the event (a press on a handle, a drag, its release),
   /// so the camera and click selection should not see it.
   bool gizmoInput(glm::vec2 px, bool down, bool pressed, bool released);
-  /// Sees every click pick first: the render node hit (-1 for none) and the hit point in world space.
-  /// Returning true keeps the renderer from changing the selection.
-  void setPickObserver(std::function<bool(int renderNode, const glm::vec3& hit)> observer);
+  /// What a click hit in a stream host's scene: the entity and the material it draws there.
+  struct InstancePick
+  {
+    rs::EntityId   entity;
+    rs::MaterialId material;
+  };
+  /// Sees every click pick of a stream host's scene first: what was hit (none for nothing) and the
+  /// hit point in world space. Returning true keeps the renderer from changing the selection;
+  /// otherwise the entity hit is selected, or the selection cleared (a hit on it again clears it too).
+  void setPickObserver(std::function<bool(const std::optional<InstancePick>& pick, const glm::vec3& hit)> observer);
 
 #ifdef USE_NVMCP
   /// Automation surface for the optional MCP endpoint (src/mcp_timing.cpp), which is where both
@@ -581,6 +611,15 @@ private:
   // place of the legacy per-frame GPU paths.
   void                       createRetainedScene();
   bool                       syncRetainedScene(VkCommandBuffer cmd);
+  // a stream host's scene: the clip moved on and written into the store; true when it wrote anything
+  bool advanceHostClip();
+  bool afterRetainedSync(const rs::SyncResult& result);
+  // the instances under the selected entity, outlined; the selection cleared when its entity went
+  void refreshEntitySelection();
+  // the gizmo on a stream host's scene (updateGizmoAttachment's half for it)
+  void updateEntityGizmo();
+  // the instance slots of a stream host's selection, and an instance's box in the world
+  nvutils::Bbox              instanceWorldBounds(uint32_t slot) const;
   void                       logRetainedNotices();
   // The variant's scene features from the retained store (the materials live instances draw with),
   // grown only, when `grow`, until the next scene replace (D15)
@@ -903,7 +942,11 @@ private:
   uint32_t  m_gizmoFlags     = 0;
   GizmoHooks m_gizmoHooks;
   glm::vec2  m_gizmoInputLast{0.f};
-  std::function<bool(int renderNode, const glm::vec3& hit)> m_pickObserver;
+  std::function<bool(const std::optional<InstancePick>&, const glm::vec3& hit)> m_pickObserver;
+  // a stream host's scene: the entity selected and the one the gizmo is on, and the clip playing
+  rs::EntityId   m_selectedEntity;
+  rs::EntityId   m_gizmoEntity;
+  rs::ClipPlayer m_hostClip;
   // Set in windowed sessions only: the Scene Browser scrolls to a new selection
   std::function<void()> m_focusSelectionInBrowser;
 

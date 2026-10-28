@@ -620,22 +620,16 @@ Json FvHost::Impl::wardrobeVisible(const Json& args)
   return {{"ok", true}};
 }
 
-// An item's nodes shown or hidden in the renderer's scene as they are (KHR_node_visibility, as
-// buildGltf writes it), without composing it again.
+// An item's nodes shown or hidden in the renderer's scene as they are, without composing it again
+// (taken off, they go at the next composition's feed).
 void FvHost::Impl::showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible)
 {
-  nvvkgltf::Scene* scene = renderer->editScene();
-  if(!scene || !scene->valid())
+  if(!f.feed || !renderer->feedsHostScene())
     return;
-  tinygltf::Model& model = scene->getModel();
+  rs::RetainedScene& scene = renderer->hostScene();
   for(const auto& [node, bone] : objects)
-  {
-    const int g = node >= 0 && node < int(f.nodeOf.size()) ? f.nodeOf[node] : -1;
-    if(g < 0 || g >= int(model.nodes.size()))
-      continue;
-    tinygltf::utils::setNodeVisibility(model.nodes[g], {visible});
-    scene->editor().updateVisibility(g);
-  }
+    if(const rs::EntityId e = f.feed->entityOf(node); scene.entity(e))
+      scene.setVisible(e, visible);
 }
 
 //--------------------------------------------------------------------------------------------------

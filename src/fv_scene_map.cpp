@@ -19,102 +19,49 @@
 
 #include "fv_scene_map.hpp"
 
-#include <algorithm>
-
-#include "gltf_scene.hpp"
-#include "gltf_scene_merger.hpp"
-
 namespace fv {
-
-FigureSceneMap mapFigure(std::vector<int>                nodeOf,
-                         std::vector<int>                meshOf,
-                         std::vector<int>                skinOf,
-                         const nvvkgltf::IndexRemapping& base,
-                         const nvvkgltf::Scene&          scene)
-{
-  FigureSceneMap out;
-  out.nodeOf = std::move(nodeOf);
-  for(int& n : out.nodeOf)
-    if(n >= 0)
-      n += base.nodes;
-  for(int n = 0; n < int(out.nodeOf.size()); n++)
-    if(out.nodeOf[size_t(n)] >= 0)
-      out.sceneOf[out.nodeOf[size_t(n)]] = n;
-  out.meshOf = std::move(meshOf);
-  for(int& m : out.meshOf)
-    if(m >= 0)
-      m += base.meshes;
-  out.skinOf = std::move(skinOf);
-  for(int& k : out.skinOf)
-    if(k >= 0)
-      k += base.skins;
-  out.primsOf.assign(out.meshOf.size(), {});
-  for(size_t m = 0; m < out.meshOf.size(); m++)
-    if(out.meshOf[m] >= 0)
-      out.primsOf[m] = vertexSetOwnersOfMesh(scene, out.meshOf[m]);
-  return out;
-}
-
-std::vector<int> vertexSetOwnersOfMesh(const nvvkgltf::Scene& scene, int gltfMesh)
-{
-  std::vector<int> out;
-  if(!scene.valid())
-    return out;
-  const auto& prims = scene.getRenderPrimitives();
-  for(int prim = 0; prim < int(prims.size()); prim++)
-  {
-    if(prims[size_t(prim)].meshID != gltfMesh)
-      continue;
-    const int owner = scene.vertexSetOwner(prim);
-    if(std::find(out.begin(), out.end(), owner) == out.end())
-      out.push_back(owner);
-  }
-  return out;
-}
 
 void SceneMap::clear()
 {
   m_where.clear();
-  m_materials.clear();
+  m_surfaces.clear();
 }
 
 void SceneMap::add(int prop, const PropAddress& address)
 {
-  m_where[address.root] = {prop, -1};
-  for(int i = 0; i < int(address.gltfOf.size()); i++)
-    if(address.gltfOf[size_t(i)] >= 0)
-      m_where[address.gltfOf[size_t(i)]] = {prop, i};
-  if(m_materials.size() <= size_t(prop))
-    m_materials.resize(size_t(prop) + 1);
-  m_materials[size_t(prop)] = {address.materials, address.materialCount};
+  if(!address.root.isNone())
+    m_where[address.root] = {prop, -1};
+  for(int i = 0; i < int(address.entityOf.size()); i++)
+    if(!address.entityOf[size_t(i)].isNone())
+      m_where[address.entityOf[size_t(i)]] = {prop, i};
+  for(int i = 0; i < int(address.materials.size()); i++)
+    if(!address.materials[size_t(i)].isNone())
+      m_surfaces.try_emplace(address.materials[size_t(i)], prop, i);
 }
 
-HostAddress SceneMap::locate(int gltf) const
+HostAddress SceneMap::locate(rs::EntityId entity) const
 {
-  const auto it = m_where.find(gltf);
+  const auto it = m_where.find(entity);
   if(it == m_where.end())
     return {};
   return {.prop = it->second.first, .node = it->second.second};
 }
 
-int SceneMap::propOfRoot(int gltf) const
+int SceneMap::propOfRoot(rs::EntityId entity) const
 {
-  const auto it = m_where.find(gltf);
+  const auto it = m_where.find(entity);
   return it == m_where.end() || it->second.second != -1 ? -1 : it->second.first;
 }
 
-HostAddress SceneMap::pick(const nvvkgltf::Scene& scene, int renderNode) const
+HostAddress SceneMap::pick(rs::EntityId entity, rs::MaterialId material) const
 {
-  if(renderNode < 0 || !scene.valid() || renderNode >= int(scene.getRenderNodes().size()))
-    return {};
-  const nvvkgltf::RenderNode& rn  = scene.getRenderNodes()[size_t(renderNode)];
-  HostAddress                 out = locate(rn.refNodeID);
+  HostAddress out = locate(entity);
   if(out.prop < 0)
     return out;
-  const auto [first, count] = m_materials[size_t(out.prop)];
-  const int i               = rn.materialID - first;
-  if(i >= 0 && i < count)
-    out.surface = i;
+  // a surface of the prop hit, not another's
+  const auto it = m_surfaces.find(material);
+  if(it != m_surfaces.end() && it->second.first == out.prop)
+    out.surface = it->second.second;
   return out;
 }
 

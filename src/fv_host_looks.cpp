@@ -23,15 +23,15 @@
 
 #include "fv_host_impl.hpp"
 
-std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> FvHost::Impl::boneAt(int gltf) const
+std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> FvHost::Impl::boneAt(rs::EntityId entity) const
 {
   for(const auto& p : props)
   {
     const auto& f = p->figure;
     if(!f || !f->fig->pose)
       continue;
-    const auto it = f->sceneOf.find(gltf);
-    if(it == f->sceneOf.end())
+    const auto it = f->nodeOf.find(entity);
+    if(it == f->nodeOf.end())
       continue;
     const auto* pb = f->fig->pose->boneForNode(it->second);
     return pb && !pb->axes.empty() ? std::pair{f, pb} : std::pair{nullptr, nullptr};

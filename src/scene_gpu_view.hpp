@@ -96,6 +96,7 @@ public:
     double    intensity   = 0.0;
     double    maxColor    = 1.0;  // the largest colour channel
     glm::mat4 worldMatrix{1.0f};
+    bool skySun = false;  // the light a physical sky takes as its sun (a stream host's scene marks it on its record)
   };
 
   struct MemoryStats

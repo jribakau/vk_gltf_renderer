@@ -23,10 +23,12 @@
 // The Figure Viewer's materials, beside the figure (fv_host.hpp): the surfaces DAZ describes, the
 // Material panel's edits over them, and the glTF materials the renderer shows (figure/materials).
 //
-// An edit is lowered again (mat::lower) and written over the scene's glTF material. Edits that
-// change a texture, not only a factor (a bump strength baked into the normal map, a colour baked
-// under makeup, the skin switching between Real-time and RTX), ask the texture server for the new
-// image on a worker thread and import it when it arrives; the material is written then.
+// An edit is lowered again (mat::lower) and the host writes it into the retained scene: a figure's
+// through its feed, with the options this lowered it with; a model's as its file's material with the
+// edits laid over. Edits that change a texture, not only a factor (a bump strength baked into the
+// normal map, a colour baked under makeup, the skin switching between Real-time and RTX), ask the
+// texture server for the new image on a worker thread; the host keeps it with the figure
+// (`remember`) and the material is written once it arrives.
 //
 // Commands (application thread):
 //   material.set    {material: "m:3" | ["m:3", ...], values: {color, roughness, metalness, opacity,
@@ -56,8 +58,7 @@
 //   KHR_materials_sheen, on figures and models alike. A map chosen again that could not be made
 //   before is tried again.
 //
-// One per prop with materials (a figure, a model). Its materials sit in the renderer's scene at
-// `Placement::materials` on (fv_compose.hpp), and "m:3" is the prop's own third material.
+// One per prop with materials (a figure, a model); "m:3" is the prop's own third material.
 //
 // Topic "materials/<prop>": {figure, items: {"m:3": {name, kind, shader, meshes, textures, values,
 // edited, eye?, makeup?}}, eyes?, skin?} as a snapshot when the prop is attached, then merge patches; `values` are
@@ -92,6 +93,7 @@
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/materials/lower.hpp>
 #include <figure/scene/graph.hpp>
+#include <tinygltf/tiny_gltf.h>
 
 #include "fv_events.hpp"
 #include "fv_workers.hpp"
@@ -114,30 +116,34 @@ public:
     // a texture for a request, cooked if need be: blocks, so only worker threads call it. `flipped`
     // says whether the figure's UVs expect rows bottom-up (the build's texturesFlipped).
     std::function<std::optional<fv::build::TextureImage>(const fv::build::TextureRequest&, bool flipped)> texture;
-    // a texture a bake made and the renderer took: kept with the figure, so the scene built again
+    // a texture a bake made: kept with the figure, where its feed finds it, so the scene fed again
     // after a wardrobe change has it too (application thread)
     std::function<void(const fv::build::TextureRequest&, const fv::build::TextureImage&)> remember;
-  };
-
-  // Where a prop's own arrays start in the renderer's scene.
-  struct Placement
-  {
-    int materials = 0, textures = 0, samplers = 0, meshes = 0;
+    // whether the figure has the image for a request (its feed would find one)
+    std::function<bool(const fv::build::TextureRequest&)> resolves;
+    // the figure's materials lowered again with these options: written into the scene (application thread)
+    std::function<void(std::vector<std::pair<int, fv::mat::LowerOptions>>)> writeFigure;
+    // a model's material `index`, its file's with the edits laid over: written into the scene
+    std::function<void(int index, tinygltf::Material material)> writeModel;
   };
 
   explicit FvMaterials(Hooks hooks);
   ~FvMaterials();
 
-  // A figure was built into the scene: `scene` is its scene graph (which outlives the attachment),
-  // `built` what the build made of its materials. Publishes the topic. Application thread.
-  void attach(const std::string& figureId, fv::SceneGraph* scene, const fv::build::BuildResult& built, bool texturesFlipped,
-              fv::mat::SkinMode skin, Placement at);
-  // A model read from a glTF or OBJ file, `source` as the file has it, its arrays composed at `at`:
-  // its materials as they are, with the same edits laid over them directly (there is no Surface to
-  // lower), named as the file names them or "Material-<i>" from their place in it, so a scene
-  // file's edits find them whatever else is in the scene. Attached again (the scene was composed
-  // again), it keeps its edits and writes them.
-  void attachModel(const std::string& id, Placement at, const tinygltf::Model& source);
+  // A figure was fed into the scene: `scene` is its scene graph (which outlives the attachment),
+  // `lowering` the options its feed lowered each material with. Publishes the topic. Application
+  // thread.
+  void attach(const std::string&                 figureId,
+              fv::SceneGraph*                    scene,
+              std::vector<fv::mat::LowerOptions> lowering,
+              bool                               texturesFlipped,
+              fv::mat::SkinMode                  skin);
+  // A model read from a glTF or OBJ file, `source` as the file has it: its materials as they are,
+  // with the same edits laid over them directly (there is no Surface to lower), named as the file
+  // names them or "Material-<i>" from their place in it, so a scene file's edits find them whatever
+  // else is in the scene. Attached again (the scene was composed again), it keeps its edits and
+  // writes them.
+  void attachModel(const std::string& id, const tinygltf::Model& source);
   // The topic goes too.
   void detach();
   // The edits of a model's material `index`, to lay over its file's own (fv::model::editedMaterial)
@@ -172,7 +178,7 @@ public:
 
 private:
   void refresh(const std::set<int>& materials);
-  void write(int index, const fv::mat::Lowered& lowered);
+  void     write(const std::set<int>& materials);
   void writeModel(int index);
   fv::Json modelItem(int index) const;
   void bake(std::vector<fv::build::TextureRequest> requests);
@@ -186,7 +192,6 @@ private:
 
   // application thread
   std::string                                         m_figure;
-  Placement                                           m_at;
   fv::SceneGraph*                                     m_scene = nullptr;
   // the materials attached: a wear appends to the scene graph before the scene is built again, and
   // what it appended has no lowering here until the next attach
@@ -196,8 +201,8 @@ private:
   bool                                                m_model = false;
   fv::SceneGraph                                      m_modelScene;
   std::vector<tinygltf::Material>                     m_originals;
+  std::vector<std::string>                            m_modelImages;  // per texture of its file, the image's name
   std::vector<fv::mat::LowerOptions>                  m_options;
-  std::map<std::string, fv::mat::ResolvedTexture>     m_textures;  // request key -> glTF texture
   std::set<std::string>                               m_failed;    // keys a cook could not make
   std::set<std::string>                               m_baking;    // keys in flight
   std::set<int>                                       m_waiting;   // materials that need them

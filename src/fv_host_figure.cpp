@@ -194,11 +194,12 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       LOGI("[fv] %s built in %.2f s: %zu nodes, %zu meshes, %zu materials, %zu images, %zu bytes of geometry\n", rel.c_str(),
            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), built.model.nodes.size(), built.model.meshes.size(),
            built.model.materials.size(), built.model.images.size(), built.model.buffers.empty() ? size_t(0) : built.model.buffers[0].data.size());
-      // the renderer takes it on the application thread
-      auto shared = std::make_shared<std::pair<std::unique_ptr<fv::Figure>, fv::build::BuildResult>>(std::move(f), std::move(built));
+      // the renderer takes it on the application thread (its feed reads the scene graph; the build
+      // above measured its hair's strands meanwhile)
+      auto       shared  = std::make_shared<std::unique_ptr<fv::Figure>>(std::move(f));
       const bool flipped = cooked;
       post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source, then]() mutable {
-        install(std::move(shared->first), std::move(shared->second), generation, jobId, flipped, skin, lib, std::move(images), std::move(source), then);
+        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(source), then);
       });
     }
     catch(const std::exception& e)
@@ -210,10 +211,15 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
   return {{"job", jobId}};
 }
 
-void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResult built, uint64_t generation, uint64_t jobId, bool texturesFlipped,
-                           fv::mat::SkinMode skin, std::shared_ptr<fv::dson::Library> lib,
-                           std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images, Json source,
-                           std::function<void(std::shared_ptr<Prop>)> then)
+void FvHost::Impl::install(std::unique_ptr<fv::Figure>                                             fig,
+                           uint64_t                                                                generation,
+                           uint64_t                                                                jobId,
+                           bool                                                                    texturesFlipped,
+                           fv::mat::SkinMode                                                       skin,
+                           std::shared_ptr<fv::dson::Library>                                      lib,
+                           std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images,
+                           Json                                                                    source,
+                           std::function<void(std::shared_ptr<Prop>)>                              then)
 {
   // the scene was cleared meanwhile: this one is dropped, and its job ends
   if(generation != loadGeneration)
@@ -227,9 +233,6 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure> fig, fv::build::BuildResu
   f->source          = std::move(source);
   f->texturesFlipped = texturesFlipped;
   f->lib             = std::move(lib);
-  // the render mode may have changed while it loaded: built for another, it is built again
-  if(skin == skinMode.load())
-    f->prebuilt = std::move(built);
   // its add-ons go on once it is in the scene; until then the eyes it will have aren't there to choose
   f->addonsPending = !f->fig->addons.empty() && f->fig->pose;
   // "Mirel.duf" reads as "Mirel"

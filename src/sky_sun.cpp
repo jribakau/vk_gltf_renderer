@@ -94,7 +94,21 @@ void SkySun::syncFromMarkedLight()
 
   const nvvkgltf::Scene* scene = m_resources->getScene();
   if(scene == nullptr || !scene->valid())
+  {
+    // a stream host's scene: its light record says which light is the sun, in the order the light
+    // buffer holds them
+    if(m_resources->hostFed && m_resources->retainedGpu)
+    {
+      const std::vector<SceneGpuView::LightInfo> lights = m_resources->gpuView().lights();
+      for(size_t i = 0; i < lights.size(); ++i)
+        if(lights[i].skySun)
+        {
+          adopt(int(i), -1, lights[i].worldMatrix);
+          return;
+        }
+    }
     return;
+  }
 
   const tinygltf::Model& model   = scene->getModel();
   const int              nodeIdx = gltf_environment_sky::findSkySunNode(model);
@@ -113,32 +127,37 @@ void SkySun::syncFromMarkedLight()
   {
     if(rlights[i].light != lightIdx || rlights[i].nodeID != nodeIdx)
       continue;
-
-    // glTF aims a light down its node's -Z, so +Z points back at the sun.
-    const glm::vec3 toSun = glm::vec3(rlights[i].worldMatrix[2]);
-    const float     len   = glm::length(toSun);
-    if(len < 1e-6F)
-      return;  // degenerate node scale; no usable direction
-
-    m_lightIndex              = static_cast<int>(i);
-    m_lightNode               = nodeIdx;
-    const glm::vec3 dir       = toSun / len;
-    const bool      moved     = !glm::all(glm::epsilonEqual(dir, m_resources->sunDirection, 1e-6F));
-    m_resources->sunDirection = dir;
-    syncAngles();
-
-    if(moved)
-    {
-      // Only the physical sky's baked image depends on where the sun is; the authored skies keep
-      // it out of their bake entirely. A preview, not a commit -- the light moves for as long as
-      // someone drags its gizmo.
-      if(m_resources->settings.envSystem == shaderio::EnvSystem::eSky)
-        if(m_actions.environmentPreview)
-          m_actions.environmentPreview();
-      if(m_actions.resetFrame)
-        m_actions.resetFrame();
-    }
+    adopt(static_cast<int>(i), nodeIdx, rlights[i].worldMatrix);
     return;
+  }
+}
+
+// Light `lightIndex` of the light buffer, at `world`, is the sun: the sky follows it.
+void SkySun::adopt(int lightIndex, int node, const glm::mat4& world)
+{
+  // glTF aims a light down its node's -Z, so +Z points back at the sun.
+  const glm::vec3 toSun = glm::vec3(world[2]);
+  const float     len   = glm::length(toSun);
+  if(len < 1e-6F)
+    return;  // degenerate node scale; no usable direction
+
+  m_lightIndex              = lightIndex;
+  m_lightNode               = node;
+  const glm::vec3 dir       = toSun / len;
+  const bool      moved     = !glm::all(glm::epsilonEqual(dir, m_resources->sunDirection, 1e-6F));
+  m_resources->sunDirection = dir;
+  syncAngles();
+
+  if(moved)
+  {
+    // Only the physical sky's baked image depends on where the sun is; the authored skies keep
+    // it out of their bake entirely. A preview, not a commit -- the light moves for as long as
+    // someone drags its gizmo.
+    if(m_resources->settings.envSystem == shaderio::EnvSystem::eSky)
+      if(m_actions.environmentPreview)
+        m_actions.environmentPreview();
+    if(m_actions.resetFrame)
+      m_actions.resetFrame();
   }
 }
 

@@ -248,6 +248,7 @@ TEST(RetainedResidency, AMoveRewritesTheRowsOfWhatMoved)
   const SyncResult r = residency.sync(scene);
   EXPECT_TRUE(r.changed);
   EXPECT_FALSE(r.drawListChanged);
+  EXPECT_FALSE(r.dlssReset);  // motion vectors describe a move
   expectClean(scene, residency, gpu);
   EXPECT_EQ(gpu.tlas(residency.tlas())->rows[1].transform[0][3], 1.f);  // the child moved with its parent
   EXPECT_EQ(gpu.tlas(residency.tlas())->rows[2].transform[0][3], 0.f);
@@ -827,6 +828,7 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
   gpu.beginFrame();
   const SyncResult r = residency.sync(scene);
   EXPECT_TRUE(r.changed && r.drawListChanged);
+  EXPECT_TRUE(r.dlssReset);  // an appearance change motion vectors can't describe
   expectClean(scene, residency, gpu);
   EXPECT_EQ(residency.textureSlot((*table)[0].texture, {}, true), -1);
   EXPECT_TRUE(gpu.textureDescriptors().at(uint32_t(before)));  // not yet: a frame in flight may sample it

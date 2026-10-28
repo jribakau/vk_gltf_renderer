@@ -176,7 +176,7 @@ set(TEST_SOURCES
     # Which backend a scene takes, and the bridge from the legacy scene's edits (the bridge oracle)
     test_scene_coexistence.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_coexistence.cpp
-    # The host's addressing on the legacy scene: uploads reach their mesh's prims, picks map back (oracle 8)
+    # The host's addressing on its retained scene: entities and picks map back to props (oracle 8)
     test_fv_scene_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp
     # Need tinygltf implementation

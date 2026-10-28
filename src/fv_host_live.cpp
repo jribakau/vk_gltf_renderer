@@ -24,104 +24,38 @@
 
 #include "fv_host_impl.hpp"
 
+// The figure's moved nodes, fed: their transforms (a pose step), or the whole figure when a node is new
 void FvHost::Impl::applyNodes(Loaded& f, const std::set<int>& moved)
 {
-  if(moved.empty())
+  if(moved.empty() || !f.feed)
     return;
-  std::vector<GltfRenderer::NodeTransform> transforms;
-  transforms.reserve(moved.size());
-  const fv::SceneGraph& scene = f.fig->loaded.scene;
-  for(int n : moved)
-  {
-    const int g = n >= 0 && n < int(f.nodeOf.size()) ? f.nodeOf[n] : -1;
-    if(g < 0 || n >= int(scene.nodes.size()))
-      continue;
-    const fv::Node& node = scene.nodes[n];
-    transforms.push_back({g, glm::vec3(node.position.x, node.position.y, node.position.z),
-                          glm::quat(float(node.quaternion.w), float(node.quaternion.x), float(node.quaternion.y), float(node.quaternion.z)),
-                          glm::vec3(node.scale.x, node.scale.y, node.scale.z)});
-  }
-  if(!transforms.empty())
-    renderer->setNodeTransforms(transforms);
+  const std::vector<int> nodes(moved.begin(), moved.end());
+  if(!f.feed->syncTransforms(f.fig->loaded.scene, f.fig->loaded.root, nodes))
+    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
 }
 
+// A mesh whose vertices moved in place (a dial, a fit, a drape), fed with the tangents near them
 void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
 {
-  if(change.mesh < 0 || change.mesh >= int(f.fig->loaded.scene.meshes.size()) || change.mesh >= int(f.primsOf.size()) || f.primsOf[change.mesh].empty())
+  if(!f.feed || change.mesh < 0 || change.mesh >= int(f.fig->loaded.scene.meshes.size())
+     || !f.fig->loaded.scene.meshes[change.mesh].geo)
     return;
-  const auto& geo = f.fig->loaded.scene.meshes[change.mesh].geo;
-  if(!geo)
+  const size_t count = f.fig->loaded.scene.meshes[change.mesh].geo->position.size() / 3;
+  if(!change.all && change.indices.empty())
     return;
-  const size_t count = geo->position.size() / 3;
-  const bool   normals = geo->normal.size() == geo->position.size();
-  // glm::vec3 is the tightly packed 12-byte attribute the renderer stages
-  static_assert(sizeof(glm::vec3) == 12, "vertex uploads assume a packed vec3");
-
-  GltfRenderer::VertexUpload upload;
-  if(change.all)
-  {
-    upload.positions.resize(count);
-    if(count)
-      std::memcpy(upload.positions.data(), geo->position.data(), count * sizeof(glm::vec3));
-    if(normals)
-    {
-      upload.normals.resize(count);
-      if(count)
-        std::memcpy(upload.normals.data(), geo->normal.data(), count * sizeof(glm::vec3));
-    }
-  }
-  else
-  {
-    if(change.indices.empty())
-      return;
-    upload.indices.reserve(change.indices.size());
-    upload.positions.reserve(change.indices.size());
-    if(normals)
-      upload.normals.reserve(change.indices.size());
-    for(uint32_t v : change.indices)
-    {
-      if(v >= count)
-        continue;
-      const float* p = geo->position.data() + size_t(v) * 3;
-      upload.indices.push_back(v);
-      upload.positions.emplace_back(p[0], p[1], p[2]);
-      if(normals)
-      {
-        const float* nrm = geo->normal.data() + size_t(v) * 3;
-        upload.normals.emplace_back(nrm[0], nrm[1], nrm[2]);
-      }
-    }
-    if(upload.indices.empty())
-      return;
-  }
-  dialTiming.addUpload(change.all ? count : upload.indices.size(), change.all);
-  const auto& prims = f.primsOf[change.mesh];
-  for(size_t i = 0; i < prims.size(); i++)
-  {
-    GltfRenderer::VertexUpload one = i + 1 == prims.size() ? std::move(upload) : upload;
-    one.renderPrimID               = prims[i];
-    renderer->queueVertexUpload(std::move(one));
-  }
+  dialTiming.addUpload(change.all ? count : change.indices.size(), change.all);
+  const int mesh = change.mesh;
+  if(!f.feed->syncVertices(f.fig->loaded.scene, {&mesh, 1}))
+    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root, std::span<const int>(&mesh, 1));
 }
 
+// Meshes bound again to their bones (a rebind): their skins' inverse binds
 void FvHost::Impl::applyRebind(Loaded& f, const std::vector<int>& meshes)
 {
-  for(int mesh : meshes)
-  {
-    if(mesh < 0 || mesh >= int(f.skinOf.size()) || mesh >= int(f.fig->loaded.scene.meshes.size()))
-      continue;
-    const int skin = f.skinOf[mesh];
-    if(skin < 0)
-      continue;
-    const fv::Mesh&          m   = f.fig->loaded.scene.meshes[mesh];
-    const std::vector<float> ibm = fv::build::inverseBindMatrices(m);
-    if(ibm.size() != m.bones.size() * 16)
-      continue;
-    static_assert(sizeof(glm::mat4) == 64, "inverse bind matrices are packed mat4");
-    std::vector<glm::mat4> mats(m.bones.size());
-    std::memcpy(mats.data(), ibm.data(), ibm.size() * sizeof(float));
-    renderer->setInverseBindMatrices(skin, mats);
-  }
+  if(!f.feed || meshes.empty())
+    return;
+  if(!f.feed->syncSkins(f.fig->loaded.scene, meshes))
+    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
 }
 
 void FvHost::Impl::prefetchImages(const std::vector<fv::build::TextureRequest>& requests, const std::vector<std::optional<fv::build::TextureImage>>& found)
@@ -255,9 +189,8 @@ Json FvHost::Impl::poseSet(const Json& args)
 
 void FvHost::Impl::frameCamera()
 {
-  nvvkgltf::Scene* scene = renderer->editScene();
-  auto             manip = renderer->getCameraManipulator();
-  if(!scene || !manip)
+  auto manip = renderer->getCameraManipulator();
+  if(!renderer->feedsHostScene() || !manip)
     return;
   const nvutils::Bbox box  = renderer->visibleSceneBounds();
   const VkExtent2D    size = renderer->renderSize();

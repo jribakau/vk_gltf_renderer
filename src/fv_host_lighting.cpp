@@ -182,12 +182,13 @@ void FvHost::Impl::requestEnvironment()
   });
 }
 
-// The sun light's colour, strength and size, and its node's rotation, when they changed.
+// The sun light's colour, strength and size, and its entity's rotation, when they changed.
 void FvHost::Impl::applySun(bool force)
 {
-  nvvkgltf::Scene* scene = renderer->editScene();
-  if(!scene || sunLight < 0 || sunNode < 0 || sunLight >= int(scene->getModel().lights.size())
-     || sunNode >= int(scene->getModel().nodes.size()))
+  if(!renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = renderer->hostScene();
+  if(!scene.light(sunLight) || !scene.entity(sunEntity))
     return;
   const fv::lighting::Sun& s     = lighting.sun;
   const glm::vec3          color = fv::lighting::linearColor(s.color);
@@ -196,69 +197,44 @@ void FvHost::Impl::applySun(bool force)
                                     {"radius", fv::lighting::sunRadiusKm(s.softness)}};
   const Json               aim   = {s.azimuth, s.elevation};
   if(force || appliedSun.is_null() || appliedSun["light"] != light)
-  {
-    tinygltf::Light& l = scene->editor().getLightForEdit(sunLight);
-    l.color            = {color.x, color.y, color.z};
-    l.intensity        = light["intensity"].get<double>();
-    tinygltf::Value::Object extras = l.extras.IsObject() ? l.extras.Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
-    extras["radius"]               = tinygltf::Value(light["radius"].get<double>());
-    l.extras                       = tinygltf::Value(extras);
-    scene->markLightDirty(sunLight);
-  }
+    scene.setLight(sunLight, sunPayload());
   if(force || appliedSun.is_null() || appliedSun["aim"] != aim)
-  {
-    const GltfRenderer::NodeTransform t{.node = sunNode, .rotation = fv::lighting::sunRotation(s.azimuth, s.elevation)};
-    renderer->setNodeTransforms({&t, 1});
-  }
+    scene.setLocal(sunEntity, {.rotation = fv::lighting::sunRotation(s.azimuth, s.elevation)});
   appliedSun = {{"light", light}, {"aim", aim}};
 }
 
-// The "Sun" light and its node as the current state has them: directional, marked as the sky's sun
-// so a physical sky follows it.
-void FvHost::Impl::fillSun(tinygltf::Light& light, tinygltf::Node& node, int lightIndex)
+// The "Sun" light as the current state has it: directional, its softness the sun's radius
+tinygltf::Light FvHost::Impl::sunPayload() const
 {
   const fv::lighting::Sun& s     = lighting.sun;
   const glm::vec3          color = fv::lighting::linearColor(s.color);
+  tinygltf::Light          light;
   light.name      = "Sun";
   light.type      = "directional";
   light.color     = {color.x, color.y, color.z};
   light.intensity = s.enabled ? s.intensity : 0.0;
-  tinygltf::Value::Object lightExtras;
-  lightExtras["radius"] = tinygltf::Value(fv::lighting::sunRadiusKm(s.softness));
-  light.extras          = tinygltf::Value(lightExtras);
-
-  node.name         = "Sun";
-  node.light        = lightIndex;
-  const glm::quat r = fv::lighting::sunRotation(s.azimuth, s.elevation);
-  node.rotation     = {r.x, r.y, r.z, r.w};
-  tinygltf::Value::Object nodeExtras = node.extras.IsObject() ? node.extras.Get<tinygltf::Value::Object>() : tinygltf::Value::Object{};
-  nodeExtras["fvId"]                 = tinygltf::Value(std::string("l:sun"));
-  node.extras                        = tinygltf::Value(nodeExtras);
-  gltf_environment_sky::setSkySunMarker(node, gltf_environment_sky::kSkySunOwnerScene);
+  tinygltf::Value::Object extras;
+  extras["radius"] = tinygltf::Value(fv::lighting::sunRadiusKm(s.softness));
+  light.extras     = tinygltf::Value(extras);
+  return light;
 }
 
-// The sun on a root node of a model about to be loaded, written with the current state, so the load
-// shows it as it is.
-void FvHost::Impl::addSun(tinygltf::Model& model)
+// The sun on a root entity of the scene about to be made resident, written with the current state
+// and marked as the sky's sun, so a physical sky follows it.
+void FvHost::Impl::feedSun(rs::RetainedScene& scene)
 {
-  tinygltf::Light light;
-  tinygltf::Node  node;
-  fillSun(light, node, int(model.lights.size()));
-  model.lights.push_back(light);
-  sunLight = int(model.lights.size()) - 1;
-  model.nodes.push_back(node);
-  sunNode = int(model.nodes.size()) - 1;
-
-  if(model.scenes.empty())
-    model.scenes.emplace_back();
-  const int scene = model.defaultScene >= 0 && model.defaultScene < int(model.scenes.size()) ? model.defaultScene : 0;
-  model.scenes[scene].nodes.push_back(sunNode);
-  if(std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), "KHR_lights_punctual") == model.extensionsUsed.end())
-    model.extensionsUsed.push_back("KHR_lights_punctual");
-  const fv::lighting::Sun& s     = lighting.sun;
-  const glm::vec3          color = fv::lighting::linearColor(s.color);
-  appliedSun = {{"light", {{"color", {color.x, color.y, color.z}}, {"intensity", light.intensity}, {"radius", fv::lighting::sunRadiusKm(s.softness)}}},
-                {"aim", {s.azimuth, s.elevation}}};
+  const fv::lighting::Sun& s = lighting.sun;
+  sunEntity                  = scene.createEntity("Sun", {0, -1});
+  scene.setLocal(sunEntity, {.rotation = fv::lighting::sunRotation(s.azimuth, s.elevation)});
+  sunLight = scene.addLight({.owner = {0, -1}, .payload = sunPayload(), .skySun = true});
+  scene.setEntityLight(sunEntity, sunLight);
+  scene.release(sunLight);
+  const glm::vec3 color = fv::lighting::linearColor(s.color);
+  appliedSun            = {{"light",
+                            {{"color", {color.x, color.y, color.z}},
+                             {"intensity", s.enabled ? s.intensity : 0.0},
+                             {"radius", fv::lighting::sunRadiusKm(s.softness)}}},
+                           {"aim", {s.azimuth, s.elevation}}};
 }
 
 // A batch of renderer parameters, validated whole before any is applied; callbacks fire as over MCP.
