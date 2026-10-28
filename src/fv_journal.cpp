@@ -24,6 +24,23 @@ namespace fv {
 void Journal::record(JournalStep step)
 {
   m_redo.clear();
+  if(m_group)
+  {
+    if(m_group->serial && !m_undo.empty() && m_undo.back().serial == m_group->serial)
+    {
+      JournalStep& group = m_undo.back();
+      for(nlohmann::json& o : step.redo)
+        group.redo.push_back(std::move(o));
+      for(nlohmann::json& o : group.undo)
+        step.undo.push_back(std::move(o));
+      group.undo = std::move(step.undo);
+      group.at   = step.at;
+      return;
+    }
+    step.label   = m_group->label;
+    step.key     = {};
+    step.gesture = step.closes = false;
+  }
   const bool sealed = std::exchange(m_sealed, step.closes);
   if(!sealed && !step.key.empty() && !m_undo.empty())
   {
@@ -39,6 +56,8 @@ void Journal::record(JournalStep step)
     }
   }
   step.serial = ++m_serial;
+  if(m_group)
+    m_group->serial = step.serial;
   m_undo.push_back(std::move(step));
   while(m_undo.size() > kLimit)
     m_undo.pop_front();
@@ -80,6 +99,19 @@ void Journal::clear()
   m_undo.clear();
   m_redo.clear();
   m_sealed = false;
+  m_group.reset();
+}
+
+void Journal::begin(std::string label)
+{
+  m_group  = Group{.label = std::move(label)};
+  m_sealed = true;
+}
+
+void Journal::end()
+{
+  m_group.reset();
+  m_sealed = true;
 }
 
 nlohmann::json Journal::topic() const

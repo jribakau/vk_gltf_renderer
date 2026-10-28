@@ -596,6 +596,8 @@ Json FvHost::Impl::historyStep(bool undo)
 {
   if(historyRun)
     throw std::runtime_error("the last undo or redo is still loading");
+  if(journal.grouping())
+    throw std::runtime_error("a scene file is still opening");
   // dials sent before the undo land first, as a step of their own
   applyPendingMorphs();
   const auto step = undo ? journal.takeUndo() : journal.takeRedo();
@@ -673,7 +675,7 @@ void FvHost::Impl::pollHistory()
 void FvHost::Impl::publishHistory()
 {
   Json topic    = journal.topic();
-  topic["busy"] = historyRun.has_value();
+  topic["busy"] = historyRun.has_value() || journal.grouping();
   protocol->events().snapshot("history", topic);
 }
 

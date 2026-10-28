@@ -151,6 +151,10 @@
 //                                                applies (fv_host_journal.cpp); a slider's edits merge into one.
 //                                                A gizmo drag of a prop or a bone, and a drag of the view
 //                                                looking through a camera prop, are one step from press to release
+//   history.begin {label} / history.end {}      what is recorded between them is one step under `label` (a
+//                                                scene file opening), its undo the other way round; undo
+//                                                waits for the end ("history".busy)
+//   history.clear {}                             the history goes (a crash's autosaved copy opened)
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
 // The scene: the host feeds the renderer's retained scene itself (HostRenderer::hostScene): a prop

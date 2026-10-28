@@ -34,6 +34,10 @@
 // takes: its steps carry its id in their key and merge whatever the time between, and its last one
 // closes it.
 //
+// A group (a scene file opening: a clear, loads, restores, places) is one step under its own label,
+// whatever its steps touch: from begin to end their redo ops add up in the order they applied, and
+// their undo ops the other way round.
+//
 // Undoing a step reads, as each op applies, what it is about to change: that is the step's redo from
 // then on (rewrite), and redoing it reads its undo the same way. A structural step needs that: a
 // load's redo is the prop its undo took away, as it was then.
@@ -73,6 +77,10 @@ public:
   std::optional<JournalStep> takeUndo();
   std::optional<JournalStep> takeRedo();
   void                       clear();
+  // The steps recorded from now until end() are one, labelled `label`
+  void begin(std::string label);
+  void end();
+  bool grouping() const { return m_group.has_value(); }
   // The step `serial`'s ops one way (`undo`, else redo), as an undo or redo read them; nothing when
   // the step is gone meanwhile.
   void rewrite(uint64_t serial, bool undo, nlohmann::json ops);
@@ -96,6 +104,12 @@ private:
   std::deque<JournalStep> m_undo, m_redo;
   bool                    m_sealed = false;  // an undo, a redo or a gesture's end since the last record: no merge
   uint64_t                m_serial = 0;
+  struct Group
+  {
+    std::string label;
+    uint64_t    serial = 0;  // its step, once one is recorded
+  };
+  std::optional<Group> m_group;
 };
 
 }  // namespace fv

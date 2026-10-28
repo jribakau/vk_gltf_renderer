@@ -540,6 +540,60 @@ TEST(FvHost, AnItemTakenOffComesBackUnderItsIdAsItWas)
   EXPECT_EQ(differ(was, stateOf(rig)), "");
 }
 
+// A scene file opening as the app sends it (a clear, the loads, their restores, places, the
+// lighting), between history.begin and history.end: one step, whose undo is the scene before and
+// whose redo is the scene opened.
+TEST(FvHost, ASceneFileOpeningIsOneStep)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", 0.4}}}});
+  rig.cmd("material.set", {{"prop", id}, {"material", "m:0"}, {"values", {{"roughness", 0.7}}}});
+  rig.cmd("prop.add", {{"kind", "camera"}});
+  Json part = rig.cmd("scene.state", {{"prop", id}}).at("result");
+  const Json   before = stateOf(rig);
+  const size_t steps  = rig.topic("history").at("undo").size();
+
+  ASSERT_TRUE(rig.cmd("history.begin", {{"label", "Open Box Scene"}}).value("ok", false));
+  EXPECT_TRUE(rig.topic("history").value("busy", false));
+  rig.cmd("scene.clear");
+  ASSERT_TRUE(rig.cmd("prop.add", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string opened = figureId(rig.topic("scene"));
+  ASSERT_FALSE(opened.empty());
+  part["prop"] = opened;
+  part["morphs"]["Taper"] = -0.3;
+  ASSERT_TRUE(rig.cmd("scene.restore", part).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  rig.cmd("prop.set", {{"prop", opened}, {"name", "Opened"}, {"visible", true}, {"parent", nullptr}});
+  rig.cmd("prop.set", {{"prop", opened}, {"transform", {{"t", {0.5, 0.0, -0.25}}}}});
+  rig.cmd("lighting.set", {{"tonemap", {{"exposure", 1.5}}}});
+  // an undo waits for the end
+  EXPECT_FALSE(rig.cmd("history.undo").value("ok", true));
+  ASSERT_TRUE(rig.cmd("history.end").value("ok", false));
+
+  const Json history = rig.topic("history");
+  EXPECT_FALSE(history.value("busy", true));
+  ASSERT_EQ(history.at("undo").size(), steps + 1) << history.dump();
+  EXPECT_EQ(history.at("undo")[0], "Open Box Scene");
+  const Json after = stateOf(rig);
+  EXPECT_NE(differ(before, after), "");
+  const Json undone = historyStep(rig, "history.undo");
+  EXPECT_FALSE(undone.contains("problems")) << undone.dump();
+  EXPECT_EQ(differ(before, stateOf(rig)), "") << "undone";
+  const Json redone = historyStep(rig, "history.redo");
+  EXPECT_FALSE(redone.contains("problems")) << redone.dump();
+  EXPECT_EQ(differ(after, stateOf(rig)), "") << "redone";
+
+  // a crash's copy opened: the history goes
+  ASSERT_TRUE(rig.cmd("history.clear").value("ok", false));
+  EXPECT_TRUE(rig.topic("history").at("undo").empty());
+}
+
 // A preset, a skin, an item's colour: each a step whose undo puts the figure's look back as it was,
 // surfaces and all, and whose redo brings the change back.
 TEST(FvHost, APresetOrALookChoiceUndoesToTheLookBefore)

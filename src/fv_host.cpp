@@ -105,6 +105,32 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // the edit history (fv_journal.hpp): the step to undo or redo, applied -> {label}, null when there is none
   cmds.add("history.undo", [impl](const Json&) { return impl->onApp([impl] { return impl->historyStep(true); }); });
   cmds.add("history.redo", [impl](const Json&) { return impl->onApp([impl] { return impl->historyStep(false); }); });
+  // a scene file opening is one step: what is recorded from begin to end, under its label
+  cmds.add("history.begin", [impl](const Json& args) {
+    return impl->onApp([impl, label = args.value("label", std::string("Open scene"))] {
+      impl->journal.begin(label);
+      impl->publishHistory();
+      return Json{{"ok", true}};
+    });
+  });
+  cmds.add("history.end", [impl](const Json&) {
+    return impl->onApp([impl] {
+      impl->journal.end();
+      impl->publishHistory();
+      return Json{{"ok", true}};
+    });
+  });
+  // the history goes: the scene it was of went (a crash's copy opened in its place)
+  cmds.add("history.clear", [impl](const Json&) {
+    return impl->onApp([impl] {
+      if(impl->historyRun)
+        throw std::runtime_error("the last undo or redo is still loading");
+      impl->journal.clear();
+      impl->pruneParked();
+      impl->publishHistory();
+      return Json{{"ok", true}};
+    });
+  });
   for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
     cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
       return impl->onApp([impl, cmd, args] { return impl->animationCommand(cmd, args); });

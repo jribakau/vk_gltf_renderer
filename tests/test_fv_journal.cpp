@@ -135,3 +135,35 @@ TEST(FvJournal, AGestureIsOneStepWhateverTheTimeUntilItsEnd)
   EXPECT_EQ(valueOf(first->undo), 0);
   EXPECT_EQ(valueOf(first->redo), 0.6);
 }
+
+TEST(FvJournal, AGroupIsOneStepOfEverythingRecordedInIt)
+{
+  fv::Journal j;
+  j.record(dial(0, 0.2, 0s));
+  const auto op = [](const char* cmd) { return json::array({{{"cmd", cmd}, {"args", json::object()}}}); };
+  const auto step = [&](const char* redo, const char* undo, std::chrono::steady_clock::duration at) {
+    return fv::JournalStep{.redo = op(redo), .undo = op(undo), .label = redo, .key = redo, .at = t0 + at};
+  };
+  j.begin("Open scene");
+  ASSERT_TRUE(j.grouping());
+  j.record(step("a", "-a", 1s));
+  j.record(step("b", "-b", 1s));
+  j.record(step("b", "-b2", 10s));  // the same key: still added, not merged
+  j.end();
+  j.record(dial(0.2, 0.4, 10s));  // after the end: a step of its own, its key or not
+  EXPECT_EQ(j.topic()["undo"], json({"Morph Taper", "Open scene", "Morph Taper"}));
+
+  j.takeUndo();
+  const auto group = j.takeUndo();
+  ASSERT_TRUE(group);
+  const auto cmds = [](const json& ops) {
+    std::vector<std::string> out;
+    for(const json& o : ops)
+      out.push_back(o["cmd"].get<std::string>());
+    return out;
+  };
+  EXPECT_EQ(cmds(group->redo), (std::vector<std::string>{"a", "b", "b"}));
+  EXPECT_EQ(cmds(group->undo), (std::vector<std::string>{"-b2", "-b", "-a"}));
+  // it doesn't merge into the step before it
+  EXPECT_EQ(j.undoCount(), 1u);
+}
