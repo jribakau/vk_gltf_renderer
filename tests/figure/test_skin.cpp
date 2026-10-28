@@ -9,6 +9,8 @@
 #include <cstring>
 #include <vector>
 
+#include <figure/dson/rig.hpp>
+#include <figure/dson/store.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/subdiv/catmark.hpp>
 
@@ -186,4 +188,105 @@ TEST(Skin, MadeSideBySideItIsTheOnePassResultBitForBit)
   EXPECT_EQ(got.skinIndex, want.skinIndex);
   ASSERT_EQ(got.skinWeight.size(), want.skinWeight.size());
   EXPECT_EQ(std::memcmp(got.skinWeight.data(), want.skinWeight.data(), got.skinWeight.size() * sizeof(float)), 0);
+}
+
+// DAZ's skinning (gpu-figures-plan.md F3): up to eight influences a drawn vertex, summing to 1, whose
+// first four renormalised are glTF's four; a dual quaternion map is refined as positions are (a map
+// linear across the grid stays so).
+TEST(Skin, EightInfluencesAndADualQuaternionMapFollowTheRefinement)
+{
+  constexpr int       n = 6;
+  fv::mesh::MeshInput in;
+  for(int y = 0; y <= n; y++)
+    for(int x = 0; x <= n; x++)
+      in.positions.insert(in.positions.end(), {float(x), float(y), 0.f});
+  in.polyStart.push_back(0);
+  for(int y = 0; y < n; y++)
+    for(int x = 0; x < n; x++)
+    {
+      const int a = y * (n + 1) + x;
+      in.polyVerts.insert(in.polyVerts.end(), {a, a + 1, a + n + 2, a + n + 1});
+      in.polyStart.push_back(int(in.polyVerts.size()));
+      in.polyMaterial.push_back(0);
+    }
+  in.level        = 1;
+  const auto mesh = fv::mesh::build(in);
+
+  fv::mesh::SkinInput s;
+  s.start.push_back(0);
+  for(int v = 0; v < (n + 1) * (n + 1); v++)
+  {
+    for(int k = 0; k < (v % 2 ? 6 : 2); k++)
+    {
+      s.bone.push_back((v + k) % 10);
+      s.weight.push_back(1.f + float(k));
+    }
+    s.start.push_back(int32_t(s.bone.size()));
+    s.dualQuatMap.push_back(float(v % (n + 1)) / n);
+  }
+  s.dualQuat = 1.f;
+  const auto out   = fv::mesh::skin(mesh, s);
+  const size_t count = mesh.renderIndex.size();
+  ASSERT_EQ(out.skinIndex8.size(), count * 8);
+  ASSERT_EQ(out.skinWeight8.size(), count * 8);
+  size_t more = 0;
+  for(size_t i = 0; i < count; i++)
+  {
+    double sum = 0, first4 = 0;
+    for(int k = 0; k < 8; k++)
+      sum += out.skinWeight8[i * 8 + k];
+    for(int k = 0; k < 4; k++)
+      first4 += out.skinWeight8[i * 8 + k];
+    EXPECT_NEAR(sum, 1.0, 1e-5) << i;
+    more += out.skinWeight8[i * 8 + 4] > 0;
+    for(int k = 0; k < 4; k++)
+    {
+      EXPECT_EQ(out.skinIndex[i * 4 + k], out.skinIndex8[i * 8 + k]) << i;
+      EXPECT_NEAR(out.skinWeight[i * 4 + k], out.skinWeight8[i * 8 + k] / first4, 1e-5) << i;
+    }
+  }
+  EXPECT_GT(more, 0u);
+  ASSERT_EQ(out.dualQuatShare.size(), count);
+  for(size_t i = 0; i < count; i++)
+    EXPECT_NEAR(out.dualQuatShare[i], mesh.position[i * 3] / n, 1e-5) << i;
+
+  // four at most: the eight are not kept
+  fv::mesh::SkinInput few;
+  few.start = {0};
+  for(int v = 0; v < (n + 1) * (n + 1); v++)
+  {
+    few.bone.push_back(v % 3);
+    few.weight.push_back(1.f);
+    few.start.push_back(int32_t(few.bone.size()));
+  }
+  EXPECT_TRUE(fv::mesh::skin(mesh, few).skinIndex8.empty());
+}
+
+// A skin modifier's settings (Genesis 3, 8 and 9 files): DualQuat is all dual quaternion; a blend map
+// blends it with linear, kept as one value when uniform (Genesis 9's is 0.5 everywhere).
+TEST(Skin, TheSkinSettingsGiveTheDualQuaternionShare)
+{
+  fv::dson::Rig rig;
+  rig.root  = 0;
+  rig.bones = {{"hip", 0}, {"thigh", 1}};
+  const auto binding = [&](const std::string& extra) {
+    const auto doc = fv::dson::parseDoc(R"({"skin": {"joints": [
+        {"id": "hip", "node": "#hip", "node_weights": {"count": 3, "values": [[0, 1], [1, 0.5], [2, 1]]}},
+        {"id": "thigh", "node": "#thigh", "node_weights": {"count": 1, "values": [[1, 0.5]]}}]})"
+                                        + extra + "}");
+    return fv::dson::skinBinding(*doc, doc->json, rig, 3);
+  };
+  const auto linear = binding("");
+  ASSERT_TRUE(linear);
+  EXPECT_EQ(linear->input.dualQuat, 0.f);
+  EXPECT_TRUE(linear->input.dualQuatMap.empty());
+  const auto dq = binding(R"(, "extra": [{"type": "skin_settings", "general_map_mode": "DualQuat"}])");
+  EXPECT_EQ(dq->input.dualQuat, 1.f);
+  const auto half = binding(R"(, "extra": [{"type": "skin_settings", "general_map_mode": "DualQuat",
+      "blend_mode": "BlendLinearDualQuat", "blend_weights": {"count": 3, "values": [[0, 0.5], [1, 0.5], [2, 0.5]]}}])");
+  EXPECT_EQ(half->input.dualQuat, 0.5f);
+  EXPECT_TRUE(half->input.dualQuatMap.empty());
+  const auto mapped = binding(R"(, "extra": [{"type": "skin_settings", "general_map_mode": "DualQuat",
+      "blend_mode": "BlendLinearDualQuat", "blend_weights": {"count": 2, "values": [[0, 0.25], [2, 1]]}}])");
+  EXPECT_EQ(mapped->input.dualQuatMap, (std::vector<float>{0.25f, 0.f, 1.f}));
 }

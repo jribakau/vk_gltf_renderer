@@ -128,16 +128,30 @@ struct SkinInput
   std::vector<float>   weight;
   // Bone that takes vertices with no weights.
   int rootBone = 0;
+  // DAZ's skin settings: the share of a vertex's skinning that is dual quaternion rather than linear
+  // blend (0 linear, 1 dual quaternion), `dualQuat` for every cage vertex unless `dualQuatMap` has
+  // one per cage vertex
+  float              dualQuat = 0;
+  std::vector<float> dualQuatMap;
 };
 
 struct SkinOutput
 {
   std::vector<uint16_t> skinIndex;   // four per drawn vertex
   std::vector<float>    skinWeight;  // four per drawn vertex, summing to 1
+  // DAZ's skinning: eight per drawn vertex, strongest first where there are more than four, summing
+  // to 1 (a slot with no influence weighs 0); empty when no vertex has more than four, the four
+  // above then being the same influences
+  std::vector<uint16_t> skinIndex8;
+  std::vector<float>    skinWeight8;
+  // the dual quaternion share (SkinInput::dualQuat), per drawn vertex when the map is not uniform
+  float              dualQuat = 0;
+  std::vector<float> dualQuatShare;
 };
 
-// The four strongest influences per drawn vertex, renormalised. On a subdivided mesh the influences
-// are refined like positions first (eight kept per level).
+// The four strongest influences per drawn vertex, renormalised, and the eight strongest. On a
+// subdivided mesh the influences are refined like positions first (eight kept per level), and a
+// dual quaternion map is refined with them.
 SkinOutput skin(const BuiltMesh& mesh, const SkinInput& s);
 
 struct CageDeltas

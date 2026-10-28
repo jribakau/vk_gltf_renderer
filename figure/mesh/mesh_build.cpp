@@ -667,6 +667,15 @@ SkinOutput skin(const BuiltMesh& mesh, const SkinInput& s)
   SkinOutput   out;
   out.skinIndex.assign(count * 4, 0);
   out.skinWeight.assign(count * 4, 0.f);
+  // eight kept only where some vertex has more than four
+  bool more = false;
+  for(int v = 0; v < ninf && !more; v++)
+    more = inf.start[v + 1] - inf.start[v] > 4;
+  if(more)
+  {
+    out.skinIndex8.assign(count * 8, 0);
+    out.skinWeight8.assign(count * 8, 0.f);
+  }
   jobs::parallelFor(count, 16384, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
     {
@@ -689,8 +698,48 @@ SkinOutput skin(const BuiltMesh& mesh, const SkinInput& s)
         out.skinIndex[i * 4 + k]  = uint16_t(inf.bone[from + k]);
         out.skinWeight[i * 4 + k] = float(inf.weight[from + k] / sum);
       }
+      if(!more)
+        continue;
+      const int m8    = std::min(8, n);
+      double    sum8  = 0;
+      for(int k = 0; k < m8; k++)
+        sum8 += inf.weight[from + k];
+      for(int k = 0; k < m8; k++)
+      {
+        out.skinIndex8[i * 8 + k]  = uint16_t(inf.bone[from + k]);
+        out.skinWeight8[i * 8 + k] = float(inf.weight[from + k] / sum8);
+      }
     }
   });
+  // where there were no weights the four above hold the root bone alone: so do the eight
+  if(more)
+    for(size_t i = 0; i < count; i++)
+      if(out.skinWeight8[i * 8] == 0.f)
+      {
+        out.skinIndex8[i * 8]  = out.skinIndex[i * 4];
+        out.skinWeight8[i * 8] = out.skinWeight[i * 4];
+      }
+
+  // the dual quaternion share: a map is refined like positions, then each drawn vertex takes its row's
+  out.dualQuat = s.dualQuat;
+  if(!s.dualQuatMap.empty() && int(s.dualQuatMap.size()) == rows)
+  {
+    std::vector<double> share(s.dualQuatMap.begin(), s.dualQuatMap.end());
+    if(mesh.refinement)
+      for(const auto& lv : mesh.refinement->levels)
+      {
+        std::vector<double> next(size_t(std::max(lv.rows(), 0)), 0.0);
+        for(int row = 0; row < lv.rows(); row++)
+          for(int k = lv.rowStart[row]; k < lv.rowStart[row + 1]; k++)
+            if(size_t(lv.col[k]) < share.size())
+              next[size_t(row)] += double(lv.weight[k]) * share[size_t(lv.col[k])];
+        share = std::move(next);
+      }
+    out.dualQuatShare.assign(count, s.dualQuat);
+    for(size_t i = 0; i < count; i++)
+      if(mesh.renderIndex[i] < share.size())
+        out.dualQuatShare[i] = float(share[mesh.renderIndex[i]]);
+  }
   return out;
 }
 

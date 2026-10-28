@@ -41,8 +41,11 @@ struct SkinBinding
   mesh::SkinInput  input;
 };
 
-// A DSON skin binding's influences per cage vertex (node weights, or the strongest TriAx axis
-// weight for Genesis 2), with the bones in the order they are met. None without joints.
-std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& skin, const Rig& rig, int vertexCount);
+// A DSON skin modifier's influences per cage vertex (its binding's node weights, or the strongest
+// TriAx axis weight for Genesis 2), with the bones in the order they are met, and its skin settings
+// (extra "skin_settings": general_map_mode DualQuat is all dual quaternion, and blend_mode
+// BlendLinearDualQuat blends it with linear by the blend_weights map, read as the dual quaternion
+// share; a uniform map is kept as one value). None without joints.
+std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& modifier, const Rig& rig, int vertexCount);
 
 }  // namespace fv::dson

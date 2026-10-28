@@ -332,7 +332,7 @@ std::string missingMessage(const std::string& fileName, const std::vector<std::s
          + " that aren't installed in the assets folder or the DAZ library: " + sample + ".";
 }
 
-// The skin modifier in a geometry's file that binds it: one naming this geometry, or none.
+// The skin modifier in a geometry's file that binds it (its "skin" naming this geometry), or none.
 const Json* skinModifierOf(const Store::Resolved& gres, const Json& geo)
 {
   const Json* mods = get(&gres.doc->json, "modifier_library");
@@ -345,7 +345,7 @@ const Json* skinModifierOf(const Store::Resolved& gres, const Json& geo)
       continue;
     auto ref = parseRef(getString(skin, "geometry"), gres.file);
     if(!ref || ref->id.empty() || ref->id == getString(&geo, "id"))
-      return skin;
+      return &m;
   }
   return nullptr;
 }

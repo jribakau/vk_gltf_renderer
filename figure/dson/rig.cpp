@@ -1,5 +1,6 @@
 #include <figure/dson/rig.hpp>
 
+#include <algorithm>
 #include <unordered_map>
 
 namespace fv::dson {
@@ -148,8 +149,12 @@ std::optional<Rig> buildRig(SceneGraph& scene, const Json& nodeLibrary, const st
   return rig;
 }
 
-std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& skin, const Rig& rig, int vertexCount)
+std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& modifier, const Rig& rig, int vertexCount)
 {
+  const Json* skinJson = get(&modifier, "skin");
+  if(!skinJson)
+    return std::nullopt;
+  const Json& skin   = *skinJson;
   const Json* joints = get(&skin, "joints");
   if(!joints || !joints->is_array() || joints->empty())
     return std::nullopt;
@@ -227,6 +232,29 @@ std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& skin, const R
   out.input.start = std::move(counts);
   auto root       = boneIndex.find(rig.root);
   out.input.rootBone = root == boneIndex.end() ? 0 : root->second;
+
+  const Json* settings = nullptr;
+  if(const Json* extra = get(&modifier, "extra"); extra && extra->is_array())
+    for(const Json& e : *extra)
+      if(getString(&e, "type") == "skin_settings")
+        settings = &e;
+  if(settings && getString(settings, "general_map_mode") == "DualQuat")
+  {
+    out.input.dualQuat = 1.f;
+    const Json* blend  = get(settings, "blend_weights");
+    if(getString(settings, "blend_mode") == "BlendLinearDualQuat" && blend && get(blend, "values"))
+    {
+      std::vector<float> map(size_t(nv), 0.f);
+      const auto         pairs = doc.rows(get(blend, "values"));
+      for(int i = 0; i < pairs->count; i++)
+        if(const double v = pairs->cell(i, 0); v >= 0 && v < nv)
+          map[size_t(v)] = float(std::clamp(pairs->cell(i, 1), 0.0, 1.0));
+      if(!map.empty() && std::all_of(map.begin(), map.end(), [&](float w) { return w == map[0]; }))
+        out.input.dualQuat = map[0];
+      else if(!map.empty())
+        out.input.dualQuatMap = std::move(map);
+    }
+  }
   return out;
 }
 
