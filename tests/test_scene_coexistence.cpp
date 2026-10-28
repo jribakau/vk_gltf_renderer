@@ -217,9 +217,10 @@ TEST(SceneCoexistence, TheBackendASceneTakes)
 
   const std::vector<std::string> none, skin = {"KHR_animation_pointer (under 'figure')"};
   EXPECT_EQ(chooseSceneBackend(SceneBackendSetting::eAuto, true, none).backend, SceneBackend::eRetained);
-  const SceneBackendChoice fallback = chooseSceneBackend(SceneBackendSetting::eAuto, true, skin);
-  EXPECT_EQ(fallback.backend, SceneBackend::eLegacy);
-  EXPECT_NE(fallback.reason.find("KHR_animation_pointer (under 'figure')"), std::string::npos);  // the log names the prop
+  // what retained can't take is left out (D23), and the log names it with its prop
+  const SceneBackendChoice degraded = chooseSceneBackend(SceneBackendSetting::eAuto, true, skin);
+  EXPECT_EQ(degraded.backend, SceneBackend::eRetained);
+  EXPECT_NE(degraded.reason.find("not drawn: KHR_animation_pointer (under 'figure')"), std::string::npos);
   EXPECT_EQ(chooseSceneBackend(SceneBackendSetting::eLegacy, true, none).backend, SceneBackend::eLegacy);
   const SceneBackendChoice forced = chooseSceneBackend(SceneBackendSetting::eRetained, true, skin);
   EXPECT_EQ(forced.backend, SceneBackend::eRetained);

@@ -621,11 +621,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                       }},
                  &m_resources.settings.tlasPolicy, Persist::eNo);
 
-  // What a stream host's scene replace draws with (scene_coexistence.hpp): `auto` takes the retained
-  // scene unless the model has what it can't draw yet. Live: the host is asked for a recompose, and
-  // the switch is that scene replace. Not remembered.
+  // What a stream host's scene replace draws with (scene_coexistence.hpp): the retained scene, unless
+  // started with `legacy`. Start-up only, so not exposed to a host (fv_parameter_filter.hpp). Not
+  // remembered.
   m_settings.add({.name = "sceneBackend",
-                  .help = "Stream sessions: the scene a scene replace draws with, auto, legacy or retained",
+                  .help = "Stream sessions: the scene a scene replace draws with, auto, legacy or retained (start-up only)",
                   .callbackSuccess =
                       [this](const nvutils::ParameterBase* const) {
                         const std::optional<rs::SceneBackendSetting> setting =
@@ -638,10 +638,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                           m_resources.settings.sceneBackend = kept;
                           return;
                         }
-                        const bool changed    = *setting != m_sceneBackendSetting;
                         m_sceneBackendSetting = *setting;
-                        if(changed && m_recomposeRequest)
-                          m_recomposeRequest();
                       }},
                  &m_resources.settings.sceneBackend, Persist::eNo);
   // Live: the retained scene's next batch of BLAS builds regrows its scratch when it needs more.

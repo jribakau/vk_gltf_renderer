@@ -106,9 +106,8 @@ SceneBackendChoice chooseSceneBackend(SceneBackendSetting setting, bool streamHo
     case SceneBackendSetting::eAuto:
       break;
   }
-  if(missing.empty())
-    return {SceneBackend::eRetained, "sceneBackend=auto"};
-  return {SceneBackend::eLegacy, "sceneBackend=auto; retained can't take " + missing};
+  // what retained can't take is left out, said once (D23)
+  return {SceneBackend::eRetained, missing.empty() ? "sceneBackend=auto" : "sceneBackend=auto; not drawn: " + missing};
 }
 
 LegacyDirtyBridge::Result LegacyDirtyBridge::carry(const nvvkgltf::Scene& legacy, RetainedScene& retained)

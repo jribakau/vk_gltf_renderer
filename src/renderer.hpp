@@ -442,8 +442,6 @@ public:
   // The retained scene draws (sceneBackend): the CPU scene above is still the one a host edits, and
   // the bridge carries its edits across once a frame; mcp_scene's edit tools are refused.
   bool drawsRetainedScene() const { return m_resources.retainedGpu != nullptr; }
-  // How the renderer asks the host for a scene replace (a recompose), as a sceneBackend change does
-  void              setRecomposeRequest(std::function<void()> request) { m_recomposeRequest = std::move(request); }
   AnimationControl& editAnimationControl() { return m_resources.animationControl; }
   bool              isBlasUpdatable(uint32_t renderPrimID) const { return m_resources.sceneRtx.isBlasUpdatable(renderPrimID); }
   // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
@@ -636,7 +634,6 @@ private:
   bool                      m_streamHost{false};  // see setStreamHost()
   rs::SceneBackendSetting            m_sceneBackendSetting{rs::SceneBackendSetting::eAuto};  // the parsed sceneBackend
   bool                               m_takeRetained{false};  // the scene replace under way takes the retained scene
-  std::function<void()>              m_recomposeRequest;     // see setRecomposeRequest()
   bool                      m_pendingAnimReconcile{false};
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off

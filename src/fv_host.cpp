@@ -293,8 +293,6 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   });
   // the stream stops before this element detaches: its server joins the HTTP threads, which must not wait on this queue
   s.protocol->setStopHook([impl] { impl->stopAccepting(); });
-  // a sceneBackend change takes effect at a scene replace: the scene is composed again
-  renderer->setRecomposeRequest([impl] { impl->requestCompose("Switching the scene backend"); });
   // The gizmo moves, turns and scales a selected prop (object picking), and poses a figure's bones
   // through its rig (bone picking), so limits and formulas apply.
   auto hasKind = [](const fv::pose::PoseBone& pb, fv::pose::ChannelKind kind) {
@@ -371,7 +369,6 @@ void FvHost::onDetach()
   s.queue.clear();
   s.renderer->setGizmoHooks({});
   s.renderer->setPickObserver({});
-  s.renderer->setRecomposeRequest({});
   if(s.view)
     s.view->setProps({});
   for(const auto& p : s.props)

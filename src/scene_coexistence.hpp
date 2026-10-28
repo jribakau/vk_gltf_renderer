@@ -75,9 +75,9 @@ struct SceneBackendChoice
 // KHR_interactivity, and glTF 2.1 external assets (`externalAssets`: the legacy scene resolved some)
 std::vector<std::string> retainedCannotTake(const tinygltf::Model& model, bool externalAssets);
 
-// The backend a scene replace takes. Windowed sessions stay legacy; `auto` takes retained unless
-// there is something it can't draw; `retained` takes it regardless (a test setting), saying what
-// will be missing.
+// The backend a scene replace takes. Windowed sessions stay legacy; a stream session takes retained,
+// saying what it won't draw (D23), unless started with `legacy` (a developer's way back until the
+// host feeds the retained scene itself).
 SceneBackendChoice chooseSceneBackend(SceneBackendSetting setting, bool streamHost, const std::vector<std::string>& cannotTake);
 
 // The host's edits to the legacy CPU scene, carried into the retained scene a document-order import

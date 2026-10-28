@@ -173,8 +173,8 @@ TEST(FvParameters, TheHostKeepsSceneLoadsAndSavesToItself)
   EXPECT_FALSE(fv::hostExposesParameter("scenefile"));
   EXPECT_FALSE(fv::hostExposesParameter("savefile"));
   EXPECT_FALSE(fv::hostExposesParameter("residencyMinInstances"));
-  // live, with defined semantics: a sceneBackend change asks the host for a recompose
-  EXPECT_TRUE(fv::hostExposesParameter("sceneBackend"));
+  EXPECT_FALSE(fv::hostExposesParameter("sceneBackend"));
+  // live, with defined semantics
   EXPECT_TRUE(fv::hostExposesParameter("blasScratchBudgetMB"));
   EXPECT_TRUE(fv::hostExposesParameter("textureGraceMB"));
   EXPECT_TRUE(fv::hostExposesParameter("screenshot"));
