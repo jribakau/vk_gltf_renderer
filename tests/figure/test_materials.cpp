@@ -1325,6 +1325,28 @@ TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)
   EXPECT_FLOAT_EQ(lowered.material["extensions"]["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.f);
 }
 
+// Colm Jackson's eye presets paint the sclera and iris on the moisture, over a black eyeball, and
+// mask its refraction with a map (clear over the cornea only): the surface keeps its map, and the
+// mask goes out as where it transmits.
+TEST(Materials, ARefractionMaskKeepsTheSurfacesMapWhereItIsOpaque)
+{
+  const auto moisture = fv::dson::parseSurface("EyeMoisture Left", channelsOf(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+    {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/CJ_Evangeline_G9_Eyes.jpg"}},
+    {"channel":{"id":"Refraction Weight","type":"float","current_value":1,"image_file":"/eye1_rf.png"}},
+    {"channel":{"id":"Refraction Index","type":"float","current_value":1.40678}}]}]})"));
+  ASSERT_TRUE(moisture.refraction);
+  EXPECT_EQ(moisture.refraction->map, "/eye1_rf.png");
+  const auto  lowered = fv::mat::lower(moisture, {}, {});
+  const Json& pbr     = lowered.material["pbrMetallicRoughness"];
+  ASSERT_TRUE(pbr.contains("baseColorTexture"));
+  EXPECT_EQ(lowered.requests[pbr["baseColorTexture"]["slot"].get<size_t>()].rel, "/CJ_Evangeline_G9_Eyes.jpg");
+  const Json& transmission = lowered.material["extensions"]["KHR_materials_transmission"];
+  ASSERT_TRUE(transmission.contains("transmissionTexture"));
+  const auto& mask = lowered.requests[transmission["transmissionTexture"]["slot"].get<size_t>()];
+  EXPECT_EQ(mask.rel, "/eye1_rf.png");
+  EXPECT_FALSE(mask.srgb);
+}
+
 }  // namespace
 
 // PBRSkin's detail layer is a relief of its own when it is another map or the same one tiled; the

@@ -212,7 +212,10 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // Iray's refraction shows none of the base colour where it refracts, but glTF tints transmitted
   // light by it, so a map on a refracting surface would be looked through, on the way in and out
   // (Tri-X's eye presets put the whole eye's map on the eye moisture). Its colour goes as a flat one does.
-  const std::string baseMap = refractive ? std::string() : s.base.map;
+  // A refraction weight map keeps it: the surface shows its map where the mask is dark (Colm
+  // Jackson's eyes paint the sclera and iris on the moisture over a black eyeball, clear only where
+  // eye1_rf.png is white), which the map left out showed as black eyes.
+  const std::string baseMap = refractive && s.refraction->map.empty() ? std::string() : s.base.map;
 
   // base colour: cutouts ride in its alpha, PBRSkin makeup is baked into it (glTF has one base
   // colour), blended in linear light
@@ -569,6 +572,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   if(transmission > 0)
   {
     ext["KHR_materials_transmission"] = {{"transmissionFactor", transmission}};
+    // where it refracts: the refraction weight's map, in red
+    if(refractive && !s.refraction->map.empty())
+      ext["KHR_materials_transmission"]["transmissionTexture"] = b.plain(s.refraction->map, false);
     if(!ext.contains("KHR_materials_volume"))
       ext["KHR_materials_volume"] = {{"thicknessFactor", 0}, {"attenuationColor", Json::array({1, 1, 1})}};
   }

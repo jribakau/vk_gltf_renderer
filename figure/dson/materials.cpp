@@ -510,7 +510,7 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   s.metallic = scalar(find({"Metallic Weight", "Metallicity"}), 0);
   // hair and lashes use refraction to let light through the strands, not as glass
   if(refr && s.kind != Kind::eHair && s.kind != Kind::eLashes)
-    s.refraction = Surface::Refraction{float(num(refr, 0)), float(num(find({"Refraction Index", "ior"}), 1.4))};
+    s.refraction = Surface::Refraction{float(num(refr, 0)), float(num(find({"Refraction Index", "ior"}), 1.4)), imageOf(refr)};
   if(num(coat, 0) > 0)
   {
     const auto gloss = roughFromGloss("Top Coat Glossiness");

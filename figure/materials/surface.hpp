@@ -165,6 +165,8 @@ struct Surface
   {
     float weight = 0;
     float ior    = 1.4f;
+    // Refraction Weight's map: where the surface refracts (white) and where it shows itself (black)
+    std::string map;
   };
   std::optional<Refraction> refraction;
   struct TopCoat
