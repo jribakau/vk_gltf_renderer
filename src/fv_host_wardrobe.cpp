@@ -95,6 +95,7 @@ Json FvHost::Impl::wear(const Json& args)
   if(!target || !target->fig->pose)
     throw std::runtime_error("Select a figure first: clothing and hair go on a figure with a skeleton.");
   WearRequest request{rel, "", {}};
+  request.step = true;
   if(const auto it = args.find("iray"); it != args.end() && it->is_array())
     for(const Json& c : *it)
       if(c.is_string())
@@ -340,8 +341,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       }
       auto done = std::make_shared<std::promise<bool>>();
       auto ok   = done->get_future();
-      post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, label, images = std::move(slot.images), done,
-            autoColor = slot.autoColor, autoColorDoc = slot.autoColorDoc]() mutable {
+      post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, only = request.only, step = request.step, label,
+            images = std::move(slot.images), done, autoColor = slot.autoColor, autoColorDoc = slot.autoColorDoc]() mutable {
         if(!inScene(target))
         {
           done->set_value(false);
@@ -349,7 +350,41 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         }
         try
         {
-          const fv::WearResult r = target->fig->commitWear(prepared, rel, ids);
+          // what it may replace (the same garment again), as it was, for the step's undo
+          std::map<int, Json> had;
+          if(step)
+            for(const fv::WornItem& w : target->fig->items)
+              had[w.id] = itemRecord(*target, w);
+          fv::WearResult r = target->fig->commitWear(prepared, rel, ids);
+          if(only)
+          {
+            // one item of the file put back: the others are worn already, or were not
+            std::vector<int> kept;
+            for(int id : r.items)
+              if(std::find(ids.begin(), ids.end(), id) != ids.end())
+                kept.push_back(id);
+              else
+                target->fig->removeItem(id);
+            r.items = std::move(kept);
+          }
+          if(step && !r.items.empty())
+          {
+            Json        undo = Json::array(), redo = Json::array();
+            std::string what;
+            for(int id : r.items)
+              if(const fv::WornItem* w = wornItem(*target->fig, id))
+              {
+                undo.push_back({{"cmd", "wardrobe.remove"}, {"args", {{"prop", target->id}, {"item", id}}}});
+                redo.push_back({{"cmd", "wardrobe.restore"}, {"args", {{"prop", target->id}, {"item", id}, {"record", itemRecord(*target, *w)}}}});
+                if(what.empty())
+                  what = w->label.empty() ? utf8Of(pathOf(rel).stem()) : w->label;
+              }
+            for(int id : r.replaced)
+              if(had.count(id))
+                undo.push_back({{"cmd", "wardrobe.restore"}, {"args", {{"prop", target->id}, {"item", id}, {"record", had[id]}}}});
+            journal.record({.redo = redo, .undo = undo, .label = "Wear " + what, .at = std::chrono::steady_clock::now()});
+            publishHistory();
+          }
           for(auto& [key, image] : images)
             target->images.insert_or_assign(key, std::move(image));
           // the Iray preset it took is its colour: undo, a scene file and "own" treat it as one
@@ -528,6 +563,86 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
     });
   });
   return jobId;
+}
+
+Json FvHost::Impl::itemRecord(const Loaded& f, const fv::WornItem& w) const
+{
+  // its place among its file's items: "w5" is the first, "w5.2" the third
+  const size_t dot   = w.key.find('.');
+  const int    piece = dot == std::string::npos ? 0 : std::atoi(w.key.c_str() + dot + 1);
+  Json         rec   = {{"rel", w.rel}, {"piece", piece}, {"label", w.label}, {"visible", w.visible},
+                        {"cloth", {{"on", w.cloth.on ? Json(*w.cloth.on) : Json()}, {"strength", w.cloth.strength}}}};
+  if(const auto c = f.colors.find(w.id); c != f.colors.end())
+    rec["color"] = c->second.rel.empty() ? Json() : Json(c->second.rel);
+  // its surfaces' edits, in the order its meshes have them
+  Json                  edits = Json::array();
+  const auto            p     = findProp(f.id);
+  const fv::SceneGraph& scene = f.fig->loaded.scene;
+  std::set<int>         seen;
+  for(int m : w.meshes)
+    if(m >= 0 && m < int(scene.meshes.size()))
+      for(int mi : scene.meshes[size_t(m)].materials)
+        if(seen.insert(mi).second)
+          edits.push_back(p && p->materials ? p->materials->editsOf(mi) : Json::object());
+  rec["materials"] = edits;
+  return rec;
+}
+
+Json FvHost::Impl::wardrobeRestore(const Json& args)
+{
+  const auto p = figureProp(args);
+  if(!p || !p->figure->fig->pose)
+    throw std::runtime_error("no such figure");
+  std::shared_ptr<Loaded> target = p->figure;
+  const int               id     = itemId(args);
+  const Json&             rec    = args.at("record");
+  if(wornItem(*target->fig, id))
+    throw std::runtime_error("i:" + std::to_string(id) + " is worn already");
+  WearRequest request{rec.at("rel").get<std::string>(), "", {}};
+  request.ids.assign(size_t(std::max(rec.value("piece", 0), 0)) + 1, 0);
+  request.ids.back() = id;
+  request.only       = true;
+  // as it was: shown or hidden and its cloth before the build, its colour and edits once its surfaces are in
+  auto before = [this, target, id, rec] {
+    if(!wornItem(*target->fig, id))
+      return;
+    target->fig->setItemVisible(id, rec.value("visible", true));
+    const Json&         c = rec.value("cloth", Json::object());
+    std::optional<bool> on;
+    if(c.contains("on") && c["on"].is_boolean())
+      on = c["on"].get<bool>();
+    target->fig->setItemCloth(id, on, c.value("strength", 1.f));
+  };
+  auto after = [this, target, id, rec] {
+    const auto q = findProp(target->id);
+    const fv::WornItem* w = wornItem(*target->fig, id);
+    if(!q || q->figure != target || !w)
+      return;
+    if(rec.contains("color") && (rec["color"].is_string() || rec["color"].is_null()))
+    {
+      const std::string rel = rec["color"].is_string() ? rec["color"].get<std::string>() : std::string();
+      std::shared_ptr<const fv::dson::Doc> doc;
+      if(rel.empty() || (doc = target->fig->store().load(rel)))
+        applyItemColor(*q, {id}, rel, doc ? &doc->json : nullptr, true);
+    }
+    if(q->materials)
+    {
+      const fv::SceneGraph& scene = target->fig->loaded.scene;
+      std::vector<int>      mats;
+      std::set<int>         seen;
+      for(int m : w->meshes)
+        if(m >= 0 && m < int(scene.meshes.size()))
+          for(int mi : scene.meshes[size_t(m)].materials)
+            if(seen.insert(mi).second)
+              mats.push_back(mi);
+      const Json& edits = rec.value("materials", Json::array());
+      for(size_t k = 0; k < mats.size() && k < edits.size(); k++)
+        if(edits[k].is_object() && !edits[k].empty())
+          q->materials->set({{"material", mats[k]}, {"values", edits[k]}});
+    }
+    publishWardrobe(*target);
+  };
+  return {{"job", startWear(target, {std::move(request)}, before, after)}, {"prop", target->id}};
 }
 
 // Taken off, an item is hidden in the renderer's scene and stays there, buffers and BLAS, until the

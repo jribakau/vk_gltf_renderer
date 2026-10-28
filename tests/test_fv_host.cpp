@@ -378,12 +378,13 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
       const auto any = [&](const std::vector<std::string>& v) { return v.empty() ? std::string("p:0") : v[rng() % v.size()]; };
       const std::string id = any(figures);
       std::string       item;
-      for(const auto& [key, it] : rig.topic("wardrobe/" + id).value("items", Json::object()).items())
+      const Json        worn = rig.topic("wardrobe/" + id).value("items", Json::object());
+      for(const auto& [key, it] : worn.items())
         item = key;
 
       std::string cmd;
       Json        args = Json::object();
-      switch(rng() % 26)
+      switch(rng() % 28)
       {
         case 0: cmd = "prop.set", args = {{"prop", id}, {"transform", {{"t", {u(-1, 1), 0.0, u(-1, 1)}}}}}; break;
         case 1: cmd = "prop.set", args = {{"prop", any(props)}, {"transform", {{"e", {u(-90, 90), u(-90, 90), 0.0}}}}}; break;
@@ -424,6 +425,8 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
         case 22: cmd = "prop.remove", args = {{"prop", any(props)}}; break;
         case 23: cmd = "prop.duplicate", args = {{"prop", any(props)}}; break;
         case 24: cmd = "load", args = {{"rel", "People/Test/Box Figure.duf"}}; break;
+        case 26: cmd = "wear", args = {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}}; break;
+        case 27: cmd = "wardrobe.remove", args = {{"prop", id}, {"item", item}}; break;
         default:
           if(rng() % 4 == 0)
             cmd = "scene.clear";
@@ -487,6 +490,47 @@ TEST(FvHost, ARemovedFigureComesBackUnderItsIdAsItWas)
     EXPECT_FALSE(rig.topic("morphs/" + id).empty());
     EXPECT_EQ(rig.topic("wardrobe/" + id).value("items", Json::object()).size(), 1u);
   }
+}
+
+// Putting an item on and taking it off are steps; an item comes back under its id, as it was.
+TEST(FvHost, AnItemTakenOffComesBackUnderItsIdAsItWas)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Wear Box Shirt");
+  const auto items = [&] { return rig.topic("wardrobe/" + id).value("items", Json::object()); };
+  ASSERT_EQ(items().size(), 1u);
+  const std::string item = items().begin().key();
+
+  // the wear undone and redone: the same id
+  historyStep(rig, "history.undo");
+  EXPECT_TRUE(items().empty());
+  historyStep(rig, "history.redo");
+  ASSERT_TRUE(items().contains(item)) << items().dump();
+
+  // hidden, its surface edited, its cloth set: taken off and put back, all of it
+  // a wear's surfaces come after the figure's: the shirt's is the last
+  int        shirt     = -1;
+  const Json materials = rig.topic("materials/" + id).value("items", Json::object());
+  for(const auto& [m, it] : materials.items())
+    shirt = std::max(shirt, std::stoi(m.substr(2)));
+  ASSERT_GE(shirt, 0);
+  rig.cmd("wardrobe.visible", {{"prop", id}, {"item", item}, {"visible", false}});
+  rig.cmd("material.set", {{"prop", id}, {"material", shirt}, {"values", {{"color", "#aa2200"}}}});
+  rig.cmd("wardrobe.cloth", {{"prop", id}, {"item", item}, {"on", false}});
+  const Json was = stateOf(rig);
+  ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", item}}).value("ok", false));
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Take off Box Shirt");
+  EXPECT_TRUE(items().empty());
+  const Json undone = historyStep(rig, "history.undo");
+  EXPECT_FALSE(undone.contains("problems")) << undone.dump();
+  ASSERT_TRUE(items().contains(item)) << items().dump();
+  EXPECT_FALSE(items()[item].value("visible", true));
+  EXPECT_EQ(differ(was, stateOf(rig)), "");
 }
 
 //--------------------------------------------------------------------------------------------------

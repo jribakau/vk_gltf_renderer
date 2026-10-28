@@ -113,7 +113,9 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           // done once it is on: the app waits on this job to lay a colour preset over the piece,
           // which finds none of its surfaces while the wear is still loading
           const auto worn = onApp([this, wearer] { return figureArg(Json{{"prop", wearer}}); });
-          startWear(worn, {{rel, "", {}, iray}}, {}, [this, jobId, label] { job(jobId, {{"label", label}, {"state", "done"}}); });
+          WearRequest request{rel, "", {}, iray};
+          request.step = true;
+          startWear(worn, {std::move(request)}, {}, [this, jobId, label] { job(jobId, {{"label", label}, {"state", "done"}}); });
           return;
         }
         if(onApp([this] { return std::count_if(props.begin(), props.end(), [](const auto& p) { return p->figure && p->figure->fig->pose; }) > 1; }))

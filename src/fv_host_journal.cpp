@@ -186,6 +186,14 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
           index.push_back(int(i));
     return {{"kind", "materials"}, {"prop", p->id}, {"materials", index}};
   }
+  if(cmd == "wardrobe.remove" || cmd == "wardrobe.restore")
+  {
+    // an item worn or not: what puts it back on, or takes it off
+    const auto p = figureProp(args);
+    if(!p || !p->figure || !args.contains("item"))
+      return nullptr;
+    return {{"kind", "items"}, {"prop", p->id}, {"items", Json::array({itemIdOf(args["item"])})}};
+  }
   if(cmd.rfind("wardrobe.", 0) == 0 || cmd.rfind("dforce.", 0) == 0)
   {
     const auto p = figureProp(args);
@@ -334,6 +342,12 @@ Json FvHost::Impl::journalState(const Json& scope)
         ops.push_back(op("dforce.enable", {{"prop", id}, {"on", f.dforce->enabled()}}));
     }
   }
+  else if(kind == "items")
+    for(const Json& item : scope["items"])
+      if(const fv::WornItem* w = wornItem(*f.fig, item.get<int>()))
+        ops.push_back(op("wardrobe.restore", {{"prop", id}, {"item", w->id}, {"record", itemRecord(f, *w)}}));
+      else
+        ops.push_back(op("wardrobe.remove", {{"prop", id}, {"item", item}}));
   else if(kind == "collision" && f.collider)
     ops.push_back(op("wardrobe.collision", {{"prop", id}, {"on", f.collider->enabled()}}));
   else if(kind == "dforce" && f.dforce)
@@ -371,6 +385,11 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
     return "Lens of " + name;
   if(cmd == "prop.remove")
     return "Remove " + name;
+  if(cmd == "wardrobe.remove")
+  {
+    const fv::WornItem* w = p && p->figure && args.contains("item") ? wornItem(*p->figure->fig, itemIdOf(args["item"])) : nullptr;
+    return "Take off " + (w ? (w->label.empty() ? w->rel : w->label) : std::string("item"));
+  }
   if(cmd == "scene.clear")
     return "Clear the scene";
   if(cmd == "morph.set")
@@ -544,6 +563,10 @@ Json FvHost::Impl::applyOp(const Json& o)
     return propRemove(args);
   if(cmd == "prop.restore")
     return propRestore(args);
+  if(cmd == "wardrobe.remove")
+    return wardrobeRemove(args);
+  if(cmd == "wardrobe.restore")
+    return wardrobeRestore(args);
   throw std::runtime_error("the history can't apply " + cmd);
 }
 

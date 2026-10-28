@@ -738,7 +738,9 @@ struct FvHost::Impl
     // installed Iray presets a 3Delight-era item may take as it goes on, the one that keeps its look
     // (fv::dson::chooseIrayPreset); recorded as its colour, so "own" takes it off again
     std::vector<std::string> iray;
-    std::vector<int>         ids;  // the ids its items had (Figure::commitWear)
+    std::vector<int>         ids;  // the ids its items had (Figure::commitWear), by their place in the file
+    bool only = false;  // its items without an id come off again at once: one item of a file put back
+    bool step = false;  // the user put it on: a step of the history
   };
   Json     wear(const Json& args);
   // What a restore sets on the figure besides its wardrobe, put on before the wear's composition so
@@ -888,6 +890,11 @@ struct FvHost::Impl
   Json sceneOrder(const Json& args);
   // A prop that came (a load, prop.add, a duplicate) as a step: its undo takes it away
   void recordAdded(const std::shared_ptr<Prop>& p, const std::string& label);
+
+  // ---- worn items as steps (C3): what puts one back on as it was, and doing that
+  Json itemRecord(const Loaded& f, const fv::WornItem& w) const;
+  // wardrobe.restore {prop, item, record}: worn again under its id, its file's other items left off (-> {job})
+  Json wardrobeRestore(const Json& args);
 
   // ---- structural steps (C3): a removed prop is kept, so its undo puts the same objects back
   // under its id, composed again; past kParked kept ones (the oldest go), it loads again from its

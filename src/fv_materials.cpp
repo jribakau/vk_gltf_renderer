@@ -28,6 +28,7 @@
 
 #include <nvutils/logger.hpp>
 
+#include <figure/dson/material_preset.hpp>
 #include <figure/dson/skin_materials.hpp>
 #include <figure/materials/edits_json.hpp>
 #include <figure/materials/lobes.hpp>
@@ -463,13 +464,22 @@ Json FvMaterials::reset(const Json& args)
 
 namespace {
 
-// "<name>", or "<name>#n" for the n-th material of that name in scene order.
+// "<name>", or "<name>#n" for the n-th material of that name in scene order, among those in use: a
+// taken-off item's surfaces stay in the scene, but count for nothing (an empty key), so a file
+// written after a take-off names its materials as the figure loaded fresh does.
 std::vector<std::string> materialKeys(const fv::SceneGraph& scene)
 {
+  const std::vector<bool>    live = fv::dson::liveMaterials(scene);
   std::map<std::string, int> counts;
   std::vector<std::string>   keys;
-  for(const fv::Material& m : scene.materials)
+  for(size_t i = 0; i < scene.materials.size(); i++)
   {
+    const fv::Material& m = scene.materials[i];
+    if(i < live.size() && !live[i])
+    {
+      keys.emplace_back();
+      continue;
+    }
     const int n = counts[m.name]++;
     keys.push_back(n > 0 ? m.name + "#" + std::to_string(n) : m.name);
   }
@@ -486,7 +496,7 @@ Json FvMaterials::editState() const
   const auto keys = materialKeys(*m_scene);
   for(size_t i = 0; i < m_count; i++)
   {
-    if(!m_scene->materials[i].edits.empty())
+    if(!keys[i].empty() && !m_scene->materials[i].edits.empty())
       out[keys[i]] = editsOf(int(i));
   }
   return out;

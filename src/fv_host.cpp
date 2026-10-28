@@ -113,7 +113,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("scene.state", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->sceneState(args); }); });
   cmds.add("scene.restore", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->sceneRestore(args); }); });
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
-  cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
+  cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.remove", args); }); });
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.visible", args); }); });
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });

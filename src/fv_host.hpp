@@ -122,7 +122,8 @@
 //                                                chosen), material edits, collision and dForce on/off, dForce's
 //                                                mode; restored after the add-ons: presets (eye-only ones as
 //                                                eyes), skin, eyes, makeup, worn items' colours, edits. A worn
-//                                                item's `id` is the "i:N" it goes back on under. A prop's id is
+//                                                item's `id` is the "i:N" it goes back on under; the edits name
+//                                                the surfaces in use, so a taken-off item's count for nothing. A prop's id is
 //                                                never given out twice, scene.clear or not
 //   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models'), by the
 //                                                number the "animation" topic gives each: it stays the
@@ -138,7 +139,9 @@
 //                                                a prop added (load, prop.add, prop.duplicate), removed
 //                                                (prop.remove, scene.clear: it comes back under its id, its
 //                                                objects kept or, past the few kept, loaded again from its
-//                                                scene-file part), or a panel edit (prop.set, morph.*,
+//                                                scene-file part), an item put on (wear, load) or taken off
+//                                                (wardrobe.remove: worn again under its id, as it was), or a
+//                                                panel edit (prop.set, morph.*,
 //                                                pose.*, material.set/reset, wardrobe.visible/collision/cloth,
 //                                                dforce.enable/mode, lighting.set, scene.order, view.use, and
 //                                                camera.set looking through a camera prop), captured as it
