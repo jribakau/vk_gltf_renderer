@@ -69,12 +69,6 @@ void LineHelperVk::deinit()
   m_initialized               = false;
 }
 
-uint32_t LineHelperVk::pack(const glm::vec4& c)
-{
-  const auto byte = [](float v) { return uint32_t(std::clamp(v, 0.f, 1.f) * 255.f + 0.5f); };
-  return byte(c.x) | byte(c.y) << 8 | byte(c.z) << 16 | byte(c.w) << 24;
-}
-
 void LineHelperVk::createPipeline()
 {
   using shaderio::lines::LinePushConstants;

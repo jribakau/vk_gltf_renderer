@@ -126,6 +126,8 @@ Primary files grouped by subsystem (not an exhaustive listing — treat `src/` a
 src/
 ├── main.cpp                    # Entry point, Vulkan context, CLI parsing
 ├── renderer.cpp/hpp            # Main renderer orchestrator (GltfRenderer)
+├── host_renderer.hpp          # HostRenderer: what the stream host asks of the renderer; GltfRenderer
+│                               #   implements it, tests/common/fake_host_renderer.hpp runs the host without a GPU
 ├── renderer_selection.cpp      # What the host calls for picks, selection, Fit and the gizmo; selection events into Resources
 ├── renderer_base.hpp           # BaseRenderer: abstract base for PathTracer / Rasterizer
 ├── renderer_pathtracer.cpp/hpp # Monte Carlo path tracer (Vulkan ray tracing + ray query)

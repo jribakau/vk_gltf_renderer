@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -68,7 +69,11 @@ public:
   bool hasLines() const { return !m_vertices.empty(); }
 
   // An RGBA colour, 0..1, as a vertex holds it.
-  static uint32_t pack(const glm::vec4& c);
+  static uint32_t pack(const glm::vec4& c)
+  {
+    const auto byte = [](float v) { return uint32_t(std::clamp(v, 0.f, 1.f) * 255.f + 0.5f); };
+    return byte(c.x) | byte(c.y) << 8 | byte(c.z) << 16 | byte(c.w) << 24;
+  }
 
   void renderRaster(VkCommandBuffer  cmd,
                     VkDescriptorSet  helperDescriptorSet,

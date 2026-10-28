@@ -177,6 +177,22 @@ set(TEST_SOURCES
     # The host's addressing on its retained scene: entities and picks map back to props (oracle 8)
     test_fv_scene_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp
+    # The host's commands without a GPU, over FakeHostRenderer (daz-viewer docs/command-journal-plan.md, C0)
+    test_fv_host.cpp
+    common/fake_host_renderer.hpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_figure.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_lighting.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_live.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_looks.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_props.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_scene.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_support.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_wardrobe.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_view.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_materials.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/env_image_loader.cpp
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Optional external generation bridge
@@ -211,6 +227,18 @@ set(TEST_SOURCES
 
 # Create test executable
 add_executable(${TEST_NAME} ${TEST_SOURCES})
+
+# The host's files hold its commands as lambdas: more sections than an object file allows by default
+if(MSVC)
+  file(GLOB FV_HOST_TEST_SOURCES ${CMAKE_SOURCE_DIR}/src/fv_host*.cpp)
+  set_source_files_properties(${FV_HOST_TEST_SOURCES} TARGET_DIRECTORY ${TEST_NAME} PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
+# The host sets parameters through nvmcp, and includes the cpp-httplib that ships inside cpp-mcp
+target_link_libraries(${TEST_NAME} PRIVATE nvpro2::nvmcp)
+if(TARGET mcp)
+  get_target_property(_mcp_includes mcp INTERFACE_INCLUDE_DIRECTORIES)
+  target_include_directories(${TEST_NAME} PRIVATE ${_mcp_includes})
+endif()
 
 # glTF 2.1 fixtures: generated into the build tree by gltf_2_1/generate_fixtures.py, never committed.
 # Without Python the folder stays empty and test_gltf_2_1.cpp skips.
