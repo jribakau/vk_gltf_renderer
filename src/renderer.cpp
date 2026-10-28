@@ -646,6 +646,26 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.textureGraceMB, Persist::eNo);
   m_settings.add({.name = "residencyMinInstances", .help = "Retained scene: the least instance capacity (start-up only)"},
                  &m_resources.settings.residencyMinInstances, Persist::eNo);
+  // Live: from the next refit on (P7, measured on Path Trace after a pose far from the load pose).
+  m_settings.add({.name = "blasRefitsBeforeRebuild",
+                  .help = "Retained scene: a BLAS refitted this many times is built again (0: never)",
+                  .callbackSuccess =
+                      [this](const nvutils::ParameterBase* const) {
+                        for(rs::RetainedSceneVk* retained : {m_resources.retainedGpu.get(), m_resources.retainedSpare.get()})
+                          if(retained)
+                            retained->setRefitsBeforeRebuild(m_resources.settings.blasRefitsBeforeRebuild);
+                      }},
+                 &m_resources.settings.blasRefitsBeforeRebuild, Persist::eNo);
+  // Live: for the BLASes built from then on (P7, B56: measured on the scene's BLAS memory).
+  m_settings.add({.name = "blasCompactStatic",
+                  .help = "Retained scene: a static BLAS is compacted once its size is known",
+                  .callbackSuccess =
+                      [this](const nvutils::ParameterBase* const) {
+                        for(rs::RetainedSceneVk* retained : {m_resources.retainedGpu.get(), m_resources.retainedSpare.get()})
+                          if(retained)
+                            retained->setCompactStatic(m_resources.settings.blasCompactStatic);
+                      }},
+                 &m_resources.settings.blasCompactStatic, Persist::eNo);
   // Debug, live (read at the next scene replace): every composition then retires the old scene's
   // slots and reallocates, so holes, slot reuse, capacity growth and deferred frees run on the GPU
   // before structural edits make them ordinary (daz-viewer docs/retained-scene-plan.md, P4).
@@ -4378,9 +4398,11 @@ void GltfRenderer::replaceHostScene()
   else
     m_resources.retainedGpu = std::make_unique<rs::RetainedSceneVk>(
         retainedBackendInfo(),
-        rs::ResidencyOptions{.minInstances      = std::max(m_resources.settings.residencyMinInstances, 1u),
-                             .blasScratchBudget = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
-                             .textureGraceBytes = VkDeviceSize(m_resources.settings.textureGraceMB) << 20});
+        rs::ResidencyOptions{.minInstances        = std::max(m_resources.settings.residencyMinInstances, 1u),
+                             .blasScratchBudget   = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
+                             .textureGraceBytes   = VkDeviceSize(m_resources.settings.textureGraceMB) << 20,
+                             .refitsBeforeRebuild = m_resources.settings.blasRefitsBeforeRebuild,
+                             .compactStatic       = m_resources.settings.blasCompactStatic});
   {
     fv::timing::Scope timeUpload("retained upload");
     VkCommandBuffer   cmd = m_app->createTempCmdBuffer();
@@ -4514,6 +4536,12 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   logRetainedNotices();
+  if(const auto compaction = m_resources.retainedGpu->takeCompaction(); compaction.blases && fv::timing::enabled())
+  {
+    constexpr double kMB = 1024.0 * 1024.0;
+    fv::timing::line(fmt::format("retained BLAS compaction: {} BLASes, {:.1f} MB to {:.1f} MB; every BLAS {:.1f} MB",
+                                 compaction.blases, compaction.before / kMB, compaction.after / kMB, compaction.blasBytes / kMB));
+  }
   // the variant only grows (D15), or a removal earlier in the session would compile a smaller one
   // now, with a queue wait
   if(result.featuresChanged)

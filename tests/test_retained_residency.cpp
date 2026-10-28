@@ -369,6 +369,86 @@ TEST(RetainedResidency, AVertexEditRefitsTheBlasesOfItsMesh)
     EXPECT_EQ(gpu.blas(residency.prim(p)->blas)->refits, 1u);
 }
 
+// blasRefitsBeforeRebuild: a BLAS refitted that many times since its build is built again in place
+// of the next refit, the old one retired; the count starts over
+TEST(RetainedResidency, ABlasRefittedEnoughIsBuiltAgain)
+{
+  RetainedScene scene;
+  const MeshId  grid = scene.addMesh(gridMesh(2, 0.f));
+  drawn(scene, "e", grid, {material(scene, "m")});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.refitsBeforeRebuild = 3});
+  residency.replace(scene);
+  const AccelHandle built = residency.prim(0)->blas;
+
+  std::vector<glm::vec3> moved = scene.mesh(grid)->positions;
+  const auto             edit  = [&] {
+    for(glm::vec3& p : moved)
+      p.z += 0.5f;
+    scene.setMeshVertices(grid, moved, {});
+    gpu.beginFrame();
+    residency.sync(scene);
+  };
+  edit();
+  edit();
+  EXPECT_EQ(residency.prim(0)->blas, built);
+  EXPECT_EQ(gpu.blas(built)->refits, 2u);
+  edit();
+  const AccelHandle again = residency.prim(0)->blas;
+  EXPECT_NE(again, built);
+  EXPECT_EQ(gpu.blas(again)->refits, 0u);
+  expectClean(scene, residency, gpu);  // the new BLAS hashes the new positions
+  edit();
+  EXPECT_EQ(residency.prim(0)->blas, again);
+  EXPECT_EQ(gpu.blas(again)->refits, 1u);
+  drain(gpu);
+  EXPECT_EQ(gpu.blas(built), nullptr);  // retired
+}
+
+// blasCompactStatic: a static prim's BLAS is built for compaction, and a sync after the frame that
+// built it puts the compacted copy in its place (the TLAS with it) and retires the original. A vertex
+// edit can't refit a compacted BLAS: it builds it again, refittable from then on.
+TEST(RetainedResidency, AStaticBlasIsCompactedOnceItsSizeIsKnown)
+{
+  RetainedScene scene;
+  const MeshId  grid = scene.addMesh(gridMesh(2, 0.f));
+  drawn(scene, "e", grid, {material(scene, "m")});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.compactStatic = true});
+  residency.replace(scene);
+  const AccelHandle built = residency.prim(0)->blas;
+  EXPECT_TRUE(gpu.blas(built)->flags & eAccelAllowCompaction);
+  EXPECT_FALSE(gpu.blas(built)->flags & eAccelAllowUpdate);
+
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(scene).changed);
+  const AccelHandle compacted = residency.prim(0)->blas;
+  ASSERT_NE(compacted, built);
+  EXPECT_TRUE(gpu.blas(compacted)->compacted);
+  expectClean(scene, residency, gpu);
+  gpu.beginFrame();
+  EXPECT_FALSE(residency.sync(scene).changed);  // once
+  drain(gpu);
+  EXPECT_EQ(gpu.blas(built), nullptr);
+
+  std::vector<glm::vec3> moved = scene.mesh(grid)->positions;
+  for(glm::vec3& p : moved)
+    p.z += 0.5f;
+  scene.setMeshVertices(grid, moved, {});
+  gpu.beginFrame();
+  residency.sync(scene);
+  const AccelHandle rebuilt = residency.prim(0)->blas;
+  EXPECT_NE(rebuilt, compacted);
+  EXPECT_TRUE(gpu.blas(rebuilt)->flags & eAccelAllowUpdate);
+  expectClean(scene, residency, gpu);
+  scene.setMeshVertices(grid, moved, {});
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(residency.prim(0)->blas, rebuilt);
+  EXPECT_EQ(gpu.blas(rebuilt)->refits, 1u);
+  EXPECT_TRUE(gpu.errors().empty());
+}
+
 // A vertex edit uploads the positions and normals, and the tangents only when it set them (a dial
 // drag's steps keep them, and sending them again cost the drag GPU time); the UVs never
 TEST(RetainedResidency, AVertexEditUploadsOnlyTheStreamsItWrote)
@@ -1136,7 +1216,12 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
     std::vector<EntityId> live;
 
     FakeGpuBackend gpu(2);
-    Residency      residency(gpu, {.minInstances = 4, .minPrims = 4, .emissiveSettleFrames = 3});
+    // odd seeds compact the static BLASes, every third builds a BLAS again after two refits
+    Residency residency(gpu, {.minInstances         = 4,
+                              .minPrims             = 4,
+                              .emissiveSettleFrames = 3,
+                              .refitsBeforeRebuild  = seed % 3 == 0 ? 2u : 0u,
+                              .compactStatic        = seed % 2 == 1});
     residency.replace(scene);
     const auto pick = [&](auto& v) -> auto& { return v[std::uniform_int_distribution<size_t>(0, v.size() - 1)(rng)]; };
 

@@ -175,6 +175,7 @@ void Residency::clear()
   m_jointPack = m_normalPack = m_weightPack = m_prevPositionTable = m_prevWorldTable = {};
   m_packsDirty = false;
   m_drawersWritten.clear();
+  m_compacting.clear();
   m_meshesWritten.clear();
   m_prevWorlds.clear();
   m_dirtyPrevPrims.clear();
@@ -259,6 +260,57 @@ void Residency::retireAccel(AccelHandle accel)
 {
   if(accel)
     m_gpu.retire([&gpu = m_gpu, accel] { gpu.destroyAccel(accel); });
+}
+
+void Residency::build(Prim& prim)
+{
+  prim.compactable = m_options.compactStatic && prim.drawer.isNone();
+  prim.compacting  = prim.compactable;
+  prim.blas = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | (prim.compactable ? eAccelAllowCompaction : eAccelAllowUpdate));
+  prim.refits = 0;
+}
+
+void Residency::refit(Prim& prim)
+{
+  if(!prim.compactable && (m_options.refitsBeforeRebuild == 0 || ++prim.refits < m_options.refitsBeforeRebuild))
+  {
+    m_gpu.refitBlas(prim.blas, prim.input);
+    return;
+  }
+  // refitted enough, or built for compaction: its vertices move after all
+  retireAccel(prim.blas);
+  prim.blas        = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowUpdate);
+  prim.refits      = 0;
+  prim.compactable = prim.compacting = false;
+}
+
+bool Residency::takeCompacted()
+{
+  bool any = false;
+  for(auto it = m_compacting.begin(); it != m_compacting.end();)
+  {
+    const uint32_t p = *it;
+    if(p >= m_prims.size() || !m_prims[p] || !m_prims[p]->compacting)
+    {
+      it = m_compacting.erase(it);
+      continue;
+    }
+    Prim&             prim = *m_prims[p];
+    const AccelHandle copy = m_gpu.compactBlas(prim.blas);
+    if(!copy)
+    {
+      ++it;  // its size isn't known yet
+      continue;
+    }
+    prim.compacting = false;
+    it              = m_compacting.erase(it);
+    if(copy == prim.blas)
+      continue;  // kept as built
+    retireAccel(prim.blas);
+    prim.blas = copy;
+    any       = true;
+  }
+  return any;
 }
 
 // ---------- Records ----------
@@ -1249,7 +1301,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     for(int32_t p : d.prims)
       if(p >= 0 && m_prims[size_t(p)]->blas)
       {
-        m_gpu.refitBlas(m_prims[size_t(p)]->blas, m_prims[size_t(p)]->input);
+        refit(*m_prims[size_t(p)]);
         refits = true;
       }
   }
@@ -1340,7 +1392,9 @@ SyncResult Residency::sync(RetainedScene& scene)
   const bool retryHeld       = std::exchange(m_retryHeld, false);
   // what the last sync wrote or moved still has motion rows to bring back to rest
   const bool motionToSettle = !m_drawersWritten.empty() || !m_meshesWritten.empty() || !m_movedLast.empty();
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle)
+  // static BLASes wait for their compacted copies (a few frames after their builds)
+  const bool compacting = !m_compacting.empty();
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting)
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);
@@ -1602,7 +1656,7 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
     return written;
   m_gpu.barrier(GpuBarrier::eTransferToBuild);
   for(uint32_t p : refits)
-    m_gpu.refitBlas(m_prims[p]->blas, m_prims[p]->input);
+    refit(*m_prims[p]);
   m_gpu.barrier(GpuBarrier::eBuildToBuild);  // the TLAS build reads them
   return written;
 }
@@ -1687,12 +1741,16 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
     m_gpu.barrier(GpuBarrier::eTransferToBuild);
   writeRenderNodes(nodes);
   writeRenderPrims(prims);
+  // the copies first: built in an earlier frame, they don't wait for this frame's builds
+  if(!m_compacting.empty() && takeCompacted())
+    tlasRows = true;
   for(uint32_t p : builds)
   {
-    Prim& prim = *m_prims[p];
-    prim.blas  = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowUpdate);
+    build(*m_prims[p]);
+    if(m_prims[p]->compacting)
+      m_compacting.insert(p);
   }
-  if(!builds.empty())
+  if(!builds.empty() || tlasRows)
     m_gpu.barrier(GpuBarrier::eBuildToBuild);
 
   if(tlasRows || !builds.empty() || result.drawListChanged || result.tlasHandleChanged || result.verticesWritten || m_bitsChanged)

@@ -363,8 +363,12 @@ AccelHandle FakeGpuBackend::compactBlas(AccelHandle handle)
   }
   if(!(it->second.flags & eAccelAllowCompaction))
     error("compactBlas: the BLAS was not built with eAccelAllowCompaction");
-  Blas copy      = it->second;
-  copy.compacted = true;
+  if(it->second.builtFrame == m_frame)
+    return {};  // the size comes once the frame that built it has run
+  Blas copy        = it->second;
+  copy.compacted   = true;
+  copy.builtFrame  = m_frame;
+  m_blasBeforeTlas = m_buildsBeforeTrace = true;
   const AccelHandle compacted{m_nextHandle++};
   m_blases.emplace(compacted.value, copy);
   return compacted;

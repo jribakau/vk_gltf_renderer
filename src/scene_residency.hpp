@@ -102,6 +102,13 @@ struct ResidencyOptions
   uint64_t textureGraceBytes = 256ull << 20;
   // the texture-info table's entries, which GltfShadeMaterial names by uint16 (D17)
   uint32_t textureInfoLimit = 65536;
+  // blasRefitsBeforeRebuild: a BLAS refitted this many times since its build is built again in place
+  // of the next refit, as a refit keeps the build's tree however far the vertices move (0: never)
+  uint32_t refitsBeforeRebuild = 0;
+  // blasCompactStatic: the BLAS of a prim drawn from its mesh's own streams is built for compaction
+  // and replaced by its compacted copy once the size is known; a vertex edit builds it again
+  // refittable
+  bool compactStatic = false;
 };
 
 // What makes two decodes the same image: the file (its path, size and write time) or the bytes or
@@ -181,7 +188,10 @@ public:
     uint32_t     indexCount = 0;
     AccelHandle  blas;
     BlasInput    input;
-    uint32_t     users = 0;  // instances drawing it
+    uint32_t     refits = 0;  // since its BLAS was built
+    uint32_t     users  = 0;  // instances drawing it
+    // its BLAS was built for compaction (not refittable), and the compacted copy is still to come
+    bool compactable = false, compacting = false;
     // the opacity micromap its BLAS links (input.micromap) and its micromap index buffer; none for none
     const OpacityMicromap* micromap = nullptr;
     BufferHandle           micromapIndices;
@@ -232,6 +242,10 @@ public:
   void clear();
   // textureGraceMB: a smaller budget trims the grace list now
   void setTextureGrace(uint64_t bytes);
+  // blasRefitsBeforeRebuild (ResidencyOptions::refitsBeforeRebuild), from the next refit on
+  void setRefitsBeforeRebuild(uint32_t refits) { m_options.refitsBeforeRebuild = refits; }
+  // blasCompactStatic (ResidencyOptions::compactStatic), for the BLASes built from now on
+  void setCompactStatic(bool compact) { m_options.compactStatic = compact; }
   // the images the last replace or sync decoded and the ones it took already decoded
   struct ImageCounts
   {
@@ -412,6 +426,13 @@ private:
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
   void     retireAccel(AccelHandle accel);
+  // the prim's BLAS built, for compaction when it is static and blasCompactStatic is on
+  void build(Prim& prim);
+  // the prim's BLAS refitted to its input, or built again once it has been refitted enough (or
+  // when it was built for compaction)
+  void refit(Prim& prim);
+  // the compacted copies of the BLASes built for compaction whose sizes are known; whether any came
+  bool takeCompacted();
   // the record's streams; `vertices`: only what setMeshVertices writes (positions, normals, and the
   // tangents when it set them)
   void uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool vertices = false);
@@ -501,6 +522,7 @@ private:
   std::set<uint32_t> m_dirtyNodes;        // render-node rows to write: rebound or now holes
   bool               m_allNodes = false;  // every row, into a new table
   bool               m_allPrims = false;
+  std::set<uint32_t> m_compacting;  // prim slots whose BLASes wait for their compacted copies
 };
 
 }  // namespace rs

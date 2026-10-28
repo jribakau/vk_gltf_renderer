@@ -137,6 +137,8 @@ VulkanGpuBackend::~VulkanGpuBackend()
   m_info.alloc->destroyImage(m_missing);
   if(m_timestamps)
     vkDestroyQueryPool(m_info.device, m_timestamps, nullptr);
+  if(m_compactQueries)
+    vkDestroyQueryPool(m_info.device, m_compactQueries, nullptr);
 }
 
 void VulkanGpuBackend::record(VkCommandBuffer cmd)
@@ -614,6 +616,25 @@ AccelHandle VulkanGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags 
   NVVK_CHECK(m_info.alloc->createAcceleration(entry.accel, entry.data.makeCreateInfo()));
   NVVK_DBG_NAME(entry.accel.accel);
   m_memory.track(kMemBlas, entry.accel.buffer.allocation);
+  if(flags & eAccelAllowCompaction)
+  {
+    if(!m_compactQueries)
+    {
+      const VkQueryPoolCreateInfo info{.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                       .queryType  = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                                       .queryCount = kCompactQueries};
+      NVVK_CHECK(vkCreateQueryPool(m_info.device, &info, nullptr, &m_compactQueries));
+      for(uint32_t q = kCompactQueries; q-- > 0;)
+        m_freeCompactQueries.push_back(q);
+    }
+    // none free: it stays as built
+    if(!m_freeCompactQueries.empty())
+    {
+      entry.compactQuery = int32_t(m_freeCompactQueries.back());
+      m_freeCompactQueries.pop_back();
+      entry.sizeWritten = std::make_shared<bool>(false);
+    }
+  }
   const AccelHandle handle{m_nextHandle++};
   m_blases.emplace(handle.value, std::move(entry));
   m_queued.push_back({handle.value, false});
@@ -756,10 +777,76 @@ void VulkanGpuBackend::recordMicromaps()
   nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 }
 
-AccelHandle VulkanGpuBackend::compactBlas(AccelHandle)
+// The compacted size each BLAS built for compaction comes out at, once its build has run (the
+// builds ahead are recorded); readable once the frame has retired
+void VulkanGpuBackend::writeCompactedSizes(std::span<const uint64_t> blases)
 {
-  LOGE("VulkanGpuBackend::compactBlas: compaction comes with P7; not compacted\n");
-  return {};
+  nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+  for(uint64_t h : blases)
+  {
+    BlasEntry& blas = m_blases.at(h);
+    vkCmdResetQueryPool(m_cmd, m_compactQueries, uint32_t(blas.compactQuery), 1);
+    vkCmdWriteAccelerationStructuresPropertiesKHR(m_cmd, 1, &blas.accel.accel, VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                                                  m_compactQueries, uint32_t(blas.compactQuery));
+    // the frame's resources are freed once the queue is past it, and so is the query
+    retire([written = blas.sizeWritten] { *written = true; });
+  }
+}
+
+VulkanGpuBackend::Compaction VulkanGpuBackend::takeCompaction()
+{
+  Compaction out = std::exchange(m_compaction, {});
+  out.blasBytes  = m_memory.getStats(kMemBlas).currentBytes;
+  return out;
+}
+
+void VulkanGpuBackend::releaseCompactQuery(BlasEntry& blas)
+{
+  if(blas.compactQuery >= 0)
+    m_freeCompactQueries.push_back(uint32_t(blas.compactQuery));
+  blas.compactQuery = -1;
+  blas.sizeWritten.reset();
+}
+
+AccelHandle VulkanGpuBackend::compactBlas(AccelHandle handle)
+{
+  auto it = m_blases.find(handle.value);
+  if(it == m_blases.end())
+  {
+    LOGE("VulkanGpuBackend::compactBlas: a dead or unknown BLAS\n");
+    return handle;
+  }
+  BlasEntry& blas = it->second;
+  if(blas.compactQuery < 0 || !recording("compactBlas"))
+    return handle;  // stays as built
+  if(!*blas.sizeWritten)
+    return {};  // its frame is still in flight
+  VkDeviceSize size = 0;
+  const VkResult read = vkGetQueryPoolResults(m_info.device, m_compactQueries, uint32_t(blas.compactQuery), 1, sizeof(size),
+                                              &size, sizeof(size), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+  releaseCompactQuery(blas);
+  if(read != VK_SUCCESS || size == 0 || size >= blas.data.sizeInfo.accelerationStructureSize)
+    return handle;
+  flushBuilds();  // call order
+  BlasEntry                                  compacted;
+  const VkAccelerationStructureCreateInfoKHR info{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+                                                  .size  = size,
+                                                  .type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR};
+  NVVK_CHECK(m_info.alloc->createAcceleration(compacted.accel, info));
+  NVVK_DBG_NAME(compacted.accel.accel);
+  m_memory.track(kMemBlas, compacted.accel.buffer.allocation);
+  // the copy keeps no build data: a compacted BLAS is never refitted
+  const VkCopyAccelerationStructureInfoKHR copy{.sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
+                                                .src   = blas.accel.accel,
+                                                .dst   = compacted.accel.accel,
+                                                .mode  = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR};
+  vkCmdCopyAccelerationStructureKHR(m_cmd, &copy);
+  m_compaction.blases++;
+  m_compaction.before += blas.data.sizeInfo.accelerationStructureSize;
+  m_compaction.after += size;
+  const AccelHandle out{m_nextHandle++};
+  m_blases.emplace(out.value, std::move(compacted));
+  return out;
 }
 
 // The queued builds and refits, side by side in scratch batches (I8), a barrier between batches
@@ -827,6 +914,12 @@ void VulkanGpuBackend::flushBuilds()
   record();
   if(timed)
     endSpan(BuildSpan::eBlas);
+  std::vector<uint64_t> compactable;
+  for(const QueuedBuild& q : m_queued)
+    if(!q.update && m_blases.at(q.blas).compactQuery >= 0)
+      compactable.push_back(q.blas);
+  if(!compactable.empty())
+    writeCompactedSizes(compactable);
   m_queued.clear();
 }
 
@@ -926,6 +1019,7 @@ void VulkanGpuBackend::destroyAccel(AccelHandle handle)
   }
   if(auto b = m_blases.find(handle.value); b != m_blases.end())
   {
+    releaseCompactQuery(b->second);
     m_memory.untrack(kMemBlas, b->second.accel.buffer.allocation);
     m_info.alloc->destroyAcceleration(b->second.accel);
     m_blases.erase(b);

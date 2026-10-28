@@ -197,6 +197,8 @@ TEST(FakeGpuBackend, RefitNeedsAllowUpdateTheSameAddressesAndNoCompaction)
   gpu.refitBlas(fixed, t.input);
   EXPECT_EQ(gpu.errors().size(), 1u);
 
+  EXPECT_FALSE(gpu.compactBlas(fixed));  // its size comes once the frame that built it has run
+  gpu.beginFrame();
   const AccelHandle compacted = gpu.compactBlas(fixed);
   ASSERT_NE(gpu.blas(compacted), nullptr);
   EXPECT_TRUE(gpu.blas(compacted)->compacted);

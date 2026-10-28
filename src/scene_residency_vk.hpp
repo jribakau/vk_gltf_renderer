@@ -132,6 +132,13 @@ public:
   void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override;
   // the images createImages took from a host's prefetches, since the last call
   uint32_t    takePrefetchCount() { return std::exchange(m_prefetchTaken, 0u); }
+  // the BLASes compacted since the last call, their sizes before and after, and every BLAS's now
+  struct Compaction
+  {
+    uint32_t blases = 0;
+    uint64_t before = 0, after = 0, blasBytes = 0;
+  };
+  Compaction  takeCompaction();
   void        destroyImage(ImageHandle image) override;
   // none: the white default in slot 0, the magenta "missing" image elsewhere (as SceneVk shows one)
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
@@ -164,6 +171,10 @@ private:
     // the opacity micromap link its geometry's triangles.pNext points at, where a move of the
     // entry leaves it
     std::unique_ptr<VkAccelerationStructureTrianglesOpacityMicromapKHR> micromap;
+    // built with eAccelAllowCompaction: the query its compacted size is written to (-1: none), and
+    // whether the frame that wrote it has retired, so the size can be read
+    int32_t               compactQuery = -1;
+    std::shared_ptr<bool> sizeWritten;
   };
   struct MicromapEntry
   {
@@ -197,6 +208,8 @@ private:
   void                                    flushUploads();
   void                                    flushBuilds();
   void                                    recordMicromaps();
+  void                                    writeCompactedSizes(std::span<const uint64_t> blases);
+  void                                    releaseCompactQuery(BlasEntry& blas);
   bool                                    inLiveBuffer(VkDeviceAddress address, VkDeviceSize size) const;
   void                                    checkInput(const BlasInput& input, const char* op) const;
   nvvk::AccelerationStructureGeometryInfo geometryOf(const BlasInput& input, const void* micromap) const;
@@ -206,7 +219,8 @@ private:
   bool                                    beginSpan();
   void                                    endSpan(BuildSpan span);
 
-  static constexpr uint32_t kTimedSpans = 64;
+  static constexpr uint32_t kTimedSpans     = 64;
+  static constexpr uint32_t kCompactQueries = 4096;  // BLASes waiting for their compacted size
 
   Info                                      m_info;
   VkDeviceSize                              m_scratchAlignment = 256;
@@ -232,6 +246,9 @@ private:
   VkQueryPool                               m_timestamps = VK_NULL_HANDLE;
   double                                    m_msPerTick  = 0.0;
   std::vector<BuildSpan>                    m_spans;  // recorded, not read yet
+  VkQueryPool                                 m_compactQueries = VK_NULL_HANDLE;
+  std::vector<uint32_t>                       m_freeCompactQueries;
+  Compaction                                  m_compaction;
   uint32_t                                  m_prefetchTaken = 0;
   nvvkgltf::DeformPipelines                 m_deformPipelines;
 };
@@ -254,12 +271,18 @@ public:
   void setBlasScratchBudget(VkDeviceSize bytes) { m_gpu.setBlasScratchBudget(bytes); }
   // textureGraceMB: the decoded images nothing samples that stay for the next replace or edit
   void setTextureGrace(VkDeviceSize bytes) { m_residency.setTextureGrace(bytes); }
+  // blasRefitsBeforeRebuild: a BLAS refitted this many times is built again (0: never)
+  void setRefitsBeforeRebuild(uint32_t refits) { m_residency.setRefitsBeforeRebuild(refits); }
+  // blasCompactStatic: static BLASes built from now on are compacted
+  void setCompactStatic(bool compact) { m_residency.setCompactStatic(compact); }
   // what the residency's last syncs could not do as asked, once each
   std::vector<std::string> takeNotices() { return m_residency.takeNotices(); }
   // the features the live shader variant has compiled in; none: every one (Residency::setShaderFeatures)
   void setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features) { m_residency.setShaderFeatures(features); }
   // the images taken from a host's prefetches since the last call
   uint32_t takePrefetchCount() { return m_gpu.takePrefetchCount(); }
+  // blasCompactStatic: what the copies since the last call saved
+  VulkanGpuBackend::Compaction takeCompaction() { return m_gpu.takeCompaction(); }
   // Nothing resident (what was is retired), the decoded images kept in grace: a host's scene
   // between a cleanup and the next retained scene replace, which takes what it shares
   void clear();

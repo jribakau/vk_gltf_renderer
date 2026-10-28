@@ -314,6 +314,10 @@ struct Settings
   uint32_t blasScratchBudgetMB = 512;
   // `residencyMinInstances`: the retained scene's least instance capacity (start-up only)
   uint32_t residencyMinInstances = 256;
+  // `blasRefitsBeforeRebuild`: a retained BLAS refitted this many times is built again (0: never)
+  uint32_t blasRefitsBeforeRebuild = 0;
+  // `blasCompactStatic`: a retained static BLAS is compacted once its size is known
+  bool blasCompactStatic = false;
   // `residencyRetireOnReplace` (debug): a stream host's scene replace syncs the new scene into the
   // backend it has, retiring the old one's slots, instead of starting the backend over
   bool residencyRetireOnReplace = false;
