@@ -528,6 +528,20 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   }
   if(pbrSkin && enabled("Makeup Enable"))
     s.makeup = readMakeup(find);
+  // PBRSkin's Makeup Metallicity: the metallic is the makeup's, where it is painted and as strongly.
+  // No makeup, no metal: Polina 9's head sets Metallic Weight 1 with it on and its makeup off, and
+  // Iray shows skin, where the whole head would otherwise be bronze.
+  if(pbrSkin && truthy(find({"Makeup Metallicity Enable"})))
+  {
+    if(!s.makeup)
+      s.metallic = {};
+    else
+    {
+      s.metallic.value *= s.makeup->weight;
+      if(s.metallic.map.empty())
+        s.metallic.map = s.makeup->weightMap;
+    }
+  }
   // 0 is authored: the highlight stays round. Absent is not the same thing.
   if(anisoCh)
     s.glossyAnisotropy = float(clamp01(num(anisoCh, 0)));

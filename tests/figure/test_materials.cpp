@@ -1284,6 +1284,31 @@ TEST(Materials, AToneAndAMakeupColourLowerIntoTheBaseMap)
   EXPECT_TRUE(merged.tone && merged.makeupColor && merged.makeupWeight && merged.toneStrength);
 }
 
+// PBRSkin's Makeup Metallicity Enable: the metallic weight is the makeup's. Without the makeup layer
+// there is no metal (Polina 9's head: Metallic Weight 1, its makeup off, skin in Iray); with it, the
+// metal goes where the makeup is, as strongly; with the switch off, Metallic Weight is the surface's.
+TEST(Materials, MakeupMetallicityIsMetalOnlyWhereTheMakeupIs)
+{
+  const auto skin = [](bool makeup, bool metallicity) {
+    std::string c = R"({"extra":[{"type":"studio/material/daz_brick","channels":[
+      {"channel":{"id":"Diffuse Enable","type":"bool","current_value":true}},
+      {"channel":{"id":"Detail Enable","type":"bool","current_value":false}},
+      {"channel":{"id":"Metallic Weight","type":"float","current_value":1}},
+      {"channel":{"id":"Makeup Weight","type":"float","current_value":0.8,"image_file":"/mask.png"}},)";
+    c += std::string(R"({"channel":{"id":"Makeup Enable","type":"bool","current_value":)") + (makeup ? "true" : "false") + "}},";
+    c += std::string(R"({"channel":{"id":"Makeup Metallicity Enable","type":"bool","current_value":)") + (metallicity ? "true" : "false") + "}}";
+    c += "]}]}";
+    return fv::dson::parseSurface("Head", channelsOf(c.c_str()));
+  };
+  const auto bare = skin(false, true);
+  EXPECT_FLOAT_EQ(bare.metallic.value, 0);
+  EXPECT_TRUE(bare.metallic.map.empty());
+  const auto madeUp = skin(true, true);
+  EXPECT_FLOAT_EQ(madeUp.metallic.value, 0.8f);
+  EXPECT_EQ(madeUp.metallic.map, "/mask.png");
+  EXPECT_FLOAT_EQ(skin(false, false).metallic.value, 1);
+}
+
 // Tri-X's eye presets give the eye moisture the eye's own map; Iray refracts through it untinted, so
 // the glTF material, which tints what it transmits by its base colour, leaves the map out.
 TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)
