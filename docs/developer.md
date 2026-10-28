@@ -897,7 +897,7 @@ copied at the top of the next one, and an instance keeps the world it was drawn 
 after it moves. The clip that plays is a `rs::ClipPlayer` on the store (`setHostClip`), driven by
 `AnimationControl` as a legacy clip is. mcp_scene's edit tools are refused (D3).
 
-Three settings, none remembered:
+Four settings, none remembered:
 
 - `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
   (`VulkanGpuBackend`); the next batch regrows it. Live.
@@ -908,6 +908,11 @@ Three settings, none remembered:
 - `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
   TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
   parameters a host can set (fv_parameter_filter.hpp).
+- `residencyRetireOnReplace` (off), a debug setting read at each scene replace: the backend stays
+  and syncs the newly fed scene over the old one instead of starting over, so every composition
+  retires the old scene's slots and takes others, with holes between, capacity growth and deferred
+  frees running on the GPU. Run one session with it on, under the validation layer in a debug
+  build. The replace's device wait stays.
 
 ---
 

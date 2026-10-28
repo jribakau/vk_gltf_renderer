@@ -646,6 +646,12 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.textureGraceMB, Persist::eNo);
   m_settings.add({.name = "residencyMinInstances", .help = "Retained scene: the least instance capacity (start-up only)"},
                  &m_resources.settings.residencyMinInstances, Persist::eNo);
+  // Debug, live (read at the next scene replace): every composition then retires the old scene's
+  // slots and reallocates, so holes, slot reuse, capacity growth and deferred frees run on the GPU
+  // before structural edits make them ordinary (daz-viewer docs/retained-scene-plan.md, P4).
+  m_settings.add({.name = "residencyRetireOnReplace",
+                  .help = "Retained scene (debug): a scene replace retires the old scene's slots and reallocates instead of starting over"},
+                 &m_resources.settings.residencyRetireOnReplace, Persist::eNo);
 
   // Gizmo, grid and snap: previously persisted but unreachable from the command line or MCP.
   m_settings.add({"uiShowGrid", "Show the infinite grid"}, &m_resources.settings.showGrid, Persist::eYes);
@@ -4394,8 +4400,14 @@ void GltfRenderer::replaceHostScene()
     vkQueueWaitIdle(m_app->getQueue(0).queue);
     m_loadPipeline.clear();
     const rs::EntityId selected = m_selectedEntity;
+    // residencyRetireOnReplace: the backend stays, out of the cleanup's way, and syncs the new scene
+    // over the old one below
+    std::unique_ptr<rs::RetainedSceneVk> kept;
+    if(m_resources.settings.residencyRetireOnReplace)
+      kept = std::move(m_resources.retainedGpu);
     cleanupScene(/*keepImagesForReuse=*/true);
-    m_selectedEntity = selected;  // where its entity is still in the scene
+    m_resources.retainedGpu = std::move(kept);
+    m_selectedEntity        = selected;  // where its entity is still in the scene
     if(!store.clip(m_hostClip.clip()))
       m_hostClip = {};
   }
@@ -4404,7 +4416,10 @@ void GltfRenderer::replaceHostScene()
   m_liveVertices.clear();
   m_pendingAnimReconcile = false;
   // the previous scene's backend, emptied, when the cleanup kept it: its decoded images are this one's to take
-  if(m_resources.retainedSpare)
+  const bool retire = m_resources.retainedGpu != nullptr;
+  if(retire)
+    m_resources.retainedSpare.reset();
+  else if(m_resources.retainedSpare)
   {
     m_resources.retainedGpu = std::move(m_resources.retainedSpare);
     m_resources.retainedGpu->setBlasScratchBudget(VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20);
@@ -4422,7 +4437,13 @@ void GltfRenderer::replaceHostScene()
       m_resources.retainedGpu->timeBuilds();
     m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
     m_resources.retainedGpu->setPlayableAnimation(hasPlayableClip(store));
-    m_resources.retainedGpu->replace(cmd, store);
+    if(retire)
+    {
+      m_resources.retainedGpu->beginFrame();
+      m_resources.retainedGpu->sync(cmd, store);
+    }
+    else
+      m_resources.retainedGpu->replace(cmd, store);
     m_app->submitAndWaitTempCmdBuffer(cmd);
     logRetainedNotices();
     m_resources.sceneVk.dropPrefetched();  // what this scene did not take would never be taken

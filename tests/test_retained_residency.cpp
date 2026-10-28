@@ -297,6 +297,54 @@ TEST(RetainedResidency, ARemovalLeavesHolesThatAreReusedAfterTheirRetireFrame)
   EXPECT_EQ(gpu.waitIdleCount(), 0u);
 }
 
+// What residencyRetireOnReplace does to a stream host's scene replace: the store's every entity
+// destroyed and the scene fed again under new handles, synced into the tables the residency has.
+// The old slots are holes until their retire frame, the new scene takes others meanwhile, and the
+// frame after it can reuse them; what only the old scene drew is freed then.
+TEST(RetainedResidency, ASceneFedAgainInTheSameStoreRetiresTheOldSlots)
+{
+  RetainedScene scene;
+  const auto    feed = [&](float z) {
+    MaterialId     m    = material(scene, "m");
+    const EntityId root = drawn(scene, "root", scene.addMesh(gridMesh(2, z)), {m});
+    drawn(scene, "child", scene.addMesh(gridMesh(1, z)), {m}, root);
+    scene.release(m);
+    return root;
+  };
+  const EntityId first = feed(0.f);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  drain(gpu);
+  const uint32_t capacity = residency.instanceCapacity();
+
+  scene.destroyEntity(first);
+  const EntityId second = feed(1.f);
+  gpu.beginFrame();
+  SyncResult r = residency.sync(scene);
+  EXPECT_TRUE(r.drawListChanged);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.instance(0), nullptr);  // the old scene's slots are holes
+  EXPECT_EQ(residency.instance(1), nullptr);
+  EXPECT_EQ(residency.instanceHighWater(), 4u);
+  EXPECT_EQ(residency.instanceCapacity(), capacity);  // the tables stay
+
+  // once retired, the next scene fed again takes them back, and nothing of the first is left
+  drain(gpu);
+  scene.destroyEntity(second);
+  feed(2.f);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu);
+  ASSERT_NE(residency.instance(0), nullptr);
+  ASSERT_NE(residency.instance(1), nullptr);
+  EXPECT_EQ(residency.instanceHighWater(), 4u);
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+  EXPECT_EQ(gpu.waitIdleCount(), 0u);
+}
+
 TEST(RetainedResidency, AVertexEditRefitsTheBlasesOfItsMesh)
 {
   RetainedScene scene;

@@ -314,6 +314,9 @@ struct Settings
   uint32_t blasScratchBudgetMB = 512;
   // `residencyMinInstances`: the retained scene's least instance capacity (start-up only)
   uint32_t residencyMinInstances = 256;
+  // `residencyRetireOnReplace` (debug): a stream host's scene replace syncs the new scene into the
+  // backend it has, retiring the old one's slots, instead of starting the backend over
+  bool residencyRetireOnReplace = false;
   // `textureGraceMB`: the retained scene's decoded images nothing samples, kept for reuse
   uint32_t textureGraceMB = 256;
 
