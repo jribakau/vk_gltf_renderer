@@ -1273,7 +1273,9 @@ glm::vec4 finishTangent(const glm::vec4& t0, const glm::vec3& n0)
   if(glm::length2(ot0) < 0.1F || glm::any(glm::isnan(ot0)))
     ot0 = glm::vec3(shaderio::makeFastTangent(n0));
 
-  return glm::vec4(ot0, t0.w);
+  // a vertex no triangle in the list touches has no handedness yet: +1, never a 0 that would
+  // scale its bitangent away
+  return glm::vec4(ot0, t0.w < 0.f ? -1.f : 1.f);
 }
 
 }  // namespace

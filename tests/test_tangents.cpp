@@ -86,7 +86,7 @@ std::vector<glm::vec4> serialTangents(const Soup& s)
     glm::vec3  ot0 = glm::normalize(glm::vec3(t0) - (glm::dot(n0, glm::vec3(t0)) * n0));
     if(glm::length2(ot0) < 0.1F || glm::any(glm::isnan(ot0)))
       ot0 = glm::vec3(shaderio::makeFastTangent(n0));
-    t0 = glm::vec4(ot0, t0.w);
+    t0 = glm::vec4(ot0, t0.w < 0.f ? -1.f : 1.f);
   }
   return tangents;
 }

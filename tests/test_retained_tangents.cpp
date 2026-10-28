@@ -189,6 +189,23 @@ TEST(RetainedTangents, TheAdjacencyListsEachVertexsCornersInOrder)
   EXPECT_EQ(tangents, std::vector<glm::vec4>(5, glm::vec4(7.f)));
 }
 
+// Every vertex comes out with a handedness of +1 or -1, those of a submesh that needs no tangents
+// and those no face touches too: the submeshes share the stream, and a 0 the shader multiplied the
+// bitangent by left a figure's skin with no frame (black under measured skin).
+TEST(RetainedTangents, EveryVertexHasAHandedness)
+{
+  for(const bool uvs : {true, false})
+    for(const bool normals : {true, false})
+    {
+      const Mesh                   m = grid(24, 18, 7, false);
+      const std::vector<glm::vec4> t = full(m, uvs, normals);
+      for(size_t v = 0; v < t.size(); v++)
+        ASSERT_TRUE(t[v].w == 1.f || t[v].w == -1.f) << "vertex " << v << " w " << t[v].w << " uvs " << uvs << " normals " << normals;
+      EXPECT_EQ(t[m.isolated].w, 1.f);
+      EXPECT_EQ(t[m.untangented].w, 1.f);
+    }
+}
+
 // Edits applied one after another to tangents remade incrementally, each compared with a full
 // recompute; and each remake writes the one-ring and nothing else.
 TEST(RetainedTangents, TheOneRingOfMovedVerticesIsAFullRecomputeBitForBit)

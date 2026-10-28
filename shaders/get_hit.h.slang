@@ -212,7 +212,9 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
   const float  orthoLength2 = dot(tangentOrtho, tangentOrtho);
   hit.tangent =
       orthoLength2 > 1e-6 * dot(tangent, tangent) ? tangentOrtho * rsqrt(orthoLength2) : makeFastTangent(hit.nrm).xyz;
-  hit.bitangent = cross(hit.nrm, hit.tangent) * tng[0].w;
+  // The handedness is a sign: a zero tangent's w is 0 too (a vertex no tangent-needing triangle
+  // touches, in a mesh whose other submeshes need them), and a bitangent scaled by it is no frame.
+  hit.bitangent = cross(hit.nrm, hit.tangent) * (tng[0].w < 0.0 ? -1.0 : 1.0);
 
   // Flip geometric normal toward the ray origin for back-face hits (front-face already
   // computed above so the shadow-terminator hack can pre-flip the per-vertex normals).
