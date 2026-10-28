@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -366,6 +367,46 @@ TEST(RetainedResidency, AVertexEditRefitsTheBlasesOfItsMesh)
   expectClean(scene, residency, gpu);  // the BLASes hash the new positions
   for(uint32_t p = 0; p < residency.primHighWater(); p++)
     EXPECT_EQ(gpu.blas(residency.prim(p)->blas)->refits, 1u);
+}
+
+// A vertex edit uploads the positions and normals, and the tangents only when it set them (a dial
+// drag's steps keep them, and sending them again cost the drag GPU time); the UVs never
+TEST(RetainedResidency, AVertexEditUploadsOnlyTheStreamsItWrote)
+{
+  RetainedScene scene;
+  MeshRecord    record = gridMesh(2, 0.f);
+  record.tangents.assign(record.positions.size(), glm::vec4(1, 0, 0, 1));
+  const MeshId grid = scene.addMesh(std::move(record));
+  drawn(scene, "e", grid, {material(scene, "m")});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  const Residency::MeshGpu& mesh = *residency.meshGpu(grid);
+  std::vector<BufferHandle> sent;
+  const auto                was  = [&](BufferHandle b) { return std::find(sent.begin(), sent.end(), b) != sent.end(); };
+  const auto                send = [&] {
+    gpu.beginFrame();
+    gpu.clearUploads();
+    residency.sync(scene);
+    sent.clear();
+    for(const FakeGpuBackend::UploadRecord& u : gpu.uploads())
+      sent.push_back(u.buffer);
+  };
+
+  std::vector<glm::vec3> moved = scene.mesh(grid)->positions;
+  for(glm::vec3& p : moved)
+    p.z += 0.5f;
+  scene.setMeshVertices(grid, moved, scene.mesh(grid)->normals);
+  send();
+  EXPECT_TRUE(was(mesh.positions) && was(mesh.normals));
+  EXPECT_FALSE(was(mesh.tangents) || was(mesh.uv0));
+  expectClean(scene, residency, gpu);
+
+  scene.setMeshVertices(grid, moved, {}, std::vector<glm::vec4>(moved.size(), glm::vec4(0, 1, 0, 1)));
+  send();
+  EXPECT_TRUE(was(mesh.positions) && was(mesh.tangents));
+  EXPECT_FALSE(was(mesh.uv0));
+  expectClean(scene, residency, gpu);
 }
 
 // A grid of two submeshes of four triangles over one opacity micromap of eight triangle records: the

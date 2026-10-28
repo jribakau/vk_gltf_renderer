@@ -524,6 +524,10 @@ void FvHost::onUpdate()
       s.applyRebind(f, changes.rebound);
       s.dialTiming.add(DialTiming::eApplyRebind, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
+    // the tangents of a mesh still for a moment: the whole body's take 15-20 ms, too much for
+    // every step of a dial drag
+    if(f.feed)
+      f.feed->settleTangents(std::chrono::milliseconds(100));
     for(const std::string& w : f.fig->takeWarnings())
       s.notice(p->name + ": " + w);
     s.publishBusy(f);

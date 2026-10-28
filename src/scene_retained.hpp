@@ -164,8 +164,9 @@ struct MeshRecord
   std::vector<Submesh>     submeshes;
   std::vector<MorphTarget> targets;
   std::vector<float>       targetWeights;  // the mesh's default morph weights
-  // bumped by a vertex edit
+  // bumped by a vertex edit, and by one that sets tangents (a drag's steps keep them)
   uint32_t contentRev = 0;
+  uint32_t tangentRev = 0;
 
   // the positions' axis-aligned bounds; empty (min > max) without vertices
   std::array<glm::vec3, 2> bounds() const;

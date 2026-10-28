@@ -35,6 +35,7 @@
 // retained scene's owner thread.
 //
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <optional>
@@ -89,8 +90,12 @@ public:
   // has been synced since setOptions. What it could do is done either way.
   // `nodes`' local transforms and visibility (a pose step, an item shown or hidden)
   bool syncTransforms(const SceneGraph& figure, int root, std::span<const int> nodes);
-  // `meshes`' vertices, moved in place (a dial, a fit, a drape), and the tangents near them
-  bool syncVertices(const SceneGraph& figure, std::span<const int> meshes);
+  // `meshes`' vertices, moved in place (a dial, a fit, a drape), and the tangents near them.
+  // `tangentsLater`: a drag's step, which keeps the tangents it had for settleTangents to make
+  bool syncVertices(const SceneGraph& figure, std::span<const int> meshes, bool tangentsLater = false);
+  // the tangents syncVertices left for later, made for each mesh whose vertices have not moved
+  // for `still` (a drag that stopped)
+  void settleTangents(std::chrono::steady_clock::duration still = {});
   // `meshes`' skins: their bones' entities and inverse binds (a rebind)
   bool syncSkins(const SceneGraph& figure, std::span<const int> meshes);
   // `materials` lowered again (an edit, a texture that came), with the options the last sync lowered with
@@ -121,6 +126,9 @@ private:
     std::vector<uint32_t>                            tangentIndices;
     std::optional<tinygltf::utils::TangentAdjacency> tangentAdjacency;
     rs::SkinId                                       skin;
+    // its tangents are from before its vertices last moved, at `movedAt`
+    bool                                  tangentsLate = false;
+    std::chrono::steady_clock::time_point movedAt;
   };
   struct FedTexture
   {
@@ -136,7 +144,7 @@ private:
                                       std::set<std::string>&             missing);
   rs::Transform        transformOf(const SceneGraph& figure, int node, int root) const;
   // the mesh's vertices fed again into its record, the tangents remade near the ones that moved
-  void moveVertices(const Mesh& m, FedMesh& f);
+  void moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater = false);
   // the skin the mesh draws with, if it is skinned
   std::optional<rs::SkinRecord> skinRecord(const Mesh& m) const;
   // whether the mesh is fed with its current geometry and hidden polygons

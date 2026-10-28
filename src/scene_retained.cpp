@@ -245,7 +245,10 @@ void RetainedScene::setMeshVertices(MeshId id, std::vector<glm::vec3> positions,
   if(!normals.empty())
     r->value.normals = std::move(normals);
   if(!tangents.empty())
+  {
     r->value.tangents = std::move(tangents);
+    r->value.tangentRev++;
+  }
   r->value.contentRev++;
   m_changes.meshes.insert(id);
   m_boundsRevision++;

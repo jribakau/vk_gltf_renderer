@@ -34,7 +34,8 @@ void FvHost::Impl::applyNodes(Loaded& f, const std::set<int>& moved)
     f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
 }
 
-// A mesh whose vertices moved in place (a dial, a fit, a drape), fed with the tangents near them
+// A mesh whose vertices moved in place (a dial, a fit, a drape), fed with the tangents it had: the
+// frame loop makes them once it stops moving
 void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
 {
   if(!f.feed || change.mesh < 0 || change.mesh >= int(f.fig->loaded.scene.meshes.size())
@@ -45,7 +46,7 @@ void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
     return;
   dialTiming.addUpload(change.all ? count : change.indices.size(), change.all);
   const int mesh = change.mesh;
-  if(!f.feed->syncVertices(f.fig->loaded.scene, {&mesh, 1}))
+  if(!f.feed->syncVertices(f.fig->loaded.scene, {&mesh, 1}, true))
     f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
 }
 

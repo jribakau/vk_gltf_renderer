@@ -485,6 +485,59 @@ TEST(FigureFeed, NarrowSyncsLeaveTheStoreAsASyncWould)
   same();
 }
 
+// A drag's steps keep the tangents the body had (making them on every step halved a dial drag's
+// frame rate). Once it has been still for the time asked, or a sync comes, they are the ones the
+// build's import makes, and they are made once.
+TEST(FigureFeed, ADragsTangentsAreMadeOnceItStops)
+{
+  const auto f = loadBox();
+  for(fv::Material& m : f->loaded.scene.materials)
+    m.surface.normalMap = "/Runtime/Textures/Test/BoxDetail_NM.png";
+  const auto        options = textured();
+  rs::RetainedScene fed;
+  fv::FigureFeed    feed(fed, {.build = options});
+  feed.sync(f->loaded.scene, f->loaded.root);
+  (void)f->drain();
+  const rs::MeshId             body   = feed.meshOf(0);
+  const std::vector<glm::vec4> before = fed.mesh(body)->tangents;
+  const auto                   drag   = [&](double value) {
+    f->morphs->set("Taper", value);  // sides that lean: their tangents turn
+    f->morphs->settled();
+    std::vector<int> moved;
+    for(const auto& c : f->drain().meshes)
+      moved.push_back(c.mesh);
+    ASSERT_FALSE(moved.empty());
+    EXPECT_TRUE(feed.syncVertices(f->loaded.scene, moved, true));
+  };
+  const auto expectImported = [&] {
+    expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
+    rs::RetainedScene imported;
+    importBuild(imported, f->loaded.scene, f->loaded.root, options);
+    expectSame(fed, imported, true);
+  };
+
+  drag(1.0);
+  drag(0.5);
+  EXPECT_EQ(fed.mesh(body)->tangents, before);
+  feed.settleTangents(std::chrono::hours(1));
+  EXPECT_EQ(fed.mesh(body)->tangents, before);
+  feed.settleTangents();
+  EXPECT_NE(fed.mesh(body)->tangents, before);
+  expectImported();
+  (void)fed.takeChanges();
+  feed.settleTangents();
+  EXPECT_TRUE(fed.takeChanges().meshes.empty());
+
+  // a sync makes them too, though the vertices are as the record has them
+  drag(0.0);
+  feed.sync(f->loaded.scene, f->loaded.root);
+  EXPECT_EQ(feed.meshOf(0), body);
+  expectImported();
+  (void)fed.takeChanges();
+  feed.settleTangents();
+  EXPECT_TRUE(fed.takeChanges().meshes.empty());
+}
+
 // Vertices written in place with no change to report (a wear's looks set a scene's restored dials)
 // reach the meshes a sync keeps: it compares them with the scene's (the host once took a
 // composition for a rebuild, and a restored expression never showed). The change that comes after

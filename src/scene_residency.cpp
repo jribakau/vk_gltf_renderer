@@ -263,7 +263,7 @@ void Residency::retireAccel(AccelHandle accel)
 
 // ---------- Records ----------
 
-void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu)
+void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool vertices)
 {
   const auto stream = [&](BufferHandle& buffer, std::span<const std::byte> bytes, BufferUsageFlags usage, const char* name) {
     if(bytes.empty())
@@ -277,7 +277,12 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu)
   };
   stream(gpu.positions, bytesOf(record.positions), eBufferVertex | eBufferStorage | eBufferAccelInput, "positions");
   stream(gpu.normals, bytesOf(record.normals), eBufferStorage, "normals");
-  stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+  if(!vertices || gpu.tangentRev != record.tangentRev)
+    stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+  gpu.contentRev = record.contentRev;
+  gpu.tangentRev = record.tangentRev;
+  if(vertices)  // a vertex edit keeps the count, so the UVs and colours are as they were
+    return;
   stream(gpu.uv0, bytesOf(record.uv0), eBufferStorage, "uv0");
   stream(gpu.uv1, bytesOf(record.uv1), eBufferStorage, "uv1");
   if(!record.colors.empty())
@@ -288,7 +293,6 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu)
     stream(gpu.colors, bytesOf(packed), eBufferStorage, "colors");
   }
   gpu.vertexCount = uint32_t(record.positions.size());
-  gpu.contentRev  = record.contentRev;
 }
 
 Residency::MeshGpu& Residency::acquireMesh(const RetainedScene& scene, MeshId id)
@@ -1549,7 +1553,7 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
       continue;
     MeshGpu&           gpu    = it->second;
     const BufferHandle before = gpu.positions;
-    uploadStreams(*record, gpu);
+    uploadStreams(*record, gpu, true);
     const bool moved = gpu.positions != before;
     // its static prims get motion from here on: their positions are copied at the next sync
     if(std::any_of(gpu.prims.begin(), gpu.prims.end(), [](int32_t p) { return p >= 0; }))

@@ -140,6 +140,7 @@ public:
     BufferHandle         positions, normals, tangents, uv0, uv1, colors;
     uint32_t             vertexCount = 0;
     uint32_t             contentRev  = 0;
+    uint32_t             tangentRev  = 0;
     std::vector<int32_t> prims;  // per submesh: its static prim slot, -1 while nothing draws it so
     // what its drawers deform with: joints (int4) and weights per vertex, and its targets' deltas
     // packed target-major; made when the first drawer needs them
@@ -411,7 +412,9 @@ private:
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
   void     retireAccel(AccelHandle accel);
-  void     uploadStreams(const MeshRecord& record, MeshGpu& gpu);
+  // the record's streams; `vertices`: only what setMeshVertices writes (positions, normals, and the
+  // tangents when it set them)
+  void uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool vertices = false);
 
   void ensureCapacity(SyncResult& result);
   void writeRenderNodes(const std::set<uint32_t>& slots);

@@ -454,6 +454,7 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       f.hidden        = m.geo->hiddenPolys;
       f.flipV         = flipV;
       f.tangentGroups = tangents;
+      f.tangentsLate  = false;
     }
     else
       // kept: its vertices as the scene has them now, which something may have written in place
@@ -500,7 +501,7 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     m_scene.release(id);
 }
 
-void FigureFeed::moveVertices(const Mesh& m, FedMesh& f)
+void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
 {
   // the same triangles over vertices that moved
   const mesh::BuiltMesh& geo   = *m.geo;
@@ -514,25 +515,31 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f)
   }
   const rs::MeshRecord& had  = *m_scene.mesh(f.id);
   const bool            same = had.positions.size() == count && had.normals.size() == normals.size();
-  std::vector<uint32_t> changed;
-  if(same)
-  {
-    for(uint32_t v = 0; v < uint32_t(count); v++)
-      if(std::memcmp(&had.positions[v], &positions[v], sizeof(glm::vec3)) != 0
-         || (!normals.empty() && std::memcmp(&had.normals[v], &normals[v], sizeof(glm::vec3)) != 0))
-        changed.push_back(v);
-    // fed from these vertices already (a composition made its record after the dial that moved them)
-    if(changed.empty())
-      return;
-  }
+  // fed from these vertices already (a composition made its record after the dial that moved them),
+  // unless its tangents are still to be made
+  if(same && std::memcmp(had.positions.data(), positions.data(), count * sizeof(glm::vec3)) == 0
+     && std::memcmp(had.normals.data(), normals.data(), normals.size() * sizeof(glm::vec3)) == 0 && (tangentsLater || !f.tangentsLate))
+    return;
   std::vector<glm::vec4> t;
-  if(!f.tangentIndices.empty())
+  if(!f.tangentIndices.empty() && tangentsLater)
+  {
+    // the drag draws with the tangents it had: settleTangents makes them once it stops
+    f.tangentsLate = true;
+    f.movedAt      = std::chrono::steady_clock::now();
+  }
+  else if(!f.tangentIndices.empty())
   {
     // made again only near the vertices that moved: a vertex's tangent reads the triangles
-    // touching it, and the old ones were made over the same triangles
+    // touching it, and the old ones were made over the same triangles (all of them, when some
+    // were left for later)
     bool made = false;
-    if(f.tangentAdjacency && same && had.tangents.size() == count)
+    if(f.tangentAdjacency && same && had.tangents.size() == count && !f.tangentsLate)
     {
+      std::vector<uint32_t> changed;
+      for(uint32_t v = 0; v < uint32_t(count); v++)
+        if(std::memcmp(&had.positions[v], &positions[v], sizeof(glm::vec3)) != 0
+           || (!normals.empty() && std::memcmp(&had.normals[v], &normals[v], sizeof(glm::vec3)) != 0))
+          changed.push_back(v);
       t    = had.tangents;
       made = tinygltf::utils::updateTangents(positions, normals, had.uv0, f.tangentIndices, *f.tangentAdjacency, changed, t);
     }
@@ -541,8 +548,26 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f)
       t.assign(count, glm::vec4(0.f));
       tinygltf::utils::computeTangents(positions, normals, had.uv0, f.tangentIndices, t);
     }
+    f.tangentsLate = false;
   }
   m_scene.setMeshVertices(f.id, std::move(positions), std::move(normals), std::move(t));
+}
+
+void FigureFeed::settleTangents(std::chrono::steady_clock::duration still)
+{
+  const auto now = std::chrono::steady_clock::now();
+  for(FedMesh& f : m_meshes)
+  {
+    if(!f.tangentsLate || now - f.movedAt < still)
+      continue;
+    f.tangentsLate            = false;
+    const rs::MeshRecord* had = m_scene.mesh(f.id);
+    if(!had || f.tangentIndices.empty())
+      continue;
+    std::vector<glm::vec4> t(had->positions.size(), glm::vec4(0.f));
+    tinygltf::utils::computeTangents(had->positions, had->normals, had->uv0, f.tangentIndices, t);
+    m_scene.setMeshVertices(f.id, had->positions, {}, std::move(t));
+  }
 }
 
 std::optional<rs::SkinRecord> FigureFeed::skinRecord(const Mesh& m) const
@@ -569,7 +594,7 @@ bool FigureFeed::fedAsItIs(const SceneGraph& figure, int mesh) const
          && m_scene.mesh(f.id)->positions.size() == m.geo->position.size() / 3;
 }
 
-bool FigureFeed::syncVertices(const SceneGraph& figure, std::span<const int> meshes)
+bool FigureFeed::syncVertices(const SceneGraph& figure, std::span<const int> meshes, bool tangentsLater)
 {
   bool all = true;
   for(int mi : meshes)
@@ -579,7 +604,7 @@ bool FigureFeed::syncVertices(const SceneGraph& figure, std::span<const int> mes
       all = false;
       continue;
     }
-    moveVertices(figure.meshes[size_t(mi)], m_meshes[size_t(mi)]);
+    moveVertices(figure.meshes[size_t(mi)], m_meshes[size_t(mi)], tangentsLater);
   }
   return all;
 }
