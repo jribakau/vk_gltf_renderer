@@ -178,8 +178,24 @@ tests/
     ├── test_utils.cpp          # Test utilities implementation
     ├── fake_gpu_backend.*      # rs::GpuBackend without a GPU: shadow bytes, BLAS/TLAS state, a frame clock,
     │                           #   and the barriers its builds and the frame's shading need
-    └── residency_oracle.*      # ResidencyOracle: rs::Residency's GPU state against the retained scene
+    ├── fake_host_renderer.hpp  # HostRenderer without a GPU: FvHost's commands over a real retained scene
+    ├── residency_oracle.*      # ResidencyOracle: rs::Residency's GPU state against the retained scene
+    └── skin_reference.hpp      # A reference skinning the figure tests compare with
 ```
+
+The figure viewer's own tests, by area (none needs a GPU):
+
+| Files | What they cover |
+|---|---|
+| `figure/test_*.cpp` | The DAZ figure library: DSON parsing, formulas, morphs, skinning, pose, wardrobe, the collider, dForce, materials and presets, eyes, hair strands, export |
+| `test_fv_*.cpp` | The stream host: the protocol, FvHost's commands over `FakeHostRenderer` (`test_fv_host`, the undo fuzz and the kept scene among them), the history (`test_fv_journal`), the figure and prop feeds, the scene map, lighting, textures, model materials |
+| `test_retained_*.cpp`, `test_fake_gpu_backend.cpp`, `test_scene_gpu_tables.cpp`, `test_residency_vk_util.cpp` | The retained scene, its import and export, residency on the fake backend checked by the oracle, deformation, tangents, the fuzz (`test_retained_fuzz`) |
+| `test_sobol.cpp`, `test_sample_schedule.cpp`, `test_denoiser_schedule.cpp`, `test_alias_table.cpp`, `test_aperture.cpp`, `test_thin_scatter.cpp`, `test_hair_bsdf.cpp`, `test_shadow_fit.cpp`, `test_ground.cpp`, `test_sun_position.cpp`, `test_environment_sky.cpp`, `test_sky_preset.cpp`, `test_tlas_policy.cpp`, `test_variant_compile_job.cpp`, `test_frame_pacing.cpp`, `test_present_*.cpp` | The path tracer's and the frame loop's helpers, on the CPU |
+
+`pnpm renderer:test` (from the app's folder; `native/setup.ps1 -Test`) builds both test executables and
+runs them side by side, the dForce, collider and retained-fuzz suites each in a process of their own,
+with `native/vk_gltf_renderer` as the working directory: the tests that read the test library find it
+from there, and skip elsewhere.
 
 > The list above is a snapshot; `tests/CMakeLists.txt` is the source of truth for
 > which test files are built.
