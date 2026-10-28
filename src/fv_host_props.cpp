@@ -225,10 +225,12 @@ void FvHost::Impl::removeProp(const std::shared_ptr<Prop>& p)
       q->euler.reset();
     }
   props.erase(std::remove(props.begin(), props.end(), p), props.end());
-  // hidden now (with what rides on it, until the composition puts that back); gone from the GPU
-  // when the composition runs
+  // hidden now (with what rides on it, until the composition puts that back); gone from the scene
+  // when the composition runs, from the GPU at its retire frame
   if(renderer->feedsHostScene() && renderer->hostScene().entity(p->root))
     renderer->hostScene().setVisible(p->root, false);
+  if(p->figure)
+    p->figure->feed = nullptr;  // the prop feed lets go of it at the composition
 }
 
 glm::mat4 FvHost::Impl::worldOf(const Prop& p) const
@@ -665,37 +667,53 @@ fv::composer::Part FvHost::Impl::partOf(size_t i, const tinygltf::Model* model, 
 
 void FvHost::Impl::releaseFed()
 {
-  if(!renderer->feedsHostScene())
-    return;
-  rs::RetainedScene& scene = renderer->hostScene();
+  propFeed.reset();
+  if(renderer->feedsHostScene() && renderer->hostScene().entity(sunEntity))
+    renderer->hostScene().destroyEntity(sunEntity);
+  sunEntity = {};
+  sunLight  = {};
   for(const auto& p : props)
   {
     if(p->figure)
     {
-      p->figure->feed.reset();
+      p->figure->feed = nullptr;
       p->figure->nodeOf.clear();
     }
-    for(rs::ClipId c : p->imported.clips)
-      scene.release(c);
-    p->imported = {};
-    if(scene.entity(p->root))
-      scene.destroyEntity(p->root);
     p->root        = {};
+    p->imported    = {};
     p->lightRecord = {};
   }
-  // roots the props above no longer name (a prop removed since): every root is the host's
-  for(const rs::EntityId root : std::vector<rs::EntityId>(scene.roots()))
-    if(scene.entity(root))
-      scene.destroyEntity(root);
-  sunEntity = {};
-  sunLight  = {};
 }
 
-// The scene fed again from its props and made resident in place of the old one: every figure
-// through its feed from its scene graph (its pose, dials, worn items and edits are in the graph, so
-// it comes back as it was); every model imported as its file has it, with its material edits laid
-// over again; cameras, lights and the sun as records. The camera stays where it was, unless the scene
-// was empty.
+fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
+{
+  fv::PropSpec s{.id = p.id, .number = uint32_t(std::atoi(p.id.c_str() + 2)), .name = p.name, .parent = p.parent, .visible = p.visible};
+  s.transform = {.translation = p.transform.translation, .rotation = p.transform.rotation, .scale = p.transform.scale};
+  if(Loaded* f = p.figure.get())
+  {
+    s.figure        = &f->fig->loaded.scene;
+    s.figureRoot    = f->fig->loaded.root;
+    s.figureOptions = buildOptionsOf(*f, skinMode.load());
+    s.figureChanged = figureChanged;
+  }
+  else if(p.model)
+  {
+    s.model = p.model;
+    if(!p.path.empty())
+      s.imageSearchPaths.push_back(pathOf(p.path).parent_path());
+  }
+  else if(p.kind == PropKind::eCamera)
+    s.camera = fv::composer::perspectiveCamera(p.camera.lens.focalLength);
+  else if(p.kind == PropKind::eLight)
+    s.light = lightPayload(p);
+  return s;
+}
+
+// The props' changes since the last composition, fed into the renderer's scene in place (P5): a prop
+// that came is fed, one that went goes (its instances retire at their frame), a figure whose
+// wardrobe changed is fed again, and the rest keep their handles, so the selection, the clip that
+// plays and the camera stay. The first composition makes the scene resident (a scene replace);
+// after it there is no device wait.
 void FvHost::Impl::compose()
 {
   ComposeRequest request = std::move(*pendingCompose);
@@ -732,107 +750,81 @@ void FvHost::Impl::compose()
       }
   }};
 
-  const bool hasGeometry = std::any_of(props.begin(), props.end(), [](const auto& p) { return p->figure || p->model; });
-  if(auto manip = renderer->getCameraManipulator())
-  {
-    glm::dvec3 eye, center, up;
-    manip->getLookat(eye, center, up);
-    cameraRestore = std::array<glm::dvec3, 3>{eye, center, up};
-  }
   // the first thing in an empty scene is framed; after that the camera stays, and so does a camera looked through
-  if(hasGeometry && !composedAny && viewCamera.empty())
-    cameraRestore.reset();
-  composedAny = hasGeometry;
-  const bool        selected     = !renderer->selectedEntity().isNone();
-  const std::string selectedProp = view ? view->selectedProp() : "";
-  // the clip playing, where, and how: its number stays its own while its prop is here
-  const AnimationControl played   = renderer->editAnimationControl();
-  const float            clipTime = renderer->hostClipTime();
-  const int              clipWas  = currentClip;
+  const bool hasGeometry = std::any_of(props.begin(), props.end(), [](const auto& p) { return p->figure || p->model; });
+  const bool frame       = hasGeometry && !composedAny && viewCamera.empty();
+  composedAny            = hasGeometry;
 
   rs::RetainedScene& scene = renderer->hostScene();
+  if(!propFeed)
+    propFeed = std::make_unique<fv::PropFeed>(scene);
+  fv::PropFeed::Result fed;
   {
-    fv::timing::Scope t("feed");
-    releaseFed();
-    const fv::mat::SkinMode skin = skinMode.load();
-    // the prop roots first, so a prop can ride on one that comes after it
+    fv::timing::Scope         t("feed");
+    std::vector<fv::PropSpec> specs;
     for(const auto& p : props)
+      specs.push_back(specOf(*p, p->figure && request.settle.count(p->figure.get())));
+    try
     {
-      const uint32_t number = uint32_t(std::atoi(p->id.c_str() + 2));
-      p->root               = scene.createEntity(p->name, {number, -1});
-      scene.setLocal(p->root,
-                     {.translation = p->transform.translation, .rotation = p->transform.rotation, .scale = p->transform.scale});
-      scene.setVisible(p->root, p->visible);
+      fed = propFeed->sync(specs);
     }
-    for(const auto& p : props)
-      if(const auto parent = p->parent.empty() ? nullptr : findProp(p->parent))
-        scene.setParent(p->root, parent->root);  // refused for a cycle: it stays at the root
-    for(const auto& p : props)
+    catch(const std::exception& e)
     {
-      const uint32_t number = uint32_t(std::atoi(p->id.c_str() + 2));
-      if(Loaded* f = p->figure.get())
-      {
-        try
-        {
-          f->feed = std::make_unique<fv::FigureFeed>(
-              scene, fv::FigureFeedOptions{.build = buildOptionsOf(*f, skin), .prop = number, .parent = p->root});
-          f->feed->sync(f->fig->loaded.scene, f->fig->loaded.root);
-        }
-        catch(const std::exception& e)
-        {
-          f->feed.reset();
-          notice(std::string("A figure could not be built: ") + e.what(), "error");
-        }
-      }
-      else if(p->model)
-      {
-        std::vector<std::filesystem::path> search;
-        if(!p->path.empty())
-          search.push_back(pathOf(p->path).parent_path());
-        p->imported = rs::importGltf(scene, *p->model, {.prop = number, .parent = p->root, .imageSearchPaths = search});
-        // what the scene can't draw of it is left out, said once (D23)
-        if(!std::exchange(p->importNoticed, true))
-          for(const std::string& n : p->imported.notices)
-            notice(p->name + ": " + n, "warning");
-        // its clips' numbers, theirs from now on
-        for(int c = 0; c < int(p->imported.clips.size()); c++)
-          if(!p->imported.clips[size_t(c)].isNone())
-            clipNumber(p->id, c);
-      }
-      else if(p->kind == PropKind::eCamera)
-      {
-        const rs::CameraId camera =
-            scene.addCamera({.owner = {number, -1}, .payload = fv::composer::perspectiveCamera(p->camera.lens.focalLength)});
-        scene.setEntityCamera(p->root, camera);
-        scene.release(camera);
-      }
-      else if(p->kind == PropKind::eLight)
-      {
-        p->lightRecord = scene.addLight({.owner = {number, -1}, .payload = lightPayload(*p)});
-        scene.setEntityLight(p->root, p->lightRecord);
-        scene.release(p->lightRecord);
-      }
+      notice(std::string("The scene could not be fed: ") + e.what(), "error");
     }
-    feedSun(scene);
+    if(!scene.entity(sunEntity))
+      feedSun(scene);
   }
+  for(const auto& [id, text] : fed.notices)
+    if(const auto p = findProp(id))
+      notice(p->name + ": " + text, "warning");
+  const std::set<std::string> added(fed.added.begin(), fed.added.end());
+  for(const auto& p : props)
+  {
+    const fv::FedProp* f = propFeed->fed(p->id);
+    p->root              = f ? f->root : rs::EntityId{};
+    p->lightRecord       = f ? f->light : rs::LightId{};
+    if(p->model && f && added.count(p->id))
+    {
+      p->imported = f->imported;
+      // its clips' numbers, theirs from now on
+      for(int c = 0; c < int(p->imported.clips.size()); c++)
+        if(!p->imported.clips[size_t(c)].isNone())
+          clipNumber(p->id, c);
+    }
+    if(p->figure)
+      p->figure->feed = f && f->figure ? f->figure.get() : nullptr;
+  }
+  // the first composition makes the scene resident, waited for; after it each frame's sync takes the changes
+  if(!renderer->drawsRetainedScene())
   {
     nvutils::ScopedTimer t("upload");
     fv::timing::Scope    ts("upload");
     renderer->replaceHostScene();
+    appliedParams.erase("infinitePlaneDistance");
+    appliedParams.erase("ptFireflyClamp");  // the replace recalibrated it (calibrateFireflyClamp); ours goes again
+    applyLighting(false);
   }
-  // the renderer put the ground at the scene's lowest point; "auto" keeps that
-  for(const nvutils::ParameterBase* p : exposedParameters(registry))
-    if(p->info.name == "infinitePlaneDistance" && p->type == nvutils::ParameterBase::Type::FLOAT32)
-      autoGround = *static_cast<const float*>(p->destination.raw);
-  appliedParams.erase("infinitePlaneDistance");
-  appliedParams.erase("ptFireflyClamp");  // the replace recalibrated it (calibrateFireflyClamp); ours goes again
-  applyLighting(false);
+  // "auto" ground: the scene's lowest drawn point, again at each structural change (D6), from the
+  // positions as fed (morphed, unskinned: D7)
+  {
+    const std::array<glm::vec3, 2> bounds = scene.bounds();
+    const float                    ground = bounds[0].y <= bounds[1].y ? bounds[0].y : 0.f;
+    if(ground != autoGround)
+    {
+      autoGround = ground;
+      appliedParams.erase("infinitePlaneDistance");
+      applyLighting(false);
+    }
+  }
 
+  // what the host keeps of each prop's place in the scene, and the topics of the props that changed
   fv::timing::Scope              timeAttach("attach");
   std::vector<FvView::PropNodes> views;
   for(size_t i = 0; i < props.size(); i++)
   {
-    Prop&             p = *props[i];
+    Prop&             p       = *props[i];
+    const bool        changed = added.count(p.id) || (p.figure && request.settle.count(p.figure.get()));
     FvView::PropNodes nodes;
     nodes.id   = p.id;
     nodes.root = p.root;
@@ -841,6 +833,7 @@ void FvHost::Impl::compose()
       Loaded&                   f     = *p.figure;
       const fv::SceneGraph&     graph = f.fig->loaded.scene;
       std::vector<rs::EntityId> entityOf(graph.nodes.size());
+      f.nodeOf.clear();
       for(int n = 0; n < int(graph.nodes.size()); n++)
       {
         entityOf[size_t(n)] = f.feed->entityOf(n);
@@ -849,13 +842,19 @@ void FvHost::Impl::compose()
       }
       for(int m = 0; m < int(graph.materials.size()); m++)
         nodes.materials.push_back(f.feed->materialOf(m));
-      // the feed took the scene's dials and binds as they are; don't feed them again
-      f.fig->drain();
-      if(!p.materials)
-        p.materials = makeMaterials(props[i]);
-      p.materials->attach(p.id, &f.fig->loaded.scene, f.feed->lowering(), f.texturesFlipped, skinMode.load());
-      publishEyes(p);
-      publishSkin(p);
+      if(changed)
+      {
+        // the feed took the scene's dials and binds as they are; don't feed them again
+        f.fig->drain();
+        if(!p.materials)
+          p.materials = makeMaterials(props[i]);
+        if(added.count(p.id))
+          p.materials->attach(p.id, &f.fig->loaded.scene, f.feed->lowering(), f.texturesFlipped, skinMode.load());
+        else
+          p.materials->extend(f.feed->lowering());
+        publishEyes(p);
+        publishSkin(p);
+      }
       Json described = FvView::describeFigure(nodes, graph, f.fig->loaded.root, std::move(entityOf),
                                               f.fig->morphs ? f.fig->morphs->size() : 0);
       if(f.fig->pose)
@@ -874,8 +873,11 @@ void FvHost::Impl::compose()
           return pb ? pb->bone : -1;
         };
       }
-      p.stats = described["stats"];
-      protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
+      if(changed)
+      {
+        p.stats = described["stats"];
+        protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
+      }
     }
     else if(p.figure)
     {
@@ -887,19 +889,23 @@ void FvHost::Impl::compose()
     {
       if(!p.materials)
         p.materials = makeMaterials(props[i]);
-      p.materials->attachModel(p.id, *p.model);
+      if(changed)
+        p.materials->attachModel(p.id, *p.model);
       nodes.materials = p.imported.materials;
       nodes.materials.resize(p.model->materials.size());
       Json described = FvView::describeModel(nodes, *p.model, p.imported.entities);
-      p.stats        = described["stats"];
-      protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
+      if(changed)
+      {
+        p.stats = described["stats"];
+        protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
+      }
     }
     views.push_back(std::move(nodes));
   }
   if(view)
     view->setProps(std::move(views));
   for(const auto& p : props)
-    if(p->figure)
+    if(p->figure && (added.count(p->id) || request.settle.count(p->figure.get())))
     {
       publishFigure(*p);
       if(p->figure->dforce && request.settle.count(p->figure.get()))
@@ -907,24 +913,19 @@ void FvHost::Impl::compose()
       if(p->figure->collider && request.settle.count(p->figure.get()))
         p->figure->collider->poke();
     }
-  // the selection was the node of a prop; it is again where that prop is now
-  if(const auto p = findProp(selectedProp))
-    renderer->selectEntity(selected ? p->root : rs::EntityId{});
-  // the clip that played plays on where it was, if its prop is still here; else the first clip
+  // the clip that plays plays on; when its prop went, the first clip there is, if any
+  if(clipOf(currentClip).isNone())
   {
-    AnimationControl& ctrl       = renderer->editAnimationControl();
-    ctrl.speed                   = played.speed;
-    ctrl.loop                    = played.loop;
-    ctrl.play                    = played.play;
     const std::vector<int> order = clipOrder();
-    currentClip                  = !clipOf(clipWas).isNone() ? clipWas : order.empty() ? -1 : order.front();
-    renderer->setHostClip(clipOf(currentClip), currentClip == clipWas ? clipTime : 0.f);
+    currentClip                  = order.empty() ? -1 : order.front();
+    renderer->setHostClip(clipOf(currentClip));
     if(currentClip < 0)
-      ctrl.play = false;
+      renderer->editAnimationControl().play = false;
   }
   publishScene();
   publishAnimation(true);
-  frameIn = 2;
+  if(frame)
+    frameIn = 2;
   finish();
 }
 

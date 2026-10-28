@@ -138,6 +138,10 @@ public:
               std::vector<fv::mat::LowerOptions> lowering,
               bool                               texturesFlipped,
               fv::mat::SkinMode                  skin);
+  // The same figure fed again after a wear, a take-off or a graft (its scene graph only grows): the
+  // materials it appended are attached, and the edits, the bakes in flight and what could not be made
+  // stay. `lowering` as attach takes it.
+  void extend(std::vector<fv::mat::LowerOptions> lowering);
   // A model read from a glTF or OBJ file, `source` as the file has it: its materials as they are,
   // with the same edits laid over them directly (there is no Surface to lower), named as the file
   // names them or "Material-<i>" from their place in it, so a scene file's edits find them whatever
@@ -178,6 +182,8 @@ public:
 
 private:
   void refresh(const std::set<int>& materials);
+  // per material, the scene meshes using it
+  void     mapMeshes();
   void     write(const std::set<int>& materials);
   void writeModel(int index);
   fv::Json modelItem(int index) const;

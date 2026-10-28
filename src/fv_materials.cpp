@@ -142,7 +142,6 @@ void FvMaterials::attach(const std::string&                 figureId,
   m_flipped = texturesFlipped;
   m_skin    = skin;
   m_applied.assign(scene->materials.size(), {});
-  m_meshesOf.assign(scene->materials.size(), {});
   m_count = scene->materials.size();
   std::set<int> again;
   for(size_t mi = 0; mi < scene->materials.size(); mi++)
@@ -158,17 +157,40 @@ void FvMaterials::attach(const std::string&                 figureId,
       }
     }
   }
-  for(size_t i = 0; i < scene->meshes.size(); i++)
+  mapMeshes();
+  publish({}, true);
+  if(!again.empty())
+    refresh(again);
+}
+
+void FvMaterials::extend(std::vector<fv::mat::LowerOptions> lowering)
+{
+  if(m_model || !m_scene)
+    return;
+  // what the feed wrote for every material, the new ones at the end: the edits, the bakes in flight
+  // and what could not be made stay
+  m_options = std::move(lowering);
+  m_options.resize(m_scene->materials.size());
+  m_applied.resize(m_scene->materials.size());
+  for(size_t mi = 0; mi < m_scene->materials.size(); mi++)
+    if(!m_waiting.count(int(mi)))
+      m_applied[mi] = stateOf(fv::mat::lower(m_scene->materials[mi].surface, m_scene->materials[mi].edits, m_options[mi]));
+  m_count = m_scene->materials.size();
+  mapMeshes();
+  publish({}, true);
+}
+
+void FvMaterials::mapMeshes()
+{
+  m_meshesOf.assign(m_scene->materials.size(), {});
+  for(size_t i = 0; i < m_scene->meshes.size(); i++)
   {
-    const fv::Mesh& m = scene->meshes[i];
+    const fv::Mesh& m = m_scene->meshes[i];
     for(int mi : m.materials)
       if(mi >= 0 && mi < int(m_meshesOf.size()))
         if(m_meshesOf[mi].empty() || m_meshesOf[mi].back() != int(i))
           m_meshesOf[mi].push_back(int(i));
   }
-  publish({}, true);
-  if(!again.empty())
-    refresh(again);
 }
 
 void FvMaterials::attachModel(const std::string& id, const tinygltf::Model& source)

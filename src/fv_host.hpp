@@ -132,7 +132,8 @@
 //
 // The scene: the host feeds the renderer's retained scene itself (GltfRenderer::hostScene): a prop
 // root per prop, a figure through its feed (fv_figure_feed.hpp), a model imported from its file, a
-// camera or a light as a record, and the sun; a composition feeds it all again and makes it resident.
+// camera or a light as a record, and the sun. A composition feeds the props' changes as deltas
+// (fv_prop_feed.hpp); what didn't change keeps its handles.
 //
 // Lighting: the environment, tone mapping, the raster shadow map and the ground are renderer
 // parameters; the sun is a directional light the host adds to every scene it composes, marked as the

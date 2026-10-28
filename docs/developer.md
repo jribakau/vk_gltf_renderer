@@ -859,17 +859,20 @@ either has a retained branch or is legacy-only and checks for it. A new use pick
 ### The retained scene in a stream session
 
 The host (fv_host.hpp) feeds `GltfRenderer::hostScene()`, a `rs::RetainedScene` that lives for the
-session, so its handles stay unique. A composition clears what it fed and feeds it all again from the
-host's state: a prop root entity per prop (owner tag `{N, -1}` for `p:N`), a figure through its
-`fv::FigureFeed` under its root, a model through `rs::importGltf` under its root (what it leaves out
-said once per prop, D23), a camera or a light as a record, and the sun (owner `{0, -1}`) as a light
-record marked as the sky's sun. `replaceHostScene` then waits for the device, cleans up as a load
-does (the store and the selection stay) and makes the store resident, waited for; with `[fv-time]`
-on, the `GPU BLAS build` and `GPU TLAS build` lines time its builds as legacy's time a load's
-(`VulkanGpuBackend::timeBuilds`). The cleanup keeps the `RetainedSceneVk`, emptied
-(`Resources::retainedSpare`), so the next replace takes the decoded images it shares with the last
-scene; the `Scene (retained, host):` line counts images decoded (and of those, taken from the
-host's prefetches) and reused.
+session, so its handles stay unique. A composition feeds the props' changes through
+`fv::PropFeed` (fv_prop_feed.hpp): a prop that came gets a prop root entity (owner tag `{N, -1}` for
+`p:N`) with a figure through its `fv::FigureFeed`, a model through `rs::importGltf` (what it leaves
+out said once, D23), or a camera or a light as a record; one that went is destroyed, its instances
+retiring at their frame; a figure whose wardrobe changed is fed again, keeping the handles of what it
+still has; the rest are set in place (parent, transform, visibility, a light's or a camera's record)
+and keep theirs, so the selection, the clip that plays and the camera stay. The sun (owner
+`{0, -1}`) is a light record marked as the sky's sun. Each frame's sync takes the changes, with no
+device wait. Only the first composition is a scene replace: `replaceHostScene` waits for the
+device, cleans up as a load does (the store and the selection stay) and makes the store resident,
+waited for; with `[fv-time]` on, the `GPU BLAS build` and `GPU TLAS build` lines time its builds as
+legacy's time a load's (`VulkanGpuBackend::timeBuilds`); the `Scene (retained, host):` line counts
+images decoded (and of those, taken from the host's prefetches) and reused. "Auto" ground is the
+store's lowest drawn point after each composition (D6).
 
 Between compositions the host writes the store directly: a pose step, a dial, a rebind and an item
 shown or hidden through the feed's narrow syncs (`syncTransforms`, `syncVertices` with the tangents

@@ -80,6 +80,7 @@
 #include "env_image_loader.hpp"
 #include "fv_compose.hpp"
 #include "fv_figure_feed.hpp"
+#include "fv_prop_feed.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
@@ -128,10 +129,10 @@ struct Loaded
   // keeps the worn conforming meshes out of the posed body (figure/wardrobe/collider.hpp); null without a body
   std::unique_ptr<fv::wardrobe::Collider> collider;
   int                                     collisionVersion = -1;
-  // what it is in the renderer's scene, fed when the scene is composed (fv_figure_feed.hpp), and the
-  // scene node each of the feed's entities is
-  std::unique_ptr<fv::FigureFeed> feed;
-  std::map<rs::EntityId, int>     nodeOf;
+  // what it is in the renderer's scene, the prop feed's (fv_prop_feed.hpp), and the scene node each of
+  // the feed's entities is; set by each composition
+  fv::FigureFeed*             feed = nullptr;
+  std::map<rs::EntityId, int> nodeOf;
   // morph topic: -1 until the channel list has been published, then the value and weight last sent
   int                                                          morphList = -1;
   std::unordered_map<std::string, std::pair<double, double>> published;
@@ -225,12 +226,11 @@ struct Prop
   CameraProp                             camera;
   LightProp                              light;
   std::unique_ptr<FvMaterials>           materials;  // a figure's or a model's
-  // what the last composition made of it in the renderer's scene: its prop root, a model's import
-  // (holding its clips' references), a light's record
+  // what the composition made of it in the renderer's scene, as the prop feed holds it
+  // (fv_prop_feed.hpp): its prop root, a model's import, a light's record
   rs::EntityId                           root;
   rs::ImportResult                       imported;
   rs::LightId                            lightRecord;
-  bool                                   importNoticed = false;  // what its import leaves out was said
   Json                                   stats = Json::object();
 };
 
@@ -589,7 +589,10 @@ struct FvHost::Impl
   bool        ridesOn(const Prop& q, const std::string& id) const;
   // a light prop's record as the prop has it, at its real intensity (hidden, its entity shines with nothing)
   tinygltf::Light lightPayload(const Prop& p) const;
-  // what the last composition fed goes from the renderer's scene
+  // the props in the renderer's scene, fed as deltas, and a prop as the feed takes it
+  std::unique_ptr<fv::PropFeed> propFeed;
+  fv::PropSpec                  specOf(const Prop& p, bool figureChanged) const;
+  // what the compositions fed goes from the renderer's scene
   void releaseFed();
 
   void post(std::function<void()> f, std::source_location where = std::source_location::current())
@@ -753,7 +756,6 @@ struct FvHost::Impl
   Json dforceCommand(const std::string& cmd, const Json& args);
   void publishFigure(Prop& p);
   void publishWardrobe(Loaded& f);
-  std::optional<std::array<glm::dvec3, 3>> cameraRestore;
   Json poseSet(const Json& args);
   // the images a load or a wear resolved, decoded on this worker's threads so the reload takes them ready
   void prefetchImages(const std::vector<fv::build::TextureRequest>& requests, const std::vector<std::optional<fv::build::TextureImage>>& found);

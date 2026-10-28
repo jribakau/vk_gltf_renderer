@@ -553,17 +553,9 @@ void FvHost::onUpdate()
     s.protocol->events().patch("scene", {{"props", moved}});
   }
   s.publishAnimation(false);
+  // the first thing in an empty scene, framed once it is drawn
   if(s.frameIn > 0 && --s.frameIn == 0)
-  {
-    if(s.cameraRestore)
-    {
-      if(auto manip = s.renderer->getCameraManipulator())
-        manip->setLookat((*s.cameraRestore)[0], (*s.cameraRestore)[1], (*s.cameraRestore)[2], true);
-      s.cameraRestore.reset();
-    }
-    else
-      s.frameCamera();
-  }
+    s.frameCamera();
   s.drawHelpers();
   if(s.view)
     s.view->onFrame();

@@ -127,6 +127,9 @@ set(TEST_SOURCES
     # the scene's own bytes (checkFeed, header only)
     test_fv_figure_feed.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp
+    # The host's props fed into the retained scene as deltas, what stayed keeping its handles
+    test_fv_prop_feed.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_prop_feed.cpp
     # Tangents remade over the one-ring of moved vertices, held to a full recompute
     test_retained_tangents.cpp
     # Clips played and skins posed on the store, held to AnimationSystem
