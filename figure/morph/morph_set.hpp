@@ -96,6 +96,9 @@ struct MeshChange
   std::vector<uint32_t> indices;  // drawn vertices, sorted; meaningless when `all`
   // only its morphed cage moved (MorphSet::cageOnly): its drawn vertices are as they were
   bool cage = false;
+  // only its drawn vertices caught up with a cage change already reported (MorphSet::catchUp):
+  // nothing moved that a reader of shapes (dForce, the collider) has not been told of
+  bool caughtUp = false;
 };
 
 class MorphSet
@@ -262,7 +265,8 @@ private:
   // a cageOnly mesh's cage brought to `active`: each changed target's cage deltas, or every target
   // over the base cage when it is not kept yet or is due a rebuild
   void       updateCage(int mesh, MeshState& st);
-  void       change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written, bool cage = false);
+  void       change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written, bool cage = false,
+                    bool caughtUp = false);
 
   std::function<mesh::BuiltMesh*(int)>                  m_geo;
   std::vector<Channel>                                  m_channels;

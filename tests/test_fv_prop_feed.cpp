@@ -357,7 +357,10 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
 
   box->morphs->settled();
   for(const fv::morph::MeshChange& c : box->drain().meshes)
+  {
     EXPECT_FALSE(c.cage) << "mesh " << c.mesh;
+    EXPECT_TRUE(c.caughtUp) << "mesh " << c.mesh;  // no reason for dForce or the collider to run again
+  }
   for(size_t mi = 0; mi < meshes; mi++)
   {
     const std::vector<float>& got  = box->loaded.scene.meshes[mi].geo->position;
@@ -472,6 +475,74 @@ TEST(FvPropFeed, DazSkinningCarriesTheFilesDualQuaternionShare)
     }
     EXPECT_GT(skinned, 0u);
   }
+}
+
+// figureDazOrder (gpu-figures-plan.md F4): a refined mesh's drawer skins the cage, then refines the
+// posed cage into its streams (the oracle holds them to that, exactly). At rest that is the mesh's
+// refined base; a turned bone moves it.
+TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
+{
+  const auto                box = loadBox();
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  props[0].figureCageOf      = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  props[0].figureDazSkinning = true;
+  props[0].figureDazOrder    = true;
+  feed.sync(props);
+  residency.replace(scene);
+  const fv::FigureFeed& figure = *feed.fed("p:1")->figure;
+  const auto check = [&](const char* when) {
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << when << ": " << p;
+  };
+  check("at rest");
+
+  // the drawers that pose their cage, and their outputs at rest: the refined base
+  std::vector<std::pair<const rs::Residency::DrawerGpu*, rs::MeshId>> posed;
+  for(size_t n = 0; n < box->loaded.scene.nodes.size(); n++)
+    if(const fv::Node& node = box->loaded.scene.nodes[n]; node.kind == fv::NodeKind::eMesh && node.mesh >= 0)
+      if(const rs::Residency::DrawerGpu* d = residency.drawer(figure.entityOf(int(n)), figure.meshOf(node.mesh)); d && d->posed)
+        posed.emplace_back(d, figure.meshOf(node.mesh));
+  ASSERT_FALSE(posed.empty());
+  std::vector<std::vector<glm::vec3>> rest;
+  for(const auto& [d, mesh] : posed)
+  {
+    const size_t           n = scene.mesh(mesh)->positions.size();
+    std::vector<glm::vec3> got(n), base(n);
+    std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(d->positions), n * 12).data(), n * 12);
+    std::memcpy(base.data(), gpu.bytesAt(gpu.bufferAddress(residency.meshGpu(mesh)->positions), n * 12).data(), n * 12);
+    for(size_t v = 0; v < n; v++)
+      ASSERT_LT(glm::distance(got[v], base[v]), 1e-4f) << v;
+    rest.push_back(got);
+  }
+
+  // a bone turned: the posed drawers move, still as the oracle has them
+  rs::EntityId bone;
+  for(size_t n = 0; n < box->loaded.scene.nodes.size() && bone.isNone(); n++)
+    if(box->loaded.scene.nodes[n].kind == fv::NodeKind::eBone && box->loaded.scene.nodes[n].parent >= 0
+       && box->loaded.scene.nodes[size_t(box->loaded.scene.nodes[n].parent)].kind == fv::NodeKind::eBone)
+      bone = figure.entityOf(int(n));
+  ASSERT_FALSE(bone.isNone());
+  rs::Transform t = scene.entity(bone)->local;
+  t.rotation      = glm::angleAxis(glm::radians(40.f), glm::vec3(0, 0, 1)) * t.rotation;
+  scene.setLocal(bone, t);
+  gpu.beginFrame();
+  residency.sync(scene);
+  check("posed");
+  float moved = 0;
+  for(size_t i = 0; i < posed.size(); i++)
+  {
+    const size_t           n = rest[i].size();
+    std::vector<glm::vec3> got(n);
+    std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(posed[i].first->positions), n * 12).data(), n * 12);
+    for(size_t v = 0; v < n; v++)
+      moved = std::max(moved, glm::distance(got[v], rest[i][v]));
+  }
+  EXPECT_GT(moved, 1e-3f);
 }
 
 // Strand ribbons (gpu-figures-plan.md F1): each drawn vertex is its strand point moved across the

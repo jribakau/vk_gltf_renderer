@@ -165,15 +165,19 @@ void Residency::clear()
 {
   for(auto& [id, mesh] : m_meshes)
   {
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.joints1,
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
                           mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
                           mesh.tangentDeltas, mesh.prevPositions})
       retireBuffer(b);
     retireRefine(mesh);
   }
   for(auto& [key, d] : m_drawers)
+  {
     for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
       retireBuffer(b);
+    for(BufferHandle b : d.posedBuffers())
+      retireBuffer(b);
+  }
   m_drawers.clear();
   for(BufferHandle b : {m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable})
     retireBuffer(b);
@@ -373,70 +377,90 @@ void Residency::refineOnGpu(std::span<MeshGpu* const> meshes)
 {
   if(meshes.empty())
     return;
-  m_gpu.barrier(GpuBarrier::eTransferToShader);  // the cages
-  size_t levels = 0;
+  std::vector<RefineRun> runs;
   for(const MeshGpu* g : meshes)
-    levels = std::max(levels, g->refine->levels.size());
+  {
+    RefineRun& run     = runs.emplace_back();
+    run.mesh           = g;
+    run.cage           = g->refine->cage;
+    run.refinedNormals = g->refine->refinedNormals;
+    for(const MeshGpu::Refine::Level& l : g->refine->levels)
+      run.levels.push_back(l.out);
+    run.positions = g->positions;
+    run.normals   = g->normals;
+    run.tangents  = g->tangents;
+  }
+  m_gpu.barrier(GpuBarrier::eTransferToShader);  // the cages
+  refineChains(runs);
+  // the refits read the positions, the skin passes both, this frame's draws both
+  m_gpu.barrier(GpuBarrier::eComputeToBuild);
+}
+
+void Residency::refineChains(std::span<const RefineRun> runs)
+{
+  size_t levels = 0;
+  for(const RefineRun& r : runs)
+    levels = std::max(levels, r.mesh->refine->levels.size());
   for(size_t i = 0; i < levels; i++)
   {
-    for(const MeshGpu* g : meshes)
-      if(i < g->refine->levels.size())
+    for(const RefineRun& r : runs)
+      if(const MeshGpu::Refine& t = *r.mesh->refine; i < t.levels.size())
       {
-        const MeshGpu::Refine::Level& l    = g->refine->levels[i];
-        const bool                    last = i + 1 == g->refine->levels.size();
+        const MeshGpu::Refine::Level& l    = t.levels[i];
+        const bool                    last = i + 1 == t.levels.size();
         m_gpu.dispatchDeform({.kind           = DeformKind::eStencil,
                               .vertexCount    = l.rows,
-                              .basePositions  = {i ? g->refine->levels[i - 1].out : g->refine->cage},
-                              .outPositions   = {l.out},
+                              .basePositions  = {i ? r.levels[i - 1] : r.cage},
+                              .outPositions   = {r.levels[i]},
                               .rowStart       = {l.start},
                               .columns        = {l.columns},
                               .stencilWeights = {l.weights},
-                              .stencilOffsets = {last ? g->refine->offsets : BufferHandle{}},
+                              .stencilOffsets = {last ? t.offsets : BufferHandle{}},
                               .sourceCount    = l.sourceCount});
       }
     m_gpu.barrier(GpuBarrier::eComputeToCompute);
   }
-  for(const MeshGpu* g : meshes)
+  for(const RefineRun& r : runs)
+  {
+    const MeshGpu::Refine& t = *r.mesh->refine;
     m_gpu.dispatchDeform({.kind          = DeformKind::eNormals,
-                          .vertexCount   = g->refine->refinedCount,
-                          .basePositions = {g->refine->levels.back().out},
-                          .outNormals    = {g->refine->refinedNormals},
-                          .rowStart      = {g->refine->normalStart},
-                          .columns       = {g->refine->normalTriangles},
-                          .triangles     = {g->refine->triangles},
-                          .sourceCount   = g->refine->refinedCount,
-                          .triangleCount = g->refine->triangleCount});
+                          .vertexCount   = t.refinedCount,
+                          .basePositions = {r.levels.back()},
+                          .outNormals    = {r.refinedNormals},
+                          .rowStart      = {t.normalStart},
+                          .columns       = {t.normalTriangles},
+                          .triangles     = {t.triangles},
+                          .sourceCount   = t.refinedCount,
+                          .triangleCount = t.triangleCount});
+  }
   m_gpu.barrier(GpuBarrier::eComputeToCompute);
   // the splits: a gather of positions and of normals, each drawn vertex its refined vertex's
-  for(const MeshGpu* g : meshes)
-    for(const auto& [from, to] :
-        {std::pair{g->refine->levels.back().out, g->positions}, std::pair{g->refine->refinedNormals, g->normals}})
+  for(const RefineRun& r : runs)
+    for(const auto& [from, to] : {std::pair{r.levels.back(), r.positions}, std::pair{r.refinedNormals, r.normals}})
       if(to)
         m_gpu.dispatchDeform({.kind          = DeformKind::eStencil,
-                              .vertexCount   = g->vertexCount,
+                              .vertexCount   = r.mesh->vertexCount,
                               .basePositions = {from},
                               .outPositions  = {to},
-                              .columns       = {g->refine->drawnFrom},
-                              .sourceCount   = g->refine->refinedCount});
+                              .columns       = {r.mesh->refine->drawnFrom},
+                              .sourceCount   = r.mesh->refine->refinedCount});
   // the tangents, from the drawn positions, normals and UVs
-  if(std::any_of(meshes.begin(), meshes.end(), [](const MeshGpu* g) { return bool(g->refine->tangentTriangles); }))
+  if(std::any_of(runs.begin(), runs.end(), [](const RefineRun& r) { return r.mesh->refine->tangentTriangles && r.tangents; }))
   {
     m_gpu.barrier(GpuBarrier::eComputeToCompute);
-    for(const MeshGpu* g : meshes)
-      if(g->refine->tangentTriangles && g->normals)
+    for(const RefineRun& r : runs)
+      if(const MeshGpu::Refine& t = *r.mesh->refine; t.tangentTriangles && r.normals && r.tangents)
         m_gpu.dispatchDeform({.kind          = DeformKind::eTangents,
-                              .vertexCount   = g->vertexCount,
-                              .basePositions = {g->positions},
-                              .baseNormals   = {g->normals},
-                              .outTangents   = {g->tangents},
-                              .rowStart      = {g->refine->tangentStart},
-                              .columns       = {g->refine->tangentCorners},
-                              .triangles     = {g->refine->tangentTriangles},
-                              .uvs           = {g->uv0},
-                              .triangleCount = g->refine->tangentTriangleCount});
+                              .vertexCount   = r.mesh->vertexCount,
+                              .basePositions = {r.positions},
+                              .baseNormals   = {r.normals},
+                              .outTangents   = {r.tangents},
+                              .rowStart      = {t.tangentStart},
+                              .columns       = {t.tangentCorners},
+                              .triangles     = {t.tangentTriangles},
+                              .uvs           = {r.mesh->uv0},
+                              .triangleCount = t.tangentTriangleCount});
   }
-  // the refits read the positions, the skin passes both, this frame's draws both
-  m_gpu.barrier(GpuBarrier::eComputeToBuild);
 }
 
 void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool vertices)
@@ -501,7 +525,7 @@ void Residency::retireMesh(MeshId id)
   if(it == m_meshes.end())
     return;
   MeshGpu& m = it->second;
-  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.joints, m.joints1, m.weights1,
+  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.joints, m.cageJoints, m.cageWeights, m.cageJoints1, m.cageWeights1, m.cageShares, m.joints1, m.weights1,
                         m.dualQuatShares, m.weights, m.positionDeltas, m.normalDeltas, m.tangentDeltas, m.prevPositions})
     retireBuffer(b);
   retireRefine(m);
@@ -1192,6 +1216,19 @@ void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool s
     }
     if(record.dualQuatShares.size() == record.positions.size())
       make(mesh.dualQuatShares, bytesOf(record.dualQuatShares), "dual quaternion shares");
+    // DAZ's order: the cage's
+    if(record.cageJoints.size() == record.cage.size() && record.cageWeights.size() == record.cage.size() && !record.cage.empty())
+    {
+      make(mesh.cageJoints, bytesOf(record.cageJoints), "cage skin joints");
+      make(mesh.cageWeights, bytesOf(record.cageWeights), "cage skin weights");
+      if(record.cageJoints1.size() == record.cage.size() && record.cageWeights1.size() == record.cage.size())
+      {
+        make(mesh.cageJoints1, bytesOf(record.cageJoints1), "cage skin joints 5-8");
+        make(mesh.cageWeights1, bytesOf(record.cageWeights1), "cage skin weights 5-8");
+      }
+      if(record.cageDualQuatShares.size() == record.cage.size())
+        make(mesh.cageShares, bytesOf(record.cageDualQuatShares), "cage dual quaternion shares");
+    }
   }
   if(record.targets.empty() || mesh.positionDeltas)
     return;
@@ -1227,8 +1264,23 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
   d.morph                = !record.targets.empty();
   d.skin = scene.skin(e.mesh->skin) && record.joints.size() == record.positions.size() && record.weights.size() == record.positions.size();
   makeDeformInputs(record, mesh, d.skin);
-  d.dualQuat      = d.skin && (record.dualQuat > 0.f || mesh.dualQuatShares);
+  // DAZ's order: a refined mesh's cage posed, then refined, when the cage has its influences
+  // (tangents too, when it has them: the chain makes them, nothing skins the base's)
+  const bool posed = d.skin && !d.morph && mesh.refine && mesh.cageJoints && mesh.cageWeights
+                     && (!mesh.tangents || mesh.refine->tangentTriangles);
+  d.dualQuat      = d.skin && (record.dualQuat > 0.f || (posed ? bool(mesh.cageShares) : bool(mesh.dualQuatShares)));
   d.dualQuatShare = record.dualQuat;
+  if(posed)
+  {
+    const auto work = [&](uint64_t count, const char* name) {
+      return m_gpu.createBuffer({.size = std::max<uint64_t>(count, 1) * sizeof(glm::vec3), .usage = eBufferStorage, .name = name});
+    };
+    DrawerGpu::Posed& p = d.posed.emplace();
+    p.cage              = work(mesh.refine->levels.front().sourceCount, "posed cage");
+    for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
+      p.levels.push_back(work(l.rows, "posed level"));
+    p.refinedNormals = work(mesh.refine->refinedCount, "posed refined normals");
+  }
   d.targetCount = d.morph ? mesh.targetCount : 0;
   d.jointCount  = d.skin ? uint32_t(scene.skin(e.mesh->skin)->joints.size()) : 0;
   const uint64_t n      = mesh.vertexCount;
@@ -1261,6 +1313,8 @@ void Residency::releaseDrawer(const DrawerKey& key)
     return;
   const DrawerGpu& d = it->second;
   for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
+    retireBuffer(b);
+  for(BufferHandle b : d.posedBuffers())
     retireBuffer(b);
   m_drawers.erase(it);
   m_drawersWritten.erase(key);
@@ -1439,10 +1493,38 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
   }
   if(std::any_of(skins.begin(), skins.end(), [](const Run* r) { return r->d->morph; }) && !morphs.empty())
     m_gpu.barrier(GpuBarrier::eComputeToCompute);
+  std::vector<RefineRun> posedRuns;
   for(Run* run : skins)
   {
     const DrawerGpu& d    = *run->d;
     const MeshGpu&   mesh = m_meshes.at(d.mesh);
+    if(d.posed)
+    {
+      // the cage posed (positions only), for the refine chain below
+      m_gpu.dispatchDeform({.kind           = DeformKind::eSkin,
+                            .vertexCount    = mesh.refine->levels.front().sourceCount,
+                            .basePositions  = {mesh.refine->cage},
+                            .outPositions   = {d.posed->cage},
+                            .joints         = {mesh.cageJoints},
+                            .weights        = {mesh.cageWeights},
+                            .jointMatrices  = {m_jointPack, d.jointOffset},
+                            .normalMatrices = {m_normalPack, d.normalOffset},
+                            .jointCount     = d.jointCount,
+                            .joints1        = {mesh.cageJoints1},
+                            .weights1       = {mesh.cageWeights1},
+                            .jointDualQuats = {d.dualQuat ? m_dualQuatPack : BufferHandle{}, d.dualQuatOffset},
+                            .dualQuatShares = {mesh.cageShares},
+                            .dualQuat       = d.dualQuatShare});
+      m_deformCounts.skins++;
+      posedRuns.push_back({.mesh           = &mesh,
+                           .cage           = d.posed->cage,
+                           .refinedNormals = d.posed->refinedNormals,
+                           .levels         = d.posed->levels,
+                           .positions      = d.positions,
+                           .normals        = d.normals,
+                           .tangents       = d.tangents});
+      continue;
+    }
     m_gpu.dispatchDeform({.kind           = DeformKind::eSkin,
                           .vertexCount    = mesh.vertexCount,
                           .basePositions  = {d.morph ? d.morphedPositions : mesh.positions},
@@ -1462,6 +1544,12 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
                           .dualQuatShares = {mesh.dualQuatShares},
                           .dualQuat       = d.dualQuatShare});
     m_deformCounts.skins++;
+  }
+  // DAZ's order: the posed cages refined into the drawers' outputs
+  if(!posedRuns.empty())
+  {
+    m_gpu.barrier(GpuBarrier::eComputeToCompute);
+    refineChains(posedRuns);
   }
   m_gpu.barrier(GpuBarrier::eComputeToBuild);
 
@@ -2205,7 +2293,7 @@ size_t Residency::liveBuffers() const
   size_t n = 0;
   for(const auto& [id, mesh] : m_meshes)
   {
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.joints1,
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
                           mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
                           mesh.tangentDeltas, mesh.prevPositions})
       n += b ? 1 : 0;
@@ -2221,8 +2309,11 @@ size_t Residency::liveBuffers() const
     }
   }
   for(const auto& [key, d] : m_drawers)
+  {
     for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
       n += b ? 1 : 0;
+    n += d.posedBuffers().size();
+  }
   for(const std::optional<Prim>& p : m_prims)
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,

@@ -198,6 +198,30 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r)
   std::vector<glm::mat3> normalMats;
   for(const glm::mat4& j : joints)
     normalMats.push_back(glm::transpose(glm::inverse(glm::mat3(j))));
+  // DAZ's order: a refined mesh with no morph and its cage's influences poses its cage (positions
+  // only), and its drawer's streams are that cage refined
+  const size_t nc = r.cage.size();
+  if(r.refine && r.targets.empty() && nc && r.cageJoints.size() == nc && r.cageWeights.size() == nc
+     && (r.tangents.empty() || !r.refine->tangentIndices.empty()))
+  {
+    const bool                 eight = r.cageJoints1.size() == nc && r.cageWeights1.size() == nc;
+    std::vector<JointDualQuat> dualQuats;
+    if(r.dualQuat > 0.f || r.cageDualQuatShares.size() == nc)
+      for(const glm::mat4& j : joints)
+        dualQuats.push_back(jointDualQuat(j));
+    MeshRecord posed = r;
+    for(size_t v = 0; v < nc; v++)
+    {
+      const glm::ivec4 j[2]  = {glm::ivec4(r.cageJoints[v]), eight ? glm::ivec4(r.cageJoints1[v]) : glm::ivec4(0)};
+      const glm::vec4  w[2]  = {r.cageWeights[v], eight ? r.cageWeights1[v] : glm::vec4(0.f)};
+      const float      share = dualQuats.empty() ? 0.f : r.cageDualQuatShares.size() == nc ? r.cageDualQuatShares[v] : r.dualQuat;
+      posed.cage[v] = skinVertex(r.cage[v], nullptr, nullptr, {j, size_t(eight ? 2 : 1)}, {w, size_t(eight ? 2 : 1)},
+                                 {joints, normalMats, dualQuats}, share)
+                          .position;
+    }
+    const MeshRecord refined = refinedBase(posed);
+    return {refined.positions, refined.normals, refined.tangents};
+  }
   // DAZ's skinning: the second set of four, and the joints' dual quaternions where the record has a share
   const bool                 eight = r.joints1.size() == n && r.weights1.size() == n;
   const bool                 dq    = r.dualQuat > 0.f || r.dualQuatShares.size() == n;

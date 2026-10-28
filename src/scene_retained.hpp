@@ -192,6 +192,12 @@ struct MeshRecord
   std::vector<glm::vec4>  weights1;
   float                   dualQuat = 0;
   std::vector<float>      dualQuatShares;
+  // DAZ's order (gpu-figures-plan.md F4): a refined mesh whose drawers skin its cage and refine the
+  // posed cage, with the cage's influences (four, and five to eight; empty: drawn vertices are
+  // skinned after refining) and dual quaternion shares (empty: `dualQuat` for every cage vertex)
+  std::vector<glm::uvec4> cageJoints, cageJoints1;
+  std::vector<glm::vec4>  cageWeights, cageWeights1;
+  std::vector<float>      cageDualQuatShares;
   std::vector<uint32_t>    indices;  // u32 always; a non-indexed primitive gets 0..n-1
   std::vector<Submesh>     submeshes;
   std::vector<MorphTarget> targets;

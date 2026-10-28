@@ -69,6 +69,9 @@ struct FigureFeedOptions
   // DAZ's skinning (figureDazSkinning, daz-viewer docs/gpu-figures-plan.md F3): records carry up to
   // eight influences and the file's dual quaternion share; otherwise glTF's four, linear
   bool dazSkinning = false;
+  // DAZ's order (figureDazOrder, gpu-figures-plan.md F4): a refined mesh's drawers skin its cage and
+  // refine the posed cage; records carry the cage's influences
+  bool dazOrder = false;
 };
 
 class FigureFeed

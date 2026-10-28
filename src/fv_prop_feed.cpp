@@ -120,7 +120,7 @@ PropFeed::Result PropFeed::sync(std::span<const PropSpec> props)
       if(!p.figure)
       {
         p.figure = std::make_unique<FigureFeed>(
-            m_scene, FigureFeedOptions{.build = s.figureOptions, .prop = s.number, .parent = p.root, .cageOf = s.figureCageOf, .dazSkinning = s.figureDazSkinning});
+            m_scene, FigureFeedOptions{.build = s.figureOptions, .prop = s.number, .parent = p.root, .cageOf = s.figureCageOf, .dazSkinning = s.figureDazSkinning, .dazOrder = s.figureDazOrder});
         p.figure->sync(*s.figure, s.figureRoot);
       }
       else if(s.figureChanged)

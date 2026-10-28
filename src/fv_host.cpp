@@ -60,6 +60,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     st.originalTextures = args.value("originalTextures", st.originalTextures);
     st.figureGpuRefine  = args.value("figureGpuRefine", st.figureGpuRefine);
     st.figureDazSkinning = args.value("figureDazSkinning", st.figureDazSkinning);
+    st.figureDazOrder    = args.value("figureDazOrder", st.figureDazOrder);
     return Json{{"ok", true}};
   });
   // load works out on a worker what the file is, and comes to the application thread for the rest
@@ -479,9 +480,11 @@ void FvHost::onUpdate()
     // this frame's edits first, then a settle or a collision pass that finished writes its result
     // and is drained on its own: its vertices never hide an edit to the same mesh, and are no
     // reason to run again
+    // (a catch-up of the drawn vertices to a cage already reported moved nothing new)
     std::vector<int> moved;
     for(const fv::morph::MeshChange& m : changes.meshes)
-      moved.push_back(m.mesh);
+      if(!m.caughtUp)
+        moved.push_back(m.mesh);
     const auto drainInto = [&] {
       fv::Figure::Changes more = f.fig->drain();
       changes.nodes.insert(more.nodes.begin(), more.nodes.end());

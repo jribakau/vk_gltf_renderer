@@ -700,6 +700,7 @@ fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
       std::lock_guard lock(settingsMutex);
       gpuRefine           = settings.figureGpuRefine;
       s.figureDazSkinning = settings.figureDazSkinning;
+      s.figureDazOrder    = settings.figureDazOrder;
     }
     if(gpuRefine && f->fig->morphs)
       s.figureCageOf = [morphs = f->fig->morphs.get()](int mesh) { return morphs->morphedCage(mesh); };

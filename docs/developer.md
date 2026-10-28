@@ -909,6 +909,13 @@ dual quaternions the residency packs (`rs::JointDualQuat` in `scene_skin.hpp`: r
 translation, and the stretch left over, blended linearly first). dForce and the collider skin the
 cage the same way (`dforce::CageSkin`); glTF export stays at four influences, linear, and says so.
 
+With `figureDazOrder` as well (off by default) a refined mesh is posed in DAZ Studio's order: the
+records carry the cage's own influences (`cageJoints`, `cageWeights` and the second four, the cage's
+shares), and the mesh's drawer (`DrawerGpu::posed`) skins the cage, positions only, then runs the
+refine chain on the posed cage into its outputs (`Residency::refineChains`, the passes the unposed
+base runs, over working streams of the drawer's own), so a pose step refines again. A catch-up of the
+CPU's drawn vertices (`MeshChange::caughtUp`) is no reason for dForce or the collider to run again.
+
 A sync decodes the images it needs in one batch, side by side on the worker pool
 (`VulkanGpuBackend::createImages`), a file the host prefetched taken from
 `SceneVk::takePrefetchedFile` instead. Each material slot owns a span of the texture-info table

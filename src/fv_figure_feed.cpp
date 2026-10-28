@@ -23,6 +23,7 @@
 #include <cstring>
 #include <set>
 
+#include <figure/dforce/skin.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 #include "scene_import_gltf.hpp"
@@ -509,6 +510,35 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
         if(r.cage.empty())
           f.refine = nullptr;  // no cage to give: drawn as the CPU makes it
         r.refine = f.refine;
+      }
+      // DAZ's order: the cage's own influences, as dForce and the collider skin the cage
+      if(f.refine && m_options.dazOrder && m.skinned() && m.cageSkin.start.size() == r.cage.size() + 1)
+      {
+        const dforce::CageSkin cs    = dforce::cageSkin(m.cageSkin, m_options.dazSkinning);
+        const size_t           n     = r.cage.size();
+        const bool             eight = cs.index8.size() == n * 8;
+        const auto&            index = eight ? cs.index8 : cs.index;
+        const auto&            wt    = eight ? cs.weight8 : cs.weight;
+        const size_t           per   = eight ? 8 : 4;
+        r.cageJoints.resize(n);
+        r.cageWeights.resize(n);
+        if(eight)
+        {
+          r.cageJoints1.resize(n);
+          r.cageWeights1.resize(n);
+        }
+        for(size_t v = 0; v < n; v++)
+        {
+          const uint16_t* j = &index[v * per];
+          r.cageJoints[v]   = glm::uvec4(j[0], j[1], j[2], j[3]);
+          r.cageWeights[v]  = glm::make_vec4(&wt[v * per]);
+          if(eight)
+          {
+            r.cageJoints1[v]  = glm::uvec4(j[4], j[5], j[6], j[7]);
+            r.cageWeights1[v] = glm::make_vec4(&wt[v * per + 4]);
+          }
+        }
+        r.cageDualQuatShares = cs.dualQuatShare;
       }
       f.tangentAdjacency = std::nullopt;
       // the GPU makes a refined mesh's tangents (zeros here, made when it is resident)

@@ -122,6 +122,9 @@ struct HostSettings
   // DAZ's skinning (up to eight influences, the file's dual quaternion share) for the figures fed
   // from now on (gpu-figures-plan.md F3)
   bool figureDazSkinning = false;
+  // DAZ's order (skin the cage, then refine the posed cage) for the figures fed from now on, with
+  // figureGpuRefine (gpu-figures-plan.md F4)
+  bool figureDazOrder = false;
 };
 
 // A loaded figure and what the renderer made of it. Lives on the application thread.

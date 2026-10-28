@@ -729,13 +729,14 @@ std::vector<std::string> MorphSet::takeErrors()
   return std::exchange(m_errors, {});
 }
 
-void MorphSet::change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written, bool cage)
+void MorphSet::change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written, bool cage, bool caughtUp)
 {
-  // a cage change stays one only while nothing else is reported for the mesh
+  // a cage change, or a catch-up, stays one only while nothing else is reported for the mesh
   const bool  fresh = !m_changes.count(mesh);
   MeshChange& c     = m_changes[mesh];
   c.mesh            = mesh;
   c.cage            = cage && (fresh || c.cage);
+  c.caughtUp        = caughtUp && (fresh || c.caughtUp);
   if(all)
     c.all = true;
   if(c.all)
@@ -824,7 +825,7 @@ void MorphSet::catchUp(std::chrono::steady_clock::duration still)
   });
   for(const MeshUpdate& u : updates)
     if(u.changed)
-      change(u.mesh, u.all, u.moved, u.written);
+      change(u.mesh, u.all, u.moved, u.written, false, true);
 }
 
 void MorphSet::updateCage(int mesh, MeshState& st)

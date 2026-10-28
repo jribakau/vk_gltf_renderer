@@ -153,6 +153,8 @@ public:
     // packed target-major; made when the first drawer needs them
     BufferHandle joints, weights, positionDeltas, normalDeltas, tangentDeltas;
     BufferHandle joints1, weights1, dualQuatShares;  // DAZ's skinning (MeshRecord::joints1)
+    // DAZ's order (MeshRecord::cageJoints): the cage's influences and shares
+    BufferHandle cageJoints, cageWeights, cageJoints1, cageWeights1, cageShares;
     uint32_t     targetCount = 0;
     // its positions as the last frame drew them, kept once a host edit writes them (static prims)
     BufferHandle prevPositions;
@@ -192,6 +194,26 @@ public:
     bool                 dualQuat = false;
     float                dualQuatShare = 0;
     uint64_t             dualQuatOffset = 0;
+    // DAZ's order (MeshRecord::cageJoints): the skin poses the mesh's cage, and the refine chain
+    // makes the outputs from it, with working streams of the drawer's own
+    struct Posed
+    {
+      BufferHandle              cage, refinedNormals;
+      std::vector<BufferHandle> levels;
+    };
+    std::optional<Posed> posed;
+    // the buffers `posed` holds
+    std::vector<BufferHandle> posedBuffers() const
+    {
+      std::vector<BufferHandle> out;
+      if(posed)
+      {
+        out = posed->levels;
+        out.push_back(posed->cage);
+        out.push_back(posed->refinedNormals);
+      }
+      return out;
+    }
     // the inputs it last ran with; empty: it runs at the next sync
     std::vector<float>     lastWeights;
     std::vector<glm::mat4> lastJoints;
@@ -465,6 +487,18 @@ private:
   // the welded normals, then each refined vertex copied to its drawn splits, then the tangents of
   // those with tangent tables; ends compute-to-build
   void refineOnGpu(std::span<MeshGpu* const> meshes);
+  // One refine chain: a cage (a mesh's, or a drawer's posed one) through its mesh's tables into
+  // drawn positions, normals and tangents, over working streams of its own
+  struct RefineRun
+  {
+    const MeshGpu*            mesh = nullptr;
+    BufferHandle              cage, refinedNormals;
+    std::vector<BufferHandle> levels;  // each level's output
+    BufferHandle              positions, normals, tangents;
+  };
+  // the chains' passes side by side, a barrier between stages; what wrote the cages and what reads
+  // the outputs are the caller's barriers
+  void refineChains(std::span<const RefineRun> runs);
 
   void ensureCapacity(SyncResult& result);
   void writeRenderNodes(const std::set<uint32_t>& slots);
