@@ -20,7 +20,8 @@
 // FvHost without a GPU (daz-viewer docs/command-journal-plan.md, C0): its commands through the
 // protocol's registry, the application thread being the test's own (onUpdate pumped while a
 // command waits on it), over FakeHostRenderer's retained scene. The test library's box figure is
-// loaded, dialled, posed and placed, and the topics read back.
+// loaded, dialled, posed, placed, given a material, dressed in its box shirt and removed, and the
+// topics read back.
 
 #include <chrono>
 #include <filesystem>
@@ -148,4 +149,79 @@ TEST(FvHost, ADialAPoseAndAPlaceShowInTheTopics)
   const Json state = rig.cmd("scene.state", {{"prop", id}});
   ASSERT_TRUE(state.value("ok", false)) << state.dump();
   EXPECT_NE(state.dump().find("Taper"), std::string::npos) << state.dump();
+}
+
+TEST(FvHost, APoseSetAndResetShowInThePoseTopic)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_FALSE(id.empty());
+  const auto headX = [&] { return rig.topic("pose/" + id).at("bones").at("head").at("axes").at("rotation/x").value("value", -1.0); };
+
+  const Json posed = rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/x", 20.0}}}});
+  ASSERT_GT(posed.at("result").value("changed", 0), 0) << posed.dump();
+  EXPECT_DOUBLE_EQ(headX(), 20.0);
+
+  ASSERT_TRUE(rig.cmd("pose.reset", {{"prop", id}}).value("ok", false));
+  EXPECT_DOUBLE_EQ(headX(), 0.0);
+}
+
+TEST(FvHost, AMaterialSetAndResetShowInTheMaterialsTopic)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_FALSE(id.empty());
+  const auto roughness = [&] { return rig.topic("materials/" + id).at("items").at("m:0").at("values").value("roughness", -1.0); };
+  const double was = roughness();
+
+  rig.cmd("material.set", {{"prop", id}, {"material", "m:0"}, {"values", {{"roughness", 0.8}}}});
+  EXPECT_NEAR(roughness(), 0.8, 1e-6);
+
+  rig.cmd("material.reset", {{"prop", id}, {"material", "m:0"}});
+  EXPECT_NEAR(roughness(), was, 1e-6);
+}
+
+TEST(FvHost, AnItemIsWornAndTakenOff)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_FALSE(id.empty());
+  const size_t bare = rig.renderer.hostScene().meshCount();
+
+  const Json worn = rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(worn.at("result").contains("job")) << worn.dump();
+  ASSERT_TRUE(rig.settle());
+  const Json  items = rig.topic("wardrobe/" + id).value("items", Json::object());
+  std::string item;
+  for(const auto& [key, it] : items.items())
+    if(it.value("rel", "").find("Box Shirt") != std::string::npos)
+      item = key;
+  ASSERT_FALSE(item.empty()) << items.dump();
+  EXPECT_GT(rig.renderer.hostScene().meshCount(), bare);
+
+  rig.cmd("wardrobe.remove", {{"prop", id}, {"item", item}});
+  ASSERT_TRUE(rig.settle());
+  EXPECT_FALSE(rig.topic("wardrobe/" + id).value("items", Json::object()).contains(item));
+}
+
+TEST(FvHost, ARemovedFigureLeavesTheSceneAndItsTopics)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_FALSE(id.empty());
+
+  ASSERT_TRUE(rig.cmd("prop.remove", {{"prop", id}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  EXPECT_TRUE(figureId(rig.topic("scene")).empty()) << rig.topic("scene").dump();
+  EXPECT_TRUE(rig.topic("morphs/" + id).empty());
+  EXPECT_TRUE(rig.topic("pose/" + id).empty());
+  EXPECT_EQ(rig.renderer.hostScene().meshCount(), 0u);
 }

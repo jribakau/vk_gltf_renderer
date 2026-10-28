@@ -1,0 +1,10 @@
+{"file_version":"0.6.0.0","asset_info":{"id":"/data/Test/Box%20Shirt/Box%20Shirt.dsf","type":"figure","contributor":{"author":"fixture"}},
+"geometry_library":[{"id":"BoxShirt-1","name":"BoxShirt","label":"Box Shirt","type":"subdivision_surface",
+ "vertices":{"count":8,"values":[[-11,2,-11],[11,2,-11],[11,2,11],[-11,2,11],[-11,22,-11],[11,22,-11],[11,22,11],[-11,22,11]]},
+ "polygon_groups":{"count":1,"values":["Shirt"]},"polygon_material_groups":{"count":1,"values":["Shirt"]},
+ "polylist":{"count":4,"values":[[0,0,0,4,5,1],[0,0,1,5,6,2],[0,0,2,6,7,3],[0,0,3,7,4,0]]}}],
+"node_library":[{"id":"BoxShirt","name":"BoxShirt","label":"Box Shirt","type":"figure","rotation_order":"YZX","center_point":[{"id":"x","value":0},{"id":"y","value":0},{"id":"z","value":0}]},
+ {"id":"hip","name":"hip","label":"Hip","type":"bone","parent":"#BoxShirt","rotation_order":"YZX","center_point":[{"id":"x","value":0},{"id":"y","value":10},{"id":"z","value":0}],"end_point":[{"id":"x","value":0},{"id":"y","value":20},{"id":"z","value":0}]}],
+"modifier_library":[{"id":"SkinBinding","name":"SkinBinding","parent":"#BoxShirt-1","skin":{"node":"#BoxShirt","geometry":"#BoxShirt-1","vertex_count":8,
+ "joints":[{"id":"hip","node":"#hip","node_weights":{"count":8,"values":[[0,1],[1,1],[2,1],[3,1],[4,1],[5,1],[6,1],[7,1]]}}]}}],
+"material_library":[{"id":"Shirt","name":"Shirt","geometry":"#BoxShirt-1","groups":["Shirt"],"diffuse":{"channel":{"id":"diffuse","type":"color","value":[0.2,0.6,0.3]}}}]}
