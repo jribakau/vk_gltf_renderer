@@ -86,6 +86,7 @@
 #ifdef USE_AGENTIC
 #include "agentic.hpp"
 #endif
+#include "host_renderer.hpp"
 
 #ifdef USE_NVMCP
 /// A clean timing series for one GPU profiler timer, gathered over a controlled window.
@@ -105,7 +106,7 @@ struct TimerMeasurement
 };
 #endif
 
-class GltfRenderer : public nvapp::IAppElement
+class GltfRenderer : public nvapp::IAppElement, public HostRenderer
 {
 public:
   GltfRenderer(nvutils::ParameterRegistry* parameterReg, const nvutils::ParameterParser* parameterParser, BenchmarkOptions& benchmarkOptions);
@@ -135,7 +136,7 @@ public:
   /// Full GPU rebuild (textures + geometry + AS). Only uploads GPU data; CPU side must already be
   /// parsed (`mergeScene`, `parseScene`, etc., depending on how the model was changed).
   void                                        rebuildVulkanSceneFull();
-  std::shared_ptr<nvutils::CameraManipulator> getCameraManipulator() { return m_cameraManip; }
+  std::shared_ptr<nvutils::CameraManipulator> getCameraManipulator() override { return m_cameraManip; }
   void                                        registerRecentFilesHandler();
   void                                        setDlssHardwareAvailability(bool rrAvailable, bool srAvailable);
   void                                        setSerAvailable(bool available);
@@ -335,7 +336,7 @@ public:
 
   /// Pre-save hook body: write the current sky into the model being serialized, or strip any
   /// stale extension when the save toggle is off.
-  void writeEnvironmentSky(tinygltf::Model& outModel, const std::filesystem::path& destination) const;
+  void writeEnvironmentSky(tinygltf::Model& outModel, const std::filesystem::path& destination) const override;
 
   /// Write, update, or remove the directional light that carries the sky's sun, so a saved sky is
   /// complete for a renderer that only reads the extension. Marked, so a reload identifies it and
@@ -350,39 +351,34 @@ public:
   /// -- and switch to the HDR environment, as the path overload does after its own decode. `name`
   /// is the file it came from, or empty for a generated image (kept in memory then, so leaving a
   /// baked sky can restore it). False for an invalid image. Application thread only.
-  [[nodiscard]] bool loadHdrEnvironment(EnvImage&& image, const std::filesystem::path& name);
+  [[nodiscard]] bool loadHdrEnvironment(EnvImage&& image, const std::filesystem::path& name) override;
   /// Scene bounds as loaded (world space), or an empty box with no scene.
   [[nodiscard]] nvutils::Bbox sceneBounds() const;
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);
   // Decodes an image file now, on the calling thread, for the next scene replace to take ready
   // (SceneVk::prefetchImage): a host's load and wear workers call it for the textures they resolved.
-  void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
+  void prefetchImage(const std::filesystem::path& diskPath, bool srgb) override;
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
-  void          setRenderSystem(RenderingMode mode);
-  RenderingMode renderSystem() const { return m_resources.settings.renderSystem; }
+  void          setRenderSystem(RenderingMode mode) override;
+  RenderingMode renderSystem() const override { return m_resources.settings.renderSystem; }
 
   // The tonemapped output and its size, for the headless frame stream (src/frame_stream.hpp). The
   // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.
   VkImage    tonemappedImage() const { return m_resources.gBuffers.getColorImage(Resources::eImgTonemapped); }
   // The allocator, for a host element that owns GPU work of its own (the dForce GPU solver)
   nvvk::ResourceAllocator& allocator() { return m_resources.allocator; }
-  VkExtent2D renderSize() const { return m_resources.gBuffers.getSize(); }
+  nvvk::ResourceAllocator* deviceAllocator() override { return &m_resources.allocator; }
+  VkExtent2D renderSize() const override { return m_resources.gBuffers.getSize(); }
 
   // The device's VRAM budget (VK_EXT_memory_budget): the bytes the driver allows this process over
   // its device-local heaps and the bytes in use; `known` is false on a device without the
   // extension. A physical-device query: any thread.
-  struct MemoryBudget
-  {
-    VkDeviceSize budget = 0;
-    VkDeviceSize usage  = 0;
-    bool         known  = false;
-  };
-  MemoryBudget deviceMemoryBudget() const;
+  MemoryBudget deviceMemoryBudget() const override;
   // What a pixel of the frame costs in the mode drawn, an estimate of the per-pixel buffers (the
   // G-buffers; under RTX the DLSS guides and output, OptiX's images and shared buffers, the hand-off
   // and the upscaler's own history). Updated each frame; any thread.
-  uint32_t frameBytesPerPixel() const { return m_frameBytesPerPixel.load(); }
+  uint32_t frameBytesPerPixel() const override { return m_frameBytesPerPixel.load(); }
   // Why a frame of this size must not be asked for (the budget cannot hold what it adds over the
   // frame drawn now), or empty. Any allocation that fails ends the process (NVVK_CHECK), so the
   // stream's /size asks here first. Any thread.
@@ -399,46 +395,46 @@ public:
 
   /// The path tracer is accumulating a still: the camera and scene have held for a frame, and
   /// the image does not yet hold maxSamples samples per pixel. Every further frame improves it.
-  bool isRefiningStill() const { return isStill() && !m_resources.accumulationComplete(); }
+  bool isRefiningStill() const override { return isStill() && !m_resources.accumulationComplete(); }
   // The path tracer is accumulating a still, or holds a finished one: every frame since the view
   // stopped added samples to one image. Not while DLSS renders (every frame without an accumulation
   // denoiser, or the hand-off delay's frames with one): its frames rebuild the image each time.
-  bool isStill() const
+  bool isStill() const override
   {
     return m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.frameCount >= 1
            && !m_pathTracer.dlssFrame();
   }
-  bool isStillConverged() const { return isStill() && m_resources.accumulationComplete(); }
+  bool isStillConverged() const override { return isStill() && m_resources.accumulationComplete(); }
   // The sample cap is reached, whatever renders (a DLSS view counts its frames too)
-  bool accumulationComplete() const { return m_resources.accumulationComplete(); }
+  bool accumulationComplete() const override { return m_resources.accumulationComplete(); }
 
   // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.
   nvvkgltf::Scene*  editScene() { return m_resources.getScene(); }
   // The retained scene draws (a stream host feeds it, below): there is no CPU scene above, and
   // mcp_scene's edit tools are refused.
-  bool drawsRetainedScene() const { return m_resources.retainedGpu != nullptr; }
+  bool drawsRetainedScene() const override { return m_resources.retainedGpu != nullptr; }
 
   // ---- A stream host's own retained scene (daz-viewer docs/retained-scene-plan.md, P4): the host
   // feeds the store, the renderer keeps it resident and draws it, with no CPU glTF scene beside it.
   // The store lives for the session, so its handles stay unique. Application thread only.
-  rs::RetainedScene& hostScene();
-  bool               feedsHostScene() const { return m_resources.hostFed; }
+  rs::RetainedScene& hostScene() override;
+  bool               feedsHostScene() const override { return m_resources.hostFed; }
   // A scene replace of what the host fed (a composition): waits for the device, drops the pending
   // picks, and makes the store resident whole. The selection stays where its entity still is.
-  void replaceHostScene();
+  void replaceHostScene() override;
   // The host's selection: an entity, drawn outlined with every instance under it; none clears it
-  void         selectEntity(rs::EntityId entity);
-  rs::EntityId selectedEntity() const { return m_selectedEntity; }
+  void         selectEntity(rs::EntityId entity) override;
+  rs::EntityId selectedEntity() const override { return m_selectedEntity; }
   // The clip that plays (none: none), `at` seconds from its start; AnimationControl plays, pauses,
   // loops and speeds it as it does a legacy clip
-  void       setHostClip(rs::ClipId clip, float at = 0.f);
+  void       setHostClip(rs::ClipId clip, float at = 0.f) override;
   rs::ClipId hostClip() const { return m_hostClip.clip(); }
   // its time and length, from its start
-  float hostClipTime() const { return m_hostClip.time() - m_hostClip.start(); }
-  float hostClipDuration() const { return std::max(0.f, m_hostClip.end() - m_hostClip.start()); }
+  float hostClipTime() const override { return m_hostClip.time() - m_hostClip.start(); }
+  float hostClipDuration() const override { return std::max(0.f, m_hostClip.end() - m_hostClip.start()); }
   // to `time` from its start, paused, shown at once
-  void              seekHostClip(float time);
-  AnimationControl& editAnimationControl() { return m_resources.animationControl; }
+  void              seekHostClip(float time) override;
+  AnimationControl& editAnimationControl() override { return m_resources.animationControl; }
   bool              isBlasUpdatable(uint32_t renderPrimID) const { return m_resources.sceneRtx.isBlasUpdatable(renderPrimID); }
   // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
   // geometry edits can refit in place. Must be set before the scene loads.
@@ -462,20 +458,20 @@ public:
   /// Ray-pick at a normalized viewport position (0..1, origin top-left): the viewport click path
   /// without ImGui. `center` recenters the camera on the hit instead of selecting. The result is
   /// applied a frame or two later, once the pick's frame has finished (see m_pendingClickPick).
-  void pickAt(glm::vec2 uv, bool center);
+  void pickAt(glm::vec2 uv, bool center) override;
   /// Shaded, clay, normals and the other debug views (shaderio::Visualization).
-  void setVisualization(shaderio::Visualization mode);
-  void setWireframe(bool on);
-  void setShowGrid(bool on);
-  void setShowAxis(bool on);
+  void setVisualization(shaderio::Visualization mode) override;
+  void setWireframe(bool on) override;
+  void setShowGrid(bool on) override;
+  void setShowAxis(bool on) override;
   /// Path-tracer depth of field. `aperture` is the lens radius squared in metres (0: pinhole).
   /// `autoFocus` keeps the orbit target sharp and ignores `focalDistance`.
-  void setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades = 0, float bladeRotation = 0);
+  void setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades = 0, float bladeRotation = 0) override;
   int  selectedNodeIndex();  // The node of a node or primitive selection, or -1
-  void fitCamera(bool wholeScene);
+  void fitCamera(bool wholeScene) override;
   /// What is shown, where it is now: the union of the visible render nodes' boxes through their
   /// current node transforms (getSceneBounds is the scene as it loaded).
-  nvutils::Bbox visibleSceneBounds();
+  nvutils::Bbox visibleSceneBounds() override;
   void selectSceneNodeFromScript(int nodeIndex);  // Script-driven selection (Inspector/Scene Browser)
 
   /// Lets a stream host own what the transform gizmo edits, on its scene's entities. `attach` gives
@@ -483,31 +479,20 @@ public:
   /// 0 for no gizmo on it; asked every frame, and new handles attach at once. `edit` gets the
   /// entity's new local translation, rotation and scale, which the host writes; `done` on the release
   /// that ends the drag. (A windowed session edits the glTF node selected, with undo.)
-  struct GizmoHooks
-  {
-    std::function<uint32_t(rs::EntityId entity)> attach;
-    std::function<void(rs::EntityId entity, const glm::vec3& t, const glm::quat& r, const glm::vec3& s, bool done)> edit;
-  };
-  void setGizmoHooks(GizmoHooks hooks);
-  void setShowGizmo(bool on);
+  void setGizmoHooks(GizmoHooks hooks) override;
+  void setShowGizmo(bool on) override;
   /// World-space line segments a host draws over the image (two vertices each), for what has no
   /// mesh: a camera's frustum, a light's marker. Drawn in both renderers, never in the path-traced
   /// image itself. Application thread only.
-  void setHelperLines(std::vector<shaderio::lines::LineVertex> vertices);
+  void setHelperLines(std::vector<shaderio::lines::LineVertex> vertices) override;
   /// The transform gizmo's pointer input without ImGui (a headless stream): `px` in render pixels,
   /// origin top-left. True when the gizmo took the event (a press on a handle, a drag, its release),
   /// so the camera and click selection should not see it.
-  bool gizmoInput(glm::vec2 px, bool down, bool pressed, bool released);
-  /// What a click hit in a stream host's scene: the entity and the material it draws there.
-  struct InstancePick
-  {
-    rs::EntityId   entity;
-    rs::MaterialId material;
-  };
+  bool gizmoInput(glm::vec2 px, bool down, bool pressed, bool released) override;
   /// Sees every click pick of a stream host's scene first: what was hit (none for nothing) and the
   /// hit point in world space. Returning true keeps the renderer from changing the selection;
   /// otherwise the entity hit is selected, or the selection cleared (a hit on it again clears it too).
-  void setPickObserver(std::function<bool(const std::optional<InstancePick>& pick, const glm::vec3& hit)> observer);
+  void setPickObserver(std::function<bool(const std::optional<InstancePick>& pick, const glm::vec3& hit)> observer) override;
 
 #ifdef USE_NVMCP
   /// Automation surface for the optional MCP endpoint (src/mcp_timing.cpp), which is where both

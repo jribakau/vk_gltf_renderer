@@ -64,12 +64,7 @@
 #include <nvapp/application.hpp>
 #include <nvapp/imgui_texture.hpp>
 
-
-enum class RenderingMode
-{
-  ePathtracer,
-  eRasterizer
-};
+#include "rendering_mode.hpp"
 
 // Which special view the user wants in the viewport. The DLSS guide-buffer entries that used
 // to live here are gone -- DLSS guide selection is now encapsulated inside the Dlss class

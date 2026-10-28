@@ -130,7 +130,7 @@
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
-// The scene: the host feeds the renderer's retained scene itself (GltfRenderer::hostScene): a prop
+// The scene: the host feeds the renderer's retained scene itself (HostRenderer::hostScene): a prop
 // root per prop, a figure through its feed (fv_figure_feed.hpp), a model imported from its file, a
 // camera or a light as a record, and the sun. A composition feeds the props' changes as deltas
 // (fv_prop_feed.hpp); what didn't change keeps its handles.
@@ -167,7 +167,7 @@
 
 #include <nvapp/application.hpp>
 
-class GltfRenderer;
+class HostRenderer;
 class FvProtocol;
 namespace nvutils {
 class ParameterRegistry;
@@ -177,7 +177,7 @@ class FvHost : public nvapp::IAppElement
 {
 public:
   // `registry` holds the renderer's parameters, which lighting and params.* write.
-  FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvutils::ParameterRegistry* registry);
+  FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvutils::ParameterRegistry* registry);
   ~FvHost() override;
 
   void onAttach(nvapp::Application* app) override;

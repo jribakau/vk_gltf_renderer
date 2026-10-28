@@ -250,7 +250,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
         -> std::shared_ptr<fv::dforce::ClothBackend> {
       if(!app)
         return nullptr;
-      auto sim = std::make_shared<DforceGpu>(&renderer->allocator(), app, std::move(meshes), opts);
+      auto sim = std::make_shared<DforceGpu>(renderer->deviceAllocator(), app, std::move(meshes), opts);
       if(!sim->valid())
       {
         notice("dForce: the GPU solver could not start; simulating on the CPU");

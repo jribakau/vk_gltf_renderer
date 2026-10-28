@@ -32,7 +32,7 @@
 
 #include <figure/scene/graph.hpp>
 
-#include "renderer.hpp"
+#include "host_renderer.hpp"
 #include "shaders/shaderio.h"
 
 namespace {
@@ -69,12 +69,12 @@ glm::dvec3 vec3Of(const fv::Json& v)
 
 }  // namespace
 
-FvView::FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry& commands, std::function<fv::Json(std::function<fv::Json()>)> onApp)
+FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry& commands, std::function<fv::Json(std::function<fv::Json()>)> onApp)
     : m_renderer(renderer)
     , m_events(&events)
     , m_onApp(std::move(onApp))
 {
-  m_renderer->setPickObserver([this](const std::optional<GltfRenderer::InstancePick>& pick, const glm::vec3& hit) {
+  m_renderer->setPickObserver([this](const std::optional<HostRenderer::InstancePick>& pick, const glm::vec3& hit) {
     const fv::HostAddress at = pick ? m_map.pick(pick->entity, pick->material) : fv::HostAddress{};
     notePick(at);
     // a mesh pick selects the node hit, which the renderer does

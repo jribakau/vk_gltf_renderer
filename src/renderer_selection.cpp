@@ -378,6 +378,10 @@ void GltfRenderer::setShowAxis(bool on)
   m_resources.settings.showAxis = on;
 }
 
+// a host names the gizmo's handles without its header
+static_assert(HostRenderer::eGizmoTranslation == TransformHelperVk::ShowTranslation && HostRenderer::eGizmoRotation == TransformHelperVk::ShowRotation
+              && HostRenderer::eGizmoScale == TransformHelperVk::ShowScale);
+
 void GltfRenderer::setGizmoHooks(GizmoHooks hooks)
 {
   m_gizmoHooks = std::move(hooks);

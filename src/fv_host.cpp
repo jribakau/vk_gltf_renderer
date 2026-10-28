@@ -26,7 +26,7 @@
 
 //--------------------------------------------------------------------------------------------------
 
-FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvutils::ParameterRegistry* registry)
+FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvutils::ParameterRegistry* registry)
     : m_impl(std::make_unique<Impl>())
 {
   Impl& s     = *m_impl;
@@ -319,18 +319,18 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
           if(!impl->view->propOfRoot(entity))
             return 0;
           const std::string& t = impl->view->transformMode();
-          return t == "rotate" ? TransformHelperVk::ShowRotation :
-                 t == "scale"  ? TransformHelperVk::ShowScale :
-                                 TransformHelperVk::ShowTranslation;
+          return t == "rotate" ? HostRenderer::eGizmoRotation :
+                 t == "scale"  ? HostRenderer::eGizmoScale :
+                                 HostRenderer::eGizmoTranslation;
         }
         if(pick != "bone")
           return 0;
         const auto [figure, pb] = impl->boneAt(entity);
         uint32_t flags          = 0;
         if(pb && hasKind(*pb, fv::pose::ChannelKind::eRotation))
-          flags |= TransformHelperVk::ShowRotation;
+          flags |= HostRenderer::eGizmoRotation;
         if(pb && hasKind(*pb, fv::pose::ChannelKind::eTranslation))
-          flags |= TransformHelperVk::ShowTranslation;
+          flags |= HostRenderer::eGizmoTranslation;
         return flags;
       },
       .edit =

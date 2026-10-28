@@ -94,7 +94,7 @@
 #include "gltf_scene_animation.hpp"
 #include "gizmo_lines_vk.hpp"
 #include "gltf_scene_editor.hpp"
-#include "renderer.hpp"
+#include "host_renderer.hpp"
 #include "scene_import_gltf.hpp"
 #include "tinygltf_utils.hpp"
 #include "ui_animation.hpp"
@@ -459,7 +459,7 @@ std::string figureGeneration(const Loaded& figure);
 
 struct FvHost::Impl
 {
-  GltfRenderer*               renderer = nullptr;
+  HostRenderer*               renderer = nullptr;
   std::shared_ptr<FvProtocol> protocol;
   nvapp::Application*         app = nullptr;
 

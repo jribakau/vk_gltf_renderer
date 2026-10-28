@@ -34,7 +34,7 @@
 
 #include "gltf_scene.hpp"
 #include "gltf_scene_editor.hpp"
-#include "renderer.hpp"
+#include "host_renderer.hpp"
 #include "tinygltf_utils.hpp"
 
 using fv::Json;

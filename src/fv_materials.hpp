@@ -98,14 +98,14 @@
 #include "fv_events.hpp"
 #include "fv_workers.hpp"
 
-class GltfRenderer;
+class HostRenderer;
 
 class FvMaterials
 {
 public:
   struct Hooks
   {
-    GltfRenderer* renderer = nullptr;
+    HostRenderer* renderer = nullptr;
     fv::EventHub* events   = nullptr;
     // runs a function on the application thread, later
     std::function<void(std::function<void()>)> post;

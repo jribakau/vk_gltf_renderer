@@ -54,7 +54,7 @@
 #include "fv_events.hpp"
 #include "fv_scene_map.hpp"
 
-class GltfRenderer;
+class HostRenderer;
 namespace tinygltf {
 class Model;
 }
@@ -67,7 +67,7 @@ class FvView
 {
 public:
   // `onApp` runs a function on the application thread and returns what it returned.
-  FvView(GltfRenderer* renderer, fv::EventHub& events, fv::CommandRegistry& commands, std::function<fv::Json(std::function<fv::Json()>)> onApp);
+  FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry& commands, std::function<fv::Json(std::function<fv::Json()>)> onApp);
 
   // A figure's posable bones: topic node -> pose bone id, and the bone node nearest a world point
   // (-1 for none).
@@ -153,7 +153,7 @@ private:
   // A click hit `at` (prop -1: nothing): the surface it hit, for the next selection published
   void notePick(const fv::HostAddress& at);
 
-  GltfRenderer*                                      m_renderer = nullptr;
+  HostRenderer*                                      m_renderer = nullptr;
   fv::EventHub*                                      m_events   = nullptr;
   std::function<fv::Json(std::function<fv::Json()>)> m_onApp;
 
