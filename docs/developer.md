@@ -876,10 +876,11 @@ Four settings, none remembered:
 
 - `sceneBackend` (`auto`, `legacy` or `retained`; `auto`) decides at each `loadModel` of a stream
   session; windowed sessions and `--scenefile` stay legacy. `auto` takes the retained scene unless
-  `rs::retainedCannotTake` (scene_coexistence.hpp) finds what it doesn't take yet: skins, morph
-  targets, animation, `KHR_interactivity`, external assets. `retained` takes it regardless, and
-  says what won't draw: it draws skins, morph targets and clips (see below). The `Scene backend:` log line names the
-  choice and why, with the top-level node (a prop) that forced legacy. A change asks the host for a
+  `rs::retainedCannotTake` (scene_coexistence.hpp) finds what it doesn't take yet:
+  `KHR_animation_pointer` channels, `KHR_interactivity`, external assets. Skins, morph targets and
+  clips' node channels it takes (see below), so FV's figures run retained. `retained` takes a scene
+  regardless, and says what won't draw. The `Scene backend:` log line names the choice and why,
+  with the top-level node (a prop) that forced legacy. A change asks the host for a
   recompose (`GltfRenderer::setRecomposeRequest`); the switch is that scene replace.
 - `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
   (`VulkanGpuBackend`); the next batch regrows it. Live.

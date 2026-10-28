@@ -71,7 +71,7 @@ struct SceneBackendChoice
 };
 
 // What the retained scene can't draw yet in `model`, once each, naming the top-level node (a
-// composed scene's prop) it was found under: skins, morph targets, animations (P3b),
+// composed scene's prop) it was found under where it has one: KHR_animation_pointer channels,
 // KHR_interactivity, and glTF 2.1 external assets (`externalAssets`: the legacy scene resolved some)
 std::vector<std::string> retainedCannotTake(const tinygltf::Model& model, bool externalAssets);
 

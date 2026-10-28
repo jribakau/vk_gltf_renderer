@@ -55,23 +55,12 @@ std::vector<std::string> retainedCannotTake(const tinygltf::Model& model, bool e
     kinds.push_back(kind);
     out.push_back(where.empty() ? kind : kind + " (under " + where + ")");
   };
-  for(size_t n = 0; n < model.nodes.size(); n++)
-  {
-    const tinygltf::Node& node = model.nodes[n];
-    if(node.skin >= 0)
-      add("skinning", under(int(n)));
-    if(node.mesh >= 0 && node.mesh < int(model.meshes.size()))
-      for(const tinygltf::Primitive& p : model.meshes[size_t(node.mesh)].primitives)
-        if(!p.targets.empty())
-          add("morph targets", under(int(n)));
-  }
+  // a clip's node channels play (the bridge carries the nodes they move); its pointer channels, which
+  // write materials, lights and cameras, don't
   for(const tinygltf::Animation& a : model.animations)
-  {
-    const auto target = std::find_if(a.channels.begin(), a.channels.end(), [&](const tinygltf::AnimationChannel& c) {
-      return c.target_node >= 0 && c.target_node < int(model.nodes.size());
-    });
-    add("animation", target != a.channels.end() ? under(target->target_node) : "");
-  }
+    for(const tinygltf::AnimationChannel& c : a.channels)
+      if(c.target_path == "pointer" || c.target_extensions.count(KHR_ANIMATION_POINTER) > 0)
+        add("KHR_animation_pointer", c.target_node >= 0 && c.target_node < int(model.nodes.size()) ? under(c.target_node) : "");
   if(used(KHR_INTERACTIVITY_EXTENSION_NAME))
     add("KHR_interactivity", "");
   if(externalAssets)

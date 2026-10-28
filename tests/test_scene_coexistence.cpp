@@ -180,22 +180,33 @@ TEST(SceneCoexistence, WhatRetainedCannotTakeIsNamedOnceUnderItsProp)
   tinygltf::Model plain = fixture();
   EXPECT_TRUE(retainedCannotTake(plain, false).empty());
 
+  // skins, morph targets and a clip's node channels are drawn
   tinygltf::Model m = fixture();
   m.skins.emplace_back();
-  m.nodes[1].skin = 0;  // under propA
-  m.nodes[2].skin = 0;
+  m.nodes[1].skin = 0;
   m.meshes[1].primitives[0].targets.push_back({{"POSITION", 0}});
   m.animations.emplace_back();
   m.animations[0].channels.push_back({});
   m.animations[0].channels[0].target_node = 2;
-  m.extensionsUsed = {KHR_INTERACTIVITY_EXTENSION_NAME, EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME};  // micromaps are drawn
-  const std::vector<std::string> what     = retainedCannotTake(m, true);
-  ASSERT_EQ(what.size(), 5u);
-  EXPECT_EQ(what[0], "skinning (under 'propA')");  // once, though propB has one too
-  EXPECT_EQ(what[1], "morph targets (under 'propB')");
-  EXPECT_EQ(what[2], "animation (under 'propB')");
-  EXPECT_EQ(what[3], "KHR_interactivity");
-  EXPECT_EQ(what[4], "glTF 2.1 external assets");
+  m.animations[0].channels[0].target_path = "rotation";
+  m.extensionsUsed                        = {EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME};  // micromaps are drawn
+  EXPECT_TRUE(retainedCannotTake(m, false).empty());
+
+  // a pointer channel, named under its prop, once though two channels have one
+  for(int node : {2, 1})
+  {
+    tinygltf::AnimationChannel c;
+    c.target_node                              = node;
+    c.target_path                              = "pointer";
+    c.target_extensions[KHR_ANIMATION_POINTER] = tinygltf::Value(tinygltf::Value::Object{});
+    m.animations[0].channels.push_back(c);
+  }
+  m.extensionsUsed.push_back(KHR_INTERACTIVITY_EXTENSION_NAME);
+  const std::vector<std::string> what = retainedCannotTake(m, true);
+  ASSERT_EQ(what.size(), 3u);
+  EXPECT_EQ(what[0], "KHR_animation_pointer (under 'propB')");
+  EXPECT_EQ(what[1], "KHR_interactivity");
+  EXPECT_EQ(what[2], "glTF 2.1 external assets");
 }
 
 TEST(SceneCoexistence, TheBackendASceneTakes)
@@ -204,11 +215,11 @@ TEST(SceneCoexistence, TheBackendASceneTakes)
     EXPECT_EQ(parseSceneBackendSetting(sceneBackendSettingName(s)), s);
   EXPECT_FALSE(parseSceneBackendSetting("Retained").has_value());
 
-  const std::vector<std::string> none, skin = {"skinning (under 'figure')"};
+  const std::vector<std::string> none, skin = {"KHR_animation_pointer (under 'figure')"};
   EXPECT_EQ(chooseSceneBackend(SceneBackendSetting::eAuto, true, none).backend, SceneBackend::eRetained);
   const SceneBackendChoice fallback = chooseSceneBackend(SceneBackendSetting::eAuto, true, skin);
   EXPECT_EQ(fallback.backend, SceneBackend::eLegacy);
-  EXPECT_NE(fallback.reason.find("skinning (under 'figure')"), std::string::npos);  // the log names the prop
+  EXPECT_NE(fallback.reason.find("KHR_animation_pointer (under 'figure')"), std::string::npos);  // the log names the prop
   EXPECT_EQ(chooseSceneBackend(SceneBackendSetting::eLegacy, true, none).backend, SceneBackend::eLegacy);
   const SceneBackendChoice forced = chooseSceneBackend(SceneBackendSetting::eRetained, true, skin);
   EXPECT_EQ(forced.backend, SceneBackend::eRetained);
