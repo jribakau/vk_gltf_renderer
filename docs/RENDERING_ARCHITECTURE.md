@@ -72,8 +72,13 @@ packed joint matrices, normal matrices and morph weights of every drawer.
 **BLAS lifecycle.** A prim's BLAS is built in the frame its prim is made, recorded into that
 frame's command buffer in batches whose scratch is bounded (`blasScratchBudgetMB`); refit when its
 vertices are written (a dial, a skin or morph pass); built again when a stream it reads had to be
-replaced; and retired with its prim after the last instance lets go of it, its memory freed a frame
-cycle later (`GpuBackend::retire`). The TLAS is built again over capacity whenever a row changes
+replaced, or after `blasRefitsBeforeRebuild` refits (0, off, by default: a 45° arm swing traced
+no slower refit-only); and retired with its prim after the last instance lets go of it, its memory
+freed a frame cycle later (`GpuBackend::retire`). A static prim (drawn from its mesh's own streams)
+is built for compaction (`blasCompactStatic`, on): the build writes its compacted size to a query,
+and once that frame has retired the next sync records the compacted copy, puts it in the TLAS and
+retires the original. A compacted BLAS can't be refitted, so a vertex edit builds it again,
+refittable from then on. The TLAS is built again over capacity whenever a row changes
 (`tlasPolicy`), keeping its handle until capacity grows.
 
 **Sync order** (`rs::Residency::sync`, once a frame before the passes): a frame-to-write barrier
@@ -743,8 +748,8 @@ the default, rebuilds every time, as NVIDIA advises for a TLAS; `update` refits 
 or an instance became active or inactive, which an UPDATE cannot express. The per-frame syncs, on
 the CPU and the GPU transform path alike, show in the GPU profiler as one `TLAS build` section.
 
-Animated scenes build their BLAS with `ALLOW_UPDATE` and skip compaction; only static scenes
-compact (see `GltfRenderer::buildAccelerationStructures()`). Vulkan permits compacting an
+In the legacy scene (the frozen editor), animated scenes build their BLAS with `ALLOW_UPDATE` and
+skip compaction; only static scenes compact (see `GltfRenderer::buildAccelerationStructures()`). Vulkan permits compacting an
 updatable BLAS and refitting it afterward, but this app's build+compact+per-frame-update path
 triggers a GPU device-lost, so compaction is skipped for animated scenes as a workaround.
 
