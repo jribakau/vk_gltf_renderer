@@ -210,7 +210,9 @@ mat::ResolvedTexture FigureFeed::resolveTexture(const mat::TextureRequest&      
   }
   rs::TextureRecord t;
   t.name     = req.rel.substr(req.rel.find_last_of('/') + 1);
-  t.uri      = image->uri;
+  // the record holds the file's path, as an import's does; the image's URI is %-encoded, as glTF
+  // has it (a folder named "Colm Jackson" is "Colm%20Jackson" there, and opens as nothing)
+  t.uri      = tinygltf::utils::decodePathFromUri(image->uri);
   t.mimeType = image->mimeType;
   if(image->mimeType == "image/ktx2")
     t.sourceExtension = "KHR_texture_basisu";

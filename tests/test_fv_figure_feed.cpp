@@ -616,6 +616,38 @@ TEST(FigureFeed, ATextureThatComesLaterIsAddedToTheList)
   expectSame(fed, imported, false);
 }
 
+// A texture whose file is in a folder with a space in its name: the record holds the file's path,
+// which opens, not the URI it was given ("a%20folder").
+TEST(FigureFeed, ATexturesRecordHoldsItsFilesPathNotItsUri)
+{
+  const fs::path dir = fs::temp_directory_path() / "fv feed textures";
+  fs::create_directories(dir);
+  fv::build::BuildOptions options;
+  options.texture = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+    const fs::path to = dir / fs::path(req.rel).filename();
+    std::error_code ec;
+    fs::copy_file(kLibrary / req.rel.substr(req.rel.find_first_not_of('/')), to, fs::copy_options::overwrite_existing, ec);
+    // its URI as the host writes it (uriOfPath): a space is %20
+    std::string uri;
+    for(char c : to.generic_string())
+      uri += c == ' ' ? std::string("%20") : std::string(1, c);
+    return fv::build::TextureImage{.uri = uri, .mimeType = "image/png"};
+  };
+  const auto        f = loadBox();
+  rs::RetainedScene fed;
+  fv::FigureFeed    feed(fed, {.build = options});
+  feed.sync(f->loaded.scene, f->loaded.root);
+  ASSERT_GT(feed.textures()->size(), 0u);
+  for(const rs::TextureRef& ref : *feed.textures())
+  {
+    const rs::TextureRecord* record = fed.texture(ref.texture);
+    ASSERT_TRUE(record);
+    EXPECT_EQ(record->uri.find('%'), std::string::npos) << record->uri;
+    EXPECT_TRUE(fs::is_regular_file(fs::path(std::u8string(record->uri.begin(), record->uri.end())))) << record->uri;
+  }
+  fs::remove_all(dir);
+}
+
 // checkFeed bites: a fed record corrupted through the store's edits is caught, each as its problem.
 TEST(FigureFeed, CheckFeedCatchesARecordCorruptedInTheStore)
 {
