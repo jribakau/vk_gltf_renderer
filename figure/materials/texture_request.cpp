@@ -18,7 +18,7 @@ std::string rgb(const std::array<float, 3>& c)
   return num(c[0]) + "," + num(c[1]) + "," + num(c[2]);
 }
 
-// A number as the cooker parses it, five decimals at most (fv_host.cpp fmtNumber).
+// A number as the cooker parses it, five decimals at most (fv_host_support.cpp fmtNumber).
 std::string shortNum(float v)
 {
   std::string out = num(v);

@@ -177,9 +177,9 @@ public:
   // release() ends it; `refresh` lowers what was noted, for when no composition came.
   void hold();
   void release(bool refresh);
-  // The figure's eyes for the topic (fv_host.cpp eyesJson); kept across attachments, dropped on detach.
+  // The figure's eyes for the topic (fv_host_looks.cpp publishEyes); kept across attachments, dropped on detach.
   void setEyes(fv::Json eyes);
-  // The same for its skin and makeup (fv_host.cpp publishSkin).
+  // The same for its skin and makeup (fv_host_looks.cpp publishSkin).
   void setSkin(fv::Json skin);
   // Real-time and RTX shade skin differently; lowers the materials that differ.
   void setSkinMode(fv::mat::SkinMode skin);
