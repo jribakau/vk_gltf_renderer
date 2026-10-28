@@ -148,6 +148,26 @@ struct MorphTarget
   bool                   operator==(const MorphTarget&) const = default;
 };
 
+// How a subdivided mesh's drawn vertices come from its cage (daz-viewer docs/gpu-figures-plan.md,
+// F1): the subdivision stencils level by level, the refined vertex each drawn vertex is (UV seam
+// splits share one), and the refined triangles with, per refined vertex, the ones whose area-weighted
+// normals it sums, in the order fv::mesh::NormalWelder sums them. Shared by every record of the mesh.
+struct RefineTables
+{
+  struct Level
+  {
+    std::vector<uint32_t> start, columns;  // row r reads columns[start[r] .. start[r + 1]) of the level before
+    std::vector<float>    weights;
+    uint32_t              rows() const { return start.empty() ? 0 : uint32_t(start.size() - 1); }
+  };
+  uint32_t              cageCount = 0;
+  std::vector<Level>    levels;                        // the last one's rows are the refined vertices
+  std::vector<uint32_t> drawnFrom;                     // per drawn vertex, its refined vertex
+  std::vector<uint32_t> triangles;                     // refined vertices, three per triangle
+  std::vector<uint32_t> normalStart, normalTriangles;  // per refined vertex
+  uint32_t              refinedCount() const { return levels.empty() ? cageCount : levels.back().rows(); }
+};
+
 // Vertex streams one or more submeshes index: a glTF mesh's primitives over one set of attribute
 // accessors (DAZ material groups), which the GPU keeps in one set of vertex buffers.
 struct MeshRecord
@@ -164,6 +184,11 @@ struct MeshRecord
   std::vector<Submesh>     submeshes;
   std::vector<MorphTarget> targets;
   std::vector<float>       targetWeights;  // the mesh's default morph weights
+  // a subdivided mesh's cage as its morphs have moved it, and the tables that make the drawn
+  // positions and normals from it: the residency then refines it on the GPU instead of uploading
+  // them (the positions and normals here are what that gives)
+  std::vector<glm::vec3>              cage;
+  std::shared_ptr<const RefineTables> refine;
   // bumped by a vertex edit, and by one that sets tangents (a drag's steps keep them)
   uint32_t contentRev = 0;
   uint32_t tangentRev = 0;
@@ -428,8 +453,12 @@ public:
   std::vector<ClipId>   clips() const;  // in slot order
 
   // edits
-  // (`normals` and `tangents` empty: kept)
-  void setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals, std::vector<glm::vec4> tangents = {});
+  // (`normals`, `tangents` and `cage` empty: kept)
+  void setMeshVertices(MeshId                 id,
+                       std::vector<glm::vec3> positions,
+                       std::vector<glm::vec3> normals,
+                       std::vector<glm::vec4> tangents = {},
+                       std::vector<glm::vec3> cage     = {});
   // joints, inverse binds and skeleton replaced (a rebind)
   void setSkin(SkinId id, SkinRecord skin);
   void setMaterial(MaterialId id, tinygltf::Material payload);

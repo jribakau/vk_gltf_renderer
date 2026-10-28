@@ -25,6 +25,7 @@
 #include <cstring>
 #include <set>
 #include <map>
+#include <optional>
 #include <tuple>
 
 #include "gltf_material_cache.hpp"
@@ -94,6 +95,55 @@ struct Deformed
   std::vector<glm::vec3> positions, normals;
   std::vector<glm::vec4> tangents;
 };
+// A refined mesh's base as the residency makes it on the GPU from its cage: each level's stencils, the
+// welded normals, the splits; arithmetic as shaders/stencil.comp.slang and vertex_normals.comp.slang
+// do it (and the fake runs them)
+MeshRecord refinedBase(const MeshRecord& r)
+{
+  MeshRecord             out = r;
+  const RefineTables&    t   = *r.refine;
+  std::vector<glm::vec3> src = r.cage;
+  for(const RefineTables::Level& level : t.levels)
+  {
+    std::vector<glm::vec3> dst(level.rows());
+    for(uint32_t row = 0; row < level.rows(); row++)
+    {
+      glm::vec3 sum(0.f);
+      for(uint32_t k = level.start[row]; k < level.start[row + 1]; k++)
+        if(level.columns[k] < src.size())
+          sum += level.weights[k] * src[level.columns[k]];
+      dst[row] = sum;
+    }
+    src = std::move(dst);
+  }
+  std::vector<glm::vec3> normals(src.size());
+  const size_t           triangleCount = t.triangles.size() / 3;
+  for(size_t v = 0; v < src.size(); v++)
+  {
+    glm::vec3 sum(0.f);
+    for(uint32_t k = t.normalStart[v]; k < t.normalStart[v + 1]; k++)
+    {
+      const uint32_t tri = t.normalTriangles[k];
+      if(tri >= triangleCount)
+        continue;
+      const uint32_t a = t.triangles[tri * 3], b = t.triangles[tri * 3 + 1], c = t.triangles[tri * 3 + 2];
+      if(a >= src.size() || b >= src.size() || c >= src.size())
+        continue;
+      sum += glm::cross(src[b] - src[a], src[c] - src[a]);
+    }
+    const float l = glm::length(sum);
+    normals[v]    = l > 0.f ? sum / l : glm::vec3(0.f);
+  }
+  for(size_t d = 0; d < out.positions.size(); d++)
+  {
+    const uint32_t from = t.drawnFrom[d];
+    out.positions[d]    = from < src.size() ? src[from] : glm::vec3(0.f);
+    if(d < out.normals.size())
+      out.normals[d] = from < normals.size() ? normals[from] : glm::vec3(0.f);
+  }
+  return out;
+}
+
 Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r)
 {
   Deformed       out{r.positions, r.normals, r.tangents};
@@ -278,13 +328,18 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     const Residency::Prim* prim = residency.prim(p);
     if(!prim)
       continue;
-    const Residency::MeshGpu* mesh   = residency.meshGpu(prim->mesh);
-    const MeshRecord*         record = scene.mesh(prim->mesh);
-    if(!mesh || !record)
+    const Residency::MeshGpu* mesh  = residency.meshGpu(prim->mesh);
+    const MeshRecord*         given = scene.mesh(prim->mesh);
+    if(!mesh || !given)
     {
       out.push_back(at("I3", p) + "a prim of a mesh that is not resident or not in the scene");
       continue;
     }
+    // a refined mesh's streams are what the GPU makes from its cage
+    std::optional<MeshRecord> refined;
+    if(mesh->refine)
+      refined = refinedBase(*given);
+    const MeshRecord*           record = refined ? &*refined : given;
     const Residency::DrawerGpu* drawer = prim->drawer.isNone() ? nullptr : residency.drawer(prim->drawer, prim->mesh);
     if(!prim->drawer.isNone() && !drawer)
     {

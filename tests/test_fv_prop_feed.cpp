@@ -224,6 +224,59 @@ TEST(FvPropFeed, AFigureChangedIsFedAgainAndEverythingGoesWithTheFeed)
 
 // The deltas a composition makes, resident as a frame's sync takes them: every one checked by the
 // residency oracle, and none waits for the device (the structural path has no idle wait from P5).
+// figureGpuRefine (gpu-figures-plan.md F1): a subdivided figure fed with its morphed cages is refined
+// on the GPU. The oracle checks the residency's streams against the cage subdivided as the shaders do
+// it; those are the CPU's drawn positions and normals to float precision, as fed and after a dial.
+TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
+{
+  const auto                box = loadBox();
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  feed.sync(props);
+  residency.replace(scene);
+  const auto check = [&](const char* when) {
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << when << ": " << p;
+    size_t refined = 0;
+    for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
+    {
+      const rs::MeshId              id     = feed.fed("p:1")->figure->meshOf(int(mi));
+      const rs::MeshRecord*         record = scene.mesh(id);
+      const rs::Residency::MeshGpu* mesh   = residency.meshGpu(id);
+      if(!record || !mesh || !mesh->refine)
+        continue;
+      refined++;
+      const size_t           n = record->positions.size();
+      std::vector<glm::vec3> positions(n), normals(n);
+      std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
+      std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(mesh->normals), n * 12).data(), n * 12);
+      for(size_t v = 0; v < n; v++)
+      {
+        ASSERT_LT(glm::distance(positions[v], record->positions[v]), 1e-4f) << when << " vertex " << v;
+        ASSERT_GT(glm::dot(normals[v], record->normals[v]), 0.9999f) << when << " vertex " << v;
+      }
+    }
+    EXPECT_GT(refined, 0u) << when;
+  };
+  check("fed");
+
+  box->morphs->set("Taper", 1.0);
+  box->morphs->settled();
+  std::vector<int> moved;
+  for(const auto& c : box->drain().meshes)
+    moved.push_back(c.mesh);
+  ASSERT_FALSE(moved.empty());
+  EXPECT_TRUE(feed.fed("p:1")->figure->syncVertices(box->loaded.scene, moved));
+  gpu.beginFrame();
+  residency.sync(scene);
+  check("dialled");
+}
+
 // A duplicated model holds the model its source does, and takes its source's meshes: one record,
 // one prim and one BLAS for both (each with its own materials). With the source removed, the
 // duplicate keeps them; another file is imported afresh.

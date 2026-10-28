@@ -36,6 +36,7 @@
 //
 
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -61,6 +62,10 @@ struct FigureFeedOptions
   uint32_t prop = 0;
   // where the figure root goes; none: a root of the retained scene
   rs::EntityId parent;
+  // a subdivided mesh's cage as its morphs have moved it (MorphSet::morphedCage), xyz per cage
+  // vertex: given, the feed sends it with the mesh's vertices and the GPU makes the drawn positions
+  // and normals from it (figureGpuRefine, daz-viewer docs/gpu-figures-plan.md F1)
+  std::function<std::vector<float>(int mesh)> cageOf;
 };
 
 class FigureFeed
@@ -126,6 +131,8 @@ private:
     std::vector<uint32_t>                            tangentIndices;
     std::optional<tinygltf::utils::TangentAdjacency> tangentAdjacency;
     rs::SkinId                                       skin;
+    // how its drawn vertices come from its cage, when the GPU refines it (FigureFeedOptions::cageOf)
+    std::shared_ptr<const rs::RefineTables> refine;
     // its tangents are from before its vertices last moved, at `movedAt`
     bool                                  tangentsLate = false;
     std::chrono::steady_clock::time_point movedAt;
@@ -145,6 +152,8 @@ private:
   rs::Transform        transformOf(const SceneGraph& figure, int node, int root) const;
   // the mesh's vertices fed again into its record, the tangents remade near the ones that moved
   void moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater = false);
+  // the mesh's morphed cage, when the GPU refines it; empty otherwise
+  std::vector<glm::vec3> cageOf(int mesh, const FedMesh& f) const;
   // the skin the mesh draws with, if it is skinned
   std::optional<rs::SkinRecord> skinRecord(const Mesh& m) const;
   // whether the mesh is fed with its current geometry and hidden polygons

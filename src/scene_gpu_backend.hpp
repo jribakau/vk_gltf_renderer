@@ -178,6 +178,8 @@ enum class DeformKind
 {
   eMorph,
   eSkin,
+  eStencil,  // weighted gathers: a subdivision level, or refined vertices copied to their splits
+  eNormals,  // welded vertex normals from triangle lists
 };
 
 // A range of a buffer a pass reads or writes from `offset` on; no buffer: none (the pass skips it)
@@ -205,6 +207,14 @@ struct DeformDispatch
   // normal matrices as the shader reads float3x3 (36 bytes each, packed)
   BufferRange joints, weights, jointMatrices, normalMatrices;
   uint32_t    jointCount = 0;
+  // stencil (shaders/stencil.comp.slang): vertexCount rows over the base positions' sourceCount
+  // float3s, into the output positions; each row the sum of weights[k] * base[columns[k]] for k in
+  // [rowStart[row], rowStart[row + 1]) (no weights: 1 each), or with no rowStart base[columns[row]]
+  // normals (vertex_normals.comp.slang): vertexCount output normals, each the unit sum of the edge
+  // cross products of the triangles (uint3 over the base positions' sourceCount) that
+  // columns[rowStart[v] .. rowStart[v + 1]) names; triangleCount of them
+  BufferRange rowStart, columns, stencilWeights, triangles;  // uint32, uint32, float, uint3
+  uint32_t    sourceCount = 0, triangleCount = 0;
 };
 // The packed normal matrices are glm::mat3 on the host and float3x3 in the shader: 36 bytes apart
 inline constexpr uint64_t kNormalMatrixStride = 36;

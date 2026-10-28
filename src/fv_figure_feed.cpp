@@ -48,6 +48,36 @@ bool draws(const SceneGraph& figure, const Node& n)
   return m.geo && !m.geo->position.empty() && !m.geo->groups.empty();
 }
 
+// How a subdivided mesh's drawn vertices come from its cage: its stencils, its splits, and per
+// refined vertex the triangles NormalWelder sums for it, in triangle order
+std::shared_ptr<const rs::RefineTables> refineTables(const mesh::BuiltMesh& geo)
+{
+  auto t       = std::make_shared<rs::RefineTables>();
+  t->cageCount = uint32_t(geo.cagePositions.size() / 3);
+  for(const subdiv::Stencils& s : geo.refinement->levels)
+  {
+    rs::RefineTables::Level& l = t->levels.emplace_back();
+    l.start.assign(s.rowStart.begin(), s.rowStart.end());
+    l.columns.assign(s.col.begin(), s.col.end());
+    l.weights = s.weight;
+  }
+  t->drawnFrom   = geo.renderIndex;
+  t->triangles   = geo.renderTris;
+  const size_t n = size_t(std::max(geo.renderVertexCount, 0));
+  t->normalStart.assign(n + 1, 0);
+  for(uint32_t v : geo.renderTris)
+    if(v < n)
+      t->normalStart[v + 1]++;
+  for(size_t v = 0; v < n; v++)
+    t->normalStart[v + 1] += t->normalStart[v];
+  std::vector<uint32_t> fill(t->normalStart.begin(), t->normalStart.end() - 1);
+  t->normalTriangles.assign(t->normalStart[n], 0);
+  for(size_t i = 0; i < geo.renderTris.size(); i++)
+    if(geo.renderTris[i] < n)
+      t->normalTriangles[fill[geo.renderTris[i]]++] = uint32_t(i / 3);
+  return t;
+}
+
 bool sameInstance(const std::optional<rs::MeshInstance>& a, const std::optional<rs::MeshInstance>& b)
 {
   if(a.has_value() != b.has_value())
@@ -441,6 +471,15 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     {
       rs::MeshRecord r   = meshRecord(figure, int(mi), drawn);
       f.tangentIndices   = tangentIndices(r, tangents);
+      // subdivided (not strand ribbons): the GPU makes its drawn vertices from its cage
+      f.refine = m.geo->refinement && !m.geo->ribbon && m_options.cageOf ? refineTables(*m.geo) : nullptr;
+      if(f.refine)
+      {
+        r.cage = cageOf(int(mi), f);
+        if(r.cage.empty())
+          f.refine = nullptr;  // no cage to give: drawn as the CPU makes it
+        r.refine = f.refine;
+      }
       f.tangentAdjacency = std::nullopt;
       if(!f.tangentIndices.empty())
       {
@@ -550,7 +589,8 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
     }
     f.tangentsLate = false;
   }
-  m_scene.setMeshVertices(f.id, std::move(positions), std::move(normals), std::move(t));
+  m_scene.setMeshVertices(f.id, std::move(positions), std::move(normals), std::move(t),
+                          f.refine ? cageOf(int(&f - m_meshes.data()), f) : std::vector<glm::vec3>{});
 }
 
 void FigureFeed::settleTangents(std::chrono::steady_clock::duration still)
@@ -568,6 +608,18 @@ void FigureFeed::settleTangents(std::chrono::steady_clock::duration still)
     tinygltf::utils::computeTangents(had->positions, had->normals, had->uv0, f.tangentIndices, t);
     m_scene.setMeshVertices(f.id, had->positions, {}, std::move(t));
   }
+}
+
+std::vector<glm::vec3> FigureFeed::cageOf(int mesh, const FedMesh& f) const
+{
+  if(!f.refine || !m_options.cageOf)
+    return {};
+  const std::vector<float> xyz = m_options.cageOf(mesh);
+  if(xyz.size() != size_t(f.refine->cageCount) * 3)
+    return {};
+  std::vector<glm::vec3> out(f.refine->cageCount);
+  std::memcpy(out.data(), xyz.data(), xyz.size() * sizeof(float));
+  return out;
 }
 
 std::optional<rs::SkinRecord> FigureFeed::skinRecord(const Mesh& m) const

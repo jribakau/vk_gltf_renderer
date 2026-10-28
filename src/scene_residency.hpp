@@ -156,6 +156,20 @@ public:
     // its positions as the last frame drew them, kept once a host edit writes them (static prims)
     BufferHandle prevPositions;
     bool         prevValid = false;
+    // a refined mesh (MeshRecord::refine): its cage, and the tables and working streams that make
+    // its positions and normals from it on the GPU (gpu-figures-plan.md F1); empty otherwise
+    struct Refine
+    {
+      struct Level
+      {
+        BufferHandle start, columns, weights, out;  // out: this level's vertices
+        uint32_t     rows = 0, sourceCount = 0;
+      };
+      BufferHandle       cage, refinedNormals, drawnFrom, triangles, normalStart, normalTriangles;
+      std::vector<Level> levels;
+      uint32_t           refinedCount = 0, triangleCount = 0;
+    };
+    std::optional<Refine> refine;
   };
   // A mesh one entity draws deformed: what the passes write, its prims, and what they last ran with
   struct DrawerGpu
@@ -436,6 +450,12 @@ private:
   // the record's streams; `vertices`: only what setMeshVertices writes (positions, normals, and the
   // tangents when it set them)
   void uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool vertices = false);
+  // a refined record's tables and working streams (MeshGpu::Refine), when its cage and drawn
+  // vertices are the sizes its tables name
+  void makeRefine(const MeshRecord& record, MeshGpu& gpu);
+  // the refined meshes' positions and normals made from their uploaded cages: each level's stencils,
+  // the welded normals, then each refined vertex copied to its drawn splits; ends compute-to-build
+  void refineOnGpu(std::span<MeshGpu* const> meshes);
 
   void ensureCapacity(SyncResult& result);
   void writeRenderNodes(const std::set<uint32_t>& slots);
@@ -523,6 +543,7 @@ private:
   bool               m_allNodes = false;  // every row, into a new table
   bool               m_allPrims = false;
   std::set<uint32_t> m_compacting;  // prim slots whose BLASes wait for their compacted copies
+  std::vector<MeshId> m_refineAcquired;            // refined meshes made resident: refined from their cages next
   bool               m_micromapsLeftOut = false;  // the device builds none: said once
 };
 

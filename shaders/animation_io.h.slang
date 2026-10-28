@@ -58,6 +58,34 @@ struct MorphPushConstant
   uint    numTargets;
 };
 
+// stencil.comp.slang: rowCount outputs, each the weighted sum of the base elements columns[rowStart[r]
+// .. rowStart[r + 1]) names (weights null: each 1), or, with no rowStart, the one base element
+// columns[r] names
+struct StencilPushConstant
+{
+  float3* baseValues;
+  float3* outValues;
+  uint*   rowStart;
+  uint*   columns;
+  float*  weights;
+  uint    rowCount;
+  uint    sourceCount;
+};
+
+// vertex_normals.comp.slang: per vertex, the unit sum of the cross products of the triangles
+// triangleList[triangleStart[v] .. triangleStart[v + 1]) names
+struct NormalsPushConstant
+{
+  float3* positions;
+  uint3*  triangles;
+  uint*   triangleStart;
+  uint*   triangleList;
+  float3* outNormals;
+  uint    vertexCount;
+  uint    triangleCount;
+  uint    positionCount;
+};
+
 NAMESPACE_SHADERIO_END()
 
 #endif

@@ -488,6 +488,60 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     }
     return b->bytes.data() + r.offset;
   };
+  // the figure passes, in floats as the shaders run them
+  if(d.kind == DeformKind::eStencil || d.kind == DeformKind::eNormals)
+  {
+    const bool            stencil = d.kind == DeformKind::eStencil;
+    const uint64_t        m       = d.sourceCount;
+    const Span<glm::vec3> base{range(d.basePositions, 12, m, "base positions", false), m};
+    const Span<uint32_t>  start{range(d.rowStart, 4, n + 1, "row starts", false), d.rowStart.buffer ? n + 1 : 0};
+    const uint64_t        entries = start ? start.get(n) : n;
+    const Span<uint32_t>  columns{range(d.columns, 4, entries, "columns", false), entries};
+    const Span<float>     w{stencil ? range(d.stencilWeights, 4, entries, "stencil weights", false) : nullptr, entries};
+    const Span<glm::uvec3> tris{stencil ? nullptr : range(d.triangles, 12, d.triangleCount, "triangles", false), d.triangleCount};
+    const Span<glm::vec3> out{range(stencil ? d.outPositions : d.outNormals, 12, n, "outputs", true), n};
+    if(!ok || !base || !columns || !out || (!stencil && (!start || !tris)))
+    {
+      if(ok)
+        error("dispatchDeform: a figure pass without its base, columns, triangles or output");
+      return;
+    }
+    if((stencil ? d.outPositions : d.outNormals).buffer == d.basePositions.buffer)
+      error("dispatchDeform: writes the buffer it reads");
+    for(uint64_t r = 0; r < n; r++)
+    {
+      glm::vec3 sum(0.f);
+      if(stencil && !start)
+      {
+        const uint32_t c = columns.get(r);
+        out.set(r, c < m ? base.get(c) : glm::vec3(0.f));
+        continue;
+      }
+      for(uint32_t k = start.get(r); k < start.get(r + 1) && k < entries; k++)
+      {
+        const uint32_t c = columns.get(k);
+        if(stencil)
+        {
+          if(c < m)
+            sum += (w ? w.get(k) : 1.f) * base.get(c);
+          continue;
+        }
+        if(c >= d.triangleCount)
+          continue;
+        const glm::uvec3 t = tris.get(c);
+        if(t.x >= m || t.y >= m || t.z >= m)
+          continue;
+        const glm::vec3 a = base.get(t.x);
+        sum += glm::cross(base.get(t.y) - a, base.get(t.z) - a);
+      }
+      const float l = glm::length(sum);
+      out.set(r, stencil ? sum : l > 0.f ? sum / l : glm::vec3(0.f));
+    }
+    const BufferRange& written = stencil ? d.outPositions : d.outNormals;
+    m_computeBeforeBuild.insert(written.buffer.value);
+    m_computeBeforeCompute.insert(written.buffer.value);
+    return;
+  }
   const Span<glm::vec3> basePos{range(d.basePositions, 12, n, "base positions", false), n};
   const Span<glm::vec3> baseNrm{range(d.baseNormals, 12, n, "base normals", false), n};
   const Span<glm::vec4> baseTan{range(d.baseTangents, 16, n, "base tangents", false), n};

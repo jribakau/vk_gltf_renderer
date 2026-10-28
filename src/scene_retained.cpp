@@ -234,13 +234,20 @@ void RetainedScene::releaseMaterialTextures(const MaterialRecord& material)
       release(ref.texture);
 }
 
-void RetainedScene::setMeshVertices(MeshId id, std::vector<glm::vec3> positions, std::vector<glm::vec3> normals, std::vector<glm::vec4> tangents)
+void RetainedScene::setMeshVertices(MeshId                 id,
+                                    std::vector<glm::vec3> positions,
+                                    std::vector<glm::vec3> normals,
+                                    std::vector<glm::vec4> tangents,
+                                    std::vector<glm::vec3> cage)
 {
   assertOwner();
   auto* r = m_meshes.get(id);
   if(!r || positions.size() != r->value.positions.size() || (!normals.empty() && normals.size() != r->value.normals.size())
-     || (!tangents.empty() && tangents.size() != r->value.positions.size()))
+     || (!tangents.empty() && tangents.size() != r->value.positions.size())
+     || (!cage.empty() && cage.size() != r->value.cage.size()))
     return;
+  if(!cage.empty())
+    r->value.cage = std::move(cage);
   r->value.positions = std::move(positions);
   if(!normals.empty())
     r->value.normals = std::move(normals);

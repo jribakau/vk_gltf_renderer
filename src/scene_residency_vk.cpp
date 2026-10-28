@@ -268,7 +268,34 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
     return base ? base + r.offset : 0;
   };
   const uint32_t groups = (d.vertexCount + ANIMATION_WORKGROUP_SIZE - 1) / ANIMATION_WORKGROUP_SIZE;
-  if(d.kind == DeformKind::eMorph)
+  if(d.kind == DeformKind::eStencil)
+  {
+    shaderio::StencilPushConstant pc{};
+    pc.baseValues  = reinterpret_cast<glm::vec3*>(at(d.basePositions));
+    pc.outValues   = reinterpret_cast<glm::vec3*>(at(d.outPositions));
+    pc.rowStart    = reinterpret_cast<uint32_t*>(at(d.rowStart));
+    pc.columns     = reinterpret_cast<uint32_t*>(at(d.columns));
+    pc.weights     = reinterpret_cast<float*>(at(d.stencilWeights));
+    pc.rowCount    = d.vertexCount;
+    pc.sourceCount = d.sourceCount;
+    vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.stencil);
+    vkCmdPushConstants(m_cmd, m_deformPipelines.stencilLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  }
+  else if(d.kind == DeformKind::eNormals)
+  {
+    shaderio::NormalsPushConstant pc{};
+    pc.positions     = reinterpret_cast<glm::vec3*>(at(d.basePositions));
+    pc.triangles     = reinterpret_cast<glm::uvec3*>(at(d.triangles));
+    pc.triangleStart = reinterpret_cast<uint32_t*>(at(d.rowStart));
+    pc.triangleList  = reinterpret_cast<uint32_t*>(at(d.columns));
+    pc.outNormals    = reinterpret_cast<glm::vec3*>(at(d.outNormals));
+    pc.vertexCount   = d.vertexCount;
+    pc.triangleCount = d.triangleCount;
+    pc.positionCount = d.sourceCount;
+    vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.normals);
+    vkCmdPushConstants(m_cmd, m_deformPipelines.normalsLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  }
+  else if(d.kind == DeformKind::eMorph)
   {
     shaderio::MorphPushConstant pc{};
     pc.basePositions  = reinterpret_cast<glm::vec3*>(at(d.basePositions));

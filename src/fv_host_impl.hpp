@@ -116,6 +116,9 @@ struct HostSettings
   int                                maxTextureSize = 4096;
   int                                subdivision    = 0;
   bool originalTextures = false;  // the source images, not the BC7 cache: only what the renderer cannot read is cooked
+  // subdivided figure meshes refined on the GPU from their morphed cages, for the figures fed from
+  // now on (daz-viewer docs/gpu-figures-plan.md F1)
+  bool figureGpuRefine = false;
 };
 
 // A loaded figure and what the renderer made of it. Lives on the application thread.
@@ -454,7 +457,7 @@ struct FvHost::Impl
   std::shared_ptr<FvProtocol> protocol;
   nvapp::Application*         app = nullptr;
 
-  std::mutex settingsMutex;
+  mutable std::mutex settingsMutex;
   HostSettings   settings;
 
   // work for the application thread, run in onUpdate

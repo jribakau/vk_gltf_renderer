@@ -52,8 +52,8 @@ namespace nvvkgltf {
 // AnimationVk and the retained scene's Vulkan backend
 struct DeformPipelines
 {
-  VkPipeline       skin{}, morph{};
-  VkPipelineLayout skinLayout{}, morphLayout{};
+  VkPipeline       skin{}, morph{}, stencil{}, normals{};
+  VkPipelineLayout skinLayout{}, morphLayout{}, stencilLayout{}, normalsLayout{};
   void             create(VkDevice device);
   void             destroy(VkDevice device);
 };

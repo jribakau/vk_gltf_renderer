@@ -695,6 +695,13 @@ fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
     s.figureRoot    = f->fig->loaded.root;
     s.figureOptions = buildOptionsOf(*f, skinMode.load());
     s.figureChanged = figureChanged;
+    bool gpuRefine  = false;
+    {
+      std::lock_guard lock(settingsMutex);
+      gpuRefine = settings.figureGpuRefine;
+    }
+    if(gpuRefine && f->fig->morphs)
+      s.figureCageOf = [morphs = f->fig->morphs.get()](int mesh) { return morphs->morphedCage(mesh); };
   }
   else if(p.model)
   {
