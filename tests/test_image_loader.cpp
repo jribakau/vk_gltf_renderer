@@ -17,11 +17,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// CPU-only unit test for nvvkgltf::loadFromMemory's WebP path: the decoder shared by glTF loading
-// and the material inspector's image import.
+// CPU-only unit test for nvvkgltf::loadFromMemory's WebP and KTX2 paths: the decoder shared by glTF
+// loading and the material inspector's image import.
 
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -101,5 +104,26 @@ TEST(ImageLoader, WebpRejectsUnbackedHugeCanvas)
     nvvkgltf::LoadedImageData  out;
     EXPECT_FALSE(nvvkgltf::loadFromMemory(out, file.data(), file.size(), /*srgb*/ false)) << "animated=" << animated;
     EXPECT_TRUE(out.mipData.empty());
+  }
+}
+
+// The texture cooker (daz-viewer src-tauri/src/texcache.rs) writes each level zstd-supercompressed:
+// a 32x16 sRGB map it cooked reads back as BC7 with every level its full size.
+TEST(ImageLoader, KtxReadsTheCookersZstdLevels)
+{
+  std::ifstream     in(std::filesystem::path(FV_TEST_DATA) / "texcache" / "cooked_zstd.ktx2", std::ios::binary);
+  const std::vector<char> file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  ASSERT_FALSE(file.empty());
+
+  nvvkgltf::LoadedImageData out;
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, file.data(), file.size(), /*srgb*/ true));
+  EXPECT_EQ(out.format, VK_FORMAT_BC7_SRGB_BLOCK);
+  EXPECT_EQ(out.size.width, 32u);
+  EXPECT_EQ(out.size.height, 16u);
+  ASSERT_EQ(out.mipData.size(), 6u);
+  for(uint32_t i = 0; i < out.mipData.size(); i++)
+  {
+    const uint32_t w = std::max(32u >> i, 1u), h = std::max(16u >> i, 1u);
+    EXPECT_EQ(out.mipData[i].size(), size_t((w + 3) / 4) * ((h + 3) / 4) * 16) << "level " << i;
   }
 }
