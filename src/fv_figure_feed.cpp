@@ -102,6 +102,19 @@ bool sameInstance(const std::optional<rs::MeshInstance>& a, const std::optional<
   return true;
 }
 
+// A figure texture's record: the file's path, as an import's record holds it. The image's URI is
+// %-encoded, as glTF has it (a folder named "Colm Jackson" is "Colm%20Jackson" there, and opens as nothing)
+rs::TextureRecord textureRecord(const mat::TextureRequest& req, const build::TextureImage& image)
+{
+  rs::TextureRecord t;
+  t.name     = req.rel.substr(req.rel.find_last_of('/') + 1);
+  t.uri      = tinygltf::utils::decodePathFromUri(image.uri);
+  t.mimeType = image.mimeType;
+  if(image.mimeType == "image/ktx2")
+    t.sourceExtension = "KHR_texture_basisu";
+  return t;
+}
+
 }  // namespace
 
 FigureFeed::FigureFeed(rs::RetainedScene& scene, FigureFeedOptions options)
@@ -199,7 +212,7 @@ mat::ResolvedTexture FigureFeed::resolveTexture(const mat::TextureRequest&      
     return {};
   const std::string key = mat::requestKey(req);
   if(auto it = m_textureOf.find(key); it != m_textureOf.end())
-    return {int(it->second.slot), it->second.flipGreen};
+    return {int(it->second.slot), it->second.flipGreen, it->second.flipRows};
   if(missing.count(key))
     return {};
   const auto image = m_options.build.texture(req);
@@ -208,22 +221,71 @@ mat::ResolvedTexture FigureFeed::resolveTexture(const mat::TextureRequest&      
     missing.insert(key);
     return {};
   }
-  rs::TextureRecord t;
-  t.name     = req.rel.substr(req.rel.find_last_of('/') + 1);
-  // the record holds the file's path, as an import's does; the image's URI is %-encoded, as glTF
-  // has it (a folder named "Colm Jackson" is "Colm%20Jackson" there, and opens as nothing)
-  t.uri      = tinygltf::utils::decodePathFromUri(image->uri);
-  t.mimeType = image->mimeType;
-  if(image->mimeType == "image/ktx2")
-    t.sourceExtension = "KHR_texture_basisu";
-  const rs::TextureId id = m_scene.addTexture(std::move(t));
+  const rs::TextureId id = m_scene.addTexture(textureRecord(req, *image));
   m_textureIds.push_back(id);
   if(!grown)
     grown = std::make_shared<rs::TextureTable>(*m_table);
   grown->push_back({id, figureSamplerDesc()});
-  const FedTexture fed{uint32_t(grown->size() - 1), image->flipGreen};
+  const FedTexture fed{uint32_t(grown->size() - 1), image->flipGreen, image->flipped != m_options.build.texturesFlipped};
   m_textureOf[key] = fed;
-  return {int(fed.slot), fed.flipGreen};
+  return {int(fed.slot), fed.flipGreen, fed.flipRows};
+}
+
+bool FigureFeed::retexture(std::span<const mat::TextureRequest> requests)
+{
+  if(!m_options.build.texture)
+    return false;
+  std::vector<std::pair<rs::TextureId, rs::TextureId>> swapped;  // the old texture, the new
+  for(const mat::TextureRequest& req : requests)
+  {
+    const auto it = m_textureOf.find(mat::requestKey(req));
+    if(it == m_textureOf.end() || it->second.slot >= m_table->size())
+      continue;
+    const auto image = m_options.build.texture(req);
+    if(!image)
+      continue;
+    swapped.emplace_back((*m_table)[it->second.slot].texture, m_scene.addTexture(textureRecord(req, *image)));
+    it->second.flipGreen = image->flipGreen;
+    it->second.flipRows  = image->flipped != m_options.build.texturesFlipped;
+  }
+  if(swapped.empty())
+    return false;
+  // every table that holds one, copied once with it replaced (the tables are the feed's growing one
+  // and the shorter ones older materials still index)
+  std::map<const rs::TextureTable*, std::shared_ptr<const rs::TextureTable>> copies;
+  const auto copyOf = [&](const std::shared_ptr<const rs::TextureTable>& table) -> std::shared_ptr<const rs::TextureTable> {
+    if(!table)
+      return table;
+    auto& copy = copies[table.get()];
+    if(!copy)
+    {
+      auto out = std::make_shared<rs::TextureTable>(*table);
+      for(rs::TextureRef& ref : *out)
+        for(const auto& [was, now] : swapped)
+          if(ref.texture == was)
+            ref.texture = now;
+      copy = std::move(out);
+    }
+    return copy;
+  };
+  const auto holds = [&](const rs::TextureTable& table) {
+    return std::any_of(table.begin(), table.end(), [&](const rs::TextureRef& ref) {
+      return std::any_of(swapped.begin(), swapped.end(), [&](const auto& s) { return s.first == ref.texture; });
+    });
+  };
+  m_table = copyOf(m_table);
+  std::vector<rs::MaterialId> materials = m_materials;
+  materials.push_back(m_default);
+  for(rs::MaterialId id : materials)
+    if(const rs::MaterialRecord* r = m_scene.material(id); r && r->textures && holds(*r->textures))
+      m_scene.setMaterial(id, r->payload, copyOf(r->textures));
+  // the feed's own hold moves to the new texture; the old goes with the last table that held it
+  for(const auto& [was, now] : swapped)
+  {
+    std::replace(m_textureIds.begin(), m_textureIds.end(), was, now);
+    m_scene.release(was);
+  }
+  return true;
 }
 
 bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const int> materials)

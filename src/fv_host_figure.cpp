@@ -137,46 +137,20 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       auto& root = f->loaded.scene.nodes[f->loaded.root];
       root.scale = root.scale * kCentimetre;
 
-      // textures: every one the build asks for, resolved in parallel. The cooked ones when all are
-      // cooked; the build flips the UVs for every texture or none, so otherwise the source images,
-      // with cutouts (only the cooker folds them into alpha) and .tif and such cooked unflipped.
-      // Original textures skips the cooked set: the sources, cutouts composed here.
+      // textures: every one the build asks for, resolved in parallel. With the cooker the figure is
+      // built for the cooked images: the ones the cache has, and until the rest are cooked their
+      // fallbacks (cookInPlace swaps each in as it lands). Original textures, or no cooker, builds it
+      // for the sources, cutouts composed here.
       // the path tracer gets the skin's volume; the rasterizer would show it see-through
       const fv::mat::SkinMode skin = skinMode.load();
       job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
-      const bool cooker = !s.texServer.empty() && !s.rootId.empty();
-      bool       cooked = cooker && !s.originalTextures;
+      const bool cooked = !s.texServer.empty() && !s.rootId.empty() && !s.originalTextures;
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
+      std::vector<fv::build::TextureRequest>                                  uncooked;
       {
-        fv::timing::Scope                                   timeTextures("textures");
-        const auto                                          requests = fv::build::textureRequests(f->loaded.scene, skin);
-        std::vector<std::optional<fv::build::TextureImage>> found(requests.size());
-        std::atomic<bool>                                   uncooked{false};
-        const auto resolve = [&](const std::function<std::optional<fv::build::TextureImage>(const fv::build::TextureRequest&)>& one) {
-          std::atomic<size_t>      next{0};
-          std::vector<std::thread> workers;
-          for(int w = 0; w < std::min<int>(8, int(requests.size())); w++)
-            workers.emplace_back([&] {
-              for(size_t i; (i = next++) < requests.size();)
-                found[i] = one(requests[i]);
-            });
-          for(auto& w : workers)
-            w.join();
-        };
-        if(cooked)
-          resolve([&](const fv::build::TextureRequest& req) {
-            CookedTexture c = cookedTexture(s, req, true, true);
-            if(c.uncooked)
-              uncooked = true;
-            return c.image;
-          });
-        if(!cooked || uncooked)
-        {
-          resolve([&](const fv::build::TextureRequest& req) { return fallbackTexture(s, *lib, req, cooker); });
-          if(cooked)
-            cookLater(s, requests);
-          cooked = false;
-        }
+        fv::timing::Scope timeTextures("textures");
+        const auto        requests = fv::build::textureRequests(f->loaded.scene, skin);
+        const auto        found    = resolveTextures(s, lib.get(), requests, cooked, uncooked);
         prefetchImages(requests, found);
         for(size_t i = 0; i < requests.size(); i++)
           images[fv::build::requestKey(requests[i])] = found[i];
@@ -200,8 +174,9 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       // above measured its hair's strands meanwhile)
       auto       shared  = std::make_shared<std::unique_ptr<fv::Figure>>(std::move(f));
       const bool flipped = cooked;
-      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source, then, id]() mutable {
-        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(source), then, id);
+      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), uncooked = std::move(uncooked), source, then,
+            id]() mutable {
+        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(uncooked), std::move(source), then, id);
       });
     }
     catch(const std::exception& e)
@@ -213,6 +188,65 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
   return {{"job", jobId}};
 }
 
+void FvHost::Impl::cookInPlace(const std::shared_ptr<Loaded>& f, std::vector<fv::build::TextureRequest> requests)
+{
+  HostSettings s;
+  {
+    std::lock_guard lock(settingsMutex);
+    s = settings;
+  }
+  // a worker the detach joins: a cook it waits on is stopped then, and what lands after is dropped
+  loaders.spawn([this, s, requests = std::move(requests), weak = std::weak_ptr<Loaded>(f)]() mutable {
+    cookAll(s, std::move(requests), [this, weak](const fv::build::TextureRequest& req, fv::build::TextureImage image) {
+      const auto f = weak.lock();
+      if(!f)
+        return;
+      {
+        std::lock_guard lock(f->landedMutex);
+        f->landed.emplace_back(req, std::move(image));
+      }
+      // several that land within a frame are taken by the first of these
+      post([this, weak] {
+        if(const auto f = weak.lock(); f && inScene(f))
+          takeLanded(*f);
+      });
+    });
+  });
+}
+
+void FvHost::Impl::takeLanded(Loaded& f)
+{
+  std::vector<std::pair<fv::build::TextureRequest, fv::build::TextureImage>> landed;
+  {
+    std::lock_guard lock(f.landedMutex);
+    landed.swap(f.landed);
+  }
+  if(landed.empty())
+    return;
+  fv::timing::Scope                      t("cooks landed");
+  std::vector<fv::build::TextureRequest> requests;
+  for(auto& [req, image] : landed)
+  {
+    f.images.insert_or_assign(fv::build::requestKey(req), std::move(image));
+    requests.push_back(req);
+  }
+  // without a feed yet, the composition that makes it lowers with these; a request it never fed
+  // (its fallback had nothing) comes with the lowering below
+  if(!f.feed)
+    return;
+  f.feed->retexture(requests);
+  const std::shared_ptr<Prop> p = findProp(f.id);
+  if(p && p->materials)
+    p->materials->rewrite();
+  else
+  {
+    std::vector<int> all(f.fig->loaded.scene.materials.size());
+    std::iota(all.begin(), all.end(), 0);
+    if(!f.feed->syncMaterials(f.fig->loaded.scene, all))
+      f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
+  }
+}
+
 void FvHost::Impl::install(std::unique_ptr<fv::Figure>                                             fig,
                            uint64_t                                                                generation,
                            uint64_t                                                                jobId,
@@ -220,6 +254,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
                            fv::mat::SkinMode                                                       skin,
                            std::shared_ptr<fv::dson::Library>                                      lib,
                            std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images,
+                           std::vector<fv::build::TextureRequest>                                  uncooked,
                            Json                                                                    source,
                            std::function<void(std::shared_ptr<Prop>)>                              then,
                            std::string                                                             id)
@@ -236,6 +271,8 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
   f->source          = std::move(source);
   f->texturesFlipped = texturesFlipped;
   f->lib             = std::move(lib);
+  if(!uncooked.empty())
+    cookInPlace(f, std::move(uncooked));
   // its add-ons go on once it is in the scene; until then the eyes it will have aren't there to choose
   f->addonsPending = !f->fig->addons.empty() && f->fig->pose;
   // "Mirel.duf" reads as "Mirel"

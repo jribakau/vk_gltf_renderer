@@ -217,19 +217,55 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   return {.image = fv::build::TextureImage{uriOfPath(res->body), "image/ktx2", flip}};
 }
 
-void cookLater(const HostSettings& s, std::vector<fv::build::TextureRequest> requests)
+void cookAll(const HostSettings&                                                                  s,
+             std::vector<fv::build::TextureRequest>                                               requests,
+             const std::function<void(const fv::build::TextureRequest&, fv::build::TextureImage)>& landed)
 {
-  std::thread([s, requests = std::move(requests)] {
-    std::atomic<size_t>      next{0};
-    std::vector<std::thread> workers;
-    for(int w = 0; w < std::min<int>(4, int(requests.size())); w++)
-      workers.emplace_back([&] {
-        for(size_t i; (i = next++) < requests.size();)
-          cookedTexture(s, requests[i], true, false, true);
-      });
-    for(auto& w : workers)
-      w.join();
-  }).detach();
+  std::stable_partition(requests.begin(), requests.end(), [](const fv::build::TextureRequest& r) { return r.srgb; });
+  std::atomic<size_t>      next{0};
+  std::vector<std::thread> workers;
+  for(int w = 0; w < std::min<int>(4, int(requests.size())); w++)
+    workers.emplace_back([&] {
+      for(size_t i; (i = next++) < requests.size();)
+        if(CookedTexture c = cookedTexture(s, requests[i], true, false, true); c.image && landed)
+          landed(requests[i], std::move(*c.image));
+    });
+  for(auto& w : workers)
+    w.join();
+}
+
+std::vector<std::optional<fv::build::TextureImage>> resolveTextures(const HostSettings&                           s,
+                                                                    const fv::dson::Library*                      lib,
+                                                                    const std::vector<fv::build::TextureRequest>& requests,
+                                                                    bool                                          flipped,
+                                                                    std::vector<fv::build::TextureRequest>&       uncooked)
+{
+  const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
+  std::vector<std::optional<fv::build::TextureImage>> found(requests.size());
+  std::vector<uint8_t>                                missed(requests.size(), 0);
+  std::atomic<size_t>                                 next{0};
+  std::vector<std::thread>                            workers;
+  for(int w = 0; w < std::min<int>(8, int(requests.size())); w++)
+    workers.emplace_back([&] {
+      for(size_t i; (i = next++) < requests.size();)
+      {
+        const fv::build::TextureRequest& req = requests[i];
+        if(!flipped)
+          found[i] = lib ? fallbackTexture(s, *lib, req, cooker) : std::nullopt;
+        else if(cooker)
+        {
+          CookedTexture c = cookedTexture(s, req, true, true);
+          missed[i]       = c.uncooked ? 1 : 0;
+          found[i]        = c.uncooked && lib ? fallbackTexture(s, *lib, req, cooker) : std::move(c.image);
+        }
+      }
+    });
+  for(auto& w : workers)
+    w.join();
+  for(size_t i = 0; i < requests.size(); i++)
+    if(missed[i])
+      uncooked.push_back(requests[i]);
+  return found;
 }
 
 std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& lib, const fv::build::TextureRequest& req)

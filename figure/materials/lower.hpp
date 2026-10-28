@@ -147,12 +147,18 @@ UvTransform surfaceUv(const Surface& s, const Edits& e);
 // The same transform for UVs whose V is turned over (v' = 1 − v) on both sides, with the images as
 // their files have them (LowerOptions::flipV): the picture lands where it did.
 UvTransform mirroredV(const UvTransform& t);
+// `t` followed by v' = 1 − v: where an image whose rows run the other way than the UVs expect holds
+// what `t` samples
+UvTransform rowsFlipped(const UvTransform& t);
 
 // What resolving one request gave.
 struct ResolvedTexture
 {
   int  index     = -1;  // glTF texture index, -1: none, the slot is dropped
   bool flipGreen = false;  // the image holds a normal map whose green the renderer should negate
+  // the image's rows run the other way than the UVs expect (a source image in a figure built for the
+  // cooked, bottom-up ones): its slot samples it through rowsFlipped
+  bool flipRows = false;
 };
 
 // The material with its slots replaced by texture infos from `resolve`. The extensions it uses are

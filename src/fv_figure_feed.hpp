@@ -120,6 +120,12 @@ public:
   bool syncMaterials(const SceneGraph& figure, std::span<const std::pair<int, mat::LowerOptions>> materials);
   // per scene material, the options the last sync lowered it with (empty until one has)
   const std::vector<mat::LowerOptions>& lowering() const { return m_lowering; }
+  // `requests`' images changed (a cook that landed for a source image): each takes its texture's
+  // place in every table that holds it, so the materials keep their indices and the old image goes.
+  // Their rows may run the other way now, which a material's lowering says (its slot's transform):
+  // the materials that sample them are the caller's to lower again (syncMaterials, or the host's
+  // material edits). A request never fed is left to the next lowering. False when none was replaced.
+  bool retexture(std::span<const mat::TextureRequest> requests);
 
   rs::EntityId   entityOf(int node) const;
   rs::MeshId     meshOf(int mesh) const;
@@ -152,6 +158,7 @@ private:
   {
     uint32_t slot      = 0;  // its place in m_table
     bool     flipGreen = false;
+    bool     flipRows  = false;  // its rows run the other way than the options' texturesFlipped
   };
 
   void syncMaterials(const SceneGraph& figure, const build::Drawing& drawing);

@@ -1635,6 +1635,61 @@ TEST(Materials, TheUvTransformComposesAndMirrorsInTheRenderersMatrix)
   EXPECT_TRUE(fv::mat::surfaceUv({}, {}).identity());
 }
 
+// A source image in a figure built for the cooked, bottom-up ones (a cold texture cache): its slot
+// samples it with V turned over after the surface's own transform, in the renderer's matrix, and
+// only that slot; a slot with no transform of its own gets the bare flip.
+TEST(Materials, AnImageWhoseRowsRunTheOtherWayIsSampledWithItsVTurnedOver)
+{
+  const auto apply = [](const fv::mat::UvTransform& t, glm::vec2 uv) {
+    KHR_texture_transform k;
+    k.offset   = {t.offset[0], t.offset[1]};
+    k.rotation = t.rotation;
+    k.scale    = {t.scale[0], t.scale[1]};
+    k.updateTransform();
+    const glm::vec3 p{uv, 1};
+    return glm::vec2(glm::dot(k.uvTransform[0], p), glm::dot(k.uvTransform[1], p));
+  };
+  const fv::mat::UvTransform t{{3, 2}, {0.25f, -0.4f}, 0.7f};
+  for(const glm::vec2 uv : {glm::vec2(0, 0), glm::vec2(1, 0), glm::vec2(0.3f, 0.8f), glm::vec2(-2, 5)})
+  {
+    const glm::vec2 want = apply(t, uv), got = apply(fv::mat::rowsFlipped(t), uv);
+    EXPECT_NEAR(got.x, want.x, 1e-4f);
+    EXPECT_NEAR(got.y, 1 - want.y, 1e-4f);
+  }
+  expectSame(fv::mat::rowsFlipped({}), {{1, -1}, {0, 1}, 0}, "bare");
+
+  // through toGltf: the base map's source runs the other way, the others are cooked
+  const auto infoTransform = [](const tinygltf::TextureInfo& info) {
+    fv::mat::UvTransform out;
+    const auto           it = info.extensions.find("KHR_texture_transform");
+    if(it == info.extensions.end())
+      return out;
+    const tinygltf::Value& tt = it->second;
+    out.scale    = {float(tt.Get("scale").Get(0).GetNumberAsDouble()), float(tt.Get("scale").Get(1).GetNumberAsDouble())};
+    out.offset   = {float(tt.Get("offset").Get(0).GetNumberAsDouble()), float(tt.Get("offset").Get(1).GetNumberAsDouble())};
+    out.rotation = tt.Has("rotation") ? float(tt.Get("rotation").GetNumberAsDouble()) : 0.f;
+    return out;
+  };
+  fv::mat::Surface tiled = garment();
+  tiled.tiles            = {2, 3};
+  for(const fv::mat::Surface& s : {garment(), tiled})
+  {
+    const fv::mat::UvTransform own     = fv::mat::surfaceUv(s, {});
+    const auto                 lowered = fv::mat::lower(s, {}, {});
+    std::vector<std::string>   used;
+    const auto                 m = fv::mat::toGltf(
+        lowered,
+        [&](const fv::mat::TextureRequest& r) {
+          const bool base = r.rel == s.base.map;
+          return fv::mat::ResolvedTexture{base ? 1 : 2, false, base};
+        },
+        used);
+    expectSame(infoTransform(m.pbrMetallicRoughness.baseColorTexture), fv::mat::rowsFlipped(own), "base");
+    expectSame(infoTransform(m.emissiveTexture), own, "emissive");
+    EXPECT_NE(std::find(used.begin(), used.end(), "KHR_texture_transform"), used.end());
+  }
+}
+
 // A fabric is a detail layer: its height map at its physical size from metresPerUv, its relief
 // fixed (a scale changes the tiling, never the image), its roughness multiplier, weight 1. A file
 // for other tools leaves it out, as it does every detail.

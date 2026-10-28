@@ -392,6 +392,7 @@ FvHost::~FvHost() = default;
 void FvHost::onAttach(nvapp::Application* app)
 {
   m_impl->app = app;
+  textureCalls().resume();
   m_impl->protocol->events().snapshot(
       "render", {{"mode", m_impl->renderer->renderSystem() == RenderingMode::ePathtracer ? "rtx" : "raster"}});
   m_impl->publishScene();

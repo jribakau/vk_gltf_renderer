@@ -184,6 +184,9 @@ public:
   // Real-time and RTX shade skin differently; lowers the materials that differ.
   void setSkinMode(fv::mat::SkinMode skin);
   fv::mat::SkinMode skinMode() const { return m_skin; }
+  // A texture they sample changed under them (a cook that landed): every attached material written
+  // again with its options and edits, the feed setting only those that differ. Not for a model.
+  void rewrite();
 
 private:
   void refresh(const std::set<int>& materials);

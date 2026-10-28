@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -33,11 +34,13 @@
 #include <thread>
 
 #include <gtest/gtest.h>
+#include <httplib.h>
 
 #include "common/fake_host_renderer.hpp"
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
+#include "scene_export_gltf.hpp"
 
 namespace fs = std::filesystem;
 using fv::Json;
@@ -854,4 +857,138 @@ TEST(FvHost, ASlidersGestureIsOneStep)
   rig.cmd("history.undo");
   rig.cmd("history.undo");
   EXPECT_EQ(rig.cmd("scene.state", {{"prop", id}}).at("result").at("morphs").value("Taper", 0.0), 0.0);
+}
+
+namespace {
+
+// The app's texture server as the host sees it (GET /<token>/<root>/<rel>?...&path=1): a path to the
+// cooked file, 202 for one not cooked yet when only the cache is asked (cached=1). Only the detail
+// normal map is cooked to begin with; the cooks of the others wait until opened.
+class FakeCooker
+{
+public:
+  FakeCooker()
+  {
+    fs::create_directories(m_dir);
+    m_server.Get(R"(/tok/r0/(.*))", [this](const httplib::Request& req, httplib::Response& res) {
+      const std::string rel     = req.matches[1];
+      const bool        flipped = req.get_param_value("flip") == "1";
+      if(req.get_param_value("cached") == "1" && rel.find("BoxDetail_NM") == std::string::npos)
+      {
+        res.status = 202;
+        return;
+      }
+      // a cook for the cache (flipped) waits to be let through; a fallback's (unflipped) does not
+      if(flipped && req.get_param_value("cached") != "1")
+      {
+        std::unique_lock lock(m_mutex);
+        m_open.wait_for(lock, std::chrono::seconds(20), [this] { return m_opened; });
+      }
+      // a file per request, its rows' way in its name
+      const fs::path file = m_dir / (std::to_string(std::hash<std::string>{}(req.target)) + (flipped ? "-up.ktx2" : "-down.ktx2"));
+      std::ofstream(file, std::ios::binary) << "KTX";
+      res.set_content(file.generic_string(), "text/plain");
+    });
+    m_port   = m_server.bind_to_any_port("127.0.0.1");
+    m_thread = std::thread([this] { m_server.listen_after_bind(); });
+  }
+  ~FakeCooker()
+  {
+    open();
+    m_server.stop();
+    m_thread.join();
+    std::error_code ec;
+    fs::remove_all(m_dir, ec);
+  }
+  std::string url() const { return "http://127.0.0.1:" + std::to_string(m_port) + "/tok"; }
+  void        open()
+  {
+    {
+      std::lock_guard lock(m_mutex);
+      m_opened = true;
+    }
+    m_open.notify_all();
+  }
+
+private:
+  const fs::path          m_dir = fs::temp_directory_path() / "fv-host-cooker";
+  httplib::Server         m_server;
+  std::thread             m_thread;
+  int                     m_port = 0;
+  std::mutex              m_mutex;
+  std::condition_variable m_open;
+  bool                    m_opened = false;
+};
+
+// The figure's images as the renderer's scene has them, and how many of its texture slots sample
+// theirs with V turned over (a source in a figure built for the cooked images)
+struct Sampled
+{
+  std::vector<std::string> images;
+  int                      turned = 0;
+};
+Sampled sampled(rs::RetainedScene& scene)
+{
+  Sampled               out;
+  const tinygltf::Model model = rs::exportGltf(scene);
+  for(const tinygltf::Image& image : model.images)
+    out.images.push_back(image.uri);
+  const std::function<void(const tinygltf::Value&)> walk = [&](const tinygltf::Value& v) {
+    if(v.IsObject())
+    {
+      if(v.Has("KHR_texture_transform") && v.Get("KHR_texture_transform").Get("scale").Get(1).GetNumberAsDouble() < 0)
+        out.turned++;
+      for(const std::string& key : v.Keys())
+        walk(v.Get(key));
+    }
+    else if(v.IsArray())
+      for(size_t i = 0; i < v.ArrayLen(); i++)
+        walk(v.Get(int(i)));
+  };
+  for(const tinygltf::Material& m : model.materials)
+    for(const tinygltf::ExtensionMap* extensions : {&m.pbrMetallicRoughness.baseColorTexture.extensions, &m.normalTexture.extensions,
+                                                    &m.emissiveTexture.extensions, &m.pbrMetallicRoughness.metallicRoughnessTexture.extensions,
+                                                    &m.extensions})
+      for(const auto& [name, value] : *extensions)
+        if(name == "KHR_texture_transform")
+          out.turned += value.Get("scale").Get(1).GetNumberAsDouble() < 0 ? 1 : 0;
+        else
+          walk(value);
+  return out;
+}
+
+}  // namespace
+
+// A figure loaded on a cold texture cache shows the cooked maps the cache has and, for the rest, the
+// fallbacks, sampled with V turned over; each cook swaps in as it lands, the fallbacks go from the
+// renderer's scene and every image ends up cooked, without a reload.
+TEST(FvHost, AFigureOnAColdCacheTakesEachCookAsItLands)
+{
+  FakeCooker cooker;
+  HostRig    rig;
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"texServer", cooker.url()}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure PBRSkin.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  rs::RetainedScene& scene  = rig.renderer.hostScene();
+  const Sampled      before = sampled(scene);
+  ASSERT_GE(before.images.size(), 2u);
+  EXPECT_GT(before.turned, 0);
+  const auto cooked = [](const std::vector<std::string>& images) {
+    return size_t(std::count_if(images.begin(), images.end(), [](const std::string& uri) { return uri.ends_with("-up.ktx2"); }));
+  };
+  EXPECT_EQ(cooked(before.images), 1u);  // the cached detail map
+
+  cooker.open();
+  Sampled   after;
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  do
+  {
+    rig.host->onUpdate();
+    after = sampled(scene);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  } while(cooked(after.images) < after.images.size() && std::chrono::steady_clock::now() < end);
+  EXPECT_EQ(cooked(after.images), after.images.size());
+  EXPECT_EQ(after.turned, 0);
+  EXPECT_EQ(after.images.size(), before.images.size());
+  EXPECT_EQ(scene.textureCount(), after.images.size());  // the fallbacks went
 }
