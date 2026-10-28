@@ -886,10 +886,12 @@ laid over, set on its import's record. Each frame `syncRetainedScene` moves the 
 residency syncs what changed.
 
 With `figureGpuRefine` (a host setting, off by default; daz-viewer `docs/gpu-figures-plan.md`) a
-subdivided figure mesh, strand ribbons aside, is fed with its morphed cage and its `rs::RefineTables`,
+subdivided figure mesh, or a widened strand mesh, is fed with its morphed cage and its `rs::RefineTables`,
 and the residency makes its positions and normals on the GPU (`refineOnGpu`: the stencil levels in
 `stencil.comp.slang`, the welded normals in `vertex_normals.comp.slang`, the UV seam splits as a
-gather) before the refits and the skin pass. A dial's step then moves the cage alone:
+gather) before the refits and the skin pass. A strand mesh's one level copies each point to its
+ribbon's two edges, and the tables' `offsets` (each edge's side times the half width `widenRibbons`
+kept) open it. A dial's step then moves the cage alone:
 `MorphSet::cageOnly`, which the host points at the feed's `refines`, keeps the morphed cage and
 reports a cage change, fed by `syncCages` (`RetainedScene::setMeshCage`). The CPU's drawn vertices,
 the record's positions and the prim bounds (the selection box, the scene bounds) catch up once the

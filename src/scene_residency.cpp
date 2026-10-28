@@ -320,7 +320,7 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
 {
   const RefineTables* t = record.refine.get();
   if(!t || t->levels.empty() || record.cage.size() != t->cageCount || t->drawnFrom.size() != record.positions.size()
-     || t->normalStart.size() != size_t(t->refinedCount()) + 1)
+     || t->normalStart.size() != size_t(t->refinedCount()) + 1 || (!t->offsets.empty() && t->offsets.size() != t->refinedCount()))
     return;
   const auto table = [&](const auto& values, const char* name) {
     const BufferHandle b = m_gpu.createBuffer({.size = values.size() * sizeof(values[0]), .usage = eBufferStorage, .name = name});
@@ -350,6 +350,8 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
   r.triangles       = table(t->triangles, "refined triangles");
   r.normalStart     = table(t->normalStart, "normal starts");
   r.normalTriangles = table(t->normalTriangles, "normal triangles");
+  if(!t->offsets.empty())
+    r.offsets = table(t->offsets, "refined offsets");
   gpu.refine        = std::move(r);
 }
 
@@ -366,7 +368,8 @@ void Residency::refineOnGpu(std::span<MeshGpu* const> meshes)
     for(const MeshGpu* g : meshes)
       if(i < g->refine->levels.size())
       {
-        const MeshGpu::Refine::Level& l = g->refine->levels[i];
+        const MeshGpu::Refine::Level& l    = g->refine->levels[i];
+        const bool                    last = i + 1 == g->refine->levels.size();
         m_gpu.dispatchDeform({.kind           = DeformKind::eStencil,
                               .vertexCount    = l.rows,
                               .basePositions  = {i ? g->refine->levels[i - 1].out : g->refine->cage},
@@ -374,6 +377,7 @@ void Residency::refineOnGpu(std::span<MeshGpu* const> meshes)
                               .rowStart       = {l.start},
                               .columns        = {l.columns},
                               .stencilWeights = {l.weights},
+                              .stencilOffsets = {last ? g->refine->offsets : BufferHandle{}},
                               .sourceCount    = l.sourceCount});
       }
     m_gpu.barrier(GpuBarrier::eComputeToCompute);
@@ -470,7 +474,7 @@ void Residency::retireMesh(MeshId id)
   if(m.refine)
   {
     for(BufferHandle b : {m.refine->cage, m.refine->refinedNormals, m.refine->drawnFrom, m.refine->triangles,
-                          m.refine->normalStart, m.refine->normalTriangles})
+                          m.refine->normalStart, m.refine->normalTriangles, m.refine->offsets})
       retireBuffer(b);
     for(const MeshGpu::Refine::Level& l : m.refine->levels)
       for(BufferHandle b : {l.start, l.columns, l.weights, l.out})

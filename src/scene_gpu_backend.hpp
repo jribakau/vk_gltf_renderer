@@ -212,8 +212,9 @@ struct DeformDispatch
   // [rowStart[row], rowStart[row + 1]) (no weights: 1 each), or with no rowStart base[columns[row]]
   // normals (vertex_normals.comp.slang): vertexCount output normals, each the unit sum of the edge
   // cross products of the triangles (uint3 over the base positions' sourceCount) that
-  // columns[rowStart[v] .. rowStart[v + 1]) names; triangleCount of them
-  BufferRange rowStart, columns, stencilWeights, triangles;  // uint32, uint32, float, uint3
+  // columns[rowStart[v] .. rowStart[v + 1]) names; triangleCount of them. A stencil's offsets (float3
+  // per row, when given) are added to its rows' sums
+  BufferRange rowStart, columns, stencilWeights, stencilOffsets, triangles;  // uint32, uint32, float, float3, uint3
   uint32_t    sourceCount = 0, triangleCount = 0;
 };
 // The packed normal matrices are glm::mat3 on the host and float3x3 in the shader: 36 bytes apart

@@ -165,7 +165,7 @@ public:
         BufferHandle start, columns, weights, out;  // out: this level's vertices
         uint32_t     rows = 0, sourceCount = 0;
       };
-      BufferHandle       cage, refinedNormals, drawnFrom, triangles, normalStart, normalTriangles;
+      BufferHandle       cage, refinedNormals, drawnFrom, triangles, normalStart, normalTriangles, offsets;
       std::vector<Level> levels;
       uint32_t           refinedCount = 0, triangleCount = 0;
     };

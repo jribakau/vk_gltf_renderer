@@ -165,6 +165,8 @@ struct RefineTables
   std::vector<uint32_t> drawnFrom;                     // per drawn vertex, its refined vertex
   std::vector<uint32_t> triangles;                     // refined vertices, three per triangle
   std::vector<uint32_t> normalStart, normalTriangles;  // per refined vertex
+  // per refined vertex, added after the last level (strand ribbons' widths); empty: none
+  std::vector<glm::vec3> offsets;
   uint32_t              refinedCount() const { return levels.empty() ? cageCount : levels.back().rows(); }
 };
 

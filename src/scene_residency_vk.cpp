@@ -276,6 +276,7 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
     pc.rowStart    = reinterpret_cast<uint32_t*>(at(d.rowStart));
     pc.columns     = reinterpret_cast<uint32_t*>(at(d.columns));
     pc.weights     = reinterpret_cast<float*>(at(d.stencilWeights));
+    pc.offsets     = reinterpret_cast<glm::vec3*>(at(d.stencilOffsets));
     pc.rowCount    = d.vertexCount;
     pc.sourceCount = d.sourceCount;
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.stencil);

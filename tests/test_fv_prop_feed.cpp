@@ -28,6 +28,8 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <figure/figure.hpp>
+#include <figure/mesh/mesh_build.hpp>
+#include <figure/mesh/normals.hpp>
 
 #include "common/fake_gpu_backend.hpp"
 #include "common/residency_oracle.hpp"
@@ -364,6 +366,93 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
     for(size_t i = 0; i < got.size(); i++)
       ASSERT_NEAR(got[i], want[i], 1e-6f) << "mesh " << mi << " value " << i;
   }
+}
+
+// Strand ribbons (gpu-figures-plan.md F1): each drawn vertex is its strand point moved across the
+// strand by its width, which the GPU adds after copying the points; the residency's streams are the
+// CPU's, as fed and with the strands moved as a morph moves them.
+TEST(FvPropFeed, StrandRibbonsAreRefinedFromTheirPoints)
+{
+  // three strands of four points, rising and leaning from a row of roots
+  fv::mesh::MeshInput input;
+  fv::mesh::Lines     lines;
+  for(int s = 0; s < 3; s++)
+  {
+    lines.start.push_back(s * 4);
+    lines.material.push_back(0);
+    for(int p = 0; p < 4; p++)
+    {
+      input.positions.insert(input.positions.end(), {float(s), 2.f * float(p), 0.3f * float(p * s)});
+      lines.verts.push_back(s * 4 + p);
+    }
+  }
+  lines.start.push_back(12);
+  input.lines = lines;
+  auto geo    = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(input));
+  ASSERT_TRUE(geo->ribbon && geo->refinement);
+  fv::mesh::widenRibbons(*geo, {{0.4, 0.2}});
+
+  fv::SceneGraph scene;
+  const int      root = scene.add(fv::Node{.name = "Hair"});
+  scene.materials.resize(1);
+  scene.materials[0].name = "Strands";
+  fv::Mesh m;
+  m.name      = "hair";
+  m.geo       = geo;
+  m.materials = {0};
+  scene.meshes.push_back(m);
+  scene.add(fv::Node{.name = "Hair strands", .kind = fv::NodeKind::eMesh, .mesh = 0}, root);
+
+  rs::RetainedScene  store;
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu);
+  std::vector<float> cage = geo->cagePositions;
+  fv::FigureFeed     feed(store, {.cageOf = [&](int) { return cage; }});
+  feed.sync(scene, root);
+  ASSERT_TRUE(feed.refines(0));
+  residency.replace(store);
+  const auto check = [&](const char* when) {
+    for(const std::string& p : rs::checkResidency(store, residency, gpu))
+      ADD_FAILURE() << when << ": " << p;
+    const rs::Residency::MeshGpu* mesh = residency.meshGpu(feed.meshOf(0));
+    ASSERT_TRUE(mesh && mesh->refine) << when;
+    const size_t           n = geo->position.size() / 3;
+    std::vector<glm::vec3> positions(n), normals(n);
+    std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
+    std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(mesh->normals), n * 12).data(), n * 12);
+    for(size_t v = 0; v < n; v++)
+    {
+      ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&geo->position[v * 3])), 1e-5f) << when << " vertex " << v;
+      // a root opens from no width: its triangles have no area, and its normal is zero both ways
+      const glm::vec3 want = glm::make_vec3(&geo->normal[v * 3]);
+      if(want == glm::vec3(0.f))
+        ASSERT_EQ(normals[v], glm::vec3(0.f)) << when << " vertex " << v;
+      else
+        ASSERT_GT(glm::dot(normals[v], want), 0.9999f) << when << " vertex " << v;
+    }
+  };
+  check("fed");
+
+  fv::mesh::CageDeltas moved;
+  for(int v = 0; v < 12; v++)
+  {
+    moved.verts.push_back(v);
+    moved.deltas.insert(moved.deltas.end(), {0.1f * float(v), 0.f, -0.05f * float(v % 4)});
+  }
+  const fv::mesh::RenderTarget t = fv::mesh::target(*geo, moved);
+  for(size_t i = 0; i < t.indices.size(); i++)
+    for(int k = 0; k < 3; k++)
+      geo->position[t.indices[i] * 3 + k] += t.deltas[i * 3 + k];
+  fv::mesh::NormalWelder(geo->renderIndex, geo->firstSplit, geo->nextSplit, geo->renderTris, geo->renderVertexCount)
+      .full(geo->position, geo->normal);
+  for(size_t i = 0; i < moved.verts.size(); i++)
+    for(int k = 0; k < 3; k++)
+      cage[size_t(moved.verts[i]) * 3 + k] += moved.deltas[i * 3 + k];
+  const int mesh = 0;
+  EXPECT_TRUE(feed.syncCages(scene, {&mesh, 1}));
+  gpu.beginFrame();
+  residency.sync(store);
+  check("moved");
 }
 
 // A duplicated model holds the model its source does, and takes its source's meshes: one record,

@@ -116,6 +116,9 @@ MeshRecord refinedBase(const MeshRecord& r)
     }
     src = std::move(dst);
   }
+  if(!t.offsets.empty() && t.offsets.size() == src.size())
+    for(size_t v = 0; v < src.size(); v++)
+      src[v] += t.offsets[v];
   std::vector<glm::vec3> normals(src.size());
   const size_t           triangleCount = t.triangles.size() / 3;
   for(size_t v = 0; v < src.size(); v++)

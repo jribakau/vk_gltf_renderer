@@ -399,6 +399,37 @@ Influences refineInfluences(const Influences& src, const subdiv::Stencils& lv, i
 
 }  // namespace
 
+// Opens the zero-width ribbons to `widths[material]` (root, tip in cm), then welds normals across them.
+void widenRibbons(mesh::BuiltMesh& m, const std::vector<std::array<double, 2>>& widths)
+{
+  if(!m.ribbon)
+    return;
+  auto& r = *m.ribbon;
+  r.half.assign(r.along.size(), 0.f);
+  // each vertex moves on its own, and a hair has millions of them
+  jobs::parallelFor(r.along.size(), 16384, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      const int  mat = r.material[i];
+      const auto w   = mat >= 0 && mat < int(widths.size()) ? widths[mat] : (widths.empty() ? std::array<double, 2>{0.1, 0.05} : widths[0]);
+      // The first 6% of the strand grows from nothing, so the root is not a full-width sheet and the
+      // body can stay opaque (no any-hit on every card). along is 0 at the root.
+      constexpr double kRoot = 0.06;
+      double           gate  = 1;
+      if(r.along[i] < kRoot)
+      {
+        const double t = r.along[i] / kRoot;
+        gate           = t * t * (3.0 - 2.0 * t);
+      }
+      const double half = (w[0] + (w[1] - w[0]) * r.along[i]) / 2 * gate;
+      r.half[i]         = float(half);
+      for(int k = 0; k < 3; k++)
+        m.position[i * 3 + k] = float(m.position[i * 3 + k] + r.side[i * 3 + k] * half);
+    }
+  });
+  NormalWelder(m.renderIndex, m.firstSplit, m.nextSplit, m.renderTris, m.renderVertexCount).full(m.position, m.normal);
+}
+
 BuiltMesh build(const MeshInput& m)
 {
   BuiltMesh out;

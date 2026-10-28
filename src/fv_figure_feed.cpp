@@ -75,6 +75,15 @@ std::shared_ptr<const rs::RefineTables> refineTables(const mesh::BuiltMesh& geo)
   for(size_t i = 0; i < geo.renderTris.size(); i++)
     if(geo.renderTris[i] < n)
       t->normalTriangles[fill[geo.renderTris[i]]++] = uint32_t(i / 3);
+  // strand ribbons: each refined vertex is its strand point, moved across the strand by its width
+  if(geo.ribbon)
+  {
+    const mesh::Ribbon& r = *geo.ribbon;
+    t->offsets.assign(n, glm::vec3(0.f));
+    for(size_t v = 0; v < n && v < geo.firstSplit.size(); v++)
+      if(const int32_t d = geo.firstSplit[v]; d >= 0 && size_t(d) < r.half.size())
+        t->offsets[v] = glm::make_vec3(&r.side[size_t(d) * 3]) * r.half[size_t(d)];
+  }
   return t;
 }
 
@@ -471,8 +480,8 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     {
       rs::MeshRecord r   = meshRecord(figure, int(mi), drawn);
       f.tangentIndices   = tangentIndices(r, tangents);
-      // subdivided (not strand ribbons): the GPU makes its drawn vertices from its cage
-      f.refine = m.geo->refinement && !m.geo->ribbon && m_options.cageOf ? refineTables(*m.geo) : nullptr;
+      // subdivided, or strand ribbons once widened: the GPU makes its drawn vertices from its cage
+      f.refine = m.geo->refinement && (!m.geo->ribbon || !m.geo->ribbon->half.empty()) && m_options.cageOf ? refineTables(*m.geo) : nullptr;
       if(f.refine)
       {
         r.cage = cageOf(int(mi), f);

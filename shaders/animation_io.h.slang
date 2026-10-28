@@ -68,6 +68,7 @@ struct StencilPushConstant
   uint*   rowStart;
   uint*   columns;
   float*  weights;
+  float3* offsets;  // per row, added to its sum; null: none
   uint    rowCount;
   uint    sourceCount;
 };

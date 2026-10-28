@@ -53,6 +53,8 @@ struct Ribbon
   std::vector<float>   side;
   std::vector<float>   along;
   std::vector<int32_t> material;
+  // how far widenRibbons moved each drawn vertex along `side`, cm (empty before)
+  std::vector<float> half;
   // Median distance between neighbouring roots, cm.
   float spacing = 0;
 };
@@ -106,6 +108,10 @@ struct BuiltMesh
 };
 
 BuiltMesh build(const MeshInput& m);
+
+// Opens a strand mesh's zero-width ribbons to `widths[material]` (root, tip in cm), then welds
+// normals across them.
+void widenRibbons(BuiltMesh& m, const std::vector<std::array<double, 2>>& widths);
 
 // The triangles drawn: fullIndex without the polygons any worn item hides, and its groups.
 struct Drawn

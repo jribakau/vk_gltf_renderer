@@ -498,6 +498,7 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     const uint64_t        entries = start ? start.get(n) : n;
     const Span<uint32_t>  columns{range(d.columns, 4, entries, "columns", false), entries};
     const Span<float>     w{stencil ? range(d.stencilWeights, 4, entries, "stencil weights", false) : nullptr, entries};
+    const Span<glm::vec3> offsets{stencil && start ? range(d.stencilOffsets, 12, n, "stencil offsets", false) : nullptr, n};
     const Span<glm::uvec3> tris{stencil ? nullptr : range(d.triangles, 12, d.triangleCount, "triangles", false), d.triangleCount};
     const Span<glm::vec3> out{range(stencil ? d.outPositions : d.outNormals, 12, n, "outputs", true), n};
     if(!ok || !base || !columns || !out || (!stencil && (!start || !tris)))
@@ -534,6 +535,8 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
         const glm::vec3 a = base.get(t.x);
         sum += glm::cross(base.get(t.y) - a, base.get(t.z) - a);
       }
+      if(offsets)
+        sum += offsets.get(r);
       const float l = glm::length(sum);
       out.set(r, stencil ? sum : l > 0.f ? sum / l : glm::vec3(0.f));
     }
