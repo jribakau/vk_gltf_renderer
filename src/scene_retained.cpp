@@ -261,6 +261,18 @@ void RetainedScene::setMeshVertices(MeshId                 id,
   m_boundsRevision++;
 }
 
+void RetainedScene::setMeshCage(MeshId id, std::vector<glm::vec3> cage)
+{
+  assertOwner();
+  auto* r = m_meshes.get(id);
+  if(!r || !r->value.refine || cage.empty() || cage.size() != r->value.cage.size())
+    return;
+  r->value.cage = std::move(cage);
+  r->value.contentRev++;
+  m_changes.meshes.insert(id);
+  m_boundsRevision++;
+}
+
 void RetainedScene::setSkin(SkinId id, SkinRecord skin)
 {
   assertOwner();

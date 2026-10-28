@@ -25,6 +25,8 @@
 #include <cstring>
 #include <filesystem>
 
+#include <glm/gtc/type_ptr.hpp>
+
 #include <figure/figure.hpp>
 
 #include "common/fake_gpu_backend.hpp"
@@ -275,6 +277,93 @@ TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
   gpu.beginFrame();
   residency.sync(scene);
   check("dialled");
+}
+
+// MorphSet::cageOnly (gpu-figures-plan.md F1b): a dial's step moves a refined mesh's cage alone, the
+// CPU's drawn vertices left as they were; the GPU's are what the CPU makes with the path off (a second
+// box dialled the same way), and the CPU's catch up at settled().
+TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
+{
+  const auto                box = loadBox(), reference = loadBox();
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  feed.sync(props);
+  residency.replace(scene);
+  fv::FigureFeed& figure = *feed.fed("p:1")->figure;
+  const auto      moved  = [](const std::vector<fv::morph::MeshChange>& changes) {
+    std::vector<int> out;
+    for(const auto& c : changes)
+      out.push_back(c.mesh);
+    return out;
+  };
+  // the dial's file read, as the path off does it
+  for(fv::Figure* f : {box.get(), reference.get()})
+  {
+    f->morphs->set("Taper", 0.5);
+    f->morphs->settled();
+  }
+  EXPECT_TRUE(figure.syncVertices(box->loaded.scene, moved(box->drain().meshes)));
+  gpu.beginFrame();
+  residency.sync(scene);
+  reference->morphs->set("Taper", 1.0);
+  reference->morphs->settled();
+
+  box->morphs->cageOnly = [&](int mesh) { return figure.refines(mesh); };
+  const size_t                    meshes = box->loaded.scene.meshes.size();
+  std::vector<std::vector<float>> drawn;
+  for(size_t mi = 0; mi < meshes; mi++)
+    drawn.push_back(box->loaded.scene.meshes[mi].geo->position);
+  box->morphs->set("Taper", 1.0);
+  const std::vector<fv::morph::MeshChange> step = box->drain().meshes;
+  size_t                                   cages = 0;
+  for(const fv::morph::MeshChange& c : step)
+  {
+    EXPECT_EQ(c.cage, figure.refines(c.mesh)) << "mesh " << c.mesh;
+    if(c.cage)
+    {
+      cages++;
+      EXPECT_EQ(box->loaded.scene.meshes[size_t(c.mesh)].geo->position, drawn[size_t(c.mesh)]) << "mesh " << c.mesh;
+    }
+  }
+  ASSERT_GT(cages, 0u);
+  EXPECT_TRUE(figure.syncCages(box->loaded.scene, moved(step)));
+  gpu.beginFrame();
+  residency.sync(scene);
+  for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+    ADD_FAILURE() << p;
+  for(size_t mi = 0; mi < meshes; mi++)
+  {
+    const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(int(mi)));
+    if(!mesh || !mesh->refine)
+      continue;
+    const fv::mesh::BuiltMesh& want = *reference->loaded.scene.meshes[mi].geo;
+    const size_t               n    = want.position.size() / 3;
+    std::vector<glm::vec3>     positions(n), normals(n);
+    std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
+    std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(mesh->normals), n * 12).data(), n * 12);
+    for(size_t v = 0; v < n; v++)
+    {
+      ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&want.position[v * 3])), 1e-4f) << "mesh " << mi << " vertex " << v;
+      ASSERT_GT(glm::dot(normals[v], glm::make_vec3(&want.normal[v * 3])), 0.9999f) << "mesh " << mi << " vertex " << v;
+    }
+  }
+
+  box->morphs->settled();
+  for(const fv::morph::MeshChange& c : box->drain().meshes)
+    EXPECT_FALSE(c.cage) << "mesh " << c.mesh;
+  for(size_t mi = 0; mi < meshes; mi++)
+  {
+    const std::vector<float>& got  = box->loaded.scene.meshes[mi].geo->position;
+    const std::vector<float>& want = reference->loaded.scene.meshes[mi].geo->position;
+    ASSERT_EQ(got.size(), want.size());
+    for(size_t i = 0; i < got.size(); i++)
+      ASSERT_NEAR(got[i], want[i], 1e-6f) << "mesh " << mi << " value " << i;
+  }
 }
 
 // A duplicated model holds the model its source does, and takes its source's meshes: one record,

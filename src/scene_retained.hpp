@@ -459,6 +459,9 @@ public:
                        std::vector<glm::vec3> normals,
                        std::vector<glm::vec4> tangents = {},
                        std::vector<glm::vec3> cage     = {});
+  // A refined mesh's cage alone, moved (a dial's step): the residency refines it again; `positions`
+  // and `normals` stay what they were until a setMeshVertices brings them up to it
+  void setMeshCage(MeshId id, std::vector<glm::vec3> cage);
   // joints, inverse binds and skeleton replaced (a rebind)
   void setSkin(SkinId id, SkinRecord skin);
   void setMaterial(MaterialId id, tinygltf::Material payload);

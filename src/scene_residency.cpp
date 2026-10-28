@@ -479,7 +479,9 @@ void Residency::retireMesh(MeshId id)
   m_meshes.erase(it);
 }
 
-// The box around the vertices a prim's indices name; none named: a point at the origin
+// The box around the vertices a prim's indices name; none named: a point at the origin. A refined
+// mesh's are its positions as fed, behind its cage during a drag (they place the selection box and
+// the scene's bounds, not culling)
 static void fitBounds(Residency::Prim& prim, const MeshRecord& record)
 {
   const Submesh& run = record.submeshes[prim.submesh];

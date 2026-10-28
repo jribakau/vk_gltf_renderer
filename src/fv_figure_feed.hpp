@@ -98,6 +98,11 @@ public:
   // `meshes`' vertices, moved in place (a dial, a fit, a drape), and the tangents near them.
   // `tangentsLater`: a drag's step, which keeps the tangents it had for settleTangents to make
   bool syncVertices(const SceneGraph& figure, std::span<const int> meshes, bool tangentsLater = false);
+  // `meshes`' morphed cages alone (MorphSet::cageOnly, a drag's step): the GPU refines them; a mesh
+  // the feed doesn't refine is fed as syncVertices feeds it
+  bool syncCages(const SceneGraph& figure, std::span<const int> meshes);
+  // whether the GPU makes the mesh's drawn vertices from its cage (FigureFeedOptions::cageOf)
+  bool refines(int mesh) const;
   // the tangents syncVertices left for later, made for each mesh whose vertices have not moved
   // for `still` (a drag that stopped)
   void settleTangents(std::chrono::steady_clock::duration still = {});

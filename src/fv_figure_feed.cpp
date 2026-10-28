@@ -661,6 +661,34 @@ bool FigureFeed::syncVertices(const SceneGraph& figure, std::span<const int> mes
   return all;
 }
 
+bool FigureFeed::syncCages(const SceneGraph& figure, std::span<const int> meshes)
+{
+  bool all = true;
+  for(int mi : meshes)
+  {
+    if(!fedAsItIs(figure, mi))
+    {
+      all = false;
+      continue;
+    }
+    FedMesh& f = m_meshes[size_t(mi)];
+    if(!f.refine)
+    {
+      moveVertices(figure.meshes[size_t(mi)], f, true);
+      continue;
+    }
+    std::vector<glm::vec3> cage = cageOf(mi, f);
+    if(cage != m_scene.mesh(f.id)->cage)
+      m_scene.setMeshCage(f.id, std::move(cage));
+  }
+  return all;
+}
+
+bool FigureFeed::refines(int mesh) const
+{
+  return mesh >= 0 && mesh < int(m_meshes.size()) && m_meshes[size_t(mesh)].refine;
+}
+
 bool FigureFeed::syncSkins(const SceneGraph& figure, std::span<const int> meshes)
 {
   bool all = true;

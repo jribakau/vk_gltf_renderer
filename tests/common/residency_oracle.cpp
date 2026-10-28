@@ -384,11 +384,13 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(prim->input.vertexAddress != gpu.bufferAddress(positions) || prim->input.indexAddress != gpu.bufferAddress(prim->indices)
        || prim->input.indexCount != run.indexCount || prim->input.vertexCount != record->positions.size())
       out.push_back(at("I3", p) + "its BLAS input is not its buffers");
+    // a refined mesh's: its positions as fed, which a drag's cage steps leave behind until the drawn
+    // vertices catch up (MorphSet::cageOnly)
     glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
     for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
     {
-      lo = glm::min(lo, record->positions[record->indices[i]]);
-      hi = glm::max(hi, record->positions[record->indices[i]]);
+      lo = glm::min(lo, given->positions[given->indices[i]]);
+      hi = glm::max(hi, given->positions[given->indices[i]]);
     }
     if(run.indexCount && (prim->boundsMin != lo || prim->boundsMax != hi))
       out.push_back(at("I3", p) + "its bounds are not its vertices'");

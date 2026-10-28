@@ -17,6 +17,8 @@ constexpr int kRebuildEvery = 400;
 constexpr size_t kParallelDeltas = 16384;
 // How long a lazy file waits for others before the driver runs for it.
 constexpr auto kDriverDelay = std::chrono::milliseconds(100);
+// How long a cageOnly mesh's cage stays still before pump() brings its drawn vertices up to it.
+constexpr auto kCatchUpAfter = std::chrono::milliseconds(100);
 
 std::string prettyLabel(const std::string& name)
 {
@@ -180,6 +182,9 @@ std::vector<float> MorphSet::morphedCage(int mesh, const mesh::RenderTarget* exc
   const mesh::BuiltMesh* geo = m_geo(mesh);
   if(!geo)
     return {};
+  // a cageOnly mesh's kept cage, when no change waits for a flush
+  if(const auto it = m_cpu.find(mesh); !except && it != m_cpu.end() && !it->second.dirty && !it->second.cage.empty())
+    return it->second.cage;
   std::vector<float> out = geo->cagePositions;
   for(const auto& [target, weight] : activeTargets(mesh, except))
     for(size_t i = 0; i < target->cageIndices.size(); i++)
@@ -381,7 +386,7 @@ void MorphSet::pump()
     flush();
   if(m_driverDirty && (m_loading.empty() || std::chrono::steady_clock::now() - m_driverSince >= kDriverDelay))
     runDriver();
-  (void)any;
+  catchUp(kCatchUpAfter);
 }
 
 void MorphSet::settled()
@@ -398,10 +403,11 @@ void MorphSet::settled()
       pump();
     }
     if(!m_driverDirty)
-      return;
+      break;
     fv::timing::Accum t("settled: driver");
     runDriver();
   }
+  catchUp();
 }
 
 void MorphSet::set(const std::string& name, double value)
@@ -723,10 +729,13 @@ std::vector<std::string> MorphSet::takeErrors()
   return std::exchange(m_errors, {});
 }
 
-void MorphSet::change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written)
+void MorphSet::change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written, bool cage)
 {
-  MeshChange& c = m_changes[mesh];
-  c.mesh        = mesh;
+  // a cage change stays one only while nothing else is reported for the mesh
+  const bool  fresh = !m_changes.count(mesh);
+  MeshChange& c     = m_changes[mesh];
+  c.mesh            = mesh;
+  c.cage            = cage && (fresh || c.cage);
   if(all)
     c.all = true;
   if(c.all)
@@ -762,18 +771,97 @@ void MorphSet::flush()
   // Each mesh's buffers, welder and state are its own, so the meshes update side by side; the
   // changes are recorded afterwards, in mesh order, as one thread's work would have.
   std::vector<MeshUpdate> updates(dirty.size());
+  std::vector<uint8_t>    cages(dirty.size());
+  if(cageOnly)
+    for(size_t i = 0; i < dirty.size(); i++)
+      cages[i] = cageOnly(dirty[i].first);
+  const auto now = std::chrono::steady_clock::now();
   jobs::parallelFor(dirty.size(), 1, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
     {
       auto& [mesh, st] = dirty[i];
       st->dirty        = false;
+      if(cages[i])
+      {
+        // the drawn buffers stay at `applied` until catchUp()
+        updateCage(mesh, *st);
+        st->behind  = true;
+        st->movedAt = now;
+        continue;
+      }
+      updates[i]  = ++st->sinceRebuild > kRebuildEvery ? rebuild(mesh, *st) : update(mesh, *st);
+      st->applied = st->active;
+      st->behind  = false;
+      st->cage.clear();
+    }
+  });
+  for(size_t i = 0; i < dirty.size(); i++)
+    if(cages[i])
+      change(dirty[i].first, true, {}, {}, true);
+    else if(updates[i].changed)
+      change(updates[i].mesh, updates[i].all, updates[i].moved, updates[i].written);
+}
+
+void MorphSet::catchUp(std::chrono::steady_clock::duration still)
+{
+  const auto                              now = std::chrono::steady_clock::now();
+  std::vector<std::pair<int, MeshState*>> behind;
+  for(auto& [mesh, st] : m_cpu)
+    if(st.behind && !st.dirty && now - st.movedAt >= still)
+      behind.emplace_back(mesh, &st);
+  if(behind.empty())
+    return;
+  fv::timing::Accum       t("morph.catch up");
+  std::vector<MeshUpdate> updates(behind.size());
+  jobs::parallelFor(behind.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      auto& [mesh, st] = behind[i];
       updates[i]       = ++st->sinceRebuild > kRebuildEvery ? rebuild(mesh, *st) : update(mesh, *st);
       st->applied      = st->active;
+      st->behind       = false;
     }
   });
   for(const MeshUpdate& u : updates)
     if(u.changed)
       change(u.mesh, u.all, u.moved, u.written);
+}
+
+void MorphSet::updateCage(int mesh, MeshState& st)
+{
+  const mesh::BuiltMesh& geo = *m_geo(mesh);
+  const auto             add = [&](const mesh::RenderTarget& t, double dw) {
+    for(size_t i = 0; i < t.cageIndices.size(); i++)
+    {
+      const size_t v = t.cageIndices[i];
+      if(v * 3 + 2 >= st.cage.size())
+        continue;
+      st.cage[v * 3]     = float(st.cage[v * 3] + t.cageDeltas[i * 3] * dw);
+      st.cage[v * 3 + 1] = float(st.cage[v * 3 + 1] + t.cageDeltas[i * 3 + 1] * dw);
+      st.cage[v * 3 + 2] = float(st.cage[v * 3 + 2] + t.cageDeltas[i * 3 + 2] * dw);
+    }
+  };
+  if(st.cage.size() != geo.cagePositions.size() || ++st.sinceCageRebuild > kRebuildEvery)
+  {
+    st.sinceCageRebuild = 0;
+    st.cage             = geo.cagePositions;
+    for(const auto& [key, a] : st.active)
+      add(*a.target, a.weight);
+  }
+  else
+  {
+    for(const auto& [key, a] : st.active)
+    {
+      const auto   it   = st.cageApplied.find(key);
+      const double prev = it == st.cageApplied.end() ? 0 : it->second.weight;
+      if(a.weight != prev)
+        add(*a.target, a.weight - prev);
+    }
+    for(const auto& [key, prev] : st.cageApplied)
+      if(!st.active.count(key) && prev.weight != 0)
+        add(*prev.target, -prev.weight);
+  }
+  st.cageApplied = st.active;
 }
 
 // Adds each changed target's weight difference; re-welds normals around the moved vertices.

@@ -41,12 +41,15 @@ void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
   if(!f.feed || change.mesh < 0 || change.mesh >= int(f.fig->loaded.scene.meshes.size())
      || !f.fig->loaded.scene.meshes[change.mesh].geo)
     return;
-  const size_t count = f.fig->loaded.scene.meshes[change.mesh].geo->position.size() / 3;
+  const fv::mesh::BuiltMesh& geo   = *f.fig->loaded.scene.meshes[change.mesh].geo;
+  const size_t              count = (change.cage ? geo.cagePositions.size() : geo.position.size()) / 3;
   if(!change.all && change.indices.empty())
     return;
   dialTiming.addUpload(change.all ? count : change.indices.size(), change.all);
-  const int mesh = change.mesh;
-  if(!f.feed->syncVertices(f.fig->loaded.scene, {&mesh, 1}, true))
+  const int  mesh = change.mesh;
+  const bool fed  = change.cage ? f.feed->syncCages(f.fig->loaded.scene, {&mesh, 1})
+                                : f.feed->syncVertices(f.fig->loaded.scene, {&mesh, 1}, true);
+  if(!fed)
     f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
 }
 
