@@ -140,7 +140,10 @@
 //                                                (prop.remove, scene.clear: it comes back under its id, its
 //                                                objects kept or, past the few kept, loaded again from its
 //                                                scene-file part), an item put on (wear, load) or taken off
-//                                                (wardrobe.remove: worn again under its id, as it was), or a
+//                                                (wardrobe.remove: worn again under its id, as it was), a
+//                                                preset or a look chosen (load of a pose, shape, property,
+//                                                material or environment preset, material.skin/eyes/makeup,
+//                                                wardrobe.color: the figure's look kept, surfaces and all), or a
 //                                                panel edit (prop.set, morph.*,
 //                                                pose.*, material.set/reset, wardrobe.visible/collision/cloth,
 //                                                dforce.enable/mode, lighting.set, scene.order, view.use, and

@@ -1,0 +1,1 @@
+{"file_version":"0.6.0.0","asset_info":{"id":"/People/Test/Materials/Box%20Body%20Red.duf","type":"preset_material"},"scene":{"animations":[{"url":"name://@selection#materials/Body:?diffuse/value","keys":[[0,[0.8,0.1,0.1]]]},{"url":"name://@selection#materials/Body:?Glossy%20Roughness/value","keys":[[0,0.2]]}]}}

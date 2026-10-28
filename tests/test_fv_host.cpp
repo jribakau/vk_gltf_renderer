@@ -270,7 +270,8 @@ Json historyStep(HostRig& rig, const char* cmd)
   return answer.value("result", Json::object());
 }
 
-// The first place two states differ (numbers to within 1e-4), or empty
+// The first place two states differ (numbers to within 1e-4), or empty. A key that is null on one
+// side and missing on the other is the same: a topic's merge patch drops what it sets to null.
 std::string differ(const Json& a, const Json& b, const std::string& at = "")
 {
   if(a.is_number() && b.is_number())
@@ -280,11 +281,13 @@ std::string differ(const Json& a, const Json& b, const std::string& at = "")
   if(a.is_object())
   {
     for(auto it = a.begin(); it != a.end(); ++it)
-      if(const std::string d = b.contains(it.key()) ? differ(it.value(), b[it.key()], at + "/" + it.key()) : at + "/" + it.key() + " went";
+      if(const std::string d = b.contains(it.key()) ? differ(it.value(), b[it.key()], at + "/" + it.key())
+                               : it.value().is_null()  ? ""
+                                                       : at + "/" + it.key() + " went";
          !d.empty())
         return d;
     for(auto it = b.begin(); it != b.end(); ++it)
-      if(!a.contains(it.key()))
+      if(!a.contains(it.key()) && !it.value().is_null())
         return at + "/" + it.key() + " came";
     return "";
   }
@@ -384,7 +387,7 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
 
       std::string cmd;
       Json        args = Json::object();
-      switch(rng() % 28)
+      switch(rng() % 32)
       {
         case 0: cmd = "prop.set", args = {{"prop", id}, {"transform", {{"t", {u(-1, 1), 0.0, u(-1, 1)}}}}}; break;
         case 1: cmd = "prop.set", args = {{"prop", any(props)}, {"transform", {{"e", {u(-90, 90), u(-90, 90), 0.0}}}}}; break;
@@ -427,6 +430,10 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
         case 24: cmd = "load", args = {{"rel", "People/Test/Box Figure.duf"}}; break;
         case 26: cmd = "wear", args = {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}}; break;
         case 27: cmd = "wardrobe.remove", args = {{"prop", id}, {"item", item}}; break;
+        case 28: cmd = "load", args = {{"prop", id}, {"rel", coin() ? "People/Test/Poses/Box Look Left.duf" : "People/Test/Materials/Box Body Red.duf"}}; break;
+        case 29: cmd = "material.skin", args = {{"prop", id}, {"rel", coin() ? Json("People/Test/Materials/Box Body Red.duf") : Json()}}; break;
+        case 30: cmd = "wardrobe.color", args = {{"prop", id}, {"item", item}, {"rel", coin() ? Json("People/Test/Materials/Box Shirt Blue.duf") : Json()}}; break;
+        case 31: cmd = "material.makeup", args = {{"prop", id}, {"rel", Json()}}; break;
         default:
           if(rng() % 4 == 0)
             cmd = "scene.clear";
@@ -531,6 +538,52 @@ TEST(FvHost, AnItemTakenOffComesBackUnderItsIdAsItWas)
   ASSERT_TRUE(items().contains(item)) << items().dump();
   EXPECT_FALSE(items()[item].value("visible", true));
   EXPECT_EQ(differ(was, stateOf(rig)), "");
+}
+
+// A preset, a skin, an item's colour: each a step whose undo puts the figure's look back as it was,
+// surfaces and all, and whose redo brings the change back.
+TEST(FvHost, APresetOrALookChoiceUndoesToTheLookBefore)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const Json        worn = rig.topic("wardrobe/" + id).value("items", Json::object());
+  ASSERT_EQ(worn.size(), 1u);
+  const std::string item = worn.begin().key();
+  rig.cmd("material.set", {{"prop", id}, {"material", "m:0"}, {"values", {{"roughness", 0.5}}}});
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", 0.2}}}});
+  // the scene's state and each surface as the Material tab shows it
+  const auto look = [&] {
+    Json       state     = stateOf(rig);
+    const Json materials = rig.topic("materials/" + id).value("items", Json::object());
+    for(const auto& [m, it] : materials.items())
+      state["surfaces"][m] = it.value("values", Json::object());
+    return state;
+  };
+
+  const std::vector<std::pair<std::string, Json>> edits = {
+      {"load", {{"prop", id}, {"rel", "People/Test/Poses/Box Look Left.duf"}}},
+      {"load", {{"prop", id}, {"rel", "People/Test/Materials/Box Body Red.duf"}}},
+      {"material.skin", {{"prop", id}, {"rel", "People/Test/Materials/Box Body Red.duf"}}},
+      {"wardrobe.color", {{"prop", id}, {"item", item}, {"rel", "People/Test/Materials/Box Shirt Blue.duf"}}},
+  };
+  for(const auto& [cmd, args] : edits)
+  {
+    const Json   before = look();
+    const size_t steps  = rig.topic("history").at("undo").size();
+    ASSERT_TRUE(rig.cmd(cmd, args).value("ok", false)) << cmd;
+    ASSERT_TRUE(rig.settle());
+    ASSERT_EQ(rig.topic("history").at("undo").size(), steps + 1) << cmd << " " << args.dump();
+    const Json after = look();
+    EXPECT_NE(differ(before, after), "") << cmd << " changed nothing";
+    EXPECT_FALSE(historyStep(rig, "history.undo").contains("problems"));
+    EXPECT_EQ(differ(before, look()), "") << cmd << " undone";
+    EXPECT_FALSE(historyStep(rig, "history.redo").contains("problems"));
+    EXPECT_EQ(differ(after, look()), "") << cmd << " redone";
+  }
 }
 
 //--------------------------------------------------------------------------------------------------

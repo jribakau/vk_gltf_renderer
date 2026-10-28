@@ -94,7 +94,8 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
                   {"rotation", fv::lighting::presetRotation(environment->rotation.value_or(0.0))}};
       if(environment->drawDome.value_or(false))
         env["background"] = "environment";
-      lightingSet({{"env", env}, {"sun", {{"enabled", false}}}});
+      const Json patch = {{"env", env}, {"sun", {{"enabled", false}}}};
+      journaled("lighting.set", patch, [&] { return lightingSet(patch); });
       notice("Applied lighting preset " + name + " (" + hdrName + "). The sun light is off; turn it back on in the Light tab.", "info");
     }
     job(jobId, {{"state", "done"}, {"preset", kind}});
@@ -107,31 +108,33 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
     if(!figure || !figure->fig->pose)
       notice(name + " is a DAZ " + kind + ". Select a DAZ figure first, then open it.");
     else
-    {
-      fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
-      protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
-      // a property preset can also set surfaces ("#materials/<surface>:?<channel>" urls)
-      const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
-      if(!surfaces.changed.empty())
-      {
-        if(prop->materials)
-          prop->materials->surfacesChanged(surfaces.changed);
-        auto& presets = figure->materialPresets;
-        presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
-        presets.push_back(rel);
-        presetChangedEyes(*prop, rel, surfaces.changed);
-        r.applied += int(surfaces.changed.size());
-      }
-      // it showed or hid worn items (a geograft's Apply and Remove presets)
-      if(!r.itemsShown.empty())
-        requestCompose("Showing", {}, figure.get());
-      if(!r.applied)
-        notice(name + ": nothing in this " + kind + " matches " + prop->name + ".");
-      else if(!r.skipped.empty())
-        notice("Applied " + name + ". " + std::to_string(r.skipped.size()) + " of its controls aren't on this figure and were skipped.", "info");
-      else
-        notice("Applied " + name + " to " + prop->name, "info");
-    }
+      // a step of the history: the figure's look before and after
+      journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
+        fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
+        protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
+        // a property preset can also set surfaces ("#materials/<surface>:?<channel>" urls)
+        const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
+        if(!surfaces.changed.empty())
+        {
+          if(prop->materials)
+            prop->materials->surfacesChanged(surfaces.changed);
+          auto& presets = figure->materialPresets;
+          presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
+          presets.push_back(rel);
+          presetChangedEyes(*prop, rel, surfaces.changed);
+          r.applied += int(surfaces.changed.size());
+        }
+        // it showed or hid worn items (a geograft's Apply and Remove presets)
+        if(!r.itemsShown.empty())
+          requestCompose("Showing", {}, figure.get());
+        if(!r.applied)
+          notice(name + ": nothing in this " + kind + " matches " + prop->name + ".");
+        else if(!r.skipped.empty())
+          notice("Applied " + name + ". " + std::to_string(r.skipped.size()) + " of its controls aren't on this figure and were skipped.", "info");
+        else
+          notice("Applied " + name + " to " + prop->name, "info");
+        return Json();
+      });
   }
   else if(kind == "material preset")
   {
@@ -148,7 +151,7 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
       // eyes swap cleanly, as the Material tab's chooser does
       try
       {
-        applyEyes(*prop, rel, &doc, false);
+        journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] { return applyEyes(*prop, rel, &doc, false); });
         notice("Eyes " + name + " on " + prop->name + ".", "info");
       }
       catch(const std::exception& e)
@@ -157,22 +160,23 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
       }
     }
     else
-    {
-      const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
-      // not composed yet, the composition lowers the surfaces as they are now
-      if(prop->materials)
-        prop->materials->surfacesChanged(r.changed);
-      if(r.changed.empty())
-        notice(name + ": none of its surfaces match " + prop->name + ".");
-      else
-      {
-        auto& presets = figure->materialPresets;
-        presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
-        presets.push_back(rel);
-        presetChangedEyes(*prop, rel, r.changed);
-        notice("Applied material preset " + name + " to " + std::to_string(r.changed.size()) + " surfaces.", "info");
-      }
-    }
+      journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
+        const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
+        // not composed yet, the composition lowers the surfaces as they are now
+        if(prop->materials)
+          prop->materials->surfacesChanged(r.changed);
+        if(r.changed.empty())
+          notice(name + ": none of its surfaces match " + prop->name + ".");
+        else
+        {
+          auto& presets = figure->materialPresets;
+          presets.erase(std::remove(presets.begin(), presets.end(), rel), presets.end());
+          presets.push_back(rel);
+          presetChangedEyes(*prop, rel, r.changed);
+          notice("Applied material preset " + name + " to " + std::to_string(r.changed.size()) + " surfaces.", "info");
+        }
+        return Json();
+      });
   }
   else
     notice(name + " is a DAZ " + kind + " and isn't supported in the native viewport yet.");
@@ -338,7 +342,7 @@ Json FvHost::Impl::wardrobeColor(const Json& args)
       return fail("the figure left the scene");
     try
     {
-      Json done     = applyItemColor(*p, items, rel, doc ? &*doc : nullptr, false);
+      Json done     = journaled("wardrobe.color", {{"prop", p->id}, {"label", label}}, [&] { return applyItemColor(*p, items, rel, doc ? &*doc : nullptr, false); });
       done["label"] = label;
       done["state"] = "done";
       job(jobId, done);
@@ -448,13 +452,14 @@ Json FvHost::Impl::choiceJob(const Json& args, const std::string& command, const
   }
   std::shared_ptr<Loaded> target = prop->figure;
   // on the application thread, the add-ons on
-  const auto done = [this, target, rel, jobId, label, fail, apply](const std::optional<fv::dson::Json>& doc) {
+  const auto done = [this, target, rel, jobId, label, fail, apply, command](const std::optional<fv::dson::Json>& doc) {
     const auto p = findProp(target->id);
     if(!p || p->figure != target)
       return fail("the figure left the scene");
     try
     {
-      Json out     = apply(*p, rel, doc ? &*doc : nullptr);
+      // a step of the history: the look before and after
+      Json out     = journaled(command, {{"prop", p->id}, {"label", label}}, [&] { return apply(*p, rel, doc ? &*doc : nullptr); });
       out["label"] = label;
       out["state"] = "done";
       job(jobId, out);

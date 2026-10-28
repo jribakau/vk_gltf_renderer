@@ -186,6 +186,13 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
           index.push_back(int(i));
     return {{"kind", "materials"}, {"prop", p->id}, {"materials", index}};
   }
+  // what rewrites a figure's surfaces: its whole look before and after
+  if(cmd == "preset" || cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "wardrobe.color"
+     || cmd == "figure.look")
+  {
+    const auto p = figureProp(args);
+    return p && p->figure ? Json{{"kind", "look"}, {"prop", p->id}} : Json();
+  }
   if(cmd == "wardrobe.remove" || cmd == "wardrobe.restore")
   {
     // an item worn or not: what puts it back on, or takes it off
@@ -342,6 +349,8 @@ Json FvHost::Impl::journalState(const Json& scope)
         ops.push_back(op("dforce.enable", {{"prop", id}, {"on", f.dforce->enabled()}}));
     }
   }
+  else if(kind == "look")
+    ops.push_back(op("figure.look", {{"prop", id}, {"look", keepLook(f)}, {"state", sceneState({{"prop", id}})}}));
   else if(kind == "items")
     for(const Json& item : scope["items"])
       if(const fv::WornItem* w = wornItem(*f.fig, item.get<int>()))
@@ -385,6 +394,10 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
     return "Lens of " + name;
   if(cmd == "prop.remove")
     return "Remove " + name;
+  if(cmd == "preset")
+    return "Apply " + args.value("name", std::string("preset"));
+  if(cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "wardrobe.color")
+    return args.value("label", cmd);
   if(cmd == "wardrobe.remove")
   {
     const fv::WornItem* w = p && p->figure && args.contains("item") ? wornItem(*p->figure->fig, itemIdOf(args["item"])) : nullptr;
@@ -479,7 +492,14 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
     failed = std::current_exception();
   }
   const Json after = journalState(scope);
-  if(before == after)
+  // a kept look is new each time it is read: what it was read from says whether anything changed
+  const auto unkept = [](Json ops) {
+    for(Json& o : ops)
+      if(o.value("cmd", "") == "figure.look")
+        o["args"].erase("look");
+    return ops;
+  };
+  if(unkept(before) == unkept(after))
   {
     if(failed)
       std::rethrow_exception(failed);
@@ -567,6 +587,8 @@ Json FvHost::Impl::applyOp(const Json& o)
     return wardrobeRemove(args);
   if(cmd == "wardrobe.restore")
     return wardrobeRestore(args);
+  if(cmd == "figure.look")
+    return applyLook(args);
   throw std::runtime_error("the history can't apply " + cmd);
 }
 
@@ -670,14 +692,114 @@ void FvHost::Impl::recordAdded(const std::shared_ptr<Prop>& p, const std::string
 void FvHost::Impl::pruneParked()
 {
   std::set<std::string> named;
-  journal.forEachOp([&](const Json& o) {
+  std::set<uint64_t>    looks;
+  const auto            note = [&](const Json& o) {
     if(o.value("cmd", "") == "prop.restore")
       named.insert(o["args"].value("prop", ""));
-  });
+    else if(o.value("cmd", "") == "figure.look")
+      looks.insert(o["args"].value("look", uint64_t(0)));
+  };
+  journal.forEachOp(note);
+  // an undo that waits on a load holds its ops and the way back it read so far
+  if(historyRun)
+    for(const Json* ops : {&historyRun->ops, &historyRun->opposite})
+      for(const Json& o : *ops)
+        note(o);
+  std::erase_if(keptLooks, [&](const auto& kept) { return !looks.count(kept.first); });
   std::erase_if(parked, [&](const auto& kept) { return !named.count(kept.first); });
   // the oldest go first: their undo loads them again
   while(parked.size() > kParked)
     parked.erase(parked.begin());
+}
+
+uint64_t FvHost::Impl::keepLook(const Loaded& f)
+{
+  auto l             = std::make_shared<FigureLook>();
+  l->materials       = f.fig->loaded.scene.materials;
+  l->materialPresets = f.materialPresets;
+  l->eyes            = f.eyes;
+  l->eyesOwned       = f.eyesOwned;
+  l->eyesPreset      = f.eyesPreset;
+  l->skin            = f.skin;
+  l->skinOwned       = f.skinOwned;
+  l->skinPreset      = f.skinPreset;
+  l->makeup          = f.makeup;
+  l->makeupLayer     = f.makeupLayer;
+  l->colors          = f.colors;
+  if(f.fig->morphs)
+    for(const fv::morph::Channel& c : f.fig->morphs->channels())
+      if(!c.hidden)
+        l->dials.emplace_back(c.name, c.value);
+  if(f.fig->pose)
+    for(const fv::pose::PoseBone& pb : f.fig->pose->bones())
+      for(const fv::pose::Axis& a : pb.axes)
+        if(const auto v = f.fig->pose->posed(pb.id, fv::pose::kindName(a.kind), a.axis))
+          l->pose.push_back({pb.id, a.kind, a.axis, *v});
+  for(const fv::WornItem& w : f.fig->items)
+    l->visible[w.id] = w.visible;
+  keptLooks[++lookCount] = std::move(l);
+  return lookCount;
+}
+
+Json FvHost::Impl::applyLook(const Json& args)
+{
+  const auto p = findProp(args.at("prop").get<std::string>());
+  if(!p || !p->figure)
+    throw std::runtime_error("no such figure");
+  const auto kept = keptLooks.find(args.at("look").get<uint64_t>());
+  if(kept == keptLooks.end())
+    throw std::runtime_error("its look is no longer kept");
+  const FigureLook& l     = *kept->second;
+  Loaded&           f     = *p->figure;
+  fv::SceneGraph&   scene = f.fig->loaded.scene;
+  // the surfaces as they were, lowered again (a wear since appended its own after them)
+  std::set<int> changed;
+  for(size_t i = 0; i < l.materials.size() && i < scene.materials.size(); i++)
+  {
+    scene.materials[i] = l.materials[i];
+    changed.insert(int(i));
+  }
+  if(p->materials)
+    p->materials->surfacesChanged(changed);
+  f.materialPresets = l.materialPresets;
+  f.eyes            = l.eyes;
+  f.eyesOwned       = l.eyesOwned;
+  f.eyesPreset      = l.eyesPreset;
+  f.skin            = l.skin;
+  f.skinOwned       = l.skinOwned;
+  f.skinPreset      = l.skinPreset;
+  f.makeup          = l.makeup;
+  f.makeupLayer     = l.makeupLayer;
+  f.colors          = l.colors;
+  // the dials and the pose where they differ
+  if(f.fig->morphs)
+  {
+    std::vector<std::pair<std::string, double>> dials;
+    for(const auto& [name, value] : l.dials)
+      if(f.fig->morphs->get(name) != value)
+        dials.emplace_back(name, value);
+    if(!dials.empty())
+      f.fig->morphs->setMany(dials);
+  }
+  if(f.fig->pose)
+  {
+    std::vector<fv::pose::ChannelValue> values;
+    for(const fv::pose::ChannelValue& v : l.pose)
+      if(f.fig->pose->posed(v.bone, fv::pose::kindName(v.kind), v.axis) != v.value)
+        values.push_back(v);
+    if(!values.empty())
+    {
+      f.fig->pose->setMany(values);
+      protocol->events().snapshot("pose/" + f.id, poseSnapshot(f));
+    }
+  }
+  for(const auto& [item, visible] : l.visible)
+    if(const fv::WornItem* w = wornItem(*f.fig, item); w && w->visible != visible)
+      wardrobeVisible({{"prop", p->id}, {"item", item}, {"visible", visible}});
+  publishEyes(*p);
+  publishSkin(*p);
+  publishWardrobe(f);
+  return {{"ok", true}};
 }
 
 Json FvHost::Impl::propRecord(const Prop& p)

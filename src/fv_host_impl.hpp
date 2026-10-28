@@ -891,6 +891,28 @@ struct FvHost::Impl
   // A prop that came (a load, prop.add, a duplicate) as a step: its undo takes it away
   void recordAdded(const std::shared_ptr<Prop>& p, const std::string& label);
 
+  // ---- a figure's look, kept for a step's undo (C3): its surfaces and edits, the looks chosen, its
+  // dials, pose and which items show. A preset or a choice (skin, eyes, makeup, an item's colour)
+  // rewrites surfaces, which no command puts back: figure.look {prop, look} does, from the one kept.
+  // A kept look goes once no step names it.
+  struct FigureLook
+  {
+    std::vector<fv::Material>                   materials;
+    std::vector<std::string>                    materialPresets;
+    std::optional<std::string>                  eyes, skin, makeup;
+    std::set<int>                               eyesOwned, skinOwned;
+    std::string                                 eyesPreset, skinPreset;
+    fv::dson::PresetLayer                       makeupLayer;
+    std::map<int, Loaded::ItemColor>            colors;
+    std::vector<std::pair<std::string, double>> dials;
+    std::vector<fv::pose::ChannelValue>         pose;
+    std::map<int, bool>                         visible;
+  };
+  std::map<uint64_t, std::shared_ptr<const FigureLook>> keptLooks;
+  uint64_t                                              lookCount = 0;
+  uint64_t keepLook(const Loaded& f);
+  Json     applyLook(const Json& args);
+
   // ---- worn items as steps (C3): what puts one back on as it was, and doing that
   Json itemRecord(const Loaded& f, const fv::WornItem& w) const;
   // wardrobe.restore {prop, item, record}: worn again under its id, its file's other items left off (-> {job})
