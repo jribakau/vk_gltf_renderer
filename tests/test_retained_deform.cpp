@@ -211,6 +211,71 @@ TEST(RetainedDeform, ASkinTurnsTheNormalsByItsBones)
   }
 }
 
+// DAZ's skinning (gpu-figures-plan.md F3): bone 1 turned half a turn about the bone's own axis (x),
+// the middle column, half on each bone, collapses onto the axis with the linear blend, keeps its
+// distance with dual quaternions, and lies half way with a share of 0.5 (Genesis 9's); the oracle,
+// which skins as the shader does, holds the drawer's streams to it
+TEST(RetainedDeform, DualQuaternionsKeepATwistedJointsVolume)
+{
+  for(const float share : {0.f, 0.5f, 1.f})
+  {
+    RetainedScene scene;
+    const EntityId root = scene.createEntity("root", {}), bone0 = scene.createEntity("bone0", {}, root);
+    const EntityId bone1 = scene.createEntity("bone1", {}, bone0);
+    Transform      t;
+    t.translation = {1, 0, 0};
+    t.rotation    = glm::angleAxis(glm::radians(180.f), glm::vec3(1, 0, 0));
+    scene.setLocal(bone1, t);
+    MeshRecord grid = skinnedGrid(false, true);
+    grid.dualQuat   = share;
+    const MeshId     mesh     = scene.addMesh(std::move(grid));
+    const MaterialId material = scene.addMaterial({});
+    const SkinId skin = scene.addSkin({.name = "skin", .joints = {bone0, bone1}, .inverseBind = {glm::mat4(1.f), glm::translate(glm::mat4(1.f), {-1, 0, 0})}});
+    const EntityId body = Rig::drawSkinned(scene, mesh, skin, material, root);
+    FakeGpuBackend gpu;
+    Residency      residency(gpu);
+    residency.replace(scene);
+    expectClean(scene, residency, gpu, "share " + std::to_string(share) + ": ");
+    const std::vector<glm::vec3> skinned = readBack<glm::vec3>(gpu, residency.drawer(body, mesh)->positions);
+    const glm::vec3              middle  = skinned[7];  // (1, 2, 0): two from the axis
+    EXPECT_NEAR(glm::length(glm::vec2(middle.y, middle.z)), 2.f * share, 1e-5f) << share;
+    EXPECT_NEAR(middle.x, 1.f, 1e-5f) << share;
+    // the right column is on bone 1 alone: turned half a turn whichever way it is skinned
+    EXPECT_NEAR(glm::distance(skinned[8], glm::vec3(2, -2, 0)), 0.f, 1e-5f) << share;
+  }
+}
+
+// Eight influences: the second set of four counts as the first does, so weights split across the
+// two sets skin as they do in one
+TEST(RetainedDeform, TheSecondSetOfFourInfluencesCounts)
+{
+  std::vector<glm::vec3> skinned[2];
+  for(int split = 0; split < 2; split++)
+  {
+    Rig rig(false);
+    rig.bend(60);
+    MeshRecord grid = skinnedGrid(false);
+    for(size_t v = 0; v < grid.positions.size(); v++)
+    {
+      grid.joints[v]  = {0, 1, 0, 0};
+      grid.weights[v] = split ? glm::vec4(0.5f, 0, 0, 0) : glm::vec4(0.5f, 0.5f, 0, 0);
+      if(split)
+      {
+        grid.joints1.push_back({1, 0, 0, 0});
+        grid.weights1.push_back({0.5f, 0, 0, 0});
+      }
+    }
+    const MeshId   mesh = rig.scene.addMesh(std::move(grid));
+    const EntityId body = Rig::drawSkinned(rig.scene, mesh, rig.skin, rig.material, rig.root);
+    FakeGpuBackend gpu;
+    Residency      residency(gpu);
+    residency.replace(rig.scene);
+    expectClean(rig.scene, residency, gpu, split ? "split: " : "one set: ");
+    skinned[split] = readBack<glm::vec3>(gpu, residency.drawer(body, mesh)->positions);
+  }
+  EXPECT_EQ(skinned[0], skinned[1]);
+}
+
 // A pose runs the skin again and refits its prims; a frame that moves nothing it reads runs nothing
 TEST(RetainedDeform, APoseRunsTheSkinAndOnlyAPoseDoes)
 {

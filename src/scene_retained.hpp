@@ -185,6 +185,13 @@ struct MeshRecord
   std::vector<glm::vec4>   colors;
   std::vector<glm::uvec4>  joints;
   std::vector<glm::vec4>   weights;
+  // DAZ's skinning (daz-viewer docs/gpu-figures-plan.md F3): influences five to eight (empty: none),
+  // and the share of the skinning that is dual quaternion rather than linear blend, per vertex when
+  // `dualQuatShares` has one each
+  std::vector<glm::uvec4> joints1;
+  std::vector<glm::vec4>  weights1;
+  float                   dualQuat = 0;
+  std::vector<float>      dualQuatShares;
   std::vector<uint32_t>    indices;  // u32 always; a non-indexed primitive gets 0..n-1
   std::vector<Submesh>     submeshes;
   std::vector<MorphTarget> targets;

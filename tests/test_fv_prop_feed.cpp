@@ -440,6 +440,40 @@ TEST(FvPropFeed, ARefinedNormalMappedFiguresTangentsAreMadeOnTheGpu)
   check("a cage step");
 }
 
+// figureDazSkinning (gpu-figures-plan.md F3): a figure's records carry its meshes' dual quaternion
+// share and its drawers skin with the joints' dual quaternions (the oracle skins as the shader does);
+// without it they are glTF's linear blend
+TEST(FvPropFeed, DazSkinningCarriesTheFilesDualQuaternionShare)
+{
+  for(const bool daz : {false, true})
+  {
+    const auto box = loadBox();
+    for(fv::Mesh& m : box->loaded.scene.meshes)
+      m.skin.dualQuat = 1.f;
+    rs::RetainedScene         scene;
+    rs::FakeGpuBackend        gpu(2);
+    rs::Residency             residency(gpu);
+    fv::PropFeed              feed(scene);
+    std::vector<fv::PropSpec> props(1);
+    props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+    props[0].figureDazSkinning = daz;
+    feed.sync(props);
+    residency.replace(scene);
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << (daz ? "daz: " : "linear: ") << p;
+    size_t skinned = 0;
+    for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
+    {
+      const rs::MeshRecord* record = scene.mesh(feed.fed("p:1")->figure->meshOf(int(mi)));
+      if(!record || record->joints.empty())
+        continue;
+      skinned++;
+      EXPECT_EQ(record->dualQuat, daz ? 1.f : 0.f) << mi;
+    }
+    EXPECT_GT(skinned, 0u);
+  }
+}
+
 // Strand ribbons (gpu-figures-plan.md F1): each drawn vertex is its strand point moved across the
 // strand by its width, which the GPU adds after copying the points; the residency's streams are the
 // CPU's, as fed and with the strands moved as a morph moves them.

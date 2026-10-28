@@ -27,6 +27,7 @@
 #include <glm/gtx/norm.hpp>
 
 #include "nvshaders/functions.h.slang"
+#include "skin_reference.hpp"
 
 #include <nvutils/offset_allocator.hpp>
 
@@ -608,10 +609,12 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
   const Span<glm::vec4> baseTan{range(d.baseTangents, 16, n, "base tangents", false), n};
   Span<glm::vec3>       posDelta, nrmDelta, tanDelta;
   Span<float>           weights;
-  Span<glm::ivec4>      joints;
-  Span<glm::vec4>       jointWeights;
+  Span<glm::ivec4>      joints, joints1;
+  Span<glm::vec4>       jointWeights, jointWeights1;
   Span<glm::mat4>       jointMats;
   Span<glm::mat3>       normalMats;
+  Span<JointDualQuat>   dualQuats;
+  Span<float>           shares;
   if(d.kind == DeformKind::eMorph)
   {
     const uint64_t deltas = n * d.targetCount;
@@ -630,6 +633,15 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     normalMats   = {range(d.normalMatrices, kNormalMatrixStride, d.jointCount, "normal matrices", false), d.jointCount};
     if(!joints || !jointWeights || !jointMats || !normalMats)
       error("dispatchDeform: a skin without joints, weights or matrices");
+    if(d.joints1.buffer && d.weights1.buffer)
+    {
+      joints1       = {range(d.joints1, 16, n, "joints 5-8", false), n};
+      jointWeights1 = {range(d.weights1, 16, n, "weights 5-8", false), n};
+    }
+    if(d.jointDualQuats.buffer)
+      dualQuats = {range(d.jointDualQuats, sizeof(JointDualQuat), d.jointCount, "joint dual quaternions", false), d.jointCount};
+    if(d.dualQuatShares.buffer)
+      shares = {range(d.dualQuatShares, 4, n, "dual quaternion shares", false), n};
   }
   const Span<glm::vec3> outPos{range(d.outPositions, 12, n, "output positions", true), n};
   const Span<glm::vec3> outNrm{range(d.outNormals, 12, n, "output normals", true), n};
@@ -644,6 +656,18 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
   if(d.outPositions.buffer == d.basePositions.buffer)
     error("dispatchDeform: writes the buffer it reads");
   const bool hasNormals = baseNrm && outNrm, hasTangents = baseTan && outTan;
+  // a skin's joints, as the shader reads them
+  std::vector<glm::mat4>     skinMats;
+  std::vector<glm::mat3>     skinNormalMats;
+  std::vector<JointDualQuat> skinDualQuats;
+  if(d.kind == DeformKind::eSkin && jointMats && normalMats)
+    for(uint32_t j = 0; j < d.jointCount; j++)
+    {
+      skinMats.push_back(jointMats.get(j));
+      skinNormalMats.push_back(normalMats.get(j));
+      if(dualQuats)
+        skinDualQuats.push_back(dualQuats.get(j));
+    }
   for(uint64_t v = 0; v < n; v++)
   {
     if(d.kind == DeformKind::eMorph)
@@ -672,24 +696,19 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     }
     if(!joints || !jointWeights || !jointMats || !normalMats)
       return;
-    const glm::vec4  w = jointWeights.get(v);
-    const glm::ivec4 j = joints.get(v);
-    glm::vec3        pos(0.f), nrm(0.f), tan(0.f);
-    for(int i = 0; i < 4; i++)
-      if(w[i] > 0.f && j[i] >= 0 && uint32_t(j[i]) < d.jointCount)
-      {
-        const glm::mat4 m = jointMats.get(uint64_t(j[i]));
-        pos += w[i] * glm::vec3(m * glm::vec4(basePos.get(v), 1.f));
-        if(hasNormals)
-          nrm += w[i] * (normalMats.get(uint64_t(j[i])) * baseNrm.get(v));
-        if(hasTangents)
-          tan += w[i] * (glm::mat3(m) * glm::vec3(baseTan.get(v)));
-      }
-    outPos.set(v, pos);
+    const glm::ivec4 j[2] = {joints.get(v), joints1 ? joints1.get(v) : glm::ivec4(0)};
+    const glm::vec4  w[2] = {jointWeights.get(v), jointWeights1 ? jointWeights1.get(v) : glm::vec4(0.f)};
+    const int        sets = joints1 && jointWeights1 ? 2 : 1;
+    const glm::vec3  nrm  = hasNormals ? baseNrm.get(v) : glm::vec3(0.f);
+    const glm::vec4  tan  = hasTangents ? baseTan.get(v) : glm::vec4(0.f);
+    const float      share = !dualQuats ? 0.f : shares ? shares.get(v) : d.dualQuat;
+    const SkinnedVertex out = skinVertex(basePos.get(v), hasNormals ? &nrm : nullptr, hasTangents ? &tan : nullptr,
+                                         {j, size_t(sets)}, {w, size_t(sets)}, {skinMats, skinNormalMats, skinDualQuats}, share);
+    outPos.set(v, out.position);
     if(hasNormals)
-      outNrm.set(v, glm::normalize(nrm));
+      outNrm.set(v, out.normal);
     if(hasTangents)
-      outTan.set(v, glm::vec4(glm::normalize(tan), baseTan.get(v).w));
+      outTan.set(v, out.tangent);
   }
   for(const BufferRange* r : {&d.outPositions, &d.outNormals, &d.outTangents})
     if(r->buffer)

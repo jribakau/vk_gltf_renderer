@@ -61,6 +61,8 @@ struct PropSpec
   // its subdivided meshes' morphed cages, for the GPU to refine (FigureFeedOptions::cageOf); taken
   // when the figure's feed is made
   std::function<std::vector<float>(int mesh)> figureCageOf;
+  // DAZ's skinning for its meshes (FigureFeedOptions::dazSkinning), taken when the figure's feed is made
+  bool figureDazSkinning = false;
   // a model's file, imported once (another file: imported again)
   std::shared_ptr<const tinygltf::Model> model;
   std::vector<std::filesystem::path>     imageSearchPaths;

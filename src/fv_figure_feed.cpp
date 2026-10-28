@@ -414,11 +414,32 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
   {
     r.joints.resize(count);
     r.weights.resize(count);
+    const bool eight = m_options.dazSkinning && m.skin.skinIndex8.size() == count * 8 && m.skin.skinWeight8.size() == count * 8;
+    if(eight)
+    {
+      r.joints1.resize(count);
+      r.weights1.resize(count);
+    }
     for(size_t v = 0; v < count; v++)
     {
+      if(eight)
+      {
+        const uint16_t* j = &m.skin.skinIndex8[v * 8];
+        r.joints[v]       = glm::uvec4(j[0], j[1], j[2], j[3]);
+        r.joints1[v]      = glm::uvec4(j[4], j[5], j[6], j[7]);
+        r.weights[v]      = glm::make_vec4(&m.skin.skinWeight8[v * 8]);
+        r.weights1[v]     = glm::make_vec4(&m.skin.skinWeight8[v * 8 + 4]);
+        continue;
+      }
       const uint16_t* j = &m.skin.skinIndex[v * 4];
       r.joints[v]       = glm::uvec4(j[0], j[1], j[2], j[3]);
       r.weights[v]      = glm::make_vec4(&m.skin.skinWeight[v * 4]);
+    }
+    if(m_options.dazSkinning)
+    {
+      r.dualQuat = m.skin.dualQuat;
+      if(m.skin.dualQuatShare.size() == count)
+        r.dualQuatShares = m.skin.dualQuatShare;
     }
   }
   r.indices = drawn.index();

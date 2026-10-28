@@ -29,6 +29,7 @@
 #include <tuple>
 
 #include "gltf_material_cache.hpp"
+#include "skin_reference.hpp"
 #include "tinygltf_utils.hpp"
 #include "scene_gpu_tables.hpp"
 #include "scene_material_bits.hpp"
@@ -197,27 +198,27 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r)
   std::vector<glm::mat3> normalMats;
   for(const glm::mat4& j : joints)
     normalMats.push_back(glm::transpose(glm::inverse(glm::mat3(j))));
+  // DAZ's skinning: the second set of four, and the joints' dual quaternions where the record has a share
+  const bool                 eight = r.joints1.size() == n && r.weights1.size() == n;
+  const bool                 dq    = r.dualQuat > 0.f || r.dualQuatShares.size() == n;
+  std::vector<JointDualQuat> dualQuats;
+  if(dq)
+    for(const glm::mat4& j : joints)
+      dualQuats.push_back(jointDualQuat(j));
   const Deformed base = out;
   for(size_t v = 0; v < n; v++)
   {
-    glm::vec3 pos(0.f), nrm(0.f), tan(0.f);
-    for(int i = 0; i < 4; i++)
-    {
-      const int j = int(r.joints[v][i]);
-      if(r.weights[v][i] > 0.f && j >= 0 && size_t(j) < joints.size())
-      {
-        pos += r.weights[v][i] * glm::vec3(joints[size_t(j)] * glm::vec4(base.positions[v], 1.f));
-        if(hasNormals)
-          nrm += r.weights[v][i] * (normalMats[size_t(j)] * base.normals[v]);
-        if(hasTangents)
-          tan += r.weights[v][i] * (glm::mat3(joints[size_t(j)]) * glm::vec3(base.tangents[v]));
-      }
-    }
-    out.positions[v] = pos;
+    const glm::ivec4    j[2]  = {glm::ivec4(r.joints[v]), eight ? glm::ivec4(r.joints1[v]) : glm::ivec4(0)};
+    const glm::vec4     w[2]  = {r.weights[v], eight ? r.weights1[v] : glm::vec4(0.f)};
+    const float         share = !dq ? 0.f : r.dualQuatShares.size() == n ? r.dualQuatShares[v] : r.dualQuat;
+    const SkinnedVertex s     = skinVertex(base.positions[v], hasNormals ? &base.normals[v] : nullptr,
+                                           hasTangents ? &base.tangents[v] : nullptr, {j, size_t(eight ? 2 : 1)},
+                                           {w, size_t(eight ? 2 : 1)}, {joints, normalMats, dualQuats}, share);
+    out.positions[v] = s.position;
     if(hasNormals)
-      out.normals[v] = glm::normalize(nrm);
+      out.normals[v] = s.normal;
     if(hasTangents)
-      out.tangents[v] = glm::vec4(glm::normalize(tan), base.tangents[v].w);
+      out.tangents[v] = s.tangent;
   }
   return out;
 }

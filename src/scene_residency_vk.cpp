@@ -342,8 +342,13 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
     pc.outPositions   = reinterpret_cast<glm::vec3*>(at(d.outPositions));
     pc.outNormals     = reinterpret_cast<glm::vec3*>(at(d.outNormals));
     pc.outTangents    = reinterpret_cast<glm::vec4*>(at(d.outTangents));
+    pc.joints1        = reinterpret_cast<glm::ivec4*>(at(d.joints1));
+    pc.weights1       = reinterpret_cast<glm::vec4*>(at(d.weights1));
+    pc.jointDualQuats = reinterpret_cast<glm::vec4*>(at(d.jointDualQuats));
+    pc.dualQuatShares = reinterpret_cast<float*>(at(d.dualQuatShares));
     pc.vertexCount    = d.vertexCount;
     pc.numJoints      = d.jointCount;
+    pc.dualQuat       = d.dualQuat;
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.skin);
     vkCmdPushConstants(m_cmd, m_deformPipelines.skinLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
   }

@@ -66,6 +66,9 @@ struct FigureFeedOptions
   // vertex: given, the feed sends it with the mesh's vertices and the GPU makes the drawn positions
   // and normals from it (figureGpuRefine, daz-viewer docs/gpu-figures-plan.md F1)
   std::function<std::vector<float>(int mesh)> cageOf;
+  // DAZ's skinning (figureDazSkinning, daz-viewer docs/gpu-figures-plan.md F3): records carry up to
+  // eight influences and the file's dual quaternion share; otherwise glTF's four, linear
+  bool dazSkinning = false;
 };
 
 class FigureFeed

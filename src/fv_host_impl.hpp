@@ -119,6 +119,9 @@ struct HostSettings
   // subdivided figure meshes refined on the GPU from their morphed cages, for the figures fed from
   // now on (daz-viewer docs/gpu-figures-plan.md F1)
   bool figureGpuRefine = false;
+  // DAZ's skinning (up to eight influences, the file's dual quaternion share) for the figures fed
+  // from now on (gpu-figures-plan.md F3)
+  bool figureDazSkinning = false;
 };
 
 // A loaded figure and what the renderer made of it. Lives on the application thread.

@@ -152,6 +152,7 @@ public:
     // what its drawers deform with: joints (int4) and weights per vertex, and its targets' deltas
     // packed target-major; made when the first drawer needs them
     BufferHandle joints, weights, positionDeltas, normalDeltas, tangentDeltas;
+    BufferHandle joints1, weights1, dualQuatShares;  // DAZ's skinning (MeshRecord::joints1)
     uint32_t     targetCount = 0;
     // its positions as the last frame drew them, kept once a host edit writes them (static prims)
     BufferHandle prevPositions;
@@ -187,6 +188,10 @@ public:
     bool                 morph       = false, skin = false;
     uint32_t             targetCount = 0, jointCount = 0;
     uint64_t             weightOffset = 0, jointOffset = 0, normalOffset = 0;  // in the packs
+    // a skin with dual quaternions (MeshRecord::dualQuat): its joints' in the dual quaternion pack
+    bool                 dualQuat = false;
+    float                dualQuatShare = 0;
+    uint64_t             dualQuatOffset = 0;
     // the inputs it last ran with; empty: it runs at the next sync
     std::vector<float>     lastWeights;
     std::vector<glm::mat4> lastJoints;
@@ -454,6 +459,8 @@ private:
   // a refined record's tables and working streams (MeshGpu::Refine), when its cage and drawn
   // vertices are the sizes its tables name
   void makeRefine(const MeshRecord& record, MeshGpu& gpu);
+  // retires a refined mesh's tables and working streams
+  void retireRefine(MeshGpu& gpu);
   // the refined meshes' positions and normals made from their uploaded cages: each level's stencils,
   // the welded normals, then each refined vertex copied to its drawn splits, then the tangents of
   // those with tangent tables; ends compute-to-build
@@ -474,7 +481,7 @@ private:
   std::map<MeshId, MeshGpu>            m_meshes;
   std::map<DrawerKey, DrawerGpu>       m_drawers;
   bool                                 m_packsDirty = false;  // drawers came or went: the packs are laid out again
-  BufferHandle                         m_jointPack, m_normalPack, m_weightPack;
+  BufferHandle                         m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack;
   DeformCounts                         m_deformCounts;
   // positions written by the last sync, copied to their previous positions at the top of the next
   std::set<DrawerKey>                  m_drawersWritten;

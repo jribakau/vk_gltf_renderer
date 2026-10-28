@@ -59,6 +59,7 @@ FvHost::FvHost(GltfRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     st.subdivision    = args.value("subdivision", st.subdivision);
     st.originalTextures = args.value("originalTextures", st.originalTextures);
     st.figureGpuRefine  = args.value("figureGpuRefine", st.figureGpuRefine);
+    st.figureDazSkinning = args.value("figureDazSkinning", st.figureDazSkinning);
     return Json{{"ok", true}};
   });
   // load works out on a worker what the file is, and comes to the application thread for the rest

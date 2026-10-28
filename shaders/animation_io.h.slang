@@ -38,8 +38,16 @@ struct SkinPushConstant
   float3*   outPositions;
   float3*   outNormals;
   float4*   outTangents;
+  // DAZ's skinning (retained figures; null on legacy's path): influences five to eight, the joints'
+  // dual quaternions (rs::JointDualQuat, five float4s each; null: linear only) and the dual
+  // quaternion share per vertex (null: dualQuat for every vertex)
+  int4*     joints1;
+  float4*   weights1;
+  float4*   jointDualQuats;
+  float*    dualQuatShares;
   uint      vertexCount;
   uint      numJoints;
+  float     dualQuat;
 };
 
 struct MorphPushConstant

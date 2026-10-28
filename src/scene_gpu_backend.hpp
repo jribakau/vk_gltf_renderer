@@ -208,6 +208,11 @@ struct DeformDispatch
   // normal matrices as the shader reads float3x3 (36 bytes each, packed)
   BufferRange joints, weights, jointMatrices, normalMatrices;
   uint32_t    jointCount = 0;
+  // DAZ's skinning (gpu-figures-plan.md F3): influences five to eight (none: four), the joints' dual
+  // quaternions (rs::JointDualQuat each; none: linear only) and the dual quaternion share per vertex
+  // (none: `dualQuat` for every vertex)
+  BufferRange joints1, weights1, jointDualQuats, dualQuatShares;
+  float       dualQuat = 0;
   // stencil (shaders/stencil.comp.slang): vertexCount rows over the base positions' sourceCount
   // float3s, into the output positions; each row the sum of weights[k] * base[columns[k]] for k in
   // [rowStart[row], rowStart[row + 1]) (no weights: 1 each), or with no rowStart base[columns[row]]

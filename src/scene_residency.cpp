@@ -36,6 +36,7 @@
 
 #include "ies_profile.hpp"
 #include "scene_gpu_tables.hpp"
+#include "scene_skin.hpp"
 #include "shaders/gltf_scene_io.h.slang"
 
 namespace rs {
@@ -163,16 +164,20 @@ std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb)
 void Residency::clear()
 {
   for(auto& [id, mesh] : m_meshes)
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints,
-                          mesh.weights, mesh.positionDeltas, mesh.normalDeltas, mesh.tangentDeltas, mesh.prevPositions})
+  {
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.joints1,
+                          mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
+                          mesh.tangentDeltas, mesh.prevPositions})
       retireBuffer(b);
+    retireRefine(mesh);
+  }
   for(auto& [key, d] : m_drawers)
     for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
       retireBuffer(b);
   m_drawers.clear();
-  for(BufferHandle b : {m_jointPack, m_normalPack, m_weightPack, m_prevPositionTable, m_prevWorldTable})
+  for(BufferHandle b : {m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable})
     retireBuffer(b);
-  m_jointPack = m_normalPack = m_weightPack = m_prevPositionTable = m_prevWorldTable = {};
+  m_jointPack = m_normalPack = m_weightPack = m_dualQuatPack = m_prevPositionTable = m_prevWorldTable = {};
   m_packsDirty = false;
   m_drawersWritten.clear();
   m_compacting.clear();
@@ -495,21 +500,26 @@ void Residency::retireMesh(MeshId id)
   auto it = m_meshes.find(id);
   if(it == m_meshes.end())
     return;
-  const MeshGpu& m = it->second;
-  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.joints, m.weights, m.positionDeltas,
-                        m.normalDeltas, m.tangentDeltas, m.prevPositions})
+  MeshGpu& m = it->second;
+  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.joints, m.joints1, m.weights1,
+                        m.dualQuatShares, m.weights, m.positionDeltas, m.normalDeltas, m.tangentDeltas, m.prevPositions})
     retireBuffer(b);
-  if(m.refine)
-  {
-    for(BufferHandle b : {m.refine->cage, m.refine->refinedNormals, m.refine->drawnFrom, m.refine->triangles,
-                          m.refine->normalStart, m.refine->normalTriangles, m.refine->offsets, m.refine->tangentTriangles,
-                          m.refine->tangentStart, m.refine->tangentCorners})
-      retireBuffer(b);
-    for(const MeshGpu::Refine::Level& l : m.refine->levels)
-      for(BufferHandle b : {l.start, l.columns, l.weights, l.out})
-        retireBuffer(b);
-  }
+  retireRefine(m);
   m_meshes.erase(it);
+}
+
+void Residency::retireRefine(MeshGpu& m)
+{
+  if(!m.refine)
+    return;
+  for(BufferHandle b : {m.refine->cage, m.refine->refinedNormals, m.refine->drawnFrom, m.refine->triangles, m.refine->normalStart,
+                        m.refine->normalTriangles, m.refine->offsets, m.refine->tangentTriangles, m.refine->tangentStart,
+                        m.refine->tangentCorners})
+    retireBuffer(b);
+  for(const MeshGpu::Refine::Level& l : m.refine->levels)
+    for(BufferHandle b : {l.start, l.columns, l.weights, l.out})
+      retireBuffer(b);
+  m.refine.reset();
 }
 
 // The box around the vertices a prim's indices name; none named: a point at the origin. A refined
@@ -1175,6 +1185,13 @@ void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool s
   {
     make(mesh.joints, bytesOf(record.joints), "skin joints");  // uint4 here, int4 in the shader: the same bits
     make(mesh.weights, bytesOf(record.weights), "skin weights");
+    if(record.joints1.size() == record.positions.size() && record.weights1.size() == record.positions.size())
+    {
+      make(mesh.joints1, bytesOf(record.joints1), "skin joints 5-8");
+      make(mesh.weights1, bytesOf(record.weights1), "skin weights 5-8");
+    }
+    if(record.dualQuatShares.size() == record.positions.size())
+      make(mesh.dualQuatShares, bytesOf(record.dualQuatShares), "dual quaternion shares");
   }
   if(record.targets.empty() || mesh.positionDeltas)
     return;
@@ -1210,6 +1227,8 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
   d.morph                = !record.targets.empty();
   d.skin = scene.skin(e.mesh->skin) && record.joints.size() == record.positions.size() && record.weights.size() == record.positions.size();
   makeDeformInputs(record, mesh, d.skin);
+  d.dualQuat      = d.skin && (record.dualQuat > 0.f || mesh.dualQuatShares);
+  d.dualQuatShare = record.dualQuat;
   d.targetCount = d.morph ? mesh.targetCount : 0;
   d.jointCount  = d.skin ? uint32_t(scene.skin(e.mesh->skin)->joints.size()) : 0;
   const uint64_t n      = mesh.vertexCount;
@@ -1256,15 +1275,18 @@ void Residency::releaseDrawer(const DrawerKey& key)
 void Residency::layOutPacks(SyncResult& result)
 {
   static_assert(sizeof(glm::mat3) == kNormalMatrixStride, "the packed normal matrices are float3x3 in the shader");
-  uint64_t joints = 0, normals = 0, weights = 0;
+  uint64_t joints = 0, normals = 0, weights = 0, dualQuats = 0;
   for(auto& [key, d] : m_drawers)
   {
-    d.jointOffset  = joints;
-    d.normalOffset = normals;
-    d.weightOffset = weights;
+    d.jointOffset    = joints;
+    d.normalOffset   = normals;
+    d.weightOffset   = weights;
+    d.dualQuatOffset = dualQuats;
     joints += uint64_t(d.jointCount) * sizeof(glm::mat4);
     normals += uint64_t(d.jointCount) * kNormalMatrixStride;
     weights += uint64_t(d.targetCount) * sizeof(float);
+    if(d.dualQuat)
+      dualQuats += uint64_t(d.jointCount) * sizeof(JointDualQuat);
     d.ran = false;
   }
   // a pack grows by doubling, so a wear's new drawers seldom make it again
@@ -1278,6 +1300,7 @@ void Residency::layOutPacks(SyncResult& result)
   fit(m_jointPack, joints, "joint matrices");
   fit(m_normalPack, normals, "normal matrices");
   fit(m_weightPack, weights, "morph weights");
+  fit(m_dualQuatPack, dualQuats, "joint dual quaternions");
   m_packsDirty = false;
 }
 
@@ -1384,6 +1407,13 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
       normalMats[j] = glm::transpose(glm::inverse(glm::mat3(run->joints[j])));
     m_gpu.upload(m_jointPack, run->d->jointOffset, bytesOf(run->joints));
     m_gpu.upload(m_normalPack, run->d->normalOffset, bytesOf(normalMats));
+    if(run->d->dualQuat)
+    {
+      std::vector<JointDualQuat> dualQuats(run->joints.size());
+      for(size_t j = 0; j < run->joints.size(); j++)
+        dualQuats[j] = jointDualQuat(run->joints[j]);
+      m_gpu.upload(m_dualQuatPack, run->d->dualQuatOffset, bytesOf(dualQuats));
+    }
   }
   m_gpu.barrier(GpuBarrier::eTransferToShader);  // the uploads, and the base streams syncVertices wrote
 
@@ -1425,7 +1455,12 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
                           .weights        = {mesh.weights},
                           .jointMatrices  = {m_jointPack, d.jointOffset},
                           .normalMatrices = {m_normalPack, d.normalOffset},
-                          .jointCount     = d.jointCount});
+                          .jointCount     = d.jointCount,
+                          .joints1        = {mesh.joints1},
+                          .weights1       = {mesh.weights1},
+                          .jointDualQuats = {d.dualQuat ? m_dualQuatPack : BufferHandle{}, d.dualQuatOffset},
+                          .dualQuatShares = {mesh.dualQuatShares},
+                          .dualQuat       = d.dualQuatShare});
     m_deformCounts.skins++;
   }
   m_gpu.barrier(GpuBarrier::eComputeToBuild);
@@ -2169,16 +2204,30 @@ size_t Residency::liveBuffers() const
 {
   size_t n = 0;
   for(const auto& [id, mesh] : m_meshes)
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints,
-                          mesh.weights, mesh.positionDeltas, mesh.normalDeltas, mesh.tangentDeltas, mesh.prevPositions})
+  {
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.joints1,
+                          mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
+                          mesh.tangentDeltas, mesh.prevPositions})
       n += b ? 1 : 0;
+    if(mesh.refine)
+    {
+      for(BufferHandle b : {mesh.refine->cage, mesh.refine->refinedNormals, mesh.refine->drawnFrom, mesh.refine->triangles,
+                            mesh.refine->normalStart, mesh.refine->normalTriangles, mesh.refine->offsets,
+                            mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners})
+        n += b ? 1 : 0;
+      for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
+        for(BufferHandle b : {l.start, l.columns, l.weights, l.out})
+          n += b ? 1 : 0;
+    }
+  }
   for(const auto& [key, d] : m_drawers)
     for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
       n += b ? 1 : 0;
   for(const std::optional<Prim>& p : m_prims)
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
-                        m_emissiveTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_prevPositionTable, m_prevWorldTable})
+                        m_emissiveTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
+                        m_prevWorldTable})
     n += b ? 1 : 0;
   return n;
 }
