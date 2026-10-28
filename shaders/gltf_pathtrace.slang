@@ -730,6 +730,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
     // have no BSDF-sampled partner: weight 1, as for a punctual light, and the full environment table.
     const bool lastVertex = !bounce.hairEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth;
+    // The lobe mixture for this vertex's light sample and BSDF sample alike, so their MIS agrees. With
+    // ePtLobeMixtureDirect only where the path is still direct: there a catchlight is seen, through a
+    // cornea one sample in forty with a single lobe; past a rough bounce one lobe costs a third less.
+    const bool lobeMixture = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture)
+                             && (!hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixtureDirect) || pt.pathRoughness <= DIRECT_PATH_ROUGHNESS);
     // The normal only culls directional lights below the surface (singleLightContribution). Give it
     // the one bounce.nextEventValid tests, so NEE and the BSDF side (R4) agree on which directions
     // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
@@ -758,8 +763,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       evalData.xi = float3(rand(seed), rand(seed), rand(seed));
       // Every lobe for a punctual light (no BSDF ray reaches it; its weight is 1 whatever the pdf), and
       // for every light when MIS weighs against the lobe mixture on both sides (bsdfSampleCore below).
-      const bool allLobes = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture)
-                            || (directLight.pdf == DIRAC && hasFlag(pushConst.flags, PathtracerFlags::ePtLobeSumPunctual));
+      const bool allLobes = lobeMixture || (directLight.pdf == DIRAC && hasFlag(pushConst.flags, PathtracerFlags::ePtLobeSumPunctual));
 #if GLTF_USE_HAIR
       if(hairOn)
         hairBsdfEvaluate(evalData, hairHit);  // already the whole fibre BSDF, with its mixture pdf
@@ -816,7 +820,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     //-----------------------------------------------------------------------
     // Sampling the BSDF :
     // - Finding the next direction and updating the throughput
+    // Not at the last vertex: the loop ends before its ray is traced, and what follows here (the
+    // shadow ray's set-up) reads the hit and the light only. The camera ray keeps it for RR's
+    // specular hit guide.
     //-----------------------------------------------------------------------
+    if(!lastVertex || firstRay)
     {
       // Sampling the BSDF at the hit point
       BsdfSampleData sampleData;
@@ -834,7 +842,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // The lobe mixture's pdf, which next-event estimation's bsdfEvaluateAll weighs against. Not at
         // the last vertex: the loop ends before this ray is traced, so nothing reads it.
-        const bool mixturePdf = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && !lastVertex;
+        const bool mixturePdf = lobeMixture && !lastVertex;
         bsdfSampleCore(sampleData, pbrMat, mixturePdf);
       }
       // bsdfSampleSimple(sampleData, pbrMat);
@@ -850,6 +858,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // light this ray reaches elsewhere has no light-sample partner: its weight is 1, as after a delta
       // lobe (the env hit's delta branch rests on the same fact). Rough thin glass lit from behind, a
       // refractive exit from inside a volume: no shadow ray passes them (getShadowTransmission).
+      // On the mode, not this vertex's lobe mixture: it holds whichever pdf the sample has.
       if(hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && sampleData.event_type != BSDF_EVENT_ABSORB
          && !(dot(sampleData.k2, hit.nrm) > 0.0f || bothSides))
         pt.lastSamplePdf = DIRAC;

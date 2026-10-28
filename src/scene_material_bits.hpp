@@ -55,6 +55,20 @@ struct MaterialBits
   bool operator==(const MaterialBits&) const = default;
 };
 
+// No ray can keep the surface and it emits nothing (materialBits gives it no instance mask)
+inline bool invisible(const tinygltf::Material& mat)
+{
+  if(mat.alphaMode == "OPAQUE" || mat.pbrMetallicRoughness.baseColorFactor.size() < 4
+     || mat.extensions.count("KHR_materials_pbrSpecularGlossiness"))
+    return false;
+  for(double e : mat.emissiveFactor)
+    if(e > 0.0)
+      return false;
+  // in float, as the shader compares them
+  const float alpha = float(mat.pbrMetallicRoughness.baseColorFactor[3]);
+  return mat.alphaMode == "MASK" ? alpha < float(mat.alphaCutoff) : alpha <= 0.0F;
+}
+
 inline MaterialBits materialBits(const tinygltf::Material& mat)
 {
   MaterialBits                             bits;
@@ -75,6 +89,12 @@ inline MaterialBits materialBits(const tinygltf::Material& mat)
   const bool walkThrough = mat.extras.IsObject() && mat.extras.Has("fvWalkThrough")
                            && mat.extras.Get("fvWalkThrough").IsBool() && mat.extras.Get("fvWalkThrough").Get<bool>();
   bits.instanceMask      = walkThrough ? INSTANCE_MASK_OTHER : INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER;
+  // A surface no ray can keep (surface_opacity.h.slang: the base colour factor's alpha only ever
+  // multiplies down) and that emits nothing is left out of every ray: a helper mesh at opacity 0, such
+  // as a hair's face dummy, otherwise stops each ray that crosses it for an alpha test that discards
+  // it. An emitter stays, however transparent (a ghost light). Spec-gloss takes its alpha elsewhere.
+  if(invisible(mat))
+    bits.instanceMask = 0;
 
   bits.alphaOpaque = mat.alphaMode == "OPAQUE";
   bits.doubleSided = mat.doubleSided;

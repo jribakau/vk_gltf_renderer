@@ -79,3 +79,25 @@ TEST(MaterialBits, AWalkThroughSurfaceLeavesTheWalkMask)
   m.extras                = tinygltf::Value(extras);
   EXPECT_EQ(materialBits(m).instanceMask, INSTANCE_MASK_OTHER);
 }
+
+TEST(MaterialBits, ASurfaceNoRayKeepsLeavesEveryRay)
+{
+  const auto transparent = [](const char* mode, double alpha) {
+    tinygltf::Material m;
+    m.alphaMode                               = mode;
+    m.pbrMetallicRoughness.baseColorFactor[3] = alpha;
+    return m;
+  };
+  EXPECT_EQ(materialBits(transparent("BLEND", 0.0)).instanceMask, 0);  // a hair's face dummy
+  EXPECT_EQ(materialBits(transparent("MASK", 0.2)).instanceMask, 0);   // under the 0.5 cutoff
+  EXPECT_NE(materialBits(transparent("MASK", 0.5)).instanceMask, 0);
+  tinygltf::Material atCutoff = transparent("MASK", 0.3);  // equal once both are floats, so kept
+  atCutoff.alphaCutoff        = 0.30000001192092896;
+  EXPECT_NE(materialBits(atCutoff).instanceMask, 0);
+  EXPECT_NE(materialBits(transparent("BLEND", 0.01)).instanceMask, 0);
+  EXPECT_NE(materialBits(transparent("OPAQUE", 0.0)).instanceMask, 0);  // OPAQUE ignores alpha
+
+  tinygltf::Material ghost = transparent("BLEND", 0.0);  // a ghost light: emits, never seen
+  ghost.emissiveFactor     = {1.0, 1.0, 1.0};
+  EXPECT_EQ(materialBits(ghost).instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER);
+}

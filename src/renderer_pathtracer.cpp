@@ -424,12 +424,15 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   // a point light's catchlight came in one sample in forty at forty times its value. Every lobe, each by
   // its weight, gives the same mean in every sample. A punctual light has no BSDF-sampled partner, so
   // that alone is unbiased (1); for the environment, the sky's sun and emitters both sides of MIS move
-  // to the lobe mixture's pdf together (2; Unreal's path tracer, AddLobeWithMIS).
+  // to the lobe mixture's pdf together (2; Unreal's path tracer, AddLobeWithMIS). 2 on every vertex cost
+  // a third of a still's frame (2026-10-28: 312 -> 214 ms at 0, 278 at 1) for a difference that shows
+  // where the path is direct, so 3 keeps it there and evaluates one lobe past a rough bounce.
   settings->add({.name            = "ptFullLobeEval",
                  .help            = "PathTracer: BSDF lobes a light sample evaluates [One, picked at random:0, "
-                                    "All for punctual lights:1, All, with the lobe-mixture pdf in MIS:2]",
+                                    "All for punctual lights:1, All, with the lobe-mixture pdf in MIS:2, "
+                                    "2 while the path is direct, else 1:3]",
                  .callbackSuccess = reset},
-                &m_fullLobeEval, Persist::eNo, 0, 2);
+                &m_fullLobeEval, Persist::eNo, 0, 3);
   settings->add({.name            = "ptApproximateCaustics",
                  .help            = "PathTracer: After a diffuse or glossy bounce, every later lobe is at least as rough as the path "
                                     "so far (biased, fewer fireflies; off: as rough as the roughest material so far)",
@@ -472,8 +475,10 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .callbackSuccess = reset},
                 &m_sampler, Persist::eNo, 0, 1);
   settings->add({"ptAutoFocus", "PathTracer: Enable auto focus"}, &m_autoFocus, Persist::eYes);
-  settings->add({"ptTechnique", "PathTracer: Rendering technique [RayQuery:0, RayTracing:1]"}, (int*)&m_renderTechnique,
-                Persist::eYes, 0, 1);
+  settings->add({"ptTechnique", "PathTracer: Rendering technique of the accumulation [RayQuery:0, RayTracing:1]"},
+                (int*)&m_techniqueStill, Persist::eYes, 0, 1);
+  settings->add({"ptTechniqueDlss", "PathTracer: Rendering technique of DLSS frames [RayQuery:0, RayTracing:1]"},
+                (int*)&m_techniqueDlss, Persist::eYes, 0, 1);
   // SER is a specialization constant of both path-tracing pipelines, so a change is picked up by
   // ensureShadersAndPipelines() on the next frame -- which is what makes it settable mid-run from a
   // benchmark sequence, not just on the command line. Silently ignored when the device lacks SER.
@@ -613,12 +618,12 @@ bool PathTracer::onUIRender(Resources& resources)
   {
     // Rendering technique selector
     const char* techniques[] = {"Compute / Ray Query", "Ray Tracing Pipeline"};
-    int         current      = static_cast<int>(m_renderTechnique);
+    int         current      = static_cast<int>(m_techniqueStill);
     ImGui::BeginDisabled(!m_supportRayQuery);
     if(PE::Combo("Rendering Pipeline", &current, techniques, IM_ARRAYSIZE(techniques)))
     {
-      m_renderTechnique = static_cast<RenderTechnique>(current);
-      changed           = true;
+      m_techniqueStill = m_techniqueDlss = static_cast<RenderTechnique>(current);  // one choice for both views here
+      changed                           = true;
     }
     ImGui::EndDisabled();
     if(!m_supportRayQuery)
@@ -630,7 +635,7 @@ bool PathTracer::onUIRender(Resources& resources)
         "Both Ray Query and Ray Tracing use hardware accelerated ray tracing."
         "Ray Query uses a compute shader interface, while Ray Tracing uses the dedicated RTX pipeline.");
 
-    if(m_supportSER && m_renderTechnique == RenderTechnique::RayTracing)
+    if(m_supportSER && (!m_supportRayQuery || m_techniqueStill == RenderTechnique::RayTracing || m_techniqueDlss == RenderTechnique::RayTracing))
     {
       // The toggle only records the wish; ensureShadersAndPipelines() drops the pipelines built with
       // the old value on the next frame. That path also covers --ptUseSER and the ray-query
@@ -1020,9 +1025,6 @@ bool PathTracer::prepareFrame(Resources& resources)
 // Render the scene
 void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 {
-  if(!m_supportRayQuery)
-    m_renderTechnique = RenderTechnique::RayTracing;
-
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
 
   // A new accumulation: whether DLSS renders its frame 0 is set where it does, and any hand-off is over
@@ -1038,6 +1040,10 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   // they wrote no guides, and DLSS reapplied the last moving frame's motion vectors to the still view,
   // smearing it along that motion until the accumulation took over.
   m_dlssShaderFrame = !isAccumulationDenoiserEnabled() || resources.frameCount == 0 || inHandoffDelay();
+  // The technique follows the variant (makeVariantKey's dlss), so a view's pipeline is the cached one
+  m_renderTechnique = (isDlssEnabled() && m_dlssShaderFrame) ? m_techniqueDlss : m_techniqueStill;
+  if(!m_supportRayQuery)
+    m_renderTechnique = RenderTechnique::RayTracing;
 
   if(!prepareFrame(resources))
     return;
@@ -1405,13 +1411,12 @@ void PathTracer::startPipelineWarm(Resources& resources)
   std::lock_guard lock(m_warmMutex);
   if(!m_warmThreads.empty())
     return;
-  const bool                  rayQuery     = m_renderTechnique == RenderTechnique::RayQuery;
   const VkPipelineLayout      layout       = m_pipelineLayout;
   const int32_t               useSER       = m_useSER ? 1 : 0;
   const int32_t               transparency = static_cast<int32_t>(m_dlss->getTransparencyMode());
   const VkPipelineCreateFlags flags        = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
   const VkPipelineCreateFlags rqFlags = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u;
-  auto warm = [this, rayQuery, layout, useSER, transparency, flags, rqFlags](std::span<const uint32_t> code, const char* build) {
+  auto warm = [this, layout, useSER, transparency, flags, rqFlags](std::span<const uint32_t> code, const char* build, bool rayQuery) {
     const auto               start = std::chrono::steady_clock::now();
     VkShaderModuleCreateInfo moduleInfo{
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1432,8 +1437,13 @@ void PathTracer::startPipelineWarm(Resources& resources)
     if(result == VK_SUCCESS)
       m_pipelineCache.saveAsync();
   };
-  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t)), "DLSS");
-  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)), "still");
+  // each build with the technique its view renders with (onRender)
+  const bool rqDlss  = m_supportRayQuery && m_techniqueDlss == RenderTechnique::RayQuery;
+  const bool rqStill = m_supportRayQuery && m_techniqueStill == RenderTechnique::RayQuery;
+  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t)),
+                             "DLSS", rqDlss);
+  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)),
+                             "still", rqStill);
 #endif
 }
 
@@ -2574,7 +2584,8 @@ void PathTracer::startVariantJob(Resources& resources, const VariantKey& key)
       .searchPaths = resources.slangCompiler.searchPaths(),
       .targets     = resources.slangCompiler.targets(),
       .options     = resources.slangCompiler.options(),
-      .rayQuery    = m_renderTechnique == RenderTechnique::RayQuery,
+      // the technique of the view the variant draws (a sibling is built for the other view)
+      .rayQuery    = m_supportRayQuery && (key.dlss ? m_techniqueDlss : m_techniqueStill) == RenderTechnique::RayQuery,
       .useSER      = m_useSER && m_supportSER,
       .layout      = m_pipelineLayout,
       .rtxFlags    = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats),
@@ -3022,6 +3033,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;
   m_pushConst.flags |= m_fullLobeEval >= 2 ? shaderio::ePtLobeMixture : 0;
+  m_pushConst.flags |= m_fullLobeEval >= 3 ? shaderio::ePtLobeMixtureDirect : 0;
 #if defined(USE_DLSS)
   m_pushConst.flags |= useDlss ? shaderio::ePtUseDlss : 0;
 #endif

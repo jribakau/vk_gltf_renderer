@@ -2098,6 +2098,7 @@ void nvvkgltf::Scene::setCurrentVariant(int variant)
         {
           anyMaterialIdChanged = true;
           m_dirtyFlags.renderNodesVk.insert(rnID);
+          m_dirtyFlags.renderNodesRtx.insert(rnID);  // the material's TLAS flags and mask
         }
         m_renderNodeRegistry.getRenderNodes()[rnID].materialID = newMatId;
       }

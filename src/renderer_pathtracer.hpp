@@ -176,7 +176,7 @@ public:
   int  m_fireflyClampMode{1};       // 0: the whole path; 1: each indirect contribution (ePtClampIndirect).
   bool m_simplifyScatter{true};     // A rough path meets a scattering medium as its thin preview (ePtSimplifyScatter).
   int  m_sampler{1};                // The accumulation's sampler: 0 PCG, 1 Owen-scrambled Sobol (ePtSobol). DLSS frames: PCG.
-  int  m_fullLobeEval{2};           // 0: one random lobe per light sample; 1: every lobe, punctual lights; 2: every lobe, mixture-pdf MIS (ePtLobe*).
+  int  m_fullLobeEval{3};           // 0: one random lobe per light sample; 1: every lobe, punctual lights; 2: every lobe, mixture-pdf MIS; 3: 2 while the path is direct, else 1 (ePtLobe*).
   // Lobes after a rough bounce are as rough as the path (ePtApproximateCaustics). Off: on a DAZ figure
   // it darkens the irises, whose light comes through the cornea, itself a caustic.
   bool m_approximateCaustics{false};
@@ -293,8 +293,13 @@ public:
   std::vector<std::thread> m_warmThreads;  // startPipelineWarm(); joined before a creation and in onDetach()
   void        joinPipelineWarm();
 
-  // The default rendering technique
+  // The technique of the frame being rendered: m_techniqueDlss on the DLSS variant's frames,
+  // m_techniqueStill on the others (onRender). Each variant keeps its own pipeline in the cache.
   RenderTechnique m_renderTechnique{RenderTechnique::RayQuery};
+  // Measured 2026-10-28 at 4K on the dressed figure: the pipeline with SER took the moving trace from
+  // 31 to 19 ms, but the still's frame from 312 to 361 ms, so each view keeps the faster one.
+  RenderTechnique m_techniqueStill{RenderTechnique::RayQuery};
+  RenderTechnique m_techniqueDlss{RenderTechnique::RayTracing};
 
   // Adaptive sampling for performance optimization
   void                                  updateAdaptiveSampling(Resources& resources);

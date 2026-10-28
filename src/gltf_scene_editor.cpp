@@ -1497,6 +1497,7 @@ void SceneEditor::setPrimitiveMaterial(int meshIndex, int primIndex, int newMate
         if(np && np->second == primIndex)
         {
           m_scene.m_dirtyFlags.renderNodesVk.insert(static_cast<int>(renderNodeIdx));
+          m_scene.m_dirtyFlags.renderNodesRtx.insert(static_cast<int>(renderNodeIdx));  // the material's TLAS flags and mask
           rnodes[renderNodeIdx].materialID = newMaterialID;
         }
       }

@@ -35,17 +35,18 @@ static const uint SOBOL_DIRECTIONS[4][32] = {
      0x208f8000u, 0x51474000u, 0xfbea2000u, 0x75d93000u, 0xa0858800u, 0x914e5400u, 0xdbe79e00u, 0x25db6d00u,
      0x58800080u, 0xe54000c0u, 0x79e00020u, 0xb6d00050u, 0x800800f8u, 0xc00c0074u, 0x200200a2u, 0x50050093u}};
 
-// Dimension `dim` (0..3) of Sobol point `index`, as 32 bits of a fraction
+// Dimension `dim` (0..3) of Sobol point `index`, as 32 bits of a fraction. The index is a hashed
+// shuffle, so it has bits up to the top: walk only the set ones. The first dimension's directions are
+// the bits themselves, reversed.
 uint sobolBits(uint index, uint dim)
 {
-  uint x   = 0u;
-  uint bit = 0u;
+  if(dim == 0u)
+    return reversebits(index);
+  uint x = 0u;
   while(index != 0u)
   {
-    if((index & 1u) != 0u)
-      x ^= SOBOL_DIRECTIONS[dim][bit];
-    index >>= 1u;
-    bit++;
+    x ^= SOBOL_DIRECTIONS[dim][firstbitlow(index)];
+    index &= index - 1u;
   }
   return x;
 }

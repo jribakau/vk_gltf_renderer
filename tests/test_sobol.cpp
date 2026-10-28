@@ -25,6 +25,16 @@ uint reversebits(uint x)
   x = ((x >> 8u) & 0x00ff00ffu) | ((x & 0x00ff00ffu) << 8u);
   return (x >> 16u) | (x << 16u);
 }
+uint firstbitlow(uint x)
+{
+  uint bit = 0u;
+  while(x != 0u && (x & 1u) == 0u)
+  {
+    x >>= 1u;
+    bit++;
+  }
+  return bit;
+}
 }  // namespace
 
 #include "../shaders/sobol.h.slang"
@@ -99,4 +109,27 @@ TEST(Sobol, ScrambledPointsAreUniformOverSeeds)
     EXPECT_NEAR(sum[d] / N, 0.5, 0.005) << d;
   // two decisions of one pixel differ
   EXPECT_NE(sobolOwen4(3u, sobolHash(sobolHashCombine(99u, 0u))).x, sobolOwen4(3u, sobolHash(sobolHashCombine(99u, 1u))).x);
+}
+
+TEST(Sobol, TheSetBitWalkMatchesTheMatrix)
+{
+  // every bit of the index against its direction number, as the generator matrix defines a point
+  const auto reference = [](uint index, uint dim) {
+    uint x = 0u;
+    for(uint bit = 0u; bit < 32u; bit++)
+      if((index >> bit) & 1u)
+        x ^= SOBOL_DIRECTIONS[dim][bit];
+    return x;
+  };
+  for(uint dim = 0u; dim < 4u; dim++)
+  {
+    for(uint i = 0u; i < 4096u; i++)
+      EXPECT_EQ(sobolBits(i, dim), reference(i, dim));
+    for(uint i = 1u; i < 4096u; i++)  // hashed indices reach the top bits
+    {
+      const uint index = sobolHash(i);
+      EXPECT_EQ(sobolBits(index, dim), reference(index, dim));
+    }
+    EXPECT_EQ(sobolBits(0xffffffffu, dim), reference(0xffffffffu, dim));
+  }
 }
