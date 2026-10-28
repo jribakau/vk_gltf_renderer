@@ -24,6 +24,9 @@
 #include <iterator>
 
 #include <glm/glm.hpp>
+#include <glm/gtx/norm.hpp>
+
+#include "nvshaders/functions.h.slang"
 
 #include <nvutils/offset_allocator.hpp>
 
@@ -489,6 +492,61 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     return b->bytes.data() + r.offset;
   };
   // the figure passes, in floats as the shaders run them
+  if(d.kind == DeformKind::eTangents)
+  {
+    const uint64_t         tc = d.triangleCount;
+    const Span<glm::vec3>  pos{range(d.basePositions, 12, n, "base positions", false), n};
+    const Span<glm::vec3>  nrm{range(d.baseNormals, 12, n, "base normals", false), n};
+    const Span<glm::vec2>  uv{d.uvs.buffer ? range(d.uvs, 8, n, "uvs", false) : nullptr, n};
+    const Span<uint32_t>   start{range(d.rowStart, 4, n + 1, "corner starts", false), n + 1};
+    const uint64_t         entries = start ? start.get(n) : 0;
+    const Span<uint32_t>   corners{range(d.columns, 4, entries, "corners", false), entries};
+    const Span<glm::uvec3> tris{range(d.triangles, 12, tc, "triangles", false), tc};
+    const Span<glm::vec4>  out{range(d.outTangents, 16, n, "outputs", true), n};
+    if(!ok || !pos || !nrm || !start || !tris || !out || (entries && !corners))
+    {
+      if(ok)
+        error("dispatchDeform: a tangent pass without its positions, normals, corners, triangles or output");
+      return;
+    }
+    for(uint64_t v = 0; v < n; v++)
+    {
+      glm::vec4 t(0.f);
+      for(uint32_t k = start.get(v); k < start.get(v + 1) && k < entries; k++)
+      {
+        const uint32_t f = corners.get(k) / 3;
+        if(f >= tc)
+          continue;
+        const glm::uvec3 i = tris.get(f);
+        if(i.x >= n || i.y >= n || i.z >= n)
+          continue;
+        const glm::vec3 n0 = nrm.get(i.x);
+        if(!uv)
+        {
+          t = shaderio::makeFastTangent(n0);
+          continue;
+        }
+        const glm::vec3 p0 = pos.get(i.x), edge1 = pos.get(i.y) - p0, edge2 = pos.get(i.z) - p0;
+        const glm::vec2 uv0 = uv.get(i.x), deltaUV1 = uv.get(i.y) - uv0, deltaUV2 = uv.get(i.z) - uv0;
+        float           r = 1.0F;
+        const float     a = deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y;
+        if(fabs(a) > 0.0F)
+          r = 1.0f / a;
+        const glm::vec3 tangent    = r * (deltaUV2.y * edge1 - deltaUV1.y * edge2);
+        const glm::vec3 bitangent  = r * (deltaUV2.x * edge1 - deltaUV1.x * edge2);
+        const float     handedness = (glm::dot(glm::cross(tangent, bitangent), n0) > 0.0F) ? 1.0F : -1.0F;
+        t                          = glm::vec4(tangent + glm::vec3(t), handedness);
+      }
+      const glm::vec3 n0  = nrm.get(v);
+      glm::vec3       ot0 = glm::normalize(glm::vec3(t) - (glm::dot(n0, glm::vec3(t)) * n0));
+      if(glm::length2(ot0) < 0.1F || glm::any(glm::isnan(ot0)))
+        ot0 = glm::vec3(shaderio::makeFastTangent(n0));
+      out.set(v, glm::vec4(ot0, t.w < 0.f ? -1.f : 1.f));
+    }
+    m_computeBeforeBuild.insert(d.outTangents.buffer.value);
+    m_computeBeforeCompute.insert(d.outTangents.buffer.value);
+    return;
+  }
   if(d.kind == DeformKind::eStencil || d.kind == DeformKind::eNormals)
   {
     const bool            stencil = d.kind == DeformKind::eStencil;

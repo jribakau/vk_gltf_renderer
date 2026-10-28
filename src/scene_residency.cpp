@@ -352,6 +352,15 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
   r.normalTriangles = table(t->normalTriangles, "normal triangles");
   if(!t->offsets.empty())
     r.offsets = table(t->offsets, "refined offsets");
+  // the tangents too, over its own corners, when it has them and the UVs they read
+  if(!t->tangentIndices.empty() && gpu.tangents && t->tangentStart.size() == record.positions.size() + 1
+     && t->tangentCorners.size() == t->tangentIndices.size() / 3 * 3)
+  {
+    r.tangentTriangles     = table(t->tangentIndices, "tangent triangles");
+    r.tangentStart         = table(t->tangentStart, "tangent corner starts");
+    r.tangentCorners       = table(t->tangentCorners, "tangent corners");
+    r.tangentTriangleCount = uint32_t(t->tangentIndices.size() / 3);
+  }
   gpu.refine        = std::move(r);
 }
 
@@ -404,6 +413,23 @@ void Residency::refineOnGpu(std::span<MeshGpu* const> meshes)
                               .outPositions  = {to},
                               .columns       = {g->refine->drawnFrom},
                               .sourceCount   = g->refine->refinedCount});
+  // the tangents, from the drawn positions, normals and UVs
+  if(std::any_of(meshes.begin(), meshes.end(), [](const MeshGpu* g) { return bool(g->refine->tangentTriangles); }))
+  {
+    m_gpu.barrier(GpuBarrier::eComputeToCompute);
+    for(const MeshGpu* g : meshes)
+      if(g->refine->tangentTriangles && g->normals)
+        m_gpu.dispatchDeform({.kind          = DeformKind::eTangents,
+                              .vertexCount   = g->vertexCount,
+                              .basePositions = {g->positions},
+                              .baseNormals   = {g->normals},
+                              .outTangents   = {g->tangents},
+                              .rowStart      = {g->refine->tangentStart},
+                              .columns       = {g->refine->tangentCorners},
+                              .triangles     = {g->refine->tangentTriangles},
+                              .uvs           = {g->uv0},
+                              .triangleCount = g->refine->tangentTriangleCount});
+  }
   // the refits read the positions, the skin passes both, this frame's draws both
   m_gpu.barrier(GpuBarrier::eComputeToBuild);
 }
@@ -413,8 +439,10 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
   const auto stream = [&](BufferHandle& buffer, std::span<const std::byte> bytes, BufferUsageFlags usage, const char* name) {
     if(bytes.empty())
       return;
-    // a refined mesh's positions and normals are made on the GPU from its cage after the first upload
-    if(vertices && gpu.refine && (&buffer == &gpu.positions || &buffer == &gpu.normals))
+    // a refined mesh's positions and normals (and tangents, with its tables) are made on the GPU from
+    // its cage after the first upload
+    if(vertices && gpu.refine
+       && (&buffer == &gpu.positions || &buffer == &gpu.normals || (&buffer == &gpu.tangents && gpu.refine->tangentTriangles)))
       return;
     if(!buffer || m_gpu.bufferSize(buffer) != bytes.size())
     {
@@ -474,7 +502,8 @@ void Residency::retireMesh(MeshId id)
   if(m.refine)
   {
     for(BufferHandle b : {m.refine->cage, m.refine->refinedNormals, m.refine->drawnFrom, m.refine->triangles,
-                          m.refine->normalStart, m.refine->normalTriangles, m.refine->offsets})
+                          m.refine->normalStart, m.refine->normalTriangles, m.refine->offsets, m.refine->tangentTriangles,
+                          m.refine->tangentStart, m.refine->tangentCorners})
       retireBuffer(b);
     for(const MeshGpu::Refine::Level& l : m.refine->levels)
       for(BufferHandle b : {l.start, l.columns, l.weights, l.out})

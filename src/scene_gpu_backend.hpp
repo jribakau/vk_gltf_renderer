@@ -179,7 +179,8 @@ enum class DeformKind
   eMorph,
   eSkin,
   eStencil,  // weighted gathers: a subdivision level, or refined vertices copied to their splits
-  eNormals,  // welded vertex normals from triangle lists
+  eNormals,   // welded vertex normals from triangle lists
+  eTangents,  // vertex tangents from corner lists
 };
 
 // A range of a buffer a pass reads or writes from `offset` on; no buffer: none (the pass skips it)
@@ -214,7 +215,11 @@ struct DeformDispatch
   // cross products of the triangles (uint3 over the base positions' sourceCount) that
   // columns[rowStart[v] .. rowStart[v + 1]) names; triangleCount of them. A stencil's offsets (float3
   // per row, when given) are added to its rows' sums
+  // tangents (vertex_tangents.comp.slang): vertexCount output tangents from the base positions,
+  // normals and uvs, each over the triangles whose corners (3 * triangle + corner)
+  // columns[rowStart[v] .. rowStart[v + 1]) names, as tinygltf::utils::computeTangents makes them
   BufferRange rowStart, columns, stencilWeights, stencilOffsets, triangles;  // uint32, uint32, float, float3, uint3
+  BufferRange uvs;                                                           // float2
   uint32_t    sourceCount = 0, triangleCount = 0;
 };
 // The packed normal matrices are glm::mat3 on the host and float3x3 in the shader: 36 bytes apart

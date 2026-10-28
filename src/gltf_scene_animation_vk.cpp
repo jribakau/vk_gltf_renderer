@@ -45,6 +45,7 @@
 #include "_autogen/morph.comp.slang.h"
 #include "_autogen/stencil.comp.slang.h"
 #include "_autogen/vertex_normals.comp.slang.h"
+#include "_autogen/vertex_tangents.comp.slang.h"
 
 
 namespace nvvkgltf {
@@ -127,7 +128,8 @@ void DeformPipelines::create(VkDevice device)
     NVVK_DBG_NAME(morph);
   }
 
-  // The retained scene's figure passes: subdivision stencils and welded normals (push constants only)
+  // The retained scene's figure passes: subdivision stencils, welded normals and tangents (push
+  // constants only)
   const auto pipeline = [device](uint32_t pushSize, const uint32_t* code, size_t codeSize, VkPipelineLayout& layout,
                                  VkPipeline& pipe) {
     VkPushConstantRange        pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = pushSize};
@@ -149,6 +151,8 @@ void DeformPipelines::create(VkDevice device)
   pipeline(sizeof(shaderio::StencilPushConstant), stencil_comp_slang, stencil_comp_slang_sizeInBytes, stencilLayout, stencil);
   pipeline(sizeof(shaderio::NormalsPushConstant), vertex_normals_comp_slang, vertex_normals_comp_slang_sizeInBytes,
            normalsLayout, normals);
+  pipeline(sizeof(shaderio::TangentsPushConstant), vertex_tangents_comp_slang, vertex_tangents_comp_slang_sizeInBytes,
+           tangentsLayout, tangents);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -163,14 +167,14 @@ void DeformPipelines::destroy(VkDevice device)
     vkDestroyPipelineLayout(device, skinLayout, nullptr);
   if(morphLayout)
     vkDestroyPipelineLayout(device, morphLayout, nullptr);
-  for(VkPipeline p : {stencil, normals})
+  for(VkPipeline p : {stencil, normals, tangents})
     if(p)
       vkDestroyPipeline(device, p, nullptr);
-  for(VkPipelineLayout l : {stencilLayout, normalsLayout})
+  for(VkPipelineLayout l : {stencilLayout, normalsLayout, tangentsLayout})
     if(l)
       vkDestroyPipelineLayout(device, l, nullptr);
-  stencil = normals = {};
-  stencilLayout = normalsLayout = {};
+  stencil = normals = tangents = {};
+  stencilLayout = normalsLayout = tangentsLayout = {};
   skin        = {};
   morph       = {};
   skinLayout  = {};

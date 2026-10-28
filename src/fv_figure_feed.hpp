@@ -157,6 +157,8 @@ private:
   rs::Transform        transformOf(const SceneGraph& figure, int node, int root) const;
   // the mesh's vertices fed again into its record, the tangents remade near the ones that moved
   void moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater = false);
+  // whether the GPU makes the mesh's tangents with its refined vertices (RefineTables::tangentIndices)
+  static bool gpuTangents(const FedMesh& f);
   // the mesh's morphed cage, when the GPU refines it; empty otherwise
   std::vector<glm::vec3> cageOf(int mesh, const FedMesh& f) const;
   // the skin the mesh draws with, if it is skinned

@@ -87,6 +87,22 @@ struct NormalsPushConstant
   uint    positionCount;
 };
 
+// vertex_tangents.comp.slang: per vertex, the UV tangents of the triangles (over the vertices) whose
+// corners corners[cornerStart[v] .. cornerStart[v + 1]) names (3 * triangle + corner), across its
+// normal; uvs null: each triangle's tangent is made from its first normal
+struct TangentsPushConstant
+{
+  float3* positions;
+  float3* normals;
+  float2* uvs;
+  uint3*  triangles;
+  uint*   cornerStart;
+  uint*   corners;
+  float4* outTangents;
+  uint    vertexCount;
+  uint    triangleCount;
+};
+
 NAMESPACE_SHADERIO_END()
 
 #endif

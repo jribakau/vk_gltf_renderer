@@ -166,8 +166,9 @@ public:
         uint32_t     rows = 0, sourceCount = 0;
       };
       BufferHandle       cage, refinedNormals, drawnFrom, triangles, normalStart, normalTriangles, offsets;
+      BufferHandle       tangentTriangles, tangentStart, tangentCorners;  // none: the CPU's tangents
       std::vector<Level> levels;
-      uint32_t           refinedCount = 0, triangleCount = 0;
+      uint32_t           refinedCount = 0, triangleCount = 0, tangentTriangleCount = 0;
     };
     std::optional<Refine> refine;
   };
@@ -454,7 +455,8 @@ private:
   // vertices are the sizes its tables name
   void makeRefine(const MeshRecord& record, MeshGpu& gpu);
   // the refined meshes' positions and normals made from their uploaded cages: each level's stencils,
-  // the welded normals, then each refined vertex copied to its drawn splits; ends compute-to-build
+  // the welded normals, then each refined vertex copied to its drawn splits, then the tangents of
+  // those with tangent tables; ends compute-to-build
   void refineOnGpu(std::span<MeshGpu* const> meshes);
 
   void ensureCapacity(SyncResult& result);

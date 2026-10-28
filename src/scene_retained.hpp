@@ -167,6 +167,9 @@ struct RefineTables
   std::vector<uint32_t> normalStart, normalTriangles;  // per refined vertex
   // per refined vertex, added after the last level (strand ribbons' widths); empty: none
   std::vector<glm::vec3> offsets;
+  // the drawn triangles whose materials need tangents (none: the mesh has no tangents) and, per drawn
+  // vertex, its corners in them (tinygltf::utils::TangentAdjacency): the GPU makes the tangents too
+  std::vector<uint32_t> tangentIndices, tangentStart, tangentCorners;
   uint32_t              refinedCount() const { return levels.empty() ? cageCount : levels.back().rows(); }
 };
 

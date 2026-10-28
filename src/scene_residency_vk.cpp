@@ -296,6 +296,21 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.normals);
     vkCmdPushConstants(m_cmd, m_deformPipelines.normalsLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
   }
+  else if(d.kind == DeformKind::eTangents)
+  {
+    shaderio::TangentsPushConstant pc{};
+    pc.positions     = reinterpret_cast<glm::vec3*>(at(d.basePositions));
+    pc.normals       = reinterpret_cast<glm::vec3*>(at(d.baseNormals));
+    pc.uvs           = reinterpret_cast<glm::vec2*>(at(d.uvs));
+    pc.triangles     = reinterpret_cast<glm::uvec3*>(at(d.triangles));
+    pc.cornerStart   = reinterpret_cast<uint32_t*>(at(d.rowStart));
+    pc.corners       = reinterpret_cast<uint32_t*>(at(d.columns));
+    pc.outTangents   = reinterpret_cast<glm::vec4*>(at(d.outTangents));
+    pc.vertexCount   = d.vertexCount;
+    pc.triangleCount = d.triangleCount;
+    vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.tangents);
+    vkCmdPushConstants(m_cmd, m_deformPipelines.tangentsLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  }
   else if(d.kind == DeformKind::eMorph)
   {
     shaderio::MorphPushConstant pc{};

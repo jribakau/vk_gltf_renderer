@@ -891,7 +891,10 @@ and the residency makes its positions and normals on the GPU (`refineOnGpu`: the
 `stencil.comp.slang`, the welded normals in `vertex_normals.comp.slang`, the UV seam splits as a
 gather) before the refits and the skin pass. A strand mesh's one level copies each point to its
 ribbon's two edges, and the tables' `offsets` (each edge's side times the half width `widenRibbons`
-kept) open it. A dial's step then moves the cage alone:
+kept) open it. A mesh whose materials need tangents gets them from the drawn positions, normals
+and UVs as well (`vertex_tangents.comp.slang`, over each vertex's corners in `computeTangents`'
+order and arithmetic), so the feed makes and sends none for it, and a drag's shading is never
+stale. A dial's step then moves the cage alone:
 `MorphSet::cageOnly`, which the host points at the feed's `refines`, keeps the morphed cage and
 reports a cage change, fed by `syncCages` (`RetainedScene::setMeshCage`). The CPU's drawn vertices,
 the record's positions and the prim bounds (the selection box, the scene bounds) catch up once the

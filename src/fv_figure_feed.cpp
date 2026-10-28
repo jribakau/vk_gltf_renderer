@@ -490,7 +490,19 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
         r.refine = f.refine;
       }
       f.tangentAdjacency = std::nullopt;
-      if(!f.tangentIndices.empty())
+      // the GPU makes a refined mesh's tangents (zeros here, made when it is resident)
+      if(f.refine && !f.tangentIndices.empty() && !r.uv0.empty())
+        if(const auto adjacency = tinygltf::utils::tangentAdjacency(f.tangentIndices, r.positions.size()))
+        {
+          auto tables            = std::make_shared<rs::RefineTables>(*f.refine);
+          tables->tangentIndices = f.tangentIndices;
+          tables->tangentStart   = adjacency->start;
+          tables->tangentCorners = adjacency->corners;
+          f.refine               = tables;
+          r.refine               = tables;
+          r.tangents.assign(r.positions.size(), glm::vec4(0.f));
+        }
+      if(!f.tangentIndices.empty() && !gpuTangents(f))
       {
         r.tangents.assign(r.positions.size(), glm::vec4(0.f));
         tinygltf::utils::computeTangents(r.positions, r.normals, r.uv0, f.tangentIndices, r.tangents);
@@ -569,13 +581,15 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
      && std::memcmp(had.normals.data(), normals.data(), normals.size() * sizeof(glm::vec3)) == 0 && (tangentsLater || !f.tangentsLate))
     return;
   std::vector<glm::vec4> t;
-  if(!f.tangentIndices.empty() && tangentsLater)
+  // a mesh the GPU makes the tangents of has them made with its positions
+  const bool cpuTangents = !f.tangentIndices.empty() && !gpuTangents(f);
+  if(cpuTangents && tangentsLater)
   {
     // the drag draws with the tangents it had: settleTangents makes them once it stops
     f.tangentsLate = true;
     f.movedAt      = std::chrono::steady_clock::now();
   }
-  else if(!f.tangentIndices.empty())
+  else if(cpuTangents)
   {
     // made again only near the vertices that moved: a vertex's tangent reads the triangles
     // touching it, and the old ones were made over the same triangles (all of them, when some
@@ -617,6 +631,11 @@ void FigureFeed::settleTangents(std::chrono::steady_clock::duration still)
     tinygltf::utils::computeTangents(had->positions, had->normals, had->uv0, f.tangentIndices, t);
     m_scene.setMeshVertices(f.id, had->positions, {}, std::move(t));
   }
+}
+
+bool FigureFeed::gpuTangents(const FedMesh& f)
+{
+  return f.refine && !f.refine->tangentIndices.empty();
 }
 
 std::vector<glm::vec3> FigureFeed::cageOf(int mesh, const FedMesh& f) const

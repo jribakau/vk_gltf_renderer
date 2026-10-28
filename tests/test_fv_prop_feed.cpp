@@ -368,6 +368,78 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
   }
 }
 
+// F2: a refined mesh whose materials are normal mapped has its tangents made on the GPU from its drawn
+// positions, normals and UVs, with no CPU tangents fed: computeTangents of the CPU's vertices to float
+// precision, as fed and after a dial's cage step (the oracle holds the skinned drawers' to them).
+TEST(FvPropFeed, ARefinedNormalMappedFiguresTangentsAreMadeOnTheGpu)
+{
+  const auto box = loadBox();
+  for(fv::Material& m : box->loaded.scene.materials)
+    m.surface.normalMap = "/Runtime/Textures/Test/BoxDetail_NM.png";
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  props[0].figureOptions.texture = [](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+    return fv::build::TextureImage{.uri = (fs::path(FV_TEST_DATA) / "daz-library" / req.rel).generic_string(), .mimeType = "image/png"};
+  };
+  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  feed.sync(props);
+  residency.replace(scene);
+  fv::FigureFeed& figure = *feed.fed("p:1")->figure;
+  const auto      check  = [&](const char* when) {
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << when << ": " << p;
+    size_t made = 0;
+    for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
+    {
+      const rs::MeshRecord*         record = scene.mesh(figure.meshOf(int(mi)));
+      const rs::Residency::MeshGpu* mesh   = residency.meshGpu(figure.meshOf(int(mi)));
+      if(!record || !mesh || !mesh->refine || !mesh->refine->tangentTriangles)
+        continue;
+      made++;
+      const fv::mesh::BuiltMesh& geo = *box->loaded.scene.meshes[mi].geo;
+      const size_t               n   = geo.position.size() / 3;
+      std::vector<glm::vec3>     positions(n), normals(n);
+      std::memcpy(positions.data(), geo.position.data(), n * 12);
+      std::memcpy(normals.data(), geo.normal.data(), n * 12);
+      std::vector<glm::vec4> want(n, glm::vec4(0.f)), got(n);
+      tinygltf::utils::computeTangents(positions, normals, record->uv0, record->refine->tangentIndices, want);
+      std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(mesh->tangents), n * 16).data(), n * 16);
+      for(size_t v = 0; v < n; v++)
+      {
+        ASSERT_GT(glm::dot(glm::vec3(got[v]), glm::vec3(want[v])), 0.999f) << when << " mesh " << mi << " vertex " << v;
+        ASSERT_EQ(got[v].w, want[v].w) << when << " mesh " << mi << " vertex " << v;
+      }
+    }
+    EXPECT_GT(made, 0u) << when;
+  };
+  check("fed");
+
+  const auto moved = [](const std::vector<fv::morph::MeshChange>& changes) {
+    std::vector<int> out;
+    for(const auto& c : changes)
+      out.push_back(c.mesh);
+    return out;
+  };
+  box->morphs->set("Taper", 0.5);  // its file read
+  box->morphs->settled();
+  EXPECT_TRUE(figure.syncVertices(box->loaded.scene, moved(box->drain().meshes), true));
+  gpu.beginFrame();
+  residency.sync(scene);
+  check("dialled");
+  box->morphs->cageOnly = [&](int mesh) { return figure.refines(mesh); };
+  box->morphs->set("Taper", 1.0);
+  EXPECT_TRUE(figure.syncCages(box->loaded.scene, moved(box->drain().meshes)));
+  gpu.beginFrame();
+  residency.sync(scene);
+  box->morphs->settled();  // the CPU's vertices, to check against
+  (void)box->drain();
+  check("a cage step");
+}
+
 // Strand ribbons (gpu-figures-plan.md F1): each drawn vertex is its strand point moved across the
 // strand by its width, which the GPU adds after copying the points; the residency's streams are the
 // CPU's, as fed and with the strands moved as a morph moves them.

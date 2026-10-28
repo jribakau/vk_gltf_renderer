@@ -29,6 +29,7 @@
 #include <tuple>
 
 #include "gltf_material_cache.hpp"
+#include "tinygltf_utils.hpp"
 #include "scene_gpu_tables.hpp"
 #include "scene_material_bits.hpp"
 #include "shaders/gltf_scene_io.h.slang"
@@ -143,6 +144,13 @@ MeshRecord refinedBase(const MeshRecord& r)
     out.positions[d]    = from < src.size() ? src[from] : glm::vec3(0.f);
     if(d < out.normals.size())
       out.normals[d] = from < normals.size() ? normals[from] : glm::vec3(0.f);
+  }
+  // with tangent tables, the tangents of those positions (the residency makes them when it has the
+  // tangent stream; computeTangents' floats, which the fake's tangent pass repeats)
+  if(!t.tangentIndices.empty() && out.tangents.size() == out.positions.size())
+  {
+    out.tangents.assign(out.positions.size(), glm::vec4(0.f));
+    tinygltf::utils::computeTangents(out.positions, out.normals, out.uv0, t.tangentIndices, out.tangents);
   }
   return out;
 }
