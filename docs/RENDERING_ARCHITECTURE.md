@@ -55,6 +55,37 @@ one with morph targets, is deformed for that entity: its own prims, over output 
 and skin passes write and refit, as legacy gives a skinned node its own render primitives.
 `SceneVk`, `SceneRtx`, `AnimationVk` and `TransformComputeVk` hold nothing in such a session.
 
+**Slots and side tables.** An entity's draw item (entity, mesh, submesh, instancing copy) is an
+instance: a render-node row and a TLAS row, whose custom index is its prim slot. A submesh drawn
+somewhere is a prim: its own index buffer and BLAS over its mesh's streams, or over its drawer's
+outputs when the entity deforms it. Instance, prim and material slots come lowest-first from pools;
+a freed slot is a hole (a zeroed row, a null TLAS row) until its retire frame, and only then goes
+back to its pool, so a frame in flight never reads another object in a slot it drew. The tables
+are sized by capacity (a power of two at or above the high-water mark); the shaders skip a hole
+(`kInvalidRenderNodeMapping`). Beside them the residency keeps: per material slot a
+`GltfShadeMaterial` row and a span of the texture-info table; texture and sampler slots (slot 0
+the defaults), one image per texture and colour space; dense lights in document order; the
+emissive table over shown instances whose materials emit; per prim slot the address of its
+previous positions and per instance slot its previous world (the DLSS motion tables); and the
+packed joint matrices, normal matrices and morph weights of every drawer.
+
+**BLAS lifecycle.** A prim's BLAS is built in the frame its prim is made, recorded into that
+frame's command buffer in batches whose scratch is bounded (`blasScratchBudgetMB`); refit when its
+vertices are written (a dial, a skin or morph pass); built again when a stream it reads had to be
+replaced; and retired with its prim after the last instance lets go of it, its memory freed a frame
+cycle later (`GpuBackend::retire`). The TLAS is built again over capacity whenever a row changes
+(`tlasPolicy`), keeping its handle until capacity grows.
+
+**Sync order** (`rs::Residency::sync`, once a frame before the passes): a frame-to-write barrier
+(nothing below overwrites what a frame in flight reads before it); last sync's moved worlds and
+written positions copied for motion; instances for the draw items that came, holes for those that
+went, and their prims, meshes and material slots; the materials edited (an edit the live variant
+can't draw held, D15); the images those need, decoded in one batch; vertex edits uploaded and their
+BLASes refit; the deform passes; capacity grown; material rows and spans; the draw lists; the
+render-node and prim rows and the TLAS; the motion tables; IES profiles, lights and the emissive
+table; the scene descriptor; then a transfer-to-shader barrier. Everything a sync frees goes
+through the retire queue; nothing waits for idle.
+
 ### BLAS ↔ Primitive Index Contract (Critical)
 
 There is a **direct correlation between BLAS and primitive index**:

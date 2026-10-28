@@ -193,6 +193,10 @@ src/
 ├── scene_export_gltf.cpp/hpp   # A RetainedScene (or a subtree) out as a fresh glTF model
 ├── scene_clip_player.cpp/hpp   # ClipPlayer: a clip played into entity TRS and morph weights, AnimationSystem's
 │                               #   interpolation ported
+├── fv_figure_feed.cpp/hpp      # A DAZ figure's scene graph straight into the retained scene, diffed
+│                               #   against what it fed, with narrow syncs for poses, dials and edits
+├── fv_prop_feed.cpp/hpp        # The Figure Viewer's props fed into the retained scene as deltas
+├── fv_scene_map.cpp/hpp        # Entities and materials back to the host's props, topic nodes and surfaces
 │
 ├── ui_inspector.cpp/hpp        # Property inspector (per selection type: node/primitive/material/
 │                               #   mesh/camera/light/texture/image/sampler/animation)
@@ -850,8 +854,7 @@ either has a retained branch or is legacy-only and checks for it. A new use pick
 - The selection by glTF node: `selectSceneNodeFromScript`, `pickSceneNodeFromScript`,
   `hoverSceneNodeFromScript`, `updateSelectionFromPick`, `onSceneSelectionEvent`,
   `selectedNodeIndex`, `isInteractivityPlaying`; the gizmo's node TRS and its undo.
-- `mcp_scene.cpp`: the MCP scene tools read and edit the legacy scene; they are refused while the
-  retained scene draws (D3).
+- `mcp_scene.cpp`: `vk_gltf_scene_info` reads the legacy scene (the edit tools went, D3).
 - `onFileDrop`, `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`,
   `wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `undo_redo.cpp`,
   `gltf_interactivity_scene_pointer.cpp`, `updateInteractivityGraphs`, `updateHoverState`.
@@ -898,7 +901,7 @@ mesh's vertices (`rs::Residency`, "Deformation"). DLSS motion comes from two tab
 keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): positions a sync wrote are
 copied at the top of the next one, and an instance keeps the world it was drawn with for one sync
 after it moves. The clip that plays is a `rs::ClipPlayer` on the store (`setHostClip`), driven by
-`AnimationControl` as a legacy clip is. mcp_scene's edit tools are refused (D3).
+`AnimationControl` as a legacy clip is.
 
 Four settings, none remembered:
 
