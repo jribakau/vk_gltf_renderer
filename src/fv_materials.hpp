@@ -162,6 +162,11 @@ public:
   fv::Json editState() const;
   // Puts such edits back; returns what could not be: materials that are not there any more.
   std::vector<std::string> restoreEdits(const fv::Json& state);
+  // One material's edits as material.set values (empty when it has none), its name, and how many
+  // materials there are
+  fv::Json    editsOf(int index) const;
+  std::string nameOf(int index) const;
+  size_t      count() const { return m_count; }
 
   // Surfaces that were parsed again (a material preset): lowers them and publishes.
   void surfacesChanged(const std::set<int>& materials);

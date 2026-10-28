@@ -74,7 +74,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     }
     return impl->onApp([impl, args] { return impl->propAdd(args); });
   });
-  cmds.add("prop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propSet(args); }); });
+  cmds.add("prop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.set", args); }); });
   cmds.add("prop.remove", [impl](const Json& args) {
     return impl->onApp([impl, args] {
       auto p = impl->findProp(args.at("prop").get<std::string>());
@@ -90,34 +90,24 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     // a figure loads again, which waits on workers: answered with its job
     return impl->onApp([impl, args] { return impl->propDuplicate(args); });
   });
-  cmds.add("scene.clear", [impl](const Json&) { return impl->onApp([impl] { return impl->sceneClear(); }); });
-  // every prop's place at once, as a scene file opens: one composition, not one per prop that moves
-  cmds.add("scene.order", [impl](const Json& args) {
-    return impl->onApp([impl, args] {
-      std::vector<std::shared_ptr<Prop>> next;
-      for(const Json& id : args.at("order"))
-        if(id.is_string())
-          if(auto p = impl->findProp(id.get<std::string>()); p && std::find(next.begin(), next.end(), p) == next.end())
-            next.push_back(p);
-      // what the list leaves out keeps its order, after what it names
-      for(const auto& p : impl->props)
-        if(std::find(next.begin(), next.end(), p) == next.end())
-          next.push_back(p);
-      if(next != impl->props)
-      {
-        impl->props = std::move(next);
-        impl->requestCompose("Reordering");
-        impl->publishScene();
-      }
-      return Json{{"ok", true}};
+  cmds.add("scene.clear", [impl](const Json&) {
+    return impl->onApp([impl] {
+      // removing a prop is no step yet (C3): the steps of the props that went would find nothing
+      impl->journal.clear();
+      impl->publishHistory();
+      return impl->sceneClear();
     });
   });
+  cmds.add("scene.order", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("scene.order", args); }); });
   cmds.add("view.use", [impl](const Json& args) {
     return impl->onApp([impl, args] {
       fv::timing::Scope t("view.use", 20);
-      return impl->viewUse(args);
+      return impl->edit("view.use", args);
     });
   });
+  // the edit history (fv_journal.hpp): the step to undo or redo, applied -> {label}, null when there is none
+  cmds.add("history.undo", [impl](const Json&) { return impl->onApp([impl] { return impl->historyStep(true); }); });
+  cmds.add("history.redo", [impl](const Json&) { return impl->onApp([impl] { return impl->historyStep(false); }); });
   for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
     cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
       return impl->onApp([impl, cmd, args] { return impl->animationCommand(cmd, args); });
@@ -127,27 +117,21 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("scene.restore", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->sceneRestore(args); }); });
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
   cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeRemove(args); }); });
-  cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeVisible(args); }); });
-  cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeCollision(args); }); });
-  cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeCloth(args); }); });
-  cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("enable", args); }); });
-  cmds.add("dforce.mode", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("mode", args); }); });
+  cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.visible", args); }); });
+  cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
+  cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
+  cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("dforce.enable", args); }); });
+  cmds.add("dforce.mode", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("dforce.mode", args); }); });
   cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
-  const auto materialsOf = [impl](const Json& args) -> FvMaterials& {
-    auto p = impl->propArg(args);
-    if(!p || !p->materials)
-      throw std::runtime_error("Select a figure or a model: its surfaces are edited here.");
-    return *p->materials;
-  };
-  cmds.add("material.set", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).set(args); }); });
-  cmds.add("material.reset", [impl, materialsOf](const Json& args) { return impl->onApp([materialsOf, args] { return materialsOf(args).reset(args); }); });
+  cmds.add("material.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("material.set", args); }); });
+  cmds.add("material.reset", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("material.reset", args); }); });
   cmds.add("material.eyes", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialEyes(args); }); });
   cmds.add("wardrobe.color", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeColor(args); }); });
   cmds.add("material.skin", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialSkin(args); }); });
   cmds.add("material.makeup", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialMakeup(args); }); });
-  cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->poseSet(args); }); });
+  cmds.add("pose.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("pose.set", args); }); });
   cmds.add("pose.eyes", [impl](const Json& args) {
-    return impl->onApp([impl, args] {
+    return impl->onApp([impl, args] { return impl->journaled("pose.eyes", args, [impl, &args] {
       const auto p = impl->figureProp(args);
       if(!p || !p->figure->fig->pose)
         throw std::runtime_error("no such figure");
@@ -163,17 +147,17 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
           bones.push_back(pb.id);
       impl->patchPose(*p->figure, bones);
       return Json{{"aimed", n}};
-    });
+    }); });
   });
   cmds.add("pose.reset", [impl](const Json& args) {
-    return impl->onApp([impl, args] {
+    return impl->onApp([impl, args] { return impl->journaled("pose.reset", args, [impl, &args] {
       auto figure = impl->figureArg(args);
       if(!figure || !figure->fig->pose)
         throw std::runtime_error("no such figure");
       figure->fig->pose->reset();
       impl->protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
       return Json{{"changed", 0}};
-    });
+    }); });
   });
   // answered at once: the values merge with whatever else arrived this frame and apply in onUpdate
   cmds.add("morph.set", [impl](const Json& args) {
@@ -190,7 +174,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return Json{{"ok", true}};
   });
   cmds.add("morph.reset", [impl](const Json& args) {
-    return impl->onApp([impl, args] {
+    return impl->onApp([impl, args] { return impl->journaled("morph.reset", args, [impl, &args] {
       auto figure = impl->figureArg(args);
       if(!figure || !figure->fig->morphs)
         throw std::runtime_error("no such figure");
@@ -200,7 +184,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       }
       figure->fig->morphs->resetAll();
       return Json{{"ok", true}};
-    });
+    }); });
   });
   cmds.add("render.mode", [impl](const Json& args) {
     const std::string mode = args.at("mode").get<std::string>();
@@ -257,7 +241,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   {"width", size.width},   {"height", size.height}};
     });
   });
-  cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingSet(args); }); });
+  cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("lighting.set", args); }); });
   // any registered renderer parameter, read or written as nvmcp's parameter tools do
   cmds.add("params.get", [impl](const Json& args) {
     return impl->onApp([impl, args] { return toolJson(nvmcp::detail::getParameters(exposedParameters(impl->registry), args.dump())); });
@@ -290,10 +274,11 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // camera.set edits the lens of the view in use: the camera looked through keeps it, else the free view
   s.view->onLensChange([impl](const FvView::Lens& lens) {
     if(const auto p = impl->findProp(impl->viewCamera))
-    {
-      p->camera.lens = lens;
-      impl->publishScene();
-    }
+      impl->journaled("camera.set", {{"prop", p->id}}, [impl, &p, &lens] {
+        p->camera.lens = lens;
+        impl->publishScene();
+        return Json();
+      });
     else
       impl->freeView.lens = lens;
   });
@@ -369,6 +354,7 @@ void FvHost::onAttach(nvapp::Application* app)
   m_impl->protocol->events().snapshot(
       "render", {{"mode", m_impl->renderer->renderSystem() == RenderingMode::ePathtracer ? "rtx" : "raster"}});
   m_impl->publishScene();
+  m_impl->publishHistory();
 }
 
 void FvHost::onDetach()

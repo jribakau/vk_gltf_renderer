@@ -486,15 +486,26 @@ Json FvMaterials::editState() const
   const auto keys = materialKeys(*m_scene);
   for(size_t i = 0; i < m_count; i++)
   {
-    if(m_scene->materials[i].edits.empty())
-      continue;
-    const Json shown = item(int(i));
-    Json       edited = Json::object();
-    for(const Json& k : shown["edited"])
-      edited[k.get<std::string>()] = shown["values"].value(k.get<std::string>(), Json());
-    out[keys[i]] = std::move(edited);
+    if(!m_scene->materials[i].edits.empty())
+      out[keys[i]] = editsOf(int(i));
   }
   return out;
+}
+
+Json FvMaterials::editsOf(int index) const
+{
+  Json edited = Json::object();
+  if(!m_scene || index < 0 || index >= int(m_count) || m_scene->materials[size_t(index)].edits.empty())
+    return edited;
+  const Json shown = item(index);
+  for(const Json& k : shown["edited"])
+    edited[k.get<std::string>()] = shown["values"].value(k.get<std::string>(), Json());
+  return edited;
+}
+
+std::string FvMaterials::nameOf(int index) const
+{
+  return m_scene && index >= 0 && index < int(m_count) ? m_scene->materials[size_t(index)].name : std::string();
 }
 
 std::vector<std::string> FvMaterials::restoreEdits(const Json& state)

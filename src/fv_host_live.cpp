@@ -90,9 +90,16 @@ void FvHost::Impl::applyPendingMorphs()
     if(!p || !p->figure || !p->figure->fig->morphs || dials.empty())
       continue;
     std::vector<std::pair<std::string, double>> values(dials.begin(), dials.end());
-    const auto                                  t0 = std::chrono::steady_clock::now();
-    p->figure->fig->morphs->setMany(values);
-    dialTiming.add(DialTiming::eSetMany, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    // a step of the history: what a frame's dials were before, read here where they land
+    Json args = {{"prop", id}, {"values", Json::object()}};
+    for(const auto& [name, value] : dials)
+      args["values"][name] = value;
+    journaled("morph.set", args, [&] {
+      const auto t0 = std::chrono::steady_clock::now();
+      p->figure->fig->morphs->setMany(values);
+      dialTiming.add(DialTiming::eSetMany, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+      return Json();
+    });
   }
 }
 
@@ -198,6 +205,8 @@ void FvHost::Impl::frameCamera()
     return;
   const nvutils::Bbox box  = renderer->visibleSceneBounds();
   const VkExtent2D    size = renderer->renderSize();
+  if(box.isEmpty())
+    return;  // nothing drawn to frame: the view stays
   manip->fit(box.min(), box.max(), true, false, size.height ? double(size.width) / size.height : 1.0);
 }
 

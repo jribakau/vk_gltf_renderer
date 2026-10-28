@@ -81,6 +81,7 @@
 #include "fv_compose.hpp"
 #include "fv_figure_feed.hpp"
 #include "fv_prop_feed.hpp"
+#include "fv_journal.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
@@ -849,6 +850,26 @@ struct FvHost::Impl
   void            feedSun(rs::RetainedScene& scene);
   void setParams(const Json& values);
   void publishLighting();
+
+  // ---- the edit history (fv_journal.hpp, fv_host_journal.cpp), application thread only
+  fv::Journal journal;
+  bool        replaying = false;  // an undo or redo applies its ops: they are no new step
+  // Applies an edit as a step: what it is about to change is read first, and again after; a step is
+  // recorded when the two differ, with the ops that put each back. Without a step (nothing changed,
+  // or an op the journal does not know) it is only applied.
+  Json journaled(const std::string& cmd, const Json& args, const std::function<Json()>& apply);
+  // journaled() with the op itself as what applies
+  Json edit(const std::string& cmd, const Json& args);
+  // One op as a step holds it, {cmd, args}: the commands the captures write
+  Json applyOp(const Json& op);
+  // What an edit reads, named so it reads the same before and after ("kind" and what it names)
+  Json journalScope(const std::string& cmd, const Json& args) const;
+  // The ops that put the scope back as it is now
+  Json journalState(const Json& scope) const;
+  std::string journalLabel(const std::string& cmd, const Json& args, const Json& scope) const;
+  Json historyStep(bool undo);
+  void publishHistory();
+  Json sceneOrder(const Json& args);
 
   std::unique_ptr<FvView> view;
   // how skin is shaded for the render mode

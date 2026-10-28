@@ -30,14 +30,23 @@
 class FakeHostRenderer : public HostRenderer
 {
 public:
-  FakeHostRenderer() { m_camera->setWindowSize({1280, 720}); }
+  FakeHostRenderer()
+  {
+    // a view as the app starts with one: a camera prop added stands here
+    m_camera->setWindowSize({1280, 720});
+    m_camera->setLookat({0.0, 1.0, 3.0}, {0.0, 1.0, 0.0}, {0.0, 1.0, 0.0}, true);
+  }
 
   rs::RetainedScene& hostScene() override { return m_scene; }
   bool               feedsHostScene() const override { return true; }
   bool               drawsRetainedScene() const override { return true; }
   void               replaceHostScene() override { replaces++; }
   void               prefetchImage(const std::filesystem::path&, bool) override {}
-  nvutils::Bbox      visibleSceneBounds() override { return {}; }
+  nvutils::Bbox      visibleSceneBounds() override
+  {
+    const auto b = m_scene.bounds();
+    return b[0].x > b[1].x ? nvutils::Bbox() : nvutils::Bbox(b[0], b[1]);
+  }
 
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }

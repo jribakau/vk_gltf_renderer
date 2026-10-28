@@ -128,6 +128,12 @@
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
+//   history.undo / history.redo {}  -> {label, problems?}: the step undone or redone, its label null when
+//                                                there is none. A step is a panel edit (prop.set, morph.*,
+//                                                pose.*, material.set/reset, wardrobe.visible/collision/cloth,
+//                                                dforce.enable/mode, lighting.set, scene.order, view.use, and
+//                                                camera.set looking through a camera prop), captured as it
+//                                                applies (fv_host_journal.cpp); a slider's edits merge into one
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
 // The scene: the host feeds the renderer's retained scene itself (HostRenderer::hostScene): a prop
@@ -143,7 +149,8 @@
 //
 // Camera, selection and display commands live in fv_view.hpp.
 //
-// Topics: "session", "jobs", "notices", "render", "lighting", "animation" ({clips: {number: {name,
+// Topics: "session", "jobs", "notices", "render", "lighting", "history" ({undo: [label], redo: [label]},
+// the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
 // "scene" ({props: {id: {kind, name, parent, visible, order, transform: {t, r, e, s}, stats?, source?,
 // format?, generation?, posable?, camera?, light?}}, order: [id]}), and per prop "nodes/<prop>"

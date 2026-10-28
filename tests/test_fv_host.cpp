@@ -23,13 +23,15 @@
 // loaded, dialled, posed, placed, given a material, dressed in its box shirt and removed, and the
 // topics read back.
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <future>
+#include <random>
 #include <thread>
 
 #include <gtest/gtest.h>
-#include <nvutils/parameter_registry.hpp>
 
 #include "common/fake_host_renderer.hpp"
 #include "fv_host.hpp"
@@ -45,7 +47,8 @@ class HostRig
 public:
   HostRig()
   {
-    host = std::make_unique<FvHost>(&renderer, protocol, &registry);
+    // no parameter registry: the renderer's parameters are GltfRenderer's, which lighting writes
+    host = std::make_unique<FvHost>(&renderer, protocol, nullptr);
     host->onAttach(nullptr);
     const Json applied = cmd("settings.apply", {{"libraryRoots", {(fs::path(FV_TEST_DATA) / "daz-library").generic_string()}},
                                                 {"rootId", "r0"},
@@ -96,7 +99,6 @@ public:
   }
 
   FakeHostRenderer             renderer;
-  nvutils::ParameterRegistry   registry;
   std::shared_ptr<FvProtocol>  protocol = std::make_shared<FvProtocol>();
   std::unique_ptr<FvHost>      host;
 };
@@ -224,4 +226,178 @@ TEST(FvHost, ARemovedFigureLeavesTheSceneAndItsTopics)
   EXPECT_TRUE(rig.topic("morphs/" + id).empty());
   EXPECT_TRUE(rig.topic("pose/" + id).empty());
   EXPECT_EQ(rig.renderer.hostScene().meshCount(), 0u);
+}
+
+//--------------------------------------------------------------------------------------------------
+// The edit history (C1)
+
+namespace {
+
+// What a round trip compares: the figure's part of a scene file, every prop's place and fields, the
+// view in use, and the lighting
+Json stateOf(HostRig& rig, const std::string& figure)
+{
+  Json scene = rig.topic("scene");
+  for(auto& [id, p] : scene["props"].items())
+    p.erase("stats");
+  Json lighting = rig.topic("lighting");
+  if(lighting.contains("env"))
+    for(const char* k : {"name", "size", "loading", "sun"})
+      lighting["env"].erase(k);
+  return {{"figure", rig.cmd("scene.state", {{"prop", figure}}).at("result")}, {"scene", scene}, {"lighting", lighting}};
+}
+
+// The first place two states differ (numbers to within 1e-4), or empty
+std::string differ(const Json& a, const Json& b, const std::string& at = "")
+{
+  if(a.is_number() && b.is_number())
+    return std::abs(a.get<double>() - b.get<double>()) <= 1e-4 ? "" : at + ": " + a.dump() + " then " + b.dump();
+  if(a.type() != b.type() || (a.is_array() && a.size() != b.size()))
+    return at + ": " + a.dump() + " then " + b.dump();
+  if(a.is_object())
+  {
+    for(auto it = a.begin(); it != a.end(); ++it)
+      if(const std::string d = b.contains(it.key()) ? differ(it.value(), b[it.key()], at + "/" + it.key()) : at + "/" + it.key() + " went";
+         !d.empty())
+        return d;
+    for(auto it = b.begin(); it != b.end(); ++it)
+      if(!a.contains(it.key()))
+        return at + "/" + it.key() + " came";
+    return "";
+  }
+  if(a.is_array())
+  {
+    for(size_t i = 0; i < a.size(); i++)
+      if(const std::string d = differ(a[i], b[i], at + "/" + std::to_string(i)); !d.empty())
+        return d;
+    return "";
+  }
+  return a == b ? "" : at + ": " + a.dump() + " then " + b.dump();
+}
+
+double roundTo3(double v)
+{
+  return std::round(v * 1000.0) / 1000.0;
+}
+
+}  // namespace
+
+TEST(FvHost, AnEditUndoesAndRedoes)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_FALSE(id.empty());
+  EXPECT_EQ(rig.topic("history"), Json({{"undo", Json::array()}, {"redo", Json::array()}}));
+  const auto headX = [&] { return rig.topic("pose/" + id).at("bones").at("head").at("axes").at("rotation/x").value("value", -1.0); };
+
+  rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/x", 20.0}}}});
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Pose Head"}));
+  const Json undone = rig.cmd("history.undo");
+  EXPECT_EQ(undone.at("result").value("label", ""), "Pose Head") << undone.dump();
+  EXPECT_DOUBLE_EQ(headX(), 0.0);
+  EXPECT_EQ(rig.topic("history").at("redo"), Json({"Pose Head"}));
+  rig.cmd("history.redo");
+  EXPECT_DOUBLE_EQ(headX(), 20.0);
+
+  // a dial lands in the frame after its command: its step is read there
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", 0.5}}}});
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Morph Taper");
+  rig.cmd("history.undo");
+  EXPECT_EQ(rig.cmd("scene.state", {{"prop", id}}).at("result").at("morphs").value("Taper", 0.0), 0.0);
+
+  // nothing changed: no step, and what could be redone still can
+  const size_t steps = rig.topic("history").at("undo").size();
+  rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/x", 20.0}}}});
+  EXPECT_EQ(rig.topic("history").at("undo").size(), steps);
+  EXPECT_EQ(rig.topic("history").at("redo"), Json({"Morph Taper"}));
+}
+
+// The round-trip oracle over seeded random sequences of the panel edits, with undos and redos among
+// them: undoing every step puts the scene back as it began, and redoing them all brings it to where
+// it ended.
+TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
+{
+  for(uint32_t seed = 1; seed <= 3; seed++)
+  {
+    HostRig rig;
+    ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    ASSERT_TRUE(rig.settle());
+    const std::string id = figureId(rig.topic("scene"));
+    ASSERT_FALSE(id.empty());
+    rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+    ASSERT_TRUE(rig.settle());
+    const Json items = rig.topic("wardrobe/" + id).value("items", Json::object());
+    ASSERT_EQ(items.size(), 1u) << items.dump();
+    const std::string item   = items.begin().key();
+    const std::string camera = rig.cmd("prop.add", {{"kind", "camera"}}).at("result").at("prop").get<std::string>();
+    const std::string light  = rig.cmd("prop.add", {{"kind", "light"}, {"type", "spot"}}).at("result").at("prop").get<std::string>();
+    ASSERT_TRUE(rig.settle());
+    ASSERT_TRUE(rig.topic("history").at("undo").empty());
+    const Json start = stateOf(rig, id);
+
+    std::mt19937                   rng(seed);
+    const auto                     u     = [&](double a, double b) { return roundTo3(a + (b - a) * double(rng() >> 8) / 16777216.0); };
+    const auto                     coin  = [&] { return rng() % 2 == 0; };
+    const std::vector<std::string> props = {id, camera, light};
+    std::string                    log;
+    for(int i = 0; i < 120; i++)
+    {
+      std::string cmd;
+      Json        args = Json::object();
+      switch(rng() % 20)
+      {
+        case 0: cmd = "prop.set", args = {{"prop", id}, {"transform", {{"t", {u(-1, 1), 0.0, u(-1, 1)}}}}}; break;
+        case 1: cmd = "prop.set", args = {{"prop", props[rng() % 3]}, {"transform", {{"e", {u(-90, 90), u(-90, 90), 0.0}}}}}; break;
+        case 2: cmd = "prop.set", args = {{"prop", light}, {"light", {{"intensity", u(0, 50)}, {"color", coin() ? "#ff8040" : "#4080ff"}}}}; break;
+        case 3: cmd = "prop.set", args = {{"prop", camera}, {"camera", {{"focalLength", u(20, 120)}}}}; break;
+        case 4: cmd = "prop.set", args = {{"prop", props[rng() % 3]}, {"name", "Name " + std::to_string(i)}}; break;
+        case 5: cmd = "prop.set", args = {{"prop", props[rng() % 3]}, {"visible", coin()}}; break;
+        case 6: cmd = "prop.set", args = {{"prop", light}, {"parent", coin() ? Json(id) : Json()}}; break;
+        case 7: cmd = "morph.set", args = {{"prop", id}, {"values", {{coin() ? "Taper" : "Stretch", u(0, 1)}}}}; break;
+        case 8: cmd = "morph.reset", args = {{"prop", id}}; break;
+        case 9: cmd = "pose.set", args = {{"prop", id}, {"values", {{std::string("head/rotation/") + "xyz"[rng() % 3], u(-50, 50)}}}}; break;
+        case 10: cmd = "pose.reset", args = {{"prop", id}}; break;
+        case 11:
+          cmd  = "material.set";
+          args = {{"prop", id},
+                  {"material", "m:" + std::to_string(rng() % 2)},
+                  {"values", coin() ? Json{{"roughness", u(0, 1)}} : Json{{"color", coin() ? "#336699" : "#aa2200"}}}};
+          break;
+        case 12: cmd = "material.reset", args = {{"prop", id}}; break;
+        case 13: cmd = "wardrobe.visible", args = {{"prop", id}, {"item", item}, {"visible", coin()}}; break;
+        case 14:
+          cmd  = "lighting.set";
+          args = coin() ? Json{{"sun", {{"azimuth", u(0, 360)}, {"enabled", coin()}}}} : Json{{"tonemap", {{"exposure", u(-2, 2)}}}};
+          break;
+        case 15:
+        {
+          std::vector<std::string> order = props;
+          std::shuffle(order.begin(), order.end(), rng);
+          cmd = "scene.order", args = {{"order", order}};
+          break;
+        }
+        case 16: cmd = "view.use", args = {{"camera", coin() ? Json(camera) : Json()}}; break;
+        case 17: cmd = "camera.set", args = {{"focalLength", u(20, 120)}}; break;
+        case 18: cmd = "history.undo"; break;
+        default: cmd = "history.redo"; break;
+      }
+      const Json answer = rig.cmd(cmd, args);
+      log += cmd + " " + args.dump() + (answer.value("ok", false) ? "" : "  -> " + answer.dump()) + "\n";
+      if(answer.contains("result") && answer["result"].is_object())
+        ASSERT_FALSE(answer["result"].contains("problems")) << answer.dump() << "\n" << log;
+    }
+    ASSERT_TRUE(rig.settle());
+    const Json end = stateOf(rig, id);
+
+    for(int undone = 0; !rig.cmd("history.undo").at("result").at("label").is_null(); undone++)
+      ASSERT_LT(undone, 300);
+    ASSERT_TRUE(rig.settle());
+    EXPECT_EQ(differ(start, stateOf(rig, id)), "") << "seed " << seed << "\n" << log;
+    for(int redone = 0; !rig.cmd("history.redo").at("result").at("label").is_null(); redone++)
+      ASSERT_LT(redone, 300);
+    ASSERT_TRUE(rig.settle());
+    EXPECT_EQ(differ(end, stateOf(rig, id)), "") << "seed " << seed << "\n" << log;
+  }
 }

@@ -177,11 +177,15 @@ set(TEST_SOURCES
     # The host's addressing on its retained scene: entities and picks map back to props (oracle 8)
     test_fv_scene_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp
-    # The host's commands without a GPU, over FakeHostRenderer (daz-viewer docs/command-journal-plan.md, C0)
+    # The host's commands without a GPU, over FakeHostRenderer, and its edit history
+    # (daz-viewer docs/command-journal-plan.md, C0 and C1)
     test_fv_host.cpp
+    test_fv_journal.cpp
     common/fake_host_renderer.hpp
     ${CMAKE_SOURCE_DIR}/src/fv_host.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_figure.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_journal.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_journal.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_live.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_looks.cpp
