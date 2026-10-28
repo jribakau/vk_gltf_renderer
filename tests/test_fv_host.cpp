@@ -242,18 +242,32 @@ TEST(FvHost, ARemovedFigureLeavesTheSceneAndItsTopics)
 
 namespace {
 
-// What a round trip compares: the figure's part of a scene file, every prop's place and fields, the
-// view in use, and the lighting
-Json stateOf(HostRig& rig, const std::string& figure)
+// What a round trip compares: every prop's place and fields, each figure's part of a scene file,
+// the view in use, and the lighting
+Json stateOf(HostRig& rig)
 {
-  Json scene = rig.topic("scene");
+  Json scene   = rig.topic("scene");
+  Json figures = Json::object();
   for(auto& [id, p] : scene["props"].items())
+  {
     p.erase("stats");
+    if(p.value("kind", "") == "figure")
+      figures[id] = rig.cmd("scene.state", {{"prop", id}}).at("result");
+  }
   Json lighting = rig.topic("lighting");
   if(lighting.contains("env"))
     for(const char* k : {"name", "size", "loading", "sun"})
       lighting["env"].erase(k);
-  return {{"figure", rig.cmd("scene.state", {{"prop", figure}}).at("result")}, {"scene", scene}, {"lighting", lighting}};
+  return {{"figures", figures}, {"scene", scene}, {"lighting", lighting}};
+}
+
+// An undo or a redo, and the jobs it starts (a restore that loads); its answer's result
+Json historyStep(HostRig& rig, const char* cmd)
+{
+  const Json answer = rig.cmd(cmd);
+  EXPECT_TRUE(answer.value("ok", false)) << answer.dump();
+  EXPECT_TRUE(rig.settle());
+  return answer.value("result", Json::object());
 }
 
 // The first place two states differ (numbers to within 1e-4), or empty
@@ -294,15 +308,16 @@ double roundTo3(double v)
 TEST(FvHost, AnEditUndoesAndRedoes)
 {
   HostRig rig;
+  EXPECT_EQ(rig.topic("history"), Json({{"undo", Json::array()}, {"redo", Json::array()}, {"busy", false}}));
   ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
   ASSERT_TRUE(rig.settle());
   const std::string id = figureId(rig.topic("scene"));
   ASSERT_FALSE(id.empty());
-  EXPECT_EQ(rig.topic("history"), Json({{"undo", Json::array()}, {"redo", Json::array()}}));
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Add Box Figure"}));
   const auto headX = [&] { return rig.topic("pose/" + id).at("bones").at("head").at("axes").at("rotation/x").value("value", -1.0); };
 
   rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/x", 20.0}}}});
-  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Pose Head"}));
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Pose Head");
   const Json undone = rig.cmd("history.undo");
   EXPECT_EQ(undone.at("result").value("label", ""), "Pose Head") << undone.dump();
   EXPECT_DOUBLE_EQ(headX(), 0.0);
@@ -323,9 +338,11 @@ TEST(FvHost, AnEditUndoesAndRedoes)
   EXPECT_EQ(rig.topic("history").at("redo"), Json({"Morph Taper"}));
 }
 
-// The round-trip oracle over seeded random sequences of the panel edits, with undos and redos among
-// them: undoing every step puts the scene back as it began, and redoing them all brings it to where
-// it ended.
+// The round-trip oracle over seeded random sequences of edits, with undos and redos among them: the
+// panel edits (C1) and the structural ones (C3: props added, loaded, duplicated, removed, the scene
+// cleared). Undoing the steps since the setup puts the scene back as it was then; undoing every step
+// empties it; redoing them all brings it to where it ended. More props are removed than are kept, so
+// some come back by loading again.
 TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
 {
   for(uint32_t seed = 1; seed <= 3; seed++)
@@ -333,37 +350,48 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
     HostRig rig;
     ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
     ASSERT_TRUE(rig.settle());
-    const std::string id = figureId(rig.topic("scene"));
-    ASSERT_FALSE(id.empty());
-    rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+    const std::string figure = figureId(rig.topic("scene"));
+    ASSERT_FALSE(figure.empty());
+    rig.cmd("wear", {{"prop", figure}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
     ASSERT_TRUE(rig.settle());
-    const Json items = rig.topic("wardrobe/" + id).value("items", Json::object());
-    ASSERT_EQ(items.size(), 1u) << items.dump();
-    const std::string item   = items.begin().key();
-    const std::string camera = rig.cmd("prop.add", {{"kind", "camera"}}).at("result").at("prop").get<std::string>();
-    const std::string light  = rig.cmd("prop.add", {{"kind", "light"}, {"type", "spot"}}).at("result").at("prop").get<std::string>();
+    rig.cmd("prop.add", {{"kind", "camera"}});
+    rig.cmd("prop.add", {{"kind", "light"}, {"type", "spot"}});
     ASSERT_TRUE(rig.settle());
-    ASSERT_TRUE(rig.topic("history").at("undo").empty());
-    const Json start = stateOf(rig, id);
+    const size_t setup = rig.topic("history").at("undo").size();
+    const Json   start = stateOf(rig);
 
-    std::mt19937                   rng(seed);
-    const auto                     u     = [&](double a, double b) { return roundTo3(a + (b - a) * double(rng() >> 8) / 16777216.0); };
-    const auto                     coin  = [&] { return rng() % 2 == 0; };
-    const std::vector<std::string> props = {id, camera, light};
-    std::string                    log;
+    std::mt19937 rng(seed);
+    const auto   u    = [&](double a, double b) { return roundTo3(a + (b - a) * double(rng() >> 8) / 16777216.0); };
+    const auto   coin = [&] { return rng() % 2 == 0; };
+    std::string  log;
     for(int i = 0; i < 120; i++)
     {
+      // what is in the scene now
+      const Json               scene = rig.topic("scene");
+      std::vector<std::string> props, figures, cameras, lights;
+      for(const Json& id : scene.value("order", Json::array()))
+      {
+        const std::string kind = scene["props"][id.get<std::string>()].value("kind", "");
+        props.push_back(id);
+        (kind == "figure" ? figures : kind == "camera" ? cameras : lights).push_back(id);
+      }
+      const auto any = [&](const std::vector<std::string>& v) { return v.empty() ? std::string("p:0") : v[rng() % v.size()]; };
+      const std::string id = any(figures);
+      std::string       item;
+      for(const auto& [key, it] : rig.topic("wardrobe/" + id).value("items", Json::object()).items())
+        item = key;
+
       std::string cmd;
       Json        args = Json::object();
-      switch(rng() % 20)
+      switch(rng() % 26)
       {
         case 0: cmd = "prop.set", args = {{"prop", id}, {"transform", {{"t", {u(-1, 1), 0.0, u(-1, 1)}}}}}; break;
-        case 1: cmd = "prop.set", args = {{"prop", props[rng() % 3]}, {"transform", {{"e", {u(-90, 90), u(-90, 90), 0.0}}}}}; break;
-        case 2: cmd = "prop.set", args = {{"prop", light}, {"light", {{"intensity", u(0, 50)}, {"color", coin() ? "#ff8040" : "#4080ff"}}}}; break;
-        case 3: cmd = "prop.set", args = {{"prop", camera}, {"camera", {{"focalLength", u(20, 120)}}}}; break;
-        case 4: cmd = "prop.set", args = {{"prop", props[rng() % 3]}, {"name", "Name " + std::to_string(i)}}; break;
-        case 5: cmd = "prop.set", args = {{"prop", props[rng() % 3]}, {"visible", coin()}}; break;
-        case 6: cmd = "prop.set", args = {{"prop", light}, {"parent", coin() ? Json(id) : Json()}}; break;
+        case 1: cmd = "prop.set", args = {{"prop", any(props)}, {"transform", {{"e", {u(-90, 90), u(-90, 90), 0.0}}}}}; break;
+        case 2: cmd = "prop.set", args = {{"prop", any(lights)}, {"light", {{"intensity", u(0, 50)}, {"color", coin() ? "#ff8040" : "#4080ff"}}}}; break;
+        case 3: cmd = "prop.set", args = {{"prop", any(cameras)}, {"camera", {{"focalLength", u(20, 120)}}}}; break;
+        case 4: cmd = "prop.set", args = {{"prop", any(props)}, {"name", "Name " + std::to_string(i)}}; break;
+        case 5: cmd = "prop.set", args = {{"prop", any(props)}, {"visible", coin()}}; break;
+        case 6: cmd = "prop.set", args = {{"prop", any(lights)}, {"parent", coin() ? Json(any(props)) : Json()}}; break;
         case 7: cmd = "morph.set", args = {{"prop", id}, {"values", {{coin() ? "Taper" : "Stretch", u(0, 1)}}}}; break;
         case 8: cmd = "morph.reset", args = {{"prop", id}}; break;
         case 9: cmd = "pose.set", args = {{"prop", id}, {"values", {{std::string("head/rotation/") + "xyz"[rng() % 3], u(-50, 50)}}}}; break;
@@ -387,27 +415,77 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
           cmd = "scene.order", args = {{"order", order}};
           break;
         }
-        case 16: cmd = "view.use", args = {{"camera", coin() ? Json(camera) : Json()}}; break;
+        case 16: cmd = "view.use", args = {{"camera", coin() ? Json(any(cameras)) : Json()}}; break;
         case 17: cmd = "camera.set", args = {{"focalLength", u(20, 120)}}; break;
         case 18: cmd = "history.undo"; break;
-        default: cmd = "history.redo"; break;
+        case 19: cmd = "history.redo"; break;
+        case 20: cmd = "prop.add", args = coin() ? Json{{"kind", "camera"}} : Json{{"kind", "light"}, {"type", "point"}}; break;
+        case 21:
+        case 22: cmd = "prop.remove", args = {{"prop", any(props)}}; break;
+        case 23: cmd = "prop.duplicate", args = {{"prop", any(props)}}; break;
+        case 24: cmd = "load", args = {{"rel", "People/Test/Box Figure.duf"}}; break;
+        default:
+          if(rng() % 4 == 0)
+            cmd = "scene.clear";
+          else
+            cmd = "history.undo";
+          break;
       }
       const Json answer = rig.cmd(cmd, args);
       log += cmd + " " + args.dump() + (answer.value("ok", false) ? "" : "  -> " + answer.dump()) + "\n";
+      // a load, a figure's duplicate, an undo that loads: in before the next edit
+      ASSERT_TRUE(rig.settle()) << log;
       if(answer.contains("result") && answer["result"].is_object())
         ASSERT_FALSE(answer["result"].contains("problems")) << answer.dump() << "\n" << log;
     }
-    ASSERT_TRUE(rig.settle());
-    const Json end = stateOf(rig, id);
+    const Json end = stateOf(rig);
 
-    for(int undone = 0; !rig.cmd("history.undo").at("result").at("label").is_null(); undone++)
-      ASSERT_LT(undone, 300);
-    ASSERT_TRUE(rig.settle());
-    EXPECT_EQ(differ(start, stateOf(rig, id)), "") << "seed " << seed << "\n" << log;
-    for(int redone = 0; !rig.cmd("history.redo").at("result").at("label").is_null(); redone++)
+    while(rig.topic("history").at("undo").size() > setup)
+      ASSERT_FALSE(historyStep(rig, "history.undo").contains("problems")) << log;
+    EXPECT_EQ(differ(start, stateOf(rig)), "") << "seed " << seed << "\n" << log;
+    while(!historyStep(rig, "history.undo").at("label").is_null())
+      ;
+    EXPECT_TRUE(rig.topic("scene").at("props").empty()) << rig.topic("scene").dump();
+    for(int redone = 0; !historyStep(rig, "history.redo").at("label").is_null(); redone++)
       ASSERT_LT(redone, 300);
+    EXPECT_EQ(differ(end, stateOf(rig)), "") << "seed " << seed << "\n" << log;
+  }
+}
+
+// A removed dressed figure comes back under its id with its look, pose and wardrobe: kept, and
+// loaded again once more removals than are kept came after it.
+TEST(FvHost, ARemovedFigureComesBackUnderItsIdAsItWas)
+{
+  for(bool reloads : {false, true})
+  {
+    HostRig rig;
+    ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
     ASSERT_TRUE(rig.settle());
-    EXPECT_EQ(differ(end, stateOf(rig, id)), "") << "seed " << seed << "\n" << log;
+    const std::string id = figureId(rig.topic("scene"));
+    rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+    ASSERT_TRUE(rig.settle());
+    rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", 0.4}}}});
+    rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/y", 25.0}}}});
+    rig.cmd("material.set", {{"prop", id}, {"material", "m:1"}, {"values", {{"roughness", 0.7}}}});
+    rig.cmd("prop.set", {{"prop", id}, {"transform", {{"t", {0.5, 0.0, -0.25}}}}});
+    const Json was = stateOf(rig);
+
+    ASSERT_TRUE(rig.cmd("prop.remove", {{"prop", id}}).value("ok", false));
+    ASSERT_TRUE(rig.settle());
+    EXPECT_EQ(rig.topic("history").at("undo")[0], "Remove Box Figure");
+    int removals = 1;
+    if(reloads)
+      for(; removals <= int(5); removals++)
+      {
+        const std::string camera = rig.cmd("prop.add", {{"kind", "camera"}}).at("result").at("prop").get<std::string>();
+        rig.cmd("prop.remove", {{"prop", camera}});
+      }
+    for(int i = 0; i < removals * 2 - 1; i++)
+      ASSERT_FALSE(historyStep(rig, "history.undo").contains("problems"));
+    EXPECT_EQ(figureId(rig.topic("scene")), id);
+    EXPECT_EQ(differ(was, stateOf(rig)), "") << (reloads ? "loaded again" : "kept");
+    EXPECT_FALSE(rig.topic("morphs/" + id).empty());
+    EXPECT_EQ(rig.topic("wardrobe/" + id).value("items", Json::object()).size(), 1u);
   }
 }
 
@@ -451,10 +529,11 @@ TEST(FvHost, AGizmoDragOfAPropIsOneStep)
     rig.renderer.gizmo.edit(root, {to, 0.f, 0.f}, glm::quat(1.f, 0.f, 0.f, 0.f), glm::vec3(1.f), true);
     rig.host->onUpdate();
   };
+  const size_t loaded = undoSteps(rig);
   drag(0.5f);
-  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Move Box Figure"}));
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Move Box Figure");
   drag(0.8f);
-  EXPECT_EQ(undoSteps(rig), 2u);
+  EXPECT_EQ(undoSteps(rig), loaded + 2);
 
   rig.cmd("history.undo");
   EXPECT_NEAR(rig.topic("scene").at("props").at(id).at("transform").at("t")[0].get<double>(), 0.5, 1e-5);
@@ -489,7 +568,7 @@ TEST(FvHost, AGizmoDragOfABoneIsOneStep)
   rig.renderer.gizmo.edit(bone, glm::vec3(0.f), glm::angleAxis(glm::radians(30.f), glm::vec3(1.f, 0.f, 0.f)), glm::vec3(1.f), true);
   rig.host->onUpdate();
   ASSERT_GT(std::abs(headX()), 1.0);
-  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Pose Head"}));
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Pose Head", "Add Box Figure"}));
   rig.cmd("history.undo");
   EXPECT_NEAR(headX(), 0.0, 1e-4);
 }
@@ -499,7 +578,7 @@ TEST(FvHost, ADragOfTheViewThroughACameraIsOneStep)
   HostRig rig;
   const std::string camera = rig.cmd("prop.add", {{"kind", "camera"}}).at("result").at("prop").get<std::string>();
   rig.cmd("view.use", {{"camera", camera}});
-  ASSERT_EQ(undoSteps(rig), 1u);  // looking through it
+  ASSERT_EQ(undoSteps(rig), 2u);  // added, and looking through it
   const Json start = rig.topic("scene").at("props").at(camera).at("transform");
 
   const auto orbit = [&](double from) {
@@ -510,16 +589,16 @@ TEST(FvHost, ADragOfTheViewThroughACameraIsOneStep)
   };
   orbit(400);
   EXPECT_EQ(rig.topic("history").at("undo")[0], "Move Camera");
-  EXPECT_EQ(undoSteps(rig), 2u);
-  orbit(500);
   EXPECT_EQ(undoSteps(rig), 3u);
+  orbit(500);
+  EXPECT_EQ(undoSteps(rig), 4u);
   EXPECT_NE(differ(start, rig.topic("scene").at("props").at(camera).at("transform")), "");
 
   rig.cmd("history.undo");
   rig.cmd("history.undo");
   rig.host->onUpdate();
   EXPECT_EQ(differ(start, rig.topic("scene").at("props").at(camera).at("transform")), "");
-  EXPECT_EQ(undoSteps(rig), 1u);  // the view going back with the camera is no step of its own
+  EXPECT_EQ(undoSteps(rig), 2u);  // the view going back with the camera is no step of its own
 }
 
 TEST(FvHost, ASlidersGestureIsOneStep)
@@ -534,13 +613,13 @@ TEST(FvHost, ASlidersGestureIsOneStep)
     if(i == 25)
       pauseBeyondMerge();
   }
-  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Morph Taper"}));
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Morph Taper", "Add Box Figure"}));
   // the same again after its end, and a pose slider's: steps of their own
   rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", 0.5}}}, {"gesture", {{"id", "slider 1"}}}});
   rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/y", 10.0}}}, {"gesture", {{"id", "slider 2"}}}});
   pauseBeyondMerge();
   rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/y", 20.0}}}, {"gesture", {{"id", "slider 2"}, {"end", true}}}});
-  EXPECT_EQ(undoSteps(rig), 3u);
+  EXPECT_EQ(undoSteps(rig), 4u);
 
   rig.cmd("history.undo");
   rig.cmd("history.undo");

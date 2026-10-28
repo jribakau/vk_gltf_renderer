@@ -72,30 +72,27 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       asProp["as"] = "prop";
       return impl->load(asProp);
     }
-    return impl->onApp([impl, args] { return impl->propAdd(args); });
-  });
-  cmds.add("prop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.set", args); }); });
-  cmds.add("prop.remove", [impl](const Json& args) {
     return impl->onApp([impl, args] {
-      auto p = impl->findProp(args.at("prop").get<std::string>());
-      if(!p)
-        throw std::runtime_error("no such prop");
-      impl->removeProp(p);
-      impl->publishScene();
-      impl->requestCompose("Removing " + p->name);
-      return Json{{"ok", true}};
+      Json added = impl->propAdd(args);
+      if(const auto p = impl->findProp(added.value("prop", "")))
+        impl->recordAdded(p, "Add " + p->name);
+      return added;
     });
   });
+  cmds.add("prop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.set", args); }); });
+  cmds.add("prop.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.remove", args); }); });
   cmds.add("prop.duplicate", [impl](const Json& args) {
     // a figure loads again, which waits on workers: answered with its job
     return impl->onApp([impl, args] { return impl->propDuplicate(args); });
   });
   cmds.add("scene.clear", [impl](const Json&) {
     return impl->onApp([impl] {
-      // removing a prop is no step yet (C3): the steps of the props that went would find nothing
-      impl->journal.clear();
-      impl->publishHistory();
-      return impl->sceneClear();
+      return impl->journaled("scene.clear", Json::object(), [impl] {
+        // every prop is kept for the undo, as a removed one is
+        for(const auto& p : impl->props)
+          impl->parked.emplace_back(p->id, p);
+        return impl->sceneClear();
+      });
     });
   });
   cmds.add("scene.order", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("scene.order", args); }); });
@@ -562,6 +559,8 @@ void FvHost::onUpdate()
     s.protocol->events().patch("scene", {{"props", moved}});
   }
   s.publishAnimation(false);
+  // an undo or redo that waits on a restore's load goes on once it is in
+  s.pollHistory();
   // the first thing in an empty scene, framed once it is drawn
   if(s.frameIn > 0 && --s.frameIn == 0)
     s.frameCamera();

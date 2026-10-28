@@ -34,6 +34,10 @@
 // takes: its steps carry its id in their key and merge whatever the time between, and its last one
 // closes it.
 //
+// Undoing a step reads, as each op applies, what it is about to change: that is the step's redo from
+// then on (rewrite), and redoing it reads its undo the same way. A structural step needs that: a
+// load's redo is the prop its undo took away, as it was then.
+//
 
 #include <chrono>
 #include <cstdint>
@@ -55,6 +59,7 @@ struct JournalStep
   std::chrono::steady_clock::time_point at;
   bool gesture = false;  // merges with its key whatever the time between
   bool closes  = false;  // a gesture's last: nothing merges into it after
+  uint64_t serial = 0;   // given by record()
 };
 
 class Journal
@@ -68,6 +73,19 @@ public:
   std::optional<JournalStep> takeUndo();
   std::optional<JournalStep> takeRedo();
   void                       clear();
+  // The step `serial`'s ops one way (`undo`, else redo), as an undo or redo read them; nothing when
+  // the step is gone meanwhile.
+  void rewrite(uint64_t serial, bool undo, nlohmann::json ops);
+  // Every op of every step, both ways
+  template <class F>
+  void forEachOp(F&& f) const
+  {
+    for(const auto* side : {&m_undo, &m_redo})
+      for(const JournalStep& s : *side)
+        for(const auto* ops : {&s.undo, &s.redo})
+          for(const nlohmann::json& o : *ops)
+            f(o);
+  }
 
   size_t undoCount() const { return m_undo.size(); }
   size_t redoCount() const { return m_redo.size(); }
@@ -77,6 +95,7 @@ public:
 private:
   std::deque<JournalStep> m_undo, m_redo;
   bool                    m_sealed = false;  // an undo, a redo or a gesture's end since the last record: no merge
+  uint64_t                m_serial = 0;
 };
 
 }  // namespace fv

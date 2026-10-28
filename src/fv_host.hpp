@@ -121,7 +121,9 @@
 //                                                material presets, skin, eyes and makeup (rel | null, once
 //                                                chosen), material edits, collision and dForce on/off, dForce's
 //                                                mode; restored after the add-ons: presets (eye-only ones as
-//                                                eyes), skin, eyes, makeup, worn items' colours, edits
+//                                                eyes), skin, eyes, makeup, worn items' colours, edits. A worn
+//                                                item's `id` is the "i:N" it goes back on under. A prop's id is
+//                                                never given out twice, scene.clear or not
 //   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models'), by the
 //                                                number the "animation" topic gives each: it stays the
 //                                                clip's while its prop is in the scene, never reused
@@ -130,8 +132,13 @@
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
-//   history.undo / history.redo {}  -> {label, problems?}: the step undone or redone, its label null when
-//                                                there is none. A step is a panel edit (prop.set, morph.*,
+//   history.undo / history.redo {}  -> {label, problems?}, or {label, job} while a prop it puts back loads:
+//                                                the step undone or redone, its label null when there is
+//                                                none; another waits for the job ("history".busy). A step is
+//                                                a prop added (load, prop.add, prop.duplicate), removed
+//                                                (prop.remove, scene.clear: it comes back under its id, its
+//                                                objects kept or, past the few kept, loaded again from its
+//                                                scene-file part), or a panel edit (prop.set, morph.*,
 //                                                pose.*, material.set/reset, wardrobe.visible/collision/cloth,
 //                                                dforce.enable/mode, lighting.set, scene.order, view.use, and
 //                                                camera.set looking through a camera prop), captured as it
@@ -153,7 +160,7 @@
 //
 // Camera, selection and display commands live in fv_view.hpp.
 //
-// Topics: "session", "jobs", "notices", "render", "lighting", "history" ({undo: [label], redo: [label]},
+// Topics: "session", "jobs", "notices", "render", "lighting", "history" ({undo: [label], redo: [label], busy},
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
 // "scene" ({props: {id: {kind, name, parent, visible, order, transform: {t, r, e, s}, stats?, source?,

@@ -70,7 +70,7 @@ Json FvHost::Impl::load(const Json& args)
 
 Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
                               std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then, std::vector<std::string> prefetch,
-                              std::vector<std::string> iray)
+                              std::vector<std::string> iray, std::string id)
 {
   const uint64_t    jobId      = ++jobs;
   const uint64_t    generation = loadGeneration;
@@ -78,7 +78,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
   job(jobId, {{"label", label}, {"state", "running"}});
 
   loaders.spawn([this, s, roots = std::move(roots), rel = std::move(rel), jobId, label, asProp, source = std::move(source), target = std::move(target),
-                 generation, then = std::move(then), prefetch = std::move(prefetch), iray = std::move(iray)] {
+                 generation, then = std::move(then), prefetch = std::move(prefetch), iray = std::move(iray), id = std::move(id)] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
@@ -198,8 +198,8 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       // above measured its hair's strands meanwhile)
       auto       shared  = std::make_shared<std::unique_ptr<fv::Figure>>(std::move(f));
       const bool flipped = cooked;
-      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source, then]() mutable {
-        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(source), then);
+      post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), source, then, id]() mutable {
+        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(source), then, id);
       });
     }
     catch(const std::exception& e)
@@ -219,7 +219,8 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
                            std::shared_ptr<fv::dson::Library>                                      lib,
                            std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images,
                            Json                                                                    source,
-                           std::function<void(std::shared_ptr<Prop>)>                              then)
+                           std::function<void(std::shared_ptr<Prop>)>                              then,
+                           std::string                                                             id)
 {
   // the scene was cleared meanwhile: this one is dropped, and its job ends
   if(generation != loadGeneration)
@@ -236,7 +237,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
   // its add-ons go on once it is in the scene; until then the eyes it will have aren't there to choose
   f->addonsPending = !f->fig->addons.empty() && f->fig->pose;
   // "Mirel.duf" reads as "Mirel"
-  auto p    = addProp(PropKind::eFigure, fileStem(f->fig->loaded.name));
+  auto p    = addProp(PropKind::eFigure, fileStem(f->fig->loaded.name), id);
   f->id     = p->id;
   p->figure = f;
   if(f->fig->morphs && !f->fig->loaded.morphs.mainMeshes.empty())
@@ -302,7 +303,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     std::lock_guard lock(morphMutex);
     morphFigures.insert(p->id);
   }
-  requestCompose("Adding " + p->name, [this, p, f, jobId, then] {
+  requestCompose("Adding " + p->name, [this, p, f, jobId, then, restored = !id.empty()] {
     if(!inScene(f))
     {
       job(jobId, {{"state", "done"}});
@@ -330,6 +331,9 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     }
     if(then)
       then(p);
+    // a load is a step of the history; a duplicate's or a restore's `then` says what it is
+    else if(!restored)
+      recordAdded(p, "Add " + p->name);
   });
 }
 

@@ -38,6 +38,7 @@ void Journal::record(JournalStep step)
       return;
     }
   }
+  step.serial = ++m_serial;
   m_undo.push_back(std::move(step));
   while(m_undo.size() > kLimit)
     m_undo.pop_front();
@@ -61,6 +62,17 @@ std::optional<JournalStep> Journal::takeRedo()
   m_redo.pop_back();
   m_sealed = true;
   return m_undo.back();
+}
+
+void Journal::rewrite(uint64_t serial, bool undo, nlohmann::json ops)
+{
+  for(auto* side : {&m_undo, &m_redo})
+    for(JournalStep& s : *side)
+      if(s.serial == serial)
+      {
+        (undo ? s.undo : s.redo) = std::move(ops);
+        return;
+      }
 }
 
 void Journal::clear()

@@ -38,6 +38,13 @@ Json vec3(const glm::vec3& v)
   return Json::array({v.x, v.y, v.z});
 }
 
+glm::vec3 vec3From(const Json& v)
+{
+  if(!v.is_array() || v.size() < 3)
+    throw std::runtime_error("expected [x, y, z]");
+  return {v[0].get<float>(), v[1].get<float>(), v[2].get<float>()};
+}
+
 // A merge patch's keys with its values dropped: what it touches, not what it sets
 Json shapeOf(const Json& patch)
 {
@@ -88,6 +95,16 @@ const char* dforceModeName(fv::dforce::Mode m)
 
 Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
 {
+  // a prop there or not: what puts it back, or takes it away
+  if(cmd == "prop.remove" || cmd == "prop.restore")
+    return args.contains("prop") && args["prop"].is_string() ? Json{{"kind", "props"}, {"ids", Json::array({args["prop"]})}} : Json();
+  if(cmd == "scene.clear")
+  {
+    Json ids = Json::array();
+    for(const auto& p : props)
+      ids.push_back(p->id);
+    return {{"kind", "props"}, {"ids", ids}};
+  }
   if(cmd == "prop.set" || cmd == "camera.set")
   {
     const auto p = args.contains("prop") && args["prop"].is_string() ? findProp(args["prop"].get<std::string>()) : nullptr;
@@ -187,10 +204,35 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
   return nullptr;
 }
 
-Json FvHost::Impl::journalState(const Json& scope) const
+Json FvHost::Impl::journalState(const Json& scope)
 {
   Json              ops  = Json::array();
   const std::string kind = scope.value("kind", "");
+  if(kind == "props")
+  {
+    // each one back as it is now, or away; then what rode on them back on, and the view through one
+    std::set<std::string> ids;
+    for(const Json& id : scope["ids"])
+      ids.insert(id.get<std::string>());
+    for(const Json& id : scope["ids"])
+      if(const auto p = findProp(id.get<std::string>()))
+        ops.push_back(op("prop.restore", {{"prop", p->id}, {"record", propRecord(*p)}}));
+      else
+        ops.push_back(op("prop.remove", {{"prop", id}}));
+    for(const auto& r : props)
+      if(!r->parent.empty() && ids.count(r->parent))
+      {
+        const glm::quat& q = r->transform.rotation;
+        Json             t = {{"t", vec3(r->transform.translation)}, {"r", {q.x, q.y, q.z, q.w}}, {"s", vec3(r->transform.scale)}};
+        if(r->euler)
+          t["e"] = vec3(*r->euler);
+        ops.push_back(op("prop.set", {{"prop", r->id}, {"parent", r->parent}}));
+        ops.push_back(op("prop.set", {{"prop", r->id}, {"transform", t}}));
+      }
+    if(ids.count(viewCamera))
+      ops.push_back(op("view.use", {{"camera", viewCamera}}));
+    return ops;
+  }
   if(kind == "lighting")
     ops.push_back(op("lighting.set", project(fv::lighting::toJson(lighting), scope["shape"])));
   else if(kind == "order")
@@ -305,7 +347,8 @@ Json FvHost::Impl::journalState(const Json& scope) const
 // As the app's own undo names its steps (src/lib/undo/history.svelte.ts)
 std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args, const Json& scope) const
 {
-  const auto        p    = scope.contains("prop") ? findProp(scope["prop"].get<std::string>()) : nullptr;
+  // the prop the scope names, else the one the command does (a removal's scope names a list)
+  const auto        p    = findProp(scope.contains("prop") ? scope["prop"].get<std::string>() : args.value("prop", std::string()));
   const std::string name = p ? p->name : std::string();
   const auto        on   = [&] { return std::string(args.value("on", true) ? "on" : "off"); };
   if(cmd == "prop.set")
@@ -326,6 +369,10 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "camera.set")
     return "Lens of " + name;
+  if(cmd == "prop.remove")
+    return "Remove " + name;
+  if(cmd == "scene.clear")
+    return "Clear the scene";
   if(cmd == "morph.set")
   {
     const Json& dials = scope["dials"];
@@ -400,6 +447,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
   if(scope.is_null())
     return apply();
   const Json         before = journalState(scope);
+  const std::string  label  = journalLabel(cmd, args, scope);
   Json               result;
   std::exception_ptr failed;
   try
@@ -434,12 +482,13 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
     key = cmd + "|" + scope.dump() + "|gesture " + gesture["id"].dump();
   journal.record({.redo    = after,
                   .undo    = before,
-                  .label   = journalLabel(cmd, args, scope),
+                  .label   = label,
                   .key     = key,
                   .at      = std::chrono::steady_clock::now(),
                   .gesture = gesture.is_object() && gesture.contains("id"),
                   .closes  = gesture.is_object() && gesture.value("end", false)});
   publishHistory();
+  pruneParked();
   if(failed)
     std::rethrow_exception(failed);
   return result;
@@ -491,39 +540,283 @@ Json FvHost::Impl::applyOp(const Json& o)
     return sceneOrder(args);
   if(cmd == "view.use")
     return viewUse(args);
+  if(cmd == "prop.remove")
+    return propRemove(args);
+  if(cmd == "prop.restore")
+    return propRestore(args);
   throw std::runtime_error("the history can't apply " + cmd);
 }
 
 Json FvHost::Impl::historyStep(bool undo)
 {
+  if(historyRun)
+    throw std::runtime_error("the last undo or redo is still loading");
   // dials sent before the undo land first, as a step of their own
   applyPendingMorphs();
   const auto step = undo ? journal.takeUndo() : journal.takeRedo();
   if(!step)
     return {{"label", nullptr}};
-  Json problems = Json::array();
-  replaying     = true;
-  for(const Json& o : undo ? step->undo : step->redo)
+  historyRun = HistoryRun{.undo = undo, .serial = step->serial, .label = step->label, .ops = undo ? step->undo : step->redo};
+  if(auto done = runHistory())
+    return *done;
+  // a restore loads: the rest of the step applies once it is in, under a job
+  historyRun->job = ++jobs;
+  job(historyRun->job, {{"label", (undo ? "Undoing " : "Redoing ") + step->label}, {"state", "running"}});
+  publishHistory();
+  return {{"label", step->label}, {"job", historyRun->job}};
+}
+
+std::optional<Json> FvHost::Impl::runHistory()
+{
+  HistoryRun& run = *historyRun;
+  replaying       = true;
+  while(run.next < run.ops.size())
+  {
+    const Json        o     = run.ops[run.next++];
+    const std::string cmd   = o.value("cmd", "");
+    const Json        scope = journalScope(cmd, o.value("args", Json::object()));
+    // what it is about to change: the way back, ahead of what the ops before it read
+    const Json before = scope.is_null() ? Json::array() : journalState(scope);
     try
     {
-      applyOp(o);
+      const Json result = applyOp(o);
+      run.opposite.insert(run.opposite.begin(), before.begin(), before.end());
+      if(result.is_object() && result.contains("job"))
+      {
+        run.waitJob  = result["job"].get<uint64_t>();
+        run.waitProp = o["args"].value("prop", "");
+        replaying    = false;
+        return std::nullopt;
+      }
     }
     catch(const std::exception& e)
     {
-      // a prop that is gone (removing one is no step yet): the rest of the step still applies
-      problems.push_back(o.value("cmd", "") + ": " + e.what());
+      run.problems.push_back(cmd + ": " + e.what());
     }
+  }
   replaying = false;
+  journal.rewrite(run.serial, !run.undo, run.opposite);
+  Json out = {{"label", run.label}};
+  if(!run.problems.empty())
+    out["problems"] = run.problems;
+  if(run.job)
+    job(run.job, run.problems.empty() ? Json{{"state", "done"}} : Json{{"state", "done"}, {"problems", run.problems}});
+  historyRun.reset();
   publishHistory();
-  Json out = {{"label", step->label}};
-  if(!problems.empty())
-    out["problems"] = problems;
+  pruneParked();
   return out;
+}
+
+void FvHost::Impl::pollHistory()
+{
+  if(!historyRun || !historyRun->waitJob)
+    return;
+  Json ended;
+  {
+    std::lock_guard lock(keptMutex);
+    const auto it = endedJobs.find(historyRun->waitJob);
+    if(it == endedJobs.end())
+      return;
+    ended = it->second;
+  }
+  if(ended.value("state", "") == "failed")
+    historyRun->problems.push_back("restoring " + historyRun->waitProp + ": " + ended.value("error", std::string("it did not load")));
+  historyRun->waitJob = 0;
+  runHistory();
 }
 
 void FvHost::Impl::publishHistory()
 {
-  protocol->events().snapshot("history", journal.topic());
+  Json topic    = journal.topic();
+  topic["busy"] = historyRun.has_value();
+  protocol->events().snapshot("history", topic);
+}
+
+void FvHost::Impl::recordAdded(const std::shared_ptr<Prop>& p, const std::string& label)
+{
+  if(replaying || !p || !findProp(p->id))
+    return;
+  journal.record({.redo  = journalState({{"kind", "props"}, {"ids", Json::array({p->id})}}),
+                  .undo  = Json::array({op("prop.remove", {{"prop", p->id}})}),
+                  .label = label,
+                  .at    = std::chrono::steady_clock::now()});
+  publishHistory();
+  pruneParked();
+}
+
+void FvHost::Impl::pruneParked()
+{
+  std::set<std::string> named;
+  journal.forEachOp([&](const Json& o) {
+    if(o.value("cmd", "") == "prop.restore")
+      named.insert(o["args"].value("prop", ""));
+  });
+  std::erase_if(parked, [&](const auto& kept) { return !named.count(kept.first); });
+  // the oldest go first: their undo loads them again
+  while(parked.size() > kParked)
+    parked.erase(parked.begin());
+}
+
+Json FvHost::Impl::propRecord(const Prop& p)
+{
+  const glm::quat& r   = p.transform.rotation;
+  Json             rec = {{"kind", kindName(p.kind)},
+                          {"name", p.name},
+                          {"visible", p.visible},
+                          {"parent", p.parent.empty() ? Json() : Json(p.parent)},
+                          {"order", int(std::find_if(props.begin(), props.end(), [&](const auto& q) { return q.get() == &p; }) - props.begin())},
+                          {"transform", {{"t", vec3(p.transform.translation)}, {"r", {r.x, r.y, r.z, r.w}}, {"s", vec3(p.transform.scale)}}}};
+  if(p.euler)
+    rec["transform"]["e"] = vec3(*p.euler);
+  if(p.kind == PropKind::eCamera)
+  {
+    rec["camera"]                   = FvView::lensJson(p.camera.lens);
+    rec["camera"]["locked"]         = p.camera.locked;
+    rec["camera"]["targetDistance"] = p.camera.targetDistance;
+  }
+  if(p.kind == PropKind::eLight)
+    rec["light"] = {{"type", p.light.type},     {"color", p.light.color}, {"intensity", p.light.intensity},
+                    {"radius", p.light.radius}, {"inner", p.light.inner}, {"outer", p.light.outer}};
+  // a figure's or a model's part of a scene file, for when it loads again
+  if(p.figure || p.model)
+    rec["state"] = sceneState({{"prop", p.id}});
+  return rec;
+}
+
+Json FvHost::Impl::propRemove(const Json& args)
+{
+  auto p = findProp(args.at("prop").get<std::string>());
+  if(!p)
+    throw std::runtime_error("no such prop");
+  // kept, for its undo
+  std::erase_if(parked, [&](const auto& kept) { return kept.first == p->id; });
+  parked.emplace_back(p->id, p);
+  removeProp(p);
+  publishScene();
+  requestCompose("Removing " + p->name);
+  return {{"ok", true}};
+}
+
+void FvHost::Impl::placeFrom(Prop& p, const Json& rec)
+{
+  p.name    = rec.value("name", p.name);
+  p.visible = rec.value("visible", true);
+  if(const Json& t = rec.value("transform", Json::object()); t.contains("t") && t.contains("r") && t.contains("s"))
+  {
+    p.transform.translation = vec3From(t["t"]);
+    p.transform.rotation    = glm::quat(t["r"][3].get<float>(), t["r"][0].get<float>(), t["r"][1].get<float>(), t["r"][2].get<float>());
+    p.transform.scale       = vec3From(t["s"]);
+    p.euler                 = t.contains("e") ? std::optional<glm::vec3>(vec3From(t["e"])) : std::nullopt;
+  }
+  // under its parent when that is back already; else what puts it back on follows
+  const std::string parent = rec.contains("parent") && rec["parent"].is_string() ? rec["parent"].get<std::string>() : "";
+  p.parent                 = findProp(parent) ? parent : "";
+  if(p.kind == PropKind::eCamera && rec.contains("camera"))
+  {
+    p.camera.lens           = FvView::lensOf(rec["camera"], p.camera.lens);
+    p.camera.locked         = rec["camera"].value("locked", false);
+    p.camera.targetDistance = rec["camera"].value("targetDistance", p.camera.targetDistance);
+  }
+  if(p.kind == PropKind::eLight && rec.contains("light"))
+  {
+    const Json& l    = rec["light"];
+    p.light.type      = l.value("type", p.light.type);
+    p.light.color     = l.value("color", p.light.color);
+    p.light.intensity = l.value("intensity", p.light.intensity);
+    p.light.radius    = l.value("radius", p.light.radius);
+    p.light.inner     = l.value("inner", p.light.inner);
+    p.light.outer     = l.value("outer", p.light.outer);
+  }
+  // its place in the scene's order
+  const auto self = std::find_if(props.begin(), props.end(), [&](const auto& q) { return q.get() == &p; });
+  if(self != props.end())
+  {
+    auto keep = *self;
+    props.erase(self);
+    props.insert(props.begin() + std::clamp(rec.value("order", int(props.size())), 0, int(props.size())), std::move(keep));
+  }
+}
+
+Json FvHost::Impl::propRestore(const Json& args)
+{
+  const std::string id  = args.at("prop").get<std::string>();
+  const Json&       rec = args.at("record");
+  if(findProp(id))
+    throw std::runtime_error(id + " is in the scene already");
+  std::shared_ptr<Prop> p;
+  if(const auto kept = std::find_if(parked.begin(), parked.end(), [&](const auto& k) { return k.first == id; }); kept != parked.end())
+  {
+    // the same objects: composed again, its figure's state as it was
+    p = kept->second;
+    parked.erase(kept);
+    props.push_back(p);
+    propCount = std::max(propCount, std::atoi(id.c_str() + 2));
+  }
+  else
+  {
+    const std::string kind = rec.value("kind", "");
+    if(kind == "camera" || kind == "light")
+      p = addProp(kind == "camera" ? PropKind::eCamera : PropKind::eLight, rec.value("name", ""), id);
+    else
+    {
+      // loaded again from where it came from, under its id, and its scene-file part put back
+      const Json state  = rec.value("state", Json::object());
+      const Json source = state.value("source", Json::object());
+      const auto then   = [this, rec, state, kind](std::shared_ptr<Prop> q) {
+        placeFrom(*q, rec);
+        applyTransform(*q);
+        applyVisible(*q);
+        requestCompose("Restoring " + q->name);
+        if(kind == "model")
+        {
+          if(q->materials && state.contains("materials"))
+            q->materials->restoreEdits(state["materials"]);
+        }
+        else
+        {
+          Json restore    = state;
+          restore["prop"] = q->id;
+          const Json r    = sceneRestore(restore);
+          // the history's run waits on the restore (its wears) next
+          if(historyRun && historyRun->waitProp == q->id && r.contains("job"))
+            historyRun->waitJob = r["job"].get<uint64_t>();
+        }
+        publishScene();
+      };
+      if(kind == "model")
+        return importModel(source.value("path", ""), then, id);
+      HostSettings s;
+      {
+        std::lock_guard lock(settingsMutex);
+        s = settings;
+      }
+      std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;
+      if(source.contains("rel"))
+        library = std::make_pair(s.roots, source["rel"].get<std::string>());
+      else if(source.contains("path"))
+        library = libraryFor(s, pathOf(source["path"].get<std::string>()));
+      if(!library)
+        throw std::runtime_error(rec.value("name", id) + " can't be loaded again: where it came from isn't known");
+      return loadFigure(s, library->first, library->second, rec.value("name", ""), source, "", true, then, {}, {}, id);
+    }
+  }
+  placeFrom(*p, rec);
+  if(p->figure)
+  {
+    std::lock_guard lock(morphMutex);
+    morphFigures.insert(p->id);
+  }
+  if(p->figure)
+  {
+    // its topics went with it: published again as new
+    p->figure->morphList        = -1;
+    p->figure->morphsSeen       = -1;
+    p->figure->dforceVersion    = -1;
+    p->figure->collisionVersion = -1;
+  }
+  requestCompose("Restoring " + p->name);
+  publishScene();
+  return {{"prop", id}};
 }
 
 // every prop's place at once, as a scene file opens: one composition, not one per prop that moves

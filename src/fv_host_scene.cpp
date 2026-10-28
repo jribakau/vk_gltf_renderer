@@ -26,13 +26,13 @@
 //--------------------------------------------------------------------------------------------------
 // Imported models and animation
 
-Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then)
+Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then, std::string id)
 {
   const uint64_t    jobId      = ++jobs;
   const uint64_t    generation = loadGeneration;
   const std::string label      = "Loading " + utf8Of(pathOf(path).filename());
   job(jobId, {{"label", label}, {"state", "running"}});
-  loaders.spawn([this, path, jobId, label, generation, then = std::move(then)] {
+  loaders.spawn([this, path, jobId, label, generation, then = std::move(then), id = std::move(id)] {
     auto        model = std::make_shared<tinygltf::Model>();
     std::string error;
     if(!fv::composer::readModelFile(pathOf(path), *model, error))
@@ -41,7 +41,7 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
       notice("Could not open " + utf8Of(pathOf(path).filename()) + ": " + error, "error");
       return;
     }
-    post([this, model, path, jobId, label, generation, then] {
+    post([this, model, path, jobId, label, generation, then, id] {
       if(generation != loadGeneration)
       {
         job(jobId, {{"label", label}, {"state", "done"}});
@@ -49,11 +49,11 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
       }
       std::string ext = pathOf(path).extension().string();
       std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::toupper(c)); });
-      auto p    = addProp(PropKind::eModel, utf8Of(pathOf(path).stem()));
+      auto p    = addProp(PropKind::eModel, utf8Of(pathOf(path).stem()), id);
       p->model  = model;
       p->path   = path;
       p->format = ext == ".OBJ" ? "OBJ" : "glTF";
-      requestCompose("Adding " + p->name, [this, p, jobId, label, then] {
+      requestCompose("Adding " + p->name, [this, p, jobId, label, then, restored = !id.empty()] {
         if(!findProp(p->id))
         {
           job(jobId, {{"label", label}, {"state", "done"}});
@@ -63,6 +63,8 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
         selectProp(p->id);
         if(then)
           then(p);
+        else if(!restored)
+          recordAdded(p, "Add " + p->name);
       });
     });
   });
@@ -376,7 +378,7 @@ Json FvHost::Impl::sceneState(const Json& args)
   for(const fv::WornItem& w : fig.items)
     if(!w.rel.empty())
     {
-      Json entry = {{"rel", w.rel}, {"visible", w.visible}, {"label", w.label}};
+      Json entry = {{"rel", w.rel}, {"visible", w.visible}, {"label", w.label}, {"id", w.id}};
       // dForce on the item as the user set it, when they did
       if(w.cloth.on || w.cloth.strength != 1.f)
         entry["cloth"] = {{"on", w.cloth.on ? Json(*w.cloth.on) : Json(nullptr)}, {"strength", std::round(w.cloth.strength * 1e3) / 1e3}};
@@ -685,7 +687,14 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       {
         const std::string rel = w.value("rel", "");
         if(!rel.empty() && skip.insert(relKey(rel)).second)
-          requests.push_back({rel, "", {}});
+        {
+          // its items under the ids they had, so what names them (the history) finds them again
+          WearRequest request{rel, "", {}};
+          for(const Json& same : worn)
+            if(relKey(same.value("rel", "")) == relKey(rel) && same.value("id", 0) > 0)
+              request.ids.push_back(same.value("id", 0));
+          requests.push_back(std::move(request));
+        }
       }
   }
   auto wear = [this, target, worn, apply, shape, surfaces, finish, requests](std::shared_future<void> commitAfter) mutable {

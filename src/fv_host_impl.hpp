@@ -636,6 +636,7 @@ struct FvHost::Impl
   static constexpr size_t kKeptNotices = 20;
   std::mutex              keptMutex;
   std::deque<uint64_t>    finishedJobs;
+  std::map<uint64_t, Json> endedJobs;  // how each of those ended, for a history run waiting on one
   std::deque<uint64_t>    shownNotices;
 
   void notice(const std::string& text, const char* level = "warning")
@@ -662,9 +663,11 @@ struct FvHost::Impl
       std::lock_guard lock(keptMutex);
       if(std::find(finishedJobs.begin(), finishedJobs.end(), id) == finishedJobs.end())
         finishedJobs.push_back(id);
+      endedJobs[id] = state;
       while(finishedJobs.size() > kKeptJobs)
       {
         patch[std::to_string(finishedJobs.front())] = nullptr;
+        endedJobs.erase(finishedJobs.front());
         finishedJobs.pop_front();
       }
     }
@@ -680,7 +683,8 @@ struct FvHost::Impl
   std::shared_ptr<Prop> figureProp(const Json& args) const;
   std::shared_ptr<Loaded> figureArg(const Json& args) const;
   bool                    inScene(const std::shared_ptr<Loaded>& f) const;
-  std::shared_ptr<Prop>   addProp(PropKind kind, const std::string& name);
+  // a new prop at the end; `id` one it had (a restore), else the next
+  std::shared_ptr<Prop>   addProp(PropKind kind, const std::string& name, const std::string& id = {});
   void                    removeProp(const std::shared_ptr<Prop>& p);
   std::unique_ptr<FvMaterials> makeMaterials(const std::shared_ptr<Prop>& p);
   glm::mat4               worldOf(const Prop& p) const;
@@ -714,7 +718,7 @@ struct FvHost::Impl
   // `iray`: installed Iray presets a 3Delight-era wearable may take as it goes on (WearRequest::iray)
   Json loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
                   std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {}, std::vector<std::string> prefetch = {},
-                  std::vector<std::string> iray = {});
+                  std::vector<std::string> iray = {}, std::string id = {});
   void install(std::unique_ptr<fv::Figure>                                             f,
                uint64_t                                                                generation,
                uint64_t                                                                jobId,
@@ -723,7 +727,8 @@ struct FvHost::Impl
                std::shared_ptr<fv::dson::Library>                                      lib,
                std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images,
                Json                                                                    source,
-               std::function<void(std::shared_ptr<Prop>)>                              then);
+               std::function<void(std::shared_ptr<Prop>)>                              then,
+               std::string                                                             id);
   // wardrobe: what a figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
   struct WearRequest
   {
@@ -733,6 +738,7 @@ struct FvHost::Impl
     // installed Iray presets a 3Delight-era item may take as it goes on, the one that keeps its look
     // (fv::dson::chooseIrayPreset); recorded as its colour, so "own" takes it off again
     std::vector<std::string> iray;
+    std::vector<int>         ids;  // the ids its items had (Figure::commitWear)
   };
   Json     wear(const Json& args);
   // What a restore sets on the figure besides its wardrobe, put on before the wear's composition so
@@ -748,7 +754,7 @@ struct FvHost::Impl
   uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild = {}, std::function<void()> after = {},
                      std::shared_future<void> commitAfter = {}, WearLooks looks = {});
   // glTF, GLB and OBJ files, read on a worker, as a new prop
-  Json importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then = {});
+  Json importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then = {}, std::string id = {});
   Json animationTopic();
   void publishAnimation(bool force);
   Json animationCommand(const std::string& cmd, const Json& args);
@@ -875,11 +881,45 @@ struct FvHost::Impl
   // What an edit reads, named so it reads the same before and after ("kind" and what it names)
   Json journalScope(const std::string& cmd, const Json& args) const;
   // The ops that put the scope back as it is now
-  Json journalState(const Json& scope) const;
+  Json journalState(const Json& scope);
   std::string journalLabel(const std::string& cmd, const Json& args, const Json& scope) const;
   Json historyStep(bool undo);
   void publishHistory();
   Json sceneOrder(const Json& args);
+  // A prop that came (a load, prop.add, a duplicate) as a step: its undo takes it away
+  void recordAdded(const std::shared_ptr<Prop>& p, const std::string& label);
+
+  // ---- structural steps (C3): a removed prop is kept, so its undo puts the same objects back
+  // under its id, composed again; past kParked kept ones (the oldest go), it loads again from its
+  // record. A kept prop goes once no step names it.
+  static constexpr size_t                              kParked = 4;
+  std::vector<std::pair<std::string, std::shared_ptr<Prop>>> parked;
+  void pruneParked();
+  // what puts a prop back: its place, fields, and a figure's or a model's scene-file part
+  Json propRecord(const Prop& p);
+  Json propRemove(const Json& args);
+  // prop.restore {prop, record}: back under its id, kept or loaded again (-> {job})
+  Json propRestore(const Json& args);
+  void placeFrom(Prop& p, const Json& record);
+  // An undo or redo applying its ops; it waits for a restore that loads, as a job
+  struct HistoryRun
+  {
+    bool        undo = true;
+    uint64_t    serial = 0;
+    std::string label;
+    Json        ops;
+    size_t      next     = 0;
+    Json        opposite = Json::array();  // what each op read before it applied: the way back
+    Json        problems = Json::array();
+    uint64_t    job      = 0;              // "Undoing ..." while it waits
+    uint64_t    waitJob  = 0;              // the load (then the restore) it waits on
+    std::string waitProp;
+  };
+  std::optional<HistoryRun> historyRun;
+  // applies the run's ops on from where it stopped; its answer once done, none while it waits
+  std::optional<Json> runHistory();
+  // a frame: the job a run waits on ended
+  void pollHistory();
 
   std::unique_ptr<FvView> view;
   // how skin is shaded for the render mode

@@ -210,8 +210,9 @@ public:
   // The same against the figure as it is now, on its owning thread.
   std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision) { return prepareWear(rel, subdivision, wearInputs()); }
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
-  // figure's owning thread. The renderer's model has to be built again afterwards.
-  WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel);
+  // figure's owning thread. The renderer's model has to be built again afterwards. `ids`: the ids its
+  // items take, in the file's order, when they come back (an undo, a scene file); the rest get new ones.
+  WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids = {});
   // Takes an item off: its nodes leave the scene (the next build leaves them out), its skeleton
   // stops following, its meshes stop following the body. False for an unknown id.
   bool removeItem(int id);

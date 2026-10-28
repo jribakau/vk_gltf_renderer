@@ -337,7 +337,7 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   return out;
 }
 
-WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel)
+WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids)
 {
   timing::Scope     t("commitWear " + rel);
   PreparedWear&     p   = *wear;
@@ -432,7 +432,13 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     for(int& m : it.meshes)
       m += meshBase;
     loaded.items.push_back(it);
-    WornItem worn = record(it, int(k), w.parts, meshBase, rel, m_nextItem++);
+    // an id it had, unless an item worn now has it; a new one after every id given out
+    int id = k < ids.size() && ids[k] > 0 && std::none_of(items.begin(), items.end(), [&](const WornItem& i) { return i.id == ids[k]; }) ? ids[k] : 0;
+    if(id)
+      m_nextItem = std::max(m_nextItem, id + 1);
+    else
+      id = m_nextItem++;
+    WornItem worn = record(it, int(k), w.parts, meshBase, rel, id);
     added.push_back(worn.id);
     items.push_back(std::move(worn));
   }

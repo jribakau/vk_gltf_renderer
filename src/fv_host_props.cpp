@@ -80,10 +80,13 @@ bool FvHost::Impl::inScene(const std::shared_ptr<Loaded>& f) const
   return f && std::any_of(props.begin(), props.end(), [&](const auto& p) { return p->figure == f; });
 }
 
-std::shared_ptr<Prop> FvHost::Impl::addProp(PropKind kind, const std::string& name)
+std::shared_ptr<Prop> FvHost::Impl::addProp(PropKind kind, const std::string& name, const std::string& id)
 {
-  auto p  = std::make_shared<Prop>();
-  p->id   = "p:" + std::to_string(++propCount);
+  auto p = std::make_shared<Prop>();
+  // an id is never given out twice: one that comes back keeps the count past it
+  if(!id.empty())
+    propCount = std::max(propCount, std::atoi(id.c_str() + 2));
+  p->id   = id.empty() ? "p:" + std::to_string(++propCount) : id;
   p->kind = kind;
   p->name = uniqueName(name.empty() ? kindName(kind) : name, nullptr);
   props.push_back(p);
@@ -1184,6 +1187,7 @@ Json FvHost::Impl::propDuplicate(const Json& args)
       restore["prop"] = p->id;
       sceneRestore(restore);
       publishScene();
+      recordAdded(p, "Duplicate " + name);
     });
   }
   auto p    = addProp(src->kind, src->name);
@@ -1202,6 +1206,7 @@ Json FvHost::Impl::propDuplicate(const Json& args)
       p->materials->restoreEdits(edits);
     selectProp(id);
   });
+  recordAdded(p, "Duplicate " + src->name);
   return {{"prop", p->id}};
 }
 
@@ -1210,7 +1215,6 @@ Json FvHost::Impl::sceneClear()
   loadGeneration++;  // loads still running drop their result
   for(auto p : std::vector(props))
     removeProp(p);
-  propCount = 0;
   requestCompose("Clearing the scene");
   return {{"ok", true}};
 }

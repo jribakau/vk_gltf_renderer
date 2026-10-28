@@ -340,8 +340,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       }
       auto done = std::make_shared<std::promise<bool>>();
       auto ok   = done->get_future();
-      post([this, target, prepared = slot.prepared, rel = request.rel, label, images = std::move(slot.images), done, autoColor = slot.autoColor,
-            autoColorDoc = slot.autoColorDoc]() mutable {
+      post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, label, images = std::move(slot.images), done,
+            autoColor = slot.autoColor, autoColorDoc = slot.autoColorDoc]() mutable {
         if(!inScene(target))
         {
           done->set_value(false);
@@ -349,7 +349,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         }
         try
         {
-          const fv::WearResult r = target->fig->commitWear(prepared, rel);
+          const fv::WearResult r = target->fig->commitWear(prepared, rel, ids);
           for(auto& [key, image] : images)
             target->images.insert_or_assign(key, std::move(image));
           // the Iray preset it took is its colour: undo, a scene file and "own" treat it as one
