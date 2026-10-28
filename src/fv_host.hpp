@@ -47,7 +47,10 @@
 //   prop.add        {path|rel} as load; or {kind: "camera"|"light", type?: point|spot|directional,
 //                   name?, camera?, transform?}  -> {prop}; a camera stands where the view is
 //   prop.set        {prop, name?, visible?, transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},
-//                   parent?: prop id | null, order?, camera?: {focalLength, dof, fStop, focusMode,
+//                   parent?: prop id | null, bone?: a posable bone of the parent figure (id or name) |
+//                   null (with a new parent, none unless given; alone, another bone of the same figure):
+//                   it rides on the bone, posed with it, its transform relative to the bone,
+//                   order?, camera?: {focalLength, dof, fStop, focusMode,
 //                   focusDistance, locked, targetDistance}, light?: {type, color, intensity, radius, inner, outer}}
 //   prop.remove     {prop}                       what rode on it stays where it was in the world
 //   prop.duplicate  {prop}                       -> {prop}, or {job} for a figure (loaded again, its state put back)
@@ -183,7 +186,7 @@
 // Topics: "session", "jobs", "notices", "render", "lighting", "history" ({undo: [label], redo: [label], busy},
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
-// "scene" ({props: {id: {kind, name, parent, visible, order, transform: {t, r, e, s}, stats?, source?,
+// "scene" ({props: {id: {kind, name, parent, bone, visible, order, transform: {t, r, e, s}, stats?, source?,
 // format?, generation?, posable?, camera?, light?}}, order: [id]}), and per prop "nodes/<prop>"
 // (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
 // "wardrobe/<prop>" ({figure, items: {id: {label, kind, rel, visible, own, channels, collision,

@@ -22,7 +22,9 @@
 //
 // The host's props fed into its retained scene as deltas (daz-viewer docs/retained-scene-plan.md,
 // P5): a prop that came is fed under a prop root entity of its own, one that went is destroyed (its
-// instances retire at their frame), and the rest are brought up to date in place: parent, transform,
+// instances retire at their frame; what rode on it is lifted out first, as the host has put it at
+// the scene's root), and the rest are brought up to date in place: parent (a prop's root, or a bone
+// of a figure's), transform,
 // visibility, a figure's graph through its feed, a camera's or a light's record. What did not change
 // keeps its handles, so picks, the selection and the clip that plays stay where they are. Vulkan-free;
 // on the retained scene's owner thread.
@@ -49,6 +51,9 @@ struct PropSpec
   uint32_t      number = 0;  // N: the owner tags' prop
   std::string   name;
   std::string   parent;  // a prop id; "" for the scene's root
+  // the node of the parent's figure it rides on (a bone: a hat on the head), -1 for the parent's
+  // root; a parent with no such node fed is ridden on at its root
+  int           parentNode = -1;
   rs::Transform transform;
   bool          visible = true;
   // what goes under its root, one of: a figure's scene graph and what its feed lowers with

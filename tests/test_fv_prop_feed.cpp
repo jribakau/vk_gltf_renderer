@@ -33,6 +33,7 @@
 
 #include "common/fake_gpu_backend.hpp"
 #include "common/residency_oracle.hpp"
+#include "fv_figure_feed_check.hpp"
 #include "fv_prop_feed.hpp"
 #include "scene_residency.hpp"
 #include "tinygltf_utils.hpp"
@@ -198,6 +199,67 @@ TEST(FvPropFeed, AParentThatWouldMakeACycleIsRefused)
   feed.sync(props);
   EXPECT_TRUE(scene.entity(feed.fed("p:1")->root)->parent.isNone());
   EXPECT_EQ(scene.entity(feed.fed("p:2")->root)->parent, feed.fed("p:1")->root);
+}
+
+// The host puts what rode on a removed prop at the scene's root: it stays, handles and all, though
+// its root was under the one that went.
+TEST(FvPropFeed, WhatRodeOnAPropThatWentStays)
+{
+  Scene             s;
+  rs::RetainedScene scene;
+  fv::PropFeed      feed(scene);
+  auto              props = s.props();
+  feed.sync(props);
+  const rs::EntityId root = feed.fed("p:2")->root, seat = feed.fed("p:2")->imported.entities[1];
+  props.erase(props.begin());  // the figure goes
+  props[0].parent.clear();
+  const auto r = feed.sync(props);
+  EXPECT_EQ(r.removed, std::vector<std::string>{"p:1"});
+  EXPECT_TRUE(r.added.empty());
+  EXPECT_EQ(feed.fed("p:2")->root, root);
+  ASSERT_NE(scene.entity(root), nullptr);
+  EXPECT_TRUE(scene.entity(root)->parent.isNone());
+  EXPECT_NE(scene.entity(seat), nullptr);
+}
+
+// A prop riding on a figure's bone (a hat on the head): its root under the bone's entity, from the
+// sync that brings the figure, so the pose carries it. The figure's feed is still the figure's own.
+TEST(FvPropFeed, APropRidesOnAFiguresBone)
+{
+  Scene             s;
+  rs::RetainedScene scene;
+  fv::PropFeed      feed(scene);
+  auto              props = s.props();
+  const int         bone  = s.box->loaded.scene.nodes[size_t(s.box->loaded.root)].children.front();
+  props[1].parentNode     = bone;
+  props[1].transform.translation = {0, 0.1f, 0};
+  feed.sync(props);
+  const fv::FigureFeed& figure = *feed.fed("p:1")->figure;
+  const rs::EntityId    chair  = feed.fed("p:2")->root;
+  EXPECT_EQ(scene.entity(chair)->parent, figure.entityOf(bone));
+  EXPECT_EQ(fv::checkFeed(s.box->loaded.scene, s.box->loaded.root, figure, scene, {}), std::vector<std::string>{});
+
+  // the bone moves: the chair with it
+  const glm::vec3 before = glm::vec3(scene.world(chair)[3]), boneBefore = glm::vec3(scene.world(figure.entityOf(bone))[3]);
+  auto&           n      = s.box->loaded.scene.nodes[size_t(bone)];
+  n.position.x += 10;
+  const int moved[] = {bone};
+  ASSERT_TRUE(feed.fed("p:1")->figure->syncTransforms(s.box->loaded.scene, s.box->loaded.root, moved));
+  const glm::vec3 boneMoved = glm::vec3(scene.world(figure.entityOf(bone))[3]) - boneBefore;
+  EXPECT_GT(glm::length(boneMoved), 1e-3f);
+  EXPECT_NEAR(glm::length(glm::vec3(scene.world(chair)[3]) - before - boneMoved), 0.f, 1e-5f);
+
+  // the same props again change nothing; back on the figure itself, then on nothing
+  (void)scene.takeChanges();
+  feed.sync(props);
+  EXPECT_TRUE(scene.takeChanges().empty());
+  props[1].parentNode = -1;
+  feed.sync(props);
+  EXPECT_EQ(scene.entity(chair)->parent, feed.fed("p:1")->root);
+  props[1].parent.clear();
+  props[1].parentNode = bone;  // a bone with no figure to ride on is none
+  feed.sync(props);
+  EXPECT_TRUE(scene.entity(chair)->parent.isNone());
 }
 
 TEST(FvPropFeed, AFigureChangedIsFedAgainAndEverythingGoesWithTheFeed)

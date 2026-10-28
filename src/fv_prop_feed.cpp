@@ -79,9 +79,21 @@ PropFeed::Result PropFeed::sync(std::span<const PropSpec> props)
   std::set<std::string> wanted;
   for(const PropSpec& s : props)
     wanted.insert(s.id);
+  // whether the entity is `ancestor` or under it
+  const auto under = [&](rs::EntityId e, rs::EntityId ancestor) {
+    for(const rs::Entity* at = m_scene.entity(e); at; e = at->parent, at = m_scene.entity(e))
+      if(e == ancestor)
+        return true;
+    return false;
+  };
   for(auto it = m_props.begin(); it != m_props.end();)
     if(!wanted.count(it->first))
     {
+      // what stays and rode on it, however far down (on a bone of its figure), comes out before its
+      // root goes with everything under it; the parents are set below
+      for(auto& [id, q] : m_props)
+        if(wanted.count(id) && m_scene.entity(q.root) && under(m_scene.entity(q.root)->parent, it->second.root))
+          m_scene.setParent(q.root, {});
       result.removed.push_back(it->first);
       release(it->second);
       it = m_props.erase(it);
@@ -99,13 +111,29 @@ PropFeed::Result PropFeed::sync(std::span<const PropSpec> props)
       result.added.push_back(s.id);
     }
   }
-  for(const PropSpec& s : props)
-  {
-    FedProp&           p      = m_props[s.id];
-    const FedProp*     up     = s.parent.empty() ? nullptr : fed(s.parent);
-    const rs::EntityId parent = up ? up->root : rs::EntityId{};
+  // what a prop rides on: none (nullopt) while the bone is of a figure not fed yet
+  const auto parentOf = [&](const PropSpec& s, bool fedAll) -> std::optional<rs::EntityId> {
+    const FedProp* up = s.parent.empty() ? nullptr : fed(s.parent);
+    if(!up)
+      return rs::EntityId{};
+    if(s.parentNode < 0)
+      return up->root;
+    if(const rs::EntityId bone = up->figure ? up->figure->entityOf(s.parentNode) : rs::EntityId{}; m_scene.entity(bone))
+      return bone;
+    return fedAll ? std::optional(up->root) : std::nullopt;
+  };
+  const auto setParent = [&](const FedProp& p, rs::EntityId parent) {
     if(m_scene.entity(p.root)->parent != parent)
       m_scene.setParent(p.root, parent);  // refused for a cycle: it stays where it was
+  };
+  std::vector<const PropSpec*> onBones;
+  for(const PropSpec& s : props)
+  {
+    FedProp& p = m_props[s.id];
+    if(const auto parent = parentOf(s, false))
+      setParent(p, *parent);
+    else
+      onBones.push_back(&s);
     if(!(m_scene.entity(p.root)->local == s.transform))
       m_scene.setLocal(p.root, s.transform);
     if(m_scene.entity(p.root)->visible != s.visible)
@@ -176,6 +204,9 @@ PropFeed::Result PropFeed::sync(std::span<const PropSpec> props)
       }
     }
   }
+  // on a bone of a figure that came now
+  for(const PropSpec* s : onBones)
+    setParent(m_props[s->id], *parentOf(*s, true));
   return result;
 }
 

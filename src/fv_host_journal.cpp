@@ -113,10 +113,10 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     Json fields = Json::array();
     if(cmd == "prop.set")
       for(const char* f : {"parent", "name", "visible", "transform", "order"})
-        if(args.contains(f))
+        if(args.contains(f) || (f == std::string_view("parent") && args.contains("bone")))
           fields.push_back(f);
-    // a new parent keeps the prop where it is in the world: its transform changes with it
-    if(args.contains("parent") && !args.contains("transform"))
+    // a new parent (or bone) keeps the prop where it is in the world: its transform changes with it
+    if((args.contains("parent") || args.contains("bone")) && !args.contains("transform"))
       fields.push_back("transform");
     if((args.contains("camera") || cmd == "camera.set") && p->kind == PropKind::eCamera)
       fields.push_back("camera");
@@ -241,7 +241,7 @@ Json FvHost::Impl::journalState(const Json& scope)
         Json             t = {{"t", vec3(r->transform.translation)}, {"r", {q.x, q.y, q.z, q.w}}, {"s", vec3(r->transform.scale)}};
         if(r->euler)
           t["e"] = vec3(*r->euler);
-        ops.push_back(op("prop.set", {{"prop", r->id}, {"parent", r->parent}}));
+        ops.push_back(op("prop.set", {{"prop", r->id}, {"parent", r->parent}, {"bone", r->bone.empty() ? Json() : Json(r->bone)}}));
         ops.push_back(op("prop.set", {{"prop", r->id}, {"transform", t}}));
       }
     if(ids.count(viewCamera))
@@ -272,7 +272,7 @@ Json FvHost::Impl::journalState(const Json& scope)
     {
       const std::string field = f.get<std::string>();
       if(field == "parent")  // first: a new parent moves the transform, which comes after
-        ops.push_back(op("prop.set", {{"prop", id}, {"parent", p->parent.empty() ? Json() : Json(p->parent)}}));
+        ops.push_back(op("prop.set", {{"prop", id}, {"parent", p->parent.empty() ? Json() : Json(p->parent)}, {"bone", p->bone.empty() ? Json() : Json(p->bone)}}));
       else if(field == "name")
         set["name"] = p->name;
       else if(field == "visible")
@@ -380,7 +380,7 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
       return "Rename " + name;
     if(args.contains("visible"))
       return (args["visible"].get<bool>() ? "Show " : "Hide ") + name;
-    if(args.contains("parent"))
+    if(args.contains("parent") || args.contains("bone"))
       return "Change what " + name + " rides on";
     if(const auto t = args.find("transform"); t != args.end() && t->is_object())
       return (t->size() != 1 || t->contains("t") ? "Move " : t->contains("s") ? "Scale " : "Rotate ") + name;
@@ -509,7 +509,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
   bool merges = cmd == "morph.set" || cmd == "material.set" || cmd == "lighting.set" || cmd == "camera.set"
                 || (cmd == "pose.set" && !args.contains("label"));
   if(cmd == "prop.set")
-    merges = !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("order");
+    merges = !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);
   if(shape.is_object())
     for(const char* k : {"prop", "gesture"})
@@ -940,6 +940,7 @@ Json FvHost::Impl::propRecord(const Prop& p)
                           {"name", p.name},
                           {"visible", p.visible},
                           {"parent", p.parent.empty() ? Json() : Json(p.parent)},
+                          {"bone", p.bone.empty() ? Json() : Json(p.bone)},
                           {"order", int(std::find_if(props.begin(), props.end(), [&](const auto& q) { return q.get() == &p; }) - props.begin())},
                           {"transform", {{"t", vec3(p.transform.translation)}, {"r", {r.x, r.y, r.z, r.w}}, {"s", vec3(p.transform.scale)}}}};
   if(p.euler)
@@ -987,6 +988,7 @@ void FvHost::Impl::placeFrom(Prop& p, const Json& rec)
   // under its parent when that is back already; else what puts it back on follows
   const std::string parent = rec.contains("parent") && rec["parent"].is_string() ? rec["parent"].get<std::string>() : "";
   p.parent                 = findProp(parent) ? parent : "";
+  p.bone                   = !p.parent.empty() && rec.contains("bone") && rec["bone"].is_string() ? rec["bone"].get<std::string>() : "";
   if(p.kind == PropKind::eCamera && rec.contains("camera"))
   {
     p.camera.lens           = FvView::lensOf(rec["camera"], p.camera.lens);

@@ -38,8 +38,9 @@ namespace {
 // the edit history, history.undo and history.redo and the "history" topic (fv_journal.hpp). 11:
 // `gesture` {id, end?} on morph.set, pose.set and material.set: a slider's drag is one step. 12:
 // history.begin, history.end (a scene file opening as one step) and history.clear. 13: the scene
-// kept for a crash, recovery.file, recovery.peek and scene.recover.
-constexpr int kProtocolVersion = 13;
+// kept for a crash, recovery.file, recovery.peek and scene.recover. 14: a prop rides on a figure's
+// bone (prop.set's `bone`, the scene topic's).
+constexpr int kProtocolVersion = 14;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

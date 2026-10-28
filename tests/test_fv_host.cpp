@@ -429,6 +429,7 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
         case 22: cmd = "prop.remove", args = {{"prop", any(props)}}; break;
         case 23: cmd = "prop.duplicate", args = {{"prop", any(props)}}; break;
         case 24: cmd = "load", args = {{"rel", "People/Test/Box Figure.duf"}}; break;
+        case 25: cmd = "prop.set", args = {{"prop", coin() ? any(lights) : any(cameras)}, {"parent", id}, {"bone", coin() ? Json("head") : Json()}}; break;
         case 26: cmd = "wear", args = {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}}; break;
         case 27: cmd = "wardrobe.remove", args = {{"prop", id}, {"item", item}}; break;
         case 28: cmd = "load", args = {{"prop", id}, {"rel", coin() ? "People/Test/Poses/Box Look Left.duf" : "People/Test/Materials/Box Body Red.duf"}}; break;
@@ -461,6 +462,69 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
       ASSERT_LT(redone, 300);
     EXPECT_EQ(differ(end, stateOf(rig)), "") << "seed " << seed << "\n" << log;
   }
+}
+
+// A prop rides on a figure's bone (a hat on the head): it stays where it is in the world when it
+// gets on, the pose carries it, undo takes it off again, and when the figure goes it stays where the
+// pose had it.
+TEST(FvHost, APropRidesOnAFiguresBone)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string figure = figureId(rig.topic("scene"));
+  const std::string lamp   = rig.cmd("prop.add", {{"kind", "light"}}).at("result").at("prop").get<std::string>();
+  rig.cmd("prop.set", {{"prop", lamp}, {"transform", {{"t", {0.2, 1.8, 0.1}}}}});
+  ASSERT_TRUE(rig.settle());
+  rs::RetainedScene& store = rig.renderer.hostScene();
+  const auto         world = [&] {
+    for(rs::EntityId e : store.entitiesInOrder())
+      if(store.entity(e)->owner == rs::OwnerTag{uint32_t(std::stoi(lamp.substr(2))), -1})
+        return store.world(e);
+    return glm::mat4(0.f);
+  };
+  const auto near = [](const glm::mat4& a, const glm::mat4& b) {
+    for(int c = 0; c < 4; c++)
+      if(glm::length(a[c] - b[c]) > 1e-4f)
+        return false;
+    return true;
+  };
+  const glm::mat4 standing = world();
+
+  // on the head, where it was
+  const Json on = rig.cmd("prop.set", {{"prop", lamp}, {"parent", figure}, {"bone", "head"}});
+  ASSERT_TRUE(on.value("ok", false)) << on.dump();
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(rig.topic("scene")["props"][lamp].value("bone", Json()), "head");
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Change what Point light rides on");
+  EXPECT_TRUE(near(world(), standing));
+
+  // the head turns: the lamp with it
+  rig.cmd("pose.set", {{"prop", figure}, {"values", {{"head/rotation/y", 40.0}}}});
+  ASSERT_TRUE(rig.settle());
+  const glm::mat4 turned = world();
+  EXPECT_FALSE(near(turned, standing));
+  rig.cmd("history.undo");
+  ASSERT_TRUE(rig.settle());
+  EXPECT_TRUE(near(world(), standing));
+  rig.cmd("history.redo");
+  ASSERT_TRUE(rig.settle());
+
+  // a bone the figure hasn't, or one with nothing to ride on, is refused
+  EXPECT_FALSE(rig.cmd("prop.set", {{"prop", lamp}, {"parent", figure}, {"bone", "no such bone"}}).value("ok", true));
+  EXPECT_FALSE(rig.cmd("prop.set", {{"prop", lamp}, {"parent", nullptr}, {"bone", "head"}}).value("ok", true));
+
+  // the figure goes: the lamp stays where the pose had it, on nothing
+  rig.cmd("prop.remove", {{"prop", figure}});
+  ASSERT_TRUE(rig.settle());
+  const Json left = rig.topic("scene")["props"][lamp];
+  EXPECT_TRUE(left.at("parent").is_null() && left.at("bone").is_null()) << left.dump();
+  EXPECT_TRUE(near(world(), turned));
+  // and back on the head with the figure's undo
+  rig.cmd("history.undo");
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(rig.topic("scene")["props"][lamp].value("bone", Json()), "head");
+  EXPECT_TRUE(near(world(), turned));
 }
 
 // A removed dressed figure comes back under its id with its look, pose and wardrobe: kept, and
@@ -636,7 +700,7 @@ TEST(FvHost, AKeptSceneComesBackInAnotherRendererAsItWas)
   rig.cmd("material.set", {{"prop", id}, {"material", "m:1"}, {"values", {{"roughness", 0.7}}}});
   rig.cmd("prop.set", {{"prop", id}, {"transform", {{"t", {0.5, 0.0, -0.25}}}}});
   const std::string camera = rig.cmd("prop.add", {{"kind", "camera"}}).at("result").at("prop").get<std::string>();
-  rig.cmd("prop.set", {{"prop", camera}, {"parent", id}});
+  rig.cmd("prop.set", {{"prop", camera}, {"parent", id}, {"bone", "head"}});
   rig.cmd("prop.add", {{"kind", "light"}});
   rig.cmd("scene.order", {{"order", {camera, id}}});
   rig.cmd("lighting.set", {{"tonemap", {{"exposure", 1.5}}}});

@@ -222,6 +222,7 @@ void FvHost::Impl::removeProp(const std::shared_ptr<Prop>& p)
     {
       const glm::mat4 world = worldOf(*q);
       q->parent.clear();
+      q->bone.clear();
       glm::vec3 skew;
       glm::vec4 perspective;
       glm::decompose(world, q->transform.scale, q->transform.rotation, q->transform.translation, skew, perspective);
@@ -244,10 +245,45 @@ glm::mat4 FvHost::Impl::worldOf(const Prop& p) const
   {
     const glm::mat4 local = glm::translate(glm::mat4(1.f), at->transform.translation) * glm::mat4_cast(at->transform.rotation)
                             * glm::scale(glm::mat4(1.f), at->transform.scale);
-    m = local * m;
-    at = at->parent.empty() ? nullptr : findProp(at->parent).get();
+    m              = local * m;
+    const Prop* up = at->parent.empty() ? nullptr : findProp(at->parent).get();
+    if(up)
+      m = boneOffset(*up, at->bone) * m;
+    at = up;
   }
   return m;
+}
+
+glm::mat4 FvHost::Impl::parentWorld(const Prop& p) const
+{
+  return parentWorld(p.parent, p.bone);
+}
+
+glm::mat4 FvHost::Impl::parentWorld(const std::string& parent, const std::string& bone) const
+{
+  const auto up = parent.empty() ? nullptr : findProp(parent);
+  return up ? worldOf(*up) * boneOffset(*up, bone) : glm::mat4(1.f);
+}
+
+int FvHost::Impl::boneNode(const Prop& figure, const std::string& bone) const
+{
+  if(bone.empty() || !figure.figure || !figure.figure->fig || !figure.figure->fig->pose)
+    return -1;
+  const fv::pose::PoseBone* pb = figure.figure->fig->pose->get(bone);
+  return pb ? pb->bone : -1;
+}
+
+glm::mat4 FvHost::Impl::boneOffset(const Prop& figure, const std::string& bone) const
+{
+  // the pose is in the scene's entities already: the bone's from there, as the drawn figure has it
+  const int node = boneNode(figure, bone);
+  if(node < 0 || !figure.figure->feed || !renderer->feedsHostScene())
+    return glm::mat4(1.f);
+  rs::RetainedScene& s = renderer->hostScene();
+  const rs::EntityId e = figure.figure->feed->entityOf(node);
+  if(!s.entity(e) || !s.entity(figure.root))
+    return glm::mat4(1.f);
+  return glm::inverse(s.world(figure.root)) * s.world(e);
 }
 
 void FvHost::Impl::applyTransform(const Prop& p)
@@ -318,6 +354,7 @@ Json FvHost::Impl::propJson(const Prop& p) const
   Json      out   = {{"kind", kindName(p.kind)},
                      {"name", p.name},
                      {"parent", p.parent.empty() ? Json() : Json(p.parent)},
+                     {"bone", p.bone.empty() ? Json() : Json(p.bone)},
                      {"visible", p.visible},
                      {"order", order},
                      {"transform",
@@ -561,8 +598,7 @@ void FvHost::Impl::cameraFromView(bool dragEnds)
     args["gesture"] = {{"id", "view:" + std::to_string(viewGesture)}, {"end", dragEnds}};
   journaled("prop.set", args, [&] {
     const glm::mat4 view   = glm::lookAt(glm::vec3(eye), glm::vec3(center), glm::vec3(up));
-    const auto      parent = p->parent.empty() ? nullptr : findProp(p->parent);
-    const glm::mat4 local  = (parent ? glm::inverse(worldOf(*parent)) : glm::mat4(1.f)) * glm::inverse(view);
+    const glm::mat4 local = glm::inverse(parentWorld(*p)) * glm::inverse(view);
     glm::vec3       scale, skew;
     glm::vec4       perspective;
     glm::decompose(local, scale, p->transform.rotation, p->transform.translation, skew, perspective);
@@ -667,9 +703,17 @@ fv::composer::Part FvHost::Impl::partOf(size_t i, const tinygltf::Model* model, 
   part.name      = p.name;
   part.transform = p.transform;
   part.visible   = p.visible;
-  for(size_t j = 0; j < props.size(); j++)
-    if(!p.parent.empty() && props[j]->id == p.parent)
-      part.parent = int(j);
+  if(!p.bone.empty())
+  {
+    // on a bone: at the scene's root where the pose has it, the file being the scene as it is now
+    glm::vec3 skew;
+    glm::vec4 perspective;
+    glm::decompose(worldOf(p), part.transform.scale, part.transform.rotation, part.transform.translation, skew, perspective);
+  }
+  else
+    for(size_t j = 0; j < props.size(); j++)
+      if(!p.parent.empty() && props[j]->id == p.parent)
+        part.parent = int(j);
   if(model)
     part.model = model;
   else if(p.kind == PropKind::eCamera)
@@ -706,6 +750,8 @@ void FvHost::Impl::releaseFed()
 fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
 {
   fv::PropSpec s{.id = p.id, .number = uint32_t(std::atoi(p.id.c_str() + 2)), .name = p.name, .parent = p.parent, .visible = p.visible};
+  if(const auto up = p.parent.empty() ? nullptr : findProp(p.parent))
+    s.parentNode = boneNode(*up, p.bone);
   s.transform = {.translation = p.transform.translation, .rotation = p.transform.rotation, .scale = p.transform.scale};
   if(Loaded* f = p.figure.get())
   {
@@ -1106,25 +1152,36 @@ Json FvHost::Impl::propSet(const Json& args)
     if(renderer->feedsHostScene() && renderer->hostScene().light(p->lightRecord))
       renderer->hostScene().setLight(p->lightRecord, lightPayload(*p));
   }
-  if(args.contains("parent"))
+  if(args.contains("parent") || args.contains("bone"))
   {
-    const std::string parent = args["parent"].is_string() ? args["parent"].get<std::string>() : "";
-    if(parent != p->parent)
+    // a new parent rides on the figure itself unless a bone comes with it; a bone alone is another
+    // of the same figure's
+    const std::string parent = !args.contains("parent") ? p->parent : args["parent"].is_string() ? args["parent"].get<std::string>() : "";
+    std::string       bone   = args.contains("bone") && args["bone"].is_string() ? args["bone"].get<std::string>() : "";
+    auto              at     = parent.empty() ? nullptr : findProp(parent);
+    if(!parent.empty() && !at)
+      throw std::runtime_error("no such parent");
+    if(!bone.empty())
+    {
+      if(!at)
+        throw std::runtime_error("a bone needs a figure to ride on");
+      if(boneNode(*at, bone) < 0)
+        throw std::runtime_error(at->name + " has no bone " + bone);
+      bone = at->figure->fig->pose->get(bone)->id;  // the id, whichever it was named by
+    }
+    if(parent != p->parent || bone != p->bone)
     {
       // it stays where it is in the world, now relative to its new parent
-      auto at = parent.empty() ? nullptr : findProp(parent);
-      if(!parent.empty() && !at)
-        throw std::runtime_error("no such parent");
       for(Prop* up = at.get(); up; up = up->parent.empty() ? nullptr : findProp(up->parent).get())
         if(up == p.get())
           throw std::runtime_error(p->name + " can't ride on something that rides on it");
-      const glm::mat4 world = worldOf(*p);
-      const glm::mat4 local = at ? glm::inverse(worldOf(*at)) * world : world;
+      const glm::mat4 local = glm::inverse(parentWorld(parent, bone)) * worldOf(*p);
       glm::vec3       skew;
       glm::vec4       perspective;
       glm::decompose(local, p->transform.scale, p->transform.rotation, p->transform.translation, skew, perspective);
       p->euler.reset();
       p->parent = parent;
+      p->bone   = bone;
       if(p->id == viewCamera)
         viewFromCamera(*p);
       requestCompose("Parenting " + p->name);
@@ -1158,6 +1215,7 @@ Json FvHost::Impl::propDuplicate(const Json& args)
     p->euler     = src->euler;
     p->visible   = src->visible;
     p->parent    = src->parent;
+    p->bone      = src->bone;
   };
   if(src->figure)
   {

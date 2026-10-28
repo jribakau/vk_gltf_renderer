@@ -97,7 +97,10 @@ inline std::vector<std::string> checkFeed(const SceneGraph& scene, int root, con
       const rs::EntityId id = stack.back();
       stack.pop_back();
       const rs::Entity* e = store.entity(id);
-      const int         i = e->owner.local;
+      // another prop riding on one of its bones (a hat on the head) is that prop's
+      if(e->owner.prop != store.entity(feed.entityOf(root))->owner.prop)
+        continue;
+      const int i = e->owner.local;
       if(i < 0 || i >= int(scene.nodes.size()) || !reached[size_t(i)] || feed.entityOf(i) != id)
         problems.push_back("entity " + e->name + " is no reached node's");
       stack.insert(stack.end(), e->children.begin(), e->children.end());

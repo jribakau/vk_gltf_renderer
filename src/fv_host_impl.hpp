@@ -228,6 +228,7 @@ struct Prop
   std::optional<glm::vec3> euler;  // the rotation as the panel typed it, degrees XYZ; a gizmo turn drops it
   bool                    visible = true;
   std::string             parent;  // a prop id, "" at the scene's root
+  std::string             bone;    // the parent figure's posable bone it rides on (its id), "" for the figure itself
   std::shared_ptr<Loaded> figure;
   // a model: as its file holds it (shared by duplicates) and where it came from
   std::shared_ptr<const tinygltf::Model> model;
@@ -690,6 +691,14 @@ struct FvHost::Impl
   void                    removeProp(const std::shared_ptr<Prop>& p);
   std::unique_ptr<FvMaterials> makeMaterials(const std::shared_ptr<Prop>& p);
   glm::mat4               worldOf(const Prop& p) const;
+  // what its transform is relative to: its parent's world, on the bone it rides on (identity at the
+  // scene's root)
+  glm::mat4               parentWorld(const Prop& p) const;
+  glm::mat4               parentWorld(const std::string& parent, const std::string& bone) const;
+  // a figure's posable bone (an id or a name) as its node in the figure's scene graph, -1 for none
+  int                     boneNode(const Prop& figure, const std::string& bone) const;
+  // where the bone is in the figure's prop root, posed (identity for none, or before it is fed)
+  glm::mat4               boneOffset(const Prop& figure, const std::string& bone) const;
   void                    applyTransform(const Prop& p);
   void                    applyVisible(const Prop& p);
   Json                    propJson(const Prop& p) const;
