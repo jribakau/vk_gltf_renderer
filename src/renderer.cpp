@@ -622,26 +622,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                       }},
                  &m_resources.settings.tlasPolicy, Persist::eNo);
 
-  // What a stream host's scene replace draws with (scene_coexistence.hpp): the retained scene, unless
-  // started with `legacy`. Start-up only, so not exposed to a host (fv_parameter_filter.hpp). Not
-  // remembered.
-  m_settings.add({.name = "sceneBackend",
-                  .help = "Stream sessions: the scene a scene replace draws with, auto, legacy or retained (start-up only)",
-                  .callbackSuccess =
-                      [this](const nvutils::ParameterBase* const) {
-                        const std::optional<rs::SceneBackendSetting> setting =
-                            rs::parseSceneBackendSetting(m_resources.settings.sceneBackend);
-                        if(!setting)
-                        {
-                          const char* kept = rs::sceneBackendSettingName(m_sceneBackendSetting);
-                          LOGW("--sceneBackend: '%s' is not auto, legacy or retained; it stays %s.\n",
-                               m_resources.settings.sceneBackend.c_str(), kept);
-                          m_resources.settings.sceneBackend = kept;
-                          return;
-                        }
-                        m_sceneBackendSetting = *setting;
-                      }},
-                 &m_resources.settings.sceneBackend, Persist::eNo);
   // Live: the retained scene's next batch of BLAS builds regrows its scratch when it needs more.
   m_settings.add({.name = "blasScratchBudgetMB",
                   .help = "Retained scene: the scratch one batch of BLAS builds shares, in MB",
@@ -3820,11 +3800,8 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
   m_pendingVertexUploads.clear();
   m_liveVertices.clear();
   m_pendingAnimReconcile = false;
-  // Scene object is set, we can create the Vulkan scene: the retained one or today's
-  if(m_takeRetained)
-    createRetainedScene();
-  else
-    createVulkanScene();
+  // Scene object is set, we can create the Vulkan scene
+  createVulkanScene();
   if(m_resources.gpuView().hasPlayableAnimation())
     m_resources.animationControl.showStrip = true;
   // Spec: "When a glTF asset contains a behavior graph, all glTF animations are assumed to be
@@ -3837,8 +3814,6 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
   // can specialize its shader when settings.optimalShader is on. Safe to call always:
   // when optimalShader is off, the path tracer ignores currentFeatureSet.
   m_resources.recomputeSceneFeatures(dlssGuideRequired());
-  if(m_resources.retainedScene)
-    updateRetainedFeatures(false);
 
   // Calibrate the firefly clamp to the scene: retroreflective materials can produce legitimately
   // high peak radiance that the default clamp of 10 would clip, visibly suppressing the effect.
@@ -4058,8 +4033,6 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
     m_resources.retainedSpare.reset();
   if(!m_resources.hostFed)  // a stream host's store is the session's
     m_resources.retainedScene.reset();
-  m_resources.retainedBridge = {};
-  m_takeRetained             = false;
   m_resources.scene.reset();
   m_thumbnailCache.clear();
   // Before sceneGpu.destroy(), which calls SceneVk::destroy() and would free these images.
@@ -4384,79 +4357,14 @@ rs::VulkanGpuBackend::Info GltfRenderer::retainedBackendInfo()
 }
 
 //--------------------------------------------------------------------------------------------------
-// The retained scene's scene replace: the CPU scene a host built, imported in document order (so
-// instance slot i is render node i, as a host and the pickers address them) and made resident, the
-// upload waited for, as loadModel promises. The legacy GPU objects are not created.
-//
-void GltfRenderer::createRetainedScene()
-{
-  fv::timing::Scope      timeScene("retained scene");
-  const nvvkgltf::Scene& scene = *m_resources.getScene();
-  m_resources.retainedScene = std::make_unique<rs::RetainedScene>();
-  rs::ImportResult imported;
-  {
-    fv::timing::Scope timeImport("document-order import");
-    imported = rs::importGltf(*m_resources.retainedScene, scene.getModel(), {.imageSearchPaths = scene.getImageSearchPaths()});
-  }
-  for(const std::string& notice : imported.notices)
-    LOGW("Retained scene: %s\n", notice.c_str());
-  // as createVulkanScene says it: micromaps only accelerate, so without device support they are left out
-  const std::vector<std::string>& extUsed = scene.getModel().extensionsUsed;
-  if(m_resources.settings.opacityMicromapMissing
-     && std::find(extUsed.begin(), extUsed.end(), EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME) != extUsed.end())
-    LOGW("Scene has opacity micromaps; using them needs an NVIDIA RTX GPU with a recent driver (VK_KHR_opacity_micromap). Rendering is unaffected.\n");
-  m_resources.retainedBridge = rs::LegacyDirtyBridge(std::move(imported));
-  // the previous scene's, emptied, when the cleanup kept it: its decoded images are this one's to take
-  if(m_resources.retainedSpare)
-  {
-    m_resources.retainedGpu = std::move(m_resources.retainedSpare);
-    m_resources.retainedGpu->setBlasScratchBudget(VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20);
-  }
-  else
-    m_resources.retainedGpu = std::make_unique<rs::RetainedSceneVk>(
-        retainedBackendInfo(),
-        rs::ResidencyOptions{.minInstances      = std::max(m_resources.settings.residencyMinInstances, 1u),
-                             .blasScratchBudget = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
-                             .textureGraceBytes = VkDeviceSize(m_resources.settings.textureGraceMB) << 20});
-  {
-    fv::timing::Scope timeUpload("retained upload");
-    VkCommandBuffer   cmd = m_app->createTempCmdBuffer();
-    // [fv-time] GPU BLAS build / GPU TLAS build, as legacy reports them at a load
-    if(fv::timing::enabled())
-      m_resources.retainedGpu->timeBuilds();
-    m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
-    m_resources.retainedGpu->setPlayableAnimation(ui::animation::hasPlayableAnimation(m_resources.getScene()));
-    m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
-    m_app->submitAndWaitTempCmdBuffer(cmd);
-    logRetainedNotices();
-    m_resources.sceneVk.dropPrefetched();  // what this scene did not take would never be taken
-    if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes())
-    {
-      OneShotGpuTimer::report("GPU BLAS build", times->blasMs);
-      OneShotGpuTimer::report("GPU TLAS build", times->tlasMs);
-    }
-  }
-
-  const rs::Residency& residency = m_resources.retainedGpu->residency();
-  constexpr double     kMB       = 1024.0 * 1024.0;
-  const rs::Residency::ImageCounts images    = residency.imageCounts();
-  LOGI("Scene (retained): %u instances, %u prims, %u materials, %u lights; images %u decoded (%u prefetched), %u reused; GPU memory %.1f MB\n",
-       residency.instanceHighWater(), residency.primHighWater(), residency.materialHighWater(), residency.lightCount(),
-       images.decoded, m_resources.retainedGpu->takePrefetchCount(), images.reused,
-       m_resources.retainedGpu->memoryStats().usedBytes / kMB);
-}
-
-//--------------------------------------------------------------------------------------------------
 // A stream host's own retained scene (renderer.hpp, hostScene)
 //
 rs::RetainedScene& GltfRenderer::hostScene()
 {
   if(!m_resources.hostFed)
   {
-    // the store a loadModel imported, if any, goes at the first replace's cleanup; this one stays
-    m_resources.retainedScene  = std::make_unique<rs::RetainedScene>();
-    m_resources.retainedBridge = {};
-    m_resources.hostFed        = true;
+    m_resources.retainedScene = std::make_unique<rs::RetainedScene>();
+    m_resources.hostFed       = true;
   }
   return *m_resources.retainedScene;
 }
@@ -4623,94 +4531,22 @@ void GltfRenderer::logRetainedNotices()
 }
 
 //--------------------------------------------------------------------------------------------------
-// The retained scene's frame, in place of the legacy per-frame GPU paths: the host's edits to the
-// CPU scene carried across by the bridge (a re-import when it can't), the CPU world matrices the
-// gizmo and the pickers read brought up to date, then the residency's sync. True when the frame
-// changed.
+// The retained scene's frame, in place of the legacy per-frame GPU paths: the clip moved on, then the
+// residency's sync of what the host fed since the last frame. True when the frame changed.
 //
 bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
 {
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Retained sync");
-
-  // a stream host's own scene: its edits are in the store already
-  if(m_resources.hostFed)
-  {
-    advanceHostClip();
-    m_pendingVertexUploads.clear();
-    m_pendingAnimReconcile = false;
-    m_resources.retainedGpu->beginFrame();
-    m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
-    const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
-    logRetainedNotices();
-    if(result.featuresChanged)
-      updateRetainedFeatures(true);
-    return afterRetainedSync(result);
-  }
-
-  nvvkgltf::Scene& scene = *m_resources.getScene();
-  // The host's vertex uploads (a dial, a fit, a drape): laid onto the live copies, which a re-import
-  // replays, and carried onto the import's records; the residency runs the skins and morphs over
-  // them. (Its skins run on their own: a reconcile request has nothing to do here.)
-  for(VertexUpload* upload : uploadsInEffect(scene))
-  {
-    bool          normals = false;
-    LiveVertices* live    = mergeVertexUpload(scene, *upload, normals);
-    if(live
-       && !m_resources.retainedBridge.carryVertices(scene, *m_resources.retainedScene, upload->renderPrimID, live->positions,
-                                                    normals ? std::span<const glm::vec3>(live->normals) : std::span<const glm::vec3>(),
-                                                    upload->indices))
-      LOGW("Retained scene: a vertex upload for primitive %d matches no record; skipped\n", upload->renderPrimID);
-  }
+  advanceHostClip();
   m_pendingVertexUploads.clear();
   m_pendingAnimReconcile = false;
-  // a clip playing, evaluated on the CPU scene as legacy evaluates it (the host and the pickers read
-  // the nodes it moves): the bridge below carries what it wrote
-  evaluateClip(scene, cmd);
-
-  const nvvkgltf::Scene::DirtyFlags& df       = scene.getDirtyFlags();
-  bool                               reimport = false;
-  if(!df.isEmpty())
-  {
-    if(!df.nodes.empty())
-      scene.updateNodeWorldMatrices();
-    // an appearance change motion vectors can't describe (see updateSceneChanges)
-    if(!df.materials.empty() || !df.lights.empty())
-    {
-      if(m_resources.settings.renderSystem == RenderingMode::ePathtracer)
-        m_pathTracer.notifyDlssContentReset(m_resources);
-      else
-        m_rasterizer.notifyDlssContentReset(m_resources);
-    }
-    reimport = m_resources.retainedBridge.carry(scene, *m_resources.retainedScene) == rs::LegacyDirtyBridge::Result::eReimport;
-    scene.clearDirtyFlags();
-  }
-
   m_resources.retainedGpu->beginFrame();
   m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
-  rs::SyncResult result;
-  if(reimport)
-  {
-    // what the bridge can't carry (an image replaced, a sampler edit, a re-parse): the scene imported again,
-    // replaced within this frame
-    fv::timing::Scope timeImport("retained re-import");
-    m_resources.retainedScene  = std::make_unique<rs::RetainedScene>();
-    m_resources.retainedBridge = rs::LegacyDirtyBridge(
-        rs::importGltf(*m_resources.retainedScene, scene.getModel(), {.imageSearchPaths = scene.getImageSearchPaths()}));
-    // the import took the model's vertices: the dials go on again before this frame draws it
-    for(const auto& [renderPrimID, live] : m_liveVertices)
-      m_resources.retainedBridge.carryVertices(scene, *m_resources.retainedScene, renderPrimID, live.positions,
-                                               live.normals.size() == live.positions.size() ? std::span<const glm::vec3>(live.normals) :
-                                                                                              std::span<const glm::vec3>(),
-                                               {});
-    m_resources.retainedGpu->setPlayableAnimation(ui::animation::hasPlayableAnimation(&scene));
-    result = m_resources.retainedGpu->replace(cmd, *m_resources.retainedScene);
-  }
-  else
-    result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
+  const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   logRetainedNotices();
-  // a re-import is not a scene replace: the variant only grows (D15), or a removal earlier in the
-  // session would compile a smaller one now, with a queue wait
-  if(reimport || result.featuresChanged)
+  // the variant only grows (D15), or a removal earlier in the session would compile a smaller one
+  // now, with a queue wait
+  if(result.featuresChanged)
     updateRetainedFeatures(true);
   return afterRetainedSync(result);
 }
@@ -5066,75 +4902,6 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
   return true;
 }
 
-bool GltfRenderer::loadModel(tinygltf::Model&& model)
-{
-  if(!m_app)
-    return false;
-  fv::timing::Scope timeLoad("loadModel (renderer)");
-  {
-    fv::timing::Scope t("wait idle + cleanup");
-    // the teardown loadSceneFile runs, for the same reasons
-    vkQueueWaitIdle(m_app->getQueue(0).queue);
-    m_loadPipeline.clear();
-    cleanupScene(/*keepImagesForReuse=*/true);  // also clears the selection
-  }
-
-  auto scn = std::make_unique<nvvkgltf::Scene>();
-  scn->supportedExtensions().insert(EXT_TEXTURE_WEBP_EXTENSION_NAME);
-  {
-    fv::timing::Scope t("parseScene");
-    scn->takeModel(std::move(model));
-  }
-  fv::timing::report("tangents", scn->parseStats().tangentsMs);
-  if(!scn->valid())
-  {
-    LOGW("The model a host built is not a valid scene\n");
-    m_resources.sceneVk.releaseRetainedImages();
-    return false;
-  }
-  m_resources.scene = std::move(scn);
-  const rs::SceneBackendChoice choice =
-      rs::chooseSceneBackend(m_sceneBackendSetting, m_streamHost,
-                             rs::retainedCannotTake(m_resources.scene->getModel(), m_resources.scene->hasExternalAssets()));
-  LOGI("Scene backend: %s (%s)\n", choice.backend == rs::SceneBackend::eRetained ? "retained" : "legacy", choice.reason.c_str());
-  m_takeRetained = choice.backend == rs::SceneBackend::eRetained;
-  finalizeSceneSetup({});
-  return true;
-}
-
-void GltfRenderer::setNodeTransforms(std::span<const NodeTransform> transforms)
-{
-  nvvkgltf::Scene* scn = m_resources.getScene();
-  if(!scn || !scn->valid())
-    return;
-  const int nodeCount = int(scn->getModel().nodes.size());
-  bool      any       = false;
-  for(const NodeTransform& t : transforms)
-  {
-    if(t.node < 0 || t.node >= nodeCount)
-      continue;
-    scn->editor().setNodeTRS(t.node, t.translation, t.rotation, t.scale);
-    scn->markSkinsBelowRtxDirty(t.node);
-    any = true;
-  }
-  if(any && scn->animation().hasSkinning())
-    requestAnimationReconcile();
-}
-
-bool GltfRenderer::setInverseBindMatrices(int skin, std::span<const glm::mat4> ibm)
-{
-  nvvkgltf::Scene* scn = m_resources.getScene();
-  if(!scn || !scn->valid() || skin < 0 || skin >= int(scn->getModel().skins.size()))
-    return false;
-  if(!scn->animation().setInverseBindMatrices(skin, ibm))
-    return false;
-  if(m_resources.retainedGpu)  // its record, which the residency's skin reads at the next sync
-    return m_resources.retainedBridge.carryInverseBinds(*m_resources.retainedScene, skin, ibm);
-  scn->markSkinRenderNodesRtxDirty(skin);
-  requestAnimationReconcile();
-  return true;
-}
-
 namespace {
 constexpr uint32_t kUploadRunGap   = 64;    // vertices between two touched ones that are staged along with them
 constexpr size_t   kUploadRunMax   = 1024;  // more runs than this: one copy of the whole buffer is cheaper
@@ -5173,19 +4940,6 @@ std::vector<std::pair<uint32_t, uint32_t>> GltfRenderer::uploadRuns(std::span<co
   if(float(covered) > float(vertexCount) * kUploadRunRatio)
     return {};
   return runs;
-}
-
-std::vector<int> GltfRenderer::renderPrimitivesOfMesh(int gltfMesh) const
-{
-  std::vector<int>       out;
-  const nvvkgltf::Scene* scn = m_resources.getScene();
-  if(!scn || !scn->valid())
-    return out;
-  const auto& prims = scn->getRenderPrimitives();
-  for(size_t i = 0; i < prims.size(); i++)
-    if(prims[i].meshID == gltfMesh)
-      out.push_back(int(i));
-  return out;
 }
 
 void GltfRenderer::prefetchImage(const std::filesystem::path& diskPath, bool srgb)

@@ -52,7 +52,6 @@
 #include <nvvk/frame_uploader.hpp>
 #include "gltf_scene.hpp"
 #include "gltf_scene_gpu.hpp"
-#include "scene_coexistence.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency_vk.hpp"
 #include "ui_animation.hpp"
@@ -311,9 +310,6 @@ struct Settings
 
   // `tlasPolicy`, build or update (tlas_policy.hpp); SceneRtx holds the parsed value.
   std::string tlasPolicy = tlasPolicyName(TlasPolicy::eBuild);
-  // `sceneBackend`, auto, legacy or retained (scene_coexistence.hpp): what a stream host's scene
-  // replace draws with
-  std::string sceneBackend = rs::sceneBackendSettingName(rs::SceneBackendSetting::eAuto);
   // `blasScratchBudgetMB`: the retained scene's BLAS builds of one batch share this much scratch
   uint32_t blasScratchBudgetMB = 512;
   // `residencyMinInstances`: the retained scene's least instance capacity (start-up only)
@@ -377,13 +373,11 @@ struct Resources
     return retainedGpu ? static_cast<const SceneGpuView&>(*retainedGpu) : legacyGpuView;
   }
 
-  // The retained scene (scene_coexistence.hpp, scene_residency_vk.hpp), when the scene replace took
-  // it: a store imported in document order from the CPU scene above, the bridge carrying the host's
-  // edits of that scene into it, and its residency. The legacy GPU objects hold nothing meanwhile.
+  // The retained scene of a stream session (scene_residency_vk.hpp): the store the host feeds
+  // (GltfRenderer::hostScene), kept for the session, and its residency. The legacy GPU objects hold
+  // nothing meanwhile, and there is no CPU scene below.
   std::unique_ptr<rs::RetainedScene>   retainedScene;
-  rs::LegacyDirtyBridge                retainedBridge;
-  // the store is a stream host's own (GltfRenderer::hostScene): fed by the host, kept for the
-  // session, with no CPU scene above
+  // the store is a stream host's own (GltfRenderer::hostScene)
   bool                                 hostFed = false;
   std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
   // Between a cleanup that keeps images for reuse and the next scene replace: the retained scene,
@@ -391,25 +385,9 @@ struct Resources
   // cleanup that keeps nothing, destroys it. Not a session's scene (gpuView() never reads it).
   std::unique_ptr<rs::RetainedSceneVk> retainedSpare;
 
-  // The legacy CPU scene. In a retained session a use from outside the inventory's allow-list logs
-  // once per call site (rs::legacySceneUseAllowed), the debug check every by-eye session runs with
-  nvvkgltf::Scene* getScene(std::source_location where = std::source_location::current())
-  {
-    checkLegacyUse(where);
-    return scene.get();
-  }
-  const nvvkgltf::Scene* getScene(std::source_location where = std::source_location::current()) const
-  {
-    checkLegacyUse(where);
-    return scene.get();
-  }
-  void checkLegacyUse(const std::source_location& where) const
-  {
-    if(retainedGpu && legacyUseCheck.firstUnlisted(where.file_name(), where.line(), where.function_name()))
-      LOGW("Retained scene: the legacy scene read at %s:%u (%s), which is not on the allow-list\n", where.file_name(),
-           unsigned(where.line()), where.function_name());
-  }
-  mutable rs::LegacyUseCheck legacyUseCheck;
+  // The legacy CPU scene: none in a retained session, whose stream host feeds the retained scene
+  nvvkgltf::Scene*       getScene() { return scene.get(); }
+  const nvvkgltf::Scene* getScene() const { return scene.get(); }
 
   // Resources
   nvvk::HdrIbl hdrIbl;  // HDR environment map

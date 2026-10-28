@@ -173,9 +173,6 @@ set(TEST_SOURCES
     # What the Vulkan backend converts and plans without a device: BLAS scratch batches (I8), TLAS rows, samplers
     test_residency_vk_util.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_residency_vk_util.cpp
-    # Which backend a scene takes, and the bridge from the legacy scene's edits (the bridge oracle)
-    test_scene_coexistence.cpp
-    ${CMAKE_SOURCE_DIR}/src/scene_coexistence.cpp
     # The host's addressing on its retained scene: entities and picks map back to props (oracle 8)
     test_fv_scene_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_scene_map.cpp

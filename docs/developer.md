@@ -186,12 +186,10 @@ src/
 │                               #   Vulkan-free (tests/common/fake_gpu_backend.* is its GPU-free twin)
 ├── scene_residency_vk.cpp/hpp  # VulkanGpuBackend (rs::GpuBackend on the allocator, the frame uploader and
 │                               #   the scene descriptor set; BLAS builds in scratch batches) and
-│                               #   RetainedSceneVk, the retained scene's SceneGpuView; not reachable yet
+│                               #   RetainedSceneVk, the retained scene's SceneGpuView, a stream session's
 ├── scene_residency_vk_util.cpp/hpp # What VulkanGpuBackend converts and plans apart from the device
 │                               #   (scratch batches, TLAS rows, glTF samplers); unit-tested
 ├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
-├── scene_coexistence.cpp/hpp  # Which backend a scene replace takes (sceneBackend), and LegacyDirtyBridge:
-│                               #   the host's legacy-scene edits carried into the retained scene
 ├── scene_export_gltf.cpp/hpp   # A RetainedScene (or a subtree) out as a fresh glTF model
 ├── scene_clip_player.cpp/hpp   # ClipPlayer: a clip played into entity TRS and morph weights, AnimationSystem's
 │                               #   interpolation ported
@@ -809,79 +807,98 @@ Use [RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md) as the source of trut
 
 ## The legacy scene and `SceneGpuView`
 
-The Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md) stands behind
-`SceneGpuView` (src/scene_gpu_view.hpp) in stream sessions that `sceneBackend` sends there (below).
-Every use of the legacy scene
-(`Resources::getScene()`, `Scene::getModel()`, `editScene()`, `hasValidScene()`, `sceneVk`,
-`sceneRtx`) outside the frozen `src/ui_*` files has one of these dispositions. A new use picks one.
+A stream session draws the Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md),
+which its host feeds (below); a windowed or `--scenefile` session draws the legacy scene. Both
+renderers read the scene through `SceneGpuView` (src/scene_gpu_view.hpp, `Resources::gpuView()`).
+In a stream session there is no legacy scene: `Resources::getScene()` is null, and every use of it
+(`Scene::getModel()`, `editScene()`, `sceneVk`, `sceneRtx`) outside the frozen `src/ui_*` files
+either has a retained branch or is legacy-only and checks for it. A new use picks one.
 
-In a retained session, `Resources::getScene()` checks its caller (a defaulted
-`std::source_location`) against an allow-list, `rs::legacySceneUseAllowed` in
-scene_coexistence.cpp, and logs a call site outside it once: `Retained scene: the legacy scene read
-at <file>:<line> (<function>)`. The list is the host's edits and addressing (below), the scene's sky
-and sun lights, and the scene replace and frame sync (`finalizeSceneSetup`, `cleanupScene`,
-`createRetainedScene`, `syncRetainedScene`). A new legacy-only use that runs in a retained session
-goes on it; anything else that logs reads a scene the retained one doesn't keep in step.
-
-**Through `SceneGpuView`** (`Resources::gpuView()`):
+**Through `SceneGpuView`**:
 - `PathTracer`: the scene descriptor, the TLAS, the bounds for the aperture and ground sliders,
-  opacity micromap presence.
+  opacity micromap presence, the DLSS motion tables.
 - `Rasterizer`: draw records (buffer, offset, index count) in `renderNodes`, the draw lists, the
   scene descriptor, the TLAS, the blend sort (draw-list revision, transform revision, world centres),
   transmission, the prepass and shadow-map gates.
-- `GltfRenderer`: `onRender`'s empty-scene return; the pickers' TLAS; the DLSS transform snapshot's
-  node count and `hasPlayableAnimation`; the silhouette's node count; `fillShadowAndGround` (bounds
-  and light records); `aerialPerspectiveEyeAltitudeKm`; `sceneBounds`; the `fitScene` command;
-  `benchmarkMemorySamples`; `updateGizmoAttachment`'s gate; `hasValidScene` (and so `pickAt`);
-  the animation-strip and playback checks.
+- `GltfRenderer`: `onRender`'s empty-scene return; the pickers' TLAS; the silhouette's node count;
+  `fillShadowAndGround` (bounds and light records); `aerialPerspectiveEyeAltitudeKm`;
+  `sceneBounds`; the `fitScene` command; `benchmarkMemorySamples`; `updateGizmoAttachment`'s gate;
+  `hasValidScene` (and so `pickAt`); `visibleSceneBounds`; the playback checks; the sky sun
+  (`SkySun::syncFromMarkedLight`, from the light record marked as the sun).
 
-**Legacy-only: the legacy backend itself**, bypassed in a retained session:
+**A stream session's own branch** (on the host's handles):
+- The store and its scene replace: `hostScene`, `replaceHostScene`, `syncRetainedScene`.
+- Selection: `selectEntity` (the instances under an entity, outlined), the pick observer's
+  `InstancePick` in `applyClickPickResult`, framing by instance bounds (`getRenderNodeBbox`).
+- The gizmo: `updateEntityGizmo`, the entity's local TRS and its parent's world from the store, its
+  drags to `GizmoHooks` on `EntityId`.
+- Clips: `setHostClip`, `seekHostClip`, `advanceHostClip`, a `rs::ClipPlayer` on the store.
+
+**Legacy-only**, windowed and `--scenefile` sessions:
 - `src/gltf_scene*` (`Scene`, `SceneVk`, `SceneRtx`, `AnimationVk`, `TransformComputeVk`,
   `SceneOmm`, `SceneGpu`, the validator), `scene_gpu_view_legacy.cpp`.
 - In `GltfRenderer`: `createVulkanScene`, `buildAccelerationStructures`, `updateSceneChanges*`,
-  `reconcileAnimationGpuState`, `updateAnimation`, `applyPendingSceneEdits`,
+  `reconcileAnimationGpuState`, `updateAnimation`, `evaluateClip`, `applyPendingSceneEdits`,
   `snapshotPrevPositions`, `requeueLiveVertices`, `reconcileGeometryIfNeeded`,
   `rebuildVulkanSceneInternal`, `applyPendingTextureTailSync`, `applyPendingTextureRebuild`,
-  `applyPendingSamplerUpdate`, `updateTextures`, `writeTextureDescriptorRange`, `cleanupScene`,
+  `applyPendingSamplerUpdate`, `updateTextures`, `writeTextureDescriptorRange`,
   `finalizeSceneSetup`, `ensureEmptyScene`, `refreshCpuSceneGraphFromModel`; `onRender`'s dirty-flag
-  and deform checks for the DLSS motion vectors; the scene-load log line; the settings that
-  configure the backend (`tlasPolicy`, the profiler hook).
+  and deform checks for the DLSS motion vectors; the settings that configure the backend
+  (`tlasPolicy`, the profiler hook).
 - The scene's sky and sun lights at a scene replace: `applyEnvironmentSkyFromScene`,
   `applyPendingAuthoredSky`, `sky_sun.cpp`'s light lookup (allowed to change, fork-boundary.md).
-
-**Legacy-only: the host's edits and addressing**, through the legacy-edit bridge in P3a–P3b, on
-handles from P4:
-- `fv_host*.cpp` (`compose`, `applyVisible`, `applySun`, `applyLightShown`, `showItem`, `propSet`,
-  the animation topic and commands, `frameCamera`, `exportGlb`), `fv_materials.cpp` (`write`,
-  `baked`, `attachModel`, the model material items), `fv_view.cpp` (picks through
-  `fv::SceneMap::pick`), `fv_compose.cpp`.
-- In `GltfRenderer`: `loadModel`, `appendSceneFile`, `setNodeTransforms`, `setInverseBindMatrices`,
-  `renderPrimitivesOfMesh`, `prefetchImage`, `selectSceneNodeFromScript`,
-  `pickSceneNodeFromScript`, `hoverSceneNodeFromScript`; the selection by glTF node in
-  `renderer_selection.cpp` (`applyClickPickResult`, `updateSelectionFromPick`,
-  `onSceneSelectionEvent`, `selectedNodeIndex`, `getRenderNodeBbox`, `visibleSceneBounds`,
-  `isInteractivityPlaying`); the
-  gizmo's node TRS (`updateGizmoAttachment`, the gizmo hooks in `onAttach`).
-- `mcp_scene.cpp`: the MCP scene tools read the legacy scene; their disposition is P4's.
-
-**Unreachable in stream sessions** (windowed or `--scenefile` only, or refused while `FvHost` is
-attached): `onFileDrop`, `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`,
-`wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `undo_redo.cpp`,
-`gltf_interactivity_scene_pointer.cpp`. `updateInteractivityGraphs` and `updateHoverState` run in a
-legacy stream session and are skipped in a retained one, which takes no `KHR_interactivity`.
+- The selection by glTF node: `selectSceneNodeFromScript`, `pickSceneNodeFromScript`,
+  `hoverSceneNodeFromScript`, `updateSelectionFromPick`, `onSceneSelectionEvent`,
+  `selectedNodeIndex`, `isInteractivityPlaying`; the gizmo's node TRS and its undo.
+- `mcp_scene.cpp`: the MCP scene tools read and edit the legacy scene; they are refused while the
+  retained scene draws (D3).
+- `onFileDrop`, `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`,
+  `wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `undo_redo.cpp`,
+  `gltf_interactivity_scene_pointer.cpp`, `updateInteractivityGraphs`, `updateHoverState`.
 
 ### The retained scene in a stream session
 
-Four settings, none remembered:
+The host (fv_host.hpp) feeds `GltfRenderer::hostScene()`, a `rs::RetainedScene` that lives for the
+session, so its handles stay unique. A composition clears what it fed and feeds it all again from the
+host's state: a prop root entity per prop (owner tag `{N, -1}` for `p:N`), a figure through its
+`fv::FigureFeed` under its root, a model through `rs::importGltf` under its root (what it leaves out
+said once per prop, D23), a camera or a light as a record, and the sun (owner `{0, -1}`) as a light
+record marked as the sky's sun. `replaceHostScene` then waits for the device, cleans up as a load
+does (the store and the selection stay) and makes the store resident, waited for; with `[fv-time]`
+on, the `GPU BLAS build` and `GPU TLAS build` lines time its builds as legacy's time a load's
+(`VulkanGpuBackend::timeBuilds`). The cleanup keeps the `RetainedSceneVk`, emptied
+(`Resources::retainedSpare`), so the next replace takes the decoded images it shares with the last
+scene; the `Scene (retained, host):` line counts images decoded (and of those, taken from the
+host's prefetches) and reused.
 
-- `sceneBackend` (`auto`, `legacy` or `retained`; `auto`), start-up only (`--sceneBackend`), so not
-  among the parameters a host can set. Windowed sessions and `--scenefile` stay legacy; a stream
-  session's `loadModel` takes the retained scene, which leaves out what `rs::retainedCannotTake`
-  (scene_coexistence.hpp) finds it doesn't take: `KHR_animation_pointer` channels,
-  `KHR_interactivity`, external assets (D23). It takes skins, morph targets and clips' node channels
-  (see below). The `Scene backend:` log line names the choice and what isn't drawn, with the
-  top-level node (a prop) it was under. `legacy` is a developer's way back until the host feeds the
-  retained scene itself.
+Between compositions the host writes the store directly: a pose step, a dial, a rebind and an item
+shown or hidden through the feed's narrow syncs (`syncTransforms`, `syncVertices` with the tangents
+near the moved vertices, `syncSkins`); a prop's transform and visibility, a light's payload and the
+sun as entity and record edits. A figure's material edit is lowered by `FvMaterials` with its own
+options and written by the feed (`syncMaterials`); a model's is its file's material with the edits
+laid over, set on its import's record. Each frame `syncRetainedScene` moves the clip on and the
+residency syncs what changed.
+
+A sync decodes the images it needs in one batch, side by side on the worker pool
+(`VulkanGpuBackend::createImages`), a file the host prefetched taken from
+`SceneVk::takePrefetchedFile` instead. Each material slot owns a span of the texture-info table
+(`MaterialCache::convertOne` at its start), so a material edit uploads its row and span only; a span
+that finds no room below the uint16 limit repacks every span once, and one that still doesn't fit is
+drawn without its textures, logged as `Retained scene: the texture-info table is full`. A material
+or light edit resets DLSS (`SyncResult::dlssReset`).
+
+A mesh an entity skins, or a mesh with morph targets, is deformed for that entity: its drawer owns
+the output streams the morph pass and then the skin pass write (the shaders legacy's `AnimationVk`
+runs, through `nvvkgltf::DeformPipelines`), and its prims' BLASes are built over them and refit
+after each pass. A pass runs only when what it reads changed: the weights, the joint matrices or the
+mesh's vertices (`rs::Residency`, "Deformation"). DLSS motion comes from two tables the residency
+keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): positions a sync wrote are
+copied at the top of the next one, and an instance keeps the world it was drawn with for one sync
+after it moves. The clip that plays is a `rs::ClipPlayer` on the store (`setHostClip`), driven by
+`AnimationControl` as a legacy clip is. mcp_scene's edit tools are refused (D3).
+
+Three settings, none remembered:
+
 - `blasScratchBudgetMB` (512): the scratch one batch of the retained scene's BLAS builds shares
   (`VulkanGpuBackend`); the next batch regrows it. Live.
 - `textureGraceMB` (256): the retained scene's decoded images that nothing samples stay decoded, up
@@ -891,43 +908,6 @@ Four settings, none remembered:
 - `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
   TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
   parameters a host can set (fv_parameter_filter.hpp).
-
-In a retained session `loadModel` builds the CPU `nvvkgltf::Scene` as before, then
-`createRetainedScene` imports it in document order (instance slot *i* is render node *i*, so the
-host's and the pickers' indices hold) and makes it resident, waited for; with `[fv-time]` on, the
-`GPU BLAS build` and `GPU TLAS build` lines time that replace's builds as legacy's time a load's
-(`VulkanGpuBackend::timeBuilds`). A cleanup that keeps images for reuse (a recompose) keeps the
-`RetainedSceneVk` too, emptied (`Resources::retainedSpare`), so the next retained replace takes the
-decoded images it shares with the last scene; the `Scene (retained):` line counts images decoded
-(and of those, taken from the host's prefetches) and reused. A sync decodes the images it needs in
-one batch, side by side on the worker pool (`VulkanGpuBackend::createImages`), a file the host
-prefetched taken from `SceneVk::takePrefetchedFile` instead. Each material slot owns a span of the
-texture-info table (`MaterialCache::convertOne` at its start), so a material edit uploads its row
-and span only; a span that finds no room below the uint16 limit repacks every span once, and one
-that still doesn't fit is drawn without its textures, logged as `Retained scene: the texture-info
-table is full`. Each frame
-`syncRetainedScene` stands in for the legacy per-frame paths listed above: `LegacyDirtyBridge`
-carries the dirty nodes, materials and lights into the store, and textures appended to the model
-(a bake: the materials carried after it take the import's texture table with them appended, and
-the bake's worker prefetches the file, so the sync that decodes it only claims it); a re-import
-when it can't (an image replaced, a texture removed, a sampler edit, a re-parse). The host's
-vertex uploads (dials, fits, drapes) are laid onto the renderer's live copies, as on legacy, and
-carried onto the import's mesh records with their tangents remade where the moved vertices reach
-(`LegacyDirtyBridge::carryVertices`); a re-import replays the live copies. A rebind's inverse binds
-reach the skin's record (`carryInverseBinds`). The CPU world matrices are brought up to date, and the
-residency syncs.
-
-On retained, a mesh an entity skins, or a mesh with morph targets, is deformed for that entity: its
-drawer owns the output streams the morph pass and then the skin pass write (the shaders legacy's
-`AnimationVk` runs, through `nvvkgltf::DeformPipelines`), and its prims' BLASes are built over them
-and refit after each pass. A pass runs only when what it reads changed: the weights, the joint
-matrices or the mesh's vertices (`rs::Residency`, "Deformation"). DLSS motion comes from two tables
-the residency keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): positions a sync
-wrote are copied at the top of the next one, and an instance keeps the world it was drawn with for
-one sync after it moves. A clip is evaluated on the CPU scene as legacy evaluates it
-(`GltfRenderer::evaluateClip`), so the host and the pickers see the nodes it moves, and the bridge
-carries the nodes and morph weights it wrote. Not on retained yet: GPU build timing for a frame's
-re-import. mcp_scene's edit tools are refused (D3).
 
 ---
 

@@ -356,32 +356,12 @@ public:
   /// Scene bounds as loaded (world space), or an empty box with no scene.
   [[nodiscard]] nvutils::Bbox sceneBounds() const;
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);
-  /// Replace the scene with a model a host built in memory (the Figure Viewer, fv_host.hpp), as
-  /// loadSceneFile does with a file: synchronous, application thread only. Image URIs are absolute.
-  [[nodiscard]] bool loadModel(tinygltf::Model&& model);
-
-  /// New local transforms for nodes of the loaded scene, as a host poses a figure: skins re-run and
-  /// every skin with a joint at or below a moved node refits. Application thread only.
-  struct NodeTransform
-  {
-    int       node = -1;
-    glm::vec3 translation{0.f};
-    glm::quat rotation{1.f, 0.f, 0.f, 0.f};
-    glm::vec3 scale{1.f};
-  };
-  void setNodeTransforms(std::span<const NodeTransform> transforms);
-
-  /// New inverse bind matrices for a skin of the loaded scene (a host that moved joint centres re-binds
-  /// the skin there), and the render primitives of a glTF mesh (the ones queueVertexUpload addresses).
-  /// False when the skin or the matrix count does not match. Application thread only.
-  bool             setInverseBindMatrices(int skin, std::span<const glm::mat4> ibm);
-  std::vector<int> renderPrimitivesOfMesh(int gltfMesh) const;
   // The runs of vertices a sparse upload touched, [first, count) pairs: what it stages, instead of
   // the whole buffer. Gaps under kUploadRunGap vertices are bridged; more than kUploadRunMax runs,
   // or runs covering over kUploadRunRatio of the vertices, mean the whole buffer (empty result).
   static std::vector<std::pair<uint32_t, uint32_t>> uploadRuns(std::span<const uint32_t> indices, size_t vertexCount);
-  // Decodes an image file now, on the calling thread, for the next loadModel() to take ready
-  // (SceneVk::prefetchImage): a host's wear worker calls it for the textures it resolved.
+  // Decodes an image file now, on the calling thread, for the next scene replace to take ready
+  // (SceneVk::prefetchImage): a host's load and wear workers call it for the textures they resolved.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
@@ -440,8 +420,8 @@ public:
 
   // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.
   nvvkgltf::Scene*  editScene() { return m_resources.getScene(); }
-  // The retained scene draws (sceneBackend): the CPU scene above is still the one a host edits, and
-  // the bridge carries its edits across once a frame; mcp_scene's edit tools are refused.
+  // The retained scene draws (a stream host feeds it, below): there is no CPU scene above, and
+  // mcp_scene's edit tools are refused.
   bool drawsRetainedScene() const { return m_resources.retainedGpu != nullptr; }
 
   // ---- A stream host's own retained scene (daz-viewer docs/retained-scene-plan.md, P4): the host
@@ -606,10 +586,8 @@ private:
   void createDescriptorSets();
   void createResourceBuffers();
   void createVulkanScene();
-  // The retained scene's scene replace, instead of createVulkanScene(): the CPU scene imported in
-  // document order and made resident, waited for. syncRetainedScene() is its per-frame half, in
-  // place of the legacy per-frame GPU paths.
-  void                       createRetainedScene();
+  // The retained scene's per-frame half (replaceHostScene() is its scene replace), in place of the
+  // legacy per-frame GPU paths
   bool                       syncRetainedScene(VkCommandBuffer cmd);
   // a stream host's scene: the clip moved on and written into the store; true when it wrote anything
   bool advanceHostClip();
@@ -671,8 +649,6 @@ private:
   bool                      evaluateClip(nvvkgltf::Scene& scn, VkCommandBuffer cmd);
   bool                      m_editable{false};
   bool                      m_streamHost{false};  // see setStreamHost()
-  rs::SceneBackendSetting            m_sceneBackendSetting{rs::SceneBackendSetting::eAuto};  // the parsed sceneBackend
-  bool                               m_takeRetained{false};  // the scene replace under way takes the retained scene
   bool                      m_pendingAnimReconcile{false};
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off

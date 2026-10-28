@@ -28,10 +28,10 @@ namespace fv {
 // over the composed scene (the host would go on addressing it by indices it no longer holds), and
 // `savefile` writes it, the host's sun included. The protocol has load, prop.add and export.glb
 // for those. Nor those read only at start-up, which a runtime write would leave meaning nothing
-// (`residencyMinInstances`, `sceneBackend`).
+// (`residencyMinInstances`).
 inline bool hostExposesParameter(std::string_view name)
 {
-  return name != "scenefile" && name != "savefile" && name != "residencyMinInstances" && name != "sceneBackend";
+  return name != "scenefile" && name != "savefile" && name != "residencyMinInstances";
 }
 
 }  // namespace fv
