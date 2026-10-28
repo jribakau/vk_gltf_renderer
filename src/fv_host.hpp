@@ -154,7 +154,17 @@
 //   history.begin {label} / history.end {}      what is recorded between them is one step under `label` (a
 //                                                scene file opening), its undo the other way round; undo
 //                                                waits for the end ("history".busy)
-//   history.clear {}                             the history goes (a crash's autosaved copy opened)
+//   history.clear {}                             the history goes (the app's settings applied at the start)
+//   recovery.file {path | null}                  where the scene is kept for a crash from now on: the ops
+//                                                that put every prop back under its id (records, as
+//                                                scene.clear's undo has them), the order, the lighting and
+//                                                the view, rewritten on a worker a second after the changes
+//                                                pause, whole then renamed into place. null: kept no more,
+//                                                and the copy goes (the scene closed as meant)
+//   recovery.peek {path}                         -> {props, at}: what a kept scene holds (props 0: none, or
+//                                                unreadable), `at` when it was kept (ms since 1970)
+//   scene.recover {path}                         a kept scene put back into an empty one, as an undo runs its
+//                                                ops -> {label, problems?}, or {label, job} while its props load
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
 // The scene: the host feeds the renderer's retained scene itself (HostRenderer::hostScene): a prop

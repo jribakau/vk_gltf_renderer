@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <random>
 #include <thread>
@@ -592,6 +593,83 @@ TEST(FvHost, ASceneFileOpeningIsOneStep)
   // a crash's copy opened: the history goes
   ASSERT_TRUE(rig.cmd("history.clear").value("ok", false));
   EXPECT_TRUE(rig.topic("history").at("undo").empty());
+}
+
+// The scene kept for a crash (C5): written a moment after the changes pause, it puts the scene back
+// in another renderer as it was, under the same ids; a change after it is kept too; a torn copy is
+// refused; and closing the scene as meant takes the copy away.
+TEST(FvHost, AKeptSceneComesBackInAnotherRendererAsItWas)
+{
+  const fs::path path = fs::temp_directory_path() / "fv_recovery_test.json";
+  fs::remove(path);
+  const auto written = [&](fs::file_time_type after, HostRig& rig) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while(std::chrono::steady_clock::now() < end)
+    {
+      rig.settle();
+      std::error_code ec;
+      if(fs::exists(path) && fs::last_write_time(path, ec) > after)
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  };
+  const auto recovered = [&](Json& state) {
+    HostRig    again;
+    const Json answer = again.cmd("scene.recover", {{"path", path.generic_string()}});
+    EXPECT_TRUE(answer.value("ok", false)) << answer.dump();
+    EXPECT_TRUE(again.settle());
+    state = stateOf(again);
+    // a prop added after takes an id the kept ones don't have
+    const Json added = again.cmd("prop.add", {{"kind", "light"}}).at("result");
+    EXPECT_FALSE(state["scene"]["props"].contains(added.value("prop", ""))) << added.dump();
+  };
+
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", 0.4}}}});
+  rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/y", 25.0}}}});
+  rig.cmd("material.set", {{"prop", id}, {"material", "m:1"}, {"values", {{"roughness", 0.7}}}});
+  rig.cmd("prop.set", {{"prop", id}, {"transform", {{"t", {0.5, 0.0, -0.25}}}}});
+  const std::string camera = rig.cmd("prop.add", {{"kind", "camera"}}).at("result").at("prop").get<std::string>();
+  rig.cmd("prop.set", {{"prop", camera}, {"parent", id}});
+  rig.cmd("prop.add", {{"kind", "light"}});
+  rig.cmd("scene.order", {{"order", {camera, id}}});
+  rig.cmd("lighting.set", {{"tonemap", {{"exposure", 1.5}}}});
+  rig.cmd("view.use", {{"camera", camera}});
+
+  ASSERT_TRUE(rig.cmd("recovery.file", {{"path", path.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(written(fs::file_time_type::min(), rig));
+  const auto peek = [&] { return rig.cmd("recovery.peek", {{"path", path.generic_string()}}).at("result"); };
+  EXPECT_EQ(peek().value("props", 0), 3) << peek().dump();
+  EXPECT_TRUE(peek().contains("at"));
+  Json state;
+  recovered(state);
+  EXPECT_EQ(differ(stateOf(rig), state), "");
+
+  // a look chosen after: kept too
+  const auto at = fs::last_write_time(path);
+  ASSERT_TRUE(rig.cmd("load", {{"prop", id}, {"rel", "People/Test/Materials/Box Body Red.duf"}}).value("ok", false));
+  ASSERT_TRUE(written(at, rig));
+  recovered(state);
+  EXPECT_EQ(differ(stateOf(rig), state), "") << "after the look";
+
+  // closed as meant: the copy goes
+  ASSERT_TRUE(rig.cmd("recovery.file", {{"path", nullptr}}).value("ok", false));
+  EXPECT_FALSE(fs::exists(path));
+  EXPECT_EQ(peek().value("props", -1), 0);
+
+  // a copy torn mid-write is refused, the scene left as it is
+  std::ofstream(path) << R"({"version": 1, "ops": [{"cmd": "prop.res)";
+  HostRig torn;
+  EXPECT_EQ(peek().value("props", -1), 0);
+  EXPECT_FALSE(torn.cmd("scene.recover", {{"path", path.generic_string()}}).value("ok", true));
+  EXPECT_TRUE(torn.topic("scene").value("props", Json::object()).empty());
+  fs::remove(path);
 }
 
 // A preset, a skin, an item's colour: each a step whose undo puts the figure's look back as it was,

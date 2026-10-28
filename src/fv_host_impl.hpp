@@ -664,6 +664,8 @@ struct FvHost::Impl
       if(std::find(finishedJobs.begin(), finishedJobs.end(), id) == finishedJobs.end())
         finishedJobs.push_back(id);
       endedJobs[id] = state;
+      // a load or a wear that ended changed the scene the crash copy keeps
+      noteRecovery();
       while(finishedJobs.size() > kKeptJobs)
       {
         patch[std::to_string(finishedJobs.front())] = nullptr;
@@ -941,10 +943,29 @@ struct FvHost::Impl
     Json        opposite = Json::array();  // what each op read before it applied: the way back
     Json        problems = Json::array();
     uint64_t    job      = 0;              // "Undoing ..." while it waits
+    std::string jobLabel;
     uint64_t    waitJob  = 0;              // the load (then the restore) it waits on
     std::string waitProp;
   };
   std::optional<HistoryRun> historyRun;
+  // starts a run (a step's ops, or a kept scene's): its answer once done, else {label, job} while it waits
+  Json startRun(HistoryRun run);
+
+  // ---- the scene kept on disk for a crash (C5): the ops that put every prop back under its id (as
+  // scene.clear's undo has them), the order, the lighting and the view, rewritten on a worker a second
+  // after the changes pause (recovery.file). scene.recover runs them as an undo runs its ops.
+  static constexpr std::chrono::milliseconds kRecoveryQuiet{1000};
+  std::filesystem::path recoveryPath;           // application thread; empty: none kept
+  std::atomic<int64_t>  recoveryDirtyAt{0};     // steady clock, ns: the last change not kept yet; 0: none
+  uint64_t              recoveryWrites = 0;     // application thread: the newest write started
+  std::mutex            recoveryMutex;
+  uint64_t              recoveryWritten = 0;    // under recoveryMutex: the newest write done, or dropped
+  // any thread
+  void noteRecovery();
+  void writeRecovery();
+  Json recoveryFile(const Json& args);
+  Json recoveryPeek(const Json& args);
+  Json recoverScene(const Json& args);
   // applies the run's ops on from where it stopped; its answer once done, none while it waits
   std::optional<Json> runHistory();
   // a frame: the job a run waits on ended

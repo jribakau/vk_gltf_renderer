@@ -589,6 +589,17 @@ Json FvHost::Impl::applyOp(const Json& o)
     return wardrobeRestore(args);
   if(cmd == "figure.look")
     return applyLook(args);
+  if(cmd == "view.free")
+  {
+    // the free view as a kept scene had it, not framed again once its props are in
+    if(auto manip = renderer->getCameraManipulator())
+    {
+      const auto at = [&](const char* k) { return glm::dvec3(vec3From(args.at(k))); };
+      manip->setLookat(at("position"), at("target"), at("up"), true);
+    }
+    frameIn = 0;
+    return {{"ok", true}};
+  }
   throw std::runtime_error("the history can't apply " + cmd);
 }
 
@@ -603,14 +614,23 @@ Json FvHost::Impl::historyStep(bool undo)
   const auto step = undo ? journal.takeUndo() : journal.takeRedo();
   if(!step)
     return {{"label", nullptr}};
-  historyRun = HistoryRun{.undo = undo, .serial = step->serial, .label = step->label, .ops = undo ? step->undo : step->redo};
+  return startRun({.undo     = undo,
+                   .serial   = step->serial,
+                   .label    = step->label,
+                   .ops      = undo ? step->undo : step->redo,
+                   .jobLabel = (undo ? "Undoing " : "Redoing ") + step->label});
+}
+
+Json FvHost::Impl::startRun(HistoryRun run)
+{
+  historyRun = std::move(run);
   if(auto done = runHistory())
     return *done;
-  // a restore loads: the rest of the step applies once it is in, under a job
+  // a restore loads: the rest applies once it is in, under a job
   historyRun->job = ++jobs;
-  job(historyRun->job, {{"label", (undo ? "Undoing " : "Redoing ") + step->label}, {"state", "running"}});
+  job(historyRun->job, {{"label", historyRun->jobLabel}, {"state", "running"}});
   publishHistory();
-  return {{"label", step->label}, {"job", historyRun->job}};
+  return {{"label", historyRun->label}, {"job", historyRun->job}};
 }
 
 std::optional<Json> FvHost::Impl::runHistory()
@@ -677,6 +697,115 @@ void FvHost::Impl::publishHistory()
   Json topic    = journal.topic();
   topic["busy"] = historyRun.has_value() || journal.grouping();
   protocol->events().snapshot("history", topic);
+  // a step recorded, undone or redone: the scene the crash copy keeps changed
+  noteRecovery();
+}
+
+void FvHost::Impl::noteRecovery()
+{
+  recoveryDirtyAt = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void FvHost::Impl::writeRecovery()
+{
+  int64_t       at  = recoveryDirtyAt.load();
+  const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  if(recoveryPath.empty() || !at || now - at < std::chrono::nanoseconds(kRecoveryQuiet).count() || !recoveryDirtyAt.compare_exchange_strong(at, 0))
+    return;
+  fv::timing::Scope t("recovery copy", 5);
+  Json ids = Json::array();
+  for(const auto& p : props)
+    ids.push_back(p->id);
+  Json ops = journalState({{"kind", "props"}, {"ids", ids}});
+  ops.push_back(op("scene.order", {{"order", ids}}));
+  ops.push_back(op("lighting.set", fv::lighting::toJson(lighting)));
+  ops.push_back(op("view.use", {{"camera", viewCamera.empty() ? Json() : Json(viewCamera)}}));
+  if(auto manip = renderer->getCameraManipulator(); manip && viewCamera.empty())
+  {
+    glm::dvec3 eye, center, up;
+    manip->getLookat(eye, center, up);
+    ops.push_back(op("view.free", {{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}}));
+  }
+  const auto  wall = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  std::string text = Json{{"version", 1}, {"props", props.size()}, {"at", wall}, {"ops", ops}}.dump();
+  loaders.spawn([this, path = recoveryPath, text = std::move(text), n = ++recoveryWrites] {
+    std::lock_guard lock(recoveryMutex);
+    if(n <= recoveryWritten)
+      return;
+    recoveryWritten = n;
+    // written whole, then put in place: a crash mid-write leaves the copy before
+    std::filesystem::path tmp = path;
+    tmp += ".tmp";
+    {
+      std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+      out << text;
+      if(!out.good())
+      {
+        LOGW("[fv] recovery copy: could not write %s\n", tmp.string().c_str());
+        return;
+      }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if(ec)
+      LOGW("[fv] recovery copy: %s\n", ec.message().c_str());
+  });
+}
+
+Json FvHost::Impl::recoveryFile(const Json& args)
+{
+  const Json path = args.value("path", Json());
+  if(path.is_string() && !path.get<std::string>().empty())
+  {
+    recoveryPath = pathOf(path.get<std::string>());
+    // kept at the next frame
+    recoveryDirtyAt = 1;
+    return {{"ok", true}};
+  }
+  // none kept from now on: a write on its way is dropped and the copy goes (the scene closed as meant)
+  const std::filesystem::path old = std::exchange(recoveryPath, {});
+  recoveryDirtyAt                 = 0;
+  std::lock_guard lock(recoveryMutex);
+  recoveryWritten = std::max(recoveryWritten, recoveryWrites);
+  if(!old.empty())
+  {
+    std::error_code ec;
+    std::filesystem::remove(old, ec);
+    std::filesystem::remove(std::filesystem::path(old) += ".tmp", ec);
+  }
+  return {{"ok", true}};
+}
+
+// A kept scene as written, or nothing when there is none or it can't be read
+static Json readKept(const std::filesystem::path& path)
+{
+  std::ifstream in(path, std::ios::binary);
+  if(!in)
+    return nullptr;
+  Json kept = Json::parse(in, nullptr, false);
+  if(kept.is_discarded() || !kept.is_object() || kept.value("version", 0) != 1 || !kept.contains("ops") || !kept["ops"].is_array())
+    return nullptr;
+  return kept;
+}
+
+Json FvHost::Impl::recoveryPeek(const Json& args)
+{
+  const Json kept = readKept(pathOf(args.at("path").get<std::string>()));
+  return kept.is_null() ? Json{{"props", 0}} : Json{{"props", kept.value("props", 0)}, {"at", kept.value("at", Json())}};
+}
+
+Json FvHost::Impl::recoverScene(const Json& args)
+{
+  if(historyRun)
+    throw std::runtime_error("the last undo or redo is still loading");
+  if(journal.grouping())
+    throw std::runtime_error("a scene file is still opening");
+  if(!props.empty())
+    throw std::runtime_error("the scene is not empty");
+  const Json kept = readKept(pathOf(args.at("path").get<std::string>()));
+  if(kept.is_null())
+    throw std::runtime_error("no scene was kept there, or it can't be read");
+  return startRun({.label = "Recover the scene", .ops = kept["ops"], .jobLabel = "Recovering the scene"});
 }
 
 void FvHost::Impl::recordAdded(const std::shared_ptr<Prop>& p, const std::string& label)

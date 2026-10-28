@@ -120,6 +120,10 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return Json{{"ok", true}};
     });
   });
+  // the scene kept on disk for a crash (C5): where, or nowhere; and put back from there
+  cmds.add("recovery.file", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->recoveryFile(args); }); });
+  cmds.add("recovery.peek", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->recoveryPeek(args); }); });
+  cmds.add("scene.recover", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->recoverScene(args); }); });
   // the history goes: the scene it was of went (a crash's copy opened in its place)
   cmds.add("history.clear", [impl](const Json&) {
     return impl->onApp([impl] {
@@ -587,6 +591,8 @@ void FvHost::onUpdate()
   s.publishAnimation(false);
   // an undo or redo that waits on a restore's load goes on once it is in
   s.pollHistory();
+  // the crash copy, a second after the changes pause
+  s.writeRecovery();
   // the first thing in an empty scene, framed once it is drawn
   if(s.frameIn > 0 && --s.frameIn == 0)
     s.frameCamera();
