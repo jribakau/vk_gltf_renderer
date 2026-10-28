@@ -189,6 +189,28 @@ TEST(RetainedDeform, ASkinnedMeshIsDrawnFromItsSkinsOutput)
   EXPECT_EQ(readBack<glm::vec3>(gpu, residency.meshGpu(rig.mesh)->positions), rig.scene.mesh(rig.mesh)->positions);
 }
 
+// The skin turns the normals by the packed normal matrices, read at their stride as the shader does
+// (P3b's readback): bone 1 turned a quarter about y takes the right column's normals from +z to +x,
+// the left column's stay, and the middle's are the normalised half and half
+TEST(RetainedDeform, ASkinTurnsTheNormalsByItsBones)
+{
+  Rig rig(false);
+  rig.bend(90);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  const std::vector<glm::vec3> normals = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->normals);
+  ASSERT_EQ(normals.size(), 9u);
+  const float half = std::sqrt(0.5f);
+  for(int y = 0; y <= 2; y++)
+  {
+    const glm::vec3 left = normals[size_t(y * 3)], middle = normals[size_t(y * 3 + 1)], right = normals[size_t(y * 3 + 2)];
+    EXPECT_NEAR(glm::distance(left, glm::vec3(0, 0, 1)), 0.f, 1e-5f) << y;
+    EXPECT_NEAR(glm::distance(middle, glm::vec3(half, 0, half)), 0.f, 1e-5f) << y;
+    EXPECT_NEAR(glm::distance(right, glm::vec3(1, 0, 0)), 0.f, 1e-5f) << y;
+  }
+}
+
 // A pose runs the skin again and refits its prims; a frame that moves nothing it reads runs nothing
 TEST(RetainedDeform, APoseRunsTheSkinAndOnlyAPoseDoes)
 {
