@@ -80,9 +80,10 @@ EyeShell eyeShell(const Surface& s);
 // The tear film's index: the authored one where it is a watery eye's, else the cornea's
 float tearFilmIor(const Surface& s);
 
-// A bump map's full height range at Bump Strength 1, in metres. Calibrated once: a Genesis 9 face
-// map at 4K (about 0.43 m per UV unit) keeps about the slope the fixed bake gave it.
-constexpr float kBumpHeight = 0.001f;
+// A bump map's full height range at Bump Strength 1, in metres. Set by eye: at 1 mm, CJ Evangeline's
+// face (Bump Strength 2, as Iray presets often have it) came out leathery, each grey step of the
+// JPEG a visible bump; a quarter of that reads as her skin.
+constexpr float kBumpHeight = 0.00025f;
 
 // The height a bump map of `metresPerUv` (scaled by `tiles` repeats) gets in UV units, the
 // TextureRequest::bumpHeight the bake divides by; 0 when the size is unknown. Two significant figures.

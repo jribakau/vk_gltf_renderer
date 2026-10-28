@@ -581,12 +581,12 @@ TEST(Materials, ABumpMapsHeightIsInMillimetresOfSurface)
   EXPECT_NEAR(scene.materials[0].metresPerUv, 4.f, 1e-5f);
   EXPECT_NEAR(scene.materials[1].metresPerUv, 0.5f, 1e-6f);
 
-  // the full range is kBumpHeight of surface: on a 4K map of a face's 0.43 m per UV unit, the
-  // slope per texel the fixed bake gave (10), within the rounding
-  EXPECT_NEAR(fv::mat::bumpHeightInUv(0.43f) * 4096, 10.f, 1.f);
+  // the full range is kBumpHeight of surface: on a 4K map of a face's 0.43 m per UV unit, a slope
+  // of about 2.4 per texel's full-range step, within the rounding
+  EXPECT_NEAR(fv::mat::bumpHeightInUv(0.43f) * 4096, 2.4f, 0.1f);
   EXPECT_EQ(fv::mat::bumpHeightInUv(0), 0.f);
-  // a detail tiled 4 times covers a quarter of the surface per UV unit
-  EXPECT_NEAR(fv::mat::bumpHeightInUv(0.4f, 4), 4 * fv::mat::bumpHeightInUv(0.4f), 1e-6f);
+  // a detail tiled 4 times covers a quarter of the surface per UV unit (each to two figures)
+  EXPECT_NEAR(fv::mat::bumpHeightInUv(0.4f, 4), 4 * fv::mat::bumpHeightInUv(0.4f), 0.02f * fv::mat::bumpHeightInUv(0.4f, 4));
 
   // the requests carry it, alone and blended onto a normal map, and the key tells them apart
   fv::mat::Surface bumped;
@@ -2060,7 +2060,7 @@ TEST(Materials, IrayPresetOverLegacyStillReadsIray)
 
 TEST(Materials, LegacyBumpRangeScalesTheBakedHeight)
 {
-  // DAZ Default's Negative/Positive Bump: +-0.01 cm is a fifth of the fixed 1 mm bake
+  // DAZ Default's Negative/Positive Bump: +-0.01 cm, four fifths of Iray's 0.25 mm bake
   const char* boxersBump = R"({"bump":{"channel":{"id":"bump","label":"Bump Strength","current_value":0.5,"image_file":"/Runtime/Textures/boxers_b.jpg"}}})";
   const auto  boxers     = fv::dson::parseSurface("Boxers", layered({kBoxers, boxersBump}));
   ASSERT_TRUE(boxers.bumpRange.has_value());
@@ -2071,9 +2071,9 @@ TEST(Materials, LegacyBumpRangeScalesTheBakedHeight)
   const auto bump  = std::find_if(reqs.begin(), reqs.end(), [](const fv::mat::TextureRequest& r) { return r.channels == "bn"; });
   ASSERT_NE(bump, reqs.end());
   EXPECT_NEAR(bump->bumpHeight, fv::mat::bumpHeightInUv(0.43f, 1, 0.0002f), 1e-7f);
-  EXPECT_NEAR(bump->bumpHeight, fv::mat::bumpHeightInUv(0.43f) / 5, fv::mat::bumpHeightInUv(0.43f) * 0.05f);
+  EXPECT_NEAR(bump->bumpHeight, fv::mat::bumpHeightInUv(0.43f) * 0.8f, fv::mat::bumpHeightInUv(0.43f) * 0.05f);
 
-  // UberSurface's Bump Minimum/Maximum, +-0.1 cm: twice the fixed bake
+  // UberSurface's Bump Minimum/Maximum, +-0.1 cm: eight times Iray's bake
   const auto torso = fv::dson::parseSurface("Torso", channelsOf(kG2fTorso));
   ASSERT_TRUE(torso.bumpRange.has_value());
   EXPECT_NEAR(*torso.bumpRange, 0.002f, 1e-7f);
