@@ -377,6 +377,53 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
   }
 }
 
+// A composition that keeps a refined mesh feeds the cage its morphs moved since, though its drawn
+// vertices are as they were: a restore that wears something sets the dials its file has before the
+// composition, which reports no change of its own (a character's expression and the collider's
+// correction were lost so, gpu-figures-plan.md F5).
+TEST(FvPropFeed, AKeptRefinedMeshIsFedTheCageItsMorphsMoved)
+{
+  const auto                box = loadBox(), reference = loadBox();
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  feed.sync(props);
+  residency.replace(scene);
+  fv::FigureFeed& figure = *feed.fed("p:1")->figure;
+  box->morphs->cageOnly  = [&](int mesh) { return figure.refines(mesh); };
+  reference->morphs->set("Taper", 1.0);
+  reference->morphs->settled();
+
+  box->morphs->set("Taper", 1.0);
+  box->morphs->settled();
+  (void)box->drain();  // nobody feeds the change: the composition below must
+  props[0].figureChanged = true;
+  feed.sync(props);
+  gpu.beginFrame();
+  residency.sync(scene);
+  for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+    ADD_FAILURE() << p;
+  size_t refined = 0;
+  for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
+  {
+    const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(int(mi)));
+    if(!mesh || !mesh->refine)
+      continue;
+    refined++;
+    const fv::mesh::BuiltMesh& want = *reference->loaded.scene.meshes[mi].geo;
+    const size_t               n    = want.position.size() / 3;
+    std::vector<glm::vec3>     positions(n);
+    std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
+    for(size_t v = 0; v < n; v++)
+      ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&want.position[v * 3])), 1e-4f) << "mesh " << mi << " vertex " << v;
+  }
+  EXPECT_GT(refined, 0u);
+}
+
 // F2: a refined mesh whose materials are normal mapped has its tangents made on the GPU from its drawn
 // positions, normals and UVs, with no CPU tangents fed: computeTangents of the CPU's vertices to float
 // precision, as fed and after a dial's cage step (the oracle holds the skinned drawers' to them).

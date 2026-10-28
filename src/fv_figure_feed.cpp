@@ -627,10 +627,16 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
   const rs::MeshRecord& had  = *m_scene.mesh(f.id);
   const bool            same = had.positions.size() == count && had.normals.size() == normals.size();
   // fed from these vertices already (a composition made its record after the dial that moved them),
-  // unless its tangents are still to be made
+  // unless its tangents are still to be made. A refined mesh's drawn vertices stay as loaded while
+  // its morphs move its cage (MorphSet::cageOnly): its cage is fed whenever it moved.
   if(same && std::memcmp(had.positions.data(), positions.data(), count * sizeof(glm::vec3)) == 0
      && std::memcmp(had.normals.data(), normals.data(), normals.size() * sizeof(glm::vec3)) == 0 && (tangentsLater || !f.tangentsLate))
+  {
+    if(f.refine)
+      if(std::vector<glm::vec3> cage = cageOf(int(&f - m_meshes.data()), f); !cage.empty() && cage != had.cage)
+        m_scene.setMeshCage(f.id, std::move(cage));
     return;
+  }
   std::vector<glm::vec4> t;
   // a mesh the GPU makes the tangents of has them made with its positions
   const bool cpuTangents = !f.tangentIndices.empty() && !gpuTangents(f);
