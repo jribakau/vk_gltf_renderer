@@ -71,9 +71,9 @@ public:
   FigureFeed(const FigureFeed&)            = delete;
   FigureFeed& operator=(const FigureFeed&) = delete;
 
-  // Brings the retained scene up to `figure` below `root`. `moved`: scene meshes whose vertices
-  // changed in place since the last sync; their positions, normals and tangents are fed again.
-  void sync(const SceneGraph& figure, int root, std::span<const int> moved = {});
+  // Brings the retained scene up to `figure` below `root`. A mesh it keeps is compared with the
+  // scene's vertices, and what moved is fed again with the tangents near it.
+  void sync(const SceneGraph& figure, int root);
   // `options.build` changed (a texture came, the skin mode or exposure moved): the next sync
   // lowers with these (the narrow syncMaterials waits for it)
   void setOptions(const build::BuildOptions& options)
@@ -141,7 +141,7 @@ private:
   std::optional<rs::SkinRecord> skinRecord(const Mesh& m) const;
   // whether the mesh is fed with its current geometry and hidden polygons
   bool fedAsItIs(const SceneGraph& figure, int mesh) const;
-  void syncMeshes(const SceneGraph& figure, const build::Drawing& drawing, std::span<const int> moved);
+  void syncMeshes(const SceneGraph& figure, const build::Drawing& drawing);
   void syncNodes(const SceneGraph& figure, int root, const build::Drawing& drawing);
   // the scene material of each of a mesh's drawn groups (-1: none), and the store's material for it
   std::vector<int> groupMaterials(const SceneGraph& figure, int mesh, const build::DrawnView& drawn) const;

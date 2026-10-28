@@ -844,8 +844,8 @@ void FvHost::Impl::compose()
         nodes.materials.push_back(f.feed->materialOf(m));
       if(changed)
       {
-        // the feed took the scene's dials and binds as they are; don't feed them again
-        f.fig->drain();
+        // no drain(): its changes go to the frame's pump, which feeds what moved since; a drain here
+        // rebinds the skins after the feed took them, and drops that
         if(!p.materials)
           p.materials = makeMaterials(props[i]);
         if(added.count(p.id))

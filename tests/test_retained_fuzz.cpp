@@ -1329,10 +1329,11 @@ private:
   }
 
   // Feeds the figure. A new node's entity is new; a node whose transform or visibility changed
-  // moved or was hidden with what is under it; the meshes the figure moved had their vertices set.
+  // moved or was hidden with what is under it; the meshes the figure moved had their vertices set
+  // (the feed finds them by comparing; `moved` says which to expect).
   void sync(Expected& want, const Fed& before, std::span<const int> moved = {})
   {
-    m_feed->sync(graph(), root(), moved);
+    m_feed->sync(graph(), root());
     const std::vector<bool> on = reached();
     std::set<rs::EntityId>  made;
     for(size_t i = 0; i < on.size(); i++)

@@ -46,7 +46,7 @@ void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
   dialTiming.addUpload(change.all ? count : change.indices.size(), change.all);
   const int mesh = change.mesh;
   if(!f.feed->syncVertices(f.fig->loaded.scene, {&mesh, 1}))
-    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root, std::span<const int>(&mesh, 1));
+    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
 }
 
 // Meshes bound again to their bones (a rebind): their skins' inverse binds

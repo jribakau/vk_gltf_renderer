@@ -238,11 +238,8 @@ TEST(FigureFeed, ADialAPoseAndHiddenPolygonsAreFedAsTheBuildHasThem)
   f->pose->setMany({{"head", fv::pose::ChannelKind::eRotation, "x", 30}});
   const fv::Figure::Changes changes = f->drain();
   ASSERT_FALSE(changes.meshes.empty());
-  std::vector<int> moved;
-  for(const auto& c : changes.meshes)
-    moved.push_back(c.mesh);
   (void)fed.takeChanges();
-  feed.sync(f->loaded.scene, f->loaded.root, moved);
+  feed.sync(f->loaded.scene, f->loaded.root);
   expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
   const rs::SceneChanges after = fed.takeChanges();
   EXPECT_EQ(feed.meshOf(0), body);  // the same record, its vertices set again
@@ -292,11 +289,8 @@ TEST(FigureFeed, ADialOnANormalMappedBodyRemakesItsTangentsAsTheBuildHasThem)
   {
     f->morphs->set("Stretch", value);
     f->morphs->settled();
-    std::vector<int> moved;
-    for(const auto& c : f->drain().meshes)
-      moved.push_back(c.mesh);
-    ASSERT_FALSE(moved.empty());
-    feed.sync(f->loaded.scene, f->loaded.root, moved);
+    ASSERT_FALSE(f->drain().meshes.empty());
+    feed.sync(f->loaded.scene, f->loaded.root);
     EXPECT_EQ(feed.meshOf(0), body);
     expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
     rs::RetainedScene imported;
@@ -489,6 +483,43 @@ TEST(FigureFeed, NarrowSyncsLeaveTheStoreAsASyncWould)
   EXPECT_FALSE(feed.syncVertices(f->loaded.scene, std::vector<int>{0}));
   feed.sync(f->loaded.scene, root);
   same();
+}
+
+// Vertices written in place with no change to report (a wear's looks set a scene's restored dials)
+// reach the meshes a sync keeps: it compares them with the scene's (the host once took a
+// composition for a rebuild, and a restored expression never showed). The change that comes after
+// moves nothing, and nor does a sync with nothing moved.
+TEST(FigureFeed, ASyncFeedsTheVerticesOfTheMeshesItKeeps)
+{
+  const auto        f       = loadBox();
+  const auto        options = textured();
+  rs::RetainedScene fed;
+  fv::FigureFeed    feed(fed, {.build = options});
+  feed.sync(f->loaded.scene, f->loaded.root);
+  (void)f->drain();
+
+  f->morphs->set("Stretch", 1);
+  f->morphs->settled();
+  const fv::Figure::Changes changes = f->drain();
+  ASSERT_FALSE(changes.meshes.empty());
+  std::vector<int> moved;
+  for(const auto& c : changes.meshes)
+    moved.push_back(c.mesh);
+
+  (void)fed.takeChanges();
+  const rs::MeshId body = feed.meshOf(0);
+  feed.sync(f->loaded.scene, f->loaded.root);
+  EXPECT_EQ(feed.meshOf(0), body);
+  EXPECT_TRUE(fed.takeChanges().meshes.count(body));
+  expectFed(f->loaded.scene, f->loaded.root, feed, fed, options);
+  rs::RetainedScene imported;
+  importBuild(imported, f->loaded.scene, f->loaded.root, options);
+  expectSame(fed, imported, false);
+
+  EXPECT_TRUE(feed.syncVertices(f->loaded.scene, moved));
+  EXPECT_TRUE(fed.takeChanges().meshes.empty());
+  feed.sync(f->loaded.scene, f->loaded.root);
+  EXPECT_TRUE(fed.takeChanges().meshes.empty());
 }
 
 TEST(FigureFeed, TheFeedLetsGoOfEverythingItFed)

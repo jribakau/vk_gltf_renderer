@@ -108,7 +108,7 @@ rs::SkinId FigureFeed::skinOf(int mesh) const
   return mesh >= 0 && mesh < int(m_meshes.size()) ? m_meshes[size_t(mesh)].skin : rs::SkinId{};
 }
 
-void FigureFeed::sync(const SceneGraph& figure, int root, std::span<const int> moved)
+void FigureFeed::sync(const SceneGraph& figure, int root)
 {
   if(root < 0 || root >= int(figure.nodes.size()))
     return;
@@ -117,7 +117,7 @@ void FigureFeed::sync(const SceneGraph& figure, int root, std::span<const int> m
   // the skins name, then the meshes and what each node draws
   syncMaterials(figure, drawing);
   syncNodes(figure, root, drawing);
-  syncMeshes(figure, drawing, moved);
+  syncMeshes(figure, drawing);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -406,7 +406,7 @@ std::vector<uint32_t> FigureFeed::tangentIndices(const rs::MeshRecord& record, c
   return indices;
 }
 
-void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& drawing, std::span<const int> moved)
+void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& drawing)
 {
   // the first node traversal meets drawing each mesh: it holds the skin (the build's other nodes
   // drawing it are DAZ instances, never skinned)
@@ -415,7 +415,6 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     if(const Node& n = figure.nodes[size_t(i)]; draws(figure, n) && firstNode[size_t(n.mesh)] < 0)
       firstNode[size_t(n.mesh)] = i;
 
-  const std::set<int>       movedSet(moved.begin(), moved.end());
   std::vector<rs::MeshId>   oldMeshes;  // let go of once the instances have moved to the new records
   std::vector<rs::SkinId>   oldSkins;
   std::vector<std::vector<rs::MaterialId>> partMaterials(figure.meshes.size());
@@ -456,7 +455,9 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       f.flipV         = flipV;
       f.tangentGroups = tangents;
     }
-    else if(movedSet.count(int(mi)))
+    else
+      // kept: its vertices as the scene has them now, which something may have written in place
+      // without a change to report (a wear's looks set the dials its file restores)
       moveVertices(m, f);
 
     // its skin: the bones' entities and the inverse binds the build writes
@@ -511,21 +512,28 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f)
     normals.resize(count);
     std::memcpy(normals.data(), geo.normal.data(), count * sizeof(glm::vec3));
   }
+  const rs::MeshRecord& had  = *m_scene.mesh(f.id);
+  const bool            same = had.positions.size() == count && had.normals.size() == normals.size();
+  std::vector<uint32_t> changed;
+  if(same)
+  {
+    for(uint32_t v = 0; v < uint32_t(count); v++)
+      if(std::memcmp(&had.positions[v], &positions[v], sizeof(glm::vec3)) != 0
+         || (!normals.empty() && std::memcmp(&had.normals[v], &normals[v], sizeof(glm::vec3)) != 0))
+        changed.push_back(v);
+    // fed from these vertices already (a composition made its record after the dial that moved them)
+    if(changed.empty())
+      return;
+  }
   std::vector<glm::vec4> t;
   if(!f.tangentIndices.empty())
   {
     // made again only near the vertices that moved: a vertex's tangent reads the triangles
     // touching it, and the old ones were made over the same triangles
-    const rs::MeshRecord& had  = *m_scene.mesh(f.id);
-    bool                  made = false;
-    if(f.tangentAdjacency && had.positions.size() == count && had.normals.size() == normals.size() && had.tangents.size() == count)
+    bool made = false;
+    if(f.tangentAdjacency && same && had.tangents.size() == count)
     {
-      std::vector<uint32_t> changed;
-      for(uint32_t v = 0; v < uint32_t(count); v++)
-        if(std::memcmp(&had.positions[v], &positions[v], sizeof(glm::vec3)) != 0
-           || (!normals.empty() && std::memcmp(&had.normals[v], &normals[v], sizeof(glm::vec3)) != 0))
-          changed.push_back(v);
-      t = had.tangents;
+      t    = had.tangents;
       made = tinygltf::utils::updateTangents(positions, normals, had.uv0, f.tangentIndices, *f.tangentAdjacency, changed, t);
     }
     if(!made)
