@@ -316,8 +316,9 @@ struct Settings
   uint32_t residencyMinInstances = 256;
   // `blasRefitsBeforeRebuild`: a retained BLAS refitted this many times is built again (0: never)
   uint32_t blasRefitsBeforeRebuild = 0;
-  // `blasCompactStatic`: a retained static BLAS is compacted once its size is known
-  bool blasCompactStatic = false;
+  // `blasCompactStatic`: a retained static BLAS is compacted once its size is known (on since P7's
+  // measure: Khronos props' BLASes 58% smaller, the image the same)
+  bool blasCompactStatic = true;
   // `residencyRetireOnReplace` (debug): a stream host's scene replace syncs the new scene into the
   // backend it has, retiring the old one's slots, instead of starting the backend over
   bool residencyRetireOnReplace = false;
