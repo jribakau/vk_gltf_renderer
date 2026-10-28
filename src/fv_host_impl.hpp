@@ -592,6 +592,8 @@ struct FvHost::Impl
   tinygltf::Model editedModel(const Prop& p) const;
   // export.glb {scene: true}: the scene as a file, built fresh from the props
   Json exportScene(const std::string& path);
+  // the notice that a figure drawn with DAZ's skinning exports with glTF's linear four
+  void noticeLinearExport(const Loaded& f);
   bool        ridesOn(const Prop& q, const std::string& id) const;
   // a light prop's record as the prop has it, at its real intensity (hidden, its entity shines with nothing)
   tinygltf::Light lightPayload(const Prop& p) const;

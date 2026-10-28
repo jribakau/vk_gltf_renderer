@@ -68,6 +68,9 @@ public:
   // Whether a shown mesh with no simulation modifier is a collider the cloth meets (a belt, a bra,
   // shoes): DAZ collides with every visible object. Unset: every one.
   std::function<bool(int mesh)> collidesWith;
+  // DAZ's skinning (eight influences, the file's dual quaternion share), as the figure's drawn meshes
+  // are skinned (figureDazSkinning, gpu-figures-plan.md F3); off: four, linear
+  bool dazSkinning = false;
 
   // Whether anything worn would be draped.
   bool active() const;

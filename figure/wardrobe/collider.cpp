@@ -91,7 +91,7 @@ struct Collider::Job
     std::vector<int16_t>  limbs;
     // for the write-back: the rest cage, its skin and pose in the mesh's space, and the way back there
     std::vector<float> rest;
-    dforce::Top4       skin;
+    dforce::CageSkin   skin;
     dforce::SkinPose   pose;
     Mat4               back;
   };
@@ -169,11 +169,11 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
   const Mat4 fromWorld = inverse(rootWorld);
   const auto toSpace = [&](int mesh) { return fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{}); };
   // a mesh's cage in its own space as posed now: skinned when it has a skin, else as it is
-  const auto posedCage = [&](int mesh, const std::vector<float>& rest, dforce::Top4* skin, dforce::SkinPose* pose) {
+  const auto posedCage = [&](int mesh, const std::vector<float>& rest, dforce::CageSkin* skin, dforce::SkinPose* pose) {
     const Mesh& m = m_scene.meshes[size_t(mesh)];
     if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
       return rest;
-    dforce::Top4     s = dforce::top4(m.cageSkin);
+    dforce::CageSkin s = dforce::cageSkin(m.cageSkin, dazSkinning);
     dforce::SkinPose p = dforce::currentSkin(m_scene, worlds, nodeOf, mesh);
     auto             posed = dforce::skinLocal(rest, s, p);
     if(skin)

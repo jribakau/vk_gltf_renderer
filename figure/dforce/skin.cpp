@@ -32,20 +32,157 @@ bool invertBlend(const std::array<double, 3>& offset, const std::array<double, 9
   return true;
 }
 
-// the weighted sum of the vertex's four skin matrices; the weight total says whether it has any
-double blend(const std::vector<Mat4>& S, const Top4& skin, size_t v, std::array<double, 16>& out)
+// A skin matrix as a unit dual quaternion (x y z w each) and the stretch left over (rows), as
+// rs::jointDualQuat takes the GPU's joints apart, in doubles
+struct JointDq
+{
+  std::array<double, 4> q{0, 0, 0, 1}, d{0, 0, 0, 0};
+  std::array<double, 9> k{1, 0, 0, 0, 1, 0, 0, 0, 1};
+};
+
+using V3 = std::array<double, 3>;
+double dot3(const V3& a, const V3& b)
+{
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+V3 cross3(const V3& a, const V3& b)
+{
+  return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+JointDq jointDq(const Mat4& m)
+{
+  const auto& e = m.e;
+  const V3    a[3] = {{e[0], e[1], e[2]}, {e[4], e[5], e[6]}, {e[8], e[9], e[10]}};
+  const V3    t{e[12], e[13], e[14]};
+  V3          r[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  const double l0 = std::sqrt(dot3(a[0], a[0]));
+  if(l0 > 1e-12)
+  {
+    const V3     r0{a[0][0] / l0, a[0][1] / l0, a[0][2] / l0};
+    const double p  = dot3(r0, a[1]);
+    const V3     c1{a[1][0] - p * r0[0], a[1][1] - p * r0[1], a[1][2] - p * r0[2]};
+    const double l1 = std::sqrt(dot3(c1, c1));
+    if(l1 > 1e-12)
+    {
+      r[0] = r0;
+      r[1] = {c1[0] / l1, c1[1] / l1, c1[2] / l1};
+      r[2] = cross3(r[0], r[1]);
+    }
+  }
+  JointDq out;
+  // the rotation [r0 r1 r2] as a quaternion (R(i, j) is r[j][i])
+  const double tr = r[0][0] + r[1][1] + r[2][2];
+  auto&        q  = out.q;
+  if(tr > 0)
+  {
+    const double s = std::sqrt(tr + 1) * 2;
+    q              = {(r[1][2] - r[2][1]) / s, (r[2][0] - r[0][2]) / s, (r[0][1] - r[1][0]) / s, s / 4};
+  }
+  else if(r[0][0] > r[1][1] && r[0][0] > r[2][2])
+  {
+    const double s = std::sqrt(1 + r[0][0] - r[1][1] - r[2][2]) * 2;
+    q              = {s / 4, (r[1][0] + r[0][1]) / s, (r[2][0] + r[0][2]) / s, (r[1][2] - r[2][1]) / s};
+  }
+  else if(r[1][1] > r[2][2])
+  {
+    const double s = std::sqrt(1 + r[1][1] - r[0][0] - r[2][2]) * 2;
+    q              = {(r[1][0] + r[0][1]) / s, s / 4, (r[2][1] + r[1][2]) / s, (r[2][0] - r[0][2]) / s};
+  }
+  else
+  {
+    const double s = std::sqrt(1 + r[2][2] - r[0][0] - r[1][1]) * 2;
+    q              = {(r[2][0] + r[0][2]) / s, (r[2][1] + r[1][2]) / s, s / 4, (r[0][1] - r[1][0]) / s};
+  }
+  const double ql = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+  for(double& c : q)
+    c /= ql;
+  // the stretch R^T A, and d = (t, 0) q / 2
+  for(int i = 0; i < 3; i++)
+    for(int j = 0; j < 3; j++)
+      out.k[size_t(i * 3 + j)] = dot3(r[i], a[j]);
+  const V3 qv{q[0], q[1], q[2]};
+  const V3 tq = cross3(t, qv);
+  out.d       = {(q[3] * t[0] + tq[0]) / 2, (q[3] * t[1] + tq[1]) / 2, (q[3] * t[2] + tq[2]) / 2, -dot3(t, qv) / 2};
+  return out;
+}
+
+std::vector<JointDq> jointDqs(const std::vector<Mat4>& S, const CageSkin& skin)
+{
+  std::vector<JointDq> out;
+  if(skin.dualQuat > 0 || !skin.dualQuatShare.empty())
+    for(const Mat4& m : S)
+      out.push_back(jointDq(m));
+  return out;
+}
+
+// the vertex's skin as one matrix: the weighted sum of its skin matrices (eight with DAZ's skinning),
+// mixed with its dual quaternion skin by its share; the weight total says whether it has any
+double blend(const std::vector<Mat4>& S, const std::vector<JointDq>& dqs, const CageSkin& skin, size_t v, std::array<double, 16>& out)
 {
   out.fill(0);
-  double wsum = 0;
-  for(size_t j = 0; j < 4; j++)
+  const bool   eight = !skin.index8.empty();
+  const size_t per   = eight ? 8 : 4;
+  const auto&  index = eight ? skin.index8 : skin.index;
+  const auto&  wt    = eight ? skin.weight8 : skin.weight;
+  double       wsum  = 0;
+  for(size_t j = 0; j < per; j++)
   {
-    const double w = skin.weight[v * 4 + j];
-    const size_t k = skin.index[v * 4 + j];
+    const double w = wt[v * per + j];
+    const size_t k = index[v * per + j];
     if(w == 0 || k >= S.size())
       continue;
     wsum += w;
     for(size_t c = 0; c < 16; c++)
       out[c] += S[k].e[c] * w;
+  }
+  const double share = dqs.size() != S.size() ? 0.0 : v < skin.dualQuatShare.size() ? skin.dualQuatShare[v] : skin.dualQuat;
+  if(wsum <= 0 || share <= 0)
+    return wsum;
+  std::array<double, 4> b0{}, b1{}, first{};
+  std::array<double, 9> kb{};
+  bool                  met = false;
+  for(size_t j = 0; j < per; j++)
+  {
+    const double w = wt[v * per + j];
+    const size_t k = index[v * per + j];
+    if(w == 0 || k >= S.size())
+      continue;
+    const JointDq& dq = dqs[k];
+    if(!met)
+      first = dq.q;
+    met             = true;
+    const double sw = dq.q[0] * first[0] + dq.q[1] * first[1] + dq.q[2] * first[2] + dq.q[3] * first[3] < 0 ? -w : w;
+    for(int c = 0; c < 4; c++)
+    {
+      b0[size_t(c)] += sw * dq.q[size_t(c)];
+      b1[size_t(c)] += sw * dq.d[size_t(c)];
+    }
+    for(int c = 0; c < 9; c++)
+      kb[size_t(c)] += w * dq.k[size_t(c)];
+  }
+  const double len = std::sqrt(b0[0] * b0[0] + b0[1] * b0[1] + b0[2] * b0[2] + b0[3] * b0[3]);
+  if(len <= 0)
+    return wsum;
+  const double x = b0[0] / len, y = b0[1] / len, z = b0[2] / len, w = b0[3] / len;
+  const V3     qv{x, y, z}, dv{b1[0] / len, b1[1] / len, b1[2] / len};
+  const double dw = b1[3] / len;
+  // R(q), then the vertex's affine dual quaternion skin R Kb + t, mixed into the linear blend
+  const double R[9] = {1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y),
+                       2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+                       2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)};
+  const V3     qd = cross3(qv, dv);
+  const V3     t{2 * (w * dv[0] - dw * x + qd[0]), 2 * (w * dv[1] - dw * y + qd[1]), 2 * (w * dv[2] - dw * z + qd[2])};
+  for(int row = 0; row < 3; row++)
+  {
+    for(int col = 0; col < 3; col++)
+    {
+      double a = 0;
+      for(int i = 0; i < 3; i++)
+        a += R[row * 3 + i] * kb[size_t(i * 3 + col)];
+      out[size_t(col * 4 + row)] = out[size_t(col * 4 + row)] * (1 - share) + a * share;
+    }
+    out[size_t(12 + row)] = out[size_t(12 + row)] * (1 - share) + t[size_t(row)] * share;
   }
   return wsum;
 }
@@ -97,10 +234,10 @@ std::vector<Mat4> skinMatrices(const SkinPose& pose)
   return out;
 }
 
-Top4 top4(const mesh::SkinInput& in)
+CageSkin cageSkin(const mesh::SkinInput& in, bool dazSkinning)
 {
   const size_t n = in.start.empty() ? 0 : in.start.size() - 1;
-  Top4         out;
+  CageSkin     out;
   out.index.assign(n * 4, 0);
   out.weight.assign(n * 4, 0.f);
   std::vector<std::pair<int, float>> pick;
@@ -126,19 +263,54 @@ Top4 top4(const mesh::SkinInput& in)
       out.weight[v * 4 + k] = pick[k].second / sum;
     }
   }
+  if(!dazSkinning)
+    return out;
+  out.dualQuat      = in.dualQuat;
+  out.dualQuatShare = in.dualQuatMap.size() == n ? in.dualQuatMap : std::vector<float>{};
+  // the eight strongest, where some vertex has more than four
+  bool more = false;
+  for(size_t v = 0; v < n && !more; v++)
+    more = in.start[v + 1] - in.start[v] > 4;
+  if(!more)
+    return out;
+  out.index8.assign(n * 8, 0);
+  out.weight8.assign(n * 8, 0.f);
+  for(size_t v = 0; v < n; v++)
+  {
+    pick.clear();
+    for(int k = in.start[v]; k < in.start[v + 1]; k++)
+      if(in.weight[size_t(k)] > 0)
+        pick.emplace_back(in.bone[size_t(k)], in.weight[size_t(k)]);
+    std::stable_sort(pick.begin(), pick.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    const size_t m   = std::min<size_t>(8, pick.size());
+    float        sum = 0;
+    for(size_t k = 0; k < m; k++)
+      sum += pick[k].second;
+    if(sum <= 0)
+    {
+      out.weight8[v * 8] = 1;
+      continue;
+    }
+    for(size_t k = 0; k < m; k++)
+    {
+      out.index8[v * 8 + k]  = uint16_t(pick[k].first);
+      out.weight8[v * 8 + k] = pick[k].second / sum;
+    }
+  }
   return out;
 }
 
-std::vector<float> skinLocal(const std::vector<float>& rest, const Top4& skin, const SkinPose& pose)
+std::vector<float> skinLocal(const std::vector<float>& rest, const CageSkin& skin, const SkinPose& pose)
 {
-  const size_t       n = rest.size() / 3;
-  const auto         S = skinMatrices(pose);
+  const size_t       n   = rest.size() / 3;
+  const auto         S   = skinMatrices(pose);
+  const auto         dqs = jointDqs(S, skin);
   std::vector<float> out(rest.size());
   std::array<double, 16> m;
   for(size_t v = 0; v < n; v++)
   {
     const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
-    if(blend(S, skin, v, m) <= 0)
+    if(blend(S, dqs, skin, v, m) <= 0)
     {
       out[v * 3] = rest[v * 3];
       out[v * 3 + 1] = rest[v * 3 + 1];
@@ -152,15 +324,16 @@ std::vector<float> skinLocal(const std::vector<float>& rest, const Top4& skin, c
   return out;
 }
 
-std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<float>& simulated, const Top4& skin, const SkinPose& pose)
+std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<float>& simulated, const CageSkin& skin, const SkinPose& pose)
 {
-  const size_t       n = rest.size() / 3;
-  const auto         S = skinMatrices(pose);
+  const size_t       n   = rest.size() / 3;
+  const auto         S   = skinMatrices(pose);
+  const auto         dqs = jointDqs(S, skin);
   std::vector<float> out(rest.size(), 0.f);
   std::array<double, 16> m;
   for(size_t v = 0; v < n; v++)
   {
-    const double wsum = blend(S, skin, v, m);
+    const double wsum = blend(S, dqs, skin, v, m);
     const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
     double       sx, sy, sz;
     std::array<double, 9> m3{1, 0, 0, 0, 1, 0, 0, 0, 1};

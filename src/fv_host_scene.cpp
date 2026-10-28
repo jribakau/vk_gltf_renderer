@@ -224,6 +224,24 @@ tinygltf::Model FvHost::Impl::editedModel(const Prop& p) const
 // at their own intensity, a hidden one's root marked hidden; no sun of the host's; the sky. What the
 // composer can't carry over is stripped, with a notice. The figures are built here, on the app
 // thread: a worker would race the dials, which change their meshes in place on this thread.
+// glTF skins linearly with four influences a vertex: an export of a figure drawn with DAZ's skinning
+// (figureDazSkinning) says its posed joints will not look as they do here
+void FvHost::Impl::noticeLinearExport(const Loaded& f)
+{
+  bool daz = false;
+  {
+    std::lock_guard lock(settingsMutex);
+    daz = settings.figureDazSkinning;
+  }
+  for(const fv::Mesh& m : f.fig->loaded.scene.meshes)
+    if(daz && m.skinned() && (m.skin.dualQuat > 0 || !m.skin.dualQuatShare.empty() || !m.skin.skinIndex8.empty()))
+    {
+      notice("Export: glTF skins linearly with four influences a vertex, so posed shoulders and twisted forearms look as "
+             "they do with DAZ's skinning off");
+      return;
+    }
+}
+
 Json FvHost::Impl::exportScene(const std::string& path)
 {
   if(props.empty())
@@ -238,6 +256,7 @@ Json FvHost::Impl::exportScene(const std::string& path)
     const tinygltf::Model*   model = nullptr;
     if(Loaded* f = p.figure.get())
     {
+      noticeLinearExport(*f);
       builds[i] = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, buildOptionsOf(*f, skinMode.load()));
       model     = &builds[i]->model;
     }
@@ -283,6 +302,7 @@ Json FvHost::Impl::exportGlb(const Json& args)
     return {{"ok", true}};
   }
   const auto&                        figure = prop->figure;
+  noticeLinearExport(*figure);
   std::shared_ptr<fv::dson::Library> lib;
   {
     std::lock_guard lock(settingsMutex);

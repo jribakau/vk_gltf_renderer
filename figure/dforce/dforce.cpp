@@ -60,7 +60,7 @@ struct Dforce::Job
     int                mesh = -1;
     size_t             slot = 0;  // into bodies and the settle's result
     std::vector<float> rest;
-    Top4               skin;
+    CageSkin           skin;
     // the pose the positions are read back through: the job's, or the live step's
     SkinPose pose;
     Mat4     back;  // job space -> mesh-local
@@ -205,7 +205,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   struct Skinned
   {
     std::vector<float> rest, posed;
-    Top4               skin;
+    CageSkin           skin;
     SkinPose           pose;
     bool               skinned = false;
   };
@@ -240,7 +240,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       return s;
     }
     s.skinned = true;
-    s.skin    = top4(m.cageSkin);
+    s.skin    = cageSkin(m.cageSkin, dazSkinning);
     s.pose    = currentSkin(m_scene, worlds, nodeOf, mesh);
     s.posed   = skinLocal(s.rest, s.skin, s.pose);
     return s;

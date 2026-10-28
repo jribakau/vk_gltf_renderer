@@ -900,6 +900,15 @@ reports a cage change, fed by `syncCages` (`RetainedScene::setMeshCage`). The CP
 the record's positions and the prim bounds (the selection box, the scene bounds) catch up once the
 mesh has been still for 100 ms (`MorphSet::catchUp`, from `pump`) and at `settled()`.
 
+With `figureDazSkinning` (a host setting, off by default) a figure is skinned as its file asks:
+`skinBinding` reads the skin modifier's `skin_settings` (Genesis 3 and 8 all dual quaternion,
+Genesis 9 half dual quaternion, half linear), the records carry up to eight influences
+(`joints1`/`weights1`) and the dual quaternion share (`dualQuat`, `dualQuatShares`), and
+`skinning.comp.slang` mixes the linear blend with dual quaternion skinning by it, from the joints'
+dual quaternions the residency packs (`rs::JointDualQuat` in `scene_skin.hpp`: rotation and
+translation, and the stretch left over, blended linearly first). dForce and the collider skin the
+cage the same way (`dforce::CageSkin`); glTF export stays at four influences, linear, and says so.
+
 A sync decodes the images it needs in one batch, side by side on the worker pool
 (`VulkanGpuBackend::createImages`), a file the host prefetched taken from
 `SceneVk::takePrefetchedFile` instead. Each material slot owns a span of the texture-info table

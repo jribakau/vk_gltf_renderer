@@ -269,9 +269,17 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     };
     // off until the Wardrobe toggle (or a scene file) turns it on: a settle costs seconds on a dressed figure
     f->dforce->setEnabled(false);
+    {
+      std::lock_guard lock(settingsMutex);
+      f->dforce->dazSkinning = settings.figureDazSkinning;
+    }
     // on from the start: a pass is a fraction of a second on the pool, and it is what keeps a garment
     // fitted to another shape or generation out of the body
     f->collider = std::make_unique<fv::wardrobe::Collider>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
+    {
+      std::lock_guard lock(settingsMutex);
+      f->collider->dazSkinning = settings.figureDazSkinning;
+    }
     f->collider->settings = [fig = f->fig.get()] {
       std::map<int, fv::dson::Smoothing> all;
       for(const fv::WornItem& w : fig->items)

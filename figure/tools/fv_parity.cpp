@@ -707,7 +707,7 @@ int main(int argc, char** argv)
             const fv::Mesh&          m    = scene.meshes[size_t(mesh)];
             const std::vector<float> cage = loaded->morphs->morphedCage(mesh);
             const std::vector<float> posed =
-                m.skinned() ? fv::dforce::skinLocal(cage, fv::dforce::top4(m.cageSkin), fv::dforce::currentSkin(scene, worlds, nodeOf, mesh)) : cage;
+                m.skinned() ? fv::dforce::skinLocal(cage, fv::dforce::cageSkin(m.cageSkin), fv::dforce::currentSkin(scene, worlds, nodeOf, mesh)) : cage;
             const fv::Mat4 to = fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : fv::Mat4{});
             const auto     inSpace = fv::dforce::transformPoints(to, posed);
             Json           report  = drapeReport(sim.model(), size_t(slot), p->bodies[size_t(slot)], inSpace, p->bodies[0], out[0]);

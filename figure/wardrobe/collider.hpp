@@ -51,6 +51,9 @@ public:
   // wardrobe's per-item collision settings. A mesh that is not listed, is hidden, or is unskinned is
   // left alone.
   std::function<std::map<int, dson::Smoothing>()> settings;
+  // DAZ's skinning (eight influences, the file's dual quaternion share), as the figure's drawn meshes
+  // are skinned (figureDazSkinning, gpu-figures-plan.md F3); off: four, linear
+  bool dazSkinning = false;
   // The meshes in the order worn, for layering two that lie equally close to the body; unset or a
   // mesh not listed: mesh order.
   std::function<std::vector<int>()> wornOrder;

@@ -576,7 +576,7 @@ TEST(Dforce, aDrapeSkinsBackToTheSimulatedShape)
   in.start  = {0, 1, 2};
   in.bone   = {0, 0};
   in.weight = {1.f, 1.f};
-  const dforce::Top4 skin = dforce::top4(in);
+  const dforce::CageSkin skin = dforce::cageSkin(in);
   const std::vector<float> rest{1, 0, 0, 0, 1, 0};
   const auto posed = dforce::skinLocal(rest, skin, pose);
   std::vector<float> simulated = posed;
@@ -589,6 +589,45 @@ TEST(Dforce, aDrapeSkinsBackToTheSimulatedShape)
   const auto back = dforce::skinLocal(draped, skin, pose);
   for(size_t i = 0; i < back.size(); i++)
     EXPECT_NEAR(back[i], simulated[i], 1e-4) << i;
+}
+
+// DAZ's skinning on the CPU (gpu-figures-plan.md F3, E4): a vertex half on a bone twisted half a turn
+// about the bone's axis keeps its distance from the axis with dual quaternions (the linear blend puts
+// it on the axis), lies half way at a share of 0.5, and a drape through that skin skins back to the
+// simulated shape, as with the linear blend
+TEST(Dforce, aDualQuaternionSkinKeepsATwistedJointsVolumeAndDrapesBack)
+{
+  const double     pi = std::acos(-1.0);
+  dforce::SkinPose pose;
+  pose.bones = {Mat4{}, compose({0, 0, 0}, quatFromEuler(pi, 0, 0, "XYZ"), {1, 1, 1})};
+  mesh::SkinInput in;
+  in.start  = {0, 2, 4};
+  in.bone   = {0, 1, 0, 1};
+  in.weight = {0.5f, 0.5f, 0.75f, 0.25f};
+  const std::vector<float> rest{1, 2, 0, 1, 0, 2};
+  for(const float share : {0.f, 0.5f, 1.f})
+  {
+    in.dualQuat                 = share;
+    const dforce::CageSkin skin = dforce::cageSkin(in, true);
+    const auto             posed = dforce::skinLocal(rest, skin, pose);
+    EXPECT_NEAR(std::hypot(posed[1], posed[2]), 2.0 * share, 1e-5) << share;
+    EXPECT_NEAR(posed[0], 1.0, 1e-5) << share;
+
+    std::vector<float> simulated = posed;
+    simulated[1] -= 0.5f;
+    simulated[5] += 0.25f;
+    const auto         delta  = dforce::drapeDelta(rest, simulated, skin, pose);
+    std::vector<float> draped = rest;
+    for(size_t i = 0; i < draped.size(); i++)
+      draped[i] += delta[i];
+    const auto back = dforce::skinLocal(draped, skin, pose);
+    // the half and half vertex's linear blend has no 3x3 to invert (it is left undraped)
+    for(size_t i = share > 0.f ? 0 : 3; i < back.size(); i++)
+      EXPECT_NEAR(back[i], simulated[i], 1e-4) << share << " " << i;
+  }
+  // off, the share is not read
+  in.dualQuat = 1.f;
+  EXPECT_EQ(dforce::cageSkin(in).dualQuat, 0.f);
 }
 
 TEST(Dforce, readsTheSettingsOfASimulationSurface)
