@@ -250,16 +250,17 @@ if(NOT NVPRO2_ENABLE_nvmcp)
 endif()
 
 # The experimental GPU cloth solver: its source and shader stay out of the build unless asked for;
-# fv_host.cpp guards its integration points on FV_DFORCE_GPU.
+# the host (src/fv_host*) guards its integration points on FV_DFORCE_GPU.
 if(NOT FV_DFORCE_GPU)
   list(FILTER EXE_SOURCES EXCLUDE REGEX "fv_dforce_gpu")
 endif()
 
 add_executable(${PROJECT_NAME} ${EXE_SOURCES})
 
-# fv_host.cpp holds the host's commands as lambdas: more sections than an object file allows by default
+# The host's files hold its commands as lambdas: more sections than an object file allows by default
 if(MSVC)
-  set_source_files_properties(src/fv_host.cpp TARGET_DIRECTORY ${PROJECT_NAME} PROPERTIES COMPILE_OPTIONS /bigobj)
+  file(GLOB FV_HOST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/fv_host*.cpp)
+  set_source_files_properties(${FV_HOST_SOURCES} TARGET_DIRECTORY ${PROJECT_NAME} PROPERTIES COMPILE_OPTIONS /bigobj)
 endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

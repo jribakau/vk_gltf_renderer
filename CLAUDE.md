@@ -95,8 +95,10 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   when `NVPRO2_ENABLE_nvmcp` is on. See [docs/mcp.md](docs/mcp.md).
 - `figure/` (target `fv_figure`, Vulkan-free) and `src/fv_*` — the Figure Viewer's native scene: DAZ figures, morphs,
   posing, wardrobe, materials, dForce and GLB export, hosted in the renderer and driven over a loopback protocol.
-  The protocol is listed in `src/fv_host.hpp` and `src/fv_view.hpp`; the app's `native/README.md`
-  describes how it drives the renderer, and its `docs/improvements.md` holds the open issues.
+  The host is one `FvHost::Impl` (`src/fv_host_impl.hpp`) split by area into `src/fv_host_*.cpp`, its
+  commands registered in `src/fv_host.cpp`. The protocol is listed in `src/fv_host.hpp` and
+  `src/fv_view.hpp`; the app's `native/README.md` describes how it drives the renderer, and its
+  `docs/improvements.md` holds the open issues.
 - `src/dlss*`, `src/optix_denoiser*`, `src/oidn_denoiser*`, `src/vk_cuda*` — AI denoisers + CUDA interop
   (OIDN runs on Vulkan compute through the prebuilt [vk_oidn](https://github.com/nvpro-samples/vk_oidn) package).
   `src/denoiser_handoff*` blends from DLSS-RR's image to OptiX / OIDN's when both are on

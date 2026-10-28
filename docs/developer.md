@@ -851,7 +851,7 @@ goes on it; anything else that logs reads a scene the retained one doesn't keep 
 
 **Legacy-only: the host's edits and addressing**, through the legacy-edit bridge in P3a–P3b, on
 handles from P4:
-- `fv_host.cpp` (`compose`, `applyVisible`, `applySun`, `applyLightShown`, `showItem`, `propSet`,
+- `fv_host*.cpp` (`compose`, `applyVisible`, `applySun`, `applyLightShown`, `showItem`, `propSet`,
   the animation topic and commands, `frameCamera`, `exportGlb`), `fv_materials.cpp` (`write`,
   `baked`, `attachModel`, the model material items), `fv_view.cpp` (picks through
   `fv::SceneMap::pick`), `fv_compose.cpp`.
