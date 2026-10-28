@@ -294,7 +294,8 @@ TEST(Wardrobe, AProjectionOntoALongItemIsTheOneThreadsResultBitForBit)
       moved.verts.push_back(int32_t(v));
       moved.deltas.insert(moved.deltas.end(), {out[v * 3], out[v * 3 + 1], out[v * 3 + 2]});
     }
-  fv::mesh::RenderTarget want;
+  fv::mesh::RenderTarget       want;
+  fv::mesh::RenderTarget::Drawn wantDrawn;
   for(size_t i = 0; i < moved.verts.size(); i++)
   {
     want.cageIndices.push_back(uint32_t(moved.verts[i]));
@@ -308,8 +309,8 @@ TEST(Wardrobe, AProjectionOntoALongItemIsTheOneThreadsResultBitForBit)
       continue;
     for(int32_t s = item.firstSplit[render.indices[i]]; s >= 0; s = item.nextSplit[s])
     {
-      want.indices.push_back(uint32_t(s));
-      want.deltas.insert(want.deltas.end(), {x, y, z});
+      wantDrawn.indices.push_back(uint32_t(s));
+      wantDrawn.deltas.insert(wantDrawn.deltas.end(), {x, y, z});
     }
   }
 
@@ -320,8 +321,8 @@ TEST(Wardrobe, AProjectionOntoALongItemIsTheOneThreadsResultBitForBit)
   const auto same = [](const auto& a, const auto& b) { return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0; };
   EXPECT_TRUE(same(got->cageIndices, want.cageIndices));
   EXPECT_TRUE(same(got->cageDeltas, want.cageDeltas));
-  EXPECT_TRUE(same(got->indices, want.indices));
-  EXPECT_TRUE(same(got->deltas, want.deltas));
+  EXPECT_TRUE(same(got->drawn(item).indices, wantDrawn.indices));
+  EXPECT_TRUE(same(got->drawn(item).deltas, wantDrawn.deltas));
 }
 
 // A follower given its projections ahead (a wear's worker makes them) moves exactly as one that

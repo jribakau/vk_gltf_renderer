@@ -116,9 +116,9 @@ struct HostSettings
   int                                maxTextureSize = 4096;
   int                                subdivision    = 0;
   bool originalTextures = false;  // the source images, not the BC7 cache: only what the renderer cannot read is cooked
-  // subdivided figure meshes refined on the GPU from their morphed cages, for the figures fed from
-  // now on (daz-viewer docs/gpu-figures-plan.md F1)
-  bool figureGpuRefine = false;
+  // subdivided figure meshes refined on the GPU from their morphed cages, for the figures loaded from
+  // now on (daz-viewer docs/gpu-figures-plan.md)
+  bool figureGpuRefine = true;
   // DAZ's skinning (up to eight influences, the file's dual quaternion share) for the figures fed
   // from now on (gpu-figures-plan.md F3)
   bool figureDazSkinning = false;
@@ -597,6 +597,8 @@ struct FvHost::Impl
   Json exportScene(const std::string& path);
   // the notice that a figure drawn with DAZ's skinning exports with glTF's linear four
   void noticeLinearExport(const Loaded& f);
+  // a figure's CPU drawn vertices brought up to its morphs, for an export
+  void catchUpDrawn(Loaded& f);
   bool        ridesOn(const Prop& q, const std::string& id) const;
   // a light prop's record as the prop has it, at its real intensity (hidden, its entity shines with nothing)
   tinygltf::Light lightPayload(const Prop& p) const;

@@ -142,9 +142,12 @@ TEST_P(FigureMorphSet, IncrementalFlushMatchesARebuild)
   auto               fresh = grid(n, level);
   std::vector<float> base  = fresh.position;
   for(int i = 0; i < 3; i++)
-    for(size_t j = 0; j < targets[i]->indices.size(); j++)
+  {
+    const fv::mesh::RenderTarget::Drawn& d = targets[i]->drawn(fresh);
+    for(size_t j = 0; j < d.indices.size(); j++)
       for(int c = 0; c < 3; c++)
-        base[size_t(targets[i]->indices[j]) * 3 + c] += float(targets[i]->deltas[j * 3 + c] * weights[i]);
+        base[size_t(d.indices[j]) * 3 + c] += float(d.deltas[j * 3 + c] * weights[i]);
+  }
   EXPECT_LT(worst(geo->position, base), 1e-4);
 
   fv::mesh::NormalWelder welder(geo->renderIndex, geo->firstSplit, geo->nextSplit, geo->renderTris, geo->renderVertexCount);
@@ -231,8 +234,8 @@ TEST(FigureMorphSet, ALargeTargetAddsItsDeltasInChunks)
       deltas.insert(deltas.end(), {0.f, 0.f, 0.01f * float(i % 7 + 1)});
     }
   const auto          t = targetOf(*geo, verts, deltas);
-  ASSERT_GT(t->indices.size(), 16384u);
-  ASSERT_LT(t->indices.size(), geo->position.size() / 3 / 4);
+  ASSERT_GT(t->drawn(*geo).indices.size(), 16384u);
+  ASSERT_LT(t->drawn(*geo).indices.size(), geo->position.size() / 3 / 4);
   const std::vector<float> base = geo->position;
   fv::morph::MorphSet      morphs([&](int) { return geo.get(); });
   morphs.addTarget("band", 0, t);
@@ -245,11 +248,12 @@ TEST(FigureMorphSet, ALargeTargetAddsItsDeltasInChunks)
   // every listed vertex moved by half its delta, and is among the changed
   std::set<uint32_t> changed(changes[0].indices.begin(), changes[0].indices.end());
   double             worstPos = 0;
-  for(size_t i = 0; i < t->indices.size(); i++)
+  const fv::mesh::RenderTarget::Drawn& d = t->drawn(*geo);
+  for(size_t i = 0; i < d.indices.size(); i++)
   {
-    const size_t o = size_t(t->indices[i]) * 3;
-    worstPos       = std::max<double>(worstPos, std::fabs(double(geo->position[o + 2]) - (double(base[o + 2]) + 0.5 * t->deltas[i * 3 + 2])));
-    EXPECT_TRUE(changed.count(t->indices[i])) << t->indices[i];
+    const size_t o = size_t(d.indices[i]) * 3;
+    worstPos       = std::max<double>(worstPos, std::fabs(double(geo->position[o + 2]) - (double(base[o + 2]) + 0.5 * d.deltas[i * 3 + 2])));
+    EXPECT_TRUE(changed.count(d.indices[i])) << d.indices[i];
   }
   EXPECT_LT(worstPos, 1e-5);
   // the normals around them agree with a weld of the whole mesh
@@ -339,6 +343,65 @@ TEST(FigureMorphSet, DriverRunsAgainWhileLoadsKeepArriving)
   gates[1].set_value();
   morphs.settled();
   EXPECT_EQ(driver.calls, 2);
+}
+
+// gpu-figures-plan.md F5: a cageOnly mesh's dial moves its cage alone, and its target never refines
+// its drawn deltas; catchUp() (an export's) makes them and writes the drawn vertices a flush with the
+// path off would have.
+TEST(FigureMorphSet, ACageOnlyMeshsTargetsMakeNoDrawnDeltasUntilACatchUp)
+{
+  fv::mesh::BuiltMesh geo = grid(6, 2), reference = grid(6, 2);
+  const auto          rest = geo.position;
+  const auto          t    = targetOf(geo, {8, 9, 16}, {0, 0, 1, 0.5f, 0, 0.25f, 0, -0.5f, 0});
+  fv::morph::MorphSet set([&](int) { return &geo; }), off([&](int) { return &reference; });
+  set.cageOnly = [](int) { return true; };
+  set.addTarget("bump", 0, t);
+  off.addTarget("bump", 0, targetOf(reference, {8, 9, 16}, {0, 0, 1, 0.5f, 0, 0.25f, 0, -0.5f, 0}));
+  set.takeChanges();
+  set.set("bump", 0.75);
+  off.set("bump", 0.75);
+  const auto changes = set.takeChanges();
+  ASSERT_EQ(changes.size(), 1u);
+  EXPECT_TRUE(changes[0].cage);
+  EXPECT_EQ(geo.position, rest);
+  EXPECT_EQ(t->drawnIfMade(), nullptr);
+  EXPECT_NEAR(set.morphedCage(0)[9 * 3], geo.cagePositions[9 * 3] + 0.375f, 1e-6);
+
+  set.settled();
+  set.pump();
+  EXPECT_TRUE(set.takeChanges().empty());
+  EXPECT_EQ(t->drawnIfMade(), nullptr);
+
+  set.catchUp();
+  const auto caught = set.takeChanges();
+  ASSERT_EQ(caught.size(), 1u);
+  EXPECT_TRUE(caught[0].caughtUp);
+  EXPECT_NE(t->drawnIfMade(), nullptr);
+  EXPECT_LT(worst(geo.position, reference.position), 1e-6);
+  EXPECT_LT(worst(geo.normal, reference.normal), 1e-6);
+}
+
+// A mesh that stops being cageOnly (its feed no longer refines it) is drawn as its morphs have it at
+// the next pump: a load moves cages alone before the host knows what its feed refines.
+TEST(FigureMorphSet, AMeshNoLongerCageOnlyCatchesUpAtThePump)
+{
+  fv::mesh::BuiltMesh geo = grid(4, 1), reference = grid(4, 1);
+  fv::morph::MorphSet set([&](int) { return &geo; }), off([&](int) { return &reference; });
+  bool                gpu = true;
+  set.cageOnly            = [&](int) { return gpu; };
+  set.addTarget("lift", 0, targetOf(geo, {6, 7}, {0, 0, 0.5f, 0, 0, 0.5f}));
+  off.addTarget("lift", 0, targetOf(reference, {6, 7}, {0, 0, 0.5f, 0, 0, 0.5f}));
+  set.set("lift", 1);
+  off.set("lift", 1);
+  set.takeChanges();
+  set.pump();
+  EXPECT_TRUE(set.takeChanges().empty());
+  gpu = false;
+  set.pump();
+  const auto caught = set.takeChanges();
+  ASSERT_EQ(caught.size(), 1u);
+  EXPECT_TRUE(caught[0].caughtUp);
+  EXPECT_LT(worst(geo.position, reference.position), 1e-6);
 }
 
 TEST(FigureMorphSet, RemovedChannelsTakeTheirShapeBackOffTheMesh)

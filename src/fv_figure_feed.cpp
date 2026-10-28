@@ -503,7 +503,7 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       rs::MeshRecord r   = meshRecord(figure, int(mi), drawn);
       f.tangentIndices   = tangentIndices(r, tangents);
       // subdivided, or strand ribbons once widened: the GPU makes its drawn vertices from its cage
-      f.refine = m.geo->refinement && (!m.geo->ribbon || !m.geo->ribbon->half.empty()) && m_options.cageOf ? refineTables(*m.geo) : nullptr;
+      f.refine = mesh::drawnFromCage(*m.geo) && m_options.cageOf ? refineTables(*m.geo) : nullptr;
       if(f.refine)
       {
         r.cage = cageOf(int(mi), f);

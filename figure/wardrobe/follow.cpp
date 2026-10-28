@@ -160,9 +160,9 @@ dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rig
         o++;
       }
   });
-  step.emplace("project: refine");
+  step.emplace("project: target");
   auto target = std::make_shared<mesh::RenderTarget>(mesh::target(item, std::move(cageIndices), std::move(cageDeltas)));
-  if(target->indices.empty())
+  if(!target->moves())
     return nullptr;
   return target;
 }

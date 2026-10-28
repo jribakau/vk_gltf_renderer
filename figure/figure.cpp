@@ -67,6 +67,7 @@ std::unique_ptr<Figure> Figure::load(std::shared_ptr<dson::Store> store, const s
   timing::Scope           t("Figure::load " + rel);
   std::unique_ptr<Figure> f(new Figure());
   f->m_store = store;
+  f->m_cageMorphs = options.cageMorphs;
   {
     timing::Scope tl("loadDson");
     f->loaded = dson::loadDson(*store, rel, options);
@@ -87,6 +88,12 @@ void Figure::setup(const Progress& progress)
   dson::MorphContext& ctx = loaded.morphs;
   dson::Store&        store = *m_store;
   morphs = std::make_unique<morph::MorphSet>([this](int i) { return loaded.scene.meshes[size_t(i)].geo.get(); });
+  // the character's shape goes onto the cages alone, until the host says which meshes it refines
+  if(m_cageMorphs)
+    morphs->cageOnly = [this](int i) {
+      const mesh::BuiltMesh* g = loaded.scene.meshes[size_t(i)].geo.get();
+      return g && mesh::drawnFromCage(*g);
+    };
   auto source = std::make_shared<StoreSource>(m_store, ctx.meshes, ctx.mainMeshes);
   m_source    = source;
   // The main figure's dials run through its formulas: a character preset's controller drives shape

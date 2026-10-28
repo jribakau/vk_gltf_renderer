@@ -242,6 +242,14 @@ void FvHost::Impl::noticeLinearExport(const Loaded& f)
     }
 }
 
+// A figure's drawn vertices as its morphs have them: the GPU makes those of the meshes it refines
+// from their cages, and the CPU's stay as loaded until something reads them (MorphSet::cageOnly)
+void FvHost::Impl::catchUpDrawn(Loaded& f)
+{
+  if(f.fig->morphs)
+    f.fig->morphs->catchUp();
+}
+
 Json FvHost::Impl::exportScene(const std::string& path)
 {
   if(props.empty())
@@ -257,6 +265,7 @@ Json FvHost::Impl::exportScene(const std::string& path)
     if(Loaded* f = p.figure.get())
     {
       noticeLinearExport(*f);
+      catchUpDrawn(*f);
       builds[i] = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, buildOptionsOf(*f, skinMode.load()));
       model     = &builds[i]->model;
     }
@@ -303,6 +312,7 @@ Json FvHost::Impl::exportGlb(const Json& args)
   }
   const auto&                        figure = prop->figure;
   noticeLinearExport(*figure);
+  catchUpDrawn(*figure);
   std::shared_ptr<fv::dson::Library> lib;
   {
     std::lock_guard lock(settingsMutex);

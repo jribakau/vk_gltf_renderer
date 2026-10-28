@@ -120,7 +120,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           throw std::runtime_error("Select the figure to put " + fileStem(rel) + " on.");
       }
       const auto t0 = std::chrono::steady_clock::now();
-      auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision}, [this, jobId, label](const std::string& step) {
+      auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision, .cageMorphs = s.figureGpuRefine}, [this, jobId, label](const std::string& step) {
         job(jobId, {{"label", label + ": " + step}, {"state", "running"}});
       });
       if(generation != loadGeneration)

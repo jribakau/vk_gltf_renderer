@@ -17,8 +17,12 @@ constexpr int kRebuildEvery = 400;
 constexpr size_t kParallelDeltas = 16384;
 // How long a lazy file waits for others before the driver runs for it.
 constexpr auto kDriverDelay = std::chrono::milliseconds(100);
-// How long a cageOnly mesh's cage stays still before pump() brings its drawn vertices up to it.
-constexpr auto kCatchUpAfter = std::chrono::milliseconds(100);
+
+// made when a mesh's drawn vertices first move (a cageOnly mesh's may never)
+std::unique_ptr<mesh::NormalWelder> welderOf(const mesh::BuiltMesh& geo)
+{
+  return std::make_unique<mesh::NormalWelder>(geo.renderIndex, geo.firstSplit, geo.nextSplit, geo.renderTris, geo.renderVertexCount);
+}
 
 std::string prettyLabel(const std::string& name)
 {
@@ -112,7 +116,6 @@ MorphSet::MeshState& MorphSet::ensureCpu(int mesh)
   MeshState&       st  = m_cpu[mesh];
   st.basePos           = geo.position;
   st.baseNrm           = geo.normal;
-  st.welder            = std::make_unique<mesh::NormalWelder>(geo.renderIndex, geo.firstSplit, geo.nextSplit, geo.renderTris, geo.renderVertexCount);
   return st;
 }
 
@@ -386,7 +389,8 @@ void MorphSet::pump()
     flush();
   if(m_driverDirty && (m_loading.empty() || std::chrono::steady_clock::now() - m_driverSince >= kDriverDelay))
     runDriver();
-  catchUp(kCatchUpAfter);
+  // meshes no longer cageOnly (the GPU stopped refining them) are drawn as their morphs have them
+  catchUp([this](int mesh) { return !cageOnly || !cageOnly(mesh); });
 }
 
 void MorphSet::settled()
@@ -407,7 +411,7 @@ void MorphSet::settled()
     fv::timing::Accum t("settled: driver");
     runDriver();
   }
-  catchUp();
+  catchUp([this](int mesh) { return !cageOnly || !cageOnly(mesh); });
 }
 
 void MorphSet::set(const std::string& name, double value)
@@ -776,7 +780,6 @@ void MorphSet::flush()
   if(cageOnly)
     for(size_t i = 0; i < dirty.size(); i++)
       cages[i] = cageOnly(dirty[i].first);
-  const auto now = std::chrono::steady_clock::now();
   jobs::parallelFor(dirty.size(), 1, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
     {
@@ -786,8 +789,7 @@ void MorphSet::flush()
       {
         // the drawn buffers stay at `applied` until catchUp()
         updateCage(mesh, *st);
-        st->behind  = true;
-        st->movedAt = now;
+        st->behind = true;
         continue;
       }
       updates[i]  = ++st->sinceRebuild > kRebuildEvery ? rebuild(mesh, *st) : update(mesh, *st);
@@ -803,12 +805,16 @@ void MorphSet::flush()
       change(updates[i].mesh, updates[i].all, updates[i].moved, updates[i].written);
 }
 
-void MorphSet::catchUp(std::chrono::steady_clock::duration still)
+void MorphSet::catchUp()
 {
-  const auto                              now = std::chrono::steady_clock::now();
+  catchUp([](int) { return true; });
+}
+
+void MorphSet::catchUp(const std::function<bool(int mesh)>& which)
+{
   std::vector<std::pair<int, MeshState*>> behind;
   for(auto& [mesh, st] : m_cpu)
-    if(st.behind && !st.dirty && now - st.movedAt >= still)
+    if(st.behind && !st.dirty && which(mesh))
       behind.emplace_back(mesh, &st);
   if(behind.empty())
     return;
@@ -877,8 +883,9 @@ MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
     st.mark.assign(n, 0);
   std::vector<uint32_t> moved;
   const auto            deltasStart = std::chrono::steady_clock::now();
-  auto                  add = [&](const mesh::RenderTarget& t, double dw) {
-    const size_t count = t.indices.size();
+  auto                  add = [&](const mesh::RenderTarget& target, double dw) {
+    const mesh::RenderTarget::Drawn& t     = target.drawn(geo);
+    const size_t                     count = t.indices.size();
     const auto   run   = [&](size_t begin, size_t end, std::vector<uint32_t>& found) {
       for(size_t i = begin; i < end; i++)
       {
@@ -924,6 +931,8 @@ MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
     return out;
   std::vector<uint32_t> written;
   const auto            weldStart = std::chrono::steady_clock::now();
+  if(!st.welder)
+    st.welder = welderOf(geo);
   const auto            range     = st.welder->partial(geo.position, geo.normal, moved, &written);
   // a weld of the whole mesh (more than a quarter of it moved) makes the change `all`
   const bool full = range && written.empty();
@@ -946,7 +955,7 @@ MorphSet::MeshUpdate MorphSet::rebuild(int mesh, MeshState& st)
   float* pos           = geo.position.data();
   for(const auto& [key, a] : st.active)
   {
-    const mesh::RenderTarget& t = *a.target;
+    const mesh::RenderTarget::Drawn& t = a.target->drawn(geo);
     for(size_t i = 0, n = t.indices.size(); i < n; i++)
     {
       const size_t o = size_t(t.indices[i]) * 3, d = i * 3;
@@ -955,6 +964,8 @@ MorphSet::MeshUpdate MorphSet::rebuild(int mesh, MeshState& st)
       pos[o + 2]     = float(pos[o + 2] + t.deltas[d + 2] * a.weight);
     }
   }
+  if(!st.welder)
+    st.welder = welderOf(geo);
   st.welder->full(geo.position, geo.normal);
   MeshUpdate out;
   out.mesh    = mesh;

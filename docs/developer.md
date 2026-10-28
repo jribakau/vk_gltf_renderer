@@ -885,7 +885,7 @@ options and written by the feed (`syncMaterials`); a model's is its file's mater
 laid over, set on its import's record. Each frame `syncRetainedScene` moves the clip on and the
 residency syncs what changed.
 
-With `figureGpuRefine` (a host setting, off by default; daz-viewer `docs/gpu-figures-plan.md`) a
+With `figureGpuRefine` (a host setting, on by default; daz-viewer `docs/gpu-figures-plan.md`) a
 subdivided figure mesh, or a widened strand mesh, is fed with its morphed cage and its `rs::RefineTables`,
 and the residency makes its positions and normals on the GPU (`refineOnGpu`: the stencil levels in
 `stencil.comp.slang`, the welded normals in `vertex_normals.comp.slang`, the UV seam splits as a
@@ -895,10 +895,16 @@ kept) open it. A mesh whose materials need tangents gets them from the drawn pos
 and UVs as well (`vertex_tangents.comp.slang`, over each vertex's corners in `computeTangents`'
 order and arithmetic), so the feed makes and sends none for it, and a drag's shading is never
 stale. A dial's step then moves the cage alone:
-`MorphSet::cageOnly`, which the host points at the feed's `refines`, keeps the morphed cage and
-reports a cage change, fed by `syncCages` (`RetainedScene::setMeshCage`). The CPU's drawn vertices,
-the record's positions and the prim bounds (the selection box, the scene bounds) catch up once the
-mesh has been still for 100 ms (`MorphSet::catchUp`, from `pump`) and at `settled()`.
+`MorphSet::cageOnly` keeps the morphed cage and reports a cage change, fed by `syncCages`
+(`RetainedScene::setMeshCage`). A figure loaded with the setting on moves only cages from the start
+(`dson::LoadOptions::cageMorphs`, by `mesh::drawnFromCage`, the rule the feed refines by); the host
+points the predicate at the feed's `refines` once it composes, and a mesh it does not refine
+catches up at the next `pump`. The CPU's drawn vertices of the rest stay as loaded until an export
+reads them (`MorphSet::catchUp`), and a morph target refines its drawn deltas only when a flush or
+that catch-up first asks (`RenderTarget::drawn`): a character's shape, a follower's projections and
+dForce's drape steps keep cage deltas alone. A refined prim's bounds (the selection box, the scene
+bounds, the auto ground) are its cage's around the cage vertices its vertices are made from
+(`Prim::cageSupport`), widened by the longest offset.
 
 With `figureDazSkinning` (a host setting, off by default) a figure is skinned as its file asks:
 `skinBinding` reads the skin modifier's `skin_settings` (Genesis 3 and 8 all dual quaternion,

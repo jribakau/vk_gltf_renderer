@@ -109,10 +109,10 @@ public:
 
   const std::vector<Channel>& channels() const { return m_channels; }
   Driver*                     driver = nullptr;
-  // Meshes whose drawn vertices something else makes from their cage while dials move (the GPU
-  // refines them: figureGpuRefine, daz-viewer docs/gpu-figures-plan.md F1). A flush keeps their
-  // morphed cage and reports a cage change; their drawn positions and normals follow once they have
-  // been still a moment (pump) and at settled(). Asked on the owner's thread.
+  // Meshes whose drawn vertices something else makes from their cage (the GPU refines them:
+  // figureGpuRefine, daz-viewer docs/gpu-figures-plan.md). A flush keeps their morphed cage and
+  // reports a cage change; their drawn positions and normals stay as they were until catchUp(), or
+  // until the mesh is no longer cageOnly (the next pump). Asked on the owner's thread.
   std::function<bool(int mesh)> cageOnly;
 
   // Number of user-facing morphs (hidden, formula-driven ones excluded).
@@ -147,9 +147,9 @@ public:
 
   // Applies pending morph changes to the drawn vertices of the meshes (to the cages of cageOnly ones).
   void flush();
-  // Brings the drawn vertices of cageOnly meshes up to their morphs, those whose cage has not moved
-  // for `still`; reported as changes.
-  void catchUp(std::chrono::steady_clock::duration still = {});
+  // Brings the drawn vertices of cageOnly meshes up to their morphs (an export reads them); reported
+  // as changes.
+  void catchUp();
 
   // The vertices changed since last asked; clears them.
   std::vector<MeshChange> takeChanges();
@@ -212,12 +212,11 @@ private:
     std::unique_ptr<mesh::NormalWelder>                   welder;
     std::vector<uint8_t>                                  mark;
     // a cageOnly mesh's morphed cage (empty: not kept), the weights it holds, and whether the drawn
-    // buffers are behind `active` (since `movedAt`)
+    // buffers are behind `active`
     std::vector<float>                                    cage;
     std::unordered_map<const mesh::RenderTarget*, Active> cageApplied;
     int                                                   sinceCageRebuild = 0;
     bool                                                  behind           = false;
-    std::chrono::steady_clock::time_point                 movedAt;
   };
 
   struct FollowerState
@@ -265,6 +264,8 @@ private:
   // a cageOnly mesh's cage brought to `active`: each changed target's cage deltas, or every target
   // over the base cage when it is not kept yet or is due a rebuild
   void       updateCage(int mesh, MeshState& st);
+  // the drawn vertices of the meshes behind their morphs that `which` names brought up to them
+  void       catchUp(const std::function<bool(int mesh)>& which);
   void       change(int mesh, bool all, const std::vector<uint32_t>& moved, const std::vector<uint32_t>& written, bool cage = false,
                     bool caughtUp = false);
 

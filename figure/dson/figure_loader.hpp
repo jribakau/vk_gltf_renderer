@@ -59,6 +59,9 @@ struct LoadOptions
   // SubD geometry drawn subdivided this many times (0-3)
   int subdivision = 0;
   std::optional<AttachTarget> attach;
+  // morphs move only the cages of the meshes whose drawn vertices are made from them
+  // (mesh::drawnFromCage): the GPU makes those (figureGpuRefine)
+  bool cageMorphs = false;
 };
 
 // A morph dial a scene file sets, and the node or geometry instance it sits on: a character's shape

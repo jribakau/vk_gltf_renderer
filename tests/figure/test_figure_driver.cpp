@@ -113,14 +113,16 @@ public:
       const fv::dson::Json* values = deltas ? fv::dson::get(deltas, "values") : nullptr;
       if(!values || !values->is_array())
         continue;
-      auto target = std::make_shared<fv::mesh::RenderTarget>();
+      auto                          target = std::make_shared<fv::mesh::RenderTarget>();
+      fv::mesh::RenderTarget::Drawn drawn;
       for(const fv::dson::Json& row : *values)
       {
-        target->indices.push_back(uint32_t(row.at(0).get<int>()));
-        target->deltas.push_back(float(row.at(1).get<double>()));
-        target->deltas.push_back(float(row.at(2).get<double>()));
-        target->deltas.push_back(float(row.at(3).get<double>()));
+        drawn.indices.push_back(uint32_t(row.at(0).get<int>()));
+        drawn.deltas.push_back(float(row.at(1).get<double>()));
+        drawn.deltas.push_back(float(row.at(2).get<double>()));
+        drawn.deltas.push_back(float(row.at(3).get<double>()));
       }
+      target->setDrawn(std::move(drawn));
       fv::dson::MorphPart part;
       part.mesh   = 0;
       part.target = target;

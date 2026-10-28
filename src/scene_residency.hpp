@@ -238,6 +238,11 @@ public:
     const OpacityMicromap* micromap = nullptr;
     BufferHandle           micromapIndices;
     glm::vec3    boundsMin{0.f}, boundsMax{0.f};  // of the vertices its indices name, in mesh space
+    // a refined mesh's: the cage vertices its vertices are made from, and how far a vertex lies off
+    // them (strand ribbons' half widths), for the tables they were made from
+    std::vector<uint32_t>             cageSupport;
+    float                             cagePad = 0;
+    std::weak_ptr<const RefineTables> supportOf;
   };
   // The raster lists (SceneGpuView::DrawList)
   enum class DrawList

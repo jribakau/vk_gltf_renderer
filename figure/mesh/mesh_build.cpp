@@ -758,46 +758,82 @@ RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d)
   return target(mesh, std::move(cageIndices), std::move(cageDeltas));
 }
 
-RenderTarget target(const BuiltMesh& mesh, std::vector<uint32_t> cageIndices, std::vector<float> cageDeltas)
+RenderTarget target(const BuiltMesh&, std::vector<uint32_t> cageIndices, std::vector<float> cageDeltas)
 {
   RenderTarget out;
   out.cageIndices = std::move(cageIndices);
   out.cageDeltas  = std::move(cageDeltas);
-  subdiv::Sparse render;
-  if(mesh.refinement)
-    render = subdiv::refineSparse(*mesh.refinement, out.cageIndices, out.cageDeltas, 3);
-  else
-    render = {out.cageIndices, out.cageDeltas};
-  // every split of a vertex that moves takes its delta: counted, then written, a chunk at a time
-  // side by side, in the order one pass would write them
-  constexpr size_t    kChunk = 16384;
-  const size_t        n = render.indices.size(), chunks = (n + kChunk - 1) / kChunk;
-  std::vector<size_t> at(chunks + 1, 0);
-  const auto          moves = [&](size_t i) { return render.data[i * 3] != 0 || render.data[i * 3 + 1] != 0 || render.data[i * 3 + 2] != 0; };
-  jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
-    for(size_t c = begin; c < end; c++)
-      for(size_t i = c * kChunk; i < std::min(n, (c + 1) * kChunk); i++)
-        if(moves(i))
-          for(int32_t s = mesh.firstSplit[render.indices[i]]; s >= 0; s = mesh.nextSplit[s])
-            at[c + 1]++;
-  });
-  std::partial_sum(at.begin(), at.end(), at.begin());
-  out.indices.resize(at[chunks]);
-  out.deltas.resize(at[chunks] * 3);
-  jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
-    for(size_t c = begin; c < end; c++)
-    {
-      size_t o = at[c];
-      for(size_t i = c * kChunk; i < std::min(n, (c + 1) * kChunk); i++)
-        if(moves(i))
-          for(int32_t s = mesh.firstSplit[render.indices[i]]; s >= 0; s = mesh.nextSplit[s], o++)
-          {
-            out.indices[o] = uint32_t(s);
-            std::copy_n(&render.data[i * 3], 3, &out.deltas[o * 3]);
-          }
-    }
-  });
   return out;
+}
+
+const RenderTarget::Drawn& RenderTarget::drawn(const BuiltMesh& mesh) const
+{
+  std::call_once(m_lazy->once, [&] {
+    Drawn&         out = m_lazy->drawn;
+    subdiv::Sparse render;
+    if(mesh.refinement)
+      render = subdiv::refineSparse(*mesh.refinement, cageIndices, cageDeltas, 3);
+    else
+      render = {cageIndices, cageDeltas};
+    // every split of a vertex that moves takes its delta: counted, then written, a chunk at a time
+    // side by side, in the order one pass would write them
+    constexpr size_t    kChunk = 16384;
+    const size_t        n = render.indices.size(), chunks = (n + kChunk - 1) / kChunk;
+    std::vector<size_t> at(chunks + 1, 0);
+    const auto moves = [&](size_t i) { return render.data[i * 3] != 0 || render.data[i * 3 + 1] != 0 || render.data[i * 3 + 2] != 0; };
+    const auto split = [&](uint32_t v) { return v < mesh.firstSplit.size() ? mesh.firstSplit[v] : -1; };
+    jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
+      for(size_t c = begin; c < end; c++)
+        for(size_t i = c * kChunk; i < std::min(n, (c + 1) * kChunk); i++)
+          if(moves(i))
+            for(int32_t s = split(render.indices[i]); s >= 0; s = mesh.nextSplit[s])
+              at[c + 1]++;
+    });
+    std::partial_sum(at.begin(), at.end(), at.begin());
+    out.indices.resize(at[chunks]);
+    out.deltas.resize(at[chunks] * 3);
+    jobs::parallelFor(chunks, 1, [&](size_t begin, size_t end) {
+      for(size_t c = begin; c < end; c++)
+      {
+        size_t o = at[c];
+        for(size_t i = c * kChunk; i < std::min(n, (c + 1) * kChunk); i++)
+          if(moves(i))
+            for(int32_t s = split(render.indices[i]); s >= 0; s = mesh.nextSplit[s], o++)
+            {
+              out.indices[o] = uint32_t(s);
+              std::copy_n(&render.data[i * 3], 3, &out.deltas[o * 3]);
+            }
+      }
+    });
+    m_lazy->made = true;
+  });
+  return m_lazy->drawn;
+}
+
+const RenderTarget::Drawn* RenderTarget::drawnIfMade() const
+{
+  return m_lazy->made ? &m_lazy->drawn : nullptr;
+}
+
+void RenderTarget::setDrawn(Drawn d)
+{
+  std::call_once(m_lazy->once, [&] {
+    m_lazy->drawn = std::move(d);
+    m_lazy->made  = true;
+  });
+}
+
+bool RenderTarget::moves() const
+{
+  const auto any = [](const std::vector<float>& v) { return std::any_of(v.begin(), v.end(), [](float x) { return x != 0.f; }); };
+  if(const Drawn* d = drawnIfMade(); d && cageDeltas.empty())
+    return any(d->deltas);
+  return any(cageDeltas);
+}
+
+bool drawnFromCage(const BuiltMesh& mesh)
+{
+  return mesh.refinement && (!mesh.ribbon || !mesh.ribbon->half.empty());
 }
 
 std::vector<float> shiftCage(BuiltMesh& mesh, std::span<const float> positions)

@@ -10,9 +10,11 @@
 //     render vertices split along UV seams, and normals are welded over render vertices.
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <optional>
 #include <span>
@@ -160,21 +162,51 @@ struct CageDeltas
   std::vector<float>   deltas;  // xyz per entry of verts
 };
 
+// A morph target: its cage deltas, and its drawn vertices' deltas made from them the first time
+// they are asked for. A mesh the GPU refines from its cage (figureGpuRefine) is moved by the cage
+// deltas alone, so its targets never make theirs (daz-viewer docs/gpu-figures-plan.md F5).
 struct RenderTarget
 {
   // drawn vertices and their xyz deltas
-  std::vector<uint32_t> indices;
-  std::vector<float>    deltas;
-  // the cage deltas it was made from, out-of-range vertices dropped
+  struct Drawn
+  {
+    std::vector<uint32_t> indices;
+    std::vector<float>    deltas;
+  };
+
+  // the cage deltas, out-of-range vertices dropped
   std::vector<uint32_t> cageIndices;
   std::vector<float>    cageDeltas;
+
+  // Refined onto `mesh`'s render vertices and spread to every UV split, once, by whichever thread
+  // asks first (the others wait for it).
+  const Drawn& drawn(const BuiltMesh& mesh) const;
+  // The drawn deltas, when made or given; else null.
+  const Drawn* drawnIfMade() const;
+  // Gives the drawn deltas outright, before anything asked for them (a target made by hand).
+  void setDrawn(Drawn d);
+  // Whether a cage delta, or a given drawn delta, is not zero.
+  bool moves() const;
+
+private:
+  struct Lazy
+  {
+    std::once_flag    once;
+    std::atomic<bool> made{false};
+    Drawn             drawn;
+  };
+  std::unique_ptr<Lazy> m_lazy = std::make_unique<Lazy>();
 };
 
-// A morph target from cage deltas: refined onto the render vertices, then spread to every UV split.
+// A morph target from cage deltas.
 RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d);
 // The same from cage vertices already in range, taken over rather than copied (a projection onto a
 // hair's strands lists a million).
 RenderTarget target(const BuiltMesh& mesh, std::vector<uint32_t> cageIndices, std::vector<float> cageDeltas);
+
+// Whether a mesh's drawn vertices can be made from its cage alone, as the GPU makes them
+// (figureGpuRefine): subdivided, or strand ribbons once widened.
+bool drawnFromCage(const BuiltMesh& mesh);
 
 // Replaces the cage positions and returns the delta of the drawn vertices (xyz each), so a fit can
 // move the rest shape without discarding morphs already applied.

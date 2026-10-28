@@ -64,8 +64,7 @@ constexpr float kStrandReach = 3.f;
 // An item morph whose deltas address vertices the item does not have belongs to another generation.
 bool targetFits(const mesh::RenderTarget& t, int count)
 {
-  const auto& idx = t.cageIndices.empty() ? t.indices : t.cageIndices;
-  return std::all_of(idx.begin(), idx.end(), [&](uint32_t i) { return int(i) < count; });
+  return std::all_of(t.cageIndices.begin(), t.cageIndices.end(), [&](uint32_t i) { return int(i) < count; });
 }
 
 // Whether an item morph that has no figure morph of the same name is worth a slider: fit adjustments

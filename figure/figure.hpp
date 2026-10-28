@@ -243,6 +243,7 @@ private:
   };
 
   std::shared_ptr<dson::Store>                  m_store;
+  bool                                          m_cageMorphs = false;  // dson::LoadOptions::cageMorphs
   std::shared_ptr<pose::FigureSource>           m_source;
   std::vector<std::string>                      m_correctiveFiles;
   std::vector<std::future<CorrectiveFile>>      m_correctiveJobs;

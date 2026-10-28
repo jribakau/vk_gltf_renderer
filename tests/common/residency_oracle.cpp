@@ -420,14 +420,37 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(prim->input.vertexAddress != gpu.bufferAddress(positions) || prim->input.indexAddress != gpu.bufferAddress(prim->indices)
        || prim->input.indexCount != run.indexCount || prim->input.vertexCount != record->positions.size())
       out.push_back(at("I3", p) + "its BLAS input is not its buffers");
-    // a refined mesh's: its positions as fed, which a drag's cage steps leave behind until the drawn
-    // vertices catch up (MorphSet::cageOnly)
+    // a refined mesh's: its cage around the cage vertices the submesh's vertices read, widened by the
+    // longest offset (the drawn positions as fed fall behind its morphs: MorphSet::cageOnly)
     glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
-    for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
+    if(given->refine && !given->cage.empty())
     {
-      lo = glm::min(lo, given->positions[given->indices[i]]);
-      hi = glm::max(hi, given->positions[given->indices[i]]);
+      const rs::RefineTables& t = *given->refine;
+      std::set<uint32_t>      reads;
+      for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
+        reads.insert(t.drawnFrom[given->indices[i]]);
+      for(size_t l = t.levels.size(); l-- > 0;)
+      {
+        std::set<uint32_t> below;
+        for(uint32_t r : reads)
+          below.insert(t.levels[l].columns.begin() + t.levels[l].start[r], t.levels[l].columns.begin() + t.levels[l].start[r + 1]);
+        reads = std::move(below);
+      }
+      float pad = 0;
+      for(const glm::vec3& o : t.offsets)
+        pad = std::max(pad, glm::length(o));
+      for(uint32_t v : reads)
+      {
+        lo = glm::min(lo, given->cage[v] - pad);
+        hi = glm::max(hi, given->cage[v] + pad);
+      }
     }
+    else
+      for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
+      {
+        lo = glm::min(lo, given->positions[given->indices[i]]);
+        hi = glm::max(hi, given->positions[given->indices[i]]);
+      }
     if(run.indexCount && (prim->boundsMin != lo || prim->boundsMax != hi))
       out.push_back(at("I3", p) + "its bounds are not its vertices'");
     const FakeGpuBackend::Blas* blas = gpu.blas(prim->blas);

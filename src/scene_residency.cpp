@@ -546,19 +546,66 @@ void Residency::retireRefine(MeshGpu& m)
   m.refine.reset();
 }
 
+// The cage vertices a refined submesh's vertices are made from: its refined vertices, then each
+// level's rows back to the columns they read
+static std::vector<uint32_t> cageSupport(const RefineTables& t, std::span<const uint32_t> indices)
+{
+  std::vector<uint8_t> mark(t.refinedCount(), 0);
+  for(uint32_t i : indices)
+    if(i < t.drawnFrom.size() && t.drawnFrom[i] < mark.size())
+      mark[t.drawnFrom[i]] = 1;
+  for(size_t l = t.levels.size(); l-- > 0;)
+  {
+    const RefineTables::Level& level = t.levels[l];
+    std::vector<uint8_t>       below(l ? t.levels[l - 1].rows() : t.cageCount, 0);
+    for(uint32_t r = 0; r < level.rows() && r < mark.size(); r++)
+      if(mark[r])
+        for(uint32_t k = level.start[r]; k < level.start[r + 1]; k++)
+          if(level.columns[k] < below.size())
+            below[level.columns[k]] = 1;
+    mark = std::move(below);
+  }
+  std::vector<uint32_t> out;
+  for(uint32_t v = 0; v < mark.size(); v++)
+    if(mark[v])
+      out.push_back(v);
+  return out;
+}
+
 // The box around the vertices a prim's indices name; none named: a point at the origin. A refined
-// mesh's are its positions as fed, behind its cage during a drag (they place the selection box and
-// the scene's bounds, not culling)
+// mesh's is its cage's around the vertices they are made from (a refined vertex is a convex sum of
+// them), widened by its offsets: the drawn positions the CPU keeps fall behind its morphs (they
+// place the selection box and the scene's bounds, not culling)
 static void fitBounds(Residency::Prim& prim, const MeshRecord& record)
 {
   const Submesh& run = record.submeshes[prim.submesh];
   glm::vec3      lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
-  for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
-    if(record.indices[i] < record.positions.size())
+  if(record.refine && !record.cage.empty() && run.indexCount)
+  {
+    if(prim.supportOf.lock() != record.refine)
     {
-      lo = glm::min(lo, record.positions[record.indices[i]]);
-      hi = glm::max(hi, record.positions[record.indices[i]]);
+      prim.cageSupport = cageSupport(*record.refine, std::span(record.indices).subspan(run.firstIndex, run.indexCount));
+      prim.cagePad     = 0;
+      for(const glm::vec3& o : record.refine->offsets)
+        prim.cagePad = std::max(prim.cagePad, glm::length(o));
+      prim.supportOf = record.refine;
     }
+    for(uint32_t v : prim.cageSupport)
+      if(v < record.cage.size())
+      {
+        lo = glm::min(lo, record.cage[v]);
+        hi = glm::max(hi, record.cage[v]);
+      }
+    lo -= glm::vec3(prim.cagePad);
+    hi += glm::vec3(prim.cagePad);
+  }
+  else
+    for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
+      if(record.indices[i] < record.positions.size())
+      {
+        lo = glm::min(lo, record.positions[record.indices[i]]);
+        hi = glm::max(hi, record.positions[record.indices[i]]);
+      }
   prim.boundsMin = lo.x <= hi.x ? lo : glm::vec3(0.f);
   prim.boundsMax = lo.x <= hi.x ? hi : glm::vec3(0.f);
 }

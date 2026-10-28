@@ -283,7 +283,8 @@ TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
 
 // MorphSet::cageOnly (gpu-figures-plan.md F1b): a dial's step moves a refined mesh's cage alone, the
 // CPU's drawn vertices left as they were; the GPU's are what the CPU makes with the path off (a second
-// box dialled the same way), and the CPU's catch up at settled().
+// box dialled the same way); the CPU's stay as they were at settled() and catch up at catchUp() (an
+// export's).
 TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
 {
   const auto                box = loadBox(), reference = loadBox();
@@ -356,6 +357,11 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
   }
 
   box->morphs->settled();
+  EXPECT_TRUE(box->drain().meshes.empty());
+  for(size_t mi = 0; mi < meshes; mi++)
+    if(figure.refines(int(mi)))
+      EXPECT_EQ(box->loaded.scene.meshes[mi].geo->position, drawn[mi]) << "mesh " << mi;
+  box->morphs->catchUp();
   for(const fv::morph::MeshChange& c : box->drain().meshes)
   {
     EXPECT_FALSE(c.cage) << "mesh " << c.mesh;
@@ -438,7 +444,7 @@ TEST(FvPropFeed, ARefinedNormalMappedFiguresTangentsAreMadeOnTheGpu)
   EXPECT_TRUE(figure.syncCages(box->loaded.scene, moved(box->drain().meshes)));
   gpu.beginFrame();
   residency.sync(scene);
-  box->morphs->settled();  // the CPU's vertices, to check against
+  box->morphs->catchUp();  // the CPU's vertices, to check against
   (void)box->drain();
   check("a cage step");
 }
@@ -616,7 +622,8 @@ TEST(FvPropFeed, StrandRibbonsAreRefinedFromTheirPoints)
     moved.verts.push_back(v);
     moved.deltas.insert(moved.deltas.end(), {0.1f * float(v), 0.f, -0.05f * float(v % 4)});
   }
-  const fv::mesh::RenderTarget t = fv::mesh::target(*geo, moved);
+  const fv::mesh::RenderTarget        target = fv::mesh::target(*geo, moved);
+  const fv::mesh::RenderTarget::Drawn& t      = target.drawn(*geo);
   for(size_t i = 0; i < t.indices.size(); i++)
     for(int k = 0; k < 3; k++)
       geo->position[t.indices[i] * 3 + k] += t.deltas[i * 3 + k];

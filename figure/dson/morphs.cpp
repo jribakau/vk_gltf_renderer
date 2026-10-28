@@ -153,7 +153,7 @@ std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, con
   for(const Found& f : found)
   {
     auto target = std::make_shared<mesh::RenderTarget>(mesh::target(*f.fm->geo, f.deltas));
-    if(target->indices.empty())
+    if(!target->moves())
       continue;
     const Json* ch = get(f.mod, "channel");
     MorphDef    def;
@@ -187,11 +187,19 @@ TargetPtr scaled(const TargetPtr& t, double k)
 {
   if(k == 1)
     return t;
-  auto out = std::make_shared<mesh::RenderTarget>(*t);
-  for(float& v : out->deltas)
-    v = float(v * k);
+  auto out         = std::make_shared<mesh::RenderTarget>();
+  out->cageIndices = t->cageIndices;
+  out->cageDeltas  = t->cageDeltas;
   for(float& v : out->cageDeltas)
     v = float(v * k);
+  // a target made by hand has its drawn deltas alone
+  if(const mesh::RenderTarget::Drawn* d = t->drawnIfMade(); d && t->cageDeltas.empty())
+  {
+    mesh::RenderTarget::Drawn s = *d;
+    for(float& v : s.deltas)
+      v = float(v * k);
+    out->setDrawn(std::move(s));
+  }
   return out;
 }
 

@@ -764,8 +764,7 @@ TEST(Dforce, aMorphChannelsTargetIsReplacedInPlace)
   morph::MorphSet morphs([&](int) { return &geo; });
   const auto make = [](float dy) {
     auto t     = std::make_shared<mesh::RenderTarget>();
-    t->indices = {1};
-    t->deltas  = {0, dy, 0};
+    t->setDrawn({.indices = {1}, .deltas = {0, dy, 0}});
     return std::shared_ptr<const mesh::RenderTarget>(t);
   };
   morph::ChannelOptions opts;
