@@ -125,46 +125,18 @@ void FigureFeed::sync(const SceneGraph& figure, int root, std::span<const int> m
 
 void FigureFeed::syncMaterials(const SceneGraph& figure, const build::Drawing& drawing)
 {
-  const std::vector<mat::LowerOptions> lowering = build::lowering(figure, drawing, m_options.build);
+  m_lowering = build::lowering(figure, drawing, m_options.build);
 
   // a texture that comes grows a copy of the table; the materials set from here on take it, the
   // others keep the one they index (its first entries are the same)
   std::shared_ptr<rs::TextureTable> grown;
-  std::set<std::string>             missing;  // asked this sync and not found
-  const auto resolve = [&](const mat::TextureRequest& req) -> mat::ResolvedTexture {
-    if(req.rel.empty() || !m_options.build.texture)
-      return {};
-    const std::string key = mat::requestKey(req);
-    if(auto it = m_textureOf.find(key); it != m_textureOf.end())
-      return {int(it->second.slot), it->second.flipGreen};
-    if(missing.count(key))
-      return {};
-    const auto image = m_options.build.texture(req);
-    if(!image)
-    {
-      missing.insert(key);
-      return {};
-    }
-    rs::TextureRecord t;
-    t.name     = req.rel.substr(req.rel.find_last_of('/') + 1);
-    t.uri      = image->uri;
-    t.mimeType = image->mimeType;
-    if(image->mimeType == "image/ktx2")
-      t.sourceExtension = "KHR_texture_basisu";
-    const rs::TextureId id = m_scene.addTexture(std::move(t));
-    m_textureIds.push_back(id);
-    if(!grown)
-      grown = std::make_shared<rs::TextureTable>(*m_table);
-    grown->push_back({id, figureSamplerDesc()});
-    const FedTexture fed{uint32_t(grown->size() - 1), image->flipGreen};
-    m_textureOf[key] = fed;
-    return {int(fed.slot), fed.flipGreen};
-  };
+  std::set<std::string>             missing;
+  const auto resolve = [&](const mat::TextureRequest& req) { return resolveTexture(req, grown, missing); };
 
   std::vector<tinygltf::Material> payloads(figure.materials.size());
   std::vector<std::string>        extensionsUsed;  // the export works them out from the payloads
   for(size_t mi = 0; mi < figure.materials.size(); mi++)
-    payloads[mi] = build::figureMaterial(figure, int(mi), lowering[mi], resolve, extensionsUsed, m_options.build);
+    payloads[mi] = build::figureMaterial(figure, int(mi), m_lowering[mi], resolve, extensionsUsed, m_options.build);
   if(grown)
     m_table = std::move(grown);
 
@@ -177,6 +149,76 @@ void FigureFeed::syncMaterials(const SceneGraph& figure, const build::Drawing& d
     else if(const rs::MaterialRecord* r = m_scene.material(id); r && !(r->payload == payloads[mi]))
       m_scene.setMaterial(id, std::move(payloads[mi]), m_table);
   }
+}
+
+mat::ResolvedTexture FigureFeed::resolveTexture(const mat::TextureRequest&         req,
+                                                std::shared_ptr<rs::TextureTable>& grown,
+                                                std::set<std::string>&             missing)
+{
+  if(req.rel.empty() || !m_options.build.texture)
+    return {};
+  const std::string key = mat::requestKey(req);
+  if(auto it = m_textureOf.find(key); it != m_textureOf.end())
+    return {int(it->second.slot), it->second.flipGreen};
+  if(missing.count(key))
+    return {};
+  const auto image = m_options.build.texture(req);
+  if(!image)
+  {
+    missing.insert(key);
+    return {};
+  }
+  rs::TextureRecord t;
+  t.name     = req.rel.substr(req.rel.find_last_of('/') + 1);
+  t.uri      = image->uri;
+  t.mimeType = image->mimeType;
+  if(image->mimeType == "image/ktx2")
+    t.sourceExtension = "KHR_texture_basisu";
+  const rs::TextureId id = m_scene.addTexture(std::move(t));
+  m_textureIds.push_back(id);
+  if(!grown)
+    grown = std::make_shared<rs::TextureTable>(*m_table);
+  grown->push_back({id, figureSamplerDesc()});
+  const FedTexture fed{uint32_t(grown->size() - 1), image->flipGreen};
+  m_textureOf[key] = fed;
+  return {int(fed.slot), fed.flipGreen};
+}
+
+bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const int> materials)
+{
+  if(m_lowering.size() != figure.materials.size())
+    return false;
+  std::shared_ptr<rs::TextureTable> grown;
+  std::set<std::string>             missing;
+  const auto resolve = [&](const mat::TextureRequest& req) { return resolveTexture(req, grown, missing); };
+  std::vector<std::pair<int, tinygltf::Material>> payloads;
+  std::vector<std::string>                        extensionsUsed;
+  bool                                            all = true;
+  for(int mi : materials)
+  {
+    if(mi < 0 || mi >= int(m_materials.size()) || m_materials[size_t(mi)].isNone())
+    {
+      all = false;
+      continue;
+    }
+    payloads.emplace_back(mi, build::figureMaterial(figure, mi, m_lowering[size_t(mi)], resolve, extensionsUsed,
+                                                    m_options.build));
+  }
+  if(grown)
+    m_table = std::move(grown);
+  for(auto& [mi, payload] : payloads)
+  {
+    const rs::MaterialId      id = m_materials[size_t(mi)];
+    const rs::MaterialRecord* r  = m_scene.material(id);
+    if(!r || r->payload == payload)
+      continue;
+    // a normal map that comes or goes changes which of the meshes using it carry tangents: their
+    // records are a sync's to make again
+    if(rs::materialNeedsTangents(r->payload) != rs::materialNeedsTangents(payload))
+      all = false;
+    m_scene.setMaterial(id, std::move(payload), m_table);
+  }
+  return all;
 }
 
 rs::MaterialId FigureFeed::materialFor(int material)
@@ -229,18 +271,48 @@ void FigureFeed::syncNodes(const SceneGraph& figure, int root, const build::Draw
     else if(m_scene.entity(e)->parent != parent)
       m_scene.setParent(e, parent, index);
 
-    rs::Transform t;
-    t.translation = glm::vec3(float(n.position.x), float(n.position.y), float(n.position.z));
-    t.rotation    = glm::quat(float(n.quaternion.w), float(n.quaternion.x), float(n.quaternion.y), float(n.quaternion.z));
-    t.scale       = glm::vec3(float(n.scale.x), float(n.scale.y), float(n.scale.z));
-    if(i == root && m_options.rootScale != 1)
-      t.scale = glm::vec3(float(n.scale.x * m_options.rootScale), float(n.scale.y * m_options.rootScale), float(n.scale.z * m_options.rootScale));
-    const rs::Entity* entity = m_scene.entity(e);
+    const rs::Transform t      = transformOf(figure, i, root);
+    const rs::Entity*   entity = m_scene.entity(e);
     if(!(entity->local == t))
       m_scene.setLocal(e, t);
     if(entity->visible != n.visible)
       m_scene.setVisible(e, n.visible);
   }
+}
+
+rs::Transform FigureFeed::transformOf(const SceneGraph& figure, int node, int root) const
+{
+  const Node&   n = figure.nodes[size_t(node)];
+  rs::Transform t;
+  t.translation = glm::vec3(float(n.position.x), float(n.position.y), float(n.position.z));
+  t.rotation    = glm::quat(float(n.quaternion.w), float(n.quaternion.x), float(n.quaternion.y), float(n.quaternion.z));
+  t.scale       = glm::vec3(float(n.scale.x), float(n.scale.y), float(n.scale.z));
+  if(node == root && m_options.rootScale != 1)
+    t.scale = glm::vec3(float(n.scale.x * m_options.rootScale), float(n.scale.y * m_options.rootScale),
+                        float(n.scale.z * m_options.rootScale));
+  return t;
+}
+
+bool FigureFeed::syncTransforms(const SceneGraph& figure, int root, std::span<const int> nodes)
+{
+  bool all = true;
+  for(int i : nodes)
+  {
+    const rs::EntityId e = entityOf(i);
+    if(i >= int(figure.nodes.size()) || !m_scene.entity(e))
+    {
+      // not fed (new, or taken off): a sync's
+      all &= i >= 0 && i < int(figure.nodes.size()) && takenOff(figure, i);
+      continue;
+    }
+    const rs::Transform t      = transformOf(figure, i, root);
+    const rs::Entity*   entity = m_scene.entity(e);
+    if(!(entity->local == t))
+      m_scene.setLocal(e, t);
+    if(entity->visible != figure.nodes[size_t(i)].visible)
+      m_scene.setVisible(e, figure.nodes[size_t(i)].visible);
+  }
+  return all;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -376,57 +448,16 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       f.tangentGroups = tangents;
     }
     else if(movedSet.count(int(mi)))
-    {
-      // the same triangles over vertices that moved
-      const mesh::BuiltMesh& geo   = *m.geo;
-      const size_t           count = geo.position.size() / 3;
-      std::vector<glm::vec3> positions(count), normals;
-      std::memcpy(positions.data(), geo.position.data(), count * sizeof(glm::vec3));
-      if(geo.normal.size() == count * 3)
-      {
-        normals.resize(count);
-        std::memcpy(normals.data(), geo.normal.data(), count * sizeof(glm::vec3));
-      }
-      std::vector<glm::vec4> t;
-      if(!f.tangentIndices.empty())
-      {
-        // made again only near the vertices that moved: a vertex's tangent reads the triangles
-        // touching it, and the old ones were made over the same triangles
-        const rs::MeshRecord& had  = *m_scene.mesh(f.id);
-        bool                  made = false;
-        if(f.tangentAdjacency && had.positions.size() == count && had.normals.size() == normals.size() && had.tangents.size() == count)
-        {
-          std::vector<uint32_t> changed;
-          for(uint32_t v = 0; v < uint32_t(count); v++)
-            if(std::memcmp(&had.positions[v], &positions[v], sizeof(glm::vec3)) != 0
-               || (!normals.empty() && std::memcmp(&had.normals[v], &normals[v], sizeof(glm::vec3)) != 0))
-              changed.push_back(v);
-          t    = had.tangents;
-          made = tinygltf::utils::updateTangents(positions, normals, had.uv0, f.tangentIndices, *f.tangentAdjacency, changed, t);
-        }
-        if(!made)
-        {
-          t.assign(count, glm::vec4(0.f));
-          tinygltf::utils::computeTangents(positions, normals, had.uv0, f.tangentIndices, t);
-        }
-      }
-      m_scene.setMeshVertices(f.id, std::move(positions), std::move(normals), std::move(t));
-    }
+      moveVertices(m, f);
 
     // its skin: the bones' entities and the inverse binds the build writes
-    const size_t count = m.geo->position.size() / 3;
-    if(m.skinned() && m.skin.skinIndex.size() == count * 4 && m.skin.skinWeight.size() == count * 4)
+    if(std::optional<rs::SkinRecord> skin = skinRecord(m))
     {
-      rs::SkinRecord skin;
-      for(int bone : m.bones)
-        skin.joints.push_back(entityOf(bone));
-      const std::vector<float> ibm = build::inverseBindMatrices(m);
-      for(size_t j = 0; j + 16 <= ibm.size(); j += 16)
-        skin.inverseBind.push_back(glm::make_mat4(&ibm[j]));
       if(f.skin.isNone())
-        f.skin = m_scene.addSkin(std::move(skin));
-      else if(const rs::SkinRecord* had = m_scene.skin(f.skin); had && (had->joints != skin.joints || had->inverseBind != skin.inverseBind))
-        m_scene.setSkin(f.skin, std::move(skin));
+        f.skin = m_scene.addSkin(std::move(*skin));
+      else if(const rs::SkinRecord* had = m_scene.skin(f.skin);
+              had && (had->joints != skin->joints || had->inverseBind != skin->inverseBind))
+        m_scene.setSkin(f.skin, std::move(*skin));
     }
     else if(!f.skin.isNone())
     {
@@ -457,6 +488,109 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     m_scene.release(id);
   for(rs::SkinId id : oldSkins)
     m_scene.release(id);
+}
+
+void FigureFeed::moveVertices(const Mesh& m, FedMesh& f)
+{
+  // the same triangles over vertices that moved
+  const mesh::BuiltMesh& geo   = *m.geo;
+  const size_t           count = geo.position.size() / 3;
+  std::vector<glm::vec3> positions(count), normals;
+  std::memcpy(positions.data(), geo.position.data(), count * sizeof(glm::vec3));
+  if(geo.normal.size() == count * 3)
+  {
+    normals.resize(count);
+    std::memcpy(normals.data(), geo.normal.data(), count * sizeof(glm::vec3));
+  }
+  std::vector<glm::vec4> t;
+  if(!f.tangentIndices.empty())
+  {
+    // made again only near the vertices that moved: a vertex's tangent reads the triangles
+    // touching it, and the old ones were made over the same triangles
+    const rs::MeshRecord& had  = *m_scene.mesh(f.id);
+    bool                  made = false;
+    if(f.tangentAdjacency && had.positions.size() == count && had.normals.size() == normals.size() && had.tangents.size() == count)
+    {
+      std::vector<uint32_t> changed;
+      for(uint32_t v = 0; v < uint32_t(count); v++)
+        if(std::memcmp(&had.positions[v], &positions[v], sizeof(glm::vec3)) != 0
+           || (!normals.empty() && std::memcmp(&had.normals[v], &normals[v], sizeof(glm::vec3)) != 0))
+          changed.push_back(v);
+      t = had.tangents;
+      made = tinygltf::utils::updateTangents(positions, normals, had.uv0, f.tangentIndices, *f.tangentAdjacency, changed, t);
+    }
+    if(!made)
+    {
+      t.assign(count, glm::vec4(0.f));
+      tinygltf::utils::computeTangents(positions, normals, had.uv0, f.tangentIndices, t);
+    }
+  }
+  m_scene.setMeshVertices(f.id, std::move(positions), std::move(normals), std::move(t));
+}
+
+std::optional<rs::SkinRecord> FigureFeed::skinRecord(const Mesh& m) const
+{
+  const size_t count = m.geo ? m.geo->position.size() / 3 : 0;
+  if(!m.skinned() || m.skin.skinIndex.size() != count * 4 || m.skin.skinWeight.size() != count * 4)
+    return std::nullopt;
+  rs::SkinRecord skin;
+  for(int bone : m.bones)
+    skin.joints.push_back(entityOf(bone));
+  const std::vector<float> ibm = build::inverseBindMatrices(m);
+  for(size_t j = 0; j + 16 <= ibm.size(); j += 16)
+    skin.inverseBind.push_back(glm::make_mat4(&ibm[j]));
+  return skin;
+}
+
+bool FigureFeed::fedAsItIs(const SceneGraph& figure, int mesh) const
+{
+  if(mesh < 0 || mesh >= int(figure.meshes.size()) || mesh >= int(m_meshes.size()))
+    return false;
+  const Mesh&    m = figure.meshes[size_t(mesh)];
+  const FedMesh& f = m_meshes[size_t(mesh)];
+  return !f.id.isNone() && m.geo && f.geo.lock() == m.geo && f.hidden == m.geo->hiddenPolys && m_scene.mesh(f.id)
+         && m_scene.mesh(f.id)->positions.size() == m.geo->position.size() / 3;
+}
+
+bool FigureFeed::syncVertices(const SceneGraph& figure, std::span<const int> meshes)
+{
+  bool all = true;
+  for(int mi : meshes)
+  {
+    if(!fedAsItIs(figure, mi))
+    {
+      all = false;
+      continue;
+    }
+    moveVertices(figure.meshes[size_t(mi)], m_meshes[size_t(mi)]);
+  }
+  return all;
+}
+
+bool FigureFeed::syncSkins(const SceneGraph& figure, std::span<const int> meshes)
+{
+  bool all = true;
+  for(int mi : meshes)
+  {
+    if(!fedAsItIs(figure, mi))
+    {
+      all = false;
+      continue;
+    }
+    FedMesh&                      f    = m_meshes[size_t(mi)];
+    std::optional<rs::SkinRecord> skin = skinRecord(figure.meshes[size_t(mi)]);
+    // a skin that comes or goes changes what the instances draw with: a sync's
+    if(skin.has_value() == f.skin.isNone())
+    {
+      all = false;
+      continue;
+    }
+    if(!skin)
+      continue;
+    if(const rs::SkinRecord* had = m_scene.skin(f.skin); had && (had->joints != skin->joints || had->inverseBind != skin->inverseBind))
+      m_scene.setSkin(f.skin, std::move(*skin));
+  }
+  return all;
 }
 
 }  // namespace fv

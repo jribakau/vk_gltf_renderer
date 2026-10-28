@@ -409,6 +409,88 @@ TEST(FigureFeed, AMaterialEditSetsThatMaterialOnly)
   expectSame(fed, imported, false);
 }
 
+// The narrow syncs a host runs every frame leave the store as a sync would: a dial and a pose (the
+// vertices, the node transforms and the rebind they bring), a hidden item, a material edit.
+TEST(FigureFeed, NarrowSyncsLeaveTheStoreAsASyncWould)
+{
+  const auto f = loadBox();
+  for(fv::Material& m : f->loaded.scene.materials)
+    m.surface.normalMap = "/Runtime/Textures/Test/BoxDetail_NM.png";
+  const auto        options = textured();
+  rs::RetainedScene fed;
+  fv::FigureFeed    feed(fed, {.build = options});
+  feed.sync(f->loaded.scene, f->loaded.root);
+  const int  root = f->loaded.root;
+  const auto same = [&] {
+    expectFed(f->loaded.scene, root, feed, fed, options);
+    rs::RetainedScene imported;
+    importBuild(imported, f->loaded.scene, root, options);
+    expectSame(fed, imported, false);
+  };
+
+  f->morphs->set("Stretch", 1);
+  f->morphs->settled();
+  f->pose->setMany({{"head", fv::pose::ChannelKind::eRotation, "x", 30}});
+  const fv::Figure::Changes changes = f->drain();
+  ASSERT_FALSE(changes.meshes.empty());
+  ASSERT_FALSE(changes.nodes.empty());
+  std::vector<int> moved;
+  for(const auto& c : changes.meshes)
+    moved.push_back(c.mesh);
+  const std::vector<int> nodes(changes.nodes.begin(), changes.nodes.end());
+  (void)fed.takeChanges();
+  EXPECT_TRUE(feed.syncVertices(f->loaded.scene, moved));
+  EXPECT_TRUE(feed.syncTransforms(f->loaded.scene, root, nodes));
+  EXPECT_TRUE(feed.syncSkins(f->loaded.scene, changes.rebound));
+  const rs::SceneChanges narrow = fed.takeChanges();
+  EXPECT_TRUE(narrow.materials.empty());  // nothing lowered
+  EXPECT_FALSE(narrow.structure);
+  same();
+
+  // the root's own transform keeps the host's scale
+  {
+    rs::RetainedScene scaled;
+    fv::FigureFeed    feedScaled(scaled, {.build = options, .rootScale = 0.01});
+    feedScaled.sync(f->loaded.scene, root);
+    scaled.setLocal(feedScaled.entityOf(root), {});
+    EXPECT_TRUE(feedScaled.syncTransforms(f->loaded.scene, root, std::vector<int>{root}));
+    EXPECT_FLOAT_EQ(scaled.entity(feedScaled.entityOf(root))->local.scale.x,
+                    float(f->loaded.scene.nodes[size_t(root)].scale.x * 0.01));
+  }
+
+  // a node hidden
+  const int hidden                              = f->loaded.scene.nodes[size_t(root)].children.front();
+  f->loaded.scene.nodes[size_t(hidden)].visible = false;
+  EXPECT_TRUE(feed.syncTransforms(f->loaded.scene, root, std::vector<int>{hidden}));
+  same();
+
+  // a factor edit: that material only
+  f->loaded.scene.materials[0].edits.roughness = 0.25f;
+  (void)fed.takeChanges();
+  EXPECT_TRUE(feed.syncMaterials(f->loaded.scene, std::vector<int>{0}));
+  EXPECT_EQ(fed.takeChanges().materials, std::set<rs::MaterialId>{feed.materialOf(0)});
+  same();
+
+  // the normal map taken away: the meshes using it carry no tangents now, which only a sync remakes
+  f->loaded.scene.materials[0].surface.normalMap.clear();
+  EXPECT_FALSE(feed.syncMaterials(f->loaded.scene, std::vector<int>{0}));
+  feed.sync(f->loaded.scene, root);
+  same();
+
+  // options that changed are lowered by a sync first
+  feed.setOptions(options);
+  EXPECT_FALSE(feed.syncMaterials(f->loaded.scene, std::vector<int>{0}));
+  feed.sync(f->loaded.scene, root);
+  EXPECT_TRUE(feed.syncMaterials(f->loaded.scene, std::vector<int>{0}));
+
+  // geometry the feed was not fed with (hidden polygons) is a sync's
+  fv::mesh::BuiltMesh& geo = *f->loaded.scene.meshes[0].geo;
+  geo.hiddenPolys["w1"]    = {int32_t(geo.triPoly[0])};
+  EXPECT_FALSE(feed.syncVertices(f->loaded.scene, std::vector<int>{0}));
+  feed.sync(f->loaded.scene, root);
+  same();
+}
+
 TEST(FigureFeed, TheFeedLetsGoOfEverythingItFed)
 {
   const auto        f = loadBox();

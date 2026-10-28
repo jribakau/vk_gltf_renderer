@@ -38,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -74,8 +75,26 @@ public:
   // changed in place since the last sync; their positions, normals and tangents are fed again.
   void sync(const SceneGraph& figure, int root, std::span<const int> moved = {});
   // `options.build` changed (a texture came, the skin mode or exposure moved): the next sync
-  // lowers with these
-  void setOptions(const build::BuildOptions& options) { m_options.build = options; }
+  // lowers with these (the narrow syncMaterials waits for it)
+  void setOptions(const build::BuildOptions& options)
+  {
+    m_options.build = options;
+    m_lowering.clear();
+  }
+
+  // Narrow syncs, for what changes every frame, without the lowering of every material a sync does
+  // (about 10 ms on a dressed figure). Each leaves the store as a sync would for that change alone,
+  // and returns false when a sync is still needed: something it was not fed with has changed (a new
+  // node or mesh, a mesh's geometry or hidden polygons, a material's need for tangents), or nothing
+  // has been synced since setOptions. What it could do is done either way.
+  // `nodes`' local transforms and visibility (a pose step, an item shown or hidden)
+  bool syncTransforms(const SceneGraph& figure, int root, std::span<const int> nodes);
+  // `meshes`' vertices, moved in place (a dial, a fit, a drape), and the tangents near them
+  bool syncVertices(const SceneGraph& figure, std::span<const int> meshes);
+  // `meshes`' skins: their bones' entities and inverse binds (a rebind)
+  bool syncSkins(const SceneGraph& figure, std::span<const int> meshes);
+  // `materials` lowered again (an edit, a texture that came), with the options the last sync lowered with
+  bool syncMaterials(const SceneGraph& figure, std::span<const int> materials);
 
   rs::EntityId   entityOf(int node) const;
   rs::MeshId     meshOf(int mesh) const;
@@ -106,6 +125,18 @@ private:
   };
 
   void syncMaterials(const SceneGraph& figure, const build::Drawing& drawing);
+  // a texture's slot in the table, added to `grown` (a copy of m_table) when it comes now; `missing`
+  // holds the keys asked this sync that resolved to nothing
+  mat::ResolvedTexture resolveTexture(const mat::TextureRequest&         req,
+                                      std::shared_ptr<rs::TextureTable>& grown,
+                                      std::set<std::string>&             missing);
+  rs::Transform        transformOf(const SceneGraph& figure, int node, int root) const;
+  // the mesh's vertices fed again into its record, the tangents remade near the ones that moved
+  void moveVertices(const Mesh& m, FedMesh& f);
+  // the skin the mesh draws with, if it is skinned
+  std::optional<rs::SkinRecord> skinRecord(const Mesh& m) const;
+  // whether the mesh is fed with its current geometry and hidden polygons
+  bool fedAsItIs(const SceneGraph& figure, int mesh) const;
   void syncMeshes(const SceneGraph& figure, const build::Drawing& drawing, std::span<const int> moved);
   void syncNodes(const SceneGraph& figure, int root, const build::Drawing& drawing);
   // the scene material of each of a mesh's drawn groups (-1: none), and the store's material for it
@@ -121,6 +152,7 @@ private:
   std::vector<rs::EntityId>   m_entities;   // per scene node
   std::vector<FedMesh>        m_meshes;     // per scene mesh
   std::vector<rs::MaterialId> m_materials;  // per scene material
+  std::vector<mat::LowerOptions> m_lowering;   // per scene material, what the last sync lowered with
   rs::MaterialId              m_default;    // drawn by a group with no material
 
   // request key -> its texture; a key that resolved to nothing is asked again next sync
