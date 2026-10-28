@@ -155,23 +155,15 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
         for(size_t i = 0; i < requests.size(); i++)
           images[fv::build::requestKey(requests[i])] = found[i];
       }
-      fv::build::BuildOptions options;
-      options.texturesFlipped = cooked;
-      options.skin            = skin;
-      options.texture         = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
-        auto it = images.find(fv::build::requestKey(req));
-        return it == images.end() ? std::nullopt : it->second;
-      };
-      options.walkThrough = fv::walkThroughMaterials(f->loaded.scene, f->items);
-      auto built = [&] {
-        fv::timing::Scope t("buildGltf");
-        return fv::build::buildGltf(f->loaded.scene, f->loaded.root, options);
-      }();
-      LOGI("[fv] %s built in %.2f s: %zu nodes, %zu meshes, %zu materials, %zu images, %zu bytes of geometry\n", rel.c_str(),
-           std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), built.model.nodes.size(), built.model.meshes.size(),
-           built.model.materials.size(), built.model.images.size(), built.model.buffers.empty() ? size_t(0) : built.model.buffers[0].data.size());
-      // the renderer takes it on the application thread (its feed reads the scene graph; the build
-      // above measured its hair's strands meanwhile)
+      // a strand hair's direction is measured here, as a wear measures its own, so the feed on the
+      // application thread finds it (the feed reads the scene graph: no glTF is built)
+      {
+        fv::timing::Scope t("strand directions");
+        fv::build::measureStrands(f->loaded.scene, cooked);
+      }
+      LOGI("[fv] %s loaded in %.2f s: %zu nodes, %zu meshes, %zu materials, %zu textures\n", rel.c_str(),
+           std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), f->loaded.scene.nodes.size(),
+           f->loaded.scene.meshes.size(), f->loaded.scene.materials.size(), images.size());
       auto       shared  = std::make_shared<std::unique_ptr<fv::Figure>>(std::move(f));
       const bool flipped = cooked;
       post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), uncooked = std::move(uncooked), source, then,
