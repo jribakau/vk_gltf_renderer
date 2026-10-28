@@ -24,11 +24,11 @@ namespace fv {
 void Journal::record(JournalStep step)
 {
   m_redo.clear();
-  const bool sealed = std::exchange(m_sealed, false);
+  const bool sealed = std::exchange(m_sealed, step.closes);
   if(!sealed && !step.key.empty() && !m_undo.empty())
   {
     JournalStep& last = m_undo.back();
-    if(last.key == step.key && step.at - last.at <= kMerge)
+    if(last.key == step.key && (step.gesture || step.at - last.at <= kMerge))
     {
       last.redo = std::move(step.redo);
       last.at   = step.at;

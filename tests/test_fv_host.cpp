@@ -35,6 +35,7 @@
 
 #include "common/fake_host_renderer.hpp"
 #include "fv_host.hpp"
+#include "fv_journal.hpp"
 #include "fv_protocol.hpp"
 
 namespace fs = std::filesystem;
@@ -87,6 +88,14 @@ public:
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return false;
+  }
+
+  // An /input batch as the app sends it, and the frames that take it
+  void input(const Json& events)
+  {
+    protocol->input(events);
+    for(int i = 0; i < 2; i++)
+      host->onUpdate();
   }
 
   Json topic(const std::string& name) const
@@ -400,4 +409,141 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
     ASSERT_TRUE(rig.settle());
     EXPECT_EQ(differ(end, stateOf(rig, id)), "") << "seed " << seed << "\n" << log;
   }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Gestures (C2): a drag, from press to release, and a slider's gesture are one step each
+
+namespace {
+
+size_t undoSteps(HostRig& rig)
+{
+  return rig.topic("history").at("undo").size();
+}
+
+// longer than the history's merge window: what still merges past it is a gesture
+void pauseBeyondMerge()
+{
+  std::this_thread::sleep_for(fv::Journal::kMerge + std::chrono::milliseconds(100));
+}
+
+}  // namespace
+
+TEST(FvHost, AGizmoDragOfAPropIsOneStep)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_TRUE(rig.cmd("select", {{"prop", id}}).value("ok", false));
+  const rs::EntityId root = rig.renderer.selectedEntity();
+  ASSERT_TRUE(rig.renderer.gizmo.edit);
+  const Json start = rig.topic("scene").at("props").at(id).at("transform");
+
+  // as the renderer calls it: every move of the drag, then the release with the last transform
+  const auto drag = [&](float to) {
+    for(float x = 0.1f; x <= to; x += 0.1f)
+    {
+      rig.renderer.gizmo.edit(root, {x, 0.f, 0.f}, glm::quat(1.f, 0.f, 0.f, 0.f), glm::vec3(1.f), false);
+      if(x < 0.15f)
+        pauseBeyondMerge();
+    }
+    rig.renderer.gizmo.edit(root, {to, 0.f, 0.f}, glm::quat(1.f, 0.f, 0.f, 0.f), glm::vec3(1.f), true);
+    rig.host->onUpdate();
+  };
+  drag(0.5f);
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Move Box Figure"}));
+  drag(0.8f);
+  EXPECT_EQ(undoSteps(rig), 2u);
+
+  rig.cmd("history.undo");
+  EXPECT_NEAR(rig.topic("scene").at("props").at(id).at("transform").at("t")[0].get<double>(), 0.5, 1e-5);
+  rig.cmd("history.undo");
+  EXPECT_EQ(differ(start, rig.topic("scene").at("props").at(id).at("transform")), "");
+}
+
+TEST(FvHost, AGizmoDragOfABoneIsOneStep)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id    = figureId(rig.topic("scene"));
+  const Json        nodes = rig.topic("nodes/" + id).value("nodes", Json::object());
+  int               head  = -1;
+  for(const auto& [index, n] : nodes.items())
+    if(n.value("name", "") == "head" || n.value("name", "") == "Head")
+      head = std::stoi(index);
+  ASSERT_GE(head, 0) << nodes.dump();
+  ASSERT_TRUE(rig.cmd("select", {{"prop", id}, {"node", head}}).value("ok", false));
+  const rs::EntityId bone  = rig.renderer.selectedEntity();
+  const auto         headX = [&] { return rig.topic("pose/" + id).at("bones").at("head").at("axes").at("rotation/x").value("value", 0.0); };
+
+  // the rig takes the drag once a frame
+  for(float deg : {10.f, 20.f, 30.f})
+  {
+    rig.renderer.gizmo.edit(bone, glm::vec3(0.f), glm::angleAxis(glm::radians(deg), glm::vec3(1.f, 0.f, 0.f)), glm::vec3(1.f), false);
+    rig.host->onUpdate();
+    if(deg == 10.f)
+      pauseBeyondMerge();
+  }
+  rig.renderer.gizmo.edit(bone, glm::vec3(0.f), glm::angleAxis(glm::radians(30.f), glm::vec3(1.f, 0.f, 0.f)), glm::vec3(1.f), true);
+  rig.host->onUpdate();
+  ASSERT_GT(std::abs(headX()), 1.0);
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Pose Head"}));
+  rig.cmd("history.undo");
+  EXPECT_NEAR(headX(), 0.0, 1e-4);
+}
+
+TEST(FvHost, ADragOfTheViewThroughACameraIsOneStep)
+{
+  HostRig rig;
+  const std::string camera = rig.cmd("prop.add", {{"kind", "camera"}}).at("result").at("prop").get<std::string>();
+  rig.cmd("view.use", {{"camera", camera}});
+  ASSERT_EQ(undoSteps(rig), 1u);  // looking through it
+  const Json start = rig.topic("scene").at("props").at(camera).at("transform");
+
+  const auto orbit = [&](double from) {
+    rig.input({{{"t", "down"}, {"b", 0}, {"x", from}, {"y", 300}}});
+    rig.input({{{"t", "move"}, {"x", from + 40}, {"y", 310}}});
+    pauseBeyondMerge();
+    rig.input({{{"t", "move"}, {"x", from + 80}, {"y", 320}}, {{"t", "move"}, {"x", from + 120}, {"y", 330}}, {{"t", "up"}, {"b", 0}, {"x", from + 120}, {"y", 330}}});
+  };
+  orbit(400);
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Move Camera");
+  EXPECT_EQ(undoSteps(rig), 2u);
+  orbit(500);
+  EXPECT_EQ(undoSteps(rig), 3u);
+  EXPECT_NE(differ(start, rig.topic("scene").at("props").at(camera).at("transform")), "");
+
+  rig.cmd("history.undo");
+  rig.cmd("history.undo");
+  rig.host->onUpdate();
+  EXPECT_EQ(differ(start, rig.topic("scene").at("props").at(camera).at("transform")), "");
+  EXPECT_EQ(undoSteps(rig), 1u);  // the view going back with the camera is no step of its own
+}
+
+TEST(FvHost, ASlidersGestureIsOneStep)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  for(int i = 1; i <= 50; i++)
+  {
+    rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", i / 50.0}}}, {"gesture", {{"id", "slider 1"}, {"end", i == 50}}}});
+    if(i == 25)
+      pauseBeyondMerge();
+  }
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Morph Taper"}));
+  // the same again after its end, and a pose slider's: steps of their own
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Taper", 0.5}}}, {"gesture", {{"id", "slider 1"}}}});
+  rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/y", 10.0}}}, {"gesture", {{"id", "slider 2"}}}});
+  pauseBeyondMerge();
+  rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/y", 20.0}}}, {"gesture", {{"id", "slider 2"}, {"end", true}}}});
+  EXPECT_EQ(undoSteps(rig), 3u);
+
+  rig.cmd("history.undo");
+  rig.cmd("history.undo");
+  rig.cmd("history.undo");
+  EXPECT_EQ(rig.cmd("scene.state", {{"prop", id}}).at("result").at("morphs").value("Taper", 0.0), 0.0);
 }

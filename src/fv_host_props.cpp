@@ -523,7 +523,7 @@ void FvHost::Impl::viewFromCamera(const Prop& p)
 
 // Orbiting, panning and zooming through an unlocked camera move it: where the view went is written
 // back to the camera prop. A locked camera takes the view back instead.
-void FvHost::Impl::cameraFromView()
+void FvHost::Impl::cameraFromView(bool dragEnds)
 {
   const auto p     = findProp(viewCamera);
   auto       manip = renderer->getCameraManipulator();
@@ -552,18 +552,33 @@ void FvHost::Impl::cameraFromView()
     viewFromCamera(*p);
     return;
   }
-  const glm::mat4 view   = glm::lookAt(glm::vec3(eye), glm::vec3(center), glm::vec3(up));
-  const auto      parent = p->parent.empty() ? nullptr : findProp(p->parent);
-  const glm::mat4 local  = (parent ? glm::inverse(worldOf(*parent)) : glm::mat4(1.f)) * glm::inverse(view);
-  glm::vec3       scale, skew;
-  glm::vec4       perspective;
-  glm::decompose(local, scale, p->transform.rotation, p->transform.translation, skew, perspective);
-  p->transform.scale       = glm::vec3(1.f);
-  p->euler.reset();
-  p->camera.targetDistance = std::max(distance, 1e-3);
-  applyTransform(*p);
-  viewWorld = worldOf(*p);
-  movedProps.insert(p->id);
+  // a step of the history: a drag one from press to release, the wheel's steps merged as a slider's
+  Json args = {{"prop", p->id}, {"transform", Json::object()}, {"camera", Json::object()}};
+  if(lmb || mmb || dragEnds)
+    args["gesture"] = {{"id", "view:" + std::to_string(viewGesture)}, {"end", dragEnds}};
+  journaled("prop.set", args, [&] {
+    const glm::mat4 view   = glm::lookAt(glm::vec3(eye), glm::vec3(center), glm::vec3(up));
+    const auto      parent = p->parent.empty() ? nullptr : findProp(p->parent);
+    const glm::mat4 local  = (parent ? glm::inverse(worldOf(*parent)) : glm::mat4(1.f)) * glm::inverse(view);
+    glm::vec3       scale, skew;
+    glm::vec4       perspective;
+    glm::decompose(local, scale, p->transform.rotation, p->transform.translation, skew, perspective);
+    p->transform.scale       = glm::vec3(1.f);
+    p->euler.reset();
+    p->camera.targetDistance = std::max(distance, 1e-3);
+    applyTransform(*p);
+    viewWorld = worldOf(*p);
+    movedProps.insert(p->id);
+    return Json();
+  });
+}
+
+void FvHost::Impl::endViewGesture()
+{
+  // the last moves of the drag came in the batch that releases it: they are its step's end
+  if(!viewCamera.empty() && frameIn == 0)
+    cameraFromView(true);
+  viewGesture++;
 }
 
 void FvHost::Impl::publishView()

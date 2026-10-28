@@ -486,6 +486,7 @@ struct FvHost::Impl
   std::mutex                                           morphMutex;
   std::set<std::string>                                morphFigures;  // the figures morph.set may name
   std::map<std::string, std::map<std::string, double>> pendingMorphs;
+  std::map<std::string, Json>                          pendingGestures;  // the latest `gesture` sent with them
   // frames until the camera frames the scene (0: none pending)
   int frameIn = 0;
   // the gizmo's latest drag on a bone: the rig takes it once a frame, however many events came
@@ -495,8 +496,12 @@ struct FvHost::Impl
     std::string             bone;
     fv::Quat                rotation;
     std::optional<fv::Vec3> position;
+    uint64_t                gesture = 0;
   };
   std::optional<GizmoEdit> gizmoEdit;
+  // the history's gestures (fv_host_journal.cpp): a gizmo drag, and a drag of the view looking
+  // through a camera prop, each from press to release; counted up at each release
+  uint64_t gizmoGesture = 0, viewGesture = 0;
   // props the gizmo or prop.set moved this frame, published once in onUpdate
   std::set<std::string> movedProps;
   // the camera prop the viewport looks through ("" for the free view), and where the free view was
@@ -697,7 +702,9 @@ struct FvHost::Impl
   // the view: looking through a camera prop, or the free view
   Json viewUse(const Json& args);
   void viewFromCamera(const Prop& p);
-  void cameraFromView();
+  // the view moved (a drag, the wheel, camera.goto): a camera prop looked through, unless locked,
+  // goes where it is now; `dragEnds` when a drag's release brought it
+  void cameraFromView(bool dragEnds = false);
   void publishView();
 
   Json load(const Json& args);
@@ -782,6 +789,9 @@ struct FvHost::Impl
   void frameCamera();
   void normalizeInput(std::vector<Json>& events);
   void applyInput(const std::vector<Json>& events);
+  // a drag of the view ends: a camera prop looked through takes where the drag left the view (its
+  // step ends with it)
+  void endViewGesture();
   void patchPose(const Loaded& f, const std::vector<std::string>& boneIds);
   // a figure's posed bone at an entity, or {nullptr, nullptr}
   std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> boneAt(rs::EntityId entity) const;

@@ -53,6 +53,12 @@ public:
 
   // Receives each /input batch (a JSON array), on an HTTP thread. Unset: input is dropped.
   void setInputSink(std::function<void(const fv::Json& events)> sink) { m_input = std::move(sink); }
+  // An /input batch, as the route hands it on (a test sends one directly)
+  void input(const fv::Json& events)
+  {
+    if(m_input)
+      m_input(events);
+  }
 
   // What this build can do beyond the protocol's commands ({dforceGpu: bool}, ...), carried by
   // `hello` and the "session" topic, so an app shows only what the renderer has.

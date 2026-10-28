@@ -53,10 +53,10 @@
 //   prop.duplicate  {prop}                       -> {prop}, or {job} for a figure (loaded again, its state put back)
 //   scene.clear     {}                           every prop goes
 //   scene.order     {order: [prop]}              the props in this order (the ones it leaves out after them), one composition
-//   pose.set        {prop, values: {"bone/kind/axis": value}}
+//   pose.set        {prop, values: {"bone/kind/axis": value}, gesture?}
 //   pose.reset      {prop}
 //   pose.eyes       {prop}                       aim the eyeballs at the camera
-//   morph.set       {prop, values: {name: value}}   coalesced, one setMany per frame
+//   morph.set       {prop, values: {name: value}, gesture?}   coalesced, one setMany per frame
 //   morph.reset     {prop}
 //   render.mode     {mode: "raster" | "rtx", skin?: "measured" | "volume" | "thin"}
 //   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
@@ -64,7 +64,9 @@
 //   render.budget   {}  -> {known, budgetBytes, usageBytes, bytesPerPixel, width, height}   GPU memory: the
 //                                                driver's budget and what a pixel of the frame costs, so an
 //                                                export size is judged before /size refuses it (507)
-//   material.set    {prop, material, values}     edit a surface (fv_materials.hpp); material.reset {prop, material?}
+//   material.set    {prop, material, values, gesture?}   edit a surface (fv_materials.hpp); material.reset {prop, material?}
+//                                                `gesture` {id, end?}: a slider's drag, one step of the history
+//                                                however long it takes, until the message that ends it
 //   material.eyes   {prop, rel: string | null}   -> {job}: a figure's eyes become the eye preset `rel` (null: the
 //                                                character's own, its file's and its add-ons' presets). Each
 //                                                choice starts from the character's own, so eyes don't stack,
@@ -133,7 +135,9 @@
 //                                                pose.*, material.set/reset, wardrobe.visible/collision/cloth,
 //                                                dforce.enable/mode, lighting.set, scene.order, view.use, and
 //                                                camera.set looking through a camera prop), captured as it
-//                                                applies (fv_host_journal.cpp); a slider's edits merge into one
+//                                                applies (fv_host_journal.cpp); a slider's edits merge into one.
+//                                                A gizmo drag of a prop or a bone, and a drag of the view
+//                                                looking through a camera prop, are one step from press to release
 //   session.shutdown {}                          a clean exit, before the host ends the process
 //
 // The scene: the host feeds the renderer's retained scene itself (HostRenderer::hostScene): a prop

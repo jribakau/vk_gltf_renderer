@@ -171,6 +171,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     for(auto it = values->begin(); it != values->end(); ++it)
       if(it.value().is_number())
         impl->pendingMorphs[fig][it.key()] = it.value().get<double>();
+    if(args.contains("gesture"))
+      impl->pendingGestures[fig] = args["gesture"];
     return Json{{"ok", true}};
   });
   cmds.add("morph.reset", [impl](const Json& args) {
@@ -325,23 +327,35 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
               auto p = impl->findProp(nodes->id);
               if(!p)
                 return;
-              p->transform = {t, glm::normalize(r), p->kind == PropKind::eCamera ? glm::vec3(1.f) : scale};
-              p->euler.reset();
-              impl->applyTransform(*p);
-              impl->movedProps.insert(p->id);
-              if(p->id == impl->viewCamera)
-                impl->viewFromCamera(*p);
+              // one step of the history from press to release
+              const Json args = {{"prop", p->id}, {"transform", Json::object()}, {"gesture", {{"id", "gizmo:" + std::to_string(impl->gizmoGesture)}, {"end", done}}}};
+              impl->journaled("prop.set", args, [&] {
+                p->transform = {t, glm::normalize(r), p->kind == PropKind::eCamera ? glm::vec3(1.f) : scale};
+                p->euler.reset();
+                impl->applyTransform(*p);
+                impl->movedProps.insert(p->id);
+                if(p->id == impl->viewCamera)
+                  impl->viewFromCamera(*p);
+                return Json();
+              });
+              if(done)
+                impl->gizmoGesture++;
               return;
             }
             // the release repeats the last move's transform; a click on a handle with no drag has only the release
-            const auto [figure, pb] =
-                done ? std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*>{} : impl->boneAt(entity);
+            if(done)
+            {
+              impl->gizmoGesture++;
+              return;
+            }
+            const auto [figure, pb] = impl->boneAt(entity);
             if(!pb)
               return;
             impl->gizmoEdit = Impl::GizmoEdit{figure, pb->id, fv::Quat{r.x, r.y, r.z, r.w},
                                               hasKind(*pb, fv::pose::ChannelKind::eTranslation) ?
                                                   std::optional<fv::Vec3>(fv::Vec3{t.x, t.y, t.z}) :
-                                                  std::nullopt};
+                                                  std::nullopt,
+                                              impl->gizmoGesture};
           },
   });
 }

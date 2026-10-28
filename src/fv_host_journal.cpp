@@ -134,7 +134,14 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     if(!fig.pose)
       return nullptr;
     Json keys = Json::array();
-    if(cmd == "pose.set")
+    if(cmd == "pose.drag")
+    {
+      // the gizmo turns (and moves) one bone: all its channels
+      if(const fv::pose::PoseBone* pb = fig.pose->get(args.value("bone", "")))
+        for(const fv::pose::Axis& a : pb->axes)
+          keys.push_back(pb->id + "/" + axisKey(a));
+    }
+    else if(cmd == "pose.set")
     {
       if(const auto it = args.find("values"); it != args.end() && it->is_object())
         for(auto v = it->begin(); v != it->end(); ++v)
@@ -310,7 +317,7 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
     if(args.contains("parent"))
       return "Change what " + name + " rides on";
     if(const auto t = args.find("transform"); t != args.end() && t->is_object())
-      return (t->size() > 1 || t->contains("t") ? "Move " : t->contains("s") ? "Scale " : "Rotate ") + name;
+      return (t->size() != 1 || t->contains("t") ? "Move " : t->contains("s") ? "Scale " : "Rotate ") + name;
     if(args.contains("camera"))
       return "Lens of " + name;
     if(args.contains("light"))
@@ -330,7 +337,7 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "morph.reset")
     return "Reset morphs";
-  if(cmd == "pose.set")
+  if(cmd == "pose.set" || cmd == "pose.drag")
   {
     // a whole-pose edit sent as one pose.set (Mirror pose) names itself
     if(args.contains("label") && args["label"].is_string())
@@ -418,12 +425,20 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
     merges = !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("order");
   Json shape = shapeOf(args);
   if(shape.is_object())
-    shape.erase("prop");
-  journal.record({.redo  = after,
-                  .undo  = before,
-                  .label = journalLabel(cmd, args, scope),
-                  .key   = merges ? cmd + "|" + scope.dump() + "|" + shape.dump() : std::string(),
-                  .at    = std::chrono::steady_clock::now()});
+    for(const char* k : {"prop", "gesture"})
+      shape.erase(k);
+  std::string key = merges ? cmd + "|" + scope.dump() + "|" + shape.dump() : std::string();
+  // a gesture ({id, end?}: a viewport drag, a slider's drag) is one step however long it takes
+  const Json gesture = args.value("gesture", Json());
+  if(gesture.is_object() && gesture.contains("id"))
+    key = cmd + "|" + scope.dump() + "|gesture " + gesture["id"].dump();
+  journal.record({.redo    = after,
+                  .undo    = before,
+                  .label   = journalLabel(cmd, args, scope),
+                  .key     = key,
+                  .at      = std::chrono::steady_clock::now(),
+                  .gesture = gesture.is_object() && gesture.contains("id"),
+                  .closes  = gesture.is_object() && gesture.value("end", false)});
   publishHistory();
   if(failed)
     std::rethrow_exception(failed);

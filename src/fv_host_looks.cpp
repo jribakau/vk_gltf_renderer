@@ -46,9 +46,13 @@ void FvHost::Impl::applyGizmoEdit()
   const GizmoEdit edit = *std::exchange(gizmoEdit, std::nullopt);
   if(!inScene(edit.figure) || !edit.figure->fig->pose)
     return;
-  // nodes, correctives and rebound skins go out with this frame's pump()
-  edit.figure->fig->pose->setLocalTransform(edit.bone, edit.rotation, edit.position);
-  patchPose(*edit.figure, {edit.bone});
+  // nodes, correctives and rebound skins go out with this frame's pump(); the drag is one step
+  const Json args = {{"prop", edit.figure->id}, {"bone", edit.bone}, {"gesture", {{"id", "gizmo:" + std::to_string(edit.gesture)}}}};
+  journaled("pose.drag", args, [&] {
+    edit.figure->fig->pose->setLocalTransform(edit.bone, edit.rotation, edit.position);
+    patchPose(*edit.figure, {edit.bone});
+    return Json();
+  });
 }
 
 void FvHost::Impl::patchPose(const Loaded& f, const std::vector<std::string>& boneIds)

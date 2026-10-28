@@ -80,9 +80,11 @@ void FvHost::Impl::prefetchImages(const std::vector<fv::build::TextureRequest>& 
 void FvHost::Impl::applyPendingMorphs()
 {
   std::map<std::string, std::map<std::string, double>> pending;
+  std::map<std::string, Json>                          gestures;
   {
     std::lock_guard lock(morphMutex);
     pending.swap(pendingMorphs);
+    gestures.swap(pendingGestures);
   }
   for(const auto& [id, dials] : pending)
   {
@@ -94,6 +96,8 @@ void FvHost::Impl::applyPendingMorphs()
     Json args = {{"prop", id}, {"values", Json::object()}};
     for(const auto& [name, value] : dials)
       args["values"][name] = value;
+    if(const auto g = gestures.find(id); g != gestures.end())
+      args["gesture"] = g->second;
     journaled("morph.set", args, [&] {
       const auto t0 = std::chrono::steady_clock::now();
       p->figure->fig->morphs->setMany(values);
@@ -282,6 +286,8 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
         lmb = false;
       else
         mmb = false;
+      if(!lmb && !mmb)
+        endViewGesture();
     }
     else if(type == "move")
     {
@@ -298,7 +304,10 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
       // a browser wheel notch is about 100 (down positive); ImGui's is 1 (up positive)
       manip->wheel(-e.value("dy", 0.0) / 100.0 * nvapp::ElementCamera::wheelSpeed, inputs);
     }
-    else if(type == "leave")
+    else if(type == "leave" && (lmb || mmb))
+    {
       lmb = mmb = false;
+      endViewGesture();
+    }
   }
 }

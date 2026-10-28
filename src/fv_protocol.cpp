@@ -35,8 +35,9 @@ namespace {
 // width and height. 8: the Clothes tab's material values (maps, UV transform, fabric, sheen) and the
 // texture slots in the materials topic (fv_materials.hpp). 9: the animation topic's clips keep their
 // numbers while their prop is in the scene (never reused), and `current` is null without clips. 10:
-// the edit history, history.undo and history.redo and the "history" topic (fv_journal.hpp).
-constexpr int kProtocolVersion = 10;
+// the edit history, history.undo and history.redo and the "history" topic (fv_journal.hpp). 11:
+// `gesture` {id, end?} on morph.set, pose.set and material.set: a slider's drag is one step.
+constexpr int kProtocolVersion = 11;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace
@@ -73,8 +74,7 @@ void FvProtocol::registerRoutes(httplib::Server& http, const std::atomic<bool>& 
       res.set_content("an array of input events", "text/plain");
       return;
     }
-    if(m_input)
-      m_input(events);
+    input(events);
     res.status = 204;
   });
 

@@ -30,6 +30,10 @@
 // key names what the step touches, so both read the same things). A merge that ends where it began
 // leaves no step. Recording a step drops what could be redone.
 //
+// A gesture (a viewport drag from press to release, a slider's drag) is one step however long it
+// takes: its steps carry its id in their key and merge whatever the time between, and its last one
+// closes it.
+//
 
 #include <chrono>
 #include <cstdint>
@@ -49,6 +53,8 @@ struct JournalStep
   std::string    label;
   std::string    key;  // empty: never merges
   std::chrono::steady_clock::time_point at;
+  bool gesture = false;  // merges with its key whatever the time between
+  bool closes  = false;  // a gesture's last: nothing merges into it after
 };
 
 class Journal
@@ -70,7 +76,7 @@ public:
 
 private:
   std::deque<JournalStep> m_undo, m_redo;
-  bool                    m_sealed = false;  // an undo or redo since the last record: no merge
+  bool                    m_sealed = false;  // an undo, a redo or a gesture's end since the last record: no merge
 };
 
 }  // namespace fv

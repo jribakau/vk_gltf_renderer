@@ -116,3 +116,22 @@ TEST(FvJournal, KeepsTheLatestStepsUpToItsLimit)
     last = s;
   EXPECT_EQ(valueOf(last->undo), 5);
 }
+
+TEST(FvJournal, AGestureIsOneStepWhateverTheTimeUntilItsEnd)
+{
+  fv::Journal j;
+  fv::JournalStep a = dial(0, 0.2, 0s, "g1"), b = dial(0.2, 0.4, 5s, "g1"), c = dial(0.4, 0.6, 9s, "g1"), d = dial(0.6, 0.8, 9100ms, "g1");
+  a.gesture = b.gesture = c.gesture = d.gesture = true;
+  c.closes  = true;
+  j.record(a);
+  j.record(b);
+  j.record(c);
+  ASSERT_EQ(j.undoCount(), 1u);
+  // closed: the same key starts a step of its own
+  j.record(d);
+  ASSERT_EQ(j.undoCount(), 2u);
+  EXPECT_EQ(valueOf(j.takeUndo()->undo), 0.6);
+  const auto first = j.takeUndo();
+  EXPECT_EQ(valueOf(first->undo), 0);
+  EXPECT_EQ(valueOf(first->redo), 0.6);
+}
