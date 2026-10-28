@@ -425,6 +425,11 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
                          .opaque        = false};
   if(run.micromap && m_gpu.opacityMicromaps())
     linkMicromap(prim, *run.micromap);
+  else if(run.micromap && !std::exchange(m_micromapsLeftOut, true))
+    // as createVulkanScene says it: micromaps only accelerate, so without device support they are left out
+    m_notices.push_back(
+        "the scene has opacity micromaps; using them needs an NVIDIA RTX GPU with a recent driver "
+        "(VK_KHR_opacity_micromap). Rendering is unaffected.");
   fitBounds(prim, record);
   m_prims[slot]  = std::move(prim);
   slots[submesh] = int32_t(slot);

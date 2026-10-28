@@ -320,6 +320,8 @@ void RetainedScene::setLightIes(LightId id, std::optional<IesLight> ies)
 uint32_t RetainedScene::addIesProfile(IesProfileRecord profile)
 {
   assertOwner();
+  if(auto it = std::find(m_iesProfiles.begin(), m_iesProfiles.end(), profile); it != m_iesProfiles.end())
+    return uint32_t(it - m_iesProfiles.begin());
   m_iesProfiles.push_back(std::move(profile));
   m_changes.iesProfiles = true;
   return uint32_t(m_iesProfiles.size() - 1);

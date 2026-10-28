@@ -178,6 +178,23 @@ TEST(RetainedScene, DrawItemsComeInSourceOrderOncePerCopy)
   EXPECT_NEAR(bounds[1].x, 9.f, 1e-6f);
 }
 
+// The store keeps one copy of an IES profile: a lamp model removed and added back (each add imports
+// it again) names the profile it had, with nothing for the residency to do
+TEST(RetainedScene, AnIesProfileThatComesAgainIsTheOneThere)
+{
+  rs::RetainedScene          scene;
+  const rs::IesProfileRecord down{.name = "down", .bytes = {1, 2, 3}, .samples = std::vector<float>(181, 0.5f)};
+  const uint32_t             first = scene.addIesProfile(down);
+  (void)scene.takeChanges();
+  EXPECT_EQ(scene.addIesProfile(down), first);
+  EXPECT_FALSE(scene.takeChanges().iesProfiles);
+  rs::IesProfileRecord other = down;
+  other.samples[0]           = 1.f;
+  EXPECT_NE(scene.addIesProfile(other), first);
+  EXPECT_TRUE(scene.takeChanges().iesProfiles);
+  EXPECT_EQ(scene.iesProfiles().size(), 2u);
+}
+
 TEST(RetainedScene, ChangesReportWhatTheResidencyHasToDo)
 {
   rs::RetainedScene  scene;

@@ -571,6 +571,13 @@ TEST(RetainedResidency, MicromapsGoWithAReplaceAndNeedTheDevice)
   expectClean(scene, plain, without, "no device support: ");
   EXPECT_FALSE(plain.hasOpacityMicromaps());
   EXPECT_EQ(without.liveAccels(), 3u);  // the two BLASes and the TLAS
+  // and says so once, as the legacy scene does
+  const std::vector<std::string> notices = plain.takeNotices();
+  ASSERT_EQ(notices.size(), 1u);
+  EXPECT_NE(notices[0].find("VK_KHR_opacity_micromap"), std::string::npos);
+  without.beginFrame();
+  plain.replace(scene);
+  EXPECT_TRUE(plain.takeNotices().empty());
 }
 
 // An edit needing a feature the live variant lacks is held, its slot keeping the row it had, while

@@ -229,6 +229,7 @@ struct IesProfileRecord
   std::string          name;
   std::vector<uint8_t> bytes;
   std::vector<float>   samples;
+  bool                 operator==(const IesProfileRecord&) const = default;
 };
 
 // EXT_lights_ies on a light's node. It stands alone: the light is a point light of this colour and
@@ -439,7 +440,8 @@ public:
   void setLightShown(LightId id, bool shown);
   void setSkySun(LightId id, bool skySun);
 
-  // ---- IES profiles: append-only (a scene replace starts a new store); returns the profile's index
+  // ---- IES profiles: append-only (a scene replace starts a new store); returns the profile's index,
+  // the one already there when the same profile comes again (a lamp model removed and added back)
   uint32_t                          addIesProfile(IesProfileRecord profile);
   std::span<const IesProfileRecord> iesProfiles() const { return m_iesProfiles; }
 

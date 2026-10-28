@@ -523,6 +523,7 @@ private:
   bool               m_allNodes = false;  // every row, into a new table
   bool               m_allPrims = false;
   std::set<uint32_t> m_compacting;  // prim slots whose BLASes wait for their compacted copies
+  bool               m_micromapsLeftOut = false;  // the device builds none: said once
 };
 
 }  // namespace rs
