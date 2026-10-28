@@ -54,6 +54,10 @@ struct ImportOptions
   // nvvkgltf::Scene::getImageSearchPaths). A URI naming a file, absolute or found here, is kept as
   // its decoded absolute path; one naming none, as the file wrote it.
   std::vector<std::filesystem::path> imageSearchPaths;
+  // an earlier import of the same model whose meshes are still in the scene (a duplicate's
+  // source): they are taken, a reference each, instead of made again, so the two share their
+  // streams, prims and BLASes. Everything else (entities, materials, skins) is the import's own.
+  const struct ImportResult* meshesOf = nullptr;
 };
 
 struct ImportResult

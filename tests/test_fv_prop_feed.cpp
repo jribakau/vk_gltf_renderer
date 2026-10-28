@@ -224,6 +224,55 @@ TEST(FvPropFeed, AFigureChangedIsFedAgainAndEverythingGoesWithTheFeed)
 
 // The deltas a composition makes, resident as a frame's sync takes them: every one checked by the
 // residency oracle, and none waits for the device (the structural path has no idle wait from P5).
+// A duplicated model holds the model its source does, and takes its source's meshes: one record,
+// one prim and one BLAS for both (each with its own materials). With the source removed, the
+// duplicate keeps them; another file is imported afresh.
+TEST(FvPropFeed, ADuplicateSharesItsSourcesMeshes)
+{
+  Scene              s;
+  rs::RetainedScene  scene;
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu);
+  fv::PropFeed       feed(scene);
+  auto               props = s.props();
+  feed.sync(props);
+  residency.replace(scene);
+  const auto step = [&](const char* what) {
+    gpu.beginFrame();
+    residency.sync(scene);
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << what << ": " << p;
+  };
+  const size_t     meshes = scene.meshCount();
+  const uint32_t   prims  = residency.primHighWater();
+  const rs::MeshId chair  = feed.fed("p:2")->imported.meshes[0][0];
+
+  props.push_back({.id = "p:5", .number = 5, .name = "Chair 2", .model = s.chair});
+  feed.sync(props);
+  step("duplicated");
+  EXPECT_EQ(feed.fed("p:5")->imported.meshes[0][0], chair);
+  EXPECT_EQ(scene.meshCount(), meshes);
+  EXPECT_EQ(residency.primHighWater(), prims);
+  EXPECT_NE(feed.fed("p:5")->imported.materials[0], feed.fed("p:2")->imported.materials[0]);
+
+  props.erase(props.begin() + 1);  // the source goes
+  feed.sync(props);
+  step("source removed");
+  EXPECT_NE(scene.mesh(chair), nullptr);
+
+  props.push_back({.id = "p:6", .number = 6, .name = "Other chair", .model = chairFile()});
+  feed.sync(props);
+  step("another file");
+  EXPECT_NE(feed.fed("p:6")->imported.meshes[0][0], chair);
+
+  feed.clear();
+  step("cleared");
+  for(uint32_t i = 0; i < gpu.framesInFlight(); i++)
+    gpu.beginFrame();
+  for(const std::string& p : rs::residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 TEST(FvPropFeed, EveryDeltaIsAFramesSyncWithNoDeviceWait)
 {
   Scene              s;

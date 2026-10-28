@@ -449,6 +449,12 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
   };
   std::vector<std::vector<PartPlan>> plans(model.meshes.size());
   out.meshes.assign(model.meshes.size(), {});
+  // the same model's meshes, when every one is still there (its vertex sets come out the same)
+  const bool shared =
+      options.meshesOf && options.meshesOf->meshes.size() == model.meshes.size()
+      && std::all_of(options.meshesOf->meshes.begin(), options.meshesOf->meshes.end(), [&](const std::vector<MeshId>& sets) {
+           return std::all_of(sets.begin(), sets.end(), [&](MeshId id) { return scene.mesh(id) != nullptr; });
+         });
   for(size_t mi = 0; mi < model.meshes.size(); mi++)
   {
     const tinygltf::Mesh&         mesh = model.meshes[mi];
@@ -462,7 +468,12 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
         continue;
       const std::string key = attributeKey(p);
       auto [it, fresh]      = partOfKey.try_emplace(key, records.size());
-      if(fresh)
+      if(fresh && shared)
+      {
+        records.emplace_back();  // a place: the earlier import's record stands for it
+        plans[mi].push_back({});
+      }
+      else if(fresh)
       {
         MeshRecord r;
         r.name      = mesh.name;
@@ -492,6 +503,11 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
         records.push_back(std::move(r));
         plans[mi].push_back({});
       }
+      plans[mi][it->second].primitives.push_back(int(pi));
+      if(p.extensions.count(KHR_MATERIALS_VARIANTS_EXTENSION_NAME))
+        notice("KHR_materials_variants: the default material is drawn");
+      if(shared)
+        continue;
       MeshRecord&                 r   = records[it->second];
       const std::vector<uint32_t> idx = primitiveIndices(model, p);
       r.submeshes.push_back({.firstIndex = uint32_t(r.indices.size()),
@@ -500,13 +516,16 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
                              .order      = int32_t(pi),
                              .micromap   = micromapUseOf(model, p, idx.size() / 3, micromaps, notice)});
       r.indices.insert(r.indices.end(), idx.begin(), idx.end());
-      plans[mi][it->second].primitives.push_back(int(pi));
-      if(p.extensions.count(KHR_MATERIALS_VARIANTS_EXTENSION_NAME))
-        notice("KHR_materials_variants: the default material is drawn");
     }
     for(size_t r = 0; r < records.size(); r++)
     {
-      plans[mi][r].mesh = scene.addMesh(std::move(records[r]));
+      if(shared && r < options.meshesOf->meshes[mi].size())
+      {
+        plans[mi][r].mesh = options.meshesOf->meshes[mi][r];
+        scene.retain(plans[mi][r].mesh);  // the import's own, let go of at its end as a made one is
+      }
+      else
+        plans[mi][r].mesh = scene.addMesh(std::move(records[r]));
       out.meshes[mi].push_back(plans[mi][r].mesh);
     }
   }

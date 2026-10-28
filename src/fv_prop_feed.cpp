@@ -139,7 +139,14 @@ PropFeed::Result PropFeed::sync(std::span<const PropSpec> props)
           m_scene.destroyEntity(e);
       const bool first = !p.model;
       p.model          = s.model;
-      p.imported = rs::importGltf(m_scene, *s.model, {.prop = s.number, .parent = p.root, .imageSearchPaths = s.imageSearchPaths});
+      // a duplicate holds the model its source does: their meshes are shared
+      const rs::ImportResult* source = nullptr;
+      for(const auto& [id, other] : m_props)
+        if(&other != &p && other.model == s.model && !other.imported.meshes.empty())
+          source = &other.imported;
+      p.imported =
+          rs::importGltf(m_scene, *s.model,
+                         {.prop = s.number, .parent = p.root, .imageSearchPaths = s.imageSearchPaths, .meshesOf = source});
       if(first)
         for(const std::string& n : p.imported.notices)
           result.notices.emplace_back(s.id, n);
