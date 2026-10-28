@@ -111,9 +111,9 @@ TEST(Sobol, ScrambledPointsAreUniformOverSeeds)
   EXPECT_NE(sobolOwen4(3u, sobolHash(sobolHashCombine(99u, 0u))).x, sobolOwen4(3u, sobolHash(sobolHashCombine(99u, 1u))).x);
 }
 
-TEST(Sobol, TheSetBitWalkMatchesTheMatrix)
+TEST(Sobol, TheRecurrenceMatchesTheTable)
 {
-  // every bit of the index against its direction number, as the generator matrix defines a point
+  // every bit of the index against its direction number in the table, as the generator matrix defines a point
   const auto reference = [](uint index, uint dim) {
     uint x = 0u;
     for(uint bit = 0u; bit < 32u; bit++)

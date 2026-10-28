@@ -35,18 +35,35 @@ static const uint SOBOL_DIRECTIONS[4][32] = {
      0x208f8000u, 0x51474000u, 0xfbea2000u, 0x75d93000u, 0xa0858800u, 0x914e5400u, 0xdbe79e00u, 0x25db6d00u,
      0x58800080u, 0xe54000c0u, 0x79e00020u, 0xb6d00050u, 0x800800f8u, 0xc00c0074u, 0x200200a2u, 0x50050093u}};
 
-// Dimension `dim` (0..3) of Sobol point `index`, as 32 bits of a fraction. The index is a hashed
-// shuffle, so it has bits up to the top: walk only the set ones. The first dimension's directions are
-// the bits themselves, reversed.
+// Dimension `dim` (0..3) of Sobol point `index`, as 32 bits of a fraction. The directions above are
+// made as the bits are walked, by each dimension's recurrence (its primitive polynomial: x + 1,
+// x^2 + x + 1, x^3 + x + 1), in registers rather than from the table indexed at run time: with the
+// table, Sobol made a still frame several times dearer than PCG (2026-10-28, 71 ms with PCG on the RT
+// pipeline). The table stays for tests/test_sobol.cpp, which checks the two agree.
+// The first dimension's directions are the bits themselves, reversed.
 uint sobolBits(uint index, uint dim)
 {
   if(dim == 0u)
     return reversebits(index);
   uint x = 0u;
+  uint a = 0x80000000u;                                  // the direction of the bit walked
+  uint b = 0xc0000000u;                                  // the next one
+  uint c = (dim == 1u) ? 0xa0000000u : (dim == 2u) ? 0x60000000u : 0x20000000u;  // the one after
   while(index != 0u)
   {
-    x ^= SOBOL_DIRECTIONS[dim][firstbitlow(index)];
-    index &= index - 1u;
+    if((index & 1u) != 0u)
+      x ^= a;
+    index >>= 1u;
+    uint next;
+    if(dim == 1u)
+      next = c ^ (c >> 1u);  // v[k] = v[k-1] ^ v[k-1] >> 1
+    else if(dim == 2u)
+      next = c ^ b ^ (b >> 2u);  // v[k] = v[k-1] ^ v[k-2] ^ v[k-2] >> 2
+    else
+      next = b ^ a ^ (a >> 3u);  // v[k] = v[k-2] ^ v[k-3] ^ v[k-3] >> 3
+    a = b;
+    b = c;
+    c = next;
   }
   return x;
 }
