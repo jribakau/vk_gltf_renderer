@@ -77,8 +77,6 @@ set(TEST_SOURCES
     test_frame_pacing.cpp
     test_present_policy.cpp
     test_present_slots.cpp
-    # Binary payloads posted for live edits (/blob): taken once, oldest dropped past the cap
-    test_blob_store.cpp
     # Figure Viewer scene logic (figure/)
     figure/test_gzip.cpp
     figure/test_dson_parse.cpp

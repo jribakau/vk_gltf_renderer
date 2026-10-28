@@ -1823,27 +1823,24 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   bool changed{false};
   changed |= m_pathTracer.keepOneAccumulationDenoiser(m_resources);  // OptiX or OIDN, not both
   changed |= interactivityAnimationApplied;
-  bool verticesEdited = false;
-  bool animated       = false;
+  bool animated = false;
   if(m_resources.retainedGpu)
-    changed |= syncRetainedScene(cmd);  // the host's edits, carried across, and the residency's sync
+    changed |= syncRetainedScene(cmd);  // the clip, and the residency's sync of the host's edits
   else
   {
-    verticesEdited = applyPendingSceneEdits(cmd);  // Host edits (vertex uploads); before animation so it composes on top
-    animated = updateAnimation(cmd);               // Update the animation
-    changed |= verticesEdited || animated;
+    animated = updateAnimation(cmd);  // Update the animation
+    changed |= animated;
     changed |= updateSceneChanges(cmd);
   }
 
   // #DLSS deformation motion: every writer of vertex positions has run. Their reconcile may have
-  // skinned or morphed, and an edit uploaded; the copy snapshotPrevPositions() kept is what the
-  // surface was before them.
+  // skinned or morphed; the copy snapshotPrevPositions() kept is what the surface was before them.
   // (the CPU fallback uploads every morphed and skinned primitive; the compute passes list theirs)
   const bool deformed = animated
                         && (m_resources.sceneGpu.animatesOnGpu() ?
                                 !m_resources.animationVk.primitivesWritten().empty() :
                                 m_resources.getScene()->animation().hasMorphTargets() || m_resources.getScene()->animation().hasSkinning());
-  const bool verticesWritten = interactivityAnimationApplied || verticesEdited || deformed;
+  const bool verticesWritten           = interactivityAnimationApplied || deformed;
   m_resources.dlssDeformMotionActive   = verticesWritten && m_resources.prevPositions.hasBuffers();
   m_verticesWrittenLastFrame           = verticesWritten;
   // the retained scene keeps both motion tables current every sync (a row at rest is no motion)
@@ -1854,16 +1851,6 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     m_resources.dlssDeformMotionActive   = dlss && m_resources.gpuView().prevPositionTable() != 0;
   }
 
-  // A traced edit is on the GPU's way now: this frame renders it.
-  if(!m_editTrace.empty())
-  {
-    m_editTrace.emplace_back("applied", traceNowMs());
-    if(m_editTraceSink)
-      m_editTraceSink(std::move(m_editTrace));
-    else
-      LOGI("%s\n", formatTrace(m_editTrace).c_str());
-    m_editTrace.clear();
-  }
   if(changed)
   {
     resetFrame();
@@ -3803,8 +3790,6 @@ bool GltfRenderer::createScene(const std::filesystem::path& sceneFilename)
 void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
 {
   ++m_sceneGeneration;
-  m_pendingVertexUploads.clear();
-  m_liveVertices.clear();
   m_pendingAnimReconcile = false;
   // Scene object is set, we can create the Vulkan scene
   createVulkanScene();
@@ -4084,37 +4069,6 @@ void GltfRenderer::refreshCpuSceneGraphFromModel()
     scene->setCurrentScene(scene->getCurrentScene());
 }
 
-//--------------------------------------------------------------------------------------------------
-// Unified scene rebuild with optional texture update
-// Internal helper that consolidates the common rebuild logic between geometry-only and full rebuilds
-//
-// Does not call parseScene — callers that modified the glTF without mergeScene/parseScene must call
-// refreshCpuSceneGraphFromModel() first (e.g. compact, rebuildSceneFromModel).
-//
-//--------------------------------------------------------------------------------------------------
-// Every rebuild re-creates vertex buffers and base geometry from the model, which holds the shapes a
-// host exported, not the ones it uploaded since: their live copies go up again on the next frame,
-// ahead of uploads still queued, which are newer than the copies and must land after them. Render
-// primitives keep their ids through a texture or geometry rebuild of the same model and through a
-// merge (new meshes are appended); an upload whose primitive changed size is dropped when applied.
-// TODO: the copies of a mesh drawn by more than one deforming node (assignDeformedRenderPrimitives)
-// are numbered after every mesh's primitives, so a merge that appends meshes shifts their ids and
-// their live copies land on the wrong primitives. Figure Viewer's figures have none; the retained
-// scene (keyed slots, no replay) removes the replay altogether.
-void GltfRenderer::requeueLiveVertices()
-{
-  if(m_liveVertices.empty())
-    return;
-  std::vector<VertexUpload> restore;
-  restore.reserve(m_liveVertices.size() + m_pendingVertexUploads.size());
-  for(const auto& [renderPrimID, live] : m_liveVertices)
-    restore.push_back({.renderPrimID = renderPrimID, .positions = live.positions, .normals = live.normals});
-  std::move(m_pendingVertexUploads.begin(), m_pendingVertexUploads.end(), std::back_inserter(restore));
-  m_pendingVertexUploads = std::move(restore);
-  // Skinning, morphs and the AS refit run once even when no animation plays.
-  m_pendingAnimReconcile = true;
-}
-
 void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mode)
 {
   using RebuildMode = nvvkgltf::SceneGpu::RebuildMode;
@@ -4147,7 +4101,6 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
   }
 
   buildAccelerationStructures();
-  requeueLiveVertices();
 
   // Update UI system
   scene = m_resources.getScene();
@@ -4412,8 +4365,6 @@ void GltfRenderer::replaceHostScene()
       m_hostClip = {};
   }
   ++m_sceneGeneration;
-  m_pendingVertexUploads.clear();
-  m_liveVertices.clear();
   m_pendingAnimReconcile = false;
   // the previous scene's backend, emptied, when the cleanup kept it: its decoded images are this one's to take
   const bool retire = m_resources.retainedGpu != nullptr;
@@ -4559,8 +4510,6 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
 {
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Retained sync");
   advanceHostClip();
-  m_pendingVertexUploads.clear();
-  m_pendingAnimReconcile = false;
   m_resources.retainedGpu->beginFrame();
   m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
@@ -4923,46 +4872,6 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
   return true;
 }
 
-namespace {
-constexpr uint32_t kUploadRunGap   = 64;    // vertices between two touched ones that are staged along with them
-constexpr size_t   kUploadRunMax   = 1024;  // more runs than this: one copy of the whole buffer is cheaper
-constexpr float    kUploadRunRatio = 0.5f;  // runs covering more of the buffer than this: the whole buffer
-}  // namespace
-
-std::vector<std::pair<uint32_t, uint32_t>> GltfRenderer::uploadRuns(std::span<const uint32_t> indices, size_t vertexCount)
-{
-  std::vector<std::pair<uint32_t, uint32_t>> runs;
-  if(indices.empty() || vertexCount == 0)
-    return runs;
-  std::vector<uint32_t> sorted;
-  if(!std::is_sorted(indices.begin(), indices.end()))
-  {
-    sorted.assign(indices.begin(), indices.end());
-    std::sort(sorted.begin(), sorted.end());
-    indices = sorted;
-  }
-  size_t covered = 0;
-  for(uint32_t v : indices)
-  {
-    if(v >= vertexCount)
-      continue;
-    if(!runs.empty() && v < runs.back().first + runs.back().second + kUploadRunGap)
-    {
-      const uint32_t end = std::max(runs.back().first + runs.back().second, v + 1);
-      covered += end - (runs.back().first + runs.back().second);
-      runs.back().second = end - runs.back().first;
-      continue;
-    }
-    runs.emplace_back(v, 1u);
-    covered++;
-    if(runs.size() > kUploadRunMax)
-      return {};
-  }
-  if(float(covered) > float(vertexCount) * kUploadRunRatio)
-    return {};
-  return runs;
-}
-
 void GltfRenderer::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
 {
   m_resources.sceneVk.prefetchImage(diskPath, srgb);
@@ -4974,38 +4883,6 @@ void GltfRenderer::setRenderSystem(RenderingMode mode)
     return;
   m_resources.settings.renderSystem = mode;
   resetFrame();
-}
-
-//--------------------------------------------------------------------------------------------------
-// Programmatic merge for a host that adds objects to the scene it mirrors (see the header). The
-// interactive merge (addSceneFromFile) runs on a worker behind the busy indicator; a host needs the
-// merge installed before its next call, as with loadSceneFile.
-int GltfRenderer::appendSceneFile(const std::filesystem::path& filename, const std::function<int(const tinygltf::Node&)>& parentOf)
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(!m_app || !scene || !scene->valid() || m_busy.isBusy())
-    return -1;
-  nvutils::ScopedTimer st(__FUNCTION__);
-
-  // In-flight frames still read the buffers the rebuild replaces.
-  vkQueueWaitIdle(m_app->getQueue(0).queue);
-  // An empty or texture-less base holds 1x1 defaults that don't match the model: a full rebuild.
-  const bool wasTextured = !scene->getModel().images.empty() && !scene->getModel().textures.empty();
-  const int  roots       = scene->mergeSceneUnder(filename, parentOf, static_cast<uint32_t>(m_maxTextures));
-  if(roots < 0 && scene->valid())
-    return -1;  // refused before anything was appended
-  // A failure past the merge (meshopt decompression) has appended to the model: parse it again and
-  // rebuild like a success, so the GPU scene matches the model whatever it now holds.
-  if(roots < 0)
-    scene->setCurrentScene(scene->getCurrentScene());
-
-  m_undoStack.clear();
-  rebuildVulkanSceneInternal(wasTextured ? nvvkgltf::SceneGpu::RebuildMode::eMergeAppend : nvvkgltf::SceneGpu::RebuildMode::eFull);
-  m_resources.recomputeSceneFeatures(dlssGuideRequired());
-
-  // rebuildVulkanSceneInternal queued the live vertex copies again (requeueLiveVertices).
-  resetFrame();
-  return roots < 0 ? -1 : roots;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -5474,9 +5351,8 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
     return true;
   }
 
-  // A host changed joint transforms or morph weights without an animation playing, or while the
-  // clip changed nothing this frame (its channels hold still or target nothing): a dial on a
-  // figure must not wait for the clip.
+  // A reconcile was asked for (a tangent upload put the base geometry back) with no clip playing,
+  // or while the clip changed nothing this frame (its channels hold still or target nothing)
   if(m_pendingAnimReconcile)
   {
     m_pendingAnimReconcile = false;
@@ -5489,36 +5365,9 @@ bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
 }
 
 //--------------------------------------------------------------------------------------------------
-// The vertices a live edit of `renderPrimID` starts from: what was last uploaded, else the
-// primitive's base geometry (skinned / morphed) or its glTF attributes. Null when it has no
-// positions.
-GltfRenderer::LiveVertices* GltfRenderer::liveVerticesOf(const nvvkgltf::Scene& scn, int renderPrimID)
-{
-  if(auto it = m_liveVertices.find(renderPrimID); it != m_liveVertices.end())
-    return &it->second;
-  LiveVertices live;
-  if(!scn.animation().getBaseGeometry(renderPrimID, live.positions, live.normals))
-  {
-    const tinygltf::Primitive* prim = scn.getRenderPrimitive(renderPrimID).pPrimitive;
-    if(!prim)
-      return nullptr;
-    const tinygltf::Model& model = scn.getModel();
-    std::vector<glm::vec3> tempP, tempN;
-    auto                   p = tinygltf::utils::getAttributeData3(model, *prim, "POSITION", &tempP);
-    auto                   n = tinygltf::utils::getAttributeData3(model, *prim, "NORMAL", &tempN);
-    live.positions.assign(p.begin(), p.end());
-    live.normals.assign(n.begin(), n.end());
-  }
-  if(live.positions.empty())
-    return nullptr;
-  return &(m_liveVertices[renderPrimID] = std::move(live));
-}
-
-//--------------------------------------------------------------------------------------------------
 // #DLSS deformation motion. Keeps each deforming primitive's positions as they are at the start
-// of the frame, before skinning, morphs or a host upload rewrite them in place: skinned and
-// morphed primitives, any primitive edited live, and the ones an upload queued for this frame
-// edits. Copied only when a writer ran last frame; otherwise the copy kept earlier still matches,
+// of the frame, before skinning or morphs rewrite them in place: skinned and morphed primitives.
+// Copied only when a writer ran last frame; otherwise the copy kept earlier still matches,
 // since nothing wrote in between. A newly kept primitive is copied at once. The first copies wait
 // for DLSS; from then on this runs every frame, DLSS or not, so no copy falls behind.
 void GltfRenderer::snapshotPrevPositions(VkCommandBuffer cmd)
@@ -5540,180 +5389,12 @@ void GltfRenderer::snapshotPrevPositions(VkCommandBuffer cmd)
     prims.push_back(int(p));
   for(const auto& task : scn->animation().getSkinTasks())
     prims.push_back(task.renderPrimID);
-  for(const auto& [p, live] : m_liveVertices)
-    prims.push_back(p);
-  for(const VertexUpload& u : m_pendingVertexUploads)
-    prims.push_back(u.renderPrimID);
   if(prims.empty())
     return;
 
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Snapshot prev positions");
   m_resources.prevPositions.cmdCopy(cmd, m_resources.sceneVk, prims, m_verticesWrittenLastFrame || m_prevPositionsStale);
   m_prevPositionsStale = false;
-}
-
-// An upload names any render primitive of a vertex set; it lands on the set's owner, whose buffers
-// every member reads. A host that sends the same whole mesh to every member (one upload per material
-// group) stages it once: of several whole uploads to one owner only the last applies.
-std::vector<GltfRenderer::VertexUpload*> GltfRenderer::uploadsInEffect(const nvvkgltf::Scene& scn)
-{
-  std::unordered_map<int, size_t> lastFull;
-  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
-  {
-    VertexUpload& u = m_pendingVertexUploads[i];
-    u.renderPrimID  = scn.vertexSetOwner(u.renderPrimID);
-    if(u.indices.empty())
-      lastFull[u.renderPrimID] = i;
-  }
-  std::vector<VertexUpload*> out;
-  for(size_t i = 0; i < m_pendingVertexUploads.size(); i++)
-  {
-    VertexUpload& u = m_pendingVertexUploads[i];
-    if(u.renderPrimID < 0 || u.renderPrimID >= int(scn.getRenderPrimitives().size()))
-      continue;
-    if(u.indices.empty() && lastFull[u.renderPrimID] != i)
-      continue;  // a whole upload a later one to the same set replaces
-    out.push_back(&u);
-  }
-  return out;
-}
-
-// An upload laid onto its primitive's live copy, which both scene backends upload from; null when it
-// doesn't fit. Normals are taken only when the upload brought some (`normals`); otherwise the copy
-// and the GPU keep their own.
-GltfRenderer::LiveVertices* GltfRenderer::mergeVertexUpload(const nvvkgltf::Scene& scn, VertexUpload& u, bool& normals)
-{
-  LiveVertices* live = liveVerticesOf(scn, u.renderPrimID);
-  if(!live)
-    return nullptr;
-  normals = !u.normals.empty() && live->normals.size() == live->positions.size();
-  if(u.indices.empty())
-  {
-    if(u.positions.size() != live->positions.size())
-    {
-      LOGW("Vertex upload for primitive %d: %zu positions, the primitive has %zu; skipped\n", u.renderPrimID,
-           u.positions.size(), live->positions.size());
-      return nullptr;
-    }
-    live->positions = std::move(u.positions);
-    if(normals)
-      live->normals = std::move(u.normals);
-    return live;
-  }
-  for(size_t k = 0; k < u.indices.size() && k < u.positions.size(); k++)
-  {
-    const uint32_t v = u.indices[k];
-    if(v >= live->positions.size())
-      continue;
-    live->positions[v] = u.positions[k];
-    if(normals && k < u.normals.size())
-      live->normals[v] = u.normals[k];
-  }
-  return live;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Apply vertex uploads queued by a host (queueVertexUpload). Skinned / morphed primitives get new
-// base geometry and are recomputed by the reconcile that follows in updateAnimation(); static ones
-// are copied into their vertex buffers here and their BLAS refit in place. The render nodes are
-// marked so the TLAS is refit on either transform path. A sparse upload patches the primitive's
-// live copy (liveVerticesOf) and uploads that, so the host sends only the vertices that moved.
-bool GltfRenderer::applyPendingSceneEdits(VkCommandBuffer cmd)
-{
-  if(m_pendingVertexUploads.empty())
-    return false;
-  nvvkgltf::Scene* scn = m_resources.getScene();
-  if(!scn || !scn->valid())
-  {
-    m_pendingVertexUploads.clear();
-    return false;
-  }
-
-  auto                  timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Live vertex edits");
-  const auto&           vertexBufs   = m_resources.sceneVk.vertexBuffers();
-  const auto&           renderNodes  = scn->getRenderNodes();
-  std::vector<uint32_t> staticPrims;
-  bool                  any = false;
-
-  for(VertexUpload* upload : uploadsInEffect(*scn))
-  {
-    VertexUpload& u = *upload;
-    if(u.renderPrimID >= int(vertexBufs.size()))
-      continue;
-    bool          sendNormals = false;
-    LiveVertices* live        = mergeVertexUpload(*scn, u, sendNormals);
-    if(!live)
-      continue;
-    const std::span<const glm::vec3> pos(live->positions);
-    const std::span<const glm::vec3> nrm = sendNormals ? std::span<const glm::vec3>(live->normals) : std::span<const glm::vec3>();
-    // a sparse upload stages the runs it touched; empty means the whole buffer
-    const std::vector<std::pair<uint32_t, uint32_t>> runs = u.indices.empty() ? std::vector<std::pair<uint32_t, uint32_t>>{} :
-                                                                                uploadRuns(u.indices, live->positions.size());
-    if(m_resources.animationVk.updateBaseGeometry(m_resources.staging, *scn, u.renderPrimID, pos, nrm, runs))
-    {
-      scn->animation().setBaseGeometry(u.renderPrimID, pos, nrm, runs);
-      m_pendingAnimReconcile = true;
-    }
-    else
-    {
-      const auto& vb = vertexBufs[u.renderPrimID];
-      if(vb.position.buffer == VK_NULL_HANDLE || vb.position.bufferSize != pos.size_bytes())
-      {
-        LOGW("Vertex upload for primitive %d: %zu positions do not match the buffer; skipped\n", u.renderPrimID, pos.size());
-        continue;
-      }
-      const auto stage = [&](const nvvk::Buffer& dst, std::span<const glm::vec3> src) {
-        if(runs.empty())
-        {
-          NVVK_CHECK(m_resources.staging.appendBuffer(dst, 0, src.size_bytes(), src.data()));
-          return;
-        }
-        for(const auto& [first, count] : runs)
-          NVVK_CHECK(m_resources.staging.appendBuffer(dst, first * sizeof(glm::vec3), count * sizeof(glm::vec3), src.data() + first));
-      };
-      stage(vb.position, pos);
-      if(!nrm.empty() && vb.normal.buffer != VK_NULL_HANDLE && vb.normal.bufferSize == nrm.size_bytes())
-        stage(vb.normal, nrm);
-      // every member of the set reads the buffers just written: each has a BLAS to refit
-      const std::span<const int> members = scn->vertexSetMembers(u.renderPrimID);
-      if(members.empty())
-        staticPrims.push_back(uint32_t(u.renderPrimID));
-      for(int member : members)
-        staticPrims.push_back(uint32_t(member));
-    }
-    // the render nodes of every member of the set
-    const std::span<const int> members = scn->vertexSetMembers(u.renderPrimID);
-    for(size_t rn = 0; rn < renderNodes.size(); rn++)
-    {
-      const int rp = renderNodes[rn].renderPrimID;
-      if(rp == u.renderPrimID || std::find(members.begin(), members.end(), rp) != members.end())
-        scn->markRenderNodeDirty(int(rn), /*forVk=*/false, /*forRtx=*/true);
-    }
-    any = true;
-  }
-  m_pendingVertexUploads.clear();
-
-  if(!staticPrims.empty())
-  {
-    // The previous frame's readers of these buffers (raster, ray tracing, AS builds) before the copy,
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
-                               | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    m_resources.staging.cmdUploadAppended(cmd);
-    // then the copy before the BLAS refit and this frame's readers.
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT,
-                           VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
-                               | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_SHADER_READ_BIT
-                               | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
-    m_resources.sceneRtx.updateBottomLevelAS(cmd, staticPrims);
-    // BLAS refits finish before the TLAS refit reads them.
-    nvvk::accelerationStructureBarrier(cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-                                       VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
-  }
-  return any;
 }
 
 void GltfRenderer::reconcileAnimationGpuState(VkCommandBuffer cmd)

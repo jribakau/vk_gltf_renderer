@@ -142,9 +142,7 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   that touches them sets `runOnApplicationThread` and stays short. A tool that
   waits on rendered frames must not, since the application thread is the one
   producing them — `GltfRenderer::measureTimer` is the deliberate exception and
-  reads only the profiler's mutex-guarded snapshots, never the scene. `vk_gltf_add_scene` is not
-  short: like a `scenefile` load it merges and rebuilds synchronously, so the host's next edit lands
-  on the merged scene.
+  reads only the profiler's mutex-guarded snapshots, never the scene.
 
 ## Fix what you find — auto-fix on discovery
 

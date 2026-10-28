@@ -20,28 +20,12 @@
 #pragma once
 
 //
-// Live scene editing over --mcp, for a host application that keeps its own copy of the scene
-// (Figure Viewer) and mirrors its edits here instead of reloading the file.
-//
-// Objects are addressed by index or by the id the host wrote into `extras.fvId` of nodes,
-// materials and mesh primitives when it exported the scene. Tools:
+// The loaded scene over --mcp, read-only (a windowed or --scenefile session's: a stream session's
+// scene is its host's). The edit tools went with the Figure Viewer's move to the retained scene
+// (decision D3 of daz-viewer docs/retained-scene-plan.md). Objects carry the id a host wrote into
+// `extras.fvId`, where it wrote one. Tools:
 //
 //   vk_gltf_scene_info          ids, nodes, materials, meshes/primitives, animations, lights, state
-//   vk_gltf_edit {ops:[...]}    several edits applied in order, landing in the same frame
-//   vk_gltf_set_material        {id|index, material: partial glTF material (factors, alpha, extensions)}
-//   vk_gltf_set_node            {id|index, visible?, translation?, rotation? (xyzw), scale?}
-//   vk_gltf_set_light           {id (node) | index (light), color?, intensity?, radius? (directional: disc radius in km at the sun's distance, soft shadows)}
-//   vk_gltf_animation           {clip?, time?, play?, speed?, loop?, reset?, stop?}
-//   vk_gltf_set_morph_weights   {id (primitive) | mesh, weights:[...]}
-//   vk_gltf_set_vertices        {id (primitive) | mesh, primitive?, positions: base64 f32 xyz, normals?: base64,
-//                                indices?: base64 u32 (only these vertices change, one per position)}
-//   vk_gltf_set_skin            {id (skinned node) | index, inverseBindMatrices: base64 f32, 16 per joint}
-//   (an array field may be {"blob": id} instead of base64: raw bytes POSTed to the frame stream's /blob,
-//    which returns {"id"}; see blob_store.hpp)
-//   vk_gltf_add_scene           {file}: merge a glTF in, each root under the node its extras.fvParent names
-//
-// Each op inside vk_gltf_edit is one of the single tools' inputs plus "op": "set_material" |
-// "set_node" | "set_light" | "animation" | "set_morph_weights" | "set_vertices" | "set_skin".
 //
 
 #ifdef USE_NVMCP

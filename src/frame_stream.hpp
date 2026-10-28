@@ -60,7 +60,6 @@
 
 #include <nvapp/application.hpp>
 
-#include "latency_trace.hpp"
 
 namespace httplib {
 class Server;
@@ -96,9 +95,6 @@ struct FrameStreamCreateInfo
   // and stillQuality. Optional: without it the host's settings apply to every frame.
   std::function<bool()> still;
 
-  // Stores a binary payload a host posts to /blob for a later live edit and returns its id
-  // (blob_store.hpp). Called on an HTTP thread. Optional: without it /blob answers 404.
-  std::function<uint64_t(std::string)> upload;
 
   // Required on every request (?t=) when not empty: the server is on loopback, but any local
   // process or web page could reach it otherwise.
@@ -149,8 +145,6 @@ public:
   // When the first /input the frame being drawn shows arrived (steady clock, ns), taken, or 0: a
   // native presenter that draws the frame the stream doesn't copy reports its latency (application thread).
   int64_t takeFrameInput();
-  // The next frame copied out carries this latency trace and logs it once encoded (application thread).
-  void traceNextFrame(LatencyTrace trace);
 
 private:
   struct Impl;

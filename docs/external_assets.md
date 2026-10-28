@@ -233,9 +233,8 @@ test fixtures are in `tests/gltf_2_1/generate_fixtures.py` (`external/`, `placem
 - **`merge(base, imported)`** — the whole-scene merge behind **Import/Merge Scene**.
 - **`mergeUnder(base, imported, parentOf, scene)`** — the same append with the imported nodes, then
   each imported default-scene root goes under the parent `parentOf` picks for it (or becomes a root
-  of `scene`). Used by `Scene::mergeSceneUnder` for a host adding objects to the scene it mirrors
-  (MCP `vk_gltf_add_scene`, Figure Viewer's composition); a parent out of range refuses the merge
-  before anything is appended. Returns a `MergeResult { firstNode, lastNode, roots }`.
+  of `scene`). Used by `Scene::mergeSceneUnder`, and by the Figure Viewer's scene export (a prop's
+  model under its prop root); a parent out of range refuses the merge before anything is appended. Returns a `MergeResult { firstNode, lastNode, roots }`.
 
 > **Why merge into one model?** The renderer is hard-bound to a single `tinygltf::Model`: all GPU
 > arrays (materials/textures/vertex/index buffers) are flat and indexed into that one model, and

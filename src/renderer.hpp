@@ -48,8 +48,6 @@
 #include "gltf_scene.hpp"
 #include "gltf_scene_rtx.hpp"
 #include "gltf_scene_vk.hpp"
-#include "latency_trace.hpp"
-#include "blob_store.hpp"
 #include <nvvk/profiler_vk.hpp>
 #include "nvutils/parameter_parser.hpp"
 #include "nvutils/parameter_registry.hpp"
@@ -356,10 +354,6 @@ public:
   /// Scene bounds as loaded (world space), or an empty box with no scene.
   [[nodiscard]] nvutils::Bbox sceneBounds() const;
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);
-  // The runs of vertices a sparse upload touched, [first, count) pairs: what it stages, instead of
-  // the whole buffer. Gaps under kUploadRunGap vertices are bridged; more than kUploadRunMax runs,
-  // or runs covering over kUploadRunRatio of the vertices, mean the whole buffer (empty result).
-  static std::vector<std::pair<uint32_t, uint32_t>> uploadRuns(std::span<const uint32_t> indices, size_t vertexCount);
   // Decodes an image file now, on the calling thread, for the next scene replace to take ready
   // (SceneVk::prefetchImage): a host's load and wear workers call it for the textures they resolved.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
@@ -456,38 +450,8 @@ public:
   // Copied into the path tracer before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
   bool isEditable() const { return m_editable; }
-  // Re-run skinning / morphing and the BLAS + TLAS refit on the next frame, even when no animation
-  // plays (joint transforms or morph weights changed).
-  void requestAnimationReconcile() { m_pendingAnimReconcile = true; }
-  // Latency trace of a live edit (latency_trace.hpp): stamped "applied" in the frame that applies
-  // it, then handed to the sink (the frame stream), or logged when there is none.
-  void traceEdit(LatencyTrace trace) { m_editTrace = std::move(trace); }
-  void setEditTraceSink(std::function<void(LatencyTrace)> sink) { m_editTraceSink = std::move(sink); }
-  // Binary payloads for live edits (blob_store.hpp); thread-safe.
-  BlobStore& blobs() { return m_blobs; }
   // Bumped on every scene load, so a host's cached ids can tell scenes apart.
   uint64_t sceneGeneration() const { return m_sceneGeneration; }
-  struct VertexUpload
-  {
-    int                    renderPrimID = -1;
-    std::vector<glm::vec3> positions;
-    std::vector<glm::vec3> normals;  // empty: keep the current normals
-    // Non-empty: a sparse update. positions[k] (and normals[k]) are the new values of vertex
-    // indices[k]; every other vertex keeps its current value.
-    std::vector<uint32_t> indices;
-  };
-  // New vertex positions (and normals) for one render primitive, applied at the start of the next
-  // frame's render. Skinned / morphed primitives get new base geometry; others are copied directly.
-  void queueVertexUpload(VertexUpload&& upload) { m_pendingVertexUploads.push_back(std::move(upload)); }
-
-  // Merge the glTF `filename` into the loaded scene, each of its root nodes under the node
-  // parentOf picks (-1: a scene root), and rebuild the GPU scene keeping every texture already
-  // loaded, so only the new file's images are read. Synchronous, like loadSceneFile, so a host's
-  // next edit lands on the merged scene. Host edits survive: model-side ones (materials, nodes,
-  // morph weights) live in the model, and vertex uploads are applied again from their live copies.
-  // Returns the number of roots attached, or -1 on failure (the scene is left as it was).
-  int appendSceneFile(const std::filesystem::path& filename, const std::function<int(const tinygltf::Node&)>& parentOf);
-
   /// Write the current scene to `filename`; backs --savefile, so it is reachable from the command
   /// line, a benchmark sequence and nvpro_set_parameters through the same single registration the
   /// load parameters use. Application thread only: it reads scene and model state. The view
@@ -644,32 +608,13 @@ private:
   // #DLSS deformation motion: keep the deforming primitives' positions from before this frame's
   // writers (see PrevPositionsVk). Runs before any of them.
   void snapshotPrevPositions(VkCommandBuffer cmd);
-  // Live edits queued by the host (vertex uploads, reconcile requests); see queueVertexUpload().
-  bool                      applyPendingSceneEdits(VkCommandBuffer cmd);
   bool                      evaluateClip(nvvkgltf::Scene& scn, VkCommandBuffer cmd);
   bool                      m_editable{false};
   bool                      m_streamHost{false};  // see setStreamHost()
-  bool                      m_pendingAnimReconcile{false};
+  bool m_pendingAnimReconcile{false};             // skin and morph again (a tangent upload put the base geometry back)
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off
-  LatencyTrace                       m_editTrace;      // See traceEdit()
-  std::function<void(LatencyTrace)>  m_editTraceSink;
-  BlobStore                          m_blobs;
   uint64_t                  m_sceneGeneration{0};
-  std::vector<VertexUpload> m_pendingVertexUploads;
-  // The vertices of each primitive edited live, as last uploaded: sparse uploads patch these and
-  // upload the result. Filled on a primitive's first edit; cleared with the scene.
-  struct LiveVertices
-  {
-    std::vector<glm::vec3> positions;
-    std::vector<glm::vec3> normals;
-  };
-  std::unordered_map<int, LiveVertices> m_liveVertices;
-  LiveVertices*                         liveVerticesOf(const nvvkgltf::Scene& scn, int renderPrimID);
-  std::vector<VertexUpload*>            uploadsInEffect(const nvvkgltf::Scene& scn);
-  LiveVertices* mergeVertexUpload(const nvvkgltf::Scene& scn, VertexUpload& upload, bool& normals);
-  // After a rebuild that re-created the vertex buffers from the model: queue the live copies again.
-  void requeueLiveVertices();
   // KHR_interactivity: ticks the scene's default behavior graph instance, then applies any
   // animation/start-driven pose changes it computed this tick (via reconcileAnimationGpuState()).
   // pointer/set's glTF-model writes flow through Scene::markNodeDirty/markMaterialDirty and are

@@ -42,19 +42,13 @@ authoritative names, schemas and descriptions:
 | `vk_gltf_list_timers` | GPU profiler timer names available right now |
 | `vk_gltf_measure` | Time one timer, or several on the same frames, over a controlled window and return the distribution |
 
-Live scene edits for a host application (materials, nodes, lights, animation, morph weights and
-vertex positions, several per call landing in one frame) are a second set of tools, the
-`vk_gltf_set_*` family and `vk_gltf_edit`, registered in `src/mcp_scene.cpp`; the comment at the
-top of `src/mcp_scene.hpp` lists them. `vk_gltf_set_vertices` takes either every vertex or only
-the ones that moved (`indices`), which it patches into the renderer's copy of the primitive
-(`GltfRenderer::applyPendingSceneEdits`). Its arrays, and `set_skin`'s, can be `{"blob": id}`
-instead of base64: the raw bytes POSTed to the frame stream's `/blob` (`--stream`), which answers
-`{"id": n}` (`src/blob_store.hpp`). A whole figure's vertices are megabytes, and as base64 they
-cost about half a second a call in the host's IPC and two JSON parses. `vk_gltf_set_skin` replaces a skinned node's inverse bind matrices (the model's accessor and the cached skin tasks, `AnimationSystem::setInverseBindMatrices`), which a host sends with the bones' new transforms when it moves joint centres. `vk_gltf_add_scene` merges a file into the loaded scene
-instead of loading it: each of its root nodes goes under the node named by its `extras.fvParent`
-(`GltfRenderer::appendSceneFile`, `SceneMerger::mergeUnder`), the textures already resident stay,
-and vertex edits sent before the merge are uploaded again from their live copies. Like a load, it
-runs synchronously on the application thread.
+`vk_gltf_scene_info` (`src/mcp_scene.cpp`) describes the loaded scene: nodes, materials, meshes with
+their render primitives, animations, lights and the animation state, with the ids a host wrote into
+`extras.fvId`. It reads a windowed or `--scenefile` session's scene; a stream session's scene is its
+host's (the Figure Viewer feeds the retained scene), so there is none to read. The live edit tools
+(`vk_gltf_edit`, the `vk_gltf_set_*` family, `vk_gltf_add_scene`) went when the Figure Viewer moved to
+the retained scene (decision D3 of daz-viewer docs/retained-scene-plan.md), with the frame stream's
+`/blob` and the edit-latency trace that only they fed.
 
 Loading is not a tool: set `scenefile` or `hdrfile` and it loads. Those parameters carry a
 `callbackSuccess`, so the same write works from the command line, a benchmark sequence, and

@@ -33,7 +33,6 @@
 #include "frame_stream.hpp"
 #include "frame_pacing.hpp"
 #include "present_policy.hpp"
-#include "blob_store.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -52,6 +51,9 @@
 using namespace std::chrono_literals;
 
 namespace {
+
+// the largest request body the server takes (a command's JSON: a scene file's state)
+constexpr size_t kMaxRequestBytes = size_t(64) << 20;
 
 // A host-visible buffer a frame is copied into, read by the encoder in place: no copy of the
 // pixels is made on the application thread. Its states, every change under Impl::rawMutex:
@@ -81,7 +83,6 @@ struct Readback
   State          state{State::eFree};
   uint64_t       signal{};  // the frame's timeline value: the copy is in once the semaphore reached it
   uint64_t       drawn{};   // the renderer's drawn-frame count when the frame was copied (0 without the callback)
-  LatencyTrace   trace;     // A traced edit this frame shows (latency_trace.hpp)
   int64_t        inputNs{};  // The first /input this frame shows arrived then (steady clock), or 0
 };
 
@@ -126,10 +127,7 @@ struct FrameStream::Impl
   std::condition_variable rawCv;
   Readback*               waiting{nullptr};
   Readback*               lastEncoded{nullptr};
-  LatencyTrace            rawTrace;
-  int64_t                 rawInputNs{0};  // the input riding on the waiting frame, as rawTrace
-  // a traced edit waiting for the next frame copied out (application thread)
-  LatencyTrace pendingTrace;
+  int64_t                 rawInputNs{0};  // the input riding on the waiting frame
 
   // Input latency. inputNs: the oldest /input not yet taken by a frame (HTTP threads -> application
   // thread). frameInputNs: the input the frames from now on show, until one is copied out
@@ -244,11 +242,6 @@ int64_t FrameStream::takeFrameInput()
   const int64_t t        = m_impl->frameInputNs;
   m_impl->frameInputNs = 0;
   return t;
-}
-
-void FrameStream::traceNextFrame(LatencyTrace trace)
-{
-  m_impl->pendingTrace = std::move(trace);
 }
 
 void FrameStream::onAttach(nvapp::Application* app)
@@ -479,12 +472,6 @@ void FrameStream::onRender(VkCommandBuffer cmd)
     std::lock_guard lock(s.rawMutex);
     rb.state = Readback::State::eCopying;
   }
-  if(!s.pendingTrace.empty())
-  {
-    rb.trace = std::move(s.pendingTrace);
-    rb.trace.emplace_back("copied", traceNowMs());
-    s.pendingTrace.clear();
-  }
   s.framesRendered++;
 }
 
@@ -564,7 +551,6 @@ void FrameStream::Impl::destroyRing()
     });
     waiting     = nullptr;
     lastEncoded = nullptr;
-    rawTrace.clear();
   }
   for(Readback& rb : ring)
   {
@@ -656,21 +642,12 @@ void FrameStream::Impl::harvest(Readback& rb)
   {
     waiting->state = Readback::State::eFree;
     framesReplaced++;
-    // the replaced frame's trace rides on this one, which shows its edit too
-    if(rb.trace.empty())
-      rb.trace = std::move(rawTrace);
-    rawTrace.clear();
+    // the replaced frame's input rides on this one, which shows it too
     if(rb.inputNs == 0)
       rb.inputNs = rawInputNs;
   }
   rawInputNs = rb.inputNs;
   rb.inputNs = 0;
-  if(!rb.trace.empty())
-  {
-    rb.trace.emplace_back("harvested", traceNowMs());
-    rawTrace = std::move(rb.trace);
-    rb.trace.clear();
-  }
   rb.state = Readback::State::eWaiting;
   waiting  = &rb;
   lock.unlock();
@@ -711,10 +688,9 @@ void FrameStream::Impl::encodeLoop()
   };
   while(running)
   {
-    Readback*    cur  = nullptr;
-    Readback*    last = nullptr;
-    LatencyTrace trace;
-    int64_t      inputAt = 0;
+    Readback* cur     = nullptr;
+    Readback* last    = nullptr;
+    int64_t   inputAt = 0;
     {
       std::unique_lock lock(rawMutex);
       rawCv.wait(lock, [&] { return waiting != nullptr || !running; });
@@ -724,7 +700,6 @@ void FrameStream::Impl::encodeLoop()
       waiting    = nullptr;
       cur->state = Readback::State::eEncoding;
       last       = lastEncoded;  // stays allocated while cur is encoding: destroyRing() waits for that
-      trace.swap(rawTrace);
       inputAt    = rawInputNs;
       rawInputNs = 0;
     }
@@ -743,8 +718,6 @@ void FrameStream::Impl::encodeLoop()
                         && extent.height == last->extent.height && std::memcmp(cur->mapped, last->mapped, bytes) == 0;
     if(repeat && lastFullChroma && wantQuality <= lastQuality)
     {
-      if(!trace.empty())
-        LOGI("%s (frame repeated, not re-sent)\n", formatTrace(trace).c_str());
       release(cur, Readback::State::eFree);
       handled();
       continue;
@@ -801,11 +774,6 @@ void FrameStream::Impl::encodeLoop()
       inputMsLast       = inMs;
       inputMs           = inputSamples++ == 0 ? inMs : inputMs * 0.8 + inMs * 0.2;
     }
-    if(!trace.empty())
-    {
-      trace.emplace_back("encoded", traceNowMs());
-      LOGI("%s\n", formatTrace(trace).c_str());
-    }
   }
   tj3Destroy(tj);
 }
@@ -813,7 +781,7 @@ void FrameStream::Impl::encodeLoop()
 void FrameStream::Impl::serve()
 {
   http.set_default_headers({{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-store"}});
-  http.set_payload_max_length(BlobStore::kMaxBytes);
+  http.set_payload_max_length(kMaxRequestBytes);
   // a frame is one write; Nagle would hold its tail for the next one
   http.set_tcp_nodelay(true);
   // Every request but a CORS preflight carries the token when one is set. A request that changes
@@ -916,22 +884,6 @@ void FrameStream::Impl::serve()
       }
     app->requestHeadlessResize({uint32_t(w), uint32_t(h)});
     res.set_content("ok", "text/plain");
-  });
-
-  // A host's binary payload for a live edit (blob_store.hpp): stored, and its id returned, so the
-  // edit can name it instead of carrying megabytes of base64 through JSON.
-  http.Options("/blob", [](const httplib::Request&, httplib::Response& res) {
-    res.set_header("Access-Control-Allow-Methods", "POST");
-    res.set_header("Access-Control-Allow-Headers", "Content-Type");
-  });
-  http.Post("/blob", [this](const httplib::Request& req, httplib::Response& res) {
-    if(!info.upload)
-    {
-      res.status = 404;
-      return;
-    }
-    const uint64_t id = info.upload(req.body);
-    res.set_content("{\"id\":" + std::to_string(id) + "}", "application/json");
   });
 
   http.Get("/stats", [this](const httplib::Request&, httplib::Response& res) {

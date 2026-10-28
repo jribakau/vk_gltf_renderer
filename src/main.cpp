@@ -694,7 +694,6 @@ auto main(int argc, char** argv) -> int
           .refining  = [r] { return r->isRefiningStill(); },
           .drawn     = [r] { return r->drawnFrameCount(); },
           .still     = [r] { return r->isStill(); },
-          .upload    = [r](std::string bytes) { return r->blobs().put(std::move(bytes)); },
           .token     = fvToken,
           .routes    = [protocol, present](httplib::Server& http, const std::atomic<bool>& running) {
             protocol->registerRoutes(http, running);
@@ -712,11 +711,6 @@ auto main(int argc, char** argv) -> int
       // the Figure Viewer's scene, driven over the protocol the stream serves
       app.addElement(std::make_shared<FvHost>(r, protocol, &parameterRegistry));
       r->setStreamHost(true);
-      // a traced live edit is logged once the frame showing it is encoded
-      r->setEditTraceSink([weak = std::weak_ptr<FrameStream>(frameStream)](LatencyTrace t) {
-        if(auto fs = weak.lock())
-          fs->traceNextFrame(std::move(t));
-      });
     }
   }
 #ifdef USE_NVMCP
