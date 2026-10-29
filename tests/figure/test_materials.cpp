@@ -1324,13 +1324,11 @@ TEST(Materials, MetallicityEnableGatesTheMetalAndMakeupMetallicityOnlyTintsIt)
   const auto bare = skin("true", false, true);
   EXPECT_FLOAT_EQ(bare.metallic.value, 0.2912088f);
   EXPECT_EQ(bare.metallic.map, "/lipmask.png");
-  // no Metallicity Enable is PBRSkin's default, off
-  for(const char* off : {static_cast<const char*>(nullptr), "false"})
-  {
-    const auto s = skin(off, true, true);
-    EXPECT_FLOAT_EQ(s.metallic.value, 0);
-    EXPECT_TRUE(s.metallic.map.empty());
-  }
+  // Metallicity Enable off, PBRSkin.dsf's default, which every PBRSkin surface has under it (a
+  // surface without the switch is an Iray Uber one with makeup laid over: ALipColourOverAnUberHead...)
+  const auto off = skin("false", true, true);
+  EXPECT_FLOAT_EQ(off.metallic.value, 0);
+  EXPECT_TRUE(off.metallic.map.empty());
   // Iray Uber: no switch, the weight and its mask as they are
   const auto belt = fv::dson::parseSurface("BeltHolster_Metal_Mat", channelsOf(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
     {"channel":{"id":"Metallic Weight","type":"float","current_value":1,"image_file":"/Belt M.jpg"}}]}]})"));
@@ -1458,9 +1456,10 @@ TEST(Materials, APbrSkinTopCoatNeedsItsEnable)
       v.push_back({"Top Coat Enable", *enable});
     return surfaceOf("Head", kPbrSkinType, v);
   };
-  for(const std::optional<bool> off : {std::optional<bool>(), std::optional<bool>(false)})
+  // off, as PBRSkin.dsf has it under her head (a surface without the switch is an Iray Uber one
+  // with makeup laid over, whose coat stays: ALipColourOverAnUberHeadLeavesItsLayersOn)
   {
-    const auto s = head(off);
+    const auto s = head(false);
     EXPECT_FALSE(s.topCoat);
     // the tight lobe (0.6 x 0.4, lobe 2's 0.15 of 0.5 x 0.25 x 2) is the clearcoat; the broad stays the base
     const auto  l   = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
@@ -3147,6 +3146,59 @@ TEST(Materials, APartialPresetOfAnotherShaderOnlyOverrides)
   EXPECT_EQ(s.dual->lobe1.map, "/SLW.jpg");
 }
 
+// A lip colour (CJ Evangeline's, on Addy Florence's Iray Uber head) is a partial PBRSkin preset, laid
+// over: its makeup channels make the head read as PBRSkin, but it carries none of PBRSkin's layer
+// switches, so none of them turns the head's own layers off. Its normal map, dual lobe,
+// translucency, coat and metal stay, with the lipstick over them.
+TEST(Materials, ALipColourOverAnUberHeadLeavesItsLayersOn)
+{
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Head", layered({kUberHead, R"({"extra":[{"channels":[
+    {"channel":{"id":"Top Coat Weight","type":"float","current_value":0.3}},
+    {"channel":{"id":"Metallic Weight","type":"float","current_value":1,"image_file":"/Runtime/Textures/face_m.jpg"}},
+    {"channel":{"id":"Transmitted Measurement Distance","type":"float","current_value":0.1}},
+    {"channel":{"id":"Scattering Measurement Distance","type":"float","current_value":0.01}}
+  ]}]})"})));
+  const Json lips = wholePreset("name://@selection", "Head", kPbrSkinUrl, "studio/material/daz_brick",
+                                {{"Makeup Enable", true}, {"Makeup Weight", 0.7}, {"Makeup Base Color", Json::array({1, 0, 0})}},
+                                {{"Makeup Weight", "/lipmask.png"}});
+  ASSERT_EQ(fv::dson::applyMaterialPreset(lips, scene, nullptr, pbrSkinDefinitions()).changed, std::set<int>({0}));
+  const fv::mat::Surface& s = scene.materials[0].surface;
+  ASSERT_TRUE(s.makeup.has_value());
+  EXPECT_FLOAT_EQ(s.makeup->weight, 0.7f);
+  EXPECT_EQ(s.makeup->weightMap, "/lipmask.png");
+  EXPECT_EQ(s.normalMap, "/Runtime/Textures/face_n.jpg");
+  ASSERT_TRUE(s.dual.has_value());
+  EXPECT_FLOAT_EQ(s.dual->weight, 0.5f);
+  ASSERT_TRUE(s.translucency.has_value());
+  EXPECT_FLOAT_EQ(s.translucency->weight, 0.6f);
+  EXPECT_FALSE(s.translucency->thinWalled);
+  ASSERT_TRUE(s.translucency->subsurface.has_value());
+  EXPECT_FLOAT_EQ(s.translucency->subsurface->transmittedDistance, 0.1f);
+  EXPECT_FLOAT_EQ(s.translucency->subsurface->scatterDistance, 0.01f);
+  ASSERT_TRUE(s.topCoat.has_value());
+  EXPECT_FLOAT_EQ(s.topCoat->weight, 0.3f);
+  EXPECT_FLOAT_EQ(s.metallic.value, 1.f);
+  EXPECT_EQ(s.metallic.map, "/Runtime/Textures/face_m.jpg");
+  const auto l = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+  EXPECT_TRUE(l.material.contains("normalTexture"));
+  EXPECT_FLOAT_EQ(l.material["extensions"]["KHR_materials_clearcoat"]["clearcoatFactor"].get<float>(), 0.3f);
+
+  // a PBRSkin surface's own switches, off, still turn its layers off
+  const auto off = surfaceOf("Head", kPbrSkinType,
+                             {{"Makeup Enable", false}, {"Bump Enable", false}, {"Dual Lobe Specular Enable", false},
+                              {"Translucency Enable", false}, {"Translucency Weight", 0.6}, {"Top Coat Enable", false},
+                              {"Top Coat Weight", 0.3}, {"Metallicity Enable", false}, {"Metallic Weight", 1},
+                              {"Normal Map", 1}, {"Dual Lobe Specular Weight", 0.5}},
+                             {{"Normal Map", "/n.jpg"}});
+  EXPECT_TRUE(off.normalMap.empty());
+  EXPECT_FLOAT_EQ(off.dual->weight, 0.f);
+  EXPECT_FLOAT_EQ(off.translucency->weight, 0.f);
+  EXPECT_TRUE(off.translucency->thinWalled);
+  EXPECT_FALSE(off.topCoat.has_value());
+  EXPECT_FLOAT_EQ(off.metallic.value, 0.f);
+}
+
 TEST(Materials, MakeupThatSwappedTheShaderComesOffWithTheShader)
 {
   // Polina 9 Face Makeup 01 is a whole PBRSkin preset on the head
@@ -3668,7 +3720,13 @@ TEST(Materials, PbrSkinBumpEnableSwitchesTheNormalAndBumpMaps)
   const auto on = skin(true);
   EXPECT_EQ(on.normalMap, "/n.jpg");
   EXPECT_EQ(on.bumpMap, "/b.jpg");
-  for(const auto& off : {skin(false), skin(std::nullopt)})
+  // off, and left to PBRSkin.dsf's default under the surface
+  const auto byDefault = fv::dson::parseSurface("Torso", collect(collect({}, kPbrSkinDefinition, kPbrSkinFile), R"({"extra":[
+    {"type":"studio/material/daz_brick","channels":[
+      {"channel":{"id":"Normal Map","type":"float","current_value":1,"image_file":"/n.jpg"}},
+      {"channel":{"id":"Bump Strength","type":"float","current_value":0.5,"image_file":"/b.jpg"}}]}]})",
+                                                                 ""));
+  for(const auto& off : {skin(false), byDefault})
   {
     EXPECT_TRUE(off.normalMap.empty());
     EXPECT_TRUE(off.bumpMap.empty());
