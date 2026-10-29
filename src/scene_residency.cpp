@@ -220,9 +220,10 @@ void Residency::clear()
   retireBuffer(m_textureInfoTable);
   retireBuffer(m_lightTable);
   retireBuffer(m_emissiveTable);
+  retireBuffer(m_emissiveGroupTable);
   retireBuffer(m_iesTable);
-  m_lightTable = m_emissiveTable = m_iesTable = {};
-  m_lightCount = m_emissiveCount = m_iesProfileCount = 0;
+  m_lightTable = m_emissiveTable = m_emissiveGroupTable = m_iesTable = {};
+  m_lightCount = m_emissiveCount = m_emissiveGroupCount = m_iesProfileCount = 0;
   m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
   m_emissiveStale                           = false;
   m_shadeMaterials.clear();
@@ -2177,6 +2178,8 @@ void Residency::writeSceneDesc()
   desc.numEmissiveTriangles  = int(m_emissiveCount);
   desc.emissiveTotalWeight   = m_emissiveTotalWeight;
   desc.emissiveMeanLum       = m_emissiveMeanLum;
+  desc.emissiveGroups        = (shaderio::EmissiveGroup*)m_gpu.bufferAddress(m_emissiveGroupTable);
+  desc.numEmissiveGroups     = int(m_emissiveGroupCount);
   m_gpu.upload(m_sceneDesc, 0, bytesOf(desc));
 }
 
@@ -2265,14 +2268,19 @@ void Residency::syncEmissive(const RetainedScene& scene)
                         .positions    = record->positions,
                         .indices      = std::span(record->indices).subspan(run.firstIndex, run.indexCount)});
   }
-  const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters);
+  const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
   const uint64_t                bytes = std::span(table.triangles).size_bytes();
   m_descDirty |=
       fitBuffer(m_gpu, m_emissiveTable, bytes, "emissive triangles", [this](BufferHandle b) { retireBuffer(b); });
   if(bytes)
     m_gpu.upload(m_emissiveTable, 0, std::as_bytes(std::span(table.triangles)));
+  const uint64_t groupBytes = std::span(table.groups).size_bytes();
+  m_descDirty |= fitBuffer(m_gpu, m_emissiveGroupTable, groupBytes, "emissive groups", [this](BufferHandle b) { retireBuffer(b); });
+  if(groupBytes)
+    m_gpu.upload(m_emissiveGroupTable, 0, std::as_bytes(std::span(table.groups)));
   m_descDirty |= m_emissiveCount != table.triangles.size() || m_emissiveTotalWeight != table.totalWeight
-                 || m_emissiveMeanLum != table.meanLum;
+                 || m_emissiveMeanLum != table.meanLum || m_emissiveGroupCount != table.groups.size();
+  m_emissiveGroupCount  = uint32_t(table.groups.size());
   m_emissiveCount       = uint32_t(table.triangles.size());
   m_emissiveTotalWeight = table.totalWeight;
   m_emissiveMeanLum     = table.meanLum;
@@ -2364,7 +2372,7 @@ size_t Residency::liveBuffers() const
   for(const std::optional<Prim>& p : m_prims)
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
-                        m_emissiveTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
+                        m_emissiveTable, m_emissiveGroupTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
                         m_prevWorldTable})
     n += b ? 1 : 0;
   return n;

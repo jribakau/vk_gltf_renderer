@@ -612,18 +612,32 @@ float punctualPickEstimate(GltfLight light, float3 pos, float3 normal, bool cull
                                    pos, normal, cull);
 }
 
-// What next-event estimation picks from at one vertex: the emissive triangles take a fixed share
-// (they have one estimate for all of them and no distance to put it at), and the environment and
-// the punctual lights split the rest by their estimates.
+// What an emissive group (EmissiveGroup) gives a point, as a punctual light's estimate does: its
+// triangles' weight over the distance to its bounds' centre, no nearer than its radius. With `cull`, 0
+// for a group whose bounds lie wholly below the plane of `normal`.
+float emissiveGroupPickEstimate(int group, float3 pos, float3 normal, bool cull)
+{
+  const EmissiveGroup g        = pushConst.gltfScene.emissiveGroups[group];
+  const float3        toCenter = g.center - pos;
+  if(cull && dot(normal, toCenter) <= -g.radius)
+    return 0.0F;
+  return g.weight / max(dot(toCenter, toCenter), max(g.radius * g.radius, 1e-8F));
+}
+
+// What next-event estimation picks from at one vertex: the environment, the punctual lights and
+// the emissive groups (GltfScene::numEmissiveGroups) split it by their estimates. Without groups,
+// or past LIGHT_PICK_MAX_LIGHTS punctual lights, the emissive triangles take a fixed share by power
+// instead (they have one estimate for all of them and no distance to put it at).
 struct LightPickSet
 {
   LightPick pick;
-  float     restShare;    // 1 - pick.emissive: the environment's and the punctual lights' together
+  float     restShare;    // 1 - pick.emissive: the environment's, the punctual lights' and the groups' together
   float     envEstimate;  // 0: no environment to pick
   float     total;        // the candidates' estimates summed
-  int       candidates;   // the environment and the lights that can light the vertex
+  int       candidates;   // the environment, the lights and the emissive groups that can light the vertex
   int       lights;       // of those, punctual lights
   bool      uniform;      // over LIGHT_PICK_MAX_LIGHTS lights: half to the environment, the lights evenly, none culled
+  bool      groups;       // the emissive groups are candidates (not uniform, and the scene has groups)
 };
 
 // `cull`: drop the lights below the plane of `normal` (not for a vertex lit from both sides).
@@ -637,6 +651,8 @@ LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
   s.total               = s.envEstimate;
   s.lights              = 0;
   float sunEstimate     = 0.0F;
+  s.groups              = !s.uniform && pushConst.gltfScene.numEmissiveGroups > 0;
+  int emitters          = 0;
   if(s.uniform)
     s.lights = numPunctual;
   else
@@ -653,12 +669,22 @@ LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
         sunEstimate = e;
     }
   }
+  if(s.groups)
+    for(int g = 0; g < pushConst.gltfScene.numEmissiveGroups; g++)
+    {
+      const float e = emissiveGroupPickEstimate(g, pos, normal, cull);
+      if(e > 0.0F)
+      {
+        s.total += e;
+        emitters++;
+      }
+    }
   const bool hasEnv = s.envEstimate > 0.0F;
-  s.candidates      = s.lights + (hasEnv ? 1 : 0);
+  s.candidates      = s.lights + emitters + (hasEnv ? 1 : 0);
 
   // Each kind present gets as much as the emissive triangles: a half beside one, a third beside both
   const int kinds = (hasEnv ? 1 : 0) + (s.lights > 0 ? 1 : 0);
-  s.pick.emissive = (pushConst.gltfScene.numEmissiveTriangles > 0) ? 1.0F / float(1 + kinds) : 0.0F;
+  s.pick.emissive = (!s.groups && pushConst.gltfScene.numEmissiveTriangles > 0) ? 1.0F / float(1 + kinds) : 0.0F;
   s.restShare     = 1.0F - s.pick.emissive;
   s.pick.pos      = pos;
   s.pick.normal   = cull ? normal : float3(0.0F);
@@ -723,21 +749,51 @@ float3 emitterSelectionRadiance(int materialIndex)
   return max(materials[materialIndex].emissiveFactor, float3(0.0F)) * materials[materialIndex].emissiveLightScale;
 }
 
-// Select an emissive triangle proportional to its selection weight in O(1) via a Vose alias table.
-// One uniform picks a bin; its fractional part chooses between that bin and its alias.
-int selectEmissiveTriangle(float u01)
+// Select an emissive triangle of [first, first + n) proportional to its selection weight in O(1) via
+// that range's Vose alias table. One uniform picks a bin; its fractional part chooses between that bin
+// and its alias.
+int selectEmissiveTriangleIn(int first, int n, float u01)
 {
-  int              n      = pushConst.gltfScene.numEmissiveTriangles;
   float            scaled = u01 * float(n);
   int              bin    = min(int(scaled), n - 1);
   float            uf     = scaled - float(bin);  // reuse the fractional part as the second uniform
-  EmissiveTriangle et     = pushConst.gltfScene.emissiveTriangles[bin];
-  return (uf < et.aliasProb) ? bin : int(et.aliasIndex);
+  EmissiveTriangle et     = pushConst.gltfScene.emissiveTriangles[first + bin];
+  return (uf < et.aliasProb) ? first + bin : int(et.aliasIndex);
+}
+
+// Select an emissive triangle proportional to its selection weight among all of them: the one table,
+// or with groups, a group by its weight and then a triangle in it (the same distribution)
+int selectEmissiveTriangle(float u01)
+{
+  const int groups = pushConst.gltfScene.numEmissiveGroups;
+  if(groups <= 0)
+    return selectEmissiveTriangleIn(0, pushConst.gltfScene.numEmissiveTriangles, u01);
+  float     target = u01 * pushConst.gltfScene.emissiveTotalWeight;
+  float     before = 0.0F;
+  EmissiveGroup g  = pushConst.gltfScene.emissiveGroups[0];
+  for(int i = 0; i < groups; i++)
+  {
+    g = pushConst.gltfScene.emissiveGroups[i];
+    if(target < before + g.weight || i == groups - 1)
+      break;
+    before += g.weight;
+  }
+  return selectEmissiveTriangleIn(int(g.first), int(g.count), saturate((target - before) / max(g.weight, 1e-20F)) * 0.99999994F);
+}
+
+// The emissive group drawn by render node `renderNodeID`; -1 for none
+int emissiveGroupOf(uint renderNodeID)
+{
+  for(int i = 0; i < pushConst.gltfScene.numEmissiveGroups; i++)
+    if(pushConst.gltfScene.emissiveGroups[i].renderNodeID == renderNodeID)
+      return i;
+  return -1;
 }
 
 // Power-weighted sample of emissive triangle `emissiveIndex` as seen from `shadingPos`, at the
-// uniform point `u`.
-EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, float2 u)
+// uniform point `u`. `totalWeight`: the weight of the triangles it was picked among (all of them,
+// or its group's).
+EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, float2 u, float totalWeight)
 {
   EmissiveSample es = {float3(0, 0, 1), 0.0, float3(0), 0.0};
 
@@ -777,7 +833,7 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
   if(cosLight <= 1e-6)
     return es;  // one-sided emitter facing away, or grazing
 
-  float wtot = pushConst.gltfScene.emissiveTotalWeight;
+  float wtot = totalWeight;
   if(wtot <= 0.0)
     return es;
 
@@ -808,10 +864,11 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
 
 // NEE solid-angle pdf (within the light technique) of sampling the hit emissive triangle in the hit
 // direction. Power-weighted selection makes the area cancel, so this needs only the emitter's own
-// radiance, the geometric normal, and W_total -- no per-triangle lookup. 0 if not a valid emitter dir.
-float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, float hitDist)
+// radiance, the geometric normal, and the weight it was picked among (`totalWeight`: all of them, or
+// its group's) -- no per-triangle lookup. 0 if not a valid emitter dir.
+float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, float hitDist, float totalWeight)
 {
-  float wtot = pushConst.gltfScene.emissiveTotalWeight;
+  float wtot = totalWeight;
   if(pushConst.gltfScene.numEmissiveTriangles <= 0 || wtot <= 0.0)
     return 0.0;
   // No sidedness gate needed: one-sided emitters cull their back faces (SceneRtx omits the
@@ -826,14 +883,28 @@ float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, 
 
 // MIS weight for a BSDF ray that landed on an emissive triangle, weighted against the emissive-NEE
 // technique. Mirrors computeEnvHitMisWeight; the competing NEE pdf is the emissive triangles' pick
-// at the vertex the ray left (`pick`) times the emitter's solid-angle pdf.
+// at the vertex the ray left (`pick`) times the emitter's solid-angle pdf. With emissive groups, the
+// share of the group drawn by `renderNodeID` there, as sizedLightNeePdf recovers a sized light's.
 // `radiance`: the emitter's selection radiance (emitterSelectionRadiance), not its texel; black: it is
 // not in the light list, and only BSDF rays reach it.
-float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float3 radiance, float3 geoNormal, float3 rayDir, float hitDist)
+float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float3 radiance, float3 geoNormal, float3 rayDir,
+                                 float hitDist, uint renderNodeID)
 {
   if(lastSamplePdf == DIRAC || !(luminance(radiance) > 0.0f))
     return 1.0f;
-  float emitterNeePdf = pick.emissive * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist);
+  float emitterNeePdf = pick.emissive * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveTotalWeight);
+  if(pushConst.gltfScene.numEmissiveGroups > 0 && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS)
+  {
+    const int group = emissiveGroupOf(renderNodeID);
+    if(group < 0)
+      return 1.0f;
+    const bool         cull  = any(pick.normal != float3(0.0F));
+    const LightPickSet set   = lightPickSet(pick.pos, pick.normal, cull);
+    const float        share = set.restShare
+                        * lightPickProbability(emissiveGroupPickEstimate(group, pick.pos, pick.normal, cull), set.total, set.candidates);
+    emitterNeePdf = share
+                    * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveGroups[group].weight);
+  }
   return misPowerWeight(lastSamplePdf, emitterNeePdf);
 }
 
@@ -889,7 +960,7 @@ void sampleLights(in float3       pos,
       uTri.x = rand(seed);
       uTri.y = rand(seed);
     }
-    EmissiveSample es     = sampleEmissiveTriangle(tri, pos, uTri);
+    EmissiveSample es     = sampleEmissiveTriangle(tri, pos, uTri, pushConst.gltfScene.emissiveTotalWeight);
     directLight.direction = es.direction;
     directLight.distance  = es.distance;
     if(es.pdf > 0.0)
@@ -939,6 +1010,7 @@ void sampleLights(in float3       pos,
   float     cumulative  = envShare;
   int       lightIndex  = -1;
   float     share       = 0.0f;
+  bool      found       = false;
   GltfLight light;
   for(int i = 0; i < numPunctual; i++)
   {
@@ -951,7 +1023,48 @@ void sampleLights(in float3       pos,
     light      = candidate;
     cumulative += p;
     if(u < cumulative)
+    {
+      found = true;
       break;
+    }
+  }
+  // An emissive group past the lights: then a triangle of it by its own weight (the last group that
+  // can light the point catches what rounding leaves over)
+  if(!found && set.groups)
+  {
+    int   group      = -1;
+    float groupShare = 0.0f;
+    for(int g = 0; g < pushConst.gltfScene.numEmissiveGroups; g++)
+    {
+      const float p = lightPickProbability(emissiveGroupPickEstimate(g, pos, normal, !bothSides), set.total, set.candidates);
+      if(p <= 0.0f)
+        continue;
+      group      = g;
+      groupShare = p;
+      cumulative += p;
+      if(u < cumulative)
+        break;
+    }
+    if(group >= 0)
+    {
+      const EmissiveGroup grp  = pushConst.gltfScene.emissiveGroups[group];
+      const int           tri  = selectEmissiveTriangleIn(int(grp.first), int(grp.count), given ? xi.w : rand(seed));
+      float2              uTri = given ? xi.yz : float2(0.0F);
+      if(!given)
+      {
+        uTri.x = rand(seed);
+        uTri.y = rand(seed);
+      }
+      EmissiveSample es     = sampleEmissiveTriangle(tri, pos, uTri, grp.weight);
+      directLight.direction = es.direction;
+      directLight.distance  = es.distance;
+      if(es.pdf > 0.0)
+      {
+        directLight.pdf             = set.restShare * groupShare * es.pdf;
+        directLight.radianceOverPdf = es.radiance / directLight.pdf;
+      }
+      return;
+    }
   }
   if(lightIndex < 0)
     return;

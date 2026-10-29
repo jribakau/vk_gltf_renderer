@@ -695,12 +695,15 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     emitters.push_back({s, inst->prim, radiance, mat->payload.doubleSided, inst->world, record->positions,
                         std::span(record->indices).subspan(run.firstIndex, run.indexCount)});
   }
-  const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters);
+  const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
   if(!residency.emissiveSettling()
      && (residency.emissiveCount() != table.triangles.size() || residency.emissiveTotalWeight() != table.totalWeight
          || residency.emissiveMeanLum() != table.meanLum
          || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveTable()), table.triangles.size() * sizeof(shaderio::EmissiveTriangle)),
-                       table.triangles.data(), table.triangles.size())))
+                       table.triangles.data(), table.triangles.size())
+         || residency.emissiveGroupCount() != table.groups.size()
+         || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveGroupTable()), table.groups.size() * sizeof(shaderio::EmissiveGroup)),
+                       table.groups.data(), table.groups.size())))
     out.push_back("I6: the emissive table is not the shown emitters' triangles");
 
   // the scene descriptor
@@ -709,7 +712,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
      || uint64_t(desc.iesProfiles) != gpu.bufferAddress(residency.iesTable())
      || uint64_t(desc.emissiveTriangles) != gpu.bufferAddress(residency.emissiveTable())
      || desc.numEmissiveTriangles != int(residency.emissiveCount())
-     || desc.emissiveTotalWeight != residency.emissiveTotalWeight() || desc.emissiveMeanLum != residency.emissiveMeanLum())
+     || desc.emissiveTotalWeight != residency.emissiveTotalWeight() || desc.emissiveMeanLum != residency.emissiveMeanLum()
+     || uint64_t(desc.emissiveGroups) != gpu.bufferAddress(residency.emissiveGroupTable())
+     || desc.numEmissiveGroups != int(residency.emissiveGroupCount()))
     out.push_back("the scene descriptor does not hold the lights and the emissive table");
   if(uint64_t(desc.renderNodes) != gpu.bufferAddress(residency.renderNodeTable())
      || uint64_t(desc.renderPrimitives) != gpu.bufferAddress(residency.renderPrimTable())

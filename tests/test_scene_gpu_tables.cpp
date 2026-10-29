@@ -120,3 +120,59 @@ TEST(SceneGpuTables, NoEmittersNoTable)
   EXPECT_TRUE(table.triangles.empty());
   EXPECT_EQ(table.totalWeight, 0.f);
 }
+
+// With groups, each emitter is one (its triangles' bounds, their weight, their range) and its alias
+// table picks among its own triangles by their weights; past the cap, the one table as before
+TEST(SceneGpuTables, EachEmitterIsAGroupWithATableOfItsOwn)
+{
+  const std::vector<glm::vec3> quad     = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<glm::vec3> lopsided = {{0, 0, 0}, {3, 0, 0}, {3, 1, 0}, {0, 1, 0}, {-1, 1, 0}};
+  const std::vector<uint32_t>  two      = {0, 1, 2, 0, 2, 3};
+  const std::vector<uint32_t>  uneven   = {0, 1, 2, 0, 3, 4};  // areas 1.5 and 0.5
+  const glm::mat4              moved    = glm::translate(glm::mat4(1.f), {10.f, 0.f, 0.f});
+  const std::vector<Emitter>   emitters = {
+      {.renderNodeID = 4, .renderPrimID = 0, .radiance = glm::vec3(1.f), .world = glm::mat4(1.f), .positions = quad, .indices = two},
+      {.renderNodeID = 7, .renderPrimID = 1, .radiance = glm::vec3(2.f), .world = moved, .positions = lopsided, .indices = uneven},
+  };
+  const auto table = buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
+  ASSERT_EQ(table.groups.size(), 2u);
+  ASSERT_EQ(table.triangles.size(), 4u);
+  double groupsWeight = 0.0;
+  for(size_t g = 0; g < 2; g++)
+  {
+    const shaderio::EmissiveGroup& group = table.groups[g];
+    EXPECT_EQ(group.renderNodeID, g == 0 ? 4u : 7u);
+    EXPECT_EQ(group.first, g * 2);
+    EXPECT_EQ(group.count, 2u);
+    groupsWeight += group.weight;
+    // the bounds hold every corner of its triangles
+    const auto& corners = g == 0 ? quad : lopsided;
+    for(const glm::vec3& c : corners)
+      EXPECT_LE(glm::distance(glm::vec3((g == 0 ? glm::mat4(1.f) : moved) * glm::vec4(c, 1.f)), group.center), group.radius + 1e-5f);
+    // its table picks its own triangles, by their weights within the group
+    std::vector<double> picked(table.triangles.size(), 0.0);
+    double              weight = 0.0;
+    for(uint32_t i = group.first; i < group.first + group.count; i++)
+    {
+      EXPECT_GE(table.triangles[i].aliasIndex, group.first);
+      EXPECT_LT(table.triangles[i].aliasIndex, group.first + group.count);
+      picked[i] += table.triangles[i].aliasProb / double(group.count);
+      picked[table.triangles[i].aliasIndex] += (1.0 - table.triangles[i].aliasProb) / double(group.count);
+    }
+    const float f = shaderio::EMISSIVE_DEFENSIVE_FRACTION;
+    for(uint32_t i = group.first; i < group.first + group.count; i++)
+    {
+      const float area = g == 0 ? 0.5f : (i == group.first ? 1.5f : 0.5f);
+      const float w    = area * ((1.f - f) * nvvkgltf::emissiveLuminance(table.triangles[i].radiance) + f * table.meanLum);
+      weight += w;
+      EXPECT_NEAR(picked[i] * group.weight, w, 1e-4) << "group " << g << " triangle " << i;
+    }
+    EXPECT_NEAR(group.weight, weight, 1e-4);
+  }
+  EXPECT_NEAR(groupsWeight, table.totalWeight, 1e-4);
+
+  const auto one = buildEmissiveTable(emitters, 1);
+  EXPECT_TRUE(one.groups.empty());
+  EXPECT_EQ(one.totalWeight, table.totalWeight);
+  EXPECT_TRUE(buildEmissiveTable(emitters).groups.empty());  // the default: the one table
+}

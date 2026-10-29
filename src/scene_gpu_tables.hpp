@@ -60,14 +60,17 @@ struct Emitter
 struct EmissiveTable
 {
   std::vector<shaderio::EmissiveTriangle> triangles;
+  std::vector<shaderio::EmissiveGroup>    groups;             // empty: one table over every triangle
   float                                   totalWeight = 0.f;  // GltfScene::emissiveTotalWeight
   float                                   meanLum     = 0.f;  // GltfScene::emissiveMeanLum
 };
 
 // Every non-degenerate triangle of the emitters that emit, weighted by area times defensive
 // luminance (pulled toward the area-weighted mean, so a dim emitter is never starved), with a Vose
-// alias table over those weights for O(1) selection.
-EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters);
+// alias table over those weights for O(1) selection. With at most `maxGroups` emitters that emit, one
+// group per emitter (shaderio::EmissiveGroup), each with an alias table of its own over its triangles;
+// otherwise (and with 0) one table over all of them.
+EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxGroups = 0);
 
 // Rec. 709 luminance; must match the shader's luminance() (nvshaders/functions.h.slang) so the pdf's
 // area term cancels

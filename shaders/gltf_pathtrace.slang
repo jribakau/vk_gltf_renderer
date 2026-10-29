@@ -681,7 +681,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // Power-weighted MIS pdf needs only the radiance the emitter was picked by, its geometric
         // normal, and W_total (the area cancels) -- no per-triangle lookup.
         emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelectionRadiance(materialIndex),
-                                                 hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT);
+                                                 hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID);
       }
       addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
     }

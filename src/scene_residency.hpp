@@ -357,6 +357,8 @@ public:
   BufferHandle lightTable() const { return m_lightTable; }
   uint32_t     lightCount() const { return m_lightCount; }
   BufferHandle emissiveTable() const { return m_emissiveTable; }
+  BufferHandle emissiveGroupTable() const { return m_emissiveGroupTable; }
+  uint32_t     emissiveGroupCount() const { return m_emissiveGroupCount; }
   uint32_t     emissiveCount() const { return m_emissiveCount; }
   float        emissiveTotalWeight() const { return m_emissiveTotalWeight; }
   float        emissiveMeanLum() const { return m_emissiveMeanLum; }
@@ -568,7 +570,8 @@ private:
   bool                                                 m_tablesMoved = false;  // the material tables were made again
   std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows
 
-  BufferHandle                         m_lightTable, m_emissiveTable, m_iesTable;
+  BufferHandle                         m_lightTable, m_emissiveTable, m_emissiveGroupTable, m_iesTable;
+  uint32_t                             m_emissiveGroupCount = 0;
   uint32_t                             m_lightCount          = 0;
   uint32_t                             m_iesProfileCount     = 0;
   uint32_t                             m_emissiveCount       = 0;
