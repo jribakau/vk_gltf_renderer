@@ -155,6 +155,8 @@ set(TEST_SOURCES
     test_sample_schedule.cpp
     # When a frame traces the selection image: a still's frame 0, a DLSS frame only while it is read (header only)
     test_selection_write.cpp
+    # A still's per-pixel stop: the convergence rule and its exposure (shader header compiled as C++)
+    test_adaptive_stop.cpp
     # A shader variant built off the application thread, with a fake compiler (header only)
     test_variant_compile_job.cpp
     # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)

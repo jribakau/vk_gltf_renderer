@@ -90,6 +90,7 @@ enum OutputImage
   eDenoiserAlbedo = 2,   // Accumulated albedo guide of the denoiser of the accumulation (RGBA32)
   eDenoiserNormal = 3,   // Accumulated world-space normal guide (RGBA32). Both alias DLSS slots: the
                          // images of the denoiser on (OptiX or OIDN) are bound there, never with DLSS
+  eConvergence = 9,      // Per pixel of an accumulation (RG32): the mean of its samples' luminance squared, and 1 while it has converged (ePtAdaptiveStop)
 };
 
 // Binding points for descriptors
@@ -334,6 +335,7 @@ enum PathtracerFlags
   ePtExitFresnel         = 1 << 17,  // A diffuse exit weighs its light by the boundary's Fresnel transmittance
   ePtLobeMixtureDirect   = 1 << 18,  // ePtLobeMixture only while the path is direct (pathRoughness at most DIRECT_PATH_ROUGHNESS)
   ePtWriteSelection      = 1 << 19,  // Trace a selection ray per pixel into eSelectImage (a still's frame 0; a DLSS frame only while something reads it)
+  ePtAdaptiveStop        = 1 << 20,  // An accumulation's pixel stops once its mean has converged (eConvergence, adaptiveThreshold)
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per
@@ -372,6 +374,8 @@ struct PathtracePushConstant
   int             hairRouletteFrom = 1;         // ...once it has taken this many fibre events (two fields keep the pointers 8-byte aligned)
   int             hairCutDlss      = 3;         // DLSS frames: a path through hair ends at this fibre event, its light sample its last (0: off)...
   float           hairCutTail      = 4.0f;      // ...which also carries this times the lock's colour over 4 pi, for the light it would have scattered on
+  float           adaptiveThreshold = 0.13f;    // ePtAdaptiveStop: a pixel stops once its mean's standard error is at most this times the root of its luminance...
+  int             adaptiveMin       = 32;       // ...and it has at least this many samples
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node

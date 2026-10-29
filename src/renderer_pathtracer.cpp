@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <span>
@@ -50,6 +51,7 @@
 
 #include "renderer_pathtracer.hpp"
 #include "sample_schedule.hpp"
+#include "../shaders/adaptive_stop.h.slang"  // adaptiveSceneThreshold
 
 #include "scene_shader_macros.hpp"
 #include "ui_helpers.hpp"
@@ -280,6 +282,8 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
       NVVK_CHECK(m_depthStaging.init(
           {.device = m_device, .alloc = &resources.allocator, .colorFormats = {VK_FORMAT_R32_SFLOAT}, .debugName = "PathTracer-DepthStaging"}));
   }
+  NVVK_CHECK(m_convergence.init(
+      {.device = m_device, .alloc = &resources.allocator, .colorFormats = {VK_FORMAT_R32G32_SFLOAT}, .debugName = "PathTracer-Convergence"}));
 
 
   // Requesting ray tracing properties
@@ -480,6 +484,20 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "times the lock's colour over 4 pi in its last light sample",
                  .callbackSuccess = reset},
                 &m_hairCutTail, Persist::eNo, 0.0F, 64.0F);
+  settings->add({.name            = "ptAdaptiveStop",
+                 .help            = "PathTracer: a still's pixel stops sampling once its mean has converged (off: every pixel "
+                                    "takes every sample, strictly unbiased)",
+                 .callbackSuccess = reset},
+                &m_adaptiveStop, Persist::eNo);
+  settings->add({.name            = "ptAdaptiveThreshold",
+                 .help            = "PathTracer: ptAdaptiveStop's bound on a pixel's standard error, times the root of its "
+                                    "luminance, in displayed brightness (after the exposure)",
+                 .callbackSuccess = reset},
+                &m_adaptiveThreshold, Persist::eNo, 0.0001F, 1.0F);
+  settings->add({.name            = "ptAdaptiveMin",
+                 .help            = "PathTracer: the samples a pixel takes before ptAdaptiveStop can stop it",
+                 .callbackSuccess = reset},
+                &m_adaptiveMin, Persist::eNo, 2, 100000);
   // Light that reaches skin after a rough bounce is blurred by that bounce: a random walk there costs
   // tens of events for detail nothing shows, so the medium shades as the thin preview's diffuse lobes
   // (Unreal's bSimplifySSS, at path roughness 0.15). Skin seen directly, or through a mirror or a
@@ -540,6 +558,7 @@ void PathTracer::onDetach(Resources& resources)
   resources.allocator.destroyBuffer(m_depthCopyBuffer);
   resources.allocator.destroyBuffer(m_cameraMediumBuffer);
   m_depthStaging.deinit();
+  m_convergence.deinit();
 
 #if defined(USE_DLSS)
   m_dlss->deinit(resources);
@@ -565,6 +584,7 @@ void PathTracer::onDetach(Resources& resources)
 void PathTracer::onResize(VkCommandBuffer cmd, const VkExtent2D& /*size*/, Resources& resources)
 {
   updateDepthStaging(cmd, resources);
+  updateConvergence(cmd, resources);
   updateDlssResources(cmd, resources);
   updateOptiXResources(cmd, resources);
 #if defined(USE_OIDN_DENOISER)
@@ -1099,6 +1119,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   // Finding the rendering size (needed before setupPushConstant so pixelAngle can be derived).
   VkExtent2D renderingSize = resources.gBuffers.getSize();
   updateDepthStaging(cmd, resources);  // first frame: onResize may not have run yet
+  updateConvergence(cmd, resources);
 #if defined(USE_DLSS)
   // When DLSS is effectively enabled, use DLSS render size
   if(getEffectiveDlssEnabled(resources))
@@ -1288,6 +1309,14 @@ void PathTracer::updateDepthStaging(VkCommandBuffer cmd, Resources& resources)
   NVVK_DBG_NAME(m_depthCopyBuffer.buffer);
 }
 
+void PathTracer::updateConvergence(VkCommandBuffer cmd, Resources& resources)
+{
+  const VkExtent2D size = resources.gBuffers.getSize();
+  const VkExtent2D cur  = m_convergence.getSize();
+  if(size.width != cur.width || size.height != cur.height)
+    NVVK_CHECK(m_convergence.update(cmd, size));  // an accumulation's first frame writes every pixel
+}
+
 //--------------------------------------------------------------------------------------------------
 // Copy the depth the path tracer wrote into m_depthStaging (R32_SFLOAT) to the G-buffer depth image.
 // Core Vulkan has no direct copy between a color and a depth image, so it goes through a buffer:
@@ -1326,7 +1355,7 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
 
   // Output images by shaderio::OutputImage slot, the first outputCount of them bound. Fixed storage:
   // this runs every frame (twice on frame 0). ObjectID is written to the eSelectImage slot as float in .r.
-  std::array<VkDescriptorImageInfo, shaderio::eNrMask + 1> outputImages{};
+  std::array<VkDescriptorImageInfo, shaderio::eConvergence + 1> outputImages{};
   uint32_t                                                 outputCount = 2;
   outputImages[shaderio::eResultImage] = resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered);
   outputImages[shaderio::eSelectImage] = resources.gBuffers.getColorStorageImageInfo(Resources::eImgSelection);
@@ -1369,6 +1398,13 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   }
 #endif
 
+
+  // An accumulation's per-pixel convergence (ePtAdaptiveStop); DLSS frames never read it
+  if(m_pushConst.flags & shaderio::ePtAdaptiveStop)
+  {
+    outputCount                          = shaderio::eConvergence + 1;
+    outputImages[shaderio::eConvergence] = m_convergence.getColorStorageImageInfo(0);
+  }
 
   VkWriteDescriptorSet allTextures = resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eOutImages);
   allTextures.descriptorCount      = outputCount;
@@ -3055,6 +3091,12 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.hairRouletteFrom = m_hairRouletteFrom;
   m_pushConst.hairCutDlss      = m_hairCutDlss;
   m_pushConst.hairCutTail      = m_hairCutTail;
+  m_pushConst.flags |= (m_adaptiveStop && !useDlss) ? shaderio::ePtAdaptiveStop : 0;
+  // in displayed brightness, with the exposure the host sets (auto exposure, which it never uses, has none)
+  m_pushConst.adaptiveThreshold = resources.tonemapperData.autoExposure ?
+                                      m_adaptiveThreshold :
+                                      adaptiveSceneThreshold(m_adaptiveThreshold, resources.tonemapperData.exposure);
+  m_pushConst.adaptiveMin       = m_adaptiveMin;
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;

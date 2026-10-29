@@ -56,6 +56,7 @@ static bool doDebug = false;
 #include "gltf_scene_io.h.slang"
 #if GLTF_USE_HAIR
 #include "hair_bsdf.h.slang"
+#include "adaptive_stop.h.slang"
 #endif
 #include "gltf_vertex_access.h.slang"
 #include "shaderio.h"
@@ -1325,6 +1326,16 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     doDebug = true;
   }
 
+  // Converged pixels of an accumulation take no more samples (ePtAdaptiveStop), a warp at a time: a
+  // thread whose warp still works costs the same idle, so a converged pixel among unconverged ones goes
+  // on sampling (and is unconverged again if a bright path arrives). Before any trace, while the warp
+  // is the launch's tile and not one SER regrouped. The value and the guides of a pixel that stops stay
+  // as they are; eConvergence is written by the accumulation's first frame below.
+  const bool adaptiveStop = hasFlag(pushConst.flags, PathtracerFlags::ePtAdaptiveStop);
+  const bool accumulating = !hasFlag(pushConst.flags, PathtracerFlags::ePtFirstFrame) && pushConst.totalSamples > 0;
+  if(adaptiveStop && accumulating && WaveActiveAllTrue(outImages[int(OutputImage::eConvergence)][int2(samplePos)].y > 0.0F))
+    return;
+
   // Initialize the random number
   // pushConst.seed selects another sequence (0: the default one), e.g. for a reference independent of a test render
   uint seed = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.frameCount) + uint(pushConst.seed) * 0x9E3779B9u));
@@ -1353,6 +1364,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   SampleResult sampleResult = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,
                                           pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
   float4 pixelColor = sampleResult.radiance;
+  float  lumSquared = square(luminance(sampleResult.radiance.xyz));  // the samples' second moment, for ePtAdaptiveStop
 
 #if USE_GUIDE_SHADER
   // The denoiser guides average every sample of the frame, like the color
@@ -1377,6 +1389,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     sampleResult   = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,
                                  pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
     pixelColor += sampleResult.radiance;
+    lumSquared += square(luminance(sampleResult.radiance.xyz));
 #if USE_GUIDE_SHADER
     if(denoiserGuides)
     {
@@ -1421,6 +1434,19 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     float4 old_color         = outImages[0][int2(samplePos)];
     outImages[int(OutputImage::eResultImage)][int2(samplePos)] =
         (old_color * pushConst.totalSamples + pixelColor * pushConst.numSamples) / totalSamplesAfter;
+  }
+
+  // Whether the pixel's mean has converged, after this frame (adaptiveConverged)
+  if(adaptiveStop)
+  {
+    const int2  pixel   = int2(samplePos);
+    const int   samples = (accumulating ? pushConst.totalSamples : 0) + pushConst.numSamples;
+    float       second  = lumSquared / float(pushConst.numSamples);
+    if(accumulating)
+      second = (outImages[int(OutputImage::eConvergence)][pixel].x * pushConst.totalSamples + lumSquared) / float(samples);
+    const float mean = luminance(outImages[int(OutputImage::eResultImage)][pixel].xyz);
+    const bool  stop = adaptiveConverged(second, mean, samples, pushConst.adaptiveThreshold, pushConst.adaptiveMin);
+    outImages[int(OutputImage::eConvergence)][pixel] = float4(second, stop ? 1.0F : 0.0F, 0.0F, 0.0F);
   }
 
 #if USE_DLSS_SHADER
@@ -1581,6 +1607,8 @@ void probeCameraMedium(IRaytracer raytracer)
 //-----------------------------------------------------------------------
 [shader("compute")]
 [numthreads(PT_WORKGROUP_X, PT_WORKGROUP_Y, 1)]
+// (subgroup vote: ePtAdaptiveStop's warp-wide stop in processPixel)
+[require(spvGroupNonUniformVote)]
 void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 {
   RAYQUERY_USE_OPACITY_MICROMAP(computeMain);
@@ -1600,6 +1628,8 @@ void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 // RAY GENERATION
 //-----------------------------------------------------------------------
 [shader("raygeneration")]
+// (subgroup vote: ePtAdaptiveStop's warp-wide stop in processPixel)
+[require(spvGroupNonUniformVote)]
 void rgenMain()
 {
   RAYQUERY_USE_OPACITY_MICROMAP(rgenMain);  // Ray queries here too (e.g. dlssTraceSkipThinGlass)

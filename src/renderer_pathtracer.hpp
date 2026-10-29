@@ -160,6 +160,7 @@ public:
   bool               m_depthViaStaging{false};
   bool               m_depthCopyable{true};  // The depth format is 32-bit float, so the staged depth can be copied in
   nvvk::RenderTarget m_depthStaging;         // R32_SFLOAT, G-buffer size
+  nvvk::RenderTarget m_convergence;          // RG32_SFLOAT, G-buffer size: shaderio::eConvergence
   nvvk::Buffer       m_depthCopyBuffer;      // Bridge for the color -> depth copy (no direct image copy between them)
   nvvk::Buffer       m_cameraMediumBuffer;   // shaderio::CameraMedium: the medium camera paths start in
   // ptCameraMedium: whether to probe it. The probe passes through surfaces that bound no medium, so
@@ -201,6 +202,13 @@ public:
   // the hair's brightness against the still about as close as the uncut moving view's)
   int   m_hairCutDlss{3};
   float m_hairCutTail{4.0F};
+  // An accumulation's pixel stops once its mean has converged (ptAdaptiveStop, ptAdaptiveThreshold,
+  // ptAdaptiveMin; shaders/adaptive_stop.h.slang). Measured 2026-10-29 on the bench (ACES, so 0.13 in
+  // displayed brightness is 0.1 in the scene's): a 128-sample still 7.96 -> 4.95 s, 0.57/255 from the
+  // full one (two full ones differ by 0.18), 0.06/255 darker
+  bool  m_adaptiveStop{true};
+  float m_adaptiveThreshold{0.13F};
+  int   m_adaptiveMin{32};
   SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
@@ -507,6 +515,8 @@ private:
   void upscaleSelectionAndDepth(VkCommandBuffer cmd, Resources& resources);
   // Size m_depthStaging / m_depthCopyBuffer to the G-buffer (no-op unless m_depthViaStaging).
   void updateDepthStaging(VkCommandBuffer cmd, Resources& resources);
+  // Size m_convergence to the G-buffer
+  void updateConvergence(VkCommandBuffer cmd, Resources& resources);
   // Copy the path-traced depth from m_depthStaging into the G-buffer depth image.
   void cmdCopyStagedDepth(VkCommandBuffer cmd, Resources& resources);
   // Destroy the pipelines for both Ray Query and Ray Tracing
