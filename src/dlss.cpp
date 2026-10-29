@@ -413,8 +413,8 @@ bool Dlss::needsRecreate() const
   // Only meaningful once NGX is up; before that updateSize() is a no-op. The RR input size is
   // compared against what the feature was built with, so a change from the command line, a
   // benchmark sequence or MCP recreates it the same way as the UI combo.
-  const bool sizeModeChanged = m_kind == Kind::RR && m_builtSizeMode >= 0 && m_builtSizeMode != m_settings.sizeMode;
-  return isAvailable() && (m_needsRecreate || sizeModeChanged);
+  const bool rrQualityChanged = m_kind == Kind::RR && m_builtRrQuality >= 0 && m_builtRrQuality != m_settings.rrQuality;
+  return isAvailable() && (m_needsRecreate || rrQualityChanged);
 }
 
 
@@ -809,11 +809,12 @@ void Dlss::registerParameters(SettingsRegistry* settings, std::function<void()> 
                                       "1=Improved (the surface seen through every glass layer)",
                    .callbackSuccess = cb},
                   &m_settings.transparencyMode, Persist::eYes, 0, 1);
-    settings->add({.name            = "dlssInputSize",
-                   .help            = "DLSS-RR input resolution NGX picks for the viewport: 0=Min, 1=Optimal (default, "
-                                      "below native), 2=Max. Use 2 when comparing timings with DLSS on and off",
+    settings->add({.name            = "dlssRrQuality",
+                   .help            = "DLSS-RR mode, the input resolution NGX picks for the viewport: 1=DLAA (native), "
+                                      "2=Quality (default, ~67%), 3=Balanced (~58%), 4=Performance (50%), "
+                                      "5=UltraPerformance (33%). Use 1 when comparing timings with DLSS on and off",
                    .callbackSuccess = cb},
-                  &m_settings.sizeMode, Persist::eYes, 0, 2);
+                  &m_settings.rrQuality, Persist::eYes, int(Quality::eDLAA), int(Quality::eUltraPerformance));
     // The network preset as a parameter, so a host can pick the transformer presets (the UI combo
     // writes m_preset directly). NGX bakes the preset at feature creation, so the feature is
     // recreated and its history dropped, as the combo does.
@@ -1241,39 +1242,30 @@ VkExtent2D Dlss::updateSizeRr(VkCommandBuffer cmd, VkExtent2D size)
 
   // RR-flavored wrapper routes querySupportedInputSizes to NGX_DLSSD_GET_OPTIMAL_SETTINGS.
   // The feature is created at this same mode (InitInfo::quality). The two must stay together:
-  // the input size is only valid for the mode that was queried.
-  constexpr auto              kRrQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
-  DlssFeature::SupportedSizes supportedSizes{};
-  NVSDK_NGX_Result result = m_dlss.querySupportedInputSizes(m_ngx, {size, kRrQuality}, &supportedSizes);
+  // the input size is only valid for the mode that was queried. The input is the mode's optimal
+  // size; DLAA's is the output's.
+  const Quality rrQuality = static_cast<Quality>(std::clamp(m_settings.rrQuality, int(Quality::eDLAA), int(Quality::eUltraPerformance)));
+  const NVSDK_NGX_PerfQuality_Value ngxQuality = qualityToNgx(rrQuality);
+  DlssFeature::SupportedSizes       supportedSizes{};
+  NVSDK_NGX_Result result = m_dlss.querySupportedInputSizes(m_ngx, {size, ngxQuality}, &supportedSizes);
   if(NVSDK_NGX_FAILED(result))
   {
     LOGE("DLSS-RR: Failed to query supported input sizes: %d\n", result);
     return size;
   }
 
-  VkExtent2D renderingSize{};
-  switch(static_cast<SizeMode>(m_settings.sizeMode))
-  {
-    case SizeMode::eMin:
-      renderingSize = supportedSizes.minSize;
-      break;
-    case SizeMode::eMax:
-      renderingSize = supportedSizes.maxSize;
-      break;
-    case SizeMode::eOptimal:
-    default:
-      renderingSize = supportedSizes.optimalSize;
-      break;
-  }
+  VkExtent2D renderingSize = supportedSizes.optimalSize;
+  if(rrQuality == Quality::eDLAA || renderingSize.width == 0 || renderingSize.height == 0)
+    renderingSize = size;
 
   // A new input size restarts the Halton sequence and drops the temporal history.
-  if(m_builtSizeMode >= 0 && m_builtSizeMode != m_settings.sizeMode)
+  if(m_builtRrQuality >= 0 && m_builtRrQuality != m_settings.rrQuality)
     notifyReset();
-  LOGI("DLSS-RR: input %ux%u for output %ux%u (input size mode %d)\n", renderingSize.width, renderingSize.height,
-       size.width, size.height, m_settings.sizeMode);
+  LOGI("DLSS-RR: input %ux%u for output %ux%u (mode %d)\n", renderingSize.width, renderingSize.height, size.width,
+       size.height, m_settings.rrQuality);
 
   DlssFeature::InitInfo initInfo{
-      .quality    = kRrQuality,
+      .quality    = ngxQuality,
       .preset     = m_preset,
       .inputSize  = renderingSize,
       .outputSize = size,
@@ -1292,12 +1284,12 @@ VkExtent2D Dlss::updateSizeRr(VkCommandBuffer cmd, VkExtent2D size)
     // into it until a create succeeds.
     LOGE("DLSS-RR: feature create failed: %d (in=%ux%u, out=%ux%u); DLSS stays off until the next resize or setting change\n",
          initRes, renderingSize.width, renderingSize.height, size.width, size.height);
-    m_builtSizeMode = m_settings.sizeMode;
+    m_builtRrQuality = m_settings.rrQuality;
     m_needsRecreate = false;
     return size;
   }
   m_dlssCreated   = true;
-  m_builtSizeMode = m_settings.sizeMode;
+  m_builtRrQuality = m_settings.rrQuality;
   m_needsRecreate = false;
   m_builtOutput   = size;
 
@@ -1406,8 +1398,9 @@ bool Dlss::onUiSettingsRr()
   if(!m_settings.enableRr)
     ImGui::BeginDisabled();
 
-  const char* sizeModes[]     = {"Min", "Optimal", "Max"};
-  int         currentSizeMode = m_settings.sizeMode;
+  // The combo lists the modes from DLAA (Quality::eDLAA) on
+  const char* rrModes[]     = {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"};
+  int         currentRrMode = m_settings.rrQuality - int(Quality::eDLAA);
 
   namespace PE = nvgui::PropertyEditor;
   PE::begin();
@@ -1421,12 +1414,12 @@ bool Dlss::onUiSettingsRr()
     m_settings.transparencyMode = currentTransMode;
     changed                     = true;
   }
-  if(PE::Combo("Input Size", &currentSizeMode, sizeModes, IM_ARRAYSIZE(sizeModes), 0,
-               "Input resolution DLSS-RR renders at before upscaling to the viewport. Optimal is below native "
-               "resolution; Max is the largest NGX supports. The DLSS-SR Quality setting does not apply here."))
+  if(PE::Combo("Mode", &currentRrMode, rrModes, IM_ARRAYSIZE(rrModes), 0,
+               "Input resolution DLSS-RR renders at before upscaling to the viewport: DLAA is native, Quality "
+               "~67%, Balanced ~58%, Performance 50%, Ultra Performance 33%. The DLSS-SR Quality setting does not apply here."))
   {
-    m_settings.sizeMode = currentSizeMode;  // needsRecreate() sees the change and recreates the feature
-    changed             = true;
+    m_settings.rrQuality = currentRrMode + int(Quality::eDLAA);  // needsRecreate() sees the change and recreates the feature
+    changed              = true;
   }
   // RR preset combo
   if(drawPresetCombo(Kind::RR, &m_preset, "Preset",

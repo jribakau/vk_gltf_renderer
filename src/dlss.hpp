@@ -127,14 +127,6 @@ public:
     eUnsupported,  // Hardware / extensions missing OR async init failed. Sticky for the session.
   };
 
-  // RR-only: how to pick the input resolution NGX recommends for a given output size.
-  enum class SizeMode
-  {
-    eMin,
-    eOptimal,
-    eMax
-  };
-
   // RR-only: how to populate the DLSS-RR guide buffers for transparent materials.
   enum class TransparencyMode
   {
@@ -337,7 +329,7 @@ private:
   struct Settings
   {
     bool enableRr         = true;                                          // RR only
-    int  sizeMode         = static_cast<int>(SizeMode::eOptimal);          // RR only (int for SettingsHandler)
+    int  rrQuality        = static_cast<int>(Quality::eQuality);           // RR only: the NGX mode, DLAA..UltraPerformance (int for SettingsHandler)
     int  qualityMode      = static_cast<int>(Quality::eOff);               // SR only (int for SettingsHandler)
     // RR only (int for SettingsHandler). Improved in the fork: a figure's corneas and eye moisture are clear glass
     int  transparencyMode = static_cast<int>(TransparencyMode::eImproved);
@@ -390,13 +382,13 @@ private:
   void releaseRrInnerGBuffer();
   void reacquireRrInnerGBuffer(Resources& resources);
 
-  // SR-only NGX quality-enum mapping (eOff/eDLAA never reach NGX; kept for completeness).
+  // NGX quality-enum mapping, SR's mode and RR's (eOff never reaches NGX).
   static NVSDK_NGX_PerfQuality_Value qualityToNgx(Quality q);
 
   // ---- Common state ---------------------------------------------------------------------------
   Kind       m_kind;  // RR or SR
   InitStatus m_state         = InitStatus::eNotChecked;
-  int        m_builtSizeMode = -1;  // RR: Settings::sizeMode the inner GBuffer was last sized with (-1 = never)
+  int        m_builtRrQuality = -1;  // RR: Settings::rrQuality the inner GBuffer was last sized with (-1 = never)
   VkExtent2D m_builtOutput{};       // RR: viewport size the feature was created to upscale to. 0 until the first build.
   bool m_needsRecreate = false;  // true when the NGX feature must be torn down + recreated (UI preset / size-mode / quality change)
   // m_dlss holds a feature (cmdInit succeeded). Both kinds: without it state() stays eLoading and no

@@ -171,8 +171,8 @@ public:
     bool packedNormalRoughness = true;
     bool hardwareDepth         = true;
     // Perf-quality mode of the NGX feature (MaxQuality, Balanced, DLAA, ...). SR takes it from the
-    // Quality combo. RR has no combo: updateSizeRr queries input sizes at MaxQuality and passes that
-    // same value here. Leaving it at zero selects MaxPerf, which will not upscale a MaxQuality input
+    // Quality combo. RR from its own mode (dlssRrQuality): updateSizeRr queries the input size at it
+    // and passes that same value here. Leaving it at zero selects MaxPerf, which will not upscale a MaxQuality input
     // and writes that input into the corner of the output. The letter preset below is a different
     // knob (which network), set through the RayReconstruction / DLSS hint parameters.
     NVSDK_NGX_PerfQuality_Value quality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
