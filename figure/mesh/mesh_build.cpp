@@ -1,6 +1,7 @@
 #include <figure/mesh/mesh_build.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <numeric>
@@ -76,7 +77,8 @@ Bounds boundsOf(std::span<const float> position)
 
 struct Strands
 {
-  // point c of the lines (lines.verts[c]) becomes drawn vertices 2c and 2c + 1
+  // point c of the lines (lines.verts[c]) becomes drawn vertices 2c and 2c + 1; past the lines'
+  // points come the segments' midpoints, in the order of the segments
   subdiv::Refinement refinement;
   // per point: the unit direction across the ribbon, root-to-tip position, and its line
   std::vector<float>   side, along;
@@ -140,6 +142,11 @@ float rootSpacing(std::span<const float> p, const Lines& lines, const std::funct
 // through it unchanged. A ribbon lies across the strand and the direction out from the roots'
 // centre, so it lies flat on the hair's volume and faces outward like a card would. Its UVs are its
 // own (across, along), so a texture on the file's UV set does not reach it.
+//
+// Each segment is drawn as two, split at its middle (a point the refinement places halfway between
+// its ends, so it follows them through the pose): a ray tracer bounds each triangle with a box, and a
+// long thin segment lying diagonally fills its box with little but air. Halving the length halves
+// how far the boxes of a lock's thousands of strands reach into one another.
 Strands strandRibbons(const MeshInput& m)
 {
   const Lines& L      = *m.lines;
@@ -149,36 +156,51 @@ Strands strandRibbons(const MeshInput& m)
   const int    points = L.start[nl];
   auto         ok     = [&](int c) { return L.verts[c] >= 0 && L.verts[c] < nv; };
 
+  // the segments drawn: their first point and their line
+  std::vector<std::array<int, 2>> segments;
+  for(int l = 0; l < nl; l++)
+    for(int c = L.start[l]; c + 1 < L.start[l + 1]; c++)
+      if(ok(c) && ok(c + 1))
+        segments.push_back({c, l});
+  const int total = points + int(segments.size());  // the lines' points, then the midpoints
+
   subdiv::Stencils stencil;
-  stencil.rowStart.assign(size_t(points) * 2 + 1, 0);
-  stencil.col.assign(size_t(points) * 2, 0);
-  stencil.weight.assign(size_t(points) * 2, 1.f);
+  stencil.rowStart.assign(size_t(total) * 2 + 1, 0);
   stencil.parentCount = nv;
   for(int c = 0; c < points; c++)
+    for(int k = 0; k < 2; k++)
+    {
+      stencil.col.push_back(ok(c) ? L.verts[c] : 0);
+      stencil.weight.push_back(1.f);
+      stencil.rowStart[c * 2 + k + 1] = int(stencil.col.size());
+    }
+  for(size_t s = 0; s < segments.size(); s++)
   {
-    const int v                  = ok(c) ? L.verts[c] : 0;
-    stencil.col[c * 2]           = v;
-    stencil.col[c * 2 + 1]       = v;
-    stencil.rowStart[c * 2 + 1] = c * 2 + 1;
-    stencil.rowStart[c * 2 + 2] = c * 2 + 2;
+    const int c = segments[s][0], mid = points + int(s);
+    for(int k = 0; k < 2; k++)
+    {
+      stencil.col.insert(stencil.col.end(), {L.verts[c], L.verts[c + 1]});
+      stencil.weight.insert(stencil.weight.end(), {0.5f, 0.5f});
+      stencil.rowStart[mid * 2 + k + 1] = int(stencil.col.size());
+    }
   }
 
   Strands out;
   auto&   r = out.refinement;
-  for(int l = 0; l < nl; l++)
-    for(int c = L.start[l]; c + 1 < L.start[l + 1]; c++)
+  for(size_t s = 0; s < segments.size(); s++)
+  {
+    const int c = segments[s][0], mid = points + int(s), d = c + 1;
+    for(auto [a, b] : {std::array<int, 2>{c, mid}, std::array<int, 2>{mid, d}})
     {
-      if(!ok(c) || !ok(c + 1))
-        continue;
-      const int d = c + 1;
-      for(int v : {c * 2, c * 2 + 1, d * 2 + 1, d * 2})
+      for(int v : {a * 2, a * 2 + 1, b * 2 + 1, b * 2})
       {
         r.quads.push_back(v);
         // one UV per drawn vertex (below), so the tangent frame runs along the strand
         r.quadValues.push_back(v);
       }
-      r.quadParent.push_back(l);
+      r.quadParent.push_back(segments[s][1]);
     }
+  }
 
   // the roots' centre, which a ribbon faces away from
   double cx = 0, cy = 0, cz = 0;
@@ -257,18 +279,35 @@ Strands strandRibbons(const MeshInput& m)
     }
   }
 
+  // a midpoint lies across the strand between its ends' directions, halfway along
+  out.side.resize(size_t(total) * 3);
+  out.along.resize(total);
+  out.line.resize(total);
+  for(size_t s = 0; s < segments.size(); s++)
+  {
+    const int c = segments[s][0], mid = points + int(s), d = c + 1;
+    float     dir[3];
+    for(int k = 0; k < 3; k++)
+      dir[k] = out.side[c * 3 + k] + out.side[d * 3 + k];
+    const float len = std::hypot(dir[0], dir[1], dir[2]);
+    for(int k = 0; k < 3; k++)
+      out.side[mid * 3 + k] = len > 1e-6f ? dir[k] / len : out.side[c * 3 + k];
+    out.along[mid] = 0.5f * (out.along[c] + out.along[d]);
+    out.line[mid]  = out.line[c];
+  }
+
   // UVs across (0 on the -side edge, 1 on the +side) and along (0 root, 1 tip) the ribbon, not the
   // file's: those are each strand's root on the scalp, the same all along it, which leaves no
   // strand direction for an anisotropic highlight to follow
-  r.values.assign(size_t(points) * 4, 0.f);
-  for(int c = 0; c < points; c++)
+  r.values.assign(size_t(total) * 4, 0.f);
+  for(int c = 0; c < total; c++)
   {
     r.values[c * 4 + 1] = out.along[c];
     r.values[c * 4 + 2] = 1;
     r.values[c * 4 + 3] = out.along[c];
   }
   r.levels.push_back(std::move(stencil));
-  r.vertexCount = points * 2;
+  r.vertexCount = total * 2;
   out.spacing   = rootSpacing(p, L, ok);
   return out;
 }

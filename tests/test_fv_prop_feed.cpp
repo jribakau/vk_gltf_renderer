@@ -22,6 +22,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 
@@ -658,6 +660,44 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
       moved = std::max(moved, glm::distance(got[v], rest[i][v]));
   }
   EXPECT_GT(moved, 1e-3f);
+}
+
+// A strand's segments are drawn as two each, split at their middles: a midpoint is refined halfway
+// between its segment's ends (so a pose moves it with them), halfway along the strand, and its
+// ribbon lies across the strand between its ends' directions.
+TEST(FvPropFeed, EachStrandSegmentIsDrawnAsTwo)
+{
+  fv::mesh::MeshInput input;
+  fv::mesh::Lines     lines;
+  lines.start    = {0, 3};
+  lines.verts    = {0, 1, 2};
+  lines.material = {0};
+  input.positions = {0, 0, 0, 0, 2, 0, 1, 4, 0};
+  input.lines     = lines;
+  const fv::mesh::BuiltMesh geo = fv::mesh::build(input);
+  ASSERT_TRUE(geo.ribbon && geo.refinement);
+  const fv::subdiv::Refinement& r = *geo.refinement;
+  EXPECT_EQ(r.vertexCount, (3 + 2) * 2);  // three points and two midpoints, each two drawn vertices
+  EXPECT_EQ(r.quads.size(), 4u * 4u);     // two segments, two quads each
+  const fv::subdiv::Stencils& s = r.levels.back();
+  for(int mid = 3; mid < 5; mid++)
+    for(int k = 0; k < 2; k++)
+    {
+      const int row = mid * 2 + k;
+      ASSERT_EQ(s.rowStart[row + 1] - s.rowStart[row], 2);
+      EXPECT_EQ(s.col[s.rowStart[row]], mid - 3);
+      EXPECT_EQ(s.col[s.rowStart[row] + 1], mid - 2);
+      EXPECT_FLOAT_EQ(s.weight[s.rowStart[row]], 0.5f);
+      EXPECT_FLOAT_EQ(s.weight[s.rowStart[row] + 1], 0.5f);
+    }
+  // along the strand, root to tip, every quarter
+  std::vector<float> along(geo.ribbon->along);
+  std::sort(along.begin(), along.end());
+  along.erase(std::unique(along.begin(), along.end()), along.end());
+  EXPECT_EQ(along, (std::vector<float>{0.f, 0.25f, 0.5f, 0.75f, 1.f}));
+  // each drawn vertex's direction across is a unit vector
+  for(size_t v = 0; v * 3 < geo.ribbon->side.size(); v++)
+    EXPECT_NEAR(std::hypot(geo.ribbon->side[v * 3], geo.ribbon->side[v * 3 + 1], geo.ribbon->side[v * 3 + 2]), 1.f, 1e-5f);
 }
 
 // Strand ribbons (gpu-figures-plan.md F1): each drawn vertex is its strand point moved across the
