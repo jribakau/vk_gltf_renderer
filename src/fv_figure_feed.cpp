@@ -331,6 +331,20 @@ bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const std::pa
       all = false;
     m_scene.setMaterial(id, std::move(payload), m_table);
   }
+  // so are those whose groups merge differently now (mergePlan): an edit that sets one of a hair's
+  // groups apart, or makes it the same as its neighbour again
+  if(all && !payloads.empty())
+    for(const FedMesh& f : m_meshes)
+    {
+      const bool edited = std::any_of(payloads.begin(), payloads.end(), [&](const auto& p) {
+        return std::find(f.groupMaterials.begin(), f.groupMaterials.end(), p.first) != f.groupMaterials.end();
+      });
+      if(edited && !f.id.isNone() && f.groupMaterials.size() == f.groupRuns.size() && mergePlan(f.groupRuns, f.groupMaterials) != f.merged)
+      {
+        all = false;
+        break;
+      }
+    }
   return all;
 }
 
@@ -440,6 +454,51 @@ std::vector<int> FigureFeed::groupMaterials(const SceneGraph& figure, int mesh, 
   return out;
 }
 
+std::vector<uint32_t> FigureFeed::mergePlan(const std::vector<std::pair<uint32_t, uint32_t>>& runs, const std::vector<int>& materials) const
+{
+  std::vector<uint32_t> plan(runs.size(), rs::Submesh::kNotMerged);
+  const auto payload = [&](size_t k) -> const tinygltf::Material* {
+    const int                 mi = materials[k];
+    const rs::MaterialRecord* r  = mi >= 0 && mi < int(m_materials.size()) ? m_scene.material(m_materials[size_t(mi)]) : nullptr;
+    return r ? &r->payload : nullptr;
+  };
+  const auto sameLook = [&](size_t a, size_t b) {
+    if(materials[a] == materials[b])
+      return true;
+    const tinygltf::Material* pa = payload(a);
+    const tinygltf::Material* pb = payload(b);
+    if(!pa || !pb)
+      return false;
+    // the surfaces' names and ids aside (extras.fvId): what they are called, not what they look like
+    const auto unnamed = [](tinygltf::Material m) {
+      m.name.clear();
+      if(m.extras.IsObject())
+      {
+        tinygltf::Value::Object extras = m.extras.Get<tinygltf::Value::Object>();
+        extras.erase("fvId");
+        m.extras = tinygltf::Value(std::move(extras));
+      }
+      return m;
+    };
+    return unnamed(*pa) == unnamed(*pb);
+  };
+  std::vector<size_t> order;  // the groups drawing something, in index order
+  for(size_t k = 0; k < runs.size(); k++)
+    if(runs[k].second > 0)
+      order.push_back(k);
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return runs[a].first < runs[b].first; });
+  size_t head = SIZE_MAX, last = SIZE_MAX;
+  for(size_t k : order)
+  {
+    if(last != SIZE_MAX && runs[k].first == runs[last].first + runs[last].second && sameLook(head, k))
+      plan[k] = uint32_t(head);
+    else
+      head = k;
+    last = k;
+  }
+  return plan;
+}
+
 std::vector<bool> FigureFeed::tangentGroups(const std::vector<int>& materials) const
 {
   // as nvvkgltf::Scene chooses: a primitive with no material is weighed as material 0
@@ -453,7 +512,7 @@ std::vector<bool> FigureFeed::tangentGroups(const std::vector<int>& materials) c
   return out;
 }
 
-rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn) const
+rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn, const std::vector<uint32_t>& merged) const
 {
   const Mesh&            m     = figure.meshes[size_t(mesh)];
   const mesh::BuiltMesh& geo   = *m.geo;
@@ -512,7 +571,8 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
   {
     const mesh::Group& g = drawn.groups()[k];
     // every group keeps its submesh, empty or not: one a graft hides whole draws nothing until it fills
-    r.submeshes.push_back({.firstIndex = g.start, .indexCount = g.count, .material = uint32_t(k), .order = int32_t(k)});
+    r.submeshes.push_back({.firstIndex = g.start, .indexCount = g.count, .material = uint32_t(k), .order = int32_t(k),
+                           .mergedInto = k < merged.size() ? merged[k] : rs::Submesh::kNotMerged});
   }
   return r;
 }
@@ -562,9 +622,17 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       partMaterials[mi].push_back(materialFor(g));
     const std::vector<bool> tangents = tangentGroups(groups);
     const bool              flipV    = !m_options.build.texturesFlipped;
-    if(f.id.isNone() || f.geo.lock() != m.geo || f.hidden != m.geo->hiddenPolys || f.flipV != flipV || f.tangentGroups != tangents)
+    std::vector<std::pair<uint32_t, uint32_t>> runs;
+    for(const mesh::Group& g : drawn.groups())
+      runs.emplace_back(g.start, g.count);
+    const std::vector<uint32_t> merged = mergePlan(runs, groups);
+    f.groupRuns                        = runs;
+    f.groupMaterials                   = groups;
+    if(f.id.isNone() || f.geo.lock() != m.geo || f.hidden != m.geo->hiddenPolys || f.flipV != flipV || f.tangentGroups != tangents
+       || f.merged != merged)
     {
-      rs::MeshRecord r   = meshRecord(figure, int(mi), drawn);
+      rs::MeshRecord r   = meshRecord(figure, int(mi), drawn, merged);
+      f.merged           = merged;
       f.tangentIndices   = tangentIndices(r, tangents);
       // subdivided, or strand ribbons once widened: the GPU makes its drawn vertices from its cage
       f.refine = mesh::drawnFromCage(*m.geo) && m_options.cageOf ? refineTables(*m.geo) : nullptr;

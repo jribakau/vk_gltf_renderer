@@ -404,6 +404,74 @@ TEST(FigureFeed, AMaterialEditSetsThatMaterialOnly)
   expectSame(fed, imported, false);
 }
 
+// A mesh's groups whose materials lower the same, their names aside, are drawn and traced as one
+// prim (one BLAS: strand hair's groups overlap through the whole lock), each group still its own
+// submesh; an edit that sets one apart asks for a sync, which parts it again.
+TEST(FigureFeed, GroupsWithTheSameMaterialAreDrawnAsOne)
+{
+  const auto      f       = loadBox();
+  const auto      options = textured();
+  fv::SceneGraph& scene   = f->loaded.scene;
+  const int       root    = f->loaded.root;
+  int             mesh    = -1;
+  for(size_t i = 0; i < scene.meshes.size(); i++)
+    if(scene.meshes[i].geo && scene.meshes[i].geo->groups.size() >= 2
+       && (mesh < 0 || scene.meshes[i].geo->groups.size() > scene.meshes[size_t(mesh)].geo->groups.size()))
+      mesh = int(i);
+  ASSERT_GE(mesh, 0) << "the box has no mesh with two groups";
+  const fv::Mesh&  m = scene.meshes[size_t(mesh)];
+  std::vector<int> groupMaterial;
+  for(const fv::mesh::Group& g : m.geo->groups)
+    groupMaterial.push_back(m.materials[size_t(g.materialIndex)]);
+  // every group's material the first's, but for its name
+  for(int mi : groupMaterial)
+  {
+    const std::string name = scene.materials[size_t(mi)].name;
+    scene.materials[size_t(mi)] = scene.materials[size_t(groupMaterial[0])];
+    scene.materials[size_t(mi)].name = name;
+  }
+
+  rs::RetainedScene fed;
+  fv::FigureFeed    feed(fed, {.build = options});
+  feed.sync(scene, root);
+  expectFed(scene, root, feed, fed, options);
+  const rs::MeshRecord* r = fed.mesh(feed.meshOf(mesh));
+  ASSERT_TRUE(r);
+  ASSERT_EQ(r->submeshes.size(), m.geo->groups.size());
+  // the groups drawing something, in index order: the first draws the others
+  std::vector<uint32_t> drawing;
+  for(uint32_t k = 0; k < r->submeshes.size(); k++)
+    if(r->submeshes[k].indexCount > 0)
+      drawing.push_back(k);
+  std::sort(drawing.begin(), drawing.end(), [&](uint32_t a, uint32_t b) { return r->submeshes[a].firstIndex < r->submeshes[b].firstIndex; });
+  ASSERT_GE(drawing.size(), 2u);
+  const uint32_t head = drawing.front(), last = drawing.back();
+  EXPECT_TRUE(r->drawsItself(head));
+  for(size_t i = 1; i < drawing.size(); i++)
+    EXPECT_EQ(r->submeshes[drawing[i]].mergedInto, head) << drawing[i];
+  const rs::Submesh run = r->drawnRun(head);
+  EXPECT_EQ(run.firstIndex, r->submeshes[head].firstIndex);
+  EXPECT_EQ(run.firstIndex + run.indexCount, r->submeshes[last].firstIndex + r->submeshes[last].indexCount);
+  // a triangle of the last group, as a pick on the merged prim names it
+  EXPECT_EQ(r->submeshAt(head, (r->submeshes[last].firstIndex - run.firstIndex) / 3), last);
+  size_t items = 0;
+  for(const rs::DrawItem& item : fed.drawItems())
+    items += item.mesh == feed.meshOf(mesh) ? 1 : 0;
+  EXPECT_EQ(items, size_t(1));
+
+  // an edit sets the last group's material apart: the narrow sync leaves it to a sync, which parts it
+  const int edited = groupMaterial[last];
+  ASSERT_NE(edited, groupMaterial[head]);
+  scene.materials[size_t(edited)].edits.roughness = 0.25f;
+  EXPECT_FALSE(feed.syncMaterials(scene, std::vector<int>{edited}));
+  feed.sync(scene, root);
+  expectFed(scene, root, feed, fed, options);
+  r = fed.mesh(feed.meshOf(mesh));
+  ASSERT_TRUE(r);
+  EXPECT_TRUE(r->drawsItself(last));
+  EXPECT_EQ(r->drawnRun(last).indexCount, r->submeshes[last].indexCount);
+}
+
 // The narrow syncs a host runs every frame leave the store as a sync would: a dial and a pose (the
 // vertices, the node transforms and the rebind they bring), a hidden item, a material edit.
 TEST(FigureFeed, NarrowSyncsLeaveTheStoreAsASyncWould)

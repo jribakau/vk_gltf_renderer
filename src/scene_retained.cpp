@@ -544,6 +544,31 @@ void RetainedScene::releaseInstance(const MeshInstance& instance)
     release(instance.skin);
 }
 
+Submesh MeshRecord::drawnRun(uint32_t s) const
+{
+  Submesh  run   = submeshes[s];
+  uint32_t first = run.firstIndex, end = run.firstIndex + run.indexCount;
+  for(uint32_t j = 0; j < submeshes.size(); j++)
+    if(j != s && submeshes[j].mergedInto == s && submeshes[j].indexCount > 0)
+    {
+      first = std::min(first, submeshes[j].firstIndex);
+      end   = std::max(end, submeshes[j].firstIndex + submeshes[j].indexCount);
+    }
+  run.firstIndex = first;
+  run.indexCount = end - first;
+  return run;
+}
+
+uint32_t MeshRecord::submeshAt(uint32_t s, uint32_t primitive) const
+{
+  const uint32_t index = drawnRun(s).firstIndex + primitive * 3;
+  for(uint32_t j = 0; j < submeshes.size(); j++)
+    if((j == s || submeshes[j].mergedInto == s) && index >= submeshes[j].firstIndex
+       && index < submeshes[j].firstIndex + submeshes[j].indexCount)
+      return j;
+  return s;
+}
+
 void RetainedScene::countUses(const MeshInstance& instance, int delta)
 {
   for(const MeshPart& part : instance.parts)
@@ -716,7 +741,7 @@ std::vector<DrawItem> RetainedScene::drawItems()
     for(size_t p = 0; p < e.mesh->parts.size(); p++)
       if(const MeshRecord* m = mesh(e.mesh->parts[p].mesh))
         for(uint32_t s = 0; s < m->submeshes.size(); s++)
-          if(m->submeshes[s].indexCount)
+          if(m->drawsItself(s) && m->drawnRun(s).indexCount)  // a run merged into another is drawn by it
             runs.push_back({m->submeshes[s].order, p, s});
     std::stable_sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) { return a.order < b.order; });
     const Derived& d = m_derived[id.index];

@@ -139,6 +139,12 @@ struct Submesh
   int32_t order = 0;
   // EXT_mesh_opacity_micromap: the micromap its triangles take their opacity from; null for none
   std::shared_ptr<const MicromapUse> micromap;
+  // The submesh that draws and traces this run with its own, which follows it in `indices`
+  // (kNotMerged: itself). A figure's feed merges a mesh's contiguous groups whose materials are the
+  // same into one prim, and so one BLAS: strand hair's groups overlap through the whole lock, and a
+  // ray in it descended each one's BLAS (one for the bob's four: -14% moving, -11% still).
+  uint32_t                           mergedInto = kNotMerged;
+  static constexpr uint32_t          kNotMerged = ~0u;
   bool                               operator==(const Submesh&) const = default;
 };
 
@@ -213,6 +219,16 @@ struct MeshRecord
 
   // the positions' axis-aligned bounds; empty (min > max) without vertices
   std::array<glm::vec3, 2> bounds() const;
+
+  // Submesh `s` is drawn by a prim of its own: not merged into another (Submesh::mergedInto)
+  bool drawsItself(uint32_t s) const
+  {
+    return submeshes[s].mergedInto == Submesh::kNotMerged || submeshes[s].mergedInto == s;
+  }
+  // The run submesh `s`'s prim draws and traces: its own, extended over the runs merged into it
+  Submesh drawnRun(uint32_t s) const;
+  // The submesh triangle `primitive` of submesh `s`'s prim belongs to: `s` unless runs merged into it
+  uint32_t submeshAt(uint32_t s, uint32_t primitive) const;
 };
 
 struct SamplerDesc

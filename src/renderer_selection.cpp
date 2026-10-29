@@ -50,7 +50,20 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
     std::optional<InstancePick> pick;
     if(hasHit && m_resources.retainedGpu)
       if(const rs::Residency::Instance* inst = m_resources.retainedGpu->residency().instance(uint32_t(pickResult.instanceID)))
+      {
         pick = InstancePick{inst->entity, inst->material};
+        // a prim that draws merged groups (Submesh::mergedInto): the material of the group hit
+        const rs::RetainedScene& scene  = hostScene();
+        const rs::MeshRecord*    record = scene.mesh(inst->mesh);
+        const rs::Entity*        entity = scene.entity(inst->entity);
+        if(record && entity && entity->mesh && inst->submesh < record->submeshes.size())
+        {
+          const uint32_t hit = record->submeshAt(inst->submesh, uint32_t(std::max(pickResult.primitiveID, 0)));
+          for(const rs::MeshPart& part : entity->mesh->parts)
+            if(part.mesh == inst->mesh && hit != inst->submesh && record->submeshes[hit].material < part.materials.size())
+              pick->material = part.materials[record->submeshes[hit].material];
+        }
+      }
     // the entity hit, or nothing; the one selected, hit again, is let go
     if(!(m_pickObserver && m_pickObserver(pick, worldPos)))
       selectEntity(pick && pick->entity != m_selectedEntity ? pick->entity : rs::EntityId{});

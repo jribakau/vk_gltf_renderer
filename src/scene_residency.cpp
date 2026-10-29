@@ -578,7 +578,7 @@ static std::vector<uint32_t> cageSupport(const RefineTables& t, std::span<const 
 // place the selection box and the scene's bounds, not culling)
 static void fitBounds(Residency::Prim& prim, const MeshRecord& record)
 {
-  const Submesh& run = record.submeshes[prim.submesh];
+  const Submesh run = record.drawnRun(prim.submesh);
   glm::vec3      lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
   if(record.refine && !record.cage.empty() && run.indexCount)
   {
@@ -628,7 +628,7 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
     m_prims.resize(size_t(slot) + 1);
 
   const MeshRecord& record = *scene.mesh(id);
-  const Submesh&    run    = record.submeshes[submesh];
+  const Submesh     run    = record.drawnRun(submesh);
   Prim              prim;
   prim.mesh       = id;
   prim.drawer     = drawer;
@@ -2256,7 +2256,7 @@ void Residency::syncEmissive(const RetainedScene& scene)
     const MeshRecord* record   = scene.mesh(inst->mesh);
     if(nvvkgltf::emissiveLuminance(radiance) <= 0.f || !record)
       continue;
-    const Submesh& run = record->submeshes[inst->submesh];
+    const Submesh run = record->drawnRun(inst->submesh);
     emitters.push_back({.renderNodeID = s,
                         .renderPrimID = inst->prim,
                         .radiance     = radiance,

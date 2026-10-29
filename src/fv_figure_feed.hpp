@@ -143,6 +143,11 @@ private:
     std::map<std::string, std::vector<int32_t>> hidden;  // the geometry's hidden polygons
     bool                                        flipV = false;
     std::vector<bool>                           tangentGroups;  // the drawn groups whose materials need tangents
+    // the drawn groups' runs (start, count in indices) and scene materials, and the group each is
+    // merged into (Submesh::mergedInto; mergePlan)
+    std::vector<std::pair<uint32_t, uint32_t>> groupRuns;
+    std::vector<int>                           groupMaterials;
+    std::vector<uint32_t>                      merged;
     // the triangles its tangents are made over (none: it has none), and which touch each vertex,
     // so moved vertices make only the tangents near them again
     std::vector<uint32_t>                            tangentIndices;
@@ -184,7 +189,11 @@ private:
   std::vector<int> groupMaterials(const SceneGraph& figure, int mesh, const build::DrawnView& drawn) const;
   rs::MaterialId   materialFor(int material);
   std::vector<bool>      tangentGroups(const std::vector<int>& materials) const;
-  rs::MeshRecord         meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn) const;
+  // Submesh::mergedInto for each drawn group: a group that follows another in the indices, both
+  // drawing something, with a material the same as that group's in all but its name, is drawn and
+  // traced with it (one prim, one BLAS)
+  std::vector<uint32_t>  mergePlan(const std::vector<std::pair<uint32_t, uint32_t>>& runs, const std::vector<int>& materials) const;
+  rs::MeshRecord         meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn, const std::vector<uint32_t>& merged) const;
   std::vector<uint32_t>  tangentIndices(const rs::MeshRecord& record, const std::vector<bool>& groups) const;
 
   rs::RetainedScene& m_scene;
