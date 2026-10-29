@@ -143,10 +143,10 @@ float rootSpacing(std::span<const float> p, const Lines& lines, const std::funct
 // centre, so it lies flat on the hair's volume and faces outward like a card would. Its UVs are its
 // own (across, along), so a texture on the file's UV set does not reach it.
 //
-// Each segment is drawn as two, split at its middle (a point the refinement places halfway between
-// its ends, so it follows them through the pose): a ray tracer bounds each triangle with a box, and a
-// long thin segment lying diagonally fills its box with little but air. Halving the length halves
-// how far the boxes of a lock's thousands of strands reach into one another.
+// Each segment is drawn in pieces (kPieces), split at points the refinement places between its ends,
+// so they follow them through the pose: a ray tracer bounds each triangle with a box, and a long thin
+// segment lying diagonally fills its box with little but air. Halving the length halves how far the
+// boxes of a lock's thousands of strands reach into one another.
 Strands strandRibbons(const MeshInput& m)
 {
   const Lines& L      = *m.lines;
@@ -162,7 +162,13 @@ Strands strandRibbons(const MeshInput& m)
     for(int c = L.start[l]; c + 1 < L.start[l + 1]; c++)
       if(ok(c) && ok(c + 1))
         segments.push_back({c, l});
-  const int total = points + int(segments.size());  // the lines' points, then the midpoints
+  // each segment drawn as this many: 2 took a still frame 57.7 -> 49.0 ms and the moving trace
+  // 18.6 -> 15.3; 4 took the still 3% further for 360 MB more and the moving view nowhere (2026-10-29)
+  constexpr int kPieces = 2;
+  constexpr int kInner  = kPieces - 1;
+  const int     total   = points + int(segments.size()) * kInner;  // the lines' points, then the inner points
+  // segment s's inner point j (0..kInner-1), at t = (j + 1) / kPieces of the way from its first point
+  auto inner = [&](size_t s, int j) { return points + int(s) * kInner + j; };
 
   subdiv::Stencils stencil;
   stencil.rowStart.assign(size_t(total) * 2 + 1, 0);
@@ -175,23 +181,26 @@ Strands strandRibbons(const MeshInput& m)
       stencil.rowStart[c * 2 + k + 1] = int(stencil.col.size());
     }
   for(size_t s = 0; s < segments.size(); s++)
-  {
-    const int c = segments[s][0], mid = points + int(s);
-    for(int k = 0; k < 2; k++)
+    for(int j = 0; j < kInner; j++)
     {
-      stencil.col.insert(stencil.col.end(), {L.verts[c], L.verts[c + 1]});
-      stencil.weight.insert(stencil.weight.end(), {0.5f, 0.5f});
-      stencil.rowStart[mid * 2 + k + 1] = int(stencil.col.size());
+      const int   c = segments[s][0], mid = inner(s, j);
+      const float t = float(j + 1) / kPieces;
+      for(int k = 0; k < 2; k++)
+      {
+        stencil.col.insert(stencil.col.end(), {L.verts[c], L.verts[c + 1]});
+        stencil.weight.insert(stencil.weight.end(), {1.f - t, t});
+        stencil.rowStart[mid * 2 + k + 1] = int(stencil.col.size());
+      }
     }
-  }
 
   Strands out;
   auto&   r = out.refinement;
   for(size_t s = 0; s < segments.size(); s++)
   {
-    const int c = segments[s][0], mid = points + int(s), d = c + 1;
-    for(auto [a, b] : {std::array<int, 2>{c, mid}, std::array<int, 2>{mid, d}})
+    const int c = segments[s][0], d = c + 1;
+    for(int j = 0; j < kPieces; j++)
     {
+      const int a = j == 0 ? c : inner(s, j - 1), b = j == kInner ? d : inner(s, j);
       for(int v : {a * 2, a * 2 + 1, b * 2 + 1, b * 2})
       {
         r.quads.push_back(v);
@@ -284,17 +293,19 @@ Strands strandRibbons(const MeshInput& m)
   out.along.resize(total);
   out.line.resize(total);
   for(size_t s = 0; s < segments.size(); s++)
-  {
-    const int c = segments[s][0], mid = points + int(s), d = c + 1;
-    float     dir[3];
-    for(int k = 0; k < 3; k++)
-      dir[k] = out.side[c * 3 + k] + out.side[d * 3 + k];
-    const float len = std::hypot(dir[0], dir[1], dir[2]);
-    for(int k = 0; k < 3; k++)
-      out.side[mid * 3 + k] = len > 1e-6f ? dir[k] / len : out.side[c * 3 + k];
-    out.along[mid] = 0.5f * (out.along[c] + out.along[d]);
-    out.line[mid]  = out.line[c];
-  }
+    for(int j = 0; j < kInner; j++)
+    {
+      const int   c = segments[s][0], mid = inner(s, j), d = c + 1;
+      const float t = float(j + 1) / kPieces;
+      float       dir[3];
+      for(int k = 0; k < 3; k++)
+        dir[k] = (1.f - t) * out.side[c * 3 + k] + t * out.side[d * 3 + k];
+      const float len = std::hypot(dir[0], dir[1], dir[2]);
+      for(int k = 0; k < 3; k++)
+        out.side[mid * 3 + k] = len > 1e-6f ? dir[k] / len : out.side[c * 3 + k];
+      out.along[mid] = (1.f - t) * out.along[c] + t * out.along[d];
+      out.line[mid]  = out.line[c];
+    }
 
   // UVs across (0 on the -side edge, 1 on the +side) and along (0 root, 1 tip) the ribbon, not the
   // file's: those are each strand's root on the scalp, the same all along it, which leaves no
