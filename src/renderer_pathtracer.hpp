@@ -42,6 +42,7 @@
 #include "denoiser_handoff.hpp"
 #include "renderer_base.hpp"
 #include "sample_schedule.hpp"
+#include "selection_write.hpp"
 #include "utils.hpp"
 #include "pipeline_cache_util.hpp"
 #include "scene_feature_detection.hpp"
@@ -192,6 +193,7 @@ public:
   // and the DLSS frames', fewer, since white hair keeps its energy through every one.
   int m_hairBounces{16};
   int m_hairBouncesDlss{4};
+  SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
   // Variant pipeline cache: avoids slow pipeline (re)compilation by reusing previously built

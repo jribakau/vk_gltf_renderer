@@ -482,6 +482,8 @@ struct Resources
 
   // Selection: set of render node indices (TLAS order). One primitive = set of size 1; node + branch = many.
   std::unordered_set<int> selectedRenderNodes;
+  // The ImGui cursor is over the viewport, so the hover picker reads the selection image this frame
+  bool hoverInViewport = false;
 
   // Selection bitmask for silhouette: one bit per render node (GPU buffer + CPU mirror)
   std::vector<uint32_t> selectionBitMask;

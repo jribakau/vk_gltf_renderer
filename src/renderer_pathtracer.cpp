@@ -3019,6 +3019,10 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   // every reset (camera/scene change). The local frameCount can be overridden to a Halton index when DLSS
   // is on and never resets; using it for ePtFirstFrame would only write depth once and break selection/depth.
   m_pushConst.flags = (resources.frameCount == 0 ? shaderio::ePtFirstFrame : 0);
+  // The selection image only when something reads it on a DLSS frame (SelectionWrite): the selection ray
+  // per pixel no one read was 8% of the moving trace (30.2 -> 27.9 ms, the harness figure at Optimal input)
+  const bool selectionRead = !resources.selectedRenderNodes.empty() || resources.hoverInViewport;
+  m_pushConst.flags |= m_selectionWrite.due(resources.frameCount == 0, useDlss, selectionRead) ? shaderio::ePtWriteSelection : 0;
   m_pushConst.flags |= m_shadowTransmission ? shaderio::ePtShadowTransmission : 0;
   m_pushConst.flags |= (m_scatterAsThin == 1 || (m_scatterAsThin == 2 && useDlss)) ? shaderio::ePtScatterAsThin : 0;
   m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;

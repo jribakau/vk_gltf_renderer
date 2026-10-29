@@ -207,6 +207,7 @@ void GltfRenderer::updateHoverCursorPosition()
 {
   m_hoverCursorInViewport = ImGui::IsWindowHovered(ImGuiFocusedFlags_RootWindow) && m_resources.getScene()
                             && m_resources.getScene()->valid() && !m_busy.isBusy();
+  m_resources.hoverInViewport = m_hoverCursorInViewport;
   if(!m_hoverCursorInViewport)
     return;
 

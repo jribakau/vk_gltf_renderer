@@ -333,6 +333,7 @@ enum PathtracerFlags
   ePtLightsVisible       = 1 << 16,  // Camera rays see sized lights (sizedLightHits); later rays always do
   ePtExitFresnel         = 1 << 17,  // A diffuse exit weighs its light by the boundary's Fresnel transmittance
   ePtLobeMixtureDirect   = 1 << 18,  // ePtLobeMixture only while the path is direct (pathRoughness at most DIRECT_PATH_ROUGHNESS)
+  ePtWriteSelection      = 1 << 19,  // Trace a selection ray per pixel into eSelectImage (a still's frame 0; a DLSS frame only while something reads it)
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

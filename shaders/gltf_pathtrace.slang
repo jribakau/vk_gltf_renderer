@@ -1367,14 +1367,15 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
       hasSolidHit ? mul(float4(sampleResult.hitPosition, 1.0), pushConst.frameInfo->viewProjMatrix) : float4(0, 0, 1, 1);
   float ndcDepth = hasSolidHit ? (clipPos.z / clipPos.w) : 1.0f;
 
-  // Only on the first frame, trace the selection ray to get the object IDs and save the NDC depth
-  if(firstFrame)
+  // The object IDs, from a selection ray of their own, when the host asks (PathTracer::setupPushConstant:
+  // every DLSS frame is a first frame, and most have nothing reading them); the NDC depth on the first frame
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtWriteSelection))
   {
-    // Trace the selection ray to get the object IDs
     uint objectID                                              = traceSelectionRay(raytracer, samplePos, imageSize);
     outImages[int(OutputImage::eSelectImage)][int2(samplePos)] = float4(asfloat(objectID), 0.0, 0.0, 0.0);
-    outDepth[int2(samplePos)]                                  = ndcDepth;
   }
+  if(firstFrame)
+    outDepth[int2(samplePos)] = ndcDepth;
 
   // Saving result
   // Nothing accumulated yet (the first frame, or the first after DLSS's frame 0): replace the value in
