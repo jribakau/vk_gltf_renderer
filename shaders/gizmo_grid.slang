@@ -176,14 +176,21 @@ struct GridFragmentOutput
 // Depth test against the scene. The lines are drawn with their own wide depth range, so the point
 // is reprojected with the scene camera to compare like with like. Perspective depth is compared as
 // distance with a relative tolerance: lines lying on a floor the scene draws at y = 0 stay visible.
+// The scene's depth is the nearest of the 3x3 texels around: a path-traced DLSS frame's depth is one
+// jittered sample a pixel, which in hair often misses the strands, and the axis flickered through the
+// hair as a dotted line. A line stops a texel short of an object's edge.
 bool occludedByScene(float2 fragCoord, float3 worldPos)
 {
   const float4 clip = mul(float4(worldPos, 1.0), pc.sceneViewProj);
   if(clip.w <= 0.0)
     return false;
-  const int2  texel = int2(fragCoord * (pc.depthBufferSize / pc.viewportSize));
-  const float scene = sceneDepth.Load(int3(texel, 0));
-  const float line  = clip.z / clip.w;
+  const int2 texel = int2(fragCoord * (pc.depthBufferSize / pc.viewportSize));
+  const int2 last  = int2(pc.depthBufferSize) - 1;
+  float      scene = 1.0;
+  for(int dy = -1; dy <= 1; ++dy)
+    for(int dx = -1; dx <= 1; ++dx)
+      scene = min(scene, sceneDepth.Load(int3(clamp(texel + int2(dx, dy), int2(0), last), 0)));
+  const float line = clip.z / clip.w;
   if(pc.isPerspective != 0)
     return (1.0 - scene) > (1.0 - line) * 1.002;  // 1 - depth falls as 1 / distance
   return scene < line - 1e-5;

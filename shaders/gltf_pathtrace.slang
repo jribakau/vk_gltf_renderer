@@ -1424,7 +1424,12 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     uint objectID                                              = traceSelectionRay(raytracer, samplePos, imageSize);
     outImages[int(OutputImage::eSelectImage)][int2(samplePos)] = float4(asfloat(objectID), 0.0, 0.0, 0.0);
   }
+  // Through an accumulation, the nearest depth any of its samples saw: the first frame's one jittered
+  // sample often misses the strands that cover part of a pixel of hair, and the grid's axis showed
+  // through the hair of a still as a dotted line.
   if(firstFrame)
+    outDepth[int2(samplePos)] = ndcDepth;
+  else if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) && ndcDepth < outDepth[int2(samplePos)])
     outDepth[int2(samplePos)] = ndcDepth;
 
   // Saving result
