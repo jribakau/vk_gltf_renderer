@@ -207,7 +207,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
 PathTracer::PathTracer()
 {
   // Default parameters for overall material
-  m_pushConst.maxDepth              = 5;
+  m_maxDepth                        = 5;
   m_pushConst.frameCount            = 0;
   m_pushConst.fireflyClampThreshold = 10.;
   m_pushConst.numSamples            = 1;  // Number of samples per pixel
@@ -352,7 +352,12 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   //   ptMaxDepth  -> "Max Depth" slider in showUI() (0..20)
   //   ptSamples   -> "Samples per Frame" slider in onUIRender() (MIN_SAMPLES_PER_PIXEL..MAX_SAMPLES_PER_PIXEL);
   //                  the adaptive-sampling autopilot also clamps to the same range at runtime.
-  settings->add({.name = "ptMaxDepth", .help = "PathTracer: Maximum ray depth", .callbackSuccess = reset}, &m_pushConst.maxDepth, Persist::eYes, 0, 20);
+  settings->add({.name = "ptMaxDepth", .help = "PathTracer: Maximum ray depth", .callbackSuccess = reset}, &m_maxDepth, Persist::eYes, 0, 20);
+  settings->add({.name            = "ptMaxDepthDlss",
+                 .help            = "PathTracer: DLSS frames: the bounces a path takes, when below ptMaxDepth (0: ptMaxDepth). "
+                                    "Biased: the light past it is lost while the view moves; the still keeps ptMaxDepth",
+                 .callbackSuccess = reset},
+                &m_maxDepthDlss, Persist::eNo, 0, 20);
   settings->add({.name            = "ptSamples",
                  .help            = "PathTracer: Samples per pixel traced each frame (see ptMaxSamples for the total)",
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
@@ -705,7 +710,7 @@ bool PathTracer::onUIRender(Resources& resources)
     }
 #endif
 
-    changed |= PE::SliderInt("Max Depth", &m_pushConst.maxDepth, 0, 20, "%d", 0, "Maximum number of bounces");
+    changed |= PE::SliderInt("Max Depth", &m_maxDepth, 0, 20, "%d", 0, "Maximum number of bounces");
     changed |= PE::SliderFloat("FireFly Clamp", &m_pushConst.fireflyClampThreshold, 0.0f, 100.0f, "%.4g", 0,
                                "Clamp threshold for fireflies. 0 = disabled.");
     changed |= PE::SliderFloat("Texture LOD", &m_pushConst.texGradScale, 0.0f, 1.0f, "%.2f", 0,
@@ -3086,6 +3091,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_fireflyClampMode == 1 ? shaderio::ePtClampIndirect : 0;
   m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
   m_pushConst.flags |= (m_regularize == 2 || (m_regularize == 1 && useDlss)) ? shaderio::ePtRegularize : 0;
+  m_pushConst.maxDepth   = sample_schedule::frameMaxDepth(m_maxDepth, m_maxDepthDlss, useDlss);
   m_pushConst.hairBudget = useDlss ? m_hairBouncesDlss : m_hairBounces;
   m_pushConst.hairRouletteDlss = m_hairRouletteDlss;
   m_pushConst.hairRouletteFrom = m_hairRouletteFrom;

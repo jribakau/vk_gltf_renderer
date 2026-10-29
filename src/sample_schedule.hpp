@@ -29,6 +29,7 @@
 //                         the count while the view is still.
 // ThroughputSearch:       Auto SPP's Throughput target, the samples per frame with the lowest frame
 //                         time per sample.
+// frameMaxDepth():        the bounces a frame's paths take: the still's, or the DLSS frames' cap below it.
 //-------------------------------------------------------------------------------------------------------
 
 #include <algorithm>
@@ -44,6 +45,13 @@ inline int frameSamples(int accumulated, int perFrame, int maxSamples, std::span
   if(const auto next = std::upper_bound(stops.begin(), stops.end(), accumulated); next != stops.end())
     count = std::min(count, *next - accumulated);
   return std::max(count, 1);
+}
+
+// The bounces this frame's paths take: `maxDepth`, or on a DLSS frame `maxDepthDlss` when it is lower
+// (0: the same as the still's). Never above the still's, so the moving view is never the costlier one.
+inline int frameMaxDepth(int maxDepth, int maxDepthDlss, bool dlss)
+{
+  return dlss && maxDepthDlss > 0 ? std::min(maxDepth, maxDepthDlss) : maxDepth;
 }
 
 // Auto SPP's frame-rate targets, over one accumulation (restart() on every reset). From one sample per
