@@ -89,6 +89,29 @@ TEST(Export, ACutoutMapBecomesTheAlphaOfTheBaseColour)
   EXPECT_EQ(px[0], 200);
 }
 
+TEST(Export, ACutoutReadFromItsAlphaTakesTheMapsAlpha)
+{
+  // DAZ's grayscale_mode "alpha": a logo white throughout, cut by its own alpha (the cooker's twin)
+  Dir  dir;
+  const auto base  = dir.write("b.png", {200, 100, 50, 255, 200, 100, 50, 255, 200, 100, 50, 255, 200, 100, 50, 255});
+  const auto alpha = dir.write("a.png", {255, 255, 255, 0, 255, 255, 255, 128, 255, 255, 255, 255, 255, 255, 255, 64});
+  fv::build::ExportOptions options;
+  options.find = [&](const std::string& r) -> std::optional<fs::path> { return dir.path / r; };
+  fv::mat::TextureRequest req;
+  req.rel            = base;
+  req.alphaRel       = alpha;
+  req.alphaFromAlpha = true;
+  const auto png = fv::build::composeImage(req, options);
+  ASSERT_TRUE(png);
+  const auto px = decoded(*png);
+  // rows flipped: the bottom row first
+  EXPECT_EQ(px[3], 255);
+  EXPECT_EQ(px[7], 64);
+  EXPECT_EQ(px[11], 0);
+  EXPECT_EQ(px[15], 128);
+  EXPECT_EQ(px[0], 200);
+}
+
 TEST(Export, AMissingSourceSaysSo)
 {
   fv::build::ExportOptions options;

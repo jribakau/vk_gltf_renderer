@@ -52,6 +52,8 @@ std::string recolorQuery(const RecolorRequest& r)
 std::string requestKey(const TextureRequest& req)
 {
   std::string key = req.rel + "|" + (req.srgb ? "1" : "0") + (req.normal ? "n" : "") + "|" + req.alphaRel + "|" + req.channels;
+  if(req.alphaFromAlpha)
+    key += "|aa";
   if(!req.bumpRel.empty())
     key += "|bump:" + req.bumpRel + ":" + num(req.bumpStrength);
   if(req.bumpHeight > 0)

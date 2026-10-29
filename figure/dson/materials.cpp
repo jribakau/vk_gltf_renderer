@@ -561,6 +561,10 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   s.base.color = shade ? shade->albedo : colorOr(base);
   s.base.map   = omniHair ? std::string() : imageOf(base);
   s.opacity    = scalar(cut, 1);
+  // a logo on a panel: an RGBA image whose colour is white where its alpha cuts the panel away
+  // (booperfooper's Gamer Girl Outfit)
+  if(cut && !s.opacity.map.empty() && cut->imageModification.is_object())
+    s.opacityFromAlpha = getString(&cut->imageModification, "grayscale_mode") == "alpha";
   // Iray Uber's own tiling, for every map of the surface (a detail layer's is its own)
   const double tilesU = num(find({"Horizontal Tiles"}), 1), tilesV = num(find({"Vertical Tiles"}), 1);
   s.tiles  = {float(tilesU != 0 ? tilesU : 1), float(tilesV != 0 ? tilesV : 1)};

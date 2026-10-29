@@ -79,6 +79,7 @@ struct TextureRequest
   bool        srgb   = true;
   bool        normal = false;  // a normal map: compressed more carefully
   std::string alphaRel;        // a cutout map folded into alpha; empty: none
+  bool        alphaFromAlpha = false;  // the cutout is that map's alpha channel, not its grey (green)
   // "ng": a normal map with green inverted (glTF's convention for meshes without tangents);
   // "bn": a normal map derived from a height map; "mr": glTF metallic-roughness from a roughness map
   std::string channels;

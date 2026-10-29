@@ -249,9 +249,10 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
     const auto a = other(req.alphaRel);
     if(!a)
       return std::nullopt;
-    // a cutout map's green channel is its alpha
+    // a cutout map's green channel is its alpha, or its own alpha (DAZ's grayscale_mode "alpha")
+    const size_t from = req.alphaFromAlpha ? 3 : 1;
     for(size_t i = 0; i < img.px.size() / 4; i++)
-      img.px[i * 4 + 3] = a->px[i * 4 + 1];
+      img.px[i * 4 + 3] = a->px[i * 4 + from];
   }
   // rows are flipped last: the derivations assume rows run top-down
   bool greenDone = false;

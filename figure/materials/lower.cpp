@@ -106,18 +106,21 @@ struct Builder
     return info(std::move(r), scale, own);
   }
 
-  // The base colour image: the colour map with its iris recoloured, a cutout in its alpha and makeup
-  // laid over it, then the whole recoloured; or, with a flat base colour, the colour baked into the image.
+  // The base colour image: the colour map with its iris recoloured, a cutout in its alpha (the
+  // cutout map's own alpha when `alphaFromAlpha`) and makeup laid over it, then the whole
+  // recoloured; or, with a flat base colour, the colour baked into the image.
   Json base(const std::string& color, const Rgb& factor, const std::string& alpha, const std::optional<MakeupLayer>& makeup,
-            const std::optional<IrisRequest>& iris = std::nullopt, const std::optional<RecolorRequest>& recolor = std::nullopt)
+            const std::optional<IrisRequest>& iris = std::nullopt, const std::optional<RecolorRequest>& recolor = std::nullopt,
+            bool alphaFromAlpha = false)
   {
     if(alpha.empty() && !makeup && !iris && !recolor)
       return color.empty() ? Json() : plain(color, true);
     TextureRequest r;
     r.srgb     = true;
     r.rel      = !color.empty() ? color : makeup && !makeup->map.empty() ? makeup->map : makeup && !makeup->weightMap.empty() ? makeup->weightMap : alpha;
-    r.alphaRel = alpha;
-    r.iris     = iris;
+    r.alphaRel       = alpha;
+    r.alphaFromAlpha = !alpha.empty() && alphaFromAlpha;
+    r.iris           = iris;
     r.recolor  = recolor;
     // a flat base colour (no base map) is a makeup bake with nothing laid over it
     if(makeup || color.empty())
@@ -327,7 +330,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   pbr["metallicFactor"]  = e.metalness.value_or(s.metallic.value);
   if(anyMap)
   {
-    const Json info = b.base(baseMap, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor);
+    const Json info = b.base(baseMap, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor, s.opacityFromAlpha);
     if(!info.is_null())
       pbr["baseColorTexture"] = info;
   }
@@ -728,7 +731,10 @@ Surface withMapEdits(const Surface& s, const Edits& e)
   if(e.baseMap)
     out.base.map = *e.baseMap;
   if(e.opacityMap)
-    out.opacity.map = *e.opacityMap;
+  {
+    out.opacity.map      = *e.opacityMap;
+    out.opacityFromAlpha = false;  // another image, read as grey
+  }
   if(e.normalMap)
     out.normalMap = *e.normalMap;
   if(e.bumpMap)

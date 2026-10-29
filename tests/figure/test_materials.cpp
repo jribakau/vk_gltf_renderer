@@ -2857,3 +2857,35 @@ TEST(Materials, AMapsOwnTilingMovesWithThePanelsOffset)
   EXPECT_EQ(t->scale, (std::array<float, 2>{1, 1}));
   EXPECT_NE(t->rotation, 0.f);
 }
+
+// ---- a cutout read from its map's alpha (DAZ's grayscale_mode "alpha")
+
+TEST(Materials, ACutoutReadFromItsAlphaAsksTheCookerForTheAlpha)
+{
+  // booperfooper's Gamer Girl Outfit: a logo, white where its alpha cuts the panel away
+  const char* panel = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+    {"channel":{"id":"diffuse","type":"color","current_value":[1,1,1],"image_file":"/panel_d.jpg"}},
+    {"channel":{"id":"Glossy Roughness","type":"float","current_value":0.5}},
+    {"channel":{"id":"Cutout Opacity","type":"float","current_value":1,"image_file":"/logo.png",
+      "image_modification":{"grayscale_mode":"alpha","scale":1,"offset":0,"invert":false}}}
+  ]}]})";
+  const auto request = [](const fv::mat::Surface& s, const fv::mat::Edits& e = {}) {
+    const auto lowered = fv::mat::lower(s, e, {});
+    return lowered.requests[lowered.material["pbrMetallicRoughness"]["baseColorTexture"]["slot"].get<size_t>()];
+  };
+  const auto s = fv::dson::parseSurface("Bottom", channelsOf(panel));
+  EXPECT_TRUE(s.opacityFromAlpha);
+  const auto alpha = request(s);
+  EXPECT_EQ(alpha.alphaRel, "/logo.png");
+  EXPECT_TRUE(alpha.alphaFromAlpha);
+  // DAZ's default, "average": the map read as grey, as before
+  const auto grey = fv::dson::parseSurface(
+      "Bottom", layered({panel, R"({"extra":[{"channels":[{"channel":{"id":"Cutout Opacity","image_modification":{"grayscale_mode":"average"}}}]}]})"}));
+  EXPECT_FALSE(grey.opacityFromAlpha);
+  EXPECT_FALSE(request(grey).alphaFromAlpha);
+  EXPECT_NE(fv::mat::requestKey(alpha), fv::mat::requestKey(request(grey)));
+  // a cutout map of the panel's own is read as grey
+  fv::mat::Edits e;
+  e.opacityMap = "/mine.png";
+  EXPECT_FALSE(request(s, e).alphaFromAlpha);
+}

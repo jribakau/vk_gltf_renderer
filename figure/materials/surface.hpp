@@ -172,6 +172,9 @@ struct Surface
 
   ColorMap  base;
   ScalarMap opacity{1, {}};  // Cutout Opacity
+  // The cutout map is read from its alpha channel (DAZ's texture instance grayscale_mode "alpha"),
+  // not as grey
+  bool opacityFromAlpha = false;
   // Iray Uber's Horizontal/Vertical Tiles and Offset: every map samples at uv * tiles + offset
   std::array<float, 2> tiles{1, 1};
   std::array<float, 2> offset{0, 0};

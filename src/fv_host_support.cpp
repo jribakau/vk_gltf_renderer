@@ -173,7 +173,7 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   // a source in a query value: <rootId>/<path>, percent-encoded
   const auto source = [&](const std::string& rel) { return encodeComponent(s.rootId + "/" + normRel(rel)); };
   if(!req.alphaRel.empty())
-    url += "&alpha=" + source(req.alphaRel);
+    url += "&alpha=" + source(req.alphaRel) + (req.alphaFromAlpha ? "&aa=1" : "");
   if(!req.bumpRel.empty())
     url += "&bump=" + source(req.bumpRel) + "&bs=" + fmtNumber(req.bumpStrength);
   if(req.bumpHeight > 0)
