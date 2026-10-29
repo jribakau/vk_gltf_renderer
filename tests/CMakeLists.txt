@@ -153,6 +153,8 @@ set(TEST_SOURCES
     test_denoiser_schedule.cpp
     # Path tracer samples per frame: ending on stops, the Auto SPP controller (header only)
     test_sample_schedule.cpp
+    # A pipeline built before that compiles again: the driver's shader cache is full (header only)
+    test_pipeline_build_record.cpp
     # When a frame traces the selection image: a still's frame 0, a DLSS frame only while it is read (header only)
     test_selection_write.cpp
     # A still's per-pixel stop: the convergence rule and its exposure (shader header compiled as C++)

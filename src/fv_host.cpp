@@ -254,6 +254,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   {"converged", impl->renderer->isStillConverged()},
                   {"complete", impl->renderer->accumulationComplete()},
                   {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer},
+                  // the driver's shader cache is full, and every start compiles the path tracer again
+                  {"driverCacheFull", impl->renderer->driverCacheFull()},
                   // the frame's size: a /size lands before the next frame, and until then the rest is the old frame's
                   {"width", size.width},
                   {"height", size.height}};

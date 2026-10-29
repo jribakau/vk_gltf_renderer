@@ -243,6 +243,7 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
       LOGW("PathTracer: cache directory '%s' was not created (%s); disk caches will fail to write\n",
            nvutils::utf8FromPath(cacheRoot).c_str(), cacheEc.message().c_str());
     m_pipelineCache.init(m_device, cacheRoot / "pipeline_cache.bin");
+    m_buildRecord.load(cacheRoot / "pipeline_builds.txt");
     if(!cacheEc)
     {
       m_shaderCacheDir = cacheRoot / "shaders";
@@ -294,6 +295,7 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   prop2.pNext                  = &m_rtPipelineProperties;
   m_rtPipelineProperties.pNext = resources.settings.serHardwareAvailable ? &m_reorderProperties : nullptr;
   vkGetPhysicalDeviceProperties2(resources.allocator.getPhysicalDevice(), &prop2);
+  m_driverVersion = prop2.properties.driverVersion;
 
   m_supportSER = resources.settings.serHardwareAvailable
                  && (m_reorderProperties.rayTracingInvocationReorderReorderingHint & VK_RAY_TRACING_INVOCATION_REORDER_MODE_REORDER_EXT);
@@ -1488,12 +1490,16 @@ void PathTracer::startPipelineWarm(Resources& resources)
     if(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
       return;
     VkResult         result   = VK_ERROR_UNKNOWN;
+    const auto       built    = std::chrono::steady_clock::now();
     const VkPipeline pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), layout, module, rayQuery,
                                                         useSER, transparency, flags, rqFlags, result);
+    const double     ms       = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - built).count();
     vkDestroyPipeline(m_device, pipeline, nullptr);
     vkDestroyShaderModule(m_device, module, nullptr);
     LOGI("%s pipeline warm-up (%s): %s (%.2f ms)\n", rayQuery ? "RQ" : "RTX", build, result == VK_SUCCESS ? "done" : "failed",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    if(result == VK_SUCCESS)
+      notePipelineBuild(nvvk::fnv1a64(code.data(), code.size_bytes()), rayQuery, useSER, transparency, rayQuery ? rqFlags : flags, ms);
     // the creation that follows is a cache hit and saves nothing, so the cache is saved here
     if(result == VK_SUCCESS)
       m_pipelineCache.saveAsync();
@@ -1506,6 +1512,37 @@ void PathTracer::startPipelineWarm(Resources& resources)
   m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)),
                              "still", rqStill);
 #endif
+}
+
+int32_t PathTracer::transparencyMode() const
+{
+#if defined(USE_DLSS)
+  return static_cast<int32_t>(m_dlss->getTransparencyMode());
+#else
+  return 0;
+#endif
+}
+
+void PathTracer::rememberModuleCode(VkShaderModule module, const void* code, size_t bytes)
+{
+  std::lock_guard lock(m_moduleCodeMutex);
+  m_moduleCode[module] = nvvk::fnv1a64(code, bytes);
+}
+
+uint64_t PathTracer::moduleCode(VkShaderModule module)
+{
+  std::lock_guard lock(m_moduleCodeMutex);
+  const auto      it = m_moduleCode.find(module);
+  return it != m_moduleCode.end() ? it->second : 0;
+}
+
+void PathTracer::notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER, int32_t transparency, VkPipelineCreateFlags flags, double ms)
+{
+  if(code == 0)
+    return;  // a module made from code nobody hashed
+  const uint64_t state[] = {code, rayQuery ? 1u : 0u, uint64_t(useSER), uint64_t(transparency), uint64_t(flags), m_driverVersion};
+  if(m_buildRecord.note(nvvk::fnv1a64(state, sizeof(state)), ms))
+    LOGW("[PathTracer] A pipeline built before compiled again (%.0f ms): the driver's shader cache is full\n", ms);
 }
 
 void PathTracer::joinPipelineWarm()
@@ -1559,8 +1596,11 @@ void PathTracer::createRqPipeline(Resources& /*resources*/)
 
   // NOTE: if the creation is slow, disable the validation layers for faster creation (--vvl 0)
   VkPipeline rqPipeline = VK_NULL_HANDLE;
+  const auto rqStart    = std::chrono::steady_clock::now();
   NVVK_CHECK(vkCreateComputePipelines(m_device, m_pipelineCache.getCache(), 1, &cpCreateInfo, nullptr, &rqPipeline));
   NVVK_DBG_NAME(rqPipeline);
+  notePipelineBuild(moduleCode(m_shaderModule), true, m_useSER ? 1 : 0, transparencyMode(), cpCreateInfo.flags,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rqStart).count());
 
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);
@@ -1755,6 +1795,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
       valid ? ((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) ? "CACHE HIT" : "cache miss") :
               "cache status unknown";
   LOGI("RTX pipeline creation: %s, deferred=%s (%.2f ms)\n", cacheStatus, wasDeferred ? "yes" : "no", elapsedMs);
+  notePipelineBuild(moduleCode(m_shaderModule), false, m_useSER ? 1 : 0, transparencyMode(), flags, elapsedMs);
   logPipelineStatistics(rtxPipeline, "RTX");
   // Unknown feedback (the deferred path leaves it unset) is not a hit, so it still saves.
   if((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) == 0)
@@ -2270,6 +2311,7 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     };
     NVVK_CHECK(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &m_shaderModule));
     NVVK_DBG_NAME(m_shaderModule);
+    rememberModuleCode(m_shaderModule, spirv.data(), spirv.size_bytes());
   }
 
   // Record which variant this compile is, so getPendingCompileWork() can tell whether the settings
@@ -2694,9 +2736,15 @@ PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
   };
   if(vkCreateShaderModule(m_device, &moduleInfo, nullptr, &built.module) != VK_SUCCESS)
     return {};
-  VkResult result = VK_ERROR_UNKNOWN;
+  rememberModuleCode(built.module, spirv.data(), spirv.size() * sizeof(uint32_t));
+  VkResult   result     = VK_ERROR_UNKNOWN;
+  const auto buildStart = std::chrono::steady_clock::now();
   built.pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), job.layout, built.module, job.rayQuery,
                                            job.useSER ? 1 : 0, job.key.dlssTransparency, job.rtxFlags, job.rqFlags, result);
+  if(built.pipeline)
+    notePipelineBuild(moduleCode(built.module), job.rayQuery, job.useSER ? 1 : 0, job.key.dlssTransparency,
+                      job.rayQuery ? job.rqFlags : job.rtxFlags,
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart).count());
   if(!built.pipeline)
   {
     LOGW("[PathTracer] Variant job: pipeline creation failed (%d)\n", int(result));

@@ -75,6 +75,7 @@ public:
   bool          isRefiningStill() const override { return false; }
   bool          isStillConverged() const override { return false; }
   bool          accumulationComplete() const override { return false; }
+  bool          driverCacheFull() const override { return false; }
   MemoryBudget  deviceMemoryBudget() const override { return {}; }
   uint32_t      frameBytesPerPixel() const override { return 4; }
   nvvk::ResourceAllocator* deviceAllocator() override { return nullptr; }

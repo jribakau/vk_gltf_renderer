@@ -30,6 +30,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -41,6 +42,7 @@
 #include <nvutils/profiler.hpp>
 #include "denoiser_handoff.hpp"
 #include "renderer_base.hpp"
+#include "pipeline_build_record.hpp"
 #include "sample_schedule.hpp"
 #include "selection_write.hpp"
 #include "utils.hpp"
@@ -111,6 +113,8 @@ public:
   // The scene features the live variant has compiled in: the optimal build's; none when every one
   // is (the optimal shader off, or the embedded build standing in for a failed compile)
   std::optional<nvvkgltf::SceneFeatureSet> liveShaderFeatures();
+  // A pipeline built before compiled again this run: the driver's shader cache is full (PipelineBuildRecord)
+  bool driverCacheFull() const { return m_buildRecord.driverDropped(); }
   // User-initiated hot reload: drop cached variants and recompile from Slang source.
   bool reloadShader(Resources& resources);
   void setBusyWindow(BusyWindow* busy) { m_busyWindow = busy; }
@@ -142,6 +146,18 @@ public:
   VkShaderModule                  m_shaderModule{};   // Shader module for RTX
 
   nvvk::PipelineCacheManager m_pipelineCache{};  // Pipeline cache for faster creation
+  // The pipelines built before (pipeline_builds.txt beside the cache), to tell a full driver cache
+  // from a new shader; each build is noted by notePipelineBuild()
+  PipelineBuildRecord m_buildRecord;
+  uint32_t            m_driverVersion{0};  // in the build keys: a driver update empties its cache
+  // The code each live shader module was made from, by its hash, for the build keys
+  std::mutex                                     m_moduleCodeMutex;
+  std::unordered_map<VkShaderModule, uint64_t>   m_moduleCode;
+  void     rememberModuleCode(VkShaderModule module, const void* code, size_t bytes);
+  uint64_t moduleCode(VkShaderModule module);
+  // A pipeline from code of hash `code`, built with this state in `ms`, in the record; a warning when
+  // the driver had dropped it since it was last built
+  void notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER, int32_t transparency, VkPipelineCreateFlags flags, double ms);
 
   // Shader Binding Table (SBT)
   nvvk::Buffer                m_sbtBuffer{};   // Buffer for the Shader Binding Table
@@ -313,6 +329,8 @@ public:
   std::mutex               m_warmMutex;
   std::vector<std::thread> m_warmThreads;  // startPipelineWarm(); joined before a creation and in onDetach()
   void        joinPipelineWarm();
+  // The DLSS transparency mode the pipelines are specialized on; 0 without DLSS
+  int32_t transparencyMode() const;
 
   // The technique of the frame being rendered: m_techniqueDlss on the DLSS variant's frames,
   // m_techniqueStill on the others (onRender). Each variant keeps its own pipeline in the cache.

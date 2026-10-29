@@ -120,6 +120,8 @@ public:
   virtual bool          isRefiningStill() const            = 0;
   virtual bool          isStillConverged() const           = 0;
   virtual bool          accumulationComplete() const       = 0;
+  // a pipeline built on an earlier run compiled again: the driver's shader cache is full
+  virtual bool          driverCacheFull() const            = 0;
   // the VRAM budget (VK_EXT_memory_budget); `known` false without the extension. Any thread.
   struct MemoryBudget
   {
