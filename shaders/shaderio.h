@@ -370,6 +370,8 @@ struct PathtracePushConstant
   float           bladeRotation = 0.0f;         // Angle of the first blade's corner, radians from the camera's right
   float           hairRouletteDlss = 1.0f;      // DLSS frames: a path continues from a fibre at most with this... (1: off)
   int             hairRouletteFrom = 1;         // ...once it has taken this many fibre events (two fields keep the pointers 8-byte aligned)
+  int             hairCutDlss      = 3;         // DLSS frames: a path through hair ends at this fibre event, its light sample its last (0: off)...
+  float           hairCutTail      = 4.0f;      // ...which also carries this times the lock's colour over 4 pi, for the light it would have scattered on
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node

@@ -164,6 +164,15 @@ float4 nextSobolDecision()
 // of missed rays (e.g., environment hits), and prepares data for direct/indirect lighting and next events.
 //-----------------------------------------------------------------------
 // `bounce` arrives default-initialized (BounceScratch's member defaults) and is filled in here.
+// DLSS frames (hairCutDlss): a path through hair ends at this fibre event, after its light sample.
+// `hairBounces`: the fibre events it has taken before this one. A negative hairCutDlss cuts the
+// still's paths too, to measure the tail against a converged image.
+bool hairCutHere(bool fibre, int hairBounces)
+{
+  return fibre && pushConst.hairCutDlss != 0 && (pushConst.hairCutDlss < 0 || hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+         && hairBounces + 1 >= abs(pushConst.hairCutDlss);
+}
+
 PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout uint seed, inout PathTracerState pt, inout BounceScratch bounce)
 {
   {
@@ -730,7 +739,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif
     // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
     // have no BSDF-sampled partner: weight 1, as for a punctual light, and the full environment table.
-    const bool lastVertex = !bounce.hairEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth;
+    bool hairCut = false;
+#if GLTF_USE_HAIR
+    hairCut = hairCutHere(bounce.fibre, pt.hairBounces);
+#endif
+    const bool lastVertex = hairCut || (!bounce.hairEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth);
     // The lobe mixture for this vertex's light sample and BSDF sample alike, so their MIS agrees. With
     // ePtLobeMixtureDirect only where the path is still direct: there a catchlight is seen, through a
     // cornea one sample in forty with a single lobe; past a rough bounce one lobe costs a third less.
@@ -767,7 +780,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       const bool allLobes = lobeMixture || (directLight.pdf == DIRAC && hasFlag(pushConst.flags, PathtracerFlags::ePtLobeSumPunctual));
 #if GLTF_USE_HAIR
       if(hairOn)
+      {
         hairBsdfEvaluate(evalData, hairHit);  // already the whole fibre BSDF, with its mixture pdf
+        // A cut path's light sample also stands for the light the lock would have scattered on to it:
+        // its colour, spread over the sphere (hairCutTail)
+        if(hairCut)
+          evalData.bsdf_diffuse += pushConst.hairCutTail * (0.25F * M_1_PI) * hairLockColor(hairHit);
+      }
       else
 #endif
       if(allLobes)
@@ -1133,9 +1152,11 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       }
     }
 
-    // Consume one surface bounce, or one of the hair's
+    // Consume one surface bounce, or one of the hair's; a path cut at a fibre (hairCutDlss) ends here
 #if GLTF_USE_HAIR
-    if(bounce.hairEvent)
+    if(hairCutHere(bounce.fibre, pt.hairBounces))
+      pt.surfaceDepth = pushConst.maxDepth;
+    else if(bounce.hairEvent)
       pt.hairBounces++;
     else
 #endif

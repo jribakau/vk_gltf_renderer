@@ -196,6 +196,11 @@ public:
   // DLSS frames: past ptHairRouletteFrom fibre events a path continues at most with ptHairRouletteDlss
   float m_hairRouletteDlss{1.0F};
   int   m_hairRouletteFrom{1};
+  // DLSS frames: hair paths end at their third fibre event, whose light sample carries the rest of the
+  // lock's light (ptHairCutDlss, ptHairCutTail; measured 2026-10-29: moving frame 29.5 -> 24.5 ms,
+  // the hair's brightness against the still about as close as the uncut moving view's)
+  int   m_hairCutDlss{3};
+  float m_hairCutTail{4.0F};
   SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 

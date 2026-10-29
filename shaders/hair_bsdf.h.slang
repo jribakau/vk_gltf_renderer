@@ -340,6 +340,12 @@ float3 hairColorToAbsorption(float3 color, float b)
   return l * l;
 }
 
+// The colour a lock of these fibres shows (hairColorFit): what its multiply scattered light returns
+float3 hairLockColor(HairHit hair)
+{
+  return exp(-sqrt(hair.sigma) * hairColorFit(hair.betaN));
+}
+
 // `baseColor`: the colour the hit shows, for a card's absorption (hairFromColor)
 bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 geoTangent, float3 normal, float3 baseColor, NVSHADERS_OUT_TYPE(HairHit) hair)
 {
