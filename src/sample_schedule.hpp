@@ -30,6 +30,7 @@
 // ThroughputSearch:       Auto SPP's Throughput target, the samples per frame with the lowest frame
 //                         time per sample.
 // frameMaxDepth():        the bounces a frame's paths take: the still's, or the DLSS frames' cap below it.
+// accumulationComplete(): the cap is reached: the samples, or the frames of a view that has none.
 //-------------------------------------------------------------------------------------------------------
 
 #include <algorithm>
@@ -45,6 +46,17 @@ inline int frameSamples(int accumulated, int perFrame, int maxSamples, std::span
   if(const auto next = std::upper_bound(stops.begin(), stops.end(), accumulated); next != stops.end())
     count = std::min(count, *next - accumulated);
   return std::max(count, 1);
+}
+
+// The view has reached Max Samples (`maxSamples`): `accumulated` samples per pixel since the last reset,
+// `frameCount` frames (-1 right after a reset). A view that accumulates no samples -- the rasterizer,
+// a still refined by DLSS frames alone -- counts its frames instead. Not once samples accumulate: a
+// still's DLSS hand-off frames are frames that add no sample, and counting them ended it one short.
+inline bool accumulationComplete(int frameCount, int accumulated, int maxSamples)
+{
+  if(frameCount < 0)
+    return false;
+  return accumulated > 0 ? accumulated >= maxSamples : frameCount >= maxSamples;
 }
 
 // The bounces this frame's paths take: `maxDepth`, or on a DLSS frame `maxDepthDlss` when it is lower

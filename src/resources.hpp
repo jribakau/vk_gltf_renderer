@@ -37,6 +37,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/ext/scalar_constants.hpp>
 
+#include "sample_schedule.hpp"
 #include "shaders/shaderio.h"  // Shared between host and device
 
 #include <nvshaders_host/hdr_env_dome.hpp>
@@ -457,7 +458,7 @@ struct Resources
   // render adds at least one sample, so it never cuts an accumulation short.
   bool accumulationComplete() const
   {
-    return (frameCount >= 0 && accumulatedSamples >= settings.maxSamples) || frameCount >= settings.maxSamples;
+    return sample_schedule::accumulationComplete(frameCount, accumulatedSamples, settings.maxSamples);
   }
 
   // Monotonic count of completed onRender() calls since the app started - unlike frameCount above

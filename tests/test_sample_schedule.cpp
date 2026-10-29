@@ -63,6 +63,18 @@ TEST(SampleSchedule, AlwaysTracesAtLeastOneSample)
   EXPECT_EQ(sample_schedule::frameSamples(0, 0, 10, {}), 1);
 }
 
+// A still that accumulates ends on its samples, however many frames came first (a DLSS hand-off frame
+// adds none: 128 frames once ended it at 127 samples); a view with no samples ends on its frames
+TEST(SampleSchedule, AccumulationEndsOnItsSamplesNotItsFrames)
+{
+  EXPECT_FALSE(sample_schedule::accumulationComplete(128, 127, 128));  // one hand-off frame before
+  EXPECT_TRUE(sample_schedule::accumulationComplete(129, 128, 128));
+  EXPECT_TRUE(sample_schedule::accumulationComplete(40, 128, 128));    // several samples a frame
+  EXPECT_FALSE(sample_schedule::accumulationComplete(127, 0, 128));    // DLSS frames alone
+  EXPECT_TRUE(sample_schedule::accumulationComplete(128, 0, 128));
+  EXPECT_FALSE(sample_schedule::accumulationComplete(-1, 128, 128));   // just reset
+}
+
 TEST(SampleSchedule, DlssFramesTakeTheLowerBounceCap)
 {
   EXPECT_EQ(sample_schedule::frameMaxDepth(8, 4, true), 4);
