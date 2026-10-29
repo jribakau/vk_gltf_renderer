@@ -39,16 +39,19 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch);
 // OmniHair's colour, linear, or none for any other shader (omniHairColor in parse/dson.ts).
 std::optional<mat::Rgb> omniHairColor(const Channels& ch);
 
-// A channel a preset sets: its value, and/or its image (an empty image removes the map).
+// A channel a preset sets: its value, and/or its image (an empty image removes the map), and/or
+// fields of its map's texture instance settings (Channel::imageModification; null: none).
 struct ChannelOverride
 {
   std::string                channel;  // id or label
   std::optional<Json>        value;
   std::optional<std::string> image;
+  Json                       imageModification;
 };
 
 // Lays channel overrides over a material's own and parses its surface again. False when nothing
-// changed. Material edits (m.edits) and the baseline stay.
+// changed. Material edits (m.edits) and the baseline stay. Texture instance settings alone, for a
+// channel the material lacks, are not laid: they would make a channel with no value.
 bool overrideChannels(Material& m, const std::vector<ChannelOverride>& overrides);
 
 // The material a surface name and its channels make: the surface, and the channels kept for what

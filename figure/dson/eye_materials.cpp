@@ -37,9 +37,9 @@ bool isEyePreset(const Json& doc, const SceneGraph& scene)
   return std::includes(eyes.begin(), eyes.end(), targets.begin(), targets.end());
 }
 
-EyesResult chooseEyes(SceneGraph& scene, const Json* doc, const std::set<int>& previous)
+EyesResult chooseEyes(SceneGraph& scene, const Json* doc, const std::set<int>& previous, const MaterialDefinitions& definitions)
 {
-  return choosePreset(scene, eyeSurfaces(scene), doc, previous);
+  return choosePreset(scene, eyeSurfaces(scene), doc, previous, definitions);
 }
 
 }  // namespace fv::dson

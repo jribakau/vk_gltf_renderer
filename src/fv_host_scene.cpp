@@ -525,7 +525,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
             applyEyes(*prop, rel, &doc->json, true);
             continue;
           }
-          const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, fig.loaded.scene);
+          const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, fig.loaded.scene, nullptr, fv::dson::definitionsIn(doc->json, fig.store()));
           if(prop->materials)
             prop->materials->surfacesChanged(r.changed);
           if(!r.changed.empty())

@@ -2319,3 +2319,457 @@ TEST(Materials, ChooseIrayPresetKeepsTheItemsLook)
   three.materials.push_back(fv::dson::buildMaterial("Band4", layered({kBoxers, kBoxersBlackMaps})));
   EXPECT_EQ(chooseIrayPreset(three, {&black}), -1);
 }
+
+// A whole preset of another shader starts the surface from that shader, as DAZ Studio replaces the
+// material; a partial one is laid over what is there.
+namespace {
+
+// PBRSkin.dsf's library entry, a few of its channels at the file's defaults: the brick graph and the
+// labels, Horizontal Tiles2 labelled "Horizontal Tiles" among them
+const char* kPbrSkinDefinition = R"({"id":"PBRSkin",
+  "diffuse":{"channel":{"id":"diffuse","name":"Diffuse Color","label":"Base Color","type":"float_color","value":[0.7529414,0.7529414,0.7529414]}},
+  "extra":[{"type":"studio/material/daz_brick","brick_settings":{}},{"type":"studio_material_channels","channels":[
+  {"channel":{"id":"Metallic Weight","label":"Metallicity","type":"float","value":0}},
+  {"channel":{"id":"Translucency Enable","type":"bool","value":false}},
+  {"channel":{"id":"Translucency Weight","type":"float","value":0.8}},
+  {"channel":{"id":"Dual Lobe Specular Enable","type":"bool","value":false}},
+  {"channel":{"id":"Dual Lobe Specular Weight","type":"float","value":1}},
+  {"channel":{"id":"Dual Lobe Specular Reflectivity","type":"float","value":0.5}},
+  {"channel":{"id":"Dual Lobe Specular Roughness Mult","type":"float","value":1}},
+  {"channel":{"id":"Specular Lobe 1 Roughness","type":"float","value":0.6}},
+  {"channel":{"id":"Specular Lobe 2 Roughness Mult","type":"float","value":0.4}},
+  {"channel":{"id":"Dual Lobe Specular Ratio","type":"float","value":0.15}},
+  {"channel":{"id":"Normal Map","type":"float","value":1}},
+  {"channel":{"id":"Makeup Enable","type":"bool","value":false}},
+  {"channel":{"id":"Detail Enable","type":"bool","value":false}},
+  {"channel":{"id":"Top Coat Weight","type":"float","value":0.5}},
+  {"channel":{"id":"Horizontal Tiles2","label":"Horizontal Tiles","type":"float","value":1}},
+  {"channel":{"id":"Vertical Tiles2","label":"Vertical Tiles","type":"float","value":1}}]}]})";
+const char* kPbrSkinUrl = "/data/Daz%203D/Built-in%20Content/Daz%20Iray%20PBRSkin/PBRSkin.dsf#PBRSkin";
+
+fv::dson::MaterialDefinitions pbrSkinDefinitions()
+{
+  return {{std::string(kPbrSkinFile) + "#PBRSkin", collect({}, kPbrSkinDefinition, kPbrSkinFile)}};
+}
+
+// Genesis 9's head in Iray Uber: its own glossy layer, a dual lobe, a normal map, tiled twice
+const char* kUberHead = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+  {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,0.8,0.7],"image_file":"/Runtime/Textures/face_d.jpg"}},
+  {"channel":{"id":"Translucency Weight","type":"float","current_value":0.6}},
+  {"channel":{"id":"Normal Map","type":"image","current_value":1.0,"image_file":"/Runtime/Textures/face_n.jpg"}},
+  {"channel":{"id":"Glossy Layered Weight","type":"float","current_value":1}},
+  {"channel":{"id":"Glossy Roughness","type":"float","current_value":0.4}},
+  {"channel":{"id":"Dual Lobe Specular Weight","type":"float","current_value":0.5}},
+  {"channel":{"id":"Specular Lobe 1 Roughness","type":"float","current_value":0.2}},
+  {"channel":{"id":"Specular Lobe 2 Roughness","type":"float","current_value":0.5}},
+  {"channel":{"id":"Dual Lobe Specular Ratio","type":"float","current_value":0.5}},
+  {"channel":{"id":"Horizontal Tiles","type":"float","current_value":2}},
+  {"channel":{"id":"Vertical Tiles","type":"float","current_value":2}}
+]}]})";
+
+// Genesis 9 Eyes.duf's Eye Left before its add-on MAT: Iray Uber, with the refraction, anisotropy
+// and reflectance tint PBRSkin has no channel for
+const char* kUberAddOnEye = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+  {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/Runtime/Textures/eyes_d.jpg"}},
+  {"channel":{"id":"Translucency Weight","type":"float","current_value":0.3}},
+  {"channel":{"id":"Glossy Layered Weight","type":"float","current_value":0.0008046585}},
+  {"channel":{"id":"Glossy Roughness","type":"float","current_value":0}},
+  {"channel":{"id":"Refraction Weight","type":"float","current_value":0}},
+  {"channel":{"id":"Refraction Index","type":"float","current_value":1.5}},
+  {"channel":{"id":"Glossy Anisotropy","type":"float","current_value":0}},
+  {"channel":{"id":"SSS Reflectance Tint","type":"color","current_value":[0.9,0.7,0.6]}}
+]}]})";
+
+using Values = std::vector<std::pair<std::string, Json>>;
+
+// A whole preset of one surface: its scene material (the shader's `url` and `type`) and a value for
+// each channel, an image too where `images` gives one, at `node`.
+Json wholePreset(const std::string& node, const std::string& surface, const std::string& url, const std::string& type, const Values& values,
+                 const std::map<std::string, std::string>& images = {})
+{
+  Json       animations = Json::array();
+  const auto add        = [&](const std::string& channel, const std::string& field, const Json& value) {
+    animations.push_back({{"url", node + "#materials/" + surface + ":?extra/studio_material_channels/channels/" + channel + "/" + field},
+                                 {"keys", Json::array({Json::array({0, value})})}});
+  };
+  for(const auto& [channel, value] : values)
+    add(channel, "value", value);
+  for(const auto& [channel, image] : images)
+    add(channel, "image_file", image);
+  const Json entry = {{"url", url}, {"groups", Json::array({surface})}, {"extra", Json::array({Json{{"type", type}}})}};
+  return Json{{"asset_info", Json{{"type", "preset_material"}}}, {"scene", Json{{"materials", Json::array({entry})}, {"animations", animations}}}};
+}
+
+// 42 PBRSkin channels at chosen values (not all PBRSkin.dsf's defaults: the dual lobe on at roughness
+// 0.5, no top coat) and its base map; Specular Lobe 2 Roughness Mult is left to the definition
+Json pbrSkinPreset(const std::string& surface, const std::string& node = "name://@selection")
+{
+  const Values values = {
+      {"diffuse", Json::array({1, 1, 1})},
+      {"Normal Map", 1},
+      {"Dual Lobe Specular Enable", true},
+      {"Dual Lobe Specular Weight", 1},
+      {"Dual Lobe Specular Reflectivity", 0.5},
+      {"Dual Lobe Specular Roughness Mult", 1},
+      {"Specular Lobe 1 Roughness", 0.5},
+      {"Dual Lobe Specular Ratio", 0.15},
+      {"Top Coat Weight", 0},
+      {"Makeup Enable", false},
+      {"Detail Enable", false},
+      {"Translucency Enable", true},
+      {"Translucency Weight", 0.5},
+      {"Metallic Weight", 0},
+      {"Smooth On", true},
+      {"Smooth Angle", 89.9},
+      {"Line Preview Color", Json::array({0, 0, 0})},
+      {"Line Start Width", 0.1},
+      {"Line End Width", 0.1},
+      {"Line UV Width", 0},
+      {"Render Priority", 3},
+      {"Propagate Priority", false},
+      {"Metallicity Enable", false},
+      {"Diffuse Enable", true},
+      {"Diffuse Roughness", 0},
+      {"Invert Transmission Normal", true},
+      {"Bump Enable", false},
+      {"Makeup Weight", 1},
+      {"Makeup Roughness Mult", 1},
+      {"Makeup Metallicity Enable", false},
+      {"Specular Occlusion Enable", false},
+      {"Ambient Occlusion Weight", 1},
+      {"Specular Occlusion Grazing", 0.1},
+      {"Top Coat Enable", false},
+      {"Top Coat Reflectivity", 0.5},
+      {"Top Coat Roughness", 0.05},
+      {"Metallic Flakes Enable", false},
+      {"Displacement Strength", 1},
+      {"Minimum Displacement", -0.1},
+      {"Maximum Displacement", 0.1},
+      {"Transmission Enable", false},
+      {"Sub Surface Enable", false},
+  };
+  return wholePreset(node, surface, kPbrSkinUrl, "studio/material/daz_brick", values, {{"diffuse", "/pb_d.jpg"}});
+}
+
+// 45 Iray Uber channels, values only, as Iray Optimized Genesis 2 Female MAT and the Basic Wear Iray
+// presets set them; `more` replaces or adds
+Values uberValues(const Values& more = {})
+{
+  Values values = {
+      {"diffuse", Json::array({1, 1, 1})},
+      {"Glossy Roughness", 0.4},
+      {"Translucency Weight", 0.5},
+      {"Metallic Weight", 0},
+      {"Base Mixing", 0},
+      {"Diffuse Overlay Weight", 0},
+      {"Diffuse Roughness", 0},
+      {"Dual Lobe Specular Weight", 0},
+      {"Dual Lobe Specular Reflectivity", 0.5},
+      {"Specular Lobe 1 Roughness", 0},
+      {"Specular Lobe 2 Roughness", 0},
+      {"Dual Lobe Specular Ratio", 1},
+      {"Glossy Layered Weight", 0.325},
+      {"Glossy Color", Json::array({1, 1, 1})},
+      {"Glossy Color Effect", 0},
+      {"Glossy Reflectivity", 0.5},
+      {"Glossy Anisotropy", 0},
+      {"Glossy Anisotropy Rotations", 0},
+      {"Backscattering Weight", 0},
+      {"Translucency Color", Json::array({1, 1, 1})},
+      {"Base Color Effect", 0},
+      {"SSS Reflectance Tint", Json::array({1, 1, 1})},
+      {"Transmitted Measurement Distance", 0},
+      {"Transmitted Color", Json::array({1, 1, 1})},
+      {"Scattering Measurement Distance", 0},
+      {"SSS Amount", 0},
+      {"SSS Direction", 0},
+      {"Refraction Index", 1.5},
+      {"Refraction Weight", 0},
+      {"Abbe", 0},
+      {"Normal Map", 1},
+      {"Top Coat Weight", 0},
+      {"Top Coat Roughness", 0},
+      {"Thin Walled", false},
+      {"Emission Color", Json::array({0, 0, 0})},
+      {"Emission Temperature", 6500},
+      {"Luminance", 1500},
+      {"Luminance Units", 3},
+      {"Cutout Opacity", 1},
+      {"Displacement Strength", 0},
+      {"Horizontal Tiles", 1},
+      {"Horizontal Offset", 0},
+      {"Vertical Tiles", 1},
+      {"Vertical Offset", 0},
+      {"UV Set", 0},
+  };
+  for(const auto& [channel, value] : more)
+  {
+    const auto it = std::find_if(values.begin(), values.end(), [&](const auto& v) { return v.first == channel; });
+    if(it != values.end())
+      it->second = value;
+    else
+      values.push_back({channel, value});
+  }
+  return values;
+}
+
+const fv::dson::Channel* channelOf(const fv::Material& m, const char* name)
+{
+  return m.channels->get(fv::dson::norm(name));
+}
+
+}  // namespace
+
+TEST(Materials, AWholePresetOfAnotherShaderStartsFromThatShader)
+{
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Head", channelsOf(kUberHead)));
+  ASSERT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::eIray);
+  ASSERT_EQ(scene.materials[0].surface.glossy.weight, 1.f);
+  ASSERT_EQ(fv::dson::applyMaterialPreset(pbrSkinPreset("Head"), scene, nullptr, pbrSkinDefinitions()).changed, std::set<int>({0}));
+  const fv::Material&     m = scene.materials[0];
+  const fv::mat::Surface& s = m.surface;
+  EXPECT_EQ(s.shader, fv::mat::Surface::Shader::ePbrSkin);
+  // Uber's glossy layer and tiling went with Uber: PBRSkin has neither
+  EXPECT_EQ(channelOf(m, "Glossy Layered Weight"), nullptr);
+  EXPECT_EQ(channelOf(m, "Glossy Roughness"), nullptr);
+  ASSERT_NE(channelOf(m, "Horizontal Tiles"), nullptr);
+  EXPECT_EQ(channelOf(m, "Horizontal Tiles")->id, "horizontaltiles2");  // PBRSkin's, by its label
+  EXPECT_EQ(s.glossy.weight, 0.f);
+  EXPECT_FLOAT_EQ(s.glossy.roughness.value, 0.5f);
+  EXPECT_EQ(s.tiles, (std::array<float, 2>{1, 1}));
+  EXPECT_EQ(s.base.map, "/pb_d.jpg");
+  // the preset sets Normal Map's value alone: the map carries over, a channel of the same id
+  EXPECT_EQ(s.normalMap, "/Runtime/Textures/face_n.jpg");
+  ASSERT_TRUE(s.dual.has_value());
+  EXPECT_FLOAT_EQ(s.dual->weight, 1.f);
+  EXPECT_FLOAT_EQ(s.dual->lobe1.value, 0.5f);
+  EXPECT_FLOAT_EQ(s.dual->lobe2.value, 0.2f);  // the definition's Specular Lobe 2 Roughness Mult, 0.4
+  EXPECT_FLOAT_EQ(s.dual->ratio, 0.85f);
+  const auto lobes = fv::mat::specularLobes(s);
+  EXPECT_FLOAT_EQ(lobes.intensity, 0.85f);
+  EXPECT_FLOAT_EQ(lobes.roughness.value, 0.5f);
+  ASSERT_TRUE(lobes.clearcoat.has_value());
+  EXPECT_FLOAT_EQ(lobes.clearcoat->weight, 0.15f);
+  EXPECT_FLOAT_EQ(lobes.clearcoat->roughness.value, 0.2f);
+}
+
+TEST(Materials, AShaderSwitchRecordsTheShaderAndWorksWithoutItsDefinition)
+{
+  for(const bool withDefinition : {true, false})
+  {
+    fv::SceneGraph scene;
+    scene.materials.push_back(fv::dson::buildMaterial("Head", channelsOf(kUberHead)));
+    fv::dson::applyMaterialPreset(pbrSkinPreset("Head"), scene, nullptr, withDefinition ? pbrSkinDefinitions() : fv::dson::MaterialDefinitions{});
+    const fv::mat::Surface& s = scene.materials[0].surface;
+    EXPECT_EQ(s.shader, fv::mat::Surface::Shader::ePbrSkin) << withDefinition;
+    EXPECT_EQ(s.dazShader.type, "studio/material/daz_brick");
+    EXPECT_EQ(s.dazShader.url, std::string(kPbrSkinFile) + "#PBRSkin");
+    ASSERT_TRUE(s.dual.has_value());
+    // without the definition its lobe 2 multiplier is missing: the lobes are the same
+    EXPECT_FLOAT_EQ(s.dual->lobe2.value, withDefinition ? 0.2f : 0.5f);
+    EXPECT_EQ(s.tiles, (std::array<float, 2>{1, 1}));
+  }
+}
+
+TEST(Materials, AnAddOnEyeSwitchedToPbrSkinLosesUbersRefractionAndTint)
+{
+  // Genesis 9 Eyes MAT on Genesis 9 Eyes.duf's Uber eye
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Eye Left", channelsOf(kUberAddOnEye)));
+  ASSERT_TRUE(scene.materials[0].surface.refraction.has_value());
+  ASSERT_TRUE(scene.materials[0].surface.glossyAnisotropy.has_value());
+  fv::dson::applyMaterialPreset(pbrSkinPreset("Eye Left"), scene, nullptr, pbrSkinDefinitions());
+  const fv::mat::Surface& s = scene.materials[0].surface;
+  EXPECT_EQ(s.shader, fv::mat::Surface::Shader::ePbrSkin);
+  EXPECT_FALSE(s.refraction.has_value());
+  EXPECT_FALSE(s.glossyAnisotropy.has_value());
+  EXPECT_EQ(s.glossy.weight, 0.f);
+  ASSERT_TRUE(s.translucency.has_value());
+  EXPECT_EQ(s.translucency->reflectanceTint, (fv::mat::Rgb{1, 1, 1}));
+}
+
+TEST(Materials, AWholeUberPresetOverPbrSkinTakesItsMakeupAway)
+{
+  // a PBRSkin surface with makeup, and a whole Uber preset of 45 values with another base map
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Eye Left", channelsOf(kMadeUp)));
+  ASSERT_TRUE(scene.materials[0].surface.makeup.has_value());
+  const Json uber = wholePreset("name://@selection", "Eye Left", "#Eye%20Left", "studio/material/uber_iray",
+                                uberValues({{"Glossy Layered Weight", 0.5}}), {{"diffuse", "/iris_d.jpg"}});
+  fv::dson::applyMaterialPreset(uber, scene);
+  const fv::mat::Surface& s = scene.materials[0].surface;
+  EXPECT_EQ(s.shader, fv::mat::Surface::Shader::eIray);
+  EXPECT_FALSE(s.makeup.has_value());
+  EXPECT_EQ(channelOf(scene.materials[0], "Makeup Enable"), nullptr);
+  EXPECT_EQ(s.base.map, "/iris_d.jpg");
+  EXPECT_FLOAT_EQ(s.glossy.weight, 0.5f);
+}
+
+TEST(Materials, AWholePresetMadeForAnItemTheSceneLacksIsLaidOver)
+{
+  // stray: its values land on another item's surfaces, which keep their shader's channels
+  fv::SceneGraph scene = wornScene();
+  fv::dson::applyMaterialPreset(pbrSkinPreset("Base", "name://@selection/SomeOtherHair:"), scene, nullptr, pbrSkinDefinitions());
+  const fv::Material& m = scene.materials[4];
+  EXPECT_NE(channelOf(m, "Glossy Roughness"), nullptr);
+  EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::ePbrSkin);  // read from the channels laid over, as before
+}
+
+TEST(Materials, AnIrayOptimizedPresetKeepsTheMapsOfTheShaderItReplaces)
+{
+  // Iray Optimized Genesis 2 Female MAT sets values only, no image, on "#Legs" and the rest: DAZ
+  // keeps the 3Delight material's maps where Iray Uber has a channel of the same id
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Boxers", layered({kBoxers, kBoxersBlackMaps})));
+  ASSERT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::eDazDefault);
+  const std::string map = scene.materials[0].surface.base.map;
+  ASSERT_FALSE(map.empty());
+  fv::dson::applyMaterialPreset(wholePreset("name://@selection", "Boxers", "#Boxers", "studio/material/uber_iray", uberValues()), scene);
+  const fv::Material& m = scene.materials[0];
+  EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::eIray);
+  EXPECT_EQ(m.surface.base.map, map);
+  EXPECT_FLOAT_EQ(m.surface.glossy.roughness.value, 0.4f);
+  EXPECT_EQ(channelOf(m, "diffuse_strength"), nullptr);
+  EXPECT_EQ(channelOf(m, "Lighting Model"), nullptr);
+}
+
+TEST(Materials, AWholePresetOfTheSameLegacyFamilyOnlyOverrides)
+{
+  // UberSurface is told from DAZ Default by marker channels a preset of its own may leave out
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Torso", channelsOf(kG2fTorso)));
+  ASSERT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::eUberSurface);
+  Values values;
+  for(int i = 0; i < 45; i++)
+    values.push_back({"Legacy Channel " + std::to_string(i), 0.5});
+  fv::dson::applyMaterialPreset(wholePreset("name://@selection", "Torso", "#Torso", "studio/material/daz_shader", values), scene);
+  EXPECT_NE(channelOf(scene.materials[0], "Map Tiling U"), nullptr);
+  EXPECT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::eUberSurface);
+}
+
+TEST(Materials, APartialPresetOfAnotherShaderOnlyOverrides)
+{
+  // a CJ skin shine: one PBRSkin channel and its map, on an Uber head
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Head", channelsOf(kUberHead)));
+  const Json shine = wholePreset("name://@selection", "Head", kPbrSkinUrl, "studio/material/daz_brick", {{"Specular Lobe 1 Roughness", 0.3}},
+                                 {{"Specular Lobe 1 Roughness", "/SLW.jpg"}});
+  fv::dson::applyMaterialPreset(shine, scene, nullptr, pbrSkinDefinitions());
+  const fv::mat::Surface& s = scene.materials[0].surface;
+  EXPECT_EQ(s.shader, fv::mat::Surface::Shader::eIray);
+  EXPECT_EQ(s.glossy.weight, 1.f);
+  EXPECT_EQ(s.tiles, (std::array<float, 2>{2, 2}));
+  ASSERT_TRUE(s.dual.has_value());
+  EXPECT_FLOAT_EQ(s.dual->lobe1.value, 0.3f);
+  EXPECT_EQ(s.dual->lobe1.map, "/SLW.jpg");
+}
+
+TEST(Materials, MakeupThatSwappedTheShaderComesOffWithTheShader)
+{
+  // Polina 9 Face Makeup 01 is a whole PBRSkin preset on the head
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Head", channelsOf(kUberHead)));
+  const Json makeup = pbrSkinPreset("Head");
+  const auto r      = fv::dson::chooseLayer(scene, {0}, &makeup, {}, pbrSkinDefinitions());
+  ASSERT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::ePbrSkin);
+  fv::dson::chooseLayer(scene, {0}, nullptr, r.layer);
+  const fv::Material& m = scene.materials[0];
+  EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::eIray);
+  ASSERT_NE(channelOf(m, "Glossy Layered Weight"), nullptr);
+  EXPECT_EQ(channelOf(m, "Glossy Layered Weight")->value, 1);
+  EXPECT_EQ(m.surface.glossy.weight, 1.f);
+  EXPECT_EQ(m.surface.tiles, (std::array<float, 2>{2, 2}));
+  EXPECT_EQ(m.surface.normalMap, "/Runtime/Textures/face_n.jpg");
+  EXPECT_EQ(m.surface.dazShader, m.baseline->shader());
+}
+
+TEST(Materials, ASwappedShaderKeepsTheEditsAndTheBaselineGoesBack)
+{
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Head", channelsOf(kUberHead)));
+  scene.materials[0].edits.roughness = 0.9f;
+  const auto roughness = [&] {
+    const fv::Material& m = scene.materials[0];
+    return fv::mat::lower(m.surface, m.edits, {}).material["pbrMetallicRoughness"]["roughnessFactor"].get<float>();
+  };
+  fv::dson::applyMaterialPreset(pbrSkinPreset("Head"), scene, nullptr, pbrSkinDefinitions());
+  EXPECT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::ePbrSkin);
+  EXPECT_EQ(scene.materials[0].edits.roughness, 0.9f);
+  EXPECT_NE(scene.materials[0].baseline, scene.materials[0].channels);
+  EXPECT_FLOAT_EQ(roughness(), 0.9f);
+  // the character's own: the shader its channels are
+  EXPECT_EQ(fv::dson::restoreBaseline(scene, {0}), std::set<int>({0}));
+  const fv::mat::Surface& s = scene.materials[0].surface;
+  EXPECT_EQ(s.shader, fv::mat::Surface::Shader::eIray);
+  EXPECT_EQ(s.glossy.weight, 1.f);
+  EXPECT_EQ(s.tiles, (std::array<float, 2>{2, 2}));
+  EXPECT_EQ(s.normalMap, "/Runtime/Textures/face_n.jpg");
+  EXPECT_EQ(scene.materials[0].edits.roughness, 0.9f);
+  EXPECT_FLOAT_EQ(roughness(), 0.9f);
+}
+
+// ---- a map's texture instance settings (image_modification)
+
+TEST(Materials, APresetKeepsAMapsTextureInstance)
+{
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Face", channelsOf(kSkin)));
+  const Json preset = Json::parse(R"({"scene":{"animations":[
+    {"url":"name://@selection#materials/Face:?extra/studio_material_channels/channels/diffuse/value","keys":[[0,[1,1,1]]]},
+    {"url":"name://@selection#materials/Face:?extra/studio_material_channels/channels/diffuse/image_modification/horizontal_tiles","keys":[[0,2.5]]},
+    {"url":"name://@selection#materials/Face:?extra/studio_material_channels/channels/diffuse/image_modification/SDcale","keys":[[0,4]]},
+    {"url":"name://@selection#materials/Face:?extra/studio_material_channels/channels/Top%20Coat%20Weight/image_modification/scale","keys":[[0,0.5]]},
+    {"url":"name://@selection#materials/Face:?Glossy%20Color/image_modification/scale","keys":[[0,3]]}
+  ]}})");
+  const auto result = fv::dson::applyMaterialPreset(preset, scene);
+  // the settings are how a map is read, not values of their own
+  EXPECT_EQ(result.edits, 1);
+  const fv::Material& m = scene.materials[0];
+  const auto*         d = channelOf(m, "diffuse");
+  ASSERT_TRUE(d->imageModification.is_object());
+  EXPECT_EQ(d->imageModification["horizontal_tiles"], 2.5);
+  EXPECT_FALSE(d->imageModification.contains("SDcale"));
+  // settings alone make no channel the material lacks
+  EXPECT_EQ(channelOf(m, "Top Coat Weight"), nullptr);
+  EXPECT_EQ(channelOf(m, "Glossy Color"), nullptr);
+}
+
+TEST(Materials, TheLoaderKeepsAnInlineTextureInstance)
+{
+  const auto ch = channelsOf(R"({"diffuse":{"channel":{"id":"diffuse","type":"color","current_value":[1,1,1],"image_file":"/cloth_d.jpg",
+    "image_modification":{"scale":1,"offset":0,"horizontal_tiles":2.5,"vertical_tiles":2.5}}}})");
+  const auto* d = ch.get("diffuse");
+  ASSERT_NE(d, nullptr);
+  EXPECT_EQ(d->imageModification["vertical_tiles"], 2.5);
+  // a later layer replaces the fields it gives and keeps the rest
+  const auto over = layered({R"({"diffuse":{"channel":{"id":"diffuse","current_value":[1,1,1],"image_modification":{"horizontal_tiles":2.5}}}})",
+                             R"({"extra":[{"channels":[{"channel":{"id":"diffuse","image_modification":{"scale":0.5}}}]}]})"});
+  EXPECT_EQ(over.get("diffuse")->imageModification["horizontal_tiles"], 2.5);
+  EXPECT_EQ(over.get("diffuse")->imageModification["scale"], 0.5);
+}
+
+TEST(Materials, ATextureInstanceSettingTellsMaterialsApart)
+{
+  const auto with = [](const char* mod) {
+    const std::string text = std::string(R"({"diffuse":{"channel":{"id":"diffuse","current_value":[1,1,1],"image_file":"/d.jpg")")
+                             + (mod ? std::string(R"(,"image_modification":)") + mod : std::string()) + "}}}";
+    return fv::dson::materialKey("Shirt", channelsOf(text.c_str()));
+  };
+  EXPECT_NE(with(R"({"horizontal_tiles":2.5})"), with(nullptr));
+  // DAZ's defaults read as no setting
+  EXPECT_EQ(with(R"({"scale":1,"horizontal_tiles":1,"vertical_tiles":1})"), with(nullptr));
+  EXPECT_NE(with(R"({"scale":0.5})"), with(nullptr));
+}
+
+TEST(Materials, ATextureInstanceSettingAloneIsNoIrayPreset)
+{
+  // an Iray id whose map only has its scale set does not make a 3Delight preset Iray's
+  const fv::SceneGraph scene  = boxersScene();
+  Json                 preset = boxersPreset("", 60, true);
+  for(const char* surface : {"Boxers", "BoxersWaistband"})
+    preset["scene"]["animations"].push_back(
+        {{"url", std::string("name://@selection#materials/") + surface + ":?extra/studio_material_channels/channels/Glossy%20Roughness/image_modification/scale"},
+         {"keys", Json::array({Json::array({0, 0.5})})}});
+  EXPECT_EQ(fv::dson::chooseIrayPreset(scene, {&preset}), -1);
+}

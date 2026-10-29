@@ -185,18 +185,30 @@ Overrides parseOverrides(const Json& doc, int* edits)
     if(!value)
       continue;
     const std::vector<std::string> segs = split(m[3].str(), '/');
-    // "extra/<shader>/channels/<id>/<field>" or "<id>/<field>"
+    // "extra/<shader>/channels/<id>/<field>" or "<id>/<field>", the field perhaps
+    // "image_modification/<setting>"
     const bool        extra   = !segs.empty() && segs[0] == "extra";
     const std::string channel = extra ? (segs.size() > 3 ? segs[3] : "") : segs[0];
     const std::string field   = extra ? (segs.size() > 4 ? segs[4] : "") : (segs.size() > 1 ? segs[1] : "");
     const size_t      rest    = extra ? 5 : 2;
-    if(channel.empty() || segs.size() > rest || (field != "value" && field != "image_file" && field != "image"))
+    // a map's texture instance settings, by the names DAZ Studio writes (Smaroula Hair's
+    // misspelled "SDcale" and "graySDcale_mode" are no setting)
+    static const std::set<std::string> kSettings = {"scale",          "offset",         "invert",           "grayscale_mode", "horizontal_tiles",
+                                                    "vertical_tiles", "horizontal_tiling_offset", "vertical_tiling_offset"};
+    const bool        setting = field == "image_modification" && segs.size() == rest + 1 && kSettings.count(segs[rest]);
+    if(channel.empty() || (!setting && (segs.size() > rest || (field != "value" && field != "image_file" && field != "image"))))
       continue;
     const std::string surface = dec(m[2].str());
     auto& list = bySurface[{nodeChain(m[1].str()), surface}];
     auto              it      = std::find_if(list.begin(), list.end(), [&](const ChannelOverride& o) { return o.channel == channel; });
     if(it == list.end())
-      it = list.insert(list.end(), ChannelOverride{channel, std::nullopt, std::nullopt});
+      it = list.insert(list.end(), ChannelOverride{channel, std::nullopt, std::nullopt, Json()});
+    // a setting is how the map is read, not a value of its own: not counted
+    if(setting)
+    {
+      it->imageModification[segs[rest]] = *value;
+      continue;
+    }
     if(field == "value")
       it->value = *value;
     else if(field == "image_file")
@@ -242,9 +254,125 @@ std::vector<bool> liveMaterials(const SceneGraph& scene)
   return out;
 }
 
-MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only)
+namespace {
+
+// The definition a scene material's url names in another file, as file#id; empty for a local one
+// ("#Legs") and for none.
+std::string definitionUrl(const Json& entry)
 {
-  MaterialPresetResult result;
+  const auto ref = parseRef(getString(&entry, "url"), "");
+  return ref && !ref->file.empty() && !ref->id.empty() ? ref->file + "#" + ref->id : std::string();
+}
+
+// The preset's scene material for a surface: the entry whose groups name it, else whose id is it.
+const Json* sceneMaterial(const Json& doc, const std::string& surface)
+{
+  const Json* materials = get(get(&doc, "scene"), "materials");
+  if(!materials || !materials->is_array())
+    return nullptr;
+  for(const Json& m : *materials)
+    if(const Json* groups = get(&m, "groups"); groups && groups->is_array()
+       && std::any_of(groups->begin(), groups->end(), [&](const Json& g) { return g.is_string() && g.get<std::string>() == surface; }))
+      return &m;
+  for(const Json& m : *materials)
+    if(getString(&m, "id") == surface)
+      return &m;
+  return nullptr;
+}
+
+// PBRSkin, Iray Uber, or one of the 3Delight-era shaders: the families a preset switches between.
+// The legacy shaders are told apart by marker channels a preset of the same one may leave out.
+int shaderFamily(mat::Surface::Shader s)
+{
+  using S = mat::Surface::Shader;
+  return s == S::ePbrSkin ? 1 : s == S::eIray ? 2 : 0;
+}
+
+// `m` as a whole preset makes it when its scene material `entry` names a shader of another family:
+// built in DAZ's order, the definition, the entry's own channels, what carries over from the old
+// material, then the preset's values. False, leaving `m`, when the family stays.
+bool presetMaterial(Material& m, const Json& entry, const std::vector<ChannelOverride>& kept, const MaterialDefinitions& definitions,
+                    const std::unordered_map<std::string, std::string>& images)
+{
+  Channels fresh;
+  if(const auto def = definitions.find(definitionUrl(entry)); def != definitions.end())
+    fresh = def->second;
+  collectChannels(&entry, fresh, images, {});
+  // DAZ keeps the old material's values where the new shader has a property of the same name (Iray
+  // Optimized Genesis 2 Female MAT sets values only and keeps the skin's maps); the old shader's
+  // other channels go. By id only: Uber's Horizontal Tiles is not PBRSkin's Horizontal Tiles2,
+  // though that one is labelled so.
+  std::set<std::string> ids;
+  for(const std::string& k : fresh.order())
+    if(const Channel* c = fresh.get(k); !c->id.empty())
+      ids.insert(c->id);
+  for(const ChannelOverride& o : kept)
+    ids.insert(norm(o.channel));
+  Json                     carried = Json::array();
+  std::set<const Channel*> seen;
+  for(const std::string& k : m.channels->order())
+  {
+    const Channel* c = m.channels->get(k);
+    if(c->id.empty() || !ids.count(c->id) || !seen.insert(c).second)
+      continue;
+    Json ch = {{"id", c->id}};
+    if(!c->value.is_null())
+      ch["current_value"] = c->value;
+    if(c->image)
+      ch["image_file"] = *c->image;
+    if(c->imageModification.is_object())
+      ch["image_modification"] = c->imageModification;
+    carried.push_back({{"channel", ch}});
+  }
+  const Json carry = {{"extra", Json::array({{{"channels", carried}}})}};
+  collectChannels(&carry, fresh, {}, {});
+  // a copy keeps the edits, the baseline and the measured UV scale
+  Material next = m;
+  next.channels = std::make_shared<const Channels>(std::move(fresh));
+  next.surface  = parseSurface(next.name, *next.channels);
+  overrideChannels(next, kept);
+  if(shaderFamily(next.surface.shader) == shaderFamily(m.surface.shader))
+    return false;
+  m = std::move(next);
+  return true;
+}
+
+}  // namespace
+
+MaterialDefinitions definitionsIn(const Json& doc, Store& store)
+{
+  MaterialDefinitions out;
+  const Json*         materials = get(get(&doc, "scene"), "materials");
+  if(!materials || !materials->is_array())
+    return out;
+  for(const Json& entry : *materials)
+  {
+    const std::string url = definitionUrl(entry);
+    if(url.empty() || out.count(url))
+      continue;
+    try
+    {
+      if(auto r = store.resolve(*parseRef(getString(&entry, "url"), ""), "material_library"))
+      {
+        std::unordered_map<std::string, std::string> images;
+        collectImages(r->doc->json, images);
+        Channels ch;
+        collectChannels(r->entry, ch, images, r->file);
+        out.emplace(url, std::move(ch));
+      }
+    }
+    catch(const std::exception&)
+    {
+    }
+  }
+  return out;
+}
+
+MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only, const MaterialDefinitions& definitions)
+{
+  MaterialPresetResult                         result;
+  std::unordered_map<std::string, std::string> images;
+  collectImages(doc, images);
   for(const auto& [key, overrides] : parseOverrides(doc, &result.edits))
   {
     const auto& [chain, surface] = key;
@@ -263,9 +391,18 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, con
       for(ChannelOverride& o : kept)
         if(o.image && o.image->empty())
           o.image.reset();
+    // A whole material may name another shader. A partial one is an option made for the shader the
+    // surface has (a CJ skin shine, a lip colour): swapped in, the new shader's defaults would
+    // switch off what it leaves out, translucency and the dual lobe among them, so it is laid over.
+    // DAZ keys the swap on the url alone; that is inferred, its preset code isn't available.
+    const int   set   = int(std::count_if(kept.begin(), kept.end(), [](const ChannelOverride& o) { return o.value || (o.image && !o.image->empty()); }));
+    const Json* entry = !stray && set >= kFullIrayPreset ? sceneMaterial(doc, surface) : nullptr;
     for(int i : targets)
-      if(overrideChannels(scene.materials[size_t(i)], kept))
+    {
+      Material& m = scene.materials[size_t(i)];
+      if((entry && m.channels && presetMaterial(m, *entry, kept, definitions, images)) || overrideChannels(m, kept))
         result.changed.insert(i);
+    }
   }
   return result;
 }
@@ -325,7 +462,8 @@ int chooseIrayPreset(const SceneGraph& scene, const std::vector<const Json*>& ca
       {
         if(o.value || (o.image && !o.image->empty()))
           set++;
-        iray = iray || irayChannel(o.channel);
+        // a texture instance setting alone sets nothing of Iray's
+        iray = iray || ((o.value || o.image) && irayChannel(o.channel));
       }
       whole = whole && set >= kFullIrayPreset;
       channels += set;
@@ -393,7 +531,8 @@ std::set<int> restoreBaseline(SceneGraph& scene, const std::set<int>& which)
   return changed;
 }
 
-PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous)
+PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous,
+                          const MaterialDefinitions& definitions)
 {
   PresetChoice  r;
   std::set<int> back = surfaces;
@@ -403,7 +542,7 @@ PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, cons
   {
     // only its part on these: what else it sets (lashes with eyes, the body with a garment) keeps
     // what was chosen for it since
-    r.preset = applyMaterialPreset(*doc, scene, &surfaces);
+    r.preset = applyMaterialPreset(*doc, scene, &surfaces, definitions);
     r.owned  = r.preset.changed;
     r.changed.insert(r.preset.changed.begin(), r.preset.changed.end());
   }

@@ -511,7 +511,7 @@ int main(int argc, char** argv)
         auto                       doc = store->load(step["preset"].get<std::string>());
         const fv::PosePresetResult r   = loaded->applyPosePreset(doc->json);
         // as the host does: a property preset's surfaces too
-        const fv::dson::MaterialPresetResult m = fv::dson::applyMaterialPreset(doc->json, loaded->loaded.scene);
+        const fv::dson::MaterialPresetResult m = fv::dson::applyMaterialPreset(doc->json, loaded->loaded.scene, nullptr, fv::dson::definitionsIn(doc->json, *store));
         loaded->settle();
         std::cerr << "preset " << step["preset"].get<std::string>() << ": applied " << r.applied << ", skipped " << r.skipped.size()
                   << ", visibility " << r.visibility.size() << ", items shown or hidden " << r.itemsShown.size() << ", surfaces "

@@ -25,6 +25,9 @@ struct Channel
   std::vector<std::string> keys;
   // its normalised id, empty without one: another channel's label or name never takes it over
   std::string id;
+  // DAZ Studio's texture instance settings for the map (scale, offset, invert, grayscale_mode, and
+  // the map's own horizontal/vertical tiles and tiling offsets), as the files give them; null when none
+  Json imageModification;
 };
 
 // Channels by normalised name, in the order first stored (as a Map iterates).

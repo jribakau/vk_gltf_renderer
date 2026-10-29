@@ -11,15 +11,31 @@
 // "Eyelashes Upper" and "Eyelashes Lower"), then to the name without a product prefix ("FE Base"
 // for "Base"). A preset made for an item the scene lacks sets its values there but keeps the maps it
 // would remove.
+//
+// A whole preset (kFullIrayPreset values or more on a surface) whose scene material names a shader
+// of another family than the surface's (PBRSkin, Iray Uber, or a 3Delight-era one) starts the
+// surface from that shader, as DAZ Studio replaces the material: the definition its url names
+// (MaterialDefinitions), the entry's own channels, the old material's values and maps where the new
+// shader has a channel of the same id, then the preset's values. The old shader's other channels go.
+// A partial preset (a skin shine, a lip colour) is laid over the surface as it is.
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
 
+#include <figure/dson/channels.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/scene/graph.hpp>
 
 namespace fv::dson {
+
+// The shader definitions a preset's scene materials name in another file, by url as file#id
+// (".../PBRSkin.dsf#PBRSkin"): their channels, as the character-load path lays them under a scene
+// material. Iray Uber's is inside DAZ Studio, so it has none.
+using MaterialDefinitions = std::map<std::string, Channels>;
+// Those of `doc`, from the store; one that isn't installed is left out.
+MaterialDefinitions definitionsIn(const Json& doc, Store& store);
 
 struct MaterialPresetResult
 {
@@ -33,8 +49,10 @@ struct MaterialPresetResult
 };
 
 // `only`: the materials that may take it (the rest of the preset is left out, and its surfaces count
-// as missing when none of theirs is among them).
-MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only = nullptr);
+// as missing when none of theirs is among them). `definitions`: definitionsIn(doc); without them a
+// shader switch starts from the entry's own channels.
+MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only = nullptr,
+                                         const MaterialDefinitions& definitions = {});
 
 // The scene materials a material preset would change, without changing them.
 std::set<int> materialPresetTargets(const Json& doc, const SceneGraph& scene);
@@ -57,7 +75,8 @@ struct PresetChoice
 // choice instead of stacking on it: `surfaces` and `previous` (what the last choice changed) back to
 // their baseline, then the part of `doc` on `surfaces` over them; null `doc` leaves them as they
 // came. Edits stay.
-PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous = {});
+PresetChoice choosePreset(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const std::set<int>& previous = {},
+                          const MaterialDefinitions& definitions = {});
 
 // Which of an item's installed Iray material presets it takes when worn, so a 3Delight-era item
 // looks as its Iray version does (roadmap item 5); -1 for none. `scene` is the item alone. A

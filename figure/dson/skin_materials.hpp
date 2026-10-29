@@ -8,8 +8,10 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 
 #include <figure/dson/channels.hpp>
 #include <figure/dson/material_preset.hpp>
@@ -23,12 +25,19 @@ namespace fv::dson {
 std::set<int> skinSurfaces(const SceneGraph& scene, const std::set<int>& leaveOut);
 
 // What a layered preset set on each material, by channel key: the channel it replaced (null: there
-// was none) and the one it put there.
+// was none) and the one it put there (null: it took the channel away, as a preset of another shader
+// takes the old shader's).
 struct LayerChannel
 {
   std::shared_ptr<Channel> before, after;
 };
-using PresetLayer = std::map<int, std::map<std::string, LayerChannel>>;
+struct LayerMaterial
+{
+  std::map<std::string, LayerChannel> channels;
+  // the shader the material's files name, before and after, when the preset switched it
+  std::optional<std::pair<mat::ShaderRef, mat::ShaderRef>> shader;
+};
+using PresetLayer = std::map<int, LayerMaterial>;
 
 struct LayerChoice
 {
@@ -39,8 +48,10 @@ struct LayerChoice
 
 // A preset laid over `surfaces` in place of the last one laid there: the channels `previous` set go
 // back to what they were before it (one something else has set since keeps that), then the part of
-// `doc` on `surfaces` goes over them; null `doc` only takes the last one off. Edits stay.
-LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const PresetLayer& previous);
+// `doc` on `surfaces` goes over them; null `doc` only takes the last one off. Edits stay. A layer
+// that switched a surface's shader comes off with the shader it replaced.
+LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const PresetLayer& previous,
+                        const MaterialDefinitions& definitions = {});
 
 // The base map of the figure's main skin surface (Genesis 9 "Body", Genesis 8 "Torso"; else the first
 // skin surface with a map), the first layer of a layered one; empty when there is none. Not `leaveOut`.

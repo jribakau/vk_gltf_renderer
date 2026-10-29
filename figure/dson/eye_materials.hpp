@@ -24,6 +24,6 @@ bool isEyePreset(const Json& doc, const SceneGraph& scene);
 using EyesResult = PresetChoice;
 
 // choosePreset on the eye surfaces: null `doc` is the character's own.
-EyesResult chooseEyes(SceneGraph& scene, const Json* doc, const std::set<int>& previous = {});
+EyesResult chooseEyes(SceneGraph& scene, const Json* doc, const std::set<int>& previous = {}, const MaterialDefinitions& definitions = {});
 
 }  // namespace fv::dson

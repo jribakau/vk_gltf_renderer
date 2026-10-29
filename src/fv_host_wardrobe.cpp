@@ -149,7 +149,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       {
         if(auto doc = target->fig->store().load(presetRel))
         {
-          const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, scene);
+          const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, scene, nullptr, fv::dson::definitionsIn(doc->json, target->fig->store()));
           if(report)
           {
             std::lock_guard lock(presetMutex);
@@ -272,7 +272,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
               std::set<int> all;
               for(size_t m = 0; m < preparedScene.materials.size(); m++)
                 all.insert(int(m));
-              fv::dson::choosePreset(preparedScene, all, &docs[size_t(k)]->json);
+              fv::dson::choosePreset(preparedScene, all, &docs[size_t(k)]->json, {},
+                                     fv::dson::definitionsIn(docs[size_t(k)]->json, target->fig->store()));
               slot.autoColor    = request.iray[size_t(k)];
               slot.autoColorDoc = docs[size_t(k)];
             }

@@ -20,18 +20,19 @@ std::set<int> skinSurfaces(const SceneGraph& scene, const std::set<int>& leaveOu
   return out;
 }
 
-LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const PresetLayer& previous)
+LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const Json* doc, const PresetLayer& previous,
+                        const MaterialDefinitions& definitions)
 {
   LayerChoice r;
   // the last layer off, channel by channel
-  for(const auto& [i, channels] : previous)
+  for(const auto& [i, layer] : previous)
   {
     if(i < 0 || i >= int(scene.materials.size()) || !scene.materials[size_t(i)].channels)
       continue;
     Material& m    = scene.materials[size_t(i)];
     Channels  next = *m.channels;
     bool      any  = false;
-    for(const auto& [key, c] : channels)
+    for(const auto& [key, c] : layer.channels)
     {
       if(next.shared(key) != c.after)
         continue;
@@ -39,6 +40,11 @@ LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const 
         next.set(key, c.before);
       else
         next.erase(key);
+      any = true;
+    }
+    if(layer.shader && next.shader() == layer.shader->second)
+    {
+      next.setShader(layer.shader->first);
       any = true;
     }
     if(!any)
@@ -54,18 +60,28 @@ LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const 
   for(int i : surfaces)
     if(i >= 0 && i < int(scene.materials.size()))
       before[i] = scene.materials[size_t(i)].channels;
-  r.preset = applyMaterialPreset(*doc, scene, &surfaces);
+  r.preset = applyMaterialPreset(*doc, scene, &surfaces, definitions);
   for(int i : r.preset.changed)
   {
     const auto& now = scene.materials[size_t(i)].channels;
     const auto& was = before[i];
     if(!now)
       continue;
+    LayerMaterial& layer = r.layer[i];
     for(const std::string& key : now->order())
     {
       std::shared_ptr<Channel> a = now->shared(key), b = was ? was->shared(key) : nullptr;
       if(a != b)
-        r.layer[i][key] = {b, a};
+        layer.channels[key] = {b, a};
+    }
+    // a preset of another shader took the old one's channels away: they come back with it
+    if(was)
+    {
+      for(const std::string& key : was->order())
+        if(!now->shared(key))
+          layer.channels[key] = {was->shared(key), nullptr};
+      if(was->shader() != now->shader())
+        layer.shader = std::pair{was->shader(), now->shader()};
     }
     r.changed.insert(i);
   }

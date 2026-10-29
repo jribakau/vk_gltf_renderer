@@ -23,6 +23,16 @@
 
 #include "fv_host_impl.hpp"
 
+namespace {
+
+// The shader definitions a preset's surfaces name, from the figure's store; none without a preset.
+fv::dson::MaterialDefinitions definitionsOf(const fv::Figure& fig, const fv::dson::Json* doc)
+{
+  return doc ? fv::dson::definitionsIn(*doc, fig.store()) : fv::dson::MaterialDefinitions{};
+}
+
+}  // namespace
+
 std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> FvHost::Impl::boneAt(rs::EntityId entity) const
 {
   for(const auto& p : props)
@@ -113,7 +123,7 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
         protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
         // a property preset can also set surfaces ("#materials/<surface>:?<channel>" urls)
-        const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
+        const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene, nullptr, definitionsOf(*figure->fig, &doc));
         if(!surfaces.changed.empty())
         {
           if(prop->materials)
@@ -161,7 +171,7 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
     }
     else
       journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
-        const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene);
+        const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene, nullptr, definitionsOf(*figure->fig, &doc));
         // not composed yet, the composition lowers the surfaces as they are now
         if(prop->materials)
           prop->materials->surfacesChanged(r.changed);
@@ -201,7 +211,7 @@ Json FvHost::Impl::applyEyes(Prop& prop, const std::string& rel, const fv::dson:
     if(std::none_of(targets.begin(), targets.end(), [&](int i) { return eyes.count(i) > 0; }))
       throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s eyes.");
   }
-  const fv::dson::EyesResult r       = fv::dson::chooseEyes(scene, doc, f.eyesOwned);
+  const fv::dson::EyesResult r       = fv::dson::chooseEyes(scene, doc, f.eyesOwned, definitionsOf(*f.fig, doc));
   std::set<int>              changed = r.changed;
   if(!keepEdits)
   {
@@ -275,7 +285,7 @@ Json FvHost::Impl::applyItemColor(Prop& prop, const std::vector<int>& items, con
     if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
       throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + label + "'s.");
   }
-  const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, previous);
+  const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, previous, definitionsOf(*f.fig, doc));
   std::set<int>                changed = r.changed;
   // the preset's colours replace the edits, all but the tiling, the fabric and the sheen (no colours)
   if(!keepEdits)
@@ -577,7 +587,7 @@ Json FvHost::Impl::applySkin(Prop& prop, const std::string& rel, const fv::dson:
     if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
       throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s skin.");
   }
-  const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, f.skinOwned);
+  const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, f.skinOwned, definitionsOf(*f.fig, doc));
   std::set<int>                changed = r.changed;
   if(!keepEdits)
   {
@@ -615,7 +625,7 @@ Json FvHost::Impl::applyMakeup(Prop& prop, const std::string& rel, const fv::dso
     if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
       throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s skin.");
   }
-  const fv::dson::LayerChoice r       = fv::dson::chooseLayer(scene, surfaces, doc, f.makeupLayer);
+  const fv::dson::LayerChoice r       = fv::dson::chooseLayer(scene, surfaces, doc, f.makeupLayer, definitionsOf(*f.fig, doc));
   std::set<int>               changed = r.changed;
   if(!keepEdits)
     for(int i : surfaces)

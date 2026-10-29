@@ -106,6 +106,11 @@ void collectChannels(const Json* def, Channels& into, const std::unordered_map<s
             entry->image = it->second;
       }
     }
+    // the map's texture instance settings, field by field over the earlier layer's
+    entry->imageModification = prev ? prev->imageModification : Json();
+    if(const Json* mod = get(&ch, "image_modification"); mod && mod->is_object())
+      for(auto it = mod->begin(); it != mod->end(); ++it)
+        entry->imageModification[it.key()] = it.value();
     entry->keys = keys;
     entry->id   = !id.empty() ? id : (prev ? prev->id : std::string());
     for(const auto& k : keys)
@@ -156,6 +161,26 @@ void collectImages(const Json& doc, std::unordered_map<std::string, std::string>
   }
 }
 
+namespace {
+
+std::string imageModificationKey(const Json& mod)
+{
+  if(!mod.is_object())
+    return {};
+  // each field as DAZ leaves it by default; a field at its default reads the same as one left out
+  static const std::pair<const char*, Json> kIdentity[] = {
+      {"scale", 1},           {"offset", 0},          {"invert", false},           {"grayscale_mode", "average"},
+      {"horizontal_tiles", 1}, {"vertical_tiles", 1}, {"horizontal_tiling_offset", 0}, {"vertical_tiling_offset", 0},
+  };
+  std::string key;
+  for(const auto& [field, identity] : kIdentity)
+    if(const Json* v = get(&mod, field); v && !v->is_null() && *v != identity)
+      key += std::string("|") + field + ":" + v->dump();
+  return key;
+}
+
+}  // namespace
+
 std::string materialKey(const std::string& name, const Channels& ch)
 {
   std::string key = name;
@@ -164,7 +189,8 @@ std::string materialKey(const std::string& name, const Channels& ch)
   for(const auto& k : ch.order())
   {
     const Channel* c = ch.get(k);
-    key += "\n" + k + "=" + (c->value.is_null() ? std::string() : c->value.dump()) + "|" + c->image.value_or("");
+    key += "\n" + k + "=" + (c->value.is_null() ? std::string() : c->value.dump()) + "|" + c->image.value_or("")
+           + imageModificationKey(c->imageModification);
   }
   return key;
 }
@@ -610,13 +636,19 @@ bool overrideChannels(Material& m, const std::vector<ChannelOverride>& overrides
   Json channels = Json::array();
   for(const ChannelOverride& o : overrides)
   {
+    if(!o.value && !o.image && !m.channels->get(norm(o.channel)))
+      continue;
     Json c = {{"id", o.channel}};
     if(o.value)
       c["current_value"] = *o.value;
     if(o.image)
       c["image_file"] = *o.image;
+    if(o.imageModification.is_object())
+      c["image_modification"] = o.imageModification;
     channels.push_back({{"channel", c}});
   }
+  if(channels.empty())
+    return false;
   const Json def = {{"extra", Json::array({{{"channels", channels}}})}};
   // a copy: the original's channels are shared with every material of the same definition
   Channels next = *m.channels;
