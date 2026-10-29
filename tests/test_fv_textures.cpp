@@ -62,3 +62,11 @@ TEST(FvTextures, MetalChannelsAreDerived)
   EXPECT_EQ(fallbackOf("m.jpg", fv::textures::derivedChannels("mt"), false, true, true), Fallback::eCompose);
   EXPECT_EQ(fallbackOf("m.jpg", fv::textures::derivedChannels("mt"), false, true, false), Fallback::eCompose);
 }
+
+// A weight map's grey in every channel: the source as it is would put full specular in its alpha
+TEST(FvTextures, WeightChannelsAreDerived)
+{
+  EXPECT_TRUE(fv::textures::derivedChannels("wa"));
+  EXPECT_EQ(fallbackOf("Skin_SLW.jpg", true, false, false, false), Fallback::eCompose);
+  EXPECT_EQ(fallbackOf("slw.tif", true, false, false, false), Fallback::eNone);
+}

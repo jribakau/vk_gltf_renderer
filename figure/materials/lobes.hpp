@@ -5,6 +5,8 @@
 // volume skin. A port of src/lib/materials/lobes.ts and the volume half of rtx/gltf.ts.
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include <figure/materials/surface.hpp>
 
@@ -14,13 +16,21 @@ struct SpecularLobes
 {
   // glTF's specularFactor: 1 is the whole of a dielectric of `reflectance` at normal incidence
   float intensity = 0;
+  // The maps whose product multiplies `intensity` texel by texel: the weight and reflectivity maps
+  // of the layer it comes from. Empty when unmapped, and when it is the sum of the glossy layer and
+  // a broad dual lobe with different maps (glossy x Mg + dual x Md is no product of maps). The
+  // weight's map is exact (Iray's weight scales the whole Fresnel curve, as specularFactor does); a
+  // reflectivity's also dims grazing, which Iray's does not, and a value clamped to 1 is clamped
+  // before its map multiplies it.
+  std::vector<std::string> intensityMaps;
   // the main lobe's roughness: the glossy layer's, or the broad dual lobe's without a glossy layer
   ScalarMap roughness;
   // the tighter dual lobe as a clearcoat, when it is tight enough to show
   struct Coat
   {
-    float     weight = 0;
-    ScalarMap roughness;
+    float                    weight = 0;
+    ScalarMap                roughness;
+    std::vector<std::string> weightMaps;  // the dual lobe's maps, multiplying `weight`
   };
   std::optional<Coat> clearcoat;
   // the share of `intensity` that is Iray's glossy layer, the only layer Glossy Anisotropy stretches

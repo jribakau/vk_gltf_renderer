@@ -499,11 +499,16 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   // Ratio is lobe 2's share. A material with neither a glossy weight nor dual-lobe channels gets
   // half a glossy layer, a believable dielectric. The Weighted mode reads Glossy Weight alone (its
   // default is 0); the layered modes, Glossy Layered Weight.
+  // Every weight and reflectivity is its value times its map, as each of DAZ's texture instances is
+  // (PBRSkin's and the 4-Layer Uber brick graphs; for Iray Uber itself that is inferred).
   const Channel* glossW = weighted ? find({"Glossy Weight"}) : find({"Glossy Layered Weight", "Glossy Weight"});
+  const Channel* glossR = find({"Glossy Reflectivity"});
   const Channel* dualCh = find({"Dual Lobe Specular Weight"});
-  s.glossy.weight       = glossW ? float(num(glossW, 0)) : weighted || dualCh ? 0.f : 0.5f;
-  s.glossy.reflectivity = float(num(find({"Glossy Reflectivity"}), 0.5));
-  s.glossy.roughness    = roughness;
+  s.glossy.weight          = glossW ? float(num(glossW, 0)) : weighted || dualCh ? 0.f : 0.5f;
+  s.glossy.weightMap       = imageOf(glossW);
+  s.glossy.reflectivity    = float(num(glossR, 0.5));
+  s.glossy.reflectivityMap = imageOf(glossR);
+  s.glossy.roughness       = roughness;
   // Glossy Color tints the glossy layer's reflection, normal to grazing: irayubermaterial.mdl's
   // glossy_color is the colour of its layered modes' glossy and of the Weighted mode's. DAZ's
   // channel defaults to white. Only Iray Uber has it.
@@ -525,7 +530,8 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     const Rgb      f0     = color(specCh).value_or(Rgb{dflt, dflt, dflt});
     const float    peak   = std::max({f0[0], f0[1], f0[2]});
     // Iray's reflectivity is 0.08 x its value at normal incidence
-    s.glossy.reflectivity = peak / 0.08f;
+    s.glossy.reflectivity    = peak / 0.08f;
+    s.glossy.reflectivityMap.clear();
     if(peak > 0)
       for(int i = 0; i < 3; i++)
         s.glossy.color[i] *= f0[i] / peak;
@@ -550,10 +556,15 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
       const auto     lobe2Gloss = roughFromGloss("Specular Lobe 2 Glossiness");
       lobe2 = lobe2Gloss ? ScalarMap{float(*lobe2Gloss), {}} : ScalarMap{float(num(lobe2Ch, lobe1.value)), imageOf(lobe2Ch)};
     }
-    DualLobe d;
-    d.weight       = enabled("Dual Lobe Specular Enable") ? float(num(dualCh, 0)) : 0.f;
-    d.reflectivity = float(num(find({"Dual Lobe Specular Reflectivity"}), 0.5));
-    d.lobe1        = lobe1;
+    // Dual Lobe Specular Roughness Mult has no map in PBRSkin's graph (a scalar on lobe 1's
+    // roughness map), so an image a file gives it is ignored, as Iray ignores it
+    const Channel* dualRefl = find({"Dual Lobe Specular Reflectivity"});
+    DualLobe       d;
+    d.weight          = enabled("Dual Lobe Specular Enable") ? float(num(dualCh, 0)) : 0.f;
+    d.weightMap       = imageOf(dualCh);
+    d.reflectivity    = float(num(dualRefl, 0.5));
+    d.reflectivityMap = imageOf(dualRefl);
+    d.lobe1           = lobe1;
     d.lobe2        = lobe2;
     d.ratio        = float(pbrSkin ? 1 - ratio : ratio);
     s.dual         = d;
@@ -601,6 +612,7 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     const Channel* transCol = find({"Translucency Color"});
     Translucency   t;
     t.weight          = float(std::clamp(enabled("Translucency Enable") ? num(transCh, 0) : 0, 0.0, 1.0));
+    t.weightMap       = imageOf(transCh);
     t.color           = color(transCol);
     t.map             = imageOf(transCol);
     // PBRSkin has no SSS Reflectance Tint: one on its surface is left over from the figure's own
@@ -675,7 +687,6 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     s.mixing           = Surface::Mixing::eWeighted;
     s.diffuseWeight    = wd * norm;
     s.glossy.weight    = wg * norm;
-    s.glossy.weightMap = imageOf(glossW);
     if(s.dual)
       s.dual->weight *= s.diffuseWeight;
     if(s.refraction)

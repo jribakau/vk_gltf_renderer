@@ -72,6 +72,8 @@ std::string requestKey(const TextureRequest& req)
     key += "|rc:" + recolorQuery(*req.recolor) + ":" + req.recolor->reference;
   for(const std::string& layer : req.layers)
     key += "|ly:" + layer;
+  for(const std::string& m : req.mulRels)
+    key += "|mul:" + m;
   return key;
 }
 

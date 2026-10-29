@@ -281,10 +281,16 @@ TEST(Materials, AnEyeUnderTheTearFilmHasNoSpecularOfItsOwn)
   const auto s     = fv::dson::parseSurface("Eye Left", channelsOf(kG9Eye));
   const auto under = fv::mat::lower(s, {}, {.underTearFilm = true}).material["extensions"];
   EXPECT_NEAR(under["KHR_materials_specular"]["specularFactor"].get<float>(), 0.0f, 1e-6f);
+  EXPECT_FALSE(under["KHR_materials_specular"].contains("specularTexture"));
   EXPECT_FALSE(under.contains("KHR_materials_clearcoat"));
-  const auto bare = fv::mat::lower(s, {}, {}).material["extensions"];
-  EXPECT_GT(bare["KHR_materials_specular"]["specularFactor"].get<float>(), 0.0f);
+  // with no film over it, its dual lobe shines where its weight map says
+  const auto bareLowered = fv::mat::lower(s, {}, {});
+  const auto bare        = bareLowered.material["extensions"];
+  EXPECT_NEAR(bare["KHR_materials_specular"]["specularFactor"].get<float>(), 0.85f, 1e-5f);
+  ASSERT_TRUE(bare["KHR_materials_specular"].contains("specularTexture"));
+  EXPECT_EQ(bareLowered.requests[bare["KHR_materials_specular"]["specularTexture"]["slot"].get<size_t>()].rel, "/Runtime/Textures/eyes_s.jpg");
   EXPECT_TRUE(bare.contains("KHR_materials_clearcoat"));
+  EXPECT_TRUE(bare["KHR_materials_clearcoat"].contains("clearcoatTexture"));
   // a panel edit still wins
   fv::mat::Edits e;
   e.specular = 0.3f;
@@ -3505,15 +3511,17 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
     EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 0);
     EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_ior"));
   }
-  // (e) Glossy Weight's map says where the surface is glossy: specularTexture's alpha
+  // (e) Glossy Weight's map says where the surface is glossy: its grey in specularTexture's alpha.
+  // Glossy Reflectivity's has no part in this mode.
   {
-    const auto s = weighted(1, 1, 1, {}, {{"Glossy Weight", "/hair_gw.jpg"}});
+    const auto s = weighted(1, 1, 1, {{"Glossy Reflectivity", 0.5}}, {{"Glossy Weight", "/hair_gw.jpg"}, {"Glossy Reflectivity", "/hair_gr.jpg"}});
     EXPECT_EQ(s.glossy.weightMap, "/hair_gw.jpg");
     const auto l = fv::mat::lower(s, {}, {});
     ASSERT_TRUE(specularOf(l).contains("specularTexture"));
     const auto& r = requestOf(l, specularOf(l)["specularTexture"]);
     EXPECT_EQ(r.rel, "/hair_gw.jpg");
-    EXPECT_EQ(r.alphaRel, "/hair_gw.jpg");
+    EXPECT_EQ(r.channels, "wa");
+    EXPECT_TRUE(r.mulRels.empty());
     EXPECT_FALSE(r.srgb);
   }
   // (f) refraction lies inside the glossy and takes its share; the glass keeps its own index
@@ -3819,4 +3827,277 @@ TEST(Materials, AnEmittersTemperatureTintsItAsABlackbodyAgainstD65)
   const auto plain = fv::mat::lower(glow, {}, {});
   expectRgb(plain.material["emissiveFactor"], 1, 1, 1, 1e-6f);
   EXPECT_NEAR(emissiveStrengthOf(plain), 1.f, 1e-6f);
+}
+
+// ---- The maps on channels that are read: each DAZ texture instance is its value times its map ----
+
+namespace {
+
+constexpr const char* kSlw = "/Runtime/Textures/DAZ/Characters/Genesis9/Base/Skin_SLW.jpg";
+
+// CJ Evangeline's head (PBRSkin) as her .duf gives it: Dual Lobe Specular Weight 1 times Skin_SLW,
+// a flat 0.6 grey, over both lobes; the head's own roughness map under them
+fv::mat::Surface cjHead(bool weightMap = true)
+{
+  ChannelValues v = {{"Detail Enable", false},
+                     {"Dual Lobe Specular Enable", true},
+                     {"Dual Lobe Specular Weight", 1},
+                     {"Dual Lobe Specular Reflectivity", 0.25},
+                     {"Dual Lobe Specular Ratio", 0.4578947},
+                     {"Specular Lobe 1 Roughness", 1},
+                     {"Specular Lobe 2 Roughness Mult", 0.55}};
+  std::map<std::string, std::string> images = {{"Specular Lobe 1 Roughness", "/head_r.jpg"}};
+  if(weightMap)
+    images["Dual Lobe Specular Weight"] = kSlw;
+  return surfaceOf("Head", kPbrSkinType, v, images);
+}
+
+const fv::mat::TextureRequest& specularRequest(const fv::mat::Lowered& l)
+{
+  return requestOf(l, l.material["extensions"]["KHR_materials_specular"]["specularTexture"]);
+}
+
+}  // namespace
+
+// pbr_skin.mdl lays both dual lobes under one weight, dual_lobe_specular_weight, which scales their
+// Fresnel curve normal to grazing, and the brick graph feeds it the weight's value times its map. A
+// map is a per-texel multiplier of both: specularTexture's alpha for the broad lobe, and the same
+// cooked image's red for the tight lobe's clearcoat.
+TEST(Materials, ADualLobeWeightMapSaysWhereBothLobesShine)
+{
+  const auto s = cjHead();
+  ASSERT_TRUE(s.dual);
+  EXPECT_EQ(s.dual->weightMap, kSlw);
+  // 1 x 0.25 x 2 = 0.5, lobe 2 (1 x 0.55) is the tight one with 0.4578947 of it
+  const auto lobes = fv::mat::specularLobes(s);
+  EXPECT_NEAR(lobes.intensity, 0.2710526f, 1e-5f);
+  ASSERT_TRUE(lobes.clearcoat);
+  EXPECT_NEAR(lobes.clearcoat->weight, 0.2289474f, 1e-5f);
+  EXPECT_EQ(lobes.intensityMaps, std::vector<std::string>{kSlw});
+  EXPECT_EQ(lobes.clearcoat->weightMaps, lobes.intensityMaps);
+
+  const auto l = fv::mat::lower(s, {}, {});
+  EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
+  ASSERT_TRUE(specularOf(l).contains("specularTexture"));
+  const auto& spec = specularRequest(l);
+  EXPECT_EQ(spec.rel, kSlw);
+  EXPECT_EQ(spec.channels, "wa");
+  EXPECT_FALSE(spec.srgb);
+  EXPECT_TRUE(spec.composed());
+  EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.2289474f, 1e-5f);
+  ASSERT_TRUE(clearcoatOf(l).contains("clearcoatTexture"));
+  EXPECT_EQ(fv::mat::requestKey(requestOf(l, clearcoatOf(l)["clearcoatTexture"])), fv::mat::requestKey(spec));
+  EXPECT_EQ(requestOf(l, clearcoatOf(l)["clearcoatRoughnessTexture"]).rel, "/head_r.jpg");
+
+  // no map (Polina 9's and Leyla 9's skin): flat as before
+  const auto flat = fv::mat::lower(cjHead(false), {}, {});
+  EXPECT_NEAR(specularOf(flat)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
+  EXPECT_FALSE(specularOf(flat).contains("specularTexture"));
+  EXPECT_FALSE(clearcoatOf(flat).contains("clearcoatTexture"));
+  EXPECT_EQ(requestOf(flat, clearcoatOf(flat)["clearcoatRoughnessTexture"]).rel, "/head_r.jpg");
+
+  // CJ's nails: their top coat takes the slot and the tight lobe folds back into the specular,
+  // 0.425 + 0.075, both under the same map, so the sum keeps it
+  const auto nails = surfaceOf("Fingernails", kPbrSkinType,
+                               {{"Detail Enable", false},
+                                {"Dual Lobe Specular Enable", true},
+                                {"Dual Lobe Specular Weight", 1},
+                                {"Dual Lobe Specular Reflectivity", 0.25},
+                                {"Dual Lobe Specular Ratio", 0.15},
+                                {"Specular Lobe 1 Roughness", 1},
+                                {"Specular Lobe 2 Roughness Mult", 0.55},
+                                {"Top Coat Enable", true},
+                                {"Top Coat Weight", 0.25}},
+                               {{"Dual Lobe Specular Weight", kSlw}});
+  const auto ln = fv::mat::lower(nails, {}, {});
+  EXPECT_NEAR(specularOf(ln)["specularFactor"].get<float>(), 0.5f, 1e-5f);
+  ASSERT_TRUE(specularOf(ln).contains("specularTexture"));
+  EXPECT_EQ(specularRequest(ln).rel, kSlw);
+  EXPECT_NEAR(clearcoatOf(ln)["clearcoatFactor"].get<float>(), 0.25f, 1e-5f);
+  EXPECT_FALSE(clearcoatOf(ln).contains("clearcoatTexture"));  // the coat's weight has no map
+}
+
+// Iray Uber stacks its glossy layer over the dual lobe, two lobes with weights of their own. glTF
+// sums them into one specularFactor, glossy x Mg + dual x Md, which no product of maps gives: the
+// sum stays flat, and only the tight lobe (the clearcoat, the dual's alone) keeps the map.
+TEST(Materials, AGlossyLayerAndADualLobeTogetherLeaveTheSumUnmapped)
+{
+  const auto s = fv::dson::parseSurface("Face", layered({kSkin, R"({"extra":[{"channels":[
+    {"channel":{"id":"Glossy Layered Weight","type":"float","current_value":0.5}},
+    {"channel":{"id":"Dual Lobe Specular Weight","type":"float","current_value":0.5,"image_file":"/Runtime/Textures/face_s.jpg"}}
+  ]}]})"}));
+  const auto lobes = fv::mat::specularLobes(s);
+  ASSERT_TRUE(lobes.clearcoat);
+  EXPECT_NEAR(lobes.clearcoat->weight, 0.25f, 1e-5f);
+  EXPECT_EQ(lobes.clearcoat->weightMaps, std::vector<std::string>{"/Runtime/Textures/face_s.jpg"});
+  EXPECT_NEAR(lobes.intensity, 0.75f, 1e-5f);
+  EXPECT_NEAR(lobes.glossyShare, 0.6666667f, 1e-5f);
+  EXPECT_TRUE(lobes.intensityMaps.empty());
+  const auto l = fv::mat::lower(s, {}, {});
+  EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.75f, 1e-5f);
+  EXPECT_FALSE(specularOf(l).contains("specularTexture"));
+  ASSERT_TRUE(clearcoatOf(l).contains("clearcoatTexture"));
+  EXPECT_EQ(requestOf(l, clearcoatOf(l)["clearcoatTexture"]).rel, "/Runtime/Textures/face_s.jpg");
+}
+
+// Addy Florence's head (Iray Uber, with her !Material ALL preset): Dual Lobe Specular Reflectivity 1
+// times Head S.jpg, a dark map. Under today's fold the reflectivity is in specularFactor, so its map
+// multiplies it like the weight's (and also dims grazing, which Iray's F0-only reflectivity does not).
+TEST(Materials, AReflectivityMapScalesTheDualLobeLikeItsWeight)
+{
+  const auto s = surfaceOf("Head", kUberType,
+                           {{"Glossy Layered Weight", 0},
+                            {"Glossy Roughness", 0.5},
+                            {"Dual Lobe Specular Weight", 0.5486111},
+                            {"Dual Lobe Specular Reflectivity", 1},
+                            {"Dual Lobe Specular Ratio", 0.85},
+                            {"Specular Lobe 1 Roughness", 0.5},
+                            {"Specular Lobe 2 Roughness", 0.4},
+                            {"Top Coat Weight", 0.01}},
+                           {{"Dual Lobe Specular Reflectivity", "/head_s.jpg"}});
+  ASSERT_TRUE(s.dual);
+  EXPECT_EQ(s.dual->reflectivityMap, "/head_s.jpg");
+  EXPECT_TRUE(s.dual->weightMap.empty());
+  // 0.5486111 x 1 x 2 = 1.0972222; lobe 2 (0.4) is the tight one with 0.15 of it
+  const auto lobes = fv::mat::specularLobes(s);
+  ASSERT_TRUE(lobes.clearcoat);
+  EXPECT_NEAR(lobes.clearcoat->weight, 0.1645833f, 1e-5f);
+  EXPECT_NEAR(lobes.intensity, 0.9326389f, 1e-5f);
+  EXPECT_EQ(lobes.intensityMaps, std::vector<std::string>{"/head_s.jpg"});
+  // the top coat holds the slot: the tight lobe folds back, under the same map
+  const auto l = fv::mat::lower(s, {}, {});
+  EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 1.0f, 1e-5f);
+  ASSERT_TRUE(specularOf(l).contains("specularTexture"));
+  EXPECT_EQ(specularRequest(l).rel, "/head_s.jpg");
+  EXPECT_EQ(specularRequest(l).channels, "wa");
+  EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.01f, 1e-6f);
+  EXPECT_FALSE(clearcoatOf(l).contains("clearcoatTexture"));
+}
+
+// A lobe with a weight map and a reflectivity map is their product, which the cooker multiplies
+// (mul=): Madelein's face maps both of her dual lobe's.
+TEST(Materials, TwoMapsOnOneLobeAreMultipliedByTheCooker)
+{
+  auto s = cjHead();
+  s.dual->reflectivityMap = "/Runtime/Textures/head_s.jpg";
+  const auto l = fv::mat::lower(s, {}, {});
+  EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
+  EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.2289474f, 1e-5f);
+  const auto& spec = specularRequest(l);
+  EXPECT_EQ(spec.rel, kSlw);
+  EXPECT_EQ(spec.mulRels, std::vector<std::string>{"/Runtime/Textures/head_s.jpg"});
+  EXPECT_TRUE(spec.composed());
+  const std::string key = fv::mat::requestKey(spec);
+  EXPECT_NE(key.find("|mul:/Runtime/Textures/head_s.jpg"), std::string::npos);
+  EXPECT_EQ(fv::mat::requestKey(requestOf(l, clearcoatOf(l)["clearcoatTexture"])), key);
+  EXPECT_NE(key, fv::mat::requestKey(specularRequest(fv::mat::lower(cjHead(), {}, {}))));
+
+  // a layered image multiplied in gives its bottom layer: the cooker multiplies plain images
+  auto layeredMap = cjHead();
+  layeredMap.dual->reflectivityMap = std::string("/x.png") + fv::mat::kLayerSeparator + "/y.png";
+  EXPECT_EQ(specularRequest(fv::mat::lower(layeredMap, {}, {})).mulRels, std::vector<std::string>{"/x.png"});
+}
+
+// Iray Uber's glossy layer is add_top_coat with Glossy Layered Weight as its weight (the whole
+// Fresnel curve) and Glossy Reflectivity as its F0, each its value times its map in the 4-Layer Uber
+// graph. Clothing often puts one gloss map on both: the product squares it.
+TEST(Materials, AGlossyLayersMapsSayWhereItShines)
+{
+  const auto s = surfaceOf("Dress", kUberType, {{"Glossy Layered Weight", 1}, {"Glossy Reflectivity", 0.5}, {"Glossy Roughness", 0.3}},
+                           {{"Glossy Layered Weight", "/gloss.jpg"}, {"Glossy Reflectivity", "/gloss.jpg"}});
+  EXPECT_EQ(s.glossy.weightMap, "/gloss.jpg");
+  EXPECT_EQ(s.glossy.reflectivityMap, "/gloss.jpg");
+  const auto lobes = fv::mat::specularLobes(s);
+  EXPECT_NEAR(lobes.intensity, 1.0f, 1e-6f);
+  EXPECT_EQ(lobes.intensityMaps, (std::vector<std::string>{"/gloss.jpg", "/gloss.jpg"}));
+  const auto l = fv::mat::lower(s, {}, {});
+  EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 1.0f, 1e-6f);
+  ASSERT_TRUE(specularOf(l).contains("specularTexture"));
+  EXPECT_EQ(specularRequest(l).rel, "/gloss.jpg");
+  EXPECT_EQ(specularRequest(l).mulRels, std::vector<std::string>{"/gloss.jpg"});
+  EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_clearcoat"));
+
+  // PBRSkin's leftover Glossy Layered Weight (Genesis 9's 0.0008) has no say over the dual lobe's maps
+  auto head = cjHead();
+  head.glossy.weight    = 0.0008046585f;
+  head.glossy.weightMap = "/stale.jpg";
+  EXPECT_EQ(fv::mat::specularLobes(head).intensityMaps, std::vector<std::string>{kSlw});
+
+  // a 3Delight-era shader's glossy layer is its own: maps read under Iray's names are dropped
+  const auto legacy = fv::dson::parseSurface("Dress", channelsOf(R"({"extra":[{"type":"studio/material/daz_shader","channels":[
+    {"channel":{"id":"Lighting Model","type":"float","current_value":0}},
+    {"channel":{"id":"specular_strength","type":"float","current_value":0.5}},
+    {"channel":{"id":"Glossy Weight","type":"float","current_value":0.7,"image_file":"/gw.jpg"}},
+    {"channel":{"id":"Glossy Reflectivity","type":"float","current_value":0.5,"image_file":"/gr.jpg"}}
+  ]}]})"));
+  EXPECT_EQ(legacy.shader, fv::mat::Surface::Shader::eDazDefault);
+  EXPECT_TRUE(legacy.glossy.weightMap.empty());
+  EXPECT_TRUE(legacy.glossy.reflectivityMap.empty());
+}
+
+// pbr_skin.mdl lets Translucency Weight of the diffuse light in, the value times its map: the map
+// says where. The Volume (Iray) and thin modes take the weight, so they take the map, in
+// transmissionTexture's red; measured flesh lets all of it in. Nails and teeth are thin in every
+// path-traced mode, so theirs applies under measured skin too.
+TEST(Materials, TheTranslucencyWeightsMapSaysWhereLightEnters)
+{
+  const auto at = [](const char* name) {
+    return surfaceOf(name, kPbrSkinType,
+                     {{"Specular Lobe 2 Roughness Mult", 0.5}, {"Translucency Enable", true}, {"Translucency Weight", 0.8}},
+                     {{"Translucency Weight", "/trans_w.jpg"}});
+  };
+  const auto face = at("Face");
+  ASSERT_TRUE(face.translucency);
+  EXPECT_EQ(face.translucency->weightMap, "/trans_w.jpg");
+  const auto transmissionOf = [](const fv::mat::Lowered& l) { return l.material["extensions"]["KHR_materials_transmission"]; };
+  for(const auto mode : {fv::mat::SkinMode::eVolume, fv::mat::SkinMode::eThin})
+  {
+    const auto l = fv::mat::lower(face, {}, {.skin = mode});
+    EXPECT_NEAR(transmissionOf(l)["transmissionFactor"].get<float>(), 0.8f, 1e-6f);
+    ASSERT_TRUE(transmissionOf(l).contains("transmissionTexture"));
+    const auto& r = requestOf(l, transmissionOf(l)["transmissionTexture"]);
+    EXPECT_EQ(r.rel, "/trans_w.jpg");
+    EXPECT_EQ(r.channels, "");
+    EXPECT_FALSE(r.srgb);
+  }
+  const auto measured = fv::mat::lower(face, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  EXPECT_NEAR(transmissionOf(measured)["transmissionFactor"].get<float>(), 1.0f, 1e-6f);
+  EXPECT_FALSE(transmissionOf(measured).contains("transmissionTexture"));
+  EXPECT_FALSE(fv::mat::lower(face, {}, {.skin = fv::mat::SkinMode::eRaster}).material["extensions"].contains("KHR_materials_transmission"));
+
+  const auto nails = fv::mat::lower(at("Fingernails"), {}, {.skin = fv::mat::SkinMode::eMeasured});
+  EXPECT_NEAR(transmissionOf(nails)["transmissionFactor"].get<float>(), 0.8f, 1e-6f);
+  ASSERT_TRUE(transmissionOf(nails).contains("transmissionTexture"));
+  EXPECT_EQ(requestOf(nails, transmissionOf(nails)["transmissionTexture"]).rel, "/trans_w.jpg");
+}
+
+// Iray Uber hair sends Translucency Weight of the diffuse light through the strand's colour; with
+// a weight map, only where the map is light.
+TEST(Materials, HairTranslucencyKeepsItsWeightMap)
+{
+  const auto s = surfaceOf("Hair", kUberType, {{"Glossy Roughness", 0.4}, {"Translucency Weight", 0.5}, {"Translucency Color", Json::array({1, 0.8, 0.5})}},
+                           {{"Translucency Weight", "/hair_tw.jpg"}, {"Translucency Color", "/hair_t.jpg"}});
+  const auto m = fv::mat::hairTranslucency(s);
+  ASSERT_TRUE(m);
+  EXPECT_EQ(m->weightMap, "/hair_tw.jpg");
+  EXPECT_FLOAT_EQ(m->weight, 0.5f);
+  const auto l = fv::mat::lower(s, {}, {});
+  ASSERT_FALSE(l.requests.empty());
+  ASSERT_TRUE(l.requests[0].makeup);
+  EXPECT_EQ(l.requests[0].makeup->weightRel, "/hair_tw.jpg");
+}
+
+// PBRSkin's Dual Lobe Specular Roughness Mult has no map in its brick graph: a scalar on lobe 1's
+// roughness map. An image a file gives it is ignored, as in Iray.
+TEST(Materials, TheDualLobeRoughnessMultHasNoMap)
+{
+  const auto s = surfaceOf("Face", kPbrSkinType,
+                           {{"Specular Lobe 2 Roughness Mult", 1}, {"Dual Lobe Specular Weight", 1}, {"Specular Lobe 1 Roughness", 0.8},
+                            {"Dual Lobe Specular Roughness Mult", 0.5}},
+                           {{"Dual Lobe Specular Roughness Mult", "/mult.jpg"}});
+  ASSERT_TRUE(s.dual);
+  EXPECT_NEAR(s.dual->lobe1.value, 0.4f, 1e-6f);
+  EXPECT_TRUE(s.dual->lobe1.map.empty());
+  for(const auto& r : fv::mat::lower(s, {}, {}).requests)
+    EXPECT_NE(r.rel, "/mult.jpg");
 }

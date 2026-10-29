@@ -7,6 +7,20 @@
 
 namespace fv::mat {
 
+namespace {
+
+// A layer's maps that multiply its strength, the empty ones left out
+std::vector<std::string> mapsOf(std::initializer_list<const std::string*> maps)
+{
+  std::vector<std::string> out;
+  for(const std::string* m : maps)
+    if(!m->empty())
+      out.push_back(*m);
+  return out;
+}
+
+}  // namespace
+
 SpecularLobes specularLobes(const Surface& s, bool ownIndex)
 {
   // Lobe strengths in units of a plain dielectric's 4% at normal incidence. Iray's reflectivity is
@@ -20,9 +34,21 @@ SpecularLobes specularLobes(const Surface& s, bool ownIndex)
                    : weighted ? kFlatF0
                    : s.mixing == Surface::Mixing::eSpecGloss ? std::clamp(0.08f * s.glossy.reflectivity, 0.04f, kFlatF0)
                                                              : 0.04f;
+  // Glossy Reflectivity has no part in the Spec/Gloss mode (Glossy Specular is the F0) nor in the
+  // Weighted one (no Fresnel), so neither has its map
+  const std::vector<std::string> glossMaps = s.mixing == Surface::Mixing::eMetallicRoughness
+                                                 ? mapsOf({&s.glossy.weightMap, &s.glossy.reflectivityMap})
+                                                 : mapsOf({&s.glossy.weightMap});
   ScalarMap roughness = s.glossy.roughness;
   if(!s.dual)
-    return {std::clamp(0.04f * glossF / f0, 0.f, 1.f), roughness, std::nullopt, 1, f0};
+  {
+    SpecularLobes out;
+    out.intensity     = std::clamp(0.04f * glossF / f0, 0.f, 1.f);
+    out.intensityMaps = glossMaps;
+    out.roughness     = roughness;
+    out.reflectance   = f0;
+    return out;
+  }
   struct Lobe
   {
     ScalarMap r;
@@ -40,13 +66,23 @@ SpecularLobes specularLobes(const Surface& s, bool ownIndex)
   const float tightF = dualF * tight.share;
   // Only a lobe tight enough to read as a separate coat leaves the base. Otherwise its share stays in the base lobe.
   const bool  promoted = tightF > 0.01f && tight.r.value < roughness.value - 0.05f;
+  // The dual lobe's weight and reflectivity maps multiply both lobes (PBRSkin lays the pair under
+  // one weight and one F0)
+  const std::vector<std::string> dualMaps = mapsOf({&s.dual->weightMap, &s.dual->reflectivityMap});
   SpecularLobes out;
   if(promoted)
-    out.clearcoat = SpecularLobes::Coat{std::min(1.f, tightF), tight.r};
+    out.clearcoat = SpecularLobes::Coat{std::min(1.f, tightF), tight.r, dualMaps};
   const float baseDual = promoted ? dualF * (1 - tight.share) : dualF;
-  // a glossy layer too faint to be the main lobe has no share in it
-  out.glossyShare = glossF > 0.01f && glossF + baseDual > 0 ? glossF / (glossF + baseDual) : 0.f;
-  out.intensity   = std::clamp(0.04f * (glossF + baseDual) / f0, 0.f, 1.f);
+  // a glossy layer too faint to be the main lobe has no share in it, nor its maps (Genesis 9's
+  // leftover Glossy Layered Weight of 0.0008 under PBRSkin)
+  const bool glossy = glossF > 0.01f;
+  out.glossyShare   = glossy && glossF + baseDual > 0 ? glossF / (glossF + baseDual) : 0.f;
+  out.intensity     = std::clamp(0.04f * (glossF + baseDual) / f0, 0.f, 1.f);
+  // the maps of the layers the main lobe is made of; two whose maps differ sum to no product of maps
+  if(baseDual <= 0.01f)
+    out.intensityMaps = glossMaps;
+  else if(!glossy || glossMaps == dualMaps)
+    out.intensityMaps = dualMaps;
   out.roughness   = roughness;
   out.reflectance = f0;
   return out;
@@ -94,9 +130,10 @@ std::optional<MakeupLayer> hairTranslucency(const Surface& s)
   if(s.kind != Kind::eHair || !t || t->map.empty() || t->weight <= 0)
     return std::nullopt;
   MakeupLayer m;
-  m.color  = t->color.value_or(Rgb{1, 1, 1});
-  m.map    = t->map;
-  m.weight = t->weight;
+  m.color     = t->color.value_or(Rgb{1, 1, 1});
+  m.map       = t->map;
+  m.weight    = t->weight;
+  m.weightMap = t->weightMap;  // where the strand lets light through
   return m;
 }
 

@@ -58,8 +58,10 @@ struct Glossy
   // linear; Glossy Color, which tints the layer's reflection (in Spec/Gloss, times Glossy Specular's hue)
   Rgb         color{1, 1, 1};
   std::string colorMap;
-  // Glossy Weight's map, in the Weighted mode: where the surface is glossy rather than diffuse
+  // The weight's map (Glossy Layered Weight's, or Glossy Weight's in the Weighted mode: where the
+  // surface is glossy rather than diffuse) and Glossy Reflectivity's; each multiplies its value
   std::string weightMap;
+  std::string reflectivityMap;
 };
 
 // Iray's dual-lobe specular: two lobes sharing one reflectivity, split by `ratio`.
@@ -69,6 +71,9 @@ struct DualLobe
   float     reflectivity = 0.5f;
   ScalarMap lobe1, lobe2;
   float     ratio = 1;  // lobe 1's share of the weight
+  // Dual Lobe Specular Weight's and Reflectivity's maps, each times its value, over both lobes
+  std::string weightMap;
+  std::string reflectivityMap;
 };
 
 // Iray's volume under the skin, for the light that enters: the colour left after travelling
@@ -91,6 +96,7 @@ struct Subsurface
 struct Translucency
 {
   float                     weight = 0;
+  std::string               weightMap;  // Translucency Weight's map: where the light enters
   std::optional<Rgb>        color;  // Translucency Color; none when the material gives none
   std::string               map;
   Rgb                       reflectanceTint{1, 1, 1};  // SSS Reflectance Tint (Iray Uber's; PBRSkin has none), on the light that comes back out

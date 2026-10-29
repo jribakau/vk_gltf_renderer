@@ -162,6 +162,9 @@ void translateLegacy(LegacyShader shader, const Channels& ch, mat::Surface& s)
 
   s.dual.reset();
   s.topCoat.reset();
+  // the glossy layer's values are replaced below, so maps read with Iray's names no longer belong to them
+  s.glossy.weightMap.clear();
+  s.glossy.reflectivityMap.clear();
   if(skin)
   {
     s.glossy.weight       = 1;

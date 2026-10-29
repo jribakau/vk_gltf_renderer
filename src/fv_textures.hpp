@@ -34,11 +34,11 @@ enum class Fallback
 };
 
 // Whether a request's channels are derived from its source: a roughness or a metal map into glTF's
-// metallic-roughness, or a height map into a normal map ("mr", "mt", "bn"). The source as it is would
-// show the wrong thing.
+// metallic-roughness, a height map into a normal map, or a weight map's grey into every channel
+// ("mr", "mt", "bn", "wa"). The source as it is would show the wrong thing.
 inline bool derivedChannels(const std::string& channels)
 {
-  return channels == "mr" || channels == "mt" || channels == "bn";
+  return channels == "mr" || channels == "mt" || channels == "bn" || channels == "wa";
 }
 
 // `derived`: channels derived from the source (derivedChannels);

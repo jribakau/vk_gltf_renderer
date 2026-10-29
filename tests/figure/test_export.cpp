@@ -170,4 +170,33 @@ TEST(Export, AMetalMapFillsTheBlueOfMetallicRoughness)
   EXPECT_EQ(mt[14], 255);
 }
 
+TEST(Export, AWeightMapIsItsGreyInEveryChannelTimesTheMapsMultipliedIn)
+{
+  // the cooker's twin ("wa", mul=): specularTexture's alpha and clearcoatTexture's red read the same
+  // weight, the mean of R, G and B (DAZ's grayscale_mode "average"); Skin_SLW is a flat 153
+  Dir        dir;
+  const auto slw  = dir.write("slw.png", {153, 153, 153, 255, 200, 100, 0, 255, 153, 153, 153, 255, 153, 153, 153, 255});
+  const auto half = dir.write("half.png", {128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255});
+  fv::build::ExportOptions options;
+  options.find = [&](const std::string& r) -> std::optional<fs::path> { return dir.path / r; };
+  fv::mat::TextureRequest req;
+  req.rel      = slw;
+  req.srgb     = false;
+  req.channels = "wa";
+  const auto px = decoded(*fv::build::composeImage(req, options));
+  // rows flipped: the coloured texel (top right) is last
+  for(int c = 0; c < 4; c++)
+  {
+    EXPECT_EQ(px[c], 153);
+    EXPECT_EQ(px[12 + c], 100);
+  }
+  // times a map of 128: (153 x 128 + 127) / 255 = 77
+  req.mulRels = {half};
+  const auto product = decoded(*fv::build::composeImage(req, options));
+  for(int c = 0; c < 4; c++)
+    EXPECT_EQ(product[c], 77);
+  req.mulRels = {"nowhere.png"};
+  EXPECT_FALSE(fv::build::composeImage(req, options));
+}
+
 }  // namespace

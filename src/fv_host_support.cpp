@@ -203,6 +203,14 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
       ly += (ly.empty() ? "" : ";") + source(layer);
     url += "&ly=" + encodeComponent(ly);
   }
+  // mul=<source>;<source>..., percent-encoded as a whole
+  if(!req.mulRels.empty())
+  {
+    std::string mul;
+    for(const std::string& m : req.mulRels)
+      mul += (mul.empty() ? "" : ";") + source(m);
+    url += "&mul=" + encodeComponent(mul);
+  }
   url += cachedOnly ? "&path=1&cached=1" : "&path=1";
   if(!textureCalls().add(&cli))
     return {};
@@ -283,7 +291,7 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
 {
   using fv::textures::Fallback;
   const bool     derived = fv::textures::derivedChannels(req.channels);
-  const bool     laid    = !req.alphaRel.empty() || req.makeup || req.iris || req.recolor || !req.layers.empty();
+  const bool     laid    = !req.alphaRel.empty() || req.makeup || req.iris || req.recolor || !req.layers.empty() || !req.mulRels.empty();
   // an iris or a recolour only the cooker makes (composeImage has neither): cooked under Original textures too
   const Fallback route =
       cooker && (req.iris || req.recolor) ? Fallback::eCook : fv::textures::fallbackOf(req.rel, derived, laid, cooker, s.originalTextures);
@@ -311,6 +319,7 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
     {
       std::vector<std::string> sources = {req.rel, req.alphaRel, req.metalRel, req.bumpRel};
       sources.insert(sources.end(), req.layers.begin(), req.layers.end());
+      sources.insert(sources.end(), req.mulRels.begin(), req.mulRels.end());
       if(req.makeup)
         sources.insert(sources.end(), {req.makeup->colorRel, req.makeup->weightRel});
       for(const std::string& rel : sources)

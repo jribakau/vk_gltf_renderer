@@ -238,6 +238,20 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
         b[3] = uint8_t(a + (b[3] * (255 - a) + 127) / 255);
       }
   }
+  // the maps multiplied in, each by its grey, as the cooker does after the layers: a lobe's weight
+  // map times its reflectivity map
+  for(const std::string& rel : req.mulRels)
+  {
+    const auto m = other(rel);
+    if(!m)
+      return std::nullopt;
+    for(size_t i = 0; i < img.px.size() / 4; i++)
+    {
+      const unsigned g = grey(&m->px[i * 4]);
+      for(int c = 0; c < 3; c++)
+        img.px[i * 4 + c] = uint8_t((img.px[i * 4 + c] * g + 127) / 255);
+    }
+  }
   // TODO(iris): req.iris goes here, before makeup as in the cooker's cook(): recolorIris
   // (figure/materials/iris.hpp, the port of texcache.rs recolour_iris). Until then a GLB, or a
   // texture composed without the cooker, keeps the eye's own iris colour.
@@ -304,6 +318,13 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
       uint8_t* p = &img.px[i * 4];
       p[2]       = grey(p);
       p[0] = p[1] = p[3] = 255;
+    }
+  // a weight map's grey in every channel: specularTexture's alpha and clearcoatTexture's red agree
+  if(req.channels == "wa")
+    for(size_t i = 0; i < img.px.size() / 4; i++)
+    {
+      uint8_t* p = &img.px[i * 4];
+      p[0] = p[1] = p[2] = p[3] = grey(p);
     }
   bool alpha = false;
   for(size_t i = 3; i < img.px.size() && !alpha; i += 4)

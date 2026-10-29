@@ -45,8 +45,11 @@ struct Builder
   MapTiling tilingOf(const TextureRequest& req) const
   {
     std::optional<MapTiling> shared;
-    for(const std::string* rel : {&req.rel, &req.alphaRel, &req.metalRel, &req.bumpRel, req.makeup ? &req.makeup->colorRel : nullptr,
-                                  req.makeup ? &req.makeup->weightRel : nullptr})
+    std::vector<const std::string*> rels = {&req.rel, &req.alphaRel, &req.metalRel, &req.bumpRel, req.makeup ? &req.makeup->colorRel : nullptr,
+                                            req.makeup ? &req.makeup->weightRel : nullptr};
+    for(const std::string& m : req.mulRels)
+      rels.push_back(&m);
+    for(const std::string* rel : rels)
     {
       if(!rel || rel->empty())
         continue;
@@ -104,6 +107,20 @@ struct Builder
     r.rel  = rel;
     r.srgb = srgb;
     return info(std::move(r), scale, own);
+  }
+
+  // The product of weight maps as one grey in every channel ("wa"), so that specularTexture (alpha)
+  // and clearcoatTexture (red) can share the image. Only the first map may be a layered image: the
+  // cooker multiplies plain images in, so a later one gives its bottom layer.
+  Json weights(const std::vector<std::string>& maps)
+  {
+    TextureRequest r;
+    r.rel      = maps.front();
+    r.srgb     = false;
+    r.channels = "wa";
+    for(size_t i = 1; i < maps.size(); i++)
+      r.mulRels.push_back(mapLayers(maps[i]).front());
+    return info(std::move(r));
   }
 
   // The base colour image: the colour map with its iris recoloured, a cutout in its alpha (the
@@ -507,15 +524,15 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   Json specularExt = {{"specularFactor", eff.specular}, {"specularColorFactor", rgbJson(specularColor)}};
   if(tinted && !s.glossy.colorMap.empty())
     specularExt["specularColorTexture"] = b.plain(s.glossy.colorMap, true);
-  // the Weighted mode's Glossy Weight map, in the alpha glTF's specularTexture is read from
-  if(!s.glossy.weightMap.empty() && !tearFilm && !underFilm)
-  {
-    TextureRequest r;
-    r.rel      = s.glossy.weightMap;
-    r.alphaRel = s.glossy.weightMap;
-    r.srgb     = false;
-    specularExt["specularTexture"] = b.info(std::move(r));
-  }
+  // Where the lobe shines: the weight and reflectivity maps of the layers it is made of, in the
+  // alpha glTF's specularTexture is read from (CJ Evangeline's Skin_SLW, the Weighted mode's Glossy
+  // Weight map). A tight dual lobe folded back under a top coat adds its share, so the sum keeps a
+  // map only when both parts have the same. The eye's water and strand hair have their own.
+  const std::vector<std::string> specularMaps = !s.topCoat || !lobes.clearcoat || lobes.clearcoat->weightMaps == lobes.intensityMaps
+                                                    ? lobes.intensityMaps
+                                                    : std::vector<std::string>{};
+  if(!specularMaps.empty() && !tearFilm && !underFilm && !ribbonHair && specular > 0)
+    specularExt["specularTexture"] = b.weights(specularMaps);
   ext["KHR_materials_specular"] = specularExt;
   // A layer brighter than 4% at normal incidence reflects through an index of its own. Glass, skin
   // and ribbon hair below set theirs over it.
@@ -534,6 +551,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     ScalarMap weight;
     ScalarMap roughness;
     float     bumpWeight = 1;
+    // the tight dual lobe's weight maps, the same cooked image as the specular's
+    std::vector<std::string> weightMaps;
   };
   std::optional<Coat> coat;
   if(tearFilm || underFilm)
@@ -548,13 +567,15 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     coat = Coat{{s.topCoat->weight * tint, s.topCoat->weightMap}, {s.topCoat->roughness, s.topCoat->roughnessMap}, s.topCoat->bumpWeight};
   }
   else if(lobes.clearcoat)
-    coat = Coat{{lobes.clearcoat->weight, {}}, lobes.clearcoat->roughness};
+    coat = Coat{{lobes.clearcoat->weight, {}}, lobes.clearcoat->roughness, 1, lobes.clearcoat->weightMaps};
   if(coat || e.clearcoat)
   {
     Json cc = {{"clearcoatFactor", clamp(e.clearcoat.value_or(coat ? coat->weight.value : 0.f), 0, 1)},
                {"clearcoatRoughnessFactor", clamp(e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f), 0, 1)}};
     if(coat && !coat->weight.map.empty())
       cc["clearcoatTexture"] = b.plain(coat->weight.map, false);
+    else if(coat && !coat->weightMaps.empty())
+      cc["clearcoatTexture"] = b.weights(coat->weightMaps);
     if(coat && !coat->roughness.map.empty())
       cc["clearcoatRoughnessTexture"] = b.plain(coat->roughness.map, false);
     if(!normal.is_null())
@@ -575,7 +596,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   }
 
   // refraction
-  float transmission = 0;
+  float       transmission = 0;
+  std::string transmissionMap;  // Translucency Weight's map, where a skin lets light in
   if(refractive)
   {
     transmission               = s.refraction->weight;
@@ -647,6 +669,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       // diffuse lobe (ptDiffuseEntry), so the share no longer needs a diffuse layer left above it.
       const VolumeMedium v = volumeMedium(t ? t->subsurface : std::nullopt);
       transmission         = std::min(1.0f, weight);
+      transmissionMap      = t ? t->weightMap : std::string();
       ext["KHR_materials_ior"]    = {{"ior", 1.4}};
       ext["KHR_materials_volume"] = {{"thicknessFactor", 1}, {"attenuationDistance", v.distance}, {"attenuationColor", rgbJson(v.attenuation)}};
       ext["KHR_materials_scatter"] = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", rgbJson(v.multiscatter)}, {"scatterAnisotropy", v.anisotropy}};
@@ -661,7 +684,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       // sockets and mouths stay clean. Anisotropy -0.8 sends a tenth of it on through, so backlit
       // ears and fingers glow. Makeup lies over the whole skin, so the light that scatters back
       // leaves through it too: it is baked into the scatter colour as into the base colour.
+      // Nails and teeth take this branch in the measured mode too, so their weight map applies there.
       transmission                = std::min(1.0f, weight);
+      transmissionMap             = t ? t->weightMap : std::string();
       ext["KHR_materials_volume"] = {{"thicknessFactor", 0}, {"attenuationColor", Json::array({1, 1, 1})}};
       Json sc = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", rgbJson(bakedFactor)}, {"scatterAnisotropy", -0.8}};
       if(Json tex = albedoTexture(); !tex.is_null())
@@ -680,9 +705,12 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   if(transmission > 0)
   {
     ext["KHR_materials_transmission"] = {{"transmissionFactor", transmission}};
-    // where it refracts: the refraction weight's map, in red
+    // where it refracts, or where a skin lets light in (pbr_skin.mdl's entering share is Translucency
+    // Weight times its map): the weight's map, in red
     if(refractive && !s.refraction->map.empty())
       ext["KHR_materials_transmission"]["transmissionTexture"] = b.plain(s.refraction->map, false);
+    else if(!transmissionMap.empty())
+      ext["KHR_materials_transmission"]["transmissionTexture"] = b.plain(transmissionMap, false);
     if(!ext.contains("KHR_materials_volume"))
       ext["KHR_materials_volume"] = {{"thicknessFactor", 0}, {"attenuationColor", Json::array({1, 1, 1})}};
   }

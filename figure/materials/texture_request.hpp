@@ -2,8 +2,8 @@
 
 // One texture a glTF material asks for: a library image, how it is read, and what the cooker (the
 // Rust texture server) lays over or converts in it. The cooker's own queries are the vocabulary:
-// `alpha=`, `mk=` (makeup), `ir=` (iris), `rc=` (recolour), `bump=`, `metal=` and `ch=` (see
-// src-tauri/src/protocol.rs).
+// `alpha=`, `mk=` (makeup), `ir=` (iris), `rc=` (recolour), `bump=`, `metal=`, `mul=` and `ch=`
+// (see src-tauri/src/protocol.rs).
 
 #include <array>
 #include <optional>
@@ -83,9 +83,14 @@ struct TextureRequest
   bool        alphaFromAlpha = false;  // the cutout is that map's alpha channel, not its grey (green)
   // "ng": a normal map with green inverted (glTF's convention for meshes without tangents);
   // "bn": a normal map derived from a height map; "mr": glTF metallic-roughness from a roughness map;
-  // "mt": glTF metallic-roughness from a metal map alone (its grey in blue, the rest white)
+  // "mt": glTF metallic-roughness from a metal map alone (its grey in blue, the rest white);
+  // "wa": a weight map's grey (the mean of R, G and B, DAZ's grayscale_mode "average") in all four
+  // channels, so specularTexture's alpha and clearcoatTexture's red read the same weight
   std::string channels;
   std::string metalRel;  // "mr": a metal map whose grey goes in blue; empty: full metal there
+  // Maps whose grey multiplies the colour channels, after the layers and before anything else: a
+  // lobe's weight map times its reflectivity map. Plain images only (not layered).
+  std::vector<std::string> mulRels;
   std::string bumpRel;  // a height map blended onto the normal map; empty: none
   float       bumpStrength = 1;
   // A height map's full range in UV units (bumpHeightInUv), which the bake turns into slopes against
@@ -102,7 +107,7 @@ struct TextureRequest
   bool composed() const
   {
     return !alphaRel.empty() || !channels.empty() || !metalRel.empty() || !bumpRel.empty() || makeup.has_value() || iris.has_value() || recolor.has_value()
-           || !layers.empty();
+           || !layers.empty() || !mulRels.empty();
   }
 };
 
