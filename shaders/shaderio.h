@@ -381,7 +381,13 @@ struct PathtracePushConstant
   float           adaptiveThreshold = 0.09f;    // ePtAdaptiveStop: a pixel stops once its mean's standard error is at most this times the root of its luminance...
   int             adaptiveMin       = 32;       // ...and it has at least this many samples
   float           hairResponsivity  = 0.0f;     // DLSS frames: the responsivity mask where the first hit is hair (0: no mask)
-  int             responsivityPad   = 0;        // keeps the pointers 8-byte aligned
+  int             responsivityPad   = 0;        // keeps the table 16-byte aligned
+  // ePtAdaptiveStop: how much more noise a pixel may keep where the tone mapper flattens its brightness,
+  // a stop apart from mid grey's luminance in the scene (adaptiveRelaxBase; 0: none). adaptive_relax.hpp
+  float4          adaptiveRelax[3];
+  float           adaptiveRelaxBase = 0.0f;
+  int             adaptivePad       = 0;        // keeps the pointers 8-byte aligned
+  uint*           adaptiveActive;               // ePtAdaptiveStop: the frame counts the pixels still sampling here (null: not counted)
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node

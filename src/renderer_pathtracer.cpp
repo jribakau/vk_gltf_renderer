@@ -52,6 +52,7 @@
 #include "renderer_pathtracer.hpp"
 #include "sample_schedule.hpp"
 #include "../shaders/adaptive_stop.h.slang"  // adaptiveSceneThreshold
+#include "adaptive_relax.hpp"
 
 #include "scene_shader_macros.hpp"
 #include "ui_helpers.hpp"
@@ -520,6 +521,16 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: the samples a pixel takes before ptAdaptiveStop can stop it",
                  .callbackSuccess = reset},
                 &m_adaptiveMin, Persist::eNo, 2, 100000);
+  settings->add({.name            = "ptAdaptiveRelax",
+                 .help            = "PathTracer: ptAdaptiveStop lets highlights the tone mapper flattens keep more noise, as "
+                                    "much more as the curve hides it (off: the plain rule everywhere)",
+                 .callbackSuccess = reset},
+                &m_adaptiveRelax, Persist::eNo);
+  settings->add({.name            = "ptAdaptiveDone",
+                 .help            = "PathTracer: with ptAdaptiveStop, the still ends once at most this share of its pixels "
+                                    "still sample (0: only at ptMaxSamples)",
+                 .callbackSuccess = reset},
+                &m_adaptiveDone, Persist::eNo, 0.0F, 1.0F);
   // Light that reaches skin after a rough bounce is blurred by that bounce: a random walk there costs
   // tens of events for detail nothing shows, so the medium shades as the thin preview's diffuse lobes
   // (Unreal's bSimplifySSS, at path roughness 0.15). Skin seen directly, or through a mirror or a
@@ -579,6 +590,8 @@ void PathTracer::onDetach(Resources& resources)
   resources.allocator.destroyBuffer(m_sbtBuffer);
   resources.allocator.destroyBuffer(m_depthCopyBuffer);
   resources.allocator.destroyBuffer(m_cameraMediumBuffer);
+  resources.allocator.destroyBuffer(m_adaptiveActiveBuffer);
+  m_adaptiveCounts.clear();
   m_depthStaging.deinit();
   m_convergence.deinit();
 
@@ -1185,6 +1198,11 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
     dispatchRays(cmd, renderingSize);
   }
 
+  // The adaptive stop's count, for the host once the frame is done (countAdaptivePixels)
+  if(pushConst.adaptiveActive != nullptr)
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                           VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_HOST_READ_BIT);
+
   // Making sure the rendered image is ready to be used by tonemapper (written by ray query compute or the RTX pipeline)
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
@@ -1331,6 +1349,41 @@ void PathTracer::updateDepthStaging(VkCommandBuffer cmd, Resources& resources)
   NVVK_DBG_NAME(m_depthCopyBuffer.buffer);
 }
 
+uint32_t* PathTracer::countAdaptivePixels(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize)
+{
+  if(!resources.app)
+    return nullptr;
+  // A slot per frame in flight: the application waited for the frame that last used this one
+  const uint32_t slots = std::max(resources.app->getFrameCycleSize(), 1u);
+  if(m_adaptiveCounts.size() != slots)
+  {
+    resources.allocator.destroyBuffer(m_adaptiveActiveBuffer);
+    NVVK_CHECK(resources.allocator.createBuffer(m_adaptiveActiveBuffer, slots * sizeof(uint32_t),
+                                                VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
+                                                    | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                                                VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
+    NVVK_DBG_NAME(m_adaptiveActiveBuffer.buffer);
+    m_adaptiveCounts.assign(slots, {});
+  }
+  const uint32_t slot = resources.app->getFrameCycleIndex() % slots;
+
+  // That frame's count, if it was this accumulation's: once few enough pixels sample, the still is done.
+  // It ends a frame or two after the count says so, the frames in flight.
+  const AdaptiveCount& last = m_adaptiveCounts[slot];
+  if(last.counted && last.accumulation == m_accumulationId)
+  {
+    uint32_t active = 0;
+    std::memcpy(&active, m_adaptiveActiveBuffer.mapping + slot * sizeof(uint32_t), sizeof(active));
+    if(double(active) <= double(m_adaptiveDone) * double(renderingSize.width) * double(renderingSize.height))
+      resources.adaptiveDone = true;
+  }
+  m_adaptiveCounts[slot] = {m_accumulationId, true};
+
+  // the barrier after setupPushConstant orders the clear before the trace
+  vkCmdFillBuffer(cmd, m_adaptiveActiveBuffer.buffer, slot * sizeof(uint32_t), sizeof(uint32_t), 0);
+  return reinterpret_cast<uint32_t*>(m_adaptiveActiveBuffer.address + slot * sizeof(uint32_t));
+}
+
 void PathTracer::updateConvergence(VkCommandBuffer cmd, Resources& resources)
 {
   const VkExtent2D size = resources.gBuffers.getSize();
@@ -1458,6 +1511,8 @@ void PathTracer::createPipeline(Resources& resources)
                                                           resources.skyLutDescriptorSetLayout};
 
   // Creating the pipeline layout
+  static_assert(sizeof(shaderio::PathtracePushConstant) <= 256, "the push constants Vulkan guarantees on NVIDIA");
+  static_assert(offsetof(shaderio::PathtracePushConstant, adaptiveRelax) % 16 == 0, "a float4 array's alignment in the shader");
   VkPushConstantRange        pushConstant{VK_SHADER_STAGE_ALL, 0, sizeof(shaderio::PathtracePushConstant)};
   VkPipelineLayoutCreateInfo plCreateInfo{
       .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -3103,6 +3158,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
     // updateStatistics() this frame (the OptiX denoiser) must not see the previous accumulation's count.
     m_totalSamplesAccumulated    = 0;
     resources.accumulatedSamples = 0;
+    resources.adaptiveDone       = false;
+    m_accumulationId++;
   }
 
   // Adjust focal distance if auto-focus is enabled
@@ -3168,6 +3225,12 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
                                       m_adaptiveThreshold :
                                       adaptiveSceneThreshold(m_adaptiveThreshold, resources.tonemapperData.exposure);
   m_pushConst.adaptiveMin       = m_adaptiveMin;
+  const adaptive_relax::Table relax = m_adaptiveRelax ? adaptive_relax::build(resources.tonemapperData) : adaptive_relax::Table{};
+  m_pushConst.adaptiveRelaxBase     = relax.base;
+  std::memcpy(m_pushConst.adaptiveRelax, relax.relax.data(), sizeof(m_pushConst.adaptiveRelax));
+  m_pushConst.adaptiveActive = (m_pushConst.flags & shaderio::ePtAdaptiveStop) && m_adaptiveDone > 0.0F ?
+                                   countAdaptivePixels(cmd, resources, renderingSize) :
+                                   nullptr;
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_walkGuiding ? shaderio::ePtWalkGuiding : 0;

@@ -75,6 +75,14 @@ TEST(SampleSchedule, AccumulationEndsOnItsSamplesNotItsFrames)
   EXPECT_FALSE(sample_schedule::accumulationComplete(-1, 128, 128));   // just reset
 }
 
+TEST(SampleSchedule, TheAdaptiveStopEndsAnAccumulationBeforeItsCap)
+{
+  EXPECT_TRUE(sample_schedule::accumulationComplete(200, 200, 500, true));
+  EXPECT_FALSE(sample_schedule::accumulationComplete(200, 200, 500, false));
+  EXPECT_FALSE(sample_schedule::accumulationComplete(-1, 200, 500, true));  // just reset
+  EXPECT_FALSE(sample_schedule::accumulationComplete(3, 0, 500, true));     // DLSS frames, no samples yet
+}
+
 TEST(SampleSchedule, DlssFramesTakeTheLowerBounceCap)
 {
   EXPECT_EQ(sample_schedule::frameMaxDepth(8, 4, true), 4);

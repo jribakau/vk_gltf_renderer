@@ -236,6 +236,20 @@ public:
   bool  m_adaptiveStop{true};
   float m_adaptiveThreshold{0.09F};
   int   m_adaptiveMin{32};
+  // Highlights the tone mapper flattens keep more noise (ptAdaptiveRelax, adaptive_relax.hpp): the
+  // brightest pixels of a still, lamps and lit walls, otherwise sampled to the cap
+  bool m_adaptiveRelax{true};
+  // The still ends once at most this share of its pixels still sample (ptAdaptiveDone; 0: only at the
+  // cap). Counted by the GPU each frame (adaptiveActive), read back once the frame is done.
+  float        m_adaptiveDone{0.001F};
+  nvvk::Buffer m_adaptiveActiveBuffer;  // a uint per frame in flight, host-visible
+  struct AdaptiveCount
+  {
+    uint64_t accumulation{0};  // the accumulation (m_accumulationId) that counted into the slot
+    bool     counted{false};
+  };
+  std::vector<AdaptiveCount> m_adaptiveCounts;  // per frame in flight: what the slot holds
+  uint64_t                   m_accumulationId{0};
   SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
@@ -546,6 +560,10 @@ private:
   void updateDepthStaging(VkCommandBuffer cmd, Resources& resources);
   // Size m_convergence to the G-buffer
   void updateConvergence(VkCommandBuffer cmd, Resources& resources);
+  // The adaptive stop's count of the pixels still sampling: reads the one this frame's slot holds
+  // (that frame is done), may end the still (Resources::adaptiveDone), and clears it for this frame.
+  // Returns the counter for the push constant.
+  uint32_t* countAdaptivePixels(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize);
   // Copy the path-traced depth from m_depthStaging into the G-buffer depth image.
   void cmdCopyStagedDepth(VkCommandBuffer cmd, Resources& resources);
   // Destroy the pipelines for both Ray Query and Ray Tracing

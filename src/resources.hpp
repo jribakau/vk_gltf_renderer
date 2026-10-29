@@ -452,13 +452,18 @@ struct Resources
 
   int frameCount{0};
 
+  // The adaptive stop found all but a few of this accumulation's pixels done (the path tracer sets it,
+  // and clears it as an accumulation starts)
+  bool adaptiveDone{false};
+
   // The accumulation is complete: rendering stops until the next reset (resetFrame). The path tracer
-  // stops when its image holds settings.maxSamples samples per pixel. The frame bound stops a renderer
-  // that adds no samples (the rasterizer, or a path tracer with nothing to trace); a frame that does
-  // render adds at least one sample, so it never cuts an accumulation short.
+  // stops when its image holds settings.maxSamples samples per pixel, or once its adaptive stop is
+  // done. The frame bound stops a renderer that adds no samples (the rasterizer, or a path tracer with
+  // nothing to trace); a frame that does render adds at least one sample, so it never cuts an
+  // accumulation short.
   bool accumulationComplete() const
   {
-    return sample_schedule::accumulationComplete(frameCount, accumulatedSamples, settings.maxSamples);
+    return sample_schedule::accumulationComplete(frameCount, accumulatedSamples, settings.maxSamples, adaptiveDone);
   }
 
   // Monotonic count of completed onRender() calls since the app started - unlike frameCount above

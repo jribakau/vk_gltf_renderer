@@ -1457,8 +1457,22 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     if(accumulating)
       second = (outImages[int(OutputImage::eConvergence)][pixel].x * pushConst.totalSamples + lumSquared) / float(samples);
     const float mean = luminance(outImages[int(OutputImage::eResultImage)][pixel].xyz);
-    const bool  stop = adaptiveConverged(second, mean, samples, pushConst.adaptiveThreshold, pushConst.adaptiveMin);
+    // where the tone mapper flattens the pixel, the table's widening, between its entries
+    float       relax    = 1.0F;
+    const float position = adaptiveRelaxPosition(mean, pushConst.adaptiveRelaxBase);
+    if(position >= 0.0F)
+    {
+      const int   i = int(position);
+      const int   j = min(i + 1, ADAPTIVE_RELAX_STOPS - 1);
+      relax         = lerp(pushConst.adaptiveRelax[i >> 2][i & 3], pushConst.adaptiveRelax[j >> 2][j & 3], position - float(i));
+    }
+    const bool stop = adaptiveConverged(second, mean, samples, pushConst.adaptiveThreshold, pushConst.adaptiveMin, relax);
     outImages[int(OutputImage::eConvergence)][pixel] = float4(second, stop ? 1.0F : 0.0F, 0.0F, 0.0F);
+    // the pixels still sampling, a warp's at a time, for the host's stop of the whole still
+    // (ptAdaptiveDone); a warp that skipped the frame above has none
+    const uint active = WaveActiveCountBits(!stop);
+    if(pushConst.adaptiveActive != nullptr && active > 0 && WaveIsFirstLane())
+      InterlockedAdd(*pushConst.adaptiveActive, active);
   }
 
 #if USE_DLSS_SHADER
@@ -1621,8 +1635,9 @@ void probeCameraMedium(IRaytracer raytracer)
 //-----------------------------------------------------------------------
 [shader("compute")]
 [numthreads(PT_WORKGROUP_X, PT_WORKGROUP_Y, 1)]
-// (subgroup vote: ePtAdaptiveStop's warp-wide stop in processPixel)
+// (subgroup vote and ballot: ePtAdaptiveStop's warp-wide stop and its count of the pixels still sampling, in processPixel)
 [require(spvGroupNonUniformVote)]
+[require(spvGroupNonUniformBallot)]
 void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 {
   RAYQUERY_USE_OPACITY_MICROMAP(computeMain);
@@ -1642,8 +1657,9 @@ void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 // RAY GENERATION
 //-----------------------------------------------------------------------
 [shader("raygeneration")]
-// (subgroup vote: ePtAdaptiveStop's warp-wide stop in processPixel)
+// (subgroup vote and ballot: ePtAdaptiveStop's warp-wide stop and its count of the pixels still sampling, in processPixel)
 [require(spvGroupNonUniformVote)]
+[require(spvGroupNonUniformBallot)]
 void rgenMain()
 {
   RAYQUERY_USE_OPACITY_MICROMAP(rgenMain);  // Ray queries here too (e.g. dlssTraceSkipThinGlass)
