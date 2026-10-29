@@ -128,6 +128,18 @@ struct Emission
   std::optional<Luminance> luminance;
 };
 
+// The shader a DSON material names: its extra's type ("studio/material/uber_iray", "daz_brick",
+// "daz_shader") and what defines it, a brick's library file#id (".../PBRSkin.dsf#PBRSkin") or a
+// shader's definition (".dse"). Iray Uber is defined inside DAZ Studio, so its url is empty. Empty
+// when no layer names one (DAZ Default, a preset's overrides alone).
+struct ShaderRef
+{
+  std::string type;
+  std::string url;
+
+  bool operator==(const ShaderRef&) const = default;
+};
+
 struct Surface
 {
   std::string name;
@@ -143,6 +155,9 @@ struct Surface
     eAoa,
     eLegacy,
   } shader = Shader::eLegacy;
+  // The shader the material's files name, kept as they say it. `shader` is still read from the
+  // channels present: an Iray preset over a 3Delight material names no shader of its own.
+  ShaderRef dazShader;
 
   ColorMap  base;
   ScalarMap opacity{1, {}};  // Cutout Opacity

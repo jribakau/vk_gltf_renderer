@@ -1,9 +1,10 @@
 #pragma once
 
 // DSON material definitions: collecting a surface's channels across the files that define and
-// override it. An Iray Uber material's parameters live in
-// `extra[{ type: "studio/material/uber_iray", channels: [...] }]`, PBRSkin's in a daz_brick extra,
-// older shaders in the top-level DSON channels (diffuse, bump, transparency...). A port of
+// override it. A material's extras name its shader and hold its parameters, as two entries:
+// `extra[{ type: "studio/material/uber_iray", version }, { type: "studio_material_channels",
+// channels: [...] }]`. PBRSkin's shader is a daz_brick, a 3Delight one a daz_shader with its .dse
+// definition; older shaders also keep top-level DSON channels (diffuse, bump, transparency...). A port of
 // src/lib/loaders/dson/materials.ts; channels are looked up by id and label, case- and
 // space-insensitively (norm), because both spellings appear in the wild.
 
@@ -21,7 +22,8 @@
 
 namespace fv::dson {
 
-// Collects channels from a DSON material definition into `into`. Later calls override.
+// Collects channels from a DSON material definition into `into`. Later calls override. It also keeps
+// the shader the layers name (Channels::shader); a brick's url is resolved against `file`.
 void collectChannels(const Json* def, Channels& into, const std::unordered_map<std::string, std::string>& images, const std::string& file);
 
 // image_library entries map an id to image layers; the first active layer with a file.

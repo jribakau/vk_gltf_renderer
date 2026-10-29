@@ -9,9 +9,11 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <figure/dson/store.hpp>
+#include <figure/materials/surface.hpp>
 
 namespace fv::dson {
 
@@ -36,8 +38,12 @@ public:
   void           erase(const std::string& key);
   std::shared_ptr<Channel> shared(const std::string& key) const;
   const std::vector<std::string>& order() const { return m_order; }
+  // the shader the layers name, the last one that names any
+  const mat::ShaderRef& shader() const { return m_shader; }
+  void                  setShader(mat::ShaderRef s) { m_shader = std::move(s); }
 
 private:
+  mat::ShaderRef                                            m_shader;
   std::vector<std::string>                                  m_order;
   std::unordered_map<std::string, std::shared_ptr<Channel>> m_map;
 };

@@ -2111,6 +2111,109 @@ TEST(Materials, IrayPresetOverLegacyStillReadsIray)
   EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::eIray);
   EXPECT_NEAR(m.surface.glossy.roughness.value, 0.45f, 1e-4f);
   EXPECT_NEAR(m.surface.glossy.reflectivity, 0.35f, 1e-4f);
+  // the overrides name no shader: the files' own stays, though the channels now read as Iray
+  EXPECT_EQ(m.surface.dazShader.type, "studio/material/daz_shader");
+}
+
+// The shader a material's files name, kept beside what its channels read as
+namespace {
+
+const char* kPbrSkinFile = "data/Daz 3D/Built-in Content/Daz Iray PBRSkin/PBRSkin.dsf";
+
+// Genesis 9's own Body: the type and the channels in two extras, as the .duf writes them
+const char* kG9Body = R"({"id":"Body","extra":[{"type":"studio/material/uber_iray","version":"1.1.0.0"},
+  {"type":"studio_material_channels","channels":[{"channel":{"id":"Glossy Roughness","current_value":0.5}}]}]})";
+// PBRSkin.dsf's library entry: the brick graph, no url
+const char* kPbrSkinEntry = R"({"id":"PBRSkin","extra":[{"type":"studio/material/daz_brick","brick_settings":{}},
+  {"type":"studio_material_channels","channels":[{"channel":{"id":"Specular Lobe 2 Roughness Mult","current_value":1}}]}]})";
+// A character's scene material over it (Leyla 9 writes "DAZ 3D"), with an Octane extra beside
+const char* kPbrSkinScene = R"({"id":"Body","url":"/data/DAZ%203D/Built-in%20Content/Daz%20Iray%20PBRSkin/PBRSkin.dsf#PBRSkin",
+  "extra":[{"type":"studio/material/daz_brick"},{"type":"studio/element_data/OctaneRender"},
+  {"type":"studio_material_channels","channels":[{"channel":{"id":"Detail Enable","current_value":true}}]}]})";
+
+fv::dson::Channels collect(fv::dson::Channels ch, const char* text, const std::string& file)
+{
+  const Json def = Json::parse(text);
+  fv::dson::collectChannels(&def, ch, {}, file);
+  return ch;
+}
+
+}  // namespace
+
+TEST(Materials, ChannelsKeepTheShaderTheirExtraNames)
+{
+  const auto skin = channelsOf(kSkin).shader();
+  EXPECT_EQ(skin.type, "studio/material/uber_iray");
+  EXPECT_EQ(skin.url, "");  // Iray Uber is defined inside DAZ Studio
+  EXPECT_EQ(fv::dson::parseSurface("Face", channelsOf(kSkin)).shader, fv::mat::Surface::Shader::eIray);
+
+  const auto torso = channelsOf(kG2fTorso).shader();
+  EXPECT_EQ(torso.type, "studio/material/daz_shader");
+  EXPECT_EQ(torso.url, "support/DAZ/Uber/shaderDefinitions/surface/omUberSurfaceDef.dse");
+
+  // "studio_material_channels" holds channels and names no shader: DAZ Default names none
+  EXPECT_EQ(channelsOf(kBoxers).shader().type, "");
+
+  // a brick with neither graph nor url: the type alone, and AoA still reads as AoA
+  const auto aoa = layered({kAoaBrick, kAoaTorso});
+  EXPECT_EQ(aoa.shader().type, "studio/material/daz_brick");
+  EXPECT_EQ(aoa.shader().url, "");
+  const auto s = fv::dson::parseSurface("Torso", aoa);
+  EXPECT_EQ(s.shader, fv::mat::Surface::Shader::eAoa);
+  EXPECT_EQ(s.dazShader.type, "studio/material/daz_brick");
+}
+
+TEST(Materials, EachLayerNamesTheShaderAsItsFileSaysIt)
+{
+  // the geometry's Iray Uber, then PBRSkin.dsf's brick, then the character's instance of it
+  auto ch = collect({}, kG9Body, "data/DAZ 3D/Genesis 9/Genesis 9.duf");
+  EXPECT_EQ(ch.shader().type, "studio/material/uber_iray");
+  EXPECT_EQ(ch.shader().url, "");
+  ch = collect(ch, kPbrSkinEntry, kPbrSkinFile);
+  EXPECT_EQ(ch.shader().type, "studio/material/daz_brick");
+  EXPECT_EQ(ch.shader().url, "data/Daz 3D/Built-in Content/Daz Iray PBRSkin/PBRSkin.dsf#PBRSkin");
+  ch = collect(ch, kPbrSkinScene, "data/DAZ 3D/Characters/Leyla 9.duf");
+  EXPECT_EQ(ch.shader().type, "studio/material/daz_brick");  // the Octane extra names no shader
+  EXPECT_EQ(ch.shader().url, "data/DAZ 3D/Built-in Content/Daz Iray PBRSkin/PBRSkin.dsf#PBRSkin");
+  const auto skin = fv::dson::parseSurface("Body", ch);
+  EXPECT_EQ(skin.shader, fv::mat::Surface::Shader::ePbrSkin);
+  EXPECT_EQ(skin.dazShader, ch.shader());
+
+  // a later layer naming another shader replaces it
+  ch = collect(ch, kG9Body, "data/DAZ 3D/Genesis 9/Genesis 9.duf");
+  EXPECT_EQ(ch.shader().type, "studio/material/uber_iray");
+  EXPECT_EQ(ch.shader().url, "");
+
+  // a 3Delight instance repeats the type without the definition: its library entry's stays
+  const auto legs = collect(channelsOf(kG2fTorso), R"({"id":"Legs","url":"#Legs","extra":[{"type":"studio/material/daz_shader"}]})",
+                            "data/DAZ 3D/Genesis 2/Female/Genesis 2 Base Female.duf");
+  EXPECT_EQ(legs.shader().type, "studio/material/daz_shader");
+  EXPECT_EQ(legs.shader().url, "support/DAZ/Uber/shaderDefinitions/surface/omUberSurfaceDef.dse");
+}
+
+TEST(Materials, PresetsKeepTheShaderTheFilesName)
+{
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Torso", channelsOf(kG2fTorso)));
+  const Json preset = Json::parse(R"({"scene":{"animations":[
+    {"url":"name://@selection#materials/Torso:?Glossy%20Roughness/value","keys":[[0,0.45]]}
+  ]}})");
+  ASSERT_EQ(fv::dson::applyMaterialPreset(preset, scene).changed, std::set<int>({0}));
+  const fv::Material& m = scene.materials[0];
+  EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::eIray);
+  for(const fv::mat::ShaderRef& s : {m.surface.dazShader, m.channels->shader(), m.baseline->shader()})
+  {
+    EXPECT_EQ(s.type, "studio/material/daz_shader");
+    EXPECT_EQ(s.url, "support/DAZ/Uber/shaderDefinitions/surface/omUberSurfaceDef.dse");
+  }
+}
+
+TEST(Materials, SurfacesNamingDifferentShadersDoNotShareAMaterial)
+{
+  const char* uber  = R"({"extra":[{"type":"studio/material/uber_iray","channels":[{"channel":{"id":"diffuse","current_value":[1,1,1]}}]}]})";
+  const char* brick = R"({"extra":[{"type":"studio/material/daz_brick","channels":[{"channel":{"id":"diffuse","current_value":[1,1,1]}}]}]})";
+  EXPECT_NE(fv::dson::materialKey("Face", channelsOf(uber)), fv::dson::materialKey("Face", channelsOf(brick)));
+  EXPECT_EQ(fv::dson::materialKey("Face", channelsOf(kSkin)), fv::dson::materialKey("Face", channelsOf(kSkin)));
 }
 
 TEST(Materials, LegacyBumpRangeScalesTheBakedHeight)

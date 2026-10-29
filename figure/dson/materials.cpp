@@ -9,6 +9,38 @@
 
 namespace fv::dson {
 
+namespace {
+
+// The shader one extra entry names, if any. Only a "studio/material/" type names a shader; other
+// extras hold channels, element data or scripts. A brick's library entry carries its graph
+// (brick_settings) and is the definition, file#id; a scene instance points at it by url. A
+// 3Delight shader's library entry gives its .dse definition, and an instance that only repeats the
+// type ("#Legs", no definition) keeps the url its library layer gave.
+void nameShader(const Json& def, const Json& ex, const std::string& file, Channels& into)
+{
+  const std::string type = getString(&ex, "type");
+  if(type.rfind("studio/material/", 0) != 0)
+    return;
+  std::string url;
+  if(type == "studio/material/daz_brick")
+  {
+    if(ex.contains("brick_settings"))
+    {
+      if(const std::string id = getString(&def, "id"); !id.empty())
+        url = file + "#" + decodeUri(id);
+    }
+    else if(const auto ref = parseRef(getString(&def, "url"), file))
+      url = ref->file + "#" + ref->id;
+  }
+  else if(type == "studio/material/daz_shader")
+    url = getString(&ex, "definition");
+  if(url.empty() && into.shader().type == type)
+    url = into.shader().url;
+  into.setShader({type, url});
+}
+
+}  // namespace
+
 void collectChannels(const Json* def, Channels& into, const std::unordered_map<std::string, std::string>& images, const std::string& file)
 {
   if(!def || !def->is_object())
@@ -86,9 +118,12 @@ void collectChannels(const Json* def, Channels& into, const std::unordered_map<s
       put(v);
     else if(it.key() == "extra" && v.is_array())
       for(const Json& ex : v)
+      {
+        nameShader(*def, ex, file, into);
         if(const Json* chans = get(&ex, "channels"); chans && chans->is_array())
           for(const Json& c : *chans)
             put(c);
+      }
   }
 }
 
@@ -124,6 +159,8 @@ void collectImages(const Json& doc, std::unordered_map<std::string, std::string>
 std::string materialKey(const std::string& name, const Channels& ch)
 {
   std::string key = name;
+  // a Material keeps the shader its files name, so surfaces naming different ones never share
+  key += "\n@" + ch.shader().type + "|" + ch.shader().url;
   for(const auto& k : ch.order())
   {
     const Channel* c = ch.get(k);
@@ -372,7 +409,10 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     s.hairFibre        = fibre;
   }
   // PBRSkin is a different shader from Iray Uber: it has per-layer enable switches, a detail and a
-  // makeup layer, and its own dual-lobe parameters. Only it has these channels.
+  // makeup layer, and its own dual-lobe parameters. Only it has these channels. Which shader is read
+  // goes by the channels present, not by the shader the files name (ch.shader()): daz_brick covers
+  // PBRSkin, OmniHair and 3Delight bricks like AoA's alike, and an Iray preset laid over a 3Delight
+  // material changes its channels without naming a shader.
   const bool pbrSkin = find({"Specular Lobe 2 Roughness Mult", "Detail Enable", "Makeup Enable"}) != nullptr;
   // A PBRSkin layer switch; Iray Uber has none, so its layers are always on.
   auto enabled = [&](const char* switchName) { return !pbrSkin || truthy(find({switchName})); };
@@ -489,6 +529,7 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
 
   s.shader = pbrSkin ? Surface::Shader::ePbrSkin
                      : (find({"Glossy Roughness", "Translucency Weight", "Metallic Weight"}) ? Surface::Shader::eIray : Surface::Shader::eLegacy);
+  s.dazShader = ch.shader();
   // OmniHair's diffuse is the albedo of its averaged dye; the fibre keeps root and tip apart
   s.base.color = shade ? shade->albedo : colorOr(base);
   s.base.map   = omniHair ? std::string() : imageOf(base);
