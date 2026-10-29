@@ -137,7 +137,9 @@ public:
   void setCameraExtra(fv::Json extra);
 
   // Pointer events, in device pixels. The gizmo takes its own (a drag on a handle); a left click
-  // that barely moved picks. Returns the events the gizmo didn't take, for the camera.
+  // that barely moved picks, and a double-click turns the view to the surface under it, the point
+  // the view then orbits (on nothing, the whole scene is framed). Returns the events the gizmo
+  // didn't take, for the camera.
   std::vector<fv::Json> onInput(const std::vector<fv::Json>& events);
   // Publishes selection and camera changes and keeps the lens matched to the viewport's aspect.
   void onFrame();
@@ -179,4 +181,8 @@ private:
   bool   m_click = false;
   bool   m_lmb   = false;
   double m_x0 = 0, m_y0 = 0;
+  // the last click that picked, for the second click of a double-click
+  std::chrono::steady_clock::time_point m_lastClick{};
+  double                                m_lastX = 0, m_lastY = 0;
+  bool                                  m_gizmoPress = false;  // the gizmo took the last press
 };

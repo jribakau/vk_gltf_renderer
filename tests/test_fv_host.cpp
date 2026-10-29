@@ -33,6 +33,7 @@
 #include <random>
 #include <thread>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
 #include <httplib.h>
 
@@ -906,6 +907,202 @@ TEST(FvHost, ADragOfTheViewThroughACameraIsOneStep)
   rig.host->onUpdate();
   EXPECT_EQ(differ(start, rig.topic("scene").at("props").at(camera).at("transform")), "");
   EXPECT_EQ(undoSteps(rig), 2u);  // the view going back with the camera is no step of its own
+}
+
+namespace {
+
+struct Look
+{
+  glm::dvec3 eye, center, up;
+};
+
+Look look(HostRig& rig)
+{
+  Look l;
+  rig.renderer.getCameraManipulator()->getLookat(l.eye, l.center, l.up);
+  return l;
+}
+
+// The view at a known place, in the frame size the fake renders
+void placeView(HostRig& rig)
+{
+  auto manip = rig.renderer.getCameraManipulator();
+  manip->setWindowSize({1280, 720});
+  rig.host->onUpdate();  // the lens takes the frame's aspect
+  manip->setLookat({0, 1, 3}, {0, 1, 0}, {0, 1, 0}, true);
+}
+
+// A world point's pixel in the current view
+glm::dvec2 pixelOf(HostRig& rig, const glm::dvec3& p)
+{
+  auto             manip = rig.renderer.getCameraManipulator();
+  const Look       l     = look(rig);
+  const glm::dmat4 view  = glm::lookAt(l.eye, l.center, l.up);
+  const glm::dmat4 proj  = glm::perspective(glm::radians(manip->getFov()), 1280.0 / 720.0, 0.01, 100.0);
+  const glm::dvec3 win   = glm::project(p, view, proj, glm::dvec4(0, 0, 1280, 720));
+  return {win.x, 720.0 - win.y};
+}
+
+}  // namespace
+
+TEST(FvHost, AWheelNotchDolliesByTheSameShareAtAnyFrameSize)
+{
+  HostRig rig;
+  placeView(rig);
+  rig.input({{{"t", "wheel"}, {"dy", -100}, {"x", 640}, {"y", 360}}});
+  const double notch = glm::length(look(rig).center - look(rig).eye);
+  EXPECT_NEAR(notch, 3.0 * std::exp(-0.1), 1e-9);
+  EXPECT_EQ(look(rig).center, glm::dvec3(0, 1, 0));
+
+  // a touchpad's ten small steps as far as the notch, and a frame twice as wide the same
+  placeView(rig);
+  rig.renderer.getCameraManipulator()->setWindowSize({2560, 1440});
+  Json steps = Json::array();
+  for(int i = 0; i < 10; i++)
+    steps.push_back({{"t", "wheel"}, {"dy", -10}, {"x", 640}, {"y", 360}});
+  rig.input(steps);
+  EXPECT_NEAR(glm::length(look(rig).center - look(rig).eye), notch, 1e-9);
+
+  // however far it turns, the eye stops short of the point of interest, and comes back out
+  Json many = Json::array();
+  for(int i = 0; i < 200; i++)
+    many.push_back({{"t", "wheel"}, {"dy", -100}});
+  rig.input(many);
+  const double closest = glm::length(look(rig).center - look(rig).eye);
+  EXPECT_GT(closest, 0.005);
+  EXPECT_LT(closest, 0.02);
+  rig.input({{{"t", "wheel"}, {"dy", 100}}});
+  EXPECT_GT(glm::length(look(rig).center - look(rig).eye), closest);
+}
+
+TEST(FvHost, AShiftWheelDolliesTowardThePointer)
+{
+  HostRig rig;
+  placeView(rig);
+  // the point under the pointer at the depth of the point of interest
+  auto             manip  = rig.renderer.getCameraManipulator();
+  const Look       before = look(rig);
+  const glm::dmat4 view   = glm::lookAt(before.eye, before.center, before.up);
+  const glm::dmat4 proj   = glm::perspective(glm::radians(manip->getFov()), 1280.0 / 720.0, 0.01, 100.0);
+  const glm::dvec4 port(0, 0, 1280, 720);
+  const double     depth = glm::project(before.center, view, proj, port).z;
+  const glm::dvec3 under = glm::unProject(glm::dvec3(1000, 720 - 200, depth), view, proj, port);
+
+  rig.input({{{"t", "wheel"}, {"dy", -300}, {"x", 1000}, {"y", 200}, {"shift", true}}});
+  const Look after = look(rig);
+  EXPECT_LT(glm::length(after.center - after.eye), 3.0 * 0.8);
+  EXPECT_NEAR(glm::dot(glm::normalize(after.center - after.eye), glm::dvec3(0, 0, -1)), 1.0, 1e-9);  // still looks the same way
+  const glm::dvec2 pixel = pixelOf(rig, under);
+  EXPECT_NEAR(pixel.x, 1000, 1e-6);
+  EXPECT_NEAR(pixel.y, 200, 1e-6);
+}
+
+TEST(FvHost, TheRightButtonLooksAroundAndFliesWithTheMovementKeys)
+{
+  HostRig rig;
+  placeView(rig);
+  // a right drag turns the view in place, half a turn across the frame's width: 60 pixels of 1280
+  const double yaw = 60.0 / 1280.0 * glm::pi<double>();
+  rig.input({{{"t", "down"}, {"b", 2}, {"x", 640}, {"y", 360}}, {{"t", "move"}, {"x", 700}, {"y", 360}}});
+  // spread over the frames: some of it at once, nearly all of it a tenth of a second on
+  const double soon = look(rig).center.x;
+  for(int i = 0; i < 20; i++)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    rig.host->onUpdate();
+  }
+  Look l = look(rig);
+  EXPECT_LT(soon, 0.9 * 3.0 * std::sin(yaw));
+  EXPECT_NEAR(l.center.x, 3.0 * std::sin(yaw), 0.02);  // a drag to the right looks right
+  EXPECT_NEAR(glm::length(l.eye - glm::dvec3(0, 1, 3)), 0.0, 1e-9);
+  EXPECT_NEAR(glm::length(l.center - l.eye), 3.0, 1e-9);
+
+  // the middle button let go during it leaves the right one's look
+  rig.input({{{"t", "down"}, {"b", 1}, {"x", 700}, {"y", 360}}, {{"t", "up"}, {"b", 1}, {"x", 700}, {"y", 360}}});
+  rig.input({{{"t", "move"}, {"x", 640}, {"y", 360}}});
+  // letting the right button go turns the rest at once, the end of its step
+  rig.input({{{"t", "up"}, {"b", 2}, {"x", 640}, {"y", 360}}});
+  l = look(rig);
+  EXPECT_NEAR(l.center.x, 0.0, 1e-9);
+
+  // up and down turn at the rate across
+  rig.input({{{"t", "down"}, {"b", 2}, {"x", 640}, {"y", 360}}, {{"t", "move"}, {"x", 640}, {"y", 420}}, {{"t", "up"}, {"b", 2}, {"x", 640}, {"y", 420}}});
+  l = look(rig);
+  EXPECT_NEAR(std::asin((l.eye.y - l.center.y) / 3.0), yaw, 1e-9);  // a drag down looks down
+  placeView(rig);
+  rig.input({{{"t", "down"}, {"b", 2}, {"x", 640}, {"y", 360}}});
+
+  // W flies forward, keeping the point of interest ahead at its distance
+  rig.input({{{"t", "fly"}, {"m", {0, 0, 1}}}});
+  for(int i = 0; i < 10; i++)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    rig.input({{{"t", "fly"}, {"m", {0, 0, 1}}}});
+  }
+  Look flown = look(rig);
+  EXPECT_LT(flown.eye.z, 3.0 - 0.02);
+  EXPECT_NEAR(flown.eye.x, 0.0, 1e-9);
+  EXPECT_NEAR(flown.eye.y, 1.0, 1e-9);
+  EXPECT_NEAR(glm::length(flown.center - flown.eye), 3.0, 1e-9);
+  // no faster than the empty scene's speed (half a metre a second) allows, with slack for a slow machine
+  EXPECT_GT(flown.eye.z, 3.0 - 0.5 * 1.0);
+
+  // Q sinks along the world's up
+  const double y = flown.eye.y;
+  rig.input({{{"t", "fly"}, {"m", {0, -1, 0}}}});
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  rig.input({{{"t", "fly"}, {"m", {0, -1, 0}}}});
+  EXPECT_LT(look(rig).eye.y, y);
+
+  // the keys held but the button let go: no more flying
+  rig.input({{{"t", "up"}, {"b", 2}, {"x", 640}, {"y", 360}}});
+  flown = look(rig);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  rig.input({{{"t", "fly"}, {"m", {0, 0, 1}}}});
+  EXPECT_EQ(look(rig).eye, flown.eye);
+}
+
+TEST(FvHost, ADoubleClickTurnsTheViewToTheSurfaceUnderIt)
+{
+  HostRig rig;
+  // the batch a double-click sends: two clicks, then the browser's dblclick
+  const auto click = [](double x) {
+    return Json::array({{{"t", "down"}, {"b", 0}, {"x", x}, {"y", 180}}, {{"t", "up"}, {"b", 0}, {"x", x}, {"y", 180}}});
+  };
+  Json batch = click(320);
+  for(const Json& e : click(320))
+    batch.push_back(e);
+  batch.push_back({{"t", "dblclick"}, {"x", 320}, {"y", 180}});
+  rig.input(batch);
+  // the first click selects, the second picks nothing (it would let go of a mesh the first selected),
+  // and the double-click picks the point to turn to
+  ASSERT_EQ(rig.renderer.picks.size(), 2u);
+  EXPECT_FALSE(rig.renderer.picks[0].second);
+  EXPECT_TRUE(rig.renderer.picks[1].second);
+  EXPECT_FLOAT_EQ(rig.renderer.picks[1].first.x, 0.25f);
+  EXPECT_FLOAT_EQ(rig.renderer.picks[1].first.y, 0.25f);
+
+  // a third click picks again, and a click elsewhere soon after is a click of its own
+  rig.input(click(320));
+  rig.input(click(900));
+  ASSERT_EQ(rig.renderer.picks.size(), 4u);
+  EXPECT_FALSE(rig.renderer.picks[2].second);
+  EXPECT_FALSE(rig.renderer.picks[3].second);
+}
+
+TEST(FvHost, FlyingStopsWhenTheKeysStopComing)
+{
+  HostRig rig;
+  placeView(rig);
+  rig.input({{{"t", "down"}, {"b", 2}, {"x", 640}, {"y", 360}}, {{"t", "fly"}, {"m", {1, 0, 0}}}});
+  // the app went quiet with a key held (a release that got lost): the view stops moving
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  rig.host->onUpdate();
+  const glm::dvec3 eye = look(rig).eye;
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  rig.host->onUpdate();
+  EXPECT_EQ(look(rig).eye, eye);
+  EXPECT_LT(eye.x, 0.1);  // and never moved a frame further than the longest step
 }
 
 TEST(FvHost, ASlidersGestureIsOneStep)

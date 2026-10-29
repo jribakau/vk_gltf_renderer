@@ -74,7 +74,12 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
   }
 
   if(!hasHit)
+  {
+    // a stream host's double-click on nothing frames the whole scene
+    if(isDoubleClick && m_resources.hostFed)
+      fitCamera(true);
     return;
+  }
   if(isDoubleClick)
   {
     // Set the camera CENTER to the hit position

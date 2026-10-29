@@ -498,6 +498,8 @@ void FvHost::onUpdate()
     s.normalizeInput(events);
     s.applyInput(s.view ? s.view->onInput(events) : events);
   }
+  s.applyLook();
+  s.applyFly();
   s.applyGizmoEdit();
   // not while a composition settles: the renderer moves the view to a scene camera for a frame or two
   if(!s.viewCamera.empty() && s.frameIn == 0)

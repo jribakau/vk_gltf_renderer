@@ -50,7 +50,7 @@ public:
 
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }
-  void         pickAt(glm::vec2, bool) override {}
+  void         pickAt(glm::vec2 uv, bool center) override { picks.push_back({uv, center}); }
   void setPickObserver(std::function<bool(const std::optional<InstancePick>&, const glm::vec3&)> observer) override
   {
     pickObserver = std::move(observer);
@@ -96,6 +96,7 @@ public:
   GizmoHooks                                                                    gizmo;
   std::function<bool(const std::optional<InstancePick>&, const glm::vec3&)>     pickObserver;
   std::vector<shaderio::lines::LineVertex>                                      helperLines;
+  std::vector<std::pair<glm::vec2, bool>>                                       picks;  // pickAt(uv, center), in order
   int stillSamples   = 0;  // what accumulatedSamples() and sampleCap() say
   int stillSampleCap = 0;
 

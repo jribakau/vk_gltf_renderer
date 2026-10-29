@@ -26,6 +26,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 
 #include <glm/glm.hpp>
 #include <nvutils/camera_manipulator.hpp>
@@ -36,6 +37,9 @@
 #include "shaders/shaderio.h"
 
 namespace {
+
+// Windows' default double-click time: a second click sooner, in the same place, is a double-click's
+constexpr auto kDoubleClickTime = std::chrono::milliseconds(500);
 
 double fovForFocalLength(double mm, double aspect)
 {
@@ -276,21 +280,39 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
     if((type == "down" || type == "up" || type == "move" || type == "leave")
        && m_renderer->gizmoInput({float(x), float(y)}, m_lmb, pressed, released))
     {
-      m_click = false;
+      m_click      = false;
+      m_gizmoPress = m_gizmoPress || pressed;
       continue;
     }
     rest.push_back(e);
     if(pressed)
     {
-      m_click = true;
-      m_x0    = x;
-      m_y0    = y;
+      m_click      = true;
+      m_gizmoPress = false;
+      m_x0         = x;
+      m_y0         = y;
+    }
+    else if(type == "dblclick")
+    {
+      // not after a double-click on a gizmo handle
+      const VkExtent2D size = m_renderer->renderSize();
+      if(!std::exchange(m_gizmoPress, false) && size.width && size.height)
+        m_renderer->pickAt({float(x / size.width), float(y / size.height)}, true);
     }
     else if(type == "up" && e.value("b", 0) == 0)
     {
       const bool click = m_click && std::hypot(x - m_x0, y - m_y0) < 4;
       m_click          = false;
       if(!click)
+        continue;
+      // the second click of a double-click picks nothing: the first one selected, and picking again
+      // would let go of a mesh it selected (the renderer's toggle); a third click picks again
+      const auto now    = std::chrono::steady_clock::now();
+      const bool second = now - m_lastClick < kDoubleClickTime && std::hypot(x - m_lastX, y - m_lastY) < 4;
+      m_lastClick       = second ? std::chrono::steady_clock::time_point{} : now;
+      m_lastX           = x;
+      m_lastY           = y;
+      if(second)
         continue;
       const VkExtent2D size = m_renderer->renderSize();
       if(size.width == 0 || size.height == 0)

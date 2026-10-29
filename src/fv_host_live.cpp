@@ -246,6 +246,47 @@ void FvHost::Impl::normalizeInput(std::vector<Json>& events)
   events.swap(kept);
 }
 
+namespace {
+
+// The wheel scales the distance to the point of interest by e^(dy * this): a browser notch (100) is
+// about 10%, the same at any frame size, and a touchpad's small steps add up to as much.
+constexpr double kWheelPerPixel = 0.001;
+// The closest the wheel brings the eye to the point of interest, in scene units (metres).
+constexpr double kMinViewDistance = 0.01;
+// Flying crosses the scene's diagonal (at least this many metres) in kFlySecondsAcross; Shift is
+// kFlyFast times faster, and each wheel notch with the right button held kFlyWheelStep times.
+constexpr double kMinFlySize       = 1.0;
+constexpr double kFlySecondsAcross = 2.0;
+constexpr double kFlyFast          = 4.0;
+constexpr double kFlyWheelStep     = 1.25;
+// The app sends the held keys each of its frames: silence this long is a release that got lost.
+constexpr auto kFlyTimeout = std::chrono::milliseconds(250);
+// The right button's look: a half turn across the frame's width, at the same rate up and down; it
+// follows the hand with this time constant (applyLook).
+constexpr double kLookTurnsPerWidth = 0.5;
+constexpr double kLookSmoothing     = 0.025;
+
+struct ViewFrame
+{
+  glm::dvec3 forward, right, up;
+  double     distance;
+};
+
+// The view's axes; nullopt when the eye sits on the point of interest.
+std::optional<ViewFrame> viewFrame(const glm::dvec3& eye, const glm::dvec3& center, const glm::dvec3& up)
+{
+  const double distance = glm::length(center - eye);
+  if(distance < 1e-9)
+    return std::nullopt;
+  const glm::dvec3 forward = (center - eye) / distance;
+  glm::dvec3       right   = glm::cross(forward, up);
+  // looking straight along up (the manipulator keeps a drag off it, a camera.goto may not)
+  right = glm::length(right) < 1e-9 ? glm::dvec3(1, 0, 0) : glm::normalize(right);
+  return ViewFrame{forward, right, glm::cross(right, forward), distance};
+}
+
+}  // namespace
+
 void FvHost::Impl::applyInput(const std::vector<Json>& events)
 {
   auto manip = renderer->getCameraManipulator();
@@ -257,57 +298,187 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
   for(const Json& e : events)
   {
     const std::string type = e.value("t", "");
-    if(locked && ((type == "move" && (lmb || mmb)) || type == "wheel"))
+    glm::dvec3        flyMove{0.0};
+    if(type == "fly" && e.contains("m") && e["m"].is_array() && e["m"].size() >= 3)
+      flyMove = {e["m"][0].get<double>(), e["m"][1].get<double>(), e["m"][2].get<double>()};
+    // the wheel with the right button held sets the flying speed, which moves nothing
+    const bool moves = (type == "move" && (lmb || mmb || rmb)) || (type == "wheel" && !rmb) || flyMove != glm::dvec3(0.0);
+    if(locked && moves)
     {
       if(!lockedNoticed)
         notice(camera->name + " is locked: unlock it in the Scene tab to move it, or go back to the free view.", "info");
       lockedNoticed = true;
       continue;
     }
-    const double      x = e.value("x", mouseX), y = e.value("y", mouseY);
-    // the old viewer's mapping: left orbits, middle and right pan, the wheel dollies
+    const double x = e.value("x", mouseX), y = e.value("y", mouseY);
+    // left orbits, middle pans, right looks around and flies with the movement keys (applyFly), the
+    // wheel dollies; the modifiers pick the left and middle drags' variants from camera_controls'
+    // table, whose manipulator this is
     nvutils::CameraManipulator::Inputs inputs{.lmb = lmb, .mmb = mmb, .shift = e.value("shift", false), .ctrl = e.value("ctrl", false),
                                               .alt = e.value("alt", false)};
-    if(type == "down")
+    if(type == "down" || type == "up")
     {
-      const int b = e.value("b", 0);
-      if(b == 0)
-        lmb = true;
+      // each button on its own: the app reports a second button pressed or released during a drag
+      const int  b    = e.value("b", 0);
+      const bool down = type == "down";
+      (b == 0 ? lmb : b == 2 ? rmb : mmb) = down;
+      if(down)
+      {
+        mouseX = x;
+        mouseY = y;
+        manip->setMousePosition({x, y});
+      }
       else
-        mmb = true;
-      mouseX = x;
-      mouseY = y;
-      manip->setMousePosition({x, y});
-    }
-    else if(type == "up")
-    {
-      const int b = e.value("b", 0);
-      if(b == 0)
-        lmb = false;
-      else
-        mmb = false;
-      if(!lmb && !mmb)
-        endViewGesture();
+      {
+        if(b == 2)
+        {
+          fly.move = {};
+          // the rest of the look is the gesture's, which ends here
+          turnLook(std::exchange(lookPending, glm::dvec2(0.0)));
+        }
+        if(!lmb && !mmb && !rmb)
+          endViewGesture();
+      }
     }
     else if(type == "move")
     {
-      if(lmb || mmb)
-      {
-        manip->setMousePosition({mouseX, mouseY});
+      manip->setMousePosition({mouseX, mouseY});
+      if(rmb)
+        lookPending += glm::dvec2(x - mouseX, y - mouseY);
+      else if(lmb || mmb)
         manip->mouseMove({x, y}, inputs);
-      }
       mouseX = x;
       mouseY = y;
     }
     else if(type == "wheel")
     {
-      // a browser wheel notch is about 100 (down positive); ImGui's is 1 (up positive)
-      manip->wheel(-e.value("dy", 0.0) / 100.0 * nvapp::ElementCamera::wheelSpeed, inputs);
+      if(rmb)
+        fly.scale = std::clamp(fly.scale * std::pow(kFlyWheelStep, -e.value("dy", 0.0) / 100.0), 1.0 / 64, 64.0);
+      else
+        wheelDolly(e);
     }
-    else if(type == "leave" && (lmb || mmb))
+    else if(type == "fly")
     {
-      lmb = mmb = false;
+      fly.move  = flyMove;
+      fly.fast  = e.value("fast", false);
+      fly.heard = std::chrono::steady_clock::now();
+    }
+    else if(type == "leave" && (lmb || mmb || rmb))
+    {
+      lmb = mmb = rmb = false;
+      fly.move        = {};
+      turnLook(std::exchange(lookPending, glm::dvec2(0.0)));
       endViewGesture();
     }
   }
+}
+
+// The wheel dollies toward the point of interest, scaling the distance to it, and stops short of it.
+// With Shift it dollies toward the cursor instead: the point under it at the depth of the point of
+// interest stays under it, and the point of interest moves along. The manipulator's own wheel is
+// not used: its step goes with the square of a step over the frame's width (a touchpad's small
+// steps barely move it, a 4K frame half as much as a 2K one), and its Shift and Alt variants are
+// the ImGui viewport's (a pick at ImGui's cursor; a field of view the lens sets back).
+void FvHost::Impl::wheelDolly(const Json& e)
+{
+  auto         manip = renderer->getCameraManipulator();
+  const double dy    = e.value("dy", 0.0);
+  if(!manip || dy == 0)
+    return;
+  if(manip->getProjectionType() == nvutils::CameraManipulator::Orthographic)
+  {
+    // a browser wheel notch is about 100 (down positive); ImGui's is 1 (up positive)
+    manip->wheel(-dy / 100.0 * nvapp::ElementCamera::wheelSpeed, {});
+    return;
+  }
+  glm::dvec3 eye, center, up;
+  manip->getLookat(eye, center, up);
+  const std::optional<ViewFrame> frame = viewFrame(eye, center, up);
+  if(!frame)
+    return;
+  const double distance = frame->distance;
+  const double factor   = std::max(distance * std::exp(dy * kWheelPerPixel), std::min(distance, kMinViewDistance)) / distance;
+  if(factor == 1.0)
+    return;
+  glm::dvec3       pivot = center;
+  const glm::uvec2 size  = manip->getWindowSize();
+  if(e.value("shift", false) && size.x > 0 && size.y > 0 && e.contains("x") && e.contains("y"))
+  {
+    const double halfHeight = std::tan(glm::radians(manip->getFov()) * 0.5) * distance;
+    const double halfWidth  = halfHeight * double(size.x) / double(size.y);
+    pivot += frame->right * ((2.0 * e["x"].get<double>() / size.x - 1.0) * halfWidth)
+             + frame->up * ((1.0 - 2.0 * e["y"].get<double>() / size.y) * halfHeight);
+  }
+  manip->setLookat(pivot + (eye - pivot) * factor, pivot + (center - pivot) * factor, up, true);
+}
+
+// The right button's look, spread over the frames. The app sends its moves once per its own frame,
+// and they land unevenly among the renderer's (two batches in one frame, none in the next): applied
+// as they came, a turn of the whole view stutters. Each frame takes a share of what is left to turn
+// that grows with the frame's time, so the view follows the hand a few tens of milliseconds behind,
+// evenly. Once a frame, after the input.
+void FvHost::Impl::applyLook()
+{
+  const auto now = std::chrono::steady_clock::now();
+  // the time since the last frame, which a still spell doesn't count; a long frame not all of it
+  const double seconds = lookPending == glm::dvec2(0.0) ? 0.0 : std::min(std::chrono::duration<double>(now - lookLast).count(), 0.1);
+  lookLast             = now;
+  if(seconds <= 0)
+    return;
+  glm::dvec2 step = lookPending * (1.0 - std::exp(-seconds / kLookSmoothing));
+  // the last fraction of a pixel at once, so the turn ends
+  if(glm::length(lookPending - step) < 0.05)
+    step = lookPending;
+  lookPending -= step;
+  turnLook(step);
+}
+
+void FvHost::Impl::turnLook(const glm::dvec2& pixels)
+{
+  auto manip = renderer->getCameraManipulator();
+  if(!manip || pixels == glm::dvec2(0.0))
+    return;
+  // the manipulator turns a full turn per window width across and per window height up and down:
+  // both scaled to kLookTurnsPerWidth of the width
+  const glm::dvec2 size(manip->getWindowSize());
+  manip->setMousePosition({0, 0});
+  manip->motion({pixels.x * kLookTurnsPerWidth, pixels.y * kLookTurnsPerWidth * size.y / size.x},
+                nvutils::CameraManipulator::Actions::LookAround);
+}
+
+// Flying: while the right button is held, the movement keys move the view at a steady speed for the
+// time since the last frame: W and S along where it looks, A and D to its sides, E and Q along the
+// world's up. Once a frame, after the input.
+void FvHost::Impl::applyFly()
+{
+  const auto now    = std::chrono::steady_clock::now();
+  auto       manip  = renderer->getCameraManipulator();
+  const auto camera = findProp(viewCamera);
+  if(!manip || !rmb || fly.move == glm::dvec3(0.0) || now - fly.heard > kFlyTimeout || (camera && camera->camera.locked))
+  {
+    fly.flying = false;
+    return;
+  }
+  if(!fly.flying)
+  {
+    // a flight starts: its speed from the scene's size, and its time from this frame
+    const nvutils::Bbox box = renderer->visibleSceneBounds();
+    fly.speed               = std::max(box.isEmpty() ? 0.0 : 2.0 * box.radius(), kMinFlySize) / kFlySecondsAcross;
+    fly.last                = now;
+    fly.flying              = true;
+  }
+  // a frame that took long (a load, a compose) moves as far as a short one, not a jump
+  const double seconds = std::min(std::chrono::duration<double>(now - fly.last).count(), 0.1);
+  fly.last             = now;
+  glm::dvec3 eye, center, up;
+  manip->getLookat(eye, center, up);
+  const std::optional<ViewFrame> frame = viewFrame(eye, center, up);
+  if(!frame || seconds <= 0)
+    return;
+  glm::dvec3 direction = frame->right * fly.move.x + glm::normalize(up) * fly.move.y + frame->forward * fly.move.z;
+  // diagonally no faster than straight
+  if(glm::length(direction) > 1.0)
+    direction = glm::normalize(direction);
+  const glm::dvec3 step = direction * (fly.speed * fly.scale * (fly.fast ? kFlyFast : 1.0) * seconds);
+  manip->setLookat(eye + step, center + step, up, true);
 }

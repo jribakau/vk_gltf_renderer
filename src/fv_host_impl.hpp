@@ -501,7 +501,22 @@ struct FvHost::Impl
   std::vector<Json> input;
   uint64_t          lastInputSeq = 0;  // the newest batch applied (normalizeInput)
   double            mouseX = 0, mouseY = 0;
-  bool              lmb = false, mmb = false;
+  bool              lmb = false, mmb = false, rmb = false;
+  // flying: the movement keys the app holds down with the right button, as a direction in the view's
+  // right, up and forward, sent again each of its frames; applyFly() moves the view once a frame
+  struct Fly
+  {
+    glm::dvec3                            move{0.0};
+    bool                                  fast  = false;
+    double                                speed = 0;  // scene units a second, from the scene's size as a flight starts
+    double                                scale = 1;  // the wheel's while the right button is held, kept for the next flight
+    bool                                  flying = false;
+    std::chrono::steady_clock::time_point heard{}, last{};
+  };
+  Fly fly;
+  // the right button's look still to turn, in pixels, and when applyLook() last took some
+  glm::dvec2                            lookPending{0.0};
+  std::chrono::steady_clock::time_point lookLast{};
 
   // application thread only: the scene's props in order
   std::vector<std::shared_ptr<Prop>> props;
@@ -838,6 +853,10 @@ struct FvHost::Impl
   void frameCamera();
   void normalizeInput(std::vector<Json>& events);
   void applyInput(const std::vector<Json>& events);
+  void wheelDolly(const Json& e);
+  void applyFly();
+  void applyLook();
+  void turnLook(const glm::dvec2& pixels);
   // a drag of the view ends: a camera prop looked through takes where the drag left the view (its
   // step ends with it)
   void endViewGesture();

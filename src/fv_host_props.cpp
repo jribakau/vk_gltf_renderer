@@ -594,7 +594,7 @@ void FvHost::Impl::cameraFromView(bool dragEnds)
   }
   // a step of the history: a drag one from press to release, the wheel's steps merged as a slider's
   Json args = {{"prop", p->id}, {"transform", Json::object()}, {"camera", Json::object()}};
-  if(lmb || mmb || dragEnds)
+  if(lmb || mmb || rmb || dragEnds)
     args["gesture"] = {{"id", "view:" + std::to_string(viewGesture)}, {"end", dragEnds}};
   journaled("prop.set", args, [&] {
     const glm::mat4 view   = glm::lookAt(glm::vec3(eye), glm::vec3(center), glm::vec3(up));
