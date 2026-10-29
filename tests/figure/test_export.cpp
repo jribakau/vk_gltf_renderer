@@ -123,4 +123,51 @@ TEST(Export, AMissingSourceSaysSo)
   EXPECT_NE(why.find("nowhere.png"), std::string::npos);
 }
 
+TEST(Export, AMetalMapFillsTheBlueOfMetallicRoughness)
+{
+  // the cooker's twin: a metal mask's grey (the mean of R, G, B) in blue, the roughness kept in green
+  Dir        dir;
+  const auto rough = dir.write("r.png", {1, 60, 7, 255, 2, 120, 7, 255, 3, 180, 7, 255, 4, 240, 7, 255});
+  const auto metal = dir.write("m.png", {0, 0, 0, 255, 255, 255, 255, 255, 30, 60, 90, 255, 100, 100, 100, 255});
+  fv::build::ExportOptions options;
+  options.find = [&](const std::string& r) -> std::optional<fs::path> { return dir.path / r; };
+  fv::mat::TextureRequest req;
+  req.rel      = rough;
+  req.srgb     = false;
+  req.channels = "mr";
+  req.metalRel = metal;
+  const auto png = fv::build::composeImage(req, options);
+  ASSERT_TRUE(png);
+  const auto px = decoded(*png);
+  // rows flipped: the bottom row first
+  EXPECT_EQ(px[0], 3);
+  EXPECT_EQ(px[1], 180);
+  EXPECT_EQ(px[2], 60);
+  EXPECT_EQ(px[3], 255);
+  EXPECT_EQ(px[5], 240);
+  EXPECT_EQ(px[6], 100);
+  EXPECT_EQ(px[9], 60);
+  EXPECT_EQ(px[10], 0);
+  EXPECT_EQ(px[13], 120);
+  EXPECT_EQ(px[14], 255);
+
+  // without a metal map, full metalness: the factor alone
+  req.metalRel.clear();
+  const auto plain = decoded(*fv::build::composeImage(req, options));
+  EXPECT_EQ(plain[1], 180);
+  EXPECT_EQ(plain[2], 255);
+
+  // the mask alone: its grey in blue, roughness white for the factor to set
+  fv::mat::TextureRequest alone;
+  alone.rel      = metal;
+  alone.srgb     = false;
+  alone.channels = "mt";
+  const auto mt  = decoded(*fv::build::composeImage(alone, options));
+  EXPECT_EQ(mt[0], 255);
+  EXPECT_EQ(mt[1], 255);
+  EXPECT_EQ(mt[2], 60);
+  EXPECT_EQ(mt[10], 0);
+  EXPECT_EQ(mt[14], 255);
+}
+
 }  // namespace

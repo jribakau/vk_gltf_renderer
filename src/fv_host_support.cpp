@@ -174,6 +174,8 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   const auto source = [&](const std::string& rel) { return encodeComponent(s.rootId + "/" + normRel(rel)); };
   if(!req.alphaRel.empty())
     url += "&alpha=" + source(req.alphaRel) + (req.alphaFromAlpha ? "&aa=1" : "");
+  if(!req.metalRel.empty())
+    url += "&metal=" + source(req.metalRel);
   if(!req.bumpRel.empty())
     url += "&bump=" + source(req.bumpRel) + "&bs=" + fmtNumber(req.bumpStrength);
   if(req.bumpHeight > 0)
@@ -280,7 +282,7 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
 std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker)
 {
   using fv::textures::Fallback;
-  const bool     derived = req.channels == "mr" || req.channels == "bn";
+  const bool     derived = fv::textures::derivedChannels(req.channels);
   const bool     laid    = !req.alphaRel.empty() || req.makeup || req.iris || req.recolor || !req.layers.empty();
   // an iris or a recolour only the cooker makes (composeImage has neither): cooked under Original textures too
   const Fallback route =
@@ -307,7 +309,7 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
     };
     mix(fv::build::requestKey(req));
     {
-      std::vector<std::string> sources = {req.rel, req.alphaRel, req.bumpRel};
+      std::vector<std::string> sources = {req.rel, req.alphaRel, req.metalRel, req.bumpRel};
       sources.insert(sources.end(), req.layers.begin(), req.layers.end());
       if(req.makeup)
         sources.insert(sources.end(), {req.makeup->colorRel, req.makeup->weightRel});

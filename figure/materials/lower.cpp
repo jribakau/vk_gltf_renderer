@@ -45,7 +45,7 @@ struct Builder
   MapTiling tilingOf(const TextureRequest& req) const
   {
     std::optional<MapTiling> shared;
-    for(const std::string* rel : {&req.rel, &req.alphaRel, &req.bumpRel, req.makeup ? &req.makeup->colorRel : nullptr,
+    for(const std::string* rel : {&req.rel, &req.alphaRel, &req.metalRel, &req.bumpRel, req.makeup ? &req.makeup->colorRel : nullptr,
                                   req.makeup ? &req.makeup->weightRel : nullptr})
     {
       if(!rel || rel->empty())
@@ -319,7 +319,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   eff.opacity     = opacity;
   eff.alphaMode   = alphaMode == "OPAQUE" ? "opaque" : alphaMode == "MASK" ? "cutout" : "blend";
   eff.doubleSided = opts.ribbon || e.doubleSided.value_or(hashed || s.twoSided);
-  eff.metalness   = e.metalness.value_or(s.metallic.value);
+  const float metalness = e.metalness.value_or(s.metallic.value);
+  eff.metalness         = metalness;
 
   Json pbr = Json::object();
   // a flat colour baked into the image (no base map) must not tint it again; with no image at all
@@ -327,7 +328,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   const bool bakedFlat = anyMap && baseMap.empty() && (makeup || !s.opacity.map.empty());
   pbr["baseColorFactor"] = Json::array({(anyMap && makeup) || bakedFlat ? 1.f : factor[0], (anyMap && makeup) || bakedFlat ? 1.f : factor[1],
                                         (anyMap && makeup) || bakedFlat ? 1.f : factor[2], opacity});
-  pbr["metallicFactor"]  = e.metalness.value_or(s.metallic.value);
+  pbr["metallicFactor"]  = metalness;
   if(anyMap)
   {
     const Json info = b.base(baseMap, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor, s.opacityFromAlpha);
@@ -355,14 +356,26 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   const float roughnessFactor = clamp(e.roughness.value_or(roughness), 0, 1);
   eff.roughness               = roughnessFactor;
   pbr["roughnessFactor"]      = roughnessFactor;
-  // glTF metallic-roughness from a roughness map (roughness in green, full metalness in blue); a
-  // separate metalness map would need both merged, which the cooker does not do
-  if(!lobes.roughness.map.empty())
+  // glTF metallic-roughness: roughness in green, metalness in blue, each times its factor. Iray's
+  // metal is Metallic Weight times its map, a mask of grey: the cooker puts that grey in the
+  // roughness map's blue, or, with no roughness map, makes the image from the mask alone (green
+  // white). With no metal the mask would only be multiplied by 0, so it is left out.
+  const std::string metalMap = metalness > 0 ? s.metallic.map : std::string();
+  if(!lobes.roughness.map.empty() || !metalMap.empty())
   {
     TextureRequest r;
-    r.rel      = lobes.roughness.map;
-    r.srgb     = false;
-    r.channels = "mr";
+    r.srgb = false;
+    if(!lobes.roughness.map.empty())
+    {
+      r.rel      = lobes.roughness.map;
+      r.channels = "mr";
+      r.metalRel = metalMap.empty() ? std::string() : mapLayers(metalMap).front();
+    }
+    else
+    {
+      r.rel      = metalMap;
+      r.channels = "mt";
+    }
     pbr["metallicRoughnessTexture"] = b.info(std::move(r));
   }
   out["pbrMetallicRoughness"] = pbr;

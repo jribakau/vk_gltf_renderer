@@ -1309,6 +1309,62 @@ TEST(Materials, MakeupMetallicityIsMetalOnlyWhereTheMakeupIs)
   EXPECT_FLOAT_EQ(skin(false, false).metallic.value, 1);
 }
 
+// Iray's metal is Metallic Weight times its map, a mask (RE4R Ada Wong's belt: weight 1, metal only
+// where Belt M.jpg is white). glTF's metalness is metallicFactor times metallicRoughness blue: the
+// mask goes in the roughness map's blue, or makes the image alone; no metal, no mask.
+TEST(Materials, AMetalMapReachesMetallicRoughnessBlue)
+{
+  const auto belt = [](float weight, bool roughMap) {
+    std::string c = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+      {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/belt_d.jpg"}},)";
+    c += std::string(R"({"channel":{"id":"Glossy Roughness","type":"float","current_value":0.4)") + (roughMap ? R"(,"image_file":"/belt_r.jpg")" : "")
+         + "}},";
+    c += R"({"channel":{"id":"Metallic Weight","type":"float","current_value":)" + std::to_string(weight) + R"(,"image_file":"/belt_m.jpg"}})";
+    c += "]}]}";
+    return fv::dson::parseSurface("Belt", channelsOf(c.c_str()));
+  };
+  const auto metalRequest = [](const fv::mat::Lowered& l) -> const fv::mat::TextureRequest* {
+    const auto& pbr = l.material["pbrMetallicRoughness"];
+    return pbr.contains("metallicRoughnessTexture") ? &l.requests[pbr["metallicRoughnessTexture"]["slot"].get<size_t>()] : nullptr;
+  };
+
+  // the mask alone: the image is the metal map's grey in blue
+  const auto alone = fv::mat::lower(belt(1, false), {}, {});
+  EXPECT_FLOAT_EQ(alone.material["pbrMetallicRoughness"]["metallicFactor"].get<float>(), 1);
+  const fv::mat::TextureRequest* mt = metalRequest(alone);
+  ASSERT_TRUE(mt);
+  EXPECT_EQ(mt->rel, "/belt_m.jpg");
+  EXPECT_EQ(mt->channels, "mt");
+  EXPECT_FALSE(mt->srgb);
+  EXPECT_TRUE(mt->metalRel.empty());
+
+  // with a roughness map, the mask rides in its blue, and the two are different images to cook
+  const auto both = fv::mat::lower(belt(1, true), {}, {});
+  const fv::mat::TextureRequest* mr = metalRequest(both);
+  ASSERT_TRUE(mr);
+  EXPECT_EQ(mr->rel, "/belt_r.jpg");
+  EXPECT_EQ(mr->channels, "mr");
+  EXPECT_EQ(mr->metalRel, "/belt_m.jpg");
+  fv::mat::TextureRequest unmasked = *mr;
+  unmasked.metalRel.clear();
+  EXPECT_NE(fv::mat::requestKey(*mr), fv::mat::requestKey(unmasked));
+
+  // no metal: the mask is left out
+  const auto none = fv::mat::lower(belt(0, false), {}, {});
+  EXPECT_FALSE(metalRequest(none));
+  const auto roughOnly = fv::mat::lower(belt(0, true), {}, {});
+  ASSERT_TRUE(metalRequest(roughOnly));
+  EXPECT_TRUE(metalRequest(roughOnly)->metalRel.empty());
+
+  // a panel metalness on a surface authored without metal shows the authored mask
+  fv::mat::Edits e;
+  e.metalness       = 0.5f;
+  const auto edited = fv::mat::lower(belt(0, false), e, {});
+  EXPECT_FLOAT_EQ(edited.material["pbrMetallicRoughness"]["metallicFactor"].get<float>(), 0.5f);
+  ASSERT_TRUE(metalRequest(edited));
+  EXPECT_EQ(metalRequest(edited)->channels, "mt");
+}
+
 // Tri-X's eye presets give the eye moisture the eye's own map; Iray refracts through it untinted, so
 // the glTF material, which tints what it transmits by its base colour, leaves the map out.
 TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)

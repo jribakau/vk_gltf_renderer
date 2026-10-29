@@ -2,7 +2,8 @@
 
 // One texture a glTF material asks for: a library image, how it is read, and what the cooker (the
 // Rust texture server) lays over or converts in it. The cooker's own queries are the vocabulary:
-// `alpha=`, `mk=` (makeup), `ir=` (iris), `rc=` (recolour), `bump=` and `ch=` (see src-tauri/src/protocol.rs).
+// `alpha=`, `mk=` (makeup), `ir=` (iris), `rc=` (recolour), `bump=`, `metal=` and `ch=` (see
+// src-tauri/src/protocol.rs).
 
 #include <array>
 #include <optional>
@@ -81,8 +82,10 @@ struct TextureRequest
   std::string alphaRel;        // a cutout map folded into alpha; empty: none
   bool        alphaFromAlpha = false;  // the cutout is that map's alpha channel, not its grey (green)
   // "ng": a normal map with green inverted (glTF's convention for meshes without tangents);
-  // "bn": a normal map derived from a height map; "mr": glTF metallic-roughness from a roughness map
+  // "bn": a normal map derived from a height map; "mr": glTF metallic-roughness from a roughness map;
+  // "mt": glTF metallic-roughness from a metal map alone (its grey in blue, the rest white)
   std::string channels;
+  std::string metalRel;  // "mr": a metal map whose grey goes in blue; empty: full metal there
   std::string bumpRel;  // a height map blended onto the normal map; empty: none
   float       bumpStrength = 1;
   // A height map's full range in UV units (bumpHeightInUv), which the bake turns into slopes against
@@ -98,7 +101,7 @@ struct TextureRequest
   // Whether only the cooker can make it (the renderer reads plain png/jpg/webp itself).
   bool composed() const
   {
-    return !alphaRel.empty() || !channels.empty() || !bumpRel.empty() || makeup.has_value() || iris.has_value() || recolor.has_value()
+    return !alphaRel.empty() || !channels.empty() || !metalRel.empty() || !bumpRel.empty() || makeup.has_value() || iris.has_value() || recolor.has_value()
            || !layers.empty();
   }
 };

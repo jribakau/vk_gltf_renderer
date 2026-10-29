@@ -33,7 +33,15 @@ enum class Fallback
   eNone,     // nothing shows the right thing
 };
 
-// `derived`: a roughness map into glTF's channels or a height map into a normal map ("mr", "bn");
+// Whether a request's channels are derived from its source: a roughness or a metal map into glTF's
+// metallic-roughness, or a height map into a normal map ("mr", "mt", "bn"). The source as it is would
+// show the wrong thing.
+inline bool derivedChannels(const std::string& channels)
+{
+  return channels == "mr" || channels == "mt" || channels == "bn";
+}
+
+// `derived`: channels derived from the source (derivedChannels);
 // `laid`: a cutout, makeup, an iris colour or layers over the source; `cooker`: a texture server is
 // there. A cutout alone changes the picture too much to go without, so the cooker folds it in,
 // unless `original` (the Original textures setting): then only a format the renderer cannot read is

@@ -193,6 +193,12 @@ Image reorientedNormals(const Image& base, const Image& detail, float strength)
   return out;
 }
 
+// A mask's grey as the cooker reads it (texcache.rs grey): the mean of R, G and B, rounded.
+uint8_t grey(const uint8_t* p)
+{
+  return uint8_t((unsigned(p[0]) + p[1] + p[2] + 1) / 3);
+}
+
 void flipRows(Image& img)
 {
   for(int y = 0; y < img.h / 2; y++)
@@ -254,6 +260,15 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
     for(size_t i = 0; i < img.px.size() / 4; i++)
       img.px[i * 4 + 3] = a->px[i * 4 + from];
   }
+  // a metal mask's grey into the roughness map's blue, as the cooker reads it: the mean of R, G, B
+  if(!req.metalRel.empty())
+  {
+    const auto m = other(req.metalRel);
+    if(!m)
+      return std::nullopt;
+    for(size_t i = 0; i < img.px.size() / 4; i++)
+      img.px[i * 4 + 2] = grey(&m->px[i * 4]);
+  }
   // rows are flipped last: the derivations assume rows run top-down
   bool greenDone = false;
   if(!req.bumpRel.empty())
@@ -274,11 +289,21 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
   if(req.channels == "ng" && !greenDone)
     for(size_t i = 0; i < img.px.size() / 4; i++)
       img.px[i * 4 + 1] = uint8_t(255 - img.px[i * 4 + 1]);
+  // without a metal map, full metalness in blue: the material's factor alone
   if(req.channels == "mr")
     for(size_t i = 0; i < img.px.size() / 4; i++)
     {
-      img.px[i * 4 + 2] = 255;
+      if(req.metalRel.empty())
+        img.px[i * 4 + 2] = 255;
       img.px[i * 4 + 3] = 255;
+    }
+  // a metal map alone: its grey in blue, roughness (green) left to the factor
+  if(req.channels == "mt")
+    for(size_t i = 0; i < img.px.size() / 4; i++)
+    {
+      uint8_t* p = &img.px[i * 4];
+      p[2]       = grey(p);
+      p[0] = p[1] = p[3] = 255;
     }
   bool alpha = false;
   for(size_t i = 3; i < img.px.size() && !alpha; i += 4)

@@ -49,3 +49,16 @@ TEST(FvTextures, NoCooker)
     EXPECT_EQ(fallbackOf("r.tif", true, false, false, original), Fallback::eNone);
   }
 }
+
+// A metal map packed into glTF's metallic-roughness is derived like a roughness map: as it is, its
+// grey would be read as roughness and full metal everywhere.
+TEST(FvTextures, MetalChannelsAreDerived)
+{
+  EXPECT_TRUE(fv::textures::derivedChannels("mt"));
+  EXPECT_TRUE(fv::textures::derivedChannels("mr"));
+  EXPECT_TRUE(fv::textures::derivedChannels("bn"));
+  EXPECT_FALSE(fv::textures::derivedChannels("ng"));
+  EXPECT_FALSE(fv::textures::derivedChannels(""));
+  EXPECT_EQ(fallbackOf("m.jpg", fv::textures::derivedChannels("mt"), false, true, true), Fallback::eCompose);
+  EXPECT_EQ(fallbackOf("m.jpg", fv::textures::derivedChannels("mt"), false, true, false), Fallback::eCompose);
+}
