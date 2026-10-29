@@ -1,7 +1,8 @@
 # Path tracer cleanup notes
 
-Review of `src/renderer_pathtracer.cpp` and `src/renderer_pathtracer.hpp`, 2026-10-29.
-Nothing major: details to go through later.
+Review of `src/renderer_pathtracer.cpp` and `src/renderer_pathtracer.hpp`, 2026-10-29, with
+`src/renderer.cpp` and `shaders/gltf_pathtrace.slang` added the same day (their sections are at the
+end). Nothing major: details to go through later.
 
 ## Summary
 
@@ -154,3 +155,129 @@ priority: each works and they do not interact.
   historical and could be closed.
 - Not worth changing: the ray-query versus ray-tracing branches are small and local, and the
   adaptive sampler is already extracted.
+
+## renderer.cpp
+
+5900 lines for one class already split across four other files (`ui_renderer.cpp`,
+`renderer_selection.cpp`, the two renderers). Nothing on the per-frame path is worth optimizing;
+the duplication comes from copying sequences instead of naming them. Counts verified by grep.
+
+### Duplicated sequences
+
+1. **Scene load finalization exists three times.** `finalizeSceneSetup` is documented as the
+   shared tail, but `createSceneFromDescriptor` repeats about 30 of its lines by hand (GPU build,
+   animation strip, interactivity autoplay, feature set, firefly clamp, UI wiring, ground plane,
+   cameras, textures with cleanup on failure, recent files). `rebuildVulkanSceneInternal` repeats
+   the animation-strip and autoplay block a third time. The descriptor path could call
+   `finalizeSceneSetup`.
+2. **The GPU scene sync is written three times.** The split between the GPU transform path and the
+   CPU path (sync materials and lights, flush the scene descriptor, upload staging, then either
+   dispatch the transform compute or sync the TLAS) appears in `reconcileAnimationGpuState` and
+   twice inside `updateSceneChanges`, once per branch. The GPU branch of `updateSceneChanges`
+   inlines the body of the `updateSceneChanges_SyncGpuBuffers` helper that sits beside it. The
+   barriers between the three copies differ subtly, which is where sync bugs come from.
+3. **Load an HDR, select it, recalibrate** appears four times. `loadHdrEnvironment` already is that
+   helper, and its own comment lists the other three sites.
+4. **Scene construction boilerplate** (make a scene, register the WebP extension) appears four
+   times. One `makeScene()` closes it.
+5. **The threaded load pattern** (queue wait, clear the load pipeline, clean up, start the busy
+   window, set the save filename, detach a thread, stop the busy window) appears three times across
+   `addSceneFromFile` and `onFileDrop`, plus a synchronous fourth in `loadSceneFile`.
+6. **Denoiser ladders again.** `dlssGuideRequired`, `displayedImageSamples`, `runTonemapPass` and
+   `logDenoiserTimings` each hold a paired OptiX and OIDN block. Same root cause as architecture
+   item 3 above.
+7. **Dirty-flag preservation across a clear** is hand-written twice with different sets: five flags
+   in `reconcileAnimationGpuState`, one in `updateSceneChanges_Finalize`. A `clearExcept(mask)` on
+   the scene's dirty flags replaces both.
+
+### To check, not confirmed
+
+The three scene loaders run on detached threads capturing `this`, and nothing waits for them on
+shutdown: `onDetach` waits for the device, not for the busy window, and the main loop has no busy
+check. Closing the window during a load looks like it tears down `Resources` under the worker.
+Not reproduced. If real, the fix is a joinable thread member or a wait on the busy window in
+`onDetach`.
+
+### Architecture
+
+- **The constructor is a 560-line settings table** (tonemapper, sun, time of day, gradient and
+  physical sky, atmosphere, retained scene, ground, shadows). The two renderers already register
+  their own through `registerParameters`; the sky and atmosphere block belongs with `SkySun` or
+  the environment panel, the tonemapper block with the tonemapper, the retained-scene block with
+  the retained backend.
+- **Eleven `m_pending*` members and eight `applyPending*` methods** implement one idea: work
+  deferred to the frame top, each pair with its own ordering comment. A single ordered queue of
+  frame-top actions makes the ordering explicit.
+- **`onRender` is 390 lines** and builds the 60-field `SceneFrameInfo` inline. `buildFrameInfo()`
+  is the obvious cut; the environment preview and commit block is a second.
+- **`updateFrameCounter` keeps instance state in a function-local static** (`ref_camera`).
+  Harmless with one renderer, wrong in principle; make it a member.
+- **The one-line `updateSceneChanges_*` wrappers** (`_BlasRebuild`, `_RasterizerInvalidate`,
+  `_TlasUpdate`) add indirection without hiding anything, while item 2 was left in place.
+
+Not worth doing: the per-frame `glm::inverse` of the view and projection, the 256-step gradient
+integral, the per-frame copy of the light list in `fillShadowAndGround`, the double
+`benchmarkFrameInfo()` call.
+
+## gltf_pathtrace.slang
+
+Well-built where it matters: live state is trimmed deliberately, the shadow ray is deferred to
+shrink registers across the trace, the hot paths are compile-time gated, and opaque instances skip
+any-hit through the instance flags. The items below are per-vertex redundancies, dead code, and
+one function that has outgrown itself.
+
+### Per-vertex work that could be cheaper
+
+Items 1, 3 and 4 are the ones to time with the MCP shader tool (`docs/mcp.md`); each is a one-line
+change behind a flag.
+
+1. **Light selection evaluates every punctual light twice per vertex.** `lightPickSet` loops over
+   the lights computing each one's pick estimate, then `sampleLights` loops again recomputing the
+   same estimates to walk to the chosen one. Bounded at `LIGHT_PICK_MAX_LIGHTS` (16), so up to 32
+   estimate evaluations per vertex. Keep the first pass's estimates, or a running prefix.
+2. **Sized-light hits recompute the pick set per hit light.** `sizedLightHits` runs once per
+   segment on every bounce, loops over all lights with a hit test each, and for every light the
+   ray hits calls `sizedLightNeePdf`, which calls `lightPickSet` again: a third pass over the
+   lights per bounce when a sphere or disc light is in view.
+3. **`getHitState` computes things most bounces never read.** The second shadow-terminator offset
+   (`shadowPosOther`) exists only for a scatter walk's diffuse exit but is computed on every hit.
+   Both texture-coordinate sets are fetched and interpolated whether or not the material uses the
+   second. These are the per-bounce vertex loads.
+4. **Any-hit copies the whole material.** `getOpacity` (`surface_opacity.h.slang`) copies the
+   88-field `GltfShadeMaterial` per candidate, then reads seven fields. On a figure every lash card
+   and hair ribbon is a non-opaque candidate. The compiler probably narrows the load; measure. The
+   early return for an opaque material is dead in practice: opaque materials are forced opaque at
+   the instance (`SceneRtx::updateInstanceFlagsCache`), so any-hit never runs for them.
+5. **Small things.** The pixel color is divided by the sample count and multiplied back in the
+   accumulation. `samplePixel` extracts the camera's forward, right and up by three matrix
+   multiplies per sample; they belong in `SceneFrameInfo`. The barycentrics are rebuilt for
+   `dlssPrevHitPos` after `getHitState` already had them.
+
+### Dead code and drift
+
+- `doDebug` is set from the mouse coordinate and read nowhere in any shader.
+- The accumulation reads `outImages[0]` by literal while the write beside it uses `eResultImage`.
+- Leftover commented calls: `//DirectLight directLight;`, `// bsdfEvaluateSimple`,
+  `// bsdfSampleSimple`.
+- `pathTraceOneBounce` opens an extra brace scope around its entire body, with the closing `return`
+  outside it.
+- The banner comments on `pathTraceOneBounce` and `pathTrace` are the same paragraph twice.
+- `max(v.x, max(v.y, v.z))` appears 17 times across this file and `pathtrace_functions.h.slang`.
+  One `maxComponent` helper.
+
+### Structure
+
+`pathTraceOneBounce` is about 700 lines in one function, with five compile-time axes (volume,
+scatter, hair, transmission, DLSS guides) interleaved; hair alone is eight `#if` islands. The
+banner comments already mark the seams: the environment miss, the first-hit guide capture, the
+diffuse exit, next-event estimation, the continuation sample, the shadow-ray setup. Each could be
+a function taking the state and the hit, which would also make the register-pressure reasoning in
+the comments checkable per piece. The DLSS first-hit guide block, with its clear-glass
+primary-surface trace, is a self-contained 60 lines with nothing to do with light transport.
+
+### Not verified
+
+The BSDF helpers (`bsdfEvaluate`, `bsdfEvaluateAll`, `bsdfSampleCore`) live in the nvpro_core2
+fork, which was not checked out when this was written. Next-event estimation draws three random
+numbers into the evaluate call's inputs on every vertex; if the all-lobes variant ignores them,
+those draws are wasted and shift the random sequence. Check in the fork before acting.
