@@ -859,6 +859,11 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
     const GltfTextureInfo texInfo = pushConst.gltfScene->textureInfos[materials[materialID].emissiveTexture];
     es.radiance = max(materials[materialID].emissiveFactor, float3(0.0F)) * sampleShadowTexture(prim, texInfo, idx, bary).rgb;
   }
+  // A ray meets a see-through surface with the probability of its opacity there (the any-hit's
+  // stochastic test), and so does what a light sample takes from it. A cutout's holes (a candle
+  // flame's card, a lamp's pattern) emitted to light samples alone, so a masked panel lit a floor
+  // 1.9x a panel with the same holes cut (tests/render/emitter_cutout.py).
+  es.radiance *= getOpacity(node, prim, int(et.triangleID), bary);
   // Power-weighted solid-angle pdf; the triangle area cancels (see header). Uses the defensive
   // luminance so it matches the host selection weight.
   es.pdf = emitterDefensiveLuminance(et.radiance) * dist2 / (wtot * cosLight);
