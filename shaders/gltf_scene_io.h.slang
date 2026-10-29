@@ -82,21 +82,28 @@ struct EmissiveTriangle
   uint   aliasIndex;    // Vose alias table: fallback bin (with emitter groups, within the triangle's group)
 };
 
-// The emissive triangles of one drawn surface (an instance's prim), sampled as one light: picked
-// among the environment and the punctual lights by an estimate of what they give the shading point
-// (their weight over the distance to their bounds), then a triangle among them by its own weight
-// (EmissiveTriangle::aliasProb and aliasIndex, within the group). GltfScene::numEmissiveGroups 0: one
-// table over every triangle, which takes a fixed share of the light samples.
+// A node of the emitters' light tree (light_tree.h.slang). A leaf is the emissive triangles of one
+// drawn surface (an instance's prim), sampled as one light: a triangle among them by its own weight
+// (EmissiveTriangle::aliasProb and aliasIndex, within the leaf). An inner node bounds its two children.
+// GltfScene::emissiveGroups holds the tree's cut first, at most EMISSIVE_GROUP_MAX nodes that are
+// picked among the environment and the punctual lights by an estimate of what they give the shading
+// point (their weight over the distance to their bounds); then their subtrees. A scene with no more
+// emitters than that has leaves alone. GltfScene::numEmissiveGroups (the cut) 0: one table over every
+// triangle, which takes a fixed share of the light samples.
 struct EmissiveGroup
 {
   float3 center;        // the bounding sphere of its triangles, in world space when the table was built
   float  radius;
   float  weight;        // its triangles' selection weights summed
-  uint   first;         // its triangles: emissiveTriangles[first, first + count)
+  uint   first;         // a leaf's triangles: emissiveTriangles[first, first + count)
   uint   count;
-  uint   renderNodeID;  // the render node its triangles are drawn by, for a BSDF ray that hits one
+  uint   renderNodeID;  // the render node a leaf's triangles are drawn by, for a BSDF ray that hits one
+  int    left;          // an inner node's children; -1 for a leaf
+  int    right;
+  int    parent;        // -1 for a node of the cut
+  int    pad;
 };
-// At most this many groups; a scene with more emitting surfaces keeps the one table
+// The cut: at most this many nodes compete with the lights, each at every light sample
 static const int EMISSIVE_GROUP_MAX = 32;
 
 
@@ -425,8 +432,10 @@ struct GltfScene
   int                  numEmissiveTriangles;  // number of sampled emissive triangles (area lights)
   float                emissiveTotalWeight;   // sum of per-triangle selection weights (area * defensive luminance)
   float                emissiveMeanLum;       // area-weighted mean emitter luminance (for defensive sampling)
-  int                  numEmissiveGroups;     // 0: the triangles are one table (EmissiveGroup)
-  EmissiveGroup*       emissiveGroups;
+  int                  numEmissiveGroups;     // the light tree's cut; 0: the triangles are one table (EmissiveGroup)
+  EmissiveGroup*       emissiveGroups;        // the cut, then the rest of the tree
+  int*                 emissiveLeafOfNode;    // [render node]: the leaf whose triangles it draws, -1 for none
+  int                  numEmissiveLeafOfNode;
 
   // EXT_lights_ies: flattened [profile][sample] table, sample = normalized candela (peak = 1) at
   // vertical angle sample/(iesProfileSampleCount-1) * 180 degrees off the light's photometric axis,

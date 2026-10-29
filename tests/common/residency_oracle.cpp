@@ -701,9 +701,12 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
          || residency.emissiveMeanLum() != table.meanLum
          || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveTable()), table.triangles.size() * sizeof(shaderio::EmissiveTriangle)),
                        table.triangles.data(), table.triangles.size())
-         || residency.emissiveGroupCount() != table.groups.size()
+         || residency.emissiveGroupCount() != table.cutCount || residency.emissiveNodeCount() != table.groups.size()
          || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveGroupTable()), table.groups.size() * sizeof(shaderio::EmissiveGroup)),
-                       table.groups.data(), table.groups.size())))
+                       table.groups.data(), table.groups.size())
+         || residency.emissiveLeafCount() != table.leafOfNode.size()
+         || !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.emissiveLeafTable()), table.leafOfNode.size() * sizeof(int32_t)),
+                       table.leafOfNode.data(), table.leafOfNode.size())))
     out.push_back("I6: the emissive table is not the shown emitters' triangles");
 
   // the scene descriptor
@@ -714,7 +717,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
      || desc.numEmissiveTriangles != int(residency.emissiveCount())
      || desc.emissiveTotalWeight != residency.emissiveTotalWeight() || desc.emissiveMeanLum != residency.emissiveMeanLum()
      || uint64_t(desc.emissiveGroups) != gpu.bufferAddress(residency.emissiveGroupTable())
-     || desc.numEmissiveGroups != int(residency.emissiveGroupCount()))
+     || desc.numEmissiveGroups != int(residency.emissiveGroupCount())
+     || uint64_t(desc.emissiveLeafOfNode) != gpu.bufferAddress(residency.emissiveLeafTable())
+     || desc.numEmissiveLeafOfNode != int(residency.emissiveLeafCount()))
     out.push_back("the scene descriptor does not hold the lights and the emissive table");
   if(uint64_t(desc.renderNodes) != gpu.bufferAddress(residency.renderNodeTable())
      || uint64_t(desc.renderPrimitives) != gpu.bufferAddress(residency.renderPrimTable())

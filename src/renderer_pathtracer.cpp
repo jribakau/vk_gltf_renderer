@@ -468,6 +468,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "it (Dwivedi guiding): the same image, sooner",
                  .callbackSuccess = reset},
                 &m_walkGuiding, Persist::eNo);
+  settings->add({.name            = "ptLightTree",
+                 .help            = "PathTracer: Emissive meshes are picked by how near and how bright they are (a light "
+                                    "tree over them); off: by power alone, wherever they are",
+                 .callbackSuccess = reset},
+                &m_lightTree, Persist::eNo);
   settings->add({.name            = "ptHairBounces",
                  .help            = "PathTracer: Fibre events a path takes through hair before they count as surface bounces (stills)",
                  .callbackSuccess = reset},
@@ -3166,6 +3171,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_walkGuiding ? shaderio::ePtWalkGuiding : 0;
+  m_pushConst.flags |= m_lightTree ? shaderio::ePtLightTree : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;

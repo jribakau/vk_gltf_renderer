@@ -208,6 +208,8 @@ public:
   bool m_exitFresnel{true};
   // Dwivedi guiding of scatter walks entered from a surface (ePtWalkGuiding, walk_guide.h.slang)
   bool m_walkGuiding{true};
+  // The emitters' light tree in the light pick (ePtLightTree, light_tree.h.slang)
+  bool m_lightTree{true};
   // Surface bounces (PathtracePushConstant::maxDepth): the still's, and the DLSS frames' when lower (0: the
   // still's), set each frame by sample_schedule::frameMaxDepth
   int m_maxDepth{5};

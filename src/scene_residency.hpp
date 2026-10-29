@@ -358,7 +358,10 @@ public:
   uint32_t     lightCount() const { return m_lightCount; }
   BufferHandle emissiveTable() const { return m_emissiveTable; }
   BufferHandle emissiveGroupTable() const { return m_emissiveGroupTable; }
-  uint32_t     emissiveGroupCount() const { return m_emissiveGroupCount; }
+  uint32_t     emissiveGroupCount() const { return m_emissiveGroupCount; }  // the light tree's cut
+  uint32_t     emissiveNodeCount() const { return m_emissiveNodeCount; }    // the light tree's nodes
+  BufferHandle emissiveLeafTable() const { return m_emissiveLeafTable; }
+  uint32_t     emissiveLeafCount() const { return m_emissiveLeafCount; }
   uint32_t     emissiveCount() const { return m_emissiveCount; }
   float        emissiveTotalWeight() const { return m_emissiveTotalWeight; }
   float        emissiveMeanLum() const { return m_emissiveMeanLum; }
@@ -570,8 +573,10 @@ private:
   bool                                                 m_tablesMoved = false;  // the material tables were made again
   std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows
 
-  BufferHandle                         m_lightTable, m_emissiveTable, m_emissiveGroupTable, m_iesTable;
-  uint32_t                             m_emissiveGroupCount = 0;
+  BufferHandle                         m_lightTable, m_emissiveTable, m_emissiveGroupTable, m_emissiveLeafTable, m_iesTable;
+  uint32_t                             m_emissiveGroupCount = 0;  // the light tree's cut
+  uint32_t                             m_emissiveNodeCount  = 0;  // its nodes, the cut included
+  uint32_t                             m_emissiveLeafCount  = 0;  // render nodes the leaf lookup covers
   uint32_t                             m_loggedLightCount   = 0;  // the light count the last [Lights] line said
   uint32_t                             m_lightCount          = 0;
   uint32_t                             m_iesProfileCount     = 0;

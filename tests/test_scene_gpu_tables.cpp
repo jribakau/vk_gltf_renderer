@@ -121,8 +121,9 @@ TEST(SceneGpuTables, NoEmittersNoTable)
   EXPECT_EQ(table.totalWeight, 0.f);
 }
 
-// With groups, each emitter is one (its triangles' bounds, their weight, their range) and its alias
-// table picks among its own triangles by their weights; past the cap, the one table as before
+// With the light tree, each emitter is a leaf (its triangles' bounds, their weight, their range) and its
+// alias table picks among its own triangles by their weights; with no more emitters than the cut, the
+// leaves alone, in order
 TEST(SceneGpuTables, EachEmitterIsAGroupWithATableOfItsOwn)
 {
   const std::vector<glm::vec3> quad     = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
@@ -136,12 +137,18 @@ TEST(SceneGpuTables, EachEmitterIsAGroupWithATableOfItsOwn)
   };
   const auto table = buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
   ASSERT_EQ(table.groups.size(), 2u);
+  EXPECT_EQ(table.cutCount, 2u);
   ASSERT_EQ(table.triangles.size(), 4u);
+  ASSERT_EQ(table.leafOfNode.size(), 8u);  // render nodes 0 to 7
+  for(int32_t node = 0; node < 8; node++)
+    EXPECT_EQ(table.leafOfNode[node], node == 4 ? 0 : node == 7 ? 1 : -1);
   double groupsWeight = 0.0;
   for(size_t g = 0; g < 2; g++)
   {
     const shaderio::EmissiveGroup& group = table.groups[g];
     EXPECT_EQ(group.renderNodeID, g == 0 ? 4u : 7u);
+    EXPECT_EQ(group.left, -1);
+    EXPECT_EQ(group.parent, -1);
     EXPECT_EQ(group.first, g * 2);
     EXPECT_EQ(group.count, 2u);
     groupsWeight += group.weight;
@@ -171,8 +178,12 @@ TEST(SceneGpuTables, EachEmitterIsAGroupWithATableOfItsOwn)
   }
   EXPECT_NEAR(groupsWeight, table.totalWeight, 1e-4);
 
+  // a cut of one: the root over the two leaves
   const auto one = buildEmissiveTable(emitters, 1);
-  EXPECT_TRUE(one.groups.empty());
+  ASSERT_EQ(one.groups.size(), 3u);
+  EXPECT_EQ(one.cutCount, 1u);
+  EXPECT_EQ(one.groups[0].parent, -1);
+  EXPECT_NEAR(one.groups[0].weight, table.totalWeight, 1e-4);
   EXPECT_EQ(one.totalWeight, table.totalWeight);
   EXPECT_TRUE(buildEmissiveTable(emitters).groups.empty());  // the default: the one table
 }

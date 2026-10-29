@@ -222,9 +222,10 @@ void Residency::clear()
   retireBuffer(m_lightTable);
   retireBuffer(m_emissiveTable);
   retireBuffer(m_emissiveGroupTable);
+  retireBuffer(m_emissiveLeafTable);
   retireBuffer(m_iesTable);
-  m_lightTable = m_emissiveTable = m_emissiveGroupTable = m_iesTable = {};
-  m_lightCount = m_emissiveCount = m_emissiveGroupCount = m_iesProfileCount = 0;
+  m_lightTable = m_emissiveTable = m_emissiveGroupTable = m_emissiveLeafTable = m_iesTable = {};
+  m_lightCount = m_emissiveCount = m_emissiveGroupCount = m_emissiveNodeCount = m_emissiveLeafCount = m_iesProfileCount = 0;
   m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
   m_emissiveStale                           = false;
   m_shadeMaterials.clear();
@@ -2181,6 +2182,8 @@ void Residency::writeSceneDesc()
   desc.emissiveMeanLum       = m_emissiveMeanLum;
   desc.emissiveGroups        = (shaderio::EmissiveGroup*)m_gpu.bufferAddress(m_emissiveGroupTable);
   desc.numEmissiveGroups     = int(m_emissiveGroupCount);
+  desc.emissiveLeafOfNode    = (int*)m_gpu.bufferAddress(m_emissiveLeafTable);
+  desc.numEmissiveLeafOfNode = int(m_emissiveLeafCount);
   m_gpu.upload(m_sceneDesc, 0, bytesOf(desc));
 }
 
@@ -2279,14 +2282,21 @@ void Residency::syncEmissive(const RetainedScene& scene)
   m_descDirty |= fitBuffer(m_gpu, m_emissiveGroupTable, groupBytes, "emissive groups", [this](BufferHandle b) { retireBuffer(b); });
   if(groupBytes)
     m_gpu.upload(m_emissiveGroupTable, 0, std::as_bytes(std::span(table.groups)));
+  const uint64_t leafBytes = std::span(table.leafOfNode).size_bytes();
+  m_descDirty |= fitBuffer(m_gpu, m_emissiveLeafTable, leafBytes, "emissive leaves", [this](BufferHandle b) { retireBuffer(b); });
+  if(leafBytes)
+    m_gpu.upload(m_emissiveLeafTable, 0, std::as_bytes(std::span(table.leafOfNode)));
   m_descDirty |= m_emissiveCount != table.triangles.size() || m_emissiveTotalWeight != table.totalWeight
-                 || m_emissiveMeanLum != table.meanLum || m_emissiveGroupCount != table.groups.size();
+                 || m_emissiveMeanLum != table.meanLum || m_emissiveGroupCount != table.cutCount
+                 || m_emissiveLeafCount != table.leafOfNode.size();
   // what the light pick has to choose among, said when it changes (a scene's first upload, a lamp added)
-  if(m_emissiveCount != table.triangles.size() || m_emissiveGroupCount != table.groups.size() || m_loggedLightCount != m_lightCount)
-    LOGI("[Lights] %u punctual lights; %zu emitters, %zu emissive triangles, %zu emissive groups\n", m_lightCount,
-         emitters.size(), table.triangles.size(), table.groups.size());
+  if(m_emissiveCount != table.triangles.size() || m_emissiveNodeCount != table.groups.size() || m_loggedLightCount != m_lightCount)
+    LOGI("[Lights] %u punctual lights; %zu emitters, %zu emissive triangles; light tree of %zu nodes, cut %u\n", m_lightCount,
+         emitters.size(), table.triangles.size(), table.groups.size(), table.cutCount);
   m_loggedLightCount    = m_lightCount;
-  m_emissiveGroupCount  = uint32_t(table.groups.size());
+  m_emissiveGroupCount  = table.cutCount;
+  m_emissiveNodeCount   = uint32_t(table.groups.size());
+  m_emissiveLeafCount   = uint32_t(table.leafOfNode.size());
   m_emissiveCount       = uint32_t(table.triangles.size());
   m_emissiveTotalWeight = table.totalWeight;
   m_emissiveMeanLum     = table.meanLum;
@@ -2378,7 +2388,7 @@ size_t Residency::liveBuffers() const
   for(const std::optional<Prim>& p : m_prims)
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
-                        m_emissiveTable, m_emissiveGroupTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
+                        m_emissiveTable, m_emissiveGroupTable, m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
                         m_prevWorldTable})
     n += b ? 1 : 0;
   return n;
