@@ -56,8 +56,8 @@ static bool doDebug = false;
 #include "gltf_scene_io.h.slang"
 #if GLTF_USE_HAIR
 #include "hair_bsdf.h.slang"
-#include "adaptive_stop.h.slang"
 #endif
+#include "adaptive_stop.h.slang"
 #include "gltf_vertex_access.h.slang"
 #include "shaderio.h"
 #include "get_hit.h.slang"
