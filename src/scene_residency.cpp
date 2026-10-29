@@ -33,6 +33,7 @@
 #include <figure/io/timing.hpp>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/id_pool.hpp>
+#include <nvutils/logger.hpp>
 
 #include "ies_profile.hpp"
 #include "scene_gpu_tables.hpp"
@@ -2280,6 +2281,11 @@ void Residency::syncEmissive(const RetainedScene& scene)
     m_gpu.upload(m_emissiveGroupTable, 0, std::as_bytes(std::span(table.groups)));
   m_descDirty |= m_emissiveCount != table.triangles.size() || m_emissiveTotalWeight != table.totalWeight
                  || m_emissiveMeanLum != table.meanLum || m_emissiveGroupCount != table.groups.size();
+  // what the light pick has to choose among, said when it changes (a scene's first upload, a lamp added)
+  if(m_emissiveCount != table.triangles.size() || m_emissiveGroupCount != table.groups.size() || m_loggedLightCount != m_lightCount)
+    LOGI("[Lights] %u punctual lights; %zu emitters, %zu emissive triangles, %zu emissive groups\n", m_lightCount,
+         emitters.size(), table.triangles.size(), table.groups.size());
+  m_loggedLightCount    = m_lightCount;
   m_emissiveGroupCount  = uint32_t(table.groups.size());
   m_emissiveCount       = uint32_t(table.triangles.size());
   m_emissiveTotalWeight = table.totalWeight;

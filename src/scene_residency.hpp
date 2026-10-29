@@ -572,6 +572,7 @@ private:
 
   BufferHandle                         m_lightTable, m_emissiveTable, m_emissiveGroupTable, m_iesTable;
   uint32_t                             m_emissiveGroupCount = 0;
+  uint32_t                             m_loggedLightCount   = 0;  // the light count the last [Lights] line said
   uint32_t                             m_lightCount          = 0;
   uint32_t                             m_iesProfileCount     = 0;
   uint32_t                             m_emissiveCount       = 0;
