@@ -75,6 +75,9 @@ struct Subsurface
   std::string scatterMap;
   float       scatterDistance = 0;
   float       direction       = 0;  // Henyey-Greenstein anisotropy, -1 back to 1 forward
+  // How SSS Color becomes scattering: -ln(colour)/distance, as PBRSkin's volume has it (a deep
+  // colour scatters little), else colour/distance, Iray Uber's default.
+  bool logScatter = false;
 };
 
 // Iray's translucency: the share of diffuse light that enters the skin instead of reflecting.
@@ -83,8 +86,11 @@ struct Translucency
   float                     weight = 0;
   std::optional<Rgb>        color;  // Translucency Color; none when the material gives none
   std::string               map;
-  Rgb                       reflectanceTint{1, 1, 1};  // SSS Reflectance Tint, on the light that comes back out
+  Rgb                       reflectanceTint{1, 1, 1};  // SSS Reflectance Tint (Iray Uber's; PBRSkin has none), on the light that comes back out
   std::optional<Subsurface> subsurface;
+  // PBRSkin with Translucency Enable off: its brick graph makes the surface thin-walled, so no light
+  // enters and there is no medium under it, whatever the skin mode.
+  bool thinWalled = false;
 };
 
 // PBRSkin's detail layer: a small normal or height map tiled across the surface's UV tile on top of

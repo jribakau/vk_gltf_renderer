@@ -1616,6 +1616,172 @@ TEST(Materials, APbrSkinCoatsColourDimsItsReflection)
   EXPECT_FLOAT_EQ(clearcoatOf(fv::mat::lower(uber, {}, {}))["clearcoatFactor"].get<float>(), 0.4f);
 }
 
+// ---- PBRSkin's volume ----
+
+// A PBRSkin face with its three volume switches, absorbing 0.5 (0.214 linear) over 1 mm and scattering
+// 0.5 over 0.1 mm, backwards
+ChannelValues pbrSkinVolume(bool translucency, bool transmission, bool subsurface)
+{
+  return {{"Detail Enable", false},
+          {"Translucency Enable", translucency},
+          {"Translucency Weight", 0.8},
+          {"Transmission Enable", transmission},
+          {"Sub Surface Enable", subsurface},
+          {"Transmitted Color", Json::array({0.5, 0.5, 0.5})},
+          {"Transmitted Measurement Distance", 0.1},
+          {"SSS Color", Json::array({0.5, 0.5, 0.5})},
+          {"Scattering Measurement Distance", 0.01},
+          {"SSS Direction", -0.7}};
+}
+
+// pbr_skin.mdl's volume scatters by -ln(SSS Color)/distance: its hidden log switch defaults on, and
+// PBRSkin's brick graph leaves it unconnected. Iray Uber's defaults off: SSS Color/distance.
+TEST(Materials, PbrSkinScattersLogarithmically)
+{
+  const auto s = surfaceOf("Face", kPbrSkinType, pbrSkinVolume(true, true, true));
+  ASSERT_TRUE(s.translucency && s.translucency->subsurface);
+  EXPECT_TRUE(s.translucency->subsurface->logScatter);
+  // sigma_s = -ln(0.214)/0.1 mm = 15416 per metre, sigma_a = -ln(0.214)/1 mm = 1542: a tenth as much
+  const auto v = fv::mat::volumeMedium(s.translucency->subsurface);
+  EXPECT_NEAR(v.distance, 5.89711e-5f, 1e-9f);
+  EXPECT_FLOAT_EQ(v.anisotropy, -0.7f);
+  for(int i = 0; i < 3; i++)
+  {
+    EXPECT_NEAR(v.albedo[i], 0.9090909f, 1e-5f);
+    EXPECT_NEAR(v.attenuation[i], 0.3678794f, 1e-5f);
+    EXPECT_NEAR(v.multiscatter[i], 0.5794536f, 1e-4f);
+  }
+  const auto  l   = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eVolume});
+  const auto& ext = l.material["extensions"];
+  EXPECT_NEAR(ext["KHR_materials_volume"]["attenuationDistance"].get<float>(), 5.89711e-5f, 1e-9f);
+  EXPECT_FLOAT_EQ(ext["KHR_materials_scatter"]["scatterAnisotropy"].get<float>(), -0.7f);
+}
+
+TEST(Materials, IrayUberScattersLinearly)
+{
+  ChannelValues v = pbrSkinVolume(true, true, true);
+  v.erase(v.begin());  // no Detail Enable: Iray Uber
+  v.push_back({"SSS Mode", 1});
+  const auto s = surfaceOf("Face", kUberType, v);
+  ASSERT_TRUE(s.translucency && s.translucency->subsurface);
+  EXPECT_FALSE(s.translucency->subsurface->logScatter);
+  // sigma_s = 0.214/0.1 mm = 2140 per metre against the same 1542 absorbed
+  const auto m = fv::mat::volumeMedium(s.translucency->subsurface);
+  EXPECT_NEAR(m.distance, 2.715916e-4f, 1e-8f);
+  for(int i = 0; i < 3; i++)
+  {
+    EXPECT_NEAR(m.albedo[i], 0.5813178f, 1e-5f);
+    EXPECT_NEAR(m.multiscatter[i], 0.2561f, 1e-3f);
+  }
+}
+
+// pbr_skin.mdl gates its absorption by Transmission Enable alone and its scattering (and the
+// scattering's direction) by Sub Surface Enable alone; with both off there is nothing to measure.
+TEST(Materials, PbrSkinSwitchesAbsorptionAndScatteringApart)
+{
+  {
+    const auto s = surfaceOf("Face", kPbrSkinType, pbrSkinVolume(true, false, true));
+    ASSERT_TRUE(s.translucency && s.translucency->subsurface);
+    const auto& sub = *s.translucency->subsurface;
+    EXPECT_EQ(sub.transmittedDistance, 0);
+    EXPECT_EQ(sub.scatterDistance, 0.01f);
+    EXPECT_EQ(sub.direction, -0.7f);
+    // scattering alone: nothing absorbed
+    const auto v = fv::mat::volumeMedium(sub);
+    EXPECT_NEAR(v.distance, 6.486822e-5f, 1e-9f);
+    EXPECT_FLOAT_EQ(v.anisotropy, -0.7f);
+    for(int i = 0; i < 3; i++)
+    {
+      EXPECT_NEAR(v.albedo[i], 1, 1e-6f);
+      EXPECT_EQ(v.multiscatter[i], 1);
+      EXPECT_NEAR(v.attenuation[i], 0.3678794f, 1e-5f);
+    }
+  }
+  {
+    const auto s = surfaceOf("Face", kPbrSkinType, pbrSkinVolume(true, true, false));
+    ASSERT_TRUE(s.translucency && s.translucency->subsurface);
+    const auto& sub = *s.translucency->subsurface;
+    EXPECT_EQ(sub.scatterDistance, 0);
+    EXPECT_EQ(sub.transmittedDistance, 0.1f);
+    EXPECT_EQ(sub.direction, 0);
+    // absorption alone: nothing scatters, and so no direction
+    const auto v = fv::mat::volumeMedium(sub);
+    EXPECT_NEAR(v.distance, 6.486822e-4f, 1e-8f);
+    EXPECT_EQ(v.anisotropy, 0);
+    for(int i = 0; i < 3; i++)
+    {
+      EXPECT_EQ(v.albedo[i], 0);
+      EXPECT_EQ(v.multiscatter[i], 0);
+    }
+  }
+  EXPECT_FALSE(surfaceOf("Face", kPbrSkinType, pbrSkinVolume(true, false, false)).translucency->subsurface);
+}
+
+// PBRSkin's brick graph makes the surface thin-walled when Translucency Enable is off: no light enters
+// and there is no medium, in every skin mode, measured skin's included.
+TEST(Materials, PbrSkinWithTranslucencyOffIsThinWalledInEveryMode)
+{
+  const auto expectPlain = [](const fv::mat::Surface& s, const char* why) {
+    for(const auto mode : {fv::mat::SkinMode::eMeasured, fv::mat::SkinMode::eVolume, fv::mat::SkinMode::eThin})
+    {
+      const auto  l   = fv::mat::lower(s, {}, {.skin = mode});
+      const auto& ext = l.material["extensions"];
+      for(const char* name : {"KHR_materials_transmission", "KHR_materials_volume", "KHR_materials_scatter", "FV_materials_subsurface"})
+        EXPECT_FALSE(ext.contains(name)) << why << ", mode " << int(mode) << ": " << name;
+    }
+  };
+  const auto off = surfaceOf("Face", kPbrSkinType, pbrSkinVolume(false, true, true));
+  ASSERT_TRUE(off.translucency);
+  EXPECT_TRUE(off.translucency->thinWalled);
+  EXPECT_EQ(off.translucency->weight, 0);
+  expectPlain(off, "Translucency Enable off");
+
+  // on: measured skin enters wholly
+  const auto on = surfaceOf("Face", kPbrSkinType, pbrSkinVolume(true, true, true));
+  EXPECT_FALSE(on.translucency->thinWalled);
+  EXPECT_FLOAT_EQ(fv::mat::lower(on, {}, {.skin = fv::mat::SkinMode::eMeasured})
+                      .material["extensions"]["KHR_materials_transmission"]["transmissionFactor"]
+                      .get<float>(),
+                  1);
+  // Iray Uber has no switch
+  EXPECT_FALSE(fv::dson::parseSurface("Face", channelsOf(kSkin)).translucency->thinWalled);
+
+  // a surface that looks like PBRSkin only by a stray preset's marker, without the switch, keeps its inside
+  const auto stray = surfaceOf("Face", kPbrSkinType, {{"Detail Enable", false}, {"Translucency Weight", 0.8}});
+  ASSERT_TRUE(stray.translucency);
+  EXPECT_FALSE(stray.translucency->thinWalled);
+  const auto  l   = fv::mat::lower(stray, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto& ext = l.material["extensions"];
+  EXPECT_FLOAT_EQ(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1);
+  EXPECT_TRUE(ext.contains("FV_materials_subsurface"));
+}
+
+// PBRSkin has no SSS Reflectance Tint (neither PBRSkin.dsf nor its MDL): a value on its surface is
+// stale, left from Iray Uber's. Iray Uber's tints the light that comes back out in thin mode.
+TEST(Materials, PbrSkinHasNoSssReflectanceTint)
+{
+  ChannelValues v = {{"Detail Enable", false},
+                     {"diffuse", Json::array({1, 1, 1})},
+                     {"Translucency Enable", true},
+                     {"Translucency Weight", 0.8},
+                     {"SSS Reflectance Tint", Json::array({0.5, 0.5, 0.5})}};
+  const std::map<std::string, std::string> images = {{"diffuse", "/Runtime/Textures/face_d.jpg"}};
+  const auto skin = surfaceOf("Face", kPbrSkinType, v, images);
+  ASSERT_TRUE(skin.translucency);
+  EXPECT_EQ(skin.translucency->reflectanceTint, (fv::mat::Rgb{1, 1, 1}));
+  const auto  thin   = fv::mat::lower(skin, {}, {.skin = fv::mat::SkinMode::eThin});
+  const auto& factor = thin.material["extensions"]["KHR_materials_scatter"]["multiscatterColorFactor"];
+  for(int i = 0; i < 3; i++)
+    EXPECT_FLOAT_EQ(factor[i].get<float>(), 1);
+
+  v.erase(v.begin());  // Iray Uber
+  const auto uber = surfaceOf("Face", kUberType, v, images);
+  const auto  uberThin = fv::mat::lower(uber, {}, {.skin = fv::mat::SkinMode::eThin});
+  const auto& tinted   = uberThin.material["extensions"]["KHR_materials_scatter"]["multiscatterColorFactor"];
+  for(int i = 0; i < 3; i++)
+    EXPECT_NEAR(tinted[i].get<float>(), 0.2140411f, 1e-6f);
+}
+
 // Tri-X's eye presets give the eye moisture the eye's own map; Iray refracts through it untinted, so
 // the glTF material, which tints what it transmits by its base colour, leaves the map out.
 TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)

@@ -801,8 +801,10 @@ Json FvMaterials::item(int index) const
     out["values"]["makeupColor"]   = m.edits.makeupColor ? Json(hexOf(*m.edits.makeupColor)) : Json(nullptr);
     out["values"]["makeupWeight"]  = std::clamp(m.edits.makeupWeight.value_or(s.makeup->weight), 0.f, 1.f);
   }
-  // measured skin's scatter distance, times human skin's: only where it applies
-  if(m_options[index].skin == fv::mat::SkinMode::eMeasured && fv::mat::skinRole(s) == fv::mat::SkinRole::eFlesh)
+  // measured skin's scatter distance, times human skin's: only where it applies (not on a
+  // thin-walled PBRSkin, which light does not enter)
+  if(m_options[index].skin == fv::mat::SkinMode::eMeasured && fv::mat::skinRole(s) == fv::mat::SkinRole::eFlesh
+     && !(s.translucency && s.translucency->thinWalled))
     out["values"]["scatterScale"] = m.edits.scatterScale.value_or(1.f);
   return out;
 }

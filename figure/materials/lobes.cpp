@@ -114,6 +114,8 @@ struct Coefficients
 };
 
 // Iray's scattering and absorption coefficients per channel (per metre), or none when the surface measures neither.
+// Absorption is always logarithmic in Transmitted Color; scattering is in SSS Color only where the
+// shader says so (PBRSkin), else linear.
 std::optional<Coefficients> measuredCoefficients(const std::optional<Subsurface>& sss)
 {
   if(!sss)
@@ -128,7 +130,8 @@ std::optional<Coefficients> measuredCoefficients(const std::optional<Subsurface>
   for(int i = 0; i < 3; i++)
   {
     c.sigmaA[i] = !std::isinf(dt) ? -std::log(std::max(1e-4f, sss->transmittedColor[i])) / dt : 0.f;
-    c.sigmaS[i] = !std::isinf(ds) ? sss->scatterColor[i] / ds : 0.f;
+    const float sc = sss->logScatter ? std::max(0.f, -std::log(std::max(1e-4f, sss->scatterColor[i]))) : sss->scatterColor[i];
+    c.sigmaS[i]    = !std::isinf(ds) ? sc / ds : 0.f;
     peak        = std::max({peak, c.sigmaA[i], c.sigmaS[i]});
   }
   return peak > 0 ? std::optional<Coefficients>(c) : std::nullopt;

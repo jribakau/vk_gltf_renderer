@@ -252,15 +252,19 @@ double chiangFit(double b)
 
 // Iray's volume: Transmitted Color over Transmitted Measurement Distance (absorption), and the
 // scattering over Scattering Measurement Distance, coloured by SSS Color in chromatic mode or grey
-// by SSS Amount in mono mode (PBRSkin is always chromatic). None when the material has no
-// measurement distance, or PBRSkin's Transmission and Sub Surface switches are off.
+// by SSS Amount in mono mode (PBRSkin is always chromatic). PBRSkin's volume switches each gate
+// their own half, as its MDL applies them: Transmission Enable the absorption, Sub Surface Enable
+// the scattering and its direction. Its scattering is logarithmic in SSS Color, as the absorption
+// is in Transmitted Color: the volume's hidden log switch defaults on there and nothing in the
+// brick graph turns it off, while Iray Uber's defaults off. None when the material measures
+// neither, or PBRSkin switches both off.
 template <class Find, class Enabled>
 std::optional<mat::Subsurface> readSubsurface(const Find& find, bool pbrSkin, const Enabled& enabled)
 {
-  if(!enabled("Transmission Enable") || !enabled("Sub Surface Enable"))
-    return std::nullopt;
-  const double transmittedDistance = num(find({"Transmitted Measurement Distance"}), 0);
-  const double scatterDistance     = num(find({"Scattering Measurement Distance"}), 0);
+  const bool   absorbs             = enabled("Transmission Enable");
+  const bool   scatters            = enabled("Sub Surface Enable");
+  const double transmittedDistance = absorbs ? num(find({"Transmitted Measurement Distance"}), 0) : 0;
+  const double scatterDistance     = scatters ? num(find({"Scattering Measurement Distance"}), 0) : 0;
   if(transmittedDistance <= 0 && scatterDistance <= 0)
     return std::nullopt;
   const bool     chromatic = pbrSkin || num(find({"SSS Mode"}), 0) == 1;
@@ -272,7 +276,8 @@ std::optional<mat::Subsurface> readSubsurface(const Find& find, bool pbrSkin, co
   s.transmittedDistance = float(transmittedDistance);
   s.scatterMap          = chromatic ? imageOf(sssColor) : std::string();
   s.scatterDistance     = float(scatterDistance);
-  s.direction           = float(std::clamp(num(find({"SSS Direction"}), 0), -0.99, 0.99));
+  s.direction           = scatters ? float(std::clamp(num(find({"SSS Direction"}), 0), -0.99, 0.99)) : 0.f;
+  s.logScatter          = pbrSkin;
   return s;
 }
 
@@ -549,8 +554,15 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     t.weight          = float(std::clamp(enabled("Translucency Enable") ? num(transCh, 0) : 0, 0.0, 1.0));
     t.color           = color(transCol);
     t.map             = imageOf(transCol);
-    t.reflectanceTint = colorOr(find({"SSS Reflectance Tint"}));
+    // PBRSkin has no SSS Reflectance Tint: one on its surface is left over from the figure's own
+    // Iray Uber material or an earlier preset.
+    t.reflectanceTint = pbrSkin ? Rgb{1, 1, 1} : colorOr(find({"SSS Reflectance Tint"}));
     t.subsurface      = readSubsurface(find, pbrSkin, enabled);
+    // PBRSkin's brick graph wires thin-walled to NOT Translucency Enable. Only where the switch is
+    // there: a real PBRSkin surface always has it from PBRSkin.dsf, while an Iray Uber surface that
+    // a makeup preset's channels made look like PBRSkin has none, and keeps its inside.
+    const Channel* transEnable = find({"Translucency Enable"});
+    t.thinWalled = pbrSkin && transEnable && !truthy(transEnable);
     s.translucency    = t;
   }
 

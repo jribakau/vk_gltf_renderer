@@ -556,6 +556,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     // back out. Genesis base colour maps are painted pale for that, and rendered as plain diffuse
     // they look grey.
     const auto& t = s.translucency;
+    // A thin-walled PBRSkin (Translucency Enable off) has no inside: it stays a plain surface in
+    // every mode, falling through to the thin branch at weight 0.
+    const bool thinWalled = t && t->thinWalled;
     // Flesh without a translucency channel still scatters. Nails and teeth scatter only at their own weight.
     const float weight = t ? t->weight : role == SkinRole::eFlesh ? 0.5f : 0.f;
     const std::optional<Rgb> tint = t ? t->color : std::nullopt;
@@ -586,7 +589,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
         return b.base({}, scatterColor, {}, makeup);
       return Json();
     };
-    if(role == SkinRole::eFlesh && opts.skin == SkinMode::eMeasured)
+    if(role == SkinRole::eFlesh && opts.skin == SkinMode::eMeasured && !thinWalled)
     {
       // Skin as measured, whatever the file's Iray medium says. Every bit of diffuse light enters
       // (skin has no diffuse layer above its tissue, only the oily film the specular lobes are),
@@ -600,7 +603,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       const float scale              = e.scatterScale.value_or(1.f);
       ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson({kSkinScatterDistance[0] * scale, kSkinScatterDistance[1] * scale, kSkinScatterDistance[2] * scale})}};
     }
-    else if(role == SkinRole::eFlesh && opts.skin == SkinMode::eVolume)
+    else if(role == SkinRole::eFlesh && opts.skin == SkinMode::eVolume && !thinWalled)
     {
       // Volumetric subsurface scattering, Iray's way: the translucent share enters (transmission =
       // weight) and random-walks through a medium with Iray's own scattering and absorption per
