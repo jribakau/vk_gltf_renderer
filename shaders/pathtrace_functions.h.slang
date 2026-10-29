@@ -13,6 +13,7 @@
 #include "sky_background.h.slang"
 #include "ground.h.slang"
 #include "light_pick.h.slang"
+#include "walk_guide.h.slang"
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -1266,12 +1267,28 @@ struct FreeFlight
   float  dist;         // INFINITE when the channel drawn has no extinction
   float3 channelProb;  // the balance heuristic's weights, from the throughput
   bool   drawn;
+  // Walk guiding (walk_guide.h.slang) for a step after a guided walk's scatter: the share of guided
+  // steps (0: this step was classic only), the guided extinction's stretch along this step, and the
+  // guided over the phase function's direction pdf
+  float guideFraction;
+  float guideStretch;
+  float guideFactor;
 };
 
 #if GLTF_USE_VOLUME
 
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
-FreeFlight sampleFreeFlight(VolumeMedium medium, float3 throughput, inout uint seed)
+// The walk guide of a medium (walk_guide.h.slang), from its largest single-scattering albedo
+WalkGuide mediumWalkGuide(VolumeMedium medium)
+{
+  const float3 sigmaS = float3(medium.scatterCoefficient);
+  const float3 albedo = sigmaS / max(volumeExtinction(medium), float3(1e-30F));
+  return makeWalkGuide(max(albedo.x, max(albedo.y, albedo.z)), float(medium.scatterAnisotropy));
+}
+
+// `walkGuide`: what the walk's last scatter chose (PathTracerState::walkGuide), `walkNormal` its entry
+// normal, `direction` this step's.
+FreeFlight sampleFreeFlight(VolumeMedium medium, float3 throughput, inout uint seed, float walkGuide, float3 walkNormal, float3 direction)
 {
   FreeFlight ff = {};
   float3 scatterCoeff = float3(medium.scatterCoefficient);
@@ -1316,6 +1333,15 @@ FreeFlight sampleFreeFlight(VolumeMedium medium, float3 throughput, inout uint s
   {
     u = (u - channelProb.x - channelProb.y) / channelProb.z;
   }
+  if(walkGuide != 0.0F)
+  {
+    const WalkGuide guide = mediumWalkGuide(medium);
+    ff.guideFraction      = guide.fraction;
+    ff.guideStretch       = walkGuideStretch(guide, dot(direction, walkNormal));
+    ff.guideFactor        = abs(walkGuide);
+    if(walkGuide < 0.0F)
+      sigmaTChannel *= ff.guideStretch;  // drawn guided
+  }
   ff.dist        = (sigmaTChannel > 0.0) ? -log(max(u, VOLUME_RAND_FLOOR)) / sigmaTChannel : INFINITE;
   ff.channelProb = channelProb;
   ff.drawn       = true;
@@ -1324,7 +1350,10 @@ FreeFlight sampleFreeFlight(VolumeMedium medium, float3 throughput, inout uint s
 #endif
 
 // `freeFlight`: the step's distance, drawn before the trace; not drawn, it is drawn here.
-bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc ray, inout float3 throughput, inout float lastSamplePdf, inout uint seed, FreeFlight freeFlight)
+// `walkGuide` / `walkNormal`: PathTracerState's. This step uses the guide its last scatter left, and a
+// scatter leaves the next step's; reaching the surface leaves none.
+bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc ray, inout float3 throughput, inout float lastSamplePdf,
+                         inout uint seed, FreeFlight freeFlight, inout float walkGuide, float3 walkNormal)
 {
   float3 extinction = volumeExtinction(medium);
 
@@ -1333,18 +1362,20 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
   float  maxScatter   = max(scatterCoeff.x, max(scatterCoeff.y, scatterCoeff.z));
   if(maxScatter > VOLUME_MIN_SCATTER)
   {
-    const FreeFlight ff          = freeFlight.drawn ? freeFlight : sampleFreeFlight(medium, throughput, seed);
-    const float3     channelProb = ff.channelProb;
-    const float      scatterDist = ff.dist;
+    const FreeFlight ff = freeFlight.drawn ? freeFlight : sampleFreeFlight(medium, throughput, seed, walkGuide, walkNormal, ray.Direction);
+    const float3 channelProb = ff.channelProb;
+    const float  scatterDist = ff.dist;
+    walkGuide                = 0.0F;
 
     // A finite free path is a scatter, including when the ray left the mesh (hitDistance is
     // INFINITE). Both unbounded means this channel has no extinction: fall through and let the
     // miss path below decide, which never multiplies 0 by INFINITE.
     if(isfinite(scatterDist) && scatterDist < hitDistance)
     {
-      // Scattering event: pdf_i(t) = sigma_t_i * exp(-sigma_t_i * t), combined over the channels.
+      // Scattering event: pdf_i(t) = sigma_t_i * exp(-sigma_t_i * t), combined over the channels
+      // (and with the guided step's, walkStepPdf).
       float3 transmittance = exp(-extinction * scatterDist);
-      float  pdf           = dot(channelProb, extinction * transmittance);
+      float  pdf = dot(channelProb, walkStepPdf(extinction, scatterDist, false, ff.guideFraction, ff.guideStretch, ff.guideFactor));
       if(pdf <= 0.0)
       {
         // Every channel's transmittance underflowed: the medium is opaque along this segment.
@@ -1356,9 +1387,30 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
       ray.Origin        = ray.Origin + ray.Direction * scatterDist;
       float3 wi         = ray.Direction;
       float  anisotropy = float(medium.scatterAnisotropy);
-      ray.Direction     = sampleHenyeyGreenstein(float2(rand(seed), rand(seed)), anisotropy, wi);
+      // A walk entered from a surface draws the next step guided or classic (walk_guide.h.slang);
+      // the next step weighs its outcome against both.
+      WalkGuide guide = {};
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtWalkGuiding) && any(walkNormal != float3(0.0F)))
+        guide = mediumWalkGuide(medium);
+      float u = rand(seed);
+      if(u < guide.fraction)
+      {
+        const float cosTheta = walkGuideSampleCos(guide, u / guide.fraction);
+        const float phi      = M_TWO_PI * rand(seed);
+        const float sinTheta = sqrt(max(1.0F - cosTheta * cosTheta, 0.0F));
+        float3      tangent, bitangent;
+        orthonormalBasis(walkNormal, tangent, bitangent);
+        ray.Direction = normalize(tangent * (sinTheta * cos(phi)) + bitangent * (sinTheta * sin(phi)) + walkNormal * cosTheta);
+      }
+      else
+        ray.Direction = sampleHenyeyGreenstein(float2(guide.fraction > 0.0F ? rand(seed) : u, rand(seed)), anisotropy, wi);
 
       lastSamplePdf = henyeyGreensteinPdf(dot(wi, ray.Direction), anisotropy);
+      if(guide.fraction > 0.0F)
+      {
+        const float factor = walkGuidePdf(guide, dot(ray.Direction, walkNormal)) / lastSamplePdf;
+        walkGuide          = u < guide.fraction ? -factor : factor;
+      }
 
       return true;  // scatter event
     }
@@ -1373,9 +1425,9 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
       return false;
     }
     // The probability of reaching the surface is exp(-sigma_t_i * d) per channel, combined with
-    // the balance heuristic.
+    // the balance heuristic (and with the guided step's).
     float3 transmittance = exp(-extinction * hitDistance);
-    float  pdf           = dot(channelProb, transmittance);
+    float  pdf = dot(channelProb, walkStepPdf(extinction, hitDistance, true, ff.guideFraction, ff.guideStretch, ff.guideFactor));
     throughput *= (pdf > 0.0) ? transmittance / pdf : float3(0.0);
     return false;
   }
@@ -1791,6 +1843,12 @@ struct PathTracerState
   // The material whose medium the path entered (-1: none, or the camera's medium). The diffuse exit
   // divides out this medium's albedo, whatever surface the walk leaves through.
   int volumeMaterial = -1;
+  // Walk guiding (walk_guide.h.slang): the normal where the walk entered, facing out of the medium
+  // (zero: a walk in the camera's medium, never guided), and what its last scatter drew the next step
+  // with: 0 for no guiding (a walk's first step, or after the surface), else the guided over the phase
+  // function's direction pdf, negative when the guided technique drew it
+  float3 walkNormal = float3(0.0F);
+  float  walkGuide  = 0.0F;
 #endif
 #if USE_GUIDE_SHADER
   GuideScratch guide           = {};
@@ -1937,7 +1995,17 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
     const float3 originBeforeScatter = ray.Origin;
 #endif
 
-    if(handleVolumeScatter(pt.volumeMedium, hitDistance, ray, pt.throughput, pt.lastSamplePdf, seed, freeFlight))
+    float  walkGuide  = 0.0F;
+    float3 walkNormal = float3(0.0F);
+#if GLTF_USE_SCATTER
+    walkGuide  = pt.walkGuide;
+    walkNormal = pt.walkNormal;
+#endif
+    const bool scattered = handleVolumeScatter(pt.volumeMedium, hitDistance, ray, pt.throughput, pt.lastSamplePdf, seed, freeFlight, walkGuide, walkNormal);
+#if GLTF_USE_SCATTER
+    pt.walkGuide = walkGuide;
+#endif
+    if(scattered)
     {
 #if GLTF_USE_SCATTER
       pt.scatterBounces++;

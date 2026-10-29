@@ -188,7 +188,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
     if(pt.isInside && hasVolumeMedium(pt.volumeMedium))
     {
-      freeFlight = sampleFreeFlight(pt.volumeMedium, pt.throughput, seed);
+      freeFlight = sampleFreeFlight(pt.volumeMedium, pt.throughput, seed, pt.walkGuide, pt.walkNormal, ray.Direction);
       if(freeFlight.drawn && isfinite(freeFlight.dist))
         ray.TMax = freeFlight.dist;
     }
@@ -986,10 +986,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
             else
               pt.volumeMedium = {};
 #if GLTF_USE_SCATTER
-            // A walk starts here: its material for the diffuse exit, and a fresh event budget
+            // A walk starts here: its material for the diffuse exit, a fresh event budget, and the
+            // entry's normal, facing out of the medium, for walk guiding (its first step is unguided)
             pt.volumeMaterial = pt.isInside ? materialIndex : -1;
             if(pt.isInside)
+            {
               pt.scatterBounces = 0;
+              pt.walkNormal     = dot(ray.Direction, hit.nrm) < 0.0F ? hit.nrm : -hit.nrm;
+              pt.walkGuide      = 0.0F;
+            }
             const float3 sigmaS = float3(pt.volumeMedium.scatterCoefficient);
             entersWalk          = pt.isInside && max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
 #endif

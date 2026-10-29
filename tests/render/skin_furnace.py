@@ -79,11 +79,11 @@ def center_rgb(path):
     return [t / count for t in total]
 
 
-def render(exe, scene_path, output_path, technique, diffuse_entry):
+def render(exe, scene_path, output_path, technique, diffuse_entry, walk_guiding):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
            "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", "1", "1", "1", "--renderSystem", "0",
            "--ptTechnique", str(technique), "--ptVolumeDiffuseExit", "1",
-           "--ptDiffuseEntry", "1" if diffuse_entry else "0", "--ptMaxDepth", "20",
+           "--ptDiffuseEntry", "1" if diffuse_entry else "0", "--ptWalkGuiding", str(walk_guiding), "--ptMaxDepth", "20",
            "--frames", "0", "--ptMaxSamples", str(SAMPLES), "--output", str(output_path)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0 or not Path(output_path).exists():
@@ -96,6 +96,8 @@ def main():
     parser.add_argument("--exe", required=True, type=Path, help="vk_gltf_renderer executable")
     parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "skin_furnace",
                         help="where the scene and images go")
+    parser.add_argument("--walk-guiding", type=int, choices=(0, 1), default=1,
+                        help="ptWalkGuiding: the walks' Dwivedi guiding (the result should not depend on it)")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -106,7 +108,7 @@ def main():
     for technique_name, technique in TECHNIQUES.items():
         for diffuse_entry in (False, True):
             image = args.out / f"{technique_name}_{'diffuse' if diffuse_entry else 'refraction'}.hdr"
-            render(args.exe, scene_path, image, technique, diffuse_entry)
+            render(args.exe, scene_path, image, technique, diffuse_entry, args.walk_guiding)
             rgb   = center_rgb(image)
             ratio = [rgb[c] / BASE[c] for c in range(3)]
             label = "diffuse entry   " if diffuse_entry else "refraction entry"

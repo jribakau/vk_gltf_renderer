@@ -342,7 +342,7 @@ set_target_properties(${TEST_NAME} PROPERTIES
 # Shader code compiled as C++ (nvshaders' BSDF, the aperture sampler, the light pick, the ground, the thin scatter lobe): its own executable, since
 # the BSDF header needs GLM's swizzles
 set(BSDF_TEST_NAME ${PROJECT_NAME}_bsdf_tests)
-add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp test_light_pick.cpp test_sobol.cpp test_ground.cpp
+add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp test_light_pick.cpp test_sobol.cpp test_ground.cpp test_walk_guide.cpp
                test_thin_scatter.cpp test_hair_bsdf.cpp)
 target_link_libraries(${BSDF_TEST_NAME} PRIVATE GTest::gtest GTest::gtest_main glm)
 target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})

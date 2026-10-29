@@ -206,6 +206,8 @@ public:
   bool m_lightsVisible{false};
   // The diffuse exit's light-side Fresnel (ePtExitFresnel): grazing light on skin as the boundary passes it
   bool m_exitFresnel{true};
+  // Dwivedi guiding of scatter walks entered from a surface (ePtWalkGuiding, walk_guide.h.slang)
+  bool m_walkGuiding{true};
   // Surface bounces (PathtracePushConstant::maxDepth): the still's, and the DLSS frames' when lower (0: the
   // still's), set each frame by sample_schedule::frameMaxDepth
   int m_maxDepth{5};

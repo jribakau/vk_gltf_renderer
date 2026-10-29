@@ -463,6 +463,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "transmittance, less at grazing, more head-on, the same in all",
                  .callbackSuccess = reset},
                 &m_exitFresnel, Persist::eNo);
+  settings->add({.name            = "ptWalkGuiding",
+                 .help            = "PathTracer: A scatter walk entered from a surface draws about half its steps back towards "
+                                    "it (Dwivedi guiding): the same image, sooner",
+                 .callbackSuccess = reset},
+                &m_walkGuiding, Persist::eNo);
   settings->add({.name            = "ptHairBounces",
                  .help            = "PathTracer: Fibre events a path takes through hair before they count as surface bounces (stills)",
                  .callbackSuccess = reset},
@@ -3160,6 +3165,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.adaptiveMin       = m_adaptiveMin;
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
+  m_pushConst.flags |= m_walkGuiding ? shaderio::ePtWalkGuiding : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;
