@@ -203,11 +203,10 @@ public:
   int   m_hairCutDlss{3};
   float m_hairCutTail{4.0F};
   // An accumulation's pixel stops once its mean has converged (ptAdaptiveStop, ptAdaptiveThreshold,
-  // ptAdaptiveMin; shaders/adaptive_stop.h.slang). Measured 2026-10-29 on the bench (ACES, so 0.13 in
-  // displayed brightness is 0.1 in the scene's): a 128-sample still 7.96 -> 4.95 s, 0.57/255 from the
-  // full one (two full ones differ by 0.18), 0.06/255 darker
+  // ptAdaptiveMin; shaders/adaptive_stop.h.slang). 0.09: test4's still 12.7 -> 9.0 s with its skin's
+  // pores as the full still's; at 0.11 (7.5 s) and 0.13 (6.5 s) OptiX smooths them away (2026-10-29)
   bool  m_adaptiveStop{true};
-  float m_adaptiveThreshold{0.13F};
+  float m_adaptiveThreshold{0.09F};
   int   m_adaptiveMin{32};
   SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
