@@ -175,7 +175,14 @@ std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, con
     const Json* hi      = get(ch, "max");
     part.min = lo && lo->is_number() && limited ? std::max(-1.0, lo->get<double>()) : 0;
     part.max = hi && hi->is_number() && limited ? std::min(2.0, hi->get<double>()) : 1;
-    def.parts.push_back(std::move(part));
+    // the mesh's shells take it too, remade on their own polygons
+    def.parts.push_back(part);
+    for(const MeshRef::Shell& s : f.fm->shells)
+    {
+      part.mesh   = s.mesh;
+      part.target = std::make_shared<mesh::RenderTarget>(mesh::target(*s.geo, f.deltas));
+      def.parts.push_back(part);
+    }
     out.push_back(std::move(def));
   }
   return out;

@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include <figure/dson/materials.hpp>
+#include <figure/dson/shell.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/mesh/normals.hpp>
@@ -212,7 +213,9 @@ UvSet parseUvSet(const Doc& doc, const Json& entry)
 }
 
 // The build input for a DSON geometry (src/lib/loaders/dson/geometry.ts buildGeometry).
-mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, int level, std::vector<std::string>& materialGroups)
+// `polyGroup`, when given: each polygon's facet group (its polygon_groups index)
+mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, int level, std::vector<std::string>& materialGroups,
+                          std::vector<int32_t>* polyGroup = nullptr)
 {
   const Json*     vertices = get(&geo, "vertices");
   const Json*     polylist = get(&geo, "polylist");
@@ -238,9 +241,13 @@ mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, i
     m.polyStart[pi + 1] = m.polyStart[pi] + polys->start[pi + 1] - polys->start[pi] - 2;
   m.polyVerts.resize(m.polyStart[np]);
   m.polyMaterial.resize(np);
+  if(polyGroup)
+    polyGroup->resize(size_t(np));
   for(int pi = 0; pi < np; pi++)
   {
     m.polyMaterial[pi] = toInt32(polys->cell(pi, 1));
+    if(polyGroup)
+      (*polyGroup)[size_t(pi)] = toInt32(polys->cell(pi, 0));
     for(int k = polys->start[pi] + 2, at = m.polyStart[pi]; k < polys->start[pi + 1]; k++, at++)
       m.polyVerts[at] = toInt32(polys->data[k]);
   }
@@ -773,6 +780,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     int         at;    // where the meshes go among the group's children: after its rig, before child nodes
     int         item;  // index into out.items, -1 without
     std::string defFile;  // the library file of its node definition
+    // a geometry shell: drawn as a copy of another node's mesh (shell.hpp), skinned by its rig
+    std::optional<Shell> shell;
   };
   std::vector<MeshJob>                       jobs;
   std::unordered_map<std::string, int>       itemOf;  // scene node or geometry instance id -> item
@@ -957,7 +966,11 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         }
       }
     }
-    jobs.push_back({&node, group, type, rig, int(scene.nodes[group].children.size()), item, resolved ? resolved->file : std::string()});
+    std::optional<Shell> shell = parseShell(node, def, get(sceneJson, "modifiers"), store, file);
+    if(shell && rig < 0)
+      if(auto r = rigOf.find(shell->source); r != rigOf.end())
+        rig = r->second;
+    jobs.push_back({&node, group, type, rig, int(scene.nodes[group].children.size()), item, resolved ? resolved->file : std::string(), std::move(shell)});
   }
   // the first three names and how many more
   auto someOf = [](const std::vector<std::string>& list) {
@@ -987,7 +1000,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   {
     std::vector<std::pair<const MeshJob*, const Json*>> work;
     for(const MeshJob& job : jobs)
-      if(const Json* geos = get(job.node, "geometries"); geos && geos->is_array())
+      if(const Json* geos = get(job.node, "geometries"); geos && geos->is_array() && !job.shell)
         for(const Json& g : *geos)
           work.emplace_back(&job, &g);
     std::vector<std::optional<Ahead>> results(work.size());
@@ -1090,7 +1103,22 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
       const Json* geos = get(job.node, "geometries");
       for(const Json& g : *geos)
       {
-        auto gref = parseRef(getString(&g, "url"), file);
+        // a shell's own geometry is empty: it builds its source's, the first the source's node has
+        std::string url = getString(&g, "url");
+        if(job.shell)
+        {
+          url.clear();
+          for(const Json& n : nodes)
+            if(getString(&n, "id") == job.shell->source)
+              if(const Json* sg = get(&n, "geometries"); sg && sg->is_array() && !sg->empty())
+                url = getString(&(*sg)[0], "url");
+          if(url.empty())
+          {
+            warn(firstString({{job.node, "label"}, {job.node, "id"}}) + " copies " + job.shell->source + ", which has no mesh here");
+            continue;
+          }
+        }
+        auto gref = parseRef(url, file);
         if(!gref)
           continue;
         // a mesh that costs something is timed: its file, its build, its dForce data, its skin
@@ -1153,8 +1181,18 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         }
         else
         {
-          timing::Scope tb("mesh::build", 10);
-          meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, meshOut.materialGroups)));
+          timing::Scope        tb("mesh::build", 10);
+          std::vector<int32_t> polyGroup;
+          mesh::MeshInput      input = meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, meshOut.materialGroups, job.shell ? &polyGroup : nullptr);
+          if(job.shell)
+          {
+            std::vector<std::string> facetGroups;
+            if(const Json* groups = get(get(&geo, "polygon_groups"), "values"); groups && groups->is_array())
+              for(const Json& v : *groups)
+                facetGroups.push_back(v.is_string() ? v.get<std::string>() : v.dump());
+            shellInput(input, *job.shell, meshOut.materialGroups, facetGroups, polyGroup);
+          }
+          meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
         }
 
         // materials, one per polygon material group
@@ -1264,11 +1302,14 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             }
         }
 
-        meshOut.name = firstString({{&geo, "label"}, {&geo, "name"}}, gid);
+        meshOut.name = job.shell ? firstString({{job.node, "label"}, {job.node, "name"}}, gid) : firstString({{&geo, "label"}, {&geo, "name"}}, gid);
         {
           MeshRef ref;
           ref.geo         = meshOut.geo;
           ref.geometryKey = lowerCase(gres->file + "#" + getString(&geo, "id"));
+          // a morph of the geometry targets the source, which hands it on (MeshRef::shells)
+          if(job.shell)
+            ref.geometryKey += "|shell";
           ref.owners      = {getString(job.node, "id"), gid};
           pendingRefs.push_back(std::move(ref));
         }
@@ -1303,6 +1344,12 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         if(job.item >= 0)
           out.parts.push_back(std::move(pendingParts[pi]));
         out.morphs.meshes.push_back(std::move(pendingRefs[pi]));
+        // a shell's source hands it every morph it takes, remade on the shell's polygons
+        if(job.shell)
+          if(auto src = meshNodesOf.find(job.shell->source); src != meshNodesOf.end() && !src->second.empty())
+            for(MeshRef& r : out.morphs.meshes)
+              if(r.mesh == scene.nodes[size_t(src->second[0])].mesh)
+                r.shells.push_back({meshNode.mesh, m.geo});
         scene.meshes.push_back(std::move(m));
         made.push_back(scene.add(std::move(meshNode)));
       }

@@ -316,3 +316,71 @@ TEST(SceneLoad, TheBuiltGltfHoldsTheFiguresMeshesAndSkins)
   for(const std::string& p : fv::build::checkBuild(r.scene, built, {}))
     ADD_FAILURE() << p;
 }
+
+// A DAZ geometry shell (studio/node/shell) draws its source's mesh again: pushed out along the
+// normals by its push modifier, its own surfaces only where its visibility channels keep them, and
+// moved by every morph of the source
+TEST(SceneLoad, AGeometryShellDrawsItsSourceAgainPushedOutWithoutItsHiddenSurfaces)
+{
+  const fs::path root = fs::temp_directory_path() / "fv-scene-shell-test";
+  fs::remove_all(root);
+  // the source: two unit quads side by side in the xy plane, surfaces A and B, facing +z
+  writeFile(root / "data/T/Hair/Hair.dsf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/data/T/Hair/Hair.dsf"},
+  "geometry_library":[{"id":"geometry","label":"Hair","type":"polygon_mesh",
+    "vertices":{"count":6,"values":[[0,0,0],[1,0,0],[1,1,0],[0,1,0],[2,0,0],[2,1,0]]},
+    "polylist":{"count":2,"values":[[0,0,0,1,2,3],[1,1,1,4,5,2]]},
+    "polygon_groups":{"count":2,"values":["g0","g1"]},
+    "polygon_material_groups":{"count":2,"values":["A","B"]}}],
+  "node_library":[{"id":"Hair","name":"Hair","type":"node"}]})");
+  // the shell: an empty geometry and a node, as DAZ Studio saves them
+  writeFile(root / "data/T/Layer/Layer.dsf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/data/T/Layer/Layer.dsf"},
+  "geometry_library":[{"id":"geometry","type":"polygon_mesh","vertices":{"count":0,"values":[]},
+    "polylist":{"count":0,"values":[]},"extra":[{"type":"studio/geometry/shell"}]}],
+  "node_library":[{"id":"Layer","name":"Layer","type":"node","extra":[{"type":"studio/node/shell"},
+    {"type":"studio_node_channels","channels":[{"channel":{"id":"Shell Node","type":"node","node":null}},
+      {"channel":{"id":"material_group_A_vis","type":"bool","value":true}},
+      {"channel":{"id":"material_group_B_vis","type":"bool","value":true}}]}]}]})");
+  writeFile(root / "Scenes/Room.duf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/Scenes/Room.duf"},
+  "modifier_library":[{"id":"Offset","name":"Offset","extra":[{"type":"studio/modifier/push"},
+    {"type":"studio_modifier_channels","channels":[{"channel":{"id":"Value","type":"float","value":0,"current_value":0.5}}]}]}],
+  "scene":{
+    "nodes":[
+      {"id":"Hair","url":"/data/T/Hair/Hair.dsf#Hair","geometries":[{"id":"geometry","url":"/data/T/Hair/Hair.dsf#geometry"}]},
+      {"id":"Layer 1","url":"/data/T/Layer/Layer.dsf#Layer","label":"Layer 1","parent":"#Hair",
+       "geometries":[{"id":"geometry-1","url":"/data/T/Layer/Layer.dsf#geometry"}],
+       "extra":[{"type":"studio/node/shell"},{"type":"studio_node_channels","channels":[
+         {"channel":{"id":"Shell Node","type":"node","node":"#Hair"}},
+         {"channel":{"id":"material_group_B_vis","type":"bool","current_value":false}}]}]}],
+    "modifiers":[{"id":"Offset-1","url":"#Offset","parent":"#Layer%201","extra":[{"type":"studio/modifier/push"}]}]}})");
+
+  fv::dson::Store store(std::make_shared<fv::dson::Library>(std::vector<fs::path>{root}));
+  const auto      r = fv::dson::loadDson(store, "Scenes/Room.duf");
+  EXPECT_FALSE(warned(r, "has no polygons"));
+
+  const fv::Mesh* hair  = meshNamed(r, "Hair");
+  const fv::Mesh* layer = meshNamed(r, "Layer 1");
+  ASSERT_NE(hair, nullptr);
+  ASSERT_NE(layer, nullptr);
+  EXPECT_EQ(hair->geo->fullIndex.size(), 12u);  // both quads
+  EXPECT_EQ(layer->geo->fullIndex.size(), 6u);  // surface A's quad alone
+  // pushed half a unit along +z, in the source's units: the quads are a unit wide
+  float hairZ = 0, layerZ = 1e9f, width = 0;
+  for(size_t i = 0; i < hair->geo->position.size(); i += 3)
+  {
+    hairZ = std::max(hairZ, hair->geo->position[i + 2]);
+    width = std::max(width, hair->geo->position[i]);
+  }
+  for(uint32_t v : layer->geo->fullIndex)
+    layerZ = std::min(layerZ, layer->geo->position[size_t(v) * 3 + 2]);
+  EXPECT_NEAR(layerZ - hairZ, 0.5f * width / 2.f, 1e-5f);
+
+  // the source's morph ref hands its morphs to the shell
+  const int layerMesh = meshIndex(r, "Layer 1");
+  bool      handed    = false;
+  for(const auto& ref : r.morphs.meshes)
+    if(ref.mesh == meshIndex(r, "Hair"))
+      for(const auto& s : ref.shells)
+        handed |= s.mesh == layerMesh;
+  EXPECT_TRUE(handed);
+  fs::remove_all(root);
+}

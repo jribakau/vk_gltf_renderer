@@ -26,6 +26,13 @@ struct MeshRef
   std::string geometryKey;
   // scene node and geometry instance ids: what a scene's morph dials name as their parent
   std::vector<std::string> owners;
+  // geometry shells drawn as copies of this mesh (shell.hpp): a morph of it moves them too
+  struct Shell
+  {
+    int                              mesh = -1;
+    std::shared_ptr<mesh::BuiltMesh> geo;
+  };
+  std::vector<Shell> shells;
 };
 
 using TargetPtr = std::shared_ptr<const mesh::RenderTarget>;

@@ -447,6 +447,8 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   for(dson::MeshRef ref : w.morphs.meshes)
   {
     ref.mesh += meshBase;
+    for(dson::MeshRef::Shell& s : ref.shells)
+      s.mesh += meshBase;
     itemRefs.push_back(ref);
     loaded.morphs.meshes.push_back(ref);
   }
