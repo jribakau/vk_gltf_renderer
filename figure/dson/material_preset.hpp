@@ -48,6 +48,10 @@ struct MaterialPresetResult
   std::set<std::string> matched;
 };
 
+// What `missing` and `matched` call the surfaces of a preset made for the selection (a shader
+// preset that names no surface): those whose shader is the one it names.
+inline constexpr const char* kSelectionSurfaces = "the surfaces with its shader";
+
 // `only`: the materials that may take it (the rest of the preset is left out, and its surfaces count
 // as missing when none of theirs is among them). `definitions`: definitionsIn(doc); without them a
 // shader switch starts from the entry's own channels.

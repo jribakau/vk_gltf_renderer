@@ -3129,6 +3129,37 @@ TEST(Materials, AWholePresetOfTheSameLegacyFamilyOnlyOverrides)
   EXPECT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::eUberSurface);
 }
 
+// FeSoul's hair colours are shader presets for the selection: "name://@selection#materials:?…"
+// names no surface. They go on the surfaces with the shader they name (the OmniHair strands), not
+// on the scalp cap, whose shader is Iray Uber.
+TEST(Materials, APresetForTheSelectionGoesOnTheSurfacesWithItsShader)
+{
+  constexpr const char* kOmniHair = "data/Daz 3D/Built-in Content/OmniSurface/OmniHair Root-Tip Blend.dsf#OmniHair Root-Tip Blend";
+  fv::SceneGraph        scene;
+  for(const char* name : {"Hair_Front1", "Hair_Back1"})
+  {
+    fv::dson::Channels ch = channelsOf(omniHair().c_str());
+    ch.setShader({"studio/material/daz_brick", kOmniHair});
+    scene.materials.push_back(fv::dson::buildMaterial(name, ch));
+  }
+  scene.materials.push_back(fv::dson::buildMaterial("Cap", channelsOf(kSkin)));
+  const Json preset = Json::parse(R"({"scene":{
+    "materials":[{"url":"/data/Daz%203D/Built-in%20Content/OmniSurface/OmniHair%20Root-Tip%20Blend.dsf#OmniHair%20Root-Tip%20Blend",
+      "extra":[{"type":"studio/material/daz_brick"}]}],
+    "animations":[{"url":"name://@selection#materials:?extra/studio_material_channels/channels/Melanin/value","keys":[[0,0.9]]}]}})");
+  const auto result = fv::dson::applyMaterialPreset(preset, scene);
+  EXPECT_EQ(result.changed, std::set<int>({0, 1}));
+  EXPECT_EQ(result.matched, std::set<std::string>({fv::dson::kSelectionSurfaces}));
+  EXPECT_TRUE(result.missing.empty());
+  EXPECT_EQ(channelOf(scene.materials[1], "Melanin")->value, 0.9);
+  EXPECT_EQ(channelOf(scene.materials[2], "Melanin"), nullptr);
+  // without a shader to go by, it goes nowhere
+  const Json bare = Json::parse(R"({"scene":{"animations":[{"url":"name://@selection#materials:?extra/studio_material_channels/channels/Melanin/value","keys":[[0,0.1]]}]}})");
+  const auto none = fv::dson::applyMaterialPreset(bare, scene);
+  EXPECT_TRUE(none.changed.empty());
+  EXPECT_EQ(none.missing, std::set<std::string>({fv::dson::kSelectionSurfaces}));
+}
+
 TEST(Materials, APartialPresetOfAnotherShaderOnlyOverrides)
 {
   // a CJ skin shine: one PBRSkin channel and its map, on an Uber head

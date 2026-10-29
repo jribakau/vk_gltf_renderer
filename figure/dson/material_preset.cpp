@@ -174,7 +174,8 @@ Overrides parseOverrides(const Json& doc, int* edits)
     return bySurface;
   std::unordered_map<std::string, std::string> images;
   collectImages(doc, images);
-  static const std::regex url(R"(^(.*?)#materials/([^:]+):\?(.+)$)");
+  // "#materials/<surface>:?…", or "#materials:?…" for the surfaces selected when it is applied
+  static const std::regex url(R"(^(.*?)#materials(?:/([^:]+))?:\?(.+)$)");
   for(const Json& a : *animations)
   {
     const std::string u = getString(&a, "url");
@@ -368,6 +369,37 @@ MaterialDefinitions definitionsIn(const Json& doc, Store& store)
   return out;
 }
 
+namespace {
+
+// The material a preset applies to whatever surfaces are selected names no group. DAZ Studio puts
+// it on the selection; here that is every surface whose shader is the one it names (FeSoul's hair
+// colours: the OmniHair strands, not the scalp cap). Without a shader to go by, none.
+std::vector<int> selectionTargets(const Json& doc, const SceneGraph& scene)
+{
+  const auto lowered = [](std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return s;
+  };
+  std::string shader;
+  if(const Json* materials = get(get(&doc, "scene"), "materials"); materials && materials->is_array())
+    for(const Json& m : *materials)
+      if(!m.contains("groups"))
+        if(const auto ref = parseRef(getString(&m, "url"), ""); ref && !ref->id.empty())
+        {
+          shader = lowered(ref->file + "#" + ref->id);
+          break;
+        }
+  std::vector<int> out;
+  if(shader.empty())
+    return out;
+  for(size_t i = 0; i < scene.materials.size(); i++)
+    if(lowered(scene.materials[i].surface.dazShader.url) == shader)
+      out.push_back(int(i));
+  return out;
+}
+
+}  // namespace
+
 MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only, const MaterialDefinitions& definitions)
 {
   MaterialPresetResult                         result;
@@ -377,13 +409,14 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, con
   {
     const auto& [chain, surface] = key;
     bool             stray   = false;
-    std::vector<int> targets = presetTargets(scene, chain, surface, &stray);
+    std::vector<int> targets = surface.empty() ? selectionTargets(doc, scene) : presetTargets(scene, chain, surface, &stray);
     if(only)
       std::erase_if(targets, [&](int i) { return !only->count(i); });
+    const std::string label = surface.empty() ? kSelectionSurfaces : surface;
     if(targets.empty())
-      result.missing.insert(surface);
+      result.missing.insert(label);
     else
-      result.matched.insert(surface);
+      result.matched.insert(label);
     // made for an item the scene doesn't have (fiber brows' colour on card brows): its values, but
     // not the maps it removes, which that item never had and this one is drawn by
     std::vector<ChannelOverride> kept = overrides;
