@@ -46,6 +46,7 @@
 #include <future>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <source_location>
 #include <set>
 #include <thread>
@@ -153,6 +154,9 @@ struct Loaded
   // a wardrobe change builds the glTF again with these and the new items' own
   std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
   bool                                                                    texturesFlipped = false;
+  // cooks that landed on a worker for its fallbacks (cookInPlace), for the application thread to take
+  std::mutex                                                                    landedMutex;
+  std::vector<std::pair<fv::build::TextureRequest, fv::build::TextureImage>> landed;
   // its DAZ library, for source textures and what it wears (the settings mutex)
   std::shared_ptr<fv::dson::Library> lib;
   // how it was opened ({rel} or {path}), for a scene file
@@ -278,6 +282,12 @@ public:
     for(httplib::Client* cli : m_live)
       cli->stop();
   }
+  // a host attaching again (another in the same process: the tests) sends them again
+  void resume()
+  {
+    std::lock_guard lock(m_mutex);
+    m_stopped = false;
+  }
 
 private:
   std::mutex                 m_mutex;
@@ -398,9 +408,12 @@ TextureCalls& textureCalls();
 // answers at once instead, `uncooked` when it isn't cooked.
 CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureRequest& req, bool flip, bool cachedOnly, bool quiet = false);
 
-// Cooks textures for a later load, on a thread of its own: a figure shows with its source images
-// rather than wait for these.
-void cookLater(const HostSettings& s, std::vector<fv::build::TextureRequest> requests);
+// Cooks textures (flipped) side by side, colour maps first (a normal map cooks about ten times
+// slower), and returns once all are done; `landed` is called with each as it lands, on the thread
+// that cooked it. FvHost::Impl::cookInPlace runs it for a figure on a cold cache.
+void cookAll(const HostSettings&                                                                  s,
+             std::vector<fv::build::TextureRequest>                                               requests,
+             const std::function<void(const fv::build::TextureRequest&, fv::build::TextureImage)>& landed);
 
 // The source image as it is, for a renderer without a texture server (tests, a standalone run).
 std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& lib, const fv::build::TextureRequest& req);
@@ -413,6 +426,16 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
 // read) are cooked, unflipped, and waited for; without a cooker, or with Original textures (only
 // what the renderer cannot read is cooked then), they are composed here too (fv_textures.hpp).
 std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker);
+
+// A figure's textures, several resolved at once. In a figure built for the cooked images (`flipped`,
+// which needs the cooker): the cooked one where the cache has it, else the fallback, its request
+// added to `uncooked` (a source's rows run the other way, which its material's slot turns over). In
+// one built for the sources: the fallbacks.
+std::vector<std::optional<fv::build::TextureImage>> resolveTextures(const HostSettings&                           s,
+                                                                    const fv::dson::Library*                      lib,
+                                                                    const std::vector<fv::build::TextureRequest>& requests,
+                                                                    bool                                          flipped,
+                                                                    std::vector<fv::build::TextureRequest>&       uncooked);
 
 // Genesis 9's brows ship a grey placeholder surface; DAZ's post-load script (Remove Duplicate
 // Eyebrows.dse, encrypted) lays the default brow material over it, which a character's own preset
@@ -737,9 +760,16 @@ struct FvHost::Impl
                fv::mat::SkinMode                                                       skin,
                std::shared_ptr<fv::dson::Library>                                      lib,
                std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images,
+               std::vector<fv::build::TextureRequest>                                  uncooked,
                Json                                                                    source,
                std::function<void(std::shared_ptr<Prop>)>                              then,
                std::string                                                             id);
+  // A figure on a cold texture cache: `requests` (shown with their fallbacks) cooked on a worker, each
+  // swapped in as it lands (takeLanded), so the figure ends with every image cooked without a reload
+  void cookInPlace(const std::shared_ptr<Loaded>& f, std::vector<fv::build::TextureRequest> requests);
+  // The cooks that landed for `f` since the last call: its images, its feed's textures, and the
+  // materials that sample them lowered again (with their edits)
+  void takeLanded(Loaded& f);
   // wardrobe: what a figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
   struct WearRequest
   {

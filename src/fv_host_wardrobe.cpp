@@ -165,20 +165,10 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
     };
     using Clock          = std::chrono::steady_clock;
     const auto msSince   = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
-    // textures, the way the figure's were made: bottom-up cooked, or the sources; several at once
-    const auto cook = [&](const std::vector<fv::build::TextureRequest>& requestsOf) {
-      std::vector<std::optional<fv::build::TextureImage>> found(requestsOf.size());
-      std::atomic<size_t>                                 next{0};
-      std::vector<std::thread>                            workers;
-      const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
-      for(int w = 0; w < std::min<int>(8, int(requestsOf.size())); w++)
-        workers.emplace_back([&] {
-          for(size_t k; (k = next++) < requestsOf.size();)
-            found[k] = target->texturesFlipped ? (cooker ? cookedTexture(s, requestsOf[k], true, false).image : std::nullopt) :
-                                                 (lib ? fallbackTexture(s, *lib, requestsOf[k], cooker) : std::nullopt);
-        });
-      for(auto& w : workers)
-        w.join();
+    // textures, the way the figure's were made: cooked where the cache has them (the rest cooked in
+    // place once it is worn), or the sources; several at once
+    const auto cook = [&](const std::vector<fv::build::TextureRequest>& requestsOf, std::vector<fv::build::TextureRequest>& uncooked) {
+      auto found = resolveTextures(s, lib.get(), requestsOf, target->texturesFlipped, uncooked);
       prefetchImages(requestsOf, found);
       return found;
     };
@@ -228,6 +218,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
     {
       std::shared_ptr<fv::Figure::PreparedWear>                               prepared;
       std::unordered_map<std::string, std::optional<fv::build::TextureImage>> images;
+      std::vector<fv::build::TextureRequest>                                  uncooked;  // shown with their fallbacks
       double                                                                  msPrep = 0, msStrands = 0, msWorker = 0;
       std::string                                                             error;
       // the Iray preset it took as it went on (WearRequest::iray), and its document
@@ -298,7 +289,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
         fv::timing::Scope t("textures");
         const auto        requestsOf = fv::build::textureRequests(preparedScene, skin);
-        const auto        found      = cook(requestsOf);
+        const auto        found      = cook(requestsOf, slot.uncooked);
         for(size_t k = 0; k < requestsOf.size(); k++)
           slot.images[fv::build::requestKey(requestsOf[k])] = found[k];
       }
@@ -342,7 +333,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       auto done = std::make_shared<std::promise<bool>>();
       auto ok   = done->get_future();
       post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, only = request.only, step = request.step, label,
-            images = std::move(slot.images), done, autoColor = slot.autoColor, autoColorDoc = slot.autoColorDoc]() mutable {
+            images = std::move(slot.images), uncooked = std::move(slot.uncooked), done, autoColor = slot.autoColor,
+            autoColorDoc = slot.autoColorDoc]() mutable {
         if(!inScene(target))
         {
           done->set_value(false);
@@ -387,6 +379,8 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           }
           for(auto& [key, image] : images)
             target->images.insert_or_assign(key, std::move(image));
+          if(!uncooked.empty())
+            cookInPlace(target, std::move(uncooked));
           // the Iray preset it took is its colour: undo, a scene file and "own" treat it as one
           if(!autoColor.empty() && autoColorDoc)
           {

@@ -31,7 +31,8 @@ struct TextureImage
 {
   std::string uri;       // absolute path
   std::string mimeType;  // "image/ktx2" for a cooked file (KHR_texture_basisu), else the source's
-  // the image's rows run bottom-up (flipped for the DSON UVs); the build flips the UVs otherwise
+  // the image's rows run bottom-up (flipped for the DSON UVs). An image that runs the other way than
+  // BuildOptions::texturesFlipped is sampled with its V turned over (mat::ResolvedTexture::flipRows)
   bool flipped = false;
   // a normal map as the source holds it, green not inverted: the material says so (FV_texture_flip_green)
   bool flipGreen = false;
@@ -41,7 +42,8 @@ struct BuildOptions
 {
   // The image for a texture, or none to leave the slot empty (a flat colour shows).
   std::function<std::optional<TextureImage>(const TextureRequest&)> texture;
-  // Whether textures arrive flipped (decides the UVs; every texture must agree).
+  // Whether textures arrive flipped: decides the UVs (the build flips them otherwise). One that
+  // doesn't agree samples through a transform that turns its V over.
   bool texturesFlipped = false;
   // How skin is sent to the path tracer.
   mat::SkinMode skin = mat::SkinMode::eVolume;

@@ -137,7 +137,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   non-destructive and fully undoable — route them through the editor +
   `undo_redo` system, not ad-hoc. A stream session's scene is the host's: it
   edits the retained store through its mutation API only (the feed, the
-  importer, entity and record edits), and undo is the app's.
+  importer, entity and record edits), and undo is the host's edit history
+  (`src/fv_journal.hpp`, the `history.*` commands), not `undo_redo`.
 - **Scene, model, and Vulkan state is application-thread-owned.** An MCP tool
   that touches them sets `runOnApplicationThread` and stays short. A tool that
   waits on rendered frames must not, since the application thread is the one

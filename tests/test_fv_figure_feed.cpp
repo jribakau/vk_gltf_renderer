@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <numeric>
 #include <set>
 
 #include <figure/figure.hpp>
@@ -646,6 +647,98 @@ TEST(FigureFeed, ATexturesRecordHoldsItsFilesPathNotItsUri)
     EXPECT_TRUE(fs::is_regular_file(fs::path(std::u8string(record->uri.begin(), record->uri.end())))) << record->uri;
   }
   fs::remove_all(dir);
+}
+
+// A figure on a cold texture cache is built for the cooked images and shows each missing one's source
+// until its cook lands: the source's slots sample it with V turned over, and the cook takes its
+// place in every table that held it (the materials keep their indices), the turn goes, and the
+// source's record leaves the store.
+TEST(FigureFeed, ACookThatLandsTakesItsSourcesPlace)
+{
+  const auto                                     f = loadBox("People/Test/Box Figure PBRSkin.duf");
+  const fv::SceneGraph&                          scene = f->loaded.scene;
+  std::map<std::string, fv::build::TextureImage> cooked;  // by request key, once cooked
+  fv::build::BuildOptions                        options;
+  options.texturesFlipped = true;
+  options.texture         = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+    if(const auto it = cooked.find(fv::build::requestKey(req)); it != cooked.end())
+      return it->second;
+    return fv::build::TextureImage{.uri = (kLibrary / req.rel).generic_string(), .mimeType = "image/png"};
+  };
+  rs::RetainedScene store;
+  fv::FigureFeed    feed(store, {.build = options});
+  feed.sync(scene, f->loaded.root);
+  const auto requests = fv::build::textureRequests(scene, options.skin);
+  ASSERT_GE(requests.size(), 2u);
+  const size_t slots = feed.textures()->size();
+  ASSERT_GT(slots, 0u);
+  std::vector<rs::TextureId> sources;
+  for(const rs::TextureRef& ref : *feed.textures())
+    sources.push_back(ref.texture);
+
+  // per material slot that samples a texture: whether its image is a cook, and whether V turns over
+  struct Sampled
+  {
+    bool cook = false, turned = false;
+  };
+  const auto sampled = [&] {
+    std::vector<Sampled> out;
+    for(size_t mi = 0; mi < scene.materials.size(); mi++)
+    {
+      const rs::MaterialRecord* r = store.material(feed.materialOf(int(mi)));
+      if(!r)
+        continue;
+      const tinygltf::Material& m = r->payload;
+      for(const tinygltf::TextureInfo* info : {&m.pbrMetallicRoughness.baseColorTexture, &m.pbrMetallicRoughness.metallicRoughnessTexture, &m.emissiveTexture})
+        if(info->index >= 0)
+        {
+          const rs::TextureRecord* t  = store.texture((*r->textures)[size_t(info->index)].texture);
+          const auto               tt = info->extensions.find("KHR_texture_transform");
+          out.push_back({t && t->mimeType == "image/ktx2",
+                         tt != info->extensions.end() && tt->second.Get("scale").Get(1).GetNumberAsDouble() < 0});
+        }
+      if(m.normalTexture.index >= 0)
+      {
+        const rs::TextureRecord* t  = store.texture((*r->textures)[size_t(m.normalTexture.index)].texture);
+        const auto               tt = m.normalTexture.extensions.find("KHR_texture_transform");
+        out.push_back({t && t->mimeType == "image/ktx2",
+                       tt != m.normalTexture.extensions.end() && tt->second.Get("scale").Get(1).GetNumberAsDouble() < 0});
+      }
+    }
+    return out;
+  };
+  const auto expectTurnedWhereSource = [&](const std::string& when) {
+    const std::vector<Sampled> all = sampled();
+    ASSERT_FALSE(all.empty()) << when;
+    for(const Sampled& x : all)
+      EXPECT_EQ(x.turned, !x.cook) << when;
+  };
+  expectTurnedWhereSource("all sources");
+
+  std::vector<int> all(scene.materials.size());
+  std::iota(all.begin(), all.end(), 0);
+  const auto land = [&](size_t from, size_t to) {
+    for(size_t i = from; i < to; i++)
+      cooked[fv::build::requestKey(requests[i])] = {.uri = "/cache/" + std::to_string(i) + ".ktx2", .mimeType = "image/ktx2", .flipped = true};
+    EXPECT_TRUE(feed.retexture(std::span(requests).subspan(from, to - from)));
+    EXPECT_TRUE(feed.syncMaterials(scene, all));
+  };
+  // one cook, then the rest
+  land(0, 1);
+  expectTurnedWhereSource("one cooked");
+  land(1, requests.size());
+  expectTurnedWhereSource("all cooked");
+  for(const Sampled& x : sampled())
+    EXPECT_TRUE(x.cook);
+
+  // the materials kept their indices: the table is as long, and every source is gone from the store
+  EXPECT_EQ(feed.textures()->size(), slots);
+  for(rs::TextureId t : sources)
+    EXPECT_EQ(store.texture(t), nullptr);
+  for(const std::string& problem : fv::checkFeed(scene, f->loaded.root, feed, store, options))
+    ADD_FAILURE() << problem;
+  // a request it never fed is the next lowering's
+  EXPECT_FALSE(feed.retexture(std::vector<fv::build::TextureRequest>{{.rel = "/Runtime/Textures/none.png"}}));
 }
 
 // checkFeed bites: a fed record corrupted through the store's edits is caught, each as its problem.

@@ -578,6 +578,17 @@ void FvMaterials::setSkinMode(fv::mat::SkinMode skin)
   refresh(all);
 }
 
+void FvMaterials::rewrite()
+{
+  if(!m_scene || m_model)
+    return;
+  std::set<int> all;
+  for(size_t i = 0; i < m_count; i++)
+    if(!m_waiting.count(int(i)))
+      all.insert(int(i));
+  write(all);
+}
+
 void FvMaterials::hold()
 {
   m_held = true;

@@ -627,7 +627,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     else
       t.source = int(model.images.size()) - 1;
     model.textures.push_back(std::move(t));
-    return textureOf[key] = {int(model.textures.size()) - 1, image->flipGreen};
+    return textureOf[key] = {int(model.textures.size()) - 1, image->flipGreen, image->flipped != options.texturesFlipped};
   };
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {

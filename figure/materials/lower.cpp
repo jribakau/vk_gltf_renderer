@@ -757,6 +757,12 @@ UvTransform mirroredV(const UvTransform& t)
   return out;
 }
 
+UvTransform rowsFlipped(const UvTransform& t)
+{
+  // F(u, v) = (u, 1 − v) after T + R(θ)·S: F·(T + R(θ)·S·uv) = (T_u, 1 − T_v) + R(−θ)·diag(s_u, −s_v)·uv
+  return {.scale = {t.scale[0], -t.scale[1]}, .offset = {t.offset[0], 1 - t.offset[1]}, .rotation = -t.rotation};
+}
+
 float emissionStrength(const Surface& s, double areaM2, double exposureValue, double iso)
 {
   if(!s.emission || !s.emission->luminance)
@@ -825,6 +831,26 @@ void resolveSlots(Json& v, const Lowered& lowered, const std::function<ResolvedT
     Json extensions = v.contains("extensions") ? v["extensions"] : Json::object();
     if(t.flipGreen)
       extensions["FV_texture_flip_green"] = Json::object();
+    if(t.flipRows)
+    {
+      Json&       tt = extensions["KHR_texture_transform"];
+      UvTransform was;
+      if(tt.is_object())
+      {
+        was.scale    = tt.value("scale", std::array<float, 2>{1, 1});
+        was.offset   = tt.value("offset", std::array<float, 2>{0, 0});
+        was.rotation = tt.value("rotation", 0.f);
+      }
+      else
+        tt = Json::object();
+      const UvTransform flipped = rowsFlipped(was);
+      tt["scale"]               = Json::array({flipped.scale[0], flipped.scale[1]});
+      tt["offset"]              = Json::array({flipped.offset[0], flipped.offset[1]});
+      if(flipped.rotation != 0)
+        tt["rotation"] = flipped.rotation;
+      else
+        tt.erase("rotation");
+    }
     if(!extensions.empty())
     {
       for(auto it = extensions.begin(); it != extensions.end(); ++it)
