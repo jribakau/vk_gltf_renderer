@@ -1284,29 +1284,63 @@ TEST(Materials, AToneAndAMakeupColourLowerIntoTheBaseMap)
   EXPECT_TRUE(merged.tone && merged.makeupColor && merged.makeupWeight && merged.toneStrength);
 }
 
-// PBRSkin's Makeup Metallicity Enable: the metallic weight is the makeup's. Without the makeup layer
-// there is no metal (Polina 9's head: Metallic Weight 1, its makeup off, skin in Iray); with it, the
-// metal goes where the makeup is, as strongly; with the switch off, Metallic Weight is the surface's.
-TEST(Materials, MakeupMetallicityIsMetalOnlyWhereTheMakeupIs)
+// pbr_skin.mdl: the metal layer is there only with Metallicity Enable (false in PBRSkin.dsf), weighted
+// by Metallic Weight times its map; Makeup Metallicity Enable, with the makeup on, only tints it with
+// the made-up colour. IST Esme's lip presets: metal 0.2912088 x LipMask, makeup 0.7509727 x LipMask,
+// both switches on: metal on the lips alone. Polina 9's head: Metallic Weight 1 and no Metallicity
+// Enable, so skin. Iray Uber has no switch.
+TEST(Materials, MetallicityEnableGatesTheMetalAndMakeupMetallicityOnlyTintsIt)
 {
-  const auto skin = [](bool makeup, bool metallicity) {
+  const auto skin = [](const char* metallicity, bool makeup, bool makeupMetallicity) {
     std::string c = R"({"extra":[{"type":"studio/material/daz_brick","channels":[
       {"channel":{"id":"Diffuse Enable","type":"bool","current_value":true}},
       {"channel":{"id":"Detail Enable","type":"bool","current_value":false}},
-      {"channel":{"id":"Metallic Weight","type":"float","current_value":1}},
-      {"channel":{"id":"Makeup Weight","type":"float","current_value":0.8,"image_file":"/mask.png"}},)";
+      {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/head_d.jpg"}},
+      {"channel":{"id":"Metallic Weight","type":"float","current_value":0.2912088,"image_file":"/lipmask.png"}},
+      {"channel":{"id":"Makeup Base Color","type":"color","current_value":[0.6,0.1,0.1]}},
+      {"channel":{"id":"Makeup Weight","type":"float","current_value":0.7509727,"image_file":"/lipmask.png"}},)";
+    if(metallicity)
+      c += std::string(R"({"channel":{"id":"Metallicity Enable","type":"bool","current_value":)") + metallicity + "}},";
     c += std::string(R"({"channel":{"id":"Makeup Enable","type":"bool","current_value":)") + (makeup ? "true" : "false") + "}},";
-    c += std::string(R"({"channel":{"id":"Makeup Metallicity Enable","type":"bool","current_value":)") + (metallicity ? "true" : "false") + "}}";
+    c += std::string(R"({"channel":{"id":"Makeup Metallicity Enable","type":"bool","current_value":)") + (makeupMetallicity ? "true" : "false") + "}}";
     c += "]}]}";
     return fv::dson::parseSurface("Head", channelsOf(c.c_str()));
   };
-  const auto bare = skin(false, true);
-  EXPECT_FLOAT_EQ(bare.metallic.value, 0);
-  EXPECT_TRUE(bare.metallic.map.empty());
-  const auto madeUp = skin(true, true);
-  EXPECT_FLOAT_EQ(madeUp.metallic.value, 0.8f);
-  EXPECT_EQ(madeUp.metallic.map, "/mask.png");
-  EXPECT_FLOAT_EQ(skin(false, false).metallic.value, 1);
+  // both switches on: Metallic Weight and its map, untouched by the makeup's weight
+  const auto lips = skin("true", true, true);
+  EXPECT_FLOAT_EQ(lips.metallic.value, 0.2912088f);
+  EXPECT_EQ(lips.metallic.map, "/lipmask.png");
+  ASSERT_TRUE(lips.makeup);
+  EXPECT_FLOAT_EQ(lips.makeup->weight, 0.7509727f);
+  EXPECT_FLOAT_EQ(skin("true", true, false).metallic.value, 0.2912088f);
+  // the makeup off changes nothing about the metal
+  const auto bare = skin("true", false, true);
+  EXPECT_FLOAT_EQ(bare.metallic.value, 0.2912088f);
+  EXPECT_EQ(bare.metallic.map, "/lipmask.png");
+  // no Metallicity Enable is PBRSkin's default, off
+  for(const char* off : {static_cast<const char*>(nullptr), "false"})
+  {
+    const auto s = skin(off, true, true);
+    EXPECT_FLOAT_EQ(s.metallic.value, 0);
+    EXPECT_TRUE(s.metallic.map.empty());
+  }
+  // Iray Uber: no switch, the weight and its mask as they are
+  const auto belt = fv::dson::parseSurface("BeltHolster_Metal_Mat", channelsOf(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+    {"channel":{"id":"Metallic Weight","type":"float","current_value":1,"image_file":"/Belt M.jpg"}}]}]})"));
+  EXPECT_FLOAT_EQ(belt.metallic.value, 1);
+  EXPECT_EQ(belt.metallic.map, "/Belt M.jpg");
+
+  // lowered: the metal reflects the made-up base colour, on the lips alone
+  const auto l = fv::mat::lower(lips, {}, {});
+  const auto& pbr = l.material["pbrMetallicRoughness"];
+  EXPECT_FLOAT_EQ(pbr["metallicFactor"].get<float>(), 0.2912088f);
+  const fv::mat::TextureRequest& metal = l.requests[pbr["metallicRoughnessTexture"]["slot"].get<size_t>()];
+  EXPECT_EQ(metal.rel, "/lipmask.png");
+  EXPECT_EQ(metal.channels, "mt");
+  EXPECT_TRUE(metal.metalRel.empty());
+  const fv::mat::TextureRequest& base = l.requests[pbr["baseColorTexture"]["slot"].get<size_t>()];
+  ASSERT_TRUE(base.makeup);
+  EXPECT_EQ(base.makeup->weightRel, "/lipmask.png");
 }
 
 // Iray's metal is Metallic Weight times its map, a mask (RE4R Ada Wong's belt: weight 1, metal only

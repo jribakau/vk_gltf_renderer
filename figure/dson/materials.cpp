@@ -579,7 +579,10 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     s.bumpMap      = imageOf(bumpCh);
     s.bumpStrength = float(num(bumpCh, 1));
   }
-  s.metallic = scalar(find({"Metallic Weight", "Metallicity"}), 0);
+  // Metallic Weight times its map (Iray's texture brick). PBRSkin's metal layer is on only with
+  // Metallicity Enable, off in PBRSkin.dsf: Polina 9's head sets Metallic Weight 1 without it and
+  // shows skin in Iray. Iray Uber has no such switch.
+  s.metallic = enabled("Metallicity Enable") ? scalar(find({"Metallic Weight", "Metallicity"}), 0) : ScalarMap{};
   // hair and lashes use refraction to let light through the strands, not as glass
   if(refr && s.kind != Kind::eHair && s.kind != Kind::eLashes)
     s.refraction = Surface::Refraction{float(num(refr, 0)), float(num(find({"Refraction Index", "ior"}), 1.4)), imageOf(refr)};
@@ -600,20 +603,9 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   }
   if(pbrSkin && enabled("Makeup Enable"))
     s.makeup = readMakeup(find);
-  // PBRSkin's Makeup Metallicity: the metallic is the makeup's, where it is painted and as strongly.
-  // No makeup, no metal: Polina 9's head sets Metallic Weight 1 with it on and its makeup off, and
-  // Iray shows skin, where the whole head would otherwise be bronze.
-  if(pbrSkin && truthy(find({"Makeup Metallicity Enable"})))
-  {
-    if(!s.makeup)
-      s.metallic = {};
-    else
-    {
-      s.metallic.value *= s.makeup->weight;
-      if(s.metallic.map.empty())
-        s.metallic.map = s.makeup->weightMap;
-    }
-  }
+  // PBRSkin's Makeup Metallicity Enable only tints the metal: with the makeup on, Iray's metal takes
+  // the base colour with the makeup laid over, which is the glTF base colour the metal reflects. Its
+  // weight is Metallic Weight's alone (Metallicity Enable, above).
   // 0 is authored: the highlight stays round. Absent is not the same thing.
   if(anisoCh)
     s.glossyAnisotropy = float(clamp01(num(anisoCh, 0)));
