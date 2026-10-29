@@ -34,14 +34,47 @@ Rgb lerp(const Rgb& a, const Rgb& b, float t)
 
 struct Builder
 {
-  std::vector<TextureRequest> requests;
-  bool                        flipV = false;  // LowerOptions::flipV
-  UvTransform                 uv;             // where the surface's own maps sample (surfaceUv)
+  std::vector<TextureRequest>             requests;
+  bool                                    flipV = false;  // LowerOptions::flipV
+  UvTransform                             uv;             // where the surface's own maps sample (surfaceUv)
+  const std::map<std::string, MapTiling>* mapTiling = nullptr;  // Surface::mapTiling
+
+  // The tiling of its own a request's images share (a cooked image is sampled once, so its sources
+  // must agree, or it keeps the surface's alone), and that a rotated surface transform can take: a
+  // map tiled differently across and down would no longer turn with the rest.
+  MapTiling tilingOf(const TextureRequest& req) const
+  {
+    std::optional<MapTiling> shared;
+    for(const std::string* rel : {&req.rel, &req.alphaRel, &req.bumpRel, req.makeup ? &req.makeup->colorRel : nullptr,
+                                  req.makeup ? &req.makeup->weightRel : nullptr})
+    {
+      if(!rel || rel->empty())
+        continue;
+      MapTiling t;
+      if(mapTiling)
+        if(const auto it = mapTiling->find(*rel); it != mapTiling->end())
+          t = it->second;
+      if(shared && *shared != t)
+        return {};
+      shared = t;
+    }
+    if(!shared || (uv.rotation != 0 && shared->tiles[0] != shared->tiles[1]))
+      return {};
+    return *shared;
+  }
 
   // A texture info for a request, sampled through `own` (a detail layer's tiling) or else the
-  // surface's transform: KHR_texture_transform when that is not the identity.
+  // surface's transform with the map's own tiling over it: KHR_texture_transform when that is not
+  // the identity.
   Json info(TextureRequest req, std::optional<float> scale = std::nullopt, std::optional<UvTransform> own = std::nullopt)
   {
+    // the map samples at Ti·(T + R·S·uv) + Oi: a panel offset moves it with every other map
+    UvTransform surface = uv;
+    if(const MapTiling t = own ? MapTiling{} : tilingOf(req); t != MapTiling{})
+    {
+      surface.scale  = {t.tiles[0] * uv.scale[0], t.tiles[1] * uv.scale[1]};
+      surface.offset = {t.tiles[0] * uv.offset[0] + t.offset[0], t.tiles[1] * uv.offset[1] + t.offset[1]};
+    }
     // a layered image: the bottom layer is the source, the rest go over it
     if(req.rel.find(kLayerSeparator) != std::string::npos)
     {
@@ -53,7 +86,7 @@ struct Builder
     Json out{{"slot", int(requests.size()) - 1}, {"texCoord", 0}};
     if(scale)
       out["scale"] = *scale;
-    if(const UvTransform& daz = own ? *own : uv; !daz.identity())
+    if(const UvTransform& daz = own ? *own : surface; !daz.identity())
     {
       // DAZ samples at offset + R·S·v; with v' = 1 − v and the image unflipped that is its mirror
       const UvTransform t  = flipV ? mirroredV(daz) : daz;
@@ -199,8 +232,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   if(auto fabric = fabricDetail(e, opts.metresPerUv))
     s.detail = std::move(fabric);
   Builder b;
-  b.flipV = opts.flipV;
-  b.uv    = surfaceUv(s, e);
+  b.flipV     = opts.flipV;
+  b.uv        = surfaceUv(s, e);
+  b.mapTiling = &s.mapTiling;
   Json           ext   = Json::object();
   Json           out   = {{"name", s.name}};
   auto           lobes = specularLobes(s);
@@ -337,9 +371,13 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // normal: the normal map and the bump map together when a surface has both (glTF has one slot),
   // else whichever one it has. DAZ skin keeps pores in the bump map. The bump strength is baked
   // into the blend; the normal map's strength stays the glTF scale. A bump's height is per the
-  // authored tile, so the panel's tiling changes no bake.
+  // authored tile, the surface's times the map's own, so the panel's tiling changes no bake.
   const float authoredTiles = std::sqrt(std::abs(s.tiles[0] * s.tiles[1]));
-  Json        normal;
+  const auto  tilesOf       = [&](const TextureRequest& r) {
+    const MapTiling t = b.tilingOf(r);
+    return authoredTiles * std::sqrt(std::abs(t.tiles[0] * t.tiles[1]));
+  };
+  Json normal;
   if(!s.normalMap.empty() && !s.bumpMap.empty())
   {
     TextureRequest r;
@@ -348,7 +386,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     r.channels     = "ng";
     r.bumpRel      = s.bumpMap;
     r.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
-    r.bumpHeight   = bumpHeightInUv(opts.metresPerUv, authoredTiles, s.bumpRange.value_or(kBumpHeight));
+    r.bumpHeight   = bumpHeightInUv(opts.metresPerUv, tilesOf(r), s.bumpRange.value_or(kBumpHeight));
     normal         = b.info(std::move(r), e.normalStrength.value_or(s.normalStrength));
     eff.normalStrength = e.normalStrength.value_or(s.normalStrength);
     eff.bumpStrength   = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
@@ -368,7 +406,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     r.rel        = s.bumpMap;
     r.srgb       = false;
     r.channels   = "bn";
-    r.bumpHeight = bumpHeightInUv(opts.metresPerUv, authoredTiles, s.bumpRange.value_or(kBumpHeight));
+    r.bumpHeight = bumpHeightInUv(opts.metresPerUv, tilesOf(r), s.bumpRange.value_or(kBumpHeight));
     normal     = b.info(std::move(r), clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2));
     eff.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
   }

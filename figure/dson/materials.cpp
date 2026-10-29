@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <regex>
+#include <set>
 
 namespace fv::dson {
 
@@ -616,6 +617,28 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   // A 3Delight-era shader's own channels, read for what they mean
   if(s.shader == Surface::Shader::eLegacy)
     translateLegacy(classifyLegacy(ch), ch, s);
+  // Each map's own tiling. PBRSkin's brick graph feeds every texture instance the Surface Tiling
+  // brick's uv, so a map's tiles apply over the surface's; for Iray Uber that order is inferred.
+  std::set<std::string>    clashes;
+  std::set<const Channel*> seen;
+  for(const std::string& k : ch.order())
+  {
+    const Channel* c = ch.get(k);
+    if(!c->image || c->image->empty() || !seen.insert(c).second)
+      continue;
+    const auto field = [&](const char* n, double d) {
+      const Json* v = c->imageModification.is_object() ? get(&c->imageModification, n) : nullptr;
+      return v && v->is_number() ? v->get<double>() : d;
+    };
+    const double tu = field("horizontal_tiles", 1), tv = field("vertical_tiles", 1);
+    const MapTiling t{{float(tu != 0 ? tu : 1), float(tv != 0 ? tv : 1)},
+                      {float(field("horizontal_tiling_offset", 0)), float(field("vertical_tiling_offset", 0))}};
+    if(const auto [at, made] = s.mapTiling.emplace(*c->image, t); !made && at->second != t)
+      clashes.insert(*c->image);
+  }
+  for(const std::string& image : clashes)
+    s.mapTiling.erase(image);
+  std::erase_if(s.mapTiling, [](const auto& e) { return e.second == MapTiling{}; });
   return s;
 }
 

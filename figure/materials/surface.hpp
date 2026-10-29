@@ -8,6 +8,7 @@
 // Colours are linear RGB. Textures are library-relative image paths, empty when there is none.
 
 #include <array>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -128,6 +129,16 @@ struct Emission
   std::optional<Luminance> luminance;
 };
 
+// A map's own tiling over the surface's, from its DAZ texture instance (image_modification): it
+// samples at tiles * (the surface's uv) + offset.
+struct MapTiling
+{
+  std::array<float, 2> tiles{1, 1};
+  std::array<float, 2> offset{0, 0};
+
+  bool operator==(const MapTiling&) const = default;
+};
+
 // The shader a DSON material names: its extra's type ("studio/material/uber_iray", "daz_brick",
 // "daz_shader") and what defines it, a brick's library file#id (".../PBRSkin.dsf#PBRSkin") or a
 // shader's definition (".dse"). Iray Uber is defined inside DAZ Studio, so its url is empty. Empty
@@ -164,6 +175,9 @@ struct Surface
   // Iray Uber's Horizontal/Vertical Tiles and Offset: every map samples at uv * tiles + offset
   std::array<float, 2> tiles{1, 1};
   std::array<float, 2> offset{0, 0};
+  // The maps a texture instance tiles over that (a fabric print 2.5 times across), by image. An
+  // image two channels tile differently is left out, as is DAZ's default of no tiling of its own.
+  std::map<std::string, MapTiling> mapTiling;
   // normal map with its strength, and the bump map with DAZ's Bump Strength
   std::string normalMap;
   float       normalStrength = 1;

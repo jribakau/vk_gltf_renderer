@@ -2773,3 +2773,87 @@ TEST(Materials, ATextureInstanceSettingAloneIsNoIrayPreset)
          {"keys", Json::array({Json::array({0, 0.5})})}});
   EXPECT_EQ(fv::dson::chooseIrayPreset(scene, {&preset}), -1);
 }
+
+// ---- a map's own tiling over the surface's
+namespace {
+
+// OOT Buttoned Up Outfit 02's shorts: the print and the bump tiled 2.5 times by their own texture
+// instances, the normal map once
+const char* kTiledCloth = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+  {"channel":{"id":"diffuse","type":"color","current_value":[1,1,1],"image_file":"/cloth_d.jpg",
+    "image_modification":{"scale":1,"offset":0,"horizontal_tiles":2.5,"vertical_tiles":2.5}}},
+  {"channel":{"id":"Bump Strength","type":"float","current_value":0.5,"image_file":"/cloth_b.jpg",
+    "image_modification":{"horizontal_tiles":2.5,"vertical_tiles":2.5}}},
+  {"channel":{"id":"Normal Map","type":"float","current_value":1,"image_file":"/cloth_n.jpg",
+    "image_modification":{"horizontal_tiles":1,"vertical_tiles":1}}},
+  {"channel":{"id":"Glossy Roughness","type":"float","current_value":0.6}}
+]}]})";
+
+// A texture info's KHR_texture_transform, none when it has none
+std::optional<fv::mat::UvTransform> tilingOf(const nlohmann::json& info)
+{
+  if(!info.contains("extensions") || !info["extensions"].contains("KHR_texture_transform"))
+    return std::nullopt;
+  const auto&          t = info["extensions"]["KHR_texture_transform"];
+  fv::mat::UvTransform out;
+  out.scale    = t.value("scale", std::array<float, 2>{1, 1});
+  out.offset   = t.value("offset", std::array<float, 2>{0, 0});
+  out.rotation = t.value("rotation", 0.f);
+  return out;
+}
+
+}  // namespace
+
+TEST(Materials, AMapsOwnTilingGoesOverTheSurfaces)
+{
+  const auto s = fv::dson::parseSurface("Shorts", channelsOf(kTiledCloth));
+  // the normal map's one tile is DAZ's default: no tiling of its own
+  EXPECT_EQ(s.mapTiling.size(), 2u);
+  const auto lowered = fv::mat::lower(s, {}, {});
+  const auto base    = tilingOf(lowered.material["pbrMetallicRoughness"]["baseColorTexture"]);
+  ASSERT_TRUE(base.has_value());
+  EXPECT_EQ(base->scale, (std::array<float, 2>{2.5f, 2.5f}));
+  EXPECT_EQ(base->offset, (std::array<float, 2>{0, 0}));
+  // the normal map and the bump cook into one image: tiled differently, it keeps the surface's tiling
+  EXPECT_FALSE(tilingOf(lowered.material["normalTexture"]).has_value());
+
+  // the surface's tiles under it
+  const auto twice = fv::dson::parseSurface(
+      "Shorts", layered({kTiledCloth, R"({"extra":[{"channels":[{"channel":{"id":"Horizontal Tiles","current_value":2}},
+                                       {"channel":{"id":"Vertical Tiles","current_value":2}}]}]})"}));
+  EXPECT_EQ(tilingOf(fv::mat::lower(twice, {}, {}).material["pbrMetallicRoughness"]["baseColorTexture"])->scale, (std::array<float, 2>{5, 5}));
+
+  // the bump alone: tiled, and its height per its own tile
+  const auto bumped = fv::dson::parseSurface("Shorts", layered({kTiledCloth, R"({"extra":[{"channels":[{"channel":{"id":"Normal Map","image_file":""}}]}]})"}));
+  fv::mat::LowerOptions o;
+  o.metresPerUv    = 0.5f;
+  const auto bump  = fv::mat::lower(bumped, {}, o);
+  EXPECT_EQ(tilingOf(bump.material["normalTexture"])->scale, (std::array<float, 2>{2.5f, 2.5f}));
+  const auto req = std::find_if(bump.requests.begin(), bump.requests.end(), [](const fv::mat::TextureRequest& r) { return r.channels == "bn"; });
+  ASSERT_NE(req, bump.requests.end());
+  EXPECT_FLOAT_EQ(req->bumpHeight, fv::mat::bumpHeightInUv(0.5f, 2.5f, fv::mat::kBumpHeight));
+}
+
+TEST(Materials, AMapsOwnTilingMovesWithThePanelsOffset)
+{
+  const auto     s = fv::dson::parseSurface("Shorts", channelsOf(kTiledCloth));
+  fv::mat::Edits e;
+  e.uvOffsetU = 0.1f;
+  // the print shifts as far over the surface as every other map: 0.1 of the surface is 0.25 of it
+  const auto base = tilingOf(fv::mat::lower(s, e, {}).material["pbrMetallicRoughness"]["baseColorTexture"]);
+  ASSERT_TRUE(base.has_value());
+  EXPECT_FLOAT_EQ(base->offset[0], 0.25f);
+  EXPECT_FLOAT_EQ(base->offset[1], 0.f);
+
+  // turned by the panel, a map tiled differently across and down would turn apart from the rest: it
+  // keeps the surface's transform
+  const auto stretched = fv::dson::parseSurface(
+      "Shorts", layered({kTiledCloth, R"({"extra":[{"channels":[{"channel":{"id":"diffuse","image_modification":{"vertical_tiles":1}}}]}]})"}));
+  ASSERT_EQ(stretched.mapTiling.at("/cloth_d.jpg").tiles, (std::array<float, 2>{2.5f, 1}));
+  fv::mat::Edits turned;
+  turned.uvRotation = 30;
+  const auto t      = tilingOf(fv::mat::lower(stretched, turned, {}).material["pbrMetallicRoughness"]["baseColorTexture"]);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->scale, (std::array<float, 2>{1, 1}));
+  EXPECT_NE(t->rotation, 0.f);
+}
