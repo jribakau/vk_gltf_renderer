@@ -15,14 +15,36 @@
 // light_pick.h.slang and EmissiveGroup (gltf_scene_io.h.slang) before it.
 
 // What a node gives a point, as a punctual light's estimate does: its triangles' weight over the
-// distance to its bounds' centre, no nearer than its radius. With `cull`, 0 for a node whose bounds
-// lie wholly below the plane of `normal`.
+// distance to its bounds' centre, no nearer than its radius, times the cosine at which the nearest of
+// its normals can face the point (PBRT-v4's LightBounds::Importance): the angle from the cone's axis to
+// the point, less the cone's spread and the angle its bounds subtend. 0 where none of its triangles
+// can face the point, as a one-sided triangle emits to its front alone (a light sample there would be
+// discarded); a point within its bounds is not judged. With `cull`, 0 for a node whose bounds lie
+// wholly below the plane of `normal`.
 float emissiveNodeEstimate(EmissiveGroup g, float3 pos, float3 normal, bool cull)
 {
   const float3 toCenter = g.center - pos;
   if(cull && dot(normal, toCenter) <= -g.radius)
     return 0.0F;
-  return g.weight / max(dot(toCenter, toCenter), max(g.radius * g.radius, 1e-8F));
+  const float d2       = dot(toCenter, toCenter);
+  const float r2       = g.radius * g.radius;
+  const float estimate = g.weight / max(d2, max(r2, 1e-8F));
+  if(g.cosSpread <= -1.0F || d2 <= r2)
+    return estimate;
+  // the angle from the axis to the point, past the spread
+  const float cosW = dot(g.axis, -toCenter) / sqrt(d2);
+  if(cosW >= g.cosSpread)
+    return estimate;
+  const float sinW = sqrt(max(1.0F - cosW * cosW, 0.0F));
+  const float sinO = sqrt(max(1.0F - g.cosSpread * g.cosSpread, 0.0F));
+  const float cosX = cosW * g.cosSpread + sinW * sinO;
+  const float sinX = sinW * g.cosSpread - cosW * sinO;
+  // less the angle the bounds subtend
+  const float sin2B = r2 / d2;
+  const float cosB  = sqrt(1.0F - sin2B);
+  if(cosX >= cosB)
+    return estimate;
+  return estimate * max(cosX * cosB + sinX * sqrt(sin2B), 0.0F);
 }
 
 // The probability of the step from an inner node to its child of estimate `child`, its sibling's

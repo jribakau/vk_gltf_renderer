@@ -21,6 +21,9 @@
 
 #include <algorithm>
 #include <limits>
+#include <span>
+
+#include <glm/gtc/constants.hpp>
 
 #include <cmath>
 
@@ -119,6 +122,60 @@ void buildAliasTable(std::vector<shaderio::EmissiveTriangle>& tris, const std::v
   }
 }
 
+// A cone of directions (EmissiveGroup::axis, cosSpread); the default holds every direction
+struct Cone
+{
+  glm::vec3 axis{0.f, 0.f, 1.f};
+  float     cosSpread = -1.f;
+};
+
+// Widen a cone's half angle by a little, so rounding in the shader never puts a normal outside it
+constexpr float kConeSlack = 1e-3f;
+
+// The cone around the mean of `normals` (unit, their area-weighted sum `sum`) that holds them all;
+// every direction when they cancel out (a closed bulb)
+Cone normalCone(const glm::dvec3& sum, std::span<const glm::vec3> normals)
+{
+  const double length = glm::length(sum);
+  if(!(length > 1e-9))
+    return {};
+  Cone cone;
+  cone.axis     = glm::vec3(sum / length);
+  float minCos  = 1.f;
+  for(const glm::vec3& n : normals)
+    minCos = std::min(minCos, glm::dot(cone.axis, n));
+  const float angle = std::acos(std::clamp(minCos, -1.f, 1.f)) + kConeSlack;
+  cone.cosSpread    = angle >= glm::pi<float>() ? -1.f : std::cos(angle);
+  return cone;
+}
+
+// The narrowest cone about the plane of both axes that holds both cones (PBRT-v4's DirectionCone Union)
+Cone unite(const Cone& a, const Cone& b)
+{
+  if(a.cosSpread <= -1.f || b.cosSpread <= -1.f)
+    return {};
+  const float thetaA = std::acos(std::clamp(a.cosSpread, -1.f, 1.f));
+  const float thetaB = std::acos(std::clamp(b.cosSpread, -1.f, 1.f));
+  const float thetaD = std::acos(std::clamp(glm::dot(a.axis, b.axis), -1.f, 1.f));
+  if(std::min(thetaD + thetaB, glm::pi<float>()) <= thetaA)
+    return a;
+  if(std::min(thetaD + thetaA, glm::pi<float>()) <= thetaB)
+    return b;
+  const float thetaO = 0.5f * (thetaA + thetaD + thetaB) + kConeSlack;
+  if(thetaO >= glm::pi<float>())
+    return {};
+  // turn a's axis towards b's by what the union's half angle exceeds a's
+  const glm::vec3 across = glm::cross(a.axis, b.axis);
+  if(!(glm::dot(across, across) > 1e-12f))
+    return {};
+  const glm::vec3 k    = glm::normalize(across);
+  const float     turn = thetaO - thetaA;
+  Cone            cone;
+  cone.axis      = glm::normalize(a.axis * std::cos(turn) + glm::cross(k, a.axis) * std::sin(turn));
+  cone.cosSpread = std::cos(thetaO);
+  return cone;
+}
+
 // An emitter, a leaf of the light tree: its node as the shader reads it, and its world bounds
 struct TreeLeaf
 {
@@ -131,6 +188,7 @@ struct TreeLeaf
 struct BuildNode
 {
   glm::vec3 lo, hi;
+  Cone      cone;
   double    weight = 0.0;
   int       left = -1, right = -1;
   int       leaf = -1;
@@ -145,7 +203,11 @@ int buildTree(std::vector<BuildNode>& nodes, std::span<const TreeLeaf> leaves, s
   if(end - begin == 1)
   {
     const TreeLeaf& leaf = leaves[order[begin]];
-    nodes[index]         = {.lo = leaf.lo, .hi = leaf.hi, .weight = leaf.node.weight, .leaf = order[begin]};
+    nodes[index]         = {.lo     = leaf.lo,
+                            .hi     = leaf.hi,
+                            .cone   = {leaf.node.axis, leaf.node.cosSpread},
+                            .weight = leaf.node.weight,
+                            .leaf   = order[begin]};
     return index;
   }
   glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
@@ -163,6 +225,7 @@ int buildTree(std::vector<BuildNode>& nodes, std::span<const TreeLeaf> leaves, s
   const int right = buildTree(nodes, leaves, order, mid, end);
   nodes[index]    = {.lo     = glm::min(nodes[left].lo, nodes[right].lo),
                      .hi     = glm::max(nodes[left].hi, nodes[right].hi),
+                     .cone   = unite(nodes[left].cone, nodes[right].cone),
                      .weight = nodes[left].weight + nodes[right].weight,
                      .left   = left,
                      .right  = right};
@@ -229,8 +292,10 @@ std::vector<shaderio::EmissiveGroup> buildLightTree(std::span<const TreeLeaf> le
     {
       g        = {};
       g.center = 0.5f * (node.lo + node.hi);
-      g.radius = 0.5f * glm::length(node.hi - node.lo);
-      g.weight = float(node.weight);
+      g.radius    = 0.5f * glm::length(node.hi - node.lo);
+      g.axis      = node.cone.axis;
+      g.cosSpread = node.cone.cosSpread;
+      g.weight    = float(node.weight);
       g.left   = outIndex[node.left];
       g.right  = outIndex[node.right];
     }
@@ -253,14 +318,17 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
   // to derive the area-weighted mean luminance for defensive sampling.
   EmissiveTable                            out;
   std::vector<shaderio::EmissiveTriangle>& tris = out.triangles;
-  std::vector<float>                       triArea;  // parallel to tris (used by the alias pass below)
+  std::vector<float>                       triArea;    // parallel to tris (used by the alias pass below)
+  std::vector<glm::vec3>                   triNormal;  // parallel to tris: the world geometric normal, for the light tree's cones
   double                                   sumArea = 0.0, sumAreaLum = 0.0;
   // each emitter's triangles, as a group, and their world bounds
   struct Span
   {
     size_t    first = 0;
     uint32_t  renderNodeID = 0;
+    bool      doubleSided  = false;
     glm::vec3 lo{std::numeric_limits<float>::max()}, hi{-std::numeric_limits<float>::max()};
+    glm::dvec3 normalSum{0.0};  // its triangles' normals weighted by area
   };
   std::vector<Span> spans;
   for(const Emitter& e : emitters)
@@ -268,7 +336,7 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
     const float lum = emissiveLuminance(e.radiance);
     if(lum <= 0.0f || e.positions.empty() || e.indices.size() < 3)
       continue;
-    spans.push_back({.first = tris.size(), .renderNodeID = e.renderNodeID});
+    spans.push_back({.first = tris.size(), .renderNodeID = e.renderNodeID, .doubleSided = e.doubleSided});
     const uint32_t numTri = static_cast<uint32_t>(e.indices.size() / 3);
     for(uint32_t t = 0; t < numTri; ++t)
     {
@@ -278,9 +346,11 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
       const glm::vec3 w0   = glm::vec3(e.world * glm::vec4(e.positions[i0], 1.0f));
       const glm::vec3 w1   = glm::vec3(e.world * glm::vec4(e.positions[i1], 1.0f));
       const glm::vec3 w2   = glm::vec3(e.world * glm::vec4(e.positions[i2], 1.0f));
-      const float     area = 0.5f * glm::length(glm::cross(w1 - w0, w2 - w0));
+      const glm::vec3 cross = glm::cross(w1 - w0, w2 - w0);  // as sampleEmissiveTriangle's lightN
+      const float     area  = 0.5f * glm::length(cross);
       if(area <= 0.0f)
         continue;  // skip degenerate (zero-area) triangles
+      spans.back().normalSum += glm::dvec3(cross) * 0.5;
       sumArea += area;
       sumAreaLum += static_cast<double>(area) * lum;
       for(const glm::vec3& w : {w0, w1, w2})
@@ -298,6 +368,7 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
       // aliasProb / aliasIndex are filled in the alias-table pass below.
       tris.push_back(et);
       triArea.push_back(area);
+      triNormal.push_back(cross / (2.0f * area));
     }
   }
 
@@ -335,8 +406,11 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
       double weight = 0.0;
       for(size_t i = first; i < end; ++i)
         weight += triWeight[i];
+      const Cone              cone = spans[g].doubleSided ? Cone{} : normalCone(spans[g].normalSum, std::span(triNormal).subspan(first, end - first));
       shaderio::EmissiveGroup leaf{.center       = 0.5f * (spans[g].lo + spans[g].hi),
                                    .radius       = 0.5f * glm::length(spans[g].hi - spans[g].lo),
+                                   .axis         = cone.axis,
+                                   .cosSpread    = cone.cosSpread,
                                    .weight       = static_cast<float>(weight),
                                    .first        = static_cast<uint32_t>(first),
                                    .count        = static_cast<uint32_t>(end - first),

@@ -22,6 +22,7 @@
 // leaf with the probability a BSDF hit's climb back up gives it, or MIS would weigh the two techniques
 // wrongly and the image would be off.
 
+#include <array>
 #include <random>
 #include <vector>
 
@@ -45,18 +46,36 @@ const std::vector<glm::vec3> kQuad  = {{-0.5f, -0.5f, 0}, {0.5f, -0.5f, 0}, {0.5
 const std::vector<uint32_t>  kTwo   = {0, 1, 2, 0, 2, 3};
 constexpr int                kCount = 100;
 
-// `count` quads of random size, brightness and place in a 20 m room, render nodes 3 apart
+// `count` quads of random size, brightness, place and facing in a 20 m room, every fifth double-sided,
+// render nodes 3 apart
 std::vector<Emitter> roomOfPanels(int count, std::mt19937& rng)
 {
-  std::uniform_real_distribution<float> place(-10.f, 10.f), size(0.1f, 1.5f), bright(0.5f, 20.f);
+  std::uniform_real_distribution<float> place(-10.f, 10.f), size(0.1f, 1.5f), bright(0.5f, 20.f), angle(-3.14159f, 3.14159f);
   std::vector<Emitter>                  emitters;
   for(int i = 0; i < count; i++)
   {
-    const glm::mat4 world = glm::scale(glm::translate(glm::mat4(1.f), {place(rng), place(rng) * 0.2f + 2.f, place(rng)}), glm::vec3(size(rng)));
+    glm::mat4 world = glm::translate(glm::mat4(1.f), {place(rng), place(rng) * 0.2f + 2.f, place(rng)});
+    world           = glm::rotate(world, angle(rng), glm::vec3(0, 1, 0));
+    world           = glm::rotate(world, angle(rng), glm::vec3(1, 0, 0));
+    world           = glm::scale(world, glm::vec3(size(rng)));
     emitters.push_back({.renderNodeID = uint32_t(3 * i + 1), .renderPrimID = uint32_t(i), .radiance = glm::vec3(bright(rng)),
-                        .world = world, .positions = kQuad, .indices = kTwo});
+                        .doubleSided = i % 5 == 0, .world = world, .positions = kQuad, .indices = kTwo});
   }
   return emitters;
+}
+
+// The world corners of the quad emitter `e`, and its front's normal (as sampleEmissiveTriangle's lightN)
+std::array<glm::vec3, 4> cornersOf(const Emitter& e)
+{
+  std::array<glm::vec3, 4> c;
+  for(int k = 0; k < 4; k++)
+    c[k] = glm::vec3(e.world * glm::vec4(kQuad[k], 1.f));
+  return c;
+}
+glm::vec3 frontOf(const Emitter& e)
+{
+  const auto c = cornersOf(e);
+  return glm::normalize(glm::cross(c[1] - c[0], c[2] - c[0]));
 }
 
 }  // namespace
@@ -126,7 +145,8 @@ TEST(LightTree, IsLaidOutCutFirstOverEveryEmitter)
 
 // From each cut node, at points about the room and with their normals' cull, the walk down reaches
 // each leaf below as often as the climb back up says, it reports that probability itself, and the climb
-// ends at that cut node; a leaf the walk cannot reach has no probability on the way up either
+// ends at that cut node; the climbs' probabilities add up to the share of walks that reach a leaf (one
+// can end at a node whose children both face away, and its sample takes nothing)
 TEST(LightTree, WalkDownAndClimbUpAgree)
 {
   std::mt19937                     rng(11);
@@ -143,13 +163,13 @@ TEST(LightTree, WalkDownAndClimbUpAgree)
     for(int c = 0; c < int(table.cutCount); c++)
     {
       std::vector<double> reached(table.groups.size(), 0.0);
-      bool                anyReached = false;
+      double              anyReached = 0.0;  // a walk can end where neither child faces the point
       for(int w = 0; w < kWalks; w++)
       {
         const EmissiveTreeWalk walk = emissiveTreeDescend(nodes, c, pos, normal, cull, (float(w) + 0.5f) / kWalks);
         if(walk.leaf < 0)
           continue;
-        anyReached = true;
+        anyReached += 1.0 / kWalks;
         ASSERT_LT(nodes[walk.leaf].left, 0);
         reached[walk.leaf] += 1.0 / kWalks;
         const EmissiveTreeWalk climb = emissiveTreeClimb(nodes, walk.leaf, pos, normal, cull);
@@ -167,7 +187,9 @@ TEST(LightTree, WalkDownAndClimbUpAgree)
         sum += climb.prob;
         EXPECT_NEAR(reached[l], climb.prob, 2.0 / kWalks + 1e-3 * climb.prob) << "point " << point << " cut " << c << " leaf " << l;
       }
-      EXPECT_NEAR(sum, anyReached ? 1.0 : 0.0, 1e-4) << "point " << point << " cut " << c;
+      // what the climbs give the leaves is what the walks reached: the rest ended with no light
+      EXPECT_NEAR(sum, anyReached, 1e-3) << "point " << point << " cut " << c;
+      EXPECT_LE(sum, 1.0 + 1e-4);
     }
   }
 }
@@ -199,4 +221,54 @@ TEST(LightTree, WalkByWeightTakesEachLeafByItsWeight)
         EXPECT_NEAR(reached[l], nodes[l].weight / nodes[c].weight, 2.0 / kWalks + 1e-3) << "cut " << c << " leaf " << l;
     EXPECT_NEAR(rest, 0.5, 0.02) << "cut " << c;  // what is left is about uniform
   }
+}
+
+// A node's cone holds the front of every one-sided emitter below it (one with a double-sided one holds
+// every way), and where a node's estimate is 0 no emitter below it can light the point: each one-sided
+// one there shows the point its back from every corner. With the estimate 0, light samples never go
+// there, so this is what keeps the cones from darkening the image.
+TEST(LightTree, ConesDropOnlyEmittersThatFaceAway)
+{
+  std::mt19937               rng(3);
+  const std::vector<Emitter> emitters = roomOfPanels(kCount, rng);
+  auto                       table    = buildEmissiveTable(emitters, EMISSIVE_GROUP_MAX);
+  EmissiveGroup*             nodes    = table.groups.data();
+  // the emitters below each node
+  std::vector<std::vector<int>> below(table.groups.size());
+  for(int i = 0; i < int(table.groups.size()); i++)
+    if(nodes[i].left < 0)
+      for(int node = i; node >= 0; node = nodes[node].parent)
+        below[node].push_back(int(table.triangles[nodes[i].first].renderPrimID));
+  for(int i = 0; i < int(table.groups.size()); i++)
+  {
+    bool anyDouble = false;
+    for(const int e : below[i])
+    {
+      anyDouble |= emitters[e].doubleSided;
+      if(!emitters[e].doubleSided && nodes[i].cosSpread > -1.f)
+        EXPECT_GE(dot(nodes[i].axis, frontOf(emitters[e])), nodes[i].cosSpread - 1e-5f) << "node " << i << " emitter " << e;
+    }
+    if(anyDouble)
+      EXPECT_EQ(nodes[i].cosSpread, -1.f) << "node " << i;
+  }
+  std::uniform_real_distribution<float> place(-12.f, 12.f);
+  int                                   dropped = 0;
+  for(int point = 0; point < 400; point++)
+  {
+    const float3 pos(place(rng), place(rng) * 0.3f + 2.f, place(rng));
+    for(int i = 0; i < int(table.groups.size()); i++)
+    {
+      if(emissiveNodeEstimate(nodes[i], pos, float3(0, 1, 0), false) > 0.f)
+        continue;
+      dropped++;
+      for(const int e : below[i])
+      {
+        ASSERT_FALSE(emitters[e].doubleSided) << "node " << i;
+        const glm::vec3 front = frontOf(emitters[e]);
+        for(const glm::vec3& corner : cornersOf(emitters[e]))
+          EXPECT_LE(dot(front, pos - corner), 1e-4f) << "node " << i << " emitter " << e << " point " << point;
+      }
+    }
+  }
+  EXPECT_GT(dropped, 0);  // the cones do drop something
 }

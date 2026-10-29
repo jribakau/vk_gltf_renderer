@@ -94,6 +94,8 @@ struct EmissiveGroup
 {
   float3 center;        // the bounding sphere of its triangles, in world space when the table was built
   float  radius;
+  float3 axis;          // the cone holding its triangles' geometric normals (the side a one-sided triangle emits to)
+  float  cosSpread;     // cos of the cone's half angle; -1: every way (a double-sided emitter, a bulb)
   float  weight;        // its triangles' selection weights summed
   uint   first;         // a leaf's triangles: emissiveTriangles[first, first + count)
   uint   count;
