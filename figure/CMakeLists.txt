@@ -25,6 +25,7 @@ add_executable(fv_parity tools/fv_parity.cpp tools/fv_parity_tinygltf.cpp
   ${FV_FIGURE_ROOT}/src/scene_retained.cpp
   ${FV_FIGURE_ROOT}/src/fv_figure_feed.cpp
   ${FV_FIGURE_ROOT}/src/scene_import_gltf.cpp
+  ${FV_FIGURE_ROOT}/src/ies_profile.cpp
   ${FV_FIGURE_ROOT}/src/scene_feature_detection.cpp
   ${FV_FIGURE_ROOT}/src/tinygltf_utils.cpp)
 target_include_directories(fv_parity PRIVATE ${FV_FIGURE_ROOT}/src ${NVSHADERS_DIR})
