@@ -96,7 +96,9 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           if(preset->environment)
             if(auto found = lib->find(normRel(preset->environment->image)))
               envPath = utf8Of(*found);
-          post([this, body = doc->json, kind = preset->kind, jobId, rel, env = preset->environment, envPath, target] {
+          // a shader preset that sets values goes on surfaces as a material preset does
+          const std::string kind = preset->setsMaterials ? "material preset" : preset->kind;
+          post([this, body = doc->json, kind, jobId, rel, env = preset->environment, envPath, target] {
             applyPreset(body, kind, jobId, rel, env, envPath, target);
           });
           return;

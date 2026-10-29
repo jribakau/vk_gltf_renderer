@@ -52,6 +52,24 @@ TEST(Presets, namesAPoseAndLeavesAModelAlone)
   EXPECT_FALSE(model.has_value());
 }
 
+// FeSoul's hair colours are shader presets that set channels; DAZ's "!Iray Uber Base" only names
+// the shader. The first goes on surfaces as a material preset does.
+TEST(Presets, AShaderPresetThatSetsValuesSetsMaterials)
+{
+  auto colour = fv::dson::describePreset(fv::dson::Json::parse(R"({"asset_info":{"type":"preset_shader"},"scene":{
+    "materials":[{"url":"/data/x.dsf#OmniHair"}],
+    "animations":[{"url":"name://@selection#materials:?extra/studio_material_channels/channels/Melanin/value","keys":[[0,0.9]]}]}})"));
+  ASSERT_TRUE(colour);
+  EXPECT_EQ(colour->kind, "shader preset");
+  EXPECT_TRUE(colour->setsMaterials);
+  auto bare = fv::dson::describePreset(fv::dson::Json::parse(R"({"asset_info":{"type":"preset_shader"},"scene":{"materials":[{"url":"#Default"}]}})"));
+  ASSERT_TRUE(bare);
+  EXPECT_FALSE(bare->setsMaterials);
+  auto material = fv::dson::describePreset(fv::dson::Json::parse(R"({"asset_info":{"type":"preset_material"},"scene":{}})"));
+  ASSERT_TRUE(material);
+  EXPECT_TRUE(material->setsMaterials);
+}
+
 TEST(Presets, readsAnEnvironmentAndGuessesCamerasAndLights)
 {
   auto env = fv::dson::describePreset(fv::dson::Json::parse(R"({

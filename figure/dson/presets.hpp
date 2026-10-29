@@ -28,6 +28,9 @@ struct PresetInfo
   // Human name of the preset kind, e.g. "pose preset".
   std::string                        kind;
   std::optional<EnvironmentPreset>   environment;
+  // Puts values on material surfaces: a material preset, or a shader preset that sets channels
+  // (FeSoul's hair colours) rather than only switching the shader (DAZ's "!Iray Uber Base").
+  bool setsMaterials = false;
 };
 
 // A .duf meant to be put on a figure that is loaded (clothing, hair, anatomy, hand props): marked a

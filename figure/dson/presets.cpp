@@ -165,6 +165,11 @@ std::optional<PresetInfo> describePreset(const Json& doc)
   }
   else
     info.kind = "preset with no geometry";
+  info.setsMaterials = info.kind == "material preset";
+  if(info.kind == "shader preset")
+    if(const Json* animations = get(scene, "animations"); animations && animations->is_array())
+      info.setsMaterials = std::any_of(animations->begin(), animations->end(),
+                                       [](const Json& a) { return getString(&a, "url").find("#materials") != std::string::npos; });
   return info;
 }
 

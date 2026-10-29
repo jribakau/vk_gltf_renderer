@@ -374,7 +374,7 @@ Json FvHost::Impl::wardrobeColor(const Json& args)
       if(!doc)
         throw std::runtime_error(fileStem(rel) + " isn't in the content library.");
       const auto preset = fv::dson::describePreset(doc->json);
-      if(!preset || preset->kind != "material preset")
+      if(!preset || !preset->setsMaterials)
         throw std::runtime_error(fileStem(rel) + " is not a material preset.");
       post([apply, body = doc->json] { apply(body); });
     }
@@ -489,7 +489,7 @@ Json FvHost::Impl::choiceJob(const Json& args, const std::string& command, const
         if(!doc)
           throw std::runtime_error(fileStem(rel) + " isn't in the content library.");
         const auto preset = fv::dson::describePreset(doc->json);
-        if(!preset || preset->kind != "material preset")
+        if(!preset || !preset->setsMaterials)
           throw std::runtime_error(fileStem(rel) + " is not a material preset.");
         post([done, body = doc->json] { done(body); });
       }
