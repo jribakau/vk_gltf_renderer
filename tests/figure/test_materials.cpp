@@ -3147,6 +3147,8 @@ TEST(Materials, APresetForTheSelectionGoesOnTheSurfacesWithItsShader)
     "materials":[{"url":"/data/Daz%203D/Built-in%20Content/OmniSurface/OmniHair%20Root-Tip%20Blend.dsf#OmniHair%20Root-Tip%20Blend",
       "extra":[{"type":"studio/material/daz_brick"}]}],
     "animations":[{"url":"name://@selection#materials:?extra/studio_material_channels/channels/Melanin/value","keys":[[0,0.9]]}]}})");
+  // an item's colour checks the surfaces first: the strands are the hair's
+  EXPECT_EQ(fv::dson::materialPresetTargets(preset, scene), std::set<int>({0, 1}));
   const auto result = fv::dson::applyMaterialPreset(preset, scene);
   EXPECT_EQ(result.changed, std::set<int>({0, 1}));
   EXPECT_EQ(result.matched, std::set<std::string>({fv::dson::kSelectionSurfaces}));

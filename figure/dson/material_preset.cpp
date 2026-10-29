@@ -398,6 +398,13 @@ std::vector<int> selectionTargets(const Json& doc, const SceneGraph& scene)
   return out;
 }
 
+// The surfaces one entry of a preset goes on: those it names, or for an entry made for the
+// selection, those with its shader.
+std::vector<int> entryTargets(const Json& doc, const SceneGraph& scene, const std::vector<std::string>& chain, const std::string& surface, bool* stray = nullptr)
+{
+  return surface.empty() ? selectionTargets(doc, scene) : presetTargets(scene, chain, surface, stray);
+}
+
 }  // namespace
 
 MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, const std::set<int>* only, const MaterialDefinitions& definitions)
@@ -409,7 +416,7 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, con
   {
     const auto& [chain, surface] = key;
     bool             stray   = false;
-    std::vector<int> targets = surface.empty() ? selectionTargets(doc, scene) : presetTargets(scene, chain, surface, &stray);
+    std::vector<int> targets = entryTargets(doc, scene, chain, surface, &stray);
     if(only)
       std::erase_if(targets, [&](int i) { return !only->count(i); });
     const std::string label = surface.empty() ? kSelectionSurfaces : surface;
@@ -486,7 +493,7 @@ int chooseIrayPreset(const SceneGraph& scene, const std::vector<const Json*>& ca
     int           maps = 0, channels = 0;
     for(const auto& [key, overrides] : parseOverrides(*candidates[k], nullptr))
     {
-      const std::vector<int> targets = presetTargets(scene, key.first, key.second);
+      const std::vector<int> targets = entryTargets(*candidates[k], scene, key.first, key.second);
       if(targets.empty())
         continue;
       // what it sets: a value, or an image (a null image removes a map, which says nothing of a look)
@@ -536,7 +543,7 @@ std::set<int> materialPresetTargets(const Json& doc, const SceneGraph& scene)
 {
   std::set<int> out;
   for(const auto& [key, overrides] : parseOverrides(doc, nullptr))
-    for(int i : presetTargets(scene, key.first, key.second))
+    for(int i : entryTargets(doc, scene, key.first, key.second))
       out.insert(i);
   return out;
 }
