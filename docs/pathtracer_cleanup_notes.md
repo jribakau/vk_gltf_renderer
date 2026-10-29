@@ -281,3 +281,76 @@ The BSDF helpers (`bsdfEvaluate`, `bsdfEvaluateAll`, `bsdfSampleCore`) live in t
 fork, which was not checked out when this was written. Next-event estimation draws three random
 numbers into the evaluate call's inputs on every vertex; if the all-lobes variant ignores them,
 those draws are wasted and shift the random sequence. Check in the fork before acting.
+
+## pathtrace_functions.h.slang
+
+The physics and MIS reasoning are careful and well-commented, and the compile-time gating is
+consistent. The problems are mechanical: the shadow-ray candidate path fetches the same data three
+times, one function's comment drifted away from it, and the file is a catch-all whose own name
+admits it.
+
+### Per-candidate cost on shadow rays
+
+The measurable item; time it with the MCP shader tool on a figure scene. A shadow ray's any-hit
+candidate on a non-opaque surface (every lash card, hair ribbon and cornea on a figure) runs
+`shadowCrossSurface`, which does, in sequence:
+
+- `getOpacity`: copies the 88-field `GltfShadeMaterial`, fetches the triangle's indices,
+  interpolates a texcoord, samples the base color texture, interpolates vertex color.
+- `shadowSurfaceBoundsMedium`: fetches the material again through the pointer to read two fields.
+- `getShadowTransmission`: copies the whole material a third time, fetches the indices a second
+  time, samples up to two more textures, and loads three vertex positions to rebuild the geometric
+  normal.
+
+Three material loads and two index loads per candidate before the compiler gets a say. Passing the
+material pointer and the indices down from `shadowCrossSurface` once is a mechanical change. The
+path-ray any-hit has the same shape in miniature: `getOpacity` copies the material before checking
+`alphaMode`, which the instance flags already decided.
+
+### Redundancies
+
+1. **The unbounded-segment absorb block exists twice** in `handleVolumeScatter`, once in the scatter
+   branch and once in the absorb branch, character for character.
+2. **`volumeExtinction` is summed three times per volume step**: in `hasVolumeMedium`, again in
+   `handleVolumeScatter`, again in `sampleFreeFlight`. Not a cost, just noise.
+3. **`handleShadowCatcher` returns a bool that is always true**, its own comment says so, and the
+   caller in `gltf_pathtrace.slang` still branches on it.
+4. **`volumeScatterNEE` multiplies by a `misWeight` that is the literal 1**, kept as a named
+   variable with a paragraph explaining why it is 1.
+5. **`GuideOutput` and `GuideScratch` are the same struct twice**, differing in one component width
+   and one extra flag; `packSampleResult` copies between them field by field.
+6. **`LightPick` carries a position and a normal per path** (six floats of live state across every
+   trace) only so `sizedLightNeePdf` can rebuild the whole pick set later. This is the
+   register-side cost of the sized-light item under gltf_pathtrace.slang above.
+
+### Comment drift
+
+- The paragraph beginning "IMPORTANT: this function exists whenever GLTF_USE_VOLUME is on"
+  describes `handleVolumeScatter`, but `FreeFlight` and `sampleFreeFlight` were inserted between
+  the comment and the function, so it now sits above a struct it does not describe.
+- Two banner comments are stacked at the top of the file: "Direct light structure" with nothing
+  under it, then "Light pick probabilities" with the struct. The first is orphaned.
+
+### Structure
+
+Twelve unrelated topics in 1900 lines: tuning constants, float stepping, ray-cone footprint, alpha
+testing, shadow transmission, light picking, emissive area lights, environment lookup, the shadow
+catcher and infinite plane, the volume walk, the DLSS clear-glass primary-surface chain, the
+wireframe overlay, the camera and selection ray, the path state, the backplate. The splitting has
+begun (`light_pick`, `ground`, `sky_background`, `surface_opacity`, `camera_ray` are included
+rather than inlined). The tell that it should continue is the `#include "raytracer_interface.h.slang"`
+in the middle of the file: the interface needs `shadowCrossSurface` and `getOpacity` defined above
+it, and everything after needs the interface. Suggested cuts:
+
+- `pt_shadow.h.slang`: opacity and shadow transmission, included by the raytracer interface. This
+  removes the mid-file include ordering trap.
+- `pt_lights.h.slang`: pick set, punctual lights, emissive triangles, environment, sized-light hits.
+- `pt_volume.h.slang`: medium, free flight, scatter, the segment step.
+- `pt_dlss_psr.h.slang`: the clear-glass chain, 150 lines only DLSS builds compile.
+
+What remains (path state, result packing, constants) is what a file called `pathtrace_functions`
+should hold.
+
+Not worth doing: the emissive sampler's full render-node copy for one matrix, and the double
+`tFactor` threshold check in `getShadowTransmission`, which is correct since the texture can lower
+it.
