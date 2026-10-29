@@ -240,12 +240,24 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   b.mapTiling = &s.mapTiling;
   Json           ext   = Json::object();
   Json           out   = {{"name", s.name}};
-  auto           lobes = specularLobes(s);
-  if(e.roughnessMap)
-    lobes.roughness.map = *e.roughnessMap;
   const SkinRole role  = skinRole(s);
   const bool     refractive = s.refraction && s.refraction->weight > 0.05f;
-  const Rgb      baseColor  = e.color.value_or(s.base.color);
+  // refraction, and flesh in the volume and measured modes, write the index themselves
+  auto lobes = specularLobes(s, !refractive && !(role == SkinRole::eFlesh && (opts.skin == SkinMode::eVolume || opts.skin == SkinMode::eMeasured)));
+  if(e.roughnessMap)
+    lobes.roughness.map = *e.roughnessMap;
+  // The Weighted mode's diffuse keeps its share under the glossy lobe; the panel's colour is scaled
+  // as the file's is. Refraction leaves the base colour behind anyway. Iray's Fresnel-free glossy
+  // becomes a lobe within about 10% of flat up to 80 degrees; the shares are exact for a smooth
+  // surface, and for a rough one as far as the BSDF's albedo fit. Left out: the translucency's share,
+  // and Diffuse Weight's map.
+  const float diffuseScale = refractive ? 1.f : weightedDiffuseScale(s);
+  const Rgb   picked       = e.color.value_or(s.base.color);
+  const Rgb   baseColor{picked[0] * diffuseScale, picked[1] * diffuseScale, picked[2] * diffuseScale};
+  // The eye's wet shells (see the specular below): the tear film, and what lies under it
+  const EyeShell shell    = eyeShell(s);
+  const bool     tearFilm = shell == EyeShell::eMoisture || shell == EyeShell::eMeniscus || (shell == EyeShell::eCornea && !opts.underTearFilm);
+  const bool     underFilm = opts.underTearFilm && (shell == EyeShell::eCornea || s.kind == Kind::eEye);
   // Iray's refraction shows none of the base colour where it refracts, but glTF tints transmitted
   // light by it, so a map on a refracting surface would be looked through, on the way in and out
   // (Tri-X's eye presets put the whole eye's map on the eye moisture). Its colour goes as a flat one does.
@@ -291,9 +303,11 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   if(recolor && !anyMap)
     factor = lerp(factor, recolor->color, recolor->strength);
   // glTF tints transmitted light by the base colour; Iray's refraction doesn't (the eye moisture's
-  // grey diffuse colour, passed through twice, left a quarter of the light to reach the iris)
+  // grey diffuse colour, passed through twice, left a quarter of the light to reach the iris). It
+  // tints it by its own colour (Glossy Color or Refraction Color: a red wine), which the eye's water
+  // never takes.
   if(refractive && !anyMap)
-    factor = lerp(factor, kWhite, s.refraction->weight);
+    factor = lerp(factor, tearFilm || underFilm ? kWhite : s.refraction->tint, s.refraction->weight);
   // Cutouts go out as BLEND: the renderer's any-hit shader skips a hit with probability 1 - alpha,
   // which is alpha hashing by another name, so they keep their soft edges. Refractive surfaces
   // (corneas) go out opaque with transmission doing the work.
@@ -315,7 +329,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   const bool liveRibbon = s.hairFibre && s.twoSided && !opts.forFile;
 
   Effective eff;
-  eff.color       = baseColor;
+  eff.color       = picked;
   eff.opacity     = opacity;
   eff.alphaMode   = alphaMode == "OPAQUE" ? "opaque" : alphaMode == "MASK" ? "cutout" : "blend";
   eff.doubleSided = opts.ribbon || e.doubleSided.value_or(hashed || s.twoSided);
@@ -342,9 +356,6 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // catchlights about 2.5 times too dim. Under it, tissue in water is close to index-matched and
   // reflects next to nothing, so the iris and sclera's own lobes (a second, broader sheen through
   // the film) and a stacked cornea's go.
-  const EyeShell shell    = eyeShell(s);
-  const bool     tearFilm = shell == EyeShell::eMoisture || shell == EyeShell::eMeniscus || (shell == EyeShell::eCornea && !opts.underTearFilm);
-  const bool     underFilm = opts.underTearFilm && (shell == EyeShell::eCornea || s.kind == Kind::eEye);
   float roughness = lobes.roughness.value;
   if(tearFilm)
     roughness = std::min(roughness, 0.02f);
@@ -485,8 +496,31 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   const float specular   = ribbonHair && !liveRibbon ? 1.f
                            : s.topCoat && lobes.clearcoat ? std::min(1.f, lobes.intensity + lobes.clearcoat->weight)
                                                           : lobes.intensity;
-  eff.specular                  = e.specular.value_or(tearFilm ? 1.f : underFilm ? 0.f : specular);
-  ext["KHR_materials_specular"] = {{"specularFactor", eff.specular}, {"specularColorFactor", Json::array({1, 1, 1})}};
+  eff.specular = e.specular.value_or(tearFilm ? 1.f : underFilm ? 0.f : specular);
+  // Glossy Color tints the glossy layer's share of the lobe, normal to grazing; the dual lobes' share
+  // stays white. This BSDF weighs the base under the lobe by its colour's brightest channel, capped
+  // at 1, but tints the lobe by all of it, so the colour stays within 1. The eye's water is clear.
+  const bool tinted        = !tearFilm && !underFilm && lobes.glossyShare > 0.01f;
+  Rgb        specularColor = tinted ? lerp(kWhite, s.glossy.color, lobes.glossyShare) : kWhite;
+  for(float& c : specularColor)
+    c = clamp(c, 0, 1);
+  Json specularExt = {{"specularFactor", eff.specular}, {"specularColorFactor", rgbJson(specularColor)}};
+  if(tinted && !s.glossy.colorMap.empty())
+    specularExt["specularColorTexture"] = b.plain(s.glossy.colorMap, true);
+  // the Weighted mode's Glossy Weight map, in the alpha glTF's specularTexture is read from
+  if(!s.glossy.weightMap.empty() && !tearFilm && !underFilm)
+  {
+    TextureRequest r;
+    r.rel      = s.glossy.weightMap;
+    r.alphaRel = s.glossy.weightMap;
+    r.srgb     = false;
+    specularExt["specularTexture"] = b.info(std::move(r));
+  }
+  ext["KHR_materials_specular"] = specularExt;
+  // A layer brighter than 4% at normal incidence reflects through an index of its own. Glass, skin
+  // and ribbon hair below set theirs over it.
+  if(lobes.reflectance > 0.04f && lobes.intensity > 0 && !tearFilm && !underFilm)
+    ext["KHR_materials_ior"] = {{"ior", iorForReflectance(lobes.reflectance)}};
   if(ribbonHair && !liveRibbon)
     ext["KHR_materials_ior"] = {{"ior", 1.55}};
   // sheen: the panel's, a cloth's soft rim of light at grazing angles

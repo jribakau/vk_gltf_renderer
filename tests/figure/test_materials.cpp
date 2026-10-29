@@ -3369,6 +3369,265 @@ TEST(Materials, ACutoutReadFromItsAlphaAsksTheCookerForTheAlpha)
 // ---- DAZ's channels read as its MDL reads them: Glossy Color, Base Mixing, squared roughness,
 // Bump Enable, Makeup Roughness Mult ----
 
+namespace {
+
+const nlohmann::json& specularOf(const fv::mat::Lowered& l)
+{
+  return l.material["extensions"]["KHR_materials_specular"];
+}
+
+void expectRgb(const nlohmann::json& c, float r, float g, float b, float tol)
+{
+  EXPECT_NEAR(c[0].get<float>(), r, tol);
+  EXPECT_NEAR(c[1].get<float>(), g, tol);
+  EXPECT_NEAR(c[2].get<float>(), b, tol);
+}
+
+const char* kGreyGlossyColor = R"({"extra":[{"channels":[{"channel":{"id":"Glossy Color","type":"color","current_value":[0.5,0.5,0.5]}}]}]})";
+
+}  // namespace
+
+// irayubermaterial.mdl tints the glossy layer by glossy_color, normal to grazing. glTF has one
+// lobe: its glossy share takes the colour, the dual lobes' share stays white. sRGB (0.5, 0.25, 1) is
+// (0.21404, 0.05088, 1) linear.
+TEST(Materials, GlossyColorTintsTheGlossyShareOfTheSpecular)
+{
+  const ChannelValues shirt = {{"Glossy Layered Weight", 1}, {"Glossy Reflectivity", 0.5}, {"Glossy Roughness", 0.4},
+                               {"Glossy Color", Json::array({0.5, 0.25, 1})}};
+  const auto          s     = surfaceOf("Shirt", kUberType, shirt, {{"Glossy Color", "/shirt_gc.jpg"}});
+  EXPECT_NEAR(s.glossy.color[0], 0.21404f, 1e-4f);
+  EXPECT_NEAR(s.glossy.color[1], 0.05088f, 1e-4f);
+  EXPECT_NEAR(s.glossy.color[2], 1.0f, 1e-4f);
+  const auto l = fv::mat::lower(s, {}, {});
+  EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 1.0f);
+  expectRgb(specularOf(l)["specularColorFactor"], 0.21404f, 0.05088f, 1.0f, 1e-4f);
+  ASSERT_TRUE(specularOf(l).contains("specularColorTexture"));
+  const auto& map = requestOf(l, specularOf(l)["specularColorTexture"]);
+  EXPECT_EQ(map.rel, "/shirt_gc.jpg");
+  EXPECT_TRUE(map.srgb);
+  EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_ior"));  // a plain dielectric's 4%
+
+  // a dual lobe half as strong as the glossy: the glossy is two thirds of the lobe
+  ChannelValues dual = shirt;
+  dual.push_back({"Dual Lobe Specular Weight", 0.5});
+  const auto mixed = fv::mat::lower(surfaceOf("Shirt", kUberType, dual), {}, {});
+  expectRgb(specularOf(mixed)["specularColorFactor"], 0.47603f, 0.36725f, 1.0f, 1e-4f);
+
+  // no Glossy Color: white, and no map
+  const auto skin = fv::mat::lower(fv::dson::parseSurface("Face", channelsOf(kSkin)), {}, {});
+  expectRgb(specularOf(skin)["specularColorFactor"], 1, 1, 1, 0);
+  EXPECT_FALSE(specularOf(skin).contains("specularColorTexture"));
+
+  // the tear film is clear water whatever its Glossy Color
+  const auto moisture = fv::dson::parseSurface("EyeMoisture Left", layered({kG9Moisture, kGreyGlossyColor}));
+  expectRgb(specularOf(fv::mat::lower(moisture, {}, {.underTearFilm = true}))["specularColorFactor"], 1, 1, 1, 0);
+
+  // a 3Delight-era surface's channel of that name is not Iray's
+  const auto legacy = surfaceOf("Shirt", "studio/material/daz_shader", {{"Glossy Color", Json::array({0.5, 0.25, 1})}});
+  EXPECT_EQ(legacy.glossy.color, (fv::mat::Rgb{1, 1, 1}));
+  expectRgb(specularOf(fv::mat::lower(legacy, {}, {}))["specularColorFactor"], 1, 1, 1, 0);
+}
+
+// Iray tints what a refracting surface lets through by Glossy Color while Share Glossy Inputs is on,
+// else by Refraction Color. glTF tints transmission by the base colour, which goes to that tint.
+TEST(Materials, RefractionLetsLightThroughInItsOwnColour)
+{
+  const auto base = [](ChannelValues extra) {
+    ChannelValues v = {{"diffuse", Json::array({0.5, 0.5, 0.5})}, {"Glossy Layered Weight", 1}, {"Glossy Roughness", 0},
+                       {"Refraction Weight", 1}, {"Refraction Index", 1.33}, {"Glossy Color", Json::array({0.5, 0.25, 1})}};
+    v.insert(v.end(), extra.begin(), extra.end());
+    return fv::mat::lower(surfaceOf("Wine", kUberType, v), {}, {}).material["pbrMetallicRoughness"]["baseColorFactor"];
+  };
+  expectRgb(base({}), 0.21404f, 0.05088f, 1.0f, 1e-4f);  // shared by default
+  expectRgb(base({{"Share Glossy Inputs", true}}), 0.21404f, 0.05088f, 1.0f, 1e-4f);
+  expectRgb(base({{"Share Glossy Inputs", false}}), 1, 1, 1, 1e-6f);  // no Refraction Color: white
+  expectRgb(base({{"Share Glossy Inputs", false}, {"Refraction Color", Json::array({1, 0.5, 1})}}), 1, 0.21404f, 1, 1e-4f);
+
+  // the eye's water stays clear
+  const auto moisture = fv::dson::parseSurface("EyeMoisture Left", layered({kG9Moisture, kGreyGlossyColor}));
+  expectRgb(fv::mat::lower(moisture, {}, {.underTearFilm = true}).material["pbrMetallicRoughness"]["baseColorFactor"], 1, 1, 1, 0);
+}
+
+// Iray Uber's Weighted mode (normalized_base) mixes the diffuse and the glossy by Diffuse Weight and
+// Glossy Weight, normalised past 1, with no Fresnel and no metal; Glossy Layered Weight is not read.
+// glTF gets an index whose Fresnel is nearly flat (F0 0.95) scaled down to the glossy's share, and the
+// diffuse scaled up again for the light that lobe already takes from under it.
+TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
+{
+  using fv::mat::Surface;
+  const auto weighted = [](double d, double g, double l, ChannelValues extra = {}, std::map<std::string, std::string> images = {},
+                           const char* name = "Shirt") {
+    ChannelValues v = {{"diffuse", Json::array({1, 1, 1})}, {"Base Mixing", 2}, {"Metallic Weight", 1}, {"Glossy Roughness", 0.2},
+                       {"Diffuse Weight", d},           {"Glossy Weight", g}, {"Glossy Layered Weight", l}};
+    v.insert(v.end(), extra.begin(), extra.end());
+    return surfaceOf(name, kUberType, v, images);
+  };
+  const auto pbrOf = [](const fv::mat::Lowered& l) { return l.material["pbrMetallicRoughness"]; };
+  const auto iorOf = [](const fv::mat::Lowered& l) { return l.material["extensions"]["KHR_materials_ior"]["ior"].get<float>(); };
+
+  EXPECT_NEAR(fv::mat::iorForReflectance(0.04f), 1.5f, 1e-4f);
+  EXPECT_NEAR(fv::mat::iorForReflectance(1.f), 77.987f, 1e-2f);  // capped at kFlatF0
+  EXPECT_NEAR(fv::mat::iorForReflectance(0.3333333f), 3.73205f, 1e-3f);
+
+  // (a) a glossy weight of 0.5 with a layered weight of 0: a third glossy, two thirds diffuse
+  {
+    const auto s = weighted(1, 0.5, 0);
+    EXPECT_EQ(s.mixing, Surface::Mixing::eWeighted);
+    EXPECT_NEAR(s.diffuseWeight, 0.66667f, 1e-4f);
+    EXPECT_NEAR(s.glossy.weight, 0.33333f, 1e-4f);
+    EXPECT_FLOAT_EQ(s.metallic.value, 0);
+    const auto l = fv::mat::lower(s, {}, {});
+    EXPECT_FLOAT_EQ(pbrOf(l)["metallicFactor"].get<float>(), 0);
+    EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.350877f, 1e-4f);
+    EXPECT_NEAR(iorOf(l), 77.987f, 1e-2f);
+    EXPECT_NEAR(pbrOf(l)["baseColorFactor"][0].get<float>(), 1.0f, 1e-4f);
+  }
+  // (b) weights under 1 together: the rest is lost, and the diffuse is 0.2 of what lies under 0.4
+  {
+    const auto l = fv::mat::lower(weighted(0.2, 0.4, 1), {}, {});
+    expectRgb(pbrOf(l)["baseColorFactor"], 0.33333f, 0.33333f, 0.33333f, 1e-4f);
+    EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.421053f, 1e-4f);
+    EXPECT_NEAR(iorOf(l), 77.987f, 1e-2f);
+    EXPECT_EQ(l.effective.color, (fv::mat::Rgb{1, 1, 1}));  // the panel shows the file's colour
+  }
+  // (c) hair's faint sheen
+  {
+    const auto s = weighted(1, 0.02, 1);
+    EXPECT_NEAR(s.glossy.weight, 0.019608f, 1e-5f);
+    const auto l = fv::mat::lower(s, {}, {});
+    EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.020640f, 1e-5f);
+    EXPECT_NEAR(iorOf(l), 77.987f, 1e-2f);
+    EXPECT_NEAR(pbrOf(l)["baseColorFactor"][0].get<float>(), 1.0f, 1e-4f);
+  }
+  // (d) no glossy weight: no reflection, whatever the layered weight says
+  {
+    const auto l = fv::mat::lower(weighted(1, 0, 0.325037), {}, {});
+    EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 0);
+    EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_ior"));
+  }
+  // (e) Glossy Weight's map says where the surface is glossy: specularTexture's alpha
+  {
+    const auto s = weighted(1, 1, 1, {}, {{"Glossy Weight", "/hair_gw.jpg"}});
+    EXPECT_EQ(s.glossy.weightMap, "/hair_gw.jpg");
+    const auto l = fv::mat::lower(s, {}, {});
+    ASSERT_TRUE(specularOf(l).contains("specularTexture"));
+    const auto& r = requestOf(l, specularOf(l)["specularTexture"]);
+    EXPECT_EQ(r.rel, "/hair_gw.jpg");
+    EXPECT_EQ(r.alphaRel, "/hair_gw.jpg");
+    EXPECT_FALSE(r.srgb);
+  }
+  // (f) refraction lies inside the glossy and takes its share; the glass keeps its own index
+  {
+    const auto s = weighted(1, 1, 1, {{"Refraction Weight", 1}, {"Refraction Index", 1.5}}, {}, "Glass");
+    ASSERT_TRUE(s.refraction);
+    EXPECT_NEAR(s.refraction->weight, 0.5f, 1e-6f);
+    const auto l = fv::mat::lower(s, {}, {});
+    EXPECT_NEAR(l.material["extensions"]["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 0.5f, 1e-6f);
+    EXPECT_NEAR(iorOf(l), 1.5f, 1e-6f);
+    EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 1);
+  }
+  // (g) the dual lobes lie on the diffuse and take its share
+  {
+    const auto s = weighted(1, 1, 1, {{"Dual Lobe Specular Weight", 0.8}});
+    ASSERT_TRUE(s.dual);
+    EXPECT_NEAR(s.dual->weight, 0.4f, 1e-6f);
+  }
+  // PBR Metallicity/Roughness is as it was: Glossy Layered Weight, a 4% lobe, the metal
+  {
+    const auto s = surfaceOf("Shirt", kUberType,
+                             {{"Base Mixing", 0}, {"Glossy Layered Weight", 1}, {"Glossy Reflectivity", 1}, {"Metallic Weight", 1}, {"Glossy Weight", 0.3}});
+    EXPECT_EQ(s.mixing, Surface::Mixing::eMetallicRoughness);
+    const auto l = fv::mat::lower(s, {}, {});
+    EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_ior"));
+    EXPECT_FLOAT_EQ(pbrOf(l)["metallicFactor"].get<float>(), 1);
+    EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 1);
+  }
+}
+
+// An index of its own changes nothing where 4% is all a surface reflects: skin and the eye keep
+// their lobes.
+TEST(Materials, APlainDielectricKeepsItsLobes)
+{
+  const auto skin = fv::mat::specularLobes(fv::dson::parseSurface("Face", channelsOf(kSkin)));
+  EXPECT_FLOAT_EQ(skin.intensity, 0.25f);
+  EXPECT_FLOAT_EQ(skin.glossyShare, 0);
+  EXPECT_FLOAT_EQ(skin.reflectance, 0.04f);
+  ASSERT_TRUE(skin.clearcoat);
+  EXPECT_FLOAT_EQ(skin.clearcoat->weight, 0.25f);
+  EXPECT_FLOAT_EQ(skin.clearcoat->roughness.value, 0.2f);
+
+  const auto eye = fv::mat::specularLobes(fv::dson::parseSurface("Eye Left", channelsOf(kG9Eye)));
+  EXPECT_FLOAT_EQ(eye.intensity, 0.85f);
+  EXPECT_FLOAT_EQ(eye.reflectance, 0.04f);
+  ASSERT_TRUE(eye.clearcoat);
+  EXPECT_FLOAT_EQ(eye.clearcoat->weight, 0.15f);
+  EXPECT_FLOAT_EQ(eye.clearcoat->roughness.value, 0.24f);
+}
+
+// Iray Uber's PBR Specular/Glossiness mode: Glossy Specular is the colour at normal incidence, white
+// at grazing, Glossy Layered Weight scales the whole curve, and neither Glossy Reflectivity nor the
+// metal is read (DAZ hides both in this mode). The wiring is inferred: Uber's is compiled into DAZ
+// Studio.
+TEST(Materials, SpecGlossReadsGlossySpecularAsF0)
+{
+  using fv::mat::Surface;
+  const auto specGloss = [](double w, Json f0, ChannelValues extra = {}, std::map<std::string, std::string> images = {}) {
+    ChannelValues v = {{"diffuse", Json::array({0.5, 0.5, 0.5})},
+                       {"Base Mixing", 1},
+                       {"Glossy Roughness", 0},
+                       {"Glossiness", 0.7},
+                       {"Glossy Reflectivity", 0.5},
+                       {"Glossy Layered Weight", w},
+                       {"Glossy Specular", f0},
+                       {"Metallic Weight", 1}};
+    v.insert(v.end(), extra.begin(), extra.end());
+    return surfaceOf("Shirt", kUberType, v, images);
+  };
+  const auto grey  = [](double v) { return Json::array({v, v, v}); };
+  const auto iorOf = [](const fv::mat::Lowered& l) { return l.material["extensions"]["KHR_materials_ior"]["ior"].get<float>(); };
+
+  // (a) DAZ's default, 4.37% linear: a plain dielectric, no metal
+  const auto s = specGloss(1, grey(0.2313726));
+  EXPECT_EQ(s.mixing, Surface::Mixing::eSpecGloss);
+  EXPECT_NEAR(s.glossy.reflectivity, 0.54669f, 1e-4f);
+  EXPECT_EQ(s.glossy.color, (fv::mat::Rgb{1, 1, 1}));
+  EXPECT_FLOAT_EQ(s.metallic.value, 0);
+  const auto a = fv::mat::lower(s, {}, {});
+  EXPECT_FLOAT_EQ(a.material["pbrMetallicRoughness"]["metallicFactor"].get<float>(), 0);
+  EXPECT_FLOAT_EQ(specularOf(a)["specularFactor"].get<float>(), 1);
+  EXPECT_NEAR(iorOf(a), 1.52886f, 1e-4f);
+  expectRgb(specularOf(a)["specularColorFactor"], 1, 1, 1, 0);
+  EXPECT_NEAR(a.material["pbrMetallicRoughness"]["roughnessFactor"].get<float>(), 0.3f, 1e-6f);
+  // (b) the weight scales the whole curve: the index stays the colour's
+  const auto b = fv::mat::lower(specGloss(0.2, grey(0.2313726)), {}, {});
+  EXPECT_NEAR(specularOf(b)["specularFactor"].get<float>(), 0.2f, 1e-5f);
+  EXPECT_NEAR(iorOf(b), 1.52886f, 1e-4f);
+  // (c) a bright F0
+  const auto c = fv::mat::lower(specGloss(1, grey(0.8078431)), {}, {});
+  EXPECT_NEAR(iorOf(c), 8.3294f, 1e-2f);
+  EXPECT_FLOAT_EQ(specularOf(c)["specularFactor"].get<float>(), 1);
+  // (c2) Noki Veil: white at a fifth of the weight is an even fifth, not a bright rim
+  const auto c2 = fv::mat::lower(specGloss(0.2, grey(1)), {}, {});
+  EXPECT_NEAR(specularOf(c2)["specularFactor"].get<float>(), 0.210526f, 1e-5f);
+  EXPECT_NEAR(iorOf(c2), 77.987f, 1e-2f);
+  // (d) a coloured F0: the brightest channel is the index, the hue the specular colour
+  const auto d = fv::mat::lower(specGloss(1, Json::array({0.5, 0.25, 0.5})), {}, {});
+  expectRgb(specularOf(d)["specularColorFactor"], 1, 0.23769f, 1, 1e-4f);
+  EXPECT_NEAR(iorOf(d), 2.72194f, 1e-3f);
+  // (e) Glossy Reflectivity is not read in this mode
+  const auto e = fv::mat::lower(specGloss(1, grey(0.2313726), {{"Glossy Reflectivity", 1}}), {}, {});
+  EXPECT_EQ(e.material, a.material);
+  // (f) Glossy Specular's map is the colour's
+  const auto f = fv::mat::lower(specGloss(1, grey(0.2313726), {}, {{"Glossy Specular", "/bls_spec.jpg"}}), {}, {});
+  ASSERT_TRUE(specularOf(f).contains("specularColorTexture"));
+  EXPECT_EQ(requestOf(f, specularOf(f)["specularColorTexture"]).rel, "/bls_spec.jpg");
+  EXPECT_TRUE(requestOf(f, specularOf(f)["specularColorTexture"]).srgb);
+  // (h) under 4%: a plain index, the lobe scaled down
+  const auto h = fv::mat::lower(specGloss(1, grey(0.1254902)), {}, {});
+  EXPECT_NEAR(specularOf(h)["specularFactor"].get<float>(), 0.36110f, 1e-4f);
+  EXPECT_FALSE(h.material["extensions"].contains("KHR_materials_ior"));
+}
+
 // conditional_square_roughness: Iray Uber squares Glossy Roughness into the lobe's alpha unless
 // Roughness Squared is off, when the value is alpha itself (AuraVix's NYC Tenement Staircase).
 // PBRSkin has no such switch.

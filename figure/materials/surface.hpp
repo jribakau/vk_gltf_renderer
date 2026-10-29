@@ -50,9 +50,16 @@ struct ScalarMap
 // Iray's glossy layer: a dielectric specular lobe over the diffuse base.
 struct Glossy
 {
-  float     weight       = 0.5f;  // Glossy Layered Weight (PBRSkin has none: 0)
+  // Glossy Layered Weight, or Glossy Weight in Iray Uber's Weighted mode, there its share of the mix
+  // (PBRSkin has none: 0)
+  float     weight       = 0.5f;
   float     reflectivity = 0.5f;  // Principled-style: 0.5 is a plain dielectric (4% at normal incidence)
   ScalarMap roughness{0.6f, {}};  // also the roughness of a material with no glossy layer
+  // linear; Glossy Color, which tints the layer's reflection (in Spec/Gloss, times Glossy Specular's hue)
+  Rgb         color{1, 1, 1};
+  std::string colorMap;
+  // Glossy Weight's map, in the Weighted mode: where the surface is glossy rather than diffuse
+  std::string weightMap;
 };
 
 // Iray's dual-lobe specular: two lobes sharing one reflectivity, split by `ratio`.
@@ -196,6 +203,18 @@ struct Surface
   // Bump Minimum/Maximum: DAZ's centimetres). None for Iray's, which bakes kBumpHeight.
   std::optional<float> bumpRange;
 
+  // Iray Uber's Base Mixing: the two PBR modes lay the glossy layer over the diffuse with a Fresnel
+  // curve; Weighted mixes them by their weights, with no Fresnel. PBRSkin is always the first.
+  enum class Mixing
+  {
+    eMetallicRoughness,
+    eSpecGloss,
+    eWeighted,
+  } mixing = Mixing::eMetallicRoughness;
+  // Diffuse Weight, the diffuse's share in the Weighted mode once normalised with the glossy's
+  // (Glossy::weight); 1 in the others
+  float diffuseWeight = 1;
+
   Glossy                  glossy;
   std::optional<DualLobe> dual;  // none when the material has no dual-lobe channels
   ScalarMap               metallic;
@@ -205,6 +224,9 @@ struct Surface
     float ior    = 1.4f;
     // Refraction Weight's map: where the surface refracts (white) and where it shows itself (black)
     std::string map;
+    // linear; what tints the light it lets through: Glossy Color with Share Glossy Inputs, else
+    // Refraction Color
+    Rgb tint{1, 1, 1};
   };
   std::optional<Refraction> refraction;
   struct TopCoat

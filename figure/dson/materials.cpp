@@ -454,11 +454,16 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   const Channel* normalCh = find({"Normal Map", "normal"});
   const Channel* bumpCh   = find({"Bump Strength", "bump"});
 
+  // Iray Uber's Base Mixing: PBR Metallicity/Roughness, PBR Specular/Glossiness, Weighted. PBRSkin
+  // has none; one on its surface is left over from Uber.
+  const double baseMixing = pbrSkin ? 0 : num(find({"Base Mixing"}), 0);
+  const bool   specGloss  = baseMixing == 1;
+  const bool   weighted   = baseMixing == 2;
+
   // Roughness: Iray's Glossy Roughness, else the inverse of a legacy glossiness, else a guess.
-  // Base Mixing 1 is Iray Uber's PBR Specular/Glossiness mode, whose layers read the Glossiness
-  // channels and ignore the Roughness ones (hair often sets it, with every roughness left at 0).
-  const bool specGloss = num(find({"Base Mixing"}), 0) == 1;
-  auto       roughFromGloss = [&](const char* n) -> std::optional<double> {
+  // Spec/Gloss mode's layers read the Glossiness channels and ignore the Roughness ones (hair often
+  // sets it, with every roughness left at 0).
+  auto roughFromGloss = [&](const char* n) -> std::optional<double> {
     const Channel* g = find({n});
     if(specGloss && g)
       return clamp01(1 - num(g, 0.5));
@@ -492,12 +497,41 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   // own roughness. PBRSkin derives both lobes from Specular Lobe 1 Roughness and its map (times
   // Dual Lobe Specular Roughness Mult, lobe 2 times Specular Lobe 2 Roughness Mult on top), and its
   // Ratio is lobe 2's share. A material with neither a glossy weight nor dual-lobe channels gets
-  // half a glossy layer, a believable dielectric.
-  const Channel* glossW = find({"Glossy Layered Weight", "Glossy Weight"});
+  // half a glossy layer, a believable dielectric. The Weighted mode reads Glossy Weight alone (its
+  // default is 0); the layered modes, Glossy Layered Weight.
+  const Channel* glossW = weighted ? find({"Glossy Weight"}) : find({"Glossy Layered Weight", "Glossy Weight"});
   const Channel* dualCh = find({"Dual Lobe Specular Weight"});
-  s.glossy.weight       = glossW ? float(num(glossW, 0)) : dualCh ? 0.f : 0.5f;
+  s.glossy.weight       = glossW ? float(num(glossW, 0)) : weighted || dualCh ? 0.f : 0.5f;
   s.glossy.reflectivity = float(num(find({"Glossy Reflectivity"}), 0.5));
   s.glossy.roughness    = roughness;
+  // Glossy Color tints the glossy layer's reflection, normal to grazing: irayubermaterial.mdl's
+  // glossy_color is the colour of its layered modes' glossy and of the Weighted mode's. DAZ's
+  // channel defaults to white. Only Iray Uber has it.
+  const bool     uber          = iray && !pbrSkin;
+  const Channel* glossyColorCh = uber ? find({"Glossy Color"}) : nullptr;
+  const Rgb      glossyColor   = colorOr(glossyColorCh);
+  s.glossy.color    = glossyColor;
+  s.glossy.colorMap = imageOf(glossyColorCh);
+  // PBR Specular/Glossiness. DAZ shows neither Glossy Reflectivity nor Metallic Weight in this mode
+  // (its files save both hidden on every such surface): Glossy Specular is the layer's colour at
+  // normal incidence, rising to white at grazing, and Glossy Layered Weight scales the whole curve.
+  // Inferred: Iray Uber's own wiring is compiled into DAZ Studio, but its MDL's slot for a colour at
+  // normal incidence defaults to 4%, as Glossy Specular's 0.2313726 is in linear light.
+  if(specGloss)
+  {
+    s.mixing              = Surface::Mixing::eSpecGloss;
+    const Channel* specCh = find({"Glossy Specular"});
+    const float    dflt   = srgbToLinear(0.2313726);
+    const Rgb      f0     = color(specCh).value_or(Rgb{dflt, dflt, dflt});
+    const float    peak   = std::max({f0[0], f0[1], f0[2]});
+    // Iray's reflectivity is 0.08 x its value at normal incidence
+    s.glossy.reflectivity = peak / 0.08f;
+    if(peak > 0)
+      for(int i = 0; i < 3; i++)
+        s.glossy.color[i] *= f0[i] / peak;
+    if(s.glossy.colorMap.empty())
+      s.glossy.colorMap = imageOf(specCh);
+  }
   if(dualCh)
   {
     const double   ratio     = clamp01(num(find({"Dual Lobe Specular Ratio"}), 1));
@@ -614,7 +648,35 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   s.metallic = enabled("Metallicity Enable") ? scalar(find({"Metallic Weight", "Metallicity"}), 0) : ScalarMap{};
   // hair and lashes use refraction to let light through the strands, not as glass
   if(refr && s.kind != Kind::eHair && s.kind != Kind::eLashes)
+  {
     s.refraction = Surface::Refraction{float(num(refr, 0)), float(num(find({"Refraction Index", "ior"}), 1.4)), imageOf(refr)};
+    // Iray Uber tints the light it lets through by Glossy Color while Share Glossy Inputs is on (the
+    // MDL's default; the channel's wiring is inferred from its name), else by Refraction Color
+    const Channel* shared = find({"Share Glossy Inputs"});
+    if(uber)
+      s.refraction->tint = !shared || truthy(shared) ? glossyColor : colorOr(find({"Refraction Color"}));
+  }
+  // Iray Uber's Weighted mode (normalized_base): the diffuse and the glossy mixed by Diffuse Weight
+  // and Glossy Weight, each 0..1 and normalised when they pass 1 together, with no Fresnel and no
+  // metal. DAZ shows exactly those two weights in this mode, and saves Glossy Layered Weight, Glossy
+  // Reflectivity, Glossiness and Metallic Weight hidden on every such surface. The dual lobes lie on
+  // the diffuse and refraction inside the glossy, so each takes its side's share.
+  if(weighted)
+  {
+    const float wd   = float(clamp01(num(find({"Diffuse Weight"}), 1)));
+    const float wg   = float(clamp01(s.glossy.weight));
+    const float norm = wd + wg > 1 ? 1 / (wd + wg) : 1.f;
+    s.mixing           = Surface::Mixing::eWeighted;
+    s.diffuseWeight    = wd * norm;
+    s.glossy.weight    = wg * norm;
+    s.glossy.weightMap = imageOf(glossW);
+    if(s.dual)
+      s.dual->weight *= s.diffuseWeight;
+    if(s.refraction)
+      s.refraction->weight *= s.glossy.weight;
+  }
+  if(weighted || specGloss)
+    s.metallic = {};
   // The top coat: PBRSkin's is there only with Top Coat Enable (false in PBRSkin.dsf; Polina 9 and
   // Leyla 9 store a weight of 0.25 with it off). Iray Uber has no switch, so a weight makes a coat.
   // The weight and roughness are each the value times its map, as every texture instance is; the

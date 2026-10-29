@@ -12,7 +12,7 @@ namespace fv::mat {
 
 struct SpecularLobes
 {
-  // glTF's specularFactor: 1 is a plain dielectric (4% at normal incidence)
+  // glTF's specularFactor: 1 is the whole of a dielectric of `reflectance` at normal incidence
   float intensity = 0;
   // the main lobe's roughness: the glossy layer's, or the broad dual lobe's without a glossy layer
   ScalarMap roughness;
@@ -25,12 +25,28 @@ struct SpecularLobes
   std::optional<Coat> clearcoat;
   // the share of `intensity` that is Iray's glossy layer, the only layer Glossy Anisotropy stretches
   float glossyShare = 1;
+  // the F0 of the index the main lobe needs: 0.04, a plain dielectric's; above it lower() writes
+  // iorForReflectance
+  float reflectance = 0.04f;
 };
+
+// The F0 the Weighted mode's lobe takes: an index whose exact Fresnel stays within about 10% of it
+// up to 80 degrees, so the lobe scaled down to Glossy Weight is close to Iray's Fresnel-free glossy
+constexpr float kFlatF0 = 0.95f;
 
 // Iray's specular at normal incidence. The glossy layer and the broader of the two dual lobes add
 // up into the main lobe; the tighter dual lobe becomes a clearcoat, the one extra lobe glTF has, so
-// skin keeps Iray's sharp wet highlight over its broad one.
-SpecularLobes specularLobes(const Surface& s);
+// skin keeps Iray's sharp wet highlight over its broad one. A layer that reflects more than 4% at
+// normal incidence (Spec/Gloss's Glossy Specular, the Weighted mode's Glossy Weight) asks for an
+// index of its own, unless `ownIndex` is false: refraction or a skin medium sets the index.
+SpecularLobes specularLobes(const Surface& s, bool ownIndex = true);
+
+// The index of refraction whose dielectric reflects `f0` at normal incidence, up to kFlatF0.
+float iorForReflectance(float f0);
+
+// What the Weighted mode scales the diffuse by so that it keeps its share (Surface::diffuseWeight)
+// under a glossy lobe that already takes the glossy's share of the light; 1 in the other modes.
+float weightedDiffuseScale(const Surface& s);
 
 enum class SkinRole
 {

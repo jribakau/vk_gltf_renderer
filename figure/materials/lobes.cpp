@@ -7,12 +7,22 @@
 
 namespace fv::mat {
 
-SpecularLobes specularLobes(const Surface& s)
+SpecularLobes specularLobes(const Surface& s, bool ownIndex)
 {
-  const float glossF = s.glossy.weight * s.glossy.reflectivity * 2;
-  ScalarMap   roughness = s.glossy.roughness;
+  // Lobe strengths in units of a plain dielectric's 4% at normal incidence. Iray's reflectivity is
+  // 0.08 x its value there; the Weighted mode's glossy reflects its weight, with no Fresnel.
+  const bool  weighted = s.mixing == Surface::Mixing::eWeighted;
+  const float glossF   = weighted ? s.glossy.weight / 0.04f : s.glossy.weight * s.glossy.reflectivity * 2;
+  // The index's F0, which glTF's specularFactor then scales down: Spec/Gloss's Glossy Specular,
+  // which Glossy Layered Weight scales whole, rim and all; for the Weighted mode, the index whose
+  // Fresnel is nearly flat. Where the index is not the lobe's own, 4%.
+  const float f0 = !ownIndex ? 0.04f
+                   : weighted ? kFlatF0
+                   : s.mixing == Surface::Mixing::eSpecGloss ? std::clamp(0.08f * s.glossy.reflectivity, 0.04f, kFlatF0)
+                                                             : 0.04f;
+  ScalarMap roughness = s.glossy.roughness;
   if(!s.dual)
-    return {std::clamp(glossF, 0.f, 1.f), roughness, std::nullopt, 1};
+    return {std::clamp(0.04f * glossF / f0, 0.f, 1.f), roughness, std::nullopt, 1, f0};
   struct Lobe
   {
     ScalarMap r;
@@ -36,9 +46,26 @@ SpecularLobes specularLobes(const Surface& s)
   const float baseDual = promoted ? dualF * (1 - tight.share) : dualF;
   // a glossy layer too faint to be the main lobe has no share in it
   out.glossyShare = glossF > 0.01f && glossF + baseDual > 0 ? glossF / (glossF + baseDual) : 0.f;
-  out.intensity   = std::clamp(glossF + baseDual, 0.f, 1.f);
+  out.intensity   = std::clamp(0.04f * (glossF + baseDual) / f0, 0.f, 1.f);
   out.roughness   = roughness;
+  out.reflectance = f0;
   return out;
+}
+
+float iorForReflectance(float f0)
+{
+  const float r = std::sqrt(std::clamp(f0, 0.f, kFlatF0));
+  return (1 + r) / (1 - r);
+}
+
+float weightedDiffuseScale(const Surface& s)
+{
+  if(s.mixing != Surface::Mixing::eWeighted)
+    return 1;
+  // the lobe takes about Glossy Weight x its brightest tint from the light under it, at every angle
+  const float tint  = std::min(1.f, std::max({s.glossy.color[0], s.glossy.color[1], s.glossy.color[2]}));
+  const float under = 1 - s.glossy.weight * tint;
+  return under > 1e-4f ? std::clamp(s.diffuseWeight / under, 0.f, 1.f) : 0.f;
 }
 
 SkinRole skinRole(const Surface& s)
