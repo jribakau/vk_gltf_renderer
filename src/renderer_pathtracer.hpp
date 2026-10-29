@@ -296,9 +296,11 @@ public:
   // The technique of the frame being rendered: m_techniqueDlss on the DLSS variant's frames,
   // m_techniqueStill on the others (onRender). Each variant keeps its own pipeline in the cache.
   RenderTechnique m_renderTechnique{RenderTechnique::RayQuery};
-  // Measured 2026-10-28 at 4K on the dressed figure: the pipeline with SER took the moving trace from
-  // 31 to 19 ms, but the still's frame from 312 to 361 ms, so each view keeps the faster one.
-  RenderTechnique m_techniqueStill{RenderTechnique::RayQuery};
+  // Measured 2026-10-28/29 at 4K on the dressed figure: the pipeline with SER took the moving trace
+  // from 31 to 19 ms, and once Sobol read no table (sobol.h.slang) the still's frame from 162 to
+  // 62 ms. Ray query was the default from upstream's merge (e33c30b), which made the still about 3x
+  // dearer. Each view still has its own setting.
+  RenderTechnique m_techniqueStill{RenderTechnique::RayTracing};
   RenderTechnique m_techniqueDlss{RenderTechnique::RayTracing};
 
   // Adaptive sampling for performance optimization

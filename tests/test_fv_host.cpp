@@ -486,7 +486,8 @@ TEST(FvHost, APropRidesOnAFiguresBone)
         return store.world(e);
     return glm::mat4(0.f);
   };
-  const auto near = [](const glm::mat4& a, const glm::mat4& b) {
+  // not `near`: <windows.h> defines it away
+  const auto sameWorld = [](const glm::mat4& a, const glm::mat4& b) {
     for(int c = 0; c < 4; c++)
       if(glm::length(a[c] - b[c]) > 1e-4f)
         return false;
@@ -500,16 +501,16 @@ TEST(FvHost, APropRidesOnAFiguresBone)
   ASSERT_TRUE(rig.settle());
   EXPECT_EQ(rig.topic("scene")["props"][lamp].value("bone", Json()), "head");
   EXPECT_EQ(rig.topic("history").at("undo")[0], "Change what Point light rides on");
-  EXPECT_TRUE(near(world(), standing));
+  EXPECT_TRUE(sameWorld(world(), standing));
 
   // the head turns: the lamp with it
   rig.cmd("pose.set", {{"prop", figure}, {"values", {{"head/rotation/y", 40.0}}}});
   ASSERT_TRUE(rig.settle());
   const glm::mat4 turned = world();
-  EXPECT_FALSE(near(turned, standing));
+  EXPECT_FALSE(sameWorld(turned, standing));
   rig.cmd("history.undo");
   ASSERT_TRUE(rig.settle());
-  EXPECT_TRUE(near(world(), standing));
+  EXPECT_TRUE(sameWorld(world(), standing));
   rig.cmd("history.redo");
   ASSERT_TRUE(rig.settle());
 
@@ -522,12 +523,12 @@ TEST(FvHost, APropRidesOnAFiguresBone)
   ASSERT_TRUE(rig.settle());
   const Json left = rig.topic("scene")["props"][lamp];
   EXPECT_TRUE(left.at("parent").is_null() && left.at("bone").is_null()) << left.dump();
-  EXPECT_TRUE(near(world(), turned));
+  EXPECT_TRUE(sameWorld(world(), turned));
   // and back on the head with the figure's undo
   rig.cmd("history.undo");
   ASSERT_TRUE(rig.settle());
   EXPECT_EQ(rig.topic("scene")["props"][lamp].value("bone", Json()), "head");
-  EXPECT_TRUE(near(world(), turned));
+  EXPECT_TRUE(sameWorld(world(), turned));
 }
 
 // A removed dressed figure comes back under its id with its look, pose and wardrobe: kept, and
