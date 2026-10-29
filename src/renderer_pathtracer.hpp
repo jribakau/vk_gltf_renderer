@@ -193,6 +193,9 @@ public:
   // and the DLSS frames', fewer, since white hair keeps its energy through every one.
   int m_hairBounces{16};
   int m_hairBouncesDlss{4};
+  // DLSS frames: past ptHairRouletteFrom fibre events a path continues at most with ptHairRouletteDlss
+  float m_hairRouletteDlss{1.0F};
+  int   m_hairRouletteFrom{1};
   SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 

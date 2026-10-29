@@ -1698,6 +1698,7 @@ struct BounceScratch
   bool   shadowRayInside     = false;         // The shadow ray starts inside a medium...
   float3 shadowRayExtinction = float3(0.0F);  // ...of this extinction.
   bool   hairEvent           = false;         // This vertex was a fibre's and spent the hair budget, not a surface bounce
+  bool   fibre               = false;         // This vertex was a fibre's, within the budget or past it
 };
 
 // The hair's own budget (PathtracePushConstant::hairBudget, the host's ptHairBounces and

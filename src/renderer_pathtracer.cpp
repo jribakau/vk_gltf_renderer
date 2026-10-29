@@ -460,6 +460,15 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Fibre events a path takes through hair before they count as surface bounces (DLSS frames)",
                  .callbackSuccess = reset},
                 &m_hairBouncesDlss, Persist::eNo, 0, 64);
+  settings->add({.name            = "ptHairRouletteDlss",
+                 .help            = "PathTracer: DLSS frames: a path continues from a fibre at most with this probability, "
+                                    "once it has taken ptHairRouletteFrom fibre events (1: off). Unbiased, noisier",
+                 .callbackSuccess = reset},
+                &m_hairRouletteDlss, Persist::eNo, 0.05F, 1.0F);
+  settings->add({.name            = "ptHairRouletteFrom",
+                 .help            = "PathTracer: the fibre events a DLSS path takes before ptHairRouletteDlss applies",
+                 .callbackSuccess = reset},
+                &m_hairRouletteFrom, Persist::eNo, 0, 64);
   // Light that reaches skin after a rough bounce is blurred by that bounce: a random walk there costs
   // tens of events for detail nothing shows, so the medium shades as the thin preview's diffuse lobes
   // (Unreal's bSimplifySSS, at path roughness 0.15). Skin seen directly, or through a mirror or a
@@ -3031,6 +3040,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_approximateCaustics ? shaderio::ePtApproximateCaustics : 0;
   m_pushConst.flags |= (m_regularize == 2 || (m_regularize == 1 && useDlss)) ? shaderio::ePtRegularize : 0;
   m_pushConst.hairBudget = useDlss ? m_hairBouncesDlss : m_hairBounces;
+  m_pushConst.hairRouletteDlss = m_hairRouletteDlss;
+  m_pushConst.hairRouletteFrom = m_hairRouletteFrom;
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;

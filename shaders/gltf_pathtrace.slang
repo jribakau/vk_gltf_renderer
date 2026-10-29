@@ -726,6 +726,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // A fibre event spends the hair's own budget while it lasts, not a surface bounce
 #if GLTF_USE_HAIR
     bounce.hairEvent = hairOn && pt.hairBounces < pushConst.hairBudget;
+    bounce.fibre     = hairOn;
 #endif
     // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
     // have no BSDF-sampled partner: weight 1, as for a punctual light, and the full environment table.
@@ -1104,16 +1105,24 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     // Not at the last vertex: the loop ends there whatever the roulette says. No cap below 1: a path
     // that keeps its energy (a white wall, blond hair) is cut by the bounce limit, not culled at
     // random and weighted up, which only made its survivors brighter and noisier.
-    int depth = pt.surfaceDepth;
+    int  depth         = pt.surfaceDepth;
+    bool fibreRoulette = false;
 #if GLTF_USE_HAIR
     depth += pt.hairBounces;
+    // DLSS frames: past its first fibre events a path through a lock continues at most with
+    // hairRouletteDlss. Unbiased (the survivors carry the rest), noisier, for Ray Reconstruction to
+    // denoise: the light a lock scatters between its fibres was three quarters of a moving frame.
+    fibreRoulette = bounce.fibre && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss)
+                    && pushConst.hairRouletteDlss < 1.0F && pt.hairBounces >= pushConst.hairRouletteFrom;
 #endif
-    if(depth >= RR_MIN_DEPTH && (bounce.hairEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
+    if((depth >= RR_MIN_DEPTH || fibreRoulette) && (bounce.hairEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
     {
       float rrCap = 1.0F;
 #if GLTF_USE_HAIR
       if(bounce.hairEvent && pt.hairBounces >= HAIR_FREE_EVENTS)
         rrCap = HAIR_RR_CAP;  // a clear fibre's path, bounded (HAIR_FREE_EVENTS)
+      if(fibreRoulette)
+        rrCap = min(rrCap, pushConst.hairRouletteDlss);
 #endif
       const float rrPcont = min(max(pt.throughput.x, max(pt.throughput.y, pt.throughput.z)) + RR_PCONT_FLOOR, rrCap);
       if(rrPcont < 1.0F)  // (rand() can return 1, which would end a path that has to survive)

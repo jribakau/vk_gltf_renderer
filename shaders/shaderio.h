@@ -368,6 +368,8 @@ struct PathtracePushConstant
   uint2           renderSize = {0, 0};          // Traced region: smaller than the output images under OptiX 2x upscale
   int             bladeCount    = 0;            // Aperture blades: below 3 a round aperture (aperture.h.slang)
   float           bladeRotation = 0.0f;         // Angle of the first blade's corner, radians from the camera's right
+  float           hairRouletteDlss = 1.0f;      // DLSS frames: a path continues from a fibre at most with this... (1: off)
+  int             hairRouletteFrom = 1;         // ...once it has taken this many fibre events (two fields keep the pointers 8-byte aligned)
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node
