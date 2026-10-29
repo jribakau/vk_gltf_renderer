@@ -12,8 +12,10 @@
 // integral over 4 is the environment's estimate (a uniform sky of that power on a surface facing it).
 
 // Above this many punctual lights the pick is uniform and nothing is culled: weighing every light at
-// every vertex would cost more than it saves.
-static const int LIGHT_PICK_MAX_LIGHTS = 16;
+// every vertex (two or three times: the pick, its walk, a BSDF hit's MIS) would cost more than it
+// saves. Measured 2026-10-29 on 49 point lights around a figure: weighted, 2.1x fewer samples for the
+// same noise at 9% more time a sample (at 16, that scene was uniform). Past 64, a light tree.
+static const int LIGHT_PICK_MAX_LIGHTS = 64;
 // The share spread evenly over the candidates, for the light an estimate underrates: one the
 // figure shades, or a glossy lobe's reflection of a light the irradiance calls dim.
 static const float LIGHT_PICK_DEFENSIVE = 0.1F;
