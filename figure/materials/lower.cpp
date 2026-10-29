@@ -497,26 +497,43 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // clearcoat: Iray's top coat, else the tighter dual lobe, on the same surface detail as the base
   struct Coat
   {
-    float     weight;
+    ScalarMap weight;
     ScalarMap roughness;
+    float     bumpWeight = 1;
   };
   std::optional<Coat> coat;
   if(tearFilm || underFilm)
     ;  // one interface, already the specular lobe; nothing reflects under it
   else if(s.topCoat)
-    coat = Coat{s.topCoat->weight, {s.topCoat->roughness, {}}};
+  {
+    // PBRSkin's coat colour tints only the coat's own reflection, so its luminance dims the coat's
+    // weight. Iray leaves the base under it the share an untinted coat would, which this gives
+    // except towards grazing, where a little less light reaches the base than in Iray.
+    const Rgb&  c    = s.topCoat->color;
+    const float tint = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+    coat = Coat{{s.topCoat->weight * tint, s.topCoat->weightMap}, {s.topCoat->roughness, s.topCoat->roughnessMap}, s.topCoat->bumpWeight};
+  }
   else if(lobes.clearcoat)
-    coat = Coat{lobes.clearcoat->weight, lobes.clearcoat->roughness};
+    coat = Coat{{lobes.clearcoat->weight, {}}, lobes.clearcoat->roughness};
   if(coat || e.clearcoat)
   {
-    Json cc = {{"clearcoatFactor", e.clearcoat.value_or(coat ? coat->weight : 0.f)},
+    Json cc = {{"clearcoatFactor", clamp(e.clearcoat.value_or(coat ? coat->weight.value : 0.f), 0, 1)},
                {"clearcoatRoughnessFactor", clamp(e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f), 0, 1)}};
+    if(coat && !coat->weight.map.empty())
+      cc["clearcoatTexture"] = b.plain(coat->weight.map, false);
     if(coat && !coat->roughness.map.empty())
       cc["clearcoatRoughnessTexture"] = b.plain(coat->roughness.map, false);
     if(!normal.is_null())
     {
-      // the same slot again: the clearcoat shares the base's surface detail
-      cc["clearcoatNormalTexture"] = normal;
+      // the same slot again: the clearcoat shares the base's surface detail, tilted by the coat's
+      // bump weight (DAZ blends towards the smooth normal, which scales slopes by about the weight).
+      // At weight 0 the slot stays with scale 0: left out, the shader would give the coat the
+      // base's bent normal, the full relief.
+      Json        n    = normal;
+      const float bump = coat ? coat->bumpWeight : 1.f;
+      if(bump < 1)
+        n["scale"] = n.value("scale", 1.f) * bump;
+      cc["clearcoatNormalTexture"] = n;
     }
     ext["KHR_materials_clearcoat"] = cc;
     eff.clearcoat                  = cc["clearcoatFactor"].get<float>();

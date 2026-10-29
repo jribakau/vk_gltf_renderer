@@ -205,6 +205,13 @@ struct Surface
   {
     float weight    = 0;
     float roughness = 0.1f;
+    // Top Coat Weight's map (where the coat is: a lip-gloss mask) and Top Coat Roughness's
+    std::string weightMap;
+    std::string roughnessMap;
+    // PBRSkin's Top Coat Bump Weight: how much of the surface's relief the coat follows, 0 smooth
+    float bumpWeight = 1;
+    // linear; PBRSkin's Top Coat Color, which tints the coat's reflection only
+    Rgb color{1, 1, 1};
   };
   std::optional<TopCoat>      topCoat;
   std::optional<Emission>     emission;

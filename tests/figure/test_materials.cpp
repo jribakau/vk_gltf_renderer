@@ -1399,6 +1399,223 @@ TEST(Materials, AMetalMapReachesMetallicRoughnessBlue)
   EXPECT_EQ(metalRequest(edited)->channels, "mt");
 }
 
+// ---- The top coat ----
+
+using ChannelValues = std::vector<std::pair<std::string, Json>>;
+
+// A surface of `shader`'s channels, each "id": value (a number, bool or [r,g,b]); an image where
+// `images` gives one
+fv::mat::Surface surfaceOf(const char* name, const char* shader, const ChannelValues& values, const std::map<std::string, std::string>& images = {})
+{
+  Json channels = Json::array();
+  for(const auto& [id, value] : values)
+  {
+    Json c = {{"id", id}, {"type", value.is_array() ? "color" : value.is_boolean() ? "bool" : "float"}, {"current_value", value}};
+    if(const auto it = images.find(id); it != images.end())
+      c["image_file"] = it->second;
+    channels.push_back({{"channel", c}});
+  }
+  const Json doc = {{"extra", Json::array({Json{{"type", shader}, {"channels", channels}}})}};
+  return fv::dson::parseSurface(name, channelsOf(doc.dump().c_str()));
+}
+
+const char* kPbrSkinType = "studio/material/daz_brick";
+const char* kUberType    = "studio/material/uber_iray";
+
+const nlohmann::json& clearcoatOf(const fv::mat::Lowered& l)
+{
+  return l.material["extensions"]["KHR_materials_clearcoat"];
+}
+
+const fv::mat::TextureRequest& requestOf(const fv::mat::Lowered& l, const nlohmann::json& info)
+{
+  return l.requests[info["slot"].get<size_t>()];
+}
+
+// pbr_skin.mdl lays the coat over the skin only with Top Coat Enable, false in PBRSkin.dsf. Polina 9's
+// head stores Top Coat Weight 0.25 at roughness 0.6721311 and leaves the switch off: no coat, and the
+// clearcoat slot goes to her tighter dual lobe. Iray Uber has no switch: a weight makes a coat.
+TEST(Materials, APbrSkinTopCoatNeedsItsEnable)
+{
+  const auto head = [](std::optional<bool> enable) {
+    ChannelValues v = {{"Detail Enable", false},
+                       {"Dual Lobe Specular Enable", true},
+                       {"Dual Lobe Specular Weight", 0.5},
+                       {"Dual Lobe Specular Reflectivity", 0.25},
+                       {"Specular Lobe 1 Roughness", 0.6},
+                       {"Specular Lobe 2 Roughness Mult", 0.4},
+                       {"Dual Lobe Specular Ratio", 0.15},
+                       {"Top Coat Weight", 0.25},
+                       {"Top Coat Roughness", 0.6721311}};
+    if(enable)
+      v.push_back({"Top Coat Enable", *enable});
+    return surfaceOf("Head", kPbrSkinType, v);
+  };
+  for(const std::optional<bool> off : {std::optional<bool>(), std::optional<bool>(false)})
+  {
+    const auto s = head(off);
+    EXPECT_FALSE(s.topCoat);
+    // the tight lobe (0.6 x 0.4, lobe 2's 0.15 of 0.5 x 0.25 x 2) is the clearcoat; the broad stays the base
+    const auto  l   = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+    const auto& ext = l.material["extensions"];
+    EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.0375f, 1e-5f);
+    EXPECT_NEAR(clearcoatOf(l)["clearcoatRoughnessFactor"].get<float>(), 0.24f, 1e-5f);
+    EXPECT_NEAR(ext["KHR_materials_specular"]["specularFactor"].get<float>(), 0.2125f, 1e-5f);
+    EXPECT_NEAR(l.material["pbrMetallicRoughness"]["roughnessFactor"].get<float>(), 0.6f, 1e-5f);
+  }
+  // on: the coat takes the slot, and the tight lobe folds back into the base specular
+  const auto on = head(true);
+  ASSERT_TRUE(on.topCoat);
+  const auto l = fv::mat::lower(on, {}, {.skin = fv::mat::SkinMode::eRaster});
+  EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.25f, 1e-5f);
+  EXPECT_NEAR(clearcoatOf(l)["clearcoatRoughnessFactor"].get<float>(), 0.6721311f, 1e-5f);
+  EXPECT_NEAR(l.material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(), 0.25f, 1e-5f);
+
+  // Iray Uber: no switch
+  const auto uber = surfaceOf("Shirt", kUberType, {{"Glossy Roughness", 0.4}, {"Top Coat Weight", 0.3}, {"Top Coat Roughness", 0.2}});
+  ASSERT_TRUE(uber.topCoat);
+  EXPECT_FLOAT_EQ(uber.topCoat->weight, 0.3f);
+  EXPECT_FLOAT_EQ(uber.topCoat->roughness, 0.2f);
+  EXPECT_FLOAT_EQ(uber.topCoat->bumpWeight, 1);
+
+  // a preset that only switches the coat off takes it away (ATK Giselle's Lip Gloss 00 Off)
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Head", channelsOf(R"({"extra":[{"type":"studio/material/daz_brick","channels":[
+    {"channel":{"id":"Detail Enable","type":"bool","current_value":false}},
+    {"channel":{"id":"Top Coat Enable","type":"bool","current_value":true}},
+    {"channel":{"id":"Top Coat Weight","type":"float","current_value":0.25}},
+    {"channel":{"id":"Top Coat Roughness","type":"float","current_value":0.11}}]}]})")));
+  ASSERT_TRUE(scene.materials[0].surface.topCoat);
+  fv::dson::applyMaterialPreset(Json::parse(R"({"scene":{"animations":[
+    {"url":"name://@selection#materials/Head:?extra/studio_material_channels/channels/Top%20Coat%20Enable/value","keys":[[0,false]]}
+  ]}})"),
+                                scene);
+  EXPECT_FALSE(scene.materials[0].surface.topCoat);
+}
+
+// The coat's weight and roughness are each the value times its map (PBRSkin's texture instances;
+// for Iray Uber, DAZ's map-times-value convention). CJ Evangeline's Lip Gloss 01: weight 0.503268
+// over her lip mask, a coat on the lips alone. glTF's clearcoat is the factor times the texture's red,
+// its roughness the factor times green; both maps are linear.
+TEST(Materials, ATopCoatsMapsGoWhereTheCoatIs)
+{
+  const auto head = [](double weight) {
+    return surfaceOf("Head", kPbrSkinType,
+                     {{"Detail Enable", false}, {"Top Coat Enable", true}, {"Top Coat Weight", weight}, {"Top Coat Roughness", 0.4052288}},
+                     {{"Top Coat Weight", "/Runtime/Textures/lipmask.png"}, {"Top Coat Roughness", "/Runtime/Textures/lip_r.png"}});
+  };
+  const auto s = head(0.503268);
+  ASSERT_TRUE(s.topCoat);
+  EXPECT_EQ(s.topCoat->weightMap, "/Runtime/Textures/lipmask.png");
+  EXPECT_EQ(s.topCoat->roughnessMap, "/Runtime/Textures/lip_r.png");
+  const auto  l  = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+  const auto& cc = clearcoatOf(l);
+  EXPECT_NEAR(cc["clearcoatFactor"].get<float>(), 0.503268f, 1e-6f);
+  EXPECT_NEAR(cc["clearcoatRoughnessFactor"].get<float>(), 0.4052288f, 1e-6f);
+  ASSERT_TRUE(cc.contains("clearcoatTexture"));
+  const fv::mat::TextureRequest& mask = requestOf(l, cc["clearcoatTexture"]);
+  EXPECT_EQ(mask.rel, "/Runtime/Textures/lipmask.png");
+  EXPECT_FALSE(mask.srgb);
+  EXPECT_TRUE(mask.channels.empty());
+  ASSERT_TRUE(cc.contains("clearcoatRoughnessTexture"));
+  const fv::mat::TextureRequest& rough = requestOf(l, cc["clearcoatRoughnessTexture"]);
+  EXPECT_EQ(rough.rel, "/Runtime/Textures/lip_r.png");
+  EXPECT_FALSE(rough.srgb);
+
+  // a panel clearcoat replaces the weight; the mask stays where the coat is
+  fv::mat::Edits e;
+  e.clearcoat       = 0.7f;
+  const auto edited   = fv::mat::lower(s, e, {.skin = fv::mat::SkinMode::eRaster});
+  EXPECT_FLOAT_EQ(clearcoatOf(edited)["clearcoatFactor"].get<float>(), 0.7f);
+  EXPECT_TRUE(clearcoatOf(edited).contains("clearcoatTexture"));
+
+  // CJ Evangeline's own head keeps the mask at weight 0: no coat
+  const auto bare = head(0);
+  EXPECT_FALSE(bare.topCoat);
+  EXPECT_FALSE(fv::mat::lower(bare, {}, {.skin = fv::mat::SkinMode::eRaster}).material["extensions"].contains("KHR_materials_clearcoat"));
+
+  // Iray Uber's weight map (Sienna Thornbrook's skin)
+  const auto uber = surfaceOf("Torso", kUberType, {{"Glossy Roughness", 0.4}, {"Top Coat Weight", 0.45}}, {{"Top Coat Weight", "/Runtime/Textures/face_s.jpg"}});
+  ASSERT_TRUE(uber.topCoat);
+  EXPECT_EQ(uber.topCoat->weightMap, "/Runtime/Textures/face_s.jpg");
+  const auto ul = fv::mat::lower(uber, {}, {});
+  ASSERT_TRUE(clearcoatOf(ul).contains("clearcoatTexture"));
+  EXPECT_EQ(requestOf(ul, clearcoatOf(ul)["clearcoatTexture"]).rel, "/Runtime/Textures/face_s.jpg");
+
+  // Specular/Glossiness mode: the roughness is 1 - Top Coat Glossiness, and a glossiness map is no roughness map
+  const auto gloss = surfaceOf("Hair", kUberType, {{"Base Mixing", 1}, {"Top Coat Weight", 0.5}, {"Top Coat Glossiness", 0.8}},
+                               {{"Top Coat Glossiness", "/gloss.png"}});
+  ASSERT_TRUE(gloss.topCoat);
+  EXPECT_NEAR(gloss.topCoat->roughness, 0.2f, 1e-6f);
+  EXPECT_TRUE(gloss.topCoat->roughnessMap.empty());
+  EXPECT_FALSE(clearcoatOf(fv::mat::lower(gloss, {}, {})).contains("clearcoatRoughnessTexture"));
+
+  // the MDL takes the weight in 0..1: the Sporty Ponytails hair's 2 is a full coat
+  const auto ponytail = surfaceOf("Bangs1", kUberType, {{"Top Coat Weight", 2}, {"Top Coat Roughness", 1}});
+  ASSERT_TRUE(ponytail.topCoat);
+  EXPECT_FLOAT_EQ(ponytail.topCoat->weight, 1);
+  EXPECT_FLOAT_EQ(clearcoatOf(fv::mat::lower(ponytail, {}, {}))["clearcoatFactor"].get<float>(), 1);
+}
+
+// PBRSkin's coat normal blends the skin's relief towards the smooth normal by Top Coat Bump Weight,
+// which scales its slopes by about the weight: glTF's clearcoatNormalTexture scale. At 0 the slot is
+// kept with scale 0, the smooth normal; without it the shader would give the coat the full relief.
+// Iray Uber's coat follows the relief whole.
+TEST(Materials, APbrSkinCoatFollowsTheReliefByItsBumpWeight)
+{
+  const auto head = [](std::optional<double> bump) {
+    ChannelValues v = {{"Detail Enable", false}, {"Normal Map", 0.8}, {"Top Coat Enable", true}, {"Top Coat Weight", 1}};
+    if(bump)
+      v.push_back({"Top Coat Bump Weight", *bump});
+    return surfaceOf("Head", kPbrSkinType, v, {{"Normal Map", "/Runtime/Textures/n.jpg"}});
+  };
+  const auto coatScale = [](const fv::mat::Surface& s) {
+    const auto l      = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+    const auto normal = l.material["normalTexture"];
+    EXPECT_NEAR(normal["scale"].get<float>(), 0.8f, 1e-6f);
+    const auto& cc = clearcoatOf(l);
+    EXPECT_TRUE(cc.contains("clearcoatNormalTexture"));
+    if(!cc.contains("clearcoatNormalTexture"))
+      return -1.f;
+    EXPECT_EQ(cc["clearcoatNormalTexture"]["slot"], normal["slot"]);  // the same image
+    return cc["clearcoatNormalTexture"]["scale"].get<float>();
+  };
+  EXPECT_NEAR(coatScale(head(0.5)), 0.4f, 1e-6f);
+  EXPECT_NEAR(coatScale(head(0)), 0, 1e-6f);
+  EXPECT_NEAR(coatScale(head(std::nullopt)), 0.8f, 1e-6f);  // PBRSkin.dsf's default is 1
+  const auto uber = surfaceOf("Shirt", kUberType, {{"Normal Map", 0.8}, {"Top Coat Weight", 1}, {"Top Coat Bump Weight", 0.3}},
+                              {{"Normal Map", "/Runtime/Textures/n.jpg"}});
+  EXPECT_NEAR(coatScale(uber), 0.8f, 1e-6f);
+}
+
+// PBRSkin's Top Coat Color tints the coat's own reflection; the base under it keeps the share an
+// untinted coat leaves it. Its luminance therefore dims the coat's weight. CHT Ava's skin: an enabled
+// coat of 0.11 at roughness 0, coloured 0.502 grey (0.216 linear).
+TEST(Materials, APbrSkinCoatsColourDimsItsReflection)
+{
+  const auto head = [](double c) {
+    return surfaceOf("Head", kPbrSkinType,
+                     {{"Detail Enable", false},
+                      {"Top Coat Enable", true},
+                      {"Top Coat Weight", 0.11},
+                      {"Top Coat Roughness", 0},
+                      {"Top Coat Color", Json::array({c, c, c})}});
+  };
+  const auto ava = head(0.5019608);
+  ASSERT_TRUE(ava.topCoat);
+  for(int i = 0; i < 3; i++)
+    EXPECT_NEAR(ava.topCoat->color[i], fv::mat::srgbToLinear(0.5019608), 1e-6f);
+  const float lum = fv::mat::srgbToLinear(0.5019608);
+  EXPECT_NEAR(clearcoatOf(fv::mat::lower(ava, {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f * lum, 1e-5f);
+  EXPECT_NEAR(clearcoatOf(fv::mat::lower(head(1), {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f, 1e-5f);
+
+  // Iray Uber's colour is not read here (its Color Effect can change the weight itself)
+  const auto uber = surfaceOf("Shirt", kUberType, {{"Top Coat Weight", 0.4}, {"Top Coat Color", Json::array({0.5, 0.5, 0.5})}});
+  ASSERT_TRUE(uber.topCoat);
+  EXPECT_EQ(uber.topCoat->color, (fv::mat::Rgb{1, 1, 1}));
+  EXPECT_FLOAT_EQ(clearcoatOf(fv::mat::lower(uber, {}, {}))["clearcoatFactor"].get<float>(), 0.4f);
+}
+
 // Tri-X's eye presets give the eye moisture the eye's own map; Iray refracts through it untinted, so
 // the glTF material, which tints what it transmits by its base colour, leaves the map out.
 TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)

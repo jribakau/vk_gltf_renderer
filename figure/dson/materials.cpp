@@ -586,10 +586,29 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   // hair and lashes use refraction to let light through the strands, not as glass
   if(refr && s.kind != Kind::eHair && s.kind != Kind::eLashes)
     s.refraction = Surface::Refraction{float(num(refr, 0)), float(num(find({"Refraction Index", "ior"}), 1.4)), imageOf(refr)};
-  if(num(coat, 0) > 0)
+  // The top coat: PBRSkin's is there only with Top Coat Enable (false in PBRSkin.dsf; Polina 9 and
+  // Leyla 9 store a weight of 0.25 with it off). Iray Uber has no switch, so a weight makes a coat.
+  // The weight and roughness are each the value times its map, as every texture instance is; the
+  // MDL takes the weight in 0..1 (the Sporty Ponytails hair sets 2).
+  if(enabled("Top Coat Enable") && num(coat, 0) > 0)
   {
-    const auto gloss = roughFromGloss("Top Coat Glossiness");
-    s.topCoat        = Surface::TopCoat{float(num(coat, 0)), float(gloss ? *gloss : num(find({"Top Coat Roughness"}), 0.1))};
+    const Channel*   roughCh = find({"Top Coat Roughness"});
+    const auto       gloss   = roughFromGloss("Top Coat Glossiness");
+    Surface::TopCoat t;
+    t.weight       = float(clamp01(num(coat, 0)));
+    t.weightMap    = imageOf(coat);
+    t.roughness    = float(gloss ? *gloss : num(roughCh, 0.1));
+    t.roughnessMap = gloss ? std::string() : imageOf(roughCh);
+    if(pbrSkin)
+    {
+      // PBRSkin's coat follows the skin's relief by its Bump Weight, blended towards the smooth
+      // normal, and its colour tints its reflection. A coloured map has no form here (none is seen).
+      t.bumpWeight           = float(clamp01(num(find({"Top Coat Bump Weight"}), 1)));
+      const Channel* colorCh = find({"Top Coat Color"});
+      if(imageOf(colorCh).empty())
+        t.color = colorOr(colorCh);
+    }
+    s.topCoat = t;
   }
   if(pbrSkin && enabled("Detail Enable"))
   {
