@@ -130,7 +130,7 @@ struct MakeupLayer
 // Iray emitters: brightness is resolved against the scene's exposure when the glTF is built.
 struct Luminance
 {
-  float amount  = 0;  // cd/m2, or for a flux (lm, W) the total
+  float amount  = 0;  // cd/m2, or for a flux (lm, or W at the file's Luminous Efficacy) the total in lumens
   bool  perArea = false;
   bool  twoSided = false;
 };

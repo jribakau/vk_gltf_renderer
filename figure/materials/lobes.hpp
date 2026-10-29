@@ -107,8 +107,8 @@ VolumeMedium volumeMedium(const std::optional<Subsurface>& sss);
 float singleScatterAlbedo(float rho, float g);
 float multiscatterForAlbedo(float albedo, float g);
 
-// Linear RGB tint of a blackbody at `kelvin`, relative to Iray's neutral 6500 K and at unit
-// luminance (emission.ts temperatureTint).
+// Linear Rec.709 tint of a blackbody at `kelvin` (MDL's math::blackbody), relative to D65 and at unit
+// luminance; below 1 K it is white, as Iray reads an emitter's colour alone there.
 Rgb temperatureTint(float kelvin);
 
 }  // namespace fv::mat

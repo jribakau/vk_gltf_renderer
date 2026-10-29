@@ -569,20 +569,26 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   {
     Emission e;
     e.color       = {*emit, imageOf(emitCh)};
-    e.temperature = float(num(find({"Emission Temperature"}), 6500));
+    // Iray's default; a non-Iray "emission" colour has no blackbody
+    e.temperature = float(num(find({"Emission Temperature"}), find({"Emission Color"}) ? 6500 : 0));
     // emission without an Iray luminance keeps a plain glow
     const Channel* lum = find({"Luminance"});
     if(lum && lum->value.is_number() && lum->value.get<double>() > 0)
     {
-      // Luminance Units: cd/m2, kcd/m2, cd/ft2, cd/cm2, lm, W
-      constexpr double kUnitScale[] = {1, 1000, 10.7639, 10000, 1, 683};
+      // Luminance Units: cd/m2, kcd/m2, cd/ft2, cd/cm2, lm, W. Watts become lumens at the file's own
+      // Luminous Efficacy (lm/W, DAZ's default 15): a lamp's efficacy, not the 683 of pure 555 nm light.
+      constexpr double kUnitScale[] = {1, 1000, 10.7639, 10000, 1, 1};
       const Channel*   unitsCh      = find({"Luminance Units"});
       const int        unit         = unitsCh && unitsCh->value.is_number() ? int(unitsCh->value.get<double>()) : 0;
-      Luminance        l;
-      l.amount   = float(lum->value.get<double>() * (unit >= 0 && unit < 6 ? kUnitScale[unit] : 1.0));
-      l.perArea  = unit >= 4;
+      double           amount       = lum->value.get<double>() * (unit >= 0 && unit < 6 ? kUnitScale[unit] : 1.0);
+      if(unit == 5)
+        amount *= std::max(0.0, num(find({"Luminous Efficacy"}), 15));
+      Luminance l;
+      l.amount  = float(amount);
+      l.perArea = unit >= 4;
+      // DAZ writes Two Sided Light on by default, so a surface that leaves it out is two-sided
       const Channel* two = find({"Two Sided Light"});
-      l.twoSided = two && two->value.is_boolean() && two->value.get<bool>();
+      l.twoSided  = two && !two->value.is_null() ? truthy(two) : true;
       e.luminance = l;
     }
     s.emission = e;

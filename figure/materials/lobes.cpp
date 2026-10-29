@@ -217,27 +217,23 @@ VolumeMedium volumeMedium(const std::optional<Subsurface>& sss)
 
 Rgb temperatureTint(float kelvin)
 {
-  // Planckian locus from Kim et al. (2002), valid from 1667 K to 25000 K
-  const auto rgb = [](double t) {
-    t = std::clamp(t, 1667.0, 25000.0);
-    const double x = t <= 4000 ? -0.2661239e9 / (t * t * t) - 0.2343589e6 / (t * t) + 0.8776956e3 / t + 0.17991
-                               : -3.0258469e9 / (t * t * t) + 2.1070379e6 / (t * t) + 0.2226347e3 / t + 0.24039;
-    const double y = t <= 2222   ? -1.1063814 * x * x * x - 1.3481102 * x * x + 2.18555832 * x - 0.20219683
-                     : t <= 4000 ? -0.9549476 * x * x * x - 1.37418593 * x * x + 2.09137015 * x - 0.16748867
-                                 : 3.081758 * x * x * x - 5.8733867 * x * x + 3.75112997 * x - 0.37001483;
-    const double X = x / y, Z = (1 - x - y) / y;
-    return std::array<double, 3>{3.2404542 * X - 1.5371385 - 0.4985314 * Z, -0.969266 * X + 1.8760108 + 0.041556 * Z,
-                                 0.0556434 * X - 0.2040259 + 1.0572252 * Z};
+  if(!(kelvin >= 1))
+    return {1, 1, 1};  // Iray: below 1 K the colour alone
+  // math::blackbody as the MDL SDK evaluates it (libmdlrt.cpp mdl_blackbody, Copyright NVIDIA
+  // Corporation, BSD-3-Clause; see third_party/mdl_sdk): X/Y and Z/Y of a Planck spectrum under the
+  // CIE 1931 observer, fitted as rational functions of T, at Y = 1 in linear Rec.709. Nothing makes
+  // 6500 K white: that blackbody sits just below D65 and comes out a touch magenta, as in Iray.
+  const double t  = std::max(double(kelvin), 500.0);
+  const double t2 = t * t, t3 = t2 * t, t4 = t2 * t2;
+  const auto   fit = [&](double a, double b, double c, double d, double e, double f, double g, double h, double i, double j) {
+    return (a + b * t + c * t2 + d * t3 + e * t4) / (f + g * t + h * t2 + i * t3 + j * t4);
   };
-  const auto c = rgb(kelvin);
-  const auto w = rgb(6500);
-  Rgb        out{float(std::max(0.0, c[0] / w[0])), float(std::max(0.0, c[1] / w[1])), float(std::max(0.0, c[2] / w[2]))};
-  const float lum = 0.2126f * out[0] + 0.7152f * out[1] + 0.0722f * out[2];
-  if(lum <= 0)
-    return {1, 1, 1};
-  for(float& v : out)
-    v /= lum;
-  return out;
+  const double X = fit(1.0, -1.44688464e+11, 3.65139181e+08, -5.24496810e+04, 7.03428125e+01, 1.0, -3.89910067e+10, 7.73122653e+07,
+                       1.99017054e+04, 6.78027157e+01);
+  const double Z = fit(1.0, -1.39076125e+11, 6.08958603e+08, -8.68632924e+05, 4.08263556e+02, -8.56817534e+03, -9.49412452e+11,
+                       2.40214241e+09, 1.47983610e+05, 1.81111205e+02);
+  return {float(std::max(0.0, 3.2406 * X - 1.5372 - 0.4986 * Z)), float(std::max(0.0, -0.9689 * X + 1.8758 + 0.0415 * Z)),
+          float(std::max(0.0, 0.0557 * X - 0.2040 + 1.0570 * Z))};
 }
 
 }  // namespace fv::mat

@@ -3698,3 +3698,125 @@ TEST(Materials, MakeupRoughnessMultScalesBothLobesUnderTheMakeup)
   EXPECT_NEAR(lobes(true, 1, true).first, 0.4f, 1e-6f);
   EXPECT_NEAR(lobes(true, 1, true).second, 0.2f, 1e-6f);
 }
+
+namespace {
+
+float emissiveStrengthOf(const fv::mat::Lowered& l)
+{
+  return l.material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"].get<float>();
+}
+
+}  // namespace
+
+// Iray Uber's emission is a flux in lumens when its units are W: DAZ converts at the file's Luminous
+// Efficacy (lm/W, default 15), the one channel that only W shows. 683 lm/W belongs to pure 555 nm light.
+TEST(Materials, AnEmittersWattsBecomeLumensAtItsLuminousEfficacy)
+{
+  const auto lamp = [](double luminance, int units, std::optional<double> efficacy) {
+    ChannelValues v = {{"Emission Color", Json::array({1, 1, 1})}, {"Luminance", luminance}, {"Luminance Units", units},
+                       {"Two Sided Light", false}};
+    if(efficacy)
+      v.push_back({"Luminous Efficacy", *efficacy});
+    return surfaceOf("Bulb", kUberType, v);
+  };
+  const auto watts = lamp(100, 5, 60);
+  ASSERT_TRUE(watts.emission && watts.emission->luminance);
+  EXPECT_NEAR(watts.emission->luminance->amount, 6000.f, 1e-3f);
+  EXPECT_TRUE(watts.emission->luminance->perArea);
+  EXPECT_FALSE(watts.emission->luminance->twoSided);
+  EXPECT_NEAR(fv::mat::emissionStrength(watts, 2.0), 0.167859f, 1e-5f);
+
+  const auto byDefault = lamp(100, 5, std::nullopt);  // DAZ's 15 lm/W
+  EXPECT_NEAR(byDefault.emission->luminance->amount, 1500.f, 1e-3f);
+  EXPECT_NEAR(fv::mat::emissionStrength(byDefault, 2.0), 0.0419647f, 1e-5f);
+
+  // lumens and luminances ignore the efficacy
+  EXPECT_NEAR(lamp(500, 4, 60).emission->luminance->amount, 500.f, 1e-3f);
+  const auto nits = lamp(1500, 0, 60);
+  EXPECT_FALSE(nits.emission->luminance->perArea);
+  EXPECT_NEAR(fv::mat::emissionStrength(nits, 0), 0.263672f, 1e-5f);
+
+  // cd/ft2 is candela per square foot, cd/cm2 ten thousand per square metre
+  EXPECT_NEAR(lamp(10, 2, std::nullopt).emission->luminance->amount, 107.639f, 1e-3f);
+  EXPECT_NEAR(lamp(10, 3, std::nullopt).emission->luminance->amount, 100000.f, 1e-3f);
+}
+
+// DAZ writes Two Sided Light on by default, so a flux emitter that leaves it out spreads its flux
+// over both sides, half as bright on each.
+TEST(Materials, AFluxEmitterWithoutTwoSidedLightIsTwoSided)
+{
+  const auto panel = [](std::optional<Json> two) {
+    ChannelValues v = {{"Emission Color", Json::array({1, 1, 1})}, {"Luminance", 500}, {"Luminance Units", 4}};
+    if(two)
+      v.push_back({"Two Sided Light", *two});
+    return surfaceOf("Panel", kUberType, v);
+  };
+  const auto unlisted = panel(std::nullopt);
+  EXPECT_TRUE(unlisted.emission->luminance->twoSided);
+  EXPECT_NEAR(fv::mat::emissionStrength(unlisted, 1.0), 0.0139882f, 1e-6f);
+  EXPECT_NEAR(fv::mat::emissionStrength(panel(false), 1.0), 0.0279765f, 1e-6f);
+  EXPECT_FALSE(panel(0).emission->luminance->twoSided);
+  EXPECT_TRUE(panel(true).emission->luminance->twoSided);
+}
+
+// irayubermaterial.mdl reads an Emission Temperature below 1 K as the colour alone, with no blackbody.
+TEST(Materials, AnEmitterAtZeroKelvinKeepsItsColour)
+{
+  for(const float k : {0.f, 0.5f})
+  {
+    const auto tint = fv::mat::temperatureTint(k);
+    for(int i = 0; i < 3; i++)
+      EXPECT_NEAR(tint[i], 1.f, 1e-6f);
+  }
+  const auto s = surfaceOf("Sole", kUberType,
+                           {{"Emission Color", Json::array({1, 0, 1})}, {"Emission Temperature", 0}, {"Luminance", 10},
+                            {"Luminance Units", 0}, {"Two Sided Light", true}});
+  const auto l = fv::mat::lower(s, {}, fv::mat::LowerOptions{.emission = 2});
+  expectRgb(l.material["emissiveFactor"], 1, 0, 1, 1e-6f);  // magenta, not the red of a 1667 K tint
+  EXPECT_NEAR(emissiveStrengthOf(l), 2.f, 1e-6f);
+}
+
+// The tint is MDL's math::blackbody: unit luminance in linear Rec.709, relative to D65, so a 6500 K
+// blackbody (just below D65 on the Planckian locus) is a touch magenta rather than white. Values from
+// the MDL SDK's mdl_blackbody, which clamps at 500 K.
+TEST(Materials, AnEmittersTemperatureTintsItAsABlackbodyAgainstD65)
+{
+  const std::vector<std::pair<float, fv::mat::Rgb>> table = {{6500.f, {1.04760f, 0.98233f, 1.03546f}},
+                                                             {2700.f, {1.92738f, 0.80603f, 0.19141f}},
+                                                             {3500.f, {1.56330f, 0.89287f, 0.40321f}},
+                                                             {10000.f, {0.86972f, 0.99535f, 1.43027f}},
+                                                             {1111.111f, {4.22464f, 0.15182f, 0.f}},
+                                                             {500.f, {6.75616f, 0.f, 0.f}},
+                                                             {200.f, {6.75616f, 0.f, 0.f}}};
+  for(const auto& [k, want] : table)
+  {
+    const auto tint = fv::mat::temperatureTint(k);
+    for(int i = 0; i < 3; i++)
+      EXPECT_NEAR(tint[i], want[i], 2e-3f) << k << " K, channel " << i;
+  }
+  for(const float k : {2700.f, 3500.f, 6500.f, 10000.f})
+  {
+    const auto t = fv::mat::temperatureTint(k);
+    EXPECT_NEAR(0.2126f * t[0] + 0.7152f * t[1] + 0.0722f * t[2], 1.f, 2e-3f) << k << " K";
+  }
+
+  // glTF's emissiveFactor stops at 1: the peak goes into the strength
+  const auto lit = [](double kelvin) {
+    const auto s = surfaceOf("Panel", kUberType, {{"Emission Color", Json::array({1, 1, 1})}, {"Emission Temperature", kelvin}});
+    return fv::mat::lower(s, {}, fv::mat::LowerOptions{.emission = 2});
+  };
+  expectRgb(lit(6500).material["emissiveFactor"], 1, 0.93770f, 0.98842f, 1e-4f);
+  EXPECT_NEAR(emissiveStrengthOf(lit(6500)), 2.09519f, 1e-4f);
+  expectRgb(lit(2700).material["emissiveFactor"], 1, 0.41820f, 0.09931f, 1e-4f);
+  EXPECT_NEAR(emissiveStrengthOf(lit(2700)), 3.85477f, 1e-4f);
+
+  // a non-Iray "emission" colour has no Emission Temperature and gets no blackbody
+  const auto glow = fv::dson::parseSurface(
+      "Glow", channelsOf(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+        {"channel":{"id":"emission","type":"color","current_value":[1,1,1]}}]}]})"));
+  ASSERT_TRUE(glow.emission);
+  EXPECT_EQ(glow.emission->temperature, 0.f);
+  const auto plain = fv::mat::lower(glow, {}, {});
+  expectRgb(plain.material["emissiveFactor"], 1, 1, 1, 1e-6f);
+  EXPECT_NEAR(emissiveStrengthOf(plain), 1.f, 1e-6f);
+}
