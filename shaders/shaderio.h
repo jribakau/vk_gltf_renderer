@@ -91,6 +91,8 @@ enum OutputImage
   eDenoiserNormal = 3,   // Accumulated world-space normal guide (RGBA32). Both alias DLSS slots: the
                          // images of the denoiser on (OptiX or OIDN) are bound there, never with DLSS
   eConvergence = 9,      // Per pixel of an accumulation (RG32): the mean of its samples' luminance squared, and 1 while it has converged (ePtAdaptiveStop)
+  eDlssResponsivity = 9, // DLSS-RR responsivity mask (R16F): ptHairResponsivity where the first hit is hair, 0 elsewhere.
+                         // DLSS frames only, so it shares the still's eConvergence slot
 };
 
 // Binding points for descriptors
@@ -376,6 +378,8 @@ struct PathtracePushConstant
   float           hairCutTail      = 4.0f;      // ...which also carries this times the lock's colour over 4 pi, for the light it would have scattered on
   float           adaptiveThreshold = 0.09f;    // ePtAdaptiveStop: a pixel stops once its mean's standard error is at most this times the root of its luminance...
   int             adaptiveMin       = 32;       // ...and it has at least this many samples
+  float           hairResponsivity  = 0.0f;     // DLSS frames: the responsivity mask where the first hit is hair (0: no mask)
+  int             responsivityPad   = 0;        // keeps the pointers 8-byte aligned
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node

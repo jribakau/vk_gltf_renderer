@@ -79,6 +79,7 @@ inline constexpr VkFormat kRrInnerFormats[] = {
     VK_FORMAT_R16_SFLOAT,           // #DLSS - ViewZ                : eDlssDepth
     VK_FORMAT_R16_SFLOAT,           // #DLSS - Specular Hit Dist    : eDlssSpecularHitDist
     VK_FORMAT_R16G16B16A16_SFLOAT,  // #DLSS-NR - Per-material mask : eNrMask
+    VK_FORMAT_R16_SFLOAT,           // #DLSS - Responsivity mask    : eDlssResponsivity
 };
 
 // One entry in a preset combo. `value` is the NGX preset enum (RR or SR table; both share the
@@ -899,7 +900,7 @@ void Dlss::evaluate(VkCommandBuffer cmd, const glm::mat4& view, const glm::mat4&
   const bool reset       = missedFrame || (m_globalFrame < m_forceResetUntilFrame);
   ++m_globalFrame;
   m_lastEvaluateFrame = m_tickFrame;
-  m_dlss.cmdEvaluate(cmd, m_ngx, {m_currentJitter, view, proj, reset});
+  m_dlss.cmdEvaluate(cmd, m_ngx, {m_currentJitter, view, proj, reset, m_responsivityMask});
 }
 
 
@@ -921,6 +922,7 @@ void Dlss::buildGuideEntries()
     m_guideEntries.push_back({"Motion", static_cast<uint32_t>(shaderio::OutputImage::eDlssMotion)});
     m_guideEntries.push_back({"ViewZ", static_cast<uint32_t>(shaderio::OutputImage::eDlssDepth)});
     m_guideEntries.push_back({"Specular HitT", static_cast<uint32_t>(shaderio::OutputImage::eDlssSpecularHitDist)});
+    m_guideEntries.push_back({"Responsivity", static_cast<uint32_t>(shaderio::OutputImage::eDlssResponsivity)});
     return;
   }
 
@@ -1331,6 +1333,7 @@ void Dlss::setResourcesRr()
   bind(DlssFeature::ResourceType::eMotionVector, shaderio::OutputImage::eDlssMotion);
   bind(DlssFeature::ResourceType::eDepth, shaderio::OutputImage::eDlssDepth);
   bind(DlssFeature::ResourceType::eSpecularHitDistance, shaderio::OutputImage::eDlssSpecularHitDist);
+  bind(DlssFeature::ResourceType::eResponsivityMask, shaderio::OutputImage::eDlssResponsivity);
 }
 
 bool Dlss::onUiActivationRr(Resources& resources)

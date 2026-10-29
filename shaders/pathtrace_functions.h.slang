@@ -100,6 +100,7 @@ struct GuideOutput
   float16_t3 specularAlbedo  = float16_t3(0);
   float      specularHitDist = 0.0f;  // Distance to reflected surface (0=no reflection, 65504=sky reflection)
   float16_t4 nrMask          = float16_t4(1, 1, 1, 1);
+  float16_t  responsivity    = float16_t(0);  // RR's responsivity mask (eDlssResponsivity)
   bool       psrValid        = false;      // The primary hit is clear glass with a surface behind it
   float3     psrPos          = float3(0);  // Virtual position of that surface (DLSS depth + motion)
 #endif                                     // USE_DLSS_SHADER
@@ -117,6 +118,7 @@ struct GuideScratch
   float16_t  specularHitDist    = float16_t(0);
   bool       captureSpecularHit = false;
   float16_t4 nrMask             = float16_t4(1, 1, 1, 1);
+  float16_t  responsivity       = float16_t(0);  // See GuideOutput
   bool       psrValid           = false;      // See GuideOutput
   float3     psrPos             = float3(0);  // See GuideOutput
 #endif                                        // USE_DLSS_SHADER
@@ -2038,6 +2040,7 @@ SampleResult packSampleResult(PathTracerState pt)
 #if MAT_EXT_DLSS_NR
   sampleResult.guideOutput.nrMask = pt.guide.nrMask;
 #endif  // MAT_EXT_DLSS_NR
+  sampleResult.guideOutput.responsivity = pt.guide.responsivity;
   sampleResult.guideOutput.psrValid = pt.guide.psrValid;
   sampleResult.guideOutput.psrPos   = pt.guide.psrPos;
 #endif  // USE_DLSS_SHADER

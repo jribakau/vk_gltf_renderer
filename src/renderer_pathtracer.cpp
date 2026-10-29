@@ -491,6 +491,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "times the lock's colour over 4 pi in its last light sample",
                  .callbackSuccess = reset},
                 &m_hairCutTail, Persist::eNo, 0.0F, 64.0F);
+  settings->add({.name            = "ptHairResponsivity",
+                 .help            = "PathTracer: DLSS frames: DLSS-RR's responsivity mask where the first hit is hair, -1 to 1 "
+                                    "(0: no mask). How far those pixels trust their history",
+                 .callbackSuccess = reset},
+                &m_hairResponsivity, Persist::eNo, -1.0F, 1.0F);
   settings->add({.name            = "ptAdaptiveStop",
                  .help            = "PathTracer: a still's pixel stops sampling once its mean has converged (off: every pixel "
                                     "takes every sample, strictly unbiased)",
@@ -1376,7 +1381,7 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
     // values without touching m_innerGBuffer directly.
     static constexpr OutputImage kRrSlots[] = {
         eResultImage, eSelectImage, eDlssAlbedo,          eDlssSpecAlbedo, eDlssNormalRoughness,
-        eDlssMotion,  eDlssDepth,   eDlssSpecularHitDist, eNrMask,
+        eDlssMotion,  eDlssDepth,   eDlssSpecularHitDist, eNrMask, eDlssResponsivity,
     };
     outputCount = static_cast<uint32_t>(kRrSlots[std::size(kRrSlots) - 1]) + 1;
     for(OutputImage slot : kRrSlots)
@@ -3044,6 +3049,7 @@ void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources)
   const glm::mat4& view = resources.cameraManip->getViewMatrix();
   const glm::mat4& proj = resources.cameraManip->getPerspectiveMatrix();
 
+  m_dlss->setResponsivityMask(m_hairResponsivity != 0.0F);
   m_dlss->evaluate(cmd, view, proj);
 
   // The selection image the blit reads was written by the path tracer's ray-tracing or compute
@@ -3145,6 +3151,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.hairRouletteFrom = m_hairRouletteFrom;
   m_pushConst.hairCutDlss      = m_hairCutDlss;
   m_pushConst.hairCutTail      = m_hairCutTail;
+  m_pushConst.hairResponsivity = useDlss ? m_hairResponsivity : 0.0F;
   m_pushConst.flags |= (m_adaptiveStop && !useDlss) ? shaderio::ePtAdaptiveStop : 0;
   // in displayed brightness, with the exposure the host sets (auto exposure, which it never uses, has none)
   m_pushConst.adaptiveThreshold = resources.tonemapperData.autoExposure ?

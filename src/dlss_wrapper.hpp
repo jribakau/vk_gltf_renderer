@@ -130,6 +130,7 @@ public:
     eRoughness,            // RR only (used when packedNormalRoughness == false)
     eMotionVector,
     eDepth,
+    eResponsivityMask,  // RR only (optional): how far each pixel trusts its history, [-1, 1]
     eResourceTypeCount
   };
 
@@ -208,6 +209,7 @@ public:
     glm::mat4 modelView;
     glm::mat4 projection;
     bool      reset = false;
+    bool      responsivity = false;  // RR: pass the eResponsivityMask resource
   };
 
   // Wraps NVSDK_NGX_VULKAN_EvaluateFeature_DLSSD (Kind::RR -- denoise + upscale) or

@@ -469,6 +469,10 @@ NVSDK_NGX_Result DlssFeature::cmdEvaluate(VkCommandBuffer cmd, NgxContext& conte
                                             nullptr;
 
     evalParams.pInNormals = &m_resources[int(ResourceType::eNormalRoughness)];
+    // the responsivity mask too is optional: nullptr when the frame has none
+    evalParams.pInResponsivityMask = info.responsivity && m_resources[int(ResourceType::eResponsivityMask)].Resource.ImageViewInfo.ImageView ?
+                                         &m_resources[int(ResourceType::eResponsivityMask)] :
+                                         nullptr;
     // In Packed roughness mode NGX still wants pInRoughness set (pointed at the same texture as
     // pInNormals). Leaving it null with Packed produces "missing input" failures at evaluate.
     evalParams.pInRoughness = m_initInfo.packedNormalRoughness ? &m_resources[int(ResourceType::eNormalRoughness)] :

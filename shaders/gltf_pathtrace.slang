@@ -727,6 +727,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       pt.guide.specularAlbedo  = float16_t3(float3(0.046F * saturate(hairHit.specular)));
       pt.guide.normalRoughness = float16_t4(pt.guide.normalRoughness.xyz, float16_t(saturate(hairHit.betaM)));
+      // RR weighs its history on hair by this (ptHairResponsivity), against the shimmer of thin fibres
+      pt.guide.responsivity = float16_t(pushConst.hairResponsivity);
     }
 #endif
 #endif
@@ -1484,6 +1486,8 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     outImages[int(OutputImage::eDlssSpecAlbedo)][int2(samplePos)] = float4(sampleResult.guideOutput.specularAlbedo.xyz, 1.0f);
     outImages[int(OutputImage::eDlssSpecularHitDist)][int2(samplePos)] = float4(sampleResult.guideOutput.specularHitDist);
     outImages[int(OutputImage::eNrMask)][int2(samplePos)] = float4(sampleResult.guideOutput.nrMask);
+    if(pushConst.hairResponsivity != 0.0f)
+      outImages[int(OutputImage::eDlssResponsivity)][int2(samplePos)] = float4(sampleResult.guideOutput.responsivity);
   }
 #endif  // USE_DLSS_SHADER
 

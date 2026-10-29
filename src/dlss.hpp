@@ -210,6 +210,8 @@ public:
   // PRECONDITION: isActive() == true. The caller is responsible for gating; in debug builds
   // this asserts on misuse, release builds will crash inside NGX (null feature handle).
   void evaluate(VkCommandBuffer cmd, const glm::mat4& view, const glm::mat4& proj);
+  // Whether evaluate() passes RR the responsivity mask the path tracer wrote (eDlssResponsivity)
+  void setResponsivityMask(bool on) { m_responsivityMask = on; }
 
   // UI panel; returns true when something changed that requires a renderer-side response.
   bool onUi(Resources& resources);
@@ -407,6 +409,7 @@ private:
 
 
   uint64_t m_globalFrame = 0;  // monotonic counter incremented by every evaluate(); notifyReset() arms a "reset on the next actual evaluate" signal by setting m_forceResetUntilFrame := m_globalFrame + 1.
+  bool     m_responsivityMask     = false;  // setResponsivityMask()
   uint64_t m_forceResetUntilFrame = 0;  // reset signal is re-armed on every notifyReset() call; evaluate() sees reset == true exactly once and the counter slides past. This is robust to evaluate() being skipped between two notifyReset() calls (deferred presents, debugger pause, async-compile-blocked frames): the signal can never be lost, only re-armed. A simple bool would silently drop the signal if it was set then cleared by something other than evaluate(). uint64_t at 60 fps wraps around in ~9.7 billion years.
   // Resources::drawnFrameCount at the last tick(), and at the last evaluate() (0: none yet). evaluate()
   // drops the history when the drawn frame before it did not evaluate: DLSS was off, the other
