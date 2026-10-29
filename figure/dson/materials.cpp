@@ -474,7 +474,16 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   if(glossyFromGloss)
     roughness = {float(*glossyFromGloss), {}};
   else if(glossRough)
+  {
     roughness = scalar(glossRough, 0.5);
+    // Iray Uber squares its roughness channels into the lobe's alpha (conditional_square_roughness)
+    // unless Roughness Squared is off: then the value is alpha itself, and the perceptual roughness
+    // taken here is its root. With a map that is sqrt(value) x map, not sqrt(value x map). PBRSkin
+    // has no such switch.
+    const Channel* squared = find({"Roughness Squared"});
+    if(!pbrSkin && squared && !truthy(squared))
+      roughness.value = std::sqrt(std::max(0.f, roughness.value));
+  }
   else
     roughness = {float(glossiness ? 1 - num(glossiness, 0.5) : 0.6), {}};
 
@@ -591,6 +600,14 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     s.bumpMap      = imageOf(bumpCh);
     s.bumpStrength = float(num(bumpCh, 1));
   }
+  // PBRSkin's Bump Enable switches its normal map and its bump map together (its brick graph ANDs it
+  // into both); the detail layer has its own switch. In the library the switch is missing only on
+  // surfaces that carry neither map. Iray Uber has none.
+  if(!enabled("Bump Enable"))
+  {
+    s.normalMap.clear();
+    s.bumpMap.clear();
+  }
   // Metallic Weight times its map (Iray's texture brick). PBRSkin's metal layer is on only with
   // Metallicity Enable, off in PBRSkin.dsf: Polina 9's head sets Metallic Weight 1 without it and
   // shows skin in Iray. Iray Uber has no such switch.
@@ -633,7 +650,18 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
       s.detail->map.clear();
   }
   if(pbrSkin && enabled("Makeup Enable"))
+  {
     s.makeup = readMakeup(find);
+    // pbr_skin.mdl multiplies the skin's roughness by Makeup Roughness Mult under the makeup's weight
+    // before the two lobes split it, so both take it. Under a weight map it varies from texel to
+    // texel, which flat lobes cannot carry: they keep the skin's.
+    if(s.makeup && s.makeup->weightMap.empty() && s.dual)
+    {
+      const float mult = 1 + (float(num(find({"Makeup Roughness Mult"}), 1)) - 1) * s.makeup->weight;
+      s.dual->lobe1.value *= mult;
+      s.dual->lobe2.value *= mult;
+    }
+  }
   // PBRSkin's Makeup Metallicity Enable only tints the metal: with the makeup on, Iray's metal takes
   // the base colour with the makeup laid over, which is the glTF base colour the metal reflects. Its
   // weight is Metallic Weight's alone (Metallicity Enable, above).

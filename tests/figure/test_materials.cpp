@@ -253,6 +253,7 @@ const char* kG9Eye = R"({"extra":[{"type":"studio/material/uber_iray","channels"
   {"channel":{"id":"Dual Lobe Specular Ratio","type":"float","current_value":0.15}},
   {"channel":{"id":"Specular Lobe 1 Roughness","type":"float","current_value":0.6}},
   {"channel":{"id":"Specular Lobe 2 Roughness Mult","type":"float","current_value":0.4}},
+  {"channel":{"id":"Bump Enable","type":"bool","current_value":true}},
   {"channel":{"id":"Normal Map","type":"image","current_value":1.0,"image_file":"/Runtime/Textures/eyes_nm.jpg"}}
 ]}]})";
 
@@ -1564,7 +1565,7 @@ TEST(Materials, ATopCoatsMapsGoWhereTheCoatIs)
 TEST(Materials, APbrSkinCoatFollowsTheReliefByItsBumpWeight)
 {
   const auto head = [](std::optional<double> bump) {
-    ChannelValues v = {{"Detail Enable", false}, {"Normal Map", 0.8}, {"Top Coat Enable", true}, {"Top Coat Weight", 1}};
+    ChannelValues v = {{"Detail Enable", false}, {"Bump Enable", true}, {"Normal Map", 0.8}, {"Top Coat Enable", true}, {"Top Coat Weight", 1}};
     if(bump)
       v.push_back({"Top Coat Bump Weight", *bump});
     return surfaceOf("Head", kPbrSkinType, v, {{"Normal Map", "/Runtime/Textures/n.jpg"}});
@@ -1830,6 +1831,7 @@ TEST(Materials, ADetailLayerRepeatingTheNormalMapAddsNoRelief)
   const auto skin = [](const char* detailMap, int tiles) {
     const std::string text = std::string(R"({"extra":[{"type":"studio/material/daz_brick","channels":[
       {"channel":{"id":"Detail Enable","type":"bool","current_value":true}},
+      {"channel":{"id":"Bump Enable","type":"bool","current_value":true}},
       {"channel":{"id":"Normal Map","type":"image","current_value":1.0,"image_file":"/Runtime/Textures/body_nm.jpg"}},
       {"channel":{"id":"Detail Weight","type":"float","current_value":1}},
       {"channel":{"id":"Detail Normal Map","type":"float","current_value":1,"image_file":")") + detailMap + R"("}},
@@ -2813,6 +2815,7 @@ const char* kPbrSkinDefinition = R"({"id":"PBRSkin",
   {"channel":{"id":"Specular Lobe 2 Roughness Mult","type":"float","value":0.4}},
   {"channel":{"id":"Dual Lobe Specular Ratio","type":"float","value":0.15}},
   {"channel":{"id":"Normal Map","type":"float","value":1}},
+  {"channel":{"id":"Bump Enable","type":"bool","value":false}},
   {"channel":{"id":"Makeup Enable","type":"bool","value":false}},
   {"channel":{"id":"Detail Enable","type":"bool","value":false}},
   {"channel":{"id":"Top Coat Weight","type":"float","value":0.5}},
@@ -2904,7 +2907,7 @@ Json pbrSkinPreset(const std::string& surface, const std::string& node = "name:/
       {"Diffuse Enable", true},
       {"Diffuse Roughness", 0},
       {"Invert Transmission Normal", true},
-      {"Bump Enable", false},
+      {"Bump Enable", true},
       {"Makeup Weight", 1},
       {"Makeup Roughness Mult", 1},
       {"Makeup Metallicity Enable", false},
@@ -3361,4 +3364,78 @@ TEST(Materials, ACutoutReadFromItsAlphaAsksTheCookerForTheAlpha)
   fv::mat::Edits e;
   e.opacityMap = "/mine.png";
   EXPECT_FALSE(request(s, e).alphaFromAlpha);
+}
+
+// ---- DAZ's channels read as its MDL reads them: Glossy Color, Base Mixing, squared roughness,
+// Bump Enable, Makeup Roughness Mult ----
+
+// conditional_square_roughness: Iray Uber squares Glossy Roughness into the lobe's alpha unless
+// Roughness Squared is off, when the value is alpha itself (AuraVix's NYC Tenement Staircase).
+// PBRSkin has no such switch.
+TEST(Materials, RoughnessSquaredOffIsAlphaItself)
+{
+  const auto rough = [](const char* shader, std::optional<bool> squared, const char* channel = "Glossy Roughness") {
+    ChannelValues v = {{channel, 0.09}, {"Metallic Weight", 0}};
+    if(std::string(shader) == kPbrSkinType)
+      v.push_back({"Detail Enable", false});
+    if(squared)
+      v.push_back({"Roughness Squared", *squared});
+    return surfaceOf("Shirt", shader, v).glossy.roughness.value;
+  };
+  EXPECT_NEAR(rough(kUberType, false), 0.3f, 1e-6f);
+  EXPECT_NEAR(rough(kUberType, true), 0.09f, 1e-6f);
+  EXPECT_NEAR(rough(kUberType, std::nullopt), 0.09f, 1e-6f);
+  EXPECT_NEAR(rough(kPbrSkinType, false, "Specular Lobe 1 Roughness"), 0.09f, 1e-6f);  // a stale Uber channel
+}
+
+// PBRSkin's brick graph ANDs Bump Enable into its normal map and its bump map alike (false in
+// PBRSkin.dsf). Iray Uber has no switch.
+TEST(Materials, PbrSkinBumpEnableSwitchesTheNormalAndBumpMaps)
+{
+  const auto skin = [](std::optional<bool> enable) {
+    ChannelValues v = {{"Detail Enable", false}, {"Normal Map", 1}, {"Bump Strength", 0.5}};
+    if(enable)
+      v.push_back({"Bump Enable", *enable});
+    return surfaceOf("Torso", kPbrSkinType, v, {{"Normal Map", "/n.jpg"}, {"Bump Strength", "/b.jpg"}});
+  };
+  const auto on = skin(true);
+  EXPECT_EQ(on.normalMap, "/n.jpg");
+  EXPECT_EQ(on.bumpMap, "/b.jpg");
+  for(const auto& off : {skin(false), skin(std::nullopt)})
+  {
+    EXPECT_TRUE(off.normalMap.empty());
+    EXPECT_TRUE(off.bumpMap.empty());
+    EXPECT_FALSE(fv::mat::lower(off, {}, {.skin = fv::mat::SkinMode::eRaster}).material.contains("normalTexture"));
+  }
+  const auto uber = surfaceOf("Torso", kUberType, {{"Normal Map", 1}, {"Bump Strength", 0.5}}, {{"Normal Map", "/n.jpg"}, {"Bump Strength", "/b.jpg"}});
+  EXPECT_EQ(uber.normalMap, "/n.jpg");
+  EXPECT_EQ(uber.bumpMap, "/b.jpg");
+}
+
+// pbr_skin.mdl multiplies the skin's roughness by lerp(1, Makeup Roughness Mult, Makeup Weight) with
+// the makeup on, before the two lobes split it. Under a weight map it varies per texel and is left out.
+TEST(Materials, MakeupRoughnessMultScalesBothLobesUnderTheMakeup)
+{
+  const auto lobes = [](bool enable, double weight, bool weightMap) {
+    const ChannelValues v = {{"Detail Enable", false},
+                             {"Makeup Enable", enable},
+                             {"Makeup Weight", weight},
+                             {"Makeup Roughness Mult", 1.5},
+                             {"Dual Lobe Specular Enable", true},
+                             {"Dual Lobe Specular Weight", 1},
+                             {"Specular Lobe 1 Roughness", 0.4},
+                             {"Specular Lobe 2 Roughness Mult", 0.5}};
+    std::map<std::string, std::string> images;
+    if(weightMap)
+      images["Makeup Weight"] = "/lips_w.jpg";
+    const auto s = surfaceOf("Lips", kPbrSkinType, v, images);
+    return std::pair{s.dual->lobe1.value, s.dual->lobe2.value};
+  };
+  EXPECT_NEAR(lobes(true, 1, false).first, 0.6f, 1e-6f);
+  EXPECT_NEAR(lobes(true, 1, false).second, 0.3f, 1e-6f);
+  EXPECT_NEAR(lobes(true, 0.5, false).first, 0.5f, 1e-6f);
+  EXPECT_NEAR(lobes(false, 1, false).first, 0.4f, 1e-6f);
+  EXPECT_NEAR(lobes(false, 1, false).second, 0.2f, 1e-6f);
+  EXPECT_NEAR(lobes(true, 1, true).first, 0.4f, 1e-6f);
+  EXPECT_NEAR(lobes(true, 1, true).second, 0.2f, 1e-6f);
 }
