@@ -309,7 +309,7 @@ void OidnDenoiser::updateDenoiser(VkCommandBuffer cmd, Resources& resources, nvv
   // The frame that reaches the samples cap is denoised whatever the interval: its image is the final one
   const bool final = samples >= resources.settings.maxSamples;
   const bool due   = isEnabled() && m_settings.autoDenoiseEnabled
-                   && m_autoDenoise.isDue(samples, m_settings.autoDenoiseSpp, final, handoffEnd);
+                   && m_autoDenoise.isDue(samples, m_settings.autoDenoiseSpp, final, handoffEnd, resources.settings.maxSamples);
   const bool denoised                    = due && autoDenoise(cmd, resources, samples);
   m_denoisedInSubFrame[section.subFrame] = denoised;
   profiler->cmdFrameEndSection(cmd, section);

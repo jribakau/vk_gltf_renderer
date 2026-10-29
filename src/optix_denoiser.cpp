@@ -891,7 +891,8 @@ void OptiXDenoiser::updateDenoiser(Resources& resources, bool dlssFrame0, int ha
   // moving camera (a reset every frame) showing denoised frames instead of raw ones.
   const bool everyFrame = m_settings.autoDenoiseSpp == 1 && resources.frameCount == 0;
   if(isAutoDenoiseActive()
-     && (everyFrame || m_autoDenoise.isDue(resources.accumulatedSamples, m_settings.autoDenoiseSpp, false, handoffEnd)))
+     && (everyFrame || m_autoDenoise.isDue(resources.accumulatedSamples, m_settings.autoDenoiseSpp, false, handoffEnd,
+                                                     resources.settings.maxSamples)))
   {
     if(denoiseOneShot(resources))
     {

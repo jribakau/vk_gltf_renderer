@@ -37,7 +37,7 @@ std::vector<int> runAccumulation(AutoDenoiseSchedule& schedule, int samplesPerFr
   for(int samples = 0; samples < maxSamples;)
   {
     samples = std::min(samples + samplesPerFrame, maxSamples);
-    if(schedule.isDue(samples, interval, samples >= maxSamples, handoffEnd))
+    if(schedule.isDue(samples, interval, samples >= maxSamples, handoffEnd, maxSamples))
     {
       schedule.markDenoised(samples);
       denoised.push_back(samples);
@@ -108,23 +108,71 @@ TEST(AutoDenoiseSchedule, NextSamplesStopsAtTheCap)
 
 TEST(AutoDenoiseSchedule, HandoffDenoisesWhenTheSamplesDouble)
 {
-  // A DLSS hand-off ending at 64 spp: each doubling, 64 itself, then the multiples of the interval
+  // A DLSS hand-off ending at 64 spp: each doubling from 4, 64 itself, then steps of the interval
   AutoDenoiseSchedule schedule;
-  EXPECT_EQ(runAccumulation(schedule, 1, 200, 50, 64), (std::vector<int>{1, 2, 4, 8, 16, 32, 64, 100, 150, 200}));
+  EXPECT_EQ(runAccumulation(schedule, 1, 200, 50, 64), (std::vector<int>{4, 8, 16, 32, 64, 114, 200}));
+}
+
+TEST(AutoDenoiseSchedule, TheAppsStillDenoisesTenTimes)
+{
+  // rtx.ts: a 32-sample hand-off, an interval of 8, 128 samples. The step grows by a quarter of the
+  // samples past 32; 120 is within a step of the cap, so the final image is the next one.
+  AutoDenoiseSchedule schedule;
+  EXPECT_EQ(runAccumulation(schedule, 1, 128, 8, 32), (std::vector<int>{4, 8, 16, 32, 40, 50, 62, 77, 96, 128}));
+}
+
+TEST(AutoDenoiseSchedule, TheStepGrowsWithTheSamples)
+{
+  // 500 samples, as the Render tab's default cap: every denoise past the hand-off is at least an
+  // interval and a quarter of the samples after the last, and none is within a step of the cap
+  AutoDenoiseSchedule schedule;
+  const std::vector<int> denoised = runAccumulation(schedule, 1, 500, 8, 32);
+  ASSERT_GE(denoised.size(), 2u);
+  EXPECT_EQ(denoised.back(), 500);
+  for(size_t i = 1; i + 1 < denoised.size(); ++i)
+    if(denoised[i - 1] >= 32)
+    {
+      EXPECT_GE(denoised[i] - denoised[i - 1], std::max(8, denoised[i - 1] / 4)) << denoised[i];
+      EXPECT_GE(500 - denoised[i], std::max(8, denoised[i] / 4)) << denoised[i];
+    }
+  EXPECT_LE(denoised.size(), 20u);
+}
+
+TEST(AutoDenoiseSchedule, OneFrameBehindItStillReachesTheFinalImage)
+{
+  // OptiX reads the image before the frame's samples and never passes `final`: the near-cap step is
+  // skipped and the idle frame denoises the final image
+  AutoDenoiseSchedule schedule;
+  std::vector<int>    denoised;
+  for(int samples = 0; samples < 128; ++samples)
+    if(schedule.isDue(samples, 8, false, 32, 128))
+    {
+      schedule.markDenoised(samples);
+      denoised.push_back(samples);
+    }
+  EXPECT_EQ(denoised.back(), 96);
+  EXPECT_TRUE(schedule.isFinalDue(128));
 }
 
 TEST(AutoDenoiseSchedule, HandoffWithSeveralSamplesPerFrame)
 {
-  // 3 spp per frame: the first frame whose count doubled denoises; 64 falls inside the frame to 66
+  // 3 spp per frame: the first frame from 4 whose count doubled denoises; 64 falls inside the frame to 66
   AutoDenoiseSchedule schedule;
-  EXPECT_EQ(runAccumulation(schedule, 3, 120, 50, 64), (std::vector<int>{3, 6, 12, 24, 48, 66, 102, 120}));
+  EXPECT_EQ(runAccumulation(schedule, 3, 120, 50, 64), (std::vector<int>{6, 12, 24, 48, 66, 120}));
+}
+
+TEST(AutoDenoiseSchedule, AShortHandoffEndsWithItsFirstDenoise)
+{
+  // A hand-off shorter than the first denoise (a cap of 2): the end itself
+  AutoDenoiseSchedule schedule;
+  EXPECT_EQ(runAccumulation(schedule, 1, 2, 8, 2), (std::vector<int>{2}));
 }
 
 TEST(AutoDenoiseSchedule, HandoffRestartsWithTheAccumulation)
 {
   AutoDenoiseSchedule schedule;
-  EXPECT_EQ(runAccumulation(schedule, 1, 10, 50, 8), (std::vector<int>{1, 2, 4, 8, 10}));
-  EXPECT_EQ(runAccumulation(schedule, 1, 10, 50, 8), (std::vector<int>{1, 2, 4, 8, 10}));
+  EXPECT_EQ(runAccumulation(schedule, 1, 10, 50, 8), (std::vector<int>{4, 8, 10}));
+  EXPECT_EQ(runAccumulation(schedule, 1, 10, 50, 8), (std::vector<int>{4, 8, 10}));
 }
 
 TEST(HandoffWeight, SmoothstepOverTheHandoff)

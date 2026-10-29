@@ -32,8 +32,15 @@
 // it is the one shown from then on.
 //
 // During a hand-off from DLSS (DenoiserHandoff), the first denoises come sooner: one each time the
-// samples double (1, 2, 4, ...), and one when they reach `handoffEnd`, then the interval as usual.
-// Each doubling halves the noise variance, so each of these denoises is a visible step.
+// samples double from HANDOFF_FIRST_DENOISE (4, 8, 16, ...), and one when they reach `handoffEnd`.
+// Each doubling halves the noise variance, so each of these denoises is a visible step. The images of
+// 1 and 2 samples were shown at 0.3% and 1.1% (handoffWeight), DLSS's image alone until the first.
+// After a hand-off the step grows with the samples, max(interval, last / 4): the noise falls as
+// 1/sqrt(samples), so a fixed step denoised more often the less each denoise changed, and each denoise
+// costs about 40 ms (OptiX's GPU time and the queue it drains). A denoise within a step of the cap
+// (`maxSamples`) is left to the final one. A 128-sample still with a 32-sample hand-off denoises at
+// 4, 8, 16, 32, 40, 50, 62, 77, 96 and 128: 10 times, where 1, 2, 4, ... and every 8 was 18.
+// Without a hand-off the interval is fixed: each multiple of it.
 //
 //   if(schedule.isDue(samples, interval, final, handoffEnd) && denoise())   // a rendered frame
 //     schedule.markDenoised(samples);
@@ -46,10 +53,14 @@
 class AutoDenoiseSchedule
 {
 public:
+  static constexpr int HANDOFF_FIRST_DENOISE = 4;  // samples per pixel of a hand-off's first denoise
+
   // A rendered frame: true when `samples` reached a multiple of `interval` the last denoise had not,
   // or is the final image of the accumulation (`final`). Before `handoffEnd` (0: no hand-off), true
-  // when `samples` doubled since the last denoise or reached `handoffEnd`.
-  bool isDue(int samples, int interval, bool final = false, int handoffEnd = 0)
+  // when `samples` doubled since the last denoise (from HANDOFF_FIRST_DENOISE) or reached `handoffEnd`;
+  // after it, when they grew by max(interval, last / 4) and are more than a step short of `maxSamples`
+  // (0: no cap known).
+  bool isDue(int samples, int interval, bool final = false, int handoffEnd = 0, int maxSamples = 0)
   {
     if(samples <= m_lastSamples)  // the accumulation restarted
       m_lastSamples = 0;
@@ -58,10 +69,14 @@ public:
     if(final)
       return true;
     if(m_lastSamples < handoffEnd)
-      return samples >= std::min(2 * m_lastSamples, handoffEnd);
+      return samples >= std::min(std::max(2 * m_lastSamples, HANDOFF_FIRST_DENOISE), handoffEnd);
     if(interval <= 0)
       return false;
-    return samples / interval > m_lastSamples / interval;
+    if(handoffEnd <= 0)
+      return samples / interval > m_lastSamples / interval;
+    if(samples < m_lastSamples + std::max(interval, m_lastSamples / 4))
+      return false;
+    return maxSamples <= 0 || maxSamples - samples >= std::max(interval, samples / 4);
   }
 
   // An idle frame, after the accumulation completed: true when its final image, of `samples`, is not
