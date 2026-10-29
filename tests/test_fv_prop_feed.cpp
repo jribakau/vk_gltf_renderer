@@ -700,14 +700,89 @@ TEST(FvPropFeed, EachStrandSegmentIsDrawnAsTwo)
     EXPECT_NEAR(std::hypot(geo.ribbon->side[v * 3], geo.ribbon->side[v * 3 + 1], geo.ribbon->side[v * 3 + 2]), 1.f, 1e-5f);
 }
 
+// PR hairs: a material that grows three per guide draws each of its strands four times, the copies
+// sitting off the guide within the radius, across and out from the head (never in), closer by the tip
+// separation at the tip, and following the guide's points (one stencil column each, so its skin and
+// morphs). A material that grows none draws its strands once, and the same seed grows the same hairs.
+TEST(FvPropFeed, AStrandGrowsItsPreRenderHairsAroundIt)
+{
+  fv::mesh::MeshInput input;
+  fv::mesh::Lines     lines;
+  // two strands hanging from a head centred on the origin: one on its right (material 0), one on
+  // its left (material 1)
+  lines.start    = {0, 3, 6};
+  lines.verts    = {0, 1, 2, 3, 4, 5};
+  lines.material = {0, 1};
+  lines.grow     = {{.perGuide = 3, .radius = 0.3f, .tipSeparation = -0.85f, .seed = 7}, {}};
+  input.positions = {10, 0, 0, 10, -5, 0, 10, -10, 0, -10, 0, 0, -10, -5, 0, -10, -10, 0};
+  input.materialCount = 2;
+  input.lines         = lines;
+  const fv::mesh::BuiltMesh geo = fv::mesh::build(input);
+  ASSERT_TRUE(geo.ribbon && geo.refinement);
+  const auto& rb = *geo.ribbon;
+  ASSERT_EQ(rb.shift.size(), geo.position.size());
+  // five strands: three points and two midpoints each, two drawn vertices apiece
+  EXPECT_EQ(geo.refinement->vertexCount, 5 * (3 + 2) * 2);
+
+  // each drawn vertex at its stencil's single point plus its shift (no width yet)
+  const fv::subdiv::Stencils& s = geo.refinement->levels.back();
+  int                         grown = 0, onLeft = 0;
+  for(size_t i = 0; i < geo.renderIndex.size(); i++)
+  {
+    const glm::vec3 shift = glm::make_vec3(&rb.shift[i * 3]);
+    const int       row   = int(geo.renderIndex[i]);
+    if(s.rowStart[row + 1] - s.rowStart[row] == 1)
+    {
+      const int point = s.col[s.rowStart[row]];
+      EXPECT_LT(glm::distance(glm::make_vec3(&geo.position[i * 3]), glm::make_vec3(&input.positions[point * 3]) + shift), 1e-5f);
+      if(point >= 3)
+        onLeft++;
+    }
+    if(shift == glm::vec3(0.f))
+      continue;
+    // material 0's copies, within the radius, across the strand (it runs along y) and outward (+x)
+    EXPECT_EQ(rb.material[i], 0);
+    EXPECT_LE(glm::length(shift), 0.3f + 1e-5f);
+    EXPECT_NEAR(shift.y, 0.f, 1e-5f);
+    EXPECT_GE(shift.x, -1e-6f);
+    if(rb.along[i] == 1.f)
+      grown++;
+  }
+  // three grown tips, each drawn twice
+  EXPECT_EQ(grown, 3 * 2);
+  // the strand on the left is drawn once: its three points' six drawn vertices
+  EXPECT_EQ(onLeft, 6);
+
+  // a copy's tip sits 0.15 as far off the guide as its root, the same way
+  for(int line = 0; line < 3; line++)
+  {
+    // copy `line`'s points follow the guides' six: 6 + 3 * line is its root, two on its tip
+    const int  root = 6 + 3 * line, tip = root + 2;
+    glm::vec3  r(0.f), t(0.f);
+    for(size_t i = 0; i < geo.renderIndex.size(); i++)
+    {
+      if(int(geo.renderIndex[i]) == root * 2)
+        r = glm::make_vec3(&rb.shift[i * 3]);
+      if(int(geo.renderIndex[i]) == tip * 2)
+        t = glm::make_vec3(&rb.shift[i * 3]);
+    }
+    EXPECT_GT(glm::length(r), 0.f) << line;
+    EXPECT_LT(glm::distance(t, r * 0.15f), 1e-5f) << line;
+  }
+
+  const fv::mesh::BuiltMesh again = fv::mesh::build(input);
+  EXPECT_EQ(again.ribbon->shift, rb.shift);
+}
+
 // Strand ribbons (gpu-figures-plan.md F1): each drawn vertex is its strand point moved across the
 // strand by its width, which the GPU adds after copying the points; the residency's streams are the
 // CPU's, as fed and with the strands moved as a morph moves them.
-TEST(FvPropFeed, StrandRibbonsAreRefinedFromTheirPoints)
+static void strandRibbonsAreRefinedFromTheirPoints(std::vector<fv::mesh::Growth> grow)
 {
   // three strands of four points, rising and leaning from a row of roots
   fv::mesh::MeshInput input;
   fv::mesh::Lines     lines;
+  lines.grow = std::move(grow);
   for(int s = 0; s < 3; s++)
   {
     lines.start.push_back(s * 4);
@@ -786,6 +861,17 @@ TEST(FvPropFeed, StrandRibbonsAreRefinedFromTheirPoints)
   gpu.beginFrame();
   residency.sync(store);
   check("moved");
+}
+
+TEST(FvPropFeed, StrandRibbonsAreRefinedFromTheirPoints)
+{
+  strandRibbonsAreRefinedFromTheirPoints({});
+}
+
+// PR hairs grown on the strands: the GPU adds each one's offset from its guide with its width.
+TEST(FvPropFeed, GrownStrandsAreRefinedFromTheirGuidesPoints)
+{
+  strandRibbonsAreRefinedFromTheirPoints({{.perGuide = 2, .radius = 0.3f, .tipSeparation = -0.85f, .seed = 7}});
 }
 
 // A duplicated model holds the model its source does, and takes its source's meshes: one record,

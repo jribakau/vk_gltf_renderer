@@ -15,6 +15,7 @@
 
 #include <figure/dson/channels.hpp>
 #include <figure/dson/store.hpp>
+#include <figure/mesh/mesh_build.hpp>
 
 namespace fv::dson {
 
@@ -62,6 +63,13 @@ struct DforceData
 std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId,
                                         const Doc& geometryDoc, const Json& geometry,
                                         const std::map<std::string, Channels>& overrides);
+
+// The pre-render (PR) hairs each material group of a strand hair grows, from its surfaces'
+// simulation settings ("PR Hairs (Per Guide)", "PR Hair Distribution Radius", "PR Hair Tip
+// Separation", bias, gain, seed). Empty unless one of the node's dynamic_generate_hair modifiers has
+// "Generate PR Hairs" on. Spread by density, clumping, scraggle, frizz and random lengths are not
+// grown.
+std::map<std::string, mesh::Growth> prHairsFor(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId);
 
 // Settings for a mesh whose file carries none, as DAZ Studio's "Add dForce Modifier: Dynamic
 // Surface" gives it: a dynamic surface at the default values on every vertex (the collision layer

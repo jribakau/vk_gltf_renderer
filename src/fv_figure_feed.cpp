@@ -76,14 +76,19 @@ std::shared_ptr<const rs::RefineTables> refineTables(const mesh::BuiltMesh& geo)
   for(size_t i = 0; i < geo.renderTris.size(); i++)
     if(geo.renderTris[i] < n)
       t->normalTriangles[fill[geo.renderTris[i]]++] = uint32_t(i / 3);
-  // strand ribbons: each refined vertex is its strand point, moved across the strand by its width
+  // strand ribbons: each refined vertex is its strand point, moved off its guide when grown from one,
+  // then across the strand by its width
   if(geo.ribbon)
   {
     const mesh::Ribbon& r = *geo.ribbon;
     t->offsets.assign(n, glm::vec3(0.f));
     for(size_t v = 0; v < n && v < geo.firstSplit.size(); v++)
       if(const int32_t d = geo.firstSplit[v]; d >= 0 && size_t(d) < r.half.size())
+      {
         t->offsets[v] = glm::make_vec3(&r.side[size_t(d) * 3]) * r.half[size_t(d)];
+        if(size_t(d) * 3 + 2 < r.shift.size())
+          t->offsets[v] += glm::make_vec3(&r.shift[size_t(d) * 3]);
+      }
   }
   return t;
 }

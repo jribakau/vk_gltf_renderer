@@ -205,6 +205,44 @@ std::map<std::string, Surface> surfacesFor(const Doc& scene, const Doc* geo, con
   return out;
 }
 
+}  // namespace
+
+std::map<std::string, mesh::Growth> prHairsFor(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId)
+{
+  std::map<std::string, mesh::Growth> out;
+  const Json*                         mods = get(get(&scene.json, "scene"), "modifiers");
+  if(!mods || !mods->is_array())
+    return out;
+  const bool generates = std::any_of(mods->begin(), mods->end(), [&](const Json& m) {
+    return hasExtraType(m, "studio/modifier/dynamic_generate_hair") && modifierParent(m) == nodeId
+           && flag(mergedModifierChannels(m, scene, geoDoc), "Generate PreRender Hairs", false);
+  });
+  if(!generates)
+    return out;
+  for(const Json& m : *mods)
+  {
+    if(!hasExtraType(m, kSurfaceType) || modifierParent(m) != geomId)
+      continue;
+    const Values ch = mergedModifierChannels(m, scene, geoDoc);
+    mesh::Growth g;
+    g.perGuide      = std::max(0, int(num(ch, "PreRender Hairs Per Guide", 0)));
+    g.radius        = std::max(0.f, num(ch, "PreRender Hair Distribution Radius", 0));
+    g.tipSeparation = num(ch, "PreRender Hair Tip Separation", 0);
+    g.bias          = num(ch, "PreRender Hair Bias", 0.5f);
+    g.gain          = num(ch, "PreRender Hair Gain", 0.5f);
+    g.seed          = uint32_t(int64_t(num(ch, "PreRender Hair Seed", 0)));
+    if(g.perGuide == 0 || g.radius == 0)
+      continue;
+    if(const Json* groups = get(&m, "groups"); groups && groups->is_array())
+      for(const Json& x : *groups)
+        if(x.is_string())
+          out[x.get<std::string>()] = g;
+  }
+  return out;
+}
+
+namespace {
+
 // Material channels of the same names, where a product stored them on the surface instead.
 Surface applyMaterialOverride(const Surface& surface, const Channels* ch)
 {

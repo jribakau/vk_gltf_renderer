@@ -666,6 +666,48 @@ TEST(Dforce, readsTheSettingsOfASimulationSurface)
   EXPECT_FALSE(dson::buildDforce(*scene, nullptr, "Other", "Other-1", *geo, geo->json, {}));
 }
 
+// A strand hair's pre-render hairs, per surface: the definition's values under the scene's, and none
+// unless a hair generator on the node has "Generate PR Hairs" on (here in its definition, which the
+// geometry's file holds).
+TEST(Dforce, readsThePreRenderHairsEachSurfaceGrows)
+{
+  const auto sceneWith = [](const char* generator) {
+    return dson::parseDoc(std::string(R"({
+      "scene": {"modifiers": [)") + generator + R"(
+        {"id": "back", "url": "#set", "parent": "#geometry", "groups": ["Back"], "extra": [{"type": "studio/simulation_settings/dynamic_simulation",
+          "channels": [{"channel": {"id": "PreRender Hairs Per Guide", "current_value": 3}}]}]},
+        {"id": "line", "url": "#set", "parent": "#geometry", "groups": ["Hairline"], "extra": [{"type": "studio/simulation_settings/dynamic_simulation"}]}
+      ]},
+      "modifier_library": [
+        {"id": "set", "extra": [{"type": "studio/simulation_settings/dynamic_simulation", "channels": [
+          {"channel": {"id": "PreRender Hairs Per Guide", "value": 0}},
+          {"channel": {"id": "PreRender Hair Distribution Radius", "value": 0.25}},
+          {"channel": {"id": "PreRender Hair Tip Separation", "value": -0.7}},
+          {"channel": {"id": "PreRender Hair Seed", "value": 310411}}]}]}
+      ]
+    })");
+  };
+  const auto geo = dson::parseDoc(R"({"modifier_library": [
+    {"id": "gen", "extra": [{"type": "studio/modifier/dynamic_generate_hair", "generates_for_render": true},
+      {"type": "studio_modifier_channels", "channels": [{"channel": {"id": "Generate PreRender Hairs", "type": "bool", "value": true}}]}]}
+  ]})");
+  const auto on = dson::prHairsFor(*sceneWith(R"({"id": "gen", "url": "/data/hair.dsf#gen", "parent": "#Hair", "extra": [{"type": "studio/modifier/dynamic_generate_hair"}]},)"),
+                                   geo.get(), "Hair", "geometry");
+  ASSERT_EQ(on.size(), 1u);
+  const fv::mesh::Growth& back = on.at("Back");
+  EXPECT_EQ(back.perGuide, 3);
+  EXPECT_FLOAT_EQ(back.radius, 0.25f);
+  EXPECT_FLOAT_EQ(back.tipSeparation, -0.7f);
+  EXPECT_FLOAT_EQ(back.bias, 0.5f);
+  EXPECT_EQ(back.seed, 310411u);
+
+  // no generator, or one switched off on the node
+  EXPECT_TRUE(dson::prHairsFor(*sceneWith(""), geo.get(), "Hair", "geometry").empty());
+  const auto off = sceneWith(R"({"id": "gen", "url": "/data/hair.dsf#gen", "parent": "#Hair", "extra": [{"type": "studio/modifier/dynamic_generate_hair"},
+    {"type": "studio_modifier_channels", "channels": [{"channel": {"id": "Generate PreRender Hairs", "type": "bool", "current_value": false}}]}]},)");
+  EXPECT_TRUE(dson::prHairsFor(*off, geo.get(), "Hair", "geometry").empty());
+}
+
 // A strand hair's points are in no polygon: each takes the settings a polygon mesh's loose vertex
 // does, without the per-vertex sums a polygon mesh adds up.
 TEST(Dforce, PointsInNoPolygonTakeTheSettingsALooseVertexDoes)

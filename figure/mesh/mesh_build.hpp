@@ -24,10 +24,25 @@
 
 namespace fv::mesh {
 
+// DAZ's pre-render (PR) hairs on one material's strands: `perGuide` more strands around each line,
+// their roots up to `radius` (cm) from its root and their spread scaled by 1 + `tipSeparation` at the
+// tip, shaped by `bias` and `gain` along the strand.
+struct Growth
+{
+  int      perGuide      = 0;
+  float    radius        = 0;
+  float    tipSeparation = 0;
+  float    bias          = 0.5f;
+  float    gain          = 0.5f;
+  uint32_t seed          = 0;
+};
+
 struct Lines
 {
   // Each polyline's points in `verts`, plus the end; a material per line.
   std::vector<int32_t> start, verts, material;
+  // the PR hairs grown per material; empty grows none
+  std::vector<Growth> grow;
 };
 
 struct MeshInput
@@ -57,6 +72,9 @@ struct Ribbon
   std::vector<int32_t> material;
   // how far widenRibbons moved each drawn vertex along `side`, cm (empty before)
   std::vector<float> half;
+  // a grown strand's offset from its guide, xyz per drawn vertex, in the rest shape (empty when the
+  // lines grow none)
+  std::vector<float> shift;
   // Median distance between neighbouring roots, cm.
   float spacing = 0;
 };

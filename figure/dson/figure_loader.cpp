@@ -514,10 +514,27 @@ std::string geometryKey(const Store::Resolved& geometry)
 {
   return lowerCase(geometry.file) + "#" + getString(geometry.entry, "id");
 }
-std::string earlyMeshKey(const Store::Resolved& geometry, const std::optional<Store::Resolved>& uv, int level)
+// ... and the PR hairs the scene grows on it.
+std::string earlyMeshKey(const Store::Resolved& geometry, const std::optional<Store::Resolved>& uv, int level,
+                         const std::map<std::string, mesh::Growth>& grow)
 {
-  return geometryKey(geometry) + "|" + (uv ? lowerCase(uv->file) + "#" + getString(uv->entry, "id") : std::string()) + "|"
-         + std::to_string(level);
+  std::string key = geometryKey(geometry) + "|" + (uv ? lowerCase(uv->file) + "#" + getString(uv->entry, "id") : std::string()) + "|"
+                    + std::to_string(level);
+  for(const auto& [group, g] : grow)
+    key += "|" + group + ":" + std::to_string(g.perGuide) + "," + std::to_string(g.radius) + "," + std::to_string(g.tipSeparation)
+           + "," + std::to_string(g.bias) + "," + std::to_string(g.gain) + "," + std::to_string(g.seed);
+  return key;
+}
+
+// The PR hairs (dson/dforce.hpp prHairsFor) on a strand mesh's lines, per material group.
+void addGrowth(mesh::MeshInput& in, const std::vector<std::string>& groups, const std::map<std::string, mesh::Growth>& grow)
+{
+  if(!in.lines || grow.empty())
+    return;
+  in.lines->grow.assign(groups.size(), {});
+  for(size_t i = 0; i < groups.size(); i++)
+    if(const auto g = grow.find(groups[i]); g != grow.end())
+      in.lines->grow[i] = g->second;
 }
 
 // The other library files a scene's nodes, geometries and materials point at, that are installed;
@@ -575,11 +592,11 @@ std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::
         return;
       // each geometry built as loadDson's pre-pass builds it, with the UV set it names (a scene
       // material that switches it makes another key, which the load builds itself)
-      std::vector<const Json*> geometries;
+      std::vector<std::pair<const Json*, const Json*>> geometries;  // node, geometry
       for(const Json& n : *nodes)
         if(const Json* geos = get(&n, "geometries"); geos && geos->is_array())
           for(const Json& g : *geos)
-            geometries.push_back(&g);
+            geometries.emplace_back(&n, &g);
       timing::Scope t("meshes built early", 10);
       jobs::parallelFor(geometries.size(), 1, [&](size_t begin, size_t end) {
         for(size_t i = begin; i < end; i++)
@@ -587,7 +604,8 @@ std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::
           std::string key;
           try
           {
-            const auto gref = parseRef(getString(geometries[i], "url"), file);
+            const auto [node, instance] = geometries[i];
+            const auto gref             = parseRef(getString(instance, "url"), file);
             if(!gref || !store->library().find(gref->file))
               continue;
             const auto gres = store->resolve(*gref, "geometry_library");
@@ -602,12 +620,15 @@ std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::
                 continue;
             }
             const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(*subdivision, 0, 3) : 0;
-            key             = earlyMeshKey(*gres, ures, level);
+            const auto grow = prHairsFor(*doc, gres->doc.get(), getString(node, "id"), getString(instance, "id"));
+            key             = earlyMeshKey(*gres, ures, level, grow);
             if(!EarlyMeshes::of(*store).start(key))
               continue;
             const std::optional<UvSet> uvSet = ures ? std::optional<UvSet>(parseUvSet(*ures->doc, *ures->entry)) : std::nullopt;
             std::vector<std::string>   groups;
-            auto geoOut = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, groups)));
+            mesh::MeshInput            input = meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, groups);
+            addGrowth(input, groups, grow);
+            auto geoOut = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
             EarlyMeshes::of(*store).finish(key, std::move(geoOut), std::move(groups));
           }
           catch(const std::exception&)
@@ -1042,10 +1063,11 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           a.uvDecided     = true;
           const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(options.subdivision, 0, 3) : 0;
           // built by a prefetch from the same geometry, UV set and level, or here
+          const auto               grow = prHairsFor(*docPtr, a.gres->doc.get(), getString(job.node, "id"), getString(&g, "id"));
           std::optional<EarlyMesh> early;
           {
             timing::Accum tt("ahead: an early mesh taken");
-            early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level));
+            early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level, grow));
           }
           if(early)
           {
@@ -1055,8 +1077,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           }
           else
           {
-            timing::Accum tb("ahead: a mesh built");
-            a.mesh.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups)));
+            timing::Accum   tb("ahead: a mesh built");
+            mesh::MeshInput input = meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups);
+            addGrowth(input, a.mesh.materialGroups, grow);
+            a.mesh.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
           }
           if(job.rig >= 0)
           {
@@ -1192,6 +1216,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
                 facetGroups.push_back(v.is_string() ? v.get<std::string>() : v.dump());
             shellInput(input, *job.shell, meshOut.materialGroups, facetGroups, polyGroup);
           }
+          addGrowth(input, meshOut.materialGroups, prHairsFor(*docPtr, gres->doc.get(), getString(job.node, "id"), gid));
           meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
         }
 

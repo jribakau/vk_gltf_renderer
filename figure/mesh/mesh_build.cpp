@@ -84,7 +84,69 @@ struct Strands
   std::vector<float>   side, along;
   std::vector<int32_t> line;
   float                spacing = 0;
+  // per point, a grown strand's offset from its guide (xyz); empty when the lines grow none
+  std::vector<float> shift;
 };
+
+// The file's lines, then the PR hairs they grow (Growth): a grown strand is its guide's points over
+// again, moved off it by Strands::shift. `guide` is each line's line in the file, `spot` (two per
+// line) where in the unit half-disc across and out from the guide a grown one sits.
+struct GrownLines
+{
+  Lines                lines;
+  std::vector<int32_t> guide;
+  std::vector<float>   spot;
+};
+
+uint64_t splitmix(uint64_t x)
+{
+  x += 0x9e3779b97f4a7c15ull;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+  return x ^ (x >> 31);
+}
+
+GrownLines grownLines(const Lines& L)
+{
+  GrownLines out;
+  out.lines    = L;
+  const int nl = int(L.start.size()) - 1;
+  out.guide.resize(size_t(nl));
+  std::iota(out.guide.begin(), out.guide.end(), 0);
+  out.spot.assign(size_t(nl) * 2, 0.f);
+  for(int l = 0; l < nl; l++)
+  {
+    const int mat = L.material[l];
+    if(mat < 0 || mat >= int(L.grow.size()))
+      continue;
+    const Growth& g = L.grow[mat];
+    for(int k = 0; k < g.perGuide; k++)
+    {
+      out.lines.verts.insert(out.lines.verts.end(), L.verts.begin() + L.start[l], L.verts.begin() + L.start[l + 1]);
+      out.lines.start.push_back(int32_t(out.lines.verts.size()));
+      out.lines.material.push_back(mat);
+      out.guide.push_back(l);
+      // uniform over the half-disc: the radius as the root of a uniform draw
+      const uint64_t h1 = splitmix((uint64_t(g.seed) << 32) ^ (uint64_t(l) << 8) ^ uint64_t(k));
+      const uint64_t h2 = splitmix(h1);
+      const double   r  = std::sqrt(double(h1 >> 11) * 0x1p-53);
+      const double   a  = 3.14159265358979323846 * (double(h2 >> 11) * 0x1p-53);
+      out.spot.push_back(float(r * std::cos(a)));
+      out.spot.push_back(float(r * std::sin(a)));
+    }
+  }
+  return out;
+}
+
+// Perlin's bias and gain, which leave t as it is at 0.5.
+double biasOf(double t, double b)
+{
+  return b == 0.5 ? t : std::pow(t, std::log(std::clamp(b, 1e-4, 1 - 1e-4)) / std::log(0.5));
+}
+double gainOf(double t, double g)
+{
+  return t < 0.5 ? biasOf(2 * t, 1 - g) / 2 : 1 - biasOf(2 - 2 * t, 1 - g) / 2;
+}
 
 // Median distance from each root to its nearest neighbour, on a grid of half-centimetre cells.
 float rootSpacing(std::span<const float> p, const Lines& lines, const std::function<bool(int)>& ok)
@@ -147,12 +209,18 @@ float rootSpacing(std::span<const float> p, const Lines& lines, const std::funct
 // so they follow them through the pose: a ray tracer bounds each triangle with a box, and a long thin
 // segment lying diagonally fills its box with little but air. Halving the length halves how far the
 // boxes of a lock's thousands of strands reach into one another.
+//
+// The PR hairs a material grows (Growth) are drawn after the file's lines, each a copy of its guide's
+// points moved by a fixed offset in the rest shape (Strands::shift), so the skin and morphs carry
+// them as they carry the guide.
 Strands strandRibbons(const MeshInput& m)
 {
-  const Lines& L      = *m.lines;
-  const auto&  p      = m.positions;
-  const int    nv     = int(p.size() / 3);
-  const int    nl     = int(L.start.size()) - 1;
+  const GrownLines G      = grownLines(*m.lines);
+  const Lines&     L      = G.lines;
+  const auto&      p      = m.positions;
+  const int        nv     = int(p.size() / 3);
+  const int        nl     = int(L.start.size()) - 1;
+  const int        guides = int(m.lines->start.size()) - 1;
   const int    points = L.start[nl];
   auto         ok     = [&](int c) { return L.verts[c] >= 0 && L.verts[c] < nv; };
 
@@ -207,14 +275,14 @@ Strands strandRibbons(const MeshInput& m)
         // one UV per drawn vertex (below), so the tangent frame runs along the strand
         r.quadValues.push_back(v);
       }
-      r.quadParent.push_back(segments[s][1]);
+      r.quadParent.push_back(G.guide[segments[s][1]]);
     }
   }
 
   // the roots' centre, which a ribbon faces away from
   double cx = 0, cy = 0, cz = 0;
   int    roots = 0;
-  for(int l = 0; l < nl; l++)
+  for(int l = 0; l < guides; l++)
   {
     const int c = L.start[l];
     if(c >= L.start[l + 1] || !ok(c))
@@ -241,7 +309,7 @@ Strands strandRibbons(const MeshInput& m)
     bool      have = false;
     for(int c = s; c < e; c++)
     {
-      out.line[c]  = l;
+      out.line[c]  = G.guide[l];
       out.along[c] = e - s > 1 ? float(double(c - s) / (e - s - 1)) : 0.f;
       if(!ok(c))
         continue;
@@ -288,6 +356,40 @@ Strands strandRibbons(const MeshInput& m)
     }
   }
 
+  // A grown strand sits at its spot across the guide (side) and out from the head (side x the
+  // strand, turned away from the roots' centre), the radius shrinking toward the tip as its tip
+  // separation has it.
+  if(nl > guides)
+  {
+    out.shift.assign(size_t(total) * 3, 0.f);
+    jobs::parallelFor(size_t(nl - guides), 256, [&](size_t begin, size_t end) {
+      for(size_t i = begin; i < end; i++)
+      {
+        const int     l = guides + int(i), s = L.start[l], e = L.start[l + 1];
+        const Growth& g = L.grow[L.material[l]];
+        for(int c = s; c < e; c++)
+        {
+          if(!ok(c))
+            continue;
+          const int    a = c > s && ok(c - 1) ? L.verts[c - 1] : L.verts[c];
+          const int    b = c + 1 < e && ok(c + 1) ? L.verts[c + 1] : L.verts[c];
+          const double t[3] = {double(p[b * 3]) - p[a * 3], double(p[b * 3 + 1]) - p[a * 3 + 1], double(p[b * 3 + 2]) - p[a * 3 + 2]};
+          const float* sd   = &out.side[c * 3];
+          double       o[3] = {sd[1] * t[2] - sd[2] * t[1], sd[2] * t[0] - sd[0] * t[2], sd[0] * t[1] - sd[1] * t[0]};
+          const double len  = std::hypot(o[0], o[1], o[2]);
+          const int    v    = L.verts[c];
+          const double away = o[0] * (p[v * 3] - cx) + o[1] * (p[v * 3 + 1] - cy) + o[2] * (p[v * 3 + 2] - cz);
+          for(double& x : o)
+            x = len > 0 ? (away < 0 ? -x : x) / len : 0;
+          const double spread = g.radius * std::max(0.0, 1 + g.tipSeparation * gainOf(biasOf(out.along[c], g.bias), g.gain));
+          const float  across = G.spot[size_t(l) * 2], outward = G.spot[size_t(l) * 2 + 1];
+          for(int k = 0; k < 3; k++)
+            out.shift[c * 3 + k] = float(spread * (across * sd[k] + outward * o[k]));
+        }
+      }
+    });
+  }
+
   // a midpoint lies across the strand between its ends' directions, halfway along
   out.side.resize(size_t(total) * 3);
   out.along.resize(total);
@@ -305,6 +407,9 @@ Strands strandRibbons(const MeshInput& m)
         out.side[mid * 3 + k] = len > 1e-6f ? dir[k] / len : out.side[c * 3 + k];
       out.along[mid] = (1.f - t) * out.along[c] + t * out.along[d];
       out.line[mid]  = out.line[c];
+      if(!out.shift.empty())
+        for(int k = 0; k < 3; k++)
+          out.shift[mid * 3 + k] = (1.f - t) * out.shift[c * 3 + k] + t * out.shift[d * 3 + k];
     }
 
   // UVs across (0 on the -side edge, 1 on the +side) and along (0 root, 1 tip) the ribbon, not the
@@ -319,7 +424,7 @@ Strands strandRibbons(const MeshInput& m)
   }
   r.levels.push_back(std::move(stencil));
   r.vertexCount = total * 2;
-  out.spacing   = rootSpacing(p, L, ok);
+  out.spacing   = rootSpacing(p, *m.lines, ok);
   return out;
 }
 
@@ -519,6 +624,11 @@ BuiltMesh build(const MeshInput& m)
     refinement      = std::make_shared<subdiv::Refinement>(std::move(strands->refinement));
     renderPositions = subdiv::refineDense(*refinement, m.positions, 3);
     renderCount     = refinement->vertexCount;
+    // point c's two drawn vertices are 2c and 2c + 1
+    if(!strands->shift.empty())
+      for(size_t v = 0; v * 3 < renderPositions.size(); v++)
+        for(int k = 0; k < 3; k++)
+          renderPositions[v * 3 + k] += strands->shift[(v >> 1) * 3 + k];
   }
   else if(m.level > 0 && np > 0)
   {
@@ -667,6 +777,8 @@ BuiltMesh build(const MeshInput& m)
     ribbon.side.assign(size_t(count) * 3, 0.f);
     ribbon.along.assign(count, 0.f);
     ribbon.material.assign(count, 0);
+    if(!strands->shift.empty())
+      ribbon.shift.assign(size_t(count) * 3, 0.f);
     for(int i = 0; i < count; i++)
     {
       const uint32_t rv   = out.renderIndex[i];
@@ -674,6 +786,9 @@ BuiltMesh build(const MeshInput& m)
       const float    sign = rv & 1 ? 1.f : -1.f;
       for(int k = 0; k < 3; k++)
         ribbon.side[i * 3 + k] = strands->side[c * 3 + k] * sign;
+      if(!ribbon.shift.empty())
+        for(int k = 0; k < 3; k++)
+          ribbon.shift[i * 3 + k] = strands->shift[c * 3 + k];
       ribbon.along[i]    = strands->along[c];
       ribbon.material[i] = m.lines->material[strands->line[c]];
     }
