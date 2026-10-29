@@ -35,6 +35,7 @@
 #include "present_policy.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -142,6 +143,15 @@ struct FrameStream::Impl
   std::mutex                            profileMutex;
   std::string                           profileJson{"null"};
   std::chrono::steady_clock::time_point profileAt{};
+
+  // The last frames for /frametimes, by frame: its start to the next frame's start, and the host's
+  // GPU time of the last frame it measured (info.frameGpuMs; the GPU's lag a few frames behind), in
+  // ms. Application thread -> HTTP threads, under timesMutex.
+  static constexpr size_t      kFrameTimes = 512;
+  std::mutex                   timesMutex;
+  std::array<float, kFrameTimes> intervalMs{};
+  std::array<float, kFrameTimes> gpuMs{};
+  uint64_t                     timesCount{0};
 
   // encoded frames: encoder thread -> HTTP client threads
   std::mutex                         jpgMutex;
@@ -368,6 +378,11 @@ void FrameStream::onUpdate()
     const double dt = std::chrono::duration<double>(now - s.lastFrame).count();
     if(dt > 0.0)
       s.renderFps = s.renderFps * 0.9 + (1.0 / dt) * 0.1;
+    const float     gpu = s.info.frameGpuMs ? float(s.info.frameGpuMs()) : 0.0F;
+    std::lock_guard lock(s.timesMutex);
+    const size_t    i = size_t(s.timesCount++ % Impl::kFrameTimes);
+    s.intervalMs[i]   = float(dt * 1000.0);
+    s.gpuMs[i]        = gpu;
   }
   s.lastFrame = now;
   // a local viewer alone needs no copy (present_policy.hpp); a /frame that came in by now does
@@ -907,6 +922,27 @@ void FrameStream::Impl::serve()
                              + ",\"inputMs\":" + std::to_string(inputMs.load()) + ",\"inputMsLast\":" + std::to_string(inputMsLast.load())
                              + ",\"inputSamples\":" + std::to_string(inputSamples.load()) + ",\"profile\":" + profile + "}";
     res.set_content(body, "application/json");
+  });
+
+  // ?since=<next from the last answer>: the frames after it the ring still holds, oldest first
+  http.Get("/frametimes", [this](const httplib::Request& req, httplib::Response& res) {
+    const uint64_t  since = req.has_param("since") ? std::strtoull(req.get_param_value("since").c_str(), nullptr, 10) : 0;
+    std::string     interval, gpu;
+    uint64_t        next = 0;
+    {
+      std::lock_guard lock(timesMutex);
+      next = timesCount;
+      char buf[32];
+      for(uint64_t f = std::max(since, next > kFrameTimes ? next - kFrameTimes : 0); f < next; f++)
+      {
+        const size_t i = size_t(f % kFrameTimes);
+        std::snprintf(buf, sizeof(buf), "%s%.3f", interval.empty() ? "" : ",", intervalMs[i]);
+        interval += buf;
+        std::snprintf(buf, sizeof(buf), "%s%.3f", gpu.empty() ? "" : ",", gpuMs[i]);
+        gpu += buf;
+      }
+    }
+    res.set_content("{\"next\":" + std::to_string(next) + ",\"interval\":[" + interval + "],\"gpu\":[" + gpu + "]}", "application/json");
   });
 
   if(info.routes)

@@ -40,6 +40,9 @@
 //                       time in ms, connected clients, whether the loop is idle; the input latency
 //                       (an /input request's arrival to the end of the encode of the first frame
 //                       drawn after it, average and last, in ms) and the host's `profile`
+//   GET /frametimes?since=N  JSON {next, interval, gpu}: the last frames (up to 512, those after
+//                       frame N), each one's start to the next one's and the host's `frameGpuMs`, in
+//                       ms; pass `next` back as `since` for only the new ones
 //
 // The element also paces the headless loop (frame_pacing.hpp) and waits for the GPU there, before
 // the host element behind it takes its input; copies that completed are handed to the encoder
@@ -116,6 +119,10 @@ struct FrameStreamCreateInfo
   // memory). Called on the application thread a few times a second; /stats serves the last value.
   // Optional.
   std::function<std::string()> profile;
+
+  // The GPU time of the host's last measured frame, ms, for /frametimes. Called on the application
+  // thread every frame. Optional.
+  std::function<double()> frameGpuMs;
 };
 
 class FrameStream : public nvapp::IAppElement

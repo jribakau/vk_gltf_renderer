@@ -1642,6 +1642,14 @@ std::string GltfRenderer::frameProfileJson() const
   return out + "}";
 }
 
+double GltfRenderer::frameGpuMs() const
+{
+  nvutils::ProfilerTimeline::TimerInfo info;
+  std::string                          api;
+  // the profiler keeps microseconds
+  return m_profilerTimeline && m_profilerTimeline->getFrameTimerInfo("Frame", info, api) ? info.gpu.last * 1e-3 : 0.0;
+}
+
 std::string GltfRenderer::refuseFrameSize(VkExtent2D size, double extraBytesPerPixel) const
 {
   const MemoryBudget b = deviceMemoryBudget();

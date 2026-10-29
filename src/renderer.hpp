@@ -392,6 +392,8 @@ public:
   // GPU ms averaged over its recent frames), and the device-local memory in use and its budget, in
   // MB. Application thread.
   std::string frameProfileJson() const;
+  // The profiler's GPU time of the last frame it measured, ms (0 before the first)
+  double frameGpuMs() const;
 
   /// The path tracer is accumulating a still: the camera and scene have held for a frame, and
   /// the image does not yet hold maxSamples samples per pixel. Every further frame improves it.

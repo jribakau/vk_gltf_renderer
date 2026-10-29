@@ -702,6 +702,7 @@ auto main(int argc, char** argv) -> int
           .stopping  = [protocol] { protocol->stop(); },
           .refuseSize = [r, present](VkExtent2D size) { return r->refuseFrameSize(size, present->bytesPerPixel()); },
           .profile    = [r] { return r->frameProfileJson(); },
+          .frameGpuMs = [r] { return r->frameGpuMs(); },
       });
       frameStream->setFullChroma(streamFullChroma);
       app.addElement(frameStream);
