@@ -139,6 +139,20 @@ TEST(FvHost, RenderStatusCountsTheStillsSamples)
   EXPECT_EQ(status.value("maxSamples", -1), 256) << status.dump();
 }
 
+// The view draws a scene before anything is in it, its sky and ground, not the renderer's flat clear
+TEST(FvHost, StartsWithAnEmptySceneResident)
+{
+  HostRig rig;
+  EXPECT_EQ(rig.renderer.replaces, 1);
+  EXPECT_EQ(rig.renderer.hostScene().meshCount(), 0u);
+  // the first prop goes into it; it isn't made again
+  const Json loaded = rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}});
+  ASSERT_TRUE(loaded.value("ok", false)) << loaded.dump();
+  ASSERT_TRUE(rig.settle());
+  EXPECT_GT(rig.renderer.hostScene().meshCount(), 0u);
+  EXPECT_EQ(rig.renderer.replaces, 1);
+}
+
 TEST(FvHost, LoadsTheBoxFigureIntoItsRetainedScene)
 {
   HostRig rig;

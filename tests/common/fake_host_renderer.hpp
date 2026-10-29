@@ -39,7 +39,7 @@ public:
 
   rs::RetainedScene& hostScene() override { return m_scene; }
   bool               feedsHostScene() const override { return true; }
-  bool               drawsRetainedScene() const override { return true; }
+  bool               drawsRetainedScene() const override { return replaces > 0; }
   void               replaceHostScene() override { replaces++; }
   void               prefetchImage(const std::filesystem::path&, bool) override {}
   nvutils::Bbox      visibleSceneBounds() override
@@ -92,6 +92,7 @@ public:
   void writeEnvironmentSky(tinygltf::Model&, const std::filesystem::path&) const override {}
 
   // what the host handed over, for a test to read
+  // how many times the host made its scene resident; resident (drawsRetainedScene) from the first
   int                                                                           replaces = 0;
   GizmoHooks                                                                    gizmo;
   std::function<bool(const std::optional<InstancePick>&, const glm::vec3&)>     pickObserver;

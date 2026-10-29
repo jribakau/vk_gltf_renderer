@@ -448,6 +448,10 @@ void FvHost::onUpdate()
     {
       LOGW("[fv] lighting: %s\n", e.what());
     }
+    // an empty scene from the start, drawn as any other: its sky, its ground and the grid, where the
+    // renderer would otherwise clear to a flat colour until the first prop came
+    if(!s.renderer->drawsRetainedScene())
+      s.requestCompose("Empty scene");
   }
   std::deque<std::function<void()>> work;
   {
