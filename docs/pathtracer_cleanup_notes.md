@@ -82,3 +82,75 @@ nanoseconds against a GPU-bound frame.
 One commit covering items 1 to 5 above plus the three comment fixes. Item 6 is optional. Verify
 with a relink (`pnpm renderer:build`) and the gtest suite (`pnpm renderer:test`); no render is
 needed since nothing changes what a frame draws.
+
+## Architecture
+
+The file is one class holding four unrelated lifetimes: per-frame rendering, pipeline and shader
+builds on background threads, an on-disk cache, and denoiser policy. The direction is already
+set: five helpers have been carved out of it (`sample_schedule`, `selection_write`,
+`denoiser_handoff`, `variant_compile_job`, `pipeline_cache_util`). What follows is what is left,
+in order of payoff against risk. The class is big because it coordinates a lot, not because the
+coordination itself is wrong; moves 1 to 3 would take it from one 3200-line class to a
+coordinator of about half that over three testable parts.
+
+### 1. The SPIR-V disk cache is a pure module trapped in a Vulkan class
+
+About 350 lines (the FNV hashing, `SourceStamp`, `spirvCacheKey`, `blobOfDeps`,
+`pruneShaderCache`, `loadCachedSpirv`, `storeCachedSpirv`) depend on nothing in `PathTracer` but
+`m_shaderCacheDir`. It is also the only part of the file with subtle failure modes: atomic
+publish, torn reads, the timestamp settle window, LRU pruning across processes. None of that can
+be unit tested today because it sits behind a class that needs a `VkDevice`. Pulling it into its
+own `SpirvDiskCache` is a zero-behavior-change move that makes it testable under the existing
+gtest suite. Highest value per unit of risk.
+
+### 2. The variant cache moves five handles by hand
+
+A live variant is five separate members (`m_shaderModule`, `m_rtxPipeline`, `m_rqPipeline`,
+`m_sbtBuffer`, `m_sbtRegions`) plus `m_pipelineUseSER`, and `VariantCacheEntry` repeats the same
+fields. Every ownership transfer (swap in, park, evict, release, teardown) is written as five
+assignments. That is why `releaseVariant` takes four handles, why the LRU trim exists twice, and
+why `onDetach` and `destroyVariantCache` destroy the same things by hand (items 5 and 6 under
+"Duplicated code" are symptoms of this). One value type, say `PipelineSet`, with a single destroy
+routine makes the live slot and a cache entry the same thing. `swapVariant` becomes a swap of two
+values and the duplication disappears as a side effect rather than by cleanup.
+
+### 3. OptiX and OIDN are the same thing with two names
+
+Thirteen functions contain a paired OptiX block and OIDN block, and the .cpp has 69 denoiser
+preprocessor branches. The two denoisers already present near-identical surfaces: enabled, guide
+state, albedo and normal images, denoise count, auto-denoise, final denoise, UI. The one real
+difference is that OptiX runs on CUDA outside the command buffer, which is an implementation
+detail, not a policy one. An `AccumulationDenoiser` interface plus one "the active accumulation
+denoiser" pointer would collapse most of those thirteen pairs to one line each, and the
+exclusivity rule in `keepOneAccumulationDenoiser` becomes a pointer assignment. This is the
+biggest cut but touches `optix_denoiser` and `oidn_denoiser` too, so schedule it rather than slip
+it in.
+
+### 4. The frame's decisions are spread across booleans and re-asked
+
+`m_dlssFrame`, `m_prevDlssFrame`, `m_handoffFrame`, `m_dlssFrame0`, `m_dlssShaderFrame` and the
+three `getEffective*` queries are consulted from `onRender`, `pushDescriptorSet`,
+`setupPushConstant` and the hand-off. The DLSS decision was already moved to "decided once at
+the frame's start"; the OptiX and OIDN decisions were not. A single per-frame plan value, built
+once at the top of `onRender` and passed down (who renders, which technique, render size,
+samples, which guides, whether the hand-off captures), makes the frame read as a straight line
+and makes it impossible for two steps to disagree.
+
+### 5. Three thread mechanisms build pipelines off the application thread
+
+The compile thread with the busy window, the warm-up threads at startup
+(`startPipelineWarm`), and the variant job (`VariantJobs`). The latter two are the same job:
+build a pipeline from a module, layout and flags on another thread and hand back handles. They
+already share `createPathTracePipeline`. One worker with a queue would serve both. Lower
+priority: each works and they do not interact.
+
+### Smaller observations
+
+- The UI panel (`onUIRender`, about 260 lines) lives in the renderer file while the repo's
+  convention is one panel per `ui_*` file. The rasterizer has the same shape, so this is a
+  repo-wide choice rather than this file's fault.
+- Encapsulation is better than the header suggests. Only `m_pushConst` and
+  `m_performanceTarget` are touched from outside the class, so the public data section is mostly
+  historical and could be closed.
+- Not worth changing: the ray-query versus ray-tracing branches are small and local, and the
+  adaptive sampler is already extracted.
