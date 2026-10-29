@@ -76,6 +76,8 @@ public:
   bool          isStillConverged() const override { return false; }
   bool          accumulationComplete() const override { return false; }
   bool          driverCacheFull() const override { return false; }
+  int           accumulatedSamples() const override { return stillSamples; }
+  int           sampleCap() const override { return stillSampleCap; }
   MemoryBudget  deviceMemoryBudget() const override { return {}; }
   uint32_t      frameBytesPerPixel() const override { return 4; }
   nvvk::ResourceAllocator* deviceAllocator() override { return nullptr; }
@@ -94,6 +96,8 @@ public:
   GizmoHooks                                                                    gizmo;
   std::function<bool(const std::optional<InstancePick>&, const glm::vec3&)>     pickObserver;
   std::vector<shaderio::lines::LineVertex>                                      helperLines;
+  int stillSamples   = 0;  // what accumulatedSamples() and sampleCap() say
+  int stillSampleCap = 0;
 
 private:
   rs::RetainedScene                           m_scene;

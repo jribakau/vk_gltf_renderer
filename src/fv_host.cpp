@@ -253,6 +253,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   {"still", impl->renderer->isStill()},
                   {"converged", impl->renderer->isStillConverged()},
                   {"complete", impl->renderer->accumulationComplete()},
+                  // samples per pixel so far, and the cap: the viewport's badge counts them
+                  {"samples", impl->renderer->accumulatedSamples()},
+                  {"maxSamples", impl->renderer->sampleCap()},
                   {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer},
                   // the driver's shader cache is full, and every start compiles the path tracer again
                   {"driverCacheFull", impl->renderer->driverCacheFull()},

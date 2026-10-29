@@ -407,6 +407,8 @@ public:
   bool isStillConverged() const override { return isStill() && m_resources.accumulationComplete(); }
   // The sample cap is reached, whatever renders (a DLSS view counts its frames too)
   bool accumulationComplete() const override { return m_resources.accumulationComplete(); }
+  int  accumulatedSamples() const override { return m_resources.accumulatedSamples; }
+  int  sampleCap() const override { return m_resources.settings.maxSamples; }
   bool driverCacheFull() const override { return m_pathTracer.driverCacheFull(); }
 
   // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.

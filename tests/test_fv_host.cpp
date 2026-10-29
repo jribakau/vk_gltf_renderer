@@ -128,6 +128,16 @@ std::string figureId(const Json& scene)
 
 }  // namespace
 
+TEST(FvHost, RenderStatusCountsTheStillsSamples)
+{
+  HostRig rig;
+  rig.renderer.stillSamples   = 37;
+  rig.renderer.stillSampleCap = 256;
+  const Json status        = rig.cmd("render.status", Json::object()).value("result", Json::object());
+  EXPECT_EQ(status.value("samples", -1), 37) << status.dump();
+  EXPECT_EQ(status.value("maxSamples", -1), 256) << status.dump();
+}
+
 TEST(FvHost, LoadsTheBoxFigureIntoItsRetainedScene)
 {
   HostRig rig;
