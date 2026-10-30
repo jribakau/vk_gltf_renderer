@@ -913,6 +913,7 @@ void FrameStream::Impl::serve()
       std::lock_guard lock(profileMutex);
       profile = profileJson;
     }
+    const ShaderWorkNow shaderWork = shaderWorkNow();
     const std::string body = "{\"rendered\":" + std::to_string(framesRendered.load()) + ",\"encoded\":" + std::to_string(framesEncoded.load())
                              + ",\"sent\":" + std::to_string(framesSent.load()) + ",\"replaced\":" + std::to_string(framesReplaced.load())
                              + ",\"skipped\":" + std::to_string(framesSkipped.load())
@@ -921,6 +922,7 @@ void FrameStream::Impl::serve()
                              + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load())
                              + ",\"idle\":" + (idle.load() ? "true" : "false")
                              + ",\"buildingPipeline\":" + (pipelineBuildsRunning().load() > 0 ? "true" : "false")
+                             + ",\"shaderWork\":{\"stage\":\"" + shaderWorkName(shaderWork.work) + "\",\"ms\":" + std::to_string(shaderWork.ms) + "}"
                              + ",\"inputMs\":" + std::to_string(inputMs.load()) + ",\"inputMsLast\":" + std::to_string(inputMsLast.load())
                              + ",\"inputSamples\":" + std::to_string(inputSamples.load()) + ",\"profile\":" + profile + "}";
     res.set_content(body, "application/json");

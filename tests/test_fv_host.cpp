@@ -42,6 +42,7 @@
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
+#include "pipeline_build_scope.hpp"
 #include "scene_export_gltf.hpp"
 
 namespace fs = std::filesystem;
@@ -886,6 +887,37 @@ TEST(FvHost, HowTightAnItemIsGoesWithIt)
 
 // Skin all the way under opaque fabric isn't drawn while the fabric is tight, so it can't show through,
 // and it comes back whenever that stops being so. Box Snug is a closed box just around the Box Figure.
+TEST(ShaderWork, SaysWhatIsBeingBuiltAndForHowLong)
+{
+  EXPECT_EQ(shaderWorkNow().work, ShaderWork::eNone);
+  EXPECT_STREQ(shaderWorkName(ShaderWork::eNone), "");
+
+  // the warm-up goes on behind everything
+  {
+    const ShaderWarmScope one, two;
+    EXPECT_EQ(shaderWorkNow().work, ShaderWork::eWarm);
+    EXPECT_STREQ(shaderWorkName(shaderWorkNow().work), "warm");
+
+    // a build that holds the view is the wait to explain, over the warm-up. Entering the build says
+    // nothing yet: a frame with nothing to build passes through it
+    const PipelineBuildScope building;
+    EXPECT_EQ(shaderWorkNow().work, ShaderWork::eWarm);
+    {
+      const ShaderWorkScope compile(ShaderWork::eCompile);
+      EXPECT_EQ(shaderWorkNow().work, ShaderWork::eCompile);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    {
+      const ShaderWorkScope pipeline(ShaderWork::ePipeline);
+      EXPECT_STREQ(shaderWorkName(shaderWorkNow().work), "pipeline");
+      // counted from the build's start, across its stages
+      EXPECT_GE(shaderWorkNow().ms, 15);
+    }
+    EXPECT_EQ(shaderWorkNow().work, ShaderWork::eWarm);
+  }
+  EXPECT_EQ(shaderWorkNow().work, ShaderWork::eNone);
+}
+
 TEST(FvHost, TightFabricHidesTheSkinUnderIt)
 {
   HostRig rig;

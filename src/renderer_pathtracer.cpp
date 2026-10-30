@@ -991,7 +991,10 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
     LOGI("[PathTracer] Shader recompile: %s\n", compiled.shaderDiff(makeVariantKey(resources)).c_str());
     if(m_busyWindow)
       m_busyWindow->setReason("Compiling Slang shaders...");
-    compileShader(resources);
+    {
+      const ShaderWorkScope stage(ShaderWork::eCompile);
+      compileShader(resources);
+    }
     work = getPendingCompileWork(resources);
   }
 
@@ -1024,6 +1027,7 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
 
   if(work.missingPipeline)
   {
+    const ShaderWorkScope stage(ShaderWork::ePipeline);
     if(m_renderTechnique == RenderTechnique::RayQuery)
     {
       if(m_busyWindow)
@@ -1552,6 +1556,7 @@ void PathTracer::startPipelineWarm(Resources& resources)
   const VkPipelineCreateFlags flags        = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
   const VkPipelineCreateFlags rqFlags = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u;
   auto warm = [this, layout, useSER, transparency, flags, rqFlags](std::span<const uint32_t> code, const char* build, bool rayQuery) {
+    const ShaderWarmScope    warming;  // /stats says so
     const auto               start = std::chrono::steady_clock::now();
     VkShaderModuleCreateInfo moduleInfo{
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
