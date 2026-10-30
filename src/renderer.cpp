@@ -242,7 +242,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  (int*)&m_resources.settings.renderSystem, Persist::eYes, 0, 1);
   m_settings.add({"uiShowAxis", "Show Axis"}, &m_resources.settings.showAxis, Persist::eYes);
   m_settings.add({"uiShowMemStats", "Show Memory Statistics"}, &m_resources.settings.showMemStats, Persist::eYes);
-  m_settings.add({"hdrIntensity", "HDR Environment Intensity"}, &m_resources.settings.hdrEnvIntensity, Persist::eYes, 0.0F, 100.0F);
+  // what the path tracer reads of the environment: a change starts the still again, or it blends in
+  const auto restartStill = [this](const nvutils::ParameterBase* const) { resetFrame(); };
+  m_settings.add({.name = "hdrIntensity", .help = "HDR Environment Intensity", .callbackSuccess = restartStill},
+                 &m_resources.settings.hdrEnvIntensity, Persist::eYes, 0.0F, 100.0F);
   // One orientation for every environment -- OMI_environment_sky's `rotation`, in its own form. It
   // is also where north is, so like the Time of Day settings, an edit from outside the UI re-places
   // the sun after the ini restore (see m_todDrivesSun).
@@ -256,7 +259,8 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                               onEnvironmentRotated();
                             }},
                        &m_resources.settings.envRotation, Persist::eYes);
-  m_settings.add({"hdrBlur", "HDR Environment Blur"}, &m_resources.settings.hdrBlur, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({.name = "hdrBlur", .help = "HDR Environment Blur", .callbackSuccess = restartStill},
+                 &m_resources.settings.hdrBlur, Persist::eYes, 0.0F, 1.0F);
   m_settings.addVector({"silhouetteColor", "Color of the silhouette"}, &m_resources.settings.silhouetteColor, Persist::eYes);
   m_settings.add({"dbgVisualization", "Visualization Mode"}, (int*)&m_resources.settings.visualization, Persist::eYes);
   m_settings.add({"dbgWireframe", "Enable wireframe overlay"}, &m_resources.settings.wireframe, Persist::eYes);
@@ -265,8 +269,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   "(no runtime MAT_EXT_* changes; triggers shader recompile on scene/material change). Default off."},
                  &m_resources.settings.optimalShader, Persist::eYes);
   // A value rather than a trigger, so a host can turn it off again over MCP (triggers aren't exposed there).
-  m_settings.add({"useSolidBackground", "Use solid color background"}, &m_resources.settings.useSolidBackground, Persist::eYes);
-  m_settings.addVector({"solidBackgroundColor", "Solid Background Color"}, &m_resources.settings.solidBackgroundColor, Persist::eYes);
+  m_settings.add({.name = "useSolidBackground", .help = "Use solid color background", .callbackSuccess = restartStill},
+                 &m_resources.settings.useSolidBackground, Persist::eYes);
+  m_settings.addVector({.name = "solidBackgroundColor", .help = "Solid Background Color", .callbackSuccess = restartStill},
+                       &m_resources.settings.solidBackgroundColor, Persist::eYes);
   // Bounds mirror the "Max Samples" slider in PathTracer::onUIRender.
   m_settings.add({"ptMaxSamples", "Path tracer: stop accumulating at this many samples per pixel"},
                  &m_resources.settings.maxSamples, Persist::eYes, 1, 1000000);
@@ -3564,14 +3570,16 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd, bool skipBeautifiedOverla
 // applies a Sobel edge filter where the bit is set, then composites the outline onto the image.
 void GltfRenderer::silhouette(VkCommandBuffer cmd)
 {
-  // Sync with UI: when selection was cleared in the scene browser (e.g. toggle off), no event
-  // is emitted, so we clear Resources here so the silhouette does not keep drawing.
-  if(!m_sceneSelection.hasSelection())
+  // A host selects through selectEntity, which keeps the render-node set itself. Otherwise, sync with
+  // the UI: when selection was cleared in the scene browser (e.g. toggle off), no event is emitted, so
+  // we clear Resources here so the silhouette does not keep drawing.
+  const bool selected = m_resources.hostFed ? !m_resources.selectedRenderNodes.empty() : m_sceneSelection.hasSelection();
+  if(!selected)
     m_resources.selectedRenderNodes.clear();
 
   // Run the silhouette pass only when something is selected (one primitive or a node and its branch).
   // We rebuild the CPU bitmask from selectedRenderNodes, upload it, then dispatch the silhouette compute.
-  if(m_sceneSelection.hasSelection())
+  if(selected)
   {
     NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
     auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
