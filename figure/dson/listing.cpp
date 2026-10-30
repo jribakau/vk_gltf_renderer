@@ -49,7 +49,9 @@ std::vector<std::string> listFiles(const Library& library, const std::string& re
   for(const fs::path& root : library.roots())
   {
     std::error_code ec;
-    const fs::path  dir = root / fs::path(rel);
+    // library paths are UTF-8; a narrow path or string is the system's code page, and throws on a
+    // name it can't hold (MantaMade's M7UP Top has one among its morphs, and would not load)
+    const fs::path  dir = root / fs::path(std::u8string(reinterpret_cast<const char8_t*>(rel.data()), rel.size()));
     if(!fs::is_directory(dir, ec))
       continue;
     for(fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
@@ -57,9 +59,13 @@ std::vector<std::string> listFiles(const Library& library, const std::string& re
       std::error_code ec2;
       if(!it->is_regular_file(ec2))
         continue;
-      if(lower(it->path().extension().generic_string()) != wanted)
+      const auto utf8 = [](const fs::path& p) {
+        const std::u8string u = p.generic_u8string();
+        return std::string(u.begin(), u.end());
+      };
+      if(lower(utf8(it->path().extension())) != wanted)
         continue;
-      const std::string file = rel + "/" + fs::relative(it->path(), dir, ec2).generic_string();
+      const std::string file = rel + "/" + utf8(fs::relative(it->path(), dir, ec2));
       if(seen.insert(lower(file)).second)
         out.push_back(file);
     }

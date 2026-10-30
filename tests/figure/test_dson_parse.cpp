@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -12,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include <figure/dson/listing.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/io/gzip.hpp>
 
@@ -222,4 +224,29 @@ TEST(DsonParse, TheParsedCacheGivesTheDocumentBackAndMissesWhenTheFileChanged)
   EXPECT_NE(fv::dson::stampOf(src).size, s1.size);
   EXPECT_EQ(fv::dson::stampOf(src).pathHash, s1.pathHash);
   fs::remove(src);
+}
+
+// A folder listing takes any file name, in UTF-8 as library paths are: a narrow path's conversion
+// throws on Windows for a name outside the system's code page, which stopped the item loading
+TEST(DsonParse, AFolderListingTakesAnyName)
+{
+  namespace fs       = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "fv_listing_test";
+  fs::remove_all(dir);
+  fs::create_directories(dir / "Morphs");
+  const std::u8string name = u8"Reina_Xiāo.dsf";
+  std::ofstream(dir / "Morphs" / fs::path(name)).put('x');
+  std::ofstream(dir / "Morphs" / "plain.dsf").put('x');
+
+  const fv::dson::Library library({dir});
+  fv::dson::clearListings();
+  const std::vector<std::string> files = fv::dson::listFiles(library, "Morphs", ".dsf");
+  ASSERT_EQ(files.size(), 2u);
+  const std::string expected = "Morphs/" + std::string(name.begin(), name.end());
+  EXPECT_NE(std::find(files.begin(), files.end(), expected), files.end());
+  // and the library finds it by the name the listing gave
+  EXPECT_TRUE(library.find(expected).has_value());
+
+  fv::dson::clearListings();
+  fs::remove_all(dir);
 }
