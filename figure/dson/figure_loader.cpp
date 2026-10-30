@@ -237,25 +237,43 @@ mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, i
       m.positions[v * 3 + c] = float(verts->cell(v, c));
   const int np = polys->count;
   m.polyStart.assign(size_t(np) + 1, 0);
+  // what a file says is checked here, where every later reader gets it from: a row without its group
+  // and material would move the rows after it back over the buffer, and a corner is an index
   for(int pi = 0; pi < np; pi++)
-    m.polyStart[pi + 1] = m.polyStart[pi] + polys->start[pi + 1] - polys->start[pi] - 2;
+  {
+    const int cells = polys->start[pi + 1] - polys->start[pi];
+    if(cells < 2)
+      throw std::runtime_error("polygon " + std::to_string(pi) + " has no group or material");
+    m.polyStart[pi + 1] = m.polyStart[pi] + cells - 2;
+  }
   m.polyVerts.resize(m.polyStart[np]);
+  const auto vertexOf = [nv](double cell) {
+    const int32_t v = toInt32(cell);
+    if(v < 0 || v >= nv)
+      throw std::runtime_error("a polygon names vertex " + std::to_string(v) + " of " + std::to_string(nv));
+    return v;
+  };
   m.polyMaterial.resize(np);
   if(polyGroup)
     polyGroup->resize(size_t(np));
   for(int pi = 0; pi < np; pi++)
   {
     m.polyMaterial[pi] = toInt32(polys->cell(pi, 1));
+    if(m.polyMaterial[pi] < 0)
+      throw std::runtime_error("polygon " + std::to_string(pi) + " names material " + std::to_string(m.polyMaterial[pi]));
     if(polyGroup)
       (*polyGroup)[size_t(pi)] = toInt32(polys->cell(pi, 0));
     for(int k = polys->start[pi] + 2, at = m.polyStart[pi]; k < polys->start[pi + 1]; k++, at++)
-      m.polyVerts[at] = toInt32(polys->data[k]);
+      m.polyVerts[at] = vertexOf(polys->data[k]);
   }
   m.materialCount = int(materialGroups.size());
   if(uvSet)
   {
     m.uvs       = uvSet->uvs;
     m.overrides = uvSet->overrides;
+    for(size_t i = 2; i < m.overrides.size(); i += 3)
+      if(const int32_t uv = m.overrides[i]; uv < 0 || size_t(uv) * 2 + 1 >= m.uvs.size())
+        throw std::runtime_error("a polygon names UV " + std::to_string(uv) + " of " + std::to_string(m.uvs.size() / 2));
   }
   m.level    = level;
   m.boundary = getString(&geo, "edge_interpolation_mode") == "edges_and_corners" ? subdiv::BoundaryInterpolation::eEdgesAndCorners :
@@ -277,7 +295,7 @@ mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, i
       {
         lines.material[l] = toInt32(t->cell(l, 1));
         for(int k = t->start[l] + 2, at = lines.start[l]; k < t->start[l + 1]; k++, at++)
-          lines.verts[at] = toInt32(t->data[k]);
+          lines.verts[at] = vertexOf(t->data[k]);
       }
       m.lines = std::move(lines);
     }

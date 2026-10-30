@@ -1167,6 +1167,22 @@ std::string tinygltf::utils::primitiveGeometryError(const tinygltf::Model& model
   // a geograft hides whole): its zero-sized vertex or index buffer fails to allocate
   if(positions.count == 0)
     return "no vertices";
+  // every attribute has one value a vertex: readers index them all by the same vertex
+  const auto sameCount = [&](const std::map<std::string, int>& attributes) -> std::string {
+    for(const auto& [name, accessor] : attributes)
+    {
+      if(!validAccessor(accessor))
+        return name + " has an invalid accessor";
+      if(model.accessors[accessor].count != positions.count)
+        return name + " has " + std::to_string(model.accessors[accessor].count) + " values for " + std::to_string(positions.count) + " vertices";
+    }
+    return {};
+  };
+  if(std::string error = sameCount(primitive.attributes); !error.empty())
+    return error;
+  for(const auto& target : primitive.targets)
+    if(std::string error = sameCount(target); !error.empty())
+      return error;
 
   if(primitive.indices >= 0)
   {
@@ -1367,6 +1383,9 @@ void tinygltf::utils::computeTangents(std::span<const glm::vec3> positions,
     uint32_t i0 = indices[i * 3 + 0];
     uint32_t i1 = indices[i * 3 + 1];
     uint32_t i2 = indices[i * 3 + 2];
+    // indices come from files: a face past the vertices has no part in them
+    if(i0 >= numVertices || i1 >= numVertices || i2 >= numVertices)
+      continue;
 
     const FaceTangent face = faceTangent(positions, normals, uvs, i0, i1, i2);
     if(!hasNormal)

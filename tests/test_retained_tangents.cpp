@@ -49,6 +49,19 @@ using tinygltf::utils::computeTangents;
 using tinygltf::utils::tangentAdjacency;
 using tinygltf::utils::updateTangents;
 
+// A face past the vertices has no part in them, and what the others make is what they make alone
+TEST(RetainedTangents, AFacePastTheVerticesIsLeftOut)
+{
+  const std::vector<glm::vec3> positions{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+  const std::vector<glm::vec3> normals(3, glm::vec3(0, 0, 1));
+  const std::vector<glm::vec2> uvs{{0, 0}, {1, 0}, {0, 1}};
+  std::vector<glm::vec4>       alone(3), withBad(3);
+  const std::vector<uint32_t>  good{0, 1, 2}, bad{0, 1, 2, 0, 1, 0x7fffffff};
+  computeTangents(positions, normals, uvs, good, alone);
+  computeTangents(positions, normals, uvs, bad, withBad);
+  EXPECT_EQ(alone, withBad);
+}
+
 struct Mesh
 {
   std::vector<glm::vec3> positions, normals;

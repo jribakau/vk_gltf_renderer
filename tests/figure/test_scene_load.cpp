@@ -319,6 +319,70 @@ TEST(SceneLoad, TheBuiltGltfHoldsTheFiguresMeshesAndSkins)
 
 // A DAZ geometry shell (studio/node/shell) draws its source's mesh again: pushed out along the
 // normals by its push modifier, its own surfaces only where its visibility channels keep them, and
+// A mesh's tables come from a file: one that can't be right is left out, with the reason, and is never
+// read past its buffers
+TEST(SceneLoad, AMalformedMeshIsSkippedNotTrusted)
+{
+  const fs::path base = fs::temp_directory_path() / "fv-scene-malformed-test";
+  fs::remove_all(base);
+  int        tries = 0;
+  const auto loaded = [&](const std::string& polylist) {
+    const fs::path root = base / std::to_string(++tries);  // a library of its own: the same path is the same document
+    writeFile(root / "data/T/Bad/Bad.dsf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/data/T/Bad/Bad.dsf"},
+    "geometry_library":[{"id":"geometry","label":"Bad","type":"polygon_mesh",
+      "vertices":{"count":4,"values":[[0,0,0],[1,0,0],[1,1,0],[0,1,0]]},
+      "polylist":)" + polylist + R"(,
+      "polygon_groups":{"count":1,"values":["g0"]},
+      "polygon_material_groups":{"count":1,"values":["A"]}}],
+    "node_library":[{"id":"Bad","name":"Bad","type":"node"}]})");
+    writeFile(root / "Scenes/Bad.duf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/Scenes/Bad.duf"},
+    "scene":{"nodes":[{"id":"Bad","url":"/data/T/Bad/Bad.dsf#Bad","geometries":[{"id":"geometry","url":"/data/T/Bad/Bad.dsf#geometry"}]}]}})");
+    fv::dson::Store store(std::make_shared<fv::dson::Library>(std::vector<fs::path>{root}));
+    return fv::dson::loadDson(store, "Scenes/Bad.duf");
+  };
+  // the control: as written, it loads
+  {
+    const auto good = loaded(R"({"count":1,"values":[[0,0,0,1,2,3]]})");
+    EXPECT_NE(meshNamed(good, "Bad"), nullptr);
+    EXPECT_FALSE(warned(good, "Skipped"));
+  }
+  for(const char* polylist : {R"({"count":2,"values":[[],[0,0,0,1,2,3]]})",        // a row with nothing in it
+                              R"({"count":1,"values":[[0]]})",                     // a row without its material
+                              R"({"count":1,"values":[[0,0,0,1,2,99]]})",          // a corner past the vertices
+                              R"({"count":1,"values":[[0,0,0,1,2,-1]]})",          // and before them
+                              R"({"count":1,"values":[[0,-1,0,1,2,3]]})"})         // a material before the first
+  {
+    // the file's only mesh: nothing to load, and it says why
+    try
+    {
+      loaded(polylist);
+      ADD_FAILURE() << polylist << " loaded";
+    }
+    catch(const std::exception& e)
+    {
+      EXPECT_NE(std::string(e.what()).find("Bad: "), std::string::npos) << polylist << ": " << e.what();
+    }
+  }
+  fs::remove_all(base);
+}
+
+// A url is content: only what is under a root comes back, however it is spelled
+TEST(SceneLoad, ALibraryPathStaysInTheLibrary)
+{
+  const fs::path root = fs::temp_directory_path() / "fv-library-confine-test";
+  fs::remove_all(root);
+  writeFile(root / "lib/data/a.dsf", "{}");
+  writeFile(root / "outside.dsf", "{}");
+  const fv::dson::Library library(std::vector<fs::path>{root / "lib"});
+  EXPECT_TRUE(library.find("data/a.dsf"));
+  EXPECT_TRUE(library.find("data/./b/../a.dsf"));  // still inside
+  const std::string outside = (root / "outside.dsf").generic_string();
+  for(const std::string& rel : {std::string("../outside.dsf"), std::string("data/../../outside.dsf"), outside, std::string("/") + outside,
+                                std::string("\\\\127.0.0.1\\share\\x.dsf"), std::string("//127.0.0.1/share/x.dsf")})
+    EXPECT_FALSE(library.find(rel)) << rel;
+  fs::remove_all(root);
+}
+
 // moved by every morph of the source
 TEST(SceneLoad, AGeometryShellDrawsItsSourceAgainPushedOutWithoutItsHiddenSurfaces)
 {

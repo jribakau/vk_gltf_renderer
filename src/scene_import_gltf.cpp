@@ -423,6 +423,25 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     return out.materials[size_t(index)];
   };
 
+  // A primitive to draw: well formed, and every index a vertex (the type checks don't read the values,
+  // which go on to BLAS builds and shaders). Read once each, as the indices can be many.
+  std::map<const tinygltf::Primitive*, bool> drawable;
+  const auto                                 draws = [&](const tinygltf::Mesh& mesh, const tinygltf::Primitive& p) {
+    const auto [known, fresh] = drawable.try_emplace(&p, false);
+    if(!fresh)
+      return known->second;
+    if(!tinygltf::utils::primitiveGeometryError(model, p).empty())
+      return false;
+    const uint32_t vertices = uint32_t(tinygltf::utils::getVertexCount(model, p));
+    bool           inRange  = true;
+    if(p.indices >= 0)
+      for(uint32_t index : primitiveIndices(model, p))
+        inRange = inRange && index < vertices;
+    if(!inRange)
+      notice("mesh '" + mesh.name + "': a primitive has indices past its " + std::to_string(vertices) + " vertices; left out");
+    return known->second = inRange;
+  };
+
   // ---- tangents for the vertex sets whose materials need them, made as nvvkgltf::Scene makes
   // them: one set of tangents per attribute key, over the triangles of every primitive that needs
   // them (across meshes that share the accessors), the material chosen as it chooses it
@@ -436,7 +455,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
       const int matId = p.material >= 0 && p.material < int(model.materials.size()) ? p.material : 0;
       if(matId >= int(model.materials.size()) || !needsTangents[size_t(matId)])
         continue;
-      if(p.attributes.count("TANGENT") || !tinygltf::utils::primitiveGeometryError(model, p).empty())
+      if(p.attributes.count("TANGENT") || !draws(mesh, p))
         continue;
       const std::vector<uint32_t> own = primitiveIndices(model, p);
       auto&                       all = tangentIndices[attributeKey(p)];
@@ -469,7 +488,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     {
       const tinygltf::Primitive& p = mesh.primitives[pi];
       // (the mode is not read: nvvkgltf::Scene draws every primitive as triangles, and so does this)
-      if(!tinygltf::utils::primitiveGeometryError(model, p).empty())
+      if(!draws(mesh, p))
         continue;
       const std::string key = attributeKey(p);
       auto [it, fresh]      = partOfKey.try_emplace(key, records.size());

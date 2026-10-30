@@ -256,6 +256,35 @@ TEST(RetainedImport, DrawsWhatTheLegacySceneDraws)
   expectParity(fixture(), "fixture");
 }
 
+// Indices are read for their values: one past the vertices leaves its primitive out, with a notice, and
+// an attribute with too few values is left out as malformed
+TEST(RetainedImport, APrimitiveNamingVerticesItDoesntHaveIsLeftOut)
+{
+  const auto indexAt = [](tinygltf::Model& model, const tinygltf::Primitive& p) -> unsigned char* {
+    const tinygltf::Accessor&   a = model.accessors[size_t(p.indices)];
+    const tinygltf::BufferView& v = model.bufferViews[size_t(a.bufferView)];
+    return model.buffers[size_t(v.buffer)].data.data() + v.byteOffset + a.byteOffset;
+  };
+  // the fixture's first mesh draws two groups; the bad one's triangles go, the other's stay
+  tinygltf::Model model = fixture();
+  const tinygltf::Primitive& first = model.meshes[0].primitives[0];
+  const size_t               size  = tinygltf::GetComponentSizeInBytes(model.accessors[size_t(first.indices)].componentType);
+  std::fill_n(indexAt(model, first), size, static_cast<unsigned char>(0xFF));
+  rs::RetainedScene      scene;
+  const rs::ImportResult r = rs::importGltf(scene, model, {.prop = 3});
+  ASSERT_EQ(r.meshes[0].size(), 1u);
+  EXPECT_EQ(scene.mesh(r.meshes[0][0])->submeshes.size(), 1u);
+  EXPECT_TRUE(std::any_of(r.notices.begin(), r.notices.end(), [](const std::string& n) { return n.find("past its") != std::string::npos; }));
+
+  // an attribute short of the vertices
+  tinygltf::Model   shortOne = fixture();
+  const tinygltf::Primitive& piece = shortOne.meshes[0].primitives[0];
+  const auto        normal   = piece.attributes.find("NORMAL");
+  ASSERT_NE(normal, piece.attributes.end());
+  shortOne.accessors[size_t(normal->second)].count = 1;
+  EXPECT_NE(tinygltf::utils::primitiveGeometryError(shortOne, piece).find("NORMAL has 1 values"), std::string::npos);
+}
+
 TEST(RetainedImport, KeepsWhatItDrawsAndLetsTheRestGo)
 {
   rs::RetainedScene      scene;

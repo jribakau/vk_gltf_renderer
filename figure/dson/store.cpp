@@ -271,6 +271,12 @@ std::optional<std::filesystem::path> Library::find(std::string_view rel) const
   std::error_code ec;
   // library paths are UTF-8 with forward slashes
   const std::filesystem::path relPath(std::u8string(reinterpret_cast<const char8_t*>(rel.data()), rel.size()));
+  // A file's url is content: joined to a root, an absolute path would replace the root (a UNC one
+  // contacts its server the moment it is looked at), and .. climbs out of it
+  if(relPath.has_root_name() || relPath.has_root_directory())
+    return std::nullopt;
+  if(const std::filesystem::path normal = relPath.lexically_normal(); !normal.empty() && *normal.begin() == "..")
+    return std::nullopt;
   for(const auto& root : m_roots)
   {
     const auto p = root / relPath;
