@@ -541,6 +541,7 @@ struct FvHost::Impl
   std::set<std::string>                                morphFigures;  // the figures morph.set may name
   std::map<std::string, std::map<std::string, double>> pendingMorphs;
   std::map<std::string, Json>                          pendingGestures;  // the latest `gesture` sent with them
+  std::map<std::pair<std::string, std::string>, Json>  pendingTight;     // wardrobe.tight's latest, by prop and item
   // frames until the camera frames the scene (0: none pending)
   int frameIn = 0;
   // the gizmo's latest drag on a bone: the rig takes it once a frame, however many events came

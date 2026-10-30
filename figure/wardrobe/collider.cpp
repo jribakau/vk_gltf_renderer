@@ -22,6 +22,13 @@ constexpr auto kDebounce = 120ms;
 // taken as pushed through the surface it is closest to (deeper is the other side of a limb).
 constexpr float kMargin = 0.25f;
 constexpr float kDepth  = 3.f;
+// The clearance an item comes to at skin tight: half a millimetre shows as fabric on the skin, where
+// the 2.5 above shows as a gap close up.
+constexpr float kTightMargin = 0.05f;
+// How far off the skin a second pull still reaches: what the first left near it after smoothing, and
+// not what it left part of the way on purpose, fading out towards a free hem.
+constexpr float kTightSecondReach = 1.5f;
+constexpr float kTightReach       = 6.f;
 // A correction below this (centimetres) is not worth a morph.
 constexpr float kMinMove = 1e-3f;
 
@@ -79,6 +86,8 @@ struct Collider::Job
   std::vector<float>    body;
   std::vector<uint32_t> bodyTris;
   std::vector<int16_t>  bodyLimbs;
+  // its rest shape, to order the items by how far from it each lies
+  std::vector<float> bodyRest;
   // the items inside out: each is pushed out of the body and of the items before it
   struct Item
   {
@@ -87,6 +96,7 @@ struct Collider::Job
     double                clearance = 0;  // from the body at rest, cm; the layer order
     int                   worn      = 0;  // its place in the order worn, for ties
     std::vector<float>    posed;          // in the root's space
+    std::vector<float>    restInSpace;    // its rest shape there, for its clearance
     std::vector<uint32_t> tris;
     std::vector<int16_t>  limbs;
     // for the write-back: the rest cage, its skin and pose in the mesh's space, and the way back there
@@ -132,6 +142,20 @@ void Collider::poke()
     m_version++;
   m_scheduled = true;
   m_due       = std::chrono::steady_clock::now() + kDebounce;
+}
+
+void Collider::pokeNow()
+{
+  m_gen++;
+  if(!m_enabled)
+    return;
+  // an earlier due time stands: a drag doesn't put it off
+  if(!m_scheduled)
+  {
+    m_version++;
+    m_due = std::chrono::steady_clock::now();
+  }
+  m_scheduled = true;
 }
 
 void Collider::setEnabled(bool on)
@@ -188,8 +212,7 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
   job->body           = dforce::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, bodyRest, nullptr, nullptr));
   job->bodyTris       = body.geo->dsonTris;
   job->bodyLimbs      = meshLimbs(m_scene, body);
-  // the body's rest shape in the root's space, to order the items by how far from it each lies
-  const auto bodyRestInSpace = dforce::transformPoints(toSpace(m_bodyMesh), bodyRest);
+  job->bodyRest       = dforce::transformPoints(toSpace(m_bodyMesh), bodyRest);
 
   std::vector<int> order;
   if(wornOrder)
@@ -220,18 +243,12 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     item.tris      = m.geo->dsonTris;
     item.limbs     = meshLimbs(m_scene, m);
     item.back      = inverse(to);
-    item.clearance = restClearance(bodyRestInSpace, job->bodyTris, dforce::transformPoints(to, item.rest));
-    item.worn      = placeWorn(mesh);
+    item.restInSpace = dforce::transformPoints(to, item.rest);
+    item.worn        = placeWorn(mesh);
     job->items.push_back(std::move(item));
   }
   if(job->items.empty())
     return nullptr;
-  // inside out: closer to the skin first; two within a millimetre in the order worn
-  std::stable_sort(job->items.begin(), job->items.end(), [](const Job::Item& a, const Job::Item& b) {
-    if(std::fabs(a.clearance - b.clearance) > 0.1)
-      return a.clearance < b.clearance;
-    return a.worn < b.worn;
-  });
   return job;
 }
 
@@ -276,6 +293,14 @@ bool Collider::pump()
   }
   m_snapshot = job;
   m_job      = jobs::pool().submit([job] {
+    // inside out: closer to the skin first; two within a millimetre in the order worn
+    for(Job::Item& item : job->items)
+      item.clearance = restClearance(job->bodyRest, job->bodyTris, item.restInSpace);
+    std::stable_sort(job->items.begin(), job->items.end(), [](const Job::Item& a, const Job::Item& b) {
+      if(std::fabs(a.clearance - b.clearance) > 0.1)
+        return a.clearance < b.clearance;
+      return a.worn < b.worn;
+    });
     std::vector<std::vector<float>> out;
     // what lies under the item being pushed: the body, then every item pushed before it
     std::vector<float>    under      = job->body;
@@ -288,15 +313,24 @@ bool Collider::pump()
       const auto         filter = limbFilter(underLimbs, item.limbs);
       const int          passes = std::clamp(item.settings.collision, 1, 8);
       const int          smooth = std::clamp(item.settings.smoothing, 1, 8);
-      if(item.settings.tight > 0)
+      const float        tight  = std::clamp(item.settings.tight, 0.f, 1.f);
+      const float        margin = kMargin + (kTightMargin - kMargin) * tight;
+      if(tight > 0)
       {
-        const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, positions, {}, filter ? &*filter : nullptr);
-        positions = smoothCorrection(positions, pullIn(positions, surface, binding, kMargin, std::min(item.settings.tight, 1.f)), item.tris, smooth);
+        // all the way on, then back as far as the amount says, so the slider is even along its length
+        std::vector<float> pulled = positions;
+        for(const float reach : {kTightReach, kTightSecondReach})
+        {
+          const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, pulled, {}, filter ? &*filter : nullptr);
+          pulled = smoothCorrection(pulled, pullIn(pulled, surface, binding, kTightMargin, 1.f, reach), item.tris, smooth);
+        }
+        for(size_t i = 0; i < positions.size(); i++)
+          positions[i] += (pulled[i] - positions[i]) * tight;
       }
       for(int pass = 0; pass < passes; pass++)
       {
         const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, positions, {}, filter ? &*filter : nullptr);
-        std::vector<float>   pushed  = pushOut(positions, surface, binding, kMargin, kDepth);
+        std::vector<float>   pushed  = pushOut(positions, surface, binding, margin, kDepth);
         if(std::equal(pushed.begin(), pushed.end(), positions.begin()))
           break;
         positions = smoothCorrection(positions, pushed, item.tris, smooth);

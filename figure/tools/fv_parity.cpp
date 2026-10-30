@@ -56,6 +56,7 @@
 #include <figure/io/timing.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
+#include <figure/wardrobe/collider.hpp>
 #include <figure/wardrobe/fit/collide.hpp>
 
 #include "fv_figure_feed.hpp"
@@ -250,6 +251,152 @@ std::vector<double> stretchRatios(const fv::dforce::ClothModel& model, size_t sl
   }
   std::sort(ratio.begin(), ratio.end());
   return ratio;
+}
+
+// How many vertices lie behind the body's closest face (pushOut's rule, within 3 cm), and how deep.
+Json insideReport(std::span<const float> body, std::span<const uint32_t> bodyTris, std::span<const float> item)
+{
+  const fv::wardrobe::Surface        surface{body, bodyTris};
+  const fv::wardrobe::SurfaceBinding binding = fv::wardrobe::bindToSurface(body, bodyTris, item);
+  const std::vector<float>           pushed  = fv::wardrobe::pushOut(item, surface, binding, 0.f, 3.f);
+  std::vector<double>                depth;
+  for(size_t k = 0; k + 2 < item.size(); k += 3)
+    if(pushed[k] != item[k] || pushed[k + 1] != item[k + 1] || pushed[k + 2] != item[k + 2])
+      depth.push_back(std::hypot(pushed[k] - item[k], pushed[k + 1] - item[k + 1], pushed[k + 2] - item[k + 2]));
+  std::sort(depth.begin(), depth.end());
+  return {{"vertices", item.size() / 3}, {"count", depth.size()}, {"p50", depth.empty() ? 0.0 : r(depth[depth.size() / 2])}, {"max", depth.empty() ? 0.0 : r(depth.back())}};
+}
+
+// How far each cage vertex of a mesh stands from the closest body point: the percentiles and the
+// counts past a few distances, over the whole mesh and over its open edges (hems).
+Json standoffReport(std::span<const float> body, std::span<const uint32_t> bodyTris, std::span<const float> item, std::span<const uint32_t> tris)
+{
+  const fv::wardrobe::SurfaceBinding binding = fv::wardrobe::bindToSurface(body, bodyTris, item);
+  const size_t                       n       = item.size() / 3;
+  std::vector<double>                dist(n, 0);
+  for(size_t v = 0; v < n; v++)
+  {
+    const size_t k = v * 3;
+    double       d2 = 0;
+    for(size_t c = 0; c < 3; c++)
+    {
+      const double s = double(body[size_t(binding.verts[k]) * 3 + c]) * binding.weights[k] + double(body[size_t(binding.verts[k + 1]) * 3 + c]) * binding.weights[k + 1]
+                       + double(body[size_t(binding.verts[k + 2]) * 3 + c]) * binding.weights[k + 2];
+      d2 += (item[k + c] - s) * (item[k + c] - s);
+    }
+    dist[v] = std::sqrt(d2);
+  }
+  std::map<std::pair<uint32_t, uint32_t>, int> edges;
+  for(size_t t = 0; t + 2 < tris.size(); t += 3)
+    for(int e = 0; e < 3; e++)
+    {
+      const uint32_t a = tris[t + size_t(e)], b = tris[t + size_t(e + 1) % 3];
+      edges[{std::min(a, b), std::max(a, b)}]++;
+    }
+  std::vector<bool> hem(n, false);
+  for(const auto& [edge, count] : edges)
+    if(count == 1)
+      hem[edge.first] = hem[edge.second] = true;
+  const auto stats = [&](bool hemOnly) {
+    std::vector<double> s;
+    for(size_t v = 0; v < n; v++)
+      if(!hemOnly || hem[v])
+        s.push_back(dist[v]);
+    std::sort(s.begin(), s.end());
+    const auto pct  = [&](double q) { return s.empty() ? 0.0 : r(s[size_t(q * double(s.size() - 1))]); };
+    const auto over = [&](double d) { return std::count_if(s.begin(), s.end(), [d](double x) { return x > d; }); };
+    return Json{{"vertices", s.size()}, {"p50", pct(0.5)}, {"p90", pct(0.9)}, {"p99", pct(0.99)}, {"max", pct(1)},
+                {"over0.1", over(0.1)}, {"over0.5", over(0.5)}, {"over1", over(1)}, {"over2", over(2)}, {"over6", over(6)}};
+  };
+  // where the farthest of the fabric within a hand's width is: what still shows as a gap
+  std::vector<size_t> order;
+  for(size_t v = 0; v < n; v++)
+    if(dist[v] > 0.5 && dist[v] < 8)
+      order.push_back(v);
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return dist[a] > dist[b]; });
+  Json far = Json::array();
+  for(size_t i = 0; i < order.size() && i < 12; i++)
+    far.push_back({{"v", order[i]}, {"d", r(dist[order[i]])}, {"hem", bool(hem[order[i]])}, {"at", {r(item[order[i] * 3]), r(item[order[i] * 3 + 1]), r(item[order[i] * 3 + 2])}}});
+  return {{"all", stats(false)}, {"hem", stats(true)}, {"farthest", far}, {"inside", insideReport(body, bodyTris, item)}};
+}
+
+// Skin tight on the worn items whose label holds `what`, through the real collider: the standoff of
+// each of their meshes before and after, and how long a pass took on the owning thread and in all.
+Json tightReport(fv::Figure& fig, const std::string& what, float amount)
+{
+  const int body = fig.loaded.morphs.meshes[fig.loaded.morphs.mainMeshes[0]].mesh;
+  fv::wardrobe::Collider collider(fig.loaded.scene, *fig.morphs, body, fig.loaded.root);
+  collider.dazSkinning = true;
+  collider.settings = [&fig] {
+    std::map<int, fv::dson::Smoothing> all;
+    for(const fv::WornItem& w : fig.items)
+      if(w.visible)
+        for(auto [mesh, smoothing] : w.collision)
+        {
+          smoothing.tight = w.tight;
+          all.emplace(mesh, smoothing);
+        }
+    return all;
+  };
+  const auto pass = [&] {
+    collider.poke();
+    double     owner = 0;
+    const auto start = std::chrono::steady_clock::now();
+    while(collider.busy())
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      collider.pump();
+      owner += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    fig.settle();
+    return Json{{"ownerMs", r(owner)}, {"allMs", r(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count())}};
+  };
+  const std::vector<uint32_t>& bodyTris = fig.loaded.scene.meshes[size_t(body)].geo->dsonTris;
+  Json                         report   = Json::object();
+  report["passBefore"]                  = pass();
+  std::vector<int> meshes;
+  for(const fv::WornItem& w : fig.items)
+    if(w.label.find(what) != std::string::npos)
+    {
+      for(const auto& [mesh, smoothing] : w.collision)
+        meshes.push_back(mesh);
+      report["items"].push_back({{"label", w.label}, {"meshes", w.meshes}, {"collision", w.collision.size()}});
+    }
+  if(meshes.empty())
+    throw std::runtime_error("no worn item with collision matches \"" + what + "\"");
+  // as the collider sees them: the cage skinned to the pose, in the figure's space
+  const auto posedCage = [&](int mesh) {
+    const fv::SceneGraph& scene  = fig.loaded.scene;
+    const auto            worlds = scene.worlds();
+    const auto            nodeOf = fv::dforce::nodeOfMesh(scene);
+    const fv::Mat4        to     = fv::inverse(worlds[size_t(fig.loaded.root)]) * worlds[size_t(nodeOf[size_t(mesh)])];
+    const auto            rest   = fig.morphs->morphedCage(mesh);
+    const fv::Mesh&       m      = scene.meshes[size_t(mesh)];
+    if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
+      return fv::dforce::transformPoints(to, rest);
+    return fv::dforce::transformPoints(to, fv::dforce::skinLocal(rest, fv::dforce::cageSkin(m.cageSkin, true), fv::dforce::currentSkin(scene, worlds, nodeOf, mesh)));
+  };
+  const auto measure = [&](const char* name) {
+    const auto bodyNow = posedCage(body);
+    for(int mesh : meshes)
+      report[name][std::to_string(mesh)] = standoffReport(bodyNow, bodyTris, posedCage(mesh), fig.loaded.scene.meshes[size_t(mesh)].geo->dsonTris);
+  };
+  // the drawn vertices, subdivided, unposed: what shows through at the rest pose
+  const auto drawn = [&](const char* name) {
+    const fv::mesh::BuiltMesh& b = *fig.loaded.scene.meshes[size_t(body)].geo;
+    for(int mesh : meshes)
+      report[name][std::to_string(mesh)] = insideReport(b.position, b.fullIndex, fig.loaded.scene.meshes[size_t(mesh)].geo->position);
+  };
+  measure("before");
+  drawn("drawnBefore");
+  for(const fv::WornItem& w : fig.items)
+    if(w.label.find(what) != std::string::npos)
+      fig.setItemTight(w.id, amount);
+  report["passAfter"] = pass();
+  measure("after");
+  drawn("drawnAfter");
+  return report;
 }
 
 // How a simulated mesh came out, for a run to be judged without a viewport. `out` is the slot's
@@ -568,6 +715,15 @@ int main(int argc, char** argv)
           }
         if(!found)
           throw std::runtime_error("no worn item matches \"" + what + "\"");
+      }
+      else if(step.contains("tight"))
+      {
+        // {"tight": {"item": label substring, "amount": 1, "dump": name}}: the wardrobe collider's skin
+        // tight on one worn item, with how far its cage stood from the body before and after
+        if(!loaded)
+          throw std::runtime_error("tight before a figure loads");
+        const Json& t = step["tight"];
+        dumps[t.value("dump", std::string("tight"))] = tightReport(*loaded, t.value("item", ""), t.value("amount", 1.f));
       }
       else if(step.contains("fit"))
       {

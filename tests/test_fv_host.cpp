@@ -858,7 +858,14 @@ TEST(FvHost, HowTightAnItemIsGoesWithIt)
   EXPECT_DOUBLE_EQ(tight(), 0.0);
   EXPECT_FALSE(rig.cmd("scene.state", {{"prop", id}}).at("result").at("worn")[0].contains("tight"));
 
-  ASSERT_TRUE(rig.cmd("wardrobe.tight", {{"prop", id}, {"item", item}, {"amount", 0.75}}).value("ok", false));
+  // a drag: answered at once, the latest applies in the frame, all of it one step of the history
+  const Json gesture = {{"id", 7}};
+  ASSERT_TRUE(rig.cmd("wardrobe.tight", {{"prop", id}, {"item", item}, {"amount", 0.25}, {"gesture", gesture}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("wardrobe.tight", {{"prop", id}, {"item", item}, {"amount", 0.5}, {"gesture", gesture}}).value("ok", false));
+  rig.host->onUpdate();
+  EXPECT_DOUBLE_EQ(tight(), 0.5);
+  ASSERT_TRUE(rig.cmd("wardrobe.tight", {{"prop", id}, {"item", item}, {"amount", 0.75}, {"gesture", gesture}}).value("ok", false));
+  rig.host->onUpdate();
   EXPECT_DOUBLE_EQ(tight(), 0.75);
   EXPECT_EQ(rig.topic("history").at("undo")[0], "Skin tight: Box Shirt");
   historyStep(rig, "history.undo");

@@ -747,7 +747,7 @@ Json FvHost::Impl::wardrobeTight(const Json& args)
   if(!figure->fig->setItemTight(itemId(args), args.at("amount").get<float>()))
     throw std::runtime_error("no such item");
   if(figure->collider)
-    figure->collider->poke();
+    figure->collider->pokeNow();
   publishWardrobe(*figure);
   return {{"ok", true}};
 }

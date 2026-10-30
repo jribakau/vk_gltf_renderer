@@ -127,13 +127,27 @@ TEST(Collider, pullsATightGarmentOntoTheBody)
   EXPECT_NEAR(minY(geo), 2.f, 1e-4f);
   ASSERT_TRUE(pass(1));
   morphs.flush();
-  EXPECT_NEAR(minY(geo), 0.25f, 0.02f);
+  EXPECT_NEAR(minY(geo), 0.05f, 0.02f);
   ASSERT_TRUE(pass(0.5f));
   morphs.flush();
-  EXPECT_NEAR(minY(geo), 1.125f, 0.02f);
+  EXPECT_NEAR(minY(geo), 1.025f, 0.02f);
   ASSERT_TRUE(pass(0));
   morphs.flush();
   EXPECT_NEAR(minY(geo), 2.f, 1e-3f);
+
+  // a garment already at the ordinary clearance still comes down onto the skin
+  r.scene.meshes[1] = sceneMesh(grid(4, 0.25f), r.bone);
+  morph::MorphSet    closeMorphs([&](int m) { return r.scene.meshes[size_t(m)].geo.get(); });
+  wardrobe::Collider close(r.scene, closeMorphs, 0, r.root);
+  close.settings = [] {
+    dson::Smoothing s;
+    s.tight = 1;
+    return std::map<int, dson::Smoothing>{{1, s}};
+  };
+  close.poke();
+  ASSERT_TRUE(pumpUntilWritten(close));
+  closeMorphs.flush();
+  EXPECT_NEAR(minY(*r.scene.meshes[1].geo), 0.05f, 0.02f);
 
   // a hem hanging free, past the reach
   Rig far;
@@ -153,6 +167,47 @@ TEST(Collider, pullsATightGarmentOntoTheBody)
   }
   farMorphs.flush();
   EXPECT_NEAR(minY(*far.scene.meshes[1].geo), 10.f, 1e-3f);
+}
+
+// A drag on skin tight fits as it goes: steps closer together than the pause a pose waits for still
+// get passes.
+TEST(Collider, aDraggedEditDoesNotWaitForAPause)
+{
+  Rig r;
+  r.scene.meshes[1] = sceneMesh(grid(4, 2), r.bone);
+  morph::MorphSet    morphs([&](int m) { return r.scene.meshes[size_t(m)].geo.get(); });
+  float              tight = 0.5f;
+  wardrobe::Collider c(r.scene, morphs, 0, r.root);
+  c.settings = [&] {
+    dson::Smoothing s;
+    s.tight = tight;
+    return std::map<int, dson::Smoothing>{{1, s}};
+  };
+  bool wrote = false;
+  for(int i = 0; i < 2000 && !wrote; i++)
+  {
+    // sooner than the 120 ms a pose's edit waits for, every time
+    if(i % 10 == 0)
+      c.pokeNow();
+    wrote = c.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(wrote);
+
+  // the same steps as ordinary pokes wait until they stop
+  Rig o;
+  o.scene.meshes[1] = sceneMesh(grid(4, 2), o.bone);
+  morph::MorphSet    otherMorphs([&](int m) { return o.scene.meshes[size_t(m)].geo.get(); });
+  wardrobe::Collider other(o.scene, otherMorphs, 0, o.root);
+  other.settings = c.settings;
+  bool early = false;
+  for(int i = 0; i < 30; i++)
+  {
+    other.poke();
+    early = other.pump() || early;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_FALSE(early);
 }
 
 TEST(Collider, pushesAGarmentOutOfTheBodyAndClearsItWhenTurnedOff)

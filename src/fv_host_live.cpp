@@ -81,10 +81,24 @@ void FvHost::Impl::applyPendingMorphs()
 {
   std::map<std::string, std::map<std::string, double>> pending;
   std::map<std::string, Json>                          gestures;
+  std::map<std::pair<std::string, std::string>, Json>  tight;
   {
     std::lock_guard lock(morphMutex);
     pending.swap(pendingMorphs);
     gestures.swap(pendingGestures);
+    tight.swap(pendingTight);
+  }
+  for(const auto& [key, args] : tight)
+  {
+    // the item may have been taken off since
+    try
+    {
+      edit("wardrobe.tight", args);
+    }
+    catch(const std::exception& e)
+    {
+      LOGW("[fv] wardrobe.tight: %s\n", e.what());
+    }
   }
   for(const auto& [id, dials] : pending)
   {

@@ -150,7 +150,16 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.visible", args); }); });
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
-  cmds.add("wardrobe.tight", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.tight", args); }); });
+  // answered at once, as morph.set: a slider sends faster than a path traced frame ends, and the steps
+  // would queue behind each other. The latest for an item applies in onUpdate
+  cmds.add("wardrobe.tight", [impl](const Json& args) {
+    std::lock_guard lock(impl->morphMutex);
+    const std::string prop = args.value("prop", "");
+    if(!impl->morphFigures.count(prop))
+      throw std::runtime_error("no such figure");
+    impl->pendingTight[{prop, args.at("item").dump()}] = args;
+    return Json{{"ok", true}};
+  });
   cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("dforce.enable", args); }); });
   cmds.add("dforce.mode", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("dforce.mode", args); }); });
   cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
@@ -460,6 +469,7 @@ void FvHost::onDetach()
     std::lock_guard morphLock(s.morphMutex);
     s.morphFigures.clear();
     s.pendingMorphs.clear();
+    s.pendingTight.clear();
   }
 }
 

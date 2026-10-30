@@ -16,8 +16,9 @@
 // deltas whose skinning gives the pushed shape; the renderer sees it as any other morph, and
 // turning collision off clears it.
 //
-// An item the user made tighter (dson::Smoothing::tight) is first pulled toward that clearance, so it
-// follows the pose and layers over what is under it as the push does.
+// An item the user made tighter (dson::Smoothing::tight) is first pulled toward the skin, and its
+// clearance comes down with the amount, from what's above to half a millimetre, so it follows the pose
+// and layers over what is under it as the push does.
 //
 // A mesh dForce drapes is left alone (the simulation collides it); the body itself is never moved.
 // Each item's settings come from its file's smoothing modifier when it carries one, else from the
@@ -77,6 +78,9 @@ public:
   void changed(const std::vector<int>& meshes, bool nodesMoved);
   // Schedules a pass (an item worn or taken off, its settings changed).
   void poke();
+  // The same for an edit being dragged, where the fit is what's being watched: a pass as soon as the
+  // one in hand ends, not after a pause in the drag.
+  void pokeNow();
   // Weight 1 pushes the items out, weight 0 shows them as they conform. Turning it on runs a pass.
   void setEnabled(bool on);
 
