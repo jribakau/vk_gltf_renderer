@@ -59,6 +59,7 @@ inline int NonUniformResourceIndex(int i)
   return i;
 }
 #include "../../shaders/gltf_material_eval.h.slang"
+#include "../../shaders/openpbr/fv_openpbr.h.slang"
 
 #include "closure_probe.hpp"
 
@@ -124,6 +125,44 @@ std::vector<ClosureAt> probeClosureBytes(const void* rowBytes, size_t rowSize, c
   std::vector<ClosureAt> out;
   for(const float cosine : options.cosines)
   {
+    if(options.openPbr)
+    {
+      ClosureAt at;
+      at.cosine                           = cosine;
+      const vec3                 V        = vec3(std::sqrt(std::max(0.0f, 1.0f - cosine * cosine)), 0.0f, cosine);
+      const OpenPBR_PreparedBsdf prepared = fvOpenPbrPrepare(mat, V);
+      std::mt19937                          rng(41);
+      std::uniform_real_distribution<float> u(0.0f, 1.0f);
+      dvec3                                 carried[LOBE_COUNT] = {};
+      int                                   drawn[LOBE_COUNT]   = {};
+      for(int i = 0; i < options.samples; i++)
+      {
+        BsdfSampleData s;
+        s.k1 = V;
+        s.xi = vec3(u(rng), u(rng), u(rng));
+        fvOpenPbrSample(s, prepared, mat);
+        const int lobe = s.event_type == BSDF_EVENT_DIFFUSE_REFLECTION   ? LOBE_DIFFUSE_REFLECTION :
+                         s.event_type == BSDF_EVENT_DIFFUSE_TRANSMISSION ? LOBE_DIFFUSE_TRANSMISSION :
+                         s.event_type == BSDF_EVENT_GLOSSY_REFLECTION    ? LOBE_SPECULAR_REFLECTION :
+                         s.event_type == BSDF_EVENT_GLOSSY_TRANSMISSION  ? LOBE_SPECULAR_TRANSMISSION :
+                                                                           -1;
+        if(lobe < 0)
+          continue;
+        carried[lobe] += dvec3(s.bsdf_over_pdf);
+        drawn[lobe]++;
+      }
+      for(int lobe = 0; lobe < LOBE_COUNT; lobe++)
+      {
+        at.lobes[lobe].weight = float(drawn[lobe]) / float(options.samples);
+        for(int c = 0; drawn[lobe] > 0 && c < 3; c++)
+        {
+          at.lobes[lobe].albedo[c] = float(carried[lobe][c] / drawn[lobe]);
+          at.total[c] += float(carried[lobe][c] / options.samples);
+        }
+      }
+      out.push_back(at);
+      continue;
+    }
     ClosureAt at;
     at.cosine     = cosine;
     const vec3 k1 = vec3(std::sqrt(std::max(0.0f, 1.0f - cosine * cosine)), 0.0f, cosine);

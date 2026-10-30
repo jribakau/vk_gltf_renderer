@@ -37,6 +37,7 @@ inline float max(float a, double b) { return glm::max(a, float(b)); }
 }  // namespace shaderio
 using namespace shaderio;
 #include <nvshaders/bsdf_functions.h.slang>
+#include "../shaders/openpbr/fv_openpbr.h.slang"
 
 namespace {
 
@@ -514,10 +515,12 @@ struct SamplingFit
   double missing  = 0.0;
 };
 
-// bsdfSample's directions against the pdf bsdfEvaluateAll reports: samples binned over the sphere,
-// each bin's expected count from the pdf integrated over it. Bins expecting few samples are pooled.
-// The grid's poles are on the Y axis, away from the views used, where lobes would fall inside one bin.
-SamplingFit samplingFit(const PbrMaterial& mat, const vec3& k1, int N = 1000000)
+// A sampler's directions against the pdf it reports: samples binned over the sphere, each bin's
+// expected count from the pdf integrated over it. Bins expecting few samples are pooled. The grid's
+// poles are on the Y axis, away from the views used, where lobes would fall inside one bin.
+// `pdfOf(k2)` is the density, `draw(xi, k2)` a sample, false for none.
+template <class PdfOf, class Draw>
+SamplingFit samplingFit(const PdfOf& pdfOf, const Draw& draw, int N = 1000000)
 {
   const int  kTheta = 24, kPhi = 48, kSub = 8;
   const auto cell   = [&](const vec3& d) {
@@ -538,12 +541,7 @@ SamplingFit samplingFit(const PbrMaterial& mat, const vec3& k1, int N = 1000000)
           const float y   = ((t + (a + 0.5f) / kSub) / kTheta) * 2.0f - 1.0f;
           const float phi = ((p + (b + 0.5f) / kSub) / kPhi - 0.5f) * 6.2831853f;
           const float r   = std::sqrt(std::max(0.0f, 1.0f - y * y));
-          BsdfEvaluateData e;
-          e.k1 = k1;
-          e.k2 = vec3(r * std::cos(phi), y, r * std::sin(phi));
-          e.xi = vec3(0.5f);
-          bsdfEvaluateAll(e, mat);
-          integral += e.pdf;
+          integral += pdfOf(vec3(r * std::cos(phi), y, r * std::sin(phi)));
         }
       // equal-area cells: y and phi are uniform over the sphere
       expected[size_t(t * kPhi + p)] = integral * (4.0 * 3.14159265358979 / (kTheta * kPhi * kSub * kSub)) * N;
@@ -554,14 +552,11 @@ SamplingFit samplingFit(const PbrMaterial& mat, const vec3& k1, int N = 1000000)
   double                                absorb = 0.0;
   for(int i = 0; i < N; i++)
   {
-    BsdfSampleData s;
-    s.k1 = k1;
-    s.xi = vec3(u(rng), u(rng), u(rng));
-    bsdfSample(s, mat);
-    if(s.event_type == BSDF_EVENT_ABSORB)
-      absorb += 1.0;
+    vec3 k2(0.0f);
+    if(draw(vec3(u(rng), u(rng), u(rng)), k2))
+      observed[size_t(cell(k2))] += 1.0;
     else
-      observed[size_t(cell(s.k2))] += 1.0;
+      absorb += 1.0;
   }
 
   SamplingFit fit;
@@ -587,6 +582,29 @@ SamplingFit samplingFit(const PbrMaterial& mat, const vec3& k1, int N = 1000000)
   fit.absorbed = absorb / N;
   fit.missing  = 1.0 - total / N;
   return fit;
+}
+
+// bsdfSample against bsdfEvaluateAll
+SamplingFit samplingFit(const PbrMaterial& mat, const vec3& k1, int N = 1000000)
+{
+  return samplingFit(
+      [&](const vec3& k2) {
+        BsdfEvaluateData e;
+        e.k1 = k1;
+        e.k2 = k2;
+        e.xi = vec3(0.5f);
+        bsdfEvaluateAll(e, mat);
+        return e.pdf;
+      },
+      [&](const vec3& xi, vec3& k2) {
+        BsdfSampleData s;
+        s.k1 = k1;
+        s.xi = xi;
+        bsdfSample(s, mat);
+        k2 = s.k2;
+        return s.event_type != BSDF_EVENT_ABSORB;
+      },
+      N);
 }
 
 }  // namespace
@@ -675,4 +693,364 @@ TEST(BsdfLobes, ALoneLobeIsReciprocal)
     EXPECT_NEAR(lambert(a, b), lambert(b, a), 0.001f * lambert(a, b)) << "pair " << i;
     EXPECT_NEAR(ggx(a, b), ggx(b, a), 0.001f * ggx(a, b) + 1e-5f) << "pair " << i;
   }
+}
+
+// Phase M2: the OpenPBR closure behind the path tracer's interface (shaders/openpbr/fv_openpbr.h.slang)
+namespace {
+
+constexpr float kAlpha = 0.25f;
+
+OpenPBR_ResolvedInputs inputsOf(const PbrMaterial& mat, const vec3& V = vec3(0, 0, 1))
+{
+  return fvOpenPbrInputs(mat, V);
+}
+
+// The closure as the path tracer calls it, for the fit above
+SamplingFit openPbrFit(const PbrMaterial& mat, const vec3& k1, int N = 1000000)
+{
+  const OpenPBR_PreparedBsdf prepared = fvOpenPbrPrepare(mat, k1);
+  return samplingFit(
+      [&](const vec3& k2) {
+        BsdfEvaluateData e;
+        e.k1 = k1;
+        e.k2 = k2;
+        e.xi = vec3(0.5f);
+        fvOpenPbrEvaluate(e, prepared, mat);
+        return e.pdf;
+      },
+      [&](const vec3& xi, vec3& k2) {
+        BsdfSampleData s;
+        s.k1 = k1;
+        s.xi = xi;
+        fvOpenPbrSample(s, prepared, mat);
+        k2 = s.k2;
+        return s.event_type != BSDF_EVENT_ABSORB;
+      },
+      N);
+}
+
+}  // namespace
+
+// The equivalences that are exact (the KHR extensions' OpenPBR alignment): a parameter comes through
+// as itself, in OpenPBR's units.
+TEST(OpenPbr, TheKhrParametersThatMapExactlyDo)
+{
+  PbrMaterial mat = base(0.5f);
+  mat.metallic    = 0.7f;
+  mat.ior2        = 1.33f;
+  EXPECT_EQ(inputsOf(mat).base_color, mat.baseColor);
+  EXPECT_EQ(inputsOf(mat).base_metalness, 0.7f);
+  EXPECT_EQ(inputsOf(mat).specular_ior, 1.33f);
+
+  // inside a volume evaluateMaterial swaps the IORs: the material's own is still the one
+  PbrMaterial inside = base(0.5f);
+  inside.transmission = 1.0f;
+  inside.thickness    = 0.01f;
+  inside.ior1         = 1.33f;
+  inside.ior2         = 1.0f;
+  EXPECT_EQ(inputsOf(inside).specular_ior, 1.33f);
+
+  PbrMaterial glass       = base(0.2f);
+  glass.transmission      = 0.8f;
+  glass.transmissionTint  = vec3(0.5f);
+  glass.dispersion        = 2.0f;
+  EXPECT_EQ(inputsOf(glass).transmission_weight, 0.8f);
+  EXPECT_EQ(inputsOf(glass).transmission_color, glass.baseColor * 0.5f);
+  EXPECT_EQ(inputsOf(glass).transmission_depth, 0.0f);  // the path tracer's walk holds the medium
+  EXPECT_EQ(inputsOf(glass).transmission_dispersion_abbe_number, 10.0f);
+  EXPECT_EQ(inputsOf(glass).transmission_dispersion_scale, 1.0f);
+
+  PbrMaterial film          = base(0.3f);
+  film.iridescence          = 0.9f;
+  film.iridescenceThickness = 400.0f;  // nm
+  film.iridescenceIor       = 1.3f;
+  EXPECT_EQ(inputsOf(film).thin_film_weight, 0.9f);
+  EXPECT_NEAR(inputsOf(film).thin_film_thickness, 0.4f, 1e-6f);  // microns
+  EXPECT_EQ(inputsOf(film).thin_film_ior, 1.3f);
+}
+
+// A roughness pair comes back from OpenPBR's anisotropy as the same two alphas
+TEST(OpenPbr, AnisotropyKeepsBothAlphas)
+{
+  for(const vec2 alpha : {vec2(0.3f, 0.3f), vec2(0.6f, 0.1f), vec2(0.04f, 0.2f), vec2(1.0f, 0.5f)})
+  {
+    PbrMaterial mat = base(0.5f);
+    mat.roughness   = alpha;
+    const auto  in  = inputsOf(mat);
+    const float r2  = in.specular_roughness * in.specular_roughness;
+    const float a   = in.specular_roughness_anisotropy;
+    const float big = r2 * std::sqrt(2.0f / (1.0f + (1.0f - a) * (1.0f - a)));
+    EXPECT_NEAR(big, std::max(alpha.x, alpha.y), 1e-5f);
+    EXPECT_NEAR((1.0f - a) * big, std::min(alpha.x, alpha.y), 1e-5f);
+  }
+}
+
+// The approximate ones, by what each is defined to keep
+TEST(OpenPbr, TheApproximateEquivalencesKeepWhatTheyAreFor)
+{
+  // KHR_materials_specular's factor and colour scale F0 as OpenPBR's weight and colour do
+  PbrMaterial dielectric   = base(0.4f);
+  dielectric.specular      = 0.5f;
+  dielectric.specularColor = vec3(0.6f, 0.7f, 0.8f);
+  EXPECT_EQ(inputsOf(dielectric).specular_weight, 0.5f);
+  EXPECT_EQ(inputsOf(dielectric).specular_color, dielectric.specularColor);
+  // a metal has neither: its specular_color would be OpenPBR's edge tint
+  dielectric.metallic = 1.0f;
+  EXPECT_EQ(inputsOf(dielectric).specular_weight, 1.0f);
+  EXPECT_EQ(inputsOf(dielectric).specular_color, vec3(1.0f));
+
+  // sheen: its colour as weight and tint, whichever the brightest channel is
+  PbrMaterial sheen    = base(0.5f);
+  sheen.sheenColor     = vec3(0.5f, 0.25f, 0.1f);
+  sheen.sheenRoughness = 0.6f;
+  EXPECT_EQ(inputsOf(sheen).fuzz_weight, 0.5f);
+  EXPECT_EQ(inputsOf(sheen).fuzz_color * inputsOf(sheen).fuzz_weight, sheen.sheenColor);
+  EXPECT_EQ(inputsOf(sheen).fuzz_roughness, 0.6f);
+
+  // clearcoat: OpenPBR's coat at KHR's fixed index, and the base darkens under it (decision M10)
+  PbrMaterial coat        = base(0.5f);
+  coat.clearcoat          = 0.75f;
+  coat.clearcoatRoughness = 0.2f;
+  EXPECT_EQ(inputsOf(coat).coat_weight, 0.75f);
+  EXPECT_EQ(inputsOf(coat).coat_roughness, 0.2f);
+  EXPECT_EQ(inputsOf(coat).coat_ior, 1.5f);
+  EXPECT_EQ(inputsOf(coat).coat_darkening, 1.0f);
+}
+
+// What has an inside to the closure: only a surface that refracts. A walk's diffuse entry is a thin
+// wall's diffuse transmission, its share of the diffuse bucket going through.
+TEST(OpenPbr, OnlyARefractingSurfaceHasAnInside)
+{
+  PbrMaterial opaque = base(0.5f);
+  opaque.thickness   = 0.01f;
+  EXPECT_TRUE(inputsOf(opaque).geometry_thin_walled);
+
+  PbrMaterial glass  = base(0.2f);
+  glass.transmission = 1.0f;
+  glass.thickness    = 0.01f;
+  EXPECT_FALSE(inputsOf(glass).geometry_thin_walled);
+  glass.thickness = 0.0f;
+  EXPECT_TRUE(inputsOf(glass).geometry_thin_walled);
+
+  PbrMaterial entry                    = base(0.5f);
+  entry.thickness                      = 0.01f;
+  entry.diffuseTransmissionFactor      = 0.75f;
+  entry.diffuseTransmissionColorFactor = vec3(0.9f, 0.8f, 0.7f);
+  const auto in                        = inputsOf(entry);
+  EXPECT_TRUE(in.geometry_thin_walled);
+  EXPECT_EQ(in.subsurface_weight, 0.75f);
+  EXPECT_EQ(in.subsurface_color, entry.diffuseTransmissionColorFactor);
+  EXPECT_EQ(in.subsurface_scatter_anisotropy, 1.0f);
+
+  // the share that goes through: a white wall sends 3/4 of its light on, in its colour
+  std::mt19937                          rng(37);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  entry.baseColor = vec3(1.0f);
+  entry.specular  = 0.0f;
+  const vec3 V(0.0f, 0.0f, 1.0f);
+  const auto prepared = fvOpenPbrPrepare(entry, V);
+  vec3       through(0.0f), back(0.0f);
+  const int  N = 100000;
+  for(int i = 0; i < N; i++)
+  {
+    BsdfSampleData s;
+    s.k1 = V;
+    s.xi = vec3(u(rng), u(rng), u(rng));
+    fvOpenPbrSample(s, prepared, entry);
+    if(s.event_type == BSDF_EVENT_DIFFUSE_TRANSMISSION)
+      through += s.bsdf_over_pdf / float(N);
+    else if(s.event_type == BSDF_EVENT_DIFFUSE_REFLECTION)
+      back += s.bsdf_over_pdf / float(N);
+  }
+  EXPECT_NEAR(through.x, 0.75f * 0.9f, 0.02f);
+  EXPECT_NEAR(through.z, 0.75f * 0.7f, 0.02f);
+  EXPECT_NEAR(back.x, 0.25f, 0.02f);
+}
+
+// A view from inside refracts out: the normal the closure sees faces away from the view
+TEST(OpenPbr, InsideAVolumeTheFrameFacesAway)
+{
+  PbrMaterial glass  = base(0.3f);
+  glass.transmission = 1.0f;
+  glass.thickness    = 0.01f;
+  const vec3 V       = normalize(vec3(0.3f, 0.1f, 0.9f));
+  EXPECT_GT(dot(inputsOf(glass, V).geometry_basis.n, V), 0.0f);
+  glass.ior1 = 1.5f;
+  glass.ior2 = 1.0f;
+  EXPECT_LT(dot(inputsOf(glass, V).geometry_basis.n, V), 0.0f);
+}
+
+// A normal map bent past the view is still the outside
+TEST(OpenPbr, ABumpBentPastTheViewIsNotTheInside)
+{
+  PbrMaterial bumped = base(0.4f);
+  bumped.N           = normalize(vec3(0.7f, 0.0f, 1.0f));
+  orthonormalBasis(bumped.N, bumped.T, bumped.B);
+  const vec3 V = normalize(vec3(-1.0f, 0.0f, 0.3f));
+  ASSERT_LT(dot(bumped.N, V), 0.0f);
+  EXPECT_GT(dot(inputsOf(bumped, V).geometry_basis.n, V), 0.0f);
+  EXPECT_TRUE(fvOpenPbrTakes(bumped));
+}
+
+// Retroreflection has no OpenPBR lobe: such a material stays on today's closure
+TEST(OpenPbr, RetroreflectionStaysOnTodaysClosure)
+{
+  PbrMaterial retro     = base(0.4f);
+  retro.retroreflection = 0.5f;
+  EXPECT_FALSE(fvOpenPbrTakes(retro));
+}
+
+// The sampler draws directions by the density the closure reports (as the oracle above does for
+// today's), and its weight is the value over that density.
+TEST(OpenPbr, SamplesFollowTheReportedPdf)
+{
+  for(Case c : cases())
+  {
+    if(!fvOpenPbrTakes(c.mat))
+      continue;
+    if(c.mat.transmission > 0.0f)
+      c.mat.roughness = vec2(0.4f * 0.4f);
+    for(const vec3& k1 : {normalize(vec3(0.0f, 0.0f, 1.0f)), normalize(vec3(0.4f, 0.2f, 0.9f)), normalize(vec3(0.9f, 0.1f, 0.3f))})
+    {
+      const SamplingFit fit = openPbrFit(c.mat, k1);
+      EXPECT_LT(fit.sigmas, 5.0) << fit.sigmas << " sigmas, " << c.name << " view " << k1.x << "," << k1.y << "," << k1.z << ", " << fit.dof << " bins";
+      EXPECT_NEAR(fit.missing, fit.absorbed, 0.01) << c.name << " view " << k1.x << "," << k1.y << "," << k1.z;
+    }
+  }
+}
+
+TEST(OpenPbr, ASampleWeighsItsValueOverItsPdf)
+{
+  std::mt19937                          rng(43);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(Case c : cases())
+  {
+    if(!fvOpenPbrTakes(c.mat))
+      continue;
+    for(int i = 0; i < 500; i++)
+    {
+      const vec3 V        = viewAbove(rng);
+      const auto prepared = fvOpenPbrPrepare(c.mat, V);
+      BsdfSampleData s;
+      s.k1 = V;
+      s.xi = vec3(u(rng), u(rng), u(rng));
+      fvOpenPbrSample(s, prepared, c.mat);
+      if(s.event_type == BSDF_EVENT_ABSORB)
+        continue;
+      BsdfEvaluateData e;
+      e.k1 = V;
+      e.k2 = s.k2;
+      e.xi = s.xi;
+      fvOpenPbrEvaluate(e, prepared, c.mat);
+      ASSERT_GT(e.pdf, 0.0f) << c.name;
+      const float weight = sum(s.bsdf_over_pdf), ratio = sum(e.bsdf_diffuse + e.bsdf_glossy) / e.pdf;
+      EXPECT_NEAR(weight, ratio, 2e-3f * std::max(weight, 1.0f)) << c.name << ", sample " << i;
+    }
+  }
+}
+
+// What the plan asks of the layering: a layer over a white base gives back what it was lit with.
+// Today's mixture gains up to 2.6% here (BsdfLobes.ALayerOverAWhiteBaseAddsNoEnergy).
+TEST(OpenPbr, ALayerOverAWhiteBaseKeepsItsEnergy)
+{
+  std::mt19937                          rng(47);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const auto white = [](float roughness) { return defaultPbrMaterial(vec3(1.0f), 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1)); };
+  for(float roughness : {0.2f, 0.5f, 0.9f})
+    for(float NoV : {0.1f, 0.3f, 0.6f, 1.0f})
+    {
+      PbrMaterial coat          = white(roughness);
+      coat.clearcoat            = 1.0f;
+      coat.clearcoatRoughness   = 0.2f;
+      PbrMaterial sheen         = white(roughness);
+      sheen.sheenColor          = vec3(1.0f);
+      sheen.sheenRoughness      = 0.5f;
+      PbrMaterial all           = coat;
+      all.sheenColor            = vec3(1.0f);
+      all.sheenRoughness        = 0.5f;
+      const std::array<std::pair<const char*, PbrMaterial>, 4> layers{{{"none", white(roughness)}, {"coat", coat}, {"sheen", sheen}, {"all", all}}};
+      const vec3 V(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      for(const auto& [name, mat] : layers)
+      {
+        const auto prepared = fvOpenPbrPrepare(mat, V);
+        double     albedo   = 0.0;
+        const int  N        = 100000;
+        for(int i = 0; i < N; i++)
+        {
+          BsdfSampleData s;
+          s.k1 = V;
+          s.xi = vec3(u(rng), u(rng), u(rng));
+          fvOpenPbrSample(s, prepared, mat);
+          if(s.event_type != BSDF_EVENT_ABSORB)
+            albedo += s.bsdf_over_pdf.x / N;
+        }
+        EXPECT_LE(albedo, 1.005) << name << ", roughness " << roughness << ", NoV " << NoV;
+        EXPECT_GE(albedo, 0.95) << name << ", roughness " << roughness << ", NoV " << NoV;
+      }
+    }
+}
+
+// A coat darkens what is under it, and tints nothing it has no colour for: today's mixture can't
+TEST(OpenPbr, ACoatDarkensADiffuseBase)
+{
+  std::mt19937                          rng(53);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  PbrMaterial plain = defaultPbrMaterial(vec3(0.3f), 0.0f, 0.6f, vec3(0, 0, 1), vec3(0, 0, 1));
+  plain.specular    = 0.0f;
+  PbrMaterial coated = plain;
+  coated.clearcoat          = 1.0f;
+  coated.clearcoatRoughness = 0.3f;
+  const vec3 V(0.0f, 0.0f, 1.0f);
+  const auto diffuseOf = [&](const PbrMaterial& mat) {
+    const auto prepared = fvOpenPbrPrepare(mat, V);
+    double     out      = 0.0;
+    const int  N        = 200000;
+    for(int i = 0; i < N; i++)
+    {
+      BsdfSampleData s;
+      s.k1 = V;
+      s.xi = vec3(u(rng), u(rng), u(rng));
+      fvOpenPbrSample(s, prepared, mat);
+      if(s.event_type == BSDF_EVENT_DIFFUSE_REFLECTION)
+        out += s.bsdf_over_pdf.x / N;
+    }
+    return out;
+  };
+  EXPECT_LT(diffuseOf(coated), 0.9 * diffuseOf(plain));
+}
+
+// What the closure doesn't have is kept on top of it: a bumped lobe's terminator, the occlusion map
+TEST(OpenPbr, TheTerminatorAndOcclusionStillApply)
+{
+  PbrMaterial bumped = base(0.5f);
+  bumped.Ns          = vec3(0, 0, 1);
+  bumped.N           = normalize(vec3(0.5f, 0.0f, 1.0f));
+  orthonormalBasis(bumped.N, bumped.T, bumped.B);
+  const vec3 V(0.0f, 0.0f, 1.0f);
+  const auto prepared = fvOpenPbrPrepare(bumped, V);
+  // a light just above the bent normal's horizon, on the side it leans away from
+  const vec3       L = normalize(vec3(-0.6f, 0.0f, 0.6f));
+  ASSERT_GT(dot(L, bumped.N), 0.0f);
+  BsdfEvaluateData e;
+  e.k1 = V;
+  e.k2 = L;
+  e.xi = vec3(0.5f);
+  fvOpenPbrEvaluate(e, prepared, bumped);
+  const vec3 fadedDiffuse = e.bsdf_diffuse;
+  EXPECT_LT(shadowTerminatorTerm(L, bumped.N, bumped.Ns), 1.0f);
+  const OpenPBR_DiffuseSpecular raw = openpbr_eval(prepared, L);
+  EXPECT_LT(fadedDiffuse.x, raw.diffuse.x);
+
+  PbrMaterial occluded = base(0.5f);
+  occluded.occlusion   = 0.25f;
+  PbrMaterial open     = base(0.5f);
+  const vec3  light    = normalize(vec3(0.2f, 0.1f, 0.9f));
+  BsdfEvaluateData a, b;
+  a.k1 = b.k1 = V;
+  a.k2 = b.k2 = light;
+  a.xi = b.xi = vec3(0.5f);
+  fvOpenPbrEvaluate(a, fvOpenPbrPrepare(occluded, V), occluded);
+  fvOpenPbrEvaluate(b, fvOpenPbrPrepare(open, V), open);
+  EXPECT_NEAR(a.bsdf_diffuse.x, 0.25f * b.bsdf_diffuse.x, 1e-5f);
+  EXPECT_NEAR(a.pdf, b.pdf, 1e-5f);
 }

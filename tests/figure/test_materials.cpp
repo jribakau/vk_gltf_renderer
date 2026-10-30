@@ -4369,6 +4369,8 @@ TEST(MaterialClosure, TheBaselineHolds)
     fv::probe::ClosureOptions options;
     options.thinScatter = f.thin;
     now[f.name]         = closureJson(fv::probe::closureOf(fv::dson::buildMaterial(f.surface, ch), f.skin, options));
+    options.openPbr     = true;
+    now[std::string(f.name) + ", openpbr"] = closureJson(fv::probe::closureOf(fv::dson::buildMaterial(f.surface, ch), f.skin, options));
   }
   if(std::getenv("FV_UPDATE_CLOSURE_BASELINE"))
   {
