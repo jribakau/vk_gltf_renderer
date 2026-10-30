@@ -1,7 +1,11 @@
 #include <figure/dson/rig.hpp>
 
 #include <algorithm>
+#include <map>
+#include <numeric>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace fv::dson {
 
@@ -255,6 +259,62 @@ std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& modifier, con
         out.input.dualQuatMap = std::move(map);
     }
   }
+  return out;
+}
+
+std::optional<SkinBinding> strandBinding(const Doc& doc, const Json& modifier, const Json& geo, const Rig& rig, int vertexCount)
+{
+  const Json* skin   = get(&modifier, "skin");
+  const Json* joints = get(skin, "joints");
+  const Json* lists  = get(&geo, "polyline_list");
+  const Json* polys  = get(&geo, "polylist");
+  const auto  lines  = doc.rows(lists ? get(lists, "values") : nullptr);
+  if(!skin || (joints && joints->is_array() && !joints->empty()) || !lines->count || doc.rows(polys ? get(polys, "values") : nullptr)->count)
+    return std::nullopt;
+
+  // the bones the file's selection map names, by polygon group
+  std::map<std::string, int> boneOfGroup;
+  if(const Json* maps = get(skin, "selection_map"); maps && maps->is_array())
+    for(const Json& map : *maps)
+      if(const Json* pairs = get(&map, "mappings"); pairs && pairs->is_array())
+        for(const Json& pair : *pairs)
+          if(pair.is_array() && pair.size() == 2 && pair[0].is_string() && pair[1].is_string())
+            if(const int bone = rig.byId(pair[1].get<std::string>()); bone >= 0)
+              boneOfGroup.try_emplace(pair[0].get<std::string>(), bone);
+  std::vector<std::string> groups;
+  if(const Json* values = get(get(&geo, "polygon_groups"), "values"); values && values->is_array())
+    for(const Json& v : *values)
+      groups.push_back(v.is_string() ? v.get<std::string>() : v.dump());
+
+  const int head     = rig.byId("head");
+  const int fallback = head >= 0 ? head : boneOfGroup.empty() ? -1 : boneOfGroup.begin()->second;
+  if(fallback < 0)
+    return std::nullopt;
+
+  SkinBinding                  out;
+  std::unordered_map<int, int> boneIndex;
+  auto                         indexOf = [&](int bone) {
+    auto [it, made] = boneIndex.try_emplace(bone, int(out.order.size()));
+    if(made)
+      out.order.push_back(bone);
+    return it->second;
+  };
+  const int nv = vertexCount;
+  out.input.start.resize(size_t(nv) + 1);
+  std::iota(out.input.start.begin(), out.input.start.end(), 0);
+  out.input.bone.assign(size_t(nv), indexOf(fallback));
+  out.input.weight.assign(size_t(nv), 1.f);
+  for(int l = 0; l < lines->count; l++)
+  {
+    const int  group = int(lines->cell(l, 0));
+    const auto named = group >= 0 && size_t(group) < groups.size() ? boneOfGroup.find(groups[size_t(group)]) : boneOfGroup.end();
+    const int  bone  = indexOf(named == boneOfGroup.end() ? fallback : named->second);
+    for(int k = lines->start[l] + 2; k < lines->start[l + 1]; k++)
+      if(const int v = int(lines->data[k]); v >= 0 && v < nv)
+        out.input.bone[size_t(v)] = bone;
+  }
+  auto root          = boneIndex.find(rig.root);
+  out.input.rootBone = root == boneIndex.end() ? 0 : root->second;
   return out;
 }
 

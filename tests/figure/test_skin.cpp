@@ -290,3 +290,33 @@ TEST(Skin, TheSkinSettingsGiveTheDualQuaternionShare)
       "blend_mode": "BlendLinearDualQuat", "blend_weights": {"count": 2, "values": [[0, 0.25], [2, 1]]}}])");
   EXPECT_EQ(mapped->input.dualQuatMap, (std::vector<float>{0.25f, 0.f, 1.f}));
 }
+
+// Strand hair with no joints (FE Shawl, Pixie Cut) follows the figure in DAZ Studio through a dForce
+// modifier. Left without a skin it stayed where the file puts it, whatever the figure's pose or shape.
+TEST(Skin, StrandsWithoutJointsRideTheBoneTheirGroupNames)
+{
+  fv::dson::Rig rig;
+  rig.root  = 0;
+  rig.bones = {{"hip", 0}, {"neck2", 1}, {"head", 2}};
+  const auto binding = [&](const std::string& joints, const std::string& map, const std::string& polys = "[]") {
+    const auto doc = fv::dson::parseDoc(R"({"geo": {"polygon_groups": {"values": ["default", "head", "neck2", "other"]},
+        "polylist": {"values": )" + polys + R"(},
+        "polyline_list": {"values": [[1, 0, 0, 1], [2, 0, 2, 3], [3, 0, 4, 5]]}},
+        "mod": {"skin": {"joints": )" + joints + R"(, "selection_map": [{"id": "m", "mappings": )" + map + R"(}]}}})");
+    return fv::dson::strandBinding(*doc, doc->json.at("mod"), doc->json.at("geo"), rig, 7);
+  };
+  const auto bound = binding("[]", R"([["head", "head"], ["neck2", "neck2"], ["other", "no such bone"]])");
+  ASSERT_TRUE(bound);
+  // one full influence per vertex: the head's strand, the neck's, the head for a group it can't place,
+  // and the head for a vertex on no strand
+  ASSERT_EQ(bound->input.start, (std::vector<int32_t>{0, 1, 2, 3, 4, 5, 6, 7}));
+  const auto boneOf = [&](int v) { return bound->order[size_t(bound->input.bone[size_t(v)])]; };
+  EXPECT_EQ(std::vector<int>({boneOf(0), boneOf(1)}), std::vector<int>({2, 2}));
+  EXPECT_EQ(std::vector<int>({boneOf(2), boneOf(3)}), std::vector<int>({1, 1}));
+  EXPECT_EQ(std::vector<int>({boneOf(4), boneOf(5), boneOf(6)}), std::vector<int>({2, 2, 2}));
+  EXPECT_EQ(bound->input.weight, std::vector<float>(7, 1.f));
+
+  // weights in the file are the file's business, and a mesh with polygons isn't strand hair
+  EXPECT_FALSE(binding(R"([{"id": "head", "node": "#head"}])", "[]"));
+  EXPECT_FALSE(binding("[]", "[]", "[[0, 0, 0, 1, 2]]"));
+}

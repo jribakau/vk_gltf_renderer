@@ -375,6 +375,13 @@ const Json* skinModifierOf(const Store::Resolved& gres, const Json& geo)
   return nullptr;
 }
 
+// A mesh's skin: the file's weights, or for strands without any, the bones their groups name.
+std::optional<SkinBinding> skinOf(const Doc& doc, const Json& modifier, const Json& geo, const Rig& rig, int vertexCount)
+{
+  auto binding = skinBinding(doc, modifier, rig, vertexCount);
+  return binding ? binding : strandBinding(doc, modifier, geo, rig, vertexCount);
+}
+
 // Reads the library files a scene names on the pool while the loader walks it, so a strand hair's
 // node, geometry and material files (tens of MB each) arrive at once instead of one after another.
 // The Store is borrowed: finish() loads whatever no pool thread has started and waits for the rest,
@@ -1105,7 +1112,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             std::optional<timing::Accum> ts;
             ts.emplace("ahead: skin binding");
             if(const Json* skinMod = skinModifierOf(*a.gres, geo))
-              if(auto binding = skinBinding(*a.gres->doc, *skinMod, out.rigs[job.rig], a.mesh.geo->dsonVertexCount))
+              if(auto binding = skinOf(*a.gres->doc, *skinMod, geo, out.rigs[job.rig], a.mesh.geo->dsonVertexCount))
               {
                 ts.emplace("ahead: skin weights");
                 a.mesh.skin     = mesh::skin(*a.mesh.geo, binding->input);
@@ -1337,7 +1344,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           timing::Scope ts("skin", 10);
           const Rig&    rig = out.rigs[job.rig];
           if(const Json* skinMod = skinModifierOf(*gres, geo))
-            if(auto binding = skinBinding(*gres->doc, *skinMod, rig, meshOut.geo->dsonVertexCount))
+            if(auto binding = skinOf(*gres->doc, *skinMod, geo, rig, meshOut.geo->dsonVertexCount))
             {
               meshOut.skin     = mesh::skin(*meshOut.geo, binding->input);
               meshOut.cageSkin = binding->input;

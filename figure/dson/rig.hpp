@@ -48,4 +48,9 @@ struct SkinBinding
 // share; a uniform map is kept as one value). None without joints.
 std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& modifier, const Rig& rig, int vertexCount);
 
+// Strand hair whose skin has no joints: DAZ Studio moves it with a dForce Hair Follow modifier, which
+// rides on the figure's surface. Each strand goes wholly on the bone the skin's selection map names for
+// its polygon group, or the head where it names none. None for anything but strands without joints.
+std::optional<SkinBinding> strandBinding(const Doc& doc, const Json& modifier, const Json& geo, const Rig& rig, int vertexCount);
+
 }  // namespace fv::dson
