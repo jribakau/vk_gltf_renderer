@@ -105,8 +105,11 @@ struct EmissiveGroup
   int    parent;        // -1 for a node of the cut
   int    pad;
 };
-// The cut: at most this many nodes compete with the lights, each at every light sample
-static const int EMISSIVE_GROUP_MAX = 32;
+// The cut: at most this many nodes compete with the lights, each at every light sample. A node of the
+// cut is judged by its own place, and a walk below one by bounds that hold several lights: 2560x1440,
+// 64 samples, the noise at a cut of 16 / 32 / 64+: 1TEST (65 emitters) 0.047 / 0.0364 / 0.0347 at 7.5 /
+// 7.7 / 7.8 s; 120 panels 32 / 64 / 120: 0.0142 / 0.0139 / 0.0135 at 4.8 / 4.9 / 5.1 s (2026-10-30)
+static const int EMISSIVE_GROUP_MAX = 64;
 
 
 /*-------------------------------------------------------------------------------------------------

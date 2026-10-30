@@ -89,7 +89,7 @@ TEST(LightTree, IsLaidOutCutFirstOverEveryEmitter)
   const std::vector<Emitter> emitters = roomOfPanels(kCount, rng);
   const auto                 table    = buildEmissiveTable(emitters, EMISSIVE_GROUP_MAX);
   ASSERT_EQ(table.cutCount, uint32_t(EMISSIVE_GROUP_MAX));
-  // a binary tree over the leaves has 2n - 1 nodes, and the cut's 32 replace the 31 above them
+  // a binary tree over the leaves has 2n - 1 nodes, and the cut's n replace the n - 1 above them
   ASSERT_EQ(table.groups.size(), size_t(2 * kCount - EMISSIVE_GROUP_MAX));
 
   std::vector<int> leafCut(table.groups.size(), -1);
