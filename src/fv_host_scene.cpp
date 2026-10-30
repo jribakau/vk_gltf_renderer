@@ -409,6 +409,14 @@ Json FvHost::Impl::sceneState(const Json& args)
                 {"pose", pose},
                 {"materialPresets", prop->figure->materialPresets},
                 {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  // the presets laid over the skin and eyes chosen; none when none are
+  if(!prop->figure->presetsOver.empty())
+  {
+    Json over = Json::array();
+    for(const Loaded::PresetOver& o : prop->figure->presetsOver)
+      over.push_back(o.rel);
+    state["materialPresetsOver"] = std::move(over);
+  }
   // the eyes chosen, null for the character's own; none when nothing was chosen
   if(prop->figure->eyes)
     state["eyes"] = prop->figure->eyes->empty() ? Json(nullptr) : Json(*prop->figure->eyes);
@@ -606,6 +614,36 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     step.reset();
     step.emplace("restore: makeup", 5);
     restoreChoice("makeup", "the makeup", &Impl::applyMakeup);
+    step.reset();
+    step.emplace("restore: presets over them", 5);
+    if(args.contains("materialPresetsOver") && args["materialPresetsOver"].is_array())
+      for(const Json& p : args["materialPresetsOver"])
+      {
+        const std::string rel = p.is_string() ? p.get<std::string>() : "";
+        if(rel.empty())
+          continue;
+        try
+        {
+          auto doc = fig.store().load(rel);
+          if(!doc)
+          {
+            problems.push_back("material preset " + fileStem(rel) + " isn't in the content library");
+            continue;
+          }
+          const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, fig.loaded.scene, nullptr, fv::dson::definitionsIn(doc->json, fig.store()));
+          if(prop->materials)
+            prop->materials->surfacesChanged(r.changed);
+          if(!r.changed.empty())
+          {
+            target->materialPresets.push_back(rel);
+            presetChangedEyes(*prop, rel, r.changed);
+          }
+        }
+        catch(const std::exception& e)
+        {
+          problems.push_back("material preset " + fileStem(rel) + ": " + e.what());
+        }
+      }
     step.reset();
     step.emplace("restore: item colours", 5);
     // each worn item's colour, over the presets and under the edits (a hair's recolour is an edit)

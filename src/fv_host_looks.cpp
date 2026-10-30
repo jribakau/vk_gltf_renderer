@@ -226,11 +226,14 @@ Json FvHost::Impl::applyEyes(Prop& prop, const std::string& rel, const fv::dson:
   }
   if(prop.materials)
     prop.materials->surfacesChanged(changed);
+  // the scene file replays it as its eyes, not as a preset
+  std::set<int> replaced = changed;
+  replaced.insert(f.eyesOwned.begin(), f.eyesOwned.end());
+  replaced.insert(r.owned.begin(), r.owned.end());
+  choiceReplaced(f, rel, replaced);
   f.eyes      = rel;
   f.eyesOwned = r.owned;
   f.eyesPreset.clear();
-  // the scene file replays it as its eyes, not as a preset
-  f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
   publishEyes(prop);
   return {{"eyes", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
 }
@@ -403,21 +406,48 @@ void FvHost::Impl::presetChangedEyes(Prop& prop, const std::string& rel, const s
   }
   if(colors)
     publishWardrobe(f);
-  const std::set<int> skin = fv::dson::skinSurfaces(f.fig->loaded.scene, wornSurfaces(f));
-  if(std::any_of(changed.begin(), changed.end(), [&](int i) { return skin.count(i) > 0; }))
+  // Of more than half of the skin or the eyes, the preset is them now. Of less (a lash colour, a nail
+  // polish, a tattoo), it lies over what was chosen, which stays chosen, and goes back after it.
+  const auto reach = [&](const std::set<int>& part) {
+    const auto touched = std::count_if(part.begin(), part.end(), [&](int i) { return changed.count(i) > 0; });
+    return touched == 0 ? 0 : touched * 2 > std::ptrdiff_t(part.size()) ? 2 : 1;
+  };
+  const int skin = reach(fv::dson::skinSurfaces(f.fig->loaded.scene, wornSurfaces(f)));
+  const int eyes = reach(fv::dson::eyeSurfaces(f.fig->loaded.scene));
+  if(skin == 2)
   {
     f.skin.reset();
     f.skinOwned.clear();
     f.skinPreset = rel;
     publishSkin(prop);
   }
-  const std::set<int> eyes = fv::dson::eyeSurfaces(f.fig->loaded.scene);
-  if(std::none_of(changed.begin(), changed.end(), [&](int i) { return eyes.count(i) > 0; }))
-    return;
-  f.eyes.reset();
-  f.eyesOwned.clear();
-  f.eyesPreset = rel;
-  publishEyes(prop);
+  if(eyes == 2)
+  {
+    f.eyes.reset();
+    f.eyesOwned.clear();
+    f.eyesPreset = rel;
+    publishEyes(prop);
+  }
+  std::erase_if(f.presetsOver, [&](const Loaded::PresetOver& o) { return o.rel == rel; });
+  if((skin == 1 && f.skin) || (eyes == 1 && f.eyes))
+  {
+    std::erase(f.materialPresets, rel);
+    f.presetsOver.push_back({rel, changed});
+  }
+}
+
+void FvHost::Impl::choiceReplaced(Loaded& f, const std::string& rel, const std::set<int>& surfaces)
+{
+  std::erase(f.materialPresets, rel);
+  std::vector<Loaded::PresetOver> kept;
+  for(Loaded::PresetOver& o : f.presetsOver)
+    if(o.rel == rel)
+      continue;
+    else if(std::any_of(o.surfaces.begin(), o.surfaces.end(), [&](int i) { return surfaces.count(i) > 0; }))
+      f.materialPresets.push_back(o.rel);
+    else
+      kept.push_back(std::move(o));
+  f.presetsOver = std::move(kept);
 }
 
 // "materials/<prop>".eyes: {rel, preset, own, ready, surfaces} (fv_host.hpp material.eyes)
@@ -599,13 +629,16 @@ Json FvHost::Impl::applySkin(Prop& prop, const std::string& rel, const fv::dson:
   }
   if(prop.materials)
     prop.materials->surfacesChanged(changed);
+  std::set<int> replaced = changed;
+  replaced.insert(f.skinOwned.begin(), f.skinOwned.end());
+  replaced.insert(r.owned.begin(), r.owned.end());
+  choiceReplaced(f, rel, replaced);
   f.skin      = rel;
   f.skinOwned = r.owned;
   f.skinPreset.clear();
   // back to the baseline, the makeup is the skin's own
   f.makeup.reset();
   f.makeupLayer.clear();
-  f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
   publishSkin(prop);
   return {{"skin", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
 }

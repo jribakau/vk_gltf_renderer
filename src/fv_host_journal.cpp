@@ -848,6 +848,7 @@ uint64_t FvHost::Impl::keepLook(const Loaded& f)
   auto l             = std::make_shared<FigureLook>();
   l->materials       = f.fig->loaded.scene.materials;
   l->materialPresets = f.materialPresets;
+  l->presetsOver     = f.presetsOver;
   l->eyes            = f.eyes;
   l->eyesOwned       = f.eyesOwned;
   l->eyesPreset      = f.eyesPreset;
@@ -893,6 +894,7 @@ Json FvHost::Impl::applyLook(const Json& args)
   if(p->materials)
     p->materials->surfacesChanged(changed);
   f.materialPresets = l.materialPresets;
+  f.presetsOver     = l.presetsOver;
   f.eyes            = l.eyes;
   f.eyesOwned       = l.eyesOwned;
   f.eyesPreset      = l.eyesPreset;

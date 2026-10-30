@@ -737,6 +737,74 @@ std::string dialOn(HostRig& rig, const std::string& id, const std::string& dial,
 }
 }  // namespace
 
+// A preset over a skin chosen: a Head's tint leaves the Body's skin chosen, and both come back when the
+// scene does, the skin named as it was. One over all of the skin is the skin. A skin chosen over the
+// surfaces the tint set takes it off them, and the file agrees.
+TEST(FvHost, APresetOverTheChosenSkinKeepsBothWhenReopened)
+{
+  const std::string tint = "People/Test/Materials/Box Head Tint.duf", red = "People/Test/Materials/Box Body Red.duf",
+                    full = "People/Test/Materials/Box Skin Full.duf";
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id    = figureId(rig.topic("scene"));
+  const auto        state = [&] { return rig.cmd("scene.state", {{"prop", id}}).at("result"); };
+  const auto        names = [](const Json& s, const char* list) { return s.value(list, Json::array()); };
+  const auto        surfaces = [](HostRig& r, const std::string& p) {
+    Json       out       = Json::object();
+    const Json materials = r.topic("materials/" + p).value("items", Json::object());
+    for(const auto& [m, it] : materials.items())
+      out[m] = it.value("values", Json::object());
+    return out;
+  };
+  const auto apply = [&](const char* cmd, const std::string& rel) {
+    ASSERT_TRUE(rig.cmd(cmd, {{"prop", id}, {"rel", rel}}).value("ok", false));
+    ASSERT_TRUE(rig.settle());
+  };
+  const auto skinTopic = [&] { return rig.topic("materials/" + id).value("skin", Json::object()); };
+
+  apply("material.skin", red);
+  apply("load", tint);
+  Json saved = state();
+  EXPECT_EQ(saved.value("skin", ""), red) << saved.dump();
+  EXPECT_EQ(names(saved, "materialPresets"), Json::array());
+  EXPECT_EQ(names(saved, "materialPresetsOver"), Json::array({tint}));
+  EXPECT_EQ(skinTopic().value("rel", ""), red) << skinTopic().dump();
+  EXPECT_TRUE(skinTopic().value("preset", Json()).is_null()) << skinTopic().dump();
+  {
+    Reopened back(saved);
+    EXPECT_TRUE(back.problems.empty()) << back.problems.dump();
+    EXPECT_EQ(surfaces(back.rig, back.id), surfaces(rig, id));
+    const Json again = back.rig.cmd("scene.state", {{"prop", back.id}}).at("result");
+    EXPECT_EQ(again.value("skin", ""), red);
+    EXPECT_EQ(names(again, "materialPresetsOver"), Json::array({tint}));
+  }
+
+  // undone, the look before: no preset over anything
+  historyStep(rig, "history.undo");
+  EXPECT_EQ(names(state(), "materialPresetsOver"), Json::array());
+  historyStep(rig, "history.redo");
+  EXPECT_EQ(names(state(), "materialPresetsOver"), Json::array({tint}));
+
+  // a skin of all of it, chosen: the tint is gone from the Head, and a reopened scene has it gone too
+  apply("material.skin", full);
+  saved = state();
+  EXPECT_EQ(names(saved, "materialPresetsOver"), Json::array());
+  EXPECT_EQ(names(saved, "materialPresets"), Json::array({tint}));
+  {
+    Reopened back(saved);
+    EXPECT_EQ(surfaces(back.rig, back.id), surfaces(rig, id));
+  }
+
+  // opened as a preset, over all of the skin, it is the skin: named so, and nothing is chosen
+  apply("material.skin", red);
+  apply("load", full);
+  saved = state();
+  EXPECT_FALSE(saved.contains("skin")) << saved.dump();
+  EXPECT_EQ(skinTopic().value("preset", ""), full) << skinTopic().dump();
+  EXPECT_EQ(names(saved, "materialPresetsOver"), Json::array());
+}
+
 // A dial the character's file sets (the Box Figure's Stretch, at 0.5) stays where the user put it, at 0
 // too: a file holds what differs from how the figure loads. What didn't change isn't in it, so a file
 // from before, which never held a zero, still means "as loaded".

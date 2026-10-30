@@ -163,6 +163,14 @@ struct Loaded
   Json source;
   // material presets opened onto it, library paths in order, for a scene file
   std::vector<std::string> materialPresets;
+  // those laid over the skin or eyes chosen, which go back after them, and what each set: a later
+  // choice over those surfaces takes the preset off them, so it goes back before that choice instead
+  struct PresetOver
+  {
+    std::string   rel;
+    std::set<int> surfaces;
+  };
+  std::vector<PresetOver> presetsOver;
   // the eyes chosen (material.eyes, or an eye-only material preset): its library path, "" for the
   // character's own; set only once chosen, so a scene file without a choice replays its presets alone
   std::optional<std::string> eyes;
@@ -889,6 +897,9 @@ struct FvHost::Impl
   // a worn item's colour (fv_host.hpp wardrobe.color): `rel` "" and no `doc` for the item as it was worn
   Json wardrobeColor(const Json& args);
   Json applyItemColor(Prop& prop, const std::vector<int>& items, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
+  // A skin or eyes `rel` chosen, over `surfaces`: it isn't a preset any more, and what lay over those
+  // surfaces is gone from them, so goes back before the choice.
+  void choiceReplaced(Loaded& f, const std::string& rel, const std::set<int>& surfaces);
   void publishEyes(Prop& p);
   // skin and makeup (fv_host.hpp material.skin, material.makeup): `rel` "" and no `doc` for the
   // character's own
@@ -969,6 +980,7 @@ struct FvHost::Impl
   {
     std::vector<fv::Material>                   materials;
     std::vector<std::string>                    materialPresets;
+    std::vector<Loaded::PresetOver>             presetsOver;
     std::optional<std::string>                  eyes, skin, makeup;
     std::set<int>                               eyesOwned, skinOwned;
     std::string                                 eyesPreset, skinPreset;
