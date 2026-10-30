@@ -19,6 +19,8 @@
 
 #include "scene_residency.hpp"
 
+#include "openpbr_luts.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cassert>
@@ -224,6 +226,8 @@ void Residency::clear()
   retireBuffer(m_emissiveGroupTable);
   retireBuffer(m_emissiveLeafTable);
   retireBuffer(m_iesTable);
+  retireBuffer(m_openPbrLuts);
+  m_openPbrLuts = {};
   m_lightTable = m_emissiveTable = m_emissiveGroupTable = m_emissiveLeafTable = m_iesTable = {};
   m_lightCount = m_emissiveCount = m_emissiveGroupCount = m_emissiveNodeCount = m_emissiveLeafCount = m_iesProfileCount = 0;
   m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
@@ -2184,6 +2188,13 @@ void Residency::writeSceneDesc()
   desc.numEmissiveGroups     = int(m_emissiveGroupCount);
   desc.emissiveLeafOfNode    = (int*)m_gpu.bufferAddress(m_emissiveLeafTable);
   desc.numEmissiveLeafOfNode = int(m_emissiveLeafCount);
+  if(!m_openPbrLuts)
+  {
+    const std::vector<float> table = openPbrLutTable();
+    m_openPbrLuts = m_gpu.createBuffer({.size = table.size() * sizeof(float), .usage = eBufferStorage, .name = "OpenPBR tables"});
+    m_gpu.upload(m_openPbrLuts, 0, std::as_bytes(std::span(table)));
+  }
+  desc.openPbrLuts = (float*)m_gpu.bufferAddress(m_openPbrLuts);
   m_gpu.upload(m_sceneDesc, 0, bytesOf(desc));
 }
 
@@ -2388,7 +2399,7 @@ size_t Residency::liveBuffers() const
   for(const std::optional<Prim>& p : m_prims)
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
-                        m_emissiveTable, m_emissiveGroupTable, m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
+                        m_emissiveTable, m_emissiveGroupTable, m_emissiveLeafTable, m_iesTable, m_openPbrLuts, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
                         m_prevWorldTable})
     n += b ? 1 : 0;
   return n;

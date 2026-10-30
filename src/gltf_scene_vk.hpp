@@ -390,6 +390,7 @@ protected:
   nvvk::Buffer m_bTextureInfos;
   nvvk::Buffer m_bLights;
   nvvk::Buffer m_bIesProfiles;        // EXT_lights_ies: flattened [profile][sample] table, see loadIesProfiles()
+  nvvk::Buffer m_bOpenPbrLuts;        // the OpenPBR closure's lookup tables, the same for every scene
   nvvk::Buffer m_bEmissiveTriangles;  // Referenced emissive triangles sampled as area lights
   uint32_t     m_numEmissiveTriangles = 0;
   float        m_emissiveTotalWeight  = 0.0f;  // Sum of per-triangle selection weights (area * defensive luminance)

@@ -38,6 +38,7 @@ inline float max(float a, double b) { return glm::max(a, float(b)); }
 using namespace shaderio;
 #include <nvshaders/bsdf_functions.h.slang>
 #include "../shaders/openpbr/fv_openpbr.h.slang"
+#include "../shaders/openpbr/fv_openpbr_lut_table.hpp"
 
 namespace {
 
@@ -1086,4 +1087,181 @@ TEST(OpenPbr, TheTerminatorAndOcclusionStillApply)
   fvOpenPbrEvaluate(b, fvOpenPbrPrepare(open, V), open);
   EXPECT_NEAR(a.bsdf_diffuse.x, 0.25f * b.bsdf_diffuse.x, 1e-5f);
   EXPECT_NEAR(a.pdf, b.pdf, 1e-5f);
+}
+
+namespace {
+
+// What the closure sends through at `k1`, by its own samples
+vec3 transmittedBy(const PbrMaterial& mat, const vec3& k1, int N = 200000)
+{
+  std::mt19937                          rng(61);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const auto                            prepared = fvOpenPbrPrepare(mat, k1);
+  vec3                                  through(0.0f);
+  for(int i = 0; i < N; i++)
+  {
+    BsdfSampleData s;
+    s.k1 = k1;
+    s.xi = vec3(u(rng), u(rng), u(rng));
+    fvOpenPbrSample(s, prepared, mat);
+    if(s.event_type == BSDF_EVENT_GLOSSY_TRANSMISSION)
+      through += s.bsdf_over_pdf / float(N);
+  }
+  return through;
+}
+
+PbrMaterial clearGlass(const vec3& colour, float thickness)
+{
+  PbrMaterial glass  = defaultPbrMaterial(colour, 0.0f, 0.02f, vec3(0, 0, 1), vec3(0, 0, 1));
+  glass.transmission = 1.0f;
+  glass.thickness    = thickness;
+  return glass;
+}
+
+}  // namespace
+
+// A shadow ray keeps of a thin clear surface what the closure's own ray does
+TEST(OpenPbr, AShadowRayCrossesAThinWallAsTheClosureDoes)
+{
+  const vec3 tint(0.9f, 0.7f, 0.5f);
+  for(const float cosine : {1.0f, 0.6f})
+  {
+    const vec3 V(std::sqrt(1.0f - cosine * cosine), 0.0f, cosine);
+    const vec3 closure = transmittedBy(clearGlass(tint, 0.0f), V);
+    const vec3 shadow  = fvOpenPbrShadowWeight(1.5f, 1.0f, 0.0f, tint, true, cosine);
+    for(int c = 0; c < 3; c++)
+      EXPECT_NEAR(shadow[c], closure[c], 0.02f) << "cosine " << cosine << " channel " << c;
+  }
+}
+
+// Through a volume the two crossings together keep what the closure's two do: a shadow ray stays
+// straight, so entry and exit are at one cosine; the closure's exit is at the refracted one.
+TEST(OpenPbr, AShadowRayCrossesAVolumeAsTheClosureDoes)
+{
+  const vec3  tint(0.9f, 0.7f, 0.5f);
+  const float cosine = 0.8f;
+  const vec3  V(std::sqrt(1.0f - cosine * cosine), 0.0f, cosine);
+  PbrMaterial outside = clearGlass(tint, 0.01f);
+  const vec3  entered = transmittedBy(outside, V);
+
+  // from inside at the refracted cosine, where the path meets the far wall of a flat slab
+  const float inner = std::sqrt(1.0f - (1.0f - cosine * cosine) / (1.5f * 1.5f));
+  PbrMaterial inside = outside;
+  inside.ior1        = 1.5f;
+  inside.ior2        = 1.0f;
+  const vec3 left    = transmittedBy(inside, vec3(std::sqrt(1.0f - inner * inner), 0.0f, inner));
+
+  const vec3 shadow = fvOpenPbrShadowWeight(1.5f, 1.0f, 0.0f, tint, false, cosine)
+                      * fvOpenPbrShadowWeight(1.5f, 1.0f, 0.0f, tint, false, -cosine);
+  for(int c = 0; c < 3; c++)
+    EXPECT_NEAR(shadow[c], entered[c] * left[c], 0.03f) << "channel " << c;
+}
+
+// What a coat reflects doesn't reach the far side, and a surface with no reflection lets all through
+TEST(OpenPbr, AShadowRayLosesWhatACoatAndTheSpecularReflect)
+{
+  const vec3 white(1.0f);
+  const vec3 plain = fvOpenPbrShadowWeight(1.5f, 1.0f, 0.0f, white, true, 1.0f);
+  const vec3 coated = fvOpenPbrShadowWeight(1.5f, 1.0f, 1.0f, white, true, 1.0f);
+  EXPECT_NEAR(coated.x / plain.x, 0.96f, 0.002f);
+  EXPECT_NEAR(fvOpenPbrShadowWeight(1.5f, 0.0f, 0.0f, white, true, 1.0f).x, 1.0f, 1e-4f);
+}
+
+// Emission lies under a coat, and the scale both techniques use is the closure's, darkening aside
+TEST(OpenPbr, EmissionComesThroughACoatAsTheClosureHasIt)
+{
+  for(const float cosine : {1.0f, 0.7f, 0.3f})
+  {
+    const vec3  V(std::sqrt(1.0f - cosine * cosine), 0.0f, cosine);
+    PbrMaterial mat         = base(0.5f);
+    mat.clearcoat           = 0.8f;
+    mat.clearcoatRoughness  = 0.3f;
+    OpenPBR_ResolvedInputs in = fvOpenPbrInputs(mat, V);
+    in.emission_luminance     = 1.0f;
+    in.coat_darkening         = 0.0f;
+    const auto prepared       = openpbr_prepare(in, vec3(1.0f), OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, V);
+    EXPECT_NEAR(fvOpenPbrEmissionScale(mat.clearcoat, 0.0f, mat.clearcoatRoughness, cosine), prepared.emission.x, 1e-3f)
+        << "cosine " << cosine;
+  }
+  // DAZ's tight lobe is no layer over the emission, and no coat isn't either
+  EXPECT_EQ(fvOpenPbrEmissionScale(0.8f, 1.0f, 0.3f, 0.5f), 1.0f);
+  EXPECT_EQ(fvOpenPbrEmissionScale(0.0f, 0.0f, 0.3f, 0.5f), 1.0f);
+}
+
+// Dispersion is the KHR extension's: the same index at the same wavelength, each channel in its band
+TEST(OpenPbr, DispersionIsTheExtensionsAtEachChannelsWavelength)
+{
+  PbrMaterial glass = clearGlass(vec3(1.0f), 0.01f);
+  EXPECT_EQ(fvOpenPbrWavelengths(glass, 0.5f), OpenPBR_BaseRgbWavelengths_nm);
+  glass.dispersion = 2.0f;
+  const vec3 low   = fvOpenPbrWavelengths(glass, 0.0f);
+  const vec3 high  = fvOpenPbrWavelengths(glass, 1.0f);
+  EXPECT_EQ(high.x, 669.0f);  // today's range, WAVELENGTH_MAX
+  EXPECT_EQ(low.z, 399.0f);   // WAVELENGTH_MIN
+  EXPECT_EQ(low.x, high.y);   // the bands meet
+  EXPECT_EQ(low.y, high.z);
+  for(const float wavelength : {low.z, high.z, high.y, high.x})
+    EXPECT_NEAR(openpbr_dispersion_adjusted_ior(1.5f, glass.dispersion, wavelength), computeDispersedIOR(1.5f, glass.dispersion, wavelength), 1e-4f)
+        << wavelength << " nm";
+}
+
+// A path narrowed to one channel by an earlier crossing keeps going on it: told its throughput, the
+// closure doesn't spend its samples on channels the path no longer carries
+TEST(OpenPbr, ADispersedPathStaysOnItsChannel)
+{
+  PbrMaterial glass = clearGlass(vec3(1.0f), 0.01f);
+  glass.dispersion  = 1.0f;
+  const vec3 V(0.0f, 0.0f, 1.0f);
+  const auto deadShare = [&](const vec3& throughput) {
+    std::mt19937                          rng(67);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    const auto prepared = fvOpenPbrPrepare(glass, V, 0.5f, throughput);
+    int        dead = 0, through = 0;
+    for(int i = 0; i < 20000; i++)
+    {
+      BsdfSampleData s;
+      s.k1 = V;
+      s.xi = vec3(u(rng), u(rng), u(rng));
+      fvOpenPbrSample(s, prepared, glass);
+      if(s.event_type != BSDF_EVENT_GLOSSY_TRANSMISSION)
+        continue;
+      through++;
+      dead += (s.bsdf_over_pdf * throughput).x <= 0.0f ? 1 : 0;
+    }
+    EXPECT_GT(through, 10000);
+    return float(dead) / float(through);
+  };
+  EXPECT_LT(deadShare(vec3(1.0f, 0.0f, 0.0f)), 0.01f);
+}
+
+// The tables from the buffer read as Adobe's arrays do, at every kind of table and past their ends
+TEST(OpenPbr, TheBufferedTablesReadAsTheArrays)
+{
+  std::vector<float> table(FV_OPENPBR_LUT_FLOATS);
+  fvOpenPbrFillLuts(table.data());
+  const auto centre = [](float cell) { return (cell + 0.5f) / float(FV_OPENPBR_LUT_SIZE); };
+  std::mt19937                          rng(71);
+  std::uniform_real_distribution<float> u(0.0f, 31.0f);
+  for(int i = 0; i < 2000; i++)
+  {
+    const float x = i == 0 ? 0.0f : i == 1 ? 31.0f : u(rng);
+    const float y = i == 0 ? 31.0f : i == 1 ? 0.0f : u(rng);
+    const float z = i == 0 ? 31.0f : u(rng);
+    for(const int id : {0, 3})
+      EXPECT_NEAR(fvOpenPbrLut3D(table.data(), id, vec3(centre(z), centre(y), centre(x))).r, openpbr_energy_array_lookup_trilinear(id, x, y, z), 1e-5f)
+          << "table " << id;
+    for(const int id : {1, 2, 4, 5})
+      EXPECT_NEAR(fvOpenPbrLut2D(table.data(), id, vec2(centre(y), centre(x))).r, openpbr_energy_array_lookup_bilinear(id, x, y), 1e-5f)
+          << "table " << id;
+    EXPECT_NEAR(fvOpenPbrLut2D(table.data(), FV_OPENPBR_LUT_METAL_AVERAGE, vec2(centre(x), 0.5f)).r,
+                openpbr_energy_array_lookup_linear(FV_OPENPBR_LUT_METAL_AVERAGE, x), 1e-5f);
+
+    // the sheen's: row, then column, as openpbr_disney_sheen_fetch_coeffs has it
+    const int  r = min(int(y), 30), c = min(int(x), 30);
+    const vec3 expected = glm::mix(glm::mix(OpenPBR_LTC_Array[r * 32 + c], OpenPBR_LTC_Array[r * 32 + c + 1], x - float(c)),
+                                   glm::mix(OpenPBR_LTC_Array[(r + 1) * 32 + c], OpenPBR_LTC_Array[(r + 1) * 32 + c + 1], x - float(c)), y - float(r));
+    const vec4 read = fvOpenPbrLut2D(table.data(), FV_OPENPBR_LUT_SHEEN, vec2(centre(x), centre(y)));
+    for(int k = 0; k < 3; k++)
+      EXPECT_NEAR(read[k], expected[k], 1e-5f) << "sheen coefficient " << k;
+  }
 }

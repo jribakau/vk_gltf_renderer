@@ -691,7 +691,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelectionRadiance(materialIndex),
                                                  hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID);
       }
-      addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
+      float3 emitted = pbrMat.emissive;
+      if(USE_OPENPBR == 1)
+        emitted *= fvOpenPbrEmissionScale(pbrMat.clearcoat, pbrMat.clearcoatIsLobe, pbrMat.clearcoatRoughness, abs(dot(pbrMat.N, ray.Direction)));
+      addRadiance(pt, emissiveMis * emitted * pt.throughput, pt.prefixIndirect);
     }
 
     //-----------------------------------------------------------------------
@@ -748,7 +751,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     const bool openPbrHere = USE_OPENPBR == 1 && !hairOn && !exitLobe && fvOpenPbrTakes(pbrMat);
     OpenPBR_PreparedBsdf openPbr;
     if(openPbrHere)
-      openPbr = fvOpenPbrPrepare(pbrMat, -ray.Direction);
+    {
+      float wavelengthXi = 0.5F;
+      if(pbrMat.dispersion > 0.0F)
+        wavelengthXi = rand(seed);
+      openPbr = fvOpenPbrPrepare(pbrMat, -ray.Direction, wavelengthXi, pt.throughput);
+    }
 
     DirectLight directLight;
     // A fibre event spends the hair's own budget while it lasts, not a surface bounce

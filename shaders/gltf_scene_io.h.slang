@@ -449,6 +449,8 @@ struct GltfScene
   // azimuthally averaged (see docs/developer.md > Lighting). GltfLight.iesProfile indexes the profile.
   float* iesProfiles;
   int    iesProfileSampleCount;
+
+  float* openPbrLuts;  // the OpenPBR closure's lookup tables (openpbr/fv_openpbr_luts.h.slang)
 };
 
 // Defensive emissive selection: blend power-weighted selection (area * luminance) with area-uniform

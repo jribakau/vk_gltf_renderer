@@ -445,6 +445,13 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
 
   float3 currentTransmission = tFactor * (1.0F - metallic) * mat.pbrBaseColorFactor.rgb;
   currentTransmission *= (1.0F - fresnel);
+  if(USE_OPENPBR == 1 && mat.retroreflectionFactor <= 0.0F)
+  {
+    const bool thin = thickness <= 0.0F || mat.diffuseTransmissionFactor > 0.0F;
+    currentTransmission = tFactor * (1.0F - metallic)
+                          * fvOpenPbrShadowWeight(mat.ior, mat.specularFactor, mat.clearcoatFactor, mat.pbrBaseColorFactor.rgb, thin,
+                                                  !thin && isInside ? -cosTheta : cosTheta);
+  }
 
 #if GLTF_USE_VOLUME
   if(thickness > 0.0)
@@ -864,6 +871,9 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
     const GltfTextureInfo texInfo = pushConst.gltfScene->textureInfos[materials[materialID].emissiveTexture];
     es.radiance = max(materials[materialID].emissiveFactor, float3(0.0F)) * sampleShadowTexture(prim, texInfo, idx, bary).rgb;
   }
+  if(USE_OPENPBR == 1)
+    es.radiance *= fvOpenPbrEmissionScale(materials[materialID].clearcoatFactor, materials[materialID].clearcoatDualLobe,
+                                          materials[materialID].clearcoatRoughness, cosLight);
   // A ray meets a see-through surface with the probability of its opacity there (the any-hit's
   // stochastic test), and so does what a light sample takes from it. A cutout's holes (a candle
   // flame's card, a lamp's pattern) emitted to light samples alone, so a masked panel lit a floor
