@@ -340,6 +340,26 @@ float3 hairColorToAbsorption(float3 color, float b)
   return l * l;
 }
 
+// OmniHair's root to tip blend (daz_3d/basic.mdl): Schlick's fast bias, and the gain built on it
+float hairBias(float t, float bias)
+{
+  return t / ((1.0F / bias - 2.0F) * (1.0F - t) + 1.0F);
+}
+
+float hairBlend(float along, float bias, float gain)
+{
+  float t = hairBias(along, bias);
+  return t < 0.5F ? hairBias(t * 2.0F, gain) * 0.5F : hairBias(t * 2.0F - 1.0F, 1.0F - gain) * 0.5F + 0.5F;
+}
+
+// OmniHairBase.mdl's absorption at a point of the strand
+float3 hairDyedAbsorption(GltfShadeMaterial mat, float along)
+{
+  float3 color = lerp(mat.hairRootColor, mat.hairTipColor, hairBlend(along, mat.hairBlendBias, mat.hairBlendGain));
+  float3 l     = log(clamp(color, float3(0.001F), float3(1.0F))) / hairColorFit(mat.hairAzimuthal);
+  return lerp(l * l, mat.hairMelaninSigma, mat.hairMelaninMix);
+}
+
 // The colour a lock of these fibres shows (hairColorFit): what its multiply scattered light returns
 float3 hairLockColor(HairHit hair)
 {
@@ -380,7 +400,8 @@ bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 g
 
   float along = saturate(abs(uv.y - mat.hairRootV));
   hair.sigma  = mat.hairFromColor > 0.0F ? hairColorToAbsorption(baseColor, mat.hairAzimuthal)
-                                        : lerp(mat.hairRootSigma, mat.hairTipSigma, along);
+                : mat.hairDyed > 0.0F    ? hairDyedAbsorption(mat, along)
+                                         : lerp(mat.hairRootSigma, mat.hairTipSigma, along);
   hair.betaM     = mat.hairLongitudinal;
   hair.betaN     = mat.hairAzimuthal;
   hair.strand    = strand;

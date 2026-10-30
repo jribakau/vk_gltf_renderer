@@ -345,6 +345,16 @@ struct GltfShadeMaterial
   float hairFromColor   = 0;
   float hairStrandSin   = 0;
   float hairStrandCos   = 0;
+  // OmniHair's absorption along the strand, in place of root and tip when hairDyed is set: the
+  // colours blended through bias and gain, to absorption, mixed with the melanin's (hair_bsdf)
+  float  hairDyed         = 0;
+  float3 hairRootColor    = float3(1);
+  float3 hairTipColor     = float3(1);
+  float3 hairMelaninSigma = float3(0);
+  float  hairMelaninMix   = 1;
+  float  hairBlendBias    = 0.5f;
+  float  hairBlendGain    = 0.5f;
+  float  hairDyePad       = 0;  // the row's size stays a multiple of 8, with no padding left unset
 #endif
 
   // Texture infos (uint16_t, 2 bytes each). Index 0 is the sentinel "no texture" slot

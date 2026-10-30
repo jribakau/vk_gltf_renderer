@@ -271,14 +271,22 @@ struct Surface
   // What its mesh belongs to (Context), which its name was read with. On a garment or a prop it is
   // an open shell, with an inside to see: drawn from both sides.
   Context context = Context::eBody;
-  // OmniHair fibre, when this surface is strand hair. Absorption is Chiang's σ_a at the root and
-  // the tip; the ribbon's along-UV blends them. None for card hair and for every other shader.
+  // OmniHair fibre, when this surface is strand hair. rootSigma and tipSigma are Chiang's σ_a at the
+  // two ends. Along the strand the shader works it out as OmniHairBase.mdl does: the dye colours
+  // blended by the along-UV through bias and gain, turned to absorption and mixed with the melanin's.
+  // None for card hair and for every other shader.
   struct HairFibre
   {
     float longitudinal = 0.2f;  // OmniHair Roughness, 0..1, the longitudinal β
     float azimuthal    = 0.2f;  // Azimuthal Roughness, 0..1
     Rgb   rootSigma{0, 0, 0};
     Rgb   tipSigma{0, 0, 0};
+    Rgb   rootDye{1, 1, 1};  // colour x weight x melanin gamma, before its clamp to 1
+    Rgb   tipDye{1, 1, 1};
+    Rgb   melaninSigma{0, 0, 0};
+    float melaninMix = 1;  // the melanin's share: sqrt(Melanin), or 1 with no dye
+    float blendBias  = 0.5f;
+    float blendGain  = 0.5f;
   };
   std::optional<HairFibre> hairFibre;
 };

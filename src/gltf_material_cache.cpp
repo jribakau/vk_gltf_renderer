@@ -278,6 +278,16 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
     dstMat.hairRootSigma    = rgb(hair.rootAbsorption);
     dstMat.hairTipSigma     = rgb(hair.tipAbsorption);
     dstMat.hairFromColor    = hair.absorptionFromColor ? 1.0f : 0.0f;
+    if(hair.dye)
+    {
+      dstMat.hairDyed         = 1.0f;
+      dstMat.hairRootColor    = rgb(hair.dye->rootColor);
+      dstMat.hairTipColor     = rgb(hair.dye->tipColor);
+      dstMat.hairMelaninSigma = rgb(hair.dye->melaninAbsorption);
+      dstMat.hairMelaninMix   = hair.dye->melaninMix;
+      dstMat.hairBlendBias    = hair.dye->bias;
+      dstMat.hairBlendGain    = hair.dye->gain;
+    }
     if(hair.strandRotation)
     {
       dstMat.hairStrandSin = glm::sin(*hair.strandRotation);

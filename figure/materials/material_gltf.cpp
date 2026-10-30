@@ -351,6 +351,17 @@ Material fromGltf(const tinygltf::Material& g)
       read(v, "azimuthalRoughness", h.azimuthal);
       read(v, "rootAbsorption", h.rootAbsorption);
       read(v, "tipAbsorption", h.tipAbsorption);
+      if(v.IsObject() && v.Has("rootColor"))
+      {
+        HairDye d;
+        read(v, "rootColor", d.rootColor);
+        read(v, "tipColor", d.tipColor);
+        read(v, "melaninAbsorption", d.melaninAbsorption);
+        read(v, "melaninMix", d.melaninMix);
+        read(v, "blendBias", d.bias);
+        read(v, "blendGain", d.gain);
+        h.dye = d;
+      }
       read(v, "rootFade", h.rootFade);
       read(v, "rootV", h.rootV);
       read(v, "specularFactor", h.specular);
@@ -568,6 +579,15 @@ Json materialJson(const Material& m, const char* key)
     {
       e["rootAbsorption"] = rgbJson(h.rootAbsorption);
       e["tipAbsorption"]  = rgbJson(h.tipAbsorption);
+      if(h.dye)
+      {
+        e["rootColor"]         = rgbJson(h.dye->rootColor);
+        e["tipColor"]          = rgbJson(h.dye->tipColor);
+        e["melaninAbsorption"] = rgbJson(h.dye->melaninAbsorption);
+        e["melaninMix"]        = h.dye->melaninMix;
+        e["blendBias"]         = h.dye->bias;
+        e["blendGain"]         = h.dye->gain;
+      }
       e["rootFade"]       = h.rootFade;
       e["rootV"]          = h.rootV;
     }

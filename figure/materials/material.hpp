@@ -168,12 +168,25 @@ struct Detail
   bool        operator==(const Detail&) const = default;
 };
 
-// A strand shaded as a fibre: OmniHair's β_m and β_n, Chiang's σ_a at root and tip, blended by the
-// ribbon's along-UV, whose ramp at the scalp is rootFade and whose root is at rootV.
+// OmniHair's absorption along a strand, as OmniHairBase.mdl and its brick have it: the colours (x
+// weight x melanin gamma, clamped only after the blend) blended root to tip through bias and gain,
+// turned to absorption, and mixed with the melanin's by melaninMix.
+struct HairDye
+{
+  Rgb   rootColor{1, 1, 1}, tipColor{1, 1, 1};
+  Rgb   melaninAbsorption{0, 0, 0};
+  float melaninMix = 1;
+  float bias = 0.5f, gain = 0.5f;
+  bool  operator==(const HairDye&) const = default;
+};
+
+// A strand shaded as a fibre: OmniHair's β_m and β_n, and Chiang's σ_a from `dye` or else blended
+// from root to tip by the ribbon's along-UV, whose ramp at the scalp is rootFade and whose root is at rootV.
 struct Hair
 {
   float longitudinal = 0.2f, azimuthal = 0.2f;
   Rgb   rootAbsorption{0, 0, 0}, tipAbsorption{0, 0, 0};
+  std::optional<HairDye> dye;
   float rootFade = 0, rootV = 0;
   float specular = 1;  // scales the reflecting orders
   // hair cards: the absorption from the colour each hit shows (Chiang's fit inverted), not root and tip

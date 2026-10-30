@@ -770,8 +770,19 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     const float hairSpecular = clamp(e.specular.value_or(1.f), 0.f, 1.f);
     Rgb         rootSigma    = f.rootSigma;
     Rgb         tipSigma     = f.tipSigma;
+    HairDye     dye{.rootColor = f.rootDye, .tipColor = f.tipDye, .melaninAbsorption = f.melaninSigma, .melaninMix = f.melaninMix, .bias = f.blendBias, .gain = f.blendGain};
     if(recolor)
+    {
       recolorFibre(rootSigma, tipSigma, betaN, recolor->color, recolor->strength);
+      // the ends a tint moved, as colours for the same blend, with no melanin left to mix in
+      const float fit = chiangFit(betaN);
+      for(int i = 0; i < 3; i++)
+      {
+        dye.rootColor[i] = std::exp(-std::sqrt(std::max(rootSigma[i], 0.f)) * fit);
+        dye.tipColor[i]  = std::exp(-std::sqrt(std::max(tipSigma[i], 0.f)) * fit);
+      }
+      dye.melaninMix = 0;
+    }
     eff.roughness = betaM;
     eff.specular  = hairSpecular;
     out.roughness        = betaM;
@@ -780,6 +791,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
                                 .azimuthal      = betaN,
                                 .rootAbsorption = rootSigma,
                                 .tipAbsorption  = tipSigma,
+                                .dye            = dye,
                                 .rootFade       = 0.06f,
                                 .rootV          = opts.flipV ? 1.f : 0.f,
                                 .specular       = hairSpecular};

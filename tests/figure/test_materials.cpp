@@ -553,7 +553,8 @@ std::string omniHair(const std::string& more = "")
 TEST(Materials, OmniHairMelaninReadsAsTheBrownItIs)
 {
   // the albedo measured for medium brown hair, not the near-black a lit ribbon showed
-  const auto c = fv::dson::omniHairColor(channelsOf(omniHair().c_str()));
+  const std::string fullWeight = R"(,{"channel":{"id":"Diffuse Strength","type":"float","current_value":1}})";
+  const auto c = fv::dson::omniHairColor(channelsOf(omniHair(fullWeight).c_str()));
   ASSERT_TRUE(c.has_value());
   EXPECT_NEAR((*c)[0], 0.259f, 0.003f);
   EXPECT_NEAR((*c)[1], 0.159f, 0.003f);
@@ -565,21 +566,80 @@ TEST(Materials, OmniHairMelaninReadsAsTheBrownItIs)
   EXPECT_GT((*white)[2], 0.9f);
 }
 
-TEST(Materials, OmniHairDiffuseStrengthBlendsTheDyeIn)
+// OmniHairBase.mdl: base_color x base_color_weight x 2.4, at most 1, to absorption, mixed with the
+// melanin's by sqrt(Melanin). A light dye absorbs nothing of its own, which is what makes blonde
+// and pastel presets light: without the 2.4 they came out dark.
+TEST(Materials, OmniHairDyeIsColourTimesWeightTimesTheMelaninGamma)
 {
-  const std::string dye = R"(,{"channel":{"id":"Hair Root Color","type":"color","current_value":[0.8,0.1,0.1]}},
-    {"channel":{"id":"Hair Tip Color","type":"color","current_value":[0.8,0.1,0.1]}})";
-  const auto weight = [&](double w) {
-    return *fv::dson::omniHairColor(channelsOf(
-        omniHair(dye + R"(,{"channel":{"id":"Diffuse Strength","type":"float","current_value":)" + std::to_string(w) + "}}").c_str()));
+  const auto channel = [](const char* id, double r, double g, double b) {
+    return std::string(R"(,{"channel":{"id":")") + id + R"(","type":"color","current_value":[)" + std::to_string(r) + "," + std::to_string(g) + "," + std::to_string(b) + "]}}";
   };
-  const auto undyed = *fv::dson::omniHairColor(channelsOf(omniHair().c_str()));
-  // none of the dye at 0, all of it at 1, and in between half way
+  // a colour channel reads as sRGB
+  const auto linear = [](float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); };
+  const auto fibre  = [&](double r, double g, double b, double w) {
+    return *fv::dson::parseSurface("FE Base", channelsOf(omniHair(channel("Hair Root Color", r, g, b) + channel("Hair Tip Color", r, g, b)
+                                                                  + R"(,{"channel":{"id":"Diffuse Strength","type":"float","current_value":)" + std::to_string(w) + "}}")
+                                                             .c_str()))
+                .hairFibre;
+  };
+  const auto undyed = fibre(1, 1, 1, 1);
+  // melanin 0.5, redness 0.5, as OmniHairBase.mdl's own spectra
+  constexpr float melanin[3] = {0.5f * 0.5f * 2.4f * (0.5f * 0.506f + 0.5f * 0.343f), 0.5f * 0.5f * 2.4f * (0.5f * 0.841f + 0.5f * 0.733f),
+                                0.5f * 0.5f * 2.4f * (0.5f * 1.653f + 0.5f * 1.924f)};
+  const float       share      = std::sqrt(0.5f);
   for(int i = 0; i < 3; i++)
-    EXPECT_FLOAT_EQ(weight(0)[i], undyed[i]);
-  EXPECT_GT(weight(1)[0] / weight(1)[1], undyed[0] / undyed[1]);
-  EXPECT_GT(weight(0.5)[0] / weight(0.5)[1], undyed[0] / undyed[1]);
-  EXPECT_LT(weight(0.5)[0] / weight(0.5)[1], weight(1)[0] / weight(1)[1]);
+    EXPECT_NEAR(undyed.tipSigma[i], melanin[i], 1e-4f);
+  EXPECT_FLOAT_EQ(undyed.melaninMix, 1.f);
+
+  // a light dye clamps to no absorption of its own, so only the melanin's share is left: lighter than undyed
+  const auto light = fibre(0.8, 0.8, 0.8, 1);
+  for(int i = 0; i < 3; i++)
+    EXPECT_NEAR(light.tipSigma[i], melanin[i] * share, 1e-4f);
+  EXPECT_FLOAT_EQ(light.melaninMix, share);
+  EXPECT_NEAR(light.tipDye[0], linear(0.8f) * 2.4f, 1e-4f);
+  // white under full weight is a dye too, not none
+  const auto white = fibre(1, 1, 1, 0.8);
+  EXPECT_NEAR(white.tipSigma[0], melanin[0] * share, 1e-4f);
+
+  // what the 2.4 leaves absorbing: a dark channel, and more of it the less weight it has
+  const auto  red  = fibre(0.8, 0.1, 0.1, 1);
+  const float fit  = 5.969f - 0.215f * 0.2f + 2.532f * 0.04f - 10.73f * 0.008f + 5.574f * 0.0016f + 0.245f * 0.00032f;
+  const float dark = std::pow(std::log(linear(0.1f) * 2.4f) / fit, 2.f);
+  EXPECT_NEAR(red.tipSigma[1], dark + (melanin[1] - dark) * share, 1e-4f);
+  EXPECT_NEAR(red.tipSigma[0], melanin[0] * share, 1e-4f);
+  EXPECT_GT(fibre(0.8, 0.1, 0.1, 0.5).tipSigma[1], red.tipSigma[1]);
+  // no weight at all is black, not undyed
+  EXPECT_GT(fibre(0.8, 0.1, 0.1, 0).tipSigma[0], undyed.tipSigma[0]);
+}
+
+// The channels the brick's root-to-tip blend reads, carried to the shader; a black root stays a colour
+// so the blend happens before the absorption, as it does in the MDL.
+TEST(Materials, OmniHairCarriesTheBlendToTheFibre)
+{
+  const std::string dye = R"(,{"channel":{"id":"Hair Root Color","type":"color","current_value":[0,0,0]}},
+    {"channel":{"id":"Hair Tip Color","type":"color","current_value":[0.8,0.8,0.6]}},
+    {"channel":{"id":"Diffuse Strength","type":"float","current_value":1}},
+    {"channel":{"id":"Root To Tip Bias","type":"float","current_value":0.4}},
+    {"channel":{"id":"Root to Tip Gain","type":"float","current_value":0.15}})";
+  const auto s = fv::dson::parseSurface("FE Base", channelsOf(omniHair(dye).c_str()));
+  ASSERT_TRUE(s.hairFibre);
+  const auto  lowered = loweredJson(s, {}, {});
+  const auto& hair    = lowered.material["extensions"]["FV_materials_hair"];
+  EXPECT_NEAR(hair["blendBias"].get<float>(), 0.4f, 1e-5f);
+  EXPECT_NEAR(hair["blendGain"].get<float>(), 0.15f, 1e-5f);
+  EXPECT_EQ(hair["rootColor"][0].get<float>(), 0.f);
+  EXPECT_NEAR(hair["tipColor"][2].get<float>(), 0.3185f * 2.4f, 1e-3f);  // 0.6 sRGB, linear
+  EXPECT_NEAR(hair["melaninMix"].get<float>(), std::sqrt(0.5f), 1e-5f);
+  EXPECT_NEAR(hair["melaninAbsorption"][0].get<float>(), s.hairFibre->melaninSigma[0], 1e-5f);
+
+  // a tint leaves the blend and takes the melanin out: its ends are all there is
+  fv::mat::Edits e;
+  e.recolor               = fv::mat::Rgb{0.6f, 0.45f, 0.25f};
+  const auto  tinted      = loweredJson(s, e, {});
+  const auto& tintedHair  = tinted.material["extensions"]["FV_materials_hair"];
+  EXPECT_EQ(tintedHair["melaninMix"].get<float>(), 0.f);
+  EXPECT_NEAR(tintedHair["blendGain"].get<float>(), 0.15f, 1e-5f);
+  EXPECT_LT(tintedHair["rootColor"][0].get<float>(), tintedHair["tipColor"][0].get<float>());
 }
 
 TEST(Materials, RibbonHairLetsLightThroughAndReflectsAsAFibre)
