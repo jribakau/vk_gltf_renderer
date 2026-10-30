@@ -2400,6 +2400,15 @@ bool GltfRenderer::dlssGuideRequired() const
   if(m_resources.settings.renderSystem != RenderingMode::ePathtracer)
     return false;
 
+#if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
+  // The build with guides is the one in the exe, warmed at start, and it writes none unless a denoiser
+  // asks (ePtDenoiserGuides). Without guides there's nothing prepared: turning the denoiser off froze
+  // the renderer for 27 s the first time, to compile and build the pipeline of a shader that differs
+  // only by code that doesn't run. The optimal shader is built per scene anyway, and leaves it out.
+  if(!m_resources.settings.optimalShader)
+    return true;
+#endif
+
 #if defined(USE_DLSS)
   if(m_pathTracer.isDlssEnabled())
     return true;

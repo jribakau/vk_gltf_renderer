@@ -75,8 +75,9 @@ struct SceneFeatureSet
     // Shader-side guide-buffer code (GuideScratch / dlssTraceClearGlass / etc.).
     // True when the active denoiser (DLSS, OptiX or OIDN) wants the path tracer to populate
     // first-hit guide buffers. The build-time CMake gate also controls this via
-    // USE_GUIDE_SHADER, but runtime variant rebuild can be more aggressive (e.g. turn
-    // off when DLSS is compiled in but the user has disabled the denoiser).
+    // USE_GUIDE_SHADER, but the optimal shader's runtime variant rebuild can be more aggressive
+    // (turn off when DLSS is compiled in but the user has disabled the denoiser). The regular
+    // shader keeps it on: that's the build in the exe (GltfRenderer::dlssGuideRequired).
     eDlssGuide,
 
     eCount
