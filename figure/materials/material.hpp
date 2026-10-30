@@ -71,10 +71,16 @@ struct Clearcoat
 {
   float       factor = 0, roughness = 0;
   TextureSlot map, roughnessMap, normalMap;
-  // A second specular lobe the lowering folded in, not a coat: both draw the same lobe, but a coat
-  // darkens what is under it and a second lobe doesn't.
-  bool dualLobe = false;
-  bool operator==(const Clearcoat&) const = default;
+  bool        operator==(const Clearcoat&) const = default;
+};
+
+// A second specular lobe, under the coat: DAZ's tight dual lobe, skin's wet highlight over its broad
+// one. No layer, so it darkens nothing under it, and it lies on the base's normal.
+struct Specular2
+{
+  float       factor = 0, roughness = 0;
+  TextureSlot map, roughnessMap;  // the weight in red, the roughness in green
+  bool        operator==(const Specular2&) const = default;
 };
 
 struct Sheen
@@ -195,6 +201,7 @@ struct Material
   std::optional<Specular>            specular;
   std::optional<float>               ior;  // left out: 1.5
   std::optional<Clearcoat>           clearcoat;
+  std::optional<Specular2>           specular2;
   std::optional<Sheen>               sheen;
   std::optional<Transmission>        transmission;
   std::optional<Volume>              volume;
@@ -238,6 +245,11 @@ void forEachSlot(M& m, Fn&& fn)
     fn(m.clearcoat->roughnessMap);
     fn(m.clearcoat->map);
     fn(m.clearcoat->normalMap);
+  }
+  if(m.specular2)
+  {
+    fn(m.specular2->map);
+    fn(m.specular2->roughnessMap);
   }
   if(m.specular)
   {

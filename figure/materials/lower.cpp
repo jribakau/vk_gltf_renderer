@@ -482,13 +482,15 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     }
   }
 
-  // A top coat occupies the only clearcoat slot, so a tight lobe that would have been the coat
-  // stays in the base specular.
+  // The tight dual lobe is a lobe of its own. For a file, which has only the coat, and in the real-time
+  // view, whose BSDF has no second lobe, it is the coat unless a top coat is: then it stays in the
+  // base specular.
+  const bool secondLobe = lobes.clearcoat && opts.skin != SkinMode::eRaster && !opts.forFile;
   // A file of strand hair (no fibre BSDF in other tools) is a dielectric sheet of index 1.55.
   // The live path shades the fibre itself and does not also put that sheet on it.
   const bool  ribbonHair = s.kind == Kind::eHair && s.twoSided;
   const float specular   = ribbonHair && !liveRibbon ? 1.f
-                           : s.topCoat && lobes.clearcoat ? std::min(1.f, lobes.intensity + lobes.clearcoat->weight)
+                           : s.topCoat && lobes.clearcoat && !secondLobe ? std::min(1.f, lobes.intensity + lobes.clearcoat->weight)
                                                           : lobes.intensity;
   eff.specular = e.specular.value_or(tearFilm ? 1.f : underFilm ? 0.f : specular);
   // Glossy Color tints the glossy layer's share of the lobe, normal to grazing; the dual lobes' share
@@ -505,9 +507,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     specularLobe.colorMap = b.plain(s.glossy.colorMap, true);
   // Where the lobe shines: the weight and reflectivity maps of the layers it is made of, in the
   // alpha the specular's map is read from (CJ Evangeline's Skin_SLW, the Weighted mode's Glossy
-  // Weight map). A tight dual lobe folded back under a top coat adds its share, so the sum keeps a
-  // map only when both parts have the same. The eye's water and strand hair have their own.
-  const std::vector<std::string> specularMaps = !s.topCoat || !lobes.clearcoat || lobes.clearcoat->weightMaps == lobes.intensityMaps
+  // Weight map). A tight dual lobe folded in adds its share, so the sum keeps a map only when both
+  // parts have the same. The eye's water and strand hair have their own.
+  const std::vector<std::string> specularMaps = secondLobe || !s.topCoat || !lobes.clearcoat || lobes.clearcoat->weightMaps == lobes.intensityMaps
                                                     ? lobes.intensityMaps
                                                     : std::vector<std::string>{};
   if(!specularMaps.empty() && !tearFilm && !underFilm && !ribbonHair && specular > 0)
@@ -523,7 +525,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   if(e.sheenColor && ((*e.sheenColor)[0] > 0 || (*e.sheenColor)[1] > 0 || (*e.sheenColor)[2] > 0))
     out.sheen = Sheen{.color = *e.sheenColor, .roughness = clamp(e.sheenRoughness.value_or(0.5f), 0, 1)};
 
-  // clearcoat: Iray's top coat, else the tighter dual lobe, on the same surface detail as the base
+  // clearcoat: Iray's top coat, else the tighter dual lobe where it has no lobe of its own, on the
+  // same surface detail as the base
   struct Coat
   {
     ScalarMap weight;
@@ -544,15 +547,32 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     const float tint = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
     coat = Coat{{s.topCoat->weight * tint, s.topCoat->weightMap}, {s.topCoat->roughness, s.topCoat->roughnessMap}, s.topCoat->bumpWeight};
   }
-  else if(lobes.clearcoat)
+  else if(lobes.clearcoat && !secondLobe)
     coat = Coat{{lobes.clearcoat->weight, {}}, lobes.clearcoat->roughness, 1, lobes.clearcoat->weightMaps};
-  if(coat || e.clearcoat)
+  // The panel's clearcoat sliders move the coat where there is one, else the second lobe, the surface's
+  // tightest highlight.
+  const bool slidersMoveSecondLobe = secondLobe && !s.topCoat;
+  if(secondLobe && !tearFilm && !underFilm)
+  {
+    Specular2 lobe;
+    lobe.factor    = clamp(slidersMoveSecondLobe ? e.clearcoat.value_or(lobes.clearcoat->weight) : lobes.clearcoat->weight, 0, 1);
+    lobe.roughness = clamp(slidersMoveSecondLobe ? e.clearcoatRoughness.value_or(lobes.clearcoat->roughness.value) : lobes.clearcoat->roughness.value, 0, 1);
+    if(!lobes.clearcoat->weightMaps.empty())
+      lobe.map = b.weights(lobes.clearcoat->weightMaps);
+    if(!lobes.clearcoat->roughness.map.empty())
+      lobe.roughnessMap = b.plain(lobes.clearcoat->roughness.map, false);
+    out.specular2 = lobe;
+    if(slidersMoveSecondLobe)
+    {
+      eff.clearcoat          = lobe.factor;
+      eff.clearcoatRoughness = lobe.roughness;
+    }
+  }
+  if(coat || (e.clearcoat && !out.specular2))
   {
     Clearcoat cc;
     cc.factor    = clamp(e.clearcoat.value_or(coat ? coat->weight.value : 0.f), 0, 1);
     cc.roughness = clamp(e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f), 0, 1);
-    // the tight lobe, not a coat: the closure darkens what lies under a coat, and not under this
-    cc.dualLobe = coat && !s.topCoat && lobes.clearcoat && !opts.forFile;
     if(coat && !coat->weight.map.empty())
       cc.map = b.plain(coat->weight.map, false);
     else if(coat && !coat->weightMaps.empty())

@@ -151,8 +151,9 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   m.transmission         = Transmission{.factor = 0.9f, .map = slot(6)};
   m.ior                  = 1.33f;
   m.volume               = Volume{.thickness = 0.5f, .thicknessMap = slot(7), .attenuationDistance = 2, .attenuationColor = {0.3f, 0.2f, 0.1f}};
-  m.clearcoat            = Clearcoat{.factor = 0.5f, .roughness = 0.2f, .map = slot(9), .roughnessMap = slot(8), .normalMap = slot(10), .dualLobe = true};
+  m.clearcoat            = Clearcoat{.factor = 0.5f, .roughness = 0.2f, .map = slot(9), .roughnessMap = slot(8), .normalMap = slot(10)};
   m.clearcoat->normalMap.scale = 0.4f;
+  m.specular2            = Specular2{.factor = 0.3f, .roughness = 0.15f, .map = slot(28), .roughnessMap = slot(29)};
   m.specular             = Specular{.factor = 0.8f, .color = {0.9f, 0.8f, 0.7f}, .map = slot(11), .colorMap = slot(12)};
   m.iridescence          = Iridescence{.factor = 0.5f, .ior = 1.4f, .thicknessMinimum = 150, .thicknessMaximum = 350, .map = slot(13), .thicknessMap = slot(14)};
   m.anisotropy           = Anisotropy{.strength = 0.5f, .rotation = 1.25f, .map = slot(15)};
@@ -189,7 +190,8 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   EXPECT_FLOAT_EQ(row.clearcoatFactor, 0.5f);
   EXPECT_FLOAT_EQ(row.clearcoatRoughness, 0.2f);
   EXPECT_FLOAT_EQ(row.clearcoatNormalTextureScale, 0.4f);
-  EXPECT_EQ(row.clearcoatDualLobe, 1.0f);
+  EXPECT_FLOAT_EQ(row.specular2Factor, 0.3f);
+  EXPECT_FLOAT_EQ(row.specular2Roughness, 0.15f);
   EXPECT_FLOAT_EQ(row.specularFactor, 0.8f);
   EXPECT_EQ(row.specularColorFactor, glm::vec3(0.9f, 0.8f, 0.7f));
   EXPECT_FLOAT_EQ(row.iridescenceFactor, 0.5f);
@@ -229,7 +231,7 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   EXPECT_EQ(row.unlit, 1);
 
   // each map's info is the one its row names, by the texture it was given
-  ASSERT_EQ(infos.size(), 27u);
+  ASSERT_EQ(infos.size(), 29u);
   const auto textureOf = [&](uint16_t at) { return infos[at].index; };
   EXPECT_EQ(textureOf(row.emissiveTexture), 1);
   EXPECT_EQ(textureOf(row.normalTexture), 2);
@@ -241,6 +243,8 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   EXPECT_EQ(textureOf(row.clearcoatRoughnessTexture), 8);
   EXPECT_EQ(textureOf(row.clearcoatTexture), 9);
   EXPECT_EQ(textureOf(row.clearcoatNormalTexture), 10);
+  EXPECT_EQ(textureOf(row.specular2Texture), 28);
+  EXPECT_EQ(textureOf(row.specular2RoughnessTexture), 29);
   EXPECT_EQ(textureOf(row.specularTexture), 11);
   EXPECT_EQ(textureOf(row.specularColorTexture), 12);
   EXPECT_EQ(textureOf(row.iridescenceTexture), 13);

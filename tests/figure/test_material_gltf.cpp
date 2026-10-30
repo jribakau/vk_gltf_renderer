@@ -49,8 +49,9 @@ Material everything()
 
   m.specular  = Specular{.factor = 0.8f, .color = {0.9f, 0.8f, 0.7f}, .map = slot(6), .colorMap = slot(7)};
   m.ior       = 1.33f;
-  m.clearcoat = Clearcoat{.factor = 0.5f, .roughness = 0.2f, .map = slot(8), .roughnessMap = slot(9), .normalMap = slot(10), .dualLobe = true};
+  m.clearcoat = Clearcoat{.factor = 0.5f, .roughness = 0.2f, .map = slot(8), .roughnessMap = slot(9), .normalMap = slot(10)};
   m.clearcoat->normalMap.scale = 0.4f;
+  m.specular2 = Specular2{.factor = 0.3f, .roughness = 0.15f, .map = slot(28), .roughnessMap = slot(29)};
   m.sheen        = Sheen{.color = {0.1f, 0.2f, 0.4f}, .roughness = 0.3f, .colorMap = slot(11), .roughnessMap = slot(12)};
   m.transmission = Transmission{.factor = 0.9f, .map = slot(13)};
   m.volume       = Volume{.thickness = 0.5f, .thicknessMap = slot(14), .attenuationDistance = 2, .attenuationColor = {0.3f, 0.2f, 0.1f}};

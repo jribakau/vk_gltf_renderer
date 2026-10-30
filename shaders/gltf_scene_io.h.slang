@@ -255,8 +255,9 @@ struct GltfShadeMaterial
 #if MAT_EXT_CLEARCOAT
   float clearcoatRoughness          = 0;
   float clearcoatNormalTextureScale = 1;  // clearcoatNormalTexture.scale
-  float clearcoatDualLobe           = 0;  // 1: the slot holds DAZ's tight specular lobe, not a coat (fvDualLobe)
-  float _clearcoatPad               = 0;  // keeps the row a multiple of 8 with no padding: rows are compared byte by byte
+  // A second specular lobe, DAZ's tight dual lobe (mat::Specular2): with the coat, as it needs its code
+  float specular2Factor    = 0;
+  float specular2Roughness = 0;
 #endif
 
 #if MAT_EXT_SPECULAR
@@ -366,6 +367,10 @@ struct GltfShadeMaterial
   uint16_t clearcoatTexture          = 0;
   uint16_t clearcoatRoughnessTexture = 0;
   uint16_t clearcoatNormalTexture    = 0;
+  uint16_t specular2Texture          = 0;
+  uint16_t specular2RoughnessTexture = 0;
+  uint16_t _clearcoatTexturePad0     = 0;  // keep the row a multiple of 8 with no padding: rows are compared byte by byte
+  uint16_t _clearcoatTexturePad1     = 0;
 #endif
 
 #if MAT_EXT_SPECULAR

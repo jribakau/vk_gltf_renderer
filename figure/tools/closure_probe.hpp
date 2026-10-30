@@ -15,7 +15,7 @@
 namespace fv::probe {
 
 // As nvshaders' LOBE_* defines
-constexpr int kLobeCount = 7;
+constexpr int kLobeCount = 8;
 const char*   lobeName(int lobe);
 
 struct ClosureLobe

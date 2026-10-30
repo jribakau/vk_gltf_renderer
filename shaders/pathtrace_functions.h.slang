@@ -435,12 +435,12 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   float fresnel = schlickFresnel(1.5F, cosTheta);
 #endif
   // What the surface reflects, as the BSDF has it: KHR_materials_specular weighs Fresnel (a cornea
-  // under the eye's tear film reflects none), and a clearcoat reflects its share over that.
+  // under the eye's tear film reflects none), and a clearcoat and second lobe reflect their shares over that.
 #if GLTF_USE_SPECULAR
   fresnel *= saturate(mat.specularFactor * max(mat.specularColorFactor.x, max(mat.specularColorFactor.y, mat.specularColorFactor.z)));
 #endif
 #if GLTF_USE_CLEARCOAT
-  fresnel = 1.0F - (1.0F - fresnel) * (1.0F - mat.clearcoatFactor * schlickFresnel(1.5F, cosTheta));
+  fresnel = 1.0F - (1.0F - fresnel) * (1.0F - mat.clearcoatFactor * schlickFresnel(1.5F, cosTheta)) * (1.0F - mat.specular2Factor * schlickFresnel(1.5F, cosTheta));
 #endif
 
   float3 currentTransmission = tFactor * (1.0F - metallic) * mat.pbrBaseColorFactor.rgb;
@@ -864,7 +864,7 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
     const GltfTextureInfo texInfo = pushConst.gltfScene->textureInfos[materials[materialID].emissiveTexture];
     es.radiance = max(materials[materialID].emissiveFactor, float3(0.0F)) * sampleShadowTexture(prim, texInfo, idx, bary).rgb;
   }
-  es.radiance *= bsdfCoatEmission(materials[materialID].clearcoatFactor, materials[materialID].clearcoatDualLobe, materials[materialID].clearcoatRoughness,
+  es.radiance *= bsdfCoatEmission(materials[materialID].clearcoatFactor, materials[materialID].clearcoatRoughness,
                                   materials[materialID].pbrBaseColorFactor.rgb, materials[materialID].pbrMetallicFactor, materials[materialID].transmissionFactor,
                                   materials[materialID].pbrRoughnessFactor * materials[materialID].pbrRoughnessFactor, cosLight);
   // A ray meets a see-through surface with the probability of its opacity there (the any-hit's

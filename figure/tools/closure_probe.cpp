@@ -82,6 +82,8 @@ const char* lobeName(int lobe)
       return "clearcoat";
     case LOBE_DIFFUSE_TRANSMISSION:
       return "diffuseTransmission";
+    case LOBE_SPECULAR2_REFLECTION:
+      return "specular2";
     default:
       return "?";
   }

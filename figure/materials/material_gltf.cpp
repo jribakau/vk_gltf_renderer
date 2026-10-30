@@ -13,6 +13,7 @@ constexpr const char* kFlipGreen    = "FV_texture_flip_green";
 constexpr const char* kScatter      = "KHR_materials_scatter";
 constexpr const char* kScatterDraft = "KHR_materials_volume_scatter";  // an earlier draft's name: read, never written
 constexpr const char* kSubsurface   = "FV_materials_subsurface";
+constexpr const char* kSpecular2    = "FV_materials_specular2";
 
 // Reading a value, each leaving `out` alone where the file has none: glTF's defaults are the structs'.
 void read(const tinygltf::Value& v, const char* key, float& out)
@@ -218,8 +219,16 @@ Material fromGltf(const tinygltf::Material& g)
       read(v, "clearcoatTexture", c.map);
       read(v, "clearcoatRoughnessTexture", c.roughnessMap);
       read(v, "clearcoatNormalTexture", c.normalMap);
-      read(v, "fvDualLobe", c.dualLobe);
       m.clearcoat = c;
+    }
+    else if(name == kSpecular2)
+    {
+      Specular2 s;
+      read(v, "specular2Factor", s.factor);
+      read(v, "specular2RoughnessFactor", s.roughness);
+      read(v, "specular2Texture", s.map);
+      read(v, "specular2RoughnessTexture", s.roughnessMap);
+      m.specular2 = s;
     }
     else if(name == "KHR_materials_sheen")
     {
@@ -428,8 +437,6 @@ Json materialJson(const Material& m, const char* key)
   {
     const Clearcoat& c = *m.clearcoat;
     Json             e = {{"clearcoatFactor", c.factor}, {"clearcoatRoughnessFactor", c.roughness}};
-    if(c.dualLobe)
-      e["fvDualLobe"] = true;
     if(c.map.has())
       e["clearcoatTexture"] = info(c.map);
     if(c.roughnessMap.has())
@@ -437,6 +444,15 @@ Json materialJson(const Material& m, const char* key)
     if(c.normalMap.has())
       e["clearcoatNormalTexture"] = info(c.normalMap);
     ext["KHR_materials_clearcoat"] = e;
+  }
+  if(m.specular2)
+  {
+    Json e = {{"specular2Factor", m.specular2->factor}, {"specular2RoughnessFactor", m.specular2->roughness}};
+    if(m.specular2->map.has())
+      e["specular2Texture"] = info(m.specular2->map);
+    if(m.specular2->roughnessMap.has())
+      e["specular2RoughnessTexture"] = info(m.specular2->roughnessMap);
+    ext[kSpecular2] = e;
   }
   if(m.sheen)
   {

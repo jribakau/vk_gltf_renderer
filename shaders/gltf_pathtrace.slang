@@ -572,6 +572,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float3 specularAlbedo = EnvBRDFApprox2(f0, pbrMat.roughness.x, ndotv);
       // A metal's multiple scattering, as its lobe gives it back (ggxMultiScatterFactor)
       specularAlbedo *= lerp(float3(1.0F), ggxMultiScatterFactor(pbrMat.baseColor, pbrMat.roughness.x, abs(ndotv)), pbrMat.metallic);
+      if(pbrMat.specular2 > 0.0F)
+        specularAlbedo = saturate(specularAlbedo + pbrMat.specular2 * EnvBRDFApprox2(float3(0.04F), pbrMat.specular2Roughness * pbrMat.specular2Roughness, ndotv));
       if(pbrMat.clearcoat > 0.0F)
         specularAlbedo = saturate(specularAlbedo
                                   + pbrMat.clearcoat * EnvBRDFApprox2(float3(0.04F), pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness, ndotv));
@@ -624,6 +626,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       pbrMat.roughness          = max(pbrMat.roughness, float2(pt.pathRoughness * pt.pathRoughness));
       pbrMat.clearcoatRoughness = max(pbrMat.clearcoatRoughness, pt.pathRoughness);
+      pbrMat.specular2Roughness = max(pbrMat.specular2Roughness, pt.pathRoughness);
     }
     else
     {
@@ -683,7 +686,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelectionRadiance(materialIndex),
                                                  hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID);
       }
-      const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatIsLobe, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,
+      const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,
                                                   pbrMat.transmission, 0.5F * (pbrMat.roughness.x + pbrMat.roughness.y), abs(dot(pbrMat.N, ray.Direction)));
       addRadiance(pt, emissiveMis * pbrMat.emissive * throughCoat * pt.throughput, pt.prefixIndirect);
     }
@@ -923,8 +926,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       if(sampleData.event_type != BSDF_EVENT_ABSORB)
       {
         // How rough this scattering was (perceptual): a diffuse lobe 1, an impulse 0, a glossy one
-        // its own roughness. The event does not say which glossy lobe it was: take the smoother of
-        // the specular and the clearcoat, so a wrong guess clamps less, not more. A fibre: its
+        // its own roughness. The event does not say which glossy lobe it was: take the smoothest of
+        // the specular, the second lobe and the clearcoat, so a wrong guess clamps less, not more. A fibre: its
         // longitudinal roughness.
         float eventRoughness = 1.0F;
         if((sampleData.event_type & BSDF_EVENT_IMPULSE) != 0)
@@ -934,6 +937,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           float alpha = max(pbrMat.roughness.x, pbrMat.roughness.y);
           if(pbrMat.clearcoat > 0.0F)
             alpha = min(alpha, pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness);
+          if(pbrMat.specular2 > 0.0F)
+            alpha = min(alpha, pbrMat.specular2Roughness * pbrMat.specular2Roughness);
           eventRoughness = sqrt(alpha);
         }
 #if GLTF_USE_HAIR

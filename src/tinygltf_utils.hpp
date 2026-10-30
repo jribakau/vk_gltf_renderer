@@ -117,9 +117,6 @@ struct KHR_materials_clearcoat
   tinygltf::TextureInfo roughnessTexture = {};
   tinygltf::TextureInfo normalTexture    = {};
   float                 normalScale      = 1.0f;  // clearcoatNormalTexture.scale
-  // fvDualLobe: the extension holds a second specular lobe the figure's lowering folded in, not a coat.
-  // Both draw the same lobe, but a coat darkens what is under it and a second lobe doesn't.
-  bool dualLobe = false;
 };
 
 // https://github.com/KhronosGroup/glTF/blob/master/extensions/2.0/Khronos/KHR_materials_sheen/README.md

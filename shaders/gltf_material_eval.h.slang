@@ -427,7 +427,6 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   // KHR_materials_clearcoat
   pbrMat.clearcoat          = material.clearcoatFactor;
   pbrMat.clearcoatRoughness = material.clearcoatRoughness;
-  pbrMat.clearcoatIsLobe    = material.clearcoatDualLobe;
   pbrMat.Nc                 = pbrMat.N;
   if(isTexturePresent(material.clearcoatTexture))
   {
@@ -460,6 +459,22 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   pbrMat.clearcoatRoughness *= detailRoughnessMul;
 #endif
   pbrMat.clearcoatRoughness = max(pbrMat.clearcoatRoughness, 0.001F);
+
+  // The second specular lobe, on the base's normal
+  pbrMat.specular2          = material.specular2Factor;
+  pbrMat.specular2Roughness = material.specular2Roughness;
+  if(isTexturePresent(material.specular2Texture))
+  {
+    pbrMat.specular2 *= getTexture(images, samplers, texInfos[material.specular2Texture], state.tc, state.texGrad).r;
+  }
+  if(isTexturePresent(material.specular2RoughnessTexture))
+  {
+    pbrMat.specular2Roughness *= getTexture(images, samplers, texInfos[material.specular2RoughnessTexture], state.tc, state.texGrad).g;
+  }
+#if GLTF_USE_DETAIL
+  pbrMat.specular2Roughness *= detailRoughnessMul;
+#endif
+  pbrMat.specular2Roughness = max(pbrMat.specular2Roughness, 0.001F);
 #endif
 
 #if GLTF_USE_IRIDESCENCE

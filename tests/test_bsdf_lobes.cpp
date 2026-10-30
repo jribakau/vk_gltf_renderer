@@ -724,21 +724,22 @@ TEST(BsdfLobes, ACoatDarkensADarkBaseAndLeavesWhite)
   EXPECT_FLOAT_EQ(diffuseOf(none).x, 0.3f);
 }
 
-// DAZ's second specular lobe sits in the coat's slot and is no layer; clear glass sends its light on, and
-// from inside the surface nothing is under the coat
+// DAZ's second specular lobe is no layer; clear glass sends its light on, and from inside the surface
+// nothing is under the coat
 TEST(BsdfLobes, OnlyACoatOverAnOpaqueBaseDarkens)
 {
   PbrMaterial lobe        = defaultPbrMaterial(vec3(0.3f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
-  lobe.clearcoat          = 1.0f;
-  lobe.clearcoatRoughness = 0.1f;
-  lobe.clearcoatIsLobe    = 1.0f;
+  lobe.specular2          = 1.0f;
+  lobe.specular2Roughness = 0.1f;
   vec3 tint               = lobe.baseColor;
   computeLobeWeights(lobe, 1.0f, tint);
   EXPECT_FLOAT_EQ(tint.x, 0.3f);
 
-  PbrMaterial glass  = lobe;
-  glass.clearcoatIsLobe = 0.0f;
-  glass.transmission = 1.0f;
+  PbrMaterial glass        = lobe;
+  glass.specular2          = 0.0f;
+  glass.clearcoat          = 1.0f;
+  glass.clearcoatRoughness = 0.1f;
+  glass.transmission       = 1.0f;
   tint               = glass.baseColor;
   computeLobeWeights(glass, 1.0f, tint);
   EXPECT_NEAR(tint.x, 0.3f, 1e-4f);
@@ -750,6 +751,67 @@ TEST(BsdfLobes, OnlyACoatOverAnOpaqueBaseDarkens)
   tint                = inside.baseColor;
   computeLobeWeights(inside, 1.0f, tint);
   EXPECT_FLOAT_EQ(tint.x, 0.3f);
+}
+
+// The second lobe weighs as a coat of its own would, the coat over it, and both over the rest
+TEST(BsdfLobes, TheSecondLobeLiesUnderTheCoatAndOverTheRest)
+{
+  const PbrMaterial plain = defaultPbrMaterial(vec3(0.5f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+  PbrMaterial       coat  = plain;
+  coat.clearcoat          = 0.8f;
+  coat.clearcoatRoughness = 0.2f;
+  PbrMaterial lobe        = plain;
+  lobe.specular2          = 0.8f;
+  lobe.specular2Roughness = 0.2f;
+  PbrMaterial both        = coat;
+  both.specular2          = 0.6f;
+  both.specular2Roughness = 0.4f;
+
+  for(float cosine : {1.0f, 0.5f, 0.15f})
+  {
+    vec3       tint = plain.baseColor;
+    const auto wc   = computeLobeWeights(coat, cosine, tint);
+    tint            = plain.baseColor;
+    const auto wl   = computeLobeWeights(lobe, cosine, tint);
+    EXPECT_FLOAT_EQ(wl[LOBE_SPECULAR2_REFLECTION], wc[LOBE_CLEARCOAT_REFLECTION]);
+    EXPECT_FLOAT_EQ(wl[LOBE_CLEARCOAT_REFLECTION], 0.0f);
+
+    tint             = plain.baseColor;
+    const auto w     = computeLobeWeights(both, cosine, tint);
+    const float coatShare = w[LOBE_CLEARCOAT_REFLECTION];
+    EXPECT_FLOAT_EQ(coatShare, wc[LOBE_CLEARCOAT_REFLECTION]);
+    EXPECT_GT(w[LOBE_SPECULAR2_REFLECTION], 0.0f);
+    EXPECT_LE(w[LOBE_SPECULAR2_REFLECTION], (1.0f - coatShare) * 0.6f + 1e-5f);
+    float sum = 0.0f;
+    for(int l = 0; l < LOBE_COUNT; l++)
+      sum += w[l];
+    EXPECT_NEAR(sum, 1.0f, 1e-5f);
+  }
+}
+
+// Its value and its pdf, by the lobe's own roughness on the base's normal; as a coat would have them
+TEST(BsdfLobes, TheSecondLobeEvaluatesAsACoatOfItsRoughness)
+{
+  PbrMaterial lobe        = defaultPbrMaterial(vec3(0.5f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+  lobe.Nc                 = lobe.N;
+  lobe.specular2          = 0.7f;
+  lobe.specular2Roughness = 0.2f;
+  PbrMaterial coat        = lobe;
+  coat.specular2          = 0.0f;
+  coat.clearcoat          = 0.7f;
+  coat.clearcoatRoughness = 0.2f;
+
+  const vec3 view  = normalize(vec3(0.3f, 0.1f, 0.9f));
+  const vec3 light = normalize(vec3(-0.25f, -0.1f, 0.9f));
+  vec3       tint  = lobe.baseColor;
+  BsdfEvaluateData a{}, b{};
+  a.k1 = b.k1 = view;
+  a.k2 = b.k2 = light;
+  bsdfEvaluateLobe(a, lobe, LOBE_SPECULAR2_REFLECTION, tint);
+  bsdfEvaluateLobe(b, coat, LOBE_CLEARCOAT_REFLECTION, tint);
+  EXPECT_GT(a.pdf, 0.0f);
+  EXPECT_NEAR(a.pdf, b.pdf, 1e-3f * b.pdf);
+  EXPECT_NEAR(a.bsdf_glossy.x, b.bsdf_glossy.x, 1e-3f * b.bsdf_glossy.x);
 }
 
 // The diffuse a path takes under a coat carries the darkening, whichever lobe it was drawn by
@@ -768,16 +830,15 @@ TEST(BsdfLobes, TheDarkeningReachesTheLobes)
 }
 
 // Emission lies under a coat: out through what it doesn't reflect, and what it doesn't give back to the base.
-// Not under a second specular lobe, or with no coat.
+// Not with no coat.
 TEST(BsdfLobes, EmissionComesOutThroughACoat)
 {
   const vec3 base(0.3f);
-  EXPECT_EQ(bsdfCoatEmission(0.0f, 0.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f), vec3(1.0f));
-  EXPECT_EQ(bsdfCoatEmission(1.0f, 1.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f), vec3(1.0f));
-  const vec3 straight = bsdfCoatEmission(1.0f, 0.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f);
-  const vec3 grazing  = bsdfCoatEmission(1.0f, 0.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 0.2f);
+  EXPECT_EQ(bsdfCoatEmission(0.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f), vec3(1.0f));
+  const vec3 straight = bsdfCoatEmission(1.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f);
+  const vec3 grazing  = bsdfCoatEmission(1.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 0.2f);
   EXPECT_NEAR(straight.x, 0.96f * bsdfCoatDarkening(1.0f, base, 0.0f, 0.0f, 0.25f).x, 0.005f);
   EXPECT_LT(grazing.x, straight.x);
   // half the coverage takes less
-  EXPECT_GT(bsdfCoatEmission(0.5f, 0.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f).x, straight.x);
+  EXPECT_GT(bsdfCoatEmission(0.5f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f).x, straight.x);
 }

@@ -163,7 +163,7 @@ SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m)
     set.enable(SceneFeatureSet::eVolume);
   if(m.scatter)
     set.enable(SceneFeatureSet::eScatter);
-  if(m.clearcoat)
+  if(m.clearcoat || m.specular2)  // the same code
     set.enable(SceneFeatureSet::eClearcoat);
   if(m.iridescence)
     set.enable(SceneFeatureSet::eIridescence);

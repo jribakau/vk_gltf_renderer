@@ -311,8 +311,9 @@ TEST(Materials, AnEyeUnderTheTearFilmHasNoSpecularOfItsOwn)
   EXPECT_NEAR(bare["KHR_materials_specular"]["specularFactor"].get<float>(), 0.85f, 1e-5f);
   ASSERT_TRUE(bare["KHR_materials_specular"].contains("specularTexture"));
   EXPECT_EQ(bareLowered.requests[bare["KHR_materials_specular"]["specularTexture"]["slot"].get<size_t>()].rel, "/Runtime/Textures/eyes_s.jpg");
-  EXPECT_TRUE(bare.contains("KHR_materials_clearcoat"));
-  EXPECT_TRUE(bare["KHR_materials_clearcoat"].contains("clearcoatTexture"));
+  EXPECT_FALSE(under.contains("FV_materials_specular2"));
+  EXPECT_TRUE(bare.contains("FV_materials_specular2"));
+  EXPECT_TRUE(bare["FV_materials_specular2"].contains("specular2Texture"));
   // a panel edit still wins
   fv::mat::Edits e;
   e.specular = 0.3f;
@@ -1452,6 +1453,11 @@ const char* kUberType    = "studio/material/uber_iray";
 const nlohmann::json& clearcoatOf(const LoweredJson& l)
 {
   return l.material["extensions"]["KHR_materials_clearcoat"];
+}
+
+const nlohmann::json& secondLobeOf(const LoweredJson& l)
+{
+  return l.material["extensions"]["FV_materials_specular2"];
 }
 
 const fv::mat::TextureRequest& requestOf(const LoweredJson& l, const nlohmann::json& info)
@@ -3997,20 +4003,19 @@ TEST(Materials, ADualLobeWeightMapSaysWhereBothLobesShine)
   EXPECT_EQ(spec.channels, "wa");
   EXPECT_FALSE(spec.srgb);
   EXPECT_TRUE(spec.composed());
-  EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.2289474f, 1e-5f);
-  ASSERT_TRUE(clearcoatOf(l).contains("clearcoatTexture"));
-  EXPECT_EQ(fv::mat::requestKey(requestOf(l, clearcoatOf(l)["clearcoatTexture"])), fv::mat::requestKey(spec));
-  EXPECT_EQ(requestOf(l, clearcoatOf(l)["clearcoatRoughnessTexture"]).rel, "/head_r.jpg");
+  EXPECT_NEAR(secondLobeOf(l)["specular2Factor"].get<float>(), 0.2289474f, 1e-5f);
+  ASSERT_TRUE(secondLobeOf(l).contains("specular2Texture"));
+  EXPECT_EQ(fv::mat::requestKey(requestOf(l, secondLobeOf(l)["specular2Texture"])), fv::mat::requestKey(spec));
+  EXPECT_EQ(requestOf(l, secondLobeOf(l)["specular2RoughnessTexture"]).rel, "/head_r.jpg");
 
   // no map (Polina 9's and Leyla 9's skin): flat as before
   const auto flat = loweredJson(cjHead(false), {}, {});
   EXPECT_NEAR(specularOf(flat)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
   EXPECT_FALSE(specularOf(flat).contains("specularTexture"));
-  EXPECT_FALSE(clearcoatOf(flat).contains("clearcoatTexture"));
-  EXPECT_EQ(requestOf(flat, clearcoatOf(flat)["clearcoatRoughnessTexture"]).rel, "/head_r.jpg");
+  EXPECT_FALSE(secondLobeOf(flat).contains("specular2Texture"));
+  EXPECT_EQ(requestOf(flat, secondLobeOf(flat)["specular2RoughnessTexture"]).rel, "/head_r.jpg");
 
-  // CJ's nails: their top coat takes the slot and the tight lobe folds back into the specular,
-  // 0.425 + 0.075, both under the same map, so the sum keeps it
+  // CJ's nails: a top coat and both lobes, each in its own place, 0.425 and 0.075 under the same map
   const auto nails = surfaceOf("Fingernails", kPbrSkinType,
                                {{"Detail Enable", false},
                                 {"Dual Lobe Specular Enable", true},
@@ -4023,16 +4028,18 @@ TEST(Materials, ADualLobeWeightMapSaysWhereBothLobesShine)
                                 {"Top Coat Weight", 0.25}},
                                {{"Dual Lobe Specular Weight", kSlw}});
   const auto ln = loweredJson(nails, {}, {});
-  EXPECT_NEAR(specularOf(ln)["specularFactor"].get<float>(), 0.5f, 1e-5f);
+  EXPECT_NEAR(specularOf(ln)["specularFactor"].get<float>(), 0.425f, 1e-5f);
   ASSERT_TRUE(specularOf(ln).contains("specularTexture"));
   EXPECT_EQ(specularRequest(ln).rel, kSlw);
+  EXPECT_NEAR(secondLobeOf(ln)["specular2Factor"].get<float>(), 0.075f, 1e-5f);
+  EXPECT_EQ(requestOf(ln, secondLobeOf(ln)["specular2Texture"]).rel, kSlw);
   EXPECT_NEAR(clearcoatOf(ln)["clearcoatFactor"].get<float>(), 0.25f, 1e-5f);
   EXPECT_FALSE(clearcoatOf(ln).contains("clearcoatTexture"));  // the coat's weight has no map
 }
 
 // Iray Uber stacks its glossy layer over the dual lobe, two lobes with weights of their own. glTF
 // sums them into one specularFactor, glossy x Mg + dual x Md, which no product of maps gives: the
-// sum stays flat, and only the tight lobe (the clearcoat, the dual's alone) keeps the map.
+// sum stays flat, and only the tight lobe (the second lobe, the dual's alone) keeps the map.
 TEST(Materials, AGlossyLayerAndADualLobeTogetherLeaveTheSumUnmapped)
 {
   const auto s = fv::dson::parseSurface("Face", layered({kSkin, R"({"extra":[{"channels":[
@@ -4049,8 +4056,8 @@ TEST(Materials, AGlossyLayerAndADualLobeTogetherLeaveTheSumUnmapped)
   const auto l = loweredJson(s, {}, {});
   EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.75f, 1e-5f);
   EXPECT_FALSE(specularOf(l).contains("specularTexture"));
-  ASSERT_TRUE(clearcoatOf(l).contains("clearcoatTexture"));
-  EXPECT_EQ(requestOf(l, clearcoatOf(l)["clearcoatTexture"]).rel, "/Runtime/Textures/face_s.jpg");
+  ASSERT_TRUE(secondLobeOf(l).contains("specular2Texture"));
+  EXPECT_EQ(requestOf(l, secondLobeOf(l)["specular2Texture"]).rel, "/Runtime/Textures/face_s.jpg");
 }
 
 // Addy Florence's head (Iray Uber, with her !Material ALL preset): Dual Lobe Specular Reflectivity 1
@@ -4077,14 +4084,48 @@ TEST(Materials, AReflectivityMapScalesTheDualLobeLikeItsWeight)
   EXPECT_NEAR(lobes.clearcoat->weight, 0.1645833f, 1e-5f);
   EXPECT_NEAR(lobes.intensity, 0.9326389f, 1e-5f);
   EXPECT_EQ(lobes.intensityMaps, std::vector<std::string>{"/head_s.jpg"});
-  // the top coat holds the slot: the tight lobe folds back, under the same map
+  // with a top coat too: each lobe its own, under the same map
   const auto l = loweredJson(s, {}, {});
-  EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 1.0f, 1e-5f);
+  EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.9326389f, 1e-5f);
   ASSERT_TRUE(specularOf(l).contains("specularTexture"));
   EXPECT_EQ(specularRequest(l).rel, "/head_s.jpg");
   EXPECT_EQ(specularRequest(l).channels, "wa");
+  EXPECT_NEAR(secondLobeOf(l)["specular2Factor"].get<float>(), 0.1645833f, 1e-5f);
+  EXPECT_EQ(requestOf(l, secondLobeOf(l)["specular2Texture"]).rel, "/head_s.jpg");
   EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.01f, 1e-6f);
   EXPECT_FALSE(clearcoatOf(l).contains("clearcoatTexture"));
+
+  // the real-time view and a file have only the coat, so there the tight lobe folds back as it did
+  for(const fv::mat::LowerOptions options : {fv::mat::LowerOptions{.skin = fv::mat::SkinMode::eRaster}, fv::mat::LowerOptions{.forFile = true}})
+  {
+    const auto folded = loweredJson(s, {}, options);
+    EXPECT_FALSE(folded.material["extensions"].contains("FV_materials_specular2"));
+    EXPECT_NEAR(specularOf(folded)["specularFactor"].get<float>(), 1.0f, 1e-5f);
+    EXPECT_NEAR(clearcoatOf(folded)["clearcoatFactor"].get<float>(), 0.01f, 1e-6f);
+  }
+}
+
+// The Material panel's clearcoat sliders move the coat where a surface has one, else its second lobe, the
+// tightest highlight it has, as they did when the lobe sat in the coat's slot
+TEST(Materials, TheClearcoatSlidersMoveTheSecondLobeWhereThereIsNoCoat)
+{
+  const auto s = cjHead();
+  fv::mat::Edits e;
+  e.clearcoat          = 0.6f;
+  e.clearcoatRoughness = 0.3f;
+  const auto l = loweredJson(s, e, {});
+  EXPECT_NEAR(secondLobeOf(l)["specular2Factor"].get<float>(), 0.6f, 1e-6f);
+  EXPECT_NEAR(secondLobeOf(l)["specular2RoughnessFactor"].get<float>(), 0.3f, 1e-6f);
+  EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_clearcoat"));
+  EXPECT_NEAR(l.effective.clearcoat, 0.6f, 1e-6f);
+  EXPECT_NEAR(l.effective.clearcoatRoughness, 0.3f, 1e-6f);
+
+  // with a coat they move the coat, and the lobe keeps its own
+  auto coated = cjHead();
+  coated.topCoat = fv::mat::Surface::TopCoat{.weight = 0.5f, .roughness = 0.2f};
+  const auto both = loweredJson(coated, e, {});
+  EXPECT_NEAR(clearcoatOf(both)["clearcoatFactor"].get<float>(), 0.6f, 1e-6f);
+  EXPECT_NEAR(secondLobeOf(both)["specular2Factor"].get<float>(), 0.2289474f, 1e-5f);
 }
 
 // A lobe with a weight map and a reflectivity map is their product, which the cooker multiplies
@@ -4095,14 +4136,14 @@ TEST(Materials, TwoMapsOnOneLobeAreMultipliedByTheCooker)
   s.dual->reflectivityMap = "/Runtime/Textures/head_s.jpg";
   const auto l = loweredJson(s, {}, {});
   EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
-  EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.2289474f, 1e-5f);
+  EXPECT_NEAR(secondLobeOf(l)["specular2Factor"].get<float>(), 0.2289474f, 1e-5f);
   const auto& spec = specularRequest(l);
   EXPECT_EQ(spec.rel, kSlw);
   EXPECT_EQ(spec.mulRels, std::vector<std::string>{"/Runtime/Textures/head_s.jpg"});
   EXPECT_TRUE(spec.composed());
   const std::string key = fv::mat::requestKey(spec);
   EXPECT_NE(key.find("|mul:/Runtime/Textures/head_s.jpg"), std::string::npos);
-  EXPECT_EQ(fv::mat::requestKey(requestOf(l, clearcoatOf(l)["clearcoatTexture"])), key);
+  EXPECT_EQ(fv::mat::requestKey(requestOf(l, secondLobeOf(l)["specular2Texture"])), key);
   EXPECT_NE(key, fv::mat::requestKey(specularRequest(loweredJson(cjHead(), {}, {}))));
 
   // a layered image multiplied in gives its bottom layer: the cooker multiplies plain images

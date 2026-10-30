@@ -22,6 +22,7 @@
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/io/gzip.hpp>
+#include <figure/materials/lobes.hpp>
 #include <figure/materials/surface.hpp>
 
 #include "closure_row.hpp"
@@ -132,6 +133,7 @@ struct Tally
   int                                loaded = 0, failed = 0, surfaces = 0;
   std::map<std::string, int>         shaders, kinds, extensions;
   std::map<std::string, std::string> failures;  // file -> why it did not load
+  std::map<std::string, int>         layers;    // shader, layer -> surfaces: what competes for the coat's slot
   // shader -> channel -> {surfaces where it has a value or map and nothing read it, those with a map}
   std::map<std::string, std::map<std::string, std::pair<int, int>>> dropped;
   Json                               rows = Json::object();
@@ -147,6 +149,8 @@ struct Tally
       kinds[k] += v;
     for(const auto& [k, v] : o.extensions)
       extensions[k] += v;
+    for(const auto& [k, v] : o.layers)
+      layers[k] += v;
     failures.insert(o.failures.begin(), o.failures.end());
     for(const auto& [shader, channels] : o.dropped)
       for(const auto& [channel, n] : channels)
@@ -213,6 +217,25 @@ void measure(const std::string& key, const Material& m, mat::SkinMode skin, Tall
   t.surfaces++;
   t.shaders[shader]++;
   t.kinds[kind]++;
+
+  // the layers a surface asks for, and what it asks of a coat's colour
+  const mat::SpecularLobes lobes = mat::specularLobes(m.surface);
+  const bool               coat  = m.surface.topCoat.has_value();
+  if(coat)
+    t.layers[shader + " top coat"]++;
+  if(lobes.clearcoat)
+    t.layers[shader + " tight dual lobe"]++;
+  if(coat && lobes.clearcoat)
+    t.layers[shader + " both"]++;
+  if(coat && m.channels)
+    if(const dson::Channel* c = m.channels->find({"Top Coat Color"}))
+    {
+      const bool white = c->value.is_array() && c->value.size() >= 3 && c->value[0] == 1.0 && c->value[1] == 1.0 && c->value[2] == 1.0;
+      if(c->image)
+        t.layers[shader + " top coat, coloured by a map"]++;
+      else if(!white)
+        t.layers[shader + " top coat, a flat colour"]++;
+    }
 
   // what the parser reads of this surface's channels: the rest is authored and dropped
   if(m.channels)
@@ -416,6 +439,7 @@ Json materialSweep(const std::filesystem::path& libraryDir, const std::filesyste
                  {"shaders", total.shaders},
                  {"kinds", total.kinds},
                  {"extensions", total.extensions},
+                 {"layers", total.layers},
                  {"dropped", droppedJson},
                  {"seconds", int(spent())}};
 
