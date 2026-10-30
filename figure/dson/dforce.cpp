@@ -205,6 +205,45 @@ std::map<std::string, Surface> surfacesFor(const Doc& scene, const Doc* geo, con
   return out;
 }
 
+// "Hair Generation Mode": 0 is Root Radius
+constexpr int kTargetSurfaces = 1;
+
+// A surface's settings for growing by density, at one stage ("PreRender " or "PreSim ").
+mesh::Growth densityGrowth(const Values& ch, const std::string& stage)
+{
+  const auto n = [&](const std::string& name, float fallback) { return num(ch, (stage + name).c_str(), fallback); };
+  mesh::Growth g;
+  g.density      = std::max(0.f, n("Hairs Density", 0));
+  g.seed         = uint32_t(int64_t(n("Hair Seed", 0)));
+  g.points       = std::max(2, int(n("Points Per Hair", 8)));
+  g.segment      = std::max(0.01f, n("Interpolation Segment Length", 1));
+  g.singleGuide  = n("Interpolation Single Guide Strength", 0);
+  g.singleBase   = n("Interpolation Single Guide Base", 0);
+  g.singleTip    = n("Interpolation Single Guide Tip", 0);
+  g.singleBias   = n("Interpolation Single Guide Bias", 0.5f);
+  g.randomLength = std::max(0.f, n("Random Length Amount", 0));
+  g.reduceLength = std::max(0.f, n("Reduce Length Amount", 0));
+  g.lengthSeed   = uint32_t(int64_t(n("Random Length Seed", 0)));
+  g.frizzBase    = std::max(0.f, n("Frizz Base Amount", 0));
+  g.frizzTip     = std::max(0.f, n("Frizz Tip Amount", 0));
+  g.frizzSeed    = uint32_t(int64_t(n("Frizz Seed", 0)));
+  for(int s = 0; s < 2; s++)
+  {
+    const std::string name = "Scraggle " + std::to_string(s + 1) + " ";
+    // mode 0 is None
+    if(int(n(name + "Mode", 0)) == 0)
+      continue;
+    mesh::Scraggle& out = g.scraggle[s];
+    out.amount = std::max(0.f, n("Scraggliness " + std::to_string(s + 1), 0));
+    // these two ids end in a space in DAZ's files
+    out.frequency = n(name + "Frequency ", n(name + "Frequency", 0));
+    out.depth     = int(n(name + "Freq Depth ", n(name + "Freq Depth", 1)));
+    out.ratio     = n(name + "Freq Ratio", 0);
+    out.mult      = n(name + "Freq Mult", 1);
+  }
+  return g;
+}
+
 }  // namespace
 
 std::map<std::string, mesh::Growth> prHairsFor(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId)
@@ -213,11 +252,14 @@ std::map<std::string, mesh::Growth> prHairsFor(const Doc& scene, const Doc* geoD
   const Json*                         mods = get(get(&scene.json, "scene"), "modifiers");
   if(!mods || !mods->is_array())
     return out;
-  const bool generates = std::any_of(mods->begin(), mods->end(), [&](const Json& m) {
-    return hasExtraType(m, "studio/modifier/dynamic_generate_hair") && modifierParent(m) == nodeId
-           && flag(mergedModifierChannels(m, scene, geoDoc), "Generate PreRender Hairs", false);
-  });
-  if(!generates)
+  const auto generates = [&](const char* channel) {
+    return std::any_of(mods->begin(), mods->end(), [&](const Json& m) {
+      return hasExtraType(m, "studio/modifier/dynamic_generate_hair") && modifierParent(m) == nodeId
+             && flag(mergedModifierChannels(m, scene, geoDoc), channel, false);
+    });
+  };
+  const bool preRender = generates("Generate PreRender Hairs"), preSim = generates("Generate PreSim Hairs");
+  if(!preRender && !preSim)
     return out;
   for(const Json& m : *mods)
   {
@@ -225,20 +267,84 @@ std::map<std::string, mesh::Growth> prHairsFor(const Doc& scene, const Doc* geoD
       continue;
     const Values ch = mergedModifierChannels(m, scene, geoDoc);
     mesh::Growth g;
-    g.perGuide      = std::max(0, int(num(ch, "PreRender Hairs Per Guide", 0)));
-    g.radius        = std::max(0.f, num(ch, "PreRender Hair Distribution Radius", 0));
-    g.tipSeparation = num(ch, "PreRender Hair Tip Separation", 0);
-    g.bias          = num(ch, "PreRender Hair Bias", 0.5f);
-    g.gain          = num(ch, "PreRender Hair Gain", 0.5f);
-    g.seed          = uint32_t(int64_t(num(ch, "PreRender Hair Seed", 0)));
-    if(g.perGuide == 0 || g.radius == 0)
-      continue;
+    if(int(num(ch, "Hair Generation Mode", 0)) == kTargetSurfaces)
+    {
+      // hairs before a simulation are hairs all the same to a scene that doesn't run one
+      if(preRender && num(ch, "PreRender Hairs Density", 0) > 0)
+        g = densityGrowth(ch, "PreRender ");
+      else if(preSim && num(ch, "PreSim Hairs Density", 0) > 0)
+        g = densityGrowth(ch, "PreSim ");
+      else
+        continue;
+    }
+    else
+    {
+      if(!preRender)
+        continue;
+      g.perGuide      = std::max(0, int(num(ch, "PreRender Hairs Per Guide", 0)));
+      g.radius        = std::max(0.f, num(ch, "PreRender Hair Distribution Radius", 0));
+      g.tipSeparation = num(ch, "PreRender Hair Tip Separation", 0);
+      g.bias          = num(ch, "PreRender Hair Bias", 0.5f);
+      g.gain          = num(ch, "PreRender Hair Gain", 0.5f);
+      g.seed          = uint32_t(int64_t(num(ch, "PreRender Hair Seed", 0)));
+      if(g.perGuide == 0 || g.radius == 0)
+        continue;
+    }
     if(const Json* groups = get(&m, "groups"); groups && groups->is_array())
       for(const Json& x : *groups)
         if(x.is_string())
           out[x.get<std::string>()] = g;
   }
   return out;
+}
+
+std::shared_ptr<const mesh::GrowthSurface> growthSurfaceFor(Store& store, const Doc& scene, const std::string& file, const Json& node,
+                                                            const std::map<std::string, mesh::Growth>& grow)
+{
+  if(std::none_of(grow.begin(), grow.end(), [](const auto& g) { return g.second.density > 0; }))
+    return nullptr;
+  const std::string parent = getString(&node, "parent");
+  const size_t      hash   = parent.rfind('#');
+  const Json*       nodes  = get(get(&scene.json, "scene"), "nodes");
+  if(hash == std::string::npos || !nodes || !nodes->is_array())
+    return nullptr;
+  const std::string parentId = decodeUri(parent.substr(hash + 1));
+  for(const Json& n : *nodes)
+  {
+    if(getString(&n, "id") != parentId)
+      continue;
+    const Json* geometries = get(&n, "geometries");
+    if(!geometries || !geometries->is_array() || geometries->empty())
+      return nullptr;
+    const auto ref = parseRef(getString(&geometries->front(), "url"), file);
+    if(!ref || !store.library().find(ref->file))
+      return nullptr;
+    const auto found = store.resolve(*ref, "geometry_library");
+    if(!found)
+      return nullptr;
+    const Json* vertices = get(found->entry, "vertices");
+    const Json* polylist = get(found->entry, "polylist");
+    const auto  verts    = found->doc->rows(vertices ? get(vertices, "values") : nullptr);
+    const auto  polys    = found->doc->rows(polylist ? get(polylist, "values") : nullptr);
+    if(!verts->count || !polys->count)
+      return nullptr;
+    auto surface = std::make_shared<mesh::GrowthSurface>();
+    surface->key = found->file + "#" + getString(found->entry, "id");
+    surface->positions.resize(size_t(verts->count) * 3);
+    for(int v = 0; v < verts->count; v++)
+      for(int c = 0; c < 3; c++)
+        surface->positions[size_t(v) * 3 + c] = float(verts->cell(v, c));
+    // polygon rows: [group, material, v0, v1, ...]
+    surface->polyStart.reserve(size_t(polys->count) + 1);
+    for(int p = 0; p < polys->count; p++)
+    {
+      for(int k = polys->start[p] + 2; k < polys->start[p + 1]; k++)
+        surface->polyVerts.push_back(int32_t(polys->data[k]));
+      surface->polyStart.push_back(int32_t(surface->polyVerts.size()));
+    }
+    return surface;
+  }
+  return nullptr;
 }
 
 namespace {

@@ -24,9 +24,25 @@
 
 namespace fv::mesh {
 
+// A grown hair wandering off its course, `amount` cm at `frequency` cycles per cm; `depth` layers of
+// it, each `ratio` as strong and `mult` as frequent as the last.
+struct Scraggle
+{
+  float amount = 0, frequency = 0;
+  int   depth = 1;
+  float ratio = 0, mult = 1;
+};
+
 // DAZ's pre-render (PR) hairs on one material's strands: `perGuide` more strands around each line,
 // their roots up to `radius` (cm) from its root and their spread scaled by 1 + `tipSeparation` at the
 // tip, shaped by `bias` and `gain` along the strand.
+//
+// Or `density` hairs per cm² over a surface ("Target Surfaces" mode, Lines::surface): on the polygons
+// whose corners all carry a guide of this material, each hair between those guides ("Surface Lattice"),
+// and following the nearest one as far as the single guide settings say. `points` is the least a hair
+// is drawn with, `segment` the length (cm) of the pieces DAZ would cut it into, which frizz is relative to.
+// DAZ documents none of the look's settings: the slider's unit is read from its label and range, and
+// what each does to a strand is uncalibrated against DAZ Studio.
 struct Growth
 {
   int      perGuide      = 0;
@@ -35,6 +51,28 @@ struct Growth
   float    bias          = 0.5f;
   float    gain          = 0.5f;
   uint32_t seed          = 0;
+
+  float density     = 0;
+  int   points      = 8;
+  float segment     = 1;
+  float singleGuide = 0, singleBase = 0, singleTip = 0, singleBias = 0.5f;
+  // how much shorter a hair is: up to `randomLength` at random, and `reduceLength` always (cm)
+  float    randomLength = 0, reduceLength = 0;
+  uint32_t lengthSeed   = 0;
+  // a share of `segment` a point moves at random, from the root's to the tip's
+  float    frizzBase = 0, frizzTip = 0;
+  uint32_t frizzSeed = 0;
+  std::array<Scraggle, 2> scraggle{};
+};
+
+// The mesh a "Target Surfaces" strand hair grows from, in the hair's own space.
+struct GrowthSurface
+{
+  std::vector<float> positions;
+  // polygon i is polyVerts[polyStart[i] .. polyStart[i + 1])
+  std::vector<int32_t> polyStart{0}, polyVerts;
+  // which geometry this is, for a key on what a build reads
+  std::string key;
 };
 
 struct Lines
@@ -43,6 +81,8 @@ struct Lines
   std::vector<int32_t> start, verts, material;
   // the PR hairs grown per material; empty grows none
   std::vector<Growth> grow;
+  // what a material with a density grows from; without one it grows nothing
+  std::shared_ptr<const GrowthSurface> surface;
 };
 
 struct MeshInput

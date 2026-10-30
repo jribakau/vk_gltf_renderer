@@ -67,9 +67,18 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
 // The pre-render (PR) hairs each material group of a strand hair grows, from its surfaces'
 // simulation settings ("PR Hairs (Per Guide)", "PR Hair Distribution Radius", "PR Hair Tip
 // Separation", bias, gain, seed). Empty unless one of the node's dynamic_generate_hair modifiers has
-// "Generate PR Hairs" on. Spread by density, clumping, scraggle, frizz and random lengths are not
-// grown.
+// "Generate PR Hairs" on.
+//
+// A surface in "Target Surfaces" mode grows by density instead, at its PR stage or else its PS one
+// ("Generate PS Hairs", the hairs DAZ would simulate; a scene without a simulation draws them as they
+// grow). Clumping, random angles, parting and Surface Lattice Smooth are not grown. A surface in the
+// other mode grows per guide at the PR stage only: its PS hairs, a multiple DAZ adds, are not grown.
 std::map<std::string, mesh::Growth> prHairsFor(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId);
+
+// What the hairs in `grow` grow from when any has a density: the mesh on the node `node` hangs on, in
+// the .duf `scene` from `file`. Null when none has one, or that mesh is missing or has no polygons.
+std::shared_ptr<const mesh::GrowthSurface> growthSurfaceFor(Store& store, const Doc& scene, const std::string& file, const Json& node,
+                                                            const std::map<std::string, mesh::Growth>& grow);
 
 // Settings for a mesh whose file carries none, as DAZ Studio's "Add dForce Modifier: Dynamic
 // Surface" gives it: a dynamic surface at the default values on every vertex (the collision layer

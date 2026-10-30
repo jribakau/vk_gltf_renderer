@@ -708,6 +708,65 @@ TEST(Dforce, readsThePreRenderHairsEachSurfaceGrows)
   EXPECT_TRUE(dson::prHairsFor(*off, geo.get(), "Hair", "geometry").empty());
 }
 
+// "Target Surfaces" mode grows by density, at the PR stage or else the PS one, with that stage's look.
+// The other mode leaves a density alone, and a stage with its generator off grows nothing.
+TEST(Dforce, readsTheDensityASurfaceGrowsAndAtWhichStage)
+{
+  const auto scene = [](const char* generators, const char* channels) {
+    return dson::parseDoc(std::string(R"({"scene": {"modifiers": [)") + generators + R"(
+        {"id": "s", "url": "#set", "parent": "#geometry", "groups": ["Back"], "extra": [{"type": "studio/simulation_settings/dynamic_simulation"}]}
+      ]},
+      "modifier_library": [{"id": "set", "extra": [{"type": "studio/simulation_settings/dynamic_simulation", "channels": [)" + channels + R"(]}]}]
+    })");
+  };
+  const std::string pr = R"({"id": "pr", "parent": "#Hair", "extra": [{"type": "studio/modifier/dynamic_generate_hair"},
+    {"type": "studio_modifier_channels", "channels": [{"channel": {"id": "Generate PreRender Hairs", "type": "bool", "value": true}}]}]},)";
+  const std::string ps = R"({"id": "ps", "parent": "#Hair", "extra": [{"type": "studio/modifier/dynamic_generate_hair"},
+    {"type": "studio_modifier_channels", "channels": [{"channel": {"id": "Generate PreSim Hairs", "type": "bool", "value": true}}]}]},)";
+  const char* const channels = R"(
+    {"channel": {"id": "Hair Generation Mode", "value": 1}},
+    {"channel": {"id": "PreSim Hairs Density", "value": 300}},
+    {"channel": {"id": "PreSim Scraggle 1 Mode", "value": 5}},
+    {"channel": {"id": "PreSim Scraggliness 1", "value": 0.3}},
+    {"channel": {"id": "PreSim Scraggle 1 Frequency ", "value": 0.25}},
+    {"channel": {"id": "PreSim Scraggle 2 Mode", "value": 0}},
+    {"channel": {"id": "PreSim Scraggliness 2", "value": 0.9}},
+    {"channel": {"id": "PreRender Hairs Density", "value": 500}},
+    {"channel": {"id": "PreRender Interpolation Single Guide Strength", "value": 1}},
+    {"channel": {"id": "PreRender Random Length Amount", "value": 1.5}},
+    {"channel": {"id": "PreRender Frizz Tip Amount", "value": 0.5}},
+    {"channel": {"id": "PreRender Interpolation Segment Length", "value": 0.3}})";
+
+  const auto both = dson::prHairsFor(*scene((pr + ps).c_str(), channels), nullptr, "Hair", "geometry");
+  ASSERT_EQ(both.size(), 1u);
+  const fv::mesh::Growth& rendered = both.at("Back");
+  EXPECT_FLOAT_EQ(rendered.density, 500.f);
+  EXPECT_EQ(rendered.perGuide, 0);
+  EXPECT_FLOAT_EQ(rendered.singleGuide, 1.f);
+  EXPECT_FLOAT_EQ(rendered.randomLength, 1.5f);
+  EXPECT_FLOAT_EQ(rendered.frizzTip, 0.5f);
+  EXPECT_FLOAT_EQ(rendered.segment, 0.3f);
+
+  // no PR generator: the PS stage's, its scraggle read and a scraggle of mode None left out
+  const auto sim = dson::prHairsFor(*scene(ps.c_str(), channels), nullptr, "Hair", "geometry");
+  ASSERT_EQ(sim.size(), 1u);
+  EXPECT_FLOAT_EQ(sim.at("Back").density, 300.f);
+  EXPECT_FLOAT_EQ(sim.at("Back").scraggle[0].amount, 0.3f);
+  EXPECT_FLOAT_EQ(sim.at("Back").scraggle[0].frequency, 0.25f);
+  EXPECT_FLOAT_EQ(sim.at("Back").scraggle[1].amount, 0.f);
+
+  EXPECT_TRUE(dson::prHairsFor(*scene("", channels), nullptr, "Hair", "geometry").empty());
+
+  // Root Radius grows per guide, whatever a density says
+  const auto radius = dson::prHairsFor(*scene(pr.c_str(), R"({"channel": {"id": "Hair Generation Mode", "value": 0}},
+    {"channel": {"id": "PreRender Hairs Density", "value": 120}},
+    {"channel": {"id": "PreRender Hairs Per Guide", "value": 3}},
+    {"channel": {"id": "PreRender Hair Distribution Radius", "value": 0.1}})"), nullptr, "Hair", "geometry");
+  ASSERT_EQ(radius.size(), 1u);
+  EXPECT_EQ(radius.at("Back").perGuide, 3);
+  EXPECT_FLOAT_EQ(radius.at("Back").density, 0.f);
+}
+
 // A strand hair's points are in no polygon: each takes the settings a polygon mesh's loose vertex
 // does, without the per-vertex sums a polygon mesh adds up.
 TEST(Dforce, PointsInNoPolygonTakeTheSettingsALooseVertexDoes)

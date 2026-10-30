@@ -543,6 +543,26 @@ the measured strand direction). A glTF written for other tools keeps the old dif
 sheet, because they have no fibre BSDF. The raster preview only stretches the highlight across the
 strand. Gated like the detail layer (`MAT_EXT_HAIR`, `GLTF_USE_HAIR` from `SceneFeatureSet::eHair`).
 
+### Strand hair the file only guides
+
+A strand file holds guides; DAZ grows the rest when it renders. `prHairsFor` (`figure/dson/dforce.cpp`)
+reads what each surface grows, and `grownLines` (`figure/mesh/mesh_build.cpp`) grows it:
+
+- **Root Radius:** PR Hairs Per Guide around each guide. The PS multiple is not grown.
+- **Target Surfaces:** a density (hairs per cm²) at the PR stage, else the PS one, on the mesh the hair's
+  node hangs on (`growthSurfaceFor`). No channel says which polygons: Surface Growth Groups is empty in
+  the one product that uses this mode, so the area is the polygons whose corners all carry a guide of
+  that surface. On AO Moonborn that adds up to the area the guides were authored on, and the
+  surrounding tube and scalp grow nothing.
+
+Either way a grown hair is points of its guide (one stencil column each, so skin, morphs and fits are
+the guide's) plus a rest-shape offset, `Strands::shift`. A density's hairs lie between the three guides
+around the root and toward their nearest as the single guide settings say, and take random length, frizz
+and scraggle. DAZ documents none of these: the amounts' units come from the sliders' labels and ranges,
+and the shapes are uncalibrated. Not grown: clumping, random angles, auto parting, Surface Lattice Smooth.
+A hair is drawn with a point per centimetre (`kGrownSegmentCm`), not the file's 0.3 cm, and a mesh
+grows at most `kMostHairsGrown`.
+
 ### Adding a new KHR_materials_* extension
 
 1. Define a new `MAT_EXT_<NAME>` flag in [`gltf_material_config.h`](../shaders/gltf_material_config.h),

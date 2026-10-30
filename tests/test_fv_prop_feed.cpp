@@ -774,6 +774,159 @@ TEST(FvPropFeed, AStrandGrowsItsPreRenderHairsAroundIt)
   EXPECT_EQ(again.ribbon->shift, rb.shift);
 }
 
+// A density's hairs: a square of 10 x 10 cm with a guide of four points hanging from each corner of
+// its left half (x 0..5) and from one corner on the right, so only the left polygon has guides all round.
+static fv::mesh::MeshInput hairOnASurface(const fv::mesh::Growth& grow)
+{
+  fv::mesh::MeshInput input;
+  fv::mesh::Lines     lines;
+  const float         roots[4][2] = {{0, 0}, {5, 0}, {5, 10}, {0, 10}};
+  for(int g = 0; g < 4; g++)
+  {
+    lines.start.push_back(g * 4);
+    lines.material.push_back(0);
+    for(int p = 0; p < 4; p++)
+    {
+      input.positions.insert(input.positions.end(), {roots[g][0], -3.f * float(p), roots[g][1]});
+      lines.verts.push_back(g * 4 + p);
+    }
+  }
+  lines.start.push_back(16);
+  lines.grow = {grow};
+  auto surface       = std::make_shared<fv::mesh::GrowthSurface>();
+  surface->positions = {0, 0, 0, 5, 0, 0, 5, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0, 10};
+  surface->polyStart = {0, 4, 8};
+  surface->polyVerts = {0, 1, 2, 3, 1, 4, 5, 2};
+  lines.surface      = surface;
+  input.lines        = lines;
+  return input;
+}
+
+// Each drawn strand's root (the drawn vertex with `along` 0 of each new line), with its shift.
+static std::vector<glm::vec3> grownRoots(const fv::mesh::BuiltMesh& geo, size_t guidePoints)
+{
+  std::vector<glm::vec3> out;
+  for(size_t i = 0; i < geo.renderIndex.size(); i++)
+    if(geo.ribbon->along[i] == 0.f && (geo.renderIndex[i] & 1) == 0 && (geo.renderIndex[i] >> 1) >= guidePoints)
+      out.push_back(glm::make_vec3(&geo.position[i * 3]));
+  return out;
+}
+
+// Hairs per cm² over the polygons with guides all round, and none on a polygon that lacks one; the
+// guides stay, and the same seed grows the same hairs.
+TEST(FvPropFeed, ADensityGrowsOverThePolygonsWithGuidesAllRound)
+{
+  const fv::mesh::MeshInput input = hairOnASurface({.seed = 7, .density = 20, .singleGuide = 1, .singleBase = 1, .singleTip = 1});
+  const fv::mesh::BuiltMesh geo   = fv::mesh::build(input);
+  ASSERT_TRUE(geo.ribbon);
+  const auto roots = grownRoots(geo, 16);
+  // 50 cm² at 20 per cm², give or take a hair for each of its two triangles
+  EXPECT_NEAR(double(roots.size()), 1000.0, 2.0);
+  float xMax = 0;
+  for(const glm::vec3& r : roots)
+  {
+    EXPECT_GE(r.x, -1e-4f);
+    EXPECT_LE(r.x, 5.f + 1e-4f);
+    EXPECT_GE(r.z, -1e-4f);
+    EXPECT_LE(r.z, 10.f + 1e-4f);
+    EXPECT_NEAR(r.y, 0.f, 1e-4f);
+    xMax = std::max(xMax, r.x);
+  }
+  // it reaches across the polygon
+  EXPECT_GT(xMax, 4.5f);
+  EXPECT_EQ(fv::mesh::build(input).ribbon->shift, geo.ribbon->shift);
+
+  fv::mesh::Growth other{.seed = 8, .density = 20};
+  EXPECT_NE(fv::mesh::build(hairOnASurface(other)).ribbon->shift, geo.ribbon->shift);
+}
+
+// A hair is a guide's points (one stencil column each, so its skin and morphs are the guide's) moved
+// off it: all the way along by where its root is when it follows one guide.
+TEST(FvPropFeed, ASingleGuideHairRunsAlongsideItsGuide)
+{
+  const fv::mesh::BuiltMesh geo = fv::mesh::build(hairOnASurface({.seed = 7, .density = 2, .singleGuide = 1, .singleBase = 1, .singleTip = 1}));
+  const fv::mesh::Ribbon&   rb  = *geo.ribbon;
+  const fv::subdiv::Stencils& s     = geo.refinement->levels.back();
+  const int                   hairs = int(grownRoots(geo, 16).size());
+  ASSERT_GT(hairs, 10);
+  for(int h = 0; h < hairs; h++)
+  {
+    const glm::vec3 root = glm::make_vec3(&rb.shift[size_t(geo.firstSplit[size_t(16 + h * 4) * 2]) * 3]);
+    // straight down from a root at y = 0: the offset lies in the surface, the same at every height
+    EXPECT_NEAR(root.y, 0.f, 1e-4f);
+    for(int q = 0; q < 4; q++)
+    {
+      const int row = (16 + h * 4 + q) * 2;
+      EXPECT_EQ(s.rowStart[row + 1] - s.rowStart[row], 1);
+      EXPECT_LT(glm::distance(glm::make_vec3(&rb.shift[size_t(geo.firstSplit[row]) * 3]), root), 1e-4f);
+    }
+  }
+}
+
+// With no single guide, a hair lies between the guides around it: here they lean apart, so the hair
+// at a polygon's centre stays near the middle of them all the way down.
+TEST(FvPropFeed, AHairBetweenGuidesFollowsThemAll)
+{
+  fv::mesh::MeshInput input = hairOnASurface({.seed = 3, .density = 4});
+  // lean the guides at x = 0 further out as they go, and the others the other way
+  for(int g = 0; g < 4; g++)
+    for(int p = 0; p < 4; p++)
+      input.positions[(g * 4 + p) * 3] += (g == 0 || g == 3 ? -1.f : 1.f) * float(p);
+  const fv::mesh::BuiltMesh geo = fv::mesh::build(input);
+  // a hair is four points here, as its guide is: the refined vertices after the guides', four to a
+  // hair and two to a point, then the segments' midpoints
+  const int hairs = int(grownRoots(geo, 16).size());
+  ASSERT_GT(hairs, 100);
+  for(int h = 0; h < hairs; h++)
+  {
+    const int root = geo.firstSplit[size_t(16 + h * 4) * 2], tip = geo.firstSplit[size_t(16 + h * 4 + 3) * 2];
+    ASSERT_GE(root, 0);
+    ASSERT_GE(tip, 0);
+    const float x = geo.position[size_t(root) * 3];
+    // the lean runs from -3 at x = 0 to +3 at x = 5, in step with where the root is
+    EXPECT_NEAR(geo.position[size_t(tip) * 3], x + (x / 5.f * 2.f - 1.f) * 3.f, 1e-3f);
+  }
+}
+
+// A hair is up to the random length shorter, drawn with as many points as its length needs and at
+// least the file's count, and its frizz and scraggle leave its root on the surface but move the rest.
+TEST(FvPropFeed, FrizzScraggleAndLengthLeaveTheRootInPlace)
+{
+  fv::mesh::Growth grow{.seed = 5, .density = 2, .points = 3, .segment = 1, .singleGuide = 1, .singleBase = 1, .singleTip = 1};
+  grow.randomLength           = 4;
+  grow.frizzBase              = 0.5f;
+  grow.frizzTip               = 0.5f;
+  grow.scraggle[0]            = {.amount = 1, .frequency = 0.5f};
+  const fv::mesh::BuiltMesh geo = fv::mesh::build(hairOnASurface(grow));
+  const fv::mesh::Ribbon&   rb  = *geo.ribbon;
+  float                     deepest = 0, shallowest = 100, moved = 0;
+  for(size_t i = 0; i < geo.renderIndex.size(); i++)
+  {
+    if((geo.renderIndex[i] >> 1) < 16)
+      continue;
+    const float y = geo.position[i * 3 + 1];
+    if(rb.along[i] == 0.f)
+      EXPECT_NEAR(y, 0.f, 1e-4f);
+    if(rb.along[i] == 1.f)
+    {
+      deepest    = std::max(deepest, -y);
+      shallowest = std::min(shallowest, -y);
+    }
+    moved = std::max(moved, std::abs(rb.shift[i * 3 + 1]));
+  }
+  // 9 cm guides, up to 4 cm shorter (a tip lands on a guide's point, so 3 or 6 or 9)
+  EXPECT_GT(deepest, 7.f);
+  EXPECT_LT(shallowest, 7.f);
+  EXPECT_GT(moved, 0.1f);
+}
+
+// Past a machine's worth of hairs they thin out rather than going on.
+TEST(FvPropFeed, ADensityStopsSomewhere)
+{
+  const fv::mesh::BuiltMesh geo = fv::mesh::build(hairOnASurface({.seed = 1, .density = 1000000, .points = 2}));
+  EXPECT_LE(grownRoots(geo, 16).size(), 500002u);
+}
+
 // Strand ribbons (gpu-figures-plan.md F1): each drawn vertex is its strand point moved across the
 // strand by its width, which the GPU adds after copying the points; the residency's streams are the
 // CPU's, as fed and with the strands moved as a morph moves them.

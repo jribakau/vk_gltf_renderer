@@ -98,6 +98,9 @@ struct GrownLines
   Lines                lines;
   std::vector<int32_t> guide;
   std::vector<float>   spot;
+  // a hair grown by density: its whole offset from its guide, xyz per point (Lines::verts), where
+  // spot and the radius don't apply; empty when none is
+  std::vector<float> placed;
 };
 
 uint64_t splitmix(uint64_t x)
@@ -108,9 +111,321 @@ uint64_t splitmix(uint64_t x)
   return x ^ (x >> 31);
 }
 
-GrownLines grownLines(const Lines& L)
+double unitOf(uint64_t h)
 {
-  GrownLines out;
+  return double(h >> 11) * 0x1p-53;
+}
+
+// Perlin's bias and gain, which leave t as it is at 0.5.
+double biasOf(double t, double b)
+{
+  return b == 0.5 ? t : std::pow(t, std::log(std::clamp(b, 1e-4, 1 - 1e-4)) / std::log(0.5));
+}
+double gainOf(double t, double g)
+{
+  return t < 0.5 ? biasOf(2 * t, 1 - g) / 2 : 1 - biasOf(2 - 2 * t, 1 - g) / 2;
+}
+
+double smoothStep(double t)
+{
+  t = std::clamp(t, 0.0, 1.0);
+  return t * t * (3 - 2 * t);
+}
+
+// Smooth noise from -1 to 1, one cycle per unit of x: `key` tells one curve from another.
+double wander(uint64_t key, double x)
+{
+  const double  floorX = std::floor(x);
+  const int64_t i      = int64_t(floorX);
+  const double  a      = unitOf(splitmix(key ^ uint64_t(i) * 0x9e3779b97f4a7c15ull)) * 2 - 1;
+  const double  b      = unitOf(splitmix(key ^ uint64_t(i + 1) * 0x9e3779b97f4a7c15ull)) * 2 - 1;
+  return a + (b - a) * smoothStep(x - floorX);
+}
+
+// One hair of a density, before it has points.
+struct SurfaceHair
+{
+  int                mat = 0, nearest = 0, kept = 0, points = 0;
+  std::array<int, 3> guides{};
+  std::array<float, 3> weights{}, root{};
+};
+
+// A root within this far (cm) of a surface's vertex is on it: guides are grown from the vertices.
+constexpr double kOnVertexCm = 0.01;
+// A grown hair's points are this far apart, or as far as its guide's or the file's count has them.
+// The file's own 0.3 cm would make a 40 cm tail a thousand triangles a hair.
+constexpr double kGrownSegmentCm = 1;
+// So a product can't run a machine out of memory; the hairs are thinned evenly past this.
+constexpr double kMostHairsGrown = 500000;
+// Frizz and scraggle come in over this much of a hair (cm), so that its root stays on the surface.
+constexpr double kFrizzInCm = 1, kScraggleInCm = 2;
+
+// Each guide of a material with a density, on the surface vertex it is rooted on: per material, per
+// surface vertex, a line or -1.
+std::vector<std::vector<int>> guidesOnVertices(const MeshInput& m)
+{
+  const Lines&         L     = *m.lines;
+  const GrowthSurface& S     = *L.surface;
+  const auto&          p     = m.positions;
+  const int            nv    = int(p.size() / 3);
+  const int            sv    = int(S.positions.size() / 3);
+  const int            lines = int(L.start.size()) - 1;
+  std::vector<std::vector<int>> out(L.grow.size());
+
+  // the surface's vertices on a grid of cells wider than the reach, so a root looks in 27 of them
+  constexpr double cell = 0.05;
+  auto             keyOf = [&](double x, double y, double z, int dx, int dy, int dz) {
+    const int64_t ix = int64_t(std::floor(x / cell)) + dx, iy = int64_t(std::floor(y / cell)) + dy, iz = int64_t(std::floor(z / cell)) + dz;
+    return ((ix & 0x1fffff) << 42) | ((iy & 0x1fffff) << 21) | (iz & 0x1fffff);
+  };
+  std::unordered_map<int64_t, std::vector<int>> grid;
+  for(int v = 0; v < sv; v++)
+    grid[keyOf(S.positions[v * 3], S.positions[v * 3 + 1], S.positions[v * 3 + 2], 0, 0, 0)].push_back(v);
+
+  for(int l = 0; l < lines; l++)
+  {
+    const int mat = L.material[l];
+    if(mat < 0 || mat >= int(L.grow.size()) || L.grow[mat].density <= 0 || L.start[l + 1] - L.start[l] < 2)
+      continue;
+    bool valid = true;
+    for(int c = L.start[l]; c < L.start[l + 1]; c++)
+      valid = valid && L.verts[c] >= 0 && L.verts[c] < nv;
+    if(!valid)
+      continue;
+    const int    r = L.verts[L.start[l]];
+    const double x = p[r * 3], y = p[r * 3 + 1], z = p[r * 3 + 2];
+    int          found = -1;
+    double       best  = kOnVertexCm;
+    for(int dx = -1; dx <= 1; dx++)
+      for(int dy = -1; dy <= 1; dy++)
+        for(int dz = -1; dz <= 1; dz++)
+        {
+          const auto it = grid.find(keyOf(x, y, z, dx, dy, dz));
+          if(it == grid.end())
+            continue;
+          for(int v : it->second)
+          {
+            const double d = std::hypot(S.positions[v * 3] - x, S.positions[v * 3 + 1] - y, S.positions[v * 3 + 2] - z);
+            if(d <= best)
+            {
+              best  = d;
+              found = v;
+            }
+          }
+        }
+    if(found < 0)
+      continue;
+    if(out[mat].empty())
+      out[mat].assign(size_t(sv), -1);
+    if(out[mat][found] < 0)
+      out[mat][found] = l;
+  }
+  return out;
+}
+
+// Where a hair roots, and among which guides: every polygon whose corners all carry a guide of a
+// material, in triangles fanned from its first corner.
+std::vector<SurfaceHair> scatterHairs(const MeshInput& m)
+{
+  const Lines&         L     = *m.lines;
+  const GrowthSurface& S     = *L.surface;
+  const int            sv    = int(S.positions.size() / 3);
+  const int            polys = int(S.polyStart.size()) - 1;
+  const auto           on    = guidesOnVertices(m);
+
+  // each triangle of a polygon with guides all round, per material
+  struct Cell
+  {
+    int                mat;
+    std::array<int, 3> corner;
+    double             hairs;
+  };
+  std::vector<Cell> cells;
+  double            wanted = 0;
+  for(int mat = 0; mat < int(on.size()); mat++)
+  {
+    if(on[mat].empty())
+      continue;
+    for(int f = 0; f < polys; f++)
+    {
+      const int s = S.polyStart[f], e = S.polyStart[f + 1];
+      if(e - s < 3 || !std::all_of(S.polyVerts.begin() + s, S.polyVerts.begin() + e, [&](int v) { return v >= 0 && v < sv && on[mat][v] >= 0; }))
+        continue;
+      for(int k = s + 1; k + 1 < e; k++)
+      {
+        const std::array<int, 3> c{S.polyVerts[s], S.polyVerts[k], S.polyVerts[k + 1]};
+        double                   u[3], w[3];
+        for(int a = 0; a < 3; a++)
+        {
+          u[a] = double(S.positions[c[1] * 3 + a]) - S.positions[c[0] * 3 + a];
+          w[a] = double(S.positions[c[2] * 3 + a]) - S.positions[c[0] * 3 + a];
+        }
+        const double area  = 0.5 * std::hypot(u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]);
+        const double hairs = area * L.grow[mat].density;
+        cells.push_back({mat, c, hairs});
+        wanted += hairs;
+      }
+    }
+  }
+
+  const double             thin = wanted > kMostHairsGrown ? kMostHairsGrown / wanted : 1;
+  std::vector<SurfaceHair> out;
+  out.reserve(size_t(wanted * thin) + cells.size());
+  for(size_t i = 0; i < cells.size(); i++)
+  {
+    const Cell&   cell = cells[i];
+    const Growth& g    = L.grow[cell.mat];
+    uint64_t      h    = splitmix((uint64_t(g.seed) << 32) ^ (uint64_t(cell.mat) << 24) ^ uint64_t(i));
+    const double  n    = cell.hairs * thin;
+    // the fraction of a hair at random, so a mesh of small polygons grows what a large one would
+    const int count = int(n) + (unitOf(h) < n - std::floor(n) ? 1 : 0);
+    for(int k = 0; k < count; k++)
+    {
+      h               = splitmix(h);
+      const double r1 = std::sqrt(unitOf(h));
+      h               = splitmix(h);
+      const double r2 = unitOf(h);
+      SurfaceHair  hair;
+      hair.mat     = cell.mat;
+      hair.weights = {float(1 - r1), float(r1 * (1 - r2)), float(r1 * r2)};
+      int nearest  = 0;
+      for(int a = 0; a < 3; a++)
+      {
+        hair.guides[a] = on[cell.mat][cell.corner[a]];
+        if(hair.weights[a] > hair.weights[nearest])
+          nearest = a;
+        for(int b = 0; b < 3; b++)
+          hair.root[b] += hair.weights[a] * S.positions[cell.corner[a] * 3 + b];
+      }
+      hair.nearest = hair.guides[nearest];
+      out.push_back(hair);
+    }
+  }
+  return out;
+}
+
+// The hairs a density grows, after `out`'s lines: each runs along the part of its nearest guide its
+// length keeps, moved off it by GrownLines::placed. That way its skin and morphs are the guide's, as a
+// hair grown per guide has them.
+void growOnSurface(const MeshInput& m, GrownLines& out)
+{
+  const Lines& L     = *m.lines;
+  const auto&  p     = m.positions;
+  auto         hairs = scatterHairs(m);
+  if(hairs.empty())
+    return;
+
+  const auto point = [&](int c, int k) { return double(p[L.verts[c] * 3 + k]); };
+  // where a guide is, `u` of the way along its points
+  const auto along = [&](int line, double u, double* at) {
+    const int    s = L.start[line], n = L.start[line + 1] - s;
+    const double x = u * (n - 1);
+    const int    i = std::min(int(x), n - 2);
+    for(int k = 0; k < 3; k++)
+      at[k] = point(s + i, k) + (point(s + i + 1, k) - point(s + i, k)) * (x - i);
+  };
+  const auto lengthOf = [&](int line) {
+    double length = 0;
+    for(int c = L.start[line]; c + 1 < L.start[line + 1]; c++)
+      length += std::hypot(point(c + 1, 0) - point(c, 0), point(c + 1, 1) - point(c, 1), point(c + 1, 2) - point(c, 2));
+    return length;
+  };
+
+  // how much of its guide each hair keeps, and so how many points it has
+  std::vector<int32_t> pointStart(hairs.size() + 1, 0);
+  for(size_t i = 0; i < hairs.size(); i++)
+  {
+    SurfaceHair&  hair   = hairs[i];
+    const Growth& g      = L.grow[hair.mat];
+    const int     points = L.start[hair.nearest + 1] - L.start[hair.nearest];
+    const double  length = lengthOf(hair.nearest);
+    const double  lost   = g.reduceLength + g.randomLength * unitOf(splitmix((uint64_t(g.lengthSeed) << 32) ^ uint64_t(i)));
+    // a tenth at least: a short hair keeps its root's tuft rather than going
+    const double keep = length > 0 ? std::max(0.1, 1 - lost / length) : 1;
+    hair.kept         = std::max(2, int(keep * (points - 1)) + 1);
+    hair.points       = std::clamp(int(std::ceil(keep * length / kGrownSegmentCm)) + 1, std::min(std::max(2, g.points), hair.kept), hair.kept);
+    pointStart[i + 1] = pointStart[i] + hair.points;
+  }
+
+  const size_t linesBefore = out.lines.start.size() - 1;
+  const int    pointsBefore = int(out.lines.verts.size());
+  out.lines.verts.resize(size_t(pointsBefore) + pointStart.back());
+  out.lines.start.reserve(linesBefore + hairs.size() + 1);
+  for(size_t i = 0; i < hairs.size(); i++)
+  {
+    out.lines.start.push_back(pointsBefore + pointStart[i + 1]);
+    out.lines.material.push_back(hairs[i].mat);
+    out.guide.push_back(hairs[i].nearest);
+    out.spot.push_back(0.f);
+    out.spot.push_back(0.f);
+  }
+  out.placed.assign(out.lines.verts.size() * 3, 0.f);
+
+  jobs::parallelFor(hairs.size(), 256, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      const SurfaceHair& hair = hairs[i];
+      const Growth&      g    = L.grow[hair.mat];
+      const int          s    = L.start[hair.nearest];
+      const int          full = L.start[hair.nearest + 1] - s;
+      const uint64_t     key  = splitmix((uint64_t(g.frizzSeed) << 32) ^ uint64_t(i));
+      double             guideRoot[3];
+      along(hair.nearest, 0, guideRoot);
+      double walked = 0;
+      double last[3];
+      for(int q = 0; q < hair.points; q++)
+      {
+        const int    at = int(std::lround(double(q) / (hair.points - 1) * (hair.kept - 1)));
+        const int    c  = pointsBefore + pointStart[i] + q;
+        const double u  = double(at) / (full - 1);
+        out.lines.verts[c] = L.verts[s + at];
+
+        // between the three guides at the root, and toward running alongside the nearest as the
+        // single guide settings have it (the hair stays this side of it, parallel to it)
+        double guide[3], between[3] = {0, 0, 0}, other[3];
+        along(hair.nearest, u, guide);
+        for(int a = 0; a < 3; a++)
+        {
+          along(hair.guides[a], u, other);
+          for(int k = 0; k < 3; k++)
+            between[k] += hair.weights[a] * other[k];
+        }
+        const double single = g.singleGuide * (g.singleBase + (g.singleTip - g.singleBase) * biasOf(u, g.singleBias));
+        if(q > 0)
+          walked += std::hypot(guide[0] - last[0], guide[1] - last[1], guide[2] - last[2]);
+        std::copy(guide, guide + 3, last);
+
+        const double frizz = (g.frizzBase + (g.frizzTip - g.frizzBase) * u) * g.segment * smoothStep(walked / kFrizzInCm);
+        for(int k = 0; k < 3; k++)
+        {
+          const double beside = guide[k] + double(hair.root[k]) - guideRoot[k];
+          double       to     = between[k] + (beside - between[k]) * single;
+          if(frizz > 0)
+            to += frizz * (unitOf(splitmix(key ^ (uint64_t(q) << 8) ^ uint64_t(k))) * 2 - 1);
+          for(size_t w = 0; w < g.scraggle.size(); w++)
+          {
+            const Scraggle& sc = g.scraggle[w];
+            if(sc.amount <= 0 || sc.frequency <= 0)
+              continue;
+            double amount = sc.amount * smoothStep(walked / kScraggleInCm), frequency = sc.frequency;
+            for(int d = 0; d < std::max(1, sc.depth) && amount > 0; d++)
+            {
+              to += amount * wander(key ^ (uint64_t(w + 1) << 40) ^ (uint64_t(d + 1) << 44) ^ (uint64_t(k + 1) << 48), walked * frequency);
+              amount *= sc.ratio;
+              frequency *= sc.mult;
+            }
+          }
+          out.placed[size_t(c) * 3 + k] = float(to - guide[k]);
+        }
+      }
+    }
+  });
+}
+
+GrownLines grownLines(const MeshInput& m)
+{
+  const Lines& L = *m.lines;
+  GrownLines   out;
   out.lines    = L;
   const int nl = int(L.start.size()) - 1;
   out.guide.resize(size_t(nl));
@@ -137,17 +452,9 @@ GrownLines grownLines(const Lines& L)
       out.spot.push_back(float(r * std::sin(a)));
     }
   }
+  if(L.surface && std::any_of(L.grow.begin(), L.grow.end(), [](const Growth& g) { return g.density > 0; }))
+    growOnSurface(m, out);
   return out;
-}
-
-// Perlin's bias and gain, which leave t as it is at 0.5.
-double biasOf(double t, double b)
-{
-  return b == 0.5 ? t : std::pow(t, std::log(std::clamp(b, 1e-4, 1 - 1e-4)) / std::log(0.5));
-}
-double gainOf(double t, double g)
-{
-  return t < 0.5 ? biasOf(2 * t, 1 - g) / 2 : 1 - biasOf(2 - 2 * t, 1 - g) / 2;
 }
 
 // Median distance from each root to its nearest neighbour, on a grid of half-centimetre cells.
@@ -217,7 +524,7 @@ float rootSpacing(std::span<const float> p, const Lines& lines, const std::funct
 // them as they carry the guide.
 Strands strandRibbons(const MeshInput& m)
 {
-  const GrownLines G      = grownLines(*m.lines);
+  const GrownLines G      = grownLines(m);
   const Lines&     L      = G.lines;
   const auto&      p      = m.positions;
   const int        nv     = int(p.size() / 3);
@@ -385,6 +692,12 @@ Strands strandRibbons(const MeshInput& m)
         {
           if(!ok(c))
             continue;
+          if(g.density > 0)
+          {
+            for(int k = 0; k < 3; k++)
+              out.shift[c * 3 + k] = G.placed[size_t(c) * 3 + k];
+            continue;
+          }
           const int    a = c > s && ok(c - 1) ? L.verts[c - 1] : L.verts[c];
           const int    b = c + 1 < e && ok(c + 1) ? L.verts[c + 1] : L.verts[c];
           const double t[3] = {double(p[b * 3]) - p[a * 3], double(p[b * 3 + 1]) - p[a * 3 + 1], double(p[b * 3 + 2]) - p[a * 3 + 2]};
