@@ -266,7 +266,7 @@ public:
     bool dlssGuide = false;  // True when guide-buffer capture is compiled in (USE_GUIDE_SHADER: DLSS, OptiX or OIDN).
     nvvkgltf::SceneFeatureSet features{};  // only meaningful when `optimal == true`
     int dlssTransparency = 0;  // USE_DLSS_TRANSP the pipeline was specialized with (Dlss::TransparencyMode).
-    int materialModel    = 0;  // USE_OPENPBR the pipeline was specialized with (ptMaterialModel)
+    int materialModel    = 0;  // ptMaterialModel: 1 compiles the OpenPBR closure in (USE_OPENPBR)
 
     // Same SPIR-V: every shader macro matches. dlssTransparency is a pipeline specialization
     // constant, not a macro, so it is left out. dlss and dlssGuide are compared in every mode (they
@@ -275,9 +275,10 @@ public:
     bool sameShader(const VariantKey& o) const
     {
       return wireframe == o.wireframe && visualize == o.visualize && omm == o.omm && optimal == o.optimal
-             && dlss == o.dlss && dlssGuide == o.dlssGuide && (optimal ? (features == o.features) : true);
+             && dlss == o.dlss && dlssGuide == o.dlssGuide && materialModel == o.materialModel
+             && (optimal ? (features == o.features) : true);
     }
-    bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency && materialModel == o.materialModel; }
+    bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }
     // The fields sameShader() sees differ on, e.g. "omm 0->1, dlss 1->0", for the recompile log.
     std::string shaderDiff(const VariantKey& to) const;
   };

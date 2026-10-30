@@ -17,14 +17,18 @@ std::filesystem::path recordPath()
 
 }  // namespace
 
-TEST(PipelineBuildRecord, ARebuiltPipelineThatCompilesAgainWasDropped)
+// Compiled twice in a run isn't the driver's doing: a warm-up and the pipeline it warms, both compiling
+// at once, said "the cache is full" of a cache just emptied
+TEST(PipelineBuildRecord, TwoCompilesInOneRunSayNothingOfTheDriver)
 {
+  std::filesystem::remove(recordPath());
   PipelineBuildRecord record;
+  record.load(recordPath());
   EXPECT_FALSE(record.note(1, 15000.0));  // new: a compile is expected
   EXPECT_FALSE(record.note(1, 70.0));     // again, from the driver's cache
+  EXPECT_FALSE(record.note(1, 15000.0));  // again, compiled
   EXPECT_FALSE(record.driverDropped());
-  EXPECT_TRUE(record.note(1, 15000.0));   // again, and compiled
-  EXPECT_TRUE(record.driverDropped());
+  std::filesystem::remove(recordPath());
 }
 
 TEST(PipelineBuildRecord, TheKeysOutliveTheProcess)

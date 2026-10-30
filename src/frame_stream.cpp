@@ -31,6 +31,7 @@
 #include <volk.h>
 
 #include "frame_stream.hpp"
+#include "pipeline_build_scope.hpp"
 #include "frame_pacing.hpp"
 #include "present_policy.hpp"
 
@@ -919,6 +920,7 @@ void FrameStream::Impl::serve()
                              + ",\"height\":" + std::to_string(extent.height) + ",\"fps\":" + std::to_string(renderFps.load())
                              + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load())
                              + ",\"idle\":" + (idle.load() ? "true" : "false")
+                             + ",\"buildingPipeline\":" + (pipelineBuildsRunning().load() > 0 ? "true" : "false")
                              + ",\"inputMs\":" + std::to_string(inputMs.load()) + ",\"inputMsLast\":" + std::to_string(inputMsLast.load())
                              + ",\"inputSamples\":" + std::to_string(inputSamples.load()) + ",\"profile\":" + profile + "}";
     res.set_content(body, "application/json");

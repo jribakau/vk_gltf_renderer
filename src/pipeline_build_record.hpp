@@ -61,13 +61,16 @@ public:
         catch(...)  // a line cut short by a killed write
         {
         }
+    m_earlier = m_keys;
   }
 
-  // A pipeline of `key` built in `ms`. True when it was built before and compiled again: the driver
-  // did not keep it. Any thread.
+  // A pipeline of `key` built in `ms`. True when it was built on an earlier run and compiled again: the
+  // driver did not keep it. Twice in one run says nothing of the driver's cache: a warm-up and the
+  // pipeline it warms can both be compiling, and a dropped variant is built again. Any thread.
   bool note(uint64_t key, double ms)
   {
     std::lock_guard lock(m_mutex);
+    const bool earlier = m_earlier.count(key) != 0;
     if(m_keys.insert(key).second)
     {
       if(!m_path.empty())
@@ -75,7 +78,7 @@ public:
           out << std::hex << key << '\n';
       return false;
     }
-    if(ms < kCompiledMs)
+    if(!earlier || ms < kCompiledMs)
       return false;
     m_dropped = true;
     return true;
@@ -92,5 +95,6 @@ private:
   mutable std::mutex           m_mutex;
   std::filesystem::path        m_path;
   std::unordered_set<uint64_t> m_keys;
+  std::unordered_set<uint64_t> m_earlier;  // the keys load() found
   bool                         m_dropped = false;
 };
