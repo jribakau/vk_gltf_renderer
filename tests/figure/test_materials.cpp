@@ -1625,7 +1625,7 @@ TEST(Materials, APbrSkinCoatFollowsTheReliefByItsBumpWeight)
 // PBRSkin's Top Coat Color tints the coat's own reflection; the base under it keeps the share an
 // untinted coat leaves it. Its luminance therefore dims the coat's weight. CHT Ava's skin: an enabled
 // coat of 0.11 at roughness 0, coloured 0.502 grey (0.216 linear).
-TEST(Materials, APbrSkinCoatsColourDimsItsReflection)
+TEST(Materials, ACoatsColourTintsItsReflection)
 {
   const auto head = [](double c) {
     return surfaceOf("Head", kPbrSkinType,
@@ -1642,12 +1642,55 @@ TEST(Materials, APbrSkinCoatsColourDimsItsReflection)
   const float lum = fv::mat::srgbToLinear(0.5019608);
   EXPECT_NEAR(clearcoatOf(loweredJson(ava, {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f * lum, 1e-5f);
   EXPECT_NEAR(clearcoatOf(loweredJson(head(1), {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f, 1e-5f);
+  EXPECT_NEAR(clearcoatOf(loweredJson(ava, {}, {.forFile = true}))["clearcoatFactor"].get<float>(), 0.11f * lum, 1e-5f);
+  EXPECT_FALSE(clearcoatOf(loweredJson(ava, {}, {.skin = fv::mat::SkinMode::eRaster})).contains("fvCoatColor"));
 
-  // Iray Uber's colour is not read here (its Color Effect can change the weight itself)
-  const auto uber = surfaceOf("Shirt", kUberType, {{"Top Coat Weight", 0.4}, {"Top Coat Color", Json::array({0.5, 0.5, 0.5})}});
+  // The path tracer tints the reflection, and the coat keeps its weight, so the base keeps its share
+  const auto traced = clearcoatOf(loweredJson(ava, {}, {}));
+  EXPECT_NEAR(traced["clearcoatFactor"].get<float>(), 0.11f, 1e-6f);
+  ASSERT_TRUE(traced.contains("fvCoatColor"));
+  EXPECT_NEAR(traced["fvCoatColor"][0].get<float>(), lum, 1e-6f);
+  // white says nothing
+  EXPECT_FALSE(clearcoatOf(loweredJson(head(1), {}, {})).contains("fvCoatColor"));
+
+  // Iray Uber's the same, its map an image of its own, read as colour
+  const auto uber = surfaceOf("Shirt", kUberType, {{"Top Coat Weight", 0.4}, {"Top Coat Color", Json::array({0.5, 0.5, 0.5})}}, {{"Top Coat Color", "/Runtime/Textures/coat_c.jpg"}});
   ASSERT_TRUE(uber.topCoat);
-  EXPECT_EQ(uber.topCoat->color, (fv::mat::Rgb{1, 1, 1}));
-  EXPECT_FLOAT_EQ(clearcoatOf(loweredJson(uber, {}, {}))["clearcoatFactor"].get<float>(), 0.4f);
+  EXPECT_EQ(uber.topCoat->colorMap, "/Runtime/Textures/coat_c.jpg");
+  const auto l = loweredJson(uber, {}, {});
+  EXPECT_FLOAT_EQ(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.4f);
+  const auto& request = requestOf(l, clearcoatOf(l)["fvCoatColorTexture"]);
+  EXPECT_EQ(request.rel, "/Runtime/Textures/coat_c.jpg");
+  EXPECT_TRUE(request.srgb);
+  // and neither view without a coloured coat asks for its map
+  EXPECT_FALSE(clearcoatOf(loweredJson(uber, {}, {.skin = fv::mat::SkinMode::eRaster})).contains("fvCoatColorTexture"));
+  EXPECT_FALSE(clearcoatOf(loweredJson(uber, {}, {.forFile = true})).contains("fvCoatColorTexture"));
+}
+
+// Top Coat Color Effect's Scatter & Transmit modes take the colour's share out of the weight and
+// normalise the tint (irayubermaterial.mdl, transmit_color_calc); Scatter Only leaves them alone
+TEST(Materials, ACoatsColorEffectMovesItsShareIntoTheWeight)
+{
+  const auto shirt = [](int effect) {
+    return surfaceOf("Shirt", kUberType, {{"Top Coat Weight", 0.5}, {"Top Coat Color Effect", effect}, {"Top Coat Color", Json::array({1.0, 0.5, 0.5})}});
+  };
+  const float half = fv::mat::srgbToLinear(0.5f);
+  const auto  only = shirt(0);
+  EXPECT_NEAR(only.topCoat->weight, 0.5f, 1e-6f);
+  EXPECT_NEAR(only.topCoat->color[1], half, 1e-6f);
+
+  const auto mean = shirt(1);
+  EXPECT_NEAR(mean.topCoat->weight, 0.5f * (1 + 2 * half) / 3, 1e-5f);
+  EXPECT_NEAR(mean.topCoat->color[0], 1.0f, 1e-6f);
+  EXPECT_NEAR(mean.topCoat->color[1], half, 1e-6f);
+
+  const auto luminance = shirt(2);
+  EXPECT_NEAR(luminance.topCoat->weight, 0.5f * (0.2126f + 0.7874f * half), 1e-5f);
+
+  // a brighter colour normalises: only its hue is left in the tint
+  const auto bright = surfaceOf("Shirt", kUberType, {{"Top Coat Weight", 0.5}, {"Top Coat Color Effect", 1}, {"Top Coat Color", Json::array({0.5, 0.5, 0.25})}});
+  EXPECT_NEAR(bright.topCoat->color[0], 1.0f, 1e-6f);
+  EXPECT_NEAR(bright.topCoat->color[1], 1.0f, 1e-6f);
 }
 
 // ---- PBRSkin's volume ----

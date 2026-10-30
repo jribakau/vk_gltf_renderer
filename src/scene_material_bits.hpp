@@ -121,6 +121,8 @@ inline std::set<int> srgbTextures(const fv::mat::Material& mat)
   add(mat.emissiveMap);
   if(mat.specular)
     add(mat.specular->colorMap);
+  if(mat.clearcoat)
+    add(mat.clearcoat->colorMap);
   if(mat.sheen)
     add(mat.sheen->colorMap);
   if(mat.diffuseTransmission)

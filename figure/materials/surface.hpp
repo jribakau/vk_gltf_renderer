@@ -244,8 +244,9 @@ struct Surface
     std::string roughnessMap;
     // PBRSkin's Top Coat Bump Weight: how much of the surface's relief the coat follows, 0 smooth
     float bumpWeight = 1;
-    // linear; PBRSkin's Top Coat Color, which tints the coat's reflection only
-    Rgb color{1, 1, 1};
+    // linear; Top Coat Color and its map, which tint the coat's reflection only
+    Rgb         color{1, 1, 1};
+    std::string colorMap;
   };
   std::optional<TopCoat>      topCoat;
   std::optional<Emission>     emission;

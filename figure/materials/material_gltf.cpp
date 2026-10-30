@@ -219,6 +219,8 @@ Material fromGltf(const tinygltf::Material& g)
       read(v, "clearcoatTexture", c.map);
       read(v, "clearcoatRoughnessTexture", c.roughnessMap);
       read(v, "clearcoatNormalTexture", c.normalMap);
+      read(v, "fvCoatColor", c.color);
+      read(v, "fvCoatColorTexture", c.colorMap);
       m.clearcoat = c;
     }
     else if(name == kSpecular2)
@@ -443,6 +445,10 @@ Json materialJson(const Material& m, const char* key)
       e["clearcoatRoughnessTexture"] = info(c.roughnessMap);
     if(c.normalMap.has())
       e["clearcoatNormalTexture"] = info(c.normalMap);
+    if(c.color != Rgb{1, 1, 1})
+      e["fvCoatColor"] = rgbJson(c.color);
+    if(c.colorMap.has())
+      e["fvCoatColorTexture"] = info(c.colorMap);
     ext["KHR_materials_clearcoat"] = e;
   }
   if(m.specular2)

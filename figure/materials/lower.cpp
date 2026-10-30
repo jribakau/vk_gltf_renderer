@@ -536,15 +536,16 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     std::vector<std::string> weightMaps;
   };
   std::optional<Coat> coat;
+  const bool          colouredCoat = opts.skin != SkinMode::eRaster && !opts.forFile;
   if(tearFilm || underFilm)
     ;  // one interface, already the specular lobe; nothing reflects under it
   else if(s.topCoat)
   {
-    // PBRSkin's coat colour tints only the coat's own reflection, so its luminance dims the coat's
-    // weight. Iray leaves the base under it the share an untinted coat would, which this gives
-    // except towards grazing, where a little less light reaches the base than in Iray.
+    // The coat's colour tints only its own reflection. The real-time view and a file have no such
+    // thing, so there its luminance dims the coat's weight (with a little less light reaching the base
+    // towards grazing than in Iray), and a map of it is left out.
     const Rgb&  c    = s.topCoat->color;
-    const float tint = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+    const float tint = colouredCoat ? 1.f : 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
     coat = Coat{{s.topCoat->weight * tint, s.topCoat->weightMap}, {s.topCoat->roughness, s.topCoat->roughnessMap}, s.topCoat->bumpWeight};
   }
   else if(lobes.clearcoat && !secondLobe)
@@ -579,6 +580,12 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       cc.map = b.weights(coat->weightMaps);
     if(coat && !coat->roughness.map.empty())
       cc.roughnessMap = b.plain(coat->roughness.map, false);
+    if(s.topCoat && coat && colouredCoat)
+    {
+      cc.color = s.topCoat->color;
+      if(!s.topCoat->colorMap.empty())
+        cc.colorMap = b.plain(s.topCoat->colorMap, true);
+    }
     if(normal.has())
     {
       // the same slot again: the clearcoat shares the base's surface detail, tilted by the coat's

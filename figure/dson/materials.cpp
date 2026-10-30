@@ -711,14 +711,25 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
     t.weightMap    = imageOf(coat);
     t.roughness    = float(gloss ? *gloss : num(roughCh, 0.1));
     t.roughnessMap = gloss ? std::string() : imageOf(roughCh);
+    // PBRSkin's coat follows the skin's relief by its Bump Weight, blended towards the smooth normal
     if(pbrSkin)
+      t.bumpWeight = float(clamp01(num(find({"Top Coat Bump Weight"}), 1)));
+    // Its colour tints its reflection, in every mode of Iray Uber's Top Coat Color Effect: the two
+    // Scatter & Transmit modes normalise the tint and take its mean (Intensity: its luminance) out of
+    // the weight (transmit_color_calc), done here for a flat colour, as there is no form of that for a
+    // map. Nothing absorbs under it. A map need not be a colour: OOT's cloth has a height map here.
+    const Channel* colorCh = find({"Top Coat Color"});
+    t.colorMap             = imageOf(colorCh);
+    t.color                = colorOr(colorCh);
+    if(const int effect = int(num(find({"Top Coat Color Effect"}), 0)); effect != 0 && t.colorMap.empty())
     {
-      // PBRSkin's coat follows the skin's relief by its Bump Weight, blended towards the smooth
-      // normal, and its colour tints its reflection. A coloured map has no form here (none is seen).
-      t.bumpWeight           = float(clamp01(num(find({"Top Coat Bump Weight"}), 1)));
-      const Channel* colorCh = find({"Top Coat Color"});
-      if(imageOf(colorCh).empty())
-        t.color = colorOr(colorCh);
+      const float peak = std::max({t.color[0], t.color[1], t.color[2]});
+      if(peak > 0)
+      {
+        t.weight *= effect == 1 ? (t.color[0] + t.color[1] + t.color[2]) / 3 : 0.2126f * t.color[0] + 0.7152f * t.color[1] + 0.0722f * t.color[2];
+        for(float& c : t.color)
+          c /= peak;
+      }
     }
     s.topCoat = t;
   }

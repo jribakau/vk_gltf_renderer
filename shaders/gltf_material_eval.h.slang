@@ -428,6 +428,12 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   pbrMat.clearcoat          = material.clearcoatFactor;
   pbrMat.clearcoatRoughness = material.clearcoatRoughness;
   pbrMat.Nc                 = pbrMat.N;
+  pbrMat.clearcoatColor     = material.clearcoatColor;
+  if(isTexturePresent(material.clearcoatColorTexture))
+  {
+    const float4 coatColor = getTexture(images, samplers, texInfos[material.clearcoatColorTexture], state.tc, state.texGrad);
+    pbrMat.clearcoatColor *= float3(coatColor.x, coatColor.y, coatColor.z);
+  }
   if(isTexturePresent(material.clearcoatTexture))
   {
     pbrMat.clearcoat *= getTexture(images, samplers, texInfos[material.clearcoatTexture], state.tc, state.texGrad).r;

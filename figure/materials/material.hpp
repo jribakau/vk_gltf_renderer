@@ -71,6 +71,10 @@ struct Clearcoat
 {
   float       factor = 0, roughness = 0;
   TextureSlot map, roughnessMap, normalMap;
+  // Tints the coat's own reflection, by the factor times the map. What lies under the coat keeps the
+  // share an untinted coat leaves it: Iray's coat absorbs nothing.
+  Rgb         color{1, 1, 1};
+  TextureSlot colorMap;
   bool        operator==(const Clearcoat&) const = default;
 };
 
@@ -245,6 +249,7 @@ void forEachSlot(M& m, Fn&& fn)
     fn(m.clearcoat->roughnessMap);
     fn(m.clearcoat->map);
     fn(m.clearcoat->normalMap);
+    fn(m.clearcoat->colorMap);
   }
   if(m.specular2)
   {

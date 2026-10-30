@@ -753,6 +753,41 @@ TEST(BsdfLobes, OnlyACoatOverAnOpaqueBaseDarkens)
   EXPECT_FLOAT_EQ(tint.x, 0.3f);
 }
 
+// A coat's colour tints its own reflection and nothing else: what lies under it keeps the same share
+TEST(BsdfLobes, ACoatsColourTintsOnlyItsReflection)
+{
+  PbrMaterial white        = defaultPbrMaterial(vec3(0.5f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+  white.Nc                 = white.N;
+  white.clearcoat          = 0.8f;
+  white.clearcoatRoughness = 0.2f;
+  PbrMaterial red          = white;
+  red.clearcoatColor       = vec3(1.0f, 0.25f, 0.5f);
+
+  for(float cosine : {1.0f, 0.5f, 0.15f})
+  {
+    vec3       ta = white.baseColor, tb = red.baseColor;
+    const auto wa = computeLobeWeights(white, cosine, ta);
+    const auto wb = computeLobeWeights(red, cosine, tb);
+    for(int l = 0; l < LOBE_COUNT; l++)
+      EXPECT_FLOAT_EQ(wa[l], wb[l]) << l;
+    EXPECT_EQ(ta, tb);  // the colour under it doesn't change either
+  }
+
+  const vec3 view  = normalize(vec3(0.3f, 0.1f, 0.9f));
+  const vec3 light = normalize(vec3(-0.25f, -0.1f, 0.9f));
+  vec3       tint  = white.baseColor;
+  BsdfEvaluateData a{}, b{};
+  a.k1 = b.k1 = view;
+  a.k2 = b.k2 = light;
+  bsdfEvaluateLobe(a, white, LOBE_CLEARCOAT_REFLECTION, tint);
+  bsdfEvaluateLobe(b, red, LOBE_CLEARCOAT_REFLECTION, tint);
+  EXPECT_GT(a.bsdf_glossy.x, 0.0f);
+  EXPECT_NEAR(b.bsdf_glossy.x, a.bsdf_glossy.x, 1e-5f);
+  EXPECT_NEAR(b.bsdf_glossy.y, 0.25f * a.bsdf_glossy.y, 1e-5f);
+  EXPECT_NEAR(b.bsdf_glossy.z, 0.5f * a.bsdf_glossy.z, 1e-5f);
+  EXPECT_FLOAT_EQ(a.pdf, b.pdf);
+}
+
 // The second lobe weighs as a coat of its own would, the coat over it, and both over the rest
 TEST(BsdfLobes, TheSecondLobeLiesUnderTheCoatAndOverTheRest)
 {

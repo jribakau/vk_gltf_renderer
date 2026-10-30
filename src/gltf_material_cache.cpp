@@ -163,6 +163,8 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   handleTexture(dstMat.clearcoatRoughnessTexture, clearcoat.roughnessMap);
   handleTexture(dstMat.clearcoatTexture, clearcoat.map);
   handleTexture(dstMat.clearcoatNormalTexture, clearcoat.normalMap);
+  dstMat.clearcoatColor = rgb(clearcoat.color);
+  handleTexture(dstMat.clearcoatColorTexture, clearcoat.colorMap);
   const Specular2 specular2 = srcMat.specular2.value_or(Specular2{});
   dstMat.specular2Factor    = specular2.factor;
   dstMat.specular2Roughness = specular2.roughness;

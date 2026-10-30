@@ -576,7 +576,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         specularAlbedo = saturate(specularAlbedo + pbrMat.specular2 * EnvBRDFApprox2(float3(0.04F), pbrMat.specular2Roughness * pbrMat.specular2Roughness, ndotv));
       if(pbrMat.clearcoat > 0.0F)
         specularAlbedo = saturate(specularAlbedo
-                                  + pbrMat.clearcoat * EnvBRDFApprox2(float3(0.04F), pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness, ndotv));
+                                  + pbrMat.clearcoat * pbrMat.clearcoatColor * EnvBRDFApprox2(float3(0.04F), pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness, ndotv));
       float3 guideNormal    = pbrMat.N;
       // RR reads linear (perceptual) roughness; the material keeps GGX alpha
       float  guideRoughness = sqrt(pbrMat.roughness.x);
