@@ -495,3 +495,184 @@ TEST(BsdfLobes, ARoughDielectricReflectsItsMicrofacetFresnel)
       EXPECT_NEAR(carriedAt(mat, NoV).reflected.x, microfacet, 0.02 * microfacet + 2e-3) << roughness << ", " << NoV;
     }
 }
+
+// Phase M1's oracles (the app's docs/material-model-plan.md): what the OpenPBR closure is read against.
+namespace {
+
+// A chi-square statistic in standard deviations (Wilson and Hilferty's normal approximation).
+double chiSquareSigmas(double chi2, int dof)
+{
+  const double k = 2.0 / (9.0 * dof);
+  return (std::cbrt(chi2 / dof) - (1.0 - k)) / std::sqrt(k);
+}
+
+struct SamplingFit
+{
+  double sigmas   = 0.0;
+  int    dof      = 0;
+  double absorbed = 0.0;  // the share of samples with no direction, and what the pdf says is left
+  double missing  = 0.0;
+};
+
+// bsdfSample's directions against the pdf bsdfEvaluateAll reports: samples binned over the sphere,
+// each bin's expected count from the pdf integrated over it. Bins expecting few samples are pooled.
+// The grid's poles are on the Y axis, away from the views used, where lobes would fall inside one bin.
+SamplingFit samplingFit(const PbrMaterial& mat, const vec3& k1, int N = 1000000)
+{
+  const int  kTheta = 24, kPhi = 48, kSub = 8;
+  const auto cell   = [&](const vec3& d) {
+    const int   t   = std::min(kTheta - 1, int((d.y * 0.5f + 0.5f) * kTheta));
+    const float phi = std::atan2(d.z, d.x) / 6.2831853f + 0.5f;
+    const int   p   = std::min(kPhi - 1, int(phi * kPhi));
+    return t * kPhi + p;
+  };
+
+  std::vector<double> expected(size_t(kTheta * kPhi), 0.0), observed(size_t(kTheta * kPhi), 0.0);
+  for(int t = 0; t < kTheta; t++)
+    for(int p = 0; p < kPhi; p++)
+    {
+      double integral = 0.0;
+      for(int a = 0; a < kSub; a++)
+        for(int b = 0; b < kSub; b++)
+        {
+          const float y   = ((t + (a + 0.5f) / kSub) / kTheta) * 2.0f - 1.0f;
+          const float phi = ((p + (b + 0.5f) / kSub) / kPhi - 0.5f) * 6.2831853f;
+          const float r   = std::sqrt(std::max(0.0f, 1.0f - y * y));
+          BsdfEvaluateData e;
+          e.k1 = k1;
+          e.k2 = vec3(r * std::cos(phi), y, r * std::sin(phi));
+          e.xi = vec3(0.5f);
+          bsdfEvaluateAll(e, mat);
+          integral += e.pdf;
+        }
+      // equal-area cells: y and phi are uniform over the sphere
+      expected[size_t(t * kPhi + p)] = integral * (4.0 * 3.14159265358979 / (kTheta * kPhi * kSub * kSub)) * N;
+    }
+
+  std::mt19937                          rng(29);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  double                                absorb = 0.0;
+  for(int i = 0; i < N; i++)
+  {
+    BsdfSampleData s;
+    s.k1 = k1;
+    s.xi = vec3(u(rng), u(rng), u(rng));
+    bsdfSample(s, mat);
+    if(s.event_type == BSDF_EVENT_ABSORB)
+      absorb += 1.0;
+    else
+      observed[size_t(cell(s.k2))] += 1.0;
+  }
+
+  SamplingFit fit;
+  double      chi2 = 0.0, poolE = 0.0, poolO = 0.0, total = 0.0;
+  for(size_t c = 0; c < expected.size(); c++)
+  {
+    total += expected[c];
+    if(expected[c] < 20.0)
+    {
+      poolE += expected[c];
+      poolO += observed[c];
+      continue;
+    }
+    chi2 += (observed[c] - expected[c]) * (observed[c] - expected[c]) / expected[c];
+    fit.dof++;
+  }
+  if(poolE >= 20.0)
+  {
+    chi2 += (poolO - poolE) * (poolO - poolE) / poolE;
+    fit.dof++;
+  }
+  fit.sigmas   = chiSquareSigmas(chi2, std::max(1, fit.dof));
+  fit.absorbed = absorb / N;
+  fit.missing  = 1.0 - total / N;
+  return fit;
+}
+
+}  // namespace
+
+// The sampler draws directions by the density it reports. A mismatch is noise or bias no test of the
+// mean finds: the mean of bsdf_over_pdf can come out right while MIS weighs each side wrongly. Sheen's
+// flip used the xi.z that had just chosen the lobe, which at some views always flipped.
+TEST(BsdfLobes, SamplesFollowTheReportedPdf)
+{
+  for(Case c : cases())
+  {
+    // a narrow lobe is finer than the bins, and the pdf's integral over a bin stops being one
+    if(c.mat.transmission > 0.0f)
+      c.mat.roughness = vec2(0.4f * 0.4f);
+    for(const vec3& k1 : {normalize(vec3(0.0f, 0.0f, 1.0f)), normalize(vec3(0.4f, 0.2f, 0.9f)), normalize(vec3(0.9f, 0.1f, 0.3f))})
+    {
+      const SamplingFit fit = samplingFit(c.mat, k1);
+      EXPECT_LT(fit.sigmas, 5.0) << fit.sigmas << " sigmas, " << c.name << " view " << k1.x << "," << k1.y << "," << k1.z << ", " << fit.dof << " bins";
+      // what the pdf leaves out over the sphere is the share the sampler gives up on
+      EXPECT_NEAR(fit.missing, fit.absorbed, 0.01) << c.name << " view " << k1.x << "," << k1.y << "," << k1.z;
+    }
+  }
+}
+
+// A layer over a white base gives back about what it was lit with, at every angle and roughness.
+// Today's lobe mixture gains up to 2.6% (a coat at a view cosine of 0.6, 1.4% with no layer at all):
+// the ceiling is what it does now, for the OpenPBR closure's albedo scaling to be read against.
+TEST(BsdfLobes, ALayerOverAWhiteBaseAddsNoEnergy)
+{
+  const auto white = [](float roughness) { return defaultPbrMaterial(vec3(1.0f), 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1)); };
+  for(float roughness : {0.2f, 0.5f, 0.9f})
+    for(float NoV : {0.1f, 0.3f, 0.6f, 1.0f})
+    {
+      PbrMaterial coat        = white(roughness);
+      coat.clearcoat          = 1.0f;
+      coat.clearcoatRoughness = 0.2f;
+      PbrMaterial sheen       = white(roughness);
+      sheen.sheenColor        = vec3(1.0f);
+      sheen.sheenRoughness    = 0.5f;
+      PbrMaterial film        = white(roughness);
+      film.iridescence        = 1.0f;
+      film.iridescenceThickness = 0.4f;
+      PbrMaterial all         = coat;
+      all.sheenColor          = vec3(1.0f);
+      all.sheenRoughness      = 0.5f;
+      all.iridescence         = 1.0f;
+      all.iridescenceThickness = 0.4f;
+      const std::array<std::pair<const char*, PbrMaterial>, 5> layers{{{"none", white(roughness)}, {"coat", coat}, {"sheen", sheen}, {"film", film}, {"all", all}}};
+      for(const auto& [name, mat] : layers)
+      {
+        const vec3 albedo = carriedAt(mat, NoV, 100000).all;
+        EXPECT_LE(std::max({albedo.x, albedo.y, albedo.z}), 1.03f) << albedo.x << ", " << name << ", roughness " << roughness << ", NoV " << NoV;
+      }
+    }
+}
+
+// Where the model claims reciprocity, light and view can trade places: a lone Lambert or GGX lobe.
+// It doesn't claim it for what is added over those: a lobe mixture's weights and a metal's multiple
+// scattering read the view alone (computeLobeWeights, ggxMultiScatterFactor), and the OpenPBR
+// closure's layering is to be read against that.
+TEST(BsdfLobes, ALoneLobeIsReciprocal)
+{
+  std::mt19937 rng(31);
+  PbrMaterial  mat = base(0.5f);
+  mat.specular     = 0.0f;
+  // eval's outputs carry the light side's cosine
+  const auto lambert = [&](const vec3& k1, const vec3& k2) {
+    BsdfEvaluateData e;
+    e.k1 = k1;
+    e.k2 = k2;
+    e.xi = vec3(0.5f);
+    bsdfEvaluateAll(e, mat);
+    return sum(e.bsdf_diffuse + e.bsdf_glossy) / k2.z;
+  };
+  const auto ggx = [&](const vec3& k1, const vec3& k2) {
+    BsdfEvaluateData e;
+    e.k1 = k1;
+    e.k2 = k2;
+    e.xi = vec3(0.5f);
+    brdf_ggx_smith_eval(e, mat, LOBE_SPECULAR_REFLECTION, vec3(0.6f), BSDF_FRESNEL_SCHLICK, 1.0f);
+    return sum(e.bsdf_glossy) / k2.z;
+  };
+  for(int i = 0; i < 2000; i++)
+  {
+    const vec3 a = viewAbove(rng), b = viewAbove(rng);
+    EXPECT_NEAR(lambert(a, b), lambert(b, a), 0.001f * lambert(a, b)) << "pair " << i;
+    EXPECT_NEAR(ggx(a, b), ggx(b, a), 0.001f * ggx(a, b) + 1e-5f) << "pair " << i;
+  }
+}
