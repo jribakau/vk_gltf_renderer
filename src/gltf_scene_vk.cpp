@@ -52,7 +52,6 @@
 #include "nvvk/mipmaps.hpp"
 
 #include "gltf_scene_vk.hpp"
-#include "openpbr_luts.hpp"
 #include "scene_residency_vk_util.hpp"
 #include "scene_gpu_tables.hpp"
 #include "gltf_scene_animation.hpp"
@@ -556,17 +555,6 @@ void nvvkgltf::SceneVk::updateSceneDescBuffer(nvvk::CmdUploaderInterface& stagin
   scene_desc.numEmissiveTriangles  = static_cast<int>(m_numEmissiveTriangles);
   scene_desc.emissiveTotalWeight   = m_emissiveTotalWeight;
   scene_desc.emissiveMeanLum       = m_emissiveMeanLum;
-
-  if(m_bOpenPbrLuts.buffer == VK_NULL_HANDLE)
-  {
-    const std::vector<float> table = openPbrLutTable();
-    NVVK_CHECK(m_alloc->createBuffer(m_bOpenPbrLuts, std::span(table).size_bytes(),
-                                     VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT));
-    NVVK_DBG_NAME(m_bOpenPbrLuts.buffer);
-    m_memoryTracker.track(kMemCategorySceneData, m_bOpenPbrLuts.allocation);
-    NVVK_CHECK(staging.appendBuffer(m_bOpenPbrLuts, 0, std::span(table)));
-  }
-  scene_desc.openPbrLuts = (float*)m_bOpenPbrLuts.address;
 
   if(m_bSceneDesc.buffer == VK_NULL_HANDLE)
   {
@@ -2370,12 +2358,6 @@ void nvvkgltf::SceneVk::destroy()
     m_memoryTracker.untrack(kMemCategorySceneData, m_bIesProfiles.allocation);
     m_alloc->destroyBuffer(m_bIesProfiles);
     m_bIesProfiles = {};  // Reset to ensure clean state
-  }
-  if(m_bOpenPbrLuts.buffer != VK_NULL_HANDLE)
-  {
-    m_memoryTracker.untrack(kMemCategorySceneData, m_bOpenPbrLuts.allocation);
-    m_alloc->destroyBuffer(m_bOpenPbrLuts);
-    m_bOpenPbrLuts = {};  // Reset to ensure clean state
   }
   if(m_bEmissiveTriangles.buffer != VK_NULL_HANDLE)
   {

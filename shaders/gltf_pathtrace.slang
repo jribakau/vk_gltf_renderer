@@ -72,15 +72,6 @@ static bool doDebug = false;
 #include "nvshaders/random.h.slang"
 #include "nvshaders/bsdf_types.h.slang"
 #include "nvshaders/bsdf_functions.h.slang"
-// The OpenPBR closure (ptMaterialModel, variantMacros). A macro, in a variant compiled from source: in
-// the embedded shaders even a specialization constant that drops it costs every cold pipeline build
-// (19 s to 36 s), and past 30 s the app takes the renderer for hung.
-#ifndef USE_OPENPBR
-#define USE_OPENPBR 0
-#endif
-#if USE_OPENPBR
-#include "openpbr/fv_openpbr.h.slang"
-#endif
 #include "nvshaders/hdr_env_sampling.h.slang"
 #include "nvshaders/light_contrib.h.slang"
 #include "nvshaders/pbr_ggx_microfacet.h.slang"
@@ -350,8 +341,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     GltfTextureInfo*   texInfos      = pushConst.gltfScene->textureInfos;
     int                materialIndex = -1;
     PbrMaterial        pbrMat;
-    // a walk's way out: its Lambertian point, which is not this surface's material
-    bool               exitLobe = false;
     // A diffuse exit's boundary index, for its light-side Fresnel (ePtExitFresnel); 0: none
     float exitFresnelEta = 0.0F;
     // Volumetric scatter shades as the thin preview at this hit: the preview flag, or a rough path
@@ -490,7 +479,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         const float3 T          = pbrMat.T;
         const float3 B          = pbrMat.B;
         const float3 Ns         = pbrMat.Ns;
-        exitLobe                = true;
         pbrMat                  = defaultPbrMaterial(exitAlbedo, 0.0F, 1.0F, N, Ng);
         pbrMat.specular         = 0.0F;
         pbrMat.ior2             = 1.0F;
@@ -695,11 +683,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelectionRadiance(materialIndex),
                                                  hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID);
       }
-      float3 emitted = pbrMat.emissive;
-#if USE_OPENPBR
-      emitted *= fvOpenPbrEmissionScale(pbrMat.clearcoat, pbrMat.clearcoatIsLobe, pbrMat.clearcoatRoughness, abs(dot(pbrMat.N, ray.Direction)));
-#endif
-      addRadiance(pt, emissiveMis * emitted * pt.throughput, pt.prefixIndirect);
+      addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
     }
 
     //-----------------------------------------------------------------------
@@ -749,23 +733,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif
 #endif
     const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
-
-    // The OpenPBR closure at this vertex (ptMaterialModel): for the light sample and the BSDF sample
-    // alike. Its pdf is always its lobes' mixture, whatever the lobe-mixture mode says of today's.
-    // A fibre stays Chiang's, and a walk's exit its Lambertian point.
-#if USE_OPENPBR
-    const bool openPbrHere = !hairOn && !exitLobe && fvOpenPbrTakes(pbrMat);
-    OpenPBR_PreparedBsdf openPbr;
-    if(openPbrHere)
-    {
-      float wavelengthXi = 0.5F;
-      if(pbrMat.dispersion > 0.0F)
-        wavelengthXi = rand(seed);
-      openPbr = fvOpenPbrPrepare(pbrMat, -ray.Direction, wavelengthXi, pt.throughput);
-    }
-#else
-    const bool openPbrHere = false;
-#endif
 
     DirectLight directLight;
     // A fibre event spends the hair's own budget while it lasts, not a surface bounce
@@ -823,11 +790,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         if(hairCut)
           evalData.bsdf_diffuse += pushConst.hairCutTail * (0.25F * M_1_PI) * hairLockColor(hairHit);
       }
-      else
-#endif
-#if USE_OPENPBR
-      if(openPbrHere)
-        fvOpenPbrEvaluate(evalData, openPbr, pbrMat);
       else
 #endif
       if(allLobes)
@@ -900,13 +862,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
       else
 #endif
-#if USE_OPENPBR
-      if(openPbrHere)
-      {
-        fvOpenPbrSample(sampleData, openPbr, pbrMat);
-      }
-      else
-#endif
       {
         // The lobe mixture's pdf, which next-event estimation's bsdfEvaluateAll weighs against. Not at
         // the last vertex: the loop ends before this ray is traced, so nothing reads it.
@@ -927,7 +882,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // lobe (the env hit's delta branch rests on the same fact). Rough thin glass lit from behind, a
       // refractive exit from inside a volume: no shadow ray passes them (getShadowTransmission).
       // On the mode, not this vertex's lobe mixture: it holds whichever pdf the sample has.
-      if((hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) || openPbrHere) && sampleData.event_type != BSDF_EVENT_ABSORB
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture) && sampleData.event_type != BSDF_EVENT_ABSORB
          && !(dot(sampleData.k2, hit.nrm) > 0.0f || bothSides))
         pt.lastSamplePdf = DIRAC;
 

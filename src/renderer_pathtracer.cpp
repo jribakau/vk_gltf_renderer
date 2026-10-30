@@ -417,12 +417,6 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Scatter walks gather light only where they leave the surface, as a diffuse exit (dense media)",
                  .callbackSuccess = reset},
                 &m_volumeDiffuseExit, Persist::eYes);
-  // The material model's closure, phase M2 of the app's docs/material-model-plan.md. A specialization
-  // constant: the pipelines are built again, cached after the first time, and no shader recompiles.
-  settings->add({.name            = "ptMaterialModel",
-                 .help            = "PathTracer: The closure surfaces shade through. 0: today's glTF lobes, 1: OpenPBR",
-                 .callbackSuccess = reset},
-                &m_materialModel, Persist::eYes);
   // The walk's way in to match its way out: through a Lambertian lobe, as Unreal's path tracer
   // enters subsurface (and Iray's translucency is a diffuse transmission), not by a rough refraction
   // whose direction follows the view.
@@ -2473,7 +2467,6 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
 #else
       0,
 #endif
-      m_materialModel,
   };
 }
 
@@ -2490,7 +2483,6 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
   add("optimal", optimal, to.optimal);
   add("dlss", dlss, to.dlss);
   add("dlssGuide", dlssGuide, to.dlssGuide);
-  add("openpbr", materialModel != 0, to.materialModel != 0);
   if(optimal && to.optimal && features != to.features)
     diff += std::string(diff.empty() ? "" : ", ") + "features [" + features.toString() + "] -> [" + to.features.toString() + "]";
   return diff.empty() ? "no shader field changed" : diff;
@@ -2675,7 +2667,6 @@ std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const
       {"USE_VISUALIZE", std::to_string(key.visualize ? 1 : 0)},
       // Ray queries against a BLAS with an opacity micromap need an explicit opt-in (see gltf_pathtrace.slang).
       {"USE_OMM", std::to_string(key.omm ? 1 : 0)},
-      {"USE_OPENPBR", std::to_string(key.materialModel)},
   };
   nvvkgltf::SceneFeatureSet guide;
   guide.set(nvvkgltf::SceneFeatureSet::eDlssGuide, key.dlssGuide);

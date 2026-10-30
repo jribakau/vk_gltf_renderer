@@ -118,7 +118,7 @@ struct KHR_materials_clearcoat
   tinygltf::TextureInfo normalTexture    = {};
   float                 normalScale      = 1.0f;  // clearcoatNormalTexture.scale
   // fvDualLobe: the extension holds a second specular lobe the figure's lowering folded in, not a coat.
-  // Today's closure draws them alike; the OpenPBR closure's coat would darken what is under it.
+  // Both draw the same lobe, but a coat darkens what is under it and a second lobe doesn't.
   bool dualLobe = false;
 };
 

@@ -37,10 +37,6 @@ struct ClosureOptions
   int                samples = 8192;
   // the interactive preview's closure of a medium: evaluateMaterial's scatterAsThin
   bool thinScatter = false;
-  // Through the OpenPBR closure (shaders/openpbr/fv_openpbr.h.slang). It has no lobe weights: a lobe's
-  // `weight` is the share of samples the lobe drew, by the event the path tracer sees (diffuse, its
-  // transmission, and all glossy reflection as "specular", glossy transmission as "transmission").
-  bool openPbr = false;
 };
 
 std::vector<ClosureAt> probeClosureBytes(const void* row, size_t rowSize, const void* infos, size_t infoSize, size_t infoCount, const ClosureOptions& options);

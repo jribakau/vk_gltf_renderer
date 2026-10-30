@@ -574,7 +574,6 @@ private:
   std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows
 
   BufferHandle                         m_lightTable, m_emissiveTable, m_emissiveGroupTable, m_emissiveLeafTable, m_iesTable;
-  BufferHandle                         m_openPbrLuts;  // the same for every scene, here for its lifetime
   uint32_t                             m_emissiveGroupCount = 0;  // the light tree's cut
   uint32_t                             m_emissiveNodeCount  = 0;  // its nodes, the cut included
   uint32_t                             m_emissiveLeafCount  = 0;  // render nodes the leaf lookup covers
