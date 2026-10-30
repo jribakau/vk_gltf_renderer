@@ -420,7 +420,7 @@ std::optional<mat::Rgb> omniHairColor(const Channels& ch)
   return shade->albedo;
 }
 
-mat::Surface parseSurface(const std::string& name, const Channels& ch)
+mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Context context)
 {
   using namespace mat;
   auto find = [&](std::initializer_list<const char*> n) { return ch.find(n); };
@@ -430,7 +430,7 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   const bool  omniHair = shade.has_value();
   Surface     s;
   s.name = name;
-  s.kind = omniHair ? Kind::eHair : classify(name);
+  s.kind = omniHair ? Kind::eHair : classify(name, context);
   if(shade)
   {
     Surface::HairFibre fibre;
@@ -827,7 +827,7 @@ bool overrideChannels(Material& m, const std::vector<ChannelOverride>& overrides
   // a copy: the original's channels are shared with every material of the same definition
   Channels next = *m.channels;
   collectChannels(&def, next, {}, {});
-  m.surface  = parseSurface(m.name, next);
+  m.surface  = parseSurface(m.name, next, m.context);
   m.channels = std::make_shared<const Channels>(std::move(next));
   return true;
 }

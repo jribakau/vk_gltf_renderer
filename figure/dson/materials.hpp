@@ -34,7 +34,7 @@ std::string materialKey(const std::string& name, const Channels& ch);
 
 // The surface a material's channels describe: an Iray Uber, PBRSkin or legacy material (a port of
 // materials/parse/dson.ts parseDsonSurface).
-mat::Surface parseSurface(const std::string& name, const Channels& ch);
+mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Context context = mat::Context::eBody);
 
 // OmniHair's colour, linear, or none for any other shader (omniHairColor in parse/dson.ts).
 std::optional<mat::Rgb> omniHairColor(const Channels& ch);

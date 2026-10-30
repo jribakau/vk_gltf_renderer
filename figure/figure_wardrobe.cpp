@@ -11,6 +11,7 @@
 #include <regex>
 #include <utility>
 
+#include <figure/dson/materials.hpp>
 #include <figure/dson/listing.hpp>
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/io/timing.hpp>
@@ -54,6 +55,26 @@ std::string kindOf(const std::string& rel, const std::string& label, const std::
   if(std::regex_search(path, anatomy))
     return "Anatomy";
   return "Clothing";
+}
+
+// Each material as its meshes' contexts say, the first of them when they differ
+void placeSurfaces(SceneGraph& scene, const std::map<int, mat::Context>& meshes)
+{
+  std::map<int, mat::Context> of;
+  for(const auto& [mesh, context] : meshes)
+    if(mesh >= 0 && mesh < int(scene.meshes.size()))
+      for(int mi : scene.meshes[size_t(mesh)].materials)
+        if(const auto [it, added] = of.emplace(mi, context); !added)
+          it->second = std::min(it->second, context);
+  for(const auto& [mi, context] : of)
+  {
+    if(mi < 0 || mi >= int(scene.materials.size()))
+      continue;
+    Material& m = scene.materials[size_t(mi)];
+    m.context   = context;
+    if(m.channels && mat::classify(m.name, context) != m.surface.kind)
+      m.surface = dson::parseSurface(m.name, *m.channels, context);
+  }
 }
 
 // How near the body a strand point binds to the body under it, cm; further out it moves with the
@@ -335,6 +356,44 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     strands.get();
   }
   return out;
+}
+
+void Figure::placeLoadedSurfaces(const std::string& rel)
+{
+  // a file that is a wearable or a prop has no body in it, though its own figure is the main one
+  std::string type;
+  try
+  {
+    if(const auto doc = m_store->load(rel))
+      type = doc->json.value("asset_info", dson::Json::object()).value("type", "");
+  }
+  catch(const std::exception&)
+  {
+  }
+  const std::string file     = kindOf(rel, "", {});
+  const bool        hairFile = file == "Hair";
+  const bool        bodyFile = file == "Anatomy" || (loaded.mainRig >= 0 && type != "wearable" && type != "prop" && !hairFile);
+  std::map<int, mat::Context> meshes;
+  // in a body's file, what is skinned and no item is part of the figure (Genesis 9's mouth, its eyes)
+  for(size_t m = 0; m < loaded.scene.meshes.size(); m++)
+    meshes[int(m)] = hairFile                                                                   ? mat::Context::eHair
+                     : bodyFile && loaded.scene.meshes[m].skinned() ? mat::Context::eBody
+                                                                                                       : mat::Context::eItem;
+  if(bodyFile)
+    for(size_t i : loaded.morphs.mainMeshes)
+      meshes[loaded.morphs.meshes[i].mesh] = mat::Context::eBody;
+  for(const dson::Item& it : loaded.items)
+  {
+    const std::string kind = kindOf(rel, it.label, it.objects);
+    // a second figure in the file is a body as well: rigged and following nothing
+    const mat::Context context = kind == "Hair" ? mat::Context::eHair
+                                 : kind == "Anatomy" || (bodyFile && !it.rigs.empty() && it.conformTarget.empty()) ? mat::Context::eBody
+                                                                                                                   : mat::Context::eItem;
+    for(int m : it.meshes)
+      if(const auto at = meshes.find(m); at != meshes.end())
+        at->second = std::min(at->second, context);
+  }
+  placeSurfaces(loaded.scene, meshes);
 }
 
 WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids,
@@ -671,6 +730,18 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     morphs->flush();
     morphs->sort();
     morphs->markLoaded(before);
+  }
+  // what it is on says what its surfaces' names mean: a graft is part of the body it goes on
+  {
+    std::map<int, mat::Context> meshes;
+    for(int id : added)
+      for(const WornItem& i : items)
+        if(i.id == id)
+          for(int m : i.meshes)
+            meshes[m] = i.kind == "Hair"                           ? mat::Context::eHair
+                        : i.kind == "Anatomy" || !i.hiddenPolys.empty() ? mat::Context::eBody
+                                                                        : mat::Context::eItem;
+    placeSurfaces(dst, meshes);
   }
   result.items = added;
   return result;

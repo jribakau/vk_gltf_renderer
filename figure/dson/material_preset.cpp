@@ -330,7 +330,7 @@ bool presetMaterial(Material& m, const Json& entry, const std::vector<ChannelOve
   // a copy keeps the edits, the baseline and the measured UV scale
   Material next = m;
   next.channels = std::make_shared<const Channels>(std::move(fresh));
-  next.surface  = parseSurface(next.name, *next.channels);
+  next.surface  = parseSurface(next.name, *next.channels, next.context);
   overrideChannels(next, kept);
   if(shaderFamily(next.surface.shader) == shaderFamily(m.surface.shader))
     return false;
@@ -565,7 +565,7 @@ std::set<int> restoreBaseline(SceneGraph& scene, const std::set<int>& which)
     if(!m.baseline || m.channels == m.baseline)
       continue;
     m.channels = m.baseline;
-    m.surface  = parseSurface(m.name, *m.baseline);
+    m.surface  = parseSurface(m.name, *m.baseline, m.context);
     changed.insert(i);
   }
   return changed;

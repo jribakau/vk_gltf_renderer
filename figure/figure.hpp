@@ -209,6 +209,8 @@ public:
                                             std::optional<bool> strandsFlipped = std::nullopt);
   // The same against the figure as it is now, on its owning thread.
   std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision) { return prepareWear(rel, subdivision, wearInputs()); }
+  // Reads each surface again knowing what its mesh belongs to (mat::Context), once its load is in
+  void placeLoadedSurfaces(const std::string& rel);
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
   // figure's owning thread. The renderer's model has to be built again afterwards. `ids`: the ids its
   // items take, in the file's order, when they come back (an undo, a scene file); the rest get new ones.

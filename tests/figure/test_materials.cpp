@@ -84,6 +84,46 @@ TEST(Materials, ClassifiesSurfacesByName)
   EXPECT_EQ(fv::mat::classify("Fingernails"), Kind::eNails);
   EXPECT_EQ(fv::mat::classify("Scalp Hair"), Kind::eHair);
   EXPECT_EQ(fv::mat::classify("Dress"), Kind::eOther);
+  // whole words: what a name only happens to contain
+  for(const char* name : {"Pearl", "Armor", "Leggings", "Necklace", "Clip", "Handbag", "Garment", "Bodysuit", "Wear Grime", "Footbed", "Floral", "Coral"})
+    EXPECT_EQ(fv::mat::classify(name), Kind::eOther) << name;
+  for(const char* name : {"Brown Leather", "LeatherChair", "Chair_03"})
+    EXPECT_EQ(fv::mat::classify(name), Kind::eOther) << name;
+  for(const char* name : {"Flash", "KitchenBacksplash", "Snail", "Toothbrush"})
+    EXPECT_EQ(fv::mat::classify(name), Kind::eOther) << name;
+  // a figure's names, however they are written
+  for(const char* name : {"Lips", "Ears", "Arms", "Legs", "Neck", "Forearms", "Toes", "Fingers", "Shirt_Back", "Back", "Genitalia", "1_SkinFace", "UpperLip"})
+    EXPECT_EQ(fv::mat::classify(name), Kind::eSkin) << name;
+  for(const char* name : {"EyeMoisture_L", "7_Tear", "Cornea"})
+    EXPECT_EQ(fv::mat::classify(name), Kind::eCornea) << name;
+  for(const char* name : {"Eyelashes", "EyeLash_mat", "6_Eyelash"})
+    EXPECT_EQ(fv::mat::classify(name), Kind::eLashes) << name;
+  for(const char* name : {"Eye Left", "Eyes_R", "Irises", "5_Pupil", "4_Eyes"})
+    EXPECT_EQ(fv::mat::classify(name), Kind::eEye) << name;
+  EXPECT_EQ(fv::mat::classify("Fingernails"), Kind::eNails);
+  EXPECT_EQ(fv::mat::classify("3_Toenail"), Kind::eNails);
+  EXPECT_EQ(fv::mat::classify("InnerMouth"), Kind::eMouth);
+  EXPECT_EQ(fv::mat::classify("EyeSocket"), Kind::eOther);
+  EXPECT_EQ(fv::mat::classify("Hairline_Back1"), Kind::eHair);
+  EXPECT_EQ(fv::mat::classify("Eyebrows_Primary"), Kind::eHair);
+
+  // what it's on: no flesh on a garment or a chair, and a hair cap only on hair
+  using fv::mat::Context;
+  for(const char* name : {"Body", "Back", "Right Leg", "Teeth", "Tongue", "Fingernails", "Face"})
+  {
+    EXPECT_EQ(fv::mat::classify(name, Context::eItem), Kind::eOther) << name;
+    EXPECT_EQ(fv::mat::classify(name, Context::eHair), Kind::eOther) << name;
+  }
+  EXPECT_EQ(fv::mat::classify("Cap", Context::eItem), Kind::eOther);
+  EXPECT_EQ(fv::mat::classify("Bottle_A_Cap", Context::eItem), Kind::eOther);
+  EXPECT_EQ(fv::mat::classify("Cap", Context::eHair), Kind::eHair);
+  EXPECT_EQ(fv::mat::classify("Skullcap", Context::eHair), Kind::eHair);
+  EXPECT_EQ(fv::mat::classify("Cap", Context::eBody), Kind::eHair);
+  // an outfit made with the skin it shows says so
+  EXPECT_EQ(fv::mat::classify("Skin_Mat", Context::eItem), Kind::eSkin);
+  // real eyes and hair on an item stay that: a mask's, a costume's
+  EXPECT_EQ(fv::mat::classify("Hair 1", Context::eItem), Kind::eHair);
+  EXPECT_EQ(fv::mat::classify("Sclera", Context::eItem), Kind::eEye);
 }
 
 TEST(Materials, ParsesAnIrayUberSkin)

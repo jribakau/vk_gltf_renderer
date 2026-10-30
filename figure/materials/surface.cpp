@@ -1,5 +1,6 @@
 #include <figure/materials/surface.hpp>
 
+#include <cctype>
 #include <cmath>
 #include <regex>
 #include <utility>
@@ -7,29 +8,64 @@
 
 namespace fv::mat {
 
-Kind classify(const std::string& name)
+namespace {
+
+// "EyeMoisture_L" -> "eye moisture l"
+std::string wordsOf(const std::string& name)
+{
+  std::string out;
+  for(size_t i = 0; i < name.size(); i++)
+  {
+    const unsigned char c = static_cast<unsigned char>(name[i]);
+    if(!std::isalpha(c))
+    {
+      if(!out.empty() && out.back() != ' ')
+        out += ' ';
+      continue;
+    }
+    if(std::isupper(c) && i > 0 && std::islower(static_cast<unsigned char>(name[i - 1])))
+      out += ' ';
+    out += char(std::tolower(c));
+  }
+  return out;
+}
+
+}  // namespace
+
+Kind classify(const std::string& name, Context context)
 {
   using R = std::regex;
-  static const std::vector<std::pair<Kind, R>> rules = [] {
-    const auto f = R::ECMAScript | R::icase | R::optimize;
-    return std::vector<std::pair<Kind, R>>{
-        {Kind::eCornea, R("cornea|moisture|tear|eye.?refract|eyerefract", f)},
-        {Kind::eLashes, R("lash", f)},
-        {Kind::eHair, R("hair|scalp|brow|beard|mustache|fibermesh|strand|cap\\b|bangs|ponytail", f)},
-        {Kind::eEye, R("sclera|iris|pupil|eye[s ._-]?(left|right|l|r)\\b|\\beyes?\\b|eyeball", f)},
-        {Kind::eNails, R("nail", f)},
-        {Kind::eTeeth, R("teeth|tooth", f)},
-        {Kind::eMouth, R("mouth|gums|tongue|inner.?mouth|oral", f)},
-        {Kind::eSkin,
-         R("face|head|lip|ear|body|torso|arm|leg|neck|hip|skin|shoulder|hand|foot|feet|genital|anatomy|nipple|areola|chest|back\\b|forearm|"
-           "thigh|shin|toe(?!nail)|finger(?!nail)",
-           f)},
-    };
-  }();
+  const auto f = R::ECMAScript | R::optimize;
+  static const std::vector<std::pair<Kind, R>> rules{
+      {Kind::eCornea, R("\\bcornea\\b|\\bmoisture\\b|\\btears?\\b|\\beye ?refract", f)},
+      {Kind::eLashes, R("\\b(eye ?)?lash(es)?\\b", f)},
+      {Kind::eHair, R("\\bhairs?\\b|\\bscalp\\b|\\b(eye ?)?brows?\\b|\\bbeard\\b|\\bmustache\\b|\\bfibermesh\\b|\\bstrands?\\b|\\bbangs\\b|\\bponytail\\b", f)},
+      {Kind::eEye, R("\\bsclera\\b|\\biris(es)?\\b|\\bpupils?\\b|\\beyes?\\b(?! (socket|lid|reflection))|\\beyeball", f)},
+      {Kind::eNails, R("\\b(finger ?|toe ?)?nails?\\b", f)},
+      {Kind::eTeeth, R("\\bteeth\\b|\\btooth\\b", f)},
+      {Kind::eMouth, R("\\bmouth\\b|\\bgums?\\b|\\btongue\\b|\\boral\\b|\\binner ?mouth\\b", f)},
+      {Kind::eSkin,
+       R("\\b(face|head|((up|low)er ?)?lips?|ears?|body|torso|(fore)?arms?|legs?|necks?|hips?|skin|shoulders?|hands?|foot|feet|genital(ia|s)?|anatomy|"
+         "nipples?|areolae?|chest|thighs?|shins?|toes?|fingers?)\\b|\\bback$",
+         f)},
+  };
+  // where hair is expected, what only hair is called there: a "Hairline", a "Skullcap", a "Cap"; on
+  // anything else that is a bottle's cap. Never a "Chair".
+  static const R hairHere("(^|[^c])hair|\\bscalp\\b|\\b(eye ?)?brows?\\b|\\bbeard\\b|\\bmustache\\b|\\bfibermesh\\b|\\bstrands?\\b|cap\\b|\\bbangs\\b|\\bponytail\\b", f);
+  const std::string words = wordsOf(name);
+  Kind              found = Kind::eOther;
   for(const auto& [kind, re] : rules)
-    if(std::regex_search(name, re))
-      return kind;
-  return Kind::eOther;
+    if(std::regex_search(words, kind == Kind::eHair && context != Context::eItem ? hairHere : re))
+    {
+      found = kind;
+      break;
+    }
+  const bool flesh = found == Kind::eSkin || found == Kind::eMouth || found == Kind::eNails || found == Kind::eTeeth;
+  if(!flesh || context == Context::eBody)
+    return found;
+  // an outfit made with the skin it shows says so ("Skin_Mat")
+  static const R saysSkin("\\bskin\\b", f);
+  return std::regex_search(words, saysSkin) ? found : Kind::eOther;
 }
 
 float srgbToLinear(double c)

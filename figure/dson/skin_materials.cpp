@@ -49,7 +49,7 @@ LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const 
     }
     if(!any)
       continue;
-    m.surface  = parseSurface(m.name, next);
+    m.surface  = parseSurface(m.name, next, m.context);
     m.channels = std::make_shared<const Channels>(std::move(next));
     r.changed.insert(i);
   }

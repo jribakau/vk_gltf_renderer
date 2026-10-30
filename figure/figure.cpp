@@ -71,6 +71,7 @@ std::unique_ptr<Figure> Figure::load(std::shared_ptr<dson::Store> store, const s
   {
     timing::Scope tl("loadDson");
     f->loaded = dson::loadDson(*store, rel, options);
+    f->placeLoadedSurfaces(rel);
   }
   f->setup(progress);
   f->indexItems();

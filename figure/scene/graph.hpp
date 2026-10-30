@@ -82,6 +82,8 @@ struct Material
   std::string                           name;
   mat::Surface                          surface;
   mat::Edits                            edits;
+  // what its mesh belongs to, which its surface is read with whenever its channels change
+  mat::Context                          context = mat::Context::eBody;
   std::shared_ptr<const dson::Channels> channels;
   // the channels as the character came: its file's own and the presets its add-ons were worn with.
   // Choosing other eyes, or the character's own, puts these back; presets opened later leave it.

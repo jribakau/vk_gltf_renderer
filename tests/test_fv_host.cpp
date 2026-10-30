@@ -31,6 +31,7 @@
 #include <fstream>
 #include <future>
 #include <random>
+#include <set>
 #include <thread>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -803,6 +804,31 @@ TEST(FvHost, APresetOverTheChosenSkinKeepsBothWhenReopened)
   EXPECT_FALSE(saved.contains("skin")) << saved.dump();
   EXPECT_EQ(skinTopic().value("preset", ""), full) << skinTopic().dump();
   EXPECT_EQ(names(saved, "materialPresetsOver"), Json::array());
+}
+
+// A surface's name means what its mesh is: the Body of a vest is no flesh, though the figure's is, and a
+// preset over both, which reads their channels again, leaves that so.
+TEST(FvHost, ASurfaceOnAGarmentIsNoFleshWhateverItsName)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Vest.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const auto kinds = [&] {
+    std::multiset<std::string> out;
+    const Json                 items = rig.topic("materials/" + id).value("items", Json::object());
+    for(const auto& [m, it] : items.items())
+      if(it.value("name", "") == "Body")
+        out.insert(it.value("kind", ""));
+    return out;
+  };
+  const std::multiset<std::string> expected{"other", "skin"};
+  EXPECT_EQ(kinds(), expected);
+  ASSERT_TRUE(rig.cmd("load", {{"prop", id}, {"rel", "People/Test/Materials/Box Body Red.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(kinds(), expected);
 }
 
 // A dial the character's file sets (the Box Figure's Stretch, at 0.5) stays where the user put it, at 0

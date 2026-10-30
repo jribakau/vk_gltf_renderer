@@ -213,7 +213,7 @@ std::string rowFingerprint(const Material& m, const mat::LowerOptions& lowering)
 void measure(const std::string& key, const Material& m, mat::SkinMode skin, Tally& t)
 {
   const std::string shader = shaderName(m.surface.shader);
-  const std::string kind   = kindName(mat::classify(m.name));
+  const std::string kind   = kindName(m.surface.kind);
   t.surfaces++;
   t.shaders[shader]++;
   t.kinds[kind]++;

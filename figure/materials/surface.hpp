@@ -29,9 +29,20 @@ enum class Kind
   eOther,
 };
 
-// What a surface's name says it is ("Face", "Eye Moisture Left", "Eyelashes", ...), the same rules
-// as classifySurface in daz.ts.
-Kind classify(const std::string& name);
+// What a surface's mesh belongs to, which decides what its name can mean. A "Body" or "Back" is flesh
+// only on a body; on a shirt or a chair it is the shirt's or the chair's. In this order: a surface on
+// meshes of several takes the first.
+enum class Context
+{
+  eBody,  // a figure, or what grafts to one or is part of one (a mouth, a genital)
+  eHair,  // a hair item: its "Cap" is a hair cap, its "Head" no flesh
+  eItem,  // anything else: clothing, a prop
+};
+
+// What a surface's name says it is ("Face", "Eye Moisture Left", "Eyelashes", ...), by whole words:
+// "Pearl" has no ear, "Armor" no arm, "Brown Leather" no brow. A name splits at its capitals, digits and
+// punctuation ("EyeMoisture_L", "3_Fingernail"), and a figure's lowercase compounds are listed.
+Kind classify(const std::string& name, Context context = Context::eBody);
 
 // A colour with an optional map that multiplies it.
 struct ColorMap
