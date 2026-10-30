@@ -150,6 +150,7 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf:
   dstMat.clearcoatFactor            = clearcoat.factor;
   dstMat.clearcoatRoughness         = clearcoat.roughnessFactor;
   dstMat.clearcoatNormalTextureScale = clearcoat.normalScale;
+  dstMat.clearcoatDualLobe           = clearcoat.dualLobe ? 1.0f : 0.0f;
   handleTexture(dstMat.clearcoatRoughnessTexture, clearcoat.roughnessTexture);
   handleTexture(dstMat.clearcoatTexture, clearcoat.texture);
   handleTexture(dstMat.clearcoatNormalTexture, clearcoat.normalTexture);

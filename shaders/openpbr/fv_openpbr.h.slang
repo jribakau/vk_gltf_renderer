@@ -96,7 +96,8 @@ OpenPBR_ResolvedInputs fvOpenPbrInputs(PbrMaterial mat, float3 V)
   in.specular_color  = lerp(mat.specularColor, float3(1.0F), mat.metallic);
   in.specular_ior    = fvOpenPbrIor(mat);
 
-  in.coat_weight    = mat.clearcoat;
+  // decision M7: DAZ's tight lobe isn't a coat, it is a lobe beside the specular (fvOpenPbrLobeShare)
+  in.coat_weight    = mat.clearcoatIsLobe > 0.0F ? 0.0F : mat.clearcoat;
   in.coat_roughness = mat.clearcoatRoughness;
   in.coat_ior       = FV_OPENPBR_COAT_IOR;
   // decision M10: physical, the base darkens under its coat
@@ -116,7 +117,7 @@ OpenPBR_ResolvedInputs fvOpenPbrInputs(PbrMaterial mat, float3 V)
   const float3 N    = fvOpenPbrFacing(mat.N, V, away);
   in.geometry_basis = fvOpenPbrBasis(N, mat.T, mat.B);
   // the coat's normal is its own map's, or the base's as bent
-  const float3 Nc        = mat.clearcoat > 0.0F ? fvOpenPbrFacing(mat.Nc, V, away) : N;
+  const float3 Nc        = in.coat_weight > 0.0F ? fvOpenPbrFacing(mat.Nc, V, away) : N;
   in.geometry_coat_basis = fvOpenPbrBasis(Nc, mat.T, mat.B);
   return in;
 }
@@ -147,10 +148,27 @@ float3 fvOpenPbrDiffuseTerms(PbrMaterial mat, float3 L)
   return terms;
 }
 
+// The share of the light DAZ's tight specular lobe takes at this view (0: no such lobe), by its albedo
+// as today's closure has it: the rest of the closure lies under it, scaled by what is left, which is
+// how OpenPBR 1.2's haze layers. It is drawn by today's GGX lobe, the one the path tracer tested.
+float fvOpenPbrLobeShare(PbrMaterial mat, float3 V)
+{
+  return mat.clearcoatIsLobe > 0.0F && mat.clearcoat > 0.0F ? bsdfClearcoatAlbedo(mat, abs(dot(V, mat.Nc))) : 0.0F;
+}
+
 // The closure at a hit. One per vertex: the light sample and the BSDF sample below share it.
 OpenPBR_PreparedBsdf fvOpenPbrPrepare(PbrMaterial mat, float3 V)
 {
   return openpbr_prepare(fvOpenPbrInputs(mat, V), float3(1.0F), OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, V);
+}
+
+// The closure says which lobe drew the direction, as the path tracer's events do
+int fvOpenPbrEvent(OpenPBR_BsdfLobeType type)
+{
+  const bool transmitted = (type & OpenPBR_BsdfLobeTypeTransmission) != 0;
+  const bool diffuse     = (type & OpenPBR_BsdfLobeTypeDiffuse) != 0;
+  return diffuse ? (transmitted ? BSDF_EVENT_DIFFUSE_TRANSMISSION : BSDF_EVENT_DIFFUSE_REFLECTION) :
+                   (transmitted ? BSDF_EVENT_GLOSSY_TRANSMISSION : BSDF_EVENT_GLOSSY_REFLECTION);
 }
 
 // bsdfEvaluateAll's outputs: the whole closure toward k2, and the pdf of its own sampler (a mixture of
@@ -158,14 +176,66 @@ OpenPBR_PreparedBsdf fvOpenPbrPrepare(PbrMaterial mat, float3 V)
 void fvOpenPbrEvaluate(NVSHADERS_INOUT_TYPE(BsdfEvaluateData) data, OpenPBR_PreparedBsdf prepared, PbrMaterial mat)
 {
   const OpenPBR_DiffuseSpecular value = openpbr_eval(prepared, data.k2);
-  data.bsdf_diffuse = value.diffuse * fvOpenPbrDiffuseTerms(mat, data.k2) * mat.occlusion;
-  data.bsdf_glossy  = value.specular * mat.occlusion;
-  data.pdf          = openpbr_pdf(prepared, data.k2);
+  const float                   share = fvOpenPbrLobeShare(mat, data.k1);
+  data.bsdf_diffuse = (1.0F - share) * value.diffuse * fvOpenPbrDiffuseTerms(mat, data.k2) * mat.occlusion;
+  data.bsdf_glossy  = (1.0F - share) * value.specular * mat.occlusion;
+  data.pdf          = (1.0F - share) * openpbr_pdf(prepared, data.k2);
+  if(share > 0.0F)
+  {
+    BsdfEvaluateData lobe = data;
+    bsdfEvaluateLobe(lobe, mat, LOBE_CLEARCOAT_REFLECTION, mat.baseColor);
+    data.bsdf_glossy += share * lobe.bsdf_glossy * mat.occlusion;
+    data.pdf += share * lobe.pdf;
+  }
 }
 
 // bsdfSampleCore's outputs. A sample with no direction is an absorption.
 void fvOpenPbrSample(NVSHADERS_INOUT_TYPE(BsdfSampleData) data, OpenPBR_PreparedBsdf prepared, PbrMaterial mat)
 {
+  const float share = fvOpenPbrLobeShare(mat, data.k1);
+  if(share > 0.0F)
+  {
+    // One of the two by its share, then the mixture's value over the mixture's pdf at what it drew,
+    // whichever drew it. xi.z chose, so it is stretched back over [0,1] for the one chosen.
+    const float3 xi   = data.xi;
+    const bool   lobe = xi.z < share;
+    int          event = BSDF_EVENT_GLOSSY_REFLECTION;
+    if(lobe)
+    {
+      BsdfSampleData drawn = data;
+      drawn.xi.z           = xi.z / share;
+      bsdfSampleLobe(drawn, mat, LOBE_CLEARCOAT_REFLECTION, mat.baseColor);
+      data.k2 = drawn.k2;
+      event   = drawn.event_type;
+    }
+    else
+    {
+      float3                  L;
+      OpenPBR_DiffuseSpecular weight;
+      float                   pdf  = 0.0F;
+      OpenPBR_BsdfLobeType    type = OpenPBR_BsdfLobeTypeNone;
+      openpbr_sample(prepared, float3(xi.x, xi.y, (xi.z - share) / (1.0F - share)), L, weight, pdf, type);
+      event   = pdf > 0.0F ? fvOpenPbrEvent(type) : BSDF_EVENT_ABSORB;
+      data.k2 = pdf > 0.0F ? normalize(L) : data.k1;
+    }
+    if(event == BSDF_EVENT_ABSORB)
+    {
+      data.pdf           = 0.0F;
+      data.bsdf_over_pdf = float3(0.0F);
+      data.event_type    = BSDF_EVENT_ABSORB;
+      return;
+    }
+    BsdfEvaluateData at;
+    at.k1 = data.k1;
+    at.k2 = data.k2;
+    at.xi = xi;
+    fvOpenPbrEvaluate(at, prepared, mat);
+    data.pdf           = at.pdf;
+    data.bsdf_over_pdf = at.pdf > 0.0F ? (at.bsdf_diffuse + at.bsdf_glossy) / at.pdf : float3(0.0F);
+    data.event_type    = at.pdf > 0.0F ? event : BSDF_EVENT_ABSORB;
+    return;
+  }
+
   float3                  L;
   OpenPBR_DiffuseSpecular weight;
   float                   pdf = 0.0F;
@@ -181,11 +251,7 @@ void fvOpenPbrSample(NVSHADERS_INOUT_TYPE(BsdfSampleData) data, OpenPBR_Prepared
   data.k2            = normalize(L);
   data.pdf           = pdf;
   data.bsdf_over_pdf = (weight.diffuse * fvOpenPbrDiffuseTerms(mat, data.k2) + weight.specular) * mat.occlusion;
-  // the closure says which lobe drew the direction, as the path tracer's events do
-  const bool transmitted = (type & OpenPBR_BsdfLobeTypeTransmission) != 0;
-  const bool diffuse     = (type & OpenPBR_BsdfLobeTypeDiffuse) != 0;
-  data.event_type        = diffuse ? (transmitted ? BSDF_EVENT_DIFFUSE_TRANSMISSION : BSDF_EVENT_DIFFUSE_REFLECTION) :
-                                     (transmitted ? BSDF_EVENT_GLOSSY_TRANSMISSION : BSDF_EVENT_GLOSSY_REFLECTION);
+  data.event_type    = fvOpenPbrEvent(type);
 }
 
 #endif  // FV_OPENPBR_H_SLANG

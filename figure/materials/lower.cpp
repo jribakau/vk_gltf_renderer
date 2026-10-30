@@ -572,6 +572,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   {
     Json cc = {{"clearcoatFactor", clamp(e.clearcoat.value_or(coat ? coat->weight.value : 0.f), 0, 1)},
                {"clearcoatRoughnessFactor", clamp(e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f), 0, 1)}};
+    // the tight lobe, not a coat: for the renderer's OpenPBR closure, which layers a coat over the rest
+    if(coat && !s.topCoat && lobes.clearcoat && !opts.forFile)
+      cc["fvDualLobe"] = true;
     if(coat && !coat->weight.map.empty())
       cc["clearcoatTexture"] = b.plain(coat->weight.map, false);
     else if(coat && !coat->weightMaps.empty())

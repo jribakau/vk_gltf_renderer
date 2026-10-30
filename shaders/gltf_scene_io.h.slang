@@ -255,6 +255,7 @@ struct GltfShadeMaterial
 #if MAT_EXT_CLEARCOAT
   float clearcoatRoughness          = 0;
   float clearcoatNormalTextureScale = 1;  // clearcoatNormalTexture.scale
+  float clearcoatDualLobe           = 0;  // 1: the slot holds DAZ's tight specular lobe, not a coat (fvDualLobe)
 #endif
 
 #if MAT_EXT_SPECULAR

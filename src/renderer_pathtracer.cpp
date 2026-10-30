@@ -154,6 +154,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
                                    bool                  rayQuery,
                                    int32_t               useSER,
                                    int32_t               transparency,
+                                   int32_t               materialModel,
                                    VkPipelineCreateFlags rtxFlags,
                                    VkPipelineCreateFlags rqFlags,
                                    VkResult&             result)
@@ -165,6 +166,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
 #else
   (void)transparency;
 #endif
+  specialization.add(2, materialModel);  // USE_OPENPBR
   VkPipeline pipeline = VK_NULL_HANDLE;
   if(rayQuery)
   {
@@ -416,6 +418,12 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Scatter walks gather light only where they leave the surface, as a diffuse exit (dense media)",
                  .callbackSuccess = reset},
                 &m_volumeDiffuseExit, Persist::eYes);
+  // The material model's closure, phase M2 of the app's docs/material-model-plan.md. A specialization
+  // constant: the pipelines are built again, cached after the first time, and no shader recompiles.
+  settings->add({.name            = "ptMaterialModel",
+                 .help            = "PathTracer: The closure surfaces shade through. 0: today's glTF lobes, 1: OpenPBR",
+                 .callbackSuccess = reset},
+                &m_materialModel, Persist::eYes);
   // The walk's way in to match its way out: through a Lambertian lobe, as Unreal's path tracer
   // enters subsurface (and Iray's translucency is a diffuse transmission), not by a rough refraction
   // whose direction follows the view.
@@ -951,7 +959,8 @@ PathTracer::PendingCompileWork PathTracer::getPendingCompileWork(const Resources
   const VkPipeline            live = (m_renderTechnique == RenderTechnique::RayQuery) ? m_rqPipeline : m_rtxPipeline;
   return {
       .recompile       = !wanted.sameShader(m_compiled),
-      .stalePipeline   = useSER != m_pipelineUseSER || wanted.dlssTransparency != m_compiled.dlssTransparency,
+      .stalePipeline   = useSER != m_pipelineUseSER || wanted.dlssTransparency != m_compiled.dlssTransparency
+                       || wanted.materialModel != m_compiled.materialModel,
       .missingPipeline = live == VK_NULL_HANDLE,
   };
 }
@@ -1004,7 +1013,7 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
     // recorded until it is done (the BusyWindow gates GltfRenderer::onRender). No wait here: this
     // runs on the compile worker while the application thread submits the BusyWindow's frames, and
     // host access to a queue must be externally synchronized.
-    const int wantDlssTransparency = makeVariantKey(resources).dlssTransparency;
+    const VariantKey wantKey = makeVariantKey(resources);
     {
       std::lock_guard<std::mutex> lock(m_compileMutex);
       vkDestroyPipeline(m_device, m_rqPipeline, nullptr);
@@ -1012,7 +1021,8 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
       m_rqPipeline                = VK_NULL_HANDLE;
       m_rtxPipeline               = VK_NULL_HANDLE;
       m_pipelineUseSER            = m_useSER;
-      m_compiled.dlssTransparency = wantDlssTransparency;
+      m_compiled.dlssTransparency = wantKey.dlssTransparency;
+      m_compiled.materialModel    = wantKey.materialModel;
       resources.allocator.destroyBuffer(m_sbtBuffer);
       m_sbtBuffer  = {};
       m_sbtRegions = {};
@@ -1549,7 +1559,8 @@ void PathTracer::startPipelineWarm(Resources& resources)
   const int32_t               transparency = static_cast<int32_t>(m_dlss->getTransparencyMode());
   const VkPipelineCreateFlags flags        = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
   const VkPipelineCreateFlags rqFlags = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u;
-  auto warm = [this, layout, useSER, transparency, flags, rqFlags](std::span<const uint32_t> code, const char* build, bool rayQuery) {
+  const int32_t materialModel = m_materialModel;
+  auto warm = [this, layout, useSER, transparency, materialModel, flags, rqFlags](std::span<const uint32_t> code, const char* build, bool rayQuery) {
     const auto               start = std::chrono::steady_clock::now();
     VkShaderModuleCreateInfo moduleInfo{
         .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1562,14 +1573,14 @@ void PathTracer::startPipelineWarm(Resources& resources)
     VkResult         result   = VK_ERROR_UNKNOWN;
     const auto       built    = std::chrono::steady_clock::now();
     const VkPipeline pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), layout, module, rayQuery,
-                                                        useSER, transparency, flags, rqFlags, result);
+                                                        useSER, transparency, materialModel, flags, rqFlags, result);
     const double     ms       = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - built).count();
     vkDestroyPipeline(m_device, pipeline, nullptr);
     vkDestroyShaderModule(m_device, module, nullptr);
     LOGI("%s pipeline warm-up (%s): %s (%.2f ms)\n", rayQuery ? "RQ" : "RTX", build, result == VK_SUCCESS ? "done" : "failed",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     if(result == VK_SUCCESS)
-      notePipelineBuild(nvvk::fnv1a64(code.data(), code.size_bytes()), rayQuery, useSER, transparency, rayQuery ? rqFlags : flags, ms);
+      notePipelineBuild(nvvk::fnv1a64(code.data(), code.size_bytes()), rayQuery, useSER, transparency | (materialModel << 8), rayQuery ? rqFlags : flags, ms);
     // the creation that follows is a cache hit and saves nothing, so the cache is saved here
     if(result == VK_SUCCESS)
       m_pipelineCache.saveAsync();
@@ -1637,6 +1648,7 @@ void PathTracer::createRqPipeline(Resources& /*resources*/)
 
   nvvk::Specialization specialization;
   specialization.add(0, m_useSER ? 1 : 0);  // USE_SER
+  specialization.add(2, m_materialModel);  // USE_OPENPBR
 #if defined(USE_DLSS)
   specialization.add(1, static_cast<int32_t>(m_dlss->getTransparencyMode()));  // USE_DLSS_TRANSP
 #endif
@@ -1669,7 +1681,7 @@ void PathTracer::createRqPipeline(Resources& /*resources*/)
   const auto rqStart    = std::chrono::steady_clock::now();
   NVVK_CHECK(vkCreateComputePipelines(m_device, m_pipelineCache.getCache(), 1, &cpCreateInfo, nullptr, &rqPipeline));
   NVVK_DBG_NAME(rqPipeline);
-  notePipelineBuild(moduleCode(m_shaderModule), true, m_useSER ? 1 : 0, transparencyMode(), cpCreateInfo.flags,
+  notePipelineBuild(moduleCode(m_shaderModule), true, m_useSER ? 1 : 0, transparencyMode() | (m_materialModel << 8), cpCreateInfo.flags,
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rqStart).count());
 
   {
@@ -1752,6 +1764,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
   // Shader Execution Reorder (SER)
   nvvk::Specialization specialization;
   specialization.add(0, m_useSER ? 1 : 0);  // USE_SER
+  specialization.add(2, m_materialModel);  // USE_OPENPBR
 #if defined(USE_DLSS)
   specialization.add(1, static_cast<int32_t>(m_dlss->getTransparencyMode()));  // USE_DLSS_TRANSP
 #endif
@@ -1865,7 +1878,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
       valid ? ((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) ? "CACHE HIT" : "cache miss") :
               "cache status unknown";
   LOGI("RTX pipeline creation: %s, deferred=%s (%.2f ms)\n", cacheStatus, wasDeferred ? "yes" : "no", elapsedMs);
-  notePipelineBuild(moduleCode(m_shaderModule), false, m_useSER ? 1 : 0, transparencyMode(), flags, elapsedMs);
+  notePipelineBuild(moduleCode(m_shaderModule), false, m_useSER ? 1 : 0, transparencyMode() | (m_materialModel << 8), flags, elapsedMs);
   logPipelineStatistics(rtxPipeline, "RTX");
   // Unknown feedback (the deferred path leaves it unset) is not a hit, so it still saves.
   if((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) == 0)
@@ -2403,7 +2416,7 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     if(compiledFromFile || m_compiledIsFallback)
       m_compiled = key;
     else
-      m_compiled = VariantKey{.dlssGuide = kEmbeddedDlssGuide, .dlssTransparency = key.dlssTransparency};
+      m_compiled = VariantKey{.dlssGuide = kEmbeddedDlssGuide, .dlssTransparency = key.dlssTransparency, .materialModel = key.materialModel};
 
     // Destroy pipeline since there is a new shader
     destroyPipelinesLocked();
@@ -2465,6 +2478,7 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
 #else
       0,
 #endif
+      m_materialModel,
   };
 }
 
@@ -2810,9 +2824,9 @@ PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
   VkResult   result     = VK_ERROR_UNKNOWN;
   const auto buildStart = std::chrono::steady_clock::now();
   built.pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), job.layout, built.module, job.rayQuery,
-                                           job.useSER ? 1 : 0, job.key.dlssTransparency, job.rtxFlags, job.rqFlags, result);
+                                           job.useSER ? 1 : 0, job.key.dlssTransparency, job.key.materialModel, job.rtxFlags, job.rqFlags, result);
   if(built.pipeline)
-    notePipelineBuild(moduleCode(built.module), job.rayQuery, job.useSER ? 1 : 0, job.key.dlssTransparency,
+    notePipelineBuild(moduleCode(built.module), job.rayQuery, job.useSER ? 1 : 0, job.key.dlssTransparency | (job.key.materialModel << 8),
                       job.rayQuery ? job.rqFlags : job.rtxFlags,
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart).count());
   if(!built.pipeline)

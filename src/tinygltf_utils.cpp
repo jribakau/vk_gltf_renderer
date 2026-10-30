@@ -280,6 +280,8 @@ KHR_materials_clearcoat tinygltf::utils::getClearcoat(const tinygltf::Material& 
     tinygltf::utils::getValue(*ext, "clearcoatNormalTexture", gmat.normalTexture);
     if(ext->Has("clearcoatNormalTexture"))
       tinygltf::utils::getValue(ext->Get("clearcoatNormalTexture"), "scale", gmat.normalScale);
+    if(ext->Has("fvDualLobe") && ext->Get("fvDualLobe").IsBool())
+      gmat.dualLobe = ext->Get("fvDualLobe").Get<bool>();
   }
   return gmat;
 }

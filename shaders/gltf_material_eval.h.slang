@@ -427,6 +427,7 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   // KHR_materials_clearcoat
   pbrMat.clearcoat          = material.clearcoatFactor;
   pbrMat.clearcoatRoughness = material.clearcoatRoughness;
+  pbrMat.clearcoatIsLobe    = material.clearcoatDualLobe;
   pbrMat.Nc                 = pbrMat.N;
   if(isTexturePresent(material.clearcoatTexture))
   {

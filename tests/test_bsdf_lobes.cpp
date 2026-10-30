@@ -817,6 +817,22 @@ TEST(OpenPbr, TheApproximateEquivalencesKeepWhatTheyAreFor)
   EXPECT_EQ(inputsOf(coat).coat_darkening, 1.0f);
 }
 
+// DAZ's tight lobe isn't a coat: nothing darkens under it, its own share reflects, and the specular
+// under it keeps its Fresnel (a coat at the same index would take it all, an interface with no contrast)
+TEST(OpenPbr, TheTightLobeIsNoCoat)
+{
+  PbrMaterial lobe        = base(0.5f);
+  lobe.clearcoat          = 0.5f;
+  lobe.clearcoatRoughness = 0.3f;
+  lobe.clearcoatIsLobe    = 1.0f;
+  EXPECT_EQ(inputsOf(lobe).coat_weight, 0.0f);
+  EXPECT_GT(fvOpenPbrLobeShare(lobe, vec3(0, 0, 1)), 0.0f);
+  EXPECT_NEAR(fvOpenPbrLobeShare(lobe, vec3(0, 0, 1)), bsdfClearcoatAlbedo(lobe, 1.0f), 1e-6f);
+  lobe.clearcoatIsLobe = 0.0f;
+  EXPECT_EQ(inputsOf(lobe).coat_weight, 0.5f);
+  EXPECT_EQ(fvOpenPbrLobeShare(lobe, vec3(0, 0, 1)), 0.0f);
+}
+
 // What has an inside to the closure: only a surface that refracts. A walk's diffuse entry is a thin
 // wall's diffuse transmission, its share of the diffuse bucket going through.
 TEST(OpenPbr, OnlyARefractingSurfaceHasAnInside)
@@ -904,7 +920,13 @@ TEST(OpenPbr, RetroreflectionStaysOnTodaysClosure)
 // today's), and its weight is the value over that density.
 TEST(OpenPbr, SamplesFollowTheReportedPdf)
 {
-  for(Case c : cases())
+  std::vector<Case> all = cases();
+  PbrMaterial       lobe = base(0.5f);
+  lobe.clearcoat          = 0.8f;
+  lobe.clearcoatRoughness = 0.3f;
+  lobe.clearcoatIsLobe    = 1.0f;
+  all.push_back({"tight lobe", lobe});
+  for(Case c : all)
   {
     if(!fvOpenPbrTakes(c.mat))
       continue;
@@ -923,7 +945,13 @@ TEST(OpenPbr, ASampleWeighsItsValueOverItsPdf)
 {
   std::mt19937                          rng(43);
   std::uniform_real_distribution<float> u(0.0f, 1.0f);
-  for(Case c : cases())
+  std::vector<Case>                     all = cases();
+  PbrMaterial                           lobe = base(0.5f);
+  lobe.clearcoat                             = 0.8f;
+  lobe.clearcoatRoughness                    = 0.3f;
+  lobe.clearcoatIsLobe                       = 1.0f;
+  all.push_back({"tight lobe", lobe});
+  for(Case c : all)
   {
     if(!fvOpenPbrTakes(c.mat))
       continue;
@@ -968,7 +996,9 @@ TEST(OpenPbr, ALayerOverAWhiteBaseKeepsItsEnergy)
       PbrMaterial all           = coat;
       all.sheenColor            = vec3(1.0f);
       all.sheenRoughness        = 0.5f;
-      const std::array<std::pair<const char*, PbrMaterial>, 4> layers{{{"none", white(roughness)}, {"coat", coat}, {"sheen", sheen}, {"all", all}}};
+      PbrMaterial tight         = coat;
+      tight.clearcoatIsLobe     = 1.0f;
+      const std::array<std::pair<const char*, PbrMaterial>, 5> layers{{{"none", white(roughness)}, {"coat", coat}, {"sheen", sheen}, {"all", all}, {"tight lobe", tight}}};
       const vec3 V(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
       for(const auto& [name, mat] : layers)
       {
@@ -984,7 +1014,10 @@ TEST(OpenPbr, ALayerOverAWhiteBaseKeepsItsEnergy)
           if(s.event_type != BSDF_EVENT_ABSORB)
             albedo += s.bsdf_over_pdf.x / N;
         }
-        EXPECT_LE(albedo, 1.005) << name << ", roughness " << roughness << ", NoV " << NoV;
+        // the tight lobe is today's GGX with its exact Fresnel over the Schlick albedo that gave it its
+        // share, which is what today's coat gains by too
+        const double ceiling = mat.clearcoatIsLobe > 0.0f ? 1.015 : 1.005;
+        EXPECT_LE(albedo, ceiling) << name << ", roughness " << roughness << ", NoV " << NoV;
         EXPECT_GE(albedo, 0.95) << name << ", roughness " << roughness << ", NoV " << NoV;
       }
     }
