@@ -132,6 +132,9 @@ public:
   // Tells a channel what its file says of it: its real label and range (a lazy channel has a label
   // made from its name, and 0 to 1, until now) and where it belongs.
   void describe(const std::string& name, const dson::MorphInfo& info);
+  // Starts reading a lazy channel's file now, whatever its value: a controller that follows another
+  // dial, which the dial doesn't know of. False when there's nothing to start.
+  bool load(const std::string& name);
 
   // Every channel's value is now what it loaded with, but those in `except`, which came earlier.
   void markLoaded(const std::set<std::string>& except = {});

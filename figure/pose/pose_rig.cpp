@@ -104,6 +104,7 @@ PoseRig::PoseRig(SceneGraph& scene, const dson::Rig& main, const std::vector<con
     pb.rest.emplace_back(node, bone.position);
     m_restBase[node]  = bone.position;
     m_byNode[node]    = m_bones.size();
+    m_writer[node]    = m_bones.size();
     m_byName[pb.name] = m_bones.size();
     m_byId[pb.id]     = m_bones.size();
     m_bones.push_back(std::move(pb));
@@ -142,6 +143,7 @@ std::pair<int, int> PoseRig::addFollowers(const dson::Rig& rig, const FollowPlan
     matched++;
     PoseBone& pb = m_bones[leader];
     pb.followers.push_back(node);
+    m_writer[node] = leader;
     // an item fitted after the joints moved was built at the moved centres: its base is without them
     pb.rest.emplace_back(node, m_scene.nodes[node].position);
     m_restBase[node] = m_scene.nodes[node].position - localOffset(pb);
@@ -163,7 +165,11 @@ void PoseRig::removeFollowers(const dson::Rig& rig)
     pb.rest.erase(std::remove_if(pb.rest.begin(), pb.rest.end(), [&](const auto& r) { return nodes.count(r.first) > 0; }), pb.rest.end());
   }
   for(int n : nodes)
+  {
     m_restBase.erase(n);
+    m_ownScale.erase(n);
+    m_writer.erase(n);
+  }
 }
 
 const PoseBone* PoseRig::get(const std::string& nameOrId) const
@@ -504,14 +510,47 @@ std::vector<int> PoseRig::apply(PoseBone& pb)
   const double g = v(ChannelKind::eScale, "general", 1);
   const Vec3   s{v(ChannelKind::eScale, "x", 1) * g, v(ChannelKind::eScale, "y", 1) * g, v(ChannelKind::eScale, "z", 1) * g};
   std::vector<int> moved;
+  bool             rescaled = false;
+  for(const auto& [node, rest] : pb.rest)
+  {
+    auto [own, added] = m_ownScale.try_emplace(node, Vec3{1, 1, 1});
+    if(own->second.x != s.x || own->second.y != s.y || own->second.z != s.z)
+    {
+      own->second = s;
+      rescaled    = true;
+    }
+  }
   for(const auto& [node, rest] : pb.rest)
   {
     Node& b       = m_scene.nodes[node];
     b.quaternion  = q;
     b.position    = rest + t;
-    b.scale       = s;
+    // DAZ's inherits_scale off: the parent's own scale moves this bone's origin but doesn't size it, while
+    // what the parent inherited does. The scene's nodes multiply down the tree, so it's divided out here
+    Vec3 local = s;
+    if(b.joint && !b.joint->inheritsScale)
+      if(const auto parent = m_ownScale.find(b.parent); parent != m_ownScale.end())
+      {
+        const Vec3& p = parent->second;
+        local         = Vec3{p.x != 0 ? s.x / p.x : s.x, p.y != 0 ? s.y / p.y : s.y, p.z != 0 ? s.z / p.z : s.z};
+      }
+    b.scale = local;
     moved.push_back(node);
     m_moved.insert(node);
+  }
+  // a change of this bone's own scale changes what its children divide out
+  if(rescaled)
+  {
+    std::set<size_t> children;
+    for(const auto& [node, rest] : pb.rest)
+      for(const int child : m_scene.nodes[node].children)
+        if(const auto writer = m_writer.find(child); writer != m_writer.end() && &m_bones[writer->second] != &pb)
+          children.insert(writer->second);
+    for(const size_t child : children)
+    {
+      const std::vector<int> theirs = apply(m_bones[child]);
+      moved.insert(moved.end(), theirs.begin(), theirs.end());
+    }
   }
   return moved;
 }

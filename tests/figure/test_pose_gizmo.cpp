@@ -3,6 +3,7 @@
 // translation round-trips, and a click on the body finds the nearest bone.
 
 #include <gtest/gtest.h>
+#include <cmath>
 
 #include <memory>
 #include <string>
@@ -160,4 +161,73 @@ TEST(PoseGizmo, aClickPicksTheNearestBoneButNotTheFaceRigOrRoot)
   EXPECT_EQ(nearest(figure.transformPoint({8, 120, 0})), "lShldr");
   EXPECT_EQ(r->pose->boneForNode(r->rig.byId("lHand"))->id, "lHand");
   EXPECT_EQ(r->pose->boneForNode(r->wrap), nullptr);
+}
+
+namespace {
+
+double sizeOf(const fv::Mat4& m)
+{
+  return std::hypot(m.e[0], m.e[1], m.e[2]);
+}
+
+// A body, a hand, a finger and its tip along x, each with a general scale, the last two (as most of a
+// Genesis figure's bones) with inherits_scale off.
+std::unique_ptr<Rigged> hand()
+{
+  const std::string general = R"("general_scale":{"id":"general_scale","value":1,"min":-10,"max":10})";
+  return build(R"([{"id":"body","type":"figure","name":"body",)" + general + R"(,"inherits_scale":true},)"
+               R"({"id":"hand","type":"bone","name":"hand","parent":"#body","center_point":[{"id":"x","value":10}],)" + general + R"(,"inherits_scale":true},)"
+               R"({"id":"finger","type":"bone","name":"finger","parent":"#hand","center_point":[{"id":"x","value":20}],)" + general + R"(,"inherits_scale":false},)"
+               R"({"id":"tip","type":"bone","name":"tip","parent":"#finger","center_point":[{"id":"x","value":30}],)" + general + R"(,"inherits_scale":false}])");
+}
+
+}  // namespace
+
+// With inherits_scale off a bone isn't sized by its parent's own scale: a hand and its fingers all set
+// to 2 are twice the size, not 2, 4 and 8 times, and each joint moves out by what is above it.
+TEST(PoseScale, ABoneThatDoesNotInheritIsNotSizedByItsParent)
+{
+  const auto r = hand();
+  r->pose->setMany({{"hand", ChannelKind::eScale, "general", 2}, {"finger", ChannelKind::eScale, "general", 2}, {"tip", ChannelKind::eScale, "general", 2}});
+  const fv::Mat4 wrap = r->scene.world(r->wrap);
+  const double   unit = sizeOf(wrap);
+  const auto     size = [&](const char* b) { return sizeOf(r->scene.world(r->rig.byId(b))) / unit; };
+  EXPECT_NEAR(size("hand"), 2, 1e-6);
+  EXPECT_NEAR(size("finger"), 2, 1e-6);
+  EXPECT_NEAR(size("tip"), 2, 1e-6);
+
+  // the finger alone: its tip stays its size, and moves with the finger
+  r->pose->setMany({{"hand", ChannelKind::eScale, "general", 1}, {"tip", ChannelKind::eScale, "general", 1}});
+  EXPECT_NEAR(size("hand"), 1, 1e-6);
+  EXPECT_NEAR(size("finger"), 2, 1e-6);
+  EXPECT_NEAR(size("tip"), 1, 1e-6);
+  const auto at = [&](const char* b) {
+    const fv::Mat4 m = r->scene.world(r->rig.byId(b));
+    return fv::inverse(wrap).transformPoint({m.e[12], m.e[13], m.e[14]}).x;
+  };
+  EXPECT_NEAR(at("finger"), 20, 1e-3);
+  EXPECT_NEAR(at("tip"), 40, 1e-3);
+}
+
+// What a parent inherited still reaches every bone: scaling the figure's root scales the whole figure,
+// joints and all, so that a figure's height dial makes it taller. Driven by a formula as by a channel.
+TEST(PoseScale, TheFiguresRootScalesEveryBone)
+{
+  const auto r = hand();
+  r->pose->setDriven({{"body|scale|general", 0.5}});
+  const fv::Mat4 wrap = r->scene.world(r->wrap);
+  const double   unit = sizeOf(wrap);
+  for(const char* b : {"body", "hand", "finger", "tip"})
+    EXPECT_NEAR(sizeOf(r->scene.world(r->rig.byId(b))) / unit, 1.5, 1e-6) << b;
+  const auto at = [&](const char* b) {
+    const fv::Mat4 m = r->scene.world(r->rig.byId(b));
+    return fv::inverse(wrap).transformPoint({m.e[12], m.e[13], m.e[14]}).x;
+  };
+  EXPECT_NEAR(at("hand"), 15, 1e-3);
+  EXPECT_NEAR(at("finger"), 30, 1e-3);
+  EXPECT_NEAR(at("tip"), 45, 1e-3);
+
+  // and back
+  r->pose->setDriven({});
+  EXPECT_NEAR(sizeOf(r->scene.world(r->rig.byId("tip"))) / unit, 1, 1e-6);
 }

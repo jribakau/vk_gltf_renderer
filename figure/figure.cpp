@@ -127,8 +127,10 @@ void Figure::setup(const Progress& progress)
         {
           // a scene's dial goes by the id in the file, the listing's by the file's name
           if(!read[i]->alias && !read[i]->id.empty())
-            notes.emplace(read[i]->id, *read[i]);
-          notes[stemOf(files[i])] = *read[i];
+            notes.info.emplace(read[i]->id, *read[i]);
+          notes.info[stemOf(files[i])] = *read[i];
+          for(const std::string& dial : read[i]->follows)
+            notes.followers[dial].push_back(stemOf(files[i]));
         }
       return notes;
     });
@@ -429,11 +431,16 @@ void Figure::finishCorrectives()
 
 void Figure::settle()
 {
+  // a scene's dials want their controllers before it is shown
+  if(m_morphInfoJob.valid())
+    m_morphInfoJob.wait();
   for(;;)
   {
     {
       timing::Scope t("settle: dials", 1);
-      morphs->settled();
+      do
+        morphs->settled();
+      while(noteMorphs());
     }
     if(m_correctiveJobs.empty())
       return;
@@ -460,28 +467,48 @@ Figure::Changes Figure::drain()
   return c;
 }
 
-void Figure::noteMorphs()
+bool Figure::noteMorphs()
 {
   if(m_morphInfoJob.valid() && m_morphInfoJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
   {
-    m_morphNotes  = m_morphInfoJob.get();
-    m_morphsNoted = -1;
+    m_morphNotes    = m_morphInfoJob.get();
+    m_morphsNoted   = -1;
+    m_followersSeen = -1;
   }
-  if(m_morphNotes.empty() || morphs->listVersion() == m_morphsNoted)
-    return;
-  for(const morph::Channel& ch : morphs->channels())
+  if(!m_morphNotes.info.empty() && morphs->listVersion() != m_morphsNoted)
   {
-    const auto it = m_morphNotes.find(ch.name);
-    if(it == m_morphNotes.end())
-      continue;
-    dson::MorphInfo info = it->second;
-    // the listing's dial for a file whose own id the scene set: one slider, the one that holds the value
-    if(!info.alias && info.id != ch.name && morphs->has(info.id))
-      info.helper = true;
-    if(ch.path != info.path || ch.kind != info.kind || ch.helper != info.helper)
-      morphs->describe(ch.name, info);
+    for(const morph::Channel& ch : morphs->channels())
+    {
+      const auto it = m_morphNotes.info.find(ch.name);
+      if(it == m_morphNotes.info.end())
+        continue;
+      dson::MorphInfo info = it->second;
+      // the listing's dial for a file whose own id the scene set: one slider, the one that holds the value
+      if(!info.alias && info.id != ch.name && morphs->has(info.id))
+        info.helper = true;
+      if(ch.path != info.path || ch.kind != info.kind || ch.helper != info.helper)
+        morphs->describe(ch.name, info);
+    }
+    m_morphsNoted = morphs->listVersion();
   }
-  m_morphsNoted = morphs->listVersion();
+  // a dial that has moved brings the controllers that follow it, which nothing else would load
+  bool started = false;
+  if(!m_morphNotes.followers.empty() && morphs->version() != m_followersSeen)
+  {
+    m_followersSeen = morphs->version();
+    for(auto it = m_morphNotes.followers.begin(); it != m_morphNotes.followers.end();)
+    {
+      if(morphs->get(it->first) == 0 && morphs->weightOf(it->first) == 0)
+      {
+        ++it;
+        continue;
+      }
+      for(const std::string& controller : it->second)
+        started = morphs->load(controller) || started;
+      it = m_morphNotes.followers.erase(it);
+    }
+  }
+  return started;
 }
 
 Figure::Changes Figure::pump()

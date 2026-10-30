@@ -95,8 +95,8 @@ morph::Loader FigureDriver::loader(const std::string& file, const std::string& n
       const bool  limited = !(clamped && clamped->is_boolean() && !clamped->get<bool>());
       const Json* lo      = dson::get(ch, "min");
       const Json* hi      = dson::get(ch, "max");
-      out.min = lo && lo->is_number() && limited ? std::max(-1.0, lo->get<double>()) : (out.parts.empty() ? 0.0 : out.parts[0].min);
-      out.max = hi && hi->is_number() && limited ? std::min(2.0, hi->get<double>()) : (out.parts.empty() ? 1.0 : out.parts[0].max);
+      out.min = lo && lo->is_number() && limited ? dson::sliderMin(lo->get<double>()) : (out.parts.empty() ? 0.0 : out.parts[0].min);
+      out.max = hi && hi->is_number() && limited ? dson::sliderMax(hi->get<double>()) : (out.parts.empty() ? 1.0 : out.parts[0].max);
       for(const Json* l : {dson::get(ch, "label"), dson::get(mod, "label")})
         if(l && l->is_string())
         {

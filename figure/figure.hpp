@@ -255,10 +255,16 @@ private:
   void setup(const Progress& progress);
   void applyOtherDials(const dson::MorphContext& ctx, const std::vector<dson::Item>& items, const std::vector<const dson::SceneDial*>& dials, const Progress& progress);
   void finishCorrectives();
-  // Tells the channels what their files say of them, when that has been read or new channels came.
-  void noteMorphs();
+  // Tells the channels what their files say of them, when that has been read or new channels came,
+  // and loads the controllers of dials that moved. True when it started a load.
+  bool noteMorphs();
 
-  using MorphNotes = std::unordered_map<std::string, dson::MorphInfo>;
+  struct MorphNotes
+  {
+    std::unordered_map<std::string, dson::MorphInfo> info;
+    // a dial's id or name -> the lazy controllers that follow it (dson::MorphInfo::follows)
+    std::unordered_map<std::string, std::vector<std::string>> followers;
+  };
 
   struct CorrectiveFile
   {
@@ -276,6 +282,7 @@ private:
   std::future<MorphNotes>                       m_morphInfoJob;
   MorphNotes                                    m_morphNotes;
   int                                           m_morphsNoted = -1;
+  int                                           m_followersSeen = -1;
   std::atomic<int>                              m_wears{0};
   int                                           m_nextItem = 1;
 };

@@ -6,6 +6,7 @@
 // followed through their linear ERC formulas here, and other formulas are skipped. A port of
 // src/lib/loaders/dson/morphs.ts.
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -61,8 +62,18 @@ bool hiddenMorph(const std::string& name);
 // Group label from the DAZ folder layout, e.g. ".../Morphs/DAZ 3D/Base Pose Head/x.dsf" -> "Base Pose Head".
 std::string groupFromPath(const std::string& file);
 
+// A dial's limits on a slider: the file's, as far as a slider is any use (a file can say ±10000).
+inline double sliderMin(double lo)
+{
+  return std::max(-2.0, lo);
+}
+inline double sliderMax(double hi)
+{
+  return std::min(2.0, hi);
+}
+
 // What a morph file says of its dial. DAZ writes it first in the modifier, before the formulas and the
-// deltas, so the few KB this takes are all that is read of a file: a figure has thousands.
+// deltas, so the start of a file is all that is read of it: a figure has thousands.
 struct MorphInfo
 {
   std::string           id, label;
@@ -73,6 +84,11 @@ struct MorphInfo
   // the file marks it as not a dial: not visible, under /Hidden, or an alias of another channel
   bool helper = false;
   bool alias  = false;
+  // it has vertex deltas of its own
+  bool hasMorph = false;
+  // A controller's (no deltas): the dials whose values its own value follows, by id. It says so in its
+  // own file, so nothing about those dials says to load it: the scale behind Proportion Height is one.
+  std::vector<std::string> follows;
 };
 
 // Reads it from the start of a morph file's text, which may stop anywhere after it. Empty without a

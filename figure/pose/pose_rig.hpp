@@ -161,6 +161,10 @@ private:
   std::map<std::string, Vec3>                  m_centerOffsets;
   // each bone's rest position with no centre offsets: the main bones' and their followers'
   std::unordered_map<int, Vec3>                m_restBase;
+  // a bone node's own scale, as its channels and formulas have it, before inherits_scale is divided out
+  std::unordered_map<int, Vec3>                m_ownScale;
+  // the bone that writes a node: its own, or its leader for a follower
+  std::unordered_map<int, size_t>              m_writer;
   std::set<int>                                m_moved;
   bool                                         m_restMoved = false;
 };

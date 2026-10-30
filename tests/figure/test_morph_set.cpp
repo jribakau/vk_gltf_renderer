@@ -481,6 +481,19 @@ TEST(MorphInfo, ReadsADialsFieldsFromTheStartOfItsFile)
   EXPECT_FALSE(fv::dson::morphInfoFromText(R"({"asset_info": {}, "scene": {}})"));
 }
 
+// A dial keeps its file's range, -2 included, as far as a slider is any use. Skimmed or loaded, the
+// same: the range doesn't jump when the dial first moves.
+TEST(MorphInfo, ARangeIsTheFilesAsFarAsASliderGoes)
+{
+  const auto range = [](const std::string& text) {
+    const auto info = fv::dson::morphInfoFromText(R"({"modifier_library": [{"id": "m", "channel": {)" + text + "}, ");
+    return std::pair{*info->min, *info->max};
+  };
+  EXPECT_EQ(range(R"("min": -2, "max": 2)"), (std::pair{-2.0, 2.0}));
+  EXPECT_EQ(range(R"("min": -0.5, "max": 1.5)"), (std::pair{-0.5, 1.5}));
+  EXPECT_EQ(range(R"("min": -10000, "max": 10000)"), (std::pair{-2.0, 2.0}));
+}
+
 // Told what its file says, a lazy channel takes its real label and range, and stays what it is.
 TEST(MorphInfo, ALazyChannelTakesItsFilesLabelAndRange)
 {
@@ -505,4 +518,29 @@ TEST(MorphInfo, ALazyChannelTakesItsFilesLabelAndRange)
   EXPECT_TRUE(ch.lazy);
   EXPECT_FALSE(ch.hidden);
   EXPECT_NE(set.listVersion(), listed);
+}
+
+// A controller's file says which dials its value follows, which nothing about those dials says. A
+// file with deltas isn't a controller, and a head that stops short of the end can't tell.
+TEST(MorphInfo, AControllerSaysWhichDialsItFollows)
+{
+  const std::string formula = R"("formulas": [
+        {"output": "Genesis9:/data/x.dsf#Genesis9?scale/general", "operations": [{"op": "push", "url": "Genesis9:#ctrl?value"}, {"op": "push", "val": 0.25}, {"op": "mult"}]},
+        {"output": "Genesis9:/data/x.dsf#ctrl?value", "operations": [{"op": "push", "url": "Genesis9:/data/y%20z.dsf#body_bs_Height?value"}, {"op": "push", "val": 1}, {"op": "mult"}]},
+        {"output": "Genesis9:/data/x.dsf#ctrl?value", "operations": [{"op": "push", "url": "lHand:/data/x.dsf#lHand?rotation/x"}, {"op": "push", "val": 1}, {"op": "mult"}]}
+      ])";
+  const std::string start = R"({"modifier_library": [{"id": "ctrl", "channel": {"label": "C"}, )";
+  const auto        controller = fv::dson::morphInfoFromText(start + formula + "}]}");
+  ASSERT_TRUE(controller);
+  EXPECT_EQ(controller->follows, (std::vector<std::string>{"body_bs_Height"}));
+  EXPECT_FALSE(controller->hasMorph);
+
+  const auto withDeltas = fv::dson::morphInfoFromText(start + formula + R"(, "morph": {"deltas": )");
+  ASSERT_TRUE(withDeltas);
+  EXPECT_TRUE(withDeltas->hasMorph);
+  EXPECT_TRUE(withDeltas->follows.empty());
+
+  const auto cutShort = fv::dson::morphInfoFromText(start + formula.substr(0, formula.size() - 12));
+  ASSERT_TRUE(cutShort);
+  EXPECT_TRUE(cutShort->follows.empty());
 }

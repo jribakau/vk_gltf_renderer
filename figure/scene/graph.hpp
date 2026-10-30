@@ -45,6 +45,8 @@ struct JointData
   std::optional<std::array<double, 3>> centerBase;
   std::array<double, 3> endPoint{};
   std::vector<JointChannel> rotation, translation, scale;
+  // whether its parent's own scale reaches it (what the parent inherited always does)
+  bool inheritsScale = true;
 };
 
 enum class NodeKind

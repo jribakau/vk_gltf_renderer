@@ -103,6 +103,8 @@ std::optional<Rig> buildRig(SceneGraph& scene, const Json& nodeLibrary, const st
     joint->rotation        = jointChannels(get(n, "rotation"), 0);
     joint->translation     = jointChannels(get(n, "translation"), 0);
     joint->scale           = jointChannels(get(n, "scale"), 1);
+    if(const Json* inherits = get(n, "inherits_scale"); inherits && inherits->is_boolean())
+      joint->inheritsScale = inherits->get<bool>();
     if(const Json* gs = get(n, "general_scale"); gs && !gs->is_null() && !(gs->is_boolean() && !gs->get<bool>()))
     {
       Json general = *gs;

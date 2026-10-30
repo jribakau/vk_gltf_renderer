@@ -279,6 +279,14 @@ void MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
   m_listVersion++;
 }
 
+bool MorphSet::load(const std::string& name)
+{
+  if(!m_lazy.count(name) || m_loading.count(name))
+    return false;
+  ensureLoaded(name);
+  return true;
+}
+
 void MorphSet::ensureLoaded(const std::string& name)
 {
   auto it = m_lazy.find(name);

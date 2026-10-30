@@ -109,6 +109,8 @@ class MorphInfoSax : public nlohmann::json_sax<Json>
 public:
   MorphInfo info;
   bool      found = false;
+  // the modifier ended, or reached its deltas, within the text
+  bool complete = false;
 
   bool null() override { return true; }
   bool boolean(bool v) override
@@ -131,6 +133,10 @@ public:
       else if(m_key == "group")
         info.path = v;
     }
+    else if(inFormula() && m_key == "output")
+      m_output = v;
+    else if(inOperation() && m_key == "url")
+      m_inputs.push_back(v);
     else if(in("presentation") && m_key == "type")
       info.kind = v;
     else if(in("channel"))
@@ -146,8 +152,14 @@ public:
   bool key(string_t& v) override
   {
     m_key = v;
-    // the rest of the modifier is what makes these files large
-    return !(inModifier() && (v == "formulas" || v == "morph"));
+    // the deltas are what make these files large, and nothing past them is needed
+    if(inModifier() && v == "morph")
+    {
+      info.hasMorph = true;
+      complete      = true;
+      return false;
+    }
+    return true;
   }
   bool start_object(std::size_t) override { return push(); }
   bool end_object() override { return pop(); }
@@ -159,15 +171,20 @@ private:
   // the keys down to here: "", "modifier_library", "" is inside a modifier
   std::vector<std::string> m_stack;
   std::string              m_key;
+  // the formula being read: what it sets, and what it reads
+  std::string              m_output;
+  std::vector<std::string> m_inputs;
 
   bool inModifier() const { return m_stack.size() == 3 && m_stack[1] == "modifier_library"; }
   bool in(const char* field) const { return m_stack.size() == 4 && m_stack[1] == "modifier_library" && m_stack[3] == field; }
+  bool inFormula() const { return m_stack.size() == 5 && m_stack[1] == "modifier_library" && m_stack[3] == "formulas"; }
+  bool inOperation() const { return m_stack.size() == 7 && m_stack[1] == "modifier_library" && m_stack[3] == "formulas" && m_stack[5] == "operations"; }
   bool number(double v)
   {
     if(in("channel") && m_key == "min")
-      info.min = v;
+      info.min = sliderMin(v);
     else if(in("channel") && m_key == "max")
-      info.max = v;
+      info.max = sliderMax(v);
     return true;
   }
   bool push()
@@ -179,10 +196,33 @@ private:
   }
   bool pop()
   {
+    if(inFormula())
+      endFormula();
     const bool first = inModifier();
     m_stack.pop_back();
     // one modifier to a morph file
+    if(first)
+      complete = true;
     return !first;
+  }
+  // "...#id?value" as the id, or empty for another property
+  static std::string valueOf(const std::string& url)
+  {
+    constexpr std::string_view kValue = "?value";
+    const size_t               hash   = url.rfind('#');
+    if(hash == std::string::npos || url.size() < kValue.size() || url.compare(url.size() - kValue.size(), kValue.size(), kValue) != 0)
+      return {};
+    return decodeUri(url.substr(hash + 1, url.size() - kValue.size() - hash - 1));
+  }
+  // a formula that sets this dial's own value from other dials': they say what it follows
+  void endFormula()
+  {
+    if(!m_output.empty() && valueOf(m_output) == info.id)
+      for(const std::string& input : m_inputs)
+        if(const std::string id = valueOf(input); !id.empty() && id != info.id)
+          info.follows.push_back(id);
+    m_output.clear();
+    m_inputs.clear();
   }
 };
 
@@ -196,13 +236,17 @@ std::optional<MorphInfo> morphInfoFromText(std::string_view head)
     return std::nullopt;
   if(sax.info.alias || sax.info.kind == "Modifier/Corrective" || sax.info.path.rfind("/Hidden", 0) == 0)
     sax.info.helper = true;
+  // a head that stopped short of the deltas can't say the file has none
+  if(sax.info.hasMorph || !sax.complete)
+    sax.info.follows.clear();
   return sax.info;
 }
 
 std::optional<MorphInfo> morphInfo(const std::filesystem::path& file)
 {
-  // a morph's fields end within a kilobyte of the modifier's start, which follows a short asset_info
-  constexpr size_t kHead = 8192;
+  // a morph's fields end within a kilobyte of the modifier's start, which follows a short asset_info;
+  // this much also holds the formulas of any controller, which has no deltas to come after them
+  constexpr size_t kHead = 256 * 1024;
   try
   {
     return morphInfoFromText(readHead(file, kHead));
@@ -288,8 +332,8 @@ std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, con
     const bool  limited = !(clamped && clamped->is_boolean() && !clamped->get<bool>());
     const Json* lo      = get(ch, "min");
     const Json* hi      = get(ch, "max");
-    part.min = lo && lo->is_number() && limited ? std::max(-1.0, lo->get<double>()) : 0;
-    part.max = hi && hi->is_number() && limited ? std::min(2.0, hi->get<double>()) : 1;
+    part.min = lo && lo->is_number() && limited ? sliderMin(lo->get<double>()) : 0;
+    part.max = hi && hi->is_number() && limited ? sliderMax(hi->get<double>()) : 1;
     // the mesh's shells take it too, remade on their own polygons
     def.parts.push_back(part);
     for(const MeshRef::Shell& s : f.fm->shells)
