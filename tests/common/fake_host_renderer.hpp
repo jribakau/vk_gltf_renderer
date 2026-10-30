@@ -44,6 +44,13 @@ public:
   bool               drawsRetainedScene() const override { return replaces > 0; }
   void               replaceHostScene() override { replaces++; }
   void               prefetchImage(const std::filesystem::path&, bool) override {}
+  std::string        refuseGeometry(uint64_t bytes) override
+  {
+    askedGeometry += bytes;
+    return geometryRefusal;
+  }
+  std::string        geometryRefusal;  // what refuseGeometry answers
+  uint64_t           askedGeometry = 0;
   void               setMaxTextureExtent(uint32_t) override {}
   void               setNoticeSink(std::function<void(const std::string&)>) override {}
   nvutils::Bbox      visibleSceneBounds() override

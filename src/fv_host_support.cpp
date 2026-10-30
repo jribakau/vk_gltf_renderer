@@ -154,6 +154,33 @@ TextureCalls& textureCalls()
   return calls;
 }
 
+namespace {
+constexpr uint64_t kGeometryBytesPerTriangle = 300;
+}
+
+uint64_t geometryBytes(const fv::SceneGraph& scene)
+{
+  uint64_t triangles = 0;
+  for(const fv::Mesh& m : scene.meshes)
+    if(m.geo)
+      triangles += (m.geo->fullIndex.empty() ? m.geo->renderTris.size() : m.geo->fullIndex.size()) / 3;
+  return triangles * kGeometryBytesPerTriangle;
+}
+
+uint64_t geometryBytes(const tinygltf::Model& model)
+{
+  uint64_t triangles = 0;
+  for(const tinygltf::Mesh& mesh : model.meshes)
+    for(const tinygltf::Primitive& p : mesh.primitives)
+    {
+      const auto position = p.attributes.find("POSITION");
+      const int  accessor = p.indices >= 0 ? p.indices : position != p.attributes.end() ? position->second : -1;
+      if(accessor >= 0 && accessor < int(model.accessors.size()))
+        triangles += model.accessors[size_t(accessor)].count / 3;
+    }
+  return triangles * kGeometryBytesPerTriangle;
+}
+
 CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureRequest& req, bool flip, bool cachedOnly, bool quiet)
 {
   // http://127.0.0.1:<port>/<token>

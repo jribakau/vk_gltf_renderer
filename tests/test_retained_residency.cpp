@@ -1005,6 +1005,39 @@ TEST(RetainedResidency, ResidentImagesComeDownForNewOnes)
   EXPECT_FALSE(gpu.hasImage(before));
 }
 
+// A mesh added past the budget takes textures down with nothing of its own to decode, and what
+// lowering could free is what a new mesh is told it can count on
+TEST(RetainedResidency, ASceneThatGrewPastItsBudgetLowersWhatIsThere)
+{
+  RetainedScene   scene;
+  const TextureId big   = scene.addTexture(chainTexture("chain_big", 1024));
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({big, {}});
+  const MaterialId shared = coloured(scene, table, 0);
+  drawn(scene, "first", scene.addMesh(gridMesh(2, 0.f)), {shared});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 16 << 20});
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  // all but what a 256 keeps of a 1024: 1024 x 1024 x 4 x (1 - 1/16)
+  EXPECT_EQ(residency.lowerableImageBytes(), 1024u * 1024u * 4u - 256u * 256u * 4u);
+
+  gpu.setImageHeadroom(-1);
+  drawn(scene, "second", scene.addMesh(gridMesh(2, 0.f)), {shared});
+  gpu.beginFrame();
+  const SyncResult result = residency.sync(scene);
+  EXPECT_TRUE(result.changed);
+  EXPECT_EQ(gpu.imageInfo(residency.image(big, true)).width, 512u);
+  EXPECT_EQ(residency.imageCounts().lowered, 1u);
+  drain(gpu);
+  expectClean(scene, residency, gpu, "after its retires: ");
+
+  // nothing structural: no fit, whatever the headroom says
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(residency.imageCounts().lowered, 1u);
+}
+
 // One lowered and let go of is decoded again when next wanted, at what there is room for
 TEST(RetainedResidency, ALoweredImageComesBackWhole)
 {

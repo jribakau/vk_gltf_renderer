@@ -95,6 +95,7 @@ struct ImageInfo
   float    meanLuminance = -1.f;   // linear, Rec. 709, of its texels; negative where unknown
   uint64_t bytes         = 0;      // the GPU memory it holds (the residency's grace budget)
   bool     outOfMemory   = false;  // no image, for want of GPU memory
+  bool     storedLevels  = false;  // its mips came from its source, so it can be decoded again smaller
 };
 
 // glTF sampler values (TINYGLTF_TEXTURE_FILTER_*, TINYGLTF_TEXTURE_WRAP_*); a filter of -1 is unset
@@ -272,8 +273,9 @@ public:
   virtual void destroyImage(ImageHandle image) = 0;
   // The largest long edge a new image keeps (Max texture size); 0: no limit
   virtual uint32_t maxImageExtent() const { return 0; }
-  // The bytes of new images that fit in GPU memory now; none where that is unknown
-  virtual std::optional<uint64_t> imageHeadroom() const { return std::nullopt; }
+  // The bytes of new images that fit in GPU memory now, negative when it is over already; none where
+  // that is unknown
+  virtual std::optional<int64_t> imageHeadroom() const { return std::nullopt; }
   // A source's stored mip chain, without decoding it; none for an image without one
   virtual std::optional<ImageChain> imageChain(const ImageSource&) { return std::nullopt; }
   // A slot of the scene's texture array; no image writes the default one.

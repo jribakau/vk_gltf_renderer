@@ -67,6 +67,9 @@ public:
   virtual void replaceHostScene() = 0;
   // Decodes an image now, on the calling thread (a load or wear worker), for the next replace
   virtual void prefetchImage(const std::filesystem::path& diskPath, bool srgb) = 0;
+  // Why a mesh of about `bytes` on the GPU can't be added, empty when it can (and then counted until
+  // it is resident). Application thread.
+  virtual std::string refuseGeometry(uint64_t bytes) = 0;
   // Max texture size: the largest long edge an image decoded from now on keeps; 0: no limit. Any thread.
   virtual void setMaxTextureExtent(uint32_t extent) = 0;
   // Where what the renderer has to tell the user goes, from the application thread (a texture lowered

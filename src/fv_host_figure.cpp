@@ -259,6 +259,12 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     job(jobId, {{"state", "done"}});
     return;
   }
+  if(const std::string refused = renderer->refuseGeometry(geometryBytes(fig->loaded.scene)); !refused.empty())
+  {
+    job(jobId, {{"state", "failed"}, {"error", refused}});
+    notice(fileStem(fig->loaded.name) + " wasn't loaded: " + refused, "error");
+    return;
+  }
   auto f             = std::make_shared<Loaded>();
   f->fig             = std::move(fig);
   f->images          = std::move(images);

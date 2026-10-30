@@ -644,9 +644,9 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                             retained->setTextureGrace(VkDeviceSize(m_resources.settings.textureGraceMB) << 20);
                       }},
                  &m_resources.settings.textureGraceMB, Persist::eNo);
-  m_settings.add({.name = "textureBudgetMB",
-                  .help = "Retained scene: the GPU memory textures are fitted to, where less than the device's budget, in MB (0: that budget)"},
-                 &m_resources.settings.textureBudgetMB, Persist::eNo);
+  m_settings.add({.name = "sceneBudgetMB",
+                  .help = "Retained scene: the GPU memory the scene is fitted to, where less than the device's budget, in MB (0: that budget)"},
+                 &m_resources.settings.sceneBudgetMB, Persist::eNo);
   m_settings.add({.name = "residencyMinInstances", .help = "Retained scene: the least instance capacity (start-up only)"},
                  &m_resources.settings.residencyMinInstances, Persist::eNo);
   // Live: from the next refit on (P7, measured on Path Trace after a pose far from the load pose).
@@ -1695,7 +1695,7 @@ GltfRenderer::AllocatedMemory GltfRenderer::allocatedMemory() const
 
 // A tenth of the budget stays free for what grows unasked (a BLAS refit, a denoiser's targets), and so
 // does what the path tracer's frame would add to the rasterizer's, for a switch of mode to find.
-std::optional<uint64_t> GltfRenderer::textureHeadroom() const
+std::optional<int64_t> GltfRenderer::sceneHeadroom() const
 {
   const MemoryBudget b = deviceMemoryBudget();
   if(!b.known)
@@ -1705,12 +1705,32 @@ std::optional<uint64_t> GltfRenderer::textureHeadroom() const
   const uint32_t perPixel = frameBytesPerPixel();
   const uint64_t frameMore = perPixel < kPathTracerBytesPerPixel ? pixels * (kPathTracerBytesPerPixel - perPixel) : 0;
   uint64_t       budget = b.budget;
-  if(const uint32_t limit = m_resources.settings.textureBudgetMB; limit > 0)
+  if(const uint32_t limit = m_resources.settings.sceneBudgetMB; limit > 0)
     budget = std::min<uint64_t>(budget, uint64_t(limit) << 20);
   const AllocatedMemory allocated = allocatedMemory();
   const uint64_t        used      = b.usage - std::min<uint64_t>(b.usage, allocated.blocks - allocated.allocations);
-  const uint64_t        reserved  = budget / 10 + frameMore + used;
-  return budget > reserved ? budget - reserved : 0;
+  return int64_t(budget) - int64_t(budget / 10 + frameMore + used);
+}
+
+// A load or wear that can't fit even with every texture lowered is refused here, before it is in the
+// scene: past the budget it would crawl, in system memory, or end the process if none is left.
+std::string GltfRenderer::refuseGeometry(uint64_t bytes)
+{
+  const std::optional<int64_t> headroom = sceneHeadroom();
+  if(!headroom)
+    return {};
+  const int64_t lowerable = m_resources.retainedGpu ? int64_t(m_resources.retainedGpu->lowerableImageBytes()) : 0;
+  const int64_t room      = *headroom - int64_t(m_pendingGeometry) + lowerable;
+  if(int64_t(bytes) <= room)
+  {
+    m_pendingGeometry += bytes;
+    return {};
+  }
+  const MemoryBudget b = deviceMemoryBudget();
+  const auto size = [](double n) { return n < 1e9 ? fmt::format("{:.0f} MB", n / 1e6) : fmt::format("{:.1f} GB", n / 1e9); };
+  return fmt::format("it needs about {} of GPU memory and {} can be freed ({:.1f} of {:.1f} GB in use). "
+                     "Remove something from the scene or lower Subdivision.",
+                     size(double(bytes)), size(double(std::max<int64_t>(room, 0))), double(b.usage) / 1e9, double(b.budget) / 1e9);
 }
 
 void GltfRenderer::onRender(VkCommandBuffer cmd)
@@ -4386,7 +4406,7 @@ rs::VulkanGpuBackend::Info GltfRenderer::retainedBackendInfo()
           .takePrefetched = [this](const std::filesystem::path& path,
                                    bool srgb) { return m_resources.sceneVk.takePrefetchedFile(path, srgb); },
           .maxImageExtent = [this] { return m_maxTextureExtent.load(); },
-          .imageHeadroom  = [this] { return textureHeadroom(); }};
+          .imageHeadroom  = [this] { return sceneHeadroom(); }};
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -4476,6 +4496,7 @@ void GltfRenderer::replaceHostScene()
     m_app->submitAndWaitTempCmdBuffer(cmd);
     logRetainedNotices();
     m_resources.sceneVk.dropPrefetched();  // what this scene did not take would never be taken
+    m_pendingGeometry = 0;
     if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes())
     {
       OneShotGpuTimer::report("GPU BLAS build", times->blasMs);
@@ -4594,6 +4615,8 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   m_resources.retainedGpu->beginFrame();
   m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
+  if(result.drawListChanged)
+    m_pendingGeometry = 0;  // what was accepted is resident, and counted as used
   logRetainedNotices();
   if(const auto compaction = m_resources.retainedGpu->takeCompaction(); compaction.blases && fv::timing::enabled())
   {

@@ -320,8 +320,8 @@ struct Settings
   bool residencyRetireOnReplace = false;
   // `textureGraceMB`: the retained scene's decoded images nothing samples, kept for reuse
   uint32_t textureGraceMB = 256;
-  // `textureBudgetMB`: the GPU memory textures are fitted to, where less than the device's budget; 0: that budget
-  uint32_t textureBudgetMB = 0;
+  // `sceneBudgetMB`: the GPU memory the scene is fitted to, where less than the device's budget; 0: that budget
+  uint32_t sceneBudgetMB = 0;
 
   // Enable scene-based shader optimization. When true, only features used by the scene are
   // enabled, reducing shader size and register usage at the cost of a one-time recompile per scene change.

@@ -124,11 +124,11 @@ public:
   const std::vector<size_t>& imageBatches() const { return m_imageBatches; }
   void        destroyImage(ImageHandle image) override;
   uint32_t                maxImageExtent() const override { return m_maxImageExtent; }
-  std::optional<uint64_t> imageHeadroom() const override { return m_imageHeadroom; }
+  std::optional<int64_t>  imageHeadroom() const override { return m_imageHeadroom; }
   // a source's width and height halved to 1, at 4 bytes a texel, for one with a uri starting "chain"
   std::optional<ImageChain> imageChain(const ImageSource& source) override;
   void setMaxImageExtent(uint32_t extent) { m_maxImageExtent = extent; }
-  void setImageHeadroom(std::optional<uint64_t> bytes) { m_imageHeadroom = bytes; }
+  void setImageHeadroom(std::optional<int64_t> bytes) { m_imageHeadroom = bytes; }
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
   void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
   bool                       opacityMicromaps() const override { return m_opacityMicromaps; }
@@ -217,7 +217,7 @@ private:
   std::unordered_map<uint64_t, Buffer>        m_buffers;
   std::unordered_map<uint64_t, Image>         m_images;
   uint32_t                                    m_maxImageExtent = 0;
-  std::optional<uint64_t>                     m_imageHeadroom;
+  std::optional<int64_t>                      m_imageHeadroom;
   std::vector<size_t>                         m_imageBatches;
   std::vector<UploadRecord>                   m_uploads;
   std::unordered_map<uint64_t, Blas>          m_blases;

@@ -958,11 +958,13 @@ Four settings, none remembered:
   to this much, oldest out first, for the next scene replace or edit to take. Live. Images are keyed
   by file (path, size, write time) or by a hash of held bytes, and the colour space
   (`rs::textureKeyOf`), and shared by every texture that is that image.
-- `textureBudgetMB` (0): the GPU memory textures are fitted to, where less than the device's budget; 0 is that budget.
+- `sceneBudgetMB` (0): the GPU memory the scene is fitted to, where less than the device's budget; 0 is that budget.
   A tenth of it stays free, and what the path tracer's frame would add under the rasterizer. `Residency::fitQueuedToMemory`
   runs before each batch of decodes: idle decodes go first, then top levels, the largest first, down to 256, of the batch and
   of what is resident (decoded again, the slots rewritten, the frame reset). It reads free room as the driver's usage less the
-  allocator's free space inside its blocks, as `gpuAllocatedMB` in the frame profile shows.
+  allocator's free space inside its blocks, as `gpuAllocatedMB` in the frame profile shows. A scene that grew is fitted with
+  nothing queued too. A load or wear is refused before it enters the scene (`GltfRenderer::refuseGeometry`) when its meshes,
+  at 300 bytes a triangle, won't fit even with every texture lowered.
 - `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
   TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
   parameters a host can set (fv_parameter_filter.hpp).

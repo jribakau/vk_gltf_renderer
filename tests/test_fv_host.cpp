@@ -153,6 +153,34 @@ TEST(FvHost, StartsWithAnEmptySceneResident)
   EXPECT_EQ(rig.renderer.replaces, 1);
 }
 
+// A load or a wear GPU memory can't take is refused before it is in the scene, and says why
+TEST(FvHost, WhatGpuMemoryCantTakeIsRefused)
+{
+  HostRig rig;
+  rig.renderer.geometryRefusal = "no room";
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  EXPECT_GT(rig.renderer.askedGeometry, 0u);
+  EXPECT_TRUE(figureId(rig.topic("scene")).empty());
+  EXPECT_EQ(rig.renderer.hostScene().meshCount(), 0u);
+  EXPECT_NE(rig.topic("notices").dump().find("wasn't loaded: no room"), std::string::npos) << rig.topic("notices").dump();
+
+  // with room it loads; a wear without any leaves the figure as it was
+  rig.renderer.geometryRefusal.clear();
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_FALSE(id.empty());
+  const size_t bare = rig.renderer.hostScene().meshCount();
+  rig.renderer.geometryRefusal = "no room";
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(rig.renderer.hostScene().meshCount(), bare);
+  EXPECT_NE(rig.topic("notices").dump().find("wasn't added: no room"), std::string::npos) << rig.topic("notices").dump();
+  const Json items = rig.topic("wardrobe/" + id).value("items", Json::object());
+  EXPECT_EQ(items.dump().find("Box Shirt"), std::string::npos) << items.dump();
+}
+
 TEST(FvHost, LoadsTheBoxFigureIntoItsRetainedScene)
 {
   HostRig rig;

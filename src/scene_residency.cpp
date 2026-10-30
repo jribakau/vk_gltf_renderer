@@ -969,16 +969,32 @@ void Residency::trimGrace(uint64_t budget)
     m_graceBytes = 0;
 }
 
+// a texture this small is what is left of a scene that can't fit: nothing lower is worth having
+constexpr uint32_t kLeastImageExtent = 256;
+
+uint64_t Residency::lowerableImageBytes() const
+{
+  uint64_t             bytes = m_graceBytes;
+  std::set<TextureKey> seen;  // one image, however many textures are it
+  for(const auto& [id, image] : m_images)
+  {
+    if(!image.image || !image.info.storedLevels || (image.key && !seen.insert(*image.key).second))
+      continue;
+    const uint64_t extent = std::max(image.info.width, image.info.height);
+    if(extent > kLeastImageExtent)
+      bytes += image.info.bytes - image.info.bytes * kLeastImageExtent * kLeastImageExtent / (extent * extent);
+  }
+  return bytes;
+}
+
 // The queued images made to fit the GPU memory left, read from their chains before anything is
 // decoded. Where they don't fit: the idle decodes go first, then top levels, the largest first, of
 // these and of what is resident (decoded again, smaller, in this batch). Geometry made resident this
-// sync already counts, as it allocates first.
+// sync already counts, as it allocates first, so a scene that grew past the budget comes back under
+// it this way with nothing queued at all.
 void Residency::fitQueuedToMemory(const RetainedScene& scene)
 {
-  // a texture this small is what is left of a scene that can't fit: nothing lower is worth having
-  constexpr uint32_t kLeastExtent = 256;
-
-  const std::optional<uint64_t> headroom = m_gpu.imageHeadroom();
+  const std::optional<int64_t> headroom = m_gpu.imageHeadroom();
   if(!headroom)
     return;
   std::vector<ImageFit> fits;
@@ -993,13 +1009,14 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
       need += fits.back().bytes();
       queued.push_back(i);
     }
-  uint64_t room = *headroom;
-  if(need <= room)
+  int64_t room = *headroom;
+  if(int64_t(need) <= room)
     return;
-  room += m_graceBytes;
+  room += int64_t(m_graceBytes);
   trimGrace(0);
-  if(need <= room)
+  if(int64_t(need) <= room)
     return;
+  const uint64_t wanted = uint64_t(int64_t(need) - room);
 
   struct Resident
   {
@@ -1028,7 +1045,7 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
     fits.push_back({std::move(*chain), skip});
   }
 
-  const uint64_t freed = lowerToFit(fits, need - room, kLeastExtent);
+  const uint64_t freed = lowerToFit(fits, wanted, kLeastImageExtent);
   uint32_t       lowered = 0, largest = 0;
   for(size_t f = 0; f < queuedFits; f++)
   {
@@ -1054,7 +1071,7 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
   m_imageCounts.lowered += lowered;
   if(lowered > 0)
     m_notices.push_back("to fit GPU memory, " + std::to_string(lowered) + " textures lowered to " + std::to_string(largest)
-                        + " or less; " + std::to_string(freed >> 20) + " MB freed of the " + std::to_string((need - room) >> 20) + " MB wanted");
+                        + " or less; " + std::to_string(freed >> 20) + " MB freed of the " + std::to_string(wanted >> 20) + " MB wanted");
   if(lowered > 0 && !std::exchange(m_noticedLowered, true))
     m_userNotices.push_back("GPU memory is nearly full, so textures are being lowered to fit. Opening the scene again restores them if there is room then.");
 }
@@ -1063,11 +1080,13 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
 // texture that is that image, and written to their slots. One nothing took meanwhile goes to grace;
 // an unreadable one leaves the default image and is tried again at its next acquisition. True when an
 // image already drawn was replaced, which changes the frame.
-bool Residency::decodeQueued(const RetainedScene& scene)
+bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
 {
-  if(m_decodeQueue.empty())
+  if(m_decodeQueue.empty() && !sceneGrew)
     return false;
   fitQueuedToMemory(scene);
+  if(m_decodeQueue.empty())
+    return false;
   std::vector<ImageSource> sources;
   for(const QueuedDecode& q : m_decodeQueue)
     sources.push_back(q.source);
@@ -1870,7 +1889,7 @@ SyncResult Residency::sync(RetainedScene& scene)
     edited.insert(m_heldMaterials.begin(), m_heldMaterials.end());
   if(!edited.empty())
     syncMaterials(scene, edited, result);
-  if(decodeQueued(scene))
+  if(decodeQueued(scene, fresh || changes.structure))
     result.changed = true;
   // refined meshes made resident now: their positions and normals from their cages, as every edit after
   if(!m_refineAcquired.empty())

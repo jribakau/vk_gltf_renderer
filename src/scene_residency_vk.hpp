@@ -91,7 +91,7 @@ public:
     std::function<std::optional<nvvkgltf::LoadedImageData>(const std::filesystem::path&, bool srgb)> takePrefetched;
     // Max texture size, and what still fits in GPU memory. Unset: no limit, and unknown.
     std::function<uint32_t()>                maxImageExtent;
-    std::function<std::optional<uint64_t>()> imageHeadroom;
+    std::function<std::optional<int64_t>()>  imageHeadroom;
   };
 
   // The first record() makes the default images and writes texture slot 0 (white) and sampler slot 0
@@ -137,7 +137,7 @@ public:
   // decoded side by side on the worker pool (a file a host prefetched taken instead), then made in order
   void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override;
   uint32_t                  maxImageExtent() const override { return m_info.maxImageExtent ? m_info.maxImageExtent() : 0; }
-  std::optional<uint64_t>   imageHeadroom() const override { return m_info.imageHeadroom ? m_info.imageHeadroom() : std::nullopt; }
+  std::optional<int64_t>    imageHeadroom() const override { return m_info.imageHeadroom ? m_info.imageHeadroom() : std::nullopt; }
   std::optional<ImageChain> imageChain(const ImageSource& source) override;
   // the images createImages took from a host's prefetches, since the last call
   uint32_t    takePrefetchCount() { return std::exchange(m_prefetchTaken, 0u); }
@@ -290,6 +290,8 @@ public:
   std::vector<std::string> takeUserNotices() { return m_residency.takeUserNotices(); }
   // VulkanGpuBackend::runRetired
   void runRetired() { m_gpu.runRetired(); }
+  // what lowering every texture would free (Residency::lowerableImageBytes)
+  uint64_t lowerableImageBytes() const { return m_residency.lowerableImageBytes(); }
   // the features the live shader variant has compiled in; none: every one (Residency::setShaderFeatures)
   void setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features) { m_residency.setShaderFeatures(features); }
   // the images taken from a host's prefetches since the last call

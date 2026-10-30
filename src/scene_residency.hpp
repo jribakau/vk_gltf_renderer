@@ -314,6 +314,9 @@ public:
   const std::set<MaterialId>& heldMaterials() const { return m_heldMaterials; }
   // what the last syncs could not do as asked (a material drawn without its textures), once each
   std::vector<std::string> takeNotices() { return std::exchange(m_notices, {}); }
+  // The GPU memory that idle images and lowering every resident one as far as it goes would free: what
+  // a new mesh can count on beyond what is free now
+  uint64_t lowerableImageBytes() const;
   // What the user should hear of them: images lowered or refused for want of GPU memory, once a scene
   std::vector<std::string> takeUserNotices() { return std::exchange(m_userNotices, {}); }
   uint64_t    graceBytes() const { return m_graceBytes; }
@@ -468,7 +471,7 @@ private:
   void     acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseImage(const ImageGpu& image);
-  bool     decodeQueued(const RetainedScene& scene);
+  bool     decodeQueued(const RetainedScene& scene, bool sceneGrew);
   void     fitQueuedToMemory(const RetainedScene& scene);
   void     trimGrace(uint64_t budget);
   void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);

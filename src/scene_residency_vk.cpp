@@ -543,7 +543,8 @@ ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkg
   info.meanLuminance = nvvkgltf::imageMeanLuminance(loaded.format, loaded.size, loaded.mipData[0]);
   VmaAllocationInfo allocation{};
   vmaGetAllocationInfo(*m_info.alloc, image.allocation, &allocation);
-  info.bytes = allocation.size;
+  info.bytes        = allocation.size;
+  info.storedLevels = loaded.mipData.size() > 1;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, image);
   return handle;

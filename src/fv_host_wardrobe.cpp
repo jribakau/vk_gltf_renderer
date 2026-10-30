@@ -341,6 +341,12 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           done->set_value(false);
           return;
         }
+        if(const std::string refused = renderer->refuseGeometry(geometryBytes(fv::Figure::preparedScene(*prepared))); !refused.empty())
+        {
+          notice(utf8Of(pathOf(rel).stem()) + " wasn't added: " + refused, "error");
+          done->set_value(false);
+          return;
+        }
         try
         {
           // what it may replace (the same garment again), as it was, for the step's undo

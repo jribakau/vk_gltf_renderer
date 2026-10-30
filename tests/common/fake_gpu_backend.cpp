@@ -237,6 +237,7 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
   info.height     = levelExtent(height, skip);
   info.twoChannel = source.component == 2;
   info.bytes      = uint64_t(info.width) * info.height * 4;
+  info.storedLevels = source.uri.rfind("chain", 0) == 0;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, Image{source.name, source.uri, source.srgb, info});
   return handle;

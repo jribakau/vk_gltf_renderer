@@ -387,8 +387,10 @@ public:
   // stream's /size asks here first. Any thread.
   // `extraBytesPerPixel`: what else a pixel of the frame costs outside the renderer (native presentation)
   std::string refuseFrameSize(VkExtent2D size, double extraBytesPerPixel = 0.0) const;
-  // The bytes of new textures that fit in GPU memory now; none where the budget is unknown
-  std::optional<uint64_t> textureHeadroom() const;
+  // The bytes of new textures that fit in GPU memory now, negative when it is over; none where the
+  // budget is unknown
+  std::optional<int64_t> sceneHeadroom() const;
+  std::string            refuseGeometry(uint64_t bytes) override;
   struct AllocatedMemory
   {
     uint64_t blocks = 0, allocations = 0;
@@ -844,6 +846,7 @@ private:
   std::atomic<uint64_t> m_frameSizePacked{0};  // width << 32 | height
   bool                  m_memoryBudgetExtension = false;  // the device has VK_EXT_memory_budget (onAttach)
   std::atomic<uint32_t> m_maxTextureExtent{0};
+  uint64_t              m_pendingGeometry = 0;  // accepted by refuseGeometry and not resident yet
   std::function<void(const std::string&)> m_noticeSink;
   bool                  m_envPreviewPending{false};  // Record a colour-only re-bake into this frame
   bool                  m_envCommitOwed{false};      // Previewed at least once; owes a commit once the edits stop
