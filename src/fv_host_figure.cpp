@@ -324,7 +324,11 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       std::map<int, fv::dson::Smoothing> all;
       for(const fv::WornItem& w : fig->items)
         if(w.visible)
-          all.insert(w.collision.begin(), w.collision.end());
+          for(auto [mesh, smoothing] : w.collision)
+          {
+            smoothing.tight = w.tight;
+            all.emplace(mesh, smoothing);
+          }
       return all;
     };
     f->collider->wornOrder = [fig = f->fig.get()] {

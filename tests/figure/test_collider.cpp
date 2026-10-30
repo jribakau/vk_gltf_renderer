@@ -104,6 +104,57 @@ float minY(const mesh::BuiltMesh& geo)
 
 }  // namespace
 
+// A garment standing off the body stays there until it is made tighter; tight pulls it to the
+// clearance, part of the way at less, and back off when it is let go. What hangs far off stays.
+TEST(Collider, pullsATightGarmentOntoTheBody)
+{
+  Rig r;
+  r.scene.meshes[1] = sceneMesh(grid(4, 2), r.bone);
+  morph::MorphSet    morphs([&](int m) { return r.scene.meshes[size_t(m)].geo.get(); });
+  float              tight = 0;
+  wardrobe::Collider c(r.scene, morphs, 0, r.root);
+  c.settings = [&] {
+    dson::Smoothing s;
+    s.tight = tight;
+    return std::map<int, dson::Smoothing>{{1, s}};
+  };
+  const auto& geo  = *r.scene.meshes[1].geo;
+  const auto  pass = [&](float amount) {
+    tight = amount;
+    c.poke();
+    return pumpUntilWritten(c);
+  };
+  EXPECT_NEAR(minY(geo), 2.f, 1e-4f);
+  ASSERT_TRUE(pass(1));
+  morphs.flush();
+  EXPECT_NEAR(minY(geo), 0.25f, 0.02f);
+  ASSERT_TRUE(pass(0.5f));
+  morphs.flush();
+  EXPECT_NEAR(minY(geo), 1.125f, 0.02f);
+  ASSERT_TRUE(pass(0));
+  morphs.flush();
+  EXPECT_NEAR(minY(geo), 2.f, 1e-3f);
+
+  // a hem hanging free, past the reach
+  Rig far;
+  far.scene.meshes[1] = sceneMesh(grid(4, 10), far.bone);
+  morph::MorphSet    farMorphs([&](int m) { return far.scene.meshes[size_t(m)].geo.get(); });
+  wardrobe::Collider farCollider(far.scene, farMorphs, 0, far.root);
+  farCollider.settings = [] {
+    dson::Smoothing s;
+    s.tight = 1;
+    return std::map<int, dson::Smoothing>{{1, s}};
+  };
+  farCollider.poke();
+  for(int i = 0; i < 500 && farCollider.busy(); i++)
+  {
+    farCollider.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  farMorphs.flush();
+  EXPECT_NEAR(minY(*far.scene.meshes[1].geo), 10.f, 1e-3f);
+}
+
 TEST(Collider, pushesAGarmentOutOfTheBodyAndClearsItWhenTurnedOff)
 {
   Rig             r;

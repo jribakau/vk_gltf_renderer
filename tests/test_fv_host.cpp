@@ -829,6 +829,52 @@ TEST(FvHost, ASurfaceOnAGarmentIsNoFleshWhateverItsName)
   ASSERT_TRUE(rig.cmd("load", {{"prop", id}, {"rel", "People/Test/Materials/Box Body Red.duf"}}).value("ok", false));
   ASSERT_TRUE(rig.settle());
   EXPECT_EQ(kinds(), expected);
+
+  // and it is an open shell with an inside to see, where the body is closed; the surface's own choice wins
+  const auto sides = [&](const char* kind) {
+    const Json items = rig.topic("materials/" + id).value("items", Json::object());
+    for(const auto& [m, it] : items.items())
+      if(it.value("name", "") == "Body" && it.value("kind", "") == kind)
+        return std::pair(m, it.at("values").value("doubleSided", false));
+    return std::pair(std::string(), false);
+  };
+  EXPECT_TRUE(sides("other").second);
+  EXPECT_FALSE(sides("skin").second);
+  rig.cmd("material.set", {{"prop", id}, {"material", sides("other").first}, {"values", {{"doubleSided", false}}}});
+  EXPECT_FALSE(sides("other").second);
+}
+
+// Skin tight is the item's: a step, kept when it is taken off and put back, and in the scene file.
+TEST(FvHost, HowTightAnItemIsGoesWithIt)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const std::string item  = itemNamed(wardrobeOf(rig, id), "Box Shirt");
+  const auto        tight = [&] { return wardrobeOf(rig, id).at(item).value("tight", -1.0); };
+  EXPECT_DOUBLE_EQ(tight(), 0.0);
+  EXPECT_FALSE(rig.cmd("scene.state", {{"prop", id}}).at("result").at("worn")[0].contains("tight"));
+
+  ASSERT_TRUE(rig.cmd("wardrobe.tight", {{"prop", id}, {"item", item}, {"amount", 0.75}}).value("ok", false));
+  EXPECT_DOUBLE_EQ(tight(), 0.75);
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Skin tight: Box Shirt");
+  historyStep(rig, "history.undo");
+  EXPECT_DOUBLE_EQ(tight(), 0.0);
+  historyStep(rig, "history.redo");
+  EXPECT_DOUBLE_EQ(tight(), 0.75);
+
+  // off and back
+  ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", item}}).value("ok", false));
+  historyStep(rig, "history.undo");
+  EXPECT_DOUBLE_EQ(tight(), 0.75);
+
+  // reopened
+  Reopened back(rig.cmd("scene.state", {{"prop", id}}).at("result"));
+  EXPECT_TRUE(back.problems.empty()) << back.problems.dump();
+  EXPECT_DOUBLE_EQ(back.items().at(itemNamed(back.items(), "Box Shirt")).value("tight", -1.0), 0.75);
 }
 
 // A dial the character's file sets (the Box Figure's Stretch, at 0.5) stays where the user put it, at 0

@@ -268,6 +268,9 @@ struct Surface
   std::optional<float> glossyAnisotropy;
   // Seen from both sides: strand hair, drawn as flat ribbons that face one way
   bool twoSided = false;
+  // What its mesh belongs to (Context), which its name was read with. On a garment or a prop it is
+  // an open shell, with an inside to see: drawn from both sides.
+  Context context = Context::eBody;
   // OmniHair fibre, when this surface is strand hair. Absorption is Chiang's σ_a at the root and
   // the tip; the ribbon's along-UV blends them. None for card hair and for every other shader.
   struct HairFibre

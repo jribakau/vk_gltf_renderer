@@ -388,6 +388,8 @@ Json FvHost::Impl::sceneState(const Json& args)
       // dForce on the item as the user set it, when they did
       if(w.cloth.on || w.cloth.strength != 1.f)
         entry["cloth"] = {{"on", w.cloth.on ? Json(*w.cloth.on) : Json(nullptr)}, {"strength", std::round(w.cloth.strength * 1e3) / 1e3}};
+      if(w.tight != 0)
+        entry["tight"] = std::round(w.tight * 1e3) / 1e3;
       // the colour chosen for it, null for its own
       if(const auto c = prop->figure->colors.find(w.id); c != prop->figure->colors.end())
         entry["color"] = c->second.rel.empty() ? Json(nullptr) : Json(c->second.rel);
@@ -678,6 +680,15 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     bool clothChanged = false;
     for(const Json& w : args.value("worn", Json::array()))
     {
+      if(w.is_object() && w.contains("tight") && w["tight"].is_number())
+      {
+        for(const fv::WornItem& i : fig.items)
+          if(relKey(i.rel) == relKey(w.value("rel", "")) && (w.value("label", "").empty() || i.label == w.value("label", "")))
+            fig.setItemTight(i.id, w["tight"].get<float>());
+        if(target->collider)
+          target->collider->poke();
+        publishWardrobe(*target);
+      }
       if(!w.is_object() || !w.contains("cloth") || !w["cloth"].is_object())
         continue;
       const Json&         c = w["cloth"];

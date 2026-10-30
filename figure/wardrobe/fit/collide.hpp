@@ -21,6 +21,11 @@ V3 triNormal(std::span<const float> p, size_t a, size_t b, size_t c);
 // of one vertex is capped, so a bad binding cannot throw it across the figure.
 std::vector<float> pushOut(std::span<const float> positions, const Surface& body, const SurfaceBinding& binding, float margin, float depth = 3);
 
+// Pulls `positions` toward `margin` centimetres over `body`, by `amount` of the way (0 to 1): a garment
+// made skin tight. Only what lies within `reach` of the skin, fading from half of it, so a hem hanging
+// free stays free; and only what is over a face rather than off past its edge, as in pushOut.
+std::vector<float> pullIn(std::span<const float> positions, const Surface& body, const SurfaceBinding& binding, float margin, float amount, float reach = 6);
+
 // Laplacian steps on the correction (`next` - `prev`), leaving the garment's cut in place.
 std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris, int passes = 2);
 

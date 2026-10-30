@@ -288,6 +288,11 @@ bool Collider::pump()
       const auto         filter = limbFilter(underLimbs, item.limbs);
       const int          passes = std::clamp(item.settings.collision, 1, 8);
       const int          smooth = std::clamp(item.settings.smoothing, 1, 8);
+      if(item.settings.tight > 0)
+      {
+        const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, positions, {}, filter ? &*filter : nullptr);
+        positions = smoothCorrection(positions, pullIn(positions, surface, binding, kMargin, std::min(item.settings.tight, 1.f)), item.tris, smooth);
+      }
       for(int pass = 0; pass < passes; pass++)
       {
         const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, positions, {}, filter ? &*filter : nullptr);

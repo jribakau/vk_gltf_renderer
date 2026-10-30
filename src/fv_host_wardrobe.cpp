@@ -41,6 +41,7 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
                                           {"own", w.rel.empty()},
                                           {"channels", w.channels.size()},
                                           {"collision", !w.collision.empty()},
+                                          {"tight", w.tight},
                                           {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}}}};
     // its scene meshes, as the materials topic's items list theirs: which surfaces are this item's
     items["i:" + std::to_string(w.id)]["meshes"] = w.meshes;
@@ -578,6 +579,8 @@ Json FvHost::Impl::itemRecord(const Loaded& f, const fv::WornItem& w) const
 {
   Json rec = {{"rel", w.rel}, {"piece", pieceOfKey(w.key)}, {"key", w.key}, {"label", w.label}, {"visible", w.visible},
               {"cloth", {{"on", w.cloth.on ? Json(*w.cloth.on) : Json()}, {"strength", w.cloth.strength}}}};
+  if(w.tight != 0)
+    rec["tight"] = w.tight;
   // its dials as they are set: they leave with it
   Json dials = Json::object();
   for(const std::string& name : w.channels)
@@ -627,6 +630,7 @@ Json FvHost::Impl::wardrobeRestore(const Json& args)
     if(c.contains("on") && c["on"].is_boolean())
       on = c["on"].get<bool>();
     target->fig->setItemCloth(id, on, c.value("strength", 1.f));
+    target->fig->setItemTight(id, rec.value("tight", 0.f));
     std::vector<std::pair<std::string, double>> dials;
     const Json saved = rec.value("dials", Json::object());
     for(const auto& [name, value] : saved.items())
@@ -729,6 +733,22 @@ Json FvHost::Impl::wardrobeCloth(const Json& args)
   publishWardrobe(*figure);
   if(figure->dforce)
     publishDforce(*figure, true);
+  return {{"ok", true}};
+}
+
+// wardrobe.tight {prop, item, amount}: how skin tight one item is, 0 as it was made to 1 on the skin
+// (figure/wardrobe/collider.hpp). The collider applies it, so it needs collision on, and a mesh dForce
+// drapes takes no notice.
+Json FvHost::Impl::wardrobeTight(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure)
+    throw std::runtime_error("no such figure");
+  if(!figure->fig->setItemTight(itemId(args), args.at("amount").get<float>()))
+    throw std::runtime_error("no such item");
+  if(figure->collider)
+    figure->collider->poke();
+  publishWardrobe(*figure);
   return {{"ok", true}};
 }
 

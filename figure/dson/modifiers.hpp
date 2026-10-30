@@ -35,6 +35,8 @@ struct Smoothing
   bool enabled   = true;
   int  smoothing = 2;  // "Smoothing Iterations"
   int  collision = 3;  // "Collision Iterations"
+  // no file's: how far the user pulled the item onto the body, 0 to 1 (WornItem::tight)
+  float tight = 0;
 };
 
 // The smoothing modifier `scene` puts on `nodeId`, or none.

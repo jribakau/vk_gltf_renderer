@@ -431,6 +431,7 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Cont
   Surface     s;
   s.name = name;
   s.kind = omniHair ? Kind::eHair : classify(name, context);
+  s.context = context;
   if(shade)
   {
     Surface::HairFibre fibre;

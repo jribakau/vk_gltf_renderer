@@ -16,6 +16,9 @@
 // deltas whose skinning gives the pushed shape; the renderer sees it as any other morph, and
 // turning collision off clears it.
 //
+// An item the user made tighter (dson::Smoothing::tight) is first pulled toward that clearance, so it
+// follows the pose and layers over what is under it as the push does.
+//
 // A mesh dForce drapes is left alone (the simulation collides it); the body itself is never moved.
 // Each item's settings come from its file's smoothing modifier when it carries one, else from the
 // defaults the figure's wardrobe gives clothing (figure.hpp, WornItem::collision).

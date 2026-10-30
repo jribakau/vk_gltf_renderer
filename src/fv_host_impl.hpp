@@ -854,6 +854,7 @@ struct FvHost::Impl
   Json wardrobeVisible(const Json& args);
   Json wardrobeCollision(const Json& args);
   Json wardrobeCloth(const Json& args);
+  Json wardrobeTight(const Json& args);
   void showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible);
   void publishDforce(Loaded& f, bool force);
   Json dforceCommand(const std::string& cmd, const Json& args);

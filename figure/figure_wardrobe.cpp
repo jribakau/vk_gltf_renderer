@@ -74,6 +74,7 @@ void placeSurfaces(SceneGraph& scene, const std::map<int, mat::Context>& meshes)
     m.context   = context;
     if(m.channels && mat::classify(m.name, context) != m.surface.kind)
       m.surface = dson::parseSurface(m.name, *m.channels, context);
+    m.surface.context = context;
   }
 }
 
@@ -890,6 +891,15 @@ std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float stre
     }
   }
   return changed;
+}
+
+bool Figure::setItemTight(int id, float amount)
+{
+  const auto it = std::find_if(items.begin(), items.end(), [&](WornItem& i) { return i.id == id; });
+  if(it == items.end())
+    return false;
+  it->tight = std::clamp(amount, 0.f, 1.f);
+  return true;
 }
 
 ClothState Figure::clothOf(const WornItem& item) const

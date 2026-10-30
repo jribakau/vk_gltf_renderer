@@ -335,7 +335,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   eff.color       = picked;
   eff.opacity     = opacity;
   eff.alphaMode   = alphaMode == "OPAQUE" ? "opaque" : alphaMode == "MASK" ? "cutout" : "blend";
-  eff.doubleSided = opts.ribbon || e.doubleSided.value_or(hashed || s.twoSided);
+  eff.doubleSided = opts.ribbon || e.doubleSided.value_or(hashed || s.twoSided || s.context == Context::eItem);
   const float metalness = e.metalness.value_or(s.metallic.value);
   eff.metalness         = metalness;
 

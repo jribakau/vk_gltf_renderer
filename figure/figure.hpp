@@ -66,6 +66,8 @@ struct WornItem
   // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
   // (the file's modifier, or defaults for clothing): empty for hair, anatomy and props without one
   std::map<int, dson::Smoothing> collision;
+  // how far the collider pulls it onto the body, 0 (as it was made) to 1 (skin tight)
+  float tight = 0;
   // dForce on this item as the user set it (Figure::setItemCloth): whether its meshes simulate
   // (unset: as the file says, a Dynamic Surface does and anything else conforms) and a dynamics
   // strength that scales the file's weights, or is every vertex's for an item the file gave none
@@ -227,6 +229,8 @@ public:
   // the collider are to be told); empty for an unknown id or an item with nothing to simulate.
   std::vector<int> setItemCloth(int id, std::optional<bool> on, float strength);
   ClothState       clothOf(const WornItem& item) const;
+  // How skin tight one item is, 0 to 1: the collider's next pass applies it. False for an unknown id.
+  bool setItemTight(int id, float amount);
   const WornItem*  item(int id) const;
   dson::Store&    store() const { return *m_store; }
   // Lists the items the scene file came with (Figure::load does).

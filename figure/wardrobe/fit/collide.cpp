@@ -52,6 +52,38 @@ std::vector<float> pushOut(std::span<const float> positions, const Surface& body
   return out;
 }
 
+std::vector<float> pullIn(std::span<const float> positions, const Surface& body, const SurfaceBinding& binding, float margin, float amount, float reach)
+{
+  std::vector<float> out(positions.begin(), positions.end());
+  const auto         p = body.positions;
+  const size_t       n = positions.size() / 3;
+  for(size_t v = 0; v < n; v++)
+  {
+    const size_t k = v * 3;
+    const double w = double(binding.weights[k]) + binding.weights[k + 1] + binding.weights[k + 2];
+    if(w <= 0)
+      continue;
+    const size_t ia = binding.verts[k], ib = binding.verts[k + 1], ic = binding.verts[k + 2];
+    const double wa = binding.weights[k], wb = binding.weights[k + 1], wc = binding.weights[k + 2];
+    const double sx = p[ia * 3] * wa + p[ib * 3] * wb + p[ic * 3] * wc;
+    const double sy = p[ia * 3 + 1] * wa + p[ib * 3 + 1] * wb + p[ic * 3 + 1] * wc;
+    const double sz = p[ia * 3 + 2] * wa + p[ib * 3 + 2] * wb + p[ic * 3 + 2] * wc;
+    const V3     nrm = triNormal(p, ia, ib, ic);
+    const double dx = positions[k] - sx, dy = positions[k + 1] - sy, dz = positions[k + 2] - sz;
+    const double signedDist = dx * nrm[0] + dy * nrm[1] + dz * nrm[2];
+    const double dist       = std::hypot(dx, dy, dz);
+    // at the clearance or under it is pushOut's; mostly sideways is past an edge, not over the face
+    if(signedDist <= margin || dist > reach || signedDist < 0.6 * dist)
+      continue;
+    const double fade = std::clamp((reach - dist) / (0.5 * reach), 0.0, 1.0);
+    const double move = amount * fade * fade * (3 - 2 * fade);
+    out[k]     = float(positions[k] + (sx + nrm[0] * margin - positions[k]) * move);
+    out[k + 1] = float(positions[k + 1] + (sy + nrm[1] * margin - positions[k + 1]) * move);
+    out[k + 2] = float(positions[k + 2] + (sz + nrm[2] * margin - positions[k + 2]) * move);
+  }
+  return out;
+}
+
 std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris, int passes)
 {
   std::vector<float> corr(prev.size());

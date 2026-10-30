@@ -206,8 +206,8 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     const auto p = figureProp(args);
     if(!p || !p->figure)
       return nullptr;
-    if(cmd == "wardrobe.visible" || cmd == "wardrobe.cloth")
-      return {{"kind", cmd == "wardrobe.visible" ? "visible" : "cloth"}, {"prop", p->id}, {"item", itemIdOf(args.at("item"))}};
+    if(cmd == "wardrobe.visible" || cmd == "wardrobe.cloth" || cmd == "wardrobe.tight")
+      return {{"kind", cmd == "wardrobe.visible" ? "visible" : cmd == "wardrobe.cloth" ? "cloth" : "tight"}, {"prop", p->id}, {"item", itemIdOf(args.at("item"))}};
     return {{"kind", cmd == "wardrobe.collision" ? "collision" : "dforce"}, {"prop", p->id}};
   }
   if(cmd == "lighting.set")
@@ -333,6 +333,11 @@ Json FvHost::Impl::journalState(const Json& scope)
     }
     ops.push_back(op("pose.set", {{"prop", id}, {"values", values}}));
   }
+  else if(kind == "tight")
+  {
+    if(const fv::WornItem* w = wornItem(*f.fig, scope["item"].get<int>()))
+      ops.push_back(op("wardrobe.tight", {{"prop", id}, {"item", scope["item"]}, {"amount", w->tight}}));
+  }
   else if(kind == "visible" || kind == "cloth")
   {
     const int           item = scope["item"].get<int>();
@@ -440,6 +445,11 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "material.reset")
     return args.contains("material") ? "Reset material" : "Reset all materials";
+  if(cmd == "wardrobe.tight")
+  {
+    const fv::WornItem* w = p && p->figure ? wornItem(*p->figure->fig, scope["item"].get<int>()) : nullptr;
+    return "Skin tight: " + (w ? (w->label.empty() ? w->rel : w->label) : std::string("item"));
+  }
   if(cmd == "wardrobe.visible" || cmd == "wardrobe.cloth")
   {
     const fv::WornItem* w     = p && p->figure ? wornItem(*p->figure->fig, scope["item"].get<int>()) : nullptr;
@@ -571,6 +581,8 @@ Json FvHost::Impl::applyOp(const Json& o)
     return wardrobeCollision(args);
   if(cmd == "wardrobe.cloth")
     return wardrobeCloth(args);
+  if(cmd == "wardrobe.tight")
+    return wardrobeTight(args);
   if(cmd == "dforce.enable" || cmd == "dforce.mode")
     return dforceCommand(cmd.substr(std::string("dforce.").size()), args);
   if(cmd == "lighting.set")
