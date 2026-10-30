@@ -561,6 +561,31 @@ TEST(Fit, ARigidPlanMovesABoneToTheLeadersJointAndTurnsItOntoItsLimb)
   EXPECT_NEAR(moved[1], 60, 0.5f);
 }
 
+// Genesis 8's pectoral joint is deep in the chest and Genesis 9's near its middle: a bust carried from
+// one to the other stood centimetres in front of the body (MantaMade's M7UP Top on Polina 9)
+TEST(Fit, ABustMovesWithTheChestNotOntoTheTargetsPectoralJoint)
+{
+  using namespace fv::wardrobe;
+  const std::vector<SkelBone> source{{"chestUpper", std::nullopt, {0, 130, -3}}, {"lPectoral", std::string("chestUpper"), {3, 132, -7.5}}};
+  const std::vector<SkelBone> target{{"spine4", std::nullopt, {0, 124, -1}}, {"l_pectoral", std::string("spine4"), {4.3, 126, 0.9}}};
+  const auto plan = rigidPlan(source, target);
+  ASSERT_EQ(plan.count("chestUpper"), 1u);
+  ASSERT_EQ(plan.count("lPectoral"), 1u);
+
+  // a point on the bust, all on the pectoral, lands where the same point on the chest lands
+  const std::vector<float> bust{7, 132, 13.5};
+  fv::mesh::SkinInput      skin;
+  skin.start  = {0, 1};
+  skin.bone   = {0};
+  skin.weight = {1.f};
+  const auto onPectoral = rigidPositions(bust, skin, {&plan.at("lPectoral")});
+  const auto onChest    = rigidPositions(bust, skin, {&plan.at("chestUpper")});
+  for(int k = 0; k < 3; k++)
+    EXPECT_NEAR(onPectoral[size_t(k)], onChest[size_t(k)], 1e-5f);
+  // forward by the chest's own move, not the 8.4 cm between the two generations' joints
+  EXPECT_NEAR(onPectoral[2], 13.5f + 2.0f, 1.0f);
+}
+
 // The glTF holds each mesh's own bytes: a mesh past 16-bit indices with polygons a worn item hides,
 // a small one beside it, both with UVs flipped and as they are, every view apart and the gaps zero.
 TEST(Wardrobe, TheBuiltGltfHoldsTheScenesMeshes)

@@ -53,7 +53,8 @@ const SkelBone* findSlot(const std::vector<SkelBone>& bones, char side, const st
 
 // A transform for every source bone. A bone whose leader is the same as its parent's (a twist, or a
 // metatarsal on a figure without one) moves with that parent. A bone with no leader moves with its
-// nearest led ancestor, and stays put when it has none.
+// nearest led ancestor, and stays put when it has none. A pectoral moves with its parent: its joint
+// is in a different place in each generation.
 std::map<std::string, Rigid> rigidPlan(const std::vector<SkelBone>& source, const std::vector<SkelBone>& target);
 
 // Linear blend of the bones' rigid transforms, by skin weight. Unweighted vertices stay. `bones`

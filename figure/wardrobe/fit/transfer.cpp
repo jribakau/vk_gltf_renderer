@@ -120,7 +120,11 @@ std::map<std::string, Rigid> rigidPlan(const std::vector<SkelBone>& source, cons
     if(leader)
       if(auto it = targetBy.find(*leader); it != targetBy.end())
         t = it->second;
-    if(!t || leader == ancestorLeader)
+    // A pectoral moves with the chest. Its joint isn't a landmark two generations share: Genesis 8's is
+    // deep in the chest and Genesis 9's near its middle, 8 cm apart, and carrying a bust from one to the
+    // other left domes in front of the body that the shape correction, capped, could not bring back.
+    // The correction fits the bust; the pose still turns it about the figure's own joint.
+    if(!t || leader == ancestorLeader || parseBone(b.name).slot == "pectoral")
     {
       out[b.name] = up;
       return up;
