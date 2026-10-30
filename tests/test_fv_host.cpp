@@ -181,6 +181,33 @@ TEST(FvHost, WhatGpuMemoryCantTakeIsRefused)
   EXPECT_EQ(items.dump().find("Box Shirt"), std::string::npos) << items.dump();
 }
 
+// A restore that couldn't put everything back says so in its job: the app won't take the scene for
+// its file's, whose next save would lose the rest
+TEST(FvHost, ARestoreReportsWhatItCouldNotPutBack)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  ASSERT_FALSE(id.empty());
+  const auto restored = [&](const char* rel) {
+    const Json answer = rig.cmd("scene.restore", {{"prop", id}, {"worn", Json::array({Json{{"rel", rel}, {"label", ""}, {"visible", true}}})}});
+    EXPECT_TRUE(answer.value("ok", false)) << answer.dump();
+    EXPECT_TRUE(rig.settle());
+    const Json job = rig.topic("jobs").value(answer.at("result").at("job").dump(), Json::object());
+    EXPECT_EQ(job.value("state", ""), "done") << job.dump();
+    return job.value("problems", Json::array());
+  };
+  // what isn't in the library
+  EXPECT_NE(restored("People/Test/Clothing/Not There.duf").dump().find("Not There"), std::string::npos);
+  // what GPU memory can't take
+  rig.renderer.geometryRefusal = "no room";
+  EXPECT_NE(restored("People/Test/Clothing/Box Shirt.duf").dump().find("wasn't added: no room"), std::string::npos);
+  // and nothing of the kind when it all goes on
+  rig.renderer.geometryRefusal.clear();
+  EXPECT_TRUE(restored("People/Test/Clothing/Box Shirt.duf").empty());
+}
+
 TEST(FvHost, LoadsTheBoxFigureIntoItsRetainedScene)
 {
   HostRig rig;

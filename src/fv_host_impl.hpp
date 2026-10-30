@@ -810,6 +810,8 @@ struct FvHost::Impl
   struct WearLooks
   {
     std::function<void()> surfaces, shape;
+    // what could not be put on, each named, by the time `after` runs (a restore's job reports them)
+    std::shared_ptr<std::vector<std::string>> problems;
   };
   // `beforeBuild` runs on the application thread once everything is on, before the scene is built
   // again; `after` once it has been. With `commitAfter`, the requests are prepared at once and put

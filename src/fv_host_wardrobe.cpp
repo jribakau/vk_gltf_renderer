@@ -328,14 +328,19 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       if(!slot.prepared)
       {
         if(!slot.error.empty())
-          notice(utf8Of(pathOf(request.rel).stem()) + ": " + slot.error, "error");
+        {
+          const std::string problem = utf8Of(pathOf(request.rel).stem()) + ": " + slot.error;
+          notice(problem, "error");
+          if(looks.problems)
+            post([problems = looks.problems, problem] { problems->push_back(problem); });
+        }
         continue;
       }
       auto done = std::make_shared<std::promise<bool>>();
       auto ok   = done->get_future();
       post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, only = request.only, step = request.step, label,
             images = std::move(slot.images), uncooked = std::move(slot.uncooked), done, autoColor = slot.autoColor,
-            autoColorDoc = slot.autoColorDoc]() mutable {
+            autoColorDoc = slot.autoColorDoc, problems = looks.problems]() mutable {
         if(!inScene(target))
         {
           done->set_value(false);
@@ -343,7 +348,10 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         }
         if(const std::string refused = renderer->refuseGeometry(geometryBytes(fv::Figure::preparedScene(*prepared))); !refused.empty())
         {
-          notice(utf8Of(pathOf(rel).stem()) + " wasn't added: " + refused, "error");
+          const std::string problem = utf8Of(pathOf(rel).stem()) + " wasn't added: " + refused;
+          notice(problem, "error");
+          if(problems)
+            problems->push_back(problem);
           done->set_value(false);
           return;
         }

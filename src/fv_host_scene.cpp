@@ -446,7 +446,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       problems = prop->materials->restoreEdits(args["materials"]);
     for(size_t i = 0; i < problems.size() && i < 5; i++)
       notice(problems[i]);
-    return {{"ok", true}};
+    return {{"ok", true}, {"problems", problems}};
   }
   std::shared_ptr<Loaded> target = prop->figure;
   const uint64_t          jobId  = ++jobs;
@@ -464,6 +464,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
   // put back. A restore that wears something does the first two before its composition, so the
   // figure is built once as the file has it (wears.looks); one that wears nothing does all three now.
   auto problemList = std::make_shared<std::vector<std::string>>();
+  auto wearProblems = std::make_shared<std::vector<std::string>>();  // noticed where they happened
   auto shape       = [this, target, args, problemList] {
     const auto prop = findProp(target->id);
     if(!prop || prop->figure != target)
@@ -662,7 +663,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         target->collider->poke();
     }
   };
-  auto finish = [this, target, jobId, problemList] {
+  auto finish = [this, target, jobId, problemList, wearProblems] {
     const auto prop = findProp(target->id);
     if(!prop || prop->figure != target)
     {
@@ -674,7 +675,12 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       notice(prop->name + ": " + problems[i]);
     if(problems.size() > 5)
       notice(std::to_string(problems.size() - 5) + " more problems restoring " + prop->name);
-    job(jobId, {{"state", "done"}});
+    // the app keeps a scene that didn't come back whole from its file (a save would lose the rest)
+    Json all = Json::array();
+    for(const std::vector<std::string>* list : {wearProblems.get(), problemList.get()})
+      for(const std::string& p : *list)
+        all.push_back(p);
+    job(jobId, {{"state", "done"}, {"problems", all}});
   };
   auto apply = [shape, surfaces, finish] {
     shape();
@@ -703,7 +709,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         }
       }
   }
-  auto wear = [this, target, worn, apply, shape, surfaces, finish, requests](std::shared_future<void> commitAfter) mutable {
+  auto wear = [this, target, worn, apply, shape, surfaces, finish, requests, wearProblems](std::shared_future<void> commitAfter) mutable {
     auto hidden = [target, worn] {
       std::vector<int> ids;
       for(const Json& w : worn)
@@ -735,7 +741,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       apply();
       return;
     }
-    startWear(target, std::move(requests), hide, finish, std::move(commitAfter), {surfaces, shape});
+    startWear(target, std::move(requests), hide, finish, std::move(commitAfter), {surfaces, shape, wearProblems});
   };
   if(target->addonsPending && !requests.empty())
   {
