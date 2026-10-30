@@ -83,7 +83,9 @@ struct Strands
   // per point: the unit direction across the ribbon, root-to-tip position, and its line
   std::vector<float>   side, along;
   std::vector<int32_t> line;
-  float                spacing = 0;
+  // per point, where along its strand the root's fade ends (Ribbon::rootFade)
+  std::vector<float> rootFade;
+  float              spacing = 0;
   // per point, a grown strand's offset from its guide (xyz); empty when the lines grow none
   std::vector<float> shift;
 };
@@ -302,15 +304,27 @@ Strands strandRibbons(const MeshInput& m)
   out.side.assign(size_t(points) * 3, 0.f);
   out.along.assign(points, 0.f);
   out.line.assign(points, 0);
+  out.rootFade.assign(points, 0.f);
   for(int l = 0; l < nl; l++)
   {
     const int s = L.start[l], e = L.start[l + 1];
     double    px = 0, py = 0, pz = 0;
     bool      have = false;
+    // the strand grows from nothing over the first 6% of it, so the root is not a full-width sheet
+    // and the body can stay opaque (no any-hit on every card), but over no more than 1 cm: on long
+    // hair a share of its length left the crown thin, 60 cm strands at a sixth of their width 1.5 cm out
+    constexpr double kRootShare = 0.06, kRootCm = 1;
+    double           length     = 0;
+    for(int c = s; c + 1 < e; c++)
+      if(ok(c) && ok(c + 1))
+        length += std::hypot(double(p[L.verts[c + 1] * 3]) - p[L.verts[c] * 3], double(p[L.verts[c + 1] * 3 + 1]) - p[L.verts[c] * 3 + 1],
+                             double(p[L.verts[c + 1] * 3 + 2]) - p[L.verts[c] * 3 + 2]);
+    const float fade = float(length > kRootCm / kRootShare ? kRootCm / length : kRootShare);
     for(int c = s; c < e; c++)
     {
-      out.line[c]  = G.guide[l];
-      out.along[c] = e - s > 1 ? float(double(c - s) / (e - s - 1)) : 0.f;
+      out.line[c]     = G.guide[l];
+      out.along[c]    = e - s > 1 ? float(double(c - s) / (e - s - 1)) : 0.f;
+      out.rootFade[c] = fade;
       if(!ok(c))
         continue;
       const int    a  = c > s && ok(c - 1) ? L.verts[c - 1] : L.verts[c];
@@ -394,6 +408,7 @@ Strands strandRibbons(const MeshInput& m)
   out.side.resize(size_t(total) * 3);
   out.along.resize(total);
   out.line.resize(total);
+  out.rootFade.resize(total);
   for(size_t s = 0; s < segments.size(); s++)
     for(int j = 0; j < kInner; j++)
     {
@@ -407,6 +422,7 @@ Strands strandRibbons(const MeshInput& m)
         out.side[mid * 3 + k] = len > 1e-6f ? dir[k] / len : out.side[c * 3 + k];
       out.along[mid] = (1.f - t) * out.along[c] + t * out.along[d];
       out.line[mid]  = out.line[c];
+      out.rootFade[mid] = out.rootFade[c];
       if(!out.shift.empty())
         for(int k = 0; k < 3; k++)
           out.shift[mid * 3 + k] = (1.f - t) * out.shift[c * 3 + k] + t * out.shift[d * 3 + k];
@@ -567,13 +583,11 @@ void widenRibbons(mesh::BuiltMesh& m, const std::vector<std::array<double, 2>>& 
     {
       const int  mat = r.material[i];
       const auto w   = mat >= 0 && mat < int(widths.size()) ? widths[mat] : (widths.empty() ? std::array<double, 2>{0.1, 0.05} : widths[0]);
-      // The first 6% of the strand grows from nothing, so the root is not a full-width sheet and the
-      // body can stay opaque (no any-hit on every card). along is 0 at the root.
-      constexpr double kRoot = 0.06;
-      double           gate  = 1;
-      if(r.along[i] < kRoot)
+      // along is 0 at the root
+      double gate = 1;
+      if(r.along[i] < r.rootFade[i])
       {
-        const double t = r.along[i] / kRoot;
+        const double t = r.along[i] / r.rootFade[i];
         gate           = t * t * (3.0 - 2.0 * t);
       }
       const double half = (w[0] + (w[1] - w[0]) * r.along[i]) / 2 * gate;
@@ -776,6 +790,7 @@ BuiltMesh build(const MeshInput& m)
     Ribbon ribbon;
     ribbon.side.assign(size_t(count) * 3, 0.f);
     ribbon.along.assign(count, 0.f);
+    ribbon.rootFade.assign(count, 0.f);
     ribbon.material.assign(count, 0);
     if(!strands->shift.empty())
       ribbon.shift.assign(size_t(count) * 3, 0.f);
@@ -790,6 +805,7 @@ BuiltMesh build(const MeshInput& m)
         for(int k = 0; k < 3; k++)
           ribbon.shift[i * 3 + k] = strands->shift[c * 3 + k];
       ribbon.along[i]    = strands->along[c];
+      ribbon.rootFade[i] = strands->rootFade[c];
       ribbon.material[i] = m.lines->material[strands->line[c]];
     }
     ribbon.spacing = strands->spacing;

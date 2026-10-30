@@ -321,6 +321,66 @@ Json standoffReport(std::span<const float> body, std::span<const uint32_t> bodyT
   return {{"all", stats(false)}, {"hem", stats(true)}, {"farthest", far}, {"inside", insideReport(body, bodyTris, item)}};
 }
 
+// How much of each strand of the worn items whose label holds `what` lies under the body's skin, at
+// rest with the figure's morphs: the buried run from the root, in cm, and the share of points under
+// it by how far along the strand they are.
+Json strandsInsideReport(fv::Figure& fig, const std::string& what)
+{
+  const int                    body     = fig.loaded.morphs.meshes[fig.loaded.morphs.mainMeshes[0]].mesh;
+  const auto                   skin     = fig.morphs->morphedCage(body);
+  const std::vector<uint32_t>& bodyTris = fig.loaded.scene.meshes[size_t(body)].geo->dsonTris;
+  const fv::wardrobe::Surface  surface{skin, bodyTris};
+  Json                         report = Json::object();
+  for(const fv::WornItem& w : fig.items)
+  {
+    if(w.label.find(what) == std::string::npos)
+      continue;
+    for(int mesh : w.meshes)
+    {
+      const fv::mesh::BuiltMesh& geo = *fig.loaded.scene.meshes[size_t(mesh)].geo;
+      if(geo.cageLineStart.size() < 2)
+        continue;
+      const auto                         item    = fig.morphs->morphedCage(mesh);
+      const fv::wardrobe::SurfaceBinding binding = fv::wardrobe::bindToSurface(skin, bodyTris, item);
+      const std::vector<float>           pushed  = fv::wardrobe::pushOut(item, surface, binding, 0.f, 3.f);
+      const auto under = [&](int v) { return pushed[size_t(v) * 3] != item[size_t(v) * 3] || pushed[size_t(v) * 3 + 1] != item[size_t(v) * 3 + 1] || pushed[size_t(v) * 3 + 2] != item[size_t(v) * 3 + 2]; };
+      std::vector<double> runs;
+      std::array<double, 4> points{}, hidden{};
+      int rootsUnder = 0;
+      for(size_t l = 0; l + 1 < geo.cageLineStart.size(); l++)
+      {
+        const int s = geo.cageLineStart[l], e = geo.cageLineStart[l + 1];
+        double    run = 0;
+        bool      buried = true;
+        rootsUnder += e > s && under(geo.cageLineVerts[size_t(s)]);
+        for(int c = s; c < e; c++)
+        {
+          const int    v  = geo.cageLineVerts[size_t(c)];
+          const double at = e - s > 1 ? double(c - s) / (e - s - 1) : 0;
+          const size_t bin = at < 0.02 ? 0 : at < 0.05 ? 1 : at < 0.1 ? 2 : 3;
+          points[bin]++;
+          hidden[bin] += under(v);
+          buried = buried && under(v);
+          if(buried && c + 1 < e)
+          {
+            const int u = geo.cageLineVerts[size_t(c) + 1];
+            run += std::hypot(item[size_t(u) * 3] - item[size_t(v) * 3], item[size_t(u) * 3 + 1] - item[size_t(v) * 3 + 1], item[size_t(u) * 3 + 2] - item[size_t(v) * 3 + 2]);
+          }
+        }
+        runs.push_back(run);
+      }
+      std::sort(runs.begin(), runs.end());
+      const auto past = [&](double cm) { return double(runs.end() - std::upper_bound(runs.begin(), runs.end(), cm)) / double(runs.size()); };
+      report[w.label] = {{"strands", runs.size()},
+                         {"rootsUnderSkin", rootsUnder},
+                         {"buriedRunCm", {{"p50", r(runs[runs.size() / 2])}, {"p90", r(runs[runs.size() * 9 / 10])}, {"max", r(runs.back())}}},
+                         {"shareBuriedPast", {{"0.5cm", r(past(0.5))}, {"1cm", r(past(1))}, {"2cm", r(past(2))}, {"4cm", r(past(4))}}},
+                         {"pointsUnderSkinAlong", {{"first 2%", r(hidden[0] / points[0])}, {"2-5%", r(hidden[1] / points[1])}, {"5-10%", r(hidden[2] / points[2])}, {"rest", r(hidden[3] / points[3])}}}};
+    }
+  }
+  return report;
+}
+
 // Skin tight on the worn items whose label holds `what`, through the real collider: the standoff of
 // each of their meshes before and after, and how long a pass took on the owning thread and in all.
 Json tightReport(fv::Figure& fig, const std::string& what, float amount)
@@ -761,6 +821,13 @@ int main(int argc, char** argv)
           throw std::runtime_error("tight before a figure loads");
         const Json& t = step["tight"];
         dumps[t.value("dump", std::string("tight"))] = tightReport(*loaded, t.value("item", ""), t.value("amount", 1.f));
+      }
+      else if(step.contains("strandsInside"))
+      {
+        // {"strandsInside": label substring, "dump": name}: how much of a worn hair's strands is under the skin
+        if(!loaded)
+          throw std::runtime_error("strandsInside before a figure loads");
+        dumps[step.value("dump", std::string("strandsInside"))] = strandsInsideReport(*loaded, step["strandsInside"].get<std::string>());
       }
       else if(step.contains("fit"))
       {

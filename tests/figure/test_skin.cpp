@@ -291,6 +291,54 @@ TEST(Skin, TheSkinSettingsGiveTheDualQuaternionShare)
   EXPECT_EQ(mapped->input.dualQuatMap, (std::vector<float>{0.25f, 0.f, 1.f}));
 }
 
+// A strand's width grows in from its root over 6% of it, and over no more than 1 cm: as a share alone,
+// 60 cm hair stayed under its width for 3.6 cm, and the crown looked thin.
+TEST(Skin, ALongStrandReachesItsWidthWithinACentimetre)
+{
+  fv::mesh::MeshInput input;
+  fv::mesh::Lines     lines;
+  lines.start = {0};
+  const auto strand = [&](int points, float step, int material) {
+    const int first = int(input.positions.size() / 3);
+    for(int p = 0; p < points; p++)
+    {
+      input.positions.insert(input.positions.end(), {float(material) * 5.f, -step * float(p), 0.f});
+      lines.verts.push_back(first + p);
+    }
+    lines.start.push_back(int32_t(lines.verts.size()));
+    lines.material.push_back(material);
+  };
+  strand(61, 1.f, 0);    // 60 cm
+  strand(51, 0.2f, 1);   // 10 cm
+  input.materialCount = 2;
+  input.lines         = lines;
+  auto geo            = fv::mesh::build(input);
+  ASSERT_TRUE(geo.ribbon);
+  fv::mesh::widenRibbons(geo, {{0.2, 0.2}, {0.2, 0.2}});
+
+  const auto& r     = *geo.ribbon;
+  const auto  half  = [&](int material, float along) {
+    int   best = -1;
+    float gap  = INFINITY;
+    for(size_t i = 0; i < r.along.size(); i++)
+      if(r.material[i] == material && std::abs(r.along[i] - along) < gap)
+      {
+        gap  = std::abs(r.along[i] - along);
+        best = int(i);
+      }
+    return r.half[size_t(best)];
+  };
+  EXPECT_EQ(half(0, 0.f), 0.f);
+  // the long strand: halfway at half a centimetre, full from a centimetre out
+  EXPECT_NEAR(half(0, 0.5f / 60), 0.05f, 0.001f);
+  EXPECT_NEAR(half(0, 1.f / 60), 0.1f, 1e-5f);
+  EXPECT_NEAR(half(0, 3.f / 60), 0.1f, 1e-5f);
+  // the short one keeps its share: halfway at 3%, 3 mm out
+  EXPECT_EQ(half(1, 0.f), 0.f);
+  EXPECT_NEAR(half(1, 0.03f), 0.05f, 0.001f);
+  EXPECT_NEAR(half(1, 0.06f), 0.1f, 1e-5f);
+}
+
 // Strand hair with no joints (FE Shawl, Pixie Cut) follows the figure in DAZ Studio through a dForce
 // modifier. Left without a skin it stayed where the file puts it, whatever the figure's pose or shape.
 TEST(Skin, StrandsWithoutJointsRideTheBoneTheirGroupNames)

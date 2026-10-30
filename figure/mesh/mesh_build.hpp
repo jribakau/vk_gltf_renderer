@@ -70,6 +70,8 @@ struct Ribbon
   std::vector<float>   side;
   std::vector<float>   along;
   std::vector<int32_t> material;
+  // where along its strand the width has grown in from nothing at the root
+  std::vector<float> rootFade;
   // how far widenRibbons moved each drawn vertex along `side`, cm (empty before)
   std::vector<float> half;
   // a grown strand's offset from its guide, xyz per drawn vertex, in the rest shape (empty when the
