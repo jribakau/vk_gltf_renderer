@@ -171,7 +171,8 @@ tests/
 ├── test_extensions_metadata.cpp # Extension metadata
 ├── test_primitives.cpp         # Procedural primitives
 ├── test_interactivity_engine.cpp # KHR_interactivity graph parsing, flow scheduling, node eval
-├── test_bsdf_lobes.cpp         # nvshaders' BSDF on the CPU: every-lobe NEE, its MIS pair, sample vs eval (own exe)
+├── test_bsdf_lobes.cpp         # nvshaders' BSDF on the CPU: every-lobe NEE, its MIS pair, sample vs eval, samples vs pdf, layered albedo, reciprocity (own exe)
+├── figure/data/closure_baseline.json # real materials' closures (figure/tools/closure_probe); MaterialClosure.TheBaselineHolds lists what a change moved, FV_UPDATE_CLOSURE_BASELINE=1 rewrites it
 ├── render/                     # GPU render checks driven by Python (see Render Tests)
 └── common/
     ├── test_utils.hpp          # Test utilities header

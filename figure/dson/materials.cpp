@@ -761,7 +761,9 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch)
   std::set<const Channel*> seen;
   for(const std::string& k : ch.order())
   {
-    const Channel* c = ch.get(k);
+    // every map's settings, whatever it is the map of: not a reading of the channel (ChannelReads)
+    const std::shared_ptr<Channel> entry = ch.shared(k);
+    const Channel*                 c     = entry.get();
     if(!c->image || c->image->empty() || !seen.insert(c).second)
       continue;
     const auto field = [&](const char* n, double d) {

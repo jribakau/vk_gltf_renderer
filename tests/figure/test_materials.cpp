@@ -4384,3 +4384,17 @@ TEST(MaterialClosure, TheBaselineHolds)
     list += line + "\n";
   EXPECT_TRUE(moved.empty()) << moved.size() << " closure numbers moved:\n" << list;
 }
+
+// What the library sweep calls dropped: a channel with a value that parsing never looked up
+TEST(MaterialClosure, ChannelReadsTellWhatTheParserLeaves)
+{
+  const fv::dson::Channels ch = layered({kBoxers, R"({"extra":[{"channels":[{"channel":{"id":"Nobody Reads This","current_value":1}}]}]})"});
+  fv::dson::ChannelReads   reads;
+  (void)fv::dson::parseSurface("Boxers", ch);
+  EXPECT_TRUE(reads.read(ch.get(fv::dson::norm("diffuse"))));
+  EXPECT_TRUE(reads.read(ch.get(fv::dson::norm("glossiness"))));
+  // the lookups just above count too, so this one is asked for by its pointer, unread until now
+  const auto unread = ch.shared(fv::dson::norm("Nobody Reads This"));
+  ASSERT_TRUE(unread);
+  EXPECT_FALSE(reads.read(unread.get()));
+}

@@ -15,6 +15,8 @@
 // build's options), and times a second sync with nothing changed, the one every frame would make.
 // Each build and each feed is read back against the scene (checkBuild, checkFeed).
 // {"surfaces": label} records each material's relief maps and the surface they cover.
+// {"sweep": label} measures every item in the library's materials, on no figure of the case's
+// (material_sweep.hpp; cases/material_sweep.json, `pnpm library:materials`).
 // {"cloth": {"item", "on", "strength"}} turns dForce on or off for the worn items it names, as the
 // Wardrobe row does.
 // {"dforce": label} settles the worn dynamic surfaces at the pose the figure is in, on what the
@@ -57,6 +59,7 @@
 #include <figure/wardrobe/fit/collide.hpp>
 
 #include "fv_figure_feed.hpp"
+#include "material_sweep.hpp"
 #include "fv_figure_feed_check.hpp"
 #include "scene_retained.hpp"
 
@@ -726,6 +729,10 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("dump before load");
         dumps[step["dump"].get<std::string>()] = dumpScene(loaded->loaded.scene, loaded->loaded.root, loaded->morphs.get());
+      }
+      else if(step.contains("sweep"))
+      {
+        dumps[step["sweep"].get<std::string>()] = fv::probe::materialSweep(libraryDir, root, step);
       }
       else if(step.contains("surfaces"))
       {

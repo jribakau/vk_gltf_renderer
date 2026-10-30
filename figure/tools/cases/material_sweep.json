@@ -1,0 +1,4 @@
+{
+  "library": "$DAZ_LIBRARY",
+  "steps": [{ "sweep": "materials", "baseline": "assets/.cache/material-sweep-baseline.json" }]
+}

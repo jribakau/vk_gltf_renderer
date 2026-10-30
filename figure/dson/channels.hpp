@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,23 @@ private:
   mat::ShaderRef                                            m_shader;
   std::vector<std::string>                                  m_order;
   std::unordered_map<std::string, std::shared_ptr<Channel>> m_map;
+};
+
+// While one is alive, on its thread, every channel found through get and find is recorded: how the
+// library sweep (tools/material_sweep) tells what the parser reads from what it leaves.
+class ChannelReads
+{
+public:
+  ChannelReads();
+  ~ChannelReads();
+  ChannelReads(const ChannelReads&)            = delete;
+  ChannelReads& operator=(const ChannelReads&) = delete;
+  bool read(const Channel* c) const { return m_read.count(c) != 0; }
+
+private:
+  friend class Channels;
+  std::unordered_set<const Channel*> m_read;
+  ChannelReads*                      m_outer;
 };
 
 // Lower case, letters and digits only.

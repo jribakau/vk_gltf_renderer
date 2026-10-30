@@ -18,10 +18,29 @@ std::string norm(std::string_view s)
   return out;
 }
 
+namespace {
+thread_local ChannelReads* t_channelReads = nullptr;
+}
+
+ChannelReads::ChannelReads()
+    : m_outer(t_channelReads)
+{
+  t_channelReads = this;
+}
+
+ChannelReads::~ChannelReads()
+{
+  t_channelReads = m_outer;
+}
+
 const Channel* Channels::get(const std::string& normName) const
 {
   auto it = m_map.find(normName);
-  return it == m_map.end() ? nullptr : it->second.get();
+  if(it == m_map.end())
+    return nullptr;
+  if(t_channelReads)
+    t_channelReads->m_read.insert(it->second.get());
+  return it->second.get();
 }
 
 std::shared_ptr<Channel> Channels::shared(const std::string& key) const

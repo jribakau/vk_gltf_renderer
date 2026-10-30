@@ -21,7 +21,8 @@ set_source_files_properties(wardrobe/bind_cache.cpp PROPERTIES COMPILE_DEFINITIO
 # step the retained scene's Vulkan-free sources: the store, the figure feed, and what they call (the
 # importer's tangent rule, the material feature detector, the tangent helpers, which use nvutils'
 # logger and pool and nvshaders' shared functions), with tinygltf's out-of-line half.
-add_executable(fv_parity tools/fv_parity.cpp tools/fv_parity_tinygltf.cpp
+add_executable(fv_parity tools/fv_parity.cpp tools/fv_parity_tinygltf.cpp tools/material_sweep.cpp tools/closure_probe.cpp
+  ${FV_FIGURE_ROOT}/src/gltf_material_cache.cpp
   ${FV_FIGURE_ROOT}/src/scene_retained.cpp
   ${FV_FIGURE_ROOT}/src/fv_figure_feed.cpp
   ${FV_FIGURE_ROOT}/src/scene_import_gltf.cpp

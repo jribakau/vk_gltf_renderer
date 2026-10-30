@@ -307,7 +307,7 @@ shaders/
 ├── gltf_scene_io.h.slang       # GltfShadeMaterial / GltfLight / GltfScene shaderio structs
 ├── gltf_vertex_access.h.slang  # Vertex buffer accessors
 ├── thin_scatter.h.slang        # KHR_materials_scatter's thin-walled lobe split (unit-tested as C++)
-└── gltf_material_eval.h.slang  # evaluateMaterial(): GltfShadeMaterial -> PbrMaterial
+└── gltf_material_eval.h.slang  # evaluateMaterial(): GltfShadeMaterial -> PbrMaterial (also compiled as C++: figure/tools/closure_probe)
 ```
 
 ---
