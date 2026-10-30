@@ -535,19 +535,15 @@ std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& 
   return out;
 }
 
-tinygltf::Material figureMaterial(const SceneGraph& scene, int material, const mat::LowerOptions& lowering,
-                                  const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve,
-                                  std::vector<std::string>& extensionsUsed, const BuildOptions& options)
+mat::Material figureMaterial(const SceneGraph& scene, int material, const mat::LowerOptions& lowering,
+                             const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve, const BuildOptions& options)
 {
-  tinygltf::Material g = materialToGltf(scene.materials[size_t(material)], lowering, resolve, extensionsUsed);
-  g.extras             = extras("m:" + std::to_string(material));
-  if(size_t(material) < options.walkThrough.size() && options.walkThrough[size_t(material)])
-  {
-    tinygltf::Value::Object o = g.extras.Get<tinygltf::Value::Object>();
-    o["fvWalkThrough"]        = tinygltf::Value(true);
-    g.extras                  = tinygltf::Value(std::move(o));
-  }
-  return g;
+  const Material& m   = scene.materials[size_t(material)];
+  mat::Material   out = mat::resolved(mat::lower(m.surface, m.edits, lowering), resolve);
+  out.name            = m.name;
+  out.id              = "m:" + std::to_string(material);
+  out.walkThrough     = size_t(material) < options.walkThrough.size() && options.walkThrough[size_t(material)];
+  return out;
 }
 
 BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& options)
@@ -631,7 +627,7 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   };
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
-    model.materials.push_back(figureMaterial(scene, int(mi), out.lowering[mi], texture, model.extensionsUsed, options));
+    model.materials.push_back(mat::toGltf(figureMaterial(scene, int(mi), out.lowering[mi], texture, options), model.extensionsUsed));
   }
   // the live model keeps it even with no texture yet: a texture baked in later (FvMaterials::baked)
   // takes the figure's sampler, the first at its place in the composed model, not another prop's

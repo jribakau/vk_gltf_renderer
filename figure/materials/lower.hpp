@@ -1,22 +1,22 @@
 #pragma once
 
-// A Surface as the glTF material the path tracer (and the rasterizer, which reads the same model)
-// evaluates: Iray's layers folded into metallic-roughness plus the KHR_materials_* and FV_*
-// extensions the renderer supports. Built from the Surface and the panel's edits alone. A port of
-// toGltf in src/lib/rtx/gltf.ts.
+// A Surface as the material the path tracer (and the rasterizer, which reads the same model)
+// evaluates: Iray's layers folded into our Material. Built from the Surface and the panel's edits
+// alone.
 //
 // The lowering is pure: textures come out as requests (what to cook from which image) that a host
-// resolves into glTF texture indices, so a live edit that changes none of them can leave the
-// textures alone.
+// resolves into texture indices, so a live edit that changes none of them can leave the textures
+// alone.
 
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include <tinygltf/json.hpp>
 #include <tinygltf/tiny_gltf.h>
 
+#include <figure/materials/material.hpp>
+#include <figure/materials/material_gltf.hpp>
 #include <figure/materials/surface.hpp>
 #include <figure/materials/texture_request.hpp>
 
@@ -103,11 +103,10 @@ struct Effective
   float                emissiveIntensity = 1;
 };
 
-// A glTF material as JSON with its texture infos left as slots: {"slot": i, "texCoord": 0, ...},
-// `i` indexing `requests`.
+// A material with its slots' indices naming `requests`, not textures
 struct Lowered
 {
-  nlohmann::json              material;
+  Material                    material;
   std::vector<TextureRequest> requests;
   Effective                   effective;
 };
@@ -131,16 +130,6 @@ struct MapSlot
 // The surface's maps with the edits applied, in that order: a slot with no map and no edit is left out.
 std::vector<MapSlot> mapSlots(const Surface& s, const Edits& e);
 
-// KHR_texture_transform's offset, rotation (radians) and scale: uv' = offset + R(rotation) · scale · uv,
-// with R(θ) = [[cos θ, sin θ], [−sin θ, cos θ]] (the spec's example and sample viewer, not the
-// matrix its README prints).
-struct UvTransform
-{
-  std::array<float, 2> scale{1, 1};
-  std::array<float, 2> offset{0, 0};
-  float                rotation = 0;
-  bool                 identity() const;
-};
 // Where a surface's own maps sample (every slot but a detail layer's maps): the edits' transform
 // laid after the authored tiling, uv' = T_e + R_e · S_e · (S_a · uv + T_a).
 UvTransform surfaceUv(const Surface& s, const Edits& e);
@@ -154,15 +143,17 @@ UvTransform rowsFlipped(const UvTransform& t);
 // What resolving one request gave.
 struct ResolvedTexture
 {
-  int  index     = -1;  // glTF texture index, -1: none, the slot is dropped
+  int  index     = -1;  // texture index, -1: none, the slot is dropped
   bool flipGreen = false;  // the image holds a normal map whose green the renderer should negate
   // the image's rows run the other way than the UVs expect (a source image in a figure built for the
   // cooked, bottom-up ones): its slot samples it through rowsFlipped
   bool flipRows = false;
 };
 
-// The material with its slots replaced by texture infos from `resolve`. The extensions it uses are
-// appended to `extensionsUsed` once.
+// The material with its slots' indices from `resolve`, each slot it can't make dropped.
+Material resolved(const Lowered& lowered, const std::function<ResolvedTexture(const TextureRequest&)>& resolve);
+
+// The same as a glTF material. The extensions it uses are appended to `extensionsUsed` once.
 tinygltf::Material toGltf(const Lowered& lowered, const std::function<ResolvedTexture(const TextureRequest&)>& resolve,
                           std::vector<std::string>& extensionsUsed);
 
@@ -173,8 +164,5 @@ float emissionStrength(const Surface& s, double areaM2, double exposureValue = 1
 
 // Surfaces that emit a flux over their area need the area to be known.
 bool needsArea(const Surface& s);
-
-// tinygltf::Value from JSON.
-tinygltf::Value toValue(const nlohmann::json& j);
 
 }  // namespace fv::mat

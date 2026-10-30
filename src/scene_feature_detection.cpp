@@ -22,6 +22,8 @@
 #include <array>
 #include <tinygltf/tiny_gltf.h>
 
+#include <figure/materials/material_gltf.hpp>
+
 #include "tinygltf_utils.hpp"
 
 namespace nvvkgltf {
@@ -55,38 +57,12 @@ constexpr std::array<FeatureName, SceneFeatureSet::kFeatureCount> kFeatureNames{
     {SceneFeatureSet::eDlssGuide, "dlssGuide"},
 }};
 
-// Probe a tinygltf extensions map for a given KHR extension name. We use
-// tinygltf::utils::hasElementName so we follow the same key-lookup convention
-// as the rest of the codebase (see src/gltf_material_cache.cpp).
-inline bool hasExt(const tinygltf::ExtensionMap& exts, const char* name)
-{
-  return tinygltf::utils::hasElementName(exts, name);
-}
-
-// KHR_texture_transform can live on any tinygltf::TextureInfo or
-// NormalTextureInfo or OcclusionTextureInfo; they all carry .extensions.
-template <typename TexInfo>
-inline bool textureInfoHasTransform(const TexInfo& ti)
-{
-  return ti.index >= 0 && hasExt(ti.extensions, KHR_TEXTURE_TRANSFORM_EXTENSION_NAME);
-}
-
-inline bool textureInfoValueHasTransform(const tinygltf::Value& v)
-{
-  if(!v.IsObject() || !v.Has("index") || !v.Get("index").IsNumber() || !v.Has("extensions") || !v.Get("extensions").IsObject())
-    return false;
-
-  tinygltf::TextureInfo ti;
-  ti.index      = v.Get("index").GetNumberAsInt();
-  ti.extensions = v.Get("extensions").Get<tinygltf::Value::Object>();
-  return textureInfoHasTransform(ti);
-}
-
 bool valueTreeHasTextureTransform(const tinygltf::Value& v)
 {
   if(v.IsObject())
   {
-    if(textureInfoValueHasTransform(v))
+    if(v.Has("index") && v.Get("index").IsNumber() && v.Get("index").GetNumberAsInt() >= 0 && v.Has("extensions")
+       && v.Get("extensions").IsObject() && v.Get("extensions").Has(KHR_TEXTURE_TRANSFORM_EXTENSION_NAME))
       return true;
 
     for(const auto& entry : v.Get<tinygltf::Value::Object>())
@@ -106,25 +82,16 @@ bool valueTreeHasTextureTransform(const tinygltf::Value& v)
   return false;
 }
 
-// Returns true if any texture slot inside a material uses KHR_texture_transform.
-inline bool materialHasTextureTransform(const tinygltf::Material& m)
+// Returns true if any texture slot inside a material uses a transform.
+inline bool materialHasTextureTransform(const fv::mat::Material& m)
 {
-  // PBR metallic-roughness slots
-  if(textureInfoHasTransform(m.pbrMetallicRoughness.baseColorTexture))
-    return true;
-  if(textureInfoHasTransform(m.pbrMetallicRoughness.metallicRoughnessTexture))
-    return true;
-
-  // Common slots (normal/occlusion/emissive have different texture-info types
-  // but all expose .extensions in the same way)
-  if(textureInfoHasTransform(m.normalTexture))
-    return true;
-  if(textureInfoHasTransform(m.occlusionTexture))
-    return true;
-  if(textureInfoHasTransform(m.emissiveTexture))
+  bool found = false;
+  fv::mat::forEachSlot(m, [&](const fv::mat::TextureSlot& slot) { found = found || (slot.has() && slot.transform); });
+  if(found)
     return true;
 
-  for(const auto& ext : m.extensions)
+  // an extension nothing here reads can still be sampled through one
+  for(const auto& ext : m.foreignExtensions)
   {
     if(valueTreeHasTextureTransform(ext.second))
       return true;
@@ -186,42 +153,41 @@ int SceneFeatureSet::unusedExtensionCount() const
 
 //--------------------------------------------------------------------------------------------------
 // One material's feature toggles, dependencies promoted
-SceneFeatureSet detectMaterialFeatures(const tinygltf::Material& m)
+SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m)
 {
   SceneFeatureSet set{};
 
-  const auto& ext = m.extensions;
-  if(hasExt(ext, KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME))
+  if(m.transmission)
     set.enable(SceneFeatureSet::eTransmission);
-  if(hasExt(ext, KHR_MATERIALS_VOLUME_EXTENSION_NAME))
+  if(m.volume)
     set.enable(SceneFeatureSet::eVolume);
-  if(hasExt(ext, KHR_MATERIALS_SCATTER_EXTENSION_NAME) || hasExt(ext, KHR_MATERIALS_VOLUME_SCATTER_EXTENSION_NAME))
+  if(m.scatter)
     set.enable(SceneFeatureSet::eScatter);
-  if(hasExt(ext, KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME))
+  if(m.clearcoat)
     set.enable(SceneFeatureSet::eClearcoat);
-  if(hasExt(ext, KHR_MATERIALS_IRIDESCENCE_EXTENSION_NAME))
+  if(m.iridescence)
     set.enable(SceneFeatureSet::eIridescence);
-  if(hasExt(ext, KHR_MATERIALS_ANISOTROPY_EXTENSION_NAME))
+  if(m.anisotropy)
     set.enable(SceneFeatureSet::eAnisotropy);
-  if(hasExt(ext, KHR_MATERIALS_SHEEN_EXTENSION_NAME))
+  if(m.sheen)
     set.enable(SceneFeatureSet::eSheen);
-  if(hasExt(ext, KHR_MATERIALS_DISPERSION_EXTENSION_NAME))
+  if(m.dispersion)
     set.enable(SceneFeatureSet::eDispersion);
-  if(hasExt(ext, KHR_MATERIALS_DIFFUSE_TRANSMISSION_EXTENSION_NAME))
+  if(m.diffuseTransmission)
     set.enable(SceneFeatureSet::eDiffuseTransmission);
-  if(hasExt(ext, KHR_MATERIALS_RETROREFLECTION_EXTENSION_NAME))
+  if(m.retroreflection)
     set.enable(SceneFeatureSet::eRetroreflection);
-  if(hasExt(ext, KHR_MATERIALS_UNLIT_EXTENSION_NAME))
+  if(m.unlit)
     set.enable(SceneFeatureSet::eUnlit);
-  if(hasExt(ext, KHR_MATERIALS_SPECULAR_EXTENSION_NAME))
+  if(m.specular)
     set.enable(SceneFeatureSet::eSpecular);
-  if(hasExt(ext, KHR_MATERIALS_IOR_EXTENSION_NAME))
+  if(m.ior)
     set.enable(SceneFeatureSet::eIor);
-  if(hasExt(ext, KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS_EXTENSION_NAME))
+  if(m.specularGlossiness)
     set.enable(SceneFeatureSet::eSpecularGlossiness);
-  if(hasExt(ext, FV_MATERIALS_DETAIL_EXTENSION_NAME))
+  if(m.detail)
     set.enable(SceneFeatureSet::eDetail);
-  if(hasExt(ext, FV_MATERIALS_HAIR_EXTENSION_NAME))
+  if(m.hair)
     set.enable(SceneFeatureSet::eHair);
 
   if(materialHasTextureTransform(m))
@@ -247,6 +213,11 @@ SceneFeatureSet detectMaterialFeatures(const tinygltf::Material& m)
     set.enable(SceneFeatureSet::eTransmission);
 
   return set;
+}
+
+SceneFeatureSet detectMaterialFeatures(const tinygltf::Material& m)
+{
+  return detectMaterialFeatures(fv::mat::fromGltf(m));
 }
 
 //--------------------------------------------------------------------------------------------------

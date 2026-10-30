@@ -1097,13 +1097,13 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
   std::vector<shaderio::GltfTextureInfo> infos;
   if(!state)
   {
-    m_shadeMaterials[s] = nvvkgltf::MaterialCache::convertOne(tinygltf::Material{}, {}, 0, infos);
+    m_shadeMaterials[s] = nvvkgltf::MaterialCache::convertOne(fv::mat::Material{}, {}, 0, infos);
     return;
   }
   const MaterialRecord* record = scene.material(state->material);
   const MaterialSlot&   slot   = m_materials.at(state->material);
   if(!m_heldMaterials.count(state->material))  // a held edit: the payload its row has, over the textures it holds
-    state->payload = record ? record->payload : tinygltf::Material{};
+    state->payload = record ? record->payload : fv::mat::Material{};
   state->features                   = nvvkgltf::detectMaterialFeatures(state->payload);
   nvvkgltf::TextureSlotTable& table = state->slots;
   table                             = {};

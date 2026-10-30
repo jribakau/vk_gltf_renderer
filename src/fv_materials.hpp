@@ -124,7 +124,7 @@ public:
     // the figure's materials lowered again with these options: written into the scene (application thread)
     std::function<void(std::vector<std::pair<int, fv::mat::LowerOptions>>)> writeFigure;
     // a model's material `index`, its file's with the edits laid over: written into the scene
-    std::function<void(int index, tinygltf::Material material)> writeModel;
+    std::function<void(int index, fv::mat::Material material)> writeModel;
   };
 
   explicit FvMaterials(Hooks hooks);
@@ -214,7 +214,7 @@ private:
   // glTF materials the edits are laid over are kept as they loaded
   bool                                                m_model = false;
   fv::SceneGraph                                      m_modelScene;
-  std::vector<tinygltf::Material>                     m_originals;
+  std::vector<fv::mat::Material>                      m_originals;
   std::vector<std::string>                            m_modelImages;  // per texture of its file, the image's name
   std::vector<fv::mat::LowerOptions>                  m_options;
   std::set<std::string>                               m_failed;    // keys a cook could not make

@@ -191,10 +191,9 @@ void FigureFeed::syncMaterials(const SceneGraph& figure, const build::Drawing& d
   std::set<std::string>             missing;
   const auto resolve = [&](const mat::TextureRequest& req) { return resolveTexture(req, grown, missing); };
 
-  std::vector<tinygltf::Material> payloads(figure.materials.size());
-  std::vector<std::string>        extensionsUsed;  // the export works them out from the payloads
+  std::vector<mat::Material> payloads(figure.materials.size());
   for(size_t mi = 0; mi < figure.materials.size(); mi++)
-    payloads[mi] = build::figureMaterial(figure, int(mi), m_lowering[mi], resolve, extensionsUsed, m_options.build);
+    payloads[mi] = build::figureMaterial(figure, int(mi), m_lowering[mi], resolve, m_options.build);
   if(grown)
     m_table = std::move(grown);
 
@@ -310,9 +309,8 @@ bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const std::pa
   std::shared_ptr<rs::TextureTable> grown;
   std::set<std::string>             missing;
   const auto resolve = [&](const mat::TextureRequest& req) { return resolveTexture(req, grown, missing); };
-  std::vector<std::pair<int, tinygltf::Material>> payloads;
-  std::vector<std::string>                        extensionsUsed;
-  bool                                            all = true;
+  std::vector<std::pair<int, mat::Material>> payloads;
+  bool                                       all = true;
   for(const auto& [mi, options] : materials)
   {
     if(mi < 0 || mi >= int(m_materials.size()) || m_materials[size_t(mi)].isNone())
@@ -320,7 +318,7 @@ bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const std::pa
       all = false;
       continue;
     }
-    payloads.emplace_back(mi, build::figureMaterial(figure, mi, options, resolve, extensionsUsed, m_options.build));
+    payloads.emplace_back(mi, build::figureMaterial(figure, mi, options, resolve, m_options.build));
   }
   if(grown)
     m_table = std::move(grown);
@@ -462,7 +460,7 @@ std::vector<int> FigureFeed::groupMaterials(const SceneGraph& figure, int mesh, 
 std::vector<uint32_t> FigureFeed::mergePlan(const std::vector<std::pair<uint32_t, uint32_t>>& runs, const std::vector<int>& materials) const
 {
   std::vector<uint32_t> plan(runs.size(), rs::Submesh::kNotMerged);
-  const auto payload = [&](size_t k) -> const tinygltf::Material* {
+  const auto payload = [&](size_t k) -> const mat::Material* {
     const int                 mi = materials[k];
     const rs::MaterialRecord* r  = mi >= 0 && mi < int(m_materials.size()) ? m_scene.material(m_materials[size_t(mi)]) : nullptr;
     return r ? &r->payload : nullptr;
@@ -470,19 +468,14 @@ std::vector<uint32_t> FigureFeed::mergePlan(const std::vector<std::pair<uint32_t
   const auto sameLook = [&](size_t a, size_t b) {
     if(materials[a] == materials[b])
       return true;
-    const tinygltf::Material* pa = payload(a);
-    const tinygltf::Material* pb = payload(b);
+    const mat::Material* pa = payload(a);
+    const mat::Material* pb = payload(b);
     if(!pa || !pb)
       return false;
-    // the surfaces' names and ids aside (extras.fvId): what they are called, not what they look like
-    const auto unnamed = [](tinygltf::Material m) {
+    // the surfaces' names and ids aside: what they are called, not what they look like
+    const auto unnamed = [](mat::Material m) {
       m.name.clear();
-      if(m.extras.IsObject())
-      {
-        tinygltf::Value::Object extras = m.extras.Get<tinygltf::Value::Object>();
-        extras.erase("fvId");
-        m.extras = tinygltf::Value(std::move(extras));
-      }
+      m.id.clear();
       return m;
     };
     return unnamed(*pa) == unnamed(*pb);

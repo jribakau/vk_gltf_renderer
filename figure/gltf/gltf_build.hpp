@@ -52,7 +52,7 @@ struct BuildOptions
   // The scene's camera exposure, which sets how bright Iray emitters are.
   double exposureValue = 13, iso = 100;
   // Per scene material, the ones light under the skin passes through (walkThroughMaterials): their
-  // glTF materials say `"fvWalkThrough": true` in their extras. Empty: none.
+  // materials say so (mat::Material::walkThrough). Empty: none.
   std::vector<bool> walkThrough;
 };
 
@@ -110,11 +110,10 @@ std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& 
 // The figure's one sampler (repeat, trilinear).
 tinygltf::Sampler figureSampler();
 
-// Scene material `material` as the build emits it: materialToGltf, with its `m:<i>` id and the
-// walk-through flag in its extras.
-tinygltf::Material figureMaterial(const SceneGraph& scene, int material, const mat::LowerOptions& lowering,
-                                  const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve,
-                                  std::vector<std::string>& extensionsUsed, const BuildOptions& options);
+// Scene material `material` as the renderer keeps it: lowered, its textures resolved by `resolve`,
+// with its `m:<i>` id and whether a scatter walk passes through it.
+mat::Material figureMaterial(const SceneGraph& scene, int material, const mat::LowerOptions& lowering,
+                             const std::function<mat::ResolvedTexture(const TextureRequest&)>& resolve, const BuildOptions& options);
 
 // A skinned mesh's inverse bind matrices as glTF stores them (16 floats per bone, column-major):
 // GLTFExporter's, the bone inverse times the bind matrix.

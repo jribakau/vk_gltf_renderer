@@ -29,6 +29,8 @@
 #include <filesystem>
 #include <random>
 
+#include <figure/materials/material_gltf.hpp>
+
 #include "scene_export_gltf.hpp"
 #include "scene_feature_detection.hpp"
 #include "scene_import_gltf.hpp"
@@ -89,8 +91,8 @@ const KnownExtension kExtensions[] = {
     {FV_MATERIALS_HAIR_EXTENSION_NAME, SceneFeatureSet::eHair},
 };
 
-// The places KHR_texture_transform can sit: the five core texture infos, a texture info inside a
-// material extension, and one inside an array there
+// The places KHR_texture_transform can sit: the five core texture infos, the coat's map, and in an
+// extension nothing reads, a texture info and one inside an array there
 enum class TransformAt
 {
   eBaseColor,
@@ -98,13 +100,14 @@ enum class TransformAt
   eNormal,
   eOcclusion,
   eEmissive,
+  eClearcoat,
   eExtension,
   eExtensionArray,
   eCount
 };
 
 // `index` -1 puts the transform on a texture info that names no texture, which counts for nothing
-void addTransform(tinygltf::Material& m, TransformAt at, int index, const char* host = KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME)
+void addTransform(tinygltf::Material& m, TransformAt at, int index)
 {
   const tinygltf::Value::Object transform{{KHR_TEXTURE_TRANSFORM_EXTENSION_NAME, object()}};
   switch(at)
@@ -129,18 +132,21 @@ void addTransform(tinygltf::Material& m, TransformAt at, int index, const char* 
       m.emissiveTexture.index      = index;
       m.emissiveTexture.extensions = transform;
       break;
+    case TransformAt::eClearcoat:
+      m.extensions[KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME] = object({{"clearcoatTexture", transformedInfo(index)}});
+      break;
     case TransformAt::eExtension:
-      m.extensions[host] = object({{"someTexture", transformedInfo(index)}});
+      m.extensions["FV_nothing_reads"] = object({{"someTexture", transformedInfo(index)}});
       break;
     case TransformAt::eExtensionArray:
-      m.extensions[host] = object({{"layers", tinygltf::Value(tinygltf::Value::Array{object(), transformedInfo(index)})}});
+      m.extensions["FV_nothing_reads"] = object({{"layers", tinygltf::Value(tinygltf::Value::Array{object(), transformedInfo(index)})}});
       break;
     case TransformAt::eCount:
       break;
   }
 }
 
-tinygltf::Material randomPayload(std::mt19937& rng)
+fv::mat::Material randomPayload(std::mt19937& rng)
 {
   tinygltf::Material m;
   m.name = "random";
@@ -148,11 +154,8 @@ tinygltf::Material randomPayload(std::mt19937& rng)
     if(rng() % 8 == 0)
       m.extensions[e.name] = object();
   if(rng() % 3 == 0)
-  {
-    const KnownExtension& host = kExtensions[rng() % std::size(kExtensions)];
-    addTransform(m, TransformAt(rng() % uint32_t(TransformAt::eCount)), rng() % 4 == 0 ? -1 : int(rng() % 3), host.name);
-  }
-  return m;
+    addTransform(m, TransformAt(rng() % uint32_t(TransformAt::eCount)), rng() % 4 == 0 ? -1 : int(rng() % 3));
+  return fv::mat::fromGltf(m);
 }
 
 // Four vertices, three submeshes over them (the middle one empty, as a group a geograft hides
@@ -255,9 +258,9 @@ private:
     return v[m_rng() % v.size()];
   }
 
-  tinygltf::Material payload()
+  fv::mat::Material payload()
   {
-    return !m_payloads.empty() && m_rng() % 2 ? pick(m_payloads) : randomPayload(m_rng);
+    return !m_payloads.empty() && m_rng() % 2 ? fv::mat::fromGltf(pick(m_payloads)) : randomPayload(m_rng);
   }
 
   // what a step may draw with: the materials held, and those instances draw with
@@ -420,7 +423,7 @@ TEST(RetainedFeatures, EveryExtensionTheDetectorKnowsFromAMaterialThatDrawsIt)
     SCOPED_TRACE(c.what);
     rs::RetainedScene    scene;
     const rs::MeshId     mesh = scene.addMesh(triangle());
-    const rs::MaterialId mat  = scene.addMaterial({.payload = c.payload});
+    const rs::MaterialId mat  = scene.addMaterial({.payload = fv::mat::fromGltf(c.payload)});
     const rs::EntityId   e    = scene.createEntity("e", {});
     EXPECT_FALSE(scene.features().has(c.feature));  // not drawn yet
     scene.setMeshInstance(e, drawWith(mesh, {mat}));
@@ -440,8 +443,8 @@ TEST(RetainedFeatures, EveryExtensionTheDetectorKnowsFromAMaterialThatDrawsIt)
   // a transform on a texture info that names no texture is not one
   rs::RetainedScene  scene;
   tinygltf::Material none;
-  addTransform(none, TransformAt::eExtension, -1);
-  const rs::MaterialId mat  = scene.addMaterial({.payload = none});
+  addTransform(none, TransformAt::eClearcoat, -1);
+  const rs::MaterialId mat  = scene.addMaterial({.payload = fv::mat::fromGltf(none)});
   const rs::MeshId     mesh = scene.addMesh(triangle());
   scene.setMeshInstance(scene.createEntity("e", {}), drawWith(mesh, {mat}));
   EXPECT_FALSE(scene.features().has(SceneFeatureSet::eTextureTransform));
@@ -456,7 +459,7 @@ TEST(RetainedFeatures, OnlyWhatIsDrawnCounts)
   const auto        with = [&](const char* ext) {
     tinygltf::Material m;
     m.extensions[ext] = object();
-    return scene.addMaterial({.payload = m});
+    return scene.addMaterial({.payload = fv::mat::fromGltf(m)});
   };
   const rs::MaterialId plain = scene.addMaterial({});
   const rs::MaterialId held  = with(KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME);
@@ -486,7 +489,7 @@ TEST(RetainedFeatures, OnlyWhatIsDrawnCounts)
   scene.takeChanges();
   tinygltf::Material clearcoat;
   clearcoat.extensions[KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME] = object();
-  scene.setMaterial(held, clearcoat);
+  scene.setMaterial(held, fv::mat::fromGltf(clearcoat));
   EXPECT_FALSE(scene.features().has(SceneFeatureSet::eClearcoat));
   EXPECT_FALSE(scene.takeChanges().features);
   expectFeaturesOfExport(scene, "an undrawn material edited");
@@ -502,7 +505,7 @@ TEST(RetainedFeatures, ACountCrossesZeroAndBack)
   const rs::MeshId     mesh = scene.addMesh(triangle());
   tinygltf::Material   coat;
   coat.extensions[KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME] = object();
-  const rs::MaterialId coated = scene.addMaterial({.payload = coat});
+  const rs::MaterialId coated = scene.addMaterial({.payload = fv::mat::fromGltf(coat)});
   const rs::MaterialId plain  = scene.addMaterial({});
   const rs::EntityId   a      = scene.createEntity("a", {});
   const rs::EntityId   b      = scene.createEntity("b", {});
@@ -525,20 +528,20 @@ TEST(RetainedFeatures, ACountCrossesZeroAndBack)
   expectFeaturesOfExport(scene, "swapped off");
 
   // and the plain material edited to a coat brings it back
-  scene.setMaterial(plain, coat);
+  scene.setMaterial(plain, fv::mat::fromGltf(coat));
   EXPECT_TRUE(scene.features().has(SceneFeatureSet::eClearcoat));
   EXPECT_TRUE(scene.takeChanges().features);
   expectFeaturesOfExport(scene, "edited on");
 
   // off and on again between two takes is no change
   scene.setMaterial(plain, {});
-  scene.setMaterial(plain, coat);
+  scene.setMaterial(plain, fv::mat::fromGltf(coat));
   EXPECT_FALSE(scene.takeChanges().features);
 
   // promoted dependencies: scatter brings volume and transmission, and they go with it
   tinygltf::Material scatter;
   scatter.extensions[KHR_MATERIALS_VOLUME_SCATTER_EXTENSION_NAME] = object();
-  scene.setMaterial(plain, scatter);
+  scene.setMaterial(plain, fv::mat::fromGltf(scatter));
   EXPECT_TRUE(scene.features().has(SceneFeatureSet::eTransmission));
   EXPECT_TRUE(scene.features().has(SceneFeatureSet::eVolume));
   expectFeaturesOfExport(scene, "scatter");
@@ -580,13 +583,13 @@ TEST(RetainedFeatures, RandomEditsOnSyntheticMaterials)
     {
       tinygltf::Material m;
       m.extensions[e.name] = object();
-      materials.push_back(scene.addMaterial({.payload = m}));
+      materials.push_back(scene.addMaterial({.payload = fv::mat::fromGltf(m)}));
     }
     for(int at = 0; at < int(TransformAt::eCount); at++)
     {
       tinygltf::Material m;
       addTransform(m, TransformAt(at), 0);
-      materials.push_back(scene.addMaterial({.payload = m}));
+      materials.push_back(scene.addMaterial({.payload = fv::mat::fromGltf(m)}));
     }
     for(int i = 0; i < 4; i++)
       materials.push_back(scene.addMaterial({.payload = randomPayload(rng)}));

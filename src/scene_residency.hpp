@@ -385,7 +385,7 @@ public:
   struct MaterialState
   {
     MaterialId                 material;
-    tinygltf::Material         payload;
+    fv::mat::Material          payload;
     nvvkgltf::TextureSlotTable slots;
     nvvkgltf::MaterialBits     bits;
     nvvkgltf::SceneFeatureSet  features;             // its payload's (detectMaterialFeatures)

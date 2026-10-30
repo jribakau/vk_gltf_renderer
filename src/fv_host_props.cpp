@@ -170,7 +170,7 @@ std::unique_ptr<FvMaterials> FvHost::Impl::makeMaterials(const std::shared_ptr<P
               f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
           },
       .writeModel =
-          [this, weak](int index, tinygltf::Material material) {
+          [this, weak](int index, fv::mat::Material material) {
             const auto p = weak.lock();
             if(!p || !renderer->feedsHostScene() || index < 0 || index >= int(p->imported.materials.size()))
               return;

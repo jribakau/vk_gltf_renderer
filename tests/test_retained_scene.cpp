@@ -123,7 +123,7 @@ TEST(RetainedScene, RecordsGoWithTheirLastReference)
   const rs::TextureId  tex   = scene.addTexture({.name = "albedo", .uri = "/tex/albedo.png"});
   auto                 table = std::make_shared<rs::TextureTable>(rs::TextureTable{{tex, {}}});
   rs::MaterialRecord   mat;
-  mat.payload.pbrMetallicRoughness.baseColorTexture.index = 0;
+  mat.payload.baseColorMap.index = 0;
   mat.textures                                            = table;
   const rs::MaterialId material = scene.addMaterial(mat);
   const rs::MeshId     mesh     = scene.addMesh(triangle());

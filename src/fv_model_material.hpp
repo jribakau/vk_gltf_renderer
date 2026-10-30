@@ -29,6 +29,7 @@
 
 #include <tinygltf/tiny_gltf.h>
 
+#include <figure/materials/material.hpp>
 #include <figure/materials/surface.hpp>
 
 namespace fv::model {
@@ -39,6 +40,8 @@ inline constexpr std::array<const char*, 4> kEditedExtensions{"KHR_materials_emi
                                                               "KHR_materials_clearcoat", "KHR_materials_sheen"};
 
 // `original` with `edits` over it. Only what the panel edits changes; textures stay the file's.
+fv::mat::Material editedMaterial(const fv::mat::Material& original, const fv::mat::Edits& edits);
+// The same for a file's own material: with no edits it comes back as it is, every byte the file's.
 tinygltf::Material editedMaterial(const tinygltf::Material& original, const fv::mat::Edits& edits);
 
 }  // namespace fv::model

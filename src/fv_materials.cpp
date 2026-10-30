@@ -219,7 +219,7 @@ void FvMaterials::attachModel(const std::string& id, const tinygltf::Model& sour
     if(size_t(i) < edits.size())
       m.edits = edits[size_t(i)];
     m_modelScene.materials.push_back(std::move(m));
-    m_originals.push_back(g);
+    m_originals.push_back(fv::mat::fromGltf(g));
   }
   m_modelImages.clear();
   for(const tinygltf::Texture& t : source.textures)
@@ -243,41 +243,7 @@ void FvMaterials::attachModel(const std::string& id, const tinygltf::Model& sour
   publish({}, true);
 }
 
-namespace {
-
-float linearOf(const std::vector<double>& v, size_t i, float d = 1)
-{
-  return i < v.size() ? float(v[i]) : d;
-}
-
-// An extension's value, made if need be.
-// An extension's colour, none when it has none.
-std::optional<Rgb> extColor(const tinygltf::ExtensionMap& ext, const char* name, const char* key)
-{
-  const auto it = ext.find(name);
-  if(it == ext.end() || !it->second.IsObject() || !it->second.Has(key))
-    return std::nullopt;
-  const tinygltf::Value& v = it->second.Get(key);
-  if(!v.IsArray() || v.ArrayLen() < 3)
-    return std::nullopt;
-  Rgb out;
-  for(int i = 0; i < 3; i++)
-    out[size_t(i)] = v.Get(i).IsNumber() ? float(v.Get(i).GetNumberAsDouble()) : 0.f;
-  return out;
-}
-
-double extNumber(const tinygltf::ExtensionMap& ext, const char* name, const char* key, double d)
-{
-  const auto it = ext.find(name);
-  if(it == ext.end() || !it->second.IsObject() || !it->second.Has(key))
-    return d;
-  const tinygltf::Value& v = it->second.Get(key);
-  return v.IsNumber() ? v.GetNumberAsDouble() : d;
-}
-
-}  // namespace
-
-// The original glTF material with the edits laid over it.
+// The original material with the edits laid over it.
 void FvMaterials::writeModel(int index)
 {
   if(index < 0 || index >= int(m_originals.size()) || !m_hooks.writeModel)
@@ -295,38 +261,35 @@ const fv::mat::Edits* FvMaterials::modelEdits(int index) const
 Json FvMaterials::modelItem(int index) const
 {
   const fv::Material&       m = m_scene->materials[size_t(index)];
-  const tinygltf::Material  g = fv::model::editedMaterial(m_originals[size_t(index)], m.edits);  // as the scene has it
-  const auto&               f   = g.pbrMetallicRoughness.baseColorFactor;
-  Json                      values = {{"color", hexOf({linearOf(f, 0), linearOf(f, 1), linearOf(f, 2)})},
-                                      {"roughness", g.pbrMetallicRoughness.roughnessFactor},
-                                      {"metalness", g.pbrMetallicRoughness.metallicFactor},
-                                      {"opacity", linearOf(f, 3)},
-                                      {"alphaMode", g.alphaMode == "MASK" ? "cutout" : g.alphaMode == "BLEND" ? "blend" : "opaque"},
+  const fv::mat::Material   g = fv::model::editedMaterial(m_originals[size_t(index)], m.edits);  // as the scene has it
+  Json                      values = {{"color", hexOf({g.baseColor[0], g.baseColor[1], g.baseColor[2]})},
+                                      {"roughness", g.roughness},
+                                      {"metalness", g.metallic},
+                                      {"opacity", g.baseColor[3]},
+                                      {"alphaMode", g.alphaMode == fv::mat::AlphaMode::eMask ? "cutout" : g.alphaMode == fv::mat::AlphaMode::eBlend ? "blend" : "opaque"},
                                       {"doubleSided", g.doubleSided},
-                                      {"specular", extNumber(g.extensions, "KHR_materials_specular", "specularFactor", 1)},
-                                      {"clearcoat", extNumber(g.extensions, "KHR_materials_clearcoat", "clearcoatFactor", 0)},
-                                      {"clearcoatRoughness", extNumber(g.extensions, "KHR_materials_clearcoat", "clearcoatRoughnessFactor", 0)},
-                                      {"emissive", hexOf({float(g.emissiveFactor.size() > 0 ? g.emissiveFactor[0] : 0), float(g.emissiveFactor.size() > 1 ? g.emissiveFactor[1] : 0),
-                                                         float(g.emissiveFactor.size() > 2 ? g.emissiveFactor[2] : 0)})},
-                                      {"emissiveIntensity", extNumber(g.extensions, "KHR_materials_emissive_strength", "emissiveStrength", 1)}};
-  if(g.normalTexture.index >= 0)
-    values["normalStrength"] = g.normalTexture.scale;
+                                      {"specular", g.specular ? g.specular->factor : 1.f},
+                                      {"clearcoat", g.clearcoat ? g.clearcoat->factor : 0.f},
+                                      {"clearcoatRoughness", g.clearcoat ? g.clearcoat->roughness : 0.f},
+                                      {"emissive", hexOf(g.emissive)},
+                                      {"emissiveIntensity", g.emissiveStrength.value_or(1.f)}};
+  if(g.normalMap.has())
+    values["normalStrength"] = g.normalMap.scale.value_or(1.f);
   // sheen: the edit as it was given (black included), else the model's own; null for none
-  const std::optional<Rgb> sheen = m.edits.sheenColor ? m.edits.sheenColor : extColor(g.extensions, "KHR_materials_sheen", "sheenColorFactor");
+  const std::optional<Rgb> sheen = m.edits.sheenColor ? m.edits.sheenColor : g.sheen ? std::optional<Rgb>(g.sheen->color) : std::nullopt;
   values["sheenColor"] = sheen && (m.edits.sheenColor || (*sheen)[0] > 0 || (*sheen)[1] > 0 || (*sheen)[2] > 0) ? Json(hexOf(*sheen)) : Json(nullptr);
-  values["sheenRoughness"] = m.edits.sheenRoughness ? double(*m.edits.sheenRoughness) :
-                                                      extNumber(g.extensions, "KHR_materials_sheen", "sheenRoughnessFactor", 0.5);
+  values["sheenRoughness"] = m.edits.sheenRoughness ? *m.edits.sheenRoughness : g.sheen ? g.sheen->roughness : 0.5f;
   // a model's images are its file's, not the library's: no rel, and none of them can be replaced
   Json textures = Json::array();
   const auto add      = [&](const char* slot, const char* label, int texture) {
     if(texture >= 0 && texture < int(m_modelImages.size()) && !m_modelImages[size_t(texture)].empty())
       textures.push_back({{"slot", slot}, {"label", label}, {"file", m_modelImages[size_t(texture)]}, {"edited", false}});
   };
-  add("base", "Base colour", g.pbrMetallicRoughness.baseColorTexture.index);
-  add("roughness", "Metallic roughness", g.pbrMetallicRoughness.metallicRoughnessTexture.index);
-  add("normal", "Normal", g.normalTexture.index);
-  add("emission", "Emissive", g.emissiveTexture.index);
-  add("occlusion", "Occlusion", g.occlusionTexture.index);
+  add("base", "Base colour", g.baseColorMap.index);
+  add("roughness", "Metallic roughness", g.metallicRoughnessMap.index);
+  add("normal", "Normal", g.normalMap.index);
+  add("emission", "Emissive", g.emissiveMap.index);
+  add("occlusion", "Occlusion", g.occlusionMap.index);
   return {{"name", m.name}, {"kind", "other"}, {"shader", "gltf"}, {"meshes", m_meshesOf[size_t(index)]}, {"textures", textures}, {"values", values},
           {"edited", editedKeys(m.edits)}};
 }
@@ -355,7 +318,7 @@ void FvMaterials::detach()
 std::string FvMaterials::stateOf(const fv::mat::Lowered& lowered) const
 {
   // the material, and the textures its slots ask for (the JSON holds only their numbers)
-  std::string text = lowered.material.dump();
+  std::string text = fv::mat::materialJson(lowered.material, "slot").dump();
   for(const fv::mat::TextureRequest& r : lowered.requests)
     text += "\n" + fv::mat::requestKey(r);
   return text;

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -24,6 +25,9 @@
 #include <figure/materials/surface.hpp>
 
 #include "closure_row.hpp"
+#include "scene_feature_detection.hpp"
+#include "scene_import_gltf.hpp"
+#include "scene_material_bits.hpp"
 
 namespace fv::probe {
 
@@ -155,6 +159,53 @@ struct Tally
   }
 };
 
+// Everything the renderer takes from a material, as one hash: its row and texture infos byte for byte,
+// its TLAS bits, shader features, sRGB slots and tangents. Each texture's number and flips come from
+// its request alone, so a request that changes shows and the order they're asked in doesn't. A
+// refactor of the material's path should move no surface's.
+std::string rowFingerprint(const Material& m, const mat::LowerOptions& lowering)
+{
+  const auto mix = [](uint64_t h, const void* data, size_t size) {
+    for(size_t i = 0; i < size; i++)
+      h = (h ^ static_cast<const unsigned char*>(data)[i]) * 0x100000001b3ull;
+    return h;
+  };
+  const auto resolve = [&](const mat::TextureRequest& req) {
+    const std::string key = mat::requestKey(req);
+    const uint64_t    h   = mix(0xcbf29ce484222325ull, key.data(), key.size());
+    mat::ResolvedTexture r;
+    r.index     = int(h & 0x3fff);
+    r.flipGreen = (h >> 20 & 1) != 0;
+    r.flipRows  = (h >> 21 & 1) != 0;
+    return r;
+  };
+  const mat::Material material = mat::resolved(mat::lower(m.surface, m.edits, lowering), resolve);
+
+  std::vector<shaderio::GltfTextureInfo> infos(1);
+  const shaderio::GltfShadeMaterial      row  = nvvkgltf::MaterialCache::convertOne(material, {}, 0, infos);
+  const nvvkgltf::MaterialBits           bits = nvvkgltf::materialBits(material);
+  const std::string                      features = nvvkgltf::detectMaterialFeatures(material).toString();
+  const std::set<int>                    srgb     = nvvkgltf::srgbTextures(material);
+  const bool                             tangents = rs::materialNeedsTangents(material);
+
+  uint64_t h = 0xcbf29ce484222325ull;
+  h          = mix(h, &row, sizeof(row));
+  h          = mix(h, infos.data(), infos.size() * sizeof(infos[0]));
+  h          = mix(h, &bits.instanceFlags, sizeof(bits.instanceFlags));
+  h          = mix(h, &bits.instanceMask, sizeof(bits.instanceMask));
+  h          = mix(h, &bits.alphaOpaque, sizeof(bits.alphaOpaque));
+  h          = mix(h, &bits.doubleSided, sizeof(bits.doubleSided));
+  h          = mix(h, &bits.transmission, sizeof(bits.transmission));
+  h          = mix(h, features.data(), features.size());
+  for(int index : srgb)
+    h = mix(h, &index, sizeof(index));
+  h = mix(h, &tangents, sizeof(tangents));
+  char text[17];
+  std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(h));
+  // a file of it reads back as the same material, or the row says so
+  return mat::fromGltf(mat::toGltf(material)) == material ? std::string(text) : std::string(text) + " not as a file";
+}
+
 void measure(const std::string& key, const Material& m, mat::SkinMode skin, Tally& t)
 {
   const std::string shader = shaderName(m.surface.shader);
@@ -209,7 +260,7 @@ void measure(const std::string& key, const Material& m, mat::SkinMode skin, Tall
         lobes[lobeName(l)] = round3(at.lobes[l].weight);
     closure[at.cosine == 1.0f ? "head" : "oblique"] = {{"albedo", {round3(at.total[0]), round3(at.total[1]), round3(at.total[2])}}, {"lobes", lobes}};
   }
-  t.rows[key] = {{"shader", shader}, {"kind", kind}, {"extensions", extensions}, {"closure", closure}};
+  t.rows[key] = {{"shader", shader}, {"kind", kind}, {"extensions", extensions}, {"closure", closure}, {"row", rowFingerprint(m, lowering)}};
 }
 
 // What moved between two runs' rows: a line per surface, at most `limit` listed

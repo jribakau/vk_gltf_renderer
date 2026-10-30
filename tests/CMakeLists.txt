@@ -79,6 +79,7 @@ set(TEST_SOURCES
     test_present_slots.cpp
     # Figure Viewer scene logic (figure/)
     figure/test_gzip.cpp
+    figure/test_material_gltf.cpp
     figure/test_dson_parse.cpp
     figure/test_jobs.cpp
     figure/test_catmark.cpp

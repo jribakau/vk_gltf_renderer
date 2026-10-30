@@ -25,6 +25,8 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
+#include <figure/materials/material_gltf.hpp>
+
 #include "gltf_scene_merger.hpp"
 #include "tinygltf_utils.hpp"
 
@@ -219,7 +221,7 @@ tinygltf::Model exportGltf(const RetainedScene& scene, const ExportOptions& opti
     const MaterialRecord* m = scene.material(id);
     if(!m)
       return materialOf[id] = -1;
-    tinygltf::Material g = m->payload;
+    tinygltf::Material g = fv::mat::toGltf(m->payload);
     nvvkgltf::SceneMerger::rebaseMaterialTextures(g, textures(m->textures));
     out.materials.push_back(std::move(g));
     return materialOf[id] = int(out.materials.size()) - 1;

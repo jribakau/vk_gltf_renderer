@@ -54,6 +54,8 @@
 #include <figure/morph/morph_set.hpp>
 #include <figure/pose/pose_rig.hpp>
 
+#include <figure/materials/material_gltf.hpp>
+
 #include "fv_figure_feed.hpp"
 #include "fv_figure_feed_check.hpp"
 #include "scene_clip_player.hpp"
@@ -140,7 +142,7 @@ tinygltf::Light randomLight(std::mt19937& rng)
 
 // A payload over a table of `textures`: base colour, a few extensions the detector knows, now and
 // then a normal map (tangents) and a texture transform
-tinygltf::Material randomPayload(std::mt19937& rng, size_t textures)
+fv::mat::Material randomPayload(std::mt19937& rng, size_t textures)
 {
   static const char* extensions[] = {KHR_MATERIALS_CLEARCOAT_EXTENSION_NAME,    KHR_MATERIALS_SHEEN_EXTENSION_NAME,
                                      KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME, KHR_MATERIALS_VOLUME_EXTENSION_NAME,
@@ -162,7 +164,7 @@ tinygltf::Material randomPayload(std::mt19937& rng, size_t textures)
       m.pbrMetallicRoughness.baseColorTexture.extensions[KHR_TEXTURE_TRANSFORM_EXTENSION_NAME] =
           tinygltf::Value(tinygltf::Value::Object{});
   }
-  return m;
+  return fv::mat::fromGltf(m);
 }
 
 const char* pathName(rs::ClipPath path)
@@ -278,7 +280,7 @@ tinygltf::Model propModel(std::mt19937& rng)
   mapped.name                                        = "mapped";
   mapped.normalTexture.index                         = 0;
   mapped.pbrMetallicRoughness.baseColorTexture.index = 1;
-  tinygltf::Material extended                        = randomPayload(rng, 2);
+  tinygltf::Material extended                        = fv::mat::toGltf(randomPayload(rng, 2));
   extended.name                                      = "extended";
   m.materials                                        = {plain, mapped, extended};
   const auto material                                = [&] { return chance(rng, 6) ? -1 : int(rng() % 3); };
@@ -1027,7 +1029,7 @@ private:
       return "material edit: none";
     const rs::MaterialId id   = pick(materials);
     rs::MaterialRecord&  r    = m_shadow.materials.at(id);
-    tinygltf::Material   edit = randomPayload(m_rng, r.textures ? r.textures->size() : 0);
+    fv::mat::Material    edit = randomPayload(m_rng, r.textures ? r.textures->size() : 0);
     m_scene.setMaterial(id, edit);
     r.payload = std::move(edit);
     want.materials.both(id);
@@ -1066,7 +1068,7 @@ private:
       }
       table->push_back({t, rs::SamplerDesc{.wrapS = chance(2) ? TINYGLTF_TEXTURE_WRAP_REPEAT : TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT}});
     }
-    tinygltf::Material payload = randomPayload(m_rng, table->size());
+    fv::mat::Material payload = randomPayload(m_rng, table->size());
     m_scene.setMaterial(id, payload, table);
     for(rs::TextureId t : added)
       m_scene.release(t);
@@ -1503,10 +1505,10 @@ private:
     const Fed    before = fed();
     const size_t i      = m_rng() % graph().materials.size();
     // a value the lowered payload does not have yet (an edit to the value it has changes nothing)
-    const double had = m_scene.material(m_feed->materialOf(int(i)))->payload.pbrMetallicRoughness.roughnessFactor;
+    const float had = m_scene.material(m_feed->materialOf(int(i)))->payload.roughness;
     std::optional<float>& roughness = graph().materials[i].edits.roughness;
     float                 value     = 0.05f * float(1 + m_rng() % 19);
-    if(value == float(had))
+    if(value == had)
       value += 0.025f;
     roughness = value;
     sync(want, before);
@@ -1998,17 +2000,13 @@ private:
 
   // A payload with its texture indices as the ids of what they name, so stores whose tables differ
   // compare
-  tinygltf::Material canonical(const rs::RetainedScene& s, const rs::MaterialRecord& m)
+  fv::mat::Material canonical(const rs::RetainedScene& s, const rs::MaterialRecord& m)
   {
-    tinygltf::Material out = m.payload;
-    for(tinygltf::TextureInfo* t :
-        {&out.pbrMetallicRoughness.baseColorTexture, &out.pbrMetallicRoughness.metallicRoughnessTexture, &out.emissiveTexture})
-      if(t->index >= 0)
-        t->index = textureId(s, m, t->index);
-    if(out.normalTexture.index >= 0)
-      out.normalTexture.index = textureId(s, m, out.normalTexture.index);
-    if(out.occlusionTexture.index >= 0)
-      out.occlusionTexture.index = textureId(s, m, out.occlusionTexture.index);
+    fv::mat::Material out = m.payload;
+    fv::mat::forEachSlot(out, [&](fv::mat::TextureSlot& slot) {
+      if(slot.has())
+        slot.index = textureId(s, m, slot.index);
+    });
     const std::function<void(tinygltf::Value&)> walk = [&](tinygltf::Value& v) {
       if(v.IsObject())
         for(auto& [key, child] : v.Get<tinygltf::Value::Object>())
@@ -2020,7 +2018,7 @@ private:
         for(auto& child : v.Get<tinygltf::Value::Array>())
           walk(child);
     };
-    for(auto& [name, ext] : out.extensions)
+    for(auto& [name, ext] : out.foreignExtensions)
       walk(ext);
     return out;
   }

@@ -168,7 +168,7 @@ src/
 ├── gltf_version.cpp/hpp        # glTF asset versions: what loads, what a save declares, 2.1 feature detection
 ├── gltf_compact_*.cpp/hpp      # Orphan resource removal / buffer compaction
 ├── gltf_create_tangent.cpp/hpp # Tangent space generation (UV gradient + MikkTSpace)
-├── gltf_material_cache.cpp/hpp # CPU-side material cache
+├── gltf_material_cache.cpp/hpp # Packs fv::mat::Material into shader rows; the CPU-side cache of the legacy scene's
 ├── gltf_image_loader.cpp/hpp   # Image decoding (DDS, KTX, STB, WebP)
 ├── gltf_animation_pointer.*    # KHR_animation_pointer support
 ├── ies_profile.cpp/hpp         # EXT_lights_ies: IESNA LM-63 photometric profile parser, and a model's profiles loaded
@@ -313,6 +313,11 @@ shaders/
 ---
 
 ## Material System
+
+The retained scene keeps [`fv::mat::Material`](../figure/materials/material.hpp): a DAZ surface lowers into it
+(`figure/materials/lower.cpp`), a glTF file's material converts into it, and glTF is what it is written to only when
+writing a file (`figure/materials/material_gltf.cpp`). Which lobes are present (optional fields) decide the shader's
+features. `MaterialCache` packs the shader's row from it; the legacy scene's glTF materials convert first.
 
 The glTF material struct (`shaderio::GltfShadeMaterial`) and its `evaluateMaterial()` function
 are **forked locally** into `shaders/gltf_*.h.slang` rather than using the upstream

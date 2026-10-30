@@ -31,8 +31,10 @@
 
 #include <tinygltf/tiny_gltf.h>
 
+#include <figure/materials/material.hpp>
+#include <figure/materials/material_gltf.hpp>
+
 #include "shaders/shaderio.h"
-#include "tinygltf_utils.hpp"
 
 namespace nvvkgltf {
 
@@ -56,39 +58,36 @@ struct MaterialBits
 };
 
 // No ray can keep the surface and it emits nothing (materialBits gives it no instance mask)
-inline bool invisible(const tinygltf::Material& mat)
+inline bool invisible(const fv::mat::Material& mat)
 {
-  if(mat.alphaMode == "OPAQUE" || mat.pbrMetallicRoughness.baseColorFactor.size() < 4
-     || mat.extensions.count("KHR_materials_pbrSpecularGlossiness"))
+  if(mat.alphaMode == fv::mat::AlphaMode::eOpaque || mat.specularGlossiness)
     return false;
-  for(double e : mat.emissiveFactor)
-    if(e > 0.0)
+  for(float e : mat.emissive)
+    if(e > 0.0f)
       return false;
-  // in float, as the shader compares them
-  const float alpha = float(mat.pbrMetallicRoughness.baseColorFactor[3]);
-  return mat.alphaMode == "MASK" ? alpha < float(mat.alphaCutoff) : alpha <= 0.0F;
+  // as the shader compares them
+  const float alpha = mat.baseColor[3];
+  return mat.alphaMode == fv::mat::AlphaMode::eMask ? alpha < mat.alphaCutoff : alpha <= 0.0F;
 }
 
-inline MaterialBits materialBits(const tinygltf::Material& mat)
+inline MaterialBits materialBits(const fv::mat::Material& mat)
 {
-  MaterialBits                             bits;
-  const KHR_materials_transmission         transmission        = tinygltf::utils::getTransmission(mat);
-  const KHR_materials_volume               volume              = tinygltf::utils::getVolume(mat);
-  const KHR_materials_diffuse_transmission diffuseTransmission = tinygltf::utils::getDiffuseTransmission(mat);
+  MaterialBits bits;
+  const float  transmission        = mat.transmission ? mat.transmission->factor : 0.0f;
+  const float  diffuseTransmission = mat.diffuseTransmission ? mat.diffuseTransmission->factor : 0.0f;
+  const float  thickness           = mat.volume ? mat.volume->thickness : 0.0f;
+  const bool   opaque              = mat.alphaMode == fv::mat::AlphaMode::eOpaque;
 
   // Opaque: no any-hit needed (faster)
-  if(transmission.factor == 0.0f && mat.alphaMode == "OPAQUE" && diffuseTransmission.diffuseTransmissionFactor == 0.0F)
+  if(transmission == 0.0f && opaque && diffuseTransmission == 0.0F)
     bits.instanceFlags |= kInstanceForceOpaque;
   // No culling for double-sided materials, and for any material a path can transmit through: the ray
   // then reaches the far side of the object from behind.
-  if(mat.doubleSided || volume.thicknessFactor > 0.0F || transmission.factor > 0.0F
-     || diffuseTransmission.diffuseTransmissionFactor > 0.0F)
+  if(mat.doubleSided || thickness > 0.0F || transmission > 0.0F || diffuseTransmission > 0.0F)
     bits.instanceFlags |= kInstanceCullDisable;
 
   // A surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK)
-  const bool walkThrough = mat.extras.IsObject() && mat.extras.Has("fvWalkThrough")
-                           && mat.extras.Get("fvWalkThrough").IsBool() && mat.extras.Get("fvWalkThrough").Get<bool>();
-  bits.instanceMask      = walkThrough ? INSTANCE_MASK_OTHER : INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER;
+  bits.instanceMask = mat.walkThrough ? INSTANCE_MASK_OTHER : INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER;
   // A surface no ray can keep (surface_opacity.h.slang: the base colour factor's alpha only ever
   // multiplies down) and that emits nothing is left out of every ray: a helper mesh at opacity 0, such
   // as a hair's face dummy, otherwise stops each ray that crosses it for an alpha test that discards
@@ -96,43 +95,49 @@ inline MaterialBits materialBits(const tinygltf::Material& mat)
   if(invisible(mat))
     bits.instanceMask = 0;
 
-  bits.alphaOpaque = mat.alphaMode == "OPAQUE";
-  bits.doubleSided = mat.doubleSided;
-  if(const auto* ext = tinygltf::utils::findExtension(mat.extensions, KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME))
-  {
-    float factor = 0.f;
-    tinygltf::utils::getValue(*ext, "transmissionFactor", factor);
-    bits.transmission = factor > 0.f;
-  }
+  bits.alphaOpaque  = opaque;
+  bits.doubleSided  = mat.doubleSided;
+  bits.transmission = transmission > 0.f;
   return bits;
+}
+
+inline MaterialBits materialBits(const tinygltf::Material& mat)
+{
+  return materialBits(fv::mat::fromGltf(mat));
 }
 
 // The texture indices a material samples as colour (sRGB), as SceneVk::findSrgbImages decides it:
 // base colour, emission, and the colour textures of specular, sheen, diffuse transmission, scatter
 // and specular-glossiness. (A texture's own `gamma` extra, which findSrgbImages also reads, is a
 // glTF texture's and not the material's.)
-inline std::set<int> srgbTextures(const tinygltf::Material& mat)
+inline std::set<int> srgbTextures(const fv::mat::Material& mat)
 {
   std::set<int> out;
-  const auto    add = [&](int index) {
-    if(index >= 0)
-      out.insert(index);
+  const auto    add = [&](const fv::mat::TextureSlot& slot) {
+    if(slot.has())
+      out.insert(slot.index);
   };
-  const auto fromExtension = [&](const char* ext, const char* name) {
-    const auto it = mat.extensions.find(ext);
-    if(it != mat.extensions.end() && it->second.Has(name) && it->second.Get(name).Has("index"))
-      add(it->second.Get(name).Get("index").GetNumberAsInt());
-  };
-  add(mat.pbrMetallicRoughness.baseColorTexture.index);
-  add(mat.emissiveTexture.index);
-  fromExtension("KHR_materials_specular", "specularColorTexture");
-  fromExtension("KHR_materials_sheen", "sheenColorTexture");
-  fromExtension("KHR_materials_diffuse_transmission", "diffuseTransmissionColorTexture");
-  fromExtension(KHR_MATERIALS_SCATTER_EXTENSION_NAME, "multiscatterColorTexture");
-  fromExtension(KHR_MATERIALS_VOLUME_SCATTER_EXTENSION_NAME, "multiscatterColorTexture");
-  fromExtension("KHR_materials_pbrSpecularGlossiness", "diffuseTexture");
-  fromExtension("KHR_materials_pbrSpecularGlossiness", "specularGlossinessTexture");
+  add(mat.baseColorMap);
+  add(mat.emissiveMap);
+  if(mat.specular)
+    add(mat.specular->colorMap);
+  if(mat.sheen)
+    add(mat.sheen->colorMap);
+  if(mat.diffuseTransmission)
+    add(mat.diffuseTransmission->colorMap);
+  if(mat.scatter)
+    add(mat.scatter->multiscatterColorMap);
+  if(mat.specularGlossiness)
+  {
+    add(mat.specularGlossiness->diffuseMap);
+    add(mat.specularGlossiness->specularGlossinessMap);
+  }
   return out;
+}
+
+inline std::set<int> srgbTextures(const tinygltf::Material& mat)
+{
+  return srgbTextures(fv::mat::fromGltf(mat));
 }
 
 }  // namespace nvvkgltf

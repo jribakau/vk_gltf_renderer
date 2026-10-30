@@ -29,6 +29,8 @@
 #include <map>
 #include <sstream>
 
+#include <figure/materials/material_gltf.hpp>
+
 #include "scene_export_gltf.hpp"
 #include "scene_import_gltf.hpp"
 #include "tinygltf_utils.hpp"
@@ -48,7 +50,7 @@ bool nearly(const glm::mat4& x, const glm::mat4& y)
 std::string mapOf(rs::RetainedScene& s, rs::MaterialId id, bool normal)
 {
   const rs::MaterialRecord* m = s.material(id);
-  const int i = normal ? m->payload.normalTexture.index : m->payload.pbrMetallicRoughness.baseColorTexture.index;
+  const int i = normal ? m->payload.normalMap.index : m->payload.baseColorMap.index;
   if(i < 0 || !m->textures || i >= int(m->textures->size()))
     return "";
   const rs::TextureRecord* t = s.texture((*m->textures)[size_t(i)].texture);
@@ -78,9 +80,7 @@ void expectSameScene(rs::RetainedScene& a, rs::RetainedScene& b, const std::stri
     ASSERT_EQ(sa.indexCount, sb.indexCount);
     EXPECT_TRUE(std::equal(ma.indices.begin() + sa.firstIndex, ma.indices.begin() + sa.firstIndex + sa.indexCount, mb.indices.begin() + sb.firstIndex));
     const rs::MaterialRecord &pa = *a.material(ia[i].material), &pb = *b.material(ib[i].material);
-    EXPECT_EQ(pa.payload.pbrMetallicRoughness.baseColorFactor, pb.payload.pbrMetallicRoughness.baseColorFactor);
-    EXPECT_EQ(pa.payload.alphaMode, pb.payload.alphaMode);
-    EXPECT_EQ(pa.payload.extensions.size(), pb.payload.extensions.size());
+    EXPECT_TRUE(pa.payload == pb.payload) << pa.payload.name;
     EXPECT_EQ(mapOf(a, ia[i].material, false), mapOf(b, ib[i].material, false));
     EXPECT_EQ(mapOf(a, ia[i].material, true), mapOf(b, ib[i].material, true));
   }

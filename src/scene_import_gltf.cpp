@@ -30,6 +30,8 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <nvutils/file_operations.hpp>
 
+#include <figure/materials/material_gltf.hpp>
+
 #include "ies_profile.hpp"
 #include "tinygltf_utils.hpp"
 
@@ -365,9 +367,9 @@ Transform transformOf(const tinygltf::Node& node)
   return t;
 }
 
-bool materialNeedsTangents(const tinygltf::Material& material)
+bool materialNeedsTangents(const fv::mat::Material& material)
 {
-  return material.normalTexture.index >= 0 || material.extensions.count(KHR_MATERIALS_ANISOTROPY_EXTENSION_NAME);
+  return material.normalMap.has() || material.anisotropy.has_value();
 }
 
 ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, const ImportOptions& options)
@@ -417,7 +419,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
       return defaultMaterial;
     }
     if(out.materials[size_t(index)].isNone())
-      out.materials[size_t(index)] = scene.addMaterial({.owner = {options.prop, index}, .payload = model.materials[size_t(index)], .textures = table});
+      out.materials[size_t(index)] = scene.addMaterial({.owner = {options.prop, index}, .payload = fv::mat::fromGltf(model.materials[size_t(index)]), .textures = table});
     return out.materials[size_t(index)];
   };
 
@@ -425,11 +427,14 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
   // them: one set of tangents per attribute key, over the triangles of every primitive that needs
   // them (across meshes that share the accessors), the material chosen as it chooses it
   std::map<std::string, std::vector<uint32_t>> tangentIndices;
+  std::vector<bool>                            needsTangents;
+  for(const tinygltf::Material& m : model.materials)
+    needsTangents.push_back(materialNeedsTangents(fv::mat::fromGltf(m)));
   for(const tinygltf::Mesh& mesh : model.meshes)
     for(const tinygltf::Primitive& p : mesh.primitives)
     {
       const int matId = p.material >= 0 && p.material < int(model.materials.size()) ? p.material : 0;
-      if(matId >= int(model.materials.size()) || !materialNeedsTangents(model.materials[size_t(matId)]))
+      if(matId >= int(model.materials.size()) || !needsTangents[size_t(matId)])
         continue;
       if(p.attributes.count("TANGENT") || !tinygltf::utils::primitiveGeometryError(model, p).empty())
         continue;

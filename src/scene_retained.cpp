@@ -283,7 +283,7 @@ void RetainedScene::setSkin(SkinId id, SkinRecord skin)
   }
 }
 
-void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload)
+void RetainedScene::setMaterial(MaterialId id, fv::mat::Material payload)
 {
   assertOwner();
   if(auto* r = m_materials.get(id))
@@ -298,7 +298,7 @@ void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload)
   }
 }
 
-void RetainedScene::setMaterial(MaterialId id, tinygltf::Material payload, std::shared_ptr<const TextureTable> textures)
+void RetainedScene::setMaterial(MaterialId id, fv::mat::Material payload, std::shared_ptr<const TextureTable> textures)
 {
   assertOwner();
   auto* r = m_materials.get(id);

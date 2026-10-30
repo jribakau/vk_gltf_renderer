@@ -39,6 +39,8 @@
 #include <figure/morph/morph_set.hpp>
 #include <figure/pose/pose_rig.hpp>
 
+#include <figure/materials/material_gltf.hpp>
+
 #include "fv_figure_feed.hpp"
 #include "fv_figure_feed_check.hpp"
 #include "scene_import_gltf.hpp"
@@ -88,7 +90,7 @@ void canonical(tinygltf::Value& v, const std::function<int(int)>& map)
       canonical(child, map);
 }
 
-tinygltf::Material canonical(const rs::RetainedScene& scene, const rs::MaterialRecord& m, std::map<std::string, int>& names)
+fv::mat::Material canonical(const rs::RetainedScene& scene, const rs::MaterialRecord& m, std::map<std::string, int>& names)
 {
   const auto map = [&](int index) {
     if(index < 0 || !m.textures || index >= int(m.textures->size()))
@@ -96,15 +98,12 @@ tinygltf::Material canonical(const rs::RetainedScene& scene, const rs::MaterialR
     const rs::TextureRecord* t = scene.texture((*m.textures)[size_t(index)].texture);
     return names.try_emplace(t ? t->uri : "", int(names.size())).first->second;
   };
-  tinygltf::Material out = m.payload;
-  for(tinygltf::TextureInfo* t : {&out.pbrMetallicRoughness.baseColorTexture, &out.pbrMetallicRoughness.metallicRoughnessTexture, &out.emissiveTexture})
-    if(t->index >= 0)
-      t->index = map(t->index);
-  if(out.normalTexture.index >= 0)
-    out.normalTexture.index = map(out.normalTexture.index);
-  if(out.occlusionTexture.index >= 0)
-    out.occlusionTexture.index = map(out.occlusionTexture.index);
-  for(auto& [name, ext] : out.extensions)
+  fv::mat::Material out = m.payload;
+  fv::mat::forEachSlot(out, [&](fv::mat::TextureSlot& slot) {
+    if(slot.has())
+      slot.index = map(slot.index);
+  });
+  for(auto& [name, ext] : out.foreignExtensions)
     canonical(ext, map);
   return out;
 }
@@ -756,22 +755,13 @@ TEST(FigureFeed, ACookThatLandsTakesItsSourcesPlace)
       const rs::MaterialRecord* r = store.material(feed.materialOf(int(mi)));
       if(!r)
         continue;
-      const tinygltf::Material& m = r->payload;
-      for(const tinygltf::TextureInfo* info : {&m.pbrMetallicRoughness.baseColorTexture, &m.pbrMetallicRoughness.metallicRoughnessTexture, &m.emissiveTexture})
-        if(info->index >= 0)
+      const fv::mat::Material& m = r->payload;
+      for(const fv::mat::TextureSlot* slot : {&m.baseColorMap, &m.metallicRoughnessMap, &m.emissiveMap, &m.normalMap})
+        if(slot->has())
         {
-          const rs::TextureRecord* t  = store.texture((*r->textures)[size_t(info->index)].texture);
-          const auto               tt = info->extensions.find("KHR_texture_transform");
-          out.push_back({t && t->mimeType == "image/ktx2",
-                         tt != info->extensions.end() && tt->second.Get("scale").Get(1).GetNumberAsDouble() < 0});
+          const rs::TextureRecord* t = store.texture((*r->textures)[size_t(slot->index)].texture);
+          out.push_back({t && t->mimeType == "image/ktx2", slot->transform && slot->transform->scale[1] < 0});
         }
-      if(m.normalTexture.index >= 0)
-      {
-        const rs::TextureRecord* t  = store.texture((*r->textures)[size_t(m.normalTexture.index)].texture);
-        const auto               tt = m.normalTexture.extensions.find("KHR_texture_transform");
-        out.push_back({t && t->mimeType == "image/ktx2",
-                       tt != m.normalTexture.extensions.end() && tt->second.Get("scale").Get(1).GetNumberAsDouble() < 0});
-      }
     }
     return out;
   };

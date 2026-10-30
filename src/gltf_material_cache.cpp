@@ -18,15 +18,18 @@
  */
 
 //
-// Extracts glTF material properties (PBR metallic-roughness, specular-glossiness,
-// KHR extensions, etc.) from tinygltf and packs them into GPU-friendly
+// Packs a material (fv::mat::Material; a glTF one converts first) into GPU-friendly
 // GltfShadeMaterial structures for use in shaders. Caches the converted
 // material array so it can be rebuilt only when materials change.
 //
 
 #include "gltf_material_cache.hpp"
 
+#include <algorithm>
+#include <cfloat>
 #include <cstddef>
+
+#include <figure/materials/material_gltf.hpp>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -68,35 +71,41 @@ namespace nvvkgltf {
 namespace {
 
 // textureSlots supplies the per-texture data resolved by SceneVk (sampler slot, source-format
-// flags), indexed by tinfo.index.
-template <typename T>
-shaderio::GltfTextureInfo getTextureInfoImpl(const T& tinfo, const TextureSlotTable& textureSlots)
+// flags), indexed by the slot's index.
+shaderio::GltfTextureInfo getTextureInfoImpl(const fv::mat::TextureSlot& slot, const TextureSlotTable& textureSlots)
 {
   shaderio::GltfTextureInfo ti{};
-  ti.index        = textureSlots.gpuTexture(tinfo.index);
-  ti.samplerIndex = static_cast<int16_t>(textureSlots.samplerSlot(tinfo.index));
-  ti.flags        = textureSlots.isTwoChannelSource(tinfo.index) ?
+  ti.index        = textureSlots.gpuTexture(slot.index);
+  ti.samplerIndex = static_cast<int16_t>(textureSlots.samplerSlot(slot.index));
+  ti.flags        = textureSlots.isTwoChannelSource(slot.index) ?
                         static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoTwoChannelSource) :
                         uint8_t{0};
   // Per reference, not per image: the same image can be sampled flipped in one slot and not another.
-  if(tinfo.extensions.count(FV_TEXTURE_FLIP_GREEN_EXTENSION_NAME) != 0)
+  if(slot.flipGreen)
     ti.flags |= static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoFlipGreen);
 
   // The renderer only uploads TEXCOORD_0 and TEXCOORD_1 (see VertexBuffers::texCoord0/texCoord1
   // in shaders/gltf_scene_io.h.slang). glTF allows TEXCOORD_N for higher N but we clamp
   // to 1 and warn once per occurrence so the user notices missing UV sets instead of
   // silently rendering with the wrong coordinates.
-  if(tinfo.texCoord > 1)
+  if(slot.texCoord > 1)
   {
     LOGW(
         "GltfTextureInfo: texture references TEXCOORD_%d but the renderer only supports "
         "TEXCOORD_0 and TEXCOORD_1; clamping to TEXCOORD_1.\n",
-        tinfo.texCoord);
+        slot.texCoord);
   }
-  ti.texCoord = static_cast<int8_t>(std::clamp(tinfo.texCoord, 0, 1));
+  ti.texCoord = static_cast<int8_t>(std::clamp(slot.texCoord, 0, 1));
 
 #if MAT_EXT_TEXTURE_TRANSFORM
-  const KHR_texture_transform& transform = tinygltf::utils::getTextureTransform(tinfo);
+  KHR_texture_transform transform;  // the identity unless the slot has one
+  if(slot.transform)
+  {
+    transform.offset   = {slot.transform->offset[0], slot.transform->offset[1]};
+    transform.scale    = {slot.transform->scale[0], slot.transform->scale[1]};
+    transform.rotation = slot.transform->rotation != 0 ? slot.transform->rotation : 0.0f;  // not -0
+    transform.updateTransform();
+  }
   ti.uvTransform = shaderio::float3x2(transform.uvTransform[0][0], transform.uvTransform[1][0], transform.uvTransform[0][1],
                                       transform.uvTransform[1][1], transform.uvTransform[0][2], transform.uvTransform[1][2]);
 #endif
@@ -104,167 +113,164 @@ shaderio::GltfTextureInfo getTextureInfoImpl(const T& tinfo, const TextureSlotTa
 }
 
 template <typename TextureHandler>
-void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf::Material& srcMat, TextureHandler handleTexture)
+void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::Material& srcMat, TextureHandler handleTexture)
 {
-  dstMat.alphaMode          = srcMat.alphaMode == "OPAQUE" ? 0 : (srcMat.alphaMode == "MASK" ? 1 : 2);
-  dstMat.alphaCutoff        = static_cast<float>(srcMat.alphaCutoff);
+  using namespace fv::mat;
+  const auto rgb = [](const Rgb& c) { return glm::vec3(c[0], c[1], c[2]); };
+
+  dstMat.alphaMode          = srcMat.alphaMode == AlphaMode::eOpaque ? 0 : (srcMat.alphaMode == AlphaMode::eMask ? 1 : 2);
+  dstMat.alphaCutoff        = srcMat.alphaCutoff;
   dstMat.doubleSided        = srcMat.doubleSided ? 1 : 0;
-  dstMat.pbrBaseColorFactor = glm::make_vec4<double>(srcMat.pbrMetallicRoughness.baseColorFactor.data());
-  dstMat.pbrMetallicFactor  = static_cast<float>(srcMat.pbrMetallicRoughness.metallicFactor);
-  dstMat.pbrRoughnessFactor = static_cast<float>(srcMat.pbrMetallicRoughness.roughnessFactor);
-  dstMat.normalTextureScale = static_cast<float>(srcMat.normalTexture.scale);
-  dstMat.occlusionStrength  = static_cast<float>(srcMat.occlusionTexture.strength);
+  dstMat.pbrBaseColorFactor = glm::vec4(srcMat.baseColor[0], srcMat.baseColor[1], srcMat.baseColor[2], srcMat.baseColor[3]);
+  dstMat.pbrMetallicFactor  = srcMat.metallic;
+  dstMat.pbrRoughnessFactor = srcMat.roughness;
+  dstMat.normalTextureScale = srcMat.normalMap.scale.value_or(1.0f);
+  dstMat.occlusionStrength  = srcMat.occlusionMap.scale.value_or(1.0f);
+  dstMat.emissiveFactor     = rgb(srcMat.emissive);
 
-  if(!srcMat.emissiveFactor.empty())
-    dstMat.emissiveFactor = glm::make_vec3<double>(srcMat.emissiveFactor.data());
+  handleTexture(dstMat.emissiveTexture, srcMat.emissiveMap);
+  handleTexture(dstMat.normalTexture, srcMat.normalMap);
+  handleTexture(dstMat.pbrBaseColorTexture, srcMat.baseColorMap);
+  handleTexture(dstMat.pbrMetallicRoughnessTexture, srcMat.metallicRoughnessMap);
+  handleTexture(dstMat.occlusionTexture, srcMat.occlusionMap);
 
-  handleTexture(dstMat.emissiveTexture, srcMat.emissiveTexture);
-  handleTexture(dstMat.normalTexture, srcMat.normalTexture);
-  handleTexture(dstMat.pbrBaseColorTexture, srcMat.pbrMetallicRoughness.baseColorTexture);
-  handleTexture(dstMat.pbrMetallicRoughnessTexture, srcMat.pbrMetallicRoughness.metallicRoughnessTexture);
-  handleTexture(dstMat.occlusionTexture, srcMat.occlusionTexture);
-
+  // a lobe left out packs as one at its defaults
 #if MAT_EXT_TRANSMISSION
-  KHR_materials_transmission transmission = tinygltf::utils::getTransmission(srcMat);
-  dstMat.transmissionFactor               = transmission.factor;
-  handleTexture(dstMat.transmissionTexture, transmission.texture);
+  const Transmission transmission = srcMat.transmission.value_or(Transmission{});
+  dstMat.transmissionFactor       = transmission.factor;
+  handleTexture(dstMat.transmissionTexture, transmission.map);
 #endif
 
 #if MAT_EXT_IOR
-  KHR_materials_ior ior = tinygltf::utils::getIor(srcMat);
-  dstMat.ior            = ior.ior;
+  dstMat.ior = srcMat.ior.value_or(1.5f);
 #endif
 
 #if MAT_EXT_VOLUME
-  KHR_materials_volume volume = tinygltf::utils::getVolume(srcMat);
-  dstMat.attenuationColor     = volume.attenuationColor;
-  dstMat.thicknessFactor      = volume.thicknessFactor;
+  const Volume volume     = srcMat.volume.value_or(Volume{});
+  dstMat.attenuationColor = rgb(volume.attenuationColor);
+  dstMat.thicknessFactor  = volume.thickness;
   // Spec range is (0, +inf); clamp out-of-range values to FLT_MAX (= no attenuation) on the CPU
   // so shaders can skip the branch and rely on division by FLT_MAX giving ~0 extinction.
   dstMat.attenuationDistance = (volume.attenuationDistance > 0.0f) ? volume.attenuationDistance : FLT_MAX;
-  handleTexture(dstMat.thicknessTexture, volume.thicknessTexture);
+  handleTexture(dstMat.thicknessTexture, volume.thicknessMap);
 #endif
 
 #if MAT_EXT_CLEARCOAT
-  KHR_materials_clearcoat clearcoat = tinygltf::utils::getClearcoat(srcMat);
-  dstMat.clearcoatFactor            = clearcoat.factor;
-  dstMat.clearcoatRoughness         = clearcoat.roughnessFactor;
-  dstMat.clearcoatNormalTextureScale = clearcoat.normalScale;
+  const Clearcoat clearcoat          = srcMat.clearcoat.value_or(Clearcoat{});
+  dstMat.clearcoatFactor             = clearcoat.factor;
+  dstMat.clearcoatRoughness          = clearcoat.roughness;
+  dstMat.clearcoatNormalTextureScale = clearcoat.normalMap.scale.value_or(1.0f);
   dstMat.clearcoatDualLobe           = clearcoat.dualLobe ? 1.0f : 0.0f;
-  handleTexture(dstMat.clearcoatRoughnessTexture, clearcoat.roughnessTexture);
-  handleTexture(dstMat.clearcoatTexture, clearcoat.texture);
-  handleTexture(dstMat.clearcoatNormalTexture, clearcoat.normalTexture);
+  handleTexture(dstMat.clearcoatRoughnessTexture, clearcoat.roughnessMap);
+  handleTexture(dstMat.clearcoatTexture, clearcoat.map);
+  handleTexture(dstMat.clearcoatNormalTexture, clearcoat.normalMap);
 #endif
 
 #if MAT_EXT_SPECULAR
-  KHR_materials_specular specular = tinygltf::utils::getSpecular(srcMat);
-  dstMat.specularFactor           = specular.specularFactor;
-  dstMat.specularColorFactor      = specular.specularColorFactor;
-  handleTexture(dstMat.specularTexture, specular.specularTexture);
-  handleTexture(dstMat.specularColorTexture, specular.specularColorTexture);
+  const Specular specular    = srcMat.specular.value_or(Specular{});
+  dstMat.specularFactor      = specular.factor;
+  dstMat.specularColorFactor = rgb(specular.color);
+  handleTexture(dstMat.specularTexture, specular.map);
+  handleTexture(dstMat.specularColorTexture, specular.colorMap);
 #endif
 
-  // KHR_materials_emissive_strength is always applied: it only scales emissiveFactor, no
-  // struct field of its own. Default strength is 1.0 when the extension is absent.
-  KHR_materials_emissive_strength emissiveStrength = tinygltf::utils::getEmissiveStrength(srcMat);
-  dstMat.emissiveFactor *= emissiveStrength.emissiveStrength;
+  // The strength is always applied: it only scales the emissive factor, no field of its own.
+  dstMat.emissiveFactor *= srcMat.emissiveStrength.value_or(1.0f);
 
 #if MAT_EXT_UNLIT
-  KHR_materials_unlit unlit = tinygltf::utils::getUnlit(srcMat);
-  dstMat.unlit              = unlit.active ? 1 : 0;
+  dstMat.unlit = srcMat.unlit ? 1 : 0;
 #endif
 
 #if MAT_EXT_IRIDESCENCE
-  KHR_materials_iridescence iridescence = tinygltf::utils::getIridescence(srcMat);
-  dstMat.iridescenceFactor              = iridescence.iridescenceFactor;
-  dstMat.iridescenceIor                 = iridescence.iridescenceIor;
-  dstMat.iridescenceThicknessMinimum    = iridescence.iridescenceThicknessMinimum;
-  dstMat.iridescenceThicknessMaximum    = iridescence.iridescenceThicknessMaximum;
-  handleTexture(dstMat.iridescenceTexture, iridescence.iridescenceTexture);
-  handleTexture(dstMat.iridescenceThicknessTexture, iridescence.iridescenceThicknessTexture);
+  const Iridescence iridescence      = srcMat.iridescence.value_or(Iridescence{});
+  dstMat.iridescenceFactor           = iridescence.factor;
+  dstMat.iridescenceIor              = iridescence.ior;
+  dstMat.iridescenceThicknessMinimum = iridescence.thicknessMinimum;
+  dstMat.iridescenceThicknessMaximum = iridescence.thicknessMaximum;
+  handleTexture(dstMat.iridescenceTexture, iridescence.map);
+  handleTexture(dstMat.iridescenceThicknessTexture, iridescence.thicknessMap);
 #endif
 
 #if MAT_EXT_ANISOTROPY
-  KHR_materials_anisotropy anisotropy = tinygltf::utils::getAnisotropy(srcMat);
-  dstMat.anisotropyRotation = glm::vec2(glm::sin(anisotropy.anisotropyRotation), glm::cos(anisotropy.anisotropyRotation));
-  dstMat.anisotropyStrength = anisotropy.anisotropyStrength;
-  handleTexture(dstMat.anisotropyTexture, anisotropy.anisotropyTexture);
+  const Anisotropy anisotropy = srcMat.anisotropy.value_or(Anisotropy{});
+  dstMat.anisotropyRotation   = glm::vec2(glm::sin(anisotropy.rotation), glm::cos(anisotropy.rotation));
+  dstMat.anisotropyStrength   = anisotropy.strength;
+  handleTexture(dstMat.anisotropyTexture, anisotropy.map);
 #endif
 
 #if MAT_EXT_SHEEN
-  KHR_materials_sheen sheen   = tinygltf::utils::getSheen(srcMat);
-  dstMat.sheenColorFactor     = sheen.sheenColorFactor;
-  dstMat.sheenRoughnessFactor = sheen.sheenRoughnessFactor;
-  handleTexture(dstMat.sheenColorTexture, sheen.sheenColorTexture);
-  handleTexture(dstMat.sheenRoughnessTexture, sheen.sheenRoughnessTexture);
+  const Sheen sheen           = srcMat.sheen.value_or(Sheen{});
+  dstMat.sheenColorFactor     = rgb(sheen.color);
+  dstMat.sheenRoughnessFactor = sheen.roughness;
+  handleTexture(dstMat.sheenColorTexture, sheen.colorMap);
+  handleTexture(dstMat.sheenRoughnessTexture, sheen.roughnessMap);
 #endif
 
 #if MAT_EXT_DISPERSION
-  KHR_materials_dispersion dispersion = tinygltf::utils::getDispersion(srcMat);
-  dstMat.dispersion                   = dispersion.dispersion;
+  dstMat.dispersion = srcMat.dispersion.value_or(0.0f);
 #endif
 
 #if MAT_EXT_SPECULAR_GLOSSINESS
   // Default pbrModel is ePbrModelMetallicRoughness (struct member default); switch to
-  // ePbrModelSpecularGlossiness only when the extension is actually present on this material.
-  KHR_materials_pbrSpecularGlossiness pbr = tinygltf::utils::getPbrSpecularGlossiness(srcMat);
-  if(tinygltf::utils::hasElementName(srcMat.extensions, KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS_EXTENSION_NAME))
+  // ePbrModelSpecularGlossiness only when the material actually has it.
+  const SpecularGlossiness pbr = srcMat.specularGlossiness.value_or(SpecularGlossiness{});
+  if(srcMat.specularGlossiness)
   {
     dstMat.pbrModel            = shaderio::PbrModel::ePbrModelSpecularGlossiness;
-    dstMat.pbrDiffuseFactor    = pbr.diffuseFactor;
-    dstMat.pbrSpecularFactor   = pbr.specularFactor;
-    dstMat.pbrGlossinessFactor = pbr.glossinessFactor;
+    dstMat.pbrDiffuseFactor    = glm::vec4(pbr.diffuse[0], pbr.diffuse[1], pbr.diffuse[2], pbr.diffuse[3]);
+    dstMat.pbrSpecularFactor   = rgb(pbr.specular);
+    dstMat.pbrGlossinessFactor = pbr.glossiness;
   }
-  handleTexture(dstMat.pbrDiffuseTexture, pbr.diffuseTexture);
-  handleTexture(dstMat.pbrSpecularGlossinessTexture, pbr.specularGlossinessTexture);
+  handleTexture(dstMat.pbrDiffuseTexture, pbr.diffuseMap);
+  handleTexture(dstMat.pbrSpecularGlossinessTexture, pbr.specularGlossinessMap);
 #endif
 
 #if MAT_EXT_DIFFUSE_TRANSMISSION
-  KHR_materials_diffuse_transmission diffuseTransmission = tinygltf::utils::getDiffuseTransmission(srcMat);
-  dstMat.diffuseTransmissionFactor                       = diffuseTransmission.diffuseTransmissionFactor;
-  dstMat.diffuseTransmissionColorFactor                  = diffuseTransmission.diffuseTransmissionColorFactor;
-  handleTexture(dstMat.diffuseTransmissionTexture, diffuseTransmission.diffuseTransmissionTexture);
-  handleTexture(dstMat.diffuseTransmissionColorTexture, diffuseTransmission.diffuseTransmissionColorTexture);
+  const DiffuseTransmission diffuseTransmission = srcMat.diffuseTransmission.value_or(DiffuseTransmission{});
+  dstMat.diffuseTransmissionFactor              = diffuseTransmission.factor;
+  dstMat.diffuseTransmissionColorFactor         = rgb(diffuseTransmission.color);
+  handleTexture(dstMat.diffuseTransmissionTexture, diffuseTransmission.map);
+  handleTexture(dstMat.diffuseTransmissionColorTexture, diffuseTransmission.colorMap);
 #endif
 
 #if MAT_EXT_RETROREFLECTION
-  KHR_materials_retroreflection retro = tinygltf::utils::getRetroreflection(srcMat);
-  dstMat.retroreflectionFactor        = retro.retroreflectionFactor;
-  handleTexture(dstMat.retroreflectionTexture, retro.retroreflectionTexture);
+  const Retroreflection retro  = srcMat.retroreflection.value_or(Retroreflection{});
+  dstMat.retroreflectionFactor = retro.factor;
+  handleTexture(dstMat.retroreflectionTexture, retro.map);
 #endif
 
 #if MAT_EXT_SCATTER
-  KHR_materials_scatter scatter  = tinygltf::utils::getScatter(srcMat);
-  dstMat.scatterStrengthFactor   = scatter.scatterStrengthFactor;
-  dstMat.multiscatterColorFactor = scatter.multiscatterColorFactor;
-  dstMat.scatterAnisotropy       = scatter.scatterAnisotropy;
-  dstMat.scatterDistance         = scatter.scatterDistance;
-  handleTexture(dstMat.scatterStrengthTexture, scatter.scatterStrengthTexture);
-  handleTexture(dstMat.multiscatterColorTexture, scatter.multiscatterColorTexture);
+  const Scatter scatter          = srcMat.scatter.value_or(Scatter{});
+  dstMat.scatterStrengthFactor   = std::clamp(scatter.strength, 0.0f, 1.0f);
+  dstMat.multiscatterColorFactor = rgb(scatter.multiscatterColor);
+  dstMat.scatterAnisotropy       = std::clamp(scatter.anisotropy, -0.999f, 0.999f);
+  dstMat.scatterDistance         = glm::max(rgb(srcMat.scatterDistance.value_or(Rgb{0, 0, 0})), glm::vec3(0.0f));
+  handleTexture(dstMat.scatterStrengthTexture, scatter.strengthMap);
+  handleTexture(dstMat.multiscatterColorTexture, scatter.multiscatterColorMap);
 #endif
 
 #if MAT_EXT_DETAIL
-  FV_materials_detail detail   = tinygltf::utils::getDetail(srcMat);
-  dstMat.detailNormalScale     = detail.detailNormalScale;
-  dstMat.detailWeightFactor    = detail.detailWeightFactor;
-  dstMat.detailRoughnessFactor = detail.detailRoughnessFactor;
-  handleTexture(dstMat.detailNormalTexture, detail.detailNormalTexture);
-  handleTexture(dstMat.detailWeightTexture, detail.detailWeightTexture);
-  handleTexture(dstMat.detailRoughnessTexture, detail.detailRoughnessTexture);
+  const Detail detail          = srcMat.detail.value_or(Detail{});
+  dstMat.detailNormalScale     = detail.normalMap.scale.value_or(1.0f);
+  dstMat.detailWeightFactor    = detail.weight;
+  dstMat.detailRoughnessFactor = detail.roughness;
+  handleTexture(dstMat.detailNormalTexture, detail.normalMap);
+  handleTexture(dstMat.detailWeightTexture, detail.weightMap);
+  handleTexture(dstMat.detailRoughnessTexture, detail.roughnessMap);
 #endif
 
 #if MAT_EXT_HAIR
-  FV_materials_hair hair = tinygltf::utils::getHair(srcMat);
-  if(hair.active)
+  if(srcMat.hair)
   {
+    const Hair& hair        = *srcMat.hair;
     dstMat.hairFactor       = 1.0f;
-    dstMat.hairLongitudinal = hair.longitudinalRoughness;
-    dstMat.hairAzimuthal    = hair.azimuthalRoughness;
+    dstMat.hairLongitudinal = hair.longitudinal;
+    dstMat.hairAzimuthal    = hair.azimuthal;
     dstMat.hairRootFade     = hair.rootFade;
     dstMat.hairRootV        = hair.rootV;
-    dstMat.hairSpecular     = hair.specularFactor;
-    dstMat.hairRootSigma    = hair.rootAbsorption;
-    dstMat.hairTipSigma     = hair.tipAbsorption;
+    dstMat.hairSpecular     = hair.specular;
+    dstMat.hairRootSigma    = rgb(hair.rootAbsorption);
+    dstMat.hairTipSigma     = rgb(hair.tipAbsorption);
     dstMat.hairFromColor    = hair.absorptionFromColor ? 1.0f : 0.0f;
     if(hair.strandRotation)
     {
@@ -275,8 +281,8 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const tinygltf:
 #endif
 
 #if MAT_EXT_DLSS_NR
-  EXT_DLSS_NR dlssNr = tinygltf::utils::getExtDlssNr(srcMat);
-  dstMat.nrMask      = dlssNr.nrMask;
+  const Rgba nr = srcMat.dlssNrMask.value_or(Rgba{1, 1, 1, 1});
+  dstMat.nrMask = glm::vec4(nr[0], nr[1], nr[2], nr[3]);
 #endif
 }
 
@@ -289,24 +295,24 @@ void MaterialCache::buildFromMaterials(const std::vector<tinygltf::Material>& ma
   m_shadeMaterials.clear();
   m_shadeMaterials.reserve(materials.size());
   for(const auto& srcMat : materials)
-    append(srcMat, textureSlots);
+    append(fv::mat::fromGltf(srcMat), textureSlots);
 }
 
-void MaterialCache::append(const tinygltf::Material& srcMat, const TextureSlotTable& textureSlots)
+void MaterialCache::append(const fv::mat::Material& srcMat, const TextureSlotTable& textureSlots)
 {
   if(m_textureInfos.empty())
     m_textureInfos.push_back({});  // entry 0: no texture
   m_shadeMaterials.emplace_back(convertOne(srcMat, textureSlots, 0, m_textureInfos));
 }
 
-shaderio::GltfShadeMaterial MaterialCache::convertOne(const tinygltf::Material&               srcMat,
+shaderio::GltfShadeMaterial MaterialCache::convertOne(const fv::mat::Material&                srcMat,
                                                       const TextureSlotTable&                 textureSlots,
                                                       uint32_t                                base,
                                                       std::vector<shaderio::GltfTextureInfo>& infos)
 {
   shaderio::GltfShadeMaterial dstMat = {};
-  populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const auto& srcTexInfo) {
-    const shaderio::GltfTextureInfo ti = getTextureInfoImpl(srcTexInfo, textureSlots);
+  populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const fv::mat::TextureSlot& slot) {
+    const shaderio::GltfTextureInfo ti = getTextureInfoImpl(slot, textureSlots);
     texIndex                           = 0;
     if(ti.index != -1)
     {
@@ -314,21 +320,30 @@ shaderio::GltfShadeMaterial MaterialCache::convertOne(const tinygltf::Material& 
       infos.push_back(ti);
     }
   });
-  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveTexture.index);
+  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveMap.index);
   return dstMat;
 }
 
-MaterialUpdateResult MaterialCache::updateMaterial(int index, const tinygltf::Material& srcMat, const TextureSlotTable& textureSlots)
+shaderio::GltfShadeMaterial MaterialCache::convertOne(const tinygltf::Material&               srcMat,
+                                                      const TextureSlotTable&                 textureSlots,
+                                                      uint32_t                                base,
+                                                      std::vector<shaderio::GltfTextureInfo>& infos)
+{
+  return convertOne(fv::mat::fromGltf(srcMat), textureSlots, base, infos);
+}
+
+MaterialUpdateResult MaterialCache::updateMaterial(int index, const tinygltf::Material& srcGltf, const TextureSlotTable& textureSlots)
 {
   MaterialUpdateResult result{};
   if(index < 0 || index >= static_cast<int>(m_shadeMaterials.size()))
     return result;
 
+  const fv::mat::Material      srcMat = fv::mat::fromGltf(srcGltf);
   shaderio::GltfShadeMaterial& dstMat = m_shadeMaterials[index];
   shaderio::GltfTextureInfo*   infos  = m_textureInfos.data();
 
-  populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const auto& srcTexInfo) {
-    const bool hasSrcTexture = srcTexInfo.index != -1;
+  populateShaderMaterial(dstMat, srcMat, [&](uint16_t& texIndex, const fv::mat::TextureSlot& slot) {
+    const bool hasSrcTexture = slot.index != -1;
 
     if(texIndex == 0)
     {
@@ -342,12 +357,12 @@ MaterialUpdateResult MaterialCache::updateMaterial(int index, const tinygltf::Ma
       return;
     }
 
-    infos[texIndex]    = getTextureInfoImpl(srcTexInfo, textureSlots);
+    infos[texIndex]    = getTextureInfoImpl(slot, textureSlots);
     result.span.minIdx = std::min(result.span.minIdx, texIndex);
     result.span.maxIdx = std::max(result.span.maxIdx, texIndex);
     result.span.count++;
   });
-  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveTexture.index);
+  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveMap.index);
   return result;
 }
 

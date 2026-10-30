@@ -18,6 +18,10 @@
 #include <string>
 #include <vector>
 
+namespace fv::mat {
+struct Material;
+}  // namespace fv::mat
+
 namespace tinygltf {
 class Model;
 struct Material;
@@ -113,6 +117,7 @@ private:
 // is checked on core material texture infos and texture-info objects nested inside
 // material extension payloads. Feature dependencies (scatter => volume => transmission)
 // are promoted, so a scene's set is the union of its materials' sets.
+SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& material);
 SceneFeatureSet detectMaterialFeatures(const tinygltf::Material& material);
 
 // Walk a glTF material list and detect which gated extensions appear: the union of

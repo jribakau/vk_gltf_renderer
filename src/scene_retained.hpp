@@ -48,6 +48,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <tinygltf/tiny_gltf.h>
 
+#include <figure/materials/material.hpp>
+
 #include "scene_feature_detection.hpp"
 #include "scene_retained_handles.hpp"
 
@@ -256,7 +258,7 @@ struct TextureRecord
 };
 
 // What a material's texture indices name: entry i of its table is the glTF texture i of the file it
-// came from, so the payload keeps its source indices and is never rebased.
+// came from, so the material keeps its source indices and is never rebased.
 struct TextureRef
 {
   TextureId   texture;
@@ -267,8 +269,8 @@ using TextureTable = std::vector<TextureRef>;
 struct MaterialRecord
 {
   OwnerTag owner;
-  // a glTF material whose texture indices index `textures`
-  tinygltf::Material                  payload;
+  // a material whose texture indices index `textures`
+  fv::mat::Material                   payload;
   std::shared_ptr<const TextureTable> textures;
   uint32_t                            rev = 0;  // bumped by setMaterial
 };
@@ -498,9 +500,9 @@ public:
   void setMeshCage(MeshId id, std::vector<glm::vec3> cage);
   // joints, inverse binds and skeleton replaced (a rebind)
   void setSkin(SkinId id, SkinRecord skin);
-  void setMaterial(MaterialId id, tinygltf::Material payload);
+  void setMaterial(MaterialId id, fv::mat::Material payload);
   // the payload with the table its texture indices now index (its textures referenced, the old ones released)
-  void setMaterial(MaterialId id, tinygltf::Material payload, std::shared_ptr<const TextureTable> textures);
+  void setMaterial(MaterialId id, fv::mat::Material payload, std::shared_ptr<const TextureTable> textures);
   void setLight(LightId id, const tinygltf::Light& payload);
   void setLightIes(LightId id, std::optional<IesLight> ies);
   void setLightShown(LightId id, bool shown);

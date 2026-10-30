@@ -11,16 +11,9 @@
 
 namespace fv::mat {
 
-using Json = nlohmann::json;
-
 namespace {
 
 constexpr Rgb kWhite{1, 1, 1};
-
-Json rgbJson(const Rgb& c)
-{
-  return Json::array({c[0], c[1], c[2]});
-}
 
 Rgb mul(const Rgb& a, const Rgb& b)
 {
@@ -66,10 +59,9 @@ struct Builder
     return *shared;
   }
 
-  // A texture info for a request, sampled through `own` (a detail layer's tiling) or else the
-  // surface's transform with the map's own tiling over it: KHR_texture_transform when that is not
-  // the identity.
-  Json info(TextureRequest req, std::optional<float> scale = std::nullopt, std::optional<UvTransform> own = std::nullopt)
+  // A slot for a request, sampled through `own` (a detail layer's tiling) or else the surface's
+  // transform with the map's own tiling over it.
+  TextureSlot info(TextureRequest req, std::optional<float> scale = std::nullopt, std::optional<UvTransform> own = std::nullopt)
   {
     // the map samples at Ti·(T + R·S·uv) + Oi: a panel offset moves it with every other map
     UvTransform surface = uv;
@@ -86,22 +78,16 @@ struct Builder
       req.layers.erase(req.layers.begin());
     }
     requests.push_back(std::move(req));
-    Json out{{"slot", int(requests.size()) - 1}, {"texCoord", 0}};
-    if(scale)
-      out["scale"] = *scale;
+    TextureSlot out;
+    out.index = int(requests.size()) - 1;
+    out.scale = scale;
+    // DAZ samples at offset + R·S·v; with v' = 1 − v and the image unflipped that is its mirror
     if(const UvTransform& daz = own ? *own : surface; !daz.identity())
-    {
-      // DAZ samples at offset + R·S·v; with v' = 1 − v and the image unflipped that is its mirror
-      const UvTransform t  = flipV ? mirroredV(daz) : daz;
-      Json              tt = {{"scale", Json::array({t.scale[0], t.scale[1]})}, {"offset", Json::array({t.offset[0], t.offset[1]})}};
-      if(t.rotation != 0)
-        tt["rotation"] = t.rotation;
-      out["extensions"] = {{"KHR_texture_transform", tt}};
-    }
+      out.transform = flipV ? mirroredV(daz) : daz;
     return out;
   }
 
-  Json plain(const std::string& rel, bool srgb, std::optional<float> scale = std::nullopt, std::optional<UvTransform> own = std::nullopt)
+  TextureSlot plain(const std::string& rel, bool srgb, std::optional<float> scale = std::nullopt, std::optional<UvTransform> own = std::nullopt)
   {
     TextureRequest r;
     r.rel  = rel;
@@ -109,10 +95,10 @@ struct Builder
     return info(std::move(r), scale, own);
   }
 
-  // The product of weight maps as one grey in every channel ("wa"), so that specularTexture (alpha)
-  // and clearcoatTexture (red) can share the image. Only the first map may be a layered image: the
+  // The product of weight maps as one grey in every channel ("wa"), so that the specular's map (alpha)
+  // and the coat's (red) can share the image. Only the first map may be a layered image: the
   // cooker multiplies plain images in, so a later one gives its bottom layer.
-  Json weights(const std::vector<std::string>& maps)
+  TextureSlot weights(const std::vector<std::string>& maps)
   {
     TextureRequest r;
     r.rel      = maps.front();
@@ -126,12 +112,12 @@ struct Builder
   // The base colour image: the colour map with its iris recoloured, a cutout in its alpha (the
   // cutout map's own alpha when `alphaFromAlpha`) and makeup laid over it, then the whole
   // recoloured; or, with a flat base colour, the colour baked into the image.
-  Json base(const std::string& color, const Rgb& factor, const std::string& alpha, const std::optional<MakeupLayer>& makeup,
+  TextureSlot base(const std::string& color, const Rgb& factor, const std::string& alpha, const std::optional<MakeupLayer>& makeup,
             const std::optional<IrisRequest>& iris = std::nullopt, const std::optional<RecolorRequest>& recolor = std::nullopt,
             bool alphaFromAlpha = false)
   {
     if(alpha.empty() && !makeup && !iris && !recolor)
-      return color.empty() ? Json() : plain(color, true);
+      return color.empty() ? TextureSlot{} : plain(color, true);
     TextureRequest r;
     r.srgb     = true;
     r.rel      = !color.empty() ? color : makeup && !makeup->map.empty() ? makeup->map : makeup && !makeup->weightMap.empty() ? makeup->weightMap : alpha;
@@ -255,8 +241,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   b.flipV     = opts.flipV;
   b.uv        = surfaceUv(s, e);
   b.mapTiling = &s.mapTiling;
-  Json           ext   = Json::object();
-  Json           out   = {{"name", s.name}};
+  Material       out;
+  out.name             = s.name;
   const SkinRole role  = skinRole(s);
   const bool     refractive = s.refraction && s.refraction->weight > 0.05f;
   // refraction, and flesh in the volume and measured modes, write the index themselves
@@ -353,19 +339,14 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   const float metalness = e.metalness.value_or(s.metallic.value);
   eff.metalness         = metalness;
 
-  Json pbr = Json::object();
   // a flat colour baked into the image (no base map) must not tint it again; with no image at all
   // (makeup with no maps of its own) the factor is the colour
   const bool bakedFlat = anyMap && baseMap.empty() && (makeup || !s.opacity.map.empty());
-  pbr["baseColorFactor"] = Json::array({(anyMap && makeup) || bakedFlat ? 1.f : factor[0], (anyMap && makeup) || bakedFlat ? 1.f : factor[1],
-                                        (anyMap && makeup) || bakedFlat ? 1.f : factor[2], opacity});
-  pbr["metallicFactor"]  = metalness;
+  out.baseColor = {(anyMap && makeup) || bakedFlat ? 1.f : factor[0], (anyMap && makeup) || bakedFlat ? 1.f : factor[1],
+                   (anyMap && makeup) || bakedFlat ? 1.f : factor[2], opacity};
+  out.metallic  = metalness;
   if(anyMap)
-  {
-    const Json info = b.base(baseMap, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor, s.opacityFromAlpha);
-    if(!info.is_null())
-      pbr["baseColorTexture"] = info;
-  }
+    out.baseColorMap = b.base(baseMap, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor, s.opacityFromAlpha);
 
   // roughness and metalness: one lobe from Iray's layers, with the limits the real-time view has
   // The eye's wet shells. The tear film reflects at Fresnel's full strength from a smooth surface:
@@ -380,11 +361,11 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     roughness = std::min(roughness, 0.1f);
   else if(s.kind == Kind::eEye)
     roughness = std::min(roughness, 0.35f);
-  // glTF's range: PBRSkin's lobe multipliers and panel edits can pass it
+  // PBRSkin's lobe multipliers and panel edits can pass its range
   const float roughnessFactor = clamp(e.roughness.value_or(roughness), 0, 1);
   eff.roughness               = roughnessFactor;
-  pbr["roughnessFactor"]      = roughnessFactor;
-  // glTF metallic-roughness: roughness in green, metalness in blue, each times its factor. Iray's
+  out.roughness               = roughnessFactor;
+  // Roughness in green, metalness in blue, each times its factor. Iray's
   // metal is Metallic Weight times its map, a mask of grey: the cooker puts that grey in the
   // roughness map's blue, or, with no roughness map, makes the image from the mask alone (green
   // white). With no metal the mask would only be multiplied by 0, so it is left out.
@@ -404,24 +385,21 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       r.rel      = metalMap;
       r.channels = "mt";
     }
-    pbr["metallicRoughnessTexture"] = b.info(std::move(r));
+    out.metallicRoughnessMap = b.info(std::move(r));
   }
-  out["pbrMetallicRoughness"] = pbr;
-  out["alphaMode"]            = alphaMode;
-  if(alphaMode == "MASK")
-    out["alphaCutoff"] = 0.5;
-  out["doubleSided"] = eff.doubleSided;
+  out.alphaMode   = alphaMode == "OPAQUE" ? AlphaMode::eOpaque : alphaMode == "MASK" ? AlphaMode::eMask : AlphaMode::eBlend;
+  out.doubleSided = eff.doubleSided;
 
-  // normal: the normal map and the bump map together when a surface has both (glTF has one slot),
+  // normal: the normal map and the bump map together when a surface has both (there is one slot),
   // else whichever one it has. DAZ skin keeps pores in the bump map. The bump strength is baked
-  // into the blend; the normal map's strength stays the glTF scale. A bump's height is per the
+  // into the blend; the normal map's strength stays the slot's scale. A bump's height is per the
   // authored tile, the surface's times the map's own, so the panel's tiling changes no bake.
   const float authoredTiles = std::sqrt(std::abs(s.tiles[0] * s.tiles[1]));
   const auto  tilesOf       = [&](const TextureRequest& r) {
     const MapTiling t = b.tilingOf(r);
     return authoredTiles * std::sqrt(std::abs(t.tiles[0] * t.tiles[1]));
   };
-  Json normal;
+  TextureSlot normal;
   if(!s.normalMap.empty() && !s.bumpMap.empty())
   {
     TextureRequest r;
@@ -459,49 +437,48 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // the shape of the water along the lid.
   if(tearFilm && shell != EyeShell::eMeniscus)
   {
-    normal = Json();
+    normal = {};
     eff.normalStrength = 0;
     eff.bumpStrength   = 0;
   }
-  if(!normal.is_null())
-    out["normalTexture"] = normal;
+  out.normalMap = normal;
 
   // emission: an Iray emitter at its physical brightness
   if(s.emission)
   {
-    // the temperature tint is normalised to luminance, so a warm light's red passes 1: glTF's
-    // emissiveFactor stops there, and the excess goes into the strength
+    // the temperature tint is normalised to luminance, so a warm light's red passes 1: the colour
+    // stops there, and the excess goes into the strength
     Rgb         color = mul(s.emission->color.color, temperatureTint(s.emission->temperature));
     const float peak  = std::max({color[0], color[1], color[2]});
     const float scale = peak > 1 ? peak : 1.f;
     color             = {color[0] / scale, color[1] / scale, color[2] / scale};
-    out["emissiveFactor"] = rgbJson(color);
+    out.emissive = color;
     if(!s.emission->color.map.empty())
-      out["emissiveTexture"] = b.plain(s.emission->color.map, true);
-    ext["KHR_materials_emissive_strength"] = {{"emissiveStrength", opts.emission * scale}};
+      out.emissiveMap = b.plain(s.emission->color.map, true);
+    out.emissiveStrength  = opts.emission * scale;
     eff.emissive          = color;
     eff.emissiveIntensity = opts.emission * scale;
   }
   // an emissive colour given in the panel to a surface that had none
   if(e.emissive && !s.emission && ((*e.emissive)[0] > 0 || (*e.emissive)[1] > 0 || (*e.emissive)[2] > 0))
   {
-    out["emissiveFactor"]                  = rgbJson(*e.emissive);
-    ext["KHR_materials_emissive_strength"] = {{"emissiveStrength", e.emissiveIntensity.value_or(1.f)}};
-    eff.emissive                           = *e.emissive;
-    eff.emissiveIntensity                  = e.emissiveIntensity.value_or(1.f);
+    out.emissive          = *e.emissive;
+    out.emissiveStrength  = e.emissiveIntensity.value_or(1.f);
+    eff.emissive          = *e.emissive;
+    eff.emissiveIntensity = e.emissiveIntensity.value_or(1.f);
   }
   else if(s.emission)
   {
     // edits of an emitter's colour and brightness
     if(e.emissive)
     {
-      out["emissiveFactor"] = rgbJson(*e.emissive);
-      eff.emissive          = *e.emissive;
+      out.emissive = *e.emissive;
+      eff.emissive = *e.emissive;
     }
     if(e.emissiveIntensity)
     {
-      ext["KHR_materials_emissive_strength"] = {{"emissiveStrength", *e.emissiveIntensity}};
-      eff.emissiveIntensity                  = *e.emissiveIntensity;
+      out.emissiveStrength  = *e.emissiveIntensity;
+      eff.emissiveIntensity = *e.emissiveIntensity;
     }
   }
 
@@ -521,29 +498,30 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   Rgb        specularColor = tinted ? lerp(kWhite, s.glossy.color, lobes.glossyShare) : kWhite;
   for(float& c : specularColor)
     c = clamp(c, 0, 1);
-  Json specularExt = {{"specularFactor", eff.specular}, {"specularColorFactor", rgbJson(specularColor)}};
+  Specular specularLobe;
+  specularLobe.factor = eff.specular;
+  specularLobe.color  = specularColor;
   if(tinted && !s.glossy.colorMap.empty())
-    specularExt["specularColorTexture"] = b.plain(s.glossy.colorMap, true);
+    specularLobe.colorMap = b.plain(s.glossy.colorMap, true);
   // Where the lobe shines: the weight and reflectivity maps of the layers it is made of, in the
-  // alpha glTF's specularTexture is read from (CJ Evangeline's Skin_SLW, the Weighted mode's Glossy
+  // alpha the specular's map is read from (CJ Evangeline's Skin_SLW, the Weighted mode's Glossy
   // Weight map). A tight dual lobe folded back under a top coat adds its share, so the sum keeps a
   // map only when both parts have the same. The eye's water and strand hair have their own.
   const std::vector<std::string> specularMaps = !s.topCoat || !lobes.clearcoat || lobes.clearcoat->weightMaps == lobes.intensityMaps
                                                     ? lobes.intensityMaps
                                                     : std::vector<std::string>{};
   if(!specularMaps.empty() && !tearFilm && !underFilm && !ribbonHair && specular > 0)
-    specularExt["specularTexture"] = b.weights(specularMaps);
-  ext["KHR_materials_specular"] = specularExt;
+    specularLobe.map = b.weights(specularMaps);
+  out.specular = specularLobe;
   // A layer brighter than 4% at normal incidence reflects through an index of its own. Glass, skin
   // and ribbon hair below set theirs over it.
   if(lobes.reflectance > 0.04f && lobes.intensity > 0 && !tearFilm && !underFilm)
-    ext["KHR_materials_ior"] = {{"ior", iorForReflectance(lobes.reflectance)}};
+    out.ior = iorForReflectance(lobes.reflectance);
   if(ribbonHair && !liveRibbon)
-    ext["KHR_materials_ior"] = {{"ior", 1.55}};
+    out.ior = 1.55f;
   // sheen: the panel's, a cloth's soft rim of light at grazing angles
   if(e.sheenColor && ((*e.sheenColor)[0] > 0 || (*e.sheenColor)[1] > 0 || (*e.sheenColor)[2] > 0))
-    ext["KHR_materials_sheen"] = {{"sheenColorFactor", rgbJson(*e.sheenColor)},
-                                  {"sheenRoughnessFactor", clamp(e.sheenRoughness.value_or(0.5f), 0, 1)}};
+    out.sheen = Sheen{.color = *e.sheenColor, .roughness = clamp(e.sheenRoughness.value_or(0.5f), 0, 1)};
 
   // clearcoat: Iray's top coat, else the tighter dual lobe, on the same surface detail as the base
   struct Coat
@@ -570,32 +548,32 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     coat = Coat{{lobes.clearcoat->weight, {}}, lobes.clearcoat->roughness, 1, lobes.clearcoat->weightMaps};
   if(coat || e.clearcoat)
   {
-    Json cc = {{"clearcoatFactor", clamp(e.clearcoat.value_or(coat ? coat->weight.value : 0.f), 0, 1)},
-               {"clearcoatRoughnessFactor", clamp(e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f), 0, 1)}};
+    Clearcoat cc;
+    cc.factor    = clamp(e.clearcoat.value_or(coat ? coat->weight.value : 0.f), 0, 1);
+    cc.roughness = clamp(e.clearcoatRoughness.value_or(coat ? coat->roughness.value : 0.1f), 0, 1);
     // the tight lobe, not a coat: the closure darkens what lies under a coat, and not under this
-    if(coat && !s.topCoat && lobes.clearcoat && !opts.forFile)
-      cc["fvDualLobe"] = true;
+    cc.dualLobe = coat && !s.topCoat && lobes.clearcoat && !opts.forFile;
     if(coat && !coat->weight.map.empty())
-      cc["clearcoatTexture"] = b.plain(coat->weight.map, false);
+      cc.map = b.plain(coat->weight.map, false);
     else if(coat && !coat->weightMaps.empty())
-      cc["clearcoatTexture"] = b.weights(coat->weightMaps);
+      cc.map = b.weights(coat->weightMaps);
     if(coat && !coat->roughness.map.empty())
-      cc["clearcoatRoughnessTexture"] = b.plain(coat->roughness.map, false);
-    if(!normal.is_null())
+      cc.roughnessMap = b.plain(coat->roughness.map, false);
+    if(normal.has())
     {
       // the same slot again: the clearcoat shares the base's surface detail, tilted by the coat's
       // bump weight (DAZ blends towards the smooth normal, which scales slopes by about the weight).
       // At weight 0 the slot stays with scale 0: left out, the shader would give the coat the
       // base's bent normal, the full relief.
-      Json        n    = normal;
+      TextureSlot n    = normal;
       const float bump = coat ? coat->bumpWeight : 1.f;
       if(bump < 1)
-        n["scale"] = n.value("scale", 1.f) * bump;
-      cc["clearcoatNormalTexture"] = n;
+        n.scale = n.scale.value_or(1.f) * bump;
+      cc.normalMap = n;
     }
-    ext["KHR_materials_clearcoat"] = cc;
-    eff.clearcoat                  = cc["clearcoatFactor"].get<float>();
-    eff.clearcoatRoughness         = cc["clearcoatRoughnessFactor"].get<float>();
+    out.clearcoat          = cc;
+    eff.clearcoat          = cc.factor;
+    eff.clearcoatRoughness = cc.roughness;
   }
 
   // refraction
@@ -603,8 +581,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   std::string transmissionMap;  // Translucency Weight's map, where a skin lets light in
   if(refractive)
   {
-    transmission               = s.refraction->weight;
-    ext["KHR_materials_ior"]   = {{"ior", tearFilm ? tearFilmIor(s) : s.refraction->ior}};
+    transmission = s.refraction->weight;
+    out.ior      = tearFilm ? tearFilmIor(s) : s.refraction->ior;
   }
 
   // Refraction wins over skin: a cornea with a translucency weight stays glass.
@@ -631,22 +609,22 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     // the base map: a Translucency Color map is often a pale scattering map that washes the skin
     // out lit from the front. A skin tone recolours it as it does the base colour.
     const std::string scatterMap = !s.base.map.empty() ? s.base.map : t ? t->map : std::string();
-    const auto        scatterTexture = [&](const Rgb& color) -> Json {
+    const auto        scatterTexture = [&](const Rgb& color) -> TextureSlot {
       if(scatterMap.empty())
-        return Json();
+        return {};
       return makeup || recolor ? b.base(scatterMap, color, {}, makeup, std::nullopt, recolor) : b.plain(scatterMap, true);
     };
     // The same albedo for both modes. A map or makeup already carries the colour, so the factor
     // stays white and the shader does not apply it twice.
     const Rgb bakedFactor = makeup ? (!scatterMap.empty() || !makeup->map.empty() || !makeup->weightMap.empty() ? kWhite : lerp(scatterColor, makeup->color, makeup->weight))
                                    : scatterColor;
-    const auto albedoTexture = [&]() -> Json {
-      Json tex = scatterTexture(scatterColor);
-      if(!tex.is_null())
+    const auto albedoTexture = [&]() -> TextureSlot {
+      TextureSlot tex = scatterTexture(scatterColor);
+      if(tex.has())
         return tex;
       if(makeup && (!makeup->map.empty() || !makeup->weightMap.empty()))
         return b.base({}, scatterColor, {}, makeup);
-      return Json();
+      return {};
     };
     if(role == SkinRole::eFlesh && opts.skin == SkinMode::eMeasured && !thinWalled)
     {
@@ -655,12 +633,12 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       // and the renderer makes the medium from the skin map where the walk enters and how far
       // light spreads in skin per channel: the map is the colour lit from the front, the distance
       // how soft pores and shadow edges are and how far red glows through ears and fingers.
-      transmission                   = 1;
-      ext["KHR_materials_ior"]       = {{"ior", 1.4}};
-      ext["KHR_materials_volume"]    = {{"thicknessFactor", 1}, {"attenuationDistance", 1}, {"attenuationColor", Json::array({1, 1, 1})}};
-      ext["KHR_materials_scatter"]   = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", Json::array({1, 1, 1})}, {"scatterAnisotropy", 0}};
-      const float scale              = e.scatterScale.value_or(1.f);
-      ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson({kSkinScatterDistance[0] * scale, kSkinScatterDistance[1] * scale, kSkinScatterDistance[2] * scale})}};
+      transmission        = 1;
+      out.ior             = 1.4f;
+      out.volume          = Volume{.thickness = 1, .attenuationDistance = 1};
+      out.scatter         = Scatter{.strength = 1};
+      const float scale   = e.scatterScale.value_or(1.f);
+      out.scatterDistance = Rgb{kSkinScatterDistance[0] * scale, kSkinScatterDistance[1] * scale, kSkinScatterDistance[2] * scale};
     }
     else if(role == SkinRole::eFlesh && opts.skin == SkinMode::eVolume && !thinWalled)
     {
@@ -673,57 +651,56 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       const VolumeMedium v = volumeMedium(t ? t->subsurface : std::nullopt);
       transmission         = std::min(1.0f, weight);
       transmissionMap      = t ? t->weightMap : std::string();
-      ext["KHR_materials_ior"]    = {{"ior", 1.4}};
-      ext["KHR_materials_volume"] = {{"thicknessFactor", 1}, {"attenuationDistance", v.distance}, {"attenuationColor", rgbJson(v.attenuation)}};
-      ext["KHR_materials_scatter"] = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", rgbJson(v.multiscatter)}, {"scatterAnisotropy", v.anisotropy}};
+      out.ior     = 1.4f;
+      out.volume  = Volume{.thickness = 1, .attenuationDistance = v.distance, .attenuationColor = v.attenuation};
+      out.scatter = Scatter{.strength = 1, .multiscatterColor = v.multiscatter, .anisotropy = v.anisotropy};
       // The base colour stays the skin map's own. The medium already warms what scatters, and the
       // walk leaves through the base colour, so a translucency tint here would be applied twice.
     }
     else if(weight > 0)
     {
       // Thin-walled scattering: the weight goes out as transmission with no volume, and
-      // KHR_materials_scatter at full strength turns that share into a Lambertian lobe coloured by
+      // scatter at full strength turns that share into a Lambertian lobe coloured by
       // the base map, which the renderer evaluates at the surface: no random walk, so open eye
       // sockets and mouths stay clean. Anisotropy -0.8 sends a tenth of it on through, so backlit
       // ears and fingers glow. Makeup lies over the whole skin, so the light that scatters back
       // leaves through it too: it is baked into the scatter colour as into the base colour.
       // Nails and teeth take this branch in the measured mode too, so their weight map applies there.
-      transmission                = std::min(1.0f, weight);
-      transmissionMap             = t ? t->weightMap : std::string();
-      ext["KHR_materials_volume"] = {{"thicknessFactor", 0}, {"attenuationColor", Json::array({1, 1, 1})}};
-      Json sc = {{"scatterStrengthFactor", 1}, {"multiscatterColorFactor", rgbJson(bakedFactor)}, {"scatterAnisotropy", -0.8}};
-      if(Json tex = albedoTexture(); !tex.is_null())
-        sc["multiscatterColorTexture"] = tex;
-      ext["KHR_materials_scatter"] = sc;
+      transmission    = std::min(1.0f, weight);
+      transmissionMap = t ? t->weightMap : std::string();
+      out.volume      = Volume{};
+      out.scatter     = Scatter{.strength = 1, .multiscatterColor = bakedFactor, .multiscatterColorMap = albedoTexture(), .anisotropy = -0.8f};
     }
   }
   // The white of an eye under measured skin: dense scattering tissue, so light comes back out a few
   // tenths of a millimetre from where it went in and the lashes' shadows soften instead of printing
   // as stripes. The eyeball's surfaces are no closed medium for a walk (one darkened the eyes), so
   // the renderer spreads where its light samples look for shadow over the surface instead
-  // (FV_materials_subsurface with no volume). A Genesis 9 eye's iris is in the same surface.
+  // (a scatter distance with no volume). A Genesis 9 eye's iris is in the same surface.
   if(const EyeLayout eye = eyeLayout(s);
      !refractive && opts.skin == SkinMode::eMeasured && (eye == EyeLayout::eShared || eye == EyeLayout::eSclera))
-    ext["FV_materials_subsurface"] = {{"scatterDistance", rgbJson(kScleraScatterDistance)}};
+    out.scatterDistance = kScleraScatterDistance;
   if(transmission > 0)
   {
-    ext["KHR_materials_transmission"] = {{"transmissionFactor", transmission}};
+    out.transmission = Transmission{.factor = transmission};
     // where it refracts, or where a skin lets light in (pbr_skin.mdl's entering share is Translucency
     // Weight times its map): the weight's map, in red
     if(refractive && !s.refraction->map.empty())
-      ext["KHR_materials_transmission"]["transmissionTexture"] = b.plain(s.refraction->map, false);
+      out.transmission->map = b.plain(s.refraction->map, false);
     else if(!transmissionMap.empty())
-      ext["KHR_materials_transmission"]["transmissionTexture"] = b.plain(transmissionMap, false);
-    if(!ext.contains("KHR_materials_volume"))
-      ext["KHR_materials_volume"] = {{"thicknessFactor", 0}, {"attenuationColor", Json::array({1, 1, 1})}};
+      out.transmission->map = b.plain(transmissionMap, false);
+    if(!out.volume)
+      out.volume = Volume{};
   }
 
   // PBRSkin's detail layer: a tiled normal map in glTF's convention bending the normal on top of the
   // normal map, with a roughness multiplier, under a weight. No map: the roughness multiplier alone
   if(s.detail && !opts.forFile)
   {
-    const DetailLayer& d  = *s.detail;
-    Json               de = {{"detailWeightFactor", d.weight}, {"detailRoughnessFactor", d.roughness}};
+    const DetailLayer& d = *s.detail;
+    Detail             de;
+    de.weight    = d.weight;
+    de.roughness = d.roughness;
     if(!d.map.empty())
     {
       TextureRequest r;
@@ -732,14 +709,14 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       r.channels               = d.heightMap ? "bn" : "ng";
       if(d.heightMap)
         r.bumpHeight = d.bumpHeight ? *d.bumpHeight : bumpHeightInUv(opts.metresPerUv, std::sqrt(d.tiles[0] * d.tiles[1]));
-      de["detailNormalTexture"] = b.info(std::move(r), d.strength, UvTransform{d.tiles, d.offset});
+      de.normalMap = b.info(std::move(r), d.strength, UvTransform{d.tiles, d.offset});
     }
     // the weight map lies on the surface's UVs; the detail's own maps keep their tiling (a weave its size)
     if(!d.weightMap.empty())
-      de["detailWeightTexture"] = b.plain(d.weightMap, false);
+      de.weightMap = b.plain(d.weightMap, false);
     if(!d.roughnessMap.empty())
-      de["detailRoughnessTexture"] = b.plain(d.roughnessMap, false, std::nullopt, UvTransform{d.tiles, d.offset});
-    ext["FV_materials_detail"] = de;
+      de.roughnessMap = b.plain(d.roughnessMap, false, std::nullopt, UvTransform{d.tiles, d.offset});
+    out.detail = de;
   }
 
   // Hair cards: the highlight stretches across the strands, a band. The rotation is measured from
@@ -747,7 +724,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // A live ribbon uses the per-hit strand instead of one angle for the whole material.
   if(s.kind == Kind::eHair && !liveRibbon && opts.anisotropyRotation)
     if(const auto strength = strandStrength(s, roughnessFactor, lobes.glossyShare))
-      ext["KHR_materials_anisotropy"] = {{"anisotropyStrength", *strength}, {"anisotropyRotation", opts.forFile ? -*opts.anisotropyRotation : *opts.anisotropyRotation}};
+      out.anisotropy = Anisotropy{.strength = *strength, .rotation = opts.forFile ? -*opts.anisotropyRotation : *opts.anisotropyRotation};
 
   if(liveRibbon)
   {
@@ -770,15 +747,15 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       recolorFibre(rootSigma, tipSigma, betaN, recolor->color, recolor->strength);
     eff.roughness = betaM;
     eff.specular  = hairSpecular;
-    out["pbrMetallicRoughness"]["roughnessFactor"] = betaM;
-    ext["KHR_materials_specular"]["specularFactor"] = hairSpecular;
-    ext["FV_materials_hair"] = {{"longitudinalRoughness", betaM},
-                                {"azimuthalRoughness", betaN},
-                                {"rootAbsorption", rgbJson(rootSigma)},
-                                {"tipAbsorption", rgbJson(tipSigma)},
-                                {"rootFade", 0.06f},
-                                {"rootV", opts.flipV ? 1.f : 0.f},
-                                {"specularFactor", hairSpecular}};
+    out.roughness        = betaM;
+    out.specular->factor = hairSpecular;
+    out.hair             = Hair{.longitudinal   = betaM,
+                                .azimuthal      = betaN,
+                                .rootAbsorption = rootSigma,
+                                .tipAbsorption  = tipSigma,
+                                .rootFade       = 0.06f,
+                                .rootV          = opts.flipV ? 1.f : 0.f,
+                                .specular       = hairSpecular};
   }
   else if(hairCards(s) && !opts.forFile && opts.skin != SkinMode::eRaster)
   {
@@ -788,24 +765,19 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     // runs across the measured anisotropy rotation, along UV v without one. The real-time view
     // keeps the GGX sheet above (it lowers with SkinMode::eRaster).
     const float betaM = cardLongitudinalRoughness(roughnessFactor);
-    Json        hair  = {{"longitudinalRoughness", betaM},
-                         {"azimuthalRoughness", kCardAzimuthalRoughness},
-                         {"specularFactor", clamp(e.specular.value_or(1.f), 0.f, 1.f)},
-                         {"absorptionFromColor", true}};
-    if(opts.anisotropyRotation)
-      hair["strandRotation"] = *opts.anisotropyRotation;
-    ext["FV_materials_hair"] = hair;
+    out.hair          = Hair{.longitudinal        = betaM,
+                               .azimuthal           = kCardAzimuthalRoughness,
+                               .specular            = clamp(e.specular.value_or(1.f), 0.f, 1.f),
+                               .absorptionFromColor = true,
+                               .strandRotation      = opts.anisotropyRotation};
   }
   else if(ribbonHair)
   {
     // A file for other tools has no fibre BSDF. A flat transmission keeps a stack of ribbons from
     // shading itself black; the live path gets that from the transmitted lobe instead.
-    const Json& c = out["pbrMetallicRoughness"]["baseColorFactor"];
-    ext["KHR_materials_diffuse_transmission"] = {{"diffuseTransmissionFactor", 0.4},
-                                                 {"diffuseTransmissionColorFactor", Json::array({c[0], c[1], c[2]})}};
+    out.diffuseTransmission = DiffuseTransmission{.factor = 0.4f, .color = {out.baseColor[0], out.baseColor[1], out.baseColor[2]}};
   }
 
-  out["extensions"] = ext;
   return {std::move(out), std::move(b.requests), std::move(eff)};
 }
 
@@ -918,148 +890,30 @@ float emissionStrength(const Surface& s, double areaM2, double exposureValue, do
   return float(luminance * (0.18 * iso) / (12.5 * std::pow(2.0, exposureValue)));
 }
 
-tinygltf::Value toValue(const Json& j)
+Material resolved(const Lowered& lowered, const std::function<ResolvedTexture(const TextureRequest&)>& resolve)
 {
-  using V = tinygltf::Value;
-  if(j.is_object())
-  {
-    V::Object o;
-    for(auto it = j.begin(); it != j.end(); ++it)
-      o[it.key()] = toValue(it.value());
-    return V(std::move(o));
-  }
-  if(j.is_array())
-  {
-    V::Array a;
-    for(const Json& x : j)
-      a.push_back(toValue(x));
-    return V(std::move(a));
-  }
-  if(j.is_boolean())
-    return V(j.get<bool>());
-  if(j.is_number_integer())
-    return V(int(j.get<int64_t>()));
-  if(j.is_number())
-    return V(j.get<double>());
-  if(j.is_string())
-    return V(j.get<std::string>());
-  return V();
-}
-
-namespace {
-
-// Replaces every slot in `v` with a texture info from `resolve`, dropping the ones that cannot be made.
-void resolveSlots(Json& v, const Lowered& lowered, const std::function<ResolvedTexture(const TextureRequest&)>& resolve, std::vector<std::string>& used)
-{
-  if(v.is_array())
-  {
-    for(Json& x : v)
-      resolveSlots(x, lowered, resolve, used);
-    return;
-  }
-  if(!v.is_object())
-    return;
-  if(v.contains("slot"))
-  {
-    const ResolvedTexture t = resolve(lowered.requests[v["slot"].get<size_t>()]);
+  Material out = lowered.material;
+  forEachSlot(out, [&](TextureSlot& slot) {
+    if(!slot.has())
+      return;
+    const ResolvedTexture t = resolve(lowered.requests[size_t(slot.index)]);
     if(t.index < 0)
     {
-      v = Json();
+      slot = {};
       return;
     }
-    Json out = {{"index", t.index}, {"texCoord", v.value("texCoord", 0)}};
-    if(v.contains("scale"))
-      out["scale"] = v["scale"];
-    Json extensions = v.contains("extensions") ? v["extensions"] : Json::object();
-    if(t.flipGreen)
-      extensions["FV_texture_flip_green"] = Json::object();
+    slot.index     = t.index;
+    slot.flipGreen = t.flipGreen;
     if(t.flipRows)
-    {
-      Json&       tt = extensions["KHR_texture_transform"];
-      UvTransform was;
-      if(tt.is_object())
-      {
-        was.scale    = tt.value("scale", std::array<float, 2>{1, 1});
-        was.offset   = tt.value("offset", std::array<float, 2>{0, 0});
-        was.rotation = tt.value("rotation", 0.f);
-      }
-      else
-        tt = Json::object();
-      const UvTransform flipped = rowsFlipped(was);
-      tt["scale"]               = Json::array({flipped.scale[0], flipped.scale[1]});
-      tt["offset"]              = Json::array({flipped.offset[0], flipped.offset[1]});
-      if(flipped.rotation != 0)
-        tt["rotation"] = flipped.rotation;
-      else
-        tt.erase("rotation");
-    }
-    if(!extensions.empty())
-    {
-      for(auto it = extensions.begin(); it != extensions.end(); ++it)
-        if(std::find(used.begin(), used.end(), it.key()) == used.end())
-          used.push_back(it.key());
-      out["extensions"] = extensions;
-    }
-    v = out;
-    return;
-  }
-  for(auto it = v.begin(); it != v.end(); ++it)
-    resolveSlots(it.value(), lowered, resolve, used);
-  for(auto it = v.begin(); it != v.end();)
-    it = it.value().is_null() ? v.erase(it) : std::next(it);
+      slot.transform = rowsFlipped(slot.transform.value_or(UvTransform{}));
+  });
+  return out;
 }
-
-void textureInfo(const Json& j, tinygltf::TextureInfo& out)
-{
-  out.index = j.value("index", -1);
-  out.texCoord = j.value("texCoord", 0);
-  if(j.contains("extensions"))
-    for(auto it = j["extensions"].begin(); it != j["extensions"].end(); ++it)
-      out.extensions[it.key()] = toValue(it.value());
-}
-
-}  // namespace
 
 tinygltf::Material toGltf(const Lowered& lowered, const std::function<ResolvedTexture(const TextureRequest&)>& resolve,
                           std::vector<std::string>& extensionsUsed)
 {
-  Json j = lowered.material;
-  resolveSlots(j, lowered, resolve, extensionsUsed);
-  tinygltf::Material m;
-  m.name = j.value("name", std::string());
-  const Json& pbr = j["pbrMetallicRoughness"];
-  m.pbrMetallicRoughness.baseColorFactor = pbr["baseColorFactor"].get<std::vector<double>>();
-  m.pbrMetallicRoughness.metallicFactor  = pbr["metallicFactor"].get<double>();
-  m.pbrMetallicRoughness.roughnessFactor = pbr["roughnessFactor"].get<double>();
-  if(pbr.contains("baseColorTexture"))
-    textureInfo(pbr["baseColorTexture"], m.pbrMetallicRoughness.baseColorTexture);
-  if(pbr.contains("metallicRoughnessTexture"))
-    textureInfo(pbr["metallicRoughnessTexture"], m.pbrMetallicRoughness.metallicRoughnessTexture);
-  m.alphaMode   = j.value("alphaMode", std::string("OPAQUE"));
-  m.alphaCutoff = j.value("alphaCutoff", 0.5);
-  m.doubleSided = j.value("doubleSided", false);
-  if(j.contains("emissiveFactor"))
-    m.emissiveFactor = j["emissiveFactor"].get<std::vector<double>>();
-  if(j.contains("emissiveTexture"))
-    textureInfo(j["emissiveTexture"], m.emissiveTexture);
-  if(j.contains("normalTexture"))
-  {
-    const Json& n = j["normalTexture"];
-    m.normalTexture.index    = n.value("index", -1);
-    m.normalTexture.texCoord = n.value("texCoord", 0);
-    m.normalTexture.scale    = n.value("scale", 1.0);
-    if(n.contains("extensions"))
-      for(auto it = n["extensions"].begin(); it != n["extensions"].end(); ++it)
-        m.normalTexture.extensions[it.key()] = toValue(it.value());
-  }
-  if(j.contains("extensions"))
-    for(auto it = j["extensions"].begin(); it != j["extensions"].end(); ++it)
-    {
-      m.extensions[it.key()] = toValue(it.value());
-      if(std::find(extensionsUsed.begin(), extensionsUsed.end(), it.key()) == extensionsUsed.end())
-        extensionsUsed.push_back(it.key());
-    }
-  return m;
+  return toGltf(resolved(lowered, resolve), extensionsUsed);
 }
 
 }  // namespace fv::mat

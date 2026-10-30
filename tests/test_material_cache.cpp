@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 #include <cstring>
+#include <figure/materials/material_gltf.hpp>
 #include "gltf_material_cache.hpp"
 #include "gltf_image_loader.hpp"
 #include "tinygltf_utils.hpp"
@@ -115,11 +116,177 @@ TEST(MaterialCache, ConvertOneNamesItsInfosFromItsBase)
   EXPECT_EQ(row.emissiveTexture, 0u);
 
   nvvkgltf::MaterialCache cache;
-  cache.append(mat, {});
+  cache.append(fv::mat::fromGltf(mat), {});
   ASSERT_EQ(cache.getTextureInfos().size(), 3u);
   for(size_t k = 0; k < 2; k++)
     EXPECT_EQ(std::memcmp(&cache.getTextureInfos()[1 + k], &infos[k], sizeof(infos[k])), 0) << k;
   EXPECT_EQ(cache.getShadeMaterials()[0].emissiveFactor, row.emissiveFactor);
+}
+
+// Every field of a material in its row, and each map in its own slot of the row
+TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
+{
+  using namespace fv::mat;
+  const auto slot = [](int index) {
+    TextureSlot s;
+    s.index = index;
+    return s;
+  };
+  Material m;
+  m.baseColor            = {0.1f, 0.2f, 0.3f, 0.4f};
+  m.metallic             = 0.25f;
+  m.roughness            = 0.75f;
+  m.alphaMode            = AlphaMode::eMask;
+  m.alphaCutoff          = 0.3f;
+  m.doubleSided          = true;
+  m.emissive             = {1, 0.5f, 0.25f};
+  m.emissiveStrength     = 2;
+  m.emissiveMap          = slot(1);
+  m.normalMap            = slot(2);
+  m.normalMap.scale      = 0.6f;
+  m.baseColorMap         = slot(3);
+  m.metallicRoughnessMap = slot(4);
+  m.occlusionMap         = slot(5);
+  m.occlusionMap.scale   = 0.7f;
+  m.transmission         = Transmission{.factor = 0.9f, .map = slot(6)};
+  m.ior                  = 1.33f;
+  m.volume               = Volume{.thickness = 0.5f, .thicknessMap = slot(7), .attenuationDistance = 2, .attenuationColor = {0.3f, 0.2f, 0.1f}};
+  m.clearcoat            = Clearcoat{.factor = 0.5f, .roughness = 0.2f, .map = slot(9), .roughnessMap = slot(8), .normalMap = slot(10), .dualLobe = true};
+  m.clearcoat->normalMap.scale = 0.4f;
+  m.specular             = Specular{.factor = 0.8f, .color = {0.9f, 0.8f, 0.7f}, .map = slot(11), .colorMap = slot(12)};
+  m.iridescence          = Iridescence{.factor = 0.5f, .ior = 1.4f, .thicknessMinimum = 150, .thicknessMaximum = 350, .map = slot(13), .thicknessMap = slot(14)};
+  m.anisotropy           = Anisotropy{.strength = 0.5f, .rotation = 1.25f, .map = slot(15)};
+  m.sheen                = Sheen{.color = {0.1f, 0.2f, 0.4f}, .roughness = 0.3f, .colorMap = slot(16), .roughnessMap = slot(17)};
+  m.dispersion           = 0.5f;
+  m.specularGlossiness   = SpecularGlossiness{.diffuse = {0.2f, 0.3f, 0.4f, 0.5f}, .specular = {0.6f, 0.7f, 0.8f}, .glossiness = 0.9f, .diffuseMap = slot(18), .specularGlossinessMap = slot(19)};
+  m.diffuseTransmission  = DiffuseTransmission{.factor = 0.3f, .color = {0.4f, 0.5f, 0.6f}, .map = slot(20), .colorMap = slot(21)};
+  m.retroreflection      = Retroreflection{.factor = 0.2f, .map = slot(22)};
+  m.scatter              = Scatter{.strength = 0.6f, .strengthMap = slot(23), .multiscatterColor = {0.7f, 0.6f, 0.5f}, .multiscatterColorMap = slot(24), .anisotropy = -0.5f};
+  m.scatterDistance      = Rgb{0.003f, 0.002f, 0.001f};
+  m.detail               = Detail{.weight = 0.5f, .roughness = 0.6f, .normalMap = slot(25), .weightMap = slot(26), .roughnessMap = slot(27)};
+  m.detail->normalMap.scale = 0.2f;
+  m.hair                 = Hair{.longitudinal = 0.3f, .azimuthal = 0.4f, .rootAbsorption = {0.5f, 0.6f, 0.7f}, .tipAbsorption = {0.1f, 0.2f, 0.3f}, .rootFade = 0.06f, .rootV = 1, .specular = 0.5f, .strandRotation = 0.5f};
+  m.dlssNrMask           = Rgba{0.1f, 0.2f, 0.3f, 0.4f};
+  m.unlit                = true;
+
+  std::vector<shaderio::GltfTextureInfo> infos;
+  const shaderio::GltfShadeMaterial      row = nvvkgltf::MaterialCache::convertOne(m, {}, 0, infos);
+
+  EXPECT_EQ(row.pbrBaseColorFactor, glm::vec4(0.1f, 0.2f, 0.3f, 0.4f));
+  EXPECT_FLOAT_EQ(row.pbrMetallicFactor, 0.25f);
+  EXPECT_FLOAT_EQ(row.pbrRoughnessFactor, 0.75f);
+  EXPECT_EQ(row.alphaMode, 1);
+  EXPECT_FLOAT_EQ(row.alphaCutoff, 0.3f);
+  EXPECT_EQ(row.doubleSided, 1);
+  EXPECT_EQ(row.emissiveFactor, glm::vec3(2, 1, 0.5f));
+  EXPECT_FLOAT_EQ(row.normalTextureScale, 0.6f);
+  EXPECT_FLOAT_EQ(row.occlusionStrength, 0.7f);
+  EXPECT_FLOAT_EQ(row.transmissionFactor, 0.9f);
+  EXPECT_FLOAT_EQ(row.ior, 1.33f);
+  EXPECT_FLOAT_EQ(row.thicknessFactor, 0.5f);
+  EXPECT_FLOAT_EQ(row.attenuationDistance, 2);
+  EXPECT_EQ(row.attenuationColor, glm::vec3(0.3f, 0.2f, 0.1f));
+  EXPECT_FLOAT_EQ(row.clearcoatFactor, 0.5f);
+  EXPECT_FLOAT_EQ(row.clearcoatRoughness, 0.2f);
+  EXPECT_FLOAT_EQ(row.clearcoatNormalTextureScale, 0.4f);
+  EXPECT_EQ(row.clearcoatDualLobe, 1.0f);
+  EXPECT_FLOAT_EQ(row.specularFactor, 0.8f);
+  EXPECT_EQ(row.specularColorFactor, glm::vec3(0.9f, 0.8f, 0.7f));
+  EXPECT_FLOAT_EQ(row.iridescenceFactor, 0.5f);
+  EXPECT_FLOAT_EQ(row.iridescenceIor, 1.4f);
+  EXPECT_FLOAT_EQ(row.iridescenceThicknessMinimum, 150);
+  EXPECT_FLOAT_EQ(row.iridescenceThicknessMaximum, 350);
+  EXPECT_FLOAT_EQ(row.anisotropyStrength, 0.5f);
+  EXPECT_EQ(row.anisotropyRotation, glm::vec2(glm::sin(1.25f), glm::cos(1.25f)));
+  EXPECT_EQ(row.sheenColorFactor, glm::vec3(0.1f, 0.2f, 0.4f));
+  EXPECT_FLOAT_EQ(row.sheenRoughnessFactor, 0.3f);
+  EXPECT_FLOAT_EQ(row.dispersion, 0.5f);
+  EXPECT_EQ(row.pbrModel, shaderio::PbrModel::ePbrModelSpecularGlossiness);
+  EXPECT_EQ(row.pbrDiffuseFactor, glm::vec4(0.2f, 0.3f, 0.4f, 0.5f));
+  EXPECT_EQ(row.pbrSpecularFactor, glm::vec3(0.6f, 0.7f, 0.8f));
+  EXPECT_FLOAT_EQ(row.pbrGlossinessFactor, 0.9f);
+  EXPECT_FLOAT_EQ(row.diffuseTransmissionFactor, 0.3f);
+  EXPECT_EQ(row.diffuseTransmissionColorFactor, glm::vec3(0.4f, 0.5f, 0.6f));
+  EXPECT_FLOAT_EQ(row.retroreflectionFactor, 0.2f);
+  EXPECT_FLOAT_EQ(row.scatterStrengthFactor, 0.6f);
+  EXPECT_EQ(row.multiscatterColorFactor, glm::vec3(0.7f, 0.6f, 0.5f));
+  EXPECT_FLOAT_EQ(row.scatterAnisotropy, -0.5f);
+  EXPECT_EQ(row.scatterDistance, glm::vec3(0.003f, 0.002f, 0.001f));
+  EXPECT_FLOAT_EQ(row.detailNormalScale, 0.2f);
+  EXPECT_FLOAT_EQ(row.detailWeightFactor, 0.5f);
+  EXPECT_FLOAT_EQ(row.detailRoughnessFactor, 0.6f);
+  EXPECT_EQ(row.hairFactor, 1.0f);
+  EXPECT_FLOAT_EQ(row.hairLongitudinal, 0.3f);
+  EXPECT_FLOAT_EQ(row.hairAzimuthal, 0.4f);
+  EXPECT_FLOAT_EQ(row.hairRootFade, 0.06f);
+  EXPECT_FLOAT_EQ(row.hairRootV, 1);
+  EXPECT_FLOAT_EQ(row.hairSpecular, 0.5f);
+  EXPECT_EQ(row.hairRootSigma, glm::vec3(0.5f, 0.6f, 0.7f));
+  EXPECT_EQ(row.hairTipSigma, glm::vec3(0.1f, 0.2f, 0.3f));
+  EXPECT_FLOAT_EQ(row.hairStrandSin, glm::sin(0.5f));
+  EXPECT_FLOAT_EQ(row.hairStrandCos, glm::cos(0.5f));
+  EXPECT_EQ(row.nrMask, glm::vec4(0.1f, 0.2f, 0.3f, 0.4f));
+  EXPECT_EQ(row.unlit, 1);
+
+  // each map's info is the one its row names, by the texture it was given
+  ASSERT_EQ(infos.size(), 27u);
+  const auto textureOf = [&](uint16_t at) { return infos[at].index; };
+  EXPECT_EQ(textureOf(row.emissiveTexture), 1);
+  EXPECT_EQ(textureOf(row.normalTexture), 2);
+  EXPECT_EQ(textureOf(row.pbrBaseColorTexture), 3);
+  EXPECT_EQ(textureOf(row.pbrMetallicRoughnessTexture), 4);
+  EXPECT_EQ(textureOf(row.occlusionTexture), 5);
+  EXPECT_EQ(textureOf(row.transmissionTexture), 6);
+  EXPECT_EQ(textureOf(row.thicknessTexture), 7);
+  EXPECT_EQ(textureOf(row.clearcoatRoughnessTexture), 8);
+  EXPECT_EQ(textureOf(row.clearcoatTexture), 9);
+  EXPECT_EQ(textureOf(row.clearcoatNormalTexture), 10);
+  EXPECT_EQ(textureOf(row.specularTexture), 11);
+  EXPECT_EQ(textureOf(row.specularColorTexture), 12);
+  EXPECT_EQ(textureOf(row.iridescenceTexture), 13);
+  EXPECT_EQ(textureOf(row.iridescenceThicknessTexture), 14);
+  EXPECT_EQ(textureOf(row.anisotropyTexture), 15);
+  EXPECT_EQ(textureOf(row.sheenColorTexture), 16);
+  EXPECT_EQ(textureOf(row.sheenRoughnessTexture), 17);
+  EXPECT_EQ(textureOf(row.pbrDiffuseTexture), 18);
+  EXPECT_EQ(textureOf(row.pbrSpecularGlossinessTexture), 19);
+  EXPECT_EQ(textureOf(row.diffuseTransmissionTexture), 20);
+  EXPECT_EQ(textureOf(row.diffuseTransmissionColorTexture), 21);
+  EXPECT_EQ(textureOf(row.retroreflectionTexture), 22);
+  EXPECT_EQ(textureOf(row.scatterStrengthTexture), 23);
+  EXPECT_EQ(textureOf(row.multiscatterColorTexture), 24);
+  EXPECT_EQ(textureOf(row.detailNormalTexture), 25);
+  EXPECT_EQ(textureOf(row.detailWeightTexture), 26);
+  EXPECT_EQ(textureOf(row.detailRoughnessTexture), 27);
+
+  // written to glTF and read back, the same row, byte for byte
+  std::vector<shaderio::GltfTextureInfo> again;
+  const shaderio::GltfShadeMaterial      through = nvvkgltf::MaterialCache::convertOne(fv::mat::toGltf(m), {}, 0, again);
+  EXPECT_EQ(std::memcmp(&row, &through, sizeof(row)), 0);
+  ASSERT_EQ(again.size(), infos.size());
+  EXPECT_EQ(std::memcmp(infos.data(), again.data(), infos.size() * sizeof(infos[0])), 0);
+}
+
+// A lobe left out packs as one at its defaults, what the shader reads where it has that feature
+TEST(MaterialCache, ALobeLeftOutPacksItsDefaults)
+{
+  std::vector<shaderio::GltfTextureInfo> infos;
+  const shaderio::GltfShadeMaterial      row = nvvkgltf::MaterialCache::convertOne(fv::mat::Material{}, {}, 0, infos);
+  EXPECT_TRUE(infos.empty());
+  EXPECT_FLOAT_EQ(row.ior, 1.5f);
+  EXPECT_FLOAT_EQ(row.specularFactor, 1);
+  EXPECT_EQ(row.specularColorFactor, glm::vec3(1));
+  EXPECT_EQ(row.attenuationDistance, FLT_MAX);
+  EXPECT_EQ(row.attenuationColor, glm::vec3(1));
+  EXPECT_FLOAT_EQ(row.normalTextureScale, 1);
+  EXPECT_FLOAT_EQ(row.occlusionStrength, 1);
+  EXPECT_FLOAT_EQ(row.iridescenceIor, 1.3f);
+  EXPECT_FLOAT_EQ(row.iridescenceThicknessMaximum, 400);
+  EXPECT_EQ(row.multiscatterColorFactor, glm::vec3(1));
+  EXPECT_FLOAT_EQ(row.detailRoughnessFactor, 1);
+  EXPECT_EQ(row.nrMask, glm::vec4(1));
+  EXPECT_EQ(row.pbrModel, shaderio::PbrModel::ePbrModelMetallicRoughness);
+  EXPECT_EQ(row.hairFactor, 0.0f);
 }
 
 TEST(MaterialCache, BuildResolvesSamplerIndexFromSlots)

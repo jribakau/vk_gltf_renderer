@@ -78,11 +78,9 @@ MaterialId material(RetainedScene& scene, const char* name)
 }
 
 // The payload with KHR_materials_transmission (factor 1), a feature the shader can compile out
-tinygltf::Material withTransmission(tinygltf::Material payload)
+fv::mat::Material withTransmission(fv::mat::Material payload)
 {
-  tinygltf::Value::Object transmission;
-  transmission["transmissionFactor"]               = tinygltf::Value(1.0);
-  payload.extensions["KHR_materials_transmission"] = tinygltf::Value(transmission);
+  payload.transmission = fv::mat::Transmission{.factor = 1};
   return payload;
 }
 
@@ -106,13 +104,13 @@ std::shared_ptr<const TextureTable> textureTable(RetainedScene& scene)
 }
 
 // base colour from table entry `base`, a normal map from entry 2
-MaterialId textured(RetainedScene& scene, std::shared_ptr<const TextureTable> table, int base, const char* alpha = "OPAQUE")
+MaterialId textured(RetainedScene& scene, std::shared_ptr<const TextureTable> table, int base, fv::mat::AlphaMode alpha = fv::mat::AlphaMode::eOpaque)
 {
   MaterialRecord m;
   m.payload.name                                        = "textured";
   m.payload.alphaMode                                   = alpha;
-  m.payload.pbrMetallicRoughness.baseColorTexture.index = base;
-  m.payload.normalTexture.index                         = 2;
+  m.payload.baseColorMap.index = base;
+  m.payload.normalMap.index                         = 2;
   m.textures                                            = std::move(table);
   return scene.addMaterial(std::move(m));
 }
@@ -121,7 +119,7 @@ MaterialId emissive(RetainedScene& scene, float strength)
 {
   MaterialRecord m;
   m.payload.name           = "lamp";
-  m.payload.emissiveFactor = {strength, strength, strength};
+  m.payload.emissive = {strength, strength, strength};
   return scene.addMaterial(std::move(m));
 }
 
@@ -599,8 +597,8 @@ TEST(RetainedResidency, AnEditTheVariantCantDrawIsHeldUntilItCan)
   const uint32_t slot = uint32_t(residency.materialSlot(glass));
 
   scene.setMaterial(glass, withTransmission(scene.material(glass)->payload));
-  tinygltf::Material red                   = scene.material(plain)->payload;
-  red.pbrMetallicRoughness.baseColorFactor = {1, 0, 0, 1};
+  fv::mat::Material red = scene.material(plain)->payload;
+  red.baseColor         = {1, 0, 0, 1};
   scene.setMaterial(plain, red);
   gpu.beginFrame();
   residency.sync(scene);
@@ -827,9 +825,9 @@ MaterialId withTextures(RetainedScene& scene, std::shared_ptr<const TextureTable
 {
   MaterialRecord m;
   m.payload.name = name;
-  int* fields[]  = {&m.payload.pbrMetallicRoughness.baseColorTexture.index, &m.payload.normalTexture.index,
-                    &m.payload.emissiveTexture.index, &m.payload.occlusionTexture.index,
-                    &m.payload.pbrMetallicRoughness.metallicRoughnessTexture.index};
+  int* fields[]  = {&m.payload.baseColorMap.index, &m.payload.normalMap.index,
+                    &m.payload.emissiveMap.index, &m.payload.occlusionMap.index,
+                    &m.payload.metallicRoughnessMap.index};
   for(int i = 0; i < count; i++)
     *fields[i] = 0;
   m.textures = std::move(table);
@@ -856,8 +854,8 @@ TEST(RetainedResidency, AMaterialEditWritesItsRowAndSpanOnly)
   EXPECT_EQ(residency.materialState(slotB)->spanCount, 3u);
 
   // a factor: its row and its span, nothing else of the material tables
-  tinygltf::Material payload                   = scene.material(a)->payload;
-  payload.pbrMetallicRoughness.baseColorFactor = {0.5, 0.5, 0.5, 1.0};
+  fv::mat::Material payload = scene.material(a)->payload;
+  payload.baseColor         = {0.5, 0.5, 0.5, 1.0};
   scene.setMaterial(a, payload);
   gpu.clearUploads();
   gpu.beginFrame();
@@ -873,8 +871,8 @@ TEST(RetainedResidency, AMaterialEditWritesItsRowAndSpanOnly)
   EXPECT_EQ(materialUploads, want);
 
   // two more references: a longer span elsewhere; b's stays
-  payload.emissiveTexture.index  = 0;
-  payload.occlusionTexture.index = 0;
+  payload.emissiveMap.index  = 0;
+  payload.occlusionMap.index = 0;
   scene.setMaterial(a, payload);
   gpu.beginFrame();
   residency.sync(scene);
@@ -969,7 +967,7 @@ TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)
   auto table  = std::make_shared<TextureTable>();
   table->push_back({scene.addTexture(missing), {}});
   MaterialRecord m;
-  m.payload.pbrMetallicRoughness.baseColorTexture.index = 0;
+  m.payload.baseColorMap.index = 0;
   m.textures                                            = table;
   drawn(scene, "e", scene.addMesh(gridMesh(1, 0.f)), {scene.addMaterial(m)});
   FakeGpuBackend gpu;
@@ -997,9 +995,9 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
   const int32_t  before   = residency.textureSlot((*table)[0].texture, {}, true);
   const uint64_t revision = residency.drawListsRevision();
 
-  tinygltf::Material edited                          = scene.material(mat)->payload;
-  edited.pbrMetallicRoughness.baseColorTexture.index = 1;  // the other sampler
-  edited.alphaMode                                   = "MASK";
+  fv::mat::Material edited  = scene.material(mat)->payload;
+  edited.baseColorMap.index = 1;  // the other sampler
+  edited.alphaMode          = fv::mat::AlphaMode::eMask;
   scene.setMaterial(mat, edited);
   gpu.beginFrame();
   const SyncResult r = residency.sync(scene);
@@ -1177,8 +1175,8 @@ TEST(RetainedResidency, AnEmittersVertexWritesRebuildTheTableOnceTheyStop)
   gpu.beginFrame();
   residency.sync(scene);
   EXPECT_TRUE(residency.emissiveSettling());
-  tinygltf::Material payload = scene.material(glow)->payload;
-  payload.doubleSided        = !payload.doubleSided;
+  fv::mat::Material payload = scene.material(glow)->payload;
+  payload.doubleSided       = !payload.doubleSided;
   scene.setMaterial(glow, payload);
   gpu.beginFrame();
   residency.sync(scene);
@@ -1217,7 +1215,7 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       materials.push_back(material(scene, name));
     const auto table = textureTable(scene);
     materials.push_back(textured(scene, table, 0));
-    materials.push_back(textured(scene, table, 1, "BLEND"));
+    materials.push_back(textured(scene, table, 1, fv::mat::AlphaMode::eBlend));
     materials.push_back(emissive(scene, 3.f));
     materials.push_back(textured(scene, table, 2));  // the normal map's texture sampled as colour too
     std::vector<EntityId> live;
@@ -1293,12 +1291,12 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
       {
         // a material edit: another texture, another alpha mode, sides
         const MaterialId   m       = pick(materials);
-        tinygltf::Material payload = scene.material(m)->payload;
-        static const char* modes[] = {"OPAQUE", "MASK", "BLEND"};
-        payload.alphaMode          = modes[rng() % 3];
-        payload.doubleSided        = rng() % 2 == 0;
+        fv::mat::Material payload = scene.material(m)->payload;
+        static const fv::mat::AlphaMode modes[] = {fv::mat::AlphaMode::eOpaque, fv::mat::AlphaMode::eMask, fv::mat::AlphaMode::eBlend};
+        payload.alphaMode   = modes[rng() % 3];
+        payload.doubleSided = rng() % 2 == 0;
         if(scene.material(m)->textures)
-          payload.pbrMetallicRoughness.baseColorTexture.index = int(rng() % 3) - 1;
+          payload.baseColorMap.index = int(rng() % 3) - 1;
         scene.setMaterial(m, payload);
       }
       else
@@ -1356,7 +1354,7 @@ TEST(RetainedResidency, ARebindingToALiveMaterialMovesItsListsAndEmitters)
   const MeshId     grid  = scene.addMesh(gridMesh(2, 0.f));
   const MaterialId plain = material(scene, "plain"), lamp = emissive(scene, 2.f);
   MaterialRecord   blend;
-  blend.payload.alphaMode  = "BLEND";
+  blend.payload.alphaMode  = fv::mat::AlphaMode::eBlend;
   const MaterialId glassy  = scene.addMaterial(blend);
   const EntityId   e       = drawn(scene, "e", grid, {plain});
   drawn(scene, "keep lamp", grid, {lamp});
@@ -1380,7 +1378,7 @@ TEST(RetainedResidency, ATextureSampledAsColourAnywhereIsDecodedAsColour)
   RetainedScene scene;
   const auto    table = textureTable(scene);
   MaterialRecord normalOnly;
-  normalOnly.payload.normalTexture.index = 2;
+  normalOnly.payload.normalMap.index = 2;
   normalOnly.textures                    = table;
   const MaterialId n    = scene.addMaterial(normalOnly);
   const MeshId     grid = scene.addMesh(gridMesh(2, 0.f));
@@ -1390,7 +1388,7 @@ TEST(RetainedResidency, ATextureSampledAsColourAnywhereIsDecodedAsColour)
   residency.replace(scene);
   expectClean(scene, residency, gpu, "normal only: ");
   MaterialRecord colour;
-  colour.payload.pbrMetallicRoughness.baseColorTexture.index = 2;
+  colour.payload.baseColorMap.index = 2;
   colour.textures                                            = table;
   drawn(scene, "colour", grid, {scene.addMaterial(colour)});
   gpu.beginFrame();
@@ -1408,11 +1406,9 @@ TEST(RetainedResidency, AHeldEditThatEmitsJoinsTheEmissiveTableWhenItIsWritten)
   Residency      residency(gpu);
   residency.setShaderFeatures(nvvkgltf::SceneFeatureSet{});
   residency.replace(scene);
-  tinygltf::Material glowing = scene.material(plain)->payload;
-  glowing.emissiveFactor     = {2, 2, 2};
-  tinygltf::Value::Object clearcoat;
-  clearcoat["clearcoatFactor"]             = tinygltf::Value(1.0);
-  glowing.extensions["KHR_materials_clearcoat"] = tinygltf::Value(clearcoat);
+  fv::mat::Material glowing = scene.material(plain)->payload;
+  glowing.emissive          = {2, 2, 2};
+  glowing.clearcoat         = fv::mat::Clearcoat{.factor = 1};
   scene.setMaterial(plain, glowing);
   gpu.beginFrame();
   residency.sync(scene);

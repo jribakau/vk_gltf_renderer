@@ -65,7 +65,7 @@ bool allZero(const void* p, size_t n)
 }
 
 // The payload a material is drawn with: its record's, or for an edit held (D15) the one its slot has
-const tinygltf::Material* drawnPayload(const RetainedScene& scene, const Residency& residency, MaterialId id)
+const fv::mat::Material* drawnPayload(const RetainedScene& scene, const Residency& residency, MaterialId id)
 {
   if(residency.heldMaterials().count(id) && residency.materialSlot(id) >= 0)
     if(const Residency::MaterialState* state = residency.materialState(uint32_t(residency.materialSlot(id))))
@@ -330,7 +330,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
           }
       if(row.customIndex != inst.prim || row.customIndex >= (1u << 24))
         out.push_back(at("I2", s) + "its custom index is not its prim slot");
-      if(const tinygltf::Material* payload = drawnPayload(scene, residency, item.material))
+      if(const fv::mat::Material* payload = drawnPayload(scene, residency, item.material))
       {
         const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(*payload);
         if(row.mask != bits.instanceMask || row.flags != bits.instanceFlags)
@@ -560,7 +560,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       slots.gpuIndex.assign(std::max<size_t>(slots.gpuIndex.size(), 1), -1);
     const shaderio::GltfShadeMaterial row =
         state ? nvvkgltf::MaterialCache::convertOne(state->payload, slots, state->span, infos) :
-                nvvkgltf::MaterialCache::convertOne(tinygltf::Material{}, {}, 0, infos);
+                nvvkgltf::MaterialCache::convertOne(fv::mat::Material{}, {}, 0, infos);
     constexpr size_t kRow = sizeof(shaderio::GltfShadeMaterial), kInfo = sizeof(shaderio::GltfTextureInfo);
     if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.materialTable()) + m * kRow, kRow), &row, 1))
       out.push_back(at("I4", m) + "its row is not its state converted at its span");
@@ -634,7 +634,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
   std::array<std::vector<uint32_t>, 4> lists;
   for(uint32_t s = 0; s < hwm; s++)
     if(const Residency::Instance* inst = residency.instance(s))
-      if(const tinygltf::Material* payload = drawnPayload(scene, residency, inst->material))
+      if(const fv::mat::Material* payload = drawnPayload(scene, residency, inst->material))
       {
         const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(*payload);
         if(bits.solid())

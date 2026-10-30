@@ -33,6 +33,21 @@ namespace {
 
 using fv::dson::Json;
 
+// A lowering with its material as glTF's JSON, its slots under "slot": what these tests read it as,
+// so a change to how the material is kept doesn't touch what they hold it to.
+struct LoweredJson
+{
+  nlohmann::json                       material;
+  std::vector<fv::mat::TextureRequest> requests;
+  fv::mat::Effective                   effective;
+};
+
+LoweredJson loweredJson(const fv::mat::Surface& s, const fv::mat::Edits& e, const fv::mat::LowerOptions& o)
+{
+  fv::mat::Lowered l = fv::mat::lower(s, e, o);
+  return {fv::mat::materialJson(l.material, "slot"), std::move(l.requests), std::move(l.effective)};
+}
+
 fv::dson::Channels channelsOf(const char* text)
 {
   fv::dson::Channels ch;
@@ -99,20 +114,20 @@ TEST(Materials, SkinGoesOutAsAVolumeForTheRendererAndPlainForTheRasterizer)
 {
   const auto s = fv::dson::parseSurface("Face", channelsOf(kSkin));
   {
-    const auto lowered = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eVolume});
+    const auto lowered = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eVolume});
     const auto& ext    = lowered.material["extensions"];
     EXPECT_TRUE(ext.contains("KHR_materials_volume"));
     EXPECT_TRUE(ext.contains("KHR_materials_scatter"));
     EXPECT_NEAR(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 0.6f, 1e-5f);
     // the medium warms what scatters; the base colour, which the walk leaves through, is the one
     // the rasterizer shows, not tinted again
-    const auto  plain = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+    const auto  plain = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eRaster});
     const auto& base  = lowered.material["pbrMetallicRoughness"]["baseColorFactor"];
     for(int i = 0; i < 3; i++)
       EXPECT_FLOAT_EQ(base[i].get<float>(), plain.material["pbrMetallicRoughness"]["baseColorFactor"][i].get<float>());
   }
   {
-    const auto lowered = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+    const auto lowered = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eRaster});
     const auto& ext    = lowered.material["extensions"];
     EXPECT_FALSE(ext.contains("KHR_materials_transmission"));
     EXPECT_FALSE(ext.contains("KHR_materials_scatter"));
@@ -128,7 +143,7 @@ TEST(Materials, FullTranslucencyEntersWhollyInEveryScatterMode)
   s.translucency->weight = 1.0f;
   for(const auto mode : {fv::mat::SkinMode::eVolume, fv::mat::SkinMode::eThin})
   {
-    const auto lowered = fv::mat::lower(s, {}, {.skin = mode});
+    const auto lowered = loweredJson(s, {}, {.skin = mode});
     EXPECT_FLOAT_EQ(lowered.material["extensions"]["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.0f);
   }
 }
@@ -138,7 +153,7 @@ TEST(Materials, FullTranslucencyEntersWhollyInEveryScatterMode)
 TEST(Materials, MeasuredSkinEntersWhollyAndSpreadsAsHumanSkin)
 {
   const auto  s       = fv::dson::parseSurface("Face", channelsOf(kSkin));
-  const auto  lowered = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto  lowered = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eMeasured});
   const auto& ext     = lowered.material["extensions"];
   EXPECT_FLOAT_EQ(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.0f);
   EXPECT_GT(ext["KHR_materials_volume"]["thicknessFactor"].get<float>(), 0.0f);
@@ -154,12 +169,12 @@ TEST(Materials, MeasuredSkinEntersWhollyAndSpreadsAsHumanSkin)
   EXPECT_GT(d[0].get<float>(), d[1].get<float>());
   EXPECT_GT(d[1].get<float>(), d[2].get<float>());
   // the Iray volume has none of it
-  EXPECT_FALSE(fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
+  EXPECT_FALSE(loweredJson(s, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
   // an edit scales the distance
   fv::mat::Edits e;
   e.scatterScale = 0.5f;
   EXPECT_FALSE(e.empty());
-  const auto  halved = fv::mat::lower(s, e, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto  halved = loweredJson(s, e, {.skin = fv::mat::SkinMode::eMeasured});
   const auto& hd     = halved.material["extensions"]["FV_materials_subsurface"]["scatterDistance"];
   for(int i = 0; i < 3; i++)
     EXPECT_FLOAT_EQ(hd[i].get<float>(), 0.5f * fv::mat::kSkinScatterDistance[i]);
@@ -168,7 +183,7 @@ TEST(Materials, MeasuredSkinEntersWhollyAndSpreadsAsHumanSkin)
 TEST(Materials, AsksTheCookerForTheBlendedNormalMap)
 {
   const auto s       = fv::dson::parseSurface("Face", channelsOf(kSkin));
-  const auto lowered = fv::mat::lower(s, {}, {});
+  const auto lowered = loweredJson(s, {}, {});
   ASSERT_EQ(lowered.requests.size(), 2u);
   const fv::mat::TextureRequest& normal = lowered.requests[1];
   EXPECT_EQ(normal.rel, "/Runtime/Textures/face_n.jpg");
@@ -198,7 +213,7 @@ TEST(Materials, KeepsEveryLayerOfALayeredImage)
   // the request reads the bottom layer and lays the rest over it
   auto s     = fv::dson::parseSurface("Eye Left", channelsOf(kSkin));
   s.base.map = eye;
-  const auto lowered = fv::mat::lower(s, {}, {});
+  const auto lowered = loweredJson(s, {}, {});
   const auto base    = std::find_if(lowered.requests.begin(), lowered.requests.end(), [](const auto& r) { return !r.layers.empty(); });
   ASSERT_NE(base, lowered.requests.end());
   EXPECT_EQ(base->rel, "/Runtime/Textures/Eyes/Sclera_01.jpg");
@@ -216,7 +231,7 @@ TEST(Materials, EditsLieOverTheSurface)
   e.roughness = 0.9f;
   e.color     = fv::mat::Rgb{0.2f, 0.2f, 0.2f};
   e.alphaMode = "cutout";
-  const auto lowered = fv::mat::lower(s, e, {.skin = fv::mat::SkinMode::eRaster});
+  const auto lowered = loweredJson(s, e, {.skin = fv::mat::SkinMode::eRaster});
   const auto& pbr    = lowered.material["pbrMetallicRoughness"];
   EXPECT_NEAR(pbr["roughnessFactor"].get<float>(), 0.9f, 1e-6f);
   EXPECT_NEAR(pbr["baseColorFactor"][0].get<float>(), 0.2f, 1e-6f);
@@ -228,7 +243,7 @@ TEST(Materials, EditsLieOverTheSurface)
 TEST(Materials, ACorneaIsGlassNotSkin)
 {
   const auto s       = fv::dson::parseSurface("Eye Moisture Left", channelsOf(kEyeMoisture));
-  const auto lowered = fv::mat::lower(s, {}, {});
+  const auto lowered = loweredJson(s, {}, {});
   const auto& ext    = lowered.material["extensions"];
   EXPECT_NEAR(ext["KHR_materials_ior"]["ior"].get<float>(), 1.376f, 1e-5f);
   EXPECT_NEAR(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1.0f, 1e-6f);
@@ -270,7 +285,7 @@ TEST(Materials, TheTearFilmReflectsAtFullFresnelFromASmoothSurface)
 {
   const auto  s       = fv::dson::parseSurface("EyeMoisture Left", channelsOf(kG9Moisture));
   ASSERT_EQ(fv::mat::eyeShell(s), fv::mat::EyeShell::eMoisture);
-  const auto  lowered = fv::mat::lower(s, {}, {.underTearFilm = true});
+  const auto  lowered = loweredJson(s, {}, {.underTearFilm = true});
   const auto& m       = lowered.material;
   const auto& ext     = m["extensions"];
   EXPECT_NEAR(ext["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
@@ -286,12 +301,12 @@ TEST(Materials, TheTearFilmReflectsAtFullFresnelFromASmoothSurface)
 TEST(Materials, AnEyeUnderTheTearFilmHasNoSpecularOfItsOwn)
 {
   const auto s     = fv::dson::parseSurface("Eye Left", channelsOf(kG9Eye));
-  const auto under = fv::mat::lower(s, {}, {.underTearFilm = true}).material["extensions"];
+  const auto under = loweredJson(s, {}, {.underTearFilm = true}).material["extensions"];
   EXPECT_NEAR(under["KHR_materials_specular"]["specularFactor"].get<float>(), 0.0f, 1e-6f);
   EXPECT_FALSE(under["KHR_materials_specular"].contains("specularTexture"));
   EXPECT_FALSE(under.contains("KHR_materials_clearcoat"));
   // with no film over it, its dual lobe shines where its weight map says
-  const auto bareLowered = fv::mat::lower(s, {}, {});
+  const auto bareLowered = loweredJson(s, {}, {});
   const auto bare        = bareLowered.material["extensions"];
   EXPECT_NEAR(bare["KHR_materials_specular"]["specularFactor"].get<float>(), 0.85f, 1e-5f);
   ASSERT_TRUE(bare["KHR_materials_specular"].contains("specularTexture"));
@@ -301,7 +316,7 @@ TEST(Materials, AnEyeUnderTheTearFilmHasNoSpecularOfItsOwn)
   // a panel edit still wins
   fv::mat::Edits e;
   e.specular = 0.3f;
-  EXPECT_NEAR(fv::mat::lower(s, e, {.underTearFilm = true}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(),
+  EXPECT_NEAR(loweredJson(s, e, {.underTearFilm = true}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(),
               0.3f, 1e-6f);
 }
 
@@ -312,13 +327,13 @@ TEST(Materials, OneReflectingShellPerEye)
 {
   const auto cornea = fv::dson::parseSurface("Cornea", channelsOf(kG9Moisture));
   ASSERT_EQ(fv::mat::eyeShell(cornea), fv::mat::EyeShell::eCornea);
-  EXPECT_NEAR(fv::mat::lower(cornea, {}, {.underTearFilm = true}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(),
+  EXPECT_NEAR(loweredJson(cornea, {}, {.underTearFilm = true}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(),
               0.0f, 1e-6f);
-  EXPECT_NEAR(fv::mat::lower(cornea, {}, {}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
+  EXPECT_NEAR(loweredJson(cornea, {}, {}).material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
 
   auto glass = fv::dson::parseSurface("EyeMoisture", channelsOf(kG9Moisture));
   glass.refraction->ior = 1.5f;
-  EXPECT_NEAR(fv::mat::lower(glass, {}, {}).material["extensions"]["KHR_materials_ior"]["ior"].get<float>(), 1.376f, 1e-6f);
+  EXPECT_NEAR(loweredJson(glass, {}, {}).material["extensions"]["KHR_materials_ior"]["ior"].get<float>(), 1.376f, 1e-6f);
 }
 
 // The lid margin's tear meniscus is the same water, but its normal map is its shape and stays
@@ -326,7 +341,7 @@ TEST(Materials, TheTearMeniscusKeepsItsShape)
 {
   const auto s = fv::dson::parseSurface("Tear", channelsOf(kG9Moisture));
   ASSERT_EQ(fv::mat::eyeShell(s), fv::mat::EyeShell::eMeniscus);
-  const auto lowered = fv::mat::lower(s, {}, {.underTearFilm = true});
+  const auto lowered = loweredJson(s, {}, {.underTearFilm = true});
   EXPECT_TRUE(lowered.material.contains("normalTexture"));
   EXPECT_NEAR(lowered.material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(), 1.0f, 1e-6f);
 }
@@ -538,7 +553,7 @@ TEST(Materials, RibbonHairLetsLightThroughAndReflectsAsAFibre)
   EXPECT_NEAR(s.hairFibre->rootSigma[1], s.hairFibre->tipSigma[1], 1e-5f);
   EXPECT_GT(s.hairFibre->rootSigma[2], s.hairFibre->rootSigma[0]);
 
-  const auto  lowered = fv::mat::lower(s, {}, {});
+  const auto  lowered = loweredJson(s, {}, {});
   const auto& ext     = lowered.material["extensions"];
   EXPECT_EQ(lowered.material["alphaMode"].get<std::string>(), "OPAQUE");
   EXPECT_FALSE(ext.contains("KHR_materials_diffuse_transmission"));
@@ -555,7 +570,7 @@ TEST(Materials, RibbonHairLetsLightThroughAndReflectsAsAFibre)
   // a file for other tools has no fibre BSDF, so it keeps the sheet that lets light through
   fv::mat::LowerOptions fileOpts;
   fileOpts.forFile = true;
-  const auto  filed = fv::mat::lower(s, {}, fileOpts);
+  const auto  filed = loweredJson(s, {}, fileOpts);
   const auto& fileExt = filed.material["extensions"];
   EXPECT_FALSE(fileExt.contains("FV_materials_hair"));
   EXPECT_NEAR(fileExt["KHR_materials_ior"]["ior"].get<float>(), 1.55f, 1e-6f);
@@ -565,7 +580,7 @@ TEST(Materials, RibbonHairLetsLightThroughAndReflectsAsAFibre)
   EXPECT_NEAR(dt["diffuseTransmissionColorFactor"][0].get<float>(), filed.material["pbrMetallicRoughness"]["baseColorFactor"][0].get<float>(), 1e-6f);
 
   // card hair is not a ribbon
-  const auto cards = fv::mat::lower(fv::dson::parseSurface("Scalp Hair", channelsOf(kSkin)), {}, {});
+  const auto cards = loweredJson(fv::dson::parseSurface("Scalp Hair", channelsOf(kSkin)), {}, {});
   EXPECT_FALSE(cards.material["extensions"].contains("KHR_materials_diffuse_transmission"));
   EXPECT_FALSE(cards.material["extensions"].contains("FV_materials_hair"));
 }
@@ -607,13 +622,13 @@ TEST(Materials, ABumpMapsHeightIsInMillimetresOfSurface)
   bumped.bumpMap = "/Runtime/Textures/skin_b.jpg";
   fv::mat::LowerOptions o;
   o.metresPerUv = 0.43f;
-  const auto alone = fv::mat::lower(bumped, {}, o).requests;
+  const auto alone = loweredJson(bumped, {}, o).requests;
   ASSERT_EQ(alone.size(), 1u);
   EXPECT_EQ(alone[0].channels, "bn");
   EXPECT_NEAR(alone[0].bumpHeight, fv::mat::bumpHeightInUv(0.43f), 1e-7f);
-  EXPECT_NE(fv::mat::requestKey(alone[0]), fv::mat::requestKey(fv::mat::lower(bumped, {}, {}).requests[0]));
+  EXPECT_NE(fv::mat::requestKey(alone[0]), fv::mat::requestKey(loweredJson(bumped, {}, {}).requests[0]));
   bumped.normalMap   = "/Runtime/Textures/skin_n.jpg";
-  const auto blended = fv::mat::lower(bumped, {}, o).requests;
+  const auto blended = loweredJson(bumped, {}, o).requests;
   ASSERT_EQ(blended.size(), 1u);
   EXPECT_EQ(blended[0].bumpRel, bumped.bumpMap);
   EXPECT_NEAR(blended[0].bumpHeight, fv::mat::bumpHeightInUv(0.43f), 1e-7f);
@@ -625,7 +640,7 @@ TEST(Materials, HairCardsAreFibresInThePathTracer)
   ASSERT_TRUE(fv::mat::hairCards(s));
   fv::mat::LowerOptions o;
   o.anisotropyRotation = 0.3f;
-  const auto  lowered = fv::mat::lower(s, {}, o);
+  const auto  lowered = loweredJson(s, {}, o);
   const auto& ext     = lowered.material["extensions"];
   ASSERT_TRUE(ext.contains("FV_materials_hair"));
   const auto& hair = ext["FV_materials_hair"];
@@ -647,15 +662,15 @@ TEST(Materials, HairCardsAreFibresInThePathTracer)
   EXPECT_NEAR(hair["specularFactor"].get<float>(), 1.f, 1e-6f);
   EXPECT_FALSE(hair.contains("rootFade"));
   // cards whose strands did not agree on a direction run along UV v
-  EXPECT_FALSE(fv::mat::lower(s, {}, {}).material["extensions"]["FV_materials_hair"].contains("strandRotation"));
+  EXPECT_FALSE(loweredJson(s, {}, {}).material["extensions"]["FV_materials_hair"].contains("strandRotation"));
 
   // the real-time view and a file for other tools keep the GGX sheet
   fv::mat::LowerOptions raster;
   raster.skin = fv::mat::SkinMode::eRaster;
-  EXPECT_FALSE(fv::mat::lower(s, {}, raster).material["extensions"].contains("FV_materials_hair"));
+  EXPECT_FALSE(loweredJson(s, {}, raster).material["extensions"].contains("FV_materials_hair"));
   fv::mat::LowerOptions file;
   file.forFile = true;
-  EXPECT_FALSE(fv::mat::lower(s, {}, file).material["extensions"].contains("FV_materials_hair"));
+  EXPECT_FALSE(loweredJson(s, {}, file).material["extensions"].contains("FV_materials_hair"));
 
   // a scalp cap and brows are hair by name, painted on the skin; OmniHair ribbons have a fibre of their own
   EXPECT_FALSE(fv::mat::hairCards(fv::dson::parseSurface("Hair Cap", channelsOf(kCardHair))));
@@ -687,7 +702,7 @@ TEST(Materials, RibbonHairEditsMoveTheFibreAndCanStayOpaque)
   e.roughness = 0.5f;
   e.specular  = 0.25f;
   e.alphaMode = "opaque";
-  const auto  lowered = fv::mat::lower(s, e, {});
+  const auto  lowered = loweredJson(s, e, {});
   const auto& hair    = lowered.material["extensions"]["FV_materials_hair"];
   EXPECT_EQ(lowered.material["alphaMode"].get<std::string>(), "OPAQUE");
   EXPECT_NEAR(hair["longitudinalRoughness"].get<float>(), 0.5f, 1e-5f);
@@ -708,7 +723,7 @@ TEST(Materials, ARecolourMovesAFibresAbsorptionAndKeepsRootAndTipApart)
   ASSERT_TRUE(s.hairFibre);
   fv::mat::Edits e;
   e.recolor                = fv::mat::Rgb{0.6f, 0.45f, 0.25f};
-  const auto   lowered     = fv::mat::lower(s, e, {});
+  const auto   lowered     = loweredJson(s, e, {});
   const auto&  hair        = lowered.material["extensions"]["FV_materials_hair"];
   const float  b           = hair["azimuthalRoughness"].get<float>();
   const float  fit         = 5.969f - 0.215f * b + 2.532f * b * b - 10.73f * b * b * b + 5.574f * b * b * b * b + 0.245f * b * b * b * b * b;
@@ -721,7 +736,7 @@ TEST(Materials, ARecolourMovesAFibresAbsorptionAndKeepsRootAndTipApart)
   }
   // none of it: the fibre as it was
   e.recolorStrength = 0.f;
-  EXPECT_NEAR(fv::mat::lower(s, e, {}).material["extensions"]["FV_materials_hair"]["rootAbsorption"][0].get<float>(), s.hairFibre->rootSigma[0], 1e-3f);
+  EXPECT_NEAR(loweredJson(s, e, {}).material["extensions"]["FV_materials_hair"]["rootAbsorption"][0].get<float>(), s.hairFibre->rootSigma[0], 1e-3f);
 }
 
 // The orders of one fibre at its centre, the part of hair_bsdf.h.slang that decides whether light
@@ -765,11 +780,11 @@ TEST(Materials, ChangingTheBumpStrengthChangesTheBakedTexture)
   const auto     s = fv::dson::parseSurface("Face", channelsOf(kSkin));
   fv::mat::Edits e;
   e.bumpStrength = 1.5f;
-  EXPECT_NE(fv::mat::requestKey(fv::mat::lower(s, {}, {}).requests[1]), fv::mat::requestKey(fv::mat::lower(s, e, {}).requests[1]));
+  EXPECT_NE(fv::mat::requestKey(loweredJson(s, {}, {}).requests[1]), fv::mat::requestKey(loweredJson(s, e, {}).requests[1]));
   // a factor does not
   fv::mat::Edits r;
   r.roughness = 0.2f;
-  EXPECT_EQ(fv::mat::lower(s, {}, {}).requests.size(), fv::mat::lower(s, r, {}).requests.size());
+  EXPECT_EQ(loweredJson(s, {}, {}).requests.size(), loweredJson(s, r, {}).requests.size());
 }
 
 // ---- the character's own channels, and eyes chosen over them
@@ -958,7 +973,7 @@ TEST(Materials, EyeLayoutsFollowTheSurfaceNames)
 TEST(Materials, AnEyesWhiteSpreadsItsLightUnderMeasuredSkinWithNoWalk)
 {
   const auto  eye     = fv::dson::parseSurface("Eye Left", channelsOf(kEye));
-  const auto  lowered = fv::mat::lower(eye, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto  lowered = loweredJson(eye, {}, {.skin = fv::mat::SkinMode::eMeasured});
   const auto& ext     = lowered.material["extensions"];
   ASSERT_TRUE(ext.contains("FV_materials_subsurface"));
   for(int i = 0; i < 3; i++)
@@ -967,7 +982,7 @@ TEST(Materials, AnEyesWhiteSpreadsItsLightUnderMeasuredSkinWithNoWalk)
   EXPECT_FALSE(ext.contains("KHR_materials_volume"));
   EXPECT_FALSE(ext.contains("KHR_materials_transmission"));
   // the Iray volume leaves the eye as it was
-  EXPECT_FALSE(fv::mat::lower(eye, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
+  EXPECT_FALSE(loweredJson(eye, {}, {.skin = fv::mat::SkinMode::eVolume}).material["extensions"].contains("FV_materials_subsurface"));
 }
 
 TEST(Materials, AnIrisColourAsksForARecolouredBaseMap)
@@ -976,7 +991,7 @@ TEST(Materials, AnIrisColourAsksForARecolouredBaseMap)
   fv::mat::Edits e;
   e.irisColor        = fv::mat::Rgb{0.2f, 0.4f, 0.6f};
   e.irisStrength     = 0.5f;
-  const auto lowered = fv::mat::lower(eye, e, {});
+  const auto lowered = loweredJson(eye, e, {});
   ASSERT_EQ(lowered.requests.size(), 1u);
   const fv::mat::TextureRequest& base = lowered.requests[0];
   ASSERT_TRUE(base.iris);
@@ -991,23 +1006,23 @@ TEST(Materials, AnIrisColourAsksForARecolouredBaseMap)
   EXPECT_FLOAT_EQ(lowered.material["pbrMetallicRoughness"]["baseColorFactor"][0].get<float>(), 1.f);
 
   // each colour and strength is a texture of its own; without one, the eye's own map
-  const auto keyOf = [&](const fv::mat::Edits& edits) { return fv::mat::requestKey(fv::mat::lower(eye, edits, {}).requests[0]); };
+  const auto keyOf = [&](const fv::mat::Edits& edits) { return fv::mat::requestKey(loweredJson(eye, edits, {}).requests[0]); };
   fv::mat::Edits stronger = e;
   stronger.irisStrength   = 1.f;
   fv::mat::Edits other    = e;
   other.irisColor         = fv::mat::Rgb{0.6f, 0.4f, 0.2f};
   EXPECT_NE(keyOf(e), keyOf(stronger));
   EXPECT_NE(keyOf(e), keyOf(other));
-  EXPECT_FALSE(fv::mat::lower(eye, {}, {}).requests[0].iris);
+  EXPECT_FALSE(loweredJson(eye, {}, {}).requests[0].iris);
   // a strength alone changes nothing
   fv::mat::Edits strengthOnly;
   strengthOnly.irisStrength = 0.3f;
-  EXPECT_FALSE(fv::mat::lower(eye, strengthOnly, {}).requests[0].iris);
+  EXPECT_FALSE(loweredJson(eye, strengthOnly, {}).requests[0].iris);
 
   // the white of a Genesis 9 eye is in the same map: baked outside the irises
   fv::mat::Edits white;
   white.scleraColor = fv::mat::Rgb{1.f, 0.9f, 0.8f};
-  const auto sclera = fv::mat::lower(eye, white, {}).requests[0];
+  const auto sclera = loweredJson(eye, white, {}).requests[0];
   ASSERT_TRUE(sclera.iris);
   EXPECT_EQ(fv::mat::irisQuery(*sclera.iris), "-|1|eye|0.249,0.249,0.108;0.749,0.249,0.108|1,0.9,0.8");
 }
@@ -1018,10 +1033,10 @@ TEST(Materials, AGenesis8IrisNeedsItsDiscsAndItsScleraIsAFactor)
   fv::mat::Edits e;
   e.irisColor = fv::mat::Rgb{0.1f, 0.3f, 0.1f};
   // where the irises are in the map isn't known: no bake (material.set refuses the colour)
-  EXPECT_FALSE(fv::mat::lower(irises, e, {}).requests[0].iris);
+  EXPECT_FALSE(loweredJson(irises, e, {}).requests[0].iris);
   fv::mat::LowerOptions o;
   o.irisDiscs        = {{0.25f, 0.75f, 0.1f}, {0.75f, 0.75f, 0.1f}};
-  const auto lowered = fv::mat::lower(irises, e, o);
+  const auto lowered = loweredJson(irises, e, o);
   ASSERT_TRUE(lowered.requests[0].iris);
   EXPECT_EQ(fv::mat::irisQuery(*lowered.requests[0].iris), "0.1,0.3,0.1|1|iris|0.25,0.75,0.1;0.75,0.75,0.1|-");
 
@@ -1030,7 +1045,7 @@ TEST(Materials, AGenesis8IrisNeedsItsDiscsAndItsScleraIsAFactor)
   fv::mat::Edits white;
   white.color       = fv::mat::Rgb{0.5f, 1.f, 1.f};
   white.scleraColor = fv::mat::Rgb{1.f, 0.8f, 0.8f};
-  const auto plain  = fv::mat::lower(sclera, white, {});
+  const auto plain  = loweredJson(sclera, white, {});
   EXPECT_FALSE(plain.requests[0].iris);
   EXPECT_NEAR(plain.material["pbrMetallicRoughness"]["baseColorFactor"][0].get<float>(), 0.5f, 1e-6f);
   EXPECT_NEAR(plain.material["pbrMetallicRoughness"]["baseColorFactor"][1].get<float>(), 0.8f, 1e-6f);
@@ -1038,7 +1053,7 @@ TEST(Materials, AGenesis8IrisNeedsItsDiscsAndItsScleraIsAFactor)
   // a flat iris takes the colour as its factor
   const auto flat = fv::dson::parseSurface("Irises", channelsOf(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
     {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[0.5,0.5,0.5]}}]}]})"));
-  const auto f    = fv::mat::lower(flat, e, {});
+  const auto f    = loweredJson(flat, e, {});
   EXPECT_TRUE(f.requests.empty());
   EXPECT_NEAR(f.material["pbrMetallicRoughness"]["baseColorFactor"][1].get<float>(), 0.3f, 1e-6f);
 }
@@ -1158,7 +1173,7 @@ TEST(Materials, ARecolourBakesTheBaseMapOrMovesAFlatColour)
   fv::mat::Edits e;
   e.recolor          = fv::mat::Rgb{0.2f, 0.4f, 0.6f};
   e.recolorStrength  = 0.5f;
-  const auto lowered = fv::mat::lower(hair, e, {});
+  const auto lowered = loweredJson(hair, e, {});
   ASSERT_FALSE(lowered.requests.empty());
   const fv::mat::TextureRequest& base = lowered.requests[0];
   ASSERT_TRUE(base.recolor);
@@ -1167,14 +1182,14 @@ TEST(Materials, ARecolourBakesTheBaseMapOrMovesAFlatColour)
   // the cooker's rc= (texcache.rs Recolour::parse), before the host percent-encodes it whole
   EXPECT_EQ(fv::mat::recolorQuery(*base.recolor), "0.2,0.4,0.6|0.5");
   EXPECT_NE(fv::mat::requestKey(base).find("|rc:0.2,0.4,0.6|0.5"), std::string::npos);
-  EXPECT_FALSE(fv::mat::lower(hair, {}, {}).requests[0].recolor);
+  EXPECT_FALSE(loweredJson(hair, {}, {}).requests[0].recolor);
 
   // no map: the flat colour, half way to the target
   const auto flat = fv::dson::parseSurface("Hair", channelsOf(kEyeMoisture));
   fv::mat::Edits half;
   half.recolor         = fv::mat::Rgb{1.f, 0.f, 0.f};
   half.recolorStrength = 0.5f;
-  const Json factor    = fv::mat::lower(flat, half, {}).material["pbrMetallicRoughness"]["baseColorFactor"];
+  const Json factor    = loweredJson(flat, half, {}).material["pbrMetallicRoughness"]["baseColorFactor"];
   EXPECT_GT(factor[0].get<float>(), factor[1].get<float>());
 
   // an edit like the rest: merged, and empty without it
@@ -1262,13 +1277,13 @@ TEST(Materials, AToneAndAMakeupColourLowerIntoTheBaseMap)
   fv::mat::Edits e;
   e.makeupColor = fv::mat::Rgb{0.6f, 0.05f, 0.1f};
   e.makeupWeight = 0.5f;
-  const auto m  = fv::mat::lower(lips, e, {});
+  const auto m  = loweredJson(lips, e, {});
   ASSERT_TRUE(m.requests[0].makeup);
   EXPECT_EQ(m.requests[0].makeup->colorRel, "");
   EXPECT_EQ(m.requests[0].makeup->weightRel, "/mask.png");
   EXPECT_FLOAT_EQ(m.requests[0].makeup->weightFactor, 0.5f);
   EXPECT_FLOAT_EQ(m.requests[0].makeup->tint[0], 0.6f);
-  EXPECT_EQ(fv::mat::lower(lips, {}, {}).requests[0].makeup->colorRel, "/lips.png");
+  EXPECT_EQ(loweredJson(lips, {}, {}).requests[0].makeup->colorRel, "/lips.png");
 
   fv::mat::Edits tone;
   tone.tone         = fv::mat::Rgb{0.3f, 0.2f, 0.15f};
@@ -1276,7 +1291,7 @@ TEST(Materials, AToneAndAMakeupColourLowerIntoTheBaseMap)
   fv::mat::LowerOptions o;
   o.toneReference = "/body_d.jpg";
   o.skin          = fv::mat::SkinMode::eThin;
-  const auto face = fv::mat::lower(fv::dson::parseSurface("Face", channelsOf(kSkin)), tone, o);
+  const auto face = loweredJson(fv::dson::parseSurface("Face", channelsOf(kSkin)), tone, o);
   int        toned = 0;
   for(const fv::mat::TextureRequest& r : face.requests)
     if(r.recolor)
@@ -1289,7 +1304,7 @@ TEST(Materials, AToneAndAMakeupColourLowerIntoTheBaseMap)
   // the base colour and the thin skin's scattering colour
   EXPECT_EQ(toned, 2);
   // without a reference, against its own map
-  const auto own = fv::mat::lower(fv::dson::parseSurface("Face", channelsOf(kSkin)), tone, {});
+  const auto own = loweredJson(fv::dson::parseSurface("Face", channelsOf(kSkin)), tone, {});
   ASSERT_TRUE(own.requests[0].recolor);
   EXPECT_EQ(own.requests[0].recolor->reference, "/Runtime/Textures/face_d.jpg");
   fv::mat::Edits merged;
@@ -1343,7 +1358,7 @@ TEST(Materials, MetallicityEnableGatesTheMetalAndMakeupMetallicityOnlyTintsIt)
   EXPECT_EQ(belt.metallic.map, "/Belt M.jpg");
 
   // lowered: the metal reflects the made-up base colour, on the lips alone
-  const auto l = fv::mat::lower(lips, {}, {});
+  const auto l = loweredJson(lips, {}, {});
   const auto& pbr = l.material["pbrMetallicRoughness"];
   EXPECT_FLOAT_EQ(pbr["metallicFactor"].get<float>(), 0.2912088f);
   const fv::mat::TextureRequest& metal = l.requests[pbr["metallicRoughnessTexture"]["slot"].get<size_t>()];
@@ -1369,13 +1384,13 @@ TEST(Materials, AMetalMapReachesMetallicRoughnessBlue)
     c += "]}]}";
     return fv::dson::parseSurface("Belt", channelsOf(c.c_str()));
   };
-  const auto metalRequest = [](const fv::mat::Lowered& l) -> const fv::mat::TextureRequest* {
+  const auto metalRequest = [](const LoweredJson& l) -> const fv::mat::TextureRequest* {
     const auto& pbr = l.material["pbrMetallicRoughness"];
     return pbr.contains("metallicRoughnessTexture") ? &l.requests[pbr["metallicRoughnessTexture"]["slot"].get<size_t>()] : nullptr;
   };
 
   // the mask alone: the image is the metal map's grey in blue
-  const auto alone = fv::mat::lower(belt(1, false), {}, {});
+  const auto alone = loweredJson(belt(1, false), {}, {});
   EXPECT_FLOAT_EQ(alone.material["pbrMetallicRoughness"]["metallicFactor"].get<float>(), 1);
   const fv::mat::TextureRequest* mt = metalRequest(alone);
   ASSERT_TRUE(mt);
@@ -1385,7 +1400,7 @@ TEST(Materials, AMetalMapReachesMetallicRoughnessBlue)
   EXPECT_TRUE(mt->metalRel.empty());
 
   // with a roughness map, the mask rides in its blue, and the two are different images to cook
-  const auto both = fv::mat::lower(belt(1, true), {}, {});
+  const auto both = loweredJson(belt(1, true), {}, {});
   const fv::mat::TextureRequest* mr = metalRequest(both);
   ASSERT_TRUE(mr);
   EXPECT_EQ(mr->rel, "/belt_r.jpg");
@@ -1396,16 +1411,16 @@ TEST(Materials, AMetalMapReachesMetallicRoughnessBlue)
   EXPECT_NE(fv::mat::requestKey(*mr), fv::mat::requestKey(unmasked));
 
   // no metal: the mask is left out
-  const auto none = fv::mat::lower(belt(0, false), {}, {});
+  const auto none = loweredJson(belt(0, false), {}, {});
   EXPECT_FALSE(metalRequest(none));
-  const auto roughOnly = fv::mat::lower(belt(0, true), {}, {});
+  const auto roughOnly = loweredJson(belt(0, true), {}, {});
   ASSERT_TRUE(metalRequest(roughOnly));
   EXPECT_TRUE(metalRequest(roughOnly)->metalRel.empty());
 
   // a panel metalness on a surface authored without metal shows the authored mask
   fv::mat::Edits e;
   e.metalness       = 0.5f;
-  const auto edited = fv::mat::lower(belt(0, false), e, {});
+  const auto edited = loweredJson(belt(0, false), e, {});
   EXPECT_FLOAT_EQ(edited.material["pbrMetallicRoughness"]["metallicFactor"].get<float>(), 0.5f);
   ASSERT_TRUE(metalRequest(edited));
   EXPECT_EQ(metalRequest(edited)->channels, "mt");
@@ -1434,12 +1449,12 @@ fv::mat::Surface surfaceOf(const char* name, const char* shader, const ChannelVa
 const char* kPbrSkinType = "studio/material/daz_brick";
 const char* kUberType    = "studio/material/uber_iray";
 
-const nlohmann::json& clearcoatOf(const fv::mat::Lowered& l)
+const nlohmann::json& clearcoatOf(const LoweredJson& l)
 {
   return l.material["extensions"]["KHR_materials_clearcoat"];
 }
 
-const fv::mat::TextureRequest& requestOf(const fv::mat::Lowered& l, const nlohmann::json& info)
+const fv::mat::TextureRequest& requestOf(const LoweredJson& l, const nlohmann::json& info)
 {
   return l.requests[info["slot"].get<size_t>()];
 }
@@ -1469,7 +1484,7 @@ TEST(Materials, APbrSkinTopCoatNeedsItsEnable)
     const auto s = head(false);
     EXPECT_FALSE(s.topCoat);
     // the tight lobe (0.6 x 0.4, lobe 2's 0.15 of 0.5 x 0.25 x 2) is the clearcoat; the broad stays the base
-    const auto  l   = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+    const auto  l   = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eRaster});
     const auto& ext = l.material["extensions"];
     EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.0375f, 1e-5f);
     EXPECT_NEAR(clearcoatOf(l)["clearcoatRoughnessFactor"].get<float>(), 0.24f, 1e-5f);
@@ -1479,7 +1494,7 @@ TEST(Materials, APbrSkinTopCoatNeedsItsEnable)
   // on: the coat takes the slot, and the tight lobe folds back into the base specular
   const auto on = head(true);
   ASSERT_TRUE(on.topCoat);
-  const auto l = fv::mat::lower(on, {}, {.skin = fv::mat::SkinMode::eRaster});
+  const auto l = loweredJson(on, {}, {.skin = fv::mat::SkinMode::eRaster});
   EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.25f, 1e-5f);
   EXPECT_NEAR(clearcoatOf(l)["clearcoatRoughnessFactor"].get<float>(), 0.6721311f, 1e-5f);
   EXPECT_NEAR(l.material["extensions"]["KHR_materials_specular"]["specularFactor"].get<float>(), 0.25f, 1e-5f);
@@ -1521,7 +1536,7 @@ TEST(Materials, ATopCoatsMapsGoWhereTheCoatIs)
   ASSERT_TRUE(s.topCoat);
   EXPECT_EQ(s.topCoat->weightMap, "/Runtime/Textures/lipmask.png");
   EXPECT_EQ(s.topCoat->roughnessMap, "/Runtime/Textures/lip_r.png");
-  const auto  l  = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+  const auto  l  = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eRaster});
   const auto& cc = clearcoatOf(l);
   EXPECT_NEAR(cc["clearcoatFactor"].get<float>(), 0.503268f, 1e-6f);
   EXPECT_NEAR(cc["clearcoatRoughnessFactor"].get<float>(), 0.4052288f, 1e-6f);
@@ -1538,20 +1553,20 @@ TEST(Materials, ATopCoatsMapsGoWhereTheCoatIs)
   // a panel clearcoat replaces the weight; the mask stays where the coat is
   fv::mat::Edits e;
   e.clearcoat       = 0.7f;
-  const auto edited   = fv::mat::lower(s, e, {.skin = fv::mat::SkinMode::eRaster});
+  const auto edited   = loweredJson(s, e, {.skin = fv::mat::SkinMode::eRaster});
   EXPECT_FLOAT_EQ(clearcoatOf(edited)["clearcoatFactor"].get<float>(), 0.7f);
   EXPECT_TRUE(clearcoatOf(edited).contains("clearcoatTexture"));
 
   // CJ Evangeline's own head keeps the mask at weight 0: no coat
   const auto bare = head(0);
   EXPECT_FALSE(bare.topCoat);
-  EXPECT_FALSE(fv::mat::lower(bare, {}, {.skin = fv::mat::SkinMode::eRaster}).material["extensions"].contains("KHR_materials_clearcoat"));
+  EXPECT_FALSE(loweredJson(bare, {}, {.skin = fv::mat::SkinMode::eRaster}).material["extensions"].contains("KHR_materials_clearcoat"));
 
   // Iray Uber's weight map (Sienna Thornbrook's skin)
   const auto uber = surfaceOf("Torso", kUberType, {{"Glossy Roughness", 0.4}, {"Top Coat Weight", 0.45}}, {{"Top Coat Weight", "/Runtime/Textures/face_s.jpg"}});
   ASSERT_TRUE(uber.topCoat);
   EXPECT_EQ(uber.topCoat->weightMap, "/Runtime/Textures/face_s.jpg");
-  const auto ul = fv::mat::lower(uber, {}, {});
+  const auto ul = loweredJson(uber, {}, {});
   ASSERT_TRUE(clearcoatOf(ul).contains("clearcoatTexture"));
   EXPECT_EQ(requestOf(ul, clearcoatOf(ul)["clearcoatTexture"]).rel, "/Runtime/Textures/face_s.jpg");
 
@@ -1561,13 +1576,13 @@ TEST(Materials, ATopCoatsMapsGoWhereTheCoatIs)
   ASSERT_TRUE(gloss.topCoat);
   EXPECT_NEAR(gloss.topCoat->roughness, 0.2f, 1e-6f);
   EXPECT_TRUE(gloss.topCoat->roughnessMap.empty());
-  EXPECT_FALSE(clearcoatOf(fv::mat::lower(gloss, {}, {})).contains("clearcoatRoughnessTexture"));
+  EXPECT_FALSE(clearcoatOf(loweredJson(gloss, {}, {})).contains("clearcoatRoughnessTexture"));
 
   // the MDL takes the weight in 0..1: the Sporty Ponytails hair's 2 is a full coat
   const auto ponytail = surfaceOf("Bangs1", kUberType, {{"Top Coat Weight", 2}, {"Top Coat Roughness", 1}});
   ASSERT_TRUE(ponytail.topCoat);
   EXPECT_FLOAT_EQ(ponytail.topCoat->weight, 1);
-  EXPECT_FLOAT_EQ(clearcoatOf(fv::mat::lower(ponytail, {}, {}))["clearcoatFactor"].get<float>(), 1);
+  EXPECT_FLOAT_EQ(clearcoatOf(loweredJson(ponytail, {}, {}))["clearcoatFactor"].get<float>(), 1);
 }
 
 // PBRSkin's coat normal blends the skin's relief towards the smooth normal by Top Coat Bump Weight,
@@ -1583,7 +1598,7 @@ TEST(Materials, APbrSkinCoatFollowsTheReliefByItsBumpWeight)
     return surfaceOf("Head", kPbrSkinType, v, {{"Normal Map", "/Runtime/Textures/n.jpg"}});
   };
   const auto coatScale = [](const fv::mat::Surface& s) {
-    const auto l      = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+    const auto l      = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eRaster});
     const auto normal = l.material["normalTexture"];
     EXPECT_NEAR(normal["scale"].get<float>(), 0.8f, 1e-6f);
     const auto& cc = clearcoatOf(l);
@@ -1619,14 +1634,14 @@ TEST(Materials, APbrSkinCoatsColourDimsItsReflection)
   for(int i = 0; i < 3; i++)
     EXPECT_NEAR(ava.topCoat->color[i], fv::mat::srgbToLinear(0.5019608), 1e-6f);
   const float lum = fv::mat::srgbToLinear(0.5019608);
-  EXPECT_NEAR(clearcoatOf(fv::mat::lower(ava, {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f * lum, 1e-5f);
-  EXPECT_NEAR(clearcoatOf(fv::mat::lower(head(1), {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f, 1e-5f);
+  EXPECT_NEAR(clearcoatOf(loweredJson(ava, {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f * lum, 1e-5f);
+  EXPECT_NEAR(clearcoatOf(loweredJson(head(1), {}, {.skin = fv::mat::SkinMode::eRaster}))["clearcoatFactor"].get<float>(), 0.11f, 1e-5f);
 
   // Iray Uber's colour is not read here (its Color Effect can change the weight itself)
   const auto uber = surfaceOf("Shirt", kUberType, {{"Top Coat Weight", 0.4}, {"Top Coat Color", Json::array({0.5, 0.5, 0.5})}});
   ASSERT_TRUE(uber.topCoat);
   EXPECT_EQ(uber.topCoat->color, (fv::mat::Rgb{1, 1, 1}));
-  EXPECT_FLOAT_EQ(clearcoatOf(fv::mat::lower(uber, {}, {}))["clearcoatFactor"].get<float>(), 0.4f);
+  EXPECT_FLOAT_EQ(clearcoatOf(loweredJson(uber, {}, {}))["clearcoatFactor"].get<float>(), 0.4f);
 }
 
 // ---- PBRSkin's volume ----
@@ -1664,7 +1679,7 @@ TEST(Materials, PbrSkinScattersLogarithmically)
     EXPECT_NEAR(v.attenuation[i], 0.3678794f, 1e-5f);
     EXPECT_NEAR(v.multiscatter[i], 0.5794536f, 1e-4f);
   }
-  const auto  l   = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eVolume});
+  const auto  l   = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eVolume});
   const auto& ext = l.material["extensions"];
   EXPECT_NEAR(ext["KHR_materials_volume"]["attenuationDistance"].get<float>(), 5.89711e-5f, 1e-9f);
   EXPECT_FLOAT_EQ(ext["KHR_materials_scatter"]["scatterAnisotropy"].get<float>(), -0.7f);
@@ -1737,7 +1752,7 @@ TEST(Materials, PbrSkinWithTranslucencyOffIsThinWalledInEveryMode)
   const auto expectPlain = [](const fv::mat::Surface& s, const char* why) {
     for(const auto mode : {fv::mat::SkinMode::eMeasured, fv::mat::SkinMode::eVolume, fv::mat::SkinMode::eThin})
     {
-      const auto  l   = fv::mat::lower(s, {}, {.skin = mode});
+      const auto  l   = loweredJson(s, {}, {.skin = mode});
       const auto& ext = l.material["extensions"];
       for(const char* name : {"KHR_materials_transmission", "KHR_materials_volume", "KHR_materials_scatter", "FV_materials_subsurface"})
         EXPECT_FALSE(ext.contains(name)) << why << ", mode " << int(mode) << ": " << name;
@@ -1752,7 +1767,7 @@ TEST(Materials, PbrSkinWithTranslucencyOffIsThinWalledInEveryMode)
   // on: measured skin enters wholly
   const auto on = surfaceOf("Face", kPbrSkinType, pbrSkinVolume(true, true, true));
   EXPECT_FALSE(on.translucency->thinWalled);
-  EXPECT_FLOAT_EQ(fv::mat::lower(on, {}, {.skin = fv::mat::SkinMode::eMeasured})
+  EXPECT_FLOAT_EQ(loweredJson(on, {}, {.skin = fv::mat::SkinMode::eMeasured})
                       .material["extensions"]["KHR_materials_transmission"]["transmissionFactor"]
                       .get<float>(),
                   1);
@@ -1763,7 +1778,7 @@ TEST(Materials, PbrSkinWithTranslucencyOffIsThinWalledInEveryMode)
   const auto stray = surfaceOf("Face", kPbrSkinType, {{"Detail Enable", false}, {"Translucency Weight", 0.8}});
   ASSERT_TRUE(stray.translucency);
   EXPECT_FALSE(stray.translucency->thinWalled);
-  const auto  l   = fv::mat::lower(stray, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto  l   = loweredJson(stray, {}, {.skin = fv::mat::SkinMode::eMeasured});
   const auto& ext = l.material["extensions"];
   EXPECT_FLOAT_EQ(ext["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 1);
   EXPECT_TRUE(ext.contains("FV_materials_subsurface"));
@@ -1782,14 +1797,14 @@ TEST(Materials, PbrSkinHasNoSssReflectanceTint)
   const auto skin = surfaceOf("Face", kPbrSkinType, v, images);
   ASSERT_TRUE(skin.translucency);
   EXPECT_EQ(skin.translucency->reflectanceTint, (fv::mat::Rgb{1, 1, 1}));
-  const auto  thin   = fv::mat::lower(skin, {}, {.skin = fv::mat::SkinMode::eThin});
+  const auto  thin   = loweredJson(skin, {}, {.skin = fv::mat::SkinMode::eThin});
   const auto& factor = thin.material["extensions"]["KHR_materials_scatter"]["multiscatterColorFactor"];
   for(int i = 0; i < 3; i++)
     EXPECT_FLOAT_EQ(factor[i].get<float>(), 1);
 
   v.erase(v.begin());  // Iray Uber
   const auto uber = surfaceOf("Face", kUberType, v, images);
-  const auto  uberThin = fv::mat::lower(uber, {}, {.skin = fv::mat::SkinMode::eThin});
+  const auto  uberThin = loweredJson(uber, {}, {.skin = fv::mat::SkinMode::eThin});
   const auto& tinted   = uberThin.material["extensions"]["KHR_materials_scatter"]["multiscatterColorFactor"];
   for(int i = 0; i < 3; i++)
     EXPECT_NEAR(tinted[i].get<float>(), 0.2140411f, 1e-6f);
@@ -1803,7 +1818,7 @@ TEST(Materials, ARefractingSurfaceIsNotTintedByItsMap)
     {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/Eyes_TX_Svetlana9_02.jpg"}},
     {"channel":{"id":"Refraction Weight","type":"float","current_value":1}},
     {"channel":{"id":"Refraction Index","type":"float","current_value":1.38}}]}]})"));
-  const auto lowered = fv::mat::lower(moisture, {}, {});
+  const auto lowered = loweredJson(moisture, {}, {});
   EXPECT_TRUE(lowered.requests.empty());
   const Json& pbr = lowered.material["pbrMetallicRoughness"];
   EXPECT_FALSE(pbr.contains("baseColorTexture"));
@@ -1822,7 +1837,7 @@ TEST(Materials, ARefractionMaskKeepsTheSurfacesMapWhereItIsOpaque)
     {"channel":{"id":"Refraction Index","type":"float","current_value":1.40678}}]}]})"));
   ASSERT_TRUE(moisture.refraction);
   EXPECT_EQ(moisture.refraction->map, "/eye1_rf.png");
-  const auto  lowered = fv::mat::lower(moisture, {}, {});
+  const auto  lowered = loweredJson(moisture, {}, {});
   const Json& pbr     = lowered.material["pbrMetallicRoughness"];
   ASSERT_TRUE(pbr.contains("baseColorTexture"));
   EXPECT_EQ(lowered.requests[pbr["baseColorTexture"]["slot"].get<size_t>()].rel, "/CJ_Evangeline_G9_Eyes.jpg");
@@ -1859,7 +1874,7 @@ TEST(Materials, ADetailLayerRepeatingTheNormalMapAddsNoRelief)
   ASSERT_TRUE(duplicate.detail);
   EXPECT_TRUE(duplicate.detail->map.empty());
   EXPECT_FLOAT_EQ(duplicate.detail->roughness, 0.8f);
-  const auto lowered = fv::mat::lower(duplicate, {}, {});
+  const auto lowered = loweredJson(duplicate, {}, {});
   const auto& ext    = lowered.material["extensions"]["FV_materials_detail"];
   EXPECT_FALSE(ext.contains("detailNormalTexture"));
   EXPECT_FLOAT_EQ(ext["detailRoughnessFactor"].get<float>(), 0.8f);
@@ -1967,13 +1982,13 @@ TEST(Materials, ReadsAnIrayUbersSurfaceTiling)
   EXPECT_FLOAT_EQ(s.tiles[1], 1);  // 0 tiles is none: untiled
   EXPECT_FLOAT_EQ(s.offset[0], 0.25f);
   EXPECT_FLOAT_EQ(s.offset[1], 0.5f);
-  const auto lowered = fv::mat::lower(s, {}, {});
+  const auto lowered = loweredJson(s, {}, {});
   expectSame(transformOf(lowered.material["pbrMetallicRoughness"]["baseColorTexture"]), {{4, 1}, {0.25f, 0.5f}, 0}, "base");
 
   const auto plain = fv::dson::parseSurface("Shirt", channelsOf(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
     {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/Runtime/Textures/shirt.jpg"}}]}]})"));
   EXPECT_EQ(plain.tiles, (std::array<float, 2>{1, 1}));
-  EXPECT_FALSE(fv::mat::lower(plain, {}, {}).material["pbrMetallicRoughness"]["baseColorTexture"].contains("extensions"));
+  EXPECT_FALSE(loweredJson(plain, {}, {}).material["pbrMetallicRoughness"]["baseColorTexture"].contains("extensions"));
 }
 
 // A slot's image replaced asks for the new image; one taken away is gone, and without its cutout a
@@ -1985,8 +2000,8 @@ TEST(Materials, AMapEditReplacesOrRemovesASlot)
   e.baseMap          = "/Runtime/Textures/FigureViewer/User/0123456789abcdef/denim.png";
   e.roughnessMap     = "/Runtime/Textures/FigureViewer/User/0123456789abcdef/rough.png";
   e.bumpMap          = "/Runtime/Textures/FigureViewer/User/0123456789abcdef/bump.png";
-  const auto lowered = fv::mat::lower(s, e, {});
-  const auto has     = [&](const fv::mat::Lowered& l, const std::string& rel) {
+  const auto lowered = loweredJson(s, e, {});
+  const auto has     = [&](const LoweredJson& l, const std::string& rel) {
     return std::any_of(l.requests.begin(), l.requests.end(), [&](const fv::mat::TextureRequest& r) { return r.rel == rel; });
   };
   const auto& pbr  = lowered.material["pbrMetallicRoughness"];
@@ -2003,7 +2018,7 @@ TEST(Materials, AMapEditReplacesOrRemovesASlot)
   fv::mat::Edits removed;
   removed.opacityMap = "";
   removed.normalMap  = "";
-  const auto bare    = fv::mat::lower(s, removed, {});
+  const auto bare    = loweredJson(s, removed, {});
   EXPECT_EQ(bare.material["alphaMode"], "OPAQUE");
   EXPECT_FALSE(bare.material["doubleSided"].get<bool>());
   EXPECT_TRUE(bare.requests[bare.material["pbrMetallicRoughness"]["baseColorTexture"]["slot"].get<size_t>()].alphaRel.empty());
@@ -2011,7 +2026,7 @@ TEST(Materials, AMapEditReplacesOrRemovesASlot)
   EXPECT_FALSE(bare.material["extensions"]["KHR_materials_clearcoat"].contains("clearcoatNormalTexture"));
   EXPECT_FALSE(has(bare, s.opacity.map));
   removed.alphaMode = "blend";  // an alpha edit still decides
-  EXPECT_EQ(fv::mat::lower(s, removed, {}).material["alphaMode"], "BLEND");
+  EXPECT_EQ(loweredJson(s, removed, {}).material["alphaMode"], "BLEND");
 
   const auto slots = fv::mat::mapSlots(s, removed);
   const auto slot  = [&](const char* name) {
@@ -2061,7 +2076,7 @@ TEST(Materials, TheUvTransformGoesOnEverySurfaceSlotButTheDetail)
   {
     fv::mat::LowerOptions o;
     o.flipV            = flipV;
-    const auto lowered = fv::mat::lower(s, e, o);
+    const auto lowered = loweredJson(s, e, o);
     std::vector<const nlohmann::json*> infos;
     slotsOf(lowered.material, infos);
     EXPECT_GE(infos.size(), 8u);  // base, mr, normal, emissive, the clearcoat's normal, the detail's three
@@ -2073,7 +2088,7 @@ TEST(Materials, TheUvTransformGoesOnEverySurfaceSlotButTheDetail)
     }
   }
   // a transform changes no image: nothing to cook again
-  const auto plain = fv::mat::lower(s, {}, {}), moved = fv::mat::lower(s, e, {});
+  const auto plain = loweredJson(s, {}, {}), moved = loweredJson(s, e, {});
   ASSERT_EQ(plain.requests.size(), moved.requests.size());
   for(size_t i = 0; i < plain.requests.size(); i++)
     EXPECT_EQ(fv::mat::requestKey(plain.requests[i]), fv::mat::requestKey(moved.requests[i]));
@@ -2197,7 +2212,7 @@ TEST(Materials, AFabricIsADetailLayerOfItsOwnSize)
   e.fabricStrength = 0.7f;
   fv::mat::LowerOptions o;
   o.metresPerUv      = 0.8f;
-  const auto  lowered = fv::mat::lower(s, e, o);
+  const auto  lowered = loweredJson(s, e, o);
   const auto& de      = lowered.material["extensions"]["FV_materials_detail"];
   EXPECT_FLOAT_EQ(de["detailWeightFactor"].get<float>(), 1);
   EXPECT_FLOAT_EQ(de["detailRoughnessFactor"].get<float>(), denim->roughness);
@@ -2215,19 +2230,19 @@ TEST(Materials, AFabricIsADetailLayerOfItsOwnSize)
 
   // twice as coarse: half the tiles, the same image
   e.fabricScale       = 2;
-  const auto  coarse  = fv::mat::lower(s, e, o);
+  const auto  coarse  = loweredJson(s, e, o);
   const auto& cnormal = coarse.material["extensions"]["FV_materials_detail"]["detailNormalTexture"];
   expectSame(transformOf(cnormal), {{tiles / 2, tiles / 2}, {0, 0}, 0}, "coarse");
   EXPECT_EQ(fv::mat::requestKey(coarse.requests[cnormal["slot"].get<size_t>()]), fv::mat::requestKey(r));
 
   // no measured size: a fixed tiling
-  const auto unknown = fv::mat::lower(s, e, {});
+  const auto unknown = loweredJson(s, e, {});
   EXPECT_GT(transformOf(unknown.material["extensions"]["FV_materials_detail"]["detailNormalTexture"]).scale[0], 1);
 
   o.forFile = true;
-  EXPECT_FALSE(fv::mat::lower(s, e, o).material["extensions"].contains("FV_materials_detail"));
+  EXPECT_FALSE(loweredJson(s, e, o).material["extensions"].contains("FV_materials_detail"));
   e.fabric = "";
-  EXPECT_FALSE(fv::mat::lower(s, e, {}).material["extensions"].contains("FV_materials_detail"));
+  EXPECT_FALSE(loweredJson(s, e, {}).material["extensions"].contains("FV_materials_detail"));
 
   e.fabric         = "satin";
   const auto slots = fv::mat::mapSlots(s, e);
@@ -2241,16 +2256,16 @@ TEST(Materials, ASheenEditIsKhrMaterialsSheen)
 {
   const fv::mat::Surface s = garment();
   fv::mat::Edits         e;
-  EXPECT_FALSE(fv::mat::lower(s, e, {}).material["extensions"].contains("KHR_materials_sheen"));
+  EXPECT_FALSE(loweredJson(s, e, {}).material["extensions"].contains("KHR_materials_sheen"));
   e.sheenColor        = fv::mat::Rgb{0.5f, 0.25f, 0.125f};
-  const auto  lowered = fv::mat::lower(s, e, {});
+  const auto  lowered = loweredJson(s, e, {});
   const auto& sheen   = lowered.material["extensions"]["KHR_materials_sheen"];
   EXPECT_FLOAT_EQ(sheen["sheenColorFactor"][1].get<float>(), 0.25f);
   EXPECT_FLOAT_EQ(sheen["sheenRoughnessFactor"].get<float>(), 0.5f);
   e.sheenRoughness = 0.2f;
-  EXPECT_FLOAT_EQ(fv::mat::lower(s, e, {}).material["extensions"]["KHR_materials_sheen"]["sheenRoughnessFactor"].get<float>(), 0.2f);
+  EXPECT_FLOAT_EQ(loweredJson(s, e, {}).material["extensions"]["KHR_materials_sheen"]["sheenRoughnessFactor"].get<float>(), 0.2f);
   e.sheenColor = fv::mat::Rgb{0, 0, 0};
-  EXPECT_FALSE(fv::mat::lower(s, e, {}).material["extensions"].contains("KHR_materials_sheen"));
+  EXPECT_FALSE(loweredJson(s, e, {}).material["extensions"].contains("KHR_materials_sheen"));
 }
 
 // material.set's values onto edits and back: what a surface publishes for a key is what material.set
@@ -2712,7 +2727,7 @@ TEST(Materials, LegacyBumpRangeScalesTheBakedHeight)
   EXPECT_NEAR(*boxers.bumpRange, 0.0002f, 1e-7f);
   fv::mat::LowerOptions o;
   o.metresPerUv    = 0.43f;
-  const auto reqs  = fv::mat::lower(boxers, {}, o).requests;
+  const auto reqs  = loweredJson(boxers, {}, o).requests;
   const auto bump  = std::find_if(reqs.begin(), reqs.end(), [](const fv::mat::TextureRequest& r) { return r.channels == "bn"; });
   ASSERT_NE(bump, reqs.end());
   EXPECT_NEAR(bump->bumpHeight, fv::mat::bumpHeightInUv(0.43f, 1, 0.0002f), 1e-7f);
@@ -3220,7 +3235,7 @@ TEST(Materials, ALipColourOverAnUberHeadLeavesItsLayersOn)
   EXPECT_FLOAT_EQ(s.topCoat->weight, 0.3f);
   EXPECT_FLOAT_EQ(s.metallic.value, 1.f);
   EXPECT_EQ(s.metallic.map, "/Runtime/Textures/face_m.jpg");
-  const auto l = fv::mat::lower(s, {}, {.skin = fv::mat::SkinMode::eRaster});
+  const auto l = loweredJson(s, {}, {.skin = fv::mat::SkinMode::eRaster});
   EXPECT_TRUE(l.material.contains("normalTexture"));
   EXPECT_FLOAT_EQ(l.material["extensions"]["KHR_materials_clearcoat"]["clearcoatFactor"].get<float>(), 0.3f);
 
@@ -3265,7 +3280,7 @@ TEST(Materials, ASwappedShaderKeepsTheEditsAndTheBaselineGoesBack)
   scene.materials[0].edits.roughness = 0.9f;
   const auto roughness = [&] {
     const fv::Material& m = scene.materials[0];
-    return fv::mat::lower(m.surface, m.edits, {}).material["pbrMetallicRoughness"]["roughnessFactor"].get<float>();
+    return loweredJson(m.surface, m.edits, {}).material["pbrMetallicRoughness"]["roughnessFactor"].get<float>();
   };
   fv::dson::applyMaterialPreset(pbrSkinPreset("Head"), scene, nullptr, pbrSkinDefinitions());
   EXPECT_EQ(scene.materials[0].surface.shader, fv::mat::Surface::Shader::ePbrSkin);
@@ -3383,7 +3398,7 @@ TEST(Materials, AMapsOwnTilingGoesOverTheSurfaces)
   const auto s = fv::dson::parseSurface("Shorts", channelsOf(kTiledCloth));
   // the normal map's one tile is DAZ's default: no tiling of its own
   EXPECT_EQ(s.mapTiling.size(), 2u);
-  const auto lowered = fv::mat::lower(s, {}, {});
+  const auto lowered = loweredJson(s, {}, {});
   const auto base    = tilingOf(lowered.material["pbrMetallicRoughness"]["baseColorTexture"]);
   ASSERT_TRUE(base.has_value());
   EXPECT_EQ(base->scale, (std::array<float, 2>{2.5f, 2.5f}));
@@ -3395,13 +3410,13 @@ TEST(Materials, AMapsOwnTilingGoesOverTheSurfaces)
   const auto twice = fv::dson::parseSurface(
       "Shorts", layered({kTiledCloth, R"({"extra":[{"channels":[{"channel":{"id":"Horizontal Tiles","current_value":2}},
                                        {"channel":{"id":"Vertical Tiles","current_value":2}}]}]})"}));
-  EXPECT_EQ(tilingOf(fv::mat::lower(twice, {}, {}).material["pbrMetallicRoughness"]["baseColorTexture"])->scale, (std::array<float, 2>{5, 5}));
+  EXPECT_EQ(tilingOf(loweredJson(twice, {}, {}).material["pbrMetallicRoughness"]["baseColorTexture"])->scale, (std::array<float, 2>{5, 5}));
 
   // the bump alone: tiled, and its height per its own tile
   const auto bumped = fv::dson::parseSurface("Shorts", layered({kTiledCloth, R"({"extra":[{"channels":[{"channel":{"id":"Normal Map","image_file":""}}]}]})"}));
   fv::mat::LowerOptions o;
   o.metresPerUv    = 0.5f;
-  const auto bump  = fv::mat::lower(bumped, {}, o);
+  const auto bump  = loweredJson(bumped, {}, o);
   EXPECT_EQ(tilingOf(bump.material["normalTexture"])->scale, (std::array<float, 2>{2.5f, 2.5f}));
   const auto req = std::find_if(bump.requests.begin(), bump.requests.end(), [](const fv::mat::TextureRequest& r) { return r.channels == "bn"; });
   ASSERT_NE(req, bump.requests.end());
@@ -3414,7 +3429,7 @@ TEST(Materials, AMapsOwnTilingMovesWithThePanelsOffset)
   fv::mat::Edits e;
   e.uvOffsetU = 0.1f;
   // the print shifts as far over the surface as every other map: 0.1 of the surface is 0.25 of it
-  const auto base = tilingOf(fv::mat::lower(s, e, {}).material["pbrMetallicRoughness"]["baseColorTexture"]);
+  const auto base = tilingOf(loweredJson(s, e, {}).material["pbrMetallicRoughness"]["baseColorTexture"]);
   ASSERT_TRUE(base.has_value());
   EXPECT_FLOAT_EQ(base->offset[0], 0.25f);
   EXPECT_FLOAT_EQ(base->offset[1], 0.f);
@@ -3426,7 +3441,7 @@ TEST(Materials, AMapsOwnTilingMovesWithThePanelsOffset)
   ASSERT_EQ(stretched.mapTiling.at("/cloth_d.jpg").tiles, (std::array<float, 2>{2.5f, 1}));
   fv::mat::Edits turned;
   turned.uvRotation = 30;
-  const auto t      = tilingOf(fv::mat::lower(stretched, turned, {}).material["pbrMetallicRoughness"]["baseColorTexture"]);
+  const auto t      = tilingOf(loweredJson(stretched, turned, {}).material["pbrMetallicRoughness"]["baseColorTexture"]);
   ASSERT_TRUE(t.has_value());
   EXPECT_EQ(t->scale, (std::array<float, 2>{1, 1}));
   EXPECT_NE(t->rotation, 0.f);
@@ -3444,7 +3459,7 @@ TEST(Materials, ACutoutReadFromItsAlphaAsksTheCookerForTheAlpha)
       "image_modification":{"grayscale_mode":"alpha","scale":1,"offset":0,"invert":false}}}
   ]}]})";
   const auto request = [](const fv::mat::Surface& s, const fv::mat::Edits& e = {}) {
-    const auto lowered = fv::mat::lower(s, e, {});
+    const auto lowered = loweredJson(s, e, {});
     return lowered.requests[lowered.material["pbrMetallicRoughness"]["baseColorTexture"]["slot"].get<size_t>()];
   };
   const auto s = fv::dson::parseSurface("Bottom", channelsOf(panel));
@@ -3469,7 +3484,7 @@ TEST(Materials, ACutoutReadFromItsAlphaAsksTheCookerForTheAlpha)
 
 namespace {
 
-const nlohmann::json& specularOf(const fv::mat::Lowered& l)
+const nlohmann::json& specularOf(const LoweredJson& l)
 {
   return l.material["extensions"]["KHR_materials_specular"];
 }
@@ -3496,7 +3511,7 @@ TEST(Materials, GlossyColorTintsTheGlossyShareOfTheSpecular)
   EXPECT_NEAR(s.glossy.color[0], 0.21404f, 1e-4f);
   EXPECT_NEAR(s.glossy.color[1], 0.05088f, 1e-4f);
   EXPECT_NEAR(s.glossy.color[2], 1.0f, 1e-4f);
-  const auto l = fv::mat::lower(s, {}, {});
+  const auto l = loweredJson(s, {}, {});
   EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 1.0f);
   expectRgb(specularOf(l)["specularColorFactor"], 0.21404f, 0.05088f, 1.0f, 1e-4f);
   ASSERT_TRUE(specularOf(l).contains("specularColorTexture"));
@@ -3508,22 +3523,22 @@ TEST(Materials, GlossyColorTintsTheGlossyShareOfTheSpecular)
   // a dual lobe half as strong as the glossy: the glossy is two thirds of the lobe
   ChannelValues dual = shirt;
   dual.push_back({"Dual Lobe Specular Weight", 0.5});
-  const auto mixed = fv::mat::lower(surfaceOf("Shirt", kUberType, dual), {}, {});
+  const auto mixed = loweredJson(surfaceOf("Shirt", kUberType, dual), {}, {});
   expectRgb(specularOf(mixed)["specularColorFactor"], 0.47603f, 0.36725f, 1.0f, 1e-4f);
 
   // no Glossy Color: white, and no map
-  const auto skin = fv::mat::lower(fv::dson::parseSurface("Face", channelsOf(kSkin)), {}, {});
+  const auto skin = loweredJson(fv::dson::parseSurface("Face", channelsOf(kSkin)), {}, {});
   expectRgb(specularOf(skin)["specularColorFactor"], 1, 1, 1, 0);
   EXPECT_FALSE(specularOf(skin).contains("specularColorTexture"));
 
   // the tear film is clear water whatever its Glossy Color
   const auto moisture = fv::dson::parseSurface("EyeMoisture Left", layered({kG9Moisture, kGreyGlossyColor}));
-  expectRgb(specularOf(fv::mat::lower(moisture, {}, {.underTearFilm = true}))["specularColorFactor"], 1, 1, 1, 0);
+  expectRgb(specularOf(loweredJson(moisture, {}, {.underTearFilm = true}))["specularColorFactor"], 1, 1, 1, 0);
 
   // a 3Delight-era surface's channel of that name is not Iray's
   const auto legacy = surfaceOf("Shirt", "studio/material/daz_shader", {{"Glossy Color", Json::array({0.5, 0.25, 1})}});
   EXPECT_EQ(legacy.glossy.color, (fv::mat::Rgb{1, 1, 1}));
-  expectRgb(specularOf(fv::mat::lower(legacy, {}, {}))["specularColorFactor"], 1, 1, 1, 0);
+  expectRgb(specularOf(loweredJson(legacy, {}, {}))["specularColorFactor"], 1, 1, 1, 0);
 }
 
 // Iray tints what a refracting surface lets through by Glossy Color while Share Glossy Inputs is on,
@@ -3534,7 +3549,7 @@ TEST(Materials, RefractionLetsLightThroughInItsOwnColour)
     ChannelValues v = {{"diffuse", Json::array({0.5, 0.5, 0.5})}, {"Glossy Layered Weight", 1}, {"Glossy Roughness", 0},
                        {"Refraction Weight", 1}, {"Refraction Index", 1.33}, {"Glossy Color", Json::array({0.5, 0.25, 1})}};
     v.insert(v.end(), extra.begin(), extra.end());
-    return fv::mat::lower(surfaceOf("Wine", kUberType, v), {}, {}).material["pbrMetallicRoughness"]["baseColorFactor"];
+    return loweredJson(surfaceOf("Wine", kUberType, v), {}, {}).material["pbrMetallicRoughness"]["baseColorFactor"];
   };
   expectRgb(base({}), 0.21404f, 0.05088f, 1.0f, 1e-4f);  // shared by default
   expectRgb(base({{"Share Glossy Inputs", true}}), 0.21404f, 0.05088f, 1.0f, 1e-4f);
@@ -3543,7 +3558,7 @@ TEST(Materials, RefractionLetsLightThroughInItsOwnColour)
 
   // the eye's water stays clear
   const auto moisture = fv::dson::parseSurface("EyeMoisture Left", layered({kG9Moisture, kGreyGlossyColor}));
-  expectRgb(fv::mat::lower(moisture, {}, {.underTearFilm = true}).material["pbrMetallicRoughness"]["baseColorFactor"], 1, 1, 1, 0);
+  expectRgb(loweredJson(moisture, {}, {.underTearFilm = true}).material["pbrMetallicRoughness"]["baseColorFactor"], 1, 1, 1, 0);
 }
 
 // Iray Uber's Weighted mode (normalized_base) mixes the diffuse and the glossy by Diffuse Weight and
@@ -3560,8 +3575,8 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
     v.insert(v.end(), extra.begin(), extra.end());
     return surfaceOf(name, kUberType, v, images);
   };
-  const auto pbrOf = [](const fv::mat::Lowered& l) { return l.material["pbrMetallicRoughness"]; };
-  const auto iorOf = [](const fv::mat::Lowered& l) { return l.material["extensions"]["KHR_materials_ior"]["ior"].get<float>(); };
+  const auto pbrOf = [](const LoweredJson& l) { return l.material["pbrMetallicRoughness"]; };
+  const auto iorOf = [](const LoweredJson& l) { return l.material["extensions"]["KHR_materials_ior"]["ior"].get<float>(); };
 
   EXPECT_NEAR(fv::mat::iorForReflectance(0.04f), 1.5f, 1e-4f);
   EXPECT_NEAR(fv::mat::iorForReflectance(1.f), 77.987f, 1e-2f);  // capped at kFlatF0
@@ -3574,7 +3589,7 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
     EXPECT_NEAR(s.diffuseWeight, 0.66667f, 1e-4f);
     EXPECT_NEAR(s.glossy.weight, 0.33333f, 1e-4f);
     EXPECT_FLOAT_EQ(s.metallic.value, 0);
-    const auto l = fv::mat::lower(s, {}, {});
+    const auto l = loweredJson(s, {}, {});
     EXPECT_FLOAT_EQ(pbrOf(l)["metallicFactor"].get<float>(), 0);
     EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.350877f, 1e-4f);
     EXPECT_NEAR(iorOf(l), 77.987f, 1e-2f);
@@ -3582,7 +3597,7 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
   }
   // (b) weights under 1 together: the rest is lost, and the diffuse is 0.2 of what lies under 0.4
   {
-    const auto l = fv::mat::lower(weighted(0.2, 0.4, 1), {}, {});
+    const auto l = loweredJson(weighted(0.2, 0.4, 1), {}, {});
     expectRgb(pbrOf(l)["baseColorFactor"], 0.33333f, 0.33333f, 0.33333f, 1e-4f);
     EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.421053f, 1e-4f);
     EXPECT_NEAR(iorOf(l), 77.987f, 1e-2f);
@@ -3592,14 +3607,14 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
   {
     const auto s = weighted(1, 0.02, 1);
     EXPECT_NEAR(s.glossy.weight, 0.019608f, 1e-5f);
-    const auto l = fv::mat::lower(s, {}, {});
+    const auto l = loweredJson(s, {}, {});
     EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.020640f, 1e-5f);
     EXPECT_NEAR(iorOf(l), 77.987f, 1e-2f);
     EXPECT_NEAR(pbrOf(l)["baseColorFactor"][0].get<float>(), 1.0f, 1e-4f);
   }
   // (d) no glossy weight: no reflection, whatever the layered weight says
   {
-    const auto l = fv::mat::lower(weighted(1, 0, 0.325037), {}, {});
+    const auto l = loweredJson(weighted(1, 0, 0.325037), {}, {});
     EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 0);
     EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_ior"));
   }
@@ -3608,7 +3623,7 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
   {
     const auto s = weighted(1, 1, 1, {{"Glossy Reflectivity", 0.5}}, {{"Glossy Weight", "/hair_gw.jpg"}, {"Glossy Reflectivity", "/hair_gr.jpg"}});
     EXPECT_EQ(s.glossy.weightMap, "/hair_gw.jpg");
-    const auto l = fv::mat::lower(s, {}, {});
+    const auto l = loweredJson(s, {}, {});
     ASSERT_TRUE(specularOf(l).contains("specularTexture"));
     const auto& r = requestOf(l, specularOf(l)["specularTexture"]);
     EXPECT_EQ(r.rel, "/hair_gw.jpg");
@@ -3621,7 +3636,7 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
     const auto s = weighted(1, 1, 1, {{"Refraction Weight", 1}, {"Refraction Index", 1.5}}, {}, "Glass");
     ASSERT_TRUE(s.refraction);
     EXPECT_NEAR(s.refraction->weight, 0.5f, 1e-6f);
-    const auto l = fv::mat::lower(s, {}, {});
+    const auto l = loweredJson(s, {}, {});
     EXPECT_NEAR(l.material["extensions"]["KHR_materials_transmission"]["transmissionFactor"].get<float>(), 0.5f, 1e-6f);
     EXPECT_NEAR(iorOf(l), 1.5f, 1e-6f);
     EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 1);
@@ -3637,7 +3652,7 @@ TEST(Materials, WeightedMixingIsDiffuseAndGlossyByWeight)
     const auto s = surfaceOf("Shirt", kUberType,
                              {{"Base Mixing", 0}, {"Glossy Layered Weight", 1}, {"Glossy Reflectivity", 1}, {"Metallic Weight", 1}, {"Glossy Weight", 0.3}});
     EXPECT_EQ(s.mixing, Surface::Mixing::eMetallicRoughness);
-    const auto l = fv::mat::lower(s, {}, {});
+    const auto l = loweredJson(s, {}, {});
     EXPECT_FALSE(l.material["extensions"].contains("KHR_materials_ior"));
     EXPECT_FLOAT_EQ(pbrOf(l)["metallicFactor"].get<float>(), 1);
     EXPECT_FLOAT_EQ(specularOf(l)["specularFactor"].get<float>(), 1);
@@ -3684,7 +3699,7 @@ TEST(Materials, SpecGlossReadsGlossySpecularAsF0)
     return surfaceOf("Shirt", kUberType, v, images);
   };
   const auto grey  = [](double v) { return Json::array({v, v, v}); };
-  const auto iorOf = [](const fv::mat::Lowered& l) { return l.material["extensions"]["KHR_materials_ior"]["ior"].get<float>(); };
+  const auto iorOf = [](const LoweredJson& l) { return l.material["extensions"]["KHR_materials_ior"]["ior"].get<float>(); };
 
   // (a) DAZ's default, 4.37% linear: a plain dielectric, no metal
   const auto s = specGloss(1, grey(0.2313726));
@@ -3692,38 +3707,38 @@ TEST(Materials, SpecGlossReadsGlossySpecularAsF0)
   EXPECT_NEAR(s.glossy.reflectivity, 0.54669f, 1e-4f);
   EXPECT_EQ(s.glossy.color, (fv::mat::Rgb{1, 1, 1}));
   EXPECT_FLOAT_EQ(s.metallic.value, 0);
-  const auto a = fv::mat::lower(s, {}, {});
+  const auto a = loweredJson(s, {}, {});
   EXPECT_FLOAT_EQ(a.material["pbrMetallicRoughness"]["metallicFactor"].get<float>(), 0);
   EXPECT_FLOAT_EQ(specularOf(a)["specularFactor"].get<float>(), 1);
   EXPECT_NEAR(iorOf(a), 1.52886f, 1e-4f);
   expectRgb(specularOf(a)["specularColorFactor"], 1, 1, 1, 0);
   EXPECT_NEAR(a.material["pbrMetallicRoughness"]["roughnessFactor"].get<float>(), 0.3f, 1e-6f);
   // (b) the weight scales the whole curve: the index stays the colour's
-  const auto b = fv::mat::lower(specGloss(0.2, grey(0.2313726)), {}, {});
+  const auto b = loweredJson(specGloss(0.2, grey(0.2313726)), {}, {});
   EXPECT_NEAR(specularOf(b)["specularFactor"].get<float>(), 0.2f, 1e-5f);
   EXPECT_NEAR(iorOf(b), 1.52886f, 1e-4f);
   // (c) a bright F0
-  const auto c = fv::mat::lower(specGloss(1, grey(0.8078431)), {}, {});
+  const auto c = loweredJson(specGloss(1, grey(0.8078431)), {}, {});
   EXPECT_NEAR(iorOf(c), 8.3294f, 1e-2f);
   EXPECT_FLOAT_EQ(specularOf(c)["specularFactor"].get<float>(), 1);
   // (c2) Noki Veil: white at a fifth of the weight is an even fifth, not a bright rim
-  const auto c2 = fv::mat::lower(specGloss(0.2, grey(1)), {}, {});
+  const auto c2 = loweredJson(specGloss(0.2, grey(1)), {}, {});
   EXPECT_NEAR(specularOf(c2)["specularFactor"].get<float>(), 0.210526f, 1e-5f);
   EXPECT_NEAR(iorOf(c2), 77.987f, 1e-2f);
   // (d) a coloured F0: the brightest channel is the index, the hue the specular colour
-  const auto d = fv::mat::lower(specGloss(1, Json::array({0.5, 0.25, 0.5})), {}, {});
+  const auto d = loweredJson(specGloss(1, Json::array({0.5, 0.25, 0.5})), {}, {});
   expectRgb(specularOf(d)["specularColorFactor"], 1, 0.23769f, 1, 1e-4f);
   EXPECT_NEAR(iorOf(d), 2.72194f, 1e-3f);
   // (e) Glossy Reflectivity is not read in this mode
-  const auto e = fv::mat::lower(specGloss(1, grey(0.2313726), {{"Glossy Reflectivity", 1}}), {}, {});
+  const auto e = loweredJson(specGloss(1, grey(0.2313726), {{"Glossy Reflectivity", 1}}), {}, {});
   EXPECT_EQ(e.material, a.material);
   // (f) Glossy Specular's map is the colour's
-  const auto f = fv::mat::lower(specGloss(1, grey(0.2313726), {}, {{"Glossy Specular", "/bls_spec.jpg"}}), {}, {});
+  const auto f = loweredJson(specGloss(1, grey(0.2313726), {}, {{"Glossy Specular", "/bls_spec.jpg"}}), {}, {});
   ASSERT_TRUE(specularOf(f).contains("specularColorTexture"));
   EXPECT_EQ(requestOf(f, specularOf(f)["specularColorTexture"]).rel, "/bls_spec.jpg");
   EXPECT_TRUE(requestOf(f, specularOf(f)["specularColorTexture"]).srgb);
   // (h) under 4%: a plain index, the lobe scaled down
-  const auto h = fv::mat::lower(specGloss(1, grey(0.1254902)), {}, {});
+  const auto h = loweredJson(specGloss(1, grey(0.1254902)), {}, {});
   EXPECT_NEAR(specularOf(h)["specularFactor"].get<float>(), 0.36110f, 1e-4f);
   EXPECT_FALSE(h.material["extensions"].contains("KHR_materials_ior"));
 }
@@ -3770,7 +3785,7 @@ TEST(Materials, PbrSkinBumpEnableSwitchesTheNormalAndBumpMaps)
   {
     EXPECT_TRUE(off.normalMap.empty());
     EXPECT_TRUE(off.bumpMap.empty());
-    EXPECT_FALSE(fv::mat::lower(off, {}, {.skin = fv::mat::SkinMode::eRaster}).material.contains("normalTexture"));
+    EXPECT_FALSE(loweredJson(off, {}, {.skin = fv::mat::SkinMode::eRaster}).material.contains("normalTexture"));
   }
   const auto uber = surfaceOf("Torso", kUberType, {{"Normal Map", 1}, {"Bump Strength", 0.5}}, {{"Normal Map", "/n.jpg"}, {"Bump Strength", "/b.jpg"}});
   EXPECT_EQ(uber.normalMap, "/n.jpg");
@@ -3807,7 +3822,7 @@ TEST(Materials, MakeupRoughnessMultScalesBothLobesUnderTheMakeup)
 
 namespace {
 
-float emissiveStrengthOf(const fv::mat::Lowered& l)
+float emissiveStrengthOf(const LoweredJson& l)
 {
   return l.material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"].get<float>();
 }
@@ -3877,7 +3892,7 @@ TEST(Materials, AnEmitterAtZeroKelvinKeepsItsColour)
   const auto s = surfaceOf("Sole", kUberType,
                            {{"Emission Color", Json::array({1, 0, 1})}, {"Emission Temperature", 0}, {"Luminance", 10},
                             {"Luminance Units", 0}, {"Two Sided Light", true}});
-  const auto l = fv::mat::lower(s, {}, fv::mat::LowerOptions{.emission = 2});
+  const auto l = loweredJson(s, {}, fv::mat::LowerOptions{.emission = 2});
   expectRgb(l.material["emissiveFactor"], 1, 0, 1, 1e-6f);  // magenta, not the red of a 1667 K tint
   EXPECT_NEAR(emissiveStrengthOf(l), 2.f, 1e-6f);
 }
@@ -3909,7 +3924,7 @@ TEST(Materials, AnEmittersTemperatureTintsItAsABlackbodyAgainstD65)
   // glTF's emissiveFactor stops at 1: the peak goes into the strength
   const auto lit = [](double kelvin) {
     const auto s = surfaceOf("Panel", kUberType, {{"Emission Color", Json::array({1, 1, 1})}, {"Emission Temperature", kelvin}});
-    return fv::mat::lower(s, {}, fv::mat::LowerOptions{.emission = 2});
+    return loweredJson(s, {}, fv::mat::LowerOptions{.emission = 2});
   };
   expectRgb(lit(6500).material["emissiveFactor"], 1, 0.93770f, 0.98842f, 1e-4f);
   EXPECT_NEAR(emissiveStrengthOf(lit(6500)), 2.09519f, 1e-4f);
@@ -3922,7 +3937,7 @@ TEST(Materials, AnEmittersTemperatureTintsItAsABlackbodyAgainstD65)
         {"channel":{"id":"emission","type":"color","current_value":[1,1,1]}}]}]})"));
   ASSERT_TRUE(glow.emission);
   EXPECT_EQ(glow.emission->temperature, 0.f);
-  const auto plain = fv::mat::lower(glow, {}, {});
+  const auto plain = loweredJson(glow, {}, {});
   expectRgb(plain.material["emissiveFactor"], 1, 1, 1, 1e-6f);
   EXPECT_NEAR(emissiveStrengthOf(plain), 1.f, 1e-6f);
 }
@@ -3950,7 +3965,7 @@ fv::mat::Surface cjHead(bool weightMap = true)
   return surfaceOf("Head", kPbrSkinType, v, images);
 }
 
-const fv::mat::TextureRequest& specularRequest(const fv::mat::Lowered& l)
+const fv::mat::TextureRequest& specularRequest(const LoweredJson& l)
 {
   return requestOf(l, l.material["extensions"]["KHR_materials_specular"]["specularTexture"]);
 }
@@ -3974,7 +3989,7 @@ TEST(Materials, ADualLobeWeightMapSaysWhereBothLobesShine)
   EXPECT_EQ(lobes.intensityMaps, std::vector<std::string>{kSlw});
   EXPECT_EQ(lobes.clearcoat->weightMaps, lobes.intensityMaps);
 
-  const auto l = fv::mat::lower(s, {}, {});
+  const auto l = loweredJson(s, {}, {});
   EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
   ASSERT_TRUE(specularOf(l).contains("specularTexture"));
   const auto& spec = specularRequest(l);
@@ -3988,7 +4003,7 @@ TEST(Materials, ADualLobeWeightMapSaysWhereBothLobesShine)
   EXPECT_EQ(requestOf(l, clearcoatOf(l)["clearcoatRoughnessTexture"]).rel, "/head_r.jpg");
 
   // no map (Polina 9's and Leyla 9's skin): flat as before
-  const auto flat = fv::mat::lower(cjHead(false), {}, {});
+  const auto flat = loweredJson(cjHead(false), {}, {});
   EXPECT_NEAR(specularOf(flat)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
   EXPECT_FALSE(specularOf(flat).contains("specularTexture"));
   EXPECT_FALSE(clearcoatOf(flat).contains("clearcoatTexture"));
@@ -4007,7 +4022,7 @@ TEST(Materials, ADualLobeWeightMapSaysWhereBothLobesShine)
                                 {"Top Coat Enable", true},
                                 {"Top Coat Weight", 0.25}},
                                {{"Dual Lobe Specular Weight", kSlw}});
-  const auto ln = fv::mat::lower(nails, {}, {});
+  const auto ln = loweredJson(nails, {}, {});
   EXPECT_NEAR(specularOf(ln)["specularFactor"].get<float>(), 0.5f, 1e-5f);
   ASSERT_TRUE(specularOf(ln).contains("specularTexture"));
   EXPECT_EQ(specularRequest(ln).rel, kSlw);
@@ -4031,7 +4046,7 @@ TEST(Materials, AGlossyLayerAndADualLobeTogetherLeaveTheSumUnmapped)
   EXPECT_NEAR(lobes.intensity, 0.75f, 1e-5f);
   EXPECT_NEAR(lobes.glossyShare, 0.6666667f, 1e-5f);
   EXPECT_TRUE(lobes.intensityMaps.empty());
-  const auto l = fv::mat::lower(s, {}, {});
+  const auto l = loweredJson(s, {}, {});
   EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.75f, 1e-5f);
   EXPECT_FALSE(specularOf(l).contains("specularTexture"));
   ASSERT_TRUE(clearcoatOf(l).contains("clearcoatTexture"));
@@ -4063,7 +4078,7 @@ TEST(Materials, AReflectivityMapScalesTheDualLobeLikeItsWeight)
   EXPECT_NEAR(lobes.intensity, 0.9326389f, 1e-5f);
   EXPECT_EQ(lobes.intensityMaps, std::vector<std::string>{"/head_s.jpg"});
   // the top coat holds the slot: the tight lobe folds back, under the same map
-  const auto l = fv::mat::lower(s, {}, {});
+  const auto l = loweredJson(s, {}, {});
   EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 1.0f, 1e-5f);
   ASSERT_TRUE(specularOf(l).contains("specularTexture"));
   EXPECT_EQ(specularRequest(l).rel, "/head_s.jpg");
@@ -4078,7 +4093,7 @@ TEST(Materials, TwoMapsOnOneLobeAreMultipliedByTheCooker)
 {
   auto s = cjHead();
   s.dual->reflectivityMap = "/Runtime/Textures/head_s.jpg";
-  const auto l = fv::mat::lower(s, {}, {});
+  const auto l = loweredJson(s, {}, {});
   EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 0.2710526f, 1e-5f);
   EXPECT_NEAR(clearcoatOf(l)["clearcoatFactor"].get<float>(), 0.2289474f, 1e-5f);
   const auto& spec = specularRequest(l);
@@ -4088,12 +4103,12 @@ TEST(Materials, TwoMapsOnOneLobeAreMultipliedByTheCooker)
   const std::string key = fv::mat::requestKey(spec);
   EXPECT_NE(key.find("|mul:/Runtime/Textures/head_s.jpg"), std::string::npos);
   EXPECT_EQ(fv::mat::requestKey(requestOf(l, clearcoatOf(l)["clearcoatTexture"])), key);
-  EXPECT_NE(key, fv::mat::requestKey(specularRequest(fv::mat::lower(cjHead(), {}, {}))));
+  EXPECT_NE(key, fv::mat::requestKey(specularRequest(loweredJson(cjHead(), {}, {}))));
 
   // a layered image multiplied in gives its bottom layer: the cooker multiplies plain images
   auto layeredMap = cjHead();
   layeredMap.dual->reflectivityMap = std::string("/x.png") + fv::mat::kLayerSeparator + "/y.png";
-  EXPECT_EQ(specularRequest(fv::mat::lower(layeredMap, {}, {})).mulRels, std::vector<std::string>{"/x.png"});
+  EXPECT_EQ(specularRequest(loweredJson(layeredMap, {}, {})).mulRels, std::vector<std::string>{"/x.png"});
 }
 
 // Iray Uber's glossy layer is add_top_coat with Glossy Layered Weight as its weight (the whole
@@ -4108,7 +4123,7 @@ TEST(Materials, AGlossyLayersMapsSayWhereItShines)
   const auto lobes = fv::mat::specularLobes(s);
   EXPECT_NEAR(lobes.intensity, 1.0f, 1e-6f);
   EXPECT_EQ(lobes.intensityMaps, (std::vector<std::string>{"/gloss.jpg", "/gloss.jpg"}));
-  const auto l = fv::mat::lower(s, {}, {});
+  const auto l = loweredJson(s, {}, {});
   EXPECT_NEAR(specularOf(l)["specularFactor"].get<float>(), 1.0f, 1e-6f);
   ASSERT_TRUE(specularOf(l).contains("specularTexture"));
   EXPECT_EQ(specularRequest(l).rel, "/gloss.jpg");
@@ -4147,10 +4162,10 @@ TEST(Materials, TheTranslucencyWeightsMapSaysWhereLightEnters)
   const auto face = at("Face");
   ASSERT_TRUE(face.translucency);
   EXPECT_EQ(face.translucency->weightMap, "/trans_w.jpg");
-  const auto transmissionOf = [](const fv::mat::Lowered& l) { return l.material["extensions"]["KHR_materials_transmission"]; };
+  const auto transmissionOf = [](const LoweredJson& l) { return l.material["extensions"]["KHR_materials_transmission"]; };
   for(const auto mode : {fv::mat::SkinMode::eVolume, fv::mat::SkinMode::eThin})
   {
-    const auto l = fv::mat::lower(face, {}, {.skin = mode});
+    const auto l = loweredJson(face, {}, {.skin = mode});
     EXPECT_NEAR(transmissionOf(l)["transmissionFactor"].get<float>(), 0.8f, 1e-6f);
     ASSERT_TRUE(transmissionOf(l).contains("transmissionTexture"));
     const auto& r = requestOf(l, transmissionOf(l)["transmissionTexture"]);
@@ -4158,12 +4173,12 @@ TEST(Materials, TheTranslucencyWeightsMapSaysWhereLightEnters)
     EXPECT_EQ(r.channels, "");
     EXPECT_FALSE(r.srgb);
   }
-  const auto measured = fv::mat::lower(face, {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto measured = loweredJson(face, {}, {.skin = fv::mat::SkinMode::eMeasured});
   EXPECT_NEAR(transmissionOf(measured)["transmissionFactor"].get<float>(), 1.0f, 1e-6f);
   EXPECT_FALSE(transmissionOf(measured).contains("transmissionTexture"));
-  EXPECT_FALSE(fv::mat::lower(face, {}, {.skin = fv::mat::SkinMode::eRaster}).material["extensions"].contains("KHR_materials_transmission"));
+  EXPECT_FALSE(loweredJson(face, {}, {.skin = fv::mat::SkinMode::eRaster}).material["extensions"].contains("KHR_materials_transmission"));
 
-  const auto nails = fv::mat::lower(at("Fingernails"), {}, {.skin = fv::mat::SkinMode::eMeasured});
+  const auto nails = loweredJson(at("Fingernails"), {}, {.skin = fv::mat::SkinMode::eMeasured});
   EXPECT_NEAR(transmissionOf(nails)["transmissionFactor"].get<float>(), 0.8f, 1e-6f);
   ASSERT_TRUE(transmissionOf(nails).contains("transmissionTexture"));
   EXPECT_EQ(requestOf(nails, transmissionOf(nails)["transmissionTexture"]).rel, "/trans_w.jpg");
@@ -4179,7 +4194,7 @@ TEST(Materials, HairTranslucencyKeepsItsWeightMap)
   ASSERT_TRUE(m);
   EXPECT_EQ(m->weightMap, "/hair_tw.jpg");
   EXPECT_FLOAT_EQ(m->weight, 0.5f);
-  const auto l = fv::mat::lower(s, {}, {});
+  const auto l = loweredJson(s, {}, {});
   ASSERT_FALSE(l.requests.empty());
   ASSERT_TRUE(l.requests[0].makeup);
   EXPECT_EQ(l.requests[0].makeup->weightRel, "/hair_tw.jpg");
@@ -4196,7 +4211,7 @@ TEST(Materials, TheDualLobeRoughnessMultHasNoMap)
   ASSERT_TRUE(s.dual);
   EXPECT_NEAR(s.dual->lobe1.value, 0.4f, 1e-6f);
   EXPECT_TRUE(s.dual->lobe1.map.empty());
-  for(const auto& r : fv::mat::lower(s, {}, {}).requests)
+  for(const auto& r : loweredJson(s, {}, {}).requests)
     EXPECT_NE(r.rel, "/mult.jpg");
 }
 
