@@ -264,6 +264,33 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   {"height", size.height}};
     });
   });
+  // The frame as a linear .hdr, answered once it is on disk: the path tracer's own image, before tone
+  // mapping and any denoiser, for numbers to compare (scripts/fv.py's capture waits for the still first)
+  cmds.add("render.capture", [impl](const Json& args) {
+    const std::filesystem::path path = pathOf(args.at("path").get<std::string>());
+    std::string                 ext  = utf8Of(path.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if(ext != ".hdr")
+      throw std::runtime_error("render.capture writes a .hdr file");
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);  // what is found afterwards is this capture's
+    const Json answer = impl->onApp([impl, path] {
+      if(impl->renderer->renderSystem() != RenderingMode::ePathtracer)
+        throw std::runtime_error("render.capture needs the path tracer");
+      impl->renderer->saveImage(path);
+      return Json{{"samples", impl->renderer->accumulatedSamples()}, {"converged", impl->renderer->isStillConverged()}};
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(impl->onApp([impl] { return impl->renderer->imageSavePending(); }))
+    {
+      if(std::chrono::steady_clock::now() > deadline)
+        throw std::runtime_error("render.capture: no frame drew in a minute");
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if(!std::filesystem::exists(path, ignored))
+      throw std::runtime_error("render.capture could not write " + utf8Of(path));
+    return answer;
+  });
   // GPU memory, for the Export dialog: the budget (VK_EXT_memory_budget; `known` false without it)
   // and what a pixel of the frame costs in the mode drawn, so a size is judged before it is asked for
   cmds.add("render.budget", [impl](const Json&) {

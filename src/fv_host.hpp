@@ -64,6 +64,7 @@
 //   render.mode     {mode: "raster" | "rtx", skin?: "measured" | "volume" | "thin"}
 //   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame)
+//   render.capture  {path}  -> {samples, converged}   the frame as a linear .hdr (path tracer), answered once saved
 //   render.budget   {}  -> {known, budgetBytes, usageBytes, bytesPerPixel, width, height}   GPU memory: the
 //                                                driver's budget and what a pixel of the frame costs, so an
 //                                                export size is judged before /size refuses it (507)

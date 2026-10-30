@@ -407,6 +407,12 @@ public:
            && !m_pathTracer.dlssFrame();
   }
   bool isStillConverged() const override { return isStill() && m_resources.accumulationComplete(); }
+  void saveImage(const std::filesystem::path& path) override
+  {
+    if(m_app)
+      m_screenshotPending = path;
+  }
+  bool imageSavePending() const override { return !m_screenshotPending.empty(); }
   // The sample cap is reached, whatever renders (a DLSS view counts its frames too)
   bool accumulationComplete() const override { return m_resources.accumulationComplete(); }
   int  accumulatedSamples() const override { return m_resources.accumulatedSamples; }

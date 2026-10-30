@@ -123,6 +123,9 @@ public:
   // the samples per pixel the still has accumulated, and the cap it refines to
   virtual int           accumulatedSamples() const         = 0;
   virtual int           sampleCap() const                  = 0;
+  // saves the frame once the next one is drawn (a .hdr: the linear render), and whether that is still to come
+  virtual void          saveImage(const std::filesystem::path& path) = 0;
+  virtual bool          imageSavePending() const           = 0;
   // a pipeline built on an earlier run compiled again: the driver's shader cache is full
   virtual bool          driverCacheFull() const            = 0;
   // the VRAM budget (VK_EXT_memory_budget); `known` false without the extension. Any thread.

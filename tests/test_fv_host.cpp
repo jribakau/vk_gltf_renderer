@@ -1278,3 +1278,24 @@ TEST(FvHost, AFigureOnAColdCacheTakesEachCookAsItLands)
   EXPECT_EQ(after.images.size(), before.images.size());
   EXPECT_EQ(scene.textureCount(), after.images.size());  // the fallbacks went
 }
+
+// The frame as a linear image, once it is on disk: the path tracer's, a .hdr
+TEST(FvHost, ACaptureIsAnHdrOfThePathTracersImage)
+{
+  HostRig                     rig;
+  const fs::path file = fs::temp_directory_path() / "fv_capture_test.hdr";
+
+  rig.renderer.setRenderSystem(RenderingMode::eRasterizer);
+  EXPECT_FALSE(rig.cmd("render.capture", {{"path", file.generic_string()}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.savedImage.empty());
+
+  rig.renderer.setRenderSystem(RenderingMode::ePathtracer);
+  EXPECT_FALSE(rig.cmd("render.capture", {{"path", "still.png"}}).value("ok", false));
+
+  rig.renderer.stillSamples = 64;
+  const Json answer         = rig.cmd("render.capture", {{"path", file.generic_string()}});
+  EXPECT_TRUE(answer.value("ok", false)) << answer.dump();
+  EXPECT_EQ(answer["result"].value("samples", 0), 64);
+  EXPECT_EQ(rig.renderer.savedImage, file);
+  fs::remove(file);
+}

@@ -23,6 +23,8 @@
 // so FvHost runs its commands in gtest (daz-viewer docs/command-journal-plan.md, C0). What only
 // draws (the gizmo, helper lines, the debug views) is kept or dropped; nothing is rendered.
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 
 #include "host_renderer.hpp"
@@ -78,6 +80,13 @@ public:
   bool          driverCacheFull() const override { return false; }
   int           accumulatedSamples() const override { return stillSamples; }
   int           sampleCap() const override { return stillSampleCap; }
+  // saved as soon as asked, an empty file standing for the image
+  void saveImage(const std::filesystem::path& path) override
+  {
+    savedImage = path;
+    std::ofstream{path};
+  }
+  bool imageSavePending() const override { return false; }
   MemoryBudget  deviceMemoryBudget() const override { return {}; }
   uint32_t      frameBytesPerPixel() const override { return 4; }
   nvvk::ResourceAllocator* deviceAllocator() override { return nullptr; }
@@ -100,6 +109,7 @@ public:
   std::vector<std::pair<glm::vec2, bool>>                                       picks;  // pickAt(uv, center), in order
   int stillSamples   = 0;  // what accumulatedSamples() and sampleCap() say
   int stillSampleCap = 0;
+  std::filesystem::path savedImage;  // the last saveImage's path
 
 private:
   rs::RetainedScene                           m_scene;
