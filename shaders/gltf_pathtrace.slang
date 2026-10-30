@@ -216,7 +216,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 
     // Check if we are on the first ray
-    bool firstRay = (pt.surfaceDepth == 0);
+    bool firstRay = ptOnCameraRay(pt);
 
     // Check if we hit the infinite plane
     bool hitInfinitePlane = checkInfinitePlaneIntersection(ray, payload, hit, frameInfo, seed);

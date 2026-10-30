@@ -1956,6 +1956,19 @@ bool ptIsInside(PathTracerState pt)
 #endif
 }
 
+// Whether the path has met nothing yet. Not surfaceDepth alone: a fibre event spends the hair's own
+// budget and leaves it at 0, and a ray leaving a fibre is no camera ray. It sees no backplate (one that
+// reached the sky replaced the path's light with the backdrop, so black hair showed the sky behind it)
+// and captures no first hit.
+bool ptOnCameraRay(PathTracerState pt)
+{
+#if GLTF_USE_HAIR
+  return pt.surfaceDepth == 0 && pt.hairBounces == 0;
+#else
+  return pt.surfaceDepth == 0;
+#endif
+}
+
 // The light a path's ray meets on sized lights before `tMax` (with `escaped`, the discs of
 // directional ones too), each weighed against the light sample of the vertex the ray left. Without
 // it the cone samples were their only technique, and they almost never land in a smooth lobe: a
@@ -1967,11 +1980,7 @@ bool ptIsInside(PathTracerState pt)
 // against) the vertex is the ray's origin. A camera ray sees the lights with ePtLightsVisible only.
 float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt)
 {
-  bool cameraRay = pt.surfaceDepth == 0;
-#if GLTF_USE_HAIR
-  cameraRay = cameraRay && pt.hairBounces == 0;
-#endif
-  if(cameraRay && !hasFlag(pushConst.flags, PathtracerFlags::ePtLightsVisible))
+  if(ptOnCameraRay(pt) && !hasFlag(pushConst.flags, PathtracerFlags::ePtLightsVisible))
     return float3(0.0F);
   const bool   delta    = pt.lastSamplePdf == DIRAC;
   const float3 vertex   = delta ? ray.Origin : pt.lightPick.pos;
