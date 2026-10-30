@@ -111,4 +111,35 @@ std::string readMaybeCompressed(const std::filesystem::path& path)
   return inflateIfCompressed(raw);
 }
 
+std::string readHead(const std::filesystem::path& path, size_t bytes)
+{
+  std::ifstream f(path, std::ios::binary);
+  if(!f)
+    throw std::runtime_error("cannot read " + path.string());
+  // text this size never takes more than this of a file, so the bytes past it stay on the disk
+  std::string raw(bytes + 1024, '\0');
+  f.read(raw.data(), std::streamsize(raw.size()));
+  raw.resize(size_t(f.gcount()));
+  const std::span<const uint8_t> in(reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
+  const size_t                   gzipAt = gzipPayload(in);
+  const bool                     zlib   = !gzipAt && isZlib(in);
+  if(!gzipAt && !zlib)
+  {
+    raw.resize(std::min(raw.size(), bytes));
+    return raw;
+  }
+  z_stream s{};
+  if(inflateInit2(&s, gzipAt ? -15 : 15) != Z_OK)
+    throw std::runtime_error("inflate: could not initialise zlib");
+  std::string out(bytes, '\0');
+  s.next_in   = const_cast<Bytef*>(in.data() + gzipAt);
+  s.avail_in  = uInt(in.size() - gzipAt);
+  s.next_out  = reinterpret_cast<Bytef*>(out.data());
+  s.avail_out = uInt(out.size());
+  inflate(&s, Z_SYNC_FLUSH);
+  out.resize(s.total_out);
+  inflateEnd(&s);
+  return out;
+}
+
 }  // namespace fv

@@ -260,6 +260,25 @@ void MorphSet::addLazy(const std::string& name, Loader loader, const ChannelOpti
   m_listVersion++;
 }
 
+void MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
+{
+  Channel* ch = channelMut(name);
+  if(!ch)
+    return;
+  if(!info.label.empty())
+    ch->label = info.label;
+  ch->path   = info.path;
+  ch->region = info.region;
+  ch->kind   = info.kind;
+  ch->helper = info.helper;
+  if(ch->lazy)
+  {
+    ch->min = info.min.value_or(ch->min);
+    ch->max = info.max.value_or(ch->max);
+  }
+  m_listVersion++;
+}
+
 void MorphSet::ensureLoaded(const std::string& name)
 {
   auto it = m_lazy.find(name);

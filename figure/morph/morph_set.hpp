@@ -38,6 +38,11 @@ struct Channel
   bool lazy = false;
   // driven by something else (joint correctives follow bone rotations); not shown as a dial
   bool hidden = false;
+  // what its file says of it (dson::MorphInfo), once describe has told it: empty for a worn item's
+  std::string path, region, kind;
+  // its file says it's not a dial. Unlike `hidden` it is still published, saved and kept in a look,
+  // as a preset may have set it; only the morph panel leaves it out
+  bool helper = false;
 };
 
 struct ChannelOptions
@@ -124,6 +129,9 @@ public:
   void addTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts = {});
   // Registers a morph whose deltas are only read the first time it is set to a non-zero value.
   void addLazy(const std::string& name, Loader loader, const ChannelOptions& opts = {});
+  // Tells a channel what its file says of it: its real label and range (a lazy channel has a label
+  // made from its name, and 0 to 1, until now) and where it belongs.
+  void describe(const std::string& name, const dson::MorphInfo& info);
 
   // Every channel's value is now what it loaded with, but those in `except`, which came earlier.
   void markLoaded(const std::set<std::string>& except = {});

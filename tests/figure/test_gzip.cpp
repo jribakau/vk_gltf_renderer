@@ -93,3 +93,25 @@ TEST(FigureGzip, TruncatedStreamThrows)
   packed.resize(packed.size() / 2);
   EXPECT_THROW(fv::inflateIfCompressed(packed), std::runtime_error);
 }
+
+// The start of a file's text, without inflating the rest of it, compressed or not.
+TEST(FigureGzip, ReadsTheHeadOfAFile)
+{
+  std::string json = "{\"a\":[";
+  for(int i = 0; i < 200000; i++)
+    json += std::to_string(i) + ",";
+  json += "0]}";
+  const std::filesystem::path dir = std::filesystem::temp_directory_path();
+  const std::filesystem::path packedPath = dir / "fv_gzip_head.dsf", plainPath = dir / "fv_gzip_head_plain.dsf";
+  const auto                  packed     = gzip(json);
+  std::ofstream(packedPath, std::ios::binary).write(reinterpret_cast<const char*>(packed.data()), std::streamsize(packed.size()));
+  std::ofstream(plainPath, std::ios::binary).write(json.data(), std::streamsize(json.size()));
+  EXPECT_EQ(fv::readHead(packedPath, 4096), json.substr(0, 4096));
+  EXPECT_EQ(fv::readHead(plainPath, 4096), json.substr(0, 4096));
+  // a file shorter than asked for is all there is
+  std::ofstream(plainPath, std::ios::binary).write("{}", 2);
+  EXPECT_EQ(fv::readHead(plainPath, 4096), "{}");
+  std::filesystem::remove(packedPath);
+  std::filesystem::remove(plainPath);
+  EXPECT_THROW(fv::readHead(plainPath, 4096), std::runtime_error);
+}

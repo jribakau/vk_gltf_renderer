@@ -200,7 +200,8 @@
 // are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
 // env.name, env.size, env.loading. "pose/<prop>" carries `eyes` (whether the figure can look at
 // the camera). "morphs/<prop>" is the visible channels ({label, group, value, min, max, weight,
-// order}); a new channel list replaces it, and value or weight changes arrive as a merge patch. A
+// order}, and what a file says of its dial when that has been read: path, region, kind, helper);
+// a new channel list replaces it, and value or weight changes arrive as a merge patch. A
 // figure's busy() line is a "jobs" entry, and takeWarnings() goes to "notices". "jobs" and
 // "notices" keep only the latest finished jobs and notices (kKeptJobs, kKeptNotices); older ones
 // leave with a null in a later patch.

@@ -143,6 +143,14 @@ void FvHost::Impl::publishMorphs(Loaded& f)
       const double w = morphs.weightOf(ch.name);
       channels[ch.name] = {{"label", ch.label}, {"group", ch.group}, {"value", ch.value}, {"min", ch.min},
                            {"max", ch.max},     {"weight", w},       {"order", order++}};
+      if(!ch.path.empty())
+        channels[ch.name]["path"] = ch.path;
+      if(!ch.region.empty())
+        channels[ch.name]["region"] = ch.region;
+      if(!ch.kind.empty())
+        channels[ch.name]["kind"] = ch.kind;
+      if(ch.helper)
+        channels[ch.name]["helper"] = true;
       f.published[ch.name] = {ch.value, w};
     }
     f.morphList = morphs.listVersion();

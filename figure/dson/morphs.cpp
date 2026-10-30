@@ -4,6 +4,9 @@
 #include <cmath>
 #include <map>
 #include <regex>
+#include <utility>
+
+#include <figure/io/gzip.hpp>
 
 namespace fv::dson {
 
@@ -96,6 +99,118 @@ bool hiddenMorph(const std::string& name)
 {
   static const std::regex re(R"(^(pjcm|pbmc|pcmc|jcm|mcm|pmcm|facs_jnt|facs_cbs|body_cbs|head_cbs|ctrl_?jcm)|_hd\d?$|HDLv\d)", std::regex::icase);
   return std::regex_search(name, re);
+}
+
+namespace {
+
+// Reads the first modifier's fields as they go by, and stops at what comes after them.
+class MorphInfoSax : public nlohmann::json_sax<Json>
+{
+public:
+  MorphInfo info;
+  bool      found = false;
+
+  bool null() override { return true; }
+  bool boolean(bool v) override
+  {
+    if(in("channel") && m_key == "visible" && !v)
+      info.helper = true;
+    return true;
+  }
+  bool number_integer(number_integer_t v) override { return number(double(v)); }
+  bool number_unsigned(number_unsigned_t v) override { return number(double(v)); }
+  bool number_float(number_float_t v, const string_t&) override { return number(v); }
+  bool string(string_t& v) override
+  {
+    if(inModifier())
+    {
+      if(m_key == "id")
+        info.id = v;
+      else if(m_key == "region")
+        info.region = v;
+      else if(m_key == "group")
+        info.path = v;
+    }
+    else if(in("presentation") && m_key == "type")
+      info.kind = v;
+    else if(in("channel"))
+    {
+      if(m_key == "label")
+        info.label = v;
+      else if(m_key == "type" && v == "alias")
+        info.alias = true;
+    }
+    return true;
+  }
+  bool binary(binary_t&) override { return true; }
+  bool key(string_t& v) override
+  {
+    m_key = v;
+    // the rest of the modifier is what makes these files large
+    return !(inModifier() && (v == "formulas" || v == "morph"));
+  }
+  bool start_object(std::size_t) override { return push(); }
+  bool end_object() override { return pop(); }
+  bool start_array(std::size_t) override { return push(); }
+  bool end_array() override { return pop(); }
+  bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override { return false; }
+
+private:
+  // the keys down to here: "", "modifier_library", "" is inside a modifier
+  std::vector<std::string> m_stack;
+  std::string              m_key;
+
+  bool inModifier() const { return m_stack.size() == 3 && m_stack[1] == "modifier_library"; }
+  bool in(const char* field) const { return m_stack.size() == 4 && m_stack[1] == "modifier_library" && m_stack[3] == field; }
+  bool number(double v)
+  {
+    if(in("channel") && m_key == "min")
+      info.min = v;
+    else if(in("channel") && m_key == "max")
+      info.max = v;
+    return true;
+  }
+  bool push()
+  {
+    m_stack.push_back(std::exchange(m_key, {}));
+    if(inModifier())
+      found = true;
+    return true;
+  }
+  bool pop()
+  {
+    const bool first = inModifier();
+    m_stack.pop_back();
+    // one modifier to a morph file
+    return !first;
+  }
+};
+
+}  // namespace
+
+std::optional<MorphInfo> morphInfoFromText(std::string_view head)
+{
+  MorphInfoSax sax;
+  Json::sax_parse(head.begin(), head.end(), &sax, Json::input_format_t::json, false);
+  if(!sax.found)
+    return std::nullopt;
+  if(sax.info.alias || sax.info.kind == "Modifier/Corrective" || sax.info.path.rfind("/Hidden", 0) == 0)
+    sax.info.helper = true;
+  return sax.info;
+}
+
+std::optional<MorphInfo> morphInfo(const std::filesystem::path& file)
+{
+  // a morph's fields end within a kilobyte of the modifier's start, which follows a short asset_info
+  constexpr size_t kHead = 8192;
+  try
+  {
+    return morphInfoFromText(readHead(file, kHead));
+  }
+  catch(const std::exception&)
+  {
+    return std::nullopt;
+  }
 }
 
 std::string groupFromPath(const std::string& file)

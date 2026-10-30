@@ -435,3 +435,74 @@ TEST(FigureMorphSet, AnItemsCopyOfALazyFigureMorphJoinsTheFiguresDial)
   EXPECT_EQ(set.get("FBMHeavy"), 0);
   EXPECT_EQ(set.meshesOf("FBMHeavy"), std::set<int>{1});
 }
+
+// A morph file's fields, as DAZ writes them, from the first few KB: the text may stop anywhere after
+// them, and the formulas and deltas are never parsed.
+TEST(MorphInfo, ReadsADialsFieldsFromTheStartOfItsFile)
+{
+  const std::string head = R"({
+    "file_version": "0.6.0.0",
+    "asset_info": {"id": "/data/x.dsf", "type": "modifier", "contributor": {"author": "Daz 3D"}},
+    "modifier_library": [{
+      "id": "body_bs_ProportionLegsLength",
+      "name": "body_bs_ProportionLegsLength",
+      "parent": "/data/Daz%203D/Genesis%209/Base/Genesis9.dsf#Genesis9-1",
+      "presentation": {"type": "Modifier/Shape", "label": "", "colors": [[0.1, 0.2, 0.3], [1, 1, 1]]},
+      "channel": {"id": "value", "type": "float", "name": "Value", "label": "Proportion Legs Length", "value": 0, "min": -2, "max": 2, "clamped": true},
+      "region": "Legs",
+      "group": "/Base",
+      "formulas": [{"output": "stops before this", )";
+  const auto info = fv::dson::morphInfoFromText(head);
+  ASSERT_TRUE(info);
+  EXPECT_EQ(info->id, "body_bs_ProportionLegsLength");
+  EXPECT_EQ(info->label, "Proportion Legs Length");
+  EXPECT_EQ(info->path, "/Base");
+  EXPECT_EQ(info->region, "Legs");
+  EXPECT_EQ(info->kind, "Modifier/Shape");
+  EXPECT_DOUBLE_EQ(*info->min, -2);
+  EXPECT_DOUBLE_EQ(*info->max, 2);
+  EXPECT_FALSE(info->helper);
+
+  // what isn't a dial, each way a file says so
+  const auto said = [](const std::string& presentation, const std::string& channel, const std::string& group) {
+    return fv::dson::morphInfoFromText(R"({"modifier_library": [{"id": "m", "presentation": {"type": ")" + presentation + R"("}, "channel": {"label": "M")" + channel
+                                       + R"(}, "group": ")" + group + R"(", "morph": {)");
+  };
+  EXPECT_FALSE(said("Modifier/Pose", "", "/Pose Controls/Arms")->helper);
+  EXPECT_TRUE(said("Modifier/Pose", R"(, "visible": false)", "/Pose Controls/Arms")->helper);
+  EXPECT_TRUE(said("Modifier/Corrective", "", "/Base")->helper);
+  EXPECT_TRUE(said("Modifier/Shape", "", "/Hidden/People")->helper);
+  const auto alias = said("Modifier/Pose", R"(, "type": "alias", "target_channel": "x")", "/Pose Controls/Arms");
+  EXPECT_TRUE(alias->helper);
+  EXPECT_TRUE(alias->alias);
+
+  // stopping short of the first modifier, or a file with none
+  EXPECT_FALSE(fv::dson::morphInfoFromText(R"({"asset_info": {"id": "/data/x)"));
+  EXPECT_FALSE(fv::dson::morphInfoFromText(R"({"asset_info": {}, "scene": {}})"));
+}
+
+// Told what its file says, a lazy channel takes its real label and range, and stays what it is.
+TEST(MorphInfo, ALazyChannelTakesItsFilesLabelAndRange)
+{
+  fv::morph::MorphSet set([](int) -> fv::mesh::BuiltMesh* { return nullptr; });
+  set.addLazy("body_bs_ProportionLegsLength", []() -> fv::morph::Finish { return [] { return fv::morph::LazyResult{}; }; });
+  const int listed = set.listVersion();
+  fv::dson::MorphInfo info;
+  info.label  = "Proportion Legs Length";
+  info.path   = "/Base";
+  info.region = "Legs";
+  info.kind   = "Modifier/Shape";
+  info.min    = -2;
+  info.max    = 2;
+  set.describe("body_bs_ProportionLegsLength", info);
+  set.describe("no such dial", info);
+  const fv::morph::Channel& ch = set.channels().front();
+  EXPECT_EQ(ch.label, "Proportion Legs Length");
+  EXPECT_EQ(ch.path, "/Base");
+  EXPECT_EQ(ch.region, "Legs");
+  EXPECT_EQ(ch.min, -2);
+  EXPECT_EQ(ch.max, 2);
+  EXPECT_TRUE(ch.lazy);
+  EXPECT_FALSE(ch.hidden);
+  EXPECT_NE(set.listVersion(), listed);
+}

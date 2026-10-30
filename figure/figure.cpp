@@ -111,7 +111,28 @@ void Figure::setup(const Progress& progress)
   {
     say("Indexing morphs");
     timing::Scope t("index morphs");
-    for(const std::string& f : dson::listFiles(store.library(), ctx.morphDir, ".dsf"))
+    const std::vector<std::string> morphFiles = dson::listFiles(store.library(), ctx.morphDir, ".dsf");
+    // what each file says of its dial, on the pool: a load doesn't wait for thousands of little reads
+    m_morphInfoJob = jobs::pool().submit([st = m_store, files = morphFiles]() {
+      timing::Scope                                 t("morph details", 1);
+      std::vector<std::optional<dson::MorphInfo>>   read(files.size());
+      jobs::parallelFor(files.size(), 32, [&](size_t begin, size_t end) {
+        for(size_t i = begin; i < end; i++)
+          if(const auto path = st->library().find(files[i]))
+            read[i] = dson::morphInfo(*path);
+      });
+      MorphNotes notes;
+      for(size_t i = 0; i < files.size(); i++)
+        if(read[i])
+        {
+          // a scene's dial goes by the id in the file, the listing's by the file's name
+          if(!read[i]->alias && !read[i]->id.empty())
+            notes.emplace(read[i]->id, *read[i]);
+          notes[stemOf(files[i])] = *read[i];
+        }
+      return notes;
+    });
+    for(const std::string& f : morphFiles)
     {
       const std::string stem = stemOf(f);
       source->index[lower(stem)] = f;
@@ -439,9 +460,34 @@ Figure::Changes Figure::drain()
   return c;
 }
 
+void Figure::noteMorphs()
+{
+  if(m_morphInfoJob.valid() && m_morphInfoJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+  {
+    m_morphNotes  = m_morphInfoJob.get();
+    m_morphsNoted = -1;
+  }
+  if(m_morphNotes.empty() || morphs->listVersion() == m_morphsNoted)
+    return;
+  for(const morph::Channel& ch : morphs->channels())
+  {
+    const auto it = m_morphNotes.find(ch.name);
+    if(it == m_morphNotes.end())
+      continue;
+    dson::MorphInfo info = it->second;
+    // the listing's dial for a file whose own id the scene set: one slider, the one that holds the value
+    if(!info.alias && info.id != ch.name && morphs->has(info.id))
+      info.helper = true;
+    if(ch.path != info.path || ch.kind != info.kind || ch.helper != info.helper)
+      morphs->describe(ch.name, info);
+  }
+  m_morphsNoted = morphs->listVersion();
+}
+
 Figure::Changes Figure::pump()
 {
   morphs->pump();
+  noteMorphs();
   if(!m_correctiveJobs.empty()
      && std::all_of(m_correctiveJobs.begin(), m_correctiveJobs.end(),
                     [](auto& j) { return j.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }))

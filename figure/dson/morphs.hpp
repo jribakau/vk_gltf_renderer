@@ -6,9 +6,11 @@
 // followed through their linear ERC formulas here, and other formulas are skipped. A port of
 // src/lib/loaders/dson/morphs.ts.
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <figure/dson/store.hpp>
@@ -58,6 +60,26 @@ bool hiddenMorph(const std::string& name);
 
 // Group label from the DAZ folder layout, e.g. ".../Morphs/DAZ 3D/Base Pose Head/x.dsf" -> "Base Pose Head".
 std::string groupFromPath(const std::string& file);
+
+// What a morph file says of its dial. DAZ writes it first in the modifier, before the formulas and the
+// deltas, so the few KB this takes are all that is read of a file: a figure has thousands.
+struct MorphInfo
+{
+  std::string           id, label;
+  // DAZ's parameter group ("/Full Body/People/Feminine"), its region ("Legs") and its presentation
+  // ("Modifier/Shape")
+  std::string           path, region, kind;
+  std::optional<double> min, max;
+  // the file marks it as not a dial: not visible, under /Hidden, or an alias of another channel
+  bool helper = false;
+  bool alias  = false;
+};
+
+// Reads it from the start of a morph file's text, which may stop anywhere after it. Empty without a
+// modifier.
+std::optional<MorphInfo> morphInfoFromText(std::string_view head);
+// The same from a file; empty when it can't be read.
+std::optional<MorphInfo> morphInfo(const std::filesystem::path& file);
 
 // Converts every morph modifier in a document into targets. `prefer` (indices into `meshes`)
 // narrows the target to one scene node's meshes when several copies of the same geometry are loaded.

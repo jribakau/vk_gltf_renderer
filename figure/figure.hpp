@@ -15,6 +15,7 @@
 #include <set>
 #include <atomic>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <figure/dson/addons.hpp>
@@ -254,6 +255,10 @@ private:
   void setup(const Progress& progress);
   void applyOtherDials(const dson::MorphContext& ctx, const std::vector<dson::Item>& items, const std::vector<const dson::SceneDial*>& dials, const Progress& progress);
   void finishCorrectives();
+  // Tells the channels what their files say of them, when that has been read or new channels came.
+  void noteMorphs();
+
+  using MorphNotes = std::unordered_map<std::string, dson::MorphInfo>;
 
   struct CorrectiveFile
   {
@@ -268,6 +273,9 @@ private:
   std::vector<std::string>                      m_correctiveFiles;
   std::vector<std::future<CorrectiveFile>>      m_correctiveJobs;
   bool                                          m_correctivesStarted = false;
+  std::future<MorphNotes>                       m_morphInfoJob;
+  MorphNotes                                    m_morphNotes;
+  int                                           m_morphsNoted = -1;
   std::atomic<int>                              m_wears{0};
   int                                           m_nextItem = 1;
 };
