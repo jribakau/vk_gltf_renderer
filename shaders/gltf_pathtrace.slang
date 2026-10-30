@@ -683,7 +683,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelectionRadiance(materialIndex),
                                                  hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID);
       }
-      addRadiance(pt, emissiveMis * pbrMat.emissive * pt.throughput, pt.prefixIndirect);
+      const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatIsLobe, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,
+                                                  pbrMat.transmission, 0.5F * (pbrMat.roughness.x + pbrMat.roughness.y), abs(dot(pbrMat.N, ray.Direction)));
+      addRadiance(pt, emissiveMis * pbrMat.emissive * throughCoat * pt.throughput, pt.prefixIndirect);
     }
 
     //-----------------------------------------------------------------------
