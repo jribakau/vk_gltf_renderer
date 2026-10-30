@@ -849,6 +849,104 @@ TEST(BsdfLobes, TheSecondLobeEvaluatesAsACoatOfItsRoughness)
   EXPECT_NEAR(a.bsdf_glossy.x, b.bsdf_glossy.x, 1e-3f * b.bsdf_glossy.x);
 }
 
+// Skin under a coat, as the walk has it and as the thin preview does: the walk's transmission isn't clear
+// glass, so both darken alike, on the base's diffuse, on the way into the walk by either entry, and on emission
+TEST(BsdfLobes, ACoatDarkensAWalkAsItsThinPreview)
+{
+  const vec3 skin(0.6f, 0.35f, 0.25f);
+  PbrMaterial preview        = defaultPbrMaterial(skin, 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+  preview.clearcoat          = 1.0f;
+  preview.clearcoatRoughness = 0.1f;
+  PbrMaterial walk           = preview;
+  walk.transmission          = 0.95f;
+  walk.thickness             = 1.0f;
+  walk.scatterCoefficient    = vec3(500.0f, 200.0f, 100.0f);
+  walk.transmissionTint      = 1.0f / skin;
+
+  const vec3 darkening = bsdfCoatDarkening(1.0f, skin, 0.0f, 0.0f, preview.roughness.x);
+  EXPECT_LT(darkening.x, 0.8f);
+  vec3 tintWalk = walk.baseColor, tintPreview = preview.baseColor;
+  computeLobeWeights(walk, 1.0f, tintWalk);
+  computeLobeWeights(preview, 1.0f, tintPreview);
+  PbrMaterial uncoated = walk;
+  uncoated.clearcoat   = 0.0f;
+  vec3 tintUncoated    = uncoated.baseColor;
+  computeLobeWeights(uncoated, 1.0f, tintUncoated);
+  for(int c = 0; c < 3; c++)
+  {
+    EXPECT_NEAR(tintWalk[c], tintPreview[c], 1e-6f);
+    EXPECT_NEAR(tintPreview[c], skin[c] * darkening[c], 1e-5f);
+    // the refraction's way in carries the factor and not the skin's colour, which the medium has
+    EXPECT_NEAR(bsdfLobeFresnel(walk, LOBE_SPECULAR_TRANSMISSION, 1.0f, tintWalk).tint[c]
+                    / bsdfLobeFresnel(uncoated, LOBE_SPECULAR_TRANSMISSION, 1.0f, tintUncoated).tint[c],
+                darkening[c], 1e-4f);
+  }
+
+  // the diffuse entry takes the transmission's share to a white lobe that doesn't read the tint
+  PbrMaterial entry                    = walk;
+  entry.transmission                   = 0.0f;
+  entry.diffuseTransmissionFactor      = 1.0f;
+  entry.diffuseTransmissionColorFactor = vec3(1.0f);
+  PbrMaterial bare                     = entry;
+  bare.clearcoat                       = 0.0f;
+  BsdfEvaluateData coated{}, plain{};
+  coated.k1 = plain.k1 = normalize(vec3(0.3f, 0.1f, 0.9f));
+  coated.k2 = plain.k2 = normalize(vec3(-0.25f, -0.1f, -0.9f));
+  bsdfEvaluateLobe(coated, entry, LOBE_DIFFUSE_TRANSMISSION, entry.baseColor);
+  bsdfEvaluateLobe(plain, bare, LOBE_DIFFUSE_TRANSMISSION, bare.baseColor);
+  ASSERT_GT(plain.bsdf_diffuse.x, 0.0f);
+  EXPECT_NEAR(coated.bsdf_diffuse.x / plain.bsdf_diffuse.x, darkening.x, 1e-4f);
+
+  EXPECT_FLOAT_EQ(bsdfCoatClearTransmission(walk), 0.0f);
+  EXPECT_NEAR(bsdfCoatEmission(1.0f, 0.1f, skin, 0.0f, bsdfCoatClearTransmission(walk), preview.roughness.x, 1.0f).x,
+              bsdfCoatEmission(1.0f, 0.1f, skin, 0.0f, bsdfCoatClearTransmission(preview), preview.roughness.x, 1.0f).x, 1e-6f);
+
+  // and clear glass keeps sending its light on
+  PbrMaterial glass        = walk;
+  glass.scatterCoefficient = vec3(0.0f);
+  EXPECT_FLOAT_EQ(bsdfCoatClearTransmission(glass), 0.95f);
+}
+
+// The metal lobe carries a coat's darkening too, on what it reflects: its Fresnel's f0 stays the base colour,
+// so a grazing view and the multiple-scattering term come out as they do uncoated, times the factor. White
+// metal keeps its energy, in evaluation and in sampling alike.
+TEST(BsdfLobes, ACoatDarkensADarkMetal)
+{
+  const auto metal = [](const vec3& colour, float coat) {
+    PbrMaterial mat        = defaultPbrMaterial(colour, 1.0f, 0.4f, vec3(0, 0, 1), vec3(0, 0, 1));
+    mat.Nc                 = mat.N;
+    mat.clearcoat          = coat;
+    mat.clearcoatRoughness = 0.1f;
+    return mat;
+  };
+  const auto ratio = [&](const vec3& colour, const vec3& view) {
+    const vec3        light  = normalize(vec3(-view.x, -view.y, view.z));
+    const PbrMaterial coated = metal(colour, 1.0f), bare = metal(colour, 0.0f);
+    BsdfEvaluateData  a{}, b{};
+    a.k1 = b.k1 = view;
+    a.k2 = b.k2 = light;
+    bsdfEvaluateLobe(a, coated, LOBE_METAL_REFLECTION, coated.baseColor);
+    bsdfEvaluateLobe(b, bare, LOBE_METAL_REFLECTION, bare.baseColor);
+    EXPECT_GT(b.bsdf_glossy.x, 0.0f);
+    return a.bsdf_glossy.x / b.bsdf_glossy.x;
+  };
+  const vec3  dark(0.3f, 0.2f, 0.1f);
+  const float factor = bsdfCoatDarkening(1.0f, dark, 1.0f, 0.0f, metal(dark, 1.0f).roughness.x).x;
+  EXPECT_LT(factor, 0.9f);
+  EXPECT_NEAR(ratio(dark, normalize(vec3(0.3f, 0.1f, 0.9f))), factor, 1e-4f);
+  EXPECT_NEAR(ratio(dark, normalize(vec3(0.95f, 0.0f, 0.2f))), factor, 1e-4f);
+  EXPECT_NEAR(ratio(vec3(1.0f), normalize(vec3(0.3f, 0.1f, 0.9f))), 1.0f, 1e-4f);
+
+  const PbrMaterial coated = metal(dark, 1.0f), bare = metal(dark, 0.0f);
+  BsdfSampleData    a{}, b{};
+  a.k1 = b.k1 = normalize(vec3(0.3f, 0.1f, 0.9f));
+  a.xi = b.xi = vec4(0.3f, 0.6f, 0.5f, 0.5f);
+  bsdfSampleLobe(a, coated, LOBE_METAL_REFLECTION, coated.baseColor);
+  bsdfSampleLobe(b, bare, LOBE_METAL_REFLECTION, bare.baseColor);
+  ASSERT_GT(b.bsdf_over_pdf.x, 0.0f);
+  EXPECT_NEAR(a.bsdf_over_pdf.x / b.bsdf_over_pdf.x, factor, 1e-4f);
+}
+
 // The diffuse a path takes under a coat carries the darkening, whichever lobe it was drawn by
 TEST(BsdfLobes, TheDarkeningReachesTheLobes)
 {

@@ -687,7 +687,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
                                                  hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID);
       }
       const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,
-                                                  pbrMat.transmission, 0.5F * (pbrMat.roughness.x + pbrMat.roughness.y), abs(dot(pbrMat.N, ray.Direction)));
+                                                  bsdfCoatClearTransmission(pbrMat), 0.5F * (pbrMat.roughness.x + pbrMat.roughness.y), abs(dot(pbrMat.N, ray.Direction)));
       addRadiance(pt, emissiveMis * pbrMat.emissive * throughCoat * pt.throughput, pt.prefixIndirect);
     }
 
