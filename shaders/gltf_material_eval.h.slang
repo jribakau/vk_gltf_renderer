@@ -25,6 +25,9 @@ the BSDF functions. The input is glTF-specific (KHR_materials_* extensions, UV t
 spec-gloss conversion); the output PbrMaterial is the generic BSDF interface defined in
 nvpro_core2.
 
+Compiled as C++ too (figure/tools/closure_probe.cpp), so keep it a polyglot: the numbers the unit
+tests and the library sweep read a material's closure by.
+
 Design notes for the fork:
  - pbrMat is initialized with defaultPbrMaterial() (instead of being left uninitialized as
    upstream) so gating out an extension block with MAT_EXT_* cannot leave PbrMaterial fields
@@ -77,7 +80,7 @@ struct MeshState
 // KHR_texture_transform: map a raw texture coordinate into the material's UV space.
 // Shared by getTexture() (color path) and the direct texture reads in the alpha/shadow
 // paths (pathtrace_functions.h.slang) so both apply the same offset/rotation/scale.
-float2 applyTextureTransform(in GltfTextureInfo textureInfo, float2 tt)
+float2 applyTextureTransform(GltfTextureInfo textureInfo, float2 tt)
 {
 #if GLTF_USE_TEXTURE_TRANSFORM
   tt = mul(float3(tt, 1), textureInfo.uvTransform).xy;
@@ -85,7 +88,7 @@ float2 applyTextureTransform(in GltfTextureInfo textureInfo, float2 tt)
   return tt;
 }
 
-float4 getTexture(Texture2D images[], SamplerState samplers[], in GltfTextureInfo textureInfo, in float2 texCoords[2], float texGrad)
+float4 getTexture(Texture2D images[], SamplerState samplers[], GltfTextureInfo textureInfo, float2 texCoords[2], float texGrad)
 {
 #ifdef USE_TEXTURES
   // Images and samplers are now separate bindless arrays (see GltfTextureInfo.index / samplerIndex).
@@ -139,11 +142,11 @@ bool isTexturePresent(uint16_t tinfo)
  * assumption. SceneVk marks those textures with eTexInfoTwoChannelSource; three-channel maps carry
  * an authored Z and are returned untouched.
  * -------------------------------------------------------------------------------------------------*/
-float3 decodeTangentSpaceNormal(float3 normal_vector, in GltfTextureInfo textureInfo)
+float3 decodeTangentSpaceNormal(float3 normal_vector, GltfTextureInfo textureInfo)
 {
   if((textureInfo.flags & TextureInfoFlagBits::eTexInfoTwoChannelSource) != 0)
   {
-    normal_vector.z = sqrt(saturate(1.0F - dot(normal_vector.xy, normal_vector.xy)));
+    normal_vector.z = sqrt(saturate(1.0F - normal_vector.x * normal_vector.x - normal_vector.y * normal_vector.y));
   }
   // FV_texture_flip_green: the same as inverting the green channel of the image (255 - G).
   if((textureInfo.flags & TextureInfoFlagBits::eTexInfoFlipGreen) != 0)
@@ -191,7 +194,7 @@ float3 multiToSingleScatterAlbedo(float3 rho_ms, float g)
 /*-------------------------------------------------------------------------------------------------
  * Convert PBR specular glossiness to metallic-roughness
  * -------------------------------------------------------------------------------------------------*/
-float3 convertSGToMR(float3 diffuseColor, float3 specularColor, float glossiness, out float metallic, out float2 roughness)
+float3 convertSGToMR(float3 diffuseColor, float3 specularColor, float glossiness, NVSHADERS_OUT_TYPE(float) metallic, NVSHADERS_OUT_TYPE(float2) roughness)
 {
   const float dielectricSpecular = 0.04f;
 
@@ -227,7 +230,7 @@ float3 convertSGToMR(float3 diffuseColor, float3 specularColor, float glossiness
 // preview of a FV_materials_subsurface medium measures its scatter distance against
 static const float PREVIEW_BUMP_SCALE = 0.0005;
 
-PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, bool scatterAsThin = false)
+PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, bool scatterAsThin = false)
 {
   // Start from a fully-initialized material so that gating out any extension with MAT_EXT_*
   // cannot leave downstream BSDF reads undefined.
@@ -250,7 +253,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     {
       float4 specularGlossinessSample =
           getTexture(images, samplers, texInfos[material.pbrSpecularGlossinessTexture], state.tc, state.texGrad);
-      specular *= specularGlossinessSample.rgb;
+      specular *= float3(specularGlossinessSample.rgb);
       glossiness *= specularGlossinessSample.a;
     }
 
@@ -329,7 +332,8 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
       GltfTextureInfo detailTexInfo = texInfos[material.detailNormalTexture];
       detailNormal = getTexture(images, samplers, detailTexInfo, state.tc, state.texGrad).xyz * 2.0F - 1.0F;
       detailNormal = decodeTangentSpaceNormal(detailNormal, detailTexInfo);
-      detailNormal.xy *= material.detailNormalScale * detailWeight;
+      detailNormal.x *= material.detailNormalScale * detailWeight;
+      detailNormal.y *= material.detailNormalScale * detailWeight;
       pbrMat.N           = applyDetailNormal(pbrMat.N, state.T, state.B, detailNormal);
       needsTangentUpdate = true;
     }
@@ -349,7 +353,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   pbrMat.emissive = material.emissiveFactor;
   if(isTexturePresent(material.emissiveTexture))
   {
-    pbrMat.emissive *= getTexture(images, samplers, texInfos[material.emissiveTexture], state.tc, state.texGrad).rgb;
+    pbrMat.emissive *= float3(getTexture(images, samplers, texInfos[material.emissiveTexture], state.tc, state.texGrad).rgb);
   }
   pbrMat.emissive = max(float3(0.0F), pbrMat.emissive);
 
@@ -380,7 +384,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   if(isTexturePresent(material.specularColorTexture))
   {
     pbrMat.specularColor *=
-        getTexture(images, samplers, texInfos[material.specularColorTexture], state.tc, state.texGrad).rgb;
+        float3(getTexture(images, samplers, texInfos[material.specularColorTexture], state.tc, state.texGrad).rgb);
   }
 
   pbrMat.specular = material.specularFactor;
@@ -524,8 +528,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   if(isTexturePresent(material.sheenColorTexture))
   {
     // sRGB texture
-    pbrMat.sheenColor *=
-        float3(getTexture(images, samplers, texInfos[material.sheenColorTexture], state.tc, state.texGrad).xyz);
+    pbrMat.sheenColor *= float3(getTexture(images, samplers, texInfos[material.sheenColorTexture], state.tc, state.texGrad).xyz);
   }
 
   pbrMat.sheenRoughness = material.sheenRoughnessFactor;
@@ -554,7 +557,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
   if(isTexturePresent(material.diffuseTransmissionColorTexture))
   {
     pbrMat.diffuseTransmissionColorFactor *=
-        getTexture(images, samplers, texInfos[material.diffuseTransmissionColorTexture], state.tc, state.texGrad).rgb;
+        float3(getTexture(images, samplers, texInfos[material.diffuseTransmissionColorTexture], state.tc, state.texGrad).rgb);
   }
 #endif
 
@@ -577,7 +580,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     if(isTexturePresent(material.multiscatterColorTexture))
     {
       multiscatterColor *=
-          getTexture(images, samplers, texInfos[material.multiscatterColorTexture], state.tc, state.texGrad).rgb;
+          float3(getTexture(images, samplers, texInfos[material.multiscatterColorTexture], state.tc, state.texGrad).rgb);
     }
 
     float g = material.scatterAnisotropy;
@@ -683,7 +686,7 @@ PbrMaterial evaluateMaterial(in GltfShadeMaterial material, MeshState state, Tex
     if(material.hairRootFade > 0.0 && material.alphaMode != AlphaMode::eAlphaModeOpaque)
     {
       float along = abs(state.tc[0].y - material.hairRootV);
-      pbrMat.opacity *= smoothstep(0.0, material.hairRootFade, along);
+      pbrMat.opacity *= smoothstep(0.0F, material.hairRootFade, along);
     }
 #ifdef RASTER_PIPELINE
     // The path tracer replaces these lobes with the fibre BSDF. The preview only stretches the

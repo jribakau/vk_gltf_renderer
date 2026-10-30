@@ -214,6 +214,8 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/gltf_compact_model.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_compact_scene.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_material_cache.cpp
+    # evaluateMaterial as C++ (phase M1 of the material plan)
+    ${CMAKE_SOURCE_DIR}/figure/tools/closure_probe.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_scene.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_scene_editor.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_image_loader.cpp
