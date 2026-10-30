@@ -2784,6 +2784,7 @@ void PathTracer::startVariantJob(Resources& resources, const VariantKey& key)
 // its module and pipeline. Nothing of Resources, and nothing destroyed but what it made and failed.
 PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
 {
+  const ShaderWarmScope  working;  // /stats says so: behind the view, like the warm-up
   const auto             start = std::chrono::steady_clock::now();
   nvslang::SlangCompiler compiler;  // a global session of its own: the application thread's is not shared
   compiler.targets() = job.targets;
