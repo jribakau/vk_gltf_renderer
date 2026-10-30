@@ -123,6 +123,7 @@ Residency::~Residency()
 {
   clear();
   trimGrace(0);
+  m_noticedLowered = m_noticedRefused = false;
 }
 
 std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb)
@@ -826,8 +827,26 @@ void Residency::releaseMaterialTextures(MaterialSlot& slot)
   slot.textures.clear();
 }
 
+namespace {
+ImageSource imageSourceOf(const TextureRecord& record, bool srgb, uint32_t maxExtent)
+{
+  return {.uri       = record.uri,
+          .bytes     = record.bytes,
+          .mimeType  = record.mimeType,
+          .pixels    = record.pixels,
+          .width     = record.width,
+          .height    = record.height,
+          .component = record.component,
+          .bits      = record.bits,
+          .srgb      = srgb,
+          .name      = record.name,
+          .maxExtent = maxExtent};
+}
+}  // namespace
+
 void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb)
 {
+  const uint32_t maxExtent = m_gpu.maxImageExtent();
   ImageGpu& image  = m_images[{id, srgb}];
   bool      shared = false;  // the image another texture decoded, or is decoding this sync
   if(image.users++ == 0)
@@ -835,6 +854,18 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
     {
       // decoded already, for another texture or in grace
       image.key = textureKeyOf(*record, srgb);
+      if(image.key)
+      {
+        image.key->maxExtent = maxExtent;
+        // lowered to fit, and let go of: there may be room for it now
+        if(auto it = m_decoded.find(*image.key); it != m_decoded.end() && it->second.lowered && it->second.users == 0)
+        {
+          m_graceBytes -= it->second.info.bytes;
+          if(it->second.image)
+            m_gpu.retire([&gpu = m_gpu, handle = it->second.image] { gpu.destroyImage(handle); });
+          m_decoded.erase(it);
+        }
+      }
       if(image.key)
         if(auto it = m_decoded.find(*image.key); it != m_decoded.end())
         {
@@ -850,18 +881,8 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
   if(image.users == 1 && !shared)
     if(const TextureRecord* record = scene.texture(id))
     {
-      const ImageSource source{.uri       = record->uri,
-                               .bytes     = record->bytes,
-                               .mimeType  = record->mimeType,
-                               .pixels    = record->pixels,
-                               .width     = record->width,
-                               .height    = record->height,
-                               .component = record->component,
-                               .bits      = record->bits,
-                               .srgb      = srgb,
-                               .name      = record->name};
       // decoded with the sync's others (decodeQueued); its slots hold the default image until then
-      m_decodeQueue.push_back({{id, srgb}, source, image.key});
+      m_decodeQueue.push_back({{id, srgb}, imageSourceOf(*record, srgb, maxExtent), image.key});
       if(image.key)
         m_decoded[*image.key] = {.users = 1};
     }
@@ -948,13 +969,105 @@ void Residency::trimGrace(uint64_t budget)
     m_graceBytes = 0;
 }
 
+// The queued images made to fit the GPU memory left, read from their chains before anything is
+// decoded. Where they don't fit: the idle decodes go first, then top levels, the largest first, of
+// these and of what is resident (decoded again, smaller, in this batch). Geometry made resident this
+// sync already counts, as it allocates first.
+void Residency::fitQueuedToMemory(const RetainedScene& scene)
+{
+  // a texture this small is what is left of a scene that can't fit: nothing lower is worth having
+  constexpr uint32_t kLeastExtent = 256;
+
+  const std::optional<uint64_t> headroom = m_gpu.imageHeadroom();
+  if(!headroom)
+    return;
+  std::vector<ImageFit> fits;
+  std::vector<size_t>   queued;  // the queue's entry of each of fits
+  uint64_t              need = 0;
+  for(size_t i = 0; i < m_decodeQueue.size(); i++)
+    if(std::optional<ImageChain> chain = m_gpu.imageChain(m_decodeQueue[i].source))
+    {
+      const uint32_t levels = uint32_t(chain->levelBytes.size());
+      const uint32_t skip   = levelsToSkip(chain->width, chain->height, levels, m_decodeQueue[i].source.maxExtent);
+      fits.push_back({std::move(*chain), skip});
+      need += fits.back().bytes();
+      queued.push_back(i);
+    }
+  uint64_t room = *headroom;
+  if(need <= room)
+    return;
+  room += m_graceBytes;
+  trimGrace(0);
+  if(need <= room)
+    return;
+
+  struct Resident
+  {
+    ImageKey                  image;
+    const TextureRecord*      record = nullptr;
+    std::optional<TextureKey> key;
+    uint32_t                  skip = 0;
+  };
+  const size_t          queuedFits = fits.size();
+  std::vector<Resident> residents;
+  std::set<TextureKey>  seen;  // one image, however many textures are it
+  for(const auto& [id, image] : m_images)
+  {
+    if(!image.image || (image.key && !seen.insert(*image.key).second))
+      continue;
+    const TextureRecord* record = scene.texture(id.first);
+    if(!record)
+      continue;
+    std::optional<ImageChain> chain = m_gpu.imageChain(imageSourceOf(*record, id.second, 0));
+    if(!chain)
+      continue;
+    uint32_t skip = 0;
+    while(levelExtent(chain->width, skip) > image.info.width && skip + 1 < chain->levelBytes.size())
+      skip++;
+    residents.push_back({id, record, image.key, skip});
+    fits.push_back({std::move(*chain), skip});
+  }
+
+  const uint64_t freed = lowerToFit(fits, need - room, kLeastExtent);
+  uint32_t       lowered = 0, largest = 0;
+  for(size_t f = 0; f < queuedFits; f++)
+  {
+    QueuedDecode& q = m_decodeQueue[queued[f]];
+    if(fits[f].skip > levelsToSkip(fits[f].chain.width, fits[f].chain.height, uint32_t(fits[f].chain.levelBytes.size()), q.source.maxExtent))
+    {
+      q.source.maxExtent = fits[f].extent();
+      q.lowered          = true;
+      lowered++;
+      largest = std::max(largest, fits[f].extent());
+    }
+  }
+  for(size_t r = 0; r < residents.size(); r++)
+  {
+    const ImageFit& fit = fits[queuedFits + r];
+    if(fit.skip <= residents[r].skip)
+      continue;
+    m_decodeQueue.push_back({residents[r].image, imageSourceOf(*residents[r].record, residents[r].image.second, fit.extent()),
+                             residents[r].key, true, true});
+    lowered++;
+    largest = std::max(largest, fit.extent());
+  }
+  m_imageCounts.lowered += lowered;
+  if(lowered > 0)
+    m_notices.push_back("to fit GPU memory, " + std::to_string(lowered) + " textures lowered to " + std::to_string(largest)
+                        + " or less; " + std::to_string(freed >> 20) + " MB freed of the " + std::to_string((need - room) >> 20) + " MB wanted");
+  if(lowered > 0 && !std::exchange(m_noticedLowered, true))
+    m_userNotices.push_back("GPU memory is nearly full, so textures are being lowered to fit. Opening the scene again restores them if there is room then.");
+}
+
 // The queued images decoded in one batch (side by side where the backend can), handed to every
 // texture that is that image, and written to their slots. One nothing took meanwhile goes to grace;
-// an unreadable one leaves the default image and is tried again at its next acquisition.
-void Residency::decodeQueued()
+// an unreadable one leaves the default image and is tried again at its next acquisition. True when an
+// image already drawn was replaced, which changes the frame.
+bool Residency::decodeQueued(const RetainedScene& scene)
 {
   if(m_decodeQueue.empty())
-    return;
+    return false;
+  fitQueuedToMemory(scene);
   std::vector<ImageSource> sources;
   for(const QueuedDecode& q : m_decodeQueue)
     sources.push_back(q.source);
@@ -964,9 +1077,15 @@ void Residency::decodeQueued()
   m_imageCounts.decoded += uint32_t(sources.size());
 
   std::set<ImageKey> written;
+  bool               replaced = false;
+  uint32_t           refused  = 0;
   for(size_t i = 0; i < m_decodeQueue.size(); i++)
   {
     const QueuedDecode& q = m_decodeQueue[i];
+    if(q.replaces && !images[i])
+      continue;  // it keeps the image it has
+    replaced |= q.replaces;
+    refused += !q.replaces && infos[i].outOfMemory;
     if(q.key)
     {
       auto decoded = m_decoded.find(*q.key);
@@ -989,14 +1108,19 @@ void Residency::decodeQueued()
         m_decoded.erase(decoded);
       else
       {
-        decoded->second.image = images[i];
-        decoded->second.info  = infos[i];
+        if(q.replaces && decoded->second.image)
+          m_gpu.retire([&gpu = m_gpu, handle = decoded->second.image] { gpu.destroyImage(handle); });
+        decoded->second.image   = images[i];
+        decoded->second.info    = infos[i];
+        decoded->second.lowered = q.lowered;
         if(decoded->second.users == 0)
           m_graceBytes += infos[i].bytes;
       }
     }
     else if(auto image = m_images.find(q.image); image != m_images.end() && !image->second.key)
     {
+      if(q.replaces && image->second.image)
+        m_gpu.retire([&gpu = m_gpu, handle = image->second.image] { gpu.destroyImage(handle); });
       image->second.image = images[i];
       image->second.info  = infos[i];
       written.insert(q.image);
@@ -1008,6 +1132,14 @@ void Residency::decodeQueued()
   for(const auto& [slotKey, use] : m_textureSlots)
     if(const ImageKey image{std::get<0>(slotKey), std::get<1>(slotKey)}; written.count(image))
       m_gpu.writeTextureDescriptor(use.slot, m_images.at(image).image);
+  m_imageCounts.refused += refused;
+  if(refused > 0)
+  {
+    m_notices.push_back(std::to_string(refused) + " textures did not fit in GPU memory");
+    if(!std::exchange(m_noticedRefused, true))
+      m_userNotices.push_back("GPU memory is full: some textures could not be loaded and are drawn without their image.");
+  }
+  return replaced;
 }
 
 void Residency::setTextureGrace(uint64_t bytes)
@@ -1738,7 +1870,8 @@ SyncResult Residency::sync(RetainedScene& scene)
     edited.insert(m_heldMaterials.begin(), m_heldMaterials.end());
   if(!edited.empty())
     syncMaterials(scene, edited, result);
-  decodeQueued();
+  if(decodeQueued(scene))
+    result.changed = true;
   // refined meshes made resident now: their positions and normals from their cages, as every edit after
   if(!m_refineAcquired.empty())
   {

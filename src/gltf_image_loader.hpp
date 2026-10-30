@@ -20,9 +20,12 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
+
+#include "image_levels.hpp"
 
 namespace nvvkgltf {
 
@@ -40,8 +43,16 @@ struct LoadedImageData
 // DDS, KTX (1/2), WebP, or falls back to stb_image (PNG, JPEG, etc.).
 // srgb: when true, format may be forced to an sRGB variant where applicable.
 // imageIDForLog: used only for log messages (e.g. "image 3").
+// maxExtent: the levels above this long edge are left out (rs::levelsToSkip), where the image stores
+// levels; a KTX file doesn't inflate them. 0: no limit.
 // Returns true if decoding succeeded and out is filled; false on failure or unsupported format.
-[[nodiscard]] bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog = 0);
+[[nodiscard]] bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog = 0, uint32_t maxExtent = 0);
+
+// The levels above a long edge of `maxExtent` left out of an image already decoded (a prefetch)
+void trimLevels(LoadedImageData& image, uint32_t maxExtent);
+
+// A KTX file's mip chain, from its header alone; none for anything else
+std::optional<rs::ImageChain> readImageChain(const void* data, size_t byteLength);
 
 // The mean luminance (linear, Rec. 709) of an 8-bit image's texels, from a grid of at most 64 x 64 of
 // them; negative for a format it does not read (compressed, float). An emissive texture's weight as a

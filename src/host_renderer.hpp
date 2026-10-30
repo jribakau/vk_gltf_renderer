@@ -67,6 +67,11 @@ public:
   virtual void replaceHostScene() = 0;
   // Decodes an image now, on the calling thread (a load or wear worker), for the next replace
   virtual void prefetchImage(const std::filesystem::path& diskPath, bool srgb) = 0;
+  // Max texture size: the largest long edge an image decoded from now on keeps; 0: no limit. Any thread.
+  virtual void setMaxTextureExtent(uint32_t extent) = 0;
+  // Where what the renderer has to tell the user goes, from the application thread (a texture lowered
+  // to fit GPU memory); empty: nowhere
+  virtual void setNoticeSink(std::function<void(const std::string&)> sink) = 0;
   // what is shown, where it is now (world space)
   virtual nvutils::Bbox visibleSceneBounds() = 0;
 

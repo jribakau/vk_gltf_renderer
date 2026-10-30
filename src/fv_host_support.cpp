@@ -165,7 +165,7 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   httplib::Client cli(base.substr(0, pathAt));
   cli.set_read_timeout(cachedOnly ? 30s : 600s);
   std::string url = base.substr(pathAt) + "/" + s.rootId + "/" + encodeRel(normRel(req.rel)) + "?srgb=" + (req.srgb ? "1" : "0")
-                    + "&flip=" + (flip ? "1" : "0") + "&max=" + std::to_string(s.maxTextureSize);
+                    + "&flip=" + (flip ? "1" : "0");
   if(req.normal)
     url += "&nm=1";
   if(!req.channels.empty())

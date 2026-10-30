@@ -795,6 +795,253 @@ TEST(RetainedResidency, ADecodeIsSharedAndOutlivesAReplaceInGrace)
   expectClean(scene, residency, gpu, "back: ");
 }
 
+// ---------- Max texture size, and fitting GPU memory
+
+TEST(ImageLevels, TheLimitKeepsWholeBlocks)
+{
+  EXPECT_EQ(levelsToSkip(4096, 4096, 13, 0), 0u);
+  EXPECT_EQ(levelsToSkip(8192, 8192, 14, 4096), 1u);
+  EXPECT_EQ(levelsToSkip(4096, 2048, 13, 1024), 2u);
+  EXPECT_EQ(levelsToSkip(1024, 1024, 11, 4096), 0u);
+  // 2496, 1248, 624, 312, 156, 78: a side of 78 isn't whole blocks, so 156 is as far as it goes
+  EXPECT_EQ(levelsToSkip(2496, 2496, 12, 64), 4u);
+  // a chain's own end
+  EXPECT_EQ(levelsToSkip(4096, 4096, 2, 256), 1u);
+  EXPECT_EQ(levelsToSkip(4096, 4096, 1, 256), 0u);
+}
+
+TEST(ImageLevels, TheLargestComeDownFirst)
+{
+  const auto fit = [](uint32_t extent) {
+    ImageChain chain{.width = extent, .height = extent};
+    for(uint32_t e = extent; e > 0; e /= 2)
+      chain.levelBytes.push_back(uint64_t(e) * e);
+    return ImageFit{chain, 0};
+  };
+  std::vector<ImageFit> images{fit(1024), fit(4096), fit(2048)};
+  // 4096's top level alone is enough
+  EXPECT_EQ(lowerToFit(images, 1, 256), 4096u * 4096u);
+  EXPECT_EQ(images[1].extent(), 2048u);
+  EXPECT_EQ(images[0].extent(), 1024u);
+  EXPECT_EQ(images[2].extent(), 2048u);
+  // the two at 2048 next, the earlier first, before 1024
+  EXPECT_EQ(lowerToFit(images, 2048u * 2048u + 1, 256), 2u * 2048u * 2048u);
+  EXPECT_EQ(images[0].extent(), 1024u);
+  EXPECT_EQ(images[1].extent(), 1024u);
+  EXPECT_EQ(images[2].extent(), 1024u);
+  // and nothing goes under the least, however much is asked
+  lowerToFit(images, ~0ull, 256);
+  for(const ImageFit& image : images)
+    EXPECT_EQ(image.extent(), 256u);
+  EXPECT_EQ(lowerToFit(images, 1, 256), 0u);
+}
+
+namespace {
+TextureRecord chainTexture(const char* uri, int extent)
+{
+  TextureRecord t;
+  t.uri    = uri;
+  t.name   = uri;
+  t.width  = extent;
+  t.height = extent;
+  // the fake's file: a key from its bytes, as a path that isn't on disk has none
+  t.bytes.assign(uri, uri + std::strlen(uri));
+  return t;
+}
+// a chain's bytes at 4 bytes a texel, from `extent` down
+uint64_t chainBytes(uint64_t extent)
+{
+  uint64_t sum = 0;
+  for(; extent > 0; extent /= 2)
+    sum += extent * extent * 4;
+  return sum;
+}
+}  // namespace
+
+// A material with only a base colour, entry `base` of the table
+MaterialId coloured(RetainedScene& scene, std::shared_ptr<const TextureTable> table, int base)
+{
+  MaterialRecord m;
+  m.payload.name               = "coloured";
+  m.payload.baseColorMap.index = base;
+  m.textures                   = std::move(table);
+  return scene.addMaterial(std::move(m));
+}
+
+// A scene of two textures, each the base colour of a material
+struct FitScene
+{
+  RetainedScene scene;
+  TextureId     first, second;
+  FitScene(const char* a, int aExtent, const char* b, int bExtent)
+  {
+    first  = scene.addTexture(chainTexture(a, aExtent));
+    second = scene.addTexture(chainTexture(b, bExtent));
+    auto table = std::make_shared<TextureTable>();
+    table->push_back({first, {}});
+    table->push_back({second, {}});
+    drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {coloured(scene, table, 0), coloured(scene, table, 1)});
+  }
+};
+
+// Max texture size: every image is decoded under it, and a change takes effect on what is decoded next
+TEST(RetainedResidency, MaxTextureSizeLimitsWhatIsDecoded)
+{
+  FitScene       f("chain_a", 64, "chain_b", 16);
+  FakeGpuBackend gpu(2);
+  gpu.setMaxImageExtent(32);
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 32u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, 16u);
+
+  // a replace at another limit doesn't take the images in grace: they are decoded under the old one
+  gpu.setMaxImageExtent(0);
+  gpu.beginFrame();
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu, "no limit: ");
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 64u);
+  EXPECT_EQ(residency.imageCounts().reused, 0u);
+}
+
+// With room for everything nothing changes, and no budget known is the same
+TEST(RetainedResidency, ImagesThatFitAreLeftAlone)
+{
+  FitScene       f("chain_a", 64, "chain_b", 32);
+  FakeGpuBackend gpu(2);
+  gpu.setImageHeadroom(chainBytes(64) + chainBytes(32));
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 64u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, 32u);
+  EXPECT_EQ(residency.imageCounts().lowered, 0u);
+  EXPECT_TRUE(residency.takeUserNotices().empty());
+}
+
+// Short of room, the queued images come down, the largest first, and the user hears of it once
+TEST(RetainedResidency, ImagesThatDontFitAreLowered)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 256);
+  FakeGpuBackend gpu(2);
+  // room for the chains but for a little: the 1024's top level is the one to go
+  gpu.setImageHeadroom(chainBytes(1024) + chainBytes(256) - 1);
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, 256u);
+  EXPECT_EQ(residency.imageCounts().lowered, 1u);
+  EXPECT_EQ(residency.takeUserNotices().size(), 1u);
+  EXPECT_FALSE(residency.takeNotices().empty());
+}
+
+// Nothing goes under the least, however little room there is
+TEST(RetainedResidency, LoweringStopsAtTheLeast)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 128);
+  FakeGpuBackend gpu(2);
+  gpu.setImageHeadroom(0);
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 256u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, 128u);
+}
+
+// Idle decodes go before anything drawn comes down
+TEST(RetainedResidency, IdleImagesGoBeforeLowering)
+{
+  FitScene       old("chain_old", 512, "chain_old2", 64);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 16 << 20});
+  residency.replace(old.scene);
+  expectClean(old.scene, residency, gpu);
+
+  // the old scene's images in grace are what stands in the new one's way
+  FitScene next("chain_a", 1024, "chain_b", 64);
+  const uint64_t idle = gpu.imageInfo(residency.image(old.first, true)).bytes + gpu.imageInfo(residency.image(old.second, true)).bytes;
+  gpu.setImageHeadroom(chainBytes(1024) + chainBytes(64) - idle);
+  gpu.beginFrame();
+  residency.replace(next.scene);
+  EXPECT_EQ(residency.graceBytes(), 0u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(next.first, true)).width, 1024u);
+  EXPECT_EQ(residency.imageCounts().lowered, 0u);
+  drain(gpu);
+  expectClean(next.scene, residency, gpu, "after its retires: ");
+}
+
+// A wear that doesn't fit takes down what is resident too: the image is decoded again, smaller, in the
+// same slots, the old one retired, and the frame starts over. Let go of, it comes back whole if there is room.
+TEST(RetainedResidency, ResidentImagesComeDownForNewOnes)
+{
+  RetainedScene scene;
+  const TextureId big = scene.addTexture(chainTexture("chain_big", 1024));
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({big, {}});
+  drawn(scene, "resident", scene.addMesh(gridMesh(2, 0.f)), {coloured(scene, table, 0)});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 16 << 20});
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  const ImageHandle before = residency.image(big, true);
+
+  const TextureId worn = scene.addTexture(chainTexture("chain_worn", 512));
+  auto            wornTable = std::make_shared<TextureTable>();
+  wornTable->push_back({worn, {}});
+  drawn(scene, "worn", scene.addMesh(gridMesh(2, 0.f)), {coloured(scene, wornTable, 0)});
+  gpu.setImageHeadroom(chainBytes(256));  // the 1024's top level is more than enough, and the larger
+  gpu.beginFrame();
+  const SyncResult result = residency.sync(scene);
+  EXPECT_TRUE(result.changed);
+  const ImageHandle after = residency.image(big, true);
+  EXPECT_NE(after, before);
+  EXPECT_EQ(gpu.imageInfo(after).width, 512u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(worn, true)).width, 512u);
+  EXPECT_EQ(residency.imageCounts().lowered, 1u);
+  drain(gpu);
+  expectClean(scene, residency, gpu, "after its retires: ");
+  EXPECT_FALSE(gpu.hasImage(before));
+}
+
+// One lowered and let go of is decoded again when next wanted, at what there is room for
+TEST(RetainedResidency, ALoweredImageComesBackWhole)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 16);
+  FakeGpuBackend gpu(2);
+  gpu.setImageHeadroom(chainBytes(256));
+  Residency residency(gpu, {.textureGraceBytes = 16 << 20});
+  residency.replace(f.scene);
+  EXPECT_LT(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+  EXPECT_EQ(residency.takeUserNotices().size(), 1u);
+
+  gpu.setImageHeadroom(1ull << 30);
+  gpu.beginFrame();
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu, "with room: ");
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "after its retires: ");
+  EXPECT_TRUE(residency.takeUserNotices().empty());
+}
+
+// GPU memory that can't hold an image leaves the default one, with a notice, not an exit
+TEST(RetainedResidency, AnImageWithoutMemoryKeepsTheDefault)
+{
+  FitScene       f("nomem_a", 64, "chain_b", 16);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  EXPECT_FALSE(residency.image(f.first, true));
+  EXPECT_TRUE(residency.image(f.second, true));
+  EXPECT_EQ(residency.imageCounts().refused, 1u);
+  EXPECT_EQ(residency.takeUserNotices().size(), 1u);
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 // A file's key is its path, size and write time, and the colour space; no key for a missing file
 TEST(RetainedResidency, ATextureKeyIsTheFileAsItIsNow)
 {

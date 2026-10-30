@@ -121,6 +121,7 @@ struct TextureKey
   uint64_t    size                                 = 0;
   uint64_t    hash                                 = 0;
   bool        srgb                                 = false;
+  uint32_t    maxExtent                            = 0;  // decoded under Max texture size at this value
   auto        operator<=>(const TextureKey&) const = default;
 };
 std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb);
@@ -298,6 +299,8 @@ public:
   {
     uint32_t decoded = 0;
     uint32_t reused  = 0;
+    uint32_t lowered = 0;  // those lowered to fit GPU memory, resident ones included
+    uint32_t refused = 0;  // those GPU memory could not hold, left on the default image
   };
   ImageCounts imageCounts() const { return m_imageCounts; }
   // The scene features the live shader variant has compiled in (the path tracer's optimal build);
@@ -311,6 +314,8 @@ public:
   const std::set<MaterialId>& heldMaterials() const { return m_heldMaterials; }
   // what the last syncs could not do as asked (a material drawn without its textures), once each
   std::vector<std::string> takeNotices() { return std::exchange(m_notices, {}); }
+  // What the user should hear of them: images lowered or refused for want of GPU memory, once a scene
+  std::vector<std::string> takeUserNotices() { return std::exchange(m_userNotices, {}); }
   uint64_t    graceBytes() const { return m_graceBytes; }
 
   // ---- what the renderers read
@@ -429,6 +434,7 @@ private:
     ImageInfo   info;
     uint32_t    users    = 0;
     uint64_t    released = 0;  // when it went idle, by m_releaseClock (the oldest is trimmed first)
+    bool        lowered  = false;  // to fit GPU memory: decoded again, when next wanted after going idle
   };
   struct SlotUse
   {
@@ -462,7 +468,8 @@ private:
   void     acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseImage(const ImageGpu& image);
-  void     decodeQueued();
+  bool     decodeQueued(const RetainedScene& scene);
+  void     fitQueuedToMemory(const RetainedScene& scene);
   void     trimGrace(uint64_t budget);
   void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);
   void     writeMaterials(const RetainedScene& scene);
@@ -556,6 +563,8 @@ private:
     ImageKey                  image;
     ImageSource               source;  // over the store's record, which outlives the sync
     std::optional<TextureKey> key;
+    bool                      lowered  = false;  // below what Max texture size allows, to fit GPU memory
+    bool                      replaces = false;  // a resident image taken down: it stays if this fails
   };
   std::vector<QueuedDecode>                            m_decodeQueue;
   uint64_t                                             m_graceBytes   = 0;
@@ -569,6 +578,8 @@ private:
   std::vector<shaderio::GltfTextureInfo>               m_textureInfos;           // the table's contents
   bool                                                 m_spansRepacked = false;  // this write
   std::vector<std::string>                             m_notices;
+  std::vector<std::string>                             m_userNotices;
+  bool                                                 m_noticedLowered = false, m_noticedRefused = false;  // since the last clear()
   bool                                                 m_bitsChanged = false;  // a material's TLAS bits or raster lists
   bool                                                 m_tablesMoved = false;  // the material tables were made again
   std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows

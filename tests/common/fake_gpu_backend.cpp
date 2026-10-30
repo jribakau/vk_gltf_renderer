@@ -226,13 +226,33 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
   info = {};
   if((source.uri.empty() && source.bytes.empty() && source.pixels.empty()) || source.uri.rfind("missing", 0) == 0)
     return {};
-  info.width      = uint32_t(std::max(source.width, 1));
-  info.height     = uint32_t(std::max(source.height, 1));
+  if(source.uri.rfind("nomem", 0) == 0)
+  {
+    info.outOfMemory = true;
+    return {};
+  }
+  const uint32_t width = uint32_t(std::max(source.width, 1)), height = uint32_t(std::max(source.height, 1));
+  uint32_t       skip  = levelsToSkip(width, height, 32, source.maxExtent);
+  info.width      = levelExtent(width, skip);
+  info.height     = levelExtent(height, skip);
   info.twoChannel = source.component == 2;
   info.bytes      = uint64_t(info.width) * info.height * 4;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, Image{source.name, source.uri, source.srgb, info});
   return handle;
+}
+
+std::optional<ImageChain> FakeGpuBackend::imageChain(const ImageSource& source)
+{
+  if(source.uri.rfind("chain", 0) != 0)
+    return std::nullopt;
+  ImageChain chain{.width = uint32_t(std::max(source.width, 1)), .height = uint32_t(std::max(source.height, 1))};
+  for(uint32_t level = 0;; level++)
+  {
+    chain.levelBytes.push_back(uint64_t(levelExtent(chain.width, level)) * levelExtent(chain.height, level) * 4);
+    if(levelExtent(chain.width, level) == 1 && levelExtent(chain.height, level) == 1)
+      return chain;
+  }
 }
 
 void FakeGpuBackend::destroyImage(ImageHandle handle)

@@ -169,7 +169,8 @@ src/
 ├── gltf_compact_*.cpp/hpp      # Orphan resource removal / buffer compaction
 ├── gltf_create_tangent.cpp/hpp # Tangent space generation (UV gradient + MikkTSpace)
 ├── gltf_material_cache.cpp/hpp # Packs fv::mat::Material into shader rows; the CPU-side cache of the legacy scene's
-├── gltf_image_loader.cpp/hpp   # Image decoding (DDS, KTX, STB, WebP)
+├── gltf_image_loader.cpp/hpp   # Image decoding (DDS, KTX, STB, WebP); a KTX inflates only the levels under its limit
+├── image_levels.hpp            # Which stored mip levels to keep: Max texture size, and lowering images to fit GPU memory
 ├── gltf_animation_pointer.*    # KHR_animation_pointer support
 ├── ies_profile.cpp/hpp         # EXT_lights_ies: IESNA LM-63 photometric profile parser, and a model's profiles loaded
 ├── scene_retained.cpp/hpp      # RetainedScene: an owned scene of entities and refcounted mesh, material,
@@ -957,6 +958,11 @@ Four settings, none remembered:
   to this much, oldest out first, for the next scene replace or edit to take. Live. Images are keyed
   by file (path, size, write time) or by a hash of held bytes, and the colour space
   (`rs::textureKeyOf`), and shared by every texture that is that image.
+- `textureBudgetMB` (0): the GPU memory textures are fitted to, where less than the device's budget; 0 is that budget.
+  A tenth of it stays free, and what the path tracer's frame would add under the rasterizer. `Residency::fitQueuedToMemory`
+  runs before each batch of decodes: idle decodes go first, then top levels, the largest first, down to 256, of the batch and
+  of what is resident (decoded again, the slots rewritten, the frame reset). It reads free room as the driver's usage less the
+  allocator's free space inside its blocks, as `gpuAllocatedMB` in the frame profile shows.
 - `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
   TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
   parameters a host can set (fv_parameter_filter.hpp).

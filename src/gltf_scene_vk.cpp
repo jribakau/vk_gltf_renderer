@@ -2013,7 +2013,7 @@ std::optional<nvvkgltf::LoadedImageData> nvvkgltf::SceneVk::takePrefetchedFile(c
   return taken;
 }
 
-void nvvkgltf::SceneVk::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
+void nvvkgltf::SceneVk::prefetchImage(const std::filesystem::path& diskPath, bool srgb, uint32_t maxExtent)
 {
   std::optional<ReuseKey> key = makeReuseKey(diskPath, srgb);
   if(!key)
@@ -2028,7 +2028,7 @@ void nvvkgltf::SceneVk::prefetchImage(const std::filesystem::path& diskPath, boo
   if(!fileMapping.open(diskPath))
     return;
   LoadedImageData loaded;
-  if(!nvvkgltf::loadFromMemory(loaded, fileMapping.data(), fileMapping.size(), srgb))
+  if(!nvvkgltf::loadFromMemory(loaded, fileMapping.data(), fileMapping.size(), srgb, 0, maxExtent))
     return;
   std::lock_guard lock(m_prefetchMutex);
   m_prefetched[*key] = std::move(loaded);
@@ -2065,7 +2065,8 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
                                   const std::vector<std::vector<char>>& mipData,
                                   const VkComponentMapping&             componentMapping,
                                   const std::string&                    name,
-                                  nvvk::Image&                          out)
+                                  nvvk::Image&                          out,
+                                  bool*                                 outOfMemory)
 {
   if(imgSize.width == 0 || imgSize.height == 0 || mipData.empty())
     return false;
@@ -2109,7 +2110,14 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
   imageViewCreateInfo.components            = componentMapping;
 
   nvvk::Image resultImage;
-  NVVK_CHECK(alloc.createImage(resultImage, imageCreateInfo, imageViewCreateInfo));
+  if(const VkResult result = alloc.createImage(resultImage, imageCreateInfo, imageViewCreateInfo); result != VK_SUCCESS)
+  {
+    LOGW("Image '%s' (%ux%u): no GPU memory for it (VkResult %d); using the default image.\n", name.c_str(), imgSize.width,
+         imgSize.height, int(result));
+    if(outOfMemory)
+      *outOfMemory = true;
+    return false;
+  }
   NVVK_DBG_NAME(resultImage.image);
   NVVK_DBG_NAME(resultImage.descriptor.imageView);
 

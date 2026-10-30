@@ -89,6 +89,9 @@ public:
     bool opacityMicromaps = false;
     // a file a host decoded ahead (SceneVk::takePrefetchedFile); any thread. Unset: none.
     std::function<std::optional<nvvkgltf::LoadedImageData>(const std::filesystem::path&, bool srgb)> takePrefetched;
+    // Max texture size, and what still fits in GPU memory. Unset: no limit, and unknown.
+    std::function<uint32_t()>                maxImageExtent;
+    std::function<std::optional<uint64_t>()> imageHeadroom;
   };
 
   // The first record() makes the default images and writes texture slot 0 (white) and sampler slot 0
@@ -103,6 +106,9 @@ public:
   void record(VkCommandBuffer cmd);
   void finish();
   void setBlasScratchBudget(VkDeviceSize bytes) { m_info.blasScratchBudget = bytes; }
+  // What retire() handed on run now, with the device idle: a scene replace, whose new scene shouldn't
+  // be fitted around memory the old one is about to give back
+  void runRetired();
   // GPU time of the AS builds recorded from here to finish(): timestamps around each flush of BLAS
   // builds and refits, and around each TLAS build with its instance upload (as legacy's `GPU BLAS
   // build` / `GPU TLAS build` lines count them), up to kTimedSpans. buildTimes() reads them once the
@@ -130,6 +136,9 @@ public:
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
   // decoded side by side on the worker pool (a file a host prefetched taken instead), then made in order
   void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override;
+  uint32_t                  maxImageExtent() const override { return m_info.maxImageExtent ? m_info.maxImageExtent() : 0; }
+  std::optional<uint64_t>   imageHeadroom() const override { return m_info.imageHeadroom ? m_info.imageHeadroom() : std::nullopt; }
+  std::optional<ImageChain> imageChain(const ImageSource& source) override;
   // the images createImages took from a host's prefetches, since the last call
   uint32_t    takePrefetchCount() { return std::exchange(m_prefetchTaken, 0u); }
   // the BLASes compacted since the last call, their sizes before and after, and every BLAS's now
@@ -277,6 +286,10 @@ public:
   void setCompactStatic(bool compact) { m_residency.setCompactStatic(compact); }
   // what the residency's last syncs could not do as asked, once each
   std::vector<std::string> takeNotices() { return m_residency.takeNotices(); }
+  // what the user should hear of them
+  std::vector<std::string> takeUserNotices() { return m_residency.takeUserNotices(); }
+  // VulkanGpuBackend::runRetired
+  void runRetired() { m_gpu.runRetired(); }
   // the features the live shader variant has compiled in; none: every one (Residency::setShaderFeatures)
   void setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features) { m_residency.setShaderFeatures(features); }
   // the images taken from a host's prefetches since the last call

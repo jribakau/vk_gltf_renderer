@@ -358,6 +358,9 @@ public:
   // Decodes an image file now, on the calling thread, for the next scene replace to take ready
   // (SceneVk::prefetchImage): a host's load and wear workers call it for the textures they resolved.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb) override;
+  // Max texture size (HostRenderer): the images decoded from now on. Any thread.
+  void setMaxTextureExtent(uint32_t extent) override { m_maxTextureExtent.store(extent); }
+  void setNoticeSink(std::function<void(const std::string&)> sink) override { m_noticeSink = std::move(sink); }
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
   void          setRenderSystem(RenderingMode mode) override;
@@ -384,6 +387,13 @@ public:
   // stream's /size asks here first. Any thread.
   // `extraBytesPerPixel`: what else a pixel of the frame costs outside the renderer (native presentation)
   std::string refuseFrameSize(VkExtent2D size, double extraBytesPerPixel = 0.0) const;
+  // The bytes of new textures that fit in GPU memory now; none where the budget is unknown
+  std::optional<uint64_t> textureHeadroom() const;
+  struct AllocatedMemory
+  {
+    uint64_t blocks = 0, allocations = 0;
+  };
+  AllocatedMemory allocatedMemory() const;
   // Frames that ran a renderer so far (Resources::drawnFrameCount): a count that stands still is a
   // view with nothing to draw, which the frame stream slows the loop for.
   uint64_t drawnFrameCount() const { return m_resources.drawnFrameCount; }
@@ -833,6 +843,8 @@ private:
   std::atomic<uint32_t> m_frameBytesPerPixel{0};
   std::atomic<uint64_t> m_frameSizePacked{0};  // width << 32 | height
   bool                  m_memoryBudgetExtension = false;  // the device has VK_EXT_memory_budget (onAttach)
+  std::atomic<uint32_t> m_maxTextureExtent{0};
+  std::function<void(const std::string&)> m_noticeSink;
   bool                  m_envPreviewPending{false};  // Record a colour-only re-bake into this frame
   bool                  m_envCommitOwed{false};      // Previewed at least once; owes a commit once the edits stop
   bool                  m_envOwnedByBaker{false};    // hdrIbl currently points at EnvBaker's image, not a loaded file

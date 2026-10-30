@@ -44,6 +44,8 @@ public:
   bool               drawsRetainedScene() const override { return replaces > 0; }
   void               replaceHostScene() override { replaces++; }
   void               prefetchImage(const std::filesystem::path&, bool) override {}
+  void               setMaxTextureExtent(uint32_t) override {}
+  void               setNoticeSink(std::function<void(const std::string&)>) override {}
   nvutils::Bbox      visibleSceneBounds() override
   {
     const auto b = m_scene.bounds();

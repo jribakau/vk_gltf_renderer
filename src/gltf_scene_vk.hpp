@@ -57,8 +57,9 @@ namespace nvvkgltf {
 // A sampled image from decoded mip levels: created, its levels uploaded through `staging` (in row
 // strips under the uploader's block size), the rest of its chain generated when there is one level,
 // `generateMipmaps` is set and the format can be blitted, and left in SHADER_READ_ONLY_OPTIMAL.
-// False, with nothing created, for an empty image or a format the device can't sample. Shared by
-// SceneVk and the retained scene's VulkanGpuBackend.
+// False, with nothing created, for an empty image, a format the device can't sample, or GPU memory
+// that can't hold it (`outOfMemory` set then). Shared by SceneVk and the retained scene's
+// VulkanGpuBackend.
 bool createSampledImage(VkCommandBuffer                       cmd,
                         nvvk::CmdUploaderInterface&           staging,
                         nvvk::ResourceAllocator&              alloc,
@@ -69,7 +70,8 @@ bool createSampledImage(VkCommandBuffer                       cmd,
                         const std::vector<std::vector<char>>& mipData,
                         const VkComponentMapping&             componentMapping,
                         const std::string&                    name,
-                        nvvk::Image&                          out);
+                        nvvk::Image&                          out,
+                        bool*                                 outOfMemory = nullptr);
 
 // Create the Vulkan version of the Scene
 // Allocate the buffers, etc.
@@ -163,7 +165,7 @@ public:
   // takes from (keyed as the reuse pool is: path, mtime, size, sRGB, mipmaps), so a host decodes a
   // wear's new textures on its worker and the reload on the render thread only adopts them. Safe
   // from any thread; what the next createTextureImages() does not take is dropped.
-  void prefetchImage(const std::filesystem::path& diskPath, bool srgb);
+  void prefetchImage(const std::filesystem::path& diskPath, bool srgb, uint32_t maxExtent = 0);
   // Drops what was prefetched: a retained scene replace decodes its own, so nothing would take it
   // What a host decoded ahead (prefetchImage) of the file at `diskPath`, taken; none when nothing
   // was (the retained scene's backend claims prefetches through it). Any thread.

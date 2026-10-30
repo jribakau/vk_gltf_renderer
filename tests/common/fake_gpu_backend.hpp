@@ -112,7 +112,8 @@ public:
   void         upload(BufferHandle dst, uint64_t offset, std::span<const std::byte> bytes) override;
   void copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size) override;
   // "decodes" what it is given: width and height as the source says, two channels for two
-  // components; a source with nothing in it, or a uri starting "missing", can't be read
+  // components, less the levels source.maxExtent leaves out; a source with nothing in it, or a uri
+  // starting "missing", can't be read, and one starting "nomem" finds no GPU memory
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
   void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override
   {
@@ -122,6 +123,12 @@ public:
   // the sizes of the createImages calls so far
   const std::vector<size_t>& imageBatches() const { return m_imageBatches; }
   void        destroyImage(ImageHandle image) override;
+  uint32_t                maxImageExtent() const override { return m_maxImageExtent; }
+  std::optional<uint64_t> imageHeadroom() const override { return m_imageHeadroom; }
+  // a source's width and height halved to 1, at 4 bytes a texel, for one with a uri starting "chain"
+  std::optional<ImageChain> imageChain(const ImageSource& source) override;
+  void setMaxImageExtent(uint32_t extent) { m_maxImageExtent = extent; }
+  void setImageHeadroom(std::optional<uint64_t> bytes) { m_imageHeadroom = bytes; }
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
   void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
   bool                       opacityMicromaps() const override { return m_opacityMicromaps; }
@@ -165,6 +172,12 @@ public:
   size_t                                    pendingRetires() const { return m_retires.size(); }
   size_t                                    liveBuffers() const { return m_buffers.size(); }
   size_t                                    liveImages() const { return m_images.size(); }
+  bool                                      hasImage(ImageHandle image) const { return m_images.count(image.value) != 0; }
+  ImageInfo                                 imageInfo(ImageHandle image) const
+  {
+    const auto it = m_images.find(image.value);
+    return it == m_images.end() ? ImageInfo{} : it->second.info;
+  }
   size_t liveAccels() const { return m_blases.size() + m_tlases.size() + m_micromaps.size(); }
   const std::vector<std::string>&           errors() const { return m_errors; }
   // What the work recorded so far leaves unfenced for the frame's shading and tracing: uploads with
@@ -203,6 +216,8 @@ private:
   std::unique_ptr<OffsetAllocator::Allocator> m_addresses;
   std::unordered_map<uint64_t, Buffer>        m_buffers;
   std::unordered_map<uint64_t, Image>         m_images;
+  uint32_t                                    m_maxImageExtent = 0;
+  std::optional<uint64_t>                     m_imageHeadroom;
   std::vector<size_t>                         m_imageBatches;
   std::vector<UploadRecord>                   m_uploads;
   std::unordered_map<uint64_t, Blas>          m_blases;

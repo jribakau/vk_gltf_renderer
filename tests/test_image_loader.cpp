@@ -109,6 +109,54 @@ TEST(ImageLoader, WebpRejectsUnbackedHugeCanvas)
 
 // The texture cooker (daz-viewer src-tauri/src/texcache.rs) writes each level zstd-supercompressed:
 // a 32x16 sRGB map it cooked reads back as BC7 with every level its full size.
+// Max texture size: the levels above the limit are left out, and what is kept is what the whole read
+// has at those levels, byte for byte. A 32x16 map's 16x8 level is whole blocks, its 8x4 one too, and
+// its 4x2 one isn't.
+TEST(ImageLoader, KtxLeavesOutTheLevelsOverItsLimit)
+{
+  std::ifstream           in(std::filesystem::path(FV_TEST_DATA) / "texcache" / "cooked_zstd.ktx2", std::ios::binary);
+  const std::vector<char> file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  ASSERT_FALSE(file.empty());
+  nvvkgltf::LoadedImageData whole;
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(whole, file.data(), file.size(), /*srgb*/ true));
+
+  const auto read = [&](uint32_t maxExtent) {
+    nvvkgltf::LoadedImageData out;
+    EXPECT_TRUE(nvvkgltf::loadFromMemory(out, file.data(), file.size(), /*srgb*/ true, 0, maxExtent));
+    return out;
+  };
+  const nvvkgltf::LoadedImageData half = read(16);
+  EXPECT_EQ(half.size.width, 16u);
+  EXPECT_EQ(half.size.height, 8u);
+  EXPECT_EQ(half.format, VK_FORMAT_BC7_SRGB_BLOCK);
+  ASSERT_EQ(half.mipData.size(), 5u);
+  for(uint32_t i = 0; i < half.mipData.size(); i++)
+    EXPECT_EQ(half.mipData[i], whole.mipData[i + 1]) << "level " << i;
+
+  EXPECT_EQ(read(20).size.width, 16u);  // the largest that fits
+  EXPECT_EQ(read(32).size.width, 32u);
+  EXPECT_EQ(read(0).size.width, 32u);
+  EXPECT_EQ(read(1).size.width, 8u);  // as near as whole blocks go
+
+  // an image already decoded comes to the same
+  nvvkgltf::LoadedImageData trimmed = whole;
+  nvvkgltf::trimLevels(trimmed, 16);
+  EXPECT_EQ(trimmed.size.width, half.size.width);
+  EXPECT_EQ(trimmed.size.height, half.size.height);
+  EXPECT_EQ(trimmed.mipData, half.mipData);
+
+  // and its chain reads from the header alone
+  const std::optional<rs::ImageChain> chain = nvvkgltf::readImageChain(file.data(), file.size());
+  ASSERT_TRUE(chain);
+  EXPECT_EQ(chain->width, 32u);
+  EXPECT_EQ(chain->height, 16u);
+  ASSERT_EQ(chain->levelBytes.size(), whole.mipData.size());
+  for(size_t i = 0; i < chain->levelBytes.size(); i++)
+    EXPECT_EQ(chain->levelBytes[i], whole.mipData[i].size()) << "level " << i;
+  const char png[] = "\x89PNG";
+  EXPECT_FALSE(nvvkgltf::readImageChain(png, sizeof(png)));
+}
+
 TEST(ImageLoader, KtxReadsTheCookersZstdLevels)
 {
   std::ifstream     in(std::filesystem::path(FV_TEST_DATA) / "texcache" / "cooked_zstd.ktx2", std::ios::binary);

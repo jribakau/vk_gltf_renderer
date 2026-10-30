@@ -43,6 +43,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
 #else
   s.protocol->setFeatures({{"dforceGpu", false}});
 #endif
+  renderer->setMaxTextureExtent(uint32_t(std::max(s.settings.maxTextureSize, 0)));
+  renderer->setNoticeSink([impl](const std::string& text) { impl->notice(text); });
 
   cmds.add("settings.apply", [impl](const Json& args) {
     std::lock_guard lock(impl->settingsMutex);
@@ -56,6 +58,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     st.rootId         = args.value("rootId", st.rootId);
     st.texServer      = args.value("texServer", st.texServer);
     st.maxTextureSize = args.value("maxTextureSize", st.maxTextureSize);
+    impl->renderer->setMaxTextureExtent(uint32_t(std::max(st.maxTextureSize, 0)));
     st.subdivision    = args.value("subdivision", st.subdivision);
     st.originalTextures = args.value("originalTextures", st.originalTextures);
     st.figureGpuRefine  = args.value("figureGpuRefine", st.figureGpuRefine);
@@ -434,6 +437,7 @@ void FvHost::onAttach(nvapp::Application* app)
 void FvHost::onDetach()
 {
   Impl& s = *m_impl;
+  s.renderer->setNoticeSink({});
   s.stopAccepting();
   s.protocol->setStopHook({});
   s.loadGeneration++;  // loads still running drop their result

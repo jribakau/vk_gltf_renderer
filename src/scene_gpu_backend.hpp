@@ -32,9 +32,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
+
+#include "image_levels.hpp"
 
 namespace rs {
 
@@ -81,6 +84,7 @@ struct ImageSource
   int                            width = -1, height = -1, component = 0, bits = 8;
   bool                           srgb = false;  // sampled as colour
   std::string                    name;
+  uint32_t                       maxExtent = 0;  // the stored levels above this long edge are left out; 0: none
 };
 
 // What decoding found, for the materials that sample the image
@@ -90,6 +94,7 @@ struct ImageInfo
   bool     twoChannel    = false;  // exactly two colour channels (BC5, R8G8, ...): a normal map's X and Y
   float    meanLuminance = -1.f;   // linear, Rec. 709, of its texels; negative where unknown
   uint64_t bytes         = 0;      // the GPU memory it holds (the residency's grace budget)
+  bool     outOfMemory   = false;  // no image, for want of GPU memory
 };
 
 // glTF sampler values (TINYGLTF_TEXTURE_FILTER_*, TINYGLTF_TEXTURE_WRAP_*); a filter of -1 is unset
@@ -265,6 +270,12 @@ public:
       images[i] = createImage(sources[i], infos[i]);
   }
   virtual void destroyImage(ImageHandle image) = 0;
+  // The largest long edge a new image keeps (Max texture size); 0: no limit
+  virtual uint32_t maxImageExtent() const { return 0; }
+  // The bytes of new images that fit in GPU memory now; none where that is unknown
+  virtual std::optional<uint64_t> imageHeadroom() const { return std::nullopt; }
+  // A source's stored mip chain, without decoding it; none for an image without one
+  virtual std::optional<ImageChain> imageChain(const ImageSource&) { return std::nullopt; }
   // A slot of the scene's texture array; no image writes the default one.
   virtual void writeTextureDescriptor(uint32_t slot, ImageHandle image)          = 0;
   virtual void writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) = 0;

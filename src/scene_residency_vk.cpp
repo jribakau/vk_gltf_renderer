@@ -228,6 +228,14 @@ void VulkanGpuBackend::retire(std::function<void()> closure)
   });
 }
 
+void VulkanGpuBackend::runRetired()
+{
+  std::map<uint64_t, std::function<void()>> pending = std::move(m_retired->pending);
+  m_retired->pending.clear();
+  for(auto& [id, closure] : pending)
+    closure();
+}
+
 void VulkanGpuBackend::waitIdle()
 {
   vkDeviceWaitIdle(m_info.device);
@@ -455,14 +463,26 @@ static bool decodeSource(const ImageSource& source, nvvkgltf::LoadedImageData& l
   if(!source.pixels.empty())
     return fromPixels(source, loaded);
   if(!source.bytes.empty())
-    return nvvkgltf::loadFromMemory(loaded, source.bytes.data(), source.bytes.size(), source.srgb);
+    return nvvkgltf::loadFromMemory(loaded, source.bytes.data(), source.bytes.size(), source.srgb, 0, source.maxExtent);
   if(source.uri.empty())
     return false;
   nvutils::FileReadMapping file;
   if(file.open(nvutils::pathFromUtf8(source.uri)))
-    return nvvkgltf::loadFromMemory(loaded, file.data(), file.size(), source.srgb);
+    return nvvkgltf::loadFromMemory(loaded, file.data(), file.size(), source.srgb, 0, source.maxExtent);
   LOGW("Image '%s' (%s) could not be opened\n", source.name.c_str(), source.uri.c_str());
   return false;
+}
+
+std::optional<ImageChain> VulkanGpuBackend::imageChain(const ImageSource& source)
+{
+  if(!source.pixels.empty())
+    return std::nullopt;
+  if(!source.bytes.empty())
+    return nvvkgltf::readImageChain(source.bytes.data(), source.bytes.size());
+  nvutils::FileReadMapping file;
+  if(source.uri.empty() || !file.open(nvutils::pathFromUtf8(source.uri)))
+    return std::nullopt;
+  return nvvkgltf::readImageChain(file.data(), file.size());
 }
 
 ImageHandle VulkanGpuBackend::createImage(const ImageSource& source, ImageInfo& info)
@@ -488,7 +508,8 @@ void VulkanGpuBackend::createImages(std::span<const ImageSource> sources, std::s
       if(std::optional<nvvkgltf::LoadedImageData> taken =
              m_info.takePrefetched(nvutils::pathFromUtf8(source.uri), source.srgb))
       {
-        loaded[i]     = std::move(*taken);
+        loaded[i] = std::move(*taken);
+        nvvkgltf::trimLevels(loaded[i], source.maxExtent);
         ok[i]         = 1;
         prefetched[i] = 1;
         return;
@@ -512,7 +533,7 @@ ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkg
   flushBuilds();  // createSampledImage records the appended uploads with its own
   nvvk::Image image;
   if(!nvvkgltf::createSampledImage(m_cmd, *m_info.staging, *m_info.alloc, m_info.physicalDevice, m_info.generateMipmaps,
-                                   loaded.format, loaded.size, loaded.mipData, loaded.componentMapping, source.name, image))
+                                   loaded.format, loaded.size, loaded.mipData, loaded.componentMapping, source.name, image, &info.outOfMemory))
     return {};
   m_uploadsPending = false;
   m_memory.track(kMemImages, image.allocation);

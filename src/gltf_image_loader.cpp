@@ -118,7 +118,7 @@ bool loadDds(LoadedImageData& out, const void* data, size_t byteLength, bool srg
   return true;
 }
 
-bool loadKtx(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog)
+bool loadKtx(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog, uint32_t maxExtent)
 {
   const uint8_t ktxIdentifier[5] = {0xAB, 0x4B, 0x54, 0x58, 0x20};  // Common for KTX1 + KTX2
   if(byteLength < sizeof(ktxIdentifier) || memcmp(data, ktxIdentifier, sizeof(ktxIdentifier)) != 0)
@@ -126,15 +126,14 @@ bool loadKtx(LoadedImageData& out, const void* data, size_t byteLength, bool srg
 
   nv_ktx::Image              ktxImage;
   const nv_ktx::ReadSettings ktxReadSettings;
-  const nv_ktx::ErrorWithText maybeError = ktxImage.readFromMemory(reinterpret_cast<const char*>(data), byteLength, ktxReadSettings);
+  const char*                reading = reinterpret_cast<const char*>(data);
+  const nv_ktx::ErrorWithText maybeError = ktxImage.readHeaderFromMemory(reading, byteLength, ktxReadSettings);
   if(maybeError.has_value())
   {
     LOGW("Failed to read image %" PRIu64 " using nv_ktx: %s\n", imageIDForLog, maybeError->c_str());
     return false;
   }
 
-  out.size.width  = ktxImage.mip0Width;
-  out.size.height = ktxImage.mip0Height;
   if(ktxImage.mip0Depth > 1)
   {
     LOGW("KTX image %" PRIu64 " had a depth of %u, but loadFromMemory() cannot handle volume textures.\n",
@@ -152,14 +151,29 @@ bool loadKtx(LoadedImageData& out, const void* data, size_t byteLength, bool srg
          imageIDForLog, ktxImage.numLayersPossibly0);
     return false;
   }
+
+  // only the levels kept are read, and inflated
+  const uint32_t skip = rs::levelsToSkip(ktxImage.mip0Width, ktxImage.mip0Height, ktxImage.numMips, maxExtent);
+  out.mipData.resize(ktxImage.numMips - skip);
+  std::vector<nv_ktx::SubresourceTarget> targets(out.mipData.size());
+  for(uint32_t i = 0; i < targets.size(); i++)
+  {
+    out.mipData[i].resize(ktxImage.getSubresourceLayout(skip + i, 0, 0).uncompressedByteSize);
+    targets[i] = {.data = out.mipData[i].data(), .capacityInBytes = out.mipData[i].size()};
+  }
+  const nv_ktx::SubresourceRange range{.firstMip = skip, .numMips = uint32_t(targets.size())};
+  const nv_ktx::ErrorWithText    readError = ktxImage.readSubresourcesFromMemory(reading, byteLength, range, targets.data());
+  if(readError.has_value())
+  {
+    LOGW("Failed to read image %" PRIu64 " using nv_ktx: %s\n", imageIDForLog, readError->c_str());
+    out.mipData.clear();
+    return false;
+  }
+
+  out.size.width       = rs::levelExtent(ktxImage.mip0Width, skip);
+  out.size.height      = rs::levelExtent(ktxImage.mip0Height, skip);
   out.format           = texture_formats::tryForceVkFormatTransferFunction(ktxImage.format, srgb);
   out.componentMapping = ktxSwizzleToVkComponentMapping(ktxImage.swizzle);
-
-  for(uint32_t i = 0; i < ktxImage.numMips; i++)
-  {
-    std::vector<char>& mip = ktxImage.subresource(i, 0, 0);
-    out.mipData.push_back(std::move(mip));
-  }
   return true;
 }
 
@@ -265,7 +279,30 @@ bool loadStb(LoadedImageData& out, const void* data, size_t byteLength, bool srg
 
 }  // namespace
 
-bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog)
+void trimLevels(LoadedImageData& image, uint32_t maxExtent)
+{
+  const uint32_t skip = rs::levelsToSkip(image.size.width, image.size.height, uint32_t(image.mipData.size()), maxExtent);
+  if(skip == 0)
+    return;
+  image.mipData.erase(image.mipData.begin(), image.mipData.begin() + skip);
+  image.size = {rs::levelExtent(image.size.width, skip), rs::levelExtent(image.size.height, skip)};
+}
+
+std::optional<rs::ImageChain> readImageChain(const void* data, size_t byteLength)
+{
+  const uint8_t ktxIdentifier[5] = {0xAB, 0x4B, 0x54, 0x58, 0x20};
+  if(data == nullptr || byteLength < sizeof(ktxIdentifier) || memcmp(data, ktxIdentifier, sizeof(ktxIdentifier)) != 0)
+    return std::nullopt;
+  nv_ktx::Image ktxImage;
+  if(ktxImage.readHeaderFromMemory(reinterpret_cast<const char*>(data), byteLength, nv_ktx::ReadSettings{}).has_value())
+    return std::nullopt;
+  rs::ImageChain chain{.width = ktxImage.mip0Width, .height = ktxImage.mip0Height};
+  for(uint32_t i = 0; i < ktxImage.numMips; i++)
+    chain.levelBytes.push_back(ktxImage.getSubresourceLayout(i, 0, 0).uncompressedByteSize);
+  return chain;
+}
+
+bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog, uint32_t maxExtent)
 {
   out = LoadedImageData{};
 
@@ -273,8 +310,11 @@ bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, b
     return false;
 
   if(loadDds(out, data, byteLength, srgb, imageIDForLog))
+  {
+    trimLevels(out, maxExtent);
     return true;
-  if(loadKtx(out, data, byteLength, srgb, imageIDForLog))
+  }
+  if(loadKtx(out, data, byteLength, srgb, imageIDForLog, maxExtent))
     return true;
   if(loadWebp(out, data, byteLength, srgb, imageIDForLog))
     return true;

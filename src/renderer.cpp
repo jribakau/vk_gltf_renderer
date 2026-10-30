@@ -644,6 +644,9 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                             retained->setTextureGrace(VkDeviceSize(m_resources.settings.textureGraceMB) << 20);
                       }},
                  &m_resources.settings.textureGraceMB, Persist::eNo);
+  m_settings.add({.name = "textureBudgetMB",
+                  .help = "Retained scene: the GPU memory textures are fitted to, where less than the device's budget, in MB (0: that budget)"},
+                 &m_resources.settings.textureBudgetMB, Persist::eNo);
   m_settings.add({.name = "residencyMinInstances", .help = "Retained scene: the least instance capacity (start-up only)"},
                  &m_resources.settings.residencyMinInstances, Persist::eNo);
   // Live: from the next refit on (P7, measured on Path Trace after a pose far from the load pose).
@@ -1636,7 +1639,8 @@ std::string GltfRenderer::frameProfileJson() const
   if(b.known)
   {
     char buf[96];
-    std::snprintf(buf, sizeof(buf), ",\"gpuMemoryMB\":%.0f,\"gpuBudgetMB\":%.0f", double(b.usage) / (1 << 20), double(b.budget) / (1 << 20));
+    std::snprintf(buf, sizeof(buf), ",\"gpuMemoryMB\":%.0f,\"gpuBudgetMB\":%.0f,\"gpuAllocatedMB\":%.0f", double(b.usage) / (1 << 20),
+                  double(b.budget) / (1 << 20), double(allocatedMemory().allocations) / (1 << 20));
     out += buf;
   }
   return out + "}";
@@ -1667,6 +1671,46 @@ std::string GltfRenderer::refuseFrameSize(VkExtent2D size, double extraBytesPerP
     return {};
   return fmt::format("a {}x{} frame needs about {:.1f} GB more of GPU memory and {:.1f} GB is free ({:.1f} of {:.1f} GB in use)",
                      size.width, size.height, need / 1e9, std::max(free, 0.0) / 1e9, b.usage / 1e9, b.budget / 1e9);
+}
+
+// What the allocator holds on the device and has handed out: the driver's usage counts whole blocks,
+// so what was freed inside one still reads as used, though a new image can go there
+GltfRenderer::AllocatedMemory GltfRenderer::allocatedMemory() const
+{
+  AllocatedMemory out;
+  if(!m_app)
+    return out;
+  VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+  vmaGetHeapBudgets(m_resources.allocator, budgets);
+  VkPhysicalDeviceMemoryProperties props{};
+  vkGetPhysicalDeviceMemoryProperties(m_app->getPhysicalDevice(), &props);
+  for(uint32_t i = 0; i < props.memoryHeapCount; i++)
+    if(props.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+    {
+      out.blocks += budgets[i].statistics.blockBytes;
+      out.allocations += budgets[i].statistics.allocationBytes;
+    }
+  return out;
+}
+
+// A tenth of the budget stays free for what grows unasked (a BLAS refit, a denoiser's targets), and so
+// does what the path tracer's frame would add to the rasterizer's, for a switch of mode to find.
+std::optional<uint64_t> GltfRenderer::textureHeadroom() const
+{
+  const MemoryBudget b = deviceMemoryBudget();
+  if(!b.known)
+    return std::nullopt;
+  const uint64_t packed = m_frameSizePacked.load();
+  const uint64_t pixels = (packed >> 32) * (packed & 0xffffffffu);
+  const uint32_t perPixel = frameBytesPerPixel();
+  const uint64_t frameMore = perPixel < kPathTracerBytesPerPixel ? pixels * (kPathTracerBytesPerPixel - perPixel) : 0;
+  uint64_t       budget = b.budget;
+  if(const uint32_t limit = m_resources.settings.textureBudgetMB; limit > 0)
+    budget = std::min<uint64_t>(budget, uint64_t(limit) << 20);
+  const AllocatedMemory allocated = allocatedMemory();
+  const uint64_t        used      = b.usage - std::min<uint64_t>(b.usage, allocated.blocks - allocated.allocations);
+  const uint64_t        reserved  = budget / 10 + frameMore + used;
+  return budget > reserved ? budget - reserved : 0;
 }
 
 void GltfRenderer::onRender(VkCommandBuffer cmd)
@@ -4340,7 +4384,9 @@ rs::VulkanGpuBackend::Info GltfRenderer::retainedBackendInfo()
           .opacityMicromaps   = m_resources.settings.opacityMicromapSupported,
           // what a host decoded ahead (prefetchImage) lands in SceneVk's map either way
           .takePrefetched = [this](const std::filesystem::path& path,
-                                   bool srgb) { return m_resources.sceneVk.takePrefetchedFile(path, srgb); }};
+                                   bool srgb) { return m_resources.sceneVk.takePrefetchedFile(path, srgb); },
+          .maxImageExtent = [this] { return m_maxTextureExtent.load(); },
+          .imageHeadroom  = [this] { return textureHeadroom(); }};
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -4411,6 +4457,8 @@ void GltfRenderer::replaceHostScene()
                              .textureGraceBytes   = VkDeviceSize(m_resources.settings.textureGraceMB) << 20,
                              .refitsBeforeRebuild = m_resources.settings.blasRefitsBeforeRebuild,
                              .compactStatic       = m_resources.settings.blasCompactStatic});
+  // the queue is idle: what the old scene let go of isn't in the new one's way when it is fitted
+  m_resources.retainedGpu->runRetired();
   {
     fv::timing::Scope timeUpload("retained upload");
     VkCommandBuffer   cmd = m_app->createTempCmdBuffer();
@@ -4530,6 +4578,9 @@ void GltfRenderer::logRetainedNotices()
 {
   for(const std::string& notice : m_resources.retainedGpu->takeNotices())
     LOGW("Retained scene: %s\n", notice.c_str());
+  for(const std::string& notice : m_resources.retainedGpu->takeUserNotices())
+    if(m_noticeSink)
+      m_noticeSink(notice);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -4910,7 +4961,7 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
 
 void GltfRenderer::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
 {
-  m_resources.sceneVk.prefetchImage(diskPath, srgb);
+  m_resources.sceneVk.prefetchImage(diskPath, srgb, m_maxTextureExtent.load());
 }
 
 void GltfRenderer::setRenderSystem(RenderingMode mode)
