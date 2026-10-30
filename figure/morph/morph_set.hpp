@@ -32,6 +32,8 @@ struct Channel
 {
   std::string name, label, group;
   double      value = 0, min = 0, max = 1;
+  // what it was when the figure or item that brought it was loaded: a scene file holds what differs
+  double loaded = 0;
   // not parsed yet: deltas load on first use (DSON morph files)
   bool lazy = false;
   // driven by something else (joint correctives follow bone rotations); not shown as a dial
@@ -122,6 +124,9 @@ public:
   void addTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts = {});
   // Registers a morph whose deltas are only read the first time it is set to a non-zero value.
   void addLazy(const std::string& name, Loader loader, const ChannelOptions& opts = {});
+
+  // Every channel's value is now what it loaded with, but those in `except`, which came earlier.
+  void markLoaded(const std::set<std::string>& except = {});
 
   const Channel* channel(const std::string& name) const;
   // A channel's dial value: what its slider shows.

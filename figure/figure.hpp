@@ -212,7 +212,11 @@ public:
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
   // figure's owning thread. The renderer's model has to be built again afterwards. `ids`: the ids its
   // items take, in the file's order, when they come back (an undo, a scene file); the rest get new ones.
-  WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids = {});
+  // `keys` the same for their keys, so what names their dials ("Loosen Neck@w3": a scene file, the
+  // history) still does. `only`: just the items with an id are coming back, so the file's other
+  // items, worn or not, aren't replaced; the caller takes the new copies of those off again.
+  WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids = {},
+                        const std::vector<std::string>& keys = {}, bool only = false);
   // Takes an item off: its nodes leave the scene (the next build leaves them out), its skeleton
   // stops following, its meshes stop following the body. False for an unknown id.
   bool removeItem(int id);

@@ -184,6 +184,7 @@ void Figure::setup(const Progress& progress)
   }
   morphs->flush();
   morphs->sort();
+  morphs->markLoaded();
 
   // posing for the main figure; other figures (conforming clothing) follow its bones by name
   if(loaded.mainRig >= 0)

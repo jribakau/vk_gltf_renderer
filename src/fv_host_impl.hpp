@@ -395,6 +395,8 @@ std::string normRel(const std::string& path);
 
 // normRel, compared as the library compares paths: without case
 std::string relKey(const std::string& path);
+// A worn item's place among its file's items, from its key: "w5" is the first, "w5.2" the third
+int pieceOfKey(const std::string& key);
 
 // encodeURI for an absolute path used as an image URI (the renderer percent-decodes URIs).
 std::string uriOfPath(const std::string& path);
@@ -800,6 +802,7 @@ struct FvHost::Impl
     // (fv::dson::chooseIrayPreset); recorded as its colour, so "own" takes it off again
     std::vector<std::string> iray;
     std::vector<int>         ids;  // the ids its items had (Figure::commitWear), by their place in the file
+    std::vector<std::string> keys;  // the keys they had, the same way
     bool only = false;  // its items without an id come off again at once: one item of a file put back
     bool step = false;  // the user put it on: a step of the history
   };

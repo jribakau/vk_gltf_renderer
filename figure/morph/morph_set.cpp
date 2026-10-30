@@ -257,6 +257,7 @@ void MorphSet::addLazy(const std::string& name, Loader loader, const ChannelOpti
   c.hidden      = opts.hidden;
   m_index[name] = m_channels.size();
   m_channels.push_back(std::move(c));
+  m_listVersion++;
 }
 
 void MorphSet::ensureLoaded(const std::string& name)
@@ -688,6 +689,13 @@ void MorphSet::applyWeights(const std::vector<std::pair<std::string, double>>& v
   for(const auto& [name, weight] : values)
     apply(name, weight);
   flush();
+}
+
+void MorphSet::markLoaded(const std::set<std::string>& except)
+{
+  for(Channel& c : m_channels)
+    if(!except.count(c.name))
+      c.loaded = c.value;
 }
 
 void MorphSet::resetAll()

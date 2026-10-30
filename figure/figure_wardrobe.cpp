@@ -337,7 +337,8 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   return out;
 }
 
-WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids)
+WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids,
+                              const std::vector<std::string>& keys, bool only)
 {
   timing::Scope     t("commitWear " + rel);
   PreparedWear&     p   = *wear;
@@ -345,16 +346,11 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   SceneGraph&       dst = loaded.scene;
   WearResult        result;
   result.warnings = w.warnings;
-  // its key now, in the order wears are put on: item k of the load is key, key.1, key.2 ... as the
-  // loader names them
-  p.key = "w" + std::to_string(++m_wears);
-  for(size_t k = 0; k < w.items.size(); k++)
-    w.items[k].key = p.key + (k ? "." + std::to_string(k) : std::string());
-
   // the same garment again replaces the worn one: the newer copy carries the file's fit settings
   std::set<std::string> sources;
-  for(const dson::Item& it : w.items)
-    sources.insert(it.sources.begin(), it.sources.end());
+  for(size_t k = 0; k < w.items.size(); k++)
+    if(!only || (k < ids.size() && ids[k] > 0))
+      sources.insert(w.items[k].sources.begin(), w.items[k].sources.end());
   std::vector<int> old;
   for(const WornItem& i : items)
     if(std::any_of(i.sources.begin(), i.sources.end(), [&](const std::string& s) { return sources.count(s) > 0; }))
@@ -363,6 +359,19 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   {
     removeItem(id);
     result.replaced.push_back(id);
+  }
+
+  // its key now, in the order wears are put on: item k of the load is key, key.1, key.2 ... as the
+  // loader names them. One coming back has the key it had, and later wears stay clear of it.
+  for(const std::string& k : keys)
+    if(k.size() > 1)
+      m_wears = std::max(m_wears.load(), std::atoi(k.c_str() + 1));
+  p.key = "w" + std::to_string(++m_wears);
+  for(size_t k = 0; k < w.items.size(); k++)
+  {
+    const bool had = k < keys.size() && !keys[k].empty()
+                     && std::none_of(items.begin(), items.end(), [&](const WornItem& i) { return i.key == keys[k]; });
+    w.items[k].key = had ? keys[k] : p.key + (k ? "." + std::to_string(k) : std::string());
   }
 
   // ---- merge the scene: nodes, meshes, materials and skeletons, with their indices moved on
@@ -661,6 +670,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     timing::Scope tf("flush");
     morphs->flush();
     morphs->sort();
+    morphs->markLoaded(before);
   }
   result.items = added;
   return result;

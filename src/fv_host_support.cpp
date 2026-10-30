@@ -110,6 +110,12 @@ std::string normRel(const std::string& path)
   return at == std::string::npos ? std::string{} : rel.substr(at);
 }
 
+int pieceOfKey(const std::string& key)
+{
+  const size_t dot = key.find('.');
+  return dot == std::string::npos ? 0 : std::max(std::atoi(key.c_str() + dot + 1), 0);
+}
+
 std::string relKey(const std::string& path)
 {
   std::string key = normRel(path);

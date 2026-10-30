@@ -338,7 +338,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       }
       auto done = std::make_shared<std::promise<bool>>();
       auto ok   = done->get_future();
-      post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, only = request.only, step = request.step, label,
+      post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, keys = request.keys, only = request.only, step = request.step, label,
             images = std::move(slot.images), uncooked = std::move(slot.uncooked), done, autoColor = slot.autoColor,
             autoColorDoc = slot.autoColorDoc, problems = looks.problems]() mutable {
         if(!inScene(target))
@@ -362,7 +362,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           if(step)
             for(const fv::WornItem& w : target->fig->items)
               had[w.id] = itemRecord(*target, w);
-          fv::WearResult r = target->fig->commitWear(prepared, rel, ids);
+          fv::WearResult r = target->fig->commitWear(prepared, rel, ids, keys, only);
           if(only)
           {
             // one item of the file put back: the others are worn already, or were not
@@ -576,11 +576,15 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
 
 Json FvHost::Impl::itemRecord(const Loaded& f, const fv::WornItem& w) const
 {
-  // its place among its file's items: "w5" is the first, "w5.2" the third
-  const size_t dot   = w.key.find('.');
-  const int    piece = dot == std::string::npos ? 0 : std::atoi(w.key.c_str() + dot + 1);
-  Json         rec   = {{"rel", w.rel}, {"piece", piece}, {"label", w.label}, {"visible", w.visible},
-                        {"cloth", {{"on", w.cloth.on ? Json(*w.cloth.on) : Json()}, {"strength", w.cloth.strength}}}};
+  Json rec = {{"rel", w.rel}, {"piece", pieceOfKey(w.key)}, {"key", w.key}, {"label", w.label}, {"visible", w.visible},
+              {"cloth", {{"on", w.cloth.on ? Json(*w.cloth.on) : Json()}, {"strength", w.cloth.strength}}}};
+  // its dials as they are set: they leave with it
+  Json dials = Json::object();
+  for(const std::string& name : w.channels)
+    if(const fv::morph::Channel* c = f.fig->morphs->channel(name); c && !c->hidden && c->value != c->loaded)
+      dials[name] = c->value;
+  if(!dials.empty())
+    rec["dials"] = std::move(dials);
   if(const auto c = f.colors.find(w.id); c != f.colors.end())
     rec["color"] = c->second.rel.empty() ? Json() : Json(c->second.rel);
   // its surfaces' edits, in the order its meshes have them
@@ -610,7 +614,9 @@ Json FvHost::Impl::wardrobeRestore(const Json& args)
   WearRequest request{rec.at("rel").get<std::string>(), "", {}};
   request.ids.assign(size_t(std::max(rec.value("piece", 0), 0)) + 1, 0);
   request.ids.back() = id;
-  request.only       = true;
+  request.keys.assign(request.ids.size(), "");
+  request.keys.back() = rec.value("key", std::string());
+  request.only        = true;
   // as it was: shown or hidden and its cloth before the build, its colour and edits once its surfaces are in
   auto before = [this, target, id, rec] {
     if(!wornItem(*target->fig, id))
@@ -621,6 +627,13 @@ Json FvHost::Impl::wardrobeRestore(const Json& args)
     if(c.contains("on") && c["on"].is_boolean())
       on = c["on"].get<bool>();
     target->fig->setItemCloth(id, on, c.value("strength", 1.f));
+    std::vector<std::pair<std::string, double>> dials;
+    const Json saved = rec.value("dials", Json::object());
+    for(const auto& [name, value] : saved.items())
+      if(target->fig->morphs->channel(name))
+        dials.emplace_back(name, value.get<double>());
+    if(!dials.empty())
+      target->fig->morphs->setMany(dials);
   };
   auto after = [this, target, id, rec] {
     const auto q = findProp(target->id);

@@ -689,6 +689,218 @@ TEST(FvHost, AnItemTakenOffComesBackUnderItsIdAsItWas)
   EXPECT_EQ(differ(was, stateOf(rig)), "");
 }
 
+namespace {
+// What the figure of a saved `state` comes back as: in a session of its own, as a scene file opens
+struct Reopened
+{
+  HostRig     rig;
+  std::string id;
+  Json        problems = Json::array();
+
+  explicit Reopened(Json state)
+  {
+    EXPECT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    id            = figureId(rig.topic("scene"));
+    state["prop"] = id;
+    const Json answer = rig.cmd("scene.restore", state);
+    EXPECT_TRUE(answer.value("ok", false)) << answer.dump();
+    EXPECT_TRUE(rig.settle());
+    problems = rig.topic("jobs").value(answer.at("result").at("job").dump(), Json::object()).value("problems", Json::array());
+  }
+  Json items() { return rig.topic("wardrobe/" + id).value("items", Json::object()); }
+  Json dial(const std::string& name) { return rig.topic("morphs/" + id).at("channels").value(name, Json::object()).value("value", Json()); }
+};
+
+Json wardrobeOf(HostRig& rig, const std::string& id)
+{
+  return rig.topic("wardrobe/" + id).value("items", Json::object());
+}
+
+// The worn item called `label`'s id ("i:3")
+std::string itemNamed(const Json& items, const std::string& label)
+{
+  for(const auto& [id, item] : items.items())
+    if(item.value("label", "") == label)
+      return id;
+  return "";
+}
+
+// The channel of `dial` on the item called `label`, as the channels topic lists it under the item's group
+std::string dialOn(HostRig& rig, const std::string& id, const std::string& dial, const std::string& label)
+{
+  const Json channels = rig.topic("morphs/" + id).at("channels");
+  for(const auto& [name, c] : channels.items())
+    if(name.rfind(dial + "@", 0) == 0 && c.value("group", "") == label)
+      return name;
+  return "";
+}
+}  // namespace
+
+// A dial the character's file sets (the Box Figure's Stretch, at 0.5) stays where the user put it, at 0
+// too: a file holds what differs from how the figure loads. What didn't change isn't in it, so a file
+// from before, which never held a zero, still means "as loaded".
+TEST(FvHost, ADialTurnedToNothingStaysThereWhenReopened)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id    = figureId(rig.topic("scene"));
+  const auto        state = [&] { return rig.cmd("scene.state", {{"prop", id}}).at("result"); };
+  EXPECT_FALSE(state().at("morphs").contains("Stretch")) << state().dump();
+
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Stretch", 0.0}}}});
+  rig.host->onUpdate();
+  ASSERT_TRUE(state().at("morphs").contains("Stretch"));
+  EXPECT_EQ(Reopened(state()).dial("Stretch"), 0.0);
+
+  // and Reset morphs, the whole of what the file set
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Stretch", 0.7}, {"Taper", 0.25}}}});
+  rig.host->onUpdate();
+  rig.cmd("morph.reset", {{"prop", id}});
+  rig.host->onUpdate();
+  Reopened reset(state());
+  EXPECT_EQ(reset.dial("Stretch"), 0.0);
+  EXPECT_EQ(reset.dial("Taper"), 0.0);
+
+  // a file with nothing for it: as loaded
+  Json old = state();
+  old["morphs"].erase("Stretch");
+  EXPECT_EQ(Reopened(old).dial("Stretch"), 0.5);
+}
+
+// A worn item's fit dial is named by the item's key. The key goes in the file, so the dial finds its
+// garment after a session that took others off, and the same modifier on another garment stays out of it.
+TEST(FvHost, AFitDialFindsItsGarmentWhenReopened)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  // on and off again: the next one's key has a gap before it
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Pants.duf"}});
+  ASSERT_TRUE(rig.settle());
+  rig.cmd("wardrobe.remove", {{"prop", id}, {"item", itemNamed(wardrobeOf(rig, id), "Box Pants")}});
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Pants.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const std::string dial = dialOn(rig, id, "Loosen Neck", "Box Pants");
+  ASSERT_FALSE(dial.empty()) << rig.topic("morphs/" + id).dump();
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{dial, 0.6}}}});
+  rig.host->onUpdate();
+  const Json saved = rig.cmd("scene.state", {{"prop", id}}).at("result");
+
+  Reopened back(saved);
+  EXPECT_TRUE(back.problems.empty()) << back.problems.dump();
+  EXPECT_EQ(back.dial(dialOn(back.rig, back.id, "Loosen Neck", "Box Pants")), 0.6);
+  EXPECT_EQ(back.dial(dialOn(back.rig, back.id, "Loosen Neck", "Box Shirt")), 0.0);
+  // and the next save has it still
+  EXPECT_EQ(back.rig.cmd("scene.state", {{"prop", back.id}}).at("result").at("morphs").value(dial, 0.0), 0.6);
+
+  // A file from before: no keys, and a key from a session that's gone. The one garment with the dial is meant.
+  Json old = saved;
+  old["worn"] = Json::array({Json{{"rel", "People/Test/Clothing/Box Pants.duf"}, {"label", "Box Pants"}, {"visible", true}, {"id", 9}}});
+  old["morphs"] = Json{{"Loosen Neck@w7", 0.3}};
+  Reopened older(old);
+  EXPECT_TRUE(older.problems.empty()) << older.problems.dump();
+  EXPECT_EQ(older.dial(dialOn(older.rig, older.id, "Loosen Neck", "Box Pants")), 0.3);
+  // nothing to go by: it is reported, and no garment takes it
+  old["worn"].push_back(Json{{"rel", "People/Test/Clothing/Box Shirt.duf"}, {"label", "Box Shirt"}, {"visible", true}, {"id", 10}});
+  Reopened unsure(old);
+  EXPECT_NE(unsure.problems.dump().find("1 morph dial not found"), std::string::npos) << unsure.problems.dump();
+  EXPECT_EQ(unsure.dial(dialOn(unsure.rig, unsure.id, "Loosen Neck", "Box Pants")), 0.0);
+  EXPECT_EQ(unsure.dial(dialOn(unsure.rig, unsure.id, "Loosen Neck", "Box Shirt")), 0.0);
+}
+
+// A dial leaves with its item and comes back with it, by a take-off's undo, under its name, so the step
+// that set it still finds it
+TEST(FvHost, AnItemTakenOffKeepsItsDials)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const std::string dial = dialOn(rig, id, "Loosen Neck", "Box Shirt");
+  ASSERT_FALSE(dial.empty());
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{dial, 0.6}}}});
+  rig.host->onUpdate();
+  ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", itemNamed(wardrobeOf(rig, id), "Box Shirt")}}).value("ok", false));
+  ASSERT_FALSE(rig.topic("morphs/" + id).at("channels").contains(dial));
+
+  historyStep(rig, "history.undo");
+  rig.host->onUpdate();
+  const Json channels = rig.topic("morphs/" + id).at("channels");
+  ASSERT_TRUE(channels.contains(dial)) << channels.dump();
+  EXPECT_EQ(channels[dial].value("value", 0.0), 0.6);
+  // the step before it: the dial set
+  historyStep(rig, "history.undo");
+  rig.host->onUpdate();
+  EXPECT_EQ(rig.topic("morphs/" + id).at("channels")[dial].value("value", 1.0), 0.0);
+}
+
+// A file that puts on two pieces: each is taken off and comes back by itself, and the wear undone and
+// redone is both of them. A piece taken off stays off when the scene is reopened.
+TEST(FvHost, TheOtherPiecesOfAFileStayWhenOneComesBack)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Outfit.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const auto items = [&] { return wardrobeOf(rig, id); };
+  ASSERT_EQ(items().size(), 2u) << items().dump();
+  const std::string shirt = itemNamed(items(), "Box Shirt"), pants = itemNamed(items(), "Box Pants");
+  ASSERT_FALSE(shirt.empty());
+  ASSERT_FALSE(pants.empty());
+  rig.cmd("material.set", {{"prop", id}, {"material", "m:1"}, {"values", {{"roughness", 0.7}}}});
+  // a piece that comes back is the last in the list: what it is goes by its key, not its place
+  const auto state = [&] {
+    Json s = stateOf(rig);
+    for(auto& [fig, f] : s["figures"].items())
+      std::sort(f["worn"].begin(), f["worn"].end(), [](const Json& a, const Json& b) { return a.value("id", 0) < b.value("id", 0); });
+    return s;
+  };
+  const Json was = state();
+
+  // either piece off and back
+  for(const std::string& piece : {shirt, pants})
+  {
+    ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", piece}}).value("ok", false));
+    ASSERT_EQ(items().size(), 1u);
+    EXPECT_FALSE(items().contains(piece));
+    const Json undone = historyStep(rig, "history.undo");
+    EXPECT_FALSE(undone.contains("problems")) << undone.dump();
+    ASSERT_EQ(items().size(), 2u) << items().dump();
+    EXPECT_TRUE(items().contains(shirt));
+    EXPECT_TRUE(items().contains(pants));
+    EXPECT_EQ(differ(was, state()), "");
+  }
+
+  // the wear undone and redone: both pieces
+  historyStep(rig, "history.undo");  // the material
+  historyStep(rig, "history.undo");  // the wear
+  EXPECT_TRUE(items().empty());
+  historyStep(rig, "history.redo");
+  ASSERT_EQ(items().size(), 2u) << items().dump();
+  EXPECT_TRUE(items().contains(shirt));
+  EXPECT_TRUE(items().contains(pants));
+
+  // the second piece worn alone comes back alone, the first alone too
+  for(const std::string& piece : {shirt, pants})
+  {
+    const std::string other = piece == shirt ? pants : shirt;
+    ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", other}}).value("ok", false));
+    Reopened back(rig.cmd("scene.state", {{"prop", id}}).at("result"));
+    ASSERT_EQ(back.items().size(), 1u) << back.items().dump();
+    EXPECT_FALSE(itemNamed(back.items(), wardrobeOf(rig, id).at(piece).value("label", "")).empty());
+    historyStep(rig, "history.undo");
+  }
+}
+
 // A scene file opening as the app sends it (a clear, the loads, their restores, places, the
 // lighting), between history.begin and history.end: one step, whose undo is the scene before and
 // whose redo is the scene opened.

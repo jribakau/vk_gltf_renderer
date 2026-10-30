@@ -384,7 +384,7 @@ Json FvHost::Impl::sceneState(const Json& args)
   for(const fv::WornItem& w : fig.items)
     if(!w.rel.empty())
     {
-      Json entry = {{"rel", w.rel}, {"visible", w.visible}, {"label", w.label}, {"id", w.id}};
+      Json entry = {{"rel", w.rel}, {"visible", w.visible}, {"label", w.label}, {"id", w.id}, {"key", w.key}};
       // dForce on the item as the user set it, when they did
       if(w.cloth.on || w.cloth.strength != 1.f)
         entry["cloth"] = {{"on", w.cloth.on ? Json(*w.cloth.on) : Json(nullptr)}, {"strength", std::round(w.cloth.strength * 1e3) / 1e3}};
@@ -395,7 +395,7 @@ Json FvHost::Impl::sceneState(const Json& args)
     }
   Json morphs = Json::object();
   for(const fv::morph::Channel& c : fig.morphs->channels())
-    if(!c.hidden && c.value != 0)
+    if(!c.hidden && c.value != c.loaded)
       morphs[c.name] = std::round(c.value * 1e5) / 1e5;
   Json pose = Json::array();
   if(fig.pose)
@@ -475,9 +475,25 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     {
       std::vector<std::pair<std::string, double>> dials;
       int                                         missing = 0;
+      // A file from before items kept their keys names a worn item's dial by the key it had that
+      // session: the one item with that dial is meant, whatever its key is now. Of several with it,
+      // the key is all there is to go by.
+      const auto channelOf = [&fig](const std::string& name) {
+        const size_t at = name.rfind('@');
+        if(at != std::string::npos)
+        {
+          std::vector<std::string> holders;
+          for(const fv::WornItem& i : fig.items)
+            if(const std::string held = name.substr(0, at) + "@" + i.key; fig.morphs->channel(held))
+              holders.push_back(held);
+          if(holders.size() == 1)
+            return holders[0];
+        }
+        return fig.morphs->channel(name) ? name : std::string();
+      };
       for(auto it = args["morphs"].begin(); it != args["morphs"].end(); ++it)
-        if(it.value().is_number() && fig.morphs->channel(it.key()))
-          dials.emplace_back(it.key(), it.value().get<double>());
+        if(const std::string name = channelOf(it.key()); it.value().is_number() && !name.empty())
+          dials.emplace_back(name, it.value().get<double>());
         else
           missing++;
       if(!dials.empty())
@@ -700,11 +716,29 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         const std::string rel = w.value("rel", "");
         if(!rel.empty() && skip.insert(relKey(rel)).second)
         {
-          // its items under the ids they had, so what names them (the history) finds them again
+          // its items under the ids they had, so what names them (the history) finds them again.
+          // With their keys too, each at its place in the file, and a piece that was taken off stays
+          // off; a file from before keys were saved has neither.
           WearRequest request{rel, "", {}};
           for(const Json& same : worn)
             if(relKey(same.value("rel", "")) == relKey(rel) && same.value("id", 0) > 0)
-              request.ids.push_back(same.value("id", 0));
+            {
+              if(!same.contains("key") || !same["key"].is_string())
+              {
+                request.ids.push_back(same.value("id", 0));
+                continue;
+              }
+              const std::string key = same["key"].get<std::string>();
+              const size_t      at  = size_t(pieceOfKey(key));
+              if(request.ids.size() <= at)
+              {
+                request.ids.resize(at + 1, 0);
+                request.keys.resize(at + 1);
+              }
+              request.ids[at]  = same.value("id", 0);
+              request.keys[at] = key;
+              request.only     = true;
+            }
           requests.push_back(std::move(request));
         }
       }
