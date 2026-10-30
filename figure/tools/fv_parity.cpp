@@ -42,6 +42,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <thread>
 #include <unordered_map>
 
@@ -396,6 +397,42 @@ Json tightReport(fv::Figure& fig, const std::string& what, float amount)
   report["passAfter"] = pass();
   measure("after");
   drawn("drawnAfter");
+  const auto hideStart = std::chrono::steady_clock::now();
+  fig.refreshTightHidden(true);
+  report["hideMs"] = r(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hideStart).count());
+  // of the fabric still under the skin as posed, how much lies over skin that's still drawn
+  const fv::mesh::BuiltMesh& bodyGeo = *fig.loaded.scene.meshes[size_t(body)].geo;
+  std::set<int32_t>          hiddenPolys;
+  for(const auto& [owner, polys] : bodyGeo.hiddenPolys)
+    hiddenPolys.insert(polys.begin(), polys.end());
+  report["hiddenPolys"] = hiddenPolys.size();
+  report["bodyPolys"]   = bodyGeo.cagePolyStart.size() - 1;
+  std::vector<uint8_t> shown(bodyGeo.cagePositions.size() / 3, 0);
+  for(size_t p = 0; p + 1 < bodyGeo.cagePolyStart.size(); p++)
+    if(!hiddenPolys.count(int32_t(p)))
+      for(int32_t c = bodyGeo.cagePolyStart[p]; c < bodyGeo.cagePolyStart[p + 1]; c++)
+        shown[size_t(bodyGeo.cagePolyVerts[size_t(c)])] = 1;
+  const auto bodyNow = posedCage(body);
+  for(int mesh : meshes)
+  {
+    const auto                         cage    = posedCage(mesh);
+    const fv::wardrobe::Surface        surface{bodyNow, bodyTris};
+    const fv::wardrobe::SurfaceBinding binding = fv::wardrobe::bindToSurface(bodyNow, bodyTris, cage);
+    const std::vector<float>           pushed  = fv::wardrobe::pushOut(cage, surface, binding, 0.f, 3.f);
+    Json                               showing = Json::array();
+    size_t                             count   = 0;
+    for(size_t k = 0; k + 2 < cage.size(); k += 3)
+    {
+      if(pushed[k] == cage[k] && pushed[k + 1] == cage[k + 1] && pushed[k + 2] == cage[k + 2])
+        continue;
+      if(!shown[binding.verts[k]] && !shown[binding.verts[k + 1]] && !shown[binding.verts[k + 2]])
+        continue;
+      count++;
+      if(showing.size() < 40)
+        showing.push_back({{"depth", r(std::hypot(pushed[k] - cage[k], pushed[k + 1] - cage[k + 1], pushed[k + 2] - cage[k + 2]))}, {"at", {r(cage[k]), r(cage[k + 1]), r(cage[k + 2])}}});
+    }
+    report["stillShowing"][std::to_string(mesh)] = {{"count", count}, {"first", showing}};
+  }
   return report;
 }
 

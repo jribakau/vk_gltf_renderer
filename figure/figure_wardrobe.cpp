@@ -11,6 +11,7 @@
 #include <regex>
 #include <utility>
 
+#include <figure/dforce/skin.hpp>
 #include <figure/dson/materials.hpp>
 #include <figure/dson/listing.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -18,6 +19,8 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
+#include <figure/wardrobe/collider.hpp>
+#include <figure/wardrobe/fit/collide.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
 #include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
@@ -774,7 +777,11 @@ bool Figure::removeItem(int id)
   morphs->removeChannels(gone.channels);
   morphs->removeMeshes(goneMeshes);
   if(!loaded.morphs.mainMeshes.empty())
-    scene.meshes[size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh)].geo->hiddenPolys.erase(gone.key);
+  {
+    auto& hidden = scene.meshes[size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh)].geo->hiddenPolys;
+    hidden.erase(gone.key);
+    hidden.erase(gone.key + "#tight");
+  }
   // its morph meshes and owner ids leave the load's morph context; the main meshes' indices follow
   dson::MorphContext&        ctx = loaded.morphs;
   std::vector<dson::MeshRef> kept;
@@ -900,6 +907,89 @@ bool Figure::setItemTight(int id, float amount)
     return false;
   it->tight = std::clamp(amount, 0.f, 1.f);
   return true;
+}
+
+namespace {
+
+// Skin under it: how close the fabric lies as made, and how far from its hems the skin has to be for a
+// pose not to bare it.
+constexpr float kCoverReach    = 2.f;
+constexpr float kCoverHemClear = 3.f;
+
+// Whether nothing shows through any surface of the mesh.
+bool opaqueMesh(const SceneGraph& scene, const Mesh& mesh)
+{
+  for(const int m : mesh.materials)
+  {
+    if(m < 0 || size_t(m) >= scene.materials.size())
+      continue;
+    const Material&      mat = scene.materials[size_t(m)];
+    const mat::Surface&  s   = mat.surface;
+    const float          o   = mat.edits.opacity.value_or(s.opacity.value);
+    if(o < 1 || !s.opacity.map.empty() || (s.refraction && (s.refraction->weight > 0 || !s.refraction->map.empty())))
+      return false;
+    if(mat.edits.alphaMode && *mat.edits.alphaMode != "opaque")
+      return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool Figure::refreshTightHidden(bool collisionOn)
+{
+  if(loaded.morphs.mainMeshes.empty())
+    return false;
+  SceneGraph& scene = loaded.scene;
+  const int   body  = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
+  auto&       geo   = *scene.meshes[size_t(body)].geo;
+  bool        changed = false;
+  for(WornItem& w : items)
+  {
+    const std::string key  = w.key + "#tight";
+    // read every time: fabric made see-through later gives the skin back
+    bool opaque = true;
+    for(const auto& [mesh, smoothing] : w.collision)
+      opaque = opaque && opaqueMesh(scene, scene.meshes[size_t(mesh)]);
+    const bool want = collisionOn && w.visible && w.tight > 0 && !w.collision.empty() && opaque && !clothOf(w).on;
+    if(!want)
+    {
+      if(w.tightChecked)
+      {
+        w.tightChecked = false;
+        w.tightPolys.clear();
+        changed = geo.hiddenPolys.erase(key) > 0 || changed;
+      }
+      continue;
+    }
+    if(w.tightChecked)
+      continue;
+    w.tightChecked = true;
+    timing::Scope t("tight: covered skin", 5);
+    const auto worlds = scene.worlds();
+    const auto nodeOf = dforce::nodeOfMesh(scene);
+    const auto inRoot = [&](int mesh, const std::vector<float>& cage) {
+      const Mat4 to = inverse(worlds[size_t(loaded.root)]) * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{});
+      return dforce::transformPoints(to, cage);
+    };
+    const auto bodyCage = inRoot(body, morphs->morphedCage(body));
+    for(const auto& [mesh, smoothing] : w.collision)
+    {
+      const Mesh& m = scene.meshes[size_t(mesh)];
+      if(!m.geo)
+        continue;
+      const auto own  = morphs->cpuTarget(wardrobe::collideChannelOf(mesh), mesh);
+      const auto cage = inRoot(mesh, morphs->morphedCage(mesh, own.get()));
+      const auto polys = wardrobe::coveredPolys(bodyCage, geo.cagePolyStart, geo.cagePolyVerts, cage, m.geo->dsonTris, kCoverReach, kCoverHemClear);
+      w.tightPolys.insert(w.tightPolys.end(), polys.begin(), polys.end());
+    }
+    if(!w.tightPolys.empty())
+    {
+      geo.hiddenPolys[key] = w.tightPolys;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 ClothState Figure::clothOf(const WornItem& item) const

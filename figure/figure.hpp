@@ -68,6 +68,10 @@ struct WornItem
   std::map<int, dson::Smoothing> collision;
   // how far the collider pulls it onto the body, 0 (as it was made) to 1 (skin tight)
   float tight = 0;
+  // the body polygons it covers, not drawn while it is tight (Figure::refreshTightHidden); whether
+  // that has been worked out for it
+  std::vector<int32_t> tightPolys;
+  bool                 tightChecked = false;
   // dForce on this item as the user set it (Figure::setItemCloth): whether its meshes simulate
   // (unset: as the file says, a Dynamic Surface does and anything else conforms) and a dynamics
   // strength that scales the file's weights, or is every vertex's for an item the file gave none
@@ -231,6 +235,11 @@ public:
   ClothState       clothOf(const WornItem& item) const;
   // How skin tight one item is, 0 to 1: the collider's next pass applies it. False for an unknown id.
   bool setItemTight(int id, float amount);
+  // Brings what tight items hide of the body up to date: the skin fully under opaque fabric stops being
+  // drawn, so nothing of it can show through at a sharp joint. Worked out once per item, at rest, and
+  // not for fabric that lets anything through or that dForce moves. True when the body's drawn
+  // triangles changed, which takes a composition.
+  bool refreshTightHidden(bool collisionOn);
   const WornItem*  item(int id) const;
   dson::Store&    store() const { return *m_store; }
   // Lists the items the scene file came with (Figure::load does).

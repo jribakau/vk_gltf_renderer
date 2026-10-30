@@ -6,12 +6,14 @@
 
 #include <chrono>
 #include <memory>
+#include <set>
 #include <thread>
 
 #include <figure/dson/modifiers.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/wardrobe/collider.hpp>
+#include <figure/wardrobe/fit/collide.hpp>
 
 namespace {
 
@@ -167,6 +169,33 @@ TEST(Collider, pullsATightGarmentOntoTheBody)
   }
   farMorphs.flush();
   EXPECT_NEAR(minY(*far.scene.meshes[1].geo), 10.f, 1e-3f);
+}
+
+// The skin a garment covers: under its face and clear of its hems, and only that.
+TEST(Collider, findsTheSkinAGarmentCovers)
+{
+  const mesh::BuiltMesh body = mesh::build(grid(8, 0));
+  const mesh::BuiltMesh item = mesh::build(grid(4, 0.5f));
+  const auto polyAt = [](int x, int z) { return z * 8 + x; };  // from the grid's corner, x and z 0 to 7
+  const auto covered = [&](float reach, float hemClear) {
+    const auto polys = wardrobe::coveredPolys(body.cagePositions.empty() ? body.position : body.cagePositions, body.cagePolyStart, body.cagePolyVerts,
+                                              item.cagePositions.empty() ? item.position : item.cagePositions, item.dsonTris, reach, hemClear);
+    return std::set<int32_t>(polys.begin(), polys.end());
+  };
+  // the garment is 4 by 4 over the middle, so with a hem clearance of 1 only the 2 by 2 at its centre
+  const auto middle = covered(2, 1);
+  EXPECT_EQ(middle.size(), 4u);
+  EXPECT_TRUE(middle.count(polyAt(3, 3)));
+  EXPECT_TRUE(middle.count(polyAt(4, 4)));
+  EXPECT_FALSE(middle.count(polyAt(2, 2)));  // under its hem
+  EXPECT_FALSE(middle.count(polyAt(0, 0)));  // bare
+  // nothing when the fabric is out of reach
+  EXPECT_TRUE(covered(0.25f, 1).empty());
+
+  // behind it only: a body over the garment's outside isn't under it
+  const mesh::BuiltMesh above = mesh::build(grid(8, 1));
+  EXPECT_TRUE(wardrobe::coveredPolys(above.cagePositions.empty() ? above.position : above.cagePositions, above.cagePolyStart, above.cagePolyVerts,
+                                     item.cagePositions.empty() ? item.position : item.cagePositions, item.dsonTris, 2, 0).empty());
 }
 
 // A drag on skin tight fits as it goes: steps closer together than the pause a pose waits for still

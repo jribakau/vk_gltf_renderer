@@ -26,6 +26,19 @@ std::vector<float> pushOut(std::span<const float> positions, const Surface& body
 // free stays free; and only what is over a face rather than off past its edge, as in pushOut.
 std::vector<float> pullIn(std::span<const float> positions, const Surface& body, const SurfaceBinding& binding, float margin, float amount, float reach = 6);
 
+// The polygons of a body (`polyStart`, `polyVerts` over `body`) that a garment covers: each corner lies
+// behind the garment's face, within `reach` of it, and at least `hemClear` along the garment from any
+// open edge, so a pose that slides the fabric doesn't bare what isn't drawn. Skin that isn't drawn
+// can't show through the fabric, however the two meet, so this is the answer to what the collider's
+// clearance can't promise at a sharp joint.
+std::vector<int32_t> coveredPolys(std::span<const float>    body,
+                                  std::span<const int32_t>  polyStart,
+                                  std::span<const int32_t>  polyVerts,
+                                  std::span<const float>    item,
+                                  std::span<const uint32_t> itemTris,
+                                  float                     reach,
+                                  float                     hemClear);
+
 // Laplacian steps on the correction (`next` - `prev`), leaving the garment's cut in place.
 std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris, int passes = 2);
 

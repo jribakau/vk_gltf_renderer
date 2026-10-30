@@ -587,6 +587,12 @@ void FvHost::onUpdate()
         f.collider->changed(moved, !changes.nodes.empty());
       if(f.collider->pump())
         drainInto();
+      // once a drag has settled, not in the middle of it: it takes a composition
+      if(!f.collider->busy() && f.fig->refreshTightHidden(f.collider->enabled()))
+      {
+        s.requestCompose("Fitting", {}, &f);
+        s.publishWardrobe(f);
+      }
       if(f.collisionVersion != f.collider->version())
         s.publishWardrobe(f);
     }

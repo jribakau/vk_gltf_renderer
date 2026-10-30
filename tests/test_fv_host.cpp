@@ -884,6 +884,79 @@ TEST(FvHost, HowTightAnItemIsGoesWithIt)
   EXPECT_DOUBLE_EQ(back.items().at(itemNamed(back.items(), "Box Shirt")).value("tight", -1.0), 0.75);
 }
 
+// Skin all the way under opaque fabric isn't drawn while the fabric is tight, so it can't show through,
+// and it comes back whenever that stops being so. Box Snug is a closed box just around the Box Figure.
+TEST(FvHost, TightFabricHidesTheSkinUnderIt)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Snug.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const std::string item   = itemNamed(wardrobeOf(rig, id), "Box Snug");
+  const auto        hidden = [&] { return wardrobeOf(rig, id).at(item).value("skinHidden", -1); };
+  // the collider's pass has to end first: that's when what's hidden is brought up to date
+  const auto        fitted = [&] {
+    for(int i = 0; i < 3000 && rig.topic("wardrobe/" + id).at("collision").value("busy", true); i++)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    rig.host->onUpdate();
+    ASSERT_TRUE(rig.settle());
+  };
+  const auto        tight  = [&](double amount) {
+    ASSERT_TRUE(rig.cmd("wardrobe.tight", {{"prop", id}, {"item", item}, {"amount", amount}}).value("ok", false));
+    rig.host->onUpdate();
+    fitted();
+  };
+  ASSERT_EQ(hidden(), 0);
+  tight(1);
+  const int covered = hidden();
+  ASSERT_GT(covered, 0) << wardrobeOf(rig, id).dump();
+  EXPECT_DOUBLE_EQ(wardrobeOf(rig, id).at(item).value("tight", 0.0), 1.0);
+  tight(0);
+  EXPECT_EQ(hidden(), 0);
+  tight(0.5);
+  EXPECT_EQ(hidden(), covered);
+
+  // undone, and put back
+  historyStep(rig, "history.undo");
+  fitted();
+  EXPECT_EQ(hidden(), 0);
+  historyStep(rig, "history.redo");
+  fitted();
+  EXPECT_EQ(hidden(), covered);
+
+  // hidden, its skin is back; shown, gone again
+  ASSERT_TRUE(rig.cmd("wardrobe.visible", {{"prop", id}, {"item", item}, {"visible", false}}).value("ok", false));
+  fitted();
+  EXPECT_EQ(hidden(), 0);
+  ASSERT_TRUE(rig.cmd("wardrobe.visible", {{"prop", id}, {"item", item}, {"visible", true}}).value("ok", false));
+  fitted();
+  EXPECT_EQ(hidden(), covered);
+
+  // collision off: nothing holds it to the body
+  ASSERT_TRUE(rig.cmd("wardrobe.collision", {{"prop", id}, {"on", false}}).value("ok", false));
+  fitted();
+  EXPECT_EQ(hidden(), 0);
+  ASSERT_TRUE(rig.cmd("wardrobe.collision", {{"prop", id}, {"on", true}}).value("ok", false));
+  fitted();
+  EXPECT_EQ(hidden(), covered);
+
+  // fabric that lets anything through gives the skin back
+  const Json materials = rig.topic("materials/" + id).at("items");
+  std::string shirt;
+  for(const auto& [key, m] : materials.items())
+    if(m.value("name", "") == "Shirt")
+      shirt = key;
+  ASSERT_FALSE(shirt.empty()) << materials.dump();
+  rig.cmd("material.set", {{"prop", id}, {"material", shirt}, {"values", {{"opacity", 0.5}}}});
+  fitted();
+  EXPECT_EQ(hidden(), 0);
+}
+
 // A dial the character's file sets (the Box Figure's Stretch, at 0.5) stays where the user put it, at 0
 // too: a file holds what differs from how the figure loads. What didn't change isn't in it, so a file
 // from before, which never held a zero, still means "as loaded".
