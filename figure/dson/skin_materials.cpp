@@ -88,6 +88,65 @@ LayerChoice chooseLayer(SceneGraph& scene, const std::set<int>& surfaces, const 
   return r;
 }
 
+Json fadedLayers(const Json& doc, float opacity)
+{
+  Json faded = doc;
+  if(!faded.contains("image_library") || !faded["image_library"].is_array())
+    return faded;
+  for(Json& image : faded["image_library"])
+  {
+    if(!image.is_object() || !image.contains("map") || !image["map"].is_array())
+      continue;
+    Json& map = image["map"];
+    // A whole image at the bottom, once under full opacity, would read as a placeholder and be left
+    // out (collectImages): a placeholder under it keeps it, faded, over the map there.
+    const auto bottom = std::find_if(map.begin(), map.end(), [](const Json& l) { return l.is_object() && l.value("active", true); });
+    const bool whole  = bottom != map.end() && !bottom->value("url", std::string()).empty() && bottom->value("transparency", 1.0) >= 1;
+    for(Json& layer : map)
+      if(layer.is_object())
+        layer["transparency"] = layer.value("transparency", 1.0) * opacity;
+    if(whole)
+      map.insert(map.begin(), Json{{"color", Json::array({0, 0, 0})}, {"transparency", 0}});
+  }
+  return faded;
+}
+
+LayerChoice chooseLayers(SceneGraph&                                            scene,
+                         const std::set<int>&                                   surfaces,
+                         const std::vector<LaidPreset>&                         presets,
+                         const PresetLayer&                                     previous,
+                         const std::function<MaterialDefinitions(const Json&)>& definitions)
+{
+  LayerChoice r = chooseLayer(scene, surfaces, nullptr, previous);
+  for(const LaidPreset& p : presets)
+  {
+    if(!p.doc)
+      continue;
+    Json        faded;
+    const Json* doc = p.doc;
+    if(p.opacity < 1)
+    {
+      faded = fadedLayers(*p.doc, p.opacity);
+      doc   = &faded;
+    }
+    LayerChoice one = chooseLayer(scene, surfaces, doc, {}, definitions ? definitions(*p.doc) : MaterialDefinitions{});
+    r.changed.insert(one.changed.begin(), one.changed.end());
+    // taken off together, a channel goes back to what it was before the first that set it
+    for(auto& [i, layer] : one.layer)
+    {
+      LayerMaterial& into = r.layer[i];
+      for(const auto& [key, c] : layer.channels)
+        if(const auto at = into.channels.find(key); at != into.channels.end())
+          at->second.after = c.after;
+        else
+          into.channels[key] = c;
+      if(layer.shader)
+        into.shader = into.shader ? std::pair{into.shader->first, layer.shader->second} : *layer.shader;
+    }
+  }
+  return r;
+}
+
 std::string toneReference(const SceneGraph& scene, const std::set<int>& leaveOut)
 {
   const std::vector<bool> live  = liveMaterials(scene);

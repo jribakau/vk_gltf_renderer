@@ -428,6 +428,14 @@ Json FvHost::Impl::sceneState(const Json& args)
     state["skin"] = prop->figure->skin->empty() ? Json(nullptr) : Json(*prop->figure->skin);
   if(prop->figure->makeup)
     state["makeup"] = prop->figure->makeup->empty() ? Json(nullptr) : Json(*prop->figure->makeup);
+  // the tattoos, bottom up; none when none are on
+  if(!prop->figure->tattoos.empty())
+  {
+    Json tattoos = Json::array();
+    for(const Loaded::Tattoo& t : prop->figure->tattoos)
+      tattoos.push_back({{"rel", t.rel}, {"on", t.on}, {"opacity", t.opacity}});
+    state["tattoos"] = std::move(tattoos);
+  }
   if(prop->figure->collider)
     state["collision"] = prop->figure->collider->enabled();
   if(prop->figure->dforce)
@@ -559,6 +567,13 @@ Json FvHost::Impl::sceneRestore(const Json& args)
             applyEyes(*prop, rel, &doc->json, true);
             continue;
           }
+          // a file from before the list of tattoos has them among its presets: they join it, to go
+          // on at the end, over what the file sets next
+          if(const auto info = fv::dson::describePreset(doc->json); info && info->kind == "layered image preset" && reachesSkin(*target, doc->json))
+          {
+            target->tattoos.push_back({.rel = rel, .layered = true, .doc = std::shared_ptr<const fv::dson::Json>(doc, &doc->json)});
+            continue;
+          }
           const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc->json, fig.loaded.scene, nullptr, fv::dson::definitionsIn(doc->json, fig.store()));
           if(prop->materials)
             prop->materials->surfacesChanged(r.changed);
@@ -647,6 +662,43 @@ Json FvHost::Impl::sceneRestore(const Json& args)
           problems.push_back("material preset " + fileStem(rel) + ": " + e.what());
         }
       }
+    step.reset();
+    step.emplace("restore: tattoos", 5);
+    // over all of that, each as it was
+    if(args.contains("tattoos") && args["tattoos"].is_array())
+      for(const Json& t : args["tattoos"])
+      {
+        const std::string rel = t.is_object() ? t.value("rel", std::string()) : std::string();
+        if(rel.empty())
+          continue;
+        try
+        {
+          auto doc = fig.store().load(rel);
+          if(!doc)
+          {
+            problems.push_back("the tattoo " + fileStem(rel) + " isn't in the content library");
+            continue;
+          }
+          const auto info = fv::dson::describePreset(doc->json);
+          std::erase_if(target->tattoos, [&](const Loaded::Tattoo& had) { return had.rel == rel; });
+          target->tattoos.push_back({.rel     = rel,
+                                     .on      = t.value("on", true),
+                                     .opacity = std::clamp(t.value("opacity", 1.f), 0.f, 1.f),
+                                     .layered = info && info->kind == "layered image preset",
+                                     .doc     = std::shared_ptr<const fv::dson::Json>(doc, &doc->json)});
+        }
+        catch(const std::exception& e)
+        {
+          problems.push_back("the tattoo " + fileStem(rel) + ": " + e.what());
+        }
+      }
+    if(!target->tattoos.empty())
+    {
+      const std::set<int> laid = layTattoos(*target);
+      if(prop->materials)
+        prop->materials->surfacesChanged(laid);
+      publishSkin(*prop);
+    }
     step.reset();
     step.emplace("restore: item colours", 5);
     // each worn item's colour, over the presets and under the edits (a hair's recolour is an edit)

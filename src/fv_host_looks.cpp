@@ -169,12 +169,32 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         notice(e.what());
       }
     }
+    // a layered preset on the skin is a tattoo: its own on the list, to hide, fade or take off
+    else if(kind == "layered image preset" && reachesSkin(*figure, doc))
+    {
+      try
+      {
+        journaled("material.tattoo", {{"prop", prop->id}, {"label", "Tattoo: " + name}}, [&] { return addTattoo(*prop, rel, std::make_shared<const fv::dson::Json>(doc)); });
+        notice("Tattoo " + name + " on " + prop->name + ". The Material tab's Skin section lists it.", "info");
+      }
+      catch(const std::exception& e)
+      {
+        notice(e.what());
+      }
+    }
     else
       journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
+        // the tattoos stay on top of whatever this sets under them
+        const std::set<int>                  lifted = layTattoos(*figure, false);
         const fv::dson::MaterialPresetResult r = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene, nullptr, definitionsOf(*figure->fig, &doc));
+        const std::set<int>                  laid = layTattoos(*figure);
         // not composed yet, the composition lowers the surfaces as they are now
         if(prop->materials)
+        {
+          prop->materials->surfacesChanged(lifted);
+          prop->materials->surfacesChanged(laid);
           prop->materials->surfacesChanged(r.changed);
+        }
         if(r.changed.empty())
           notice(name + ": none of its surfaces match " + prop->name + ".");
         else
@@ -617,6 +637,8 @@ Json FvHost::Impl::applySkin(Prop& prop, const std::string& rel, const fv::dson:
     if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
       throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s skin.");
   }
+  // the tattoos lie over the skin: off for the change, and back on the new one below
+  const std::set<int>          lifted  = layTattoos(f, false);
   const fv::dson::PresetChoice r       = fv::dson::choosePreset(scene, surfaces, doc, f.skinOwned, definitionsOf(*f.fig, doc));
   std::set<int>                changed = r.changed;
   if(!keepEdits)
@@ -639,6 +661,12 @@ Json FvHost::Impl::applySkin(Prop& prop, const std::string& rel, const fv::dson:
   // back to the baseline, the makeup is the skin's own
   f.makeup.reset();
   f.makeupLayer.clear();
+  const std::set<int> laid = layTattoos(f);
+  if(prop.materials)
+  {
+    prop.materials->surfacesChanged(lifted);
+    prop.materials->surfacesChanged(laid);
+  }
   publishSkin(prop);
   return {{"skin", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
 }
@@ -658,19 +686,117 @@ Json FvHost::Impl::applyMakeup(Prop& prop, const std::string& rel, const fv::dso
     if(std::none_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; }))
       throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s skin.");
   }
+  // the tattoos lie over the makeup: off for the change, and back on after it
+  const std::set<int>         lifted  = layTattoos(f, false);
   const fv::dson::LayerChoice r       = fv::dson::chooseLayer(scene, surfaces, doc, f.makeupLayer, definitionsOf(*f.fig, doc));
   std::set<int>               changed = r.changed;
   if(!keepEdits)
     for(int i : surfaces)
       if(clearColours(scene.materials[size_t(i)].edits, true))
         changed.insert(i);
+  const std::set<int> laid = layTattoos(f);
   if(prop.materials)
+  {
     prop.materials->surfacesChanged(changed);
+    prop.materials->surfacesChanged(lifted);
+    prop.materials->surfacesChanged(laid);
+  }
   f.makeup      = rel;
   f.makeupLayer = r.layer;
   f.materialPresets.erase(std::remove(f.materialPresets.begin(), f.materialPresets.end(), rel), f.materialPresets.end());
   publishSkin(prop);
   return {{"makeup", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
+}
+
+bool FvHost::Impl::reachesSkin(const Loaded& f, const fv::dson::Json& doc)
+{
+  const fv::SceneGraph& scene    = f.fig->loaded.scene;
+  const std::set<int>   surfaces = fv::dson::skinSurfaces(scene, wornSurfaces(f));
+  const std::set<int>   targets  = fv::dson::materialPresetTargets(doc, scene);
+  return std::any_of(targets.begin(), targets.end(), [&](int i) { return surfaces.count(i) > 0; });
+}
+
+std::set<int> FvHost::Impl::layTattoos(Loaded& f, bool on)
+{
+  if(f.tattoos.empty() && f.tattooLayer.empty())
+    return {};
+  fv::SceneGraph&                   scene = f.fig->loaded.scene;
+  std::vector<fv::dson::LaidPreset> laid;
+  if(on)
+    for(const Loaded::Tattoo& t : f.tattoos)
+      if(t.on)
+        laid.push_back({t.doc.get(), t.layered ? t.opacity : 1.f});
+  fv::dson::LayerChoice r = fv::dson::chooseLayers(scene, fv::dson::skinSurfaces(scene, wornSurfaces(f)), laid, f.tattooLayer,
+                                                   [&](const fv::dson::Json& doc) { return definitionsOf(*f.fig, &doc); });
+  f.tattooLayer = std::move(r.layer);
+  return std::move(r.changed);
+}
+
+Json FvHost::Impl::addTattoo(Prop& prop, const std::string& rel, std::shared_ptr<const fv::dson::Json> doc)
+{
+  Loaded& f = *prop.figure;
+  if(!reachesSkin(f, *doc))
+    throw std::runtime_error("None of " + fileStem(rel) + "'s surfaces are " + prop.name + "'s skin.");
+  const auto info = fv::dson::describePreset(*doc);
+  std::erase_if(f.tattoos, [&](const Loaded::Tattoo& t) { return t.rel == rel; });
+  f.tattoos.push_back({.rel = rel, .layered = info && info->kind == "layered image preset", .doc = std::move(doc)});
+  std::erase(f.materialPresets, rel);
+  const std::set<int> changed = layTattoos(f);
+  if(prop.materials)
+    prop.materials->surfacesChanged(changed);
+  publishSkin(prop);
+  return {{"tattoo", rel}, {"changed", changed.size()}};
+}
+
+Json FvHost::Impl::materialTattoo(const Json& args)
+{
+  return choiceJob(args, "material.tattoo", "Tattoo", [this](Prop& p, const std::string& rel, const fv::dson::Json* doc) {
+    if(!doc)
+      throw std::runtime_error("material.tattoo wants rel: a library path");
+    return addTattoo(p, rel, std::make_shared<const fv::dson::Json>(*doc));
+  });
+}
+
+Json FvHost::Impl::materialTattooSet(const Json& args)
+{
+  const auto p = figureProp(args);
+  if(!p)
+    throw std::runtime_error("Select a figure first.");
+  const std::string rel = args.value("rel", std::string());
+  Loaded&           f   = *p->figure;
+  const auto        it  = std::find_if(f.tattoos.begin(), f.tattoos.end(), [&](const Loaded::Tattoo& t) { return t.rel == rel; });
+  if(it == f.tattoos.end())
+    throw std::runtime_error(fileStem(rel) + " isn't on " + p->name + ".");
+  const std::string label = args.contains("on") ? (args["on"].get<bool>() ? "Show tattoo " : "Hide tattoo ") + fileStem(rel) : "Fade tattoo " + fileStem(rel);
+  return journaled("material.tattoo", {{"prop", p->id}, {"label", label}}, [&] {
+    if(args.contains("on"))
+      it->on = args["on"].get<bool>();
+    if(args.contains("opacity"))
+      it->opacity = std::clamp(args["opacity"].get<float>(), 0.f, 1.f);
+    const std::set<int> changed = layTattoos(f);
+    if(p->materials)
+      p->materials->surfacesChanged(changed);
+    publishSkin(*p);
+    return Json{{"ok", true}};
+  });
+}
+
+Json FvHost::Impl::materialTattooRemove(const Json& args)
+{
+  const auto p = figureProp(args);
+  if(!p)
+    throw std::runtime_error("Select a figure first.");
+  const std::string rel = args.value("rel", std::string());
+  const std::string label = rel.empty() ? std::string("Remove the tattoos") : "Remove tattoo " + fileStem(rel);
+  return journaled("material.tattoo", {{"prop", p->id}, {"label", label}}, [&] {
+    Loaded& f = *p->figure;
+    std::erase_if(f.tattoos, [&](const Loaded::Tattoo& t) { return rel.empty() || t.rel == rel; });
+    const std::set<int> changed = layTattoos(f);
+    if(p->materials)
+      p->materials->surfacesChanged(changed);
+    publishSkin(*p);
+    return Json{{"ok", true}};
+  });
 }
 
 // "materials/<prop>".skin: {rel, preset, makeup, ready, surfaces} (fv_host.hpp material.skin)
@@ -682,9 +808,13 @@ void FvHost::Impl::publishSkin(Prop& p)
   Json          surfaces = Json::array();
   for(int i : fv::dson::skinSurfaces(f.fig->loaded.scene, wornSurfaces(f)))
     surfaces.push_back("m:" + std::to_string(i));
+  Json tattoos = Json::array();
+  for(const Loaded::Tattoo& t : f.tattoos)
+    tattoos.push_back({{"rel", t.rel}, {"on", t.on}, {"opacity", t.opacity}, {"layered", t.layered}});
   p.materials->setSkin({{"rel", f.skin && !f.skin->empty() ? Json(*f.skin) : Json(nullptr)},
                         {"preset", f.skinPreset.empty() ? Json(nullptr) : Json(f.skinPreset)},
                         {"makeup", f.makeup && !f.makeup->empty() ? Json(*f.makeup) : Json(nullptr)},
+                        {"tattoos", tattoos},
                         {"ready", !f.addonsPending},
                         {"surfaces", surfaces}});
 }

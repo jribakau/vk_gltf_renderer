@@ -92,6 +92,16 @@
 //                                                makeup) and the makeup chosen. The job ends {state: "done",
 //                                                skin, changed}. A material preset that reaches the skin is
 //                                                recorded as the skin's `preset`
+//   material.tattoo {prop, rel}                  -> {job}: a tattoo (a preset, layered or not) on the list of those
+//                                                on the skin, over the skin and makeup, on top of the others; the
+//                                                same one again moves it there. Ends {state: "done", tattoo,
+//                                                changed}, or "failed" when none of it reaches the skin. A layered
+//                                                image preset opened with `load` that reaches the skin goes this way.
+//   material.tattoo.set {prop, rel, on?, opacity?}   shows, hides or fades one (opacity 0..1, layered ones);
+//                                                each is laid again, so a fade cooks the skin's maps again
+//   material.tattoo.remove {prop, rel?}          takes one off, or with no rel all of them. A skin or makeup choice
+//                                                keeps them. "materials/<prop>".skin.tattoos = [{rel, on, opacity,
+//                                                layered}], bottom up; kept in the scene file (tattoos)
 //   material.makeup {prop, rel: string | null}   -> {job}: makeup laid over the skin on now: the channels the
 //                                                last makeup set go back (null: only that), then the preset's
 //                                                part on the skin; drops the panel's makeup colours. Ends {state:

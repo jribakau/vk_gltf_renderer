@@ -187,7 +187,7 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     return {{"kind", "materials"}, {"prop", p->id}, {"materials", index}};
   }
   // what rewrites a figure's surfaces: its whole look before and after
-  if(cmd == "preset" || cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "wardrobe.color"
+  if(cmd == "preset" || cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "material.tattoo" || cmd == "wardrobe.color"
      || cmd == "figure.look")
   {
     const auto p = figureProp(args);
@@ -401,7 +401,7 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
     return "Remove " + name;
   if(cmd == "preset")
     return "Apply " + args.value("name", std::string("preset"));
-  if(cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "wardrobe.color")
+  if(cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "material.tattoo" || cmd == "wardrobe.color")
     return args.value("label", cmd);
   if(cmd == "wardrobe.remove")
   {
@@ -890,6 +890,8 @@ uint64_t FvHost::Impl::keepLook(const Loaded& f)
   l->skinPreset      = f.skinPreset;
   l->makeup          = f.makeup;
   l->makeupLayer     = f.makeupLayer;
+  l->tattoos         = f.tattoos;
+  l->tattooLayer     = f.tattooLayer;
   l->colors          = f.colors;
   if(f.fig->morphs)
     for(const fv::morph::Channel& c : f.fig->morphs->channels())
@@ -936,6 +938,8 @@ Json FvHost::Impl::applyLook(const Json& args)
   f.skinPreset      = l.skinPreset;
   f.makeup          = l.makeup;
   f.makeupLayer     = l.makeupLayer;
+  f.tattoos         = l.tattoos;
+  f.tattooLayer     = l.tattooLayer;
   f.colors          = l.colors;
   // the dials and the pose where they differ
   if(f.fig->morphs)

@@ -197,6 +197,18 @@ struct Loaded
   // next choice takes off; a skin choice takes it off with the rest
   std::optional<std::string> makeup;
   fv::dson::PresetLayer      makeupLayer;
+  // the tattoos on its skin (material.tattoo), bottom up, over the skin and makeup: each stays its own
+  // to hide, fade or take off, by laying the others again. `tattooLayer` is what they set together.
+  struct Tattoo
+  {
+    std::string                           rel;
+    bool                                  on      = true;
+    float                                 opacity = 1;
+    bool                                  layered = false;  // a layered image preset, which can fade
+    std::shared_ptr<const fv::dson::Json> doc;
+  };
+  std::vector<Tattoo>   tattoos;
+  fv::dson::PresetLayer tattooLayer;
   // the add-ons its file lists are still going on; a restore waits for them, as it would otherwise
   // wear them a second time without their presets
   bool                               addonsPending = false;
@@ -927,6 +939,17 @@ struct FvHost::Impl
   Json applySkin(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
   Json applyMakeup(Prop& prop, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
   void publishSkin(Prop& p);
+  // tattoos (fv_host.hpp material.tattoo)
+  Json materialTattoo(const Json& args);
+  Json materialTattooSet(const Json& args);
+  Json materialTattooRemove(const Json& args);
+  // puts one on the list, in place of an earlier go with the same preset, and lays them; throws,
+  // changing nothing, when none of the preset is on the figure's skin
+  Json addTattoo(Prop& prop, const std::string& rel, std::shared_ptr<const fv::dson::Json> doc);
+  // whether a preset reaches the figure's skin
+  bool reachesSkin(const Loaded& f, const fv::dson::Json& doc);
+  // takes the stack off and, with `on`, lays those shown again; the surfaces this changed
+  std::set<int> layTattoos(Loaded& f, bool on = true);
   std::set<int> wornSurfaces(const Loaded& f);
   // a preset chosen for part of a figure, read on a worker and applied by `apply` once the add-ons are on
   using ChoiceApply = std::function<Json(Prop&, const std::string& rel, const fv::dson::Json* doc)>;
@@ -1004,6 +1027,8 @@ struct FvHost::Impl
     std::set<int>                               eyesOwned, skinOwned;
     std::string                                 eyesPreset, skinPreset;
     fv::dson::PresetLayer                       makeupLayer;
+    std::vector<Loaded::Tattoo>                 tattoos;
+    fv::dson::PresetLayer                       tattooLayer;
     std::map<int, Loaded::ItemColor>            colors;
     std::vector<std::pair<std::string, double>> dials;
     std::vector<fv::pose::ChannelValue>         pose;

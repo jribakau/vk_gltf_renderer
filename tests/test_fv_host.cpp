@@ -1055,6 +1055,100 @@ TEST(FvHost, ALayeredImagePresetGoesOnAsAMakeupAndAsAPreset)
   EXPECT_EQ(notices.find("is not a material preset"), std::string::npos) << notices;
 }
 
+// The tattoos on a figure are a list: each can be hidden, faded and taken off, undo brings it back, a
+// skin or makeup choice leaves them on, and a scene file holds them as they were.
+TEST(FvHost, TattoosAreAListFromPuttingOnToReopening)
+{
+  const std::string one = "People/Test/Materials/Box Tattoo.duf", two = "People/Test/Materials/Box Tattoo Two.duf";
+  const std::string full = "People/Test/Materials/Box Skin Full.duf";
+  HostRig           rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id   = figureId(rig.topic("scene"));
+  const auto        list = [&] {
+    rig.host->onUpdate();
+    return rig.topic("materials/" + id).at("skin").value("tattoos", Json::array());
+  };
+  const auto put = [&](const std::string& rel) {
+    const Json answer = rig.cmd("material.tattoo", {{"prop", id}, {"rel", rel}});
+    ASSERT_TRUE(answer.value("ok", false)) << answer.dump();
+    ASSERT_TRUE(rig.settle());
+    const Json job = rig.topic("jobs").value(answer.at("result").at("job").dump(), Json::object());
+    EXPECT_EQ(job.value("state", ""), "done") << job.dump();
+  };
+  EXPECT_TRUE(list().empty());
+
+  put(one);
+  put(two);
+  ASSERT_EQ(list().size(), 2u) << list().dump();
+  EXPECT_EQ(list()[0].value("rel", ""), one);
+  EXPECT_EQ(list()[1].value("rel", ""), two);
+  EXPECT_TRUE(list()[0].value("on", false));
+  EXPECT_TRUE(list()[0].value("layered", false));
+  EXPECT_FLOAT_EQ(list()[0].value("opacity", 0.f), 1.f);
+
+  // the same one again moves it to the top, no second copy
+  put(one);
+  ASSERT_EQ(list().size(), 2u);
+  EXPECT_EQ(list()[1].value("rel", ""), one);
+
+  // hidden and faded, each by itself
+  ASSERT_TRUE(rig.cmd("material.tattoo.set", {{"prop", id}, {"rel", two}, {"on", false}}).value("ok", false));
+  EXPECT_FALSE(list()[0].value("on", true));
+  EXPECT_TRUE(list()[1].value("on", false));
+  ASSERT_TRUE(rig.cmd("material.tattoo.set", {{"prop", id}, {"rel", one}, {"opacity", 0.25}}).value("ok", false));
+  EXPECT_FLOAT_EQ(list()[1].value("opacity", 0.f), 0.25f);
+  EXPECT_FLOAT_EQ(list()[0].value("opacity", 0.f), 1.f);
+  EXPECT_FALSE(rig.cmd("material.tattoo.set", {{"prop", id}, {"rel", "People/Nowhere.duf"}, {"on", false}}).value("ok", true));
+
+  // a scene file holds them as they are
+  const Json saved = rig.cmd("scene.state", {{"prop", id}}).at("result");
+  ASSERT_EQ(saved.value("tattoos", Json::array()).size(), 2u) << saved.dump();
+  EXPECT_FALSE(saved.at("materialPresets").dump().find("Box Tattoo") != std::string::npos) << saved.dump();
+  {
+    Reopened   back(saved);
+    const Json again = back.rig.cmd("scene.state", {{"prop", back.id}}).at("result").value("tattoos", Json::array());
+    EXPECT_EQ(again, saved.at("tattoos")) << again.dump();
+    EXPECT_TRUE(back.problems.empty()) << back.problems.dump();
+  }
+
+  // a file from before the list has a tattoo among its presets: it joins the list
+  {
+    Json older = saved;
+    older.erase("tattoos");
+    older["materialPresets"] = Json::array({one});
+    Reopened   back(older);
+    const Json joined = back.rig.cmd("scene.state", {{"prop", back.id}}).at("result");
+    ASSERT_EQ(joined.value("tattoos", Json::array()).size(), 1u) << joined.dump();
+    EXPECT_EQ(joined.at("tattoos")[0].value("rel", ""), one);
+    EXPECT_EQ(joined.at("materialPresets").size(), 0u) << joined.dump();
+  }
+
+  // another skin keeps them on
+  const Json skin = rig.cmd("material.skin", {{"prop", id}, {"rel", full}});
+  ASSERT_TRUE(skin.value("ok", false)) << skin.dump();
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(list().size(), 2u);
+  const Json own = rig.cmd("material.makeup", {{"prop", id}, {"rel", Json()}});
+  ASSERT_TRUE(own.value("ok", false)) << own.dump();
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(list().size(), 2u);
+
+  // off one at a time, undo brings it back, as it was
+  ASSERT_TRUE(rig.cmd("material.tattoo.remove", {{"prop", id}, {"rel", one}}).value("ok", false));
+  ASSERT_EQ(list().size(), 1u);
+  EXPECT_EQ(list()[0].value("rel", ""), two);
+  rig.cmd("history.undo");
+  ASSERT_TRUE(rig.settle());
+  ASSERT_EQ(list().size(), 2u) << list().dump();
+  EXPECT_FLOAT_EQ(list()[1].value("opacity", 0.f), 0.25f);
+
+  // and all together
+  ASSERT_TRUE(rig.cmd("material.tattoo.remove", {{"prop", id}}).value("ok", false));
+  EXPECT_TRUE(list().empty());
+  EXPECT_FALSE(rig.cmd("scene.state", {{"prop", id}}).at("result").contains("tattoos"));
+}
+
 // A general body slider comes with a load, from the figure's bones alone, and is a dial like any other:
 // the panel is told what it is, a scene file holds it, undo takes it back and Reset morphs zeroes it.
 TEST(FvHost, ABodySliderIsADialFromLoadToReopening)

@@ -1623,6 +1623,98 @@ TEST(Materials, MakeupComesOffAloneLeavingTheSkinUnderIt)
   EXPECT_EQ(image("Makeup Weight"), "none");
 }
 
+namespace {
+
+// A layered preset on the Head's base colour, of these layers
+Json layeredOnHead(const Json& layers)
+{
+  return Json{{"asset_info", {{"type", "preset_layered_image"}}},
+              {"image_library", Json::array({{{"id", "T"}, {"map_size", {4096, 4096}}, {"map", layers}}})},
+              {"scene", {{"animations", Json::array({{{"url", "name://@selection/Genesis9:#materials/Head:?diffuse/image"}, {"keys", Json::array({Json::array({0, "#T"})})}}})}}}};
+}
+
+// A tattoo as they mostly come: an empty bottom, so it goes over the map there, and its image
+Json tattooOn(const std::string& file, double opacity)
+{
+  return layeredOnHead(Json::array({{{"color", {0, 0, 0}}}, {{"url", file}, {"transparency", opacity}}}));
+}
+
+}  // namespace
+
+// Tattoos are a stack over the skin: any of them goes, or comes back, without the skin or the others moving
+TEST(Materials, TattoosComeOffOneAtATimeLeavingTheSkinAndTheRest)
+{
+  fv::SceneGraph scene = eyeScene();
+  fv::dson::applyMaterialPreset(Json::parse(R"({"scene":{"animations":[{"url":"name://@selection/Genesis9:#materials/Head:?extra/studio_material_channels/channels/diffuse/image_file","keys":[[0,"/tan.jpg"]]}]}})"), scene);
+  const std::set<int> surfaces = fv::dson::skinSurfaces(scene, {7});
+  const auto          base     = [&] { return scene.materials[1].surface.base.map; };
+  ASSERT_EQ(base(), "/tan.jpg");
+  const auto has = [&](const char* file) { return base().find(file) != std::string::npos; };
+
+  const Json arm = tattooOn("/arm.png", 0.75), leg = tattooOn("/leg.png", 0.75);
+  auto       both = fv::dson::chooseLayers(scene, surfaces, {{&arm}, {&leg}}, {});
+  EXPECT_EQ(both.changed, std::set<int>{1});
+  EXPECT_TRUE(has("/tan.jpg"));
+  EXPECT_TRUE(has("/arm.png"));
+  EXPECT_TRUE(has("/leg.png"));
+  EXPECT_LT(base().find("/arm.png"), base().find("/leg.png"));  // bottom up
+
+  // one goes, the other and the skin stay
+  auto legOnly = fv::dson::chooseLayers(scene, surfaces, {{&leg}}, both.layer);
+  EXPECT_TRUE(has("/tan.jpg"));
+  EXPECT_FALSE(has("/arm.png"));
+  EXPECT_TRUE(has("/leg.png"));
+
+  // back on, on top now
+  auto again = fv::dson::chooseLayers(scene, surfaces, {{&leg}, {&arm}}, legOnly.layer);
+  EXPECT_LT(base().find("/leg.png"), base().find("/arm.png"));
+
+  // all off: the skin as it was, not a trace
+  const auto off = fv::dson::chooseLayers(scene, surfaces, {}, again.layer);
+  EXPECT_EQ(base(), "/tan.jpg");
+  EXPECT_TRUE(off.layer.empty());
+  EXPECT_EQ(off.changed, std::set<int>{1});
+}
+
+TEST(Materials, FadingATattooLowersEveryLayerAndKeepsTheSkinUnderAWholeImage)
+{
+  const Json two   = layeredOnHead(Json::array({{{"url", "/logo.png"}, {"transparency", 0.5}}, {{"url", "/b.png"}}}));
+  const Json faded = fv::dson::fadedLayers(two, 0.5f);
+  const Json& map  = faded["image_library"][0]["map"];
+  ASSERT_EQ(map.size(), 2u);
+  EXPECT_DOUBLE_EQ(map[0]["transparency"].get<double>(), 0.25);
+  EXPECT_DOUBLE_EQ(map[1]["transparency"].get<double>(), 0.5);  // no opacity of its own: all of it
+  EXPECT_DOUBLE_EQ(two["image_library"][0]["map"][0]["transparency"].get<double>(), 0.5);  // its own copy
+  EXPECT_EQ(fv::dson::fadedLayers(Json::object(), 0.5f), Json::object());
+
+  fv::SceneGraph scene = eyeScene();
+  fv::dson::applyMaterialPreset(Json::parse(R"({"scene":{"animations":[{"url":"name://@selection/Genesis9:#materials/Head:?extra/studio_material_channels/channels/diffuse/image_file","keys":[[0,"/tan.jpg"]]}]}})"), scene);
+  const std::set<int> surfaces = fv::dson::skinSurfaces(scene, {7});
+  const auto          base     = [&] { return scene.materials[1].surface.base.map; };
+
+  // A whole image replaces the map. Faded it has to show what is under it, and has to stay itself:
+  // read alone, a bottom under full opacity is a placeholder and left out.
+  const Json whole = layeredOnHead(Json::array({{{"url", "/whole.png"}}}));
+  auto       laid  = fv::dson::chooseLayers(scene, surfaces, {{&whole}}, {});
+  EXPECT_EQ(base(), "/whole.png");
+  laid = fv::dson::chooseLayers(scene, surfaces, {{&whole, 0.5f}}, laid.layer);
+  ASSERT_EQ(fv::mat::mapLayers(base()).size(), 2u) << base();
+  EXPECT_EQ(fv::mat::mapLayers(base())[0], "/tan.jpg");
+  const auto layer = fv::mat::parseLayer(fv::mat::mapLayers(base())[1]);
+  EXPECT_EQ(layer.file, "/whole.png");
+  EXPECT_FLOAT_EQ(layer.opacity, 0.5f);
+
+  // A maker's logo at the bottom stays hidden through a fade
+  const Json logo = layeredOnHead(Json::array({{{"url", "/logo.png"}, {"transparency", 0}}, {{"url", "/ink.png"}, {"transparency", 0.8}}}));
+  laid = fv::dson::chooseLayers(scene, surfaces, {{&logo, 0.5f}}, laid.layer);
+  EXPECT_EQ(base().find("/logo.png"), std::string::npos) << base();
+  EXPECT_FLOAT_EQ(fv::mat::parseLayer(fv::mat::mapLayers(base())[1]).opacity, 0.4f);
+
+  // All off, the skin
+  fv::dson::chooseLayers(scene, surfaces, {}, laid.layer);
+  EXPECT_EQ(base(), "/tan.jpg");
+}
+
 const char* kMadeUp = R"({"extra":[{"type":"studio/material/daz_brick","channels":[
   {"channel":{"id":"Diffuse Enable","type":"bool","current_value":true}},
   {"channel":{"id":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/face_d.jpg"}},
