@@ -196,7 +196,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
     // Trace the ray through the scene. A walk's step sees only what can bound its medium: it
     // passes through lashes, hair and clothing that reach under the skin (INSTANCE_MASK_WALK).
-    raytracer.Trace(ray, payload, seed, freeFlight.drawn ? INSTANCE_MASK_WALK : 0xFF);
+    raytracer.Trace(ray, payload, seed, freeFlight.drawn ? INSTANCE_MASK_WALK : 0xFF,
+                    ptOnCameraRay(pt) || ptIsInside(pt) ? CAMERA_RAY_FLAGS : BOUNCE_RAY_FLAGS);
     ray.TMax = INFINITE;
 
     // Getting the scene information
@@ -675,8 +676,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     const bool walkOwnsDirect = false;
 #endif
     // Emitters are also sampled as area lights, textured ones by their texture's mean; a BSDF ray that
-    // hits one is MIS-weighted against the light technique, mirroring the env-hit MIS above.
-    if(!walkOwnsDirect && any(pbrMat.emissive > float3(0.0)))
+    // hits one is MIS-weighted against the light technique, mirroring the env-hit MIS above. A one-sided
+    // emitter met from behind is only a surface, as the light samples have it (sampleEmissiveTriangle).
+    const bool emitsThisWay = hitInfinitePlane || hit.frontFace || materials[materialIndex].doubleSided != 0;
+    if(!walkOwnsDirect && emitsThisWay && any(pbrMat.emissive > float3(0.0)))
     {
       float emissiveMis = 1.0;
       if(!hitInfinitePlane)
@@ -1588,7 +1591,7 @@ void probeCameraMedium(IRaytracer raytracer)
   for(int i = 0; i < CAMERA_MEDIUM_MAX_SURFACES; i++)
   {
     HitPayload payload;
-    raytracer.Trace(ray, payload, seed, 0xFF);
+    raytracer.Trace(ray, payload, seed, 0xFF, CAMERA_RAY_FLAGS);
     if(payload.hitT == INFINITE)
       break;
 

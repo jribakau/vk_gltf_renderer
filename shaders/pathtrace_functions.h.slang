@@ -887,10 +887,9 @@ float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, 
   float wtot = totalWeight;
   if(pushConst.gltfScene.numEmissiveTriangles <= 0 || wtot <= 0.0)
     return 0.0;
-  // No sidedness gate needed: one-sided emitters cull their back faces (SceneRtx omits the
-  // FACING_CULL_DISABLE bit for them, and the path-trace rays use RAY_FLAG_CULL_BACK_FACING_TRIANGLES),
-  // so only front faces are hit -- exactly the side the sampler samples. abs() gives the right cosine
-  // magnitude for both one-sided (front) and double-sided (either face, sampler also uses abs) emitters.
+  // No sidedness gate needed: the caller counts a one-sided emitter's front faces only (emitsThisWay),
+  // exactly the side the sampler samples. abs() gives the right cosine magnitude for both one-sided
+  // (front) and double-sided (either face, sampler also uses abs) emitters.
   float cosLight = abs(dot(geoNormal, rayDir));  // geonrm is pre-flipped toward the ray
   if(cosLight <= 1e-6)
     return 0.0;

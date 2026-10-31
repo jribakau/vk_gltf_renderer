@@ -1311,6 +1311,35 @@ TEST(Materials, TheSkinIsTheCharactersSurfacesButItsEyesAndWornItems)
   EXPECT_EQ(fv::dson::toneReference(scene, {0, 1}), "");
 }
 
+// Drawn from both sides by what the surface is on, as Iray draws it, but for a figure; and a light
+// that says it's one-sided has a back, or it would emit twice the flux it's given. An edit says otherwise.
+TEST(Materials, WhatIsDrawnFromBothSidesGoesByWhatItIsOn)
+{
+  using fv::mat::Context;
+  const auto drawnBothWays = [](Context context, bool oneSidedLight = false, std::optional<bool> edit = {}) {
+    fv::mat::Surface s;
+    s.context = context;
+    if(oneSidedLight)
+    {
+      fv::mat::Emission e;
+      e.color     = {fv::mat::Rgb{1, 1, 1}, ""};
+      e.luminance = fv::mat::Luminance{.amount = 100, .perArea = true, .twoSided = false};
+      s.emission  = e;
+    }
+    fv::mat::Edits edits;
+    edits.doubleSided = edit;
+    return loweredJson(s, edits, {}).material["doubleSided"].get<bool>();
+  };
+  EXPECT_TRUE(drawnBothWays(Context::eItem));
+  EXPECT_TRUE(drawnBothWays(Context::eHair));
+  EXPECT_FALSE(drawnBothWays(Context::eBody));
+  EXPECT_FALSE(drawnBothWays(Context::eItem, true));
+  EXPECT_FALSE(drawnBothWays(Context::eHair, true));
+  EXPECT_TRUE(drawnBothWays(Context::eItem, true, true));
+  EXPECT_FALSE(drawnBothWays(Context::eItem, false, false));
+  EXPECT_TRUE(drawnBothWays(Context::eBody, false, true));
+}
+
 // Makeup is a layer: the next one takes off only the channels the last one set, so a skin preset
 // applied under it stays, and a channel something else set since keeps that.
 TEST(Materials, MakeupComesOffAloneLeavingTheSkinUnderIt)

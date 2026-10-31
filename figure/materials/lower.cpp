@@ -335,7 +335,10 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   eff.color       = picked;
   eff.opacity     = opacity;
   eff.alphaMode   = alphaMode == "OPAQUE" ? "opaque" : alphaMode == "MASK" ? "cutout" : "blend";
-  eff.doubleSided = opts.ribbon || e.doubleSided.value_or(hashed || s.twoSided || s.context == Context::eItem);
+  // Iray draws a surface from both sides, whatever it's on; a figure stays one-sided, having no inside
+  // to show. A light says whether it has a back: its flux is spread over the sides it has (emissionStrength).
+  const bool oneSidedLight = s.emission && s.emission->luminance && !s.emission->luminance->twoSided;
+  eff.doubleSided = opts.ribbon || e.doubleSided.value_or(!oneSidedLight && (hashed || s.twoSided || s.context != Context::eBody));
   const float metalness = e.metalness.value_or(s.metallic.value);
   eff.metalness         = metalness;
 

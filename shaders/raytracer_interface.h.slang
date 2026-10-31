@@ -62,11 +62,22 @@ struct ShadowPayload
 // can stop at the first one instead of searching for the closest.
 static const uint SHADOW_RAY_FLAGS = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 
+// Which sides of a surface a path's ray sees. glTF's single-sidedness is about what is drawn: a camera
+// ray doesn't see a single-sided surface from behind (SceneRtx sets
+// VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR on double-sided and transmissive instances,
+// which see both). To light it is solid from either side, so a bounce stops at a back face as a shadow
+// ray does (SHADOW_RAY_FLAGS has no cull: a roof that faces the sun still shades what's under it), and
+// the BSDF's and the light sample's estimates of one light agree. A walk inside a medium keeps the
+// camera's: a back face there says its medium ended, and only the medium's own mesh may say that.
+static const uint CAMERA_RAY_FLAGS = RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+static const uint BOUNCE_RAY_FLAGS = RAY_FLAG_NONE;
+
 // Raytracer interface definition
 interface IRaytracer
 {
-  // `instanceMask`: the TLAS instances the ray can hit (shaderio.h INSTANCE_MASK_*; 0xFF for all)
-  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask);
+  // `instanceMask`: the TLAS instances the ray can hit (shaderio.h INSTANCE_MASK_*; 0xFF for all);
+  // `rayFlags`: CAMERA_RAY_FLAGS or BOUNCE_RAY_FLAGS
+  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask, uint rayFlags);
   void TraceLow(RayDesc ray, inout HitPayload payload);
   // A shadow ray that starts inside a medium says so, with that medium's extinction: it attenuates
   // every segment it travels inside one, up to TMax.
@@ -76,18 +87,15 @@ interface IRaytracer
 // Implementation using RayQuery
 struct RayQueryRaytracer : IRaytracer
 {
-  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask)
+  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask, uint rayFlags)
   {
     payload.hitT = INFINITE;  // Default when not hitting anything
 #if USE_VISUALIZE
     payload.ommUnknown = false;  // Clear stale debug state; the OMM viz re-sets it below per ray
 #endif
 
-    // Back-face culling implements glTF single-sidedness: the ray culls back faces by default,
-    // and SceneRtx sets VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR on double-sided
-    // (and transmissive/volume) instances to re-enable them (see gltf_scene_rtx.cpp).
     RayQuery rayQuery;
-    rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, instanceMask, ray);
+    rayQuery.TraceRayInline(topLevelAS, rayFlags, instanceMask, ray);
 
     while(rayQuery.Proceed())
     {
@@ -192,7 +200,7 @@ struct RayQueryRaytracer : IRaytracer
 // Implementation using traditional ray tracing
 struct TraditionalRaytracer : IRaytracer
 {
-  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask)
+  void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask, uint rayFlags)
   {
     payload.seed = seed;
 #if USE_VISUALIZE
@@ -200,7 +208,7 @@ struct TraditionalRaytracer : IRaytracer
 #endif
     if(USE_SER == 1 && AVAILABLE_SER == 1)
     {
-      HitObject hitObj = HitObject::TraceRay(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, instanceMask, 0, 0, 0, ray, payload);
+      HitObject hitObj = HitObject::TraceRay(topLevelAS, rayFlags, instanceMask, 0, 0, 0, ray, payload);
 
       // Simple default thread reordering, not coherence hinting
       ReorderThread(hitObj);
@@ -224,7 +232,7 @@ struct TraditionalRaytracer : IRaytracer
     }
     else
     {
-      TraceRay(topLevelAS, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, instanceMask, 0, 0, 0, ray, payload);
+      TraceRay(topLevelAS, rayFlags, instanceMask, 0, 0, 0, ray, payload);
     }
     seed = payload.seed;
   }
