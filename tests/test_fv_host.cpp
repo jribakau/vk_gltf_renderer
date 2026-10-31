@@ -1906,3 +1906,39 @@ TEST(FvHost, AWearIsFedByItsCompositionNotBeforeIt)
   // and what's worn is in the scene
   EXPECT_FALSE(rig.topic("wardrobe/" + id).value("items", Json::object()).empty());
 }
+
+// Figures take their worn items side by side, each its own: nothing of one reaches the other
+TEST(FvHost, TwoFiguresRestoredAtOnceEachGetTheirOwn)
+{
+  HostRig rig;
+  for(int i = 0; i < 2; i++)
+    ASSERT_TRUE(rig.cmd("prop.add", {{"rel", "People/Test/Box Figure.duf"}, {"place", {{"name", "Box " + std::to_string(i)}}}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  std::vector<std::string> ids;
+  const Json               scene = rig.topic("scene");
+  for(const auto& [id, p] : scene.at("props").items())
+    if(p.value("kind", "") == "figure")
+      ids.push_back(id);
+  ASSERT_EQ(ids.size(), 2u);
+
+  const auto worn = [](std::initializer_list<const char*> rels) {
+    Json out = Json::array();
+    for(const char* rel : rels)
+      out.push_back(Json{{"rel", rel}, {"label", ""}, {"visible", true}});
+    return out;
+  };
+  for(int round = 0; round < 5; round++)
+  {
+    // the second figure's asked while the first's is still going
+    const Json a = rig.cmd("scene.restore", {{"prop", ids[0]}, {"worn", worn({"People/Test/Clothing/Box Shirt.duf"})}});
+    const Json b = rig.cmd("scene.restore", {{"prop", ids[1]}, {"worn", worn({"People/Test/Clothing/Box Shirt.duf", "People/Test/Clothing/Box Shirt.duf"})}});
+    ASSERT_TRUE(a.value("ok", false)) << a.dump();
+    ASSERT_TRUE(b.value("ok", false)) << b.dump();
+    ASSERT_TRUE(rig.settle());
+    const auto problems = [&](const Json& answer) { return rig.topic("jobs").value(answer.at("result").at("job").dump(), Json::object()).value("problems", Json::array()); };
+    EXPECT_TRUE(problems(a).empty()) << problems(a).dump();
+    EXPECT_TRUE(problems(b).empty()) << problems(b).dump();
+  }
+  for(const std::string& id : ids)
+    EXPECT_FALSE(rig.topic("wardrobe/" + id).value("items", Json::object()).empty()) << id;
+}

@@ -201,6 +201,9 @@ struct Loaded
   bool                               addonsPending = false;
   // wear batches started and not yet asked to be composed (startWear): any worker holds the count up
   std::atomic<int>                   wearsRunning{0};
+  // one wear batch at a time commits to it, in the order they asked. Its own: a batch prepares against a
+  // copy of this figure, and another figure's has nothing to wait for here
+  std::mutex                         wearMutex;
   std::vector<std::function<void()>> afterAddons;
 };
 
@@ -857,7 +860,6 @@ struct FvHost::Impl
   Json exportGlb(const Json& args);
   Json sceneState(const Json& args);
   Json sceneRestore(const Json& args);
-  std::mutex wearMutex;
   Json wardrobeRemove(const Json& args);
   Json wardrobeVisible(const Json& args);
   Json wardrobeCollision(const Json& args);

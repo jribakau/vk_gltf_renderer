@@ -130,7 +130,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
                  commitAfter, looks = std::move(looks), running = std::move(running)] {
     // A batch that commits after something else (a restore after the figure's add-ons) prepares at
     // once and takes the wear lock only to commit; any other batch holds it throughout.
-    std::unique_lock serial(wearMutex, std::defer_lock);
+    std::unique_lock serial(target->wearMutex, std::defer_lock);
     if(!commitAfter.valid())
       serial.lock();
     bool any  = false;
