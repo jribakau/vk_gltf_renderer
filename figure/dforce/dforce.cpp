@@ -137,7 +137,10 @@ void Dforce::poke()
   if(!m_enabled || !active())
     return;
   if(m_mode == Mode::eSettle && playing && playing())
+  {
+    m_skippedPlaying = true;
     return;
+  }
   m_gen++;
   m_scheduled = true;
   m_due       = std::chrono::steady_clock::now() + kDebounce;
@@ -161,6 +164,13 @@ void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
 void Dforce::setPlacement(const Mat4& placed)
 {
   m_placed = placed;
+  if(m_skippedPlaying && !(playing && playing()))
+  {
+    // what changed while a clip played: the drape catches up now it has stopped
+    m_skippedPlaying = false;
+    if(m_mode == Mode::eSettle)
+      poke();
+  }
   // live reads it next frame. Against what the last settle was asked for, so a slow turn adds up; a
   // turn while a clip plays waits for it to stop, as the drape does
   if(m_mode != Mode::eSettle || (playing && playing()))
@@ -662,6 +672,9 @@ bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positi
     opts.value  = 1.0;
     opts.min    = 0.0;
     opts.max    = 1.0;
+    // a target only goes on at a weight: one left at 0 would have this settle run for nothing
+    if(m_morphs.has(channelOf(d.mesh)))
+      m_morphs.setMany({{channelOf(d.mesh), 1.0}});
     m_morphs.replaceCpuTarget(channelOf(d.mesh), d.mesh, std::move(target), opts);
     if(m_draped.insert(d.mesh).second)
       m_version++;

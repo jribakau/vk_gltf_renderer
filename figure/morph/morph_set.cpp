@@ -808,8 +808,9 @@ void MorphSet::markLoaded(const std::set<std::string>& except)
 void MorphSet::resetAll()
 {
   std::vector<std::pair<std::string, double>> back;
+  // a hidden channel is no dial: a drape's or a follower's stays as it is
   for(const Channel& c : m_channels)
-    if(c.value != c.rest)
+    if(c.value != c.rest && !c.hidden)
       back.emplace_back(c.name, c.rest);
   setMany(back);
   // nothing has dialled them now: what a file says later still applies

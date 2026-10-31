@@ -154,6 +154,7 @@ private:
   std::future<std::vector<std::vector<float>>>   m_job;
   // a settle on the GPU, a slice a frame on this thread; m_snapshot is its job
   std::shared_ptr<ClothBackend>                  m_settling;
+  bool                                           m_skippedPlaying = false;  // an edit came while a clip played
   uint64_t                                       m_jobGen = 0;
   // live: the simulation, what it was built from, the step in flight and the bones it was given
   std::shared_ptr<ClothBackend>                  m_live;

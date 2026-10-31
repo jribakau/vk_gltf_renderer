@@ -1668,6 +1668,46 @@ TEST(Dforce, aSlowTurnAddsUpAndATurnDuringAClipWaitsForItsEnd)
   EXPECT_TRUE(d.busy());
 }
 
+TEST(Dforce, ResetAllLeavesTheDrapeAndASettleBringsItBackAtAnyRate)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  const std::string drape = "dforce:1";
+  ASSERT_TRUE(morphs.has(drape));
+  EXPECT_DOUBLE_EQ(morphs.get(drape), 1.0);
+  morphs.resetAll();
+  EXPECT_DOUBLE_EQ(morphs.get(drape), 1.0);
+  // left at 0 by whatever: a settle's target wouldn't go on, for all it ran
+  morphs.setMany({{drape, 0.0}});
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_DOUBLE_EQ(morphs.get(drape), 1.0);
+}
+
+TEST(Dforce, WhatChangedWhileAClipPlayedSettlesOnceItStops)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  bool playing = true;
+  d.playing    = [&] { return playing; };
+  d.poke();
+  EXPECT_FALSE(d.busy());
+  d.setPlacement(fv::Mat4{});
+  EXPECT_FALSE(d.busy());
+  playing = false;
+  d.setPlacement(fv::Mat4{});  // as the host does every frame
+  EXPECT_TRUE(d.busy());
+  ASSERT_TRUE(pumpUntilWritten(d));
+  d.setPlacement(fv::Mat4{});
+  EXPECT_FALSE(d.busy());  // once
+}
+
 TEST(Dforce, aSettleOnTheGpuGoesInSlicesAndAnEditDropsItAtOnce)
 {
   VeilScene       v;
