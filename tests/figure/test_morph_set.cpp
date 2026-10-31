@@ -14,11 +14,13 @@
 #include <future>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
 
+#include <figure/dson/store.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/mesh/normals.hpp>
@@ -655,6 +657,244 @@ TEST(FigureMorphSet, SortPutsMovedDialsFirstNotDefaultOnes)
   set.sort();
   ASSERT_EQ(set.channels().size(), 3u);
   EXPECT_EQ(set.channels()[0].name, "c switch moved");
+}
+
+namespace {
+
+// A file with nothing in it for the figure, as Genesis 9's has for Eye Pupils Dilate.
+fv::morph::Loader emptyFile()
+{
+  return []() -> fv::morph::Finish { return [] { return fv::morph::LazyResult{}; }; };
+}
+
+// A worn item holding a dial's deltas in a file of its own, read by the time it is asked for. Moving
+// with the body isn't what these show, so it projects nothing.
+fv::morph::Follower holdingItem(const std::string& channel, fv::dson::TargetPtr copy)
+{
+  fv::morph::Follower f;
+  f.mesh   = 1;
+  f.source = 0;
+  f.label  = "Eyes";
+  f.hasOwn = [channel](const std::string& name) { return name == channel; };
+  f.own    = [channel, copy](const std::string& name) -> std::shared_future<std::vector<fv::dson::TargetPtr>> {
+    if(name != channel)
+      return {};
+    std::promise<std::vector<fv::dson::TargetPtr>> file;
+    file.set_value({copy});
+    return file.get_future().share();
+  };
+  f.project = [](const fv::mesh::RenderTarget&) -> fv::dson::TargetPtr {
+    ADD_FAILURE() << "the source has nothing to project";
+    return nullptr;
+  };
+  return f;
+}
+
+// Two meshes, and a target that lifts a vertex of the second by 1 at full weight.
+struct WornItemSet
+{
+  std::shared_ptr<fv::mesh::BuiltMesh> body = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  std::shared_ptr<fv::mesh::BuiltMesh> item = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  fv::dson::TargetPtr                  copy = targetOf(*item, {5}, {0, 0, 1});
+  size_t                               z    = size_t(copy->drawn(*item).indices[0]) * 3 + 2;
+  float                                base = item->position[z];
+  fv::morph::MorphSet                  set{[this](int m) { return m == 0 ? body.get() : item.get(); }};
+  float lift() const { return item->position[z] - base; }
+};
+
+}  // namespace
+
+// A dial whose file has nothing for the figure stays on the list: it used to go on its first drag, and
+// a preset's value for it then counted as skipped. It keeps its value, and a later listing of the same
+// name makes no second dial. A body slider's loader says keep, so it isn't inert.
+TEST(FigureMorphSet, ADialWithNothingInItsFileStaysListed)
+{
+  auto                geo = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  fv::morph::MorphSet set([&](int) { return geo.get(); });
+  std::atomic<int>    reads{0};
+  set.addLazy("Pupils", emptyFile());
+  set.addLazy("fv_shape_waist", countingFile(reads));
+  const int listed = set.size();
+
+  set.setMany({{"Pupils", 0.5}, {"fv_shape_waist", 0.5}});
+  set.settled();
+
+  const fv::morph::Channel* pupils = set.channel("Pupils");
+  ASSERT_NE(pupils, nullptr);
+  EXPECT_TRUE(pupils->inert);
+  EXPECT_FALSE(pupils->lazy);
+  EXPECT_EQ(pupils->value, 0.5);
+  EXPECT_TRUE(set.has("Pupils"));
+  EXPECT_EQ(set.size(), listed);
+  EXPECT_FALSE(set.channel("fv_shape_waist")->inert);
+
+  set.addLazy("Pupils", emptyFile());
+  EXPECT_EQ(set.size(), listed);
+  set.set("Pupils", 0);
+  set.settled();
+  EXPECT_EQ(set.channel("Pupils")->value, 0);
+  set.resetAll();
+  EXPECT_EQ(set.size(), listed);
+}
+
+// The removal this replaces still holds for what has no slider: a hidden channel whose file is empty
+// goes. So does a dial whose file isn't there at all, or won't read.
+TEST(FigureMorphSet, AnEmptyHiddenChannelAndAMissingFileStillGo)
+{
+  fv::morph::MorphSet set([](int) -> fv::mesh::BuiltMesh* { return nullptr; });
+  fv::morph::ChannelOptions hidden;
+  hidden.hidden = true;
+  set.addLazy("driven", emptyFile(), hidden);
+  set.addLazy("missing", []() -> fv::morph::Finish { throw fv::dson::MissingFileError("missing.dsf"); });
+  set.addLazy("broken", []() -> fv::morph::Finish { throw std::runtime_error("bad file"); });
+  set.setMany({{"driven", 1}, {"missing", 1}, {"broken", 1}});
+  set.settled();
+  EXPECT_EQ(set.channel("driven"), nullptr);
+  EXPECT_EQ(set.channel("missing"), nullptr);
+  EXPECT_EQ(set.channel("broken"), nullptr);
+  EXPECT_EQ(set.takeErrors().size(), 1u);
+}
+
+// A file that moves something isn't inert, nor is a controller, nor a switch that rests away from 0,
+// including one whose rest is only known after its file was read.
+TEST(FigureMorphSet, OnlyAFileWithNothingAtAllMakesADialInert)
+{
+  auto                geo    = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  const auto          target = targetOf(*geo, {0}, {0, 0, 1});
+  fv::morph::MorphSet set([&](int) { return geo.get(); });
+  std::atomic<int>    reads{0};
+  set.addLazy("moves", [target]() -> fv::morph::Finish {
+    return [target] {
+      fv::dson::MorphPart part;
+      part.mesh   = 0;
+      part.target = target;
+      fv::morph::LazyResult r;
+      r.parts.push_back(part);
+      return r;
+    };
+  });
+  set.addLazy("controller", countingFile(reads));
+  set.addLazy("switch", emptyFile());
+  set.addLazy("late switch", emptyFile());
+  set.describe("switch", restingAt(1));
+  set.setMany({{"moves", 1}, {"controller", 1}, {"switch", 0}, {"late switch", 1}});
+  set.settled();
+  EXPECT_FALSE(set.channel("moves")->inert);
+  EXPECT_FALSE(set.channel("controller")->inert);
+  EXPECT_FALSE(set.channel("switch")->inert);
+  EXPECT_TRUE(set.channel("late switch")->inert);
+  set.describe("late switch", restingAt(1));
+  EXPECT_FALSE(set.channel("late switch")->inert);
+}
+
+// The dial moves the item that holds its deltas, though the body has nothing for it, and the dial stays.
+// Back at 0 the item is back too.
+TEST(FigureMorphSet, AnEmptyDialMovesAFollowerWithItsOwnCopy)
+{
+  WornItemSet w;
+  w.set.addLazy("Pupils", emptyFile());
+  w.set.addFollower(holdingItem("Pupils", w.copy));
+
+  w.set.set("Pupils", 0.5);
+  w.set.settled();
+  ASSERT_NE(w.set.channel("Pupils"), nullptr);
+  EXPECT_TRUE(w.set.channel("Pupils")->inert);
+  w.set.pump();  // the copy is taken here, as a frame would
+  EXPECT_NEAR(w.lift(), 0.5f, 1e-5);
+
+  w.set.set("Pupils", 1);
+  EXPECT_NEAR(w.lift(), 1.f, 1e-5);
+  w.set.set("Pupils", 0);
+  EXPECT_NEAR(w.lift(), 0.f, 1e-5);
+  EXPECT_EQ(w.set.channel("Pupils")->value, 0);
+}
+
+// A copy that arrives after the dial went back has nothing to apply, and a follower without a copy of
+// its own isn't touched by a dial that has nothing for it.
+TEST(FigureMorphSet, ACopyArrivingAfterTheDialWentBackDoesNothing)
+{
+  WornItemSet                                    w;
+  std::promise<std::vector<fv::dson::TargetPtr>> file;
+  fv::morph::Follower                            f = holdingItem("Pupils", w.copy);
+  f.own = [held = file.get_future().share()](const std::string&) { return held; };
+  w.set.addLazy("Pupils", emptyFile());
+  w.set.addLazy("Other", emptyFile());
+  w.set.addFollower(f);
+  w.set.setMany({{"Pupils", 1}, {"Other", 1}});
+  w.set.settled();
+  w.set.set("Pupils", 0);
+  w.set.pump();
+  file.set_value({w.copy});
+  w.set.pump();
+  EXPECT_EQ(w.lift(), 0.f);
+  EXPECT_TRUE(w.set.activeTargets(1).empty());
+}
+
+// An item put on while the dial's file is on its way waits with it.
+TEST(FigureMorphSet, AFollowerAddedWhileTheFileLoadsMovesWhenItArrives)
+{
+  WornItemSet        w;
+  std::promise<void> arrive;
+  w.set.addLazy("Pupils", [gate = arrive.get_future().share()]() -> fv::morph::Finish {
+    gate.wait();
+    return [] { return fv::morph::LazyResult{}; };
+  });
+  w.set.set("Pupils", 1);
+  w.set.addFollower(holdingItem("Pupils", w.copy));
+  w.set.pump();
+  EXPECT_EQ(w.lift(), 0.f);  // nothing asked of it yet
+  arrive.set_value();
+  w.set.settled();
+  w.set.pump();
+  EXPECT_NEAR(w.lift(), 1.f, 1e-5);
+}
+
+// What the panel will say a dial moves: the items that hold something for it, each once however many
+// meshes it has. A follower with neither copy nor binding isn't one, and it goes when the item does.
+TEST(FigureMorphSet, ADialSaysWhichItemsItMoves)
+{
+  WornItemSet w;
+  w.set.addLazy("Pupils", emptyFile());
+  w.set.addLazy("Other", emptyFile());
+  w.set.addTarget("Bound", 1, w.copy);
+  const int before = w.set.listVersion();
+  w.set.addFollower(holdingItem("Pupils", w.copy));
+  EXPECT_GT(w.set.listVersion(), before);
+  w.set.addFollower(holdingItem("Pupils", w.copy));
+
+  const std::vector<std::string> eyes{"Eyes"};
+  EXPECT_EQ(w.set.itemsMoving("Pupils"), eyes);
+  EXPECT_EQ(w.set.itemsMoving("Bound"), eyes);
+  EXPECT_TRUE(w.set.itemsMoving("Other").empty());
+
+  w.set.removeMeshes({1});
+  EXPECT_TRUE(w.set.itemsMoving("Pupils").empty());
+  EXPECT_NE(w.set.channel("Pupils"), nullptr);
+}
+
+// An item's binding to a dial doesn't make the dial the item's: with it taken off, the dial, whose own
+// file was empty, stays for the next item, and a listing of the name makes no second one.
+TEST(FigureMorphSet, AnEmptyDialOutlivesAnItemBoundToIt)
+{
+  WornItemSet w;
+  w.set.addLazy("Pupils", emptyFile());
+  w.set.addTarget("Pupils", 1, w.copy);
+  w.set.set("Pupils", 0.5);
+  w.set.settled();
+  ASSERT_TRUE(w.set.channel("Pupils")->inert);
+  const int listed = w.set.size();
+
+  w.set.removeMeshes({1});
+  ASSERT_NE(w.set.channel("Pupils"), nullptr);
+  EXPECT_EQ(w.set.get("Pupils"), 0.5);
+  EXPECT_TRUE(w.set.has("Pupils"));
+  w.set.addLazy("Pupils", emptyFile());
+  EXPECT_EQ(w.set.size(), listed);
+
+  // an item's own dial, which a file never listed, goes with it as ever
+  w.set.addTarget("Pants Loose", 1, w.copy);
+  w.set.removeMeshes({1});
+  EXPECT_EQ(w.set.channel("Pants Loose"), nullptr);
 }
 
 // A morph file's fields, as DAZ writes them, from the first few KB: the text may stop anywhere after

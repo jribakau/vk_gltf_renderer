@@ -6,11 +6,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
-
+#include <filesystem>
+#include <future>
 #include <memory>
 #include <set>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -235,6 +240,137 @@ TEST(Wardrobe, AMorphOnTheBodyMovesTheItemThatFollowsIt)
   morphs.set("Lift", 1.0);
   morphs.flush();
   EXPECT_NEAR(z(), before, 1e-4f);
+}
+
+// A follower holding "Lift"'s deltas for the item in a file of its own, already read.
+fv::morph::Follower holdingLift(const std::vector<std::shared_ptr<fv::mesh::BuiltMesh>>& meshes, fv::dson::TargetPtr copy)
+{
+  fv::morph::Follower f;
+  f.mesh   = 1;
+  f.source = 0;
+  f.hasOwn = [](const std::string& channel) { return channel == "Lift"; };
+  f.own    = [copy](const std::string& channel) -> std::shared_future<std::vector<fv::dson::TargetPtr>> {
+    if(channel != "Lift")
+      return {};
+    std::promise<std::vector<fv::dson::TargetPtr>> file;
+    file.set_value({copy});
+    return file.get_future().share();
+  };
+  const auto binding = std::make_shared<fv::wardrobe::SurfaceBinding>(
+      fv::wardrobe::bindToSurface(meshes[0]->cagePositions, meshes[0]->dsonTris, meshes[1]->cagePositions));
+  f.project = [binding, body = meshes[0], item = meshes[1]](const fv::mesh::RenderTarget& t) {
+    std::vector<float> scratch;
+    return fv::wardrobe::projectTarget(*binding, nullptr, *body, *item, t, scratch);
+  };
+  return f;
+}
+
+// The dial was set before the item went on, and its file has nothing for the body: wearing the item
+// still applies it, and it comes off with the item. An item without a copy of its own takes nothing.
+TEST(Wardrobe, WearingAnItemAfterAnEmptyDialWasSetAppliesIt)
+{
+  std::vector<std::shared_ptr<fv::mesh::BuiltMesh>> meshes{std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(4, 0))),
+                                                           std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(grid(2, 0.5f)))};
+  fv::morph::MorphSet morphs([&](int i) { return meshes[size_t(i)].get(); });
+  morphs.addLazy("Lift", []() -> fv::morph::Finish { return [] { return fv::morph::LazyResult{}; }; });
+  morphs.set("Lift", 0.5);
+  morphs.settled();
+  ASSERT_NE(morphs.channel("Lift"), nullptr);
+
+  fv::mesh::CageDeltas d;
+  d.verts  = {4};
+  d.deltas = {0.f, 0.f, 2.f};
+  const auto copy = std::make_shared<const fv::mesh::RenderTarget>(fv::mesh::target(*meshes[1], d));
+  size_t     drawn = 0;
+  for(size_t i = 0; i < meshes[1]->renderIndex.size(); i++)
+    if(meshes[1]->renderIndex[i] == 4)
+      drawn = i;
+  const auto  z      = [&] { return meshes[1]->position[drawn * 3 + 2]; };
+  const float before = z();
+
+  fv::morph::Follower none = holdingLift(meshes, copy);
+  none.hasOwn              = [](const std::string&) { return false; };
+  morphs.addFollower(none);
+  morphs.pump();
+  EXPECT_EQ(z(), before);
+  morphs.removeMeshes({1});
+
+  morphs.addFollower(holdingLift(meshes, copy));
+  morphs.pump();  // the copy, read on the pool, is taken here
+  EXPECT_NEAR(z() - before, 1.0f, 1e-4f);
+  morphs.set("Lift", 1.0);
+  EXPECT_NEAR(z() - before, 2.0f, 1e-4f);
+  morphs.set("Lift", 0.0);
+  EXPECT_NEAR(z(), before, 1e-4f);
+  EXPECT_NE(morphs.channel("Lift"), nullptr);
+}
+
+// The same through a real wear. Box Figure's Sleeve Lift has an empty morph block, and Box Shirt holds
+// the deltas in a file of the same name.
+TEST(Wardrobe, AFiguresEmptyDialMovesTheWornItemThatHoldsItsDeltas)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  fv::dson::LoadOptions       options;
+  options.subdivision = 1;
+  auto figure = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library})),
+                                 "People/Test/Box Figure.duf", options);
+  figure->settle();
+  const std::string shirt = "People/Test/Clothing/Box Shirt.duf";
+  const auto        wear  = [&] {
+    const fv::WearResult worn = figure->commitWear(figure->prepareWear(shirt, 1), shirt);
+    figure->settle();
+    return worn.items.at(0);
+  };
+  const auto geoOf = [&](int id) {
+    for(const fv::WornItem& item : figure->items)
+      if(item.id == id)
+        return figure->loaded.scene.meshes[size_t(item.meshes.at(0))].geo;
+    return std::shared_ptr<fv::mesh::BuiltMesh>();
+  };
+  const auto moved = [](const fv::mesh::BuiltMesh& geo, const std::vector<float>& from) {
+    float most = 0;
+    for(size_t i = 0; i < from.size(); i++)
+      most = std::max(most, std::abs(geo.position[i] - from[i]));
+    return most;
+  };
+  // the shirt's copy loads on the pool: a frame or so, as the app sees it
+  const auto waitForMove = [&](const fv::mesh::BuiltMesh& geo, const std::vector<float>& from) {
+    for(int i = 0; i < 5000 && moved(geo, from) < 1e-3f; i++)
+    {
+      figure->pump();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return moved(geo, from);
+  };
+
+  const int  first = wear();
+  const auto geo   = geoOf(first);
+  ASSERT_TRUE(geo);
+  const std::vector<std::string> onlyShirt{"Box Shirt"};
+  EXPECT_EQ(figure->morphs->itemsMoving("Sleeve Lift"), onlyShirt);
+  EXPECT_TRUE(figure->morphs->itemsMoving("Taper").empty());
+  const std::vector<float> rest = geo->position;
+
+  figure->morphs->set("Sleeve Lift", 1.0);
+  figure->settle();
+  const fv::morph::Channel* dial = figure->morphs->channel("Sleeve Lift");
+  ASSERT_NE(dial, nullptr);
+  EXPECT_TRUE(dial->inert);
+  EXPECT_NEAR(waitForMove(*geo, rest), 3.0f, 1e-3f);
+  figure->morphs->set("Sleeve Lift", 0.0);
+  figure->settle();
+  EXPECT_LT(moved(*geo, rest), 1e-4f);
+
+  // off with the shirt the dial stays, set; on again the new shirt takes it
+  figure->morphs->set("Sleeve Lift", 0.5);
+  figure->settle();
+  ASSERT_TRUE(figure->removeItem(first));
+  ASSERT_NE(figure->morphs->channel("Sleeve Lift"), nullptr);
+  EXPECT_TRUE(figure->morphs->itemsMoving("Sleeve Lift").empty());
+  const auto again = geoOf(wear());
+  ASSERT_TRUE(again);
+  EXPECT_EQ(figure->morphs->get("Sleeve Lift"), 0.5);
+  EXPECT_NEAR(waitForMove(*again, rest), 1.5f, 1e-3f);
 }
 
 // A body morph projected onto a long item (a hair's strands, a gown at SubD) is worked a chunk at a

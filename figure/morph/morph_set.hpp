@@ -48,6 +48,9 @@ struct Channel
   // its file says it's not a dial. Unlike `hidden` it is still published, saved and kept in a look,
   // as a preset may have set it; only the morph panel leaves it out
   bool helper = false;
+  // its file has nothing to move and nothing to drive: it moves only what a worn item holds for it,
+  // when one is on (Genesis 9's Eye Pupils Dilate, whose deltas are in Genesis 9 Eyes)
+  bool inert = false;
 };
 
 struct ChannelOptions
@@ -57,9 +60,10 @@ struct ChannelOptions
   bool                       hidden = false;
 };
 
-// What a lazy channel's file gave: the targets it moves. A channel whose file has none is removed,
-// unless `keep` (a controller: a dial that drives other morphs or bones through formulas) or it rests
-// away from 0 (a switch, which other files' formulas read).
+// What a lazy channel's file gave: the targets it moves. A channel whose file has none is inert, unless
+// `keep` (a controller: a dial that drives other morphs or bones through formulas) or it rests away
+// from 0 (a switch, which other files' formulas read). An inert hidden channel is removed: it has no
+// slider to keep.
 struct LazyResult
 {
   std::vector<dson::MorphPart> parts;
@@ -95,6 +99,11 @@ struct Follower
   // The follower's own targets for a channel, used instead of projecting (an item ships fitted
   // copies of the body shapes); an invalid future when it has none. Read on a pool thread.
   std::function<std::shared_future<std::vector<dson::TargetPtr>>(const std::string&)> own;
+  // Whether own() has a file for a channel; asked on the owner's thread. A follower that does moves
+  // with the channel even when the source has no target for it.
+  std::function<bool(const std::string&)> hasOwn;
+  // what to call it where a dial says what it moves (the worn item's label)
+  std::string label;
   // Projections made ahead, off the owner's thread, of the source's targets dialled in when the
   // wear began: (source target, its projection, null when it moves nothing). addFollower() takes
   // them instead of calling project() for those; any other target is projected as usual.
@@ -196,7 +205,8 @@ public:
   // Registers a follower and fits it to every morph already dialled in.
   void addFollower(Follower f);
   // Forgets meshes that left the scene: their followers, CPU state and bindings. Channels left with
-  // nothing to move and nothing to load are removed.
+  // nothing to move and nothing to load are removed, but for an inert one, which the next item may
+  // want.
   void removeMeshes(const std::set<int>& meshes);
   // Removes channels outright, loaded or not.
   void removeChannels(const std::vector<std::string>& names);
@@ -206,6 +216,9 @@ public:
   std::vector<std::pair<dson::TargetPtr, double>> activeTargets(int mesh, const mesh::RenderTarget* except = nullptr) const;
   // The meshes a channel's targets move (none while it is not loaded).
   std::set<int> meshesOf(const std::string& name) const;
+  // The labels of the followers a channel moves through something of their own, a copy of the morph
+  // or a binding, each once. Not the ones that only project what the source has.
+  std::vector<std::string> itemsMoving(const std::string& name) const;
   // The target a channel binds on a mesh, or null.
   dson::TargetPtr cpuTarget(const std::string& name, int mesh) const;
   // The mesh's cage with every active target's cage deltas applied, except `except` (a mesh's own

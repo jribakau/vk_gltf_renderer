@@ -182,6 +182,20 @@ std::set<int> MorphSet::meshesOf(const std::string& name) const
   return out;
 }
 
+std::vector<std::string> MorphSet::itemsMoving(const std::string& name) const
+{
+  std::vector<std::string> out;
+  const std::set<int>      bound = meshesOf(name);
+  for(const auto& st : m_followers)
+  {
+    const Follower& f = st->f;
+    // an item of several meshes follows once for each
+    if((bound.count(f.mesh) || (f.hasOwn && f.hasOwn(name))) && std::find(out.begin(), out.end(), f.label) == out.end())
+      out.push_back(f.label);
+  }
+  return out;
+}
+
 std::vector<float> MorphSet::morphedCage(int mesh, const mesh::RenderTarget* except) const
 {
   const mesh::BuiltMesh* geo = m_geo(mesh);
@@ -283,6 +297,8 @@ bool MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
   if(ch->loaded == ch->rest)
     ch->loaded = info.rest;
   ch->rest = info.rest;
+  // loaded before its rest was known: a switch isn't inert, whatever its file holds
+  ch->inert = ch->inert && info.rest == 0;
   m_listVersion++;
   if(ch->value == info.rest)
     return false;
@@ -338,16 +354,19 @@ void MorphSet::finishLoad(const std::string& name, std::future<Finish>& fut)
     Channel* ch = channelMut(name);
     if(!ch)
       return;
-    // nothing in the file, and nothing else bound to it (a worn item's copy of the morph). A switch
-    // that rests elsewhere has nothing in its file either: its readers go by what it's set to.
-    if(result.parts.empty() && !result.keep && !m_bindings.count(name) && ch->rest == 0)
+    // Nothing in the file. A worn item may hold the deltas, so the dial stays: its slider used to go on
+    // the first drag. A hidden one has no slider to keep, unless an item's copy is bound to it. A switch
+    // that rests elsewhere has nothing in its file either, but its readers go by what it's set to.
+    const bool inert = result.parts.empty() && !result.keep && ch->rest == 0;
+    if(inert && ch->hidden && !m_bindings.count(name))
     {
       m_channels.erase(m_channels.begin() + std::ptrdiff_t(ch - m_channels.data()));
       reindex();
     }
     else
     {
-      ch->lazy = false;
+      ch->lazy  = false;
+      ch->inert = inert;
       const std::string* label = result.label ? &*result.label : (!result.parts.empty() && result.parts[0].hasLabel ? &result.parts[0].label : nullptr);
       if(label && !label->empty())
         ch->label = *label;
@@ -528,6 +547,8 @@ bool MorphSet::apply(const std::string& name, double value)
       ensureLoaded(name);
     return true;
   }
+  for(auto& f : m_followers)
+    follow(*f, name, value);
   auto it = m_bindings.find(name);
   if(it == m_bindings.end())
     return true;
@@ -540,8 +561,6 @@ bool MorphSet::apply(const std::string& name, double value)
       st.active[b.target.get()] = {b.target, value};
     st.dirty = true;
   }
-  for(auto& f : m_followers)
-    follow(*f, name, value);
   return true;
 }
 
@@ -555,6 +574,8 @@ void MorphSet::addFollower(Follower f)
   st->f.preprojected.clear();
   FollowerState& ref = *st;
   m_followers.push_back(std::move(st));
+  // what the dials move is part of the list
+  m_listVersion++;
   bool moved = false;
   for(const Channel& ch : m_channels)
   {
@@ -567,7 +588,9 @@ void MorphSet::addFollower(Follower f)
 }
 
 // Applies channel `name` at `value` to one follower; returns whether its shape may have changed. A
-// follower with its own binding for the channel (a scene file set the item's copy) is left to it.
+// follower with its own binding for the channel (a scene file set the item's copy) is left to it. One
+// with a copy of its own moves though the source has nothing for it, pump() applying the copy once it
+// has loaded. A dial still waiting for its file waits with it: finishLoad() applies both.
 bool MorphSet::follow(FollowerState& st, const std::string& name, double value)
 {
   auto cpu = m_cpu.find(st.f.mesh);
@@ -584,8 +607,9 @@ bool MorphSet::follow(FollowerState& st, const std::string& name, double value)
       if(b.mesh == st.f.mesh)
         own = true;
     }
-  auto prev = st.applied.find(name);
-  if(sources.empty() && prev == st.applied.end())
+  auto       prev   = st.applied.find(name);
+  const bool moving = !sources.empty() || (!m_lazy.count(name) && st.f.hasOwn && st.f.hasOwn(name));
+  if(!moving && prev == st.applied.end())
     return false;
   if(prev != st.applied.end())
   {
@@ -594,7 +618,7 @@ bool MorphSet::follow(FollowerState& st, const std::string& name, double value)
     st.applied.erase(prev);
   }
   cpu->second.dirty = true;
-  if(value == 0 || sources.empty() || own)
+  if(value == 0 || !moving || own)
     return true;
   auto targets = followerTargets(st, name, sources);
   for(const auto& t : targets)
@@ -698,7 +722,14 @@ void MorphSet::removeMeshes(const std::set<int>& gone)
     if(list.size() != before && list.empty())
     {
       const std::string name = it->first;
-      it                     = m_bindings.erase(it);
+      // the figure's dial, which that item's copy was bound to, is there for the next one
+      const auto kept = std::find_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return c.name == name && c.inert; });
+      if(kept != m_channels.end())
+      {
+        ++it;
+        continue;
+      }
+      it = m_bindings.erase(it);
       if(!m_lazy.count(name))
       {
         m_channels.erase(std::remove_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return c.name == name; }), m_channels.end());

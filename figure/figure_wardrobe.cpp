@@ -101,6 +101,20 @@ bool isAdjustment(const std::string& id)
   return !std::regex_search(id, plumbing) || std::regex_search(id, adjusts);
 }
 
+// The item's own morph file for a channel, or null. DAZ's morph tools tag each file's modifier id with
+// a hex suffix ("Mirel Head-0xa98947a" on the body, "-0xa989482" on the eyes); the copies share the name
+// and the file stem.
+const std::string* ownMorphFile(const std::map<std::string, std::string>& own, const std::string& channel)
+{
+  static const std::regex hex(R"(-0x[0-9a-f]+$)", std::regex::icase);
+  const std::string       lower = lowerCase(channel);
+  auto                    it    = own.find(lower);
+  // only a tagged name pays for the regex: a driver asks for each dial it moves that the body has no target for
+  if(it == own.end() && lower.find("-0x") != std::string::npos)
+    it = own.find(std::regex_replace(lower, hex, ""));
+  return it == own.end() ? nullptr : &it->second;
+}
+
 // "body_bs_LoosenNeck" -> "Loosen Neck"; the morph's own label replaces it once loaded.
 std::string prettyMorphName(const std::string& id)
 {
@@ -639,17 +653,15 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
         thread_local std::vector<float> scratch;
         return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, *itemGeo, t, scratch);
       };
-      // DAZ's morph tools tag each file's modifier id with a hex suffix ("Mirel Head-0xa98947a" on the
-      // body, "-0xa989482" on the eyes); the copies share the name and the file stem
-      f.own = [store = m_store, own, ref, itemGeo](const std::string& channel) -> std::shared_future<std::vector<dson::TargetPtr>> {
-        static const std::regex hex(R"(-0x[0-9a-f]+$)", std::regex::icase);
-        auto                    it = own.find(lowerCase(channel));
-        if(it == own.end())
-          it = own.find(lowerCase(std::regex_replace(channel, hex, "")));
-        if(it == own.end())
+      const auto files = std::make_shared<const std::map<std::string, std::string>>(own);
+      f.label          = worn->label;
+      f.hasOwn         = [files](const std::string& channel) { return ownMorphFile(*files, channel) != nullptr; };
+      f.own            = [store = m_store, files, ref, itemGeo](const std::string& channel) -> std::shared_future<std::vector<dson::TargetPtr>> {
+        const std::string* file = ownMorphFile(*files, channel);
+        if(!file)
           return {};
         return jobs::pool()
-            .submit([store, file = it->second, ref, itemGeo]() -> std::vector<dson::TargetPtr> {
+            .submit([store, file = *file, ref, itemGeo]() -> std::vector<dson::TargetPtr> {
               std::vector<dson::TargetPtr> out;
               try
               {
