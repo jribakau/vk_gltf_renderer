@@ -113,6 +113,40 @@ TEST(Dforce, clothLostInsideAColliderIsBroughtBackOut)
     EXPECT_LT(under[1][v * 3 + 1], -2.5f) << v;
 }
 
+TEST(Dforce, restingClothGripsTheFaceItLiesOn)
+{
+  // a sheet on a slope of 20 degrees: friction 0.5 holds it, none lets it slide (tan 20 = 0.36)
+  const auto slidOver = [](float friction) {
+    const float pi = float(std::acos(-1.0)), sn = std::sin(20 * pi / 180), cs = std::cos(20 * pi / 180);
+    Grid        slope = grid(60, 0), sheet = grid(12, 0.5f);
+    const auto  tilt = [&](std::vector<float>& pos) {
+      for(size_t v = 0; v < pos.size() / 3; v++)
+      {
+        const float x = pos[v * 3], y = pos[v * 3 + 1];
+        pos[v * 3]     = x * cs + y * sn;
+        pos[v * 3 + 1] = -x * sn + y * cs;
+      }
+    };
+    tilt(slope.pos);
+    tilt(sheet.pos);
+    dforce::SettleMesh body = dforce::SettleMesh::collider(slope.pos, slope.pos, slope.tris, dforce::kBodyLayer, 0.2f, friction);
+    dforce::SettleMesh m    = cloth(sheet);
+    std::fill(m.friction.begin(), m.friction.end(), friction);
+    dforce::ClothSim sim({body, m});
+    const auto       start = sim.positions()[1];
+    for(int f = 0; f < 90; f++)
+      sim.frame(1, 1);
+    const auto now = sim.positions()[1];
+    double     mean = 0;
+    for(size_t v = 0; v < now.size() / 3; v++)
+      mean += double(now[v * 3] - start[v * 3]) / double(now.size() / 3);
+    return float(mean);
+  };
+  const float gripped = slidOver(0.5f), slippery = slidOver(0.f);
+  EXPECT_GT(slippery, 50.f);
+  EXPECT_LT(std::fabs(gripped), 2.f);
+}
+
 TEST(Dforce, aHangingStripKeepsItsLength)
 {
   // a 4 x 30 cm strip pinned along its top edge: it hangs about its rest length. The one-sweep
@@ -1478,7 +1512,11 @@ public:
       : m_meshes(std::move(meshes))
   {
   }
-  void frame(float, float, float, float s) override { seconds.push_back(s); }
+  void frame(float, float, float extra, float s) override
+  {
+    seconds.push_back(s);
+    damping.push_back(extra);
+  }
   void setTarget(size_t, const std::vector<fv::Mat4>&) override {}
   void setGravity(const std::array<float, 3>& g) override { gravity.push_back(g); }
   void settle() override {}
@@ -1491,7 +1529,7 @@ public:
       out.push_back(m.rest);
     return out;
   }
-  std::vector<float>                seconds;
+  std::vector<float>                seconds, damping;
   std::vector<std::array<float, 3>> gravity;
 
 private:
@@ -1668,6 +1706,38 @@ TEST(Dforce, aStillPoseSleepsThoughTheClothNeverRestsAndATurnWakesIt)
   const size_t asleep = sim->seconds.size();
   frames(20);
   EXPECT_EQ(sim->seconds.size(), asleep);
+}
+
+TEST(Dforce, aStillPoseLetsTheClothMoveBeforeItCalmsIt)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<RestlessSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<RestlessSim>(std::move(meshes));
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  d.setPlacement(kUpsideDown);
+  float simulated = 0;
+  for(int i = 0; i < 200; i++)
+  {
+    const size_t before = sim->seconds.size();
+    now += std::chrono::milliseconds(20);
+    d.pump();
+    if(sim->seconds.size() == before)
+      continue;
+    simulated += sim->seconds.back();
+    if(simulated < 0.9f)
+      EXPECT_EQ(sim->damping.back(), 0.f) << simulated;
+    if(simulated > 2.1f)
+      EXPECT_EQ(sim->damping.back(), 6.f) << simulated;
+  }
+  EXPECT_GT(simulated, 2.5f);
 }
 
 TEST(Dforce, aLiveStepKeepsTheClockAtAnyFrameRate)

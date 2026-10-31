@@ -75,6 +75,10 @@ struct Kinematic
 
 }  // namespace
 
+// A frame in which the pose moves anything further than this, cm, goes in pieces, at most so many.
+constexpr float kJumpPerPiece = 2.f;
+constexpr int   kMostPieces   = 12;
+
 struct DforceGpu::Impl
 {
   nvvk::ResourceAllocator* alloc = nullptr;
@@ -585,9 +589,10 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     }
   };
   // resting vertices held on their faces where the pose has them at pc.t
-  const auto hold = [&] {
+  const auto hold = [&](bool grip) {
     if(m.numTris == 0 || (debug & 2))
       return;
+    pc.grip = grip ? 1 : 0;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, holdPipe);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
@@ -614,7 +619,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       sweep(false);
     for(int it = 0; it < opts.stretchSweeps; it++)
       sweep(true);
-    hold();
+    hold(true);
     if(s == next && m.numTris > 0)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, collidePipe);
@@ -623,7 +628,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       barrier();
       // the pushes stretched edges; one more sweep shares them out before velocities are read
       sweep(false);
-      hold();
+      hold(false);
       tFaces = pc.t;
       next += std::max(1, steps / passes);
     }
@@ -700,7 +705,23 @@ void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
 {
   if(!m_valid || m_impl->broken)
     return;
-  m_impl->frame(t0, t1, extraDamping, seconds);
+  // a pose that jumps (a value typed, an undo) in one frame leaves behind what rests on it: a 15 degree
+  // turn of the hip moves the shoulders 16 cm, and the top of a dress hanging from them fell 44. A drag
+  // of the same turn over a second is fine. In pieces it costs a slow frame only when it happens
+  Impl&              s = *m_impl;
+  std::vector<float> from = s.xHost, to = s.xHost;
+  s.kinematicAt(t0, from);
+  s.kinematicAt(t1, to);
+  float farthest = 0;
+  for(int i : s.model.kinematicVerts)
+  {
+    const float dx = to[size_t(i) * 3] - from[size_t(i) * 3], dy = to[size_t(i) * 3 + 1] - from[size_t(i) * 3 + 1], dz = to[size_t(i) * 3 + 2] - from[size_t(i) * 3 + 2];
+    farthest = std::max(farthest, dx * dx + dy * dy + dz * dz);
+  }
+  const int   pieces = std::clamp(int(std::ceil(std::sqrt(farthest) / kJumpPerPiece)), 1, kMostPieces);
+  const float length = (seconds > 0 ? seconds : s.opts.frameDt) / float(pieces);
+  for(int p = 0; p < pieces && !s.broken; p++)
+    s.frame(t0 + (t1 - t0) * float(p) / float(pieces), t0 + (t1 - t0) * float(p + 1) / float(pieces), extraDamping, length);
   m_lastMove = m_impl->broken ? 0.f : m_impl->lastMove;
 }
 

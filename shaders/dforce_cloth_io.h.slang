@@ -94,6 +94,7 @@ struct DforcePushConstant
   float        t;                     // where in the frame the kinematic vertices are at the substep's end
   float        tFaces;                // where they were at the last collision pass
   float        extraDamping;
+  uint         grip;                  // a hold that applies friction
 };
 
 NAMESPACE_SHADERIO_END()

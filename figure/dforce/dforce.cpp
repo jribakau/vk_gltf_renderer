@@ -15,8 +15,11 @@ using namespace std::chrono_literals;
 
 constexpr auto  kDebounce = 400ms;
 constexpr float kAir      = 0.15f;
-// Velocity decay per second a live step adds while the pose stands still, so the cloth comes to rest.
+// Velocity decay per second a live step adds once the pose has stood still for a while, so the cloth
+// comes to rest; until then it falls and swings freely. Seconds: free for this long, then this long
+// to reach it, within the hold.
 constexpr float kLiveRestDamping = 6.f;
+constexpr float kLiveFree = 1.f, kLiveCalming = 1.f;
 // A live step is as long as the time since the last one, within these, seconds: a slow frame doesn't
 // make slow motion, down to the rate below which a step's substeps would stop holding the cloth
 // together (then it slows instead), and frames faster than the shortest wait for each other.
@@ -582,7 +585,7 @@ bool Dforce::pumpLive()
   m_liveBones  = std::move(bones);
   m_liveMoving = moved || turned;
   auto        sim     = m_live;
-  const float damping = moved ? 0.f : kLiveRestDamping;
+  const float damping = moved ? 0.f : kLiveRestDamping * std::clamp((m_liveStill - kLiveFree) / kLiveCalming, 0.f, 1.f);
   if(sim->ownerThreadOnly())
   {
     sim->step(damping, seconds);

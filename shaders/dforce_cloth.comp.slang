@@ -291,8 +291,21 @@ void holdMain(uint3 tid: SV_DispatchThreadID)
   float target = float(direction) * gap;
   if(direction > 0 ? sd >= target : sd <= target)
     return;
-  float push = min(abs(target - sd), m.cap) * (target - sd > 0 ? 1.0 : -1.0);
-  m.x[i]     = m.x[i] + n * push;
+  float  push = min(abs(target - sd), m.cap) * (target - sd > 0 ? 1.0 : -1.0);
+  float3 p    = m.x[i] + n * push;
+  // Coulomb, as the CPU solver: this substep's slide over the face is taken back as far as the push's
+  // normal force holds it. Not in the hold after a pass
+  if(pc.grip == 0)
+  {
+    m.x[i] = p;
+    return;
+  }
+  float3 slide = (p - m.prev[i]) - ((m.x[tri.a] - m.prev[tri.a]) + (m.x[tri.b] - m.prev[tri.b]) + (m.x[tri.c] - m.prev[tri.c])) / 3.0;
+  slide        = slide - n * dot(slide, n);
+  float along  = length(slide);
+  if(along > 1e-9)
+    p = p - slide * min(1.0, (tri.friction + m.friction[i]) * 0.5 * abs(push) / along);
+  m.x[i] = p;
 }
 
 // Pushes a free vertex out of the faces it was outside of at its last pass, and notes the face it

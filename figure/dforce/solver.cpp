@@ -28,11 +28,11 @@ constexpr float kStretchCompliance = 3e-5f;
 constexpr float kShearCompliance   = 3e-3f;
 constexpr float kBendCompliance    = 2e-3f;
 // A vertex of partial strength s is tethered to its skinned position with compliance
-// kAttachSag * (s / (1 - s))^2 per unit of inverse mass, s^2: under gravity it hangs g * kAttachSag
-// * (s / (1 - s))^2 below that position whatever its mass. A band painted at 0.2 keeps within a
-// millimetre, 0.5 gives a centimetre and a half, and a garment whose surfaces are set to 0.7-0.9
-// throughout (common: the Kai Dress is 0.7-0.88) drapes as freely as it does in DAZ Studio, 8 cm
-// of give at 0.7 and 80 at 0.88.
+// kAttachSag * (s / (1 - s))^4 per unit of inverse mass: under gravity it hangs g * kAttachSag
+// * (s / (1 - s))^4 below that position whatever its mass. A band painted at 0.2 stays on the skin,
+// 0.5 gives a centimetre and a half, and a garment whose surfaces are set to 0.7-0.9 throughout
+// (common: the Kai Dress is 0.7-0.88) hangs from what it lies on and only leans on its skin, 44 cm of
+// give at 0.7. Judged by its drape, with no measurement of what DAZ Studio does with a strength.
 constexpr float kAttachSag = 1.5e-3f;
 // Reach links: seed vertices about this many centimetres apart over the surface, each level linked
 // to the seeds within kReachSpan of its spacing. On the Kai Dress with no tether at all, two levels
@@ -467,7 +467,7 @@ struct ClothSim::Impl : ClothModel
   // The face a vertex resting on face `t` is over now: `t`, or the nearest face two edges around it
   // that the vertex slid onto; -1 when it is over none (it left the surface). Fills `now` and `n`.
   int  followContact(int i, int t, Closest& now, V3& n) const;
-  void holdContacts();
+  void holdContacts(bool grip);
   // One sweep over the constraints (the stretch edges alone when `stretchOnly`) and the tethers.
   void solveEdges(float dt, bool stretchOnly = false);
   void collide(float kinematicStep);
@@ -799,7 +799,7 @@ ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air, b
       {
         const float s = std::clamp(strength[i], 1e-4f, 0.999f);
         const float r = s / (1 - s);
-        attAlpha[i]   = kAttachSag * inv[i] * r * r;
+        attAlpha[i]   = kAttachSag * inv[i] * r * r * r * r;
         softVerts.push_back(i);
       }
     }
@@ -1180,7 +1180,7 @@ int ClothSim::Impl::followContact(int i, int t, Closest& now, V3& n) const
   return at;
 }
 
-void ClothSim::Impl::holdContacts()
+void ClothSim::Impl::holdContacts(bool grip)
 {
   jobs::parallelFor(freeVerts.size(), 1024, [&](size_t begin, size_t end) {
     for(size_t fi = begin; fi < end; fi++)
@@ -1212,6 +1212,29 @@ void ClothSim::Impl::holdContacts()
       const float push = std::min(std::fabs(target - now.signedDistance), kCap) * (target - now.signedDistance > 0 ? 1.f : -1.f);
       for(int k = 0; k < 3; k++)
         x[i * 3 + k] += n[size_t(k)] * push;
+      // Coulomb: this substep's slide over the face is taken back as far as the push's normal force
+      // holds it. This is where a resting vertex meets its face: the collision pass after it finds
+      // the vertex in place already. Not in the hold after a pass, with nothing after it to see that
+      // the slide took the vertex under the next face
+      if(!grip)
+        continue;
+      float rub[3];
+      for(int k = 0; k < 3; k++)
+      {
+        const float face = ((x[held.a * 3 + k] - prev[held.a * 3 + k]) + (x[held.b * 3 + k] - prev[held.b * 3 + k]) + (x[held.c * 3 + k] - prev[held.c * 3 + k])) / 3.f;
+        rub[k]           = (x[i * 3 + k] - prev[i * 3 + k]) - face;
+      }
+      const float dn = rub[0] * n[0] + rub[1] * n[1] + rub[2] * n[2];
+      for(int k = 0; k < 3; k++)
+        rub[k] -= n[size_t(k)] * dn;
+      const float slide = std::sqrt(rub[0] * rub[0] + rub[1] * rub[1] + rub[2] * rub[2]);
+      if(slide > 1e-9f)
+      {
+        const float grip  = (held.friction + friction[i]) * 0.5f * std::fabs(push);
+        const float share = std::min(1.f, grip / slide);
+        for(int k = 0; k < 3; k++)
+          x[i * 3 + k] -= rub[k] * share;
+      }
     }
   });
 }
@@ -1554,14 +1577,14 @@ void ClothSim::Impl::frame(float t0, float t1, float extraDamping, float seconds
       solveEdges(dt);
     for(int it = 0; it < opts.stretchSweeps; it++)
       solveEdges(dt, true);
-    holdContacts();
+    holdContacts(true);
     if(s == nextCollision)
     {
       snap = x;
       collide(kinematicMove / float(passes));
       // the pushes stretched edges; one more sweep shares them out before velocities are read
       solveEdges(dt);
-      holdContacts();
+      holdContacts(false);
       nextCollision += std::max(1, n / passes);
     }
     for(int i : freeVerts)
