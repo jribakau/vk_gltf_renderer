@@ -250,3 +250,17 @@ TEST(DsonParse, AFolderListingTakesAnyName)
   fv::dson::clearListings();
   fs::remove_all(dir);
 }
+
+TEST(Listing, AFolderOutsideTheSystemsCodePageIsListed)
+{
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / L"fv \x30e9\x30a4\x30d6\x30e9\x30ea";
+  fs::remove_all(dir);
+  fs::create_directories(dir / "Morphs");
+  std::ofstream(dir / "Morphs" / "one.dsf").put('x');
+  const fv::dson::Library library({dir});
+  fv::dson::clearListings();
+  EXPECT_EQ(fv::dson::listFiles(library, "Morphs", ".dsf").size(), 1u);
+  fv::dson::clearListings();
+  fs::remove_all(dir);
+}

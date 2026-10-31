@@ -35,7 +35,11 @@ std::vector<std::string> listFiles(const Library& library, const std::string& re
 {
   std::string key = rel + "|" + ext;
   for(const fs::path& root : library.roots())
-    key += "|" + root.generic_string();
+  {
+    // not generic_string: a folder outside the system's code page throws there, and fails every load
+    const std::u8string where = root.generic_u8string();
+    key += "|" + std::string(where.begin(), where.end());
+  }
   key = lower(key);
   {
     std::lock_guard<std::mutex> lock(g_mutex);

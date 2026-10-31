@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <map>
 
 namespace fv::build {
@@ -33,9 +35,11 @@ std::optional<Image> decode(const ExportOptions& o, const std::string& rel, std:
       *why = rel + " is not in the library";
     return std::nullopt;
   }
-  int         w = 0, h = 0, n = 0;
-  const std::string utf8 = path->generic_string();
-  unsigned char*    data = stbi_load(utf8.c_str(), &w, &h, &n, 4);
+  int w = 0, h = 0, n = 0;
+  // the bytes through a wide path, as a path outside the code page opens as nothing by a narrow one
+  std::ifstream in(*path, std::ios::binary);
+  const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  unsigned char* data = bytes.empty() ? nullptr : stbi_load_from_memory(reinterpret_cast<const unsigned char*>(bytes.data()), int(bytes.size()), &w, &h, &n, 4);
   if(!data)
   {
     if(why)
@@ -424,19 +428,24 @@ std::vector<std::string> finishGlb(GlbExport& job, const std::filesystem::path& 
   // whole, then put in place: a full disk or a crash mustn't cost the file this goes over
   std::filesystem::path tmp = out;
   tmp += ".tmp";
+  // tinygltf takes a file name in UTF-8; a narrow string is the code page's, and mangles the name
+  const auto            utf8 = [](const std::filesystem::path& p) {
+    const std::u8string u = p.generic_u8string();
+    return std::string(u.begin(), u.end());
+  };
   std::error_code       ec;
   tinygltf::TinyGLTF    writer;
-  if(!writer.WriteGltfSceneToFile(&model, tmp.string(), false, true, false, true))
+  if(!writer.WriteGltfSceneToFile(&model, utf8(tmp), false, true, false, true))
   {
     std::filesystem::remove(tmp, ec);
-    throw std::runtime_error("the GLB could not be written to " + out.string());
+    throw std::runtime_error("the GLB could not be written to " + utf8(out));
   }
   std::filesystem::rename(tmp, out, ec);
   if(ec)
   {
     const std::string why = ec.message();
     std::filesystem::remove(tmp, ec);
-    throw std::runtime_error("the GLB could not be written to " + out.string() + ": " + why);
+    throw std::runtime_error("the GLB could not be written to " + utf8(out) + ": " + why);
   }
   return notes;
 }

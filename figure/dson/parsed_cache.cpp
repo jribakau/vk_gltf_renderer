@@ -110,8 +110,8 @@ bool writeParsed(const std::filesystem::path& cacheFile, const Doc& doc, const P
   h.tables    = uint32_t(doc.tables.size());
   // through a temporary beside it, renamed into place: a reader never sees a half-written file
   static std::atomic<unsigned> counter{0};
-  const std::filesystem::path  tmp = cacheFile.string() + ".tmp" + std::to_string(counter++) + "-"
-                                    + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xffff);
+  std::filesystem::path        tmp = cacheFile;
+  tmp += ".tmp" + std::to_string(counter++) + "-" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xffff);
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
     if(!out)

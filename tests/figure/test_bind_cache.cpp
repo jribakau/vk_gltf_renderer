@@ -88,6 +88,20 @@ TEST_F(BindCache, AMissBindsAndKeepsItAndTheNextBindReadsItBack)
   expectSame(second, fresh);
 }
 
+TEST_F(BindCache, AFolderOutsideTheSystemsCodePageIsKeptIn)
+{
+  const std::filesystem::path other = dir / L"\x30e9\x30a4\x30d6\x30e9\x30ea";
+  std::filesystem::create_directories(other);
+  fv::wardrobe::setBindCacheDir(other);
+  const auto body = fv::mesh::build(grid(6, 0));
+  const auto item = fv::mesh::build(grid(3, 0.5f));
+  EXPECT_NO_THROW(fv::wardrobe::cachedBindToSurface(body.cagePositions, body.dsonTris, item.cagePositions));
+  size_t kept = 0;
+  for(const auto& e : std::filesystem::directory_iterator(other))
+    kept += e.is_regular_file() ? 1 : 0;
+  EXPECT_EQ(kept, 1u);
+}
+
 TEST_F(BindCache, StrandsAreKeptToo)
 {
   const auto body = fv::mesh::build(grid(6, 0));

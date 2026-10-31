@@ -210,7 +210,8 @@ void writeBinding(const std::filesystem::path& file, const Key& key, const Surfa
   // through a temporary beside it, renamed into place: a reader never sees a half-written file, and
   // two writers (two app instances) each write their own
   static std::atomic<unsigned> counter{0};
-  const std::filesystem::path  tmp = file.string() + ".tmp" + std::to_string(counter++) + "-"
+  std::filesystem::path        tmp = file;
+  tmp += ".tmp" + std::to_string(counter++) + "-"
                                     + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xffff) + "-"
                                     + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count() & 0xffffff);
   {
@@ -253,7 +254,14 @@ SurfaceBinding cached(const Key& key, size_t itemVerts, size_t bodyVerts, const 
   }
   g_misses++;
   SurfaceBinding b = bind();
-  writeBinding(file, key, b);
+  // the cache is optional: failing to keep what was bound mustn't fail the wear
+  try
+  {
+    writeBinding(file, key, b);
+  }
+  catch(const std::exception&)
+  {
+  }
   return b;
 }
 

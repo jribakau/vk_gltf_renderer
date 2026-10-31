@@ -1463,6 +1463,28 @@ TEST(FvHost, AKeptSceneComesBackInAnotherRendererAsItWas)
   fs::remove(path);
 }
 
+TEST(FvHost, AGlbGoesWhereItWasAskedOutsideTheSystemsCodePage)
+{
+  const fs::path dir = fs::temp_directory_path() / L"fv glb \x30e9\x30a4\x30d6";
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  const fs::path out = dir / L"\x0160eima \x30e9.glb";
+  HostRig rig;
+  rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const std::u8string where = out.generic_u8string();
+  const Json answer = rig.cmd("export.glb", {{"prop", figureId(rig.topic("scene"))}, {"path", std::string(where.begin(), where.end())}});
+  ASSERT_TRUE(answer.value("ok", false)) << answer.dump();
+  ASSERT_TRUE(rig.settle());
+  std::vector<fs::path> files;
+  for(const auto& e : fs::directory_iterator(dir))
+    files.push_back(e.path());
+  ASSERT_EQ(files.size(), 1u);
+  EXPECT_EQ(files[0].filename(), out.filename());
+  EXPECT_GT(fs::file_size(out), 0u);
+  fs::remove_all(dir);
+}
+
 TEST(FvHost, ACopyThatDidNotAllComeBackGoesAsideBeforeItIsWrittenOver)
 {
   const fs::path path = fs::temp_directory_path() / "fv recovery aside.json";
