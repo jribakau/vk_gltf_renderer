@@ -276,25 +276,72 @@ void Residency::retireAccel(AccelHandle accel)
     m_gpu.retire([&gpu = m_gpu, accel] { gpu.destroyAccel(accel); });
 }
 
+// What a mesh's shape is read from: a refined mesh's cage, as the drawn positions the CPU keeps fall
+// behind its morphs.
+static const std::vector<glm::vec3>& shapeOf(const MeshRecord& record)
+{
+  return record.cage.empty() ? record.positions : record.cage;
+}
+
+// Some of a mesh's vertices, however many it has: enough to tell how its shape has changed, and few
+// enough to look at on every step of a drag.
+static std::vector<glm::vec3> shapeSample(const MeshRecord& record)
+{
+  constexpr size_t               kSampled = 512;
+  const std::vector<glm::vec3>&  shape    = shapeOf(record);
+  const size_t                   stride   = std::max<size_t>(1, shape.size() / kSampled);
+  std::vector<glm::vec3>         out;
+  out.reserve(shape.size() / stride + 1);
+  for(size_t v = 0; v < shape.size(); v += stride)
+    out.push_back(shape[v]);
+  return out;
+}
+
+// Whether a mesh has changed shape so far from `built` that a refit would leave its BLAS not worth
+// tracing: its vertices are, on average, more than this share of its size from where they were, once
+// what they all did together is taken out (going somewhere as one leaves a BVH as good as it was).
+// Toyen's dForce Long Hair falling took a still from 2.4 s to 27 s refit, and 2.3 s built again. A
+// build costs a frame (0.45 s for that hair's 25 M drawn points), and starts this count over.
+static bool reshapedFar(const std::vector<glm::vec3>& built, const std::vector<glm::vec3>& now)
+{
+  constexpr float kFarShare = 0.02f;
+  if(built.empty() || built.size() != now.size())
+    return false;
+  glm::vec3 lo = built[0], hi = built[0], together(0.f);
+  for(size_t v = 0; v < built.size(); v++)
+  {
+    lo = glm::min(lo, built[v]);
+    hi = glm::max(hi, built[v]);
+    together += now[v] - built[v];
+  }
+  together /= float(built.size());
+  float apart = 0;
+  for(size_t v = 0; v < built.size(); v++)
+    apart += glm::length(now[v] - built[v] - together);
+  return apart / float(built.size()) > glm::length(hi - lo) * kFarShare;
+}
+
 void Residency::build(Prim& prim)
 {
   prim.compactable = m_options.compactStatic && prim.drawer.isNone();
   prim.compacting  = prim.compactable;
   prim.blas = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | (prim.compactable ? eAccelAllowCompaction : eAccelAllowUpdate));
-  prim.refits = 0;
+  prim.refits   = 0;
+  prim.outgrown = false;
 }
 
 void Residency::refit(Prim& prim)
 {
-  if(!prim.compactable && (m_options.refitsBeforeRebuild == 0 || ++prim.refits < m_options.refitsBeforeRebuild))
+  if(!prim.outgrown && !prim.compactable && (m_options.refitsBeforeRebuild == 0 || ++prim.refits < m_options.refitsBeforeRebuild))
   {
     m_gpu.refitBlas(prim.blas, prim.input);
     return;
   }
-  // refitted enough, or built for compaction: its vertices move after all
+  // refitted enough, out of its shape, or built for compaction: its vertices move after all
   retireAccel(prim.blas);
   prim.blas        = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowUpdate);
   prim.refits      = 0;
+  prim.outgrown    = false;
   prim.compactable = prim.compacting = false;
 }
 
@@ -494,6 +541,7 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
   gpu.tangentRev = record.tangentRev;
   if(vertices)  // a vertex edit keeps the count, so the UVs and colours are as they were
     return;
+  gpu.builtShape = shapeSample(record);
   stream(gpu.uv0, bytesOf(record.uv0), eBufferStorage, "uv0");
   stream(gpu.uv1, bytesOf(record.uv1), eBufferStorage, "uv1");
   if(!record.colors.empty())
@@ -2102,6 +2150,20 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
     if(gpu.refine)
       refined.push_back(&gpu);
     const bool moved = gpu.positions != before;
+    // come a long way from what its BLASes were built for: they are built again, static and drawn
+    // deformed alike, when their refits would come
+    if(std::vector<glm::vec3> shape = shapeSample(*record); reshapedFar(gpu.builtShape, shape))
+    {
+      gpu.builtShape = std::move(shape);
+      for(int32_t p : gpu.prims)
+        if(p >= 0)
+          m_prims[size_t(p)]->outgrown = true;
+      for(auto& [key, d] : m_drawers)
+        if(key.second == id)
+          for(int32_t p : d.prims)
+            if(p >= 0)
+              m_prims[size_t(p)]->outgrown = true;
+    }
     // its static prims get motion from here on: their positions are copied at the next sync
     if(std::any_of(gpu.prims.begin(), gpu.prims.end(), [](int32_t p) { return p >= 0; }))
     {

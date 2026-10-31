@@ -1034,6 +1034,16 @@ bool Figure::refreshTightHidden(bool collisionOn)
   return changed;
 }
 
+bool Figure::fallsByItself(const std::vector<int>& ids) const
+{
+  for(const WornItem& w : items)
+    if(std::find(ids.begin(), ids.end(), w.id) != ids.end())
+      for(int m : w.meshes)
+        if(m >= 0 && size_t(m) < loaded.scene.meshes.size() && loaded.scene.meshes[size_t(m)].dforce && loaded.scene.meshes[size_t(m)].dforce->simulatesStrands())
+          return true;
+  return false;
+}
+
 ClothState Figure::clothOf(const WornItem& item) const
 {
   ClothState s;

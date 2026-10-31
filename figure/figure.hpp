@@ -241,6 +241,9 @@ public:
   // the collider are to be told); empty for an unknown id or an item with nothing to simulate.
   std::vector<int> setItemCloth(int id, std::optional<bool> on, float strength);
   ClothState       clothOf(const WornItem& item) const;
+  // Whether one of these items is strand hair falling by its own settings, as nobody has said
+  // otherwise (dson::strandsUnsettled), so the figure's dForce is to be on for it.
+  bool             fallsByItself(const std::vector<int>& items) const;
   // How skin tight one item is, 0 to 1: the collider's next pass applies it. False for an unknown id.
   bool setItemTight(int id, float amount);
   // Brings what tight items hide of the body up to date: the skin fully under opaque fabric stops being

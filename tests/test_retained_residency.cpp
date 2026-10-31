@@ -27,6 +27,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <random>
 
@@ -399,6 +400,47 @@ TEST(RetainedResidency, ABlasRefittedEnoughIsBuiltAgain)
   edit();
   EXPECT_EQ(residency.prim(0)->blas, again);
   EXPECT_EQ(gpu.blas(again)->refits, 1u);
+  drain(gpu);
+  EXPECT_EQ(gpu.blas(built), nullptr);  // retired
+}
+
+// A mesh that changes shape a long way (hair falling under dForce) gets a BLAS built for its new shape:
+// a refit leaves one that takes ten times as long to trace.
+TEST(RetainedResidency, ABlasIsBuiltAgainWhenItsMeshChangesShapeFarAndNotOtherwise)
+{
+  RetainedScene scene;
+  const MeshId  grid = scene.addMesh(gridMesh(8, 0.f));
+  drawn(scene, "e", grid, {material(scene, "m")});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  const std::vector<glm::vec3> rest = scene.mesh(grid)->positions;
+  const auto                   edit = [&](const std::function<glm::vec3(glm::vec3)>& to) {
+    std::vector<glm::vec3> moved = rest;
+    for(glm::vec3& p : moved)
+      p = to(p);
+    scene.setMeshVertices(grid, moved, {});
+    gpu.beginFrame();
+    residency.sync(scene);
+    return residency.prim(0)->blas;
+  };
+  const AccelHandle built = residency.prim(0)->blas;
+
+  // going somewhere as one, however far, leaves the BVH as good as it was
+  EXPECT_EQ(edit([](glm::vec3 p) { return p + glm::vec3(0, 0, 40); }), built);
+  // a small change of shape stays a refit
+  EXPECT_EQ(edit([&](glm::vec3 p) { return p + glm::vec3(0, 0, p.x * 0.001f); }), built);
+  EXPECT_GT(gpu.blas(built)->refits, 0u);
+
+  // a large one is built again, once, and the count starts from there
+  const auto fallen = [&](glm::vec3 p) { return p + glm::vec3(0, 0, p.x * 2.f); };
+  const AccelHandle again = edit(fallen);
+  EXPECT_NE(again, built);
+  EXPECT_EQ(gpu.blas(again)->refits, 0u);
+  expectClean(scene, residency, gpu);  // the new BLAS hashes the new positions
+  EXPECT_EQ(edit([&](glm::vec3 p) { return fallen(p) + glm::vec3(0, 0, 0.001f * p.y); }), again);
+  // and back again: as far the other way
+  EXPECT_NE(edit([](glm::vec3 p) { return p; }), again);
   drain(gpu);
   EXPECT_EQ(gpu.blas(built), nullptr);  // retired
 }

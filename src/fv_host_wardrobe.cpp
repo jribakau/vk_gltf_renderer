@@ -379,6 +379,13 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
                 target->fig->removeItem(id);
             r.items = std::move(kept);
           }
+          // hair left for a simulation to bring down (strandsUnsettled) comes down as it goes on,
+          // though the figure's dForce is off until asked for; a scene file says for itself
+          if(step && target->dforce && !target->dforce->enabled() && target->fig->fallsByItself(r.items))
+          {
+            target->dforce->setEnabled(true);
+            publishDforce(*target, true);
+          }
           if(step && !r.items.empty())
           {
             Json        undo = Json::array(), redo = Json::array();

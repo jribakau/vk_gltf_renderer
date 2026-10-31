@@ -159,6 +159,8 @@ public:
     uint32_t             contentRev  = 0;
     uint32_t             tangentRev  = 0;
     std::vector<int32_t> prims;  // per submesh: its static prim slot, -1 while nothing draws it so
+    // some of its vertices in the shape its BLASes were last built for all at once (reshapedFar)
+    std::vector<glm::vec3> builtShape;
     // what its drawers deform with: joints (int4) and weights per vertex, and its targets' deltas
     // packed target-major; made when the first drawer needs them
     BufferHandle joints, weights, positionDeltas, normalDeltas, tangentDeltas;
@@ -242,6 +244,8 @@ public:
     AccelHandle  blas;
     BlasInput    input;
     uint32_t     refits = 0;  // since its BLAS was built
+    // its mesh has changed shape too far for a refit to leave a BLAS worth tracing: its next is a build
+    bool         outgrown = false;
     uint32_t     users  = 0;  // instances drawing it
     // its BLAS was built for compaction (not refittable), and the compacted copy is still to come
     bool compactable = false, compacting = false;

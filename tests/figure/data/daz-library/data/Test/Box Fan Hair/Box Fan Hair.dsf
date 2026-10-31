@@ -1,0 +1,11 @@
+{"file_version":"0.6.0.0","asset_info":{"id":"/data/Test/Box%20Fan%20Hair/Box%20Fan%20Hair.dsf","type":"figure","contributor":{"author":"fixture"}},
+"geometry_library":[{"id":"BoxFanHair-1","name":"BoxFanHair","label":"Box Fan Hair","type":"polygon_mesh",
+ "vertices":{"count":10,"values":[[0,40,0],[10,40,0],[20,40,0],[30,40,0],[40,40,0],[0,40,4],[10,40,4],[20,40,4],[30,40,4],[40,40,4]]},
+ "polygon_groups":{"count":1,"values":["Hair"]},"polygon_material_groups":{"count":1,"values":["Hair"]},
+ "polylist":{"count":0,"values":[]},
+ "polyline_list":{"count":2,"values":[[0,0,0,1,2,3,4],[0,0,5,6,7,8,9]]}}],
+"node_library":[{"id":"BoxFanHair","name":"BoxFanHair","label":"Box Fan Hair","type":"figure","rotation_order":"YZX","center_point":[{"id":"x","value":0},{"id":"y","value":0},{"id":"z","value":0}]},
+ {"id":"hip","name":"hip","label":"Hip","type":"bone","parent":"#BoxFanHair","rotation_order":"YZX","center_point":[{"id":"x","value":0},{"id":"y","value":10},{"id":"z","value":0}],"end_point":[{"id":"x","value":0},{"id":"y","value":20},{"id":"z","value":0}]}],
+"modifier_library":[{"id":"SkinBinding","name":"SkinBinding","parent":"#BoxFanHair-1","skin":{"node":"#BoxFanHair","geometry":"#BoxFanHair-1","vertex_count":10,
+ "joints":[{"id":"hip","node":"#hip","node_weights":{"count":10,"values":[[0,1],[1,1],[2,1],[3,1],[4,1],[5,1],[6,1],[7,1],[8,1],[9,1]]}}]}}],
+"material_library":[{"id":"Hair","name":"Hair","geometry":"#BoxFanHair-1","groups":["Hair"],"diffuse":{"channel":{"id":"diffuse","type":"color","value":[0.3,0.2,0.1]}}}]}

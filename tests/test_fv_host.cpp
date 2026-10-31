@@ -695,6 +695,23 @@ TEST(FvHost, AnItemTakenOffComesBackUnderItsIdAsItWas)
   EXPECT_EQ(differ(was, stateOf(rig)), "");
 }
 
+// The figure's dForce starts off, so hair standing straight out would stay that way until someone
+// found the switch: wearing it turns dForce on and it falls. Hair styled as it is leaves it off.
+TEST(FvHostWardrobe, HairLeftStandingOutFallsWhenItGoesOnAndHangingHairStaysAsItIs)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  EXPECT_FALSE(rig.topic("dforce/" + id).value("enabled", true));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Hanging Hair.duf"}});
+  ASSERT_TRUE(rig.settle());
+  EXPECT_FALSE(rig.topic("dforce/" + id).value("enabled", true));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Fan Hair.duf"}});
+  ASSERT_TRUE(rig.settle());
+  EXPECT_TRUE(rig.topic("dforce/" + id).value("enabled", false));
+}
+
 namespace {
 // What the figure of a saved `state` comes back as: in a session of its own, as a scene file opens
 struct Reopened
