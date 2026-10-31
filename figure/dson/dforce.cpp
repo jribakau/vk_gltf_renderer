@@ -34,6 +34,9 @@ struct Surface
   float density       = 180;
   float contraction   = 1;
   float damping       = 0.1f;
+  // "Local Shape Constraint Stiffness" and its tip's: what keeps a strand's authored bends
+  float shapeRoot     = 0.007f;
+  float shapeTip      = 0.06f;
 };
 
 // A modifier and the document it lives in (whose tables its rows are packed in).
@@ -93,6 +96,8 @@ Surface surfaceFrom(const Values& ch)
   s.density       = num(ch, "Density", d.density);
   s.contraction   = num(ch, "Contraction-Expansion Ratio", d.contraction);
   s.damping       = num(ch, "Damping", d.damping);
+  s.shapeRoot     = num(ch, "Local Shape Constraint Stiffness", d.shapeRoot);
+  s.shapeTip      = num(ch, "Local Shape Constraint Tip Stiffness", d.shapeTip);
   return s;
 }
 
@@ -382,10 +387,42 @@ Surface applyMaterialOverride(const Surface& surface, const Channels* ch)
   s.density       = n("Density", surface.density);
   s.contraction   = n("Contraction-Expansion Ratio", surface.contraction);
   s.damping       = n("Damping", surface.damping);
+  s.shapeRoot     = n("Local Shape Constraint Stiffness", surface.shapeRoot);
+  s.shapeTip      = n("Local Shape Constraint Tip Stiffness", surface.shapeTip);
   return s;
 }
 
 }  // namespace
+
+bool strandsUnsettled(std::span<const float> positions, std::span<const int32_t> start, std::span<const int32_t> verts)
+{
+  constexpr float kLong = 30, kCounted = 15, kDown = -0.5f;
+  std::vector<float> lengths;
+  int                counted = 0, hanging = 0;
+  const auto         at = [&](int32_t v, int c) { return positions[size_t(v) * 3 + c]; };
+  for(size_t s = 0; s + 1 < start.size(); s++)
+  {
+    float length = 0;
+    for(int32_t k = start[s]; k + 1 < start[s + 1]; k++)
+    {
+      const float x = at(verts[k + 1], 0) - at(verts[k], 0), y = at(verts[k + 1], 1) - at(verts[k], 1), z = at(verts[k + 1], 2) - at(verts[k], 2);
+      length += std::sqrt(x * x + y * y + z * z);
+    }
+    lengths.push_back(length);
+    if(length < kCounted || start[s + 1] - start[s] < 2)
+      continue;
+    counted++;
+    const int32_t root = verts[start[s]], tip = verts[start[s + 1] - 1];
+    const float   x = at(tip, 0) - at(root, 0), y = at(tip, 1) - at(root, 1), z = at(tip, 2) - at(root, 2);
+    const float   chord = std::sqrt(x * x + y * y + z * z);
+    if(chord > 0 && y / chord < kDown)
+      hanging++;
+  }
+  if(lengths.empty() || !counted)
+    return false;
+  std::nth_element(lengths.begin(), lengths.begin() + std::ptrdiff_t(lengths.size() / 2), lengths.end());
+  return lengths[lengths.size() / 2] >= kLong && hanging * 2 < counted;
+}
 
 std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId,
                                         const Doc& geometryDoc, const Json& geometry, const std::map<std::string, Channels>& overrides)
@@ -517,6 +554,43 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
       out->polyVerts.resize(at);
     else
       out->polyStart.push_back(int32_t(out->polyVerts.size()));
+  }
+  // strand hair: rows as the polygons', [group, material, v0, v1, ...]
+  const Json* polylines = get(&geometry, "polyline_list");
+  if(const auto lines = geometryDoc.rows(polylines ? get(polylines, "values") : nullptr); lines && lines->count && !np)
+  {
+    for(int li = 0; li < lines->count; li++)
+    {
+      const size_t at = out->strandVerts.size();
+      for(int k = lines->start[li] + 2; k < lines->start[li + 1]; k++)
+      {
+        const double v = lines->data[k];
+        if(v >= 0 && v < nv)
+          out->strandVerts.push_back(int32_t(v));
+      }
+      if(out->strandVerts.size() - at < 2)
+      {
+        out->strandVerts.resize(at);
+        continue;
+      }
+      out->strandStart.push_back(int32_t(out->strandVerts.size()));
+      const double      mi   = lines->cell(li, 1);
+      const std::string name = mi >= 0 && size_t(mi) < groups.size() ? groups[size_t(mi)] : groups[0];
+      const auto        it   = byGroup.find(name);
+      const auto        ov   = overrides.find(name);
+      const Surface     s    = applyMaterialOverride(it != byGroup.end() ? it->second : Surface{}, ov != overrides.end() ? &ov->second : nullptr);
+      out->strandStrength.push_back(s.visible ? s.strength : 0.f);
+      out->strandOffset.push_back(s.offset);
+      out->strandFriction.push_back(s.friction);
+      out->strandShapeRoot.push_back(s.shapeRoot);
+      out->strandShapeTip.push_back(s.shapeTip);
+      out->strandCollide.push_back(s.collide ? 1 : 0);
+    }
+    std::vector<float> positions(size_t(nv) * 3);
+    for(int v = 0; v < nv; v++)
+      for(int c = 0; c < 3; c++)
+        positions[size_t(v) * 3 + c] = float(verts->cell(v, c));
+    out->strandsOn = strandsUnsettled(positions, out->strandStart, out->strandVerts);
   }
   return out;
 }

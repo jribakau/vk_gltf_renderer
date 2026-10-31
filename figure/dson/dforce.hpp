@@ -49,11 +49,22 @@ struct DforceData
   // polyVerts[polyStart[i] .. polyStart[i + 1])
   std::vector<int32_t> polyStart{0}, polyVerts;
 
-  // Whether the settings cover any polygons. Strand hair carries a simulation modifier on polylines
-  // alone; the settle has no constraints for those, so it neither drapes nor collides with them.
+  // Strand hair: polylines, root first, with their surface's settings per strand. Strand i is
+  // strandVerts[strandStart[i] .. strandStart[i + 1]).
+  std::vector<int32_t> strandStart{0}, strandVerts;
+  std::vector<float>   strandStrength, strandOffset, strandFriction, strandShapeRoot, strandShapeTip;
+  std::vector<uint8_t> strandCollide;
+  // The strands fall under gravity. Off, they keep their authored shape: a styled hair is what most
+  // files are, and DAZ Studio simulates none until asked. On from the file only where that shape can't
+  // be what was meant, long strands that don't hang (strandsUnsettled), and by the item's Cloth switch.
+  bool strandsOn = false;
+
+  // Whether the settings cover any polygons, for the cloth solver's constraints.
   bool hasPolygons() const { return polyStart.size() > 1; }
+  bool hasStrands() const { return strandStart.size() > 1; }
+  bool simulatesStrands() const { return hasStrands() && strandsOn && visible && !freeze; }
   // A mesh the settle should drape, rather than only collide with.
-  bool simulated() const { return hasPolygons() && visible && !freeze && (kind == DforceKind::eDynamic || kind == DforceKind::eAddon); }
+  bool simulated() const { return (hasPolygons() || simulatesStrands()) && visible && !freeze && (kind == DforceKind::eDynamic || kind == DforceKind::eAddon); }
 };
 
 // Per-vertex settings for one geometry instance: `scene` is the .duf, `geoDoc` the geometry's own
@@ -63,6 +74,12 @@ struct DforceData
 std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, const std::string& nodeId, const std::string& geomId,
                                         const Doc& geometryDoc, const Json& geometry,
                                         const std::map<std::string, Channels>& overrides);
+
+// Whether strand hair was left for a simulation to bring down, not styled: its strands are long
+// (a median of 30 cm or more) and fewer than half of those over 15 cm run downward from root to tip.
+// In this library, on 2026-10-31, that is Toyen's dForce Long Hair alone, which stands straight out.
+// Short hair and updos don't hang either, and are styled that way.
+bool strandsUnsettled(std::span<const float> positions, std::span<const int32_t> start, std::span<const int32_t> verts);
 
 // The pre-render (PR) hairs each material group of a strand hair grows, from its surfaces'
 // simulation settings ("PR Hairs (Per Guide)", "PR Hair Distribution Radius", "PR Hair Tip

@@ -5,6 +5,7 @@
 
 #include <figure/dforce/skin.hpp>
 #include <figure/dforce/solver.hpp>
+#include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 
 namespace fv::dforce {
@@ -85,6 +86,17 @@ struct Dforce::Job
     Mat4     back;  // job space -> mesh-local
   };
   std::vector<Drape> drapes;
+  // strand hair that falls, which collides with `bodies` and is no part of their settle
+  struct Hair
+  {
+    int                mesh = -1;
+    StrandSet          strands;
+    std::vector<float> rest;
+    CageSkin           skin;
+    SkinPose           pose;
+    Mat4               back;  // job space -> mesh-local
+  };
+  std::vector<Hair> hairs;
 };
 
 Dforce::Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root)
@@ -103,6 +115,10 @@ Dforce::~Dforce()
     m_job.wait();
   if(m_liveStep.valid())
     m_liveStep.wait();
+  if(m_hairStale)
+    m_hairStale->store(true);
+  if(m_hairJob.valid())
+    m_hairJob.wait();
 }
 
 std::vector<int> Dforce::dynamics() const
@@ -129,7 +145,7 @@ bool Dforce::active() const
 
 bool Dforce::busy() const
 {
-  return m_scheduled || m_job.valid() || m_settling || m_liveSettling;
+  return m_scheduled || m_job.valid() || m_hairJob.valid() || m_settling || m_liveSettling;
 }
 
 void Dforce::poke()
@@ -144,6 +160,8 @@ void Dforce::poke()
   m_gen++;
   if(m_jobStale)
     m_jobStale->store(true);
+  if(m_hairStale)
+    m_hairStale->store(true);
   m_scheduled = true;
   m_due       = std::chrono::steady_clock::now() + kDebounce;
   m_version++;
@@ -193,6 +211,8 @@ void Dforce::resimulate()
   m_gen++;
   if(m_jobStale)
     m_jobStale->store(true);
+  if(m_hairStale)
+    m_hairStale->store(true);
   m_version++;
 }
 
@@ -201,7 +221,9 @@ void Dforce::cancel()
   m_gen++;
   if(m_jobStale)
     m_jobStale->store(true);
-  if(m_scheduled || m_job.valid() || m_settling || m_live)
+  if(m_hairStale)
+    m_hairStale->store(true);
+  if(m_scheduled || m_job.valid() || m_hairJob.valid() || m_settling || m_live)
     m_version++;
   m_scheduled = false;
   m_settling.reset();
@@ -322,6 +344,33 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     const Mesh& m = m_scene.meshes[size_t(mesh)];
     if(mesh == m_bodyMesh || !m.geo || nodeOf[size_t(mesh)] < 0 || !shown[size_t(nodeOf[size_t(mesh)])])
       return;
+    if(m.dforce && m.dforce->simulatesStrands() && m.dforce->simulated())
+    {
+      const dson::DforceData& data = *m.dforce;
+      const auto own     = m_morphs.cpuTarget(channelOf(mesh), mesh);
+      auto       skinned = skinCage(mesh, own.get());
+      if(!skinned)
+        return;
+      const Mat4 to = toSpace(mesh);
+      Job::Hair  h;
+      h.mesh               = mesh;
+      h.strands.posed      = transformPoints(to, skinned->posed);
+      h.strands.start      = data.strandStart;
+      h.strands.verts      = data.strandVerts;
+      h.strands.strength   = data.strandStrength;
+      h.strands.offset     = data.strandOffset;
+      h.strands.friction   = data.strandFriction;
+      h.strands.shapeRoot  = data.strandShapeRoot;
+      h.strands.shapeTip   = data.strandShapeTip;
+      h.strands.collide    = data.strandCollide;
+      h.strands.gravity    = gravity;
+      h.rest               = std::move(skinned->rest);
+      h.skin               = std::move(skinned->skin);
+      h.pose               = std::move(skinned->pose);
+      h.back               = inverse(to);
+      job->hairs.push_back(std::move(h));
+      return;
+    }
     if(!m.dforce || !m.dforce->hasPolygons())
     {
       // no simulation settings of its own (a belt, a bra, shoes): a collider at the surface
@@ -401,7 +450,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   };
   for(int mesh = 0; mesh < int(m_scene.meshes.size()); mesh++)
     consider(mesh);
-  if(job->drapes.empty())
+  if(job->drapes.empty() && job->hairs.empty())
     return nullptr;
   return job;
 }
@@ -416,6 +465,8 @@ std::optional<Dforce::Prepared> Dforce::prepared() const
   p.slotMesh = job->slotMesh;
   for(const Job::Drape& d : job->drapes)
     p.drapes.emplace_back(d.mesh, int(d.slot));
+  for(const Job::Hair& h : job->hairs)
+    p.hairs.emplace_back(h.mesh, h.strands);
   return p;
 }
 
@@ -468,6 +519,34 @@ bool Dforce::pump()
     if(gen == m_gen && m_enabled && job && !positions.empty())
       wrote = apply(*job, positions);
   }
+  if(m_hairJob.valid() && m_hairJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+  {
+    std::vector<std::vector<float>> positions;
+    try
+    {
+      positions = m_hairJob.get();
+    }
+    catch(const std::exception&)
+    {
+      positions.clear();
+    }
+    const auto job = std::move(m_hairSnapshot);
+    m_hairSnapshot.reset();
+    m_version++;
+    if(m_hairGen == m_gen && m_enabled && job && positions.size() == job->hairs.size())
+    {
+      timing::Scope t("dforce: hair lands");
+      // an item taken off while this ran is not draped
+      const std::vector<int> live = dynamics();
+      for(size_t i = 0; i < positions.size(); i++)
+      {
+        const Job::Hair& h = job->hairs[i];
+        if(std::find(live.begin(), live.end(), h.mesh) == live.end())
+          continue;
+        wrote = writeDrape(h.mesh, drapeDelta(h.rest, transformPoints(h.back, positions[i]), h.skin, h.pose)) || wrote;
+      }
+    }
+  }
   const auto onThePool = [this](std::shared_ptr<Job> job) {
     // an edit since it began ends it within a frame: the new settle needn't wait for what would be dropped
     m_jobStale = std::make_shared<std::atomic<bool>>(false);
@@ -501,7 +580,7 @@ bool Dforce::pump()
       }
     }
   }
-  if(m_scheduled && !m_job.valid() && !m_settling && std::chrono::steady_clock::now() >= m_due)
+  if(m_scheduled && !m_job.valid() && !m_hairJob.valid() && !m_settling && std::chrono::steady_clock::now() >= m_due)
   {
     m_scheduled = false;
     if(m_enabled && active())
@@ -509,14 +588,32 @@ bool Dforce::pump()
       if(auto job = prepare(m_gen))
       {
         m_settleGravity = currentGravity();
-        m_snapshot = job;
-        m_jobGen   = m_gen;
-        SettleOptions opts;
-        opts.air = kAir;
-        if(makeGpuSim)
-          m_settling = makeGpuSim(job->bodies, opts);
-        if(!m_settling)
-          onThePool(job);
+        if(!job->drapes.empty())
+        {
+          m_snapshot = job;
+          m_jobGen   = m_gen;
+          SettleOptions opts;
+          opts.air = kAir;
+          if(makeGpuSim)
+            m_settling = makeGpuSim(job->bodies, opts);
+          if(!m_settling)
+            onThePool(job);
+        }
+        if(!job->hairs.empty())
+        {
+          m_hairSnapshot = job;
+          m_hairGen      = m_gen;
+          m_hairStale    = std::make_shared<std::atomic<bool>>(false);
+          m_hairJob      = jobs::pool().submit([job, stale = m_hairStale] {
+            timing::Scope t("dforce: hair settle");
+            StrandOptions opts;
+            opts.cancelled = [stale] { return stale->load(); };
+            std::vector<std::vector<float>> out;
+            for(const Job::Hair& h : job->hairs)
+              out.push_back(settleStrands(h.strands, job->bodies, opts));
+            return out;
+          });
+        }
         m_version++;
       }
     }
@@ -562,6 +659,9 @@ bool Dforce::pumpLive()
     if(!active())
       return wrote;
     m_liveJob = prepare(m_gen);
+    // strand hair settles only: it has no live simulation
+    if(m_liveJob && m_liveJob->drapes.empty())
+      m_liveJob.reset();
     if(!m_liveJob)
       return wrote;
     SettleOptions opts;
@@ -650,6 +750,36 @@ bool Dforce::pumpLive()
   return wrote;
 }
 
+bool Dforce::writeDrape(int mesh, const std::vector<float>& delta)
+{
+  const Mesh& m = m_scene.meshes[size_t(mesh)];
+  if(!m.geo)
+    return false;
+  mesh::CageDeltas cage;
+  for(size_t v = 0; v * 3 + 2 < delta.size(); v++)
+  {
+    const float x = delta[v * 3], y = delta[v * 3 + 1], z = delta[v * 3 + 2];
+    if(std::fabs(x) + std::fabs(y) + std::fabs(z) <= 1e-4f)
+      continue;
+    cage.verts.push_back(int32_t(v));
+    cage.deltas.insert(cage.deltas.end(), {x, y, z});
+  }
+  auto target = std::make_shared<const mesh::RenderTarget>(cage.verts.empty() ? mesh::RenderTarget{} : mesh::target(*m.geo, cage));
+  morph::ChannelOptions opts;
+  opts.hidden = true;
+  opts.label  = "dForce";
+  opts.value  = 1.0;
+  opts.min    = 0.0;
+  opts.max    = 1.0;
+  // a target only goes on at a weight: one left at 0 would have this settle run for nothing
+  if(m_morphs.has(channelOf(mesh)))
+    m_morphs.setMany({{channelOf(mesh), 1.0}});
+  m_morphs.replaceCpuTarget(channelOf(mesh), mesh, std::move(target), opts);
+  if(m_draped.insert(mesh).second)
+    m_version++;
+  return true;
+}
+
 bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positions)
 {
   bool wrote = false;
@@ -664,30 +794,7 @@ bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positi
     if(!m.geo)
       continue;
     const auto local = transformPoints(d.back, positions[d.slot]);
-    const auto delta = drapeDelta(d.rest, local, d.skin, d.pose);
-    mesh::CageDeltas cage;
-    for(size_t v = 0; v * 3 + 2 < delta.size(); v++)
-    {
-      const float x = delta[v * 3], y = delta[v * 3 + 1], z = delta[v * 3 + 2];
-      if(std::fabs(x) + std::fabs(y) + std::fabs(z) <= 1e-4f)
-        continue;
-      cage.verts.push_back(int32_t(v));
-      cage.deltas.insert(cage.deltas.end(), {x, y, z});
-    }
-    auto target = std::make_shared<const mesh::RenderTarget>(cage.verts.empty() ? mesh::RenderTarget{} : mesh::target(*m.geo, cage));
-    morph::ChannelOptions opts;
-    opts.hidden = true;
-    opts.label  = "dForce";
-    opts.value  = 1.0;
-    opts.min    = 0.0;
-    opts.max    = 1.0;
-    // a target only goes on at a weight: one left at 0 would have this settle run for nothing
-    if(m_morphs.has(channelOf(d.mesh)))
-      m_morphs.setMany({{channelOf(d.mesh), 1.0}});
-    m_morphs.replaceCpuTarget(channelOf(d.mesh), d.mesh, std::move(target), opts);
-    if(m_draped.insert(d.mesh).second)
-      m_version++;
-    wrote = true;
+    wrote            = writeDrape(d.mesh, drapeDelta(d.rest, local, d.skin, d.pose)) || wrote;
   }
   if(wrote && m_mode == Mode::eSettle)
     m_version++;

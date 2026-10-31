@@ -847,6 +847,22 @@ std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo
 {
   const bool fileSimulates = file && file->simulated();
   const bool simulate      = on ? *on : fileSimulates;
+  // strand hair: the file's settings, the strands falling or not
+  if(file && file->hasStrands())
+  {
+    if(simulate == fileSimulates && strength == 1.f)
+      return file;
+    auto data       = std::make_shared<dson::DforceData>(*file);
+    data->strandsOn = simulate;
+    data->freeze    = false;
+    data->visible   = true;
+    if(data->kind == dson::DforceKind::eStatic)
+      data->kind = dson::DforceKind::eDynamic;
+    const float s = std::clamp(strength, 0.f, 1.f);
+    for(float& w : data->strandStrength)
+      w *= s;
+    return data;
+  }
   if(!simulate)
   {
     if(!fileSimulates)
@@ -898,13 +914,20 @@ std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float stre
     if(mesh.dforce && mesh.dforce->hasPolygons())
       for(int16_t l : mesh.dforce->layer)
         layer = std::max<int>(layer, l);
+  // on a hair, the switch is for its strands: the cap they grow from stays on the head
+  const auto strandsOf = [&](int m) {
+    const auto saved = it->fileDforce.find(m);
+    const auto& file = saved != it->fileDforce.end() ? saved->second : loaded.scene.meshes[size_t(m)].dforce;
+    return file && file->hasStrands();
+  };
+  const bool hair = std::any_of(it->meshes.begin(), it->meshes.end(), [&](int m) { return m >= 0 && size_t(m) < loaded.scene.meshes.size() && strandsOf(m); });
   std::vector<int> changed;
   for(int m : it->meshes)
   {
     if(m < 0 || size_t(m) >= loaded.scene.meshes.size())
       continue;
     Mesh& mesh = loaded.scene.meshes[size_t(m)];
-    if(!mesh.geo)
+    if(!mesh.geo || (hair && !strandsOf(m)))
       continue;
     // the file's own settings, kept the first time the user changes this item
     if(!it->fileDforce.count(m))
@@ -1020,11 +1043,11 @@ ClothState Figure::clothOf(const WornItem& item) const
     if(m < 0 || size_t(m) >= loaded.scene.meshes.size())
       continue;
     const Mesh& mesh = loaded.scene.meshes[size_t(m)];
-    if(!mesh.geo || mesh.geo->cagePolyStart.size() < 2)
+    const auto  file = item.fileDforce.count(m) ? item.fileDforce.at(m) : mesh.dforce;
+    if(!mesh.geo || (mesh.geo->cagePolyStart.size() < 2 && !(file && file->hasStrands())))
       continue;
-    s.able          = true;
-    const auto file = item.fileDforce.count(m) ? item.fileDforce.at(m) : mesh.dforce;
-    if(file && file->hasPolygons())
+    s.able = true;
+    if(file && (file->hasPolygons() || file->hasStrands()))
       s.native = true;
     s.loosest = std::max(s.loosest, clothLoosest(file));
     if(mesh.dforce && mesh.dforce->simulated())

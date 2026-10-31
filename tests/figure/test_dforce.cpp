@@ -12,6 +12,7 @@
 #include <figure/dforce/dforce.hpp>
 #include <figure/dforce/skin.hpp>
 #include <figure/dforce/solver.hpp>
+#include <figure/dforce/strands.hpp>
 #include <figure/dson/dforce.hpp>
 #include <figure/figure.hpp>
 #include <figure/morph/morph_set.hpp>
@@ -2014,4 +2015,344 @@ TEST(Dforce, anEditToADrapedMeshSettlesAgain)
   EXPECT_FALSE(d.busy());
   d.changed({1}, false);
   EXPECT_TRUE(d.busy());
+}
+
+namespace {
+
+// Strands side by side along +x from `root`, a point every `step` cm, at the file's usual settings
+// without its pull back to the authored shape.
+dforce::StrandSet strandsAlongX(fv::Vec3 root, int count, int points, float step, float offset = 0.2f)
+{
+  dforce::StrandSet s;
+  s.start = {0};
+  for(int c = 0; c < count; c++)
+  {
+    for(int p = 0; p < points; p++)
+    {
+      s.verts.push_back(int32_t(s.posed.size() / 3));
+      s.posed.insert(s.posed.end(), {float(root.x) + float(p) * step, float(root.y), float(root.z) + float(c)});
+    }
+    s.start.push_back(int32_t(s.verts.size()));
+    s.strength.push_back(1.f);
+    s.offset.push_back(offset);
+    s.friction.push_back(0.4f);
+    s.shapeRoot.push_back(0.f);
+    s.shapeTip.push_back(0.f);
+    s.collide.push_back(1);
+  }
+  return s;
+}
+
+fv::Vec3 pointOf(const std::vector<float>& a, int v)
+{
+  return {a[size_t(v) * 3], a[size_t(v) * 3 + 1], a[size_t(v) * 3 + 2]};
+}
+
+float lengthOf(const std::vector<float>& a, const dforce::StrandSet& s, size_t strand)
+{
+  float length = 0;
+  for(int k = s.start[strand]; k + 1 < s.start[strand + 1]; k++)
+  {
+    const fv::Vec3 p = pointOf(a, s.verts[k]), q = pointOf(a, s.verts[k + 1]);
+    length += float(std::sqrt((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y) + (p.z - q.z) * (p.z - q.z)));
+  }
+  return length;
+}
+
+// A closed sphere about the origin, faces out.
+dforce::SettleMesh sphere(float radius, int rings, int segments)
+{
+  std::vector<float>    pos;
+  std::vector<uint32_t> tris;
+  const float           pi = 3.14159265f;
+  for(int r = 0; r <= rings; r++)
+    for(int s = 0; s < segments; s++)
+    {
+      const float polar = pi * float(r) / float(rings), around = 2 * pi * float(s) / float(segments);
+      pos.insert(pos.end(), {radius * std::sin(polar) * std::cos(around), radius * std::cos(polar), radius * std::sin(polar) * std::sin(around)});
+    }
+  const auto at = [&](int r, int s) { return uint32_t(r * segments + (s % segments)); };
+  for(int r = 0; r < rings; r++)
+    for(int s = 0; s < segments; s++)
+      tris.insert(tris.end(), {at(r, s), at(r, s + 1), at(r + 1, s), at(r, s + 1), at(r + 1, s + 1), at(r + 1, s)});
+  return dforce::SettleMesh::collider(pos, pos, tris, dforce::kBodyLayer, 0.2f, 0.4f);
+}
+
+}  // namespace
+
+TEST(DforceStrands, aStrandStandingOutFallsToHangFromItsRootAtItsLength)
+{
+  const auto s   = strandsAlongX({0, 100, 0}, 1, 31, 1);
+  const auto out = dforce::settleStrands(s, {});
+  ASSERT_EQ(out.size(), s.posed.size());
+  EXPECT_EQ(pointOf(out, 0).x, 0);
+  EXPECT_EQ(pointOf(out, 0).y, 100);
+  const fv::Vec3 tip = pointOf(out, 30);
+  EXPECT_NEAR(tip.y, 70, 1.5);
+  EXPECT_NEAR(tip.x, 0, 2);
+  EXPECT_NEAR(lengthOf(out, s, 0), 30, 0.6);
+}
+
+TEST(DforceStrands, aStrandRestsOnAColliderByItsOffset)
+{
+  const Grid floor = grid(80, 0);
+  const auto s     = strandsAlongX({-20, 10, 0}, 1, 41, 1, 1.f);
+  const auto out   = dforce::settleStrands(s, {dforce::SettleMesh::collider(floor.pos, floor.pos, floor.tris, dforce::kBodyLayer, 0.2f, 0.4f)});
+  float      lowest = INFINITY;
+  for(int v = 0; v < 41; v++)
+    lowest = std::min(lowest, float(pointOf(out, v).y));
+  EXPECT_GT(lowest, 0.7f);
+  EXPECT_LT(lowest, 1.3f);
+}
+
+TEST(DforceStrands, aStrandDrapesOverARoundColliderWithoutEnteringIt)
+{
+  // the signs and slopes of the distance grid over a curve, from above and past its equator
+  const float radius = 10, offset = 1;
+  const auto  s      = strandsAlongX({0, radius + offset + 0.2f, 0}, 1, 41, 1, offset);
+  const auto  out    = dforce::settleStrands(s, {sphere(radius, 48, 48)});
+  for(int v = 0; v < 41; v++)
+  {
+    const fv::Vec3 p = pointOf(out, v);
+    EXPECT_GT(std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z), radius + offset - 0.4) << v;
+  }
+  EXPECT_LT(pointOf(out, 40).y, 0);
+}
+
+TEST(DforceStrands, aPointThatStartsInsideAColliderIsBroughtOut)
+{
+  const float radius = 10;
+  auto        s      = strandsAlongX({0, radius + 1, 0}, 1, 11, 1, 0.5f);
+  // a span's worth under the surface, within the reach it can be brought back from
+  for(int v = 1; v < 11; v++)
+    s.posed[size_t(v) * 3 + 1] = float(radius - 1);
+  // every point simulated: a point between two follows its span, in or out
+  dforce::StrandOptions opts;
+  opts.spacing   = 0.5f;
+  const auto out = dforce::settleStrands(s, {sphere(radius, 48, 48)}, opts);
+  for(int v = 0; v < 11; v++)
+  {
+    const fv::Vec3 p = pointOf(out, v);
+    EXPECT_GT(std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z), radius) << v;
+  }
+}
+
+TEST(DforceStrands, wavesShorterThanASpanStayOnAHangingStrand)
+{
+  auto s = strandsAlongX({0, 100, 0}, 1, 121, 0.25f);
+  for(int v = 0; v < 121; v++)
+    s.posed[size_t(v) * 3 + 2] = 0.3f * std::sin(float(v) * 0.5f);
+  const float before = lengthOf(s.posed, s, 0);
+  const auto  out    = dforce::settleStrands(s, {});
+  EXPECT_NEAR(lengthOf(out, s, 0), before, before * 0.05f);
+  float widest = 0;
+  for(int v = 0; v < 121; v++)
+    widest = std::max(widest, std::fabs(float(pointOf(out, v).z)));
+  EXPECT_GT(widest, 0.2f);
+  EXPECT_LT(pointOf(out, 120).y, 75);
+}
+
+TEST(DforceStrands, strengthRunsFromThePoseToTheFall)
+{
+  auto       s    = strandsAlongX({0, 100, 0}, 1, 21, 1);
+  const auto full = dforce::settleStrands(s, {});
+  s.strength      = {0.f};
+  EXPECT_EQ(dforce::settleStrands(s, {}), s.posed);
+  s.strength     = {0.5f};
+  const auto mid = dforce::settleStrands(s, {});
+  EXPECT_NEAR(pointOf(mid, 20).y, (pointOf(s.posed, 20).y + pointOf(full, 20).y) / 2, 1e-3);
+}
+
+TEST(DforceStrands, aStrandAsStiffAsItCanBeHoldsItsShape)
+{
+  auto s      = strandsAlongX({0, 100, 0}, 1, 21, 1);
+  s.shapeRoot = {4.f};
+  s.shapeTip  = {4.f};
+  const auto out = dforce::settleStrands(s, {});
+  EXPECT_NEAR(pointOf(out, 20).x, 20, 0.2);
+  EXPECT_NEAR(pointOf(out, 20).y, 100, 0.2);
+}
+
+TEST(DforceStrands, theSettleEndsOnceTheStrandsAreStill)
+{
+  // already hanging: nothing to wait for, whatever the longest it may take
+  auto s = strandsAlongX({0, 100, 0}, 8, 21, 1);
+  for(size_t v = 0; v < s.posed.size() / 3; v++)
+  {
+    s.posed[v * 3 + 1] = 100 - s.posed[v * 3];
+    s.posed[v * 3]     = 0;
+  }
+  int                   frames = 0;
+  dforce::StrandOptions opts;
+  opts.cancelled = [&] { frames++; return false; };
+  dforce::settleStrands(s, {}, opts);
+  EXPECT_LT(frames, opts.maxFrames / 2);
+}
+
+TEST(DforceStrands, anEditEndsTheSettleWithinAFrame)
+{
+  const auto            s = strandsAlongX({0, 100, 0}, 1, 21, 1);
+  dforce::StrandOptions opts;
+  opts.cancelled = [] { return true; };
+  const auto out = dforce::settleStrands(s, {}, opts);
+  EXPECT_NEAR(pointOf(out, 20).y, 100, 1e-3);
+}
+
+TEST(DforceStrands, aCollideOffSurfacePassesThrough)
+{
+  const Grid floor = grid(80, 0);
+  auto       s     = strandsAlongX({-20, 10, 0}, 1, 41, 1);
+  s.collide        = {0};
+  const auto out   = dforce::settleStrands(s, {dforce::SettleMesh::collider(floor.pos, floor.pos, floor.tris, dforce::kBodyLayer, 0.2f, 0.4f)});
+  EXPECT_LT(pointOf(out, 40).y, -20);
+}
+
+// Toyen's dForce Long Hair stands straight out; hair styled up or hanging is left as it is.
+TEST(DforceStrands, onlyLongStrandsThatDontHangAreUnsettled)
+{
+  const auto of = [](float length, float dx, float dy) {
+    std::vector<float>   pos;
+    std::vector<int32_t> start{0}, verts;
+    for(int c = 0; c < 4; c++)
+    {
+      for(int p = 0; p <= 10; p++)
+      {
+        verts.push_back(int32_t(pos.size() / 3));
+        const float t = float(p) / 10 * length;
+        pos.insert(pos.end(), {dx * t, 150 + dy * t, float(c)});
+      }
+      start.push_back(int32_t(verts.size()));
+    }
+    return dson::strandsUnsettled(pos, start, verts);
+  };
+  EXPECT_TRUE(of(58, 1, 0));
+  EXPECT_FALSE(of(58, 0, -1));
+  EXPECT_FALSE(of(8, 1, 0));
+  EXPECT_FALSE(of(18, 1, 0));
+  EXPECT_FALSE(dson::strandsUnsettled({}, {}, {}));
+}
+
+namespace {
+
+// A hair of two strands on a node with a simulation modifier, one on each of two surfaces, standing
+// straight out (`dy` 0) or hanging (`dy` -1).
+std::shared_ptr<dson::DforceData> hairSettings(float dy)
+{
+  const auto scene = dson::parseDoc(R"({
+    "scene": {"modifiers": [
+      {"id": "sim", "url": "#dyn", "parent": "#Hair", "extra": [{"type": "studio/modifier/dynamic_simulation"}]},
+      {"id": "long", "url": "#set", "parent": "#Hair-1", "groups": ["Long"], "extra": [{"type": "studio/simulation_settings/dynamic_simulation"}],
+       "channel": {"id": "Collision Offset", "current_value": 2.4}},
+      {"id": "short", "url": "#set", "parent": "#Hair-1", "groups": ["Short"], "extra": [{"type": "studio/simulation_settings/dynamic_simulation"}],
+       "channel": {"id": "Collision Offset", "current_value": 0.2}}
+    ]},
+    "modifier_library": [
+      {"id": "dyn", "extra": [{"type": "studio/modifier/dynamic_simulation", "channels": [
+        {"channel": {"id": "Simulation Object Type", "current_value": 1}}]}]},
+      {"id": "set", "extra": [{"type": "studio/simulation_settings/dynamic_simulation", "channels": [
+        {"channel": {"id": "Friction", "current_value": 0.3}},
+        {"channel": {"id": "Local Shape Constraint Stiffness", "current_value": 0.01}},
+        {"channel": {"id": "Local Shape Constraint Tip Stiffness", "current_value": 0.05}}]}]}
+    ]
+  })");
+  // two strands of 40 cm over three points, on the two groups
+  const std::string y = std::to_string(100 + 20 * dy), tip = std::to_string(100 + 40 * dy);
+  const std::string x1 = dy < 0 ? "0" : "20", x2 = dy < 0 ? "0" : "40";
+  const auto geo = dson::parseDoc(R"({
+    "vertices": {"count": 6, "values": [[0,100,0],[)" + x1 + "," + y + R"(,0],[)" + x2 + "," + tip + R"(,0],[0,100,1],[)" + x1 + "," + y + R"(,1],[)" + x2 + "," + tip + R"(,1]]},
+    "polylist": {"count": 0, "values": []},
+    "polyline_list": {"count": 2, "values": [[0, 0, 0, 1, 2], [0, 1, 3, 4, 5]]},
+    "polygon_material_groups": {"count": 2, "values": ["Long", "Short"]}
+  })");
+  return dson::buildDforce(*scene, nullptr, "Hair", "Hair-1", *geo, geo->json, {});
+}
+
+}  // namespace
+
+TEST(DforceStrands, readsEachStrandsSettingsFromItsSurface)
+{
+  const auto fan = hairSettings(0);
+  ASSERT_TRUE(fan);
+  EXPECT_FALSE(fan->hasPolygons());
+  ASSERT_TRUE(fan->hasStrands());
+  ASSERT_EQ(fan->strandStart, (std::vector<int32_t>{0, 3, 6}));
+  EXPECT_EQ(fan->strandVerts, (std::vector<int32_t>{0, 1, 2, 3, 4, 5}));
+  ASSERT_EQ(fan->strandOffset.size(), 2u);
+  EXPECT_NEAR(fan->strandOffset[0], 2.4f, 1e-6);
+  EXPECT_NEAR(fan->strandOffset[1], 0.2f, 1e-6);
+  EXPECT_NEAR(fan->strandFriction[0], 0.3f, 1e-6);
+  EXPECT_NEAR(fan->strandShapeRoot[1], 0.01f, 1e-6);
+  EXPECT_NEAR(fan->strandShapeTip[1], 0.05f, 1e-6);
+  // standing out: it falls by itself. Hanging already: its file's style stays.
+  EXPECT_TRUE(fan->simulated());
+  const auto hanging = hairSettings(-1);
+  ASSERT_TRUE(hanging && hanging->hasStrands());
+  EXPECT_FALSE(hanging->simulated());
+}
+
+TEST(DforceStrands, theClothSwitchLetsStrandsFallOrHoldsThem)
+{
+  fv::mesh::BuiltMesh geo;
+  const auto          hanging = hairSettings(-1);
+  EXPECT_EQ(clothSettings(geo, hanging, std::nullopt, 1.f), hanging);
+  const auto on = clothSettings(geo, hanging, true, 0.5f);
+  ASSERT_TRUE(on);
+  EXPECT_TRUE(on->simulated());
+  EXPECT_NEAR(on->strandStrength[0], hanging->strandStrength[0] * 0.5f, 1e-6);
+
+  const auto fan = hairSettings(0);
+  EXPECT_EQ(clothSettings(geo, fan, true, 1.f), fan);
+  const auto off = clothSettings(geo, fan, false, 1.f);
+  ASSERT_TRUE(off);
+  EXPECT_FALSE(off->simulated());
+}
+
+TEST(DforceStrands, aHairInTheSceneComesDownAsItsDrape)
+{
+  // through the whole job: picked out of the scene, solved on the pool, landed as the mesh's morph
+  fv::SceneGraph scene;
+  const int      rootNode = scene.add(fv::Node{});
+  const Grid     body     = grid(8, 0);
+  scene.meshes.push_back(sceneMesh(body, false));
+
+  const auto            s = strandsAlongX({-4, 30, 0}, 2, 11, 2);
+  fv::mesh::MeshInput   in;
+  in.positions = s.posed;
+  fv::mesh::Lines lines;
+  lines.start    = s.start;
+  lines.verts    = s.verts;
+  lines.material = {0, 0};
+  in.lines       = std::move(lines);
+  fv::Mesh hair;
+  hair.geo            = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(in));
+  hair.materialGroups = {"Default"};
+  hair.materials      = {0};
+  auto data           = std::make_shared<dson::DforceData>();
+  data->strandStart     = s.start;
+  data->strandVerts     = s.verts;
+  data->strandStrength  = s.strength;
+  data->strandOffset    = s.offset;
+  data->strandFriction  = s.friction;
+  data->strandShapeRoot = s.shapeRoot;
+  data->strandShapeTip  = s.shapeTip;
+  data->strandCollide   = s.collide;
+  data->strandsOn       = true;
+  hair.dforce           = data;
+  scene.meshes.push_back(std::move(hair));
+  scene.materials.push_back({});
+  for(int i = 0; i < 2; i++)
+  {
+    fv::Node n;
+    n.kind = fv::NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, rootNode);
+  }
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+  ASSERT_TRUE(d.active());
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_EQ(d.draped(), 1);
+  // 20 cm of strand from a root at 30, so its tip is down about 10
+  EXPECT_LT(lowestOf(scene.meshes[1].geo->position), 12.f);
 }

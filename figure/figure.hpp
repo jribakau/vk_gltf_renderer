@@ -119,7 +119,7 @@ std::vector<bool> walkThroughMaterials(const SceneGraph& scene, const std::vecto
 // How a worn item stands with dForce, for the panels.
 struct ClothState
 {
-  bool  able     = false;  // it has polygons to simulate
+  bool  able     = false;  // it has polygons or strands to simulate
   bool  native   = false;  // its file carries simulation settings
   bool  on       = false;  // a mesh of it drapes now
   float strength = 1.f;

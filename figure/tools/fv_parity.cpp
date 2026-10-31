@@ -859,6 +859,106 @@ int main(int argc, char** argv)
         auto p = d.prepared();
         if(!p)
           throw std::runtime_error("nothing worn drapes");
+        // strand hair: where it ends up against where it started, and a sample of it to look at
+        if(!p->hairs.empty())
+        {
+          Json hairs = Json::array();
+          for(const auto& [mesh, strands] : p->hairs)
+          {
+            fv::dforce::StrandOptions hairOpts;
+            hairOpts.spacing       = step.value("spacing", hairOpts.spacing);
+            hairOpts.maxFrames     = step.value("frames", hairOpts.maxFrames);
+            hairOpts.substeps      = step.value("substeps", hairOpts.substeps);
+            size_t colliderTris    = 0;
+            for(const auto& b : p->bodies)
+              colliderTris += b.tris.size() / 3;
+            std::cout << "hair colliders: " << p->bodies.size() << " meshes, " << colliderTris << " tris" << std::endl;
+            const auto  hairStart  = std::chrono::steady_clock::now();
+            const auto  after      = fv::dforce::settleStrands(strands, p->bodies, hairOpts);
+            const double hairMs    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hairStart).count();
+            // what landing it costs: the move as the mesh's render target, every drawn hair
+            fv::mesh::CageDeltas landed;
+            for(size_t v = 0; v * 3 + 2 < after.size(); v++)
+            {
+              landed.verts.push_back(int32_t(v));
+              landed.deltas.insert(landed.deltas.end(), {after[v * 3] - strands.posed[v * 3], after[v * 3 + 1] - strands.posed[v * 3 + 1], after[v * 3 + 2] - strands.posed[v * 3 + 2]});
+            }
+            const auto  landStart  = std::chrono::steady_clock::now();
+            const auto  landedTarget = fv::mesh::target(*scene.meshes[size_t(mesh)].geo, landed);
+            const double landMs    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - landStart).count();
+            std::cout << "hair lands: " << landMs << " ms, " << scene.meshes[size_t(mesh)].geo->position.size() / 3 << " drawn points" << std::endl;
+            const auto  point      = [](const std::vector<float>& a, int v) { return std::array<float, 3>{a[size_t(v) * 3], a[size_t(v) * 3 + 1], a[size_t(v) * 3 + 2]}; };
+            const auto  lengthOf   = [&](const std::vector<float>& a, size_t s) {
+              double l = 0;
+              for(int k = strands.start[s]; k + 1 < strands.start[s + 1]; k++)
+              {
+                const auto u = point(a, strands.verts[size_t(k)]), w = point(a, strands.verts[size_t(k) + 1]);
+                l += std::sqrt(double((u[0] - w[0]) * (u[0] - w[0]) + (u[1] - w[1]) * (u[1] - w[1]) + (u[2] - w[2]) * (u[2] - w[2])));
+              }
+              return l;
+            };
+            std::vector<double> stretch, tips;
+            int                 hanging = 0;
+            const size_t        count   = strands.start.size() - 1;
+            Json                sample  = Json::array();
+            const int           every   = std::max(1, step.value("sampleEvery", 8));
+            for(size_t s = 0; s < count; s++)
+            {
+              const double was = lengthOf(strands.posed, s);
+              if(was > 0)
+                stretch.push_back(lengthOf(after, s) / was);
+              const auto root = point(after, strands.verts[size_t(strands.start[s])]), tip = point(after, strands.verts[size_t(strands.start[s + 1]) - 1]);
+              const float dx = tip[0] - root[0], dy = tip[1] - root[1], dz = tip[2] - root[2];
+              const float chord = std::sqrt(dx * dx + dy * dy + dz * dz);
+              if(chord > 0 && dy / chord < -0.5f)
+                hanging++;
+              tips.push_back(tip[1]);
+              if(s % size_t(every) == 0)
+              {
+                Json line = Json::array();
+                for(int k = strands.start[s]; k < strands.start[s + 1]; k += 4)
+                  for(float c : point(after, strands.verts[size_t(k)]))
+                    line.push_back(c);
+                sample.push_back(std::move(line));
+              }
+            }
+            std::sort(stretch.begin(), stretch.end());
+            std::sort(tips.begin(), tips.end());
+            Json body = Json::array();
+            for(size_t v = 0; v * 3 + 2 < p->bodies[0].posed.size(); v += 7)
+              for(int c = 0; c < 3; c++)
+                body.push_back(p->bodies[0].posed[v * 3 + size_t(c)]);
+            hairs.push_back({{"mesh", fileSafe(scene.meshes[size_t(mesh)].name)}, {"strands", count}, {"points", strands.posed.size() / 3}, {"ms", hairMs}, {"hangingShare", double(hanging) / double(count)},
+                             {"stretchMin", stretch.front()}, {"stretchMax", stretch.back()}, {"tipYMedian", tips[tips.size() / 2]}, {"tipYLowest", tips.front()}, {"tipYHighest", tips.back()}});
+            if(step.contains("hairDump"))
+            {
+              std::ofstream dump(root / pathOf(step["hairDump"].get<std::string>().c_str()));
+              dump << Json{{"strands", sample}, {"body", body}}.dump();
+            }
+          }
+          std::cout << "hair " << label << ": " << hairs.dump() << std::endl;
+          // as the app has it: picked up, solved on the pool and landed, a frame's call at a time
+          if(step.value("pump", false))
+          {
+            d.resimulate();
+            const auto pumpStart = std::chrono::steady_clock::now();
+            double     longest = 0;
+            bool       wrote = false;
+            int        calls = 0;
+            while(!wrote && std::chrono::steady_clock::now() - pumpStart < std::chrono::seconds(60))
+            {
+              const auto callStart = std::chrono::steady_clock::now();
+              wrote = d.pump();
+              longest = std::max(longest, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - callStart).count());
+              calls++;
+              if(!wrote)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            std::cout << "hair pump: wrote " << wrote << " in " << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pumpStart).count() << " ms, longest call " << longest << " ms over " << calls << " calls" << std::endl;
+          }
+          if(p->drapes.empty())
+            continue;
+        }
         // experiments: the cloth's own faces left out of its collisions
         if(!step.value("selfCollide", true))
           for(fv::dforce::SettleMesh& m : p->bodies)

@@ -34,6 +34,7 @@
 #include <string>
 #include <vector>
 
+#include <figure/dforce/strands.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/scene/graph.hpp>
@@ -123,6 +124,8 @@ public:
     std::vector<SettleMesh>          bodies;
     std::vector<int>                 slotMesh;
     std::vector<std::pair<int, int>> drapes;
+    // strand hair that falls: its mesh and its strands, against `bodies`
+    std::vector<std::pair<int, StrandSet>> hairs;
   };
   std::optional<Prepared> prepared() const;
 
@@ -133,6 +136,8 @@ private:
   bool                 apply(const Job& job, const std::vector<std::vector<float>>& positions);
   // The bones of a job's skinned meshes as the figure has them now, per slot (empty: unskinned).
   std::vector<std::vector<Mat4>> currentBones(const Job& job) const;
+  // Holds this drape on a mesh: cage deltas, xyz per cage vertex. True when written.
+  bool writeDrape(int mesh, const std::vector<float>& delta);
   // World down, in cm/s^2, in the job's space.
   std::array<float, 3> currentGravity() const;
   bool                           pumpLive();
@@ -158,6 +163,11 @@ private:
   bool                                           m_skippedPlaying = false;  // an edit came while a clip played
   std::shared_ptr<std::atomic<bool>>             m_jobStale;                // m_job's: an edit has made it out of date
   uint64_t                                       m_jobGen = 0;
+  // strand hair's settle, on the pool beside the cloth's: the positions per hair of its snapshot
+  std::shared_ptr<Job>                           m_hairSnapshot;
+  std::future<std::vector<std::vector<float>>>   m_hairJob;
+  std::shared_ptr<std::atomic<bool>>             m_hairStale;
+  uint64_t                                       m_hairGen = 0;
   // live: the simulation, what it was built from, the step in flight and the bones it was given
   std::shared_ptr<ClothBackend>                  m_live;
   std::shared_ptr<Job>                           m_liveJob;
