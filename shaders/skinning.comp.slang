@@ -29,6 +29,14 @@
 ConstantBuffer<SkinPushConstant> pc;
 
 // v turned by the unit quaternion q (x, y, z, w)
+// A joint scaled to zero leaves a normal of no length: normalize would make it NaN, which a sum spreads
+// and DLSS keeps. It stays as it was made.
+float3 normalizeOr(float3 v, float3 fallback)
+{
+  const float lengthSq = dot(v, v);
+  return lengthSq > 1e-20 ? v / sqrt(lengthSq) : fallback;
+}
+
 float3 quatRotate(float4 q, float3 v)
 {
   return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -84,10 +92,10 @@ void main(uint3 tid: SV_DispatchThreadID)
     pc.outPositions[v] = skinnedPos;
 
     if(hasNormals)
-      pc.outNormals[v] = normalize(skinnedNrm);
+      pc.outNormals[v] = normalizeOr(skinnedNrm, pc.baseNormals[v]);
 
     if(hasTangents)
-      pc.outTangents[v] = float4(normalize(skinnedTan), pc.baseTangents[v].w);
+      pc.outTangents[v] = float4(normalizeOr(skinnedTan, pc.baseTangents[v].xyz), pc.baseTangents[v].w);
     return;
   }
 
@@ -132,13 +140,13 @@ void main(uint3 tid: SV_DispatchThreadID)
     float3 c0    = cross(k1, k2), c1 = cross(k2, k0), c2 = cross(k0, k1);
     float  side  = dot(k0, c0) < 0.0 ? -1.0 : 1.0;
     float3 dqNrm = quatRotate(q, side * float3(dot(c0, n), dot(c1, n), dot(c2, n)));
-    pc.outNormals[v] = normalize(normalize(skinnedNrm) * (1.0 - share) + normalize(dqNrm) * share);
+    pc.outNormals[v] = normalizeOr(normalizeOr(skinnedNrm, n) * (1.0 - share) + normalizeOr(dqNrm, n) * share, n);
   }
 
   if(hasTangents)
   {
     float3 t     = pc.baseTangents[v].xyz;
     float3 dqTan = quatRotate(q, float3(dot(k0, t), dot(k1, t), dot(k2, t)));
-    pc.outTangents[v] = float4(normalize(normalize(skinnedTan) * (1.0 - share) + normalize(dqTan) * share), pc.baseTangents[v].w);
+    pc.outTangents[v] = float4(normalizeOr(normalizeOr(skinnedTan, t) * (1.0 - share) + normalizeOr(dqTan, t) * share, t), pc.baseTangents[v].w);
   }
 }

@@ -4576,12 +4576,8 @@ void GltfRenderer::refreshEntitySelection()
   const rs::Residency& residency = m_resources.retainedGpu->residency();
   for(uint32_t slot = 0; slot < residency.instanceHighWater(); slot++)
     if(const rs::Residency::Instance* inst = residency.instance(slot))
-      for(rs::EntityId e = inst->entity; !e.isNone(); e = store.entity(e)->parent)
-        if(e == m_selectedEntity)
-        {
-          m_resources.selectedRenderNodes.insert(int(slot));
-          break;
-        }
+      if(store.isWithin(inst->entity, m_selectedEntity))
+        m_resources.selectedRenderNodes.insert(int(slot));
 }
 
 void GltfRenderer::setHostClip(rs::ClipId clip, float at)

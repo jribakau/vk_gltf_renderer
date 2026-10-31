@@ -197,7 +197,7 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
     return out;
   std::vector<glm::mat3> normalMats;
   for(const glm::mat4& j : joints)
-    normalMats.push_back(glm::transpose(glm::inverse(glm::mat3(j))));
+    normalMats.push_back(rs::skinNormalMatrix(glm::mat3(j)));
   // DAZ's order: a refined mesh with no morph and its cage's influences poses its cage (positions
   // only), and its drawer's streams are that cage refined
   const size_t nc = r.cage.size();

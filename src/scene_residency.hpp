@@ -139,6 +139,15 @@ struct SyncResult
   bool dlssReset         = false;  // a scene replace, or a material or light edited
 };
 
+// A joint's normal matrix: its cofactors, on the determinant's side. The inverse transpose over the same
+// direction, but finite for a joint scaled to zero (a common way to hide a limb), where an inverse gives
+// NaN to every vertex weighted to it.
+inline glm::mat3 skinNormalMatrix(const glm::mat3& m)
+{
+  const glm::mat3 cofactors(glm::cross(m[1], m[2]), glm::cross(m[2], m[0]), glm::cross(m[0], m[1]));
+  return glm::determinant(m) < 0.f ? -cofactors : cofactors;
+}
+
 class Residency
 {
 public:

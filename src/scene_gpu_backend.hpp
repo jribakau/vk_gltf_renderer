@@ -263,6 +263,8 @@ public:
   // ---------- Images and descriptors ----------
   // The image decoded, its mips made; none when it can't be read (its slot keeps the default image).
   virtual ImageHandle createImage(const ImageSource& source, ImageInfo& info) = 0;
+  // A decode a host did ahead for this file isn't needed after all: the image was there already.
+  virtual void dropPrefetch(const std::string& /*uri*/, bool /*srgb*/) {}
   // Several at once, in order (a backend may decode them side by side); `images` and `infos` as
   // long as `sources`
   virtual void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos)

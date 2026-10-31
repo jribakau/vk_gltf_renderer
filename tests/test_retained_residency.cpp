@@ -1295,6 +1295,53 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
     ADD_FAILURE() << p;
 }
 
+TEST(RetainedResidency, ANormalMatrixStaysFiniteForAJointScaledToZero)
+{
+  // the inverse transpose's direction, whatever the scale, the rotation or a mirror
+  const glm::mat3 turned = glm::mat3(glm::rotate(glm::mat4(1.f), 0.7f, glm::vec3(0.f, 1.f, 0.f)));
+  for(const glm::mat3& m : {turned, 2.f * turned, turned * glm::mat3(glm::scale(glm::mat4(1.f), glm::vec3(1.f, 3.f, 0.5f))), glm::mat3(glm::scale(glm::mat4(1.f), glm::vec3(-1.f, 1.f, 1.f)))})
+  {
+    const glm::vec3 n(0.3f, 0.5f, 0.8f);
+    const glm::vec3 expected = glm::normalize(glm::transpose(glm::inverse(m)) * n);
+    const glm::vec3 got      = glm::normalize(skinNormalMatrix(m) * n);
+    EXPECT_NEAR(glm::dot(expected, got), 1.f, 1e-5f);
+  }
+  const glm::mat3 gone = skinNormalMatrix(glm::mat3(0.f));
+  for(int c = 0; c < 3; c++)
+    for(int r = 0; r < 3; r++)
+      EXPECT_TRUE(std::isfinite(gone[c][r]));
+}
+
+TEST(RetainedResidency, AFileAlreadyThereLetsGoOfWhatAWorkerDecodedForIt)
+{
+  const std::filesystem::path file = std::filesystem::temp_directory_path() / "fv residency prefetch.png";
+  std::ofstream(file, std::ios::binary) << "not read by the fake";
+  RetainedScene scene;
+  const auto    record = [&] {
+    TextureRecord t;
+    t.uri      = file.generic_string();
+    t.mimeType = "image/png";
+    t.width    = 4;
+    t.height   = 4;
+    return t;
+  };
+  const TextureId a = scene.addTexture(record()), same = scene.addTexture(record());
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({a, {}});
+  table->push_back({same, {}});
+  const MeshId grid = scene.addMesh(gridMesh(2, 0.f, 2));
+  drawn(scene, "e", grid, {textured(scene, table, 0), textured(scene, table, 1)});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.imageCounts().reused, 1u);
+  EXPECT_EQ(gpu.droppedPrefetches, std::vector<std::string>{file.generic_string()});
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+  std::filesystem::remove(file);
+}
+
 // Lights are dense in document order; a hidden one shines with nothing, and a moved one is packed
 // again where it went.
 TEST(RetainedResidency, LightsFollowTheirEntities)

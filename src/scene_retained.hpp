@@ -531,6 +531,15 @@ public:
   void setEntityCamera(EntityId id, CameraId camera);  // references it
 
   const Entity* entity(EntityId id) const { return m_entities.get(id); }
+  // Whether `id` is `ancestor` or under it. False for an id already gone, as a residency instance can
+  // name between a compose and the next sync.
+  bool isWithin(EntityId id, EntityId ancestor) const
+  {
+    for(const Entity* e = entity(id); e; id = e->parent, e = entity(id))
+      if(id == ancestor)
+        return true;
+    return false;
+  }
   size_t        entityCount() const { return m_entities.size(); }
   const std::vector<EntityId>& roots() const { return m_roots; }
 

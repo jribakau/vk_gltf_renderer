@@ -496,6 +496,12 @@ ImageHandle VulkanGpuBackend::createImage(const ImageSource& source, ImageInfo& 
   return createFromDecoded(source, loaded, info);
 }
 
+void VulkanGpuBackend::dropPrefetch(const std::string& uri, bool srgb)
+{
+  if(m_info.takePrefetched)
+    m_info.takePrefetched(nvutils::pathFromUtf8(uri), srgb);
+}
+
 void VulkanGpuBackend::createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos)
 {
   if(!recording("createImages"))

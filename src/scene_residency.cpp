@@ -876,6 +876,9 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
           image.info  = decoded.info;
           shared      = true;
           m_imageCounts.reused++;
+          // nothing will take what a worker decoded for this wear, and it would stay in CPU memory
+          if(!record->uri.empty())
+            m_gpu.dropPrefetch(record->uri, srgb);
         }
     }
   if(image.users == 1 && !shared)
@@ -1663,7 +1666,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
   {
     std::vector<glm::mat3> normalMats(run->joints.size());
     for(size_t j = 0; j < run->joints.size(); j++)
-      normalMats[j] = glm::transpose(glm::inverse(glm::mat3(run->joints[j])));
+      normalMats[j] = skinNormalMatrix(glm::mat3(run->joints[j]));
     m_gpu.upload(m_jointPack, run->d->jointOffset, bytesOf(run->joints));
     m_gpu.upload(m_normalPack, run->d->normalOffset, bytesOf(normalMats));
     if(run->d->dualQuat)

@@ -73,6 +73,21 @@ TEST(RetainedHandles, AFreedSlotComesBackUnderANewGeneration)
   EXPECT_EQ(sum, 5);
 }
 
+TEST(RetainedScene, WhatIsGoneIsWithinNothing)
+{
+  rs::RetainedScene scene;
+  const rs::OwnerTag owner{1, 0};
+  const rs::EntityId root  = scene.createEntity("root", owner);
+  const rs::EntityId child = scene.createEntity("child", owner, root);
+  EXPECT_TRUE(scene.isWithin(child, root));
+  EXPECT_TRUE(scene.isWithin(root, root));
+  EXPECT_FALSE(scene.isWithin(root, child));
+  // as a residency instance can name it between a compose and the next sync
+  scene.destroyEntity(child);
+  EXPECT_FALSE(scene.isWithin(child, root));
+  EXPECT_FALSE(scene.isWithin(rs::EntityId{}, root));
+}
+
 TEST(RetainedScene, WorldMatricesFollowTheHierarchy)
 {
   rs::RetainedScene scene;

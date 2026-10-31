@@ -135,6 +135,7 @@ public:
   // decoded on this thread (a file, encoded bytes, or decoded pixels of 8 or 16 bits), its mips made
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
   // decoded side by side on the worker pool (a file a host prefetched taken instead), then made in order
+  void dropPrefetch(const std::string& uri, bool srgb) override;
   void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override;
   uint32_t                  maxImageExtent() const override { return m_info.maxImageExtent ? m_info.maxImageExtent() : 0; }
   std::optional<int64_t>    imageHeadroom() const override { return m_info.imageHeadroom ? m_info.imageHeadroom() : std::nullopt; }

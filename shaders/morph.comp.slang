@@ -47,7 +47,9 @@ void main(uint3 tid: SV_DispatchThreadID)
       continue;
 
     uint offset = t * pc.vertexCount + v;
-    pos += weight * pc.positionDeltas[offset];
+    // a target may move only normals, which glTF allows: there is no position buffer then
+    if(pc.positionDeltas != nullptr)
+      pos += weight * pc.positionDeltas[offset];
 
     if(hasNormals && pc.normalDeltas != nullptr)
       nrm += weight * pc.normalDeltas[offset];

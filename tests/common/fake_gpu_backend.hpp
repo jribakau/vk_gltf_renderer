@@ -115,6 +115,8 @@ public:
   // components, less the levels source.maxExtent leaves out; a source with nothing in it, or a uri
   // starting "missing", can't be read, and one starting "nomem" finds no GPU memory
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
+  void dropPrefetch(const std::string& uri, bool) override { droppedPrefetches.push_back(uri); }
+  std::vector<std::string> droppedPrefetches;
   void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override
   {
     m_imageBatches.push_back(sources.size());
