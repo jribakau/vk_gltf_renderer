@@ -578,8 +578,7 @@ checklist differs from the PBR pattern above:
 5. Wire the new NGX input in `Dlss::evaluateNr()` or the appropriate evaluate function
    (`src/dlss.cpp`), reading directly from `m_innerGBuffer`.
 6. tinygltf helpers (`src/tinygltf_utils.{hpp,cpp}`), material cache loading
-   (`src/gltf_material_cache.cpp`), extension registration (`src/gltf_scene.cpp`), and inspector
-   UI (`src/ui_inspector.{hpp,cpp}`) follow the same pattern as PBR extensions — see
+   (`src/gltf_material_cache.cpp`), and extension registration (`src/gltf_scene.cpp`) follow the same pattern as PBR extensions — see
    `EXT_DLSS_NR` for the complete example.
 7. Update [`docs/denoising.md`](denoising.md) (for guide-buffer / denoiser integration).
 
@@ -797,11 +796,10 @@ Use [RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md) as the source of trut
 ## The legacy scene and `SceneGpuView`
 
 A stream session draws the Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md),
-which its host feeds (below); a windowed or `--scenefile` session draws the legacy scene. Both
+which its host feeds (below); a `--scenefile` session draws the legacy scene. Both
 renderers read the scene through `SceneGpuView` (src/scene_gpu_view.hpp, `Resources::gpuView()`).
 In a stream session there is no legacy scene: `Resources::getScene()` is null, and every use of it
-(`Scene::getModel()`, `editScene()`, `sceneVk`, `sceneRtx`) outside the frozen `src/ui_*` files
-either has a retained branch or is legacy-only and checks for it. A new use picks one.
+(`Scene::getModel()`, `editScene()`, `sceneVk`, `sceneRtx`) either has a retained branch or is legacy-only and checks for it. A new use picks one.
 
 **Through `SceneGpuView`**:
 - `PathTracer`: the scene descriptor, the TLAS, the bounds for the aperture and ground sliders,
@@ -823,7 +821,7 @@ either has a retained branch or is legacy-only and checks for it. A new use pick
   drags to `GizmoHooks` on `EntityId`.
 - Clips: `setHostClip`, `seekHostClip`, `advanceHostClip`, a `rs::ClipPlayer` on the store.
 
-**Legacy-only**, windowed and `--scenefile` sessions:
+**Legacy-only**, `--scenefile` sessions:
 - `src/gltf_scene*` (`Scene`, `SceneVk`, `SceneRtx`, `AnimationVk`, `TransformComputeVk`,
   `SceneOmm`, `SceneGpu`, the validator), `scene_gpu_view_legacy.cpp`.
 - In `GltfRenderer`: `createVulkanScene`, `buildAccelerationStructures`, `updateSceneChanges*`,

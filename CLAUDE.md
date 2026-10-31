@@ -50,12 +50,9 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 | Supported glTF extensions | `m_supportedExtensions` in `src/gltf_scene.cpp` |
 | glTF versions that load, the version a save writes, what counts as a 2.1 feature | `src/gltf_version.cpp` |
 | Visualization / debug modes | `enum Visualization` in `shaders/shaderio.h` |
-| Environment types | `enum EnvSystem` in `shaders/shaderio.h`, and the picker in `src/ui_renderer.cpp` |
+| Environment types | `enum EnvSystem` in `shaders/shaderio.h` |
 | Command-line / MCP / persisted settings (names, defaults, whether they persist) | `m_settings.add(...)` in `src/renderer*.cpp`, plus `parameterRegistry.add(...)` in `src/main.cpp` and `src/benchmarking.cpp` |
-| Menu commands, their labels and keyboard shortcuts (including Esc in presentation mode and the file-drop modifiers) | `GltfRenderer::registerCommands()` in `src/ui_renderer.cpp` (the `ui::CommandRegistry`, `src/ui_commands.hpp`) — menus, toolbar, key handling and Help > Keyboard & Mouse all read it |
 | Viewport mouse bindings (camera drags, wheel, click to select, double-click to set the point of interest) and camera movement keys | `kBindings` in `src/camera_controls.cpp` — the manipulator, the viewport input handling, `mouseClickedInViewport()` and Help's Camera tab all read it |
-| Menu layout, UI panels | menu/UI builders in `src/ui_renderer.cpp` (and other `src/ui_*`) |
-| Elements-list categories, columns, CRUD | `ensureElementRegistry()` (the `ElementTypeDesc` array) in `src/ui_scene_browser_elements.cpp` |
 | Material extension gates | `MAT_EXT_*` in `shaders/gltf_material_config.h`, `GLTF_USE_*` in `shaders/gltf_eval_config.h` |
 | Host/device structs & layout | `shaders/shaderio.h` + the `*_io.h.slang` / `*_shaderio.h.slang` headers |
 | Which files are tests/benchmarks | `tests/CMakeLists.txt` |
@@ -77,16 +74,10 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 - `src/sky_bruneton.*` — the Bruneton precomputed-atmospheric-scattering LUTs and the six compute
   passes that build them. The only physical sky; the older MDL one was deleted from this repo (it
   stays in `nvpro_core2` for other samples).
-- `src/sun_position.*` — NOAA solar position, behind the Environment panel's Time of Day widget.
+- `src/sun_position.*` — NOAA solar position.
   A pure function with no dependency on the rest of the renderer; nothing else links against it.
 - `src/sky_preset.*` — `.sky.json`: one sky as a file of its own. The text layer only; the
   serializer is `gltf_environment_sky`'s, so a preset and a glTF cannot drift.
-- `src/ui_*` — ImGui panels (inspector, scene browser, animation, environment);
-  viewport and menus live in `ui_renderer.cpp`. One panel per file. The Scene Browser's **Elements** tab is
-  data-driven: one `ElementTypeDesc` per glTF collection
-  (`ui_scene_browser_elements.cpp`) feeds a single generic list renderer. Menu items, toolbar
-  toggles and keyboard shortcuts are commands in one registry (`ui_commands.hpp`, filled by
-  `registerCommands()`); keys are routed with `ImGui::Shortcut()`.
 - `src/mcp_timing.{cpp,hpp}` — the optional MCP endpoint (`--mcp`): recompile
   shaders and time a GPU pass, so an agent can measure a shader change. Loading
   and every other setting go through the parameter registry instead. Built only
@@ -110,7 +101,7 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   descriptors are built once and consumed by both. A change for one path must
   not fork or duplicate that shared state — if you touch shared resources,
   verify both paths still work. One scene backend owns them per session: the
-  legacy scene in a windowed session, the retained scene in a stream session;
+  legacy scene under `--scenefile`, the retained scene in a stream session;
   both renderers read whichever it is through `SceneGpuView`
   (`Resources::gpuView()`), never the backend's own objects.
 - **RenderNode / RenderPrimitive arrays are derived and regenerated** from the
@@ -217,9 +208,9 @@ you are expected to keep them that way:
   Check `docs/developer.md` and the sibling `nvpro_core2/` repo first. Keep it
   DRY — this codebase is meant to grow cleanly, not accrete duplicates.
 - Match the naming and file-pairing already in `src/` (`foo.cpp` / `foo.hpp`,
-  `*_vk` for Vulkan-resource owners, `ui_*` for panels, `gltf_scene_*` for
+  `*_vk` for Vulkan-resource owners, `gltf_scene_*` for
   scene subsystems).
-- Slang shaders, not GLSL. Shader hot-reload is **Ctrl+Shift+R** at runtime.
+- Slang shaders, not GLSL.
 - **Text files are stored as LF**, enforced by `.gitattributes` (`* text=auto`).
   Your working tree follows your own `core.autocrlf` / `core.eol`, not your OS:
   `autocrlf=true` gives CRLF, `input` gives LF, and `false` defers to `core.eol`
