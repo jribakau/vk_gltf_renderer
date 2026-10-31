@@ -101,6 +101,7 @@ struct Effective
   float                specular = 0, clearcoat = 0, clearcoatRoughness = 0.1f;
   Rgb                  emissive{0, 0, 0};
   float                emissiveIntensity = 1;
+  bool                 colorBaked = false;  // the colour is in the base map's bake: a change to it cooks a texture
 };
 
 // A material with its slots' indices naming `requests`, not textures

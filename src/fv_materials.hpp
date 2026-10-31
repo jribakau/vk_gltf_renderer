@@ -63,7 +63,8 @@
 // Topic "materials/<prop>": {figure, items: {"m:3": {name, kind, shader, meshes, textures, values,
 // edited, eye?, makeup?}}, eyes?, skin?} as a snapshot when the prop is attached, then merge patches; `values` are
 // what the renderer was given (edits included), `edited` lists the values that are edits, `meshes`
-// the prop's meshes using it. An eye's surface has `eye: {iris, sclera, baked}` (the colours it
+// the prop's meshes using it. `colorBaked`: its colour is in a bake, so the panel applies it on release.
+// An eye's surface has `eye: {iris, sclera, baked}` (the colours it
 // takes, and whether changing them cooks its map) and always has irisColor/irisStrength or
 // scleraColor in `values`, a colour null when unset. A surface with a makeup layer has
 // `makeup: {mapped}` (whether a map shapes it) and makeupColor (null when unset) and makeupWeight
@@ -197,8 +198,27 @@ private:
   void     write(const std::set<int>& materials);
   void writeModel(int index);
   fv::Json modelItem(int index) const;
+  // A texture being made, and whether any material still wants it
+  struct BakeItem
+  {
+    fv::build::TextureRequest          request;
+    std::shared_ptr<std::atomic<bool>> unwanted;
+  };
+  struct BakeResult
+  {
+    fv::build::TextureRequest              request;
+    std::optional<fv::build::TextureImage> image;
+    bool                                   skipped = false;  // nobody wanted it by its turn: not made
+  };
+  // Asks for `requests`. One bake runs at a time per figure, since a cook can't be stopped: what's asked
+  // meanwhile waits, and what a material has moved on from by its turn is dropped unmade, so a drag
+  // makes the bake it started with and the one it ended on, not one per frame.
   void bake(std::vector<fv::build::TextureRequest> requests);
-  void baked(std::vector<std::pair<fv::build::TextureRequest, std::optional<fv::build::TextureImage>>> results, uint64_t generation);
+  void startBake();
+  // marks what no material wants now, and what it wants again
+  void markUnwanted();
+  void forgetBakes();
+  void baked(std::vector<BakeResult> results, uint64_t generation);
   void publish(const std::set<int>& materials, bool all);
   std::string stateOf(const fv::mat::Lowered& lowered) const;
   fv::Json item(int index) const;
@@ -220,8 +240,11 @@ private:
   std::vector<std::string>                            m_modelImages;  // per texture of its file, the image's name
   std::vector<fv::mat::LowerOptions>                  m_options;
   std::set<std::string>                               m_failed;    // keys a cook could not make
-  std::set<std::string>                               m_baking;    // keys in flight
+  std::map<std::string, std::shared_ptr<std::atomic<bool>>> m_baking;  // keys queued or in flight, each's BakeItem::unwanted
+  std::vector<BakeItem>                               m_bakeQueue;
+  bool                                                m_bakeRunning = false;
   std::set<int>                                       m_waiting;   // materials that need them
+  std::map<int, std::set<std::string>>                m_wants;     // each of those, the keys it needs
   bool                                                m_held = false;
   std::set<int>                                       m_heldChanges;  // noted while held
   std::vector<std::string>                            m_applied;   // per material, the glTF last written (as JSON text)

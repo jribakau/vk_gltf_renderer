@@ -48,6 +48,7 @@
 #include <figure/materials/material_gltf.hpp>
 
 #include "fv_figure_feed.hpp"
+#include "common/fake_host_renderer.hpp"
 #include "fv_figure_feed_check.hpp"
 #include "fv_events.hpp"
 #include "fv_materials.hpp"
@@ -936,17 +937,19 @@ struct TonedBox
     };
     feed = std::make_unique<fv::FigureFeed>(store, fv::FigureFeedOptions{.build = options});
     materials = std::make_unique<FvMaterials>(FvMaterials::Hooks{
+        .renderer = &renderer,
         .events = &events,
         .post =
             [this](std::function<void()> run) {
               std::lock_guard lock(mutex);
               posted.push_back(std::move(run));
             },
-        .notice  = [](const std::string&, const char*) {},
+        .notice  = [this](const std::string&, const char*) { notices++; },
         .nextJob = [this] { return uint64_t(++asked); },
         .job     = [](uint64_t, const fv::Json&) {},
         .texture = [this](const fv::build::TextureRequest& req, bool) -> std::optional<fv::build::TextureImage> {
           gate.wait();
+          cooks++;
           if(failing)
             return std::nullopt;
           return fv::build::TextureImage{.uri = "/baked" + req.rel + "?" + req.recolor->reference, .mimeType = "image/png"};
@@ -975,9 +978,9 @@ struct TonedBox
     materials->extend(feed->lowering(), feed->takeKept());
   }
 
-  void tone()
+  void tone(const char* color = "#aa7755")
   {
-    materials->set({{"material", {"m:" + std::to_string(body), "m:" + std::to_string(head)}}, {"values", {{"tone", "#aa7755"}}}});
+    materials->set({{"material", {"m:" + std::to_string(body), "m:" + std::to_string(head)}}, {"values", {{"tone", color}}}});
   }
 
   // what's been posted back, once a bake has
@@ -1025,13 +1028,16 @@ struct TonedBox
   fv::build::BuildOptions                        options;
   std::map<std::string, fv::build::TextureImage> images;  // by request key: what a bake made
   std::set<std::string>                          gone;    // rels whose files aren't there
-  std::atomic<int>                               asked{0};
+  std::atomic<int>                               asked{0};   // the bakes started
+  std::atomic<int>                               cooks{0};   // the textures they made
+  std::atomic<int>                               notices{0};
   std::atomic<bool>                              failing{false};
   std::promise<void>                             opened;
   std::shared_future<void>                       gate;
   std::mutex                                     mutex;
   std::deque<std::function<void()>>              posted;
 
+  FakeHostRenderer                renderer;
   rs::RetainedScene               store;
   fv::EventHub                    events;
   std::unique_ptr<fv::FigureFeed> feed;
@@ -1183,4 +1189,91 @@ TEST(FigureFeedTone, NoTexturesAtAllKeepsNothing)
   b.scene.materials[size_t(b.head)].edits.roughness = 0.35f;
   b.feed->sync(b.scene, b.f->loaded.root);
   EXPECT_FLOAT_EQ(b.store.material(b.feed->materialOf(b.head))->payload.roughness, 0.35f);
+}
+
+// A drag over a baked value: the bake it started with runs out, since a cook can't be stopped, and the
+// one it ended on follows. Nothing between is made, and the surfaces end on the last.
+TEST(FvMaterialsBake, ADragMakesTheFirstAndTheLastNotEveryStep)
+{
+  TonedBox b;
+  b.attach();
+  b.close();
+  b.tone("#100000");
+  EXPECT_EQ(b.asked, 1);
+  for(const char* step : {"#200000", "#300000", "#400000", "#500000"})
+    b.tone(step);
+  EXPECT_EQ(b.asked, 1);
+
+  b.opened.set_value();
+  b.landed();
+  EXPECT_EQ(b.asked, 2);
+  b.landed();
+  EXPECT_EQ(b.asked, 2);
+
+  // the first's first texture, already being made, and the last's two. The first's second never was.
+  EXPECT_EQ(b.cooks, 3);
+  int toned = 0;
+  for(const fv::mat::TextureRequest& r : fv::build::textureRequests(b.scene, b.options.skin))
+    if(r.recolor)
+    {
+      toned++;
+      EXPECT_TRUE(b.images.count(fv::build::requestKey(r))) << r.rel;
+    }
+  EXPECT_EQ(toned, 2);
+  EXPECT_EQ(b.images.size(), 3u);
+  EXPECT_EQ(b.base(b.head), "/baked" + kHeadMap + "?" + kBodyMap);
+  EXPECT_EQ(b.notices, 0);
+}
+
+// Back to the colour being made: the bake in flight is wanted again, not made twice
+TEST(FvMaterialsBake, AColourDraggedBackTakesTheBakeInFlight)
+{
+  TonedBox b;
+  b.attach();
+  b.close();
+  b.tone("#100000");
+  b.tone("#200000");
+  b.tone("#100000");
+  b.opened.set_value();
+  b.landed();
+  EXPECT_EQ(b.asked, 1);
+  EXPECT_EQ(b.cooks, 2);
+  EXPECT_EQ(b.base(b.head), "/baked" + kHeadMap + "?" + kBodyMap);
+}
+
+// What nobody wants by the time it's made isn't decoded for a scene that won't take it
+TEST(FvMaterialsBake, ABakeNobodyWantsIsNotDecoded)
+{
+  TonedBox b;
+  b.attach();
+  b.close();
+  b.tone("#100000");
+  b.tone("#200000");
+  b.opened.set_value();
+  b.landed();
+  EXPECT_EQ(b.renderer.prefetches, 0);
+  b.landed();
+  EXPECT_EQ(b.renderer.prefetches, 2);
+}
+
+// An edit taken back while its bake runs leaves nothing behind: no map from it, nothing called failed
+TEST(FvMaterialsBake, AnEditTakenBackLeavesNoBakeBehind)
+{
+  TonedBox b;
+  b.attach();
+  b.close();
+  b.tone();
+  b.materials->reset({{"material", {"m:" + std::to_string(b.body), "m:" + std::to_string(b.head)}}});
+  b.opened.set_value();
+  b.landed();
+  EXPECT_EQ(b.base(b.head), "/source" + kHeadMap);
+  EXPECT_EQ(b.notices, 0);
+  EXPECT_EQ(b.asked, 1);
+  EXPECT_EQ(b.renderer.prefetches, 0);
+
+  // and the same tone asked again is made: dropped isn't failed
+  b.tone();
+  EXPECT_EQ(b.asked, 2);
+  b.landed();
+  EXPECT_EQ(b.base(b.head), "/baked" + kHeadMap + "?" + kBodyMap);
 }

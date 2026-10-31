@@ -1311,6 +1311,64 @@ TEST(Materials, TheSkinIsTheCharactersSurfacesButItsEyesAndWornItems)
   EXPECT_EQ(fv::dson::toneReference(scene, {0, 1}), "");
 }
 
+// A colour is in a bake only where it has to be, and the panel is told, so it can apply it on release:
+// a drag would otherwise cook a texture a frame. Over a cutout alone it's a factor on a white image;
+// laid under a makeup layer or a hair's translucency it isn't.
+TEST(Materials, AColourStaysOutOfABakeWhereItCan)
+{
+  const auto lowered = [](const fv::mat::Surface& s, fv::mat::Rgb color, std::optional<fv::mat::Rgb> recolor = {}) {
+    fv::mat::Edits e;
+    e.color   = color;
+    e.recolor = recolor;
+    return loweredJson(s, e, {});
+  };
+  const fv::mat::Rgb red{0.8f, 0.1f, 0.1f}, blue{0.1f, 0.1f, 0.8f};
+  const auto         keyOf = [](const LoweredJson& l) { return fv::mat::requestKey(l.requests.at(0)); };
+  const auto         factorOf = [](const LoweredJson& l) { return l.material["pbrMetallicRoughness"]["baseColorFactor"][0].get<float>(); };
+
+  // a cutout with no base map
+  fv::mat::Surface cutout;
+  cutout.name        = "Lace";
+  cutout.opacity.map = "/Runtime/Textures/lace_o.jpg";
+  EXPECT_FALSE(lowered(cutout, red).effective.colorBaked);
+  EXPECT_EQ(keyOf(lowered(cutout, red)), keyOf(lowered(cutout, blue)));
+  EXPECT_FLOAT_EQ(factorOf(lowered(cutout, red)), 0.8f);
+  EXPECT_FLOAT_EQ(lowered(cutout, red).requests.at(0).makeup->factor[0], 1.f);
+  EXPECT_EQ(lowered(cutout, red).requests.at(0).alphaRel, cutout.opacity.map);
+
+  // recoloured, it's the image that's moved
+  EXPECT_TRUE(lowered(cutout, red, blue).effective.colorBaked);
+  EXPECT_NE(keyOf(lowered(cutout, red, blue)), keyOf(lowered(cutout, blue, blue)));
+  EXPECT_FLOAT_EQ(factorOf(lowered(cutout, red, blue)), 1.f);
+
+  // a plain map, with or without a cutout: a factor
+  fv::mat::Surface mapped = cutout;
+  mapped.base.map         = "/Runtime/Textures/lace_d.jpg";
+  EXPECT_FALSE(lowered(mapped, red).effective.colorBaked);
+  EXPECT_EQ(keyOf(lowered(mapped, red)), keyOf(lowered(mapped, blue)));
+  EXPECT_FLOAT_EQ(factorOf(lowered(mapped, red)), 0.8f);
+
+  // under makeup: in the image
+  fv::mat::Surface madeUp;
+  madeUp.name     = "Lips";
+  madeUp.base.map = "/Runtime/Textures/lips_d.jpg";
+  madeUp.makeup   = fv::mat::MakeupLayer{.map = "/Runtime/Textures/lips.png", .weight = 0.8f};
+  EXPECT_TRUE(lowered(madeUp, red).effective.colorBaked);
+  EXPECT_NE(keyOf(lowered(madeUp, red)), keyOf(lowered(madeUp, blue)));
+
+  // a hair's translucency is such a layer
+  fv::mat::Surface hair;
+  hair.name         = "Hair";
+  hair.kind         = fv::mat::Kind::eHair;
+  hair.base.map     = "/Runtime/Textures/hair_d.jpg";
+  hair.translucency = fv::mat::Translucency{.weight = 0.5f, .map = "/Runtime/Textures/hair_t.jpg"};
+  EXPECT_TRUE(lowered(hair, red).effective.colorBaked);
+  EXPECT_NE(keyOf(lowered(hair, red)), keyOf(lowered(hair, blue)));
+
+  // no map at all: a factor
+  EXPECT_FALSE(lowered(fv::mat::Surface{}, red).effective.colorBaked);
+}
+
 // Drawn from both sides by what the surface is on, as Iray draws it, but for a figure; and a light
 // that says it's one-sided has a back, or it would emit twice the flux it's given. An edit says otherwise.
 TEST(Materials, WhatIsDrawnFromBothSidesGoesByWhatItIsOn)

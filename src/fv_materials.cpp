@@ -132,14 +132,17 @@ void FvMaterials::attach(const std::string&                 figureId,
   // the feed lowered every surface as it is now
   m_heldChanges.clear();
   // bakes still running were for the scene before this one, whose result is dropped: their materials ask again
-  const std::set<std::string> inflight = m_figure == figureId && !m_model ? m_baking : std::set<std::string>{};
+  std::set<std::string> inflight;
+  if(m_figure == figureId && !m_model)
+    for(const auto& [key, unwanted] : m_baking)
+      inflight.insert(key);
   m_model                              = false;
   m_figure                             = figureId;
   m_scene                              = scene;
   m_options                            = std::move(lowering);
   m_options.resize(scene->materials.size());
   m_failed.clear();
-  m_baking.clear();
+  forgetBakes();
   m_waiting.clear();
   m_flipped = texturesFlipped;
   m_skin    = skin;
@@ -221,7 +224,7 @@ void FvMaterials::attachModel(const std::string& id, const tinygltf::Model& sour
   m_figure         = id;
   m_options.clear();
   m_waiting.clear();
-  m_baking.clear();
+  forgetBakes();
   std::vector<fv::mat::Edits> edits;
   if(again)
     for(const fv::Material& m : m_modelScene.materials)
@@ -324,7 +327,7 @@ void FvMaterials::detach()
   m_applied.clear();
   m_meshesOf.clear();
   m_waiting.clear();
-  m_baking.clear();
+  forgetBakes();
   m_eyes = nullptr;
   m_skinState = nullptr;
   if(!m_figure.empty())
@@ -611,23 +614,25 @@ void FvMaterials::refresh(const std::set<int>& materials)
     m_options[mi].toneReference = toneReference;
     const fv::Material& m = m_scene->materials[mi];
     const fv::mat::Lowered     lowered = fv::mat::lower(m.surface, m.edits, m_options[mi]);
-    bool                       wait    = false;
+    std::set<std::string>      wants;
     for(const fv::mat::TextureRequest& r : lowered.requests)
     {
       const std::string key = fv::mat::requestKey(r);
       if((m_hooks.resolves && m_hooks.resolves(r)) || m_failed.count(key))
         continue;
-      wait = true;
+      wants.insert(key);
       if(!m_baking.count(key) && asked.insert(key).second)
         missing.push_back(r);
     }
     shown.insert(mi);
-    if(wait)
+    if(!wants.empty())
     {
       m_waiting.insert(mi);
+      m_wants[mi] = std::move(wants);
       continue;
     }
     m_waiting.erase(mi);
+    m_wants.erase(mi);
     const std::string state = stateOf(lowered);
     if(state != m_applied[mi])
     {
@@ -636,6 +641,7 @@ void FvMaterials::refresh(const std::set<int>& materials)
     }
   }
   write(written);
+  markUnwanted();
   if(!missing.empty())
     bake(std::move(missing));
   publish(shown, false);
@@ -652,22 +658,68 @@ void FvMaterials::write(const std::set<int>& materials)
   m_hooks.writeFigure(std::move(out));
 }
 
+void FvMaterials::markUnwanted()
+{
+  std::set<std::string> wanted;
+  for(const auto& [mi, keys] : m_wants)
+    wanted.insert(keys.begin(), keys.end());
+  for(const auto& [key, unwanted] : m_baking)
+    *unwanted = !wanted.count(key);
+}
+
+// The scene they were for is going: what runs still makes no more than it has to
+void FvMaterials::forgetBakes()
+{
+  for(const auto& [key, unwanted] : m_baking)
+    *unwanted = true;
+  m_baking.clear();
+  m_bakeQueue.clear();
+  m_wants.clear();
+}
+
 void FvMaterials::bake(std::vector<fv::build::TextureRequest> requests)
 {
-  for(const auto& r : requests)
-    m_baking.insert(fv::mat::requestKey(r));
+  for(fv::build::TextureRequest& r : requests)
+  {
+    auto unwanted = std::make_shared<std::atomic<bool>>(false);
+    m_baking[fv::mat::requestKey(r)] = unwanted;
+    m_bakeQueue.push_back({std::move(r), std::move(unwanted)});
+  }
+  startBake();
+}
+
+void FvMaterials::startBake()
+{
+  if(m_bakeRunning)
+    return;
+  std::vector<BakeItem> items;
+  for(BakeItem& item : m_bakeQueue)
+    if(*item.unwanted)
+      m_baking.erase(fv::mat::requestKey(item.request));
+    else
+      items.push_back(std::move(item));
+  m_bakeQueue.clear();
+  if(items.empty())
+    return;
+  m_bakeRunning = true;
   const uint64_t generation = m_generation;
   const uint64_t jobId      = m_hooks.nextJob ? m_hooks.nextJob() : 0;
   if(m_hooks.job)
-    m_hooks.job(jobId, {{"label", "Baking " + std::to_string(requests.size()) + (requests.size() == 1 ? " texture" : " textures")}, {"state", "running"}});
+    m_hooks.job(jobId, {{"label", "Baking " + std::to_string(items.size()) + (items.size() == 1 ? " texture" : " textures")}, {"state", "running"}});
   const bool flipped = m_flipped;
   auto       alive   = m_alive;
-  m_threads.spawn([this, requests = std::move(requests), generation, jobId, flipped, alive] {
-    std::vector<std::pair<fv::build::TextureRequest, std::optional<fv::build::TextureImage>>> results;
-    for(const auto& r : requests)
+  m_threads.spawn([this, items = std::move(items), generation, jobId, flipped, alive] {
+    std::vector<BakeResult> results;
+    for(const BakeItem& item : items)
     {
       if(!*alive)
         return;
+      const fv::build::TextureRequest& r = item.request;
+      if(*item.unwanted)
+      {
+        results.push_back({r, std::nullopt, true});
+        continue;
+      }
       std::optional<fv::build::TextureImage> image;
       try
       {
@@ -677,10 +729,10 @@ void FvMaterials::bake(std::vector<fv::build::TextureRequest> requests)
       {
         LOGW("texture %s: %s\n", r.rel.c_str(), e.what());
       }
-      // decoded here, off the app thread: the scene that takes the texture claims it
-      if(image && m_hooks.renderer)
+      // decoded here, off the app thread: the scene that takes the texture claims it, if one still will
+      if(image && m_hooks.renderer && !*item.unwanted)
         m_hooks.renderer->prefetchImage(pathOfUri(image->uri), r.srgb);
-      results.emplace_back(r, std::move(image));
+      results.push_back({r, std::move(image)});
     }
     if(!*alive)
       return;
@@ -689,19 +741,23 @@ void FvMaterials::bake(std::vector<fv::build::TextureRequest> requests)
         return;
       if(m_hooks.job)
         m_hooks.job(jobId, {{"state", "done"}});
+      m_bakeRunning = false;
       baked(std::move(results), generation);
+      startBake();
     });
   });
 }
 
-void FvMaterials::baked(std::vector<std::pair<fv::build::TextureRequest, std::optional<fv::build::TextureImage>>> results, uint64_t generation)
+void FvMaterials::baked(std::vector<BakeResult> results, uint64_t generation)
 {
   if(generation != m_generation || !m_scene)
     return;
-  for(auto& [req, image] : results)
+  for(auto& [req, image, skipped] : results)
   {
     const std::string key = fv::mat::requestKey(req);
     m_baking.erase(key);
+    if(skipped)
+      continue;
     // kept with the figure, where its feed takes it as the figure's sampler repeats it (Genesis
     // UVs use one 0..1 tile per surface group)
     if(image && m_hooks.remember)
@@ -751,7 +807,8 @@ Json FvMaterials::item(int index) const
               {"meshes", m_meshesOf[index]},
               {"textures", textures},
               {"values", values},
-              {"edited", editedKeys(m.edits)}};
+              {"edited", editedKeys(m.edits)},
+              {"colorBaked", v.colorBaked}};
   if(s.translucency && s.translucency->weight > 0)
     out["translucency"] = s.translucency->weight;
   // an eye: which of its colours it takes, and whether a change cooks its map (else it is live). The

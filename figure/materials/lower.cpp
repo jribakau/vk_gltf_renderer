@@ -343,13 +343,14 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   eff.metalness         = metalness;
 
   // a flat colour baked into the image (no base map) must not tint it again; with no image at all
-  // (makeup with no maps of its own) the factor is the colour
-  const bool bakedFlat = anyMap && baseMap.empty() && (makeup || !s.opacity.map.empty());
-  out.baseColor = {(anyMap && makeup) || bakedFlat ? 1.f : factor[0], (anyMap && makeup) || bakedFlat ? 1.f : factor[1],
-                   (anyMap && makeup) || bakedFlat ? 1.f : factor[2], opacity};
+  // (makeup with no maps of its own) the factor is the colour. Over a cutout alone it needs no baking:
+  // it's a factor on a white image with the cutout in its alpha, and a change to it cooks nothing.
+  const bool bakedFlat = anyMap && baseMap.empty() && (makeup || recolor);
+  eff.colorBaked       = anyMap && (makeup || bakedFlat);
+  out.baseColor = {eff.colorBaked ? 1.f : factor[0], eff.colorBaked ? 1.f : factor[1], eff.colorBaked ? 1.f : factor[2], opacity};
   out.metallic  = metalness;
   if(anyMap)
-    out.baseColorMap = b.base(baseMap, baseColor, s.opacity.map, makeup, irisRequest(s, e, opts), recolor, s.opacityFromAlpha);
+    out.baseColorMap = b.base(baseMap, eff.colorBaked ? baseColor : kWhite, s.opacity.map, makeup, irisRequest(s, e, opts), recolor, s.opacityFromAlpha);
 
   // roughness and metalness: one lobe from Iray's layers, with the limits the real-time view has
   // The eye's wet shells. The tear film reflects at Fresnel's full strength from a smooth surface:

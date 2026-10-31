@@ -23,6 +23,7 @@
 // so FvHost runs its commands in gtest (daz-viewer docs/command-journal-plan.md, C0). What only
 // draws (the gizmo, helper lines, the debug views) is kept or dropped; nothing is rendered.
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -43,7 +44,8 @@ public:
   bool               feedsHostScene() const override { return true; }
   bool               drawsRetainedScene() const override { return replaces > 0; }
   void               replaceHostScene() override { replaces++; }
-  void               prefetchImage(const std::filesystem::path&, bool) override {}
+  void               prefetchImage(const std::filesystem::path&, bool) override { prefetches++; }
+  std::atomic<int>   prefetches{0};
   std::string        refuseGeometry(uint64_t bytes) override
   {
     askedGeometry += bytes;
