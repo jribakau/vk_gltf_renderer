@@ -122,7 +122,7 @@
 //                                                reaches the item becomes its colour
 //   wardrobe.collision {prop, on}                 worn conforming meshes are pushed out of the posed body
 //                                                (figure/wardrobe/collider.hpp), on by default
-//   wardrobe.cloth  {prop, item, on?: bool | null, strength?}   dForce on one item: true drapes it (at the
+//   wardrobe.cloth  {prop, item, on?: bool | null, strength?, volume?}   dForce on one item: true drapes it (at the
 //                                                defaults when its file has no simulation settings), false
 //                                                holds it, null leaves it to the file; `strength` scales
 //                                                the weights (figure.hpp, clothSettings)

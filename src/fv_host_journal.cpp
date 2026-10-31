@@ -349,7 +349,7 @@ Json FvHost::Impl::journalState(const Json& scope)
     else
     {
       // turning an item's cloth on turns the figure's dForce on: that goes back after it
-      ops.push_back(op("wardrobe.cloth", {{"prop", id}, {"item", item}, {"on", w->cloth.on ? Json(*w->cloth.on) : Json()}, {"strength", w->cloth.strength}}));
+      ops.push_back(op("wardrobe.cloth", {{"prop", id}, {"item", item}, {"on", w->cloth.on ? Json(*w->cloth.on) : Json()}, {"strength", w->cloth.strength}, {"volume", w->cloth.volume}}));
       if(f.dforce)
         ops.push_back(op("dforce.enable", {{"prop", id}, {"on", f.dforce->enabled()}}));
     }

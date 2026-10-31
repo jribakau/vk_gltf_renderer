@@ -843,17 +843,18 @@ std::vector<bool> walkThroughMaterials(const SceneGraph& scene, const std::vecto
 }
 
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
-                                                      std::optional<bool> on, float strength, int layer)
+                                                      std::optional<bool> on, float strength, int layer, float volume)
 {
   const bool fileSimulates = file && file->simulated();
   const bool simulate      = on ? *on : fileSimulates;
   // strand hair: the file's settings, the strands falling or not
   if(file && file->hasStrands())
   {
-    if(simulate == fileSimulates && strength == 1.f)
+    if(simulate == fileSimulates && strength == 1.f && volume == file->strandVolume)
       return file;
-    auto data       = std::make_shared<dson::DforceData>(*file);
-    data->strandsOn = simulate;
+    auto data          = std::make_shared<dson::DforceData>(*file);
+    data->strandsOn    = simulate;
+    data->strandVolume = volume;
     data->freeze    = false;
     data->visible   = true;
     if(data->kind == dson::DforceKind::eStatic)
@@ -899,13 +900,14 @@ float clothLoosest(const std::shared_ptr<const dson::DforceData>& file)
   return 1.f;
 }
 
-std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float strength)
+std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float strength, float volume)
 {
   const auto it = std::find_if(items.begin(), items.end(), [&](WornItem& i) { return i.id == id; });
   if(it == items.end())
     return {};
   it->cloth.on       = on;
   it->cloth.strength = std::clamp(strength, 0.f, kClothLoosest);
+  it->cloth.volume   = std::clamp(volume, 0.f, 1.f);
   // an item given settings here joins the top collision layer the figure's garments use, so it
   // keeps the side of each it started on (a belt over the skirt, a bra under the shirt) rather than
   // being pushed under a garment on a higher layer
@@ -932,7 +934,7 @@ std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float stre
     // the file's own settings, kept the first time the user changes this item
     if(!it->fileDforce.count(m))
       it->fileDforce[m] = mesh.dforce;
-    auto next = clothSettings(*mesh.geo, it->fileDforce[m], on, it->cloth.strength, layer);
+    auto next = clothSettings(*mesh.geo, it->fileDforce[m], on, it->cloth.strength, layer, it->cloth.volume);
     if(next != mesh.dforce)
     {
       mesh.dforce = std::move(next);
@@ -1048,6 +1050,7 @@ ClothState Figure::clothOf(const WornItem& item) const
 {
   ClothState s;
   s.strength = item.cloth.strength;
+  s.volume   = item.cloth.volume;
   for(int m : item.meshes)
   {
     if(m < 0 || size_t(m) >= loaded.scene.meshes.size())
@@ -1060,6 +1063,8 @@ ClothState Figure::clothOf(const WornItem& item) const
     if(file && (file->hasPolygons() || file->hasStrands()))
       s.native = true;
     s.loosest = std::max(s.loosest, clothLoosest(file));
+    if(file && file->hasStrands())
+      s.strands = true;
     if(mesh.dforce && mesh.dforce->simulated())
       s.on = true;
   }

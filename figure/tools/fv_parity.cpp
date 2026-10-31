@@ -863,8 +863,9 @@ int main(int argc, char** argv)
         if(!p->hairs.empty())
         {
           Json hairs = Json::array();
-          for(const auto& [mesh, strands] : p->hairs)
+          for(auto [mesh, strands] : p->hairs)
           {
+            strands.volume = step.value("volume", strands.volume);
             fv::dforce::StrandOptions hairOpts;
             hairOpts.spacing       = step.value("spacing", hairOpts.spacing);
             hairOpts.maxFrames     = step.value("frames", hairOpts.maxFrames);

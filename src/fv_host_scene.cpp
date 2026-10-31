@@ -387,8 +387,12 @@ Json FvHost::Impl::sceneState(const Json& args)
     {
       Json entry = {{"rel", w.rel}, {"visible", w.visible}, {"label", w.label}, {"id", w.id}, {"key", w.key}};
       // dForce on the item as the user set it, when they did
-      if(w.cloth.on || w.cloth.strength != 1.f)
+      if(w.cloth.on || w.cloth.strength != 1.f || w.cloth.volume != fv::dson::kStrandVolume)
+      {
         entry["cloth"] = {{"on", w.cloth.on ? Json(*w.cloth.on) : Json(nullptr)}, {"strength", std::round(w.cloth.strength * 1e3) / 1e3}};
+        if(w.cloth.volume != fv::dson::kStrandVolume)
+          entry["cloth"]["volume"] = std::round(w.cloth.volume * 1e3) / 1e3;
+      }
       if(w.tight != 0)
         entry["tight"] = std::round(w.tight * 1e3) / 1e3;
       // the colour chosen for it, null for its own
@@ -750,7 +754,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         on = c["on"].get<bool>();
       for(const fv::WornItem& i : fig.items)
         if(relKey(i.rel) == relKey(w.value("rel", "")) && (w.value("label", "").empty() || i.label == w.value("label", "")))
-          if(!fig.setItemCloth(i.id, on, c.value("strength", 1.f)).empty())
+          if(!fig.setItemCloth(i.id, on, c.value("strength", 1.f), c.value("volume", fv::dson::kStrandVolume)).empty())
             clothChanged = true;
     }
     if(clothChanged)

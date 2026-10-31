@@ -26,6 +26,9 @@ enum class DforceKind
   eAddon,
 };
 
+// How much body strand hair keeps until someone says otherwise: see dforce::StrandSet::volume
+constexpr float kStrandVolume = 0.5f;
+
 // Per-vertex cloth settings, one value per cage vertex.
 struct DforceData
 {
@@ -58,6 +61,7 @@ struct DforceData
   // files are, and DAZ Studio simulates none until asked. On from the file only where that shape can't
   // be what was meant, long strands that don't hang (strandsUnsettled), and by the item's Cloth switch.
   bool strandsOn = false;
+  float strandVolume = kStrandVolume;
 
   // Whether the settings cover any polygons, for the cloth solver's constraints.
   bool hasPolygons() const { return polyStart.size() > 1; }

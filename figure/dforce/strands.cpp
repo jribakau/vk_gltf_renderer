@@ -27,6 +27,12 @@ constexpr float kDeepest = 3.f;
 constexpr float kCell = 1.5f;
 // In a node of the grid: too far from any face to say
 constexpr float kUnset = 1e9f;
+// At Volume 1, on top of a strand's offset: how much further off a collider its root stands, cm, and
+// as a multiple of the offset (a surface the file sets further out goes further out still)
+constexpr float kVolumeLift = 4.f, kVolumeOffsets = 2.f;
+// At Volume 1: the pull towards the way a strand grows at its root, per step, and how far along the
+// strand that has faded to nothing, as a share of its length
+constexpr float kVolumeHold = 0.15f, kVolumeHoldReach = 0.35f;
 // Frames a strand must lie still before it stops being solved
 constexpr int kStillFrames = 2;
 // Under this share of strands still moving, the hair counts as at rest
@@ -108,7 +114,9 @@ public:
   DistanceField(const std::vector<SettleMesh>& colliders, float offset, P3 from, P3 to)
   {
     const float span = std::max({to.x - from.x, to.y - from.y, to.z - from.z, 0.f});
-    m_cell           = std::max(kCell, span / 192.f);
+    // and coarser for an offset that large, which only meets broad shapes, as the band's cost goes
+    // with its cube
+    m_cell           = std::max({kCell, span / 192.f, offset / 4.f});
     // a point `offset` off a face or kDeepest behind it must find all eight of its corners known
     const float band  = std::max(offset, kDeepest) + m_cell * 1.74f;
     const float band2 = band * band;
@@ -294,7 +302,7 @@ std::vector<float> settleStrands(const StrandSet& s, const std::vector<SettleMes
     for(const float l : c.length)
       length += l;
     longest = std::max(longest, length);
-    offset  = std::max(offset, s.offset[i]);
+    offset  = std::max(offset, s.offset[i] + s.volume * (kVolumeLift + kVolumeOffsets * s.offset[i]));
     lo      = {std::min(lo.x, c.x[0].x), std::min(lo.y, c.x[0].y), std::min(lo.z, c.x[0].z)};
     hi      = {std::max(hi.x, c.x[0].x), std::max(hi.y, c.x[0].y), std::max(hi.z, c.x[0].z)};
   }
@@ -307,7 +315,7 @@ std::vector<float> settleStrands(const StrandSet& s, const std::vector<SettleMes
     Chain&       c = chains[strand];
     const size_t n = c.x.size();
     const float  shapeRoot = s.shapeRoot[strand] * kShapeScale, shapeTip = s.shapeTip[strand] * kShapeScale;
-    const float  gap       = s.offset[strand];
+    const float  lift      = s.volume * (kVolumeLift + kVolumeOffsets * s.offset[strand]);
     const bool   collide   = s.collide[strand] != 0;
     const float  friction  = std::clamp(s.friction[strand], 0.f, 1.f);
     // where each point goes: its motion, damped, and gravity
@@ -332,12 +340,13 @@ std::vector<float> settleStrands(const StrandSet& s, const std::vector<SettleMes
       const P3    shapeUnit = c.shapeUnit[i - 1];
       const P3    authored  = i == 1 ? shapeUnit : unit(turned(shapeUnit, parentWas, parentNow), shapeUnit);
       const float along     = float(i - 1) / float(std::max<size_t>(1, n - 2));
-      const float pull      = std::min(1.f, (i == 1 ? kRootShape : 1.f) * mix(shapeRoot, shapeTip, along));
+      const float hold      = s.volume * kVolumeHold * std::max(0.f, 1 - along / kVolumeHoldReach);
+      const float pull      = std::min(1.f, std::max(hold, (i == 1 ? kRootShape : 1.f) * mix(shapeRoot, shapeTip, along)));
       const P3    now       = unit(pred[i] - pred[i - 1], authored);
       P3          dir       = unit(now * (1 - pull) + authored * pull, now);
       pred[i]               = pred[i - 1] + dir * c.length[i - 1];
       P3 normal;
-      if(collide && field.pushOut(pred[i], gap, normal))
+      if(collide && field.pushOut(pred[i], s.offset[strand] + lift * (1 - along * along), normal))
       {
         // loses motion along what it rests on, and stays its length from the point above
         const P3 move    = pred[i] - c.x[i];

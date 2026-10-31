@@ -34,6 +34,10 @@ struct StrandSet
   std::vector<float> offset, friction;
   // Per strand: "Local Shape Constraint Stiffness" and its tip's, the pull back to the authored bends
   std::vector<float> shapeRoot, shapeTip;
+  // How much body the hair keeps against gravity, 0 to 1: strands stand further off what they rest on
+  // and hold the way they grow for longer, both most at the root and gone by the tip. 0 is the file's
+  // offsets alone, which on most hair leaves it flat to the head. Not a DAZ setting.
+  float volume = 0;
   // 0: passes through colliders ("Collide" off)
   std::vector<uint8_t> collide;
   std::array<float, 3> gravity{0, -980, 0};

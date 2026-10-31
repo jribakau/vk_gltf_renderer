@@ -43,6 +43,7 @@
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
+#include <figure/dson/dforce.hpp>
 #include <figure/dson/listing.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/io/timing.hpp>
@@ -710,6 +711,38 @@ TEST(FvHostWardrobe, HairLeftStandingOutFallsWhenItGoesOnAndHangingHairStaysAsIt
   rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Fan Hair.duf"}});
   ASSERT_TRUE(rig.settle());
   EXPECT_TRUE(rig.topic("dforce/" + id).value("enabled", false));
+}
+
+// A hair's Volume: published for the slider, one step of undo, and kept by a scene file only once moved.
+TEST(FvHostWardrobe, AHairsVolumeIsPublishedUndoneAndSaved)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Fan Hair.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const auto items = [&] { return rig.topic("wardrobe/" + id).value("items", Json::object()); };
+  ASSERT_EQ(items().size(), 1u);
+  const std::string item   = items().begin().key();
+  const auto        volume = [&] { return items()[item].at("cloth").value("volume", -1.f); };
+  EXPECT_TRUE(items()[item].at("cloth").value("strands", false));
+  EXPECT_FLOAT_EQ(volume(), fv::dson::kStrandVolume);
+  const auto savedCloth = [&]() -> Json {
+    for(const Json& w : rig.cmd("scene.state", {{"prop", id}}).at("result").value("worn", Json::array()))
+      if(w.contains("cloth"))
+        return w["cloth"];
+    return nullptr;
+  };
+  EXPECT_TRUE(savedCloth().is_null());
+
+  rig.cmd("wardrobe.cloth", {{"prop", id}, {"item", item}, {"volume", 0.8}});
+  EXPECT_FLOAT_EQ(volume(), 0.8f);
+  EXPECT_FLOAT_EQ(savedCloth().value("volume", -1.f), 0.8f);
+  historyStep(rig, "history.undo");
+  EXPECT_FLOAT_EQ(volume(), fv::dson::kStrandVolume);
+  historyStep(rig, "history.redo");
+  EXPECT_FLOAT_EQ(volume(), 0.8f);
 }
 
 namespace {

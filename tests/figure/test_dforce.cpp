@@ -2059,6 +2059,17 @@ float lengthOf(const std::vector<float>& a, const dforce::StrandSet& s, size_t s
   return length;
 }
 
+// A hair's file settings, standing out so that it falls by itself.
+std::shared_ptr<const dson::DforceData> hairSettingsForVolume()
+{
+  auto d          = std::make_shared<dson::DforceData>();
+  d->strandStart  = {0, 3};
+  d->strandVerts  = {0, 1, 2};
+  d->strandStrength = {1.f};
+  d->strandsOn    = true;
+  return d;
+}
+
 // A closed sphere about the origin, faces out.
 dforce::SettleMesh sphere(float radius, int rings, int segments)
 {
@@ -2117,6 +2128,66 @@ TEST(DforceStrands, aStrandDrapesOverARoundColliderWithoutEnteringIt)
     EXPECT_GT(std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z), radius + offset - 0.4) << v;
   }
   EXPECT_LT(pointOf(out, 40).y, 0);
+}
+
+TEST(DforceStrands, volumeStandsTheRootsOffAColliderAtTheStrandsLength)
+{
+  const float radius = 10, offset = 0.5f;
+  auto        s      = strandsAlongX({0, radius + offset + 0.2f, 0}, 1, 41, 1, offset);
+  const auto  flat   = dforce::settleStrands(s, {sphere(radius, 48, 48)});
+  s.volume           = 1;
+  const auto full    = dforce::settleStrands(s, {sphere(radius, 48, 48)});
+  const auto off     = [&](const std::vector<float>& a, int v) {
+    const fv::Vec3 p = pointOf(a, v);
+    return std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z) - radius;
+  };
+  // the hair rides a good way further out over the top of the head
+  EXPECT_GT(off(full, 12), off(flat, 12) + 2);
+  for(int v = 3; v < 41; v++)
+    EXPECT_GT(off(full, v), offset - 0.4) << v;
+  // no longer for it, and from the same root
+  EXPECT_NEAR(lengthOf(full, s, 0), lengthOf(flat, s, 0), 0.01);
+  EXPECT_EQ(pointOf(full, 0).y, pointOf(s.posed, 0).y);
+}
+
+TEST(DforceStrands, volumeFadesToTheFilesOffsetAtTheTip)
+{
+  // lying along a floor: lifted near the root, down to its offset at the tip
+  const Grid floor = grid(80, 0);
+  auto       s     = strandsAlongX({-20, 10, 0}, 1, 41, 1, 1.f);
+  s.volume         = 1;
+  const auto out   = dforce::settleStrands(s, {dforce::SettleMesh::collider(floor.pos, floor.pos, floor.tris, dforce::kBodyLayer, 0.2f, 0.4f)});
+  const float tip  = float(pointOf(out, 40).y);
+  EXPECT_LT(tip, 2.f);
+  EXPECT_GT(tip, 0.7f);
+  EXPECT_GT(pointOf(out, 21).y, tip + 1);
+}
+
+TEST(DforceStrands, volumeHoldsAStrandTheWayItGrowsNearItsRoot)
+{
+  // nothing to rest on: only the hold keeps the first of it out against gravity
+  auto       s    = strandsAlongX({0, 100, 0}, 1, 41, 1);
+  const auto flat = dforce::settleStrands(s, {});
+  s.volume        = 1;
+  const auto full = dforce::settleStrands(s, {});
+  EXPECT_GT(pointOf(full, 9).x, pointOf(flat, 9).x + 1);
+  // and past that it hangs
+  const fv::Vec3 a = pointOf(full, 30), b = pointOf(full, 40);
+  EXPECT_LT(std::fabs(a.x - b.x), 2);
+}
+
+TEST(DforceStrands, theClothSwitchCarriesAHairsVolume)
+{
+  fv::mesh::BuiltMesh geo;
+  const auto          fan = hairSettingsForVolume();
+  const auto          set = clothSettings(geo, fan, std::nullopt, 1.f, 0, 0.8f);
+  ASSERT_TRUE(set);
+  EXPECT_NE(set, fan);
+  EXPECT_NEAR(set->strandVolume, 0.8f, 1e-6);
+  EXPECT_NEAR(fan->strandVolume, dson::kStrandVolume, 1e-6);
+  EXPECT_TRUE(set->simulated());
+  // left at its default, the file's own settings stand
+  EXPECT_EQ(clothSettings(geo, fan, std::nullopt, 1.f), fan);
 }
 
 TEST(DforceStrands, aPointThatStartsInsideAColliderIsBroughtOut)

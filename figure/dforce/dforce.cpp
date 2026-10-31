@@ -363,6 +363,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       h.strands.shapeRoot  = data.strandShapeRoot;
       h.strands.shapeTip   = data.strandShapeTip;
       h.strands.collide    = data.strandCollide;
+      h.strands.volume     = data.strandVolume;
       h.strands.gravity    = gravity;
       h.rest               = std::move(skinned->rest);
       h.skin               = std::move(skinned->skin);

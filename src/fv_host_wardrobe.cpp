@@ -43,7 +43,7 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
                                           {"collision", !w.collision.empty()},
                                           {"tight", w.tight},
                                           {"skinHidden", w.tightPolys.size()},
-                                          {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}, {"loosest", cloth.loosest}}}};
+                                          {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}, {"loosest", cloth.loosest}, {"strands", cloth.strands}, {"volume", cloth.volume}}}};
     // its scene meshes, as the materials topic's items list theirs: which surfaces are this item's
     items["i:" + std::to_string(w.id)]["meshes"] = w.meshes;
     // the colour preset on it, null for its own; absent, as it was worn
@@ -589,7 +589,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
 Json FvHost::Impl::itemRecord(const Loaded& f, const fv::WornItem& w) const
 {
   Json rec = {{"rel", w.rel}, {"piece", pieceOfKey(w.key)}, {"key", w.key}, {"label", w.label}, {"visible", w.visible},
-              {"cloth", {{"on", w.cloth.on ? Json(*w.cloth.on) : Json()}, {"strength", w.cloth.strength}}}};
+              {"cloth", {{"on", w.cloth.on ? Json(*w.cloth.on) : Json()}, {"strength", w.cloth.strength}, {"volume", w.cloth.volume}}}};
   if(w.tight != 0)
     rec["tight"] = w.tight;
   // its dials as they are set: they leave with it
@@ -640,7 +640,7 @@ Json FvHost::Impl::wardrobeRestore(const Json& args)
     std::optional<bool> on;
     if(c.contains("on") && c["on"].is_boolean())
       on = c["on"].get<bool>();
-    target->fig->setItemCloth(id, on, c.value("strength", 1.f));
+    target->fig->setItemCloth(id, on, c.value("strength", 1.f), c.value("volume", fv::dson::kStrandVolume));
     target->fig->setItemTight(id, rec.value("tight", 0.f));
     std::vector<std::pair<std::string, double>> dials;
     const Json saved = rec.value("dials", Json::object());
@@ -714,7 +714,7 @@ Json FvHost::Impl::wardrobeRemove(const Json& args)
   return {{"ok", true}};
 }
 
-// wardrobe.cloth {prop, item, on?: bool | null, strength?}: dForce on one item (figure.hpp,
+// wardrobe.cloth {prop, item, on?: bool | null, strength?, volume?}: dForce on one item (figure.hpp,
 // clothSettings): true drapes it, at the defaults when its file has no simulation settings, false
 // holds it, null leaves it to the file; `strength` scales the weights. Turning an item on turns the
 // figure's dForce on, so the choice shows.
@@ -731,7 +731,7 @@ Json FvHost::Impl::wardrobeCloth(const Json& args)
   if(args.contains("on"))
     on = args["on"].is_boolean() ? std::optional<bool>(args["on"].get<bool>()) : std::nullopt;
   const float strength = args.value("strength", item->cloth.strength);
-  const auto  changed  = figure->fig->setItemCloth(id, on, strength);
+  const auto  changed  = figure->fig->setItemCloth(id, on, strength, args.value("volume", item->cloth.volume));
   if(figure->dforce)
   {
     if(on && *on && !figure->dforce->enabled())

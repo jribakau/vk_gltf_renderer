@@ -81,6 +81,8 @@ struct WornItem
   {
     std::optional<bool> on;
     float               strength = 1.f;
+    // strand hair's body: see dforce::StrandSet::volume
+    float               volume = dson::kStrandVolume;
   };
   Cloth cloth;
   // each mesh's settings as its file had them (null: none), kept once the user first changes them
@@ -104,7 +106,7 @@ struct WornItem
 // (strand hair) or is left as the file has it with none.
 constexpr float kClothLoosest = 2.f;
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
-                                                      std::optional<bool> on, float strength, int layer = 0);
+                                                      std::optional<bool> on, float strength, int layer = 0, float volume = dson::kStrandVolume);
 // The strength past which those settings no longer change: only weights between none and full can loosen.
 float clothLoosest(const std::shared_ptr<const dson::DforceData>& file);
 
@@ -124,6 +126,8 @@ struct ClothState
   bool  on       = false;  // a mesh of it drapes now
   float strength = 1.f;
   float loosest  = 1.f;  // see clothLoosest
+  bool  strands  = false;  // strand hair, whose `volume` means something
+  float volume   = dson::kStrandVolume;
 };
 
 struct WearResult
@@ -239,7 +243,7 @@ public:
   bool setItemVisible(int id, bool visible);
   // dForce on one item: see clothSettings. The meshes it changed are returned (the simulation and
   // the collider are to be told); empty for an unknown id or an item with nothing to simulate.
-  std::vector<int> setItemCloth(int id, std::optional<bool> on, float strength);
+  std::vector<int> setItemCloth(int id, std::optional<bool> on, float strength, float volume = dson::kStrandVolume);
   ClothState       clothOf(const WornItem& item) const;
   // Whether one of these items is strand hair falling by its own settings, as nobody has said
   // otherwise (dson::strandsUnsettled), so the figure's dForce is to be on for it.
