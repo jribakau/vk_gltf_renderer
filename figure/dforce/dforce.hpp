@@ -25,6 +25,7 @@
 
 #include <array>
 #include <chrono>
+#include <atomic>
 #include <functional>
 #include <future>
 #include <memory>
@@ -155,6 +156,7 @@ private:
   // a settle on the GPU, a slice a frame on this thread; m_snapshot is its job
   std::shared_ptr<ClothBackend>                  m_settling;
   bool                                           m_skippedPlaying = false;  // an edit came while a clip played
+  std::shared_ptr<std::atomic<bool>>             m_jobStale;                // m_job's: an edit has made it out of date
   uint64_t                                       m_jobGen = 0;
   // live: the simulation, what it was built from, the step in flight and the bones it was given
   std::shared_ptr<ClothBackend>                  m_live;

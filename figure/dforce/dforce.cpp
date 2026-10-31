@@ -142,6 +142,8 @@ void Dforce::poke()
     return;
   }
   m_gen++;
+  if(m_jobStale)
+    m_jobStale->store(true);
   m_scheduled = true;
   m_due       = std::chrono::steady_clock::now() + kDebounce;
   m_version++;
@@ -189,12 +191,16 @@ void Dforce::resimulate()
   m_scheduled = true;
   m_due       = std::chrono::steady_clock::now();
   m_gen++;
+  if(m_jobStale)
+    m_jobStale->store(true);
   m_version++;
 }
 
 void Dforce::cancel()
 {
   m_gen++;
+  if(m_jobStale)
+    m_jobStale->store(true);
   if(m_scheduled || m_job.valid() || m_settling || m_live)
     m_version++;
   m_scheduled = false;
@@ -463,9 +469,12 @@ bool Dforce::pump()
       wrote = apply(*job, positions);
   }
   const auto onThePool = [this](std::shared_ptr<Job> job) {
-    m_job = jobs::pool().submit([job] {
+    // an edit since it began ends it within a frame: the new settle needn't wait for what would be dropped
+    m_jobStale = std::make_shared<std::atomic<bool>>(false);
+    m_job      = jobs::pool().submit([job, stale = m_jobStale] {
       SettleOptions opts;
-      opts.air = kAir;
+      opts.air       = kAir;
+      opts.cancelled = [stale] { return stale->load(); };
       return settle(job->bodies, opts);
     });
   };

@@ -1668,6 +1668,18 @@ TEST(Dforce, aSlowTurnAddsUpAndATurnDuringAClipWaitsForItsEnd)
   EXPECT_TRUE(d.busy());
 }
 
+TEST(Dforce, ACancelledSettleEndsWithinAFrame)
+{
+  const Grid g = grid(6, 5);
+  dforce::SettleMesh cloth = dforce::SettleMesh::collider(g.pos, g.pos, g.tris, 0, 0.2f, 0.4f);
+  dforce::SettleOptions opts;
+  int asked = 0;
+  opts.cancelled = [&] { return ++asked > 3; };
+  dforce::ClothSim sim({cloth}, opts);
+  sim.settle();
+  EXPECT_EQ(asked, 4);
+}
+
 TEST(Dforce, ResetAllLeavesTheDrapeAndASettleBringsItBackAtAnyRate)
 {
   VeilScene       v;

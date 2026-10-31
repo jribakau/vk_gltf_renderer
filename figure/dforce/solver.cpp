@@ -1700,11 +1700,18 @@ void ClothSim::settle()
 {
   const SettleOptions& opts   = m_impl->opts;
   const int            frames = std::max(1, int(std::lround(transitionSeconds() / opts.frameDt)));
+  const auto cancelled = [&] { return opts.cancelled && opts.cancelled(); };
   for(int f = 0; f < frames; f++)
+  {
+    if(cancelled())
+      return;
     frame(float(f) / float(frames), float(f + 1) / float(frames));
+  }
   const int hold = std::max(1, int(std::ceil(opts.maxHold / opts.frameDt)));
   for(int h = 0; h < hold; h++)
   {
+    if(cancelled())
+      return;
     frame(1, 1, kHoldDamping);
     if(lastMove() < opts.restMove)
       break;

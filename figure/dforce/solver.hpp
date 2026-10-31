@@ -29,6 +29,7 @@
 // pose until the cloth is still, and a live simulation gives it the pose the figure has now every
 // frame and steps it once, so the cloth follows a drag.
 
+#include <functional>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -203,6 +204,8 @@ struct SettleOptions
   // within reach is put back outside it: cloth pulled through a limb by its edges between two
   // collision passes, or carried through by the sweep, would otherwise stay inside for good
   bool recoverLost = true;
+  // Asked once a frame: true ends the settle where it is, as an edit has made it out of date.
+  std::function<bool()> cancelled;
   // The largest move of a vertex over a frame, in cm, under which the cloth counts as still
   float restMove = 0.01f;
 };
