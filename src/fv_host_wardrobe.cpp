@@ -43,7 +43,7 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
                                           {"collision", !w.collision.empty()},
                                           {"tight", w.tight},
                                           {"skinHidden", w.tightPolys.size()},
-                                          {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}}}};
+                                          {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}, {"loosest", cloth.loosest}}}};
     // its scene meshes, as the materials topic's items list theirs: which surfaces are this item's
     items["i:" + std::to_string(w.id)]["meshes"] = w.meshes;
     // the colour preset on it, null for its own; absent, as it was worn

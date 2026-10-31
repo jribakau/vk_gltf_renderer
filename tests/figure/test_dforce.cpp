@@ -1298,6 +1298,32 @@ TEST(Dforce, anItemWithoutSimulationSettingsCanBeMadeCloth)
   EXPECT_FALSE(clothSettings(bare, nullptr, true, 1.f));
 }
 
+TEST(Dforce, keepShapeRunsFromTheFilesWeightsToClothAndToTheBody)
+{
+  const Grid g    = grid(4, 3);
+  const auto mesh = sceneMesh(g, false);
+  auto       soft = std::make_shared<dson::DforceData>(*sceneMesh(g, true).dforce);
+  ASSERT_GE(soft->strength.size(), 3u);
+  EXPECT_EQ(clothLoosest(soft), 1.f);
+  EXPECT_EQ(clothLoosest(nullptr), 1.f);
+  soft->strength[0] = 0.5f;
+  soft->strength[1] = 0.f;
+  soft->strength[2] = 1.f;
+  EXPECT_EQ(clothLoosest(soft), kClothLoosest);
+  const std::shared_ptr<const dson::DforceData> file = soft;
+  // the middle is the file's, untouched
+  EXPECT_EQ(clothSettings(*mesh.geo, file, std::nullopt, 1.f), file);
+  const auto weights = [&](float strength) {
+    const auto data = clothSettings(*mesh.geo, file, std::nullopt, strength);
+    return std::array<float, 3>{data->strength[0], data->strength[1], data->strength[2]};
+  };
+  // towards the body, and towards cloth; what the file holds stays held
+  EXPECT_EQ(weights(0.5f), (std::array<float, 3>{0.25f, 0.f, 0.5f}));
+  EXPECT_EQ(weights(1.5f), (std::array<float, 3>{0.75f, 0.f, 1.f}));
+  EXPECT_EQ(weights(kClothLoosest), (std::array<float, 3>{1.f, 0.f, 1.f}));
+  EXPECT_EQ(weights(9.f), weights(kClothLoosest));
+}
+
 TEST(Dforce, liveModeDrapesThenStepsOnlyWhileSomethingMoves)
 {
   fv::SceneGraph scene;

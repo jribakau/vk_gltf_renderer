@@ -857,7 +857,7 @@ std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo
     return held;
   }
   // as the file has it, untouched
-  if(fileSimulates && !on && strength >= 1.f)
+  if(fileSimulates && !on && strength == 1.f)
     return file;
   std::shared_ptr<dson::DforceData> data;
   if(file && file->hasPolygons())
@@ -870,10 +870,17 @@ std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo
   data->visible = true;
   if(data->kind == dson::DforceKind::eStatic)
     data->kind = dson::DforceKind::eDynamic;
-  const float s = std::clamp(strength, 0.f, 1.f);
+  const float s = std::clamp(strength, 0.f, kClothLoosest);
   for(float& w : data->strength)
-    w *= s;
+    w = s <= 1.f ? w * s : w > 0 ? w + (1.f - w) * (s - 1.f) : 0.f;
   return data;
+}
+
+float clothLoosest(const std::shared_ptr<const dson::DforceData>& file)
+{
+  if(file && std::any_of(file->strength.begin(), file->strength.end(), [](float w) { return w > 0 && w < 1; }))
+    return kClothLoosest;
+  return 1.f;
 }
 
 std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float strength)
@@ -882,7 +889,7 @@ std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float stre
   if(it == items.end())
     return {};
   it->cloth.on       = on;
-  it->cloth.strength = std::clamp(strength, 0.f, 1.f);
+  it->cloth.strength = std::clamp(strength, 0.f, kClothLoosest);
   // an item given settings here joins the top collision layer the figure's garments use, so it
   // keeps the side of each it started on (a belt over the skirt, a bra under the shirt) rather than
   // being pushed under a garment on a higher layer
@@ -1019,6 +1026,7 @@ ClothState Figure::clothOf(const WornItem& item) const
     const auto file = item.fileDforce.count(m) ? item.fileDforce.at(m) : mesh.dforce;
     if(file && file->hasPolygons())
       s.native = true;
+    s.loosest = std::max(s.loosest, clothLoosest(file));
     if(mesh.dforce && mesh.dforce->simulated())
       s.on = true;
   }

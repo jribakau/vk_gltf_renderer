@@ -76,7 +76,7 @@ struct WornItem
   bool                 tightChecked = false;
   // dForce on this item as the user set it (Figure::setItemCloth): whether its meshes simulate
   // (unset: as the file says, a Dynamic Surface does and anything else conforms) and a dynamics
-  // strength that scales the file's weights, or is every vertex's for an item the file gave none
+  // strength: see clothSettings
   struct Cloth
   {
     std::optional<bool> on;
@@ -98,10 +98,15 @@ struct WornItem
 // the file says (a Dynamic Surface drapes, anything else conforms), true drapes the mesh (at the
 // defaults of DAZ Studio's "Add dForce Modifier" when the file gives none, over the cage's polygon
 // loops), false leaves it conforming (a file's dynamic surface held frozen, so it still collides).
-// `strength` scales the weights; `layer` is the collision layer settings made here get. Null when
-// the mesh has no polygons (strand hair) or is left as the file has it with none.
+// `strength` is 1 for the file's weights; below that it scales them towards following the body, and
+// above it lifts them towards fully cloth, there at kClothLoosest, a vertex the file holds at 0 stays
+// held. `layer` is the collision layer settings made here get. Null when the mesh has no polygons
+// (strand hair) or is left as the file has it with none.
+constexpr float kClothLoosest = 2.f;
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
                                                       std::optional<bool> on, float strength, int layer = 0);
+// The strength past which those settings no longer change: only weights between none and full can loosen.
+float clothLoosest(const std::shared_ptr<const dson::DforceData>& file);
 
 // Per scene material: whether light scattering under the skin passes through it rather than
 // leaving the skin there (the renderer's "fvWalkThrough"). Lashes, hair, brows and the eyes' wet
@@ -118,6 +123,7 @@ struct ClothState
   bool  native   = false;  // its file carries simulation settings
   bool  on       = false;  // a mesh of it drapes now
   float strength = 1.f;
+  float loosest  = 1.f;  // see clothLoosest
 };
 
 struct WearResult
