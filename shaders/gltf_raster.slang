@@ -555,17 +555,24 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
     }
   }
 
-  // A cutout's test, unless the prepass made it already: its depth, tested EQUAL, is the test then
-  if(material.alphaMode == AlphaMode::eAlphaModeMask && pushConst.prepassDepth == 0)
+  if(material.alphaMode == AlphaMode::eAlphaModeMask)
   {
-    if(pbrMat.opacity < material.alphaCutoff)
+    // A cutout's test, unless the prepass made it already: its depth, tested EQUAL, is the test then.
+    // A transmissive cutout comes through the blend list, which the prepass doesn't draw
+    if((pushConst.prepassDepth == 0 || pushConst.blendPass != int(RasterBlendPass::eRasterBlendAll)) && pbrMat.opacity < material.alphaCutoff)
+      discard;
+    // what it keeps is solid, whatever its opacity
+    if(pushConst.blendPass == int(RasterBlendPass::eRasterBlendSheer))
       discard;
   }
-  // A blended surface's two draws split its texels by its own opacity (RasterBlendPass)
-  if(pushConst.blendPass == int(RasterBlendPass::eRasterBlendSolid) && pbrMat.opacity < RASTER_BLEND_SOLID)
-    discard;
-  if(pushConst.blendPass == int(RasterBlendPass::eRasterBlendSheer) && pbrMat.opacity >= RASTER_BLEND_SOLID)
-    discard;
+  else
+  {
+    // A blended surface's two draws split its texels by its own opacity (RasterBlendPass)
+    if(pushConst.blendPass == int(RasterBlendPass::eRasterBlendSolid) && pbrMat.opacity < RASTER_BLEND_SOLID)
+      discard;
+    if(pushConst.blendPass == int(RasterBlendPass::eRasterBlendSheer) && pbrMat.opacity >= RASTER_BLEND_SOLID)
+      discard;
+  }
 
 #if GLTF_USE_UNLIT
   // KHR_materials_unlit: skip lighting entirely. Match Khronos pbr.frag (color = baseColor + emissive).

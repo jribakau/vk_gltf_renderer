@@ -3082,7 +3082,7 @@ std::unordered_set<int> nvvkgltf::Scene::getMaterialRenderNodes(const std::unord
 uint8_t nvvkgltf::Scene::computeMaterialBucketKey(const tinygltf::Material& mat)
 {
   const MaterialBits bits = materialBits(mat);
-  return uint8_t((bits.alphaOpaque ? 0x1 : 0) | (bits.doubleSided ? 0x2 : 0) | (bits.transmission ? 0x4 : 0));
+  return uint8_t((bits.alphaSolid ? 0x1 : 0) | (bits.doubleSided ? 0x2 : 0) | (bits.transmission ? 0x4 : 0));
 }
 
 //-------------------------------------------------------------------------------------------------

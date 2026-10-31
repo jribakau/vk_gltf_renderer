@@ -58,12 +58,20 @@ TEST(MaterialBits, DoubleSidedTurnsCullingOff)
   EXPECT_FALSE(bits.solid() || bits.blend());
 }
 
-TEST(MaterialBits, CutoutsAndTransmissionBlend)
+TEST(MaterialBits, ACutoutIsSolidSoThePrepassTestsItAndTransmissionBlends)
 {
   tinygltf::Material mask;
   mask.alphaMode = "MASK";
-  EXPECT_TRUE(materialBits(mask).blend());
+  // the prepass draws the solid lists and tests the cutoff: in the blend list its clear texels would be
+  // shaded and written opaque
+  EXPECT_TRUE(materialBits(mask).solid());
+  EXPECT_FALSE(materialBits(mask).blend());
+  // rays still stop to test it
   EXPECT_EQ(materialBits(mask).instanceFlags, 0u);
+  tinygltf::Material sided = mask;
+  sided.doubleSided        = true;
+  EXPECT_TRUE(materialBits(sided).solidDoubleSided());
+  EXPECT_FALSE(materialBits(sided).solid() || materialBits(sided).blend());
 
   const auto glass = materialBits(transmissive(1.0));
   EXPECT_TRUE(glass.blend() && glass.transmission);

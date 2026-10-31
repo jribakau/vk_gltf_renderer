@@ -197,7 +197,7 @@ std::string rowFingerprint(const Material& m, const mat::LowerOptions& lowering)
   h          = mix(h, infos.data(), infos.size() * sizeof(infos[0]));
   h          = mix(h, &bits.instanceFlags, sizeof(bits.instanceFlags));
   h          = mix(h, &bits.instanceMask, sizeof(bits.instanceMask));
-  h          = mix(h, &bits.alphaOpaque, sizeof(bits.alphaOpaque));
+  h          = mix(h, &bits.alphaSolid, sizeof(bits.alphaSolid));
   h          = mix(h, &bits.doubleSided, sizeof(bits.doubleSided));
   h          = mix(h, &bits.transmission, sizeof(bits.transmission));
   h          = mix(h, features.data(), features.size());

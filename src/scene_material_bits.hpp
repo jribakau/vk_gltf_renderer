@@ -45,15 +45,17 @@ struct MaterialBits
 {
   uint32_t instanceFlags = 0;
   uint8_t  instanceMask  = 0;
-  // the raster buckets' key (Scene::computeMaterialBucketKey): alpha mode OPAQUE, double-sided, transmissive
-  bool alphaOpaque  = false;
+  // the raster buckets' key (Scene::computeMaterialBucketKey): no texel is part see-through (alpha mode
+  // OPAQUE, or MASK: the prepass tests the cutout and its depth is the main pass's test), double-sided,
+  // transmissive
+  bool alphaSolid   = false;
   bool doubleSided  = false;
   bool transmission = false;
 
   // the raster lists, as Scene::getShadedNodes sorts render nodes
-  bool solid() const { return alphaOpaque && !doubleSided && !transmission; }
-  bool solidDoubleSided() const { return alphaOpaque && doubleSided; }
-  bool blend() const { return !alphaOpaque || transmission; }
+  bool solid() const { return alphaSolid && !doubleSided && !transmission; }
+  bool solidDoubleSided() const { return alphaSolid && doubleSided; }
+  bool blend() const { return !alphaSolid || transmission; }
   bool operator==(const MaterialBits&) const = default;
 };
 
@@ -95,7 +97,7 @@ inline MaterialBits materialBits(const fv::mat::Material& mat)
   if(invisible(mat))
     bits.instanceMask = 0;
 
-  bits.alphaOpaque  = opaque;
+  bits.alphaSolid   = opaque || mat.alphaMode == fv::mat::AlphaMode::eMask;
   bits.doubleSided  = mat.doubleSided;
   bits.transmission = transmission > 0.f;
   return bits;

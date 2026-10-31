@@ -1277,7 +1277,7 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
 
   fv::mat::Material edited  = scene.material(mat)->payload;
   edited.baseColorMap.index = 1;  // the other sampler
-  edited.alphaMode          = fv::mat::AlphaMode::eMask;
+  edited.alphaMode          = fv::mat::AlphaMode::eBlend;
   scene.setMaterial(mat, edited);
   gpu.beginFrame();
   const SyncResult r = residency.sync(scene);
