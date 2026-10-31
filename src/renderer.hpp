@@ -57,7 +57,6 @@
 #include "shaders/shaderio.h"  // Shared between host and device
 #include "shaders/gizmo_lines_shaderio.h.slang"
 
-#include "benchmarking.hpp"
 #include "renderer_pathtracer.hpp"
 #include "renderer_rasterizer.hpp"
 #include "resources.hpp"
@@ -105,11 +104,9 @@ struct TimerMeasurement
 class GltfRenderer : public nvapp::IAppElement, public HostRenderer
 {
 public:
-  GltfRenderer(nvutils::ParameterRegistry* parameterReg, const nvutils::ParameterParser* parameterParser, BenchmarkOptions& benchmarkOptions);
+  GltfRenderer(nvutils::ParameterRegistry* parameterReg, const nvutils::ParameterParser* parameterParser);
   ~GltfRenderer() override = default;
 
-  /// Emits parseable BENCHMARK_ADV memory block (called from ParameterSequencer post-callback).
-  void benchmarkAdvance(const nvutils::ParameterSequencer::State& state);
 
   /// Load a scene from disk into `m_resources.scene`. Returns true only if a new scene was
   /// actually installed; returns false on any failure (empty path, findFile miss, OBJ parse
@@ -626,11 +623,8 @@ private:
   void applyClickPickResult(const nvvk::RayPicker::PickResult& pickResult, bool isDoubleClick);
 
   // Headless / scripted benchmark (shared automation paths)
-  [[nodiscard]] bool                             isBenchmarkMode() const;
   [[nodiscard]] bool                             isHeadlessMode() const;
   [[nodiscard]] bool                             isAutomatedRun() const;
-  BenchmarkController::HeadlessFrameInfo         benchmarkFrameInfo() const;
-  std::vector<BenchmarkController::MemorySample> benchmarkMemorySamples() const;
   void                                           saveHeadlessOutputImage();
   void saveViewportImage(const std::filesystem::path& filename);  // .hdr: linear render, else tonemapped
   std::filesystem::path headlessOutputPathOrDefault() const;
@@ -656,7 +650,6 @@ private:
 
   // UI
   void renderUI();
-  void renderBenchmarkViewport();  // Minimal fullscreen image (benchmark mode)
   void registerCommands();         // The menu, toolbar and keyboard commands (m_commands), once at attach
   bool hasValidScene();
   void renderMenu();
@@ -691,7 +684,6 @@ private:
   nvutils::Bbox getRenderNodesBbox(const std::unordered_set<int>& renderNodeIndices);
   void          windowTitle();
   void          applyGltfCamera(int cameraIndex);
-  void          applyCameraString(const std::string& text);
   void          setGltfCameraFromView(int cameraIndex);
   void          loadHdrFileDialog();
   /// The `.sky.json` pickers behind the Environment panel's two preset buttons.
@@ -801,6 +793,7 @@ private:
   // `screenshot`: saved in onPostRender from a frame drawn without the selection silhouette, the
   // grid, the gizmo and the helper lines, which otherwise go into the tonemapped image
   std::filesystem::path m_screenshotPending;
+  std::filesystem::path m_screenshotParam;  // --screenshot, taken up by m_screenshotPending
   // for refuseFrameSize on another thread: the frame's per-pixel cost and size, written each frame
   std::atomic<uint32_t> m_frameBytesPerPixel{0};
   std::atomic<uint64_t> m_frameSizePacked{0};  // width << 32 | height
@@ -931,5 +924,4 @@ private:
     bool compactScene{false};
   } m_menuRequests;
 
-  BenchmarkController m_benchmark;
 };

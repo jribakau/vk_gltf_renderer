@@ -224,9 +224,8 @@ private:
 }  // namespace
 
 // The constructor registers the parameters that can be set from the command line
-GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::ParameterParser* paramParser, BenchmarkOptions& benchmarkOptions)
+GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::ParameterParser* paramParser)
     : m_parameterParser(paramParser)
-    , m_benchmark(benchmarkOptions)
     , m_settings(paramReg)
 {
   // Every user-settable value is declared once here (see settings_registry.hpp): the command line,
@@ -346,7 +345,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  Persist::eYes, -24.0F, 24.0F);
 
   // Panel visibility: persisted before, but not settable. Exposed now so a scripted capture can
-  // hide the chrome (see docs/benchmarking.md).
+  // hide the chrome.
   m_settings.add({"uiShowCamera", "Show the Camera window"}, &m_resources.settings.showCameraWindow, Persist::eYes);
   m_settings.add({"uiShowSettings", "Show the Settings window"}, &m_resources.settings.showSettingsWindow, Persist::eYes);
   m_settings.add({"uiShowEnvironment", "Show the Environment window"}, &m_resources.settings.showEnvironmentWindow, Persist::eYes);
@@ -753,41 +752,16 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_pathTracer.registerParameters(&m_settings, [this]() { resetFrame(); });
   m_rasterizer.registerParameters(&m_settings);
 
-  m_benchmark.registerParameters(
-      paramReg, {
-                    .applyGltfCamera   = [this](int cameraIndex) { applyGltfCamera(cameraIndex); },
-                    .applyCameraString = [this](const std::string& text) { applyCameraString(text); },
-                    .fitScene =
-                        [this]() {
-                          if(m_resources.gpuView().hasContent())
-                          {
-                            const nvutils::Bbox bbox = m_resources.gpuView().bounds();
-                            m_cameraManip->fit(bbox.min(), bbox.max(), false, true, m_cameraManip->getAspectRatio());
-                            resetFrame();
-                          }
-                        },
-                    .resetFrame = [this]() { resetFrame(); },
-                    .saveScreenshot =
-                        [this](const std::filesystem::path& filename) {
-                          // the next frame is drawn without its overlays and saved once submitted (onPostRender)
-                          if(m_app)
-                            m_screenshotPending = filename;
-                        },
-                    .saveUiScreenshot =
-                        [this](const std::filesystem::path& filename) {
-                          // Capture the full composited window (ImGui panels + viewport). This reads the swapchain
-                          // PRESENT image, which only exists in a windowed run; headless has no swapchain.
-                          if(m_app && !m_app->isHeadless())
-                          {
-                            m_app->requestScreenShot(filename, 100);
-                          }
-                          else
-                          {
-                            LOGW("--uiScreenshot ignored: requires a windowed run (no swapchain in headless mode)\n");
-                          }
-                        },
-                    .selectSceneNode = [this](int index) { selectSceneNodeFromScript(index); },
-                });
+  // Saves the viewport without its overlays (scripts/render-scene.py). The next frame is drawn that
+  // way and saved once submitted (onPostRender).
+  paramReg->add({.name = "screenshot",
+                 .help = "Save the viewport to this image, without its overlays",
+                 .callbackSuccess =
+                     [this](const nvutils::ParameterBase* const) {
+                       if(m_app && !m_screenshotParam.empty())
+                         m_screenshotPending = std::exchange(m_screenshotParam, {});
+                     }},
+                {".png", ".jpg", ".jpeg"}, &m_screenshotParam);
 
   // Initialize camera manipulator
   m_cameraManip = std::make_shared<AnchorCameraManipulator>();
@@ -1162,11 +1136,6 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
 // 6. Processing changes from UI interactions and triggering re-rendering when needed
 // 7. Displaying the busy indicator during asynchronous operations
 // The UI layout is organized hierarchically with collapsible sections for better usability
-bool GltfRenderer::isBenchmarkMode() const
-{
-  return m_benchmark.isBenchmarkMode();
-}
-
 bool GltfRenderer::isHeadlessMode() const
 {
   return m_app != nullptr && m_app->isHeadless();
@@ -1174,7 +1143,7 @@ bool GltfRenderer::isHeadlessMode() const
 
 bool GltfRenderer::isAutomatedRun() const
 {
-  return isHeadlessMode() || isBenchmarkMode();
+  return isHeadlessMode();
 }
 
 void GltfRenderer::alignMaxSamplesForHeadless(uint32_t headlessFrames)
@@ -1184,7 +1153,13 @@ void GltfRenderer::alignMaxSamplesForHeadless(uint32_t headlessFrames)
     return;
   const int samplesPerFrame =
       m_pathTracer.m_adaptiveSampling ? PathTracer::MAX_ADAPTIVE_SAMPLES_PER_PIXEL : m_pathTracer.m_pushConst.numSamples;
-  BenchmarkController::alignMaxSamplesForHeadless(m_resources.settings.maxSamples, headlessFrames, samplesPerFrame);
+  const int64_t needed = std::min<int64_t>(int64_t(headlessFrames) * std::max(samplesPerFrame, 1), INT_MAX);
+  if(m_resources.settings.maxSamples < needed)
+  {
+    LOGW("ptMaxSamples (%d) is less than headless --frames (%u) x %d spp per frame; setting it to %lld\n",
+         m_resources.settings.maxSamples, headlessFrames, samplesPerFrame, static_cast<long long>(needed));
+    m_resources.settings.maxSamples = static_cast<int>(needed);
+  }
 }
 
 void GltfRenderer::applyHeadlessDefaults()
@@ -1195,35 +1170,6 @@ void GltfRenderer::applyHeadlessDefaults()
   // Nobody watches a headless frame: Auto SPP aims at throughput rather than a frame rate
   if(!(m_parameterParser && m_parameterParser->wasParsed("ptPerformanceTarget")))
     m_pathTracer.m_performanceTarget = PathTracer::PerformanceTarget::eThroughput;
-}
-
-BenchmarkController::HeadlessFrameInfo GltfRenderer::benchmarkFrameInfo() const
-{
-  return {.totalFrames = m_app ? m_app->getHeadlessFrameCount() : 0,
-          .maxSamples  = m_resources.settings.maxSamples,
-          .ptSamples   = m_pathTracer.samplesPerFrame(),
-          .samples     = m_resources.accumulatedSamples,
-          .imageSize   = m_resources.gBuffers.getSize()};
-}
-
-std::vector<BenchmarkController::MemorySample> GltfRenderer::benchmarkMemorySamples() const
-{
-  std::vector<BenchmarkController::MemorySample> samples;
-  if(m_resources.gpuView().hasContent())
-  {
-    const SceneGpuView::MemoryStats scene = m_resources.gpuView().memoryStats();
-    samples.push_back({.category = "Scene", .deviceUsed = scene.usedBytes, .deviceAllocated = scene.peakBytes});
-  }
-  else
-  {
-    samples.push_back({.category = "Scene"});
-  }
-
-  const auto& appStats = m_resources.appMemoryTracker.getTotalStats();
-  samples.push_back({.category = (m_resources.settings.renderSystem == RenderingMode::ePathtracer) ? "PathTracer" : "Rasterizer",
-                     .deviceUsed      = appStats.currentBytes,
-                     .deviceAllocated = appStats.peakBytes});
-  return samples;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1527,11 +1473,6 @@ void GltfRenderer::onUIRender()
   applyPendingResets();
   updatePresentationMode();
 
-  if(isBenchmarkMode())
-  {
-    renderBenchmarkViewport();
-    return;
-  }
   // A stream host's panels are never seen, so they are not built (0.5-3 ms of CPU a frame, est.).
   // The viewport's per-frame camera step still runs: camera transitions and camera.frame need it.
   if(m_streamHost)
@@ -1824,7 +1765,6 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // PathTracer::ensureShadersAndPipelines() watches currentFeatureSet and recompiles when this flips.
   m_resources.currentFeatureSet.set(nvvkgltf::SceneFeatureSet::eDlssGuide, dlssGuideRequired());
 
-  m_benchmark.beginHeadlessTimingIfNeeded(isHeadlessMode(), benchmarkFrameInfo());
 
   // Start the profiler section for the GPU timer
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
@@ -2057,24 +1997,13 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     m_pendingAnchorResult = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore());
     m_pendingAnchorPick.reset();
   }
-  // The grid and transform gizmo are drawn into the frame. Benchmarks keep them out (they would
-  // change the measured image); a headless --stream is the native viewport, so the grid shows there.
-  if(!isBenchmarkMode() && overlays)
+  // The grid and transform gizmo are drawn into the frame: a headless --stream is the native
+  // viewport, so the grid shows there.
+  if(overlays)
   {
     renderVisualHelpers(cmd);
   }
-
-  m_benchmark.updateHeadlessProgressIfNeeded(benchmarkFrameInfo());
 }
-
-//--------------------------------------------------------------------------------------------------
-// Per-sequence benchmark memory report (parsed by utils/benchmark/benchmark.py)
-void GltfRenderer::benchmarkAdvance(const nvutils::ParameterSequencer::State& state)
-{
-  (void)state;
-  m_benchmark.emitSequenceMemory(benchmarkMemorySamples());
-}
-
 
 //--------------------------------------------------------------------------------------------------
 // Render the UI menu: File, Tools, Renderer
@@ -2087,13 +2016,11 @@ void GltfRenderer::onUIMenu()
 // Called with headless rendering, to save the final image
 void GltfRenderer::onLastHeadlessFrame()
 {
-  m_benchmark.logHeadlessSummary(benchmarkFrameInfo());
   logDenoiserTimings();
   if(m_sampleCapture.next < m_sampleCapture.targets.size())
     LOGW("--outputSamples: %d spp and above were not reached (the image has %d spp); raise --frames\n",
          m_sampleCapture.targets[m_sampleCapture.next], m_sampleCapture.lastSamples);
   saveHeadlessOutputImage();
-  m_benchmark.finishHeadlessTiming();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3855,7 +3782,6 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
 
   // Set camera from scene, unless a camera string overrides it
   nvvkgltf::addSceneCamerasToWidget(m_cameraManip, filename, scene->getRenderCameras(), scene->getSceneBounds());
-  applyCameraString(m_benchmark.cameraString());
 
   // Viewer-side environment controls (hdrEnvIntensity, envRotation, the backplate override)
   // are deliberately left alone by a scene load -- resetting them used to discard whatever the
@@ -4016,7 +3942,6 @@ void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descri
   m_resources.settings.infinitePlaneDistance = scene->getSceneBounds().min().y;
 
   nvvkgltf::addSceneCamerasToWidget(m_cameraManip, descriptorPath, scene->getRenderCameras(), scene->getSceneBounds());
-  applyCameraString(m_benchmark.cameraString());
 
   if(!updateTextures())
   {
@@ -4454,7 +4379,6 @@ void GltfRenderer::replaceHostScene()
   calibrateFireflyClamp();
   if(const nvutils::Bbox bounds = m_resources.gpuView().bounds(); !bounds.isEmpty())
     m_resources.settings.infinitePlaneDistance = bounds.min().y;
-  applyCameraString(m_benchmark.cameraString());
   refreshEntitySelection();
   resetFrame();
 }

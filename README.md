@@ -105,7 +105,6 @@ cmake --build build
 
 For a **full walkthrough** of rendering modes, editor workflows, and feature screenshots, see the [User Guide](docs/user-guide.md).
 
-For **headless timing** and optional scripted GPU benchmarks, see [Benchmarking](docs/benchmarking.md) (`utils/benchmark/`).
 
 To let an AI agent measure a shader change against the running renderer, launch with `--mcp` and
 see [MCP shader timing](docs/mcp.md).
@@ -201,7 +200,6 @@ See [External Assets](docs/external_assets.md) for design details.
 - [Rendering Architecture](docs/RENDERING_ARCHITECTURE.md) — data flow from glTF model to GPU, BLAS/TLAS acceleration structures, and render nodes.
 - [External Assets](docs/external_assets.md) — glTF 2.1 complex scenes: reference / merge / edit / save mechanics.
 - [glTF 2.1](docs/gltf_2_1.md) — what the renderer supports so far, how it follows a draft spec, the tinygltf fork, and the 2.1 test fixtures.
-- [Benchmarking](docs/benchmarking.md) — headless timing and scripted GPU benchmarks.
 
 These docs explain concepts and workflows and point at *where* things live; enumerated facts (extension lists, CLI flags, enum values) are owned by the code.
 

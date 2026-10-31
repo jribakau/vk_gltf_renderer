@@ -32,8 +32,6 @@ C++20. Host and device share structs via `shaders/shaderio.h`.
 | MCP shader timing: enabling `--mcp`, the tool surface, measuring a change | [docs/mcp.md](docs/mcp.md) |
 | Runtime behavior, editor workflows, features | [docs/user-guide.md](docs/user-guide.md) |
 | DLSS / OptiX / OIDN denoising, motion vectors, jitter/reset (incl. why animated meshes ghost) | [docs/denoising.md](docs/denoising.md) |
-| Headless timing / scripted GPU benchmarks | [docs/benchmarking.md](docs/benchmarking.md) |
-| Capture the UI (panels + viewport) or script-drive selection to review UI/UX | [docs/benchmarking.md](docs/benchmarking.md) (§ UI inspection) |
 | Test suite: running (CTest vs. direct), adding tests, benchmarks | [tests/README.md](tests/README.md) |
 | Where scene/model assets come from | [docs/external_assets.md](docs/external_assets.md), [docs/resources.md](docs/resources.md) |
 
@@ -212,7 +210,6 @@ you are expected to keep them that way:
 | glTF 2.1 external-asset load/save/edit behavior | [docs/external_assets.md](docs/external_assets.md) |
 | Other glTF 2.1 support, a draft-spec assumption, or the tinygltf fork | [docs/gltf_2_1.md](docs/gltf_2_1.md) (status, patch log); mark draft-spec choices `PROVISIONAL(...)` and add a fixture to `tests/gltf_2_1/generate_fixtures.py` |
 | MCP tools or the timing measurement | [docs/mcp.md](docs/mcp.md) |
-| Headless/benchmark flags or output format | [docs/benchmarking.md](docs/benchmarking.md), `utils/benchmark/README.md` |
 | Added a glTF material extension | path tracer eval first, then README extension list + developer.md checklist |
 
 ## Conventions
@@ -258,4 +255,3 @@ path-tracer-only build that starts on Mesa's lavapipe, for headless CI and bench
 `FV_DFORCE_GPU` (`ON` — the GPU dForce cloth solver, `src/fv_dforce_gpu*` and
 `shaders/dforce_cloth*.slang`, the app's "Live (GPU)" mode; a build without it says so in the
 protocol's `features` and the app hides the mode).
-See `tests/README.md` and `docs/benchmarking.md`.

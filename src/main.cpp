@@ -90,15 +90,8 @@ auto main(int argc, char** argv) -> int
   logger.breakOnError(false);
 #endif
 
-  BenchmarkOptions benchmarkOptions;
-
   nvutils::ParameterRegistry            parameterRegistry;
   nvutils::ParameterParser              cli(nvutils::getExecutablePath().stem().string(), {".txt"});
-  nvutils::ParameterSequencer::InitInfo sequencerInfo{
-      .parameterParser   = &cli,
-      .parameterRegistry = &parameterRegistry,
-      .profilerManager   = &g_profilerManager,
-  };
 
   // Global variables
   std::filesystem::path sceneFilename{};             // "shader_ball.gltf"};  // Default scene
@@ -209,8 +202,6 @@ auto main(int argc, char** argv) -> int
   parameterRegistry.add({"mcp", "Serve the shader-timing tools over MCP (see src/mcp_timing.cpp)"}, &enableMcp, true);
   parameterRegistry.add({"mcpPort", "Port for the --mcp endpoint (1-65535)"}, &mcpPort);
 #endif
-  parameterRegistry.add({"benchmark", "Enable benchmarking: scripted sequences, no vsync, minimal UI"},
-                        &benchmarkOptions.enabled);
   parameterRegistry.add({"vvl", "Activate Vulkan Validation Layer"}, &vkSetup.enableValidationLayers);
   parameterRegistry.add({"logLevel", "Log level: [Stats:1, Info:3, Warning:4, Error:5]"}, reinterpret_cast<int*>(&logLevel));
   parameterRegistry.add({"logShow", "Show extra log info (bitset): [0:None, 1:Time, 2:Level]"}, reinterpret_cast<int*>(&logShow));
@@ -261,12 +252,8 @@ auto main(int argc, char** argv) -> int
   auto profilerSettings  = std::make_shared<nvapp::ElementProfiler::ViewSettings>();
   profilerSettings->show = false;
 
-  // Create renderer early so it can register CLI/benchmark parameters
-  auto elemGltfRenderer = std::make_shared<GltfRenderer>(&parameterRegistry, &cli, benchmarkOptions);
-
-  sequencerInfo.registerScriptParameters(parameterRegistry, cli);
-  sequencerInfo.postCallbacks.emplace_back(
-      [&](const nvutils::ParameterSequencer::State& state) { elemGltfRenderer->benchmarkAdvance(state); });
+  // Create renderer early so it can register its parameters
+  auto elemGltfRenderer = std::make_shared<GltfRenderer>(&parameterRegistry, &cli);
 
   // Adding the parameter registry to the command line parser and parsing arguments
   cli.add(parameterRegistry);
@@ -275,7 +262,6 @@ auto main(int argc, char** argv) -> int
   // device yet, so a load would fail and report the start-up file as broken. The explicit load
   // further down is what handles the command-line case.
   renderer = elemGltfRenderer.get();
-  cli.setVerbose(benchmarkOptions.enabled);
 
 
   elemGltfRenderer->setCacheDir(cacheDir);
@@ -291,16 +277,6 @@ auto main(int argc, char** argv) -> int
     elemGltfRenderer->applyHeadlessDefaults();
   }
 
-  if(benchmarkOptions.enabled)
-  {
-    logLevel = nvutils::Logger::LogLevel::eSTATS;
-    if(!sequencerInfo.hasScript())
-    {
-      LOGE("Benchmark mode requires --sequencefile or --sequencestring\n");
-      return -1;
-    }
-  }
-
   // ImGui::LoadIniSettingsFromDisk() silently keeps the defaults when it cannot read the file, so an
   // automated run would report results for a configuration it never restored. Reject it up front.
   if(!iniFilename.empty() && !std::ifstream(iniFilename))
@@ -313,12 +289,6 @@ auto main(int argc, char** argv) -> int
   logger.setMinimumLogLevel(logLevel);
   logger.setShowFlags(logShow);
 
-  std::shared_ptr<nvapp::ElementSequencer> elemSequencer;
-  if(sequencerInfo.hasScript())
-  {
-    elemSequencer = std::make_shared<nvapp::ElementSequencer>(sequencerInfo);
-  }
-
   auto elemGpuMonitor = std::make_shared<nvgpu_monitor::ElementGpuMonitor>();
   auto elemProfiler   = std::make_shared<nvapp::ElementProfiler>(&g_profilerManager, profilerSettings);
   auto elemLogger     = std::make_shared<nvapp::ElementLogger>(false);
@@ -327,7 +297,6 @@ auto main(int argc, char** argv) -> int
   auto elemDbgPrintf = std::make_shared<nvapp::ElementDbgPrintf>();
 #endif
 
-  if(!benchmarkOptions.enabled)
   {
     elemLogger->setLevelFilter(nvapp::ElementLogger::eBitERROR | nvapp::ElementLogger::eBitWARNING | nvapp::ElementLogger::eBitINFO);
 
@@ -578,7 +547,7 @@ auto main(int argc, char** argv) -> int
   appInfo.device         = vkContext.getDevice();
   appInfo.physicalDevice = vkContext.getPhysicalDevice();
   appInfo.queues         = vkContext.getQueueInfos();
-  appInfo.useMenu        = !benchmarkOptions.enabled;
+  appInfo.useMenu        = true;
   // ImGui descriptor pool: default 128 is too small once the inspector/scene-browser show live
   // texture thumbnails (one descriptor per on-screen thumbnail, bounded by ThumbnailCache). Raise
   // it to leave ample headroom above the viewport/denoiser images the app already registers.
@@ -597,7 +566,7 @@ auto main(int argc, char** argv) -> int
   // session into the result, so the same command line gave different images and timings on
   // different days. Settings come from the defaults and the command line; --iniFile opts back into
   // a specific file (loaded below, once every element has registered its settings handler).
-  const bool automatedRun = appInfo.headless || sequencerInfo.hasScript() || benchmarkOptions.enabled;
+  const bool automatedRun = appInfo.headless;
   appInfo.persistSettings = !automatedRun;
 
   // Create the application
@@ -612,10 +581,6 @@ auto main(int argc, char** argv) -> int
 
   elemGltfRenderer->registerRecentFilesHandler();
 
-  if(elemSequencer)
-  {
-    app.addElement(elemSequencer);
-  }
   app.addElement(elemGltfRenderer);
   if(enableStream)
   {
@@ -694,7 +659,6 @@ auto main(int argc, char** argv) -> int
     }
   }
 #endif
-  if(!benchmarkOptions.enabled)
   {
     app.addElement(elemLogger);
     app.addElement(elemGpuMonitor);
@@ -709,11 +673,6 @@ auto main(int argc, char** argv) -> int
 #ifdef USE_DBG_PRINTF
     app.addElement(elemDbgPrintf);
 #endif
-  }
-
-  if(benchmarkOptions.enabled)
-  {
-    app.setVsync(false);
   }
 
   // Loading the scene and the HDR
