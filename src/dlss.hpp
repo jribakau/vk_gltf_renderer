@@ -206,10 +206,6 @@ public:
   void setResponsivityMask(bool on) { m_responsivityMask = on; }
 
   // UI panel; returns true when something changed that requires a renderer-side response.
-  bool onUi(Resources& resources);
-  bool onUiActivation(Resources& resources);
-  bool onUiSettings(Resources& resources);
-  bool onUiGuideBuffers();
 
   // Register parameters for the DLSS UI panel or CLI.
   /// Declare this subsystem's settings (command line + benchmark + persistence).
@@ -282,9 +278,6 @@ public:
   void updateSizeNr(VkCommandBuffer cmd, VkExtent2D displaySize);
   void destroyNr();
   void evaluateNr(VkCommandBuffer cmd);
-  bool onUiNrActivation();
-  bool onUiNrSettings();
-  bool onUiNr();
 #endif  // USE_DLSSNR
 
   // ---- SR-only API (assert m_kind == Kind::SR in debug) --------------------------------------
@@ -362,16 +355,11 @@ private:
   VkExtent2D updateSizeSr(VkCommandBuffer cmd, Resources& resources, VkExtent2D size);
   void       setResourcesRr();
   void       setResourcesSr();
-  bool       onUiActivationRr(Resources& resources);
-  bool       onUiActivationSr(Resources& resources);
-  bool       onUiSettingsRr();
-  bool       onUiSettingsSr(Resources& resources);
 
   // Build the per-Kind guide-image table after the inner GBuffer exists.
   void buildGuideEntries();
   // Render the thumbnail grid for the current m_guideEntries; toggles m_selectedGuide on click.
   // Returns true when the selection changed this frame.
-  bool drawGuideThumbnails();
 
   // SR-only helpers carried over verbatim from the old DlssSuperResolution code.
   void destroyImagesSr();

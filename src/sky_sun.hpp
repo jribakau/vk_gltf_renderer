@@ -45,7 +45,6 @@
 //--------------------------------------------------------------------------------------------------
 
 struct Resources;
-class UndoStack;
 
 class SkySun
 {
@@ -58,7 +57,7 @@ public:
     std::function<void()> environmentPreview;
   };
 
-  void init(Resources* resources, UndoStack* undoStack, Actions actions);
+  void init(Resources* resources, Actions actions);
 
   // Re-read the scene's marker and adopt whatever light it names, or fall back to the renderer's
   // own sun. Runs at the frame top, so moving that light -- gizmo, inspector, animation -- carries
@@ -82,14 +81,10 @@ public:
   // order. The sun is chosen rather than guessed, so this is what the choice is made from.
   [[nodiscard]] std::vector<std::pair<int, std::string>> candidateLights() const;
 
-  // Make `nodeIndex` the sky's sun, or -1 to hand the sun back to the renderer. Undoable: the
-  // marker lives in the scene, so setting it is a scene edit.
-  void setSunNode(int nodeIndex);
-
   // Scene light index of the sun, or -1 when the renderer supplies its own. Read by the frame
   // push-constants, which need to tell the shaders whether to add a sun of their own.
   [[nodiscard]] int lightIndex() const { return m_lightIndex; }
-  // Node index of the marked light, for the panel to edit through undo_redo.
+  // Node index of the marked light.
   [[nodiscard]] int lightNode() const { return m_lightNode; }
 
 private:
@@ -98,7 +93,6 @@ private:
   bool setMarkedDirection(const glm::vec3& toSun);
 
   Resources* m_resources{nullptr};
-  UndoStack* m_undoStack{nullptr};
   Actions    m_actions;
 
   // light `lightIndex` (its node in the CPU scene, -1 for none) at `world` is the sun

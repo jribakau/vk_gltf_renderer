@@ -357,33 +357,13 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"uiShowGridSettings", "Show the Grid & Snap settings window"},
                  &m_resources.settings.showGridSettingsWindow, Persist::eYes);
 
-  // Presentation mode (F11): viewport only, borderless on the window's monitor. Not persisted --
-  // a talk should not start the next session in it -- and ignored in headless runs. The value is a
-  // request that updatePresentationMode() applies at the top of the next UI pass.
-  m_settings.add({"presentationMode",
-                  "Presentation mode: hide all panels and the menu bar, borderless full screen on "
-                  "the window's monitor [Off:0, On:1] (F11)"},
-                 &m_presentationModeRequested, Persist::eNo);
-  // Every panel presentation mode hides (main.cpp adds the profiler, logger and NVML monitor).
-  for(bool* visible : {&m_resources.settings.showCameraWindow, &m_resources.settings.showSettingsWindow,
-                       &m_resources.settings.showEnvironmentWindow, &m_resources.settings.showTonemapperWindow,
-                       &m_resources.settings.showStatisticsWindow, &m_resources.settings.showSceneBrowserWindow,
-                       &m_resources.settings.showInspectorWindow,
-                       &m_resources.settings.showGridSettingsWindow,
-                       &m_resources.settings.showMemStats, &m_resources.animationControl.showStrip})
-    m_presentation.addWindow(visible);
-#ifndef NDEBUG
-  m_presentation.addWindow(&m_resources.settings.showGridStyleWindow);
-  m_presentation.addWindow(&m_resources.settings.showGizmoStyleWindow);
-#endif
-
   // The sun. One direction is shared by every sky type that has a sun, which is why these are not
   // named sky*: Resources::sunDirection is the single source of truth and the angles drive it
   // through the callback. Everything else below is direct.
   //
   // SkySun is initialized here, not in onAttach: the command line is parsed between construction
   // and onAttach, and these callbacks fire during that parse.
-  m_skySun.init(&m_resources, &m_undoStack,
+  m_skySun.init(&m_resources,
                 {
                     .resetFrame         = [this] { resetFrame(); },
                     .environmentPreview = [this] { requestEnvironmentPreview(); },
@@ -727,27 +707,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({.name = "shadowNormalBias", .help = "Rasterizer: shadow normal offset, in shadow-map texels", .callbackSuccess = shadowChanged},
                  &m_resources.settings.shadowNormalBias, Persist::eYes, 0.0F, 50.0F);
 
-  // The two Windows-menu resets, also reachable from a script, a benchmark sequence and MCP. Both
-  // only raise the pending flag that applyPendingResets() consumes at the top of the next UI pass,
-  // so they are safe to fire from any of those paths. onUIRender() runs in headless and benchmark
-  // runs too, so the settings reset lands there as well; the layout reset is the part that
-  // self-skips, since those runs never build a dockspace. "Reset all" implies the layout too: it
-  // is the no-ini start-up state.
-  m_settings.addAction({"resetUiLayout", "Restore the default docking layout (Windows > Reset UI Layout)"},
-                       [this]() { m_pendingResetLayout = true; });
-  m_settings.addAction({"resetAllToDefault", "Restore every setting and the layout to their defaults (Windows > Reset All to Default)"},
-                       [this]() {
-                         m_pendingResetSettings = true;
-                         m_pendingResetLayout   = true;
-                       });
-  // Narrower sibling of the above, and the same action the Environment panel's Reset button runs.
-  // Registered rather than left UI-only so a benchmark sequence or an agent can put one sky type
-  // back to a known state without resetting the whole application.
-  m_settings.addAction({"envResetDefaults", "Restore the selected environment type's settings to their defaults"}, [this]() {
-    m_uiEnvironment.resetDefaults();
-    resetFrame();
-  });
-
   // Register PathTracer-specific command line parameters
   m_pathTracer.registerParameters(&m_settings, [this]() { resetFrame(); });
   m_rasterizer.registerParameters(&m_settings);
@@ -779,7 +738,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_device             = app->getDevice();
   m_resources.instance = app->getInstance();
   m_resources.app      = app;
-  registerCommands();
 
   // VK_EXT_memory_budget is asked for as an optional extension (main.cpp), so a device that has it
   // has it enabled: deviceMemoryBudget() may chain its query then
@@ -997,35 +955,8 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // the RTX pipeline the first path-traced frame needs, built on a thread while the app starts
   m_pathTracer.startPipelineWarm(m_resources);
 
-  // Wire the create-catalog hook up front so the menu-bar "Create" works with nothing loaded:
-  // it stands up an empty, UI-wired scene on demand (wireSceneToUi re-sets this same hook later).
-  m_sceneBrowser.setBeforeCreateCallback([this] { ensureEmptyScene(); });
-
-  // Selection events reach Resources from here on, whether or not the UI pass runs (B59: installed
-  // inside renderUI, a stream host skipping it would stop filling selectedRenderNodes). Only a
-  // window has a Scene Browser to scroll to the selection.
+  // Selection events reach Resources from here on.
   m_sceneSelection.setEventCallback([this](const SceneSelection::Event& event) { onSceneSelectionEvent(event); });
-  if(!app->isHeadless())
-    m_focusSelectionInBrowser = [this] { m_sceneBrowser.focusOnSelection(); };
-
-  // The Environment panel. It edits Settings through m_resources directly; everything below is a
-  // consequence an edit has for the renderer, which the panel has no business knowing how to do.
-  m_uiEnvironment.setResources(&m_resources);
-  m_uiEnvironment.setSelection(&m_sceneSelection);
-  m_uiEnvironment.setActions({
-      .environmentChanged    = [this] { onEnvironmentChanged(); },
-      .requestPreview        = [this] { requestEnvironmentPreview(); },
-      .resetFrame            = [this] { resetFrame(); },
-      .applyTimeOfDay        = [this] { m_skySun.applyTimeOfDay(); },
-      .environmentRotated    = [this] { onEnvironmentRotated(); },
-      .setSunAngles          = [this](float az, float el) { m_skySun.setAngles(az, el); },
-      .sunLightNode          = [this] { return m_skySun.lightNode(); },
-      .setSkySunNode         = [this](int node) { m_skySun.setSunNode(node); },
-      .directionalLightNodes = [this] { return m_skySun.candidateLights(); },
-      .loadHdrFileDialog     = [this] { loadHdrFileDialog(); },
-      .loadSkyPresetDialog   = [this] { loadSkyPresetDialog(); },
-      .saveSkyPresetDialog   = [this] { saveSkyPresetDialog(); },
-  });
 
   // ===== Visual Helpers (Grid + Transform Gizmo) =====
   {
@@ -1072,16 +1003,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
         if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
           m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, true);
       }
-      else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
-      {
-        glm::vec3   newT, newS;
-        glm::quat   newR;
-        const auto& node = m_resources.getScene()->editor().getNode(m_gizmoNodeIndex);
-        tinygltf::utils::getNodeTRS(node, newT, newR, newS);
-        auto cmd = std::make_unique<SetTransformCommand>(*m_resources.getScene(), m_gizmoNodeIndex, m_gizmoSnapshotT,
-                                                         m_gizmoSnapshotR, m_gizmoSnapshotS, newT, newR, newS);
-        m_undoStack.pushExecuted(std::move(cmd));
-      }
     });
   }
 
@@ -1094,7 +1015,6 @@ void GltfRenderer::onDetach()
 {
   // SYNC NOTE: Full device wait during shutdown is the standard Vulkan teardown pattern.
   vkDeviceWaitIdle(m_device);
-  m_thumbnailCache.clear();  // release ImGui thumbnail descriptor sets while idle
   m_visualHelpers.deinit();
   m_pathTracer.onDetach(m_resources);
   m_rasterizer.onDetach(m_resources);
@@ -1362,8 +1282,6 @@ void GltfRenderer::applyPendingTextureRebuild()
   scene->getDirtyFlags().texturesChanged = false;
   rebuildVulkanSceneFull();
   resetFrame();
-  m_sceneBrowser.markCachesDirty();
-  m_inspector.refreshTextureNames();
 }
 
 // Consume a pending TAIL-ONLY texture change (import / undo / redo of an imported texture) at frame top,
@@ -1405,15 +1323,7 @@ void GltfRenderer::applyPendingTextureTailSync()
   // Descriptors are now consistent with the model; lift the per-frame material-sync gate.
   scene->getDirtyFlags().texturesTailChanged = false;
 
-  // A tail shrink (undo) deferred-freed the removed image views. Park any thumbnail descriptors keyed on
-  // them so a later view-handle reuse cannot hit a stale descriptor (a grow frees nothing, so it needs no
-  // eviction, and existing thumbnails stay valid).
-  if(newTexture < firstTexture)
-    m_thumbnailCache.clearDeferred();
-
   resetFrame();
-  m_sceneBrowser.markCachesDirty();
-  m_inspector.refreshTextureNames();
 }
 
 // Consume pending sampler edits (DirtyFlags::samplers) at frame top: an Inspector wrap/filter edit
@@ -1463,42 +1373,9 @@ void GltfRenderer::onUIRender()
     applyPendingSamplerUpdate();  // frame-top: in-place VkSampler update for a prior-frame sampler wrap/filter edit
   }
 
-  // Advance the thumbnail cache's deferred-free ring before any panel acquires thumbnails this frame.
-  m_thumbnailCache.beginFrame(m_app->getFrameCycleSize());
-
-  // Windows > Reset UI Layout / Reset All to Default, before any panel is submitted. This sits
-  // ahead of the benchmark branch because the two resets are also scriptable actions: a benchmark
-  // sequence that issues --resetAllToDefault expects the settings to be back at their defaults for
-  // the measurements that follow, and benchmark mode never reaches renderUI().
-  applyPendingResets();
-  updatePresentationMode();
-
-  // A stream host's panels are never seen, so they are not built (0.5-3 ms of CPU a frame, est.).
-  // The viewport's per-frame camera step still runs: camera transitions and camera.frame need it.
-  if(m_streamHost)
-    m_cameraManip->updateAnim();
-  else
-    renderUI();
-  m_toasts.render();  // transient notifications overlay (drawn on top of the panels)
+  // The viewport's per-frame camera step: camera transitions and camera.frame need it.
+  m_cameraManip->updateAnim();
 }
-
-//--------------------------------------------------------------------------------------------------
-// Resolve a glTF texture / image index to a bounded ImGui thumbnail. Returns 0 when the index is out
-// of range or the image is not resident on the GPU (e.g. an unused image that was never uploaded).
-ImTextureID GltfRenderer::thumbnailForTexture(int textureIndex)
-{
-  if(textureIndex < 0)
-    return 0;
-  return m_thumbnailCache.acquire(m_resources.sceneVk.textureView(static_cast<uint32_t>(textureIndex)));
-}
-
-ImTextureID GltfRenderer::thumbnailForImage(int imageIndex)
-{
-  if(imageIndex < 0)
-    return 0;
-  return m_thumbnailCache.acquire(m_resources.sceneVk.imageView(static_cast<uint32_t>(imageIndex)));
-}
-
 
 //--------------------------------------------------------------------------------------------------
 // Render the scene
@@ -2006,13 +1883,6 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
 }
 
 //--------------------------------------------------------------------------------------------------
-// Render the UI menu: File, Tools, Renderer
-void GltfRenderer::onUIMenu()
-{
-  renderMenu();
-}
-
-//--------------------------------------------------------------------------------------------------
 // Called with headless rendering, to save the final image
 void GltfRenderer::onLastHeadlessFrame()
 {
@@ -2065,14 +1935,12 @@ void GltfRenderer::addSceneFromFile(const std::filesystem::path& filename, bool 
     const std::string name    = nvutils::utf8FromPath(filename.filename());
     if(nodeIdx >= 0)
     {
-      m_undoStack.clear();
       rebuildVulkanSceneInternal(wasTextured ? nvvkgltf::SceneGpu::RebuildMode::eMergeAppend : nvvkgltf::SceneGpu::RebuildMode::eFull);
       // Imported glTF may bring extensions the previous scene didn't use; recompute so optimal-mode
       // rebuilds the shader if the feature set widened.
       m_resources.recomputeSceneFeatures(dlssGuideRequired());
       resetFrame();
       m_sceneSelection.selectNode(nodeIdx);
-      focusSelectionInBrowser();
       LOGI("Scene %s successfully: %s\n", asReference ? "referenced" : "merged", name.c_str());
     }
     else
@@ -2098,108 +1966,6 @@ void GltfRenderer::onMergeScene(const std::filesystem::path& filename)
 void GltfRenderer::onReferenceScene(const std::filesystem::path& filename)
 {
   addSceneFromFile(filename, /*asReference=*/true);
-}
-
-//--------------------------------------------------------------------------------------------------
-// Load a glTF scene or an HDR file (called from both Load Scene and Load HDR Environment menu items)
-// Shift+drag-drop merges the file into the current scene instead of replacing it.
-//
-void GltfRenderer::onFileDrop(const std::filesystem::path& filename)
-{
-  // Sky presets first: a `.sky.json` is also a `.json`, and the descriptor test below is a suffix
-  // match. Cheap and self-contained -- no scene teardown, so no queue wait (a panorama preset goes
-  // through createHDR, which waits for itself) -- but still refused while a worker load is in
-  // flight, since that load will apply its own sky when it lands.
-  if(sky_preset::isPresetPath(filename))
-  {
-    if(!m_busy.isBusy())
-      loadSkyPreset(filename);
-    return;
-  }
-
-  // SYNC NOTE: User-initiated file load/merge — wait ensures GPU is idle before scene teardown/rebuild.
-  vkQueueWaitIdle(m_app->getQueue(0).queue);
-
-  bool isDescriptor = filename.string().ends_with(".scene.json");
-  if(isDescriptor)
-  {
-    if(m_busy.isBusy())
-      return;
-
-    m_loadPipeline.clear();
-    cleanupScene();  // also frees rasterizer record cmd + clears sort state via onSceneInvalidated()
-
-    m_busy.start("Loading Descriptor");
-    m_imageSaveFilename = std::filesystem::path(filename.stem()).replace_extension(".jpg");
-    std::thread([=, this]() {
-      m_lastSceneDirectory = filename.parent_path();
-      createSceneFromDescriptor(filename);
-      m_busy.stop();
-    }).detach();
-  }
-  else if(nvutils::extensionMatches(filename, ".gltf") || nvutils::extensionMatches(filename, ".glb")
-          || nvutils::extensionMatches(filename, ".obj"))
-  {
-    if(m_busy.isBusy())
-      return;
-
-    // The modifiers held with the drop pick the command whose "Drop file" binding they match:
-    // File > Reference Scene (glTF 2.1, a read-only external asset) or File > Import/Merge Scene.
-    // Only the modifiers those bindings use are read, so another one held along does not matter.
-    const ImGuiKeyChord referenceMods = m_commands.get("file.reference").binding.chord;
-    const ImGuiKeyChord mergeMods     = m_commands.get("file.merge").binding.chord;
-    const ImGuiKeyChord dropMods      = (referenceMods | mergeMods) & ImGuiMod_Mask_;
-
-    // When dropping from another app, our window often doesn't have focus so ImGui/GLFW don't see
-    // the keys. On Windows use GetKeyState (state when the drop message was generated) so it works
-    // for Explorer, Everything, and other DnD sources.
-    ImGuiKeyChord held = ImGuiKey_None;
-#if defined(_WIN32)
-    held |= (GetKeyState(VK_CONTROL) & 0x8000) ? ImGuiMod_Ctrl : 0;
-    held |= (GetKeyState(VK_SHIFT) & 0x8000) ? ImGuiMod_Shift : 0;
-    held |= (GetKeyState(VK_MENU) & 0x8000) ? ImGuiMod_Alt : 0;
-#else
-    held = ImGui::GetIO().KeyMods;
-#endif
-    held &= dropMods;
-
-    if(held == referenceMods)
-    {
-      onReferenceScene(filename);
-    }
-    else if(held == mergeMods)
-    {
-      onMergeScene(filename);
-    }
-    else
-    {
-      m_loadPipeline.clear();
-      // Keep file-backed images: createScene adopts the unchanged ones. The queue is already idle.
-      cleanupScene(/*keepImagesForReuse=*/true);
-
-      // Set busy BEFORE starting the worker thread to prevent re-entrant drops
-      m_busy.start("Loading");
-      m_imageSaveFilename = std::filesystem::path(filename.stem()).replace_extension(".jpg");
-
-      std::thread([=, this]() {
-        m_lastSceneDirectory = filename.parent_path();
-        // createScene returns before createVulkanScene on failure, so the pool would otherwise
-        // keep the previous scene's textures until deinit.
-        if(!createScene(filename))
-          m_resources.sceneVk.releaseRetainedImages();
-        m_busy.stop();
-      }).detach();
-    }
-  }
-  else if(isEnvImageExtension(filename))
-  {
-    m_lastHdrDirectory = filename.parent_path();
-    createHDR(filename);
-    m_resources.settings.envSystem = shaderio::EnvSystem::eHdr;
-    calibrateFireflyClamp();
-  }
-
-  resetFrame();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3702,7 +3468,6 @@ bool GltfRenderer::createScene(const std::filesystem::path& sceneFilename)
   if(!filename.has_filename())
   {
     LOGW("Cannot find file: %s\n", nvutils::utf8FromPath(sceneFilename).c_str());
-    removeFromRecentFiles(filename);
     return false;
   }
 
@@ -3730,7 +3495,6 @@ bool GltfRenderer::createScene(const std::filesystem::path& sceneFilename)
     {
       LOGW("Error loading OBJ: %s\n", error.c_str());
       LOGW("Warning: %s\n", warn.c_str());
-      removeFromRecentFiles(filename);
       return false;
     }
   }
@@ -3742,7 +3506,6 @@ bool GltfRenderer::createScene(const std::filesystem::path& sceneFilename)
     if(!scn->load(filename))
     {
       LOGW("Error loading scene: %s\n", nvutils::utf8FromPath(filename).c_str());
-      removeFromRecentFiles(filename);
       return false;
     }
     m_resources.scene = std::move(scn);
@@ -3775,7 +3538,6 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
   // high peak radiance that the default clamp of 10 would clip, visibly suppressing the effect.
   calibrateFireflyClamp();
 
-  wireSceneToUi();  // Scene Browser + Inspector pointers, callbacks, bounds
 
   nvvkgltf::Scene* scene = m_resources.getScene();
   m_resources.settings.infinitePlaneDistance = scene->getSceneBounds().min().y;  // Set the infinite plane distance to the bottom of the scene
@@ -3801,56 +3563,17 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
     // Clean up the scene we just loaded - it's unsafe to render
     vkDeviceWaitIdle(m_device);
     cleanupScene();
-
-    if(!filename.empty())
-      removeFromRecentFiles(filename);
     return;
   }
-
-  if(!filename.empty())
-    addToRecentFiles(filename);
 }
 
-//--------------------------------------------------------------------------------------------------
-// Wire the current Scene into the UI panels (browser + inspector): pointers, callbacks and bounds.
-// Shared by finalizeSceneSetup() (after a load) and ensureEmptyScene() (a wired empty scene).
-//
-void GltfRenderer::wireSceneToUi()
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-
-  // Host services shared by both panels (file dialog, texture thumbnails, toasts). Built once here and
-  // handed to each, instead of wiring the same three hooks separately. IMAGE/TEXTURE edits made through
-  // these set DirtyFlags::texturesChanged and are consumed at frame top by applyPendingTextureRebuild().
-  UiHostServices host;
-  host.pickImageFile    = [this] { return pickImageFile(); };
-  host.textureThumbnail = [this](int i) { return thumbnailForTexture(i); };
-  host.notify           = [this](const std::string& msg, bool err) { notify(msg, err); };
-
-  m_sceneBrowser.setScene(scene);
-  m_sceneBrowser.setSelection(&m_sceneSelection);
-  m_sceneBrowser.setUndoStack(&m_undoStack);
-  m_sceneBrowser.setBbox(scene->getSceneBounds());
-  m_sceneBrowser.setPendingDelete(&m_pendingDeleteNode, &m_openDeletePopupNextFrame);
-  m_sceneBrowser.setHostServices(host);
-  // GEOMETRY edits fire this callback (immediate reconcile), unlike image/texture edits which defer.
-  m_sceneBrowser.setGeometryChangedCallback([this] { reconcileGeometryIfNeeded(); });
-  m_sceneBrowser.setBeforeCreateCallback([this] { ensureEmptyScene(); });
-  m_sceneBrowser.setImageThumbnailCallback([this](int i) { return thumbnailForImage(i); });
-
-  m_inspector.setScene(scene);
-  m_inspector.setSelection(&m_sceneSelection);
-  m_inspector.setUndoStack(&m_undoStack);
-  m_inspector.setBbox(scene->getSceneBounds());
-  m_inspector.setHostServices(host);
-  m_inspector.setViewImageCallback([this](int imageIndex) { m_sceneBrowser.openImageViewer(imageIndex); });
-  m_inspector.setImageThumbnailCallback([this](int i) { return thumbnailForImage(i); });
-}
-
-// Push a transient notification (isError = red) to the on-screen toast overlay.
+// A notification has no overlay to go to: the log says it.
 void GltfRenderer::notify(const std::string& message, bool isError)
 {
-  m_toasts.push(message, isError ? UiToasts::Level::Error : UiToasts::Level::Info);
+  if(isError)
+    LOGE("%s\n", message.c_str());
+  else
+    LOGI("%s\n", message.c_str());
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3871,7 +3594,6 @@ void GltfRenderer::ensureEmptyScene()
   // Still not valid() until a node is added, so onRender() clears the G-Buffer rather than drawing.
   scn->getModel().scenes.emplace_back().name = "Scene";
   m_resources.scene                          = std::move(scn);
-  wireSceneToUi();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3937,7 +3659,6 @@ void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descri
 
   calibrateFireflyClamp();
 
-  wireSceneToUi();
 
   m_resources.settings.infinitePlaneDistance = scene->getSceneBounds().min().y;
 
@@ -3951,7 +3672,6 @@ void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descri
     return;
   }
 
-  addToRecentFiles(descriptorPath);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3959,7 +3679,6 @@ void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descri
 //
 void GltfRenderer::cleanupScene(bool keepImagesForReuse)
 {
-  m_undoStack.clear();
   // Drop any renderer-side state tied to the outgoing Scene BEFORE the unique_ptr is reset.
   // The heap allocator is free to hand the same address back to the next Scene instance, so
   // any Scene-pointer-based invalidation inside the render loop would be unreliable -- this is
@@ -3985,14 +3704,11 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   if(!m_resources.hostFed)  // a stream host's store is the session's
     m_resources.retainedScene.reset();
   m_resources.scene.reset();
-  m_thumbnailCache.clear();
   // Before sceneGpu.destroy(), which calls SceneVk::destroy() and would free these images.
   // Keyed slots are cleared so destroy() frees only the images that cannot be reused.
   if(keepImagesForReuse)
     m_resources.sceneVk.retainImagesForReuse();
   m_resources.sceneGpu.destroy();
-  m_sceneBrowser.setScene(nullptr);
-  m_inspector.setScene(nullptr);
   m_sceneSelection.clearSelection();  // Clear selection in new UI system
   m_resources.selectedRenderNodes.clear();
   m_resources.animationControl      = AnimationControl{};
@@ -4037,12 +3753,6 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
   // SYNC NOTE: Full scene rebuild (merge/compact/geometry change) -- wait ensures GPU is idle.
   NVVK_CHECK(vkQueueWaitIdle(m_app->getQueue(0).queue));
 
-  // eFull replaces image views (unchanged files keep theirs; the rest are destroyed). Release the
-  // thumbnails now (GPU is idle) so panels re-acquire against the views that survive. eMergeAppend
-  // keeps every existing view, so its thumbnails stay valid and must NOT be cleared.
-  if(mode == RebuildMode::eFull)
-    m_thumbnailCache.clear();
-
   nvvkgltf::Scene* scene = m_resources.getScene();
 
   {
@@ -4059,15 +3769,9 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
 
   buildAccelerationStructures();
 
-  // Update UI system
   scene = m_resources.getScene();
   if(scene)
   {
-    m_sceneBrowser.setScene(scene);
-    m_sceneBrowser.setBbox(scene->getSceneBounds());
-    m_inspector.setScene(scene);
-    m_inspector.setBbox(scene->getSceneBounds());
-
     // After merge: select the merged file's first animation clip (appended after base clips).
     // Otherwise currentAnimation often stays on a base-scene clip and merged motion appears "stuck".
     AnimationControl& animCtrl = m_resources.animationControl;
@@ -4112,7 +3816,6 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
 //
 void GltfRenderer::rebuildSceneFromModel()
 {
-  m_undoStack.clear();  // structural model edit outside the command system invalidates history
   rebuildSceneGeometry();
 }
 
@@ -5047,14 +4750,28 @@ void GltfRenderer::pickSceneNodeFromScript(int nodeIndex)
   resetFrame();
 }
 
-void GltfRenderer::onUndoRedo()
+// AnchorCameraManipulator::AnchorRequest: called from camera_controls::update() inside the
+// "Viewport" window when an anchored drag or wheel step begins. Like a click, it only captures the ray; onRender()
+// records the pick and updateAnchorPickState() answers the manipulator.
+bool GltfRenderer::requestAnchorPick(const glm::dvec2& screenPos)
 {
-  // Undo/redo may re-introduce geometry (e.g. redo of an added primitive) that has no GPU buffers yet;
-  // rebuild before the next frame's acceleration-structure build tries to reference them.
-  reconcileGeometryIfNeeded();
-  resetFrame();
-  m_sceneBrowser.markCachesDirty();
-  m_inspector.refreshTextureNames();  // undo/redo of a texture import changes the texture set
+  const nvvkgltf::Scene* scene = m_resources.getScene();
+  if(m_busy.isBusy() || scene == nullptr || !scene->valid() || m_resources.sceneRtx.topLevelAS() == VK_NULL_HANDLE)
+    return false;
+
+  // A new request supersedes one still in flight: the manipulator only waits for the latest, and an
+  // older answer would otherwise be taken for it (e.g. a wheel pick becoming a drag's anchor).
+  m_pendingAnchorResult.reset();
+
+  const ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+  const ImVec2 avail     = ImGui::GetContentRegionAvail();
+  m_pendingAnchorPick    = nvvk::RayPicker::PickInfo{
+         .modelViewInv   = glm::inverse(m_cameraManip->getViewMatrix()),
+         .perspectiveInv = glm::inverse(m_cameraManip->getPerspectiveMatrix()),
+         .isOrthographic = (m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic) ? 1 : 0,
+         .pickPos        = {(screenPos.x - cursorPos.x) / avail.x, (screenPos.y - cursorPos.y) / avail.y},
+  };
+  return true;
 }
 
 //--------------------------------------------------------------------------------------------------

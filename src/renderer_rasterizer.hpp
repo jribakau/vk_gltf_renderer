@@ -48,7 +48,6 @@ public:
   void onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler) override;
   void onDetach(Resources& resources) override;
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size, Resources& resources) override;
-  bool onUIRender(Resources& resources) override;
   void onRender(VkCommandBuffer cmd, Resources& resources) override;
   void onSceneInvalidated(Resources& resources) override;
   void notifyDlssContentReset(Resources& resources) override;

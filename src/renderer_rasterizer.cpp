@@ -404,57 +404,6 @@ void Rasterizer::onResize(VkCommandBuffer cmd, const VkExtent2D& size, Resources
 #endif
 }
 
-//--------------------------------------------------------------------------------------------------
-// Render the rasterizer's UI controls
-// Currently provides a wireframe toggle option
-// Returns true if any UI state changed
-bool Rasterizer::onUIRender(Resources& resources)
-{
-  namespace PE = nvgui::PropertyEditor;
-  bool changed = false;
-  if(PE::begin())
-  {
-    // Toggling recording on/off must invalidate the cached secondary command buffer; otherwise
-    // a recorded buffer that was captured before/after a shader recompile or scene change can
-    // be replayed, replaying stale shader bytecode and stale draw order.
-    if(PE::Checkbox("Use Recorded Cmd", &m_useRecordedCmd, "Use recorded command buffers for better performance"))
-    {
-      freeRecordCommandBuffer(resources);
-      changed = true;
-    }
-    PE::end();
-  }
-
-#if defined(USE_DLSS)
-  if(ImGui::CollapsingHeader("AI Denoisers", ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    bool dlssChanged = m_dlss->onUiActivation(resources);
-#if defined(USE_DLSSNR)
-    bool nrChanged = m_dlss->onUiNrActivation();
-#endif
-
-    ImGui::Spacing();
-
-    dlssChanged |= m_dlss->onUiSettings(resources);
-    if(dlssChanged)
-    {
-      // Quality / preset change
-      freeRecordCommandBuffer(resources);
-      changed = true;
-    }
-#if defined(USE_DLSSNR)
-    nrChanged |= m_dlss->onUiNrSettings();
-    changed |= nrChanged;
-#endif
-
-    ImGui::Spacing();
-    changed |= m_dlss->onUiGuideBuffers();
-  }
-#endif
-
-  return changed;
-}
-
 namespace {
 
 // Where the rasterizer renders this frame: outer GBuffer (DLSS off / build), or the inner

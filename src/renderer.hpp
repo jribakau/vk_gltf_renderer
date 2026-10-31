@@ -65,21 +65,12 @@
 #include "env_image_loader.hpp"
 #include "sky_bruneton.hpp"
 #include "sky_sun.hpp"
-#include "ui_environment.hpp"
-#include "ui_help.hpp"
 #include "gltf_environment_sky.hpp"
 #include "camera_controls.hpp"
 #include "ui_busy_window.hpp"
-#include "ui_commands.hpp"
-#include "ui_scene_browser.hpp"
-#include "ui_inspector.hpp"
-#include "ui_presentation_mode.hpp"
-#include "ui_thumbnail_cache.hpp"
-#include "ui_toast.hpp"
 #include "scene_selection.hpp"
 #include "gizmo_visuals_vk.hpp"
 #include "timeline_pipeline.hpp"
-#include "undo_redo.hpp"
 #include "scene_clip_player.hpp"
 #include "host_renderer.hpp"
 
@@ -130,7 +121,6 @@ public:
   /// parsed (`mergeScene`, `parseScene`, etc., depending on how the model was changed).
   void                                        rebuildVulkanSceneFull();
   std::shared_ptr<nvutils::CameraManipulator> getCameraManipulator() override { return m_cameraManip; }
-  void                                        registerRecentFilesHandler();
   void                                        setDlssHardwareAvailability(bool rrAvailable, bool srAvailable);
   void                                        setSerAvailable(bool available);
   void                                        setDeviceExtensions(std::vector<std::string> extensions);
@@ -143,10 +133,8 @@ public:
 
   /// Presentation mode (F11, View > Presentation Mode, --presentationMode): see ui_presentation_mode.hpp.
   /// Registers a panel owned by another application element, so presentation mode hides it too.
-  void addPresentationWindow(std::function<bool()> isVisible, std::function<void(bool)> setVisible);
   /// Leave presentation mode now, restoring the panels and the window. main() calls this before
   /// Application::deinit(), which persists the window geometry and the ImGui.ini.
-  void exitPresentationMode();
 
   /// Drain the queue, recompile the active renderer's shaders, and reset accumulation.
   /// Application thread only: it destroys and recreates live pipelines.
@@ -520,12 +508,10 @@ public:
 private:
   void onAttach(nvapp::Application* app) override;
   void onDetach() override;
-  void onFileDrop(const std::filesystem::path& filename) override;
   void onLastHeadlessFrame() override;
   void onRender(VkCommandBuffer cmd) override;
   void onPostRender() override;
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
-  void onUIMenu() override;
   void onUIRender() override;
 
   bool updateFrameCounter();
@@ -566,7 +552,6 @@ private:
   std::optional<nvvkgltf::SceneFeatureSet> drawableFeatures();
   rs::VulkanGpuBackend::Info retainedBackendInfo();
   void finalizeSceneSetup(const std::filesystem::path& filename);  // Shared GPU build + UI wiring after a load
-  void wireSceneToUi();                                            // Wire current scene into browser/inspector panels
   void buildAccelerationStructures();                              // Helper for BLAS/TLAS building
   void destroyResources();
   void resetFrame();
@@ -646,34 +631,15 @@ private:
 
   // Selection (renderer_selection.cpp)
   void onSceneSelectionEvent(const SceneSelection::Event& event);
-  void focusSelectionInBrowser();
 
   // UI
-  void renderUI();
   void registerCommands();         // The menu, toolbar and keyboard commands (m_commands), once at attach
   bool hasValidScene();
-  void renderMenu();
-  void renderFileMenu(std::filesystem::path& sceneToLoadFilename);
-  void renderViewMenu();
-  void renderWindowsMenu();
   // Windows > Reset UI Layout / Reset All to Default. Both are deferred to the top of the next UI
   // pass (m_pendingResetLayout / m_pendingResetSettings) so the rebuild does not run while the menu
   // bar is mid-submission, and so the panels pick the new state up before they are submitted.
   void applyPendingResets();
   // F11 / Esc / --presentationMode: bring PresentationMode in line with the request. Top of the UI pass.
-  void updatePresentationMode();
-  void renderEditMenu();
-  void renderCreateMenu();  // "Create" menu: add procedural primitives (enabled whenever a scene exists)
-  void renderToolsMenu(bool validScene);
-  void renderDebugMenu();
-  void onUndoRedo();
-  void renderMenuToolbarAndGizmos();
-  void renderMemoryStatistics();
-  void renderTonemapperWindow();
-  void renderStatisticsWindow();
-  void addToRecentFiles(const std::filesystem::path& filePath, int historySize = 20);
-  void removeFromRecentFiles(const std::filesystem::path& filePath);
-  void mouseClickedInViewport();
   // `selectionPoint`/`selectionRayOrigin` (global space) are the real ray-pick hit point/origin -
   // default NaN for callers with no ray (e.g. script-driven test commands), matching the
   // spec-sanctioned "no ray info" fallback (see SceneSelection::Event's doc comment).
@@ -682,17 +648,10 @@ private:
                                         const glm::vec3& selectionRayOrigin = glm::vec3(std::numeric_limits<float>::quiet_NaN()));
   nvutils::Bbox getRenderNodeBbox(int renderNodeIndex);
   nvutils::Bbox getRenderNodesBbox(const std::unordered_set<int>& renderNodeIndices);
-  void          windowTitle();
-  void          applyGltfCamera(int cameraIndex);
-  void          setGltfCameraFromView(int cameraIndex);
-  void          loadHdrFileDialog();
   /// The `.sky.json` pickers behind the Environment panel's two preset buttons.
-  void loadSkyPresetDialog();
-  void saveSkyPresetDialog();
 
   // Opens an image file dialog for the inspector's "Load from file" texture action. Returns the chosen
   // path, or an empty path if cancelled.
-  std::filesystem::path pickImageFile();
 
   // Resolve a glTF texture / image index to a bounded ImGui thumbnail (0 if not resident). Handed to
   // the inspector and scene browser so their panels can show thumbnails without knowing about the GPU.
@@ -704,7 +663,6 @@ private:
   void notify(const std::string& message, bool isError);
 
   // Recent files management
-  std::vector<std::filesystem::path> m_recentFiles;
 
   // File dialog directories
   std::filesystem::path m_lastSceneDirectory;
@@ -753,13 +711,8 @@ private:
 
   // New Scene Browser system (parallel implementation)
   SceneSelection m_sceneSelection;  // Shared selection state
-  UiSceneBrowser m_sceneBrowser;    // New scene browser
-  UiEnvironment  m_uiEnvironment;   // Environment panel
   SkySun         m_skySun;          // Who the sun is, and where it points
-  UiInspector    m_inspector;       // New inspector
-  ThumbnailCache m_thumbnailCache;  // Bounded ImGui thumbnails for scene textures/images
 
-  UiToasts      m_toasts;  // Transient error/info notifications (e.g. failed image import)
   BusyWindow    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   VisualHelpers m_visualHelpers;  // Grid + transform gizmo overlay
@@ -812,11 +765,8 @@ private:
   std::filesystem::path m_pendingSaveSkyPreset;          // Start-up --saveSkyPreset, written after the load
 
   // Undo/Redo
-  UndoStack m_undoStack;
 
   // Application-level delete confirmation (shared with scene browser via pointers)
-  int  m_pendingDeleteNode        = -1;
-  bool m_openDeletePopupNextFrame = false;
 
   // Gizmo TRS local storage (pointers passed to TransformHelperVk)
   glm::vec3 m_gizmoPosition{0.f};
@@ -833,7 +783,6 @@ private:
   rs::EntityId   m_gizmoEntity;
   rs::ClipPlayer m_hostClip;
   // Set in windowed sessions only: the Scene Browser scrolls to a new selection
-  std::function<void()> m_focusSelectionInBrowser;
 
   // Gizmo TRS snapshot for undo (captured at drag start)
   glm::vec3 m_gizmoSnapshotT{0.f};
@@ -899,29 +848,7 @@ private:
   // Presentation mode. The registered parameter (--presentationMode, MCP) is only the request;
   // updatePresentationMode() applies it and writes the actual state back, so every path -- F11,
   // Esc, the View menu, the command line, MCP -- goes through the same enter/leave.
-  PresentationMode m_presentation;
-  bool             m_presentationModeRequested{false};
 
-  ui::help::HelpState m_help;  // Help menu windows (ui_help.hpp)
 
-  // Every menu / toolbar / keyboard command (ui_commands.hpp), filled by registerCommands().
-  ui::CommandRegistry m_commands;
-  // File and Tools commands that open a dialog or rebuild the scene only raise a request here;
-  // renderMenu() carries them out once the menus are closed.
-  struct MenuRequests
-  {
-    bool newScene{false};
-    bool openFile{false};
-    bool mergeFile{false};
-    bool referenceFile{false};
-    bool loadHdrFile{false};
-    bool saveFile{false};
-    bool saveAsFile{false};
-    bool saveSelfContainedAsFile{false};
-    bool saveImageFile{false};
-    bool saveScreenFile{false};
-    bool reloadShaders{false};
-    bool compactScene{false};
-  } m_menuRequests;
 
 };

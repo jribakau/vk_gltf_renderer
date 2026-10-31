@@ -29,8 +29,8 @@
 #include "gltf_scene.hpp"
 #include "resources.hpp"
 #include "sky_sun.hpp"
+#include "gltf_scene_editor.hpp"
 #include "sun_position.hpp"
-#include "undo_redo.hpp"
 
 //--------------------------------------------------------------------------------------------------
 // The sun's direction as a unit vector, and the inverse, in the environment's own frame. Azimuth
@@ -69,10 +69,9 @@ void anglesFromSunDirection(const glm::vec3& direction, bool yIsUp, float& azimu
 }
 }  // namespace
 
-void SkySun::init(Resources* resources, UndoStack* undoStack, Actions actions)
+void SkySun::init(Resources* resources, Actions actions)
 {
   m_resources = resources;
-  m_undoStack = undoStack;
   m_actions   = std::move(actions);
 }
 
@@ -196,27 +195,6 @@ std::vector<std::pair<int, std::string>> SkySun::candidateLights() const
 }
 
 //--------------------------------------------------------------------------------------------------
-// Choose which light is the sky's sun.
-//
-void SkySun::setSunNode(int nodeIndex)
-{
-  nvvkgltf::Scene* scene = m_resources->getScene();
-  if(scene == nullptr || !scene->valid() || nodeIndex == m_lightNode)
-    return;
-
-  m_undoStack->executeCommand(std::make_unique<SetSkySunCommand>(*scene, m_lightNode, nodeIndex));
-
-  // The sun's direction changes with the choice, and for the physical sky its image depends on
-  // that direction. syncSunFromMarkedLight() picks the new one up at the next frame top; the bake
-  // has to be told separately because nothing else here marks it stale.
-  if(m_resources->settings.envSystem == shaderio::EnvSystem::eSky)
-    if(m_actions.environmentPreview)
-      m_actions.environmentPreview();
-  if(m_actions.resetFrame)
-    m_actions.resetFrame();
-}
-
-//--------------------------------------------------------------------------------------------------
 // Aim the marked sun light, undoably. The write half of syncSunFromMarkedLight().
 //
 bool SkySun::setMarkedDirection(const glm::vec3& toSun)
@@ -251,8 +229,6 @@ bool SkySun::setMarkedDirection(const glm::vec3& toSun)
   const glm::quat         newRotation = gltf_environment_sky::localRotationForWorld(parentWorld, worldRotation);
 
   scene->editor().setNodeTRS(m_lightNode, translation, newRotation, scale);
-  m_undoStack->pushExecuted(std::make_unique<SetTransformCommand>(*scene, m_lightNode, translation, oldRotation, scale,
-                                                                  translation, newRotation, scale));
   return true;
 }
 

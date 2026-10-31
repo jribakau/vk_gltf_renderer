@@ -92,7 +92,6 @@ public:
   const VkDescriptorImageInfo* displayImage() const { return m_shown ? &m_shownImage : nullptr; }
 
   // The setting, shown when DLSS-RR and an accumulation denoiser are both on
-  void onUi();
 
 private:
   enum Image

@@ -252,13 +252,9 @@ public:
   float    lastInvokeGpuMs() const { return m_lastInvokeGpuMs; }
 
   // UI controls
-  bool onUi(Resources& resources);
-  bool onUiActivation(Resources& resources);
   // Turn off, as the checkbox does. Returns true when the render size changes back (Upscale 2X), which
   // restarts the accumulation.
   bool disable(Resources& resources);
-  bool onUiSettings(Resources& resources);
-  bool onUiPreview(Resources& resources);
 
 private:
   // Initialize OptiX context and denoiser

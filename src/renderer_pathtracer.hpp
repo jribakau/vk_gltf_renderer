@@ -89,7 +89,6 @@ public:
   }
   void onDetach(Resources& resources) override;
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size, Resources& resources) override;
-  bool onUIRender(Resources& resources) override;
   void onRender(VkCommandBuffer cmd, Resources& resources) override;
   // Called instead of onRender() while the accumulation is complete
   void onAccumulationComplete(VkCommandBuffer cmd, Resources& resources);

@@ -221,13 +221,3 @@ void DenoiserHandoff::cancel()
   m_shown  = false;
 }
 
-void DenoiserHandoff::onUi()
-{
-  namespace PE = nvgui::PropertyEditor;
-  PE::begin("DenoiserHandoff");
-  PE::SliderInt("DLSS Hand-off", &m_settings.spp, 0, 1000, "%d spp", ImGuiSliderFlags_Logarithmic,
-                "Once the camera stops, blend from DLSS's image to the OptiX / OIDN one over this many samples "
-                "per pixel, while the denoised image is still made of few samples. 0 switches at its first denoise.");
-  ImGui::TextDisabled("Hand-off: %d%% denoised", int(m_weight * 100.0f + 0.5f));
-  PE::end();
-}

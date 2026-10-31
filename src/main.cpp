@@ -44,7 +44,6 @@
 #include <nvvk/validation_settings.hpp>
 
 #include "renderer.hpp"
-#include "ui_dock_layout.hpp"
 #include "mcp_timing.hpp"
 #include "frame_stream.hpp"
 #include "frame_present.hpp"
@@ -55,25 +54,9 @@
 #include "mcp_scene.hpp"
 
 #include <algorithm>
-#include "docs/app_icon_png.h"
 #include "version.hpp"
 
 nvutils::ProfilerManager g_profilerManager;  // #PROFILER
-
-//////////////////////////////////////////////////////////////////////////
-// Create and set the window icon
-static void setWindowIcon(GLFWwindow* window)
-{
-  GLFWimage icon{};
-  int       channels = 0;
-  icon.pixels        = stbi_load_from_memory(app_icon_png, app_icon_png_len, &icon.width, &icon.height, &channels, 4);
-  if(icon.pixels)
-  {
-    glfwSetWindowIcon(window, 1, &icon);  // Set icon to window
-    glfwPollEvents();                     // Force icon to be immediately shown
-    stbi_image_free(icon.pixels);
-  }
-}
 
 //////////////////////////////////////////////////////////////////////////
 ///
@@ -193,7 +176,10 @@ auto main(int argc, char** argv) -> int
                              }},
                         {".json"}, &savePresetFilename);
   parameterRegistry.addVector({"size", "Size of the window to be created", "s"}, &appInfo.windowSize);
-  parameterRegistry.add({"headless"}, &appInfo.headless, true);
+  // Always headless: the app draws the frames itself. Accepted for what still passes it.
+  bool headlessFlag = true;
+  parameterRegistry.add({"headless"}, &headlessFlag, true);
+  appInfo.headless = true;
   parameterRegistry.add({"frames", "Number of frames to run in headless mode"}, &appInfo.headlessFrameCount);
   parameterRegistry.add({"vsync"}, &appInfo.vSync);
 #ifdef USE_NVMCP
@@ -208,7 +194,6 @@ auto main(int argc, char** argv) -> int
   parameterRegistry.add({"device", "force a vulkan device via index into the device list"}, &vkSetup.forceGPU);
   parameterRegistry.add({"vsyncOffMode", "Preferred VSync Off mode: [0:Immediate, 1:Mailbox, 2:FIFO, 3:FIFO Relax]"},
                         reinterpret_cast<int*>(&appInfo.preferredVsyncOffMode));
-  parameterRegistry.add({"floatingWindows", "Allow dock windows to be separate windows"}, &appInfo.hasUndockableViewport, true);
   bool useOpacityMicromap = true;
   parameterRegistry.add({"useOpacityMicromap", "Use EXT_mesh_opacity_micromap opacity micromaps when supported"}, &useOpacityMicromap);
 
@@ -271,11 +256,8 @@ auto main(int argc, char** argv) -> int
   fv::wardrobe::setBindCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "bind");
   elemGltfRenderer->setEditable(editable || enableStream);
 
-  if(appInfo.headless)
-  {
-    elemGltfRenderer->alignMaxSamplesForHeadless(appInfo.headlessFrameCount);
-    elemGltfRenderer->applyHeadlessDefaults();
-  }
+  elemGltfRenderer->alignMaxSamplesForHeadless(appInfo.headlessFrameCount);
+  elemGltfRenderer->applyHeadlessDefaults();
 
   // ImGui::LoadIniSettingsFromDisk() silently keeps the defaults when it cannot read the file, so an
   // automated run would report results for a configuration it never restored. Reject it up front.
@@ -289,21 +271,11 @@ auto main(int argc, char** argv) -> int
   logger.setMinimumLogLevel(logLevel);
   logger.setShowFlags(logShow);
 
-  auto elemGpuMonitor = std::make_shared<nvgpu_monitor::ElementGpuMonitor>();
   auto elemProfiler   = std::make_shared<nvapp::ElementProfiler>(&g_profilerManager, profilerSettings);
-  auto elemLogger     = std::make_shared<nvapp::ElementLogger>(false);
 
 #ifdef USE_DBG_PRINTF
   auto elemDbgPrintf = std::make_shared<nvapp::ElementDbgPrintf>();
 #endif
-
-  {
-    elemLogger->setLevelFilter(nvapp::ElementLogger::eBitERROR | nvapp::ElementLogger::eBitWARNING | nvapp::ElementLogger::eBitINFO);
-
-    nvutils::Logger::getInstance().setLogCallback([elemLogger](nvutils::Logger::LogLevel logLevelCb, const std::string& str) {
-      elemLogger->addLog(logLevelCb, "%s", str.c_str());
-    });
-  }
 
   // Extension feature needed.
   // clang-format off
@@ -349,12 +321,6 @@ auto main(int argc, char** argv) -> int
 
   // Only request the graphics queue
   vkSetup.queues = {{VK_QUEUE_GRAPHICS_BIT}};
-
-  // If not headless, add the surface extensions for both instance and device (i.e swapchain)
-  if(!appInfo.headless)
-  {
-    nvvk::addSurfaceExtensions(vkSetup.instanceExtensions, &vkSetup.deviceExtensions);
-  }
 
 #ifdef USE_OPTIX_DENOISER
   // Instance extensions
@@ -547,48 +513,19 @@ auto main(int argc, char** argv) -> int
   appInfo.device         = vkContext.getDevice();
   appInfo.physicalDevice = vkContext.getPhysicalDevice();
   appInfo.queues         = vkContext.getQueueInfos();
-  appInfo.useMenu        = true;
-  // ImGui descriptor pool: default 128 is too small once the inspector/scene-browser show live
-  // texture thumbnails (one descriptor per on-screen thumbnail, bounded by ThumbnailCache). Raise
-  // it to leave ample headroom above the viewport/denoiser images the app already registers.
-  appInfo.texturePoolSize = 1024U;
-
-  // Setting up the layout of the application. The same function backs Windows > Reset UI Layout,
-  // so the two can never drift (src/ui_dock_layout.cpp).
-  appInfo.dockSetup = &ui::buildDefaultDockLayout;
-
-  // An automated run neither restores nor saves the .ini (window, layout, renderer settings).
-  //
-  // Saving: a scripted run arranges the window for its own purposes (--benchmark hides the side
-  // panels, a capture script picks its own window size), and saving that leaves the next
-  // interactive session with a layout nobody chose -- panels missing and no clue why.
-  // Restoring: tonemapper, path-tracer and window settings would leak from the last interactive
-  // session into the result, so the same command line gave different images and timings on
-  // different days. Settings come from the defaults and the command line; --iniFile opts back into
-  // a specific file (loaded below, once every element has registered its settings handler).
-  const bool automatedRun = appInfo.headless;
-  appInfo.persistSettings = !automatedRun;
+  appInfo.useMenu        = false;
+  // Settings come from the defaults and the command line, so the same command line gives the same
+  // image; --iniFile opts into a specific file (loaded below, once every settings handler registered).
+  appInfo.persistSettings = false;
 
   // Create the application
   nvapp::Application app;
   app.init(appInfo);
 
-  // Set the window icon
-  if(!appInfo.headless)
-  {
-    setWindowIcon(app.getWindowHandle());
-  }
-
-  elemGltfRenderer->registerRecentFilesHandler();
-
   app.addElement(elemGltfRenderer);
   if(enableStream)
   {
-    if(!appInfo.headless)
-    {
-      LOGW("--stream needs --headless; ignored.\n");
-    }
-    else if(streamPort == 0 || streamPort > 65535)
+    if(streamPort == 0 || streamPort > 65535)
     {
       LOGE("--streamPort %u is not a valid TCP port (1-65535); frames are not served.\n", unsigned(streamPort));
     }
@@ -659,21 +596,10 @@ auto main(int argc, char** argv) -> int
     }
   }
 #endif
-  {
-    app.addElement(elemLogger);
-    app.addElement(elemGpuMonitor);
-    app.addElement(elemProfiler);
-    // Presentation mode (F11) hides these panels too, and restores them on the way out.
-    elemGltfRenderer->addPresentationWindow([elemLogger] { return elemLogger->isShowLog(); },
-                                            [elemLogger](bool v) { elemLogger->setShowLog(v); });
-    elemGltfRenderer->addPresentationWindow([elemGpuMonitor] { return elemGpuMonitor->showWindow; },
-                                            [elemGpuMonitor](bool v) { elemGpuMonitor->showWindow = v; });
-    elemGltfRenderer->addPresentationWindow([profilerSettings] { return profilerSettings->show; },
-                                            [profilerSettings](bool v) { profilerSettings->show = v; });
+  app.addElement(elemProfiler);
 #ifdef USE_DBG_PRINTF
-    app.addElement(elemDbgPrintf);
+  app.addElement(elemDbgPrintf);
 #endif
-  }
 
   // Loading the scene and the HDR
 #ifdef USE_DEFAULT_SCENE
@@ -706,22 +632,13 @@ auto main(int argc, char** argv) -> int
   }
 
   // --iniFile: an automated run restores this file on purpose (see persistSettings above).
-  if(automatedRun && !iniFilename.empty())
+  if(!iniFilename.empty())
   {
     LOGI("Restoring settings from '%s'\n", nvutils::utf8FromPath(iniFilename).c_str());
     ImGui::LoadIniSettingsFromDisk(nvutils::utf8FromPath(iniFilename).c_str());
   }
-  else if(!iniFilename.empty())
-  {
-    LOGW("--iniFile is only used by headless, scripted and benchmark runs; ignored.\n");
-  }
 
   app.run();
-
-  // Closing the window while presenting: put the window and panels back first, since deinit() is
-  // what persists the window geometry and the ImGui.ini -- otherwise the next launch would open
-  // borderless-sized with every panel hidden.
-  elemGltfRenderer->exitPresentationMode();
 
   // A start-up --savefile writes once the run is over, not during the parse: the callback above
   // no-ops while `renderer` is still null, and even afterwards the scene is not fully set up

@@ -40,7 +40,6 @@ public:
   virtual void onDetach(Resources& resources) {};
   virtual void onResize(VkCommandBuffer cmd, const VkExtent2D& size, Resources& resources) {};
   virtual void onRender(VkCommandBuffer cmd, Resources& resources) {};
-  virtual void onUIMenu() {};
   virtual void onSceneInvalidated(Resources& resources) {};
 
   // A scene edit changed appearance in a way motion vectors can't describe (material/light
@@ -50,7 +49,6 @@ public:
   // see docs/denoising.md.
   virtual void notifyDlssContentReset(Resources& resources) {};
 
-  [[nodiscard]] virtual bool onUIRender(Resources&) { return false; }
 
   //---
   // Returns false only when a from-file compile was requested and the Slang compile failed. The

@@ -27,6 +27,7 @@
 #include <nvutils/logger.hpp>
 
 #include "renderer.hpp"
+#include "gltf_scene_editor.hpp"
 #include "scene_selection_render_nodes.hpp"
 #include "tinygltf_utils.hpp"
 
@@ -112,12 +113,6 @@ void GltfRenderer::onSceneSelectionEvent(const SceneSelection::Event& event)
 {
   switch(event.type)
   {
-    case SceneSelection::EventType::CameraApply:
-      applyGltfCamera(event.data);
-      break;
-    case SceneSelection::EventType::CameraSetFromView:
-      setGltfCameraFromView(event.data);
-      break;
     case SceneSelection::EventType::NodeSelected: {
       m_resources.selectedRenderNodes.clear();
       nvvkgltf::Scene* scn = m_resources.getScene();
@@ -133,13 +128,6 @@ void GltfRenderer::onSceneSelectionEvent(const SceneSelection::Event& event)
       // Material selection event
       break;
   }
-}
-
-// The Scene Browser scrolls to the selection in windowed sessions; elsewhere there is no browser to show it.
-void GltfRenderer::focusSelectionInBrowser()
-{
-  if(m_focusSelectionInBrowser)
-    m_focusSelectionInBrowser();
 }
 
 // Update the current selection from a ray-pick result. `renderNodeIdx` is the TLAS instance index
@@ -178,7 +166,6 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
     if(selectableNodeID >= 0)
     {
       m_sceneSelection.selectNode(selectableNodeID, selectionPoint, selectionRayOrigin);
-      focusSelectionInBrowser();
     }
     else
     {
@@ -198,7 +185,6 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
     if(editableNodeID >= 0)
     {
       m_sceneSelection.selectNode(editableNodeID, selectionPoint, selectionRayOrigin);
-      focusSelectionInBrowser();
     }
     else
     {
@@ -211,7 +197,6 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
   if(scene->isInstanceSetRenderNode(renderNodeIdx))
   {
     m_sceneSelection.selectNode(renderNodes[renderNodeIdx].refNodeID, selectionPoint, selectionRayOrigin);
-    focusSelectionInBrowser();
     return;
   }
 
@@ -223,7 +208,6 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
 
   m_resources.selectedRenderNodes = {renderNodeIdx};
   m_sceneSelection.selectPrimitive(renderNodeIdx, nodeID, primIndex, meshID, selectionPoint, selectionRayOrigin);
-  focusSelectionInBrowser();
 }
 
 nvutils::Bbox GltfRenderer::instanceWorldBounds(uint32_t slot) const

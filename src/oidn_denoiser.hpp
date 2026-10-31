@@ -157,11 +157,8 @@ public:
   double getGpuTimeMs() const { return m_denoiseTimeMs; }
 
   // UI controls
-  bool onUiActivation(Resources& resources);
   // Turn off, as the checkbox does. The accumulation is kept.
   void disable(Resources& resources);
-  bool onUiSettings(Resources& resources);
-  bool onUiPreview(Resources& resources);
 
 private:
   void resizeTargets(VkCommandBuffer cmd, VkExtent2D size);
