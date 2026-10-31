@@ -27,7 +27,6 @@ C++20. Host and device share structs via `shaders/shaderio.h`.
 | Scene data flow: Model → RenderNodes → GPU SSBO / BLAS / TLAS | [docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md) |
 | glTF 2.1 multi-file scenes, read-only flagging, re-externalize on save | [docs/external_assets.md](docs/external_assets.md) |
 | Any other glTF 2.1 work: status, `PROVISIONAL` markers for draft-spec choices, the tinygltf fork, test fixtures | [docs/gltf_2_1.md](docs/gltf_2_1.md) |
-| KHR_interactivity behavior graphs: node execution, event wiring, coverage status | [docs/interactivity.md](docs/interactivity.md) |
 | Sky models: physical atmosphere, gradient, units and calibration, the sun, glTF mapping | [docs/sky.md](docs/sky.md) |
 | Environment *pipeline*: the analytic bake, lighting vs background fields, preview/commit | [docs/developer.md](docs/developer.md) (§ Environment Lighting) |
 | MCP shader timing: enabling `--mcp`, the tool surface, measuring a change | [docs/mcp.md](docs/mcp.md) |
@@ -212,7 +211,6 @@ you are expected to keep them that way:
 | Environment sources, the sky bake, or the lighting/background split | [docs/developer.md](docs/developer.md) + [docs/user-guide.md](docs/user-guide.md) |
 | glTF 2.1 external-asset load/save/edit behavior | [docs/external_assets.md](docs/external_assets.md) |
 | Other glTF 2.1 support, a draft-spec assumption, or the tinygltf fork | [docs/gltf_2_1.md](docs/gltf_2_1.md) (status, patch log); mark draft-spec choices `PROVISIONAL(...)` and add a fixture to `tests/gltf_2_1/generate_fixtures.py` |
-| KHR_interactivity node coverage, execution model, event wiring | [docs/interactivity.md](docs/interactivity.md) |
 | MCP tools or the timing measurement | [docs/mcp.md](docs/mcp.md) |
 | Headless/benchmark flags or output format | [docs/benchmarking.md](docs/benchmarking.md), `utils/benchmark/README.md` |
 | Added a glTF material extension | path tracer eval first, then README extension list + developer.md checklist |

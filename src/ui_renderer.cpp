@@ -56,7 +56,6 @@
 #include "ui_commands.hpp"
 #include "ui_dock_layout.hpp"
 #include "ui_helpers.hpp"
-#include "ui_interactivity.hpp"
 #include "ui_mouse_state.hpp"
 #include "version.hpp"
 
@@ -152,11 +151,8 @@ void GltfRenderer::mouseClickedInViewport()
            && (binding.input == camera_controls::Input::eLeftDoubleClick ? s_mouseClickState.isMouseDoubleClicked(button) :
                                                                            s_mouseClickState.isMouseSingleClicked(button));
   };
-  const bool interactivityPlaying = isInteractivityPlaying();
-  const bool setCenter            = !interactivityPlaying && gestured(*centerBinding);
-  const bool clicked              = interactivityPlaying ?
-                                        s_mouseClickState.isMouseReleasedNoDrag(camera_controls::clickButton(selectBinding->input)) :
-                                        (gestured(*selectBinding) || setCenter);
+  const bool setCenter = gestured(*centerBinding);
+  const bool clicked   = gestured(*selectBinding) || setCenter;
   if(clicked)
   {
     // Convert screen coordinates to normalized viewport coordinates [0,1]
@@ -197,26 +193,6 @@ bool GltfRenderer::requestAnchorPick(const glm::dvec2& screenPos)
          .pickPos        = {(screenPos.x - cursorPos.x) / avail.x, (screenPos.y - cursorPos.y) / avail.y},
   };
   return true;
-}
-
-// Captures whether the cursor is currently over the 3D viewport and, if so, its pixel position in
-// render-target space - consumed by onRender()'s updateHoverState()/HoverPicker later this same
-// frame (docs/interactivity.md Phase E). Must be called from the viewport window's ImGui code,
-// right where mouseClickedInViewport() computes the equivalent position for click-picking.
-void GltfRenderer::updateHoverCursorPosition()
-{
-  m_hoverCursorInViewport = ImGui::IsWindowHovered(ImGuiFocusedFlags_RootWindow) && m_resources.getScene()
-                            && m_resources.getScene()->valid() && !m_busy.isBusy();
-  m_resources.hoverInViewport = m_hoverCursorInViewport;
-  if(!m_hoverCursorInViewport)
-    return;
-
-  const ImVec2     mousePos  = ImGui::GetMousePos();
-  const ImVec2     cursorPos = ImGui::GetCursorScreenPos();
-  const ImVec2     avail     = ImGui::GetContentRegionAvail();
-  const VkExtent2D imgSize   = m_resources.gBuffers.getSize();
-  m_hoverCursorPixel = {static_cast<int>((mousePos.x - cursorPos.x) / avail.x * static_cast<float>(imgSize.width)),
-                        static_cast<int>((mousePos.y - cursorPos.y) / avail.y * static_cast<float>(imgSize.height))};
 }
 
 // Centered warning banner drawn over the viewport image when Environment Type = None leaves the
@@ -390,12 +366,6 @@ void GltfRenderer::renderUI()
       ImGui::End();  // End Camera
     }
 
-    // KHR_interactivity Graphs window: closed by default, opt-in via the View menu or toolbar
-    // indicator. renderWindow() itself handles the ImGui::Begin/End pair and every no-op case
-    // (no scene, no graph, window closed) - this is the whole call site.
-    ui::interactivity::renderWindow(m_resources.getScene(), m_resources.interactivityControl,
-                                    &m_resources.settings.showInteractivityWindow);
-
     // Scene Browser system (its selection events reach Resources through onSceneSelectionEvent, installed in onAttach)
     {
       m_sceneBrowser.render(&m_resources.settings.showSceneBrowserWindow, m_busy.isBusy());
@@ -511,12 +481,6 @@ void GltfRenderer::renderUI()
 
     // Handle mouse clicks and gizmo interaction in the viewport
     GltfRenderer::mouseClickedInViewport();
-
-    // Capture the cursor's viewport pixel position for KHR_interactivity hover detection
-    // (docs/interactivity.md Phase E). ImGui state (IsWindowHovered/GetCursorScreenPos) is only
-    // valid here, in the UI-render phase - onRender()'s later Vulkan-recording pass can't query
-    // it directly, so it's stashed on GltfRenderer for updateHoverState() to consume this frame.
-    GltfRenderer::updateHoverCursorPosition();
 
     // Viewport-scoped keyboard shortcuts (G, T, Home, Space): live while the viewport is hovered or
     // focused. Called every frame from inside this window; the routing decides (ui_commands.cpp).
@@ -976,15 +940,6 @@ void GltfRenderer::renderMenuToolbarAndGizmos()
       ImGui::SetTooltip("Toggle %s", cmd.label);
   });
 
-  // KHR_interactivity Play/Pause indicator - only drawn when the loaded scene actually has a graph
-  // (unlike the toggles above, which are always present). Toggles InteractivityControl::play
-  // directly; does not open the Interactivity window (View > Windows > Interactivity, or F8).
-  if(ui::interactivity::hasGraph(m_resources.getScene()))
-  {
-    ImGui::SameLine(0, 0);
-    ui::interactivity::renderToolbarIndicator(m_resources.getScene(), m_resources.interactivityControl);
-  }
-
   ImGui::SameLine();
   ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
 }
@@ -1233,7 +1188,6 @@ void GltfRenderer::registerCommands()
   window("window.inspector", "Inspector", ICON_MS_LIST_ALT, ImGuiKey_F4, settings.showInspectorWindow);
   window("window.environment", "Environment", ICON_MS_PUBLIC, ImGuiKey_F5, settings.showEnvironmentWindow);
   window("window.tonemapper", "Tonemapper", ICON_MS_TONALITY, ImGuiKey_F6, settings.showTonemapperWindow);
-  window("window.interactivity", "Interactivity", ICON_MS_EXTENSION, ImGuiKey_F8, settings.showInteractivityWindow);
   // Handled by nvapp::ElementLogger; listed so Help shows it.
   m_commands.add({.id = "window.log", .label = "Log", .group = "Windows", .binding = {kCtrl | kShift | ImGuiKey_L}});
 

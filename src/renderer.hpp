@@ -69,7 +69,6 @@
 #include "ui_environment.hpp"
 #include "ui_help.hpp"
 #include "gltf_environment_sky.hpp"
-#include "hover_picker.hpp"
 #include "camera_controls.hpp"
 #include "ui_busy_window.hpp"
 #include "ui_commands.hpp"
@@ -602,8 +601,7 @@ private:
   bool updateAnimation(VkCommandBuffer cmd);
   // Shared downstream GPU reconciliation after CPU-side animation-channel evaluation dirtied the
   // model (world matrices, GPU sync, morph/skin compute, BLAS/TLAS update, dirty-flag clear) - the
-  // common tail of updateAnimation() (UI-driven single clip) and updateInteractivityGraphs()
-  // (KHR_interactivity-driven, possibly several clips at once via animation/start).
+  // tail of updateAnimation().
   void reconcileAnimationGpuState(VkCommandBuffer cmd);
   // #DLSS deformation motion: keep the deforming primitives' positions from before this frame's
   // writers (see PrevPositionsVk). Runs before any of them.
@@ -615,23 +613,8 @@ private:
   bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off
   uint64_t                  m_sceneGeneration{0};
-  // KHR_interactivity: ticks the scene's default behavior graph instance, then applies any
-  // animation/start-driven pose changes it computed this tick (via reconcileAnimationGpuState()).
-  // pointer/set's glTF-model writes flow through Scene::markNodeDirty/markMaterialDirty and are
-  // picked up by the dirty-flags path in updateSceneChanges() right after this call, same as before.
-  bool updateInteractivityGraphs(VkCommandBuffer cmd);
-  // Polls m_hoverPicker for a completed G-buffer readback and, on a change, notifies the scene's
-  // interactivity graph (Scene::notifyNodeHoverChanged) - called once per frame, before
-  // updateInteractivityGraphs() so a hover transition this frame feeds this same frame's tick.
-  void updateHoverState();
-  // Script-driven hover for UI scenario tests: calls the exact same notification path
-  // updateHoverState() uses for real cursor input, bypassing the async GPU readback for determinism.
-  void hoverSceneNodeFromScript(int nodeIndex);
-  // UI-phase capture of cursor-over-viewport state; see the member fields' comments.
-  void updateHoverCursorPosition();
-
   // Polls m_pendingClickResult's frame semaphore and, once signaled, calls m_rayPicker.getResult()
-  // and applies it via applyClickPickResult() - called once per frame, next to updateHoverState().
+  // and applies it via applyClickPickResult() - called once per frame.
   void updateClickPickState();
   // Same for the camera anchor pick: answers m_cameraManip->resolveAnchor() once its frame has signaled.
   void updateAnchorPickState();
@@ -698,11 +681,6 @@ private:
   void addToRecentFiles(const std::filesystem::path& filePath, int historySize = 20);
   void removeFromRecentFiles(const std::filesystem::path& filePath);
   void mouseClickedInViewport();
-  // True when the current scene has a KHR_interactivity graph and it's actively ticking - the
-  // shared gate for every place viewport click behavior changes while a graph is playing (see
-  // docs/interactivity.md's design notes): skipping the click-to-deselect toggle
-  // (updateSelectionFromPick) and skipping the single/double-click debounce (mouseClickedInViewport).
-  bool isInteractivityPlaying() const;
   // `selectionPoint`/`selectionRayOrigin` (global space) are the real ray-pick hit point/origin -
   // default NaN for callers with no ray (e.g. script-driven test commands), matching the
   // spec-sanctioned "no ray info" fallback (see SceneSelection::Event's doc comment).
@@ -793,7 +771,6 @@ private:
   BusyWindow    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   VisualHelpers m_visualHelpers;  // Grid + transform gizmo overlay
-  HoverPicker   m_hoverPicker;    // KHR_interactivity hover detection (docs/interactivity.md Phase E)
   EnvBaker      m_envBaker;       // Bakes analytic skies into the shared lighting environment
   SkyBruneton   m_skyBruneton;    // Precomputed atmospheric scattering LUTs
   // Which environment the firefly clamp was last calibrated for, as an int so it can hold a
@@ -870,23 +847,14 @@ private:
   glm::quat m_gizmoSnapshotR{1, 0, 0, 0};
   glm::vec3 m_gizmoSnapshotS{1.f};
 
-  // KHR_interactivity hover state: the glTF node currently under the cursor, -1 for none. Driven
-  // by m_hoverPicker's async G-buffer readback (see updateHoverState()); also settable directly
-  // by the `hovernode`/`clearhover` script commands for deterministic testing.
-  int m_hoveredNodeIndex = -1;
-  // Cursor position captured during the UI phase (updateHoverCursorPosition(), ui_renderer.cpp)
-  // for onRender()'s later use - ImGui hover/cursor queries aren't valid from onRender() itself.
-  glm::ivec2 m_hoverCursorPixel{-1, -1};
-  bool       m_hoverCursorInViewport = false;
-
   // Async click ray-pick (avoids the ~300ms stall of the old synchronous submitAndWaitTempCmdBuffer
-  // path - see docs/interactivity.md's design note). A click captured during the UI phase
+  // path). A click captured during the UI phase
   // (mouseClickedInViewport(), ui_renderer.cpp) becomes a PendingClickPick with everything the pick
   // needs baked in *at click time* (camera state, normalized cursor position, single/double-click
   // classification) - no GPU work yet. onRender(cmd) then records m_rayPicker.run(cmd, ...) into the
-  // frame's own command buffer (next to m_hoverPicker.requestReadback - the TLAS is already proven
+  // frame's own command buffer (the TLAS is already proven
   // valid there) and moves it into a PendingClickResult carrying just the frame semaphore to poll.
-  // updateClickPickState() (called next to updateHoverState()) polls that semaphore non-blocking and,
+  // updateClickPickState() polls that semaphore non-blocking and,
   // once signaled, reads m_rayPicker.getResult() and applies it via applyClickPickResult(). A newer
   // click simply overwrites whichever of these is pending - nvvk::RayPicker has one internal result
   // buffer, so only the most recent run() before a getResult() call is ever meaningful anyway.

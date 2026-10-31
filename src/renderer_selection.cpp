@@ -105,12 +105,6 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
   }
 }
 
-bool GltfRenderer::isInteractivityPlaying() const
-{
-  const nvvkgltf::Scene* scene = m_resources.getScene();
-  return scene && !scene->getInteractivityGraphs().empty() && m_resources.interactivityControl.play;
-}
-
 // SceneSelection's events into Resources, for the silhouette and Fit, and into KHR_interactivity's
 // onSelect. Installed once in onAttach, so a selection fills selectedRenderNodes whether or not the
 // UI pass runs (a stream host skips it).
@@ -128,27 +122,11 @@ void GltfRenderer::onSceneSelectionEvent(const SceneSelection::Event& event)
       m_resources.selectedRenderNodes.clear();
       nvvkgltf::Scene* scn = m_resources.getScene();
       if(scn && scn->valid())
-      {
         m_resources.selectedRenderNodes = renderNodesOfNode(*scn, event.data);
-        // KHR_interactivity event/onSelect: real ray-pick hit point/origin when this selection
-        // was redirected here from an actual 3D-viewport click (e.g. KHR_node_selectability's
-        // nearest-selectable-ancestor fallback in updateSelectionFromPick()) - NaN (the
-        // spec-sanctioned "no ray info" fallback) otherwise (Scene Browser click, script-driven
-        // `selectnode`, ...; SceneSelection::selectNode's default parameters already are NaN).
-        scn->notifyNodeSelected(event.data, event.selectionPoint, event.selectionRayOrigin);
-      }
       break;
     }
     case SceneSelection::EventType::PrimitiveSelected: {
       m_resources.selectedRenderNodes = {event.renderNodeIndex};
-      nvvkgltf::Scene* scn            = m_resources.getScene();
-      if(scn && scn->valid())
-      {
-        // KHR_interactivity event/onSelect: real ray-pick hit point/origin when this came from
-        // an actual 3D-viewport click (SceneSelection::selectPrimitive's default parameters
-        // are already the spec-sanctioned NaN fallback for callers with no ray - e.g. tests).
-        scn->notifyNodeSelected(event.data, event.selectionPoint, event.selectionRayOrigin);
-      }
       break;
     }
     case SceneSelection::EventType::MaterialSelected:
@@ -185,13 +163,8 @@ void GltfRenderer::updateSelectionFromPick(int renderNodeIdx, const glm::vec3& s
     return;
   }
 
-  // Clicking the currently selected primitive again de-selects it - standard editor behavior, but
-  // actively harmful while a KHR_interactivity graph is playing: every other click on the same node
-  // (e.g. re-clicking a lever/button several times in a row) would silently eat the click as a
-  // deselect instead of re-firing event/onSelect, making the graph feel like it needs "two clicks"
-  // to react. Skip the toggle while a graph is actually running, so every click re-selects and
-  // re-fires the event; click-to-deselect still works normally once the graph is paused/absent.
-  if(!isInteractivityPlaying() && m_resources.selectedRenderNodes.size() == 1 && m_resources.selectedRenderNodes.count(renderNodeIdx))
+  // Clicking the currently selected primitive again de-selects it
+  if(m_resources.selectedRenderNodes.size() == 1 && m_resources.selectedRenderNodes.count(renderNodeIdx))
   {
     clearSelection();
     return;

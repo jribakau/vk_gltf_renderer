@@ -141,7 +141,6 @@ src/
 ├── gltf_environment_sky.cpp/hpp# OMI_environment_sky parse/write/strip, raw-value passthrough
 ├── mcp_timing.cpp/hpp          # Optional MCP endpoint (--mcp): recompile shaders, time a
 │                               #   GPU pass over a window (docs/mcp.md)
-├── hover_picker.cpp/hpp        # Async G-buffer readback for KHR_interactivity hover detection
 ├── camera_controls.cpp/hpp     # Viewport bindings table (drags, wheel, clicks, keys -> action), the manipulator
 │                               #   that dispatches from it (Shift pivots on the ray-picked point), and
 │                               #   the per-frame input handling; Help's Camera tab reads the same table

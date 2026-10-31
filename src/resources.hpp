@@ -56,7 +56,6 @@
 #include "scene_gpu_view.hpp"
 #include "scene_residency_vk.hpp"
 #include "ui_animation.hpp"
-#include "ui_interactivity.hpp"
 #include "gltf_scene_transform_vk.hpp"
 #include "gltf_scene_prev_positions_vk.hpp"
 #include "gpu_memory_tracker.hpp"
@@ -165,7 +164,6 @@ struct Settings
   bool                    showStatisticsWindow   = false;  // Show Statistics window
   bool                    showSceneBrowserWindow = true;   // Show Scene Browser window
   bool                    showInspectorWindow    = true;   // Show Inspector window
-  bool  showInteractivityWindow = false;  // Show KHR_interactivity Graphs window (opt-in, unlike the above)
   bool  showGridSettingsWindow  = false;  // Show Grid & Snap settings window
   float hdrEnvIntensity         = 1.0f;   // Intensity of the environment (HDR)
   // The environment's orientation: a unit quaternion taking its own frame to world, stored x, y, z, w
@@ -447,9 +445,6 @@ struct Resources
   // Animation playback state
   AnimationControl animationControl{};
 
-  // KHR_interactivity Graphs panel playback state
-  InteractivityControl interactivityControl{};
-
   int frameCount{0};
 
   // The adaptive stop found all but a few of this accumulation's pixels done (the path tracer sets it,
@@ -488,8 +483,6 @@ struct Resources
 
   // Selection: set of render node indices (TLAS order). One primitive = set of size 1; node + branch = many.
   std::unordered_set<int> selectedRenderNodes;
-  // The ImGui cursor is over the viewport, so the hover picker reads the selection image this frame
-  bool hoverInViewport = false;
 
   // Selection bitmask for silhouette: one bit per render node (GPU buffer + CPU mirror)
   std::vector<uint32_t> selectionBitMask;
