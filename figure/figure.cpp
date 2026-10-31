@@ -9,6 +9,7 @@
 #include <figure/dson/listing.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
+#include <figure/morph/shape_sliders.hpp>
 
 namespace fv {
 
@@ -227,6 +228,10 @@ void Figure::setup(const Progress& progress)
         loadCorrectivesOnce();
       };
       driver->onDriven = [this] { loadCorrectivesOnce(); };
+      std::vector<const dson::MeshRef*> bodies;
+      for(const size_t i : ctx.mainMeshes)
+        bodies.push_back(&ctx.meshes[i]);
+      morph::addShapeSliders(*morphs, *driver, loaded.scene, bodies);
       // a character's scene file stores its joints where its shape put them; a bare figure's are the base's
       if(!ctx.mainNode.empty() && ctx.previewCenters)
         driver->captureBaseline();

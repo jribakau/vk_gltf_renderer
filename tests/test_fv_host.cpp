@@ -700,9 +700,9 @@ struct Reopened
   std::string id;
   Json        problems = Json::array();
 
-  explicit Reopened(Json state)
+  explicit Reopened(Json state, const std::string& rel = "People/Test/Box Figure.duf")
   {
-    EXPECT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.cmd("load", {{"rel", rel}}).value("ok", false));
     EXPECT_TRUE(rig.settle());
     id            = figureId(rig.topic("scene"));
     state["prop"] = id;
@@ -1020,6 +1020,45 @@ TEST(FvHost, ADialTurnedToNothingStaysThereWhenReopened)
   Json old = state();
   old["morphs"].erase("Stretch");
   EXPECT_EQ(Reopened(old).dial("Stretch"), 0.5);
+}
+
+// A general body slider comes with a load, from the figure's bones alone, and is a dial like any other:
+// the panel is told what it is, a scene file holds it, undo takes it back and Reset morphs zeroes it.
+TEST(FvHost, ABodySliderIsADialFromLoadToReopening)
+{
+  const std::string rel = "People/Test/Shape Figure.duf";
+  HostRig           rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", rel}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id    = figureId(rig.topic("scene"));
+  const auto        state = [&] { return rig.cmd("scene.state", {{"prop", id}}).at("result"); };
+  const Json        ch    = rig.topic("morphs/" + id).at("channels").value("fv_shape_waist", Json::object());
+  EXPECT_EQ(ch.value("label", ""), "Waist") << ch.dump();
+  EXPECT_EQ(ch.value("kind", ""), "Modifier/FvShape");
+  EXPECT_EQ(ch.value("region", ""), "Waist");
+  EXPECT_EQ(ch.value("min", 0.0), -1.0);
+  EXPECT_EQ(ch.value("max", 0.0), 1.0);
+  EXPECT_FALSE(ch.value("helper", false));
+  EXPECT_FALSE(state().at("morphs").contains("fv_shape_waist")) << state().dump();
+
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"fv_shape_waist", 0.5}}}});
+  rig.host->onUpdate();
+  EXPECT_EQ(state().at("morphs").value("fv_shape_waist", 0.0), 0.5);
+  {
+    Reopened reopened(state(), rel);
+    EXPECT_EQ(reopened.dial("fv_shape_waist"), 0.5);
+    EXPECT_TRUE(reopened.problems.empty()) << reopened.problems.dump();
+  }
+
+  rig.cmd("history.undo");
+  rig.host->onUpdate();
+  EXPECT_FALSE(state().at("morphs").contains("fv_shape_waist")) << state().dump();
+
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"fv_shape_waist", -1.0}}}});
+  rig.host->onUpdate();
+  rig.cmd("morph.reset", {{"prop", id}});
+  rig.host->onUpdate();
+  EXPECT_EQ(rig.topic("morphs/" + id).at("channels").at("fv_shape_waist").value("value", 1.0), 0.0);
 }
 
 // A worn item's fit dial is named by the item's key. The key goes in the file, so the dial finds its

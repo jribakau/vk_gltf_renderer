@@ -86,6 +86,7 @@ set(TEST_SOURCES
     figure/test_formulas.cpp
     figure/test_erc.cpp
     figure/test_morph_set.cpp
+    figure/test_shape_sliders.cpp
     figure/test_figure_driver.cpp
     figure/test_eyes.cpp
     figure/test_pose_gizmo.cpp
