@@ -1225,7 +1225,7 @@ bool handleShadowCatcher(IRaytracer      raytracer,
     shadowRay.Origin    = safeOffsetRay(hit.pos, hit.geonrm, hit.offsetDistance);
     shadowRay.Direction = directLight.direction;
     shadowRay.TMin      = 0.0;
-    shadowRay.TMax      = INFINITE;
+    shadowRay.TMax      = directLight.distance;  // short of the light: an emitter is no shadow on what it lights
     const float3 shadow = raytracer.TraceShadow(shadowRay, seed);
     visibility          = (shadow.x + shadow.y + shadow.z) / 3.0F;
   }

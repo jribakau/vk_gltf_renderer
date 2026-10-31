@@ -864,12 +864,14 @@ ShadowVertexOutput vertexShadowMain(VertexInput input)
 
 // Opaque surfaces only write depth. A mask material is cut at its cutoff, as it is drawn; a blended
 // one is hashed against its opacity, so hair cards and lashes cast the cutout shadow their texture
-// says, and a nearly clear surface (an eye's moisture layer) casts almost none.
+// says, and a nearly clear surface (an eye's moisture layer) casts almost none. So is what transmits,
+// which lowers as opaque (a cornea, glass): by what it lets through, as a traced shadow ray takes it.
 [shader("fragment")]
 void fragmentShadowMain(ShadowVertexOutput input, uint primitiveID: SV_PrimitiveID, float3 baryWeights: SV_Barycentrics)
 {
   GltfShadeMaterial material = pushConst.gltfScene->materials[pushConst.materialID];
-  if(material.alphaMode == AlphaMode::eAlphaModeOpaque)
+  const bool opaque = material.alphaMode == AlphaMode::eAlphaModeOpaque;
+  if(opaque && material.transmissionFactor == 0.0)
     return;
 
   GltfRenderNode      renderNode      = pushConst.gltfScene->renderNodes[pushConst.renderNodeID];
@@ -887,7 +889,7 @@ void fragmentShadowMain(ShadowVertexOutput input, uint primitiveID: SV_Primitive
       discard;
     return;
   }
-  const float coverage = pbrMat.opacity * (1.0 - pbrMat.transmission);
+  const float coverage = (opaque ? 1.0 : pbrMat.opacity) * (1.0 - pbrMat.transmission);
   if(coverage <= interleavedGradientNoise(input.position.xy))
     discard;
 }
