@@ -256,7 +256,7 @@ private:
   void applyOtherDials(const dson::MorphContext& ctx, const std::vector<dson::Item>& items, const std::vector<const dson::SceneDial*>& dials, const Progress& progress);
   void finishCorrectives();
   // Tells the channels what their files say of them, when that has been read or new channels came,
-  // and loads the controllers of dials that moved. True when it started a load.
+  // and loads the controllers of dials that moved. True when that left a load or the driver to run.
   bool noteMorphs();
 
   struct MorphNotes

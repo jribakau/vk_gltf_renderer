@@ -140,6 +140,8 @@ void MorphSet::bind(const std::string& name, Binding b, double value, const Chan
     c.min    = opts.min.value_or(0);
     c.max    = opts.max.value_or(1);
     c.hidden = opts.hidden;
+    // a value given is one set: a scene's, for an item or another figure
+    c.dialled = opts.value.has_value();
     m_index[name] = m_channels.size();
     m_channels.push_back(std::move(c));
   }
@@ -260,11 +262,11 @@ void MorphSet::addLazy(const std::string& name, Loader loader, const ChannelOpti
   m_listVersion++;
 }
 
-void MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
+bool MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
 {
   Channel* ch = channelMut(name);
   if(!ch)
-    return;
+    return false;
   if(!info.label.empty())
     ch->label = info.label;
   ch->path   = info.path;
@@ -276,7 +278,37 @@ void MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
     ch->min = info.min.value_or(ch->min);
     ch->max = info.max.value_or(ch->max);
   }
+  // one that loaded at its rest still does, whoever has dialled it since: a scene file holds a 0 set
+  // before the rest was known
+  if(ch->loaded == ch->rest)
+    ch->loaded = info.rest;
+  ch->rest = info.rest;
   m_listVersion++;
+  if(ch->value == info.rest)
+    return false;
+  if(ch->dialled)
+  {
+    // set away from a rest it didn't know of, which no change of value said (a 0 on a dial that was 0)
+    if(!m_lazy.count(name) || m_loading.count(name))
+      return false;
+    ensureLoaded(name);
+    return true;
+  }
+  // the buffers still hold the old weight until the driver says otherwise; a file not read has none,
+  // and takes the weight when something does read it
+  if(driver && !m_lazy.count(name) && !m_weights.count(name))
+    m_weights[name] = ch->value;
+  ch->value = info.rest;
+  m_version++;
+  if(driver)
+  {
+    if(!m_driverDirty)
+      m_driverSince = std::chrono::steady_clock::now();
+    m_driverDirty = true;
+  }
+  else
+    applyWeights({{name, info.rest}});
+  return true;
 }
 
 bool MorphSet::load(const std::string& name)
@@ -306,8 +338,9 @@ void MorphSet::finishLoad(const std::string& name, std::future<Finish>& fut)
     Channel* ch = channelMut(name);
     if(!ch)
       return;
-    // nothing in the file, and nothing else bound to it (a worn item's copy of the morph)
-    if(result.parts.empty() && !result.keep && !m_bindings.count(name))
+    // nothing in the file, and nothing else bound to it (a worn item's copy of the morph). A switch
+    // that rests elsewhere has nothing in its file either: its readers go by what it's set to.
+    if(result.parts.empty() && !result.keep && !m_bindings.count(name) && ch->rest == 0)
     {
       m_channels.erase(m_channels.begin() + std::ptrdiff_t(ch - m_channels.data()));
       reindex();
@@ -453,7 +486,10 @@ void MorphSet::setMany(const std::vector<std::pair<std::string, double>>& values
   for(const auto& [name, value] : values)
   {
     Channel* ch = channelMut(name);
-    if(!ch || ch->value == value)
+    if(!ch)
+      continue;
+    ch->dialled = true;
+    if(ch->value == value)
       continue;
     // the buffers still hold the old weight until the driver says otherwise
     if(driver && !m_weights.count(name))
@@ -487,7 +523,8 @@ bool MorphSet::apply(const std::string& name, double value)
     m_weights[name] = value;
   if(m_lazy.count(name))
   {
-    if(value != 0)
+    // what a formula reads at its rest is the channel's own value: only leaving it wants the file
+    if(value != ch->rest)
       ensureLoaded(name);
     return true;
   }
@@ -727,11 +764,14 @@ void MorphSet::markLoaded(const std::set<std::string>& except)
 
 void MorphSet::resetAll()
 {
-  std::vector<std::pair<std::string, double>> zero;
+  std::vector<std::pair<std::string, double>> back;
   for(const Channel& c : m_channels)
-    if(c.value != 0)
-      zero.emplace_back(c.name, 0.0);
-  setMany(zero);
+    if(c.value != c.rest)
+      back.emplace_back(c.name, c.rest);
+  setMany(back);
+  // nothing has dialled them now: what a file says later still applies
+  for(Channel& c : m_channels)
+    c.dialled = false;
 }
 
 void MorphSet::markRebuild(int mesh)
@@ -752,8 +792,8 @@ void MorphSet::sort()
   };
   // active channels first so a loaded character's shape is visible at the top
   std::stable_sort(m_channels.begin(), m_channels.end(), [&](const Channel& a, const Channel& b) {
-    if((b.value != 0) != (a.value != 0))
-      return (b.value != 0) < (a.value != 0);
+    if((b.value != b.rest) != (a.value != a.rest))
+      return (b.value != b.rest) < (a.value != a.rest);
     if(rank(a.group) != rank(b.group))
       return rank(a.group) < rank(b.group);
     if(a.group != b.group)

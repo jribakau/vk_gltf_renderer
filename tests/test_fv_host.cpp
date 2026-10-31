@@ -29,6 +29,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <random>
 #include <set>
@@ -1059,6 +1060,54 @@ TEST(FvHost, ABodySliderIsADialFromLoadToReopening)
   rig.cmd("morph.reset", {{"prop", id}});
   rig.host->onUpdate();
   EXPECT_EQ(rig.topic("morphs/" + id).at("channels").at("fv_shape_waist").value("value", 1.0), 0.0);
+}
+
+// A dial its file defaults on (the Shape Figure's Power, at 1) stands there from the load, and a file
+// holds it only away from there, 0 included. A file from before, which has nothing for it, means where
+// it now stands. Reset morphs goes back to it, and undoes back to the 0.
+TEST(FvHost, ADialItsFileDefaultsOnHoldsThatFromLoadToReopening)
+{
+  const std::string rel = "People/Test/Shape Figure.duf";
+  HostRig           rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", rel}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id    = figureId(rig.topic("scene"));
+  const auto        state = [&] { return rig.cmd("scene.state", {{"prop", id}}).at("result"); };
+  const auto        power = [&] { return rig.topic("morphs/" + id).at("channels").at("Power").value("value", -1.0); };
+  // what a morph's file says is read on the pool: a load doesn't wait for it, so a dial takes it a frame later
+  const auto arrives = [](HostRig& r, const std::function<bool()>& reached) {
+    for(int i = 0; i < 5000 && !reached(); i++)
+    {
+      r.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return reached();
+  };
+  EXPECT_TRUE(arrives(rig, [&] { return power() == 1.0; }));
+  EXPECT_FALSE(state().at("morphs").contains("Power")) << state().dump();
+  {
+    Reopened reopened(state(), rel);
+    EXPECT_TRUE(arrives(reopened.rig, [&] { return reopened.dial("Power") == 1.0; }));
+  }
+
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Power", 0.0}}}});
+  rig.host->onUpdate();
+  ASSERT_TRUE(state().at("morphs").contains("Power")) << state().dump();
+  EXPECT_EQ(state().at("morphs").value("Power", -1.0), 0.0);
+  {
+    // it stays through the default's arrival, however late that is
+    Reopened reopened(state(), rel);
+    EXPECT_TRUE(arrives(reopened.rig, [&] { return reopened.rig.topic("morphs/" + reopened.id).at("channels").at("Power").contains("path"); }));
+    EXPECT_EQ(reopened.dial("Power"), 0.0);
+  }
+
+  rig.cmd("morph.reset", {{"prop", id}});
+  rig.host->onUpdate();
+  EXPECT_EQ(power(), 1.0);
+  EXPECT_FALSE(state().at("morphs").contains("Power")) << state().dump();
+  rig.cmd("history.undo");
+  rig.host->onUpdate();
+  EXPECT_EQ(power(), 0.0);
 }
 
 // A worn item's fit dial is named by the item's key. The key goes in the file, so the dial finds its

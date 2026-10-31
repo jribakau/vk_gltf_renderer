@@ -74,6 +74,43 @@ const char* kJcm = R"({
   ]
 })";
 
+// A smile moves the lips, whose own file multiplies them by a switch that is on unless turned off, as
+// Mouth Sticky Power does to the morphs it reads.
+const char* kSmile = R"({
+  "modifier_library": [{
+    "id": "Smile",
+    "channel": {"value": 0, "min": 0, "max": 1},
+    "formulas": [{"output": "Fig:/data/Fig/Morphs/Lips.dsf#Lips?value", "operations": [{"op": "push", "url": "Fig:#Smile?value"}]}]
+  }]
+})";
+
+const char* kLips = R"({
+  "modifier_library": [{
+    "id": "Lips",
+    "channel": {"value": 0},
+    "morph": {"deltas": {"values": [[1, 0, 2, 0]]}},
+    "formulas": [{"output": "Fig:#Lips?value", "stage": "mult", "operations": [{"op": "push", "url": "Fig:#Power?value"}]}]
+  }]
+})";
+
+const char* kPower = R"({
+  "modifier_library": [{"id": "Power", "channel": {"value": 1, "min": 0, "max": 1}}]
+})";
+
+// A dial of its own, multiplied by a switch whose id isn't its file's name.
+const char* kBrow = R"({
+  "modifier_library": [{
+    "id": "Brow",
+    "channel": {"value": 0, "min": 0, "max": 1},
+    "morph": {"deltas": {"values": [[1, 0, 2, 0]]}},
+    "formulas": [{"output": "Fig:#Brow?value", "stage": "mult", "operations": [{"op": "push", "url": "Fig:#Switch?value"}]}]
+  }]
+})";
+
+const char* kSwitch = R"({
+  "modifier_library": [{"id": "Switch", "channel": {"value": 1, "min": 0, "max": 1}}]
+})";
+
 const char* kNodes = R"([
   {"id": "hip", "type": "figure", "center_point": [{"id": "y", "value": 0}]},
   {"id": "head", "type": "bone", "parent": "#hip", "center_point": [{"id": "y", "value": 15}],
@@ -90,6 +127,11 @@ public:
     add("data/Fig/Morphs/CTRL.dsf", kCtrl);
     add("data/Fig/Morphs/Tail.dsf", kTail);
     add("data/Fig/Morphs/Correctives/JCM.dsf", kJcm);
+    add("data/Fig/Morphs/Smile.dsf", kSmile);
+    add("data/Fig/Morphs/Lips.dsf", kLips);
+    add("data/Fig/Morphs/Power.dsf", kPower);
+    add("data/Fig/Morphs/Brow.dsf", kBrow);
+    add("data/Fig/Morphs/ctrl_Switch.dsf", kSwitch);
   }
 
   std::shared_ptr<const fv::dson::Doc> doc(const std::string& file) override
@@ -334,6 +376,76 @@ TEST(FigureDriver, AShapeMovesTheJointAndTheSkinRebindsThere)
   f->morphs->settled();
   EXPECT_NEAR(f->scene.nodes[f->head].position.y, 15, 1e-4);
   EXPECT_NEAR(f->y(3), 30, 1e-4);
+}
+
+// A switch that defaults on passes what it multiplies through, its file unread. Turned off it stops it
+// and is read for the first time; a reset puts it back on.
+TEST(FigureDriver, AMultSwitchAtItsRestPassesItsReaderThrough)
+{
+  const auto read = [](const Fig& f, const char* file) {
+    const auto loaded = f.source->filesLoaded();
+    return std::find(loaded.begin(), loaded.end(), file) != loaded.end();
+  };
+  auto f = setup();
+  f->morphs->addLazy("Smile", f->driver->loader("data/Fig/Morphs/Smile.dsf", "Smile"));
+  f->morphs->addLazy("Power", f->driver->loader("data/Fig/Morphs/Power.dsf", "Power"));
+  fv::dson::MorphInfo info;
+  info.rest = 1;
+  EXPECT_TRUE(f->morphs->describe("Power", info));
+  f->morphs->settled();
+  EXPECT_FALSE(read(*f, "data/Fig/Morphs/Power.dsf"));
+
+  f->morphs->set("Smile", 0.5);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Lips"), 0.5, 1e-6);
+  EXPECT_NEAR(f->y(1), 11, 1e-4);
+  EXPECT_FALSE(read(*f, "data/Fig/Morphs/Power.dsf"));
+  EXPECT_DOUBLE_EQ(f->morphs->get("Power"), 1);
+
+  f->morphs->set("Power", 0);
+  f->morphs->settled();
+  EXPECT_TRUE(read(*f, "data/Fig/Morphs/Power.dsf"));
+  EXPECT_NEAR(f->morphs->weightOf("Lips"), 0, 1e-6);
+  EXPECT_NEAR(f->y(1), 10, 1e-4);
+
+  f->morphs->set("Power", 0.5);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Lips"), 0.25, 1e-6);
+
+  f->morphs->resetAll();
+  f->morphs->settled();
+  EXPECT_DOUBLE_EQ(f->morphs->get("Power"), 1);
+  EXPECT_DOUBLE_EQ(f->morphs->get("Smile"), 0);
+  EXPECT_NEAR(f->morphs->weightOf("Lips"), 0, 1e-6);
+  f->morphs->set("Smile", 1);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Lips"), 1, 1e-6);
+}
+
+// A switch whose id isn't its file's name (body_basejointcorrectives in
+// body_ctrl_basejointcorrectives.dsf) can't be read through its dial until the file says the two are
+// one. Turned straight down to 0 it has to be read all the same, or its readers never hear of it.
+TEST(FigureDriver, ASwitchNamedOtherThanItsFileTurnsOffAtNothing)
+{
+  auto f = setup();
+  f->morphs->addLazy("Brow", f->driver->loader("data/Fig/Morphs/Brow.dsf", "Brow"));
+  f->morphs->addLazy("ctrl_Switch", f->driver->loader("data/Fig/Morphs/ctrl_Switch.dsf", "ctrl_Switch"));
+  fv::dson::MorphInfo info;
+  info.id   = "Switch";
+  info.rest = 1;
+  f->morphs->describe("ctrl_Switch", info);
+  f->morphs->set("Brow", 0.5);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Brow"), 0.5, 1e-6);
+
+  f->morphs->set("ctrl_Switch", 0);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Brow"), 0, 1e-6);
+  EXPECT_NEAR(f->y(1), 10, 1e-4);
+
+  f->morphs->set("ctrl_Switch", 1);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Brow"), 0.5, 1e-6);
 }
 
 TEST(FigureDriver, BaselineCountsOffsetsFromCentresTheSceneStored)

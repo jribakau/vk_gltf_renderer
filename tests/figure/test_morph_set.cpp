@@ -440,6 +440,223 @@ TEST(FigureMorphSet, AnItemsCopyOfALazyFigureMorphJoinsTheFiguresDial)
   EXPECT_EQ(set.meshesOf("FBMHeavy"), std::set<int>{1});
 }
 
+namespace {
+
+fv::dson::MorphInfo restingAt(double rest)
+{
+  fv::dson::MorphInfo info;
+  info.path = "/Base";
+  info.rest = rest;
+  return info;
+}
+
+// A controller's file, counted when it is read.
+fv::morph::Loader countingFile(std::atomic<int>& reads)
+{
+  return [&reads]() -> fv::morph::Finish {
+    reads.fetch_add(1);
+    return [] {
+      fv::morph::LazyResult r;
+      r.keep = true;
+      return r;
+    };
+  };
+}
+
+}  // namespace
+
+// A dial stands where its file says, and formulas read it there. That takes no read of the file: a
+// figure has a switch of this kind for 130 corrective files. Told again, it has nothing more to do.
+TEST(FigureMorphSet, ADialStandsAtItsFilesDefaultWithoutReadingTheFile)
+{
+  std::atomic<int>    reads{0};
+  fv::morph::MorphSet set([](int) -> fv::mesh::BuiltMesh* { return nullptr; });
+  CountDriver         driver;
+  set.driver = &driver;
+  set.addLazy("switch", countingFile(reads));
+  const int seen = set.version();
+
+  EXPECT_TRUE(set.describe("switch", restingAt(1)));
+  const fv::morph::Channel& ch = *set.channel("switch");
+  EXPECT_EQ(ch.value, 1);
+  EXPECT_EQ(ch.rest, 1);
+  EXPECT_EQ(ch.loaded, 1);
+  EXPECT_FALSE(ch.dialled);
+  EXPECT_EQ(set.weightOf("switch"), 1);
+  EXPECT_GT(set.version(), seen);
+
+  // the driver reads the new value on the next pump; nothing is loading
+  EXPECT_FALSE(set.loading());
+  set.pump();
+  EXPECT_EQ(driver.calls, 1);
+  set.settled();
+  EXPECT_EQ(reads.load(), 0);
+  EXPECT_TRUE(ch.lazy);
+
+  EXPECT_FALSE(set.describe("switch", restingAt(1)));
+  EXPECT_EQ(driver.calls, 1);
+  EXPECT_FALSE(set.describe("no such dial", restingAt(1)));
+}
+
+// A default of nothing is what a channel starts at: no driver run for each of a figure's thousand dials.
+TEST(FigureMorphSet, ADefaultOfNothingAsksForNothing)
+{
+  std::atomic<int>    reads{0};
+  fv::morph::MorphSet set([](int) -> fv::mesh::BuiltMesh* { return nullptr; });
+  CountDriver         driver;
+  set.driver = &driver;
+  set.addLazy("dial", countingFile(reads));
+  EXPECT_FALSE(set.describe("dial", restingAt(0)));
+  set.settled();
+  EXPECT_EQ(driver.calls, 0);
+  EXPECT_EQ(reads.load(), 0);
+}
+
+// Moving off the rest wants the file, as moving off 0 always has, and that includes moving to 0. Back
+// at the rest asks for nothing more.
+TEST(FigureMorphSet, LeavingTheRestReadsTheFile)
+{
+  std::atomic<int>    reads{0};
+  fv::morph::MorphSet set([](int) -> fv::mesh::BuiltMesh* { return nullptr; });
+  set.addLazy("switch", countingFile(reads));
+  set.describe("switch", restingAt(1));
+  set.set("switch", 1);
+  set.settled();
+  EXPECT_EQ(reads.load(), 0);
+  set.set("switch", 0);
+  set.settled();
+  EXPECT_EQ(reads.load(), 1);
+  EXPECT_EQ(set.get("switch"), 0);
+  EXPECT_FALSE(set.channel("switch")->lazy);
+  set.set("switch", 1);
+  set.settled();
+  EXPECT_EQ(reads.load(), 1);
+}
+
+// A scene's 0, or the user's, is a value: a describe that comes later doesn't replace it, whether or
+// not it changed anything. The file is read as for any dial away from its rest, and a scene file holds
+// the 0, so it comes back. The same for a value a scene gave when a worn item's channel was made.
+TEST(FigureMorphSet, ADialSetToNothingStaysThroughALaterDescribe)
+{
+  std::atomic<int>    reads{0};
+  auto                geo = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  fv::morph::MorphSet set([&](int) { return geo.get(); });
+  set.addLazy("zero", countingFile(reads));
+  set.addLazy("half", countingFile(reads));
+  set.set("zero", 0);
+  set.set("half", 0.5);
+  fv::morph::ChannelOptions opts;
+  opts.value = 0.25;
+  set.addTarget("given", 0, targetOf(*geo, {0}, {0, 0, 1}), opts);
+
+  EXPECT_TRUE(set.describe("zero", restingAt(1)));
+  set.describe("half", restingAt(1));
+  set.describe("given", restingAt(1));
+  EXPECT_EQ(set.get("zero"), 0);
+  EXPECT_EQ(set.get("half"), 0.5);
+  EXPECT_EQ(set.get("given"), 0.25);
+  EXPECT_EQ(set.channel("zero")->rest, 1);
+  EXPECT_NE(set.channel("zero")->value, set.channel("zero")->loaded);
+  set.settled();
+  EXPECT_EQ(reads.load(), 2);
+  EXPECT_EQ(set.get("zero"), 0);
+}
+
+// What a character's file set is how the figure loads, whatever the dial's own file says, and no
+// scene file needs to hold it.
+TEST(FigureMorphSet, ACharactersValueStaysWhatTheFigureLoadsAt)
+{
+  std::atomic<int>    reads{0};
+  fv::morph::MorphSet set([](int) -> fv::mesh::BuiltMesh* { return nullptr; });
+  set.addLazy("dial", countingFile(reads));
+  set.set("dial", 0.6);
+  set.settled();
+  set.markLoaded();
+  set.describe("dial", restingAt(1));
+  EXPECT_EQ(set.get("dial"), 0.6);
+  EXPECT_EQ(set.channel("dial")->loaded, 0.6);
+  EXPECT_EQ(set.channel("dial")->rest, 1);
+}
+
+// A channel already bound when its default arrives moves the mesh to it: at once with no driver, and
+// through the driver with one, the weight staying what the buffers hold until then.
+TEST(FigureMorphSet, ABoundChannelsDefaultReachesTheMesh)
+{
+  auto                geo    = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  const auto          target = targetOf(*geo, {0}, {0, 0, 1});
+  const size_t        z      = size_t(target->drawn(*geo).indices[0]) * 3 + 2;
+  const float         base   = geo->position[z];
+  fv::morph::MorphSet alone([&](int) { return geo.get(); });
+  alone.addTarget("m", 0, target);
+  EXPECT_TRUE(alone.describe("m", restingAt(0.5)));
+  EXPECT_EQ(alone.weightOf("m"), 0.5);
+  EXPECT_NEAR(geo->position[z], base + 0.5f, 1e-5);
+
+  auto                geo2 = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  fv::morph::MorphSet driven([&](int) { return geo2.get(); });
+  CountDriver         driver;
+  driven.driver = &driver;
+  driven.addTarget("m", 0, targetOf(*geo2, {0}, {0, 0, 1}));
+  EXPECT_TRUE(driven.describe("m", restingAt(0.5)));
+  EXPECT_EQ(driven.get("m"), 0.5);
+  EXPECT_EQ(driven.weightOf("m"), 0);
+  driven.pump();
+  EXPECT_EQ(driver.calls, 1);
+  driven.applyWeights({{"m", 0.5}});
+  EXPECT_NEAR(geo2->position[z], base + 0.5f, 1e-5);
+}
+
+// Reset goes to the file's default, not 0, for a dial set to 0 as for one set elsewhere. It leaves it
+// undialled: one reset before its file was read still takes the default when that comes. A channel
+// no file describes (a general body slider, a worn item's dial) goes to 0 as ever.
+TEST(FigureMorphSet, AResetGoesToWhereTheFileRestsIt)
+{
+  std::atomic<int>    reads{0};
+  auto                geo = std::make_shared<fv::mesh::BuiltMesh>(grid(3, 0));
+  fv::morph::MorphSet set([&](int) { return geo.get(); });
+  set.addLazy("switch", countingFile(reads));
+  set.addLazy("late", countingFile(reads));
+  set.addLazy("fv_shape_waist", countingFile(reads));
+  set.addTarget("worn", 0, targetOf(*geo, {0}, {0, 0, 1}));
+  set.describe("switch", restingAt(1));
+  set.set("switch", 0);
+  set.set("late", 0.3);
+  set.set("fv_shape_waist", -0.5);
+  set.set("worn", 0.5);
+  set.settled();
+
+  set.resetAll();
+  set.settled();
+  EXPECT_EQ(set.get("switch"), 1);
+  EXPECT_EQ(set.get("late"), 0);
+  EXPECT_EQ(set.get("fv_shape_waist"), 0);
+  EXPECT_EQ(set.get("worn"), 0);
+  EXPECT_EQ(set.weightOf("switch"), 1);
+  EXPECT_FALSE(set.channel("switch")->dialled);
+
+  EXPECT_TRUE(set.describe("late", restingAt(0.25)));
+  EXPECT_EQ(set.get("late"), 0.25);
+}
+
+// The list's first places are for what's been changed: a dial at its default isn't.
+TEST(FigureMorphSet, SortPutsMovedDialsFirstNotDefaultOnes)
+{
+  std::atomic<int>    reads{0};
+  fv::morph::MorphSet set([](int) -> fv::mesh::BuiltMesh* { return nullptr; });
+  fv::morph::ChannelOptions opts;
+  opts.group = "Head";
+  set.addLazy("a switch", countingFile(reads), opts);
+  set.addLazy("b dial", countingFile(reads), opts);
+  set.addLazy("c switch moved", countingFile(reads), opts);
+  set.describe("a switch", restingAt(1));
+  set.describe("c switch moved", restingAt(1));
+  set.set("c switch moved", 0);
+  set.settled();
+  set.sort();
+  ASSERT_EQ(set.channels().size(), 3u);
+  EXPECT_EQ(set.channels()[0].name, "c switch moved");
+}
+
 // A morph file's fields, as DAZ writes them, from the first few KB: the text may stop anywhere after
 // them, and the deltas are never parsed.
 TEST(MorphInfo, ReadsADialsFieldsFromTheStartOfItsFile)

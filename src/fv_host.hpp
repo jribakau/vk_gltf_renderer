@@ -60,7 +60,7 @@
 //   pose.reset      {prop}
 //   pose.eyes       {prop}                       aim the eyeballs at the camera
 //   morph.set       {prop, values: {name: value}, gesture?}   coalesced, one setMany per frame
-//   morph.reset     {prop}
+//   morph.reset     {prop}                                    every dial back to where its file rests it
 //   render.mode     {mode: "raster" | "rtx", skin?: "measured" | "volume" | "thin"}
 //   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame)

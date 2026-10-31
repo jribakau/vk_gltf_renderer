@@ -34,6 +34,11 @@ struct Channel
   double      value = 0, min = 0, max = 1;
   // what it was when the figure or item that brought it was loaded: a scene file holds what differs
   double loaded = 0;
+  // where its file says it stands untouched, once describe has told it, and where a reset takes it
+  double rest = 0;
+  // something has set it (a scene, the user, a preset), to 0 as much as anything: its file's default
+  // doesn't replace that. A reset clears it.
+  bool dialled = false;
   // not parsed yet: deltas load on first use (DSON morph files)
   bool lazy = false;
   // driven by something else (joint correctives follow bone rotations); not shown as a dial
@@ -53,7 +58,8 @@ struct ChannelOptions
 };
 
 // What a lazy channel's file gave: the targets it moves. A channel whose file has none is removed,
-// unless `keep` (a controller: a dial that drives other morphs or bones through formulas).
+// unless `keep` (a controller: a dial that drives other morphs or bones through formulas) or it rests
+// away from 0 (a switch, which other files' formulas read).
 struct LazyResult
 {
   std::vector<dson::MorphPart> parts;
@@ -127,11 +133,13 @@ public:
 
   // Adds a morph target to a channel, making the channel when it is new.
   void addTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts = {});
-  // Registers a morph whose deltas are only read the first time it is set to a non-zero value.
+  // Registers a morph whose deltas are only read the first time it is set away from its rest.
   void addLazy(const std::string& name, Loader loader, const ChannelOptions& opts = {});
   // Tells a channel what its file says of it: its real label and range (a lazy channel has a label
-  // made from its name, and 0 to 1, until now) and where it belongs.
-  void describe(const std::string& name, const dson::MorphInfo& info);
+  // made from its name, and 0 to 1, until now), where it belongs and where it rests. A channel nothing
+  // has dialled goes to that rest, and formulas read it there; its file is not read for that. True
+  // when the driver or a load now has something to do.
+  bool describe(const std::string& name, const dson::MorphInfo& info);
   // Starts reading a lazy channel's file now, whatever its value: a controller that follows another
   // dial, which the dial doesn't know of. False when there's nothing to start.
   bool load(const std::string& name);
@@ -152,6 +160,7 @@ public:
   void setMany(const std::vector<std::pair<std::string, double>>& values);
   // Applies channels at the given weights; the driver calls this.
   void applyWeights(const std::vector<std::pair<std::string, double>>& values);
+  // Every channel back to its rest, undialled.
   void resetAll();
 
   // Takes the lazy loads that finished, runs the driver for them (once they have all arrived, or

@@ -144,7 +144,7 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
       }
       else
         for(const fv::morph::Channel& c : fig.morphs->channels())
-          if(c.value != 0)
+          if(c.value != c.rest)
             dials.push_back(c.name);
       return {{"kind", "morphs"}, {"prop", p->id}, {"dials", dials}};
     }

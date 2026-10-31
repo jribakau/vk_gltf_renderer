@@ -480,6 +480,7 @@ bool Figure::noteMorphs()
     m_morphsNoted   = -1;
     m_followersSeen = -1;
   }
+  bool again = false;
   if(!m_morphNotes.info.empty() && morphs->listVersion() != m_morphsNoted)
   {
     for(const morph::Channel& ch : morphs->channels())
@@ -491,29 +492,30 @@ bool Figure::noteMorphs()
       // the listing's dial for a file whose own id the scene set: one slider, the one that holds the value
       if(!info.alias && info.id != ch.name && morphs->has(info.id))
         info.helper = true;
-      if(ch.path != info.path || ch.kind != info.kind || ch.helper != info.helper)
-        morphs->describe(ch.name, info);
+      if(ch.path != info.path || ch.kind != info.kind || ch.helper != info.helper || ch.rest != info.rest)
+        again = morphs->describe(ch.name, info) || again;
     }
     m_morphsNoted = morphs->listVersion();
   }
-  // a dial that has moved brings the controllers that follow it, which nothing else would load
-  bool started = false;
+  // a dial that has moved from its rest brings the controllers that follow it, which nothing else
+  // would load. At its rest it brings none, whatever that rest is: a file's default is no move.
   if(!m_morphNotes.followers.empty() && morphs->version() != m_followersSeen)
   {
     m_followersSeen = morphs->version();
     for(auto it = m_morphNotes.followers.begin(); it != m_morphNotes.followers.end();)
     {
-      if(morphs->get(it->first) == 0 && morphs->weightOf(it->first) == 0)
+      const morph::Channel* dial = morphs->channel(it->first);
+      if(!dial || (dial->value == dial->rest && morphs->weightOf(it->first) == dial->rest))
       {
         ++it;
         continue;
       }
       for(const std::string& controller : it->second)
-        started = morphs->load(controller) || started;
+        again = morphs->load(controller) || again;
       it = m_morphNotes.followers.erase(it);
     }
   }
-  return started;
+  return again;
 }
 
 Figure::Changes Figure::pump()
