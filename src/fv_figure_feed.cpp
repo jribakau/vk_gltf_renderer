@@ -120,6 +120,24 @@ rs::TextureRecord textureRecord(const mat::TextureRequest& req, const build::Tex
   return t;
 }
 
+// Whether `next` has no map where `now` shows one
+bool losesMap(const mat::Material& now, const mat::Material& next)
+{
+  const auto maps = [](const mat::Material& m) {
+    std::vector<bool> out;
+    mat::forEachSlot(m, [&](const mat::TextureSlot& slot) { out.push_back(slot.has()); });
+    return out;
+  };
+  const std::vector<bool> a = maps(now), b = maps(next);
+  // other extensions, so other slots (a skin mode's): by how many
+  if(a.size() != b.size())
+    return std::count(a.begin(), a.end(), true) > std::count(b.begin(), b.end(), true);
+  for(size_t i = 0; i < a.size(); i++)
+    if(a[i] && !b[i])
+      return true;
+  return false;
+}
+
 }  // namespace
 
 FigureFeed::FigureFeed(rs::RetainedScene& scene, FigureFeedOptions options)
@@ -189,11 +207,19 @@ void FigureFeed::syncMaterials(const SceneGraph& figure, const build::Drawing& d
   // others keep the one they index (its first entries are the same)
   std::shared_ptr<rs::TextureTable> grown;
   std::set<std::string>             missing;
-  const auto resolve = [&](const mat::TextureRequest& req) { return resolveTexture(req, grown, missing); };
-
   std::vector<mat::Material> payloads(figure.materials.size());
+  std::vector<bool>          missed(figure.materials.size(), false);
   for(size_t mi = 0; mi < figure.materials.size(); mi++)
+  {
+    const auto resolve = [&](const mat::TextureRequest& req) {
+      const mat::ResolvedTexture t = resolveTexture(req, grown, missing);
+      // asked and not there; with no textures at all (the setting) nothing is on its way
+      if(t.index < 0 && !req.rel.empty() && m_options.build.texture)
+        missed[mi] = true;
+      return t;
+    };
     payloads[mi] = build::figureMaterial(figure, int(mi), m_lowering[mi], resolve, m_options.build);
+  }
   if(grown)
     m_table = std::move(grown);
 
@@ -204,7 +230,15 @@ void FigureFeed::syncMaterials(const SceneGraph& figure, const build::Drawing& d
     if(id.isNone())
       id = m_scene.addMaterial({.owner = {m_options.prop, int32_t(mi)}, .payload = std::move(payloads[mi]), .textures = m_table});
     else if(const rs::MaterialRecord* r = m_scene.material(id); r && !(r->payload == payloads[mi]))
+    {
+      if(missed[mi] && losesMap(r->payload, payloads[mi]))
+      {
+        m_kept.insert(int(mi));
+        continue;
+      }
       m_scene.setMaterial(id, std::move(payloads[mi]), m_table);
+    }
+    m_kept.erase(int(mi));
   }
 }
 
@@ -324,6 +358,7 @@ bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const std::pa
     m_table = std::move(grown);
   for(auto& [mi, payload] : payloads)
   {
+    m_kept.erase(mi);
     const rs::MaterialId      id = m_materials[size_t(mi)];
     const rs::MaterialRecord* r  = m_scene.material(id);
     if(!r || r->payload == payload)

@@ -928,9 +928,9 @@ void FvHost::Impl::compose()
         if(!p.materials)
           p.materials = makeMaterials(props[i]);
         if(added.count(p.id))
-          p.materials->attach(p.id, &f.fig->loaded.scene, f.feed->lowering(), f.texturesFlipped, skinMode.load());
+          p.materials->attach(p.id, &f.fig->loaded.scene, f.feed->lowering(), f.texturesFlipped, skinMode.load(), f.feed->takeKept());
         else
-          p.materials->extend(f.feed->lowering());
+          p.materials->extend(f.feed->lowering(), f.feed->takeKept());
         publishEyes(p);
         publishSkin(p);
       }

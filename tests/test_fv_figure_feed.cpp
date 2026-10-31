@@ -27,11 +27,17 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <set>
+#include <thread>
 
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -43,6 +49,8 @@
 
 #include "fv_figure_feed.hpp"
 #include "fv_figure_feed_check.hpp"
+#include "fv_events.hpp"
+#include "fv_materials.hpp"
 #include "scene_import_gltf.hpp"
 
 namespace {
@@ -894,4 +902,285 @@ TEST(FigureFeed, CheckFeedCatchesARecordCorruptedInTheStore)
   flipped.texturesFlipped         = true;
   const std::vector<std::string> problems = fv::checkFeed(scene, root, feed, store, flipped);
   EXPECT_NE(std::find(problems.begin(), problems.end(), "mesh 0 UVs"), problems.end());
+}
+
+//--------------------------------------------------------------------------------------------------
+// A skin tone through a full sync: the feed and the host's materials together, as the host joins them,
+// over the box figure with a skin map on each of its two surfaces. A bake is a texture hook held behind
+// `gate`; what's known without one is every source image.
+namespace {
+
+struct TonedBox
+{
+  TonedBox()
+  {
+    for(size_t mi = 0; mi < scene.materials.size(); mi++)
+    {
+      fv::Material& m = scene.materials[mi];
+      if(m.name == "Body" || m.name == "Head")
+      {
+        (m.name == "Body" ? body : head) = int(mi);
+        m.surface.kind                   = fv::mat::Kind::eSkin;
+        m.surface.base.map               = "/Runtime/Textures/Test/" + m.name + "_d.png";
+      }
+    }
+    EXPECT_GE(body, 0);
+    EXPECT_GE(head, 0);
+    options.texture = [this](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+      if(gone.count(req.rel))
+        return std::nullopt;
+      if(!req.recolor)
+        return fv::build::TextureImage{.uri = "/source" + req.rel, .mimeType = "image/png"};
+      const auto it = images.find(fv::build::requestKey(req));
+      return it == images.end() ? std::nullopt : std::optional(it->second);
+    };
+    feed = std::make_unique<fv::FigureFeed>(store, fv::FigureFeedOptions{.build = options});
+    materials = std::make_unique<FvMaterials>(FvMaterials::Hooks{
+        .events = &events,
+        .post =
+            [this](std::function<void()> run) {
+              std::lock_guard lock(mutex);
+              posted.push_back(std::move(run));
+            },
+        .notice  = [](const std::string&, const char*) {},
+        .nextJob = [this] { return uint64_t(++asked); },
+        .job     = [](uint64_t, const fv::Json&) {},
+        .texture = [this](const fv::build::TextureRequest& req, bool) -> std::optional<fv::build::TextureImage> {
+          gate.wait();
+          if(failing)
+            return std::nullopt;
+          return fv::build::TextureImage{.uri = "/baked" + req.rel + "?" + req.recolor->reference, .mimeType = "image/png"};
+        },
+        .remember = [this](const fv::build::TextureRequest& req, const fv::build::TextureImage& image) { images[fv::build::requestKey(req)] = image; },
+        .resolves = [this](const fv::build::TextureRequest& req) { return options.texture(req).has_value(); },
+        .writeFigure =
+            [this](std::vector<std::pair<int, fv::mat::LowerOptions>> written) {
+              if(!feed->syncMaterials(scene, written))
+                feed->sync(scene, f->loaded.root);
+            },
+    });
+    open();
+  }
+
+  void attach()
+  {
+    feed->sync(scene, f->loaded.root);
+    materials->attach("n:Box", &scene, feed->lowering(), false, options.skin, feed->takeKept());
+  }
+
+  // the figure fed whole, as a composition after a wear or a take-off feeds it
+  void compose()
+  {
+    feed->sync(scene, f->loaded.root);
+    materials->extend(feed->lowering(), feed->takeKept());
+  }
+
+  void tone()
+  {
+    materials->set({{"material", {"m:" + std::to_string(body), "m:" + std::to_string(head)}}, {"values", {{"tone", "#aa7755"}}}});
+  }
+
+  // what's been posted back, once a bake has
+  void landed()
+  {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    for(;;)
+    {
+      std::function<void()> run;
+      {
+        std::lock_guard lock(mutex);
+        if(!posted.empty())
+        {
+          run = std::move(posted.front());
+          posted.pop_front();
+        }
+      }
+      if(run)
+      {
+        run();
+        return;
+      }
+      ASSERT_LT(std::chrono::steady_clock::now(), end) << "no bake landed";
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+
+  // the image a surface's base map samples; "" without one
+  std::string base(int material) const
+  {
+    const rs::MaterialRecord* r = store.material(feed->materialOf(material));
+    if(!r || !r->payload.baseColorMap.has())
+      return "";
+    const rs::TextureRecord* t = store.texture((*r->textures)[size_t(r->payload.baseColorMap.index)].texture);
+    return t ? t->uri : "";
+  }
+
+  void open() { gate = opened.get_future().share(), opened.set_value(); }
+  void close() { opened = std::promise<void>(), gate = opened.get_future().share(); }
+
+  std::unique_ptr<fv::Figure> f     = loadBox();
+  fv::SceneGraph&             scene = f->loaded.scene;
+  int                         body = -1, head = -1;
+
+  fv::build::BuildOptions                        options;
+  std::map<std::string, fv::build::TextureImage> images;  // by request key: what a bake made
+  std::set<std::string>                          gone;    // rels whose files aren't there
+  std::atomic<int>                               asked{0};
+  std::atomic<bool>                              failing{false};
+  std::promise<void>                             opened;
+  std::shared_future<void>                       gate;
+  std::mutex                                     mutex;
+  std::deque<std::function<void()>>              posted;
+
+  rs::RetainedScene               store;
+  fv::EventHub                    events;
+  std::unique_ptr<fv::FigureFeed> feed;
+  std::unique_ptr<FvMaterials>    materials;
+};
+
+const std::string kBodyMap = "/Runtime/Textures/Test/Body_d.png", kHeadMap = "/Runtime/Textures/Test/Head_d.png";
+
+}  // namespace
+
+// Toned, then fed whole (a wear, a take-off, a geograft): every skin surface keeps its toned map, with
+// no bake asked again, and the key is the one a scene's restore cooks ahead
+TEST(FigureFeedTone, AToneKeepsEverySurfacesMapThroughAFullSync)
+{
+  TonedBox b;
+  b.attach();
+  b.tone();
+  EXPECT_EQ(b.asked, 1);
+  b.landed();
+  const std::string body = b.base(b.body), head = b.base(b.head);
+  EXPECT_EQ(body, "/baked" + kBodyMap + "?" + kBodyMap);
+  EXPECT_EQ(head, "/baked" + kHeadMap + "?" + kBodyMap);
+
+  b.compose();
+  EXPECT_EQ(b.base(b.body), body);
+  EXPECT_EQ(b.base(b.head), head);
+  EXPECT_EQ(b.feed->lowering()[size_t(b.head)].toneReference, kBodyMap);
+  EXPECT_EQ(b.asked, 1);
+  EXPECT_TRUE(b.feed->takeKept().empty());
+
+  // again, and through a geometry fallback that isn't followed by a composition
+  b.feed->sync(b.scene, b.f->loaded.root);
+  EXPECT_EQ(b.base(b.head), head);
+  EXPECT_TRUE(b.feed->takeKept().empty());
+
+  for(const fv::mat::TextureRequest& r : fv::build::textureRequests(b.scene, b.options.skin))
+    if(r.recolor)
+      EXPECT_TRUE(b.images.count(fv::build::requestKey(r))) << r.rel;
+}
+
+// A file with a tone in it: its restore cooks what the feed then asks for, and every surface tones
+// against the figure's reference, not each against its own mean
+TEST(FigureFeedTone, ARestoredToneTonesAgainstTheFiguresReference)
+{
+  TonedBox b;
+  for(int mi : {b.body, b.head})
+    b.scene.materials[size_t(mi)].edits.tone = fv::mat::Rgb{0.67f, 0.47f, 0.33f};
+  int toned = 0;
+  for(const fv::mat::TextureRequest& r : fv::build::textureRequests(b.scene, b.options.skin))
+    if(r.recolor)
+    {
+      toned++;
+      EXPECT_EQ(r.recolor->reference, kBodyMap) << r.rel;
+      b.images[fv::build::requestKey(r)] = {.uri = "/cooked" + r.rel, .mimeType = "image/png"};
+    }
+  EXPECT_GE(toned, 2);
+  b.attach();
+  EXPECT_EQ(b.base(b.body), "/cooked" + kBodyMap);
+  EXPECT_EQ(b.base(b.head), "/cooked" + kHeadMap);
+  EXPECT_EQ(b.asked, 0);
+}
+
+// Fed whole while its bake is in flight: the surface goes on showing the map it has, and the bake's
+// map takes over when it lands
+TEST(FigureFeedTone, ABakeInFlightDoesNotTakeTheMapAway)
+{
+  TonedBox b;
+  b.attach();
+  const std::string before = b.base(b.head);
+  EXPECT_EQ(before, "/source" + kHeadMap);
+  b.close();
+  b.tone();
+  EXPECT_EQ(b.asked, 1);
+
+  b.compose();
+  EXPECT_EQ(b.base(b.body), "/source" + kBodyMap);
+  EXPECT_EQ(b.base(b.head), before);
+  EXPECT_EQ(b.asked, 1);  // the one in flight
+
+  b.opened.set_value();
+  b.landed();
+  EXPECT_EQ(b.base(b.body), "/baked" + kBodyMap + "?" + kBodyMap);
+  EXPECT_EQ(b.base(b.head), "/baked" + kHeadMap + "?" + kBodyMap);
+}
+
+// A key nothing has asked for yet (the reference itself changed under the tone): the surfaces keep
+// what they show, are asked for, and get it. Nothing is left recorded that isn't on screen.
+TEST(FigureFeedTone, AKeyNothingAskedForIsAskedFor)
+{
+  TonedBox b;
+  b.attach();
+  b.tone();
+  b.landed();
+  const std::string head = b.base(b.head);
+
+  const std::string tanned = "/Runtime/Textures/Test/Tan_d.png";
+  b.scene.materials[size_t(b.body)].surface.base.map = tanned;
+  b.compose();
+  EXPECT_EQ(b.base(b.head), head);
+  EXPECT_EQ(b.asked, 2);
+  b.landed();
+  EXPECT_EQ(b.base(b.body), "/baked" + tanned + "?" + tanned);
+  EXPECT_EQ(b.base(b.head), "/baked" + kHeadMap + "?" + tanned);
+  EXPECT_TRUE(b.feed->takeKept().empty());
+}
+
+// A map that was never there holds nothing back: the rest of the material still changes, and nothing
+// asks for it over and over
+TEST(FigureFeedTone, AMissingFileDoesNotFreezeAMaterial)
+{
+  TonedBox b;
+  b.gone.insert(kHeadMap);
+  b.attach();
+  EXPECT_EQ(b.base(b.head), "");
+  const fv::mat::Material before = b.store.material(b.feed->materialOf(b.head))->payload;
+
+  b.scene.materials[size_t(b.head)].surface.opacity.value = 0.5f;
+  b.compose();
+  EXPECT_FALSE(b.store.material(b.feed->materialOf(b.head))->payload == before);
+  EXPECT_EQ(b.asked, 0);
+}
+
+// A bake that fails is written as it is, flat, once: the next full sync finds no map to keep, and asks
+// for nothing
+TEST(FigureFeedTone, ABakeThatFailsIsNotAskedAgain)
+{
+  TonedBox b;
+  b.attach();
+  b.failing = true;
+  b.tone();
+  b.landed();
+  EXPECT_EQ(b.base(b.head), "");
+  b.compose();
+  b.compose();
+  EXPECT_EQ(b.base(b.head), "");
+  EXPECT_EQ(b.asked, 1);
+}
+
+// Textures switched off leave nothing on its way: the maps go, and the materials go on taking edits
+TEST(FigureFeedTone, NoTexturesAtAllKeepsNothing)
+{
+  TonedBox b;
+  b.attach();
+  EXPECT_EQ(b.base(b.head), "/source" + kHeadMap);
+  b.feed->setOptions({});
+  b.feed->sync(b.scene, b.f->loaded.root);
+  EXPECT_EQ(b.base(b.head), "");
+  EXPECT_TRUE(b.feed->takeKept().empty());
+  b.scene.materials[size_t(b.head)].edits.roughness = 0.35f;
+  b.feed->sync(b.scene, b.f->loaded.root);
+  EXPECT_FLOAT_EQ(b.store.material(b.feed->materialOf(b.head))->payload.roughness, 0.35f);
 }

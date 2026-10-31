@@ -1,6 +1,7 @@
 #include <figure/gltf/gltf_build.hpp>
 
 #include <figure/dson/material_preset.hpp>
+#include <figure/dson/skin_materials.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/materials/hair_strands.hpp>
@@ -227,13 +228,14 @@ static bool hasTearFilm(const SceneGraph& scene)
   return false;
 }
 
-mat::LowerOptions requestOptions(const SceneGraph& scene, int material, mat::SkinMode skin, bool tearFilm)
+mat::LowerOptions requestOptions(const SceneGraph& scene, int material, mat::SkinMode skin, bool tearFilm, const std::string& toneReference)
 {
   const Material&   m = scene.materials[size_t(material)];
   mat::LowerOptions o;
   o.skin          = skin;
   o.metresPerUv   = m.metresPerUv;
   o.underTearFilm = tearFilm;
+  o.toneReference = toneReference;
   // an iris's colour asks for a texture only where its discs are known
   if(mat::eyeLayout(m.surface) == mat::EyeLayout::eIris)
     o.irisDiscs = irisDiscs(scene, material);
@@ -245,10 +247,11 @@ std::vector<TextureRequest> textureRequests(const SceneGraph& scene, mat::SkinMo
   std::vector<TextureRequest> out;
   std::set<std::string>       seen;
   const bool                  tearFilm = hasTearFilm(scene);
+  const std::string           tone     = dson::toneReference(scene);
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
     const Material& m = scene.materials[mi];
-    for(TextureRequest& req : mat::lower(m.surface, m.edits, requestOptions(scene, int(mi), skin, tearFilm)).requests)
+    for(TextureRequest& req : mat::lower(m.surface, m.edits, requestOptions(scene, int(mi), skin, tearFilm, tone)).requests)
       if(seen.insert(requestKey(req)).second)
         out.push_back(std::move(req));
   }
@@ -517,11 +520,12 @@ std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& 
         if(mi >= 0 && mi < int(onRibbon.size()))
           onRibbon[mi] = true;
   std::vector<mat::LowerOptions> out(scene.materials.size());
-  const bool tearFilm = hasTearFilm(scene);
+  const bool        tearFilm = hasTearFilm(scene);
+  const std::string tone     = dson::toneReference(scene);
   for(size_t mi = 0; mi < scene.materials.size(); mi++)
   {
     mat::LowerOptions& lo = out[mi];
-    lo                    = requestOptions(scene, int(mi), options.skin, tearFilm);
+    lo                    = requestOptions(scene, int(mi), options.skin, tearFilm, tone);
     lo.forFile            = options.forFile;
     lo.flipV              = !options.texturesFlipped;
     lo.ribbon             = onRibbon[mi];

@@ -137,11 +137,13 @@ public:
               fv::SceneGraph*                    scene,
               std::vector<fv::mat::LowerOptions> lowering,
               bool                               texturesFlipped,
-              fv::mat::SkinMode                  skin);
+              fv::mat::SkinMode                  skin,
+              const std::set<int>&               kept = {});
   // The same figure fed again after a wear, a take-off or a graft (its scene graph only grows): the
   // materials it appended are attached, and the edits, the bakes in flight and what could not be made
-  // stay. `lowering` as attach takes it.
-  void extend(std::vector<fv::mat::LowerOptions> lowering);
+  // stay. `lowering` as attach takes it; `kept` (FigureFeed::takeKept), the materials its feed left as
+  // they were for want of a map: asked for here, and written when they come.
+  void extend(std::vector<fv::mat::LowerOptions> lowering, const std::set<int>& kept = {});
   // A model read from a glTF or OBJ file, `source` as the file has it: its materials as they are,
   // with the same edits laid over them directly (there is no Surface to lower), named as the file
   // names them or "Material-<i>" from their place in it, so a scene file's edits find them whatever

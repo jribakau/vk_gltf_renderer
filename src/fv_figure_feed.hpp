@@ -43,6 +43,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <figure/gltf/gltf_build.hpp>
@@ -120,6 +121,11 @@ public:
   bool syncMaterials(const SceneGraph& figure, std::span<const std::pair<int, mat::LowerOptions>> materials);
   // per scene material, the options the last sync lowered it with (empty until one has)
   const std::vector<mat::LowerOptions>& lowering() const { return m_lowering; }
+  // The materials a sync left as they were, since the last call: lowered again they'd lose a map they
+  // show to a texture that isn't here (a bake in flight, a key asked for the first time). A map that
+  // was never there holds nothing back, so a file that's gone can't freeze a material. Getting them
+  // their new look is the caller's (FvMaterials::extend); the narrow syncMaterials writes what it's given.
+  std::set<int> takeKept() { return std::exchange(m_kept, {}); }
   // `requests`' images changed (a cook that landed for a source image): each takes its texture's
   // place in every table that holds it, so the materials keep their indices and the old image goes.
   // Their rows may run the other way now, which a material's lowering says (its slot's transform):
@@ -204,6 +210,7 @@ private:
   std::vector<rs::MaterialId> m_materials;  // per scene material
   std::vector<mat::LowerOptions> m_lowering;   // per scene material, what the last sync lowered with
   rs::MaterialId              m_default;    // drawn by a group with no material
+  std::set<int>               m_kept;       // takeKept
 
   // request key -> its texture; a key that resolved to nothing is asked again next sync
   std::map<std::string, FedTexture>       m_textureOf;

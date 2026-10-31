@@ -125,7 +125,8 @@ void FvMaterials::attach(const std::string&                 figureId,
                          fv::SceneGraph*                    scene,
                          std::vector<fv::mat::LowerOptions> lowering,
                          bool                               texturesFlipped,
-                         fv::mat::SkinMode                  skin)
+                         fv::mat::SkinMode                  skin,
+                         const std::set<int>&               kept)
 {
   m_generation++;
   // the feed lowered every surface as it is now
@@ -158,13 +159,19 @@ void FvMaterials::attach(const std::string&                 figureId,
       }
     }
   }
+  for(int mi : kept)
+    if(mi >= 0 && mi < int(m_count))
+    {
+      m_applied[size_t(mi)].clear();
+      again.insert(mi);
+    }
   mapMeshes();
   publish({}, true);
   if(!again.empty())
     refresh(again);
 }
 
-void FvMaterials::extend(std::vector<fv::mat::LowerOptions> lowering)
+void FvMaterials::extend(std::vector<fv::mat::LowerOptions> lowering, const std::set<int>& kept)
 {
   if(m_model || !m_scene)
     return;
@@ -177,8 +184,18 @@ void FvMaterials::extend(std::vector<fv::mat::LowerOptions> lowering)
     if(!m_waiting.count(int(mi)))
       m_applied[mi] = stateOf(fv::mat::lower(m_scene->materials[mi].surface, m_scene->materials[mi].edits, m_options[mi]));
   m_count = m_scene->materials.size();
+  // what the feed left as it was isn't what was just lowered
+  std::set<int> again;
+  for(int mi : kept)
+    if(mi >= 0 && mi < int(m_count) && !m_waiting.count(mi))
+    {
+      m_applied[size_t(mi)].clear();
+      again.insert(mi);
+    }
   mapMeshes();
   publish({}, true);
+  if(!again.empty())
+    refresh(again);
 }
 
 void FvMaterials::mapMeshes()
