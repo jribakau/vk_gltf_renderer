@@ -1380,6 +1380,18 @@ void GltfRenderer::onPostRender()
 {
   if(!m_app)
     return;
+  // A still's frames run one at a time. Queued, they gain a sample nothing can see, and an edit arriving
+  // now would wait for all of them before its first moving frame, freezing and then jumping the image
+  // at the start of every action. (A moving view's frames queue, for their rate; a window presents after this.)
+  if(m_streamHost && m_resources.settings.renderSystem == RenderingMode::ePathtracer && !m_pathTracer.dlssFrame())
+  {
+    const nvvk::SemaphoreInfo frame = m_app->getFrameSignalSemaphore();
+    const VkSemaphoreWaitInfo wait{.sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                   .semaphoreCount = 1,
+                                   .pSemaphores    = &frame.semaphore,
+                                   .pValues        = &frame.value};
+    NVVK_CHECK(vkWaitSemaphores(m_device, &wait, std::numeric_limits<uint64_t>::max()));
+  }
   if(!m_screenshotPending.empty())
   {
     saveViewportImage(m_screenshotPending);
