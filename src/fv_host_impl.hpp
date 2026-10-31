@@ -199,6 +199,8 @@ struct Loaded
   // the add-ons its file lists are still going on; a restore waits for them, as it would otherwise
   // wear them a second time without their presets
   bool                               addonsPending = false;
+  // wear batches started and not yet asked to be composed (startWear): any worker holds the count up
+  std::atomic<int>                   wearsRunning{0};
   std::vector<std::function<void()>> afterAddons;
 };
 
@@ -869,6 +871,8 @@ struct FvHost::Impl
   Json poseSet(const Json& args);
   // the images a load or a wear resolved, decoded on this worker's threads so the reload takes them ready
   void prefetchImages(const std::vector<fv::build::TextureRequest>& requests, const std::vector<std::optional<fv::build::TextureImage>>& found);
+  // Something changed that the figure's feed hasn't got yet (a node or mesh just worn): fed whole
+  void feedWhole(Loaded& f);
   void applyNodes(Loaded& f, const std::set<int>& moved);
   void applyMesh(Loaded& f, const fv::morph::MeshChange& change);
   void applyRebind(Loaded& f, const std::vector<int>& meshes);

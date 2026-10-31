@@ -25,13 +25,23 @@
 #include "fv_host_impl.hpp"
 
 // The figure's moved nodes, fed: their transforms (a pose step), or the whole figure when a node is new
+void FvHost::Impl::feedWhole(Loaded& f)
+{
+  // its composition is coming, and feeds it whole as a restore leaves it: fed now, a heavy mesh would be
+  // built and made resident for materials about to change, then again
+  if(f.wearsRunning > 0)
+    return;
+  fv::timing::Scope t("a figure fed whole, outside a composition");
+  f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
+}
+
 void FvHost::Impl::applyNodes(Loaded& f, const std::set<int>& moved)
 {
   if(moved.empty() || !f.feed)
     return;
   const std::vector<int> nodes(moved.begin(), moved.end());
   if(!f.feed->syncTransforms(f.fig->loaded.scene, f.fig->loaded.root, nodes))
-    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
+    feedWhole(f);
 }
 
 // A mesh whose vertices moved in place (a dial, a fit, a drape), fed with the tangents it had: the
@@ -50,7 +60,7 @@ void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
   const bool fed  = change.cage ? f.feed->syncCages(f.fig->loaded.scene, {&mesh, 1})
                                 : f.feed->syncVertices(f.fig->loaded.scene, {&mesh, 1}, true);
   if(!fed)
-    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
+    feedWhole(f);
 }
 
 // Meshes bound again to their bones (a rebind): their skins' inverse binds
@@ -59,7 +69,7 @@ void FvHost::Impl::applyRebind(Loaded& f, const std::vector<int>& meshes)
   if(!f.feed || meshes.empty())
     return;
   if(!f.feed->syncSkins(f.fig->loaded.scene, meshes))
-    f.feed->sync(f.fig->loaded.scene, f.fig->loaded.root);
+    feedWhole(f);
 }
 
 void FvHost::Impl::prefetchImages(const std::vector<fv::build::TextureRequest>& requests, const std::vector<std::optional<fv::build::TextureImage>>& found)

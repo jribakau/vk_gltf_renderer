@@ -42,6 +42,7 @@
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
+#include <figure/io/timing.hpp>
 #include "pipeline_build_scope.hpp"
 #include "scene_export_gltf.hpp"
 
@@ -1873,4 +1874,35 @@ TEST(FvHost, AClearThatKeepsTheViewLeavesTheFirstFigureUnframed)
   for(int i = 0; i < 4; i++)
     rig.host->onUpdate();
   EXPECT_FALSE(closeTo(look(rig).eye, {3, 2, 9}));
+}
+
+// A restore's worn items are fed once, by its composition, with the materials the file gives them: fed
+// as they are committed, a heavy mesh is built and made resident twice in every open
+TEST(FvHost, AWearIsFedByItsCompositionNotBeforeIt)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+
+  std::mutex  mutex;
+  int         fedWhole = 0;
+  fv::timing::setSink([&](const std::string& line) {
+    std::lock_guard lock(mutex);
+    if(line.find("fed whole, outside a composition") != std::string::npos)
+      fedWhole++;
+  });
+  const Json worn = Json::array({Json{{"rel", "People/Test/Clothing/Box Shirt.duf"}, {"label", ""}, {"visible", true}}});
+  ASSERT_TRUE(rig.cmd("scene.restore", {{"prop", id}, {"worn", worn}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  // a wear from the library, as well
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  for(int i = 0; i < 4; i++)
+    rig.host->onUpdate();
+  fv::timing::setSink({});
+
+  EXPECT_EQ(fedWhole, 0);
+  // and what's worn is in the scene
+  EXPECT_FALSE(rig.topic("wardrobe/" + id).value("items", Json::object()).empty());
 }

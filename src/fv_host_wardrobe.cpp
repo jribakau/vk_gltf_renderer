@@ -123,8 +123,11 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
   const std::string label = "Wearing " + utf8Of(pathOf(requests.front().rel).stem());
   job(jobId, {{"label", label}, {"state", "running"}});
   const fv::mat::SkinMode skin = skinMode.load();
+  // held by the worker and by what it posts last, whichever way the batch ends
+  target->wearsRunning++;
+  std::shared_ptr<void> running(nullptr, [target](void*) { target->wearsRunning--; });
   loaders.spawn([this, s, requests = std::move(requests), target, lib, jobId, label, skin, beforeBuild = std::move(beforeBuild), after = std::move(after),
-                 commitAfter, looks = std::move(looks)] {
+                 commitAfter, looks = std::move(looks), running = std::move(running)] {
     // A batch that commits after something else (a restore after the figure's add-ons) prepares at
     // once and takes the wear lock only to commit; any other batch holds it throughout.
     std::unique_lock serial(wearMutex, std::defer_lock);
@@ -534,7 +537,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         notice(e.what(), "error");
       }
     }
-    post([this, target, jobId, label, beforeBuild, after, looks, lookRequests = std::move(lookRequests), lookImages = std::move(lookImages)]() mutable {
+    post([this, target, jobId, label, beforeBuild, after, looks, lookRequests = std::move(lookRequests), lookImages = std::move(lookImages), running]() mutable {
       const auto releaseHeld = [&](bool refresh) {
         if(const auto p = findProp(target->id); p && p->figure == target && p->materials)
           p->materials->release(refresh);
