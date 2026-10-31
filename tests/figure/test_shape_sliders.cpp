@@ -198,7 +198,62 @@ TEST(ShapeSliders, ThighsHoldBackTowardTheMidlineOnly)
   EXPECT_NEAR(front[2], kRadius * 0.2f, 1e-5);
 }
 
-TEST(ShapeSliders, EveryGenerationsThighBonesAndWaistBonesAreFound)
+TEST(ShapeSliders, ABellyMovesTheFrontAloneAndFadesInFromTheFlank)
+{
+  GirthRecipe r = waist();
+  r.facing      = 1;
+  const fv::mesh::MeshInput in = tube();
+  const auto d = fv::morph::girthDeltas(in.positions, oneBone(in.positions.size() / 3, 0), {bone("spine1", {0, 0, 0}, {0, 40, 0})}, r);
+  // vertex kAround / 4 faces straight forward (+z), its opposite straight back; the flanks face neither
+  const float* front = deltaOf(d, kAround / 4);
+  ASSERT_TRUE(front);
+  EXPECT_NEAR(front[2], kRadius * 0.2f, 1e-5);
+  EXPECT_EQ(deltaOf(d, kAround * 3 / 4), nullptr);
+  EXPECT_EQ(deltaOf(d, 0), nullptr);
+  // 45 degrees round is past the fade's end
+  const float* round = deltaOf(d, kAround / 8);
+  ASSERT_TRUE(round);
+  EXPECT_NEAR(round[2], in.positions[size_t(kAround / 8) * 3 + 2] * 0.2f, 1e-5);
+
+  r.facing = -1;
+  const auto back = fv::morph::girthDeltas(in.positions, oneBone(in.positions.size() / 3, 0), {bone("spine1", {0, 0, 0}, {0, 40, 0})}, r);
+  EXPECT_EQ(deltaOf(back, kAround / 4), nullptr);
+  ASSERT_TRUE(deltaOf(back, kAround * 3 / 4));
+  EXPECT_NEAR(deltaOf(back, kAround * 3 / 4)[2], -kRadius * 0.2f, 1e-5);
+}
+
+TEST(ShapeSliders, ARecipeCanWeighTheAxes)
+{
+  GirthRecipe r = waist();
+  r.axes        = {1.f, 1.f, 0.35f};
+  const fv::mesh::MeshInput in = tube();
+  const auto d = fv::morph::girthDeltas(in.positions, oneBone(in.positions.size() / 3, 0), {bone("spine1", {0, 0, 0}, {0, 40, 0})}, r);
+  ASSERT_TRUE(deltaOf(d, 0) && deltaOf(d, kAround / 4));
+  EXPECT_NEAR(deltaOf(d, 0)[0], kRadius * 0.2f, 1e-5);
+  EXPECT_NEAR(deltaOf(d, kAround / 4)[2], kRadius * 0.2f * 0.35f, 1e-5);
+}
+
+TEST(ShapeSliders, AChestPushesItsPectoralsFromTheSpine)
+{
+  GirthRecipe r;
+  r.slots    = {"spine3", "pectoral"};
+  r.cap      = 0.2f;
+  r.axisSlot = "spine3";
+  const fv::mesh::MeshInput in = tube();
+  // the skin on a pectoral whose own axis points forward, across the spine's
+  const std::vector<ShapeBone> bones{bone("spine3", {0, 0, 0}, {0, 40, 0}), bone("l_pectoral", {3, 5, 8}, {3, 5, 18})};
+  const auto d = fv::morph::girthDeltas(in.positions, oneBone(in.positions.size() / 3, 1), bones, r);
+  for(size_t i = 0; i < d.verts.size(); i++)
+  {
+    const float* p = &in.positions[size_t(d.verts[i]) * 3];
+    EXPECT_NEAR(d.deltas[i * 3], p[0] * 0.2f, 1e-5);
+    EXPECT_NEAR(d.deltas[i * 3 + 1], 0.f, 1e-5);
+    EXPECT_NEAR(d.deltas[i * 3 + 2], p[2] * 0.2f, 1e-5);
+  }
+  EXPECT_FALSE(d.verts.empty());
+}
+
+TEST(ShapeSliders, EveryGenerationsBonesAreFound)
 {
   const auto& recipes = fv::morph::girthRecipes();
   const auto  recipe  = [&](const std::string& channel) {
@@ -209,14 +264,34 @@ TEST(ShapeSliders, EveryGenerationsThighBonesAndWaistBonesAreFound)
   const auto moves = [&](const std::string& name, const GirthRecipe& r) {
     return !fv::morph::girthDeltas(in.positions, oneBone(n, 0), {bone(name, {0, 0, 0}, {0, 40, 0})}, r).verts.empty();
   };
-  for(const char* name : {"l_thigh", "l_thightwist1", "l_thightwist2", "r_thigh", "lThighBend", "lThighTwist", "rThighBend", "rThighTwist"})
-    EXPECT_TRUE(moves(name, recipe("fv_shape_thighs"))) << name;
-  for(const char* name : {"l_shin", "lShin", "pelvis", "hip"})
-    EXPECT_FALSE(moves(name, recipe("fv_shape_thighs"))) << name;
-  for(const char* name : {"spine1", "spine2", "abdomenLower", "abdomenUpper"})
-    EXPECT_TRUE(moves(name, recipe("fv_shape_waist"))) << name;
-  for(const char* name : {"spine3", "chestLower", "pelvis"})
-    EXPECT_FALSE(moves(name, recipe("fv_shape_waist"))) << name;
+  struct Case
+  {
+    const char*              channel;
+    std::vector<const char*> yes, no;
+  };
+  const std::vector<Case> cases{
+      {"fv_shape_thighs", {"l_thigh", "l_thightwist1", "l_thightwist2", "r_thigh", "lThighBend", "lThighTwist", "rThighBend", "rThighTwist"}, {"l_shin", "lShin", "pelvis", "hip"}},
+      {"fv_shape_waist", {"spine1", "spine2", "abdomenLower", "abdomenUpper"}, {"spine3", "chestLower", "pelvis"}},
+      {"fv_shape_chest", {"spine3", "spine4", "chestLower", "chestUpper", "l_pectoral", "rPectoral"}, {"spine2", "abdomenUpper", "l_shoulder", "lCollar"}},
+      {"fv_shape_hips", {"pelvis"}, {"hip", "spine1", "l_thigh"}},
+      {"fv_shape_neck", {"neck1", "neck2", "neckLower", "neckUpper"}, {"head", "spine4", "chestUpper"}},
+      {"fv_shape_upperarms", {"l_upperarm", "l_upperarmtwist1", "r_upperarmtwist2", "lShldrBend", "rShldrTwist"}, {"l_forearm", "l_shoulder", "lCollar", "lForearmBend"}},
+      {"fv_shape_forearms", {"l_forearm", "l_forearmtwist1", "r_forearmtwist2", "lForearmBend", "rForearmTwist"}, {"l_upperarm", "lShldrBend", "l_hand", "lHand"}},
+      {"fv_shape_calves", {"l_shin", "r_shin", "lShin", "rShin"}, {"l_thigh", "lThighBend", "l_foot", "lFoot"}},
+  };
+  for(const Case& c : cases)
+  {
+    for(const char* name : c.yes)
+      EXPECT_TRUE(moves(name, recipe(c.channel))) << c.channel << " " << name;
+    for(const char* name : c.no)
+      EXPECT_FALSE(moves(name, recipe(c.channel))) << c.channel << " " << name;
+  }
+  // hips and glutes share a bone, but not the same skin of it: a tube's back moves for one and its
+  // flank for both
+  const GirthRecipe glutes = recipe("fv_shape_glutes");
+  const auto        back   = fv::morph::girthDeltas(in.positions, oneBone(n, 0), {bone("pelvis", {0, 0, 0}, {0, 40, 0})}, glutes);
+  EXPECT_EQ(deltaOf(back, kAround / 4), nullptr);
+  EXPECT_NE(deltaOf(back, kAround * 3 / 4), nullptr);
 }
 
 TEST(ShapeSliders, TheSliderIsADialFromMinusOneToOneThatComesBackToItsStart)
@@ -332,16 +407,26 @@ TEST(ShapeSliders, WhatFollowsTheBodyFollowsTheSlider)
   EXPECT_NEAR(worn->position[0], before * 1.22f, 1e-4);
 }
 
-TEST(ShapeSliders, HeightDrivesTheFiguresDialWhileThatDialStaysAtZero)
+namespace {
+
+void addDial(fv::morph::MorphSet& morphs, const std::string& name)
 {
-  Body b;
-  b.morphs->addLazy("body_bs_ProportionHeight", []() -> fv::morph::Finish {
+  morphs.addLazy(name, []() -> fv::morph::Finish {
     return [] {
       fv::morph::LazyResult r;
       r.keep = true;
       return r;
     };
   });
+}
+
+}  // namespace
+
+TEST(ShapeSliders, HeightDrivesTheFiguresDialsWhileThoseDialsStayAtZero)
+{
+  Body b;
+  for(const char* dial : {"body_bs_ProportionHeight", "body_bs_ProportionLegsLength", "head_ctrl_ProportionHeadSize_scl"})
+    addDial(*b.morphs, dial);
   b.addSliders();
   const fv::morph::Channel* height = b.morphs->channel("fv_shape_height");
   ASSERT_NE(height, nullptr);
@@ -356,13 +441,34 @@ TEST(ShapeSliders, HeightDrivesTheFiguresDialWhileThatDialStaysAtZero)
   // its range is what the slider said, though its load found no file to say so
   EXPECT_DOUBLE_EQ(b.morphs->channel("fv_shape_height")->min, -1);
   EXPECT_DOUBLE_EQ(b.morphs->get("body_bs_ProportionHeight"), 0);
-  EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionHeight"), 0.5, 1e-6);
+  EXPECT_DOUBLE_EQ(b.morphs->get("body_bs_ProportionLegsLength"), 0);
+  EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionHeight"), 0.1, 1e-6);
+  EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionLegsLength"), 0.25, 1e-6);
+  // a little of the whole figure's scale, which the head doesn't take
+  EXPECT_NEAR(b.morphs->weightOf("head_ctrl_ProportionHeadSize_scl"), -0.05, 1e-6);
 
   b.morphs->set("fv_shape_height", -1);
   b.morphs->settled();
-  EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionHeight"), -1, 1e-6);
+  EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionLegsLength"), -0.5, 1e-6);
 
   b.morphs->resetAll();
   b.morphs->settled();
   EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionHeight"), 0, 1e-6);
+  EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionLegsLength"), 0, 1e-6);
+}
+
+TEST(ShapeSliders, ASliderNeedsItsFirstDialAndAddsToWhatADialIsSetTo)
+{
+  Body b;
+  // Height's others, without the dial it is made from; and a slider of its own for the legs
+  addDial(*b.morphs, "body_bs_ProportionLegsLength");
+  b.addSliders();
+  EXPECT_FALSE(b.morphs->has("fv_shape_height"));
+  ASSERT_TRUE(b.morphs->has("fv_shape_legs_length"));
+  EXPECT_FALSE(b.morphs->has("fv_shape_arms_length"));
+
+  b.morphs->set("body_bs_ProportionLegsLength", 0.25);
+  b.morphs->set("fv_shape_legs_length", 1);
+  b.morphs->settled();
+  EXPECT_NEAR(b.morphs->weightOf("body_bs_ProportionLegsLength"), 0.75, 1e-6);
 }
