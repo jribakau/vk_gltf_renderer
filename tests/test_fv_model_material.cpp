@@ -84,11 +84,28 @@ TEST(FvModelMaterial, NoEditsIsTheFilesMaterialAndASheenRoughnessAloneAddsNoShee
   original.pbrMetallicRoughness.baseColorFactor = {0.1, 0.2, 0.3, 1.0};
   original.alphaMode                            = "BLEND";
   EXPECT_EQ(fv::model::editedMaterial(original, {}), original);
-
   fv::mat::Edits e;
   e.sheenRoughness = 0.3f;
   e.normalStrength = 2.f;  // and no normal map to scale
   const tinygltf::Material m = fv::model::editedMaterial(original, e);
   EXPECT_FALSE(m.extensions.count("KHR_materials_sheen"));
   EXPECT_DOUBLE_EQ(m.normalTexture.scale, 1.0);
+}
+
+TEST(FvModelMaterial, AnOpacityEditOnAnOpaqueMaterialIsSeen)
+{
+  tinygltf::Material original;
+  original.alphaMode = "OPAQUE";
+  fv::mat::Edits e;
+  e.opacity = 0.5f;
+  EXPECT_EQ(fv::model::editedMaterial(original, e).alphaMode, "BLEND");
+  e.opacity = 1.f;
+  EXPECT_EQ(fv::model::editedMaterial(original, e).alphaMode, "OPAQUE");
+  // the alpha mode's own edit has the last word
+  e.opacity   = 0.5f;
+  e.alphaMode = "opaque";
+  EXPECT_EQ(fv::model::editedMaterial(original, e).alphaMode, "OPAQUE");
+  original.alphaMode = "MASK";
+  e.alphaMode.reset();
+  EXPECT_EQ(fv::model::editedMaterial(original, e).alphaMode, "MASK");
 }

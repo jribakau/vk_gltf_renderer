@@ -77,6 +77,23 @@ struct Builder
       req.rel    = req.layers.front();
       req.layers.erase(req.layers.begin());
     }
+    // the cooker opens every other source as one file: its bottom layer, or the whole request is lost
+    const auto bottomLayer = [](std::string& rel) {
+      if(rel.find(kLayerSeparator) != std::string::npos)
+        rel = mapLayers(rel).front();
+    };
+    bottomLayer(req.alphaRel);
+    bottomLayer(req.metalRel);
+    bottomLayer(req.bumpRel);
+    for(std::string& rel : req.mulRels)
+      bottomLayer(rel);
+    if(req.makeup)
+    {
+      bottomLayer(req.makeup->colorRel);
+      bottomLayer(req.makeup->weightRel);
+    }
+    if(req.recolor)
+      bottomLayer(req.recolor->reference);
     requests.push_back(std::move(req));
     TextureSlot out;
     out.index = int(requests.size()) - 1;
@@ -105,7 +122,7 @@ struct Builder
     r.srgb     = false;
     r.channels = "wa";
     for(size_t i = 1; i < maps.size(); i++)
-      r.mulRels.push_back(mapLayers(maps[i]).front());
+      r.mulRels.push_back(maps[i]);
     return info(std::move(r));
   }
 
@@ -314,9 +331,10 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // Cutouts go out as BLEND: the renderer's any-hit shader skips a hit with probability 1 - alpha,
   // which is alpha hashing by another name, so they keep their soft edges. Refractive surfaces
   // (corneas) go out opaque with transmission doing the work.
-  const bool hashed = !s.opacity.map.empty() || (s.opacity.value < 1 && !refractive);
-  std::string alphaMode = hashed ? (opts.forFile ? "MASK" : "BLEND") : "OPAQUE";
+  // An Opacity edit below 1 is seen on a surface that loaded opaque, or the slider would do nothing.
   float       opacity   = e.opacity.value_or(s.opacity.value);
+  const bool  hashed    = !s.opacity.map.empty() || (opacity < 1 && (e.opacity || !refractive));
+  std::string alphaMode = hashed ? (opts.forFile ? "MASK" : "BLEND") : "OPAQUE";
   if(refractive && s.opacity.map.empty() && !e.opacity)
   {
     alphaMode = "OPAQUE";
@@ -382,7 +400,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     {
       r.rel      = lobes.roughness.map;
       r.channels = "mr";
-      r.metalRel = metalMap.empty() ? std::string() : mapLayers(metalMap).front();
+      r.metalRel = metalMap;
     }
     else
     {

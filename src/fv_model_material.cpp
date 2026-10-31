@@ -30,7 +30,12 @@ fv::mat::Material editedMaterial(const fv::mat::Material& original, const fv::ma
     for(size_t i = 0; i < 3; i++)
       m.baseColor[i] = (*e.color)[i];
   if(e.opacity)
+  {
     m.baseColor[3] = *e.opacity;
+    // or the slider would do nothing; an edit of the alpha mode, below, has the last word
+    if(*e.opacity < 1 && m.alphaMode == fv::mat::AlphaMode::eOpaque)
+      m.alphaMode = fv::mat::AlphaMode::eBlend;
+  }
   if(e.roughness)
     m.roughness = *e.roughness;
   if(e.metalness)

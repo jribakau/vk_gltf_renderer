@@ -293,6 +293,60 @@ TEST(Materials, ACorneaIsGlassNotSkin)
   EXPECT_EQ(lowered.material["alphaMode"], "OPAQUE");
 }
 
+TEST(Materials, AnOpacityEditOnASurfaceThatLoadedOpaqueIsSeen)
+{
+  const auto s = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  EXPECT_EQ(loweredJson(s, {}, {}).material["alphaMode"], "OPAQUE");
+  fv::mat::Edits e;
+  e.opacity = 0.5f;
+  const auto seen = loweredJson(s, e, {});
+  EXPECT_EQ(seen.material["alphaMode"], "BLEND");
+  EXPECT_EQ(seen.effective.alphaMode, "blend");
+  EXPECT_TRUE(seen.effective.doubleSided);
+  e.opacity = 1.f;
+  EXPECT_EQ(loweredJson(s, e, {}).material["alphaMode"], "OPAQUE");
+  // the alpha mode's own edit has the last word
+  e.opacity   = 0.5f;
+  e.alphaMode = "opaque";
+  EXPECT_EQ(loweredJson(s, e, {}).material["alphaMode"], "OPAQUE");
+}
+
+TEST(Materials, OnlyTheMainSourceOfARequestIsLayered)
+{
+  // a cutout, a makeup, a metal or a weight map of two layers: the cooker opens those as one file, and
+  // the name with its separator is none, which loses the whole request and the colour with it
+  const auto layered = [](const char* name) { return std::string("/maps/") + name + "_a.png" + fv::mat::kLayerSeparator + "/maps/" + name + "_b.png"; };
+  auto       s       = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  s.opacity.map      = layered("cut");
+  s.bumpMap          = layered("bump");
+  s.metallic.map     = layered("metal");
+  s.makeup           = fv::mat::MakeupLayer{};
+  s.makeup->map      = layered("makeup");
+  s.makeup->weightMap = layered("weight");
+  const auto lowered = loweredJson(s, {}, {});
+  ASSERT_FALSE(lowered.requests.empty());
+  const auto one = [](const std::string& rel) { EXPECT_EQ(rel.find(fv::mat::kLayerSeparator), std::string::npos) << rel; };
+  bool       cut = false, painted = false;
+  for(const fv::mat::TextureRequest& r : lowered.requests)
+  {
+    one(r.rel);
+    one(r.alphaRel);
+    one(r.metalRel);
+    one(r.bumpRel);
+    for(const std::string& rel : r.mulRels)
+      one(rel);
+    if(r.makeup)
+    {
+      one(r.makeup->colorRel);
+      one(r.makeup->weightRel);
+      painted = r.makeup->colorRel == "/maps/makeup_a.png" && r.makeup->weightRel == "/maps/weight_a.png";
+    }
+    cut = cut || r.alphaRel == "/maps/cut_a.png";
+  }
+  EXPECT_TRUE(cut);
+  EXPECT_TRUE(painted);
+}
+
 // Genesis 9's eye as Addy Florence's eyes give it: a thin-walled moisture shell over the eye with
 // Iray's glossy weight 0.40 and the iris's normal map, and the eye under it with a mapped dual lobe.
 const char* kG9Moisture = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
