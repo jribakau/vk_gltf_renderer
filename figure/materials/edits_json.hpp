@@ -28,6 +28,11 @@ void applyValue(Edits& e, const std::string& key, const EditsJson& v);
 // The keys of the values that are edits.
 EditsJson editedKeys(const Edits& e);
 
+// The edits themselves, as material.set takes them back: what a scene file, the journal and a
+// duplicate keep. Not what the surface publishes: a value lowering overrides or leaves out in this
+// render mode stays as it was given.
+EditsJson editedValues(const Edits& e);
+
 // Keys only a figure's surfaces take (a model's materials have no Surface to lower): the maps, the
 // UV transform and the fabric.
 bool figureOnlyKey(std::string_view key);

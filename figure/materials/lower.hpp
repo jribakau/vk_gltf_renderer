@@ -102,6 +102,15 @@ struct Effective
   Rgb                  emissive{0, 0, 0};
   float                emissiveIntensity = 1;
   bool                 colorBaked = false;  // the colour is in the base map's bake: a change to it cooks a texture
+  // The colour can't be seen: a refracting surface looked straight through, with nothing to tint
+  bool colorUnused = false;
+  // Strand hair: the path tracer shades the fibre itself, whose colour isn't the base colour
+  bool fibre = false;
+  // What the clearcoat values move: "coat", the file's top coat; "tight", the sharper dual lobe, a
+  // highlight of the surface and no layer over it; "" for neither, so a change adds a coat
+  std::string coatRole;
+  // The values that multiply a map, whose number is a factor and not what the surface shows
+  std::vector<std::string> mapped;
 };
 
 // A material with its slots' indices naming `requests`, not textures

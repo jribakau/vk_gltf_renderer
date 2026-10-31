@@ -310,8 +310,21 @@ Json FvMaterials::modelItem(int index) const
   add("normal", "Normal", g.normalMap.index);
   add("emission", "Emissive", g.emissiveMap.index);
   add("occlusion", "Occlusion", g.occlusionMap.index);
+  // the values that multiply one of its maps
+  Json       mapped = Json::array();
+  const auto multiplies = [&](bool map, const char* key) {
+    if(map)
+      mapped.push_back(key);
+  };
+  multiplies(g.baseColorMap.has(), "color");
+  multiplies(g.metallicRoughnessMap.has(), "roughness");
+  multiplies(g.metallicRoughnessMap.has(), "metalness");
+  multiplies(g.specular && g.specular->map.has(), "specular");
+  multiplies(g.clearcoat && g.clearcoat->map.has(), "clearcoat");
+  multiplies(g.clearcoat && g.clearcoat->roughnessMap.has(), "clearcoatRoughness");
+  multiplies(g.emissiveMap.has(), "emissive");
   return {{"name", m.name}, {"kind", "other"}, {"shader", "gltf"}, {"meshes", m_meshesOf[size_t(index)]}, {"textures", textures}, {"values", values},
-          {"edited", editedKeys(m.edits)}};
+          {"edited", editedKeys(m.edits)}, {"mapped", mapped}};
 }
 
 void FvMaterials::detach()
@@ -490,10 +503,7 @@ Json FvMaterials::editsOf(int index) const
   Json edited = Json::object();
   if(!m_scene || index < 0 || index >= int(m_count) || m_scene->materials[size_t(index)].edits.empty())
     return edited;
-  const Json shown = item(index);
-  for(const Json& k : shown["edited"])
-    edited[k.get<std::string>()] = shown["values"].value(k.get<std::string>(), Json());
-  return edited;
+  return fv::mat::editedValues(m_scene->materials[size_t(index)].edits);
 }
 
 std::string FvMaterials::nameOf(int index) const
@@ -808,9 +818,12 @@ Json FvMaterials::item(int index) const
               {"textures", textures},
               {"values", values},
               {"edited", editedKeys(m.edits)},
-              {"colorBaked", v.colorBaked}};
-  if(s.translucency && s.translucency->weight > 0)
-    out["translucency"] = s.translucency->weight;
+              {"colorBaked", v.colorBaked},
+              {"colorUnused", v.colorUnused},
+              {"fibre", v.fibre},
+              {"ribbon", m_options[index].ribbon},
+              {"coatRole", v.coatRole},
+              {"mapped", v.mapped}};
   // an eye: which of its colours it takes, and whether a change cooks its map (else it is live). The
   // colours go out as null when unset, so a merge patch takes an old one away.
   if(const EyeRoles roles = eyeRoles(s, &m_options[index]); roles.iris || roles.sclera)

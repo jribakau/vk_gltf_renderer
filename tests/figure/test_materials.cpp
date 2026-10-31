@@ -2746,6 +2746,152 @@ TEST(Materials, TheEditValuesRoundTrip)
     EXPECT_FALSE(fv::mat::figureOnlyKey(k)) << k;
 }
 
+// A scene file keeps the edit, not what this render mode shows of it: reading saves back from the
+// published values lost a scatter distance saved in Real-time, and made an emitter's power 1
+TEST(Materials, EditsAreKeptAsTheyWereGivenWhateverASurfaceShows)
+{
+  using EditsJson = fv::mat::EditsJson;
+  const EditsJson in = {{"color", "#336699"}, {"roughness", 0.25}, {"doubleSided", false}, {"alphaMode", "cutout"}, {"baseMap", "/Runtime/Textures/b.png"},
+                        {"fabric", ""},       {"scatterScale", 2}, {"emissiveIntensity", 40}, {"normalStrength", 1.5}};
+  fv::mat::Edits  e;
+  for(auto it = in.begin(); it != in.end(); ++it)
+    fv::mat::applyValue(e, it.key(), it.value());
+  const EditsJson kept = fv::mat::editedValues(e);
+  EXPECT_EQ(kept.size(), in.size());
+  EXPECT_EQ(fv::mat::editedKeys(e).size(), in.size());
+  // set again, they are the same edits and say the same
+  fv::mat::Edits again;
+  for(auto it = kept.begin(); it != kept.end(); ++it)
+    fv::mat::applyValue(again, it.key(), it.value());
+  EXPECT_EQ(fv::mat::editedValues(again), kept);
+  EXPECT_FLOAT_EQ(*again.scatterScale, 2);
+  EXPECT_FLOAT_EQ(*again.emissiveIntensity, 40);
+  EXPECT_EQ(kept["color"], "#336699");
+
+  // null drops a number and a colour, as it does a map: the panel's way back to the surface's own
+  fv::mat::applyValue(again, "roughness", nullptr);
+  fv::mat::applyValue(again, "color", nullptr);
+  EXPECT_FALSE(again.roughness);
+  EXPECT_FALSE(again.color);
+  EXPECT_FALSE(fv::mat::editedValues(again).contains("roughness"));
+  EXPECT_TRUE(fv::mat::editedValues(fv::mat::Edits{}).empty());
+}
+
+// The panel leaves out what can't matter: it reads that from here
+TEST(Materials, ATearFilmHasNoReliefAndASurfaceSeenThroughNoColour)
+{
+  const auto     film = fv::dson::parseSurface("EyeMoisture Left", channelsOf(kG9Moisture));
+  fv::mat::Edits relief;
+  relief.normalStrength = 1;
+  relief.bumpStrength   = 1;
+  const auto shown = fv::mat::lower(film, relief, {.underTearFilm = true}).effective;
+  EXPECT_FALSE(shown.normalStrength);
+  EXPECT_FALSE(shown.bumpStrength);
+
+  fv::mat::Surface glass;
+  glass.refraction = fv::mat::Surface::Refraction{.weight = 1};
+  EXPECT_TRUE(fv::mat::lower(glass, {}, {}).effective.colorUnused);
+  glass.refraction->weight = 0.5f;
+  EXPECT_FALSE(fv::mat::lower(glass, {}, {}).effective.colorUnused);
+  EXPECT_FALSE(fv::mat::lower(fv::mat::Surface{}, {}, {}).effective.colorUnused);
+}
+
+TEST(Materials, AClearcoatOfNothingAddsNoCoat)
+{
+  fv::mat::Edits none;
+  none.clearcoat = 0;
+  EXPECT_FALSE(fv::mat::lower(fv::mat::Surface{}, none, {}).material.clearcoat);
+  fv::mat::Edits some;
+  some.clearcoat = 0.5f;
+  const auto coated = fv::mat::lower(fv::mat::Surface{}, some, {});
+  ASSERT_TRUE(coated.material.clearcoat);
+  EXPECT_FLOAT_EQ(coated.effective.clearcoat, 0.5f);
+}
+
+// The Clearcoat sliders say what they move: a file's coat, or the sharper dual lobe, in both renderers
+TEST(Materials, ASurfaceSaysWhatItsClearcoatValuesMove)
+{
+  fv::mat::Surface plain;
+  plain.glossy.weight = 0;
+  EXPECT_EQ(fv::mat::lower(plain, {}, {}).effective.coatRole, "");
+
+  fv::mat::Surface dual = plain;
+  dual.dual             = fv::mat::DualLobe{.weight = 1, .lobe1 = {.value = 0.2f}, .lobe2 = {.value = 0.6f}, .ratio = 0.5f};
+  for(const auto mode : {fv::mat::SkinMode::eRaster, fv::mat::SkinMode::eVolume})
+    EXPECT_EQ(fv::mat::lower(dual, {}, {.skin = mode}).effective.coatRole, "tight");
+
+  fv::mat::Surface coated = dual;
+  coated.topCoat          = fv::mat::Surface::TopCoat{.weight = 0.5f};
+  for(const auto mode : {fv::mat::SkinMode::eRaster, fv::mat::SkinMode::eVolume})
+    EXPECT_EQ(fv::mat::lower(coated, {}, {.skin = mode}).effective.coatRole, "coat");
+}
+
+// A number over a map is a factor; the panel marks it
+TEST(Materials, ASurfaceSaysWhichOfItsValuesMultiplyAMap)
+{
+  const auto mappedOf = [](const fv::mat::Surface& s, const fv::mat::Edits& e, const fv::mat::LowerOptions& o) {
+    return fv::mat::lower(s, e, o).effective.mapped;
+  };
+  const auto has = [](const std::vector<std::string>& list, const char* key) { return std::find(list.begin(), list.end(), key) != list.end(); };
+
+  EXPECT_TRUE(mappedOf(fv::mat::Surface{}, {}, {}).empty());
+
+  fv::mat::Surface s;
+  s.base.map     = "/b.png";
+  s.opacity.map  = "/o.png";
+  s.metallic.map = "/m.png";
+  fv::mat::Edits rough;
+  rough.roughnessMap = "/r.png";
+  const auto all = mappedOf(s, rough, {});
+  for(const char* key : {"color", "opacity", "metalness", "roughness"})
+    EXPECT_TRUE(has(all, key)) << key;
+  EXPECT_FALSE(has(all, "emissive"));
+
+  // the dual lobe's maps go with the sliders that move it
+  fv::mat::Surface dual;
+  dual.glossy.weight = 0;
+  dual.dual          = fv::mat::DualLobe{.weight = 1, .lobe1 = {.value = 0.2f}, .lobe2 = {.value = 0.6f}, .ratio = 0.5f, .weightMap = "/w.png"};
+  for(const auto mode : {fv::mat::SkinMode::eRaster, fv::mat::SkinMode::eVolume})
+    EXPECT_TRUE(has(mappedOf(dual, {}, {.skin = mode}), "clearcoat"));
+}
+
+// In Thin mode, nails and teeth, most of a surface's light comes back through its scatter colour:
+// Base color moved only the rest
+TEST(Materials, BaseColorTintsThinScatter)
+{
+  const ChannelValues v = {{"diffuse", Json::array({1, 1, 1})}, {"Translucency Weight", 0.8}, {"SSS Reflectance Tint", Json::array({0.5, 0.5, 0.5})}};
+  const std::map<std::string, std::string> images = {{"diffuse", "/Runtime/Textures/face_d.jpg"}};
+  const auto face  = surfaceOf("Face", kUberType, v, images);
+  const auto as    = loweredJson(face, {}, {.skin = fv::mat::SkinMode::eThin});
+  fv::mat::Edits e;
+  e.color          = fv::mat::Rgb{0.5f, 0.25f, 1};
+  const auto tinted = loweredJson(face, e, {.skin = fv::mat::SkinMode::eThin});
+  const auto factor = [](const auto& lowered, int i) { return lowered.material["extensions"]["KHR_materials_scatter"]["multiscatterColorFactor"][i].template get<float>(); };
+  for(int i = 0; i < 3; i++)
+    EXPECT_NEAR(factor(tinted, i), factor(as, i) * (*e.color)[size_t(i)], 1e-5f) << i;
+}
+
+// A strand or a card in the path tracer: the panel shows the fibre's numbers, and the flags say so
+TEST(Materials, HairShowsTheFibresNumbers)
+{
+  fv::mat::Surface cards;
+  cards.kind        = fv::mat::Kind::eHair;
+  cards.name        = "Hair";
+  cards.opacity.map = "/o.png";
+  fv::mat::Edits map;
+  map.roughnessMap = "/r.png";
+  const auto traced = fv::mat::lower(cards, map, {.skin = fv::mat::SkinMode::eVolume}).effective;
+  EXPECT_FLOAT_EQ(traced.specular, 1);
+  EXPECT_FALSE(traced.fibre);  // a card is a sheet with a fibre's lobes: its base colour still colours it
+  EXPECT_EQ(std::find(traced.mapped.begin(), traced.mapped.end(), "roughness"), traced.mapped.end());
+  map.specular = 0.3f;
+  EXPECT_FLOAT_EQ(fv::mat::lower(cards, map, {.skin = fv::mat::SkinMode::eVolume}).effective.specular, 0.3f);
+
+  // the real-time view keeps the sheet, whose map counts
+  const auto sheet = fv::mat::lower(cards, map, {.skin = fv::mat::SkinMode::eRaster}).effective;
+  EXPECT_NE(std::find(sheet.mapped.begin(), sheet.mapped.end(), "roughness"), sheet.mapped.end());
+}
+
 // Legacy (3Delight) surfaces: the channels of Age of Armour's Subsurface shader, as in
 // data/Age of Armour/Subsurface Shaders/AoA_Subsurface/AoA_Subsurface.dsf, where labels name other
 // channels' ids, and the id-only layer a figure's scene lays over them (Genesis 3 Female.duf, Torso).

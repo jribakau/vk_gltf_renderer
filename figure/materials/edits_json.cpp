@@ -194,48 +194,33 @@ void applyValue(Edits& e, const std::string& key, const EditsJson& v)
     throw std::runtime_error("unknown material value " + key);
 }
 
+EditsJson editedValues(const Edits& e)
+{
+  EditsJson out = EditsJson::object();
+  for(const ColorField& f : kColors)
+    if(e.*f.member)
+      out[f.name] = hexOf(*(e.*f.member));
+  for(const StringField& f : kMaps)
+    if(e.*f.member)
+      out[f.name] = *(e.*f.member);
+  for(const NumberField& f : kNumbers)
+    if(e.*f.member)
+      out[f.name] = *(e.*f.member);
+  if(e.alphaMode)
+    out["alphaMode"] = *e.alphaMode;
+  if(e.doubleSided)
+    out["doubleSided"] = *e.doubleSided;
+  if(e.fabric)
+    out["fabric"] = *e.fabric;
+  return out;
+}
+
 EditsJson editedKeys(const Edits& e)
 {
-  EditsJson  out = EditsJson::array();
-  const auto add = [&](bool set, const char* name) {
-    if(set)
-      out.push_back(name);
-  };
-  add(e.color.has_value(), "color");
-  add(e.roughness.has_value(), "roughness");
-  add(e.metalness.has_value(), "metalness");
-  add(e.opacity.has_value(), "opacity");
-  add(e.alphaMode.has_value(), "alphaMode");
-  add(e.doubleSided.has_value(), "doubleSided");
-  add(e.normalStrength.has_value(), "normalStrength");
-  add(e.bumpStrength.has_value(), "bumpStrength");
-  add(e.specular.has_value(), "specular");
-  add(e.clearcoat.has_value(), "clearcoat");
-  add(e.clearcoatRoughness.has_value(), "clearcoatRoughness");
-  add(e.emissive.has_value(), "emissive");
-  add(e.emissiveIntensity.has_value(), "emissiveIntensity");
-  add(e.irisColor.has_value(), "irisColor");
-  add(e.irisStrength.has_value(), "irisStrength");
-  add(e.scleraColor.has_value(), "scleraColor");
-  add(e.recolor.has_value(), "recolor");
-  add(e.recolorStrength.has_value(), "recolorStrength");
-  add(e.tone.has_value(), "tone");
-  add(e.toneStrength.has_value(), "toneStrength");
-  add(e.makeupColor.has_value(), "makeupColor");
-  add(e.makeupWeight.has_value(), "makeupWeight");
-  add(e.scatterScale.has_value(), "scatterScale");
-  for(const StringField& f : kMaps)
-    add((e.*f.member).has_value(), f.name);
-  add(e.uvScaleU.has_value(), "uvScaleU");
-  add(e.uvScaleV.has_value(), "uvScaleV");
-  add(e.uvOffsetU.has_value(), "uvOffsetU");
-  add(e.uvOffsetV.has_value(), "uvOffsetV");
-  add(e.uvRotation.has_value(), "uvRotation");
-  add(e.fabric.has_value(), "fabric");
-  add(e.fabricScale.has_value(), "fabricScale");
-  add(e.fabricStrength.has_value(), "fabricStrength");
-  add(e.sheenColor.has_value(), "sheenColor");
-  add(e.sheenRoughness.has_value(), "sheenRoughness");
+  const EditsJson values = editedValues(e);
+  EditsJson       out    = EditsJson::array();
+  for(auto it = values.begin(); it != values.end(); ++it)
+    out.push_back(it.key());
   return out;
 }
 

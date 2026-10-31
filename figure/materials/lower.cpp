@@ -328,6 +328,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // never takes.
   if(refractive && !anyMap)
     factor = lerp(factor, tearFilm || underFilm ? kWhite : s.refraction->tint, s.refraction->weight);
+  const bool colorUnused = refractive && !anyMap && s.refraction->weight >= 0.99f;
   // Cutouts go out as BLEND: the renderer's any-hit shader skips a hit with probability 1 - alpha,
   // which is alpha hashing by another name, so they keep their soft edges. Refractive surfaces
   // (corneas) go out opaque with transmission doing the work.
@@ -460,8 +461,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   if(tearFilm && shell != EyeShell::eMeniscus)
   {
     normal = {};
-    eff.normalStrength = 0;
-    eff.bumpStrength   = 0;
+    eff.normalStrength.reset();
+    eff.bumpStrength.reset();
   }
   out.normalMap = normal;
 
@@ -591,7 +592,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       eff.clearcoatRoughness = lobe.roughness;
     }
   }
-  if(coat || (e.clearcoat && !out.specular2))
+  // A clearcoat of 0 asked of a surface with none adds nothing: the looks without a coat send it
+  if(coat || (e.clearcoat.value_or(0.f) > 0 && !out.specular2))
   {
     Clearcoat cc;
     cc.factor    = clamp(e.clearcoat.value_or(coat ? coat->weight.value : 0.f), 0, 1);
@@ -654,7 +656,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     const float hueMax = std::max({hue[0], hue[1], hue[2], 1e-4f});
     for(float& v : hue)
       v /= hueMax;
-    const Rgb scatterColor = t ? mul(tint.value_or(kWhite), t->reflectanceTint) : lerp(kWhite, hue, 0.25f);
+    // The panel's colour tints this light too: only the thin branch below reads it (the walks leave
+    // through the base colour), and without it Base color moved only the share that doesn't enter.
+    const Rgb scatterColor = mul(t ? mul(tint.value_or(kWhite), t->reflectanceTint) : lerp(kWhite, hue, 0.25f), e.color.value_or(kWhite));
     // the base map: a Translucency Color map is often a pale scattering map that washes the skin
     // out lit from the front. A skin tone recolours it as it does the base colour.
     const std::string scatterMap = !s.base.map.empty() ? s.base.map : t ? t->map : std::string();
@@ -826,9 +830,12 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     // runs across the measured anisotropy rotation, along UV v without one. The real-time view
     // keeps the GGX sheet above (it lowers with SkinMode::eRaster).
     const float betaM = cardLongitudinalRoughness(roughnessFactor);
+    // the panel shows what the fibre uses, not the sheet's lobe it replaces: else a first nudge of
+    // Specular would drop the fibre from 1 to the sheet's value
+    eff.specular      = clamp(e.specular.value_or(1.f), 0.f, 1.f);
     out.hair          = Hair{.longitudinal        = betaM,
                                .azimuthal           = kCardAzimuthalRoughness,
-                               .specular            = clamp(e.specular.value_or(1.f), 0.f, 1.f),
+                               .specular            = eff.specular,
                                .absorptionFromColor = true,
                                .strandRotation      = opts.anisotropyRotation};
   }
@@ -838,6 +845,25 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     // shading itself black; the live path gets that from the transmitted lobe instead.
     out.diffuseTransmission = DiffuseTransmission{.factor = 0.4f, .color = {out.baseColor[0], out.baseColor[1], out.baseColor[2]}};
   }
+
+  // What the panel needs to say about these numbers
+  eff.colorUnused = colorUnused;
+  eff.fibre       = liveRibbon;
+  eff.coatRole    = tearFilm || underFilm ? "" : s.topCoat ? "coat" : lobes.clearcoat ? "tight" : "";
+  const auto mapped = [&](bool map, const char* key) {
+    if(map)
+      eff.mapped.emplace_back(key);
+  };
+  const bool coatOnSecondLobe = slidersMoveSecondLobe && out.specular2;
+  mapped(!baseMap.empty(), "color");
+  // the fibre's roughness is a number of its own: no map reaches it in the path tracer
+  mapped(!lobes.roughness.map.empty() && !out.hair, "roughness");
+  mapped(!s.metallic.map.empty(), "metalness");
+  mapped(out.specular && out.specular->map.has(), "specular");
+  mapped(coatOnSecondLobe ? out.specular2->map.has() : out.clearcoat && out.clearcoat->map.has(), "clearcoat");
+  mapped(coatOnSecondLobe ? out.specular2->roughnessMap.has() : out.clearcoat && out.clearcoat->roughnessMap.has(), "clearcoatRoughness");
+  mapped(!s.opacity.map.empty(), "opacity");
+  mapped(out.emissiveMap.has(), "emissive");
 
   return {std::move(out), std::move(b.requests), std::move(eff)};
 }

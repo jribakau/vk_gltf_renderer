@@ -64,6 +64,8 @@
 // edited, eye?, makeup?}}, eyes?, skin?} as a snapshot when the prop is attached, then merge patches; `values` are
 // what the renderer was given (edits included), `edited` lists the values that are edits, `meshes`
 // the prop's meshes using it. `colorBaked`: its colour is in a bake, so the panel applies it on release.
+// `colorUnused`, `fibre`, `ribbon`, `coatRole` and `mapped`: what the panel says about the values and
+// which it leaves out (mat::Effective, and mesh::BuiltMesh::ribbon).
 // An eye's surface has `eye: {iris, sclera, baked}` (the colours it
 // takes, and whether changing them cooks its map) and always has irisColor/irisStrength or
 // scleraColor in `values`, a colour null when unset. A surface with a makeup layer has
