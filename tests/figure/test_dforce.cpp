@@ -2426,4 +2426,91 @@ TEST(DforceStrands, aHairInTheSceneComesDownAsItsDrape)
   EXPECT_EQ(d.draped(), 1);
   // 20 cm of strand from a root at 30, so its tip is down about 10
   EXPECT_LT(lowestOf(scene.meshes[1].geo->position), 12.f);
+
+  // its switch off: no settle will come, as nothing else drapes, and it goes back as it was
+  auto held       = std::make_shared<dson::DforceData>(*data);
+  held->strandsOn = false;
+  scene.meshes[1].dforce = held;
+  ASSERT_FALSE(d.active());
+  d.changed({1}, false);
+  EXPECT_EQ(d.draped(), 0);
+  EXPECT_GT(lowestOf(scene.meshes[1].geo->position), 29.f);
+}
+
+namespace {
+
+// A strand along +x with waves up and down of `amplitude` cm every 12 cm, longer than a span.
+dforce::StrandSet wavyStrand(float amplitude)
+{
+  auto s = strandsAlongX({0, 100, 0}, 1, 41, 1);
+  for(int v = 0; v < 41; v++)
+    s.posed[size_t(v) * 3 + 1] = 100 + amplitude * std::sin(float(v) * 2 * 3.14159265f / 12);
+  return s;
+}
+
+float meanMove(const std::vector<float>& a, const std::vector<float>& b)
+{
+  float sum = 0;
+  for(size_t v = 0; v < a.size() / 3; v++)
+    sum += std::sqrt((a[v * 3] - b[v * 3]) * (a[v * 3] - b[v * 3]) + (a[v * 3 + 1] - b[v * 3 + 1]) * (a[v * 3 + 1] - b[v * 3 + 1]) + (a[v * 3 + 2] - b[v * 3 + 2]) * (a[v * 3 + 2] - b[v * 3 + 2]));
+  return sum / float(a.size() / 3);
+}
+
+// How much a strand still turns from span to span, radians over its length: its curls.
+float curling(const std::vector<float>& a, int from, int to, int stride)
+{
+  float turned = 0;
+  for(int v = from; v + 2 * stride <= to; v += stride)
+  {
+    const fv::Vec3 p = pointOf(a, v), q = pointOf(a, v + stride), r = pointOf(a, v + 2 * stride);
+    const double   ax = q.x - p.x, ay = q.y - p.y, az = q.z - p.z, bx = r.x - q.x, by = r.y - q.y, bz = r.z - q.z;
+    const double   c  = (ax * bx + ay * by + az * bz) / std::sqrt((ax * ax + ay * ay + az * az) * (bx * bx + by * by + bz * bz));
+    turned += float(std::acos(std::clamp(c, -1.0, 1.0)));
+  }
+  return turned;
+}
+
+}  // namespace
+
+TEST(DforceStrands, styledHairKeepsItsCurlsWhereUnsettledHairHangsStraight)
+{
+  auto       s      = wavyStrand(1.5f);
+  const float before = curling(s.posed, 0, 40, 3);
+  ASSERT_GT(before, 3.f);
+  const auto fallen = dforce::settleStrands(s, {});
+  EXPECT_LT(curling(fallen, 0, 40, 3), before * 0.5f);
+  s.styled       = true;
+  s.volume       = 0.5f;
+  const auto kept = dforce::settleStrands(s, {});
+  EXPECT_GT(curling(kept, 0, 40, 3), before * 0.7f);
+}
+
+TEST(DforceStrands, onStyledHairMoreVolumeMeansCloserToTheStyle)
+{
+  auto s   = wavyStrand(1.5f);
+  s.styled = true;
+  float last = INFINITY;
+  for(const float volume : {0.f, 0.5f, 1.f})
+  {
+    s.volume         = volume;
+    const float move = meanMove(dforce::settleStrands(s, {}), s.posed);
+    EXPECT_LT(move, last) << volume;
+    last = move;
+  }
+  // at full it has barely drooped for a strand held straight out, but at none it has come down a long way
+  EXPECT_LT(last, 3.f);
+  s.volume = 0;
+  EXPECT_GT(meanMove(dforce::settleStrands(s, {}), s.posed), 5.f);
+  // and it keeps its length whatever the Volume
+  s.volume = 0.5f;
+  const auto out = dforce::settleStrands(s, {});
+  EXPECT_NEAR(lengthOf(out, s, 0), lengthOf(s.posed, s, 0), lengthOf(s.posed, s, 0) * 0.01f);
+}
+
+TEST(DforceStrands, aHairStandingOutIsNotStyledAndOneThatHangsIs)
+{
+  const auto fan = hairSettings(0), hanging = hairSettings(-1);
+  ASSERT_TRUE(fan && hanging);
+  EXPECT_FALSE(fan->strandStyled);
+  EXPECT_TRUE(hanging->strandStyled);
 }

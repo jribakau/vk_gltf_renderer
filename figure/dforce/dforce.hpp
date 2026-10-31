@@ -137,6 +137,7 @@ private:
   // The bones of a job's skinned meshes as the figure has them now, per slot (empty: unskinned).
   std::vector<std::vector<Mat4>> currentBones(const Job& job) const;
   // Holds this drape on a mesh: cage deltas, xyz per cage vertex. True when written.
+  void dropStale();
   bool writeDrape(int mesh, const std::vector<float>& delta);
   // World down, in cm/s^2, in the job's space.
   std::array<float, 3> currentGravity() const;

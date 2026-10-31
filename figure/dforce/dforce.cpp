@@ -148,8 +148,31 @@ bool Dforce::busy() const
   return m_scheduled || m_job.valid() || m_hairJob.valid() || m_settling || m_liveSettling;
 }
 
+// What has stopped simulating (its switch off, frozen, hidden) goes back to the shape it conforms to:
+// no settle will come for it, and with nothing else draping none comes at all.
+void Dforce::dropStale()
+{
+  const std::vector<int>                      live = dynamics();
+  std::vector<std::pair<std::string, double>> names;
+  for(auto it = m_draped.begin(); it != m_draped.end();)
+  {
+    if(std::find(live.begin(), live.end(), *it) != live.end())
+    {
+      ++it;
+      continue;
+    }
+    if(m_morphs.has(channelOf(*it)))
+      names.emplace_back(channelOf(*it), 0.0);
+    it = m_draped.erase(it);
+    m_version++;
+  }
+  if(!names.empty())
+    m_morphs.setMany(names);
+}
+
 void Dforce::poke()
 {
+  dropStale();
   if(!m_enabled || !active())
     return;
   if(m_mode == Mode::eSettle && playing && playing())
@@ -364,6 +387,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       h.strands.shapeTip   = data.strandShapeTip;
       h.strands.collide    = data.strandCollide;
       h.strands.volume     = data.strandVolume;
+      h.strands.styled     = data.strandStyled;
       h.strands.gravity    = gravity;
       h.rest               = std::move(skinned->rest);
       h.skin               = std::move(skinned->skin);

@@ -62,6 +62,8 @@ struct DforceData
   // be what was meant, long strands that don't hang (strandsUnsettled), and by the item's Cloth switch.
   bool strandsOn = false;
   float strandVolume = kStrandVolume;
+  // Its authored shape is a style to keep, rather than a pose left for a simulation to bring down
+  bool  strandStyled = false;
 
   // Whether the settings cover any polygons, for the cloth solver's constraints.
   bool hasPolygons() const { return polyStart.size() > 1; }

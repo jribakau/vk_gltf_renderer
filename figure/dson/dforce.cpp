@@ -590,7 +590,8 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
     for(int v = 0; v < nv; v++)
       for(int c = 0; c < 3; c++)
         positions[size_t(v) * 3 + c] = float(verts->cell(v, c));
-    out->strandsOn = strandsUnsettled(positions, out->strandStart, out->strandVerts);
+    out->strandsOn    = strandsUnsettled(positions, out->strandStart, out->strandVerts);
+    out->strandStyled = !out->strandsOn;
   }
   return out;
 }
