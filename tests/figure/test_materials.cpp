@@ -264,6 +264,127 @@ TEST(Materials, KeepsEveryLayerOfALayeredImage)
   EXPECT_NE(fv::mat::requestKey(*base), fv::mat::requestKey(plain));
 }
 
+// A layer as it shows: what isn't seen is left out, and what's left says how it blends.
+TEST(Materials, ALayerSaysHowMuchOfItShowsHowItBlendsAndWhatMasksIt)
+{
+  const Json doc = Json::parse(R"({"image_library": [
+    {"id": "Look", "map_size": [4096, 4096], "map": [
+      {"url": "/skin.jpg", "transparency": 1},
+      {"url": "/hidden.png", "transparency": 0},
+      {"url": "/blush.png", "transparency": 0.7, "operation": "blend_source_over"},
+      {"url": "/writing.png", "operation": "multiply"},
+      {"color": [0.5, 0.25, 1], "operation": "blend_overlay", "mask": {"url": "/lips.png", "active": true}},
+      {"url": "/off.png", "active": false}]}]})");
+  std::unordered_map<std::string, std::string> images;
+  fv::dson::collectImages(doc, images);
+  const auto layers = fv::mat::mapLayers(images["Look"]);
+  ASSERT_EQ(layers.size(), 4u) << images["Look"];
+  EXPECT_EQ(layers[0], "/skin.jpg");
+
+  const auto blush = fv::mat::parseLayer(layers[1]);
+  EXPECT_EQ(blush.file, "/blush.png");
+  EXPECT_FLOAT_EQ(blush.opacity, 0.7f);
+  EXPECT_EQ(blush.blend, "");
+
+  const auto writing = fv::mat::parseLayer(layers[2]);
+  EXPECT_EQ(writing.blend, "multiply");
+
+  const auto lips = fv::mat::parseLayer(layers[3]);
+  EXPECT_EQ(lips.file, "");
+  EXPECT_EQ(lips.mask, "/lips.png");
+  EXPECT_EQ(lips.blend, "overlay");
+  EXPECT_FLOAT_EQ(lips.color[1], 0.25f);
+  // a whole image's own stack: nothing to fit to another size
+  EXPECT_EQ(lips.canvas, 0);
+
+  // a plain layer stays a plain file, with the key it always had
+  EXPECT_EQ(fv::mat::layerText(fv::mat::parseLayer("/iris.png")), "/iris.png");
+  EXPECT_EQ(fv::mat::layerFile(layers[3]), "");
+  EXPECT_EQ(fv::mat::layerFile(layers[1]), "/blush.png");
+}
+
+// What a makeup or a tattoo is made of on disk: 3D Sugar's stack has its logo at 0% at the bottom, Daz's
+// Skull and Bones an empty black. As a map either would take the skin away.
+TEST(Materials, ALayeredPresetWithNoBottomOfItsOwnGoesOverTheMapThere)
+{
+  const Json doc = Json::parse(R"({"image_library": [
+    {"id": "Logo", "map_size": [4096, 4096], "map": [
+      {"url": "/3DS.jpg", "transparency": 0},
+      {"url": "/liner.png", "transparency": 0.9}]},
+    {"id": "Faint", "map_size": [4096, 4096], "map": [
+      {"url": "/3DS.jpg", "transparency": 0.04},
+      {"url": "/blush.png"}]},
+    {"id": "Empty", "map_size": [2048, 2048], "map": [
+      {"color": [0, 0, 0]},
+      {"url": "/skull.png", "operation": "blend_multiply", "transparency": 0.5}]},
+    {"id": "Own", "map_size": [4096, 4096], "map": [
+      {"url": "/river.jpg"},
+      {"url": "/blush.png", "transparency": 0.7}]},
+    {"id": "Nothing", "map": [{"url": "/3DS.jpg", "transparency": 0}]}]})");
+  std::unordered_map<std::string, std::string> images;
+  fv::dson::collectImages(doc, images, true);
+
+  const auto over = [&](const char* id) {
+    const auto layers = fv::mat::mapLayers(images[id]);
+    EXPECT_EQ(layers.front(), "") << id << ": " << images[id];
+    EXPECT_EQ(images[id].find("3DS.jpg"), std::string::npos) << "the logo shows: " << images[id];
+    return layers;
+  };
+  const auto logo = fv::mat::parseLayer(over("Logo")[1]);
+  EXPECT_EQ(logo.file, "/liner.png");
+  EXPECT_FLOAT_EQ(logo.opacity, 0.9f);
+  EXPECT_EQ(logo.canvas, 4096);
+  EXPECT_EQ(fv::mat::parseLayer(over("Faint")[1]).file, "/blush.png");
+  const auto skull = fv::mat::parseLayer(over("Empty")[1]);
+  EXPECT_EQ(skull.blend, "multiply");
+  EXPECT_EQ(skull.canvas, 2048);
+  EXPECT_EQ(images["Nothing"], std::string(1, fv::mat::kLayerSeparator));
+
+  // a whole image at the bottom is the map, as it is off a scene file
+  EXPECT_EQ(fv::mat::mapLayers(images["Own"]).front(), "/river.jpg");
+
+  // and what isn't a layered preset keeps the first file for its bottom: nothing goes over
+  std::unordered_map<std::string, std::string> scene;
+  fv::dson::collectImages(doc, scene);
+  EXPECT_EQ(fv::mat::mapLayers(scene["Empty"]).front(), "/skull.png");
+  EXPECT_EQ(fv::mat::mapLayers(scene["Logo"]).front(), "/liner.png");
+}
+
+TEST(Materials, LayersOverTheMapThereGoOnOnceAndLeaveAChannelWithoutOneToItsFile)
+{
+  fv::Material m;
+  m.name         = "Head";
+  auto channels  = channelsOf(kSkin);
+  m.channels     = std::make_shared<const fv::dson::Channels>(channels);
+  m.surface      = fv::dson::parseSurface(m.name, *m.channels);
+  const auto map = [&](const char* id) {
+    const fv::dson::Channel* c = m.channels->find({id});
+    return c && c->image ? *c->image : std::string();
+  };
+  const std::string skin = map("diffuse");
+  ASSERT_FALSE(skin.empty());
+
+  const char        sep = fv::mat::kLayerSeparator;
+  const std::string liner = std::string(1, sep) + "/liner.png";
+  ASSERT_TRUE(fv::dson::overrideChannels(m, {{"diffuse", std::nullopt, liner, nullptr}}));
+  EXPECT_EQ(map("diffuse"), skin + liner);
+  EXPECT_EQ(fv::mat::mapLayers(m.surface.base.map).front(), skin);
+
+  // a second goes over the first; the first again adds nothing
+  const std::string blush = std::string(1, sep) + "/blush.png";
+  fv::dson::overrideChannels(m, {{"diffuse", std::nullopt, blush, nullptr}});
+  fv::dson::overrideChannels(m, {{"diffuse", std::nullopt, liner, nullptr}});
+  EXPECT_EQ(map("diffuse"), skin + liner + blush);
+
+  // nothing to lay: the map stays
+  EXPECT_FALSE(fv::dson::overrideChannels(m, {{"diffuse", std::nullopt, std::string(1, sep), nullptr}}));
+  EXPECT_EQ(map("diffuse"), skin + liner + blush);
+
+  // a channel with no map takes the first layer's file as its bottom, not a path that starts with nothing
+  fv::dson::overrideChannels(m, {{"No Map Yet", std::nullopt, liner + blush, nullptr}});
+  EXPECT_EQ(map("No Map Yet"), "/liner.png" + blush);
+}
+
 TEST(Materials, EditsLieOverTheSurface)
 {
   const auto     s = fv::dson::parseSurface("Face", channelsOf(kSkin));

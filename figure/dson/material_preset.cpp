@@ -173,7 +173,7 @@ Overrides parseOverrides(const Json& doc, int* edits)
   if(!animations || !animations->is_array())
     return bySurface;
   std::unordered_map<std::string, std::string> images;
-  collectImages(doc, images);
+  collectImages(doc, images, getString(get(&doc, "asset_info"), "type") == "preset_layered_image");
   // "#materials/<surface>:?…", or "#materials:?…" for the surfaces selected when it is applied
   static const std::regex url(R"(^(.*?)#materials(?:/([^:]+))?:\?(.+)$)");
   for(const Json& a : *animations)

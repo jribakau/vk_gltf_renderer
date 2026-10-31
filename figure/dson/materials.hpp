@@ -26,8 +26,10 @@ namespace fv::dson {
 // the shader the layers name (Channels::shader); a brick's url is resolved against `file`.
 void collectChannels(const Json* def, Channels& into, const std::unordered_map<std::string, std::string>& images, const std::string& file);
 
-// image_library entries map an id to image layers; the first active layer with a file.
-void collectImages(const Json& doc, std::unordered_map<std::string, std::string>& into);
+// image_library entries map an id to image layers: a map as mat::mapLayers reads it. With
+// `overWhatIsThere` (a layered image preset), one whose bottom isn't a whole image of its own has no
+// bottom: the map starts with mat::kLayerSeparator, and goes over the channel's (overrideChannels).
+void collectImages(const Json& doc, std::unordered_map<std::string, std::string>& into, bool overWhatIsThere = false);
 
 // Identifies the material a surface name and its channels make, so equal ones share.
 std::string materialKey(const std::string& name, const Channels& ch);

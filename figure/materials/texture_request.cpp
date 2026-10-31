@@ -1,6 +1,7 @@
 #include <figure/materials/texture_request.hpp>
 
 #include <cstdio>
+#include <cstdlib>
 
 namespace fv::mat {
 
@@ -85,6 +86,48 @@ std::vector<std::string> mapLayers(const std::string& map)
     out.push_back(map.substr(from, at - from));
   out.push_back(map.substr(from));
   return out;
+}
+
+namespace {
+
+// between a layer's fields: no path holds it
+constexpr char kLayerField = '\x1f';
+
+}  // namespace
+
+std::string layerText(const MapLayer& l)
+{
+  const bool plain = !l.file.empty() && l.blend.empty() && l.opacity == 1 && l.mask.empty() && l.canvas == 0;
+  if(plain)
+    return l.file;
+  const char sep = kLayerField;
+  return l.file + sep + l.blend + sep + num(l.opacity) + sep + l.mask + sep + rgb(l.color) + sep + std::to_string(l.canvas);
+}
+
+MapLayer parseLayer(const std::string& text)
+{
+  std::vector<std::string> fields;
+  size_t                   from = 0;
+  for(size_t at; (at = text.find(kLayerField, from)) != std::string::npos; from = at + 1)
+    fields.push_back(text.substr(from, at - from));
+  fields.push_back(text.substr(from));
+  MapLayer l;
+  l.file = fields[0];
+  if(fields.size() < 6)
+    return l;
+  l.blend   = fields[1];
+  l.opacity = std::strtof(fields[2].c_str(), nullptr);
+  l.mask    = fields[3];
+  float c[3] = {1, 1, 1};
+  std::sscanf(fields[4].c_str(), "%f,%f,%f", &c[0], &c[1], &c[2]);
+  l.color  = {c[0], c[1], c[2]};
+  l.canvas = std::atoi(fields[5].c_str());
+  return l;
+}
+
+std::string layerFile(const std::string& text)
+{
+  return text.substr(0, text.find(kLayerField));
 }
 
 }  // namespace fv::mat

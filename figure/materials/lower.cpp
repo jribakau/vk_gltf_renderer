@@ -74,13 +74,13 @@ struct Builder
     if(req.rel.find(kLayerSeparator) != std::string::npos)
     {
       req.layers = mapLayers(req.rel);
-      req.rel    = req.layers.front();
+      req.rel    = layerFile(req.layers.front());
       req.layers.erase(req.layers.begin());
     }
     // the cooker opens every other source as one file: its bottom layer, or the whole request is lost
     const auto bottomLayer = [](std::string& rel) {
       if(rel.find(kLayerSeparator) != std::string::npos)
-        rel = mapLayers(rel).front();
+        rel = layerFile(mapLayers(rel).front());
     };
     bottomLayer(req.alphaRel);
     bottomLayer(req.metalRel);
@@ -884,7 +884,7 @@ std::vector<MapSlot> mapSlots(const Surface& surface, const Edits& e)
   std::vector<MapSlot> out;
   const auto           add = [&](const char* slot, const char* label, const std::string& rel, bool edited) {
     if(!rel.empty() || edited)
-      out.push_back({slot, label, mapLayers(rel).front(), edited});
+      out.push_back({slot, label, layerFile(mapLayers(rel).front()), edited});
   };
   add("base", "Base colour", s.base.map, e.baseMap.has_value());
   add("opacity", "Cutout", s.opacity.map, e.opacityMap.has_value());

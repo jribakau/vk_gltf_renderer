@@ -146,10 +146,10 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         return Json();
       });
   }
-  else if(kind == "material preset")
+  else if(kind == "material preset" || kind == "layered image preset")
   {
     if(!figure)
-      notice(name + " is a DAZ material preset. Select a DAZ figure first, then open the preset.");
+      notice(name + " is a DAZ " + kind + ". Select a DAZ figure first, then open the preset.");
     else if(figure->addonsPending)
     {
       // Genesis 9's eyes, mouth and lashes are add-ons still going on: the preset waits for their surfaces

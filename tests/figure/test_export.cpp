@@ -68,6 +68,57 @@ TEST(Export, ANormalMapGetsItsGreenInvertedAndItsRowsFlipped)
   EXPECT_EQ(px[9], 255 - 20);
 }
 
+// The same numbers as the cooker's lays_layers_by_opacity_blend_and_mask (texcache.rs)
+TEST(Export, ALayerLiesOverByItsOpacityBlendAndMask)
+{
+  Dir        dir;
+  const auto pixels = [](uint8_t r, uint8_t g, uint8_t b) { return std::vector<uint8_t>{r, g, b, 255, r, g, b, 255, r, g, b, 255, r, g, b, 255}; };
+  const auto base   = dir.write("b.png", pixels(200, 100, 40));
+  const auto top    = dir.write("t.png", pixels(100, 200, 50));
+  // white on the left, black on the right
+  const auto mask = dir.write("m.png", {255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255});
+  fv::build::ExportOptions options;
+  options.find = [&](const std::string& r) -> std::optional<fs::path> { return dir.path / r; };
+  const auto lay = [&](const fv::mat::MapLayer& layer) {
+    fv::mat::TextureRequest req;
+    req.rel    = base;
+    req.layers = {fv::mat::layerText(layer)};
+    const auto png = fv::build::composeImage(req, options);
+    EXPECT_TRUE(png);
+    return decoded(*png);
+  };
+  const auto near = [](const std::vector<uint8_t>& px, int i, std::array<int, 3> want) {
+    for(int c = 0; c < 3; c++)
+      EXPECT_NEAR(int(px[size_t(i) * 4 + size_t(c)]), want[size_t(c)], 1) << "pixel " << i << " channel " << c;
+  };
+
+  fv::mat::MapLayer half;
+  half.file    = top;
+  half.opacity = 0.5f;
+  near(lay(half), 0, {150, 150, 45});
+
+  fv::mat::MapLayer multiply;
+  multiply.file  = top;
+  multiply.blend = "multiply";
+  near(lay(multiply), 0, {78, 78, 8});
+
+  fv::mat::MapLayer masked;
+  masked.file = top;
+  masked.mask = mask;
+  const auto maskedPx = lay(masked);
+  near(maskedPx, 0, {100, 200, 50});
+  near(maskedPx, 1, {200, 100, 40});
+
+  // a lipstick: no file, its colour where the mask says, by overlay
+  fv::mat::MapLayer colour;
+  colour.mask  = mask;
+  colour.color = {0.5f, 0.25f, 1.f};
+  colour.blend = "overlay";
+  const auto colourPx = lay(colour);
+  near(colourPx, 0, {200, 50, 80});
+  near(colourPx, 1, {200, 100, 40});
+}
+
 TEST(Export, ACutoutMapBecomesTheAlphaOfTheBaseColour)
 {
   Dir  dir;

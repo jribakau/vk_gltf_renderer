@@ -1025,6 +1025,36 @@ TEST(FvHost, ADialTurnedToNothingStaysThereWhenReopened)
   EXPECT_EQ(Reopened(old).dial("Stretch"), 0.5);
 }
 
+// A layered image preset goes on as a makeup, and as a preset opened by itself (a tattoo): each was
+// refused for being neither a material preset nor anything the viewport could put on.
+TEST(FvHost, ALayeredImagePresetGoesOnAsAMakeupAndAsAPreset)
+{
+  const std::string rel = "People/Test/Materials/Box Tattoo.duf";
+  HostRig           rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+
+  const Json makeup = rig.cmd("material.makeup", {{"prop", id}, {"rel", rel}});
+  ASSERT_TRUE(makeup.value("ok", false)) << makeup.dump();
+  ASSERT_TRUE(rig.settle());
+  const Json job = rig.topic("jobs").value(makeup.at("result").at("job").dump(), Json::object());
+  EXPECT_EQ(job.value("state", ""), "done") << job.dump();
+  EXPECT_EQ(job.value("makeup", ""), rel) << job.dump();
+  EXPECT_GT(job.value("changed", 0), 0) << job.dump();
+
+  const Json off = rig.cmd("material.makeup", {{"prop", id}, {"rel", Json()}});
+  ASSERT_TRUE(off.value("ok", false)) << off.dump();
+  ASSERT_TRUE(rig.settle());
+
+  const Json opened = rig.cmd("load", {{"rel", rel}, {"prop", id}});
+  ASSERT_TRUE(opened.value("ok", false)) << opened.dump();
+  ASSERT_TRUE(rig.settle());
+  const std::string notices = rig.topic("notices").dump();
+  EXPECT_EQ(notices.find("isn't supported"), std::string::npos) << notices;
+  EXPECT_EQ(notices.find("is not a material preset"), std::string::npos) << notices;
+}
+
 // A general body slider comes with a load, from the figure's bones alone, and is a dial like any other:
 // the panel is told what it is, a scene file holds it, undo takes it back and Reset morphs zeroes it.
 TEST(FvHost, ABodySliderIsADialFromLoadToReopening)

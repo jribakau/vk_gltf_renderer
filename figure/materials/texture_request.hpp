@@ -99,8 +99,8 @@ struct TextureRequest
   std::optional<MakeupRequest> makeup;
   std::optional<IrisRequest>   iris;
   std::optional<RecolorRequest> recolor;
-  // A DAZ layered image's upper layers, laid over `rel` by their own alpha before anything else
-  // (Genesis 9's default eyes: the iris over the sclera)
+  // A DAZ layered image's upper layers, laid over `rel` before anything else (Genesis 9's default
+  // eyes: the iris over the sclera), each as layerText writes it
   std::vector<std::string> layers;
 
   // Whether only the cooker can make it (the renderer reads plain png/jpg/webp itself).
@@ -111,10 +111,35 @@ struct TextureRequest
   }
 };
 
-// A layered image's map: its layers' files bottom up, joined by this (no path holds it).
+// A layered image's map: its layers bottom up, joined by this (no path holds it). A map that starts
+// with it has no bottom of its own and goes over the map its channel has (dson::collectImages).
 constexpr char kLayerSeparator = '|';
-// The files of a map, bottom up: one for a plain image.
+// The layers of a map, bottom up, each as layerText writes it: one for a plain image.
 std::vector<std::string> mapLayers(const std::string& map);
+
+// One upper layer of a layered image. Each pixel moves from what is under it toward the blend of the
+// two, by the layer's alpha x `opacity` x the mask's grey. Blended in the image's own values, as an
+// 8-bit editor does. texcache.rs cook and export_glb.cpp composeImage both lay layers this way.
+struct MapLayer
+{
+  // empty: a flat `color`
+  std::string file;
+  // "" (over), "multiply", "overlay", "screen", "hard_light" or "color_burn"
+  std::string blend;
+  float       opacity = 1;
+  // empty: none. Past its edge nothing of the layer shows
+  std::string mask;
+  std::array<float, 3> color{1.f, 1.f, 1.f};
+  // The width of the image it was made for, when it may go over a map of another size: it is scaled
+  // by that share. 0: at its own size from the top left (Genesis 9's iris is the top half of the
+  // sclera's square).
+  int canvas = 0;
+};
+// A layer as a map holds it: its file alone, for a layer with nothing else to say.
+std::string layerText(const MapLayer& layer);
+MapLayer    parseLayer(const std::string& text);
+// The file a layer of a map names ("" for a flat colour).
+std::string layerFile(const std::string& text);
 
 // Two requests with the same key cook the same image.
 std::string requestKey(const TextureRequest& req);

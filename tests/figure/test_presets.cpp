@@ -65,6 +65,16 @@ TEST(Presets, AShaderPresetThatSetsValuesSetsMaterials)
   auto bare = fv::dson::describePreset(fv::dson::Json::parse(R"({"asset_info":{"type":"preset_shader"},"scene":{"materials":[{"url":"#Default"}]}})"));
   ASSERT_TRUE(bare);
   EXPECT_FALSE(bare->setsMaterials);
+  // a tattoo or a makeup: a stack of images on a surface's channels
+  auto layered = fv::dson::describePreset(fv::dson::Json::parse(R"({"asset_info":{"type":"preset_layered_image"},"scene":{"animations":[
+    {"url":"name://@selection#materials/Head:?diffuse/image","keys":[[0,"#Look"]]}]}})"));
+  ASSERT_TRUE(layered);
+  EXPECT_EQ(layered->kind, "layered image preset");
+  EXPECT_TRUE(layered->setsMaterials);
+  auto noSurface = fv::dson::describePreset(fv::dson::Json::parse(R"({"asset_info":{"type":"preset_layered_image"},"scene":{}})"));
+  ASSERT_TRUE(noSurface);
+  EXPECT_FALSE(noSurface->setsMaterials);
+
   auto material = fv::dson::describePreset(fv::dson::Json::parse(R"({"asset_info":{"type":"preset_material"},"scene":{}})"));
   ASSERT_TRUE(material);
   EXPECT_TRUE(material->setsMaterials);

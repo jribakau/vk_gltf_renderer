@@ -203,6 +203,22 @@ uint8_t grey(const uint8_t* p)
   return uint8_t((unsigned(p[0]) + p[1] + p[2] + 1) / 3);
 }
 
+// A layer's blend of what is under it and its own value, 0 to 1 (texcache.rs blend_layer).
+float blendLayer(const std::string& blend, float under, float top)
+{
+  if(blend == "multiply")
+    return under * top;
+  if(blend == "screen")
+    return 1 - (1 - under) * (1 - top);
+  if(blend == "overlay")
+    return under < 0.5f ? 2 * under * top : 1 - 2 * (1 - under) * (1 - top);
+  if(blend == "hard_light")
+    return top < 0.5f ? 2 * under * top : 1 - 2 * (1 - under) * (1 - top);
+  if(blend == "color_burn")
+    return top <= 0 ? 0 : 1 - std::min(1.f, (1 - under) / top);
+  return top;
+}
+
 void flipRows(Image& img)
 {
   for(int y = 0; y < img.h / 2; y++)
@@ -224,22 +240,51 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
       return std::nullopt;
     return resized(*i, img.w, img.h);
   };
-  // a layered image's upper layers over it by their alpha, first, as the cooker does: each at its
-  // own size from the top left (Genesis 9's iris layer is the top half of the sclera's square)
-  for(const std::string& rel : req.layers)
+  // a layered image's upper layers over it, first, as the cooker does (texcache.rs lay_over): each at
+  // its own size from the top left (Genesis 9's iris layer is the top half of the sclera's square),
+  // unless it was made for another size than the bottom's
+  for(const std::string& text : req.layers)
   {
-    const auto top = decode(o, rel, why);
-    if(!top)
+    const mat::MapLayer layer = mat::parseLayer(text);
+    const auto          read  = [&](const std::string& rel) -> std::optional<Image> {
+      auto i = decode(o, rel, why);
+      if(!i)
+        return std::nullopt;
+      if(layer.canvas > 0 && layer.canvas != img.w)
+        return resized(*i, std::max(1, i->w * img.w / layer.canvas), std::max(1, i->h * img.w / layer.canvas));
+      return i;
+    };
+    std::optional<Image> top, mask;
+    if(!layer.file.empty() && !(top = read(layer.file)))
       return std::nullopt;
-    for(int y = 0; y < std::min(top->h, img.h); y++)
-      for(int x = 0; x < std::min(top->w, img.w); x++)
+    if(!layer.mask.empty() && !(mask = read(layer.mask)))
+      return std::nullopt;
+    const int w = std::min(img.w, top ? top->w : mask ? mask->w : img.w);
+    const int h = std::min(img.h, top ? top->h : mask ? mask->h : img.h);
+    for(int y = 0; y < h; y++)
+      for(int x = 0; x < w; x++)
       {
-        const uint8_t* t = top->at(x, y);
-        uint8_t*       b = img.at(x, y);
-        const unsigned a = t[3];
+        uint8_t* b  = img.at(x, y);
+        float    m  = layer.opacity;
+        float    tc[3];
+        if(top)
+        {
+          const uint8_t* t = top->at(x, y);
+          m *= float(t[3]) / 255.f;
+          for(int c = 0; c < 3; c++)
+            tc[c] = float(t[c]) / 255.f;
+        }
+        else
+          for(int c = 0; c < 3; c++)
+            tc[c] = layer.color[size_t(c)];
+        if(mask)
+          m *= x < mask->w && y < mask->h ? float(grey(mask->at(x, y))) / 255.f : 0.f;
         for(int c = 0; c < 3; c++)
-          b[c] = uint8_t((t[c] * a + b[c] * (255 - a) + 127) / 255);
-        b[3] = uint8_t(a + (b[3] * (255 - a) + 127) / 255);
+        {
+          const float under = float(b[c]) / 255.f;
+          b[c]              = uint8_t(std::lround(std::clamp(under + (blendLayer(layer.blend, under, tc[c]) - under) * m, 0.f, 1.f) * 255.f));
+        }
+        b[3] = uint8_t(std::lround((m + float(b[3]) / 255.f * (1.f - m)) * 255.f));
       }
   }
   // the maps multiplied in, each by its grey, as the cooker does after the layers: a lobe's weight

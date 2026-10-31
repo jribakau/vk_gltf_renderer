@@ -101,7 +101,7 @@ std::string toneReference(const SceneGraph& scene, const std::set<int>& leaveOut
     const Material& m = scene.materials[i];
     if(!live[i] || leaveOut.count(int(i)) || m.surface.kind != mat::Kind::eSkin || m.surface.base.map.empty())
       continue;
-    const std::string map = mat::mapLayers(m.surface.base.map).front();
+    const std::string map = mat::layerFile(mat::mapLayers(m.surface.base.map).front());
     if(const std::string name = lower(m.name); name == "body" || name == "torso")
       return map;
     if(first.empty())

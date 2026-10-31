@@ -229,12 +229,22 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   // rc=<r,g,b>|<strength>[|<reference source>], percent-encoded as a whole
   if(req.recolor)
     url += "&rc=" + encodeComponent(fv::mat::recolorQuery(*req.recolor) + (req.recolor->reference.empty() ? "" : "|" + source(req.recolor->reference)));
-  // ly=<source>;<source>..., percent-encoded as a whole
+  // ly=<layer>;<layer>..., percent-encoded as a whole. A layer is its source, or
+  // <source>^<blend>^<opacity>^<mask source>^<r,g,b>^<canvas> (texcache.rs Layer::parse)
   if(!req.layers.empty())
   {
     std::string ly;
-    for(const std::string& layer : req.layers)
-      ly += (ly.empty() ? "" : ";") + source(layer);
+    for(const std::string& text : req.layers)
+    {
+      const fv::mat::MapLayer layer = fv::mat::parseLayer(text);
+      const std::string       file  = layer.file.empty() ? std::string() : source(layer.file);
+      ly += ly.empty() ? "" : ";";
+      if(text == layer.file)
+        ly += file;
+      else
+        ly += file + "^" + layer.blend + "^" + std::to_string(layer.opacity) + "^" + (layer.mask.empty() ? std::string() : source(layer.mask)) + "^"
+              + std::to_string(layer.color[0]) + "," + std::to_string(layer.color[1]) + "," + std::to_string(layer.color[2]) + "^" + std::to_string(layer.canvas);
+    }
     url += "&ly=" + encodeComponent(ly);
   }
   // mul=<source>;<source>..., percent-encoded as a whole
@@ -365,7 +375,12 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
     mix(fv::build::requestKey(req));
     {
       std::vector<std::string> sources = {req.rel, req.alphaRel, req.metalRel, req.bumpRel};
-      sources.insert(sources.end(), req.layers.begin(), req.layers.end());
+      for(const std::string& text : req.layers)
+      {
+        const fv::mat::MapLayer layer = fv::mat::parseLayer(text);
+        sources.push_back(layer.file);
+        sources.push_back(layer.mask);
+      }
       sources.insert(sources.end(), req.mulRels.begin(), req.mulRels.end());
       if(req.makeup)
         sources.insert(sources.end(), {req.makeup->colorRel, req.makeup->weightRel});

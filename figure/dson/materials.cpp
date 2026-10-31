@@ -133,7 +133,41 @@ void collectChannels(const Json* def, Channels& into, const std::unordered_map<s
   }
 }
 
-void collectImages(const Json& doc, std::unordered_map<std::string, std::string>& into)
+namespace {
+
+bool layerOn(const Json& l)
+{
+  const Json* active = get(&l, "active");
+  return !(active && active->is_boolean() && !active->get<bool>());
+}
+
+// DAZ's "transparency" is how much of a layer shows: 1 all of it.
+float layerOpacity(const Json& l)
+{
+  const Json* v = get(&l, "transparency");
+  return v && v->is_number() ? float(v->get<double>()) : 1.f;
+}
+
+mat::MapLayer upperLayer(const Json& l)
+{
+  mat::MapLayer out;
+  out.file    = getString(&l, "url");
+  out.opacity = layerOpacity(l);
+  std::string op = getString(&l, "operation");
+  if(op.rfind("blend_", 0) == 0)
+    op = op.substr(6);
+  if(op == "multiply" || op == "overlay" || op == "screen" || op == "hard_light" || op == "color_burn")
+    out.blend = op;
+  if(const Json* mask = get(&l, "mask"); mask && mask->is_object() && layerOn(*mask))
+    out.mask = getString(mask, "url");
+  if(const Json* c = get(&l, "color"); c && c->is_array() && c->size() == 3 && (*c)[0].is_number())
+    out.color = {(*c)[0].get<float>(), (*c)[1].get<float>(), (*c)[2].get<float>()};
+  return out;
+}
+
+}  // namespace
+
+void collectImages(const Json& doc, std::unordered_map<std::string, std::string>& into, bool overWhatIsThere)
 {
   const Json* lib = get(&doc, "image_library");
   if(!lib || !lib->is_array())
@@ -144,21 +178,48 @@ void collectImages(const Json& doc, std::unordered_map<std::string, std::string>
     const std::string id = getString(&img, "id");
     if(!layers || !layers->is_array() || id.empty())
       continue;
-    // A layered image (Genesis 9's default eyes: the iris, a disc with alpha, over the sclera)
-    // keeps its file layers bottom up; the cooker lays them over each other. A colour layer with no
-    // file (the white under the sclera) is covered by the first file.
-    std::string map;
+    std::vector<const Json*> on;
     for(const Json& l : *layers)
+      if(layerOn(l))
+        on.push_back(&l);
+    if(on.empty())
+      continue;
+    // A layered image (Genesis 9's default eyes: the iris, a disc with alpha, over the sclera) keeps
+    // its layers bottom up; the cooker lays them over each other. A layer that doesn't show is left
+    // out, as is a colour under the first file (the white under the sclera), which covers it.
+    //
+    // A layered image preset whose bottom isn't a whole image of its own goes over the map already
+    // there: its bottom is an empty colour (Daz's Skull and Bones, a tattoo multiplied on black) or a
+    // maker's logo at 0 to 4% (3D Sugar), which as a map would take the skin away. That is inferred
+    // from those files and their thumbnails: DAZ Studio's own rule for applying one isn't available.
+    const std::string bottom = getString(on[0], "url");
+    const bool        over   = overWhatIsThere && (bottom.empty() || layerOpacity(*on[0]) < 1);
+    int               canvas = 0;
+    if(over)
+      if(const Json* size = get(&img, "map_size"); size && size->is_array() && !size->empty() && (*size)[0].is_number())
+        canvas = (*size)[0].get<int>();
+    std::string map;
+    bool        started = false;
+    for(size_t i = over ? 1 : 0; i < on.size(); i++)
     {
-      const Json* active = get(&l, "active");
-      if(active && active->is_boolean() && !active->get<bool>())
-        continue;
+      const Json& l    = *on[i];
       const std::string url = getString(&l, "url");
-      if(!url.empty())
-        map += (map.empty() ? "" : std::string(1, mat::kLayerSeparator)) + url;
+      if(layerOpacity(l) <= 0 || (!over && !started && url.empty()))
+        continue;
+      if(!over && !started)
+        map = url;
+      else
+      {
+        mat::MapLayer layer = upperLayer(l);
+        layer.canvas        = canvas;
+        map += (over || started ? std::string(1, mat::kLayerSeparator) : "") + mat::layerText(layer);
+      }
+      started = true;
     }
     if(!map.empty())
       into[id] = map;
+    else if(over)
+      into[id] = std::string(1, mat::kLayerSeparator);
   }
 }
 
@@ -832,6 +893,18 @@ Material buildMaterial(const std::string& name, const Channels& ch)
   return m;
 }
 
+namespace {
+
+// Whether layers with no bottom of their own start with a file, which can stand for the bottom of a
+// channel with no map; a flat colour can't.
+bool parseFirstHasFile(const std::string& layers)
+{
+  const std::vector<std::string> list = mat::mapLayers(layers);
+  return list.size() > 1 && !mat::layerFile(list[1]).empty();
+}
+
+}  // namespace
+
 bool overrideChannels(Material& m, const std::vector<ChannelOverride>& overrides)
 {
   if(overrides.empty() || !m.channels)
@@ -841,11 +914,28 @@ bool overrideChannels(Material& m, const std::vector<ChannelOverride>& overrides
   {
     if(!o.value && !o.image && !m.channels->get(norm(o.channel)))
       continue;
+    // layers with no bottom of their own go over the map there, once: a preset put on again adds nothing
+    std::optional<std::string> image = o.image;
+    if(image && !image->empty() && image->front() == mat::kLayerSeparator)
+    {
+      const Channel*    was = m.channels->get(norm(o.channel));
+      const std::string map = was && was->image ? *was->image : std::string();
+      if(image->size() == 1 || map.find(*image) != std::string::npos)
+        image.reset();
+      else if(map.empty() && !parseFirstHasFile(*image))
+        image.reset();
+      else if(map.empty())
+        image = image->substr(1);
+      else
+        image = map + *image;
+      if(!image && !o.value)
+        continue;
+    }
     Json c = {{"id", o.channel}};
     if(o.value)
       c["current_value"] = *o.value;
-    if(o.image)
-      c["image_file"] = *o.image;
+    if(image)
+      c["image_file"] = *image;
     if(o.imageModification.is_object())
       c["image_modification"] = o.imageModification;
     channels.push_back({{"channel", c}});
