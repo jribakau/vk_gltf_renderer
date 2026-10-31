@@ -88,8 +88,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     // a figure loads again, which waits on workers: answered with its job
     return impl->onApp([impl, args] { return impl->propDuplicate(args); });
   });
-  cmds.add("scene.clear", [impl](const Json&) {
-    return impl->onApp([impl] {
+  cmds.add("scene.clear", [impl](const Json& args) {
+    return impl->onApp([impl, keepView = args.value("keepView", false)] {
+      impl->viewKept = keepView;
       return impl->journaled("scene.clear", Json::object(), [impl] {
         // every prop is kept for the undo, as a removed one is
         for(const auto& p : impl->props)

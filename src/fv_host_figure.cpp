@@ -35,7 +35,7 @@ Json FvHost::Impl::load(const Json& args)
     std::string ext = pathOf(args["path"].get<std::string>()).extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
     if(ext == ".gltf" || ext == ".glb" || ext == ".obj")
-      return importModel(args["path"].get<std::string>());
+      return importModel(args["path"].get<std::string>(), {}, {}, args.value("place", Json()));
   }
   // an absolute path, or a path in the content folders (a library item)
   std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;
@@ -65,12 +65,13 @@ Json FvHost::Impl::load(const Json& args)
       for(const Json& r : args[key])
         if(r.is_string())
           into->push_back(r.get<std::string>());
-  return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp, {}, std::move(prefetch), std::move(iray));
+  return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp, {}, std::move(prefetch), std::move(iray), {},
+                    args.value("place", Json()));
 }
 
 Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
                               std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then, std::vector<std::string> prefetch,
-                              std::vector<std::string> iray, std::string id)
+                              std::vector<std::string> iray, std::string id, Json place)
 {
   const uint64_t    jobId      = ++jobs;
   const uint64_t    generation = loadGeneration;
@@ -78,7 +79,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
   job(jobId, {{"label", label}, {"state", "running"}});
 
   loaders.spawn([this, s, roots = std::move(roots), rel = std::move(rel), jobId, label, asProp, source = std::move(source), target = std::move(target),
-                 generation, then = std::move(then), prefetch = std::move(prefetch), iray = std::move(iray), id = std::move(id)] {
+                 generation, then = std::move(then), prefetch = std::move(prefetch), iray = std::move(iray), id = std::move(id), place = std::move(place)] {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
@@ -169,8 +170,8 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       auto       shared  = std::make_shared<std::unique_ptr<fv::Figure>>(std::move(f));
       const bool flipped = cooked;
       post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), uncooked = std::move(uncooked), source, then,
-            id]() mutable {
-        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(uncooked), std::move(source), then, id);
+            id, place]() mutable {
+        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(uncooked), std::move(source), then, id, place);
       });
     }
     catch(const std::exception& e)
@@ -251,7 +252,8 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
                            std::vector<fv::build::TextureRequest>                                  uncooked,
                            Json                                                                    source,
                            std::function<void(std::shared_ptr<Prop>)>                              then,
-                           std::string                                                             id)
+                           std::string                                                             id,
+                           Json                                                                    place)
 {
   // the scene was cleared meanwhile: this one is dropped, and its job ends
   if(generation != loadGeneration)
@@ -346,6 +348,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     std::lock_guard lock(morphMutex);
     morphFigures.insert(p->id);
   }
+  placeProp(*p, place);
   requestCompose("Adding " + p->name, [this, p, f, jobId, then, restored = !id.empty()] {
     if(!inScene(f))
     {

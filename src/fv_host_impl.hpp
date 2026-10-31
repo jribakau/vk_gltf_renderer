@@ -583,6 +583,7 @@ struct FvHost::Impl
   };
   std::optional<ComposeRequest> pendingCompose;
   bool                          composedAny = false;  // the last composition had a figure or model in it
+  bool                          viewKept    = false;  // a scene file sets the view: its first figure or model isn't framed
 
   // loads, wears, exports and environment decodes, each on a thread of its own
   FvWorkers loaders;
@@ -783,7 +784,7 @@ struct FvHost::Impl
   // `iray`: installed Iray presets a 3Delight-era wearable may take as it goes on (WearRequest::iray)
   Json loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
                   std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {}, std::vector<std::string> prefetch = {},
-                  std::vector<std::string> iray = {}, std::string id = {});
+                  std::vector<std::string> iray = {}, std::string id = {}, Json place = {});
   void install(std::unique_ptr<fv::Figure>                                             f,
                uint64_t                                                                generation,
                uint64_t                                                                jobId,
@@ -794,7 +795,8 @@ struct FvHost::Impl
                std::vector<fv::build::TextureRequest>                                  uncooked,
                Json                                                                    source,
                std::function<void(std::shared_ptr<Prop>)>                              then,
-               std::string                                                             id);
+               std::string                                                             id,
+               Json                                                                    place);
   // A figure on a cold texture cache: `requests` (shown with their fallbacks) cooked on a worker, each
   // swapped in as it lands (takeLanded), so the figure ends with every image cooked without a reload
   void cookInPlace(const std::shared_ptr<Loaded>& f, std::vector<fv::build::TextureRequest> requests);
@@ -831,7 +833,10 @@ struct FvHost::Impl
   uint64_t startWear(std::shared_ptr<Loaded> target, std::vector<WearRequest> requests, std::function<void()> beforeBuild = {}, std::function<void()> after = {},
                      std::shared_future<void> commitAfter = {}, WearLooks looks = {});
   // glTF, GLB and OBJ files, read on a worker, as a new prop
-  Json importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then = {}, std::string id = {});
+  Json importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then = {}, std::string id = {}, Json place = {});
+  // What prop.add's `place` says of a prop being made (prop.set's fields), so that it's never drawn
+  // anywhere else: a scene file's name, visibility, transform, lens or light
+  void placeProp(const Prop& p, const Json& place);
   Json animationTopic();
   void publishAnimation(bool force);
   Json animationCommand(const std::string& cmd, const Json& args);

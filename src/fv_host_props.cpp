@@ -825,8 +825,9 @@ void FvHost::Impl::compose()
 
   // the first thing in an empty scene is framed; after that the camera stays, and so does a camera looked through
   const bool hasGeometry = std::any_of(props.begin(), props.end(), [](const auto& p) { return p->figure || p->model; });
-  const bool frame       = hasGeometry && !composedAny && viewCamera.empty();
+  const bool frame       = hasGeometry && !composedAny && viewCamera.empty() && !viewKept;
   composedAny            = hasGeometry;
+  viewKept               = viewKept && !hasGeometry;
 
   rs::RetainedScene& scene = renderer->hostScene();
   if(!propFeed)
@@ -1058,8 +1059,18 @@ Json FvHost::Impl::propAdd(const Json& args)
   }
   if(args.contains("transform"))
     propSet({{"prop", p->id}, {"transform", args["transform"]}});
+  placeProp(*p, args.value("place", Json()));
   requestCompose("Adding " + p->name, [this, id = p->id] { selectProp(id); });
   return {{"prop", p->id}};
+}
+
+void FvHost::Impl::placeProp(const Prop& p, const Json& place)
+{
+  if(!place.is_object() || place.empty())
+    return;
+  Json set    = place;
+  set["prop"] = p.id;
+  propSet(set);
 }
 
 // What the panels change about a prop: a name, whether it shows, where it is, what it rides on, a

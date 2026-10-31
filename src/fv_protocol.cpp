@@ -40,7 +40,7 @@ namespace {
 // history.begin, history.end (a scene file opening as one step) and history.clear. 13: the scene
 // kept for a crash, recovery.file, recovery.peek and scene.recover. 14: a prop rides on a figure's
 // bone (prop.set's `bone`, the scene topic's).
-constexpr int kProtocolVersion = 14;
+constexpr int kProtocolVersion = 15;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

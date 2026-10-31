@@ -26,13 +26,13 @@
 //--------------------------------------------------------------------------------------------------
 // Imported models and animation
 
-Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then, std::string id)
+Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::shared_ptr<Prop>)> then, std::string id, Json place)
 {
   const uint64_t    jobId      = ++jobs;
   const uint64_t    generation = loadGeneration;
   const std::string label      = "Loading " + utf8Of(pathOf(path).filename());
   job(jobId, {{"label", label}, {"state", "running"}});
-  loaders.spawn([this, path, jobId, label, generation, then = std::move(then), id = std::move(id)] {
+  loaders.spawn([this, path, jobId, label, generation, then = std::move(then), id = std::move(id), place = std::move(place)] {
     auto        model = std::make_shared<tinygltf::Model>();
     std::string error;
     if(!fv::composer::readModelFile(pathOf(path), *model, error))
@@ -41,7 +41,7 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
       notice("Could not open " + utf8Of(pathOf(path).filename()) + ": " + error, "error");
       return;
     }
-    post([this, model, path, jobId, label, generation, then, id] {
+    post([this, model, path, jobId, label, generation, then, id, place] {
       if(generation != loadGeneration)
       {
         job(jobId, {{"label", label}, {"state", "done"}});
@@ -59,6 +59,7 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
       p->model  = model;
       p->path   = path;
       p->format = ext == ".OBJ" ? "OBJ" : "glTF";
+      placeProp(*p, place);
       requestCompose("Adding " + p->name, [this, p, jobId, label, then, restored = !id.empty()] {
         if(!findProp(p->id))
         {

@@ -1818,3 +1818,59 @@ TEST(FvHost, ACaptureIsAnHdrOfThePathTracersImage)
   EXPECT_EQ(rig.renderer.savedImage, file);
   fs::remove(file);
 }
+
+// A scene file makes a prop where it has it: no frame of it stands anywhere else, and there's nothing
+// left to send for it after its load
+TEST(FvHost, APropIsMadeWhereItsPlaceSays)
+{
+  HostRig    rig;
+  const Json place = {{"name", "Stage"}, {"visible", false}, {"transform", {{"t", {1.5, 0.0, -2.0}}, {"r", {0.0, 0.0, 0.0, 1.0}}, {"s", {2.0, 2.0, 2.0}}}}};
+  ASSERT_TRUE(rig.cmd("prop.add", {{"rel", "People/Test/Box Figure.duf"}, {"place", place}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const Json scene = rig.topic("scene");
+  const Json f     = scene.at("props").at(figureId(scene));
+  EXPECT_EQ(f.at("name"), "Stage");
+  EXPECT_EQ(f.at("visible"), false);
+  EXPECT_NEAR(f.at("transform").at("t")[0].get<double>(), 1.5, 1e-6);
+  EXPECT_NEAR(f.at("transform").at("s")[1].get<double>(), 2.0, 1e-6);
+  const rs::Entity* root = nullptr;
+  for(rs::EntityId id : rig.renderer.hostScene().roots())
+    if(const rs::Entity* e = rig.renderer.hostScene().entity(id); e && e->local.scale.x == 2.f)
+      root = e;
+  ASSERT_NE(root, nullptr);
+  EXPECT_EQ(root->local.translation, glm::vec3(1.5f, 0.f, -2.f));
+  EXPECT_FALSE(root->visible);
+
+  // a camera and a light take theirs at once
+  const Json camera = rig.cmd("prop.add", {{"kind", "camera"}, {"place", {{"name", "Close"}, {"camera", {{"focalLength", 85}}}, {"transform", {{"t", {0.0, 1.0, 2.0}}}}}}}).at("result");
+  const Json c      = rig.topic("scene").at("props").at(camera.at("prop").get<std::string>());
+  EXPECT_EQ(c.at("name"), "Close");
+  EXPECT_NEAR(c.at("camera").at("focalLength").get<double>(), 85, 1e-6);
+  EXPECT_NEAR(c.at("transform").at("t")[2].get<double>(), 2.0, 1e-6);
+}
+
+// A file's saved view is set before its figures come, so the first of them isn't framed over it; a
+// clear without one frames as before, and it holds for that one load only
+TEST(FvHost, AClearThatKeepsTheViewLeavesTheFirstFigureUnframed)
+{
+  HostRig rig;
+  placeView(rig);
+  rig.cmd("scene.clear", {{"keepView", true}});
+  rig.cmd("camera.goto", {{"position", {3.0, 2.0, 9.0}}, {"target", {1.0, 1.0, 0.0}}});
+  ASSERT_TRUE(rig.cmd("prop.add", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  for(int i = 0; i < 4; i++)
+    rig.host->onUpdate();
+  const auto closeTo = [](const glm::dvec3& a, const glm::dvec3& b) { return glm::length(a - b) < 1e-3; };
+  EXPECT_TRUE(closeTo(look(rig).eye, {3, 2, 9}));
+  EXPECT_TRUE(closeTo(look(rig).center, {1, 1, 0}));
+
+  rig.cmd("scene.clear");
+  rig.cmd("camera.goto", {{"position", {3.0, 2.0, 9.0}}, {"target", {1.0, 1.0, 0.0}}});
+  ASSERT_TRUE(rig.settle());
+  ASSERT_TRUE(rig.cmd("prop.add", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  for(int i = 0; i < 4; i++)
+    rig.host->onUpdate();
+  EXPECT_FALSE(closeTo(look(rig).eye, {3, 2, 9}));
+}
