@@ -4553,9 +4553,12 @@ void GltfRenderer::replaceHostScene()
 
 void GltfRenderer::selectEntity(rs::EntityId entity)
 {
+  // the same again (a click on nothing with nothing selected) changes no picture: the still keeps its samples
+  const bool same  = entity == m_selectedEntity;
   m_selectedEntity = entity;
   refreshEntitySelection();
-  resetFrame();
+  if(!same)
+    resetFrame();
 }
 
 void GltfRenderer::refreshEntitySelection()
