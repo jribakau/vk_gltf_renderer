@@ -339,6 +339,10 @@ add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp test_ligh
                test_thin_scatter.cpp test_hair_bsdf.cpp)
 target_link_libraries(${BSDF_TEST_NAME} PRIVATE GTest::gtest GTest::gtest_main glm)
 target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})
+# MSVC's extensions give GLM's member swizzles (v.xy); GCC and Clang get them with its intrinsics
+if(NOT MSVC)
+  target_compile_definitions(${BSDF_TEST_NAME} PRIVATE GLM_FORCE_INTRINSICS)
+endif()
 gtest_discover_tests(${BSDF_TEST_NAME})
 set_target_properties(${BSDF_TEST_NAME} PROPERTIES FOLDER "Tests")
 
@@ -364,6 +368,7 @@ add_executable(${BENCHMARK_NAME}
     ${CMAKE_SOURCE_DIR}/src/gltf_version.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_scene_merger.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_scene_external_assets.cpp
+    ${CMAKE_SOURCE_DIR}/src/gltf_meshopt.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_converter.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_create_tangent.cpp
