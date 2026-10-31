@@ -1604,7 +1604,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
   {
     DrawerGpu*             d = nullptr;
     std::vector<float>     weights;
-    std::vector<glm::mat4> joints;
+    std::vector<glm::mat4> pose, joints;
     bool                   morph = false, skin = false;
   };
   std::vector<Run> runs;
@@ -1624,10 +1624,11 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     }
     if(d.skin)
     {
-      run.joints = scene.jointMatrices(d.entity);
-      if(run.joints.size() != d.jointCount)  // the skin was set again with other joints
+      run.pose = scene.jointPose(d.entity);
+      // (the pose has the mesh's own matrix after the joints')
+      if(const uint32_t joints = run.pose.empty() ? 0 : uint32_t(run.pose.size() - 1); joints != d.jointCount)  // the skin was set again with other joints
       {
-        d.jointCount = uint32_t(run.joints.size());
+        d.jointCount = joints;
         m_packsDirty = true;
       }
     }
@@ -1643,11 +1644,14 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     const bool baseMoved = written.count(d.mesh) > 0;
     run.morph            = d.morph && (!d.ran || baseMoved || run.weights != d.lastWeights);
     // a skin over a morph reads the morph's own output, so it runs again only for what it reads
-    run.skin = d.skin && d.jointCount && (!d.ran || baseMoved || run.morph || run.joints != d.lastJoints);
+    run.skin = d.skin && d.jointCount && (!d.ran || baseMoved || run.morph || run.pose != d.lastPose);
     if(run.morph)
       morphs.push_back(&run);
     if(run.skin)
+    {
+      run.joints = scene.jointMatrices(d.entity);
       skins.push_back(&run);
+    }
   }
   if(morphs.empty() && skins.empty())
     return;
@@ -1765,7 +1769,10 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     if(run.morph)
       d.lastWeights = run.weights;
     if(run.skin)
+    {
+      d.lastPose   = std::move(run.pose);
       d.lastJoints = run.joints;
+    }
     m_drawersWritten.insert({d.entity, d.mesh});
     written.insert(d.mesh);
     for(int32_t p : d.prims)

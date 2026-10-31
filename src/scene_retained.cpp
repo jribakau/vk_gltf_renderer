@@ -702,6 +702,65 @@ std::vector<glm::mat4> RetainedScene::jointMatrices(EntityId id)
   return out;
 }
 
+std::vector<glm::mat4> RetainedScene::jointPose(EntityId id)
+{
+  const Entity* e = m_entities.get(id);
+  if(!e || !e->mesh)
+    return {};
+  const SkinRecord* s = skin(e->mesh->skin);
+  if(!s)
+    return {};
+  m_skinWalk++;
+  const EntityId         anchor = skinAnchor(id, s->joints);
+  std::vector<glm::mat4> out(s->joints.size(), glm::mat4(1.f));
+  out.push_back(fromAnchor(id, anchor));
+  for(size_t j = 0; j < s->joints.size(); j++)
+    if(m_entities.contains(s->joints[j]))
+      out[j] = fromAnchor(s->joints[j], anchor);
+  return out;
+}
+
+EntityId RetainedScene::skinAnchor(EntityId id, const std::vector<EntityId>& joints)
+{
+  std::vector<EntityId> above;
+  for(EntityId x = id; !x.isNone(); x = m_entities[x].parent)
+    above.push_back(x);
+  size_t highest = 0;
+  for(EntityId joint : joints)
+  {
+    if(!m_entities.contains(joint))
+      continue;
+    EntityId x = joint;
+    for(; !x.isNone() && m_derived[x.index].seenWalk != m_skinWalk; x = m_entities[x].parent)
+    {
+      m_derived[x.index].seenWalk = m_skinWalk;
+      if(const auto at = std::find(above.begin(), above.end(), x); at != above.end())
+      {
+        highest = std::max(highest, size_t(at - above.begin()));
+        break;
+      }
+    }
+    // up past the top without meeting the mesh's entity: another tree
+    if(x.isNone())
+      return {};
+  }
+  return above[highest];
+}
+
+const glm::mat4& RetainedScene::fromAnchor(EntityId id, EntityId anchor)
+{
+  static const glm::mat4 identity(1.f);
+  if(id == anchor || id.isNone())
+    return identity;
+  Derived& d = m_derived[id.index];
+  if(d.anchorWalk != m_skinWalk)
+  {
+    d.anchored   = fromAnchor(m_entities[id].parent, anchor) * m_entities[id].local.local();
+    d.anchorWalk = m_skinWalk;
+  }
+  return d.anchored;
+}
+
 //--------------------------------------------------------------------------------------------------
 // Views
 

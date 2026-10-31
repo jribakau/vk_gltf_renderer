@@ -217,7 +217,8 @@ public:
     }
     // the inputs it last ran with; empty: it runs at the next sync
     std::vector<float>     lastWeights;
-    std::vector<glm::mat4> lastJoints;
+    std::vector<glm::mat4> lastPose;
+    std::vector<glm::mat4> lastJoints;  // what the skin ran with
     bool                   ran = false;
   };
   using DrawerKey = std::pair<EntityId, MeshId>;

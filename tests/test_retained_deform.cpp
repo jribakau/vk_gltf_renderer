@@ -317,6 +317,44 @@ TEST(RetainedDeform, APoseRunsTheSkinAndOnlyAPoseDoes)
   expectClean(rig.scene, residency, gpu, "at rest: ");
 }
 
+// Moving, turning or sizing what carries a figure moves its instances and leaves its bones where they are
+// relative to its meshes: the skin doesn't run again and no BLAS is refit, or a drag of a transform slider
+// would cost as much as a pose, however far off the origin the figure goes
+TEST(RetainedDeform, MovingWhatCarriesAFigureDoesNotRunItsSkin)
+{
+  Rig            rig(false);
+  rig.bend(33.3f);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  const Residency::DrawerGpu& d = *residency.drawer(rig.body, rig.mesh);
+  const uint32_t              refits = refitsOf(residency, gpu, d);
+
+  uint32_t skins = 0;
+  for(int i = 1; i <= 40; i++)
+  {
+    Transform t;
+    t.translation = glm::vec3(0.137f, -0.291f, 0.073f) * float(i * i);
+    t.rotation    = glm::angleAxis(glm::radians(float(i) * 7.3f), glm::normalize(glm::vec3(1, 2, 3)));
+    t.scale       = glm::vec3(1.f + float(i) * 0.037f);
+    rig.scene.setLocal(rig.root, t);
+    gpu.beginFrame();
+    SyncResult r = residency.sync(rig.scene);
+    EXPECT_TRUE(r.changed);
+    skins += residency.deformCounts().skins;
+  }
+  EXPECT_EQ(skins, 0u);
+  EXPECT_EQ(refitsOf(residency, gpu, d), refits);
+  expectClean(rig.scene, residency, gpu, "moved: ");
+
+  // and a pose still does, wherever it stands
+  rig.bend(40);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(residency.deformCounts().skins, 1u);
+  expectClean(rig.scene, residency, gpu, "posed: ");
+}
+
 // Morph, then skin: the skin reads the morph's output, never its own, so a pose alone runs the skin
 // alone and the result is the morph skinned once
 TEST(RetainedDeform, AMorphedSkinRunsOnlyThePassWhoseInputsChanged)

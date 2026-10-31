@@ -156,7 +156,7 @@ MeshRecord refinedBase(const MeshRecord& r)
   return out;
 }
 
-Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r)
+Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r, const std::vector<glm::mat4>& ran)
 {
   Deformed       out{r.positions, r.normals, r.tangents};
   const Entity&  e = *scene.entity(entity);
@@ -192,7 +192,7 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r)
         out.tangents[v] = glm::vec4(glm::normalize(glm::vec3(tan)), tan.w);
     }
   }
-  const std::vector<glm::mat4> joints = scene.jointMatrices(entity);
+  const std::vector<glm::mat4>& joints = ran;
   if(joints.empty() || r.joints.size() != n || r.weights.size() != n)
     return out;
   std::vector<glm::mat3> normalMats;
@@ -401,8 +401,20 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I3", p) + "its mesh's position buffer does not hold the mesh's positions");
     if(drawer)
     {
-      // the passes ran on what the scene says now: the outputs hold the mesh as the entity draws it
-      const Deformed want = deformedNow(scene, prim->drawer, *record);
+      // the passes ran on what the scene says now: the outputs hold the mesh as the entity draws it. The
+      // skin doesn't run again when only what carries the figure moved, so its matrices are the ones it
+      // last ran with, and those are the joints' now to within the rounding of going through the worlds
+      const std::vector<glm::mat4> jointsNow = scene.jointMatrices(prim->drawer);
+      const std::vector<glm::mat4>& ran      = drawer->lastJoints.size() == jointsNow.size() ? drawer->lastJoints : jointsNow;
+      const float                   farOut   = 1.f + glm::length(glm::vec3(scene.world(prim->drawer)[3]));
+      for(size_t j = 0; j < jointsNow.size(); j++)
+        for(int c = 0; c < 4; c++)
+          if(glm::any(glm::greaterThan(glm::abs(ran[j][c] - jointsNow[j][c]), glm::vec4(1e-5f * farOut))))
+          {
+            out.push_back(at("I22", p) + "its skin last ran with other joints than the entity's now");
+            c = 4, j = jointsNow.size();
+          }
+      const Deformed want = deformedNow(scene, prim->drawer, *record, ran);
       if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(drawer->positions), want.positions.size() * sizeof(glm::vec3)),
                     want.positions.data(), want.positions.size()))
         out.push_back(at("I22", p) + "its drawer's positions are not its mesh deformed as the entity draws it now");

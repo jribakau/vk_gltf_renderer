@@ -542,6 +542,10 @@ public:
   // nvvkgltf::AnimationSystem::computeSkinning makes them (identity for a joint that is gone).
   // Empty when the entity draws no skinned mesh.
   std::vector<glm::mat4> jointMatrices(EntityId id);
+  // Where the skin's joints stand relative to the mesh, from the locals below the nearest entity above
+  // them all. It says whether the skin has to run: moving what carries a figure leaves this the same to
+  // the bit, where jointMatrices differs by rounding at every step. Empty as jointMatrices is.
+  std::vector<glm::mat4> jointPose(EntityId id);
 
   // ---- views, in document order: depth first from the roots, an entity before its children
   std::vector<EntityId>  entitiesInOrder() const;
@@ -595,6 +599,10 @@ private:
   // `delta` uses of each material the instance's submeshes draw with
   void countUses(const MeshInstance& instance, int delta);
   void countFeatures(const nvvkgltf::SceneFeatureSet& features, int64_t delta);
+  // the nearest entity above `id` and every one of `joints` (none: they share no root)
+  EntityId skinAnchor(EntityId id, const std::vector<EntityId>& joints);
+  // the entity's matrix relative to `anchor`, kept for the rest of this m_skinWalk
+  const glm::mat4& fromAnchor(EntityId id, EntityId anchor);
 
   std::thread::id m_owner;
 
@@ -615,8 +623,12 @@ private:
     glm::mat4 world = glm::mat4(1.f);
     bool      shown = true;
     bool      dirty = true;
+    // for jointMatrices: this entity's matrix from the anchor, and the walk that last reached it
+    glm::mat4 anchored  = glm::mat4(1.f);
+    uint64_t  anchorWalk = 0, seenWalk = 0;
   };
   std::vector<Derived> m_derived;
+  uint64_t             m_skinWalk = 0;
   bool                 m_anyDirty = false;
 
   // per SceneFeatureSet feature: submesh uses of materials needing it
