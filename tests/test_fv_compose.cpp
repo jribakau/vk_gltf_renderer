@@ -21,10 +21,14 @@
 // at the props' indices, each prop's arrays start where `base` says, ids are prefixed per prop, and
 // cameras, lights, visibility and parents come out as the props have them.
 
+#include <array>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <set>
 
 #include <gtest/gtest.h>
+#include <meshoptimizer/src/meshoptimizer.h>
 
 #include "fv_compose.hpp"
 #include "tinygltf_utils.hpp"
@@ -241,6 +245,79 @@ TEST(FvCompose, ReadModelFileMakesImagesAbsolute)
   tinygltf::Model none;
   EXPECT_FALSE(fv::composer::readModelFile(dir / "missing.gltf", none, error));
   std::filesystem::remove_all(dir);
+}
+
+// A .glb compressed by gltfpack: its views live in a fallback buffer with no bytes of its own, and only
+// the compressed one is in the file. They read back as the mesh that was encoded.
+TEST(FvCompose, ReadModelFileUnpacksMeshoptCompression)
+{
+  const std::array<float, 9>    positions = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  const std::array<uint32_t, 3> indices   = {0, 1, 2};
+
+  std::vector<unsigned char> vertexBytes(meshopt_encodeVertexBufferBound(3, 12));
+  vertexBytes.resize(meshopt_encodeVertexBuffer(vertexBytes.data(), vertexBytes.size(), positions.data(), 3, 12));
+  std::vector<unsigned char> indexBytes(meshopt_encodeIndexBufferBound(3, 3));
+  indexBytes.resize(meshopt_encodeIndexBuffer(indexBytes.data(), indexBytes.size(), indices.data(), 3));
+
+  std::vector<unsigned char> bin = vertexBytes;
+  while(bin.size() % 4)
+    bin.push_back(0);
+  const size_t indexOffset = bin.size();
+  bin.insert(bin.end(), indexBytes.begin(), indexBytes.end());
+  while(bin.size() % 4)
+    bin.push_back(0);
+
+  std::string json = R"({"asset":{"version":"2.0"},"extensionsUsed":["EXT_meshopt_compression"],
+    "extensionsRequired":["EXT_meshopt_compression"],"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+    "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+    "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+                 {"bufferView":1,"componentType":5125,"count":3,"type":"SCALAR"}],
+    "bufferViews":[{"buffer":1,"byteOffset":0,"byteLength":36,"byteStride":12,"extensions":{"EXT_meshopt_compression":
+                     {"buffer":0,"byteOffset":0,"byteLength":)"
+                     + std::to_string(vertexBytes.size()) + R"(,"byteStride":12,"count":3,"mode":"ATTRIBUTES"}}},
+                   {"buffer":1,"byteOffset":36,"byteLength":12,"extensions":{"EXT_meshopt_compression":
+                     {"buffer":0,"byteOffset":)"
+                     + std::to_string(indexOffset) + R"(,"byteLength":)" + std::to_string(indexBytes.size())
+                     + R"(,"byteStride":4,"count":3,"mode":"TRIANGLES"}}}],
+    "buffers":[{"byteLength":)"
+                     + std::to_string(bin.size()) + R"(},
+               {"byteLength":48,"extensions":{"EXT_meshopt_compression":{"fallback":true}}}]})";
+  while(json.size() % 4)
+    json.push_back(' ');
+
+  const auto dir = std::filesystem::temp_directory_path() / "fv_compose_meshopt_test";
+  std::filesystem::create_directories(dir);
+  const auto file = dir / "tri.glb";
+  {
+    const auto    word = [](std::ofstream& out, uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    std::ofstream out(file, std::ios::binary);
+    out.write("glTF", 4);
+    word(out, 2);
+    word(out, uint32_t(12 + 8 + json.size() + 8 + bin.size()));
+    word(out, uint32_t(json.size()));
+    out.write("JSON", 4);
+    out.write(json.data(), std::streamsize(json.size()));
+    word(out, uint32_t(bin.size()));
+    out.write("BIN ", 4);
+    out.write(reinterpret_cast<const char*>(bin.data()), std::streamsize(bin.size()));
+  }
+
+  tinygltf::Model model;
+  std::string     error;
+  ASSERT_TRUE(fv::composer::readModelFile(file, model, error)) << error;
+  std::filesystem::remove_all(dir);
+
+  ASSERT_EQ(model.bufferViews.size(), 2u);
+  for(const tinygltf::BufferView& view : model.bufferViews)
+    EXPECT_TRUE(view.extensions.empty());
+  const auto bytesOf = [&](int view) {
+    const tinygltf::BufferView& v = model.bufferViews[size_t(view)];
+    return model.buffers[size_t(v.buffer)].data.data() + v.byteOffset;
+  };
+  EXPECT_EQ(std::memcmp(bytesOf(0), positions.data(), sizeof(positions)), 0);
+  EXPECT_EQ(std::memcmp(bytesOf(1), indices.data(), sizeof(indices)), 0);
+  // the compressed buffer has no view left, so it goes
+  EXPECT_EQ(model.buffers.size(), 1u);
 }
 
 // A model prop's own lights, after a lamp prop: the composed model holds the lamp's light and then the
