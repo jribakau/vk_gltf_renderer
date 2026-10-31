@@ -10,7 +10,6 @@ This project is developer-oriented: the **RTX path tracer** is the primary high-
 - [Scene Graph](#scene-graph)
 - [Source Code Structure](#source-code-structure)
 - [Material System](#material-system)
-- [Agentic Workflow Bridge](#agentic-workflow-bridge)
 - [Common Development Workflows](#common-development-workflows)
 - [Testing](#testing)
 - [Contributing](#contributing)
@@ -746,20 +745,6 @@ both `.hdr` and `.exr` — see that header for why EXR cannot live inside `nvvk`
 the renderer does not model survive a round trip untouched. `GltfRenderer` applies a parsed sky at
 the top of the frame *after* the settings-restore hooks have run, so a scene that carries a sky wins
 over the persisted `.ini`.
-
-## Agentic Workflow Bridge
-
-The optional external generation bridge lives in [`src/agentic_bridge.*`](../src/agentic_bridge.hpp). It defines a filesystem-based manifest and request/response envelope for tools that can generate HDR environments, texture references, or image-to-image enhancements.
-
-Initialize the bridge with:
-
-```bash
-vk_gltf_renderer --agenticBridgeInit --agenticBridgeRoot path/to/agentic_bridge
-```
-
-This creates `manifest.json`, `requests/`, `responses/`, and `assets/` without requiring ComfyUI or any other generator to be installed. The same bridge can be initialized and driven from the in-app **Agentic** window (F7, in the Windows menu). The C++ is compiled only when the `USE_AGENTIC` CMake option is ON (the default). See [Agentic Workflow Foundation](agentic-workflow.md) for the staged plan and protocol shape.
-
----
 
 ## Common Development Workflows
 

@@ -83,9 +83,6 @@
 #include "timeline_pipeline.hpp"
 #include "undo_redo.hpp"
 #include "scene_clip_player.hpp"
-#ifdef USE_AGENTIC
-#include "agentic.hpp"
-#endif
 #include "host_renderer.hpp"
 
 #ifdef USE_NVMCP
@@ -142,11 +139,6 @@ public:
   void                                        setSerAvailable(bool available);
   void                                        setDeviceExtensions(std::vector<std::string> extensions);
   void                                        setOpacityMicromapAvailable(bool hardware, bool enabled);
-#ifdef USE_AGENTIC
-  /// Override the optional Agentic bridge root (from --agenticBridgeRoot). Applied
-  /// to the controller once it is initialized in onAttach.
-  void setAgenticBridgeRoot(const std::filesystem::path& root);
-#endif
   /// Unless --ptMaxSamples was given, raises the cap so the accumulation covers the full headless run (--frames).
   void alignMaxSamplesForHeadless(uint32_t headlessFrames);
   // Headless runs render still images: unless --animPlay was given, animations don't play, since
@@ -590,7 +582,7 @@ private:
   void pickSceneNodeFromScript(int nodeIndex);
   void silhouette(VkCommandBuffer cmd);
   bool tonemap(VkCommandBuffer cmd);
-  bool runTonemapPass(VkCommandBuffer cmd, bool skipBeautifiedOverlay);
+  bool runTonemapPass(VkCommandBuffer cmd);
   void renderVisualHelpers(VkCommandBuffer cmd);
 #if defined(USE_DLSS)
   Dlss*       activeDlss();
@@ -743,15 +735,6 @@ private:
 
   // Recent files management
   std::vector<std::filesystem::path> m_recentFiles;
-
-  // Optional Agentic bridge controller (HDRI from prompt, image-to-image
-  // beautify). All state, polling, Vulkan upload of the beautified image, and
-  // adapter-heartbeat tracking live in agentic::Controller; renderAgenticWindow
-  // in ui_agentic.cpp drives the UI. Compiled only when USE_AGENTIC is defined.
-#ifdef USE_AGENTIC
-  agentic::Controller   m_agentic;
-  std::filesystem::path m_agenticBridgeRootOverride;  // from --agenticBridgeRoot; applied after m_agentic.init()
-#endif
 
   // File dialog directories
   std::filesystem::path m_lastSceneDirectory;

@@ -70,13 +70,12 @@
 // Which special view the user wants in the viewport. The DLSS guide-buffer entries that used
 // to live here are gone -- DLSS guide selection is now encapsulated inside the Dlss class
 // (see Dlss::activeGuideImage() in dlss.hpp). What remains are the app-level overrides of the
-// rendered output: the regular renderer output, an AI-denoised image, or the agentic result.
+// rendered output: the regular renderer output, or an AI-denoised image.
 enum class DisplayBuffer
 {
   eRendered,           // Final rendered image (default)
   eOptixDenoised,      // OptiX Denoised output (handled via OptiXDenoiser::getDescriptorImageInfo)
   eOidnDenoised,       // vk_oidn Denoised output (handled via OidnDenoiser::getDescriptorImageInfo)
-  eAgenticBeautified,  // External image-to-image result from the agentic bridge
 };
 
 enum DirtyFlags
@@ -167,7 +166,6 @@ struct Settings
   bool                    showSceneBrowserWindow = true;   // Show Scene Browser window
   bool                    showInspectorWindow    = true;   // Show Inspector window
   bool  showInteractivityWindow = false;  // Show KHR_interactivity Graphs window (opt-in, unlike the above)
-  bool  showAgenticWindow       = false;  // Show Agentic bridge window
   bool  showGridSettingsWindow  = false;  // Show Grid & Snap settings window
   float hdrEnvIntensity         = 1.0f;   // Intensity of the environment (HDR)
   // The environment's orientation: a unit quaternion taking its own frame to world, stored x, y, z, w

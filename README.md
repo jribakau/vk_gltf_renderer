@@ -22,7 +22,6 @@ Built in C++ on [nvpro_core2](https://github.com/nvpro-samples/nvpro_core2) with
 - **35 glTF extensions** — Anisotropy, clearcoat, transmission, volume, sheen, iridescence, dispersion, retroreflection, Draco, interactivity, opacity micromaps, IES light profiles, and more.
 - **glTF 2.1 complex scenes (preview)** — Compose multi-file scenes with External Assets: reference glTF/GLB files as instances that share geometry, with nested references, cycle detection, and file aliases — re-externalized on save.
 - **AI denoising** — DLSS Ray Reconstruction, OptiX AI Denoiser and Open Image Denoise (on Vulkan, through [vk_oidn](https://github.com/nvpro-samples/vk_oidn)) produce clean images at interactive rates.
-- **Agentic AI generation (optional)** — Local **ComfyUI** bridge that *beautifies* the current render or *generates an HDRI* environment from a text prompt.
 - **Rasterizer preview** — Fast PBR rasterizer shares scene resources for instant iteration during editing.
 - **Developer tools** — GPU profiler, memory tracker, shader hot-reload (Ctrl+Shift+R), headless batch mode.
 
@@ -86,7 +85,6 @@ cmake --build build
 - Profiler, GPU monitor, GPU memory tracking, and statistics.
 - Shader hot-reload (Ctrl+Shift+R) for developers who want to experiment.
 - AI denoisers: DLSS Ray Reconstruction, OptiX AI Denoiser and Open Image Denoise (vk_oidn).
-- Optional agentic AI generation via a local ComfyUI bridge: beautify the current render, or generate an HDRI environment from a text prompt (see [ComfyUI Agentic Setup](docs/comfyui-agentic-setup.md)).
 - Rasterizer fallback for fast scene interaction and editing.
 - A scene asset editor with hierarchy operations, a transform gizmo, material editing, merging, and saving back to glTF (non-destructive).
 - glTF 2.1 complex-scene composition (preview): reference external glTF/GLB assets, instance them (shared geometry), resolve nested references with cycle detection, and re-externalize on save.
@@ -111,35 +109,6 @@ For **headless timing** and optional scripted GPU benchmarks, see [Benchmarking]
 
 To let an AI agent measure a shader change against the running renderer, launch with `--mcp` and
 see [MCP shader timing](docs/mcp.md).
-
-## Agentic — AI-Assisted Generation
-
-Drive local generative AI from inside the renderer through an optional **[ComfyUI](https://www.comfy.org/)** bridge. Two tools are wired into the in-app **Agentic** window (press **F7**):
-
-- **Beautify Last Render** — send the current path-traced frame to a diffusion model and get it back photorealistic, or restyled by prompt (pencil, cartoon, watercolor, blueprint, and more).
-- **Generate HDRI From Prompt** — type a prompt and get a full 360° HDR environment, applied directly as the scene's lighting.
-
-Generation is entirely optional — the renderer runs without it.
-
-### Showcase
-
-Path-traced renders (left), beautified or restyled by prompt (right):
-
-| Original render | AI result |
-| ---- | ---- |
-| <img src="docs/images/agentic_i1.jpg" height="130"> | <img src="docs/images/agentic_i1_0.png" height="130"> |
-| <img src="docs/images/agentic_i2.jpg" height="130"> | <img src="docs/images/agentic_i2_0.png" height="130"> <img src="docs/images/agentic_i2_1.png" height="130"> <img src="docs/images/agentic_i2_2.png" height="130"> <img src="docs/images/agentic_i2_3.png" height="130"> |
-| <img src="docs/images/agentic_i3.jpg" height="130"> | <img src="docs/images/agentic_i3_0.png" height="130"> |
-
-### Setup
-
-Generation needs a local **ComfyUI** install, the diffusion models, and a small Python bridge that connects it to the renderer. The **[ComfyUI Agentic Setup](docs/comfyui-agentic-setup.md)** guide walks through it end to end:
-
-1. Install ComfyUI and download the models.
-2. Start ComfyUI.
-3. Open the **Agentic** window (**F7**) and use **Copy start command** to launch the bridge in a terminal; once the **Bridge** and **ComfyUI** status lights are green, generate.
-
-For the architecture, bridge directory layout, and request/response protocol behind it, see [Agentic Workflow](docs/agentic-workflow.md).
 
 ## glTF Support
 
@@ -225,7 +194,6 @@ See [External Assets](docs/external_assets.md) for design details.
 **For users**
 
 - [User Guide](docs/user-guide.md) — renderer settings, PBR materials, scene editor, camera, environment, tone mapping, common CLI flags, and troubleshooting.
-- [ComfyUI Agentic Setup](docs/comfyui-agentic-setup.md) — set up the local ComfyUI install, models, and bridge to beautify renders and generate HDRIs from prompts.
 - [glTF Resources](docs/resources.md) — curated collection of glTF models, HDR environments, specifications, and tools.
 
 **For contributors**
@@ -234,7 +202,6 @@ See [External Assets](docs/external_assets.md) for design details.
 - [Rendering Architecture](docs/RENDERING_ARCHITECTURE.md) — data flow from glTF model to GPU, BLAS/TLAS acceleration structures, and render nodes.
 - [External Assets](docs/external_assets.md) — glTF 2.1 complex scenes: reference / merge / edit / save mechanics.
 - [glTF 2.1](docs/gltf_2_1.md) — what the renderer supports so far, how it follows a draft spec, the tinygltf fork, and the 2.1 test fixtures.
-- [Agentic Workflow](docs/agentic-workflow.md) — architecture, filesystem bridge protocol, and roadmap behind the optional AI generation feature.
 - [Benchmarking](docs/benchmarking.md) — headless timing and scripted GPU benchmarks.
 
 These docs explain concepts and workflows and point at *where* things live; enumerated facts (extension lists, CLI flags, enum values) are owned by the code.

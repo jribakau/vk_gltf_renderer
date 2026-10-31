@@ -835,9 +835,7 @@ vk_gltf_renderer --benchmark 1 --size 1920 1080 --sequencefile utils/benchmark/q
 ```
 
 See [Benchmarking](benchmarking.md) for headless A/B timing, the script format, and `--outputSamples`
-(save a convergence series, e.g. `1,2,4,8,...` samples per pixel, from a single run). The optional
-image-generation bridge (`--agenticBridgeRoot`, `--agenticBridgeInit`, and the **Agentic** window
-on F7) is covered in [ComfyUI Agentic Setup](comfyui-agentic-setup.md).
+(save a convergence series, e.g. `1,2,4,8,...` samples per pixel, from a single run).
 
 ---
 

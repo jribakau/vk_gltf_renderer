@@ -53,8 +53,6 @@ set(TEST_SOURCES
     test_primitives.cpp
     # Tangents made side by side match the serial loop bit for bit
     test_tangents.cpp
-    # Agentic workflow bridge contract
-    test_agentic_bridge.cpp
     # Geometry compaction preserves EXT_mesh_opacity_micromap payload
     test_opacity_micromap_compaction.cpp
     # KHR_interactivity behavior-graph engine (parsing, flow scheduling, node evaluation)
@@ -211,7 +209,6 @@ set(TEST_SOURCES
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Optional external generation bridge
-    ${CMAKE_SOURCE_DIR}/src/agentic_bridge.cpp
     # Local glTF scene implementation
     ${CMAKE_SOURCE_DIR}/src/gltf_environment_sky.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_compact_model.cpp

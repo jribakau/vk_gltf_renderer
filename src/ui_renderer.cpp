@@ -379,9 +379,6 @@ void GltfRenderer::renderUI()
     bool changed{false};
 
     // Auto-poll + heartbeat refresh in one call (throttled internally).
-#ifdef USE_AGENTIC
-    m_agentic.tick();
-#endif
 
     if(m_resources.settings.showCameraWindow)
     {
@@ -413,9 +410,6 @@ void GltfRenderer::renderUI()
       m_sceneBrowser.showImageViewer();
     }
 
-#ifdef USE_AGENTIC
-    agentic::renderAgenticWindow(m_agentic, m_resources);
-#endif
 
     if(m_resources.settings.showSettingsWindow)
     {
@@ -886,8 +880,6 @@ void GltfRenderer::addPresentationWindow(std::function<bool()> isVisible, std::f
   m_presentation.addWindow(std::move(isVisible), std::move(setVisible));
 }
 
-// (The Agentic feature has no top-level menu; its window is toggled from the
-//  Windows menu / F7 and rendered by agentic::renderAgenticWindow in ui_agentic.cpp.)
 
 void GltfRenderer::renderToolsMenu(bool validScene)
 {
@@ -1234,8 +1226,7 @@ void GltfRenderer::registerCommands()
                       },
                   .enabled = [this] { return ui::animation::hasPlayableAnimation(m_resources.getScene()); }});
 
-  // Windows, in menu and toolbar order. The Agentic window only exists when USE_AGENTIC is built, so
-  // a non-Agentic build has no dead control.
+  // Windows, in menu and toolbar order.
   window("window.camera", "Camera", ICON_MS_PHOTO_CAMERA, ImGuiKey_F1, settings.showCameraWindow);
   window("window.sceneBrowser", "Scene Browser", ICON_MS_ACCOUNT_TREE, ImGuiKey_F2, settings.showSceneBrowserWindow);
   window("window.settings", "Settings", ICON_MS_SETTINGS, ImGuiKey_F3, settings.showSettingsWindow);
@@ -1243,9 +1234,6 @@ void GltfRenderer::registerCommands()
   window("window.environment", "Environment", ICON_MS_PUBLIC, ImGuiKey_F5, settings.showEnvironmentWindow);
   window("window.tonemapper", "Tonemapper", ICON_MS_TONALITY, ImGuiKey_F6, settings.showTonemapperWindow);
   window("window.interactivity", "Interactivity", ICON_MS_EXTENSION, ImGuiKey_F8, settings.showInteractivityWindow);
-#ifdef USE_AGENTIC
-  window("window.agentic", "Agentic", ICON_MS_AUTO_AWESOME, ImGuiKey_F7, settings.showAgenticWindow);
-#endif
   // Handled by nvapp::ElementLogger; listed so Help shows it.
   m_commands.add({.id = "window.log", .label = "Log", .group = "Windows", .binding = {kCtrl | kShift | ImGuiKey_L}});
 
@@ -1437,7 +1425,6 @@ void GltfRenderer::renderMenu()
   m_rasterizer.onUIMenu();
 }
 
-// (renderAgenticWindow moved to agentic::renderAgenticWindow in src/ui_agentic.cpp.)
 
 
 void GltfRenderer::addToRecentFiles(const std::filesystem::path& filePath, int historySize)

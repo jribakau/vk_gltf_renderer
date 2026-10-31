@@ -357,7 +357,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"uiShowInspector", "Show the Inspector window"}, &m_resources.settings.showInspectorWindow, Persist::eYes);
   m_settings.add({"uiShowInteractivity", "Show the KHR_interactivity Graphs window"},
                  &m_resources.settings.showInteractivityWindow, Persist::eYes);
-  m_settings.add({"uiShowAgentic", "Show the Agentic bridge window"}, &m_resources.settings.showAgenticWindow, Persist::eYes);
   m_settings.add({"uiShowGridSettings", "Show the Grid & Snap settings window"},
                  &m_resources.settings.showGridSettingsWindow, Persist::eYes);
 
@@ -373,7 +372,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                        &m_resources.settings.showEnvironmentWindow, &m_resources.settings.showTonemapperWindow,
                        &m_resources.settings.showStatisticsWindow, &m_resources.settings.showSceneBrowserWindow,
                        &m_resources.settings.showInspectorWindow, &m_resources.settings.showInteractivityWindow,
-                       &m_resources.settings.showAgenticWindow, &m_resources.settings.showGridSettingsWindow,
+                       &m_resources.settings.showGridSettingsWindow,
                        &m_resources.settings.showMemStats, &m_resources.animationControl.showStrip})
     m_presentation.addWindow(visible);
 #ifndef NDEBUG
@@ -1116,39 +1115,8 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     });
   }
 
-#ifdef USE_AGENTIC
-  // ===== Agentic bridge controller =====
-  // Done last so all the resources / queues / path-tracer state the callbacks
-  // reach into are fully initialized.
-  m_agentic.init({
-      .app              = m_app,
-      .resources        = &m_resources,
-      .device           = m_device,
-      .transientCmdPool = m_transientCmdPool,
-      // Atomic "load + apply this HDR" action used when an HDRI job comes back.
-      .applyHdri =
-          [this](const std::filesystem::path& path) {
-            createHDR(path);
-            m_resources.settings.envSystem = shaderio::EnvSystem::eHdr;
-            calibrateFireflyClamp();
-          },
-      .resetFrame     = [this]() { resetFrame(); },
-      .runTonemapPass = [this](VkCommandBuffer cmd,
-                               bool            skipBeautifiedOverlay) { runTonemapPass(cmd, skipBeautifiedOverlay); },
-  });
-
-  // Apply the optional --agenticBridgeRoot override now that the controller has
-  // set up its default root; a no-op when the flag was not passed.
-  m_agentic.setBridgeRoot(m_agenticBridgeRootOverride);
-#endif  // USE_AGENTIC
 }
 
-#ifdef USE_AGENTIC
-void GltfRenderer::setAgenticBridgeRoot(const std::filesystem::path& root)
-{
-  m_agenticBridgeRootOverride = root;
-}
-#endif
 
 //--------------------------------------------------------------------------------------------------
 // Detach the renderers and destroy the resources
@@ -1305,8 +1273,6 @@ int GltfRenderer::displayedImageSamples(DisplayBuffer& source) const
      source == DisplayBuffer::eOidnDenoised && oidn && oidn->hasValidDenoisedOutput())
     return oidn->denoisedSamples();
 #endif
-  if(source == DisplayBuffer::eAgenticBeautified)
-    return -1;
   source = DisplayBuffer::eRendered;  // what runTonemapPass falls back to
   return m_resources.accumulatedSamples;
 }
@@ -3484,10 +3450,10 @@ bool GltfRenderer::tonemap(VkCommandBuffer cmd)
 {
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
-  return runTonemapPass(cmd, /*skipBeautifiedOverlay=*/false);
+  return runTonemapPass(cmd);
 }
 
-bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd, bool skipBeautifiedOverlay)
+bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 {
   // Select which buffer to tonemap based on user selection
   VkDescriptorImageInfo inputBuffer =
@@ -3496,15 +3462,6 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd, bool skipBeautifiedOverla
   bool       usingGuideBuffer = false;
   bool       bypassTonemapper = false;
 
-#ifdef USE_AGENTIC
-  if(!skipBeautifiedOverlay && m_resources.settings.displayBuffer == DisplayBuffer::eAgenticBeautified
-     && m_agentic.hasBeautifiedImage())
-  {
-    // Using beautified image as input buffer
-    inputBuffer      = m_agentic.beautifiedDescriptor();
-    bypassTonemapper = true;
-  }
-#endif
 
   // OptiX / OIDN denoised output (path-tracer only). Routed via the global DisplayBuffer toggle the
   // denoisers write when they denoise or the user clicks their thumbnail.
@@ -4943,7 +4900,7 @@ bool GltfRenderer::loadHdrEnvironment(const std::filesystem::path& filename)
   m_resources.settings.envSystem = shaderio::EnvSystem::eHdr;
   // A new HDR changes hdrIbl.getIntegral(), which defaultFireflyClamp() uses when envSystem is
   // eHdr. Refresh the path-tracer clamp in lock-step -- matching the pattern in onFileDrop, the
-  // Agentic applyHdri callback, and the HDR-picker UI -- so a --hdrfile change from a benchmark
+  // and the HDR-picker UI -- so a --hdrfile change from a benchmark
   // sequence or MCP write doesn't keep clamping against the previous HDR's integral.
   calibrateFireflyClamp();
   resetFrame();
@@ -5319,7 +5276,7 @@ void GltfRenderer::createHDR(const std::filesystem::path& hdrFilename)
 // HDR load; split out so a caller can run it on a worker and only pay for the upload here.
 void GltfRenderer::uploadHdrEnvironment(EnvImage&& envImage, const std::filesystem::path& sourceFile)
 {
-  // Agentic HDRI reload can happen mid-frame (pollNow from renderUI). Wait until
+  // An HDRI reload can happen mid-frame. Wait until
   // in-flight work finishes before tearing down env images the rasterizer/path
   // tracer may still be sampling.
   NVVK_CHECK(vkDeviceWaitIdle(m_device));
@@ -5383,11 +5340,6 @@ void GltfRenderer::uploadHdrEnvironment(EnvImage&& envImage, const std::filesyst
 // This ensures proper synchronization and prevents use-after-free errors
 void GltfRenderer::destroyResources()
 {
-#ifdef USE_AGENTIC
-  // Free the beautified image + its ImGui texture first, while the allocator and
-  // ImGui backend are still alive and before the descriptor pool / layouts go.
-  m_agentic.deinit();
-#endif
 
   m_loadPipeline.destroy();
   m_resources.retainedGpu.reset();  // while the allocator, the uploader and the sampler pool live

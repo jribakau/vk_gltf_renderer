@@ -63,7 +63,6 @@ option(USE_DLSSNR             "Enable DLSS Neural Rendering (beta; requires DLSS
 option(USE_OPTIX_DENOISER     "Enable OptiX denoiser as alternative to DLSS (requires CUDAToolkit)."  ON)
 option(USE_OIDN_DENOISER      "Enable the vk_oidn denoiser (Open Image Denoise on Vulkan; downloads its SDK package)." ON)
 option(USE_DRACO              "Enable Draco mesh compression when importing glTF."                    ON)
-option(USE_AGENTIC            "Build the optional Agentic bridge (ComfyUI HDRI + beautify)."          ON)
 option(FV_DFORCE_GPU          "Build the GPU dForce cloth solver (src/fv_dforce_gpu, shaders/dforce_cloth)."    ON)
 option(USE_DEFAULT_SCENE      "Load a bundled default scene at startup."                              OFF)
 option(BUILD_TESTING          "Build unit tests and benchmarks (GoogleTest + Google Benchmark)."      OFF)
@@ -238,11 +237,6 @@ list(FILTER EXE_SOURCES EXCLUDE REGEX "vk_cuda*")
 list(FILTER EXE_SOURCES EXCLUDE REGEX "optix_denoiser*")
 list(FILTER EXE_SOURCES EXCLUDE REGEX "oidn_denoiser*")
 
-# Optional Agentic bridge: exclude its sources (agentic*.cpp/.hpp, ui_agentic.cpp)
-# when the feature is off. The renderer guards its integration points on USE_AGENTIC.
-if(NOT USE_AGENTIC)
-  list(FILTER EXE_SOURCES EXCLUDE REGEX "agentic")
-endif()
 
 # main.cpp guards its integration points on USE_NVMCP, so the renderer builds unchanged without it.
 if(NOT NVPRO2_ENABLE_nvmcp)
@@ -365,9 +359,6 @@ endif()
 
 if(FV_DFORCE_GPU)
   target_compile_definitions(${PROJECT_NAME} PRIVATE FV_DFORCE_GPU)
-endif()
-if(USE_AGENTIC)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE USE_AGENTIC)
 endif()
 
 # Generated headers (version.hpp, compiled Slang shaders) live under the build dir.
@@ -687,80 +678,6 @@ copy_to_runtime_and_install(${PROJECT_NAME}
 
 
 #####################################################################################
-# Ship the optional Agentic bridge (Python adapter + helper + workflows) next to
-# the executable. The renderer's Agentic Window resolves the adapter script at
-# runtime via <exe_dir>/utils/comfy_bridge/comfy_bridge.py so the "Adapter not
-# running" hint can show an exact, copy-pasteable command for the user.
-#
-# Build-time: POST_BUILD copy_if_different so dev runs from _bin/<config>/ work.
-# Install-time: install(FILES ...) into <prefix>/utils/... so packaged builds match.
-#####################################################################################
-if(USE_AGENTIC)
-  set(AGENTIC_UTILS_SRC "${CMAKE_CURRENT_LIST_DIR}/utils")
-  file(GLOB AGENTIC_ADAPTER_FILES
-    CONFIGURE_DEPENDS
-    "${AGENTIC_UTILS_SRC}/comfy_bridge/*.py"
-    "${AGENTIC_UTILS_SRC}/comfy_bridge/*.md"
-    "${AGENTIC_UTILS_SRC}/comfy_bridge/*.json"  # prompts.json (Agentic prompt presets)
-  )
-  file(GLOB AGENTIC_WORKFLOW_FILES
-    CONFIGURE_DEPENDS
-    "${AGENTIC_UTILS_SRC}/comfy_bridge/workflows/*.json"
-  )
-  file(GLOB AGENTIC_ROOT_UTILS_FILES
-    CONFIGURE_DEPENDS
-    "${AGENTIC_UTILS_SRC}/png_to_hdr.py"
-  )
-
-  # Make the destination directories exist before per-file copy_if_different runs.
-  add_custom_command(
-    TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-      "$<TARGET_FILE_DIR:${PROJECT_NAME}>/utils/comfy_bridge/workflows"
-    VERBATIM
-  )
-  foreach(_F IN LISTS AGENTIC_ADAPTER_FILES)
-    add_custom_command(
-      TARGET ${PROJECT_NAME} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${_F}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>/utils/comfy_bridge/"
-      VERBATIM
-    )
-  endforeach()
-  foreach(_F IN LISTS AGENTIC_WORKFLOW_FILES)
-    add_custom_command(
-      TARGET ${PROJECT_NAME} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${_F}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>/utils/comfy_bridge/workflows/"
-      VERBATIM
-    )
-  endforeach()
-  foreach(_F IN LISTS AGENTIC_ROOT_UTILS_FILES)
-    add_custom_command(
-      TARGET ${PROJECT_NAME} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${_F}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>/utils/"
-      VERBATIM
-    )
-  endforeach()
-
-  install(FILES ${AGENTIC_ADAPTER_FILES}    DESTINATION "utils/comfy_bridge")
-  install(FILES ${AGENTIC_WORKFLOW_FILES}   DESTINATION "utils/comfy_bridge/workflows")
-  install(FILES ${AGENTIC_ROOT_UTILS_FILES} DESTINATION "utils")
-
-  # Surface the file lists in the IDE so they're easy to find and edit.
-  source_group("Agentic Utils\\Adapter"   FILES ${AGENTIC_ADAPTER_FILES})
-  source_group("Agentic Utils\\Workflows" FILES ${AGENTIC_WORKFLOW_FILES})
-  source_group("Agentic Utils\\Helpers"   FILES ${AGENTIC_ROOT_UTILS_FILES})
-  target_sources(${PROJECT_NAME} PRIVATE
-    ${AGENTIC_ADAPTER_FILES}
-    ${AGENTIC_WORKFLOW_FILES}
-    ${AGENTIC_ROOT_UTILS_FILES}
-  )
-endif() # USE_AGENTIC
-
-
-#####################################################################################
 # Windows resource file (application icon + version info).
 #####################################################################################
 if(WIN32)
@@ -904,7 +821,6 @@ _summary_feature("USE_OPTIX_DENOISER" ${USE_OPTIX_DENOISER} ${OPTIX_DENOISER_AVA
 _summary_feature("USE_OIDN_DENOISER"  ${USE_OIDN_DENOISER}  ${OIDN_DENOISER_AVAILABLE})
 _summary_bool("USE_DRACO"            ${USE_DRACO})
 _summary_bool("USE_SOFTWARE_VULKAN"  ${USE_SOFTWARE_VULKAN})
-_summary_bool("USE_AGENTIC"          ${USE_AGENTIC})
 _summary_bool("USE_DEFAULT_SCENE"    ${USE_DEFAULT_SCENE})
 _summary_bool("BUILD_TESTING"        ${BUILD_TESTING})
 
