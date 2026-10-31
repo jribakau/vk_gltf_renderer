@@ -72,30 +72,46 @@ inline double sliderMax(double hi)
   return std::min(2.0, hi);
 }
 
-// What a morph file says of its dial. DAZ writes it first in the modifier, before the formulas and the
-// deltas, so the start of a file is all that is read of it: a figure has thousands.
+// What a morph file says of its dial. DAZ writes the channel first in the modifier, then the formulas,
+// then the deltas, so a file is read as far as the deltas and no further: a figure has thousands.
 struct MorphInfo
 {
   std::string           id, label;
   // DAZ's parameter group ("/Full Body/People/Feminine"), its region ("Legs") and its presentation
   // ("Modifier/Shape")
   std::string           path, region, kind;
+  // the channel's type as stated ("float", "bool", "alias", "file"), empty when it states none
+  std::string           type;
+  // the value the dial stands at untouched; a boolean's is 1 or 0
+  double                rest = 0;
   std::optional<double> min, max;
-  // the file marks it as not a dial: not visible, under /Hidden, or an alias of another channel
+  // the file marks it as not a dial: not visible, under /Hidden, or a channel of a type that isn't a
+  // number to dial (an alias of another channel, a file to load)
   bool helper = false;
   bool alias  = false;
-  // it has vertex deltas of its own
-  bool hasMorph = false;
-  // A controller's (no deltas): the dials whose values its own value follows, by id. It says so in its
-  // own file, so nothing about those dials says to load it: the scale behind Proportion Height is one.
-  std::vector<std::string> follows;
+  // the vertex deltas it says it has. A block of none (facs_ctrl_MouthSmile) is no morph.
+  int  deltaCount = 0;
+  bool hasMorph   = false;
+  // the text reached the deltas or the modifier's end. Without that, nothing below can be told.
+  bool complete = false;
+  // The dials its sum-stage formulas read, by id, whatever those formulas set. Its own value isn't one.
+  std::vector<std::string> reads;
+  // the modifier's formulas as the file has them, or null without any. Shared: a file's info is copied
+  // about, and a character's formulas are large.
+  std::shared_ptr<const Json> formulas;
 };
 
-// Reads it from the start of a morph file's text, which may stop anywhere after it. Empty without a
-// modifier.
+// Reads it from the start of a morph file's text, which may stop anywhere after the channel. Empty
+// without a modifier.
 std::optional<MorphInfo> morphInfoFromText(std::string_view head);
-// The same from a file; empty when it can't be read.
+// The same from a file, read further when the start of it didn't reach the deltas; empty when it can't
+// be read.
 std::optional<MorphInfo> morphInfo(const std::filesystem::path& file);
+
+// A controller's (no deltas): the dials its own value follows, by id, from the formulas that set it. It
+// says so in its own file, so nothing about those dials says to load it: the scale behind Proportion
+// Height is one. Empty for a file with deltas, or one that wasn't read to the end of its formulas.
+std::vector<std::string> followedDials(const MorphInfo& info);
 
 // Converts every morph modifier in a document into targets. `prefer` (indices into `meshes`)
 // narrows the target to one scene node's meshes when several copies of the same geometry are loaded.

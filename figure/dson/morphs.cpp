@@ -103,27 +103,69 @@ bool hiddenMorph(const std::string& name)
 
 namespace {
 
-// Reads the first modifier's fields as they go by, and stops at what comes after them.
+// "...#id?value" as the id, or empty for another property
+std::string valueOf(const std::string& url)
+{
+  constexpr std::string_view kValue = "?value";
+  const size_t               hash   = url.rfind('#');
+  if(hash == std::string::npos || url.size() < kValue.size() || url.compare(url.size() - kValue.size(), kValue.size(), kValue) != 0)
+    return {};
+  return decodeUri(url.substr(hash + 1, url.size() - kValue.size() - hash - 1));
+}
+
+// the dials a formula's operations read, by id, other than `self`
+std::vector<std::string> valueInputs(const Json& formula, const std::string& self)
+{
+  std::vector<std::string> out;
+  const Json*              ops = get(&formula, "operations");
+  if(ops && ops->is_array())
+    for(const Json& op : *ops)
+      if(std::string id = valueOf(getString(&op, "url")); !id.empty() && id != self)
+        out.push_back(std::move(id));
+  return out;
+}
+
+// a formula adds to what it sets, which is what a stage of "sum" or none says (pose/erc.cpp)
+bool sumStage(const Json& formula)
+{
+  const Json* stage = get(&formula, "stage");
+  if(!stage || stage->is_null())
+    return true;
+  return stage->is_string() && (stage->get<std::string>().empty() || stage->get<std::string>() == "sum");
+}
+
+// Reads the first modifier's fields and formulas as they go by, and stops at what comes after them.
 class MorphInfoSax : public nlohmann::json_sax<Json>
 {
 public:
   MorphInfo info;
   bool      found = false;
-  // the modifier ended, or reached its deltas, within the text
-  bool complete = false;
+  // the modifier's "formulas", as a parse of the whole file would have them
+  Json formulas;
 
-  bool null() override { return true; }
+  MorphInfoSax()
+      : m_dom(formulas, false)
+  {
+  }
+
+  bool null() override { return !inFormulas() || m_dom.null(); }
   bool boolean(bool v) override
   {
+    if(inFormulas())
+      return m_dom.boolean(v);
     if(in("channel") && m_key == "visible" && !v)
       info.helper = true;
+    else if(in("channel") && m_key == "value")
+      info.rest = v ? 1 : 0;
     return true;
   }
-  bool number_integer(number_integer_t v) override { return number(double(v)); }
-  bool number_unsigned(number_unsigned_t v) override { return number(double(v)); }
-  bool number_float(number_float_t v, const string_t&) override { return number(v); }
+  bool number_integer(number_integer_t v) override { return inFormulas() ? m_dom.number_integer(v) : number(double(v)); }
+  bool number_unsigned(number_unsigned_t v) override { return inFormulas() ? m_dom.number_unsigned(v) : number(double(v)); }
+  bool number_float(number_float_t v, const string_t& s) override { return inFormulas() ? m_dom.number_float(v, s) : number(v); }
   bool string(string_t& v) override
   {
+    if(inFormulas())
+      return m_dom.string(v);
     if(inModifier())
     {
       if(m_key == "id")
@@ -133,96 +175,95 @@ public:
       else if(m_key == "group")
         info.path = v;
     }
-    else if(inFormula() && m_key == "output")
-      m_output = v;
-    else if(inOperation() && m_key == "url")
-      m_inputs.push_back(v);
     else if(in("presentation") && m_key == "type")
       info.kind = v;
     else if(in("channel"))
     {
       if(m_key == "label")
         info.label = v;
-      else if(m_key == "type" && v == "alias")
-        info.alias = true;
+      else if(m_key == "type")
+      {
+        info.type  = v;
+        info.alias = v == "alias";
+      }
     }
     return true;
   }
   bool binary(binary_t&) override { return true; }
   bool key(string_t& v) override
   {
+    if(inFormulas())
+      return m_dom.key(v);
     m_key = v;
-    // the deltas are what make these files large, and nothing past them is needed
-    if(inModifier() && v == "morph")
+    // The deltas are what make these files large, and nothing past them is needed. A block of none has
+    // nothing to skip, so what comes after it is read as usual.
+    if(inDeltas() && v == "values" && info.deltaCount > 0)
     {
-      info.hasMorph = true;
-      complete      = true;
+      info.complete = true;
       return false;
     }
     return true;
   }
-  bool start_object(std::size_t) override { return push(); }
-  bool end_object() override { return pop(); }
-  bool start_array(std::size_t) override { return push(); }
-  bool end_array() override { return pop(); }
+  bool start_object(std::size_t n) override
+  {
+    push();
+    return !inFormulas() || m_dom.start_object(n);
+  }
+  bool end_object() override
+  {
+    if(inFormulas() && !m_dom.end_object())
+      return false;
+    return pop();
+  }
+  bool start_array(std::size_t n) override
+  {
+    push();
+    return !inFormulas() || m_dom.start_array(n);
+  }
+  bool end_array() override
+  {
+    if(inFormulas() && !m_dom.end_array())
+      return false;
+    return pop();
+  }
   bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override { return false; }
 
 private:
   // the keys down to here: "", "modifier_library", "" is inside a modifier
   std::vector<std::string> m_stack;
   std::string              m_key;
-  // the formula being read: what it sets, and what it reads
-  std::string              m_output;
-  std::vector<std::string> m_inputs;
+  nlohmann::detail::json_sax_dom_parser<Json, decltype(nlohmann::detail::input_adapter(std::declval<std::string&>()))> m_dom;
 
   bool inModifier() const { return m_stack.size() == 3 && m_stack[1] == "modifier_library"; }
   bool in(const char* field) const { return m_stack.size() == 4 && m_stack[1] == "modifier_library" && m_stack[3] == field; }
-  bool inFormula() const { return m_stack.size() == 5 && m_stack[1] == "modifier_library" && m_stack[3] == "formulas"; }
-  bool inOperation() const { return m_stack.size() == 7 && m_stack[1] == "modifier_library" && m_stack[3] == "formulas" && m_stack[5] == "operations"; }
+  bool inFormulas() const { return m_stack.size() >= 4 && m_stack[1] == "modifier_library" && m_stack[3] == "formulas"; }
+  bool inDeltas() const { return m_stack.size() == 5 && m_stack[1] == "modifier_library" && m_stack[3] == "morph" && m_stack[4] == "deltas"; }
   bool number(double v)
   {
     if(in("channel") && m_key == "min")
       info.min = sliderMin(v);
     else if(in("channel") && m_key == "max")
       info.max = sliderMax(v);
+    else if(in("channel") && m_key == "value")
+      info.rest = v;
+    else if(inDeltas() && m_key == "count")
+      info.deltaCount = int(v);
     return true;
   }
-  bool push()
+  void push()
   {
     m_stack.push_back(std::exchange(m_key, {}));
     if(inModifier())
       found = true;
-    return true;
   }
   bool pop()
   {
-    if(inFormula())
-      endFormula();
     const bool first = inModifier();
     m_stack.pop_back();
     // one modifier to a morph file
     if(first)
-      complete = true;
+      info.complete = true;
     return !first;
-  }
-  // "...#id?value" as the id, or empty for another property
-  static std::string valueOf(const std::string& url)
-  {
-    constexpr std::string_view kValue = "?value";
-    const size_t               hash   = url.rfind('#');
-    if(hash == std::string::npos || url.size() < kValue.size() || url.compare(url.size() - kValue.size(), kValue.size(), kValue) != 0)
-      return {};
-    return decodeUri(url.substr(hash + 1, url.size() - kValue.size() - hash - 1));
-  }
-  // a formula that sets this dial's own value from other dials': they say what it follows
-  void endFormula()
-  {
-    if(!m_output.empty() && valueOf(m_output) == info.id)
-      for(const std::string& input : m_inputs)
-        if(const std::string id = valueOf(input); !id.empty() && id != info.id)
-          info.follows.push_back(id);
-    m_output.clear();
-    m_inputs.clear();
   }
 };
 
@@ -234,27 +275,52 @@ std::optional<MorphInfo> morphInfoFromText(std::string_view head)
   Json::sax_parse(head.begin(), head.end(), &sax, Json::input_format_t::json, false);
   if(!sax.found)
     return std::nullopt;
-  if(sax.info.alias || sax.info.kind == "Modifier/Corrective" || sax.info.path.rfind("/Hidden", 0) == 0)
-    sax.info.helper = true;
-  // a head that stopped short of the deltas can't say the file has none
-  if(sax.info.hasMorph || !sax.complete)
-    sax.info.follows.clear();
-  return sax.info;
+  MorphInfo& info = sax.info;
+  // a channel with no stated type is taken for a number, as DAZ writes most of them
+  const bool dial = info.type.empty() || info.type == "float" || info.type == "bool";
+  if(!dial || info.kind == "Modifier/Corrective" || info.path.rfind("/Hidden", 0) == 0)
+    info.helper = true;
+  info.hasMorph = info.deltaCount > 0;
+  // formulas cut off midway say nothing of the file's dials
+  if(info.complete && sax.formulas.is_array() && !sax.formulas.empty())
+  {
+    for(const Json& f : sax.formulas)
+      if(sumStage(f))
+        for(std::string& id : valueInputs(f, info.id))
+          info.reads.push_back(std::move(id));
+    info.formulas = std::make_shared<const Json>(std::move(sax.formulas));
+  }
+  return std::move(sax.info);
 }
 
 std::optional<MorphInfo> morphInfo(const std::filesystem::path& file)
 {
-  // a morph's fields end within a kilobyte of the modifier's start, which follows a short asset_info;
-  // this much also holds the formulas of any controller, which has no deltas to come after them
+  // a morph's fields end within a kilobyte of the modifier's start, which follows a short asset_info,
+  // and this much reaches the deltas of nearly every file. The few it doesn't are read whole.
   constexpr size_t kHead = 256 * 1024;
   try
   {
-    return morphInfoFromText(readHead(file, kHead));
+    std::optional<MorphInfo> info = morphInfoFromText(readHead(file, kHead));
+    if(info && !info->complete)
+      info = morphInfoFromText(readMaybeCompressed(file));
+    return info;
   }
   catch(const std::exception&)
   {
     return std::nullopt;
   }
+}
+
+std::vector<std::string> followedDials(const MorphInfo& info)
+{
+  std::vector<std::string> out;
+  if(info.hasMorph || !info.formulas)
+    return out;
+  for(const Json& f : *info.formulas)
+    if(valueOf(getString(&f, "output")) == info.id)
+      for(std::string& id : valueInputs(f, info.id))
+        out.push_back(std::move(id));
+  return out;
 }
 
 std::string groupFromPath(const std::string& file)
@@ -440,8 +506,7 @@ std::vector<DrivenMorph> drivenMorphs(Store& store, const std::string& file, con
         continue;
       for(const Json& f : *formulas)
       {
-        const Json* stage = get(&f, "stage");
-        if(stage && stage->is_string() && !stage->get<std::string>().empty() && stage->get<std::string>() != "sum")
+        if(!sumStage(f))
           continue;
         const auto target = formulaTarget(get(&f, "output"), file);
         const auto k      = linearFactor(get(&f, "operations"), id);

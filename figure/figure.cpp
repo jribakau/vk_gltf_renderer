@@ -130,7 +130,7 @@ void Figure::setup(const Progress& progress)
           if(!read[i]->alias && !read[i]->id.empty())
             notes.info.emplace(read[i]->id, *read[i]);
           notes.info[stemOf(files[i])] = *read[i];
-          for(const std::string& dial : read[i]->follows)
+          for(const std::string& dial : dson::followedDials(*read[i]))
             notes.followers[dial].push_back(stemOf(files[i]));
         }
       return notes;

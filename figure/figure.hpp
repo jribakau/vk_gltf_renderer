@@ -262,7 +262,7 @@ private:
   struct MorphNotes
   {
     std::unordered_map<std::string, dson::MorphInfo> info;
-    // a dial's id or name -> the lazy controllers that follow it (dson::MorphInfo::follows)
+    // a dial's id or name -> the lazy controllers that follow it (dson::followedDials)
     std::unordered_map<std::string, std::vector<std::string>> followers;
   };
 

@@ -9,9 +9,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <set>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -437,7 +441,7 @@ TEST(FigureMorphSet, AnItemsCopyOfALazyFigureMorphJoinsTheFiguresDial)
 }
 
 // A morph file's fields, as DAZ writes them, from the first few KB: the text may stop anywhere after
-// them, and the formulas and deltas are never parsed.
+// them, and the deltas are never parsed.
 TEST(MorphInfo, ReadsADialsFieldsFromTheStartOfItsFile)
 {
   const std::string head = R"({
@@ -461,7 +465,37 @@ TEST(MorphInfo, ReadsADialsFieldsFromTheStartOfItsFile)
   EXPECT_EQ(info->kind, "Modifier/Shape");
   EXPECT_DOUBLE_EQ(*info->min, -2);
   EXPECT_DOUBLE_EQ(*info->max, 2);
+  EXPECT_EQ(info->type, "float");
+  EXPECT_DOUBLE_EQ(info->rest, 0);
   EXPECT_FALSE(info->helper);
+  // it stopped in the formulas: nothing of them, and no word on the deltas
+  EXPECT_FALSE(info->complete);
+  EXPECT_FALSE(info->formulas);
+  EXPECT_TRUE(info->reads.empty());
+  EXPECT_EQ(info->deltaCount, 0);
+
+  // the value it stands at when the file doesn't say 0, a boolean's as a number, and none stated
+  const auto restOf = [](const std::string& channel) {
+    return fv::dson::morphInfoFromText(R"({"modifier_library": [{"id": "m", "channel": {)" + channel + "}}]}")->rest;
+  };
+  EXPECT_DOUBLE_EQ(restOf(R"("type": "float", "value": 0.25, "min": 0, "max": 1)"), 0.25);
+  EXPECT_DOUBLE_EQ(restOf(R"("type": "float", "value": 1)"), 1);
+  EXPECT_DOUBLE_EQ(restOf(R"("type": "bool", "value": true)"), 1);
+  EXPECT_DOUBLE_EQ(restOf(R"("type": "bool", "value": false)"), 0);
+  EXPECT_DOUBLE_EQ(restOf(R"("type": "float")"), 0);
+
+  // the deltas' count, which comes before their values, and the formulas as they were written
+  const auto whole = fv::dson::morphInfoFromText(R"({"modifier_library": [{
+      "id": "m", "channel": {"type": "float", "label": "M", "value": 0.5},
+      "formulas": [{"output": "#m?value", "stage": "mult", "operations": [{"op": "push", "url": "#gate?value"}, {"op": "push", "val": 2.5}, {"op": "mult"}], "on": true, "off": null}],
+      "morph": {"vertex_count": 100, "deltas": {"count": 2, "values": [[0, 1, 1, )");
+  ASSERT_TRUE(whole);
+  EXPECT_TRUE(whole->complete);
+  EXPECT_TRUE(whole->hasMorph);
+  EXPECT_EQ(whole->deltaCount, 2);
+  EXPECT_DOUBLE_EQ(whole->rest, 0.5);
+  ASSERT_TRUE(whole->formulas);
+  EXPECT_EQ(*whole->formulas, fv::dson::Json::parse(R"([{"output": "#m?value", "stage": "mult", "operations": [{"op": "push", "url": "#gate?value"}, {"op": "push", "val": 2.5}, {"op": "mult"}], "on": true, "off": null}])"));
 
   // what isn't a dial, each way a file says so
   const auto said = [](const std::string& presentation, const std::string& channel, const std::string& group) {
@@ -521,26 +555,112 @@ TEST(MorphInfo, ALazyChannelTakesItsFilesLabelAndRange)
 }
 
 // A controller's file says which dials its value follows, which nothing about those dials says. A
+// file's reads are wider: any sum formula's ?value input, whatever it sets, with deltas or without. A
 // file with deltas isn't a controller, and a head that stops short of the end can't tell.
 TEST(MorphInfo, AControllerSaysWhichDialsItFollows)
 {
   const std::string formula = R"("formulas": [
         {"output": "Genesis9:/data/x.dsf#Genesis9?scale/general", "operations": [{"op": "push", "url": "Genesis9:#ctrl?value"}, {"op": "push", "val": 0.25}, {"op": "mult"}]},
         {"output": "Genesis9:/data/x.dsf#ctrl?value", "operations": [{"op": "push", "url": "Genesis9:/data/y%20z.dsf#body_bs_Height?value"}, {"op": "push", "val": 1}, {"op": "mult"}]},
-        {"output": "Genesis9:/data/x.dsf#ctrl?value", "operations": [{"op": "push", "url": "lHand:/data/x.dsf#lHand?rotation/x"}, {"op": "push", "val": 1}, {"op": "mult"}]}
+        {"output": "Genesis9:/data/x.dsf#ctrl?value", "operations": [{"op": "push", "url": "lHand:/data/x.dsf#lHand?rotation/x"}, {"op": "push", "val": 1}, {"op": "mult"}]},
+        {"output": "Genesis9:/data/x.dsf#ctrl?value", "stage": "mult", "operations": [{"op": "push", "url": "Genesis9:#gate?value"}]},
+        {"output": "Genesis9:/data/w.dsf#other?value", "stage": "sum", "operations": [{"op": "push", "url": "Genesis9:#input?value"}]}
       ])";
   const std::string start = R"({"modifier_library": [{"id": "ctrl", "channel": {"label": "C"}, )";
-  const auto        controller = fv::dson::morphInfoFromText(start + formula + "}]}");
-  ASSERT_TRUE(controller);
-  EXPECT_EQ(controller->follows, (std::vector<std::string>{"body_bs_Height"}));
-  EXPECT_FALSE(controller->hasMorph);
+  const std::vector<std::string> followed{"body_bs_Height", "gate"}, reads{"body_bs_Height", "input"};
 
-  const auto withDeltas = fv::dson::morphInfoFromText(start + formula + R"(, "morph": {"deltas": )");
+  const auto controller = fv::dson::morphInfoFromText(start + formula + "}]}");
+  ASSERT_TRUE(controller);
+  EXPECT_TRUE(controller->complete);
+  EXPECT_EQ(fv::dson::followedDials(*controller), followed);
+  EXPECT_EQ(controller->reads, reads);
+  EXPECT_FALSE(controller->hasMorph);
+  ASSERT_TRUE(controller->formulas);
+  EXPECT_EQ(controller->formulas->size(), 5u);
+
+  const auto withDeltas = fv::dson::morphInfoFromText(start + formula + R"(, "morph": {"deltas": {"count": 40, "values": [[0, )");
   ASSERT_TRUE(withDeltas);
+  EXPECT_TRUE(withDeltas->complete);
   EXPECT_TRUE(withDeltas->hasMorph);
-  EXPECT_TRUE(withDeltas->follows.empty());
+  EXPECT_EQ(withDeltas->deltaCount, 40);
+  EXPECT_TRUE(fv::dson::followedDials(*withDeltas).empty());
+  EXPECT_EQ(withDeltas->reads, reads);
 
   const auto cutShort = fv::dson::morphInfoFromText(start + formula.substr(0, formula.size() - 12));
   ASSERT_TRUE(cutShort);
-  EXPECT_TRUE(cutShort->follows.empty());
+  EXPECT_FALSE(cutShort->complete);
+  EXPECT_TRUE(fv::dson::followedDials(*cutShort).empty());
+  EXPECT_TRUE(cutShort->reads.empty());
+}
+
+// facs_ctrl_MouthSmile has a morph block with nothing in it: a controller like any other. Whatever
+// comes after an empty block is still read.
+TEST(MorphInfo, AMorphBlockOfNoDeltasCountsAsNone)
+{
+  const std::string formula = R"("formulas": [{"output": "#ctrl?value", "operations": [{"op": "push", "url": "#dial?value"}]}])";
+  const std::string block   = R"("morph": {"vertex_count": 100, "deltas": {"count": 0, "values": []}})";
+  const std::string start   = R"({"modifier_library": [{"id": "ctrl", "channel": {"label": "C"}, )";
+
+  const auto before = fv::dson::morphInfoFromText(start + formula + ", " + block + "}]}");
+  ASSERT_TRUE(before);
+  EXPECT_TRUE(before->complete);
+  EXPECT_EQ(before->deltaCount, 0);
+  EXPECT_FALSE(before->hasMorph);
+  EXPECT_EQ(fv::dson::followedDials(*before), (std::vector<std::string>{"dial"}));
+
+  const auto after = fv::dson::morphInfoFromText(start + block + ", " + formula + "}]}");
+  ASSERT_TRUE(after);
+  EXPECT_FALSE(after->hasMorph);
+  EXPECT_EQ(after->reads, (std::vector<std::string>{"dial"}));
+}
+
+// Formulas can run past what's read of a file at first (a character's do): it's then read whole.
+TEST(MorphInfo, AHeadCutShortReadsTheWholeFile)
+{
+  std::string formulas;
+  for(int i = 0; i < 6000; i++)
+    formulas += std::string(i ? ", " : "") + R"({"output": "#other?value", "operations": [{"op": "push", "url": "#dial)" + std::to_string(i) + R"(?value"}, {"op": "push", "val": 1}, {"op": "mult"}]})";
+  const std::string text = R"({"modifier_library": [{"id": "big", "channel": {"type": "float", "label": "Big", "value": 0.5}, "formulas": [)" + formulas
+                           + R"(], "morph": {"deltas": {"count": 7, "values": [[0, 0, 0, 1]]}}}]})";
+  ASSERT_GT(text.size(), 256u * 1024u);
+
+  const auto cut = fv::dson::morphInfoFromText(std::string_view(text).substr(0, 256 * 1024));
+  ASSERT_TRUE(cut);
+  EXPECT_FALSE(cut->complete);
+  EXPECT_FALSE(cut->hasMorph);
+  EXPECT_EQ(cut->label, "Big");
+
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "fv_morph_info_whole.dsf";
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << text;
+  }
+  const auto info = fv::dson::morphInfo(path);
+  std::filesystem::remove(path);
+  ASSERT_TRUE(info);
+  EXPECT_TRUE(info->complete);
+  EXPECT_TRUE(info->hasMorph);
+  EXPECT_EQ(info->deltaCount, 7);
+  EXPECT_DOUBLE_EQ(info->rest, 0.5);
+  EXPECT_EQ(info->reads.size(), 6000u);
+  ASSERT_TRUE(info->formulas);
+  EXPECT_EQ(info->formulas->size(), 6000u);
+}
+
+// A channel holding something other than a number is no dial: Developer Tools and LoadHeadSplit load a
+// file. A stated float or bool is one, and so is a channel that states nothing.
+TEST(MorphInfo, AChannelOfAnotherTypeIsAHelper)
+{
+  const auto said = [](const std::string& channel) {
+    return fv::dson::morphInfoFromText(R"({"modifier_library": [{"id": "m", "channel": {"label": "M")" + channel + "}}]}");
+  };
+  const auto file = said(R"(, "type": "file", "value": "/People/Genesis 9/Developer Kit/x.duf")");
+  EXPECT_TRUE(file->helper);
+  EXPECT_FALSE(file->alias);
+  EXPECT_EQ(file->type, "file");
+  EXPECT_DOUBLE_EQ(file->rest, 0);
+  EXPECT_TRUE(said(R"(, "type": "string")")->helper);
+  EXPECT_FALSE(said(R"(, "type": "float")")->helper);
+  EXPECT_FALSE(said(R"(, "type": "bool", "value": true)")->helper);
+  EXPECT_FALSE(said("")->helper);
 }
