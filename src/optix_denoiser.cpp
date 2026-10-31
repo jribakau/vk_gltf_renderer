@@ -491,9 +491,7 @@ bool OptiXDenoiser::denoiseOneShot(Resources& resources)
   // Execute OptiX denoising. Upscale's output is larger than its input, so there is nothing to blend with.
   const Clock::time_point tInvoke = Clock::now();
   {
-    float blend = 0.0f;
-    if(!isUpscaleMode() && m_settings.blendMax > 0.0f && resources.settings.maxSamples > 0)
-      blend = m_settings.blendMax * std::clamp(float(resources.accumulatedSamples) / float(resources.settings.maxSamples), 0.0f, 1.0f);
+    const float blend = isUpscaleMode() ? 0.0f : sample_schedule::denoiseBlend(m_settings.blendMax, resources.accumulatedSamples, resources.settings.maxSamples, m_denoisingFinal);
     if(!executeDenoising(blend))
     {
       return false;
@@ -913,7 +911,10 @@ void OptiXDenoiser::denoiseFinal(Resources& resources)
   const int samples = resources.accumulatedSamples;
   if(!isEnabled() || !isAutoDenoiseActive() || !m_autoDenoise.isFinalDue(samples))
     return;
-  if(denoiseOneShot(resources))
+  m_denoisingFinal = true;
+  const bool denoised = denoiseOneShot(resources);
+  m_denoisingFinal = false;
+  if(denoised)
   {
     resources.settings.displayBuffer = DisplayBuffer::eOptixDenoised;
     LOGI("Auto-denoise of the final image at %d spp\n", samples);

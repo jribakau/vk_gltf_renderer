@@ -230,6 +230,7 @@ public:
   // Auto-denoise on an idle frame, the accumulation complete: denoises its final image if the last
   // denoise was not of it
   void denoiseFinal(Resources& resources);
+  bool m_denoisingFinal = false;  // this denoise is denoiseFinal's: Keep detail in full
 
   const nvvkgltf::GpuMemoryTracker& getExportMemoryTracker() const { return m_exportMemoryTracker; }
 

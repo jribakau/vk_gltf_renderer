@@ -41,6 +41,18 @@ std::vector<int> accumulate(int perFrame, int maxSamples, const std::vector<int>
 
 }  // namespace
 
+TEST(SampleSchedule, TheFinalImageKeepsAllItsDetailWhereverItStopped)
+{
+  // the same image stopped at 200: the cap the user set must not smooth it
+  EXPECT_FLOAT_EQ(sample_schedule::denoiseBlend(0.4f, 200, 500, true), 0.4f);
+  EXPECT_FLOAT_EQ(sample_schedule::denoiseBlend(0.4f, 200, 1000, true), 0.4f);
+  // while it refines, it grows with the samples
+  EXPECT_FLOAT_EQ(sample_schedule::denoiseBlend(0.4f, 250, 500, false), 0.2f);
+  EXPECT_FLOAT_EQ(sample_schedule::denoiseBlend(0.4f, 9000, 500, false), 0.4f);
+  EXPECT_EQ(sample_schedule::denoiseBlend(0.f, 200, 500, true), 0.f);
+  EXPECT_EQ(sample_schedule::denoiseBlend(0.4f, 200, 0, true), 0.f);
+}
+
 TEST(SampleSchedule, EndsExactlyOnTheCap)
 {
   EXPECT_EQ(accumulate(3, 10, {}), (std::vector<int>{3, 6, 9, 10}));

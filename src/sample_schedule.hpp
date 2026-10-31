@@ -55,6 +55,19 @@ inline int frameSamples(int accumulated, int perFrame, int maxSamples, std::span
 // still's DLSS hand-off frames are frames that add no sample, and counting them ended it one short.
 // `converged`: the adaptive stop found all but a few pixels done (ptAdaptiveDone), which ends a view
 // with samples before the cap.
+// How much of the noisy image a denoise blends back (Keep detail): a share of `keep` that grows with the
+// samples while the image still refines, so early frames aren't noisy, and all of it on the final image,
+// however many samples it stopped at. A share of the cap alone, an adaptive stop denoises harder the
+// higher Refine samples is.
+inline float denoiseBlend(float keep, int samples, int maxSamples, bool finalImage)
+{
+  if(keep <= 0.f || maxSamples <= 0)
+    return 0.f;
+  if(finalImage)
+    return keep;
+  return keep * std::clamp(float(samples) / float(maxSamples), 0.f, 1.f);
+}
+
 inline bool accumulationComplete(int frameCount, int accumulated, int maxSamples, bool converged = false)
 {
   if(frameCount < 0)
