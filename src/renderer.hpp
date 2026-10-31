@@ -109,6 +109,7 @@ public:
   bool createScene(const std::filesystem::path& sceneFilename);
   // Ensure an editable Scene exists (wired to the UI, no GPU build) so add/import can run from nothing.
   void ensureEmptyScene();
+  void placeCameraFromFile(const tinygltf::Model& model);
   void createSceneFromDescriptor(const std::filesystem::path& descriptorPath);
   void createHDR(const std::filesystem::path& hdrFilename);
   // The upload half of createHDR: `envImage` is consumed. `sourceFile` is empty for a generated image.

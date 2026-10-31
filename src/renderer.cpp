@@ -107,6 +107,8 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "renderer.hpp"
+#include "fv_compose.hpp"
+#include "scene_import_gltf.hpp"
 
 #include <figure/io/timing.hpp>
 #include "env_image_loader.hpp"
@@ -3004,7 +3006,7 @@ void GltfRenderer::calibrateFireflyClamp()
 {
   m_fireflyClampCalibratedFor = int(m_resources.settings.envSystem);
   // a host owns the clamp (ptFireflyClamp, from its exposure): an environment's kind changing must not take it
-  if(!m_resources.hostFed)
+  if(!m_resources.hostFed || m_resources.sceneFromFile)
     m_pathTracer.m_pushConst.fireflyClampThreshold = defaultFireflyClamp();
 }
 
@@ -3442,7 +3444,6 @@ void GltfRenderer::setOpacityMicromapAvailable(bool hardware, bool enabled)
 bool GltfRenderer::createScene(const std::filesystem::path& sceneFilename)
 {
   nvutils::ScopedTimer st(__FUNCTION__);
-  m_sceneSelection.clearSelection();  // Clear selection in new UI system
   m_resources.selectedRenderNodes.clear();
 
   if(sceneFilename.empty())
@@ -3457,49 +3458,76 @@ bool GltfRenderer::createScene(const std::filesystem::path& sceneFilename)
     return false;
   }
 
-  // Convert OBJ to glTF
-  if(nvutils::extensionMatches(sceneFilename, ".obj"))
+  // The file goes the way a prop's does: read, imported into the store, uploaded
+  LOGI("Loading scene: %s\n", nvutils::utf8FromPath(filename).c_str());
+  tinygltf::Model model;
+  std::string     error;
+  if(!fv::composer::readModelFile(filename, model, error))
   {
-    tinyobj::ObjReaderConfig readerConfig;
-    readerConfig.mtl_search_path = std::filesystem::path(filename).parent_path().string();
-    tinyobj::ObjReader reader;
+    LOGW("Error loading scene: %s: %s\n", nvutils::utf8FromPath(filename).c_str(), error.c_str());
+    return false;
+  }
+  m_resources.retainedScene = std::make_unique<rs::RetainedScene>();
+  m_resources.hostFed       = true;
+  m_resources.sceneFromFile = true;
+  rs::importGltf(*m_resources.retainedScene, model, {.prop = 1, .imageSearchPaths = {filename.parent_path()}});
+  replaceHostScene();
+  placeCameraFromFile(model);
+  return true;
+}
 
-    bool        result = reader.ParseFromFile(nvutils::utf8FromPath(filename), readerConfig);
-    std::string warn   = reader.Warning();
-    std::string error  = reader.Error();
+// The file's first camera, or a fit of the scene when it has none
+void GltfRenderer::placeCameraFromFile(const tinygltf::Model& model)
+{
+  const nvutils::Bbox bounds = m_resources.gpuView().bounds();
+  bool                placed = false;
+  const auto          place  = [&](int nodeId, const glm::mat4& world) {
+    const tinygltf::Node&   node = model.nodes[size_t(nodeId)];
+    const tinygltf::Camera& from = model.cameras[size_t(node.camera)];
+    const bool              orthographic = from.type != "perspective";
 
-    if(result)
+    nvutils::CameraManipulator::Camera camera;
+    camera.projectionType = orthographic ? nvutils::CameraManipulator::ProjectionType::Orthographic :
+                                           nvutils::CameraManipulator::ProjectionType::Perspective;
+    double zNear = orthographic ? from.orthographic.znear : from.perspective.znear;
+    double zFar  = orthographic ? from.orthographic.zfar : from.perspective.zfar;
+    if(zFar <= zNear)
+      zFar = std::max(zNear * 2.0, 4.0 * double(bounds.radius()));
+    camera.nearFar = {zNear, zFar};
+    if(orthographic)
     {
-      TinyConverter   converter;
-      tinygltf::Model model;
-      converter.convert(model, reader);
-      auto scn = std::make_unique<nvvkgltf::Scene>();
-      scn->takeModel(std::move(model));
-      m_resources.scene = std::move(scn);
+      camera.orthMag = {from.orthographic.xmag, from.orthographic.ymag};
+      camera.fov     = 45.0;
     }
     else
-    {
-      LOGW("Error loading OBJ: %s\n", error.c_str());
-      LOGW("Warning: %s\n", warn.c_str());
-      return false;
-    }
-  }
-  else
-  {
-    LOGI("Loading scene: %s\n", nvutils::utf8FromPath(filename).c_str());
-    auto scn = std::make_unique<nvvkgltf::Scene>();
-    scn->supportedExtensions().insert(EXT_TEXTURE_WEBP_EXTENSION_NAME);  // Register support for WebP images in glTF (local to this project)
-    if(!scn->load(filename))
-    {
-      LOGW("Error loading scene: %s\n", nvutils::utf8FromPath(filename).c_str());
-      return false;
-    }
-    m_resources.scene = std::move(scn);
-  }
+      camera.fov = glm::degrees(from.perspective.yfov);
 
-  // Scene object is ready; wire up GPU resources and UI (shared with createEmptyScene()).
-  finalizeSceneSetup(filename);
-  return true;
+    // looking down the node's -Z, as far as the scene's centre
+    const glm::dmat4 m(world);
+    const glm::dvec3 eye     = glm::dvec3(m[3]);
+    const glm::dvec3 forward = -glm::dmat3(m) * glm::dvec3(0.0, 0.0, 1.0);
+    camera.eye               = eye;
+    camera.ctr               = eye + std::abs(glm::dot(glm::dvec3(bounds.center()) - eye, forward)) * forward;
+    camera.up                = glm::dvec3(0.0, 1.0, 0.0);
+    if(node.extras.IsObject())
+    {
+      tinygltf::utils::getArrayValue(node.extras, "camera::eye", camera.eye);
+      tinygltf::utils::getArrayValue(node.extras, "camera::center", camera.ctr);
+      tinygltf::utils::getArrayValue(node.extras, "camera::up", camera.up);
+    }
+    m_cameraManip->setCamera(camera);
+    placed = true;
+    return true;
+  };
+  if(!model.scenes.empty())
+    for(int root : model.scenes[size_t(std::max(model.defaultScene, 0))].nodes)
+      if(!placed)
+        tinygltf::utils::traverseSceneGraph(model, root, glm::mat4(1), place);
+  if(!placed && !bounds.isEmpty())
+  {
+    m_cameraManip->fit(bounds.min(), bounds.max(), true);
+    m_cameraManip->setClipPlanes(glm::vec2(0.001F * bounds.radius(), 100.0F * bounds.radius()));
+  }
 }
 
 //--------------------------------------------------------------------------------------------------

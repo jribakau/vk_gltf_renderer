@@ -100,9 +100,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 - **The two render paths share resources.** Scene buffers, textures, and
   descriptors are built once and consumed by both. A change for one path must
   not fork or duplicate that shared state — if you touch shared resources,
-  verify both paths still work. One scene backend owns them per session: the
-  legacy scene under `--scenefile`, the retained scene in a stream session;
-  both renderers read whichever it is through `SceneGpuView`
+  verify both paths still work. The retained scene owns them, fed by a stream
+  host or imported by `--scenefile`; both renderers read it through `SceneGpuView`
   (`Resources::gpuView()`), never the backend's own objects.
 - **RenderNode / RenderPrimitive arrays are derived and regenerated** from the
   glTF model (see RENDERING_ARCHITECTURE.md). Don't hand-mutate them as if they

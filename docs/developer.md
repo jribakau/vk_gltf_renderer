@@ -796,7 +796,8 @@ Use [RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md) as the source of trut
 ## The legacy scene and `SceneGpuView`
 
 A stream session draws the Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md),
-which its host feeds (below); a `--scenefile` session draws the legacy scene. Both
+which its host feeds (below), or which `--scenefile` imports a file into. Nothing loads the legacy
+scene any more; it is on its way out. Both
 renderers read the scene through `SceneGpuView` (src/scene_gpu_view.hpp, `Resources::gpuView()`).
 In a stream session there is no legacy scene: `Resources::getScene()` is null, and every use of it
 (`Scene::getModel()`, `editScene()`, `sceneVk`, `sceneRtx`) either has a retained branch or is legacy-only and checks for it. A new use picks one.
@@ -821,7 +822,7 @@ In a stream session there is no legacy scene: `Resources::getScene()` is null, a
   drags to `GizmoHooks` on `EntityId`.
 - Clips: `setHostClip`, `seekHostClip`, `advanceHostClip`, a `rs::ClipPlayer` on the store.
 
-**Legacy-only**, `--scenefile` sessions:
+**Legacy-only**, no longer reached:
 - `src/gltf_scene*` (`Scene`, `SceneVk`, `SceneRtx`, `AnimationVk`, `TransformComputeVk`,
   `SceneOmm`, `SceneGpu`, the validator), `scene_gpu_view_legacy.cpp`.
 - In `GltfRenderer`: `createVulkanScene`, `buildAccelerationStructures`, `updateSceneChanges*`,
