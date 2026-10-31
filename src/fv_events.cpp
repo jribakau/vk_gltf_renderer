@@ -198,8 +198,9 @@ bool EventHub::closed() const
 std::string EventHub::sse(const Event& event)
 {
   const Json body = {{"rev", event.rev}, {"topic", event.topic}, {"kind", event.kind}, {"data", event.data}};
-  // dump() escapes control characters, so the payload is one line as SSE requires
-  return "id: " + std::to_string(event.rev) + "\ndata: " + body.dump() + "\n\n";
+  // dump() escapes control characters, so the payload is one line as SSE requires. A name that isn't
+  // UTF-8 (an OBJ's material, a parse error's bytes) goes as U+FFFD: strict, it throws on this thread and ends the process
+  return "id: " + std::to_string(event.rev) + "\ndata: " + body.dump(-1, ' ', false, Json::error_handler_t::replace) + "\n\n";
 }
 
 }  // namespace fv

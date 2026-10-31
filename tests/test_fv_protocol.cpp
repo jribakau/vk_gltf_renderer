@@ -59,6 +59,19 @@ TEST(FvCommands, FailuresAnswerWithAnError)
   EXPECT_FALSE(commands.dispatch({{"cmd", 3}})["ok"].get<bool>());
 }
 
+TEST(FvEvents, ANameThatIsNotUtf8DoesNotEndTheProcess)
+{
+  fv::Event e;
+  e.rev   = 1;
+  e.topic = "materials";
+  e.kind  = "snapshot";
+  e.data  = fv::Json{{"name", "M\xE4ntel"}};
+  const std::string line = fv::EventHub::sse(e);
+  const auto        at   = line.find("data: ") + 6;
+  const fv::Json    back = fv::Json::parse(line.substr(at, line.find('\n', at) - at));
+  EXPECT_EQ(back["data"]["name"], "M\xEF\xBF\xBDntel");
+}
+
 TEST(FvEvents, PatchesMergeIntoTheSnapshot)
 {
   fv::EventHub hub;

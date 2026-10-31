@@ -30,6 +30,7 @@
 #include <httplib.h>
 
 #include "fv_host.hpp"
+#include "pipeline_build_scope.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -606,7 +607,7 @@ struct FvHost::Impl
   }
 
   // Runs `f` on the application thread and waits for it (from an HTTP thread). A task that has not
-  // started within 30 s is dropped and the caller told so; one that is running is waited for, however
+  // started within 30 s, and no pipeline build to wait for, is dropped and the caller told so; one that is running is waited for, however
   // long, so no command is reported failed and then applied (a retry would apply it twice).
   template <class F>
   auto onApp(F f, std::source_location where = std::source_location::current()) -> decltype(f())
@@ -631,8 +632,12 @@ struct FvHost::Impl
                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), 50);
       });
     }
-    if(result.wait_for(30s) != std::future_status::ready)
+    while(result.wait_for(30s) != std::future_status::ready)
     {
+      // a pipeline build holds the thread for as long as it takes, and is no sign of a hang: the settings
+      // that are waiting must not be lost to it, with the Render tab still showing them
+      if(pipelineBuildsRunning().load() > 0)
+        continue;
       int queued = 0;
       if(state->compare_exchange_strong(queued, 2))
         throw std::runtime_error("timed out waiting for the renderer; the command was dropped");
@@ -1058,6 +1063,7 @@ struct FvHost::Impl
   void writeRecovery();
   Json recoveryFile(const Json& args);
   Json recoveryPeek(const Json& args);
+  Json recoveryForget(const Json& args);
   Json recoverScene(const Json& args);
   // applies the run's ops on from where it stopped; its answer once done, none while it waits
   std::optional<Json> runHistory();

@@ -421,9 +421,23 @@ std::vector<std::string> finishGlb(GlbExport& job, const std::filesystem::path& 
                                             [](const std::string& e) { return e == "KHR_texture_basisu"; }),
                              model.extensionsUsed.end());
   // the images no texture reaches by KTX2 any more
-  tinygltf::TinyGLTF writer;
-  if(!writer.WriteGltfSceneToFile(&model, out.string(), false, true, false, true))
+  // whole, then put in place: a full disk or a crash mustn't cost the file this goes over
+  std::filesystem::path tmp = out;
+  tmp += ".tmp";
+  std::error_code       ec;
+  tinygltf::TinyGLTF    writer;
+  if(!writer.WriteGltfSceneToFile(&model, tmp.string(), false, true, false, true))
+  {
+    std::filesystem::remove(tmp, ec);
     throw std::runtime_error("the GLB could not be written to " + out.string());
+  }
+  std::filesystem::rename(tmp, out, ec);
+  if(ec)
+  {
+    const std::string why = ec.message();
+    std::filesystem::remove(tmp, ec);
+    throw std::runtime_error("the GLB could not be written to " + out.string() + ": " + why);
+  }
   return notes;
 }
 

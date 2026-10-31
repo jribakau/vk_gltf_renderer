@@ -24,6 +24,9 @@
 
 #include "fv_host_impl.hpp"
 
+#include <figure/dson/listing.hpp>
+#include <figure/dson/store.hpp>
+
 //--------------------------------------------------------------------------------------------------
 
 FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvutils::ParameterRegistry* registry)
@@ -49,6 +52,13 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("settings.apply", [impl](const Json& args) {
     std::lock_guard lock(impl->settingsMutex);
     HostSettings&       st = impl->settings;
+    // an install or an uninstall: what was read of the library is out of date, or a character loaded
+    // right after installing its morphs misses them until a restart
+    if(args.value("contentChanged", false))
+    {
+      fv::dson::Store::clearShared();
+      fv::dson::clearListings();
+    }
     if(args.contains("libraryRoots"))
     {
       st.roots.clear();
@@ -126,6 +136,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   });
   // the scene kept on disk for a crash (C5): where, or nowhere; and put back from there
   cmds.add("recovery.file", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->recoveryFile(args); }); });
+  cmds.add("recovery.forget", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->recoveryForget(args); }); });
   cmds.add("recovery.peek", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->recoveryPeek(args); }); });
   cmds.add("scene.recover", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->recoverScene(args); }); });
   // the history goes: the scene it was of went (a crash's copy opened in its place)

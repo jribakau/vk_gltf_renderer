@@ -43,6 +43,8 @@
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
+#include <figure/dson/listing.hpp>
+#include <figure/dson/store.hpp>
 #include <figure/io/timing.hpp>
 #include "pipeline_build_scope.hpp"
 #include "scene_export_gltf.hpp"
@@ -1455,9 +1457,48 @@ TEST(FvHost, AKeptSceneComesBackInAnotherRendererAsItWas)
   std::ofstream(path) << R"({"version": 1, "ops": [{"cmd": "prop.res)";
   HostRig torn;
   EXPECT_EQ(peek().value("props", -1), 0);
+  EXPECT_TRUE(peek().value("unreadable", false));
   EXPECT_FALSE(torn.cmd("scene.recover", {{"path", path.generic_string()}}).value("ok", true));
   EXPECT_TRUE(torn.topic("scene").value("props", Json::object()).empty());
   fs::remove(path);
+}
+
+TEST(FvHost, ACopyThatDidNotAllComeBackGoesAsideBeforeItIsWrittenOver)
+{
+  const fs::path path = fs::temp_directory_path() / "fv recovery aside.json";
+  const fs::path keep = fs::temp_directory_path() / "fv recovery aside.prev.json";
+  std::ofstream(path) << "the only copy";
+  fs::remove(keep);
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("recovery.file", {{"path", path.generic_string()}, {"keepAs", keep.generic_string()}}).value("ok", false));
+  std::string kept;
+  std::getline(std::ifstream(keep), kept);
+  EXPECT_EQ(kept, "the only copy");
+  EXPECT_TRUE(rig.cmd("recovery.forget", {{"path", keep.generic_string()}}).value("ok", false));
+  EXPECT_FALSE(fs::exists(keep));
+  ASSERT_TRUE(rig.cmd("recovery.file", {{"path", nullptr}}).value("ok", false));
+  EXPECT_FALSE(fs::exists(path));
+}
+
+TEST(FvHost, AnInstallIsSeenInTheLibraryThroughContentChanged)
+{
+  const fs::path dir = fs::temp_directory_path() / "fv content changed";
+  fs::remove_all(dir);
+  fs::create_directories(dir / "Morphs");
+  std::ofstream(dir / "Morphs" / "one.dsf").put('x');
+  const fv::dson::Library library({dir});
+  fv::dson::clearListings();
+  EXPECT_EQ(fv::dson::listFiles(library, "Morphs", ".dsf").size(), 1u);
+  std::ofstream(dir / "Morphs" / "two.dsf").put('x');
+  EXPECT_EQ(fv::dson::listFiles(library, "Morphs", ".dsf").size(), 1u);  // kept a while, as a load lists a lot
+  HostRig rig;
+  // a settings change that isn't one keeps what was read
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"maxTextureSize", 1024}}).value("ok", false));
+  EXPECT_EQ(fv::dson::listFiles(library, "Morphs", ".dsf").size(), 1u);
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"contentChanged", true}}).value("ok", false));
+  EXPECT_EQ(fv::dson::listFiles(library, "Morphs", ".dsf").size(), 2u);
+  fv::dson::clearListings();
+  fs::remove_all(dir);
 }
 
 // A preset, a skin, an item's colour: each a step whose undo puts the figure's look back as it was,

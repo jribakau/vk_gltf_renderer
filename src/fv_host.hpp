@@ -168,9 +168,12 @@
 //                                                scene.clear's undo has them), the order, the lighting and
 //                                                the view, rewritten on a worker a second after the changes
 //                                                pause, whole then renamed into place. null: kept no more,
-//                                                and the copy goes (the scene closed as meant)
-//   recovery.peek {path}                         -> {props, at}: what a kept scene holds (props 0: none, or
-//                                                unreadable), `at` when it was kept (ms since 1970)
+//                                                and the copy goes (the scene closed as meant). `keepAs`: the
+//                                                copy there goes to that path first (it didn't all come back)
+//   recovery.peek {path}                         -> {props, at}: what a kept scene holds (props 0: none;
+//                                                `unreadable`: a file that can't be read), `at` when it was
+//                                                kept (ms since 1970)
+//   recovery.forget {path}                       a copy set aside goes
 //   scene.recover {path}                         a kept scene put back into an empty one, as an undo runs its
 //                                                ops -> {label, problems?}, or {label, job} while its props load
 //   session.shutdown {}                          a clean exit, before the host ends the process

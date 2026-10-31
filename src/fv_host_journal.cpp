@@ -739,7 +739,8 @@ void FvHost::Impl::writeRecovery()
     ops.push_back(op("view.free", {{"position", vec3(eye)}, {"target", vec3(center)}, {"up", vec3(up)}}));
   }
   const auto  wall = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-  std::string text = Json{{"version", 1}, {"props", props.size()}, {"at", wall}, {"ops", ops}}.dump();
+  // a name that isn't UTF-8 (an OBJ's, a file's) is no reason to lose the copy
+  std::string text = Json{{"version", 1}, {"props", props.size()}, {"at", wall}, {"ops", ops}}.dump(-1, ' ', false, Json::error_handler_t::replace);
   loaders.spawn([this, path = recoveryPath, text = std::move(text), n = ++recoveryWrites] {
     std::lock_guard lock(recoveryMutex);
     if(n <= recoveryWritten)
@@ -770,6 +771,15 @@ Json FvHost::Impl::recoveryFile(const Json& args)
   if(path.is_string() && !path.get<std::string>().empty())
   {
     recoveryPath = pathOf(path.get<std::string>());
+    // the copy there didn't all come back: it goes aside before anything is written over it
+    if(const Json keepAs = args.value("keepAs", Json()); keepAs.is_string())
+    {
+      std::lock_guard lock(recoveryMutex);
+      std::error_code ec;
+      std::filesystem::rename(recoveryPath, pathOf(keepAs.get<std::string>()), ec);
+      if(ec)
+        LOGW("[fv] recovery copy: could not keep the last one aside: %s\n", ec.message().c_str());
+    }
     // kept at the next frame
     recoveryDirtyAt = 1;
     return {{"ok", true}};
@@ -802,8 +812,19 @@ static Json readKept(const std::filesystem::path& path)
 
 Json FvHost::Impl::recoveryPeek(const Json& args)
 {
-  const Json kept = readKept(pathOf(args.at("path").get<std::string>()));
+  const std::filesystem::path path = pathOf(args.at("path").get<std::string>());
+  const Json                  kept = readKept(path);
+  std::error_code             ec;
+  if(kept.is_null() && std::filesystem::exists(path, ec))
+    return {{"props", 0}, {"unreadable", true}};
   return kept.is_null() ? Json{{"props", 0}} : Json{{"props", kept.value("props", 0)}, {"at", kept.value("at", Json())}};
+}
+
+Json FvHost::Impl::recoveryForget(const Json& args)
+{
+  std::error_code ec;
+  std::filesystem::remove(pathOf(args.at("path").get<std::string>()), ec);
+  return {{"ok", true}};
 }
 
 Json FvHost::Impl::recoverScene(const Json& args)

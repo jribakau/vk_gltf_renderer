@@ -66,7 +66,7 @@ void FvProtocol::registerRoutes(httplib::Server& http, const std::atomic<bool>& 
     fv::Json answer  = request.is_discarded() ? fv::Json{{"ok", false}, {"error", "the body is not JSON"}} : m_commands.dispatch(request);
     // the rev after the command: events up to it include whatever the command changed
     answer["rev"] = m_events.rev();
-    res.set_content(answer.dump(), "application/json");
+    res.set_content(answer.dump(-1, ' ', false, fv::Json::error_handler_t::replace), "application/json");
   });
 
   http.Post("/input", [this](const httplib::Request& req, httplib::Response& res) {
