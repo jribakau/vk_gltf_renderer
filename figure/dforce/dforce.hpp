@@ -6,6 +6,8 @@
 // - Settle (the default): one settle for the pose, scheduled once the pose or shape stops changing.
 //   A newer pose, morph or wear bumps the generation, and a finished job applies only if it is still
 //   that generation.
+//   With `makeGpuSim` it runs on the renderer's compute solver instead, a slice a frame in pump(), so
+//   the app stays usable and an edit drops it at once; if that solver fails, the job goes to the pool.
 // - Live: the simulation keeps its state and takes the figure's bones every frame, stepping once on
 //   the pool and writing the drape the frame after, so the cloth follows a drag or a playing clip.
 //   It starts with a settle, and builds itself again (after a short wait) when a dial changes a rest
@@ -150,6 +152,8 @@ private:
   // the settle on the pool: its snapshot and the positions it made
   std::shared_ptr<Job>                           m_snapshot;
   std::future<std::vector<std::vector<float>>>   m_job;
+  // a settle on the GPU, a slice a frame on this thread; m_snapshot is its job
+  std::shared_ptr<ClothBackend>                  m_settling;
   uint64_t                                       m_jobGen = 0;
   // live: the simulation, what it was built from, the step in flight and the bones it was given
   std::shared_ptr<ClothBackend>                  m_live;

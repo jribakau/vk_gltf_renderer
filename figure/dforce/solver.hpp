@@ -195,8 +195,10 @@ struct SettleOptions
   bool reachLinks = true;
   // Seconds the pose transition takes; 0 picks them from how far the colliders move
   float transition = 0;
-  // Seconds the cloth may take to come to rest once the pose is reached
-  float maxHold = 3.f;
+  // Seconds the cloth may take to come to rest once the pose is reached. It rarely does: a vertex caught
+  // in a fold keeps moving. On the Kai Dress 1 s lands within 0.6 cm mean of 3 s, the hem under a
+  // centimetre short, and from there it only creeps.
+  float maxHold = 1.f;
   // Every frame, a free vertex touching nothing that lies behind the nearest face of a lower layer
   // within reach is put back outside it: cloth pulled through a limb by its edges between two
   // collision passes, or carried through by the sweep, would otherwise stay inside for good
@@ -216,6 +218,15 @@ public:
   // Which way is down and how hard, cm/s^2 in the job's space: the figure was turned.
   virtual void  setGravity(const std::array<float, 3>& gravity) = 0;
   virtual void  settle() = 0;
+  // A settle in slices, for a simulation on the thread that draws: frames until `seconds` are used, at
+  // least one. True once it is done.
+  virtual bool  settleSome(double /*seconds*/)
+  {
+    settle();
+    return true;
+  }
+  // It stopped and what it has isn't to be used (a position that isn't a number).
+  virtual bool  failed() const { return false; }
   virtual float lastMove() const = 0;
   virtual std::vector<std::vector<float>> positions() const = 0;
   // True when it must be driven on the thread that made it (a GPU queue), never on the pool.

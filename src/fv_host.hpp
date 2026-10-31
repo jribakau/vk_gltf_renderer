@@ -119,8 +119,10 @@
 //   wardrobe.tight  {prop, item, amount}          how skin tight one item is, 0 as made to 1 on the skin;
 //                                                the collider applies it (figure/wardrobe/collider.hpp)
 //   dforce.enable   {prop, on}; dforce.resimulate {prop}   cloth drapes over the body (figure/dforce)
-//   dforce.mode     {prop, mode: "settle" | "live" | "gpu"}   one settle once the pose stops, a step every
-//                                                frame, or that on the GPU solver (FV_DFORCE_GPU builds; the
+//   dforce.mode     {prop, mode: "settle" | "live" | "gpu"}   one settle once the pose stops (on the GPU solver
+//                                                where there is one), a step every frame, or that on the GPU
+//                                                solver. The app offers only settle: real-time cloth is paused
+//                                                (FV_DFORCE_GPU builds; the
 //                                                "session" topic's features.dforceGpu says, and a scene file's
 //                                                "gpu" restores as live without it)
 //   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,

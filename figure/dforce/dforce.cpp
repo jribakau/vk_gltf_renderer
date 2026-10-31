@@ -19,7 +19,9 @@ constexpr float kAir      = 0.15f;
 // comes to rest; until then it falls and swings freely. Seconds: free for this long, then this long
 // to reach it, within the hold.
 constexpr float kLiveRestDamping = 6.f;
-constexpr float kLiveFree = 1.f, kLiveCalming = 1.f;
+constexpr float kLiveFree = 1.f, kLiveCalming = 1.f, kLiveHold = 3.f;
+// How much of a frame a settle on the GPU may take, seconds: the app stays usable while it runs.
+constexpr double kSettleSlice = 0.05;
 // A live step is as long as the time since the last one, within these, seconds: a slow frame doesn't
 // make slow motion, down to the rate below which a step's substeps would stop holding the cloth
 // together (then it slows instead), and frames faster than the shortest wait for each other.
@@ -127,7 +129,7 @@ bool Dforce::active() const
 
 bool Dforce::busy() const
 {
-  return m_scheduled || m_job.valid() || m_liveSettling;
+  return m_scheduled || m_job.valid() || m_settling || m_liveSettling;
 }
 
 void Dforce::poke()
@@ -183,9 +185,10 @@ void Dforce::resimulate()
 void Dforce::cancel()
 {
   m_gen++;
-  if(m_scheduled || m_job.valid() || m_live)
+  if(m_scheduled || m_job.valid() || m_settling || m_live)
     m_version++;
   m_scheduled = false;
+  m_settling.reset();
   // a live step in flight is dropped when it lands; the simulation goes
   m_live.reset();
   m_liveJob.reset();
@@ -449,7 +452,37 @@ bool Dforce::pump()
     if(gen == m_gen && m_enabled && job && !positions.empty())
       wrote = apply(*job, positions);
   }
-  if(m_scheduled && !m_job.valid() && std::chrono::steady_clock::now() >= m_due)
+  const auto onThePool = [this](std::shared_ptr<Job> job) {
+    m_job = jobs::pool().submit([job] {
+      SettleOptions opts;
+      opts.air = kAir;
+      return settle(job->bodies, opts);
+    });
+  };
+  if(m_settling)
+  {
+    // an edit since it began: what it has is of the old pose, and the new settle needn't wait for it
+    if(m_jobGen != m_gen || !m_enabled)
+    {
+      m_settling.reset();
+      m_snapshot.reset();
+      m_version++;
+    }
+    else if(m_settling->settleSome(kSettleSlice))
+    {
+      const auto sim = std::move(m_settling);
+      m_settling.reset();
+      m_version++;
+      if(sim->failed())
+        onThePool(m_snapshot);
+      else
+      {
+        wrote = apply(*m_snapshot, sim->positions()) || wrote;
+        m_snapshot.reset();
+      }
+    }
+  }
+  if(m_scheduled && !m_job.valid() && !m_settling && std::chrono::steady_clock::now() >= m_due)
   {
     m_scheduled = false;
     if(m_enabled && active())
@@ -459,16 +492,17 @@ bool Dforce::pump()
         m_settleGravity = currentGravity();
         m_snapshot = job;
         m_jobGen   = m_gen;
-        m_job      = jobs::pool().submit([job] {
-          SettleOptions opts;
-          opts.air = kAir;
-          return settle(job->bodies, opts);
-        });
+        SettleOptions opts;
+        opts.air = kAir;
+        if(makeGpuSim)
+          m_settling = makeGpuSim(job->bodies, opts);
+        if(!m_settling)
+          onThePool(job);
         m_version++;
       }
     }
   }
-  // a newer edit that arrives while one runs waits for it: that result is dropped above, then this starts
+  // a newer edit that arrives while one runs on the pool waits for it: that result is dropped above, then this starts
   return wrote;
 }
 
@@ -523,7 +557,7 @@ bool Dforce::pumpLive()
     m_liveSettling = true;
     m_liveMoving   = true;
     // the settle holds the pose for as long as a still pose is ever held
-    m_liveStill    = opts.maxHold;
+    m_liveStill    = kLiveHold;
     m_liveLast     = clock ? clock() : std::chrono::steady_clock::now();
     m_version++;
     auto sim = m_live;
@@ -553,9 +587,8 @@ bool Dforce::pumpLive()
   const bool                 turned  = !sameGravity(gravity, m_liveGravity);
   if(moved || turned)
     m_liveStill = 0;
-  const SettleOptions held;
   const auto now = clock ? clock() : std::chrono::steady_clock::now();
-  if(!moved && !turned && !m_liveMoving && (m_live->lastMove() < 0.01f || m_liveStill >= held.maxHold))
+  if(!moved && !turned && !m_liveMoving && (m_live->lastMove() < 0.01f || m_liveStill >= kLiveHold))
   {
     m_liveLast = now;
     return wrote;

@@ -64,6 +64,8 @@ public:
   void  setTarget(size_t mesh, const std::vector<fv::Mat4>& bones) override;
   void  setGravity(const std::array<float, 3>& gravity) override;
   void  settle() override;
+  bool  settleSome(double seconds) override;
+  bool  failed() const override;
   float lastMove() const override { return m_lastMove; }
   std::vector<std::vector<float>> positions() const override;
   bool                            ownerThreadOnly() const override { return true; }

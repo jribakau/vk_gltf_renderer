@@ -749,7 +749,12 @@ TEST(Dforce, aTightSkirtInAStrideStaysOutOfBothThighs)
   meshes.push_back(m);
   dforce::ClothSim sim(meshes);
   sim.settle();
-  EXPECT_EQ(sim.recovered(), 0);
+  // what is still being put back when a settle ends stops, given the time
+  dforce::SettleOptions longer;
+  longer.maxHold = 3;
+  dforce::ClothSim given(meshes, longer);
+  given.settle();
+  EXPECT_EQ(given.recovered(), 0);
   const auto out = sim.positions();
   int        inside = 0;
   for(size_t v = 0; v < out[2].size() / 3; v++)
@@ -1562,6 +1567,42 @@ private:
   std::vector<dforce::SettleMesh> m_meshes;
 };
 
+// A settle that takes so many slices, on the thread that draws, as the GPU's does: it moves the cloth.
+class SlicedSim final : public dforce::ClothBackend
+{
+public:
+  SlicedSim(std::vector<dforce::SettleMesh> meshes, int slices, bool fails)
+      : m_meshes(std::move(meshes))
+      , m_left(slices)
+      , m_fails(fails)
+  {
+  }
+  void  frame(float, float, float, float) override {}
+  void  setTarget(size_t, const std::vector<fv::Mat4>&) override {}
+  void  setGravity(const std::array<float, 3>&) override {}
+  void  settle() override { ADD_FAILURE() << "a settle on the drawing thread goes in slices"; }
+  bool  settleSome(double) override { return --m_left <= 0; }
+  bool  failed() const override { return m_fails; }
+  float lastMove() const override { return 1.f; }
+  bool  ownerThreadOnly() const override { return true; }
+  std::vector<std::vector<float>> positions() const override
+  {
+    std::vector<std::vector<float>> out;
+    for(const dforce::SettleMesh& m : m_meshes)
+    {
+      out.push_back(m.rest);
+      for(size_t v = 0; v < out.back().size() / 3; v++)
+        out.back()[v * 3 + 2] += 1.f;
+    }
+    return out;
+  }
+
+private:
+  std::vector<dforce::SettleMesh> m_meshes;
+  int                             m_left;
+  bool                            m_fails;
+};
+
 }  // namespace
 
 TEST(Dforce, aFrameTakesTheTimeItIsGivenAndGravityCanTurn)
@@ -1625,6 +1666,63 @@ TEST(Dforce, aSlowTurnAddsUpAndATurnDuringAClipWaitsForItsEnd)
   playing = false;
   d.setPlacement(kUpsideDown);
   EXPECT_TRUE(d.busy());
+}
+
+TEST(Dforce, aSettleOnTheGpuGoesInSlicesAndAnEditDropsItAtOnce)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::weak_ptr<SlicedSim> sim;
+  int                      made = 0;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    auto s = std::make_shared<SlicedSim>(std::move(meshes), 3, false);
+    sim    = s;
+    made++;
+    return s;
+  };
+  d.resimulate();
+  EXPECT_FALSE(d.pump());  // made, and nothing stepped on the frame that made it
+  ASSERT_EQ(made, 1);
+  EXPECT_TRUE(d.busy());
+  EXPECT_FALSE(d.pump());
+  EXPECT_FALSE(d.pump());
+  EXPECT_TRUE(d.busy());
+  EXPECT_TRUE(d.pump());
+  EXPECT_FALSE(d.busy());
+  EXPECT_TRUE(sim.expired());
+
+  // an edit partway: the old settle goes on the next frame, and the new one doesn't wait for it to finish
+  d.resimulate();
+  EXPECT_FALSE(d.pump());
+  ASSERT_EQ(made, 2);
+  EXPECT_FALSE(d.pump());
+  d.resimulate();
+  EXPECT_FALSE(d.pump());
+  ASSERT_EQ(made, 3);
+  ASSERT_TRUE(pumpUntilWritten(d));
+
+  // turned off partway: it goes, and nothing is written
+  d.resimulate();
+  EXPECT_FALSE(d.pump());
+  d.setEnabled(false);
+  EXPECT_TRUE(sim.expired());
+  EXPECT_FALSE(d.busy());
+  EXPECT_FALSE(d.pump());
+}
+
+TEST(Dforce, aSettleTheGpuCouldNotFinishGoesToTheCpu)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) { return std::make_shared<SlicedSim>(std::move(meshes), 1, true); };
+  const auto before = v.scene.meshes[1].geo->position;
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_FALSE(d.busy());
+  // what the CPU's settle did with the veil, not the failed simulation's shift along z
+  EXPECT_LT(lowestOf(v.scene.meshes[1].geo->position), lowestOf(before));
 }
 
 TEST(Dforce, gravityFollowsAllThePlacementHas)
@@ -1717,18 +1815,18 @@ TEST(Dforce, aStillPoseSleepsThoughTheClothNeverRestsAndATurnWakesIt)
   EXPECT_LE(sim->seconds.size(), 1u);
   EXPECT_TRUE(sim->gravity.empty());
 
-  // turned over: told once, and held for as long as a settle would hold it, then asleep again
+  // turned over: told once, and held for live's 3 s, then asleep again
   const size_t before = sim->seconds.size();
   d.setPlacement(kUpsideDown);
-  const dforce::SettleOptions held;
+  const float held = 3.f;
   frames(400);
   ASSERT_EQ(sim->gravity.size(), 1u);
   EXPECT_NEAR(sim->gravity[0][1], 980.f, 1e-2f);
   float simulated = 0;
   for(size_t i = before; i < sim->seconds.size(); i++)
     simulated += sim->seconds[i];
-  EXPECT_GE(simulated, held.maxHold);
-  EXPECT_LT(simulated, held.maxHold + 0.1f);
+  EXPECT_GE(simulated, held);
+  EXPECT_LT(simulated, held + 0.1f);
   const size_t asleep = sim->seconds.size();
   frames(20);
   EXPECT_EQ(sim->seconds.size(), asleep);

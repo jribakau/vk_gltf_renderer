@@ -873,6 +873,7 @@ int main(int argc, char** argv)
         opts.iterations    = step.value("iterations", opts.iterations);
         opts.stretchSweeps = step.value("stretchSweeps", opts.stretchSweeps);
         opts.substeps      = step.value("substeps", opts.substeps);
+        opts.transition    = step.value("transition", opts.transition);
         const auto           simStart = std::chrono::steady_clock::now();
         fv::dforce::ClothSim sim(p->bodies, opts);
         const bool           trace  = step.value("trace", false);

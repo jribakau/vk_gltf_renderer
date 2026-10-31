@@ -48,7 +48,7 @@ constexpr float kDefaultArea = 1.f;
 // many however fast the colliders move. Collision passes are fewer; see frame().
 constexpr int kMinSubsteps = 24, kMaxSubsteps = 48;
 // The pose transition: colliders move at most this fast, within these bounds, seconds.
-constexpr float kTransitionSpeed = 60.f, kMinTransition = 0.25f, kMaxTransition = 1.5f;
+constexpr float kTransitionSpeed = 60.f, kMinTransition = 0.25f, kMaxTransition = 0.75f;
 // Velocity decay added per second while the pose is held, so the cloth comes to rest in a few frames.
 constexpr float kHoldDamping = 6.f;
 // Collision passes per frame, at least, and the most anything may move between two: half the depth

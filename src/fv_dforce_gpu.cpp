@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <limits>
 #include <cmath>
 #include <cstring>
 
@@ -46,7 +47,7 @@ constexpr float kDepth            = 2.f;
 constexpr float kCap              = 2.f;
 constexpr float kMaxSpeed         = 400.f;
 constexpr int   kMinSubsteps      = 24, kMaxSubsteps = 48;
-constexpr float kTransitionSpeed  = 60.f, kMinTransition = 0.25f, kMaxTransition = 1.5f;
+constexpr float kTransitionSpeed  = 60.f, kMinTransition = 0.25f, kMaxTransition = 0.75f;
 constexpr float kHoldDamping      = 6.f;
 constexpr int   kMinCollisionPasses = 4;
 constexpr float kPassSpacing      = 0.5f * kDepth;
@@ -109,6 +110,14 @@ struct DforceGpu::Impl
   int                collisions = kMinCollisionPasses;
   float              transition = kMinTransition;
   float              lastMove   = 0;
+  // the pose a frame that held still was last given (negative: none): the next at the same place needs
+  // neither the skin nor the collision grid again
+  float                 heldAt = -1;
+  shaderio::DforceModel shaderModel{};
+  // a settle under way, and what it has cost
+  int    settled    = 0;
+  double settleWork = 0, settleWait = 0;
+  std::chrono::steady_clock::time_point settleStart;
   // a frame that came back with a position that is not a number: the frame is dropped and the
   // simulation stops, so one bad step cannot take the device down with it
   bool broken = false;
@@ -482,67 +491,73 @@ bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
 void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds)
 {
   const size_t n = size_t(model.nv);
-  // where the pose takes what it holds by the end of the frame
-  std::vector<float> start = xHost, end = xHost;
-  kinematicAt(t0, start);
-  kinematicAt(t1, end);
-  float kinematicMove = 0;
-  for(int i : model.kinematicVerts)
+  shaderio::DforceModel& m             = shaderModel;
+  float                  kinematicMove = 0;
+  const bool             held          = t0 == t1 && t0 == heldAt;
+  heldAt                               = t0 == t1 ? t0 : -1.f;
+  if(!held)
   {
-    const float dx = end[size_t(i) * 3] - start[size_t(i) * 3], dy = end[size_t(i) * 3 + 1] - start[size_t(i) * 3 + 1],
-                dz = end[size_t(i) * 3 + 2] - start[size_t(i) * 3 + 2];
-    kinematicMove = std::max(kinematicMove, dx * dx + dy * dy + dz * dz);
-  }
-  kinematicMove = std::sqrt(kinematicMove);
-  std::memcpy(kinStart.mapping, start.data(), n * 3 * sizeof(float));
-  std::memcpy(kinEnd.mapping, end.data(), n * 3 * sizeof(float));
+    // where the pose takes what it holds by the end of the frame
+    std::vector<float> start = xHost, end = xHost;
+    kinematicAt(t0, start);
+    kinematicAt(t1, end);
+    for(int i : model.kinematicVerts)
+    {
+      const float dx = end[size_t(i) * 3] - start[size_t(i) * 3], dy = end[size_t(i) * 3 + 1] - start[size_t(i) * 3 + 1],
+                  dz = end[size_t(i) * 3 + 2] - start[size_t(i) * 3 + 2];
+      kinematicMove = std::max(kinematicMove, dx * dx + dy * dy + dz * dz);
+    }
+    kinematicMove = std::sqrt(kinematicMove);
+    std::memcpy(kinStart.mapping, start.data(), n * 3 * sizeof(float));
+    std::memcpy(kinEnd.mapping, end.data(), n * 3 * sizeof(float));
 
-  shaderio::DforceModel m{};
-  m.x            = reinterpret_cast<glm::vec3*>(x.address);
-  m.prev         = reinterpret_cast<glm::vec3*>(prev.address);
-  m.vel          = reinterpret_cast<glm::vec3*>(vel.address);
-  m.cprev        = reinterpret_cast<glm::vec3*>(cprev.address);
-  m.kinStart     = reinterpret_cast<glm::vec3*>(kinStart.address);
-  m.kinEnd       = reinterpret_cast<glm::vec3*>(kinEnd.address);
-  m.kinematic    = reinterpret_cast<int*>(kinematic.address);
-  m.freeVerts    = reinterpret_cast<int*>(freeVerts.address);
-  m.inv          = reinterpret_cast<float*>(inv.address);
-  m.dampRate     = reinterpret_cast<float*>(dampRate.address);
-  m.offset       = reinterpret_cast<float*>(offset.address);
-  m.friction     = reinterpret_cast<float*>(friction.address);
-  m.layer        = reinterpret_cast<int*>(layer.address);
-  m.collides     = reinterpret_cast<int*>(collides.address);
-  m.grav         = reinterpret_cast<glm::vec3*>(grav.address);
-  m.edges        = reinterpret_cast<shaderio::DforceEdge*>(edges.address);
-  m.lam          = reinterpret_cast<float*>(lam.address);
-  m.tris         = reinterpret_cast<shaderio::DforceTri*>(tris.address);
-  m.softVerts    = reinterpret_cast<int*>(softVerts.address);
-  m.attAlpha     = reinterpret_cast<float*>(attAlpha.address);
-  m.lamAtt       = reinterpret_cast<float*>(lamAtt.address);
-  m.contact      = reinterpret_cast<int*>(contact.address);
-  m.recoverDepth = kRecoverDepth;
-  m.nv           = uint32_t(n);
-  m.numKinematic = uint32_t(model.kinematicVerts.size());
-  m.numFree      = uint32_t(model.freeVerts.size());
-  m.numEdges     = uint32_t(colourStart.back());
-  m.numTris      = uint32_t(model.staticTris.size());
-  m.numSoft      = uint32_t(model.softVerts.size());
-  m.cellSize     = kCell;
-  m.depth        = kDepth;
-  m.cap          = kCap;
-  m.maxSpeed     = kMaxSpeed;
-  m.searchReach  = model.maxOffset + kSearch;
-  if(model.staticTris.empty() || !buildGrid(start, end, m))
-  {
-    if(!model.staticTris.empty() && !gridFailed)
-      LOGE("dForce GPU: the collision grid's buffers could not be made; the cloth collides with nothing\n");
-    gridFailed = !model.staticTris.empty();
-    m.cells    = nullptr;
-    m.items    = nullptr;
-    m.cellMask = 0;
-    m.numTris  = 0;
+    m = {};
+    m.x            = reinterpret_cast<glm::vec3*>(x.address);
+    m.prev         = reinterpret_cast<glm::vec3*>(prev.address);
+    m.vel          = reinterpret_cast<glm::vec3*>(vel.address);
+    m.cprev        = reinterpret_cast<glm::vec3*>(cprev.address);
+    m.kinStart     = reinterpret_cast<glm::vec3*>(kinStart.address);
+    m.kinEnd       = reinterpret_cast<glm::vec3*>(kinEnd.address);
+    m.kinematic    = reinterpret_cast<int*>(kinematic.address);
+    m.freeVerts    = reinterpret_cast<int*>(freeVerts.address);
+    m.inv          = reinterpret_cast<float*>(inv.address);
+    m.dampRate     = reinterpret_cast<float*>(dampRate.address);
+    m.offset       = reinterpret_cast<float*>(offset.address);
+    m.friction     = reinterpret_cast<float*>(friction.address);
+    m.layer        = reinterpret_cast<int*>(layer.address);
+    m.collides     = reinterpret_cast<int*>(collides.address);
+    m.grav         = reinterpret_cast<glm::vec3*>(grav.address);
+    m.edges        = reinterpret_cast<shaderio::DforceEdge*>(edges.address);
+    m.lam          = reinterpret_cast<float*>(lam.address);
+    m.tris         = reinterpret_cast<shaderio::DforceTri*>(tris.address);
+    m.softVerts    = reinterpret_cast<int*>(softVerts.address);
+    m.attAlpha     = reinterpret_cast<float*>(attAlpha.address);
+    m.lamAtt       = reinterpret_cast<float*>(lamAtt.address);
+    m.contact      = reinterpret_cast<int*>(contact.address);
+    m.recoverDepth = kRecoverDepth;
+    m.nv           = uint32_t(n);
+    m.numKinematic = uint32_t(model.kinematicVerts.size());
+    m.numFree      = uint32_t(model.freeVerts.size());
+    m.numEdges     = uint32_t(colourStart.back());
+    m.numTris      = uint32_t(model.staticTris.size());
+    m.numSoft      = uint32_t(model.softVerts.size());
+    m.cellSize     = kCell;
+    m.depth        = kDepth;
+    m.cap          = kCap;
+    m.maxSpeed     = kMaxSpeed;
+    m.searchReach  = model.maxOffset + kSearch;
+    if(model.staticTris.empty() || !buildGrid(start, end, m))
+    {
+      if(!model.staticTris.empty() && !gridFailed)
+        LOGE("dForce GPU: the collision grid's buffers could not be made; the cloth collides with nothing\n");
+      gridFailed = !model.staticTris.empty();
+      m.cells    = nullptr;
+      m.items    = nullptr;
+      m.cellMask = 0;
+      m.numTris  = 0;
+    }
+    std::memcpy(modelBuf.mapping, &m, sizeof(m));
   }
-  std::memcpy(modelBuf.mapping, &m, sizeof(m));
 
   const int   steps  = substeps;
   const float dt     = (seconds > 0 ? seconds : opts.frameDt) / float(steps);
@@ -641,7 +656,9 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   const VkBufferCopy copy{.srcOffset = 0, .dstOffset = 0, .size = n * 3 * sizeof(float)};
   vkCmdCopyBuffer(cmd, x.buffer, readback.buffer, 1, &copy);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_HOST_BIT);
+  const auto waitStart = std::chrono::steady_clock::now();
   app->submitAndWaitTempCmdBuffer(cmd);
+  settleWait += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
 
   std::vector<float> frameStart = std::move(xHost);
   xHost.resize(n * 3);
@@ -708,15 +725,18 @@ void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
   // a pose that jumps (a value typed, an undo) in one frame leaves behind what rests on it: a 15 degree
   // turn of the hip moves the shoulders 16 cm, and the top of a dress hanging from them fell 44. A drag
   // of the same turn over a second is fine. In pieces it costs a slow frame only when it happens
-  Impl&              s = *m_impl;
-  std::vector<float> from = s.xHost, to = s.xHost;
-  s.kinematicAt(t0, from);
-  s.kinematicAt(t1, to);
+  Impl& s        = *m_impl;
   float farthest = 0;
-  for(int i : s.model.kinematicVerts)
+  if(t0 != t1)
   {
-    const float dx = to[size_t(i) * 3] - from[size_t(i) * 3], dy = to[size_t(i) * 3 + 1] - from[size_t(i) * 3 + 1], dz = to[size_t(i) * 3 + 2] - from[size_t(i) * 3 + 2];
-    farthest = std::max(farthest, dx * dx + dy * dy + dz * dz);
+    std::vector<float> from = s.xHost, to = s.xHost;
+    s.kinematicAt(t0, from);
+    s.kinematicAt(t1, to);
+    for(int i : s.model.kinematicVerts)
+    {
+      const float dx = to[size_t(i) * 3] - from[size_t(i) * 3], dy = to[size_t(i) * 3 + 1] - from[size_t(i) * 3 + 1], dz = to[size_t(i) * 3 + 2] - from[size_t(i) * 3 + 2];
+      farthest = std::max(farthest, dx * dx + dy * dy + dz * dz);
+    }
   }
   const int   pieces = std::clamp(int(std::ceil(std::sqrt(farthest) / kJumpPerPiece)), 1, kMostPieces);
   const float length = (seconds > 0 ? seconds : s.opts.frameDt) / float(pieces);
@@ -733,28 +753,54 @@ void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
   s.kin[mesh].from = s.kin[mesh].to;
   for(size_t b = 0; b < bones.size(); b++)
     s.kin[mesh].to[b] = poseOf(bones[b]);
+  s.heldAt = -1;
   targetSet();
 }
 
 void DforceGpu::settle()
 {
-  if(!m_valid)
-    return;
-  const auto start  = std::chrono::steady_clock::now();
-  const int  frames = std::max(1, int(std::lround(m_impl->transition / m_impl->opts.frameDt)));
-  int        run    = 0;
-  for(int f = 0; f < frames; f++, run++)
-    frame(float(f) / float(frames), float(f + 1) / float(frames));
-  const int hold = std::max(1, int(std::ceil(m_impl->opts.maxHold / m_impl->opts.frameDt)));
-  for(int h = 0; h < hold; h++)
+  while(!settleSome(std::numeric_limits<double>::infinity()))
   {
-    frame(1, 1, kHoldDamping);
-    run++;
-    if(m_lastMove < m_impl->opts.restMove)
+  }
+}
+
+bool DforceGpu::settleSome(double seconds)
+{
+  if(!m_valid)
+    return true;
+  Impl&      s      = *m_impl;
+  const auto start  = std::chrono::steady_clock::now();
+  const int  frames = std::max(1, int(std::lround(s.transition / s.opts.frameDt)));
+  const int  hold   = std::max(1, int(std::ceil(s.opts.maxHold / s.opts.frameDt)));
+  if(s.settled == 0)
+  {
+    s.settleStart = start;
+    s.settleWait  = 0;
+    s.settleWork  = 0;
+  }
+  bool done = s.broken;
+  while(!done)
+  {
+    if(s.settled < frames)
+      frame(float(s.settled) / float(frames), float(s.settled + 1) / float(frames));
+    else
+      frame(1, 1, kHoldDamping);
+    s.settled++;
+    done = s.broken || s.settled >= frames + hold || (s.settled > frames && m_lastMove < s.opts.restMove);
+    if(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= seconds)
       break;
   }
-  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-  LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms (%.1f ms a frame, %d substeps)\n", run, ms, ms / std::max(1, run), m_impl->substeps);
+  const auto end = std::chrono::steady_clock::now();
+  s.settleWork += std::chrono::duration<double, std::milli>(end - start).count();
+  if(done)
+    LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms of work, %.1f ms waiting on the GPU, %.1f ms in all (%.1f ms a frame, %d substeps)\n", s.settled, s.settleWork,
+         s.settleWait, std::chrono::duration<double, std::milli>(end - s.settleStart).count(), s.settleWork / std::max(1, s.settled), s.substeps);
+  return done;
+}
+
+bool DforceGpu::failed() const
+{
+  return !m_valid || m_impl->broken;
 }
 
 std::vector<std::vector<float>> DforceGpu::positions() const

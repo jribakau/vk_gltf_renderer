@@ -287,7 +287,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
     f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
 #ifdef FV_DFORCE_GPU
-    // the experimental GPU solver, for mode "gpu": made and stepped on the application thread
+    // the GPU solver, for a settle and for mode "gpu": made and stepped on the application thread
     f->dforce->makeGpuSim = [this](std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts)
         -> std::shared_ptr<fv::dforce::ClothBackend> {
       if(!app)
