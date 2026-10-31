@@ -135,8 +135,71 @@ TEST(MorphReach, ASplineGivesItsRealOutput)
     {"op": "push", "val": 3},
     {"op": "spline_linear"}]}])";
   const auto        reach  = fv::pose::auditReach({fact("Ctrl", 0, R"("value": 0, "min": 0, "max": 1)", spline), fact("Shape", 8)});
-  // at the dial's end, whatever it passes through on the way
+  // at the dial's end: that's far enough for no one to ask what it passes through on the way
   EXPECT_DOUBLE_EQ(of(reach, "Ctrl").cm, 2);
+}
+
+// Back at 0 by the end of its range, as Neck Swallow's splines are: it does something on the way.
+TEST(MorphReach, ADialThatPeaksOnTheWayMoves)
+{
+  const auto peak = [](const std::string& output, const std::string& dial, const std::string& knot, const std::string& end) {
+    return R"([{"output": ")" + output + R"(", "operations": [{"op": "push", "url": "Fig:#)" + dial + R"(?value"},
+      {"op": "push", "val": [0, 0, 0, 0, 0]},
+      {"op": "push", "val": [)" + knot + R"(, 1, 0, 0, 0]},
+      {"op": "push", "val": [)" + end + R"(, 0, 0, 0, 0]},
+      {"op": "push", "val": 3},
+      {"op": "spline_linear"}]}])";
+  };
+  const auto reach = fv::pose::auditReach({fact("Skin", 0, R"("value": 0, "min": 0, "max": 1)", peak("Fig:#Shape?value", "Skin", "0.5", "1")), fact("Shape", 8)});
+  EXPECT_DOUBLE_EQ(of(reach, "Skin").cm, 8);
+  EXPECT_EQ(of(reach, "Skin").morphs, 1);
+
+  // over the dial's own range, not 0 to 1, and a joint counts as skin does
+  const auto turn = fv::pose::auditReach({fact("Turn", 0, R"("value": 0, "min": 0, "max": 2)", peak("head:/data/Fig/Fig.dsf#head?rotation/x", "Turn", "1.5", "2"))});
+  EXPECT_DOUBLE_EQ(of(turn, "Turn").deg, 1);
+}
+
+// An alias has its dial's id and nothing else of it, and its file lists first more often than not.
+TEST(MorphReach, AnAliasDoesntStandInForItsDial)
+{
+  const auto alias = [](const std::string& id) {
+    MorphFact f = fact(id, 0, R"("type": "alias")");
+    f.file      = "data/Fig/Morphs/alias_head_" + id + ".dsf";
+    f.stem      = "alias_head_" + id;
+    return f;
+  };
+  const MorphFact ctrl  = fact("Ctrl", 0, R"("value": 0, "min": 0, "max": 1)", "[" + drive("Fig:#Shape?value", "Ctrl", 10) + "]");
+  const MorphFact shape = fact("Shape", 8, R"("value": 0, "min": 0, "max": 0.5, "clamped": true)");
+
+  // its dial's formulas and limits both count, whichever file comes first
+  const auto first = fv::pose::auditReach({alias("Ctrl"), ctrl, alias("Shape"), shape});
+  EXPECT_DOUBLE_EQ(of(first, "Ctrl").cm, 4);
+  EXPECT_EQ(of(first, "Ctrl").morphs, 1);
+  EXPECT_FALSE(first.count("alias_head_Ctrl"));
+  const auto last = fv::pose::auditReach({ctrl, alias("Ctrl"), shape, alias("Shape")});
+  EXPECT_DOUBLE_EQ(of(last, "Ctrl").cm, 4);
+
+  // a dial's own rest, too: this one stands on, and goes to 0
+  const auto rest = fv::pose::auditReach({alias("On"), fact("On", 3, R"("value": 1, "min": 0, "max": 1)")});
+  EXPECT_DOUBLE_EQ(of(rest, "On").cm, 3);
+  // one with no dial on this figure reads as unknown, as any input no file holds
+  EXPECT_TRUE(fv::pose::auditReach({alias("Gone")}).empty());
+}
+
+// What a controller moves that the figure has no deltas for: a worn item's copy may hold them.
+TEST(MorphReach, ADialSaysWhichEmptyDialsItMoves)
+{
+  const std::string formulas = "[" + drive("Fig:#Lash?value", "Ctrl", 1) + "," + drive("Fig:#Curl?value", "Ctrl", 0.5) + "," + drive("Fig:#Shape?value", "Ctrl", 1) + ","
+                               + drive("Fig:#pJCMEmpty?value", "Ctrl", 1) + "," + drive("Fig:#Renamed?value", "Ctrl", 1) + ","
+                               + R"({"output": "Fig:#Combo?value", "operations": [{"op": "push", "url": "Fig:#Ctrl?value"}, {"op": "push", "url": "Fig:#Other?value"}, {"op": "mult"}]})" + "]";
+  MorphFact renamed = fact("Renamed");
+  renamed.stem      = "Renamed File";
+  const auto  reach = fv::pose::auditReach({fact("Ctrl", 0, R"("value": 0, "min": 0, "max": 1)", formulas), fact("Lash"), fact("Curl"), fact("Shape", 2), fact("pJCMEmpty"), renamed, fact("Combo"), fact("Other")});
+  // sorted; not the morph with deltas, nor one a run of the formulas would drop for its name, nor the
+  // combo, which this dial doesn't move alone, nor itself
+  const std::vector<std::string> empties{"Curl", "Lash"};
+  EXPECT_EQ(of(reach, "Ctrl").drives, empties);
+  EXPECT_TRUE(of(reach, "Lash").drives.empty());
 }
 
 TEST(MorphReach, AClampLimitsIt)

@@ -28,7 +28,7 @@
 
 namespace fv::morph {
 
-// What a dial can do on its own, from where it rests to the ends of its range (pose/morph_reach.hpp).
+// What a dial can do on its own, from where it rests across its range (pose/morph_reach.hpp).
 struct Reach
 {
   // the furthest it moves skin in centimetres, a joint centre's offset included, and the largest
@@ -39,6 +39,8 @@ struct Reach
   int morphs = 0, bones = 0;
   // the ones its formulas reach only as a multiplier
   int scales = 0;
+  // the listed dials it moves that have no deltas on the figure: a worn item's copy of one moves with it
+  std::vector<std::string> drives;
 
   bool operator==(const Reach&) const = default;
 };
@@ -237,7 +239,8 @@ public:
   // The meshes a channel's targets move (none while it is not loaded).
   std::set<int> meshesOf(const std::string& name) const;
   // The labels of the followers a channel moves through something of their own, a copy of the morph
-  // or a binding, each once. Not the ones that only project what the source has.
+  // or a binding, its own or a dial's it drives (Reach::drives), each once. Not the ones that only
+  // project what the source has.
   std::vector<std::string> itemsMoving(const std::string& name) const;
   // The target a channel binds on a mesh, or null.
   dson::TargetPtr cpuTarget(const std::string& name, int mesh) const;

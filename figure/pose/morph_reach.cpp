@@ -5,6 +5,7 @@
 #include <cmath>
 #include <optional>
 #include <set>
+#include <unordered_set>
 
 #include <figure/io/timing.hpp>
 #include <figure/pose/erc.hpp>
@@ -12,6 +13,12 @@
 namespace fv::pose {
 
 namespace {
+
+// A dial moving less than this at its ends is looked at on the way too, in this many steps: its formulas
+// may rise and be back at 0 by the end of its range, as Neck Swallow's splines are. One moving more has
+// answered what the panel asks, and each look runs all it reaches.
+constexpr double kLookCloserCm = 1;
+constexpr int    kRangeSteps   = 8;
 
 // Who reads a property: the formula's output, and whether by a mult stage.
 struct Forward
@@ -68,12 +75,19 @@ DialReach auditReach(const std::vector<MorphFact>& facts)
   ErcGraph      graph;
   // a modifier's key -> its size. Two copies of a file are one modifier, whose formulas count once.
   std::unordered_map<KeyId, double> sizes;
+  // the modifiers a formula moves by the name of a dial on the list, which a worn item's copy can follow
+  std::unordered_set<KeyId> listed;
   for(const MorphFact& f : facts)
   {
     const dson::MorphInfo& info = f.info;
-    if(info.id.empty())
+    // An alias has its dial's id and nothing of its dial, whose value is another channel's as the driver
+    // has it. Its file usually lists before the real one, which is the one that counts.
+    if(info.id.empty() || info.alias)
       continue;
-    const auto [known, first] = sizes.try_emplace(graph.intern("m:" + info.id), f.size);
+    const KeyId key = graph.intern("m:" + info.id);
+    if(f.stem == info.id && !dson::hiddenMorph(f.stem))
+      listed.insert(key);
+    const auto [known, first] = sizes.try_emplace(key, f.size);
     if(!first)
     {
       known->second = std::max(known->second, f.size);
@@ -84,8 +98,7 @@ DialReach auditReach(const std::vector<MorphFact>& facts)
     meta.clamped = info.clamped;
     meta.lo      = info.lo;
     meta.hi      = info.hi;
-    // an alias's value is another channel's, as the driver has it
-    graph.addModifier(info.id, f.file, info.alias ? nullptr : &meta, info.formulas.get());
+    graph.addModifier(info.id, f.file, &meta, info.formulas.get());
   }
   Readers readers;
   for(const KeyId key : graph.outputs())
@@ -94,37 +107,13 @@ DialReach auditReach(const std::vector<MorphFact>& facts)
 
   auto       rest  = graph.evaluator(atRest);
   const auto audit = [&](const dson::MorphInfo& info) {
-    const auto dialAt = [&](double at) {
-      return graph.evaluator([&id = info.id, at](const KeyInfo& k) -> std::optional<double> {
-        if(k.morph && k.id == id)
-          return at;
-        return atRest(k);
-      });
-    };
-    // as a channel's range before its file says otherwise (MorphSet::addLazy)
-    std::array<ErcGraph::Evaluator, 2> ends = {dialAt(info.min.value_or(0)), dialAt(info.max.value_or(1))};
-    morph::Reach                       out;
-    // at each end: the furthest a morph moves, and each bone's centre, squared
-    std::array<double, 2>                                  skin{};
-    std::unordered_map<std::string, std::array<double, 2>> centres;
-    std::set<std::string>                                  moved, scaled;
-    for(const auto& [key, added] : walk(graph.intern("m:" + info.id), readers))
+    const KeyId           dial    = graph.intern("m:" + info.id);
+    const auto            reached = walk(dial, readers);
+    morph::Reach          out;
+    std::set<std::string> moved, scaled, drives;
+    for(const auto& [key, added] : reached)
     {
-      const KeyInfo& k    = graph.info(key);
-      const double   from = rest(key).value_or(0);
-      for(size_t e = 0; e < ends.size(); e++)
-      {
-        const double d = std::abs(ends[e](key).value_or(0) - from);
-        if(k.morph)
-        {
-          if(const auto size = sizes.find(key); size != sizes.end())
-            skin[e] = std::max(skin[e], d * size->second);
-        }
-        else if(k.prop == "center_point")
-          centres[k.id][e] += d * d;
-        else if(k.prop == "rotation")
-          out.deg = std::max(out.deg, d);
-      }
+      const KeyInfo& k = graph.info(key);
       if(k.morph)
       {
         if(const auto size = sizes.find(key); size != sizes.end() && size->second > 0)
@@ -135,13 +124,47 @@ DialReach auditReach(const std::vector<MorphFact>& facts)
     }
     out.bones = int(moved.size());
     out.scales += int(std::count_if(scaled.begin(), scaled.end(), [&](const std::string& bone) { return !moved.count(bone); }));
-    for(size_t e = 0; e < ends.size(); e++)
-    {
+
+    // the furthest a morph moves with the dial here, and each bone's centre, squared
+    const auto look = [&](double at) {
+      auto value = graph.evaluator([&id = info.id, at](const KeyInfo& k) -> std::optional<double> {
+        if(k.morph && k.id == id)
+          return at;
+        return atRest(k);
+      });
+      double                                  skin = 0;
+      std::unordered_map<std::string, double> centres;
+      for(const auto& [key, added] : reached)
+      {
+        const KeyInfo& k = graph.info(key);
+        const double   d = std::abs(value(key).value_or(0) - rest(key).value_or(0));
+        if(k.morph)
+        {
+          const auto size = sizes.find(key);
+          if(size == sizes.end())
+            continue;
+          skin = std::max(skin, d * size->second);
+          if(d > 0 && size->second == 0 && key != dial && listed.count(key))
+            drives.insert(k.id);
+        }
+        else if(k.prop == "center_point")
+          centres[k.id] += d * d;
+        else if(k.prop == "rotation")
+          out.deg = std::max(out.deg, d);
+      }
       double centre = 0;
       for(const auto& [bone, squared] : centres)
-        centre = std::max(centre, std::sqrt(squared[e]));
-      out.cm = std::max(out.cm, skin[e] + centre);
-    }
+        centre = std::max(centre, std::sqrt(squared));
+      out.cm = std::max(out.cm, skin + centre);
+    };
+    // as a channel's range before its file says otherwise (MorphSet::addLazy)
+    const double lo = info.min.value_or(0), hi = info.max.value_or(1);
+    look(lo);
+    look(hi);
+    if(out.cm < kLookCloserCm && out.deg == 0 && reached.size() > 1)
+      for(int step = 1; step < kRangeSteps; step++)
+        look(lo + (hi - lo) * step / kRangeSteps);
+    out.drives.assign(drives.begin(), drives.end());
     return out;
   };
 

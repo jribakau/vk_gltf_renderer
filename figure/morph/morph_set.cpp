@@ -185,12 +185,15 @@ std::set<int> MorphSet::meshesOf(const std::string& name) const
 std::vector<std::string> MorphSet::itemsMoving(const std::string& name) const
 {
   std::vector<std::string> out;
-  const std::set<int>      bound = meshesOf(name);
+  const Channel*           ch = channel(name);
   for(const auto& st : m_followers)
   {
     const Follower& f = st->f;
     // an item of several meshes follows once for each
-    if((bound.count(f.mesh) || (f.hasOwn && f.hasOwn(name))) && std::find(out.begin(), out.end(), f.label) == out.end())
+    if(std::find(out.begin(), out.end(), f.label) != out.end())
+      continue;
+    const auto holds = [&](const std::string& dial) { return meshesOf(dial).count(f.mesh) || (f.hasOwn && f.hasOwn(dial)); };
+    if(holds(name) || (ch && ch->reach && std::any_of(ch->reach->drives.begin(), ch->reach->drives.end(), holds)))
       out.push_back(f.label);
   }
   return out;

@@ -872,6 +872,36 @@ TEST(FigureMorphSet, ADialSaysWhichItemsItMoves)
   EXPECT_NE(w.set.channel("Pupils"), nullptr);
 }
 
+// A controller moves an item through the dials it drives, whose copies are the item's: its own name isn't
+// in the item's folder. Once the audit has said which it drives.
+TEST(FigureMorphSet, AControllerMovesTheItemsThatHoldWhatItDrives)
+{
+  WornItemSet w;
+  w.set.addLazy("Natural", emptyFile());
+  w.set.addLazy("Thick", emptyFile());
+  w.set.addLazy("Curl", emptyFile());
+  w.set.addFollower(holdingItem("Curl", w.copy));
+  EXPECT_TRUE(w.set.itemsMoving("Natural").empty());
+
+  fv::morph::Reach natural;
+  natural.drives = {"Other", "Curl"};
+  w.set.setReach("Natural", natural);
+  fv::morph::Reach thick;
+  thick.drives = {"Other"};
+  w.set.setReach("Thick", thick);
+
+  const std::vector<std::string> eyes{"Eyes"};
+  EXPECT_EQ(w.set.itemsMoving("Natural"), eyes);
+  EXPECT_TRUE(w.set.itemsMoving("Thick").empty());
+
+  // and it says so again when a new list of what it drives comes
+  const int before = w.set.listVersion();
+  natural.drives   = {"Other"};
+  w.set.setReach("Natural", natural);
+  EXPECT_GT(w.set.listVersion(), before);
+  EXPECT_TRUE(w.set.itemsMoving("Natural").empty());
+}
+
 // An item's binding to a dial doesn't make the dial the item's: with it taken off, the dial, whose own
 // file was empty, stays for the next item, and a listing of the name makes no second one.
 TEST(FigureMorphSet, AnEmptyDialOutlivesAnItemBoundToIt)

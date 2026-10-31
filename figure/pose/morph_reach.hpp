@@ -2,9 +2,9 @@
 
 // What each dial of a figure's Morphs folder can do, worked out before any of them is moved: the panel
 // tells the ones that move skin from the ones that barely do. It runs the formulas the driver would, in
-// a graph of its own holding every file's, at each dial's two ends against all of them at rest. A
-// morph's size comes from reading its deltas (dson::morphSize). Off the owner's thread, on a copy of
-// what the skims said: it touches no figure.
+// a graph of its own holding every file's, at each dial's two ends against all of them at rest, and on
+// the way for one that does little at its ends. A morph's size comes from reading its deltas
+// (dson::morphSize). Off the owner's thread, on a copy of what the skims said: it touches no figure.
 
 #include <string>
 #include <unordered_map>
