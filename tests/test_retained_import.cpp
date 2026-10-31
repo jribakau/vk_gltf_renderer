@@ -34,6 +34,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <nvutils/file_operations.hpp>
 
+#include "gltf_meshopt.hpp"
 #include "gltf_scene.hpp"
 #include "ies_profile.hpp"
 #include "scene_import_gltf.hpp"
@@ -543,7 +544,8 @@ TEST(RetainedImport, DrawsTheFixturesAsTheLegacySceneDoes)
       std::string        err, warn;
       const bool ok = file.extension() == ".glb" ? loader.LoadBinaryFromFile(&model, &err, &warn, file.string()) :
                                                    loader.LoadASCIIFromFile(&model, &err, &warn, file.string());
-      if(!ok || model.nodes.empty() || model.scenes.empty() || model.extensionsUsed.end() != std::find_if(model.extensionsUsed.begin(), model.extensionsUsed.end(), [](const std::string& e) {
+      // decoded as the app's readModelFile does: the legacy scene's takeModel reads buffers as they are
+      if(!ok || !nvvkgltf::decompressMeshopt(model) || model.nodes.empty() || model.scenes.empty() || model.extensionsUsed.end() != std::find_if(model.extensionsUsed.begin(), model.extensionsUsed.end(), [](const std::string& e) {
            return e == "KHR_materials_variants" || e == "KHR_interactivity" || e.rfind("EXT_external", 0) == 0;
          }))
         continue;

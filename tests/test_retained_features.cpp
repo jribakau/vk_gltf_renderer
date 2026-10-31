@@ -31,6 +31,7 @@
 
 #include <figure/materials/material_gltf.hpp>
 
+#include "gltf_meshopt.hpp"
 #include "scene_export_gltf.hpp"
 #include "scene_feature_detection.hpp"
 #include "scene_import_gltf.hpp"
@@ -390,6 +391,8 @@ tinygltf::Model load(const std::filesystem::path& file, bool& ok)
   std::string        err, warn;
   ok = file.extension() == ".glb" ? loader.LoadBinaryFromFile(&model, &err, &warn, file.string()) :
                                     loader.LoadASCIIFromFile(&model, &err, &warn, file.string());
+  // the importer reads decoded buffers, as the app's readModelFile gives it
+  ok = ok && nvvkgltf::decompressMeshopt(model);
   return model;
 }
 
