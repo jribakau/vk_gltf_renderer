@@ -1096,6 +1096,108 @@ TEST(Dforce, liveModeDrapesThenStepsOnlyWhileSomethingMoves)
   EXPECT_TRUE(wrote);
 }
 
+TEST(Dforce, aLiveBoneMoveKeepsTheFiguresCentimetres)
+{
+  // as the host has it: the skins bound, then the figure root scaled to metres. A bone that moves no
+  // mesh goes to the simulation as a target, in the mesh's own centimetres as the build's bones are:
+  // given the scaled matrices the pinned row and the body would sweep to 1/100 of where they are
+  fv::SceneGraph scene;
+  fv::Node       root;
+  root.scale         = {0.01, 0.01, 0.01};
+  const int rootNode = scene.add(root);
+  fv::Node  boneNode;
+  boneNode.kind  = fv::NodeKind::eBone;
+  const int bone = scene.add(boneNode, rootNode);
+
+  const Grid body = grid(8, 0), veil = grid(4, 3);
+  const auto skinned = [&](fv::Mesh m) {
+    const size_t n = m.geo->cagePositions.size() / 3;
+    m.bones        = {bone};
+    m.boneInverses = {fv::Mat4{}};
+    for(size_t v = 0; v <= n; v++)
+      m.cageSkin.start.push_back(int32_t(v));
+    m.cageSkin.bone.assign(n, 0);
+    m.cageSkin.weight.assign(n, 1.f);
+    return m;
+  };
+  scene.meshes.push_back(skinned(sceneMesh(body, false)));
+  scene.meshes.push_back(skinned(sceneMesh(veil, true)));
+  // the veil's first row held on the skin
+  const int pinned = 5;
+  {
+    auto settings = std::make_shared<fv::dson::DforceData>(*scene.meshes[1].dforce);
+    for(int v = 0; v < pinned; v++)
+      settings->strength[size_t(v)] = 0.f;
+    scene.meshes[1].dforce = settings;
+  }
+  scene.materials.push_back({});
+  for(int i = 0; i < 2; i++)
+  {
+    fv::Node n;
+    n.kind = fv::NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, rootNode);
+  }
+  // the drawn vertices run in their own order: the row is the ones at its z
+  const std::vector<float> rest = scene.meshes[1].geo->position;
+  std::vector<size_t>      row;
+  for(size_t v = 0; v < rest.size() / 3; v++)
+    if(rest[v * 3 + 2] == veil.pos[2])
+      row.push_back(v);
+  ASSERT_EQ(row.size(), size_t(pinned));
+
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+  d.setMode(dforce::Mode::eLive);
+  bool wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+  {
+    wrote = d.pump();
+    if(!wrote)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(wrote);
+  for(int i = 0; i < 400 && d.busy(); i++)
+  {
+    d.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  // what is drawn is the cloth's rest shape plus its drape, skinned on top: the pinned row's drape stays
+  // nothing, wherever the bone is, and the free cloth stays in the size it was
+  const auto& pos    = scene.meshes[1].geo->position;
+  const auto  expect = [&](const char* when) {
+    for(size_t v : row)
+      for(size_t c = 0; c < 3; c++)
+        EXPECT_NEAR(pos[v * 3 + c], rest[v * 3 + c], 0.05f) << when << " vertex " << v;
+    float least = 1e9f, most = -1e9f;
+    for(size_t v = 0; v < pos.size() / 3; v++)
+    {
+      least = std::min(least, pos[v * 3]);
+      most  = std::max(most, pos[v * 3]);
+    }
+    EXPECT_GT(most - least, 3.f) << when;
+  };
+  expect("draped");
+
+  scene.nodes[size_t(bone)].position.x += 2;
+  int writes = 0;
+  for(int i = 0; i < 300; i++)
+  {
+    if(d.pump())
+    {
+      writes++;
+      expect("moving");
+      if(HasFailure())
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  // it did step, and the steps stop again
+  EXPECT_GT(writes, 0);
+  expect("moved");
+}
+
 TEST(Dforce, anEditToADrapedMeshSettlesAgain)
 {
   // the host reports a frame's edits before the drape is written, so a mesh just draped that an edit

@@ -379,7 +379,7 @@ std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const
     const int mesh = job.slotMesh[slot];
     if(mesh < 0 || size_t(mesh) >= m_scene.meshes.size() || !m_scene.meshes[size_t(mesh)].skinned())
       continue;
-    out[slot] = currentSkin(m_scene, worlds, nodeOf, mesh).bones;
+    out[slot] = skinMatrices(currentSkin(m_scene, worlds, nodeOf, mesh));
   }
   return out;
 }
