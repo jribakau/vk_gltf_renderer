@@ -47,7 +47,7 @@ Pool& pool()
   return instance;
 }
 
-void parallelFor(size_t count, size_t chunk, const std::function<void(size_t, size_t)>& fn)
+void parallelFor(size_t count, size_t chunk, const std::function<void(size_t, size_t)>& fn, size_t maxHelpers)
 {
   chunk               = std::max<size_t>(chunk, 1);
   const size_t chunks = (count + chunk - 1) / chunk;
@@ -95,7 +95,7 @@ void parallelFor(size_t count, size_t chunk, const std::function<void(size_t, si
     }
   };
   Pool&        p       = pool();
-  const size_t helpers = std::min(p.size(), chunks - 1);
+  const size_t helpers = std::min({p.size(), chunks - 1, maxHelpers});
   for(size_t i = 0; i < helpers; i++)
     p.submit([state, work] { work(*state); });
   work(*state);

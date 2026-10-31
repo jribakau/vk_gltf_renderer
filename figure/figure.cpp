@@ -126,6 +126,8 @@ void Figure::setup(const Progress& progress)
       for(size_t i = 0; i < files.size(); i++)
         if(read[i])
         {
+          notes.facts.push_back({files[i], stemOf(files[i]), *read[i]});
+          read[i]->formulas.reset();
           // a scene's dial goes by the id in the file, the listing's by the file's name
           if(!read[i]->alias && !read[i]->id.empty())
             notes.info.emplace(read[i]->id, *read[i]);
@@ -479,12 +481,33 @@ bool Figure::noteMorphs()
     m_morphNotes  = m_morphInfoJob.get();
     m_morphsNoted = -1;
     arrived       = true;
+    m_morphReachJob = jobs::pool().submit([st = m_store, facts = std::move(m_morphNotes.facts)]() mutable {
+      timing::Scope t("morph reach", 1);
+      // a few threads of the pool: a dial's file, which someone is waiting for, queues behind them
+      jobs::parallelFor(
+          facts.size(), 8,
+          [&](size_t begin, size_t end) {
+            for(size_t i = begin; i < end; i++)
+              if(facts[i].info.hasMorph)
+                if(const auto path = st->library().find(facts[i].file))
+                  facts[i].size = dson::morphSize(*path);
+          },
+          3);
+      return pose::auditReach(facts);
+    });
+  }
+  if(m_morphReachJob.valid() && m_morphReachJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+  {
+    m_morphReach  = m_morphReachJob.get();
+    m_morphsNoted = -1;
   }
   bool again = false;
   if(!m_morphNotes.info.empty() && morphs->listVersion() != m_morphsNoted)
   {
     for(const morph::Channel& ch : morphs->channels())
     {
+      if(const auto reach = m_morphReach.find(ch.name); reach != m_morphReach.end())
+        morphs->setReach(ch.name, reach->second);
       const auto it = m_morphNotes.info.find(ch.name);
       if(it == m_morphNotes.info.end())
         continue;

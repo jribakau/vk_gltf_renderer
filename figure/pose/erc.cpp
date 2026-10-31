@@ -126,8 +126,7 @@ void ErcGraph::addDoc(const Json& doc, const std::string& file)
       const Json* idj = dson::get(&mod, "id");
       if(!idj || !idj->is_string())
         continue;
-      const std::string id = idj->get<std::string>();
-      m_files[id]          = file;
+      std::optional<ChannelMeta> channel;
       if(const Json* ch = dson::get(&mod, "channel"); ch && ch->is_object())
       {
         const Json* raw = dson::get(ch, "current_value");
@@ -149,13 +148,32 @@ void ErcGraph::addDoc(const Json& doc, const std::string& file)
           meta.lo      = lo->get<double>();
           meta.hi      = hi->get<double>();
         }
-        m_metas[id] = meta;
+        channel = meta;
       }
-      if(const Json* formulas = dson::get(&mod, "formulas"); formulas && formulas->is_array())
-        for(const Json& f : *formulas)
-          addFormula(f, file);
+      addModifier(idj->get<std::string>(), file, channel ? &*channel : nullptr, dson::get(&mod, "formulas"));
     }
   version++;
+}
+
+void ErcGraph::addModifier(const std::string& id, const std::string& file, const ChannelMeta* meta, const Json* formulas)
+{
+  m_files[id] = file;
+  if(meta)
+    m_metas[id] = *meta;
+  if(formulas && formulas->is_array())
+    for(const Json& f : *formulas)
+      addFormula(f, file);
+  version++;
+}
+
+std::vector<ErcGraph::Input> ErcGraph::inputsOf(KeyId k) const
+{
+  std::vector<Input> out;
+  for(const Compiled& f : m_keys[size_t(k)].formulas)
+    for(const KeyId in : f.inputs)
+      if(in >= 0)
+        out.push_back({in, f.mult});
+  return out;
 }
 
 void ErcGraph::addFormula(const Json& f, const std::string& file)

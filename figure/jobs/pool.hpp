@@ -5,6 +5,7 @@
 // collects on its own thread, so figure objects stay single-threaded.
 
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <future>
@@ -56,6 +57,8 @@ Pool& pool();
 // Calls fn(begin, end) over [0, count) in chunks of `chunk`, on the pool and on the calling thread,
 // and returns when every chunk is done. The caller takes chunks too, so a pool job may call it: the
 // work finishes even when every pool thread is busy. The first exception is rethrown at the end.
-void parallelFor(size_t count, size_t chunk, const std::function<void(size_t begin, size_t end)>& fn);
+// `maxHelpers` limits the pool threads it asks for, for work nobody is waiting on: what's submitted
+// next queues behind them.
+void parallelFor(size_t count, size_t chunk, const std::function<void(size_t begin, size_t end)>& fn, size_t maxHelpers = SIZE_MAX);
 
 }  // namespace fv::jobs

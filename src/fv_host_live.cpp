@@ -24,6 +24,8 @@
 
 #include "fv_host_impl.hpp"
 
+#include <cmath>
+
 // The figure's moved nodes, fed: their transforms (a pose step), or the whole figure when a node is new
 void FvHost::Impl::feedWhole(Loaded& f)
 {
@@ -146,6 +148,8 @@ void FvHost::Impl::publishMorphs(Loaded& f)
     Json channels = Json::object();
     f.published.clear();
     int order = 0;
+    // this goes out for every dial each time the list changes, and no one reads 17 digits of it
+    const auto thousandths = [](double v) { return std::round(v * 1000) / 1000; };
     for(const fv::morph::Channel& ch : morphs.channels())
     {
       if(ch.hidden)
@@ -161,6 +165,18 @@ void FvHost::Impl::publishMorphs(Loaded& f)
         channels[ch.name]["kind"] = ch.kind;
       if(ch.helper)
         channels[ch.name]["helper"] = true;
+      if(ch.rest != 0)
+        channels[ch.name]["rest"] = ch.rest;
+      if(ch.reach)
+        channels[ch.name]["reach"] = {{"cm", thousandths(ch.reach->cm)},
+                                      {"deg", thousandths(ch.reach->deg)},
+                                      {"morphs", ch.reach->morphs},
+                                      {"bones", ch.reach->bones},
+                                      {"scales", ch.reach->scales}};
+      if(ch.inert)
+        channels[ch.name]["inert"] = true;
+      if(std::vector<std::string> items = morphs.itemsMoving(ch.name); !items.empty())
+        channels[ch.name]["items"] = std::move(items);
       f.published[ch.name] = {ch.value, w};
     }
     f.morphList = morphs.listVersion();

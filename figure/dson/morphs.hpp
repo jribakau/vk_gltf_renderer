@@ -85,6 +85,10 @@ struct MorphInfo
   // the value the dial stands at untouched; a boolean's is 1 or 0
   double                rest = 0;
   std::optional<double> min, max;
+  // the channel holds its value to these, when it says it's clamped: the file's own, where min and max
+  // are a slider's
+  bool   clamped = false;
+  double lo = 0, hi = 0;
   // the file marks it as not a dial: not visible, under /Hidden, or a channel of a type that isn't a
   // number to dial (an alias of another channel, a file to load)
   bool helper = false;
@@ -109,6 +113,12 @@ std::optional<MorphInfo> morphInfoFromText(std::string_view head);
 // The same from a file, read further when the start of it didn't reach the deltas; empty when it can't
 // be read.
 std::optional<MorphInfo> morphInfo(const std::filesystem::path& file);
+
+// The furthest its deltas move a vertex at a weight of 1, in the file's centimetres; 0 without any.
+// Goes through all of them and keeps none.
+double morphSizeFromText(std::string_view text);
+// The same from a file; 0 when it can't be read.
+double morphSize(const std::filesystem::path& file);
 
 // Converts every morph modifier in a document into targets. `prefer` (indices into `meshes`)
 // narrows the target to one scene node's meshes when several copies of the same geometry are loaded.

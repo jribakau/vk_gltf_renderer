@@ -1110,6 +1110,93 @@ TEST(FvHost, ADialItsFileDefaultsOnHoldsThatFromLoadToReopening)
   EXPECT_EQ(power(), 0.0);
 }
 
+namespace {
+
+// Frames until a channel of the morphs topic says what it can do: nothing waits for that, a settle included
+Json reachOf(HostRig& rig, const std::string& id, const std::string& dial)
+{
+  const auto channel = [&] { return rig.topic("morphs/" + id).at("channels").value(dial, Json::object()); };
+  for(int i = 0; i < 5000 && !channel().contains("reach"); i++)
+  {
+    rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return channel().value("reach", Json::object());
+}
+
+}  // namespace
+
+// The panel is told what a dial can do: its deltas' size at the end of its range, the bones it turns and
+// the morphs its formulas reach. A dial at a default of 0 doesn't say so.
+TEST(FvHost, AMorphsTopicSaysWhatADialCanDo)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+
+  const Json taper = reachOf(rig, id, "Taper");
+  EXPECT_NEAR(taper.value("cm", 0.0), 8.485, 1e-9) << taper.dump();
+  EXPECT_EQ(taper.value("deg", -1.0), 0.0);
+  EXPECT_EQ(taper.value("morphs", 0), 1);
+  EXPECT_EQ(taper.value("bones", -1), 0);
+  EXPECT_EQ(taper.value("scales", -1), 0);
+  const Json nod = reachOf(rig, id, "CTRL Nod");
+  EXPECT_EQ(nod.value("deg", 0.0), 30.0) << nod.dump();
+  EXPECT_EQ(nod.value("bones", 0), 1);
+  EXPECT_EQ(nod.value("morphs", 0), 1);
+  EXPECT_NEAR(nod.value("cm", 0.0), 8.485, 1e-9);
+
+  const Json channels = rig.topic("morphs/" + id).at("channels");
+  EXPECT_FALSE(channels.at("Taper").contains("rest"));
+  EXPECT_FALSE(channels.at("Taper").contains("inert"));
+  EXPECT_FALSE(channels.at("Taper").contains("items"));
+  // the deltas of this one are all on the item, and its file has a block of none
+  const Json lift = reachOf(rig, id, "Sleeve Lift");
+  EXPECT_EQ(lift.value("cm", -1.0), 0.0) << lift.dump();
+  EXPECT_EQ(lift.value("morphs", -1), 0);
+  EXPECT_FALSE(channels.at("Sleeve Lift").contains("items"));
+
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const auto sleeve = [&] { return rig.topic("morphs/" + id).at("channels").at("Sleeve Lift"); };
+  EXPECT_EQ(sleeve().value("items", Json::array()), Json::array({"Box Shirt"})) << sleeve().dump();
+  EXPECT_FALSE(sleeve().contains("inert"));
+
+  // a file read says what it holds, and the channel stays what it can do
+  rig.cmd("morph.set", {{"prop", id}, {"values", {{"Sleeve Lift", 0.5}}}});
+  ASSERT_TRUE(rig.settle());
+  for(int i = 0; i < 5000 && !sleeve().contains("inert"); i++)
+  {
+    rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(sleeve().value("inert", false)) << sleeve().dump();
+  EXPECT_TRUE(sleeve().contains("reach"));
+  EXPECT_EQ(sleeve().value("items", Json::array()), Json::array({"Box Shirt"}));
+}
+
+// A dial's default goes out when it isn't 0. A body slider has no file to say anything of it: unknown, and
+// the panel counts that as there to be seen.
+TEST(FvHost, AMorphsTopicSaysWhereADialRestsAndABodySliderHasNoReach)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Shape Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+
+  const Json power = reachOf(rig, id, "Power");
+  EXPECT_EQ(power.value("cm", -1.0), 0.0) << power.dump();
+  const Json channels = rig.topic("morphs/" + id).at("channels");
+  EXPECT_EQ(channels.at("Power").value("rest", 0.0), 1.0) << channels.at("Power").dump();
+  const Json waist = channels.at("fv_shape_waist");
+  EXPECT_FALSE(waist.contains("reach")) << waist.dump();
+  EXPECT_FALSE(waist.contains("rest"));
+  EXPECT_FALSE(waist.contains("inert"));
+  EXPECT_FALSE(waist.contains("helper"));
+  EXPECT_EQ(waist.value("kind", ""), "Modifier/FvShape");
+}
+
 // A worn item's fit dial is named by the item's key. The key goes in the file, so the dial finds its
 // garment after a session that took others off, and the same modifier on another garment stays out of it.
 TEST(FvHost, AFitDialFindsItsGarmentWhenReopened)

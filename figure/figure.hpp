@@ -22,6 +22,7 @@
 #include <figure/dson/figure_loader.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/pose/figure_driver.hpp>
+#include <figure/pose/morph_reach.hpp>
 #include <figure/pose/pose_rig.hpp>
 
 namespace fv {
@@ -264,6 +265,8 @@ private:
     std::unordered_map<std::string, dson::MorphInfo> info;
     // for the driver, which takes it on arrival
     pose::MorphFiles                                 files;
+    // for the reach audit, which starts on arrival; the only copy of the formulas
+    std::vector<pose::MorphFact>                     facts;
   };
 
   struct CorrectiveFile
@@ -281,6 +284,9 @@ private:
   bool                                          m_correctivesStarted = false;
   std::future<MorphNotes>                       m_morphInfoJob;
   MorphNotes                                    m_morphNotes;
+  // what each dial can do: it reads every morph's deltas, so nothing waits for it, settle() included
+  std::future<pose::DialReach>                  m_morphReachJob;
+  pose::DialReach                               m_morphReach;
   int                                           m_morphsNoted = -1;
   int                                           m_readersSeen = -1;
   std::atomic<int>                              m_wears{0};

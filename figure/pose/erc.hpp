@@ -65,6 +65,9 @@ class ErcGraph
 public:
   // Registers every modifier of a DSON document: its channel and its formulas. Once per file.
   void addDoc(const dson::Json& doc, const std::string& file);
+  // One modifier by its parts, as a skim holds them: its channel and its array of formulas, each null
+  // for none.
+  void addModifier(const std::string& id, const std::string& file, const ChannelMeta* meta, const dson::Json* formulas);
 
   // The id of a property key, made on first use.
   KeyId intern(const std::string& key);
@@ -80,6 +83,14 @@ public:
   const ChannelMeta* meta(const std::string& id) const;
   // The file a modifier lives in, when a registered file or an explicit url said so.
   const std::string* fileOf(const std::string& id) const;
+
+  // What a property's formulas read, and whether a mult stage does, which only scales what else moved it.
+  struct Input
+  {
+    KeyId key  = -1;
+    bool  mult = false;
+  };
+  std::vector<Input> inputsOf(KeyId k) const;
 
   // Evaluates properties on demand against `base`, each once (memoised for this evaluation).
   class Evaluator

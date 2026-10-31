@@ -327,6 +327,15 @@ bool MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
   return true;
 }
 
+void MorphSet::setReach(const std::string& name, const Reach& reach)
+{
+  Channel* ch = channelMut(name);
+  if(!ch || ch->reach == reach)
+    return;
+  ch->reach = reach;
+  m_listVersion++;
+}
+
 bool MorphSet::load(const std::string& name)
 {
   if(!m_lazy.count(name) || m_loading.count(name))

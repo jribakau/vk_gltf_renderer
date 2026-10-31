@@ -28,6 +28,21 @@
 
 namespace fv::morph {
 
+// What a dial can do on its own, from where it rests to the ends of its range (pose/morph_reach.hpp).
+struct Reach
+{
+  // the furthest it moves skin in centimetres, a joint centre's offset included, and the largest
+  // rotation of a bone in degrees
+  double cm = 0, deg = 0;
+  // the morphs with deltas and the bones its formulas add to, moving or not: a combo's formula
+  // multiplies by another dial, so it reaches them and scores 0 until that one moves
+  int morphs = 0, bones = 0;
+  // the ones its formulas reach only as a multiplier
+  int scales = 0;
+
+  bool operator==(const Reach&) const = default;
+};
+
 struct Channel
 {
   std::string name, label, group;
@@ -51,6 +66,9 @@ struct Channel
   // its file has nothing to move and nothing to drive: it moves only what a worn item holds for it,
   // when one is on (Genesis 9's Eye Pupils Dilate, whose deltas are in Genesis 9 Eyes)
   bool inert = false;
+  // what it can do, once the figure's files have been gone through. Unknown until then, and for good
+  // on a dial no file holds (a body slider, a worn item's).
+  std::optional<Reach> reach;
 };
 
 struct ChannelOptions
@@ -149,6 +167,8 @@ public:
   // has dialled goes to that rest, and formulas read it there; its file is not read for that. True
   // when the driver or a load now has something to do.
   bool describe(const std::string& name, const dson::MorphInfo& info);
+  // Tells a channel what it can do.
+  void setReach(const std::string& name, const Reach& reach);
   // Starts reading a lazy channel's file now, whatever its value: a morph whose formulas read another
   // dial, which the dial doesn't know of. False when there's nothing to start.
   bool load(const std::string& name);

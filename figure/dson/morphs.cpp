@@ -142,6 +142,9 @@ public:
   bool      found = false;
   // the modifier's "formulas", as a parse of the whole file would have them
   Json formulas;
+  // the channel's limits as the file has them, and whether it says they hold
+  std::optional<double> lo, hi;
+  bool                  clamped = false;
 
   MorphInfoSax()
       : m_dom(formulas, false)
@@ -157,6 +160,8 @@ public:
       info.helper = true;
     else if(in("channel") && m_key == "value")
       info.rest = v ? 1 : 0;
+    else if(in("channel") && m_key == "clamped")
+      clamped = v;
     return true;
   }
   bool number_integer(number_integer_t v) override { return inFormulas() ? m_dom.number_integer(v) : number(double(v)); }
@@ -241,11 +246,19 @@ private:
   bool number(double v)
   {
     if(in("channel") && m_key == "min")
+    {
+      lo       = v;
       info.min = sliderMin(v);
+    }
     else if(in("channel") && m_key == "max")
+    {
+      hi       = v;
       info.max = sliderMax(v);
+    }
     else if(in("channel") && m_key == "value")
       info.rest = v;
+    else if(in("channel") && m_key == "clamped")
+      clamped = v != 0;
     else if(inDeltas() && m_key == "count")
       info.deltaCount = int(v);
     return true;
@@ -267,6 +280,87 @@ private:
   }
 };
 
+// Keeps the longest row of the first deltas it comes to, and stops at their end.
+class MorphSizeSax : public nlohmann::json_sax<Json>
+{
+public:
+  // the longest row's squared length, its vertex number left out
+  double squared = 0;
+
+  bool null() override { return true; }
+  bool boolean(bool) override { return true; }
+  bool number_integer(number_integer_t v) override { return cell(double(v)); }
+  bool number_unsigned(number_unsigned_t v) override { return cell(double(v)); }
+  bool number_float(number_float_t v, const string_t&) override { return cell(v); }
+  bool string(string_t&) override { return true; }
+  bool binary(binary_t&) override { return true; }
+  bool key(string_t& v) override
+  {
+    m_key = v;
+    return true;
+  }
+  bool start_object(std::size_t) override
+  {
+    m_stack.push_back(std::exchange(m_key, {}));
+    return true;
+  }
+  bool end_object() override
+  {
+    m_stack.pop_back();
+    return true;
+  }
+  bool start_array(std::size_t) override
+  {
+    if(m_at == At::values)
+    {
+      m_at     = At::row;
+      m_column = 0;
+      m_row    = 0;
+      return true;
+    }
+    if(m_at == At::outside && m_key == "values" && m_stack.size() == 5 && m_stack[1] == "modifier_library" && m_stack[3] == "morph" && m_stack[4] == "deltas")
+    {
+      m_at = At::values;
+      return true;
+    }
+    m_stack.push_back(std::exchange(m_key, {}));
+    return true;
+  }
+  bool end_array() override
+  {
+    if(m_at == At::row)
+    {
+      m_at    = At::values;
+      squared = std::max(squared, m_row);
+      return true;
+    }
+    if(m_at == At::values)
+      return false;
+    m_stack.pop_back();
+    return true;
+  }
+  bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override { return false; }
+
+private:
+  enum class At
+  {
+    outside,
+    values,
+    row,
+  };
+  bool cell(double v)
+  {
+    if(m_at == At::row && m_column++ > 0)
+      m_row += v * v;
+    return true;
+  }
+  At                       m_at     = At::outside;
+  int                      m_column = 0;
+  double                   m_row    = 0;
+  std::vector<std::string> m_stack;
+  std::string              m_key;
+};
+
 }  // namespace
 
 std::optional<MorphInfo> morphInfoFromText(std::string_view head)
@@ -281,6 +375,12 @@ std::optional<MorphInfo> morphInfoFromText(std::string_view head)
   if(!dial || info.kind == "Modifier/Corrective" || info.path.rfind("/Hidden", 0) == 0)
     info.helper = true;
   info.hasMorph = info.deltaCount > 0;
+  if(sax.clamped && sax.lo && sax.hi)
+  {
+    info.clamped = true;
+    info.lo      = *sax.lo;
+    info.hi      = *sax.hi;
+  }
   // formulas cut off midway say nothing of the file's dials
   if(info.complete && sax.formulas.is_array() && !sax.formulas.empty())
   {
@@ -308,6 +408,25 @@ std::optional<MorphInfo> morphInfo(const std::filesystem::path& file)
   catch(const std::exception&)
   {
     return std::nullopt;
+  }
+}
+
+double morphSizeFromText(std::string_view text)
+{
+  MorphSizeSax sax;
+  Json::sax_parse(text.begin(), text.end(), &sax, Json::input_format_t::json, false);
+  return std::sqrt(sax.squared);
+}
+
+double morphSize(const std::filesystem::path& file)
+{
+  try
+  {
+    return morphSizeFromText(readMaybeCompressed(file));
+  }
+  catch(const std::exception&)
+  {
+    return 0;
   }
 }
 
