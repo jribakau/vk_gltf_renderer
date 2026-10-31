@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "sampled_image.hpp"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -53,25 +54,6 @@ It is using `nvvkgltf::Scene` to create the Vulkan buffers and images.
 -------------------------------------------------------------------------------------------------*/
 
 namespace nvvkgltf {
-
-// A sampled image from decoded mip levels: created, its levels uploaded through `staging` (in row
-// strips under the uploader's block size), the rest of its chain generated when there is one level,
-// `generateMipmaps` is set and the format can be blitted, and left in SHADER_READ_ONLY_OPTIMAL.
-// False, with nothing created, for an empty image, a format the device can't sample, or GPU memory
-// that can't hold it (`outOfMemory` set then). Shared by SceneVk and the retained scene's
-// VulkanGpuBackend.
-bool createSampledImage(VkCommandBuffer                       cmd,
-                        nvvk::CmdUploaderInterface&           staging,
-                        nvvk::ResourceAllocator&              alloc,
-                        VkPhysicalDevice                      physicalDevice,
-                        bool                                  generateMipmaps,
-                        VkFormat                              format,
-                        VkExtent2D                            size,
-                        const std::vector<std::vector<char>>& mipData,
-                        const VkComponentMapping&             componentMapping,
-                        const std::string&                    name,
-                        nvvk::Image&                          out,
-                        bool*                                 outOfMemory = nullptr);
 
 // Create the Vulkan version of the Scene
 // Allocate the buffers, etc.
@@ -161,20 +143,6 @@ public:
   // assumption destroy() makes. Also the failed-load path, so a load that never reaches
   // createTextureImages() does not pin the previous scene's textures.
   void releaseRetainedImages();
-  // Decodes a file-backed image on the calling thread into a pool the next createTextureImages()
-  // takes from (keyed as the reuse pool is: path, mtime, size, sRGB, mipmaps), so a host decodes a
-  // wear's new textures on its worker and the reload on the render thread only adopts them. Safe
-  // from any thread; what the next createTextureImages() does not take is dropped.
-  void prefetchImage(const std::filesystem::path& diskPath, bool srgb, uint32_t maxExtent = 0);
-  // Drops what was prefetched: a retained scene replace decodes its own, so nothing would take it
-  // What a host decoded ahead (prefetchImage) of the file at `diskPath`, taken; none when nothing
-  // was (the retained scene's backend claims prefetches through it). Any thread.
-  std::optional<LoadedImageData> takePrefetchedFile(const std::filesystem::path& diskPath, bool srgb);
-  void dropPrefetched()
-  {
-    std::lock_guard lock(m_prefetchMutex);
-    m_prefetched.clear();
-  }
   // track() each pooled allocation. cleanupScene() resets the memory tracker after destroy(), which
   // zeroes current bytes while the pool is still alive; without this a later untrack is a no-op and
   // a reused scene reports no image memory. eFull does not reset the tracker and does not call this.

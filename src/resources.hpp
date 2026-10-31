@@ -37,6 +37,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/ext/scalar_constants.hpp>
 
+#include "image_prefetch.hpp"
 #include "sample_schedule.hpp"
 #include "shaders/shaderio.h"  // Shared between host and device
 
@@ -370,8 +371,8 @@ struct Resources
   std::unique_ptr<rs::RetainedScene>   retainedScene;
   // the store is a stream host's own (GltfRenderer::hostScene)
   bool                                 hostFed = false;
-  std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
   bool                                 sceneFromFile = false;  // --scenefile: no host, so the renderer keeps the firefly clamp
+  std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
   // Between a cleanup that keeps images for reuse and the next scene replace: the retained scene,
   // emptied, its decoded images in grace. The next retained replace takes it; a legacy one, or a
   // cleanup that keeps nothing, destroys it. Not a session's scene (gpuView() never reads it).
@@ -380,6 +381,8 @@ struct Resources
   // The legacy CPU scene: none in a retained session, whose stream host feeds the retained scene
   nvvkgltf::Scene*       getScene() { return scene.get(); }
   const nvvkgltf::Scene* getScene() const { return scene.get(); }
+
+  nvvkgltf::ImagePrefetch imagePrefetch;  // what a host decoded ahead for the retained scene's upload
 
   // Resources
   nvvk::HdrIbl hdrIbl;  // HDR environment map

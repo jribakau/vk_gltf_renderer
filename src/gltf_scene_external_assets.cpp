@@ -44,6 +44,7 @@
 
 #include "gltf_scene.hpp"
 #include "gltf_scene_loading.hpp"
+#include "gltf_meshopt.hpp"
 #include "gltf_scene_merger.hpp"
 #include "gltf_scene_validator.hpp"
 #include "tinygltf_utils.hpp"
@@ -283,7 +284,7 @@ private:
       LOGW("External asset '%s' uses unsupported extensions; skipping\n", pathUtf8.c_str());
       return nullptr;
     }
-    if(!detail::decompressMeshopt(x.model))
+    if(!decompressMeshopt(x.model))
     {
       LOGW("External asset '%s': meshopt decompression failed; skipping\n", pathUtf8.c_str());
       return nullptr;

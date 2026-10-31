@@ -3975,9 +3975,7 @@ rs::VulkanGpuBackend::Info GltfRenderer::retainedBackendInfo()
           .maxSamplers        = m_maxSamplers,
           .blasScratchBudget  = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
           .opacityMicromaps   = m_resources.settings.opacityMicromapSupported,
-          // what a host decoded ahead (prefetchImage) lands in SceneVk's map either way
-          .takePrefetched = [this](const std::filesystem::path& path,
-                                   bool srgb) { return m_resources.sceneVk.takePrefetchedFile(path, srgb); },
+          .takePrefetched = [this](const std::filesystem::path& path, bool srgb) { return m_resources.imagePrefetch.take(path, srgb); },
           .maxImageExtent = [this] { return m_maxTextureExtent.load(); },
           .imageHeadroom  = [this] { return sceneHeadroom(); }};
 }
@@ -4068,7 +4066,7 @@ void GltfRenderer::replaceHostScene()
       m_resources.retainedGpu->replace(cmd, store);
     m_app->submitAndWaitTempCmdBuffer(cmd);
     logRetainedNotices();
-    m_resources.sceneVk.dropPrefetched();  // what this scene did not take would never be taken
+    m_resources.imagePrefetch.drop();  // what this scene did not take would never be taken
     m_pendingGeometry = 0;
     if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes())
     {
@@ -4555,7 +4553,7 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
 
 void GltfRenderer::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
 {
-  m_resources.sceneVk.prefetchImage(diskPath, srgb, m_maxTextureExtent.load());
+  m_resources.imagePrefetch.prefetch(diskPath, srgb, m_maxTextureExtent.load());
 }
 
 void GltfRenderer::setRenderSystem(RenderingMode mode)

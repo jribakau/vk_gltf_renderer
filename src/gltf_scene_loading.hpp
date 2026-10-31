@@ -53,8 +53,4 @@ bool loadGltfFile(const std::filesystem::path& filename,
 // Rewrite the relative image URIs of `child`, loaded from `childDir`, so they resolve from `ownerDir`.
 void rebaseImageUris(tinygltf::Model& child, const std::filesystem::path& childDir, const std::filesystem::path& ownerDir);
 
-// Decompress KHR/EXT_meshopt_compression buffer views in place and drop the extension. Returns true
-// if the extension was not used or decoding succeeded.
-bool decompressMeshopt(tinygltf::Model& model);
-
 }  // namespace nvvkgltf::detail

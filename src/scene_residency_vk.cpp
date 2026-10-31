@@ -38,7 +38,9 @@
 #include <nvvk/uploader_interface.hpp>
 
 #include "gltf_image_loader.hpp"
-#include "gltf_scene_vk.hpp"
+#include "gltf_image_loader.hpp"
+#include "sampled_image.hpp"
+#include "shaders/animation_io.h.slang"
 #include "staging_config.hpp"
 
 namespace rs {

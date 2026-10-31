@@ -26,7 +26,7 @@
 
 #include <tinyobjloader/tiny_obj_loader.h>
 
-#include "gltf_scene.hpp"
+#include "gltf_meshopt.hpp"
 #include "tinygltf_converter.hpp"
 #include "tinygltf_utils.hpp"
 
@@ -208,19 +208,11 @@ bool readModelFile(const std::filesystem::path& file, tinygltf::Model& model, st
         error = "not a glTF file";
       return false;
     }
-    // meshopt-compressed buffer views only the renderer's own loader unpacks (a merge skips them)
-    const auto uses = [&](const char* name) {
-      return std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), name) != model.extensionsUsed.end();
-    };
-    if(uses("EXT_meshopt_compression") || uses("KHR_meshopt_compression"))
+    // a merge would skip meshopt-compressed buffer views
+    if(!nvvkgltf::decompressMeshopt(model))
     {
-      nvvkgltf::Scene scene;
-      if(!scene.load(file))
-      {
-        error = "its compressed meshes could not be read";
-        return false;
-      }
-      model = scene.getModel();
+      error = "its compressed meshes could not be read";
+      return false;
     }
   }
   // a primitive with no material gets the model's own default one, as an OBJ does: the renderer's

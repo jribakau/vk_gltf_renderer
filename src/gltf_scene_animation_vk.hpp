@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "deform_pipelines.hpp"
 #include <span>
 
 #include <vector>
@@ -47,16 +48,6 @@ The CPU fallback path in `SceneVk::uploadPrimitives()` is preserved and selectab
 
  -------------------------------------------------------------------------------------------------*/
 namespace nvvkgltf {
-
-// The skinning and morph compute pipelines (push constants only, shaders/animation_io.h.slang), for
-// AnimationVk and the retained scene's Vulkan backend
-struct DeformPipelines
-{
-  VkPipeline       skin{}, morph{}, stencil{}, normals{}, tangents{};
-  VkPipelineLayout skinLayout{}, morphLayout{}, stencilLayout{}, normalsLayout{}, tangentsLayout{};
-  void             create(VkDevice device);
-  void             destroy(VkDevice device);
-};
 
 class AnimationVk
 {

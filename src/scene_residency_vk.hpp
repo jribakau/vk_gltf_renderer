@@ -49,7 +49,8 @@
 #include <nvvk/resources.hpp>
 
 #include "gltf_image_loader.hpp"
-#include "gltf_scene_animation_vk.hpp"
+#include "deform_pipelines.hpp"
+#include "gltf_image_loader.hpp"
 #include "gpu_memory_tracker.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency.hpp"
@@ -87,7 +88,7 @@ public:
     bool                            generateMipmaps   = true;
     // VK_KHR_opacity_micromap available and on (Settings::opacityMicromapSupported)
     bool opacityMicromaps = false;
-    // a file a host decoded ahead (SceneVk::takePrefetchedFile); any thread. Unset: none.
+    // a file a host decoded ahead (ImagePrefetch::take); any thread. Unset: none.
     std::function<std::optional<nvvkgltf::LoadedImageData>(const std::filesystem::path&, bool srgb)> takePrefetched;
     // Max texture size, and what still fits in GPU memory. Unset: no limit, and unknown.
     std::function<uint32_t()>                maxImageExtent;
