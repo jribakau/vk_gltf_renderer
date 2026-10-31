@@ -2,6 +2,9 @@
 
 #undef GLM_FORCE_XYZW_ONLY
 #define GLM_FORCE_SWIZZLE
+#if !defined(_MSC_VER)
+#define GLM_FORCE_INTRINSICS  // GCC and Clang get GLM's member swizzles (v.xy) only with it
+#endif
 #include <glm/glm.hpp>
 
 #include <algorithm>

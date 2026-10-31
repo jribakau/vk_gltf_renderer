@@ -137,7 +137,8 @@ float hairSampleTrimmedLogistic(float u, float s)
 {
   const float k = hairLogisticMassPi(s);
   const float x = -s * log(1.0F / (u * k + 0.5F * (1.0F - k)) - 1.0F);
-  return clamp(x, -M_PI, M_PI);
+  const float pi = M_PI;  // as a float: glibc's M_PI is a double where this compiles as C++
+  return clamp(x, -pi, pi);
 }
 
 float hairWrapPi(float dphi)
@@ -296,8 +297,8 @@ HairResponse hairFibreAt(float h, float3 wo, float3 wi, HairHit hair, HairScales
     r.pdf += mp * ord.pdf[p] * np;
   }
   float mpR = hairMp(cosI, max(cosO, 1e-4F), sinI, sinO, sc.v[HAIR_PMAX]);
-  r.f += mpR * ord.ap[HAIR_PMAX] * (0.5F * M_1_PI);
-  r.pdf += mpR * ord.pdf[HAIR_PMAX] * (0.5F * M_1_PI);
+  r.f += mpR * ord.ap[HAIR_PMAX] * (0.5F * M_1_OVER_PI);
+  r.pdf += mpR * ord.pdf[HAIR_PMAX] * (0.5F * M_1_OVER_PI);
   return r;
 }
 
