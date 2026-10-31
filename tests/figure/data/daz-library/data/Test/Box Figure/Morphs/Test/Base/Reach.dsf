@@ -1,0 +1,1 @@
+{"file_version":"0.6.0.0","asset_info":{"id":"/data/Test/Box%20Figure/Morphs/Test/Base/Reach.dsf","type":"modifier"},"modifier_library":[{"id":"Reach-0x1","name":"Reach-0x1","parent":"/data/Test/Box%20Figure/Box%20Figure.dsf#BoxFigure","channel":{"id":"value","type":"float","label":"Reach","value":0,"min":0,"max":1}}]}

@@ -6,8 +6,9 @@
 //
 // The graph grows as files load. A dial's file is read when the dial is first set; what its
 // formulas write and isn't a channel yet becomes a hidden one, loaded from the file a url names or
-// from the Morphs folder, and so on down the chain until nothing new is needed. The joint
-// correctives join on the first pose change.
+// from the Morphs folder, and so on down the chain until nothing new is needed. A morph can also say
+// in its own file what drives it, which nothing about that dial says: MorphFiles holds those, and
+// they're read when the dial moves. The joint correctives join on the first pose change.
 
 #include <functional>
 #include <map>
@@ -37,6 +38,28 @@ public:
   virtual std::optional<std::string> find(const std::string& id) = 0;
 };
 
+// What the skims of a Morphs folder's files say (dson::MorphInfo) that formulas need before the files
+// are read: formulas go by modifier ids, and the listing by file names.
+struct MorphFiles
+{
+  struct Reader
+  {
+    std::string file, stem, id;
+  };
+  // a dial's id -> the files that read it
+  std::unordered_map<std::string, std::vector<Reader>> readers;
+  struct Dial
+  {
+    // the channel a listing would have for it, unless its name is hidden
+    std::string stem;
+    double      rest = 0;
+  };
+  // a modifier's id -> the dial its file holds
+  std::unordered_map<std::string, Dial> dials;
+
+  void add(const std::string& file, const std::string& stem, const dson::MorphInfo& info);
+};
+
 class FigureDriver : public morph::Driver
 {
 public:
@@ -53,23 +76,40 @@ public:
   // Re-evaluates every formula and applies what changed. Re-entrant calls run once more at the end.
   void update() override;
 
-  // Takes the joint centres the formulas give now as where the figure's skeleton already is: a
-  // character's scene file stores its bones at the centres its shape moved them to.
+  // Takes what the files say, and runs the formulas with it: a character's morph multiplied by a dial
+  // whose file isn't read stands at 0 now, not at whatever the formula says without it.
+  void noteFiles(MorphFiles files);
+  // Starts reading the files that read a dial standing away from its rest, and forgets those: they
+  // only have to be read once. A dial at its rest brings none, whatever that rest is: a file's default
+  // is no move. True when a load started.
+  bool loadReaders();
+
+  // Takes the joint centres the formulas give at the dials the figure loaded with as where its
+  // skeleton already is: a character's scene file stores its bones at the centres its shape moved them
+  // to. Formulas that join later are counted the same way, as the file's centres include them too.
   void captureBaseline();
 
   // The channel name for a modifier id, where a file's modifier and the channel made for it differ.
   std::string nameOf(const std::string& id) const;
 
 private:
+  // the channel that holds a modifier's dial: by its id, or the listing's before its file has said so
+  const morph::Channel* dialOf(const std::string& id) const;
+  // a modifier's value by that channel, or where its file says it rests when a hidden name has none
+  std::optional<double> dialValue(const std::string& id, double morph::Channel::*value) const;
   std::optional<double> base(const KeyInfo& key);
+  std::optional<double> baseAtLoad(const KeyInfo& key);
   void                  run();
 
   morph::MorphSet&                      m_morphs;
   std::shared_ptr<FigureSource>         m_source;
   // modifier id -> channel name, and back
   std::unordered_map<std::string, std::string> m_alias, m_idOf;
+  MorphFiles                                   m_files;
   // joint centre values the figure loaded with (its scene stored the moved centres): offsets count from here
   std::map<std::string, double> m_baseline;
+  // the graph's version the baseline was taken at, -1 for a figure with none
+  int                           m_baselineFormulas = -1;
   bool                          m_running = false;
   bool                          m_again   = false;
 };

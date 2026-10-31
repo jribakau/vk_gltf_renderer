@@ -149,7 +149,7 @@ public:
   // has dialled goes to that rest, and formulas read it there; its file is not read for that. True
   // when the driver or a load now has something to do.
   bool describe(const std::string& name, const dson::MorphInfo& info);
-  // Starts reading a lazy channel's file now, whatever its value: a controller that follows another
+  // Starts reading a lazy channel's file now, whatever its value: a morph whose formulas read another
   // dial, which the dial doesn't know of. False when there's nothing to start.
   bool load(const std::string& name);
 

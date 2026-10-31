@@ -130,8 +130,7 @@ void Figure::setup(const Progress& progress)
           if(!read[i]->alias && !read[i]->id.empty())
             notes.info.emplace(read[i]->id, *read[i]);
           notes.info[stemOf(files[i])] = *read[i];
-          for(const std::string& dial : dson::followedDials(*read[i]))
-            notes.followers[dial].push_back(stemOf(files[i]));
+          notes.files.add(files[i], stemOf(files[i]), *read[i]);
         }
       return notes;
     });
@@ -474,11 +473,12 @@ Figure::Changes Figure::drain()
 
 bool Figure::noteMorphs()
 {
+  bool arrived = false;
   if(m_morphInfoJob.valid() && m_morphInfoJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
   {
-    m_morphNotes    = m_morphInfoJob.get();
-    m_morphsNoted   = -1;
-    m_followersSeen = -1;
+    m_morphNotes  = m_morphInfoJob.get();
+    m_morphsNoted = -1;
+    arrived       = true;
   }
   bool again = false;
   if(!m_morphNotes.info.empty() && morphs->listVersion() != m_morphsNoted)
@@ -496,24 +496,17 @@ bool Figure::noteMorphs()
         again = morphs->describe(ch.name, info) || again;
     }
     m_morphsNoted = morphs->listVersion();
+    // one that came or heard of its rest may stand away from it, which no change of value says
+    m_readersSeen = -1;
   }
-  // a dial that has moved from its rest brings the controllers that follow it, which nothing else
-  // would load. At its rest it brings none, whatever that rest is: a file's default is no move.
-  if(!m_morphNotes.followers.empty() && morphs->version() != m_followersSeen)
+  // once the channels have heard of their rests, as formulas will read them now
+  if(arrived && driver)
+    driver->noteFiles(std::move(m_morphNotes.files));
+  // a dial that has moved brings the files that read it, which nothing else would load
+  if(driver && morphs->version() != m_readersSeen)
   {
-    m_followersSeen = morphs->version();
-    for(auto it = m_morphNotes.followers.begin(); it != m_morphNotes.followers.end();)
-    {
-      const morph::Channel* dial = morphs->channel(it->first);
-      if(!dial || (dial->value == dial->rest && morphs->weightOf(it->first) == dial->rest))
-      {
-        ++it;
-        continue;
-      }
-      for(const std::string& controller : it->second)
-        again = morphs->load(controller) || again;
-      it = m_morphNotes.followers.erase(it);
-    }
+    m_readersSeen = morphs->version();
+    again         = driver->loadReaders() || again;
   }
   return again;
 }

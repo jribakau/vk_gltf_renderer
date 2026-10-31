@@ -305,6 +305,38 @@ TEST(Wardrobe, WearingAnItemAfterAnEmptyDialWasSetAppliesIt)
   EXPECT_NE(morphs.channel("Lift"), nullptr);
 }
 
+// A figure's own Morphs folder, skimmed: moving a dial with nothing in it reads the morphs whose files
+// say that it drives them, the listing's dial and one a listing leaves out, by ids none of which are
+// their files' names. Standing still it reads neither.
+TEST(FigureMorphs, ADialBringsTheFilesThatReadIt)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  fv::dson::LoadOptions       options;
+  options.subdivision = 1;
+  auto figure = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library})),
+                                 "People/Test/Box Figure.duf", options);
+  figure->settle();
+  const fv::morph::Channel* pull = figure->morphs->channel("Reach Pull");
+  ASSERT_NE(pull, nullptr);
+  EXPECT_TRUE(pull->lazy);
+  EXPECT_EQ(figure->morphs->channel("facs_cbs_ReachCombo"), nullptr);
+
+  figure->morphs->set("Reach", 0.5);
+  figure->settle();
+  EXPECT_FALSE(figure->morphs->channel("Reach Pull")->lazy);
+  EXPECT_NEAR(figure->morphs->weightOf("Reach Pull"), 0.5, 1e-6);
+  EXPECT_DOUBLE_EQ(figure->morphs->get("Reach Pull"), 0);
+  const fv::morph::Channel* combo = figure->morphs->channel("facs_cbs_ReachCombo");
+  ASSERT_NE(combo, nullptr);
+  EXPECT_TRUE(combo->hidden);
+  EXPECT_NEAR(figure->morphs->weightOf("facs_cbs_ReachCombo"), 0.5, 1e-6);
+
+  figure->morphs->set("Reach", 0.0);
+  figure->settle();
+  EXPECT_NEAR(figure->morphs->weightOf("Reach Pull"), 0, 1e-6);
+  EXPECT_NEAR(figure->morphs->weightOf("facs_cbs_ReachCombo"), 0, 1e-6);
+}
+
 // The same through a real wear. Box Figure's Sleeve Lift has an empty morph block, and Box Shirt holds
 // the deltas in a file of the same name.
 TEST(Wardrobe, AFiguresEmptyDialMovesTheWornItemThatHoldsItsDeltas)

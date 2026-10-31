@@ -94,7 +94,9 @@ struct MorphInfo
   bool hasMorph   = false;
   // the text reached the deltas or the modifier's end. Without that, nothing below can be told.
   bool complete = false;
-  // The dials its sum-stage formulas read, by id, whatever those formulas set. Its own value isn't one.
+  // The dials its sum-stage formulas read, by id, whatever those formulas set. It says so in its own
+  // file, so nothing about those dials says to load it: the scale behind Proportion Height is one. A
+  // mult-stage input only scales what something else moved. Its own value isn't one.
   std::vector<std::string> reads;
   // the modifier's formulas as the file has them, or null without any. Shared: a file's info is copied
   // about, and a character's formulas are large.
@@ -107,11 +109,6 @@ std::optional<MorphInfo> morphInfoFromText(std::string_view head);
 // The same from a file, read further when the start of it didn't reach the deltas; empty when it can't
 // be read.
 std::optional<MorphInfo> morphInfo(const std::filesystem::path& file);
-
-// A controller's (no deltas): the dials its own value follows, by id, from the formulas that set it. It
-// says so in its own file, so nothing about those dials says to load it: the scale behind Proportion
-// Height is one. Empty for a file with deltas, or one that wasn't read to the end of its formulas.
-std::vector<std::string> followedDials(const MorphInfo& info);
 
 // Converts every morph modifier in a document into targets. `prefer` (indices into `meshes`)
 // narrows the target to one scene node's meshes when several copies of the same geometry are loaded.

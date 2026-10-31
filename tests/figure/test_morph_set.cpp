@@ -1011,10 +1011,10 @@ TEST(MorphInfo, ALazyChannelTakesItsFilesLabelAndRange)
   EXPECT_NE(set.listVersion(), listed);
 }
 
-// A controller's file says which dials its value follows, which nothing about those dials says. A
-// file's reads are wider: any sum formula's ?value input, whatever it sets, with deltas or without. A
-// file with deltas isn't a controller, and a head that stops short of the end can't tell.
-TEST(MorphInfo, AControllerSaysWhichDialsItFollows)
+// A file says which dials it reads, which nothing about those dials says: any sum formula's ?value
+// input, whatever it sets, with deltas or without. A mult-stage input isn't one, and a head that stops
+// short of the end can't tell.
+TEST(MorphInfo, AFileSaysWhichDialsItReads)
 {
   const std::string formula = R"("formulas": [
         {"output": "Genesis9:/data/x.dsf#Genesis9?scale/general", "operations": [{"op": "push", "url": "Genesis9:#ctrl?value"}, {"op": "push", "val": 0.25}, {"op": "mult"}]},
@@ -1024,12 +1024,11 @@ TEST(MorphInfo, AControllerSaysWhichDialsItFollows)
         {"output": "Genesis9:/data/w.dsf#other?value", "stage": "sum", "operations": [{"op": "push", "url": "Genesis9:#input?value"}]}
       ])";
   const std::string start = R"({"modifier_library": [{"id": "ctrl", "channel": {"label": "C"}, )";
-  const std::vector<std::string> followed{"body_bs_Height", "gate"}, reads{"body_bs_Height", "input"};
+  const std::vector<std::string> reads{"body_bs_Height", "input"};
 
   const auto controller = fv::dson::morphInfoFromText(start + formula + "}]}");
   ASSERT_TRUE(controller);
   EXPECT_TRUE(controller->complete);
-  EXPECT_EQ(fv::dson::followedDials(*controller), followed);
   EXPECT_EQ(controller->reads, reads);
   EXPECT_FALSE(controller->hasMorph);
   ASSERT_TRUE(controller->formulas);
@@ -1040,13 +1039,11 @@ TEST(MorphInfo, AControllerSaysWhichDialsItFollows)
   EXPECT_TRUE(withDeltas->complete);
   EXPECT_TRUE(withDeltas->hasMorph);
   EXPECT_EQ(withDeltas->deltaCount, 40);
-  EXPECT_TRUE(fv::dson::followedDials(*withDeltas).empty());
   EXPECT_EQ(withDeltas->reads, reads);
 
   const auto cutShort = fv::dson::morphInfoFromText(start + formula.substr(0, formula.size() - 12));
   ASSERT_TRUE(cutShort);
   EXPECT_FALSE(cutShort->complete);
-  EXPECT_TRUE(fv::dson::followedDials(*cutShort).empty());
   EXPECT_TRUE(cutShort->reads.empty());
 }
 
@@ -1063,7 +1060,7 @@ TEST(MorphInfo, AMorphBlockOfNoDeltasCountsAsNone)
   EXPECT_TRUE(before->complete);
   EXPECT_EQ(before->deltaCount, 0);
   EXPECT_FALSE(before->hasMorph);
-  EXPECT_EQ(fv::dson::followedDials(*before), (std::vector<std::string>{"dial"}));
+  EXPECT_EQ(before->reads, (std::vector<std::string>{"dial"}));
 
   const auto after = fv::dson::morphInfoFromText(start + block + ", " + formula + "}]}");
   ASSERT_TRUE(after);

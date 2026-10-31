@@ -18,6 +18,17 @@ bool poseProp(const std::string& p)
 }
 }  // namespace
 
+void MorphFiles::add(const std::string& file, const std::string& stem, const dson::MorphInfo& info)
+{
+  if(info.id.empty())
+    return;
+  // an alias's value is another channel's
+  if(!info.alias)
+    dials[info.id] = {stem, info.rest};
+  for(const std::string& dial : info.reads)
+    readers[dial].push_back({file, stem, info.id});
+}
+
 FigureDriver::FigureDriver(morph::MorphSet& morphs, std::shared_ptr<FigureSource> source)
     : m_morphs(morphs)
     , m_source(std::move(source))
@@ -108,19 +119,84 @@ morph::Loader FigureDriver::loader(const std::string& file, const std::string& n
   };
 }
 
+const morph::Channel* FigureDriver::dialOf(const std::string& id) const
+{
+  if(const morph::Channel* c = m_morphs.channel(nameOf(id)))
+    return c;
+  const auto it = m_files.dials.find(id);
+  return it == m_files.dials.end() ? nullptr : m_morphs.channel(it->second.stem);
+}
+
+std::optional<double> FigureDriver::dialValue(const std::string& id, double morph::Channel::*value) const
+{
+  if(const morph::Channel* c = dialOf(id))
+    return c->*value;
+  const auto it = m_files.dials.find(id);
+  return it == m_files.dials.end() ? std::nullopt : std::optional<double>(it->second.rest);
+}
+
 // A property's value before formulas: a dial, a posed bone channel, 0 for a joint centre's offset.
 std::optional<double> FigureDriver::base(const KeyInfo& key)
 {
   if(key.morph)
-  {
-    const morph::Channel* c = m_morphs.channel(nameOf(key.id));
-    return c ? std::optional<double>(c->value) : std::nullopt;
-  }
+    return dialValue(key.id, &morph::Channel::value);
   if(key.id.empty())
     return std::nullopt;
   if(poseProp(key.prop))
     return rig ? rig->posed(key.id, key.prop, key.axis) : std::nullopt;
   return rig && rig->hasBone(key.id) ? std::optional<double>(0) : std::nullopt;
+}
+
+// A property as the figure loaded: its dials where they stood then, its bones unposed.
+std::optional<double> FigureDriver::baseAtLoad(const KeyInfo& key)
+{
+  if(key.morph)
+    return dialValue(key.id, &morph::Channel::loaded);
+  const std::optional<double> v = base(key);
+  return v && poseProp(key.prop) ? std::optional<double>(key.prop == "scale" ? 1 : 0) : v;
+}
+
+void FigureDriver::noteFiles(MorphFiles files)
+{
+  m_files = std::move(files);
+  if(m_baselineFormulas >= 0)
+    captureBaseline();
+  update();
+}
+
+bool FigureDriver::loadReaders()
+{
+  if(m_files.readers.empty())
+    return false;
+  fv::timing::Accum whole("driver.readers");
+  bool              started = false;
+  for(auto it = m_files.readers.begin(); it != m_files.readers.end();)
+  {
+    const morph::Channel* dial = dialOf(it->first);
+    if(!dial || (dial->value == dial->rest && m_morphs.weightOf(dial->name) == dial->rest))
+    {
+      ++it;
+      continue;
+    }
+    for(const MorphFiles::Reader& r : it->second)
+    {
+      // the channel it has by its id, as a scene's dial has, else the listing's by its file's name
+      const std::string byId = nameOf(r.id);
+      if(!m_morphs.has(byId) && m_morphs.has(r.stem))
+      {
+        started = m_morphs.load(r.stem) || started;
+        continue;
+      }
+      // a listing leaves out a hidden name: such a morph joins as run() adds one a formula moves
+      morph::ChannelOptions opts;
+      opts.group  = "Driven";
+      opts.hidden = true;
+      m_morphs.addLazy(byId, loader(r.file, byId), opts);
+      started = m_morphs.load(byId) || started;
+    }
+    it = m_files.readers.erase(it);
+  }
+  return started;
 }
 
 void FigureDriver::update()
@@ -150,6 +226,8 @@ void FigureDriver::update()
 void FigureDriver::run()
 {
   fv::timing::Accum whole("driver.run");
+  if(m_baselineFormulas >= 0 && m_baselineFormulas != graph.version)
+    captureBaseline();
   auto              value = graph.evaluator([this](const KeyInfo& k) { return base(k); });
   // channels that are dialled or applied, in order, then the ones formulas move
   std::vector<std::string>        names;
@@ -248,8 +326,9 @@ void FigureDriver::run()
 
 void FigureDriver::captureBaseline()
 {
-  auto value = graph.evaluator([this](const KeyInfo& k) { return base(k); });
+  auto value = graph.evaluator([this](const KeyInfo& k) { return baseAtLoad(k); });
   m_baseline.clear();
+  m_baselineFormulas = graph.version;
   const std::vector<KeyId> outputs = graph.outputs();
   for(KeyId key : outputs)
   {

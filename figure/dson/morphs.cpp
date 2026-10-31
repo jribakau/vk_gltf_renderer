@@ -311,18 +311,6 @@ std::optional<MorphInfo> morphInfo(const std::filesystem::path& file)
   }
 }
 
-std::vector<std::string> followedDials(const MorphInfo& info)
-{
-  std::vector<std::string> out;
-  if(info.hasMorph || !info.formulas)
-    return out;
-  for(const Json& f : *info.formulas)
-    if(valueOf(getString(&f, "output")) == info.id)
-      for(std::string& id : valueInputs(f, info.id))
-        out.push_back(std::move(id));
-  return out;
-}
-
 std::string groupFromPath(const std::string& file)
 {
   std::vector<std::string> parts;
