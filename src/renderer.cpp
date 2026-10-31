@@ -3394,8 +3394,10 @@ void GltfRenderer::refreshBakedEnvironment()
 //   - Otherwise → a fixed baseline high enough to preserve legitimately bright highlights
 void GltfRenderer::calibrateFireflyClamp()
 {
-  m_fireflyClampCalibratedFor                    = int(m_resources.settings.envSystem);
-  m_pathTracer.m_pushConst.fireflyClampThreshold = defaultFireflyClamp();
+  m_fireflyClampCalibratedFor = int(m_resources.settings.envSystem);
+  // a host owns the clamp (ptFireflyClamp, from its exposure): an environment's kind changing must not take it
+  if(!m_resources.hostFed)
+    m_pathTracer.m_pushConst.fireflyClampThreshold = defaultFireflyClamp();
 }
 
 //--------------------------------------------------------------------------------------------------
