@@ -87,7 +87,7 @@ struct DforceGpu::Impl
   // edges sorted by colour, and where each colour starts; the stretch edges have the first colours
   // to themselves, so a sweep over them alone is those colours
   std::vector<int> colourStart;
-  int              stretchColours = 0;
+  int              stretchColours = 0;
   int                lengthColours = 0;
 
   VkPipelineLayout layout{};
