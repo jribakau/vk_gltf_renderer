@@ -142,6 +142,232 @@ TEST(Dforce, aHangingStripKeepsItsLength)
   }
 }
 
+namespace {
+
+// A sheet hanging from its top row, `rows` centimetres long, in rows and columns `cell` centimetres apart.
+dforce::SettleMesh hangingSheet(int columns, int rows, float cell, float stretch)
+{
+  Grid g;
+  for(int r = 0; r <= rows; r++)
+    for(int c = 0; c <= columns; c++)
+      g.pos.insert(g.pos.end(), {float(c) * cell, -float(r) * cell, 0.f});
+  const auto at = [&](int c, int r) { return uint32_t(r * (columns + 1) + c); };
+  for(int r = 0; r < rows; r++)
+    for(int c = 0; c < columns; c++)
+    {
+      g.tris.insert(g.tris.end(), {at(c, r), at(c, r + 1), at(c + 1, r), at(c + 1, r), at(c, r + 1), at(c + 1, r + 1)});
+      g.polyVerts.insert(g.polyVerts.end(), {int32_t(at(c, r)), int32_t(at(c, r + 1)), int32_t(at(c + 1, r + 1)), int32_t(at(c + 1, r))});
+      g.polyStart.push_back(int32_t(g.polyVerts.size()));
+    }
+  dforce::SettleMesh m = cloth(g);
+  std::fill(m.stretch.begin(), m.stretch.end(), stretch);
+  for(int c = 0; c <= columns; c++)
+    m.strength[at(c, 0)] = 0.f;
+  return m;
+}
+
+// How far the sheet's bottom row has come down, over how long it is.
+float hangsAt(const std::vector<float>& pos, float length)
+{
+  float lowest = 0;
+  for(size_t v = 0; v < pos.size() / 3; v++)
+    lowest = std::min(lowest, pos[v * 3 + 1]);
+  return -lowest / length;
+}
+
+}  // namespace
+
+TEST(Dforce, reachLinksCarryAHangingSheetToWhatHoldsIt)
+{
+  // two metres of fine cloth from one row: edge by edge the sweeps can't bring the load up in time
+  const auto hang = [](bool links) {
+    dforce::SettleOptions opts;
+    opts.reachLinks = links;
+    dforce::ClothSim sim({hangingSheet(10, 200, 1.f, 0.8f)}, opts);
+    for(int f = 0; f < 45; f++)
+      sim.frame(1, 1, 3.f);
+    return hangsAt(sim.positions()[0], 200.f);
+  };
+  const float without = hang(false), with = hang(true);
+  EXPECT_LT(with - 1.f, (without - 1.f) * 0.5f) << "without " << without << " with " << with;
+}
+
+TEST(Dforce, reachLinksFollowTheThreadsAtTheFabricsCompliance)
+{
+  const dforce::ClothModel flat = dforce::ClothModel::build({hangingSheet(40, 40, 1.f, 0.8f)}, 0.15f);
+  int                      links = 0;
+  for(const dforce::Edge& e : flat.edges)
+  {
+    if(e.kind != dforce::EdgeKind::eReach)
+      continue;
+    links++;
+    const float dx = std::fabs(flat.rest[size_t(e.a) * 3] - flat.rest[size_t(e.b) * 3]), dy = std::fabs(flat.rest[size_t(e.a) * 3 + 1] - flat.rest[size_t(e.b) * 3 + 1]);
+    // as long as the way along the threads, which no shear can lengthen
+    EXPECT_NEAR(e.rest, dx + dy, 1e-3f);
+    EXPECT_NEAR(e.alpha, flat.edges[0].alpha, flat.edges[0].alpha * 0.01f);
+    // pinned to pinned holds nothing
+    EXPECT_TRUE(flat.inv[size_t(e.a)] > 0 || flat.inv[size_t(e.b)] > 0);
+  }
+  EXPECT_GT(links, 0);
+  // the links are few against the edges
+  EXPECT_LT(links, int(flat.edges.size()) / 10);
+  // another mesh's cloth isn't linked to this one
+  const dforce::ClothModel two = dforce::ClothModel::build({hangingSheet(10, 10, 1.f, 0.8f), hangingSheet(10, 10, 1.f, 0.8f)}, 0.15f);
+  for(const dforce::Edge& e : two.edges)
+    EXPECT_EQ(two.meshOf[size_t(e.a)], two.meshOf[size_t(e.b)]);
+}
+
+TEST(Dforce, reachLinksFollowTheFabricsExpansion)
+{
+  dforce::SettleMesh m = hangingSheet(40, 40, 1.f, 0.8f);
+  std::fill(m.contraction.begin(), m.contraction.end(), 1.2f);
+  const dforce::ClothModel model = dforce::ClothModel::build({m}, 0.15f);
+  int                      links = 0;
+  for(const dforce::Edge& e : model.edges)
+  {
+    if(e.kind != dforce::EdgeKind::eReach)
+      continue;
+    links++;
+    const float dx = std::fabs(model.rest[size_t(e.a) * 3] - model.rest[size_t(e.b) * 3]), dy = std::fabs(model.rest[size_t(e.a) * 3 + 1] - model.rest[size_t(e.b) * 3 + 1]);
+    EXPECT_NEAR(e.rest, (dx + dy) * 1.2f, 1e-2f);
+  }
+  EXPECT_GT(links, 0);
+}
+
+TEST(Dforce, aReachLinkOverASoftPanelIsAsSoftAsThePanel)
+{
+  // stiff above and below a soft band three rows tall
+  dforce::SettleMesh m = hangingSheet(40, 40, 1.f, 0.8f);
+  for(int r = 20; r < 23; r++)
+    for(int c = 0; c <= 40; c++)
+      m.stretch[size_t(r * 41 + c)] = 0.05f;
+  const dforce::ClothModel model = dforce::ClothModel::build({m}, 0.15f);
+  int                      across = 0;
+  float                    stiffest = INFINITY, softestEdge = 0;
+  for(const dforce::Edge& e : model.edges)
+  {
+    if(e.kind == dforce::EdgeKind::eStretch)
+      softestEdge = std::max(softestEdge, e.alpha);
+    if(e.kind != dforce::EdgeKind::eReach)
+      continue;
+    const float ya = -model.rest[size_t(e.a) * 3 + 1], yb = -model.rest[size_t(e.b) * 3 + 1];
+    if(std::min(ya, yb) < 20 && std::max(ya, yb) > 22)
+    {
+      across++;
+      stiffest = std::min(stiffest, e.alpha);
+    }
+  }
+  ASSERT_GT(across, 0);
+  EXPECT_NEAR(stiffest, softestEdge, softestEdge * 0.01f);
+}
+
+TEST(Dforce, aVertexTakesOnlySoManyLinks)
+{
+  // a pinned band with strands hanging from it: the band's seeds are within reach of every strand
+  const int  strands = 120, points = 30;
+  Grid       fringe;
+  const auto at = [&](int s, int p) { return uint32_t(s * points + p); };
+  for(int s = 0; s < strands; s++)
+    for(int p = 0; p < points; p++)
+      fringe.pos.insert(fringe.pos.end(), {float(s) * 0.5f, -float(p) * 0.5f, 0.f});
+  for(int s = 0; s < strands; s++)
+  {
+    for(int p = 0; p + 1 < points; p++)
+    {
+      fringe.polyVerts.insert(fringe.polyVerts.end(), {int32_t(at(s, p)), int32_t(at(s, p + 1))});
+      fringe.polyStart.push_back(int32_t(fringe.polyVerts.size()));
+    }
+    if(s + 1 < strands)
+    {
+      fringe.polyVerts.insert(fringe.polyVerts.end(), {int32_t(at(s, 0)), int32_t(at(s + 1, 0))});
+      fringe.polyStart.push_back(int32_t(fringe.polyVerts.size()));
+    }
+  }
+  dforce::SettleMesh m = cloth(fringe);
+  for(int s = 0; s < strands; s++)
+    m.strength[at(s, 0)] = 0.f;
+  const dforce::ClothModel model = dforce::ClothModel::build({m}, 0.15f);
+  std::vector<int>         links(size_t(model.nv), 0);
+  int                      total = 0;
+  for(const dforce::Edge& e : model.edges)
+    if(e.kind == dforce::EdgeKind::eReach)
+    {
+      links[size_t(e.a)]++;
+      links[size_t(e.b)]++;
+      total++;
+    }
+  EXPECT_GT(total, 0);
+  EXPECT_LE(*std::max_element(links.begin(), links.end()), 12);
+}
+
+TEST(Dforce, reachLinksLeaveShearToTheFabric)
+{
+  // a loose weave hung from its two top corners sags on the bias, by shear. Against the same cloth with
+  // no links and sweeps enough to converge: without those, it falls further only by stretching
+  const auto hang = [](bool withLinks) {
+    dforce::SettleMesh m = hangingSheet(60, 60, 1.f, 0.8f);
+    std::fill(m.strength.begin(), m.strength.end(), 1.f);
+    m.strength[0]  = 0.f;
+    m.strength[60] = 0.f;
+    std::fill(m.shear.begin(), m.shear.end(), 0.05f);
+    dforce::SettleOptions opts;
+    opts.reachLinks = withLinks;
+    if(!withLinks)
+    {
+      opts.stretchSweeps = 40;
+      opts.substeps      = 48;
+    }
+    dforce::ClothSim sim({m}, opts);
+    sim.settle();
+    return sim.positions()[0];
+  };
+  const auto  with = hang(true), converged = hang(false);
+  // the middle of the top edge, which only the bias lets fall
+  const float fell = -with[30 * 3 + 1], fellConverged = -converged[30 * 3 + 1];
+  EXPECT_GT(fellConverged, 3.f);
+  EXPECT_NEAR(fell, fellConverged, fellConverged * 0.25f);
+}
+
+TEST(Dforce, aStretchyFabricStaysStretchyWithReachLinks)
+{
+  const auto hang = [](float stretch) {
+    dforce::SettleOptions opts;
+    dforce::ClothSim      sim({hangingSheet(10, 100, 1.f, stretch)}, opts);
+    for(int f = 0; f < 45; f++)
+      sim.frame(1, 1, 3.f);
+    return hangsAt(sim.positions()[0], 100.f);
+  };
+  EXPECT_GT(hang(0.02f), hang(0.9f) + 0.01f);
+}
+
+TEST(Dforce, aReachLinkOnlyPullsSoClothCanGather)
+{
+  // both ends brought to half the distance: the cloth between gathers, its links slack
+  dforce::SettleMesh m = hangingSheet(40, 2, 1.f, 0.8f);
+  std::fill(m.strength.begin(), m.strength.end(), 1.f);
+  for(int r = 0; r <= 2; r++)
+    for(int c : {0, 40})
+    {
+      const size_t v = size_t(r) * 41 + size_t(c);
+      m.strength[v]  = 0.f;
+      m.posed[v * 3] = c == 0 ? 10.f : 30.f;
+    }
+  dforce::SettleOptions opts;
+  dforce::ClothSim      sim({m}, opts);
+  sim.settle();
+  const auto pos   = sim.positions()[0];
+  int        slack = 0;
+  for(const dforce::Edge& e : sim.model().edges)
+  {
+    if(e.kind != dforce::EdgeKind::eReach)
+      continue;
+    const float len = std::hypot(pos[size_t(e.a) * 3] - pos[size_t(e.b) * 3], pos[size_t(e.a) * 3 + 1] - pos[size_t(e.b) * 3 + 1], pos[size_t(e.a) * 3 + 2] - pos[size_t(e.b) * 3 + 2]);
+    if(len < e.rest * 0.8f)
+      slack++;
+  }
+  EXPECT_GT(slack, 0);
+}
+
 TEST(Dforce, aSoftBandFollowsItsBoneAndAStrengthGradientDoesNotTear)
 {
   // a 4 x 30 cm strip skinned to one bone: its top row pinned, the next three at a fifth of the
@@ -1222,8 +1448,8 @@ struct VeilScene
   }
 };
 
-// The turn the Transform panel gives a figure it stands on its head.
-const fv::Quat kUpsideDown{1, 0, 0, 0};
+// The placement the Transform panel gives a figure it stands on its head.
+const fv::Mat4 kUpsideDown = fv::compose({}, fv::Quat{1, 0, 0, 0}, {1, 1, 1});
 
 bool pumpUntilWritten(dforce::Dforce& d)
 {
@@ -1300,14 +1526,77 @@ TEST(Dforce, aFigureTurnedOverSettlesTheOtherWay)
   morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
   dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
   // turned in the world, the scene graph as it was: the host places a figure's entity
-  d.setTurn(kUpsideDown);
+  d.setPlacement(kUpsideDown);
   EXPECT_TRUE(d.busy());
   ASSERT_TRUE(pumpUntilWritten(d));
   EXPECT_GT(lowestOf(v.scene.meshes[1].geo->position), 3.5f);
   // the same turn again is nothing new
   EXPECT_FALSE(d.busy());
-  d.setTurn(kUpsideDown);
+  d.setPlacement(kUpsideDown);
   EXPECT_FALSE(d.busy());
+}
+
+TEST(Dforce, aSlowTurnAddsUpAndATurnDuringAClipWaitsForItsEnd)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  // too little to matter from one frame to the next, not over a hundred
+  const auto tilted = [](double degrees) {
+    const double half = degrees * 0.5 * 3.14159265358979 / 180.0;
+    return fv::compose({}, fv::Quat{std::sin(half), 0, 0, std::cos(half)}, {1, 1, 1});
+  };
+  d.setPlacement(tilted(0.01));
+  EXPECT_FALSE(d.busy());
+  for(int i = 2; i <= 100 && !d.busy(); i++)
+    d.setPlacement(tilted(0.01 * i));
+  EXPECT_TRUE(d.busy());
+  d.cancel();
+
+  // turned over during a clip: nothing until it stops, then the settle
+  bool playing = true;
+  d.playing    = [&] { return playing; };
+  d.setPlacement(kUpsideDown);
+  EXPECT_FALSE(d.busy());
+  playing = false;
+  d.setPlacement(kUpsideDown);
+  EXPECT_TRUE(d.busy());
+}
+
+TEST(Dforce, gravityFollowsAllThePlacementHas)
+{
+  // what hangs plumb as drawn: under a scale that isn't uniform the direction isn't a rotation's
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<RestlessSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<RestlessSim>(std::move(meshes));
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  const double half = 45.0 * 0.5 * 3.14159265358979 / 180.0;
+  // a 45 degree tilt about z over a scale of 2 along x, and the same mirrored
+  for(const double sx : {2.0, -1.0})
+  {
+    const fv::Mat4 placed = fv::compose({}, fv::Quat{0, 0, std::sin(half), std::cos(half)}, {sx, 1, 1});
+    d.setPlacement(placed);
+    now += std::chrono::milliseconds(20);
+    d.pump();
+    ASSERT_FALSE(sim->gravity.empty());
+    const std::array<float, 3> g = sim->gravity.back();
+    EXPECT_NEAR(std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]), 980.f, 0.5f);
+    // drawn through the placement it points straight down
+    const double wx = placed.e[0] * g[0] + placed.e[4] * g[1] + placed.e[8] * g[2];
+    const double wy = placed.e[1] * g[0] + placed.e[5] * g[1] + placed.e[9] * g[2];
+    const double wz = placed.e[2] * g[0] + placed.e[6] * g[1] + placed.e[10] * g[2];
+    EXPECT_NEAR(wx / wy, 0.0, 1e-4) << sx;
+    EXPECT_NEAR(wz / wy, 0.0, 1e-4) << sx;
+    EXPECT_LT(wy, 0.0) << sx;
+  }
 }
 
 TEST(Dforce, aLiveSimulationAtRestFallsTheNewWayWhenTheFigureIsTurned)
@@ -1326,7 +1615,7 @@ TEST(Dforce, aLiveSimulationAtRestFallsTheNewWayWhenTheFigureIsTurned)
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   const float rested = lowestOf(pos);
-  d.setTurn(kUpsideDown);
+  d.setPlacement(kUpsideDown);
   // no new build: the same simulation is told
   EXPECT_FALSE(d.busy());
   for(int i = 0; i < 3000 && lowestOf(pos) < rested + 2.f; i++)
@@ -1347,21 +1636,28 @@ TEST(Dforce, aStillPoseSleepsThoughTheClothNeverRestsAndATurnWakesIt)
     sim = std::make_shared<RestlessSim>(std::move(meshes));
     return sim;
   };
+  auto       now = std::chrono::steady_clock::now();
+  d.clock        = [&] { return now; };
+  const auto frames = [&](int count) {
+    for(int i = 0; i < count; i++)
+    {
+      now += std::chrono::milliseconds(20);
+      d.pump();
+    }
+  };
   d.setMode(dforce::Mode::eLiveGpu);
   ASSERT_TRUE(pumpUntilWritten(d));
   ASSERT_TRUE(sim);
   // the settle has held this pose already: after a step to land it, nothing more
-  for(int i = 0; i < 20; i++)
-    d.pump();
+  frames(20);
   EXPECT_LE(sim->seconds.size(), 1u);
   EXPECT_TRUE(sim->gravity.empty());
 
   // turned over: told once, and held for as long as a settle would hold it, then asleep again
   const size_t before = sim->seconds.size();
-  d.setTurn(kUpsideDown);
+  d.setPlacement(kUpsideDown);
   const dforce::SettleOptions held;
-  for(int i = 0; i < 400; i++)
-    d.pump();
+  frames(400);
   ASSERT_EQ(sim->gravity.size(), 1u);
   EXPECT_NEAR(sim->gravity[0][1], 980.f, 1e-2f);
   float simulated = 0;
@@ -1370,12 +1666,11 @@ TEST(Dforce, aStillPoseSleepsThoughTheClothNeverRestsAndATurnWakesIt)
   EXPECT_GE(simulated, held.maxHold);
   EXPECT_LT(simulated, held.maxHold + 0.1f);
   const size_t asleep = sim->seconds.size();
-  for(int i = 0; i < 20; i++)
-    d.pump();
+  frames(20);
   EXPECT_EQ(sim->seconds.size(), asleep);
 }
 
-TEST(Dforce, aLiveStepIsAsLongAsTheTimeSinceTheLastWithinItsLimits)
+TEST(Dforce, aLiveStepKeepsTheClockAtAnyFrameRate)
 {
   VeilScene       v;
   morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
@@ -1385,22 +1680,61 @@ TEST(Dforce, aLiveStepIsAsLongAsTheTimeSinceTheLastWithinItsLimits)
     sim = std::make_shared<RestlessSim>(std::move(meshes));
     return sim;
   };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
   d.setMode(dforce::Mode::eLiveGpu);
   ASSERT_TRUE(pumpUntilWritten(d));
-  d.setTurn(kUpsideDown);
-  d.pump();
+  d.setPlacement(kUpsideDown);
+  const auto after = [&](int ms) {
+    now += std::chrono::milliseconds(ms);
+    d.pump();
+  };
+  after(20);
   // a frame of 30 ms
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  d.pump();
-  EXPECT_GE(sim->seconds.back(), 0.03f);
-  EXPECT_LE(sim->seconds.back(), 1.f / 20.f);
+  after(30);
+  EXPECT_NEAR(sim->seconds.back(), 0.03f, 1e-3f);
   // a very slow one slows the cloth rather than taking a step its substeps can't hold together
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  d.pump();
+  after(200);
   EXPECT_FLOAT_EQ(sim->seconds.back(), 1.f / 20.f);
-  // a very fast one
+  // at 360 fps the frames add up to a step, and in all of them the time simulated is the time gone by
+  const size_t steps = sim->seconds.size();
+  float        simulated = 0;
+  for(int i = 0; i < 360; i++)
+    after(3);
+  for(size_t i = steps; i < sim->seconds.size(); i++)
+    simulated += sim->seconds[i];
+  EXPECT_NEAR(simulated, 360 * 0.003f, 0.03f);
+  EXPECT_LE(sim->seconds.size() - steps, 60u + 1u);
+}
+
+TEST(Dforce, aTurnOnAFrameTooShortToStepIsStillTaken)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<RestlessSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<RestlessSim>(std::move(meshes));
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  for(int i = 0; i < 5; i++)
+  {
+    now += std::chrono::milliseconds(20);
+    d.pump();
+  }
+  const size_t asleep = sim->seconds.size();
+  d.setPlacement(kUpsideDown);
   d.pump();
-  EXPECT_FLOAT_EQ(sim->seconds.back(), 1.f / 60.f);
+  EXPECT_EQ(sim->seconds.size(), asleep);
+  EXPECT_TRUE(sim->gravity.empty());
+  now += std::chrono::milliseconds(20);
+  d.pump();
+  EXPECT_EQ(sim->seconds.size(), asleep + 1);
+  EXPECT_EQ(sim->gravity.size(), 1u);
 }
 
 TEST(Dforce, anEditToADrapedMeshSettlesAgain)

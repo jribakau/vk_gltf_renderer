@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <queue>
 #include <unordered_map>
 
 #include <figure/jobs/pool.hpp>
@@ -33,6 +34,13 @@ constexpr float kBendCompliance    = 2e-3f;
 // throughout (common: the Kai Dress is 0.7-0.88) drapes as freely as it does in DAZ Studio, 8 cm
 // of give at 0.7 and 80 at 0.88.
 constexpr float kAttachSag = 1.5e-3f;
+// Reach links: seed vertices about this many centimetres apart over the surface, each level linked
+// to the seeds within kReachSpan of its spacing. On the Kai Dress with no tether at all, two levels
+// keep on the body what falls off without them, for about 10% more time (2026-10-31:
+// docs/improvements.md).
+constexpr float kReachSpacing[] = {4.f, 16.f};
+constexpr float kReachSpan      = 2.2f;
+constexpr int   kReachMostLinks = 12;
 // Mass floor, grams, and the area credited to a vertex no polygon touches, cm^2.
 constexpr float kMinMass     = 1e-4f;
 constexpr float kDefaultArea = 1.f;
@@ -423,7 +431,7 @@ struct ClothSim::Impl : ClothModel
   float               minOffset  = 0.05f;
 
   Impl(std::vector<SettleMesh> in, const SettleOptions& o)
-      : ClothModel(ClothModel::build(in, o.air))
+      : ClothModel(ClothModel::build(in, o.air, o.reachLinks))
       , meshes(std::move(in))
       , opts(o)
   {
@@ -471,6 +479,84 @@ namespace {
 // blocks of the vertex range, two per pool thread for balance; DSON vertex order is spatially
 // coherent, so few edges cross blocks. An edge belongs to the block of its free vertices; one
 // with a kinematic end goes with its free end, since the other is never written.
+// Links seeds of each spacing to the seeds around them, as long as the shortest way between them over
+// the mesh's stretch edges: its threads, which a shear doesn't lengthen, so a link leaves shear to the
+// fabric, and over a surface curved in its rest shape the way is longer than the chord, so it can
+// still unfold. As compliant as the softest edge on the way (a sheet's give over a patch doesn't grow
+// with the patch, as a chain's would, but a soft panel on the way is still soft). A vertex takes the
+// nearest few: a band that strands hang from would otherwise be linked to every strand.
+void addReachLinks(ClothModel& model)
+{
+  const size_t nv = size_t(model.nv);
+  struct Step
+  {
+    int   to;
+    float length, alpha;
+  };
+  std::vector<std::vector<Step>> around(nv);
+  for(const Edge& e : model.edges)
+    if(e.kind == EdgeKind::eStretch && model.dynamic[size_t(e.a)] && model.dynamic[size_t(e.b)])
+    {
+      around[size_t(e.a)].push_back({e.b, e.rest, e.alpha});
+      around[size_t(e.b)].push_back({e.a, e.rest, e.alpha});
+    }
+  std::vector<float> dist(nv, INFINITY), softest(nv, 0.f);
+  std::vector<int>   touched, links(nv, 0);
+  using Open = std::pair<float, int>;
+  const auto walk = [&](int from, float reach, const auto& visit) {
+    std::priority_queue<Open, std::vector<Open>, std::greater<Open>> open;
+    dist[size_t(from)]    = 0;
+    softest[size_t(from)] = 0;
+    touched.push_back(from);
+    open.push({0.f, from});
+    while(!open.empty())
+    {
+      const auto [d, v] = open.top();
+      open.pop();
+      if(d > dist[size_t(v)])
+        continue;
+      visit(v, d, softest[size_t(v)]);
+      for(const Step& s : around[size_t(v)])
+      {
+        const float next = d + s.length;
+        if(next > reach || next >= dist[size_t(s.to)])
+          continue;
+        if(dist[size_t(s.to)] == INFINITY)
+          touched.push_back(s.to);
+        dist[size_t(s.to)]    = next;
+        softest[size_t(s.to)] = std::max(softest[size_t(v)], s.alpha);
+        open.push({next, s.to});
+      }
+    }
+    for(int t : touched)
+      dist[size_t(t)] = INFINITY;
+    touched.clear();
+  };
+  for(const float spacing : kReachSpacing)
+  {
+    std::vector<char> covered(nv, 0), isSeed(nv, 0);
+    std::vector<int>  seeds;
+    for(int i = 0; i < model.nv; i++)
+      if(model.dynamic[size_t(i)] && !covered[size_t(i)])
+      {
+        isSeed[size_t(i)] = 1;
+        seeds.push_back(i);
+        walk(i, spacing, [&](int v, float, float) { covered[size_t(v)] = 1; });
+      }
+    for(int s : seeds)
+      walk(s, spacing * kReachSpan, [&](int v, float d, float alpha) {
+        // pinned to pinned holds nothing
+        if(v <= s || !isSeed[size_t(v)] || (model.inv[size_t(s)] <= 0 && model.inv[size_t(v)] <= 0))
+          return;
+        if(links[size_t(s)] >= kReachMostLinks || links[size_t(v)] >= kReachMostLinks)
+          return;
+        links[size_t(s)]++;
+        links[size_t(v)]++;
+        model.edges.push_back({s, v, d, alpha, EdgeKind::eReach, 1.f, 0.f});
+      });
+  }
+}
+
 void partitionEdges(ClothModel& model)
 {
   const int blocks = int(std::max<size_t>(1, 2 * (jobs::pool().size() + 1)));
@@ -491,7 +577,7 @@ void partitionEdges(ClothModel& model)
   }
   // stretch edges first in every list, so a sweep over them alone is a prefix
   const auto stretchFirst = [&](std::vector<int>& list) {
-    const auto mid = std::stable_partition(list.begin(), list.end(), [&](int e) { return model.edges[size_t(e)].kind == EdgeKind::eStretch; });
+    const auto mid = std::stable_partition(list.begin(), list.end(), [&](int e) { return holdsLength(model.edges[size_t(e)].kind); });
     return int(mid - list.begin());
   };
   model.blockStretch.clear();
@@ -502,7 +588,7 @@ void partitionEdges(ClothModel& model)
 
 }  // namespace
 
-ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air)
+ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air, bool reachLinks)
 {
   ClothModel model;
   // the model's members by their plain names below
@@ -760,6 +846,8 @@ ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air)
       }
     }
   }
+  if(reachLinks)
+    addReachLinks(model);
   ringStart.assign(size_t(nv) + 1, 0);
   for(const Edge& e : edges)
     if(e.kind == EdgeKind::eStretch)
@@ -1133,6 +1221,9 @@ void ClothSim::Impl::solveEdges(float dt, bool stretchOnly)
   const float atScale = 1.f / (dt * dt);
   const auto  project = [&](int e) {
     const Edge& edge = edges[size_t(e)];
+    // not in a full sweep (one follows a collision pass): see the top of solver.hpp
+    if(edge.kind == EdgeKind::eReach && !stretchOnly)
+      return;
     const int   a = edge.a, b = edge.b;
     const float wa = inv[a], wb = inv[b];
     const float w = wa + wb;
@@ -1147,7 +1238,10 @@ void ClothSim::Impl::solveEdges(float dt, bool stretchOnly)
     const float C  = len - edge.rest;
     const float nx = dx / len, ny = dy / len, nz = dz / len;
     const float at = alpha * atScale;
-    const float dl = float((-C - at * lam[size_t(e)]) / (w + at));
+    float       dl = float((-C - at * lam[size_t(e)]) / (w + at));
+    // a reach link only ever pulls: what it has given back it can't give again
+    if(edge.kind == EdgeKind::eReach)
+      dl = float(std::min(lam[size_t(e)] + double(dl), 0.0) - lam[size_t(e)]);
     lam[size_t(e)] += dl;
     if(wa > 0)
     {

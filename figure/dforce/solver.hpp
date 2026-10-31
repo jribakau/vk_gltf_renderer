@@ -14,6 +14,14 @@
 // position solved with the edges every substep, as compliant as the strength makes it (a skirt's
 // band fades from pinned to free over a few rows without tearing).
 //
+// A sweep moves a correction one edge along, so what holds a garment up (a strap on a shoulder, a
+// band on the hips) wouldn't reach the cloth hanging from it within a substep, and the cloth would
+// stretch until it slid off. Reach links carry it: one-sided constraints between vertices some
+// centimetres apart over the surface, no longer than the way between them along the mesh's threads,
+// as compliant as the softest edge on that way. Only stretching meets them, so cloth folds and gathers as it did. Only the
+// stretch sweeps take them, not the sweep after a collision pass: drawn straight, a link would pull
+// what contact has just pushed out back through a limb.
+//
 // Because the side is kept, a vertex that starts inside a lower layer (a fitted shape overlapping
 // the body) would stay inside; those are moved out along the nearest face before the first step.
 //
@@ -90,7 +98,14 @@ enum class EdgeKind
   eStretch,
   eShear,
   eBend,
+  eReach,  // pulls only, and is swept with the stretch edges
 };
+
+// Whether a stretch-only sweep takes this edge.
+constexpr bool holdsLength(EdgeKind kind)
+{
+  return kind == EdgeKind::eStretch || kind == EdgeKind::eReach;
+}
 
 struct Edge
 {
@@ -118,7 +133,7 @@ struct ClothModel
   std::vector<Edge>    edges;
   // the sweep in parallel: edges whose free vertices all lie in one block of the vertex range run
   // block by block on the pool, the few that cross blocks after them on one thread. Each list
-  // starts with its stretch edges, this many, so a sweep over those alone is a prefix
+  // starts with the edges that hold length, this many, so a sweep over those alone is a prefix
   std::vector<std::vector<int>> blockEdges;
   std::vector<int>              crossingEdges;
   std::vector<int>              blockStretch;
@@ -140,7 +155,7 @@ struct ClothModel
   std::vector<float> attAlpha;
   float              maxOffset = 0, minOffset = 0.05f;
 
-  static ClothModel build(const std::vector<SettleMesh>& meshes, float air);
+  static ClothModel build(const std::vector<SettleMesh>& meshes, float air, bool reachLinks = true);
 };
 
 // A bone's skin matrix taken apart, so a sweep between two poses can turn it.
@@ -176,6 +191,8 @@ struct SettleOptions
   // band), and the stretch edges are a third of the constraints, so these converge it at a third
   // of a sweep's cost each. Five bring that skirt's worst edge to 1.3x and its 99th centile to 1.07.
   int stretchSweeps = 5;
+  // Long one-sided links along the cloth (see the top of this file); off only to compare against.
+  bool reachLinks = true;
   // Seconds the pose transition takes; 0 picks them from how far the colliders move
   float transition = 0;
   // Seconds the cloth may take to come to rest once the pose is reached

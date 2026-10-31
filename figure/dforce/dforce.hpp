@@ -64,6 +64,8 @@ public:
 
   // True while a clip is playing: in settle mode the last drape stays until playback stops.
   std::function<bool()> playing;
+  // The time live steps are measured by; unset: the steady clock. For a test.
+  std::function<std::chrono::steady_clock::time_point()> clock;
   // The GPU simulation, when the renderer offers one.
   MakeSim makeGpuSim;
   // Whether a shown mesh with no simulation modifier is a collider the cloth meets (a belt, a bra,
@@ -89,9 +91,9 @@ public:
   void changed(const std::vector<int>& meshes, bool nodesMoved);
   // Runs now, still dropping the result if a newer edit arrives while it runs.
   void resimulate();
-  // How the figure is turned in the world on top of its scene graph (the host places it), so the
+  // Where the figure is placed in the world on top of its scene graph (the host's entity), so the
   // simulation knows which way is down. A change that matters settles again, or wakes a live one.
-  void setTurn(const Quat& turn);
+  void setPlacement(const Mat4& placed);
   // Weight 1 drapes, weight 0 restores the conforming meshes. Turning it on settles again.
   void setEnabled(bool on);
   // Settle or live; switching to live starts with a settle. Live on the GPU without `makeGpuSim`
@@ -136,7 +138,9 @@ private:
   morph::MorphSet& m_morphs;
   int              m_bodyMesh;
   int              m_root;
-  Quat             m_turn;
+  Mat4             m_placed;
+  // the gravity the last settle was asked for
+  std::array<float, 3> m_settleGravity{0, 0, 0};
 
   bool                                  m_enabled   = true;
   Mode                                  m_mode      = Mode::eSettle;

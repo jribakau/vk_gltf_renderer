@@ -32,6 +32,7 @@ NAMESPACE_SHADERIO_BEGIN()
 #define DFORCE_WORKGROUP_SIZE 256
 // kind: 0 stretch, 1 shear, 2 bend
 #define DFORCE_EDGE_BEND 2
+#define DFORCE_EDGE_REACH 3
 
 struct DforceEdge
 {

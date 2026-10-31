@@ -176,6 +176,9 @@ void edgesMain(uint3 tid: SV_DispatchThreadID)
   float3 n  = d / len;
   float  at = alpha / (pc.dt * pc.dt);
   float  dl = (-C - at * m.lam[e]) / (w + at);
+  // a reach link only ever pulls: what it has given back it can't give again
+  if(ed.kind == DFORCE_EDGE_REACH)
+    dl = min(m.lam[e] + dl, 0.0) - m.lam[e];
   m.lam[e] += dl;
   if(wa > 0)
     m.x[ed.a] = m.x[ed.a] - n * (wa * dl);

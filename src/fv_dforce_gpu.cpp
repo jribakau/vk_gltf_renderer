@@ -87,7 +87,8 @@ struct DforceGpu::Impl
   // edges sorted by colour, and where each colour starts; the stretch edges have the first colours
   // to themselves, so a sweep over them alone is those colours
   std::vector<int> colourStart;
-  int              stretchColours = 0;
+  int              stretchColours = 0;
+  int                lengthColours = 0;
 
   VkPipelineLayout layout{};
   VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{};
@@ -171,7 +172,7 @@ bool DforceGpu::Impl::makePipeline(const char* entry, VkPipeline& out)
 
 bool DforceGpu::Impl::init()
 {
-  model = ClothModel::build(meshes, opts.air);
+  model = ClothModel::build(meshes, opts.air, opts.reachLinks);
   if(model.nv == 0 || model.freeVerts.empty())
     return false;
 #pragma warning(suppress : 4996)  // getenv: read once, at start-up
@@ -196,14 +197,16 @@ bool DforceGpu::Impl::init()
   // CPU solver's stretchSweeps) are the first colours
   std::vector<int> colourOf(model.edges.size(), -1);
   int              colours = 0;
-  const auto       colourKind = [&](bool stretch) {
+  const auto       colourKind = [&](const auto& wanted) {
     std::vector<uint64_t> used(size_t(model.nv), 0);
     for(size_t e = 0; e < model.edges.size(); e++)
     {
       const Edge& ed = model.edges[e];
-      if((ed.kind == EdgeKind::eStretch) != stretch || (model.inv[ed.a] <= 0 && model.inv[ed.b] <= 0))
+      if(!wanted(ed.kind) || (model.inv[ed.a] <= 0 && model.inv[ed.b] <= 0))
         continue;
-      const uint64_t taken = used[size_t(ed.a)] | used[size_t(ed.b)];
+      // a pinned end is only read: edges that share one don't touch
+      const bool     freeA = model.inv[ed.a] > 0, freeB = model.inv[ed.b] > 0;
+      const uint64_t taken = (freeA ? used[size_t(ed.a)] : 0) | (freeB ? used[size_t(ed.b)] : 0);
       int            c     = 0;
       while(c < 63 && (taken >> c) & 1)
         c++;
@@ -213,8 +216,10 @@ bool DforceGpu::Impl::init()
         return false;
       }
       colourOf[e] = colours + c;
-      used[size_t(ed.a)] |= uint64_t(1) << c;
-      used[size_t(ed.b)] |= uint64_t(1) << c;
+      if(freeA)
+        used[size_t(ed.a)] |= uint64_t(1) << c;
+      if(freeB)
+        used[size_t(ed.b)] |= uint64_t(1) << c;
     }
     int most = 0;
     for(size_t e = 0; e < model.edges.size(); e++)
@@ -223,10 +228,14 @@ bool DforceGpu::Impl::init()
     colours += most;
     return true;
   };
-  if(!colourKind(true))
+  // stretch, reach links, the rest: a stretch sweep takes the first two, a full sweep all but the links
+  if(!colourKind([](EdgeKind k) { return k == EdgeKind::eStretch; }))
     return false;
   stretchColours = colours;
-  if(!colourKind(false))
+  if(!colourKind([](EdgeKind k) { return k == EdgeKind::eReach; }))
+    return false;
+  lengthColours = colours;
+  if(!colourKind([](EdgeKind k) { return !holdsLength(k); }))
     return false;
   std::vector<shaderio::DforceEdge> sorted;
   colourStart.assign(size_t(colours) + 1, 0);
@@ -547,8 +556,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   pc.model        = reinterpret_cast<shaderio::DforceModel*>(modelBuf.address);
   pc.dt           = dt;
   pc.extraDamping = extraDamping;
-  // one sweep: the colours in [first, last), then the tethers
-  const auto sweep = [&](size_t first, size_t last) {
+  const auto colours = [&](size_t first, size_t last) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, edgesPipe);
     for(size_t c = first; c < last && c + 1 < colourStart.size(); c++)
     {
@@ -560,6 +568,14 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       vkCmdDispatch(cmd, groups(pc.edgeCount), 1, 1);
       barrier();
     }
+  };
+  // one sweep, as the CPU solver's: every edge but the links, or those that hold length; then the tethers
+  const auto sweep = [&](bool lengthOnly) {
+    colours(0, size_t(stretchColours));
+    if(lengthOnly)
+      colours(size_t(stretchColours), size_t(lengthColours));
+    else
+      colours(size_t(lengthColours), colourStart.size() - 1);
     if(m.numSoft > 0)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, attachPipe);
@@ -568,7 +584,6 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       barrier();
     }
   };
-  const size_t allColours = colourStart.size() - 1;
   // resting vertices held on their faces where the pose has them at pc.t
   const auto hold = [&] {
     if(m.numTris == 0 || (debug & 2))
@@ -596,9 +611,9 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     vkCmdDispatch(cmd, groups(std::max({m.numKinematic, m.numFree, m.numEdges, m.numSoft})), 1, 1);
     barrier();
     for(int it = 0; it < std::max(1, opts.iterations); it++)
-      sweep(0, allColours);
+      sweep(false);
     for(int it = 0; it < opts.stretchSweeps; it++)
-      sweep(0, size_t(stretchColours));
+      sweep(true);
     hold();
     if(s == next && m.numTris > 0)
     {
@@ -607,7 +622,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
       barrier();
       // the pushes stretched edges; one more sweep shares them out before velocities are read
-      sweep(0, allColours);
+      sweep(false);
       hold();
       tFaces = pc.t;
       next += std::max(1, steps / passes);

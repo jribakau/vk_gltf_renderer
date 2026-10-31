@@ -584,7 +584,7 @@ void FvHost::onUpdate()
         for(int c = 0; c < 4; c++)
           for(int r = 0; r < 4; r++)
             placed.e[size_t(c * 4 + r)] = world[c][r];
-        f.dforce->setTurn(fv::rotationOf(placed));
+        f.dforce->setPlacement(placed);
       }
       if(!changes.nodes.empty() || !moved.empty())
         f.dforce->changed(moved, !changes.nodes.empty());

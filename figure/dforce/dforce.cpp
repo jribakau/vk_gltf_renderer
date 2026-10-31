@@ -19,7 +19,7 @@ constexpr float kAir      = 0.15f;
 constexpr float kLiveRestDamping = 6.f;
 // A live step is as long as the time since the last one, within these, seconds: a slow frame doesn't
 // make slow motion, down to the rate below which a step's substeps would stop holding the cloth
-// together (then it slows instead), and a fast one doesn't cut the time finer than it needs.
+// together (then it slows instead), and frames faster than the shortest wait for each other.
 constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 20.f;
 // How far gravity must turn to matter, cm/s^2 on any axis: about a twentieth of a degree.
 constexpr float kGravityChange = 1.f;
@@ -88,6 +88,7 @@ Dforce::Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int roo
     , m_bodyMesh(bodyMesh)
     , m_root(root)
 {
+  m_settleGravity = currentGravity();
 }
 
 Dforce::~Dforce()
@@ -152,14 +153,19 @@ void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
     poke();
 }
 
-void Dforce::setTurn(const Quat& turn)
+void Dforce::setPlacement(const Mat4& placed)
 {
-  const std::array<float, 3> was = currentGravity();
-  m_turn                         = turn;
+  m_placed = placed;
+  // live reads it next frame. Against what the last settle was asked for, so a slow turn adds up; a
+  // turn while a clip plays waits for it to stop, as the drape does
+  if(m_mode != Mode::eSettle || (playing && playing()))
+    return;
   const std::array<float, 3> now = currentGravity();
-  // live reads it next frame
-  if(m_mode == Mode::eSettle && !sameGravity(was, now))
+  if(!sameGravity(now, m_settleGravity))
+  {
+    m_settleGravity = now;
     poke();
+  }
 }
 
 void Dforce::resimulate()
@@ -395,9 +401,12 @@ std::array<float, 3> Dforce::currentGravity() const
 {
   const auto worlds    = m_scene.worlds();
   const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
-  // world down, turned into the root's frame
-  const Vec3 g = rotate(Vec3{0, -980, 0}, (m_turn * rotationOf(rootWorld)).inverse());
-  return {float(g.x), float(g.y), float(g.z)};
+  // world down in the job's space, through all the placement has: what hangs plumb as drawn under a
+  // scale that isn't uniform, or a mirror, is not what a rotation alone gives
+  const Mat4   fromWorld = inverse(m_placed * rootWorld);
+  const double x = -fromWorld.e[4], y = -fromWorld.e[5], z = -fromWorld.e[6];
+  const double scale = 980.0 / std::max(1e-12, std::sqrt(x * x + y * y + z * z));
+  return {float(x * scale), float(y * scale), float(z * scale)};
 }
 
 std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const
@@ -444,6 +453,7 @@ bool Dforce::pump()
     {
       if(auto job = prepare(m_gen))
       {
+        m_settleGravity = currentGravity();
         m_snapshot = job;
         m_jobGen   = m_gen;
         m_job      = jobs::pool().submit([job] {
@@ -511,7 +521,7 @@ bool Dforce::pumpLive()
     m_liveMoving   = true;
     // the settle holds the pose for as long as a still pose is ever held
     m_liveStill    = opts.maxHold;
-    m_liveLast     = std::chrono::steady_clock::now();
+    m_liveLast     = clock ? clock() : std::chrono::steady_clock::now();
     m_version++;
     auto sim = m_live;
     if(sim->ownerThreadOnly())
@@ -535,29 +545,32 @@ bool Dforce::pumpLive()
   auto bones = currentBones(*m_liveJob);
   bool moved = false;
   for(size_t slot = 0; slot < bones.size(); slot++)
-    if(!samePose(bones[slot], m_liveBones[slot]))
-    {
-      moved = true;
-      m_live->setTarget(slot, bones[slot]);
-    }
+    moved = moved || !samePose(bones[slot], m_liveBones[slot]);
   const std::array<float, 3> gravity = currentGravity();
   const bool                 turned  = !sameGravity(gravity, m_liveGravity);
-  if(turned)
-  {
-    m_liveGravity = gravity;
-    m_live->setGravity(gravity);
-  }
   if(moved || turned)
     m_liveStill = 0;
   const SettleOptions held;
-  const auto now = std::chrono::steady_clock::now();
+  const auto now = clock ? clock() : std::chrono::steady_clock::now();
   if(!moved && !turned && !m_liveMoving && (m_live->lastMove() < 0.01f || m_liveStill >= held.maxHold))
   {
     m_liveLast = now;
     return wrote;
   }
-  const float seconds = std::clamp(std::chrono::duration<float>(now - m_liveLast).count(), kLiveMinStep, kLiveMaxStep);
+  // shorter than the shortest step: the time carries over, and what woke it is still there to see
+  const float elapsed = std::chrono::duration<float>(now - m_liveLast).count();
+  if(elapsed < kLiveMinStep)
+    return wrote;
+  const float seconds = std::min(elapsed, kLiveMaxStep);
   m_liveLast          = now;
+  for(size_t slot = 0; slot < bones.size(); slot++)
+    if(!samePose(bones[slot], m_liveBones[slot]))
+      m_live->setTarget(slot, bones[slot]);
+  if(turned)
+  {
+    m_liveGravity = gravity;
+    m_live->setGravity(gravity);
+  }
   if(!moved)
     m_liveStill += seconds;
   // the drape of this step is read back through the pose it was stepped to
