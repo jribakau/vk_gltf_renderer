@@ -35,8 +35,6 @@
 #include <nvapp/elem_dbgprintf.hpp>
 #include <nvapp/elem_logger.hpp>
 #include <nvapp/elem_profiler.hpp>
-#include <nvapp/elem_sequencer.hpp>
-#include <nvgpu_monitor/elem_gpu_monitor.hpp>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/parameter_parser.hpp>
 #include <nvutils/parameter_sequencer.hpp>

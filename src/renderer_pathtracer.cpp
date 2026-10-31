@@ -744,8 +744,8 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
   {
     // SYNC NOTE: the previous frame may still use these pipelines. prepareFrame() (or reloadShader())
     // drained the queue on the application thread before this ran, and no path-tracer frame is
-    // recorded until it is done (the BusyWindow gates GltfRenderer::onRender). No wait here: this
-    // runs on the compile worker while the application thread submits the BusyWindow's frames, and
+    // recorded until it is done (the BusyState gates GltfRenderer::onRender). No wait here: this
+    // runs on the compile worker while the application thread submits the BusyState's frames, and
     // host access to a queue must be externally synchronized.
     const VariantKey wantKey = makeVariantKey(resources);
     {
@@ -789,7 +789,7 @@ void PathTracer::startAsyncCompile(Resources& resources)
   if(m_compileThread.joinable())
     m_compileThread.join();
 
-  // Without a BusyWindow nothing gates the next frame, which then joins this thread in
+  // Without a BusyState nothing gates the next frame, which then joins this thread in
   // startAsyncCompile(): the compile still completes, synchronously.
   if(m_busyWindow)
     m_busyWindow->start("Preparing path tracer...");
@@ -809,7 +809,7 @@ bool PathTracer::prepareFrame(Resources& resources)
 {
   // A variant already in the cache is swapped in right here: only handles move (what the previous
   // frame may still use is released through the app's frame ring), so there is no queue wait, no
-  // BusyWindow and no accumulation reset. Anything else goes to an async job that shows the BusyWindow.
+  // BusyState and no accumulation reset. Anything else goes to an async job that shows the BusyState.
   installBuiltVariant(resources);  // a variant built off the frame goes into the cache, swapped in below
   PendingCompileWork work = getPendingCompileWork(resources);
   if(work.recompile && tryRestoreCachedVariant(resources))
@@ -2233,7 +2233,7 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
 
 //--------------------------------------------------------------------------------------------------
 // Swap in the wanted variant if the cache already holds it. A hit is only a handle swap, so
-// onRender() does it inline instead of going through the async worker and the BusyWindow, whose
+// onRender() does it inline instead of going through the async worker and the BusyState, whose
 // completion resets the accumulation. On a miss nothing is touched: the live handles stay put for
 // compileShader() to park.
 bool PathTracer::tryRestoreCachedVariant(Resources& resources)
@@ -2794,7 +2794,7 @@ void PathTracer::updateStatistics(Resources& resources)
 // environment is; the shader reads them only when the frame says the sky is the physical one), and
 // the pushed set 1. Once per frame; dispatchRays() launches it, for the probe and for the paths.
 // prepareFrame() builds the pipeline before a frame is recorded, so a missing one is a logic error,
-// not something to build here, inside command recording and with no BusyWindow.
+// not something to build here, inside command recording and with no BusyState.
 bool PathTracer::bindTechnique(VkCommandBuffer cmd, Resources& resources)
 {
   const bool                rayQuery  = m_renderTechnique == RenderTechnique::RayQuery;

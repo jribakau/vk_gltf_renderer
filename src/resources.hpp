@@ -55,7 +55,7 @@
 #include "gltf_scene_gpu.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency_vk.hpp"
-#include "ui_animation.hpp"
+#include "animation_control.hpp"
 #include "gltf_scene_transform_vk.hpp"
 #include "gltf_scene_prev_positions_vk.hpp"
 #include "gpu_memory_tracker.hpp"
@@ -156,15 +156,6 @@ struct Settings
   float                   gridUnit               = 1.0f;   // Grid base unit (world units)
   float                   snapRotation           = 45.0f;  // Rotation snap increment (degrees)
   float                   snapScale              = 0.1f;   // Scale snap increment
-  bool                    showMemStats           = false;  // Show memory statistics window
-  bool                    showCameraWindow       = true;   // Show Camera window
-  bool                    showSettingsWindow     = true;   // Show Settings window
-  bool                    showEnvironmentWindow  = true;   // Show Environment window
-  bool                    showTonemapperWindow   = true;   // Show Tonemapper window
-  bool                    showStatisticsWindow   = false;  // Show Statistics window
-  bool                    showSceneBrowserWindow = true;   // Show Scene Browser window
-  bool                    showInspectorWindow    = true;   // Show Inspector window
-  bool  showGridSettingsWindow  = false;  // Show Grid & Snap settings window
   float hdrEnvIntensity         = 1.0f;   // Intensity of the environment (HDR)
   // The environment's orientation: a unit quaternion taking its own frame to world, stored x, y, z, w
   // -- OMI_environment_sky's `rotation`, verbatim, and the only orientation any environment has. It
@@ -324,8 +315,6 @@ struct Settings
   bool optimalShader = false;
 
 #ifndef NDEBUG
-  bool showGridStyleWindow  = false;  // Show Grid Style debug window
-  bool showGizmoStyleWindow = false;  // Show Gizmo Style debug window
 #endif
 
   // `envRotation` as a quaternion, normalised. The stored value may not be unit -- the command line

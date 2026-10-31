@@ -88,7 +88,6 @@ public:
   const GridStyle& style() const { return m_style; }
 
 #ifndef NDEBUG
-  static bool onDebugUI(GridStyle& style);
 #endif
 
   void renderRaster(VkCommandBuffer  cmd,

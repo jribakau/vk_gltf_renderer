@@ -128,9 +128,6 @@ public:
   [[nodiscard]] bool                    hasSelection() const { return m_selection.type != SelectionType::eNone; }
 
   // Material clipboard (system clipboard integration)
-  void               copyMaterialToClipboard(int matIdx);
-  [[nodiscard]] int  getMaterialFromClipboard() const;
-  [[nodiscard]] bool hasClipboardMaterial() const;
 
   // Camera action events (for UI buttons)
   void emitCameraApply(int cameraIdx);

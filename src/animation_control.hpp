@@ -19,17 +19,8 @@
 
 #pragma once
 
-// Animation UI for the glTF renderer.
-//
-// Contains:
-//   1. AnimationControl -- playback state + domain logic (play/pause, clip
-//      selection, scrub, frame step, reset, speed). No ImGui in this header
-//      so other call sites can read the state without pulling the UI layer.
-//   2. ui::animation::renderStripWidgets -- the single view, a slim transport
-//      row drawn as a semi-transparent overlay at the bottom of the Viewport's
-//      3D image. Visibility is driven by AnimationControl::showStrip
-//      (auto-enabled by GltfRenderer when a scene containing animations is
-//      loaded; toggleable from the View menu and viewport toolbar).
+// AnimationControl: playback state and its domain logic (play/pause, clip selection, scrub, reset,
+// speed), and whether a scene has anything to play.
 //
 // State owner: Resources::animationControl. The renderer's update path
 // (GltfRenderer::updateAnimation) reads the queries (doAnimation, deltaTime,
@@ -40,7 +31,7 @@
 
 #include <string>
 
-#include <imgui/imgui.h>  // ImVec2 in renderStripOverlay's signature
+
 
 namespace nvvkgltf {
 class Scene;
@@ -58,11 +49,9 @@ struct AnimationControl
   bool  reset            = false;  // Jump back to start on next update
   float speed            = 1.0F;   // Playback multiplier
   int   currentAnimation = 0;      // Index into AnimationSystem clips
-  bool  showStrip        = false;  // Viewport Animation Strip overlay visible (auto-enabled on animated scene load)
   bool  loop             = true;   // Wrap at the clip end; false stops playback there
   bool  seek             = false;  // One-shot: evaluate the clip at its current time without advancing it
 
-  // Domain actions (used by the Animation Strip widget and keyboard shortcut)
   void togglePlay() { play = !play; }
   void stepOne()
   {
@@ -88,22 +77,9 @@ struct AnimationControl
   static std::string formatTime(float seconds);
 };
 
-//-----------------------------------------------------------------------------
-// Animation Strip widget
-//-----------------------------------------------------------------------------
-
 namespace ui::animation {
 
 // A scene has "playable animation" when at least one clip declares a positive duration.
 bool hasPlayableAnimation(nvvkgltf::Scene* scene);
-
-// Render the Animation Strip as a hover-reactive overlay at the given screen rect
-// (typically over the bottom edge of the 3D image in the Viewport). Fully
-// visible while the mouse is over the strip; eases to a dim idle alpha when
-// the mouse leaves, so it stays out of the way of the 3D content until the
-// user wants it. Owns its own child region, background, and fade state.
-// Returns true when the user clicked Play/Pause this frame, so the caller can
-// remember that choice for the next scene load (scrub and step pauses don't count).
-bool renderStripOverlay(nvvkgltf::Scene* scene, AnimationControl& ctrl, const ImVec2& topLeft, const ImVec2& size);
 
 }  // namespace ui::animation

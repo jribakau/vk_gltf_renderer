@@ -42,7 +42,7 @@
 #include "gltf_scene_editor.hpp"
 #include "renderer.hpp"
 #include "tinygltf_utils.hpp"
-#include "ui_animation.hpp"
+#include "animation_control.hpp"
 
 using Json = nlohmann::json;
 

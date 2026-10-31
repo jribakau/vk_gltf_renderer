@@ -120,7 +120,7 @@
 #include "utils.hpp"
 #include "tinyobjloader/tiny_obj_loader.h"
 #include "tinygltf_converter.hpp"
-#include "ui_animation.hpp"  // hasPlayableAnimation, which the legacy view asks too
+#include "animation_control.hpp"  // hasPlayableAnimation, which the legacy view asks too
 
 extern nvutils::ProfilerManager g_profilerManager;  // #PROFILER
 
@@ -239,8 +239,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Renderer [Path tracer:0, Rasterizer:1]",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { onRenderSystemChanged(); }},
                  (int*)&m_resources.settings.renderSystem, Persist::eYes, 0, 1);
-  m_settings.add({"uiShowAxis", "Show Axis"}, &m_resources.settings.showAxis, Persist::eYes);
-  m_settings.add({"uiShowMemStats", "Show Memory Statistics"}, &m_resources.settings.showMemStats, Persist::eYes);
   // what the path tracer reads of the environment: a change starts the still again, or it blends in
   const auto restartStill = [this](const nvutils::ParameterBase* const) { resetFrame(); };
   m_settings.add({.name = "hdrIntensity", .help = "HDR Environment Intensity", .callbackSuccess = restartStill},
@@ -346,16 +344,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
 
   // Panel visibility: persisted before, but not settable. Exposed now so a scripted capture can
   // hide the chrome.
-  m_settings.add({"uiShowCamera", "Show the Camera window"}, &m_resources.settings.showCameraWindow, Persist::eYes);
-  m_settings.add({"uiShowSettings", "Show the Settings window"}, &m_resources.settings.showSettingsWindow, Persist::eYes);
-  m_settings.add({"uiShowEnvironment", "Show the Environment window"}, &m_resources.settings.showEnvironmentWindow, Persist::eYes);
-  m_settings.add({"uiShowTonemapper", "Show the Tonemapper window"}, &m_resources.settings.showTonemapperWindow, Persist::eYes);
-  m_settings.add({"uiShowStatistics", "Show the Statistics window"}, &m_resources.settings.showStatisticsWindow, Persist::eYes);
-  m_settings.add({"uiShowSceneBrowser", "Show the Scene Browser window"}, &m_resources.settings.showSceneBrowserWindow,
-                 Persist::eYes);
-  m_settings.add({"uiShowInspector", "Show the Inspector window"}, &m_resources.settings.showInspectorWindow, Persist::eYes);
-  m_settings.add({"uiShowGridSettings", "Show the Grid & Snap settings window"},
-                 &m_resources.settings.showGridSettingsWindow, Persist::eYes);
 
   // The sun. One direction is shared by every sky type that has a sun, which is why these are not
   // named sky*: Resources::sunDirection is the single source of truth and the angles drive it
@@ -659,8 +647,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.residencyRetireOnReplace, Persist::eNo);
 
   // Gizmo, grid and snap: previously persisted but unreachable from the command line or MCP.
-  m_settings.add({"uiShowGrid", "Show the infinite grid"}, &m_resources.settings.showGrid, Persist::eYes);
-  m_settings.add({"uiShowGizmo", "Show the transform gizmo on the selected node"}, &m_resources.settings.showGizmo, Persist::eYes);
   m_settings.add({"uiGridUnit", "Grid base unit (world units)"}, &m_resources.settings.gridUnit, Persist::eYes);
   m_settings.add({"uiSnapEnabled", "Snap gizmo transforms to grid increments"}, &m_resources.settings.snapEnabled, Persist::eYes);
   m_settings.add({"uiSnapRotation", "Rotation snap increment (degrees)"}, &m_resources.settings.snapRotation, Persist::eYes);
@@ -947,7 +933,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_pathTracer.setCacheDir(m_cacheDir);
   m_pathTracer.onAttach(m_resources, &m_profilerGpuTimer);
   m_pathTracer.setProfilerTimeline(m_profilerTimeline);
-  m_pathTracer.setBusyWindow(&m_busy);  // Show BusyWindow during async shader/pipeline compiles
+  m_pathTracer.setBusyWindow(&m_busy);  // Show BusyState during async shader/pipeline compiles
   m_rasterizer.onAttach(m_resources, &m_profilerGpuTimer);
 
   m_pathTracer.createPipeline(m_resources);
@@ -3526,8 +3512,6 @@ void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
   m_pendingAnimReconcile = false;
   // Scene object is set, we can create the Vulkan scene
   createVulkanScene();
-  if(m_resources.gpuView().hasPlayableAnimation())
-    m_resources.animationControl.showStrip = true;
 
   // Detect which KHR_materials_* the loaded scene actually uses so the path tracer
   // can specialize its shader when settings.optimalShader is on. Safe to call always:
@@ -3650,8 +3634,6 @@ void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descri
   // Publish to resources only when fully constructed (UI thread can now see it)
   m_resources.scene = std::move(scn);
   createVulkanScene();
-  if(m_resources.gpuView().hasPlayableAnimation())
-    m_resources.animationControl.showStrip = true;
 
   // Detect which KHR_materials_* the loaded scene actually uses so the path tracer
   // can specialize its shader when settings.optimalShader is on.
@@ -3787,8 +3769,6 @@ void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mo
       if(nAnim > 0 && (animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim))
         animCtrl.currentAnimation = 0;
     }
-    if(m_resources.gpuView().hasPlayableAnimation())
-      animCtrl.showStrip = true;
   }
 
   // Update textures if images were (re)loaded. eFull rewrites the whole array; eMergeAppend rewrites it

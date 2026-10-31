@@ -145,39 +145,6 @@ void SceneSelection::clearSelection()
 }
 
 //--------------------------------------------------------------------------------------------------
-// Copy material to system clipboard
-//
-void SceneSelection::copyMaterialToClipboard(int matIdx)
-{
-  m_clipboardMaterialIndex = matIdx;
-
-  // Store in system clipboard as "gltf_material:index"
-  std::string clipData = "gltf_material:" + std::to_string(matIdx);
-  ImGui::SetClipboardText(clipData.c_str());
-}
-
-//--------------------------------------------------------------------------------------------------
-// Get material from system clipboard
-//
-int SceneSelection::getMaterialFromClipboard() const
-{
-  const char* clipText = ImGui::GetClipboardText();
-  if(clipText && std::strncmp(clipText, "gltf_material:", 14) == 0)
-  {
-    return std::atoi(clipText + 14);
-  }
-  return -1;  // Invalid
-}
-
-//--------------------------------------------------------------------------------------------------
-// Check if clipboard contains a material
-//
-bool SceneSelection::hasClipboardMaterial() const
-{
-  return getMaterialFromClipboard() >= 0;
-}
-
-//--------------------------------------------------------------------------------------------------
 // Emit event to external systems (internal helper)
 //
 void SceneSelection::emitEvent(const Event& event)

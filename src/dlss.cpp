@@ -886,57 +886,11 @@ void Dlss::assertKind([[maybe_unused]] Kind expected) const
 
 namespace {
 
-// Renders DLSS preset combo for the active Kind and updates *currentPreset when changed.
-bool drawPresetCombo(Dlss::Kind kind, uint32_t* currentPreset, const char* label, const char* tooltip)
-{
-  const auto presets = kindConfig(kind).presets;
-  if(presets.empty())
-    return false;
-
-  // Resolve the current selection's index in the table
-  int currentIdx = 0;
-  for(int i = 0; i < static_cast<int>(presets.size()); ++i)
-  {
-    if(presets[i].value == *currentPreset)
-    {
-      currentIdx = i;
-      break;
-    }
-  }
-
-  // Build the labels array in a stack-friendly buffer (preset counts are tiny -- <= ~8).
-  const int   labelCount = static_cast<int>(presets.size());
-  const char* labels[16];
-  assert(labelCount <= static_cast<int>(std::size(labels)) && "kRr/kSrPresets is larger than the labels[] buffer");
-  for(int i = 0; i < labelCount; ++i)
-    labels[i] = presets[i].label;
-
-  namespace PE = nvgui::PropertyEditor;
-  if(PE::Combo(label, &currentIdx, labels, labelCount, 0, tooltip))
-  {
-    *currentPreset = presets[currentIdx].value;
-    return true;
-  }
-  return false;
-}
-
 }  // namespace
 
 // ============================================================================================
 // Common UI helper -- "Reset History" button
 // ============================================================================================
-
-bool Dlss::drawResetHistoryButton()
-{
-  bool clicked = false;
-  if(ImGui::Button(ICON_MS_REFRESH " Reset History"))
-  {
-    notifyReset();
-    clicked = true;
-  }
-  nvgui::tooltip("Discard the denoiser's temporal history on the next frame.");
-  return clicked;
-}
 
 
 // ============================================================================================

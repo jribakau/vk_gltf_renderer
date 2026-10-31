@@ -100,7 +100,7 @@
 #include "host_renderer.hpp"
 #include "scene_import_gltf.hpp"
 #include "tinygltf_utils.hpp"
-#include "ui_animation.hpp"
+#include "animation_control.hpp"
 
 using fv::Json;
 using namespace std::chrono_literals;

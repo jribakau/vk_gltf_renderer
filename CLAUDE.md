@@ -7,7 +7,9 @@ file **and** this file in the same commit.
 
 ## What this is
 
-A Vulkan **ray tracing** renderer for glTF 2.0 scenes, built on
+The render process of Figure Viewer, a fork that no longer merges upstream: it runs headless only,
+its host (`src/fv_*`) driving it over a local protocol, with no window or panels of its own. It began as
+a Vulkan **ray tracing** renderer for glTF 2.0 scenes, built on
 [nvpro_core2](https://github.com/nvpro-samples/nvpro_core2) with
 [Slang](https://github.com/shader-slang/slang) shaders. Two render paths share
 the same Vulkan resources and scene data:
@@ -30,7 +32,6 @@ C++20. Host and device share structs via `shaders/shaderio.h`.
 | Sky models: physical atmosphere, gradient, units and calibration, the sun, glTF mapping | [docs/sky.md](docs/sky.md) |
 | Environment *pipeline*: the analytic bake, lighting vs background fields, preview/commit | [docs/developer.md](docs/developer.md) (§ Environment Lighting) |
 | MCP shader timing: enabling `--mcp`, the tool surface, measuring a change | [docs/mcp.md](docs/mcp.md) |
-| Runtime behavior, editor workflows, features | [docs/user-guide.md](docs/user-guide.md) |
 | DLSS / OptiX / OIDN denoising, motion vectors, jitter/reset (incl. why animated meshes ghost) | [docs/denoising.md](docs/denoising.md) |
 | Test suite: running (CTest vs. direct), adding tests, benchmarks | [tests/README.md](tests/README.md) |
 | Where scene/model assets come from | [docs/external_assets.md](docs/external_assets.md), [docs/resources.md](docs/resources.md) |
@@ -130,12 +131,10 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   sequences, MCP, and the persisted `.ini`; `Persist` says whether it survives a
   restart. Never register a setting in two places again — that is what let the
   two old lists drift.
-- **Scene editing has one route per session.** The windowed editor's edits are
-  non-destructive and fully undoable — route them through the editor +
-  `undo_redo` system, not ad-hoc. A stream session's scene is the host's: it
+- **Scene editing has one route.** A stream session's scene is the host's: it
   edits the retained store through its mutation API only (the feed, the
   importer, entity and record edits), and undo is the host's edit history
-  (`src/fv_journal.hpp`, the `history.*` commands), not `undo_redo`.
+  (`src/fv_journal.hpp`, the `history.*` commands).
 - **Scene, model, and Vulkan state is application-thread-owned.** An MCP tool
   that touches them sets `runOnApplicationThread` and stays short. A tool that
   waits on rendered frames must not, since the application thread is the one
@@ -203,10 +202,9 @@ you are expected to keep them that way:
 |---|---|
 | Scene sync / dirty-flag / BLAS-TLAS data flow | [docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md) |
 | App lifecycle, source layout, material fork, build/test | [docs/developer.md](docs/developer.md) + this file |
-| A user-facing feature, menu, or shortcut | [docs/user-guide.md](docs/user-guide.md); a command or shortcut goes in `registerCommands()` (Help lists it from there) — see developer.md § Add a command |
 | DLSS/OptiX/OIDN, motion-vector / jitter / reset behavior | [docs/denoising.md](docs/denoising.md) |
 | A sky model, its units, the sun, or the `OMI_environment_sky` mapping | [docs/sky.md](docs/sky.md) |
-| Environment sources, the sky bake, or the lighting/background split | [docs/developer.md](docs/developer.md) + [docs/user-guide.md](docs/user-guide.md) |
+| Environment sources, the sky bake, or the lighting/background split | [docs/developer.md](docs/developer.md) |
 | glTF 2.1 external-asset load/save/edit behavior | [docs/external_assets.md](docs/external_assets.md) |
 | Other glTF 2.1 support, a draft-spec assumption, or the tinygltf fork | [docs/gltf_2_1.md](docs/gltf_2_1.md) (status, patch log); mark draft-spec choices `PROVISIONAL(...)` and add a fixture to `tests/gltf_2_1/generate_fixtures.py` |
 | MCP tools or the timing measurement | [docs/mcp.md](docs/mcp.md) |

@@ -341,7 +341,6 @@ private:
   void       startAsyncInit(Resources& resources);
   bool       consumePendingInitResult();
   void       teardownNgx();
-  bool       drawResetHistoryButton();
   // RR-friendly assertion shim -- in release builds (NDEBUG) the inline accessors above just
   // execute the kind-appropriate path without firing.
   void assertKind(Kind expected) const;
@@ -440,7 +439,6 @@ private:
   VkImageView        m_nrInputView    = VK_NULL_HANDLE;
   VkFormat           m_nrInputFormat  = VK_FORMAT_UNDEFINED;
   bool               m_nrForceReset   = false;
-  bool               m_nrSettingsOpen = false;
 #endif  // USE_DLSSNR
 
   // ---- SR-only state --------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # Developer Guide -- Vulkan Ray Tracing glTF Renderer
 
-> **For contributors and agents.** High-level architecture, source map, and the material system — concepts plus pointers into `src/` and `shaders/`, not a restatement of the code. For runtime usage see the [User Guide](user-guide.md); for the scene data-flow deep dive see [Rendering Architecture](RENDERING_ARCHITECTURE.md).
+> **For contributors and agents.** High-level architecture, source map, and the material system — concepts plus pointers into `src/` and `shaders/`, not a restatement of the code. For the scene data-flow deep dive see [Rendering Architecture](RENDERING_ARCHITECTURE.md).
 
 This project is developer-oriented: the **RTX path tracer** is the primary high-quality reference for ray tracing glTF PBR materials, while the **rasterizer** is a practical fallback for fast interaction and iteration. Both renderers share Vulkan resources and Slang shaders.
 
@@ -146,6 +146,8 @@ src/
 │                               #   the per-frame input handling; Help's Camera tab reads the same table
 ├── settings_registry.hpp       # One declaration per setting -> CLI + benchmark sequences + ImGui.ini;
 │                               #   also captures each declaration-time default (Reset All to Default)
+├── animation_control.cpp/hpp   # Animation playback state, scrubbing and clip choice
+├── busy_state.hpp              # Busy flag: a background scene job is running
 ├── resources.hpp               # Shared Vulkan resources and settings (`nvvk::FrameUploader` staging)
 │
 ├── gltf_scene.cpp/hpp          # Core scene loading and management
@@ -201,17 +203,6 @@ src/
 ├── fv_prop_feed.cpp/hpp        # The Figure Viewer's props fed into the retained scene as deltas
 ├── fv_scene_map.cpp/hpp        # Entities and materials back to the host's props, topic nodes and surfaces
 │
-├── ui_inspector.cpp/hpp        # Property inspector (per selection type: node/primitive/material/
-│                               #   mesh/camera/light/texture/image/sampler/animation)
-├── ui_scene_browser.cpp/hpp    # Scene Browser window: Scene Graph tree + the Elements tab host
-├── ui_scene_browser_elements.cpp # Elements tab: builds the ElementTypeDesc registry and the one
-│                               #   generic list renderer (icon tabs, columns, toolbar, sort, filter)
-├── ui_element_registry.hpp     # ElementTypeDesc / ElementColumn / ElementAddVariant (data-driven list)
-├── ui_gltf_labels.cpp/hpp      # Shared image-name + sampler wrap/filter labels (list + inspector)
-├── ui_renderer.cpp             # Viewport UI, menus and mouse interaction
-├── ui_environment.cpp/hpp      # UiEnvironment: the Environment panel. Environment type, HDR file,
-│                               #   the authored skies, the atmosphere folds, Sun & Time of Day.
-│                               #   Takes what it needs through setters, like UiInspector
 ├── sky_sun.cpp/hpp             # SkySun: who the sun is (renderer state, or a scene light marked
 │                               #   as the sky's) and every path that aims it
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
@@ -225,18 +216,6 @@ src/
 ├── frame_present_win32.cpp     # Its D3D11 side: the swapchain, the shared textures and fence (Windows)
 ├── present_policy.hpp          # Who watches a --stream run, and what FrameStream copies for them (unit-tested)
 ├── present_slots.hpp           # The shared images' hand-off between Vulkan and D3D (unit-tested)
-├── ui_dock_layout.cpp/hpp      # Default docking arrangement, shared by start-up (main.cpp's
-│                               #   dockSetup) and Windows > Reset UI Layout
-├── ui_presentation_mode.cpp/hpp # Presentation mode (F11): hides panels + menu bar, borderless
-│                               #   full screen on the window's monitor; saves/restores both
-├── ui_commands.cpp/hpp         # Command registry: every menu/toolbar/keyboard command and its
-│                               #   key binding, and the shortcut routing (see Add a command)
-├── ui_help.cpp/hpp             # Help menu: Keyboard & Mouse reference (live camera table,
-│                               #   searchable shortcuts generated from the registry) and About
-├── ui_xmp.cpp/hpp              # KHR_xmp_json_ld metadata display
-├── ui_animation.cpp/hpp        # Animation playback state and viewport animation widget
-├── ui_mouse_state.hpp          # Mouse state tracking for viewport
-├── ui_busy_window.hpp          # Loading/busy indicator overlay
 │
 ├── dlss.cpp/hpp                # DLSS adapter (Ray Reconstruction + Super Resolution)
 ├── dlss_wrapper.cpp/hpp        # NGX / DLSS SDK wrapper (project-independent)
@@ -250,7 +229,6 @@ src/
 ├── gizmo_grid_vk.cpp/hpp       # Infinite procedural grid
 ├── gizmo_visuals_vk.cpp/hpp    # Helper overlay manager
 │
-├── undo_redo.cpp/hpp           # Full undo/redo system for scene editing
 ├── tinygltf_utils.cpp/hpp      # TinyGLTF material + node extension extraction (visibility/selectability/hoverability);
 │                               #   tangents, also over plain arrays and remade near vertices that moved
 ├── tinygltf_converter.cpp/hpp  # OBJ to glTF converter
@@ -262,7 +240,6 @@ src/
 ├── scene_feature_detection.cpp/hpp # Detect which extensions a scene uses
 ├── scene_shader_macros.cpp/hpp # Emit -DGLTF_USE_* macros from detected features
 ├── timeline_pipeline.cpp/hpp   # Timeline-semaphore submission helper
-├── benchmarking.cpp/hpp        # Headless timing / scripted GPU benchmarks
 ├── gltf_camera_utils.hpp       # Camera utility functions
 ├── gpu_memory_tracker.hpp      # GPU memory category tracking
 ├── scoped_banner.hpp           # Scoped UI banner helper
@@ -579,8 +556,7 @@ grows at most `kMostHairsGrown`.
    `-DGLTF_USE_<NAME>=0|1` in optimal mode.
 7. If the path tracer or raster reads the new field outside `evaluateMaterial()` (e.g.
    `getShadowTransmission()` in `pathtrace_functions.h.slang`), gate with `#if GLTF_USE_<NAME>`.
-8. Update documentation in [`README.md`](../README.md) (extension support list) and
-   [`user-guide.md`](user-guide.md).
+8. Update the extension support list in [`README.md`](../README.md).
 
 ### Adding a non-PBR material extension (guide-buffer pattern)
 
@@ -605,8 +581,7 @@ checklist differs from the PBR pattern above:
    (`src/gltf_material_cache.cpp`), extension registration (`src/gltf_scene.cpp`), and inspector
    UI (`src/ui_inspector.{hpp,cpp}`) follow the same pattern as PBR extensions — see
    `EXT_DLSS_NR` for the complete example.
-7. Update [`docs/denoising.md`](denoising.md) (for guide-buffer / denoiser integration) and
-   [`user-guide.md`](user-guide.md).
+7. Update [`docs/denoising.md`](denoising.md) (for guide-buffer / denoiser integration).
 
 ## Lighting
 
@@ -633,10 +608,8 @@ Both render paths evaluate the profile identically via `evalIesFactor()` in
 The Inspector exposes `multiplier` and `color` as editable property-editor rows on any node
 carrying `EXT_lights_ies` (`UiInspector::renderNodeProperties` -> `renderIesEditor`). Edits are
 undoable via `EditNodeIesCommand`. The profile index itself is read-only (it refers to the loaded
-`.ies` file array). Nodes that additionally carry `KHR_lights_punctual` show an inline warning in
-the IES section explaining that the KHR attachment is ignored on that node. See
-[user-guide.md § IES Photometric Profiles](user-guide.md) for profile comparison renders and the
-inspector UI.
+`.ies` file array). A node that also carries `KHR_lights_punctual` keeps only the IES light: the KHR
+attachment is ignored.
 
 ## Environment Lighting
 
@@ -752,8 +725,7 @@ over the persisted `.ini`.
 1. Register it once: `m_settings.add(...)` (`SettingsRegistry`) for a renderer setting, or
    `parameterRegistry.add(...)` in `main.cpp` for an app-level flag.
 2. Wire it to renderer or app settings.
-3. Nothing to list by hand: it appears in `--help`. Describe it in the
-   [user guide](user-guide.md) only where users need to know how to use it.
+3. Nothing to list by hand: it appears in `--help`.
 
 ### Add a command or a keyboard shortcut
 
@@ -810,8 +782,7 @@ A command that opens a dialog or rebuilds the scene only raises a request (`m_me
    it defines itself), add its remapping to `gltf_scene_merger.cpp` in the same change — otherwise it
    is silently dropped or cross-linked when scenes are merged. See
    [External Assets → index remapping is exhaustive](external_assets.md#scenemerger-gltf_scene_mergerhppcpp).
-5. Update extension documentation in [README.md](../README.md) and usage notes in
-   [user-guide.md](user-guide.md).
+5. Update extension documentation in [README.md](../README.md).
 
 ### Modify sync/data-flow behavior
 
@@ -866,12 +837,9 @@ either has a retained branch or is legacy-only and checks for it. A new use pick
 - The scene's sky and sun lights at a scene replace: `applyEnvironmentSkyFromScene`,
   `applyPendingAuthoredSky`, `sky_sun.cpp`'s light lookup (allowed to change, fork-boundary.md).
 - The selection by glTF node: `selectSceneNodeFromScript`, `pickSceneNodeFromScript`,
-  `hoverSceneNodeFromScript`, `updateSelectionFromPick`, `onSceneSelectionEvent`,
-  `selectedNodeIndex`, `isInteractivityPlaying`; the gizmo's node TRS and its undo.
+  `updateSelectionFromPick`, `onSceneSelectionEvent`, `selectedNodeIndex`; the gizmo's node TRS.
 - `mcp_scene.cpp`: `vk_gltf_scene_info` reads the legacy scene (the edit tools went, D3).
-- `onFileDrop`, `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`,
-  `wireSceneToUi`, `thumbnailForTexture`/`thumbnailForImage` (the UI pass), `undo_redo.cpp`,
-  `gltf_interactivity_scene_pointer.cpp`, `updateInteractivityGraphs`, `updateHoverState`.
+- `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`.
 
 ### The retained scene in a stream session
 

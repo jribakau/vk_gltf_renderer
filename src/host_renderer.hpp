@@ -44,7 +44,7 @@
 #include "scene_retained.hpp"
 #include "shaders/gizmo_lines_shaderio.h.slang"
 #include "shaders/shaderio.h"
-#include "ui_animation.hpp"
+#include "animation_control.hpp"
 
 namespace nvvk {
 class ResourceAllocator;

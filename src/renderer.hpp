@@ -67,7 +67,7 @@
 #include "sky_sun.hpp"
 #include "gltf_environment_sky.hpp"
 #include "camera_controls.hpp"
-#include "ui_busy_window.hpp"
+#include "busy_state.hpp"
 #include "scene_selection.hpp"
 #include "gizmo_visuals_vk.hpp"
 #include "timeline_pipeline.hpp"
@@ -633,12 +633,9 @@ private:
   void onSceneSelectionEvent(const SceneSelection::Event& event);
 
   // UI
-  void registerCommands();         // The menu, toolbar and keyboard commands (m_commands), once at attach
   bool hasValidScene();
   // Windows > Reset UI Layout / Reset All to Default. Both are deferred to the top of the next UI
-  // pass (m_pendingResetLayout / m_pendingResetSettings) so the rebuild does not run while the menu
   // bar is mid-submission, and so the panels pick the new state up before they are submitted.
-  void applyPendingResets();
   // F11 / Esc / --presentationMode: bring PresentationMode in line with the request. Top of the UI pass.
   // `selectionPoint`/`selectionRayOrigin` (global space) are the real ray-pick hit point/origin -
   // default NaN for callers with no ray (e.g. script-driven test commands), matching the
@@ -655,8 +652,6 @@ private:
 
   // Resolve a glTF texture / image index to a bounded ImGui thumbnail (0 if not resident). Handed to
   // the inspector and scene browser so their panels can show thumbnails without knowing about the GPU.
-  ImTextureID thumbnailForTexture(int textureIndex);
-  ImTextureID thumbnailForImage(int imageIndex);
 
   // Push a transient notification to the on-screen toast overlay (isError = red). Wired into the
   // inspector / scene browser so their edit actions can surface failures beyond the log.
@@ -713,7 +708,7 @@ private:
   SceneSelection m_sceneSelection;  // Shared selection state
   SkySun         m_skySun;          // Who the sun is, and where it points
 
-  BusyWindow    m_busy;
+  BusyState    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   VisualHelpers m_visualHelpers;  // Grid + transform gizmo overlay
   EnvBaker      m_envBaker;       // Bakes analytic skies into the shared lighting environment
@@ -841,9 +836,6 @@ private:
   bool m_pendingRestoreCallbacks{true};
 
   // Requested from the Windows menu, consumed by applyPendingResets() at the top of the UI pass.
-  bool m_pendingResetLayout{false};
-  bool m_pendingResetSettings{false};
-  bool m_openResetAllPopupNextFrame{false};
 
   // Presentation mode. The registered parameter (--presentationMode, MCP) is only the request;
   // updatePresentationMode() applies it and writes the actual state back, so every path -- F11,

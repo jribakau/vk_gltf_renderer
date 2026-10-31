@@ -28,7 +28,7 @@
 #include "gltf_scene_rtx.hpp"
 #include "gltf_scene_transform_vk.hpp"
 #include "gltf_scene_vk.hpp"
-#include "ui_animation.hpp"
+#include "animation_control.hpp"
 
 namespace {
 

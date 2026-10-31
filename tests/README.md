@@ -73,20 +73,6 @@ _bin/Release/vk_gltf_renderer_tests.exe --gtest_filter=BasicTests.RoundTrip
 _bin/Release/vk_gltf_renderer_tests.exe --gtest_color=yes --gtest_print_time=1
 ```
 
-### Interactivity Tests
-
-`KHR_interactivity` behavior-graph engine tests (graph parsing/validation, flow scheduling,
-node evaluation — see [docs/interactivity.md](../docs/interactivity.md)) are self-contained:
-they build graphs directly as `tinygltf::Value` trees in-process, no GPU or scene file needed.
-
-```bash
-# Via ctest
-ctest -C Release -R Interactivity --output-on-failure
-
-# Directly
-_bin/Release/vk_gltf_renderer_tests.exe --gtest_filter="Interactivity*"
-```
-
 The `ready` gate waits for a render pass to actually complete (`Resources::renderPassCount`, a
 monotonic counter unaffected by dirty-flag resets) rather than the accumulation frame counter -
 a scene whose graph writes a pointer every tick (e.g. `BowShooting.glb`'s permanent idle sway
@@ -114,25 +100,6 @@ python tests/render/volume_scatter_punctual.py --exe _bin/Release/vk_gltf_render
 | `volume_scatter_punctual.py` | Point, spot and directional lights light a `KHR_materials_scatter` medium through next-event estimation at the scatter point (their pdf is `DIRAC`, which a `pdf <= 0` guard used to drop), a spot aimed away leaves it dark, and the light-selection pdf is right (two half-intensity lights give the same image as one) |
 | `volume_transmittance.py` | Light that crosses a `KHR_materials_volume` medium is attenuated by it: an emitter inside an absorbing medium is dimmed by `exp(-sigma_t d)`, seen from outside the medium and from inside it (emission used to be added before the medium in front of it, and a camera path started in clear air wherever the camera was), a surface and its point light inside one by the camera and shadow segments (a shadow ray did not know it started inside, nor attenuate its last segment), a fog lit from just inside its boundary matches one lit from just outside, and an extinction given over a 0.2 mm `attenuationDistance` renders like the same extinction given over 1 m (a 1 mm floor once dropped all absorption of such media), and a lit fog scaled down to a fraction of a millimetre renders like the original (a fixed-length ray offset once skipped medium at every boundary, so small media came out brighter) |
 | `volume_walk_exit.py` | A scatter walk's diffuse exit (`ptVolumeDiffuseExit`) divides out the albedo of the medium it walked in, not that of the surface it leaves through: a white two-sided card with no medium inside a back-lit skin slab adds no light (the walk meeting its back was divided by the 0.05 floor: 14 times the slab's brightness), and giving the slab's hidden faces a material of another albedo leaves the image as it was (it was divided by theirs: 4 times) |
-
-### UI Scenario Scripts (`tests/ui/`) — currently dormant
-
-Hover/select/UI interaction used to be scriptable end-to-end via a scripted UI-automation
-integration, driving real ImGui widgets with `click`/`open`/`close`/`check`/`visible` and
-screenshot capture. That integration has been pulled out of the app for now — the glue code and
-its CLI parameters are gone — and is tracked as future work to reinstate. The scenario scripts
-below remain in `tests/ui/` as reference for what the coverage was and should be again; they are
-not runnable against the current build.
-
-| Script | Verifies | Scene |
-|---|---|---|
-| `interactivity_panel.txt` | KHR_interactivity Interactivity window: Play/Pause/Reset, Variables/Send Event/Log sub-sections, Reset actually restarting the graph | `Tests/Interactivity/event/send_and_receive/glTF-Binary/send_and_receive.glb` (Khronos `glTF-Test-Assets-Interactivity`) |
-| `animation_playback.txt` | `animation/start`/`stop`/`stopAt` clip playback driven end-to-end (real conformance scene's self-verifying `debug/log` checks), combined with the Interactivity window's Play/Pause/Reset | `Tests/Interactivity/animation/{start,stop,stopAt}/glTF-Binary/*.glb` (Khronos `glTF-Test-Assets-Interactivity`) |
-| `select_ray_info.txt` | `event/onSelect`'s `selectionPoint`/`selectionRayOrigin` output sockets via a simulated ray-pick click (`pickrendernode`) - regression test for the fix where a real click's ray data never reached `notifyNodeSelected()` | `Tests/Interactivity/UserInteractions/eventOnSelect/glTF-Binary/eventOnSelect.glb` (Khronos `glTF-Test-Assets-Interactivity`) |
-| `calculator.txt` | Clicking a digit button fires `event/onSelect` and correctly re-renders its digit-strip display - regression test for the fix where a `pointer/set`-only write to a texture-transform's `offset` dropped the baked-in `scale` | `Models/Calculator/glTF-Binary/Calculator.glb` (Khronos `glTF-Test-Assets-Interactivity`) |
-| `bow_shooting.txt` | Aim -> draw -> release via three clicks on the same handle node, verifying the arrow actually launches - regression test for the fix where `pointer/set` writing a bool to any non-`/visible` path (e.g. `KHR_node_selectability/selectable`) silently failed and killed the whole shoot chain | `Models/BowShooting/glTF-Binary/BowShooting.glb` (Khronos `glTF-Test-Assets-Interactivity`) |
-| `reclick_selection_during_play.txt` | Three consecutive clicks on the same node all re-fire `event/onSelect` while a graph is playing, instead of every other click being absorbed as a deselect - regression test for the editor's normal click-to-deselect toggle making click-driven interactivity feel like it needs "two clicks" | `Models/BowShooting/glTF-Binary/BowShooting.glb` (Khronos `glTF-Test-Assets-Interactivity`) |
-| `editor_operations.txt` | Scene Browser Elements tab + Inspector: category tabs, Materials add/duplicate/rename/delete/undo/redo, material value edits, Nodes add/visibility/delete, sort/filter, Textures/Samplers/Images editing, primitive split/merge | A texture-rich scene, e.g. `DamagedHelmet.gltf` |
 
 ## Running Benchmarks
 
@@ -170,7 +137,6 @@ tests/
 ├── test_material_cache.cpp     # Material cache
 ├── test_extensions_metadata.cpp # Extension metadata
 ├── test_primitives.cpp         # Procedural primitives
-├── test_interactivity_engine.cpp # KHR_interactivity graph parsing, flow scheduling, node eval
 ├── test_bsdf_lobes.cpp         # nvshaders' BSDF on the CPU: every-lobe NEE, its MIS pair, sample vs eval, samples vs pdf, layered albedo, reciprocity (own exe)
 ├── figure/data/closure_baseline.json # real materials' closures (figure/tools/closure_probe); MaterialClosure.TheBaselineHolds lists what a change moved, FV_UPDATE_CLOSURE_BASELINE=1 rewrites it
 ├── render/                     # GPU render checks driven by Python (see Render Tests)

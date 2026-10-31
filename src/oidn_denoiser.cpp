@@ -368,24 +368,3 @@ void OidnDenoiser::disable(Resources& resources)
     resources.settings.displayBuffer = DisplayBuffer::eRendered;
 }
 
-// One labeled image of the preview row; returns its top-left corner. Guides the network does not use
-// are dimmed.
-ImVec2 OidnDenoiser::thumbnailUi(const char* label, GBufferIndex index, bool used, ImVec2 size, nvapp::ImTextureVisualizer::Settings settings)
-{
-  ImGui::BeginGroup();
-  if(used)
-    ImGui::TextUnformatted(label);
-  else
-  {
-    ImGui::TextDisabled("%s (unused)", label);
-    settings.scale.w = 0.35f;
-  }
-  const ImVec2 imgPos = ImGui::GetCursorScreenPos();
-  if(m_imageUi.isValid())
-    m_imageUi.image(m_target.getUiImageView(index), size, settings);
-  else
-    ImGui::Dummy(size);
-  ImGui::EndGroup();
-  return imgPos;
-}
-

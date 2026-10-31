@@ -48,7 +48,7 @@
 #include "utils.hpp"
 #include "pipeline_cache_util.hpp"
 #include "scene_feature_detection.hpp"
-#include "ui_busy_window.hpp"
+#include "busy_state.hpp"
 #include "variant_compile_job.hpp"
 
 // #DLSS
@@ -116,7 +116,7 @@ public:
   bool driverCacheFull() const { return m_buildRecord.driverDropped(); }
   // User-initiated hot reload: drop cached variants and recompile from Slang source.
   bool reloadShader(Resources& resources);
-  void setBusyWindow(BusyWindow* busy) { m_busyWindow = busy; }
+  void setBusyWindow(BusyState* busy) { m_busyWindow = busy; }
   // --cacheDir. Empty (the default) keeps the caches next to the executable. Set before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
   // Lens radius squared in metres (0: a pinhole). autoFocus uses the eye-to-target distance. Blades:
@@ -309,7 +309,7 @@ public:
   // guide buffers on, nothing else, on a GPU with SER (the embedded build has AVAILABLE_SER=1).
   bool isEmbeddedDlssVariant(const Resources& resources) const;
   bool isEmbeddedBaseVariant(const Resources& resources) const;
-  // Swaps in the wanted variant if it is cached (cheap; no BusyWindow). Leaves live handles alone on a miss.
+  // Swaps in the wanted variant if it is cached (cheap; no BusyState). Leaves live handles alone on a miss.
   bool tryRestoreCachedVariant(Resources& resources);
   // Destroys a variant's handles now (gpuIdle) or through the app's frame ring
   void releaseVariant(Resources& resources, VkShaderModule module, VkPipeline rtx, VkPipeline rq, nvvk::Buffer sbt, bool gpuIdle);
@@ -344,7 +344,7 @@ public:
   bool                      variantBuilt() const { return m_variantJobs.done(); }
   void                      discardVariantJob();
 
-  BusyWindow* m_busyWindow{nullptr};  // Modal shown during async shader/pipeline compile.
+  BusyState* m_busyWindow{nullptr};  // Modal shown during async shader/pipeline compile.
   std::mutex  m_compileMutex;         // Guards compile metadata and live pipeline handles.
   std::thread m_compileThread;        // Joined in onDetach().
   std::mutex               m_warmMutex;

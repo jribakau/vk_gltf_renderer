@@ -661,7 +661,7 @@ On next frame, updateSceneChanges(cmd):
 ## Performance Characteristics
 
 The millisecond figures below are rough order-of-magnitude estimates for orientation, not
-measured benchmarks — profile with the built-in tools (see `docs/benchmarking.md`) for real numbers.
+measured benchmarks — measure on the scene in question for real numbers.
 
 ### Surgical Update (Transform Only):
 - **CPU:** O(N) where N = number of dirty nodes (typically 1-10)

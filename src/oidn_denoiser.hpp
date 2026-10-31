@@ -166,7 +166,6 @@ private:
   bool cmdDenoise(VkCommandBuffer cmd, Resources& resources, int samples);
   bool autoDenoise(VkCommandBuffer cmd, Resources& resources, int samples);
   void readGpuTime(uint32_t subFrame);
-  ImVec2 thumbnailUi(const char* label, GBufferIndex index, bool used, ImVec2 size, nvapp::ImTextureVisualizer::Settings settings);
 
   Settings          m_settings{};
   Availability      m_availability    = Availability::eNotChecked;

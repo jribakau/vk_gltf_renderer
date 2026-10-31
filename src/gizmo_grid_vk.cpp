@@ -336,28 +336,4 @@ void GridHelperVk::renderRaster(VkCommandBuffer  cmd,
 //-----------------------------------------------------------------------------
 
 #ifndef NDEBUG
-bool GridHelperVk::onDebugUI(GridStyle& style)
-{
-  bool changed = false;
-
-  changed |= ImGui::ColorEdit3("Minor Color", &style.minorColor.x, ImGuiColorEditFlags_Float);
-  changed |= ImGui::ColorEdit3("Major Color", &style.majorColor.x, ImGuiColorEditFlags_Float);
-  ImGui::Separator();
-  changed |= ImGui::ColorEdit3("Axis X Color", &style.axisColorX.x, ImGuiColorEditFlags_Float);
-  changed |= ImGui::ColorEdit3("Axis Y Color", &style.axisColorY.x, ImGuiColorEditFlags_Float);
-  changed |= ImGui::ColorEdit3("Axis Z Color", &style.axisColorZ.x, ImGuiColorEditFlags_Float);
-  ImGui::Separator();
-  changed |= ImGui::SliderFloat("Line Width", &style.lineWidth, 0.5f, 5.0f);
-  changed |= ImGui::SliderFloat("Base Unit", &style.baseUnit, 0.001f, 100.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-
-  int numLines = static_cast<int>(style.numLines);
-  if(ImGui::SliderInt("Num Lines", &numLines, 11, 501))
-  {
-    numLines |= 1;  // keep odd for symmetry
-    style.numLines = static_cast<uint32_t>(numLines);
-    changed        = true;
-  }
-
-  return changed;
-}
 #endif

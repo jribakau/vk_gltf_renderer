@@ -186,9 +186,8 @@ combined:
   and applied via `prevRenderNodeObjectToWorld` in `shaders/gltf_pathtrace.slang`. Gated by
   `Resources::dlssInstanceMotionActive` (bound only on frames where transforms actually change) -
   this gate must see `Scene::DirtyFlags::nodes` as populated by *this* frame's transform writes,
-  which is why the gate check in `GltfRenderer::onRender()` runs after `updateInteractivityGraphs()`
-  (see [docs/interactivity.md](interactivity.md) for a real bug this ordering fixed - a graph-driven
-  per-tick move ghosted for its entire duration when the check ran before the tick instead of after).
+  which is why the gate check in `GltfRenderer::onRender()` runs after the frame's transform writes:
+  a per-tick move ghosted for its entire duration when the check ran first.
 
 **Per-vertex skin/morph deformation (path tracer).** Skinning and morph overwrite the position
 buffer in place (`AnimationVk::dispatchAnimation`; the CPU fallback is `SceneVk::uploadPrimitives`),
@@ -200,7 +199,7 @@ shape dial or a clip moves it.
 `PrevPositionsVk` (`src/gltf_scene_prev_positions_vk.hpp`) keeps a copy of each deforming
 primitive's positions, 12 bytes a vertex. Deforming here means skinned, morphed, edited live, or
 named by an upload queued for this frame. The copy is made in
-`GltfRenderer::snapshotPrevPositions` at the start of the frame, before the interactivity tick,
+`GltfRenderer::snapshotPrevPositions` at the start of the frame, before
 the host uploads and the animation reconcile write, and only when one of them ran the frame
 before. When nothing wrote in between, the copy taken earlier still matches. On frames where a
 writer ran, `dlssDeformMotionActive` binds `PathtracePushConstant::prevVertexPositions`, a table of
@@ -245,7 +244,7 @@ Cost: each traversal rejects thin clear glass inside the ray query itself, using
 factors (`dlssClearGlassFromFactors`), so a stack of glass panes costs one ray. Another traversal
 starts only at refracting glass, or at glass whose clarity depends on a texture. The surface found
 is shaded once. The extra work is paid only by pixels whose primary hit is clear glass. Measure it
-with the path-trace GPU timer (see [benchmarking.md](benchmarking.md)); the cost grows with
+with the path-trace GPU timer; the cost grows with
 glass screen coverage.
 
 The guides must agree with the noisy color. The path spends one bounce per glass surface, so
@@ -316,8 +315,7 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
   never baked into `viewProjMatrix` / `prevMVP`; NGX de-jitters via `InJitterOffset` (negated in
   `src/dlss_wrapper.cpp`).
 - Temporal history is **intentionally not reset on camera motion.** `InReset` is only for
-  discontinuities (resize, preset/quality change, re-enable, and — since the fix documented in
-  [docs/interactivity.md](interactivity.md) — a material/light property write via
+  discontinuities (resize, preset/quality change, re-enable, and a material/light property write via
   `BaseRenderer::notifyDlssContentReset()`, called from `GltfRenderer::updateSceneChanges()`
   whenever `Scene::DirtyFlags::materials`/`lights` is non-empty) via `Dlss::notifyReset` /
   `m_forceResetUntilFrame`. Do not reset on dolly/pan — it discards accumulation and adds noise
