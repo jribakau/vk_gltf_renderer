@@ -128,7 +128,8 @@ std::string uriOfPath(const std::string& path)
   std::string out;
   for(unsigned char c : path)
   {
-    if(c == '%' || c == ' ' || c == '#' || c == '?' || c >= 0x80)
+    // '+': the reading side, a URI's decoder, takes it for a space
+    if(c == '%' || c == ' ' || c == '#' || c == '?' || c == '+' || c >= 0x80)
     {
       static const char* hex = "0123456789ABCDEF";
       out += '%';

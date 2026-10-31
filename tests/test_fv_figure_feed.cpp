@@ -695,20 +695,21 @@ TEST(FigureFeed, ATextureThatComesLaterIsAddedToTheList)
 
 // A texture whose file is in a folder with a space in its name: the record holds the file's path,
 // which opens, not the URI it was given ("a%20folder").
+namespace fvhost {
+std::string uriOfPath(const std::string& path);
+}
+
 TEST(FigureFeed, ATexturesRecordHoldsItsFilesPathNotItsUri)
 {
-  const fs::path dir = fs::temp_directory_path() / "fv feed textures";
+  // a '+' too, which a URI's decoder would take for a space
+  const fs::path dir = fs::temp_directory_path() / "fv feed+textures";
   fs::create_directories(dir);
   fv::build::BuildOptions options;
   options.texture = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
     const fs::path to = dir / fs::path(req.rel).filename();
     std::error_code ec;
     fs::copy_file(kLibrary / req.rel.substr(req.rel.find_first_not_of('/')), to, fs::copy_options::overwrite_existing, ec);
-    // its URI as the host writes it (uriOfPath): a space is %20
-    std::string uri;
-    for(char c : to.generic_string())
-      uri += c == ' ' ? std::string("%20") : std::string(1, c);
-    return fv::build::TextureImage{.uri = uri, .mimeType = "image/png"};
+    return fv::build::TextureImage{.uri = fvhost::uriOfPath(to.generic_string()), .mimeType = "image/png"};
   };
   const auto        f = loadBox();
   rs::RetainedScene fed;
