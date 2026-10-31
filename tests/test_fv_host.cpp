@@ -1911,6 +1911,8 @@ namespace {
 class FakeCooker
 {
 public:
+  std::atomic<int> composedCooks{0}, unflippedCooks{0};
+
   FakeCooker()
   {
     fs::create_directories(m_dir);
@@ -1922,8 +1924,12 @@ public:
         res.status = 202;
         return;
       }
-      // a cook for the cache (flipped) waits to be let through; a fallback's (unflipped) does not
-      if(flipped && req.get_param_value("cached") != "1")
+      // a cook for the cache (flipped) waits to be let through. One that can only be shown cooked is
+      // cooked as the load goes (fallbackTexture), as it will stay: that one doesn't
+      const bool composed = req.has_param("alpha") || req.has_param("mk") || req.has_param("ir") || req.has_param("rc") || req.has_param("ly") || req.has_param("mul");
+      composedCooks += composed && flipped ? 1 : 0;
+      unflippedCooks += flipped ? 0 : 1;
+      if(flipped && !composed && req.get_param_value("cached") != "1")
       {
         std::unique_lock lock(m_mutex);
         m_open.wait_for(lock, std::chrono::seconds(20), [this] { return m_opened; });
@@ -2003,10 +2009,10 @@ Sampled sampled(rs::RetainedScene& scene)
 
 }  // namespace
 
-// A figure loaded on a cold texture cache shows the cooked maps the cache has and, for the rest, the
-// fallbacks, sampled with V turned over; each cook swaps in as it lands, the fallbacks go from the
-// renderer's scene and every image ends up cooked, without a reload.
-TEST(FvHost, AFigureOnAColdCacheTakesEachCookAsItLands)
+// A figure loaded on a cold texture cache shows the cooked maps the cache has. What can only be shown
+// cooked (a bake with something laid in it) is cooked once as the load goes, flipped as it will stay,
+// and the load waits for that one only.
+TEST(FvHost, AFigureOnAColdCacheCooksWhatItCanOnlyShowCookedOnce)
 {
   FakeCooker cooker;
   HostRig    rig;
@@ -2014,27 +2020,12 @@ TEST(FvHost, AFigureOnAColdCacheTakesEachCookAsItLands)
   ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure PBRSkin.duf"}}).value("ok", false));
   ASSERT_TRUE(rig.settle());
   rs::RetainedScene& scene  = rig.renderer.hostScene();
-  const Sampled      before = sampled(scene);
-  ASSERT_GE(before.images.size(), 2u);
-  EXPECT_GT(before.turned, 0);
-  const auto cooked = [](const std::vector<std::string>& images) {
-    return size_t(std::count_if(images.begin(), images.end(), [](const std::string& uri) { return uri.ends_with("-up.ktx2"); }));
-  };
-  EXPECT_EQ(cooked(before.images), 1u);  // the cached detail map
-
-  cooker.open();
-  Sampled   after;
-  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-  do
-  {
-    rig.host->onUpdate();
-    after = sampled(scene);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  } while(cooked(after.images) < after.images.size() && std::chrono::steady_clock::now() < end);
-  EXPECT_EQ(cooked(after.images), after.images.size());
-  EXPECT_EQ(after.turned, 0);
-  EXPECT_EQ(after.images.size(), before.images.size());
-  EXPECT_EQ(scene.textureCount(), after.images.size());  // the fallbacks went
+  const Sampled      landed = sampled(scene);
+  ASSERT_GE(landed.images.size(), 2u);
+  EXPECT_EQ(landed.turned, 0);
+  EXPECT_EQ(std::count_if(landed.images.begin(), landed.images.end(), [](const std::string& uri) { return uri.ends_with("-up.ktx2"); }), std::ptrdiff_t(landed.images.size()));
+  EXPECT_GT(cooker.composedCooks.load(), 0);
+  EXPECT_EQ(cooker.unflippedCooks.load(), 0);
 }
 
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr

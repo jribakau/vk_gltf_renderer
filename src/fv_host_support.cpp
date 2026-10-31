@@ -299,8 +299,17 @@ std::vector<std::optional<fv::build::TextureImage>> resolveTextures(const HostSe
         else if(cooker)
         {
           CookedTexture c = cookedTexture(s, req, true, true);
-          missed[i]       = c.uncooked ? 1 : 0;
-          found[i]        = c.uncooked && lib ? fallbackTexture(s, *lib, req, cooker) : std::move(c.image);
+          if(!c.uncooked)
+            found[i] = std::move(c.image);
+          else
+          {
+            // what can only be shown cooked (a cutout, a makeup, a .tif) is cooked now, as it will stay:
+            // cooked unflipped and then again flipped, the load waits for one nothing reads again
+            bool final = false;
+            if(lib)
+              found[i] = fallbackTexture(s, *lib, req, cooker, true, &final);
+            missed[i] = final ? 0 : 1;
+          }
         }
       }
     });
@@ -321,7 +330,7 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
   return fv::build::TextureImage{uriOfPath(p), mimeOf(p), false};
 }
 
-std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker)
+std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker, bool flip, bool* final)
 {
   using fv::textures::Fallback;
   const bool     derived = fv::textures::derivedChannels(req.channels);
@@ -330,7 +339,11 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
   const Fallback route =
       cooker && (req.iris || req.recolor) ? Fallback::eCook : fv::textures::fallbackOf(req.rel, derived, laid, cooker, s.originalTextures);
   if(route == Fallback::eCook)
-    return cookedTexture(s, req, false, false).image;
+  {
+    if(final)
+      *final = flip;
+    return cookedTexture(s, req, flip, false).image;
+  }
   // composed into a PNG beside the others made this way (composeImage recolours the iris)
   if(route == Fallback::eCompose)
   {

@@ -441,7 +441,8 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
 // alone changes the picture too much: it, makeup and an iris colour (and formats the renderer cannot
 // read) are cooked, unflipped, and waited for; without a cooker, or with Original textures (only
 // what the renderer cannot read is cooked then), they are composed here too (fv_textures.hpp).
-std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker);
+// `flip`: the figure's images are flipped, so one cooked here is as it will stay, which `final` says.
+std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, const fv::dson::Library& lib, const fv::build::TextureRequest& req, bool cooker, bool flip = false, bool* final = nullptr);
 
 // A figure's textures, several resolved at once. In a figure built for the cooked images (`flipped`,
 // which needs the cooker): the cooked one where the cache has it, else the fallback, its request
