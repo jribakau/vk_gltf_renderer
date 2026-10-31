@@ -298,7 +298,7 @@ TEST(FvCompose, ReadModelFileUnpacksMeshoptCompression)
     out.write("JSON", 4);
     out.write(json.data(), std::streamsize(json.size()));
     word(out, uint32_t(bin.size()));
-    out.write("BIN ", 4);
+    out.write("BIN\0", 4);
     out.write(reinterpret_cast<const char*>(bin.data()), std::streamsize(bin.size()));
   }
 
