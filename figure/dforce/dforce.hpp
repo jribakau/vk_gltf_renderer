@@ -21,6 +21,7 @@
 // One thread (the figure's owner) calls everything; only the solver runs elsewhere, on a snapshot
 // of what it needs (a live simulation is touched by the owner only between its steps).
 
+#include <array>
 #include <chrono>
 #include <functional>
 #include <future>
@@ -88,6 +89,9 @@ public:
   void changed(const std::vector<int>& meshes, bool nodesMoved);
   // Runs now, still dropping the result if a newer edit arrives while it runs.
   void resimulate();
+  // How the figure is turned in the world on top of its scene graph (the host places it), so the
+  // simulation knows which way is down. A change that matters settles again, or wakes a live one.
+  void setTurn(const Quat& turn);
   // Weight 1 drapes, weight 0 restores the conforming meshes. Turning it on settles again.
   void setEnabled(bool on);
   // Settle or live; switching to live starts with a settle. Live on the GPU without `makeGpuSim`
@@ -124,12 +128,15 @@ private:
   bool                 apply(const Job& job, const std::vector<std::vector<float>>& positions);
   // The bones of a job's skinned meshes as the figure has them now, per slot (empty: unskinned).
   std::vector<std::vector<Mat4>> currentBones(const Job& job) const;
+  // World down, in cm/s^2, in the job's space.
+  std::array<float, 3> currentGravity() const;
   bool                           pumpLive();
 
   SceneGraph&      m_scene;
   morph::MorphSet& m_morphs;
   int              m_bodyMesh;
   int              m_root;
+  Quat             m_turn;
 
   bool                                  m_enabled   = true;
   Mode                                  m_mode      = Mode::eSettle;
@@ -147,6 +154,10 @@ private:
   std::vector<std::vector<Mat4>>                 m_liveBones;
   bool                                           m_liveSettling = false;
   bool                                           m_liveMoving   = true;
+  std::array<float, 3>                           m_liveGravity{0, 0, 0};
+  // live: when the last step started, and the simulated seconds since the pose last moved
+  std::chrono::steady_clock::time_point          m_liveLast;
+  float                                          m_liveStill = 0;
   uint64_t                                       m_liveGen      = 0;
   std::set<int> m_draped;
   int           m_version = 0;

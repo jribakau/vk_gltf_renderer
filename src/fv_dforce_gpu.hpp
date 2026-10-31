@@ -60,8 +60,9 @@ public:
   DforceGpu(const DforceGpu&)            = delete;
   DforceGpu& operator=(const DforceGpu&) = delete;
 
-  void  frame(float t0, float t1, float extraDamping = 0) override;
+  void  frame(float t0, float t1, float extraDamping = 0, float seconds = 0) override;
   void  setTarget(size_t mesh, const std::vector<fv::Mat4>& bones) override;
+  void  setGravity(const std::array<float, 3>& gravity) override;
   void  settle() override;
   float lastMove() const override { return m_lastMove; }
   std::vector<std::vector<float>> positions() const override;

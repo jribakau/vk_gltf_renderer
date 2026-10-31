@@ -576,6 +576,16 @@ void FvHost::onUpdate()
     timePhase("frame: dForce and collision");
     if(f.dforce)
     {
+      // the Transform panel, a gizmo or what it rides on places the figure's entity, not its graph
+      if(s.renderer->feedsHostScene() && s.renderer->hostScene().entity(p->root))
+      {
+        const glm::mat4 world = s.renderer->hostScene().world(p->root);
+        fv::Mat4        placed;
+        for(int c = 0; c < 4; c++)
+          for(int r = 0; r < 4; r++)
+            placed.e[size_t(c * 4 + r)] = world[c][r];
+        f.dforce->setTurn(fv::rotationOf(placed));
+      }
       if(!changes.nodes.empty() || !moved.empty())
         f.dforce->changed(moved, !changes.nodes.empty());
       if(f.dforce->pump())

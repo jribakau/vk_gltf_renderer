@@ -17,6 +17,12 @@ constexpr auto  kDebounce = 400ms;
 constexpr float kAir      = 0.15f;
 // Velocity decay per second a live step adds while the pose stands still, so the cloth comes to rest.
 constexpr float kLiveRestDamping = 6.f;
+// A live step is as long as the time since the last one, within these, seconds: a slow frame doesn't
+// make slow motion, down to the rate below which a step's substeps would stop holding the cloth
+// together (then it slows instead), and a fast one doesn't cut the time finer than it needs.
+constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 20.f;
+// How far gravity must turn to matter, cm/s^2 on any axis: about a twentieth of a degree.
+constexpr float kGravityChange = 1.f;
 
 // Whether the node of every mesh is shown: not taken off, not hidden, nor anything above it.
 std::vector<bool> shownNodes(const SceneGraph& scene)
@@ -29,6 +35,14 @@ std::vector<bool> shownNodes(const SceneGraph& scene)
     shown[i]      = n.visible && !n.removed && (n.parent < 0 || shown[size_t(n.parent)]);
   }
   return shown;
+}
+
+bool sameGravity(const std::array<float, 3>& a, const std::array<float, 3>& b)
+{
+  for(int k = 0; k < 3; k++)
+    if(std::fabs(a[size_t(k)] - b[size_t(k)]) > kGravityChange)
+      return false;
+  return true;
 }
 
 bool samePose(const std::vector<Mat4>& a, const std::vector<Mat4>& b)
@@ -135,6 +149,16 @@ void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
     return;
   }
   if(nodesMoved || !meshes.empty())
+    poke();
+}
+
+void Dforce::setTurn(const Quat& turn)
+{
+  const std::array<float, 3> was = currentGravity();
+  m_turn                         = turn;
+  const std::array<float, 3> now = currentGravity();
+  // live reads it next frame
+  if(m_mode == Mode::eSettle && !sameGravity(was, now))
     poke();
 }
 
@@ -251,9 +275,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   const Mat4 fromWorld = inverse(rootWorld);
   const auto toSpace   = [&](int mesh) { return fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{}); };
 
-  // world down, turned into the root's frame
-  const Vec3 g = rotate(Vec3{0, -980, 0}, rotationOf(rootWorld).inverse());
-  const std::array<float, 3> gravity{float(g.x), float(g.y), float(g.z)};
+  const std::array<float, 3> gravity = currentGravity();
 
   // the body is always a collider, in the same space as the cloth, and under every cloth layer
   if(m_bodyMesh >= 0 && size_t(m_bodyMesh) < m_scene.meshes.size())
@@ -369,6 +391,15 @@ std::optional<Dforce::Prepared> Dforce::prepared() const
   return p;
 }
 
+std::array<float, 3> Dforce::currentGravity() const
+{
+  const auto worlds    = m_scene.worlds();
+  const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
+  // world down, turned into the root's frame
+  const Vec3 g = rotate(Vec3{0, -980, 0}, (m_turn * rotationOf(rootWorld)).inverse());
+  return {float(g.x), float(g.y), float(g.z)};
+}
+
 std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const
 {
   std::vector<std::vector<Mat4>> out(job.slotMesh.size());
@@ -474,9 +505,13 @@ bool Dforce::pumpLive()
     if(!m_live)
       m_live = std::make_shared<ClothSim>(m_liveJob->bodies, opts);
     m_liveBones    = currentBones(*m_liveJob);
+    m_liveGravity  = currentGravity();
     m_liveGen      = m_gen;
     m_liveSettling = true;
     m_liveMoving   = true;
+    // the settle holds the pose for as long as a still pose is ever held
+    m_liveStill    = opts.maxHold;
+    m_liveLast     = std::chrono::steady_clock::now();
     m_version++;
     auto sim = m_live;
     if(sim->ownerThreadOnly())
@@ -495,7 +530,8 @@ bool Dforce::pumpLive()
   }
   if(!m_live || m_scheduled)
     return wrote;
-  // the pose now; a pose that stands still with the cloth at rest needs no step
+  // the pose now, and which way is down; a pose that stands still needs no step once the cloth is at
+  // rest, or has had as long as a settle gives it: a few vertices caught in a fold may never be
   auto bones = currentBones(*m_liveJob);
   bool moved = false;
   for(size_t slot = 0; slot < bones.size(); slot++)
@@ -504,8 +540,26 @@ bool Dforce::pumpLive()
       moved = true;
       m_live->setTarget(slot, bones[slot]);
     }
-  if(!moved && !m_liveMoving && m_live->lastMove() < 0.01f)
+  const std::array<float, 3> gravity = currentGravity();
+  const bool                 turned  = !sameGravity(gravity, m_liveGravity);
+  if(turned)
+  {
+    m_liveGravity = gravity;
+    m_live->setGravity(gravity);
+  }
+  if(moved || turned)
+    m_liveStill = 0;
+  const SettleOptions held;
+  const auto now = std::chrono::steady_clock::now();
+  if(!moved && !turned && !m_liveMoving && (m_live->lastMove() < 0.01f || m_liveStill >= held.maxHold))
+  {
+    m_liveLast = now;
     return wrote;
+  }
+  const float seconds = std::clamp(std::chrono::duration<float>(now - m_liveLast).count(), kLiveMinStep, kLiveMaxStep);
+  m_liveLast          = now;
+  if(!moved)
+    m_liveStill += seconds;
   // the drape of this step is read back through the pose it was stepped to
   const auto worlds = m_scene.worlds();
   const auto nodeOf = nodeOfMesh(m_scene);
@@ -513,16 +567,16 @@ bool Dforce::pumpLive()
     if(m_liveJob->slotMesh[d.slot] >= 0)
       d.pose = currentSkin(m_scene, worlds, nodeOf, d.mesh);
   m_liveBones  = std::move(bones);
-  m_liveMoving = moved;
+  m_liveMoving = moved || turned;
   auto        sim     = m_live;
   const float damping = moved ? 0.f : kLiveRestDamping;
   if(sim->ownerThreadOnly())
   {
-    sim->step(damping);
+    sim->step(damping, seconds);
     return apply(*m_liveJob, sim->positions()) || wrote;
   }
-  m_liveStep = jobs::pool().submit([sim, damping] {
-    sim->step(damping);
+  m_liveStep = jobs::pool().submit([sim, damping, seconds] {
+    sim->step(damping, seconds);
     return sim->positions();
   });
   return wrote;

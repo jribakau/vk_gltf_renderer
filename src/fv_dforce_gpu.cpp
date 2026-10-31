@@ -125,7 +125,7 @@ struct DforceGpu::Impl
   // ---- a frame
   void kinematicAt(float t, std::vector<float>& out);
   bool buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m);
-  void frame(float t0, float t1, float extraDamping);
+  void frame(float t0, float t1, float extraDamping, float seconds = 0);
 };
 
 bool DforceGpu::Impl::mappedBytes(nvvk::Buffer& buf, const void* data, size_t bytes, VmaMemoryUsage usage)
@@ -466,7 +466,7 @@ bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
   return true;
 }
 
-void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
+void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds)
 {
   const size_t n = size_t(model.nv);
   // where the pose takes what it holds by the end of the frame
@@ -532,7 +532,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping)
   std::memcpy(modelBuf.mapping, &m, sizeof(m));
 
   const int   steps  = substeps;
-  const float dt     = opts.frameDt / float(steps);
+  const float dt     = (seconds > 0 ? seconds : opts.frameDt) / float(steps);
   const int   passes = std::min(steps, std::max(collisions, int(std::ceil(std::max(lastMove, kinematicMove) / kPassSpacing))));
   int         next   = steps - 1 - (passes - 1) * (steps / passes);
   float       tFaces = 0;
@@ -670,11 +670,22 @@ DforceGpu::~DforceGpu()
   m_impl->destroy();
 }
 
-void DforceGpu::frame(float t0, float t1, float extraDamping)
+void DforceGpu::setGravity(const std::array<float, 3>& gravity)
+{
+  if(!m_valid)
+    return;
+  // the frames before this one have finished: a step waits for its own
+  std::vector<float>& grav = m_impl->model.grav;
+  for(size_t i = 0; i + 2 < grav.size(); i += 3)
+    std::copy(gravity.begin(), gravity.end(), grav.begin() + long(i));
+  std::memcpy(m_impl->grav.mapping, grav.data(), grav.size() * sizeof(float));
+}
+
+void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
 {
   if(!m_valid || m_impl->broken)
     return;
-  m_impl->frame(t0, t1, extraDamping);
+  m_impl->frame(t0, t1, extraDamping, seconds);
   m_lastMove = m_impl->broken ? 0.f : m_impl->lastMove;
 }
 

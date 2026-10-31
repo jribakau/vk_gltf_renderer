@@ -1198,6 +1198,211 @@ TEST(Dforce, aLiveBoneMoveKeepsTheFiguresCentimetres)
   expect("moved");
 }
 
+namespace {
+
+// A veil over a floor, as liveModeDrapesThenStepsOnlyWhileSomethingMoves has them.
+struct VeilScene
+{
+  fv::SceneGraph scene;
+  int            rootNode = -1;
+  VeilScene()
+  {
+    rootNode        = scene.add(fv::Node{});
+    const Grid body = grid(8, 0), veil = grid(4, 3);
+    scene.meshes.push_back(sceneMesh(body, false));
+    scene.meshes.push_back(sceneMesh(veil, true));
+    scene.materials.push_back({});
+    for(int i = 0; i < 2; i++)
+    {
+      fv::Node n;
+      n.kind = fv::NodeKind::eMesh;
+      n.mesh = i;
+      scene.add(n, rootNode);
+    }
+  }
+};
+
+// The turn the Transform panel gives a figure it stands on its head.
+const fv::Quat kUpsideDown{1, 0, 0, 0};
+
+bool pumpUntilWritten(dforce::Dforce& d)
+{
+  for(int i = 0; i < 6000; i++)
+  {
+    if(d.pump())
+      return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return false;
+}
+
+float lowestOf(const std::vector<float>& pos)
+{
+  float y = INFINITY;
+  for(size_t v = 0; v < pos.size() / 3; v++)
+    y = std::min(y, pos[v * 3 + 1]);
+  return y;
+}
+
+// A simulation that never comes to rest, as a vertex caught in a fold doesn't: what's asked of it is kept.
+class RestlessSim final : public dforce::ClothBackend
+{
+public:
+  explicit RestlessSim(std::vector<dforce::SettleMesh> meshes)
+      : m_meshes(std::move(meshes))
+  {
+  }
+  void frame(float, float, float, float s) override { seconds.push_back(s); }
+  void setTarget(size_t, const std::vector<fv::Mat4>&) override {}
+  void setGravity(const std::array<float, 3>& g) override { gravity.push_back(g); }
+  void settle() override {}
+  float lastMove() const override { return 1.f; }
+  bool  ownerThreadOnly() const override { return true; }
+  std::vector<std::vector<float>> positions() const override
+  {
+    std::vector<std::vector<float>> out;
+    for(const dforce::SettleMesh& m : m_meshes)
+      out.push_back(m.rest);
+    return out;
+  }
+  std::vector<float>                seconds;
+  std::vector<std::array<float, 3>> gravity;
+
+private:
+  std::vector<dforce::SettleMesh> m_meshes;
+};
+
+}  // namespace
+
+TEST(Dforce, aFrameTakesTheTimeItIsGivenAndGravityCanTurn)
+{
+  // free cloth, nothing under it: a frame twice as long falls four times as far
+  const auto fallOver = [](float seconds) {
+    dforce::SettleOptions opts;
+    opts.substeps = 24;
+    dforce::ClothSim sim({cloth(grid(4, 0))}, opts);
+    sim.frame(1, 1, 0, seconds);
+    return -sim.positions()[0][1];
+  };
+  EXPECT_NEAR(fallOver(1.f / 30.f) / fallOver(1.f / 15.f), 0.25f, 0.02f);
+
+  dforce::SettleOptions opts;
+  opts.substeps = 24;
+  dforce::ClothSim sim({cloth(grid(4, 0))}, opts);
+  sim.setGravity({0, 980, 0});
+  sim.frame(1, 1);
+  EXPECT_GT(sim.positions()[0][1], 0.f);
+}
+
+TEST(Dforce, aFigureTurnedOverSettlesTheOtherWay)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  // turned in the world, the scene graph as it was: the host places a figure's entity
+  d.setTurn(kUpsideDown);
+  EXPECT_TRUE(d.busy());
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_GT(lowestOf(v.scene.meshes[1].geo->position), 3.5f);
+  // the same turn again is nothing new
+  EXPECT_FALSE(d.busy());
+  d.setTurn(kUpsideDown);
+  EXPECT_FALSE(d.busy());
+}
+
+TEST(Dforce, aLiveSimulationAtRestFallsTheNewWayWhenTheFigureIsTurned)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  d.setMode(dforce::Mode::eLive);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  const auto& pos = v.scene.meshes[1].geo->position;
+  ASSERT_LT(lowestOf(pos), 1.f);
+  // left to come to rest
+  for(int i = 0; i < 300; i++)
+  {
+    d.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const float rested = lowestOf(pos);
+  d.setTurn(kUpsideDown);
+  // no new build: the same simulation is told
+  EXPECT_FALSE(d.busy());
+  for(int i = 0; i < 3000 && lowestOf(pos) < rested + 2.f; i++)
+  {
+    d.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_GE(lowestOf(pos), rested + 2.f);
+}
+
+TEST(Dforce, aStillPoseSleepsThoughTheClothNeverRestsAndATurnWakesIt)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<RestlessSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<RestlessSim>(std::move(meshes));
+    return sim;
+  };
+  d.setMode(dforce::Mode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_TRUE(sim);
+  // the settle has held this pose already: after a step to land it, nothing more
+  for(int i = 0; i < 20; i++)
+    d.pump();
+  EXPECT_LE(sim->seconds.size(), 1u);
+  EXPECT_TRUE(sim->gravity.empty());
+
+  // turned over: told once, and held for as long as a settle would hold it, then asleep again
+  const size_t before = sim->seconds.size();
+  d.setTurn(kUpsideDown);
+  const dforce::SettleOptions held;
+  for(int i = 0; i < 400; i++)
+    d.pump();
+  ASSERT_EQ(sim->gravity.size(), 1u);
+  EXPECT_NEAR(sim->gravity[0][1], 980.f, 1e-2f);
+  float simulated = 0;
+  for(size_t i = before; i < sim->seconds.size(); i++)
+    simulated += sim->seconds[i];
+  EXPECT_GE(simulated, held.maxHold);
+  EXPECT_LT(simulated, held.maxHold + 0.1f);
+  const size_t asleep = sim->seconds.size();
+  for(int i = 0; i < 20; i++)
+    d.pump();
+  EXPECT_EQ(sim->seconds.size(), asleep);
+}
+
+TEST(Dforce, aLiveStepIsAsLongAsTheTimeSinceTheLastWithinItsLimits)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<RestlessSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<RestlessSim>(std::move(meshes));
+    return sim;
+  };
+  d.setMode(dforce::Mode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  d.setTurn(kUpsideDown);
+  d.pump();
+  // a frame of 30 ms
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  d.pump();
+  EXPECT_GE(sim->seconds.back(), 0.03f);
+  EXPECT_LE(sim->seconds.back(), 1.f / 20.f);
+  // a very slow one slows the cloth rather than taking a step its substeps can't hold together
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  d.pump();
+  EXPECT_FLOAT_EQ(sim->seconds.back(), 1.f / 20.f);
+  // a very fast one
+  d.pump();
+  EXPECT_FLOAT_EQ(sim->seconds.back(), 1.f / 60.f);
+}
+
 TEST(Dforce, anEditToADrapedMeshSettlesAgain)
 {
   // the host reports a frame's edits before the drape is written, so a mesh just draped that an edit

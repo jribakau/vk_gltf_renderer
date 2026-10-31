@@ -193,8 +193,11 @@ class ClothBackend
 {
 public:
   virtual ~ClothBackend() = default;
-  virtual void  frame(float t0, float t1, float extraDamping = 0) = 0;
+  // `seconds` of simulated time; 0: SettleOptions::frameDt
+  virtual void  frame(float t0, float t1, float extraDamping = 0, float seconds = 0) = 0;
   virtual void  setTarget(size_t mesh, const std::vector<Mat4>& bones) = 0;
+  // Which way is down and how hard, cm/s^2 in the job's space: the figure was turned.
+  virtual void  setGravity(const std::array<float, 3>& gravity) = 0;
   virtual void  settle() = 0;
   virtual float lastMove() const = 0;
   virtual std::vector<std::vector<float>> positions() const = 0;
@@ -205,9 +208,9 @@ public:
   // sweep from 0 on every frame would set the colliders and the pinned cloth out from the pose
   // they memorized (the rest pose, after a settle) each frame and drag them through the cloth to
   // the target again.
-  void step(float extraDamping = 0)
+  void step(float extraDamping = 0, float seconds = 0)
   {
-    frame(m_targetPending ? 0.f : 1.f, 1, extraDamping);
+    frame(m_targetPending ? 0.f : 1.f, 1, extraDamping, seconds);
     m_targetPending = false;
   }
 
@@ -230,12 +233,14 @@ public:
 
   // Advances one frame: the colliders and pinned vertices sweep from pose fraction `t0` to `t1`
   // (0 the pose they set out from, 1 the target) while the cloth integrates. `extraDamping` is a
-  // further velocity decay per second, for bringing a held pose to rest quickly.
-  void frame(float t0, float t1, float extraDamping = 0) override;
+  // further velocity decay per second, for bringing a held pose to rest quickly. The frame is
+  // `seconds` long, cut into the same substeps; 0: SettleOptions::frameDt.
+  void frame(float t0, float t1, float extraDamping = 0, float seconds = 0) override;
   // Live: a new target for a skinned mesh's bones (its skin matrices in the mesh's space, as
   // `SettleMesh::bones`). The pose its kinematic vertices have reached becomes where they set out
   // from, so the next frame(0, 1) sweeps them to the new target. Meshes not given keep theirs.
   void setTarget(size_t mesh, const std::vector<Mat4>& bones) override;
+  void setGravity(const std::array<float, 3>& gravity) override;
   // The pose transition over its frames, then the hold until the cloth is still (or `maxHold`).
   void settle() override;
   // How far the fastest dynamic vertex moved over the last frame, cm.

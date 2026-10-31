@@ -463,7 +463,7 @@ struct ClothSim::Impl : ClothModel
   // One sweep over the constraints (the stretch edges alone when `stretchOnly`) and the tethers.
   void solveEdges(float dt, bool stretchOnly = false);
   void collide(float kinematicStep);
-  void frame(float t0, float t1, float extraDamping);
+  void frame(float t0, float t1, float extraDamping, float seconds);
 };
 
 namespace {
@@ -1409,10 +1409,10 @@ void ClothSim::Impl::collide(float kinematicStep)
   cprev = x;
 }
 
-void ClothSim::Impl::frame(float t0, float t1, float extraDamping)
+void ClothSim::Impl::frame(float t0, float t1, float extraDamping, float seconds)
 {
   const int   n  = substeps;
-  const float dt = opts.frameDt / float(n);
+  const float dt = (seconds > 0 ? seconds : opts.frameDt) / float(n);
   // where the pose takes what it holds by the end of the frame, and how far: the colliders' cells
   // for the whole frame cover that sweep
   endPos = x;
@@ -1490,9 +1490,16 @@ ClothSim::ClothSim(std::vector<SettleMesh> meshes, const SettleOptions& opts)
 
 ClothSim::~ClothSim() = default;
 
-void ClothSim::frame(float t0, float t1, float extraDamping)
+void ClothSim::frame(float t0, float t1, float extraDamping, float seconds)
 {
-  m_impl->frame(t0, t1, extraDamping);
+  m_impl->frame(t0, t1, extraDamping, seconds);
+}
+
+void ClothSim::setGravity(const std::array<float, 3>& gravity)
+{
+  std::vector<float>& grav = m_impl->grav;
+  for(size_t i = 0; i + 2 < grav.size(); i += 3)
+    std::copy(gravity.begin(), gravity.end(), grav.begin() + long(i));
 }
 
 void ClothSim::setTarget(size_t mesh, const std::vector<Mat4>& bones)
