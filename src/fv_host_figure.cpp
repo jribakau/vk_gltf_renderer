@@ -300,6 +300,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
         notice("dForce: the GPU solver could not start; simulating on the CPU");
         return nullptr;
       }
+      sim->onStartFailed = [this] { notice("dForce: the GPU solver could not start; simulating on the CPU"); };
       return sim;
     };
 #endif

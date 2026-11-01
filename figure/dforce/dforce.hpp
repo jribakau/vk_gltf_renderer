@@ -6,7 +6,7 @@
 // - Settle (the default): one settle for the pose, scheduled once the pose or shape stops changing.
 //   A newer pose, morph or wear bumps the generation, and a finished job applies only if it is still
 //   that generation.
-//   With `makeGpuSim` it runs on the renderer's compute solver instead, a slice a frame in pump(), so
+//   With `makeGpuSim` it runs on the renderer's compute solver instead, made on the pool and then a slice a frame in pump(), so
 //   the app stays usable and an edit drops it at once; if that solver fails, the job goes to the pool.
 // - Live: the simulation keeps its state and takes the figure's bones every frame, stepping once on
 //   the pool and writing the drape the frame after, so the cloth follows a drag or a playing clip.

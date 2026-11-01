@@ -610,7 +610,12 @@ bool Dforce::pump()
     m_scheduled = false;
     if(m_enabled && active())
     {
-      if(auto job = prepare(m_gen))
+      std::shared_ptr<Job> job;
+      {
+        timing::Scope t("dforce: prepare");
+        job = prepare(m_gen);
+      }
+      if(job)
       {
         m_settleGravity = currentGravity();
         if(!job->drapes.empty())

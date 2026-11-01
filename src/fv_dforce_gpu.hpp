@@ -37,10 +37,16 @@
 // face every substep (recoverMain, holdMain), and a live step that holds the pose reached until a
 // new target comes (ClothBackend::step).
 //
+// What the frames needn't wait for is made on the pool: the model, the colours and the start, which on a hair of
+// 340,000 vertices take seconds. The buffers and pipelines come on the owner's thread once that is done, at the first
+// call that needs them, and until then settleSome() says it isn't done and costs nothing.
+//
 // A frame that takes over 250 ms is logged with what it saw (such a frame is the one before a
 // device loss: Windows resets a GPU held for about two seconds). FV_DFORCE_GPU_DEBUG in the
 // environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold.
 
+#include <functional>
+#include <future>
 #include <memory>
 #include <vector>
 
@@ -70,12 +76,20 @@ public:
   std::vector<std::vector<float>> positions() const override;
   bool                            ownerThreadOnly() const override { return true; }
 
-  // Whether the pipelines and buffers were made; false leaves every call a no-op.
-  bool valid() const { return m_valid; }
+  // False: there is no device to run on, and every call is a no-op. Otherwise whether it can start is known
+  // later: failed() and onStartFailed.
+  bool valid() const { return m_valid || m_prepared.valid(); }
+
+  // It could not start, for whoever would say so: called on the owner's thread
+  std::function<void()> onStartFailed;
 
 private:
+  // What was made on the pool, into buffers. `wait`: for it, if it isn't done; otherwise false until it is.
+  bool started(bool wait);
+
   struct Impl;
-  std::unique_ptr<Impl> m_impl;
+  std::shared_ptr<Impl> m_impl;  // the pool's job holds it too: what it is making outlives a settle an edit dropped
+  std::future<bool>     m_prepared;
   bool                  m_valid    = false;
   float                 m_lastMove = 0;
 };

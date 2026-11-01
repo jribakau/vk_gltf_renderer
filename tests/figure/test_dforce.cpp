@@ -94,6 +94,53 @@ TEST(Dforce, clothFallsOntoAColliderAndStaysOutsideIt)
   }
 }
 
+// What a vertex can't collide with is no work for the start: a hair's own faces, hundreds of thousands in a small
+// space around every vertex, took 40 s of a frame (Classic Messy Bob Hair, 342,000 vertices)
+TEST(Dforce, theStartPassesOverFacesNoVertexCanTouch)
+{
+  Grid sheet = grid(400, 0.1f);
+  for(size_t v = 0; v < sheet.pos.size() / 3; v++)
+  {
+    sheet.pos[v * 3] *= 0.01f;
+    sheet.pos[v * 3 + 2] *= 0.01f;
+  }
+  const Grid body = grid(8, 0);
+  const auto model = dforce::ClothModel::build({dforce::SettleMesh::collider(body.pos, body.pos, body.tris, dforce::kBodyLayer, 0.2f, 0.4f), cloth(sheet)}, 0.15f, false);
+  std::vector<float> x     = model.rest;
+  const auto         begun = std::chrono::steady_clock::now();
+  dforce::separateStart(model, x);
+  EXPECT_LT(std::chrono::duration<double>(std::chrono::steady_clock::now() - begun).count(), 5.0);
+  // and the start is what it was: out of the body by the gap, and not out of its own faces
+  const size_t first = size_t(model.base[1]);
+  for(size_t v = 0; v < sheet.pos.size() / 3; v += 997)
+    EXPECT_NEAR(x[(first + v) * 3 + 1], 0.2f, 1e-3f) << v;
+}
+
+TEST(Dforce, theStartStillMovesAClothOutOfOneUnderIt)
+{
+  const Grid body = grid(8, 0), under = grid(4, 1), over = grid(4, 1.1f);
+  dforce::SettleMesh top = cloth(over);
+  top.layer.assign(top.layer.size(), 1);
+  const auto model = dforce::ClothModel::build({dforce::SettleMesh::collider(body.pos, body.pos, body.tris, dforce::kBodyLayer, 0.2f, 0.4f), cloth(under), top}, 0.15f, false);
+  std::vector<float> x = model.rest;
+  dforce::separateStart(model, x);
+  EXPECT_NEAR(x[size_t(model.base[1]) * 3 + 1], 1.f, 1e-3f) << "clear of the body, it stays";
+  EXPECT_NEAR(x[size_t(model.base[2]) * 3 + 1], 1.2f, 1e-3f) << "by the gap, over the cloth under it";
+}
+
+TEST(Dforce, theStartMovesTheLowestLayerFirst)
+{
+  // the upper cloth comes first in the list, and still sees the lower one where it ended up
+  const Grid body = grid(8, 0), under = grid(4, 0.1f), over = grid(4, 0.25f);
+  dforce::SettleMesh top = cloth(over);
+  top.layer.assign(top.layer.size(), 1);
+  const auto model = dforce::ClothModel::build({dforce::SettleMesh::collider(body.pos, body.pos, body.tris, dforce::kBodyLayer, 0.2f, 0.4f), top, cloth(under)}, 0.15f, false);
+  std::vector<float> x = model.rest;
+  dforce::separateStart(model, x);
+  EXPECT_NEAR(x[size_t(model.base[2]) * 3 + 1], 0.2f, 1e-3f) << "by the gap, over the body";
+  EXPECT_NEAR(x[size_t(model.base[1]) * 3 + 1], 0.4f, 1e-3f) << "by the gap, over where the cloth under it went";
+}
+
 TEST(Dforce, clothLostInsideAColliderIsBroughtBackOut)
 {
   // a veil that starts 2.5 cm under the body, deeper than the start separates: every frame puts

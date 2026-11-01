@@ -26,6 +26,8 @@
 #include <cmath>
 #include <cstring>
 
+#include <figure/io/timing.hpp>
+#include <figure/jobs/pool.hpp>
 #include <glm/glm.hpp>
 #include <nvapp/application.hpp>
 #include <nvutils/logger.hpp>
@@ -94,6 +96,9 @@ struct DforceGpu::Impl
   std::vector<int> colourStart;
   int              stretchColours = 0;
   int                lengthColours = 0;
+  // as the buffers take them, from prepare() until create()
+  std::vector<shaderio::DforceEdge> sorted;
+  std::vector<shaderio::DforceTri>  faces;
 
   VkPipelineLayout layout{};
   VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{};
@@ -126,7 +131,8 @@ struct DforceGpu::Impl
   int debug = 0;
 
   // ---- setup
-  bool init();
+  bool prepare();  // any thread: touches nothing but the model
+  bool create();   // the owner's thread
   void destroy();
   template <class T>
   bool mapped(nvvk::Buffer& buf, const std::vector<T>& data, VmaMemoryUsage usage = VMA_MEMORY_USAGE_CPU_TO_GPU)
@@ -183,7 +189,7 @@ bool DforceGpu::Impl::makePipeline(const char* entry, VkPipeline& out)
   return true;
 }
 
-bool DforceGpu::Impl::init()
+bool DforceGpu::Impl::prepare()
 {
   model = ClothModel::build(meshes, opts.air, opts.reachLinks);
   if(model.nv == 0 || model.freeVerts.empty())
@@ -250,7 +256,6 @@ bool DforceGpu::Impl::init()
   lengthColours = colours;
   if(!colourKind([](EdgeKind k) { return !holdsLength(k); }))
     return false;
-  std::vector<shaderio::DforceEdge> sorted;
   colourStart.assign(size_t(colours) + 1, 0);
   for(int c = 0; c < colours; c++)
   {
@@ -264,13 +269,35 @@ bool DforceGpu::Impl::init()
   }
   colourStart[size_t(colours)] = int(sorted.size());
 
-  std::vector<shaderio::DforceTri> faces;
   for(int t : model.staticTris)
   {
     const Tri& tri = model.tris[size_t(t)];
     faces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, 0.f, 0.f});
   }
 
+  // the start: the rest shape, with what overlaps the body moved out of it, as the CPU solver starts
+  xHost = model.rest;
+  separateStart(model, xHost);
+
+  // the transition's length and the frame's substeps, from how far the pose moves what it holds
+  float maxMove = 0;
+  for(int i : model.kinematicVerts)
+  {
+    const float dx = model.posed[i * 3] - model.rest[i * 3], dy = model.posed[i * 3 + 1] - model.rest[i * 3 + 1],
+                dz = model.posed[i * 3 + 2] - model.rest[i * 3 + 2];
+    maxMove = std::max(maxMove, std::sqrt(dx * dx + dy * dy + dz * dz));
+  }
+  transition           = opts.transition > 0 ? opts.transition : std::min(kMaxTransition, std::max(kMinTransition, maxMove / kTransitionSpeed));
+  const int frames     = std::max(1, int(std::lround(transition / opts.frameDt)));
+  const int byMotion   = int(std::ceil(maxMove / float(frames) / kPassSpacing));
+  substeps             = opts.substeps > 0 ? std::min(240, opts.substeps) : std::min(kMaxSubsteps, std::max(kMinSubsteps, byMotion));
+  collisions           = std::min(substeps, std::max(kMinCollisionPasses, byMotion));
+  return true;
+}
+
+bool DforceGpu::Impl::create()
+{
+  fv::timing::Scope  t("dforce: buffers and pipelines");
   const size_t       n = size_t(model.nv);
   std::vector<float> zeros(n * 3, 0.f);
   std::vector<float> lamZero(std::max<size_t>(1, sorted.size()), 0.f);
@@ -281,9 +308,6 @@ bool DforceGpu::Impl::init()
     collideFlags[i] = model.collides[i] ? 1 : 0;
     layers[i]       = model.layer[i];
   }
-  // the start: the rest shape, with what overlaps the body moved out of it, as the CPU solver starts
-  xHost = model.rest;
-  separateStart(model, xHost);
   bool ok = true;
   ok &= mapped(x, xHost);
   ok &= mapped(prev, xHost);
@@ -321,22 +345,10 @@ bool DforceGpu::Impl::init()
      || !makePipeline("recoverMain", recoverPipe) || !makePipeline("holdMain", holdPipe) || !makePipeline("collideMain", collidePipe)
      || !makePipeline("velocityMain", velocityPipe))
     return false;
-
-  // the transition's length and the frame's substeps, from how far the pose moves what it holds
-  float maxMove = 0;
-  for(int i : model.kinematicVerts)
-  {
-    const float dx = model.posed[i * 3] - model.rest[i * 3], dy = model.posed[i * 3 + 1] - model.rest[i * 3 + 1],
-                dz = model.posed[i * 3 + 2] - model.rest[i * 3 + 2];
-    maxMove = std::max(maxMove, std::sqrt(dx * dx + dy * dy + dz * dz));
-  }
-  transition           = opts.transition > 0 ? opts.transition : std::min(kMaxTransition, std::max(kMinTransition, maxMove / kTransitionSpeed));
-  const int frames     = std::max(1, int(std::lround(transition / opts.frameDt)));
-  const int byMotion   = int(std::ceil(maxMove / float(frames) / kPassSpacing));
-  substeps             = opts.substeps > 0 ? std::min(240, opts.substeps) : std::min(kMaxSubsteps, std::max(kMinSubsteps, byMotion));
-  collisions           = std::min(substeps, std::max(kMinCollisionPasses, byMotion));
   LOGI("dForce GPU: %d vertices (%zu free, %zu soft), %zu edges in %d colours (%d stretch), %zu collision faces\n", model.nv,
-       model.freeVerts.size(), model.softVerts.size(), sorted.size(), colours, stretchColours, faces.size());
+       model.freeVerts.size(), model.softVerts.size(), sorted.size(), int(colourStart.size()) - 1, stretchColours, faces.size());
+  sorted = {};
+  faces  = {};
   return true;
 }
 
@@ -691,25 +703,51 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
 }
 
 DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<SettleMesh> meshes, const SettleOptions& opts)
-    : m_impl(std::make_unique<Impl>())
+    : m_impl(std::make_shared<Impl>())
 {
   m_impl->alloc  = alloc;
   m_impl->app    = app;
   m_impl->meshes = std::move(meshes);
   m_impl->opts   = opts;
-  m_valid        = alloc && app && m_impl->init();
-  if(!m_valid)
-    m_impl->destroy();
+  if(alloc && app)
+    m_prepared = fv::jobs::pool().submit([impl = m_impl] { return impl->prepare(); });
 }
 
 DforceGpu::~DforceGpu()
 {
-  m_impl->destroy();
+  // still on the pool: it has made nothing of the device's, and lets go of the rest when it ends
+  if(!m_prepared.valid())
+    m_impl->destroy();
+}
+
+bool DforceGpu::started(bool wait)
+{
+  if(!m_prepared.valid())
+    return m_valid;
+  if(!wait && m_prepared.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+    return false;
+  bool ok = false;
+  try
+  {
+    ok = m_prepared.get();
+  }
+  catch(const std::exception& e)
+  {
+    LOGE("dForce GPU: %s\n", e.what());
+  }
+  m_valid = ok && m_impl->create();
+  if(!m_valid)
+  {
+    m_impl->destroy();
+    if(onStartFailed)
+      onStartFailed();
+  }
+  return m_valid;
 }
 
 void DforceGpu::setGravity(const std::array<float, 3>& gravity)
 {
-  if(!m_valid)
+  if(!started(true))
     return;
   // the frames before this one have finished: a step waits for its own
   std::vector<float>& grav = m_impl->model.grav;
@@ -720,7 +758,7 @@ void DforceGpu::setGravity(const std::array<float, 3>& gravity)
 
 void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
 {
-  if(!m_valid || m_impl->broken)
+  if(!started(true) || m_impl->broken)
     return;
   // a pose that jumps (a value typed, an undo) in one frame leaves behind what rests on it: a 15 degree
   // turn of the hip moves the shoulders 16 cm, and the top of a dress hanging from them fell 44. A drag
@@ -747,6 +785,8 @@ void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
 
 void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
 {
+  if(!started(true))
+    return;
   Impl& s = *m_impl;
   if(mesh >= s.kin.size() || !s.kin[mesh].skinned || bones.size() != s.kin[mesh].to.size())
     return;
@@ -759,6 +799,7 @@ void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
 
 void DforceGpu::settle()
 {
+  started(true);
   while(!settleSome(std::numeric_limits<double>::infinity()))
   {
   }
@@ -766,8 +807,8 @@ void DforceGpu::settle()
 
 bool DforceGpu::settleSome(double seconds)
 {
-  if(!m_valid)
-    return true;
+  if(!started(false))
+    return !m_prepared.valid();
   Impl&      s      = *m_impl;
   const auto start  = std::chrono::steady_clock::now();
   const int  frames = std::max(1, int(std::lround(s.transition / s.opts.frameDt)));
@@ -800,7 +841,7 @@ bool DforceGpu::settleSome(double seconds)
 
 bool DforceGpu::failed() const
 {
-  return !m_valid || m_impl->broken;
+  return !m_prepared.valid() && (!m_valid || m_impl->broken);
 }
 
 std::vector<std::vector<float>> DforceGpu::positions() const

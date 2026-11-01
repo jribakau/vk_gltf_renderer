@@ -4,9 +4,11 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <queue>
 #include <unordered_map>
 
+#include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 
 namespace fv::dforce {
@@ -590,6 +592,7 @@ void partitionEdges(ClothModel& model)
 
 ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air, bool reachLinks)
 {
+  timing::Scope tBuild("dforce: model");
   ClothModel model;
   // the model's members by their plain names below
   auto& nv = model.nv;
@@ -847,7 +850,11 @@ ClothModel ClothModel::build(const std::vector<SettleMesh>& meshes, float air, b
     }
   }
   if(reachLinks)
+  {
+    timing::Scope t("dforce: reach links");
     addReachLinks(model);
+  }
+  timing::Scope tRings("dforce: rings");
   ringStart.assign(size_t(nv) + 1, 0);
   for(const Edge& e : edges)
     if(e.kind == EdgeKind::eStretch)
@@ -1003,60 +1010,96 @@ void ClothSim::Impl::separateStart()
 
 void separateStart(const ClothModel& model, std::vector<float>& x)
 {
+  timing::Scope t("dforce: separate the start");
   const auto& tris     = model.tris;
   const auto& meshOf   = model.meshOf;
   const auto& layer    = model.layer;
   const auto& offset   = model.offset;
   const auto& collides = model.collides;
-  TriGrid     grid;
-  grid.build(tris, model.allTris, x, x, 0.f);
-  std::vector<uint32_t> seen(tris.size(), 0);
-  uint32_t              stamp = 0;
+  // A vertex looks only at faces of other meshes, on layers under it, so what none can look at stays out of the
+  // grid: on a hair, thousands of its own faces lie around every vertex, and passing over them all took 40 s.
+  int top = std::numeric_limits<int>::min(), second = top, topMesh = -1;
   for(int i : model.freeVerts)
   {
     if(!collides[i])
       continue;
-    const float qx = x[i * 3], qy = x[i * 3 + 1], qz = x[i * 3 + 2];
-    const float lo[3] = {qx - kDepth, qy - kDepth, qz - kDepth}, hi[3] = {qx + kDepth, qy + kDepth, qz + kDepth};
-    stamp++;
-    int   best = -1;
-    float bestDist = kDepth, bestSigned = 0;
-    V3    bestN{};
-    grid.query(lo, hi, [&](const Item& item) {
-      const int t = item.tri;
-      if(seen[size_t(t)] == stamp)
-        return;
-      seen[size_t(t)] = stamp;
-      const Tri& tri  = tris[size_t(t)];
-      if(tri.mesh == meshOf[i] || tri.layer >= layer[i])
-        return;
-      for(int c = 0; c < 3; c++)
+    if(layer[i] > top)
+    {
+      if(meshOf[i] != topMesh)
+        second = top;
+      top     = layer[i];
+      topMesh = meshOf[i];
+    }
+    else if(meshOf[i] != topMesh && layer[i] > second)
+      second = layer[i];
+  }
+  std::vector<int> underSomething;
+  for(int t : model.allTris)
+    if(tris[size_t(t)].layer < (tris[size_t(t)].mesh == topMesh ? second : top))
+      underSomething.push_back(t);
+  TriGrid grid;
+  grid.build(tris, underSomething, x, x, 0.f);
+  // The lowest layer first, so what lies on a moved cloth sees where it went. A layer's vertices look only at what
+  // is under them, so they go side by side, and their moves land together when the layer is done.
+  std::map<int, std::vector<int>> byLayer;
+  for(int i : model.freeVerts)
+    if(collides[i])
+      byLayer[layer[i]].push_back(i);
+  for(const auto& [level, verts] : byLayer)
+  {
+    std::vector<float> moves(verts.size() * 3, 0.f);
+    jobs::parallelFor(verts.size(), 4096, [&](size_t begin, size_t end) {
+      std::vector<uint32_t> seen(tris.size(), 0);
+      uint32_t              stamp = 0;
+      for(size_t vi = begin; vi < end; vi++)
       {
-        const float blo = std::min(x[tri.a * 3 + c], std::min(x[tri.b * 3 + c], x[tri.c * 3 + c]));
-        const float bhi = std::max(x[tri.a * 3 + c], std::max(x[tri.b * 3 + c], x[tri.c * 3 + c]));
-        const float q   = c == 0 ? qx : c == 1 ? qy : qz;
-        if(q < blo - bestDist || q > bhi + bestDist)
-          return;
+        const int   i  = verts[vi];
+        const float qx = x[i * 3], qy = x[i * 3 + 1], qz = x[i * 3 + 2];
+        const float lo[3] = {qx - kDepth, qy - kDepth, qz - kDepth}, hi[3] = {qx + kDepth, qy + kDepth, qz + kDepth};
+        stamp++;
+        int   best = -1;
+        float bestDist = kDepth, bestSigned = 0;
+        V3    bestN{};
+        grid.query(lo, hi, [&](const Item& item) {
+          const int t = item.tri;
+          if(item.mesh == meshOf[i] || seen[size_t(t)] == stamp)
+            return;
+          seen[size_t(t)] = stamp;
+          const Tri& tri  = tris[size_t(t)];
+          if(tri.layer >= level)
+            return;
+          for(int c = 0; c < 3; c++)
+          {
+            const float blo = std::min(x[tri.a * 3 + c], std::min(x[tri.b * 3 + c], x[tri.c * 3 + c]));
+            const float bhi = std::max(x[tri.a * 3 + c], std::max(x[tri.b * 3 + c], x[tri.c * 3 + c]));
+            const float q   = c == 0 ? qx : c == 1 ? qy : qz;
+            if(q < blo - bestDist || q > bhi + bestDist)
+              return;
+          }
+          V3 n;
+          if(!triNormal(x, tri.a, tri.b, tri.c, n))
+            return;
+          const Closest c = closest(qx, qy, qz, x, tri.a, tri.b, tri.c, n);
+          if(c.dist >= bestDist)
+            return;
+          best       = t;
+          bestDist   = c.dist;
+          bestSigned = c.signedDistance;
+          bestN      = n;
+        });
+        if(best < 0)
+          continue;
+        const float gap = std::max(tris[size_t(best)].offset, offset[i]);
+        if(bestSigned >= gap)
+          continue;
+        const float push = gap - bestSigned;
+        for(int k = 0; k < 3; k++)
+          moves[vi * 3 + size_t(k)] = bestN[size_t(k)] * push;
       }
-      V3 n;
-      if(!triNormal(x, tri.a, tri.b, tri.c, n))
-        return;
-      const Closest c = closest(qx, qy, qz, x, tri.a, tri.b, tri.c, n);
-      if(c.dist >= bestDist)
-        return;
-      best       = t;
-      bestDist   = c.dist;
-      bestSigned = c.signedDistance;
-      bestN      = n;
     });
-    if(best < 0)
-      continue;
-    const float gap = std::max(tris[size_t(best)].offset, offset[i]);
-    if(bestSigned >= gap)
-      continue;
-    const float push = gap - bestSigned;
-    for(int k = 0; k < 3; k++)
-      x[i * 3 + k] += bestN[size_t(k)] * push;
+    for(size_t vi = 0; vi < verts.size(); vi++)
+      for(int k = 0; k < 3; k++)
+        x[verts[vi] * 3 + k] += moves[vi * 3 + size_t(k)];
   }
 }
 
