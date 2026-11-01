@@ -162,17 +162,19 @@ struct MorphTarget
 // normals it sums, in the order fv::mesh::NormalWelder sums them. Shared by every record of the mesh.
 struct RefineTables
 {
+  // `owner`'s: as large as the mesh, so read where they are
   struct Level
   {
-    std::vector<uint32_t> start, columns;  // row r reads columns[start[r] .. start[r + 1]) of the level before
-    std::vector<float>    weights;
-    uint32_t              rows() const { return start.empty() ? 0 : uint32_t(start.size() - 1); }
+    std::span<const uint32_t> start, columns;  // row r reads columns[start[r] .. start[r + 1]) of the level before
+    std::span<const float>    weights;
+    uint32_t                  rows() const { return start.empty() ? 0 : uint32_t(start.size() - 1); }
   };
-  uint32_t              cageCount = 0;
-  std::vector<Level>    levels;                        // the last one's rows are the refined vertices
-  std::vector<uint32_t> drawnFrom;                     // per drawn vertex, its refined vertex
-  std::vector<uint32_t> triangles;                     // refined vertices, three per triangle
-  std::vector<uint32_t> normalStart, normalTriangles;  // per refined vertex
+  uint32_t                  cageCount = 0;
+  std::vector<Level>        levels;     // the last one's rows are the refined vertices
+  std::span<const uint32_t> drawnFrom;  // per drawn vertex, its refined vertex
+  std::span<const uint32_t> triangles;  // refined vertices, three per triangle
+  std::shared_ptr<const void> owner;    // what those read
+  std::vector<uint32_t>     normalStart, normalTriangles;  // per refined vertex
   // per refined vertex, added after the last level (strand ribbons' widths); empty: none
   std::vector<glm::vec3> offsets;
   // the drawn triangles whose materials need tangents (none: the mesh has no tangents) and, per drawn

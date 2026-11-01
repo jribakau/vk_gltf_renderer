@@ -9,6 +9,8 @@ set(TEST_COMMON_SOURCES
     common/fake_gpu_backend.cpp
     common/residency_oracle.hpp
     common/residency_oracle.cpp
+    common/failing_allocations.hpp
+    common/failing_allocations.cpp
     test_main.cpp
 )
 
@@ -199,6 +201,7 @@ set(TEST_SOURCES
     # evaluateMaterial as C++ (phase M1 of the material plan)
     ${CMAKE_SOURCE_DIR}/figure/tools/closure_probe.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_image_loader.cpp
+    ${CMAKE_SOURCE_DIR}/src/image_prefetch.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_scene_merger.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_converter.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_utils.cpp

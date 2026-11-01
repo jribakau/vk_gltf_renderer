@@ -36,6 +36,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   s.renderer  = renderer;
   s.protocol  = std::move(protocol);
   s.registry  = registry;
+  s.loaders.onError = [impl = m_impl.get()](const std::string& what) { impl->notice(what, "error"); };
   auto& cmds  = s.protocol->commands();
   Impl* impl  = m_impl.get();
   // the figure library's phase timers (loads, wears, glTF builds) go to the log
@@ -564,7 +565,7 @@ void FvHost::onUpdate()
     }
     catch(const std::exception& e)
     {
-      s.notice(e.what(), "error");
+      s.notice(problemOf(e), "error");
     }
   }
   timePhase("frame: compose");
@@ -577,7 +578,7 @@ void FvHost::onUpdate()
     }
     catch(const std::exception& e)
     {
-      s.notice(std::string("The scene could not be built: ") + e.what(), "error");
+      s.notice("The scene could not be built: " + problemOf(e), "error");
     }
   }
   timePhase("frame: input and morphs");
@@ -599,89 +600,97 @@ void FvHost::onUpdate()
   if(!s.viewCamera.empty() && s.frameIn == 0)
     s.cameraFromView();
   s.applyPendingMorphs();
+  s.watchSystemMemory();
   for(const auto& p : s.props)
   {
     if(!p->figure)
       continue;
-    Loaded& f = *p->figure;
-    timePhase("frame: figure pump");
-    fv::Figure::Changes changes = f.fig->pump();
-    // this frame's edits first, then a settle or a collision pass that finished writes its result
-    // and is drained on its own: its vertices never hide an edit to the same mesh, and are no
-    // reason to run again
-    // (a catch-up of the drawn vertices to a cage already reported moved nothing new)
-    std::vector<int> moved;
-    for(const fv::morph::MeshChange& m : changes.meshes)
-      if(!m.caughtUp)
-        moved.push_back(m.mesh);
-    const auto drainInto = [&] {
-      fv::Figure::Changes more = f.fig->drain();
-      changes.nodes.insert(more.nodes.begin(), more.nodes.end());
-      changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(more.meshes.begin()), std::make_move_iterator(more.meshes.end()));
-      changes.rebound.insert(changes.rebound.end(), more.rebound.begin(), more.rebound.end());
-    };
-    timePhase("frame: dForce and collision");
-    if(f.dforce)
+    try
     {
-      // the Transform panel, a gizmo or what it rides on places the figure's entity, not its graph
-      if(s.renderer->feedsHostScene() && s.renderer->hostScene().entity(p->root))
+      Loaded& f = *p->figure;
+      timePhase("frame: figure pump");
+      fv::Figure::Changes changes = f.fig->pump();
+      // this frame's edits first, then a settle or a collision pass that finished writes its result
+      // and is drained on its own: its vertices never hide an edit to the same mesh, and are no
+      // reason to run again
+      // (a catch-up of the drawn vertices to a cage already reported moved nothing new)
+      std::vector<int> moved;
+      for(const fv::morph::MeshChange& m : changes.meshes)
+        if(!m.caughtUp)
+          moved.push_back(m.mesh);
+      const auto drainInto = [&] {
+        fv::Figure::Changes more = f.fig->drain();
+        changes.nodes.insert(more.nodes.begin(), more.nodes.end());
+        changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(more.meshes.begin()), std::make_move_iterator(more.meshes.end()));
+        changes.rebound.insert(changes.rebound.end(), more.rebound.begin(), more.rebound.end());
+      };
+      timePhase("frame: dForce and collision");
+      if(f.dforce)
       {
-        const glm::mat4 world = s.renderer->hostScene().world(p->root);
-        fv::Mat4        placed;
-        for(int c = 0; c < 4; c++)
-          for(int r = 0; r < 4; r++)
-            placed.e[size_t(c * 4 + r)] = world[c][r];
-        f.dforce->setPlacement(placed);
+        // the Transform panel, a gizmo or what it rides on places the figure's entity, not its graph
+        if(s.renderer->feedsHostScene() && s.renderer->hostScene().entity(p->root))
+        {
+          const glm::mat4 world = s.renderer->hostScene().world(p->root);
+          fv::Mat4        placed;
+          for(int c = 0; c < 4; c++)
+            for(int r = 0; r < 4; r++)
+              placed.e[size_t(c * 4 + r)] = world[c][r];
+          f.dforce->setPlacement(placed);
+        }
+        if(!changes.nodes.empty() || !moved.empty())
+          f.dforce->changed(moved, !changes.nodes.empty());
+        if(f.dforce->pump())
+          drainInto();
+        s.publishDforce(f, false);
       }
-      if(!changes.nodes.empty() || !moved.empty())
-        f.dforce->changed(moved, !changes.nodes.empty());
-      if(f.dforce->pump())
-        drainInto();
-      s.publishDforce(f, false);
-    }
-    if(f.collider)
-    {
-      if(!changes.nodes.empty() || !moved.empty())
-        f.collider->changed(moved, !changes.nodes.empty());
-      if(f.collider->pump())
-        drainInto();
-      // once a drag has settled, not in the middle of it: it takes a composition
-      if(!f.collider->busy() && f.fig->refreshTightHidden(f.collider->enabled()))
+      if(f.collider)
       {
-        s.requestCompose("Fitting", {}, &f);
-        s.publishWardrobe(f);
+        if(!changes.nodes.empty() || !moved.empty())
+          f.collider->changed(moved, !changes.nodes.empty());
+        if(f.collider->pump())
+          drainInto();
+        // once a drag has settled, not in the middle of it: it takes a composition
+        if(!f.collider->busy() && f.fig->refreshTightHidden(f.collider->enabled()))
+        {
+          s.requestCompose("Fitting", {}, &f);
+          s.publishWardrobe(f);
+        }
+        if(f.collisionVersion != f.collider->version())
+          s.publishWardrobe(f);
       }
-      if(f.collisionVersion != f.collider->version())
-        s.publishWardrobe(f);
+      timePhase("frame: figure changes applied");
+      if(!changes.nodes.empty())
+      {
+        const auto t0 = std::chrono::steady_clock::now();
+        s.applyNodes(f, changes.nodes);
+        s.dialTiming.add(DialTiming::eApplyNodes, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+      }
+      if(!changes.meshes.empty())
+      {
+        const auto t0 = std::chrono::steady_clock::now();
+        for(const fv::morph::MeshChange& mesh : changes.meshes)
+          s.applyMesh(f, mesh);
+        s.dialTiming.add(DialTiming::eApplyMesh, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+      }
+      if(!changes.rebound.empty())
+      {
+        const auto t0 = std::chrono::steady_clock::now();
+        s.applyRebind(f, changes.rebound);
+        s.dialTiming.add(DialTiming::eApplyRebind, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+      }
+      // the tangents of a mesh still for a moment: the whole body's take 15-20 ms, too much for
+      // every step of a dial drag
+      if(f.feed)
+        f.feed->settleTangents(std::chrono::milliseconds(100));
+      for(const std::string& w : f.fig->takeWarnings())
+        s.notice(p->name + ": " + w);
+      s.publishBusy(f);
+      s.publishMorphs(f);
     }
-    timePhase("frame: figure changes applied");
-    if(!changes.nodes.empty())
+    catch(const std::exception& e)
     {
-      const auto t0 = std::chrono::steady_clock::now();
-      s.applyNodes(f, changes.nodes);
-      s.dialTiming.add(DialTiming::eApplyNodes, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+      s.noticeNowAndThen(p->name + ": " + problemOf(e));
     }
-    if(!changes.meshes.empty())
-    {
-      const auto t0 = std::chrono::steady_clock::now();
-      for(const fv::morph::MeshChange& mesh : changes.meshes)
-        s.applyMesh(f, mesh);
-      s.dialTiming.add(DialTiming::eApplyMesh, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-    }
-    if(!changes.rebound.empty())
-    {
-      const auto t0 = std::chrono::steady_clock::now();
-      s.applyRebind(f, changes.rebound);
-      s.dialTiming.add(DialTiming::eApplyRebind, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-    }
-    // the tangents of a mesh still for a moment: the whole body's take 15-20 ms, too much for
-    // every step of a dial drag
-    if(f.feed)
-      f.feed->settleTangents(std::chrono::milliseconds(100));
-    for(const std::string& w : f.fig->takeWarnings())
-      s.notice(p->name + ": " + w);
-    s.publishBusy(f);
-    s.publishMorphs(f);
   }
   timePhase("frame: the rest");
   if(fv::timing::enabled())

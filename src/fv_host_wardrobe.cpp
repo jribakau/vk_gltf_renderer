@@ -307,7 +307,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       catch(const std::exception& e)
       {
         slot.prepared.reset();
-        slot.error = e.what();
+        slot.error = problemOf(e);
       }
       slot.msWorker = msSince(tWear);
     };
@@ -474,7 +474,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           }
           catch(const std::exception& e)
           {
-            notice(e.what(), "error");
+            notice(utf8Of(pathOf(rel).stem()) + ": " + problemOf(e), "error");
             done->set_value(false);
           }
         });
@@ -566,20 +566,12 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         });
         // as the materials would have baked them, side by side
         lookImages.resize(lookRequests.size());
-        std::atomic<size_t>      next{0};
-        std::vector<std::thread> workers;
-        for(int w = 0; w < std::min<int>(8, int(lookRequests.size())); w++)
-          workers.emplace_back([&] {
-            for(size_t k; (k = next++) < lookRequests.size();)
-              lookImages[k] = bakeTexture(lib, lookRequests[k], target->texturesFlipped);
-          });
-        for(auto& w : workers)
-          w.join();
+        sideBySide(lookRequests.size(), 8, [&](size_t k) { lookImages[k] = bakeTexture(lib, lookRequests[k], target->texturesFlipped); });
         prefetchImages(lookRequests, lookImages);
       }
       catch(const std::exception& e)
       {
-        notice(e.what(), "error");
+        notice(problemOf(e), "error");
       }
     }
     post([this, target, jobId, label, beforeBuild, after, looks, lookRequests = std::move(lookRequests), lookImages = std::move(lookImages), running]() mutable {

@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include <figure/io/cache_folder.hpp>
 #include <figure/io/timing.hpp>
 
 // xxHash as zstd ships it (XXH64 only), inlined here so it shares no symbols with zstd's copy
@@ -152,47 +153,8 @@ std::optional<SurfaceBinding> readBinding(const std::filesystem::path& file, con
   SurfaceBinding b;
   if(!readRaw(in, b.verts, h.verts) || !readRaw(in, b.weights, h.weights) || !readRaw(in, b.used, h.used))
     return std::nullopt;
-  // read: the newest to keep when the folder is trimmed
-  std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now(), ec);
+  io::touchCacheFile(file);
   return b;
-}
-
-// Keeps the folder under its budget, the least recently written or read first to go. Files another
-// process holds stay.
-void trim(const std::filesystem::path& dir)
-{
-  std::error_code ec;
-  struct Entry
-  {
-    std::filesystem::path           path;
-    uintmax_t                       size;
-    std::filesystem::file_time_type time;
-  };
-  std::vector<Entry> files;
-  uintmax_t          total = 0;
-  for(const auto& e : std::filesystem::directory_iterator(dir, ec))
-  {
-    if(e.path().extension() != ".fvb")
-      continue;
-    std::error_code fe;
-    const uintmax_t size = e.file_size(fe);
-    const auto      time = e.last_write_time(fe);
-    if(fe)
-      continue;
-    files.push_back({e.path(), size, time});
-    total += size;
-  }
-  if(total <= kBudget)
-    return;
-  std::sort(files.begin(), files.end(), [](const Entry& a, const Entry& b) { return a.time < b.time; });
-  for(const Entry& f : files)
-  {
-    if(total <= kBudget * 3 / 4)
-      break;
-    std::error_code re;
-    if(std::filesystem::remove(f.path, re))
-      total -= f.size;
-  }
 }
 
 void writeBinding(const std::filesystem::path& file, const Key& key, const SurfaceBinding& b)
@@ -236,7 +198,7 @@ void writeBinding(const std::filesystem::path& file, const Key& key, const Surfa
     std::filesystem::remove(tmp, ec);
     return;
   }
-  trim(file.parent_path());
+  io::trimCacheFolder(file.parent_path(), ".fvb", kBudget);
 }
 
 SurfaceBinding cached(const Key& key, size_t itemVerts, size_t bodyVerts, const std::function<SurfaceBinding()>& bind)

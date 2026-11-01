@@ -51,16 +51,19 @@ bool draws(const SceneGraph& figure, const Node& n)
 
 // How a subdivided mesh's drawn vertices come from its cage: its stencils, its splits, and per
 // refined vertex the triangles NormalWelder sums for it, in triangle order
-std::shared_ptr<const rs::RefineTables> refineTables(const mesh::BuiltMesh& geo)
+std::shared_ptr<rs::RefineTables> refineTables(const std::shared_ptr<mesh::BuiltMesh>& built)
 {
+  const mesh::BuiltMesh& geo = *built;
   auto t       = std::make_shared<rs::RefineTables>();
+  t->owner     = built;
   t->cageCount = uint32_t(geo.cagePositions.size() / 3);
+  const auto indices = [](const std::vector<int32_t>& v) { return std::span(reinterpret_cast<const uint32_t*>(v.data()), v.size()); };
   for(const subdiv::Stencils& s : geo.refinement->levels)
   {
     rs::RefineTables::Level& l = t->levels.emplace_back();
-    l.start.assign(s.rowStart.begin(), s.rowStart.end());
-    l.columns.assign(s.col.begin(), s.col.end());
-    l.weights = s.weight;
+    l.start                    = indices(s.rowStart);
+    l.columns                  = indices(s.col);
+    l.weights                  = s.weight;
   }
   t->drawnFrom   = geo.renderIndex;
   t->triangles   = geo.renderTris;
@@ -702,7 +705,8 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       f.merged           = merged;
       f.tangentIndices   = tangentIndices(r, tangents);
       // subdivided, or strand ribbons once widened: the GPU makes its drawn vertices from its cage
-      f.refine = mesh::drawnFromCage(*m.geo) && m_options.cageOf ? refineTables(*m.geo) : nullptr;
+      std::shared_ptr<rs::RefineTables> tables = mesh::drawnFromCage(*m.geo) && m_options.cageOf ? refineTables(m.geo) : nullptr;
+      f.refine                                 = tables;
       if(f.refine)
       {
         r.cage = cageOf(int(mi), f);
@@ -744,12 +748,9 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       if(f.refine && !f.tangentIndices.empty() && !r.uv0.empty())
         if(const auto adjacency = tinygltf::utils::tangentAdjacency(f.tangentIndices, r.positions.size()))
         {
-          auto tables            = std::make_shared<rs::RefineTables>(*f.refine);
           tables->tangentIndices = f.tangentIndices;
           tables->tangentStart   = adjacency->start;
           tables->tangentCorners = adjacency->corners;
-          f.refine               = tables;
-          r.refine               = tables;
           r.tangents.assign(r.positions.size(), glm::vec4(0.f));
         }
       if(!f.tangentIndices.empty() && !gpuTangents(f))

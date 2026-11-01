@@ -311,6 +311,8 @@ public:
   // Decodes an image file now, on the calling thread, for the next scene replace to take ready
   // (ImagePrefetch): a host's load and wear workers call it for the textures they resolved.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb) override;
+  void dropDecodedAhead() override { m_resources.imagePrefetch.drop(); }
+  void decodeAhead(bool allowed) override { m_resources.imagePrefetch.setBudget(allowed ? nvvkgltf::ImagePrefetch::kDefaultBudget : 0); }
   // Max texture size (HostRenderer): the images decoded from now on. Any thread.
   void setMaxTextureExtent(uint32_t extent) override { m_maxTextureExtent.store(extent); }
   void setNoticeSink(std::function<void(const std::string&)> sink) override { m_noticeSink = std::move(sink); }

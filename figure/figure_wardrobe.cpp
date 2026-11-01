@@ -204,10 +204,18 @@ const WornItem* Figure::item(int id) const
 std::shared_ptr<const SceneGraph> Figure::wearBase() const
 {
   timing::Scope t("wearBase copy");
-  auto          out = std::make_shared<SceneGraph>(loaded.scene);
+  auto          out = std::make_shared<SceneGraph>();
+  out->nodes        = loaded.scene.nodes;
   for(Node& n : out->nodes)
     if(n.joint)
       n.joint = std::make_shared<JointData>(*n.joint);
+  // of the meshes a wear reads the body: the others' skins are as large as what has been worn
+  out->meshes.resize(loaded.scene.meshes.size());
+  if(!loaded.morphs.mainMeshes.empty())
+  {
+    const size_t body = size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh);
+    out->meshes[body] = loaded.scene.meshes[body];
+  }
   return out;
 }
 
@@ -252,6 +260,16 @@ Figure::WearInputs Figure::wearInputs() const
   return in;
 }
 
+namespace {
+void releaseMesh(Mesh& mesh)
+{
+  mesh.geo.reset();
+  mesh.skin     = {};
+  mesh.cageSkin = {};
+  mesh.dforce.reset();
+}
+}  // namespace
+
 WearQuality oneStepDown(const WearQuality& quality)
 {
   return {std::max(quality.subdivision - 1, 0), std::max(quality.strandKeep / 2, kLeastStrandKeep)};
@@ -286,6 +304,8 @@ std::string wearShortfall(const SceneGraph& scene, const std::vector<int>& meshe
 std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, const WearQuality& quality, const WearInputs& inputs,
                                                           std::optional<bool> strandsFlipped)
 {
+  // what it reads of a parsed file stays while it runs
+  const dson::Store::Hold hold(*m_store);
   auto out = std::make_shared<PreparedWear>();
   // a key of its own until commitWear gives it its place among the worn items
   static std::atomic<int> s_prepares{0};
@@ -474,6 +494,19 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   SceneGraph&       dst = loaded.scene;
   WearResult        result;
   result.warnings = w.warnings;
+  // what can fail for want of memory fails here, with the figure as it was: the merge below only moves
+  {
+    size_t mounts = 0;
+    for(const dson::Item& it : w.items)
+      mounts += it.objects.size();
+    dst.nodes.reserve(dst.nodes.size() + w.scene.nodes.size() + mounts);
+    dst.meshes.reserve(dst.meshes.size() + w.scene.meshes.size());
+    dst.materials.reserve(dst.materials.size() + w.scene.materials.size());
+    loaded.rigs.reserve(loaded.rigs.size() + w.rigs.size());
+    loaded.items.reserve(loaded.items.size() + w.items.size());
+    loaded.morphs.meshes.reserve(loaded.morphs.meshes.size() + w.morphs.meshes.size());
+    items.reserve(items.size() + w.items.size());
+  }
   // the same garment again replaces the worn one: the newer copy carries the file's fit settings
   for(int id : itemsReplacedBy(p, ids, only))
   {
@@ -497,7 +530,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   // ---- merge the scene: nodes, meshes, materials and skeletons, with their indices moved on
   const int nodeBase = int(dst.nodes.size()), meshBase = int(dst.meshes.size()), materialBase = int(dst.materials.size()),
             rigBase = int(loaded.rigs.size()), itemBase = int(loaded.items.size());
-  for(fv::Node n : w.scene.nodes)
+  for(fv::Node& n : w.scene.nodes)
   {
     if(n.parent >= 0)
       n.parent += nodeBase;
@@ -507,7 +540,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       n.mesh += meshBase;
     dst.nodes.push_back(std::move(n));
   }
-  for(fv::Mesh m : w.scene.meshes)
+  for(fv::Mesh& m : w.scene.meshes)
   {
     for(int& mi : m.materials)
       mi += materialBase;
@@ -517,7 +550,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   }
   for(fv::Material& m : w.scene.materials)
     dst.materials.push_back(std::move(m));
-  for(dson::Rig r : w.rigs)
+  for(dson::Rig& r : w.rigs)
   {
     r.root += nodeBase;
     for(auto& [id, node] : r.bones)
@@ -530,6 +563,33 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   const int        body      = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
 
   std::vector<int> added;
+  // whatever fails from here on takes it off again, as the user would
+  struct TakeOff
+  {
+    Figure&                 figure;
+    const std::vector<int>& added;
+    int                     nodeBase, meshBase;
+    bool                    done = false;
+    ~TakeOff()
+    {
+      if(done)
+        return;
+      for(int id : added)
+        try
+        {
+          figure.removeItem(id);
+        }
+        catch(const std::exception&)
+        {
+        }
+      // and what hadn't become an item yet
+      SceneGraph& scene = figure.loaded.scene;
+      for(size_t n = size_t(nodeBase); n < scene.nodes.size(); n++)
+        scene.nodes[n].removed = true;
+      for(size_t m = size_t(meshBase); m < scene.meshes.size(); m++)
+        releaseMesh(scene.meshes[m]);
+    }
+  } takeOff{*this, added, nodeBase, meshBase};
   for(size_t k = 0; k < w.items.size(); k++)
   {
     dson::Item it = w.items[k];
@@ -806,6 +866,9 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     placeSurfaces(dst, meshes);
   }
   result.items = added;
+  takeOff.done = true;
+  // what the parsed files only this store holds
+  m_store->trim();
   return result;
 }
 
@@ -861,6 +924,13 @@ bool Figure::removeItem(int id)
     if(i < newIndex.size() && newIndex[i] != SIZE_MAX)
       mains.push_back(newIndex[i]);
   ctx.mainMeshes = std::move(mains);
+  // what it drew with goes, unless something still shown draws it; the slots stay, as the indices of
+  // what was worn after it count on them
+  const std::vector<bool> live = liveMeshes(scene);
+  for(int m : gone.meshes)
+    if(m >= 0 && m < int(live.size()) && !live[size_t(m)])
+      releaseMesh(scene.meshes[size_t(m)]);
+  m_store->trim();
   return true;
 }
 

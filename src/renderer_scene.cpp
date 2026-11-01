@@ -460,6 +460,7 @@ void GltfRenderer::applyMemoryFill(VkCommandBuffer cmd)
 
 void GltfRenderer::watchMemory()
 {
+  m_resources.imagePrefetch.dropOlderThan(120);
   const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
   // No host to tell: a render from the command line keeps to what it loaded with, so that two of them
   // compare. isAutomatedRun() can't say so: the app's renderer runs headless too.

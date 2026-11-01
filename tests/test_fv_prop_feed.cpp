@@ -708,6 +708,14 @@ TEST(FvPropFeed, AMeshsPriceIsWhatItHoldsOnceResident)
     EXPECT_EQ(entry->triangles, c.triangles) << mi;
     EXPECT_EQ(entry->prop, 1u);
     EXPECT_EQ(entry->local, int(mi));
+    // what the record's tables read is the mesh's own, not a copy
+    if(record->refine)
+    {
+      const auto& geo = *box->loaded.scene.meshes[mi].geo;
+      EXPECT_EQ(static_cast<const void*>(record->refine->levels.at(0).columns.data()), static_cast<const void*>(geo.refinement->levels.at(0).col.data()));
+      EXPECT_EQ(record->refine->triangles.data(), geo.renderTris.data());
+      EXPECT_EQ(record->refine->owner, box->loaded.scene.meshes[mi].geo);
+    }
     priced++;
   }
   EXPECT_GT(priced, 0u);
@@ -730,7 +738,7 @@ TEST(FvPropFeed, EachStrandSegmentIsDrawnAsTwo)
   ASSERT_TRUE(geo.ribbon && geo.refinement);
   const fv::subdiv::Refinement& r = *geo.refinement;
   EXPECT_EQ(r.vertexCount, (3 + 2) * 2);  // three points and two midpoints, each two drawn vertices
-  EXPECT_EQ(r.quads.size(), 4u * 4u);     // two segments, two quads each
+  EXPECT_EQ(geo.renderTris.size(), 4u * 2u * 3u);  // two segments, two quads each
   const fv::subdiv::Stencils& s = r.levels.back();
   for(int mid = 3; mid < 5; mid++)
     for(int k = 0; k < 2; k++)

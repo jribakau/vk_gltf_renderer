@@ -77,6 +77,7 @@
 #include <figure/wardrobe/fit/generation.hpp>
 #include <figure/gltf/export_glb.hpp>
 #include <figure/gltf/gltf_build.hpp>
+#include <figure/io/system_memory.hpp>
 #include <figure/io/timing.hpp>
 
 #include "env_image_loader.hpp"
@@ -84,6 +85,7 @@
 #include "fv_figure_feed.hpp"
 #include "fv_prop_feed.hpp"
 #include "fv_journal.hpp"
+#include "ram_watch.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
@@ -472,6 +474,14 @@ std::string fileStem(const std::string& rel);
 // What a figure's or a model's meshes will take on the GPU, for HostRenderer::geometryShortfall: their
 // buffers in the residency's formats (scene_price.hpp) and what the driver says their BLASes hold.
 // Their textures aren't in it: those come down to fit as they arrive.
+// A failure as a person reads it: bad_alloc's own words are "bad allocation".
+std::string problemOf(const std::exception& e);
+// What a prop holds of system memory: its figure's meshes, or its model's buffers
+uint64_t propRamBytes(const Prop& p);
+// fn(i) for each of `count`, on up to `threads` threads of their own, for work that waits on the pool or
+// on a server. When they have all stopped, the first thing one threw comes out here.
+void sideBySide(size_t count, int threads, const std::function<void(size_t)>& fn);
+
 uint64_t geometryBytes(const fv::SceneGraph& scene, const HostRenderer& renderer);
 uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes, const HostRenderer& renderer);
 uint64_t geometryBytes(const tinygltf::Model& model, const HostRenderer& renderer);
@@ -671,6 +681,21 @@ struct FvHost::Impl
   Json exportScene(const std::string& path);
   // the notice that a figure drawn with DAZ's skinning exports with glTF's linear four
   void noticeLinearExport(const Loaded& f);
+  // once a second: system memory short, what is only kept for later goes, and it says so
+  void watchSystemMemory();
+  rs::RamWatch                          ramWatch;
+  std::chrono::steady_clock::time_point lastRamReading{};
+  bool                                  ramShort = false;
+  // for what can fail every frame until something changes: once in a while
+  void noticeNowAndThen(const std::string& text)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if(now - lastFrameNotice < std::chrono::seconds(10))
+      return;
+    lastFrameNotice = now;
+    notice(text, "error");
+  }
+  std::chrono::steady_clock::time_point lastFrameNotice{};
   // a figure's CPU drawn vertices brought up to its morphs, for an export
   void catchUpDrawn(Loaded& f);
   bool        ridesOn(const Prop& q, const std::string& id) const;
@@ -1034,9 +1059,9 @@ struct FvHost::Impl
   Json wardrobeRestore(const Json& args);
 
   // ---- structural steps (C3): a removed prop is kept, so its undo puts the same objects back
-  // under its id, composed again; past kParked kept ones (the oldest go), it loads again from its
-  // record. A kept prop goes once no step names it.
-  static constexpr size_t                              kParked = 4;
+  // under its id, composed again; past kParkedBytes of them (the oldest go) or with system memory
+  // short, it loads again from its record. A kept prop goes once no step names it.
+  static constexpr uint64_t                            kParkedBytes = uint64_t(4) << 30;
   std::vector<std::pair<std::string, std::shared_ptr<Prop>>> parked;
   void pruneParked();
   // what puts a prop back: its place, fields, and a figure's or a model's scene-file part

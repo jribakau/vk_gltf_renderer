@@ -68,6 +68,9 @@ public:
   virtual void replaceHostScene() = 0;
   // Decodes an image now, on the calling thread (a load or wear worker), for the next replace
   virtual void prefetchImage(const std::filesystem::path& diskPath, bool srgb) = 0;
+  // Lets go of what was decoded ahead, and whether to go on doing so: system memory is short
+  virtual void dropDecodedAhead() = 0;
+  virtual void decodeAhead(bool allowed) = 0;
   // Why a mesh of about `bytes` on the GPU won't fit, empty when it will. It may come all the same: what
   // doesn't fit falls to system memory and draws slower. `keepTextureDetail`: for what can come in smaller
   // instead, so textures count as coming down only as far as hardly shows. Application thread.

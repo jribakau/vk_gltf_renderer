@@ -22,12 +22,17 @@
 //
 // The Figure Viewer host's worker threads (loads, wears, exports, texture bakes): each runs to the
 // end on its own. Finished ones are joined when the next one starts, so a long session doesn't
-// keep a stack per finished job; the rest are joined at shutdown.
+// keep a stack per finished job; the rest are joined at shutdown. What one lets escape is reported,
+// not the end of the process.
 //
 
 #include <atomic>
+#include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -40,19 +45,33 @@ public:
   FvWorkers& operator=(const FvWorkers&) = delete;
   ~FvWorkers() { joinAll(); }
 
+  // Told what a worker let escape. Set before the first spawn.
+  std::function<void(const std::string&)> onError;
+
   template <class F>
   void spawn(F&& f)
   {
     auto            done = std::make_shared<std::atomic<bool>>(false);
     std::lock_guard lock(m_mutex);
     reap();
-    m_workers.push_back({std::thread([f = std::forward<F>(f), done]() mutable {
+    m_workers.push_back({std::thread([this, f = std::forward<F>(f), done]() mutable {
                            struct Done
                            {
                              std::atomic<bool>& flag;
                              ~Done() { flag = true; }
                            } mark{*done};
-                           f();
+                           try
+                           {
+                             f();
+                           }
+                           catch(const std::bad_alloc&)
+                           {
+                             report("System memory ran out.");
+                           }
+                           catch(const std::exception& e)
+                           {
+                             report(e.what());
+                           }
                          }),
                          done});
   }
@@ -77,6 +96,18 @@ public:
   }
 
 private:
+  void report(const std::string& what)
+  {
+    try
+    {
+      if(onError)
+        onError(what);
+    }
+    catch(const std::exception&)
+    {
+    }
+  }
+
   struct Worker
   {
     std::thread                        thread;

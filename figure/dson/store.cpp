@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <list>
 #include <unordered_map>
@@ -466,6 +467,37 @@ std::shared_ptr<void> Store::attachment(const std::function<std::shared_ptr<void
   if(!m_attachment)
     m_attachment = make();
   return m_attachment;
+}
+
+size_t Store::trim()
+{
+  std::lock_guard lock(m_mutex);
+  if(m_holds > 0)
+    return 0;
+  size_t gone = 0;
+  for(auto it = m_cache.begin(); it != m_cache.end();)
+  {
+    std::shared_ptr<const Doc> doc;
+    if(it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+      try
+      {
+        doc = it->second.get();
+      }
+      catch(const std::exception&)
+      {
+      }
+    // held by the cache here and this copy of it: nothing else
+    if(!doc || doc.use_count() > 2)
+    {
+      ++it;
+      continue;
+    }
+    const Doc* const raw = doc.get();
+    std::erase_if(m_index, [&](const auto& entry) { return entry.first.first == raw; });
+    it = m_cache.erase(it);
+    gone++;
+  }
+  return gone;
 }
 
 void Store::clearShared()

@@ -457,6 +457,28 @@ by as much. The reduction lives on `WornItem::reduced` and in no file. What a we
 garment again, `Figure::itemsReplacedBy`) counts as leaving when it is weighed, and an item taken off is
 fed out at once, so its memory is there for what comes next.
 
+System memory follows the same way. An item taken off lets go of its built mesh and skin
+(`Figure::removeItem`; the slot stays, since the indices of what came after it count on it, so
+`Mesh::geo` can be null), and of the parsed files only its figure's store still held (`Store::trim`, not
+while a `Store::Hold` stands: a loader's raw pointers into a file are good only while it lives). A wear is
+given the skeleton and the body (`wearBase`), not every mesh's skin. A refined mesh's record reads the
+stencils and triangles in its `BuiltMesh` (`RefineTables::owner`), and a build lets go of the faces its
+stencils were worked out from. Large builds go side by side as far as they fit (`jobs::MemoryGate`, on
+`mesh::buildBytes`), and one alone always goes.
+
+A commit either finishes or takes off what it merged (`commitWear`'s `TakeOff`), so a failed allocation
+anywhere in it leaves the figure whole; a test fails each allocation of a wear in turn. Workers report what
+they let escape (`FvWorkers::onError`, `sideBySide`), and a figure's part of the frame reports it and goes on.
+
+`rs::RamWatch` reads system memory once a second: short under a sixteenth of it or 2 GiB, of it or of what
+can still be committed. Then what is only kept for later goes: props removed for an undo
+(`kParkedBytes`, 4 GiB otherwise), textures decoded ahead (`ImagePrefetch`, 1 GiB otherwise, and what nobody
+takes for two minutes goes anyway), the shared parsed files; a notice says so, once. The folders on disk
+keep to budgets too: parsed files 5 GB (`.fvd`, `io::trimCacheFolder`; a damaged one is deleted and written
+again), bindings 1 GB. The texture cooker's eviction (`texcache.rs`) leaves what this session handed out, so
+a scene larger than its cap stays over it until the next start, and its parallel work runs on half the
+threads at below-normal priority (`background_threads`).
+
 ### Textures following GPU memory
 
 The budget moves while a scene is open: another program takes memory and gives it back. Once a second

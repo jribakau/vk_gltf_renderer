@@ -168,6 +168,56 @@ uint64_t priced(const rs::MeshCounts& c, const HostRenderer& renderer)
 }
 }  // namespace
 
+std::string problemOf(const std::exception& e)
+{
+  return dynamic_cast<const std::bad_alloc*>(&e) ? "System memory ran out." : e.what();
+}
+
+uint64_t propRamBytes(const Prop& p)
+{
+  uint64_t bytes = 0;
+  if(p.figure)
+  {
+    for(const fv::Mesh& m : p.figure->fig->loaded.scene.meshes)
+    {
+      if(m.geo)
+        bytes += fv::mesh::ramBytes(*m.geo);
+      bytes += m.skin.skinIndex.size() * sizeof(uint16_t) + m.skin.skinWeight.size() * sizeof(float) + m.skin.skinIndex8.size() * sizeof(uint16_t)
+               + m.skin.skinWeight8.size() * sizeof(float) + m.skin.dualQuatShare.size() * sizeof(float);
+    }
+  }
+  else if(p.model)
+    for(const tinygltf::Buffer& b : p.model->buffers)
+      bytes += b.data.size();
+  return bytes;
+}
+
+void sideBySide(size_t count, int threads, const std::function<void(size_t)>& fn)
+{
+  std::atomic<size_t>      next{0};
+  std::mutex               mutex;
+  std::exception_ptr       first;
+  std::vector<std::thread> workers;
+  for(int w = 0; w < std::min<int>(threads, int(count)); w++)
+    workers.emplace_back([&] {
+      for(size_t i; (i = next++) < count;)
+        try
+        {
+          fn(i);
+        }
+        catch(...)
+        {
+          std::lock_guard lock(mutex);
+          if(!first)
+            first = std::current_exception();
+        }
+    });
+  for(std::thread& w : workers)
+    w.join();
+  if(first)
+    std::rethrow_exception(first);
+}
+
 uint64_t geometryBytes(const fv::SceneGraph& scene, const HostRenderer& renderer)
 {
   uint64_t bytes = 0;
@@ -281,16 +331,10 @@ void cookAll(const HostSettings&                                                
              const std::function<void(const fv::build::TextureRequest&, fv::build::TextureImage)>& landed)
 {
   std::stable_partition(requests.begin(), requests.end(), [](const fv::build::TextureRequest& r) { return r.srgb; });
-  std::atomic<size_t>      next{0};
-  std::vector<std::thread> workers;
-  for(int w = 0; w < std::min<int>(4, int(requests.size())); w++)
-    workers.emplace_back([&] {
-      for(size_t i; (i = next++) < requests.size();)
-        if(CookedTexture c = cookedTexture(s, requests[i], true, false, true); c.image && landed)
-          landed(requests[i], std::move(*c.image));
-    });
-  for(auto& w : workers)
-    w.join();
+  sideBySide(requests.size(), 4, [&](size_t i) {
+    if(CookedTexture c = cookedTexture(s, requests[i], true, false, true); c.image && landed)
+      landed(requests[i], std::move(*c.image));
+  });
 }
 
 std::vector<std::optional<fv::build::TextureImage>> resolveTextures(const HostSettings&                           s,
@@ -302,34 +346,26 @@ std::vector<std::optional<fv::build::TextureImage>> resolveTextures(const HostSe
   const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
   std::vector<std::optional<fv::build::TextureImage>> found(requests.size());
   std::vector<uint8_t>                                missed(requests.size(), 0);
-  std::atomic<size_t>                                 next{0};
-  std::vector<std::thread>                            workers;
-  for(int w = 0; w < std::min<int>(8, int(requests.size())); w++)
-    workers.emplace_back([&] {
-      for(size_t i; (i = next++) < requests.size();)
+  sideBySide(requests.size(), 8, [&](size_t i) {
+    const fv::build::TextureRequest& req = requests[i];
+    if(!flipped)
+      found[i] = lib ? fallbackTexture(s, *lib, req, cooker) : std::nullopt;
+    else if(cooker)
+    {
+      CookedTexture c = cookedTexture(s, req, true, true);
+      if(!c.uncooked)
+        found[i] = std::move(c.image);
+      else
       {
-        const fv::build::TextureRequest& req = requests[i];
-        if(!flipped)
-          found[i] = lib ? fallbackTexture(s, *lib, req, cooker) : std::nullopt;
-        else if(cooker)
-        {
-          CookedTexture c = cookedTexture(s, req, true, true);
-          if(!c.uncooked)
-            found[i] = std::move(c.image);
-          else
-          {
-            // what can only be shown cooked (a cutout, a makeup, a .tif) is cooked now, as it will stay:
-            // cooked unflipped and then again flipped, the load waits for one nothing reads again
-            bool final = false;
-            if(lib)
-              found[i] = fallbackTexture(s, *lib, req, cooker, true, &final);
-            missed[i] = final ? 0 : 1;
-          }
-        }
+        // what can only be shown cooked (a cutout, a makeup, a .tif) is cooked now, as it will stay:
+        // cooked unflipped and then again flipped, the load waits for one nothing reads again
+        bool final = false;
+        if(lib)
+          found[i] = fallbackTexture(s, *lib, req, cooker, true, &final);
+        missed[i] = final ? 0 : 1;
       }
-    });
-  for(auto& w : workers)
-    w.join();
+    }
+  });
   for(size_t i = 0; i < requests.size(); i++)
     if(missed[i])
       uncooked.push_back(requests[i]);

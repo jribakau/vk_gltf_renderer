@@ -1161,9 +1161,56 @@ BuiltMesh build(const MeshInput& m)
     ribbon.spacing = strands->spacing;
     out.ribbon     = std::move(ribbon);
   }
+  // the faces were only for here: the mesh keeps the stencils
+  if(refinement)
+  {
+    std::vector<int32_t>().swap(refinement->quads);
+    std::vector<int32_t>().swap(refinement->quadValues);
+    std::vector<int32_t>().swap(refinement->quadParent);
+    std::vector<float>().swap(refinement->values);
+  }
   out.refinement = std::move(refinement);
   out.bounds     = boundsOf(out.position);
   return out;
+}
+
+uint64_t buildBytes(const MeshInput& m)
+{
+  // from what they held when counted (docs/scene-memory-plan.md): a strand's triangle takes more, as it
+  // has a ribbon and a stencil row of its own
+  constexpr uint64_t kBytesPerStrandTriangle = 300, kBytesPerSmoothTriangle = 100;
+  if(m.lines)
+  {
+    const Lines& l        = *m.lines;
+    uint64_t     triangles = 0;
+    for(size_t line = 0; line + 1 < l.start.size(); line++)
+    {
+      const uint64_t   segments = uint64_t(std::max(l.start[line + 1] - l.start[line] - 1, 0));
+      const int32_t    material = line < l.material.size() ? l.material[line] : 0;
+      const uint64_t   copies   = material >= 0 && size_t(material) < l.grow.size() ? 1 + uint64_t(std::max(l.grow[size_t(material)].perGuide, 0)) : 1;
+      triangles += segments * 4 * copies;
+    }
+    return uint64_t(double(triangles) * std::clamp(double(l.keep), 0.0, 1.0)) * kBytesPerStrandTriangle;
+  }
+  // a level turns each polygon's corners into quads, and every level after makes each quad four
+  uint64_t quads = m.polyVerts.size();
+  for(int level = 1; level < m.level; level++)
+    quads *= 4;
+  return m.level > 0 ? quads * 2 * kBytesPerSmoothTriangle : 0;
+}
+
+uint64_t ramBytes(const BuiltMesh& m)
+{
+  const auto of = [](const auto& v) { return uint64_t(v.size()) * sizeof(v[0]); };
+  uint64_t   bytes = of(m.position) + of(m.uv) + of(m.normal) + of(m.fullIndex) + of(m.groups) + of(m.triPoly) + of(m.renderIndex) + of(m.firstSplit)
+                   + of(m.nextSplit) + of(m.renderTris) + of(m.dsonTris) + of(m.cagePolyStart) + of(m.cagePolyVerts) + of(m.cageLineStart)
+                   + of(m.cageLineVerts) + of(m.cagePositions);
+  if(m.ribbon)
+    bytes += of(m.ribbon->side) + of(m.ribbon->along) + of(m.ribbon->material) + of(m.ribbon->rootFade) + of(m.ribbon->half) + of(m.ribbon->shift);
+  if(m.refinement)
+    for(const subdiv::Stencils& s : m.refinement->levels)
+      bytes += of(s.rowStart) + of(s.col) + of(s.weight);
+  return bytes;
 }
 
 SkinOutput skin(const BuiltMesh& mesh, const SkinInput& s)

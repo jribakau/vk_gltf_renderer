@@ -14,7 +14,9 @@
 
 #include <figure/dson/materials.hpp>
 #include <figure/dson/shell.hpp>
+#include <figure/io/system_memory.hpp>
 #include <figure/io/timing.hpp>
+#include <figure/jobs/memory_gate.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
@@ -23,6 +25,20 @@
 namespace fv::dson {
 
 namespace {
+
+// A mesh built: one that takes a lot of system memory waits until it fits beside the others building
+std::shared_ptr<mesh::BuiltMesh> builtMesh(const mesh::MeshInput& input)
+{
+  constexpr uint64_t      kLarge = uint64_t(256) << 20;
+  static jobs::MemoryGate gate([] {
+    const io::SystemMemory memory = io::systemMemory();
+    return memory.known ? std::min(memory.availablePhysical, memory.availableCommit) : UINT64_MAX;
+  });
+  jobs::MemoryGate::Ticket ticket;
+  if(const uint64_t bytes = mesh::buildBytes(input); bytes >= kLarge)
+    ticket = gate.enter(bytes);
+  return std::make_shared<mesh::BuiltMesh>(mesh::build(input));
+}
 
 // node[key] unless null or absent, else def[key] (JavaScript's `node.key ?? def.key`).
 const Json* pick(const Json* node, const Json* def, std::string_view key)
@@ -673,7 +689,7 @@ std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::
             std::vector<std::string>   groups;
             mesh::MeshInput            input = meshInput(*gres->doc, geo, uvSet ? &*uvSet : nullptr, level, groups);
             addGrowth(input, groups, grow, surface);
-            auto geoOut = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
+            auto geoOut = builtMesh(input);
             EarlyMeshes::of(*store).finish(key, std::move(geoOut), std::move(groups));
           }
           catch(const std::exception&)
@@ -1131,7 +1147,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             addGrowth(input, a.mesh.materialGroups, grow, surface);
             if(input.lines)
               input.lines->keep = options.strandKeep;
-            a.mesh.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
+            a.mesh.geo = builtMesh(input);
           }
           if(job.rig >= 0)
           {
@@ -1275,7 +1291,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           addGrowth(input, meshOut.materialGroups, grow, growthSurfaceFor(store, *docPtr, file, *job.node, grow));
           if(input.lines)
             input.lines->keep = options.strandKeep;
-          meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
+          meshOut.geo = builtMesh(input);
         }
 
         // materials, one per polygon material group

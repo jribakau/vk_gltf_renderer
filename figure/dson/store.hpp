@@ -32,6 +32,8 @@
 
 #include <tinygltf/json.hpp>
 
+#include <atomic>
+
 namespace fv::dson {
 
 using Json = nlohmann::ordered_json;
@@ -77,7 +79,7 @@ std::shared_ptr<Doc> parseDocDom(std::string text);
 // modification time: the tree as CBOR (ordered_json keeps key order and number types through it),
 // the tables raw. A 76 MB strand-hair geometry parses in 0.8 s and reads back in tens of ms. Set at
 // start-up; empty (the default) is off. Files of 2 MB and more go through it, written on a pool
-// thread after the parse.
+// thread after the parse. The folder keeps to 5 GB, least recently used out first.
 void                  setParsedCacheDir(const std::filesystem::path& dir);
 std::filesystem::path parsedCacheDir();
 struct ParsedStamp
@@ -88,7 +90,7 @@ struct ParsedStamp
 ParsedStamp           stampOf(const std::filesystem::path& file);
 std::filesystem::path parsedCacheFile(const std::filesystem::path& dir, const ParsedStamp& stamp);
 // Writes the document through a temporary beside the file; reads it back when the stamp matches,
-// null otherwise (a missing, stale or damaged file is a miss).
+// null otherwise (a missing, stale or damaged file is a miss, and a damaged one is deleted).
 bool                 writeParsed(const std::filesystem::path& cacheFile, const Doc& doc, const ParsedStamp& stamp);
 std::shared_ptr<Doc> readParsed(const std::filesystem::path& cacheFile, const ParsedStamp& stamp);
 
@@ -163,6 +165,27 @@ public:
   // Forgets every shared parsed file: the library's contents changed.
   static void clearShared();
 
+  // Lets go of the parsed files nothing but this store holds any more, which the shared cache has let
+  // go of too: the next load reads them again. Not while a Hold stands. A failed read stays, so a missing
+  // file is looked for once. Returns how many went.
+  size_t trim();
+  // A loader's raw pointers into its parsed files are good while this stands
+  class Hold
+  {
+  public:
+    explicit Hold(Store& store)
+        : m_store(store)
+    {
+      m_store.m_holds++;
+    }
+    ~Hold() { m_store.m_holds--; }
+    Hold(const Hold&)            = delete;
+    Hold& operator=(const Hold&) = delete;
+
+  private:
+    Store& m_store;
+  };
+
   // State a loader keeps with the store, which goes with it (the loader's meshes built ahead):
   // made by `make` the first time it is asked for.
   std::shared_ptr<void> attachment(const std::function<std::shared_ptr<void>()>& make);
@@ -175,6 +198,7 @@ private:
   mutable std::mutex                                                   m_mutex;
   std::map<std::string, std::shared_future<std::shared_ptr<const Doc>>> m_cache;
   std::shared_ptr<void>                                                m_attachment;
+  std::atomic<int>                                                     m_holds{0};
   // per document and library array, entries by id
   std::map<std::pair<const Doc*, std::string>, std::map<std::string, const Json*>> m_index;
 };

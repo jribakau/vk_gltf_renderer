@@ -872,8 +872,10 @@ void FvHost::Impl::pruneParked()
   std::erase_if(keptLooks, [&](const auto& kept) { return !looks.count(kept.first); });
   std::erase_if(parked, [&](const auto& kept) { return !named.count(kept.first); });
   // the oldest go first: their undo loads them again
-  while(parked.size() > kParked)
-    parked.erase(parked.begin());
+  std::vector<uint64_t> bytes;
+  for(const auto& kept : parked)
+    bytes.push_back(propRamBytes(*kept.second));
+  parked.erase(parked.begin(), parked.begin() + std::ptrdiff_t(rs::oldestToLetGo(bytes, kParkedBytes)));
 }
 
 uint64_t FvHost::Impl::keepLook(const Loaded& f)

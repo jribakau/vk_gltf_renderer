@@ -171,11 +171,14 @@ MeshRecord ribbonPiece()
   }
   m.indices = {0, 1, 2};
   m.submeshes.push_back({.firstIndex = 0, .indexCount = 3, .material = 0, .order = 0});
-  auto t       = std::make_shared<RefineTables>();
+  static const uint32_t kStart[]    = {0, 1, 2, 3};
+  static const uint32_t kColumns[]  = {0, 1, 2};
+  static const float    kWeights[]  = {1, 1, 1};
+  auto                  t           = std::make_shared<RefineTables>();
   t->cageCount = 3;
-  t->levels.push_back({.start = {0, 1, 2, 3}, .columns = {0, 1, 2}, .weights = {1, 1, 1}});
-  t->drawnFrom       = {0, 1, 2};
-  t->triangles       = {0, 1, 2};
+  t->levels.push_back({.start = kStart, .columns = kColumns, .weights = kWeights});
+  t->drawnFrom       = kColumns;
+  t->triangles       = kColumns;
   t->normalStart     = {0, 1, 2, 3};
   t->normalTriangles = {0, 0, 0};
   t->offsets.assign(3, kRibbonWidth);

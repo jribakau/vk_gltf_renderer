@@ -31,6 +31,7 @@
 #include <webp/encode.h>
 
 #include "gltf_image_loader.hpp"
+#include "image_prefetch.hpp"
 
 namespace {
 
@@ -174,4 +175,39 @@ TEST(ImageLoader, KtxReadsTheCookersZstdLevels)
     const uint32_t w = std::max(32u >> i, 1u), h = std::max(16u >> i, 1u);
     EXPECT_EQ(out.mipData[i].size(), size_t((w + 3) / 4) * ((h + 3) / 4) * 16) << "level " << i;
   }
+}
+
+// Decoding ahead is only ahead of time: past its budget nothing more is decoded, and what nobody takes goes
+TEST(ImagePrefetch, KeepsToItsBudgetAndWhatNobodyTakesGoes)
+{
+  const std::filesystem::path dir = std::filesystem::path(FV_TEST_DATA) / "daz-library" / "Runtime" / "Textures" / "Test";
+  const std::filesystem::path a = dir / "BoxDetail_NM.png", b = dir / "BoxMakeup.png";
+  nvvkgltf::ImagePrefetch     prefetch;
+  prefetch.prefetch(a, false);
+  const uint64_t one = prefetch.bytes();
+  ASSERT_GT(one, 0u);
+  prefetch.prefetch(a, false);  // the same file again
+  EXPECT_EQ(prefetch.bytes(), one);
+
+  prefetch.setBudget(one);  // full: not decoded, and the upload decodes it
+  prefetch.prefetch(b, false);
+  EXPECT_EQ(prefetch.bytes(), one);
+  EXPECT_FALSE(prefetch.take(b, false));
+
+  EXPECT_TRUE(prefetch.take(a, false));
+  EXPECT_EQ(prefetch.bytes(), 0u);
+  EXPECT_FALSE(prefetch.take(a, false));
+
+  prefetch.setBudget(nvvkgltf::ImagePrefetch::kDefaultBudget);
+  prefetch.prefetch(b, false);
+  EXPECT_GT(prefetch.bytes(), 0u);
+  prefetch.dropOlderThan(60);
+  EXPECT_GT(prefetch.bytes(), 0u);  // not yet
+  prefetch.dropOlderThan(0);
+  EXPECT_EQ(prefetch.bytes(), 0u);
+  EXPECT_FALSE(prefetch.take(b, false));
+
+  prefetch.setBudget(0);
+  prefetch.prefetch(a, false);
+  EXPECT_EQ(prefetch.bytes(), 0u);
 }

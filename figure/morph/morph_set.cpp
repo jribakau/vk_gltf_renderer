@@ -150,6 +150,8 @@ void MorphSet::bind(const std::string& name, Binding b, double value, const Chan
 
 void MorphSet::addTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts)
 {
+  if(!m_geo(mesh))
+    return;  // taken off while its file was read
   ensureCpu(mesh);
   bind(name, {mesh, target}, opts.value.value_or(0), opts);
   const double v = weightOf(name);
@@ -234,6 +236,8 @@ dson::TargetPtr MorphSet::cpuTarget(const std::string& name, int mesh) const
 
 void MorphSet::replaceCpuTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts)
 {
+  if(!m_geo(mesh))
+    return;  // taken off while it was worked out
   MeshState& st = ensureCpu(mesh);
   auto       it = m_bindings.find(name);
   if(it == m_bindings.end())
@@ -392,10 +396,11 @@ void MorphSet::finishLoad(const std::string& name, std::future<Finish>& fut)
         ch->max = result.parts[0].max;
       auto& list = m_bindings[name];
       for(const dson::MorphPart& part : result.parts)
-      {
-        ensureCpu(part.mesh);
-        list.push_back({part.mesh, part.target});
-      }
+        if(m_geo(part.mesh))  // not one taken off while its file was read
+        {
+          ensureCpu(part.mesh);
+          list.push_back({part.mesh, part.target});
+        }
       const double w = weightOf(name);
       if(w != 0)
         applyWeights({{name, w}});

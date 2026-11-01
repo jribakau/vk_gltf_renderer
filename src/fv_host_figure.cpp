@@ -130,6 +130,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       });
       if(generation != loadGeneration)
       {
+        renderer->dropDecodedAhead();
         job(jobId, {{"label", label}, {"state", "done"}});
         return;  // the scene was cleared meanwhile
       }
@@ -176,8 +177,8 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
     }
     catch(const std::exception& e)
     {
-      job(jobId, {{"label", label}, {"state", "failed"}, {"error", e.what()}});
-      notice(e.what(), "error");
+      job(jobId, {{"label", label}, {"state", "failed"}, {"error", problemOf(e)}});
+      notice(problemOf(e), "error");
     }
   });
   return {{"job", jobId}};

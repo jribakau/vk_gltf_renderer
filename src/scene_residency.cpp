@@ -71,6 +71,12 @@ std::shared_ptr<nvutils::IDPool> poolFromOne(uint32_t size)
 }
 
 template <class T>
+std::span<const std::byte> bytesOf(std::span<const T> v)
+{
+  return std::as_bytes(v);
+}
+
+template <class T>
 std::span<const std::byte> bytesOf(const std::vector<T>& v)
 {
   return std::as_bytes(std::span(v));

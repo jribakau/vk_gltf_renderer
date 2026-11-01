@@ -176,6 +176,11 @@ struct BuiltMesh
 };
 
 BuiltMesh build(const MeshInput& m);
+// Roughly what building it takes of system memory at its peak: from the counts, before it is built, to
+// tell whether several can go side by side.
+uint64_t buildBytes(const MeshInput& m);
+// What a built mesh holds of system memory.
+uint64_t ramBytes(const BuiltMesh& m);
 
 // Opens a strand mesh's zero-width ribbons to `widths[material]` (root, tip in cm), then welds
 // normals across them.

@@ -46,7 +46,11 @@ public:
   bool               drawsRetainedScene() const override { return replaces > 0; }
   void               replaceHostScene() override { replaces++; }
   void               prefetchImage(const std::filesystem::path&, bool) override { prefetches++; }
+  void               dropDecodedAhead() override { decodedAheadDropped++; }
+  void               decodeAhead(bool allowed) override { decodingAhead = allowed; }
   std::atomic<int>   prefetches{0};
+  std::atomic<int>   decodedAheadDropped{0};
+  std::atomic<bool>  decodingAhead{true};
   std::string        geometryShortfall(uint64_t bytes, bool keepTextureDetail = false) override
   {
     askedGeometry += bytes;

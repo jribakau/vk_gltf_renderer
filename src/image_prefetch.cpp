@@ -50,7 +50,7 @@ void ImagePrefetch::prefetch(const std::filesystem::path& diskPath, bool srgb, u
     return;
   {
     std::lock_guard lock(m_mutex);
-    if(m_images.count(*key))
+    if(m_images.count(*key) || m_bytes >= m_budget)
       return;
   }
   nvutils::FileReadMapping fileMapping;
@@ -59,8 +59,16 @@ void ImagePrefetch::prefetch(const std::filesystem::path& diskPath, bool srgb, u
   LoadedImageData loaded;
   if(!loadFromMemory(loaded, fileMapping.data(), fileMapping.size(), srgb, 0, maxExtent))
     return;
+  uint64_t bytes = 0;
+  for(const std::vector<char>& level : loaded.mipData)
+    bytes += level.size();
   std::lock_guard lock(m_mutex);
-  m_images[*key] = std::move(loaded);
+  // two asked for it at once: one is kept
+  if(const auto [it, made] = m_images.try_emplace(*key); made)
+  {
+    it->second = {std::move(loaded), bytes, std::chrono::steady_clock::now()};
+    m_bytes += bytes;
+  }
 }
 
 std::optional<LoadedImageData> ImagePrefetch::take(const std::filesystem::path& diskPath, bool srgb)
@@ -72,7 +80,8 @@ std::optional<LoadedImageData> ImagePrefetch::take(const std::filesystem::path& 
   auto            it = m_images.find(*key);
   if(it == m_images.end())
     return std::nullopt;
-  std::optional<LoadedImageData> taken = std::move(it->second);
+  std::optional<LoadedImageData> taken = std::move(it->second.image);
+  m_bytes -= it->second.bytes;
   m_images.erase(it);
   return taken;
 }
@@ -81,6 +90,31 @@ void ImagePrefetch::drop()
 {
   std::lock_guard lock(m_mutex);
   m_images.clear();
+  m_bytes = 0;
+}
+
+void ImagePrefetch::dropOlderThan(double seconds)
+{
+  const auto      before = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+  std::lock_guard lock(m_mutex);
+  std::erase_if(m_images, [&](const auto& entry) {
+    if(entry.second.at > before)
+      return false;
+    m_bytes -= entry.second.bytes;
+    return true;
+  });
+}
+
+void ImagePrefetch::setBudget(uint64_t bytes)
+{
+  std::lock_guard lock(m_mutex);
+  m_budget = bytes;
+}
+
+uint64_t ImagePrefetch::bytes() const
+{
+  std::lock_guard lock(m_mutex);
+  return m_bytes;
 }
 
 }  // namespace nvvkgltf

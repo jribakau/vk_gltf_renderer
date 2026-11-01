@@ -31,6 +31,7 @@
 #include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
 
+#include "../common/failing_allocations.hpp"
 #include "scene_import_gltf.hpp"
 
 namespace {
@@ -337,6 +338,127 @@ TEST(FigureMorphs, ADialBringsTheFilesThatReadIt)
   figure->settle();
   EXPECT_NEAR(figure->morphs->weightOf("Reach Pull"), 0, 1e-6);
   EXPECT_NEAR(figure->morphs->weightOf("facs_cbs_ReachCombo"), 0, 1e-6);
+}
+
+namespace {
+std::unique_ptr<fv::Figure> boxFigure()
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  fv::dson::LoadOptions       options;
+  options.subdivision = 1;
+  auto figure = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library})),
+                                 "People/Test/Box Figure.duf", options);
+  figure->settle();
+  return figure;
+}
+const char* const kBoxShirt = "People/Test/Clothing/Box Shirt.duf";
+}  // namespace
+
+// Taken off, an item's built mesh and skin go, so that try-ons don't add up. Its slot stays, the figure
+// still builds, and it can go on again.
+TEST(Wardrobe, TakingAnItemOffLetsGoOfItsMesh)
+{
+  const auto           figure = boxFigure();
+  const fv::WearResult worn   = figure->commitWear(figure->prepareWear(kBoxShirt, 1), kBoxShirt);
+  figure->settle();
+  const std::vector<int> meshes = figure->item(worn.items.at(0))->meshes;
+  ASSERT_FALSE(meshes.empty());
+  std::vector<std::weak_ptr<fv::mesh::BuiltMesh>> built;
+  for(int m : meshes)
+    built.push_back(figure->loaded.scene.meshes[size_t(m)].geo);
+  const size_t slots = figure->loaded.scene.meshes.size();
+
+  ASSERT_TRUE(figure->removeItem(worn.items.at(0)));
+  figure->settle();
+  EXPECT_EQ(figure->loaded.scene.meshes.size(), slots);
+  for(size_t i = 0; i < meshes.size(); i++)
+  {
+    const fv::Mesh& mesh = figure->loaded.scene.meshes[size_t(meshes[i])];
+    EXPECT_TRUE(built[i].expired()) << meshes[i] << ": something still holds its mesh";
+    EXPECT_FALSE(mesh.geo);
+    EXPECT_TRUE(mesh.skin.skinIndex.empty());
+    EXPECT_TRUE(mesh.cageSkin.start.empty());
+  }
+  (void)fv::build::buildGltf(figure->loaded.scene, figure->loaded.root, {});
+
+  const fv::WearResult again = figure->commitWear(figure->prepareWear(kBoxShirt, 1), kBoxShirt);
+  figure->settle();
+  EXPECT_EQ(again.items.size(), worn.items.size());
+  (void)fv::build::buildGltf(figure->loaded.scene, figure->loaded.root, {});
+}
+
+// A wear reads the skeleton and the body of a figure, on another thread: it isn't given the rest, which
+// grows with what is worn. The faces its stencils were worked out from are gone by then too.
+TEST(Wardrobe, AWearIsGivenTheSkeletonAndTheBodyOnly)
+{
+  const auto figure = boxFigure();
+  const auto worn   = figure->commitWear(figure->prepareWear(kBoxShirt, 1), kBoxShirt);
+  figure->settle();
+  const int  shirt = figure->item(worn.items.at(0))->meshes.at(0);
+  const auto base  = figure->wearBase();
+  EXPECT_EQ(base->nodes.size(), figure->loaded.scene.nodes.size());
+  EXPECT_EQ(base->meshes.size(), figure->loaded.scene.meshes.size());
+  EXPECT_FALSE(base->meshes[size_t(shirt)].geo);
+  EXPECT_TRUE(base->meshes[size_t(shirt)].skin.skinIndex.empty());
+  const size_t body = size_t(figure->loaded.morphs.meshes[figure->loaded.morphs.mainMeshes[0]].mesh);
+  EXPECT_EQ(base->meshes[body].geo, figure->loaded.scene.meshes[body].geo);
+  const auto& refinement = figure->loaded.scene.meshes[body].geo->refinement;
+  ASSERT_TRUE(refinement);
+  EXPECT_TRUE(refinement->quads.empty());
+  EXPECT_TRUE(refinement->quadParent.empty());
+  EXPECT_TRUE(refinement->quadValues.empty());
+  EXPECT_FALSE(refinement->levels.empty());
+}
+
+// System memory running out anywhere in a commit leaves the figure as it was: nothing half worn, nothing
+// of it drawn, and the same wear goes on afterwards.
+TEST(Wardrobe, AWearThatRunsOutOfMemoryLeavesTheFigureAsItWas)
+{
+  const auto figure = boxFigure();
+  const size_t had  = figure->items.size();
+  long         total = 0;
+  {
+    auto       prepared = figure->prepareWear(kBoxShirt, 1);
+    const long before   = fv::test::allocationsMade();
+    const auto worn     = figure->commitWear(prepared, kBoxShirt);
+    total               = fv::test::allocationsMade() - before;
+    figure->removeItem(worn.items.at(0));
+  }
+  ASSERT_GT(total, 0);
+  size_t failed = 0;
+  for(long n = 0; n < total; n += 1 + total / 300)
+  {
+    auto prepared = figure->prepareWear(kBoxShirt, 1);
+    fv::test::failAllocationAfter(n);
+    try
+    {
+      const auto worn = figure->commitWear(prepared, kBoxShirt);
+      fv::test::failAllocationAfter(-1);
+      // what something on the way caught: it is on whole
+      EXPECT_EQ(figure->items.size(), had + 1) << n;
+      figure->removeItem(worn.items.at(0));
+    }
+    catch(const std::bad_alloc&)
+    {
+      fv::test::failAllocationAfter(-1);
+      failed++;
+      EXPECT_EQ(figure->items.size(), had) << n;
+      figure->settle();
+      (void)figure->pump();
+      (void)figure->drain();
+      const std::vector<bool> live = fv::liveMeshes(figure->loaded.scene);
+      for(size_t m = 0; m < live.size(); m++)
+        if(!figure->loaded.scene.meshes[m].geo)
+          EXPECT_FALSE(live[m]) << n << ": mesh " << m << " is drawn with nothing to draw";
+    }
+    prepared.reset();
+  }
+  EXPECT_GT(failed, 0u);
+  const auto worn = figure->commitWear(figure->prepareWear(kBoxShirt, 1), kBoxShirt);
+  figure->settle();
+  EXPECT_EQ(figure->items.size(), had + 1);
+  EXPECT_EQ(worn.items.size(), 1u);
+  (void)fv::build::buildGltf(figure->loaded.scene, figure->loaded.root, {});
 }
 
 // The same through a real wear. Box Figure's Sleeve Lift has an empty morph block, and Box Shirt holds

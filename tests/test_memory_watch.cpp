@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "memory_watch.hpp"
+#include "ram_watch.hpp"
 
 namespace {
 
@@ -156,3 +157,40 @@ TEST(MemoryWatch, ARaisingTakesABatchAtMostAndLeavesTheMargin)
 }
 
 }  // namespace
+
+// System memory: short under a sixteenth of it or 2 GiB, whichever is more, of it or of what can still be
+// committed; said once; no longer short at twice that, so that what the host gives back doesn't flip it.
+TEST(RamWatch, ShortIsSaidOnceAndEndsWellAboveWhereItStarted)
+{
+  constexpr uint64_t kGiB = uint64_t(1) << 30;
+  rs::RamWatch       watch;
+  const auto         at = [&](uint64_t physical, uint64_t commit = 90) { return watch.step({64 * kGiB, physical * kGiB, commit * kGiB}); };
+  EXPECT_FALSE(at(30).short_);
+  EXPECT_FALSE(at(4).short_);  // a sixteenth of 64 GiB
+  auto step = at(3);
+  EXPECT_TRUE(step.short_);
+  EXPECT_TRUE(step.justNow);
+  step = at(2);
+  EXPECT_TRUE(step.short_);
+  EXPECT_FALSE(step.justNow);
+  EXPECT_TRUE(at(7).short_);
+  EXPECT_FALSE(at(8).short_);
+  EXPECT_FALSE(at(5).short_);
+  // nothing left to commit is short too, whatever is free
+  step = at(30, 1);
+  EXPECT_TRUE(step.short_ && step.justNow);
+  // a small machine: 2 GiB
+  rs::RamWatch small;
+  EXPECT_FALSE(small.step({8 * kGiB, 3 * kGiB, 90 * kGiB}).short_);
+  EXPECT_TRUE(small.step({8 * kGiB, kGiB, 90 * kGiB}).short_);
+}
+
+TEST(RamWatch, WhatIsKeptForLaterGoesOldestFirst)
+{
+  const std::vector<uint64_t> bytes = {100, 200, 300};
+  EXPECT_EQ(rs::oldestToLetGo(bytes, 600), 0u);
+  EXPECT_EQ(rs::oldestToLetGo(bytes, 599), 1u);
+  EXPECT_EQ(rs::oldestToLetGo(bytes, 300), 2u);
+  EXPECT_EQ(rs::oldestToLetGo(bytes, 299), 3u);
+  EXPECT_EQ(rs::oldestToLetGo({}, 0), 0u);
+}

@@ -5,8 +5,10 @@
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
+#include <figure/jobs/memory_gate.hpp>
 #include <figure/jobs/pool.hpp>
 
 TEST(Jobs, ParallelForCoversEveryIndexOnce)
@@ -46,4 +48,34 @@ TEST(Jobs, ParallelForRethrowsAfterEveryChunk)
                                      }),
                std::runtime_error);
   EXPECT_EQ(chunks.load(), 10);
+}
+
+// Large builds side by side only as far as they fit; one alone always goes, whatever it asks.
+TEST(Jobs, TheMemoryGateLetsThroughWhatFitsAndOneAloneAlways)
+{
+  std::atomic<uint64_t> available{1000};
+  fv::jobs::MemoryGate  gate([&] { return available.load(); });
+  {
+    auto huge = gate.enter(5000);  // alone
+    EXPECT_EQ(gate.inside(), 5000u);
+  }
+  EXPECT_EQ(gate.inside(), 0u);
+
+  auto first = gate.enter(600);
+  auto small = gate.enter(300);
+  EXPECT_EQ(gate.inside(), 900u);
+  std::atomic<bool> through{false};
+  std::thread       waiting([&] {
+    auto third = gate.enter(600);
+    through    = true;
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_FALSE(through.load());
+  small.release();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_FALSE(through.load());  // 600 + 600 doesn't fit either
+  first.release();
+  waiting.join();
+  EXPECT_TRUE(through.load());
+  EXPECT_EQ(gate.inside(), 0u);
 }

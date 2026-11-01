@@ -76,17 +76,47 @@ void FvHost::Impl::applyRebind(Loaded& f, const std::vector<int>& meshes)
 
 void FvHost::Impl::prefetchImages(const std::vector<fv::build::TextureRequest>& requests, const std::vector<std::optional<fv::build::TextureImage>>& found)
 {
-  fv::timing::Scope        t("decode textures");
-  std::atomic<size_t>      next{0};
-  std::vector<std::thread> workers;
-  for(int w = 0; w < std::min<int>(8, int(found.size())); w++)
-    workers.emplace_back([&] {
-      for(size_t i; (i = next++) < found.size();)
-        if(found[i] && !found[i]->uri.empty())
-          renderer->prefetchImage(pathOf(found[i]->uri), requests[i].srgb);
+  fv::timing::Scope t("decode textures");
+  try
+  {
+    sideBySide(found.size(), 8, [&](size_t i) {
+      if(found[i] && !found[i]->uri.empty())
+        renderer->prefetchImage(pathOf(found[i]->uri), requests[i].srgb);
     });
-  for(auto& w : workers)
-    w.join();
+  }
+  catch(const std::exception& e)
+  {
+    // only ahead of time: the upload decodes what isn't here
+    LOGW("[fv] decoding textures ahead: %s\n", e.what());
+  }
+}
+
+void FvHost::Impl::watchSystemMemory()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if(now - lastRamReading < std::chrono::seconds(1))
+    return;
+  lastRamReading                    = now;
+  const fv::io::SystemMemory memory = fv::io::systemMemory();
+  if(!memory.known)
+    return;
+  const rs::RamWatch::Step step = ramWatch.step({memory.totalPhysical, memory.availablePhysical, memory.availableCommit});
+  if(step.short_ != ramShort)
+    renderer->decodeAhead(!step.short_);
+  ramShort = step.short_;
+  if(!step.short_)
+    return;
+  // what is only kept for later: an undo loads a prop again, a load decodes and reads its files again
+  parked.clear();
+  renderer->dropDecodedAhead();
+  if(!step.justNow)
+    return;
+  fv::dson::Store::clearShared();
+  const auto gb = [](uint64_t bytes) { return double(bytes) / double(uint64_t(1) << 30); };
+  char       text[160];
+  std::snprintf(text, sizeof text, "System memory is nearly full, %.1f of %.0f GB free: everything may slow down until something is closed or taken off.",
+                gb(std::min(memory.availablePhysical, memory.availableCommit)), gb(memory.totalPhysical));
+  notice(text);
 }
 
 void FvHost::Impl::applyPendingMorphs()

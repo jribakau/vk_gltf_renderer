@@ -6,15 +6,19 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
 #include <figure/dson/listing.hpp>
 #include <figure/dson/store.hpp>
+#include <figure/io/cache_folder.hpp>
 #include <figure/io/gzip.hpp>
 
 namespace {
@@ -182,6 +186,29 @@ TEST(DsonParse, RealFilesMatchWhenTheLibraryIsAvailable)
   }
 }
 
+// A store lets go of the files only it holds, between loads: the next load reads them again. A failed
+// read stays, so a missing file is looked for once.
+TEST(DsonParse, AStoreLetsGoOfWhatOnlyItHolds)
+{
+  const auto       library = std::make_shared<fv::dson::Library>(std::vector<fs::path>{fs::path(FV_TEST_DATA) / "daz-library"});
+  fv::dson::Store  store(library);
+  const std::string kept = "People/Test/Box Figure.duf", loose = "People/Test/Clothing/Box Shirt.duf";
+  const auto        held = store.load(kept);
+  std::weak_ptr<const fv::dson::Doc> gone = store.load(loose);
+  EXPECT_THROW(store.load("People/Test/not there.duf"), fv::dson::MissingFileError);
+  ASSERT_FALSE(gone.expired());
+  {
+    const fv::dson::Store::Hold hold(store);
+    EXPECT_EQ(store.trim(), 0u);
+    EXPECT_FALSE(gone.expired());
+  }
+  EXPECT_EQ(store.trim(), 1u);
+  EXPECT_TRUE(gone.expired());
+  EXPECT_EQ(store.load(kept), held);
+  EXPECT_TRUE(store.load(loose));
+  EXPECT_THROW(store.load("People/Test/not there.duf"), fv::dson::MissingFileError);
+}
+
 TEST(DsonParse, TheParsedCacheGivesTheDocumentBackAndMissesWhenTheFileChanged)
 {
   const std::string text = R"({"a": 1, "b": 1.5, "c": "x", "d": [true, null, -0.0, 1e3, 2.5e-7, 18446744073709551615, -9007199254740993],)"
@@ -207,7 +234,73 @@ TEST(DsonParse, TheParsedCacheGivesTheDocumentBackAndMissesWhenTheFileChanged)
     cut << "FVD1 but nothing after the magic";
   }
   EXPECT_FALSE(fv::dson::readParsed(file, stamp));
+  // and one whose stamp matches is deleted, so the next parse writes it again: cut short, a byte changed
+  // at each of its places, or claiming more tables than it could hold
+  const std::vector<char> whole = [&] {
+    fv::dson::writeParsed(file, *doc, stamp);
+    std::ifstream in(file, std::ios::binary);
+    return std::vector<char>(std::istreambuf_iterator<char>(in), {});
+  }();
+  const auto written = [&](const std::vector<char>& bytes) {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), std::streamsize(bytes.size()));
+  };
+  for(const size_t keep : {whole.size() - 1, whole.size() / 2, size_t(60)})
+  {
+    written({whole.begin(), whole.begin() + std::ptrdiff_t(keep)});
+    EXPECT_FALSE(fv::dson::readParsed(file, stamp)) << keep;
+    EXPECT_FALSE(fs::exists(file)) << keep;
+  }
+  {
+    std::vector<char> huge = whole;
+    const uint32_t    tables = 0xfffffff0u;
+    std::memcpy(huge.data() + 48, &tables, sizeof(tables));  // Header::tables
+    written(huge);
+    EXPECT_FALSE(fv::dson::readParsed(file, stamp));
+    EXPECT_FALSE(fs::exists(file));
+  }
+  // anything else: nothing thrown, whatever each byte of the tables becomes, and never a table that
+  // reads outside itself
+  for(size_t at = 56; at < whole.size(); at += 3)
+  {
+    std::vector<char> bad = whole;
+    bad[at]               = char(bad[at] ^ 0xa5);
+    written(bad);
+    if(const auto back = fv::dson::readParsed(file, stamp))
+      for(const fv::dson::Rows& t : back->tables)
+      {
+        EXPECT_EQ(t.start.size(), size_t(t.count) + 1);
+        EXPECT_EQ(size_t(t.start.back()), t.data.size());
+      }
+  }
   fs::remove_all(dir);
+  // the same file read again keeps its place in the folder, and the folder keeps to its budget
+  {
+    const fs::path trimmed = fs::temp_directory_path() / "fv-cache-folder-test";
+    fs::remove_all(trimmed);
+    fs::create_directories(trimmed);
+    const auto put = [&](const char* name, int age) {
+      std::ofstream(trimmed / name, std::ios::binary) << std::string(1000, 'x');
+      fs::last_write_time(trimmed / name, fs::file_time_type::clock::now() - std::chrono::hours(age));
+    };
+    put("old.fvd", 3);
+    put("older.fvd", 4);
+    put("new.fvd", 2);
+    put("other.fvb", 9);  // not this cache's
+    fv::io::trimCacheFolder(trimmed, ".fvd", 3000);
+    EXPECT_TRUE(fs::exists(trimmed / "older.fvd"));  // within it
+    fv::io::trimCacheFolder(trimmed, ".fvd", 2500);  // to three quarters of it: 1875
+    EXPECT_FALSE(fs::exists(trimmed / "older.fvd"));
+    EXPECT_FALSE(fs::exists(trimmed / "old.fvd"));
+    EXPECT_TRUE(fs::exists(trimmed / "new.fvd"));
+    EXPECT_TRUE(fs::exists(trimmed / "other.fvb"));
+    put("first.fvd", 5);
+    fv::io::touchCacheFile(trimmed / "first.fvd");
+    fv::io::trimCacheFolder(trimmed, ".fvd", 1500);  // to 1125
+    EXPECT_TRUE(fs::exists(trimmed / "first.fvd"));
+    EXPECT_FALSE(fs::exists(trimmed / "new.fvd"));
+    fs::remove_all(trimmed);
+  }
   // the stamp of a real file follows its size and time
   const fs::path src = dir.parent_path() / "fv-parsed-cache-src.json";
   {

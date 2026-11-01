@@ -837,7 +837,7 @@ void FvHost::Impl::compose()
     }
     catch(const std::exception& e)
     {
-      notice(std::string("The scene could not be fed: ") + e.what(), "error");
+      notice("The scene could not be fed: " + problemOf(e), "error");
     }
     if(!scene.entity(sunEntity))
       feedSun(scene);
