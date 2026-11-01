@@ -269,6 +269,7 @@ target_compile_definitions(${TEST_NAME} PRIVATE
     # the figure library's fixtures (DAZ library, subdivision references)
     FV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/figure/data"
     GLTF_2_1_FIXTURES_DIR="${GLTF_2_1_FIXTURES_DIR}"
+    FV_TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
 )
 
 # Add Draco support if enabled

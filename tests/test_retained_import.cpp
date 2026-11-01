@@ -24,6 +24,8 @@
 
 #include <gtest/gtest.h>
 
+#include "common/golden_digest.hpp"
+
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -173,9 +175,40 @@ std::vector<T> read(const tinygltf::Model& m, int accessor)
   return {d.begin(), d.end()};
 }
 
+// What the import of a model draws: item by item, the world matrix, visibility, node, material,
+// positions, indices and tangents, then the lights.
+void expectDrawsAsRecorded(const tinygltf::Model& model, const std::string& what)
+{
+  rs::RetainedScene retained;
+  rs::importGltf(retained, model, {.prop = 7});
+  GoldenDigest digest;
+  for(const rs::DrawItem& item : retained.drawItems())
+  {
+    digest.add(item.world);
+    digest.add(int64_t(item.shown));
+    digest.add(int64_t(retained.entity(item.entity)->owner.local));
+    const rs::MaterialRecord* mat = retained.material(item.material);
+    ASSERT_NE(mat, nullptr);
+    digest.add(int64_t(mat->owner.local));
+    const rs::MeshRecord* mesh = retained.mesh(item.mesh);
+    ASSERT_NE(mesh, nullptr);
+    digest.addAll<glm::vec3>(mesh->positions);
+    const rs::Submesh& run = mesh->submeshes[item.submesh];
+    digest.addBytes(mesh->indices.data() + run.firstIndex, run.indexCount * sizeof(uint32_t));
+    digest.addAll<glm::vec4>(mesh->tangents);
+  }
+  for(const rs::LightItem& light : retained.lightItems())
+  {
+    digest.add(light.world);
+    digest.add(int64_t(retained.light(light.light)->owner.local));
+  }
+  expectGolden("import " + what, digest);
+}
+
 // The two scenes of one model, compared draw item by render node.
 void expectParity(const tinygltf::Model& model, const std::string& what)
 {
+  expectDrawsAsRecorded(model, what);
   nvvkgltf::Scene legacy;
   legacy.takeModel(tinygltf::Model(model));
   if(!legacy.valid())
@@ -551,7 +584,7 @@ TEST(RetainedImport, DrawsTheFixturesAsTheLegacySceneDoes)
            return std::any_of(mesh.primitives.begin(), mesh.primitives.end(), [](const tinygltf::Primitive& p) { return p.material < 0; });
          }))
         continue;  // the one difference on purpose: no material is the glTF default here
-      expectParity(model, file.filename().string());
+      expectParity(model, std::filesystem::relative(file, dir).generic_string());
       tested++;
     }
   }

@@ -30,6 +30,8 @@
 
 #include <gtest/gtest.h>
 
+#include "common/golden_digest.hpp"
+
 #include <cstring>
 #include <filesystem>
 
@@ -290,10 +292,88 @@ struct Counts
   int times = 0, nodes = 0, skinned = 0;
 };
 
+// A model's clips played: its local transforms, world matrices, morph weights and skinned vertices
+// after every step, each clip one digest
+void expectPlaysAsRecorded(const tinygltf::Model& model, const std::string& what, Counts& counts)
+{
+  rs::RetainedScene      retained;
+  const rs::ImportResult imported = rs::importGltf(retained, model, {.prop = 1});
+  ASSERT_EQ(imported.clips.size(), model.animations.size()) << what;
+  for(size_t a = 0; a < model.animations.size(); a++)
+  {
+    const rs::ClipRecord* clip = retained.clip(imported.clips[a]);
+    ASSERT_NE(clip, nullptr) << what << ", animation " << a;
+    rs::ClipPlayer player(retained, imported.clips[a]);
+    GoldenDigest   digest;
+    digest.add(player.start());
+    digest.add(player.end());
+    const auto record = [&]() {
+      player.apply(retained);
+      counts.times++;
+      digest.add(player.time());
+      for(rs::EntityId id : retained.entitiesInOrder())
+      {
+        const rs::Entity& e = *retained.entity(id);
+        counts.nodes++;
+        if(e.local.matrix)
+          digest.add(*e.local.matrix);
+        else
+        {
+          digest.add(e.local.translation);
+          digest.add(glm::vec4(e.local.rotation.x, e.local.rotation.y, e.local.rotation.z, e.local.rotation.w));
+          digest.add(e.local.scale);
+        }
+        digest.add(retained.world(id));
+        if(!e.mesh)
+          continue;
+        digest.addAll<float>(e.mesh->morphWeights);
+        const std::vector<glm::mat4> joints = retained.jointMatrices(id);
+        if(joints.empty())
+          continue;
+        for(const rs::MeshPart& part : e.mesh->parts)
+        {
+          const rs::MeshRecord* mesh = retained.mesh(part.mesh);
+          if(!mesh || mesh->weights.empty())
+            continue;
+          std::vector<glm::vec3> positions, normals;
+          skin(*mesh, joints, positions, normals);
+          digest.addAll<glm::vec3>(positions);
+          digest.addAll<glm::vec3>(normals);
+          counts.skinned++;
+        }
+      }
+    };
+    for(float t : sampleTimes(*clip))
+    {
+      player.setTime(t);
+      record();
+    }
+    // wrapped: steps that are not a whole fraction of the clip, from its start
+    digest.add(player.reset());
+    const float dt = std::max(player.end() - player.start(), 0.1f) * 0.37f;
+    for(int i = 0; i < 12; i++)
+    {
+      player.advance(dt, true);
+      record();
+    }
+    // and held at the end
+    for(int i = 0; i < 4; i++)
+    {
+      player.advance(dt, false);
+      record();
+    }
+    expectGolden("play " + what + " " + std::to_string(a), digest);
+  }
+}
+
 // A model's clips played on both scenes, compared after every step; the first difference fails the
 // model and stops it
 void expectAnimationParity(const tinygltf::Model& model, const std::string& what, Counts& counts)
 {
+  {
+    Counts recorded;
+    expectPlaysAsRecorded(model, what, recorded);
+  }
   nvvkgltf::Scene legacy;
   legacy.takeModel(tinygltf::Model(model));
   if(!legacy.valid())
