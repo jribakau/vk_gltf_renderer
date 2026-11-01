@@ -39,6 +39,10 @@ struct FitFigure
 std::optional<std::pair<Generation, Generation>> generationsOf(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel,
                                                                const FitFigure& figure);
 
+// Whether `item` is known to be made for the figure's own rig. The bones it has beyond the figure's are
+// then its own (a hair's strands, a skirt's panels), riding on the ones they share.
+bool madeForFigure(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel, const FitFigure& figure);
+
 // Fits one item of `wearable` onto `figure` when it was made for another generation: its meshes' cages
 // are rewritten in place (so call it before anything binds them). None leaves it untouched.
 std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& wearable, const dson::Item& item, const std::string& rel, const FitFigure& figure);

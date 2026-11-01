@@ -156,6 +156,8 @@ set(TEST_SOURCES
     test_scene_gpu_tables.cpp
     # The emitters' light tree: its layout and its walks (shaders/light_tree.h.slang compiled as C++)
     test_light_tree.cpp
+    # When textures follow GPU memory: the policy (header only)
+    test_memory_watch.cpp
     # The retained scene on the fake GPU, every sync held to ResidencyOracle (oracles 1 and 2b)
     test_retained_residency.cpp
     # Skinned and morphed meshes drawn through their drawers, the passes run on the fake (I22), DLSS motion (I10)

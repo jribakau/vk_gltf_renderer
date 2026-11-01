@@ -165,13 +165,28 @@ namespace {
 constexpr uint64_t kGeometryBytesPerTriangle = 300;
 }
 
+namespace {
+uint64_t geometryBytes(const fv::Mesh& m)
+{
+  return m.geo ? (m.geo->fullIndex.empty() ? m.geo->renderTris.size() : m.geo->fullIndex.size()) / 3 * kGeometryBytesPerTriangle : 0;
+}
+}  // namespace
+
 uint64_t geometryBytes(const fv::SceneGraph& scene)
 {
-  uint64_t triangles = 0;
+  uint64_t bytes = 0;
   for(const fv::Mesh& m : scene.meshes)
-    if(m.geo)
-      triangles += (m.geo->fullIndex.empty() ? m.geo->renderTris.size() : m.geo->fullIndex.size()) / 3;
-  return triangles * kGeometryBytesPerTriangle;
+    bytes += geometryBytes(m);
+  return bytes;
+}
+
+uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes)
+{
+  uint64_t bytes = 0;
+  for(int m : meshes)
+    if(m >= 0 && m < int(scene.meshes.size()))
+      bytes += geometryBytes(scene.meshes[size_t(m)]);
+  return bytes;
 }
 
 uint64_t geometryBytes(const tinygltf::Model& model)

@@ -276,6 +276,7 @@ mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, i
         throw std::runtime_error("a polygon names UV " + std::to_string(uv) + " of " + std::to_string(m.uvs.size() / 2));
   }
   m.level    = level;
+  m.subdivisionSurface = getString(&geo, "type") == "subdivision_surface";
   m.boundary = getString(&geo, "edge_interpolation_mode") == "edges_and_corners" ? subdiv::BoundaryInterpolation::eEdgesAndCorners :
                                                                                   subdiv::BoundaryInterpolation::eEdges;
   // strand hair: polylines in the same row layout, drawn as ribbons when there are no polygons
@@ -342,19 +343,6 @@ Centers fitCenters(const SceneGraph& scene, const Json& nodeLibrary, const Cente
       out[id] = scene.nodes[b].joint->center;
   }
   return out;
-}
-
-std::string missingMessage(const std::string& fileName, const std::vector<std::string>& missing)
-{
-  std::string name = fileName;
-  for(const char* ext : {".duf", ".dsf", ".DUF", ".DSF"})
-    if(name.size() > 4 && name.compare(name.size() - 4, 4, ext) == 0)
-      name.resize(name.size() - 4);
-  std::string sample = missing[0] + (missing.size() > 1 ? ", " + missing[1] : "");
-  if(missing.size() > 2)
-    sample += " and " + std::to_string(missing.size() - 2) + " more";
-  return name + " needs " + std::to_string(missing.size()) + " library file" + (missing.size() == 1 ? "" : "s")
-         + " that aren't installed in the assets folder or the DAZ library: " + sample + ".";
 }
 
 // The skin modifier in a geometry's file that binds it (its "skin" naming this geometry), or none.
@@ -540,11 +528,11 @@ std::string geometryKey(const Store::Resolved& geometry)
   return lowerCase(geometry.file) + "#" + getString(geometry.entry, "id");
 }
 // ... and the PR hairs the scene grows on it.
-std::string earlyMeshKey(const Store::Resolved& geometry, const std::optional<Store::Resolved>& uv, int level,
+std::string earlyMeshKey(const Store::Resolved& geometry, const std::optional<Store::Resolved>& uv, int level, float strandKeep,
                          const std::map<std::string, mesh::Growth>& grow, const mesh::GrowthSurface* surface)
 {
   std::string key = geometryKey(geometry) + "|" + (uv ? lowerCase(uv->file) + "#" + getString(uv->entry, "id") : std::string()) + "|"
-                    + std::to_string(level);
+                    + std::to_string(level) + "|" + std::to_string(strandKeep);
   const auto add = [&](auto value) { key += "," + std::to_string(value); };
   for(const auto& [group, g] : grow)
   {
@@ -612,6 +600,19 @@ std::atomic<size_t> g_earlyTaken{0};
 
 }  // namespace
 
+std::string missingMessage(const std::string& fileName, const std::vector<std::string>& missing)
+{
+  std::string name = fileName;
+  for(const char* ext : {".duf", ".dsf", ".DUF", ".DSF"})
+    if(name.size() > 4 && name.compare(name.size() - 4, 4, ext) == 0)
+      name.resize(name.size() - 4);
+  std::string sample = missing[0] + (missing.size() > 1 ? ", " + missing[1] : "");
+  if(missing.size() > 2)
+    sample += " and " + std::to_string(missing.size() - 2) + " more";
+  return name + " needs " + std::to_string(missing.size()) + " library file" + (missing.size() == 1 ? " that isn't" : "s that aren't")
+         + " installed in the assets folder or the DAZ library: " + sample + ".";
+}
+
 size_t earlyMeshesTaken()
 {
   return g_earlyTaken.load();
@@ -665,7 +666,7 @@ std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::
             const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(*subdivision, 0, 3) : 0;
             const auto grow    = prHairsFor(*doc, gres->doc.get(), getString(node, "id"), getString(instance, "id"));
             const auto surface = growthSurfaceFor(*store, *doc, file, *node, grow);
-            key                = earlyMeshKey(*gres, ures, level, grow, surface.get());
+            key                = earlyMeshKey(*gres, ures, level, 1, grow, surface.get());
             if(!EarlyMeshes::of(*store).start(key))
               continue;
             const std::optional<UvSet> uvSet = ures ? std::optional<UvSet>(parseUvSet(*ures->doc, *ures->entry)) : std::nullopt;
@@ -827,13 +828,16 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
 
   // ---- node definitions, then groups and rigs in file order (parents before children)
   std::vector<std::string> skipped;
-  auto                     skip = [&](const Json& node, const std::string& why, bool missingFile) {
-    // missing files are reported once, together, after every node has been tried
-    if(missingFile)
-      return;
+  auto                     skip = [&](const Json& node, const std::string& why) {
     const std::string reason = firstString({{&node, "label"}, {&node, "id"}}) + ": " + why;
     skipped.push_back(reason);
     warn("Skipped " + reason);
+  };
+  // the files this load asked for and no content folder has, reported together after every node has
+  // been tried. Its own: the store lives with the figure, and morphs it read since aren't this item's
+  auto missed = [&](const MissingFileError& e) {
+    if(std::find(out.missing.begin(), out.missing.end(), e.file()) == out.missing.end())
+      out.missing.push_back(e.file());
   };
 
   struct MeshJob
@@ -876,14 +880,14 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
       if(nodeRef && !nodeRef->id.empty())
         resolved = store.resolve(*nodeRef, "node_library");
     }
-    catch(const MissingFileError&)
+    catch(const MissingFileError& e)
     {
-      skip(node, "", true);
+      missed(e);
       continue;
     }
     catch(const std::exception& e)
     {
-      skip(node, e.what(), false);
+      skip(node, e.what());
       continue;
     }
     const Json*       def       = resolved ? resolved->entry : nullptr;
@@ -1112,7 +1116,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           std::optional<EarlyMesh> early;
           {
             timing::Accum tt("ahead: an early mesh taken");
-            early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level, grow, surface.get()));
+            early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level, options.strandKeep, grow, surface.get()));
           }
           if(early)
           {
@@ -1125,6 +1129,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             timing::Accum   tb("ahead: a mesh built");
             mesh::MeshInput input = meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups);
             addGrowth(input, a.mesh.materialGroups, grow, surface);
+            if(input.lines)
+              input.lines->keep = options.strandKeep;
             a.mesh.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
           }
           if(job.rig >= 0)
@@ -1232,6 +1238,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             if(auto uref = parseRef(uvUri, gres->file))
               ures = store.resolve(*uref, "uv_set_library");
           }
+          catch(const MissingFileError& e)
+          {
+            missed(e);
+          }
           catch(const std::exception&)
           {
           }
@@ -1263,6 +1273,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           }
           const auto grow = prHairsFor(*docPtr, gres->doc.get(), getString(job.node, "id"), gid);
           addGrowth(input, meshOut.materialGroups, grow, growthSurfaceFor(store, *docPtr, file, *job.node, grow));
+          if(input.lines)
+            input.lines->keep = options.strandKeep;
           meshOut.geo = std::make_shared<mesh::BuiltMesh>(mesh::build(input));
         }
 
@@ -1312,6 +1324,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
                   layers.emplace_back(r2->entry, r2->file);
                 }
               }
+              catch(const MissingFileError& e)
+              {
+                missed(e);
+              }
               catch(const std::exception&)
               {
               }
@@ -1348,7 +1364,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
               const Channel* c = chans ? chans->get(norm(n)) : nullptr;
               return c && c->value.is_number() ? std::optional<double>(c->value.get<double>()) : std::nullopt;
             };
-            widths.push_back(ribbonWidths(width("Line Start Width"), width("Line End Width"), meshOut.geo->ribbon->spacing));
+            const auto drawn = ribbonWidths(width("Line Start Width"), width("Line End Width"), meshOut.geo->ribbon->spacing);
+            // what the strands left in have to cover
+            widths.push_back({drawn[0] / options.strandKeep, drawn[1] / options.strandKeep});
           }
           mesh::widenRibbons(*meshOut.geo, widths);
         }
@@ -1425,13 +1443,13 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         made.push_back(scene.add(std::move(meshNode)));
       }
     }
-    catch(const MissingFileError&)
+    catch(const MissingFileError& e)
     {
-      skip(*job.node, "", true);
+      missed(e);
     }
     catch(const std::exception& e)
     {
-      skip(*job.node, e.what(), false);
+      skip(*job.node, e.what());
     }
     // in file order, after the group's rig and before its child nodes
     for(size_t k = 0; k < made.size(); k++)
@@ -1574,7 +1592,6 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
       item.footPose      = feet;
     }
   }
-  out.missing = store.missing();
   if(!built)
   {
     if(!out.missing.empty())

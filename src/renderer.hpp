@@ -69,6 +69,7 @@
 #include "timeline_pipeline.hpp"
 #include "scene_clip_player.hpp"
 #include "host_renderer.hpp"
+#include "memory_watch.hpp"
 
 #ifdef USE_NVMCP
 /// A clean timing series for one GPU profiler timer, gathered over a controlled window.
@@ -313,6 +314,8 @@ public:
   // Max texture size (HostRenderer): the images decoded from now on. Any thread.
   void setMaxTextureExtent(uint32_t extent) override { m_maxTextureExtent.store(extent); }
   void setNoticeSink(std::function<void(const std::string&)> sink) override { m_noticeSink = std::move(sink); }
+  void setLoweredSink(std::function<void(uint32_t, uint32_t)> sink) override { m_loweredSink = std::move(sink); }
+  void holdTextures(bool held) override { m_texturesHeld = held; }
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
   void          setRenderSystem(RenderingMode mode) override;
@@ -341,8 +344,10 @@ public:
   std::string refuseFrameSize(VkExtent2D size, double extraBytesPerPixel = 0.0) const;
   // The bytes of new textures that fit in GPU memory now, negative when it is over; none where the
   // budget is unknown
-  std::optional<int64_t> sceneHeadroom() const;
-  std::string            refuseGeometry(uint64_t bytes) override;
+  std::optional<int64_t> sceneHeadroom() const override;
+  // the budget the scene is fitted to: the driver's, or sceneBudgetMB where that is less
+  uint64_t               sceneBudget() const;
+  std::string            refuseGeometry(uint64_t bytes, bool keepTextureDetail = false) override;
   struct AllocatedMemory
   {
     uint64_t blocks = 0, allocations = 0;
@@ -486,6 +491,10 @@ private:
   void createResourceBuffers();
   // The retained scene's per-frame half (replaceHostScene() is its scene replace)
   bool                       syncRetainedScene(VkCommandBuffer cmd);
+  // Textures following GPU memory: once a second, what rs::MemoryWatch says is asked of the next sync
+  void                       watchMemory();
+  // the textures lowered now, told to the sink when that changed
+  void                       reportLoweredImages(uint32_t count, uint32_t largest);
   // a stream host's scene: the clip moved on and written into the store; true when it wrote anything
   bool advanceHostClip();
   bool afterRetainedSync(const rs::SyncResult& result);
@@ -634,6 +643,10 @@ private:
   std::atomic<uint32_t> m_maxTextureExtent{0};
   uint64_t              m_pendingGeometry = 0;  // accepted by refuseGeometry and not resident yet
   std::function<void(const std::string&)> m_noticeSink;
+  std::function<void(uint32_t, uint32_t)> m_loweredSink;
+  uint32_t              m_loweredCount = 0, m_loweredLargest = 0;  // as the sink last heard
+  rs::MemoryWatch       m_memoryWatch;
+  bool                  m_texturesHeld = false;      // an export is running (holdTextures)
   bool                  m_envPreviewPending{false};  // Record a colour-only re-bake into this frame
   bool                  m_envCommitOwed{false};      // Previewed at least once; owes a commit once the edits stop
   bool                  m_envOwnedByBaker{false};    // hdrIbl currently points at EnvBaker's image, not a loaded file

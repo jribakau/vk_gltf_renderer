@@ -920,9 +920,10 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
           DecodedImage& decoded = it->second;
           if(decoded.users++ == 0)
             m_graceBytes -= decoded.info.bytes;
-          image.image = decoded.image;
-          image.info  = decoded.info;
-          shared      = true;
+          image.image   = decoded.image;
+          image.info    = decoded.info;
+          image.lowered = decoded.lowered;
+          shared        = true;
           m_imageCounts.reused++;
           // nothing will take what a worker decoded for this wear, and it would stay in CPU memory
           if(!record->uri.empty())
@@ -1020,10 +1021,7 @@ void Residency::trimGrace(uint64_t budget)
     m_graceBytes = 0;
 }
 
-// a texture this small is what is left of a scene that can't fit: nothing lower is worth having
-constexpr uint32_t kLeastImageExtent = 256;
-
-uint64_t Residency::lowerableImageBytes() const
+uint64_t Residency::lowerableImageBytes(uint32_t leastExtent) const
 {
   uint64_t             bytes = m_graceBytes;
   std::set<TextureKey> seen;  // one image, however many textures are it
@@ -1032,18 +1030,91 @@ uint64_t Residency::lowerableImageBytes() const
     if(!image.image || !image.info.storedLevels || (image.key && !seen.insert(*image.key).second))
       continue;
     const uint64_t extent = std::max(image.info.width, image.info.height);
-    if(extent > kLeastImageExtent)
-      bytes += image.info.bytes - image.info.bytes * kLeastImageExtent * kLeastImageExtent / (extent * extent);
+    if(extent > leastExtent)
+      bytes += image.info.bytes - image.info.bytes * leastExtent * leastExtent / (extent * extent);
   }
   return bytes;
+}
+
+Residency::LoweredImages Residency::loweredImages() const
+{
+  LoweredImages        out;
+  std::set<TextureKey> seen;  // one image, however many textures are it
+  for(const auto& [id, image] : m_images)
+    if(image.image && image.lowered && (!image.key || seen.insert(*image.key).second))
+    {
+      out.count++;
+      out.largest = std::max({out.largest, image.info.width, image.info.height});
+    }
+  return out;
+}
+
+std::set<Residency::ImageKey> Residency::favouredImages(const RetainedScene& scene) const
+{
+  std::set<ImageKey> out;
+  for(const auto& [id, slot] : m_materials)
+    if(const MaterialRecord* record = scene.material(id); record && record->favoured)
+      for(const auto& t : slot.textures)
+        if(t)
+          out.insert({std::get<0>(*t), std::get<2>(*t)});
+  std::set<TextureKey> files;
+  for(const ImageKey& id : out)
+    if(auto it = m_images.find(id); it != m_images.end() && it->second.key)
+      files.insert(*it->second.key);
+  for(const auto& [id, image] : m_images)
+    if(image.key && files.count(*image.key))
+      out.insert(id);
+  return out;
+}
+
+void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits) const
+{
+  const std::set<ImageKey> favoured = favouredImages(scene);
+  std::set<TextureKey>     seen;  // one image, however many textures are it
+  for(const auto& [id, image] : m_images)
+  {
+    if(!image.image || (onlyLowered && !image.lowered) || (image.key && !seen.insert(*image.key).second))
+      continue;
+    const TextureRecord* record = scene.texture(id.first);
+    if(!record)
+      continue;
+    std::optional<ImageChain> chain = m_gpu.imageChain(imageSourceOf(*record, id.second, 0));
+    if(!chain)
+      continue;
+    uint32_t skip = 0;
+    while(levelExtent(chain->width, skip) > image.info.width && skip + 1 < chain->levelBytes.size())
+      skip++;
+    residents.push_back({id, record, image.key, skip});
+    fits.push_back({std::move(*chain), skip, favoured.count(id) > 0});
+  }
+}
+
+uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room)
+{
+  std::vector<ResidentImage> residents;
+  std::vector<ImageFit>      fits;
+  residentFits(scene, true, residents, fits);
+  std::vector<uint32_t> wanted;
+  for(const ImageFit& fit : fits)
+    wanted.push_back(levelsToSkip(fit.chain.width, fit.chain.height, uint32_t(fit.chain.levelBytes.size()), m_gpu.maxImageExtent()));
+  raiseToFit(fits, wanted, room);
+  uint32_t raised = 0;
+  for(size_t i = 0; i < residents.size(); i++)
+    if(fits[i].skip < residents[i].skip)
+    {
+      m_decodeQueue.push_back({residents[i].image, imageSourceOf(*residents[i].record, residents[i].image.second, fits[i].extent()),
+                               residents[i].key, fits[i].skip > wanted[i], true});
+      raised++;
+    }
+  return raised;
 }
 
 // The queued images made to fit the GPU memory left, read from their chains before anything is
 // decoded. Where they don't fit: the idle decodes go first, then top levels, the largest first, of
 // these and of what is resident (decoded again, smaller, in this batch). Geometry made resident this
 // sync already counts, as it allocates first, so a scene that grew past the budget comes back under
-// it this way with nothing queued at all.
-void Residency::fitQueuedToMemory(const RetainedScene& scene)
+// it this way with nothing queued at all. `slack`: as much again is left free.
+void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
 {
   const std::optional<int64_t> headroom = m_gpu.imageHeadroom();
   if(!headroom)
@@ -1060,7 +1131,7 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
       need += fits.back().bytes();
       queued.push_back(i);
     }
-  int64_t room = *headroom;
+  int64_t room = *headroom - int64_t(slack);
   if(int64_t(need) <= room)
     return;
   room += int64_t(m_graceBytes);
@@ -1069,35 +1140,21 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
     return;
   const uint64_t wanted = uint64_t(int64_t(need) - room);
 
-  struct Resident
-  {
-    ImageKey                  image;
-    const TextureRecord*      record = nullptr;
-    std::optional<TextureKey> key;
-    uint32_t                  skip = 0;
-  };
-  const size_t          queuedFits = fits.size();
-  std::vector<Resident> residents;
-  std::set<TextureKey>  seen;  // one image, however many textures are it
-  for(const auto& [id, image] : m_images)
-  {
-    if(!image.image || (image.key && !seen.insert(*image.key).second))
-      continue;
-    const TextureRecord* record = scene.texture(id.first);
-    if(!record)
-      continue;
-    std::optional<ImageChain> chain = m_gpu.imageChain(imageSourceOf(*record, id.second, 0));
-    if(!chain)
-      continue;
-    uint32_t skip = 0;
-    while(levelExtent(chain->width, skip) > image.info.width && skip + 1 < chain->levelBytes.size())
-      skip++;
-    residents.push_back({id, record, image.key, skip});
-    fits.push_back({std::move(*chain), skip});
-  }
+  const size_t               queuedFits = fits.size();
+  const std::set<ImageKey>   favoured   = favouredImages(scene);
+  for(size_t f = 0; f < queuedFits; f++)
+    fits[f].favoured = favoured.count(m_decodeQueue[queued[f]].image) > 0;
+  std::vector<ResidentImage> residents;
+  residentFits(scene, false, residents, fits);
 
   const uint64_t freed = lowerToFit(fits, wanted, kLeastImageExtent);
   uint32_t       lowered = 0, largest = 0;
+  std::string    which;  // for the log: each one's name and long edge, favoured ones marked
+  const auto     noteLowered = [&](const std::string& name, const ImageFit& fit) {
+    lowered++;
+    largest = std::max(largest, fit.extent());
+    which += (which.empty() ? "" : ", ") + name + " " + std::to_string(fit.extent()) + (fit.favoured ? "*" : "");
+  };
   for(size_t f = 0; f < queuedFits; f++)
   {
     QueuedDecode& q = m_decodeQueue[queued[f]];
@@ -1105,8 +1162,7 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
     {
       q.source.maxExtent = fits[f].extent();
       q.lowered          = true;
-      lowered++;
-      largest = std::max(largest, fits[f].extent());
+      noteLowered(std::string(q.source.name), fits[f]);
     }
   }
   for(size_t r = 0; r < residents.size(); r++)
@@ -1116,15 +1172,14 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
       continue;
     m_decodeQueue.push_back({residents[r].image, imageSourceOf(*residents[r].record, residents[r].image.second, fit.extent()),
                              residents[r].key, true, true});
-    lowered++;
-    largest = std::max(largest, fit.extent());
+    noteLowered(residents[r].record->name, fit);
   }
   m_imageCounts.lowered += lowered;
   if(lowered > 0)
     m_notices.push_back("to fit GPU memory, " + std::to_string(lowered) + " textures lowered to " + std::to_string(largest)
-                        + " or less; " + std::to_string(freed >> 20) + " MB freed of the " + std::to_string(wanted >> 20) + " MB wanted");
+                        + " or less; " + std::to_string(freed >> 20) + " MB freed of the " + std::to_string(wanted >> 20) + " MB wanted: " + which);
   if(lowered > 0 && !std::exchange(m_noticedLowered, true))
-    m_userNotices.push_back("GPU memory is nearly full, so textures are being lowered to fit. Opening the scene again restores them if there is room then.");
+    m_userNotices.push_back("GPU memory is nearly full, so textures are being lowered to fit. They come back by themselves when there is room.");
 }
 
 // The queued images decoded in one batch (side by side where the backend can), handed to every
@@ -1133,9 +1188,10 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene)
 // image already drawn was replaced, which changes the frame.
 bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
 {
-  if(m_decodeQueue.empty() && !sceneGrew)
+  const std::optional<uint64_t> slack = std::exchange(m_fitSlack, std::nullopt);
+  if(m_decodeQueue.empty() && !sceneGrew && !slack)
     return false;
-  fitQueuedToMemory(scene);
+  fitQueuedToMemory(scene, slack.value_or(0));
   if(m_decodeQueue.empty())
     return false;
   std::vector<ImageSource> sources;
@@ -1148,6 +1204,7 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
 
   std::set<ImageKey> written;
   bool               replaced = false;
+  bool               restored = false;
   uint32_t           refused  = 0;
   for(size_t i = 0; i < m_decodeQueue.size(); i++)
   {
@@ -1155,6 +1212,7 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     if(q.replaces && !images[i])
       continue;  // it keeps the image it has
     replaced |= q.replaces;
+    restored |= q.replaces && !q.lowered;
     refused += !q.replaces && infos[i].outOfMemory;
     if(q.key)
     {
@@ -1168,8 +1226,9 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
       for(auto& [id, image] : m_images)
         if(image.key == q.key)
         {
-          image.image = images[i];
-          image.info  = infos[i];
+          image.image   = images[i];
+          image.info    = infos[i];
+          image.lowered = q.lowered;
           if(!images[i])
             image.key.reset();
           written.insert(id);
@@ -1191,8 +1250,9 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     {
       if(q.replaces && image->second.image)
         m_gpu.retire([&gpu = m_gpu, handle = image->second.image] { gpu.destroyImage(handle); });
-      image->second.image = images[i];
-      image->second.info  = infos[i];
+      image->second.image   = images[i];
+      image->second.info    = infos[i];
+      image->second.lowered = q.lowered;
       written.insert(q.image);
     }
     else if(images[i])
@@ -1203,6 +1263,8 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     if(const ImageKey image{std::get<0>(slotKey), std::get<1>(slotKey)}; written.count(image))
       m_gpu.writeTextureDescriptor(use.slot, m_images.at(image).image);
   m_imageCounts.refused += refused;
+  if(restored && loweredImages().count == 0 && std::exchange(m_noticedLowered, false))
+    m_userNotices.push_back("GPU memory has room again: the textures are back to full size.");
   if(refused > 0)
   {
     m_notices.push_back(std::to_string(refused) + " textures did not fit in GPU memory");
@@ -1922,7 +1984,9 @@ SyncResult Residency::sync(RetainedScene& scene)
   const bool motionToSettle = !m_drawersWritten.empty() || !m_meshesWritten.empty() || !m_movedLast.empty();
   // static BLASes wait for their compacted copies (a few frames after their builds)
   const bool compacting = !m_compacting.empty();
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting)
+  // images asked of it between syncs (raiseImages, lowerImages)
+  const bool imagesAsked = !m_decodeQueue.empty() || m_fitSlack;
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked)
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);

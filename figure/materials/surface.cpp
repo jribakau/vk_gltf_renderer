@@ -68,6 +68,21 @@ Kind classify(const std::string& name, Context context)
   return std::regex_search(words, saysSkin) ? found : Kind::eOther;
 }
 
+bool onTheFace(const Surface& s)
+{
+  const auto f = std::regex::ECMAScript | std::regex::optimize;
+  // a figure's lashes and brows are items worn on it, so they are on no body: their names say it
+  static const std::regex brows("\\b(eye ?)?brows?\\b", f);
+  if(s.kind == Kind::eLashes || (s.kind == Kind::eHair && std::regex_search(wordsOf(s.name), brows)))
+    return true;
+  if(s.context != Context::eBody)
+    return false;
+  if(s.kind != Kind::eSkin)
+    return s.kind != Kind::eNails && s.kind != Kind::eOther;
+  static const std::regex face("\\b(face|head|((up|low)er ?)?lips?|ears?)\\b", f);
+  return std::regex_search(wordsOf(s.name), face);
+}
+
 float srgbToLinear(double c)
 {
   return float(c < 0.04045 ? c * 0.0773993808 : std::pow(c * 0.9478672986 + 0.0521327014, 2.4));

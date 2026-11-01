@@ -771,7 +771,7 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("wear before a figure loads");
         const std::string rel = step["wear"].get<std::string>();
-        auto              prepared = loaded->prepareWear(rel, step.value("subdivision", 0));
+        auto              prepared = loaded->prepareWear(rel, fv::WearQuality{step.value("subdivision", 0), step.value("strandKeep", 1.f)});
         // as the host does on its worker, so the build after the wear finds the strands measured
         if(step.value("measure", false))
         {
@@ -780,7 +780,13 @@ int main(int argc, char** argv)
         }
         const fv::WearResult w = loaded->commitWear(prepared, rel);
         loaded->settle();
-        Json report = {{"items", w.items}, {"fit", r(w.fit)}, {"notes", w.notes}, {"warnings", w.warnings}, {"missingBones", w.missingBones}};
+        size_t triangles = 0;
+        for(const fv::WornItem& item : loaded->items)
+          if(std::find(w.items.begin(), w.items.end(), item.id) != w.items.end())
+            for(int m : item.meshes)
+              if(const auto& geo = loaded->loaded.scene.meshes[size_t(m)].geo)
+                triangles += geo->fullIndex.size() / 3;
+        Json report = {{"items", w.items}, {"fit", r(w.fit)}, {"triangles", triangles}, {"notes", w.notes}, {"warnings", w.warnings}, {"missingBones", w.missingBones}};
         std::cerr << "wear " << rel << ": " << report.dump() << "\n";
       }
       else if(step.contains("remove"))

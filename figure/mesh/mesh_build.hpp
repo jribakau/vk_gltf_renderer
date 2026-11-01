@@ -83,6 +83,9 @@ struct Lines
   std::vector<Growth> grow;
   // what a material with a density grows from; without one it grows nothing
   std::shared_ptr<const GrowthSurface> surface;
+  // the share of the lines drawn, the file's and the grown alike. The cage keeps them all: the skin,
+  // morphs and a simulation run on them as ever
+  float keep = 1;
 };
 
 struct MeshInput
@@ -97,6 +100,8 @@ struct MeshInput
   // UV seam overrides as (polygon, vertex, uv index) triplets.
   std::vector<int32_t> overrides;
   int                  level    = 0;
+  // the file marks it SubD: how finely it is drawn is a choice (level)
+  bool                 subdivisionSurface = false;
   subdiv::BoundaryInterpolation boundary = subdiv::BoundaryInterpolation::eEdges;
   // Polylines (strand hair), drawn as ribbons when the mesh has no polygons.
   std::optional<Lines> lines;
@@ -162,6 +167,7 @@ struct BuiltMesh
   std::vector<float>                         cagePositions;
   std::shared_ptr<const subdiv::Refinement> refinement;
   std::optional<Ribbon>                      ribbon;
+  bool                                       subdivisionSurface = false;  // MeshInput::subdivisionSurface
   Bounds                                     bounds;
   // cage polygons a worn item hides (a geograft replaces them), by the item's key
   std::map<std::string, std::vector<int32_t>> hiddenPolys;

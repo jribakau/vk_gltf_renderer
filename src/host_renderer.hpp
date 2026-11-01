@@ -68,13 +68,23 @@ public:
   // Decodes an image now, on the calling thread (a load or wear worker), for the next replace
   virtual void prefetchImage(const std::filesystem::path& diskPath, bool srgb) = 0;
   // Why a mesh of about `bytes` on the GPU can't be added, empty when it can (and then counted until
-  // it is resident). Application thread.
-  virtual std::string refuseGeometry(uint64_t bytes) = 0;
+  // it is resident). `keepTextureDetail`: for what can come in smaller instead, so textures count
+  // as coming down only as far as hardly shows. Application thread.
+  virtual std::string refuseGeometry(uint64_t bytes, bool keepTextureDetail = false) = 0;
+  // The GPU memory free beyond what is kept back, negative when that is in use too; none without a
+  // known budget. Application thread.
+  virtual std::optional<int64_t> sceneHeadroom() const = 0;
   // Max texture size: the largest long edge an image decoded from now on keeps; 0: no limit. Any thread.
   virtual void setMaxTextureExtent(uint32_t extent) = 0;
   // Where what the renderer has to tell the user goes, from the application thread (a texture lowered
   // to fit GPU memory); empty: nowhere
   virtual void setNoticeSink(std::function<void(const std::string&)> sink) = 0;
+  // Where the textures lowered to fit GPU memory are reported as they change, from the application
+  // thread: how many, and the long edge of the largest; empty: nowhere
+  virtual void setLoweredSink(std::function<void(uint32_t count, uint32_t largest)> sink) = 0;
+  // An export is running: textures don't follow GPU memory until it ends, unless it runs past the
+  // driver's budget (rs::MemoryWatch). Application thread.
+  virtual void holdTextures(bool held) = 0;
   // what is shown, where it is now (world space)
   virtual nvutils::Bbox visibleSceneBounds() = 0;
 

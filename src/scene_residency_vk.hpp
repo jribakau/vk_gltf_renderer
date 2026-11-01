@@ -293,7 +293,10 @@ public:
   // VulkanGpuBackend::runRetired
   void runRetired() { m_gpu.runRetired(); }
   // what lowering every texture would free (Residency::lowerableImageBytes)
-  uint64_t lowerableImageBytes() const { return m_residency.lowerableImageBytes(); }
+  uint64_t lowerableImageBytes(uint32_t leastExtent) const { return m_residency.lowerableImageBytes(leastExtent); }
+  // the textures following GPU memory (Residency::lowerImages, raiseImages)
+  void     lowerImages(uint64_t slack) { m_residency.lowerImages(slack); }
+  uint32_t raiseImages(const RetainedScene& scene, uint64_t room) { return m_residency.raiseImages(scene, room); }
   // the features the live shader variant has compiled in; none: every one (Residency::setShaderFeatures)
   void setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features) { m_residency.setShaderFeatures(features); }
   // the images taken from a host's prefetches since the last call

@@ -46,15 +46,25 @@ public:
   void               replaceHostScene() override { replaces++; }
   void               prefetchImage(const std::filesystem::path&, bool) override { prefetches++; }
   std::atomic<int>   prefetches{0};
-  std::string        refuseGeometry(uint64_t bytes) override
+  std::string        refuseGeometry(uint64_t bytes, bool keepTextureDetail = false) override
   {
     askedGeometry += bytes;
-    return geometryRefusal;
+    lastGeometry      = bytes;
+    lastKeptTextures  = keepTextureDetail;
+    return bytes > geometryLimit ? std::string("no room") : geometryRefusal;
   }
   std::string        geometryRefusal;  // what refuseGeometry answers
-  uint64_t           askedGeometry = 0;
+  uint64_t           geometryLimit = UINT64_MAX;  // past this it answers "no room"
+  uint64_t           askedGeometry = 0, lastGeometry = 0;
+  bool               lastKeptTextures = false;
   void               setMaxTextureExtent(uint32_t) override {}
   void               setNoticeSink(std::function<void(const std::string&)>) override {}
+  std::optional<int64_t> sceneHeadroom() const override { return headroom; }
+  std::optional<int64_t> headroom;  // none: no budget known
+  void               setLoweredSink(std::function<void(uint32_t, uint32_t)> sink) override { loweredSink = std::move(sink); }
+  std::function<void(uint32_t, uint32_t)> loweredSink;
+  void               holdTextures(bool held) override { texturesHeld = held; }
+  bool               texturesHeld = false;
   nvutils::Bbox      visibleSceneBounds() override
   {
     const auto b = m_scene.bounds();

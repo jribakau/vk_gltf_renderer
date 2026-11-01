@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <set>
@@ -25,6 +26,7 @@
 #include <figure/subdiv/catmark.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
+#include <figure/wardrobe/fit/fit.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
@@ -405,6 +407,119 @@ TEST(Wardrobe, AFiguresEmptyDialMovesTheWornItemThatHoldsItsDeltas)
   EXPECT_NEAR(waitForMove(*again, rest), 1.5f, 1e-3f);
 }
 
+// A hair loaded with a share of its strands covers what it did: each is wider by as much. A mesh a
+// prefetch built of all of them isn't the one this load wants, and waits for one that does.
+TEST(Wardrobe, AHairLoadedWithAShareOfItsStrandsIsAsWideAsItHasToBe)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  auto store = std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library}));
+  const std::string hair = "People/Test/Clothing/Box Fan Hair.duf";
+  fv::dson::prefetchScene(store, hair, 0).wait();
+  const auto ribbon = [](const fv::dson::LoadResult& r) -> const fv::mesh::BuiltMesh& {
+    for(const fv::Mesh& m : r.scene.meshes)
+      if(m.geo && m.geo->ribbon)
+        return *m.geo;
+    throw std::runtime_error("no strands");
+  };
+  const auto widest = [](const fv::mesh::BuiltMesh& g) { return *std::max_element(g.ribbon->half.begin(), g.ribbon->half.end()); };
+  fv::dson::LoadOptions less;
+  less.strandKeep                      = 0.5f;
+  const fv::dson::LoadResult thinned   = fv::dson::loadDson(*store, hair, less);
+  const fv::dson::LoadResult whole     = fv::dson::loadDson(*store, hair);
+  const fv::mesh::BuiltMesh& drawn     = ribbon(thinned);
+  const fv::mesh::BuiltMesh& allOfIt   = ribbon(whole);
+  EXPECT_EQ(drawn.fullIndex.size() * 2, allOfIt.fullIndex.size());  // one of its two strands
+  EXPECT_EQ(drawn.dsonVertexCount, allOfIt.dsonVertexCount);
+  EXPECT_NEAR(widest(drawn), widest(allOfIt) * 2, 1e-5f);
+}
+
+// A wearable goes down a step at a time, as far as each of its meshes has anywhere to go, and says what
+// it came in without only where it has that to lose.
+TEST(Wardrobe, AWearThatDoesNotFitGoesDownAStepAtATime)
+{
+  using fv::WearQuality;
+  const auto at = [](const WearQuality& q, int subdivision, float keep) { return q.subdivision == subdivision && q.strandKeep == keep; };
+  WearQuality q{2, 1.f};
+  q = fv::oneStepDown(q);
+  EXPECT_TRUE(at(q, 1, 0.5f));
+  q = fv::oneStepDown(q);
+  EXPECT_TRUE(at(q, 0, 0.25f));
+  q = fv::oneStepDown(q);
+  EXPECT_TRUE(at(q, 0, 0.25f));
+
+  const auto scene = [](bool ribbon, bool subd) {
+    fv::SceneGraph s;
+    fv::Mesh       m;
+    m.geo                     = std::make_shared<fv::mesh::BuiltMesh>();
+    m.geo->subdivisionSurface = subd;
+    if(ribbon)
+      m.geo->ribbon.emplace();
+    s.meshes.push_back(m);
+    return s;
+  };
+  const fv::SceneGraph hair = scene(true, false), garment = scene(false, true), prop = scene(false, false);
+  EXPECT_TRUE(fv::wearCanShrink(hair, {0, 1.f}));
+  EXPECT_TRUE(fv::wearCanShrink(hair, {0, 0.5f}));
+  EXPECT_FALSE(fv::wearCanShrink(hair, {2, 0.25f}));
+  EXPECT_TRUE(fv::wearCanShrink(garment, {1, 0.25f}));
+  EXPECT_FALSE(fv::wearCanShrink(garment, {0, 1.f}));
+  EXPECT_FALSE(fv::wearCanShrink(prop, {2, 1.f}));
+
+  const std::vector<int> only{0};
+  EXPECT_EQ(fv::wearShortfall(hair, only, {1, 0.5f}, 2), "half its strands");
+  EXPECT_EQ(fv::wearShortfall(hair, only, {0, 0.25f}, 2), "a quarter of its strands");
+  EXPECT_EQ(fv::wearShortfall(garment, only, {1, 0.5f}, 2), "Subdivision 1");
+  EXPECT_EQ(fv::wearShortfall(prop, only, {1, 0.5f}, 2), "");
+  EXPECT_EQ(fv::wearShortfall(garment, only, {2, 1.f}, 2), "");
+}
+
+// The store stays with the figure, and a morph a dial's formula asked for and isn't installed is no
+// business of the next item's: Dejla 9's head drives a morph of a pack that isn't there, and whatever
+// went on after it said it needed that file.
+TEST(Wardrobe, AnItemIsNotBlamedForAFileTheFigureAskedFor)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  fv::dson::LoadOptions       options;
+  options.subdivision = 1;
+  auto figure = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library})),
+                                 "People/Test/Box Figure.duf", options);
+  figure->settle();
+  EXPECT_THROW(figure->store().load("data/Test/Not Installed.dsf"), fv::dson::MissingFileError);
+  const std::string    shirt = "People/Test/Clothing/Box Shirt.duf";
+  const fv::WearResult worn  = figure->commitWear(figure->prepareWear(shirt, 1), shirt);
+  EXPECT_TRUE(worn.warnings.empty()) << worn.warnings.at(0);
+}
+
+// A character's own file setting a morph that isn't installed does come out wrong, and says so.
+TEST(FigureMorphs, ACharacterSettingAMorphThatIsNotInstalledSaysSo)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  const std::filesystem::path extra   = std::filesystem::temp_directory_path() / "fv_test_lost_dial";
+  std::filesystem::remove_all(extra);
+  std::filesystem::create_directories(extra / "People" / "Test");
+  std::ifstream  in(library / "People" / "Test" / "Box Figure.duf");
+  fv::dson::Json doc = fv::dson::Json::parse(in);
+  fv::dson::Json dial;
+  dial["id"]                       = "Gone";
+  dial["url"]                      = "/data/Test/Box%20Figure/Morphs/Test/Base/Gone.dsf#Gone";
+  dial["parent"]                   = "#BoxFigure";
+  dial["channel"]["id"]            = "value";
+  dial["channel"]["current_value"] = 1.0;
+  doc["scene"]["modifiers"].push_back(dial);
+  std::ofstream(extra / "People" / "Test" / "Lost Dial.duf") << doc.dump();
+
+  fv::dson::LoadOptions options;
+  options.subdivision = 1;
+  auto figure = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library, extra})),
+                                 "People/Test/Lost Dial.duf", options);
+  figure->settle();
+  const std::vector<std::string> warnings = figure->takeWarnings();
+  std::filesystem::remove_all(extra);
+  ASSERT_EQ(warnings.size(), 1u);
+  EXPECT_EQ(warnings[0],
+            "Box Figure needs 1 library file that isn't installed in the assets folder or the DAZ library: data/Test/Box Figure/Morphs/Test/Base/Gone.dsf.");
+}
+
 // A body morph projected onto a long item (a hair's strands, a gown at SubD) is worked a chunk at a
 // time side by side: the result is the one-thread loop's, bit for bit, through the refinement and
 // every UV split of a seam.
@@ -702,6 +817,24 @@ TEST(Fit, IdentifiesTheGenerationAnOutfitWasMadeFor)
   EXPECT_TRUE(sameRig(Generation::eG8, Generation::eG81));
   EXPECT_FALSE(sameRig(Generation::eG8, Generation::eG9));
   EXPECT_TRUE(sameTopology(Generation::eG3, Generation::eG81));
+}
+
+// Julia Hair has 15 strand bones to its 5 of the figure's. That isn't another figure's skeleton: it is
+// made for this rig. An item whose generation can't be told still has its bones to go by.
+TEST(Fit, AnItemForTheFiguresOwnRigIsMadeForIt)
+{
+  fv::SceneGraph                scene;
+  fv::dson::Rig                 rig;
+  fv::dson::LoadResult          wearable;
+  fv::dson::Item                item;
+  const fv::wardrobe::FitFigure g9{scene, rig, 0, "data/Daz 3D/Genesis 9/Base"};
+  const fv::wardrobe::FitFigure g81{scene, rig, 0, "data/DAZ 3D/Genesis 8/Female 8_1"};
+  EXPECT_TRUE(fv::wardrobe::madeForFigure(wearable, item, "People/Genesis 9/Hair/Toyen/Julia Hair/Julia Hair.duf", g9));
+  EXPECT_FALSE(fv::wardrobe::madeForFigure(wearable, item, "People/Genesis 8 Female/Hair/Some Hair.duf", g9));
+  EXPECT_FALSE(fv::wardrobe::madeForFigure(wearable, item, "People/Genesis/Hair/Santa Baby/Hair.duf", g9));
+  EXPECT_TRUE(fv::wardrobe::madeForFigure(wearable, item, "People/Genesis 8 Female/Hair/Some Hair.duf", g81));
+  item.conformTarget = "/data/Daz%203D/Genesis%209/Base/Genesis9.dsf";
+  EXPECT_TRUE(fv::wardrobe::madeForFigure(wearable, item, "Props/Some Hat.duf", g9));
 }
 
 TEST(Fit, ARigidPlanMovesABoneToTheLeadersJointAndTurnsItOntoItsLimb)

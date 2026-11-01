@@ -619,7 +619,8 @@ std::vector<DrivenMorph> drivenMorphs(Store& store, const std::string& file, con
         const auto k      = linearFactor(get(&f, "operations"), id);
         if(!target || !k || *k == 0 || (target->file == file && target->id == id))
           continue;
-        // a driven morph that isn't installed: the store records it and the loader reports it
+        // a driven morph that isn't installed is left out: a character's formulas can name a pack only
+        // its maker had (Dejla 9's head drives a Breastacular morph), and the figure doesn't need it
         try
         {
           for(DrivenMorph& d : drivenMorphs(store, target->file, target->id, weight * *k, depth + 1))

@@ -49,6 +49,22 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
 
 // What the figure wears: one wearable's nodes, which go on and come off together. Items that came
 // with the scene file are listed too, with no library path.
+// How much of its geometry a wearable is built with: all of it, until it doesn't fit GPU memory.
+struct WearQuality
+{
+  int   subdivision = 0;  // dson::LoadOptions::subdivision
+  float strandKeep  = 1;  // dson::LoadOptions::strandKeep
+};
+// Fewer than this and a hair's strands, as wide as they would have to be, read as cards
+constexpr float kLeastStrandKeep = 0.25f;
+// One step down: a subdivision level less and half the strands, as far as each goes.
+WearQuality oneStepDown(const WearQuality& quality);
+// Whether a step down from `quality` would make any of these meshes smaller.
+bool wearCanShrink(const SceneGraph& scene, const WearQuality& quality);
+// What `meshes` came in without at `quality`, where everything is at `subdivision`: "half its
+// strands and Subdivision 1". Empty when they have all of it.
+std::string wearShortfall(const SceneGraph& scene, const std::vector<int>& meshes, const WearQuality& quality, int subdivision);
+
 struct WornItem
 {
   int         id = 0;
@@ -63,6 +79,8 @@ struct WornItem
   std::set<std::string>                    nodeNames, sources;
   // the dials it brought: fit adjustments such as "Loosen Neck"
   std::vector<std::string> channels;
+  // what it came in without to fit GPU memory (wearShortfall); empty: all of it
+  std::string reduced;
   // body polygons a geograft hides while it is worn and shown
   std::vector<int32_t> hiddenPolys;
   // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
@@ -134,7 +152,8 @@ struct WearResult
 {
   std::vector<int> items;     // ids of what went on
   std::vector<int> replaced;  // ids taken off because these are the same garment
-  // share of the items' bones that found a figure bone: low means it was made for another figure
+  // share of the bones that found a figure bone, of the items not known to share the figure's rig: low
+  // means it was made for another figure
   double                   fit = 1;
   std::vector<std::string> missingBones, warnings;
   // how items made for another generation were refitted ("Genesis 8 outfit on Genesis 9, ...")
@@ -223,10 +242,11 @@ public:
   // when it is committed, so keys follow the order wears are put on, not the order they finish.
   // `strandsFlipped`, when given, measures a strand hair's directions (build::measureStrands with
   // that flag) beside the binding, so the host's measure after the material presets finds them done.
-  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision, const WearInputs& inputs,
+  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, const WearQuality& quality, const WearInputs& inputs,
                                             std::optional<bool> strandsFlipped = std::nullopt);
   // The same against the figure as it is now, on its owning thread.
-  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision) { return prepareWear(rel, subdivision, wearInputs()); }
+  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, const WearQuality& quality) { return prepareWear(rel, quality, wearInputs()); }
+  std::shared_ptr<PreparedWear> prepareWear(const std::string& rel, int subdivision) { return prepareWear(rel, WearQuality{subdivision}); }
   // Reads each surface again knowing what its mesh belongs to (mat::Context), once its load is in
   void placeLoadedSurfaces(const std::string& rel);
   // Merges a prepared wearable into the scene: nodes, skeleton, materials, morph followers. On the
@@ -237,6 +257,8 @@ public:
   // items, worn or not, aren't replaced; the caller takes the new copies of those off again.
   WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids = {},
                         const std::vector<std::string>& keys = {}, bool only = false);
+  // The worn items commitWear would replace, given the same `ids` and `only`: the same garment again.
+  std::vector<int> itemsReplacedBy(const PreparedWear& wear, const std::vector<int>& ids, bool only) const;
   // Takes an item off: its nodes leave the scene (the next build leaves them out), its skeleton
   // stops following, its meshes stop following the body. False for an unknown id.
   bool removeItem(int id);

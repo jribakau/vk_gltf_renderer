@@ -165,6 +165,8 @@ struct Figure::PreparedWear
   dson::LoadResult loaded;
   // per item of `loaded`: how it was refitted when it was made for another generation
   std::vector<std::optional<wardrobe::FitDetail>> fits;
+  // per item of `loaded`: known to be made for this figure's rig (wardrobe::madeForFigure)
+  std::vector<bool> ownRig;
   // per entry of loaded.parts: the surface binding of a conforming part
   std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>> bindings;
   std::string                                                  key;
@@ -250,7 +252,38 @@ Figure::WearInputs Figure::wearInputs() const
   return in;
 }
 
-std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, int subdivision, const WearInputs& inputs,
+WearQuality oneStepDown(const WearQuality& quality)
+{
+  return {std::max(quality.subdivision - 1, 0), std::max(quality.strandKeep / 2, kLeastStrandKeep)};
+}
+
+bool wearCanShrink(const SceneGraph& scene, const WearQuality& quality)
+{
+  for(const Mesh& m : scene.meshes)
+    if(m.geo && (m.geo->ribbon ? quality.strandKeep > kLeastStrandKeep : m.geo->subdivisionSurface && quality.subdivision > 0))
+      return true;
+  return false;
+}
+
+std::string wearShortfall(const SceneGraph& scene, const std::vector<int>& meshes, const WearQuality& quality, int subdivision)
+{
+  bool strands = false, smooth = false;
+  for(int i : meshes)
+    if(i >= 0 && i < int(scene.meshes.size()) && scene.meshes[size_t(i)].geo)
+    {
+      const mesh::BuiltMesh& geo = *scene.meshes[size_t(i)].geo;
+      strands                    = strands || geo.ribbon;
+      smooth                     = smooth || (!geo.ribbon && geo.subdivisionSurface);
+    }
+  std::string out;
+  if(strands && quality.strandKeep < 1)
+    out = quality.strandKeep > kLeastStrandKeep ? "half its strands" : "a quarter of its strands";
+  if(smooth && quality.subdivision < subdivision)
+    out += (out.empty() ? "Subdivision " : " and Subdivision ") + std::to_string(quality.subdivision);
+  return out;
+}
+
+std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, const WearQuality& quality, const WearInputs& inputs,
                                                           std::optional<bool> strandsFlipped)
 {
   auto out = std::make_shared<PreparedWear>();
@@ -258,7 +291,8 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   static std::atomic<int> s_prepares{0};
   out->key = "p" + std::to_string(++s_prepares);
   dson::LoadOptions options;
-  options.subdivision = subdivision;
+  options.subdivision = quality.subdivision;
+  options.strandKeep  = quality.strandKeep;
   const SceneGraph& scene = *inputs.scene;
   options.attach      = dson::AttachTarget{&scene, inputs.rig.get(), out->key};
   const std::vector<dson::TargetPtr>& bodyTargets = inputs.bodyTargets;
@@ -279,7 +313,10 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     const std::string& morphDir = inputs.morphDir;
     wardrobe::FitFigure figure{scene, *inputs.rig, bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
     for(const dson::Item& it : out->loaded.items)
+    {
       out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
+      out->ownRig.push_back(wardrobe::madeForFigure(out->loaded, it, rel, figure));
+    }
   }
   // A strand hair's directions, measured beside the binding: their weld runs on one thread while the
   // bind keeps the pool busy. Both only read the item's scene. The future waits in its destructor,
@@ -414,6 +451,20 @@ void Figure::placeLoadedSurfaces(const std::string& rel)
   placeSurfaces(loaded.scene, meshes);
 }
 
+std::vector<int> Figure::itemsReplacedBy(const PreparedWear& wear, const std::vector<int>& ids, bool only) const
+{
+  const dson::LoadResult& w = wear.loaded;
+  std::set<std::string>   sources;
+  for(size_t k = 0; k < w.items.size(); k++)
+    if(!only || (k < ids.size() && ids[k] > 0))
+      sources.insert(w.items[k].sources.begin(), w.items[k].sources.end());
+  std::vector<int> old;
+  for(const WornItem& i : items)
+    if(std::any_of(i.sources.begin(), i.sources.end(), [&](const std::string& s) { return sources.count(s) > 0; }))
+      old.push_back(i.id);
+  return old;
+}
+
 WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids,
                               const std::vector<std::string>& keys, bool only)
 {
@@ -424,15 +475,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   WearResult        result;
   result.warnings = w.warnings;
   // the same garment again replaces the worn one: the newer copy carries the file's fit settings
-  std::set<std::string> sources;
-  for(size_t k = 0; k < w.items.size(); k++)
-    if(!only || (k < ids.size() && ids[k] > 0))
-      sources.insert(w.items[k].sources.begin(), w.items[k].sources.end());
-  std::vector<int> old;
-  for(const WornItem& i : items)
-    if(std::any_of(i.sources.begin(), i.sources.end(), [&](const std::string& s) { return sources.count(s) > 0; }))
-      old.push_back(i.id);
-  for(int id : old)
+  for(int id : itemsReplacedBy(p, ids, only))
   {
     removeItem(id);
     result.replaced.push_back(id);
@@ -554,7 +597,8 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     return dson::MeshRef{};
   };
 
-  // ---- skeletons follow the figure's bones; the match is how well it was made for this figure
+  // ---- skeletons follow the figure's bones; the match says whether an item of no known generation was
+  // made for this figure. One known to share its rig has nothing to prove
   int matched = 0, total = 0;
   for(size_t k = 0; k < added.size(); k++)
     if(const WornItem* worn = item(added[k]))
@@ -571,6 +615,8 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
         if(pose)
         {
           const auto [m, t] = pose->addFollowers(loaded.rigs[size_t(r)], plan);
+          if(k < p.ownRig.size() && p.ownRig[k])
+            continue;
           matched += m;
           total += t;
         }

@@ -482,6 +482,7 @@ std::string fileStem(const std::string& rel);
 // and BLAS, from Polina 9, an outfit and strand hair at subdivision 1 and 2 (243 to 280 bytes a
 // triangle, 2026-10-30). Their textures aren't in it: those come down to fit as they arrive.
 uint64_t geometryBytes(const fv::SceneGraph& scene);
+uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes);
 uint64_t geometryBytes(const tinygltf::Model& model);
 
 // The registered parameters nvmcp can read and write: values, not triggers or custom parsers, and

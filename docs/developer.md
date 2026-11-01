@@ -445,6 +445,36 @@ guides follow that ray. Rays leaving the eye go straight, so the eye needs no me
 internal reflection to lose light to, and a lit iris is as bright as without it; the cost is that the
 cornea focuses no caustic. A GLB export leaves it out. It has no Inspector section.
 
+### A wear that doesn't fit GPU memory
+
+`GltfRenderer::refuseGeometry` weighs what a wear would add. A refusal is not the end while
+`fv::wearCanShrink` says there is less to build: the wear's worker prepares it again one
+`fv::oneStepDown` lower (a subdivision level less, half the strands, to a quarter) and commits again.
+`mesh::Lines::keep` is the share of a hair's strands drawn, chosen by a golden-ratio sequence so a
+smaller share's strands are some of a larger one's. They are dropped from the drawn ribbons only: the
+cage, and so the skin, morphs, binding and simulation, keep them all, and `loadDson` widens what is left
+by as much. The reduction lives on `WornItem::reduced` and in no file. What a wear replaces (the same
+garment again, `Figure::itemsReplacedBy`) counts as leaving when it is weighed, and an item taken off is
+fed out at once, so its memory is there for what comes next.
+
+### Textures following GPU memory
+
+The budget moves while a scene is open: another program takes memory and gives it back. Once a second
+`GltfRenderer::watchMemory` reads the headroom and `rs::MemoryWatch` says what to do, asked of the next
+sync (`Residency::lowerImages`, `raiseImages`; a sync with no scene change runs for them). The policy's
+times keep a wandering budget from turning into textures going up and down, and `kMargin` stays free
+after either, so the one doesn't call for the other. A change of texture restarts a still, so a still
+being refined and an export (`render.hold`) are left alone until memory passes the driver's budget.
+A raising that has begun carries on through the still it restarted, at `kRaiseBatch` bytes a second,
+because the frame waits for the decode. An image is decoded whole beside the one it replaces, so
+`raiseToFit` counts its whole chain. `MaterialRecord::favoured` (a figure's face, `mat::onTheFace`) makes
+a material's images count as a level smaller on the way down and on the way back, so they stay at least a
+level above the rest. A large image has its own allocation (`createSampledImage`, 4 MB and up): freed inside
+a block it could only be used by this process, and the driver's usage would hardly move. A render with no host
+doesn't watch, so that two of them compare; `isAutomatedRun()` can't say so, as the app's renderer is headless too.
+`scripts/texture-memory-check.py` runs all this on the GPU, which the unit tests never reach. The `memory` topic
+carries what is lowered; `src/lib/native/quality.ts` joins it with the wardrobe's for the viewport and the Export dialog.
+
 ### `FV_materials_hair`: a fibre on a ribbon
 
 OmniHair strand hair is drawn as flat ribbons. The path tracer shades those with a fibre BSDF
@@ -794,7 +824,8 @@ Four settings, none remembered:
   of what is resident (decoded again, the slots rewritten, the frame reset). It reads free room as the driver's usage less the
   allocator's free space inside its blocks, as `gpuAllocatedMB` in the frame profile shows. A scene that grew is fitted with
   nothing queued too. A load or wear is refused before it enters the scene (`GltfRenderer::refuseGeometry`) when its meshes,
-  at 300 bytes a triangle, won't fit even with every texture lowered.
+  at 300 bytes a triangle, won't fit even with every texture lowered. With a scene open it follows the budget both ways
+  (see "Textures following GPU memory").
 - `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
   TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
   parameters a host can set (fv_parameter_filter.hpp).

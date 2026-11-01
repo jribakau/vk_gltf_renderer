@@ -1063,6 +1063,8 @@ TEST(RetainedResidency, ASceneThatGrewPastItsBudgetLowersWhatIsThere)
   expectClean(scene, residency, gpu);
   // all but what a 256 keeps of a 1024: 1024 x 1024 x 4 x (1 - 1/16)
   EXPECT_EQ(residency.lowerableImageBytes(), 1024u * 1024u * 4u - 256u * 256u * 4u);
+  EXPECT_EQ(residency.lowerableImageBytes(512), 1024u * 1024u * 4u - 512u * 512u * 4u);
+  EXPECT_EQ(residency.lowerableImageBytes(2048), 0u);
 
   gpu.setImageHeadroom(-1);
   drawn(scene, "second", scene.addMesh(gridMesh(2, 0.f)), {shared});
@@ -1099,6 +1101,187 @@ TEST(RetainedResidency, ALoweredImageComesBackWhole)
   drain(gpu);
   expectClean(f.scene, residency, gpu, "after its retires: ");
   EXPECT_TRUE(residency.takeUserNotices().empty());
+}
+
+// Memory another program took: nothing in the scene changed, and nothing happens until the watch asks
+TEST(RetainedResidency, ASyncAskedToLowerDoesSoWithNothingChanged)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 256);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  EXPECT_EQ(residency.loweredImages(), Residency::LoweredImages{});
+
+  gpu.setImageHeadroom(-1);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(f.scene).changed);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  EXPECT_EQ(residency.loweredImages(), (Residency::LoweredImages{1, 512}));
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "after its retires: ");
+
+  // asked once: the next sync has nothing to do, whatever the headroom says
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+
+  // with slack, what stays free counts as wanted: the 512's top level is more than the slack
+  gpu.setImageHeadroom(0);
+  residency.lowerImages(1);
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(f.scene).changed);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 256u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, 256u);
+  EXPECT_EQ(residency.loweredImages(), (Residency::LoweredImages{1, 256}));
+}
+
+// Memory given back: what was lowered comes up as far as the room goes, in place, and the user hears
+// when all of it is back; the same again told anew
+TEST(RetainedResidency, LoweredImagesComeBackAsFarAsThereIsRoom)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 16);
+  FakeGpuBackend gpu(2);
+  gpu.setImageHeadroom(chainBytes(256) + chainBytes(16));
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  EXPECT_EQ(residency.loweredImages(), (Residency::LoweredImages{1, 256}));
+  EXPECT_EQ(residency.takeUserNotices().size(), 1u);
+  const ImageHandle low = residency.image(f.first, true);
+
+  gpu.setImageHeadroom(1ull << 30);
+  gpu.beginFrame();
+  EXPECT_EQ(residency.raiseImages(f.scene, chainBytes(512) - 1), 0u);  // decoded whole, beside the one it replaces
+  residency.sync(f.scene);
+  EXPECT_EQ(residency.image(f.first, true), low);
+
+  gpu.beginFrame();
+  EXPECT_EQ(residency.raiseImages(f.scene, chainBytes(512)), 1u);
+  EXPECT_TRUE(residency.sync(f.scene).changed);
+  EXPECT_NE(residency.image(f.first, true), low);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  EXPECT_EQ(residency.loweredImages(), (Residency::LoweredImages{1, 512}));
+  EXPECT_TRUE(residency.takeUserNotices().empty());
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "after its retires: ");
+  EXPECT_FALSE(gpu.hasImage(low));
+
+  gpu.beginFrame();
+  EXPECT_EQ(residency.raiseImages(f.scene, 1ull << 30), 1u);
+  EXPECT_TRUE(residency.sync(f.scene).changed);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+  EXPECT_EQ(residency.loweredImages(), Residency::LoweredImages{});
+  EXPECT_EQ(residency.takeUserNotices().size(), 1u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "whole again: ");
+  EXPECT_EQ(residency.raiseImages(f.scene, 1ull << 30), 0u);
+
+  // short again: told again
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(residency.takeUserNotices().size(), 1u);
+}
+
+// Max texture size is as far as an image comes back
+TEST(RetainedResidency, ARaisedImageStopsAtMaxTextureSize)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 16);
+  FakeGpuBackend gpu(2);
+  gpu.setImageHeadroom(chainBytes(256) + chainBytes(16));
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  gpu.setImageHeadroom(1ull << 30);
+  gpu.setMaxImageExtent(512);
+  gpu.beginFrame();
+  EXPECT_EQ(residency.raiseImages(f.scene, 1ull << 30), 1u);
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  EXPECT_EQ(residency.loweredImages(), Residency::LoweredImages{});
+}
+
+// Two textures of one file are one image: counted once, and both come back
+TEST(RetainedResidency, ASharedFileIsLoweredAndRaisedAsOneImage)
+{
+  RetainedScene   scene;
+  const TextureId a = scene.addTexture(chainTexture("chain_same", 1024));
+  const TextureId b = scene.addTexture(chainTexture("chain_same", 1024));
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({a, {}});
+  table->push_back({b, {}});
+  drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {coloured(scene, table, 0), coloured(scene, table, 1)});
+  FakeGpuBackend gpu(2);
+  gpu.setImageHeadroom(chainBytes(512));
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.loweredImages(), (Residency::LoweredImages{1, 512}));
+
+  gpu.setImageHeadroom(1ull << 30);
+  gpu.beginFrame();
+  EXPECT_EQ(residency.raiseImages(scene, 1ull << 30), 1u);
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "raised: ");
+  EXPECT_EQ(gpu.imageInfo(residency.image(a, true)).width, 1024u);
+  EXPECT_EQ(residency.image(a, true), residency.image(b, true));
+  EXPECT_EQ(residency.loweredImages(), Residency::LoweredImages{});
+}
+
+// A favoured material's images come down after the others' and go back before them; a tie between
+// images alike falls to the earlier on the way down, so the face is listed first here
+TEST(RetainedResidency, AFavouredMaterialsImagesStayAboveTheOthers)
+{
+  RetainedScene   scene;
+  const TextureId face = scene.addTexture(chainTexture("chain_face", 1024));
+  const TextureId body = scene.addTexture(chainTexture("chain_body", 1024));
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({face, {}});
+  table->push_back({body, {}});
+  MaterialRecord favoured;
+  favoured.payload.name               = "face";
+  favoured.payload.baseColorMap.index = 0;
+  favoured.textures                   = table;
+  favoured.favoured                   = true;
+  drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {scene.addMaterial(std::move(favoured)), coloured(scene, table, 1)});
+
+  FakeGpuBackend gpu(2);
+  // short by a top level of 1024: the body's goes, and the face stays
+  gpu.setImageHeadroom(chainBytes(1024) + chainBytes(512));
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  const auto widths = [&] { return std::pair{gpu.imageInfo(residency.image(face, true)).width, gpu.imageInfo(residency.image(body, true)).width}; };
+  residency.replace(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(widths(), (std::pair{1024u, 512u}));
+
+  // the body goes on down before the face follows it, so the face is always a level or more above
+  gpu.setImageHeadroom(-int64_t(512 * 512 * 4));
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(widths(), (std::pair{1024u, 256u}));
+  drain(gpu);
+  gpu.setImageHeadroom(-int64_t(512 * 512 * 4));
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(widths(), (std::pair{512u, 256u}));
+  drain(gpu);
+
+  // on the way back the face is first
+  gpu.setImageHeadroom(1ull << 30);
+  gpu.beginFrame();
+  EXPECT_EQ(residency.raiseImages(scene, chainBytes(1024)), 1u);
+  residency.sync(scene);
+  EXPECT_EQ(widths(), (std::pair{1024u, 256u}));
+  drain(gpu);
+  expectClean(scene, residency, gpu, "after its retires: ");
 }
 
 // GPU memory that can't hold an image leaves the default one, with a notice, not an exit

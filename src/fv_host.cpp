@@ -48,6 +48,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
 #endif
   renderer->setMaxTextureExtent(uint32_t(std::max(s.settings.maxTextureSize, 0)));
   renderer->setNoticeSink([impl](const std::string& text) { impl->notice(text); });
+  renderer->setLoweredSink([impl](uint32_t count, uint32_t largest) {
+    impl->protocol->events().snapshot("memory", {{"lowered", count}, {"largest", largest}});
+  });
 
   cmds.add("settings.apply", [impl](const Json& args) {
     std::lock_guard lock(impl->settingsMutex);
@@ -325,9 +328,20 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return impl->onApp([impl] {
       const auto       b    = impl->renderer->deviceMemoryBudget();
       const VkExtent2D size = impl->renderer->renderSize();
-      return Json{{"known", b.known},   {"budgetBytes", b.budget},
+      Json answer{{"known", b.known},   {"budgetBytes", b.budget},
                   {"usageBytes", b.usage}, {"bytesPerPixel", impl->renderer->frameBytesPerPixel()},
                   {"width", size.width},   {"height", size.height}};
+      if(const std::optional<int64_t> headroom = impl->renderer->sceneHeadroom())
+        answer["headroomBytes"] = *headroom;
+      return answer;
+    });
+  });
+  // An export's whole run: textures stay as they are, so its frames match and its still isn't restarted
+  cmds.add("render.hold", [impl](const Json& args) {
+    const bool on = args.value("on", false);
+    return impl->onApp([impl, on] {
+      impl->renderer->holdTextures(on);
+      return Json{{"on", on}};
     });
   });
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("lighting.set", args); }); });
@@ -463,6 +477,7 @@ void FvHost::onDetach()
 {
   Impl& s = *m_impl;
   s.renderer->setNoticeSink({});
+  s.renderer->setLoweredSink({});
   s.stopAccepting();
   s.protocol->setStopHook({});
   s.loadGeneration++;  // loads still running drop their result

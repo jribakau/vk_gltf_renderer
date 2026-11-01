@@ -228,7 +228,10 @@ void FigureFeed::syncMaterials(const SceneGraph& figure, const build::Drawing& d
   {
     rs::MaterialId& id = m_materials[mi];
     if(id.isNone())
-      id = m_scene.addMaterial({.owner = {m_options.prop, int32_t(mi)}, .payload = std::move(payloads[mi]), .textures = m_table});
+      id = m_scene.addMaterial({.owner    = {m_options.prop, int32_t(mi)},
+                                .payload  = std::move(payloads[mi]),
+                                .textures = m_table,
+                                .favoured = mat::onTheFace(figure.materials[mi].surface)});
     else if(const rs::MaterialRecord* r = m_scene.material(id); r && !(r->payload == payloads[mi]))
     {
       if(missed[mi] && losesMap(r->payload, payloads[mi]))

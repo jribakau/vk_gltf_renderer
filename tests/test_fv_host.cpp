@@ -146,6 +146,41 @@ TEST(FvHost, RenderStatusCountsTheStillsSamples)
   EXPECT_EQ(status.value("maxSamples", -1), 256) << status.dump();
 }
 
+// An export holds the textures where they are, and what is lowered reaches the app as a topic
+TEST(FvHost, TexturesFollowingMemoryReachTheApp)
+{
+  HostRig rig;
+  EXPECT_TRUE(rig.cmd("render.hold", {{"on", true}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.texturesHeld);
+  EXPECT_TRUE(rig.cmd("render.hold", {{"on", false}}).value("ok", false));
+  EXPECT_FALSE(rig.renderer.texturesHeld);
+
+  ASSERT_TRUE(rig.renderer.loweredSink);
+  rig.renderer.loweredSink(12, 1024);
+  const Json memory = rig.topic("memory");
+  EXPECT_EQ(memory.value("lowered", 0), 12) << memory.dump();
+  EXPECT_EQ(memory.value("largest", 0), 1024) << memory.dump();
+}
+
+// What is taken off leaves the renderer's scene at once, so its GPU memory is there for what comes next
+TEST(FvHost, AnItemTakenOffLeavesTheScene)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  const size_t      bare = rig.renderer.hostScene().drawItems().size();
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const size_t dressed = rig.renderer.hostScene().drawItems().size();
+  ASSERT_GT(dressed, bare);
+
+  const Json worn = rig.topic("wardrobe/" + id).value("items", Json::object());
+  ASSERT_EQ(worn.size(), 1u);
+  ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", worn.begin().key()}}).value("ok", false));
+  EXPECT_EQ(rig.renderer.hostScene().drawItems().size(), bare);
+}
+
 // The view draws a scene before anything is in it, its sky and ground, not the renderer's flat clear
 TEST(FvHost, StartsWithAnEmptySceneResident)
 {
@@ -711,6 +746,74 @@ TEST(FvHostWardrobe, HairLeftStandingOutFallsWhenItGoesOnAndHangingHairStaysAsIt
   rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Fan Hair.duf"}});
   ASSERT_TRUE(rig.settle());
   EXPECT_TRUE(rig.topic("dforce/" + id).value("enabled", false));
+}
+
+// What GPU memory can't take as it is comes in with less of its geometry, says so, and is refused only
+// when it has nothing left to give. Put on with room again it has all of it.
+TEST(FvHostWardrobe, AnItemThatDoesNotFitComesInSmaller)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id    = figureId(rig.topic("scene"));
+  const auto        items = [&] { return rig.topic("wardrobe/" + id).value("items", Json::object()); };
+  const auto        wear  = [&](const char* rel) {
+    rig.cmd("wear", {{"prop", id}, {"rel", rel}});
+    ASSERT_TRUE(rig.settle());
+  };
+  const auto takeOff = [&] {
+    const Json worn = items();
+    for(const auto& [item, value] : worn.items())
+      ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", item}}).value("ok", false));
+    ASSERT_TRUE(rig.settle());
+  };
+  const char* hair  = "People/Test/Clothing/Box Fan Hair.duf";
+  const char* shirt = "People/Test/Clothing/Box Shirt.duf";
+
+  wear(hair);
+  ASSERT_EQ(items().size(), 1u);
+  EXPECT_EQ(items().begin().value().value("reduced", "?"), "");
+  EXPECT_TRUE(rig.renderer.lastKeptTextures);  // a first try keeps its textures: there is further to go
+  const uint64_t hairBytes = rig.renderer.lastGeometry;
+  takeOff();
+
+  rig.renderer.geometryLimit = hairBytes * 3 / 4;
+  wear(hair);
+  ASSERT_EQ(items().size(), 1u);
+  EXPECT_EQ(items().begin().value().value("reduced", ""), "half its strands");
+  EXPECT_EQ(rig.renderer.lastGeometry, hairBytes / 2);
+  EXPECT_NE(rig.topic("notices").dump().find("Box Fan Hair came in with half its strands, to fit GPU memory"), std::string::npos) << rig.topic("notices").dump();
+
+  // on again, what it replaces leaves as it comes: all of it needs room only for the difference
+  wear(hair);
+  ASSERT_EQ(items().size(), 1u);
+  EXPECT_EQ(items().begin().value().value("reduced", "?"), "");
+  EXPECT_EQ(rig.renderer.lastGeometry, hairBytes - hairBytes / 2);
+  takeOff();
+
+  // a garment comes down a level, from the host's subdivision 1
+  rig.renderer.geometryLimit = UINT64_MAX;
+  wear(shirt);
+  const uint64_t shirtBytes = rig.renderer.lastGeometry;
+  takeOff();
+  rig.renderer.geometryLimit = shirtBytes / 2;
+  wear(shirt);
+  ASSERT_EQ(items().size(), 1u);
+  EXPECT_EQ(items().begin().value().value("reduced", ""), "Subdivision 0");
+  EXPECT_EQ(rig.renderer.lastGeometry, shirtBytes / 4);
+  takeOff();
+
+  // nothing small enough: the last try counts the textures all the way down, and then it is refused
+  rig.renderer.geometryLimit = 1;
+  wear(hair);
+  EXPECT_TRUE(items().empty());
+  EXPECT_FALSE(rig.renderer.lastKeptTextures);
+  EXPECT_NE(rig.topic("notices").dump().find("Box Fan Hair wasn't added: no room"), std::string::npos) << rig.topic("notices").dump();
+
+  rig.renderer.geometryLimit = UINT64_MAX;
+  wear(hair);
+  ASSERT_EQ(items().size(), 1u);
+  EXPECT_EQ(items().begin().value().value("reduced", "?"), "");
 }
 
 // A hair's Volume: published for the slider, one step of undo, and kept by a scene file only once moved.

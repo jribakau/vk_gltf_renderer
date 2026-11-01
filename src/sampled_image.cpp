@@ -170,8 +170,17 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
   VkImageViewCreateInfo imageViewCreateInfo = DEFAULT_VkImageViewCreateInfo;
   imageViewCreateInfo.components            = componentMapping;
 
+  // A large image has memory of its own, so what lowering it frees goes back to the system at once:
+  // freed inside a block it could only be used by this process, whatever else wants the GPU
+  constexpr size_t kOwnMemoryBytes = 4 << 20;
+  size_t           bytes           = 0;
+  for(const std::vector<char>& mip : mipData)
+    bytes += mip.size();
+  const VmaAllocationCreateInfo allocation{.flags = bytes >= kOwnMemoryBytes ? VmaAllocationCreateFlags(VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) : VmaAllocationCreateFlags(0),
+                                           .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+
   nvvk::Image resultImage;
-  if(const VkResult result = alloc.createImage(resultImage, imageCreateInfo, imageViewCreateInfo); result != VK_SUCCESS)
+  if(const VkResult result = alloc.createImage(resultImage, imageCreateInfo, imageViewCreateInfo, allocation); result != VK_SUCCESS)
   {
     LOGW("Image '%s' (%ux%u): no GPU memory for it (VkResult %d); using the default image.\n", name.c_str(), imgSize.width,
          imgSize.height, int(result));

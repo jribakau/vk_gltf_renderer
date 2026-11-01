@@ -297,14 +297,7 @@ std::shared_ptr<const Doc> Store::fetch(const std::string& file)
 {
   const auto path = m_library->find(file);
   if(!path)
-  {
-    {
-      std::lock_guard lock(m_mutex);
-      if(std::find(m_missing.begin(), m_missing.end(), file) == m_missing.end())
-        m_missing.push_back(file);
-    }
     throw MissingFileError(file);
-  }
   std::error_code ec;
   const uintmax_t onDisk = std::filesystem::file_size(*path, ec);
   const uintmax_t size   = ec ? 0 : textSize(*path, onDisk);
@@ -473,12 +466,6 @@ std::shared_ptr<void> Store::attachment(const std::function<std::shared_ptr<void
   if(!m_attachment)
     m_attachment = make();
   return m_attachment;
-}
-
-std::vector<std::string> Store::missing() const
-{
-  std::lock_guard lock(m_mutex);
-  return m_missing;
 }
 
 void Store::clearShared()

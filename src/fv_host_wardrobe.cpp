@@ -43,6 +43,7 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
                                           {"collision", !w.collision.empty()},
                                           {"tight", w.tight},
                                           {"skinHidden", w.tightPolys.size()},
+                                          {"reduced", w.reduced},
                                           {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}, {"loosest", cloth.loosest}, {"strands", cloth.strands}, {"volume", cloth.volume}}}};
     // its scene meshes, as the materials topic's items list theirs: which surfaces are this item's
     items["i:" + std::to_string(w.id)]["meshes"] = w.meshes;
@@ -226,11 +227,15 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       std::vector<fv::build::TextureRequest>                                  uncooked;  // shown with their fallbacks
       double                                                                  msPrep = 0, msStrands = 0, msWorker = 0;
       std::string                                                             error;
+      // how much of its geometry it is built with: less each time GPU memory refuses it
+      fv::WearQuality                                                         quality;
       // the Iray preset it took as it went on (WearRequest::iray), and its document
       std::string                                autoColor;
       std::shared_ptr<const fv::dson::Doc>       autoColorDoc;
     };
     std::vector<Slot> slots(todo.size());
+    for(Slot& slot : slots)
+      slot.quality.subdivision = s.subdivision;
     auto              prepare = [&](size_t i) {
       const WearRequest& request = *todo[i];
       Slot&              slot    = slots[i];
@@ -241,7 +246,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           return;
         job(jobId, {{"label", utf8Of(pathOf(request.rel).stem()) + ": loading"}, {"state", "running"}});
         const auto tPrep = Clock::now();
-        slot.prepared    = target->fig->prepareWear(request.rel, s.subdivision, *inputs, target->texturesFlipped);
+        slot.prepared    = target->fig->prepareWear(request.rel, slot.quality, *inputs, target->texturesFlipped);
         slot.msPrep      = msSince(tPrep);
         // the material presets that go with it, applied to the wearable before its textures are looked up
         fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*slot.prepared);
@@ -330,140 +335,176 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
       Slot&              slot    = slots[i];
       if(!accepting)
         return;
-      if(!slot.prepared)
+      // until it goes on: one GPU memory refuses is prepared again with less of its geometry
+      while(true)
       {
-        if(!slot.error.empty())
+        if(!slot.prepared)
         {
-          const std::string problem = utf8Of(pathOf(request.rel).stem()) + ": " + slot.error;
-          notice(problem, "error");
-          if(looks.problems)
-            post([problems = looks.problems, problem] { problems->push_back(problem); });
-        }
-        continue;
-      }
-      auto done = std::make_shared<std::promise<bool>>();
-      auto ok   = done->get_future();
-      post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, keys = request.keys, only = request.only, step = request.step, label,
-            images = std::move(slot.images), uncooked = std::move(slot.uncooked), done, autoColor = slot.autoColor,
-            autoColorDoc = slot.autoColorDoc, problems = looks.problems]() mutable {
-        if(!inScene(target))
-        {
-          done->set_value(false);
-          return;
-        }
-        if(const std::string refused = renderer->refuseGeometry(geometryBytes(fv::Figure::preparedScene(*prepared))); !refused.empty())
-        {
-          const std::string problem = utf8Of(pathOf(rel).stem()) + " wasn't added: " + refused;
-          notice(problem, "error");
-          if(problems)
-            problems->push_back(problem);
-          done->set_value(false);
-          return;
-        }
-        try
-        {
-          // what it may replace (the same garment again), as it was, for the step's undo
-          std::map<int, Json> had;
-          if(step)
-            for(const fv::WornItem& w : target->fig->items)
-              had[w.id] = itemRecord(*target, w);
-          fv::WearResult r = target->fig->commitWear(prepared, rel, ids, keys, only);
-          if(only)
+          if(!slot.error.empty())
           {
-            // one item of the file put back: the others are worn already, or were not
-            std::vector<int> kept;
-            for(int id : r.items)
-              if(std::find(ids.begin(), ids.end(), id) != ids.end())
-                kept.push_back(id);
-              else
-                target->fig->removeItem(id);
-            r.items = std::move(kept);
+            const std::string problem = utf8Of(pathOf(request.rel).stem()) + ": " + slot.error;
+            notice(problem, "error");
+            if(looks.problems)
+              post([problems = looks.problems, problem] { problems->push_back(problem); });
           }
-          // hair left for a simulation to bring down (strandsUnsettled) comes down as it goes on,
-          // though the figure's dForce is off until asked for; a scene file says for itself
-          if(step && target->dforce && !target->dforce->enabled() && target->fig->fallsByItself(r.items))
+          break;
+        }
+        auto done  = std::make_shared<std::promise<bool>>();
+        auto ok    = done->get_future();
+        auto again = std::make_shared<bool>(false);
+        post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, keys = request.keys, only = request.only, step = request.step, label,
+              images = std::move(slot.images), uncooked = std::move(slot.uncooked), done, autoColor = slot.autoColor,
+              autoColorDoc = slot.autoColorDoc, problems = looks.problems, quality = slot.quality, subdivision = s.subdivision, again]() mutable {
+          if(!inScene(target))
           {
-            target->dforce->setEnabled(true);
-            publishDforce(*target, true);
+            done->set_value(false);
+            return;
           }
-          if(step && !r.items.empty())
+          const fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
+          const bool            smaller       = fv::wearCanShrink(preparedScene, quality);
+          // the same garment again: what it replaces leaves as it comes
+          uint64_t leaving = 0;
+          for(int id : target->fig->itemsReplacedBy(*prepared, ids, only))
+            if(const fv::WornItem* w = wornItem(*target->fig, id))
+              leaving += geometryBytes(target->fig->loaded.scene, w->meshes);
+          const uint64_t bytes = geometryBytes(preparedScene);
+          if(const std::string refused = renderer->refuseGeometry(bytes - std::min(bytes, leaving), smaller); !refused.empty())
           {
-            Json        undo = Json::array(), redo = Json::array();
-            std::string what;
-            for(int id : r.items)
-              if(const fv::WornItem* w = wornItem(*target->fig, id))
-              {
-                undo.push_back({{"cmd", "wardrobe.remove"}, {"args", {{"prop", target->id}, {"item", id}}}});
-                redo.push_back({{"cmd", "wardrobe.restore"}, {"args", {{"prop", target->id}, {"item", id}, {"record", itemRecord(*target, *w)}}}});
-                if(what.empty())
-                  what = w->label.empty() ? utf8Of(pathOf(rel).stem()) : w->label;
-              }
-            for(int id : r.replaced)
-              if(had.count(id))
-                undo.push_back({{"cmd", "wardrobe.restore"}, {"args", {{"prop", target->id}, {"item", id}, {"record", had[id]}}}});
-            journal.record({.redo = redo, .undo = undo, .label = "Wear " + what, .at = std::chrono::steady_clock::now()});
-            publishHistory();
+            if(smaller)
+            {
+              *again = true;
+              done->set_value(false);
+              return;
+            }
+            const std::string problem = utf8Of(pathOf(rel).stem()) + " wasn't added: " + refused;
+            notice(problem, "error");
+            if(problems)
+              problems->push_back(problem);
+            done->set_value(false);
+            return;
           }
-          for(auto& [key, image] : images)
-            target->images.insert_or_assign(key, std::move(image));
-          if(!uncooked.empty())
-            cookInPlace(target, std::move(uncooked));
-          // the Iray preset it took is its colour: undo, a scene file and "own" treat it as one
-          if(!autoColor.empty() && autoColorDoc)
+          try
           {
-            const fv::SceneGraph& scene   = target->fig->loaded.scene;
-            const std::set<int>   targets = fv::dson::materialPresetTargets(autoColorDoc->json, scene);
-            for(int id : r.items)
+            // what it may replace (the same garment again), as it was, for the step's undo
+            std::map<int, Json> had;
+            if(step)
               for(const fv::WornItem& w : target->fig->items)
+                had[w.id] = itemRecord(*target, w);
+            fv::WearResult r = target->fig->commitWear(prepared, rel, ids, keys, only);
+            if(only)
+            {
+              // one item of the file put back: the others are worn already, or were not
+              std::vector<int> kept;
+              for(int id : r.items)
+                if(std::find(ids.begin(), ids.end(), id) != ids.end())
+                  kept.push_back(id);
+                else
+                  target->fig->removeItem(id);
+              r.items = std::move(kept);
+            }
+            std::string without;
+            for(int id : r.items)
+              for(fv::WornItem& w : target->fig->items)
                 if(w.id == id)
                 {
-                  std::set<int> owned;
-                  for(int m : w.meshes)
-                    if(m >= 0 && m < int(scene.meshes.size()))
-                      for(int mi : scene.meshes[size_t(m)].materials)
-                        if(targets.count(mi))
-                          owned.insert(mi);
-                  if(!owned.empty())
-                    target->colors[id] = {autoColor, owned, true};
+                  w.reduced = fv::wearShortfall(target->fig->loaded.scene, w.meshes, quality, subdivision);
+                  if(without.empty())
+                    without = w.reduced;
                 }
-            publishWardrobe(*target);
-            notice(utf8Of(pathOf(rel).stem()) + " is a 3Delight item: it took its installed Iray material, " + utf8Of(pathOf(autoColor).stem()) + ".", "info");
+            if(!without.empty())
+              notice(utf8Of(pathOf(rel).stem()) + " came in with " + without + ", to fit GPU memory. Free some and put it on again for all of it.");
+            // hair left for a simulation to bring down (strandsUnsettled) comes down as it goes on,
+            // though the figure's dForce is off until asked for; a scene file says for itself
+            if(step && target->dforce && !target->dforce->enabled() && target->fig->fallsByItself(r.items))
+            {
+              target->dforce->setEnabled(true);
+              publishDforce(*target, true);
+            }
+            if(step && !r.items.empty())
+            {
+              Json        undo = Json::array(), redo = Json::array();
+              std::string what;
+              for(int id : r.items)
+                if(const fv::WornItem* w = wornItem(*target->fig, id))
+                {
+                  undo.push_back({{"cmd", "wardrobe.remove"}, {"args", {{"prop", target->id}, {"item", id}}}});
+                  redo.push_back({{"cmd", "wardrobe.restore"}, {"args", {{"prop", target->id}, {"item", id}, {"record", itemRecord(*target, *w)}}}});
+                  if(what.empty())
+                    what = w->label.empty() ? utf8Of(pathOf(rel).stem()) : w->label;
+                }
+              for(int id : r.replaced)
+                if(had.count(id))
+                  undo.push_back({{"cmd", "wardrobe.restore"}, {"args", {{"prop", target->id}, {"item", id}, {"record", had[id]}}}});
+              journal.record({.redo = redo, .undo = undo, .label = "Wear " + what, .at = std::chrono::steady_clock::now()});
+              publishHistory();
+            }
+            for(auto& [key, image] : images)
+              target->images.insert_or_assign(key, std::move(image));
+            if(!uncooked.empty())
+              cookInPlace(target, std::move(uncooked));
+            // the Iray preset it took is its colour: undo, a scene file and "own" treat it as one
+            if(!autoColor.empty() && autoColorDoc)
+            {
+              const fv::SceneGraph& scene   = target->fig->loaded.scene;
+              const std::set<int>   targets = fv::dson::materialPresetTargets(autoColorDoc->json, scene);
+              for(int id : r.items)
+                for(const fv::WornItem& w : target->fig->items)
+                  if(w.id == id)
+                  {
+                    std::set<int> owned;
+                    for(int m : w.meshes)
+                      if(m >= 0 && m < int(scene.meshes.size()))
+                        for(int mi : scene.meshes[size_t(m)].materials)
+                          if(targets.count(mi))
+                            owned.insert(mi);
+                    if(!owned.empty())
+                      target->colors[id] = {autoColor, owned, true};
+                  }
+              publishWardrobe(*target);
+              notice(utf8Of(pathOf(rel).stem()) + " is a 3Delight item: it took its installed Iray material, " + utf8Of(pathOf(autoColor).stem()) + ".", "info");
+            }
+            for(const std::string& w : r.warnings)
+              notice(w);
+            for(const std::string& n : r.notes)
+              notice(n, "info");
+            if(!r.missingBones.empty())
+              notice(utf8Of(pathOf(rel).stem()) + ": this figure has no " + r.missingBones.front()
+                     + (r.missingBones.size() > 1 ? " and " + std::to_string(r.missingBones.size() - 1) + " other bones" : "") + " to hang it from.");
+            if(r.fit < 0.5)
+              notice(utf8Of(pathOf(rel).stem())
+                     + ": most of its bones found no match on this figure, so it was probably made for another figure and will not follow the pose.");
+            done->set_value(true);
           }
-          for(const std::string& w : r.warnings)
-            notice(w);
-          for(const std::string& n : r.notes)
-            notice(n, "info");
-          if(!r.missingBones.empty())
-            notice(utf8Of(pathOf(rel).stem()) + ": this figure has no " + r.missingBones.front()
-                   + (r.missingBones.size() > 1 ? " and " + std::to_string(r.missingBones.size() - 1) + " other bones" : "") + " to hang it from.");
-          if(r.fit < 0.5)
-            notice(utf8Of(pathOf(rel).stem())
-                   + ": most of its bones found no match on this figure, so it was probably made for another figure and will not follow the pose.");
-          done->set_value(true);
-        }
-        catch(const std::exception& e)
+          catch(const std::exception& e)
+          {
+            notice(e.what(), "error");
+            done->set_value(false);
+          }
+        });
+        // the application thread merges it; a renderer that is closing never will
+        const auto tCommit = Clock::now();
         {
-          notice(e.what(), "error");
-          done->set_value(false);
+          fv::timing::Scope timeCommit("commit (render thread)");
+          while(ok.wait_for(100ms) != std::future_status::ready)
+            if(!accepting)
+              return;
         }
-      });
-      // the application thread merges it; a renderer that is closing never will
-      const auto tCommit = Clock::now();
-      {
-        fv::timing::Scope timeCommit("commit (render thread)");
-        while(ok.wait_for(100ms) != std::future_status::ready)
-          if(!accepting)
-            return;
-      }
-      any = ok.get() || any;
-      if(fv::timing::enabled())
-      {
-        const double msCommit = msSince(tCommit);
-        char         buf[256];
-        std::snprintf(buf, sizeof buf, "wear summary: worker %.0f ms (prepare %.0f, strands %.0f), render thread %.0f ms (wearBase %.0f, commit %.0f)",
-                      slot.msWorker, slot.msPrep, slot.msStrands, msBase + msCommit, msBase, msCommit);
-        fv::timing::line(buf);
-        fv::timing::report("wear " + utf8Of(pathOf(request.rel).stem()), msSince(tBatch));
+        any = ok.get() || any;
+        if(fv::timing::enabled())
+        {
+          const double msCommit = msSince(tCommit);
+          char         buf[256];
+          std::snprintf(buf, sizeof buf, "wear summary: worker %.0f ms (prepare %.0f, strands %.0f), render thread %.0f ms (wearBase %.0f, commit %.0f)",
+                        slot.msWorker, slot.msPrep, slot.msStrands, msBase + msCommit, msBase, msCommit);
+          fv::timing::line(buf);
+          fv::timing::report("wear " + utf8Of(pathOf(request.rel).stem()), msSince(tBatch));
+        }
+        if(!*again)
+          break;
+        const fv::WearQuality lower = fv::oneStepDown(slot.quality);
+        slot                        = Slot{};
+        slot.quality                = lower;
+        prepare(i);
       }
     }
     // surfaces no worn item had; those of the figure itself took the character's preset at load
@@ -706,6 +747,10 @@ Json FvHost::Impl::wardrobeRemove(const Json& args)
     return {{"ok", true}};
   }
   showItem(*figure, objects, false);
+  // what it holds on the GPU goes now: taking something off is what a refused wear asks of the user,
+  // and undo wears it again from its file whether it stayed or not
+  if(figure->feed && renderer->feedsHostScene())
+    feedWhole(*figure);
   if(figure->collider)
     figure->collider->poke();
   publishWardrobe(*figure);

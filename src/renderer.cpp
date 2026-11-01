@@ -704,6 +704,13 @@ GltfRenderer::AllocatedMemory GltfRenderer::allocatedMemory() const
   return out;
 }
 
+uint64_t GltfRenderer::sceneBudget() const
+{
+  const uint64_t budget = deviceMemoryBudget().budget;
+  const uint32_t limit  = m_resources.settings.sceneBudgetMB;
+  return limit > 0 ? std::min<uint64_t>(budget, uint64_t(limit) << 20) : budget;
+}
+
 // A tenth of the budget stays free for what grows unasked (a BLAS refit, a denoiser's targets), and so
 // does what the path tracer's frame would add to the rasterizer's, for a switch of mode to find.
 std::optional<int64_t> GltfRenderer::sceneHeadroom() const
@@ -715,9 +722,7 @@ std::optional<int64_t> GltfRenderer::sceneHeadroom() const
   const uint64_t pixels = (packed >> 32) * (packed & 0xffffffffu);
   const uint32_t perPixel = frameBytesPerPixel();
   const uint64_t frameMore = perPixel < kPathTracerBytesPerPixel ? pixels * (kPathTracerBytesPerPixel - perPixel) : 0;
-  uint64_t       budget = b.budget;
-  if(const uint32_t limit = m_resources.settings.sceneBudgetMB; limit > 0)
-    budget = std::min<uint64_t>(budget, uint64_t(limit) << 20);
+  const uint64_t budget = sceneBudget();
   const AllocatedMemory allocated = allocatedMemory();
   const uint64_t        used      = b.usage - std::min<uint64_t>(b.usage, allocated.blocks - allocated.allocations);
   return int64_t(budget) - int64_t(budget / 10 + frameMore + used);
@@ -725,12 +730,16 @@ std::optional<int64_t> GltfRenderer::sceneHeadroom() const
 
 // A load or wear that can't fit even with every texture lowered is refused here, before it is in the
 // scene: past the budget it would crawl, in system memory, or end the process if none is left.
-std::string GltfRenderer::refuseGeometry(uint64_t bytes)
+std::string GltfRenderer::refuseGeometry(uint64_t bytes, bool keepTextureDetail)
 {
   const std::optional<int64_t> headroom = sceneHeadroom();
   if(!headroom)
     return {};
-  const int64_t lowerable = m_resources.retainedGpu ? int64_t(m_resources.retainedGpu->lowerableImageBytes()) : 0;
+  // a 4K map at 2K hardly shows at a portrait's framing, and below that a skin's pores go before a
+  // hair's strands do
+  constexpr uint32_t kDetailExtent = 2048;
+  const uint32_t     least         = keepTextureDetail ? kDetailExtent : rs::kLeastImageExtent;
+  const int64_t      lowerable     = m_resources.retainedGpu ? int64_t(m_resources.retainedGpu->lowerableImageBytes(least)) : 0;
   const int64_t room      = *headroom - int64_t(m_pendingGeometry) + lowerable;
   if(int64_t(bytes) <= room)
   {
@@ -840,6 +849,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // Empty scene, clear the G-Buffer
   if(!m_resources.gpuView().hasContent())
   {
+    reportLoweredImages(0, 0);
     clearGbuffer(cmd);
     return;
   }

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
+#include <set>
 #include <vector>
 
 #include <figure/dson/rig.hpp>
@@ -289,6 +291,69 @@ TEST(Skin, TheSkinSettingsGiveTheDualQuaternionShare)
   const auto mapped = binding(R"(, "extra": [{"type": "skin_settings", "general_map_mode": "DualQuat",
       "blend_mode": "BlendLinearDualQuat", "blend_weights": {"count": 2, "values": [[0, 0.25], [2, 1]]}}])");
   EXPECT_EQ(mapped->input.dualQuatMap, (std::vector<float>{0.25f, 0.f, 1.f}));
+}
+
+// A hair drawn with a share of its strands: the cage keeps them all for the skin, morphs and a
+// simulation, the ones drawn are spread evenly, and a smaller share's are some of a larger one's.
+TEST(Skin, AHairDrawsAShareOfItsStrandsAndKeepsThemAllInItsCage)
+{
+  constexpr int       kStrands = 64, kPoints = 5;
+  constexpr float     kApart   = 0.1f;
+  fv::mesh::MeshInput input;
+  fv::mesh::Lines     lines;
+  lines.start = {0};
+  for(int s = 0; s < kStrands; s++)
+  {
+    for(int p = 0; p < kPoints; p++)
+    {
+      lines.verts.push_back(int32_t(input.positions.size() / 3));
+      input.positions.insert(input.positions.end(), {float(s) * kApart, -float(p), 0.f});
+    }
+    lines.start.push_back(int32_t(lines.verts.size()));
+    lines.material.push_back(0);
+  }
+  input.lines = lines;
+  const auto built = [&](float keep) {
+    fv::mesh::MeshInput in = input;
+    in.lines->keep         = keep;
+    return fv::mesh::build(in);
+  };
+  const auto tris  = [](const fv::mesh::BuiltMesh& g) { return double(g.fullIndex.size() / 3); };
+  const auto roots = [](const fv::mesh::BuiltMesh& g) {
+    std::set<float> out;
+    for(size_t i = 0; i < g.ribbon->along.size(); i++)
+      if(g.ribbon->along[i] == 0.f)
+        out.insert(g.position[i * 3]);
+    return out;
+  };
+  const fv::mesh::BuiltMesh full = built(1.f), half = built(0.5f), quarter = built(0.25f);
+  const double              perStrand = tris(full) / kStrands;
+  EXPECT_NEAR(tris(half), kStrands / 2 * perStrand, perStrand);
+  EXPECT_NEAR(tris(quarter), kStrands / 4 * perStrand, perStrand);
+  for(const fv::mesh::BuiltMesh* g : {&half, &quarter})
+  {
+    EXPECT_EQ(g->cagePositions, full.cagePositions);
+    EXPECT_EQ(g->cageLineStart, full.cageLineStart);
+    EXPECT_EQ(g->cageLineVerts, full.cageLineVerts);
+    EXPECT_EQ(g->dsonVertexCount, full.dsonVertexCount);
+    EXPECT_EQ(g->ribbon->spacing, full.ribbon->spacing);
+  }
+  const std::set<float> all = roots(full), most = roots(half), few = roots(quarter);
+  EXPECT_TRUE(std::includes(all.begin(), all.end(), most.begin(), most.end()));
+  EXPECT_TRUE(std::includes(most.begin(), most.end(), few.begin(), few.end()));
+  for(auto a = most.begin(), b = std::next(a); b != most.end(); ++a, ++b)
+    EXPECT_LE(*b - *a, 3.5f * kApart);
+
+  // what a hair grows goes with it, and so few still draws one
+  fv::mesh::Growth grow;
+  grow.perGuide    = 3;
+  grow.radius      = 0.05f;
+  input.lines->grow = {grow};
+  const fv::mesh::BuiltMesh grown = built(1.f), thinned = built(0.5f), least = built(0.001f);
+  EXPECT_NEAR(tris(grown), tris(full) * 4, 1e-6);
+  EXPECT_NEAR(tris(thinned), tris(grown) / 2, perStrand);
+  EXPECT_EQ(thinned.ribbon->shift.size(), thinned.ribbon->along.size() * 3);
+  EXPECT_GE(tris(least), perStrand);
 }
 
 // A strand's width grows in from its root over 6% of it, and over no more than 1 cm: as a share alone,

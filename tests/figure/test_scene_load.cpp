@@ -136,6 +136,38 @@ bool warned(const fv::dson::LoadResult& r, const std::string& text)
   return std::any_of(r.warnings.begin(), r.warnings.end(), [&](const std::string& w) { return w.find(text) != std::string::npos; });
 }
 
+// A wearable says what it needs of itself, each one that needs it, though the store looks a file up once.
+TEST(SceneLoad, AnItemSaysWhichOfItsFilesAreNotInstalled)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  const std::filesystem::path extra   = std::filesystem::temp_directory_path() / "fv_test_lost_items";
+  std::filesystem::remove_all(extra);
+  std::filesystem::create_directories(extra / "People" / "Test");
+  std::ifstream  in(library / "People" / "Test" / "Clothing" / "Box Shirt.duf");
+  fv::dson::Json doc = fv::dson::Json::parse(in);
+  fv::dson::Json lost;
+  lost["id"]             = "Lost";
+  lost["url"]            = "/data/Test/Not%20Installed.dsf#Lost";
+  lost["parent"]         = "name://@selection";
+  lost["conform_target"] = "name://@selection";
+  doc["scene"]["nodes"].push_back(lost);
+  for(const char* name : {"Lost One.duf", "Lost Two.duf"})
+    std::ofstream(extra / "People" / "Test" / name) << doc.dump();
+
+  fv::dson::Store store(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library, extra}));
+  const std::vector<std::string> expected{"data/Test/Not Installed.dsf"};
+  const fv::dson::LoadResult     one = fv::dson::loadDson(store, "People/Test/Lost One.duf");
+  EXPECT_EQ(one.missing, expected);
+  EXPECT_TRUE(warned(one, "Box Shirt needs 1 library file that isn't installed in the assets folder or the DAZ library: data/Test/Not Installed.dsf."));
+  const fv::dson::LoadResult two = fv::dson::loadDson(store, "People/Test/Lost Two.duf");
+  EXPECT_EQ(two.missing, expected);
+  EXPECT_TRUE(warned(two, "Box Shirt needs 1 library file"));
+  const fv::dson::LoadResult whole = fv::dson::loadDson(store, "People/Test/Clothing/Box Shirt.duf");
+  EXPECT_TRUE(whole.missing.empty());
+  EXPECT_FALSE(warned(whole, "library file"));
+  std::filesystem::remove_all(extra);
+}
+
 class SceneInstances : public ::testing::Test
 {
 protected:

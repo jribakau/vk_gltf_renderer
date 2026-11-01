@@ -273,6 +273,8 @@ struct MaterialRecord
   fv::mat::Material                   payload;
   std::shared_ptr<const TextureTable> textures;
   uint32_t                            rev = 0;  // bumped by setMaterial
+  // what the eye goes to first (a figure's face): short of GPU memory, its images stay a level above the others
+  bool favoured = false;
 };
 
 struct SkinRecord

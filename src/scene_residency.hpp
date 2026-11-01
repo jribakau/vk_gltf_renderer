@@ -91,6 +91,9 @@ class IDPool;
 
 namespace rs {
 
+// a texture this small is what is left of a scene that can't fit: nothing lower is worth having
+inline constexpr uint32_t kLeastImageExtent = 256;
+
 struct ResidencyOptions
 {
   uint32_t minInstances      = 256;           // residencyMinInstances: the least instance capacity
@@ -328,11 +331,23 @@ public:
   const std::set<MaterialId>& heldMaterials() const { return m_heldMaterials; }
   // what the last syncs could not do as asked (a material drawn without its textures), once each
   std::vector<std::string> takeNotices() { return std::exchange(m_notices, {}); }
-  // The GPU memory that idle images and lowering every resident one as far as it goes would free: what
-  // a new mesh can count on beyond what is free now
-  uint64_t lowerableImageBytes() const;
+  // The GPU memory that idle images and lowering every resident one to a long edge of `leastExtent`
+  // would free: what a new mesh can count on beyond what is free now
+  uint64_t lowerableImageBytes(uint32_t leastExtent = kLeastImageExtent) const;
   // What the user should hear of them: images lowered or refused for want of GPU memory, once a scene
   std::vector<std::string> takeUserNotices() { return std::exchange(m_userNotices, {}); }
+  // The images below what Max texture size allows, to fit GPU memory, and the long edge of the largest of them
+  struct LoweredImages
+  {
+    uint32_t count = 0, largest = 0;
+    bool     operator==(const LoweredImages&) const = default;
+  };
+  LoweredImages loweredImages() const;
+  // The next sync lowers what it has to, as when the scene grew, with `slack` bytes free after it
+  void lowerImages(uint64_t slack) { m_fitSlack = slack; }
+  // The next sync decodes images lowered earlier a level or more larger, as far as `room` bytes go
+  // (raiseToFit). How many it will.
+  uint32_t raiseImages(const RetainedScene& scene, uint64_t room);
   uint64_t    graceBytes() const { return m_graceBytes; }
 
   // ---- what the renderers read
@@ -443,6 +458,7 @@ private:
     ImageInfo                 info;
     uint32_t                  users = 0;
     std::optional<TextureKey> key;  // shared through m_decoded; none: its own image
+    bool                      lowered = false;  // below what Max texture size allows, to fit GPU memory
   };
   // one decode per key, shared by the textures that are that image; one nothing uses is in grace
   struct DecodedImage
@@ -486,7 +502,18 @@ private:
   void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseImage(const ImageGpu& image);
   bool     decodeQueued(const RetainedScene& scene, bool sceneGrew);
-  void     fitQueuedToMemory(const RetainedScene& scene);
+  void     fitQueuedToMemory(const RetainedScene& scene, uint64_t slack);
+  // A resident image as fitting sees it: what it is, and how many levels it leaves out
+  struct ResidentImage
+  {
+    ImageKey                  image;
+    const TextureRecord*      record = nullptr;
+    std::optional<TextureKey> key;
+    uint32_t                  skip = 0;
+  };
+  void residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits) const;
+  // the images of the materials that say they are favoured, and of what shares their files
+  std::set<ImageKey> favouredImages(const RetainedScene& scene) const;
   void     trimGrace(uint64_t budget);
   void     syncMaterials(RetainedScene& scene, const std::set<MaterialId>& edited, SyncResult& result);
   void     writeMaterials(const RetainedScene& scene);
@@ -584,6 +611,7 @@ private:
     bool                      replaces = false;  // a resident image taken down: it stays if this fails
   };
   std::vector<QueuedDecode>                            m_decodeQueue;
+  std::optional<uint64_t>                              m_fitSlack;  // lowerImages' for the next sync
   uint64_t                                             m_graceBytes   = 0;
   uint64_t                                             m_releaseClock = 0;
   ImageCounts                                          m_imageCounts;

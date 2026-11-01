@@ -70,21 +70,33 @@ std::vector<float> collide(const std::vector<float>& positions, std::span<const 
   return smoothCorrection(positions, pushOut(positions, body, binding, 0.15f), tris);
 }
 
-}  // namespace
-
-std::optional<std::pair<Generation, Generation>> generationsOf(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel,
-                                                               const FitFigure& figure)
+// The generations the item and the figure can be told to be of.
+std::pair<std::optional<Generation>, std::optional<Generation>> identified(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel,
+                                                                           const FitFigure& figure)
 {
   std::vector<std::string> figureNames, itemNames;
   for(const auto& [id, node] : figure.rig.bones)
     figureNames.push_back(figure.scene.nodes[size_t(node)].name);
   for(const BoneRef& b : boneRefs(wearable.scene, wearable, item))
     itemNames.push_back(b.name);
-  const auto source = identifyGeneration(rel, itemNames, item.conformTarget);
-  const auto target = identifyGeneration(figure.folder, figureNames, {});
+  return {identifyGeneration(rel, itemNames, item.conformTarget), identifyGeneration(figure.folder, figureNames, {})};
+}
+
+}  // namespace
+
+std::optional<std::pair<Generation, Generation>> generationsOf(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel,
+                                                               const FitFigure& figure)
+{
+  const auto [source, target] = identified(wearable, item, rel, figure);
   if(source && target && !sameRig(*source, *target))
     return std::make_pair(*source, *target);
   return std::nullopt;
+}
+
+bool madeForFigure(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel, const FitFigure& figure)
+{
+  const auto [source, target] = identified(wearable, item, rel, figure);
+  return source && target && sameRig(*source, *target);
 }
 
 std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const dson::Item& item, const std::string& rel, const FitFigure& figure)

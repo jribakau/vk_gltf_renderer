@@ -65,9 +65,12 @@
 //   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame)
 //   render.capture  {path}  -> {samples, converged}   the frame as a linear .hdr (path tracer), answered once saved
-//   render.budget   {}  -> {known, budgetBytes, usageBytes, bytesPerPixel, width, height}   GPU memory: the
-//                                                driver's budget and what a pixel of the frame costs, so an
-//                                                export size is judged before /size refuses it (507)
+//   render.budget   {}  -> {known, budgetBytes, usageBytes, headroomBytes?, bytesPerPixel, width, height}   GPU
+//                                                memory: the driver's budget, what is free beyond what is kept
+//                                                back, and what a pixel of the frame costs, so an export size
+//                                                is judged before /size refuses it (507)
+//   render.hold     {on}  -> {on}   an export is running: textures don't follow GPU memory until it ends,
+//                                                unless it runs past the budget
 //   material.set    {prop, material, values, gesture?}   edit a surface (fv_materials.hpp); material.reset {prop, material?}
 //                                                `gesture` {id, end?}: a slider's drag, one step of the history
 //                                                however long it takes, until the message that ends it
@@ -109,7 +112,7 @@
 //                                                makeup, ready, surfaces: ["m:N"]}
 //   wear            {prop, rel | path}           put a wearable on a figure -> {job}
 //   wardrobe.remove {prop, item}, wardrobe.visible {prop, item, visible}   hidden in place; a removed item
-//                                                leaves the renderer's scene at the next composition, and a geograft composes
+//                                                leaves the renderer's scene at once, and a geograft composes
 //   wardrobe.color  {prop, item | [item...], rel: string | null}   -> {job}: the item's colour becomes the
 //                                                material preset `rel` (null: the item as it was worn). Each
 //                                                choice starts from the item as it was worn, so colours don't
@@ -201,7 +204,8 @@
 //
 // Camera, selection and display commands live in fv_view.hpp.
 //
-// Topics: "session", "jobs", "notices", "render", "lighting", "history" ({undo: [label], redo: [label], busy},
+// Topics: "session", "jobs", "notices", "render", "memory" ({lowered, largest}: the textures below what Max
+// texture size allows to fit GPU memory, and the long edge of the largest), "lighting", "history" ({undo: [label], redo: [label], busy},
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
 // "scene" ({props: {id: {kind, name, parent, bone, visible, order, transform: {t, r, e, s}, stats?, source?,

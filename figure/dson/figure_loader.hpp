@@ -58,6 +58,9 @@ struct LoadOptions
 {
   // SubD geometry drawn subdivided this many times (0-3)
   int subdivision = 0;
+  // the share of a strand hair's strands drawn (mesh::Lines::keep), each wider by as much, so that
+  // the hair covers what it did
+  float strandKeep = 1;
   std::optional<AttachTarget> attach;
   // morphs move only the cages of the meshes whose drawn vertices are made from them
   // (mesh::drawnFromCage): the GPU makes those (figureGpuRefine)
@@ -123,13 +126,16 @@ struct LoadResult
   std::vector<ItemPart> parts;
   MorphContext             morphs;
   std::vector<std::string> warnings;
-  // library files referenced but not installed
+  // library files this load referenced and aren't installed
   std::vector<std::string> missing;
 };
 
 // Loads `rel` (library-relative). Throws when nothing could be built, with the reason (a missing
 // base figure names the product to install).
 LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& options = {});
+
+// What a notice says of the library files `fileName` needs and aren't installed (at least one).
+std::string missingMessage(const std::string& fileName, const std::vector<std::string>& missing);
 
 // Starts reading `rel` and the library files its scene names (nodes, geometries, materials, their
 // UV sets) on the pool and returns at once, so a wear's files are on their way while the figure is

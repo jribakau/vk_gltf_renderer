@@ -8,6 +8,34 @@ using namespace materials_test;
 
 namespace {
 
+// What comes down last short of GPU memory: a figure's face, and nothing on a shirt or a chair
+TEST(Materials, KnowsWhatIsOnTheFace)
+{
+  using fv::mat::Context;
+  const auto on = [](const char* name, Context context = Context::eBody) {
+    fv::mat::Surface s;
+    s.name    = name;
+    s.context = context;
+    s.kind    = fv::mat::classify(name, context);
+    return fv::mat::onTheFace(s);
+  };
+  for(const char* face : {"Face", "Head", "Lips", "Ears", "Eye Left", "Sclera", "Irises", "Cornea", "Eye Moisture Left", "Eyelashes", "Eyebrows", "Mouth", "Teeth", "Tongue"})
+    EXPECT_TRUE(on(face)) << face;
+  for(const char* rest : {"Body", "Torso", "Arms", "Legs", "Fingernails", "Toenails"})
+    EXPECT_FALSE(on(rest)) << rest;
+  // Genesis 9's lashes and brows are worn items, as its real surfaces are named
+  for(const char* worn : {"Eyelashes Upper", "Eyelashes Lower", "Eyebrows_Primary"})
+  {
+    EXPECT_TRUE(on(worn, Context::eItem)) << worn;
+    EXPECT_TRUE(on(worn, Context::eHair)) << worn;
+  }
+  EXPECT_FALSE(on("Brown Leather", Context::eItem));
+  EXPECT_FALSE(on("Head", Context::eItem));
+  EXPECT_FALSE(on("Face", Context::eItem));
+  EXPECT_FALSE(on("Eye", Context::eHair));
+  EXPECT_FALSE(on("Hair", Context::eHair));
+}
+
 TEST(Materials, ClassifiesSurfacesByName)
 {
   using fv::mat::Kind;

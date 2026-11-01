@@ -291,6 +291,10 @@ struct Surface
   std::optional<HairFibre> hairFibre;
 };
 
+// Whether a figure's surface is on its face, where the eye goes first: the skin of the head, the eyes,
+// their lashes, the brows and the mouth. Short of GPU memory its maps come down last.
+bool onTheFace(const Surface& s);
+
 // What the Material panel can change on a surface. Each field is set only once edited, so the glTF
 // material keeps its own derivation of the rest. Colours are linear.
 struct Edits

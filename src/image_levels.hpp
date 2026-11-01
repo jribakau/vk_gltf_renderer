@@ -69,7 +69,17 @@ struct ImageFit
 {
   ImageChain chain;
   uint32_t   skip = 0;
+  bool       favoured = false;  // what the eye goes to first: it stays at least a level above the others
 
+  // what a level counts as against the others': a favoured image's, as the level under it
+  uint64_t weight(uint32_t level) const { return chain.levelBytes[level] >> (favoured ? 2 : 0); }
+  // whether this image's level `level` goes before `other`'s `otherLevel` when images come down:
+  // the heavier, and of equals the one not favoured
+  bool goesBefore(uint32_t level, const ImageFit& other, uint32_t otherLevel) const
+  {
+    const uint64_t mine = weight(level), theirs = other.weight(otherLevel);
+    return mine > theirs || (mine == theirs && !favoured && other.favoured);
+  }
   uint64_t bytes() const
   {
     uint64_t sum = 0;
@@ -84,9 +94,11 @@ struct ImageFit
     return skip + 1 < chain.levelBytes.size() && canStartAt(chain.width, chain.height, skip + 1)
            && std::max(levelExtent(chain.width, skip + 1), levelExtent(chain.height, skip + 1)) >= minExtent;
   }
+  // whether a level can go back on top, with `wanted` the most it may leave out
+  bool canRaise(uint32_t wanted) const { return skip > wanted && (skip == 1 || canStartAt(chain.width, chain.height, skip - 1)); }
 };
 
-// Leaves out top levels until `bytes` are freed, whichever image's top level is largest first (the
+// Leaves out top levels until `bytes` are freed, whichever image's top level weighs most first (the
 // earlier of a tie), so the largest come down to the others before any falls below them. The bytes
 // freed: less than asked when every image is down to `minExtent`.
 inline uint64_t lowerToFit(std::span<ImageFit> images, uint64_t bytes, uint32_t minExtent)
@@ -96,13 +108,41 @@ inline uint64_t lowerToFit(std::span<ImageFit> images, uint64_t bytes, uint32_t 
   {
     ImageFit* largest = nullptr;
     for(ImageFit& image : images)
-      if(image.canLower(minExtent) && (!largest || image.chain.levelBytes[image.skip] > largest->chain.levelBytes[largest->skip]))
+      if(image.canLower(minExtent) && (!largest || image.goesBefore(image.skip, *largest, largest->skip)))
         largest = &image;
     if(!largest)
       break;
     freed += largest->chain.levelBytes[largest->skip++];
   }
   return freed;
+}
+
+// lowerToFit undone: top levels put back, the lightest first (the later of a tie), down to each
+// image's `wanted` levels left out, while what they take fits `room`. An image is decoded again whole
+// beside the one it replaces, so its first level back counts its whole chain. The bytes they take;
+// stops at the first that doesn't fit, so none gets ahead of the others.
+inline uint64_t raiseToFit(std::span<ImageFit> images, std::span<const uint32_t> wanted, uint64_t room)
+{
+  std::vector<uint32_t> before;
+  for(const ImageFit& image : images)
+    before.push_back(image.skip);
+  uint64_t taken = 0;
+  while(true)
+  {
+    size_t next = images.size();
+    for(size_t i = 0; i < images.size(); i++)
+      if(images[i].canRaise(wanted[i]) && (next == images.size() || !images[i].goesBefore(images[i].skip - 1, images[next], images[next].skip - 1)))
+        next = i;
+    if(next == images.size())
+      break;
+    ImageFit&      image = images[next];
+    const uint64_t cost  = image.chain.levelBytes[image.skip - 1] + (image.skip == before[next] ? image.bytes() : 0);
+    if(taken + cost > room)
+      break;
+    taken += cost;
+    image.skip--;
+  }
+  return taken;
 }
 
 }  // namespace rs

@@ -160,9 +160,6 @@ public:
   // else every *_library array in the file. The first entry with the id wins.
   std::optional<Resolved> resolve(const Ref& ref, const char* preferLibrary = nullptr);
 
-  // Library files that were referenced but not found, in the order first asked for.
-  std::vector<std::string> missing() const;
-
   // Forgets every shared parsed file: the library's contents changed.
   static void clearShared();
 
@@ -177,7 +174,6 @@ private:
   std::shared_ptr<const Library>                                       m_library;
   mutable std::mutex                                                   m_mutex;
   std::map<std::string, std::shared_future<std::shared_ptr<const Doc>>> m_cache;
-  std::vector<std::string>                                             m_missing;
   std::shared_ptr<void>                                                m_attachment;
   // per document and library array, entries by id
   std::map<std::pair<const Doc*, std::string>, std::map<std::string, const Json*>> m_index;

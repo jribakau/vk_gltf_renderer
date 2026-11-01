@@ -188,8 +188,12 @@ void Figure::setup(const Progress& progress)
     timing::Scope t("character dials");
     prefetch(mainDials);
     std::vector<std::pair<std::string, double>> values;
+    // what the file itself sets and isn't installed: the figure comes out without it
+    std::vector<std::string> notInstalled;
     for(const dson::SceneDial* d : mainDials)
     {
+      if(!m_store->library().find(d->file) && std::find(notInstalled.begin(), notInstalled.end(), d->file) == notInstalled.end())
+        notInstalled.push_back(d->file);
       if(!morphs->has(d->id))
       {
         morph::ChannelOptions opts;
@@ -198,6 +202,8 @@ void Figure::setup(const Progress& progress)
       }
       values.emplace_back(d->id, d->value);
     }
+    if(!notInstalled.empty())
+      loaded.warnings.push_back(dson::missingMessage(loaded.name, notInstalled));
     // each dial's file loads, its formulas name more, and so on until nothing new is needed
     morphs->setMany(values);
     morphs->settled();
@@ -269,9 +275,6 @@ void Figure::applyOtherDials(const dson::MorphContext& ctx, const std::vector<ds
       try
       {
         driven = dson::drivenMorphs(store, d->file, d->id, d->value);
-      }
-      catch(const dson::MissingFileError&)
-      {
       }
       catch(const std::exception& e)
       {

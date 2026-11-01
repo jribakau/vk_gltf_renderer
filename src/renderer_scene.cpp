@@ -20,6 +20,7 @@
 // GltfRenderer's scene: a file or the host's retained scene going in, its sync each frame, its clip.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -394,6 +395,50 @@ void GltfRenderer::logRetainedNotices()
       m_noticeSink(notice);
 }
 
+void GltfRenderer::reportLoweredImages(uint32_t count, uint32_t largest)
+{
+  if(count == m_loweredCount && largest == m_loweredLargest)
+    return;
+  m_loweredCount   = count;
+  m_loweredLargest = largest;
+  if(m_loweredSink)
+    m_loweredSink(count, largest);
+}
+
+void GltfRenderer::watchMemory()
+{
+  const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  // No host to tell: a render from the command line keeps to what it loaded with, so that two of them
+  // compare. isAutomatedRun() can't say so: the app's renderer runs headless too.
+  if(!m_loweredSink || !m_memoryBudgetExtension || !m_memoryWatch.due(now))
+    return;
+  rs::RetainedSceneVk&               gpu     = *m_resources.retainedGpu;
+  const rs::Residency::LoweredImages lowered = gpu.residency().loweredImages();
+  reportLoweredImages(lowered.count, lowered.largest);
+  const std::optional<int64_t> headroom = sceneHeadroom();
+  if(!headroom)
+    return;
+  const int64_t free = *headroom - int64_t(m_pendingGeometry);
+  switch(m_memoryWatch.read({.now        = now,
+                             .headroom   = free,
+                             .pastBudget = *headroom < -int64_t(sceneBudget() / 10),  // the tenth kept back is gone too
+                             .canLower   = gpu.lowerableImageBytes(rs::kLeastImageExtent) > 0,
+                             .lowered    = lowered.count > 0,
+                             .refining   = isRefiningStill(),
+                             .held       = m_texturesHeld}))
+  {
+    case rs::MemoryWatch::Act::eLower:
+      gpu.lowerImages(uint64_t(rs::MemoryWatch::kMargin));
+      break;
+    case rs::MemoryWatch::Act::eRaise:
+      if(gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free)) == 0)
+        m_memoryWatch.raiseEnded(now);
+      break;
+    case rs::MemoryWatch::Act::eNone:
+      break;
+  }
+}
+
 //--------------------------------------------------------------------------------------------------
 // The retained scene's frame: the clip moved on, then the
 // residency's sync of what the host fed since the last frame. True when the frame changed.
@@ -404,6 +449,7 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   advanceHostClip();
   m_resources.retainedGpu->beginFrame();
   m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
+  watchMemory();
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   if(result.drawListChanged)
     m_pendingGeometry = 0;  // what was accepted is resident, and counted as used

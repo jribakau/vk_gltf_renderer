@@ -457,6 +457,39 @@ GrownLines grownLines(const MeshInput& m)
   return out;
 }
 
+// Leaves the share of the lines Lines::keep draws: each by its place in a golden-ratio sequence, which
+// spreads them evenly along the file's order, where neighbours mostly lie together, and makes a smaller
+// share's lines some of a larger one's. The first always stays. How many of the first `guides` stay.
+int thinLines(GrownLines& g, double keep, int guides)
+{
+  const int            nl = int(g.lines.start.size()) - 1;
+  std::vector<int32_t> start{0}, verts, material, guide;
+  std::vector<float>   spot, placed;
+  int                  kept = 0;
+  for(int l = 0; l < nl; l++)
+  {
+    const double place = l * 0.6180339887498949;
+    if(place - std::floor(place) >= keep)
+      continue;
+    kept += l < guides ? 1 : 0;
+    const int s = g.lines.start[l], e = g.lines.start[l + 1];
+    verts.insert(verts.end(), g.lines.verts.begin() + s, g.lines.verts.begin() + e);
+    start.push_back(int32_t(verts.size()));
+    material.push_back(g.lines.material[l]);
+    guide.push_back(g.guide[l]);
+    spot.insert(spot.end(), g.spot.begin() + size_t(l) * 2, g.spot.begin() + size_t(l) * 2 + 2);
+    if(!g.placed.empty())
+      placed.insert(placed.end(), g.placed.begin() + size_t(s) * 3, g.placed.begin() + size_t(e) * 3);
+  }
+  g.lines.start    = std::move(start);
+  g.lines.verts    = std::move(verts);
+  g.lines.material = std::move(material);
+  g.guide          = std::move(guide);
+  g.spot           = std::move(spot);
+  g.placed         = std::move(placed);
+  return kept;
+}
+
 // Median distance from each root to its nearest neighbour, on a grid of half-centimetre cells.
 float rootSpacing(std::span<const float> p, const Lines& lines, const std::function<bool(int)>& ok)
 {
@@ -524,12 +557,14 @@ float rootSpacing(std::span<const float> p, const Lines& lines, const std::funct
 // them as they carry the guide.
 Strands strandRibbons(const MeshInput& m)
 {
-  const GrownLines G      = grownLines(m);
-  const Lines&     L      = G.lines;
-  const auto&      p      = m.positions;
-  const int        nv     = int(p.size() / 3);
-  const int        nl     = int(L.start.size()) - 1;
-  const int        guides = int(m.lines->start.size()) - 1;
+  GrownLines   G      = grownLines(m);
+  int          guides = int(m.lines->start.size()) - 1;
+  if(m.lines->keep < 1)
+    guides = thinLines(G, m.lines->keep, guides);
+  const Lines& L      = G.lines;
+  const auto&  p      = m.positions;
+  const int    nv     = int(p.size() / 3);
+  const int    nl     = int(L.start.size()) - 1;
   const int    points = L.start[nl];
   auto         ok     = [&](int c) { return L.verts[c] >= 0 && L.verts[c] < nv; };
 
@@ -753,7 +788,8 @@ Strands strandRibbons(const MeshInput& m)
   }
   r.levels.push_back(std::move(stencil));
   r.vertexCount = total * 2;
-  out.spacing   = rootSpacing(p, *m.lines, ok);
+  // of the file's lines, thinned or not: it stands for the strands' width (ribbonWidths)
+  out.spacing   = rootSpacing(p, *m.lines, [&](int c) { return m.lines->verts[c] >= 0 && m.lines->verts[c] < nv; });
   return out;
 }
 
@@ -920,6 +956,7 @@ BuiltMesh build(const MeshInput& m)
   out.dsonTris        = fan(m.polyStart, m.polyVerts, np);
   out.dsonVertexCount = nv;
   out.polyCount       = std::max(np, 0);
+  out.subdivisionSurface = m.subdivisionSurface;
   out.cagePositions   = m.positions;
   if(np > 0)
   {
