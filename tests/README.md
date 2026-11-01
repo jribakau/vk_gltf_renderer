@@ -139,7 +139,7 @@ The figure viewer's own tests, by area (none needs a GPU):
 
 | Files | What they cover |
 |---|---|
-| `figure/test_*.cpp` | The DAZ figure library: DSON parsing, formulas, morphs, skinning, pose, wardrobe, the collider, dForce, materials and presets, eyes, hair strands, export |
+| `figure/test_*.cpp` | The DAZ figure library: DSON parsing, formulas, morphs, skinning, pose, wardrobe, the collider, dForce, materials and presets (`test_materials*.cpp` by topic, their helpers in `materials_test_util.hpp`), eyes, hair strands, export |
 | `test_fv_*.cpp` | The stream host: the protocol, FvHost's commands over `FakeHostRenderer` (`test_fv_host`, the undo fuzz and the kept scene among them), the history (`test_fv_journal`), the figure and prop feeds, the scene map, lighting, textures, model materials |
 | `test_retained_*.cpp`, `test_fake_gpu_backend.cpp`, `test_scene_gpu_tables.cpp`, `test_scene_merger.cpp`, `test_material_cache.cpp`, `test_extensions_metadata.cpp`, `test_residency_vk_util.cpp` | The retained scene, its import and export, what a loaded file is merged and cached through, residency on the fake backend checked by the oracle, deformation, tangents, the fuzz (`test_retained_fuzz`) |
 | `test_sobol.cpp`, `test_sample_schedule.cpp`, `test_denoiser_schedule.cpp`, `test_alias_table.cpp`, `test_aperture.cpp`, `test_thin_scatter.cpp`, `test_hair_bsdf.cpp`, `test_shadow_fit.cpp`, `test_ground.cpp`, `test_sun_position.cpp`, `test_environment_sky.cpp`, `test_sky_preset.cpp`, `test_variant_compile_job.cpp`, `test_frame_pacing.cpp`, `test_present_*.cpp` | The path tracer's and the frame loop's helpers, on the CPU |
