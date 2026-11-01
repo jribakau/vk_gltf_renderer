@@ -169,6 +169,35 @@ std::vector<fv::mat::StrandVote> strandVotes(const fv::mat::StrandMesh& part, st
   return votes;
 }
 
+// The rotation as it was read from every vote, which a tally stands in for
+std::optional<float> strandRotation(const std::vector<fv::mat::StrandVote>& votes)
+{
+  const auto axisDelta = [](double a, double b) {
+    double d = std::fmod(std::abs(a - b), std::numbers::pi);
+    return d > std::numbers::pi / 2 ? std::numbers::pi - d : d;
+  };
+  double c = 0, s = 0, weight = 0;
+  for(const auto& v : votes)
+  {
+    c += v.weight * std::cos(2.0 * v.theta);
+    s += v.weight * std::sin(2.0 * v.theta);
+    weight += v.weight;
+  }
+  if(weight <= 0)
+    return std::nullopt;
+  const double strand = 0.5 * std::atan2(s, c);
+  double       agreed = 0;
+  for(const auto& v : votes)
+    if(axisDelta(v.theta, strand) <= 20.0 * std::numbers::pi / 180.0)
+      agreed += v.weight;
+  if(agreed / weight < fv::mat::kStrandConfidence)
+    return std::nullopt;
+  double r = strand + std::numbers::pi / 2;
+  if(r > std::numbers::pi / 2)
+    r -= std::numbers::pi;
+  return float(r);
+}
+
 }  // namespace ref
 
 // Hair cards as a hair's mesh has them: strips of quads along random directions, some cut per
@@ -286,7 +315,50 @@ TEST(HairStrands, TheVotesAreTheSerialOnesBitForBit)
   }
   const fv::mat::StrandMesh unindexed{c.position, c.uv, {}, {}};
   expectSameVotes(fv::mat::strandVotes(unindexed), ref::strandVotes(unindexed, ids));
-  // the cards agree: what the rotation is made from is the same too
-  EXPECT_EQ(fv::mat::strandRotation(fv::mat::strandVotes({c.position, c.uv, c.index, {}})),
-            fv::mat::strandRotation(ref::strandVotes({c.position, c.uv, c.index, {}}, ids)));
+}
+
+// A tally gives the rotation its votes do, for a hair of one material or split over several meshes, and none
+// when they don't agree
+TEST(HairStrands, ATallyGivesTheRotationItsVotesDo)
+{
+  // random cards agree on nothing, and both say so
+  const Cards c = cards(40000, 11);
+  const auto  randomVotes = fv::mat::strandVotes({c.position, c.uv, c.index, {}});
+  EXPECT_EQ(ref::strandRotation(randomVotes).has_value(), fv::mat::strandRotation(fv::mat::tallyVotes(randomVotes)).has_value());
+
+  std::mt19937                     random(7);
+  std::normal_distribution<float>  spread(0.3f, 0.1f);
+  std::uniform_real_distribution<float> length(0.1f, 1.f);
+  std::vector<fv::mat::StrandVote> votes;
+  for(int i = 0; i < 20000; i++)
+    votes.push_back({length(random), spread(random)});
+  const auto want = ref::strandRotation(votes);
+  ASSERT_TRUE(want);
+  const auto whole = fv::mat::strandRotation(fv::mat::tallyVotes(votes));
+  ASSERT_TRUE(whole);
+  EXPECT_EQ(*whole, *want);
+
+  const size_t           half = votes.size() / 3;
+  const std::vector<fv::mat::StrandVote> first(votes.begin(), votes.begin() + std::ptrdiff_t(half)), rest(votes.begin() + std::ptrdiff_t(half), votes.end());
+  fv::mat::StrandTally added;
+  added += fv::mat::tallyVotes(first);
+  added += fv::mat::tallyVotes(rest);
+  const auto split = fv::mat::strandRotation(added);
+  ASSERT_TRUE(split);
+  EXPECT_NEAR(*split, *want, 1e-6f);
+
+  EXPECT_FALSE(fv::mat::strandRotation(fv::mat::StrandTally{}));
+  // directions all round: no one of them holds enough of the length. Each side of the 70% is told apart too.
+  std::vector<fv::mat::StrandVote> allRound;
+  for(int i = 0; i < 360; i++)
+    allRound.push_back({1.f, float(i) * 0.5f * std::numbers::pi_v<float> / 180.f});
+  EXPECT_FALSE(ref::strandRotation(allRound));
+  EXPECT_FALSE(fv::mat::strandRotation(fv::mat::tallyVotes(allRound)));
+  for(float share : {0.6f, 0.65f, 0.75f, 0.8f})
+  {
+    std::vector<fv::mat::StrandVote> some;
+    for(int i = 0; i < 1000; i++)
+      some.push_back({1.f, float(i) < share * 1000.f ? 0.3f + float(i % 7) * 0.01f : -1.2f + float(i % 11) * 0.05f});
+    EXPECT_EQ(ref::strandRotation(some).has_value(), fv::mat::strandRotation(fv::mat::tallyVotes(some)).has_value()) << share;
+  }
 }

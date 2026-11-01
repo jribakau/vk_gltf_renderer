@@ -114,7 +114,7 @@ private:
   std::vector<std::shared_ptr<void>> m_kept;
 };
 
-// The strand votes of one hair part (a mesh's drawn ranges of one material), measured once per
+// The strand votes of one hair part (a mesh's drawn ranges of one material), added up, measured once per
 // geometry: a strand hair's cards take about a second to weld and measure, and the host builds the
 // glTF again after every wardrobe change. A part is kept while its geometry lives; a dial that moves
 // the hair leaves its cards' layout, and so the strand direction, as it was measured.
@@ -124,7 +124,7 @@ struct StrandPart
   std::vector<mat::StrandMesh::Range>                 ranges;
   size_t                                              indexCount = 0;
   bool                                                flipV      = false;
-  std::shared_ptr<const std::vector<mat::StrandVote>> votes;
+  std::shared_ptr<const mat::StrandTally>             votes;
 };
 std::mutex                                                g_strandMutex;
 std::map<const mesh::BuiltMesh*, std::vector<StrandPart>> g_strands;
@@ -163,10 +163,10 @@ bool sameRanges(const std::vector<mat::StrandMesh::Range>& a, const std::vector<
 }
 
 // The votes of `ranges` of `index`, with the UVs flipped as a build without cooked textures sends them.
-std::shared_ptr<const std::vector<mat::StrandVote>> strandVotesOf(const std::shared_ptr<mesh::BuiltMesh>& geo,
-                                                                  const std::vector<uint32_t>&           index,
-                                                                  const std::vector<mat::StrandMesh::Range>& ranges,
-                                                                  bool                                   flipV)
+std::shared_ptr<const mat::StrandTally> strandVotesOf(const std::shared_ptr<mesh::BuiltMesh>&    geo,
+                                                      const std::vector<uint32_t>&               index,
+                                                      const std::vector<mat::StrandMesh::Range>& ranges,
+                                                      bool                                       flipV)
 {
   {
     std::lock_guard lock(g_strandMutex);
@@ -187,7 +187,7 @@ std::shared_ptr<const std::vector<mat::StrandVote>> strandVotesOf(const std::sha
   const auto weld  = weldOf(geo);
   auto       votes = [&] {
     timing::Scope t("strand votes", 20);
-    return std::make_shared<const std::vector<mat::StrandVote>>(mat::strandVotes({geo->position, uv, index, ranges}, *weld));
+    return std::make_shared<const mat::StrandTally>(mat::tallyVotes(mat::strandVotes({geo->position, uv, index, ranges}, *weld)));
   }();
   std::lock_guard lock(g_strandMutex);
   // geometry that is gone takes its parts with it (and an address used again starts afresh)
@@ -547,7 +547,7 @@ std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& 
   timing::Scope           phase("emitters and strand votes");
   const std::vector<Mat4> worlds = scene.worlds();
   std::vector<double>     emitArea(scene.materials.size(), 0.0);
-  std::vector<std::vector<std::shared_ptr<const std::vector<mat::StrandVote>>>> hairVotes(scene.materials.size());
+  std::vector<std::vector<std::shared_ptr<const mat::StrandTally>>> hairVotes(scene.materials.size());
   // a mesh drawn from several nodes (DAZ Studio instances) counts once: each copy emits as the one it copies
   std::vector<bool> counted(scene.meshes.size(), false);
   for(int i : drawing.order)
@@ -608,10 +608,13 @@ std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& 
     lo.ribbon             = onRibbon[mi];
     lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
     // one material on several meshes is one glTF material, so those meshes vote together
-    std::vector<mat::StrandVote> votes;
-    for(const auto& v : hairVotes[mi])
-      votes.insert(votes.end(), v->begin(), v->end());
-    lo.anisotropyRotation = mat::strandRotation(votes);
+    if(!hairVotes[mi].empty())
+    {
+      mat::StrandTally votes;
+      for(const auto& v : hairVotes[mi])
+        votes += *v;
+      lo.anisotropyRotation = mat::strandRotation(votes);
+    }
   }
   return out;
 }

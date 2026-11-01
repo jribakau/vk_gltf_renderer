@@ -14,6 +14,9 @@ namespace {
 using Vec3 = std::array<double, 3>;
 
 constexpr double kAgree = 20.0 * std::numbers::pi / 180.0;
+// A tally's spans of direction: a twentieth of a degree each, so that only votes that close to the 20 degrees
+// are ever counted on the wrong side of it
+constexpr size_t kAxisSpans = 3600;
 // the longest edge has to beat the next by this much, or the polygon is not a card
 constexpr double kEdgeRatio = 1.25;
 // vertices closer than this share of the mesh's size are one vertex when edges are matched
@@ -295,23 +298,45 @@ std::vector<StrandVote> strandVotes(const StrandMesh& part, std::span<const uint
   return votes;
 }
 
-std::optional<float> strandRotation(const std::vector<StrandVote>& votes)
+StrandTally& StrandTally::operator+=(const StrandTally& other)
 {
-  double c = 0, s = 0, weight = 0;
-  for(const auto& v : votes)
+  c += other.c;
+  s += other.s;
+  weight += other.weight;
+  if(byAxis.size() < other.byAxis.size())
+    byAxis.resize(other.byAxis.size(), 0.0);
+  for(size_t i = 0; i < other.byAxis.size(); i++)
+    byAxis[i] += other.byAxis[i];
+  return *this;
+}
+
+StrandTally tallyVotes(const std::vector<StrandVote>& votes)
+{
+  StrandTally t;
+  t.byAxis.assign(kAxisSpans, 0.0);
+  for(const StrandVote& v : votes)
   {
-    c += v.weight * std::cos(2.0 * v.theta);
-    s += v.weight * std::sin(2.0 * v.theta);
-    weight += v.weight;
+    t.c += v.weight * std::cos(2.0 * v.theta);
+    t.s += v.weight * std::sin(2.0 * v.theta);
+    t.weight += v.weight;
+    double axis = std::fmod(double(v.theta), std::numbers::pi);
+    if(axis < 0)
+      axis += std::numbers::pi;
+    t.byAxis[std::min(size_t(axis / std::numbers::pi * kAxisSpans), kAxisSpans - 1)] += v.weight;
   }
-  if(weight <= 0)
+  return t;
+}
+
+std::optional<float> strandRotation(const StrandTally& votes)
+{
+  if(votes.weight <= 0)
     return std::nullopt;
-  const double strand = 0.5 * std::atan2(s, c);
+  const double strand = 0.5 * std::atan2(votes.s, votes.c);
   double       agreed = 0;
-  for(const auto& v : votes)
-    if(axisDelta(v.theta, strand) <= kAgree)
-      agreed += v.weight;
-  if(agreed / weight < kStrandConfidence)
+  for(size_t i = 0; i < votes.byAxis.size(); i++)
+    if(axisDelta((double(i) + 0.5) / double(votes.byAxis.size()) * std::numbers::pi, strand) <= kAgree)
+      agreed += votes.byAxis[i];
+  if(agreed / votes.weight < kStrandConfidence)
     return std::nullopt;
   // across the strand: a quarter turn
   double r = strand + std::numbers::pi / 2;

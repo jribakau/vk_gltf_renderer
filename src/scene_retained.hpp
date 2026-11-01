@@ -173,10 +173,10 @@ struct RefineTables
   std::vector<Level>        levels;     // the last one's rows are the refined vertices
   std::span<const uint32_t> drawnFrom;  // per drawn vertex, its refined vertex
   std::span<const uint32_t> triangles;  // refined vertices, three per triangle
+  std::span<const uint32_t> normalStart, normalTriangles;  // per refined vertex
   // per refined vertex, added after the last level (strand ribbons' widths); empty: none
   std::span<const glm::vec3>  offsets;
   std::shared_ptr<const void> owner;    // what those read
-  std::vector<uint32_t>     normalStart, normalTriangles;  // per refined vertex
   // the drawn triangles whose materials need tangents (none: the mesh has no tangents) and, per drawn
   // vertex, its corners in them (tinygltf::utils::TangentAdjacency): the GPU makes the tangents too
   std::vector<uint32_t> tangentIndices, tangentStart, tangentCorners;

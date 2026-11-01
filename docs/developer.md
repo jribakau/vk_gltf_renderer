@@ -494,6 +494,9 @@ and lets them go, so it works once. `MorphSet::cageOnly` is `FigureFeed::refines
 first sync, and would otherwise run the whole CPU morph on it and keep what that made. To find what the heap holds, a temporary `operator new` that keeps a
 `CaptureStackBackTrace` of large allocations, a linker map from `_LINK_=/MAP:file` and one relink name it per function; that is how this was found.
 
+What can be worked out off the frame is. `mesh::build` makes the normal tables (`BuiltMesh::normalStart`, `normalTriangles`), which the feed only spans. A hair's
+votes on its strands' rotation become a `mat::StrandTally` on the worker, and the feed adds tallies (`strandRotation`) instead of reading millions of votes for every feed.
+
 Grey maps are half the size from their next cook on: the cooker writes one grey as BC4 with a `KTXswizzle`
 (`texcache.rs GreyMap`), which the images it cooked before need not, and a lobe's roughness from the file the
 base roughness uses asks for the same image.
@@ -852,6 +855,10 @@ Such a mesh holds nothing the route it doesn't take would read: no positions, no
 its own, and no skin on its drawn vertices (`MeshGpu::hasBase`). They come, refined once then, when
 something needs them (`Residency::ensureBase`): a static draw of the mesh, or a drawer that can't pose,
 one with morph targets on the record, or tangents with no tables to make them from.
+
+What is new comes a few at a time, since every BVH a sync asks for goes in the frame's one submission: a sync takes
+`ResidencyOptions::arrivalTriangles` of new meshes, and always one however large. The rest wait in `Residency::arriving()`, not drawn and not
+parked, and the next sync takes them with no change in the scene.
 
 A sync decodes the images it needs in one batch, side by side on the worker pool
 (`VulkanGpuBackend::createImages`), a file the host prefetched taken from

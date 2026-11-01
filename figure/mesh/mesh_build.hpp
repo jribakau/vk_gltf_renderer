@@ -155,6 +155,9 @@ struct BuiltMesh
   int                   renderVertexCount = 0;
   // triangles fanned per face on render vertices, for welded normals
   std::vector<uint32_t> renderTris;
+  // refined: per render vertex, the triangles it sums for its normal, in triangle order (normalStart
+  // has one more: vertex v's are normalTriangles[normalStart[v] .. normalStart[v + 1]))
+  std::vector<uint32_t> normalStart, normalTriangles;
   // triangles of the cage on DSON vertices, for fitting worn items to this mesh
   std::vector<uint32_t> dsonTris;
   int                   dsonVertexCount = 0;

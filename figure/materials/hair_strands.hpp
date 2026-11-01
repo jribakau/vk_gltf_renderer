@@ -43,9 +43,19 @@ std::vector<StrandVote> strandVotes(const StrandMesh& part);
 std::vector<uint32_t>   weldPositions(std::span<const float> position);
 std::vector<StrandVote> strandVotes(const StrandMesh& part, std::span<const uint32_t> weldIds);
 
+// Votes added up to what a rotation reads of them, the same size however many they were: a large hair has
+// millions, and the rotation is read at every feed. One material on several meshes adds theirs together.
+struct StrandTally
+{
+  double              c = 0, s = 0, weight = 0;
+  std::vector<double> byAxis;  // the weight of each small span of directions, 0..pi
+  StrandTally&        operator+=(const StrandTally& other);
+};
+StrandTally tallyVotes(const std::vector<StrandVote>& votes);
+
 // The anisotropy rotation (radians, across the strand, in -pi/2..pi/2) of the votes, or none when
 // the long edges do not agree.
-std::optional<float> strandRotation(const std::vector<StrandVote>& votes);
+std::optional<float> strandRotation(const StrandTally& votes);
 
 // The anisotropyStrength that roughens the main lobe across the strand as much as Iray does, or
 // none when the material asks for a round highlight.

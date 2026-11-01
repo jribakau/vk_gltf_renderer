@@ -113,18 +113,8 @@ std::shared_ptr<rs::RefineTables> refineTables(const std::shared_ptr<mesh::Built
   }
   t->drawnFrom   = geo.renderIndex;
   t->triangles   = geo.renderTris;
-  const size_t n = size_t(std::max(geo.renderVertexCount, 0));
-  t->normalStart.assign(n + 1, 0);
-  for(uint32_t v : geo.renderTris)
-    if(v < n)
-      t->normalStart[v + 1]++;
-  for(size_t v = 0; v < n; v++)
-    t->normalStart[v + 1] += t->normalStart[v];
-  std::vector<uint32_t> fill(t->normalStart.begin(), t->normalStart.end() - 1);
-  t->normalTriangles.assign(t->normalStart[n], 0);
-  for(size_t i = 0; i < geo.renderTris.size(); i++)
-    if(geo.renderTris[i] < n)
-      t->normalTriangles[fill[geo.renderTris[i]]++] = uint32_t(i / 3);
+  t->normalStart = geo.normalStart;
+  t->normalTriangles = geo.normalTriangles;
   // strand ribbons: each refined vertex is its strand point, moved off its guide when grown from one,
   // then across the strand by its width
   if(geo.ribbon)
@@ -603,6 +593,19 @@ bool FigureFeed::anyEmits(const std::vector<int>& materials) const
   return false;
 }
 
+// The drawn vertices into a record
+static void addDrawnVertices(rs::MeshRecord& r, const mesh::BuiltMesh& geo)
+{
+  const size_t count = geo.position.size() / 3;
+  r.positions.resize(count);
+  std::memcpy(r.positions.data(), geo.position.data(), count * sizeof(glm::vec3));
+  if(geo.normal.size() == count * 3)
+  {
+    r.normals.resize(count);
+    std::memcpy(r.normals.data(), geo.normal.data(), count * sizeof(glm::vec3));
+  }
+}
+
 rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn, const std::vector<uint32_t>& merged, bool thin) const
 {
   const Mesh&            m     = figure.meshes[size_t(mesh)];
@@ -611,12 +614,15 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
   rs::MeshRecord         r;
   r.name  = m.name;
   r.owner = {m_options.prop, int32_t(mesh)};
-  r.positions.resize(count);
-  std::memcpy(r.positions.data(), geo.position.data(), count * sizeof(glm::vec3));
-  if(geo.normal.size() == count * 3)
+  if(thin)
   {
-    r.normals.resize(count);
-    std::memcpy(r.normals.data(), geo.normal.data(), count * sizeof(glm::vec3));
+    r.thinVertices = count;
+    r.thinNormals  = geo.normal.size() == count * 3;
+  }
+  else
+  {
+    addDrawnVertices(r, geo);
+    addDrawnSkin(r, m);
   }
   if(geo.uv.size() == count * 2)
   {
@@ -625,8 +631,6 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
     for(size_t v = 0; v < count; v++)
       r.uv0[v] = glm::vec2(geo.uv[v * 2], flip ? 1 - geo.uv[v * 2 + 1] : geo.uv[v * 2 + 1]);
   }
-  if(!thin)
-    addDrawnSkin(r, m);
   r.indices = drawn.index();
   for(size_t k = 0; k < drawn.groups().size(); k++)
   {
@@ -734,7 +738,8 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
        || f.merged != merged || (m.geo->ribbon && f.emits != emits))
     {
       // a strand hair whose drawers pose its cage: nothing reads its drawn vertices or their skin, unless it
-      // gives light, when the emissive table does
+      // gives light, when the emissive table does. If it can't pose after all (no cage to give, tangents with no
+      // tables) they come back below.
       const bool     thin = m_options.cageOf && m.geo->ribbon && poses(m) && !emits;
       rs::MeshRecord r    = meshRecord(figure, int(mi), drawn, merged, thin);
       f.merged           = merged;
@@ -782,32 +787,27 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       f.tangentAdjacency = std::nullopt;
       // the GPU makes a refined mesh's tangents (zeros here, made when it is resident)
       if(f.refine && !f.tangentIndices.empty() && !r.uv0.empty())
-        if(const auto adjacency = tinygltf::utils::tangentAdjacency(f.tangentIndices, r.positions.size()))
+        if(const auto adjacency = tinygltf::utils::tangentAdjacency(f.tangentIndices, r.vertexCount()))
         {
           tables->tangentIndices = f.tangentIndices;
           tables->tangentStart   = adjacency->start;
           tables->tangentCorners = adjacency->corners;
-          r.tangents.assign(r.positions.size(), glm::vec4(0.f));
+          r.tangents.assign(r.vertexCount(), glm::vec4(0.f));
         }
+      f.thin = thin && f.refine && r.cageJoints.size() == r.cage.size() && (f.tangentIndices.empty() || gpuTangents(f));
+      if(thin && !f.thin)
+      {
+        r.thinVertices = 0;
+        r.thinNormals  = false;
+        addDrawnVertices(r, *m.geo);
+        addDrawnSkin(r, m);
+      }
       if(!f.tangentIndices.empty() && !gpuTangents(f))
       {
         r.tangents.assign(r.positions.size(), glm::vec4(0.f));
         tinygltf::utils::computeTangents(r.positions, r.normals, r.uv0, f.tangentIndices, r.tangents);
         f.tangentAdjacency = tinygltf::utils::tangentAdjacency(f.tangentIndices, r.positions.size());
       }
-      // the drawn streams go, once the tangents have been worked out from their counts. What can't pose after
-      // all (no cage to give, tangents with no tables) keeps them.
-      f.thin = thin && f.refine && r.cageJoints.size() == r.cage.size() && (r.tangents.empty() || gpuTangents(f));
-      if(f.thin)
-      {
-        r.thinVertices = r.positions.size();
-        r.thinNormals  = !r.normals.empty();
-        // swapped: assigning {} clears them and keeps what they hold
-        std::vector<glm::vec3>().swap(r.positions);
-        std::vector<glm::vec3>().swap(r.normals);
-      }
-      else if(thin)
-        addDrawnSkin(r, m);
       oldMeshes.push_back(f.id);
       f.id            = m_scene.addMesh(std::move(r));
       f.geo           = m.geo;

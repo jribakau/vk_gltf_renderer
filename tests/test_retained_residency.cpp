@@ -411,6 +411,64 @@ TEST(RetainedResidency, AMeshThatFindsNoMemoryIsParkedAndTheRestDraws)
   EXPECT_EQ(gpu.liveBytes(), before);
 }
 
+// What is new comes a few at a time, so that their BVHs don't all go in one submission: each sync takes what fits,
+// and at least one however large, and goes on by itself until nothing waits.
+TEST(RetainedResidency, WhatIsNewComesAFewAtATime)
+{
+  RetainedScene       scene;
+  const MaterialId    m = material(scene, "m");
+  std::vector<MeshId> meshes;
+  for(int i = 0; i < 4; i++)
+  {
+    meshes.push_back(scene.addMesh(gridMesh(8, float(i))));
+    drawn(scene, ("e" + std::to_string(i)).c_str(), meshes.back(), {m});
+  }
+  const uint64_t triangles = scene.mesh(meshes[0])->indices.size() / 3;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.arrivalTriangles = triangles * 2});
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "first");
+  EXPECT_NE(residency.meshGpu(meshes[0]), nullptr);
+  EXPECT_NE(residency.meshGpu(meshes[1]), nullptr);
+  EXPECT_EQ(residency.meshGpu(meshes[2]), nullptr);
+  EXPECT_EQ(residency.arriving(), (std::set<MeshId>{meshes[2], meshes[3]}));
+  EXPECT_TRUE(residency.parked().empty()) << "waiting isn't parked";
+  EXPECT_EQ(residency.parkedForMemory(), 0u);
+
+  // with no change in the scene, the next sync takes them, and says the frame changed
+  gpu.beginFrame();
+  const SyncResult next = residency.sync(scene);
+  EXPECT_TRUE(next.changed);
+  EXPECT_TRUE(next.drawListChanged);
+  expectClean(scene, residency, gpu, "second");
+  EXPECT_NE(residency.meshGpu(meshes[3]), nullptr);
+  EXPECT_TRUE(residency.arriving().empty());
+
+  // nothing waits: nothing runs
+  gpu.beginFrame();
+  EXPECT_FALSE(residency.sync(scene).changed);
+
+  // one too large for the sync comes alone, and then the rest
+  RetainedScene       large;
+  const MaterialId    lm = material(large, "m");
+  const MeshId        big = large.addMesh(gridMesh(16, 0.f)), small = large.addMesh(gridMesh(2, 1.f));
+  drawn(large, "big", big, {lm});
+  const EntityId smallOne = drawn(large, "small", small, {lm});
+  FakeGpuBackend gpu2;
+  Residency      second(gpu2, {.arrivalTriangles = 1});
+  second.replace(large);
+  EXPECT_NE(second.meshGpu(big), nullptr);
+  EXPECT_EQ(second.arriving(), std::set<MeshId>{small});
+  expectClean(large, second, gpu2, "alone");
+
+  // one that goes while it waits just goes
+  large.destroyEntity(smallOne);
+  gpu2.beginFrame();
+  second.sync(large);
+  EXPECT_TRUE(second.arriving().empty());
+  expectClean(large, second, gpu2, "gone");
+}
+
 TEST(RetainedResidency, AVertexEditRefitsTheBlasesOfItsMesh)
 {
   RetainedScene scene;

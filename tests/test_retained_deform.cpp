@@ -179,8 +179,10 @@ MeshRecord ribbonPiece()
   t->levels.push_back({.start = kStart, .columns = kColumns, .weights = kWeights});
   t->drawnFrom       = kColumns;
   t->triangles       = kColumns;
-  t->normalStart     = {0, 1, 2, 3};
-  t->normalTriangles = {0, 0, 0};
+  static const uint32_t kNormalStart[]     = {0, 1, 2, 3};
+  static const uint32_t kNormalTriangles[] = {0, 0, 0};
+  t->normalStart     = kNormalStart;
+  t->normalTriangles = kNormalTriangles;
   static const std::vector<glm::vec3> kOffsets(3, kRibbonWidth);
   t->offsets = kOffsets;
   m.refine = t;

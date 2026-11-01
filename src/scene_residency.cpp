@@ -2437,6 +2437,29 @@ const glm::mat4* Residency::prevWorld(uint32_t slot) const
   return slot < m_prevWorlds.size() && slot < m_instances.size() && m_instances[slot] ? &m_prevWorlds[slot] : nullptr;
 }
 
+void Residency::holdBackArrivals(const RetainedScene& scene, std::vector<DrawItem>& items)
+{
+  m_arriving.clear();
+  std::set<MeshId> coming;
+  uint64_t         triangles = 0;
+  for(const DrawItem& item : items)
+  {
+    if(m_meshes.count(item.mesh) || coming.count(item.mesh) || m_arriving.count(item.mesh))
+      continue;
+    const MeshRecord* record = scene.mesh(item.mesh);
+    const uint64_t    more   = record ? record->indices.size() / 3 : 0;
+    if(triangles > 0 && triangles + more > m_options.arrivalTriangles)
+      m_arriving.insert(item.mesh);
+    else
+    {
+      coming.insert(item.mesh);
+      triangles += more;
+    }
+  }
+  if(!m_arriving.empty())
+    std::erase_if(items, [&](const DrawItem& item) { return m_arriving.count(item.mesh) > 0; });
+}
+
 void Residency::setParked(MeshId mesh, bool parked)
 {
   if(parked ? m_parked.insert(mesh).second : m_parked.erase(mesh) > 0)
@@ -2518,7 +2541,7 @@ SyncResult Residency::sync(RetainedScene& scene)
       retireBuffer(std::exchange(d->second.prevPositions, {}));
     it = m_prevResting.erase(it);
   }
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged && !settleBuild && !liveAsleep)
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged && !settleBuild && !liveAsleep && m_arriving.empty())
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);
@@ -2546,8 +2569,9 @@ SyncResult Residency::sync(RetainedScene& scene)
         cameBack = true;
       }
   std::erase_if(items, [&](const DrawItem& item) { return m_parked.count(item.mesh) > 0; });
-  if(fresh || changes.structure || parkedChanged || cameBack)
+  if(fresh || changes.structure || parkedChanged || cameBack || !m_arriving.empty())
   {
+    holdBackArrivals(scene, items);
     // what is brought back goes and comes in one sync: its old memory is still held when the new is asked for
     if(!m_bringBack.empty())
     {

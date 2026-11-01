@@ -110,6 +110,9 @@ struct ResidencyOptions
   uint64_t textureGraceBytes = 256ull << 20;
   // the texture-info table's entries, which GltfShadeMaterial names by uint16 (D17)
   uint32_t textureInfoLimit = 65536;
+  // The triangles of what is new made resident in one sync; the first always comes, however large. Every BVH a sync
+  // asks for is built in the frame's one submission, and a few large hairs at once come near what a driver allows one.
+  uint64_t arrivalTriangles = 16'000'000;
   // blasRefitsBeforeRebuild: a BLAS refitted this many times since its build is built again in place
   // of the next refit, as a refit keeps the build's tree however far the vertices move (0: never)
   uint32_t refitsBeforeRebuild = 0;
@@ -346,6 +349,8 @@ public:
   // that finds no memory when it comes parks itself, and says so. Asked of it between syncs.
   void                    setParked(MeshId mesh, bool parked);
   const std::set<MeshId>& parked() const { return m_parked; }
+  // In the scene and not resident yet: their turn comes in a later sync (ResidencyOptions::arrivalTriangles)
+  const std::set<MeshId>& arriving() const { return m_arriving; }
   // Everything parked comes back at the next sync, as far as it finds memory
   void                    retryParked();
   // The meshes parked for want of memory, not those only let go of while hidden
@@ -628,7 +633,8 @@ private:
 
   GpuBackend&      m_gpu;
   ResidencyOptions m_options;
-  std::set<MeshId> m_parked, m_failedMeshes, m_noticedParked;
+  std::set<MeshId> m_parked, m_failedMeshes, m_noticedParked, m_arriving;
+  void             holdBackArrivals(const RetainedScene& scene, std::vector<DrawItem>& items);
   bool             m_parkedChanged = false;  // since the last sync
   // the bytes retired and not freed yet; shared with the closures, which may outlive a clear()
   std::shared_ptr<uint64_t> m_retiring = std::make_shared<uint64_t>(0);

@@ -1182,6 +1182,18 @@ BuiltMesh build(const MeshInput& m)
   // the faces were only for here: the mesh keeps the stencils
   if(refinement)
   {
+    const size_t n = size_t(std::max(renderCount, 0));
+    out.normalStart.assign(n + 1, 0);
+    for(uint32_t v : out.renderTris)
+      if(v < n)
+        out.normalStart[v + 1]++;
+    for(size_t v = 0; v < n; v++)
+      out.normalStart[v + 1] += out.normalStart[v];
+    std::vector<uint32_t> fill(out.normalStart.begin(), out.normalStart.end() - 1);
+    out.normalTriangles.assign(out.normalStart[n], 0);
+    for(size_t i = 0; i < out.renderTris.size(); i++)
+      if(out.renderTris[i] < n)
+        out.normalTriangles[fill[out.renderTris[i]]++] = uint32_t(i / 3);
     std::vector<int32_t>().swap(refinement->quads);
     std::vector<int32_t>().swap(refinement->quadValues);
     std::vector<int32_t>().swap(refinement->quadParent);
@@ -1221,7 +1233,7 @@ uint64_t ramBytes(const BuiltMesh& m)
 {
   const auto of = [](const auto& v) { return uint64_t(v.size()) * sizeof(v[0]); };
   uint64_t   bytes = of(m.position) + of(m.uv) + of(m.normal) + of(m.fullIndex) + of(m.groups) + of(m.triPoly) + of(m.renderIndex) + of(m.firstSplit)
-                   + of(m.nextSplit) + of(m.renderTris) + of(m.dsonTris) + of(m.cagePolyStart) + of(m.cagePolyVerts) + of(m.cageLineStart)
+                   + of(m.nextSplit) + of(m.renderTris) + of(m.normalStart) + of(m.normalTriangles) + of(m.dsonTris) + of(m.cagePolyStart) + of(m.cagePolyVerts) + of(m.cageLineStart)
                    + of(m.cageLineVerts) + of(m.cagePositions);
   if(m.ribbon)
     bytes += of(m.ribbon->side) + of(m.ribbon->along) + of(m.ribbon->material) + of(m.ribbon->rootFade) + of(m.ribbon->shift) + of(m.ribbon->offsets);
