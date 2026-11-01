@@ -64,7 +64,6 @@
 #include <nvutils/logger.hpp>
 
 #ifndef NDEBUG
-#include <imgui.h>
 #endif
 
 #include "shaders/gizmo_grid_shaderio.h.slang"
@@ -331,9 +330,3 @@ void GridHelperVk::renderRaster(VkCommandBuffer  cmd,
   vkCmdDraw(cmd, 6, 1, 0, 0);
 }
 
-//-----------------------------------------------------------------------------
-// Debug UI: ImGui window to tweak GridStyle at runtime (debug builds only)
-//-----------------------------------------------------------------------------
-
-#ifndef NDEBUG
-#endif

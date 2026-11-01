@@ -22,22 +22,22 @@
 /*
  * One declaration per user-settable value.
  *
- * A setting has to reach four consumers: the command line, benchmark parameter sequences, the
- * optional MCP endpoint (docs/mcp.md), and the ImGui.ini that remembers it between runs. The first
- * three all read nvutils::ParameterRegistry; the last reads nvgui::SettingsHandler.
+ * A setting has to reach the command line, the app's parameter messages, the optional MCP endpoint
+ * (docs/mcp.md), and the ImGui.ini that remembers it between runs. The first three read
+ * nvutils::ParameterRegistry; the last reads nvgui::SettingsHandler.
  *
  * Those used to be two hand-maintained lists, registered at two different points in the lifecycle
  * -- parameters in the constructor, settings in onAttach -- so no single place showed both and they
  * drifted badly (the tonemapper persisted its method but not its exposure; ptTechnique persisted
  * but ptUseSER did not). Declaring through this registry makes that impossible: one call feeds all
- * four, and Persist is a decision you have to state rather than forget.
+ * of them, and Persist is a decision you have to state rather than forget.
  *
  * Because the settings handler only exists later, persisted declarations are recorded here and
  * replayed by applyPersistence() once it does.
  *
  * ImGui.ini restore writes directly into the storage pointer through nvgui::SettingsHandler and
- * does NOT fire the parameter's callbackSuccess -- unlike the command-line and benchmark paths,
- * which do. Most callbacks are CLI/UI-only "one-shot" side effects that should NOT re-run on
+ * does NOT fire the parameter's callbackSuccess -- unlike the other paths, which do.
+ * Most callbacks are "one-shot" side effects that should NOT re-run on
  * restore (e.g. --ptSamples disables adaptive sampling, but restoring ptSamples from a session
  * where the user had adaptive sampling on must not clobber the equally-restored ptAdaptiveSampling).
  * For the few cases where a persisted value drives derived state that must be recomputed after
@@ -78,7 +78,6 @@ public:
   void add(const nvutils::ParameterBase::Info& info, T* storage, Persist persist, Rest&&... rest)
   {
     m_registry->add(info, storage, std::forward<Rest>(rest)...);
-    rememberDefault(storage);
     if(persist == Persist::eYes)
       remember(info.name, storage);
   }
@@ -88,19 +87,8 @@ public:
   void addVector(const nvutils::ParameterBase::Info& info, GLMVEC* storage, Persist persist)
   {
     m_registry->addVector(info, storage);
-    rememberDefault(storage);
     if(persist == Persist::eYes)
       remember(info.name, storage);
-  }
-
-  // An action: no storage, just a callback. Runs from the command line, a benchmark sequence, and
-  // nvpro_set_parameters alike -- nvmcp invokes callbackSuccess on the application thread, so the
-  // callback may touch scene and Vulkan state. Never persisted.
-  void addAction(nvutils::ParameterBase::Info info, std::function<void()> action)
-  {
-    info.callbackSuccess = [action = std::move(action)](const nvutils::ParameterBase* const) { action(); };
-    m_actionStorage.push_back(std::make_unique<bool>(false));
-    m_registry->add(info, m_actionStorage.back().get(), true);
   }
 
   // Replay the persisted declarations. Called once the handler exists (onAttach); declarations
@@ -132,43 +120,14 @@ public:
       m_postRestoreHooks[i]();
   }
 
-  // Restore every declared value to the default it held when it was declared -- i.e. the state of a
-  // run with no ImGui.ini and no command line (Windows > Reset All to Default). Declarations happen
-  // in the GltfRenderer constructor, before the ini is read and before the command line is applied,
-  // so the value captured there *is* the built-in default.
-  //
-  // This writes storage directly, exactly like ImGui.ini restore does, and for the same reason: the
-  // per-setting callbackSuccess describes a single CLI/UI edit, not a wholesale restore. Callers
-  // must therefore follow it with runPostRestoreHooks() to refresh derived state -- the same
-  // contract the ini path already obeys.
-  void resetToDefaults() const
-  {
-    for(size_t i = 0; i < m_defaults.size(); i++)
-      m_defaults[i]();
-  }
-
-  [[nodiscard]] const std::vector<std::string>& persistedNames() const { return m_persistedNames; }
-
 private:
-  // Capture the declaration-time value so resetToDefaults() can put it back.
-  template <class T>
-  void rememberDefault(T* storage)
-  {
-    m_defaults.push_back([storage, value = *storage]() { *storage = value; });
-  }
-
   template <class T>
   void remember(const std::string& name, T* storage)
   {
-    m_persistedNames.push_back(name);
     m_persisted.push_back([name, storage](nvgui::SettingsHandler& handler) { handler.setSetting(name, storage); });
   }
 
   nvutils::ParameterRegistry*                               m_registry{};
   std::vector<std::function<void(nvgui::SettingsHandler&)>> m_persisted;
-  std::vector<std::string>                                  m_persistedNames;
   std::vector<std::function<void()>>                        m_postRestoreHooks;
-  std::vector<std::function<void()>>                        m_defaults;
-  // Flag parameters need somewhere to write; an action only cares that the callback fired.
-  std::vector<std::unique_ptr<bool>> m_actionStorage;
 };

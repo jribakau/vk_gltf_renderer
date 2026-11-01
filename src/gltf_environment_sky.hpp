@@ -217,18 +217,6 @@ inline void setSkySunMarker(tinygltf::Node& node, const char* owner = kSkySunOwn
   return node.extras.Has(kSkySunMarkerKey);
 }
 
-// The light a node instances, or -1. `node.light` is the canonical reference; the extension map is
-// the fallback for JSON edited by hand, mirroring what gltf_compact_scene.cpp does.
-[[nodiscard]] inline int nodeLightIndex(const tinygltf::Node& node)
-{
-  if(node.light >= 0)
-    return node.light;
-  const auto ext = node.extensions.find("KHR_lights_punctual");
-  if(ext != node.extensions.end() && ext->second.Has("light"))
-    return ext->second.Get("light").GetNumberAsInt();
-  return -1;
-}
-
 // Index of the node carrying the marker, or -1. First match wins: the writer only ever creates
 // one, and a file with several is malformed rather than meaningful.
 [[nodiscard]] int findSkySunNode(const tinygltf::Model& model);

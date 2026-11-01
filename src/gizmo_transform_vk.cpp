@@ -27,7 +27,6 @@
 #include "gizmo_transform_vk.hpp"
 
 #ifndef NDEBUG
-#include <imgui.h>
 #endif
 
 #include <nvvk/debug_util.hpp>
@@ -703,8 +702,6 @@ void TransformHelperVk::startDrag(GizmoComponent   component,
       break;
   }
 
-  if(m_onTransformBegin)
-    m_onTransformBegin();
 }
 
 void TransformHelperVk::updateDrag(const glm::vec2& mousePos,
@@ -1206,67 +1203,3 @@ void TransformHelperVk::rebuildPipelines()
   createShaderObjects();
 }
 
-//-----------------------------------------------------------------------------
-// Debug UI (debug builds only)
-//-----------------------------------------------------------------------------
-
-#ifndef NDEBUG
-bool TransformHelperVk::onDebugUI(GizmoStyle& style)
-{
-  bool changed = false;
-
-  if(ImGui::CollapsingHeader("Screen Space", ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    changed |= ImGui::SliderFloat("Size (px)", &style.sizePixels, 10.0f, 200.0f);
-  }
-
-  if(ImGui::CollapsingHeader("Colors", ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    changed |= ImGui::ColorEdit3("Axis X", &style.colorX.x, ImGuiColorEditFlags_Float);
-    changed |= ImGui::ColorEdit3("Axis Y", &style.colorY.x, ImGuiColorEditFlags_Float);
-    changed |= ImGui::ColorEdit3("Axis Z", &style.colorZ.x, ImGuiColorEditFlags_Float);
-    ImGui::Separator();
-    changed |= ImGui::ColorEdit3("Plane XY", &style.colorPlaneXY.x, ImGuiColorEditFlags_Float);
-    changed |= ImGui::ColorEdit3("Plane XZ", &style.colorPlaneXZ.x, ImGuiColorEditFlags_Float);
-    changed |= ImGui::ColorEdit3("Plane YZ", &style.colorPlaneYZ.x, ImGuiColorEditFlags_Float);
-    ImGui::Separator();
-    ImGui::BeginDisabled(true);
-    changed |= ImGui::ColorEdit3("Screen Rotation", &style.colorScreenRotation.x, ImGuiColorEditFlags_Float);
-    ImGui::EndDisabled();
-    changed |= ImGui::ColorEdit3("Uniform Scale", &style.colorScaleUniform.x, ImGuiColorEditFlags_Float);
-  }
-
-  if(ImGui::CollapsingHeader("Hover / Alpha", ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    changed |= ImGui::SliderFloat("Hover Brightness", &style.hoverBrightness, 1.0f, 3.0f);
-    changed |= ImGui::SliderFloat("Hover Mix", &style.hoverMix, 0.0f, 1.0f);
-    changed |= ImGui::SliderFloat("Plane Alpha", &style.planeAlpha, 0.0f, 1.0f);
-    changed |= ImGui::Checkbox("Occlusion Dither", &style.occlusionDither);
-  }
-
-  if(ImGui::CollapsingHeader("Geometry (requires rebuild)"))
-  {
-    ImGui::BeginDisabled(true);
-    ImGui::SliderFloat("Shaft Radius", &style.shaftRadius, 0.005f, 0.1f);
-    ImGui::SliderFloat("Shaft Length", &style.shaftLength, 0.2f, 3.0f);
-    ImGui::SliderFloat("Cone Radius", &style.coneRadius, 0.02f, 0.2f);
-    ImGui::SliderFloat("Cone Height", &style.coneHeight, 0.05f, 0.5f);
-    ImGui::SliderInt("Cone Segments", &style.coneSegments, 4, 64);
-    ImGui::Separator();
-    ImGui::SliderFloat("Ring Radius", &style.ringRadius, 0.5f, 3.0f);
-    ImGui::SliderFloat("Ring Tube Radius", &style.ringTubeRadius, 0.005f, 0.1f);
-    ImGui::SliderInt("Ring Major Segs", &style.ringMajorSegs, 16, 128);
-    ImGui::SliderInt("Ring Minor Segs", &style.ringMinorSegs, 4, 32);
-    ImGui::Separator();
-    ImGui::SliderFloat("Scale Cube Size", &style.scaleCubeSize, 0.02f, 0.3f);
-    ImGui::SliderFloat("Scale Cube Axis Len", &style.scaleCubeAxisLength, 0.5f, 3.0f);
-    ImGui::SliderFloat("Center Cube Scale", &style.centerCubeScale, 0.5f, 3.0f);
-    ImGui::Separator();
-    ImGui::SliderFloat("Plane Size", &style.planeSize, 0.05f, 0.5f);
-    ImGui::SliderFloat("Plane Offset", &style.planeOffset, 0.1f, 1.0f);
-    ImGui::EndDisabled();
-  }
-
-  return changed;
-}
-#endif

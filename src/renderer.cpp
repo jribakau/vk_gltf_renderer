@@ -224,7 +224,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
     , m_settings(paramReg)
 {
   // Every user-settable value is declared once here (see settings_registry.hpp): the command line,
-  // benchmark sequences, MCP, and ImGui.ini all follow from this one call. Persist says whether the
+  // MCP, the app's parameter messages and ImGui.ini all follow from this one call. Persist says whether the
   // value is remembered between runs.
   m_settings.add({.name            = "envSystem",
                   .help            = "Environment: [Sky:0, HDR:1, None:2, Plain:3, Gradient:4]",
@@ -239,7 +239,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({.name = "hdrIntensity", .help = "HDR Environment Intensity", .callbackSuccess = restartStill},
                  &m_resources.settings.hdrEnvIntensity, Persist::eYes, 0.0F, 100.0F);
   // One orientation for every environment -- OMI_environment_sky's `rotation`, in its own form. It
-  // is also where north is, so like the Time of Day settings, an edit from outside the UI re-places
+  // is also where north is, so like the Time of Day settings, an edit re-places
   // the sun after the ini restore (see m_todDrivesSun).
   m_settings.addVector({.name = "envRotation",
                         .help = "Environment rotation: unit quaternion x y z w (glTF order); turns the HDR, "
@@ -265,12 +265,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.useSolidBackground, Persist::eYes);
   m_settings.addVector({.name = "solidBackgroundColor", .help = "Solid Background Color", .callbackSuccess = restartStill},
                        &m_resources.settings.solidBackgroundColor, Persist::eYes);
-  // Bounds mirror the "Max Samples" slider in PathTracer::onUIRender.
   m_settings.add({"ptMaxSamples", "Path tracer: stop accumulating at this many samples per pixel"},
                  &m_resources.settings.maxSamples, Persist::eYes, 1, 1000000);
-  // Persisted: the UI's Play/Pause writes it, so a user who paused keeps new scenes paused across
-  // sessions. Headless, scripted and benchmark runs neither read nor write the ini, so they can't
-  // change what the next interactive session plays.
+  // Persisted. Headless and scripted runs neither read nor write the ini, so they can't change what
+  // the next session plays.
   m_settings.add(
       {.name = "animPlay",
        .help = "Play animations [Off:0, On:1]. Default: on (last Play/Pause choice is remembered), off in headless runs. "
@@ -289,14 +287,13 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   "count is that of the image shown, denoised or not"},
                  &m_outputSamples, Persist::eNo);
 
-  // Tonemapper. Ranges match the UI sliders in nvgui/tonemapper.cpp, so a script or an agent is
-  // bounded the same way the user is. tmBrightness and tmVignette were once tmGamma and
+  // Tonemapper. tmBrightness and tmVignette were once tmGamma and
   // tmWhitePoint -- names for fields TonemapperData does not have.
   m_settings.add({"tmMethod", "Tonemapper: Method [Filmic:0, Uncharted:1, Clip:2, ACES:3, AgX:4, KhronosPBR:5]"},
                  &m_resources.tonemapperData.method, Persist::eYes, 0, 5);
   m_settings.add({"tmActive", "Tonemapper: Enable tone mapping [Off:0, On:1]"}, &m_resources.tonemapperData.isActive,
                  Persist::eYes, 0, 1);
-  // Floor below the UI slider's 0.1, which is not enough headroom for a bright environment with
+  // Floor below 0.1, which is not enough headroom for a bright environment with
   // auto-exposure off -- what a reproducible capture wants. Out-of-range values are clamped rather
   // than refused, so too high a floor is silent: the run succeeds and the image is simply not the
   // one that was asked for.
@@ -363,7 +360,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({.name = "sunElevation", .help = "Sun elevation (degrees); shared by every sky type", .callbackSuccess = applySunAngles},
                  &m_resources.settings.sunElevation, Persist::eYes, -90.0F, 90.0F);
   // ImGui.ini restore writes sunAzimuth/Elevation directly and never runs applySunAngles, so
-  // Resources::sunDirection -- the value rendering and the sky UI actually use -- would stay at
+  // Resources::sunDirection -- the value rendering actually uses -- would stay at
   // its default and the remembered sun position would silently not be restored. Re-run the
   // conversion once, after Application::run() has reloaded the ini (see onUIRender's one-shot).
   //
@@ -442,7 +439,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   // the direction from them cannot tell it is undoing an explicit instruction. Silently: the run
   // simply renders yesterday's sun, which looks exactly like the widget not working.
   //
-  // So if anything asked for a time of day from outside the UI, it asks again here, after the
+  // So if anything asked for a time of day, it asks again here, after the
   // restore. Registered after that hook, and hooks run in order, so it wins. With no such request
   // the flag is false and the remembered angles stand, which is what reopening the app should do.
   m_settings.addPostRestoreHook([this]() {
@@ -686,8 +683,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                 {".png", ".jpg", ".jpeg"}, &m_screenshotParam);
 
   // Initialize camera manipulator
-  m_cameraManip = std::make_shared<AnchorCameraManipulator>();
-  m_cameraManip->setAnchorRequest([this](const glm::dvec2& screenPos) { return requestAnchorPick(screenPos); });
+  m_cameraManip = std::make_shared<DragCameraManipulator>();
   m_resources.cameraManip = m_cameraManip;  // Share with resources
 }
 
@@ -724,9 +720,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     return !(m_parameterParser && m_parameterParser->wasParsed(key));
   });
   m_settingsHandler.addImGuiHandler();
-
-  // Customize ImGui style for better visibility
-  ImGui::GetStyle().Colors[ImGuiCol_ButtonActive] = (ImVec4)ImColor::HSV(0.3F, 0.5F, 0.5F);
 
   // ===== Memory Allocation & Buffer Management =====
   m_resources.allocator.init({
@@ -803,7 +796,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
 
   // Ray picker
   m_rayPicker.init(&m_resources.allocator);
-  m_anchorPicker.init(&m_resources.allocator);
 
   // Tonemapper
   m_resources.tonemapper.init(&m_resources.allocator, tonemapper_slang);
@@ -899,7 +891,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_pathTracer.setCacheDir(m_cacheDir);
   m_pathTracer.onAttach(m_resources, &m_profilerGpuTimer);
   m_pathTracer.setProfilerTimeline(m_profilerTimeline);
-  m_pathTracer.setBusyWindow(&m_busy);  // Show BusyState during async shader/pipeline compiles
+  m_pathTracer.setBusyState(&m_busy);
   m_rasterizer.onAttach(m_resources, &m_profilerGpuTimer);
 
   m_pathTracer.createPipeline(m_resources);
@@ -975,16 +967,6 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
 }
 
 //--------------------------------------------------------------------------------------------------
-// Render the UI elements and handle UI-driven scene interactions
-// This method is responsible for:
-// 1. Rendering the settings panel with renderer selection, environment options, and debug controls
-// 2. Displaying the scene graph hierarchy and handling object selection
-// 3. Managing variant and animation controls when available in the loaded scene
-// 4. Showing scene statistics and performance metrics
-// 5. Rendering the viewport with the tonemapped image and optional 3D axis overlay
-// 6. Processing changes from UI interactions and triggering re-rendering when needed
-// 7. Displaying the busy indicator during asynchronous operations
-// The UI layout is organized hierarchically with collapsible sections for better usability
 bool GltfRenderer::isHeadlessMode() const
 {
   return m_app != nullptr && m_app->isHeadless();
@@ -1160,8 +1142,8 @@ void GltfRenderer::onPostRender()
   m_sampleCapture.pending.clear();
 }
 
-// One rule for every way the viewport is saved (File > Save Image, --output, --outputSamples, the
-// benchmark screenshot): a .hdr file gets the linear rendered image, so it can be measured; any
+// One rule for every way the viewport is saved (--output, --outputSamples, the screenshot
+// parameter): a .hdr file gets the linear rendered image, so it can be measured; any
 // other extension gets what the screen shows.
 void GltfRenderer::saveViewportImage(const std::filesystem::path& filename)
 {
@@ -1379,7 +1361,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     return;
   }
 
-  // Consume the done signal from the busy state, this will remove the Progress Bar from the UI.
+  // Consume the done signal from the busy state.
   if(m_busy.isDone())
   {
     m_busy.consumeDone();
@@ -1397,7 +1379,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     m_loadPipeline.drain();
   }
   else if(m_loadPipeline.poll())
-    return;  // Still loading -- give control back to the UI
+    return;  // Still loading
 
   // Preview re-bake for a control that is being dragged. Unlike the commit path this records into
   // the frame's own command buffer and waits on nothing, so it belongs here rather than in
@@ -1442,16 +1424,9 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
       resetFrame();
     }
   }
-  else if(m_envCommitOwed && !ImGui::IsAnyItemActive())
+  else if(m_envCommitOwed)
   {
     // First frame since the edits stopped: pay for the full rebuild the previews skipped.
-    //
-    // "Stopped" also means the control has been let go. A slider reports a change only on frames
-    // where the mouse moved, so a drag held still for one frame used to commit mid-drag -- a device
-    // wait and a full-quality rebuild -- and the next movement dropped back to preview quality. The
-    // physical sky flickered between the two, worst under heavy Mie, whose haze is mostly the
-    // multiple scattering a preview trims. Drivers that are not ImGui controls (the gizmo, an
-    // animated sun) still settle as before: when they stop requesting previews.
     m_envCommitOwed = false;
     onEnvironmentChanged();
   }
@@ -1476,7 +1451,6 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
 
   updateClickPickState();   // Poll the previous click's async ray-pick, apply it once ready (see m_pendingClickPick)
-  updateAnchorPickState();  // Same for the camera anchor of a Shift+drag (see m_pendingAnchorPick)
   // Check for changes
   bool changed{false};
   changed |= m_pathTracer.keepOneAccumulationDenoiser(m_resources);  // OptiX or OIDN, not both
@@ -1641,13 +1615,6 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
         PendingClickResult{.semaphoreState = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore()),
                            .isDoubleClick  = m_pendingClickPick->isDoubleClick};
     m_pendingClickPick.reset();
-  }
-  if(m_pendingAnchorPick)
-  {
-    m_pendingAnchorPick->tlas = m_resources.gpuView().tlas();
-    m_anchorPicker.run(cmd, *m_pendingAnchorPick);
-    m_pendingAnchorResult = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore());
-    m_pendingAnchorPick.reset();
   }
   // The grid and transform gizmo are drawn into the frame: a headless --stream is the native
   // viewport, so the grid shows there.
@@ -3095,15 +3062,6 @@ void GltfRenderer::placeCameraFromFile(const tinygltf::Model& model)
   }
 }
 
-// A notification has no overlay to go to: the log says it.
-void GltfRenderer::notify(const std::string& message, bool isError)
-{
-  if(isError)
-    LOGE("%s\n", message.c_str());
-  else
-    LOGI("%s\n", message.c_str());
-}
-
 //--------------------------------------------------------------------------------------------------
 // Helper function to cleanup the current scene
 //
@@ -3135,9 +3093,6 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   // be consumed by the newly loaded scene once its semaphore settles, applying a pick result to the wrong node indices.
   m_pendingClickPick.reset();
   m_pendingClickResult.reset();
-  m_pendingAnchorPick.reset();
-  m_pendingAnchorResult.reset();
-  m_cameraManip->cancelAnchor();  // Not resolveAnchor(): a miss would replay queued wheel steps
 
 }
 
@@ -3180,21 +3135,6 @@ rs::RetainedScene& GltfRenderer::hostScene()
   return *m_resources.retainedScene;
 }
 
-namespace {
-// whether a clip of the store has a length to play (ui::animation::hasPlayableAnimation's rule)
-bool hasPlayableClip(const rs::RetainedScene& store)
-{
-  for(rs::ClipId id : store.clips())
-    if(const rs::ClipRecord* clip = store.clip(id))
-    {
-      const std::array<float, 2> range = clip->range();
-      if(range[1] - range[0] > 1e-6f)
-        return true;
-    }
-  return false;
-}
-}  // namespace
-
 void GltfRenderer::replaceHostScene()
 {
   rs::RetainedScene& store = hostScene();
@@ -3216,7 +3156,6 @@ void GltfRenderer::replaceHostScene()
     if(!store.clip(m_hostClip.clip()))
       m_hostClip = {};
   }
-  ++m_sceneGeneration;
   // the previous scene's backend, emptied, when the cleanup kept it: its decoded images are this one's to take
   const bool retire = m_resources.retainedGpu != nullptr;
   if(retire)
@@ -3242,7 +3181,6 @@ void GltfRenderer::replaceHostScene()
     if(fv::timing::enabled())
       m_resources.retainedGpu->timeBuilds();
     m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
-    m_resources.retainedGpu->setPlayableAnimation(hasPlayableClip(store));
     if(retire)
     {
       m_resources.retainedGpu->beginFrame();
@@ -3535,7 +3473,7 @@ void GltfRenderer::createDescriptorSets()
 // Load an environment map / scene by path.
 //
 // These back the --hdrfile / --scenefile parameters, which carry a callbackSuccess so that setting
-// them does the load -- from the command line, a benchmark sequence, or nvpro_set_parameters alike
+// them does the load -- from the command line or nvpro_set_parameters alike
 // (nvmcp invokes the callback on the application thread). Before that, writing either was accepted
 // and did nothing, because both were only read once during start-up.
 //
@@ -3559,9 +3497,8 @@ bool GltfRenderer::loadHdrEnvironment(const std::filesystem::path& filename)
   // Loading an environment the renderer is not told to sample would be another silent no-op.
   m_resources.settings.envSystem = shaderio::EnvSystem::eHdr;
   // A new HDR changes hdrIbl.getIntegral(), which defaultFireflyClamp() uses when envSystem is
-  // eHdr. Refresh the path-tracer clamp in lock-step -- matching the pattern in onFileDrop, the
-  // and the HDR-picker UI -- so a --hdrfile change from a benchmark
-  // sequence or MCP write doesn't keep clamping against the previous HDR's integral.
+  // eHdr. Refresh the path-tracer clamp in lock-step -- so a --hdrfile change from an MCP write
+  // doesn't keep clamping against the previous HDR's integral.
   calibrateFireflyClamp();
   resetFrame();
   return true;
@@ -3628,7 +3565,7 @@ bool GltfRenderer::reloadShaders()
 }
 
 //--------------------------------------------------------------------------------------------------
-// Recompile the shaders of the current renderer. See onUIMenu() for the key binding
+// Recompile the shaders of the current renderer.
 bool GltfRenderer::compileShaders()
 {
   nvutils::ScopedTimer st(__FUNCTION__);
@@ -3669,29 +3606,6 @@ void GltfRenderer::resetFrame()
   m_resources.frameCount = -1;
 }
 
-// AnchorCameraManipulator::AnchorRequest: called from camera_controls::update() inside the
-// "Viewport" window when an anchored drag or wheel step begins. Like a click, it only captures the ray; onRender()
-// records the pick and updateAnchorPickState() answers the manipulator.
-bool GltfRenderer::requestAnchorPick(const glm::dvec2& screenPos)
-{
-  if(m_busy.isBusy() || m_resources.gpuView().tlas() == VK_NULL_HANDLE)
-    return false;
-
-  // A new request supersedes one still in flight: the manipulator only waits for the latest, and an
-  // older answer would otherwise be taken for it (e.g. a wheel pick becoming a drag's anchor).
-  m_pendingAnchorResult.reset();
-
-  const ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-  const ImVec2 avail     = ImGui::GetContentRegionAvail();
-  m_pendingAnchorPick    = nvvk::RayPicker::PickInfo{
-         .modelViewInv   = glm::inverse(m_cameraManip->getViewMatrix()),
-         .perspectiveInv = glm::inverse(m_cameraManip->getPerspectiveMatrix()),
-         .isOrthographic = (m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic) ? 1 : 0,
-         .pickPos        = {(screenPos.x - cursorPos.x) / avail.x, (screenPos.y - cursorPos.y) / avail.y},
-  };
-  return true;
-}
-
 //--------------------------------------------------------------------------------------------------
 // Update the frame counter
 // This is called every frame to update the frame counter or to reset it if the camera has changed
@@ -3700,7 +3614,6 @@ bool GltfRenderer::requestAnchorPick(const glm::dvec2& screenPos)
 // Returns true if the frame counter is less than the maximum number of frames
 bool GltfRenderer::updateFrameCounter()
 {
-  ++m_resources.renderPassCount;  // monotonic - never reset by resetFrame(), see its doc comment
 
   static nvutils::CameraManipulator::Camera ref_camera{};
 
@@ -3885,7 +3798,6 @@ void GltfRenderer::destroyResources()
   m_resources.samplerPool.deinit();
   m_resources.staging.deinit();
   m_rayPicker.deinit();
-  m_anchorPicker.deinit();
   m_resources.allocator.deinit();
 }
 
@@ -3906,19 +3818,4 @@ void GltfRenderer::updateClickPickState()
   applyClickPickResult(m_rayPicker.getResult(), isDoubleClick);
 }
 
-// Non-blocking poll of the camera anchor ray-pick, the same way as updateClickPickState().
-void GltfRenderer::updateAnchorPickState()
-{
-  if(!m_pendingAnchorResult || !m_pendingAnchorResult->testSignaled(m_device))
-    return;
-
-  m_pendingAnchorResult.reset();
-  const nvvk::RayPicker::PickResult pickResult = m_anchorPicker.getResult();
-  if(pickResult.instanceID < 0 || pickResult.hitT <= 0.F)
-  {
-    m_cameraManip->resolveAnchor(std::nullopt);
-    return;
-  }
-  m_cameraManip->resolveAnchor(glm::dvec3(pickResult.worldRayOrigin + pickResult.worldRayDirection * pickResult.hitT));
-}
 

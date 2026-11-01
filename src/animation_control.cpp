@@ -18,19 +18,11 @@
  */
 
 //
-// Animation UI for the glTF renderer: AnimationControl (playback state + domain logic --
-// play/pause, clip selection, scrub, frame step, reset, speed; no ImGui, so other call sites can
-// read it without pulling in the UI layer) and ui::animation::renderStripWidgets, the transport
-// row overlaid at the bottom of the viewport. State owner: Resources::animationControl;
-// GltfRenderer::updateAnimation drives it every frame.
+// Playback state: play/pause, clip selection, scrub, reset, speed. State owner:
+// Resources::animationControl; GltfRenderer::updateAnimation drives it every frame.
 //
 
 #include "animation_control.hpp"
-
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <string>
 
 #include <imgui/imgui.h>
 
@@ -49,16 +41,4 @@ float AnimationControl::deltaTime() const
   return runOnce ? speed * kStepDeltaSeconds : ImGui::GetIO().DeltaTime * speed;
 }
 
-std::string AnimationControl::formatTime(float seconds)
-{
-  if(!std::isfinite(seconds) || seconds < 0.0F)
-    seconds = 0.0F;
-  const int total   = static_cast<int>(seconds);
-  const int minutes = total / 60;
-  const int secs    = total % 60;
-  const int ms      = static_cast<int>((seconds - static_cast<float>(total)) * 1000.0F);
-  char      buffer[16];
-  std::snprintf(buffer, sizeof(buffer), "%02d:%02d.%03d", minutes, secs, ms);
-  return buffer;
-}
 

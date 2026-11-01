@@ -46,7 +46,7 @@ more than pays for the DLSS pass itself. **DLAA** traces at native resolution.
 The DLSS-SR quality setting (`--dlssQuality`) is unrelated: it only sizes the rasterizer's Super
 Resolution input. The DLSS-RR panel shows the resolution actually in use
 ("Input resolution"), and each resize is logged as `DLSS-RR: input WxH for output WxH`. Changing
-the mode from any source (UI, command line, benchmark sequence, MCP) recreates the feature and
+the mode from any source (the app, command line, MCP) recreates the feature and
 resets its temporal history; `Dlss::needsRecreate` compares the setting with the mode the feature
 was built with.
 
@@ -443,12 +443,7 @@ This is exposed as the `EXT_DLSS_NR` glTF material extension. The full pipeline:
    When a mask is present, `InUseAutoMask = 0`; when absent (Kind::SR or path tracer not active),
    it falls back to the `useAutoMask` setting.
 
-5. **UI** — `UiInspector::materialDlssNr()` (`src/ui_inspector.cpp`) renders four `SliderFloat`
-   controls (Intensity / Local Tone / Local Structure / Global Tone) via
-   `renderMaterialExtensionSection()`, which provides the Add / Remove scaffolding automatically.
-   The extension appears in the **Material Extensions** section of the inspector.
-
-6. **glTF support** — the extension's data goes through the material payload
+5. **glTF support** — the extension's data goes through the material payload
    (`figure/materials/material_gltf.cpp`).
 
 > **Rasterizer note:** The rasterizer does not write `eNrMask` (no 4th framebuffer attachment in
@@ -468,5 +463,4 @@ If a future NGX SDK exposes a new per-pixel input (e.g. skin mask, emissive mask
 4. Register the slot in `kRrSlots[]` (`src/renderer_pathtracer.cpp`).
 5. Wire the NGX input in `Dlss::evaluateNr()` (`src/dlss.cpp`), mirroring the `pInControlMask`
    pattern.
-6. Add tinygltf helpers, material cache loading, glTF extension registration, and inspector UI
-   following the `EXT_DLSS_NR` pattern.
+6. Add tinygltf helpers, material cache loading and glTF extension registration, following the `EXT_DLSS_NR` pattern.

@@ -47,7 +47,6 @@
 #include <nvvk/sbt_generator.hpp>
 #include <nvvk/specialization.hpp>
 #include <nvutils/parameter_registry.hpp>
-#include <nvgui/tooltip.hpp>
 
 #include "renderer_pathtracer.hpp"
 #include "sample_schedule.hpp"
@@ -343,17 +342,14 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
 void PathTracer::registerParameters(SettingsRegistry* settings, std::function<void()> resetAccumulation)
 {
   // A setting that changes what a frame renders must restart the accumulation when it is set from the
-  // command line, a benchmark sequence or MCP: otherwise new frames are averaged into the old image, and
+  // command line, the app or MCP: otherwise new frames are averaged into the old image, and
   // once the frame count has reached maxFrames nothing renders at all.
   const nvutils::ParameterBase::CallbackSuccess reset = [resetAccumulation](const nvutils::ParameterBase* const) {
     if(resetAccumulation)
       resetAccumulation();
   };
   // PathTracer-specific settings. Persist marks what survives a restart (see settings_registry.hpp).
-  // Bounds mirror the UI sliders so CLI and benchmark sequences accept the same range the UI does:
-  //   ptMaxDepth  -> "Max Depth" slider in showUI() (0..20)
-  //   ptSamples   -> "Samples per Frame" slider in onUIRender() (MIN_SAMPLES_PER_PIXEL..MAX_SAMPLES_PER_PIXEL);
-  //                  the adaptive-sampling autopilot also clamps to the same range at runtime.
+  // ptSamples: the adaptive-sampling autopilot clamps to the same range at runtime.
   settings->add({.name = "ptMaxDepth", .help = "PathTracer: Maximum ray depth", .callbackSuccess = reset}, &m_maxDepth, Persist::eYes, 0, 20);
   settings->add({.name            = "ptMaxDepthDlss",
                  .help            = "PathTracer: DLSS frames: the bounces a path takes, when below ptMaxDepth (0: ptMaxDepth). "
@@ -550,8 +546,8 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   settings->add({"ptTechniqueDlss", "PathTracer: Rendering technique of DLSS frames [RayQuery:0, RayTracing:1]"},
                 (int*)&m_techniqueDlss, Persist::eYes, 0, 1);
   // SER is a specialization constant of both path-tracing pipelines, so a change is picked up by
-  // ensureShadersAndPipelines() on the next frame -- which is what makes it settable mid-run from a
-  // benchmark sequence, not just on the command line. Silently ignored when the device lacks SER.
+  // ensureShadersAndPipelines() on the next frame -- which is what makes it settable mid-run, not
+  // just on the command line. Silently ignored when the device lacks SER.
   settings->add({"ptUseSER", "PathTracer: Use Shader Execution Reordering (ignored if unsupported)"}, &m_useSER, Persist::eYes);
   settings->add({"ptAdaptiveSampling", "PathTracer: Enable adaptive sampling"}, &m_adaptiveSampling, Persist::eYes);
   settings->add({.name = "ptPerformanceTarget",
@@ -727,8 +723,8 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
       compiled = m_compiled;
     }
     LOGI("[PathTracer] Shader recompile: %s\n", compiled.shaderDiff(makeVariantKey(resources)).c_str());
-    if(m_busyWindow)
-      m_busyWindow->setReason("Compiling Slang shaders...");
+    if(m_busy)
+      m_busy->setReason("Compiling Slang shaders...");
     {
       const ShaderWorkScope stage(ShaderWork::eCompile);
       compileShader(resources);
@@ -736,8 +732,7 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
     work = getPendingCompileWork(resources);
   }
 
-  // SER (--ptUseSER / the UI checkbox) and the DLSS transparency mode (--dlssTransparency / the
-  // UI combo) are pipeline specialization constants, not shader macros, so they need no recompile --
+  // SER (--ptUseSER) and the DLSS transparency mode (--dlssTransparency) are pipeline specialization constants, not shader macros, so they need no recompile --
   // only the pipelines built with the old values have to go. The SBT is generated from the RTX
   // pipeline, so it goes with it.
   if(work.stalePipeline)
@@ -768,14 +763,14 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
     const ShaderWorkScope stage(ShaderWork::ePipeline);
     if(m_renderTechnique == RenderTechnique::RayQuery)
     {
-      if(m_busyWindow)
-        m_busyWindow->setReason("Creating Ray Query pipeline...");
+      if(m_busy)
+        m_busy->setReason("Creating Ray Query pipeline...");
       createRqPipeline(resources);
     }
     else
     {
-      if(m_busyWindow)
-        m_busyWindow->setReason("Creating RTX pipeline...");
+      if(m_busy)
+        m_busy->setReason("Creating RTX pipeline...");
       createRtxPipeline(resources);
     }
   }
@@ -791,13 +786,13 @@ void PathTracer::startAsyncCompile(Resources& resources)
 
   // Without a BusyState nothing gates the next frame, which then joins this thread in
   // startAsyncCompile(): the compile still completes, synchronously.
-  if(m_busyWindow)
-    m_busyWindow->start("Preparing path tracer...");
+  if(m_busy)
+    m_busy->start("Preparing path tracer...");
 
   m_compileThread = std::thread([this, &resources]() {
     ensureShadersAndPipelines(resources);
-    if(m_busyWindow)
-      m_busyWindow->stop();
+    if(m_busy)
+      m_busy->stop();
   });
 }
 

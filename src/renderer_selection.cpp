@@ -30,8 +30,7 @@
 #include "tinygltf_utils.hpp"
 
 // Applies a completed async ray-pick result (see m_pendingClickPick's comment in renderer.hpp for
-// the full pipeline) - selection, and on a double click, camera recenter. Exactly the logic that
-// used to run inline in mouseClickedInViewport() right after its now-removed blocking GPU wait.
+// the full pipeline) - selection, and on a double click, camera recenter.
 void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickResult, bool isDoubleClick)
 {
   // Environment was picked (no hit)

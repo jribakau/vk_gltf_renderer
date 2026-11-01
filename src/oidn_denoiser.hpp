@@ -24,7 +24,6 @@
 #include <array>
 #include <memory>
 
-#include <nvapp/imgui_texture_visualizer.hpp>
 #include <nvutils/profiler.hpp>
 #include <nvvk/context.hpp>
 #include <nvvk/profiler_vk.hpp>
@@ -191,5 +190,4 @@ private:
   nvutils::ProfilerTimeline*  m_profilerTimeline = nullptr;
 
   nvvk::RenderTarget         m_target;  // See GBufferIndex
-  nvapp::ImTextureVisualizer m_imageUi{};
 };

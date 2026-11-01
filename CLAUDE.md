@@ -48,8 +48,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 | What a glTF file brings in | `rs::importGltf` in `src/scene_import_gltf.cpp`; materials in `figure/materials/material_gltf.cpp` |
 | Visualization / debug modes | `enum Visualization` in `shaders/shaderio.h` |
 | Environment types | `enum EnvSystem` in `shaders/shaderio.h` |
-| Command-line / MCP / persisted settings (names, defaults, whether they persist) | `m_settings.add(...)` in `src/renderer*.cpp`, plus `parameterRegistry.add(...)` in `src/main.cpp` and `src/benchmarking.cpp` |
-| Viewport mouse bindings (camera drags, wheel, click to select, double-click to set the point of interest) and camera movement keys | `kBindings` in `src/camera_controls.cpp` — the manipulator, the viewport input handling, `mouseClickedInViewport()` and Help's Camera tab all read it |
+| Command-line / MCP / persisted settings (names, defaults, whether they persist) | `m_settings.add(...)` in `src/renderer*.cpp`, plus `parameterRegistry.add(...)` in `src/main.cpp` |
+| What a viewport drag does to the camera | `camera_controls::dragMotion` in `src/camera_controls.hpp`; the app's view input in `FvHost::Impl` (`src/fv_host_live.cpp`) |
 | Material extension gates | `MAT_EXT_*` in `shaders/gltf_material_config.h`, `GLTF_USE_*` in `shaders/gltf_eval_config.h` |
 | Host/device structs & layout | `shaders/shaderio.h` + the `*_io.h.slang` / `*_shaderio.h.slang` headers |
 | Which files are tests/benchmarks | `tests/CMakeLists.txt` |

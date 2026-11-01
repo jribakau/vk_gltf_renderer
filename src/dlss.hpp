@@ -35,8 +35,8 @@
 //
 //   * NR        - DLSS Neural Rendering (display-resolution image enhancement).
 //                 Available on both RR and SR instances; evaluateNr() runs after
-//                 tonemapping (NR expects LDR input). Enabled via
-//                 onUiNr(), gated by isNrAvailable() (detected during NGX async init).
+//                 tonemapping (NR expects LDR input); availability is detected during NGX
+//                 async init.
 //
 // Architecture:
 //
@@ -101,15 +101,10 @@
 #include <glm/glm.hpp>
 
 #include "nvvk/render_target.hpp"
-#include <nvapp/imgui_texture_visualizer.hpp>
 #include "nvutils/parameter_registry.hpp"
 
 #include "dlss_wrapper.hpp"
 #include "nvsdk_ngx_helpers_vk.h"
-
-namespace nvgui {
-class SettingsHandler;
-}
 
 
 class Dlss
@@ -212,7 +207,7 @@ public:
   /// onSettingChanged, if provided, is attached as ParameterBase::callbackSuccess to every
   /// setting this helper registers, so a CLI or benchmark change fires the caller's hook.
   /// This lets a caller (e.g. Rasterizer) invalidate its own state (recorded scene cmd) when
-  /// DLSS parameters change outside the UI path. Not fired on ImGui.ini restore -- ini loads
+  /// DLSS parameters change. Not fired on ImGui.ini restore -- ini loads
   /// bypass callbackSuccess (see settings_registry.hpp).
   void registerParameters(SettingsRegistry* settings, std::function<void()> onSettingChanged = {});
 
@@ -411,7 +406,6 @@ private:
   nvvkgltf::GpuMemoryTracker* m_appMemoryTracker = nullptr;
 
   nvvk::RenderTarget         m_innerGBuffer{};
-  nvapp::ImTextureVisualizer m_guideVisualizer{};
   bool                       m_innerTracked = false;
 
   // ---- Per-frame state owned by beginFrame() / consumed by evaluate() ------------------------

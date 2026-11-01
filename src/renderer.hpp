@@ -114,10 +114,6 @@ public:
   // advancing them resets the path tracer's accumulation every frame.
   void applyHeadlessDefaults();
 
-  /// Presentation mode (F11, View > Presentation Mode, --presentationMode): see ui_presentation_mode.hpp.
-  /// Registers a panel owned by another application element, so presentation mode hides it too.
-  /// Leave presentation mode now, restoring the panels and the window. main() calls this before
-  /// Application::deinit(), which persists the window geometry and the ImGui.ini.
 
   /// Drain the queue, recompile the active renderer's shaders, and reset accumulation.
   /// Application thread only: it destroys and recreates live pipelines.
@@ -128,7 +124,7 @@ public:
   /// Drive the shared sun from azimuth/elevation in degrees -- the inverse of syncSunAngles().
 
   /// Find the light the scene marks as the sky's sun and adopt its direction, or report that
-  /// there is none. Runs at the frame top, so moving that light -- gizmo, inspector, animation --
+  /// there is none. Runs at the frame top, so moving that light -- gizmo, animation --
   /// carries the sky with it.
   ///
   /// Only a *marked* light qualifies. An ordinary directional light is an ordinary light: the
@@ -404,7 +400,6 @@ public:
   // The clip that plays (none: none), `at` seconds from its start; AnimationControl plays, pauses,
   // loops and speeds it
   void       setHostClip(rs::ClipId clip, float at = 0.f) override;
-  rs::ClipId hostClip() const { return m_hostClip.clip(); }
   // its time and length, from its start
   float hostClipTime() const override { return m_hostClip.time() - m_hostClip.start(); }
   float hostClipDuration() const override { return std::max(0.f, m_hostClip.end() - m_hostClip.start()); }
@@ -420,9 +415,7 @@ public:
   // --cacheDir. Empty keeps the pipeline cache and compiled SPIR-V next to the executable.
   // Copied into the path tracer before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
-  bool isEditable() const { return m_editable; }
   // Bumped on every scene load, so a host's cached ids can tell scenes apart.
-  uint64_t sceneGeneration() const { return m_sceneGeneration; }
 
   /// Ray-pick at a normalized viewport position (0..1, origin top-left): the viewport click path
   /// without ImGui. `center` recenters the camera on the hit instead of selecting. The result is
@@ -528,17 +521,11 @@ private:
   bool                      m_editable{false};
   bool                      m_streamHost{false};  // see setStreamHost()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off
-  uint64_t                  m_sceneGeneration{0};
   // Polls m_pendingClickResult's frame semaphore and, once signaled, calls m_rayPicker.getResult()
   // and applies it via applyClickPickResult() - called once per frame.
   void updateClickPickState();
-  // Same for the camera anchor pick: answers m_cameraManip->resolveAnchor() once its frame has signaled.
-  void updateAnchorPickState();
-  // AnchorCameraManipulator::AnchorRequest - queues m_pendingAnchorPick for the next onRender().
-  bool requestAnchorPick(const glm::dvec2& screenPos);
-  // Applies a completed ray-pick result: selection (and, on a double click, camera recenter) -
-  // the exact logic mouseClickedInViewport() used to run inline, now one to two frames removed
-  // from the click itself (see m_pendingClickPick's comment for why).
+  // Applies a completed ray-pick result: selection, and on a double click, camera recenter. One to
+  // two frames after the click itself (see m_pendingClickPick's comment for why).
   void applyClickPickResult(const nvvk::RayPicker::PickResult& pickResult, bool isDoubleClick);
 
   // Headless / scripted benchmark (shared automation paths)
@@ -559,18 +546,6 @@ private:
   bool hasValidScene();
   nvutils::Bbox getRenderNodeBbox(int renderNodeIndex);
   nvutils::Bbox getRenderNodesBbox(const std::unordered_set<int>& renderNodeIndices);
-  /// The `.sky.json` pickers behind the Environment panel's two preset buttons.
-
-  // Opens an image file dialog for the inspector's "Load from file" texture action. Returns the chosen
-  // path, or an empty path if cancelled.
-
-  // Resolve a glTF texture / image index to a bounded ImGui thumbnail (0 if not resident). Handed to
-  // the inspector and scene browser so their panels can show thumbnails without knowing about the GPU.
-
-  // Push a transient notification to the on-screen toast overlay (isError = red). Wired into the
-  // inspector / scene browser so their edit actions can surface failures beyond the log.
-  void notify(const std::string& message, bool isError);
-
   // Recent files management
 
   // File dialog directories
@@ -588,7 +563,6 @@ private:
   nvapp::Application*        m_app{};               // Application pointer
   VkDevice                   m_device{};            // Convenient
   nvvk::RayPicker            m_rayPicker{};         // Ray picker
-  nvvk::RayPicker            m_anchorPicker{};      // Ray picker for the camera anchor (see m_pendingAnchorPick)
   nvutils::ProfilerTimeline* m_profilerTimeline{};  // Timeline profiler
 #ifdef USE_NVMCP
   // Guards the *lifetime* of m_profilerTimeline (not its contents, which are already mutex-guarded
@@ -600,7 +574,7 @@ private:
   [[nodiscard]] std::string waitUntilMeasurable() const;
 #endif
   nvvk::ProfilerGpuTimer                   m_profilerGpuTimer{};  // GPU profiler
-  std::shared_ptr<AnchorCameraManipulator> m_cameraManip;         // Camera manipulator
+  std::shared_ptr<DragCameraManipulator>   m_cameraManip;         // Camera manipulator
 
   nvutils::PerformanceTimer m_cpuTimer;               // CPU performance timer (path-tracer accumulation window)
   bool                      m_cpuTimePrinted{false};  // Track if CPU time has been printed
@@ -618,7 +592,6 @@ private:
   PathTracer            m_pathTracer;  // Path tracer renderer
   Rasterizer m_rasterizer;  // Rasterizer renderer
 
-  // New Scene Browser system (parallel implementation)
   SkySun         m_skySun;          // Who the sun is, and where it points
 
   BusyState    m_busy;
@@ -631,8 +604,7 @@ private:
   // recalibrated when the environment changes *kind* and not on every re-bake.
   int  m_fireflyClampCalibratedFor{-1};
   bool m_envBakeDirty{true};  // Baked environment needs rebuilding before the next frame
-  // Set when a Time of Day value arrives from outside the UI -- the command line, a benchmark
-  // sequence or MCP. It decides a precedence question the ini restore would otherwise settle
+  // Set when a Time of Day value arrives. It decides a precedence question the ini restore would otherwise settle
   // wrongly: see the post-restore hook beside the tod* declarations.
   bool m_todDrivesSun{false};
   // --animPlay: whether animations play. Re-applied to animationControl.play on every scene load,
@@ -686,9 +658,8 @@ private:
   rs::EntityId   m_gizmoEntity;
   rs::ClipPlayer m_hostClip;
 
-  // Async click ray-pick (avoids the ~300ms stall of the old synchronous submitAndWaitTempCmdBuffer
-  // path). A click captured during the UI phase
-  // (mouseClickedInViewport(), ui_renderer.cpp) becomes a PendingClickPick with everything the pick
+  // Async click ray-pick (avoids the ~300ms stall of a synchronous submit). A click from the host
+  // becomes a PendingClickPick with everything the pick
   // needs baked in *at click time* (camera state, normalized cursor position, single/double-click
   // classification) - no GPU work yet. onRender(cmd) then records m_rayPicker.run(cmd, ...) into the
   // frame's own command buffer (the TLAS is already proven
@@ -713,13 +684,6 @@ private:
   };
   std::optional<PendingClickResult> m_pendingClickResult;
 
-  // Async ray-pick of the camera anchor (Shift+drag, see camera_controls.hpp), on the same pattern as
-  // the click pick above but with its own picker, since a Shift+click also queues a selection pick.
-  // The answer goes to AnchorCameraManipulator::resolveAnchor(), and a dropped pick must answer too,
-  // or the drag waiting on it stays frozen. A new request drops the answer of one still in flight.
-  std::optional<nvvk::RayPicker::PickInfo> m_pendingAnchorPick;
-  std::optional<nvvk::SemaphoreState>      m_pendingAnchorResult;
-
   // Non-blocking GPU loading pipeline (see timeline_pipeline.hpp for details).
   // Worker threads enqueue command buffers; the main thread calls poll() each frame.
   TimelinePipeline m_loadPipeline;
@@ -737,11 +701,6 @@ private:
   // sunAzimuth/Elevation).
   bool m_pendingRestoreCallbacks{true};
 
-  // Requested from the Windows menu, consumed by applyPendingResets() at the top of the UI pass.
-
-  // Presentation mode. The registered parameter (--presentationMode, MCP) is only the request;
-  // updatePresentationMode() applies it and writes the actual state back, so every path -- F11,
-  // Esc, the View menu, the command line, MCP -- goes through the same enter/leave.
 
 
 

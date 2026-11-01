@@ -28,8 +28,6 @@
 #include <cstring>
 #include <vector>
 
-#include <nvgui/fonts.hpp>
-#include <nvgui/property_editor.hpp>
 #include <nvutils/logger.hpp>
 #include <nvvk/barriers.hpp>
 #include <nvvk/check_error.hpp>
@@ -105,9 +103,6 @@ void OidnDenoiser::init(Resources& resources)
   LOGI("vk_oidn %d.%d.%d: tensor cores (VK_KHR_cooperative_matrix): %s\n", VK_OIDN_VERSION_MAJOR, VK_OIDN_VERSION_MINOR,
        VK_OIDN_VERSION_PATCH, m_context->isCooperativeMatrixEnabled() ? "yes" : "no");
 
-  if(resources.app && !resources.app->isHeadless())
-    m_imageUi.init({.device = m_device, .colorFormats = {resources.app->getSwapchainFormat()}});
-
   m_availability = Availability::eAvailable;
 }
 
@@ -119,7 +114,6 @@ void OidnDenoiser::deinit(Resources& /*resources*/)
 
   if(m_appMemoryTracker)
     m_appMemoryTracker->untrack("OIDN/GBuffers", m_target, eGBufferCount);
-  m_imageUi.deinit();
   m_target.deinit();
 
   m_hasValidOutput = false;
@@ -129,8 +123,6 @@ void OidnDenoiser::deinit(Resources& /*resources*/)
 
 void OidnDenoiser::registerParameters(SettingsRegistry* settings)
 {
-  // Bounds mirror the UI (Interval slider 1..1000, Quality and Guides combos 0..2) so CLI, benchmark
-  // sequences, and ImGui.ini restore cannot set values the UI would reject.
   settings->add({"oidnEnable", "OIDN Denoiser: Enable the vk_oidn denoiser"}, &m_settings.enable, Persist::eYes);
   settings->add({"oidnAutoDenoiseEnabled", "OIDN Denoiser: Auto-denoise every N samples per pixel and at the max samples"},
                 &m_settings.autoDenoiseEnabled, Persist::eYes);

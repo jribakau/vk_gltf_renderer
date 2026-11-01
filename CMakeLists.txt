@@ -66,7 +66,6 @@ option(USE_DRACO              "Enable Draco mesh compression when importing glTF
 option(FV_DFORCE_GPU          "Build the GPU dForce cloth solver (src/fv_dforce_gpu, shaders/dforce_cloth)."    ON)
 option(USE_DEFAULT_SCENE      "Load a bundled default scene at startup."                              OFF)
 option(BUILD_TESTING          "Build unit tests and benchmarks (GoogleTest + Google Benchmark)."      OFF)
-option(REQUIRE_NVML_MONITOR   "Fail configure if NVML support is unavailable in nvpro_core2."         OFF)
 option(USE_SOFTWARE_VULKAN    "Run on software Vulkan (lavapipe) for CI: path tracer only, see below." OFF)
 
 # ---- nvpro_core2 module toggles ----------------------------------------------------
@@ -133,16 +132,6 @@ endif()
 # nvpro_core2: locate (or auto-download) and enforce optional requirements.
 #####################################################################################
 find_package(NvproCore2 REQUIRED)
-
-if(REQUIRE_NVML_MONITOR)
-  get_target_property(_NVGPU_MONITOR_DEFS nvpro2::nvgpu_monitor INTERFACE_COMPILE_DEFINITIONS)
-  if(NOT _NVGPU_MONITOR_DEFS)
-    set(_NVGPU_MONITOR_DEFS "")
-  endif()
-  if(NOT "NVML_SUPPORTED" IN_LIST _NVGPU_MONITOR_DEFS)
-    message(FATAL_ERROR "REQUIRE_NVML_MONITOR is ON, but nvpro2::nvgpu_monitor was configured without NVML support. Install the CUDA NVML development component.")
-  endif()
-endif()
 
 
 #####################################################################################
@@ -266,7 +255,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   nvpro2::nvvk
   nvpro2::nvshaders_host
   nvpro2::nvaftermath
-  nvpro2::nvgpu_monitor
   # Additional deps for the local gltf loader (previously provided by nvvkgltf).
   fmt
   glm
@@ -478,8 +466,7 @@ endif()
 # Nsight Aftermath is optional and picked up by nvpro_core2 via the
 # NSIGHT_AFTERMATH_SDK env variable. Its Find module runs in nvpro_core2's
 # subdirectory scope, so NsightAftermath_FOUND isn't visible here. Read the
-# authoritative signal off the nvpro2::nvaftermath target instead — same
-# pattern used for the NVML check at the top.
+# authoritative signal off the nvpro2::nvaftermath target instead.
 set(AFTERMATH_AVAILABLE OFF)
 if(TARGET nvpro2::nvaftermath)
   get_target_property(_AFTERMATH_DEFS nvpro2::nvaftermath INTERFACE_COMPILE_DEFINITIONS)

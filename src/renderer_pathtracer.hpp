@@ -116,7 +116,7 @@ public:
   bool driverCacheFull() const { return m_buildRecord.driverDropped(); }
   // User-initiated hot reload: drop cached variants and recompile from Slang source.
   bool reloadShader(Resources& resources);
-  void setBusyWindow(BusyState* busy) { m_busyWindow = busy; }
+  void setBusyState(BusyState* busy) { m_busy = busy; }
   // --cacheDir. Empty (the default) keeps the caches next to the executable. Set before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
   // Lens radius squared in metres (0: a pinhole). autoFocus uses the eye-to-target distance. Blades:
@@ -131,9 +131,9 @@ public:
   }
 
   // Register command line parameters
-  /// Declare this subsystem's settings (command line + benchmark + MCP + persistence).
+  /// Declare this subsystem's settings (command line + MCP + persistence).
   /// resetAccumulation restarts the frame count: settings that change what a frame renders call it
-  /// when they are set outside the UI (whose changes reset through onUI's return value).
+  /// when they are set.
   void registerParameters(SettingsRegistry* settings, std::function<void()> resetAccumulation);
 
   VkDevice                        m_device{};  // Vulkan device
@@ -344,7 +344,7 @@ public:
   bool                      variantBuilt() const { return m_variantJobs.done(); }
   void                      discardVariantJob();
 
-  BusyState* m_busyWindow{nullptr};  // Modal shown during async shader/pipeline compile.
+  BusyState* m_busy{nullptr};  // Says what the async shader and pipeline compiles are doing
   std::mutex  m_compileMutex;         // Guards compile metadata and live pipeline handles.
   std::thread m_compileThread;        // Joined in onDetach().
   std::mutex               m_warmMutex;

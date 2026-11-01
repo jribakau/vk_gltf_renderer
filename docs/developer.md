@@ -31,15 +31,13 @@ For the internal data-flow walkthrough (retained scene -> residency -> GPU/TLAS)
 | `onDetach()` | Clean up all GPU resources |
 | `onRender(cmd)` | Record rendering commands (dispatch to path tracer or rasterizer, then tone map) |
 | `onResize()` | Recreate G-Buffer and notify renderers |
-| `onUIRender()` | Render ImGui UI and handle input |
-| `onUIMenu()` | Create menu bar (File, View, Tools, Debug) |
-| `onFileDrop()` | Load dropped .gltf/.glb/.obj (or a `.scene.json` descriptor) as scenes, .hdr as environment maps |
+| `onUIRender()` | Frame-top work that may wait on the GPU: pending loads, environment bakes, resizes (nothing draws a UI; the name is `nvapp`'s) |
 
 In `main()` we attach:
-- `GltfRenderer` — the main element (scene loading, rendering, UI)
+- `GltfRenderer` — the main element (scene loading, rendering)
+- with `--stream`: the frame stream, the presenter and `FvHost`, which answers the app
+- with `--mcp`: the MCP endpoint
 - `ElementProfiler` — GPU execution timing
-- `ElementLogger` — log output in a UI window
-- `ElementGpuMonitor` — NVML-based GPU status monitoring
 - `ElementDbgPrintf` — shader `printf` debug output (only when built with `USE_DBG_PRINTF`)
 
 ### Path-traced depth
@@ -91,11 +89,8 @@ src/
 ├── gltf_environment_sky.cpp/hpp# OMI_environment_sky parse/write/strip, raw-value passthrough
 ├── mcp_timing.cpp/hpp          # Optional MCP endpoint (--mcp): recompile shaders, time a
 │                               #   GPU pass over a window (docs/mcp.md)
-├── camera_controls.cpp/hpp     # Viewport bindings table (drags, wheel, clicks, keys -> action), the manipulator
-│                               #   that dispatches from it (Shift pivots on the ray-picked point), and
-│                               #   the per-frame input handling; Help's Camera tab reads the same table
-├── settings_registry.hpp       # One declaration per setting -> CLI + benchmark sequences + ImGui.ini;
-│                               #   also captures each declaration-time default (Reset All to Default)
+├── camera_controls.cpp/hpp     # What a viewport drag does to the camera (dragMotion), and the manipulator it drives
+├── settings_registry.hpp       # One declaration per setting -> CLI + MCP + ImGui.ini
 ├── animation_control.cpp/hpp   # Animation playback state, scrubbing and clip choice
 ├── busy_state.hpp              # Busy flag: a background scene job is running
 ├── resources.hpp               # Shared Vulkan resources and settings (`nvvk::FrameUploader` staging)
@@ -649,50 +644,12 @@ over the persisted `.ini`.
 2. Wire it to renderer or app settings.
 3. Nothing to list by hand: it appears in `--help`.
 
-### Add a command or a keyboard shortcut
-
-Commands live in one place: `GltfRenderer::registerCommands()` (`ui_renderer.cpp`) adds each to the
-`ui::CommandRegistry` (`ui_commands.hpp`), with its label, icon, menu group, what it does, and
-optionally when it is enabled or checked. Its key binding sits beside it in the same declaration,
-held apart from the command so bindings can later become user-settable. Everything else is a view
-of the registry: a menu draws it with `menuItem(id)` (icon, label and shortcut text come along),
-the toolbar draws window and view toggles from it, and Help > Keyboard & Mouse lists every bound
-command, grouped by menu. A new shortcut therefore needs no change outside `registerCommands()`.
-
-Keys go through Dear ImGui's shortcut routing (`ImGui::Shortcut()`), polled once per frame per
-binding scope: global bindings by the menu bar, viewport bindings from inside the viewport window
-(live while the viewport is hovered — no click needed — or focused), and F11 from
-`updatePresentationMode()`, since the menu bar is hidden in presentation mode. That function also
-polls the presentation-only bindings (Esc leaves the mode) while the mode is on, so they never claim a
-key the rest of the time. Global bindings take
-the lowest routing priority, so a widget using the keyboard keeps it: while a text field is edited,
-letters, Delete, Home and Esc go to the field, and its own Ctrl+Z / Ctrl+Y win over Undo / Redo.
-Two kinds of binding are listed but never polled. A command without a `run` is handled by other
-code: the log window's key belongs to `nvapp::ElementLogger`. A binding with a `text` is matched by
-the code that handles it: '?' as a typed character by `ui_help.cpp`, and "Drop file", the modifiers
-held while a file is dropped, by `onFileDrop()`, which matches them against File > Import/Merge Scene
-and File > Reference Scene instead of naming the keys itself.
-
-The viewport's mouse, wheel and movement keys are not commands: they are held down, dragged or
-clicked rather than pressed. They have a table of their own, `kBindings` in `camera_controls.cpp`;
-each row names an input, the modifiers it needs and those it tolerates, the navigation modes and
-projection it applies to, the action, and the label and tooltip Help shows. For an input, the first
-matching row wins. `AnchorCameraManipulator` dispatches drags and the wheel from it instead of using
-`nvutils::CameraManipulator`'s own mapping, `camera_controls::update()` replaces
-`nvapp::ElementCamera::updateCamera()` for the viewport, `mouseClickedInViewport()` takes the click
-that selects and the double-click that sets the point of interest from it, and Help > Keyboard &
-Mouse draws its Camera tab (mouse grid, clicks and keys) from it. Rebinding them is a change to that
-table only.
-
-A command that opens a dialog or rebuilds the scene only raises a request (`m_menuRequests`);
-`renderMenu()` carries it out once the menus are closed.
-
 ### Add a renderer setting
 
 1. Add state in shared settings/resources.
 2. Bind and consume it in `renderer_pathtracer.cpp` or `renderer_rasterizer.cpp`.
-3. Expose UI controls in the corresponding UI module.
-4. Persist with the settings handler when needed.
+3. Persist with the settings handler when needed. The app reaches it by name through the host's
+   parameter messages; `src/fv_parameter_filter.hpp` lists what the host keeps to itself.
 
 ### Add or update glTF extension support
 

@@ -206,17 +206,10 @@ public:
   void setTransformSpace(TransformSpace space);
   void setSnapEnabled(bool enabled) { m_enableSnapping = enabled; }
   void setSnapValues(float translate, float rotate, float scale);
-  void setGizmoSize(float sizePixels) { m_style.sizePixels = sizePixels; }
 
-  TransformSpace getTransformSpace() const { return m_space; }
-  bool           isSnapEnabled() const { return m_enableSnapping; }
 
   GizmoStyle&       style() { return m_style; }
   const GizmoStyle& style() const { return m_style; }
-
-#ifndef NDEBUG
-  static bool onDebugUI(GizmoStyle& style);
-#endif
 
   //-----------------------------------------------------------------------------
   // Interaction
@@ -250,7 +243,6 @@ public:
   // Callbacks
   //-----------------------------------------------------------------------------
 
-  void setOnTransformBegin(std::function<void()> callback) { m_onTransformBegin = callback; }
   void setOnTransformChange(std::function<void()> callback) { m_onTransformChange = callback; }
   void setOnTransformEnd(std::function<void()> callback) { m_onTransformEnd = callback; }
 
@@ -400,7 +392,6 @@ private:
   nvvk::GraphicsPipelineState m_dynamicPipeline;
 
   // Callbacks
-  std::function<void()> m_onTransformBegin;
   std::function<void()> m_onTransformChange;
   std::function<void()> m_onTransformEnd;
 };

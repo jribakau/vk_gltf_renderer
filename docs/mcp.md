@@ -43,7 +43,7 @@ authoritative names, schemas and descriptions:
 | `vk_gltf_measure` | Time one timer, or several on the same frames, over a controlled window and return the distribution |
 
 Loading is not a tool: set `scenefile` or `hdrfile` and it loads. Those parameters carry a
-`callbackSuccess`, so the same write works from the command line, a benchmark sequence, and
+`callbackSuccess`, so the same write works from the command line and
 `nvpro_set_parameters` alike. Both loads run synchronously on the application thread — the parse
 and the Vulkan resource creation complete before the write returns. On failure the load leaves an
 empty scene / no HDR (rather than silently continuing on the previous asset) and the callback in

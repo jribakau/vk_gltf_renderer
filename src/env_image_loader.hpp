@@ -66,6 +66,3 @@ EnvImage loadEnvImage(const std::filesystem::path& file);
 // the loader so a new format cannot be added without the UI that offers it following along.
 const char* envImageExtensions();
 
-// True when `file` has one of those extensions. Used by the drop handler, which has to decide
-// whether a dropped file is an environment before opening it.
-bool isEnvImageExtension(const std::filesystem::path& file);

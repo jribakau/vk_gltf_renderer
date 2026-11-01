@@ -934,59 +934,6 @@ empty accessor and a failed copy.
 -------------------------------------------------------------------------------------------------*/
 
 /*-------------------------------------------------------------------------------------------------
-## Function `getAccessorNormalizedValue`
-> Converts a raw accessor value (e.g. from `accessor.minValues` / `accessor.maxValues`)
-> to a normalized float following the glTF 2.0 spec.
->
-> For signed normalized component types (`BYTE`, `SHORT`) the result is clamped to `-1.0`
-> (raw `INT_MIN` is reserved by the spec and must not produce values < -1.0).
-> Non-normalized or floating-point accessors return the value unchanged.
--------------------------------------------------------------------------------------------------*/
-inline float getAccessorNormalizedValue(const tinygltf::Accessor& accessor, double rawValue)
-{
-  const float v = static_cast<float>(rawValue);
-  if(!accessor.normalized)
-    return v;
-  switch(accessor.componentType)
-  {
-    case TINYGLTF_COMPONENT_TYPE_BYTE:
-      return std::max(v / 127.f, -1.f);
-    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-      return v / 255.f;
-    case TINYGLTF_COMPONENT_TYPE_SHORT:
-      return std::max(v / 32767.f, -1.f);
-    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-      return v / 65535.f;
-    default:
-      return v;
-  }
-}
-
-/*-------------------------------------------------------------------------------------------------
-## Function `getPrimitivePositionBounds`
-> Object-space AABB of a primitive, read from its `POSITION` accessor `min`/`max` (which the
-> glTF spec requires) and normalized per `getAccessorNormalizedValue`.
->
-> Returns false, leaving `bmin`/`bmax` untouched, when `POSITION` is missing, the accessor index
-> is out of range, or either bound has fewer than three components.
--------------------------------------------------------------------------------------------------*/
-inline bool getPrimitivePositionBounds(const tinygltf::Model& model, const tinygltf::Primitive& primitive, glm::vec3& bmin, glm::vec3& bmax)
-{
-  auto it = primitive.attributes.find("POSITION");
-  if(it == primitive.attributes.end() || it->second < 0 || static_cast<size_t>(it->second) >= model.accessors.size())
-    return false;
-  const tinygltf::Accessor& accessor = model.accessors[it->second];
-  if(accessor.minValues.size() < 3 || accessor.maxValues.size() < 3)
-    return false;
-  for(int i = 0; i < 3; ++i)
-  {
-    bmin[i] = getAccessorNormalizedValue(accessor, accessor.minValues[i]);
-    bmax[i] = getAccessorNormalizedValue(accessor, accessor.maxValues[i]);
-  }
-  return true;
-}
-
-/*-------------------------------------------------------------------------------------------------
 ## Function `getAccessorData<T>`
 > Returns a span with all the values of `accessor`.
 
@@ -1271,52 +1218,6 @@ inline std::span<const T> getAttributeData3(const tinygltf::Model& model,
 {
   return getAttributeData3<T>(const_cast<tinygltf::Model&>(model), attributes, attributeName, storageIfComplex);
 }
-
-/*-------------------------------------------------------------------------------------------------
-## Function `copyAttributeData<T>`
-> Copies all the values of the primitive's attribute to a vector. Returns true on success.
-
-Example:
-```
-// Get a glTF primitive's vertex positions.
-std::vector<glm::vec3> vertices;
-if(!copyAttributeData<glm::vec3>(model, primitive, "POSITION", vertices))
-{
-  LOGE("Accessor was not valid or attribute did not exist!\n");
-}
-```
--------------------------------------------------------------------------------------------------*/
-template <typename T>
-inline bool copyAttributeData(const tinygltf::Model&     model,
-                              const tinygltf::Primitive& primitive,
-                              const std::string&         attributeName,
-                              std::vector<T>&            output)
-{
-  const auto& it = primitive.attributes.find(attributeName);
-  if(primitive.attributes.end() == it)
-  {
-    return false;
-  }
-
-  const tinygltf::Accessor& accessor = model.accessors.at(it->second);
-  return copyAccessorData<T>(model, accessor, output);
-}
-
-template <typename T>
-inline bool copyAttributeData3(const tinygltf::Model& model,
-                               const tinygltf::Value& attributes,
-                               const std::string&     attributeName,
-                               std::vector<T>&        output)
-{
-  if(!attributes.Has(attributeName))
-  {
-    return false;
-  }
-
-  const tinygltf::Accessor& accessor = model.accessors.at(attributes.Get(attributeName).GetNumberAsInt());
-  return copyAccessorData<T>(model, accessor, output);
-}
-
 
 /*-------------------------------------------------------------------------------------------------
 ## Function `appendData<T>`

@@ -59,17 +59,6 @@ const char* envImageExtensions()
 #endif
 }
 
-bool isEnvImageExtension(const std::filesystem::path& file)
-{
-  if(nvutils::extensionMatches(file, ".hdr"))
-    return true;
-#ifdef NVP_SUPPORTS_BASISU
-  if(nvutils::extensionMatches(file, ".exr"))
-    return true;
-#endif
-  return false;
-}
-
 EnvImage loadEnvImage(const std::filesystem::path& file)
 {
   nvutils::ScopedTimer st(__FUNCTION__);

@@ -42,14 +42,6 @@ struct TextureInfoSpan
 
   bool hasAny() const { return count > 0; }
 
-  // Returns the number of slots in [minIdx, maxIdx] (inclusive). Returns 0 when empty (count == 0)
-  // to avoid underflow when minIdx is default (uint16_t max) and maxIdx is 0.
-  size_t spanSize() const
-  {
-    if(!hasAny() || minIdx > maxIdx)
-      return 0;
-    return static_cast<size_t>(maxIdx) - static_cast<size_t>(minIdx) + 1;
-  }
 };
 
 // Result of updating a single cached material

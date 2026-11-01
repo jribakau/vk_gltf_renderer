@@ -23,7 +23,6 @@
 
 #include "denoiser_handoff.hpp"
 
-#include <nvgui/property_editor.hpp>
 #include <nvvk/barriers.hpp>
 #include <nvvk/check_error.hpp>
 #include <nvvk/compute_pipeline.hpp>
@@ -102,7 +101,6 @@ void DenoiserHandoff::deinit(Resources& resources)
 
 void DenoiserHandoff::registerParameters(SettingsRegistry* settings)
 {
-  // Bounds mirror the UI slider
   settings->add({"dlssHandoffSpp",
                  "Denoisers: With DLSS-RR and OptiX or OIDN, samples per pixel over which the image blends from "
                  "DLSS's to the denoised one (0 = switch at the first denoise)"},

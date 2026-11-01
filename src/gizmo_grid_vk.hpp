@@ -66,10 +66,6 @@ public:
 
   void setVisible(bool visible) { m_visible = visible; }
   bool isVisible() const { return m_visible; }
-  void toggleVisible() { m_visible = !m_visible; }
-
-  void  setLineThickness(float pixels) { m_style.lineWidth = pixels; }
-  float getLineThickness() const { return m_style.lineWidth; }
 
   struct GridStyle
   {

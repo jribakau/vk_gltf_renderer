@@ -132,13 +132,6 @@ inline bool skyHasSun(shaderio::EnvSystem env)
   return env == shaderio::EnvSystem::eSky || env == shaderio::EnvSystem::eGradient;
 }
 
-// True when turning `env` (Settings::envRotation) changes anything: a panorama, and the two skies
-// with a sun. A plain sky looks the same from every direction, and None has nothing to turn.
-inline bool environmentTurns(shaderio::EnvSystem env)
-{
-  return env == shaderio::EnvSystem::eHdr || skyHasSun(env);
-}
-
 struct Settings
 {
   RenderingMode           renderSystem           = RenderingMode::ePathtracer;          // Renderer to use
@@ -433,16 +426,9 @@ struct Resources
     return sample_schedule::accumulationComplete(frameCount, accumulatedSamples, settings.maxSamples, adaptiveDone);
   }
 
-  // Monotonic count of completed onRender() calls since the app started - unlike frameCount above
-  // (which resets to -1 on every dirty-flag/camera-move reset, by design, to avoid ghosting), this
-  // never resets. A KHR_interactivity graph that writes a pointer every tick (e.g. a permanent idle
-  // animation via event/onTick) resets frameCount every single frame, so it can never reach >= 1 -
-  // callers that just need "has at least one frame actually rendered" (e.g. a UI scenario script's
-  // ready gate) should use this instead.
-  uint64_t renderPassCount{0};
 
   // Frames that wrote SceneFrameInfo and called the active renderer's onRender(), so the previous-frame
-  // matrices moved. Unlike renderPassCount, frames skipped once maxFrames is reached do not count.
+  // matrices moved. Frames skipped once maxFrames is reached do not count.
   // Dlss compares it across evaluate() calls to find frames it missed.
   uint64_t drawnFrameCount{0};
 

@@ -69,12 +69,6 @@ public:
     return m_accum / static_cast<T>(m_frameCount);
   }
 
-  // Get the number of samples currently in the average
-  int getSampleCount() const { return m_frameCount; }
-
-  // Check if the rolling average has enough samples
-  bool hasData() const { return m_frameCount > 0; }
-
   // Reset the rolling average to initial state
   void reset()
   {
@@ -83,9 +77,6 @@ public:
     m_accum      = T{};
     std::fill(std::begin(m_values), std::end(m_values), T{});
   }
-
-  // Get the total accumulated value
-  T getAccumulated() const { return m_accum; }
 
 private:
   T   m_values[N];   // Circular buffer of values

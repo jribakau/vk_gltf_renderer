@@ -139,8 +139,7 @@ auto main(int argc, char** argv) -> int
                         {".ini"}, &iniFilename);
 
   // Sky presets. Actions, like hdrfile above: the value is a path and setting it does the thing,
-  // which is what makes them reachable from a benchmark sequence and from MCP without a second
-  // registration. Neither persists -- remembering "load this preset" would replay it next launch.
+  // which is what makes them reachable from MCP without a second registration. Neither persists -- remembering "load this preset" would replay it next launch.
   parameterRegistry.add({.name = "loadSkyPreset",
                          .help = "Apply a .sky.json preset (loads immediately when set at runtime)",
                          .callbackSuccess =
@@ -606,7 +605,7 @@ auto main(int argc, char** argv) -> int
   // renderer exists, so the start-up values are handed over here -- and applied at the first frame
   // top, not now: the ini restore and the scene's authored sky both land there and would otherwise
   // overwrite the preset, or be missing from the one saved. At runtime the callbacks reach the
-  // renderer directly, so a benchmark sequence or an MCP write still applies immediately.
+  // renderer directly, so an MCP write still applies immediately.
   if(!loadPresetFilename.empty() || !savePresetFilename.empty())
   {
     elemGltfRenderer->queueStartupSkyPresets(loadPresetFilename, savePresetFilename);

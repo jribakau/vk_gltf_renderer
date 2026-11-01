@@ -51,7 +51,6 @@
 #include <nvvk/mipmaps.hpp>
 #include <nvvk/descriptors.hpp>
 
-#include <nvgui/property_editor.hpp>
 #include <nvshaders_host/pbr_sheen_lut.hpp>
 
 #include "renderer_rasterizer.hpp"
@@ -118,15 +117,14 @@ void Rasterizer::registerParameters(SettingsRegistry* settings)
 {
   // Rasterizer-specific command line parameters.
   //
-  // rasterUseRecordedCmd and the DLSS-SR parameters bypass the UI checkbox/settings paths that
-  // otherwise call freeRecordCommandBuffer() inline (see showUI()). A CLI or benchmark change
-  // therefore has to route the same invalidation through a callback: we set a dirty flag here
+  // A change to rasterUseRecordedCmd or the DLSS-SR parameters invalidates the recording, so it goes
+  // through a callback: we set a dirty flag here
   // and consume it at the top of onRender(), where a valid Resources& is available to schedule
   // the deferred free. Without this, onRender() would replay a stale secondary command buffer
   // (baked viewport / pipelines / draw order) when m_useRecordedCmd is on and twoPass is false.
   //
-  // NOTE: ImGui.ini restore and Windows > Reset All to Default do not fire
-  // ParameterBase::callbackSuccess -- they write storage directly (see settings_registry.hpp).
+  // NOTE: ImGui.ini restore does not fire
+  // ParameterBase::callbackSuccess -- it writes storage directly (see settings_registry.hpp).
   // Any invalidation that must also cover those needs a shadow-state check in onRender(): see
   // m_lastWireframe, and m_recordedSceneExtent for the DLSS-driven extent change.
   const auto invalidateRecordedCmd = [this]() { m_recordedSceneCmdDirty = true; };
@@ -478,7 +476,7 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
     m_lastWireframe = resources.settings.wireframe;
   }
 
-  // Registry-driven changes (CLI, benchmark sequence) to rasterUseRecordedCmd / dlssQuality
+  // Registry-driven changes to rasterUseRecordedCmd / dlssQuality
   // set this flag from registerParameters()'s callbacks. Drain it here, where a valid
   // Resources& lets us submit the deferred free. Otherwise a stale secondary cmd would be
   // replayed further down (see recordedThisFrame branch in the twoPass=false path).
@@ -729,9 +727,8 @@ void Rasterizer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // The recording bakes viewport/scissor from the extent it was made at, so a change of active
   // extent invalidates it. The callbacks in registerParameters() cover registry-driven edits, but
-  // not the paths that write setting storage directly -- ImGui.ini restore and Windows > Reset All
-  // to Default -- and those can turn DLSS-SR off under a live recording, moving rendering from the
-  // inner extent back to the outer one. Comparing against the recorded extent catches all of them.
+  // not ImGui.ini restore, which writes setting storage directly and can turn DLSS-SR off under a live recording, moving rendering from the
+  // inner extent back to the outer one. Comparing against the recorded extent catches it too.
   if(m_recordedSceneCmd != VK_NULL_HANDLE
      && (m_recordedSceneExtent.width != targets.extent.width || m_recordedSceneExtent.height != targets.extent.height))
   {

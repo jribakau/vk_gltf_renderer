@@ -360,8 +360,7 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
     }
     const double x = e.value("x", mouseX), y = e.value("y", mouseY);
     // left orbits, middle pans, right looks around and flies with the movement keys (applyFly), the
-    // wheel dollies; the modifiers pick the left and middle drags' variants from camera_controls'
-    // table, whose manipulator this is
+    // wheel dollies; the modifiers pick the left drag's variants (camera_controls::dragMotion)
     nvutils::CameraManipulator::Inputs inputs{.lmb = lmb, .mmb = mmb, .shift = e.value("shift", false), .ctrl = e.value("ctrl", false),
                                               .alt = e.value("alt", false)};
     if(type == "down" || type == "up")
@@ -425,8 +424,7 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
 // With Shift it dollies toward the cursor instead: the point under it at the depth of the point of
 // interest stays under it, and the point of interest moves along. The manipulator's own wheel is
 // not used: its step goes with the square of a step over the frame's width (a touchpad's small
-// steps barely move it, a 4K frame half as much as a 2K one), and its Shift and Alt variants are
-// the ImGui viewport's (a pick at ImGui's cursor; a field of view the lens sets back).
+// steps barely move it, a 4K frame half as much as a 2K one).
 void FvHost::Impl::wheelDolly(const Json& e)
 {
   auto         manip = renderer->getCameraManipulator();

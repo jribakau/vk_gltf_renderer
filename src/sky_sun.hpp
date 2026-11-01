@@ -60,7 +60,7 @@ public:
   void init(Resources* resources, Actions actions);
 
   // Re-read the scene's marker and adopt whatever light it names, or fall back to the renderer's
-  // own sun. Runs at the frame top, so moving that light -- gizmo, inspector, animation -- carries
+  // own sun. Runs at the frame top, so moving that light -- gizmo, animation -- carries
   // the sky with it.
   void syncFromMarkedLight();
 

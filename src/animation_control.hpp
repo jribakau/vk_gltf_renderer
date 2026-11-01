@@ -29,13 +29,7 @@
 // sets `play` from GltfRenderer::m_animPlay -- the user's last explicit
 // Play/Pause choice, persisted as --animPlay.
 
-#include <string>
 
-
-
-namespace nvvkgltf {
-class Scene;
-}
 
 //-----------------------------------------------------------------------------
 // Playback state + domain logic
@@ -52,15 +46,6 @@ struct AnimationControl
   bool  loop             = true;   // Wrap at the clip end; false stops playback there
   bool  seek             = false;  // One-shot: evaluate the clip at its current time without advancing it
 
-  void togglePlay() { play = !play; }
-  void stepOne()
-  {
-    runOnce = true;
-    play    = false;
-  }
-  void resetToStart() { reset = true; }
-
-
   // Queries consumed by the animation update path
   [[nodiscard]] bool  doAnimation() const { return play || runOnce || reset || seek; }
   [[nodiscard]] float deltaTime() const;
@@ -68,12 +53,5 @@ struct AnimationControl
 
   // Called by the animation update path after consuming a one-shot step/reset.
   void clearStates() { runOnce = reset = seek = false; }
-
-  // Format a time value in seconds as mm:ss.ms (used by the time readout).
-  static std::string formatTime(float seconds);
 };
 
-namespace ui::animation {
-
-
-}  // namespace ui::animation

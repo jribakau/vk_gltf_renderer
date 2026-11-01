@@ -80,6 +80,7 @@ set(TEST_SOURCES
     # Figure Viewer scene of props composed into the renderer's one glTF
     test_fv_compose.cpp
     test_scene_merger.cpp
+    test_camera_controls.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_compose.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_meshopt.cpp
     # A model prop's material with its edits, for the scene and for an export
@@ -264,7 +265,6 @@ target_link_libraries(${TEST_NAME} PRIVATE
     nvpro2::nvslang
     nvpro2::nvshaders_host
     nvpro2::nvaftermath
-    nvpro2::nvgpu_monitor
     # Additional dependencies for local gltf implementation
     tinygltf
     stb
@@ -362,7 +362,6 @@ target_link_libraries(${BENCHMARK_NAME} PRIVATE
     nvpro2::nvslang
     nvpro2::nvshaders_host
     nvpro2::nvaftermath
-    nvpro2::nvgpu_monitor
     # Additional dependencies for local gltf implementation
     tinygltf
     stb

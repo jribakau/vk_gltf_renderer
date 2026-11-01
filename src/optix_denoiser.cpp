@@ -36,8 +36,6 @@
 
 #include "nvutils/logger.hpp"
 #include "nvutils/parameter_registry.hpp"
-#include <nvgui/fonts.hpp>
-#include <nvgui/property_editor.hpp>
 #include "nvvk/commands.hpp"
 #include "nvvk/descriptors.hpp"
 #include "nvvk/resource_allocator.hpp"
@@ -133,9 +131,6 @@ void OptiXDenoiser::init(Resources& resources)
   // Initialize OptiX
   if(!initOptiX(resources))
     return;
-
-  if(resources.app && !resources.app->isHeadless())
-    m_denoisedUi.init({.device = m_device, .colorFormats = {resources.app->getSwapchainFormat()}});
 
   m_availability = Availability::eAvailable;
 }
@@ -804,7 +799,6 @@ void OptiXDenoiser::cleanupOptiX()
     m_appMemoryTracker->untrack("OptiX/GBuffers", m_denoiserTarget, eGBufferCount);
     m_appMemoryTracker->untrack("OptiX/Staging", m_upscaleStaging, 1);
   }
-  m_denoisedUi.deinit();
   m_denoiserTarget.deinit();
   m_upscaleStaging.deinit();
 
@@ -845,8 +839,6 @@ void OptiXDenoiser::registerParameters(SettingsRegistry* settings)
   settings->add({"optixEnable", "OptiX Denoiser: Enable OptiX denoiser"}, &m_settings.enable, Persist::eYes);
   settings->add({"optixAutoDenoiseEnabled", "OptiX Denoiser: Auto-denoise every N samples per pixel and at the max samples"},
                 &m_settings.autoDenoiseEnabled, Persist::eYes);
-  // Bounds mirror the UI (Slider 1..1000 in showUI, Combo indices 0..1 for {AOV, Upscale2X}) so
-  // CLI, benchmark sequences, and ImGui.ini restore cannot set values the UI would reject.
   settings->add({"optixAutoDenoiseSpp", "OptiX Denoiser: Auto-denoise interval, in samples per pixel"},
                 &m_settings.autoDenoiseSpp, Persist::eYes, 1, 1000);
   settings->add({"optixModelKind", "OptiX Denoiser: Model [AOV:0, Upscale2X:1]"}, (int*)&m_settings.modelKind,

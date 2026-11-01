@@ -28,7 +28,6 @@
 #include <nvutils/parameter_registry.hpp>
 #include <nvvk/render_target.hpp>
 #include <nvvk/resource_allocator.hpp>
-#include <nvapp/imgui_texture_visualizer.hpp>
 
 // OptiX includes
 #include <optix.h>
@@ -346,7 +345,6 @@ private:
   nvvk::RenderTarget         m_denoiserTarget;  // See GBufferIndex
   GuideAccumulation          m_guides;          // Samples in the guide images
   nvvk::RenderTarget         m_upscaleStaging;  // Half-res staging for selection/depth upscale blit (see StagingIndex)
-  nvapp::ImTextureVisualizer m_denoisedUi{};
   VkSampler                  m_linearSampler{};
 
 

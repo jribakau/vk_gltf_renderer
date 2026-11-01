@@ -35,10 +35,6 @@
 
 #include <imgui/imgui.h>
 
-#include <nvgui/fonts.hpp>
-#include <nvgui/property_editor.hpp>
-#include <nvgui/settings_handler.hpp>
-#include <nvgui/tooltip.hpp>
 #include <nvutils/logger.hpp>
 #include <nvutils/timers.hpp>
 #include <nvvk/barriers.hpp>
@@ -185,11 +181,7 @@ void Dlss::init(Resources& resources)
   // happens when DLSS-RR hardware isn't available on the current GPU.
   const bool rrSkipped = (m_kind == Kind::RR && m_state == InitStatus::eUnavailable);
   if(!rrSkipped)
-  {
     buildGuideEntries();
-    if(resources.app && !resources.app->isHeadless())
-      m_guideVisualizer.init({.device = resources.allocator.getDevice(), .colorFormats = {resources.app->getSwapchainFormat()}});
-  }
 
   startAsyncInit(resources);
 }
@@ -203,7 +195,6 @@ void Dlss::deinit(Resources& resources)
   m_initInProgress.store(false, std::memory_order_release);
   m_pendingInitResult.store(kPendingInitNone, std::memory_order_release);
 
-  m_guideVisualizer.deinit();
 #if defined(USE_DLSSNR)
   destroyNr();
   m_nrGBuffer.deinit();
@@ -410,8 +401,8 @@ bool Dlss::tick(Resources& resources)
 bool Dlss::needsRecreate() const
 {
   // Only meaningful once NGX is up; before that updateSize() is a no-op. The RR input size is
-  // compared against what the feature was built with, so a change from the command line, a
-  // benchmark sequence or MCP recreates it the same way as the UI combo.
+  // compared against what the feature was built with, so a change from the command line or
+  // MCP recreates it the same way as the app.
   const bool rrQualityChanged = m_kind == Kind::RR && m_builtRrQuality >= 0 && m_builtRrQuality != m_settings.rrQuality;
   return isAvailable() && (m_needsRecreate || rrQualityChanged);
 }
