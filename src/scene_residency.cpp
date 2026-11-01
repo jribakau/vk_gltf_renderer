@@ -415,7 +415,7 @@ bool Residency::takeCompacted()
 void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
 {
   const RefineTables* t = record.refine.get();
-  if(!t || t->levels.empty() || record.cage.size() != t->cageCount || t->drawnFrom.size() != record.positions.size()
+  if(!t || t->levels.empty() || record.cage.size() != t->cageCount || t->drawnFrom.size() != record.vertexCount()
      || t->normalStart.size() != size_t(t->refinedCount()) + 1 || (!t->offsets.empty() && t->offsets.size() != t->refinedCount()))
     return;
   const auto table = [&](const auto& values, const char* name) {
@@ -446,7 +446,7 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
   if(!t->offsets.empty())
     r.offsets = table(t->offsets, "refined offsets");
   // the tangents too, over its own corners, when it has them and the UVs they read
-  if(!t->tangentIndices.empty() && !record.tangents.empty() && t->tangentStart.size() == record.positions.size() + 1
+  if(!t->tangentIndices.empty() && !record.tangents.empty() && t->tangentStart.size() == record.vertexCount() + 1
      && t->tangentCorners.size() == t->tangentIndices.size() / 3 * 3)
   {
     r.tangentTriangles     = table(t->tangentIndices, "tangent triangles");
@@ -662,7 +662,7 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
       packed[i] = glm::packUnorm4x8(record.colors[i]);
     stream(gpu.colors, bytesOf(packed), eBufferStorage, "colors");
   }
-  gpu.vertexCount = uint32_t(record.positions.size());
+  gpu.vertexCount = uint32_t(record.vertexCount());
 }
 
 // A static prim draws the mesh's own streams, and a drawer that doesn't pose its cage deforms from them. A
@@ -680,6 +680,13 @@ void Residency::ensureBase(const MeshRecord& record, MeshGpu& gpu)
   stream(gpu.positions, bytesOf(record.positions), eBufferVertex | eBufferStorage | eBufferAccelInput, "positions");
   stream(gpu.normals, bytesOf(record.normals), eBufferStorage, "normals");
   stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+  // none held on the CPU: the refine that follows makes them
+  if(record.thinVertices)
+  {
+    gpu.positions = m_gpu.createBuffer({.size = record.thinVertices * sizeof(glm::vec3), .usage = eBufferVertex | eBufferStorage | eBufferAccelInput, .name = "positions", .mayFail = true});
+    if(record.thinNormals)
+      gpu.normals = m_gpu.createBuffer({.size = record.thinVertices * sizeof(glm::vec3), .usage = eBufferStorage, .name = "normals", .mayFail = true});
+  }
 }
 
 Residency::MeshGpu& Residency::acquireMesh(const RetainedScene& scene, MeshId id)
@@ -1328,7 +1335,7 @@ void Residency::wake(const RetainedScene& scene, MeshId id)
         buffer = m_gpu.createBuffer({.size = n * element, .usage = eBufferStorage, .name = name, .mayFail = true});
       };
       output(d.morphedPositions, sizeof(glm::vec3), "morphed positions");
-      if(!record->normals.empty())
+      if(record->hasNormals())
         output(d.morphedNormals, sizeof(glm::vec3), "morphed normals");
       if(!record->tangents.empty())
         output(d.morphedTangents, sizeof(glm::vec4), "morphed tangents");
@@ -1957,8 +1964,7 @@ bool Residency::deforms(const RetainedScene& scene, EntityId entity, MeshId mesh
     return false;
   if(!r->targets.empty())
     return true;
-  return scene.skin(e->mesh->skin) && !r->positions.empty() && r->joints.size() == r->positions.size()
-         && r->weights.size() == r->positions.size();
+  return scene.skin(e->mesh->skin) && r->skins();
 }
 
 // What a mesh's drawers deform from, beside its streams: joints and weights for a skin, the targets'
@@ -2030,7 +2036,7 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
   d.entity               = entity;
   d.mesh                 = id;
   d.morph                = !record.targets.empty();
-  d.skin = scene.skin(e.mesh->skin) && record.joints.size() == record.positions.size() && record.weights.size() == record.positions.size();
+  d.skin = scene.skin(e.mesh->skin) && record.skins();
   // DAZ's order: a refined mesh's cage posed, then refined, when the cage has its influences
   // (tangents too, when it has them: the chain makes them, nothing skins the base's)
   const bool cageInfluences = !record.cage.empty() && record.cageJoints.size() == record.cage.size() && record.cageWeights.size() == record.cage.size();
@@ -2051,14 +2057,14 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
     buffer = m_gpu.createBuffer({.size = n * element, .usage = usage, .name = name, .mayFail = true});
   };
   output(d.positions, sizeof(glm::vec3), eBufferVertex | eBufferStorage | eBufferAccelInput, "deformed positions");
-  if(!record.normals.empty())
+  if(record.hasNormals())
     output(d.normals, sizeof(glm::vec3), eBufferStorage, "deformed normals");
   if(!record.tangents.empty())
     output(d.tangents, sizeof(glm::vec4), eBufferStorage, "deformed tangents");
   if(d.morph && d.skin)
   {
     output(d.morphedPositions, sizeof(glm::vec3), eBufferStorage, "morphed positions");
-    if(!record.normals.empty())
+    if(record.hasNormals())
       output(d.morphedNormals, sizeof(glm::vec3), eBufferStorage, "morphed normals");
     if(!record.tangents.empty())
       output(d.morphedTangents, sizeof(glm::vec4), eBufferStorage, "morphed tangents");
@@ -2680,8 +2686,7 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
         return true;
       const MeshRecord* r = scene.mesh(kept.mesh);
       const Entity*     e = scene.entity(kept.entity);
-      const bool        skin = r && e && e->mesh && scene.skin(e->mesh->skin) && r->joints.size() == r->positions.size()
-                        && r->weights.size() == r->positions.size();
+      const bool        skin = r && e && e->mesh && scene.skin(e->mesh->skin) && r->skins();
       return r && d->morph == !r->targets.empty() && d->skin == skin;
     };
     if(wanted != drawn.end() && wanted->second == kept.deformed && sameDrawer())

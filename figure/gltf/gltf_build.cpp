@@ -128,11 +128,12 @@ struct StrandPart
 };
 std::mutex                                                g_strandMutex;
 std::map<const mesh::BuiltMesh*, std::vector<StrandPart>> g_strands;
-// a geometry's weld, shared by its materials' votes (each used to weld the whole mesh again)
+// a geometry's weld, shared by its materials' votes (each used to weld the whole mesh again) while
+// one of them holds it: 4 bytes a vertex, read by nothing once they have voted
 struct StrandWeld
 {
-  std::weak_ptr<const mesh::BuiltMesh>         geo;
-  std::shared_ptr<const std::vector<uint32_t>> ids;
+  std::weak_ptr<const mesh::BuiltMesh>       geo;
+  std::weak_ptr<const std::vector<uint32_t>> ids;
 };
 std::map<const mesh::BuiltMesh*, StrandWeld> g_welds;  // under g_strandMutex
 
@@ -141,15 +142,18 @@ std::shared_ptr<const std::vector<uint32_t>> weldOf(const std::shared_ptr<mesh::
   {
     std::lock_guard lock(g_strandMutex);
     if(auto it = g_welds.find(geo.get()); it != g_welds.end() && it->second.geo.lock() == geo)
-      return it->second.ids;
+      if(auto ids = it->second.ids.lock())
+        return ids;
   }
   auto ids = std::make_shared<const std::vector<uint32_t>>(mat::weldPositions(geo->position));
   std::lock_guard lock(g_strandMutex);
   std::erase_if(g_welds, [](const auto& kv) { return kv.second.geo.expired(); });
   auto& slot = g_welds[geo.get()];
-  if(slot.geo.lock() != geo)  // first here (two parts of one mesh may have welded side by side: the first stays)
-    slot = {geo, ids};
-  return slot.ids;
+  if(slot.geo.lock() == geo)  // two parts of one mesh may have welded side by side: the first stays
+    if(auto first = slot.ids.lock())
+      return first;
+  slot = {geo, ids};
+  return ids;
 }
 
 bool sameRanges(const std::vector<mat::StrandMesh::Range>& a, const std::vector<mat::StrandMesh::Range>& b)
@@ -468,11 +472,12 @@ void measureStrands(const SceneGraph& scene, bool texturesFlipped)
   for(const Part& p : parts)
     if(std::find(meshes.begin(), meshes.end(), p.mesh->geo) == meshes.end())
       meshes.push_back(p.mesh->geo);
+  std::vector<std::shared_ptr<const std::vector<uint32_t>>> welds(meshes.size());
   jobs::parallelFor(meshes.size(), 1, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
     {
       timing::Scope t("strand weld", 20);
-      weldOf(meshes[i]);
+      welds[i] = weldOf(meshes[i]);
     }
   });
   jobs::parallelFor(parts.size(), 1, [&](size_t begin, size_t end) {
@@ -752,12 +757,21 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
     }
     const int texcoord = w.accessor(w.view(uv, geo.uv.size() * 4, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_FLOAT, count, TINYGLTF_TYPE_VEC2);
     int joints = -1, weights = -1;
-    if(m.skinned() && m.skin.skinIndex.size() == count * 4)
+    // a strand hair goes without its drawn skin until something like this asks; the writer reads it later
+    const uint16_t* skinIndex   = m.skin.skinIndex.data();
+    const float*    skinWeight  = m.skin.skinWeight.data();
+    size_t          skinEntries = m.skin.skinIndex.size();
+    if(m.skinned() && m.skin.skinIndex.empty())
     {
-      joints  = w.accessor(w.view(m.skin.skinIndex.data(), m.skin.skinIndex.size() * 2, TINYGLTF_TARGET_ARRAY_BUFFER),
-                           TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT, count, TINYGLTF_TYPE_VEC4);
-      weights = w.accessor(w.view(m.skin.skinWeight.data(), m.skin.skinWeight.size() * 4, TINYGLTF_TARGET_ARRAY_BUFFER),
-                           TINYGLTF_COMPONENT_TYPE_FLOAT, count, TINYGLTF_TYPE_VEC4);
+      mesh::SkinOutput made = mesh::skin(geo, m.cageSkin);
+      skinEntries           = made.skinIndex.size();
+      skinIndex             = w.keep(std::move(made.skinIndex));
+      skinWeight            = w.keep(std::move(made.skinWeight));
+    }
+    if(m.skinned() && skinEntries == count * 4)
+    {
+      joints  = w.accessor(w.view(skinIndex, skinEntries * 2, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT, count, TINYGLTF_TYPE_VEC4);
+      weights = w.accessor(w.view(skinWeight, skinEntries * 4, TINYGLTF_TARGET_ARRAY_BUFFER), TINYGLTF_COMPONENT_TYPE_FLOAT, count, TINYGLTF_TYPE_VEC4);
     }
 
     tinygltf::Mesh gm;

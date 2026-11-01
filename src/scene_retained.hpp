@@ -173,10 +173,10 @@ struct RefineTables
   std::vector<Level>        levels;     // the last one's rows are the refined vertices
   std::span<const uint32_t> drawnFrom;  // per drawn vertex, its refined vertex
   std::span<const uint32_t> triangles;  // refined vertices, three per triangle
+  // per refined vertex, added after the last level (strand ribbons' widths); empty: none
+  std::span<const glm::vec3>  offsets;
   std::shared_ptr<const void> owner;    // what those read
   std::vector<uint32_t>     normalStart, normalTriangles;  // per refined vertex
-  // per refined vertex, added after the last level (strand ribbons' widths); empty: none
-  std::vector<glm::vec3> offsets;
   // the drawn triangles whose materials need tangents (none: the mesh has no tangents) and, per drawn
   // vertex, its corners in them (tinygltf::utils::TangentAdjacency): the GPU makes the tangents too
   std::vector<uint32_t> tangentIndices, tangentStart, tangentCorners;
@@ -208,6 +208,19 @@ struct MeshRecord
   std::vector<glm::uvec4> cageJoints, cageJoints1;
   std::vector<glm::vec4>  cageWeights, cageWeights1;
   std::vector<float>      cageDualQuatShares;
+  // A strand hair's drawn vertices, made on the GPU from its posed cage and read by nothing else, aren't
+  // held: `positions`, `normals` and the drawn skin are empty, and this says how many there are.
+  uint64_t thinVertices = 0;
+  bool     thinNormals  = false;
+  uint64_t vertexCount() const { return thinVertices ? thinVertices : positions.size(); }
+  bool     hasNormals() const { return thinVertices ? thinNormals : !normals.empty(); }
+  // Whether what draws it with a skin deforms it
+  bool skins() const
+  {
+    if(thinVertices)
+      return !cage.empty() && cageJoints.size() == cage.size() && cageWeights.size() == cage.size();
+    return !positions.empty() && joints.size() == positions.size() && weights.size() == positions.size();
+  }
   std::vector<uint32_t>    indices;  // u32 always; a non-indexed primitive gets 0..n-1
   std::vector<Submesh>     submeshes;
   std::vector<MorphTarget> targets;

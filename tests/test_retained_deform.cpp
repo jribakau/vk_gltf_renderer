@@ -181,7 +181,8 @@ MeshRecord ribbonPiece()
   t->triangles       = kColumns;
   t->normalStart     = {0, 1, 2, 3};
   t->normalTriangles = {0, 0, 0};
-  t->offsets.assign(3, kRibbonWidth);
+  static const std::vector<glm::vec3> kOffsets(3, kRibbonWidth);
+  t->offsets = kOffsets;
   m.refine = t;
   return m;
 }

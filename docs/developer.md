@@ -487,6 +487,13 @@ in the same sync (`wakeWhatChanged`: a pose, a morph weight, a vertex edit, a ne
 wake writes nothing. A drawer's matrices are written before each run, so a pack laid out again no longer runs every
 drawer: a wear doesn't skin every other figure.
 
+A strand hair's record is thin once the feed knows every drawer poses its cage (`MeshRecord::thinVertices`): `positions`, `normals` and the drawn skin are
+empty, and code asks `vertexCount()`, `hasNormals()` and `skins()`. It stays fat when a group's material gives light, since `syncEmissive` reads the
+triangles. `mesh::skin` isn't made for a ribbon: an export makes it with `mesh::skin(geo, cageSkin)`. `widenRibbons` turns the ribbon's streams into `offsets`
+and lets them go, so it works once. `MorphSet::cageOnly` is `FigureFeed::refinesOnceFed`, which is true of a mesh not yet fed: a wear's dials come before its
+first sync, and would otherwise run the whole CPU morph on it and keep what that made. To find what the heap holds, a temporary `operator new` that keeps a
+`CaptureStackBackTrace` of large allocations, a linker map from `_LINK_=/MAP:file` and one relink name it per function; that is how this was found.
+
 Grey maps are half the size from their next cook on: the cooker writes one grey as BC4 with a `KTXswizzle`
 (`texcache.rs GreyMap`), which the images it cooked before need not, and a lobe's roughness from the file the
 base roughness uses asks for the same image.

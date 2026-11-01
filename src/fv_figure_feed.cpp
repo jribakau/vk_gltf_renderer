@@ -49,6 +49,52 @@ bool draws(const SceneGraph& figure, const Node& n)
   return m.geo && !m.geo->position.empty() && !m.geo->groups.empty();
 }
 
+// Whether what draws it can pose its cage: it has the cage's own influences
+bool poses(const Mesh& m)
+{
+  return m.geo && m.skinned() && mesh::drawnFromCage(*m.geo) && !m.geo->cagePositions.empty() && m.cageSkin.start.size() == m.geo->cagePositions.size() / 3 + 1;
+}
+
+// The drawn vertices' skin into a record, made here for a mesh that goes without one (a strand hair)
+void addDrawnSkin(rs::MeshRecord& r, const Mesh& m)
+{
+  if(!m.skinned() || !m.geo)
+    return;
+  const size_t     count = m.geo->position.size() / 3;
+  mesh::SkinOutput made;
+  if(m.skin.skinIndex.empty())
+    made = mesh::skin(*m.geo, m.cageSkin);
+  const mesh::SkinOutput& skin = m.skin.skinIndex.empty() ? made : m.skin;
+  if(skin.skinIndex.size() != count * 4 || skin.skinWeight.size() != count * 4)
+    return;
+  r.joints.resize(count);
+  r.weights.resize(count);
+  const bool eight = skin.skinIndex8.size() == count * 8 && skin.skinWeight8.size() == count * 8;
+  if(eight)
+  {
+    r.joints1.resize(count);
+    r.weights1.resize(count);
+  }
+  for(size_t v = 0; v < count; v++)
+  {
+    if(eight)
+    {
+      const uint16_t* j = &skin.skinIndex8[v * 8];
+      r.joints[v]       = glm::uvec4(j[0], j[1], j[2], j[3]);
+      r.joints1[v]      = glm::uvec4(j[4], j[5], j[6], j[7]);
+      r.weights[v]      = glm::make_vec4(&skin.skinWeight8[v * 8]);
+      r.weights1[v]     = glm::make_vec4(&skin.skinWeight8[v * 8 + 4]);
+      continue;
+    }
+    const uint16_t* j = &skin.skinIndex[v * 4];
+    r.joints[v]       = glm::uvec4(j[0], j[1], j[2], j[3]);
+    r.weights[v]      = glm::make_vec4(&skin.skinWeight[v * 4]);
+  }
+  r.dualQuat = skin.dualQuat;
+  if(skin.dualQuatShare.size() == count)
+    r.dualQuatShares = skin.dualQuatShare;
+}
+
 // How a subdivided mesh's drawn vertices come from its cage: its stencils, its splits, and per
 // refined vertex the triangles NormalWelder sums for it, in triangle order
 std::shared_ptr<rs::RefineTables> refineTables(const std::shared_ptr<mesh::BuiltMesh>& built)
@@ -82,17 +128,7 @@ std::shared_ptr<rs::RefineTables> refineTables(const std::shared_ptr<mesh::Built
   // strand ribbons: each refined vertex is its strand point, moved off its guide when grown from one,
   // then across the strand by its width
   if(geo.ribbon)
-  {
-    const mesh::Ribbon& r = *geo.ribbon;
-    t->offsets.assign(n, glm::vec3(0.f));
-    for(size_t v = 0; v < n && v < geo.firstSplit.size(); v++)
-      if(const int32_t d = geo.firstSplit[v]; d >= 0 && size_t(d) < r.half.size())
-      {
-        t->offsets[v] = glm::make_vec3(&r.side[size_t(d) * 3]) * r.half[size_t(d)];
-        if(size_t(d) * 3 + 2 < r.shift.size())
-          t->offsets[v] += glm::make_vec3(&r.shift[size_t(d) * 3]);
-      }
-  }
+    t->offsets = std::span(reinterpret_cast<const glm::vec3*>(geo.ribbon->offsets.data()), geo.ribbon->offsets.size() / 3);
   return t;
 }
 
@@ -374,6 +410,9 @@ bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const std::pa
     // records are a sync's to make again
     if(rs::materialNeedsTangents(r->payload) != rs::materialNeedsTangents(payload))
       all = false;
+    // and one that starts or stops giving light, whether a hair holds its triangles for the emissive table
+    if(rs::materialEmits(r->payload) != rs::materialEmits(payload))
+      all = false;
     m_scene.setMaterial(id, std::move(payload), m_table);
   }
   // so are those whose groups merge differently now (mergePlan): an edit that sets one of a hair's
@@ -552,7 +591,19 @@ std::vector<bool> FigureFeed::tangentGroups(const std::vector<int>& materials) c
   return out;
 }
 
-rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn, const std::vector<uint32_t>& merged) const
+bool FigureFeed::anyEmits(const std::vector<int>& materials) const
+{
+  for(int mi : materials)
+  {
+    const int                 chosen = mi >= 0 ? mi : 0;
+    const rs::MaterialRecord* r      = chosen < int(m_materials.size()) ? m_scene.material(m_materials[size_t(chosen)]) : nullptr;
+    if(r && rs::materialEmits(r->payload))
+      return true;
+  }
+  return false;
+}
+
+rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn, const std::vector<uint32_t>& merged, bool thin) const
 {
   const Mesh&            m     = figure.meshes[size_t(mesh)];
   const mesh::BuiltMesh& geo   = *m.geo;
@@ -574,35 +625,8 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
     for(size_t v = 0; v < count; v++)
       r.uv0[v] = glm::vec2(geo.uv[v * 2], flip ? 1 - geo.uv[v * 2 + 1] : geo.uv[v * 2 + 1]);
   }
-  if(m.skinned() && m.skin.skinIndex.size() == count * 4 && m.skin.skinWeight.size() == count * 4)
-  {
-    r.joints.resize(count);
-    r.weights.resize(count);
-    const bool eight = m.skin.skinIndex8.size() == count * 8 && m.skin.skinWeight8.size() == count * 8;
-    if(eight)
-    {
-      r.joints1.resize(count);
-      r.weights1.resize(count);
-    }
-    for(size_t v = 0; v < count; v++)
-    {
-      if(eight)
-      {
-        const uint16_t* j = &m.skin.skinIndex8[v * 8];
-        r.joints[v]       = glm::uvec4(j[0], j[1], j[2], j[3]);
-        r.joints1[v]      = glm::uvec4(j[4], j[5], j[6], j[7]);
-        r.weights[v]      = glm::make_vec4(&m.skin.skinWeight8[v * 8]);
-        r.weights1[v]     = glm::make_vec4(&m.skin.skinWeight8[v * 8 + 4]);
-        continue;
-      }
-      const uint16_t* j = &m.skin.skinIndex[v * 4];
-      r.joints[v]       = glm::uvec4(j[0], j[1], j[2], j[3]);
-      r.weights[v]      = glm::make_vec4(&m.skin.skinWeight[v * 4]);
-    }
-    r.dualQuat = m.skin.dualQuat;
-    if(m.skin.dualQuatShare.size() == count)
-      r.dualQuatShares = m.skin.dualQuatShare;
-  }
+  if(!thin)
+    addDrawnSkin(r, m);
   r.indices = drawn.index();
   for(size_t k = 0; k < drawn.groups().size(); k++)
   {
@@ -626,7 +650,7 @@ rs::MeshCounts meshCounts(const Mesh& m)
   c.uv0                      = geo.uv.size() == c.vertices * 2;
   // what its materials ask isn't known yet: a garment's nearly always have normal maps, a strand's rarely do
   c.tangents        = c.uv0 && !geo.ribbon;
-  c.skinned         = m.skinned() && m.skin.skinIndex.size() == c.vertices * 4;
+  c.skinned         = m.skinned() && (m.skin.skinIndex.size() == c.vertices * 4 || poses(m));
   c.eightInfluences = c.skinned && m.skin.skinIndex8.size() == c.vertices * 8;
   c.dualQuatShares  = c.skinned && m.skin.dualQuatShare.size() == c.vertices;
   if(mesh::drawnFromCage(geo) && !geo.cagePositions.empty())
@@ -698,6 +722,7 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     for(int g : groups)
       partMaterials[mi].push_back(materialFor(g));
     const std::vector<bool> tangents = tangentGroups(groups);
+    const bool              emits    = anyEmits(groups);
     const bool              flipV    = !m_options.build.texturesFlipped;
     std::vector<std::pair<uint32_t, uint32_t>> runs;
     for(const mesh::Group& g : drawn.groups())
@@ -706,9 +731,12 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     f.groupRuns                        = runs;
     f.groupMaterials                   = groups;
     if(f.id.isNone() || f.geo.lock() != m.geo || f.hidden != m.geo->hiddenPolys || f.flipV != flipV || f.tangentGroups != tangents
-       || f.merged != merged)
+       || f.merged != merged || (m.geo->ribbon && f.emits != emits))
     {
-      rs::MeshRecord r   = meshRecord(figure, int(mi), drawn, merged);
+      // a strand hair whose drawers pose its cage: nothing reads its drawn vertices or their skin, unless it
+      // gives light, when the emissive table does
+      const bool     thin = m_options.cageOf && m.geo->ribbon && poses(m) && !emits;
+      rs::MeshRecord r    = meshRecord(figure, int(mi), drawn, merged, thin);
       f.merged           = merged;
       f.tangentIndices   = tangentIndices(r, tangents);
       // subdivided, or strand ribbons once widened: the GPU makes its drawn vertices from its cage
@@ -749,6 +777,7 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
           }
         }
         r.cageDualQuatShares = cs.dualQuatShare;
+        r.dualQuat           = cs.dualQuat;
       }
       f.tangentAdjacency = std::nullopt;
       // the GPU makes a refined mesh's tangents (zeros here, made when it is resident)
@@ -766,12 +795,26 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
         tinygltf::utils::computeTangents(r.positions, r.normals, r.uv0, f.tangentIndices, r.tangents);
         f.tangentAdjacency = tinygltf::utils::tangentAdjacency(f.tangentIndices, r.positions.size());
       }
+      // the drawn streams go, once the tangents have been worked out from their counts. What can't pose after
+      // all (no cage to give, tangents with no tables) keeps them.
+      f.thin = thin && f.refine && r.cageJoints.size() == r.cage.size() && (r.tangents.empty() || gpuTangents(f));
+      if(f.thin)
+      {
+        r.thinVertices = r.positions.size();
+        r.thinNormals  = !r.normals.empty();
+        // swapped: assigning {} clears them and keeps what they hold
+        std::vector<glm::vec3>().swap(r.positions);
+        std::vector<glm::vec3>().swap(r.normals);
+      }
+      else if(thin)
+        addDrawnSkin(r, m);
       oldMeshes.push_back(f.id);
       f.id            = m_scene.addMesh(std::move(r));
       f.geo           = m.geo;
       f.hidden        = m.geo->hiddenPolys;
       f.flipV         = flipV;
       f.tangentGroups = tangents;
+      f.emits         = emits;
       f.tangentsLate  = false;
     }
     else
@@ -821,6 +864,13 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
 
 void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
 {
+  // made from its cage, whatever has happened to the CPU's copy
+  if(f.thin)
+  {
+    if(std::vector<glm::vec3> cage = cageOf(int(&f - m_meshes.data()), f); !cage.empty() && cage != m_scene.mesh(f.id)->cage)
+      m_scene.setMeshCage(f.id, std::move(cage));
+    return;
+  }
   // the same triangles over vertices that moved
   const mesh::BuiltMesh& geo   = *m.geo;
   const size_t           count = geo.position.size() / 3;
@@ -917,7 +967,7 @@ std::vector<glm::vec3> FigureFeed::cageOf(int mesh, const FedMesh& f) const
 std::optional<rs::SkinRecord> FigureFeed::skinRecord(const Mesh& m) const
 {
   const size_t count = m.geo ? m.geo->position.size() / 3 : 0;
-  if(!m.skinned() || m.skin.skinIndex.size() != count * 4 || m.skin.skinWeight.size() != count * 4)
+  if(!m.skinned() || (!poses(m) && (m.skin.skinIndex.size() != count * 4 || m.skin.skinWeight.size() != count * 4)))
     return std::nullopt;
   rs::SkinRecord skin;
   for(int bone : m.bones)
@@ -935,7 +985,7 @@ bool FigureFeed::fedAsItIs(const SceneGraph& figure, int mesh) const
   const Mesh&    m = figure.meshes[size_t(mesh)];
   const FedMesh& f = m_meshes[size_t(mesh)];
   return !f.id.isNone() && m.geo && f.geo.lock() == m.geo && f.hidden == m.geo->hiddenPolys && m_scene.mesh(f.id)
-         && m_scene.mesh(f.id)->positions.size() == m.geo->position.size() / 3;
+         && m_scene.mesh(f.id)->vertexCount() == m.geo->position.size() / 3;
 }
 
 bool FigureFeed::syncVertices(const SceneGraph& figure, std::span<const int> meshes, bool tangentsLater)
@@ -979,6 +1029,16 @@ bool FigureFeed::syncCages(const SceneGraph& figure, std::span<const int> meshes
 bool FigureFeed::refines(int mesh) const
 {
   return mesh >= 0 && mesh < int(m_meshes.size()) && m_meshes[size_t(mesh)].refine;
+}
+
+bool FigureFeed::refinesOnceFed(const SceneGraph& figure, int mesh) const
+{
+  if(refines(mesh))
+    return true;
+  if(mesh < 0 || mesh >= int(figure.meshes.size()) || (mesh < int(m_meshes.size()) && !m_meshes[size_t(mesh)].id.isNone()))
+    return false;
+  const Mesh& m = figure.meshes[size_t(mesh)];
+  return m_options.cageOf && m.geo && mesh::drawnFromCage(*m.geo);
 }
 
 bool FigureFeed::syncSkins(const SceneGraph& figure, std::span<const int> meshes)

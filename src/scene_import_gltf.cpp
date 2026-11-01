@@ -372,6 +372,11 @@ bool materialNeedsTangents(const fv::mat::Material& material)
   return material.normalMap.has() || material.anisotropy.has_value();
 }
 
+bool materialEmits(const fv::mat::Material& material)
+{
+  return material.emissiveStrength.value_or(1.f) > 0.f && (material.emissive[0] > 0.f || material.emissive[1] > 0.f || material.emissive[2] > 0.f);
+}
+
 std::vector<MeshCounts> modelMeshCounts(const tinygltf::Model& model)
 {
   const auto countOf = [&](int accessor) {

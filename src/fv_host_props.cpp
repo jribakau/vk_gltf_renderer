@@ -862,9 +862,9 @@ void FvHost::Impl::compose()
     if(p->figure)
     {
       p->figure->feed = f && f->figure ? f->figure.get() : nullptr;
-      // a dial moves only the cages of the meshes its feed has the GPU refine
+      // a dial moves only the cages of the meshes its feed has the GPU refine, or is about to
       if(p->figure->fig->morphs)
-        p->figure->fig->morphs->cageOnly = [l = p->figure.get()](int mesh) { return l->feed && l->feed->refines(mesh); };
+        p->figure->fig->morphs->cageOnly = [l = p->figure.get()](int mesh) { return l->feed && l->feed->refinesOnceFed(l->fig->loaded.scene, mesh); };
     }
   }
   // the first composition makes the scene resident, waited for; after it each frame's sync takes the changes

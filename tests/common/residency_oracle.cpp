@@ -86,7 +86,7 @@ bool drawnDeformed(RetainedScene& scene, EntityId entity, const MeshRecord& r)
   if(!e || !e->mesh)
     return false;
   return !r.targets.empty()
-         || (scene.skin(e->mesh->skin) && !r.positions.empty() && r.joints.size() == r.positions.size() && r.weights.size() == r.positions.size());
+         || (scene.skin(e->mesh->skin) && r.skins());
 }
 
 // The mesh as the entity draws it: its targets at the instance's weights (else the mesh's), then
@@ -103,6 +103,9 @@ struct Deformed
 MeshRecord refinedBase(const MeshRecord& r, const std::vector<glm::vec4>* frameX = nullptr, const std::vector<glm::vec3>* frameY = nullptr)
 {
   MeshRecord             out = r;
+  out.positions.resize(r.vertexCount());
+  if(r.hasNormals())
+    out.normals.resize(r.vertexCount());
   const RefineTables&    t   = *r.refine;
   std::vector<glm::vec3> src = r.cage;
   for(const RefineTables::Level& level : t.levels)
@@ -175,8 +178,8 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
 {
   Deformed       out{r.positions, r.normals, r.tangents};
   const Entity&  e = *scene.entity(entity);
-  const size_t   n = r.positions.size();
-  const bool     hasNormals = r.normals.size() == n, hasTangents = r.tangents.size() == n;
+  const size_t   n = r.vertexCount();
+  const bool     hasNormals = r.hasNormals(), hasTangents = r.tangents.size() == n;
   // a stream no target has is not morphed (its deltas are not uploaded)
   const bool normalDeltas  = std::any_of(r.targets.begin(), r.targets.end(), [](const MorphTarget& x) { return !x.normals.empty(); });
   const bool tangentDeltas = std::any_of(r.targets.begin(), r.targets.end(), [](const MorphTarget& x) { return !x.tangents.empty(); });
@@ -208,7 +211,7 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
     }
   }
   const std::vector<glm::mat4>& joints = ran;
-  if(joints.empty() || r.joints.size() != n || r.weights.size() != n)
+  if(joints.empty() || !r.skins())
     return out;
   std::vector<glm::mat3> normalMats;
   for(const glm::mat4& j : joints)

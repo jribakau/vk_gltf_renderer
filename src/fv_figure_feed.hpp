@@ -113,6 +113,8 @@ public:
   bool syncCages(const SceneGraph& figure, std::span<const int> meshes);
   // whether the GPU makes the mesh's drawn vertices from its cage (FigureFeedOptions::cageOf)
   bool refines(int mesh) const;
+  // ... or will when it first feeds it: a wear's dials come before its first sync
+  bool refinesOnceFed(const SceneGraph& figure, int mesh) const;
   // the tangents syncVertices left for later, made for each mesh whose vertices have not moved
   // for `still` (a drag that stopped)
   void settleTangents(std::chrono::steady_clock::duration still = {});
@@ -149,6 +151,8 @@ private:
   {
     rs::MeshId                                  id;
     std::weak_ptr<mesh::BuiltMesh>              geo;
+    bool                                        thin  = false;  // MeshRecord::thinVertices
+    bool                                        emits = false;  // one of its groups gives light
     std::map<std::string, std::vector<int32_t>> hidden;  // the geometry's hidden polygons
     bool                                        flipV = false;
     std::vector<bool>                           tangentGroups;  // the drawn groups whose materials need tangents
@@ -198,11 +202,13 @@ private:
   std::vector<int> groupMaterials(const SceneGraph& figure, int mesh, const build::DrawnView& drawn) const;
   rs::MaterialId   materialFor(int material);
   std::vector<bool>      tangentGroups(const std::vector<int>& materials) const;
+  bool                   anyEmits(const std::vector<int>& materials) const;
   // Submesh::mergedInto for each drawn group: a group that follows another in the indices, both
   // drawing something, with a material the same as that group's in all but its name, is drawn and
   // traced with it (one prim, one BLAS)
   std::vector<uint32_t>  mergePlan(const std::vector<std::pair<uint32_t, uint32_t>>& runs, const std::vector<int>& materials) const;
-  rs::MeshRecord         meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn, const std::vector<uint32_t>& merged) const;
+  // `thin`: without the drawn vertices' skin
+  rs::MeshRecord         meshRecord(const SceneGraph& figure, int mesh, const build::DrawnView& drawn, const std::vector<uint32_t>& merged, bool thin = false) const;
   std::vector<uint32_t>  tangentIndices(const rs::MeshRecord& record, const std::vector<bool>& groups) const;
 
   rs::RetainedScene& m_scene;

@@ -38,7 +38,7 @@ glm::mat4 Transform::local() const
 std::array<glm::vec3, 2> MeshRecord::bounds() const
 {
   std::array<glm::vec3, 2> b{glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
-  for(const glm::vec3& p : positions)
+  for(const glm::vec3& p : thinVertices ? cage : positions)
   {
     b[0] = glm::min(b[0], p);
     b[1] = glm::max(b[1], p);

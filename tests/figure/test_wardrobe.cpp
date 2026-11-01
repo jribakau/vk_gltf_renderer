@@ -543,7 +543,12 @@ TEST(Wardrobe, AHairLoadedWithAShareOfItsStrandsIsAsWideAsItHasToBe)
         return *m.geo;
     throw std::runtime_error("no strands");
   };
-  const auto widest = [](const fv::mesh::BuiltMesh& g) { return *std::max_element(g.ribbon->half.begin(), g.ribbon->half.end()); };
+  const auto widest = [](const fv::mesh::BuiltMesh& g) {
+    float most = 0;
+    for(size_t i = 0; i + 2 < g.ribbon->offsets.size(); i += 3)
+      most = std::max(most, std::hypot(g.ribbon->offsets[i], g.ribbon->offsets[i + 1], g.ribbon->offsets[i + 2]));
+    return most;
+  };
   fv::dson::LoadOptions less;
   less.strandKeep                      = 0.5f;
   const fv::dson::LoadResult thinned   = fv::dson::loadDson(*store, hair, less);

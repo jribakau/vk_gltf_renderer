@@ -922,10 +922,10 @@ Influences refineInfluences(const Influences& src, const subdiv::Stencils& lv, i
 // Opens the zero-width ribbons to `widths[material]` (root, tip in cm), then welds normals across them.
 void widenRibbons(mesh::BuiltMesh& m, const std::vector<std::array<double, 2>>& widths)
 {
-  if(!m.ribbon)
+  if(!m.ribbon || !m.ribbon->offsets.empty())
     return;
-  auto& r = *m.ribbon;
-  r.half.assign(r.along.size(), 0.f);
+  auto&              r = *m.ribbon;
+  std::vector<float> half(r.along.size(), 0.f);
   // each vertex moves on its own, and a hair has millions of them
   jobs::parallelFor(r.along.size(), 16384, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
@@ -939,13 +939,31 @@ void widenRibbons(mesh::BuiltMesh& m, const std::vector<std::array<double, 2>>& 
         const double t = r.along[i] / r.rootFade[i];
         gate           = t * t * (3.0 - 2.0 * t);
       }
-      const double half = (w[0] + (w[1] - w[0]) * r.along[i]) / 2 * gate;
-      r.half[i]         = float(half);
+      const double across = (w[0] + (w[1] - w[0]) * r.along[i]) / 2 * gate;
+      half[i]             = float(across);
       for(int k = 0; k < 3; k++)
-        m.position[i * 3 + k] = float(m.position[i * 3 + k] + r.side[i * 3 + k] * half);
+        m.position[i * 3 + k] = float(m.position[i * 3 + k] + r.side[i * 3 + k] * across);
     }
   });
   NormalWelder(m.renderIndex, m.firstSplit, m.nextSplit, m.renderTris, m.renderVertexCount).full(m.position, m.normal);
+  // what a drawer adds to each strand point: nothing reads the rest again, and it is a third of the mesh
+  const size_t n = std::min(size_t(std::max(m.renderVertexCount, 0)), m.firstSplit.size());
+  r.offsets.assign(size_t(std::max(m.renderVertexCount, 0)) * 3, 0.f);
+  jobs::parallelFor(n, 16384, [&](size_t begin, size_t end) {
+    for(size_t v = begin; v < end; v++)
+    {
+      const int32_t d = m.firstSplit[v];
+      if(d < 0 || size_t(d) >= half.size())
+        continue;
+      for(size_t k = 0; k < 3; k++)
+        r.offsets[v * 3 + k] = r.side[size_t(d) * 3 + k] * half[size_t(d)] + (r.shift.empty() ? 0.f : r.shift[size_t(d) * 3 + k]);
+    }
+  });
+  std::vector<float>().swap(r.side);
+  std::vector<float>().swap(r.along);
+  std::vector<int32_t>().swap(r.material);
+  std::vector<float>().swap(r.rootFade);
+  std::vector<float>().swap(r.shift);
 }
 
 BuiltMesh build(const MeshInput& m)
@@ -1206,7 +1224,7 @@ uint64_t ramBytes(const BuiltMesh& m)
                    + of(m.nextSplit) + of(m.renderTris) + of(m.dsonTris) + of(m.cagePolyStart) + of(m.cagePolyVerts) + of(m.cageLineStart)
                    + of(m.cageLineVerts) + of(m.cagePositions);
   if(m.ribbon)
-    bytes += of(m.ribbon->side) + of(m.ribbon->along) + of(m.ribbon->material) + of(m.ribbon->rootFade) + of(m.ribbon->half) + of(m.ribbon->shift);
+    bytes += of(m.ribbon->side) + of(m.ribbon->along) + of(m.ribbon->material) + of(m.ribbon->rootFade) + of(m.ribbon->shift) + of(m.ribbon->offsets);
   if(m.refinement)
     for(const subdiv::Stencils& s : m.refinement->levels)
       bytes += of(s.rowStart) + of(s.col) + of(s.weight);
@@ -1411,7 +1429,7 @@ bool RenderTarget::moves() const
 
 bool drawnFromCage(const BuiltMesh& mesh)
 {
-  return mesh.refinement && (!mesh.ribbon || !mesh.ribbon->half.empty());
+  return mesh.refinement && (!mesh.ribbon || !mesh.ribbon->offsets.empty());
 }
 
 std::vector<float> shiftCage(BuiltMesh& mesh, std::span<const float> positions)

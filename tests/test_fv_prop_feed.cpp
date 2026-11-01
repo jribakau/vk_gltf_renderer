@@ -30,6 +30,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <figure/figure.hpp>
+#include <figure/gltf/gltf_check.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/mesh/normals.hpp>
 
@@ -674,6 +675,225 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
       moved = std::max(moved, glm::distance(got[v], rest[i][v]));
   }
   EXPECT_GT(moved, 1e-3f);
+}
+
+// Nothing reads a posed strand hair's drawn vertices but the GPU that makes them, so its record holds none, nor
+// their skin: only how many there are. Its drawers make them from the posed cage, and the oracle holds them to
+// that at rest, posed, moved by a dial, and woken after settling. An export makes the skin it needs, and what
+// gives light keeps its triangles for the emissive table.
+TEST(FvPropFeed, APosedStrandHairHoldsNoDrawnVerticesOnTheCpu)
+{
+  const fs::path library = fs::path(FV_TEST_DATA) / "daz-library";
+  auto           hair    = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<fs::path>{library})),
+                                            "People/Test/Clothing/Box Fan Hair.duf", {});
+  hair->settle();
+  hair->drain();
+  fv::SceneGraph& graph  = hair->loaded.scene;
+  const int       root   = hair->loaded.root;
+  const auto      ribbon = std::find_if(graph.meshes.begin(), graph.meshes.end(), [](const fv::Mesh& m) { return m.geo && m.geo->ribbon; });
+  ASSERT_NE(ribbon, graph.meshes.end());
+  ASSERT_TRUE(ribbon->skinned());
+  const int                  mi  = int(ribbon - graph.meshes.begin());
+  const fv::mesh::BuiltMesh& geo = *ribbon->geo;
+  const size_t               n   = geo.position.size() / 3;
+  // this asset's ribbons come with no width: some, as widening would have given them
+  ASSERT_EQ(geo.ribbon->offsets.size(), size_t(geo.renderVertexCount) * 3);
+  for(size_t v = 0; v < size_t(geo.renderVertexCount); v++)
+  {
+    const float across = v % 2 ? 0.2f : -0.2f;
+    for(size_t k = 0; k < 3; k++)
+    {
+      ribbon->geo->ribbon->offsets[v * 3 + k] += across;
+      ribbon->geo->position[size_t(geo.firstSplit[v]) * 3 + k] += across;
+    }
+  }
+  EXPECT_TRUE(ribbon->skin.skinIndex.empty()) << "made only by what asks";
+
+  rs::RetainedScene  scene;
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu, {.settleQuietFrames = 0});
+  std::vector<float> cage = geo.cagePositions;
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int) { return cage; }});
+  feed.sync(graph, root);
+  residency.replace(scene);
+  const rs::MeshId id = feed.meshOf(mi);
+  const auto check = [&](const char* when) {
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << when << ": " << p;
+  };
+  const auto frames = [&](int count) {
+    for(int i = 0; i < count; i++)
+    {
+      gpu.beginFrame();
+      residency.sync(scene);
+    }
+  };
+  const auto drawnNow = [&] {
+    std::vector<glm::vec3> got(n);
+    std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(drawnBuffers(graph, feed, residency, mi).positions), n * 12).data(), n * 12);
+    return got;
+  };
+  const auto farthest = [](const std::vector<glm::vec3>& a, const std::vector<glm::vec3>& b) {
+    float most = 0;
+    for(size_t v = 0; v < a.size(); v++)
+      most = std::max(most, glm::distance(a[v], b[v]));
+    return most;
+  };
+
+  const rs::MeshRecord* record = scene.mesh(id);
+  ASSERT_TRUE(record);
+  EXPECT_EQ(record->thinVertices, n);
+  EXPECT_TRUE(record->positions.empty());
+  EXPECT_TRUE(record->normals.empty());
+  EXPECT_TRUE(record->joints.empty());
+  EXPECT_TRUE(record->weights.empty());
+  EXPECT_FALSE(record->indices.empty());
+  ASSERT_TRUE(residency.meshGpu(id)->refine) << "a drawer has nothing else to make them from";
+  check("at rest");
+
+  // at rest, what the CPU keeps
+  const std::vector<glm::vec3> rest = drawnNow();
+  for(size_t v = 0; v < n; v++)
+    ASSERT_LT(glm::distance(rest[v], glm::make_vec3(&geo.position[v * 3])), 1e-4f) << v;
+
+  // its price is what it holds, as for any other mesh
+  const rs::MemoryLedger ledger = residency.ledger();
+  const auto             entry  = std::find_if(ledger.meshes.begin(), ledger.meshes.end(), [&](const auto& m) { return m.mesh == id; });
+  ASSERT_NE(entry, ledger.meshes.end());
+  rs::MeshCounts counts   = fv::meshCounts(*ribbon);
+  counts.tangents         = !record->tangents.empty();
+  counts.tangentTriangles = record->refine->tangentIndices.size() / 3;
+  EXPECT_EQ(rs::meshBufferBytes(counts), entry->bytes.total() - entry->bytes.bvh);
+  EXPECT_EQ(entry->bytes.unread, 0u);
+
+  // a bone turned
+  ASSERT_FALSE(ribbon->bones.empty());
+  const rs::EntityId bone = feed.entityOf(ribbon->bones[0]);
+  const auto         turn = [&](float degrees) {
+    rs::Transform t = scene.entity(bone)->local;
+    t.rotation      = glm::angleAxis(glm::radians(degrees), glm::vec3(0, 0, 1)) * t.rotation;
+    scene.setLocal(bone, t);
+  };
+  turn(40);
+  frames(1);
+  check("posed");
+  const std::vector<glm::vec3> posed = drawnNow();
+  EXPECT_GT(farthest(posed, rest), 1e-3f);
+
+  // a dial: its cage moves, in the same record, and the drawn vertices follow
+  for(size_t v = 0; v < cage.size() / 3; v++)
+    cage[v * 3 + 1] += 0.5f;
+  feed.sync(graph, root);
+  EXPECT_EQ(feed.meshOf(mi), id);
+  frames(1);
+  check("dialled");
+  EXPECT_GT(farthest(drawnNow(), posed), 1e-3f);
+
+  // settled and woken
+  const std::vector<glm::vec3> dialled = drawnNow();
+  residency.settle(id);
+  frames(4);
+  ASSERT_TRUE(residency.isSettled(id));
+  EXPECT_EQ(farthest(drawnNow(), dialled), 0.f);
+  turn(-20);
+  frames(1);
+  EXPECT_FALSE(residency.isSettled(id));
+  check("woken");
+  EXPECT_GT(farthest(drawnNow(), dialled), 1e-3f);
+
+  // an export makes the skin it needs
+  const fv::build::BuildResult built = fv::build::buildGltf(graph, root, {});
+  for(const std::string& p : fv::build::checkBuild(graph, built, {}))
+    ADD_FAILURE() << p;
+  ASSERT_GE(built.meshOf[size_t(mi)], 0);
+  EXPECT_TRUE(built.model.meshes[size_t(built.meshOf[size_t(mi)])].primitives.at(0).attributes.count("JOINTS_0"));
+
+  // what gives light keeps its triangles: that takes a sync, and letting go of the light takes them away again
+  std::vector<int> materials(graph.materials.size());
+  for(size_t i = 0; i < materials.size(); i++)
+    materials[i] = int(i);
+  for(fv::Material& material : graph.materials)
+    material.edits.emissive = fv::mat::Rgb{1, 1, 1};
+  EXPECT_FALSE(feed.syncMaterials(graph, materials));
+  feed.sync(graph, root);
+  frames(1);
+  const rs::MeshRecord* emitting = scene.mesh(feed.meshOf(mi));
+  ASSERT_TRUE(emitting);
+  EXPECT_EQ(emitting->thinVertices, 0u);
+  EXPECT_EQ(emitting->positions.size(), n);
+  EXPECT_EQ(emitting->joints.size(), n);
+  EXPECT_GT(residency.emissiveCount(), 0u);
+  check("giving light");
+  for(fv::Material& material : graph.materials)
+    material.edits.emissive = std::nullopt;
+  EXPECT_FALSE(feed.syncMaterials(graph, materials));
+  feed.sync(graph, root);
+  frames(1);
+  EXPECT_EQ(scene.mesh(feed.meshOf(mi))->thinVertices, n);
+  EXPECT_EQ(residency.emissiveCount(), 0u);
+  check("not any more");
+}
+
+// A wear's dials come before its first sync. What the GPU is about to refine moves its cage alone, as a fed mesh
+// does: the CPU morphs nothing it doesn't draw, and holds nothing for it, until something asks.
+TEST(FvPropFeed, AWearsDialsMoveOnlyItsCageBeforeItIsFed)
+{
+  const char* const shirt = "People/Test/Clothing/Box Shirt.duf";
+  const auto        box = loadBox(), dialled = loadBox();
+  box->morphs->set("Taper", 1.0);
+  box->morphs->settled();
+  dialled->morphs->set("Taper", 1.0);
+  dialled->morphs->settled();
+
+  rs::RetainedScene  scene;
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu);
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); }});
+  feed.sync(box->loaded.scene, box->loaded.root);
+  residency.replace(scene);
+  box->morphs->cageOnly = [&](int mesh) { return feed.refinesOnceFed(box->loaded.scene, mesh); };
+
+  const auto wear = [&](fv::Figure& f, std::vector<float>* came = nullptr) {
+    const size_t first    = f.loaded.scene.meshes.size();
+    auto         prepared = f.prepareWear(shirt, 1);
+    if(came)
+      *came = fv::Figure::preparedScene(*prepared).meshes.at(0).geo->position;
+    f.commitWear(prepared, shirt);
+    f.morphs->settled();
+    EXPECT_EQ(f.loaded.scene.meshes.size(), first + 1);
+    return int(first);
+  };
+  std::vector<float>         asItCame;
+  const int                  mi      = wear(*box, &asItCame);
+  const fv::mesh::BuiltMesh& worn    = *box->loaded.scene.meshes[size_t(mi)].geo;
+  const fv::mesh::BuiltMesh& morphed = *dialled->loaded.scene.meshes[size_t(wear(*dialled))].geo;
+  ASSERT_TRUE(fv::mesh::drawnFromCage(worn));
+  ASSERT_NE(asItCame, morphed.position) << "the shirt follows the dial";
+
+  EXPECT_FALSE(feed.refines(mi));
+  EXPECT_TRUE(feed.refinesOnceFed(box->loaded.scene, mi));
+  EXPECT_EQ(worn.position, asItCame);
+  EXPECT_NE(box->morphs->morphedCage(mi), worn.cagePositions);
+
+  // fed, it draws the dial all the same
+  feed.sync(box->loaded.scene, box->loaded.root);
+  EXPECT_TRUE(feed.refines(mi));
+  gpu.beginFrame();
+  residency.sync(scene);
+  for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+    ADD_FAILURE() << p;
+  EXPECT_EQ(worn.position, asItCame);
+  const size_t           n = worn.position.size() / 3;
+  std::vector<glm::vec3> drawn(n);
+  std::memcpy(drawn.data(), gpu.bytesAt(gpu.bufferAddress(drawnBuffers(box->loaded.scene, feed, residency, mi).positions), n * 12).data(), n * 12);
+  for(size_t v = 0; v < n; v++)
+    ASSERT_LT(glm::distance(drawn[v], glm::make_vec3(&morphed.position[v * 3])), 1e-4f) << v;
+
+  // and an export, which asks, finds what a CPU morph would have made
+  box->morphs->catchUp();
+  ASSERT_EQ(worn.position.size(), morphed.position.size());
+  for(size_t i = 0; i < worn.position.size(); i++)
+    ASSERT_NEAR(worn.position[i], morphed.position[i], 1e-5f) << i;
 }
 
 // A mesh's price, made before anything is fed, is what its buffers hold once resident: the residency's

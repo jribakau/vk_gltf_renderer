@@ -86,6 +86,9 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
 // measured from the tangent.
 bool materialNeedsTangents(const fv::mat::Material& material);
 
+// Whether a material's surfaces give light: the emissive table reads their triangles from their records.
+bool materialEmits(const fv::mat::Material& material);
+
 // A node's local transform: its matrix when it has one, else its TRS
 Transform transformOf(const tinygltf::Node& node);
 

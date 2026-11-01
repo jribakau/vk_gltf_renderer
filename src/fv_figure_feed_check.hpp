@@ -166,8 +166,11 @@ inline std::vector<std::string> checkFeed(const SceneGraph& scene, int root, con
       continue;
     }
 
-    same(r->positions.data(), r->positions.size() * sizeof(glm::vec3), geo.position.data(), geo.position.size() * 4, name + "positions");
-    same(r->normals.data(), r->normals.size() * sizeof(glm::vec3), geo.normal.data(), geo.normal.size() * 4, name + "normals");
+    if(!r->thinVertices)
+    {
+      same(r->positions.data(), r->positions.size() * sizeof(glm::vec3), geo.position.data(), geo.position.size() * 4, name + "positions");
+      same(r->normals.data(), r->normals.size() * sizeof(glm::vec3), geo.normal.data(), geo.normal.size() * 4, name + "normals");
+    }
     std::vector<float> uv = geo.uv;
     if(!options.texturesFlipped)
       for(size_t v = 0; v < uv.size() / 2; v++)
@@ -187,7 +190,10 @@ inline std::vector<std::string> checkFeed(const SceneGraph& scene, int root, con
     }
 
     const bool skinned = m.skinned() && m.skin.skinIndex.size() == count * 4;
-    if(skinned)
+    if(r->thinVertices)
+    {
+    }
+    else if(skinned)
     {
       std::vector<glm::uvec4> joints(count);
       for(size_t v = 0; v < count; v++)
@@ -195,7 +201,7 @@ inline std::vector<std::string> checkFeed(const SceneGraph& scene, int root, con
       same(r->joints.data(), r->joints.size() * sizeof(glm::uvec4), joints.data(), joints.size() * sizeof(glm::uvec4), name + "joints");
       same(r->weights.data(), r->weights.size() * sizeof(glm::vec4), m.skin.skinWeight.data(), m.skin.skinWeight.size() * 4, name + "weights");
     }
-    else if(!r->joints.empty())
+    else if(!r->joints.empty() && !(m.skinned() && m.skin.skinIndex.empty()))
       problems.push_back(name + "joints on a mesh with no skin");
 
     for(size_t k = 0; k < drawn.groups.size(); k++)

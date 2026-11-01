@@ -114,9 +114,18 @@ MorphSet::MeshState& MorphSet::ensureCpu(int mesh)
     return it->second;
   mesh::BuiltMesh& geo = *m_geo(mesh);
   MeshState&       st  = m_cpu[mesh];
-  st.basePos           = geo.position;
-  st.baseNrm           = geo.normal;
+  // what only moves its cage writes its drawn vertices at a catch-up, if ever: it copies them then
+  if(!cageOnly || !cageOnly(mesh))
+    keepBase(geo, st);
   return st;
+}
+
+void MorphSet::keepBase(const mesh::BuiltMesh& geo, MeshState& st)
+{
+  if(!st.basePos.empty())
+    return;
+  st.basePos = geo.position;
+  st.baseNrm = geo.normal;
 }
 
 void MorphSet::bind(const std::string& name, Binding b, double value, const ChannelOptions& opts)
@@ -1001,6 +1010,7 @@ MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
   MeshUpdate       out;
   out.mesh = mesh;
   mesh::BuiltMesh& geo = *m_geo(mesh);
+  keepBase(geo, st);
   float*           pos = geo.position.data();
   const uint32_t   n   = uint32_t(geo.position.size() / 3);
   if(st.mark.size() != n)
@@ -1074,6 +1084,7 @@ MorphSet::MeshUpdate MorphSet::rebuild(int mesh, MeshState& st)
   fv::timing::Accum rebuildTime("morph.rebuild");
   st.sinceRebuild      = 0;
   mesh::BuiltMesh& geo = *m_geo(mesh);
+  keepBase(geo, st);
   geo.position         = st.basePos;
   geo.normal           = st.baseNrm;
   float* pos           = geo.position.data();

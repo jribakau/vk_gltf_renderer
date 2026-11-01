@@ -85,11 +85,15 @@ inline std::vector<std::string> checkBuild(const SceneGraph& scene, const BuildR
       if(model.accessors[size_t(p)].minValues != lo || model.accessors[size_t(p)].maxValues != hi)
         problems.push_back(name + "bounds");
     }
-    const bool skinned = m.skinned() && m.skin.skinIndex.size() == count * 4;
+    mesh::SkinOutput madeSkin;
+    if(m.skinned() && m.skin.skinIndex.empty())
+      madeSkin = mesh::skin(geo, m.cageSkin);
+    const mesh::SkinOutput& drawnSkin = m.skin.skinIndex.empty() ? madeSkin : m.skin;
+    const bool skinned = m.skinned() && drawnSkin.skinIndex.size() == count * 4;
     if(skinned)
     {
-      same(attribute("JOINTS_0"), m.skin.skinIndex.data(), m.skin.skinIndex.size() * 2, name + "joints");
-      same(attribute("WEIGHTS_0"), m.skin.skinWeight.data(), m.skin.skinWeight.size() * 4, name + "weights");
+      same(attribute("JOINTS_0"), drawnSkin.skinIndex.data(), drawnSkin.skinIndex.size() * 2, name + "joints");
+      same(attribute("WEIGHTS_0"), drawnSkin.skinWeight.data(), drawnSkin.skinWeight.size() * 4, name + "weights");
     }
     else if(attribute("JOINTS_0") >= 0)
       problems.push_back(name + "joints on a mesh with no skin");

@@ -1157,7 +1157,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
               if(auto binding = skinOf(*a.gres->doc, *skinMod, geo, out.rigs[job.rig], a.mesh.geo->dsonVertexCount))
               {
                 ts.emplace("ahead: skin weights");
-                a.mesh.skin     = mesh::skin(*a.mesh.geo, binding->input);
+                // a strand hair's drawers skin its cage: what would ask makes it then (a big one's is 700 MB)
+                if(!a.mesh.geo->ribbon)
+                  a.mesh.skin = mesh::skin(*a.mesh.geo, binding->input);
                 a.mesh.cageSkin = binding->input;
                 a.mesh.bones    = binding->order;
               }
@@ -1401,7 +1403,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           if(const Json* skinMod = skinModifierOf(*gres, geo))
             if(auto binding = skinOf(*gres->doc, *skinMod, geo, rig, meshOut.geo->dsonVertexCount))
             {
-              meshOut.skin     = mesh::skin(*meshOut.geo, binding->input);
+              if(!meshOut.geo->ribbon)
+                meshOut.skin = mesh::skin(*meshOut.geo, binding->input);
               meshOut.cageSkin = binding->input;
               meshOut.bones    = binding->order;
             }

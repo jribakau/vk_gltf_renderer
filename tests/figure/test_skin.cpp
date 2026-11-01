@@ -379,10 +379,14 @@ TEST(Skin, ALongStrandReachesItsWidthWithinACentimetre)
   input.lines         = lines;
   auto geo            = fv::mesh::build(input);
   ASSERT_TRUE(geo.ribbon);
+  const fv::mesh::Ribbon r = *geo.ribbon;  // what widening lets go of
   fv::mesh::widenRibbons(geo, {{0.2, 0.2}, {0.2, 0.2}});
+  EXPECT_TRUE(geo.ribbon->side.empty());
+  EXPECT_TRUE(geo.ribbon->along.empty());
+  EXPECT_TRUE(geo.ribbon->material.empty());
+  EXPECT_TRUE(geo.ribbon->rootFade.empty());
 
-  const auto& r     = *geo.ribbon;
-  const auto  half  = [&](int material, float along) {
+  const auto half = [&](int material, float along) {
     int   best = -1;
     float gap  = INFINITY;
     for(size_t i = 0; i < r.along.size(); i++)
@@ -391,7 +395,8 @@ TEST(Skin, ALongStrandReachesItsWidthWithinACentimetre)
         gap  = std::abs(r.along[i] - along);
         best = int(i);
       }
-    return r.half[size_t(best)];
+    const float* o = &geo.ribbon->offsets[size_t(geo.renderIndex[size_t(best)]) * 3];
+    return std::hypot(o[0], o[1], o[2]);
   };
   EXPECT_EQ(half(0, 0.f), 0.f);
   // the long strand: halfway at half a centimetre, full from a centimetre out

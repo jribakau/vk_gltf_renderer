@@ -112,16 +112,18 @@ struct MeshInput
 // width; widened once the materials give the widths.
 struct Ribbon
 {
+  // Per drawn vertex, until widenRibbons has made `offsets` of them and let them go
   std::vector<float>   side;
   std::vector<float>   along;
   std::vector<int32_t> material;
   // where along its strand the width has grown in from nothing at the root
   std::vector<float> rootFade;
-  // how far widenRibbons moved each drawn vertex along `side`, cm (empty before)
-  std::vector<float> half;
   // a grown strand's offset from its guide, xyz per drawn vertex, in the rest shape (empty when the
   // lines grow none)
   std::vector<float> shift;
+  // Per render vertex once widened (empty before), xyz: how far it is from its strand point, off its
+  // guide and across by its width, cm. All that is read of a ribbon from then on.
+  std::vector<float> offsets;
   // Median distance between neighbouring roots, cm.
   float spacing = 0;
 };

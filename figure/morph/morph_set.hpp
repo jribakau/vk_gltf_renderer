@@ -305,6 +305,7 @@ private:
   void     reindex();
   void     bind(const std::string& name, Binding b, double value, const ChannelOptions& opts);
   MeshState& ensureCpu(int mesh);
+  void       keepBase(const mesh::BuiltMesh& geo, MeshState& st);
   // writes a channel's weight into its bindings; returns false for an unknown channel
   bool apply(const std::string& name, double value);
   void ensureLoaded(const std::string& name);
