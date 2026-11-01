@@ -453,6 +453,13 @@ void RetainedScene::setLocal(EntityId id, const Transform& local)
   }
 }
 
+void RetainedScene::setMaterialKeepFull(MaterialId id, bool on)
+{
+  assertOwner();
+  if(auto* r = m_materials.get(id))
+    r->value.keepFull = on;
+}
+
 void RetainedScene::setVisible(EntityId id, bool visible)
 {
   assertOwner();

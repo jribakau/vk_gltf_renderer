@@ -82,6 +82,8 @@ public:
   FigureFeed(rs::RetainedScene& scene, FigureFeedOptions options);
   // the figure's entities go, and every record the feed holds is released
   ~FigureFeed();
+  // Which of its materials are marked Keep full, as the figure now says
+  void syncKeepFull(const SceneGraph& figure);
   FigureFeed(const FigureFeed&)            = delete;
   FigureFeed& operator=(const FigureFeed&) = delete;
 

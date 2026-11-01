@@ -470,33 +470,51 @@ void GltfRenderer::watchMemory()
   rs::RetainedSceneVk&               gpu     = *m_resources.retainedGpu;
   const rs::Residency::LoweredImages lowered = gpu.residency().loweredImages();
   constexpr uint64_t                 kSpillStep = 64ull << 20;  // a figure that wanders doesn't tell the app
+  const uint64_t                     spilled    = gpu.backend().spilledBytes();
+  const std::string                  next       = gpu.residency().nextToGo(*m_resources.retainedScene);
+  const rs::MemoryLedger             ledger     = gpu.residency().ledger();
+  const MemoryBudget                 budget     = deviceMemoryBudget();
+  const auto                         step       = [](uint64_t bytes) { return bytes / kSpillStep * kSpillStep; };
   reportMemory({.lowered      = lowered.count,
                 .largest      = lowered.largest,
-                .parked       = uint32_t(gpu.residency().parked().size()),
-                .spilledBytes = gpu.backend().spilledBytes() / kSpillStep * kSpillStep});
+                .parked       = uint32_t(gpu.residency().parkedForMemory()),
+                .spilledBytes = step(spilled),
+                .letGoHidden  = uint32_t(gpu.residency().letGoHidden().size()),
+                .budget       = step(budget.budget),
+                .used         = step(budget.usage),
+                .geometry     = step(ledger.total.total() - ledger.total.images),
+                .textures     = step(ledger.total.images),
+                .nextToGo     = next});
   const std::optional<int64_t> headroom = sceneHeadroom();
   if(!headroom)
     return;
   // what found no memory, tried again now and then once there may be some
-  if(!gpu.residency().parked().empty() && *headroom > int64_t(rs::MemoryWatch::kMargin) && now >= m_retryParkedAt)
+  if(gpu.residency().parkedForMemory() > 0 && *headroom > int64_t(rs::MemoryWatch::kMargin) && now >= m_retryParkedAt)
   {
     constexpr double kRetryEvery = 30;  // what still finds none makes the frame wait for the driver to say so
     m_retryParkedAt = now + kRetryEvery;
     gpu.retryParked();
   }
   const int64_t free = *headroom - int64_t(m_pendingGeometry);
-  switch(m_memoryWatch.read({.now        = now,
+  const rs::MemoryWatch::Act act = m_memoryWatch.read({.now        = now,
                              .headroom   = free,
                              .pastBudget = *headroom < -int64_t(sceneBudget() / 10),  // the tenth kept back is gone too
-                             .canLower   = gpu.lowerableImageBytes(rs::kLeastImageExtent) > 0,
-                             .lowered    = lowered.count > 0,
+                             .canLower   = gpu.lowerableImageBytes(rs::kLeastImageExtent) > 0 || !next.empty(),
+                             .lowered    = lowered.count > 0 || spilled > 0,
                              .refining   = isRefiningStill(),
-                             .held       = m_texturesHeld}))
+                             .held       = m_texturesHeld});
+  // textures have stopped moving: a still takes its samples from them alone, once
+  if(act == rs::MemoryWatch::Act::eNone && !m_texturesHeld && std::exchange(m_texturesMoved, false))
+    resetFrame();
+  switch(act)
   {
     case rs::MemoryWatch::Act::eLower:
       gpu.lowerImages(uint64_t(rs::MemoryWatch::kMargin));
       break;
     case rs::MemoryWatch::Act::eRaise:
+      // what lies in system memory first: it costs the frame more than a texture a size down
+      if(spilled > 0 && gpu.bringBack(*m_resources.retainedScene, uint64_t(free - rs::MemoryWatch::kMargin)) > 0)
+        break;
       if(gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free)) == 0)
         m_memoryWatch.raiseEnded(now);
       break;
@@ -550,7 +568,8 @@ bool GltfRenderer::afterRetainedSync(const rs::SyncResult& result)
     else
       m_rasterizer.notifyDlssContentReset(m_resources);
   }
-  return result.changed;
+  m_texturesMoved = m_texturesMoved || result.imagesMoved;
+  return result.changed && !result.samePicture;
 }
 
 void GltfRenderer::updateRetainedFeatures(bool grow)

@@ -137,7 +137,9 @@ std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb);
 // What a sync did, for the renderer (see "The contract")
 struct SyncResult
 {
-  bool changed           = false;  // any GPU op: the frame resets
+  bool changed           = false;  // any GPU op: the frame resets, unless it is the same picture
+  bool samePicture       = false;  // all it did leaves the picture as it was: a still goes on
+  bool imagesMoved       = false;  // a texture came down or back up to fit memory (samePicture, near enough)
   bool drawListChanged   = false;  // instances came or went
   bool buffersChanged    = false;  // a table or stream buffer was replaced
   bool visibilityChanged = false;  // an instance was shown or hidden
@@ -307,6 +309,7 @@ public:
   {
     uint32_t decoded = 0;
     uint32_t reused  = 0;
+    uint32_t copied  = 0;  // those that came down or moved by copying the levels they kept, nothing read
     uint32_t lowered = 0;  // those lowered to fit GPU memory, resident ones included
     uint32_t refused = 0;  // those GPU memory could not hold, left on the default image
   };
@@ -340,8 +343,19 @@ public:
   const std::set<MeshId>& parked() const { return m_parked; }
   // Everything parked comes back at the next sync, as far as it finds memory
   void                    retryParked();
-  // The next sync lowers what it has to, as when the scene grew, with `slack` bytes free after it
+  // The meshes parked for want of memory, not those only let go of while hidden
+  size_t                  parkedForMemory() const { return m_parked.size() - m_letGoHidden.size(); }
+  // Those let go of while nothing showed them (the Fit): they come back when something does
+  const std::set<MeshId>& letGoHidden() const { return m_letGoHidden; }
+  // The next sync gives up what it has to for `slack` bytes free after it, at most a step's worth when no
+  // new image is waiting: the memory is read again before the next (rs::planToFit)
   void lowerImages(uint64_t slack) { m_fitSlack = slack; }
+  static constexpr uint64_t kFitStep = uint64_t(512) << 20;
+  // What lies in system memory for want of room comes back, as far as `room` bytes go. How many things
+  // will: an image is copied in the next sync, a mesh made again there, and nothing is lost meanwhile.
+  uint32_t bringBack(const RetainedScene& scene, uint64_t room);
+  // What the next step of the Fit would give up, in a few words; empty: nothing can
+  std::string nextToGo(const RetainedScene& scene) const;
   // The next sync decodes images lowered earlier a level or more larger, as far as `room` bytes go
   // (raiseToFit). How many it will.
   uint32_t raiseImages(const RetainedScene& scene, uint64_t room);
@@ -458,6 +472,10 @@ private:
     uint32_t                  users = 0;
     std::optional<TextureKey> key;  // shared through m_decoded; none: its own image
     bool                      lowered = false;  // below what Max texture size allows, to fit GPU memory
+    // its source's stored levels, read once: a fit looks at every image whenever it runs
+    mutable std::optional<ImageChain> chain;
+    mutable bool                      chainRead  = false;
+    mutable bool                      levelsMade = false;  // none stored: those it has on the GPU, so it comes back whole
   };
   // one decode per key, shared by the textures that are that image; one nothing uses is in grace
   struct DecodedImage
@@ -518,6 +536,10 @@ private:
     uint32_t                  skip = 0;
   };
   void residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits) const;
+  // of the images, those whose materials are all marked Keep full
+  std::set<ImageKey> pinnedImages(const RetainedScene& scene) const;
+  // the meshes nothing shows, what each holds
+  std::vector<std::pair<MeshId, uint64_t>> hiddenMeshes() const;
   // the images of the materials that say they are favoured, and of what shares their files
   std::set<ImageKey> favouredImages(const RetainedScene& scene) const;
   void     trimGrace(uint64_t budget);
@@ -628,9 +650,14 @@ private:
     std::optional<TextureKey> key;
     bool                      lowered  = false;  // below what Max texture size allows, to fit GPU memory
     bool                      replaces = false;  // a resident image taken down: it stays if this fails
+    uint32_t                  dropLevels = 0;    // that many of its top levels go: copied from what it is, where it can be
+    bool                      moveOnly   = false;  // the same image, to be somewhere better: if not copied, left as it is
   };
   std::vector<QueuedDecode>                            m_decodeQueue;
   std::optional<uint64_t>                              m_fitSlack;  // lowerImages' for the next sync
+  bool                                                 m_compactedOnly = false;  // this sync's BLASes were only compacted
+  std::set<MeshId>                                     m_letGoHidden;  // of m_parked: while hidden, for the Fit
+  std::set<MeshId>                                     m_bringBack;    // the next sync makes these again
   uint64_t                                             m_graceBytes   = 0;
   uint64_t                                             m_releaseClock = 0;
   ImageCounts                                          m_imageCounts;

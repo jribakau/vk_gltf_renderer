@@ -98,6 +98,7 @@ struct ImageInfo
   uint64_t bytes         = 0;      // the GPU memory it holds (the residency's grace budget)
   bool     outOfMemory   = false;  // no image, for want of GPU memory
   bool     storedLevels  = false;  // its mips came from its source, so it can be decoded again smaller
+  uint32_t levels        = 0;      // the mip levels it has
 };
 
 // glTF sampler values (TINYGLTF_TEXTURE_FILTER_*, TINYGLTF_TEXTURE_WRAP_*); a filter of -1 is unset
@@ -281,6 +282,14 @@ public:
     for(size_t i = 0; i < sources.size(); i++)
       images[i] = createImage(sources[i], infos[i]);
   }
+  // A new image of `image`'s levels from `dropLevels` down, copied from it in this frame: nothing read or
+  // decoded (0: all of them, which moves it to where a new allocation lands). None where it can't: no such
+  // levels, or no memory for it (`info.outOfMemory`).
+  virtual ImageHandle copyImageLevels(ImageHandle /*image*/, uint32_t /*dropLevels*/, ImageInfo& info)
+  {
+    info = {};
+    return {};
+  }
   virtual void destroyImage(ImageHandle image) = 0;
   // The largest long edge a new image keeps (Max texture size); 0: no limit
   virtual uint32_t maxImageExtent() const { return 0; }
@@ -321,6 +330,10 @@ public:
   // What of everything alive the allocator couldn't place on the device: rays and shaders read it from
   // system memory, over the bus
   virtual uint64_t spilledBytes() const = 0;
+  // Whether it is one of those
+  virtual bool bufferSpilled(BufferHandle) const { return false; }
+  virtual bool imageSpilled(ImageHandle) const { return false; }
+  virtual bool accelSpilled(AccelHandle) const { return false; }
 
   // ---------- Passes ----------
   virtual void dispatchDeform(const DeformDispatch& dispatch) = 0;

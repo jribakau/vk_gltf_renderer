@@ -598,9 +598,68 @@ ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkg
   vmaGetAllocationInfo(*m_info.alloc, image.allocation, &allocation);
   info.bytes        = allocation.size;
   info.storedLevels = loaded.mipData.size() > 1;
+  info.levels       = image.mipLevels;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, image);
+  m_imageMade.emplace(handle.value, ImageMade{loaded.componentMapping, source.name, info});
   return handle;
+}
+
+ImageHandle VulkanGpuBackend::copyImageLevels(ImageHandle handle, uint32_t dropLevels, ImageInfo& info)
+{
+  info = {};
+  const auto from = m_images.find(handle.value);
+  const auto made = m_imageMade.find(handle.value);
+  if(from == m_images.end() || made == m_imageMade.end() || !recording("copyImageLevels"))
+    return {};
+  const nvvk::Image source = from->second;
+  if(dropLevels >= source.mipLevels)
+    return {};
+  VkImageCreateInfo create = DEFAULT_VkImageCreateInfo;
+  create.extent            = {std::max(source.extent.width >> dropLevels, 1u), std::max(source.extent.height >> dropLevels, 1u), 1};
+  create.format            = source.format;
+  create.mipLevels         = source.mipLevels - dropLevels;
+  create.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  VkImageViewCreateInfo view = DEFAULT_VkImageViewCreateInfo;
+  view.components            = made->second.mapping;
+  // memory of its own when it is large, as a decoded one has (createSampledImage)
+  constexpr uint64_t kOwnMemoryBytes = 4 << 20;
+  const VmaAllocationCreateInfo allocation{.flags = (made->second.info.bytes >> (2 * dropLevels)) >= kOwnMemoryBytes ? VmaAllocationCreateFlags(VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) : VmaAllocationCreateFlags(0),
+                                           .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+  nvvk::Image copy;
+  if(m_info.alloc->createImage(copy, create, view, allocation) != VK_SUCCESS)
+  {
+    info.outOfMemory = true;
+    return {};
+  }
+  nvvk::DebugUtil::getInstance().setObjectName(copy.image, made->second.name);
+  flushBuilds();
+  nvvk::cmdImageMemoryBarrier(m_cmd, {copy.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL});
+  nvvk::cmdImageMemoryBarrier(m_cmd, {source.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL});
+  std::vector<VkImageCopy> regions;
+  for(uint32_t level = 0; level < create.mipLevels; level++)
+    regions.push_back({.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level + dropLevels, 0, 1},
+                       .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1},
+                       .extent         = {std::max(create.extent.width >> level, 1u), std::max(create.extent.height >> level, 1u), 1}});
+  vkCmdCopyImage(m_cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, copy.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(regions.size()), regions.data());
+  nvvk::cmdImageMemoryBarrier(m_cmd, {source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+  copy.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  nvvk::cmdImageMemoryBarrier(m_cmd, {copy.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+  m_memory.track(kMemImages, copy.allocation);
+  info        = made->second.info;
+  info.width  = create.extent.width;
+  info.height = create.extent.height;
+  info.levels = create.mipLevels;
+  VmaAllocationInfo allocated{};
+  vmaGetAllocationInfo(*m_info.alloc, copy.allocation, &allocated);
+  info.bytes = allocated.size;
+  const ImageHandle out{m_nextHandle++};
+  m_images.emplace(out.value, copy);
+  // (a name and a mapping copied, before anything new moves the map)
+  ImageMade kept = made->second;
+  kept.info      = info;
+  m_imageMade.emplace(out.value, std::move(kept));
+  return out;
 }
 
 void VulkanGpuBackend::destroyImage(ImageHandle handle)
@@ -614,6 +673,7 @@ void VulkanGpuBackend::destroyImage(ImageHandle handle)
   m_memory.untrack(kMemImages, it->second.allocation);
   m_info.alloc->destroyImage(it->second);
   m_images.erase(it);
+  m_imageMade.erase(handle.value);
 }
 
 void VulkanGpuBackend::ensureDefaults()
@@ -1201,18 +1261,40 @@ void VulkanGpuBackend::destroyAccel(AccelHandle handle)
   LOGE("VulkanGpuBackend::destroyAccel: dead or unknown acceleration structure %llu\n", (unsigned long long)handle.value);
 }
 
+// How much of an allocation lies off the device
+static uint64_t spilledOf(VmaAllocator allocator, VmaAllocation allocation)
+{
+  if(!allocation)
+    return 0;
+  VmaAllocationInfo info{};
+  vmaGetAllocationInfo(allocator, allocation, &info);
+  VkMemoryPropertyFlags flags = 0;
+  vmaGetMemoryTypeProperties(allocator, info.memoryType, &flags);
+  return flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? 0 : info.size;
+}
+
+bool VulkanGpuBackend::bufferSpilled(BufferHandle buffer) const
+{
+  const auto it = m_buffers.find(buffer.value);
+  return it != m_buffers.end() && spilledOf(*m_info.alloc, it->second.buffer.allocation) > 0;
+}
+
+bool VulkanGpuBackend::imageSpilled(ImageHandle image) const
+{
+  const auto it = m_images.find(image.value);
+  return it != m_images.end() && spilledOf(*m_info.alloc, it->second.allocation) > 0;
+}
+
+bool VulkanGpuBackend::accelSpilled(AccelHandle accel) const
+{
+  const auto it = m_blases.find(accel.value);
+  return it != m_blases.end() && spilledOf(*m_info.alloc, it->second.accel.buffer.allocation) > 0;
+}
+
 uint64_t VulkanGpuBackend::spilledBytes() const
 {
   const VmaAllocator allocator = *m_info.alloc;
-  const auto         spilled   = [&](VmaAllocation allocation) -> uint64_t {
-    if(!allocation)
-      return 0;
-    VmaAllocationInfo info{};
-    vmaGetAllocationInfo(allocator, allocation, &info);
-    VkMemoryPropertyFlags flags = 0;
-    vmaGetMemoryTypeProperties(allocator, info.memoryType, &flags);
-    return flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? 0 : info.size;
-  };
+  const auto         spilled   = [&](VmaAllocation allocation) { return spilledOf(allocator, allocation); };
   uint64_t bytes = spilled(m_blasScratch.allocation);
   for(const auto& [handle, b] : m_buffers)
     bytes += spilled(b.buffer.allocation);

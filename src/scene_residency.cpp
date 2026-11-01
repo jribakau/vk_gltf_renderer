@@ -19,6 +19,8 @@
 
 #include "scene_residency.hpp"
 
+#include "memory_plan.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cassert>
@@ -192,6 +194,8 @@ void Residency::clear()
   m_packsDirty = false;
   m_drawersWritten.clear();
   m_prevResting.clear();
+  m_letGoHidden.clear();
+  m_bringBack.clear();
   m_drawersWrittenLast.clear();
   m_compacting.clear();
   m_refineAcquired.clear();
@@ -1152,7 +1156,7 @@ uint64_t Residency::lowerableImageBytes(uint32_t leastExtent) const
   std::set<TextureKey> seen;  // one image, however many textures are it
   for(const auto& [id, image] : m_images)
   {
-    if(!image.image || !image.info.storedLevels || (image.key && !seen.insert(*image.key).second))
+    if(!image.image || image.info.levels <= 1 || (image.key && !seen.insert(*image.key).second))
       continue;
     const uint64_t extent = std::max(image.info.width, image.info.height);
     if(extent > leastExtent)
@@ -1171,6 +1175,38 @@ Residency::LoweredImages Residency::loweredImages() const
       out.count++;
       out.largest = std::max({out.largest, image.info.width, image.info.height});
     }
+  return out;
+}
+
+std::set<Residency::ImageKey> Residency::pinnedImages(const RetainedScene& scene) const
+{
+  std::set<ImageKey> out;
+  for(const auto& [id, slot] : m_materials)
+    if(const MaterialRecord* record = scene.material(id); record && record->keepFull)
+      for(const auto& t : slot.textures)
+        if(t)
+          out.insert({std::get<0>(*t), std::get<2>(*t)});
+  std::set<TextureKey> files;
+  for(const ImageKey& id : out)
+    if(auto it = m_images.find(id); it != m_images.end() && it->second.key)
+      files.insert(*it->second.key);
+  for(const auto& [id, image] : m_images)
+    if(image.key && files.count(*image.key))
+      out.insert(id);
+  return out;
+}
+
+std::vector<std::pair<MeshId, uint64_t>> Residency::hiddenMeshes() const
+{
+  std::map<MeshId, bool> shown;
+  for(const auto& instance : m_instances)
+    if(instance)
+      shown[instance->mesh] = shown[instance->mesh] || instance->shown;
+  const MemoryLedger                       ledger = this->ledger();
+  std::vector<std::pair<MeshId, uint64_t>> out;
+  for(const MemoryLedger::Mesh& m : ledger.meshes)
+    if(const auto it = shown.find(m.mesh); it != shown.end() && !it->second && !m_parked.count(m.mesh))
+      out.emplace_back(m.mesh, m.bytes.total());
   return out;
 }
 
@@ -1194,7 +1230,7 @@ std::set<Residency::ImageKey> Residency::favouredImages(const RetainedScene& sce
 
 void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits) const
 {
-  const std::set<ImageKey> favoured = favouredImages(scene);
+  const std::set<ImageKey> favoured = favouredImages(scene), pinned = pinnedImages(scene);
   std::set<TextureKey>     seen;  // one image, however many textures are it
   for(const auto& [id, image] : m_images)
   {
@@ -1203,14 +1239,27 @@ void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::
     const TextureRecord* record = scene.texture(id.first);
     if(!record)
       continue;
-    std::optional<ImageChain> chain = m_gpu.imageChain(imageSourceOf(*record, id.second, 0));
-    if(!chain)
+    if(!std::exchange(image.chainRead, true))
+    {
+      image.chain = m_gpu.imageChain(imageSourceOf(*record, id.second, 0));
+      // none to read, but levels on the GPU: it can come down too. Read before anything lowered it.
+      if(!image.chain && image.info.levels > 1)
+      {
+        image.chain.emplace(ImageChain{.width = image.info.width, .height = image.info.height});
+        image.levelsMade = true;
+        uint64_t top     = image.info.bytes - image.info.bytes / 4;  // of all the levels, the top three quarters
+        for(uint32_t level = 0; level < image.info.levels; level++, top /= 4)
+          image.chain->levelBytes.push_back(std::max<uint64_t>(top, 1));
+      }
+    }
+    if(!image.chain)
       continue;
     uint32_t skip = 0;
-    while(levelExtent(chain->width, skip) > image.info.width && skip + 1 < chain->levelBytes.size())
+    while(levelExtent(image.chain->width, skip) > image.info.width && skip + 1 < image.chain->levelBytes.size())
       skip++;
     residents.push_back({id, record, image.key, skip});
-    fits.push_back({std::move(*chain), skip, favoured.count(id) > 0});
+    ImageFit& fit = fits.emplace_back(ImageFit{*image.chain, skip, favoured.count(id) > 0, pinned.count(id) > 0});
+    fit.wholeOnly = image.levelsMade;
   }
 }
 
@@ -1232,6 +1281,82 @@ uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room)
       raised++;
     }
   return raised;
+}
+
+uint32_t Residency::bringBack(const RetainedScene& scene, uint64_t room)
+{
+  uint32_t brought = 0;
+  // images first: a copy is nothing
+  std::set<TextureKey> seen;
+  for(const auto& [id, image] : m_images)
+  {
+    if(!image.image || !m_gpu.imageSpilled(image.image) || image.info.bytes > room || (image.key && !seen.insert(*image.key).second))
+      continue;
+    const TextureRecord* record = scene.texture(id.first);
+    if(!record)
+      continue;
+    QueuedDecode q{id, imageSourceOf(*record, id.second, 0), image.key, image.lowered, true};
+    q.moveOnly = true;
+    m_decodeQueue.push_back(std::move(q));
+    room -= image.info.bytes;
+    brought++;
+  }
+  if(brought)
+    return brought;
+  // then one mesh, the largest that fits: it is made again
+  const auto  meshSpilled = [&](MeshId id) {
+    const MeshGpu* mesh = meshGpu(id);
+    if(!mesh)
+      return false;
+    for(BufferHandle b : {mesh->positions, mesh->normals, mesh->tangents, mesh->uv0, mesh->uv1, mesh->colors})
+      if(m_gpu.bufferSpilled(b))
+        return true;
+    for(const auto& [key, d] : m_drawers)
+      if(key.second == id)
+        for(BufferHandle b : {d.positions, d.normals, d.tangents})
+          if(m_gpu.bufferSpilled(b))
+            return true;
+    for(const std::optional<Prim>& prim : m_prims)
+      if(prim && prim->mesh == id && m_gpu.accelSpilled(prim->blas))
+        return true;
+    return false;
+  };
+  const MemoryLedger ledger = this->ledger();
+  MeshId             best;
+  uint64_t           bestBytes = 0;
+  for(const MemoryLedger::Mesh& m : ledger.meshes)
+    if(m.bytes.total() <= room && m.bytes.total() > bestBytes && meshSpilled(m.mesh))
+    {
+      best      = m.mesh;
+      bestBytes = m.bytes.total();
+    }
+  if(best.isNone())
+    return 0;
+  m_bringBack.insert(best);
+  m_parkedChanged = true;
+  return 1;
+}
+
+std::string Residency::nextToGo(const RetainedScene& scene) const
+{
+  if(m_graceBytes > 0)
+    return "textures nothing is using";
+  const std::vector<std::pair<MeshId, uint64_t>> hidden = hiddenMeshes();
+  if(!hidden.empty())
+  {
+    const auto largest = std::max_element(hidden.begin(), hidden.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+    const MeshRecord* record = scene.mesh(largest->first);
+    return "a hidden item" + (record && !record->name.empty() ? ": " + record->name : std::string());
+  }
+  std::vector<ResidentImage> residents;
+  std::vector<ImageFit>      fits;
+  residentFits(scene, false, residents, fits);
+  const std::vector<ImageFit> before = fits;
+  (void)planToFit(1, {.images = fits, .leastExtent = kLeastImageExtent});
+  for(size_t i = 0; i < fits.size(); i++)
+    if(fits[i].skip != before[i].skip)
+      return residents[i].record->name + " at " + std::to_string(before[i].extent());
+  return {};
 }
 
 // The queued images made to fit the GPU memory left, read from their chains before anything is
@@ -1256,23 +1381,37 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
       need += fits.back().bytes();
       queued.push_back(i);
     }
-  int64_t room = *headroom - int64_t(slack);
+  const int64_t room = *headroom - int64_t(slack);
   if(int64_t(need) <= room)
     return;
-  room += int64_t(m_graceBytes);
-  trimGrace(0);
-  if(int64_t(need) <= room)
-    return;
-  const uint64_t wanted = uint64_t(int64_t(need) - room);
+  // with nothing new waiting, a step: the memory is read again before the next
+  uint64_t wanted = uint64_t(int64_t(need) - room);
+  if(queued.empty())
+    wanted = std::min(wanted, kFitStep);
 
   const size_t               queuedFits = fits.size();
-  const std::set<ImageKey>   favoured   = favouredImages(scene);
+  const std::set<ImageKey>   favoured   = favouredImages(scene), pinned = pinnedImages(scene);
   for(size_t f = 0; f < queuedFits; f++)
+  {
     fits[f].favoured = favoured.count(m_decodeQueue[queued[f]].image) > 0;
+    fits[f].pinned   = pinned.count(m_decodeQueue[queued[f]].image) > 0;
+  }
   std::vector<ResidentImage> residents;
   residentFits(scene, false, residents, fits);
 
-  const uint64_t freed = lowerToFit(fits, wanted, kLeastImageExtent);
+  const std::vector<std::pair<MeshId, uint64_t>> hidden = hiddenMeshes();
+  std::vector<uint64_t>                          hiddenBytes;
+  for(const auto& [mesh, bytes] : hidden)
+    hiddenBytes.push_back(bytes);
+  const FitPlan plan = planToFit(wanted, {.idleBytes = m_graceBytes, .hidden = hiddenBytes, .images = fits, .leastExtent = kLeastImageExtent});
+  trimGrace(m_graceBytes - plan.idle);
+  for(size_t i : plan.hidden)
+  {
+    m_letGoHidden.insert(hidden[i].first);
+    m_parked.insert(hidden[i].first);
+    m_parkedChanged = true;
+  }
+  const uint64_t freed = plan.freed();
   uint32_t       lowered = 0, largest = 0;
   std::string    which;  // for the log: each one's name and long edge, favoured ones marked
   const auto     noteLowered = [&](const std::string& name, const ImageFit& fit) {
@@ -1296,7 +1435,7 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
     if(fit.skip <= residents[r].skip)
       continue;
     m_decodeQueue.push_back({residents[r].image, imageSourceOf(*residents[r].record, residents[r].image.second, fit.extent()),
-                             residents[r].key, true, true});
+                             residents[r].key, true, true, fit.skip - residents[r].skip});
     noteLowered(residents[r].record->name, fit);
   }
   m_imageCounts.lowered += lowered;
@@ -1319,69 +1458,85 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
   fitQueuedToMemory(scene, slack.value_or(0));
   if(m_decodeQueue.empty())
     return false;
-  std::vector<ImageSource> sources;
-  for(const QueuedDecode& q : m_decodeQueue)
-    sources.push_back(q.source);
-  std::vector<ImageHandle> images(sources.size());
-  std::vector<ImageInfo>   infos(sources.size());
-  m_gpu.createImages(sources, images, infos);
-  m_imageCounts.decoded += uint32_t(sources.size());
 
   std::set<ImageKey> written;
   bool               replaced = false;
   bool               restored = false;
   uint32_t           refused  = 0;
-  for(size_t i = 0; i < m_decodeQueue.size(); i++)
-  {
-    const QueuedDecode& q = m_decodeQueue[i];
-    if(q.replaces && !images[i])
-      continue;  // it keeps the image it has
+  const auto         install  = [&](const QueuedDecode& q, ImageHandle made, const ImageInfo& info) {
+    if(q.replaces && !made)
+      return;  // it keeps the image it has
     replaced |= q.replaces;
     restored |= q.replaces && !q.lowered;
-    refused += !q.replaces && infos[i].outOfMemory;
+    refused += !q.replaces && info.outOfMemory;
     if(q.key)
     {
       auto decoded = m_decoded.find(*q.key);
       if(decoded == m_decoded.end())
       {
-        retireImage(images[i], infos[i].bytes);
-        continue;
+        retireImage(made, info.bytes);
+        return;
       }
       for(auto& [id, image] : m_images)
         if(image.key == q.key)
         {
-          image.image   = images[i];
-          image.info    = infos[i];
+          image.image   = made;
+          image.info    = info;
           image.lowered = q.lowered;
-          if(!images[i])
+          if(!made)
             image.key.reset();
           written.insert(id);
         }
-      if(!images[i])
+      if(!made)
         m_decoded.erase(decoded);
       else
       {
         if(q.replaces)
           retireImage(decoded->second.image, decoded->second.info.bytes);
-        decoded->second.image   = images[i];
-        decoded->second.info    = infos[i];
+        decoded->second.image   = made;
+        decoded->second.info    = info;
         decoded->second.lowered = q.lowered;
         if(decoded->second.users == 0)
-          m_graceBytes += infos[i].bytes;
+          m_graceBytes += info.bytes;
       }
     }
     else if(auto image = m_images.find(q.image); image != m_images.end() && !image->second.key)
     {
       if(q.replaces)
         retireImage(image->second.image, image->second.info.bytes);
-      image->second.image   = images[i];
-      image->second.info    = infos[i];
+      image->second.image   = made;
+      image->second.info    = info;
       image->second.lowered = q.lowered;
       written.insert(q.image);
     }
     else
-      retireImage(images[i], infos[i].bytes);
+      retireImage(made, info.bytes);
+  };
+
+  // what only comes down, or only moves, is copied from what it is, with nothing read or decoded
+  std::vector<QueuedDecode> decoding;
+  for(QueuedDecode& q : m_decodeQueue)
+  {
+    const auto image = q.dropLevels || q.moveOnly ? m_images.find(q.image) : m_images.end();
+    ImageInfo  info;
+    if(const ImageHandle copy = image != m_images.end() ? m_gpu.copyImageLevels(image->second.image, q.dropLevels, info) : ImageHandle{})
+    {
+      install(q, copy, info);
+      m_imageCounts.copied++;
+    }
+    else if(!q.moveOnly)
+      decoding.push_back(std::move(q));
   }
+  std::vector<ImageSource> sources;
+  for(const QueuedDecode& q : decoding)
+    sources.push_back(q.source);
+  std::vector<ImageHandle> images(sources.size());
+  std::vector<ImageInfo>   infos(sources.size());
+  if(!sources.empty())
+    m_gpu.createImages(sources, images, infos);
+  m_imageCounts.decoded += uint32_t(sources.size());
+  for(size_t i = 0; i < decoding.size(); i++)
+    install(decoding[i], images[i], infos[i]);
   m_decodeQueue.clear();
   for(const auto& [slotKey, use] : m_textureSlots)
     if(const ImageKey image{std::get<0>(slotKey), std::get<1>(slotKey)}; written.count(image))
@@ -2110,9 +2265,9 @@ void Residency::setParked(MeshId mesh, bool parked)
 
 void Residency::retryParked()
 {
-  if(m_parked.empty())
+  if(m_parked.size() == m_letGoHidden.size())
     return;
-  m_parked.clear();
+  m_parked        = m_letGoHidden;
   m_parkedChanged = true;
 }
 
@@ -2198,9 +2353,26 @@ SyncResult Residency::sync(RetainedScene& scene)
   snapshotPrevPositions();
 
   std::vector<DrawItem> items = scene.drawItems();
+  // what was let go of while hidden comes back with its first shown draw
+  bool cameBack = false;
+  if(!m_letGoHidden.empty())
+    for(const DrawItem& item : items)
+      if(item.shown && m_letGoHidden.erase(item.mesh))
+      {
+        m_parked.erase(item.mesh);
+        cameBack = true;
+      }
   std::erase_if(items, [&](const DrawItem& item) { return m_parked.count(item.mesh) > 0; });
-  if(fresh || changes.structure || parkedChanged)
+  if(fresh || changes.structure || parkedChanged || cameBack)
   {
+    // what is brought back goes and comes in one sync: its old memory is still held when the new is asked for
+    if(!m_bringBack.empty())
+    {
+      std::vector<DrawItem> without = items;
+      std::erase_if(without, [&](const DrawItem& item) { return m_bringBack.count(item.mesh) > 0; });
+      syncStructure(scene, without, result);
+      m_bringBack.clear();
+    }
     syncStructure(scene, items, result);
     if(parkFailed(scene, items))
       syncStructure(scene, items, result);
@@ -2210,8 +2382,7 @@ SyncResult Residency::sync(RetainedScene& scene)
     edited.insert(m_heldMaterials.begin(), m_heldMaterials.end());
   if(!edited.empty())
     syncMaterials(scene, edited, result);
-  if(decodeQueued(scene, fresh || changes.structure))
-    result.changed = true;
+  result.imagesMoved = decodeQueued(scene, fresh || changes.structure);
   // refined meshes made resident now: their positions and normals from their cages, as every edit after
   if(!m_refineAcquired.empty())
   {
@@ -2294,6 +2465,10 @@ SyncResult Residency::sync(RetainedScene& scene)
     writeSceneDesc();
     result.changed = true;
   }
+  // nothing else moved than what leaves the picture as it was: a still goes on
+  result.samePicture = !result.changed && (result.imagesMoved || m_compactedOnly);
+  result.changed     = result.changed || result.samePicture;
+  m_compactedOnly    = false;
   // everything uploaded above, before the frame's shading reads it
   if(result.changed)
     m_gpu.barrier(GpuBarrier::eTransferToShader);
@@ -2574,8 +2749,9 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   writeRenderNodes(nodes);
   writeRenderPrims(prims);
   // the copies first: built in an earlier frame, they don't wait for this frame's builds
-  if(!m_compacting.empty() && takeCompacted())
-    tlasRows = true;
+  const bool otherRows = tlasRows;
+  const bool compacted = !m_compacting.empty() && takeCompacted();
+  tlasRows             = tlasRows || compacted;
   for(uint32_t p : builds)
   {
     build(*m_prims[p]);
@@ -2594,9 +2770,12 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
 
   if(tlasRows || !builds.empty() || result.drawListChanged || result.tlasHandleChanged || result.verticesWritten || m_bitsChanged)
   {
+    // the same surfaces, in a smaller BVH: nothing to start again for
+    const bool onlyCompacted = compacted && !otherRows && builds.empty() && !result.drawListChanged && !result.tlasHandleChanged && !result.verticesWritten && !m_bitsChanged;
     buildTlas();
     m_gpu.barrier(GpuBarrier::eBuildToTrace);
-    result.changed = true;
+    m_compactedOnly = onlyCompacted;
+    result.changed  = result.changed || !onlyCompacted;
   }
   if(!nodes.empty() || !prims.empty())
     result.changed = true;

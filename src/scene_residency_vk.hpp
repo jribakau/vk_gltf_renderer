@@ -151,6 +151,7 @@ public:
     uint64_t before = 0, after = 0, blasBytes = 0;
   };
   Compaction  takeCompaction();
+  ImageHandle copyImageLevels(ImageHandle image, uint32_t dropLevels, ImageInfo& info) override;
   void        destroyImage(ImageHandle image) override;
   // none: the white default in slot 0, the magenta "missing" image elsewhere (shows one)
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
@@ -168,6 +169,9 @@ public:
   uint64_t    accelBytes(AccelHandle accel) const override;
   uint64_t    buildScratchBytes() const override { return m_blasScratch.bufferSize; }
   uint64_t    spilledBytes() const override;
+  bool        bufferSpilled(BufferHandle buffer) const override;
+  bool        imageSpilled(ImageHandle image) const override;
+  bool        accelSpilled(AccelHandle accel) const override;
   // shaders/morph.comp.slang or skinning.comp.slang over the dispatch's ranges (the pipelines are
   // made at the first)
   void dispatchDeform(const DeformDispatch& dispatch) override;
@@ -252,6 +256,14 @@ private:
   std::vector<uint64_t>                       m_queuedMicromaps;  // built ahead of the queued BLASes
   std::unordered_map<uint64_t, TlasEntry>   m_tlases;
   std::vector<QueuedBuild>                  m_queued;
+  // what copyImageLevels needs of an image and it doesn't hold
+  struct ImageMade
+  {
+    VkComponentMapping mapping{};
+    std::string        name;
+    ImageInfo          info;
+  };
+  std::unordered_map<uint64_t, ImageMade>   m_imageMade;
   nvvk::Buffer                              m_blasScratch;
   uint64_t                                  m_blasScratchUsed = 0;  // the last frame that built with it
   std::unordered_map<uint32_t, VkSampler>   m_samplers;  // by sampler slot
@@ -305,6 +317,7 @@ public:
   // the textures following GPU memory (Residency::lowerImages, raiseImages)
   void     lowerImages(uint64_t slack) { m_residency.lowerImages(slack); }
   uint32_t raiseImages(const RetainedScene& scene, uint64_t room) { return m_residency.raiseImages(scene, room); }
+  uint32_t bringBack(const RetainedScene& scene, uint64_t room) { return m_residency.bringBack(scene, room); }
   // the features the live shader variant has compiled in; none: every one (Residency::setShaderFeatures)
   void setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features) { m_residency.setShaderFeatures(features); }
   // the images taken from a host's prefetches since the last call

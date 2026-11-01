@@ -130,6 +130,14 @@ public:
   }
   // the sizes of the createImages calls so far
   const std::vector<size_t>& imageBatches() const { return m_imageBatches; }
+  // a chain's levels only: as createImage would make it with those left out, no decode counted
+  ImageHandle copyImageLevels(ImageHandle image, uint32_t dropLevels, ImageInfo& info) override;
+  uint32_t    imageCopies() const { return m_imageCopies; }
+  // what is made from now on lies in system memory, until told otherwise
+  void setSpilling(bool on) { m_spilling = on; }
+  bool bufferSpilled(BufferHandle buffer) const override { return m_spilledBuffers.count(buffer.value) > 0; }
+  bool imageSpilled(ImageHandle image) const override { return m_spilledImages.count(image.value) > 0; }
+  bool accelSpilled(AccelHandle accel) const override { return m_spilledAccels.count(accel.value) > 0; }
   void        destroyImage(ImageHandle image) override;
   uint32_t                maxImageExtent() const override { return m_maxImageExtent; }
   std::optional<int64_t>  imageHeadroom() const override { return m_imageHeadroom; }
@@ -151,7 +159,7 @@ public:
   // as a driver might: kBlasBytesPerTriangle a triangle as built, kCompactedBlasBytesPerTriangle compacted
   uint64_t    accelBytes(AccelHandle accel) const override;
   uint64_t    buildScratchBytes() const override { return 0; }
-  uint64_t    spilledBytes() const override { return 0; }
+  uint64_t    spilledBytes() const override { return m_spilledBuffers.size() + m_spilledImages.size() + m_spilledAccels.size(); }
   static constexpr uint64_t kBlasBytesPerTriangle = 64, kCompactedBlasBytesPerTriangle = 26;
   // Everything alive on the fake device, retired or not: buffers, images and acceleration structures
   uint64_t    liveBytes() const;
@@ -236,6 +244,9 @@ private:
   uint32_t                                    m_maxImageExtent = 0;
   std::optional<int64_t>                      m_imageHeadroom;
   std::vector<size_t>                         m_imageBatches;
+  uint32_t                                    m_imageCopies = 0;
+  bool                                        m_spilling    = false;
+  std::set<uint64_t>                          m_spilledBuffers, m_spilledImages, m_spilledAccels;
   std::vector<UploadRecord>                   m_uploads;
   std::unordered_map<uint64_t, Blas>          m_blases;
   std::unordered_map<uint64_t, Micromap>      m_micromaps;

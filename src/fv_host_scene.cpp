@@ -391,6 +391,8 @@ Json FvHost::Impl::sceneState(const Json& args)
       }
       if(w.tight != 0)
         entry["tight"] = std::round(w.tight * 1e3) / 1e3;
+      if(w.keepFull)
+        entry["keepFull"] = true;
       // the colour chosen for it, null for its own
       if(const auto c = prop->figure->colors.find(w.id); c != prop->figure->colors.end())
         entry["color"] = c->second.rel.empty() ? Json(nullptr) : Json(c->second.rel);
@@ -733,6 +735,15 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     bool clothChanged = false;
     for(const Json& w : args.value("worn", Json::array()))
     {
+      if(w.is_object() && w.value("keepFull", false))
+      {
+        for(const fv::WornItem& i : fig.items)
+          if(relKey(i.rel) == relKey(w.value("rel", "")) && (w.value("label", "").empty() || i.label == w.value("label", "")))
+            fig.setItemKeepFull(i.id, true);
+        if(target->feed)
+          target->feed->syncKeepFull(fig.loaded.scene);
+        publishWardrobe(*target);
+      }
       if(w.is_object() && w.contains("tight") && w["tight"].is_number())
       {
         for(const fv::WornItem& i : fig.items)

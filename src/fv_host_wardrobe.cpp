@@ -44,6 +44,7 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
                                           {"tight", w.tight},
                                           {"skinHidden", w.tightPolys.size()},
                                           {"reduced", w.reduced},
+                                          {"keepFull", w.keepFull},
                                           {"cloth", {{"able", cloth.able}, {"native", cloth.native}, {"on", cloth.on}, {"strength", cloth.strength}, {"loosest", cloth.loosest}, {"strands", cloth.strands}, {"volume", cloth.volume}}}};
     // its scene meshes, as the materials topic's items list theirs: which surfaces are this item's
     items["i:" + std::to_string(w.id)]["meshes"] = w.meshes;
@@ -622,6 +623,8 @@ Json FvHost::Impl::itemRecord(const Loaded& f, const fv::WornItem& w) const
               {"cloth", {{"on", w.cloth.on ? Json(*w.cloth.on) : Json()}, {"strength", w.cloth.strength}, {"volume", w.cloth.volume}}}};
   if(w.tight != 0)
     rec["tight"] = w.tight;
+  if(w.keepFull)
+    rec["keepFull"] = true;
   // its dials as they are set: they leave with it
   Json dials = Json::object();
   for(const std::string& name : w.channels)
@@ -672,6 +675,7 @@ Json FvHost::Impl::wardrobeRestore(const Json& args)
       on = c["on"].get<bool>();
     target->fig->setItemCloth(id, on, c.value("strength", 1.f), c.value("volume", fv::dson::kStrandVolume));
     target->fig->setItemTight(id, rec.value("tight", 0.f));
+    target->fig->setItemKeepFull(id, rec.value("keepFull", false));
     std::vector<std::pair<std::string, double>> dials;
     const Json saved = rec.value("dials", Json::object());
     for(const auto& [name, value] : saved.items())
@@ -793,6 +797,20 @@ Json FvHost::Impl::wardrobeTight(const Json& args)
     throw std::runtime_error("no such item");
   if(figure->collider)
     figure->collider->pokeNow();
+  publishWardrobe(*figure);
+  return {{"ok", true}};
+}
+
+Json FvHost::Impl::wardrobeKeepFull(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure)
+    throw std::runtime_error("no such figure");
+  const int id = itemId(args);
+  if(!figure->fig->setItemKeepFull(id, args.value("on", false)))
+    throw std::runtime_error("no such item");
+  if(figure->feed)
+    figure->feed->syncKeepFull(figure->fig->loaded.scene);
   publishWardrobe(*figure);
   return {{"ok", true}};
 }

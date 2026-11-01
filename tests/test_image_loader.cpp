@@ -177,6 +177,58 @@ TEST(ImageLoader, KtxReadsTheCookersZstdLevels)
   }
 }
 
+// A map of one grey as the cooker writes it (texcache.rs GreyMap): BC4, and a swizzle saying where the grey goes
+TEST(ImageLoader, KtxKeepsAGreyMapsSwizzle)
+{
+  const auto word = [](std::vector<char>& out, uint32_t v) {
+    for(int i = 0; i < 4; i++)
+      out.push_back(char(v >> (8 * i)));
+  };
+  std::vector<char> kvd;
+  const std::string key = "KTXswizzle", value = "rr11";
+  word(kvd, uint32_t(key.size() + 1 + value.size() + 1));
+  kvd.insert(kvd.end(), key.begin(), key.end());
+  kvd.push_back(0);
+  kvd.insert(kvd.end(), value.begin(), value.end());
+  kvd.push_back(0);
+  while(kvd.size() % 4)
+    kvd.push_back(0);
+  std::vector<char> dfd;
+  for(const uint32_t v : {uint32_t(44), uint32_t(0), uint32_t(2 | (40 << 16)), uint32_t(131 | (1 << 8) | (1 << 16)), uint32_t(3 | (3 << 8)), uint32_t(8), uint32_t(0), uint32_t(63 << 16), uint32_t(0), uint32_t(0), UINT32_MAX})
+    word(dfd, v);
+
+  const std::vector<char> blocks(4 * 8, char(0x55));  // two by two blocks: 8x8
+  const uint8_t           id[12] = {0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+  std::vector<char>       file(id, id + 12);
+  for(const uint32_t v : {uint32_t(VK_FORMAT_BC4_UNORM_BLOCK), uint32_t(1), uint32_t(8), uint32_t(8), uint32_t(0), uint32_t(0), uint32_t(1), uint32_t(1), uint32_t(0)})
+    word(file, v);
+  const uint32_t dfdAt = 80 + 24, kvdAt = dfdAt + uint32_t(dfd.size()), dataAt = (kvdAt + uint32_t(kvd.size()) + 15) / 16 * 16;
+  for(const uint32_t v : {dfdAt, uint32_t(dfd.size()), kvdAt, uint32_t(kvd.size())})
+    word(file, v);
+  for(int i = 0; i < 4; i++)  // no supercompression data
+    word(file, 0);
+  for(const uint64_t v : {uint64_t(dataAt), uint64_t(blocks.size()), uint64_t(blocks.size())})
+  {
+    word(file, uint32_t(v));
+    word(file, uint32_t(v >> 32));
+  }
+  file.insert(file.end(), dfd.begin(), dfd.end());
+  file.insert(file.end(), kvd.begin(), kvd.end());
+  file.resize(dataAt, 0);
+  file.insert(file.end(), blocks.begin(), blocks.end());
+
+  nvvkgltf::LoadedImageData out;
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, file.data(), file.size(), /*srgb*/ false));
+  EXPECT_EQ(out.format, VK_FORMAT_BC4_UNORM_BLOCK);
+  EXPECT_EQ(out.size.width, 8u);
+  ASSERT_EQ(out.mipData.size(), 1u);
+  EXPECT_EQ(out.mipData[0].size(), blocks.size());
+  EXPECT_EQ(out.componentMapping.r, VK_COMPONENT_SWIZZLE_R);
+  EXPECT_EQ(out.componentMapping.g, VK_COMPONENT_SWIZZLE_R);
+  EXPECT_EQ(out.componentMapping.b, VK_COMPONENT_SWIZZLE_ONE);
+  EXPECT_EQ(out.componentMapping.a, VK_COMPONENT_SWIZZLE_ONE);
+}
+
 // Decoding ahead is only ahead of time: past its budget nothing more is decoded, and what nobody takes goes
 TEST(ImagePrefetch, KeepsToItsBudgetAndWhatNobodyTakesGoes)
 {

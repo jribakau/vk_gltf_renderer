@@ -66,6 +66,7 @@
 //                                                frame's size (a /size lands before the next frame)
 //   render.capture  {path}  -> {samples, converged}   the frame as a linear .hdr (path tracer), answered once saved
 //   render.ledger   {}  -> {total, idleImages, retiring, spilled, meshes}   what the scene holds on the GPU, by who reads it
+//   wardrobe.keepFull {prop, item, on}            short of GPU memory, its textures come down only when nothing else can
 //   render.budget   {}  -> {known, budgetBytes, usageBytes, allocatorBlockBytes, allocatorAllocationBytes, headroomBytes?, bytesPerPixel, width, height}   GPU
 //                                                memory: the driver's budget, what is free beyond what is kept
 //                                                back, and what a pixel of the frame costs, so an export size
@@ -205,7 +206,7 @@
 //
 // Camera, selection and display commands live in fv_view.hpp.
 //
-// Topics: "session", "jobs", "notices", "render", "memory" ({lowered, largest, parked, spilledBytes}: the textures below what Max
+// Topics: "session", "jobs", "notices", "render", "memory" ({lowered, largest, parked, spilledBytes, letGoHidden, budgetBytes, usedBytes, geometryBytes, textureBytes, nextToGo}: the textures below what Max
 // texture size allows to fit GPU memory, and the long edge of the largest), "lighting", "history" ({undo: [label], redo: [label], busy},
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",

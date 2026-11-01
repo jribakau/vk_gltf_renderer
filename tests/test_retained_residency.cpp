@@ -1207,6 +1207,42 @@ TEST(RetainedResidency, ASyncAskedToLowerDoesSoWithNothingChanged)
   EXPECT_EQ(residency.loweredImages(), (Residency::LoweredImages{1, 256}));
 }
 
+// What comes down is copied from what it was, with nothing read or decoded, and a still goes on through it.
+// One that can't be copied is decoded smaller instead.
+TEST(RetainedResidency, ComingDownCopiesTheLevelsItKeeps)
+{
+  FitScene       f("chain_a", 1024, "chain-nocopy_b", 512);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  drain(gpu);
+  const size_t batches = gpu.imageBatches().size();
+
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  const SyncResult down = residency.sync(f.scene);
+  EXPECT_TRUE(down.changed);
+  EXPECT_TRUE(down.samePicture);
+  EXPECT_TRUE(down.imagesMoved);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  EXPECT_EQ(gpu.imageCopies(), 1u);
+  EXPECT_EQ(residency.imageCounts().copied, 1u);
+  EXPECT_EQ(gpu.imageBatches().size(), batches) << "nothing was decoded";
+  drain(gpu);
+  expectClean(f.scene, residency, gpu);
+
+  // both now at 512, the one that can't be copied goes the old way
+  gpu.setImageHeadroom(-int64_t(chainBytes(512)) * 2);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(f.scene).samePicture);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, 256u);
+  EXPECT_EQ(gpu.imageBatches().size(), batches + 1);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu);
+}
+
 // Memory given back: what was lowered comes up as far as the room goes, in place, and the user hears
 // when all of it is back; the same again told anew
 TEST(RetainedResidency, LoweredImagesComeBackAsFarAsThereIsRoom)
@@ -1298,6 +1334,147 @@ TEST(RetainedResidency, ASharedFileIsLoweredAndRaisedAsOneImage)
   EXPECT_EQ(gpu.imageInfo(residency.image(a, true)).width, 1024u);
   EXPECT_EQ(residency.image(a, true), residency.image(b, true));
   EXPECT_EQ(residency.loweredImages(), Residency::LoweredImages{});
+}
+
+// Short of memory, an item nothing shows lets go of what it holds before anything visible gives way, and
+// isn't counted as what the scene is drawn without. Shown again it comes back by itself.
+TEST(RetainedResidency, AHiddenItemGoesBeforeAnythingThatShows)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 256);
+  const MeshId   other = f.scene.addMesh(gridMesh(4, 3.f, 2));
+  const EntityId hidden = drawn(f.scene, "hidden", other, {coloured(f.scene, nullptr, -1), coloured(f.scene, nullptr, -1)});
+  f.scene.setVisible(hidden, false);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  ASSERT_TRUE(residency.meshGpu(other));
+  const uint64_t holds = residency.ledger().total.total();
+
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);  // the plan
+  gpu.beginFrame();
+  residency.sync(f.scene);  // and it goes
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "let go: ");
+  EXPECT_FALSE(residency.meshGpu(other));
+  EXPECT_EQ(residency.letGoHidden().size(), 1u);
+  EXPECT_EQ(residency.parkedForMemory(), 0u);
+  EXPECT_LT(residency.ledger().total.total(), holds);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u) << "nothing that shows gave way";
+
+  f.scene.setVisible(hidden, true);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "shown: ");
+  EXPECT_TRUE(residency.meshGpu(other));
+  EXPECT_TRUE(residency.letGoHidden().empty());
+}
+
+// What is marked Keep full comes down only when nothing else can, and comes back first
+TEST(RetainedResidency, WhatIsKeptFullComesDownLast)
+{
+  RetainedScene scene;
+  const TextureId kept = scene.addTexture(chainTexture("chain_kept", 2048)), plain = scene.addTexture(chainTexture("chain_plain", 1024));
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({kept, {}});
+  table->push_back({plain, {}});
+  MaterialRecord keep;
+  keep.payload.name               = "kept";
+  keep.payload.baseColorMap.index = 0;
+  keep.textures                   = table;
+  keep.keepFull                   = true;
+  drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {scene.addMaterial(std::move(keep)), coloured(scene, table, 1)});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(scene);
+
+  // though the larger, it stays while the other can come down
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(kept, true)).width, 2048u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(plain, true)).width, 512u);
+  drain(gpu);
+  expectClean(scene, residency, gpu);
+
+  // the other at its least: now it goes too
+  gpu.setImageHeadroom(-int64_t(Residency::kFitStep));
+  for(int i = 0; i < 4; i++)
+  {
+    residency.lowerImages(0);
+    gpu.beginFrame();
+    residency.sync(scene);
+    drain(gpu);
+  }
+  EXPECT_EQ(gpu.imageInfo(residency.image(plain, true)).width, kLeastImageExtent);
+  EXPECT_LT(gpu.imageInfo(residency.image(kept, true)).width, 2048u);
+}
+
+// An image with no stored levels (a PNG, kept whole) comes down by the levels the GPU made, and comes back all at once
+TEST(RetainedResidency, AnImageWithNoStoredLevelsComesDownToo)
+{
+  FitScene       f("mips_a", 1024, "chain_b", 256);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(f.scene).imagesMoved);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  EXPECT_EQ(residency.loweredImages().count, 1u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu);
+
+  gpu.setImageHeadroom(int64_t(1) << 40);
+  EXPECT_EQ(residency.raiseImages(f.scene, uint64_t(1) << 30), 1u);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+  EXPECT_EQ(residency.loweredImages().count, 0u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu);
+}
+
+// What had to go to system memory comes back when there is room: an image by a copy, then a mesh made
+// again, one at a time, with nothing missing from any frame between.
+TEST(RetainedResidency, WhatSpilledComesBackWhenThereIsRoom)
+{
+  FitScene       f("chain_a", 256, "chain_b", 256);
+  FakeGpuBackend gpu(2);
+  gpu.setSpilling(true);
+  Residency residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  expectClean(f.scene, residency, gpu);
+  EXPECT_GT(gpu.spilledBytes(), 0u);
+  gpu.setSpilling(false);
+
+  // no room: nothing moves
+  EXPECT_EQ(residency.bringBack(f.scene, 0), 0u);
+
+  EXPECT_EQ(residency.bringBack(f.scene, uint64_t(1) << 30), 2u) << "the images";
+  gpu.beginFrame();
+  const SyncResult moved = residency.sync(f.scene);
+  EXPECT_TRUE(moved.samePicture);
+  EXPECT_FALSE(gpu.imageSpilled(residency.image(f.first, true)));
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 256u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "images moved: ");
+
+  EXPECT_EQ(residency.bringBack(f.scene, uint64_t(1) << 30), 1u) << "the mesh";
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  expectClean(f.scene, residency, gpu, "mesh made again: ");
+  EXPECT_EQ(residency.bringBack(f.scene, uint64_t(1) << 30), 0u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "after its retires: ");
+  const MeshId mesh = residency.ledger().meshes.at(0).mesh;
+  EXPECT_FALSE(gpu.bufferSpilled(residency.meshGpu(mesh)->positions));
 }
 
 // A favoured material's images come down after the others' and go back before them; a tie between

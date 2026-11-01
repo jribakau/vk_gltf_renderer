@@ -129,11 +129,14 @@ BufferHandle FakeGpuBackend::createBuffer(const BufferDesc& desc)
   b.createdFrame  = m_frame;
   const BufferHandle handle{m_nextHandle++};
   m_buffers.emplace(handle.value, std::move(b));
+  if(m_spilling)
+    m_spilledBuffers.insert(handle.value);
   return handle;
 }
 
 void FakeGpuBackend::destroyBuffer(BufferHandle handle)
 {
+  m_spilledBuffers.erase(handle.value);
   Buffer* b = liveBuffer(handle, "destroyBuffer");
   if(!b)
     return;
@@ -249,14 +252,42 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
     return {};
   }
   const uint32_t width = uint32_t(std::max(source.width, 1)), height = uint32_t(std::max(source.height, 1));
-  uint32_t       skip  = levelsToSkip(width, height, 32, source.maxExtent);
+  // "mips": no levels in its file, so it is decoded whole, and made on the GPU
+  const bool     made  = source.uri.rfind("mips", 0) == 0;
+  uint32_t       skip  = made ? 0 : levelsToSkip(width, height, 32, source.maxExtent);
   info.width      = levelExtent(width, skip);
   info.height     = levelExtent(height, skip);
   info.twoChannel = source.component == 2;
   info.bytes      = uint64_t(info.width) * info.height * 4;
   info.storedLevels = source.uri.rfind("chain", 0) == 0;
+  if(info.storedLevels || made)
+    for(uint32_t e = std::max(info.width, info.height); e > 0; e /= 2)
+      info.levels++;
   const ImageHandle handle{m_nextHandle++};
   m_images.emplace(handle.value, Image{source.name, source.uri, source.srgb, info});
+  if(m_spilling)
+    m_spilledImages.insert(handle.value);
+  return handle;
+}
+
+ImageHandle FakeGpuBackend::copyImageLevels(ImageHandle image, uint32_t dropLevels, ImageInfo& info)
+{
+  info = {};
+  const auto it = m_images.find(image.value);
+  if(it == m_images.end() || dropLevels >= it->second.info.levels || it->second.uri.rfind("chain-nocopy", 0) == 0)
+    return {};
+  info        = it->second.info;
+  info.width  = levelExtent(info.width, dropLevels);
+  info.height = levelExtent(info.height, dropLevels);
+  info.bytes  = uint64_t(info.width) * info.height * 4;
+  info.levels -= dropLevels;
+  m_imageCopies++;
+  const ImageHandle handle{m_nextHandle++};
+  Image             copy = it->second;
+  copy.info              = info;
+  m_images.emplace(handle.value, std::move(copy));
+  if(m_spilling)
+    m_spilledImages.insert(handle.value);
   return handle;
 }
 
@@ -275,6 +306,7 @@ std::optional<ImageChain> FakeGpuBackend::imageChain(const ImageSource& source)
 
 void FakeGpuBackend::destroyImage(ImageHandle handle)
 {
+  m_spilledImages.erase(handle.value);
   if(!m_images.erase(handle.value))
     error("destroyImage: dead or unknown image " + std::to_string(handle.value));
 }
@@ -367,6 +399,8 @@ AccelHandle FakeGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags fl
   m_blasBeforeTlas = m_buildsBeforeTrace = true;
   const AccelHandle handle{m_nextHandle++};
   m_blases.emplace(handle.value, b);
+  if(m_spilling)
+    m_spilledAccels.insert(handle.value);
   return handle;
 }
 
@@ -497,6 +531,7 @@ void FakeGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows
 
 void FakeGpuBackend::destroyAccel(AccelHandle handle)
 {
+  m_spilledAccels.erase(handle.value);
   if(m_micromaps.count(handle.value))
   {
     for(const auto& [h, b] : m_blases)

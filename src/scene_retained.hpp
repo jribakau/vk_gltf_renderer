@@ -277,6 +277,8 @@ struct MaterialRecord
   uint32_t                            rev = 0;  // bumped by setMaterial
   // what the eye goes to first (a figure's face): short of GPU memory, its images stay a level above the others
   bool favoured = false;
+  // marked Keep full: short of GPU memory its images come down only when nothing else can
+  bool keepFull = false;
 };
 
 struct SkinRecord
@@ -528,6 +530,8 @@ public:
   bool setParent(EntityId id, EntityId parent, int index = -1, bool keepWorld = false);
   void setLocal(EntityId id, const Transform& local);
   void setVisible(EntityId id, bool visible);
+  // Short of GPU memory, comes down last. Nothing to draw again: read when memory is next fitted.
+  void setMaterialKeepFull(MaterialId id, bool on);
   // Draws `instance` (references its meshes, materials and skin); nullopt draws nothing.
   void setMeshInstance(EntityId id, std::optional<MeshInstance> instance);
   void setMorphWeights(EntityId id, std::vector<float> weights);

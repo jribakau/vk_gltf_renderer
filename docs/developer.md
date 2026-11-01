@@ -466,6 +466,22 @@ stencils and triangles in its `BuiltMesh` (`RefineTables::owner`), and a build l
 stencils were worked out from. Large builds go side by side as far as they fit (`jobs::MemoryGate`, on
 `mesh::buildBytes`), and one alone always goes.
 
+Short of GPU memory, one plan says what gives way, the cheapest loss first (`rs::planToFit`,
+`memory_plan.hpp`): images nothing samples, items nothing shows (`Residency::letGoHidden`: gone until something
+shows them, and not what the scene is "drawn without"), then the largest textures' top levels, with the face a
+level above and what is marked Keep full (`MaterialRecord::keepFull`) last of all. `rs::MemoryWatch` says when and
+the renderer asks for a step of it at a time (`Residency::kFitStep`), reading the memory again between. A level
+comes down by copying the levels kept into a new image (`GpuBackend::copyImageLevels`): nothing read, nothing
+decoded, a frame's copy commands. An image with no stored levels (a PNG kept whole) comes down the same way, by
+the levels the GPU made, and comes back all at once. Room back, what lies in system memory comes first
+(`Residency::bringBack`: an image by a copy, a mesh made again in one sync, so no frame goes without it), then
+the textures. These swaps, and a BLAS compacted, leave the picture as it was (`SyncResult::samePicture`), so a
+still goes on through them and starts once more when textures stop moving.
+
+Grey maps are half the size from their next cook on: the cooker writes one grey as BC4 with a `KTXswizzle`
+(`texcache.rs GreyMap`), which the images it cooked before need not, and a lobe's roughness from the file the
+base roughness uses asks for the same image.
+
 A commit either finishes or takes off what it merged (`commitWear`'s `TakeOff`), so a failed allocation
 anywhere in it leaves the figure whole; a test fails each allocation of a wear in turn. Workers report what
 they let escape (`FvWorkers::onError`, `sideBySide`), and a figure's part of the frame reports it and goes on.

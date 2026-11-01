@@ -96,7 +96,11 @@ public:
     uint32_t lowered = 0, largest = 0;  // textures lowered to fit, and the long edge of the largest
     uint32_t parked       = 0;          // meshes that found no memory anywhere, and aren't drawn
     uint64_t spilledBytes = 0;          // what lies in system memory, in steps worth mentioning
-    bool     operator==(const MemoryReport&) const = default;
+    uint32_t letGoHidden  = 0;          // items let go of while hidden: they come back when shown
+    // the bar: all of it in steps worth mentioning. `budget` is what the driver offers, `used` what it counts
+    uint64_t budget = 0, used = 0, geometry = 0, textures = 0;
+    std::string nextToGo;               // what gives way next, in a few words
+    bool        operator==(const MemoryReport&) const = default;
   };
   // Where that is reported as it changes, from the application thread; empty: nowhere
   virtual void setMemorySink(std::function<void(const MemoryReport&)> sink) = 0;

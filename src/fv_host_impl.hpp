@@ -894,6 +894,7 @@ struct FvHost::Impl
   Json sceneRestore(const Json& args);
   Json wardrobeRemove(const Json& args);
   Json wardrobeVisible(const Json& args);
+  Json wardrobeKeepFull(const Json& args);
   Json wardrobeCollision(const Json& args);
   Json wardrobeCloth(const Json& args);
   Json wardrobeTight(const Json& args);

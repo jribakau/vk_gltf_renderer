@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "memory_plan.hpp"
 #include "memory_watch.hpp"
 #include "ram_watch.hpp"
 
@@ -193,4 +194,120 @@ TEST(RamWatch, WhatIsKeptForLaterGoesOldestFirst)
   EXPECT_EQ(rs::oldestToLetGo(bytes, 300), 2u);
   EXPECT_EQ(rs::oldestToLetGo(bytes, 299), 3u);
   EXPECT_EQ(rs::oldestToLetGo({}, 0), 0u);
+}
+
+namespace {
+rs::ImageFit fitOf(uint32_t extent, bool pinned = false)
+{
+  rs::ImageFit fit;
+  fit.chain.width = fit.chain.height = extent;
+  for(uint32_t e = extent;; e /= 2)
+  {
+    fit.chain.levelBytes.push_back(uint64_t(e) * e * 4);
+    if(e == 1)
+      break;
+  }
+  fit.pinned = pinned;
+  return fit;
+}
+}  // namespace
+
+// What gives way goes in order: what nothing looks at, then the largest texture; what is Keep full last
+TEST(MemoryPlan, TheCheapestLossGoesFirst)
+{
+  const uint64_t              top = 1024ull * 1024 * 4;
+  std::vector<rs::ImageFit>   images{fitOf(1024), fitOf(1024, true), fitOf(256)};
+  const std::vector<uint64_t> hidden{100, 300, 200};
+  const rs::FitRungs          rungs{.idleBytes = 50, .hidden = hidden, .images = images, .leastExtent = 256};
+
+  rs::FitPlan plan = rs::planToFit(30, rungs);
+  EXPECT_EQ(plan.idle, 30u);
+  EXPECT_TRUE(plan.hidden.empty());
+  EXPECT_EQ(plan.images, 0u);
+
+  plan = rs::planToFit(50 + 250, rungs);  // the largest hidden item covers it
+  EXPECT_EQ(plan.idle, 50u);
+  EXPECT_EQ(plan.hidden, (std::vector<size_t>{1}));
+  EXPECT_EQ(plan.hiddenBytes, 300u);
+  EXPECT_EQ(images[0].skip, 0u);
+
+  plan = rs::planToFit(650 + 1, rungs);  // and all of them, then a level
+  EXPECT_EQ(plan.hidden, (std::vector<size_t>{1, 2, 0}));
+  EXPECT_EQ(images[0].skip, 1u);
+  EXPECT_EQ(images[1].skip, 0u) << "what is pinned waits";
+  EXPECT_EQ(plan.images, top);
+
+  // everything else down to the least, and only then what is pinned
+  images                   = {fitOf(1024), fitOf(1024, true), fitOf(256)};
+  const uint64_t theRest   = top + top / 4;  // the first image, 1024 and 512
+  plan                     = rs::planToFit(650 + theRest + 1, rungs);
+  EXPECT_EQ(images[0].skip, 2u);
+  EXPECT_EQ(images[1].skip, 1u);
+  EXPECT_EQ(images[2].skip, 0u);
+  EXPECT_EQ(plan.freed(), 650 + theRest + top);
+
+  // and less than asked, when there is no more to give up
+  images = {fitOf(1024), fitOf(1024, true), fitOf(256)};
+  plan   = rs::planToFit(UINT64_MAX / 2, rungs);
+  EXPECT_EQ(plan.freed(), 650 + 2 * theRest);
+  EXPECT_EQ(images[0].extent(), 256u);
+  EXPECT_EQ(images[1].extent(), 256u);
+}
+
+// Asked for nothing, it does nothing; asked again for what it has done, it goes on from there; asked for
+// more it does what it would have done for less, and more
+TEST(MemoryPlan, IsMonotonicAndGoesOnFromWhereItIs)
+{
+  const auto levels = [](uint64_t wanted) {
+    std::vector<rs::ImageFit> images{fitOf(2048), fitOf(1024), fitOf(1024, true), fitOf(512)};
+    (void)rs::planToFit(wanted, {.images = images, .leastExtent = 64});
+    std::vector<uint32_t> skips;
+    for(const rs::ImageFit& image : images)
+      skips.push_back(image.skip);
+    return skips;
+  };
+  std::vector<uint32_t> before(4, 0);
+  for(uint64_t wanted = 0; wanted < 40ull << 20; wanted += 1 << 20)
+  {
+    const std::vector<uint32_t> now = levels(wanted);
+    for(size_t i = 0; i < now.size(); i++)
+      EXPECT_GE(now[i], before[i]) << wanted << " image " << i;
+    before = now;
+  }
+
+  // nothing wanted: nothing moves
+  std::vector<rs::ImageFit> images{fitOf(2048), fitOf(1024)};
+  EXPECT_EQ(rs::planToFit(0, {.idleBytes = 10, .images = images, .leastExtent = 64}).freed(), 0u);
+  EXPECT_EQ(images[0].skip, 0u);
+  // in two steps as in one: the closed loop's steps come to what one plan would have
+  std::vector<rs::ImageFit> once = images, twice = images;
+  const uint64_t            step = 20ull << 20;
+  (void)rs::planToFit(2 * step, {.images = once, .leastExtent = 64});
+  (void)rs::planToFit(step, {.images = twice, .leastExtent = 64});
+  (void)rs::planToFit(2 * step - (twice[0].skip ? twice[0].chain.levelBytes[0] : 0), {.images = twice, .leastExtent = 64});
+  EXPECT_GE(twice[0].skip, once[0].skip);
+}
+
+// What is Keep full comes back first, and one with no stored levels comes back all at once
+TEST(MemoryPlan, WhatComesBackFirst)
+{
+  std::vector<rs::ImageFit> images{fitOf(1024), fitOf(1024, true)};
+  images[0].skip = images[1].skip = 1;
+  const std::vector<uint32_t> wanted{0, 0};
+  const uint64_t              onlyOne = images[1].chain.levelBytes[0] + images[1].bytes();
+  EXPECT_EQ(rs::raiseToFit(images, wanted, onlyOne), onlyOne);
+  EXPECT_EQ(images[1].skip, 0u);
+  EXPECT_EQ(images[0].skip, 1u);
+
+  std::vector<rs::ImageFit> whole{fitOf(1024)};
+  whole[0].wholeOnly = true;
+  whole[0].skip      = 3;
+  const std::vector<uint32_t> none{0};
+  EXPECT_EQ(rs::raiseToFit(whole, none, 1000), 0u);
+  EXPECT_EQ(whole[0].skip, 3u);
+  uint64_t all = 0;
+  for(uint64_t level : whole[0].chain.levelBytes)
+    all += level;
+  EXPECT_EQ(rs::raiseToFit(whole, none, all), all);
+  EXPECT_EQ(whole[0].skip, 0u);
 }

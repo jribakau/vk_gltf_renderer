@@ -206,8 +206,8 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     const auto p = figureProp(args);
     if(!p || !p->figure)
       return nullptr;
-    if(cmd == "wardrobe.visible" || cmd == "wardrobe.cloth" || cmd == "wardrobe.tight")
-      return {{"kind", cmd == "wardrobe.visible" ? "visible" : cmd == "wardrobe.cloth" ? "cloth" : "tight"}, {"prop", p->id}, {"item", itemIdOf(args.at("item"))}};
+    if(cmd == "wardrobe.visible" || cmd == "wardrobe.cloth" || cmd == "wardrobe.tight" || cmd == "wardrobe.keepFull")
+      return {{"kind", cmd == "wardrobe.visible" ? "visible" : cmd == "wardrobe.cloth" ? "cloth" : cmd == "wardrobe.tight" ? "tight" : "keepFull"}, {"prop", p->id}, {"item", itemIdOf(args.at("item"))}};
     return {{"kind", cmd == "wardrobe.collision" ? "collision" : "dforce"}, {"prop", p->id}};
   }
   if(cmd == "lighting.set")
@@ -338,6 +338,12 @@ Json FvHost::Impl::journalState(const Json& scope)
     if(const fv::WornItem* w = wornItem(*f.fig, scope["item"].get<int>()))
       ops.push_back(op("wardrobe.tight", {{"prop", id}, {"item", scope["item"]}, {"amount", w->tight}}));
   }
+  else if(kind == "keepFull")
+  {
+    const int item = scope["item"].get<int>();
+    if(const fv::WornItem* w = wornItem(*f.fig, item))
+      ops.push_back(op("wardrobe.keepFull", {{"prop", id}, {"item", item}, {"on", w->keepFull}}));
+  }
   else if(kind == "visible" || kind == "cloth")
   {
     const int           item = scope["item"].get<int>();
@@ -450,10 +456,12 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
     const fv::WornItem* w = p && p->figure ? wornItem(*p->figure->fig, scope["item"].get<int>()) : nullptr;
     return "Skin tight: " + (w ? (w->label.empty() ? w->rel : w->label) : std::string("item"));
   }
-  if(cmd == "wardrobe.visible" || cmd == "wardrobe.cloth")
+  if(cmd == "wardrobe.visible" || cmd == "wardrobe.cloth" || cmd == "wardrobe.keepFull")
   {
     const fv::WornItem* w     = p && p->figure ? wornItem(*p->figure->fig, scope["item"].get<int>()) : nullptr;
     const std::string   label = w ? (w->label.empty() ? w->rel : w->label) : "item";
+    if(cmd == "wardrobe.keepFull")
+      return std::string(args.value("on", false) ? "Keep full: " : "Auto: ") + label;
     if(cmd == "wardrobe.visible")
       return (args.value("visible", true) ? "Show " : "Hide ") + label;
     if(args.contains("on"))
@@ -577,6 +585,8 @@ Json FvHost::Impl::applyOp(const Json& o)
   }
   if(cmd == "wardrobe.visible")
     return wardrobeVisible(args);
+  if(cmd == "wardrobe.keepFull")
+    return wardrobeKeepFull(args);
   if(cmd == "wardrobe.collision")
     return wardrobeCollision(args);
   if(cmd == "wardrobe.cloth")

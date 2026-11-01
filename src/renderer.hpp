@@ -658,6 +658,7 @@ private:
   size_t                m_memoryFillNext = 0;        // the block memoryFillWriteMB writes next
   rs::MemoryWatch       m_memoryWatch;
   bool                  m_texturesHeld = false;      // an export is running (holdTextures)
+  bool                  m_texturesMoved = false;     // since a still last started: it goes on through them, then starts again
   bool                  m_envPreviewPending{false};  // Record a colour-only re-bake into this frame
   bool                  m_envCommitOwed{false};      // Previewed at least once; owes a commit once the edits stop
   bool                  m_envOwnedByBaker{false};    // hdrIbl currently points at EnvBaker's image, not a loaded file

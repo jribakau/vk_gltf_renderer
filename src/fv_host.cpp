@@ -50,7 +50,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   renderer->setMaxTextureExtent(uint32_t(std::max(s.settings.maxTextureSize, 0)));
   renderer->setNoticeSink([impl](const std::string& text) { impl->notice(text); });
   renderer->setMemorySink([impl](const HostRenderer::MemoryReport& r) {
-    impl->protocol->events().snapshot("memory", {{"lowered", r.lowered}, {"largest", r.largest}, {"parked", r.parked}, {"spilledBytes", r.spilledBytes}});
+    impl->protocol->events().snapshot("memory", {{"lowered", r.lowered}, {"largest", r.largest}, {"parked", r.parked}, {"spilledBytes", r.spilledBytes},
+                                                 {"letGoHidden", r.letGoHidden}, {"budgetBytes", r.budget}, {"usedBytes", r.used},
+                                                 {"geometryBytes", r.geometry}, {"textureBytes", r.textures}, {"nextToGo", r.nextToGo}});
   });
 
   cmds.add("settings.apply", [impl](const Json& args) {
@@ -161,6 +163,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wear", [impl](const Json& args) { return impl->wear(args); });
   cmds.add("wardrobe.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.remove", args); }); });
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.visible", args); }); });
+  cmds.add("wardrobe.keepFull", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.keepFull", args); }); });
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
   // answered at once, as morph.set: a slider sends faster than a path traced frame ends, and the steps

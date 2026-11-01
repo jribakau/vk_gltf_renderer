@@ -81,6 +81,8 @@ struct WornItem
   std::vector<std::string> channels;
   // what it came in without to fit GPU memory (wearShortfall); empty: all of it
   std::string reduced;
+  // short of GPU memory, its textures come down only when nothing else can
+  bool keepFull = false;
   // body polygons a geograft hides while it is worn and shown
   std::vector<int32_t> hiddenPolys;
   // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
@@ -263,6 +265,8 @@ public:
   // stops following, its meshes stop following the body. False for an unknown id.
   bool removeItem(int id);
   bool setItemVisible(int id, bool visible);
+  // Marks an item Keep full, or not: its surfaces say so (Material::keepFull). False for an unknown id.
+  bool setItemKeepFull(int id, bool on);
   // dForce on one item: see clothSettings. The meshes it changed are returned (the simulation and
   // the collider are to be told); empty for an unknown id or an item with nothing to simulate.
   std::vector<int> setItemCloth(int id, std::optional<bool> on, float strength, float volume = dson::kStrandVolume);

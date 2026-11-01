@@ -90,6 +90,8 @@ struct Material
   // the channels as the character came: its file's own and the presets its add-ons were worn with.
   // Choosing other eyes, or the character's own, puts these back; presets opened later leave it.
   std::shared_ptr<const dson::Channels> baseline;
+  // its item is marked Keep full (Figure::setItemKeepFull)
+  bool keepFull = false;
   // How much surface one UV unit covers, in metres (the square root of area over UV area), on the
   // unmorphed mesh as it loaded: what turns a bump map's height into slopes. 0: not measured.
   float metresPerUv = 0;

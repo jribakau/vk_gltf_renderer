@@ -872,6 +872,20 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   return result;
 }
 
+bool Figure::setItemKeepFull(int id, bool on)
+{
+  const auto it = std::find_if(items.begin(), items.end(), [&](const WornItem& i) { return i.id == id; });
+  if(it == items.end())
+    return false;
+  it->keepFull = on;
+  for(int m : it->meshes)
+    if(m >= 0 && m < int(loaded.scene.meshes.size()))
+      for(int mi : loaded.scene.meshes[size_t(m)].materials)
+        if(mi >= 0 && mi < int(loaded.scene.materials.size()))
+          loaded.scene.materials[size_t(mi)].keepFull = on;
+  return true;
+}
+
 bool Figure::removeItem(int id)
 {
   const auto it = std::find_if(items.begin(), items.end(), [&](const WornItem& i) { return i.id == id; });

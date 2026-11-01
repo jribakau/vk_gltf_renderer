@@ -414,6 +414,18 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     }
     out.metallicRoughnessMap = b.info(std::move(r));
   }
+  // Another lobe's roughness from the same file reads green too, and that image's green is the file's:
+  // one image in GPU memory rather than two
+  const auto roughnessImage = [&](const std::string& rel) {
+    if(rel != lobes.roughness.map)
+      return b.plain(rel, false);
+    TextureRequest r;
+    r.srgb     = false;
+    r.rel      = rel;
+    r.channels = "mr";
+    r.metalRel = metalMap;
+    return b.info(std::move(r));
+  };
   out.alphaMode   = alphaMode == "OPAQUE" ? AlphaMode::eOpaque : alphaMode == "MASK" ? AlphaMode::eMask : AlphaMode::eBlend;
   out.doubleSided = eff.doubleSided;
 
@@ -588,7 +600,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     if(!lobes.clearcoat->weightMaps.empty())
       lobe.map = b.weights(lobes.clearcoat->weightMaps);
     if(!lobes.clearcoat->roughness.map.empty())
-      lobe.roughnessMap = b.plain(lobes.clearcoat->roughness.map, false);
+      lobe.roughnessMap = roughnessImage(lobes.clearcoat->roughness.map);
     out.specular2 = lobe;
     if(slidersMoveSecondLobe)
     {
@@ -607,7 +619,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     else if(coat && !coat->weightMaps.empty())
       cc.map = b.weights(coat->weightMaps);
     if(coat && !coat->roughness.map.empty())
-      cc.roughnessMap = b.plain(coat->roughness.map, false);
+      cc.roughnessMap = roughnessImage(coat->roughness.map);
     if(s.topCoat && coat && colouredCoat)
     {
       cc.color = s.topCoat->color;

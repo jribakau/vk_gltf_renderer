@@ -234,7 +234,8 @@ void FigureFeed::syncMaterials(const SceneGraph& figure, const build::Drawing& d
       id = m_scene.addMaterial({.owner    = {m_options.prop, int32_t(mi)},
                                 .payload  = std::move(payloads[mi]),
                                 .textures = m_table,
-                                .favoured = mat::onTheFace(figure.materials[mi].surface)});
+                                .favoured = mat::onTheFace(figure.materials[mi].surface),
+                                .keepFull = figure.materials[mi].keepFull});
     else if(const rs::MaterialRecord* r = m_scene.material(id); r && !(r->payload == payloads[mi]))
     {
       if(missed[mi] && losesMap(r->payload, payloads[mi]))
@@ -659,6 +660,12 @@ std::vector<uint32_t> FigureFeed::tangentIndices(const rs::MeshRecord& record, c
       indices.insert(indices.end(), record.indices.begin() + s.firstIndex, record.indices.begin() + s.firstIndex + s.indexCount);
     }
   return indices;
+}
+
+void FigureFeed::syncKeepFull(const SceneGraph& figure)
+{
+  for(size_t mi = 0; mi < figure.materials.size() && mi < m_materials.size(); mi++)
+    m_scene.setMaterialKeepFull(m_materials[mi], figure.materials[mi].keepFull);
 }
 
 void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& drawing)

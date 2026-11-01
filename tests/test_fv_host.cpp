@@ -1003,6 +1003,55 @@ TEST(FvHost, ASurfaceOnAGarmentIsNoFleshWhateverItsName)
   EXPECT_FALSE(sides("other").second);
 }
 
+// Keep full is the item's: a step of the history, kept when it is taken off and put back, in the scene file,
+// and its surfaces say so to what fits memory.
+TEST(FvHost, KeepFullGoesWithTheItem)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const std::string item = itemNamed(wardrobeOf(rig, id), "Box Shirt");
+  const auto        kept = [&] { return wardrobeOf(rig, id).at(item).value("keepFull", false); };
+  // how many of the scene's materials are marked
+  const auto marked = [&] {
+    size_t            n     = 0;
+    rs::RetainedScene& scene = rig.renderer.hostScene();
+    for(const rs::DrawItem& d : scene.drawItems())
+      if(const rs::MaterialRecord* m = scene.material(d.material); m && m->keepFull)
+        n++;
+    return n;
+  };
+  EXPECT_FALSE(kept());
+  EXPECT_EQ(marked(), 0u);
+  EXPECT_FALSE(rig.cmd("scene.state", {{"prop", id}}).at("result").at("worn")[0].contains("keepFull"));
+
+  ASSERT_TRUE(rig.cmd("wardrobe.keepFull", {{"prop", id}, {"item", item}, {"on", true}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  EXPECT_TRUE(kept());
+  EXPECT_GT(marked(), 0u);
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Keep full: Box Shirt");
+  historyStep(rig, "history.undo");
+  EXPECT_FALSE(kept());
+  EXPECT_EQ(marked(), 0u);
+  historyStep(rig, "history.redo");
+  EXPECT_TRUE(kept());
+
+  // off and back
+  ASSERT_TRUE(rig.cmd("wardrobe.remove", {{"prop", id}, {"item", item}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  historyStep(rig, "history.undo");
+  EXPECT_TRUE(kept());
+  EXPECT_GT(marked(), 0u);
+
+  // reopened
+  Reopened back(rig.cmd("scene.state", {{"prop", id}}).at("result"));
+  EXPECT_TRUE(back.problems.empty()) << back.problems.dump();
+  EXPECT_TRUE(back.items().at(itemNamed(back.items(), "Box Shirt")).value("keepFull", false));
+}
+
 // Skin tight is the item's: a step, kept when it is taken off and put back, and in the scene file.
 TEST(FvHost, HowTightAnItemIsGoesWithIt)
 {
