@@ -478,7 +478,7 @@ std::string axisKey(const fv::pose::Axis& a);
 Json poseSnapshot(const Loaded& f);
 
 std::string fileStem(const std::string& rel);
-// What a figure's or a model's meshes will take on the GPU, for HostRenderer::refuseGeometry: their
+// What a figure's or a model's meshes will take on the GPU, for HostRenderer::geometryShortfall: their
 // buffers in the residency's formats (scene_price.hpp) and what the driver says their BLASes hold.
 // Their textures aren't in it: those come down to fit as they arrive.
 struct GeometryPricing

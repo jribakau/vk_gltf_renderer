@@ -205,7 +205,7 @@
 //
 // Camera, selection and display commands live in fv_view.hpp.
 //
-// Topics: "session", "jobs", "notices", "render", "memory" ({lowered, largest}: the textures below what Max
+// Topics: "session", "jobs", "notices", "render", "memory" ({lowered, largest, parked, spilledBytes}: the textures below what Max
 // texture size allows to fit GPU memory, and the long edge of the largest), "lighting", "history" ({undo: [label], redo: [label], busy},
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",

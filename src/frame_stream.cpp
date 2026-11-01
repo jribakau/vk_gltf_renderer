@@ -890,7 +890,7 @@ void FrameStream::Impl::serve()
       res.set_content("w and h must be 16..16384", "text/plain");
       return;
     }
-    // a frame the GPU memory cannot hold would end the process at its first allocation
+    // a frame the GPU memory cannot hold would lie in system memory and crawl, every target read over the bus
     if(info.refuseSize)
       if(const std::string why = info.refuseSize({uint32_t(w), uint32_t(h)}); !why.empty())
       {

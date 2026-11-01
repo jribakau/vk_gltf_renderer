@@ -100,6 +100,18 @@ FakeGpuBackend::Buffer* FakeGpuBackend::liveBuffer(BufferHandle handle, const ch
 
 BufferHandle FakeGpuBackend::createBuffer(const BufferDesc& desc)
 {
+  if(desc.mayFail && m_memoryLimit && liveBytes() + desc.size > *m_memoryLimit)
+  {
+    m_allocationFailed = true;
+    Buffer b;
+    b.desc          = desc;
+    b.desc.size     = 0;
+    b.noMemory      = true;
+    b.createdFrame  = m_frame;
+    const BufferHandle none{m_nextHandle++};
+    m_buffers.emplace(none.value, std::move(b));
+    return none;
+  }
   const uint64_t                    units = std::max<uint64_t>((desc.size + kAddressUnit - 1) / kAddressUnit, 1);
   const OffsetAllocator::Allocation alloc =
       units < kAddressUnits ? m_addresses->allocate(uint32_t(units)) : OffsetAllocator::Allocation{};
@@ -125,6 +137,11 @@ void FakeGpuBackend::destroyBuffer(BufferHandle handle)
   Buffer* b = liveBuffer(handle, "destroyBuffer");
   if(!b)
     return;
+  if(b->noMemory)
+  {
+    m_buffers.erase(handle.value);
+    return;
+  }
   m_addresses->free({b->allocOffset, b->allocMetadata});
   m_buffers.erase(handle.value);
   m_writtenBeforeBuild.erase(handle.value);
@@ -148,7 +165,7 @@ uint64_t FakeGpuBackend::bufferSize(BufferHandle handle) const
 void FakeGpuBackend::upload(BufferHandle dst, uint64_t offset, std::span<const std::byte> bytes)
 {
   Buffer* b = liveBuffer(dst, "upload");
-  if(!b)
+  if(!b || b->noMemory)
     return;
   if(offset > b->desc.size || bytes.size() > b->desc.size - offset)
   {
@@ -328,6 +345,14 @@ void FakeGpuBackend::checkMicromapLink(const BlasInput& input, const char* op)
 
 AccelHandle FakeGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags flags)
 {
+  if(!input.vertexAddress || !input.indexAddress
+     || (m_memoryLimit && liveBytes() + input.indexCount / 3 * kBlasBytesPerTriangle > *m_memoryLimit))
+  {
+    m_allocationFailed = true;
+    const AccelHandle none{m_nextHandle++};
+    m_blases.emplace(none.value, Blas{.input = input, .flags = flags, .noMemory = true});
+    return none;
+  }
   Blas b;
   b.input       = input;
   b.flags       = flags;
@@ -354,6 +379,8 @@ void FakeGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
     return;
   }
   Blas& b = it->second;
+  if(b.noMemory)
+    return;
   if(!(b.flags & eAccelAllowUpdate))
     error("refitBlas: the BLAS was not built with eAccelAllowUpdate");
   if(b.compacted)
@@ -402,7 +429,7 @@ AccelHandle FakeGpuBackend::compactBlas(AccelHandle handle)
 uint64_t FakeGpuBackend::accelBytes(AccelHandle handle) const
 {
   if(auto b = m_blases.find(handle.value); b != m_blases.end())
-    return uint64_t(b->second.input.indexCount / 3) * (b->second.compacted ? kCompactedBlasBytesPerTriangle : kBlasBytesPerTriangle);
+    return b->second.noMemory ? 0 : uint64_t(b->second.input.indexCount / 3) * (b->second.compacted ? kCompactedBlasBytesPerTriangle : kBlasBytesPerTriangle);
   if(auto t = m_tlases.find(handle.value); t != m_tlases.end())
     return uint64_t(t->second.capacity) * 128;
   if(auto m = m_micromaps.find(handle.value); m != m_micromaps.end())
@@ -445,8 +472,8 @@ void FakeGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows
   if(rows.size() > t.capacity)
     error("buildTlas: " + std::to_string(rows.size()) + " rows in a TLAS of " + std::to_string(t.capacity));
   for(size_t i = 0; i < rows.size(); i++)
-    if(rows[i].blas && !m_blases.count(rows[i].blas.value))
-      error("buildTlas: row " + std::to_string(i) + " references a dead or unknown BLAS");
+    if(const auto b = m_blases.find(rows[i].blas.value); rows[i].blas && (b == m_blases.end() || b->second.noMemory))
+      error("buildTlas: row " + std::to_string(i) + " references a dead or unknown BLAS, or one that found no memory");
   if(m_blasBeforeTlas)
     error("buildTlas: BLASes built or refitted with no build-to-build barrier before it");
   if(t.builds + t.updates > 0 && t.builtFrame < m_frame && !m_frameFenced)
@@ -508,6 +535,11 @@ struct Span
 // skinning.comp.slang, element for element
 void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
 {
+  for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
+                              &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
+                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs})
+    if(const auto it = m_buffers.find(r->buffer.value); it != m_buffers.end() && it->second.noMemory)
+      return;  // as the Vulkan backend: a pass over a buffer that found no memory does nothing
   m_deforms.push_back(d);
   const uint64_t n  = d.vertexCount;
   bool           ok = true;

@@ -345,6 +345,12 @@ public:
     bool     operator==(const LoweredImages&) const = default;
   };
   LoweredImages loweredImages() const;
+  // A parked mesh isn't drawn and nothing of it is resident, though the scene goes on holding it. A mesh
+  // that finds no memory when it comes parks itself, and says so. Asked of it between syncs.
+  void                    setParked(MeshId mesh, bool parked);
+  const std::set<MeshId>& parked() const { return m_parked; }
+  // Everything parked comes back at the next sync, as far as it finds memory
+  void                    retryParked();
   // The next sync lowers what it has to, as when the scene grew, with `slack` bytes free after it
   void lowerImages(uint64_t slack) { m_fitSlack = slack; }
   // The next sync decodes images lowered earlier a level or more larger, as far as `room` bytes go
@@ -480,6 +486,8 @@ private:
   };
 
   void syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result);
+  // what found no memory this sync parked and out of `items`; whether anything was
+  bool parkFailed(const RetainedScene& scene, std::vector<DrawItem>& items);
   void syncRows(const std::vector<DrawItem>& items, SyncResult& result);
   std::set<MeshId> syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result);
   void             snapshotPrevPositions();
@@ -574,6 +582,8 @@ private:
 
   GpuBackend&      m_gpu;
   ResidencyOptions m_options;
+  std::set<MeshId> m_parked, m_failedMeshes, m_noticedParked;
+  bool             m_parkedChanged = false;  // since the last sync
   // the bytes retired and not freed yet; shared with the closures, which may outlive a clear()
   std::shared_ptr<uint64_t> m_retiring = std::make_shared<uint64_t>(0);
 

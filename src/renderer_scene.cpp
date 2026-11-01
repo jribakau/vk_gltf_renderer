@@ -395,14 +395,13 @@ void GltfRenderer::logRetainedNotices()
       m_noticeSink(notice);
 }
 
-void GltfRenderer::reportLoweredImages(uint32_t count, uint32_t largest)
+void GltfRenderer::reportMemory(const MemoryReport& report)
 {
-  if(count == m_loweredCount && largest == m_loweredLargest)
+  if(report == m_memoryReported)
     return;
-  m_loweredCount   = count;
-  m_loweredLargest = largest;
-  if(m_loweredSink)
-    m_loweredSink(count, largest);
+  m_memoryReported = report;
+  if(m_memorySink)
+    m_memorySink(report);
 }
 
 // A line in the log when what the scene holds has moved, so that a real scene's bytes can be read back
@@ -463,15 +462,26 @@ void GltfRenderer::watchMemory()
   const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
   // No host to tell: a render from the command line keeps to what it loaded with, so that two of them
   // compare. isAutomatedRun() can't say so: the app's renderer runs headless too.
-  if(!m_loweredSink || !m_memoryBudgetExtension || !m_memoryWatch.due(now))
+  if(!m_memorySink || !m_memoryBudgetExtension || !m_memoryWatch.due(now))
     return;
   logMemoryLedger();
   rs::RetainedSceneVk&               gpu     = *m_resources.retainedGpu;
   const rs::Residency::LoweredImages lowered = gpu.residency().loweredImages();
-  reportLoweredImages(lowered.count, lowered.largest);
+  constexpr uint64_t                 kSpillStep = 64ull << 20;  // a figure that wanders doesn't tell the app
+  reportMemory({.lowered      = lowered.count,
+                .largest      = lowered.largest,
+                .parked       = uint32_t(gpu.residency().parked().size()),
+                .spilledBytes = gpu.backend().spilledBytes() / kSpillStep * kSpillStep});
   const std::optional<int64_t> headroom = sceneHeadroom();
   if(!headroom)
     return;
+  // what found no memory, tried again now and then once there may be some
+  if(!gpu.residency().parked().empty() && *headroom > int64_t(rs::MemoryWatch::kMargin) && now >= m_retryParkedAt)
+  {
+    constexpr double kRetryEvery = 30;  // what still finds none makes the frame wait for the driver to say so
+    m_retryParkedAt = now + kRetryEvery;
+    gpu.retryParked();
+  }
   const int64_t free = *headroom - int64_t(m_pendingGeometry);
   switch(m_memoryWatch.read({.now        = now,
                              .headroom   = free,

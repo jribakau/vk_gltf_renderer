@@ -273,6 +273,12 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
   flushUploads();
   if(!m_deformPipelines.skin)
     m_deformPipelines.create(m_info.device);
+  // a pass over a buffer that found no memory does nothing
+  for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
+                              &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
+                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs})
+    if(auto it = r->buffer ? m_buffers.find(r->buffer.value) : m_buffers.end(); it != m_buffers.end() && !it->second.buffer.buffer)
+      return;
   // a range's device address; null for none, as the shaders test
   const auto at = [&](const BufferRange& r) -> uint64_t {
     if(!r.buffer)
@@ -377,8 +383,17 @@ BufferHandle VulkanGpuBackend::createBuffer(const BufferDesc& desc)
   BufferEntry entry;
   entry.size = desc.size;
   // 16-byte aligned: TLAS instances need it, and BLAS inputs need 4 (I17)
-  NVVK_CHECK(m_info.alloc->createBuffer(entry.buffer, std::max<VkDeviceSize>(desc.size, 16), vkBufferUsage(desc.usage),
-                                        VMA_MEMORY_USAGE_AUTO, {}, 16));
+  const VkResult result = m_info.alloc->createBuffer(entry.buffer, std::max<VkDeviceSize>(desc.size, 16), vkBufferUsage(desc.usage),
+                                                     VMA_MEMORY_USAGE_AUTO, {}, 16);
+  if(result != VK_SUCCESS && desc.mayFail)
+  {
+    LOGW("VulkanGpuBackend::createBuffer: no memory for %llu bytes of %s\n", (unsigned long long)desc.size, desc.name ? desc.name : "a buffer");
+    m_allocationFailed = true;
+    const BufferHandle none{m_nextHandle++};
+    m_buffers.emplace(none.value, BufferEntry{});
+    return none;
+  }
+  NVVK_CHECK(result);
   nvvk::DebugUtil::getInstance().setObjectName(entry.buffer.buffer, desc.name ? desc.name : "retained buffer");
   m_memory.track(kMemBuffers, entry.buffer.allocation);
   m_ranges[entry.buffer.address] = entry.size;
@@ -395,9 +410,12 @@ void VulkanGpuBackend::destroyBuffer(BufferHandle handle)
     LOGE("VulkanGpuBackend::destroyBuffer: dead or unknown buffer %llu\n", (unsigned long long)handle.value);
     return;
   }
-  m_ranges.erase(it->second.buffer.address);
-  m_memory.untrack(kMemBuffers, it->second.buffer.allocation);
-  m_info.alloc->destroyBuffer(it->second.buffer);
+  if(it->second.buffer.buffer)  // or it found no memory
+  {
+    m_ranges.erase(it->second.buffer.address);
+    m_memory.untrack(kMemBuffers, it->second.buffer.allocation);
+    m_info.alloc->destroyBuffer(it->second.buffer);
+  }
   m_buffers.erase(it);
 }
 
@@ -422,6 +440,8 @@ VkBuffer VulkanGpuBackend::vkBuffer(BufferHandle handle) const
 void VulkanGpuBackend::upload(BufferHandle dst, uint64_t offset, std::span<const std::byte> bytes)
 {
   auto it = m_buffers.find(dst.value);
+  if(it != m_buffers.end() && !it->second.buffer.buffer)
+    return;  // it found no memory
   if(it == m_buffers.end() || offset > it->second.size || bytes.size() > it->second.size - offset)
   {
     LOGE("VulkanGpuBackend::upload: %zu bytes at %llu do not fit buffer %llu\n", bytes.size(),
@@ -440,6 +460,8 @@ void VulkanGpuBackend::copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHa
   if(!recording("copyBuffer"))
     return;
   auto s = m_buffers.find(src.value), d = m_buffers.find(dst.value);
+  if((s != m_buffers.end() && !s->second.buffer.buffer) || (d != m_buffers.end() && !d->second.buffer.buffer))
+    return;  // one found no memory
   if(s == m_buffers.end() || d == m_buffers.end() || srcOffset + size > s->second.size || dstOffset + size > d->second.size)
   {
     LOGE("VulkanGpuBackend::copyBuffer: a dead buffer or a range out of bounds\n");
@@ -671,8 +693,15 @@ nvvk::AccelerationStructureGeometryInfo VulkanGpuBackend::geometryOf(const BlasI
 
 AccelHandle VulkanGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags flags)
 {
-  checkInput(input, "buildBlas");
   BlasEntry entry;
+  if(!input.vertexAddress || !input.indexAddress)  // over a buffer that found no memory
+  {
+    m_allocationFailed = true;
+    const AccelHandle none{m_nextHandle++};
+    m_blases.emplace(none.value, std::move(entry));
+    return none;
+  }
+  checkInput(input, "buildBlas");
   if(input.micromap)
   {
     auto mm = m_micromaps.find(input.micromap.value);
@@ -696,7 +725,15 @@ AccelHandle VulkanGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags 
   entry.data.asType = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
   entry.data.addGeometry(geometryOf(input, entry.micromap.get()));
   entry.data.finalizeGeometry(m_info.device, vkAccelBuildFlags(flags));
-  NVVK_CHECK(m_info.alloc->createAcceleration(entry.accel, entry.data.makeCreateInfo()));
+  if(m_info.alloc->createAcceleration(entry.accel, entry.data.makeCreateInfo()) != VK_SUCCESS)
+  {
+    LOGW("VulkanGpuBackend::buildBlas: no memory for %u triangles\n", input.indexCount / 3);
+    m_allocationFailed = true;
+    entry.accel        = {};
+    const AccelHandle none{m_nextHandle++};
+    m_blases.emplace(none.value, std::move(entry));
+    return none;
+  }
   NVVK_DBG_NAME(entry.accel.accel);
   m_memory.track(kMemBlas, entry.accel.buffer.allocation);
   if(flags & eAccelAllowCompaction)
@@ -727,6 +764,8 @@ AccelHandle VulkanGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags 
 void VulkanGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
 {
   auto it = m_blases.find(handle.value);
+  if(it != m_blases.end() && !it->second.accel.accel)
+    return;  // it found no memory
   if(it == m_blases.end() || !(it->second.data.buildInfo.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR))
   {
     LOGE("VulkanGpuBackend::refitBlas: a dead BLAS or one built without eAccelAllowUpdate\n");
@@ -915,7 +954,8 @@ AccelHandle VulkanGpuBackend::compactBlas(AccelHandle handle)
   const VkAccelerationStructureCreateInfoKHR info{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
                                                   .size  = size,
                                                   .type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR};
-  NVVK_CHECK(m_info.alloc->createAcceleration(compacted.accel, info));
+  if(m_info.alloc->createAcceleration(compacted.accel, info) != VK_SUCCESS)
+    return handle;  // no room for the copy: it stays as built
   NVVK_DBG_NAME(compacted.accel.accel);
   m_memory.track(kMemBlas, compacted.accel.buffer.allocation);
   // the copy keeps no build data: a compacted BLAS is never refitted
@@ -958,8 +998,25 @@ void VulkanGpuBackend::flushBuilds()
         alloc->destroyBuffer(scratch);
       });
     m_blasScratch = {};
-    NVVK_CHECK(m_info.alloc->createBuffer(m_blasScratch, plan.size, VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT,
-                                          VMA_MEMORY_USAGE_AUTO, {}, m_scratchAlignment));
+    if(m_info.alloc->createBuffer(m_blasScratch, plan.size, VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT,
+                                  VMA_MEMORY_USAGE_AUTO, {}, m_scratchAlignment)
+       != VK_SUCCESS)
+    {
+      // nothing queued can be built: a BLAS never built must not reach a TLAS, and a refit keeps what it has
+      LOGW("VulkanGpuBackend::flushBuilds: no memory for %llu bytes of build scratch\n", (unsigned long long)plan.size);
+      m_blasScratch      = {};
+      m_allocationFailed = true;
+      for(const QueuedBuild& q : m_queued)
+        if(!q.update)
+          if(BlasEntry& blas = m_blases.at(q.blas); blas.accel.accel)
+          {
+            m_memory.untrack(kMemBlas, blas.accel.buffer.allocation);
+            m_info.alloc->destroyAcceleration(blas.accel);
+            blas.accel = {};
+          }
+      m_queued.clear();
+      return;
+    }
     NVVK_DBG_NAME(m_blasScratch.buffer);
     m_memory.track(kMemScratch, m_blasScratch.allocation);
   }
@@ -1103,8 +1160,11 @@ void VulkanGpuBackend::destroyAccel(AccelHandle handle)
   if(auto b = m_blases.find(handle.value); b != m_blases.end())
   {
     releaseCompactQuery(b->second);
-    m_memory.untrack(kMemBlas, b->second.accel.buffer.allocation);
-    m_info.alloc->destroyAcceleration(b->second.accel);
+    if(b->second.accel.accel)  // or it found no memory
+    {
+      m_memory.untrack(kMemBlas, b->second.accel.buffer.allocation);
+      m_info.alloc->destroyAcceleration(b->second.accel);
+    }
     m_blases.erase(b);
     return;
   }

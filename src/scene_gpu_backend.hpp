@@ -71,6 +71,8 @@ struct BufferDesc
   uint64_t         size  = 0;
   BufferUsageFlags usage = 0;
   const char*      name  = nullptr;  // debug name
+  // what a mesh holds: with no memory to be found anywhere, none is an answer (takeAllocationFailed)
+  bool             mayFail = false;
 };
 
 // An image as it came, for the backend to decode: a file, encoded bytes (a GLB's, a data URI's), or
@@ -252,7 +254,11 @@ public:
   virtual void waitIdle() = 0;
 
   // ---------- Buffers ----------
+  // With BufferDesc::mayFail and no memory, a buffer of no bytes at address 0: writes and passes over it do
+  // nothing, and it is retired as any other
   virtual BufferHandle createBuffer(const BufferDesc& desc) = 0;
+  // Whether a buffer (mayFail) or a BLAS found no memory since the last call
+  virtual bool takeAllocationFailed() = 0;
   // Now: from a retire closure for a buffer a frame in flight may still read.
   virtual void     destroyBuffer(BufferHandle buffer)                                          = 0;
   virtual uint64_t bufferAddress(BufferHandle buffer) const                                    = 0;
@@ -290,7 +296,8 @@ public:
   // A new opacity micromap, its inputs uploaded and its build recorded in this frame ahead of any
   // BLAS build that links it; outlives every BLAS that does.
   virtual AccelHandle buildMicromap(const MicromapInput& input) = 0;
-  // A new BLAS, its build recorded in this frame.
+  // A new BLAS, its build recorded in this frame. With no memory for it or its scratch, or over a buffer
+  // that found none, one that holds nothing and no TLAS row reaches (takeAllocationFailed).
   virtual AccelHandle buildBlas(const BlasInput& input, AccelBuildFlags flags) = 0;
   // In place; the BLAS was built with eAccelAllowUpdate, not compacted, and the input keeps its
   // addresses and index count.

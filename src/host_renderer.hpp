@@ -68,10 +68,12 @@ public:
   virtual void replaceHostScene() = 0;
   // Decodes an image now, on the calling thread (a load or wear worker), for the next replace
   virtual void prefetchImage(const std::filesystem::path& diskPath, bool srgb) = 0;
-  // Why a mesh of about `bytes` on the GPU can't be added, empty when it can (and then counted until
-  // it is resident). `keepTextureDetail`: for what can come in smaller instead, so textures count
-  // as coming down only as far as hardly shows. Application thread.
-  virtual std::string refuseGeometry(uint64_t bytes, bool keepTextureDetail = false) = 0;
+  // Why a mesh of about `bytes` on the GPU won't fit, empty when it will. It may come all the same: what
+  // doesn't fit falls to system memory and draws slower. `keepTextureDetail`: for what can come in smaller
+  // instead, so textures count as coming down only as far as hardly shows. Application thread.
+  virtual std::string geometryShortfall(uint64_t bytes, bool keepTextureDetail = false) = 0;
+  // It is coming: counted as taken until it is resident. Application thread.
+  virtual void admitGeometry(uint64_t bytes) = 0;
   // What a BLAS of this many triangles would hold, as the driver says, before any is built: one built to
   // be refitted, or one that is compacted (rs::kCompactedBlasShare). Application thread.
   virtual uint64_t blasBytes(uint64_t triangles, uint64_t vertices, bool refittable) const = 0;
@@ -85,9 +87,16 @@ public:
   // Where what the renderer has to tell the user goes, from the application thread (a texture lowered
   // to fit GPU memory); empty: nowhere
   virtual void setNoticeSink(std::function<void(const std::string&)> sink) = 0;
-  // Where the textures lowered to fit GPU memory are reported as they change, from the application
-  // thread: how many, and the long edge of the largest; empty: nowhere
-  virtual void setLoweredSink(std::function<void(uint32_t count, uint32_t largest)> sink) = 0;
+  // What the scene is drawn without, or slower for, for want of GPU memory
+  struct MemoryReport
+  {
+    uint32_t lowered = 0, largest = 0;  // textures lowered to fit, and the long edge of the largest
+    uint32_t parked       = 0;          // meshes that found no memory anywhere, and aren't drawn
+    uint64_t spilledBytes = 0;          // what lies in system memory, in steps worth mentioning
+    bool     operator==(const MemoryReport&) const = default;
+  };
+  // Where that is reported as it changes, from the application thread; empty: nowhere
+  virtual void setMemorySink(std::function<void(const MemoryReport&)> sink) = 0;
   // An export is running: textures don't follow GPU memory until it ends, unless it runs past the
   // driver's budget (rs::MemoryWatch). Application thread.
   virtual void holdTextures(bool held) = 0;

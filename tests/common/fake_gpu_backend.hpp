@@ -43,6 +43,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "scene_gpu_backend.hpp"
@@ -64,6 +65,7 @@ public:
     uint32_t               allocOffset   = 0;  // the OffsetAllocator allocation behind the address
     uint32_t               allocMetadata = 0;
     uint64_t               createdFrame  = 0;
+    bool                   noMemory      = false;  // it found none (setMemoryLimit)
   };
   struct Image
   {
@@ -80,6 +82,7 @@ public:
     uint32_t        builds      = 0;
     uint32_t        refits      = 0;
     uint64_t        builtFrame  = 0;  // the frame of its last build or refit
+    bool            noMemory    = false;  // it found none (setMemoryLimit)
   };
   struct Micromap
   {
@@ -106,6 +109,9 @@ public:
   void         retire(std::function<void()> closure) override;
   void         waitIdle() override;
   BufferHandle createBuffer(const BufferDesc& desc) override;
+  bool         takeAllocationFailed() override { return std::exchange(m_allocationFailed, false); }
+  // What it can hold at most, what is alive counted: a buffer (mayFail) or BLAS past it finds no memory
+  void         setMemoryLimit(std::optional<uint64_t> bytes) { m_memoryLimit = bytes; }
   void         destroyBuffer(BufferHandle buffer) override;
   uint64_t     bufferAddress(BufferHandle buffer) const override;
   uint64_t     bufferSize(BufferHandle buffer) const override;
@@ -221,6 +227,8 @@ private:
   uint64_t m_nextHandle    = 1;
   uint32_t m_waitIdleCount = 0;
   bool     m_opacityMicromaps = true;
+  bool     m_allocationFailed = false;
+  std::optional<uint64_t> m_memoryLimit;
 
   std::unique_ptr<OffsetAllocator::Allocator> m_addresses;
   std::unordered_map<uint64_t, Buffer>        m_buffers;

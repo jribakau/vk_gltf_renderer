@@ -345,6 +345,72 @@ TEST(RetainedResidency, ASceneFedAgainInTheSameStoreRetiresTheOldSlots)
   EXPECT_EQ(gpu.waitIdleCount(), 0u);
 }
 
+// With no memory to be found, a mesh isn't the end of anything: it is parked in the same sync, named once,
+// and the rest draws. Tried again it comes back, and nothing leaks on the way. Every limit from nothing
+// to room for all of it, each new try starting from whatever the last one left.
+TEST(RetainedResidency, AMeshThatFindsNoMemoryIsParkedAndTheRestDraws)
+{
+  RetainedScene    scene;
+  const MaterialId matte = material(scene, "matte");
+  std::vector<MeshId> meshes;
+  for(int i = 0; i < 3; i++)
+  {
+    meshes.push_back(scene.addMesh(gridMesh(8 + i * 8, float(i))));
+    drawn(scene, "item", meshes.back(), {matte});
+  }
+  FakeGpuBackend whole(2);
+  Residency      wholeResidency(whole);
+  wholeResidency.replace(scene);
+  expectClean(scene, wholeResidency, whole, "with room");
+  EXPECT_TRUE(wholeResidency.parked().empty());
+  const uint64_t room = whole.liveBytes();
+
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  size_t         everParked = 0;
+  // (the last with more than room: what is retiring counts, and tables that grew stay grown)
+  for(uint64_t limit = 0; limit <= room * 2; limit += std::max<uint64_t>(room / 37, 1))
+  {
+    gpu.setMemoryLimit(limit);
+    gpu.beginFrame();
+    residency.retryParked();
+    residency.sync(scene);
+    expectClean(scene, residency, gpu, "at a limit of " + std::to_string(limit));
+    everParked = std::max(everParked, residency.parked().size());
+    drain(gpu);
+    for(const std::string& p : residencyLeaks(residency, gpu))
+      ADD_FAILURE() << "at a limit of " << limit << ": " << p;
+  }
+  EXPECT_GT(everParked, 0u);
+  EXPECT_TRUE(residency.parked().empty()) << "with room for all of it, nothing stays out";
+  // the first time each was parked, and not each time it was tried again
+  const std::vector<std::string> notices = residency.takeUserNotices();
+  EXPECT_FALSE(notices.empty());
+  size_t named = 0;
+  for(const std::string& n : notices)
+    named += n.find("aren't drawn for now") != std::string::npos;
+  EXPECT_LE(named, 3u);
+
+  // asked for by a host: what is parked gives back all it held, and comes back whole
+  const MeshId first = meshes.front();
+  gpu.setMemoryLimit(std::nullopt);
+  drain(gpu);
+  const uint64_t before = gpu.liveBytes();
+  residency.setParked(first, true);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "parked");
+  EXPECT_EQ(residency.meshGpu(first), nullptr);
+  drain(gpu);
+  EXPECT_LT(gpu.liveBytes(), before);
+  residency.setParked(first, false);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "back");
+  drain(gpu);
+  EXPECT_EQ(gpu.liveBytes(), before);
+}
+
 TEST(RetainedResidency, AVertexEditRefitsTheBlasesOfItsMesh)
 {
   RetainedScene scene;

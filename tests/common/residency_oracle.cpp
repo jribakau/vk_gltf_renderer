@@ -289,7 +289,12 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(const Residency::Instance* inst = residency.instance(s))
       if(!slotOf.emplace(std::tuple{inst->entity, inst->mesh, inst->submesh, inst->copy}, s).second)
         out.push_back(at("I1", s) + "a second instance of one draw item");
-  const std::vector<DrawItem> items = scene.drawItems();
+  std::vector<DrawItem> items = scene.drawItems();
+  // a mesh parked for want of memory has nothing resident
+  std::erase_if(items, [&](const DrawItem& item) { return residency.parked().count(item.mesh) > 0; });
+  for(MeshId parked : residency.parked())
+    if(residency.meshGpu(parked))
+      out.push_back("parked: a parked mesh is still resident");
   if(items.size() != slotOf.size())
     out.push_back("I1: " + std::to_string(slotOf.size()) + " instances for " + std::to_string(items.size()) + " draw items");
 

@@ -314,7 +314,7 @@ public:
   // Max texture size (HostRenderer): the images decoded from now on. Any thread.
   void setMaxTextureExtent(uint32_t extent) override { m_maxTextureExtent.store(extent); }
   void setNoticeSink(std::function<void(const std::string&)> sink) override { m_noticeSink = std::move(sink); }
-  void setLoweredSink(std::function<void(uint32_t, uint32_t)> sink) override { m_loweredSink = std::move(sink); }
+  void setMemorySink(std::function<void(const MemoryReport&)> sink) override { m_memorySink = std::move(sink); }
   void holdTextures(bool held) override { m_texturesHeld = held; }
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
@@ -338,7 +338,7 @@ public:
   // and the upscaler's own history). Updated each frame; any thread.
   uint32_t frameBytesPerPixel() const override { return m_frameBytesPerPixel.load(); }
   // Why a frame of this size must not be asked for (the budget cannot hold what it adds over the
-  // frame drawn now), or empty. Any allocation that fails ends the process (NVVK_CHECK), so the
+  // frame drawn now), or empty. Its targets would lie in system memory, and the frame crawl, so the
   // stream's /size asks here first. Any thread.
   // `extraBytesPerPixel`: what else a pixel of the frame costs outside the renderer (native presentation)
   std::string refuseFrameSize(VkExtent2D size, double extraBytesPerPixel = 0.0) const;
@@ -347,7 +347,8 @@ public:
   std::optional<int64_t> sceneHeadroom() const override;
   // the budget the scene is fitted to: the driver's, or sceneBudgetMB where that is less
   uint64_t               sceneBudget() const;
-  std::string            refuseGeometry(uint64_t bytes, bool keepTextureDetail = false) override;
+  std::string            geometryShortfall(uint64_t bytes, bool keepTextureDetail = false) override;
+  void                   admitGeometry(uint64_t bytes) override { m_pendingGeometry += bytes; }
   uint64_t               blasBytes(uint64_t triangles, uint64_t vertices, bool refittable) const override;
   rs::MemoryLedger       memoryLedger() const override;
   struct AllocatedMemory
@@ -498,7 +499,7 @@ private:
   void                       logMemoryLedger();
   void                       applyMemoryFill(VkCommandBuffer cmd);
   // the textures lowered now, told to the sink when that changed
-  void                       reportLoweredImages(uint32_t count, uint32_t largest);
+  void                       reportMemory(const MemoryReport& report);
   // a stream host's scene: the clip moved on and written into the store; true when it wrote anything
   bool advanceHostClip();
   bool afterRetainedSync(const rs::SyncResult& result);
@@ -645,10 +646,11 @@ private:
   std::atomic<uint64_t> m_frameSizePacked{0};  // width << 32 | height
   bool                  m_memoryBudgetExtension = false;  // the device has VK_EXT_memory_budget (onAttach)
   std::atomic<uint32_t> m_maxTextureExtent{0};
-  uint64_t              m_pendingGeometry = 0;  // accepted by refuseGeometry and not resident yet
+  uint64_t              m_pendingGeometry = 0;  // admitted and not resident yet
   std::function<void(const std::string&)> m_noticeSink;
-  std::function<void(uint32_t, uint32_t)> m_loweredSink;
-  uint32_t              m_loweredCount = 0, m_loweredLargest = 0;  // as the sink last heard
+  std::function<void(const MemoryReport&)> m_memorySink;
+  MemoryReport                             m_memoryReported;
+  double                                   m_retryParkedAt = 0;  // when what found no memory is tried again
   uint64_t              m_ledgerLogged = 0;          // the scene's bytes the last [memory] line said
   std::vector<nvvk::Buffer> m_memoryFill;            // memoryFillMB's
   size_t                m_memoryFillNext = 0;        // the block memoryFillWriteMB writes next

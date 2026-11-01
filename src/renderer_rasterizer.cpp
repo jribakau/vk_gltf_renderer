@@ -320,7 +320,7 @@ void Rasterizer::deinitShadowResources(Resources& resources)
 {
   if(m_shadowMap.image != VK_NULL_HANDLE)
     resources.allocator.destroyImage(m_shadowMap);
-  m_shadowMapSize = 0;
+  m_shadowMapSize = m_shadowMapAsked = 0;
   if(m_shadowCompareSampler)
     resources.samplerPool.releaseSampler(m_shadowCompareSampler);
   if(m_shadowPointSampler)
@@ -357,7 +357,17 @@ void Rasterizer::createShadowMap(VkCommandBuffer cmd, Resources& resources, int 
       .format           = imageInfo.format,
       .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
   };
-  NVVK_CHECK(resources.allocator.createImage(m_shadowMap, imageInfo, viewInfo));
+  // a dropdown's value doesn't end the process: what fits, as far down as a shadow is any use
+  VkImageCreateInfo sized = imageInfo;
+  VkResult          made  = resources.allocator.createImage(m_shadowMap, sized, viewInfo);
+  while(made != VK_SUCCESS && size > 1024)
+  {
+    size /= 2;
+    sized.extent = {uint32_t(size), uint32_t(size), 1};
+    LOGW("Rasterizer: no memory for the shadow map; trying %d\n", size);
+    made = resources.allocator.createImage(m_shadowMap, sized, viewInfo);
+  }
+  NVVK_CHECK(made);
   NVVK_DBG_NAME(m_shadowMap.image);
   m_shadowMapSize = size;
 
@@ -1396,8 +1406,9 @@ void Rasterizer::renderShadowMap(VkCommandBuffer cmd, Resources& resources)
   if(!resources.gpuView().hasContent())
     return;
   const int size = std::clamp(resources.settings.shadowMapSize, 1024, 8192);
-  if(size != m_shadowMapSize)
+  if(size != m_shadowMapAsked)
   {
+    m_shadowMapAsked = size;
     // The descriptor set is rewritten below, which a recording or an in-flight frame may hold.
     NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
     freeRecordCommandBuffer(resources);

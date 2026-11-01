@@ -368,22 +368,19 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           for(int id : target->fig->itemsReplacedBy(*prepared, ids, only))
             if(const fv::WornItem* w = wornItem(*target->fig, id))
               leaving += geometryBytes(target->fig->loaded.scene, w->meshes, pricing);
-          const uint64_t bytes = geometryBytes(preparedScene, pricing);
-          if(const std::string refused = renderer->refuseGeometry(bytes - std::min(bytes, leaving), smaller); !refused.empty())
+          const uint64_t bytes  = geometryBytes(preparedScene, pricing);
+          const uint64_t adding = bytes - std::min(bytes, leaving);
+          // what doesn't fit comes in smaller while there is smaller to come; then all the same, said so
+          const std::string shortfall = renderer->geometryShortfall(adding, smaller);
+          if(!shortfall.empty() && smaller)
           {
-            if(smaller)
-            {
-              *again = true;
-              done->set_value(false);
-              return;
-            }
-            const std::string problem = utf8Of(pathOf(rel).stem()) + " wasn't added: " + refused;
-            notice(problem, "error");
-            if(problems)
-              problems->push_back(problem);
+            *again = true;
             done->set_value(false);
             return;
           }
+          renderer->admitGeometry(adding);
+          if(!shortfall.empty())
+            notice(utf8Of(pathOf(rel).stem()) + " came in past GPU memory: " + shortfall);
           try
           {
             // what it may replace (the same garment again), as it was, for the step's undo

@@ -155,11 +155,13 @@ TEST(FvHost, TexturesFollowingMemoryReachTheApp)
   EXPECT_TRUE(rig.cmd("render.hold", {{"on", false}}).value("ok", false));
   EXPECT_FALSE(rig.renderer.texturesHeld);
 
-  ASSERT_TRUE(rig.renderer.loweredSink);
-  rig.renderer.loweredSink(12, 1024);
+  ASSERT_TRUE(rig.renderer.memorySink);
+  rig.renderer.memorySink({.lowered = 12, .largest = 1024, .parked = 2, .spilledBytes = 1 << 30});
   const Json memory = rig.topic("memory");
   EXPECT_EQ(memory.value("lowered", 0), 12) << memory.dump();
   EXPECT_EQ(memory.value("largest", 0), 1024) << memory.dump();
+  EXPECT_EQ(memory.value("parked", 0), 2) << memory.dump();
+  EXPECT_EQ(memory.value("spilledBytes", uint64_t(0)), uint64_t(1) << 30) << memory.dump();
 }
 
 // What is taken off leaves the renderer's scene at once, so its GPU memory is there for what comes next
@@ -195,32 +197,28 @@ TEST(FvHost, StartsWithAnEmptySceneResident)
   EXPECT_EQ(rig.renderer.replaces, 1);
 }
 
-// A load or a wear GPU memory can't take is refused before it is in the scene, and says why
-TEST(FvHost, WhatGpuMemoryCantTakeIsRefused)
+// What GPU memory can't take comes all the same, said so: it runs from system memory, slower
+TEST(FvHost, WhatGpuMemoryCantTakeComesAllTheSameAndSaysSo)
 {
   HostRig rig;
   rig.renderer.geometryRefusal = "no room";
   ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
   ASSERT_TRUE(rig.settle());
   EXPECT_GT(rig.renderer.askedGeometry, 0u);
-  EXPECT_TRUE(figureId(rig.topic("scene")).empty());
-  EXPECT_EQ(rig.renderer.hostScene().meshCount(), 0u);
-  EXPECT_NE(rig.topic("notices").dump().find("wasn't loaded: no room"), std::string::npos) << rig.topic("notices").dump();
-
-  // with room it loads; a wear without any leaves the figure as it was
-  rig.renderer.geometryRefusal.clear();
-  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
-  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(rig.renderer.admittedGeometry, rig.renderer.askedGeometry);
   const std::string id = figureId(rig.topic("scene"));
   ASSERT_FALSE(id.empty());
+  EXPECT_NE(rig.topic("notices").dump().find("came in past GPU memory: no room"), std::string::npos) << rig.topic("notices").dump();
   const size_t bare = rig.renderer.hostScene().meshCount();
-  rig.renderer.geometryRefusal = "no room";
+  EXPECT_GT(bare, 0u);
+
+  // and a wear
   rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
   ASSERT_TRUE(rig.settle());
-  EXPECT_EQ(rig.renderer.hostScene().meshCount(), bare);
-  EXPECT_NE(rig.topic("notices").dump().find("wasn't added: no room"), std::string::npos) << rig.topic("notices").dump();
+  EXPECT_GT(rig.renderer.hostScene().meshCount(), bare);
   const Json items = rig.topic("wardrobe/" + id).value("items", Json::object());
-  EXPECT_EQ(items.dump().find("Box Shirt"), std::string::npos) << items.dump();
+  EXPECT_NE(items.dump().find("Box Shirt"), std::string::npos) << items.dump();
+  EXPECT_NE(rig.topic("notices").dump().find("Box Shirt came in past GPU memory: no room"), std::string::npos) << rig.topic("notices").dump();
 }
 
 // A restore that couldn't put everything back says so in its job: the app won't take the scene for
@@ -242,10 +240,9 @@ TEST(FvHost, ARestoreReportsWhatItCouldNotPutBack)
   };
   // what isn't in the library
   EXPECT_NE(restored("People/Test/Clothing/Not There.duf").dump().find("Not There"), std::string::npos);
-  // what GPU memory can't take
+  // what GPU memory can't take is put back too, slower: nothing to report, so the scene stays its file's
   rig.renderer.geometryRefusal = "no room";
-  EXPECT_NE(restored("People/Test/Clothing/Box Shirt.duf").dump().find("wasn't added: no room"), std::string::npos);
-  // and nothing of the kind when it all goes on
+  EXPECT_TRUE(restored("People/Test/Clothing/Box Shirt.duf").empty());
   rig.renderer.geometryRefusal.clear();
   EXPECT_TRUE(restored("People/Test/Clothing/Box Shirt.duf").empty());
 }
@@ -805,12 +802,14 @@ TEST(FvHostWardrobe, AnItemThatDoesNotFitComesInSmaller)
   EXPECT_LE(rig.renderer.lastGeometry, rig.renderer.geometryLimit);
   takeOff();
 
-  // nothing small enough: the last try counts the textures all the way down, and then it is refused
+  // nothing small enough: the last try counts the textures all the way down, and it comes at its smallest
   rig.renderer.geometryLimit = 1;
   wear(hair);
-  EXPECT_TRUE(items().empty());
+  ASSERT_EQ(items().size(), 1u);
+  EXPECT_EQ(items().begin().value().value("reduced", ""), "a quarter of its strands");
   EXPECT_FALSE(rig.renderer.lastKeptTextures);
-  EXPECT_NE(rig.topic("notices").dump().find("Box Fan Hair wasn't added: no room"), std::string::npos) << rig.topic("notices").dump();
+  EXPECT_NE(rig.topic("notices").dump().find("Box Fan Hair came in past GPU memory: no room"), std::string::npos) << rig.topic("notices").dump();
+  takeOff();
 
   rig.renderer.geometryLimit = UINT64_MAX;
   wear(hair);

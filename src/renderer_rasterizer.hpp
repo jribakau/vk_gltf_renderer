@@ -105,6 +105,7 @@ private:
   VkShaderEXT          m_shadowFragmentShader{};
   nvvk::Image          m_shadowMap{};
   int                  m_shadowMapSize = 0;
+  int                  m_shadowMapAsked = 0;  // what m_shadowMapSize was made for: memory may have given less
   VkSampler            m_shadowCompareSampler{};
   VkSampler            m_shadowPointSampler{};
   nvvk::DescriptorPack m_shadowDescPack;

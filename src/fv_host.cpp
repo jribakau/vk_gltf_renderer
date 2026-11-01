@@ -48,8 +48,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
 #endif
   renderer->setMaxTextureExtent(uint32_t(std::max(s.settings.maxTextureSize, 0)));
   renderer->setNoticeSink([impl](const std::string& text) { impl->notice(text); });
-  renderer->setLoweredSink([impl](uint32_t count, uint32_t largest) {
-    impl->protocol->events().snapshot("memory", {{"lowered", count}, {"largest", largest}});
+  renderer->setMemorySink([impl](const HostRenderer::MemoryReport& r) {
+    impl->protocol->events().snapshot("memory", {{"lowered", r.lowered}, {"largest", r.largest}, {"parked", r.parked}, {"spilledBytes", r.spilledBytes}});
   });
 
   cmds.add("settings.apply", [impl](const Json& args) {
@@ -497,7 +497,7 @@ void FvHost::onDetach()
 {
   Impl& s = *m_impl;
   s.renderer->setNoticeSink({});
-  s.renderer->setLoweredSink({});
+  s.renderer->setMemorySink({});
   s.stopAccepting();
   s.protocol->setStopHook({});
   s.loadGeneration++;  // loads still running drop their result

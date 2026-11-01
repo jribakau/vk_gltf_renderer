@@ -732,9 +732,10 @@ std::optional<int64_t> GltfRenderer::sceneHeadroom() const
   return int64_t(budget) - int64_t(budget / 10 + frameMore + used);
 }
 
-// A load or wear that can't fit even with every texture lowered is refused here, before it is in the
-// scene: past the budget it would crawl, in system memory, or end the process if none is left.
-std::string GltfRenderer::refuseGeometry(uint64_t bytes, bool keepTextureDetail)
+// A load or wear that can't fit even with every texture lowered would fall to system memory: on an RTX 4080
+// about six times the frame time for what the view looks at (docs/scene-memory-plan.md). What can come in
+// smaller does; the rest comes all the same, said so.
+std::string GltfRenderer::geometryShortfall(uint64_t bytes, bool keepTextureDetail)
 {
   const std::optional<int64_t> headroom = sceneHeadroom();
   if(!headroom)
@@ -746,14 +747,11 @@ std::string GltfRenderer::refuseGeometry(uint64_t bytes, bool keepTextureDetail)
   const int64_t      lowerable     = m_resources.retainedGpu ? int64_t(m_resources.retainedGpu->lowerableImageBytes(least)) : 0;
   const int64_t room      = *headroom - int64_t(m_pendingGeometry) + lowerable;
   if(int64_t(bytes) <= room)
-  {
-    m_pendingGeometry += bytes;
     return {};
-  }
   const MemoryBudget b = deviceMemoryBudget();
   const auto size = [](double n) { return n < 1e9 ? fmt::format("{:.0f} MB", n / 1e6) : fmt::format("{:.1f} GB", n / 1e9); };
-  return fmt::format("it needs about {} of GPU memory and {} can be freed ({:.1f} of {:.1f} GB in use). "
-                     "Remove something from the scene or lower Subdivision.",
+  return fmt::format("it needs about {} of GPU memory and {} can be freed ({:.1f} of {:.1f} GB in use), so part of the scene "
+                     "runs from system memory and rendering is slower. Removing something or lowering Subdivision helps.",
                      size(double(bytes)), size(double(std::max<int64_t>(room, 0))), double(b.usage) / 1e9, double(b.budget) / 1e9);
 }
 
@@ -886,7 +884,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // Empty scene, clear the G-Buffer
   if(!m_resources.gpuView().hasContent())
   {
-    reportLoweredImages(0, 0);
+    reportMemory({});
     clearGbuffer(cmd);
     return;
   }

@@ -406,12 +406,12 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
      || t->normalStart.size() != size_t(t->refinedCount()) + 1 || (!t->offsets.empty() && t->offsets.size() != t->refinedCount()))
     return;
   const auto table = [&](const auto& values, const char* name) {
-    const BufferHandle b = m_gpu.createBuffer({.size = values.size() * sizeof(values[0]), .usage = eBufferStorage, .name = name});
+    const BufferHandle b = m_gpu.createBuffer({.size = values.size() * sizeof(values[0]), .usage = eBufferStorage, .name = name, .mayFail = true});
     m_gpu.upload(b, 0, bytesOf(values));
     return b;
   };
   MeshGpu::Refine r;
-  r.cage = m_gpu.createBuffer({.size = record.cage.size() * sizeof(glm::vec3), .usage = eBufferStorage, .name = "cage"});
+  r.cage = m_gpu.createBuffer({.size = record.cage.size() * sizeof(glm::vec3), .usage = eBufferStorage, .name = "cage", .mayFail = true});
   m_gpu.upload(r.cage, 0, bytesOf(record.cage));
   uint32_t source = t->cageCount;
   for(size_t i = 0; i < t->levels.size(); i++)
@@ -421,14 +421,14 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
     g.start   = table(l.start, "stencil starts");
     g.columns = table(l.columns, "stencil columns");
     g.weights = table(l.weights, "stencil weights");
-    g.out = m_gpu.createBuffer({.size = uint64_t(g.rows) * sizeof(glm::vec3), .usage = eBufferStorage, .name = "refined level"});
+    g.out = m_gpu.createBuffer({.size = uint64_t(g.rows) * sizeof(glm::vec3), .usage = eBufferStorage, .name = "refined level", .mayFail = true});
     r.levels.push_back(g);
     source = g.rows;
   }
   r.refinedCount   = t->refinedCount();
   r.triangleCount  = uint32_t(t->triangles.size() / 3);
   r.refinedNormals = m_gpu.createBuffer(
-      {.size = uint64_t(r.refinedCount) * sizeof(glm::vec3), .usage = eBufferStorage, .name = "refined normals"});
+      {.size = uint64_t(r.refinedCount) * sizeof(glm::vec3), .usage = eBufferStorage, .name = "refined normals", .mayFail = true});
   r.drawnFrom       = table(t->drawnFrom, "drawn from");
   r.triangles       = table(t->triangles, "refined triangles");
   r.normalStart     = table(t->normalStart, "normal starts");
@@ -550,7 +550,7 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
     if(!buffer || m_gpu.bufferSize(buffer) != bytes.size())
     {
       retireBuffer(buffer);
-      buffer = m_gpu.createBuffer({.size = bytes.size(), .usage = usage, .name = name});
+      buffer = m_gpu.createBuffer({.size = bytes.size(), .usage = usage, .name = name, .mayFail = true});
     }
     m_gpu.upload(buffer, 0, bytes);
   };
@@ -713,7 +713,7 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
   prim.users      = 1;
   const std::span<const uint32_t> indices(record.indices.data() + run.firstIndex, run.indexCount);
   prim.indices = m_gpu.createBuffer(
-      {.size = indices.size_bytes(), .usage = eBufferIndex | eBufferStorage | eBufferAccelInput, .name = "indices"});
+      {.size = indices.size_bytes(), .usage = eBufferIndex | eBufferStorage | eBufferAccelInput, .name = "indices", .mayFail = true});
   m_gpu.upload(prim.indices, 0, std::as_bytes(indices));
   prim.input          = {.vertexAddress = m_gpu.bufferAddress(d ? d->positions : mesh.positions),
                          .vertexStride  = sizeof(glm::vec3),
@@ -1537,7 +1537,7 @@ void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool s
   const auto make = [&](BufferHandle& buffer, std::span<const std::byte> bytes, const char* name) {
     if(buffer || bytes.empty())
       return;
-    buffer = m_gpu.createBuffer({.size = bytes.size(), .usage = eBufferStorage, .name = name});
+    buffer = m_gpu.createBuffer({.size = bytes.size(), .usage = eBufferStorage, .name = name, .mayFail = true});
     m_gpu.upload(buffer, 0, bytes);
   };
   if(skin)
@@ -1608,7 +1608,7 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
   if(posed)
   {
     const auto work = [&](uint64_t count, const char* name) {
-      return m_gpu.createBuffer({.size = std::max<uint64_t>(count, 1) * sizeof(glm::vec3), .usage = eBufferStorage, .name = name});
+      return m_gpu.createBuffer({.size = std::max<uint64_t>(count, 1) * sizeof(glm::vec3), .usage = eBufferStorage, .name = name, .mayFail = true});
     };
     DrawerGpu::Posed& p = d.posed.emplace();
     p.cage              = work(mesh.refine->levels.front().sourceCount, "posed cage");
@@ -1620,7 +1620,7 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
   d.jointCount  = d.skin ? uint32_t(scene.skin(e.mesh->skin)->joints.size()) : 0;
   const uint64_t n      = mesh.vertexCount;
   const auto     output = [&](BufferHandle& buffer, uint64_t element, BufferUsageFlags usage, const char* name) {
-    buffer = m_gpu.createBuffer({.size = n * element, .usage = usage, .name = name});
+    buffer = m_gpu.createBuffer({.size = n * element, .usage = usage, .name = name, .mayFail = true});
   };
   output(d.positions, sizeof(glm::vec3), eBufferVertex | eBufferStorage | eBufferAccelInput, "deformed positions");
   if(mesh.normals)
@@ -1983,6 +1983,38 @@ const glm::mat4* Residency::prevWorld(uint32_t slot) const
   return slot < m_prevWorlds.size() && slot < m_instances.size() && m_instances[slot] ? &m_prevWorlds[slot] : nullptr;
 }
 
+void Residency::setParked(MeshId mesh, bool parked)
+{
+  if(parked ? m_parked.insert(mesh).second : m_parked.erase(mesh) > 0)
+    m_parkedChanged = true;
+}
+
+void Residency::retryParked()
+{
+  if(m_parked.empty())
+    return;
+  m_parked.clear();
+  m_parkedChanged = true;
+}
+
+bool Residency::parkFailed(const RetainedScene& scene, std::vector<DrawItem>& items)
+{
+  if(m_failedMeshes.empty())
+    return false;
+  std::string names;
+  for(MeshId mesh : m_failedMeshes)
+  {
+    m_parked.insert(mesh);
+    if(const MeshRecord* record = scene.mesh(mesh); record && m_noticedParked.insert(mesh).second)
+      names += (names.empty() ? "" : ", ") + record->name;
+  }
+  m_failedMeshes.clear();
+  if(!names.empty())
+    m_userNotices.push_back("GPU and system memory are both full, so these aren't drawn for now: " + names + ".");
+  std::erase_if(items, [&](const DrawItem& item) { return m_parked.count(item.mesh) > 0; });
+  return true;
+}
+
 SyncResult Residency::replace(RetainedScene& scene)
 {
   clear();
@@ -2007,7 +2039,8 @@ SyncResult Residency::sync(RetainedScene& scene)
   const bool compacting = !m_compacting.empty();
   // images asked of it between syncs (raiseImages, lowerImages)
   const bool imagesAsked = !m_decodeQueue.empty() || m_fitSlack;
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked)
+  const bool parkedChanged = std::exchange(m_parkedChanged, false);
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged)
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);
@@ -2025,8 +2058,13 @@ SyncResult Residency::sync(RetainedScene& scene)
   snapshotPrevPositions();
 
   std::vector<DrawItem> items = scene.drawItems();
-  if(fresh || changes.structure)
+  std::erase_if(items, [&](const DrawItem& item) { return m_parked.count(item.mesh) > 0; });
+  if(fresh || changes.structure || parkedChanged)
+  {
     syncStructure(scene, items, result);
+    if(parkFailed(scene, items))
+      syncStructure(scene, items, result);
+  }
   std::set<MaterialId> edited = changes.materials;
   if(retryHeld)
     edited.insert(m_heldMaterials.begin(), m_heldMaterials.end());
@@ -2046,6 +2084,8 @@ SyncResult Residency::sync(RetainedScene& scene)
   std::set<MeshId> written;
   if(!changes.meshes.empty())
     written = syncVertices(scene, changes.meshes, result);
+  if(m_gpu.takeAllocationFailed())
+    m_failedMeshes.insert(written.begin(), written.end());
   syncDeforms(scene, written, result);
   ensureCapacity(result);
   // textures before materials before geometry (see "The sync"): the textures are written as their
@@ -2066,6 +2106,14 @@ SyncResult Residency::sync(RetainedScene& scene)
   // (an edit held until now and written on its retry counts: it may emit, or stop)
   const bool materialsWritten = m_tablesMoved || result.drawListChanged || !edited.empty();
   syncRows(items, result);
+  // what couldn't be built goes, and the rest is drawn
+  if(parkFailed(scene, items))
+  {
+    syncStructure(scene, items, result);
+    buildDrawLists();
+    result.drawListChanged = true;
+    syncRows(items, result);
+  }
   writeMotionTables(result);
   if(fresh || changes.iesProfiles)
   {
@@ -2198,6 +2246,8 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     if(inst.deformed)
       acquireDrawer(scene, item.entity, item.mesh).users++;
     inst.prim         = acquirePrim(scene, item.mesh, item.submesh, inst.deformed ? item.entity : EntityId{});
+    if(m_gpu.takeAllocationFailed())
+      m_failedMeshes.insert(item.mesh);
     inst.material     = item.material;
     inst.materialSlot = acquireMaterial(scene, item.material);
     inst.world        = item.world;
@@ -2393,6 +2443,13 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   }
   if(!builds.empty() || tlasRows)
     m_gpu.barrier(GpuBarrier::eBuildToBuild);
+  // (their scratch is found at that barrier, so any of them): the sync comes back here without them
+  if(m_gpu.takeAllocationFailed() && !builds.empty())
+  {
+    for(uint32_t p : builds)
+      m_failedMeshes.insert(m_prims[p]->mesh);
+    return;
+  }
 
   if(tlasRows || !builds.empty() || result.drawListChanged || result.tlasHandleChanged || result.verticesWritten || m_bitsChanged)
   {

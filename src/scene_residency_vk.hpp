@@ -128,6 +128,7 @@ public:
   void         retire(std::function<void()> closure) override;
   void         waitIdle() override;
   BufferHandle createBuffer(const BufferDesc& desc) override;
+  bool         takeAllocationFailed() override { return std::exchange(m_allocationFailed, false); }
   void         destroyBuffer(BufferHandle buffer) override;
   uint64_t     bufferAddress(BufferHandle buffer) const override;
   uint64_t     bufferSize(BufferHandle buffer) const override;
@@ -242,6 +243,7 @@ private:
   uint64_t                                  m_nextHandle       = 1;
   VkCommandBuffer                           m_cmd              = VK_NULL_HANDLE;
   bool                                      m_uploadsPending   = false;
+  bool                                      m_allocationFailed = false;  // since takeAllocationFailed
   std::unordered_map<uint64_t, BufferEntry> m_buffers;
   std::map<VkDeviceAddress, VkDeviceSize>   m_ranges;  // live buffers by address, to check BLAS inputs
   std::unordered_map<uint64_t, nvvk::Image> m_images;
@@ -295,6 +297,8 @@ public:
   std::vector<std::string> takeUserNotices() { return m_residency.takeUserNotices(); }
   // VulkanGpuBackend::runRetired
   void runRetired() { m_gpu.runRetired(); }
+  // what found no memory, tried again (Residency::retryParked)
+  void retryParked() { m_residency.retryParked(); }
   // what lowering every texture would free (Residency::lowerableImageBytes)
   uint64_t lowerableImageBytes(uint32_t leastExtent) const { return m_residency.lowerableImageBytes(leastExtent); }
   // the textures following GPU memory (Residency::lowerImages, raiseImages)

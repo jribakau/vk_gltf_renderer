@@ -447,7 +447,7 @@ cornea focuses no caustic. A GLB export leaves it out. It has no Inspector secti
 
 ### A wear that doesn't fit GPU memory
 
-`GltfRenderer::refuseGeometry` weighs what a wear would add. A refusal is not the end while
+`GltfRenderer::geometryShortfall` weighs what a wear would add. Falling short is not the end while
 `fv::wearCanShrink` says there is less to build: the wear's worker prepares it again one
 `fv::oneStepDown` lower (a subdivision level less, half the strands, to a quarter) and commits again.
 `mesh::Lines::keep` is the share of a hair's strands drawn, chosen by a golden-ratio sequence so a
@@ -823,9 +823,11 @@ Four settings, none remembered:
   runs before each batch of decodes: idle decodes go first, then top levels, the largest first, down to 256, of the batch and
   of what is resident (decoded again, the slots rewritten, the frame reset). It reads free room as the driver's usage less the
   allocator's free space inside its blocks, as `gpuAllocatedMB` in the frame profile shows. A scene that grew is fitted with
-  nothing queued too. A load or wear is refused before it enters the scene (`GltfRenderer::refuseGeometry`) when its meshes,
-  priced from their counts in the residency's stream formats and the driver's BLAS sizes (`scene_price.hpp`), won't fit even
-  with every texture lowered. With a scene open it follows the budget both ways (see "Textures following GPU memory").
+  nothing queued too. `GltfRenderer::geometryShortfall` says when a load or wear won't fit even with every texture lowered, its
+  meshes priced from their counts in the residency's stream formats and the driver's BLAS sizes (`scene_price.hpp`). What can
+  come in smaller does; the rest comes all the same, with a notice. A mesh that finds no memory at all, on the device or in
+  system memory, is parked (`Residency::setParked`): nothing of it resident, named in a notice, tried again when there is room.
+  With a scene open it follows the budget both ways (see "Textures following GPU memory").
   What is resident is in `Residency::ledger`, by who reads it and per mesh: the `[memory]` log line and `render.ledger`.
   Past the budget nothing fails: the allocator's next choice of memory type is system memory, so an allocation takes
   100 ms and more and stays there, and rays read it over the bus (`MemoryLedger::spilled`, `scripts/memory-limit-check.py`).
