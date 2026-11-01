@@ -49,7 +49,6 @@
 #include <figure/dson/store.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include "fv_protocol.hpp"
-#include "mcp_scene.hpp"
 
 #include <algorithm>
 #include "version.hpp"
@@ -76,7 +75,6 @@ auto main(int argc, char** argv) -> int
 
   // Global variables
   std::filesystem::path sceneFilename{};             // "shader_ball.gltf"};  // Default scene
-  std::filesystem::path saveSceneFilename{};         // --savefile: writes on change, never persisted
   std::filesystem::path hdrFilename{"std_env.hdr"};  // Default HDR
   std::filesystem::path cacheDir{};                  // --cacheDir: pipeline cache and compiled SPIR-V. Empty: next to the exe
   std::filesystem::path loadPresetFilename;          // --loadSkyPreset, applied on write
@@ -105,20 +103,6 @@ auto main(int argc, char** argv) -> int
                                }
                              }},
                         {".gltf"}, &sceneFilename);
-  // Saving is a parameter for the same reason loading is: one registration covers the command
-  // line, benchmark sequences and nvpro_set_parameters at once, and it runs on the application
-  // thread where touching the scene is legal. It is deliberately not persisted -- remembering a
-  // path that was already written would re-save on the next launch.
-  parameterRegistry.add({.name = "savefile",
-                         .help = "Write the current scene to this path (saves immediately when set at runtime)",
-                         .callbackSuccess =
-                             [&renderer, &saveSceneFilename](const nvutils::ParameterBase* const) {
-                               if(renderer && !renderer->save(saveSceneFilename))
-                               {
-                                 LOGW("savefile '%s' was not written.\n", nvutils::utf8FromPath(saveSceneFilename).c_str());
-                               }
-                             }},
-                        {".gltf", ".glb"}, &saveSceneFilename);
   parameterRegistry.add({.name = "hdrfile",
                          .help = "Input HDR filename (loads immediately when set at runtime)",
                          .callbackSuccess =
@@ -227,7 +211,7 @@ auto main(int argc, char** argv) -> int
   // other local processes and pages out.
   std::string fvToken;
   parameterRegistry.add({"fvToken", "Token every --stream request must carry (?t=); empty: none"}, &fvToken);
-  // Live editing by a host (src/mcp_scene.cpp): keep every BLAS refittable instead of compacting it.
+  // Live editing by a host: keep every BLAS refittable instead of compacting it.
   bool editable = false;
   parameterRegistry.add({"editable", "Keep geometry refittable for live edits over --mcp (implied by --stream)"}, &editable, true);
 
@@ -489,7 +473,7 @@ auto main(int argc, char** argv) -> int
       vkContext.hasExtensionEnabled(VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME) && (ommFeature.micromap == VK_TRUE)
       && vkContext.hasExtensionEnabled(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME)
       && (addressCmdFeature.deviceAddressCommands == VK_TRUE);  // micromaps are created with vkCreateAccelerationStructure2KHR
-  // A scene that carries micromaps on hardware without OMM says so when it loads (createVulkanScene).
+  // A scene that carries micromaps on hardware without OMM says so when it loads.
   elemGltfRenderer->setOpacityMicromapAvailable(ommHardware, useOpacityMicromap);
 
   // Names of the extensions the device was created with (the vk_oidn denoiser picks its features from them)
@@ -589,7 +573,6 @@ auto main(int argc, char** argv) -> int
   {
     if(auto elemMcp = createTimingMcpServer({.port = uint16_t(mcpPort)}, elemGltfRenderer))
     {
-      registerSceneMcpTools(*elemMcp, elemGltfRenderer);
       app.addElement(elemMcp);
     }
   }
@@ -637,19 +620,6 @@ auto main(int argc, char** argv) -> int
   }
 
   app.run();
-
-  // A start-up --savefile writes once the run is over, not during the parse: the callback above
-  // no-ops while `renderer` is still null, and even afterwards the scene is not fully set up
-  // until the first frame has applied deferred state (a glTF-authored sky among it). Saving here
-  // captures what was actually rendered. Setting savefile at runtime, from MCP or a benchmark
-  // sequence, goes through the callback and saves immediately.
-  if(!saveSceneFilename.empty() && elemGltfRenderer)
-  {
-    if(!elemGltfRenderer->save(saveSceneFilename))
-    {
-      LOGW("savefile '%s' was not written.\n", nvutils::utf8FromPath(saveSceneFilename).c_str());
-    }
-  }
 
   app.deinit();
 

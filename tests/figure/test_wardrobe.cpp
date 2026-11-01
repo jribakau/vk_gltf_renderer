@@ -29,7 +29,7 @@
 #include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
 
-#include "gltf_scene.hpp"
+#include "scene_import_gltf.hpp"
 
 namespace {
 
@@ -660,12 +660,9 @@ TEST(Wardrobe, AGroupAGraftHidesWholeIsNotDrawn)
   ASSERT_EQ(built.model.meshes[0].primitives.size(), 2u);
   EXPECT_EQ(built.model.accessors[size_t(built.model.meshes[0].primitives[1].indices)].count, 0u);
 
-  nvvkgltf::Scene loaded;
-  loaded.takeModel(std::move(built.model));
-  EXPECT_EQ(loaded.getRenderPrimitives().size(), 1u);
-  EXPECT_GE(loaded.getMeshRenderPrimitive(0, 0), 0);
-  EXPECT_EQ(loaded.getMeshRenderPrimitive(0, 1), -1);
-  EXPECT_EQ(loaded.getRenderNodes().size(), 1u);
+  rs::RetainedScene loaded;
+  rs::importGltf(loaded, built.model);
+  EXPECT_EQ(loaded.drawItems().size(), 1u);
 }
 
 TEST(Fit, BonesAliasAcrossGenerationsByAnatomicalSlot)

@@ -77,27 +77,16 @@ public:
   // aim. No-op if the configured date does not parse.
   void applyTimeOfDay();
 
-  // Directional lights the scene offers as candidate suns: node index and display name, in scene
-  // order. The sun is chosen rather than guessed, so this is what the choice is made from.
-  [[nodiscard]] std::vector<std::pair<int, std::string>> candidateLights() const;
-
   // Scene light index of the sun, or -1 when the renderer supplies its own. Read by the frame
   // push-constants, which need to tell the shaders whether to add a sun of their own.
   [[nodiscard]] int lightIndex() const { return m_lightIndex; }
-  // Node index of the marked light.
-  [[nodiscard]] int lightNode() const { return m_lightNode; }
 
 private:
-  // Point the scene's marked sun light along `toSun`, as an undoable edit. False when there is no
-  // marked light to move, which is how aim() decides whether it is editing a scene or a float.
-  bool setMarkedDirection(const glm::vec3& toSun);
-
   Resources* m_resources{nullptr};
   Actions    m_actions;
 
-  // light `lightIndex` (its node in the CPU scene, -1 for none) at `world` is the sun
-  void adopt(int lightIndex, int node, const glm::mat4& world);
+  // light `lightIndex` at `world` is the sun
+  void adopt(int lightIndex, const glm::mat4& world);
 
   int m_lightIndex{-1};
-  int m_lightNode{-1};
 };

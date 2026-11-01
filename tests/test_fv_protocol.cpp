@@ -181,10 +181,9 @@ TEST(FvEvents, SseMessageIsOneDataLine)
 
 // params.get / params.set leave out what would load or save the scene behind the host, and what is
 // read only at start-up
-TEST(FvParameters, TheHostKeepsSceneLoadsAndSavesToItself)
+TEST(FvParameters, TheHostKeepsSceneLoadsToItself)
 {
   EXPECT_FALSE(fv::hostExposesParameter("scenefile"));
-  EXPECT_FALSE(fv::hostExposesParameter("savefile"));
   EXPECT_FALSE(fv::hostExposesParameter("residencyMinInstances"));
   // live, with defined semantics
   EXPECT_TRUE(fv::hostExposesParameter("blasScratchBudgetMB"));

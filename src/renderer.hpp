@@ -45,9 +45,6 @@
 #include <nvvk/resource_allocator.hpp>
 #include <nvvk/semaphore.hpp>
 #include "settings_registry.hpp"
-#include "gltf_scene.hpp"
-#include "gltf_scene_rtx.hpp"
-#include "gltf_scene_vk.hpp"
 #include <nvvk/profiler_vk.hpp>
 #include "nvutils/parameter_parser.hpp"
 #include "nvutils/parameter_registry.hpp"
@@ -68,7 +65,6 @@
 #include "gltf_environment_sky.hpp"
 #include "camera_controls.hpp"
 #include "busy_state.hpp"
-#include "scene_selection.hpp"
 #include "gizmo_visuals_vk.hpp"
 #include "timeline_pipeline.hpp"
 #include "scene_clip_player.hpp"
@@ -99,28 +95,14 @@ public:
   ~GltfRenderer() override = default;
 
 
-  /// Load a scene from disk into `m_resources.scene`. Returns true only if a new scene was
-  /// actually installed; returns false on any failure (empty path, findFile miss, OBJ parse
-  /// error, glTF load error) and leaves the current scene pointer in place. Does *not* tear
-  /// down previously-loaded derived state (sceneRtx BLAS/TLAS, sceneGpu buffers, undo stack,
-  /// thumbnails, rasterizer recorded cmd, ...): callers that replace an existing scene at
-  /// runtime must tear down first, see `loadSceneFile` and `onFileDrop`. Startup in `main.cpp`
-  /// runs before any scene exists and can call this directly.
+  /// Load a file into the retained scene, as a prop's model goes. False on any failure (empty path,
+  /// no such file, a load error). Callers that replace a scene at runtime tear down first: see
+  /// `loadSceneFile`. Startup in `main.cpp` runs before any scene exists and can call this directly.
   bool createScene(const std::filesystem::path& sceneFilename);
-  // Ensure an editable Scene exists (wired to the UI, no GPU build) so add/import can run from nothing.
-  void ensureEmptyScene();
   void placeCameraFromFile(const tinygltf::Model& model);
-  void createSceneFromDescriptor(const std::filesystem::path& descriptorPath);
   void createHDR(const std::filesystem::path& hdrFilename);
   // The upload half of createHDR: `envImage` is consumed. `sourceFile` is empty for a generated image.
   void uploadHdrEnvironment(EnvImage&& envImage, const std::filesystem::path& sourceFile);
-  void onMergeScene(const std::filesystem::path& filename);
-  void onReferenceScene(const std::filesystem::path& filename);
-  // Shared worker for merge (embed) and reference (glTF 2.1 external asset) imports.
-  void addSceneFromFile(const std::filesystem::path& filename, bool asReference);
-  /// Full GPU rebuild (textures + geometry + AS). Only uploads GPU data; CPU side must already be
-  /// parsed (`mergeScene`, `parseScene`, etc., depending on how the model was changed).
-  void                                        rebuildVulkanSceneFull();
   std::shared_ptr<nvutils::CameraManipulator> getCameraManipulator() override { return m_cameraManip; }
   void                                        setDlssHardwareAvailability(bool rrAvailable, bool srAvailable);
   void                                        setSerAvailable(bool available);
@@ -296,19 +278,13 @@ public:
   /// on the device and rewrites descriptors, which is unsafe mid-command-buffer.
   void applyPendingEnvironmentRefresh();
 
-  /// Parse the sky a freshly loaded scene authors, if it has one, and queue it for the next frame
-  /// top. Does not touch settings directly -- see applyPendingAuthoredSky for why.
-  void applyEnvironmentSkyFromScene();
 
-  /// Apply the queued authored sky to the live settings. Runs after the ini restore so that glTF
-  /// wins over ini; scenes without the extension leave the settings untouched.
-  void applyPendingAuthoredSky();
 
   /// Apply the presets queued by queueStartupSkyPresets(). Runs right after applyPendingAuthoredSky.
   void applyPendingSkyPresets();
 
-  /// URI to record for an environment image on save: relative to the glTF when the image lives
-  /// under it, absolute otherwise.
+  /// URI to record for an environment image: relative to the file when the image lives under it,
+  /// absolute otherwise.
   std::string relativeUriForSave(const std::filesystem::path& asset, const std::filesystem::path& destination) const;
 
   /// Pre-save hook body: write the current sky into the model being serialized, or strip any
@@ -319,6 +295,9 @@ public:
   /// complete for a renderer that only reads the extension. Marked, so a reload identifies it and
   /// a later save manages the same one instead of adding another.
   void writeSkySunLight(tinygltf::Model& outModel) const;
+
+
+
 
   /// Load an environment map / scene by path; these back --hdrfile / --scenefile, which load on
   /// change. False if the file does not exist or the renderer is not attached yet (the start-up
@@ -333,7 +312,7 @@ public:
   [[nodiscard]] nvutils::Bbox sceneBounds() const;
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);
   // Decodes an image file now, on the calling thread, for the next scene replace to take ready
-  // (SceneVk::prefetchImage): a host's load and wear workers call it for the textures they resolved.
+  // (ImagePrefetch): a host's load and wear workers call it for the textures they resolved.
   void prefetchImage(const std::filesystem::path& diskPath, bool srgb) override;
   // Max texture size (HostRenderer): the images decoded from now on. Any thread.
   void setMaxTextureExtent(uint32_t extent) override { m_maxTextureExtent.store(extent); }
@@ -408,10 +387,7 @@ public:
   int  sampleCap() const override { return m_resources.settings.maxSamples; }
   bool driverCacheFull() const override { return m_pathTracer.driverCacheFull(); }
 
-  // Live-edit surface for a host application (src/mcp_scene.cpp). Application thread only.
-  nvvkgltf::Scene*  editScene() { return m_resources.getScene(); }
-  // The retained scene draws (a stream host feeds it, below): there is no CPU scene above, and
-  // mcp_scene's edit tools are refused.
+  // The retained scene draws (a stream host feeds it, below, or --scenefile imported into it)
   bool drawsRetainedScene() const override { return m_resources.retainedGpu != nullptr; }
 
   // ---- A stream host's own retained scene (daz-viewer docs/retained-scene-plan.md, P4): the host
@@ -426,7 +402,7 @@ public:
   void         selectEntity(rs::EntityId entity) override;
   rs::EntityId selectedEntity() const override { return m_selectedEntity; }
   // The clip that plays (none: none), `at` seconds from its start; AnimationControl plays, pauses,
-  // loops and speeds it as it does a legacy clip
+  // loops and speeds it
   void       setHostClip(rs::ClipId clip, float at = 0.f) override;
   rs::ClipId hostClip() const { return m_hostClip.clip(); }
   // its time and length, from its start
@@ -435,7 +411,6 @@ public:
   // to `time` from its start, paused, shown at once
   void              seekHostClip(float time) override;
   AnimationControl& editAnimationControl() override { return m_resources.animationControl; }
-  bool              isBlasUpdatable(uint32_t renderPrimID) const { return m_resources.sceneRtx.isBlasUpdatable(renderPrimID); }
   // --editable (implied by --stream): every BLAS keeps ALLOW_UPDATE and is never compacted, so
   // geometry edits can refit in place. Must be set before the scene loads.
   void setEditable(bool editable) { m_editable = editable; }
@@ -448,12 +423,6 @@ public:
   bool isEditable() const { return m_editable; }
   // Bumped on every scene load, so a host's cached ids can tell scenes apart.
   uint64_t sceneGeneration() const { return m_sceneGeneration; }
-  /// Write the current scene to `filename`; backs --savefile, so it is reachable from the command
-  /// line, a benchmark sequence and nvpro_set_parameters through the same single registration the
-  /// load parameters use. Application thread only: it reads scene and model state. The view
-  /// becomes the scene's first camera, as File > Save has it. (A host's scene export builds its own
-  /// model instead: FvHost's export.glb.)
-  bool save(const std::filesystem::path& filename, bool selfContained = false);
 
   /// Ray-pick at a normalized viewport position (0..1, origin top-left): the viewport click path
   /// without ImGui. `center` recenters the camera on the hit instead of selecting. The result is
@@ -467,12 +436,10 @@ public:
   /// Path-tracer depth of field. `aperture` is the lens radius squared in metres (0: pinhole).
   /// `autoFocus` keeps the orbit target sharp and ignores `focalDistance`.
   void setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades = 0, float bladeRotation = 0) override;
-  int  selectedNodeIndex();  // The node of a node or primitive selection, or -1
   void fitCamera(bool wholeScene) override;
   /// What is shown, where it is now: the union of the visible render nodes' boxes through their
   /// current node transforms (getSceneBounds is the scene as it loaded).
   nvutils::Bbox visibleSceneBounds() override;
-  void selectSceneNodeFromScript(int nodeIndex);  // Script-driven selection (Inspector/Scene Browser)
 
   /// Lets a stream host own what the transform gizmo edits, on its scene's entities. `attach` gives
   /// the handles the selected entity shows (TransformHelperVk::ShowRotation, ShowTranslation, ...),
@@ -521,20 +488,10 @@ private:
   // Drops the current scene. keepImagesForReuse retains file-backed GPU images (scenefile replace)
   // so the following create() can adopt unchanged files; every other caller frees them.
   void cleanupScene(bool keepImagesForReuse = false);
-  void rebuildSceneFromModel();  // Rebuild Vulkan scene after modifying the glTF model in-place (preserves textures); clears undo
-  void rebuildSceneGeometry();  // Geometry-only rebuild (preserves textures); does NOT clear undo (used by undoable geometry edits)
-  void reconcileGeometryIfNeeded();  // Rebuild geometry when GPU buffers are behind the render-primitive count (e.g. added primitive)
-  void applyPendingTextureRebuild();  // Consume DirtyFlags::texturesChanged at frame top: full texture rebuild + cache refresh
-  void applyPendingTextureTailSync();  // Consume DirtyFlags::texturesTailChanged at frame top: incremental append/remove of tail textures
-  void applyPendingSamplerUpdate();  // Consume DirtyFlags::samplers at frame top: in-place VkSampler update, no image touch
-  void refreshCpuSceneGraphFromModel();
-  void rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mode);  // GPU upload + AS; CPU scene must already be parsed
   bool compileShaders();
   void createDescriptorSets();
   void createResourceBuffers();
-  void createVulkanScene();
-  // The retained scene's per-frame half (replaceHostScene() is its scene replace), in place of the
-  // legacy per-frame GPU paths
+  // The retained scene's per-frame half (replaceHostScene() is its scene replace)
   bool                       syncRetainedScene(VkCommandBuffer cmd);
   // a stream host's scene: the clip moved on and written into the store; true when it wrote anything
   bool advanceHostClip();
@@ -552,16 +509,8 @@ private:
   // What the residency may draw: the live path-tracer variant's features, or every one
   std::optional<nvvkgltf::SceneFeatureSet> drawableFeatures();
   rs::VulkanGpuBackend::Info retainedBackendInfo();
-  void finalizeSceneSetup(const std::filesystem::path& filename);  // Shared GPU build + UI wiring after a load
-  void buildAccelerationStructures();                              // Helper for BLAS/TLAS building
   void destroyResources();
   void resetFrame();
-  // Script-driven *ray-pick* selection (`pickrendernode`): selects the given glTF node's
-  // first render primitive the same way a real 3D-viewport click would - unlike
-  // selectSceneNodeFromScript() above, this supplies finite (camera-eye/node-position) selectionPoint/
-  // selectionRayOrigin values, so KHR_interactivity event/onSelect's ray-info output sockets can be
-  // exercised end-to-end without an actual mouse click.
-  void pickSceneNodeFromScript(int nodeIndex);
   void silhouette(VkCommandBuffer cmd);
   bool tonemap(VkCommandBuffer cmd);
   bool runTonemapPass(VkCommandBuffer cmd);
@@ -574,26 +523,10 @@ private:
   bool dlssGuideRequired() const;  // True when the path tracer currently needs DLSS/OptiX/OIDN guide-buffer capture code.
   float defaultFireflyClamp() const;  // Scene-appropriate firefly clamp: HDR luminance integral, else a fixed baseline.
   void  updateGizmoAttachment();
-  bool  updateTextures();
-  // Write a contiguous range of scene texture / sampler descriptors (eTextures / eSamplers). updateTextures()
-  // writes the whole set; applyPendingTextureTailSync() writes only the newly appended slots.
-  bool writeTextureDescriptorRange(uint32_t firstTexture, uint32_t textureCount, uint32_t firstSampler, uint32_t samplerCount);
   void updateHdrImages();
 
-  bool updateSceneChanges(VkCommandBuffer cmd);
-  bool updateAnimation(VkCommandBuffer cmd);
-  // Shared downstream GPU reconciliation after CPU-side animation-channel evaluation dirtied the
-  // model (world matrices, GPU sync, morph/skin compute, BLAS/TLAS update, dirty-flag clear) - the
-  // tail of updateAnimation().
-  void reconcileAnimationGpuState(VkCommandBuffer cmd);
-  // #DLSS deformation motion: keep the deforming primitives' positions from before this frame's
-  // writers (see PrevPositionsVk). Runs before any of them.
-  void snapshotPrevPositions(VkCommandBuffer cmd);
-  bool                      evaluateClip(nvvkgltf::Scene& scn, VkCommandBuffer cmd);
   bool                      m_editable{false};
   bool                      m_streamHost{false};  // see setStreamHost()
-  bool m_pendingAnimReconcile{false};             // skin and morph again (a tangent upload put the base geometry back)
-  bool                      m_verticesWrittenLastFrame{false};  // See snapshotPrevPositions()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off
   uint64_t                  m_sceneGeneration{0};
   // Polls m_pendingClickResult's frame semaphore and, once signaled, calls m_rayPicker.getResult()
@@ -620,30 +553,10 @@ private:
   void refreshSampleTargets();  // Before the frame renders: parses the counts, and hands them to the path tracer as stops
   void updateSampleCaptures();  // After the frame is recorded: schedules a save when a requested count is reached
 
-  // updateSceneChanges phase helpers (keep main function readable)
-  void updateSceneChanges_BlasRebuild(const nvvkgltf::Scene::DirtyFlags& df);
-  void updateSceneChanges_NodeTransforms(VkCommandBuffer cmd, nvvkgltf::Scene* scene, const nvvkgltf::Scene::DirtyFlags& df);
-  uint32_t updateSceneChanges_SyncGpuBuffers(VkCommandBuffer cmd, nvvkgltf::Scene* scene);
-  void     updateSceneChanges_TlasUpdate(VkCommandBuffer cmd, nvvkgltf::Scene* scene);
-  void     markGpuTransformStaleAfterCpuSync(const nvvkgltf::Scene& scene);
-  void     updateSceneChanges_RasterizerInvalidate(bool renderNodeOrNodeDirty);
-  void     updateSceneChanges_TangentUpload(VkCommandBuffer cmd, nvvkgltf::Scene* scene, bool& changed);
-  void     updateSceneChanges_Finalize(VkCommandBuffer cmd, bool changed, bool stagingFlushed, nvvkgltf::Scene* scene);
 
-  // Selection (renderer_selection.cpp)
-  void onSceneSelectionEvent(const SceneSelection::Event& event);
 
   // UI
   bool hasValidScene();
-  // Windows > Reset UI Layout / Reset All to Default. Both are deferred to the top of the next UI
-  // bar is mid-submission, and so the panels pick the new state up before they are submitted.
-  // F11 / Esc / --presentationMode: bring PresentationMode in line with the request. Top of the UI pass.
-  // `selectionPoint`/`selectionRayOrigin` (global space) are the real ray-pick hit point/origin -
-  // default NaN for callers with no ray (e.g. script-driven test commands), matching the
-  // spec-sanctioned "no ray info" fallback (see SceneSelection::Event's doc comment).
-  void          updateSelectionFromPick(int              renderNodeIdx,
-                                        const glm::vec3& selectionPoint = glm::vec3(std::numeric_limits<float>::quiet_NaN()),
-                                        const glm::vec3& selectionRayOrigin = glm::vec3(std::numeric_limits<float>::quiet_NaN()));
   nvutils::Bbox getRenderNodeBbox(int renderNodeIndex);
   nvutils::Bbox getRenderNodesBbox(const std::unordered_set<int>& renderNodeIndices);
   /// The `.sky.json` pickers behind the Environment panel's two preset buttons.
@@ -706,7 +619,6 @@ private:
   Rasterizer m_rasterizer;  // Rasterizer renderer
 
   // New Scene Browser system (parallel implementation)
-  SceneSelection m_sceneSelection;  // Shared selection state
   SkySun         m_skySun;          // Who the sun is, and where it points
 
   BusyState    m_busy;
@@ -760,16 +672,11 @@ private:
   std::filesystem::path m_pendingLoadSkyPreset;          // Start-up --loadSkyPreset, applied at the frame top
   std::filesystem::path m_pendingSaveSkyPreset;          // Start-up --saveSkyPreset, written after the load
 
-  // Undo/Redo
-
-  // Application-level delete confirmation (shared with scene browser via pointers)
-
   // Gizmo TRS local storage (pointers passed to TransformHelperVk)
   glm::vec3 m_gizmoPosition{0.f};
   glm::vec3 m_gizmoRotation{0.f};  // Euler angles in degrees
   glm::vec3 m_gizmoScale{1.f};
   glm::mat4 m_gizmoParentWorldMatrix{1.f};
-  int       m_gizmoNodeIndex = -1;
   uint32_t  m_gizmoFlags     = 0;
   GizmoHooks m_gizmoHooks;
   glm::vec2  m_gizmoInputLast{0.f};
@@ -778,12 +685,6 @@ private:
   rs::EntityId   m_selectedEntity;
   rs::EntityId   m_gizmoEntity;
   rs::ClipPlayer m_hostClip;
-  // Set in windowed sessions only: the Scene Browser scrolls to a new selection
-
-  // Gizmo TRS snapshot for undo (captured at drag start)
-  glm::vec3 m_gizmoSnapshotT{0.f};
-  glm::quat m_gizmoSnapshotR{1, 0, 0, 0};
-  glm::vec3 m_gizmoSnapshotS{1.f};
 
   // Async click ray-pick (avoids the ~300ms stall of the old synchronous submitAndWaitTempCmdBuffer
   // path). A click captured during the UI phase

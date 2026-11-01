@@ -738,7 +738,7 @@ struct EmissiveSample
 };
 
 // The radiance material `materialIndex` was picked by among the emitters: emissiveFactor (strength
-// included) times its emissive texture's mean (emissiveLightScale), as SceneVk::uploadEmissiveTriangles
+// included) times its emissive texture's mean (emissiveLightScale), as the scene's uploadEmissiveTriangles
 // stored it. Not what it emits at any one point of a textured emitter; what the pick's pdf is made of.
 float3 emitterSelectionRadiance(int materialIndex)
 {

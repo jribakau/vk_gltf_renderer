@@ -27,7 +27,7 @@
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#define TINYGLTF_NO_EXTERNAL_IMAGE  // Images loaded by SceneVk
+#define TINYGLTF_NO_EXTERNAL_IMAGE  // Images loaded by the residency
 #define TINYGLTF_USE_RAPIDJSON
 #define TINYGLTF_USE_RAPIDJSON_CRTALLOCATOR
 #pragma warning(push)

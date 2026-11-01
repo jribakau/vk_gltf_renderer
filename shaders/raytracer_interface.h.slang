@@ -63,7 +63,7 @@ struct ShadowPayload
 static const uint SHADOW_RAY_FLAGS = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 
 // Which sides of a surface a path's ray sees. glTF's single-sidedness is about what is drawn: a camera
-// ray doesn't see a single-sided surface from behind (SceneRtx sets
+// ray doesn't see a single-sided surface from behind (an instance sets
 // VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR on double-sided and transmissive instances,
 // which see both). To light it is solid from either side, so a bounce stops at a back face as a shadow
 // ray does (SHADOW_RAY_FLAGS has no cull: a roof that faces the sun still shades what's under it), and

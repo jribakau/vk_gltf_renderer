@@ -20,7 +20,7 @@
 #pragma once
 
 //
-// Scene-wide GPU tables derived from what draws, shared by the legacy scene (SceneVk) and the
+// Scene-wide GPU tables derived from what draws, used by the
 // retained one (rs::Residency): the punctual lights as the shaders read them, and the emissive
 // triangles next-event estimation samples through a Vose alias table. Vulkan-free.
 //

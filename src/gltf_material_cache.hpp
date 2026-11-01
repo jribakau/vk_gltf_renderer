@@ -59,12 +59,12 @@ struct MaterialUpdateResult
   bool            topologyChanged = false;  // Texture slots added/removed; caller should rebuild cache
 };
 
-// Per-glTF-texture data resolved by SceneVk and baked into each GltfTextureInfo. Both vectors are
+// Per-glTF-texture data resolved by the residency and baked into each GltfTextureInfo. Both vectors are
 // indexed by glTF texture index and may be shorter than model.textures (or empty), in which case the
 // accessors below fall back to the neutral default.
 struct TextureSlotTable
 {
-  // Resolved GPU sampler slot (SceneVk::samplers(); slot 0 = default). Pure model data, so it is
+  // Resolved GPU sampler slot (slot 0 = default). Pure model data, so it is
   // available before the images are decoded.
   std::vector<int> samplerSlots;
 
@@ -117,7 +117,7 @@ struct TextureSlotTable
 # class nvvkgltf::MaterialCache
 
 >  CPU cache of shader materials and texture infos converted from tinygltf::Material.
-   Used by SceneVk to upload material/texture buffers. Supports full rebuild and
+   Used by the residency to upload material/texture buffers. Supports full rebuild and
    per-material update with topology change detection.
 --------------------------------------------------------------------------------------------------*/
 class MaterialCache

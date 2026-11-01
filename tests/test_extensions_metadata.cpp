@@ -25,7 +25,6 @@
 
 #include <gtest/gtest.h>
 
-#include "gltf_scene.hpp"
 #include "tinygltf_utils.hpp"
 #include "common/test_utils.hpp"
 
@@ -197,42 +196,6 @@ TEST(ExtensionsMetadata, DeduplicatesEntries)
 
   EXPECT_EQ(countOccurrences(model.extensionsUsed, KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME), 1);
   EXPECT_EQ(countOccurrences(model.extensionsRequired, KHR_LIGHTS_PUNCTUAL_EXTENSION_NAME), 1);
-}
-
-// End-to-end: an added material extension appears in the saved file's extensionsUsed and a stale
-// entry is pruned, verified by reloading the written asset.
-TEST(ExtensionsMetadata, SaveReloadReconcilesUsed)
-{
-  auto assetsPath = TestResources::getSampleAssetsPath();
-  if(assetsPath.empty())
-    GTEST_SKIP() << "glTF-Sample-Assets not found at: " << GLTF_SAMPLE_ASSETS_PATH;
-
-  nvvkgltf::Scene scene;
-  if(!scene.load(assetsPath / "Models/Box/glTF/Box.gltf"))
-    GTEST_SKIP() << "Failed to load Box.gltf";
-
-  tinygltf::Model& model = scene.getModel();
-  if(model.materials.empty())
-    GTEST_SKIP() << "Box.gltf has no materials";
-
-  // Inject a stale used entry and add a real material extension.
-  model.extensionsUsed.push_back(KHR_MATERIALS_SHEEN_EXTENSION_NAME);
-  tinygltf::utils::setIor(model.materials[0], KHR_materials_ior{1.4f});
-
-  auto tempDir = std::filesystem::temp_directory_path() / "gltf_ext_metadata_test";
-  std::filesystem::create_directories(tempDir);
-  auto tempFile = tempDir / "box_ext.gltf";
-  ASSERT_TRUE(scene.save(tempFile));
-
-  nvvkgltf::Scene reloaded;
-  ASSERT_TRUE(reloaded.load(tempFile));
-  const tinygltf::Model& m2 = reloaded.getModel();
-
-  EXPECT_TRUE(contains(m2.extensionsUsed, KHR_MATERIALS_IOR_EXTENSION_NAME));
-  EXPECT_FALSE(contains(m2.extensionsUsed, KHR_MATERIALS_SHEEN_EXTENSION_NAME));
-  EXPECT_TRUE(isSubset(m2.extensionsRequired, m2.extensionsUsed));
-
-  std::filesystem::remove_all(tempDir);
 }
 
 // Regression: setValue(TextureInfo) used to populate the nested map through Get<Object>() without

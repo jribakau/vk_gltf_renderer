@@ -17,16 +17,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Clips and skinning on the retained scene (oracle 6 of daz-viewer docs/retained-scene-plan.md): a
-// model imported into the store and loaded into nvvkgltf::Scene, each clip played by a ClipPlayer
-// and by AnimationSystem::updateAnimation at the same times (on keys, between them, before the
-// first, after the last, wrapped and held at the end), gives every node the same local TRS, world
-// matrix and morph weights, and every skinned mesh the same skinned positions and normals, bit for
-// bit: the arithmetic is the same, in the same order.
+// Clips and skinning on the retained scene: a model imported into the store, each clip played by a
+// ClipPlayer (on keys, between them, before the first, after the last, wrapped and held at the end),
+// gives every node its local TRS, world matrix and morph weights, and every skinned mesh its skinned
+// positions and normals, as tests/golden/retained.txt recorded them.
 //
-// computeSkinning keeps its joint matrices to itself and exposes the skinned vertices, so the joint
-// matrices are held to it through those: RetainedScene::jointMatrices put through computeSkinning's
-// own vertex loop. Both use inverse(world[mesh node]) * world[joint] * IBM; there is no conversion.
+// The joint matrices are held through the vertices they skin: RetainedScene::jointMatrices put through
+// a vertex loop here, with inverse(world[mesh node]) * world[joint] * IBM.
 
 #include <gtest/gtest.h>
 
@@ -38,8 +35,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include "gltf_scene.hpp"
-#include "gltf_scene_animation.hpp"
 #include "scene_clip_player.hpp"
 #include "scene_import_gltf.hpp"
 #include "tinygltf_utils.hpp"
@@ -212,16 +207,6 @@ tinygltf::Model fixture()
   return m;
 }
 
-glm::quat legacyRotation(const tinygltf::Node& n)
-{
-  return n.rotation.size() == 4 ? glm::quat(float(n.rotation[3]), float(n.rotation[0]), float(n.rotation[1]), float(n.rotation[2])) :
-                                  glm::quat(1.f, 0.f, 0.f, 0.f);
-}
-glm::vec3 legacyVec3(const std::vector<double>& v, float fallback)
-{
-  return v.size() == 3 ? glm::vec3(float(v[0]), float(v[1]), float(v[2])) : glm::vec3(fallback);
-}
-
 // computeSkinning's vertex loop over a retained mesh and joint matrices
 void skin(const rs::MeshRecord& m, const std::vector<glm::mat4>& jointMatrices, std::vector<glm::vec3>& positions, std::vector<glm::vec3>& normals)
 {
@@ -366,158 +351,17 @@ void expectPlaysAsRecorded(const tinygltf::Model& model, const std::string& what
   }
 }
 
-// A model's clips played on both scenes, compared after every step; the first difference fails the
-// model and stops it
-void expectAnimationParity(const tinygltf::Model& model, const std::string& what, Counts& counts)
-{
-  {
-    Counts recorded;
-    expectPlaysAsRecorded(model, what, recorded);
-  }
-  nvvkgltf::Scene legacy;
-  legacy.takeModel(tinygltf::Model(model));
-  if(!legacy.valid())
-  {
-    ADD_FAILURE() << what << ": the legacy scene did not load";
-    return;
-  }
-  nvvkgltf::AnimationSystem& anim = legacy.animation();
-  const tinygltf::Model&     lm   = legacy.getModel();
-  rs::RetainedScene          retained;
-  const rs::ImportResult     imported = rs::importGltf(retained, model, {.prop = 1});
-  ASSERT_EQ(anim.getNumAnimations(), int(model.animations.size())) << what;
-  ASSERT_EQ(imported.clips.size(), model.animations.size()) << what;
-
-  // each skin task's retained vertex set: the one of its glTF mesh with its base positions
-  std::vector<const rs::MeshRecord*> skinMeshes;
-  for(const nvvkgltf::SkinTask& task : anim.getSkinTasks())
-  {
-    const rs::MeshRecord* found = nullptr;
-    for(rs::MeshId id : imported.meshes[size_t(legacy.getRenderPrimitive(size_t(task.renderPrimID)).meshID)])
-      if(sameBits(retained.mesh(id)->positions, task.basePositions))
-        found = retained.mesh(id);
-    ASSERT_NE(found, nullptr) << what << ": no vertex set for a skin task";
-    skinMeshes.push_back(found);
-  }
-
-  for(size_t a = 0; a < model.animations.size(); a++)
-  {
-    const rs::ClipRecord* clip = retained.clip(imported.clips[a]);
-    ASSERT_NE(clip, nullptr) << what << ", animation " << a;
-    rs::ClipPlayer           player(retained, imported.clips[a]);
-    nvvkgltf::AnimationInfo& info = anim.getAnimationInfo(int(a));
-    EXPECT_EQ(player.start(), info.start) << what;
-    EXPECT_EQ(player.end(), info.end) << what;
-
-    const auto compare = [&](const std::string& when) -> bool {
-      SCOPED_TRACE(what + ", animation " + std::to_string(a) + ", " + when);
-      counts.times++;
-      for(rs::EntityId id : retained.entitiesInOrder())
-      {
-        const int             n    = retained.entity(id)->owner.local;
-        const tinygltf::Node& node = lm.nodes[size_t(n)];
-        const rs::Entity&     e    = *retained.entity(id);
-        counts.nodes++;
-        if(node.matrix.size() == 16)
-        {
-          EXPECT_TRUE(e.local.matrix && *e.local.matrix == glm::mat4(glm::make_mat4(node.matrix.data()))) << node.name;
-        }
-        else
-        {
-          EXPECT_EQ(e.local.translation, legacyVec3(node.translation, 0.f)) << node.name;
-          EXPECT_EQ(e.local.scale, legacyVec3(node.scale, 1.f)) << node.name;
-          const glm::quat r = legacyRotation(node);
-          EXPECT_EQ(r, e.local.rotation) << node.name << ": rotation (" << r.x << ", " << r.y << ", " << r.z << ", " << r.w
-                                         << ") against (" << e.local.rotation.x << ", " << e.local.rotation.y << ", "
-                                         << e.local.rotation.z << ", " << e.local.rotation.w << ")";
-        }
-        if(retained.world(id) != legacy.getNodesWorldMatrices()[size_t(n)])
-        {
-          ADD_FAILURE() << node.name << ": world matrix";
-          return false;
-        }
-        if(e.mesh)
-        {
-          std::vector<float> lw;
-          for(double w : node.weights)
-            lw.push_back(float(w));
-          if(lw != e.mesh->morphWeights)
-          {
-            ADD_FAILURE() << node.name << ": morph weights";
-            return false;
-          }
-        }
-        if(::testing::Test::HasFailure())
-          return false;
-      }
-      for(size_t t = 0; t < anim.getSkinTasks().size(); t++)
-      {
-        const nvvkgltf::SkinTask& task = anim.getSkinTasks()[t];
-        const tinygltf::Skin&     s    = lm.skins[size_t(task.skinID)];
-        const std::vector<glm::mat4> joints = retained.jointMatrices(imported.entities[size_t(task.refNodeID)]);
-        EXPECT_EQ(joints.size(), s.joints.size());
-        std::vector<glm::vec3> positions, normals;
-        skin(*skinMeshes[t], joints, positions, normals);
-        const nvvkgltf::SkinningResult& result = anim.getSkinningResult(t);
-        EXPECT_TRUE(sameBits(positions, result.positions)) << "skinned positions, task " << t;
-        EXPECT_TRUE(sameBits(normals, result.normals)) << "skinned normals, task " << t;
-        counts.skinned++;
-      }
-      return !::testing::Test::HasFailure();
-    };
-    const auto step = [&]() {
-      (void)anim.updateAnimation(uint32_t(a));
-      legacy.updateNodeWorldMatrices();
-      if(anim.hasSkinning())
-        anim.computeSkinning();
-      player.apply(retained);
-    };
-
-    for(float t : sampleTimes(*clip))
-    {
-      info.currentTime = t;
-      player.setTime(t);
-      step();
-      if(!compare("t = " + std::to_string(t)))
-        return;
-    }
-    // wrapped: steps that are not a whole fraction of the clip, from its start
-    EXPECT_EQ(player.reset(), info.reset());
-    const float dt = std::max(info.end - info.start, 0.1f) * 0.37f;
-    for(int i = 0; i < 12; i++)
-    {
-      info.incrementTime(dt, true);
-      player.advance(dt, true);
-      ASSERT_EQ(player.time(), info.currentTime) << what;
-      step();
-      if(!compare("looped step " + std::to_string(i)))
-        return;
-    }
-    // and held at the end
-    for(int i = 0; i < 4; i++)
-    {
-      info.incrementTime(dt, false);
-      player.advance(dt, false);
-      ASSERT_EQ(player.time(), info.currentTime) << what;
-      step();
-      if(!compare("held step " + std::to_string(i)))
-        return;
-    }
-  }
-}
-
 }  // namespace
 
-TEST(RetainedAnimation, ClipsPlayAsTheLegacySceneDoes)
+TEST(RetainedAnimation, ClipsPlayAsRecorded)
 {
   Counts counts;
-  expectAnimationParity(fixture(), "fixture", counts);
+  expectPlaysAsRecorded(fixture(), "fixture", counts);
   EXPECT_GT(counts.skinned, 0);
 }
 
-// What glTF says a STEP channel holds, on both scenes: each key's value up to the next key, the last
-// key's value exactly on it, and a rotation key read as the quaternion it is (AnimationSystem once
-// gave the next-to-last key there, and took a rotation key's x, y and z as Euler angles)
+// What glTF says a STEP channel holds: each key's value up to the next key, the last key's value
+// exactly on it, and a rotation key read as the quaternion it is
 TEST(RetainedAnimation, StepHoldsEachKeyAndTheLastOnIt)
 {
   const tinygltf::Model model = fixture();
@@ -533,11 +377,6 @@ TEST(RetainedAnimation, StepHoldsEachKeyAndTheLastOnIt)
   ASSERT_GE(step, 0);
   ASSERT_GE(morphStep, 0);
 
-  nvvkgltf::Scene legacy;
-  legacy.takeModel(tinygltf::Model(model));
-  ASSERT_TRUE(legacy.valid());
-  nvvkgltf::AnimationSystem& anim = legacy.animation();
-  const tinygltf::Model&     lm   = legacy.getModel();
   rs::RetainedScene          retained;
   const rs::ImportResult     imported = rs::importGltf(retained, model, {.prop = 1});
   rs::ClipPlayer             player(retained, imported.clips[0]);  // "all"
@@ -557,28 +396,20 @@ TEST(RetainedAnimation, StepHoldsEachKeyAndTheLastOnIt)
                            Expected{2.f, glm::quat(h, h, 0, 0), {1, 1, 0}, {0.25f, 1}}})
   {
     SCOPED_TRACE("t = " + std::to_string(x.time));
-    anim.getAnimationInfo(0).currentTime = x.time;
-    (void)anim.updateAnimation(0);
     player.setTime(x.time);
     player.apply(retained);
 
-    EXPECT_EQ(legacyRotation(lm.nodes[size_t(step)]), x.rotation);
     EXPECT_EQ(stepEntity.local.rotation, x.rotation);
     if(x.time <= 1.5f)  // the translation's last key; past it the channel leaves the node alone
     {
-      EXPECT_EQ(legacyVec3(lm.nodes[size_t(step)].translation, 0.f), x.translation);
       EXPECT_EQ(stepEntity.local.translation, x.translation);
     }
-    std::vector<float> lw;
-    for(double w : lm.nodes[size_t(morphStep)].weights)
-      lw.push_back(float(w));
-    EXPECT_EQ(lw, x.weights);
     EXPECT_EQ(morphStepEntity.mesh->morphWeights, x.weights);
   }
 }
 
 // The Khronos samples with animations, skins and morphs, when present.
-TEST(RetainedAnimation, SampleAssetsPlayAsTheLegacySceneDoes)
+TEST(RetainedAnimation, SampleAssetsPlayAsRecorded)
 {
   namespace fs = std::filesystem;
   const fs::path models = fs::path(GLTF_SAMPLE_ASSETS_PATH) / "Models";
@@ -599,7 +430,7 @@ TEST(RetainedAnimation, SampleAssetsPlayAsTheLegacySceneDoes)
     tinygltf::Model    model;
     std::string        err, warn;
     ASSERT_TRUE(loader.LoadASCIIFromFile(&model, &err, &warn, path.string())) << file << ": " << err;
-    expectAnimationParity(model, file, counts);
+    expectPlaysAsRecorded(model, file, counts);
     tested++;
   }
   if(tested == 0)

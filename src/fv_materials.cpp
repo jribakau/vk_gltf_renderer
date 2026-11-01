@@ -33,8 +33,6 @@
 #include <figure/materials/edits_json.hpp>
 #include <figure/materials/lobes.hpp>
 
-#include "gltf_scene.hpp"
-#include "gltf_scene_editor.hpp"
 #include "host_renderer.hpp"
 #include "tinygltf_utils.hpp"
 

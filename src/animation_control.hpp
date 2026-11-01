@@ -48,7 +48,7 @@ struct AnimationControl
   bool  runOnce          = false;  // One-shot step (timeline scrub or frame advance)
   bool  reset            = false;  // Jump back to start on next update
   float speed            = 1.0F;   // Playback multiplier
-  int   currentAnimation = 0;      // Index into AnimationSystem clips
+  int   currentAnimation = 0;      // Index into the scene's clips
   bool  loop             = true;   // Wrap at the clip end; false stops playback there
   bool  seek             = false;  // One-shot: evaluate the clip at its current time without advancing it
 
@@ -60,10 +60,6 @@ struct AnimationControl
   }
   void resetToStart() { reset = true; }
 
-  // Move the current clip to `time`, pause playback, and request a one-shot
-  // update so the scene reflects the new pose on the next frame.
-  // No-op if the scene has no animation or the selection is out of range.
-  void scrubTo(float time, nvvkgltf::Scene* scene);
 
   // Queries consumed by the animation update path
   [[nodiscard]] bool  doAnimation() const { return play || runOnce || reset || seek; }
@@ -79,7 +75,5 @@ struct AnimationControl
 
 namespace ui::animation {
 
-// A scene has "playable animation" when at least one clip declares a positive duration.
-bool hasPlayableAnimation(nvvkgltf::Scene* scene);
 
 }  // namespace ui::animation

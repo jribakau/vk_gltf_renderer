@@ -622,7 +622,7 @@ endif()
 
 
 #####################################################################################
-# Third-party deps (Draco, RapidJSON, MikkTSpace, WebP).
+# Third-party deps (Draco, RapidJSON, WebP).
 #####################################################################################
 # Software Vulkan drivers (Mesa's lavapipe) ray trace but lack fragment shader barycentrics,
 # which only the rasterizer's fragment shader reads (gltf_raster.slang). This build asks for them
@@ -648,11 +648,6 @@ download_package(
 set(RAPIDJSON_INCLUDE_DIR ${RapidJSON_SOURCE_DIR}/rapidjson-master/include/rapidjson)
 target_include_directories(${PROJECT_NAME} PRIVATE ${RAPIDJSON_INCLUDE_DIR})
 
-set(MIKKTSPACE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/MikkTSpace)
-set(MIKKTSPACE_SRC ${MIKKTSPACE_DIR}/mikktspace.c ${MIKKTSPACE_DIR}/mikktspace.h)
-target_include_directories(${PROJECT_NAME} PRIVATE ${MIKKTSPACE_DIR})
-target_sources(${PROJECT_NAME} PRIVATE ${MIKKTSPACE_SRC})
-source_group("MikkTSpace" FILES ${MIKKTSPACE_SRC})
 
 find_package(WebP REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE webp)

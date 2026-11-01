@@ -15,34 +15,20 @@ set(TEST_COMMON_SOURCES
 # Test sources (will grow in each phase)
 set(TEST_SOURCES
     ${TEST_COMMON_SOURCES}
-    test_basic.cpp
     # Phase 2A: Validation and round-trip tests
-    test_roundtrip.cpp
-    test_features_preserved.cpp
     # Phase 2B: Model-primary architecture tests
-    test_model_primary.cpp
     # Phase 2C: Basic editing operations tests
-    test_basic_editing.cpp
     # Phase 2D.1: Basic index remapping tests
-    test_index_remapping_basic.cpp
     # Phase 2D.2: Advanced index remapping tests
-    test_index_remapping_advanced.cpp
     # Dirty flags and RenderNodes/RenderPrimitives
-    test_dirty_flags_and_render_nodes.cpp
     # Node hierarchy operations (add, duplicate, reparent, delete)
-    test_node_hierarchy_operations.cpp
     # Children order preservation test
-    test_children_order_preservation.cpp
     # Animation and validation (empty sampler, compact, validator)
-    test_animation_and_validation.cpp
     # Error paths and edge cases (bounds checks, merger failures, load failures)
-    test_error_paths.cpp
     # MaterialCache conversion, incremental updates, topology change detection
     test_material_cache.cpp
     # Animation update, time advancement, wrapping, stability
-    test_animation_update.cpp
     # Compute animation: deferred CPU allocation, CPU skinning, CPU morph targets
-    test_compute_animation.cpp
     # Top-level extensionsUsed / extensionsRequired reconciliation on save
     test_extensions_metadata.cpp
     # KHR_materials_scatter host-side contract (defaults, clamping, legacy alias, round-trip)
@@ -50,17 +36,12 @@ set(TEST_SOURCES
     # KHR_materials_diffuse_transmission property names (spec key, legacy fallback, round-trip)
     test_materials_diffuse_transmission.cpp
     # Procedural primitives (plane/cube/sphere) + new/empty-scene workflow
-    test_primitives.cpp
     # Tangents made side by side match the serial loop bit for bit
     test_tangents.cpp
     # Geometry compaction preserves EXT_mesh_opacity_micromap payload
-    test_opacity_micromap_compaction.cpp
     # AnimationPointerSystem: partial texture-extension writes preserve sibling fields
-    test_animation_pointer.cpp
     # glTF 2.1 conformance against the generated fixtures in gltf_2_1/
-    test_gltf_2_1.cpp
     # glTF 2.1 uid: copies, merge collisions, validator
-    test_uid.cpp
     # Image decoding (WebP path of the shared loader)
     test_image_loader.cpp
     # Phase 1 (env pipeline): CPU-only unit test for nvvk::buildEnvAliasmap (Vose)
@@ -98,6 +79,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_events.cpp
     # Figure Viewer scene of props composed into the renderer's one glTF
     test_fv_compose.cpp
+    test_scene_merger.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_compose.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_meshopt.cpp
     # A model prop's material with its edits, for the scene and for an export
@@ -158,9 +140,7 @@ set(TEST_SOURCES
     # A shader variant built off the application thread, with a fake compiler (header only)
     test_variant_compile_job.cpp
     # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)
-    test_tlas_policy.cpp
     # What a selected node puts in selectedRenderNodes, whether or not the UI pass runs (header only)
-    test_selection_render_nodes.cpp
     # The retained scene's GPU seam without a GPU (rs::GpuBackend): the fake's own tests
     test_fake_gpu_backend.cpp
     # What a material decides for its draws: TLAS flags and mask, the raster lists (header only)
@@ -206,25 +186,13 @@ set(TEST_SOURCES
     # Optional external generation bridge
     # Local glTF scene implementation
     ${CMAKE_SOURCE_DIR}/src/gltf_environment_sky.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_compact_model.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_compact_scene.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_material_cache.cpp
     # evaluateMaterial as C++ (phase M1 of the material plan)
     ${CMAKE_SOURCE_DIR}/figure/tools/closure_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_editor.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_image_loader.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_animation.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_validator.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_version.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_scene_merger.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_external_assets.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_converter.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_animation_pointer.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_create_tangent.cpp
-    # MikkTSpace for tangent generation
-    ${CMAKE_SOURCE_DIR}/third_party/MikkTSpace/mikktspace.c
     # Phase-specific tests added here as we progress
 )
 
@@ -353,21 +321,11 @@ add_executable(${BENCHMARK_NAME}
     # Need tinygltf implementation
     ${CMAKE_SOURCE_DIR}/src/tiny_stb_implementation.cpp
     # Local glTF scene implementation
-    ${CMAKE_SOURCE_DIR}/src/gltf_animation_pointer.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_environment_sky.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_compact_model.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_compact_scene.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_editor.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_image_loader.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_animation.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_validator.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_version.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_scene_merger.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_scene_external_assets.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_converter.cpp
     ${CMAKE_SOURCE_DIR}/src/tinygltf_utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf_create_tangent.cpp
     # The retained scene (daz-viewer docs/retained-scene-plan.md): store, importer, figure feed
     ${CMAKE_SOURCE_DIR}/src/scene_retained.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_import_gltf.cpp
@@ -376,8 +334,6 @@ add_executable(${BENCHMARK_NAME}
     ${CMAKE_SOURCE_DIR}/src/scene_clip_player.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_feature_detection.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_figure_feed.cpp
-    # MikkTSpace for tangent generation
-    ${CMAKE_SOURCE_DIR}/third_party/MikkTSpace/mikktspace.c
 )
 
 # the Box Figure the retained-scene benchmarks feed

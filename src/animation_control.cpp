@@ -34,8 +34,6 @@
 
 #include <imgui/imgui.h>
 
-#include "gltf_scene.hpp"
-#include "gltf_scene_animation.hpp"
 
 //=============================================================================
 // AnimationControl -- state + domain logic
@@ -51,21 +49,6 @@ float AnimationControl::deltaTime() const
   return runOnce ? speed * kStepDeltaSeconds : ImGui::GetIO().DeltaTime * speed;
 }
 
-void AnimationControl::scrubTo(float time, nvvkgltf::Scene* scene)
-{
-  if(!scene || !scene->animation().hasAnimation())
-    return;
-
-  const int nAnim = scene->animation().getNumAnimations();
-  if(currentAnimation < 0 || currentAnimation >= nAnim)
-    return;
-
-  nvvkgltf::AnimationInfo& info = scene->animation().getAnimationInfo(currentAnimation);
-  info.currentTime              = std::clamp(time, info.start, info.end);
-  runOnce                       = true;   // Request a single evaluation on next update
-  play                          = false;  // Scrubbing implies pause
-}
-
 std::string AnimationControl::formatTime(float seconds)
 {
   if(!std::isfinite(seconds) || seconds < 0.0F)
@@ -79,32 +62,3 @@ std::string AnimationControl::formatTime(float seconds)
   return buffer;
 }
 
-//=============================================================================
-// Animation Strip widget
-//=============================================================================
-
-namespace ui::animation {
-
-bool hasPlayableAnimation(nvvkgltf::Scene* scene)
-{
-  if(!scene || !scene->animation().hasAnimation())
-    return false;
-
-  // A clip is "playable" only when its timeline spans a meaningful positive
-  // duration. Require the span to exceed a microsecond: well below any real
-  // animation frame (~16 ms at 60 fps), well above numerical noise. This
-  // defends against malformed files with all keyframes at the same time,
-  // NaN-poisoned timelines (all comparisons return false), and any future
-  // regression of the default sentinel in AnimationInfo.
-  constexpr float            kMinPlayableDurationSeconds = 1e-6F;
-  nvvkgltf::AnimationSystem& system                      = scene->animation();
-  for(int i = 0; i < system.getNumAnimations(); ++i)
-  {
-    const nvvkgltf::AnimationInfo& info = system.getAnimationInfo(i);
-    if(info.end - info.start > kMinPlayableDurationSeconds)
-      return true;
-  }
-  return false;
-}
-
-}  // namespace ui::animation

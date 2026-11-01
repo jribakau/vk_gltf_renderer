@@ -189,7 +189,7 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
   // Upload one mip level as a full-image append when it fits, or split it into
   // horizontal row-strips when it exceeds the staging block-size limit
   // (nvvk::BufferCircularAllocator asserts size <= blockSize per subAllocate).
-  // Row-strip chunking keeps the pattern used by SceneVk (linear per-row layout)
+  // Row-strip chunking (linear per-row layout)
   // and works for arbitrarily large mips (e.g. 8K/16K, 16-bpc, HDR32F).
   auto uploadMipLevel = [&](uint32_t mip, const VkExtent3D& mipExtent, std::span<const char> mipBytes) {
     VkImageSubresourceLayers subresource{};

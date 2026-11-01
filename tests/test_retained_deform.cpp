@@ -21,7 +21,7 @@
 // morphed meshes drawn through their drawers on the fake GPU, which runs each pass as the shader
 // does. Every sync is checked by ResidencyOracle, which deforms the mesh on the CPU from the scene
 // as it is now (I22) and walks the DLSS motion tables (I10). The CPU arithmetic is the one
-// test_retained_animation holds to nvvkgltf::AnimationSystem.
+// test_retained_animation holds to its recorded output.
 
 #include <gtest/gtest.h>
 

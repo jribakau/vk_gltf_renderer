@@ -17,10 +17,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// glTF into the retained scene (oracle 3 of daz-viewer docs/retained-scene-plan.md): what the
-// importer draws equals what nvvkgltf::Scene draws of the same model, item for render node, in the
-// same order: world matrix, visibility, material, positions, indices and generated tangents bit for
-// bit, and the lights in the same order.
+// glTF into the retained scene: what the importer draws, item by item in order (world matrix,
+// visibility, material, positions, indices, tangents) and the lights, against tests/golden/retained.txt.
 
 #include <gtest/gtest.h>
 
@@ -36,7 +34,6 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <nvutils/file_operations.hpp>
 
-#include "gltf_scene.hpp"
 #include "ies_profile.hpp"
 #include "scene_import_gltf.hpp"
 #include "tinygltf_utils.hpp"
@@ -205,88 +202,11 @@ void expectDrawsAsRecorded(const tinygltf::Model& model, const std::string& what
   expectGolden("import " + what, digest);
 }
 
-// The two scenes of one model, compared draw item by render node.
-void expectParity(const tinygltf::Model& model, const std::string& what)
-{
-  expectDrawsAsRecorded(model, what);
-  nvvkgltf::Scene legacy;
-  legacy.takeModel(tinygltf::Model(model));
-  if(!legacy.valid())
-  {
-    ADD_FAILURE() << what << ": the legacy scene did not load";
-    return;
-  }
-  const tinygltf::Model& lm = legacy.getModel();
-
-  rs::RetainedScene      retained;
-  const rs::ImportResult imported = rs::importGltf(retained, model, {.prop = 7});
-  const std::vector<rs::DrawItem> items = retained.drawItems();
-  const auto&                     nodes = legacy.getRenderNodes();
-  ASSERT_EQ(items.size(), nodes.size()) << what;
-  for(size_t i = 0; i < items.size(); i++)
-  {
-    SCOPED_TRACE(what + ", render node " + std::to_string(i));
-    const nvvkgltf::RenderNode& rn   = nodes[i];
-    const rs::DrawItem&         item = items[i];
-    EXPECT_TRUE(nearly(item.world, rn.worldMatrix));
-    EXPECT_EQ(item.shown, rn.visible);
-    EXPECT_EQ(retained.entity(item.entity)->owner.local, rn.refNodeID);
-    const rs::MaterialRecord* mat = retained.material(item.material);
-    ASSERT_NE(mat, nullptr);
-    EXPECT_EQ(mat->owner.local, rn.materialID);
-
-    const tinygltf::Primitive& prim = *legacy.getRenderPrimitive(size_t(rn.renderPrimID)).pPrimitive;
-    const rs::MeshRecord*      mesh = retained.mesh(item.mesh);
-    ASSERT_NE(mesh, nullptr);
-    const std::vector<glm::vec3> pos = read<glm::vec3>(lm, prim.attributes.at("POSITION"));
-    ASSERT_EQ(mesh->positions.size(), pos.size());
-    EXPECT_EQ(std::memcmp(mesh->positions.data(), pos.data(), pos.size() * sizeof(glm::vec3)), 0);
-    const rs::Submesh&    run = mesh->submeshes[item.submesh];
-    std::vector<uint32_t> idx;
-    if(prim.indices >= 0)
-      idx = read<uint32_t>(lm, prim.indices);
-    else
-      for(uint32_t v = 0; v < pos.size(); v++)
-        idx.push_back(v);
-    ASSERT_EQ(run.indexCount, idx.size());
-    EXPECT_TRUE(std::equal(idx.begin(), idx.end(), mesh->indices.begin() + run.firstIndex));
-    // tangents where the legacy scene made or read them, bit for bit
-    if(auto it = prim.attributes.find("TANGENT"); it != prim.attributes.end())
-    {
-      const std::vector<glm::vec4> tan = read<glm::vec4>(lm, it->second);
-      ASSERT_EQ(mesh->tangents.size(), tan.size());
-      EXPECT_EQ(std::memcmp(mesh->tangents.data(), tan.data(), tan.size() * sizeof(glm::vec4)), 0);
-    }
-    else if(!mesh->tangents.empty())
-    {
-      // the legacy scene gives tangents only to the primitives that need them, which splits a
-      // vertex set (the TANGENT attribute changes their key); here the set keeps one vertex set,
-      // with the tangents a sibling submesh needed
-      const auto& parts = retained.entity(item.entity)->mesh->parts;
-      const auto  part  = std::find_if(parts.begin(), parts.end(), [&](const rs::MeshPart& p) { return p.mesh == item.mesh; });
-      ASSERT_NE(part, parts.end());
-      const bool siblingNeeds = std::any_of(mesh->submeshes.begin(), mesh->submeshes.end(), [&](const rs::Submesh& s) {
-        const rs::MaterialRecord* m = retained.material(part->materials[s.material]);
-        return m && rs::materialNeedsTangents(m->payload);
-      });
-      EXPECT_TRUE(siblingNeeds);
-    }
-  }
-
-  const std::vector<rs::LightItem> lights = retained.lightItems();
-  ASSERT_EQ(lights.size(), legacy.getRenderLights().size()) << what;
-  for(size_t i = 0; i < lights.size(); i++)
-  {
-    EXPECT_TRUE(nearly(lights[i].world, legacy.getRenderLights()[i].worldMatrix)) << what << ", light " << i;
-    EXPECT_EQ(retained.light(lights[i].light)->owner.local, legacy.getRenderLights()[i].light) << what << ", light " << i;
-  }
-}
-
 }  // namespace
 
-TEST(RetainedImport, DrawsWhatTheLegacySceneDraws)
+TEST(RetainedImport, DrawsAsRecorded)
 {
-  expectParity(fixture(), "fixture");
+  expectDrawsAsRecorded(fixture(), "fixture");
 }
 
 // Indices are read for their values: one past the vertices leaves its primitive out, with a notice, and
@@ -529,7 +449,7 @@ TEST(RetainedImport, OpacityMicromapsAreSharedByTheSubmeshesThatIndexThem)
   EXPECT_TRUE(b->indices.empty());
   EXPECT_EQ(b->indexComponentType, 0);
   EXPECT_FALSE(scene.mesh(r.meshes[1][0])->submeshes[0].micromap);
-  expectParity(withMicromaps(), "micromaps");
+  expectDrawsAsRecorded(withMicromaps(), "micromaps");
 }
 
 // A link that would read past its micromap's two records is left out with a notice: by its base,
@@ -557,7 +477,7 @@ TEST(RetainedImport, AMicromapLinkPastItsMicromapIsLeftOut)
   }
 }
 
-TEST(RetainedImport, DrawsTheFixturesAsTheLegacySceneDoes)
+TEST(RetainedImport, DrawsTheFixturesAsRecorded)
 {
   namespace fs = std::filesystem;
   int tested   = 0;
@@ -584,7 +504,7 @@ TEST(RetainedImport, DrawsTheFixturesAsTheLegacySceneDoes)
            return std::any_of(mesh.primitives.begin(), mesh.primitives.end(), [](const tinygltf::Primitive& p) { return p.material < 0; });
          }))
         continue;  // the one difference on purpose: no material is the glTF default here
-      expectParity(model, std::filesystem::relative(file, dir).generic_string());
+      expectDrawsAsRecorded(model, std::filesystem::relative(file, dir).generic_string());
       tested++;
     }
   }

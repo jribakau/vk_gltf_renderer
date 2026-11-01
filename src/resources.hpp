@@ -52,16 +52,11 @@
 #include <nvvk/resource_allocator.hpp>
 #include <nvvk/sampler_pool.hpp>
 #include <nvvk/frame_uploader.hpp>
-#include "gltf_scene.hpp"
-#include "gltf_scene_gpu.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency_vk.hpp"
 #include "animation_control.hpp"
-#include "gltf_scene_transform_vk.hpp"
-#include "gltf_scene_prev_positions_vk.hpp"
 #include "gpu_memory_tracker.hpp"
 #include "scene_feature_detection.hpp"
-#include "tlas_policy.hpp"
 #include <nvapp/application.hpp>
 #include <nvapp/imgui_texture.hpp>
 
@@ -292,8 +287,6 @@ struct Settings
   bool opacityMicromapMissing = false;  // --useOpacityMicromap is on but the device lacks VK_KHR_opacity_micromap
   DisplayBuffer displayBuffer = DisplayBuffer::eRendered;  // Which buffer to display in viewport
 
-  // `tlasPolicy`, build or update (tlas_policy.hpp); SceneRtx holds the parsed value.
-  std::string tlasPolicy = tlasPolicyName(TlasPolicy::eBuild);
   // `blasScratchBudgetMB`: the retained scene's BLAS builds of one batch share this much scratch
   uint32_t blasScratchBudgetMB = 512;
   // `residencyMinInstances`: the retained scene's least instance capacity (start-up only)
@@ -350,37 +343,23 @@ struct Resources
   VkCommandPool          commandPool{};    // Command pool for secondary command buffer
   nvslang::SlangCompiler slangCompiler{};  // Slang compiler
 
-  std::unique_ptr<nvvkgltf::Scene> scene;
-  nvvkgltf::SceneVk                sceneVk;
-  nvvkgltf::SceneRtx               sceneRtx;
-  nvvkgltf::AnimationVk            animationVk;
-  nvvkgltf::TransformComputeVk     transformCompute{};
-  nvvkgltf::SceneGpu sceneGpu{sceneVk, animationVk, sceneRtx, transformCompute, staging};  // Must be declared after its reference dependencies
-  nvvkgltf::PrevPositionsVk prevPositions{};  // #DLSS deformation motion: last frame's vertex positions
-  // What the renderers read of the scene on the GPU (scene_gpu_view.hpp): the retained scene when a
-  // scene replace took it, else today's objects
-  LegacySceneGpuView  legacyGpuView{scene, sceneVk, sceneRtx, animationVk, transformCompute};
+  EmptySceneGpuView emptyGpuView;
   const SceneGpuView& gpuView() const
   {
-    return retainedGpu ? static_cast<const SceneGpuView&>(*retainedGpu) : legacyGpuView;
+    return retainedGpu ? static_cast<const SceneGpuView&>(*retainedGpu) : emptyGpuView;
   }
 
-  // The retained scene of a stream session (scene_residency_vk.hpp): the store the host feeds
-  // (GltfRenderer::hostScene), kept for the session, and its residency. The legacy GPU objects hold
-  // nothing meanwhile, and there is no CPU scene below.
+  // The retained scene (scene_residency_vk.hpp): the store the host feeds (GltfRenderer::hostScene)
+  // or --scenefile imports into, kept for the session, and its residency.
   std::unique_ptr<rs::RetainedScene>   retainedScene;
   // the store is a stream host's own (GltfRenderer::hostScene)
   bool                                 hostFed = false;
   bool                                 sceneFromFile = false;  // --scenefile: no host, so the renderer keeps the firefly clamp
   std::unique_ptr<rs::RetainedSceneVk> retainedGpu;
   // Between a cleanup that keeps images for reuse and the next scene replace: the retained scene,
-  // emptied, its decoded images in grace. The next retained replace takes it; a legacy one, or a
-  // cleanup that keeps nothing, destroys it. Not a session's scene (gpuView() never reads it).
+  // emptied, its decoded images in grace. The next replace takes it; a cleanup that keeps
+  // nothing destroys it. Not a session's scene (gpuView() never reads it).
   std::unique_ptr<rs::RetainedSceneVk> retainedSpare;
-
-  // The legacy CPU scene: none in a retained session, whose stream host feeds the retained scene
-  nvvkgltf::Scene*       getScene() { return scene.get(); }
-  const nvvkgltf::Scene* getScene() const { return scene.get(); }
 
   nvvkgltf::ImagePrefetch imagePrefetch;  // what a host decoded ahead for the retained scene's upload
 
@@ -506,18 +485,6 @@ struct Resources
   std::bitset<32> dirtyFlags;
 
   // Scene feature set (KHR_materials_* and denoiser guide buffer);
-  // updated via recomputeSceneFeatures() on scene/material/denoiser changes.
   nvvkgltf::SceneFeatureSet currentFeatureSet{};
 
-  // Update currentFeatureSet from the scene. Returns true if changed.
-  bool recomputeSceneFeatures(bool dlssGuideActive)
-  {
-    nvvkgltf::SceneFeatureSet newSet{};
-    if(scene)
-      newSet = nvvkgltf::detectSceneFeatures(scene->getModel());
-    newSet.set(nvvkgltf::SceneFeatureSet::eDlssGuide, dlssGuideActive);
-    const bool changed = (newSet != currentFeatureSet);
-    currentFeatureSet  = newSet;
-    return changed;
-  }
 };

@@ -700,7 +700,7 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
   if(run.micromap && m_gpu.opacityMicromaps())
     linkMicromap(prim, *run.micromap);
   else if(run.micromap && !std::exchange(m_micromapsLeftOut, true))
-    // as createVulkanScene says it: micromaps only accelerate, so without device support they are left out
+    // micromaps only accelerate, so without device support they are left out
     m_notices.push_back(
         "the scene has opacity micromaps; using them needs an NVIDIA RTX GPU with a recent driver "
         "(VK_KHR_opacity_micromap). Rendering is unaffected.");
@@ -1668,7 +1668,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     Run run{.d = &d};
     if(d.morph)
     {
-      // a target without a weight weighs 0 (AnimationVk); the instance's weights, else the mesh's
+      // a target without a weight weighs 0; the instance's weights, else the mesh's
       const std::vector<float>& source = e->mesh->morphWeights.empty() ? record->targetWeights : e->mesh->morphWeights;
       run.weights.assign(d.targetCount, 0.f);
       std::copy_n(source.begin(), std::min<size_t>(source.size(), d.targetCount), run.weights.begin());

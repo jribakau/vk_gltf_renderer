@@ -24,14 +24,12 @@
 namespace fv {
 
 // Whether the Figure Viewer host lets params.get / params.set reach a registered parameter. Not
-// those that replace or write the renderer's scene behind the host's back: `scenefile` loads a file
-// over the composed scene (the host would go on addressing it by indices it no longer holds), and
-// `savefile` writes it, the host's sun included. The protocol has load, prop.add and export.glb
-// for those. Nor those read only at start-up, which a runtime write would leave meaning nothing
+// `scenefile`, which loads a file over the composed scene behind the host's back (the host would go
+// on addressing it by indices it no longer holds): the protocol has load and prop.add. Nor those read only at start-up, which a runtime write would leave meaning nothing
 // (`residencyMinInstances`).
 inline bool hostExposesParameter(std::string_view name)
 {
-  return name != "scenefile" && name != "savefile" && name != "residencyMinInstances";
+  return name != "scenefile" && name != "residencyMinInstances";
 }
 
 }  // namespace fv

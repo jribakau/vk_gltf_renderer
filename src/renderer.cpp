@@ -99,10 +99,6 @@
 #include <nvvk/default_structs.hpp>
 #include <nvvk/formats.hpp>
 #include <nvvk/mipmaps.hpp>
-#include "gltf_camera_utils.hpp"
-#include "gltf_scene_editor.hpp"
-#include "gltf_scene_animation.hpp"
-#include "gltf_scene_transform_vk.hpp"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -115,14 +111,11 @@
 #include "gltf_environment_sky.hpp"
 #include "sun_position.hpp"
 #include "sky_preset.hpp"
-#include "scene_descriptor.hpp"
 #include "shadow_fit.hpp"
 #include "staging_config.hpp"
 #include "tinygltf_utils.hpp"
 #include "utils.hpp"
-#include "tinyobjloader/tiny_obj_loader.h"
-#include "tinygltf_converter.hpp"
-#include "animation_control.hpp"  // hasPlayableAnimation, which the legacy view asks too
+#include "animation_control.hpp"
 
 extern nvutils::ProfilerManager g_profilerManager;  // #PROFILER
 
@@ -576,24 +569,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   // renaming of those parameters, it is a different model. A persisted .ini still carrying them
   // is handled by SettingsRegistry, which ignores keys it does not know.
 
-  // What a TLAS sync does with the existing structure (tlas_policy.hpp): live, read at the next sync.
-  // Not remembered: `build` is the default (D8: 0.07 ms against 0.02 ms a sync, measured on the
-  // harness scene), and `update` is for measuring the two against each other.
-  m_settings.add({.name = "tlasPolicy",
-                  .help = "TLAS sync: build (rebuild it every time) or update (refit it in place where valid)",
-                  .callbackSuccess =
-                      [this](const nvutils::ParameterBase* const) {
-                        if(const std::optional<TlasPolicy> policy = parseTlasPolicy(m_resources.settings.tlasPolicy))
-                        {
-                          m_resources.sceneRtx.setTlasPolicy(*policy);
-                          return;
-                        }
-                        const char* kept = tlasPolicyName(m_resources.sceneRtx.tlasPolicy());
-                        LOGW("--tlasPolicy: '%s' is neither build nor update; it stays %s.\n", m_resources.settings.tlasPolicy.c_str(), kept);
-                        m_resources.settings.tlasPolicy = kept;
-                      }},
-                 &m_resources.settings.tlasPolicy, Persist::eNo);
-
   // Live: the retained scene's next batch of BLAS builds regrows its scratch when it needs more.
   m_settings.add({.name = "blasScratchBudgetMB",
                   .help = "Retained scene: the scratch one batch of BLAS builds shares, in MB",
@@ -777,7 +752,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // is larger than the library default so scene-create can stage large meshes/textures.
   NVVK_CHECK(m_resources.staging.init({
       .allocator = &m_resources.allocator,
-      .blockSize = kFrameUploaderBlockSize,  // shared with SceneVk::createImage row-strip chunking
+      .blockSize = kFrameUploaderBlockSize,  // shared with createSampledImage's row-strip chunking
       .debugName = "frameUploads",
   }));
 
@@ -861,23 +836,12 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_resources.skyLutDescriptorSetLayout = m_skyBruneton.getDescriptorSetLayout();
   m_resources.skyLutDescriptorSet       = m_skyBruneton.getDescriptorSet();
 
-  // ===== Scene & Acceleration Structure =====
-  m_resources.sceneGpu.init(&m_resources.allocator, &m_resources.samplerPool, m_app->getQueue(0).queue,
-                            [app](std::function<void()>&& fn) { app->submitResourceFree(std::move(fn)); });
-  m_resources.transformCompute.init(&m_resources.allocator);
-  m_resources.transformCompute.setGraphicsQueue(m_app->getQueue(0).queue);
-  m_resources.transformCompute.setDeferredFree(
-      [app](std::function<void()>&& fn) { app->submitResourceFree(std::move(fn)); });
-  m_resources.prevPositions.init(&m_resources.allocator, m_app->getQueue(0).queue,
-                                 [app](std::function<void()>&& fn) { app->submitResourceFree(std::move(fn)); });
-
   // ===== Profiling & Performance =====
   {
     SCOPED_TIMER("Profiler");
     m_profilerTimeline = g_profilerManager.createTimeline({.name = "Primary Timeline"});
     m_profilerGpuTimer.init(m_profilerTimeline, m_app->getDevice(), m_app->getPhysicalDevice(),
                             int32_t(m_app->getQueue(0).familyIndex), false);
-    m_resources.sceneRtx.setProfiler(&m_profilerGpuTimer);
   }
 
 
@@ -943,9 +907,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // the RTX pipeline the first path-traced frame needs, built on a thread while the app starts
   m_pathTracer.startPipelineWarm(m_resources);
 
-  // Selection events reach Resources from here on.
-  m_sceneSelection.setEventCallback([this](const SceneSelection::Event& event) { onSceneSelectionEvent(event); });
-
   // ===== Visual Helpers (Grid + Transform Gizmo) =====
   {
     VkFormat depthFormat = m_resources.gBuffers.getDepthFormat();
@@ -963,34 +924,14 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     };
     m_visualHelpers.init(helperRes);
 
-    m_visualHelpers.transform.setOnTransformBegin([this]() {
-      if(!m_resources.hostFed && m_gizmoNodeIndex >= 0 && m_resources.getScene())
-      {
-        const auto& node = m_resources.getScene()->editor().getNode(m_gizmoNodeIndex);
-        tinygltf::utils::getNodeTRS(node, m_gizmoSnapshotT, m_gizmoSnapshotR, m_gizmoSnapshotS);
-      }
-    });
-
     m_visualHelpers.transform.setOnTransformChange([this]() {
-      if(m_resources.hostFed)
-      {
-        if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
-          m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, false);
-      }
-      else if(m_gizmoNodeIndex >= 0 && m_resources.getScene())
-      {
-        glm::quat rotation = glm::quat(glm::radians(m_gizmoRotation));
-        m_resources.getScene()->editor().setNodeTRS(m_gizmoNodeIndex, m_gizmoPosition, rotation, m_gizmoScale);
-        resetFrame();
-      }
+      if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
+        m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, false);
     });
 
     m_visualHelpers.transform.setOnTransformEnd([this]() {
-      if(m_resources.hostFed)
-      {
-        if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
-          m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, true);
-      }
+      if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
+        m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, true);
     });
   }
 
@@ -1245,98 +1186,6 @@ void GltfRenderer::saveHeadlessOutputImage()
   saveViewportImage(outputPath);
 }
 
-// Consume a pending image/texture-set change (import/replace/remove/reload/sampler/undo) at the very
-// start of the frame, BEFORE any ImGui::Image is recorded this frame.
-//
-// Why here and nowhere else: rebuildVulkanSceneFull() frees the ImGui thumbnail descriptor sets
-// (ThumbnailCache::clear) and destroys the scene image views they reference. If it ran after the panels
-// have already recorded ImGui::Image draw commands, ImGui_ImplVulkan_RenderDrawData would later replay
-// them with freed descriptors (VUID-vkCmdBindDescriptorSets-pDescriptorSets-parameter: "Invalid
-// VkDescriptorSet Object"). rebuildVulkanSceneFull() waits on the queue first, so the prior frame that
-// used the now-freed thumbnails/views has finished; the current frame re-acquires fresh thumbnails in
-// renderUI(). The prior frame's material copy-struct write-backs (spec/gloss) have also flushed, so
-// sRGB detection sees the final material usage.
-//
-// Two other sites deliberately defer to this method (grep DirtyFlags::texturesChanged):
-//   - reconcileGeometryIfNeeded(): must NOT rebuild here (it runs mid-frame via onUndoRedo).
-//   - updateSceneChanges(): skips its per-frame sync while the flag is pending, so the material buffer
-//     never references a texture index that eTextures[] does not contain yet.
-void GltfRenderer::applyPendingTextureRebuild()
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(!scene || !scene->getDirtyFlags().texturesChanged)
-    return;
-
-  scene->getDirtyFlags().texturesChanged = false;
-  rebuildVulkanSceneFull();
-  resetFrame();
-}
-
-// Consume a pending TAIL-ONLY texture change (import / undo / redo of an imported texture) at frame top,
-// alongside applyPendingTextureRebuild(). Unlike the full rebuild, this reconciles only the appended or
-// removed tail (SceneVk::syncTextureTail): it neither stalls the GPU nor frees existing image views, so
-// thumbnails and in-flight frames stay valid and no acceleration-structure work is needed. The per-frame
-// material sync (which carries the new texture index) stays gated until the flag clears -- see the
-// texturesTailChanged guard in updateSceneChanges().
-void GltfRenderer::applyPendingTextureTailSync()
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(!scene || !scene->getDirtyFlags().texturesTailChanged)
-    return;
-
-  const uint32_t firstTexture = m_resources.sceneVk.textureCount();
-  const uint32_t firstSampler = m_resources.sceneVk.samplerCount();
-
-  // Load/create new tail images (or deferred-free removed ones) on a transient command buffer, uploaded
-  // asynchronously via the load pipeline -- the same pattern as the full rebuild, minus the queue wait.
-  VkCommandBuffer cmd{};
-  nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
-  m_resources.sceneVk.syncTextureTail(cmd, m_resources.staging, *scene);
-  NVVK_CHECK(vkEndCommandBuffer(cmd));
-  m_loadPipeline.enqueue(cmd);
-
-  // Write only the newly appended descriptors; removed tail slots become unused (PARTIALLY_BOUND) and
-  // need no write. The image views exist immediately (created above); their contents land once the
-  // enqueued upload completes, before any frame samples the new texture.
-  const uint32_t newTexture = m_resources.sceneVk.textureCount();
-  const uint32_t newSampler = m_resources.sceneVk.samplerCount();
-  if(newTexture > firstTexture || newSampler > firstSampler)
-  {
-    if(!writeTextureDescriptorRange(firstTexture, newTexture > firstTexture ? newTexture - firstTexture : 0,  //
-                                    firstSampler, newSampler > firstSampler ? newSampler - firstSampler : 0))
-      return;  // capacity overflow (logged FATAL): leave texturesTailChanged set so updateSceneChanges keeps
-               // the material sync gated -- the material must not reference a texture whose descriptor is unwritten.
-  }
-
-  // Descriptors are now consistent with the model; lift the per-frame material-sync gate.
-  scene->getDirtyFlags().texturesTailChanged = false;
-
-  resetFrame();
-}
-
-// Consume pending sampler edits (DirtyFlags::samplers) at frame top: an Inspector wrap/filter edit
-// changes model.samplers[i] in place. Unlike applyPendingTextureRebuild(), this never touches m_images
-// or m_textures -- only the affected VkSampler is recreated and its single eSamplers descriptor slot
-// rewritten, so image data is never re-read from disk for a sampler-only change.
-void GltfRenderer::applyPendingSamplerUpdate()
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(!scene || scene->getDirtyFlags().samplers.empty())
-    return;
-
-  const tinygltf::Model& model = scene->getModel();
-  for(int samplerIndex : scene->getDirtyFlags().samplers)
-  {
-    m_resources.sceneVk.updateSampler(model, samplerIndex);
-    if(!writeTextureDescriptorRange(0, 0, static_cast<uint32_t>(samplerIndex) + 1, 1))
-      return;  // capacity overflow (logged FATAL): leave DirtyFlags::samplers set so the stale eSamplers
-               // slot -- whose old VkSampler is already queued for deferred release -- is not forgotten.
-  }
-  scene->getDirtyFlags().samplers.clear();
-
-  resetFrame();
-}
-
 void GltfRenderer::onUIRender()
 {
   // Run any post-restore hooks now that Application::run() has reloaded the ini (which happens
@@ -1350,16 +1199,8 @@ void GltfRenderer::onUIRender()
     m_settings.runPostRestoreHooks();
   }
 
-  applyPendingAuthoredSky();         // frame-top: adopt a loaded scene's OMI sky, after the ini restore above
-  applyPendingSkyPresets();          // frame-top: start-up presets, after the scene's sky so they win over it
+  applyPendingSkyPresets();          // frame-top: start-up presets
   applyPendingEnvironmentRefresh();  // frame-top: re-bake / rebind the environment after a sky change (see method)
-  // The legacy scene's frame-top texture work; the retained scene's bridge takes those edits instead
-  if(!m_resources.retainedGpu)
-  {
-    applyPendingTextureRebuild();  // frame-top: full GPU texture rebuild for a prior-frame structural edit (see method)
-    applyPendingTextureTailSync();  // frame-top: incremental append/remove for a prior-frame import/undo/redo (see method)
-    applyPendingSamplerUpdate();  // frame-top: in-place VkSampler update for a prior-frame sampler wrap/filter edit
-  }
 
   // The viewport's per-frame camera step: camera transitions and camera.frame need it.
   m_cameraManip->updateAnim();
@@ -1634,71 +1475,17 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   // Start the profiler section for the GPU timer
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
 
-  // #DLSS deformation motion: before anything can pose skins. (The retained scene copies its own at
-  // the top of its sync.)
-  if(!m_resources.retainedGpu)
-    snapshotPrevPositions(cmd);
-
   updateClickPickState();   // Poll the previous click's async ray-pick, apply it once ready (see m_pendingClickPick)
   updateAnchorPickState();  // Same for the camera anchor of a Shift+drag (see m_pendingAnchorPick)
-  // #DLSS instance motion vectors: snapshot the previous-frame render-node transforms BEFORE any
-  // animation / gizmo edit rewrites them this frame. The previous transforms feed per-instance motion
-  // vectors in the path tracer (camera + object motion combined). This is only meaningful when node
-  // transforms are actually changing this frame -- animation advancing, or a pending gizmo/editor
-  // edit (markNodeDirty populates DirtyFlags::nodes during UI, before this check). When nothing moves, prev == curr, so we skip both the snapshot pass and
-  // the per-instance reprojection and let the path tracer produce exact camera-only motion
-  // (prevRenderNodeObjectToWorld stays unbound). The snapshot reads the live render-node buffer each
-  // frame independently, so skipping static frames is safe with no trailing-frame artifact. Gated on
-  // DLSS specifically (not dlssGuideRequired(), which also covers OptiX) since only the DLSS path
-  // consumes these vectors. See gltf_pathtrace.slang.
-  m_resources.dlssInstanceMotionActive = false;
-  // (the retained scene keeps its own previous transforms: set after its sync, below)
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled() && !m_resources.retainedGpu)
-  {
-    nvvkgltf::Scene*                   scn = m_resources.getScene();
-    const nvvkgltf::Scene::DirtyFlags& df  = scn->getDirtyFlags();
-    const bool animActive = m_resources.gpuView().hasPlayableAnimation() && m_resources.animationControl.doAnimation();
-    // dirtyNodesReachGeometry, not merely a dirty node: a moved light or camera moves no instance.
-    const bool nodesDirty                = scn->dirtyNodesReachGeometry();
-    m_resources.dlssInstanceMotionActive = animActive || nodesDirty;
-
-    if(m_resources.dlssInstanceMotionActive)
-    {
-      auto snapSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Snapshot prev transforms");
-      m_resources.transformCompute.cmdSnapshotPrevObjectToWorld(cmd, m_resources.sceneVk, m_resources.gpuView().renderNodeCapacity());
-    }
-  }
-
   // Check for changes
   bool changed{false};
   changed |= m_pathTracer.keepOneAccumulationDenoiser(m_resources);  // OptiX or OIDN, not both
-  bool animated = false;
-  if(m_resources.retainedGpu)
-    changed |= syncRetainedScene(cmd);  // the clip, and the residency's sync of the host's edits
-  else
-  {
-    animated = updateAnimation(cmd);  // Update the animation
-    changed |= animated;
-    changed |= updateSceneChanges(cmd);
-  }
+  changed |= syncRetainedScene(cmd);  // the clip, and the residency's sync of the host's edits
 
-  // #DLSS deformation motion: every writer of vertex positions has run. Their reconcile may have
-  // skinned or morphed; the copy snapshotPrevPositions() kept is what the surface was before them.
-  // (the CPU fallback uploads every morphed and skinned primitive; the compute passes list theirs)
-  const bool deformed = animated
-                        && (m_resources.sceneGpu.animatesOnGpu() ?
-                                !m_resources.animationVk.primitivesWritten().empty() :
-                                m_resources.getScene()->animation().hasMorphTargets() || m_resources.getScene()->animation().hasSkinning());
-  const bool verticesWritten           = deformed;
-  m_resources.dlssDeformMotionActive   = verticesWritten && m_resources.prevPositions.hasBuffers();
-  m_verticesWrittenLastFrame           = verticesWritten;
-  // the retained scene keeps both motion tables current every sync (a row at rest is no motion)
-  if(m_resources.retainedGpu)
-  {
-    const bool dlss = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled();
-    m_resources.dlssInstanceMotionActive = dlss && m_resources.gpuView().prevObjectToWorldTable() != 0;
-    m_resources.dlssDeformMotionActive   = dlss && m_resources.gpuView().prevPositionTable() != 0;
-  }
+  // #DLSS motion: the retained scene keeps both tables current every sync (a row at rest is no motion)
+  const bool dlss = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled();
+  m_resources.dlssInstanceMotionActive = dlss && m_resources.gpuView().prevObjectToWorldTable() != 0;
+  m_resources.dlssDeformMotionActive   = dlss && m_resources.gpuView().prevPositionTable() != 0;
 
   if(changed)
   {
@@ -1881,126 +1668,6 @@ void GltfRenderer::onLastHeadlessFrame()
   saveHeadlessOutputImage();
 }
 
-//--------------------------------------------------------------------------------------------------
-// Add another glTF into the current scene, either embedded (merge) or linked (glTF 2.1 external
-// asset reference). Shared worker for onMergeScene()/onReferenceScene(): the two modes differ only
-// in the Scene call and the status text, so the threading + post-import rebuild live here.
-//
-void GltfRenderer::addSceneFromFile(const std::filesystem::path& filename, bool asReference)
-{
-  // Bootstrap a scene when nothing is loaded (or the current one is invalid). This covers BOTH the
-  // merge and reference paths below -- they call getScene()->mergeScene()/referenceScene(), so this
-  // guarantees a non-null scene for either. (Both mergeScene() and referenceScene() also ensure a
-  // scene container on an empty model, so the imported content has a root.)
-  if(!m_resources.getScene() || !m_resources.getScene()->valid())
-  {
-    auto scn = std::make_unique<nvvkgltf::Scene>();
-    scn->supportedExtensions().insert(EXT_TEXTURE_WEBP_EXTENSION_NAME);
-    m_resources.scene = std::move(scn);
-  }
-
-  if(m_busy.isBusy())
-    return;
-
-  // Ensure no in-flight frame still references GPU resources (incl. per-frame staging buffers) that
-  // the upcoming rebuild will destroy/replace. The drag-drop path idles in onFileDrop, but the File
-  // menu entry points reach here directly, so idle here to cover both. (main thread; see VUID-00922)
-  vkQueueWaitIdle(m_app->getQueue(0).queue);
-
-  // Set busy BEFORE starting the worker thread to prevent UI access during scene modification
-  m_busy.start(asReference ? "Referencing Scene" : "Merging Scene");
-
-  std::thread([=, this]() {
-    nvvkgltf::Scene* scene = m_resources.getScene();
-    // Capture BEFORE the import mutates the model: merge/reference is a pure tail-append, so when the base
-    // already has images and textures we preserve them on the GPU and load only the new tail
-    // (eMergeAppend). An empty / texture-less base carries 1x1 GPU dummy defaults whose sizes don't match
-    // the model, so it still needs a full rebuild.
-    const bool wasTextured = scene && !scene->getModel().images.empty() && !scene->getModel().textures.empty();
-
-    const int         nodeIdx = asReference ? scene->referenceScene(filename) :
-                                              scene->mergeScene(filename, static_cast<uint32_t>(m_maxTextures));
-    const std::string name    = nvutils::utf8FromPath(filename.filename());
-    if(nodeIdx >= 0)
-    {
-      rebuildVulkanSceneInternal(wasTextured ? nvvkgltf::SceneGpu::RebuildMode::eMergeAppend : nvvkgltf::SceneGpu::RebuildMode::eFull);
-      // Imported glTF may bring extensions the previous scene didn't use; recompute so optimal-mode
-      // rebuilds the shader if the feature set widened.
-      m_resources.recomputeSceneFeatures(dlssGuideRequired());
-      resetFrame();
-      m_sceneSelection.selectNode(nodeIdx);
-      LOGI("Scene %s successfully: %s\n", asReference ? "referenced" : "merged", name.c_str());
-    }
-    else
-    {
-      LOGE("Failed to %s scene: %s\n", asReference ? "reference" : "merge", name.c_str());
-    }
-    m_busy.stop();
-  }).detach();
-}
-
-//--------------------------------------------------------------------------------------------------
-// Merge (embed) a glTF scene into the current one. Called from File menu or Shift+drag-drop.
-//
-void GltfRenderer::onMergeScene(const std::filesystem::path& filename)
-{
-  addSceneFromFile(filename, /*asReference=*/false);
-}
-
-//--------------------------------------------------------------------------------------------------
-// glTF 2.1: add a scene as a referenced external asset (read-only, re-externalized on save) instead
-// of embedding it. Called from File>Reference Scene... or Ctrl+Shift+drag-drop.
-//
-void GltfRenderer::onReferenceScene(const std::filesystem::path& filename)
-{
-  addSceneFromFile(filename, /*asReference=*/true);
-}
-
-//--------------------------------------------------------------------------------------------------
-// Save the scene
-bool GltfRenderer::save(const std::filesystem::path& filename, bool selfContained)
-{
-  if(m_resources.getScene() && m_resources.getScene()->valid() && !filename.empty())
-  {
-    std::vector<nvvkgltf::RenderCamera> cameras = nvvkgltf::getCamerasFromWidget();
-
-    // Replace the first camera with the current view
-    if(!cameras.empty())
-    {
-      nvvkgltf::RenderCamera& camera = cameras[0];
-      m_cameraManip->getLookat(camera.eye, camera.center, camera.up);
-      camera.znear = m_cameraManip->getClipPlanes().x;
-      camera.zfar  = m_cameraManip->getClipPlanes().y;
-
-      if(m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic)
-      {
-        camera.type = nvvkgltf::RenderCamera::CameraType::eOrthographic;
-        camera.xmag = static_cast<double>(m_cameraManip->getOrthographicXmag());
-        camera.ymag = static_cast<double>(m_cameraManip->getOrthographicYmag());
-      }
-      else
-      {
-        camera.type = nvvkgltf::RenderCamera::CameraType::ePerspective;
-        camera.yfov = glm::radians(m_cameraManip->getFov());
-      }
-
-    }
-
-    // Install the environment-sky writer for this save. Done here rather than at scene creation
-    // so that no load path can forget it -- there is exactly one place a scene is saved.
-    nvvkgltf::Scene* scene = m_resources.getScene();
-    scene->setPreSaveHook([this](tinygltf::Model& outModel, const std::filesystem::path& destination) {
-      writeEnvironmentSky(outModel, destination);
-    });
-
-    // File > Save: the viewport's cameras become the scene's, then the scene is written
-    if(!cameras.empty())
-      scene->setSceneCameras(cameras);
-    return scene->save(filename, selfContained);
-  }
-  return false;
-}
-
 #if defined(USE_DLSS)
 //--------------------------------------------------------------------------------------------------
 // Returns the Dlss instance owned by whichever renderer is currently active.
@@ -2047,49 +1714,6 @@ bool GltfRenderer::dlssGuideRequired() const
 #endif
 
   return false;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Adopt the sky authored by the scene that was just loaded.
-//
-// Precedence is glTF over ini, and only for the sky itself: a file that carries
-// OMI_environment_sky is stating what its environment is, so it overwrites the corresponding
-// settings and they persist to the ini as usual (reopening the same file lands where the user
-// left off). A file without the extension changes nothing.
-//
-// Only plain and gradient are adopted as the active mode. A panorama or physical sky is parsed --
-// and, importantly, kept verbatim so a later save does not drop it -- but the renderer stays on
-// whatever environment it was showing, because neither type is produced by the baker yet.
-//
-void GltfRenderer::applyEnvironmentSkyFromScene()
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(scene == nullptr || !scene->valid())
-    return;
-
-  const tinygltf::Model& model      = scene->getModel();
-  const int              sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
-
-  // Parse now, apply at the next frame top. The settings cannot be written here: on start-up the
-  // ini is restored *after* the command-line scene load, and the restore writes envSystem
-  // straight into storage -- so anything set here is silently overwritten and the file's sky
-  // loses to the ini, which is backwards. applyPendingAuthoredSky() runs after the restore hooks
-  // and re-asserts it.
-  m_environmentSky        = gltf_environment_sky::parse(model, sceneIndex);
-  m_environmentSkyPending = m_environmentSky.has_value();
-}
-
-//--------------------------------------------------------------------------------------------------
-// Push the authored sky into the live settings. Runs at the frame top, after the ini restore, so
-// that "glTF wins over ini" holds regardless of which order the two landed in.
-//
-void GltfRenderer::applyPendingAuthoredSky()
-{
-  if(!m_environmentSkyPending || !m_environmentSky.has_value())
-    return;
-  m_environmentSkyPending      = false;
-  const nvvkgltf::Scene* scene = m_resources.getScene();
-  applySkyDescriptor(*m_environmentSky, SkySource::eScene, scene ? scene->getFilename().parent_path() : std::filesystem::path{});
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2211,6 +1835,75 @@ void GltfRenderer::applySkyDescriptor(const SkyDescriptor& sky, SkySource source
   // refresh at the next frame top, which calibrates when the environment kind changed.
   onEnvironmentChanged();
   resetFrame();
+}
+
+//--------------------------------------------------------------------------------------------------
+// Capture the current sky as a `.sky.json`, and apply one.
+//
+// The sun angle travels with it, because a sky and the angle of its sun are one look. On the way
+// out it is read from the direction the renderer is actually using, whichever of the four things
+// set it; on the way in it is applied through m_skySun.aim(), so a scene whose sun is a marked light
+// records the move on its undo stack exactly as a slider drag would.
+//
+// Note what is *not* undoable: everything else a preset changes is viewer state -- the atmosphere,
+// the ambient terms, the environment type -- and no environment control in this renderer is on the
+// undo stack. Putting presets there alone would mean a settings-snapshot command unlike anything
+// else in undo_redo, for a consistency the panel does not otherwise have.
+//
+bool GltfRenderer::saveSkyPreset(const std::filesystem::path& path) const
+{
+  const EnvironmentState sky = skyDescriptorFromSettings(path);
+  if(!sky.has_value())
+  {
+    LOGW("Sky preset: the current environment is not a sky that can be written (%s).\n", nvutils::utf8FromPath(path).c_str());
+    return false;
+  }
+
+  sky_preset::Preset preset{.sky = *sky};
+  if(skyHasSun(m_resources.settings.envSystem))
+  {
+    // glTF aims a light down -Z, so the rotation that takes +Z to the sun is what a node would
+    // store -- the same convention SkySun::setMarkedDirection writes.
+    preset.sunRotation = glm::rotation(glm::vec3(0.0F, 0.0F, 1.0F), glm::normalize(m_resources.sunDirection));
+  }
+  return sky_preset::save(path, preset);
+}
+
+bool GltfRenderer::loadSkyPreset(const std::filesystem::path& path)
+{
+  const std::optional<sky_preset::Preset> preset = sky_preset::load(path);
+  if(!preset.has_value())
+    return false;
+
+  // A preset loaded after a scene supersedes that scene's sky, even one still waiting for the frame
+  // top -- otherwise the scene's would land a frame later and silently undo this.
+  m_environmentSkyPending = false;
+  applySkyDescriptor(preset->sky, SkySource::ePreset, path.parent_path());
+
+  // Absent means "leave the sun alone", which is why this is not an else.
+  if(preset->sunRotation.has_value())
+  {
+    m_skySun.aim(*preset->sunRotation * glm::vec3(0.0F, 0.0F, 1.0F));
+    m_skySun.syncAngles();
+  }
+
+  // The preset is now what a save would write, so a scene saved after loading one carries it.
+  m_environmentSky = preset->sky;
+  return true;
+}
+
+void GltfRenderer::queueStartupSkyPresets(const std::filesystem::path& load, const std::filesystem::path& save)
+{
+  m_pendingLoadSkyPreset = load;
+  m_pendingSaveSkyPreset = save;
+}
+
+void GltfRenderer::applyPendingSkyPresets()
+{
+  if(!m_pendingLoadSkyPreset.empty())
+    loadSkyPreset(std::exchange(m_pendingLoadSkyPreset, {}));
+  if(!m_pendingSaveSkyPreset.empty())
+    saveSkyPreset(std::exchange(m_pendingSaveSkyPreset, {}));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2406,75 +2099,6 @@ void GltfRenderer::writeEnvironmentSky(tinygltf::Model& outModel, const std::fil
 }
 
 //--------------------------------------------------------------------------------------------------
-// Capture the current sky as a `.sky.json`, and apply one.
-//
-// The sun angle travels with it, because a sky and the angle of its sun are one look. On the way
-// out it is read from the direction the renderer is actually using, whichever of the four things
-// set it; on the way in it is applied through m_skySun.aim(), so a scene whose sun is a marked light
-// records the move on its undo stack exactly as a slider drag would.
-//
-// Note what is *not* undoable: everything else a preset changes is viewer state -- the atmosphere,
-// the ambient terms, the environment type -- and no environment control in this renderer is on the
-// undo stack. Putting presets there alone would mean a settings-snapshot command unlike anything
-// else in undo_redo, for a consistency the panel does not otherwise have.
-//
-bool GltfRenderer::saveSkyPreset(const std::filesystem::path& path) const
-{
-  const EnvironmentState sky = skyDescriptorFromSettings(path);
-  if(!sky.has_value())
-  {
-    LOGW("Sky preset: the current environment is not a sky that can be written (%s).\n", nvutils::utf8FromPath(path).c_str());
-    return false;
-  }
-
-  sky_preset::Preset preset{.sky = *sky};
-  if(skyHasSun(m_resources.settings.envSystem))
-  {
-    // glTF aims a light down -Z, so the rotation that takes +Z to the sun is what a node would
-    // store -- the same convention SkySun::setMarkedDirection writes.
-    preset.sunRotation = glm::rotation(glm::vec3(0.0F, 0.0F, 1.0F), glm::normalize(m_resources.sunDirection));
-  }
-  return sky_preset::save(path, preset);
-}
-
-bool GltfRenderer::loadSkyPreset(const std::filesystem::path& path)
-{
-  const std::optional<sky_preset::Preset> preset = sky_preset::load(path);
-  if(!preset.has_value())
-    return false;
-
-  // A preset loaded after a scene supersedes that scene's sky, even one still waiting for the frame
-  // top -- otherwise the scene's would land a frame later and silently undo this.
-  m_environmentSkyPending = false;
-  applySkyDescriptor(preset->sky, SkySource::ePreset, path.parent_path());
-
-  // Absent means "leave the sun alone", which is why this is not an else.
-  if(preset->sunRotation.has_value())
-  {
-    m_skySun.aim(*preset->sunRotation * glm::vec3(0.0F, 0.0F, 1.0F));
-    m_skySun.syncAngles();
-  }
-
-  // The preset is now what a save would write, so a scene saved after loading one carries it.
-  m_environmentSky = preset->sky;
-  return true;
-}
-
-void GltfRenderer::queueStartupSkyPresets(const std::filesystem::path& load, const std::filesystem::path& save)
-{
-  m_pendingLoadSkyPreset = load;
-  m_pendingSaveSkyPreset = save;
-}
-
-void GltfRenderer::applyPendingSkyPresets()
-{
-  if(!m_pendingLoadSkyPreset.empty())
-    loadSkyPreset(std::exchange(m_pendingLoadSkyPreset, {}));
-  if(!m_pendingSaveSkyPreset.empty())
-    saveSkyPreset(std::exchange(m_pendingSaveSkyPreset, {}));
-}
-
-//--------------------------------------------------------------------------------------------------
 // The live settings as an authored sky. See the declaration for what nullopt means.
 //
 EnvironmentState GltfRenderer::skyDescriptorFromSettings(const std::filesystem::path& destination) const
@@ -2581,7 +2205,7 @@ EnvironmentState GltfRenderer::skyDescriptorFromSettings(const std::filesystem::
 //--------------------------------------------------------------------------------------------------
 // Frame-top hook for a pending environment change, paired with onEnvironmentChanged().
 //
-// Runs from onUIRender rather than onRender for the same reason applyPendingTextureRebuild does:
+// Runs from onUIRender rather than onRender:
 // rebuilding the environment waits on the device and rewrites descriptors that in-flight frames
 // are reading, which is not safe in the middle of recording a frame's command buffer. onUIRender
 // is the frame-top point this renderer already uses for deferred GPU rebuilds, and it runs in the
@@ -3194,16 +2818,9 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 // applies a Sobel edge filter where the bit is set, then composites the outline onto the image.
 void GltfRenderer::silhouette(VkCommandBuffer cmd)
 {
-  // A host selects through selectEntity, which keeps the render-node set itself. Otherwise, sync with
-  // the UI: when selection was cleared in the scene browser (e.g. toggle off), no event is emitted, so
-  // we clear Resources here so the silhouette does not keep drawing.
-  const bool selected = m_resources.hostFed ? !m_resources.selectedRenderNodes.empty() : m_sceneSelection.hasSelection();
-  if(!selected)
-    m_resources.selectedRenderNodes.clear();
-
   // Run the silhouette pass only when something is selected (one primitive or a node and its branch).
   // We rebuild the CPU bitmask from selectedRenderNodes, upload it, then dispatch the silhouette compute.
-  if(selected)
+  if(!m_resources.selectedRenderNodes.empty())
   {
     NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
     auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
@@ -3297,66 +2914,14 @@ void GltfRenderer::updateGizmoAttachment()
 {
   if(!m_resources.settings.showGizmo || !m_resources.gpuView().hasContent())
   {
-    if(m_gizmoNodeIndex >= 0 || !m_gizmoEntity.isNone())
+    if(!m_gizmoEntity.isNone())
     {
       m_visualHelpers.transform.clearAttachment();
-      m_gizmoNodeIndex = -1;
-      m_gizmoEntity    = {};
+      m_gizmoEntity = {};
     }
     return;
   }
-  if(m_resources.hostFed)
-  {
-    updateEntityGizmo();
-    return;
-  }
-
-  int nodeIdx = -1;
-  if(m_sceneSelection.hasSelection())
-  {
-    auto sel = m_sceneSelection.getSelection();
-    if(sel.type == SceneSelection::SelectionType::eNode || sel.type == SceneSelection::SelectionType::ePrimitive)
-    {
-      nodeIdx = sel.nodeIndex;
-    }
-  }
-
-  const uint32_t flags = nodeIdx < 0 ? 0 : TransformHelperVk::ShowAll;
-  if(flags == 0)
-  {
-    if(m_gizmoNodeIndex >= 0)
-    {
-      m_visualHelpers.transform.clearAttachment();
-      m_gizmoNodeIndex = -1;
-    }
-    return;
-  }
-
-  const int parentIdx = m_resources.getScene()->editor().getNodeParent(nodeIdx);
-  // Attach or update if the selection or its handles changed
-  if(nodeIdx != m_gizmoNodeIndex || (flags != m_gizmoFlags && !m_visualHelpers.transform.isDragging()))
-  {
-    m_gizmoNodeIndex = nodeIdx;
-    m_gizmoFlags     = flags;
-
-    glm::quat rotation;
-    tinygltf::utils::getNodeTRS(m_resources.getScene()->editor().getNode(nodeIdx), m_gizmoPosition, rotation, m_gizmoScale);
-    m_gizmoRotation = glm::degrees(glm::eulerAngles(rotation));
-
-    m_gizmoParentWorldMatrix = (parentIdx >= 0) ? m_resources.getScene()->computeNodeWorldMatrix(parentIdx) : glm::mat4(1.f);
-
-    m_visualHelpers.transform.attachTransform(&m_gizmoPosition, &m_gizmoRotation, &m_gizmoScale, flags);
-    m_visualHelpers.transform.setParentWorldMatrix(&m_gizmoParentWorldMatrix);
-  }
-  else if(!m_visualHelpers.transform.isDragging())
-  {
-    // Re-read TRS from the scene node so inspector edits are reflected immediately; the parent
-    // moves too when something above the node is posed
-    glm::quat rotation;
-    tinygltf::utils::getNodeTRS(m_resources.getScene()->editor().getNode(nodeIdx), m_gizmoPosition, rotation, m_gizmoScale);
-    m_gizmoRotation = glm::degrees(glm::eulerAngles(rotation));
-    m_gizmoParentWorldMatrix = (parentIdx >= 0) ? m_resources.getScene()->computeNodeWorldMatrix(parentIdx) : glm::mat4(1.f);
-  }
+  updateEntityGizmo();
 }
 
 // The gizmo on a stream host's selected entity: its local TRS and its parent's world matrix from the
@@ -3530,55 +3095,6 @@ void GltfRenderer::placeCameraFromFile(const tinygltf::Model& model)
   }
 }
 
-//--------------------------------------------------------------------------------------------------
-// Shared tail for creating/loading a scene: builds the Vulkan scene, feature set, UI panels, camera
-// and textures. `filename` is empty for a new/empty scene (no camera list, no recent-files entry).
-//
-void GltfRenderer::finalizeSceneSetup(const std::filesystem::path& filename)
-{
-  ++m_sceneGeneration;
-  m_pendingAnimReconcile = false;
-  // Scene object is set, we can create the Vulkan scene
-  createVulkanScene();
-
-  // Detect which KHR_materials_* the loaded scene actually uses so the path tracer
-  // can specialize its shader when settings.optimalShader is on. Safe to call always:
-  // when optimalShader is off, the path tracer ignores currentFeatureSet.
-  m_resources.recomputeSceneFeatures(dlssGuideRequired());
-
-  // Calibrate the firefly clamp to the scene: retroreflective materials can produce legitimately
-  // high peak radiance that the default clamp of 10 would clip, visibly suppressing the effect.
-  calibrateFireflyClamp();
-
-
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  m_resources.settings.infinitePlaneDistance = scene->getSceneBounds().min().y;  // Set the infinite plane distance to the bottom of the scene
-
-  // Set camera from scene, unless a camera string overrides it
-  nvvkgltf::addSceneCamerasToWidget(m_cameraManip, filename, scene->getRenderCameras(), scene->getSceneBounds());
-
-  // Viewer-side environment controls (hdrEnvIntensity, envRotation, the backplate override)
-  // are deliberately left alone by a scene load -- resetting them used to discard whatever the
-  // user, the command line, or MCP had set. The *authored* sky is different: a glTF carrying
-  // OMI_environment_sky is stating what the scene's sky is, and that wins over the ini.
-  //
-  // The one place the two meet is `rotation`, which is both. It is applied only when the file
-  // states it -- see applySkyDescriptor -- so an authored orientation wins while a scene that is
-  // silent about it leaves the user's rotation where they left it.
-  applyEnvironmentSkyFromScene();
-
-  // Need to update (push) all textures; the retained scene wrote its own
-  if(!m_resources.retainedGpu && !updateTextures())
-  {
-    LOGE("Failed to update textures - cannot safely render scene");
-
-    // Clean up the scene we just loaded - it's unsafe to render
-    vkDeviceWaitIdle(m_device);
-    cleanupScene();
-    return;
-  }
-}
-
 // A notification has no overlay to go to: the log says it.
 void GltfRenderer::notify(const std::string& message, bool isError)
 {
@@ -3586,102 +3102,6 @@ void GltfRenderer::notify(const std::string& message, bool isError)
     LOGE("%s\n", message.c_str());
   else
     LOGI("%s\n", message.c_str());
-}
-
-//--------------------------------------------------------------------------------------------------
-// Ensure an editable Scene exists so the normal add path (popup + AddPrimitiveCommand) can run even
-// with nothing loaded. Creates a fresh, empty Scene and wires it to the UI, but does NOT build GPU
-// resources: an empty scene is not valid() so onRender() just clears the G-Buffer (see the guard in
-// onRender). The first primitive's AddPrimitiveCommand then triggers the (full) GPU build via
-// reconcileGeometryIfNeeded(). No-op if a scene already exists.
-//
-void GltfRenderer::ensureEmptyScene()
-{
-  if(m_resources.getScene())
-    return;
-
-  auto scn = std::make_unique<nvvkgltf::Scene>();
-  scn->supportedExtensions().insert(EXT_TEXTURE_WEBP_EXTENSION_NAME);
-  // One empty scene container so the browser shows a scene root (matches a loaded scene minus nodes).
-  // Still not valid() until a node is added, so onRender() clears the G-Buffer rather than drawing.
-  scn->getModel().scenes.emplace_back().name = "Scene";
-  m_resources.scene                          = std::move(scn);
-}
-
-//--------------------------------------------------------------------------------------------------
-// Load a legacy .scene.json descriptor and bridge it to glTF 2.1 external assets: each model
-// instance is added as a *reference* (not embedded), so the composed scene round-trips as external
-// assets on save. This turns the old descriptor format into a one-way importer onto the modern path.
-//
-void GltfRenderer::createSceneFromDescriptor(const std::filesystem::path& descriptorPath)
-{
-  nvutils::ScopedTimer st(__FUNCTION__);
-  m_sceneSelection.clearSelection();
-  m_resources.selectedRenderNodes.clear();
-
-  SceneDescriptor desc;
-  if(!loadSceneDescriptor(descriptorPath, desc) || desc.models.empty())
-    return;
-
-  // Build the scene locally so it's not visible to the UI thread during construction
-  auto scn = std::make_unique<nvvkgltf::Scene>();
-  scn->supportedExtensions().insert(EXT_TEXTURE_WEBP_EXTENSION_NAME);
-  nvvkgltf::Scene* scene = scn.get();
-
-  auto instancesByModel = desc.getInstancesByModel();
-
-  for(const auto& [modelIdx, instances] : instancesByModel)
-  {
-    const auto& modelEntry = desc.models[modelIdx];
-    // referenceScene() loads the file on first use and, for repeats of the same model, duplicates the
-    // instance so geometry (meshes/BLAS) is shared. Each call returns the editable instance node that
-    // carries the externalAsset link; we only set its transform/name.
-    for(const auto& instPtr : instances)
-    {
-      const auto& inst            = *instPtr;
-      int         instanceNodeIdx = scene->referenceScene(modelEntry.resolvedPath);
-      if(instanceNodeIdx < 0)
-      {
-        LOGE("Failed to reference model: %s\n", nvutils::utf8FromPath(modelEntry.resolvedPath).c_str());
-        break;  // the file won't load for the remaining instances either
-      }
-      scene->editor().setNodeTRS(instanceNodeIdx, inst.translation, inst.rotation, inst.scale);
-      if(!inst.name.empty())
-        scene->getModel().nodes[instanceNodeIdx].name = inst.name;
-    }
-  }
-
-  if(!scene->valid())
-  {
-    LOGW("Scene descriptor produced no valid scene\n");
-    return;
-  }
-
-  scene->setCurrentScene(scene->getCurrentScene());  // Final reparse: world matrices + render nodes
-
-  // Publish to resources only when fully constructed (UI thread can now see it)
-  m_resources.scene = std::move(scn);
-  createVulkanScene();
-
-  // Detect which KHR_materials_* the loaded scene actually uses so the path tracer
-  // can specialize its shader when settings.optimalShader is on.
-  m_resources.recomputeSceneFeatures(dlssGuideRequired());
-
-  calibrateFireflyClamp();
-
-
-  m_resources.settings.infinitePlaneDistance = scene->getSceneBounds().min().y;
-
-  nvvkgltf::addSceneCamerasToWidget(m_cameraManip, descriptorPath, scene->getRenderCameras(), scene->getSceneBounds());
-
-  if(!updateTextures())
-  {
-    LOGE("Failed to update textures from descriptor scene\n");
-    vkDeviceWaitIdle(m_device);
-    cleanupScene();
-    return;
-  }
-
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3695,14 +3115,8 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   // the authoritative invalidation point.
   m_pathTracer.onSceneInvalidated(m_resources);
   m_rasterizer.onSceneInvalidated(m_resources);
-  if(m_resources.getScene())
-    m_resources.transformCompute.destroyGpuBuffers();
-  m_resources.prevPositions.destroyGpuBuffers();
-  m_verticesWrittenLastFrame = false;
-  // The retained scene goes first. Kept, emptied, when images are kept for reuse (retainedSpare);
-  // otherwise destroyed now, its backend waiting for the device and running what it retired (which
-  // writes the default image into its freed texture slots) before a legacy scene writes its own. A
-  // legacy scene replace destroys a kept one first (createVulkanScene).
+  // The retained scene is kept, emptied, when images are kept for reuse (retainedSpare); otherwise
+  // destroyed now, its backend waiting for the device and running what it retired.
   if(m_resources.retainedGpu && keepImagesForReuse)
   {
     m_resources.retainedGpu->clear();
@@ -3713,13 +3127,6 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
     m_resources.retainedSpare.reset();
   if(!m_resources.hostFed)  // a stream host's store is the session's
     m_resources.retainedScene.reset();
-  m_resources.scene.reset();
-  // Before sceneGpu.destroy(), which calls SceneVk::destroy() and would free these images.
-  // Keyed slots are cleared so destroy() frees only the images that cannot be reused.
-  if(keepImagesForReuse)
-    m_resources.sceneVk.retainImagesForReuse();
-  m_resources.sceneGpu.destroy();
-  m_sceneSelection.clearSelection();  // Clear selection in new UI system
   m_resources.selectedRenderNodes.clear();
   m_resources.animationControl      = AnimationControl{};
   m_resources.animationControl.play = m_animPlay;
@@ -3732,226 +3139,6 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   m_pendingAnchorResult.reset();
   m_cameraManip->cancelAnchor();  // Not resolveAnchor(): a miss would replay queued wheel steps
 
-  // Reset memory statistics for the new scene
-  // Keeps lifetime allocation/deallocation counts but resets current and peak values.
-  // Retained images are still allocated; reset() just zeroed their counters, so count them again
-  // or a later untrack does nothing and the reused scene reports no image memory.
-  m_resources.sceneVk.getMemoryTracker().reset();
-  if(keepImagesForReuse)
-    m_resources.sceneVk.trackRetainedImages();
-  m_resources.sceneRtx.getMemoryTracker().reset();
-  m_resources.transformCompute.getMemoryTracker().reset();
-  m_resources.animationVk.getMemoryTracker().reset();
-}
-
-//--------------------------------------------------------------------------------------------------
-void GltfRenderer::refreshCpuSceneGraphFromModel()
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(scene)
-    scene->setCurrentScene(scene->getCurrentScene());
-}
-
-void GltfRenderer::rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode mode)
-{
-  using RebuildMode = nvvkgltf::SceneGpu::RebuildMode;
-  // Modes that add or reload images (eFull adopts unchanged file-backed images and reads the rest;
-  // eMergeAppend loads only the new tail). Both need a descriptor rewrite; eGeometryOnly leaves
-  // textures untouched.
-  const bool touchesTextures = (mode == RebuildMode::eFull || mode == RebuildMode::eMergeAppend);
-
-  // SYNC NOTE: Full scene rebuild (merge/compact/geometry change) -- wait ensures GPU is idle.
-  NVVK_CHECK(vkQueueWaitIdle(m_app->getQueue(0).queue));
-
-  nvvkgltf::Scene* scene = m_resources.getScene();
-
-  {
-    if(scene)
-      m_resources.transformCompute.destroyGpuBuffers();  // Before scene RTX rebuild
-    m_resources.prevPositions.destroyGpuBuffers();       // The rebuild replaces the vertex buffers
-    m_verticesWrittenLastFrame = false;
-    VkCommandBuffer cmd{};
-    nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
-    m_resources.sceneGpu.rebuild(cmd, *scene, mode);
-    NVVK_CHECK(vkEndCommandBuffer(cmd));
-    m_loadPipeline.enqueue(cmd);
-  }
-
-  buildAccelerationStructures();
-
-  scene = m_resources.getScene();
-  if(scene)
-  {
-    // After merge: select the merged file's first animation clip (appended after base clips).
-    // Otherwise currentAnimation often stays on a base-scene clip and merged motion appears "stuck".
-    AnimationControl& animCtrl = m_resources.animationControl;
-    if(int prefer = scene->takeMergePreferredAnimationIndex(); prefer >= 0)
-    {
-      const int nAnim = scene->animation().getNumAnimations();
-      if(nAnim > 0 && prefer < nAnim)
-        animCtrl.currentAnimation = prefer;
-    }
-    else if(scene->animation().hasAnimation())
-    {
-      const int nAnim = scene->animation().getNumAnimations();
-      if(nAnim > 0 && (animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim))
-        animCtrl.currentAnimation = 0;
-    }
-  }
-
-  // Update textures if images were (re)loaded. eFull rewrites the whole array; eMergeAppend rewrites it
-  // too (cheap, no disk) so the new tail textures become visible. eGeometryOnly preserves textures.
-  if(touchesTextures)
-  {
-    if(!updateTextures())
-    {
-      LOGE("Failed to update textures - scene may not render correctly\n");
-    }
-  }
-}
-
-//--------------------------------------------------------------------------------------------------
-// Rebuild the Vulkan scene after modifying the glTF model in-place.
-// Use this when you've modified model geometry (vertices, indices, accessors) and need to
-// recreate GPU resources. The model data itself is preserved.
-//
-// Example use cases:
-// - After MikkTSpace tangent generation with vertex splitting
-// - After mesh optimization that changes vertex/index counts
-// - After any operation that modifies buffer data or accessor indices
-//
-// Note: This preserves textures since they don't change during geometry modifications.
-//
-void GltfRenderer::rebuildSceneFromModel()
-{
-  rebuildSceneGeometry();
-}
-
-//--------------------------------------------------------------------------------------------------
-// Geometry-only rebuild that preserves the undo stack. Use from undoable geometry edits (e.g. adding
-// a procedural primitive) where the mutation IS tracked by a command and undo history must survive.
-//
-void GltfRenderer::rebuildSceneGeometry()
-{
-  refreshCpuSceneGraphFromModel();
-  rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode::eGeometryOnly);  // Geometry only, preserve textures
-  resetFrame();  // geometry changed -> restart path-tracer accumulation (the rebuild clears the
-                 // dirty flags before updateSceneChanges runs, so nothing else would reset it)
-}
-
-//--------------------------------------------------------------------------------------------------
-// Reconcile GPU resources with the model after a create/undo/redo edit. Two cases:
-//
-// 1. First build: the scene just became valid() (e.g. the first object - primitive, light or empty
-//    node - added to an empty scene from the "Create" menu). No textures/materials/render-node
-//    buffers exist yet, so onRender()/updateSceneChanges() would touch unbuilt GPU resources. Detect
-//    this via the material buffer (null until the first full build) and do a full build.
-// 2. Primitive topology changed (primitivesChanged): syncFromScene() never (re)allocates the
-//    per-primitive vertex/index buffers, so they must be recreated to match the current render
-//    primitives before the per-frame acceleration-structure build references them. A count check is
-//    not sufficient: add -> undo -> add-a-different-primitive can leave counts equal while the GPU
-//    buffers still hold the old geometry, so key off primitivesChanged. Light / empty-node / transform
-//    edits on an already-built scene need nothing here - updateSceneChanges() handles them per frame.
-//
-// Runs in UI context (after a command / undo-redo), matching the safe rebuild pattern used by tangent
-// regen and merge.
-//
-void GltfRenderer::reconcileGeometryIfNeeded()
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(!scene || !scene->valid())
-    return;
-
-  const bool firstBuild = (m_resources.sceneVk.material().buffer == VK_NULL_HANDLE);
-  if(firstBuild)
-  {
-    rebuildVulkanSceneFull();  // textures + materials + geometry + AS
-    resetFrame();              // restart path-tracer accumulation (full rebuild doesn't itself reset)
-  }
-  else if(scene->getDirtyFlags().primitivesChanged)
-  {
-    rebuildSceneGeometry();  // geometry-only (recreates vertex/index buffers + BLAS/TLAS, resets frame)
-  }
-  // NOTE: DirtyFlags::texturesChanged is intentionally NOT handled here. A full texture rebuild frees
-  // the ImGui thumbnail descriptor sets, so it must run at the START of the frame, not mid-frame from
-  // here (this runs during onUIRender, e.g. via onUndoRedo). See applyPendingTextureRebuild().
-}
-
-//--------------------------------------------------------------------------------------------------
-// Full GPU resource rebuild including textures. Used after operations that modify the model
-// structure: merging scenes, compacting resources, etc.
-// Destroys all GPU resources and recreates from the current model.
-//
-void GltfRenderer::rebuildVulkanSceneFull()
-{
-  rebuildVulkanSceneInternal(nvvkgltf::SceneGpu::RebuildMode::eFull);
-}
-
-//--------------------------------------------------------------------------------------------------
-// This function creates the Vulkan scene from the glTF model
-// It builds the bottom-level and top-level acceleration structure
-// The function is called when the scene is loaded
-void GltfRenderer::createVulkanScene()
-{
-  // a retained scene kept for reuse goes before this one writes the scene's descriptors (cleanupScene)
-  m_resources.retainedSpare.reset();
-  {
-    // Enable opacity micromap (EXT_mesh_opacity_micromap) build when the device supports it
-    m_resources.sceneVk.setOpacityMicromapEnabled(m_resources.settings.opacityMicromapSupported);
-    // Micromaps are only an acceleration: without device support they are skipped and the image is
-    // unchanged. Mention it once per load, only for a scene that actually carries them, and not when
-    // the user turned them off (--useOpacityMicromap 0).
-    const std::vector<std::string>& extUsed = m_resources.getScene()->getModel().extensionsUsed;
-    if(m_resources.settings.opacityMicromapMissing
-       && std::find(extUsed.begin(), extUsed.end(), EXT_MESH_OPACITY_MICROMAP_EXTENSION_NAME) != extUsed.end())
-    {
-      LOGW("Scene has opacity micromaps; using them needs an NVIDIA RTX GPU with a recent driver (VK_KHR_opacity_micromap). Rendering is unaffected.\n");
-    }
-
-    // Create and queue command buffer for scene data upload (vertices, indices, materials, etc.)
-    // This work happens asynchronously via the command buffer queue
-    fv::timing::Scope timeBuffers("scene buffers");
-    VkCommandBuffer   cmd{};
-    nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
-    m_resources.sceneGpu.create(cmd, *m_resources.getScene(), true);
-    NVVK_CHECK(vkEndCommandBuffer(cmd));
-    m_loadPipeline.enqueue(cmd);
-  }
-  if(fv::timing::enabled())
-  {
-    const auto& ts = m_resources.sceneVk.lastTextureStats();
-    char        buf[160];
-    std::snprintf(buf, sizeof buf, "textures: %zu decoded, %zu adopted, decode %.1f ms, upload %.1f ms, %zu prefetched", ts.decoded, ts.adopted,
-                  ts.decodeMs, ts.uploadMs, ts.prefetched);
-    fv::timing::line(buf);
-  }
-
-  buildAccelerationStructures();
-
-  // One line to compare scenes by: ray tracing size, and the GPU memory the scene was given (the BLAS
-  // before compaction, which runs later on non-animated scenes).
-  const nvvkgltf::Scene& scene = *m_resources.getScene();
-  constexpr double       kMB   = 1024.0 * 1024.0;
-  LOGI("Scene: %zu render primitives (BLAS), %zu render nodes (TLAS instances), %zu materials, %zu textures; GPU memory: scene %.1f MB, "
-       "ray tracing %.1f MB (BLAS %.1f MB)\n",
-       scene.getRenderPrimitives().size(), scene.getRenderNodes().size(), scene.getModel().materials.size(), scene.getModel().textures.size(),
-       sumTrackerCurrentBytes(m_resources.sceneVk.getMemoryTracker()) / kMB,
-       sumTrackerCurrentBytes(m_resources.sceneRtx.getMemoryTracker()) / kMB,
-       m_resources.sceneRtx.getMemoryTracker().getStats("BLAS").currentBytes / kMB);
-  // The same sizes and the rest of what slot capacities and the uint16 texture-info limit are sized
-  // from, read by baseline-report from inside the compose that loaded the scene
-  if(fv::timing::enabled())
-  {
-    const nvvkgltf::SceneRtx& rtx = m_resources.sceneRtx;
-    char                      buf[256];
-    std::snprintf(buf, sizeof buf,
-                  "scene counts: %zu render nodes, %zu TLAS instances, %zu BLASes, %zu render primitives, %zu materials, "
-                  "%zu texture infos, %u textures, %u samplers, %llu BLAS scratch bytes",
-                  scene.getRenderNodes().size(), rtx.tlasInstanceCount(), rtx.blasCount(), scene.getRenderPrimitives().size(),
-                  scene.getModel().materials.size(), m_resources.sceneVk.textureInfoCount(), m_resources.sceneVk.textureCount(),
-                  m_resources.sceneVk.samplerCount(), static_cast<unsigned long long>(rtx.blasScratchBytes()));
-    fv::timing::line(buf);
-  }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -4030,7 +3217,6 @@ void GltfRenderer::replaceHostScene()
       m_hostClip = {};
   }
   ++m_sceneGeneration;
-  m_pendingAnimReconcile = false;
   // the previous scene's backend, emptied, when the cleanup kept it: its decoded images are this one's to take
   const bool retire = m_resources.retainedGpu != nullptr;
   if(retire)
@@ -4081,8 +3267,7 @@ void GltfRenderer::replaceHostScene()
        images.decoded, m_resources.retainedGpu->takePrefetchCount(), images.reused,
        m_resources.retainedGpu->memoryStats().usedBytes / (1024.0 * 1024.0));
 
-  // finalizeSceneSetup's part for a scene with no CPU glTF beside it: no cameras for the widget, no
-  // UI panels, no authored sky or interactivity (a host scene has none); the camera stays
+  // the camera stays
   m_resources.currentFeatureSet = {};
   updateRetainedFeatures(false);
   calibrateFireflyClamp();
@@ -4138,8 +3323,7 @@ void GltfRenderer::seekHostClip(float time)
   m_resources.animationControl.seek = true;
 }
 
-// The clip playing moved on by this frame's time and written into the store's entities, as
-// evaluateClip does it for a legacy clip.
+// The clip playing moved on by this frame's time and written into the store's entities.
 bool GltfRenderer::advanceHostClip()
 {
   AnimationControl&  ctrl  = m_resources.animationControl;
@@ -4174,7 +3358,7 @@ void GltfRenderer::logRetainedNotices()
 }
 
 //--------------------------------------------------------------------------------------------------
-// The retained scene's frame, in place of the legacy per-frame GPU paths: the clip moved on, then the
+// The retained scene's frame: the clip moved on, then the
 // residency's sync of what the host fed since the last frame. True when the frame changed.
 //
 bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
@@ -4237,111 +3421,6 @@ std::optional<nvvkgltf::SceneFeatureSet> GltfRenderer::drawableFeatures()
   if(m_resources.settings.renderSystem != RenderingMode::ePathtracer)
     return std::nullopt;
   return m_pathTracer.liveShaderFeatures();
-}
-
-//--------------------------------------------------------------------------------------------------
-// Build BLAS and TLAS acceleration structures for ray tracing
-// Used by both createVulkanScene() and rebuildSceneFromModel()
-//
-void GltfRenderer::buildAccelerationStructures()
-{
-  // Skip BLAS compaction for animated scenes to avoid freezing mesh positions; only static scenes are compacted.
-  // An editable (host-driven) session refits geometry in place too, so it never compacts.
-  const bool isAnimated = m_editable || (m_resources.getScene() && m_resources.getScene()->animation().hasAnimation());
-  VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-  flags |= isAnimated ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
-
-  // Create the bottom-level acceleration structure descriptors (no building yet)
-  m_resources.sceneRtx.createBottomLevelAccelerationStructure(*m_resources.getScene(), m_resources.sceneVk, flags);
-
-  // Build the bottom-level acceleration structure
-  // Memory-conscious approach: build within a fixed memory budget using multiple command buffers if needed
-  // Each build command is queued separately and (for non-animated scenes) followed by compaction to optimize memory usage
-  {
-    bool finished = false;
-
-    // [fv-time] GPU BLAS build / GPU TLAS build: what the GPU spent on the builds themselves, read back
-    // when each command buffer completes (the "drain load pipeline" scope is the CPU's wait for all of
-    // the load's GPU work). The BLAS line sums the passes and comes with the last one; compaction is
-    // not in it. The TLAS line includes the upload of its instances.
-    const bool timeGpu = fv::timing::enabled();
-    auto       makeGpuTimer = [&]() -> std::shared_ptr<OneShotGpuTimer> {
-      return timeGpu ? std::make_shared<OneShotGpuTimer>(m_device, m_app->getPhysicalDevice()) : nullptr;
-    };
-    auto blasGpuMs = std::make_shared<double>(0.0);
-
-    fv::timing::Scope timeBlas("BLAS record");
-    // Building BLAS within a memory budget, which could involve multiple calls to cmdBuildBottomLevelAccelerationStructure
-    do
-    {
-      VkCommandBuffer cmd{};
-      nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
-      constexpr VkDeviceSize kBlasBuildMemoryBudget = 512ULL * 1024 * 1024;  // 512 MB per build pass
-      std::shared_ptr<OneShotGpuTimer> gpuTimer = makeGpuTimer();
-      if(gpuTimer)
-        gpuTimer->begin(cmd);
-      finished = m_resources.sceneRtx.cmdBuildBottomLevelAccelerationStructure(cmd, kBlasBuildMemoryBudget);
-      if(gpuTimer)
-        gpuTimer->end(cmd);
-      NVVK_CHECK(vkEndCommandBuffer(cmd));
-      m_loadPipeline.enqueue(cmd, [this, isAnimated, gpuTimer, blasGpuMs, last = finished] {
-        if(gpuTimer)
-        {
-          *blasGpuMs += gpuTimer->ms();
-          if(last)
-            OneShotGpuTimer::report("GPU BLAS build", *blasGpuMs);
-        }
-        if(!isAnimated)
-        {
-          VkCommandBuffer compactCmd{};
-          nvvk::beginSingleTimeCommands(compactCmd, m_device, m_transientCmdPool);
-          m_resources.sceneRtx.cmdCompactBlas(compactCmd);
-          NVVK_CHECK(vkEndCommandBuffer(compactCmd));
-          m_loadPipeline.enqueue(compactCmd);
-        }
-      });
-
-    } while(!finished);
-
-    // Track all BLAS allocations now that they're all built
-    m_resources.sceneRtx.trackBlasMemory();
-
-    // Queue TLAS building for after all BLAS work completes
-    // TLAS is the top-level structure referencing all bottom-level acceleration structures
-    {
-      fv::timing::Scope timeTlas("TLAS record");
-      VkCommandBuffer   cmd{};
-      nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
-      std::shared_ptr<OneShotGpuTimer> gpuTimer = makeGpuTimer();
-      if(gpuTimer)
-        gpuTimer->begin(cmd);
-      m_resources.sceneRtx.cmdCreateBuildTopLevelAccelerationStructure(cmd, m_resources.staging, *m_resources.getScene());
-      if(gpuTimer)
-        gpuTimer->end(cmd);
-      m_resources.staging.cmdUploadAppended(cmd);
-      NVVK_CHECK(vkEndCommandBuffer(cmd));
-      m_loadPipeline.enqueue(cmd, [this, gpuTimer] {
-        if(gpuTimer)
-          OneShotGpuTimer::report("GPU TLAS build", gpuTimer->ms());
-        m_resources.staging.releaseCompletedAllocations(true);
-      });
-    }
-  }
-
-  // Avoid double-build: whoever called us (createVulkanScene, rebuildVulkanSceneInternal, or updateSceneChanges) just queued BLAS+TLAS.
-  if(m_resources.getScene())
-    m_resources.getScene()->getDirtyFlags().primitivesChanged = false;
-
-  // GPU transform SSBOs (hierarchy, matrices, RenderNodeGpuMapping). Queue after TLAS instance buffer exists.
-  if(m_resources.getScene())
-  {
-    m_resources.transformCompute.createGpuBuffers(m_resources.staging, *m_resources.getScene());
-    VkCommandBuffer upCmd{};
-    nvvk::beginSingleTimeCommands(upCmd, m_device, m_transientCmdPool);
-    m_resources.staging.cmdUploadAppended(upCmd);
-    NVVK_CHECK(vkEndCommandBuffer(upCmd));
-    m_loadPipeline.enqueue(upCmd);
-  }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -4464,9 +3543,8 @@ void GltfRenderer::createDescriptorSets()
 // nvsamples::getResourcesDirs() so bare resource-relative inputs (e.g. `--hdrfile studio.hdr`
 // where studio.hdr ships under the sample's resources dir) work exactly like a cwd-relative or
 // absolute path. Reporting success/failure is likewise the loaders' job: HdrIbl::isValid() flips
-// off with a warning log when its input cannot be loaded, and Scene creation leaves getScene()
-// null when it bails -- so we no longer need a pre-flight std::filesystem::exists() gate here
-// that would reject resource-relative inputs the loader would otherwise have found.
+// off with a warning log when its input cannot be loaded -- so we no longer need a pre-flight
+// std::filesystem::exists() gate here that would reject resource-relative inputs the loader would otherwise have found.
 bool GltfRenderer::loadHdrEnvironment(const std::filesystem::path& filename)
 {
   // Not attached yet: this is the start-up command-line parse, and main() performs that load
@@ -4517,38 +3595,12 @@ bool GltfRenderer::loadSceneFile(const std::filesystem::path& filename)
   if(!m_app)
     return false;
 
-  // Programmatic full-scene replacement (CLI/benchmark/MCP). Mirror the teardown that the
-  // onFileDrop replace-path runs before `createScene` -- without it, we leak/keep-stale the
-  // previous scene's derived state: sceneRtx BLAS/TLAS, sceneGpu buffers, transformCompute GPU
-  // buffers, undo stack, thumbnails, hover/pick, animation & interactivity controls, and the
-  // rasterizer's recorded secondary command buffer (see cleanupScene()'s comment naming itself
-  // "the authoritative invalidation point"). createHDR self-quiesces so loadHdrEnvironment does
-  // not need a parallel wrapper-level teardown; createScene does not, so we do it here.
-  //
-  // Synchronous (unlike onFileDrop, which threads the load behind a busy indicator) because a
-  // benchmark/MCP client needs the scene fully installed on the GPU before this call returns --
-  // otherwise the next sequenced parameter change would race the upload.
-  //
-  // Consequence: a failed load leaves an empty scene rather than the previous one. That is the
-  // right failure mode for programmatic clients (an obviously empty capture beats a silently
-  // wrong one attributed to the requested filename); the caller in main.cpp also emits a LOGW
-  // naming the offending file.
+  // Synchronous: a client needs the scene on the GPU before this returns. A failed load leaves an
+  // empty scene rather than the previous one, and the caller in main.cpp names the file.
   vkQueueWaitIdle(m_app->getQueue(0).queue);
   m_loadPipeline.clear();
-  // File-backed images stay resident so createScene can adopt the unchanged files.
   cleanupScene(/*keepImagesForReuse=*/true);
-
-  // Return createScene's own outcome, not `getScene() != nullptr`: even after cleanupScene()
-  // above, we want the return to describe what the *new* attempt did, not accidentally report
-  // success just because some scene pointer happens to be non-null.
-  // createScene returns before any GPU image work when the file cannot be read, which would
-  // leave the previous scene's textures in the pool.
-  if(!createScene(filename))
-  {
-    m_resources.sceneVk.releaseRetainedImages();
-    return false;
-  }
-  return true;
+  return createScene(filename);
 }
 
 void GltfRenderer::prefetchImage(const std::filesystem::path& diskPath, bool srgb)
@@ -4588,71 +3640,6 @@ bool GltfRenderer::compileShaders()
 }
 
 //--------------------------------------------------------------------------------------------------
-// Update the textures: this is called when the scene is loaded
-// Textures are updated in the descriptor set (0)
-bool GltfRenderer::updateTextures()
-{
-  const uint32_t imageCount = m_resources.sceneVk.textureCount();
-  if(imageCount == 0)
-    return true;
-  return writeTextureDescriptorRange(0, imageCount, 0, m_resources.sceneVk.samplerCount());
-}
-
-//--------------------------------------------------------------------------------------------------
-// Write a contiguous range of the scene texture (eTextures) and sampler (eSamplers) descriptor arrays.
-// updateTextures() writes the whole set (elements 0..count); applyPendingTextureTailSync() writes only
-// the appended tail. The arrays are bindless (UPDATE_AFTER_BIND + PARTIALLY_BOUND), so a partial write
-// leaves the untouched slots -- and any in-flight frames referencing them -- valid.
-bool GltfRenderer::writeTextureDescriptorRange(uint32_t firstTexture, uint32_t textureCount, uint32_t firstSampler, uint32_t samplerCount)
-{
-  // CRITICAL: materials index eTextures[] / eSamplers[] directly; exceeding capacity would read
-  // uninitialized descriptors (undefined behavior). Fail loudly instead.
-  if(firstTexture + textureCount > m_maxTextures)
-  {
-    LOGE("FATAL: Scene needs %u material images but the descriptor set only supports %u!", firstTexture + textureCount, m_maxTextures);
-    LOGE("       Increase m_maxTextures in renderer.hpp, or reduce/deduplicate scene textures.");
-    return false;
-  }
-  if(firstSampler + samplerCount > m_maxSamplers)
-  {
-    LOGE("FATAL: Scene needs %u samplers but the descriptor set only supports %u!", firstSampler + samplerCount, m_maxSamplers);
-    return false;
-  }
-
-  nvvk::WriteSetContainer write{};
-
-  // eTextures: SAMPLED_IMAGE array. The nvvk::Image descriptors supply imageView + layout; their
-  // sampler field is ignored by Vulkan for this descriptor type.
-  if(textureCount > 0)
-  {
-    VkWriteDescriptorSet images =
-        m_resources.descriptorBinding[0].getWriteSet(shaderio::BindingPoints::eTextures, m_resources.descriptorSet,
-                                                     firstTexture, textureCount);
-    write.append(images, m_resources.sceneVk.textures().data() + firstTexture);
-  }
-
-  // eSamplers: SAMPLER array. Only the sampler field is used; imageView stays null. samplerInfos must
-  // outlive vkUpdateDescriptorSets below, so it lives at function scope.
-  std::vector<VkDescriptorImageInfo> samplerInfos;
-  if(samplerCount > 0)
-  {
-    samplerInfos.resize(samplerCount);
-    const std::vector<VkSampler>& samplers = m_resources.sceneVk.samplers();
-    for(uint32_t i = 0; i < samplerCount; ++i)
-      samplerInfos[i] = VkDescriptorImageInfo{
-          .sampler = samplers[firstSampler + i], .imageView = VK_NULL_HANDLE, .imageLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VkWriteDescriptorSet allSamplers =
-        m_resources.descriptorBinding[0].getWriteSet(shaderio::BindingPoints::eSamplers, m_resources.descriptorSet,
-                                                     firstSampler, samplerCount);
-    write.append(allSamplers, samplerInfos.data());
-  }
-
-  if(write.size() > 0)
-    vkUpdateDescriptorSets(m_device, write.size(), write.data(), 0, nullptr);
-  return true;
-}
-
-//--------------------------------------------------------------------------------------------------
 // Update the HDR images : add the 2D images to allTextures and the cube images to allTexturesCube
 //
 void GltfRenderer::updateHdrImages()
@@ -4682,87 +3669,12 @@ void GltfRenderer::resetFrame()
   m_resources.frameCount = -1;
 }
 
-// Select a scene-graph node by index from a script parameter (--selectNode). The index is a glTF node
-// index, exactly as shown in the Scene Browser tree. This routes through the shared SceneSelection so the
-// Scene Browser highlight, the Inspector contents, and the render-node selection set all update precisely
-// as they would from a click in the tree (selectNode emits NodeSelected, which onSceneSelectionEvent turns
-// into the selectedRenderNodes set). A negative or out-of-range index clears the selection. Used by the
-// windowed scripted-run harness so UI/UX changes to the scene list and inspector can be exercised and
-// captured with --uiScreenshot.
-void GltfRenderer::selectSceneNodeFromScript(int nodeIndex)
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  const int        count = (scene && scene->valid()) ? static_cast<int>(scene->getModel().nodes.size()) : 0;
-  if(nodeIndex >= 0 && nodeIndex < count)
-  {
-    m_sceneSelection.selectNode(nodeIndex);
-  }
-  else
-  {
-    if(nodeIndex >= 0)
-    {
-      LOGW("--selectNode %d ignored: scene has %d node(s)\n", nodeIndex, count);
-    }
-    // clearSelection() does not emit an event, so drop the render-node set explicitly.
-    m_sceneSelection.clearSelection();
-    m_resources.selectedRenderNodes.clear();
-  }
-  resetFrame();
-}
-
-void GltfRenderer::pickSceneNodeFromScript(int nodeIndex)
-{
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(!scene || !scene->valid())
-    return;
-
-  const int nodeCount = static_cast<int>(scene->getModel().nodes.size());
-  if(nodeIndex < 0 || nodeIndex >= nodeCount)
-  {
-    updateSelectionFromPick(-1);
-    resetFrame();
-    return;
-  }
-
-  // Find a render node for this glTF node (first primitive) - same "which render node represents
-  // this glTF node" question a real click's TLAS instance ID answers implicitly.
-  const auto& renderNodes   = scene->getRenderNodes();
-  int         renderNodeIdx = -1;
-  for(size_t i = 0; i < renderNodes.size(); ++i)
-  {
-    if(renderNodes[i].refNodeID == nodeIndex)
-    {
-      renderNodeIdx = static_cast<int>(i);
-      break;
-    }
-  }
-  if(renderNodeIdx < 0)
-  {
-    LOGW("pickrendernode %d ignored: glTF node has no render primitive (not a mesh node?)\n", nodeIndex);
-    updateSelectionFromPick(-1);
-    resetFrame();
-    return;
-  }
-
-  // Synthetic but finite ray data (no real cursor/GPU raycast in a scripted run): the current camera
-  // eye as the ray origin, the node's own world-space position as the hit point - enough to exercise
-  // KHR_interactivity event/onSelect's selectionPoint/selectionRayOrigin end-to-end.
-  glm::dvec3 eye, center, up;
-  m_cameraManip->getLookat(eye, center, up);
-  const auto&     worldMatrices = scene->getNodesWorldMatrices();
-  const glm::vec3 worldPos =
-      nodeIndex < static_cast<int>(worldMatrices.size()) ? glm::vec3(worldMatrices[nodeIndex][3]) : glm::vec3(0);
-  updateSelectionFromPick(renderNodeIdx, worldPos, glm::vec3(eye));
-  resetFrame();
-}
-
 // AnchorCameraManipulator::AnchorRequest: called from camera_controls::update() inside the
 // "Viewport" window when an anchored drag or wheel step begins. Like a click, it only captures the ray; onRender()
 // records the pick and updateAnchorPickState() answers the manipulator.
 bool GltfRenderer::requestAnchorPick(const glm::dvec2& screenPos)
 {
-  const nvvkgltf::Scene* scene = m_resources.getScene();
-  if(m_busy.isBusy() || scene == nullptr || !scene->valid() || m_resources.sceneRtx.topLevelAS() == VK_NULL_HANDLE)
+  if(m_busy.isBusy() || m_resources.gpuView().tlas() == VK_NULL_HANDLE)
     return false;
 
   // A new request supersedes one still in flight: the manipulator only waits for the latest, and an
@@ -4968,9 +3880,6 @@ void GltfRenderer::destroyResources()
   m_resources.appMemoryTracker.untrack("GBuffers", m_resources.gBuffers, Resources::eImgCount);
   m_resources.tonemappedUi.deinit();
   m_resources.gBuffers.deinit();
-  m_resources.transformCompute.deinit();
-  m_resources.prevPositions.deinit();
-  m_resources.sceneGpu.deinit();
   m_resources.hdrIbl.deinit();
   m_resources.hdrDome.deinit();
   m_resources.samplerPool.deinit();
@@ -4980,204 +3889,6 @@ void GltfRenderer::destroyResources()
   m_resources.allocator.deinit();
 }
 
-
-//--------------------------------------------------------------------------------------------------
-// Update the scene animation
-// - If there is an animation in the scene, and animation is enabled, update the animation
-// - Update the relevant buffers and acceleration structures
-// - Reset the frame counter to restart progressive rendering
-//
-// The current clip moved on by this frame's time and evaluated on the CPU scene: its channels write
-// the nodes' TRS and morph weights (marked dirty) and its pointer targets. False when no clip plays or
-// it changed nothing. Both scene backends start from it: legacy reconciles its GPU state after it,
-// the retained scene's bridge carries the nodes it moved.
-bool GltfRenderer::evaluateClip(nvvkgltf::Scene& scn, VkCommandBuffer cmd)
-{
-  AnimationControl& animCtrl = m_resources.animationControl;
-  const int         nAnim    = scn.animation().getNumAnimations();
-  if(nAnim <= 0 || !m_resources.gpuView().hasPlayableAnimation() || !animCtrl.doAnimation())
-    return false;
-  if(animCtrl.currentAnimation < 0 || animCtrl.currentAnimation >= nAnim)
-    animCtrl.currentAnimation = 0;
-
-  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Update animation");
-  NVVK_DBG_SCOPE(cmd);
-
-  float                    deltaTime = animCtrl.deltaTime();
-  nvvkgltf::AnimationInfo& animInfo  = scn.animation().getAnimationInfo(animCtrl.currentAnimation);
-  if(animCtrl.isReset())
-    animInfo.reset();
-  else if(!animCtrl.seek)
-  {
-    animInfo.incrementTime(deltaTime, animCtrl.loop);
-    if(!animCtrl.loop && animInfo.currentTime >= animInfo.end)
-      animCtrl.play = false;
-  }
-
-  // Evaluate animation channels (marks Scene nodes dirty internally; also marks
-  // render nodes for skins whose joints moved, and materials/lights for pointer channels)
-  bool evaluated = false;
-  {
-    auto t    = m_profilerGpuTimer.cmdFrameSection(cmd, "Eval channels");
-    evaluated = scn.animation().updateAnimation(animCtrl.currentAnimation);
-  }
-  if(evaluated)
-    animCtrl.clearStates();
-  return evaluated;
-}
-
-bool GltfRenderer::updateAnimation(VkCommandBuffer cmd)
-{
-  nvvkgltf::Scene* scnPtr = m_resources.getScene();
-  if(!scnPtr)
-    return false;
-  if(evaluateClip(*scnPtr, cmd))
-  {
-    reconcileAnimationGpuState(cmd);
-    m_pendingAnimReconcile = false;
-    return true;
-  }
-
-  // A reconcile was asked for (a tangent upload put the base geometry back) with no clip playing,
-  // or while the clip changed nothing this frame (its channels hold still or target nothing)
-  if(m_pendingAnimReconcile)
-  {
-    m_pendingAnimReconcile = false;
-    auto timerSection      = m_profilerGpuTimer.cmdFrameSection(cmd, "Live edit reconcile");
-    reconcileAnimationGpuState(cmd);
-    return true;
-  }
-
-  return false;
-}
-
-//--------------------------------------------------------------------------------------------------
-// #DLSS deformation motion. Keeps each deforming primitive's positions as they are at the start
-// of the frame, before skinning or morphs rewrite them in place: skinned and morphed primitives.
-// Copied only when a writer ran last frame; otherwise the copy kept earlier still matches,
-// since nothing wrote in between. A newly kept primitive is copied at once. The first copies wait
-// for DLSS; from then on this runs every frame, DLSS or not, so no copy falls behind.
-void GltfRenderer::snapshotPrevPositions(VkCommandBuffer cmd)
-{
-  nvvkgltf::Scene* scn = m_resources.getScene();
-  const bool dlss = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled();
-  if(!scn)
-    return;
-  if(!dlss)
-  {
-    // Only DLSS reads the copies. Buffers kept from an earlier DLSS session go stale here and are
-    // copied whole on its first frame back, which is what keeping them current would have left.
-    m_prevPositionsStale = m_prevPositionsStale || m_resources.prevPositions.hasBuffers();
-    return;
-  }
-
-  std::vector<int> prims;
-  for(uint32_t p : scn->animation().getMorphPrimitives())
-    prims.push_back(int(p));
-  for(const auto& task : scn->animation().getSkinTasks())
-    prims.push_back(task.renderPrimID);
-  if(prims.empty())
-    return;
-
-  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Snapshot prev positions");
-  m_resources.prevPositions.cmdCopy(cmd, m_resources.sceneVk, prims, m_verticesWrittenLastFrame || m_prevPositionsStale);
-  m_prevPositionsStale = false;
-}
-
-void GltfRenderer::reconcileAnimationGpuState(VkCommandBuffer cmd)
-{
-  nvvkgltf::Scene&    scn    = *m_resources.getScene();
-  nvvkgltf::SceneVk&  scnVk  = m_resources.sceneVk;
-  nvvkgltf::SceneRtx& scnRtx = m_resources.sceneRtx;
-
-  // Recompute world matrices for dirty nodes and expand dirty flags to all affected
-  // render nodes (including descendants needed for transform-only animated nodes).
-  {
-    auto t = m_profilerGpuTimer.cmdFrameSection(cmd, "World matrices + dirty");
-    scn.updateNodeWorldMatrices();
-  }
-
-  scnRtx.updateInstanceFlagsCache(scn);
-
-  const bool gpuTransform = m_resources.sceneGpu.shouldUseGpuTransform(scn);
-
-  {
-    auto t = m_profilerGpuTimer.cmdFrameSection(cmd, "Sync to GPU");
-    if(gpuTransform)
-    {
-      // Animated emitters are handled upstream: updateNodeWorldMatrices() (called above) refreshes
-      // the render-node world matrices and latches DirtyFlags::emissiveDirty when an emissive node
-      // moves, so syncFromScene rebuilds the emitter list even though this restricted mask omits
-      // render-node sync.
-      (void)scnVk.syncFromScene(m_resources.staging, scn, nvvkgltf::SceneVk::eSyncMaterials | nvvkgltf::SceneVk::eSyncLights);
-      (void)scnVk.flushSceneDescIfDirty(m_resources.staging, scn);
-    }
-    else
-    {
-      // A prior GPU transform frame may have moved nodes on-device only; reconcile just those before
-      // the CPU sync sources render-node / TLAS transforms from the CPU mirror.
-      if(scn.mergeGpuStaleNodesIntoDirty())
-        scn.updateNodeWorldMatrices();
-      markGpuTransformStaleAfterCpuSync(scn);
-      (void)scnVk.syncFromScene(m_resources.staging, scn);
-    }
-  }
-
-  bool hasMorphOrSkin = scn.animation().hasMorphTargets() || scn.animation().hasSkinning();
-  if(hasMorphOrSkin)
-  {
-    auto timerSectionMorph = m_profilerGpuTimer.cmdFrameSection(cmd, "Morph or Skin");
-    m_resources.sceneGpu.applyAnimation(cmd, scn);
-  }
-
-  {
-    auto t = m_profilerGpuTimer.cmdFrameSection(cmd, "Staging flush");
-    m_resources.staging.cmdUploadAppended(cmd);
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                           VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-                           VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT
-                               | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
-  }
-
-  {
-    auto timerSectionAS = m_profilerGpuTimer.cmdFrameSection(cmd, "AS update");
-    if(hasMorphOrSkin && m_resources.sceneGpu.animatesOnGpu())
-      scnRtx.updateBottomLevelAS(cmd, m_resources.animationVk.primitivesWritten());  // the sets this dispatch wrote
-    else if(hasMorphOrSkin)
-      scnRtx.updateBottomLevelAS(cmd, scn);  // the CPU fallback uploaded every morphed and skinned primitive
-    if(gpuTransform)
-    {
-      m_resources.transformCompute.dispatchTransformUpdate(cmd, m_resources.staging, scn, scnVk, scnRtx);
-    }
-    else
-    {
-      (void)scnRtx.syncTopLevelAS(cmd, m_resources.staging, scn);
-    }
-  }
-
-  // Preserve the deferred texture/sampler signals across this per-frame flag clear: all three are
-  // consumed at frame top (applyPendingTextureRebuild() / applyPendingTextureTailSync() /
-  // applyPendingSamplerUpdate()), not here, so a texture/image/sampler edit or an import/undo made
-  // while an animation plays must not be wiped before then.
-  // materials/lights are also preserved: an animation channel that targets a material/light property
-  // (KHR_animation_pointer) marks them dirty
-  // inside scn.animation().updateAnimation() above, but this function's own GPU sync already
-  // consumed that write - clearing them here (instead of after updateSceneChanges() sees them) would
-  // silently skip notifyDlssContentReset()'s appearance-discontinuity check for an animation-driven
-  // material/light change, the same DLSS temporal-history bug already fixed for pointer/set writes.
-  const bool              pendingTextures    = scn.getDirtyFlags().texturesChanged;
-  const bool              pendingTextureTail = scn.getDirtyFlags().texturesTailChanged;
-  std::unordered_set<int> pendingSamplers    = std::move(scn.getDirtyFlags().samplers);
-  std::unordered_set<int> pendingMaterials   = std::move(scn.getDirtyFlags().materials);
-  std::unordered_set<int> pendingLights      = std::move(scn.getDirtyFlags().lights);
-  scn.clearDirtyFlags();
-  scn.getDirtyFlags().texturesChanged     = pendingTextures;
-  scn.getDirtyFlags().texturesTailChanged = pendingTextureTail;
-  scn.getDirtyFlags().samplers            = std::move(pendingSamplers);
-  scn.getDirtyFlags().materials           = std::move(pendingMaterials);
-  scn.getDirtyFlags().lights              = std::move(pendingLights);
-}
 
 //--------------------------------------------------------------------------------------------------
 // Non-blocking poll of the async click ray-pick (see m_pendingClickPick's comment in renderer.hpp).
@@ -5211,249 +3922,3 @@ void GltfRenderer::updateAnchorPickState()
   m_cameraManip->resolveAnchor(glm::dvec3(pickResult.worldRayOrigin + pickResult.worldRayDirection * pickResult.hitT));
 }
 
-//--------------------------------------------------------------------------------------------------
-// updateSceneChanges
-//
-// Syncs CPU scene state (dirty flags) to GPU: SceneVk buffers (materials, lights, render nodes,
-// vertices) and SceneRtx acceleration structures (BLAS/TLAS). Called once per frame before draw.
-//
-//--------------------------------------------------------------------------------------------------
-// updateSceneChanges phase helpers
-//--------------------------------------------------------------------------------------------------
-void GltfRenderer::updateSceneChanges_BlasRebuild(const nvvkgltf::Scene::DirtyFlags& df)
-{
-  if(df.primitivesChanged)
-    buildAccelerationStructures();
-}
-
-void GltfRenderer::updateSceneChanges_NodeTransforms(VkCommandBuffer cmd, nvvkgltf::Scene* scene, const nvvkgltf::Scene::DirtyFlags& df)
-{
-  if(df.nodes.empty())
-    return;
-
-  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "UpdateNodeWorldMatrices");
-  scene->updateNodeWorldMatrices();
-}
-
-uint32_t GltfRenderer::updateSceneChanges_SyncGpuBuffers(VkCommandBuffer cmd, nvvkgltf::Scene* scene)
-{
-  uint32_t synced = m_resources.sceneVk.syncFromScene(m_resources.staging, *scene);
-
-  if(m_resources.sceneVk.flushSceneDescIfDirty(m_resources.staging, *scene))
-    synced |= nvvkgltf::SceneVk::eSyncRenderNodes;
-
-  if(synced != nvvkgltf::SceneVk::eSyncNone)
-  {
-    auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "SyncGpuBuffers");
-    // A prior staging flush earlier this frame (updateAnimation's "Staging flush") may have written
-    // some of these same buffers (e.g. m_bSceneDesc when a structural change re-dirties it). Those
-    // writes were exposed to compute / AS-build / vertex-input consumers, so this second transfer
-    // write must be ordered after both the prior transfer write (WAW) and those readers (WAR).
-    nvvk::cmdMemoryBarrier(cmd,
-                           VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
-                               | VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
-                           VK_PIPELINE_STAGE_2_COPY_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR
-                               | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    m_resources.staging.cmdUploadAppended(cmd);
-  }
-  return synced;
-}
-
-//--------------------------------------------------------------------------------------------------
-// After a CPU transform sync, tell the GPU transform path what it no longer holds. Call once the CPU
-// world-matrix walk has run, so the render-node dirty sets say whether geometry moved.
-//
-// A frame that moved only mesh-less nodes -- the sky's sun on every frame of a Time of Day drag --
-// changed those nodes' locals and nothing else, so only they are re-uploaded on the next GPU frame.
-// Anything else keeps the full re-upload, the conservative choice this path always made.
-//
-void GltfRenderer::markGpuTransformStaleAfterCpuSync(const nvvkgltf::Scene& scene)
-{
-  const auto& df = scene.getDirtyFlags();
-  if(df.isEmpty())
-    return;
-  if(!df.nodes.empty() && !scene.dirtyNodesReachGeometry())
-    m_resources.transformCompute.markLocalsStale(df.nodes);
-  else
-    m_resources.transformCompute.markGpuStale();
-}
-
-void GltfRenderer::updateSceneChanges_TlasUpdate(VkCommandBuffer cmd, nvvkgltf::Scene* scene)
-{
-  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "SyncTopLevelAS");
-  (void)m_resources.sceneRtx.syncTopLevelAS(cmd, m_resources.staging, *scene);
-}
-
-void GltfRenderer::updateSceneChanges_RasterizerInvalidate(bool renderNodeOrNodeDirty)
-{
-  if(renderNodeOrNodeDirty)
-    m_rasterizer.freeRecordCommandBuffer(m_resources);
-}
-
-void GltfRenderer::updateSceneChanges_TangentUpload(VkCommandBuffer cmd, nvvkgltf::Scene* scene, bool& changed)
-{
-  (void)cmd;
-  if(m_resources.dirtyFlags.test(DirtyFlags::eDirtyTangents))
-  {
-    m_resources.sceneVk.uploadVertexBuffers(m_resources.staging, *scene);
-    m_resources.dirtyFlags.reset(DirtyFlags::eDirtyTangents);
-    // the upload put the base geometry back into deformed primitives' buffers: skin and morph them again
-    m_resources.animationVk.invalidateOutputs();
-    m_pendingAnimReconcile = true;
-    changed = true;
-  }
-}
-
-void GltfRenderer::updateSceneChanges_Finalize(VkCommandBuffer cmd, bool changed, bool stagingFlushed, nvvkgltf::Scene* scene)
-{
-  if(changed && !stagingFlushed)
-    m_resources.staging.cmdUploadAppended(cmd);
-
-  // Preserve a pending sampler edit across this clear: it is only consumed at the next frame's top
-  // (applyPendingSamplerUpdate()), not here, so an Inspector edit made this frame must survive until then.
-  if(nvvkgltf::Scene* s = m_resources.getScene())
-  {
-    std::unordered_set<int> pendingSamplers = std::move(s->getDirtyFlags().samplers);
-    s->clearDirtyFlags();
-    s->getDirtyFlags().samplers = std::move(pendingSamplers);
-  }
-
-#ifndef NDEBUG
-  if(changed && m_validateGpuSync && scene && !m_skipGpuSyncValidation)
-  {
-    auto mismatches = m_resources.sceneVk.validateGpuSync(*scene, m_resources.sceneRtx.getTlasInstances());
-    for(const auto& m : mismatches)
-      LOGE("GPU sync mismatch: %s\n", m.description.c_str());
-    assert(mismatches.empty() && "GPU sync validation failed -- see log for details");
-  }
-#endif
-}
-
-//--------------------------------------------------------------------------------------------------
-// Sync scene dirty state to GPU (materials, lights, render nodes, BLAS/TLAS, rasterizer state).
-// Returns true if any change was applied (caller may reset frame counter for progressive rendering).
-// All dirty state lives in Scene; this function clears dirty flags at the end.
-//--------------------------------------------------------------------------------------------------
-bool GltfRenderer::updateSceneChanges(VkCommandBuffer cmd)
-{
-  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
-
-  nvvkgltf::Scene* scene = m_resources.getScene();
-  if(!scene)
-    return false;
-
-#ifndef NDEBUG
-  m_skipGpuSyncValidation = false;
-#endif
-
-  // A texture-set change is pending (structural via texturesChanged, or a tail import/undo/redo via
-  // texturesTailChanged). The GPU material buffer must not be updated to reference a new texture index
-  // before eTextures[] contains it -- that write runs at the next frame top (applyPendingTextureRebuild()
-  // / applyPendingTextureTailSync()). Skip this frame's sync and keep rendering the previous,
-  // self-consistent GPU state; the dirty flags persist until then.
-  if(scene->getDirtyFlags().texturesChanged || scene->getDirtyFlags().texturesTailChanged)
-    return false;
-
-  const auto& df             = scene->getDirtyFlags();
-  bool        changed        = !df.isEmpty();
-  bool        stagingFlushed = false;
-
-  // A mesh-less node (a light, a camera) moving changes nothing the recorded draws depend on.
-  bool renderNodeOrNodeDirty = df.allRenderNodesDirty || !df.renderNodesVk.empty() || scene->dirtyNodesReachGeometry();
-
-  // Material edit may have added or removed a KHR_materials_* extension; refresh the
-  // scene feature set so optimal-mode shader rebuild picks it up. Cheap check (walk
-  // a few maps per material); only runs when materials are actually dirty.
-  if(!df.materials.empty())
-    m_resources.recomputeSceneFeatures(dlssGuideRequired());
-
-  // A material/light property changed (e.g. a KHR_interactivity pointer/set writing a
-  // texture-transform offset, or a live Inspector edit) - this is an appearance discontinuity
-  // motion vectors can't describe (nothing moved; the surface's content just changed), so DLSS's
-  // temporal history would blend old and new content at the same screen location. Drop it via the
-  // active renderer's own DLSS instance, same as a resize/quality-change discontinuity. Node
-  // transform changes alone don't need this - they're already correctly handled by instance
-  // motion vectors (see the ordering comment in onRender() above / docs/denoising.md).
-  if(!df.materials.empty() || !df.lights.empty())
-  {
-    switch(m_resources.settings.renderSystem)
-    {
-      case RenderingMode::ePathtracer:
-        m_pathTracer.notifyDlssContentReset(m_resources);
-        break;
-      case RenderingMode::eRasterizer:
-        m_rasterizer.notifyDlssContentReset(m_resources);
-        break;
-    }
-  }
-
-  updateSceneChanges_BlasRebuild(df);
-  m_resources.sceneRtx.updateInstanceFlagsCache(*scene);
-
-  const bool gpuTransform = m_resources.sceneGpu.shouldUseGpuTransform(*scene);
-
-  if(gpuTransform)
-  {
-    // GPU handles world-matrix propagation, render-node updates, and TLAS rebuild.
-    // CPU only refreshes local matrices (for staging upload) and light world matrices.
-    if(!df.nodes.empty())
-    {
-      auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "UpdateLocalMatrices");
-      scene->updateLocalMatricesAndLights();
-    }
-
-    uint32_t synced = m_resources.sceneVk.syncFromScene(m_resources.staging, *scene,
-                                                        nvvkgltf::SceneVk::eSyncMaterials | nvvkgltf::SceneVk::eSyncLights);
-    if(m_resources.sceneVk.flushSceneDescIfDirty(m_resources.staging, *scene))
-      synced |= nvvkgltf::SceneVk::eSyncRenderNodes;
-
-    if(synced != nvvkgltf::SceneVk::eSyncNone)
-    {
-      auto timerSectionSync = m_profilerGpuTimer.cmdFrameSection(cmd, "SyncGpuBuffers");
-      m_resources.staging.cmdUploadAppended(cmd);
-    }
-    stagingFlushed = (synced != nvvkgltf::SceneVk::eSyncNone);
-
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT);
-
-    {
-      auto timerSectionGpu = m_profilerGpuTimer.cmdFrameSection(cmd, "GPU transform + TLAS update");
-      m_resources.transformCompute.dispatchTransformUpdate(cmd, m_resources.staging, *scene, m_resources.sceneVk,
-                                                           m_resources.sceneRtx);
-    }
-#ifndef NDEBUG
-    m_skipGpuSyncValidation = true;
-#endif
-  }
-  else
-  {
-    // If the GPU transform path moved nodes on-device, the CPU world-matrix mirror is stale for just
-    // those nodes. Only reconcile when this CPU frame actually syncs (df not empty): the upcoming
-    // syncFromScene / syncTopLevelAS source transforms from the mirror, so the moved nodes must be
-    // current (otherwise a moved object snaps to its stale CPU transform on a full TLAS rebuild). On
-    // idle frames the GPU-side transforms stay authoritative, so we leave the stale set pending and skip
-    // the work — this is what keeps large scenes from hitching after a gizmo release.
-    if(!df.isEmpty() && scene->mergeGpuStaleNodesIntoDirty())
-      renderNodeOrNodeDirty = true;  // moved-node transforms changed -> invalidate rasterizer accumulation
-
-    updateSceneChanges_NodeTransforms(cmd, scene, df);
-    markGpuTransformStaleAfterCpuSync(*scene);
-
-    uint32_t synced = updateSceneChanges_SyncGpuBuffers(cmd, scene);
-    stagingFlushed  = (synced != nvvkgltf::SceneVk::eSyncNone);
-
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT);
-
-    updateSceneChanges_TlasUpdate(cmd, scene);
-  }
-
-  updateSceneChanges_RasterizerInvalidate(renderNodeOrNodeDirty);
-  updateSceneChanges_TangentUpload(cmd, scene, changed);
-  updateSceneChanges_Finalize(cmd, changed, stagingFlushed, scene);
-
-  return changed;
-}

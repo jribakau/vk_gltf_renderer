@@ -26,10 +26,8 @@
 #include <nvutils/logger.hpp>
 
 #include "gltf_environment_sky.hpp"
-#include "gltf_scene.hpp"
 #include "resources.hpp"
 #include "sky_sun.hpp"
-#include "gltf_scene_editor.hpp"
 #include "sun_position.hpp"
 
 //--------------------------------------------------------------------------------------------------
@@ -89,50 +87,21 @@ void SkySun::init(Resources* resources, Actions actions)
 void SkySun::syncFromMarkedLight()
 {
   m_lightIndex = -1;
-  m_lightNode  = -1;
 
-  const nvvkgltf::Scene* scene = m_resources->getScene();
-  if(scene == nullptr || !scene->valid())
-  {
-    // a stream host's scene: its light record says which light is the sun, in the order the light
-    // buffer holds them
-    if(m_resources->hostFed && m_resources->retainedGpu)
+  // the scene's light record says which light is the sun, in the order the light buffer holds them
+  if(!m_resources->retainedGpu)
+    return;
+  const std::vector<SceneGpuView::LightInfo> lights = m_resources->gpuView().lights();
+  for(size_t i = 0; i < lights.size(); ++i)
+    if(lights[i].skySun)
     {
-      const std::vector<SceneGpuView::LightInfo> lights = m_resources->gpuView().lights();
-      for(size_t i = 0; i < lights.size(); ++i)
-        if(lights[i].skySun)
-        {
-          adopt(int(i), -1, lights[i].worldMatrix);
-          return;
-        }
+      adopt(int(i), lights[i].worldMatrix);
+      return;
     }
-    return;
-  }
-
-  const tinygltf::Model& model   = scene->getModel();
-  const int              nodeIdx = gltf_environment_sky::findSkySunNode(model);
-  if(nodeIdx < 0)
-    return;
-
-  const int lightIdx = gltf_environment_sky::nodeLightIndex(model.nodes[nodeIdx]);
-  if(lightIdx < 0)
-    return;  // marker on a node that carries no light: stale, ignore it
-
-  // The render-light list is what the shaders index, and it carries the world matrix -- which is
-  // what a nested or animated light needs. Matched on the node as well as the light: one light may
-  // be instanced by several nodes, and only the marked one is the sun.
-  const std::vector<nvvkgltf::RenderLight>& rlights = scene->getRenderLights();
-  for(size_t i = 0; i < rlights.size(); ++i)
-  {
-    if(rlights[i].light != lightIdx || rlights[i].nodeID != nodeIdx)
-      continue;
-    adopt(static_cast<int>(i), nodeIdx, rlights[i].worldMatrix);
-    return;
-  }
 }
 
 // Light `lightIndex` of the light buffer, at `world`, is the sun: the sky follows it.
-void SkySun::adopt(int lightIndex, int node, const glm::mat4& world)
+void SkySun::adopt(int lightIndex, const glm::mat4& world)
 {
   // glTF aims a light down its node's -Z, so +Z points back at the sun.
   const glm::vec3 toSun = glm::vec3(world[2]);
@@ -141,7 +110,6 @@ void SkySun::adopt(int lightIndex, int node, const glm::mat4& world)
     return;  // degenerate node scale; no usable direction
 
   m_lightIndex              = lightIndex;
-  m_lightNode               = node;
   const glm::vec3 dir       = toSun / len;
   const bool      moved     = !glm::all(glm::epsilonEqual(dir, m_resources->sunDirection, 1e-6F));
   m_resources->sunDirection = dir;
@@ -161,78 +129,6 @@ void SkySun::adopt(int lightIndex, int node, const glm::mat4& world)
 }
 
 //--------------------------------------------------------------------------------------------------
-// Candidate suns: every directional light in the scene.
-//
-std::vector<std::pair<int, std::string>> SkySun::candidateLights() const
-{
-  std::vector<std::pair<int, std::string>> out;
-  const nvvkgltf::Scene*                   scene = m_resources->getScene();
-  if(scene == nullptr || !scene->valid())
-    return out;
-
-  const tinygltf::Model& model = scene->getModel();
-  for(size_t i = 0; i < model.nodes.size(); ++i)
-  {
-    const tinygltf::Node& node     = model.nodes[i];
-    int                   lightIdx = node.light;
-    if(lightIdx < 0)
-    {
-      const auto ext = node.extensions.find("KHR_lights_punctual");
-      if(ext != node.extensions.end() && ext->second.Has("light"))
-        lightIdx = ext->second.Get("light").GetNumberAsInt();
-    }
-    if(lightIdx < 0 || lightIdx >= static_cast<int>(model.lights.size()))
-      continue;
-    if(model.lights[lightIdx].type != "directional")
-      continue;
-
-    std::string name = node.name.empty() ? model.lights[lightIdx].name : node.name;
-    if(name.empty())
-      name = "Directional light " + std::to_string(lightIdx);
-    out.emplace_back(static_cast<int>(i), std::move(name));
-  }
-  return out;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Aim the marked sun light, undoably. The write half of syncSunFromMarkedLight().
-//
-bool SkySun::setMarkedDirection(const glm::vec3& toSun)
-{
-  nvvkgltf::Scene* scene = m_resources->getScene();
-  if(m_lightNode < 0 || scene == nullptr || !scene->valid())
-    return false;
-
-  const tinygltf::Model& model = scene->getModel();
-  if(m_lightNode >= static_cast<int>(model.nodes.size()))
-    return false;
-
-  const tinygltf::Node& node = model.nodes[m_lightNode];
-
-  // Local TRS, which is what a node stores and what the undo command records. The direction is a
-  // world one, so a sun parented under a rotated rig has the parent's rotation taken back out --
-  // otherwise syncFromMarkedLight() would read the parent's turn on top at the next frame.
-  // getNodeTRS decomposes a `matrix` node too; reading the TRS fields directly would see identity
-  // there and move the light to the origin on the setNodeTRS below.
-  glm::vec3 translation{0.0F};
-  glm::quat oldRotation{1.0F, 0.0F, 0.0F, 0.0F};
-  glm::vec3 scale{1.0F};
-  tinygltf::utils::getNodeTRS(node, translation, oldRotation, scale);
-
-  // glTF aims a light down -Z, so +Z is what points at the sun.
-  const glm::quat worldRotation = glm::rotation(glm::vec3(0.0F, 0.0F, 1.0F), glm::normalize(toSun));
-  // The scene keeps the parent table, so no hierarchy walk: this runs every frame of a slider or
-  // Time of Day drag.
-  const std::vector<int>& parents     = scene->getNodeParents();
-  const int               parent      = m_lightNode < static_cast<int>(parents.size()) ? parents[m_lightNode] : -1;
-  const glm::mat4         parentWorld = parent >= 0 ? scene->computeNodeWorldMatrix(parent) : glm::mat4(1.0F);
-  const glm::quat         newRotation = gltf_environment_sky::localRotationForWorld(parentWorld, worldRotation);
-
-  scene->editor().setNodeTRS(m_lightNode, translation, newRotation, scale);
-  return true;
-}
-
-//--------------------------------------------------------------------------------------------------
 // Apply a new sun direction, through whatever owns the sun.
 //
 // The UI paths that move the sun -- the azimuth/elevation sliders, the Time of Day widget, and a
@@ -242,8 +138,7 @@ bool SkySun::setMarkedDirection(const glm::vec3& toSun)
 //
 void SkySun::aim(const glm::vec3& toSun)
 {
-  if(!setMarkedDirection(toSun))
-    m_resources->sunDirection = glm::normalize(toSun);
+  m_resources->sunDirection = glm::normalize(toSun);
 
   syncAngles();  // keep the reported and persisted angles equal to the direction just set
 

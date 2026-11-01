@@ -21,9 +21,8 @@
 
 //
 // What a material decides for everything that draws with it: its TLAS instance flags and mask, and
-// which raster lists it goes in. One definition for the legacy scene (SceneRtx, Scene's shaded-node
-// buckets) and the retained one (rs::Residency). Vulkan-free: the flag values are Vulkan's, checked
-// against the enums where Vulkan is included (gltf_scene_rtx.cpp).
+// which raster lists it goes in. Vulkan-free: the flag values are Vulkan's, checked against the enums
+// where Vulkan is included (scene_residency_vk.cpp).
 //
 
 #include <cstdint>
@@ -108,7 +107,7 @@ inline MaterialBits materialBits(const tinygltf::Material& mat)
   return materialBits(fv::mat::fromGltf(mat));
 }
 
-// The texture indices a material samples as colour (sRGB), as SceneVk::findSrgbImages decides it:
+// The texture indices a material samples as colour (sRGB). decides it:
 // base colour, emission, and the colour textures of specular, sheen, diffuse transmission, scatter
 // and specular-glossiness. (A texture's own `gamma` extra, which findSrgbImages also reads, is a
 // glTF texture's and not the material's.)

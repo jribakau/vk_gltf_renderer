@@ -238,8 +238,7 @@ inline void setSkySunMarker(tinygltf::Node& node, const char* owner = kSkySunOwn
 // local one; writing the world value straight into a parented light would have the parent's turn
 // applied on top on the next read.
 //
-// The live scene already tracks parents (nvvkgltf::Scene::getNodeParents / computeNodeWorldMatrix),
-// so a caller holding one passes that parent's world matrix here.
+// A caller that tracks parents passes that parent's world matrix here.
 [[nodiscard]] glm::quat localRotationForWorld(const glm::mat4& parentWorld, const glm::quat& worldRotation);
 
 // The same, for a bare model with no parent table -- the save hook's `outModel`, which for a scene

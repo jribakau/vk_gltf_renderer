@@ -59,16 +59,6 @@ struct MergeResult
 class SceneMerger
 {
 public:
-  // Merge importedModel into baseModel. Imported scene roots become children of a new wrapper node.
-  // The caller must set base model's "imported image" state so the loader uses the right basedir
-  // per image: Scene stores baseImageCount and importedSceneBasePath for that.
-  // If maxTextureCount is set and the combined texture count would exceed it, returns -1.
-  // Returns the index of the new wrapper node in baseModel.nodes on success, or -1 on failure.
-  static int merge(tinygltf::Model&        baseModel,
-                   const tinygltf::Model&  importedModel,
-                   const std::string&      importedSceneName,
-                   std::optional<uint32_t> maxTextureCount = std::nullopt);
-
   // Append the resources of importedModel that nodes point at (buffers to meshes, materials,
   // cameras, lights, micromaps), with their indices rebased, and the animations' samplers. Nodes,
   // skins and animation channels are NOT appended: the caller makes node copies of its own, remaps

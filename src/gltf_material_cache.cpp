@@ -70,7 +70,7 @@ namespace nvvkgltf {
 
 namespace {
 
-// textureSlots supplies the per-texture data resolved by SceneVk (sampler slot, source-format
+// textureSlots supplies the per-texture data resolved by the residency (sampler slot, source-format
 // flags), indexed by the slot's index.
 shaderio::GltfTextureInfo getTextureInfoImpl(const fv::mat::TextureSlot& slot, const TextureSlotTable& textureSlots)
 {

@@ -111,7 +111,7 @@ public:
   // be fitted around memory the old one is about to give back
   void runRetired();
   // GPU time of the AS builds recorded from here to finish(): timestamps around each flush of BLAS
-  // builds and refits, and around each TLAS build with its instance upload (as legacy's `GPU BLAS
+  // builds and refits, and around each TLAS build with its instance upload (`GPU BLAS
   // build` / `GPU TLAS build` lines count them), up to kTimedSpans. buildTimes() reads them once the
   // command buffer has completed: none before that, or when nothing was timed.
   void                      timeBuilds() { m_timeBuilds = true; }
@@ -151,11 +151,11 @@ public:
   };
   Compaction  takeCompaction();
   void        destroyImage(ImageHandle image) override;
-  // none: the white default in slot 0, the magenta "missing" image elsewhere (as SceneVk shows one)
+  // none: the white default in slot 0, the magenta "missing" image elsewhere (shows one)
   void        writeTextureDescriptor(uint32_t slot, ImageHandle image) override;
   void        writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc) override;
   bool        opacityMicromaps() const override { return m_info.opacityMicromaps; }
-  // as SceneOmm::create builds one; its inputs and scratch freed a frame cycle after the build
+  // its inputs and scratch freed a frame cycle after the build
   AccelHandle buildMicromap(const MicromapInput& input) override;
   AccelHandle buildBlas(const BlasInput& input, AccelBuildFlags flags) override;
   void        refitBlas(AccelHandle blas, const BlasInput& input) override;
@@ -266,7 +266,7 @@ private:
 
 // The retained scene as the renderers read it: a VulkanGpuBackend and an rs::Residency over a
 // RetainedScene, brought up to date once per frame. Not reachable yet: the sceneBackend setting
-// (P3a1) creates it in place of the legacy scene.
+// (P3a1) creates it.
 class RetainedSceneVk : public SceneGpuView
 {
 public:

@@ -30,7 +30,7 @@
 namespace nvvkgltf {
 
 // CPU-side result of decoding an image from raw bytes (disk, buffer, or embedded).
-// Used by ImageLoader; SceneVk copies this into SceneImage and then creates the Vulkan image.
+// What ImageLoader decodes; createSampledImage makes the Vulkan image of it.
 struct LoadedImageData
 {
   VkFormat                       format{VK_FORMAT_UNDEFINED};

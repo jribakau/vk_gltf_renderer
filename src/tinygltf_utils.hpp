@@ -1373,7 +1373,7 @@ void setEmissiveStrength(tinygltf::Material& tmat, const KHR_materials_emissive_
 
 // A material's emissiveFactor * KHR_materials_emissive_strength, before any emissive texture: vec3(0)
 // when it does not emit. The CPU-side emitter transform tracking's test; the GPU emitter list weighs
-// a textured emitter by its texture's mean too (SceneVk::uploadEmissiveTriangles).
+// a textured emitter by its texture's mean too.
 glm::vec3                 getEmissiveFactorRadiance(const tinygltf::Material& tmat);
 KHR_materials_iridescence getIridescence(const tinygltf::Material& tmat);
 void                      setIridescence(tinygltf::Material& tmat, const KHR_materials_iridescence& iridescence);

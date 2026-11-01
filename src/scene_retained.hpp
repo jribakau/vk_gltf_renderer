@@ -319,7 +319,7 @@ struct CameraRecord
 };
 
 // What a clip's channel drives on its entity: glTF's animation target paths, without
-// KHR_animation_pointer's, which stays legacy-only (decision D23).
+// KHR_animation_pointer's, which is not supported (decision D23).
 enum class ClipPath
 {
   eTranslation,
@@ -548,7 +548,7 @@ public:
   bool      shown(EntityId id);
   // The joint matrices of the skin an entity's mesh instance draws with, from the world matrices:
   // inverse(world(id)) * world(joint) * the joint's inverse bind matrix, as
-  // nvvkgltf::AnimationSystem::computeSkinning makes them (identity for a joint that is gone).
+  // skinning takes them (identity for a joint that is gone).
   // Empty when the entity draws no skinned mesh.
   std::vector<glm::mat4> jointMatrices(EntityId id);
   // Where the skin's joints stand relative to the mesh, from the locals below the nearest entity above

@@ -599,48 +599,6 @@ IndexRemapping SceneMerger::offsetsOf(const tinygltf::Model& baseModel)
   return computeOffsets(baseModel);
 }
 
-int SceneMerger::merge(tinygltf::Model&        baseModel,
-                       const tinygltf::Model&  importedModel,
-                       const std::string&      importedSceneName,
-                       std::optional<uint32_t> maxTextureCount)
-{
-  if(importedModel.nodes.empty())
-    return -1;
-  if(importedModel.scenes.empty())
-    return -1;
-
-  if(maxTextureCount.has_value())
-  {
-    const size_t combined = baseModel.textures.size() + importedModel.textures.size();
-    if(combined > static_cast<size_t>(*maxTextureCount))
-      return -1;
-  }
-
-  IndexRemapping offsets = computeOffsets(baseModel);
-  appendResourcesAndExtensions(baseModel, importedModel, offsets);
-
-  int                    defaultScene  = importedModel.defaultScene >= 0 ? importedModel.defaultScene : 0;
-  const tinygltf::Scene& importedScene = importedModel.scenes[defaultScene];
-
-  tinygltf::Node wrapperNode;
-  wrapperNode.name = importedSceneName;
-  for(int nodeIdx : importedScene.nodes)
-  {
-    wrapperNode.children.push_back(offsets.nodes + nodeIdx);
-  }
-
-  int wrapperIdx = static_cast<int>(baseModel.nodes.size());
-  baseModel.nodes.push_back(std::move(wrapperNode));
-
-  // Add the imported scene to the base model
-  if(baseModel.scenes.empty())
-    baseModel.scenes.emplace_back();
-  int currentScene = baseModel.defaultScene >= 0 ? baseModel.defaultScene : 0;
-  baseModel.scenes[currentScene].nodes.push_back(wrapperIdx);
-
-  return wrapperIdx;
-}
-
 IndexRemapping SceneMerger::appendResources(tinygltf::Model&       baseModel,
                                             const tinygltf::Model& importedModel,
                                             std::span<const int>   sharedImages,

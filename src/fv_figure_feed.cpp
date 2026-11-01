@@ -534,7 +534,7 @@ std::vector<uint32_t> FigureFeed::mergePlan(const std::vector<std::pair<uint32_t
 
 std::vector<bool> FigureFeed::tangentGroups(const std::vector<int>& materials) const
 {
-  // as nvvkgltf::Scene chooses: a primitive with no material is weighed as material 0
+  // a primitive with no material is weighed as material 0
   std::vector<bool> out;
   for(int mi : materials)
   {
@@ -613,7 +613,7 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
 std::vector<uint32_t> FigureFeed::tangentIndices(const rs::MeshRecord& record, const std::vector<bool>& groups) const
 {
   // one set of tangents over the triangles of every group that needs them (the build's primitives
-  // share the vertices, and nvvkgltf::Scene makes them so per attribute set)
+  // share the vertices, and the importer makes them so per attribute set)
   std::vector<uint32_t> indices;
   for(size_t k = 0; k < record.submeshes.size() && k < groups.size(); k++)
     if(groups[k])

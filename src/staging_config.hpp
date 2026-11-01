@@ -30,7 +30,7 @@
 //
 // This constant is owned by the app (not by `nvvk::FrameUploader`), because:
 //   * `Resources::staging.init()` in renderer.cpp passes it as `blockSize`.
-//   * `SceneVk::createImage` in gltf_scene_vk.cpp must know it to chunk oversized
+//   * `createSampledImage` in sampled_image.cpp must know it to chunk oversized
 //     mip uploads into row-strips (`BufferCircularAllocator::subAllocate`
 //     asserts `size <= blockSize`, so any single append must stay under it).
 //
@@ -42,7 +42,7 @@
 //     textures).
 //   * Kept below 512 MiB so cold init doesn't reserve a huge host-visible chunk
 //     up front. Any single mip that exceeds this is uploaded in row-strips by
-//     `SceneVk::createImage`, so this is not a hard cap on texture size.
+//     `createSampledImage`, so this is not a hard cap on texture size.
 constexpr VkDeviceSize kFrameUploaderBlockSize = 256ull * 1024 * 1024;
 
 // Append a large array in pieces that each fit one staging block. A single append must stay

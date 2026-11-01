@@ -139,7 +139,7 @@ bool isTexturePresent(uint16_t tinfo)
  * Two-channel formats (BC5, R8G8, EAC_R11G11) are the standard way to ship normal maps: only X and
  * Y are stored and Z is implied. Vulkan samples their missing blue channel as 0, which decodes to
  * Z = -1 and flips the normal into the surface, so it has to be rebuilt from the unit-length
- * assumption. SceneVk marks those textures with eTexInfoTwoChannelSource; three-channel maps carry
+ * assumption. The residency marks those textures with eTexInfoTwoChannelSource; three-channel maps carry
  * an authored Z and are returned untouched.
  * -------------------------------------------------------------------------------------------------*/
 float3 decodeTangentSpaceNormal(float3 normal_vector, GltfTextureInfo textureInfo)

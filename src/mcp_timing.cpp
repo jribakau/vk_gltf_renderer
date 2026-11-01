@@ -368,9 +368,7 @@ std::shared_ptr<nvmcp::Element> createTimingMcpServer(const McpTimingCreateInfo&
                       "them changes nothing. The ones that take effect live, and that a timing run should pin, "
                       "are: ptAdaptiveSampling (false, for a fixed-cost frame), ptSamples, ptTechnique, ptUseSER, "
                       "ptOptimalShader, dlssEnable, ptMaxDepth, ptMaxSamples, and envSystem (not None -- that "
-                      "removes all environment light). For live scene editing (materials, nodes, lights, "
-                      "animation, morph weights, vertices) read vk_gltf_scene_info and batch edits with "
-                      "vk_gltf_edit.",
+                      "removes all environment light).",
       .port         = info.port,
   });
 

@@ -1487,7 +1487,7 @@ void Rasterizer::renderBlendOnly(VkCommandBuffer cmd, Resources& resources, VkEx
 
 void Rasterizer::renderRasterScene(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderExtent)
 {
-  // Single-pass legacy path used for scenes without transmission and for the recorded command
+  // Single-pass path used for scenes without transmission and for the recorded command
   // buffer route. Equivalent to renderOpaqueOnly() + renderBlendOnly() but reuses one push.
   renderOpaqueOnly(cmd, resources, renderExtent);
   renderBlendOnly(cmd, resources, renderExtent);
@@ -1686,7 +1686,7 @@ void Rasterizer::captureAndMipOpaqueColor(VkCommandBuffer cmd, Resources& resour
 //--------------------------------------------------------------------------------------------------
 // Sort the blend (transparent) nodes back-to-front against the current view matrix.
 // Sorting is done on the AABB centroid taken from the POSITION accessor's min/max attributes,
-// which nvvkgltf::Scene caches once per primitive so we don't re-parse tinygltf accessors here.
+// which the scene caches once per primitive so we don't re-parse tinygltf accessors here.
 // Returns true when the order changed compared to the previous frame so callers can invalidate
 // any cached secondary command buffer.
 //
@@ -1831,7 +1831,7 @@ void Rasterizer::freeRecordCommandBuffer(Resources& resources)
 
 //--------------------------------------------------------------------------------------------------
 // Drop all Scene-tied state. Called from GltfRenderer::cleanupScene() before the current
-// nvvkgltf::Scene instance is destroyed so the next rendered frame doesn't accidentally reuse
+// scene is destroyed so the next rendered frame doesn't accidentally reuse
 // stale render-node indices or short-circuit memos from the previous Scene. Also frees the
 // recorded secondary command buffer since it baked draws from the outgoing Scene.
 //

@@ -40,8 +40,13 @@
 #include "gltf_image_loader.hpp"
 #include "gltf_image_loader.hpp"
 #include "sampled_image.hpp"
+#include "scene_material_bits.hpp"
 #include "shaders/animation_io.h.slang"
 #include "staging_config.hpp"
+
+// scene_material_bits.hpp is Vulkan-free; its flags are these
+static_assert(nvvkgltf::kInstanceCullDisable == VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
+static_assert(nvvkgltf::kInstanceForceOpaque == VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR);
 
 namespace rs {
 
@@ -645,7 +650,7 @@ void VulkanGpuBackend::checkInput(const BlasInput& input, const char* op) const
 
 nvvk::AccelerationStructureGeometryInfo VulkanGpuBackend::geometryOf(const BlasInput& input, const void* micromap) const
 {
-  // as SceneRtx::renderPrimitiveToAsGeometry: float3 positions, uint32 indices; and the micromap
+  // float3 positions, uint32 indices; and the micromap
   // link, the entry's own
   nvvk::AccelerationStructureGeometryInfo out;
   VkAccelerationStructureGeometryTrianglesDataKHR triangles{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
@@ -675,7 +680,7 @@ AccelHandle VulkanGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags 
       LOGE("VulkanGpuBackend::buildBlas: a dead or unknown micromap; built without it\n");
     else
     {
-      // as SceneRtx::createBottomLevelAccelerationStructure links SceneOmm's (no indices: UINT16 at
+      // the micromap is linked (no indices: UINT16 at
       // address 0, the triangle's own index)
       entry.micromap = std::make_unique<VkAccelerationStructureTrianglesOpacityMicromapKHR>(
           VkAccelerationStructureTrianglesOpacityMicromapKHR{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_KHR});
@@ -1061,7 +1066,7 @@ void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> ro
     NVVK_CHECK(appendBufferChunked(*m_info.staging, tlas.instances, 0, std::span<const VkAccelerationStructureInstanceKHR>(instances)));
   m_uploadsPending = true;
   flushUploads();
-  // (the destination masks nvvk's helper takes: legacy's SceneRtx passes these too)
+  // (the destination masks nvvk's helper takes)
   nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_TRANSFER_WRITE_BIT,
                                      VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
   tlas.data.asBuildRangeInfo[0].primitiveCount = uint32_t(rows.size());

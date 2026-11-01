@@ -19,7 +19,7 @@
 
 // The figure feed against the build (daz-viewer docs/retained-scene-plan.md, oracle 4): a figure fed
 // straight into the retained scene holds what importing its fv::build::buildGltf model holds, and
-// the importer is held to nvvkgltf::Scene by test_retained_import. Checked after a load, a dial, a
+// the importer is held to its recorded output by test_retained_import. Checked after a load, a dial, a
 // pose, hidden polygons, a hidden node and a taken-off one, a dial on a normal-mapped body, and for
 // DAZ instances; fv::checkFeed holds the store to the scene's own bytes after each, and is shown to
 // catch a fed record corrupted through the store.
@@ -341,7 +341,7 @@ TEST(FigureFeed, AHiddenNodeAndATakenOffOneAreFedAsTheBuildHasThem)
 }
 
 // DAZ Studio instances: one mesh drawn from several nodes is one record, as it is one glTF mesh. Its
-// normal map asks for tangents, made once for the record as nvvkgltf::Scene makes them.
+// normal map asks for tangents, made once for the record.
 TEST(FigureFeed, InstancesShareOneMeshWithItsTangents)
 {
   fv::mesh::MeshInput input;

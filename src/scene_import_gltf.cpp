@@ -40,7 +40,7 @@ namespace rs {
 namespace {
 
 // The attribute accessors (and morph targets) a primitive reads: primitives with the same key share
-// one vertex set (as nvvkgltf::Scene::attributeKey).
+// one vertex set.
 std::string attributeKey(const tinygltf::Primitive& p)
 {
   std::string key;
@@ -97,7 +97,7 @@ std::optional<std::span<const unsigned char>> bufferViewBytes(const tinygltf::Mo
   return std::span<const unsigned char>(model.buffers[size_t(bv.buffer)].data).subspan(bv.byteOffset, bv.byteLength);
 }
 
-// EXT_mesh_opacity_micromap's root micromaps, checked as SceneOmm::create checks them, and for at
+// EXT_mesh_opacity_micromap's root micromaps, checked and for at
 // least one triangle record at a stride Vulkan takes (a multiple of 4, at least 8); null for one
 // left out
 std::vector<std::shared_ptr<const OpacityMicromap>> opacityMicromaps(const tinygltf::Model& model, const Notice& notice)
@@ -154,7 +154,7 @@ std::vector<std::shared_ptr<const OpacityMicromap>> opacityMicromaps(const tinyg
 }
 
 // A primitive's EXT_mesh_opacity_micromap link over its `triangles` triangles, checked as
-// SceneOmm::create checks it, and for an index per triangle that names a triangle of the micromap
+// checked, and for an index per triangle that names a triangle of the micromap
 // (a special index aside); null for none, or one left out
 std::shared_ptr<const MicromapUse> micromapUseOf(const tinygltf::Model&                                     model,
                                                  const tinygltf::Primitive&                                 p,
@@ -315,7 +315,7 @@ TextureRecord textureRecordOf(const tinygltf::Model& model, size_t image, std::s
 
 namespace {
 
-// A sampler's keys as AnimationSystem::parseSamplersAndChannels reads them (an interpolation it
+// A sampler's keys (an interpolation it
 // does not name is linear); nothing when its accessors can't be read.
 std::optional<ClipSampler> clipSampler(const tinygltf::Model& model, const tinygltf::AnimationSampler& s)
 {
@@ -384,7 +384,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     if(std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(), ext) != model.extensionsUsed.end())
       notice(std::string(ext) + " is not drawn yet; left out");
 
-  // ---- EXT_lights_ies profiles, read and sampled here as the legacy scene reads them; by index
+  // ---- EXT_lights_ies profiles, read and sampled here; by index
   std::vector<uint32_t> iesProfiles;
   {
     std::vector<std::string> warnings;
@@ -442,7 +442,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     return known->second = inRange;
   };
 
-  // ---- tangents for the vertex sets whose materials need them, made as nvvkgltf::Scene makes
+  // ---- tangents for the vertex sets whose materials need them, made as
   // them: one set of tangents per attribute key, over the triangles of every primitive that needs
   // them (across meshes that share the accessors), the material chosen as it chooses it
   std::map<std::string, std::vector<uint32_t>> tangentIndices;
@@ -487,7 +487,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
     for(size_t pi = 0; pi < mesh.primitives.size(); pi++)
     {
       const tinygltf::Primitive& p = mesh.primitives[pi];
-      // (the mode is not read: nvvkgltf::Scene draws every primitive as triangles, and so does this)
+      // (the mode is not read: every primitive draws as triangles)
       if(!draws(mesh, p))
         continue;
       const std::string key = attributeKey(p);
@@ -652,7 +652,7 @@ ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, cons
   // ---- clips: each animation's channels on the scene's nodes, with the samplers they use. A
   // KHR_animation_pointer channel is left out (D23, noticed above), as is one whose node is not in
   // the scene (it moves nothing drawn) or whose values are not its path's type (which
-  // AnimationSystem leaves alone too)
+  // left alone)
   out.clips.assign(model.animations.size(), {});
   for(size_t ai = 0; ai < model.animations.size(); ai++)
   {

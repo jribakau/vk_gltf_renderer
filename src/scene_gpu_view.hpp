@@ -22,27 +22,24 @@
 //
 // What the renderers read of the scene on the GPU (docs: daz-viewer docs/retained-scene-plan.md,
 // "Coexistence"): the path tracer, the rasterizer, the silhouette, the pickers and the frame's
-// shadow and ground fit read this, never nvvkgltf::Scene, SceneVk or SceneRtx, so the retained
-// backend (P3a) can stand behind it. LegacySceneGpuView is today's objects behind it.
+// shadow and ground fit read this; RetainedSceneVk stands behind it.
 //
 // Per-slot side tables: every GPU array indexed by a render node, render primitive or material
 // slot. A new one belongs here, so the retained residency layer sizes, grows, fills and retires it
 // with the rest (capacity and holes; see "Slots"):
-//   render node   GltfRenderNode[] (SceneVk m_bRenderNode); RenderNodeGpuMapping
-//                 (TransformComputeVk m_bRenderNodeMappings); gpuInstLocalMatrices
+//   render node   GltfRenderNode[]; RenderNodeGpuMapping
+//                ; gpuInstLocalMatrices
 //                 (m_bGpuInstLocalMatrices); prevRenderNodeObjectToWorld (m_bPrevRenderNodeO2W);
-//                 TLAS instance rows (SceneRtx m_tlasInstances, m_instancesBuffer) and their flags
+//                 TLAS instance rows and their flags
 //                 (m_instanceFlagsCache); the selection bitmask (Resources bSelectionBitMask)
-//   render prim   GltfRenderPrimitive[] (SceneVk m_bRenderPrim); vertex streams and the index
-//                 buffer (m_vertexBuffers, m_bIndices); its BLAS (SceneRtx m_blasAccel,
-//                 m_blasBuildData); OMM index buffers (SceneOmm m_indexBuffers); previous
-//                 positions and their address table (PrevPositionsVk m_prev, m_table; retained:
-//                 prevPositionTable())
-//   material      GltfShadeMaterial[] (SceneVk m_bMaterial) and its span of GltfTextureInfo
+//   render prim   GltfRenderPrimitive[]; vertex streams and the index
+//                 buffer (m_vertexBuffers, m_bIndices); its BLAS; OMM index buffers; previous
+//                 positions and their address table)
+//   material      GltfShadeMaterial[] and its span of GltfTextureInfo
 //                 (m_bTextureInfos)
 //   scene-wide    lights (m_bLights) and IES profiles (m_bIesProfiles), dense; the emissive
 //                 triangle table (m_bEmissiveTriangles), derived from render node and prim slots;
-//                 joint, normal-matrix and morph-weight packs (AnimationVk)
+//                 joint, normal-matrix and morph-weight packs
 //
 
 #include <cstdint>
@@ -54,14 +51,6 @@
 #include <vulkan/vulkan_core.h>
 
 #include <nvutils/bounding_box.hpp>
-
-namespace nvvkgltf {
-class Scene;
-class SceneVk;
-class SceneRtx;
-class AnimationVk;
-class TransformComputeVk;
-}  // namespace nvvkgltf
 
 class SceneGpuView
 {
@@ -131,68 +120,44 @@ public:
   virtual bool hasOpacityMicromaps() const  = 0;
   virtual bool hasPlayableAnimation() const = 0;
   // Whether a variant that only adds scene features may be built off the frame (D15): the view
-  // holds the material edits that need them and draws nothing the live variant lacks (retained);
-  // never on legacy, whose edits draw at once
+  // holds the material edits that need them and draws nothing the live variant lacks
   virtual bool variantMayBuildOffFrame() const = 0;
   // The render lights, in the light buffer's order
   virtual std::vector<LightInfo> lights() const = 0;
 
-  // The bounds of what draws; empty without a scene. (The legacy scene gives a unit box around the
-  // origin when nothing in it has bounds, so a caller that must skip an empty scene checks
-  // renderNodeCapacity() too.)
+  // The bounds of what draws; empty without a scene
   virtual nvutils::Bbox bounds() const = 0;
   // The scene's GPU memory: geometry, materials, textures, acceleration structures, animation
   virtual MemoryStats memoryStats() const = 0;
 
   // #DLSS motion the view keeps itself: per render primitive the device address of its positions as
   // the last frame drew them (0: none), and per render node the objectToWorld it was last drawn
-  // with. 0 when the view keeps none: the legacy scene's are PrevPositionsVk and TransformComputeVk,
-  // which the renderer drives frame by frame.
+  // with. 0 when the view keeps none.
   virtual VkDeviceAddress prevPositionTable() const { return 0; }
   virtual VkDeviceAddress prevObjectToWorldTable() const { return 0; }
 };
 
-// Today's objects behind the view: nvvkgltf::Scene on the CPU, SceneVk, SceneRtx, AnimationVk and
-// TransformComputeVk on the GPU.
-class LegacySceneGpuView : public SceneGpuView
+// The view with no scene loaded yet
+class EmptySceneGpuView final : public SceneGpuView
 {
 public:
-  LegacySceneGpuView(const std::unique_ptr<nvvkgltf::Scene>& scene,
-                     const nvvkgltf::SceneVk&                sceneVk,
-                     const nvvkgltf::SceneRtx&               sceneRtx,
-                     const nvvkgltf::AnimationVk&            animationVk,
-                     const nvvkgltf::TransformComputeVk&     transformCompute)
-      : m_scene(scene)
-      , m_sceneVk(sceneVk)
-      , m_sceneRtx(sceneRtx)
-      , m_animationVk(animationVk)
-      , m_transformCompute(transformCompute)
-  {
-  }
-
-  bool                         hasContent() const override;
-  VkDeviceAddress              sceneDesc() const override;
-  VkAccelerationStructureKHR   tlas() const override;
-  uint32_t                     renderNodeCapacity() const override;
-  const std::vector<uint32_t>& drawList(DrawList list) const override;
-  uint64_t                     drawListsRevision() const override;
-  uint64_t                     transformsRevision() const override;
-  DrawRecord                   drawRecord(uint32_t renderNode) const override;
-  std::optional<glm::vec3>     worldCentre(uint32_t renderNode) const override;
-  bool                         hasTransmission() const override;
-  bool                         hasOpacityMicromaps() const override;
+  bool                         hasContent() const override { return false; }
+  VkDeviceAddress              sceneDesc() const override { return 0; }
+  VkAccelerationStructureKHR   tlas() const override { return VK_NULL_HANDLE; }
+  uint32_t                     renderNodeCapacity() const override { return 0; }
+  const std::vector<uint32_t>& drawList(DrawList) const override { return m_noDraws; }
+  uint64_t                     drawListsRevision() const override { return 0; }
+  uint64_t                     transformsRevision() const override { return 0; }
+  DrawRecord                   drawRecord(uint32_t) const override { return {}; }
+  std::optional<glm::vec3>     worldCentre(uint32_t) const override { return std::nullopt; }
+  bool                         hasTransmission() const override { return false; }
+  bool                         hasOpacityMicromaps() const override { return false; }
+  bool                         hasPlayableAnimation() const override { return false; }
   bool                         variantMayBuildOffFrame() const override { return false; }
-  bool                         hasPlayableAnimation() const override;
-  std::vector<LightInfo>       lights() const override;
-  nvutils::Bbox                bounds() const override;
-  MemoryStats                  memoryStats() const override;
+  std::vector<LightInfo>       lights() const override { return {}; }
+  nvutils::Bbox                bounds() const override { return {}; }
+  MemoryStats                  memoryStats() const override { return {}; }
 
 private:
-  const nvvkgltf::Scene* valid() const;
-
-  const std::unique_ptr<nvvkgltf::Scene>& m_scene;
-  const nvvkgltf::SceneVk&                m_sceneVk;
-  const nvvkgltf::SceneRtx&               m_sceneRtx;
-  const nvvkgltf::AnimationVk&            m_animationVk;
-  const nvvkgltf::TransformComputeVk&     m_transformCompute;
+  std::vector<uint32_t> m_noDraws;
 };

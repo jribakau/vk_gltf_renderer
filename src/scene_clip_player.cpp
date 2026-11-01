@@ -31,7 +31,7 @@ namespace rs {
 namespace {
 
 // Where `time` falls among the keys: the segment from key `index` to the next, the factor in it
-// and its length (AnimationSystem::processAnimationChannel and calculateInterpolationFactor).
+// and its length.
 // Nothing before the first key, after the last, or with fewer than two keys.
 struct Segment
 {

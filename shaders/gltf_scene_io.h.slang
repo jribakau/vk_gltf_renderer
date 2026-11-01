@@ -168,7 +168,7 @@ enum PbrModel
 enum TextureInfoFlagBits
 {
   // The source image format carries exactly two color components (BC5, R8G8, EAC_R11G11, ...), so
-  // red and green are authored data but the sampled blue channel is a synthetic 0. Set by SceneVk
+  // red and green are authored data but the sampled blue channel is a synthetic 0. Set by the residency
   // from the decoded VkFormat. Consumers that need the third channel must reconstruct it from the
   // first two -- see the normal map handling in gltf_material_eval.h.slang.
   eTexInfoTwoChannelSource = 1 << 0,
@@ -222,7 +222,7 @@ struct GltfShadeMaterial
   float occlusionStrength = 1;
   int   doubleSided       = 0;
   // An emitter's weight among the light samples is emissiveFactor (strength included) times this:
-  // the emissive texture's mean luminance (SceneVk, from the decoded image), 1 without a texture or
+  // the emissive texture's mean luminance (from the decoded image), 1 without a texture or
   // where the mean is unknown, 0 for an all-black texture (not a light). The path tracer's hit side
   // reads it to recover the pick the light sample made (emitterSelectionRadiance).
   float emissiveLightScale = 1;

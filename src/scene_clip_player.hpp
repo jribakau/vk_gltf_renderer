@@ -21,12 +21,12 @@
 
 //
 // A clip of the retained scene played (daz-viewer docs/retained-scene-plan.md, "Imported clips"):
-// nvvkgltf::AnimationSystem's evaluation ported, with its arithmetic and its edge cases, writing
+// glTF's channel evaluation, with its arithmetic and its edge cases, writing
 // entity TRS (setLocal) and morph weights (setMorphWeights), so takeChanges reports what a frame of
-// playback moved like any other edit. One player per clip; its time is its own, advanced as
-// nvvkgltf::AnimationInfo advances (wrapping, or held at the end).
+// playback moved like any other edit. One player per clip; its time is its own, advanced wrapping or
+// held at the end.
 //
-// Where the legacy evaluation leaves a channel alone, so does this: before its first key, after its
+// It leaves a channel alone before its first key, after its
 // last, and with fewer than two keys; the entity keeps what it had. Exactly on the last key a STEP
 // channel holds that key, as glTF says.
 //
