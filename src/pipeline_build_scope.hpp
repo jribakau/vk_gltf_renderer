@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 
 // Whether shaders or pipelines are being built on the application thread, which answers no command
 // meanwhile. The stream's /stats says so from its own thread, so the app's watchdog can tell a cold
@@ -58,12 +59,23 @@ inline std::atomic<int64_t>& buildSince()
   static std::atomic<int64_t> value{0};
   return value;
 }
-inline std::atomic<int>& warms()
+// The builds behind the view: those running, and of this round, which ends when none is, how many there are
+// and how many are done. The driver reports nothing from inside one, so this is all the progress there is.
+struct Warms
 {
-  static std::atomic<int> value{0};
+  std::mutex mutex;
+  int        running = 0;
+  int        done    = 0;
+  int        total   = 0;
+  int64_t    since   = 0;
+};
+inline Warms& warms()
+{
+  static Warms value;
   return value;
 }
-inline std::atomic<int64_t>& warmSince()
+// The longest compile of the last run that compiled (PipelineBuildRecord), for scale: 0 is none on record
+inline std::atomic<int64_t>& lastBuildMs()
 {
   static std::atomic<int64_t> value{0};
   return value;
@@ -97,28 +109,47 @@ struct ShaderWarmScope
 {
   ShaderWarmScope()
   {
-    if(shader_work_detail::warms().fetch_add(1) == 0)
-      shader_work_detail::warmSince() = shader_work_detail::nowMs();
+    shader_work_detail::Warms& warms = shader_work_detail::warms();
+    std::lock_guard            lock(warms.mutex);
+    if(warms.running++ == 0)
+    {
+      warms.since = shader_work_detail::nowMs();
+      warms.done  = 0;
+      warms.total = 0;
+    }
+    warms.total++;
   }
-  ~ShaderWarmScope() { shader_work_detail::warms().fetch_sub(1); }
+  ~ShaderWarmScope()
+  {
+    shader_work_detail::Warms& warms = shader_work_detail::warms();
+    std::lock_guard            lock(warms.mutex);
+    warms.running--;
+    warms.done++;
+  }
   ShaderWarmScope(const ShaderWarmScope&)            = delete;
   ShaderWarmScope& operator=(const ShaderWarmScope&) = delete;
 };
 
 struct ShaderWorkNow
 {
-  ShaderWork work = ShaderWork::eNone;
-  int64_t    ms   = 0;  // how long it has been going
+  ShaderWork work   = ShaderWork::eNone;
+  int64_t    ms     = 0;  // how long it has been going
+  int        done   = 0;  // of the builds behind the view while any runs, which a build that holds the view may be waiting for
+  int        total  = 0;
+  int64_t    lastMs = 0;  // shader_work_detail::lastBuildMs
 };
 
 // What is being built now. A build that holds the view comes first: that is the wait to explain.
 inline ShaderWorkNow shaderWorkNow()
 {
   using namespace shader_work_detail;
-  const auto held = ShaderWork(stage().load());
+  const auto      held = ShaderWork(stage().load());
+  Warms&          w    = warms();
+  std::lock_guard lock(w.mutex);
+  const bool      behind = w.running > 0;
   if(held != ShaderWork::eNone)
-    return {held, nowMs() - buildSince().load()};
-  if(warms().load() > 0)
-    return {ShaderWork::eWarm, nowMs() - warmSince().load()};
+    return {held, nowMs() - buildSince().load(), behind ? w.done : 0, behind ? w.total : 0, lastBuildMs().load()};
+  if(behind)
+    return {ShaderWork::eWarm, nowMs() - w.since, w.done, w.total, lastBuildMs().load()};
   return {};
 }

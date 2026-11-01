@@ -104,6 +104,7 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
            nvutils::utf8FromPath(cacheRoot).c_str(), cacheEc.message().c_str());
     m_pipelineCache.init(m_device, cacheRoot / "pipeline_cache.bin");
     m_buildRecord.load(cacheRoot / "pipeline_builds.txt");
+    shader_work_detail::lastBuildMs() = int64_t(m_buildRecord.lastCompiledMs());
     if(!cacheEc)
     {
       m_shaderCacheDir = cacheRoot / "shaders";

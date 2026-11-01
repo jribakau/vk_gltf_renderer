@@ -1098,6 +1098,42 @@ TEST(FvHost, HowTightAnItemIsGoesWithIt)
 
 // Skin all the way under opaque fabric isn't drawn while the fabric is tight, so it can't show through,
 // and it comes back whenever that stops being so. Box Snug is a closed box just around the Box Figure.
+// Two pipelines build side by side, and a view that needs one waits for both: how many are done is what it can say
+TEST(ShaderWork, CountsWhatIsBuildingSideBySide)
+{
+  {
+    auto                  first = std::make_unique<ShaderWarmScope>();
+    const ShaderWarmScope second;
+    EXPECT_EQ(shaderWorkNow().done, 0);
+    EXPECT_EQ(shaderWorkNow().total, 2);
+    first.reset();
+    EXPECT_EQ(shaderWorkNow().work, ShaderWork::eWarm);
+    EXPECT_EQ(shaderWorkNow().done, 1);
+    EXPECT_EQ(shaderWorkNow().total, 2);
+    {
+      const PipelineBuildScope building;
+      const ShaderWorkScope    pipeline(ShaderWork::ePipeline);
+      EXPECT_EQ(shaderWorkNow().work, ShaderWork::ePipeline);
+      EXPECT_EQ(shaderWorkNow().done, 1);
+      EXPECT_EQ(shaderWorkNow().total, 2);
+    }
+  }
+  EXPECT_EQ(shaderWorkNow().total, 0);
+  {
+    const ShaderWarmScope next;
+    EXPECT_EQ(shaderWorkNow().done, 0) << "a new round starts over";
+    EXPECT_EQ(shaderWorkNow().total, 1);
+    shader_work_detail::lastBuildMs() = 23000;
+    EXPECT_EQ(shaderWorkNow().lastMs, 23000);
+    shader_work_detail::lastBuildMs() = 0;
+  }
+  {
+    const PipelineBuildScope building;
+    const ShaderWorkScope    pipeline(ShaderWork::ePipeline);
+    EXPECT_EQ(shaderWorkNow().total, 0) << "one with none behind it waits for itself";
+  }
+}
+
 TEST(ShaderWork, SaysWhatIsBeingBuiltAndForHowLong)
 {
   EXPECT_EQ(shaderWorkNow().work, ShaderWork::eNone);

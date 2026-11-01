@@ -31,6 +31,46 @@ TEST(PipelineBuildRecord, TwoCompilesInOneRunSayNothingOfTheDriver)
   std::filesystem::remove(recordPath());
 }
 
+// What the badge has for how long a wait will be: the last run's longest, and not the longest ever, since
+// what a shader takes changes with the shader and the driver
+TEST(PipelineBuildRecord, TheLastRunsLongestCompileIsKept)
+{
+  std::filesystem::remove(recordPath());
+  {
+    PipelineBuildRecord first;
+    first.load(recordPath());
+    EXPECT_EQ(first.lastCompiledMs(), 0.0) << "none on record";
+    first.note(1, 20000.0);
+    first.note(2, 70.0);  // from the cache: no compile
+    first.note(3, 23000.0);
+    first.note(4, 5000.0);
+    EXPECT_EQ(first.lastCompiledMs(), 0.0) << "what this run takes is for the next";
+  }
+  {
+    PipelineBuildRecord second;
+    second.load(recordPath());
+    EXPECT_EQ(second.lastCompiledMs(), 23000.0);
+    EXPECT_FALSE(second.note(4, 70.0)) << "the keys still read among the times";
+    second.note(5, 9000.0);
+  }
+  {
+    PipelineBuildRecord third;
+    third.load(recordPath());
+    EXPECT_EQ(third.lastCompiledMs(), 9000.0);
+    EXPECT_TRUE(third.note(1, 15000.0));
+  }
+  std::filesystem::remove(recordPath());
+  {
+    PipelineBuildRecord fromCache;
+    fromCache.load(recordPath());
+    fromCache.note(1, 70.0);
+  }
+  PipelineBuildRecord none;
+  none.load(recordPath());
+  EXPECT_EQ(none.lastCompiledMs(), 0.0) << "a run that only read the cache says nothing of a compile";
+  std::filesystem::remove(recordPath());
+}
+
 TEST(PipelineBuildRecord, TheKeysOutliveTheProcess)
 {
   std::filesystem::remove(recordPath());

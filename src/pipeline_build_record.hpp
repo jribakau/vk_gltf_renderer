@@ -29,6 +29,8 @@
 //
 // The record is a file of keys (hex, one a line) beside the pipeline cache. A key is the caller's: the
 // code, its specialization and flags, and the driver version (an update empties the driver's cache).
+// A line "ms <n>" says how long a compile took, and the last one is the longest of the last run that compiled:
+// the one number there is for how long the next will take, since the driver reports nothing from inside one.
 //-------------------------------------------------------------------------------------------------------
 
 #include <cstdint>
@@ -36,6 +38,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 class PipelineBuildRecord
@@ -56,7 +59,10 @@ public:
       if(!line.empty())
         try
         {
-          m_keys.insert(std::stoull(line, nullptr, 16));
+          if(line.starts_with(kMsPrefix))
+            m_lastCompiledMs = std::stod(line.substr(kMsPrefix.size()));
+          else
+            m_keys.insert(std::stoull(line, nullptr, 16));
         }
         catch(...)  // a line cut short by a killed write
         {
@@ -70,6 +76,13 @@ public:
   bool note(uint64_t key, double ms)
   {
     std::lock_guard lock(m_mutex);
+    if(ms >= kCompiledMs && ms > m_longestThisRun)
+    {
+      m_longestThisRun = ms;
+      if(!m_path.empty())
+        if(std::ofstream out(m_path, std::ios::app); out)
+          out << kMsPrefix << uint64_t(ms) << '\n';
+    }
     const bool earlier = m_earlier.count(key) != 0;
     if(m_keys.insert(key).second)
     {
@@ -84,6 +97,13 @@ public:
     return true;
   }
 
+  // The longest compile of the last run that compiled, as load() found it; 0: none on record
+  double lastCompiledMs() const
+  {
+    std::lock_guard lock(m_mutex);
+    return m_lastCompiledMs;
+  }
+
   // A note() since load() said the driver dropped a pipeline
   bool driverDropped() const
   {
@@ -92,9 +112,13 @@ public:
   }
 
 private:
+  static constexpr std::string_view kMsPrefix = "ms ";
+
   mutable std::mutex           m_mutex;
   std::filesystem::path        m_path;
   std::unordered_set<uint64_t> m_keys;
   std::unordered_set<uint64_t> m_earlier;  // the keys load() found
   bool                         m_dropped = false;
+  double                       m_lastCompiledMs = 0;
+  double                       m_longestThisRun = 0;
 };
