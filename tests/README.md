@@ -34,10 +34,16 @@ setting it after the first configure has no effect — pass `-D` (or delete the 
 
 ### glTF 2.1 fixtures
 
-No official sample asset uses glTF 2.1 yet, so `test_gltf_2_1.cpp` loads small files that
-`tests/gltf_2_1/generate_fixtures.py` writes into the build tree. Only the script is committed; the
-test build reruns it when it changes. This needs Python 3 at configure time, otherwise the 2.1 tests
-skip. See [docs/gltf_2_1.md](../docs/gltf_2_1.md#5-test-fixtures).
+`tests/gltf_2_1/generate_fixtures.py` writes small files into the build tree for the importer's and the
+export's tests. Only the script is committed; the test build reruns it when it changes. This needs
+Python 3 at configure time, otherwise those tests skip.
+
+### Recorded output
+
+`tests/golden/retained.txt` holds a digest of what the importer draws and what the clip player gives
+(`tests/common/golden_digest.hpp`), recorded while both were still compared directly with the CPU glTF
+scene they replaced. A changed number means the output moved; `FV_UPDATE_GOLDEN=1` rewrites the
+entries a run reaches, once the change is understood.
 
 ## Running Tests
 
@@ -67,17 +73,11 @@ _bin/Release/vk_gltf_renderer_tests.exe
 _bin/Release/vk_gltf_renderer_tests.exe --gtest_color=yes
 
 # Run specific test
-_bin/Release/vk_gltf_renderer_tests.exe --gtest_filter=BasicTests.RoundTrip
+_bin/Release/vk_gltf_renderer_tests.exe --gtest_filter=RetainedImport.*
 
 # Run with verbose output
 _bin/Release/vk_gltf_renderer_tests.exe --gtest_color=yes --gtest_print_time=1
 ```
-
-The `ready` gate waits for a render pass to actually complete (`Resources::renderPassCount`, a
-monotonic counter unaffected by dirty-flag resets) rather than the accumulation frame counter -
-a scene whose graph writes a pointer every tick (e.g. `BowShooting.glb`'s permanent idle sway
-animation) resets the accumulation counter every single frame, which used to make `ready` hang
-forever.
 
 ### Render Tests (`tests/render/`)
 
@@ -107,8 +107,8 @@ python tests/render/volume_scatter_punctual.py --exe _bin/Release/vk_gltf_render
 # Run all benchmarks
 _bin/Release/vk_gltf_renderer_benchmarks.exe
 
-# Run specific benchmark (substring match on the registered name, e.g. BM_SceneLoad_Simple)
-_bin/Release/vk_gltf_renderer_benchmarks.exe --benchmark_filter=BM_SceneLoad
+# Run specific benchmark (substring match on the registered name)
+_bin/Release/vk_gltf_renderer_benchmarks.exe --benchmark_filter=BM_RetainedImport
 
 # Run with repetitions for statistical accuracy
 _bin/Release/vk_gltf_renderer_benchmarks.exe --benchmark_repetitions=10
@@ -122,21 +122,6 @@ tests/
 ├── README.md                   # This file
 ├── test_main.cpp               # Test entry point
 ├── benchmark_main.cpp          # Benchmark entry point
-├── test_basic.cpp              # Basic scene loading
-├── test_roundtrip.cpp          # Load → save → reload fidelity
-├── test_features_preserved.cpp # Features/extensions survive round-trip
-├── test_model_primary.cpp      # Primary-model selection
-├── test_basic_editing.cpp      # Node add/delete/duplicate editing
-├── test_index_remapping_basic.cpp / _advanced.cpp # Index remapping after edits
-├── test_dirty_flags_and_render_nodes.cpp # Dirty-flag → render-node sync
-├── test_node_hierarchy_operations.cpp    # Reparent / hierarchy ops
-├── test_children_order_preservation.cpp  # Child ordering stability
-├── test_animation_and_validation.cpp     # Animation + scene validation
-├── test_animation_update.cpp / test_compute_animation.cpp # CPU / GPU animation
-├── test_error_paths.cpp        # Error handling
-├── test_material_cache.cpp     # Material cache
-├── test_extensions_metadata.cpp # Extension metadata
-├── test_primitives.cpp         # Procedural primitives
 ├── test_bsdf_lobes.cpp         # nvshaders' BSDF on the CPU: every-lobe NEE, its MIS pair, sample vs eval, samples vs pdf, layered albedo, reciprocity (own exe)
 ├── figure/data/closure_baseline.json # real materials' closures (figure/tools/closure_probe); MaterialClosure.TheBaselineHolds lists what a change moved, FV_UPDATE_CLOSURE_BASELINE=1 rewrites it
 ├── render/                     # GPU render checks driven by Python (see Render Tests)
@@ -156,8 +141,8 @@ The figure viewer's own tests, by area (none needs a GPU):
 |---|---|
 | `figure/test_*.cpp` | The DAZ figure library: DSON parsing, formulas, morphs, skinning, pose, wardrobe, the collider, dForce, materials and presets, eyes, hair strands, export |
 | `test_fv_*.cpp` | The stream host: the protocol, FvHost's commands over `FakeHostRenderer` (`test_fv_host`, the undo fuzz and the kept scene among them), the history (`test_fv_journal`), the figure and prop feeds, the scene map, lighting, textures, model materials |
-| `test_retained_*.cpp`, `test_fake_gpu_backend.cpp`, `test_scene_gpu_tables.cpp`, `test_residency_vk_util.cpp` | The retained scene, its import and export, residency on the fake backend checked by the oracle, deformation, tangents, the fuzz (`test_retained_fuzz`) |
-| `test_sobol.cpp`, `test_sample_schedule.cpp`, `test_denoiser_schedule.cpp`, `test_alias_table.cpp`, `test_aperture.cpp`, `test_thin_scatter.cpp`, `test_hair_bsdf.cpp`, `test_shadow_fit.cpp`, `test_ground.cpp`, `test_sun_position.cpp`, `test_environment_sky.cpp`, `test_sky_preset.cpp`, `test_tlas_policy.cpp`, `test_variant_compile_job.cpp`, `test_frame_pacing.cpp`, `test_present_*.cpp` | The path tracer's and the frame loop's helpers, on the CPU |
+| `test_retained_*.cpp`, `test_fake_gpu_backend.cpp`, `test_scene_gpu_tables.cpp`, `test_scene_merger.cpp`, `test_material_cache.cpp`, `test_extensions_metadata.cpp`, `test_residency_vk_util.cpp` | The retained scene, its import and export, what a loaded file is merged and cached through, residency on the fake backend checked by the oracle, deformation, tangents, the fuzz (`test_retained_fuzz`) |
+| `test_sobol.cpp`, `test_sample_schedule.cpp`, `test_denoiser_schedule.cpp`, `test_alias_table.cpp`, `test_aperture.cpp`, `test_thin_scatter.cpp`, `test_hair_bsdf.cpp`, `test_shadow_fit.cpp`, `test_ground.cpp`, `test_sun_position.cpp`, `test_environment_sky.cpp`, `test_sky_preset.cpp`, `test_variant_compile_job.cpp`, `test_frame_pacing.cpp`, `test_present_*.cpp` | The path tracer's and the frame loop's helpers, on the CPU |
 
 `pnpm renderer:test` (from the app's folder; `native/setup.ps1 -Test`) builds both test executables and
 runs them side by side, the dForce, collider and retained-fuzz suites each in a process of their own,
@@ -176,7 +161,7 @@ from there, and skip elsewhere.
    ```cmake
    set(TEST_SOURCES
        ${TEST_COMMON_SOURCES}
-       test_basic.cpp
+       test_sobol.cpp
        test_mynewfeature.cpp  # Add here
    )
    ```

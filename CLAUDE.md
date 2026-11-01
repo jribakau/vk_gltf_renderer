@@ -26,15 +26,13 @@ C++20. Host and device share structs via `shaders/shaderio.h`.
 | Your task | Read |
 |---|---|
 | Understand overall architecture, app lifecycle, source map | [docs/developer.md](docs/developer.md) |
-| Scene data flow: Model → RenderNodes → GPU SSBO / BLAS / TLAS | [docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md) |
-| glTF 2.1 multi-file scenes, read-only flagging, re-externalize on save | [docs/external_assets.md](docs/external_assets.md) |
-| Any other glTF 2.1 work: status, `PROVISIONAL` markers for draft-spec choices, the tinygltf fork, test fixtures | [docs/gltf_2_1.md](docs/gltf_2_1.md) |
+| Scene data flow: retained scene → residency → GPU tables / BLAS / TLAS | [docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md) |
 | Sky models: physical atmosphere, gradient, units and calibration, the sun, glTF mapping | [docs/sky.md](docs/sky.md) |
 | Environment *pipeline*: the analytic bake, lighting vs background fields, preview/commit | [docs/developer.md](docs/developer.md) (§ Environment Lighting) |
 | MCP shader timing: enabling `--mcp`, the tool surface, measuring a change | [docs/mcp.md](docs/mcp.md) |
 | DLSS / OptiX / OIDN denoising, motion vectors, jitter/reset (incl. why animated meshes ghost) | [docs/denoising.md](docs/denoising.md) |
 | Test suite: running (CTest vs. direct), adding tests, benchmarks | [tests/README.md](tests/README.md) |
-| Where scene/model assets come from | [docs/external_assets.md](docs/external_assets.md), [docs/resources.md](docs/resources.md) |
+| Where scene/model assets come from | [docs/resources.md](docs/resources.md) |
 
 `docs/developer.md` contains the full annotated `src/` and `shaders/` file map —
 use it to locate a subsystem instead of fanning out readers across the tree.
@@ -47,8 +45,7 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 
 | You need… | Grep / read this (authoritative) |
 |---|---|
-| Supported glTF extensions | `m_supportedExtensions` in `src/gltf_scene.cpp` |
-| glTF versions that load, the version a save writes, what counts as a 2.1 feature | `src/gltf_version.cpp` |
+| What a glTF file brings in | `rs::importGltf` in `src/scene_import_gltf.cpp`; materials in `figure/materials/material_gltf.cpp` |
 | Visualization / debug modes | `enum Visualization` in `shaders/shaderio.h` |
 | Environment types | `enum EnvSystem` in `shaders/shaderio.h` |
 | Command-line / MCP / persisted settings (names, defaults, whether they persist) | `m_settings.add(...)` in `src/renderer*.cpp`, plus `parameterRegistry.add(...)` in `src/main.cpp` and `src/benchmarking.cpp` |
@@ -64,10 +61,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 - `src/renderer*.{cpp,hpp}` — render backends (`BaseRenderer` → `PathTracer` /
   `Rasterizer`), plus a separate `Silhouette` compute pass, all orchestrated by
   `renderer.cpp` (`GltfRenderer`).
-- `src/gltf_scene*.{cpp,hpp}` — scene loading, GPU upload (`SceneVk`),
-  acceleration structures (`SceneRtx`), editing, animation, merge, compaction. glTF 2.1 external
-  assets are placed by `gltf_scene_external_assets.cpp`, each referenced file loaded once per scene
-  and static content drawn as instance sets.
+- `src/scene_retained*`, `src/scene_residency*`, `src/scene_import_gltf.*`, `src/scene_export_gltf.*` —
+  the scene: its store, kept resident (GPU tables, BLAS, TLAS), and glTF in and out.
 - `src/env_baker.*`, `src/gltf_environment_sky.*` — the analytic sky bake (an authored or
   physical sky becomes the same lat-long image + alias table an HDR file would) and
   `OMI_environment_sky` load/save.
@@ -103,12 +98,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   verify both paths still work. The retained scene owns them, fed by a stream
   host or imported by `--scenefile`; both renderers read it through `SceneGpuView`
   (`Resources::gpuView()`), never the backend's own objects.
-- **RenderNode / RenderPrimitive arrays are derived and regenerated** from the
-  glTF model (see RENDERING_ARCHITECTURE.md). Don't hand-mutate them as if they
-  were source of truth; drive changes from the model / editor path so GPU SSBO
-  and TLAS stay in sync. The retained scene derives its instances from entities
-  instead, incrementally (`rs::Residency`); a stream host feeds its store
-  (`GltfRenderer::hostScene`), and there is no glTF model beside it.
+- **Instances are derived from entities**, incrementally (`rs::Residency`): don't hand-mutate its
+  tables; edit the store (`GltfRenderer::hostScene`), and there is no glTF model beside it.
 - **The path tracer is the material reference.** New glTF material extensions
   land in the path tracer's Slang material eval first
   (`shaders/gltf_material_eval.h.slang`, gated by `MAT_EXT_*` flags in
@@ -195,8 +186,6 @@ you are expected to keep them that way:
 | DLSS/OptiX/OIDN, motion-vector / jitter / reset behavior | [docs/denoising.md](docs/denoising.md) |
 | A sky model, its units, the sun, or the `OMI_environment_sky` mapping | [docs/sky.md](docs/sky.md) |
 | Environment sources, the sky bake, or the lighting/background split | [docs/developer.md](docs/developer.md) |
-| glTF 2.1 external-asset load/save/edit behavior | [docs/external_assets.md](docs/external_assets.md) |
-| Other glTF 2.1 support, a draft-spec assumption, or the tinygltf fork | [docs/gltf_2_1.md](docs/gltf_2_1.md) (status, patch log); mark draft-spec choices `PROVISIONAL(...)` and add a fixture to `tests/gltf_2_1/generate_fixtures.py` |
 | MCP tools or the timing measurement | [docs/mcp.md](docs/mcp.md) |
 | Added a glTF material extension | path tracer eval first, then README extension list + developer.md checklist |
 
@@ -207,8 +196,7 @@ you are expected to keep them that way:
   Check `docs/developer.md` and the sibling `nvpro_core2/` repo first. Keep it
   DRY — this codebase is meant to grow cleanly, not accrete duplicates.
 - Match the naming and file-pairing already in `src/` (`foo.cpp` / `foo.hpp`,
-  `*_vk` for Vulkan-resource owners, `gltf_scene_*` for
-  scene subsystems).
+  `*_vk` for Vulkan-resource owners, `scene_*` for scene subsystems).
 - Slang shaders, not GLSL.
 - **Text files are stored as LF**, enforced by `.gitattributes` (`* text=auto`).
   Your working tree follows your own `core.autocrlf` / `core.eol`, not your OS:

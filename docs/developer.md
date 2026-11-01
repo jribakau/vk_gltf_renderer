@@ -14,10 +14,8 @@ This project is developer-oriented: the **RTX path tracer** is the primary high-
 - [Testing](#testing)
 - [Contributing](#contributing)
 
-For the internal data-flow walkthrough (Model -> RenderNodes -> GPU/TLAS), including how ray tracing acceleration structures are built, see [Rendering Architecture](RENDERING_ARCHITECTURE.md).
+For the internal data-flow walkthrough (retained scene -> residency -> GPU/TLAS), including how ray tracing acceleration structures are built, see [Rendering Architecture](RENDERING_ARCHITECTURE.md).
 
-For how glTF 2.1 external assets (complex scenes) are merged, flagged read-only, and re-externalized/flattened on save, see [External Assets](external_assets.md).
-For glTF 2.1 support as a whole (status, `PROVISIONAL` markers, the tinygltf fork, test fixtures), see [glTF 2.1](gltf_2_1.md).
 
 ---
 
@@ -58,55 +56,7 @@ since core Vulkan has no direct copy between color and depth images.
 
 ## Scene Graph
 
-The glTF scene is loaded via TinyGLTF and converted to a GPU-friendly representation shared by both renderers.
-
-````mermaid
----
-config:
-  layout: elk
-  theme: neutral
----
-flowchart TB
- subgraph RenderNodes["RenderNodes"]
-        rn0["rn0"]
-        rn1["rn1"]
-        rn2["rn2"]
-        rn3["rn3"]
-        rn4["rn4"]
-  end
- subgraph s1["RenderPrimitives"]
-        n1["rp0"]
-        n2["rp1"]
-  end
- subgraph s2["RenderMaterials"]
-        n3["m1"]
-        n4["m2"]
-        n5["m3"]
-  end
-    sceneRoot["sceneRoot"] --> node0["node0"]
-    node0 --> node1["node1"] & node2["node2"] & node3["node3"]
-    node3 --> mesh1["mesh1"]
-    mesh0["mesh0"] --> prim0["prim0"] & prim1["prim1"]
-    mesh1 --> prim2["prim1'"]
-    node1 --> mesh0
-    node2 --> mesh0
-    prim0 --> rn0 & rn2 & n1 & n3
-    prim1 --> rn1 & rn3 & n2 & n4
-    prim2 --> rn4 & n2 & n5
-
-    style node0 fill:#BBDEFB
-    style node1 fill:#BBDEFB
-    style node2 fill:#BBDEFB
-    style node3 fill:#BBDEFB
-    style prim0 fill:#C8E6C9
-    style prim1 fill:#C8E6C9
-    style prim2 fill:#C8E6C9
-    style RenderNodes fill:#BBDEFB
-    style s1 fill:#C8E6C9
-    style s2 fill:#E1BEE7
-````
-
-**RenderNodes** are the flattened instances with world matrices and material references. **RenderPrimitives** are the unique geometry (vertex/index buffers). Shared primitives create one BLAS for multiple render nodes.
+The scene is a retained store (`rs::RetainedScene`) kept resident by `rs::Residency`, shared by both renderers: instances, prims and materials in slots, in tables the shaders read.
 
 > RN0 == node0 -> node1 -> prim0
 > RN1 == node0 -> node1 -> prim1
@@ -150,28 +100,14 @@ src/
 ├── busy_state.hpp              # Busy flag: a background scene job is running
 ├── resources.hpp               # Shared Vulkan resources and settings (`nvvk::FrameUploader` staging)
 │
-├── gltf_scene.cpp/hpp          # Core scene loading and management
-├── gltf_scene_vk.cpp/hpp       # GPU buffer/texture upload (SceneVk)
-├── gltf_scene_omm.cpp/hpp      # Opacity micromaps (SceneOmm), EXT_mesh_opacity_micromap → VK_KHR_opacity_micromap
-├── gltf_scene_rtx.cpp/hpp      # BLAS/TLAS acceleration structures (SceneRtx)
-├── tlas_policy.hpp             # `tlasPolicy`: when a TLAS sync builds rather than updates (unit-tested)
-├── gltf_scene_gpu.cpp/hpp      # SceneGpu — coordinates SceneVk / AnimationVk / SceneRtx / TransformComputeVk
-├── gltf_scene_editor.cpp/hpp   # Scene editing (add/delete/duplicate nodes)
-├── gltf_scene_animation.cpp/hpp# AnimationSystem: playback/interpolation (CPU), via Scene::animation()
-├── gltf_scene_animation_vk.cpp/hpp # GPU compute skinning / morph target animation
-├── gltf_scene_transform_vk.cpp/hpp # GPU compute world-matrix propagation
-├── gltf_scene_prev_positions_vk.cpp/hpp # DLSS: previous-frame positions of deforming primitives
-├── gltf_scene_merger.cpp/hpp   # Merge two glTF scenes; append a file's resources (external assets)
-├── gltf_scene_external_assets.cpp # glTF 2.1 external assets: file cache, placement, instance sets (ExternalAssetPlacer)
-├── gltf_scene_loading.hpp      # Shared file loading helpers (aliases, image rebase, meshopt)
-├── gltf_scene_validator.cpp/hpp# Scene validation
-├── gltf_version.cpp/hpp        # glTF asset versions: what loads, what a save declares, 2.1 feature detection
-├── gltf_compact_*.cpp/hpp      # Orphan resource removal / buffer compaction
-├── gltf_create_tangent.cpp/hpp # Tangent space generation (UV gradient + MikkTSpace)
-├── gltf_material_cache.cpp/hpp # Packs fv::mat::Material into shader rows; the CPU-side cache of the legacy scene's
+├── deform_pipelines.cpp/hpp    # The skinning and morph compute pipelines
+├── gltf_meshopt.cpp/hpp        # KHR/EXT_meshopt_compression decoded in place
+├── image_prefetch.cpp/hpp      # Images a host decodes ahead for the upload to take
+├── sampled_image.cpp/hpp       # A sampled VkImage from decoded mip levels
+├── gltf_scene_merger.cpp/hpp   # Compose props into one glTF: append a model's resources, rebased
+├── gltf_material_cache.cpp/hpp # Packs fv::mat::Material into shader rows; the rows the residency uploads
 ├── gltf_image_loader.cpp/hpp   # Image decoding (DDS, KTX, STB, WebP); a KTX inflates only the levels under its limit
 ├── image_levels.hpp            # Which stored mip levels to keep: Max texture size, and lowering images to fit GPU memory
-├── gltf_animation_pointer.*    # KHR_animation_pointer support
 ├── ies_profile.cpp/hpp         # EXT_lights_ies: IESNA LM-63 photometric profile parser, and a model's profiles loaded
 ├── scene_retained.cpp/hpp      # RetainedScene: an owned scene of entities and refcounted mesh, material,
 │                               #   texture, skin, light, camera and clip records, with what changed since
@@ -180,13 +116,12 @@ src/
 │                               #   In progress for Figure Viewer, not yet on the render path (unit-tested)
 ├── scene_retained_handles.hpp  # Its generational handles and slot map
 ├── scene_gpu_view.hpp          # SceneGpuView: what the renderers read of the scene on the GPU, and the
-│                               #   per-slot side tables; LegacySceneGpuView (scene_gpu_view_legacy.cpp)
-│                               #   puts Scene, SceneVk and SceneRtx behind it
+│                               #   per-slot side tables
 ├── scene_residency.cpp/hpp     # rs::Residency: a RetainedScene kept resident through rs::GpuBackend,
 │                               #   synced once a frame (slots with holes, capacity tables, BLAS per
 │                               #   prim, the TLAS); Vulkan-free, held to tests/common/residency_oracle.*
-├── scene_material_bits.hpp     # A material's TLAS flags and mask, raster lists and sRGB textures (both scenes)
-├── scene_gpu_tables.cpp/hpp    # Lights as the shaders read them; the emissive triangles' alias table (both scenes)
+├── scene_material_bits.hpp     # A material's TLAS flags and mask, raster lists and sRGB textures
+├── scene_gpu_tables.cpp/hpp    # Lights as the shaders read them; the emissive triangles' alias table
 ├── scene_gpu_backend.hpp       # rs::GpuBackend: all the retained residency layer will call on the GPU,
 │                               #   Vulkan-free (tests/common/fake_gpu_backend.* is its GPU-free twin)
 ├── scene_residency_vk.cpp/hpp  # VulkanGpuBackend (rs::GpuBackend on the allocator, the frame uploader and
@@ -194,7 +129,7 @@ src/
 │                               #   RetainedSceneVk, the retained scene's SceneGpuView, a stream session's
 ├── scene_residency_vk_util.cpp/hpp # What VulkanGpuBackend converts and plans apart from the device
 │                               #   (scratch batches, TLAS rows, glTF samplers); unit-tested
-├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene, drawing what nvvkgltf::Scene draws
+├── scene_import_gltf.cpp/hpp   # A glTF model into a RetainedScene
 ├── scene_export_gltf.cpp/hpp   # A RetainedScene (or a subtree) out as a fresh glTF model
 ├── scene_clip_player.cpp/hpp   # ClipPlayer: a clip played into entity TRS and morph weights, AnimationSystem's
 │                               #   interpolation ported
@@ -234,15 +169,10 @@ src/
 ├── tinygltf_converter.cpp/hpp  # OBJ to glTF converter
 ├── tiny_stb_implementation.cpp # STB library implementation (single compilation unit)
 ├── pipeline_cache_util.cpp/hpp # Vulkan pipeline cache persistence
-├── scene_selection.cpp/hpp     # Selection state and events
-├── scene_selection_render_nodes.hpp # The render nodes a selected node draws (header only)
-├── scene_descriptor.cpp/hpp    # Scene descriptor set layout / bindings
 ├── scene_feature_detection.cpp/hpp # Detect which extensions a scene uses
 ├── scene_shader_macros.cpp/hpp # Emit -DGLTF_USE_* macros from detected features
 ├── timeline_pipeline.cpp/hpp   # Timeline-semaphore submission helper
-├── gltf_camera_utils.hpp       # Camera utility functions
 ├── gpu_memory_tracker.hpp      # GPU memory category tracking
-├── scoped_banner.hpp           # Scoped UI banner helper
 └── utils.hpp                   # Miscellaneous utilities
 
 shaders/
@@ -251,11 +181,7 @@ shaders/
 ├── silhouette.comp.slang       # Selection edge detection
 ├── skinning.comp.slang         # GPU skinning
 ├── morph.comp.slang            # GPU morph-target blending
-├── world_matrix_propagate.comp.slang   # Per-level world-matrix propagation
-├── snapshot_prev_transforms.comp.slang # Snapshot previous transforms (motion vectors)
-├── update_render_instances.comp.slang  # Refresh render-instance data on GPU
 ├── animation_io.h.slang        # Skinning/morph shader I/O
-├── world_matrix_io.h.slang     # World-matrix compute shader I/O
 ├── shaderio.h                  # Host/device shared structures
 ├── pathtrace_functions.h.slang # Path-tracer hit/shading helpers (getShadowTransmission, etc.)
 ├── sobol.h.slang               # Owen-scrambled Sobol points for the accumulation's sampling decisions (ptSampler)
@@ -293,7 +219,7 @@ shaders/
 The retained scene keeps [`fv::mat::Material`](../figure/materials/material.hpp): a DAZ surface lowers into it
 (`figure/materials/lower.cpp`), a glTF file's material converts into it, and glTF is what it is written to only when
 writing a file (`figure/materials/material_gltf.cpp`). Which lobes are present (optional fields) decide the shader's
-features. `MaterialCache` packs the shader's row from it; the legacy scene's glTF materials convert first.
+features. `MaterialCache` packs the shader's row from it.
 
 The glTF material struct (`shaderio::GltfShadeMaterial`) and its `evaluateMaterial()` function
 are **forked locally** into `shaders/gltf_*.h.slang` rather than using the upstream
@@ -346,22 +272,21 @@ renderer resolves both on the host so the shader stays simple.
 - **Authored swizzle.** A KTX2 file may carry a `KTXswizzle` key (e.g. a BC5 metallic-roughness map
   that declares `1rg1`). `nv_ktx` parses it into `KTXImage::swizzle`;
   [`gltf_image_loader.cpp`](../src/gltf_image_loader.cpp) converts it to a `VkComponentMapping`, and
-  `SceneVk::createImage()` applies it to the `VkImageView` — so the swizzle costs nothing at sample
+  `createSampledImage()` applies it to the `VkImageView` — so the swizzle costs nothing at sample
   time and both render paths see the remapped channels. The same field is used to expand
   single-channel `stb_image` results to grayscale.
 - **Missing channels.** A two-channel format (BC5, `R8G8`, EAC_R11G11) has no third channel to
   swizzle from; Vulkan samples blue as a synthetic `0`. That is fine for data that only occupies two
   channels, but it breaks tangent-space normal maps, whose Z is implied rather than stored — decoding
   the synthetic `0` to `-1` flips the normal into the surface and the surface renders black.
-  `SceneVk::buildTextureFormatFlags()` infers the component count from the decoded `VkFormat` and
+  The residency infers the component count from the decoded `VkFormat` and
   marks the **exactly two-channel** ones in `GltfTextureInfo::flags`; `decodeTangentSpaceNormal()` in
   [`gltf_material_eval.h.slang`](../shaders/gltf_material_eval.h.slang) rebuilds Z from the
   unit-length assumption. Three-channel maps keep their authored Z, and single-channel formats are
   excluded — their green is synthetic too, so there is no second axis to reconstruct from.
 
-Because the flag depends on the decoded image format, texture creation runs **before**
-`uploadMaterials()` in `SceneVk::create()` and `recreatePreservingTextures()` — the material cache
-bakes the per-texture sampler slot and format flags (`TextureSlotTable`) into `GltfTextureInfo`.
+Because the flag depends on the decoded image format, images are made **before** a material's row:
+the material cache bakes the per-texture sampler slot and format flags (`TextureSlotTable`) into `GltfTextureInfo`.
 
 ### Worked example: `KHR_materials_scatter` (two modes, one material block)
 
@@ -406,7 +331,7 @@ Some things about the transport are worth knowing before touching it:
 - Surfaces with a diffuse transmission lobe are lit from **both** hemispheres, so `sampleLights()`
   takes a flag that disables the punctual-light hemisphere rejection in
   `singleLightContribution()`. Without it, a light behind a backlit leaf or sheet contributes
-  nothing. For the same reason `SceneRtx` disables back-face culling on them (`getInstanceFlag()`):
+  nothing. For the same reason their TLAS instances disable back-face culling (`materialBits`):
   a diffusely transmitted ray reaches the far wall of a closed object from behind.
 - Straight-through shadow transmission (`getShadowTransmission()`) passes only a **clear crossing**:
   smooth (`CLEAR_CROSSING_ALPHA`, from the material's own roughness and its texture) specular
@@ -578,7 +503,7 @@ checklist differs from the PBR pattern above:
 5. Wire the new NGX input in `Dlss::evaluateNr()` or the appropriate evaluate function
    (`src/dlss.cpp`), reading directly from `m_innerGBuffer`.
 6. tinygltf helpers (`src/tinygltf_utils.{hpp,cpp}`), material cache loading
-   (`src/gltf_material_cache.cpp`), and extension registration (`src/gltf_scene.cpp`) follow the same pattern as PBR extensions — see
+   (`src/gltf_material_cache.cpp`), follow the same pattern as PBR extensions — see
    `EXT_DLSS_NR` for the complete example.
 7. Update [`docs/denoising.md`](denoising.md) (for guide-buffer / denoiser integration).
 
@@ -587,8 +512,7 @@ checklist differs from the PBR pattern above:
 `EXT_lights_ies` provides photometrically accurate angular light distribution using IESNA LM-63
 profile files. Per spec it defines a **self-sufficient point light** and does not compose with
 `KHR_lights_punctual`. If a node carries both extensions, `EXT_lights_ies` wins and the KHR
-attachment on that specific node is dropped at load with a warning (see
-`Scene::handleLightTraversal` in [`src/gltf_scene.cpp`](../src/gltf_scene.cpp)); the shared KHR
+attachment on that specific node is dropped at load with a warning (`rs::importGltf`); the shared KHR
 light entity in `model.lights[]` is preserved, so other nodes referencing it are unaffected.
 
 ![IES profiles — ring and scatter distributions on floor and wall](images/LightsIES_original.jpg)
@@ -698,8 +622,7 @@ than a silent wrong answer, which is the better failure. An authored `equirectan
 never invented but always preserved, since index 0 is a valid texture — inventing one would load
 the wrong image rather than fall back.
 
-The URI resolves against **the glTF that named it**, like every other external asset
-([external_assets.md](external_assets.md)), not against the resources directories — two scenes
+The URI resolves against **the file that named it**, not against the resources directories — two scenes
 naming the same file must not load each other's environment. On save it is written relative to the
 file being written when the image lives under it, and absolute when it does not, so a scene and
 its environment move together without a chain of `..` that breaks at the first move.
@@ -778,67 +701,25 @@ A command that opens a dialog or rebuilds the scene only raises a request (`m_me
    checklist in [Material System → Adding a new KHR_materials_* extension](#adding-a-new-khr_materials_-extension).
 3. Otherwise, integrate runtime behavior in scene/shader code as needed.
 4. **If the extension stores any index** (into accessors/bufferViews/textures or a root-level array
-   it defines itself), add its remapping to `gltf_scene_merger.cpp` in the same change — otherwise it
-   is silently dropped or cross-linked when scenes are merged. See
-   [External Assets → index remapping is exhaustive](external_assets.md#scenemerger-gltf_scene_mergerhppcpp).
+   it defines itself), add its remapping to `gltf_scene_merger.cpp` in the same change: otherwise it
+   is silently dropped or cross-linked when props are composed.
 5. Update extension documentation in [README.md](../README.md).
 
 ### Modify sync/data-flow behavior
 
 Use [RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md) as the source of truth for:
-- parse/rebuild flow
-- render-node dirty propagation
+- slots, side tables and the sync order
 - GPU buffer synchronization
-- TLAS/BLAS update invariants
+- TLAS/BLAS lifecycle
 
 ---
 
-## The legacy scene and `SceneGpuView`
+## The retained scene and `SceneGpuView`
 
-A stream session draws the Figure Viewer's retained scene (daz-viewer docs/retained-scene-plan.md),
-which its host feeds (below), or which `--scenefile` imports a file into. Nothing loads the legacy
-scene any more; it is on its way out. Both
-renderers read the scene through `SceneGpuView` (src/scene_gpu_view.hpp, `Resources::gpuView()`).
-In a stream session there is no legacy scene: `Resources::getScene()` is null, and every use of it
-(`Scene::getModel()`, `editScene()`, `sceneVk`, `sceneRtx`) either has a retained branch or is legacy-only and checks for it. A new use picks one.
-
-**Through `SceneGpuView`**:
-- `PathTracer`: the scene descriptor, the TLAS, the bounds for the aperture and ground sliders,
-  opacity micromap presence, the DLSS motion tables.
-- `Rasterizer`: draw records (buffer, offset, index count) in `renderNodes`, the draw lists, the
-  scene descriptor, the TLAS, the blend sort (draw-list revision, transform revision, world centres),
-  transmission, the prepass and shadow-map gates.
-- `GltfRenderer`: `onRender`'s empty-scene return; the pickers' TLAS; the silhouette's node count;
-  `fillShadowAndGround` (bounds and light records); `aerialPerspectiveEyeAltitudeKm`;
-  `sceneBounds`; the `fitScene` command; `benchmarkMemorySamples`; `updateGizmoAttachment`'s gate;
-  `hasValidScene` (and so `pickAt`); `visibleSceneBounds`; the playback checks; the sky sun
-  (`SkySun::syncFromMarkedLight`, from the light record marked as the sun).
-
-**A stream session's own branch** (on the host's handles):
-- The store and its scene replace: `hostScene`, `replaceHostScene`, `syncRetainedScene`.
-- Selection: `selectEntity` (the instances under an entity, outlined), the pick observer's
-  `InstancePick` in `applyClickPickResult`, framing by instance bounds (`getRenderNodeBbox`).
-- The gizmo: `updateEntityGizmo`, the entity's local TRS and its parent's world from the store, its
-  drags to `GizmoHooks` on `EntityId`.
-- Clips: `setHostClip`, `seekHostClip`, `advanceHostClip`, a `rs::ClipPlayer` on the store.
-
-**Legacy-only**, no longer reached:
-- `src/gltf_scene*` (`Scene`, `SceneVk`, `SceneRtx`, `AnimationVk`, `TransformComputeVk`,
-  `SceneOmm`, `SceneGpu`, the validator), `scene_gpu_view_legacy.cpp`.
-- In `GltfRenderer`: `createVulkanScene`, `buildAccelerationStructures`, `updateSceneChanges*`,
-  `reconcileAnimationGpuState`, `updateAnimation`, `evaluateClip`, `applyPendingSceneEdits`,
-  `snapshotPrevPositions`, `requeueLiveVertices`, `reconcileGeometryIfNeeded`,
-  `rebuildVulkanSceneInternal`, `applyPendingTextureTailSync`, `applyPendingTextureRebuild`,
-  `applyPendingSamplerUpdate`, `updateTextures`, `writeTextureDescriptorRange`,
-  `finalizeSceneSetup`, `ensureEmptyScene`, `refreshCpuSceneGraphFromModel`; `onRender`'s dirty-flag
-  and deform checks for the DLSS motion vectors; the settings that configure the backend
-  (`tlasPolicy`, the profiler hook).
-- The scene's sky and sun lights at a scene replace: `applyEnvironmentSkyFromScene`,
-  `applyPendingAuthoredSky`, `sky_sun.cpp`'s light lookup (allowed to change, fork-boundary.md).
-- The selection by glTF node: `selectSceneNodeFromScript`, `pickSceneNodeFromScript`,
-  `updateSelectionFromPick`, `onSceneSelectionEvent`, `selectedNodeIndex`; the gizmo's node TRS.
-- `mcp_scene.cpp`: `vk_gltf_scene_info` reads the legacy scene (the edit tools went, D3).
-- `addSceneFromFile`, `loadSceneFile`, `createSceneFromDescriptor`, `save`.
+The renderer draws a retained scene (daz-viewer docs/retained-scene-plan.md), which a stream host
+feeds (below) or which `--scenefile` imports a file into. Both renderers read it through
+`SceneGpuView` (src/scene_gpu_view.hpp, `Resources::gpuView()`); with no scene loaded yet that is an
+`EmptySceneGpuView`.
 
 ### The retained scene in a stream session
 
@@ -853,8 +734,8 @@ and keep theirs, so the selection, the clip that plays and the camera stay. The 
 `{0, -1}`) is a light record marked as the sky's sun. Each frame's sync takes the changes, with no
 device wait. Only the first composition is a scene replace: `replaceHostScene` waits for the
 device, cleans up as a load does (the store and the selection stay) and makes the store resident,
-waited for; with `[fv-time]` on, the `GPU BLAS build` and `GPU TLAS build` lines time its builds as
-legacy's time a load's (`VulkanGpuBackend::timeBuilds`); the `Scene (retained, host):` line counts
+waited for; with `[fv-time]` on, the `GPU BLAS build` and `GPU TLAS build` lines time its builds
+(`VulkanGpuBackend::timeBuilds`); the `Scene (retained, host):` line counts
 images decoded (and of those, taken from the host's prefetches) and reused. "Auto" ground is the
 store's lowest drawn point after each composition (D6).
 
@@ -905,21 +786,21 @@ CPU's drawn vertices (`MeshChange::caughtUp`) is no reason for dForce or the col
 
 A sync decodes the images it needs in one batch, side by side on the worker pool
 (`VulkanGpuBackend::createImages`), a file the host prefetched taken from
-`SceneVk::takePrefetchedFile` instead. Each material slot owns a span of the texture-info table
+`ImagePrefetch::take` instead. Each material slot owns a span of the texture-info table
 (`MaterialCache::convertOne` at its start), so a material edit uploads its row and span only; a span
 that finds no room below the uint16 limit repacks every span once, and one that still doesn't fit is
 drawn without its textures, logged as `Retained scene: the texture-info table is full`. A material
 or light edit resets DLSS (`SyncResult::dlssReset`).
 
 A mesh an entity skins, or a mesh with morph targets, is deformed for that entity: its drawer owns
-the output streams the morph pass and then the skin pass write (the shaders legacy's `AnimationVk`
-runs, through `nvvkgltf::DeformPipelines`), and its prims' BLASes are built over them and refit
+the output streams the morph pass and then the skin pass write (through
+`nvvkgltf::DeformPipelines`), and its prims' BLASes are built over them and refit
 after each pass. A pass runs only when what it reads changed: the weights, the joint matrices or the
 mesh's vertices (`rs::Residency`, "Deformation"). DLSS motion comes from two tables the residency
 keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): positions a sync wrote are
 copied at the top of the next one, and an instance keeps the world it was drawn with for one sync
 after it moves. The clip that plays is a `rs::ClipPlayer` on the store (`setHostClip`), driven by
-`AnimationControl` as a legacy clip is.
+`AnimationControl`.
 
 Four settings, none remembered:
 

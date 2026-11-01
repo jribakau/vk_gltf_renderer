@@ -181,27 +181,20 @@ combined:
   (`shaders/shaderio.h`; both are unjittered and updated per frame in `GltfRenderer::onRender`,
   `src/renderer.cpp`). `prevMVP` holds the previous rendered frame's view-projection and is *not*
   cleared by `resetFrame()`, so a continuous camera move keeps correct camera MVs.
-- **Instance (node) motion** — previous render-node transforms snapshotted by
-  `snapshot_prev_transforms.comp.slang` (host: `TransformComputeVk::cmdSnapshotPrevObjectToWorld`)
-  and applied via `prevRenderNodeObjectToWorld` in `shaders/gltf_pathtrace.slang`. Gated by
-  `Resources::dlssInstanceMotionActive` (bound only on frames where transforms actually change) -
-  this gate must see `Scene::DirtyFlags::nodes` as populated by *this* frame's transform writes,
-  which is why the gate check in `GltfRenderer::onRender()` runs after the frame's transform writes:
-  a per-tick move ghosted for its entire duration when the check ran first.
+- **Instance (node) motion** — an instance keeps the world it was drawn with for one sync after it
+  moves (`SceneGpuView::prevObjectToWorldTable`), applied via `prevRenderNodeObjectToWorld` in
+  `shaders/gltf_pathtrace.slang`. Gated by `Resources::dlssInstanceMotionActive`, set after the
+  frame's sync: a per-tick move ghosted for its entire duration when the check ran first.
 
-**Per-vertex skin/morph deformation (path tracer).** Skinning and morph overwrite the position
-buffer in place (`AnimationVk::dispatchAnimation`; the CPU fallback is `SceneVk::uploadPrimitives`),
-and `set_vertices` does the same. A bone pose is not instance motion: skinning writes the new
+**Per-vertex skin/morph deformation (path tracer).** The skin and morph passes write a drawer's
+output positions, and a vertex edit writes a mesh's. A bone pose is not instance motion: skinning writes the new
 positions while the mesh node's transform stays put, so instance motion alone reprojects the
 current shape under camera motion only, and Ray Reconstruction smears the surface while a pose, a
 shape dial or a clip moves it.
 
-`PrevPositionsVk` (`src/gltf_scene_prev_positions_vk.hpp`) keeps a copy of each deforming
-primitive's positions, 12 bytes a vertex. Deforming here means skinned, morphed, edited live, or
-named by an upload queued for this frame. The copy is made in
-`GltfRenderer::snapshotPrevPositions` at the start of the frame, before
-the host uploads and the animation reconcile write, and only when one of them ran the frame
-before. When nothing wrote in between, the copy taken earlier still matches. On frames where a
+The residency keeps a copy of those positions, 12 bytes a vertex, made at the top of the next sync
+from what the last one wrote (`SceneGpuView::prevPositionTable`). When nothing wrote in between, the
+copy taken earlier still matches. On frames where a
 writer ran, `dlssDeformMotionActive` binds `PathtracePushConstant::prevVertexPositions`, a table of
 device addresses, one per render primitive.
 
@@ -316,8 +309,7 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
   `src/dlss_wrapper.cpp`).
 - Temporal history is **intentionally not reset on camera motion.** `InReset` is only for
   discontinuities (resize, preset/quality change, re-enable, and a material/light property write via
-  `BaseRenderer::notifyDlssContentReset()`, called from `GltfRenderer::updateSceneChanges()`
-  whenever `Scene::DirtyFlags::materials`/`lights` is non-empty) via `Dlss::notifyReset` /
+  `BaseRenderer::notifyDlssContentReset()`, after a sync that says so (`SyncResult::dlssReset`)) via `Dlss::notifyReset` /
   `m_forceResetUntilFrame`. Do not reset on dolly/pan — it discards accumulation and adds noise
   without fixing MV correctness. Node-transform-only changes are deliberately excluded from this
   reset — those are already correctly handled by instance motion vectors (see "Instance (node)
@@ -456,8 +448,8 @@ This is exposed as the `EXT_DLSS_NR` glTF material extension. The full pipeline:
    `renderMaterialExtensionSection()`, which provides the Add / Remove scaffolding automatically.
    The extension appears in the **Material Extensions** section of the inspector.
 
-6. **glTF support** — `"EXT_DLSS_NR"` is declared in `m_supportedExtensions`
-   (`src/gltf_scene.cpp`) so the loader preserves the extension data on round-trip save/load.
+6. **glTF support** — the extension's data goes through the material payload
+   (`figure/materials/material_gltf.cpp`).
 
 > **Rasterizer note:** The rasterizer does not write `eNrMask` (no 4th framebuffer attachment in
 > the SR pass). For Kind::SR, `pInControlMask = nullptr` and `InUseAutoMask` follows the global

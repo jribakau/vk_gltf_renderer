@@ -42,14 +42,6 @@ authoritative names, schemas and descriptions:
 | `vk_gltf_list_timers` | GPU profiler timer names available right now |
 | `vk_gltf_measure` | Time one timer, or several on the same frames, over a controlled window and return the distribution |
 
-`vk_gltf_scene_info` (`src/mcp_scene.cpp`) describes the loaded scene: nodes, materials, meshes with
-their render primitives, animations, lights and the animation state, with the ids a host wrote into
-`extras.fvId`. It reads a windowed or `--scenefile` session's scene; a stream session's scene is its
-host's (the Figure Viewer feeds the retained scene), so there is none to read. The live edit tools
-(`vk_gltf_edit`, the `vk_gltf_set_*` family, `vk_gltf_add_scene`) went when the Figure Viewer moved to
-the retained scene (decision D3 of daz-viewer docs/retained-scene-plan.md), with the frame stream's
-`/blob` and the edit-latency trace that only they fed.
-
 Loading is not a tool: set `scenefile` or `hdrfile` and it loads. Those parameters carry a
 `callbackSuccess`, so the same write works from the command line, a benchmark sequence, and
 `nvpro_set_parameters` alike. Both loads run synchronously on the application thread — the parse

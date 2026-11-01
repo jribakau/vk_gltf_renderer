@@ -410,7 +410,7 @@ or with `--loadSkyPreset` / `--saveSkyPreset` -- which also makes them reachable
 sequence and from MCP, since all four come from one declaration.
 
 A panorama preset names its image relative to the `.sky.json`, the same rule glTF external assets
-follow ([external_assets.md](external_assets.md)), so a preset and its `.hdr` travel as a pair.
+follow , so a preset and its `.hdr` travel as a pair.
 
 **Not undoable**, deliberately. Everything a preset changes is viewer state, and no environment
 control in this renderer is on the undo stack; the exception is aiming a scene's marked sun light,
