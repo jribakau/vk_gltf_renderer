@@ -587,7 +587,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // #DLSS primary surface replacement: describe what is seen through the glass. The albedo
         // keeps the glass's Fresnel share; depth and motion come from the replaced surface.
-        DlssGlassPsr psr     = dlssTraceClearGlass(pbrMat, hit, ray.Direction, ptIsInside(pt));
+        DlssGlassPsr psr     = dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt));
         float        ndotv   = saturate(dot(pbrMat.N, -ray.Direction));
         float        fresnel = schlickFresnel((pbrMat.ior2 > 0.0f) ? (pbrMat.ior2 / pbrMat.ior1) : 1.5f, ndotv);
         guideAlbedo          = dlssEnforceMinAlbedo(lerp(psr.albedo, pbrMat.baseColor.xyz, fresnel), specularAlbedo);
@@ -884,6 +884,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Update the pt.throughput
       pt.throughput *= sampleData.bsdf_over_pdf;
       ray.Direction    = sampleData.k2;  // new direction
+      if(materialIndex >= 0 && (sampleData.event_type & BSDF_EVENT_TRANSMISSION) != 0)
+        ray.Direction = rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex);
       pt.lastSamplePdf = sampleData.pdf;
       // Next-event estimation above samples a light only where this holds (bounce.nextEventValid), so a
       // light this ray reaches elsewhere has no light-sample partner: its weight is 1, as after a delta

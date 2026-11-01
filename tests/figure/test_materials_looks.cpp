@@ -189,6 +189,106 @@ TEST(Materials, EyeLayoutsFollowTheSurfaceNames)
   EXPECT_EQ(layout("Face"), EyeLayout::eNone);
 }
 
+// ---- skin's micro-relief
+
+constexpr float kFaceMetresPerUv = 0.43f;
+fv::mat::LowerOptions underAWalk()
+{
+  return {.skin = fv::mat::SkinMode::eMeasured, .metresPerUv = kFaceMetresPerUv};
+}
+
+TEST(Materials, SkinUnderAWalkHasTheMicroReliefAtItsSize)
+{
+  const auto  skin    = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  const auto  lowered = loweredJson(skin, {}, underAWalk());
+  const auto& de      = lowered.material["extensions"]["FV_materials_detail"];
+  EXPECT_FLOAT_EQ(de["detailWeightFactor"].get<float>(), 1);
+  EXPECT_FLOAT_EQ(de["detailRoughnessFactor"].get<float>(), fv::mat::kSkinMicroRoughness);
+  const auto& normal = de["detailNormalTexture"];
+  EXPECT_FLOAT_EQ(normal["scale"].get<float>(), 1);
+  const float tiles = kFaceMetresPerUv / fv::mat::kSkinMicroTileMetres;
+  EXPECT_FLOAT_EQ(normal["extensions"]["KHR_texture_transform"]["scale"][0].get<float>(), tiles);
+  EXPECT_FLOAT_EQ(normal["extensions"]["KHR_texture_transform"]["scale"][1].get<float>(), tiles);
+  // a height map baked to its slopes, whose relief doesn't change with the surface's size
+  const auto request = std::find_if(lowered.requests.begin(), lowered.requests.end(), [](const auto& r) { return r.rel == fv::mat::kSkinMicroMap; });
+  ASSERT_NE(request, lowered.requests.end());
+  EXPECT_EQ(request->channels, "bn");
+  EXPECT_FLOAT_EQ(request->bumpHeight, fv::mat::kSkinMicroRelief);
+  EXPECT_FALSE(request->srgb);
+  EXPECT_FLOAT_EQ(*lowered.effective.microDetail, 1);
+  // the volume skin's walk melts it the same way
+  EXPECT_TRUE(loweredJson(skin, {}, {.skin = fv::mat::SkinMode::eVolume, .metresPerUv = kFaceMetresPerUv}).material["extensions"].contains("FV_materials_detail"));
+}
+
+TEST(Materials, TheMicroReliefGoesOnlyOnSkinItCanLieOn)
+{
+  const auto has = [](const fv::mat::Surface& s, const fv::mat::Edits& e, const fv::mat::LowerOptions& o) {
+    const auto lowered = fv::mat::lower(s, e, o);
+    return std::any_of(lowered.requests.begin(), lowered.requests.end(), [](const auto& r) { return r.rel == fv::mat::kSkinMicroMap; });
+  };
+  const auto skin = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  ASSERT_TRUE(has(skin, {}, underAWalk()));
+  // the views with no walk to melt it out of the diffuse light, a file, and a surface of unknown size
+  EXPECT_FALSE(has(skin, {}, {.skin = fv::mat::SkinMode::eRaster, .metresPerUv = kFaceMetresPerUv}));
+  EXPECT_FALSE(has(skin, {}, {.skin = fv::mat::SkinMode::eThin, .metresPerUv = kFaceMetresPerUv}));
+  EXPECT_FALSE(has(skin, {}, {.skin = fv::mat::SkinMode::eMeasured, .forFile = true, .metresPerUv = kFaceMetresPerUv}));
+  EXPECT_FALSE(has(skin, {}, {.skin = fv::mat::SkinMode::eMeasured}));
+  // nothing but skin: a mouth's wet lining, nails, an eye
+  for(const char* name : {"Mouth Cavity", "Fingernails", "Eye Left"})
+    EXPECT_FALSE(has(fv::dson::parseSurface(name, channelsOf(kSkin)), {}, underAWalk())) << name;
+  // the panel takes it off
+  fv::mat::Edits off;
+  off.microDetail = 0;
+  EXPECT_FALSE(has(skin, off, underAWalk()));
+  EXPECT_FLOAT_EQ(*fv::mat::lower(skin, off, underAWalk()).effective.microDetail, 0);
+  // a lip gloss lies smooth over it
+  auto coated    = skin;
+  coated.topCoat = fv::mat::Surface::TopCoat{.weight = 0.5f};
+  EXPECT_FALSE(has(coated, {}, underAWalk()));
+  // a fabric on the surface wins
+  fv::mat::Edits fabric;
+  fabric.fabric = "denim";
+  EXPECT_FALSE(has(skin, fabric, underAWalk()));
+  // a detail map of the file's own stays, and with it what would be lost
+  auto authored       = skin;
+  authored.detail     = fv::mat::DetailLayer{.map = "/Runtime/Textures/pores.png", .weight = 1};
+  EXPECT_FALSE(has(authored, {}, underAWalk()));
+  auto weighted       = skin;
+  weighted.detail     = fv::mat::DetailLayer{.weight = 1, .weightMap = "/Runtime/Textures/w.png", .roughness = 0.5f};
+  EXPECT_FALSE(has(weighted, {}, underAWalk()));
+}
+
+// Leyla 9's skin has a detail layer with no map: on, doing nothing, or a multiplier the relief keeps
+TEST(Materials, TheMicroReliefKeepsAMaplessLayersRoughness)
+{
+  auto skin   = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  skin.detail = fv::mat::DetailLayer{.weight = 0.5f, .roughness = 0.8f};
+  const auto  lowered = loweredJson(skin, {}, underAWalk());
+  const auto& de      = lowered.material["extensions"]["FV_materials_detail"];
+  EXPECT_FLOAT_EQ(de["detailWeightFactor"].get<float>(), 1);
+  EXPECT_FLOAT_EQ(de["detailRoughnessFactor"].get<float>(), 0.9f * fv::mat::kSkinMicroRoughness);
+}
+
+// Slopes' variance goes as the strength squared, and what the lobes give back with it, up to strength
+// 1's: past that a strong relief is what's asked for, and it widens the highlight
+TEST(Materials, TheMicroReliefsStrengthScalesItsSlopesAndItsRoughness)
+{
+  const auto skin = fv::dson::parseSurface("Face", channelsOf(kSkin));
+  const auto at   = [&](float strength) {
+    fv::mat::Edits e;
+    e.microDetail = strength;
+    const auto lowered = loweredJson(skin, e, underAWalk());
+    const auto de      = lowered.material["extensions"]["FV_materials_detail"];
+    EXPECT_FLOAT_EQ(*lowered.effective.microDetail, strength);
+    return std::pair{de["detailNormalTexture"]["scale"].get<float>(), de["detailRoughnessFactor"].get<float>()};
+  };
+  const float give = 1 - fv::mat::kSkinMicroRoughness;
+  EXPECT_FLOAT_EQ(at(0.5f).first, 0.5f);
+  EXPECT_FLOAT_EQ(at(0.5f).second, 1 - give * 0.25f);
+  EXPECT_FLOAT_EQ(at(2).first, 2);
+  EXPECT_FLOAT_EQ(at(2).second, fv::mat::kSkinMicroRoughness);
+}
+
 TEST(Materials, AnEyesWhiteSpreadsItsLightUnderMeasuredSkinWithNoWalk)
 {
   const auto  eye     = fv::dson::parseSurface("Eye Left", channelsOf(kEye));

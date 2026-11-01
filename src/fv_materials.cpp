@@ -803,6 +803,7 @@ Json FvMaterials::item(int index) const
                                        {"emissiveIntensity", v.emissiveIntensity}};
   // null without such a map, so a merge patch takes the strength away when an edit removes the map
   values["normalStrength"] = v.normalStrength ? Json(*v.normalStrength) : Json(nullptr);
+  values["microDetail"]    = v.microDetail ? Json(*v.microDetail) : Json(nullptr);
   values["bumpStrength"]   = v.bumpStrength ? Json(*v.bumpStrength) : Json(nullptr);
   fv::mat::clothesValues(m.edits, values);
   // the maps as lowering uses them, the edits' included; one an edit took away has rel ""

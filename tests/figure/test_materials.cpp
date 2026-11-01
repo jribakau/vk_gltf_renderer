@@ -443,9 +443,9 @@ TEST(Materials, AnEyeUnderTheTearFilmHasNoSpecularOfItsOwn)
               0.3f, 1e-6f);
 }
 
-// Genesis 8's two shells: the moisture over the whole eye is the film, the cornea under it is
-// index-matched. A cornea with no moisture over it is the film itself. An index that is not a
-// watery eye's (glass at 1.5) becomes the cornea's.
+// Two shells stacked: the moisture is the film, the cornea under it is index-matched. A cornea with no
+// moisture over it (Genesis 8's stops at the limbus, the build works that out) is the film itself. An
+// index that is not a watery eye's (glass at 1.5) becomes the cornea's.
 TEST(Materials, OneReflectingShellPerEye)
 {
   const auto cornea = fv::dson::parseSurface("Cornea", channelsOf(kG9Moisture));
@@ -457,6 +457,27 @@ TEST(Materials, OneReflectingShellPerEye)
   auto glass = fv::dson::parseSurface("EyeMoisture", channelsOf(kG9Moisture));
   glass.refraction->ior = 1.5f;
   EXPECT_NEAR(loweredJson(glass, {}, {}).material["extensions"]["KHR_materials_ior"]["ior"].get<float>(), 1.376f, 1e-6f);
+}
+
+// A ray entering the eye bends at the one film over it, into the chamber; only there, or a stack would
+// bend it twice. The meniscus has no chamber behind it, and a file for other tools none of ours.
+TEST(Materials, TheTearFilmBendsARayIntoTheEyesChamber)
+{
+  const auto chamberOf = [](const char* name, const fv::mat::LowerOptions& o) {
+    const auto  lowered = loweredJson(fv::dson::parseSurface(name, channelsOf(kG9Moisture)), {}, o);
+    const auto& ext     = lowered.material["extensions"];
+    return ext.contains("FV_materials_eye") ? ext["FV_materials_eye"]["chamberIor"].get<float>() : 0.f;
+  };
+  EXPECT_FLOAT_EQ(chamberOf("EyeMoisture Left", {.underTearFilm = true}), fv::mat::kEyeChamberIor);
+  EXPECT_FLOAT_EQ(chamberOf("Cornea", {}), fv::mat::kEyeChamberIor);
+  EXPECT_EQ(chamberOf("Cornea", {.underTearFilm = true}), 0.f);
+  EXPECT_EQ(chamberOf("Tear", {.underTearFilm = true}), 0.f);
+  EXPECT_EQ(chamberOf("EyeMoisture Left", {.forFile = true}), 0.f);
+  // the film stays thin-walled: no medium for a path or a shadow ray to track
+  const auto  film = loweredJson(fv::dson::parseSurface("EyeMoisture Left", channelsOf(kG9Moisture)), {}, {});
+  EXPECT_LE(film.material["extensions"]["KHR_materials_volume"].value("thicknessFactor", 0.f), 0.f);
+  // what bends the ray is not what reflects: the film's own index stays on the catchlight
+  EXPECT_NEAR(film.material["extensions"]["KHR_materials_ior"]["ior"].get<float>(), 1.38f, 1e-6f);
 }
 
 // The lid margin's tear meniscus is the same water, but its normal map is its shape and stays

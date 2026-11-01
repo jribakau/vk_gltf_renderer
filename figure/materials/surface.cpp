@@ -84,7 +84,7 @@ bool Edits::empty() const
          && !clearcoat && !clearcoatRoughness && !emissive && !emissiveIntensity && !irisColor && !scleraColor && !irisStrength
          && !recolor && !recolorStrength && !tone && !toneStrength && !makeupColor && !makeupWeight
          && !scatterScale && !baseMap && !opacityMap && !normalMap && !bumpMap && !roughnessMap && !uvScaleU && !uvScaleV && !uvOffsetU
-         && !uvOffsetV && !uvRotation && !fabric && !fabricScale && !fabricStrength && !sheenColor && !sheenRoughness;
+         && !uvOffsetV && !uvRotation && !fabric && !fabricScale && !fabricStrength && !microDetail && !sheenColor && !sheenRoughness;
 }
 
 void Edits::merge(const Edits& o)
@@ -129,6 +129,7 @@ void Edits::merge(const Edits& o)
   take(fabric, o.fabric);
   take(fabricScale, o.fabricScale);
   take(fabricStrength, o.fabricStrength);
+  take(microDetail, o.microDetail);
   take(sheenColor, o.sheenColor);
   take(sheenRoughness, o.sheenRoughness);
 }

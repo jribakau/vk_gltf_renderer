@@ -411,6 +411,12 @@ garment's UV layout. The relief is fixed per fabric rather than derived from the
 change of the fabric's scale only changes the texture transform and cooks nothing new. A GLB export
 leaves the detail layer out, as it does PBRSkin's.
 
+It also writes it for skin's micro-relief (`skinMicroDetail` in the same file): skin under a random
+walk with no detail map or top coat of its own gets a tiled height map of fine creases and pores, the
+app's like the fabrics'. The walk melts it out of the diffuse light, so what shows is the highlights
+breaking up. The moving view's thin preview leaves a measured skin's detail layer out
+(`evaluateMaterial`), where one sample a pixel would only shimmer.
+
 Every other texture a figure surface samples gets the surface's UV transform as
 `KHR_texture_transform` from lowering (`surfaceUv` in
 [`figure/materials/lower.cpp`](../figure/materials/lower.cpp)): Iray Uber's authored Horizontal /
@@ -427,6 +433,17 @@ on top of the normal map instead of replacing it, and scales roughness under the
 clearcoat block layers the same detail on the clearcoat normal. It follows the usual gating
 (`MAT_EXT_DETAIL` for layout, `GLTF_USE_DETAIL` from `SceneFeatureSet::eDetail`) and has no
 Inspector section.
+
+### `FV_materials_eye`: the eye's chamber behind a tear film
+
+A vendor extension written by Figure Viewer on the surface a camera sees an eye through, the tear
+film (`mat::eyeShell`, and `chamberIor` on `mat::Material`). The surface stays thin-walled to the
+BSDF, shadow rays and the medium rules. Only a path's ray entering through its front face takes a
+different direction, refracted into the chamber at `chamberIor` (`rayIntoEyeChamber()` in
+[`shaders/pathtrace_functions.h.slang`](../shaders/pathtrace_functions.h.slang)), and the clear-glass
+guides follow that ray. Rays leaving the eye go straight, so the eye needs no medium, there is no total
+internal reflection to lose light to, and a lit iris is as bright as without it; the cost is that the
+cornea focuses no caustic. A GLB export leaves it out. It has no Inspector section.
 
 ### `FV_materials_hair`: a fibre on a ribbon
 

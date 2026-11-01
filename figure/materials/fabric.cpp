@@ -74,4 +74,25 @@ std::optional<DetailLayer> fabricDetail(const Edits& e, float metresPerUv)
   return d;
 }
 
+std::optional<DetailLayer> skinMicroDetail(const Surface& s, const Edits& e, float metresPerUv)
+{
+  const float strength = e.microDetail.value_or(1.f);
+  if(metresPerUv <= 0 || strength <= 0 || s.topCoat)
+    return std::nullopt;
+  if(s.detail && (!s.detail->map.empty() || !s.detail->weightMap.empty() || !s.detail->roughnessMap.empty()))
+    return std::nullopt;
+  const float tiles = std::clamp(metresPerUv / kSkinMicroTileMetres, 1.f, 4096.f);
+  DetailLayer d;
+  d.map        = std::string(kSkinMicroMap);
+  d.heightMap  = true;
+  d.bumpHeight = kSkinMicroRelief;
+  d.strength   = strength;
+  d.weight     = 1;
+  d.tiles      = {tiles, tiles};
+  // slopes' variance goes as the strength squared; a layer's own multiplier, under its weight, stays
+  const float own = s.detail ? 1 + (s.detail->roughness - 1) * s.detail->weight : 1;
+  d.roughness     = own * (1 - (1 - kSkinMicroRoughness) * std::min(strength * strength, 1.f));
+  return d;
+}
+
 }  // namespace fv::mat

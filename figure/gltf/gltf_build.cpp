@@ -6,6 +6,8 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/materials/hair_strands.hpp>
 
+#include <glm/glm.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -216,6 +218,34 @@ tinygltf::Value extras(const std::string& fvId)
 
 }  // namespace
 
+// The nearest point of triangle abc to p (Ericson, Real-Time Collision Detection, 5.1.5)
+static glm::vec3 closestOnTriangle(const glm::vec3& p, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
+{
+  const glm::vec3 ab = b - a, ac = c - a, ap = p - a;
+  const float     d1 = glm::dot(ab, ap), d2 = glm::dot(ac, ap);
+  if(d1 <= 0 && d2 <= 0)
+    return a;
+  const glm::vec3 bp = p - b;
+  const float     d3 = glm::dot(ab, bp), d4 = glm::dot(ac, bp);
+  if(d3 >= 0 && d4 <= d3)
+    return b;
+  const float vc = d1 * d4 - d3 * d2;
+  if(vc <= 0 && d1 >= 0 && d3 <= 0)
+    return a + ab * (d1 / (d1 - d3));
+  const glm::vec3 cp = p - c;
+  const float     d5 = glm::dot(ab, cp), d6 = glm::dot(ac, cp);
+  if(d6 >= 0 && d5 <= d6)
+    return c;
+  const float vb = d5 * d2 - d1 * d6;
+  if(vb <= 0 && d2 >= 0 && d6 <= 0)
+    return a + ac * (d2 / (d2 - d6));
+  const float va = d3 * d6 - d5 * d4;
+  if(va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0)
+    return b + (c - b) * ((d4 - d3) / (d4 - d3 + d5 - d6));
+  const float denom = 1 / (va + vb + vc);
+  return a + ab * (vb * denom) + ac * (vc * denom);
+}
+
 // Whether the figure's eyes have a tear film over them, a refracting moisture shell (mat::eyeShell):
 // the eye surfaces and corneas under it are lowered without their own specular (LowerOptions::underTearFilm).
 // A taken-off item's moisture is no film.
@@ -228,13 +258,55 @@ static bool hasTearFilm(const SceneGraph& scene)
   return false;
 }
 
+// Whether a moisture shell lies over this cornea, which is about its depth off it at most. Most eyes
+// have one over the whole eye. Genesis 8's stops at the limbus and the cornea fills the hole it leaves,
+// so there the cornea is the film: lowered without a reflection of its own, the eye had no catchlight
+// over the iris.
+static bool moistureCovers(const SceneGraph& scene, int cornea)
+{
+  constexpr float   kWithinCm = 0.2f;
+  constexpr size_t  kSamples  = 64;  // of the cornea's vertices: a hole shows at any of the ones over it
+  const auto        live      = dson::liveMaterials(scene);
+  std::vector<glm::vec3> film;  // three to a triangle
+  std::vector<glm::vec3> points;
+  for(const Mesh& m : scene.meshes)
+  {
+    if(!m.geo)
+      continue;
+    for(const mesh::Group& group : m.geo->groups)
+    {
+      const int mi = group.materialIndex < int(m.materials.size()) ? m.materials[size_t(group.materialIndex)] : -1;
+      if(mi < 0 || mi >= int(scene.materials.size()))
+        continue;
+      const bool isFilm = live[size_t(mi)] && mat::eyeShell(scene.materials[size_t(mi)].surface) == mat::EyeShell::eMoisture;
+      if(!isFilm && mi != cornea)
+        continue;
+      for(uint32_t i = group.start; i < group.start + group.count; i++)
+      {
+        const uint32_t v = m.geo->fullIndex[i];
+        (isFilm ? film : points).push_back({m.geo->position[size_t(v) * 3], m.geo->position[size_t(v) * 3 + 1], m.geo->position[size_t(v) * 3 + 2]});
+      }
+    }
+  }
+  const size_t step = std::max<size_t>(1, points.size() / kSamples);
+  for(size_t i = 0; i < points.size(); i += step)
+  {
+    bool over = false;
+    for(size_t t = 0; t + 2 < film.size() && !over; t += 3)
+      over = glm::length(points[i] - closestOnTriangle(points[i], film[t], film[t + 1], film[t + 2])) <= kWithinCm;
+    if(!over)
+      return false;
+  }
+  return true;
+}
+
 mat::LowerOptions requestOptions(const SceneGraph& scene, int material, mat::SkinMode skin, bool tearFilm, const std::string& toneReference)
 {
   const Material&   m = scene.materials[size_t(material)];
   mat::LowerOptions o;
   o.skin          = skin;
   o.metresPerUv   = m.metresPerUv;
-  o.underTearFilm = tearFilm;
+  o.underTearFilm = tearFilm && (mat::eyeShell(m.surface) != mat::EyeShell::eCornea || moistureCovers(scene, material));
   o.toneReference = toneReference;
   // an iris's colour asks for a texture only where its discs are known
   if(mat::eyeLayout(m.surface) == mat::EyeLayout::eIris)

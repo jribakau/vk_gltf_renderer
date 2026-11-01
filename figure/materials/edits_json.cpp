@@ -90,6 +90,7 @@ constexpr NumberField kNumbers[] = {
     {"uvRotation", &Edits::uvRotation, -360, 360},
     {"fabricScale", &Edits::fabricScale, 0.1f, 10},
     {"fabricStrength", &Edits::fabricStrength, 0, 2},
+    {"microDetail", &Edits::microDetail, 0, 2},
     {"sheenRoughness", &Edits::sheenRoughness, 0, 1},
 };
 
@@ -231,7 +232,7 @@ bool mapKey(std::string_view key)
 
 bool figureOnlyKey(std::string_view key)
 {
-  return mapKey(key) || key.starts_with("uv") || key.starts_with("fabric");
+  return mapKey(key) || key.starts_with("uv") || key.starts_with("fabric") || key == "microDetail";
 }
 
 void clothesValues(const Edits& e, EditsJson& values)

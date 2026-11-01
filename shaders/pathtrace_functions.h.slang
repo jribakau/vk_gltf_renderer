@@ -465,6 +465,26 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
 #endif
 }
 
+// FV_materials_eye: where a ray goes on through a tear film it just crossed. Entering through the
+// front face it bends into the eye's chamber, which is what shows the iris where it appears to be.
+// The surface stays thin-walled for everything else, and the eye has no medium to track: a ray leaving
+// through the back face, and the shadow rays, go straight (getShadowTransmission). So no light is lost
+// to total internal reflection or gained without radiance's n^2, and a lit iris is as bright as its
+// map says; what that leaves out is the caustic a bare cornea focuses on the far side of the iris.
+float3 rayIntoEyeChamber(float3 dir, float3 N, HitState hit, GltfShadeMaterial* material)
+{
+#if GLTF_USE_TRANSMISSION
+  if(hit.frontFace && material.chamberIor > 0.0F)
+  {
+    const float3 bent = refract(dir, dot(N, dir) < 0.0F ? N : -N, 1.0F / material.chamberIor);
+    // A shading normal can lean past a grazing ray: it has to stay on the far side of the surface
+    if(dot(bent, hit.geonrm) * dot(dir, hit.geonrm) > 0.0F)
+      return bent;
+  }
+#endif
+  return dir;
+}
+
 // Beer-Lambert transmittance of a shadow-ray segment: every segment travelled inside a medium,
 // whatever ends it -- a boundary, another surface, or the light itself.
 float3 shadowMediumTransmittance(bool isInside, float3 extinction, float segmentLength)

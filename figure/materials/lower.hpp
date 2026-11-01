@@ -80,6 +80,10 @@ EyeShell eyeShell(const Surface& s);
 // The tear film's index: the authored one where it is a watery eye's, else the cornea's
 float tearFilmIor(const Surface& s);
 
+// The eye's chamber as one refracting surface, the reduced eye's index: the cornea's 1.376 and the
+// aqueous humour's 1.336 behind it bend a ray about as much as the humour's alone would at the front.
+constexpr float kEyeChamberIor = 1.336f;
+
 // A bump map's full height range at Bump Strength 1, in metres. Set by eye: at 1 mm, CJ Evangeline's
 // face (Bump Strength 2, as Iray presets often have it) came out leathery, each grey step of the
 // JPEG a visible bump; a quarter of that reads as her skin.
@@ -98,6 +102,7 @@ struct Effective
   std::string          alphaMode = "opaque";  // opaque | cutout | blend
   bool                 doubleSided = false;
   std::optional<float> normalStrength, bumpStrength;  // set when the surface has such a map
+  std::optional<float> microDetail;                   // set when the surface has skin's micro-relief
   float                specular = 0, clearcoat = 0, clearcoatRoughness = 0.1f;
   Rgb                  emissive{0, 0, 0};
   float                emissiveIntensity = 1;

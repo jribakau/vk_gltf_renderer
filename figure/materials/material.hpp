@@ -221,6 +221,7 @@ struct Material
   std::optional<Specular2>           specular2;
   std::optional<Sheen>               sheen;
   std::optional<Transmission>        transmission;
+  std::optional<float>               chamberIor;  // the eye's chamber behind a tear film, which an entering ray bends into
   std::optional<Volume>              volume;
   std::optional<Scatter>             scatter;
   std::optional<Rgb>                 scatterDistance;  // how far light spreads under the surface, per channel, in scene units

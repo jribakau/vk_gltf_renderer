@@ -894,6 +894,43 @@ TEST(Wardrobe, ATakenOffItemDoesNotBoundTheBody)
   EXPECT_EQ(fv::walkThroughMaterials(scene, items), (std::vector<bool>{false, true}));
 }
 
+// A cornea is under the film only where the moisture lies over it. Genesis 8's stops at the limbus,
+// around a hole the cornea fills: there the cornea reflects, or the eye has no catchlight over the iris.
+TEST(Wardrobe, ACorneaInTheMoisturesHoleIsTheFilm)
+{
+  using fv::mat::Kind;
+  const auto lowerWithMoistureAt = [](float moistureX) {
+    fv::SceneGraph scene;
+    const int      root = scene.add(fv::Node{});
+    fv::Material   cornea, moisture;
+    cornea.surface.kind         = Kind::eCornea;
+    cornea.surface.name         = "Cornea";
+    cornea.surface.refraction   = fv::mat::Surface::Refraction{1.f, 1.376f};
+    moisture.surface.kind       = Kind::eCornea;
+    moisture.surface.name       = "EyeMoisture";
+    moisture.surface.refraction = fv::mat::Surface::Refraction{1.f, 1.376f};
+    scene.materials             = {cornea, moisture};
+    for(int mat : {0, 1})
+    {
+      fv::Mesh m;
+      fv::mesh::MeshInput in = grid(2, mat == 0 ? 0.f : 0.05f);
+      if(mat == 1)
+        for(size_t v = 0; v * 3 < in.positions.size(); v++)
+          in.positions[v * 3] += moistureX;
+      m.geo       = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(in));
+      m.materials = {mat};
+      scene.meshes.push_back(m);
+      fv::Node node;
+      node.kind = fv::NodeKind::eMesh;
+      node.mesh = int(scene.meshes.size()) - 1;
+      scene.add(node, root);
+    }
+    return fv::build::requestOptions(scene, 0, fv::mat::SkinMode::eMeasured, true, "").underTearFilm;
+  };
+  EXPECT_TRUE(lowerWithMoistureAt(0));      // half a millimetre over it
+  EXPECT_FALSE(lowerWithMoistureAt(5.f));   // beside it, the shell ringing a hole
+}
+
 // A taken-off eye moisture is no tear film over the eyes that stay, and a taken-off mesh gives an
 // iris no discs: the build lowers what is left as if the item had never been worn.
 TEST(Wardrobe, ATakenOffItemLeavesNoTearFilmOrIrisDiscs)

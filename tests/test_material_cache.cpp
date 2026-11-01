@@ -166,6 +166,7 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   m.retroreflection      = Retroreflection{.factor = 0.2f, .map = slot(22)};
   m.scatter              = Scatter{.strength = 0.6f, .strengthMap = slot(23), .multiscatterColor = {0.7f, 0.6f, 0.5f}, .multiscatterColorMap = slot(24), .anisotropy = -0.5f};
   m.scatterDistance      = Rgb{0.003f, 0.002f, 0.001f};
+  m.chamberIor           = 1.336f;
   m.detail               = Detail{.weight = 0.5f, .roughness = 0.6f, .normalMap = slot(25), .weightMap = slot(26), .roughnessMap = slot(27)};
   m.detail->normalMap.scale = 0.2f;
   m.hair                 = Hair{.longitudinal = 0.3f, .azimuthal = 0.4f, .rootAbsorption = {0.5f, 0.6f, 0.7f}, .tipAbsorption = {0.1f, 0.2f, 0.3f}, .rootFade = 0.06f, .rootV = 1, .specular = 0.5f, .strandRotation = 0.5f};
@@ -217,6 +218,7 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   EXPECT_EQ(row.multiscatterColorFactor, glm::vec3(0.7f, 0.6f, 0.5f));
   EXPECT_FLOAT_EQ(row.scatterAnisotropy, -0.5f);
   EXPECT_EQ(row.scatterDistance, glm::vec3(0.003f, 0.002f, 0.001f));
+  EXPECT_FLOAT_EQ(row.chamberIor, 1.336f);
   EXPECT_FLOAT_EQ(row.detailNormalScale, 0.2f);
   EXPECT_FLOAT_EQ(row.detailWeightFactor, 0.5f);
   EXPECT_FLOAT_EQ(row.detailRoughnessFactor, 0.6f);

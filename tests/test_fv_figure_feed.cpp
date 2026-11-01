@@ -709,6 +709,8 @@ TEST(FigureFeed, ATexturesRecordHoldsItsFilesPathNotItsUri)
     const fs::path to = dir / fs::path(req.rel).filename();
     std::error_code ec;
     fs::copy_file(kLibrary / req.rel.substr(req.rel.find_first_not_of('/')), to, fs::copy_options::overwrite_existing, ec);
+    if(ec)  // skin's micro-relief: the app writes it, and this library has no app
+      return std::nullopt;
     return fv::build::TextureImage{.uri = fvhost::uriOfPath(to.generic_string()), .mimeType = "image/png"};
   };
   const auto        f = loadBox();

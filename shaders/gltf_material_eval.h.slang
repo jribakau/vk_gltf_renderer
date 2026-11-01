@@ -320,7 +320,14 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   float  detailWeight       = 0.0F;
   float3 detailNormal       = float3(0.0F, 0.0F, 1.0F);
   float  detailRoughnessMul = 1.0F;
-  if(material.detailWeightFactor > 0.0F)
+  // Not on skin shaded as the thin preview: a fine relief at one sample a pixel only shimmers under
+  // DLSS, and the roughness that makes up for it goes with it, so a highlight keeps its width.
+  bool detailOn = material.detailWeightFactor > 0.0F;
+#if GLTF_USE_SCATTER && !defined(RASTER_PIPELINE)
+  if(scatterAsThin && any(material.scatterDistance > 0.0F))
+    detailOn = false;
+#endif
+  if(detailOn)
   {
     detailWeight = material.detailWeightFactor;
     if(isTexturePresent(material.detailWeightTexture))

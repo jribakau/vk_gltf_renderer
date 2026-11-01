@@ -73,6 +73,7 @@ TEST(Materials, TheClothesEditsAreEditsLikeTheRest)
       [](E& e) { e.fabric = "denim"; },
       [](E& e) { e.fabricScale = 2; },
       [](E& e) { e.fabricStrength = 0.5f; },
+      [](E& e) { e.microDetail = 0.5f; },
       [](E& e) { e.sheenColor = fv::mat::Rgb{1, 0, 0}; },
       [](E& e) { e.sheenRoughness = 0.2f; },
   };
@@ -406,6 +407,7 @@ TEST(Materials, TheEditValuesRoundTrip)
                         {"fabric", "corduroy"},
                         {"fabricScale", 1.5},
                         {"fabricStrength", 0.4},
+                        {"microDetail", 1.5},
                         {"sheenColor", "#336699"},
                         {"sheenRoughness", 0.25}};
   fv::mat::Edits e;
@@ -418,6 +420,7 @@ TEST(Materials, TheEditValuesRoundTrip)
   fv::mat::clothesValues(e, values);
   values["color"]        = fv::mat::hexOf(*e.color);
   values["roughness"]    = *e.roughness;
+  values["microDetail"]  = *e.microDetail;
   const EditsJson edited = fv::mat::editedKeys(e);
   EXPECT_EQ(edited.size(), in.size());
   // the values not edited: null or their defaults
@@ -450,7 +453,7 @@ TEST(Materials, TheEditValuesRoundTrip)
   fv::mat::applyValue(e, "roughnessMap", "/Runtime/Textures/a..b.png");  // dots in a name are no way up
   EXPECT_EQ(*e.roughnessMap, "/Runtime/Textures/a..b.png");
 
-  for(const char* k : {"baseMap", "roughnessMap", "uvScaleU", "uvRotation", "fabric", "fabricStrength"})
+  for(const char* k : {"baseMap", "roughnessMap", "uvScaleU", "uvRotation", "fabric", "fabricStrength", "microDetail"})
     EXPECT_TRUE(fv::mat::figureOnlyKey(k)) << k;
   for(const char* k : {"sheenColor", "sheenRoughness", "color", "roughness"})
     EXPECT_FALSE(fv::mat::figureOnlyKey(k)) << k;

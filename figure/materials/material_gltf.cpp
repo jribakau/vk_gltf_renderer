@@ -13,6 +13,7 @@ constexpr const char* kFlipGreen    = "FV_texture_flip_green";
 constexpr const char* kScatter      = "KHR_materials_scatter";
 constexpr const char* kScatterDraft = "KHR_materials_volume_scatter";  // an earlier draft's name: read, never written
 constexpr const char* kSubsurface   = "FV_materials_subsurface";
+constexpr const char* kEye          = "FV_materials_eye";
 constexpr const char* kSpecular2    = "FV_materials_specular2";
 
 // Reading a value, each leaving `out` alone where the file has none: glTF's defaults are the structs'.
@@ -263,6 +264,13 @@ Material fromGltf(const tinygltf::Material& g)
       read(v, "scatterDistance", distance);
       m.scatterDistance = distance;
     }
+    else if(name == kEye)
+    {
+      float ior = 0;
+      read(v, "chamberIor", ior);
+      if(ior > 0)
+        m.chamberIor = ior;
+    }
     else if(name == kScatter || name == kScatterDraft)
     {
       // The draft had no strength: scattering was always at full strength, and its colour defaulted to
@@ -509,6 +517,8 @@ Json materialJson(const Material& m, const char* key)
   }
   if(m.scatterDistance)
     ext[kSubsurface] = {{"scatterDistance", rgbJson(*m.scatterDistance)}};
+  if(m.chamberIor)
+    ext[kEye] = {{"chamberIor", *m.chamberIor}};
   if(m.anisotropy)
   {
     Json e = {{"anisotropyStrength", m.anisotropy->strength}, {"anisotropyRotation", m.anisotropy->rotation}};

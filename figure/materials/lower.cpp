@@ -254,6 +254,10 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   Surface s = withMapEdits(surface, e);
   if(auto fabric = fabricDetail(e, opts.metresPerUv))
     s.detail = std::move(fabric);
+  // Flesh under a walk gets the micro-relief; a mouth's wet lining has no creases
+  else if(s.kind == Kind::eSkin && !opts.forFile && (opts.skin == SkinMode::eVolume || opts.skin == SkinMode::eMeasured))
+    if(auto micro = skinMicroDetail(s, e, opts.metresPerUv))
+      s.detail = std::move(micro);
   Builder b;
   b.flipV     = opts.flipV;
   b.uv        = surfaceUv(s, e);
@@ -634,6 +638,11 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   {
     transmission = s.refraction->weight;
     out.ior      = tearFilm ? tearFilmIor(s) : s.refraction->ior;
+    // A camera looks at the iris through the film: it sits behind a curved interface, so it looks
+    // larger, further forward and turned towards the viewer. The meniscus is a strip along the lid
+    // with nothing behind it to see.
+    if(tearFilm && shell != EyeShell::eMeniscus && !opts.forFile)
+      out.chamberIor = kEyeChamberIor;
   }
 
   // Refraction wins over skin: a cornea with a translucency weight stays glass.
@@ -771,6 +780,11 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       de.roughnessMap = b.plain(d.roughnessMap, false, std::nullopt, UvTransform{d.tiles, d.offset});
     out.detail = de;
   }
+  // the micro-relief's strength, and an edit of it that took it off, so the slider can bring it back
+  if(s.detail && s.detail->map == kSkinMicroMap)
+    eff.microDetail = s.detail->strength;
+  else if(e.microDetail)
+    eff.microDetail = *e.microDetail;
 
   // Hair cards: the highlight stretches across the strands, a band. The rotation is measured from
   // the mesh in the renderer's convention. An authored Glossy Anisotropy of 0 keeps it round.

@@ -237,6 +237,10 @@ struct GltfShadeMaterial
 
 #if MAT_EXT_TRANSMISSION
   float transmissionFactor = 0;
+  // FV_materials_eye: the index of the chamber behind a tear film, which a ray entering through the
+  // surface's front face bends into (rayIntoEyeChamber); 0: it passes straight, as thin glass does
+  float chamberIor  = 0;
+  float _chamberPad = 0;  // keeps the row a multiple of 8 with no padding: rows are compared byte by byte
 #endif
 
 #if MAT_EXT_VOLUME

@@ -42,4 +42,29 @@ std::string fabricRoughnessMap(const Fabric& f);
 // unknown, a fixed tiling instead); none when the edits name no fabric this table has.
 std::optional<DetailLayer> fabricDetail(const Edits& e, float metresPerUv);
 
+// Skin's micro-relief, for skin with no detail map of its own: the fine creases and pores that a
+// character's normal map, at about a tenth of a millimetre a texel, barely holds (Leyla 9's has an RMS
+// slope of about 0.065 across a face). Under a random walk they melt out of the diffuse light, as in
+// real skin, so what they do is break up the highlights. Like the fabrics' images, the app's
+// (src-tauri/src/fabrics.rs), written into the assets library at startup.
+constexpr std::string_view kSkinMicroMap = "/Runtime/Textures/FigureViewer/Skin/v1/micro-height.png";
+// One texture tile on the skin, in metres: 1024 texels of 25 microns, about 46 creased cells across.
+constexpr float kSkinMicroTileMetres = 0.0256f;
+// The height map's full range as a fraction of the tile, which makes the per-axis RMS slope about 0.07
+// at strength 1 (a test in fabrics.rs holds the image to this number). Measured skin's whole slope is
+// about 0.2 to 0.3 per axis (Weyrich 2006, Beckmann m of 0.3 to 0.45), most of it finer than this and
+// left to the lobes' roughness.
+constexpr float kSkinMicroRelief = 0.00146f;
+// What the relief adds to a lobe's slopes (2 x 0.07^2 to its alpha squared) it takes back from its
+// roughness at strength 1, so that a highlight too small to resolve the relief keeps about its width.
+// One multiplier for all the lobes: the broad ones stay within about 5% (alpha 0.25 to 0.4), and the
+// tightest (alpha 0.1), with less to give back, spread by about a third.
+constexpr float kSkinMicroRoughness = 0.96f;
+
+// The layer lower() gives flesh under a walk (SkinMode::eVolume, eMeasured) that one UV unit spans
+// `metresPerUv` of, at the edits' strength. None for an unknown size, at strength 0, on a surface with a
+// detail map of its own or a weight or roughness map that would be lost, and under a top coat: a lip
+// gloss lies smooth over the relief, and the one normal would ripple its reflection.
+std::optional<DetailLayer> skinMicroDetail(const Surface& s, const Edits& e, float metresPerUv);
+
 }  // namespace fv::mat
