@@ -214,3 +214,107 @@ void GltfRenderer::setDepthOfField(float focalDistance, float aperture, bool aut
   m_pathTracer.setDepthOfField(focalDistance, aperture, autoFocus, blades, bladeRotation);
   resetFrame();
 }
+
+//--------------------------------------------------------------------------------------------------
+// Update gizmo attachment based on current node selection
+void GltfRenderer::updateGizmoAttachment()
+{
+  if(!m_resources.settings.showGizmo || !m_resources.gpuView().hasContent())
+  {
+    if(!m_gizmoEntity.isNone())
+    {
+      m_visualHelpers.transform.clearAttachment();
+      m_gizmoEntity = {};
+    }
+    return;
+  }
+  updateEntityGizmo();
+}
+
+// The gizmo on a stream host's selected entity: its local TRS and its parent's world matrix from the
+// store, its handles from the host; a drag goes to the host (GizmoHooks::edit), which writes the store.
+void GltfRenderer::updateEntityGizmo()
+{
+  rs::RetainedScene* store  = m_resources.retainedScene.get();
+  const rs::Entity*  entity = store && !m_selectedEntity.isNone() ? store->entity(m_selectedEntity) : nullptr;
+  const uint32_t     flags  = entity && m_gizmoHooks.attach ? m_gizmoHooks.attach(m_selectedEntity) : 0;
+  if(flags == 0)
+  {
+    if(!m_gizmoEntity.isNone())
+    {
+      m_visualHelpers.transform.clearAttachment();
+      m_gizmoEntity = {};
+    }
+    return;
+  }
+  const auto read = [&] {
+    glm::quat rotation;
+    if(entity->local.matrix)
+    {
+      glm::vec3 skew;
+      glm::vec4 perspective;
+      glm::decompose(*entity->local.matrix, m_gizmoScale, rotation, m_gizmoPosition, skew, perspective);
+    }
+    else
+    {
+      m_gizmoPosition = entity->local.translation;
+      rotation        = entity->local.rotation;
+      m_gizmoScale    = entity->local.scale;
+    }
+    m_gizmoRotation          = glm::degrees(glm::eulerAngles(rotation));
+    m_gizmoParentWorldMatrix = entity->parent.isNone() ? glm::mat4(1.f) : store->world(entity->parent);
+  };
+  if(m_selectedEntity != m_gizmoEntity || (flags != m_gizmoFlags && !m_visualHelpers.transform.isDragging()))
+  {
+    m_gizmoEntity = m_selectedEntity;
+    m_gizmoFlags  = flags;
+    read();
+    m_visualHelpers.transform.attachTransform(&m_gizmoPosition, &m_gizmoRotation, &m_gizmoScale, flags);
+    m_visualHelpers.transform.setParentWorldMatrix(&m_gizmoParentWorldMatrix);
+  }
+  else if(!m_visualHelpers.transform.isDragging())
+    read();  // the host's edits and what moves above it show at once
+}
+
+void GltfRenderer::selectEntity(rs::EntityId entity)
+{
+  // the same again (a click on nothing with nothing selected) changes no picture: the still keeps its samples
+  const bool same  = entity == m_selectedEntity;
+  m_selectedEntity = entity;
+  refreshEntitySelection();
+  if(!same)
+    resetFrame();
+}
+
+void GltfRenderer::refreshEntitySelection()
+{
+  if(!m_resources.hostFed)
+    return;
+  m_resources.selectedRenderNodes.clear();
+  rs::RetainedScene& store = *m_resources.retainedScene;
+  if(!m_selectedEntity.isNone() && !store.entity(m_selectedEntity))
+    m_selectedEntity = {};  // gone with what it was in
+  if(m_selectedEntity.isNone() || !m_resources.retainedGpu)
+    return;
+  const rs::Residency& residency = m_resources.retainedGpu->residency();
+  for(uint32_t slot = 0; slot < residency.instanceHighWater(); slot++)
+    if(const rs::Residency::Instance* inst = residency.instance(slot))
+      if(store.isWithin(inst->entity, m_selectedEntity))
+        m_resources.selectedRenderNodes.insert(int(slot));
+}
+
+//--------------------------------------------------------------------------------------------------
+// Non-blocking poll of the async click ray-pick (see m_pendingClickPick's comment in renderer.hpp).
+// Once the frame that recorded the pick has signaled, nvvk::RayPicker::getResult() is a plain
+// host-mapped-buffer read (confirmed in nvvk/ray_picker.cpp - no internal wait of its own), so this
+// is a cheap poll-then-memcpy.
+//--------------------------------------------------------------------------------------------------
+void GltfRenderer::updateClickPickState()
+{
+  if(!m_pendingClickResult || !m_pendingClickResult->semaphoreState.testSignaled(m_device))
+    return;
+
+  const bool isDoubleClick = m_pendingClickResult->isDoubleClick;
+  m_pendingClickResult.reset();
+  applyClickPickResult(m_rayPicker.getResult(), isDoubleClick);
+}

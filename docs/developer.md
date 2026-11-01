@@ -72,7 +72,10 @@ Primary files grouped by subsystem (not an exhaustive listing — treat `src/` a
 ```text
 src/
 ├── main.cpp                    # Entry point, Vulkan context, CLI parsing
-├── renderer.cpp/hpp            # Main renderer orchestrator (GltfRenderer)
+├── renderer.cpp/hpp            # Main renderer orchestrator (GltfRenderer): attach and detach, the frame
+├── renderer_settings.cpp       # Its settings: every value the command line, the app and MCP can set
+├── renderer_environment.cpp    # Its environment: sky, presets, bakes, the HDR panorama, the firefly clamp
+├── renderer_scene.cpp          # Its scene: a file or the host's retained scene going in, the sync, the clip
 ├── host_renderer.hpp          # HostRenderer: what the stream host asks of the renderer; GltfRenderer
 │                               #   implements it, tests/common/fake_host_renderer.hpp runs the host without a GPU
 ├── fv_journal.cpp/hpp          # The edit history's steps (undo, redo, merge); fv_host_journal.cpp captures
@@ -80,6 +83,7 @@ src/
 ├── renderer_selection.cpp      # What the host calls for picks, selection, Fit and the gizmo; selection events into Resources
 ├── renderer_base.hpp           # BaseRenderer: abstract base for PathTracer / Rasterizer
 ├── renderer_pathtracer.cpp/hpp # Monte Carlo path tracer (Vulkan ray tracing + ray query)
+├── renderer_pathtracer_shaders.cpp # Its shaders and pipelines: compiling, the SPIR-V cache, the variants
 ├── sample_schedule.hpp         # Samples per frame: ending on stops (cap, --outputSamples), the Auto SPP controller
 ├── renderer_rasterizer.cpp/hpp # Forward PBR rasterizer
 ├── renderer_silhouette.cpp/hpp # Selection highlight (compute shader)

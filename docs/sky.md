@@ -10,7 +10,7 @@ sky type. Read that first if you are changing the pipeline rather than a sky.
 
 ## The sky types
 
-`shaderio::EnvSystem` selects the source; the picker in `src/ui_renderer.cpp` is the user-facing
+`shaderio::EnvSystem` selects the source; the app's environment picker is the user-facing
 list. Three of them are analytic and are **baked** into the same lat-long image an HDR file would
 produce:
 
@@ -182,7 +182,7 @@ arbitrary linear units as the rest of that sky, where the dome sits near 1. Putt
 physical sky's conversion is a category error and a quiet one: a half-degree disk subtends 6.8e-5
 sr, so a `sunColor` of 1 became 7e-5 lux beneath a dome delivering about 1.5 — a sun you could see
 and could not light by. Its illuminance is **scaled against its own dome** instead, the one
-quantity that sky does define, by `kGradientSunToSkyRatio` (`src/renderer.cpp`). `sunColor` keeps
+quantity that sky does define, by `kGradientSunToSkyRatio` (`src/renderer_environment.cpp`). `sunColor` keeps
 its brightness as well as its hue.
 
 That ratio is fitted to a measured clear day's direct-to-diffuse band rather than picked. It has to
