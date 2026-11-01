@@ -65,7 +65,7 @@
 //   render.status   {}  -> {refining, still, converged, complete, rtx, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame)
 //   render.capture  {path}  -> {samples, converged}   the frame as a linear .hdr (path tracer), answered once saved
-//   render.ledger   {}  -> {total, idleImages, retiring, spilled, meshes}   what the scene holds on the GPU, by who reads it
+//   render.ledger   {}  -> {hits, total, idleImages, retiring, spilled, meshes}   what the scene holds on the GPU, by who reads it, and what first hits last wanted of it
 //   wardrobe.keepFull {prop, item, on}            short of GPU memory, its textures come down only when nothing else can
 //   render.budget   {}  -> {known, budgetBytes, usageBytes, allocatorBlockBytes, allocatorAllocationBytes, headroomBytes?, bytesPerPixel, width, height}   GPU
 //                                                memory: the driver's budget, what is free beyond what is kept

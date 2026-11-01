@@ -526,24 +526,39 @@ void GltfRenderer::watchMemory()
       gpu.lowerImages(uint64_t(rs::MemoryWatch::kMargin));
       break;
     case rs::MemoryWatch::Act::eRaise:
+    {
       // what lies in system memory first: it costs the frame more than a texture a size down
       if(spilled > 0 && gpu.bringBack(*m_resources.retainedScene, uint64_t(free - rs::MemoryWatch::kMargin)) > 0)
         break;
-      // the way it came down: textures to where detail began to go, then detail, then the rest of them
-      if(gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free), rs::kDetailAfterExtent) > 0)
-        break;
-      if(const std::optional<rs::ItemDetail::Up> up = gpu.nextDetailUp(uint64_t(free - rs::MemoryWatch::kMargin)); up && m_detailSink)
-      {
+      const auto itemUp = [&](bool unseenToo) {
+        const std::optional<rs::ItemDetail::Up> up = gpu.nextDetailUp(uint64_t(free - rs::MemoryWatch::kMargin), unseenToo);
+        if(!up || !m_detailSink)
+          return false;
         admitGeometry(up->bytes);
         m_detailSink(up->item, true);
+        return true;
+      };
+      // the way it came down: textures to where detail began to go, then detail, then the rest of them, and
+      // the detail of what no ray reaches once what they reach is back
+      if(gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free), rs::kDetailAfterExtent) > 0 || itemUp(false)
+         || gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free)) > 0 || itemUp(true))
         break;
-      }
-      if(gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free)) == 0)
-        m_memoryWatch.raiseEnded(now);
+      m_memoryWatch.raiseEnded(now);
       break;
+    }
     case rs::MemoryWatch::Act::eNone:
       break;
   }
+  // Near full, what rays reach starts to decide what gives way; a scene with room never counts
+  const bool nearFull = free < int64_t(sceneBudget() / 4) || lowered.count > 0 || spilled > 0 || gpu.residency().settledCount() > 0 || gpu.residency().detailBelowFull();
+  m_pathTracer.setCountHits(nearFull);
+  // what they want back doesn't wait as a raising does: the view just asked for it (short of memory, the watch goes first)
+  if(act == rs::MemoryWatch::Act::eNone && !m_texturesHeld && free >= 0)
+    if(const std::optional<rs::ItemDetail::Up> up = gpu.followHits(*m_resources.retainedScene, free - rs::MemoryWatch::kMargin); up && m_detailSink)
+    {
+      admitGeometry(up->bytes);
+      m_detailSink(up->item, true);
+    }
 }
 
 //--------------------------------------------------------------------------------------------------

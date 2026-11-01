@@ -26,7 +26,9 @@
 // residency changes here too.
 //
 
+#include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "scene_retained.hpp"
@@ -71,6 +73,15 @@ struct MemoryLedger
     GpuBytes bytes;
   };
   std::vector<Mesh> meshes;
+  // What the last count of first hits saw, per material (Residency::setMaterialHits): each by the long edge it
+  // could show, 256 << bin; empty: none has been counted
+  struct MaterialHits
+  {
+    uint32_t                prop  = 0;   // OwnerTag::prop
+    int32_t                 local = -1;  // OwnerTag::local
+    std::array<uint64_t, 6> bins{};
+  };
+  std::vector<MaterialHits> hits;
   uint64_t          idleImages = 0;  // of total.images: nothing samples them (Residency's grace list)
   uint64_t          retiring   = 0;  // let go of and not in total: freed once no frame in flight reads it
   // of everything alive, what the allocator couldn't place on the device: read from system memory over
@@ -90,13 +101,15 @@ struct ItemDetail
     uint64_t                              item = 0;  // the host's own
     std::string                           name;
     std::vector<std::pair<MeshId, float>> meshes;  // each with the share of what it holds it would keep
+    std::vector<MaterialId>               materials;  // what rays reach of it (Residency::setMaterialHits)
     bool                                  selected = false;  // goes after the others
     bool                                  pinned   = false;  // marked Keep full: after every texture
   };
   struct Up
   {
-    uint64_t item  = 0;
-    uint64_t bytes = 0;  // what a step up would take
+    uint64_t                item  = 0;
+    uint64_t                bytes = 0;  // what a step up would take
+    std::vector<MaterialId> materials;
   };
   std::vector<Down> down;
   std::vector<Up>   up;

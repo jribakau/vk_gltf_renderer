@@ -386,7 +386,8 @@ struct PathtracePushConstant
   // a stop apart from mid grey's luminance in the scene (adaptiveRelaxBase; 0: none). adaptive_relax.hpp
   float4          adaptiveRelax[3];
   float           adaptiveRelaxBase = 0.0f;
-  int             adaptivePad       = 0;        // keeps the pointers 8-byte aligned
+  int             hitSignalSlots    = 0;        // hitSignal's materials; keeps the pointers 8-byte aligned
+  uint*           hitSignal;                    // first hits counted per material slot and bin (hit_signal.h.slang; null: not counting)
   uint*           adaptiveActive;               // ePtAdaptiveStop: the frame counts the pixels still sampling here (null: not counted)
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
   GltfScene*      gltfScene;                    // GLTF scene

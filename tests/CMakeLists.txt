@@ -146,6 +146,7 @@ set(TEST_SOURCES
     test_selection_write.cpp
     # A still's per-pixel stop: the convergence rule and its exposure (shader header compiled as C++)
     test_adaptive_stop.cpp
+    test_hit_signal.cpp
     # A shader variant built off the application thread, with a fake compiler (header only)
     test_variant_compile_job.cpp
     # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)

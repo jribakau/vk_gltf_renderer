@@ -58,6 +58,7 @@ static bool doDebug = false;
 #include "hair_bsdf.h.slang"
 #endif
 #include "adaptive_stop.h.slang"
+#include "hit_signal.h.slang"
 #include "gltf_vertex_access.h.slang"
 #include "shaderio.h"
 #include "get_hit.h.slang"
@@ -143,6 +144,7 @@ static bool g_sobol         = false;
 static uint g_sobolIndex    = 0u;  // the pixel's sample index: the accumulation's samples before it
 static uint g_sobolPixel    = 0u;  // the pixel's scramble, the same in every frame
 static uint g_sobolDecision = 0u;
+static bool g_hitToCount    = false;  // the pixel counts, and its first hit is still to come (pushConst.hitSignal)
 
 void beginSobolSample(uint index)
 {
@@ -451,6 +453,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif
 
       float     texGrad = worldFoot * hit.texelDensity * pushConst.texGradScale;
+      if(g_hitToCount)
+      {
+        g_hitToCount = false;
+        if(materialIndex < pushConst.hitSignalSlots)
+          InterlockedAdd(pushConst.hitSignal[materialIndex * HIT_SIGNAL_BINS + hitSignalBin(worldFoot * hit.texelDensity)], 1u);
+      }
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;
       pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials, simplifyScatter);
@@ -1362,6 +1370,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   g_sobol      = hasFlag(pushConst.flags, PathtracerFlags::ePtSobol) && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
   g_sobolPixel = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.seed) + 0x5bd1e995u));
   beginSobolSample(uint(pushConst.totalSamples));
+  g_hitToCount = pushConst.hitSignal != nullptr && hitSignalPixel(int(samplePos.x), int(samplePos.y), pushConst.frameCount);
 
   bool firstFrame = hasFlag(pushConst.flags, PathtracerFlags::ePtFirstFrame);
 

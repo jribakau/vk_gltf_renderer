@@ -389,15 +389,28 @@ public:
   // The next sync decodes images lowered earlier a level or more larger, as far as `room` bytes go
   // (raiseToFit). How many it will.
   // Not past `upToExtent`, when given: details come back before the textures above that (kDetailAfterExtent).
-  uint32_t raiseImages(const RetainedScene& scene, uint64_t room, uint32_t upToExtent = 0);
+  // `onlyWhatHitsWant`: no further than first hits would miss, and nothing they wouldn't
+  uint32_t raiseImages(const RetainedScene& scene, uint64_t room, uint32_t upToExtent = 0, bool onlyWhatHitsWant = false);
   // What can move of the host's worn items. Between syncs.
   void setItemDetail(ItemDetail detail);
   // The items the Fit has asked to come down a step since the last call
   std::vector<uint64_t> takeDetailAsks() { return std::exchange(m_detailAsks, {}); }
   // The first whose step up fits `room`, asked only once
-  std::optional<ItemDetail::Up> nextDetailUp(uint64_t room);
+  // what rays reach most; `unseenToo` false: not what they don't, which can wait for the textures they do
+  std::optional<ItemDetail::Up> nextDetailUp(uint64_t room, bool unseenToo = true);
   // Whether an item is below all it could be
   bool detailBelowFull() const { return !m_detail.up.empty(); }
+  // What the path tracer's first hits wanted, a count per material slot and bin (hit_signal.h.slang), which orders
+  // what gives way from now on: what they don't want goes first, and a material nothing counted yet isn't
+  // taken for one they don't. Only ever at rest, so that what comes down doesn't follow a moving view.
+  void     setMaterialHits(const RetainedScene& scene, std::span<const uint32_t> table);
+  uint32_t materialSlotCount() const;
+  // What a new count of first hits wants back comes as the view asks, not when the watch next finds room for
+  // anything: a step at each reading of the memory, once what the last did shows in it, until none is left.
+  // `room`: what is free past what is kept free. With it, what they want comes, and only that; without, what they
+  // want less makes way, when they want it less at least twice over (lowerForExchange). An item to ask for,
+  // if that is the step. Between syncs.
+  std::optional<ItemDetail::Up> followHits(const RetainedScene& scene, int64_t room);
   uint64_t    graceBytes() const { return m_graceBytes; }
   // What is resident now, in the bytes the backend holds, and what is let go of and not freed yet
   MemoryLedger ledger() const;
@@ -656,8 +669,19 @@ private:
     const ItemDetail::Down* down  = nullptr;
     uint64_t                bytes = 0;
   };
-  // In the order they go, and how many at the end are Keep full
-  std::vector<DetailStep> detailSteps(size_t& last) const;
+  // In the order they go; how many at the start no ray reaches, and at the end are Keep full
+  std::vector<DetailStep> detailSteps(size_t& first, size_t& last) const;
+  // The share of the scene's first hits on these; none when one of them hasn't been counted
+  std::optional<double> hitShare(const std::vector<MaterialId>& materials) const;
+  bool                  giveWayForHits(const RetainedScene& scene, uint64_t shortBy);
+  struct MaterialHits
+  {
+    OwnerTag                       owner;
+    std::array<uint64_t, kHitBins> bins{};
+  };
+  std::map<MaterialId, MaterialHits> m_hits;
+  uint64_t                           m_hitsTotal = 0;
+  bool                               m_hitsToFollow = false;  // a count that followHits has not seen through
   // Whether something would settle had it been quiet for longer (what just came, a pause in a drag)
   bool settlingSoon() const;
   // Since when what would show has waited for that; a clip, which never goes quiet, holds it up only once

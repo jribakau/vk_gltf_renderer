@@ -54,6 +54,8 @@ struct FitRungs
   std::span<const uint64_t> detail;
   size_t                    detailLast  = 0;
   uint32_t                  detailAfter = 0;
+  // ... and the first `detailFirst` of them, which no ray reaches, before any texture
+  size_t detailFirst = 0;
 };
 
 struct FitPlan
@@ -117,12 +119,68 @@ inline FitPlan planToFit(uint64_t wanted, const FitRungs& rungs)
     }
   };
   const size_t notLast = rungs.detail.size() - std::min(rungs.detailLast, rungs.detail.size());
+  const size_t first   = std::min(rungs.detailFirst, notLast);
+  giveDetail(0, first);
   lowerImages(std::max(rungs.leastExtent, rungs.detailAfter), false);
-  giveDetail(0, notLast);
+  giveDetail(first, notLast);
   lowerImages(rungs.leastExtent, false);
   lowerImages(rungs.leastExtent, true);
   giveDetail(notLast, rungs.detail.size());
   return out;
+}
+
+// With memory full, what hits want and a lowered image doesn't have comes at the expense of what another has and
+// they don't: the levels to leave out for that (in `images`, in place) so that the raising that follows
+// has the room, which it needs for the image whole beside the one it replaces. Only for at least twice the hits for
+// the bytes, and only images whose hits are known, so that this doesn't turn into levels going up and down with
+// the view. `wanted`: the most each may leave out. `shortBy`: what is missing before there is any room, which the first
+// raising pays for. The bytes it makes room for, at most about `most`.
+inline uint64_t lowerForExchange(std::span<ImageFit> images, std::span<const uint32_t> wanted, uint32_t minExtent, uint64_t most, uint64_t shortBy = 0)
+{
+  // where each would be once what it makes room for is back
+  std::vector<uint32_t> back;
+  for(const ImageFit& image : images)
+    back.push_back(image.skip);
+  uint64_t moved = 0;
+  while(moved < most)
+  {
+    size_t raise = images.size();
+    for(size_t i = 0; i < images.size(); i++)
+      if(images[i].wanting && back[i] > wanted[i] && back[i] == images[i].skip && images[i].lossWithout(back[i] - 1) >= kLeastHitLoss
+         && (raise == images.size() || images[i].weight(back[i] - 1) < images[raise].weight(back[raise] - 1)))
+        raise = i;
+    if(raise == images.size())
+      break;
+    const double   worth = images[raise].weight(back[raise] - 1);
+    const uint64_t need  = shortBy + (images[raise].wholeOnly ? images[raise].wholeBytes() : images[raise].chain.levelBytes[back[raise] - 1] + images[raise].bytes());
+    uint64_t       freed = 0;
+    std::vector<uint32_t> before;
+    for(const ImageFit& image : images)
+      before.push_back(image.skip);
+    while(freed < need)
+    {
+      size_t lower = images.size();
+      for(size_t i = 0; i < images.size(); i++)
+        if(i != raise && images[i].wanting && !images[i].pinned && back[i] == images[i].skip && images[i].canLower(minExtent)
+           && (lower == images.size() || images[i].weight(images[i].skip) > images[lower].weight(images[lower].skip)))
+          lower = i;
+      if(lower == images.size() || images[lower].weight(images[lower].skip) < 2 * worth)
+        break;
+      freed += images[lower].chain.levelBytes[images[lower].skip];
+      images[lower].skip++;
+      back[lower] = images[lower].skip;
+    }
+    if(freed < need)
+    {
+      for(size_t i = 0; i < images.size(); i++)
+        images[i].skip = before[i];
+      break;
+    }
+    back[raise]--;
+    moved += need;
+    shortBy = 0;
+  }
+  return moved;
 }
 
 }  // namespace rs

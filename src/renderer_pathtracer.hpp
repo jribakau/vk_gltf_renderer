@@ -111,6 +111,8 @@ public:
   bool compileShader(Resources& resources, bool fromFile = true) override;
   // The scene features the live variant has compiled in: the optimal build's; none when every one
   // is (the optimal shader off, or the embedded build standing in for a failed compile)
+  // Whether what first hits want is counted (countHits): memory is near full
+  void setCountHits(bool on) { m_countHits = on; }
   std::optional<nvvkgltf::SceneFeatureSet> liveShaderFeatures();
   // A pipeline built before compiled again this run: the driver's shader cache is full (PipelineBuildRecord)
   bool driverCacheFull() const { return m_buildRecord.driverDropped(); }
@@ -242,6 +244,11 @@ public:
   // cap). Counted by the GPU each frame (adaptiveActive), read back once the frame is done.
   float        m_adaptiveDone{0.001F};
   nvvk::Buffer m_adaptiveActiveBuffer;  // a uint per frame in flight, host-visible
+  bool                      m_countHits{false};
+  int                       m_hitFrames{0};         // this rest's frames that counted, -1 once they are copied; a move starts again
+  nvvk::Buffer              m_hitCounts;            // on the device: every frame's first hits add up here
+  std::vector<nvvk::Buffer> m_hitReadback;          // per frame in flight, host-visible
+  std::vector<uint8_t>      m_hitCopied;            // per frame in flight: that frame copied a count there
   struct AdaptiveCount
   {
     uint64_t accumulation{0};  // the accumulation (m_accumulationId) that counted into the slot
@@ -563,6 +570,13 @@ private:
   // (that frame is done), may end the still (Resources::adaptiveDone), and clears it for this frame.
   // Returns the counter for the push constant.
   uint32_t* countAdaptivePixels(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize);
+  // The hit signal: where this frame counts what first hits want (hit_signal.h.slang), null when it doesn't.
+  // A few frames of each rest, from when memory is near full (setCountHits): the frame that counts nothing
+  // pays one branch a pixel, and a scene that fits never counts.
+  uint32_t* countHits(VkCommandBuffer cmd, Resources& resources);
+  // What a frame copied has come back when the frame cycle reaches its slot again
+  void takeHitCounts(Resources& resources);
+  void copyHitCounts(VkCommandBuffer cmd, Resources& resources);
   // Copy the path-traced depth from m_depthStaging into the G-buffer depth image.
   void cmdCopyStagedDepth(VkCommandBuffer cmd, Resources& resources);
   // Destroy the pipelines for both Ray Query and Ray Tracing

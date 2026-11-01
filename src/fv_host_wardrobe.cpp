@@ -645,6 +645,11 @@ void FvHost::Impl::offerItemDetail()
         rs::ItemDetail::Down  down{.item = key, .name = w.label, .selected = p == selected, .pinned = w.keepFull};
         uint64_t              upBytes = 0;
         for(int m : w.meshes)
+          if(m >= 0 && m < int(scene.meshes.size()))
+            for(int material : scene.meshes[size_t(m)].materials)
+              if(const rs::MaterialId id = p->figure->feed->materialOf(material); !id.isNone())
+                down.materials.push_back(id);
+        for(int m : w.meshes)
         {
           if(m < 0 || m >= int(scene.meshes.size()))
             continue;
@@ -655,10 +660,10 @@ void FvHost::Impl::offerItemDetail()
           if(const float share = fv::shareAt(mesh, item.higher); share > 1)
             upBytes += uint64_t(double(geometryBytes(scene, std::vector<int>{m}, *renderer)) * (double(share) - 1));
         }
+        if(upBytes > 0)
+          detail.up.push_back({key, upBytes, down.materials});
         if(!down.meshes.empty())
           detail.down.push_back(std::move(down));
-        if(upBytes > 0)
-          detail.up.push_back({key, upBytes});
         detailItems.emplace(key, item);
       }
     }

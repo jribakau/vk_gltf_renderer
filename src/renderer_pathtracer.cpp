@@ -51,6 +51,7 @@
 #include "renderer_pathtracer.hpp"
 #include "sample_schedule.hpp"
 #include "../shaders/adaptive_stop.h.slang"  // adaptiveSceneThreshold
+#include "../shaders/hit_signal.h.slang"
 #include "adaptive_relax.hpp"
 
 #include "scene_shader_macros.hpp"
@@ -447,6 +448,12 @@ void PathTracer::onDetach(Resources& resources)
   resources.allocator.destroyBuffer(m_cameraMediumBuffer);
   resources.allocator.destroyBuffer(m_adaptiveActiveBuffer);
   m_adaptiveCounts.clear();
+  resources.allocator.destroyBuffer(m_hitCounts);
+  for(nvvk::Buffer& b : m_hitReadback)
+    resources.allocator.destroyBuffer(b);
+  m_hitReadback.clear();
+  m_hitCopied.clear();
+  m_hitFrames = 0;
   m_depthStaging.deinit();
   m_convergence.deinit();
 
@@ -752,6 +759,10 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 // every accumulation; OIDN only when the cap was lowered below it, or Auto turned on, since.
 void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resources)
 {
+  // a view whose samples ended before its window did counted what it counted, and traces nothing from here
+  if(m_hitFrames > 0)
+    copyHitCounts(cmd, resources);
+  takeHitCounts(resources);
 #if defined(USE_OPTIX_DENOISER)
   if(getEffectiveOptixEnabled(resources))
     m_optix->denoiseFinal(resources);
@@ -859,6 +870,86 @@ uint32_t* PathTracer::countAdaptivePixels(VkCommandBuffer cmd, Resources& resour
   // the barrier after setupPushConstant orders the clear before the trace
   vkCmdFillBuffer(cmd, m_adaptiveActiveBuffer.buffer, slot * sizeof(uint32_t), sizeof(uint32_t), 0);
   return reinterpret_cast<uint32_t*>(m_adaptiveActiveBuffer.address + slot * sizeof(uint32_t));
+}
+
+uint32_t* PathTracer::countHits(VkCommandBuffer cmd, Resources& resources)
+{
+  static_assert(HIT_SIGNAL_BINS == rs::kHitBins);
+  static_assert(sizeof(shaderio::PathtracePushConstant) <= 256, "the least a device has to offer for push constants");
+  // far more materials than a scene that fits memory has; those past it just aren't counted
+  constexpr uint32_t     kSlots  = 4096;
+  constexpr VkDeviceSize kBytes  = kSlots * HIT_SIGNAL_BINS * sizeof(uint32_t);
+  constexpr int          kFrames = 8;  // at one pixel in sixteen, half a million hits at 1080p
+  if(!resources.app || !resources.retainedGpu || !resources.retainedScene || !m_countHits)
+    return nullptr;
+  const uint32_t frameSlots = std::max(resources.app->getFrameCycleSize(), 1u);
+  if(m_hitReadback.size() != frameSlots)
+  {
+    for(nvvk::Buffer& b : m_hitReadback)
+      resources.allocator.destroyBuffer(b);
+    m_hitReadback.assign(frameSlots, {});
+    for(nvvk::Buffer& b : m_hitReadback)
+    {
+      NVVK_CHECK(resources.allocator.createBuffer(b, kBytes, VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+                                                  VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
+      NVVK_DBG_NAME(b.buffer);
+    }
+    m_hitCopied.assign(frameSlots, 0);
+  }
+  if(!m_hitCounts.buffer)
+  {
+    NVVK_CHECK(resources.allocator.createBuffer(m_hitCounts, kBytes,
+                                                VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
+                                                    | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                                                VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE));
+    NVVK_DBG_NAME(m_hitCounts.buffer);
+  }
+  takeHitCounts(resources);
+
+  // Frame 0 is whatever moved it; what is at rest after that counts. A window a move cut short says nothing.
+  if(resources.frameCount == 0)
+  {
+    m_hitFrames = 0;
+    return nullptr;
+  }
+  if(m_hitFrames < 0)
+    return nullptr;
+  if(m_hitFrames == 0)
+  {
+    vkCmdFillBuffer(cmd, m_hitCounts.buffer, 0, VK_WHOLE_SIZE, 0);
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+  }
+  if(m_hitFrames < kFrames)
+  {
+    m_hitFrames++;
+    m_pushConst.hitSignalSlots = int(std::min(resources.retainedGpu->residency().materialSlotCount(), kSlots));
+    return reinterpret_cast<uint32_t*>(m_hitCounts.address);
+  }
+  copyHitCounts(cmd, resources);
+  return nullptr;
+}
+
+void PathTracer::takeHitCounts(Resources& resources)
+{
+  if(m_hitCopied.empty())
+    return;
+  // The application waited for the frame that last used this slot
+  const uint32_t slot = resources.app->getFrameCycleIndex() % uint32_t(m_hitCopied.size());
+  if(std::exchange(m_hitCopied[slot], uint8_t(0)))
+    resources.retainedGpu->setMaterialHits(*resources.retainedScene, {reinterpret_cast<const uint32_t*>(m_hitReadback[slot].mapping), size_t(m_hitReadback[slot].bufferSize / sizeof(uint32_t))});
+}
+
+void PathTracer::copyHitCounts(VkCommandBuffer cmd, Resources& resources)
+{
+  const uint32_t slot = resources.app->getFrameCycleIndex() % uint32_t(m_hitCopied.size());
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                         VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+  const VkBufferCopy region{0, 0, m_hitReadback[slot].bufferSize};
+  vkCmdCopyBuffer(cmd, m_hitCounts.buffer, m_hitReadback[slot].buffer, 1, &region);
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_HOST_READ_BIT);
+  m_hitCopied[slot] = 1;
+  m_hitFrames       = -1;
 }
 
 void PathTracer::updateConvergence(VkCommandBuffer cmd, Resources& resources)
@@ -1284,6 +1375,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.adaptiveActive = (m_pushConst.flags & shaderio::ePtAdaptiveStop) && m_adaptiveDone > 0.0F ?
                                    countAdaptivePixels(cmd, resources, renderingSize) :
                                    nullptr;
+  m_pushConst.hitSignalSlots = 0;
+  m_pushConst.hitSignal      = countHits(cmd, resources);
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_walkGuiding ? shaderio::ePtWalkGuiding : 0;

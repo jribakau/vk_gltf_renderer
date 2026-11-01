@@ -1040,6 +1040,7 @@ struct FitScene
   RetainedScene scene;
   TextureId     first, second;
   MeshId        mesh;
+  MaterialId    firstMaterial, secondMaterial;
   FitScene(const char* a, int aExtent, const char* b, int bExtent)
   {
     first  = scene.addTexture(chainTexture(a, aExtent));
@@ -1047,8 +1048,10 @@ struct FitScene
     auto table = std::make_shared<TextureTable>();
     table->push_back({first, {}});
     table->push_back({second, {}});
-    mesh = scene.addMesh(gridMesh(2, 0.f, 2));
-    drawn(scene, "e", mesh, {coloured(scene, table, 0), coloured(scene, table, 1)});
+    mesh           = scene.addMesh(gridMesh(2, 0.f, 2));
+    firstMaterial  = coloured(scene, table, 0);
+    secondMaterial = coloured(scene, table, 1);
+    drawn(scene, "e", mesh, {firstMaterial, secondMaterial});
   }
 };
 
@@ -1227,6 +1230,141 @@ TEST(RetainedResidency, ALoweredImageComesBackWhole)
   drain(gpu);
   expectClean(f.scene, residency, gpu, "after its retires: ");
   EXPECT_TRUE(residency.takeUserNotices().empty());
+}
+
+// What the first hits want orders what gives way: the image they don't want goes first though it is the smaller,
+// and an item none reach goes before any texture.
+TEST(RetainedResidency, WhatRaysDontReachGivesWayFirst)
+{
+  FitScene       f("chain_a", 512, "chain_b", 1024);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20, .leastDetailStep = 1});
+  residency.replace(f.scene);
+  EXPECT_NE(residency.nextToGo(f.scene).find(" at 1024"), std::string::npos) << "with no hits, the largest";
+
+  std::vector<uint32_t> table(size_t(residency.materialSlotCount()) * kHitBins, 0);
+  const auto            count = [&](MaterialId m, uint32_t bin, uint32_t hits) { table[size_t(residency.materialSlot(m)) * kHitBins + bin] = hits; };
+  count(f.firstMaterial, 1, 1000);  // wants its 512, whole
+  count(f.secondMaterial, 0, 1);    // could show 256 of its 1024
+  residency.setMaterialHits(f.scene, table);
+  EXPECT_NE(residency.nextToGo(f.scene).find(" at 1024"), std::string::npos) << "still the one none want at that size";
+  count(f.secondMaterial, 0, 0);
+  count(f.secondMaterial, 2, 1000);  // now it wants its 1024, as the first its 512: the larger's level frees more
+  residency.setMaterialHits(f.scene, table);
+  const MemoryLedger ledger = residency.ledger();
+  EXPECT_EQ(ledger.hits.size(), 2u);
+
+  // the smaller goes first when the larger is wanted far more
+  count(f.firstMaterial, 1, 1);
+  count(f.secondMaterial, 2, 100000);
+  residency.setMaterialHits(f.scene, table);
+  EXPECT_NE(residency.nextToGo(f.scene).find(" at 512"), std::string::npos);
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 256u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, 1024u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "lowered by hits: ");
+
+  // an item none reach goes before any texture, one they do after textures reach 2K; one not counted isn't unseen
+  const ItemDetail::Down seen{.item = 1, .name = "seen", .meshes = {{f.mesh, 0.5f}}, .materials = {f.secondMaterial}};
+  ItemDetail::Down       unseen{.item = 2, .name = "unseen", .meshes = {{f.mesh, 0.5f}}, .materials = {f.firstMaterial}};
+  count(f.firstMaterial, 1, 0);
+  residency.setMaterialHits(f.scene, table);
+  residency.setItemDetail({.down = {seen, unseen}});
+  EXPECT_EQ(residency.nextToGo(f.scene), "the detail of unseen");
+  ItemDetail::Down notCounted = unseen;
+  notCounted.materials        = {MaterialId{}};
+  residency.setItemDetail({.down = {notCounted}});
+  EXPECT_EQ(residency.nextToGo(f.scene), "the detail of unseen") << "a 1024 is below where textures would go first, so it goes all the same";
+  residency.setItemDetail({});
+  drain(gpu);
+}
+
+// Memory full and the hits new: what they want less makes way for what they want more, once for each count
+TEST(RetainedResidency, WhatHitsWantBackMakesRoomForItself)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 2048);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20, .leastDetailStep = 1});
+  residency.replace(f.scene);
+  std::vector<uint32_t> table(size_t(residency.materialSlotCount()) * kHitBins, 0);
+  const auto            count = [&](MaterialId m, uint32_t bin, uint32_t hits) { table[size_t(residency.materialSlot(m)) * kHitBins + bin] = hits; };
+  // the first is lowered, wanted by nothing at that size
+  count(f.firstMaterial, 0, 100000);
+  count(f.secondMaterial, 3, 100000);
+  residency.setMaterialHits(f.scene, table);
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  drain(gpu);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+
+  // the view turns: now the hits want the first, and could show 256 of the second
+  gpu.setImageHeadroom(0);
+  count(f.firstMaterial, 0, 0);
+  count(f.firstMaterial, 2, 100000);
+  count(f.secondMaterial, 3, 0);
+  count(f.secondMaterial, 0, 1);
+  residency.setMaterialHits(f.scene, table);
+  EXPECT_FALSE(residency.followHits(f.scene, 0).has_value());
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  drain(gpu);
+  const uint32_t gaveWay = gpu.imageInfo(residency.image(f.second, true)).width;
+  EXPECT_LT(gaveWay, 2048u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u) << "it comes up when the room shows";
+  expectClean(f.scene, residency, gpu, "exchanged: ");
+
+  // the room shows: what they want comes, and nothing else does for all there is
+  const int64_t room = int64_t(1) << 30;
+  gpu.setImageHeadroom(room);
+  EXPECT_FALSE(residency.followHits(f.scene, room).has_value());
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  drain(gpu);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, gaveWay);
+  expectClean(f.scene, residency, gpu, "came back: ");
+
+  // that was all of this count
+  EXPECT_FALSE(residency.followHits(f.scene, room).has_value());
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  drain(gpu);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.second, true)).width, gaveWay);
+
+  // an item down that rays reach, and one up they hardly do: the second gives way for it
+  gpu.setImageHeadroom(0);
+  ItemDetail detail{.down = {{.item = 5, .name = "far", .meshes = {{f.mesh, 0.5f}}, .materials = {f.secondMaterial}}},
+                    .up   = {{.item = 6, .bytes = 10, .materials = {f.firstMaterial}}}};
+  residency.setItemDetail(detail);
+  residency.setMaterialHits(f.scene, table);
+  EXPECT_FALSE(residency.followHits(f.scene, 0).has_value());
+  EXPECT_EQ(residency.takeDetailAsks(), std::vector<uint64_t>{5});
+  residency.setItemDetail({.up = detail.up});
+  EXPECT_EQ(residency.followHits(f.scene, 100)->item, 6u) << "with the room it made";
+  drain(gpu);
+}
+
+TEST(RetainedResidency, WhatRaysReachComesBackFirst)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 256);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20, .leastDetailStep = 1});
+  residency.replace(f.scene);
+  std::vector<uint32_t> table(size_t(residency.materialSlotCount()) * kHitBins, 0);
+  table[size_t(residency.materialSlot(f.firstMaterial)) * kHitBins + 1] = 1000;
+  residency.setMaterialHits(f.scene, table);
+
+  residency.setItemDetail({.up = {{1, 10, {f.secondMaterial}}, {2, 10, {f.firstMaterial}}, {3, 1000, {f.firstMaterial}}}});
+  EXPECT_EQ(residency.nextDetailUp(50, false)->item, 2u) << "the one they reach, offered later, that fits";
+  EXPECT_FALSE(residency.nextDetailUp(50, false).has_value()) << "the one they don't waits for the textures they do";
+  EXPECT_EQ(residency.nextDetailUp(50, true)->item, 1u);
+  EXPECT_EQ(residency.nextDetailUp(1000, false)->item, 3u);
 }
 
 // The host makes a worn item's smaller records, so the Fit only asks: once, counting on what it asked for

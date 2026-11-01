@@ -200,6 +200,9 @@ void Residency::clear()
   m_detailAsks.clear();
   m_detailComing = 0;
   m_heldForSettleSince.reset();
+  m_hits.clear();
+  m_hitsTotal = 0;
+  m_hitsToFollow = false;
   m_settleBuilds.clear();
   m_wakeAsked.clear();
   m_drawersWrittenLast.clear();
@@ -1417,6 +1420,26 @@ void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::
 {
   const std::set<ImageKey> favoured = favouredImages(scene), pinned = pinnedImages(scene);
   std::set<TextureKey>     seen;  // one image, however many textures are it
+  // what the last count wanted of each image, and of each file several may be
+  using Bins = std::array<uint64_t, kHitBins>;
+  std::map<ImageKey, Bins>   imageHits;
+  std::map<TextureKey, Bins> fileHits;
+  for(const auto& [material, slot] : m_materials)
+    if(const auto hits = m_hits.find(material); hits != m_hits.end())
+      for(const auto& t : slot.textures)
+        if(t)
+        {
+          const ImageKey key{std::get<0>(*t), std::get<2>(*t)};
+          Bins&          mine  = imageHits[key];
+          const auto     image = m_images.find(key);
+          Bins*          file  = image != m_images.end() && image->second.key ? &fileHits[*image->second.key] : nullptr;
+          for(uint32_t bin = 0; bin < kHitBins; bin++)
+          {
+            mine[bin] += hits->second.bins[bin];
+            if(file)
+              (*file)[bin] += hits->second.bins[bin];
+          }
+        }
   for(const auto& [id, image] : m_images)
   {
     if(!image.image || (onlyLowered && !image.lowered) || (image.key && !seen.insert(*image.key).second))
@@ -1445,6 +1468,20 @@ void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::
     residents.push_back({id, record, image.key, skip});
     ImageFit& fit = fits.emplace_back(ImageFit{*image.chain, skip, favoured.count(id) > 0, pinned.count(id) > 0});
     fit.wholeOnly = image.levelsMade;
+    const Bins* wants = nullptr;
+    if(image.key)
+    {
+      if(const auto it = fileHits.find(*image.key); it != fileHits.end())
+        wants = &it->second;
+    }
+    else if(const auto it = imageHits.find(id); it != imageHits.end())
+      wants = &it->second;
+    if(wants && m_hitsTotal > 0)
+    {
+      fit.wanting.emplace();
+      for(uint32_t bin = 0; bin < kHitBins; bin++)
+        (*fit.wanting)[bin] = float(double((*wants)[bin]) / double(m_hitsTotal));
+    }
   }
 }
 
@@ -1456,22 +1493,146 @@ void Residency::setItemDetail(ItemDetail detail)
   std::erase_if(m_detail.down, [&](const ItemDetail::Down& d) { return std::find(m_detailAsks.begin(), m_detailAsks.end(), d.item) != m_detailAsks.end(); });
 }
 
-std::optional<ItemDetail::Up> Residency::nextDetailUp(uint64_t room)
+namespace {
+constexpr double kHitSeen = 0.01;  // of the scene's first hits: less, and an item is as good as out of view
+}
+
+std::optional<ItemDetail::Up> Residency::nextDetailUp(uint64_t room, bool unseenToo)
 {
+  size_t best      = m_detail.up.size();
+  double bestShare = -1;
   for(size_t i = 0; i < m_detail.up.size(); i++)
-    if(m_detail.up[i].bytes <= room)
+  {
+    if(m_detail.up[i].bytes > room)
+      continue;
+    const std::optional<double> share = hitShare(m_detail.up[i].materials);
+    if((unseenToo || !share || *share >= kHitSeen) && share.value_or(0) > bestShare)
     {
-      const ItemDetail::Up up = m_detail.up[i];
-      m_detail.up.erase(m_detail.up.begin() + i);
-      return up;
+      best      = i;
+      bestShare = share.value_or(0);
     }
+  }
+  if(best == m_detail.up.size())
+    return std::nullopt;
+  const ItemDetail::Up up = m_detail.up[best];
+  m_detail.up.erase(m_detail.up.begin() + best);
+  return up;
+}
+
+void Residency::setMaterialHits(const RetainedScene& scene, std::span<const uint32_t> table)
+{
+  m_hits.clear();
+  m_hitsTotal = 0;
+  m_hitsToFollow = true;
+  for(const auto& [id, slot] : m_materials)
+  {
+    if((size_t(slot.slot) + 1) * kHitBins > table.size())
+      continue;
+    MaterialHits& hits = m_hits[id];
+    if(const MaterialRecord* record = scene.material(id))
+      hits.owner = record->owner;
+    for(uint32_t bin = 0; bin < kHitBins; bin++)
+    {
+      hits.bins[bin] = table[size_t(slot.slot) * kHitBins + bin];
+      m_hitsTotal += hits.bins[bin];
+    }
+  }
+}
+
+uint32_t Residency::materialSlotCount() const
+{
+  uint32_t count = 0;
+  for(const auto& [id, slot] : m_materials)
+    count = std::max(count, slot.slot + 1);
+  return count;
+}
+
+std::optional<double> Residency::hitShare(const std::vector<MaterialId>& materials) const
+{
+  if(m_hitsTotal == 0 || materials.empty())
+    return std::nullopt;
+  uint64_t sum = 0;
+  for(MaterialId id : materials)
+  {
+    const auto hits = m_hits.find(id);
+    if(hits == m_hits.end())
+      return std::nullopt;
+    for(uint64_t bin : hits->second.bins)
+      sum += bin;
+  }
+  return double(sum) / double(m_hitsTotal);
+}
+
+std::optional<ItemDetail::Up> Residency::followHits(const RetainedScene& scene, int64_t room)
+{
+  // what the last step did has to show in what is free
+  if(!m_hitsToFollow || m_hitsTotal == 0 || !m_decodeQueue.empty() || m_detailComing > 0 || *m_retiring > 0)
+    return std::nullopt;
+  const uint64_t free = uint64_t(std::max<int64_t>(room, 0));
+  constexpr uint64_t kAtATime = uint64_t(256) << 20;  // the frame waits for what it decodes
+  if(raiseImages(scene, std::min(free, kAtATime), 0, true) > 0)
+    return std::nullopt;
+  if(std::optional<ItemDetail::Up> up = nextDetailUp(free, false))
+    return up;
+  m_hitsToFollow = giveWayForHits(scene, uint64_t(std::max<int64_t>(-room, 0)));
   return std::nullopt;
 }
 
-std::vector<Residency::DetailStep> Residency::detailSteps(size_t& last) const
+bool Residency::giveWayForHits(const RetainedScene& scene, uint64_t shortBy)
+{
+  std::vector<ResidentImage> residents;
+  std::vector<ImageFit>      fits;
+  residentFits(scene, false, residents, fits);
+  std::vector<uint32_t> wanted;
+  for(const ImageFit& fit : fits)
+    wanted.push_back(levelsToSkip(fit.chain.width, fit.chain.height, uint32_t(fit.chain.levelBytes.size()), m_gpu.maxImageExtent()));
+  if(lowerForExchange(fits, wanted, kLeastImageExtent, kFitStep, shortBy) > 0)
+  {
+    std::string which;
+    for(size_t r = 0; r < residents.size(); r++)
+      if(fits[r].skip > residents[r].skip)
+      {
+        m_decodeQueue.push_back({residents[r].image, imageSourceOf(*residents[r].record, residents[r].image.second, fits[r].extent()),
+                                 residents[r].key, true, true, fits[r].skip - residents[r].skip});
+        which += (which.empty() ? "" : ", ") + residents[r].record->name + " " + std::to_string(fits[r].extent());
+      }
+    m_notices.push_back("what first hits want back makes room: " + which);
+    return true;
+  }
+  // an item likewise: the one down that rays reach most, and the one not that they reach least
+  double most  = kHitSeen;
+  bool   found = false;
+  for(const ItemDetail::Up& up : m_detail.up)
+    if(const std::optional<double> share = hitShare(up.materials); share && *share >= most)
+    {
+      most  = *share;
+      found = true;
+    }
+  if(!found)
+    return false;
+  size_t                  first = 0, last = 0;
+  const std::vector<DetailStep> steps = detailSteps(first, last);
+  const DetailStep*       least = nullptr;
+  double                  leastShare = most / 2;
+  for(const DetailStep& step : steps)
+    if(const std::optional<double> share = hitShare(step.down->materials); share && !step.down->selected && !step.down->pinned && *share < leastShare)
+    {
+      least      = &step;
+      leastShare = *share;
+    }
+  if(!least)
+    return false;
+  const uint64_t item = least->down->item;
+  m_detailAsks.push_back(item);
+  m_detailComing += least->bytes;
+  std::erase_if(m_detail.down, [&](const ItemDetail::Down& d) { return d.item == item; });
+  return true;
+}
+
+std::vector<Residency::DetailStep> Residency::detailSteps(size_t& first, size_t& last) const
 {
   std::vector<DetailStep> out;
-  last = 0;
+  first = last = 0;
   if(m_detail.down.empty())
     return out;
   std::map<MeshId, uint64_t> held;
@@ -1487,18 +1648,29 @@ std::vector<Residency::DetailStep> Residency::detailSteps(size_t& last) const
     if(freed >= double(m_options.leastDetailStep))
       out.push_back({&d, uint64_t(freed)});
   }
-  std::stable_sort(out.begin(), out.end(), [](const DetailStep& a, const DetailStep& b) {
+  // what is freed for what rays lose, as images come down (ImageFit::weight); and what none reach before the rest
+  constexpr double kUnseen = 1.0 / 1024;
+  const auto weigh = [&](const DetailStep& s) {
+    const std::optional<double> share = hitShare(s.down->materials);
+    return share ? double(s.bytes) / std::max(*share, kUnseen) : double(s.bytes);
+  };
+  const auto unseen = [&](const DetailStep& s) {
+    const std::optional<double> share = hitShare(s.down->materials);
+    return share && *share < kUnseen && !s.down->selected && !s.down->pinned;
+  };
+  std::stable_sort(out.begin(), out.end(), [&](const DetailStep& a, const DetailStep& b) {
     if(a.down->pinned != b.down->pinned)
       return b.down->pinned;
     if(a.down->selected != b.down->selected)
       return b.down->selected;
-    return a.bytes > b.bytes;
+    return weigh(a) > weigh(b);
   });
-  last = size_t(std::count_if(out.begin(), out.end(), [](const DetailStep& s) { return s.down->pinned; }));
+  first = size_t(std::count_if(out.begin(), out.end(), unseen));
+  last  = size_t(std::count_if(out.begin(), out.end(), [](const DetailStep& s) { return s.down->pinned; }));
   return out;
 }
 
-uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room, uint32_t upToExtent)
+uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room, uint32_t upToExtent, bool onlyWhatHitsWant)
 {
   std::vector<ResidentImage> residents;
   std::vector<ImageFit>      fits;
@@ -1509,16 +1681,27 @@ uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room, uint3
     const uint32_t levels = uint32_t(fit.chain.levelBytes.size());
     full.push_back(levelsToSkip(fit.chain.width, fit.chain.height, levels, m_gpu.maxImageExtent()));
     wanted.push_back(upToExtent ? std::max(full.back(), levelsToSkip(fit.chain.width, fit.chain.height, levels, upToExtent)) : full.back());
+    if(onlyWhatHitsWant)
+    {
+      uint32_t missed = fit.skip;
+      while(fit.wanting && missed > wanted.back() && fit.lossWithout(missed - 1) >= kLeastHitLoss)
+        missed--;
+      wanted.back() = missed;
+    }
   }
   raiseToFit(fits, wanted, room);
-  uint32_t raised = 0;
+  uint32_t    raised = 0;
+  std::string which;
   for(size_t i = 0; i < residents.size(); i++)
     if(fits[i].skip < residents[i].skip)
     {
       m_decodeQueue.push_back({residents[i].image, imageSourceOf(*residents[i].record, residents[i].image.second, fits[i].extent()),
                                residents[i].key, fits[i].skip > full[i], true});
       raised++;
+      which += (which.empty() ? "" : ", ") + residents[i].record->name + " " + std::to_string(fits[i].extent());
     }
+  if(raised > 0)
+    m_notices.push_back("with room, textures raised: " + which);
   return raised;
 }
 
@@ -1597,12 +1780,12 @@ std::string Residency::nextToGo(const RetainedScene& scene) const
   std::vector<ImageFit>      fits;
   residentFits(scene, false, residents, fits);
   const std::vector<ImageFit> before = fits;
-  size_t                      detailLast = 0;
-  const std::vector<DetailStep> steps    = detailSteps(detailLast);
+  size_t                      detailFirst = 0, detailLast = 0;
+  const std::vector<DetailStep> steps     = detailSteps(detailFirst, detailLast);
   std::vector<uint64_t>         detailBytes;
   for(const DetailStep& step : steps)
     detailBytes.push_back(step.bytes);
-  const FitPlan plan = planToFit(1, {.images = fits, .leastExtent = kLeastImageExtent, .detail = detailBytes, .detailLast = detailLast, .detailAfter = kDetailAfterExtent});
+  const FitPlan plan = planToFit(1, {.images = fits, .leastExtent = kLeastImageExtent, .detail = detailBytes, .detailLast = detailLast, .detailAfter = kDetailAfterExtent, .detailFirst = detailFirst});
   for(size_t i = 0; i < fits.size(); i++)
     if(fits[i].skip != before[i].skip)
       return residents[i].record->name + " at " + std::to_string(before[i].extent());
@@ -1625,7 +1808,8 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
   std::vector<size_t>   queued;  // the queue's entry of each of fits
   uint64_t              need = 0;
   for(size_t i = 0; i < m_decodeQueue.size(); i++)
-    if(std::optional<ImageChain> chain = m_gpu.imageChain(m_decodeQueue[i].source))
+    // what comes down frees room rather than taking it
+    if(std::optional<ImageChain> chain = m_decodeQueue[i].dropLevels > 0 ? std::nullopt : m_gpu.imageChain(m_decodeQueue[i].source))
     {
       const uint32_t levels = uint32_t(chain->levelBytes.size());
       const uint32_t skip   = levelsToSkip(chain->width, chain->height, levels, m_decodeQueue[i].source.maxExtent);
@@ -1661,8 +1845,8 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
   std::vector<uint64_t>                          settleBytes;
   for(const auto& [mesh, bytes] : settleable)
     settleBytes.push_back(bytes);
-  size_t                        detailLast = 0;
-  const std::vector<DetailStep> steps      = detailSteps(detailLast);
+  size_t                        detailFirst = 0, detailLast = 0;
+  const std::vector<DetailStep> steps       = detailSteps(detailFirst, detailLast);
   std::vector<uint64_t>         detailBytes;
   for(const DetailStep& step : steps)
     detailBytes.push_back(step.bytes);
@@ -1674,7 +1858,7 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
   const bool hold = queued.empty() && frame < *m_heldForSettleSince + m_options.settleQuietFrames && settlingSoon();
   const FitPlan plan = planToFit(wanted, {.idleBytes = m_graceBytes, .hidden = hiddenBytes, .settle = settleBytes, .images = hold ? std::span<ImageFit>{} : std::span<ImageFit>(fits),
                                           .leastExtent = kLeastImageExtent, .detail = hold ? std::span<const uint64_t>{} : std::span<const uint64_t>(detailBytes),
-                                          .detailLast = hold ? 0 : detailLast, .detailAfter = kDetailAfterExtent});
+                                          .detailLast = hold ? 0 : detailLast, .detailAfter = kDetailAfterExtent, .detailFirst = hold ? 0 : detailFirst});
   trimGrace(m_graceBytes - plan.idle);
   {
     std::set<uint64_t> asked;
@@ -3488,6 +3672,9 @@ MemoryLedger Residency::ledger() const
   for(const auto& [id, image] : m_images)
     out.total.images += !image.key && image.image ? image.info.bytes : 0;
   out.idleImages = m_graceBytes;
+  for(const auto& [id, hits] : m_hits)
+    if(std::any_of(hits.bins.begin(), hits.bins.end(), [](uint64_t b) { return b > 0; }))
+      out.hits.push_back({hits.owner.prop, hits.owner.local, hits.bins});
   for(BufferHandle s : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable, m_emissiveTable, m_emissiveGroupTable,
                         m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable})
     out.total.scene += bytes(s);

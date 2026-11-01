@@ -25,12 +25,19 @@
 //
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
 namespace rs {
+
+// What first hits want of a material, by how large a long edge they could show: 256 << bin (shaders/hit_signal.h.slang)
+inline constexpr uint32_t kHitBins = 6;
+// of the scene's first hits: a level that fewer would miss is as good as one that none would
+inline constexpr double kLeastHitLoss = 1.0 / 1024;
 
 inline uint32_t levelExtent(uint32_t base, uint32_t level)
 {
@@ -72,14 +79,31 @@ struct ImageFit
   bool       favoured = false;  // what the eye goes to first: it stays at least a level above the others
   bool       pinned   = false;  // marked Keep full: it comes down only when nothing else can
   bool       wholeOnly = false;  // no stored levels to read: it can come down, and comes back all at once
+  // what the scene's first hits want of it, each bin a share of them all; none: not known yet
+  std::optional<std::array<float, kHitBins>> wanting;
 
-  // what a level counts as against the others': a favoured image's, as the level under it
-  uint64_t weight(uint32_t level) const { return chain.levelBytes[level] >> (favoured ? 2 : 0); }
+  // the share of the scene's first hits that would show less were level `level` gone
+  double lossWithout(uint32_t level) const
+  {
+    const uint32_t kept = std::max(levelExtent(chain.width, level + 1), levelExtent(chain.height, level + 1));
+    double         loss = 0;
+    for(uint32_t bin = 0; bin < kHitBins; bin++)
+      if((256u << bin) > kept)
+        loss += (*wanting)[bin];
+    return loss;
+  }
+  // what a level counts as against the others', bytes freed for what is lost: a favoured image's as the level
+  // under it, and with hits known, by how few want it. What none want goes before all that anything does.
+  double weight(uint32_t level) const
+  {
+    const double bytes = double(chain.levelBytes[level]) / (favoured ? 4.0 : 1.0);
+    return wanting ? bytes / std::max(lossWithout(level), kLeastHitLoss) : bytes;
+  }
   // whether this image's level `level` goes before `other`'s `otherLevel` when images come down:
   // the heavier, and of equals the one not favoured
   bool goesBefore(uint32_t level, const ImageFit& other, uint32_t otherLevel) const
   {
-    const uint64_t mine = weight(level), theirs = other.weight(otherLevel);
+    const double mine = weight(level), theirs = other.weight(otherLevel);
     return mine > theirs || (mine == theirs && !favoured && other.favoured);
   }
   uint64_t bytes() const
@@ -87,6 +111,13 @@ struct ImageFit
     uint64_t sum = 0;
     for(size_t i = skip; i < chain.levelBytes.size(); i++)
       sum += chain.levelBytes[i];
+    return sum;
+  }
+  uint64_t wholeBytes() const
+  {
+    uint64_t sum = 0;
+    for(uint64_t level : chain.levelBytes)
+      sum += level;
     return sum;
   }
   uint32_t extent() const { return std::max(levelExtent(chain.width, skip), levelExtent(chain.height, skip)); }
@@ -142,9 +173,7 @@ inline uint64_t raiseToFit(std::span<ImageFit> images, std::span<const uint32_t>
     ImageFit& image = images[next];
     if(image.wholeOnly)
     {
-      uint64_t whole = 0;
-      for(uint64_t level : image.chain.levelBytes)
-        whole += level;
+      const uint64_t whole = image.wholeBytes();
       if(taken + whole > room)
         break;
       taken += whole;
