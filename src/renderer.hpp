@@ -348,6 +348,8 @@ public:
   // the budget the scene is fitted to: the driver's, or sceneBudgetMB where that is less
   uint64_t               sceneBudget() const;
   std::string            refuseGeometry(uint64_t bytes, bool keepTextureDetail = false) override;
+  uint64_t               blasBytes(uint64_t triangles, uint64_t vertices, bool refittable) const override;
+  rs::MemoryLedger       memoryLedger() const override;
   struct AllocatedMemory
   {
     uint64_t blocks = 0, allocations = 0;
@@ -493,6 +495,8 @@ private:
   bool                       syncRetainedScene(VkCommandBuffer cmd);
   // Textures following GPU memory: once a second, what rs::MemoryWatch says is asked of the next sync
   void                       watchMemory();
+  void                       logMemoryLedger();
+  void                       applyMemoryFill(VkCommandBuffer cmd);
   // the textures lowered now, told to the sink when that changed
   void                       reportLoweredImages(uint32_t count, uint32_t largest);
   // a stream host's scene: the clip moved on and written into the store; true when it wrote anything
@@ -645,6 +649,9 @@ private:
   std::function<void(const std::string&)> m_noticeSink;
   std::function<void(uint32_t, uint32_t)> m_loweredSink;
   uint32_t              m_loweredCount = 0, m_loweredLargest = 0;  // as the sink last heard
+  uint64_t              m_ledgerLogged = 0;          // the scene's bytes the last [memory] line said
+  std::vector<nvvk::Buffer> m_memoryFill;            // memoryFillMB's
+  size_t                m_memoryFillNext = 0;        // the block memoryFillWriteMB writes next
   rs::MemoryWatch       m_memoryWatch;
   bool                  m_texturesHeld = false;      // an export is running (holdTextures)
   bool                  m_envPreviewPending{false};  // Record a colour-only re-bake into this frame

@@ -478,12 +478,17 @@ std::string axisKey(const fv::pose::Axis& a);
 Json poseSnapshot(const Loaded& f);
 
 std::string fileStem(const std::string& rel);
-// About what a figure's or a model's meshes take on the GPU, for HostRenderer::refuseGeometry: buffers
-// and BLAS, from Polina 9, an outfit and strand hair at subdivision 1 and 2 (243 to 280 bytes a
-// triangle, 2026-10-30). Their textures aren't in it: those come down to fit as they arrive.
-uint64_t geometryBytes(const fv::SceneGraph& scene);
-uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes);
-uint64_t geometryBytes(const tinygltf::Model& model);
+// What a figure's or a model's meshes will take on the GPU, for HostRenderer::refuseGeometry: their
+// buffers in the residency's formats (scene_price.hpp) and what the driver says their BLASes hold.
+// Their textures aren't in it: those come down to fit as they arrive.
+struct GeometryPricing
+{
+  const HostRenderer* renderer  = nullptr;
+  bool                gpuRefine = false, dazSkinning = false, dazOrder = false;  // HostSettings' figure*
+};
+uint64_t geometryBytes(const fv::SceneGraph& scene, const GeometryPricing& pricing);
+uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes, const GeometryPricing& pricing);
+uint64_t geometryBytes(const tinygltf::Model& model, const GeometryPricing& pricing);
 
 // The registered parameters nvmcp can read and write: values, not triggers or custom parsers, and
 // none that loads or saves the scene behind the host (fv::hostExposesParameter).
@@ -522,6 +527,11 @@ struct FvHost::Impl
 
   mutable std::mutex settingsMutex;
   HostSettings   settings;
+  GeometryPricing geometryPricing() const
+  {
+    std::lock_guard lock(settingsMutex);
+    return {.renderer = renderer, .gpuRefine = settings.figureGpuRefine, .dazSkinning = settings.figureDazSkinning, .dazOrder = settings.figureDazOrder};
+  }
 
   // work for the application thread, run in onUpdate
   std::mutex                        queueMutex;

@@ -372,6 +372,48 @@ bool materialNeedsTangents(const fv::mat::Material& material)
   return material.normalMap.has() || material.anisotropy.has_value();
 }
 
+std::vector<MeshCounts> modelMeshCounts(const tinygltf::Model& model)
+{
+  const auto countOf = [&](int accessor) {
+    return accessor >= 0 && accessor < int(model.accessors.size()) ? uint64_t(model.accessors[size_t(accessor)].count) : uint64_t(0);
+  };
+  std::vector<bool> needsTangents;
+  for(const tinygltf::Material& m : model.materials)
+    needsTangents.push_back(materialNeedsTangents(fv::mat::fromGltf(m)));
+  std::vector<MeshCounts> out;
+  for(const tinygltf::Mesh& mesh : model.meshes)
+  {
+    std::map<std::string, MeshCounts> sets;  // as importGltf groups its primitives
+    for(const tinygltf::Primitive& p : mesh.primitives)
+    {
+      const auto attribute = [&](const char* name) {
+        const auto it = p.attributes.find(name);
+        return it == p.attributes.end() ? -1 : it->second;
+      };
+      MeshCounts&    c        = sets[attributeKey(p)];
+      const uint64_t vertices = countOf(attribute("POSITION"));
+      c.vertices              = vertices;
+      c.triangles += (p.indices >= 0 ? countOf(p.indices) : vertices) / 3;
+      c.normals = attribute("NORMAL") >= 0;
+      c.uv0     = attribute("TEXCOORD_0") >= 0;
+      c.uv1     = attribute("TEXCOORD_1") >= 0;
+      c.colors  = attribute("COLOR_0") >= 0;
+      c.skinned = attribute("JOINTS_0") >= 0 && attribute("WEIGHTS_0") >= 0;
+      const int material = p.material >= 0 && p.material < int(model.materials.size()) ? p.material : 0;
+      c.tangents |= attribute("TANGENT") >= 0 || (material < int(needsTangents.size()) && needsTangents[size_t(material)]);
+      c.morphTargets = p.targets.size();
+      for(const auto& target : p.targets)
+      {
+        c.morphNormals |= target.count("NORMAL") > 0;
+        c.morphTangents |= target.count("TANGENT") > 0;
+      }
+    }
+    for(const auto& [key, counts] : sets)
+      out.push_back(counts);
+  }
+  return out;
+}
+
 ImportResult importGltf(RetainedScene& scene, const tinygltf::Model& model, const ImportOptions& options)
 {
   ImportResult          out;

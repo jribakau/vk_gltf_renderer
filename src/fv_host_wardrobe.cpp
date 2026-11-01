@@ -363,11 +363,12 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           const fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*prepared);
           const bool            smaller       = fv::wearCanShrink(preparedScene, quality);
           // the same garment again: what it replaces leaves as it comes
-          uint64_t leaving = 0;
+          const GeometryPricing pricing = geometryPricing();
+          uint64_t              leaving = 0;
           for(int id : target->fig->itemsReplacedBy(*prepared, ids, only))
             if(const fv::WornItem* w = wornItem(*target->fig, id))
-              leaving += geometryBytes(target->fig->loaded.scene, w->meshes);
-          const uint64_t bytes = geometryBytes(preparedScene);
+              leaving += geometryBytes(target->fig->loaded.scene, w->meshes, pricing);
+          const uint64_t bytes = geometryBytes(preparedScene, pricing);
           if(const std::string refused = renderer->refuseGeometry(bytes - std::min(bytes, leaving), smaller); !refused.empty())
           {
             if(smaller)

@@ -336,6 +336,26 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return answer;
     });
   });
+  // What the scene holds on the GPU, by who reads it, and per mesh: `meshes` {prop, local, triangles, ...}
+  cmds.add("render.ledger", [impl](const Json&) {
+    return impl->onApp([impl] {
+      const auto classes = [](const rs::GpuBytes& b) {
+        return Json{{"drawn", b.drawn},     {"bvh", b.bvh},       {"remake", b.remake}, {"working", b.working},
+                    {"unread", b.unread},   {"images", b.images}, {"scene", b.scene},   {"total", b.total()}};
+      };
+      const rs::MemoryLedger ledger = impl->renderer->memoryLedger();
+      Json                   meshes = Json::array();
+      for(const rs::MemoryLedger::Mesh& m : ledger.meshes)
+      {
+        Json entry         = classes(m.bytes);
+        entry["prop"]      = m.prop;
+        entry["local"]     = m.local;
+        entry["triangles"] = m.triangles;
+        meshes.push_back(std::move(entry));
+      }
+      return Json{{"total", classes(ledger.total)}, {"idleImages", ledger.idleImages}, {"retiring", ledger.retiring}, {"spilled", ledger.spilled}, {"meshes", std::move(meshes)}};
+    });
+  });
   // An export's whole run: textures stay as they are, so its frames match and its still isn't restarted
   cmds.add("render.hold", [impl](const Json& args) {
     const bool on = args.value("on", false);

@@ -256,6 +256,10 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     out.push_back("backend: " + e);
   for(const std::string& e : gpu.unfencedForTheFrame())
     out.push_back("barriers: " + e);
+  // the ledger is what the device holds, what is on its way out included
+  if(const MemoryLedger ledger = residency.ledger(); ledger.total.total() + ledger.retiring != gpu.liveBytes())
+    out.push_back("ledger: " + std::to_string(ledger.total.total()) + " B resident and " + std::to_string(ledger.retiring) + " B retiring, the device holds "
+                  + std::to_string(gpu.liveBytes()));
 
   const uint32_t hwm = residency.instanceHighWater();
   // I13

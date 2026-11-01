@@ -48,6 +48,7 @@
 
 #include <figure/gltf/gltf_build.hpp>
 
+#include "scene_price.hpp"
 #include "scene_retained.hpp"
 #include "tinygltf_utils.hpp"
 
@@ -74,6 +75,11 @@ struct FigureFeedOptions
   // refine the posed cage; records carry the cage's influences
   bool dazOrder = false;
 };
+
+// What a mesh will hold once fed (scene_price.hpp), for a price before it is: the counts of the record
+// FigureFeed::meshRecord makes of it. Whether it has tangents is a guess: that is for its materials to
+// say, and a garment's nearly always ask while a strand's rarely do.
+rs::MeshCounts meshCounts(const Mesh& mesh, bool gpuRefine, bool dazSkinning, bool dazOrder);
 
 class FigureFeed
 {

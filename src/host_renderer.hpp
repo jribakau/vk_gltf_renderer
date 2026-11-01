@@ -41,6 +41,7 @@
 
 #include "env_image_loader.hpp"
 #include "rendering_mode.hpp"
+#include "scene_price.hpp"
 #include "scene_retained.hpp"
 #include "shaders/gizmo_lines_shaderio.h.slang"
 #include "shaders/shaderio.h"
@@ -71,6 +72,11 @@ public:
   // it is resident). `keepTextureDetail`: for what can come in smaller instead, so textures count
   // as coming down only as far as hardly shows. Application thread.
   virtual std::string refuseGeometry(uint64_t bytes, bool keepTextureDetail = false) = 0;
+  // What a BLAS of this many triangles would hold, as the driver says, before any is built: one built to
+  // be refitted, or one that is compacted (rs::kCompactedBlasShare). Application thread.
+  virtual uint64_t blasBytes(uint64_t triangles, uint64_t vertices, bool refittable) const = 0;
+  // What the retained scene holds on the GPU now; empty before it has one. Application thread.
+  virtual rs::MemoryLedger memoryLedger() const = 0;
   // The GPU memory free beyond what is kept back, negative when that is in use too; none without a
   // known budget. Application thread.
   virtual std::optional<int64_t> sceneHeadroom() const = 0;

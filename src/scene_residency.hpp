@@ -83,6 +83,7 @@
 #include "gltf_material_cache.hpp"
 #include "scene_gpu_backend.hpp"
 #include "scene_material_bits.hpp"
+#include "scene_price.hpp"
 #include "scene_retained.hpp"
 
 namespace nvutils {
@@ -158,6 +159,7 @@ public:
   struct MeshGpu
   {
     BufferHandle         positions, normals, tangents, uv0, uv1, colors;
+    OwnerTag             owner;
     uint32_t             vertexCount = 0;
     uint32_t             contentRev  = 0;
     uint32_t             tangentRev  = 0;
@@ -349,6 +351,8 @@ public:
   // (raiseToFit). How many it will.
   uint32_t raiseImages(const RetainedScene& scene, uint64_t room);
   uint64_t    graceBytes() const { return m_graceBytes; }
+  // What is resident now, in the bytes the backend holds, and what is let go of and not freed yet
+  MemoryLedger ledger() const;
 
   // ---- what the renderers read
   uint64_t    sceneDesc() const;  // GltfScene's address
@@ -529,6 +533,7 @@ private:
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
   void     retireAccel(AccelHandle accel);
+  void     retireImage(ImageHandle image, uint64_t bytes);
   // the prim's BLAS built, for compaction when it is static and blasCompactStatic is on
   void build(Prim& prim);
   // the prim's BLAS refitted to its input, or built again once it has been refitted enough (or
@@ -569,6 +574,8 @@ private:
 
   GpuBackend&      m_gpu;
   ResidencyOptions m_options;
+  // the bytes retired and not freed yet; shared with the closures, which may outlive a clear()
+  std::shared_ptr<uint64_t> m_retiring = std::make_shared<uint64_t>(0);
 
   // shared with the retire closures that give slots back, which may outlive a clear()
   std::shared_ptr<nvutils::IDPool> m_instancePool, m_primPool, m_materialPool;

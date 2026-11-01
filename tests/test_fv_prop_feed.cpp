@@ -662,6 +662,49 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
   EXPECT_GT(moved, 1e-3f);
 }
 
+// A mesh's price, made before anything is fed, is what its buffers hold once resident: the residency's
+// formats and scene_price.hpp stay together. With DAZ's order, the mesh's own streams are read by nothing.
+TEST(FvPropFeed, AMeshsPriceIsWhatItHoldsOnceResident)
+{
+  for(const bool dazOrder : {false, true})
+  {
+    const auto                box = loadBox();
+    rs::RetainedScene         scene;
+    rs::FakeGpuBackend        gpu(2);
+    rs::Residency             residency(gpu);
+    fv::PropFeed              feed(scene);
+    std::vector<fv::PropSpec> props(1);
+    props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+    props[0].figureCageOf      = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+    props[0].figureDazSkinning = true;
+    props[0].figureDazOrder    = dazOrder;
+    feed.sync(props);
+    residency.replace(scene);
+    const fv::FigureFeed&  figure = *feed.fed("p:1")->figure;
+    const rs::MemoryLedger ledger = residency.ledger();
+    size_t                 priced = 0;
+    for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
+    {
+      const rs::MeshRecord* record = scene.mesh(figure.meshOf(int(mi)));
+      if(!record)
+        continue;
+      const auto entry = std::find_if(ledger.meshes.begin(), ledger.meshes.end(), [&](const auto& m) { return m.mesh == figure.meshOf(int(mi)); });
+      ASSERT_NE(entry, ledger.meshes.end()) << mi;
+      rs::MeshCounts c = fv::meshCounts(box->loaded.scene.meshes[mi], true, true, dazOrder);
+      // what its materials asked, which the price can only guess
+      c.tangents         = !record->tangents.empty();
+      c.tangentTriangles = record->refine ? record->refine->tangentIndices.size() / 3 : 0;
+      EXPECT_EQ(rs::meshBufferBytes(c), entry->bytes.total() - entry->bytes.bvh) << "mesh " << mi << " with DAZ's order " << dazOrder;
+      EXPECT_EQ(entry->triangles, c.triangles) << mi;
+      EXPECT_EQ(entry->prop, 1u);
+      EXPECT_EQ(entry->local, int(mi));
+      priced++;
+    }
+    EXPECT_GT(priced, 0u);
+    EXPECT_EQ(ledger.total.unread > 0, dazOrder);
+  }
+}
+
 // A strand's segments are drawn as two each, split at their middles: a midpoint is refined halfway
 // between its segment's ends (so a pose moves it with them), halfway along the strand, and its
 // ribbon lies across the strand between its ends' directions.

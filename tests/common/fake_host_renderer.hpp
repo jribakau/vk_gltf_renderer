@@ -28,6 +28,7 @@
 #include <fstream>
 #include <memory>
 
+#include "fake_gpu_backend.hpp"
 #include "host_renderer.hpp"
 
 class FakeHostRenderer : public HostRenderer
@@ -53,6 +54,11 @@ public:
     lastKeptTextures  = keepTextureDetail;
     return bytes > geometryLimit ? std::string("no room") : geometryRefusal;
   }
+  uint64_t blasBytes(uint64_t triangles, uint64_t, bool refittable) const override
+  {
+    return triangles * (refittable ? rs::FakeGpuBackend::kBlasBytesPerTriangle : rs::FakeGpuBackend::kCompactedBlasBytesPerTriangle);
+  }
+  rs::MemoryLedger   memoryLedger() const override { return {}; }
   std::string        geometryRefusal;  // what refuseGeometry answers
   uint64_t           geometryLimit = UINT64_MAX;  // past this it answers "no room"
   uint64_t           askedGeometry = 0, lastGeometry = 0;

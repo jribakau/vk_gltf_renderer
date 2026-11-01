@@ -399,6 +399,33 @@ AccelHandle FakeGpuBackend::compactBlas(AccelHandle handle)
   return compacted;
 }
 
+uint64_t FakeGpuBackend::accelBytes(AccelHandle handle) const
+{
+  if(auto b = m_blases.find(handle.value); b != m_blases.end())
+    return uint64_t(b->second.input.indexCount / 3) * (b->second.compacted ? kCompactedBlasBytesPerTriangle : kBlasBytesPerTriangle);
+  if(auto t = m_tlases.find(handle.value); t != m_tlases.end())
+    return uint64_t(t->second.capacity) * 128;
+  if(auto m = m_micromaps.find(handle.value); m != m_micromaps.end())
+    return m->second.data.size() + m->second.triangles.size();
+  return 0;
+}
+
+uint64_t FakeGpuBackend::liveBytes() const
+{
+  uint64_t bytes = 0;
+  for(const auto& [handle, b] : m_buffers)
+    bytes += b.bytes.size();
+  for(const auto& [handle, i] : m_images)
+    bytes += i.info.bytes;
+  for(const auto& [handle, b] : m_blases)
+    bytes += accelBytes({handle});
+  for(const auto& [handle, t] : m_tlases)
+    bytes += accelBytes({handle});
+  for(const auto& [handle, m] : m_micromaps)
+    bytes += accelBytes({handle});
+  return bytes;
+}
+
 AccelHandle FakeGpuBackend::createTlas(uint32_t capacity)
 {
   const AccelHandle handle{m_nextHandle++};

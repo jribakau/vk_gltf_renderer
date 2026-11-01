@@ -407,6 +407,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({.name = "sceneBudgetMB",
                   .help = "Retained scene: the GPU memory the scene is fitted to, where less than the device's budget, in MB (0: that budget)"},
                  &m_resources.settings.sceneBudgetMB, Persist::eNo);
+  m_settings.add({.name = "memoryFillMB",
+                  .help = "Device memory held and touched every frame, for a measure of the device's limit, in MB (0: none)"},
+                 &m_resources.settings.memoryFillMB, Persist::eNo);
+  m_settings.add({.name = "memoryFillWriteMB", .help = "How much of memoryFillMB is written whole each frame, in turn, in MB"},
+                 &m_resources.settings.memoryFillWriteMB, Persist::eNo);
   m_settings.add({.name = "residencyMinInstances", .help = "Retained scene: the least instance capacity (start-up only)"},
                  &m_resources.settings.residencyMinInstances, Persist::eNo);
   // Live: from the next refit on (P7, measured on Path Trace after a pose far from the load pose).

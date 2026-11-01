@@ -162,45 +162,35 @@ TextureCalls& textureCalls()
 }
 
 namespace {
-constexpr uint64_t kGeometryBytesPerTriangle = 300;
-}
-
-namespace {
-uint64_t geometryBytes(const fv::Mesh& m)
+uint64_t priced(const rs::MeshCounts& c, const GeometryPricing& pricing)
 {
-  return m.geo ? (m.geo->fullIndex.empty() ? m.geo->renderTris.size() : m.geo->fullIndex.size()) / 3 * kGeometryBytesPerTriangle : 0;
+  return rs::meshBufferBytes(c) + pricing.renderer->blasBytes(c.triangles, c.vertices, c.deforms());
 }
 }  // namespace
 
-uint64_t geometryBytes(const fv::SceneGraph& scene)
+uint64_t geometryBytes(const fv::SceneGraph& scene, const GeometryPricing& pricing)
 {
   uint64_t bytes = 0;
   for(const fv::Mesh& m : scene.meshes)
-    bytes += geometryBytes(m);
+    bytes += priced(fv::meshCounts(m, pricing.gpuRefine, pricing.dazSkinning, pricing.dazOrder), pricing);
   return bytes;
 }
 
-uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes)
+uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes, const GeometryPricing& pricing)
 {
   uint64_t bytes = 0;
   for(int m : meshes)
     if(m >= 0 && m < int(scene.meshes.size()))
-      bytes += geometryBytes(scene.meshes[size_t(m)]);
+      bytes += priced(fv::meshCounts(scene.meshes[size_t(m)], pricing.gpuRefine, pricing.dazSkinning, pricing.dazOrder), pricing);
   return bytes;
 }
 
-uint64_t geometryBytes(const tinygltf::Model& model)
+uint64_t geometryBytes(const tinygltf::Model& model, const GeometryPricing& pricing)
 {
-  uint64_t triangles = 0;
-  for(const tinygltf::Mesh& mesh : model.meshes)
-    for(const tinygltf::Primitive& p : mesh.primitives)
-    {
-      const auto position = p.attributes.find("POSITION");
-      const int  accessor = p.indices >= 0 ? p.indices : position != p.attributes.end() ? position->second : -1;
-      if(accessor >= 0 && accessor < int(model.accessors.size()))
-        triangles += model.accessors[size_t(accessor)].count / 3;
-    }
-  return triangles * kGeometryBytesPerTriangle;
+  uint64_t bytes = 0;
+  for(const rs::MeshCounts& c : rs::modelMeshCounts(model))
+    bytes += priced(c, pricing);
+  return bytes;
 }
 
 CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureRequest& req, bool flip, bool cachedOnly, bool quiet)

@@ -296,6 +296,11 @@ struct Settings
   uint32_t textureGraceMB = 256;
   // `sceneBudgetMB`: the GPU memory the scene is fitted to, where less than the device's budget; 0: that budget
   uint32_t sceneBudgetMB = 0;
+  // `memoryFillMB`: device memory held and touched every frame, standing in for a scene that large in a
+  // measure of the device's limit (scripts/memory-limit-check.py); 0: none
+  uint32_t memoryFillMB = 0;
+  // `memoryFillWriteMB`: how much of it is written whole each frame, in turn
+  uint32_t memoryFillWriteMB = 0;
 
   // Enable scene-based shader optimization. When true, only features used by the scene are
   // enabled, reducing shader size and register usage at the cost of a one-time recompile per scene change.

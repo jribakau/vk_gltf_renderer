@@ -40,9 +40,14 @@
 
 #include <tinygltf/tiny_gltf.h>
 
+#include "scene_price.hpp"
 #include "scene_retained.hpp"
 
 namespace rs {
+
+// What each vertex set importGltf would make of a model holds, read from its accessors: a price before
+// the import
+std::vector<MeshCounts> modelMeshCounts(const tinygltf::Model& model);
 
 struct ImportOptions
 {

@@ -1122,6 +1122,43 @@ void VulkanGpuBackend::destroyAccel(AccelHandle handle)
   LOGE("VulkanGpuBackend::destroyAccel: dead or unknown acceleration structure %llu\n", (unsigned long long)handle.value);
 }
 
+uint64_t VulkanGpuBackend::spilledBytes() const
+{
+  const VmaAllocator allocator = *m_info.alloc;
+  const auto         spilled   = [&](VmaAllocation allocation) -> uint64_t {
+    if(!allocation)
+      return 0;
+    VmaAllocationInfo info{};
+    vmaGetAllocationInfo(allocator, allocation, &info);
+    VkMemoryPropertyFlags flags = 0;
+    vmaGetMemoryTypeProperties(allocator, info.memoryType, &flags);
+    return flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? 0 : info.size;
+  };
+  uint64_t bytes = spilled(m_blasScratch.allocation);
+  for(const auto& [handle, b] : m_buffers)
+    bytes += spilled(b.buffer.allocation);
+  for(const auto& [handle, image] : m_images)
+    bytes += spilled(image.allocation);
+  for(const auto& [handle, b] : m_blases)
+    bytes += spilled(b.accel.buffer.allocation);
+  for(const auto& [handle, t] : m_tlases)
+    bytes += spilled(t.accel.buffer.allocation) + spilled(t.instances.allocation) + spilled(t.scratch.allocation);
+  for(const auto& [handle, m] : m_micromaps)
+    bytes += spilled(m.storage.allocation);
+  return bytes;
+}
+
+uint64_t VulkanGpuBackend::accelBytes(AccelHandle handle) const
+{
+  if(auto m = m_micromaps.find(handle.value); m != m_micromaps.end())
+    return m->second.storage.bufferSize + m->second.data.bufferSize + m->second.triangles.bufferSize + m->second.scratch.bufferSize;
+  if(auto b = m_blases.find(handle.value); b != m_blases.end())
+    return b->second.accel.buffer.bufferSize;
+  if(auto t = m_tlases.find(handle.value); t != m_tlases.end())
+    return t->second.accel.buffer.bufferSize + t->second.instances.bufferSize + t->second.scratch.bufferSize;
+  return 0;
+}
+
 VkAccelerationStructureKHR VulkanGpuBackend::vkAccel(AccelHandle handle) const
 {
   if(auto b = m_blases.find(handle.value); b != m_blases.end())

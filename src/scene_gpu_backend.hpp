@@ -304,6 +304,13 @@ public:
   virtual AccelHandle createTlas(uint32_t capacity)                                             = 0;
   virtual void        buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) = 0;
   virtual void        destroyAccel(AccelHandle accel)                                           = 0;
+  // What one holds on the device: a TLAS's instances and scratch with it, a micromap's inputs until they go
+  virtual uint64_t accelBytes(AccelHandle accel) const = 0;
+  // What the BLAS builds' shared scratch holds
+  virtual uint64_t buildScratchBytes() const = 0;
+  // What of everything alive the allocator couldn't place on the device: rays and shaders read it from
+  // system memory, over the bus
+  virtual uint64_t spilledBytes() const = 0;
 
   // ---------- Passes ----------
   virtual void dispatchDeform(const DeformDispatch& dispatch) = 0;

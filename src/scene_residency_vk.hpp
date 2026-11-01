@@ -164,6 +164,9 @@ public:
   AccelHandle createTlas(uint32_t capacity) override;
   void        buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) override;
   void        destroyAccel(AccelHandle accel) override;
+  uint64_t    accelBytes(AccelHandle accel) const override;
+  uint64_t    buildScratchBytes() const override { return m_blasScratch.bufferSize; }
+  uint64_t    spilledBytes() const override;
   // shaders/morph.comp.slang or skinning.comp.slang over the dispatch's ranges (the pipelines are
   // made at the first)
   void dispatchDeform(const DeformDispatch& dispatch) override;

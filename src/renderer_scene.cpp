@@ -405,6 +405,59 @@ void GltfRenderer::reportLoweredImages(uint32_t count, uint32_t largest)
     m_loweredSink(count, largest);
 }
 
+// A line in the log when what the scene holds has moved, so that a real scene's bytes can be read back
+void GltfRenderer::logMemoryLedger()
+{
+  constexpr uint64_t kWorthSaying = 32ull << 20;
+  const rs::MemoryLedger ledger   = memoryLedger();
+  const uint64_t         total    = ledger.total.total();
+  if((total > m_ledgerLogged ? total - m_ledgerLogged : m_ledgerLogged - total) < kWorthSaying)
+    return;
+  m_ledgerLogged = total;
+  const MemoryBudget budget = deviceMemoryBudget();
+  const auto         mb     = [](uint64_t bytes) { return unsigned(bytes >> 20); };
+  LOGI("[memory] scene %u MB: drawn %u, BVH %u, remake %u, working %u, unread %u, images %u (idle %u), scene %u; retiring %u; in system memory %u; driver %u of %u MB\n",
+       mb(total), mb(ledger.total.drawn), mb(ledger.total.bvh), mb(ledger.total.remake), mb(ledger.total.working), mb(ledger.total.unread),
+       mb(ledger.total.images), mb(ledger.idleImages), mb(ledger.total.scene), mb(ledger.retiring), mb(ledger.spilled), mb(budget.usage), mb(budget.budget));
+}
+
+// memoryFillMB: device memory nothing else uses, touched every frame so the driver has to keep it where it
+// is, for a measure of what the device does near and past its budget (scripts/memory-limit-check.py)
+void GltfRenderer::applyMemoryFill(VkCommandBuffer cmd)
+{
+  constexpr VkDeviceSize kBlock  = VkDeviceSize(256) << 20;
+  const size_t           blocks  = size_t(m_resources.settings.memoryFillMB) * (VkDeviceSize(1) << 20) / kBlock;
+  while(m_memoryFill.size() > blocks)
+  {
+    m_app->submitResourceFree([alloc = &m_resources.allocator, buffer = m_memoryFill.back()]() mutable { alloc->destroyBuffer(buffer); });
+    m_memoryFill.pop_back();
+  }
+  while(m_memoryFill.size() < blocks)
+  {
+    const auto   start = std::chrono::steady_clock::now();
+    nvvk::Buffer buffer;
+    const VkResult result = m_resources.allocator.createBuffer(buffer, kBlock, VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+    const double   ms     = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    VmaAllocationInfo info{};
+    if(result == VK_SUCCESS)
+      vmaGetAllocationInfo(m_resources.allocator, buffer.allocation, &info);
+    LOGI("[memory fill] block %zu: result %d in %.2f ms, memory type %u\n", m_memoryFill.size(), int(result), ms, info.memoryType);
+    if(result != VK_SUCCESS)
+    {
+      m_resources.settings.memoryFillMB = uint32_t(m_memoryFill.size() * (kBlock >> 20));
+      break;
+    }
+    m_memoryFill.push_back(buffer);
+  }
+  for(const nvvk::Buffer& buffer : m_memoryFill)
+    vkCmdFillBuffer(cmd, buffer.buffer, 0, 4, uint32_t(m_resources.frameCount));
+  // memoryFillWriteMB: blocks written whole each frame, in turn, so one the driver moved to system memory
+  // shows in the frame's time
+  if(!m_memoryFill.empty())
+    for(uint32_t i = 0; i < m_resources.settings.memoryFillWriteMB / (kBlock >> 20); i++)
+      vkCmdFillBuffer(cmd, m_memoryFill[m_memoryFillNext++ % m_memoryFill.size()].buffer, 0, VK_WHOLE_SIZE, uint32_t(m_resources.frameCount));
+}
+
 void GltfRenderer::watchMemory()
 {
   const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -412,6 +465,7 @@ void GltfRenderer::watchMemory()
   // compare. isAutomatedRun() can't say so: the app's renderer runs headless too.
   if(!m_loweredSink || !m_memoryBudgetExtension || !m_memoryWatch.due(now))
     return;
+  logMemoryLedger();
   rs::RetainedSceneVk&               gpu     = *m_resources.retainedGpu;
   const rs::Residency::LoweredImages lowered = gpu.residency().loweredImages();
   reportLoweredImages(lowered.count, lowered.largest);
@@ -449,6 +503,7 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   advanceHostClip();
   m_resources.retainedGpu->beginFrame();
   m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
+  applyMemoryFill(cmd);
   watchMemory();
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   if(result.drawListChanged)

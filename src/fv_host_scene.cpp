@@ -47,7 +47,7 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
         job(jobId, {{"label", label}, {"state", "done"}});
         return;
       }
-      if(const std::string refused = renderer->refuseGeometry(geometryBytes(*model)); !refused.empty())
+      if(const std::string refused = renderer->refuseGeometry(geometryBytes(*model, geometryPricing())); !refused.empty())
       {
         job(jobId, {{"label", label}, {"state", "failed"}, {"error", refused}});
         notice(utf8Of(pathOf(path).filename()) + " wasn't loaded: " + refused, "error");

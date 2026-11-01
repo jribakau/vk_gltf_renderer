@@ -592,13 +592,15 @@ void GltfRenderer::onUIRender()
 
 //--------------------------------------------------------------------------------------------------
 // Render the scene
-// What a pixel of the frame holds in GPU memory, for refuseFrameSize. Measured at 4K on 2026-10-25:
-// the rasterizer's G-buffers (RGBA8, RGBA32F, R32F, depth: 28 B), and under RTX those plus the DLSS
-// guides and output (72 B), OptiX's three images and four CUDA-shared float4 buffers (112 B) and
-// the hand-off's two targets (24 B), about 244 B of buffers the renderer owns, plus the upscaler's
-// own history, which the driver holds. Estimates: a refusal keeps the process alive, nothing more.
-constexpr uint32_t kRasterBytesPerPixel     = 48;
-constexpr uint32_t kPathTracerBytesPerPixel = 300;
+// What a pixel of the frame holds in GPU memory, for refuseFrameSize and for the room a change of mode
+// has to find: the driver's usage between 1080p and 4K, a session per mode (scripts/memory-limit-check.py,
+// RTX 4080, 2026-11-01). Both renderers keep their targets at the frame's size whichever draws, so
+// the rasterizer's holds the path tracer's too. DLSS is its guides and the upscaler's history, which the
+// driver holds.
+constexpr uint32_t kRasterBytesPerPixel     = 236;
+constexpr uint32_t kPathTracerBytesPerPixel = 209;
+constexpr uint32_t kDlssBytesPerPixel       = 143;
+constexpr uint32_t kMostBytesPerPixel       = kPathTracerBytesPerPixel + kDlssBytesPerPixel;
 
 GltfRenderer::MemoryBudget GltfRenderer::deviceMemoryBudget() const
 {
@@ -721,10 +723,12 @@ std::optional<int64_t> GltfRenderer::sceneHeadroom() const
   const uint64_t packed = m_frameSizePacked.load();
   const uint64_t pixels = (packed >> 32) * (packed & 0xffffffffu);
   const uint32_t perPixel = frameBytesPerPixel();
-  const uint64_t frameMore = perPixel < kPathTracerBytesPerPixel ? pixels * (kPathTracerBytesPerPixel - perPixel) : 0;
+  const uint64_t frameMore = perPixel < kMostBytesPerPixel ? pixels * (kMostBytesPerPixel - perPixel) : 0;
   const uint64_t budget = sceneBudget();
   const AllocatedMemory allocated = allocatedMemory();
-  const uint64_t        used      = b.usage - std::min<uint64_t>(b.usage, allocated.blocks - allocated.allocations);
+  uint64_t              used      = b.usage - std::min<uint64_t>(b.usage, allocated.blocks - allocated.allocations);
+  // memoryFillMB stands in for what the scene doesn't know of, so the scene comes in on top of it and spills
+  used -= std::min<uint64_t>(used, uint64_t(m_memoryFill.size()) << 28);
   return int64_t(budget) - int64_t(budget / 10 + frameMore + used);
 }
 
@@ -753,12 +757,45 @@ std::string GltfRenderer::refuseGeometry(uint64_t bytes, bool keepTextureDetail)
                      size(double(bytes)), size(double(std::max<int64_t>(room, 0))), double(b.usage) / 1e9, double(b.budget) / 1e9);
 }
 
+uint64_t GltfRenderer::blasBytes(uint64_t triangles, uint64_t vertices, bool refittable) const
+{
+  if(triangles == 0 || !m_app)
+    return 0;
+  VkAccelerationStructureGeometryKHR geometry{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+                                              .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR};
+  geometry.geometry.triangles = {.sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
+                                 .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
+                                 .vertexStride = sizeof(glm::vec3),
+                                 .maxVertex    = uint32_t(std::min<uint64_t>(vertices ? vertices - 1 : 0, UINT32_MAX)),
+                                 .indexType    = VK_INDEX_TYPE_UINT32};
+  const VkAccelerationStructureBuildGeometryInfoKHR info{
+      .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+      .type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+      .flags = VkBuildAccelerationStructureFlagsKHR(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR
+                                                    | (refittable ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR :
+                                                                    VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR)),
+      .mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+      .geometryCount = 1,
+      .pGeometries   = &geometry};
+  const uint32_t                           count = uint32_t(std::min<uint64_t>(triangles, UINT32_MAX));
+  VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+  vkGetAccelerationStructureBuildSizesKHR(m_app->getDevice(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &count, &sizes);
+  return refittable ? sizes.accelerationStructureSize : uint64_t(double(sizes.accelerationStructureSize) * rs::kCompactedBlasShare);
+}
+
+rs::MemoryLedger GltfRenderer::memoryLedger() const
+{
+  return m_resources.retainedGpu ? m_resources.retainedGpu->residency().ledger() : rs::MemoryLedger{};
+}
+
 void GltfRenderer::onRender(VkCommandBuffer cmd)
 {
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
   m_profilerTimeline->frameAdvance();
   // for refuseFrameSize on the stream's thread
-  m_frameBytesPerPixel.store(m_resources.settings.renderSystem == RenderingMode::ePathtracer ? kPathTracerBytesPerPixel : kRasterBytesPerPixel);
+  m_frameBytesPerPixel.store(m_resources.settings.renderSystem == RenderingMode::ePathtracer ?
+                                 kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0) :
+                                 kRasterBytesPerPixel);
   {
     const VkExtent2D s = renderSize();
     m_frameSizePacked.store(uint64_t(s.width) << 32 | s.height);

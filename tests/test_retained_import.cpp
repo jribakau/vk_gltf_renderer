@@ -22,7 +22,9 @@
 
 #include <gtest/gtest.h>
 
+#include "common/fake_gpu_backend.hpp"
 #include "common/golden_digest.hpp"
+#include "scene_residency.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -207,6 +209,26 @@ void expectDrawsAsRecorded(const tinygltf::Model& model, const std::string& what
 TEST(RetainedImport, DrawsAsRecorded)
 {
   expectDrawsAsRecorded(fixture(), "fixture");
+}
+
+// A model's price, read from its accessors before the import, is what the import's buffers hold once
+// resident, and it holds them once however many nodes draw them
+TEST(RetainedImport, AModelsPriceIsWhatItsImportHolds)
+{
+  const tinygltf::Model model = fixture();
+  rs::RetainedScene     scene;
+  rs::importGltf(scene, model, {.prop = 3});
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu);
+  residency.replace(scene);
+  uint64_t priced = 0;
+  for(const rs::MeshCounts& c : rs::modelMeshCounts(model))
+    priced += rs::meshBufferBytes(c);
+  uint64_t held = 0;
+  for(const rs::MemoryLedger::Mesh& m : residency.ledger().meshes)
+    held += m.bytes.total() - m.bytes.bvh;
+  EXPECT_GT(priced, 0u);
+  EXPECT_EQ(priced, held);
 }
 
 // Indices are read for their values: one past the vertices leaves its primitive out, with a notice, and

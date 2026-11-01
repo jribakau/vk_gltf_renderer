@@ -613,6 +613,40 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
   return r;
 }
 
+rs::MeshCounts meshCounts(const Mesh& m, bool gpuRefine, bool dazSkinning, bool dazOrder)
+{
+  rs::MeshCounts c;
+  if(!m.geo)
+    return c;
+  const mesh::BuiltMesh& geo = *m.geo;
+  c.vertices                 = geo.position.size() / 3;
+  c.triangles                = (geo.fullIndex.empty() ? geo.renderTris.size() : geo.fullIndex.size()) / 3;
+  c.normals                  = geo.normal.size() == c.vertices * 3;
+  c.uv0                      = geo.uv.size() == c.vertices * 2;
+  // what its materials ask isn't known yet: a garment's nearly always have normal maps, a strand's rarely do
+  c.tangents        = c.uv0 && !geo.ribbon;
+  c.skinned         = m.skinned() && m.skin.skinIndex.size() == c.vertices * 4;
+  c.eightInfluences = c.skinned && dazSkinning && m.skin.skinIndex8.size() == c.vertices * 8;
+  c.dualQuatShares  = c.skinned && dazSkinning && m.skin.dualQuatShare.size() == c.vertices;
+  if(gpuRefine && mesh::drawnFromCage(geo) && !geo.cagePositions.empty())
+  {
+    c.cageVertices = geo.cagePositions.size() / 3;
+    for(const subdiv::Stencils& s : geo.refinement->levels)
+      c.levels.push_back({.rows = uint64_t(s.rows()), .entries = s.col.size()});
+    c.refinedTriangles = geo.renderTris.size() / 3;
+    c.offsets          = geo.ribbon.has_value();
+    c.tangentTriangles = c.tangents ? c.triangles : 0;
+    c.posed            = dazOrder && c.skinned && m.cageSkin.start.size() == c.cageVertices + 1;
+    if(c.posed && dazSkinning)
+    {
+      for(size_t v = 0; v < c.cageVertices && !c.cageEightInfluences; v++)
+        c.cageEightInfluences = m.cageSkin.start[v + 1] - m.cageSkin.start[v] > 4;
+      c.cageDualQuatShares = m.cageSkin.dualQuatMap.size() == c.cageVertices;
+    }
+  }
+  return c;
+}
+
 std::vector<uint32_t> FigureFeed::tangentIndices(const rs::MeshRecord& record, const std::vector<bool>& groups) const
 {
   // one set of tangents over the triangles of every group that needs them (the build's primitives

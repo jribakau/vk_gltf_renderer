@@ -824,8 +824,11 @@ Four settings, none remembered:
   of what is resident (decoded again, the slots rewritten, the frame reset). It reads free room as the driver's usage less the
   allocator's free space inside its blocks, as `gpuAllocatedMB` in the frame profile shows. A scene that grew is fitted with
   nothing queued too. A load or wear is refused before it enters the scene (`GltfRenderer::refuseGeometry`) when its meshes,
-  at 300 bytes a triangle, won't fit even with every texture lowered. With a scene open it follows the budget both ways
-  (see "Textures following GPU memory").
+  priced from their counts in the residency's stream formats and the driver's BLAS sizes (`scene_price.hpp`), won't fit even
+  with every texture lowered. With a scene open it follows the budget both ways (see "Textures following GPU memory").
+  What is resident is in `Residency::ledger`, by who reads it and per mesh: the `[memory]` log line and `render.ledger`.
+  Past the budget nothing fails: the allocator's next choice of memory type is system memory, so an allocation takes
+  100 ms and more and stays there, and rays read it over the bus (`MemoryLedger::spilled`, `scripts/memory-limit-check.py`).
 - `residencyMinInstances` (256): the least instance capacity of the retained scene's tables and
   TLAS, which double from there. Start-up only (`--residencyMinInstances`), so not among the
   parameters a host can set (fv_parameter_filter.hpp).

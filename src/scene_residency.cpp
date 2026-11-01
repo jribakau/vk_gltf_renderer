@@ -266,14 +266,37 @@ void Residency::clear()
 
 void Residency::retireBuffer(BufferHandle buffer)
 {
-  if(buffer)
-    m_gpu.retire([&gpu = m_gpu, buffer] { gpu.destroyBuffer(buffer); });
+  if(!buffer)
+    return;
+  const uint64_t bytes = m_gpu.bufferSize(buffer);
+  *m_retiring += bytes;
+  m_gpu.retire([&gpu = m_gpu, buffer, retiring = m_retiring, bytes] {
+    gpu.destroyBuffer(buffer);
+    *retiring -= bytes;
+  });
 }
 
 void Residency::retireAccel(AccelHandle accel)
 {
-  if(accel)
-    m_gpu.retire([&gpu = m_gpu, accel] { gpu.destroyAccel(accel); });
+  if(!accel)
+    return;
+  const uint64_t bytes = m_gpu.accelBytes(accel);
+  *m_retiring += bytes;
+  m_gpu.retire([&gpu = m_gpu, accel, retiring = m_retiring, bytes] {
+    gpu.destroyAccel(accel);
+    *retiring -= bytes;
+  });
+}
+
+void Residency::retireImage(ImageHandle image, uint64_t bytes)
+{
+  if(!image)
+    return;
+  *m_retiring += bytes;
+  m_gpu.retire([&gpu = m_gpu, image, retiring = m_retiring, bytes] {
+    gpu.destroyImage(image);
+    *retiring -= bytes;
+  });
 }
 
 // What a mesh's shape is read from: a refined mesh's cage, as the drawn positions the CPU keeps fall
@@ -562,6 +585,7 @@ Residency::MeshGpu& Residency::acquireMesh(const RetainedScene& scene, MeshId id
   MeshGpu& gpu = m_meshes[id];
   if(const MeshRecord* record = scene.mesh(id))
   {
+    gpu.owner = record->owner;
     uploadStreams(*record, gpu);
     makeRefine(*record, gpu);
     if(gpu.refine)
@@ -909,8 +933,7 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
         if(auto it = m_decoded.find(*image.key); it != m_decoded.end() && it->second.lowered && it->second.users == 0)
         {
           m_graceBytes -= it->second.info.bytes;
-          if(it->second.image)
-            m_gpu.retire([&gpu = m_gpu, handle = it->second.image] { gpu.destroyImage(handle); });
+          retireImage(it->second.image, it->second.info.bytes);
           m_decoded.erase(it);
         }
       }
@@ -997,8 +1020,8 @@ void Residency::releaseImage(const ImageGpu& image)
       m_graceBytes += it->second.info.bytes;
     }
   }
-  else if(image.image)
-    m_gpu.retire([&gpu = m_gpu, handle = image.image] { gpu.destroyImage(handle); });
+  else
+    retireImage(image.image, image.info.bytes);
 }
 
 // The idle decodes, oldest first, destroyed at retire until the rest fit `budget`
@@ -1013,8 +1036,7 @@ void Residency::trimGrace(uint64_t budget)
     if(oldest == m_decoded.end())
       break;
     m_graceBytes -= oldest->second.info.bytes;
-    if(oldest->second.image)
-      m_gpu.retire([&gpu = m_gpu, handle = oldest->second.image] { gpu.destroyImage(handle); });
+    retireImage(oldest->second.image, oldest->second.info.bytes);
     m_decoded.erase(oldest);
   }
   if(m_graceBytes > budget)  // only idle decodes count, so this can't be
@@ -1219,8 +1241,7 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
       auto decoded = m_decoded.find(*q.key);
       if(decoded == m_decoded.end())
       {
-        if(images[i])
-          m_gpu.retire([&gpu = m_gpu, handle = images[i]] { gpu.destroyImage(handle); });
+        retireImage(images[i], infos[i].bytes);
         continue;
       }
       for(auto& [id, image] : m_images)
@@ -1237,8 +1258,8 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
         m_decoded.erase(decoded);
       else
       {
-        if(q.replaces && decoded->second.image)
-          m_gpu.retire([&gpu = m_gpu, handle = decoded->second.image] { gpu.destroyImage(handle); });
+        if(q.replaces)
+          retireImage(decoded->second.image, decoded->second.info.bytes);
         decoded->second.image   = images[i];
         decoded->second.info    = infos[i];
         decoded->second.lowered = q.lowered;
@@ -1248,15 +1269,15 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     }
     else if(auto image = m_images.find(q.image); image != m_images.end() && !image->second.key)
     {
-      if(q.replaces && image->second.image)
-        m_gpu.retire([&gpu = m_gpu, handle = image->second.image] { gpu.destroyImage(handle); });
+      if(q.replaces)
+        retireImage(image->second.image, image->second.info.bytes);
       image->second.image   = images[i];
       image->second.info    = infos[i];
       image->second.lowered = q.lowered;
       written.insert(q.image);
     }
-    else if(images[i])
-      m_gpu.retire([&gpu = m_gpu, handle = images[i]] { gpu.destroyImage(handle); });
+    else
+      retireImage(images[i], infos[i].bytes);
   }
   m_decodeQueue.clear();
   for(const auto& [slotKey, use] : m_textureSlots)
@@ -2680,6 +2701,93 @@ size_t Residency::liveBuffers() const
                         m_prevWorldTable})
     n += b ? 1 : 0;
   return n;
+}
+
+MemoryLedger Residency::ledger() const
+{
+  MemoryLedger out;
+  const auto   bytes = [&](BufferHandle b) { return b ? m_gpu.bufferSize(b) : 0; };
+  std::map<MeshId, size_t> entryOf;
+  std::set<MeshId>         posedDrawers, otherDrawers;
+  for(const auto& [key, d] : m_drawers)
+    (d.posed ? posedDrawers : otherDrawers).insert(key.second);
+  for(const auto& [id, mesh] : m_meshes)
+  {
+    entryOf[id] = out.meshes.size();
+    MemoryLedger::Mesh& entry = out.meshes.emplace_back();
+    entry.mesh                = id;
+    entry.prop                = mesh.owner.prop;
+    entry.local               = mesh.owner.local;
+    GpuBytes& b               = entry.bytes;
+    // the mesh's own streams: drawn where a prim draws them, what a drawer deforms from where one reads
+    // them, and read by nothing where every drawer makes its streams from the posed cage
+    bool drawnItself = false;
+    for(int32_t p : mesh.prims)
+      drawnItself |= p >= 0;
+    const bool readByADrawer = otherDrawers.count(id) || !posedDrawers.count(id);
+    uint64_t&  ownStreams    = drawnItself ? b.drawn : readByADrawer ? b.remake : b.unread;
+    for(BufferHandle s : {mesh.positions, mesh.normals, mesh.tangents})
+      ownStreams += bytes(s);
+    for(BufferHandle s : {mesh.uv0, mesh.uv1, mesh.colors})
+      b.drawn += bytes(s);
+    // what deforms it: the drawn vertices' skin is the posed cage's to do when every drawer poses
+    uint64_t& drawnSkin = readByADrawer ? b.remake : b.unread;
+    for(BufferHandle s : {mesh.joints, mesh.weights, mesh.joints1, mesh.weights1, mesh.dualQuatShares})
+      drawnSkin += bytes(s);
+    for(BufferHandle s : {mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.positionDeltas, mesh.normalDeltas, mesh.tangentDeltas})
+      b.remake += bytes(s);
+    b.working += bytes(mesh.prevPositions);
+    if(mesh.refine)
+    {
+      for(BufferHandle s : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles, mesh.refine->normalStart, mesh.refine->normalTriangles,
+                            mesh.refine->offsets, mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners})
+        b.remake += bytes(s);
+      // the refined base's way there, which only the mesh's own streams come from
+      uint64_t& baseLevels = drawnItself || readByADrawer ? b.working : b.unread;
+      baseLevels += bytes(mesh.refine->refinedNormals);
+      for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
+      {
+        b.remake += bytes(l.start) + bytes(l.columns) + bytes(l.weights);
+        baseLevels += bytes(l.out);
+      }
+    }
+  }
+  for(const auto& [key, d] : m_drawers)
+    if(auto entry = entryOf.find(key.second); entry != entryOf.end())
+    {
+      GpuBytes& b = out.meshes[entry->second].bytes;
+      for(BufferHandle s : {d.positions, d.normals, d.tangents})
+        b.drawn += bytes(s);
+      for(BufferHandle s : {d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
+        b.working += bytes(s);
+      for(BufferHandle s : d.posedBuffers())
+        b.working += bytes(s);
+    }
+  for(const std::optional<Prim>& p : m_prims)
+    if(p)
+      if(auto entry = entryOf.find(p->mesh); entry != entryOf.end())
+      {
+        MemoryLedger::Mesh& m = out.meshes[entry->second];
+        m.triangles += p->indexCount / 3;
+        m.bytes.drawn += bytes(p->indices);
+        m.bytes.bvh += bytes(p->micromapIndices) + (p->blas ? m_gpu.accelBytes(p->blas) : 0);
+      }
+  for(const MemoryLedger::Mesh& m : out.meshes)
+    out.total += m.bytes;
+  for(const auto& [key, mm] : m_micromaps)
+    out.total.bvh += m_gpu.accelBytes(mm.accel);
+  for(const auto& [key, decoded] : m_decoded)
+    out.total.images += decoded.image ? decoded.info.bytes : 0;
+  for(const auto& [id, image] : m_images)
+    out.total.images += !image.key && image.image ? image.info.bytes : 0;
+  out.idleImages = m_graceBytes;
+  for(BufferHandle s : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable, m_emissiveTable, m_emissiveGroupTable,
+                        m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable})
+    out.total.scene += bytes(s);
+  out.total.scene += (m_tlas ? m_gpu.accelBytes(m_tlas) : 0) + m_gpu.buildScratchBytes();
+  out.retiring = *m_retiring;
+  out.spilled  = m_gpu.spilledBytes();
+  return out;
 }
 
 size_t Residency::liveImages() const
