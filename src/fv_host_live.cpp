@@ -106,6 +106,7 @@ void FvHost::Impl::watchSystemMemory()
           live.insert(id);
     renderer->setLiveMeshes(std::move(live));
   }
+  offerItemDetail();
   const fv::io::SystemMemory memory = fv::io::systemMemory();
   if(!memory.known)
     return;

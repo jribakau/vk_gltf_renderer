@@ -410,7 +410,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
                     without = w.reduced;
                 }
             if(!without.empty())
-              notice(utf8Of(pathOf(rel).stem()) + " came in with " + without + ", to fit GPU memory. Free some and put it on again for all of it.");
+              notice(utf8Of(pathOf(rel).stem()) + " came in with " + without + ", to fit GPU memory. The rest comes back by itself when there is room.");
             // hair left for a simulation to bring down (strandsUnsettled) comes down as it goes on,
             // though the figure's dForce is off until asked for; a scene file says for itself
             if(step && target->dforce && !target->dforce->enabled() && target->fig->fallsByItself(r.items))
@@ -615,6 +615,104 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
     });
   });
   return jobId;
+}
+
+void FvHost::Impl::offerItemDetail()
+{
+  rs::ItemDetail detail;
+  detail.making = detailMaking;
+  detailItems.clear();
+  if(!detailMaking && std::chrono::steady_clock::now() >= detailAgainAt)
+  {
+    int subdivision = 0;
+    {
+      std::lock_guard lock(settingsMutex);
+      subdivision = settings.subdivision;
+    }
+    const std::shared_ptr<Prop> selected = view ? findProp(view->selectedProp()) : nullptr;
+    for(const std::shared_ptr<Prop>& p : props)
+    {
+      if(!p->figure || !p->figure->feed || p->figure->wearsRunning > 0)
+        continue;
+      const fv::SceneGraph& scene = p->figure->fig->loaded.scene;
+      for(const fv::WornItem& w : p->figure->fig->items)
+      {
+        if(!w.visible)
+          continue;
+        const fv::WearQuality now = fv::qualityOf(scene, w.meshes);
+        const DetailItem      item{p->figure, w.id, fv::oneStepDown(now), fv::oneStepUp(now, subdivision)};
+        const uint64_t        key = ++detailKeys;
+        rs::ItemDetail::Down  down{.item = key, .name = w.label, .selected = p == selected, .pinned = w.keepFull};
+        uint64_t              upBytes = 0;
+        for(int m : w.meshes)
+        {
+          if(m < 0 || m >= int(scene.meshes.size()))
+            continue;
+          const fv::Mesh& mesh = scene.meshes[size_t(m)];
+          if(const float share = fv::shareAt(mesh, item.lower); share < 1)
+            if(const rs::MeshId id = p->figure->feed->meshOf(m); !id.isNone())
+              down.meshes.emplace_back(id, share);
+          if(const float share = fv::shareAt(mesh, item.higher); share > 1)
+            upBytes += uint64_t(double(geometryBytes(scene, std::vector<int>{m}, *renderer)) * (double(share) - 1));
+        }
+        if(!down.meshes.empty())
+          detail.down.push_back(std::move(down));
+        if(upBytes > 0)
+          detail.up.push_back({key, upBytes});
+        detailItems.emplace(key, item);
+      }
+    }
+  }
+  renderer->setItemDetail(std::move(detail));
+}
+
+void FvHost::Impl::stepItemDetail(uint64_t key, bool up)
+{
+  const auto found = detailItems.find(key);
+  if(found == detailItems.end() || detailMaking)
+    return;
+  const std::shared_ptr<Loaded> f = found->second.figure.lock();
+  if(!f || !inScene(f) || f->wearsRunning > 0)
+    return;
+  auto remade = f->fig->remakeInputs(found->second.item, up ? found->second.higher : found->second.lower);
+  if(!remade)
+    return;
+  detailMaking = true;
+  loaders.spawn([this, weak = std::weak_ptr<Loaded>(f), remade, up, flipped = f->texturesFlipped] {
+    bool built = true;
+    try
+    {
+      fv::timing::Scope t(up ? "an item made finer" : "an item made coarser");
+      fv::Figure::buildRemade(*remade);
+      // on this thread, or the first feed would measure them on the frame
+      fv::build::measureStrands(remade->scene, flipped);
+    }
+    catch(const std::exception& e)
+    {
+      LOGW("[fv] an item's detail: %s\n", e.what());
+      built = false;
+    }
+    post([this, weak, remade, up, built] {
+      detailMaking = false;
+      if(!built)
+        detailAgainAt = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      const std::shared_ptr<Loaded> f = weak.lock();
+      if(!built || !f || !inScene(f))
+        return;
+      int subdivision = 0;
+      {
+        std::lock_guard lock(settingsMutex);
+        subdivision = settings.subdivision;
+      }
+      if(!f->fig->commitRemade(*remade, subdivision))
+        return;
+      publishWardrobe(*f);
+      if(f->feed)
+        feedWhole(*f);
+      if(const fv::WornItem* w = wornItem(*f->fig, remade->item); w && !up && !std::exchange(detailNoticed, true))
+        notice("GPU memory is nearly full, so " + w->label + " is drawn with " + w->reduced + " for now. Items come back by themselves when there is room.", "info");
+    });
+  });
 }
 
 Json FvHost::Impl::itemRecord(const Loaded& f, const fv::WornItem& w) const

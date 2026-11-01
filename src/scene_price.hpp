@@ -81,6 +81,28 @@ struct MemoryLedger
 
 // What a mesh will hold, in the counts that decide it. A refined mesh's drawn vertices are made on the
 // GPU from its cage through `levels` of stencils (MeshRecord::refine).
+// A host's worn items as the Fit sees them: what could be made a step coarser or finer. The host makes them,
+// as new records, so all the Fit does is ask (docs/scene-memory-plan.md).
+struct ItemDetail
+{
+  struct Down
+  {
+    uint64_t                              item = 0;  // the host's own
+    std::string                           name;
+    std::vector<std::pair<MeshId, float>> meshes;  // each with the share of what it holds it would keep
+    bool                                  selected = false;  // goes after the others
+    bool                                  pinned   = false;  // marked Keep full: after every texture
+  };
+  struct Up
+  {
+    uint64_t item  = 0;
+    uint64_t bytes = 0;  // what a step up would take
+  };
+  std::vector<Down> down;
+  std::vector<Up>   up;
+  bool              making = false;  // one is being made: what was asked hasn't freed anything yet
+};
+
 struct MeshCounts
 {
   uint64_t vertices = 0, triangles = 0;

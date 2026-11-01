@@ -254,6 +254,44 @@ TEST(MemoryPlan, TheCheapestLossGoesFirst)
   EXPECT_EQ(images[1].extent(), 256u);
 }
 
+// A worn item's detail goes once textures are down to where they'd start to show, before they go further; one
+// marked Keep full after every texture
+TEST(MemoryPlan, DetailGoesBeforeTexturesWouldShow)
+{
+  const uint64_t              top = 4096ull * 4096 * 4;
+  const std::vector<uint64_t> detail{100, 50};
+  const auto                  plan = [&](uint64_t wanted, size_t last, std::vector<rs::ImageFit>& images) {
+    return rs::planToFit(wanted, {.images = images, .leastExtent = 256, .detail = detail, .detailLast = last, .detailAfter = 2048});
+  };
+  std::vector<rs::ImageFit> images{fitOf(4096), fitOf(2048)};
+  rs::FitPlan               got = plan(1, 0, images);
+  EXPECT_TRUE(got.detail.empty());
+  EXPECT_EQ(images[0].extent(), 2048u);
+
+  images = {fitOf(4096), fitOf(2048)};
+  got    = plan(top + 1, 0, images);
+  EXPECT_EQ(got.detail, (std::vector<size_t>{0}));
+  EXPECT_EQ(got.detailBytes, 100u);
+  EXPECT_EQ(got.freed(), top + 100);
+  EXPECT_EQ(images[1].extent(), 2048u);
+
+  images = {fitOf(4096), fitOf(2048)};
+  got    = plan(top + 151, 0, images);
+  EXPECT_EQ(got.detail, (std::vector<size_t>{0, 1}));
+  EXPECT_LT(std::min(images[0].extent(), images[1].extent()), 2048u) << "then textures go on";
+
+  // Keep full waits for every texture
+  images = {fitOf(4096), fitOf(2048)};
+  got    = plan(top + 101, 1, images);
+  EXPECT_EQ(got.detail, (std::vector<size_t>{0}));
+  EXPECT_LT(std::min(images[0].extent(), images[1].extent()), 2048u);
+  images = {fitOf(4096), fitOf(2048, true)};
+  got    = plan(UINT64_MAX / 2, 1, images);
+  EXPECT_EQ(got.detail, (std::vector<size_t>{0, 1}));
+  EXPECT_EQ(images[0].extent(), 256u);
+  EXPECT_EQ(images[1].extent(), 256u);
+}
+
 // Asked for nothing, it does nothing; asked again for what it has done, it goes on from there; asked for
 // more it does what it would have done for less, and more
 TEST(MemoryPlan, IsMonotonicAndGoesOnFromWhereItIs)

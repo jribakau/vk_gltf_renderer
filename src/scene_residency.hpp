@@ -113,6 +113,8 @@ struct ResidencyOptions
   // The triangles of what is new made resident in one sync; the first always comes, however large. Every BVH a sync
   // asks for is built in the frame's one submission, and a few large hairs at once come near what a driver allows one.
   uint64_t arrivalTriangles = 16'000'000;
+  // A worn item's step down in detail isn't worth a new record for less than this: a tear, an eyelash
+  uint64_t leastDetailStep = uint64_t(32) << 20;
   // blasRefitsBeforeRebuild: a BLAS refitted this many times since its build is built again in place
   // of the next refit, as a refit keeps the build's tree however far the vertices move (0: never)
   uint32_t refitsBeforeRebuild = 0;
@@ -120,8 +122,9 @@ struct ResidencyOptions
   // and replaced by its compacted copy once the size is known; a vertex edit builds it again
   // refittable
   bool compactStatic = false;
-  // A mesh settles only when nothing has written it for this many frames: a clip or a drag rules it out
-  uint64_t settleQuietFrames = 300;
+  // A mesh settles only when nothing has written it for this many frames: a clip or a drag rules it out, and a
+  // pause in one wakes it again at little cost. As long as this, what would show waits for what is about to settle.
+  uint64_t settleQuietFrames = 60;
 };
 
 // What makes two decodes the same image: the file (its path, size and write time) or the bytes or
@@ -385,7 +388,16 @@ public:
   std::string nextToGo(const RetainedScene& scene) const;
   // The next sync decodes images lowered earlier a level or more larger, as far as `room` bytes go
   // (raiseToFit). How many it will.
-  uint32_t raiseImages(const RetainedScene& scene, uint64_t room);
+  // Not past `upToExtent`, when given: details come back before the textures above that (kDetailAfterExtent).
+  uint32_t raiseImages(const RetainedScene& scene, uint64_t room, uint32_t upToExtent = 0);
+  // What can move of the host's worn items. Between syncs.
+  void setItemDetail(ItemDetail detail);
+  // The items the Fit has asked to come down a step since the last call
+  std::vector<uint64_t> takeDetailAsks() { return std::exchange(m_detailAsks, {}); }
+  // The first whose step up fits `room`, asked only once
+  std::optional<ItemDetail::Up> nextDetailUp(uint64_t room);
+  // Whether an item is below all it could be
+  bool detailBelowFull() const { return !m_detail.up.empty(); }
   uint64_t    graceBytes() const { return m_graceBytes; }
   // What is resident now, in the bytes the backend holds, and what is let go of and not freed yet
   MemoryLedger ledger() const;
@@ -635,6 +647,21 @@ private:
   ResidencyOptions m_options;
   std::set<MeshId> m_parked, m_failedMeshes, m_noticedParked, m_arriving;
   void             holdBackArrivals(const RetainedScene& scene, std::vector<DrawItem>& items);
+  // setItemDetail's, what has been asked and not reached the host, and what those asked will free
+  ItemDetail            m_detail;
+  std::vector<uint64_t> m_detailAsks;
+  uint64_t              m_detailComing = 0;
+  struct DetailStep
+  {
+    const ItemDetail::Down* down  = nullptr;
+    uint64_t                bytes = 0;
+  };
+  // In the order they go, and how many at the end are Keep full
+  std::vector<DetailStep> detailSteps(size_t& last) const;
+  // Whether something would settle had it been quiet for longer (what just came, a pause in a drag)
+  bool settlingSoon() const;
+  // Since when what would show has waited for that; a clip, which never goes quiet, holds it up only once
+  std::optional<uint64_t> m_heldForSettleSince;
   bool             m_parkedChanged = false;  // since the last sync
   // the bytes retired and not freed yet; shared with the closures, which may outlive a clear()
   std::shared_ptr<uint64_t> m_retiring = std::make_shared<uint64_t>(0);

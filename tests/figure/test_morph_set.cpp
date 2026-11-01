@@ -351,6 +351,65 @@ TEST(FigureMorphSet, DriverRunsAgainWhileLoadsKeepArriving)
   EXPECT_EQ(driver.calls, 2);
 }
 
+// A mesh made again over its cage (mesh::remade): its cage stays where its morphs have it, and a catch-up draws
+// them at its new level, each target's drawn deltas made again for it.
+TEST(FigureMorphSet, AMeshMadeAgainTakesItsMorphsAtItsNewLevel)
+{
+  const auto input = [](int level) {
+    fv::mesh::MeshInput in;
+    in.level              = level;
+    in.subdivisionSurface = true;
+    in.materialCount      = 1;
+    for(int j = 0; j <= 6; j++)
+      for(int i = 0; i <= 6; i++)
+        for(float v : {float(i), float(j), float(std::sin(double(i)) * std::cos(double(j)))})
+          in.positions.push_back(v);
+    in.polyStart.push_back(0);
+    for(int j = 0; j < 6; j++)
+      for(int i = 0; i < 6; i++)
+      {
+        const int a = j * 7 + i;
+        for(int v : {a, a + 1, a + 8, a + 7})
+          in.polyVerts.push_back(v);
+        in.polyMaterial.push_back(0);
+        in.polyStart.push_back(int32_t(in.polyVerts.size()));
+      }
+    return in;
+  };
+  const std::vector<int32_t> verts{8, 9, 16};
+  const std::vector<float>   deltas{0, 0, 1, 0.5f, 0, 0.25f, 0, -0.5f, 0};
+
+  auto                geo = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(input(2)));
+  fv::mesh::BuiltMesh reference = fv::mesh::build(input(1));
+  ASSERT_NE(geo->source, nullptr);
+  const auto          t = targetOf(*geo, verts, deltas);
+  fv::morph::MorphSet set([&](int) { return geo.get(); }), off([&](int) { return &reference; });
+  set.cageOnly = [](int) { return true; };
+  set.addTarget("bump", 0, t);
+  off.addTarget("bump", 0, targetOf(reference, verts, deltas));
+  set.takeChanges();
+  set.set("bump", 0.75);
+  off.set("bump", 0.75);
+  set.takeChanges();
+  off.takeChanges();
+  set.catchUp();  // drawn deltas made at level 2, to show they don't stay
+  set.takeChanges();
+  const size_t             finer = t->drawnIfMade()->indices.size();
+  const std::vector<float> cage  = set.morphedCage(0);
+
+  geo = fv::mesh::remade(*geo, geo->cagePositions, 1, 1);
+  set.meshRemade(0);
+  EXPECT_EQ(geo->position.size(), reference.position.size());
+  EXPECT_EQ(set.morphedCage(0), cage);
+  set.catchUp();
+  const auto caught = set.takeChanges();
+  ASSERT_EQ(caught.size(), 1u);
+  EXPECT_TRUE(caught[0].caughtUp);
+  EXPECT_LT(t->drawnIfMade()->indices.size(), finer);
+  EXPECT_LT(worst(geo->position, reference.position), 1e-6);
+  EXPECT_LT(worst(geo->normal, reference.normal), 1e-6);
+}
+
 // gpu-figures-plan.md F5: a cageOnly mesh's dial moves its cage alone, and its target never refines
 // its drawn deltas; catchUp() (an export's) makes them and writes the drawn vertices a flush with the
 // path off would have.

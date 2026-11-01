@@ -220,7 +220,7 @@ TEST(Wardrobe, AMorphOnTheBodyMovesTheItemThatFollowsIt)
   f.mesh    = 1;
   f.source  = 0;
   f.project = [binding, body = meshes[0], item = meshes[1], scratch = std::make_shared<std::vector<float>>()](const fv::mesh::RenderTarget& t) {
-    return fv::wardrobe::projectTarget(*binding, nullptr, *body, *item, t, *scratch);
+    return fv::wardrobe::projectTarget(*binding, nullptr, *body, item->dsonVertexCount, t, *scratch);
   };
   morphs.addFollower(f);
   // the drawn vertex of the item's cage vertex (1, 1)
@@ -263,7 +263,7 @@ fv::morph::Follower holdingLift(const std::vector<std::shared_ptr<fv::mesh::Buil
       fv::wardrobe::bindToSurface(meshes[0]->cagePositions, meshes[0]->dsonTris, meshes[1]->cagePositions));
   f.project = [binding, body = meshes[0], item = meshes[1]](const fv::mesh::RenderTarget& t) {
     std::vector<float> scratch;
-    return fv::wardrobe::projectTarget(*binding, nullptr, *body, *item, t, scratch);
+    return fv::wardrobe::projectTarget(*binding, nullptr, *body, item->dsonVertexCount, t, scratch);
   };
   return f;
 }
@@ -560,6 +560,109 @@ TEST(Wardrobe, AHairLoadedWithAShareOfItsStrandsIsAsWideAsItHasToBe)
   EXPECT_NEAR(widest(drawn), widest(allOfIt) * 2, 1e-5f);
 }
 
+// A hair made again over its cage: the same cage, a share of its strands, each as much wider, and all of it
+// again from that as it was.
+TEST(Wardrobe, AHairMadeAgainIsAsWideAsItsShareHasToBe)
+{
+  fv::mesh::MeshInput in;
+  in.materialCount = 1;
+  fv::mesh::Lines lines;
+  lines.start.push_back(0);
+  for(int line = 0; line < 32; line++)
+  {
+    for(int point = 0; point < 4; point++)
+    {
+      lines.verts.push_back(int32_t(in.positions.size() / 3));
+      for(float v : {float(line), float(point), 0.f})
+        in.positions.push_back(v);
+    }
+    lines.start.push_back(int32_t(lines.verts.size()));
+    lines.material.push_back(0);
+  }
+  in.lines = lines;
+  fv::mesh::BuiltMesh whole = fv::mesh::build(in);
+  fv::mesh::widenRibbons(whole, {{0.1, 0.05}});
+  const auto widest = [](const fv::mesh::BuiltMesh& g) {
+    float most = 0;
+    for(size_t i = 0; i + 2 < g.ribbon->offsets.size(); i += 3)
+      most = std::max(most, std::hypot(g.ribbon->offsets[i], g.ribbon->offsets[i + 1], g.ribbon->offsets[i + 2]));
+    return most;
+  };
+  ASSERT_GT(widest(whole), 0.f);
+
+  const auto half = fv::mesh::remade(whole, whole.cagePositions, 0, 0.5f);
+  ASSERT_NE(half, nullptr);
+  EXPECT_NEAR(double(half->fullIndex.size()), double(whole.fullIndex.size()) / 2, double(whole.fullIndex.size()) / 8);
+  EXPECT_EQ(half->dsonVertexCount, whole.dsonVertexCount);
+  EXPECT_EQ(half->cageLineVerts, whole.cageLineVerts);
+  EXPECT_EQ(half->source->lines->keep, 0.5f);
+  EXPECT_NEAR(widest(*half), widest(whole) * 2, 1e-5f);
+  EXPECT_TRUE(fv::mesh::drawnFromCage(*half));
+
+  const auto again = fv::mesh::remade(*half, half->cagePositions, 0, 1.f);
+  EXPECT_EQ(again->fullIndex, whole.fullIndex);
+  EXPECT_EQ(again->position, whole.position);
+  EXPECT_EQ(again->ribbon->offsets, whole.ribbon->offsets);
+
+  // over the cage it has now, as one built there would be
+  std::vector<float> moved = whole.cagePositions;
+  for(size_t i = 1; i < moved.size(); i += 3)
+    moved[i] += 2;
+  const auto           there = fv::mesh::remade(whole, moved, 0, 1.f);
+  fv::mesh::MeshInput  atMoved = in;
+  atMoved.positions           = moved;
+  fv::mesh::BuiltMesh  fresh   = fv::mesh::build(atMoved);
+  fv::mesh::widenRibbons(fresh, {{0.1, 0.05}});
+  EXPECT_EQ(there->position, fresh.position);
+
+  // what has nothing to be finer or coarser in isn't made again
+  fv::mesh::MeshInput flat;
+  flat.positions = {0, 0, 0, 1, 0, 0, 1, 1, 0};
+  flat.polyStart = {0, 3};
+  flat.polyVerts = {0, 1, 2};
+  flat.polyMaterial = {0};
+  const fv::mesh::BuiltMesh plain = fv::mesh::build(flat);
+  EXPECT_EQ(plain.source, nullptr);
+  EXPECT_EQ(fv::mesh::remade(plain, plain.cagePositions, 1, 1.f), nullptr);
+}
+
+// One step up undoes one step down, as far as there is to go; a mesh says what share a quality would draw.
+TEST(Wardrobe, AnItemsQualityGoesUpAsItCameDown)
+{
+  using fv::WearQuality;
+  const auto at = [](const WearQuality& q, int subdivision, float keep) { return q.subdivision == subdivision && q.strandKeep == keep; };
+  EXPECT_TRUE(at(fv::oneStepUp({0, 0.25f}, 2), 1, 0.5f));
+  EXPECT_TRUE(at(fv::oneStepUp({1, 0.5f}, 2), 2, 1.f));
+  EXPECT_TRUE(at(fv::oneStepUp({2, 1.f}, 2), 2, 1.f));
+  EXPECT_TRUE(at(fv::oneStepUp({2, 1.f}, 1), 2, 1.f)) << "a setting lowered since asks nothing of what is finer";
+
+  fv::Mesh smooth, strands, plain;
+  smooth.geo                     = std::make_shared<fv::mesh::BuiltMesh>();
+  smooth.geo->subdivisionSurface = true;
+  auto smoothInput               = std::make_shared<fv::mesh::MeshInput>();
+  smoothInput->subdivisionSurface = true;
+  smoothInput->level             = 2;
+  smooth.geo->source             = smoothInput;
+  strands.geo                    = std::make_shared<fv::mesh::BuiltMesh>();
+  auto strandInput               = std::make_shared<fv::mesh::MeshInput>();
+  strandInput->lines.emplace();
+  strandInput->lines->keep = 0.5f;
+  strands.geo->source      = strandInput;
+  plain.geo                = std::make_shared<fv::mesh::BuiltMesh>();
+  EXPECT_FLOAT_EQ(fv::shareAt(smooth, {1, 1.f}), 0.25f);
+  EXPECT_FLOAT_EQ(fv::shareAt(smooth, {2, 0.25f}), 1.f);
+  EXPECT_FLOAT_EQ(fv::shareAt(strands, {0, 0.25f}), 0.5f);
+  EXPECT_FLOAT_EQ(fv::shareAt(strands, {0, 1.f}), 2.f);
+  EXPECT_FLOAT_EQ(fv::shareAt(plain, {0, 0.25f}), 1.f);
+
+  fv::SceneGraph scene;
+  scene.meshes = {smooth, strands, plain};
+  EXPECT_TRUE(at(fv::qualityOf(scene, {0}), 2, 1.f));
+  EXPECT_TRUE(at(fv::qualityOf(scene, {1}), 0, 0.5f));
+  EXPECT_TRUE(at(fv::qualityOf(scene, {2}), 0, 1.f));
+  EXPECT_TRUE(at(fv::qualityOf(scene, {0, 1, 2}), 2, 0.5f));
+}
+
 // A wearable goes down a step at a time, as far as each of its meshes has anywhere to go, and says what
 // it came in without only where it has that to lose.
 TEST(Wardrobe, AWearThatDoesNotFitGoesDownAStepAtATime)
@@ -725,7 +828,7 @@ TEST(Wardrobe, AProjectionOntoALongItemIsTheOneThreadsResultBitForBit)
   }
 
   std::vector<float> scratchNow;
-  const auto         got = fv::wardrobe::projectTarget(binding, nullptr, body, item, bodyTarget, scratchNow);
+  const auto         got = fv::wardrobe::projectTarget(binding, nullptr, body, item.dsonVertexCount, bodyTarget, scratchNow);
   ASSERT_TRUE(got);
   ASSERT_GT(moved.verts.size(), 40000u);
   const auto same = [](const auto& a, const auto& b) { return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0; };
@@ -760,7 +863,7 @@ TEST(Wardrobe, AFollowerWithProjectionsMadeAheadMovesLikeOneProjectingAtCommit)
         fv::wardrobe::bindToSurface(meshes[0]->cagePositions, meshes[0]->dsonTris, meshes[1]->cagePositions));
     const auto project = [binding, body = meshes[0], item = meshes[1]](const fv::mesh::RenderTarget& t) {
       std::vector<float> scratch;
-      return fv::wardrobe::projectTarget(*binding, nullptr, *body, *item, t, scratch);
+      return fv::wardrobe::projectTarget(*binding, nullptr, *body, item->dsonVertexCount, t, scratch);
     };
     fv::morph::Follower f;
     f.mesh   = 1;
@@ -823,7 +926,7 @@ TEST(Wardrobe, ProjectionsMadeSideBySideMoveTheItemsAsOneAtATime)
       f.project = [binding, body = meshes[0], item = meshes[size_t(k) + 1], n = &counted[k]](const fv::mesh::RenderTarget& t) {
         (*n)++;
         std::vector<float> scratch;
-        return fv::wardrobe::projectTarget(*binding, nullptr, *body, *item, t, scratch);
+        return fv::wardrobe::projectTarget(*binding, nullptr, *body, item->dsonVertexCount, t, scratch);
       };
       morphs.addFollower(f);
     };

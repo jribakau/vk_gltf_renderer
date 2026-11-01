@@ -943,6 +943,21 @@ void MorphSet::catchUp()
   catchUp([](int) { return true; });
 }
 
+void MorphSet::meshRemade(int mesh)
+{
+  const auto it = m_cpu.find(mesh);
+  if(it == m_cpu.end())
+    return;
+  MeshState& st = it->second;
+  std::vector<float>().swap(st.basePos);
+  std::vector<float>().swap(st.baseNrm);
+  std::vector<uint8_t>().swap(st.mark);
+  st.welder.reset();
+  st.applied.clear();
+  st.sinceRebuild = 0;
+  st.behind       = !st.active.empty();
+}
+
 void MorphSet::catchUp(const std::function<bool(int mesh)>& which)
 {
   std::vector<std::pair<int, MeshState*>> behind;

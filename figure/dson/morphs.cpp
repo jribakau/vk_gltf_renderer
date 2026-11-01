@@ -71,12 +71,12 @@ const MeshRef* targetFor(const Json& mod, const std::string& file, const std::ve
     if(list)
     {
       for(size_t i : *list)
-        if(meshes[i].geo->dsonVertexCount == n)
+        if(meshes[i].cageVertices == n)
           return &meshes[i];
       return nullptr;
     }
     for(const MeshRef& m : meshes)
-      if(m.geo->dsonVertexCount == n)
+      if(m.cageVertices == n)
         return &m;
     return nullptr;
   };
@@ -484,7 +484,7 @@ std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, con
   std::vector<MorphDef> out;
   for(const Found& f : found)
   {
-    auto target = std::make_shared<mesh::RenderTarget>(mesh::target(*f.fm->geo, f.deltas));
+    auto target = std::make_shared<mesh::RenderTarget>(mesh::target(f.fm->cageVertices, f.deltas));
     if(!target->moves())
       continue;
     const Json* ch = get(f.mod, "channel");
@@ -512,7 +512,7 @@ std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, con
     for(const MeshRef::Shell& s : f.fm->shells)
     {
       part.mesh   = s.mesh;
-      part.target = std::make_shared<mesh::RenderTarget>(mesh::target(*s.geo, f.deltas));
+      part.target = std::make_shared<mesh::RenderTarget>(mesh::target(s.cageVertices, f.deltas));
       def.parts.push_back(part);
     }
     out.push_back(std::move(def));

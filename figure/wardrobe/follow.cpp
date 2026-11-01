@@ -69,7 +69,7 @@ std::optional<Graft> parseGraft(const dson::Doc& doc, const dson::Json& geo)
   return out;
 }
 
-dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rigidity, const mesh::BuiltMesh& body, const mesh::BuiltMesh& item,
+dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rigidity, const mesh::BuiltMesh& body, int itemVertices,
                               const mesh::RenderTarget& t, std::vector<float>& scratch)
 {
   const auto& indices = t.cageIndices;
@@ -104,7 +104,7 @@ dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rig
   step.emplace("project: item verts");
   // a long item (a hair's strands) is worked a chunk at a time side by side; each vertex is its own
   constexpr size_t   kChunk = 32768;
-  const size_t       nv = size_t(item.dsonVertexCount), chunks = (nv + kChunk - 1) / kChunk;
+  const size_t       nv = size_t(itemVertices), chunks = (nv + kChunk - 1) / kChunk;
   std::vector<float> out(nv * 3);
   jobs::parallelFor(nv, kChunk, [&](size_t begin, size_t end) {
     for(size_t v = begin; v < end; v++)
@@ -161,7 +161,9 @@ dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rig
       }
   });
   step.emplace("project: target");
-  auto target = std::make_shared<mesh::RenderTarget>(mesh::target(item, std::move(cageIndices), std::move(cageDeltas)));
+  auto target         = std::make_shared<mesh::RenderTarget>();
+  target->cageIndices = std::move(cageIndices);
+  target->cageDeltas  = std::move(cageDeltas);
   if(!target->moves())
     return nullptr;
   return target;

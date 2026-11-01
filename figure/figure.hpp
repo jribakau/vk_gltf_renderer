@@ -59,11 +59,37 @@ struct WearQuality
 constexpr float kLeastStrandKeep = 0.25f;
 // One step down: a subdivision level less and half the strands, as far as each goes.
 WearQuality oneStepDown(const WearQuality& quality);
+// One step up: as far as every level there is at `subdivision` and all the strands.
+WearQuality oneStepUp(const WearQuality& quality, int subdivision);
+// What these meshes are built at now: the finest level of those subdivided, the largest share of strands
+WearQuality qualityOf(const SceneGraph& scene, const std::vector<int>& meshes);
+// The share of what a mesh draws now that it would draw at `quality`; 1 for what has no such choice.
+float shareAt(const Mesh& mesh, const WearQuality& quality);
 // Whether a step down from `quality` would make any of these meshes smaller.
 bool wearCanShrink(const SceneGraph& scene, const WearQuality& quality);
 // What `meshes` came in without at `quality`, where everything is at `subdivision`: "half its
 // strands and Subdivision 1". Empty when they have all of it.
 std::string wearShortfall(const SceneGraph& scene, const std::vector<int>& meshes, const WearQuality& quality, int subdivision);
+
+// A worn item's meshes made again at another quality over the cages they have (Figure::remakeInputs). Only
+// what is drawn changes: dials, the pose, a drape and bindings live on the cage.
+struct RemadeItem
+{
+  int         item = 0;
+  WearQuality quality;
+  struct Part
+  {
+    int                                         mesh = -1;
+    std::shared_ptr<mesh::BuiltMesh>            from, made;
+    std::vector<float>                          cage;
+    std::map<std::string, std::vector<int32_t>> hidden;
+    mesh::SkinInput                             cageSkin;  // empty: the mesh keeps no drawn skin
+    mesh::SkinOutput                            skin;
+  };
+  std::vector<Part> parts;
+  // the figure's materials and these meshes alone: a hair's strands are measured here before it goes on
+  SceneGraph scene;
+};
 
 struct WornItem
 {
@@ -79,7 +105,7 @@ struct WornItem
   std::set<std::string>                    nodeNames, sources;
   // the dials it brought: fit adjustments such as "Loosen Neck"
   std::vector<std::string> channels;
-  // what it came in without to fit GPU memory (wearShortfall); empty: all of it
+  // what it is drawn without to fit GPU memory (wearShortfall); empty: all of it
   std::string reduced;
   // short of GPU memory, its textures come down only when nothing else can
   bool keepFull = false;
@@ -261,6 +287,13 @@ public:
                         const std::vector<std::string>& keys = {}, bool only = false);
   // The worn items commitWear would replace, given the same `ids` and `only`: the same garment again.
   std::vector<int> itemsReplacedBy(const PreparedWear& wear, const std::vector<int>& ids, bool only) const;
+  // What building the item at `quality` reads, copied; null when it is gone or none of it would change. Owning thread.
+  std::shared_ptr<RemadeItem> remakeInputs(int id, const WearQuality& quality) const;
+  // Any thread
+  static void buildRemade(RemadeItem& item);
+  // Swaps them in and says what the item is drawn without, where everything is at `subdivision`. False, and
+  // nothing changed, when the item went or a cage moved meanwhile. Owning thread.
+  bool commitRemade(RemadeItem& item, int subdivision);
   // Takes an item off: its nodes leave the scene (the next build leaves them out), its skeleton
   // stops following, its meshes stop following the body. False for an unknown id.
   bool removeItem(int id);

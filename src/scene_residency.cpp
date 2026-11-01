@@ -196,6 +196,10 @@ void Residency::clear()
   m_prevResting.clear();
   m_letGoHidden.clear();
   m_bringBack.clear();
+  m_detail       = {};
+  m_detailAsks.clear();
+  m_detailComing = 0;
+  m_heldForSettleSince.reset();
   m_settleBuilds.clear();
   m_wakeAsked.clear();
   m_drawersWrittenLast.clear();
@@ -1251,6 +1255,19 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes() const
   return out;
 }
 
+bool Residency::settlingSoon() const
+{
+  std::set<MeshId> soon;
+  for(const auto& [key, d] : m_drawers)
+    if(m_gpu.frame() < d.writtenAt + m_options.settleQuietFrames || !d.ran)
+      soon.insert(key.second);
+  for(MeshId id : soon)
+    if(const auto mesh = m_meshes.find(id); mesh != m_meshes.end() && !mesh->second.settled && !m_parked.count(id)
+       && std::none_of(mesh->second.prims.begin(), mesh->second.prims.end(), [](int32_t p) { return p >= 0; }))
+      return true;
+  return false;
+}
+
 void Residency::settle(MeshId id)
 {
   const auto it = m_meshes.find(id);
@@ -1431,21 +1448,75 @@ void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::
   }
 }
 
-uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room)
+void Residency::setItemDetail(ItemDetail detail)
+{
+  if(!detail.making)
+    m_detailComing = 0;
+  m_detail = std::move(detail);
+  std::erase_if(m_detail.down, [&](const ItemDetail::Down& d) { return std::find(m_detailAsks.begin(), m_detailAsks.end(), d.item) != m_detailAsks.end(); });
+}
+
+std::optional<ItemDetail::Up> Residency::nextDetailUp(uint64_t room)
+{
+  for(size_t i = 0; i < m_detail.up.size(); i++)
+    if(m_detail.up[i].bytes <= room)
+    {
+      const ItemDetail::Up up = m_detail.up[i];
+      m_detail.up.erase(m_detail.up.begin() + i);
+      return up;
+    }
+  return std::nullopt;
+}
+
+std::vector<Residency::DetailStep> Residency::detailSteps(size_t& last) const
+{
+  std::vector<DetailStep> out;
+  last = 0;
+  if(m_detail.down.empty())
+    return out;
+  std::map<MeshId, uint64_t> held;
+  const MemoryLedger         ledger = this->ledger();
+  for(const MemoryLedger::Mesh& m : ledger.meshes)
+    held[m.mesh] = m.bytes.total();
+  for(const ItemDetail::Down& d : m_detail.down)
+  {
+    double freed = 0;
+    for(const auto& [mesh, share] : d.meshes)
+      if(const auto it = held.find(mesh); it != held.end())
+        freed += double(it->second) * (1.0 - double(share));
+    if(freed >= double(m_options.leastDetailStep))
+      out.push_back({&d, uint64_t(freed)});
+  }
+  std::stable_sort(out.begin(), out.end(), [](const DetailStep& a, const DetailStep& b) {
+    if(a.down->pinned != b.down->pinned)
+      return b.down->pinned;
+    if(a.down->selected != b.down->selected)
+      return b.down->selected;
+    return a.bytes > b.bytes;
+  });
+  last = size_t(std::count_if(out.begin(), out.end(), [](const DetailStep& s) { return s.down->pinned; }));
+  return out;
+}
+
+uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room, uint32_t upToExtent)
 {
   std::vector<ResidentImage> residents;
   std::vector<ImageFit>      fits;
   residentFits(scene, true, residents, fits);
-  std::vector<uint32_t> wanted;
+  std::vector<uint32_t> full, wanted;
   for(const ImageFit& fit : fits)
-    wanted.push_back(levelsToSkip(fit.chain.width, fit.chain.height, uint32_t(fit.chain.levelBytes.size()), m_gpu.maxImageExtent()));
+  {
+    const uint32_t levels = uint32_t(fit.chain.levelBytes.size());
+    full.push_back(levelsToSkip(fit.chain.width, fit.chain.height, levels, m_gpu.maxImageExtent()));
+    wanted.push_back(upToExtent ? std::max(full.back(), levelsToSkip(fit.chain.width, fit.chain.height, levels, upToExtent)) : full.back());
+  }
   raiseToFit(fits, wanted, room);
   uint32_t raised = 0;
   for(size_t i = 0; i < residents.size(); i++)
     if(fits[i].skip < residents[i].skip)
     {
       m_decodeQueue.push_back({residents[i].image, imageSourceOf(*residents[i].record, residents[i].image.second, fits[i].extent()),
-                               residents[i].key, fits[i].skip > wanted[i], true});
+                               residents[i].key, fits[i].skip > full[i], true});
       raised++;
     }
   return raised;
@@ -1526,10 +1597,17 @@ std::string Residency::nextToGo(const RetainedScene& scene) const
   std::vector<ImageFit>      fits;
   residentFits(scene, false, residents, fits);
   const std::vector<ImageFit> before = fits;
-  (void)planToFit(1, {.images = fits, .leastExtent = kLeastImageExtent});
+  size_t                      detailLast = 0;
+  const std::vector<DetailStep> steps    = detailSteps(detailLast);
+  std::vector<uint64_t>         detailBytes;
+  for(const DetailStep& step : steps)
+    detailBytes.push_back(step.bytes);
+  const FitPlan plan = planToFit(1, {.images = fits, .leastExtent = kLeastImageExtent, .detail = detailBytes, .detailLast = detailLast, .detailAfter = kDetailAfterExtent});
   for(size_t i = 0; i < fits.size(); i++)
     if(fits[i].skip != before[i].skip)
       return residents[i].record->name + " at " + std::to_string(before[i].extent());
+  if(!plan.detail.empty())
+    return "the detail of " + steps[plan.detail.front()].down->name;
   return {};
 }
 
@@ -1562,6 +1640,8 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
   uint64_t wanted = uint64_t(int64_t(need) - room);
   if(queued.empty())
     wanted = std::min(wanted, kFitStep);
+  // what is being made will free this before long
+  wanted -= std::min(wanted, m_detailComing);
 
   const size_t               queuedFits = fits.size();
   const std::set<ImageKey>   favoured   = favouredImages(scene), pinned = pinnedImages(scene);
@@ -1581,8 +1661,31 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
   std::vector<uint64_t>                          settleBytes;
   for(const auto& [mesh, bytes] : settleable)
     settleBytes.push_back(bytes);
-  const FitPlan plan = planToFit(wanted, {.idleBytes = m_graceBytes, .hidden = hiddenBytes, .settle = settleBytes, .images = fits, .leastExtent = kLeastImageExtent});
+  size_t                        detailLast = 0;
+  const std::vector<DetailStep> steps      = detailSteps(detailLast);
+  std::vector<uint64_t>         detailBytes;
+  for(const DetailStep& step : steps)
+    detailBytes.push_back(step.bytes);
+  // with nothing new waiting for the room, what would show waits for what is about to settle, which won't. For
+  // as long as settling takes: then on, for a while, a clip that never goes quiet doesn't hold it up again.
+  const uint64_t frame = m_gpu.frame();
+  if(!m_heldForSettleSince || frame >= *m_heldForSettleSince + 4 * m_options.settleQuietFrames)
+    m_heldForSettleSince = frame;
+  const bool hold = queued.empty() && frame < *m_heldForSettleSince + m_options.settleQuietFrames && settlingSoon();
+  const FitPlan plan = planToFit(wanted, {.idleBytes = m_graceBytes, .hidden = hiddenBytes, .settle = settleBytes, .images = hold ? std::span<ImageFit>{} : std::span<ImageFit>(fits),
+                                          .leastExtent = kLeastImageExtent, .detail = hold ? std::span<const uint64_t>{} : std::span<const uint64_t>(detailBytes),
+                                          .detailLast = hold ? 0 : detailLast, .detailAfter = kDetailAfterExtent});
   trimGrace(m_graceBytes - plan.idle);
+  {
+    std::set<uint64_t> asked;
+    for(size_t i : plan.detail)
+    {
+      asked.insert(steps[i].down->item);
+      m_detailAsks.push_back(steps[i].down->item);
+      m_detailComing += steps[i].bytes;
+    }
+    std::erase_if(m_detail.down, [&](const ItemDetail::Down& d) { return asked.count(d.item) > 0; });  // `steps` read them: not before here
+  }
   for(size_t i : plan.settled)
     settle(settleable[i].first);
   for(size_t i : plan.hidden)

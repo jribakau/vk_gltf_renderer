@@ -109,6 +109,10 @@ public:
   };
   // Where that is reported as it changes, from the application thread; empty: nowhere
   virtual void setMemorySink(std::function<void(const MemoryReport&)> sink) = 0;
+  // What can move of the worn items, as often as it changes or a reading comes (rs::ItemDetail), and where
+  // the Fit's asks go: an item (ItemDetail's own), a step up or down. Application thread.
+  virtual void setItemDetail(rs::ItemDetail detail) = 0;
+  virtual void setDetailSink(std::function<void(uint64_t item, bool up)> sink) = 0;
   // An export is running: textures don't follow GPU memory until it ends, unless it runs past the
   // driver's budget (rs::MemoryWatch). Application thread.
   virtual void holdTextures(bool held) = 0;

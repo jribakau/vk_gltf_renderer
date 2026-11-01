@@ -37,6 +37,10 @@
 
 namespace rs {
 
+// Textures come down this far before a worn item loses any detail: past it they show, as half a hair's
+// strands hardly do on what the eye isn't on
+inline constexpr uint32_t kDetailAfterExtent = 2048;
+
 // What can give way, in the order it does
 struct FitRungs
 {
@@ -45,6 +49,11 @@ struct FitRungs
   std::span<const uint64_t> settle;         // items, in the order they go: the picture stays, and the next edit waits a moment
   std::span<ImageFit>       images;         // top levels, down to `leastExtent`; the plan leaves them out in place
   uint32_t                  leastExtent = 0;
+  // worn items a step down in detail, in the order they go, by what each frees: after textures have come
+  // down to `detailAfter`, and the last `detailLast` of them (marked Keep full) after every texture
+  std::span<const uint64_t> detail;
+  size_t                    detailLast  = 0;
+  uint32_t                  detailAfter = 0;
 };
 
 struct FitPlan
@@ -55,7 +64,9 @@ struct FitPlan
   std::vector<size_t> settled;     // of FitRungs::settle, these settle
   uint64_t            settleBytes = 0;
   uint64_t            images      = 0;  // what the levels left out free
-  uint64_t            freed() const { return idle + hiddenBytes + settleBytes + images; }
+  std::vector<size_t> detail;           // of FitRungs::detail, these come down a step
+  uint64_t            detailBytes = 0;
+  uint64_t            freed() const { return idle + hiddenBytes + settleBytes + images + detailBytes; }
 };
 
 // What to give up for `wanted` bytes, less when there isn't that much to give up.
@@ -90,14 +101,27 @@ inline FitPlan planToFit(uint64_t wanted, const FitRungs& rungs)
     took(rungs.settle[i]);
   }
 
-  if(left > 0)
-  {
-    const uint64_t freed = lowerToFit(rungs.images, left, rungs.leastExtent);
+  const auto lowerImages = [&](uint32_t least, bool pinnedToo) {
+    if(left == 0)
+      return;
+    const uint64_t freed = lowerToFit(rungs.images, left, least, pinnedToo);
     out.images += freed;
     took(freed);
-  }
-  if(left > 0)
-    out.images += lowerToFit(rungs.images, left, rungs.leastExtent, true);
+  };
+  const auto giveDetail = [&](size_t from, size_t to) {
+    for(size_t i = from; i < to && left > 0; i++)
+    {
+      out.detail.push_back(i);
+      out.detailBytes += rungs.detail[i];
+      took(rungs.detail[i]);
+    }
+  };
+  const size_t notLast = rungs.detail.size() - std::min(rungs.detailLast, rungs.detail.size());
+  lowerImages(std::max(rungs.leastExtent, rungs.detailAfter), false);
+  giveDetail(0, notLast);
+  lowerImages(rungs.leastExtent, false);
+  lowerImages(rungs.leastExtent, true);
+  giveDetail(notLast, rungs.detail.size());
   return out;
 }
 

@@ -73,6 +73,8 @@ public:
   bool               lastKeptTextures = false;
   void               setMaxTextureExtent(uint32_t) override {}
   void               setNoticeSink(std::function<void(const std::string&)>) override {}
+  void               setItemDetail(rs::ItemDetail) override {}
+  void               setDetailSink(std::function<void(uint64_t, bool)>) override {}
   std::optional<int64_t> sceneHeadroom() const override { return headroom; }
   std::optional<int64_t> headroom;  // none: no budget known
   void               setMemorySink(std::function<void(const MemoryReport&)> sink) override { memorySink = std::move(sink); }

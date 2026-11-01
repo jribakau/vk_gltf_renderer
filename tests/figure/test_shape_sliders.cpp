@@ -122,7 +122,7 @@ struct Body
     mesh.cageSkin = oneBone(geo->cagePositions.size() / 3, 0);
     scene.meshes.push_back(std::move(mesh));
     ref.mesh = 0;
-    ref.geo  = geo;
+    ref.cageVertices = geo->dsonVertexCount;
     morphs   = std::make_unique<fv::morph::MorphSet>([this](int) { return geo.get(); });
     driver   = std::make_unique<fv::pose::FigureDriver>(*morphs, std::make_shared<NoFiles>());
     morphs->driver = driver.get();
@@ -376,7 +376,7 @@ TEST(ShapeSliders, AShellMovesWithItsBody)
 {
   Body b;
   auto shell = std::make_shared<fv::mesh::BuiltMesh>(fv::mesh::build(tube()));
-  b.ref.shells.push_back({1, shell});
+  b.ref.shells.push_back({1, shell->dsonVertexCount});
   b.morphs = std::make_unique<fv::morph::MorphSet>([&](int i) { return i == 0 ? b.geo.get() : shell.get(); });
   b.driver = std::make_unique<fv::pose::FigureDriver>(*b.morphs, std::make_shared<NoFiles>());
   b.morphs->driver = b.driver.get();

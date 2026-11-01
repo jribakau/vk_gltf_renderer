@@ -458,6 +458,64 @@ TEST(RetainedDeform, WakingWithNothingChangedWritesNothing)
   expectClean(rig.scene, residency, gpu, "a second drawer: ");
 }
 
+// What shows waits for what is about to settle, which doesn't show: what just came settles first, with nothing
+// given up for it. And what never goes quiet doesn't hold it up for long.
+TEST(RetainedDeform, WhatShowsWaitsForWhatIsAboutToSettle)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.leastDetailStep = 1, .settleQuietFrames = 8});
+  residency.replace(rig.scene);
+  const auto offer = [&] { residency.setItemDetail({.down = {{.item = 1, .name = "hair", .meshes = {{rig.mesh, 0.5f}}}}}); };
+  const auto ask   = [&] {
+    residency.lowerImages(0);
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+    return residency.takeDetailAsks();
+  };
+  offer();
+  gpu.setImageHeadroom(-1);
+  EXPECT_TRUE(ask().empty()) << "it just came";
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  for(int i = 0; i < 8; i++)
+  {
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+  }
+  EXPECT_TRUE(ask().empty()) << "settling gives what was wanted";
+  EXPECT_TRUE(residency.isSettled(rig.mesh));
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "settled: ");
+
+  // settled and still short: now it goes
+  offer();
+  EXPECT_EQ(ask(), std::vector<uint64_t>{1});
+  residency.setItemDetail({});
+
+  // written every frame: it holds what shows up for as long as settling would take, once
+  RibbonRig      clip;
+  FakeGpuBackend clipGpu;
+  Residency      playing(clipGpu, {.leastDetailStep = 1, .settleQuietFrames = 8});
+  playing.replace(clip.scene);
+  playing.setItemDetail({.down = {{.item = 2, .name = "hair", .meshes = {{clip.mesh, 0.5f}}}}});
+  clipGpu.setImageHeadroom(-1);
+  std::vector<uint64_t> asked;
+  int                   frames = 0;
+  for(; frames < 12 && asked.empty(); frames++)
+  {
+    Transform t;
+    t.translation = {float(frames + 1) * 0.1f, 0, 0};
+    clip.scene.setLocal(clip.bone, t);
+    playing.lowerImages(0);
+    clipGpu.beginFrame();
+    playing.sync(clip.scene);
+    asked = playing.takeDetailAsks();
+  }
+  EXPECT_EQ(asked, std::vector<uint64_t>{2});
+  EXPECT_GE(frames, 8);
+  EXPECT_FALSE(playing.isSettled(clip.mesh));
+}
+
 // What is being edited settles after everything else
 TEST(RetainedDeform, WhatIsBeingEditedSettlesLast)
 {

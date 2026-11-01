@@ -45,7 +45,7 @@ std::optional<Graft> parseGraft(const dson::Doc& doc, const dson::Json& geo);
 
 // The item's version of one body morph target, or null when it moves nothing on the item. Both
 // meshes work through their cages' vertices; `scratch` holds body-cage-sized deltas between calls.
-dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rigidity, const mesh::BuiltMesh& body, const mesh::BuiltMesh& item,
+dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rigidity, const mesh::BuiltMesh& body, int itemVertices,
                               const mesh::RenderTarget& target, std::vector<float>& scratch);
 
 }  // namespace fv::wardrobe

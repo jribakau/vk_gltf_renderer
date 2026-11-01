@@ -181,16 +181,16 @@ void addShapeSliders(MorphSet& morphs, pose::FigureDriver& driver, const SceneGr
     for(const dson::MeshRef* body : bodies)
     {
       const Mesh& mesh = scene.meshes[size_t(body->mesh)];
-      if(!mesh.skinned() || !body->geo || mesh.cageSkin.start.size() != body->geo->cagePositions.size() / 3 + 1)
+      if(!mesh.skinned() || !mesh.geo || mesh.cageSkin.start.size() != mesh.geo->cagePositions.size() / 3 + 1)
         continue;
-      const mesh::CageDeltas deltas = girthDeltas(body->geo->cagePositions, mesh.cageSkin, shapeBones(scene, mesh), recipe);
+      const mesh::CageDeltas deltas = girthDeltas(mesh.geo->cagePositions, mesh.cageSkin, shapeBones(scene, mesh), recipe);
       if(deltas.verts.empty())
         continue;
       const ChannelOptions opts = sliderOptions(recipe.label);
-      morphs.addTarget(recipe.channel, body->mesh, std::make_shared<mesh::RenderTarget>(mesh::target(*body->geo, deltas)), opts);
+      morphs.addTarget(recipe.channel, body->mesh, std::make_shared<mesh::RenderTarget>(mesh::target(body->cageVertices, deltas)), opts);
       // the mesh's shells take it too, remade on their own polygons
       for(const dson::MeshRef::Shell& s : body->shells)
-        morphs.addTarget(recipe.channel, s.mesh, std::make_shared<mesh::RenderTarget>(mesh::target(*s.geo, deltas)), opts);
+        morphs.addTarget(recipe.channel, s.mesh, std::make_shared<mesh::RenderTarget>(mesh::target(s.cageVertices, deltas)), opts);
       added = true;
     }
     if(added)

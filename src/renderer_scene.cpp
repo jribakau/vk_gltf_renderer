@@ -31,6 +31,7 @@
 #include <nvvk/commands.hpp>
 #include <nvvk/debug_util.hpp>
 
+#include "memory_plan.hpp"
 #include "renderer.hpp"
 #include "fv_compose.hpp"
 #include "scene_import_gltf.hpp"
@@ -464,6 +465,12 @@ void GltfRenderer::setLiveMeshes(std::set<rs::MeshId> meshes)
     m_resources.retainedGpu->setLive(std::move(meshes));
 }
 
+void GltfRenderer::setItemDetail(rs::ItemDetail detail)
+{
+  if(m_resources.retainedGpu)
+    m_resources.retainedGpu->setItemDetail(std::move(detail));
+}
+
 void GltfRenderer::watchMemory()
 {
   m_resources.imagePrefetch.dropOlderThan(120);
@@ -507,7 +514,7 @@ void GltfRenderer::watchMemory()
                              .headroom   = free,
                              .pastBudget = *headroom < -int64_t(sceneBudget() / 10),  // the tenth kept back is gone too
                              .canLower   = gpu.lowerableImageBytes(rs::kLeastImageExtent) > 0 || !next.empty(),
-                             .lowered    = lowered.count > 0 || spilled > 0,
+                             .lowered    = lowered.count > 0 || spilled > 0 || gpu.residency().detailBelowFull(),
                              .refining   = isRefiningStill(),
                              .held       = m_texturesHeld});
   // textures have stopped moving: a still takes its samples from them alone, once
@@ -522,6 +529,15 @@ void GltfRenderer::watchMemory()
       // what lies in system memory first: it costs the frame more than a texture a size down
       if(spilled > 0 && gpu.bringBack(*m_resources.retainedScene, uint64_t(free - rs::MemoryWatch::kMargin)) > 0)
         break;
+      // the way it came down: textures to where detail began to go, then detail, then the rest of them
+      if(gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free), rs::kDetailAfterExtent) > 0)
+        break;
+      if(const std::optional<rs::ItemDetail::Up> up = gpu.nextDetailUp(uint64_t(free - rs::MemoryWatch::kMargin)); up && m_detailSink)
+      {
+        admitGeometry(up->bytes);
+        m_detailSink(up->item, true);
+        break;
+      }
       if(gpu.raiseImages(*m_resources.retainedScene, rs::MemoryWatch::raiseRoom(free)) == 0)
         m_memoryWatch.raiseEnded(now);
       break;
@@ -545,6 +561,10 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   if(result.drawListChanged)
     m_pendingGeometry = 0;  // what was accepted is resident, and counted as used
+  // an export keeps the detail it began with
+  for(uint64_t item : m_resources.retainedGpu->takeDetailAsks())
+    if(m_detailSink && !m_texturesHeld)
+      m_detailSink(item, false);
   logRetainedNotices();
   if(const auto compaction = m_resources.retainedGpu->takeCompaction(); compaction.blases && fv::timing::enabled())
   {

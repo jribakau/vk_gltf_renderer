@@ -318,6 +318,8 @@ public:
   void setMaxTextureExtent(uint32_t extent) override { m_maxTextureExtent.store(extent); }
   void setNoticeSink(std::function<void(const std::string&)> sink) override { m_noticeSink = std::move(sink); }
   void setMemorySink(std::function<void(const MemoryReport&)> sink) override { m_memorySink = std::move(sink); }
+  void setItemDetail(rs::ItemDetail detail) override;
+  void setDetailSink(std::function<void(uint64_t item, bool up)> sink) override { m_detailSink = std::move(sink); }
   void holdTextures(bool held) override { m_texturesHeld = held; }
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
@@ -652,6 +654,7 @@ private:
   uint64_t              m_pendingGeometry = 0;  // admitted and not resident yet
   std::function<void(const std::string&)> m_noticeSink;
   std::function<void(const MemoryReport&)> m_memorySink;
+  std::function<void(uint64_t item, bool up)> m_detailSink;
   MemoryReport                             m_memoryReported;
   double                                   m_retryParkedAt = 0;  // when what found no memory is tried again
   uint64_t              m_ledgerLogged = 0;          // the scene's bytes the last [memory] line said

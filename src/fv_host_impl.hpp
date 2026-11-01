@@ -683,6 +683,20 @@ struct FvHost::Impl
   void noticeLinearExport(const Loaded& f);
   // once a second: system memory short, what is only kept for later goes, and it says so
   void watchSystemMemory();
+  // Worn items' detail following GPU memory: what could move, told to the renderer, and a step of it asked for
+  void offerItemDetail();
+  void stepItemDetail(uint64_t item, bool up);
+  struct DetailItem
+  {
+    std::weak_ptr<Loaded> figure;
+    int                   item = 0;
+    fv::WearQuality       lower, higher;
+  };
+  std::map<uint64_t, DetailItem>        detailItems;  // as last offered, under keys never used again
+  uint64_t                              detailKeys   = 0;
+  bool                                  detailMaking = false;  // one at a time
+  bool                                  detailNoticed = false;
+  std::chrono::steady_clock::time_point detailAgainAt;  // what failed for want of system memory isn't tried until then
   rs::RamWatch                          ramWatch;
   std::chrono::steady_clock::time_point lastRamReading{};
   bool                                  ramShort = false;

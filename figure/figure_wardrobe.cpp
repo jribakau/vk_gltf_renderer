@@ -275,6 +275,111 @@ WearQuality oneStepDown(const WearQuality& quality)
   return {std::max(quality.subdivision - 1, 0), std::max(quality.strandKeep / 2, kLeastStrandKeep)};
 }
 
+WearQuality oneStepUp(const WearQuality& quality, int subdivision)
+{
+  return {std::min(quality.subdivision + 1, std::max(subdivision, quality.subdivision)), std::min(quality.strandKeep * 2, 1.f)};
+}
+
+WearQuality qualityOf(const SceneGraph& scene, const std::vector<int>& meshes)
+{
+  WearQuality out{0, 0};
+  bool        strands = false;
+  for(int i : meshes)
+    if(i >= 0 && i < int(scene.meshes.size()) && scene.meshes[size_t(i)].geo && scene.meshes[size_t(i)].geo->source)
+    {
+      const mesh::MeshInput& source = *scene.meshes[size_t(i)].geo->source;
+      if(source.lines)
+      {
+        out.strandKeep = std::max(out.strandKeep, source.lines->keep);
+        strands        = true;
+      }
+      else
+        out.subdivision = std::max(out.subdivision, source.level);
+    }
+  if(!strands)
+    out.strandKeep = 1;
+  return out;
+}
+
+float shareAt(const Mesh& mesh, const WearQuality& quality)
+{
+  if(!mesh.geo || !mesh.geo->source)
+    return 1;
+  const mesh::MeshInput& source = *mesh.geo->source;
+  if(source.lines)
+    return source.lines->keep > 0 ? quality.strandKeep / source.lines->keep : 1;
+  // a level is four faces for each
+  return mesh.geo->subdivisionSurface ? float(std::pow(4.0, quality.subdivision - source.level)) : 1;
+}
+
+std::shared_ptr<RemadeItem> Figure::remakeInputs(int id, const WearQuality& quality) const
+{
+  const auto worn = std::find_if(items.begin(), items.end(), [&](const WornItem& w) { return w.id == id; });
+  if(worn == items.end())
+    return nullptr;
+  auto out     = std::make_shared<RemadeItem>();
+  out->item    = id;
+  out->quality = quality;
+  for(int i : worn->meshes)
+  {
+    if(i < 0 || i >= int(loaded.scene.meshes.size()))
+      continue;
+    const Mesh& m = loaded.scene.meshes[size_t(i)];
+    if(!m.geo || !m.geo->source || shareAt(m, quality) == 1)
+      continue;
+    RemadeItem::Part part;
+    part.mesh = i;
+    part.from = m.geo;
+    part.cage = m.geo->cagePositions;
+    part.hidden = m.geo->hiddenPolys;
+    if(!m.geo->ribbon)
+      part.cageSkin = m.cageSkin;
+    out->parts.push_back(std::move(part));
+  }
+  if(out->parts.empty())
+    return nullptr;
+  out->scene.materials = loaded.scene.materials;
+  out->scene.meshes.resize(loaded.scene.meshes.size());
+  for(const RemadeItem::Part& part : out->parts)
+    out->scene.meshes[size_t(part.mesh)].materials = loaded.scene.meshes[size_t(part.mesh)].materials;
+  return out;
+}
+
+void Figure::buildRemade(RemadeItem& item)
+{
+  for(RemadeItem::Part& part : item.parts)
+  {
+    timing::Scope t("remade", 10);
+    part.made              = mesh::remade(*part.from, part.cage, item.quality.subdivision, item.quality.strandKeep);
+    part.made->hiddenPolys = part.hidden;
+    if(!part.cageSkin.start.empty())
+      part.skin = mesh::skin(*part.made, part.cageSkin);
+    item.scene.meshes[size_t(part.mesh)].geo = part.made;
+  }
+}
+
+bool Figure::commitRemade(RemadeItem& item, int subdivision)
+{
+  const auto worn = std::find_if(items.begin(), items.end(), [&](const WornItem& w) { return w.id == item.item; });
+  if(worn == items.end())
+    return false;
+  for(const RemadeItem::Part& part : item.parts)
+    if(!part.made || part.mesh >= int(loaded.scene.meshes.size()) || loaded.scene.meshes[size_t(part.mesh)].geo != part.from
+       || part.from->cagePositions != part.cage)
+      return false;
+  for(RemadeItem::Part& part : item.parts)
+  {
+    Mesh& m                = loaded.scene.meshes[size_t(part.mesh)];
+    part.made->hiddenPolys = m.geo->hiddenPolys;
+    m.geo                  = part.made;
+    m.skin                 = std::move(part.skin);
+    if(morphs)
+      morphs->meshRemade(part.mesh);
+  }
+  worn->reduced = wearShortfall(loaded.scene, worn->meshes, qualityOf(loaded.scene, worn->meshes), subdivision);
+  return true;
+}
+
 bool wearCanShrink(const SceneGraph& scene, const WearQuality& quality)
 {
   for(const Mesh& m : scene.meshes)
@@ -417,7 +522,7 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       for(size_t k = 0; k < bodyTargets.size(); k++)
         projections.push_back(jobs::pool().submit([&body, item, &part, binding = out->bindings[i], target = bodyTargets[k], cell = &slot[k]] {
           std::vector<float> scratch;
-          *cell = {target, wardrobe::projectTarget(*binding, part.rigidity ? &*part.rigidity : nullptr, body, *item, *target, scratch)};
+          *cell = {target, wardrobe::projectTarget(*binding, part.rigidity ? &*part.rigidity : nullptr, body, item->dsonVertexCount, *target, scratch)};
         }));
     }
     for(auto& j : projections)
@@ -747,7 +852,8 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     if(!worn)
       continue;
     const auto& own    = listOwn(part.defFile);
-    const auto  itemGeo = dst.meshes[size_t(mesh)].geo;
+    // a count, not the mesh: it may be made again (remade) while these live, and the old one should go
+    const int   itemVertices = dst.meshes[size_t(mesh)].geo->dsonVertexCount;
     const dson::MeshRef ref = refOf(mesh);
     if(part.conforms && p.bindings[i])
     {
@@ -755,24 +861,24 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       f.mesh   = mesh;
       f.source = body;
       // the scratch is the calling thread's: the morph set projects several targets side by side
-      f.project = [binding = p.bindings[i], rigidity = part.rigidity, bodyGeo = bodyGeoPtr, itemGeo](const mesh::RenderTarget& t) -> dson::TargetPtr {
+      f.project = [binding = p.bindings[i], rigidity = part.rigidity, bodyGeo = bodyGeoPtr, itemVertices](const mesh::RenderTarget& t) -> dson::TargetPtr {
         thread_local std::vector<float> scratch;
-        return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, *itemGeo, t, scratch);
+        return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, itemVertices, t, scratch);
       };
       const auto files = std::make_shared<const std::map<std::string, std::string>>(own);
       f.label          = worn->label;
       f.hasOwn         = [files](const std::string& channel) { return ownMorphFile(*files, channel) != nullptr; };
-      f.own            = [store = m_store, files, ref, itemGeo](const std::string& channel) -> std::shared_future<std::vector<dson::TargetPtr>> {
+      f.own            = [store = m_store, files, ref, itemVertices](const std::string& channel) -> std::shared_future<std::vector<dson::TargetPtr>> {
         const std::string* file = ownMorphFile(*files, channel);
         if(!file)
           return {};
         return jobs::pool()
-            .submit([store, file = *file, ref, itemGeo]() -> std::vector<dson::TargetPtr> {
+            .submit([store, file = *file, ref, itemVertices]() -> std::vector<dson::TargetPtr> {
               std::vector<dson::TargetPtr> out;
               try
               {
                 for(const dson::MorphPart& part : dson::loadMorphFile(*store, file, {ref}))
-                  if(part.mesh == ref.mesh && part.target && targetFits(*part.target, itemGeo->dsonVertexCount))
+                  if(part.mesh == ref.mesh && part.target && targetFits(*part.target, itemVertices))
                     out.push_back(part.target);
               }
               catch(const std::exception&)

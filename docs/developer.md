@@ -478,7 +478,8 @@ the levels the GPU made, and comes back all at once. Room back, what lies in sys
 the textures. These swaps, and a BLAS compacted, leave the picture as it was (`SyncResult::samePicture`), so a
 still goes on through them and starts once more when textures stop moving.
 
-Under the same pressure, what nobody is editing settles (`Residency::settle`), before any texture comes down: a
+Under the same pressure, what nobody is editing settles (`Residency::settle`), before any texture comes down, and
+what would show waits for what is about to (`settlingSoon`), once and for as long as settling takes: a
 mesh with drawers only, none written for `settleQuietFrames`, the selected figure's last of all (`setLive`, which
 wakes it as it becomes selected). What only remakes it goes: tables, cage, skin inputs, morph deltas, its own streams, last
 frame's positions. Its drawers' outputs stay, so the picture does, and its BVHs are built again compacted, one a
@@ -496,6 +497,12 @@ first sync, and would otherwise run the whole CPU morph on it and keep what that
 
 What can be worked out off the frame is. `mesh::build` makes the normal tables (`BuiltMesh::normalStart`, `normalTriangles`), which the feed only spans. A hair's
 votes on its strands' rotation become a `mat::StrandTally` on the worker, and the feed adds tallies (`strandRotation`) instead of reading millions of votes for every feed.
+
+Past that, a worn item comes down in detail while it is in the scene. A subdivided or strand mesh keeps what it was built from (`BuiltMesh::source`), and `mesh::remade` builds it again at another level or
+share of strands over the cage it has now, from which everything on the cage stays true: morphs, a pose, a drape, bindings. `Lines::keep` draws nested shares, so a quarter's strands are among a half's. The
+Fit only asks (`rs::ItemDetail`, `FitRungs::detail`): the host offers its items once a second (`FvHost::Impl::offerItemDetail`), makes one at a time on a worker (`stepItemDetail`, `Figure::buildRemade`),
+and the feed swaps the record because the mesh changed. So nothing that outlives a build may hold a `BuiltMesh`: `dson::MeshRef` and a follower hold the cage's vertex count, and a test checks that the old mesh goes.
+A target's drawn deltas are made per mesh size, and `MorphSet::meshRemade` lets go of what was kept of the old drawn vertices.
 
 Grey maps are half the size from their next cook on: the cooker writes one grey as BC4 with a `KTXswizzle`
 (`texcache.rs GreyMap`), which the images it cooked before need not, and a lobe's roughness from the file the

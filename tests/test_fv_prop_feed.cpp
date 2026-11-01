@@ -834,6 +834,98 @@ TEST(FvPropFeed, APosedStrandHairHoldsNoDrawnVerticesOnTheCpu)
   check("not any more");
 }
 
+// An item in the scene comes down a step and back. All that lives on its cage stays, what it was drawn with goes
+// (nothing holds the old mesh, or the memory wasn't given back), and what is drawn is what a wear at that level draws.
+TEST(FvPropFeed, AWornItemComesDownAStepAndBack)
+{
+  const char* const shirt = "People/Test/Clothing/Box Shirt.duf";
+  const auto        box = loadBox(), atLevelOne = loadBox();
+  rs::RetainedScene  scene;
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu);
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); }});
+  feed.sync(box->loaded.scene, box->loaded.root);
+  residency.replace(scene);
+  box->morphs->cageOnly = [&](int mesh) { return feed.refinesOnceFed(box->loaded.scene, mesh); };
+  const auto frames = [&](const char* when) {
+    for(int i = 0; i < 6; i++)
+    {
+      gpu.beginFrame();
+      residency.sync(scene);
+    }
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << when << ": " << p;
+  };
+
+  const int  mi   = int(box->loaded.scene.meshes.size());
+  const auto worn = box->commitWear(box->prepareWear(shirt, 2), shirt);
+  ASSERT_EQ(worn.items.size(), 1u);
+  const int id = worn.items[0];
+  box->morphs->set("Taper", 1.0);
+  box->morphs->settled();
+  box->morphs->takeChanges();
+  feed.sync(box->loaded.scene, box->loaded.root);
+  frames("worn");
+  const fv::WornItem* item = nullptr;
+  for(const fv::WornItem& w : box->items)
+    if(w.id == id)
+      item = &w;
+  ASSERT_NE(item, nullptr);
+  EXPECT_TRUE(fv::qualityOf(box->loaded.scene, item->meshes).subdivision == 2);
+
+  std::weak_ptr<fv::mesh::BuiltMesh> old       = box->loaded.scene.meshes[size_t(mi)].geo;
+  const size_t                       triangles = old.lock()->fullIndex.size();
+  const std::vector<float>           cage      = box->morphs->morphedCage(mi);
+  const rs::MeshId                   had       = feed.meshOf(mi);
+  ASSERT_NE(cage, old.lock()->cagePositions) << "the shirt follows the dial";
+
+  auto down = box->remakeInputs(id, {1, 1.f});
+  ASSERT_NE(down, nullptr);
+  fv::Figure::buildRemade(*down);
+  ASSERT_TRUE(box->commitRemade(*down, 2));
+  down.reset();
+  EXPECT_EQ(box->loaded.scene.meshes[size_t(mi)].geo->fullIndex.size() * 4, triangles);
+  EXPECT_EQ(item->reduced, "Subdivision 1");
+  EXPECT_EQ(box->morphs->morphedCage(mi), cage);
+  EXPECT_EQ(box->remakeInputs(id, {1, 1.f}), nullptr) << "nothing to do";
+
+  feed.sync(box->loaded.scene, box->loaded.root);
+  frames("down");
+  EXPECT_NE(feed.meshOf(mi), had);
+  EXPECT_TRUE(old.expired()) << "something still holds the mesh it was";
+
+  // what an export reads, as a wear at that level with that dial would have it
+  atLevelOne->morphs->set("Taper", 1.0);
+  atLevelOne->morphs->settled();
+  const int first = int(atLevelOne->loaded.scene.meshes.size());
+  atLevelOne->commitWear(atLevelOne->prepareWear(shirt, 1), shirt);
+  atLevelOne->morphs->settled();
+  box->morphs->catchUp();
+  box->morphs->takeChanges();
+  const std::vector<float>& reference = atLevelOne->loaded.scene.meshes[size_t(first)].geo->position;
+  const std::vector<float>& ours      = box->loaded.scene.meshes[size_t(mi)].geo->position;
+  ASSERT_EQ(ours.size(), reference.size());
+  for(size_t i = 0; i < ours.size(); i++)
+    ASSERT_NEAR(ours[i], reference[i], 1e-3f) << i;
+
+  // a cage that moved meanwhile: nothing changes, and it can be asked again
+  auto up = box->remakeInputs(id, {2, 1.f});
+  ASSERT_NE(up, nullptr);
+  fv::Figure::buildRemade(*up);
+  fv::mesh::BuiltMesh& now = *box->loaded.scene.meshes[size_t(mi)].geo;
+  now.cagePositions[0] += 1;
+  EXPECT_FALSE(box->commitRemade(*up, 2));
+  now.cagePositions[0] -= 1;
+  EXPECT_EQ(item->reduced, "Subdivision 1");
+  ASSERT_TRUE(box->commitRemade(*up, 2));
+  up.reset();
+  EXPECT_EQ(box->loaded.scene.meshes[size_t(mi)].geo->fullIndex.size(), triangles);
+  EXPECT_TRUE(item->reduced.empty());
+  feed.sync(box->loaded.scene, box->loaded.root);
+  frames("up");
+  EXPECT_EQ(fv::checkFeed(box->loaded.scene, box->loaded.root, feed, scene, {}), std::vector<std::string>{});
+}
+
 // A wear's dials come before its first sync. What the GPU is about to refine moves its cage alone, as a fed mesh
 // does: the CPU morphs nothing it doesn't draw, and holds nothing for it, until something asks.
 TEST(FvPropFeed, AWearsDialsMoveOnlyItsCageBeforeItIsFed)

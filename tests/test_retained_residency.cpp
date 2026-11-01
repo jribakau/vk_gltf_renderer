@@ -1039,6 +1039,7 @@ struct FitScene
 {
   RetainedScene scene;
   TextureId     first, second;
+  MeshId        mesh;
   FitScene(const char* a, int aExtent, const char* b, int bExtent)
   {
     first  = scene.addTexture(chainTexture(a, aExtent));
@@ -1046,7 +1047,8 @@ struct FitScene
     auto table = std::make_shared<TextureTable>();
     table->push_back({first, {}});
     table->push_back({second, {}});
-    drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {coloured(scene, table, 0), coloured(scene, table, 1)});
+    mesh = scene.addMesh(gridMesh(2, 0.f, 2));
+    drawn(scene, "e", mesh, {coloured(scene, table, 0), coloured(scene, table, 1)});
   }
 };
 
@@ -1225,6 +1227,77 @@ TEST(RetainedResidency, ALoweredImageComesBackWhole)
   drain(gpu);
   expectClean(f.scene, residency, gpu, "after its retires: ");
   EXPECT_TRUE(residency.takeUserNotices().empty());
+}
+
+// The host makes a worn item's smaller records, so the Fit only asks: once, counting on what it asked for
+// until the host says it has done with it, and only for what is worth it.
+TEST(RetainedResidency, AnItemsDetailIsAskedOfTheHost)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 256);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20, .leastDetailStep = 1});
+  residency.replace(f.scene);
+  EXPECT_NE(residency.nextToGo(f.scene).find(" at "), std::string::npos) << "nothing offered: textures";
+  const ItemDetail offered{.down = {{.item = 7, .name = "Long Hair", .meshes = {{f.mesh, 0.5f}}}}};
+  residency.setItemDetail(offered);
+  EXPECT_EQ(residency.nextToGo(f.scene), "the detail of Long Hair") << "a 1024 is already below where they show";
+
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(residency.takeDetailAsks(), std::vector<uint64_t>{7});
+  EXPECT_EQ(residency.loweredImages(), Residency::LoweredImages{});
+  drain(gpu);
+  expectClean(f.scene, residency, gpu);
+
+  // being made: nothing more gives way for what it will free
+  residency.setItemDetail({.making = true});
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_TRUE(residency.takeDetailAsks().empty());
+  EXPECT_EQ(residency.loweredImages(), Residency::LoweredImages{});
+
+  // done with, and still short: what was offered and what comes next
+  residency.setItemDetail({});
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  drain(gpu);
+
+  // too little to be worth a new record
+  FakeGpuBackend otherGpu(2);
+  Residency      small(otherGpu, {.textureGraceBytes = 1 << 20, .leastDetailStep = uint64_t(1) << 40});
+  small.replace(f.scene);
+  small.setItemDetail(offered);
+  EXPECT_NE(small.nextToGo(f.scene).find(" at "), std::string::npos);
+
+  // up: the first that fits, once, and textures only as far as asked
+  residency.setItemDetail({.up = {{7, 1000}, {8, 10}}});
+  EXPECT_TRUE(residency.detailBelowFull());
+  EXPECT_EQ(residency.nextDetailUp(50)->item, 8u);
+  EXPECT_FALSE(residency.nextDetailUp(50).has_value());
+  EXPECT_EQ(residency.nextDetailUp(1000)->item, 7u);
+  EXPECT_FALSE(residency.detailBelowFull());
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 256u);
+  drain(gpu);
+  gpu.setImageHeadroom(1ll << 40);
+  EXPECT_EQ(residency.raiseImages(f.scene, uint64_t(1) << 40, 512), 1u);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 512u);
+  EXPECT_EQ(residency.raiseImages(f.scene, uint64_t(1) << 40, 512), 0u) << "as far as asked";
+  residency.raiseImages(f.scene, uint64_t(1) << 40);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "raised: ");
 }
 
 // Memory another program took: nothing in the scene changed, and nothing happens until the watch asks

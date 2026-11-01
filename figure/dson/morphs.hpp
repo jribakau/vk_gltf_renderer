@@ -22,9 +22,10 @@ namespace fv::dson {
 // A built mesh a morph can target.
 struct MeshRef
 {
-  // index into SceneGraph::meshes
-  int                              mesh = -1;
-  std::shared_ptr<mesh::BuiltMesh> geo;
+  // index into SceneGraph::meshes, and its cage's vertices: all a morph is made from. It holds no mesh: a
+  // mesh can be made again over its cage (mesh::remade), and the one it was should go.
+  int mesh         = -1;
+  int cageVertices = 0;
   // "file#geometryId" of the geometry this mesh came from, lowercase
   std::string geometryKey;
   // scene node and geometry instance ids: what a scene's morph dials name as their parent
@@ -32,8 +33,8 @@ struct MeshRef
   // geometry shells drawn as copies of this mesh (shell.hpp): a morph of it moves them too
   struct Shell
   {
-    int                              mesh = -1;
-    std::shared_ptr<mesh::BuiltMesh> geo;
+    int mesh         = -1;
+    int cageVertices = 0;
   };
   std::vector<Shell> shells;
 };

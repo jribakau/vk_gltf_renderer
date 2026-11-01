@@ -925,6 +925,7 @@ void widenRibbons(mesh::BuiltMesh& m, const std::vector<std::array<double, 2>>& 
   if(!m.ribbon || !m.ribbon->offsets.empty())
     return;
   auto&              r = *m.ribbon;
+  r.widths           = widths;
   std::vector<float> half(r.along.size(), 0.f);
   // each vertex moves on its own, and a hair has millions of them
   jobs::parallelFor(r.along.size(), 16384, [&](size_t begin, size_t end) {
@@ -976,6 +977,12 @@ BuiltMesh build(const MeshInput& m)
   out.polyCount       = std::max(np, 0);
   out.subdivisionSurface = m.subdivisionSurface;
   out.cagePositions   = m.positions;
+  if(m.lines || m.subdivisionSurface)
+  {
+    auto source = std::make_shared<MeshInput>(m);
+    std::vector<float>().swap(source->positions);
+    out.source = std::move(source);
+  }
   if(np > 0)
   {
     out.cagePolyStart = m.polyStart;
@@ -1204,6 +1211,29 @@ BuiltMesh build(const MeshInput& m)
   return out;
 }
 
+std::shared_ptr<BuiltMesh> remade(const BuiltMesh& mesh, std::span<const float> cage, int level, float keep)
+{
+  if(!mesh.source)
+    return nullptr;
+  MeshInput input = *mesh.source;
+  input.positions.assign(cage.begin(), cage.end());
+  if(input.subdivisionSurface)
+    input.level = level;
+  if(input.lines)
+    input.lines->keep = keep;
+  auto out = std::make_shared<BuiltMesh>(build(input));
+  if(out->ribbon && mesh.ribbon && !mesh.ribbon->widths.empty())
+  {
+    // what the strands left in have to cover
+    const double                       scale = double(mesh.source->lines->keep) / double(keep);
+    std::vector<std::array<double, 2>> widths = mesh.ribbon->widths;
+    for(std::array<double, 2>& w : widths)
+      w = {w[0] * scale, w[1] * scale};
+    widenRibbons(*out, widths);
+  }
+  return out;
+}
+
 uint64_t buildBytes(const MeshInput& m)
 {
   // from what they held when counted (docs/scene-memory-plan.md): a strand's triangle takes more, as it
@@ -1235,6 +1265,12 @@ uint64_t ramBytes(const BuiltMesh& m)
   uint64_t   bytes = of(m.position) + of(m.uv) + of(m.normal) + of(m.fullIndex) + of(m.groups) + of(m.triPoly) + of(m.renderIndex) + of(m.firstSplit)
                    + of(m.nextSplit) + of(m.renderTris) + of(m.normalStart) + of(m.normalTriangles) + of(m.dsonTris) + of(m.cagePolyStart) + of(m.cagePolyVerts) + of(m.cageLineStart)
                    + of(m.cageLineVerts) + of(m.cagePositions);
+  if(m.source)
+  {
+    bytes += of(m.source->polyStart) + of(m.source->polyVerts) + of(m.source->polyMaterial) + of(m.source->uvs) + of(m.source->overrides);
+    if(m.source->lines)
+      bytes += of(m.source->lines->start) + of(m.source->lines->verts) + of(m.source->lines->material);
+  }
   if(m.ribbon)
     bytes += of(m.ribbon->side) + of(m.ribbon->along) + of(m.ribbon->material) + of(m.ribbon->rootFade) + of(m.ribbon->shift) + of(m.ribbon->offsets);
   if(m.refinement)
@@ -1353,17 +1389,25 @@ SkinOutput skin(const BuiltMesh& mesh, const SkinInput& s)
 
 RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d)
 {
+  return target(mesh.dsonVertexCount, d);
+}
+
+RenderTarget target(int cageVertices, const CageDeltas& d)
+{
   std::vector<uint32_t> cageIndices;
   std::vector<float>    cageDeltas;
   for(size_t i = 0; i < d.verts.size(); i++)
   {
     const int v = d.verts[i];
-    if(v < 0 || v >= mesh.dsonVertexCount)
+    if(v < 0 || v >= cageVertices)
       continue;
     cageIndices.push_back(uint32_t(v));
     cageDeltas.insert(cageDeltas.end(), d.deltas.begin() + i * 3, d.deltas.begin() + i * 3 + 3);
   }
-  return target(mesh, std::move(cageIndices), std::move(cageDeltas));
+  RenderTarget out;
+  out.cageIndices = std::move(cageIndices);
+  out.cageDeltas  = std::move(cageDeltas);
+  return out;
 }
 
 RenderTarget target(const BuiltMesh&, std::vector<uint32_t> cageIndices, std::vector<float> cageDeltas)
@@ -1376,8 +1420,17 @@ RenderTarget target(const BuiltMesh&, std::vector<uint32_t> cageIndices, std::ve
 
 const RenderTarget::Drawn& RenderTarget::drawn(const BuiltMesh& mesh) const
 {
-  std::call_once(m_lazy->once, [&] {
-    Drawn&         out = m_lazy->drawn;
+  const size_t key  = mesh.position.size() + 1;
+  const auto   made = [&] {
+    const size_t had = m_lazy->madeFor.load(std::memory_order_acquire);
+    return had == key || had == kGiven;
+  };
+  if(made())
+    return m_lazy->drawn;
+  std::lock_guard lock(m_lazy->mutex);
+  if(!made())
+  {
+    Drawn          out;
     subdiv::Sparse render;
     if(mesh.refinement)
       render = subdiv::refineSparse(*mesh.refinement, cageIndices, cageDeltas, 3);
@@ -1413,22 +1466,24 @@ const RenderTarget::Drawn& RenderTarget::drawn(const BuiltMesh& mesh) const
             }
       }
     });
-    m_lazy->made = true;
-  });
+    m_lazy->drawn = std::move(out);
+    m_lazy->madeFor.store(key, std::memory_order_release);
+  }
   return m_lazy->drawn;
 }
 
 const RenderTarget::Drawn* RenderTarget::drawnIfMade() const
 {
-  return m_lazy->made ? &m_lazy->drawn : nullptr;
+  return m_lazy->madeFor.load(std::memory_order_acquire) != 0 ? &m_lazy->drawn : nullptr;
 }
 
 void RenderTarget::setDrawn(Drawn d)
 {
-  std::call_once(m_lazy->once, [&] {
-    m_lazy->drawn = std::move(d);
-    m_lazy->made  = true;
-  });
+  std::lock_guard lock(m_lazy->mutex);
+  if(m_lazy->madeFor.load(std::memory_order_acquire) != 0)
+    return;
+  m_lazy->drawn = std::move(d);
+  m_lazy->madeFor.store(kGiven, std::memory_order_release);
 }
 
 bool RenderTarget::moves() const

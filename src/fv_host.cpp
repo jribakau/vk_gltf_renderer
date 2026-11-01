@@ -54,6 +54,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                                                  {"letGoHidden", r.letGoHidden}, {"settled", r.settled}, {"budgetBytes", r.budget}, {"usedBytes", r.used},
                                                  {"geometryBytes", r.geometry}, {"textureBytes", r.textures}, {"nextToGo", r.nextToGo}});
   });
+  renderer->setDetailSink([impl](uint64_t item, bool up) { impl->stepItemDetail(item, up); });
 
   cmds.add("settings.apply", [impl](const Json& args) {
     std::lock_guard lock(impl->settingsMutex);
@@ -501,6 +502,7 @@ void FvHost::onDetach()
   Impl& s = *m_impl;
   s.renderer->setNoticeSink({});
   s.renderer->setMemorySink({});
+  s.renderer->setDetailSink({});
   s.stopAccepting();
   s.protocol->setStopHook({});
   s.loadGeneration++;  // loads still running drop their result

@@ -1413,7 +1413,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         meshOut.name = job.shell ? firstString({{job.node, "label"}, {job.node, "name"}}, gid) : firstString({{&geo, "label"}, {&geo, "name"}}, gid);
         {
           MeshRef ref;
-          ref.geo         = meshOut.geo;
+          ref.cageVertices = meshOut.geo->dsonVertexCount;
           ref.geometryKey = lowerCase(gres->file + "#" + getString(&geo, "id"));
           // a morph of the geometry targets the source, which hands it on (MeshRef::shells)
           if(job.shell)
@@ -1457,7 +1457,7 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           if(auto src = meshNodesOf.find(job.shell->source); src != meshNodesOf.end() && !src->second.empty())
             for(MeshRef& r : out.morphs.meshes)
               if(r.mesh == scene.nodes[size_t(src->second[0])].mesh)
-                r.shells.push_back({meshNode.mesh, m.geo});
+                r.shells.push_back({meshNode.mesh, m.geo->dsonVertexCount});
         scene.meshes.push_back(std::move(m));
         made.push_back(scene.add(std::move(meshNode)));
       }

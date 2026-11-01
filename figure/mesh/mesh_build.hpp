@@ -126,6 +126,8 @@ struct Ribbon
   std::vector<float> offsets;
   // Median distance between neighbouring roots, cm.
   float spacing = 0;
+  // Root and tip per material, cm, as it was widened: what a share of its strands has to cover (remade)
+  std::vector<std::array<double, 2>> widths;
 };
 
 struct Group
@@ -176,11 +178,17 @@ struct BuiltMesh
   Bounds                                     bounds;
   // cage polygons a worn item hides (a geograft replaces them), by the item's key
   std::map<std::string, std::vector<int32_t>> hiddenPolys;
+  // What it was built from, when it can be drawn finer or coarser (subdivided, or strand hair): remade. Its
+  // positions are left out, cagePositions having them as they are now.
+  std::shared_ptr<const MeshInput> source;
 
   bool refined() const { return refinement != nullptr; }
 };
 
 BuiltMesh build(const MeshInput& m);
+// The mesh again at another level, or with another share of its strands, over `cage`: everything that lives
+// on the cage stays true of it (morphs, a pose, a drape, bindings). Null when it has no source.
+std::shared_ptr<BuiltMesh> remade(const BuiltMesh& mesh, std::span<const float> cage, int level, float keep);
 // Roughly what building it takes of system memory at its peak: from the counts, before it is built, to
 // tell whether several can go side by side.
 uint64_t buildBytes(const MeshInput& m);
@@ -254,8 +262,8 @@ struct RenderTarget
   std::vector<uint32_t> cageIndices;
   std::vector<float>    cageDeltas;
 
-  // Refined onto `mesh`'s render vertices and spread to every UV split, once, by whichever thread
-  // asks first (the others wait for it).
+  // Refined onto `mesh`'s render vertices and spread to every UV split, once for a mesh of its size, by
+  // whichever thread asks first (the others wait for it). The size is how a mesh made again shows.
   const Drawn& drawn(const BuiltMesh& mesh) const;
   // The drawn deltas, when made or given; else null.
   const Drawn* drawnIfMade() const;
@@ -267,14 +275,16 @@ struct RenderTarget
 private:
   struct Lazy
   {
-    std::once_flag    once;
-    std::atomic<bool> made{false};
-    Drawn             drawn;
+    std::mutex          mutex;
+    std::atomic<size_t> madeFor{0};  // 0: nothing made; else the drawn positions' size, plus one
+    Drawn               drawn;
   };
+  static constexpr size_t kGiven = SIZE_MAX;  // madeFor of what setDrawn gave: good for any
   std::unique_ptr<Lazy> m_lazy = std::make_unique<Lazy>();
 };
 
-// A morph target from cage deltas.
+// A morph target from cage deltas, those of vertices the cage doesn't have left out.
+RenderTarget target(int cageVertices, const CageDeltas& d);
 RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d);
 // The same from cage vertices already in range, taken over rather than copied (a projection onto a
 // hair's strands lists a million).

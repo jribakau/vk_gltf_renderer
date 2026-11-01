@@ -316,7 +316,10 @@ public:
   uint64_t lowerableImageBytes(uint32_t leastExtent) const { return m_residency.lowerableImageBytes(leastExtent); }
   // the textures following GPU memory (Residency::lowerImages, raiseImages)
   void     lowerImages(uint64_t slack) { m_residency.lowerImages(slack); }
-  uint32_t raiseImages(const RetainedScene& scene, uint64_t room) { return m_residency.raiseImages(scene, room); }
+  uint32_t raiseImages(const RetainedScene& scene, uint64_t room, uint32_t upToExtent = 0) { return m_residency.raiseImages(scene, room, upToExtent); }
+  void     setItemDetail(ItemDetail detail) { m_residency.setItemDetail(std::move(detail)); }
+  std::vector<uint64_t>         takeDetailAsks() { return m_residency.takeDetailAsks(); }
+  std::optional<ItemDetail::Up> nextDetailUp(uint64_t room) { return m_residency.nextDetailUp(room); }
   uint32_t bringBack(const RetainedScene& scene, uint64_t room) { return m_residency.bringBack(scene, room); }
   void     setLive(std::set<MeshId> meshes) { m_residency.setLive(std::move(meshes)); }
   // the features the live shader variant has compiled in; none: every one (Residency::setShaderFeatures)

@@ -206,6 +206,9 @@ public:
   // Brings the drawn vertices of cageOnly meshes up to their morphs (an export reads them); reported
   // as changes.
   void catchUp();
+  // The mesh was made again over its cage (mesh::remade): its drawn vertices hold no morph now, and what
+  // was kept of the old ones goes. Its morphed cage stays as it is. Owning thread.
+  void meshRemade(int mesh);
 
   // The vertices changed since last asked; clears them.
   std::vector<MeshChange> takeChanges();
