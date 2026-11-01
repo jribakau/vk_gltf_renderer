@@ -46,6 +46,8 @@ public:
   bool               drawsRetainedScene() const override { return replaces > 0; }
   void               replaceHostScene() override { replaces++; }
   void               prefetchImage(const std::filesystem::path&, bool) override { prefetches++; }
+  void               setLiveMeshes(std::set<rs::MeshId> meshes) override { liveMeshes = std::move(meshes); }
+  std::set<rs::MeshId> liveMeshes;
   void               dropDecodedAhead() override { decodedAheadDropped++; }
   void               decodeAhead(bool allowed) override { decodingAhead = allowed; }
   std::atomic<int>   prefetches{0};

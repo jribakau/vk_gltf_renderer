@@ -478,6 +478,15 @@ the levels the GPU made, and comes back all at once. Room back, what lies in sys
 the textures. These swaps, and a BLAS compacted, leave the picture as it was (`SyncResult::samePicture`), so a
 still goes on through them and starts once more when textures stop moving.
 
+Under the same pressure, what nobody is editing settles (`Residency::settle`), before any texture comes down: a
+mesh with drawers only, none written for `settleQuietFrames`, the selected figure's last of all (`setLive`, which
+wakes it as it becomes selected). What only remakes it goes: tables, cage, skin inputs, morph deltas, its own streams, last
+frame's positions. Its drawers' outputs stay, so the picture does, and its BVHs are built again compacted, one a
+sync and only with room for it beside the old one (`m_settleBuilds`). Anything that would change it wakes it first
+in the same sync (`wakeWhatChanged`: a pose, a morph weight, a vertex edit, a new draw, being selected); an unchanged
+wake writes nothing. A drawer's matrices are written before each run, so a pack laid out again no longer runs every
+drawer: a wear doesn't skin every other figure.
+
 Grey maps are half the size from their next cook on: the cooker writes one grey as BC4 with a `KTXswizzle`
 (`texcache.rs GreyMap`), which the images it cooked before need not, and a lobe's roughness from the file the
 base roughness uses asks for the same image.

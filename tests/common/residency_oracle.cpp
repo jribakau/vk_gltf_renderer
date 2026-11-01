@@ -402,7 +402,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     }
     // a refined mesh's streams are what the GPU makes from its cage
     std::optional<MeshRecord> refined;
-    if(mesh->refine)
+    if(given->refine && (mesh->refine || mesh->settled))
       refined = refinedBase(*given);
     const MeshRecord*           record = refined ? &*refined : given;
     const Residency::DrawerGpu* drawer = prim->drawer.isNone() ? nullptr : residency.drawer(prim->drawer, prim->mesh);

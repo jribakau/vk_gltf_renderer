@@ -117,6 +117,8 @@ struct ResidencyOptions
   // and replaced by its compacted copy once the size is known; a vertex edit builds it again
   // refittable
   bool compactStatic = false;
+  // A mesh settles only when nothing has written it for this many frames: a clip or a drag rules it out
+  uint64_t settleQuietFrames = 300;
 };
 
 // What makes two decodes the same image: the file (its path, size and write time) or the bytes or
@@ -166,6 +168,8 @@ public:
   {
     BufferHandle         positions, normals, tangents, uv0, uv1, colors;
     bool                 hasBase = false;  // positions, normals and tangents are wanted (ensureBase)
+    bool                 settled = false;  // Residency::settle: only what is drawn is held
+    bool                 hadBase = false;  // settled: it wants those again when it wakes
     OwnerTag             owner;
     uint32_t             vertexCount = 0;
     uint32_t             contentRev  = 0;
@@ -227,6 +231,7 @@ public:
     std::vector<glm::mat4> lastPose;
     std::vector<glm::mat4> lastJoints;  // what the skin ran with
     bool                   ran = false;
+    uint64_t               writtenAt = 0;  // the frame its passes last ran
   };
   using DrawerKey = std::pair<EntityId, MeshId>;
   // A submesh drawn: its index buffer, BLAS and bounds
@@ -354,6 +359,23 @@ public:
   // What lies in system memory for want of room comes back, as far as `room` bytes go. How many things
   // will: an image is copied in the next sync, a mesh made again there, and nothing is lost meanwhile.
   uint32_t bringBack(const RetainedScene& scene, uint64_t room);
+  // A mesh not being edited settles: everything that only remakes it goes (its tables, cage, skin inputs and
+  // morph deltas, its own streams, last frame's positions), and its BVH is built again compacted when there
+  // is room beside the old one. What is drawn stays, and the picture with it. Anything that changes it wakes
+  // it, in the sync it changes. Only a mesh with no static draws.
+  void settle(MeshId mesh);
+  bool isSettled(MeshId mesh) const;
+  // How many are settled now
+  size_t settledCount() const;
+  // What is being edited (the selected figure): woken as it becomes so, ready for the edit, and the last to
+  // settle. Between syncs.
+  void setLive(std::set<MeshId> meshes)
+  {
+    for(MeshId id : meshes)
+      if(!m_live.count(id))
+        m_wakeAsked.insert(id);
+    m_live = std::move(meshes);
+  }
   // What the next step of the Fit would give up, in a few words; empty: nothing can
   std::string nextToGo(const RetainedScene& scene) const;
   // The next sync decodes images lowered earlier a level or more larger, as far as `room` bytes go
@@ -540,6 +562,12 @@ private:
   std::set<ImageKey> pinnedImages(const RetainedScene& scene) const;
   // the meshes nothing shows, what each holds
   std::vector<std::pair<MeshId, uint64_t>> hiddenMeshes() const;
+  // the meshes that could settle, in the order they would, what each would give back
+  std::vector<std::pair<MeshId, uint64_t>> settleableMeshes() const;
+  // A settled mesh made ready again; nothing is written, so nothing moves
+  void wake(const RetainedScene& scene, MeshId id);
+  // what changed since the last sync, on what is settled, or what became live
+  void wakeWhatChanged(RetainedScene& scene, const std::set<MeshId>& edited);
   // the images of the materials that say they are favoured, and of what shares their files
   std::set<ImageKey> favouredImages(const RetainedScene& scene) const;
   void     trimGrace(uint64_t budget);
@@ -658,6 +686,9 @@ private:
   bool                                                 m_compactedOnly = false;  // this sync's BLASes were only compacted
   std::set<MeshId>                                     m_letGoHidden;  // of m_parked: while hidden, for the Fit
   std::set<MeshId>                                     m_bringBack;    // the next sync makes these again
+  std::set<uint32_t>                                   m_settleBuilds;  // prims of settled meshes, to build again compacted
+  std::set<MeshId>                                     m_live, m_wakeAsked;  // setLive
+  bool                                                 m_woke = false;  // this sync uploaded what a settled mesh let go of
   uint64_t                                             m_graceBytes   = 0;
   uint64_t                                             m_releaseClock = 0;
   ImageCounts                                          m_imageCounts;

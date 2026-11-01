@@ -30,6 +30,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -68,6 +70,8 @@ public:
   virtual void replaceHostScene() = 0;
   // Decodes an image now, on the calling thread (a load or wear worker), for the next replace
   virtual void prefetchImage(const std::filesystem::path& diskPath, bool srgb) = 0;
+  // What is being edited, ready for it: it doesn't settle under memory pressure, and wakes if it has
+  virtual void setLiveMeshes(std::set<rs::MeshId> meshes) = 0;
   // Lets go of what was decoded ahead, and whether to go on doing so: system memory is short
   virtual void dropDecodedAhead() = 0;
   virtual void decodeAhead(bool allowed) = 0;
@@ -97,6 +101,7 @@ public:
     uint32_t parked       = 0;          // meshes that found no memory anywhere, and aren't drawn
     uint64_t spilledBytes = 0;          // what lies in system memory, in steps worth mentioning
     uint32_t letGoHidden  = 0;          // items let go of while hidden: they come back when shown
+    uint32_t settled      = 0;          // items holding only what is drawn: the next edit waits a moment
     // the bar: all of it in steps worth mentioning. `budget` is what the driver offers, `used` what it counts
     uint64_t budget = 0, used = 0, geometry = 0, textures = 0;
     std::string nextToGo;               // what gives way next, in a few words

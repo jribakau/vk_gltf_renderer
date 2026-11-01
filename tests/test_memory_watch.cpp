@@ -311,3 +311,20 @@ TEST(MemoryPlan, WhatComesBackFirst)
   EXPECT_EQ(rs::raiseToFit(whole, none, all), all);
   EXPECT_EQ(whole[0].skip, 0u);
 }
+
+// Settling comes after what nothing looks at, and before any texture
+TEST(MemoryPlan, SettlingComesBeforeTextures)
+{
+  std::vector<rs::ImageFit>   images{fitOf(1024)};
+  const std::vector<uint64_t> hidden{100}, settle{500, 200};
+  const rs::FitRungs          rungs{.idleBytes = 10, .hidden = hidden, .settle = settle, .images = images, .leastExtent = 64};
+  rs::FitPlan plan = rs::planToFit(110, rungs);
+  EXPECT_TRUE(plan.settled.empty());
+  plan = rs::planToFit(111, rungs);
+  EXPECT_EQ(plan.settled, (std::vector<size_t>{0}));
+  EXPECT_EQ(plan.settleBytes, 500u);
+  EXPECT_EQ(images[0].skip, 0u);
+  plan = rs::planToFit(810 + 1, rungs);
+  EXPECT_EQ(plan.settled, (std::vector<size_t>{0, 1}));
+  EXPECT_EQ(images[0].skip, 1u);
+}

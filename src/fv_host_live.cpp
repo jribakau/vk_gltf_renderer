@@ -97,6 +97,15 @@ void FvHost::Impl::watchSystemMemory()
   if(now - lastRamReading < std::chrono::seconds(1))
     return;
   lastRamReading                    = now;
+  // what is selected, ready to be edited
+  {
+    std::set<rs::MeshId> live;
+    if(const auto p = view ? findProp(view->selectedProp()) : nullptr; p && p->figure && p->figure->feed)
+      for(size_t m = 0; m < p->figure->fig->loaded.scene.meshes.size(); m++)
+        if(const rs::MeshId id = p->figure->feed->meshOf(int(m)); !id.isNone())
+          live.insert(id);
+    renderer->setLiveMeshes(std::move(live));
+  }
   const fv::io::SystemMemory memory = fv::io::systemMemory();
   if(!memory.known)
     return;

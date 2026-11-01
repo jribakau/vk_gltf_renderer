@@ -42,6 +42,7 @@ struct FitRungs
 {
   uint64_t                  idleBytes = 0;  // images nothing samples: nothing is lost
   std::span<const uint64_t> hidden;         // items nothing shows, whole: nothing is lost until shown, then they're made again
+  std::span<const uint64_t> settle;         // items, in the order they go: the picture stays, and the next edit waits a moment
   std::span<ImageFit>       images;         // top levels, down to `leastExtent`; the plan leaves them out in place
   uint32_t                  leastExtent = 0;
 };
@@ -51,8 +52,10 @@ struct FitPlan
   uint64_t            idle = 0;    // of the idle images' bytes
   std::vector<size_t> hidden;      // of FitRungs::hidden, these let go of
   uint64_t            hiddenBytes = 0;
+  std::vector<size_t> settled;     // of FitRungs::settle, these settle
+  uint64_t            settleBytes = 0;
   uint64_t            images      = 0;  // what the levels left out free
-  uint64_t            freed() const { return idle + hiddenBytes + images; }
+  uint64_t            freed() const { return idle + hiddenBytes + settleBytes + images; }
 };
 
 // What to give up for `wanted` bytes, less when there isn't that much to give up.
@@ -66,16 +69,25 @@ inline FitPlan planToFit(uint64_t wanted, const FitRungs& rungs)
   took(out.idle);
 
   // the largest first, so that as few as possible have to be made again
-  std::vector<size_t> order(rungs.hidden.size());
-  std::iota(order.begin(), order.end(), size_t(0));
-  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return rungs.hidden[a] > rungs.hidden[b]; });
-  for(size_t i : order)
+  const auto largestFirst = [&](std::span<const uint64_t> bytes, std::vector<size_t>& chosen, uint64_t& sum) {
+    std::vector<size_t> order(bytes.size());
+    std::iota(order.begin(), order.end(), size_t(0));
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return bytes[a] > bytes[b]; });
+    for(size_t i : order)
+    {
+      if(left == 0)
+        break;
+      chosen.push_back(i);
+      sum += bytes[i];
+      took(bytes[i]);
+    }
+  };
+  largestFirst(rungs.hidden, out.hidden, out.hiddenBytes);
+  for(size_t i = 0; i < rungs.settle.size() && left > 0; i++)
   {
-    if(left == 0)
-      break;
-    out.hidden.push_back(i);
-    out.hiddenBytes += rungs.hidden[i];
-    took(rungs.hidden[i]);
+    out.settled.push_back(i);
+    out.settleBytes += rungs.settle[i];
+    took(rungs.settle[i]);
   }
 
   if(left > 0)

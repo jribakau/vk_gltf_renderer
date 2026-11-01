@@ -310,6 +310,239 @@ TEST(RetainedDeform, WhatOnlyAPoseReadsGoesAtRestAndComesBackWithThePose)
   EXPECT_LT(glm::distance(drawn[1], turned * (rig.scene.mesh(rig.mesh)->cage[1] + kRibbonWidth)), 1e-5f);
 }
 
+// A mesh not being edited settles: it holds only what rays read, in a compacted BVH, and draws what it drew.
+// Nothing runs while nothing changes, and the still goes on.
+TEST(RetainedDeform, ASettledMeshHoldsOnlyWhatIsDrawn)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 0});
+  residency.replace(rig.scene);
+  const Residency::DrawerGpu& d = *residency.drawer(rig.body, rig.mesh);
+  Transform t;
+  t.rotation = glm::angleAxis(glm::radians(30.f), glm::vec3(0, 0, 1));
+  rig.scene.setLocal(rig.bone, t);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  const std::vector<glm::vec3> drew = readBack<glm::vec3>(gpu, d.positions);
+  const GpuBytes               live = residency.ledger().total;
+  EXPECT_GT(live.remake, 0u);
+
+  residency.settle(rig.mesh);
+  EXPECT_TRUE(residency.isSettled(rig.mesh));
+  gpu.beginFrame();
+  const SyncResult building = residency.sync(rig.scene);  // its BVH built again, to be compacted
+  EXPECT_TRUE(building.samePicture);
+  drain(gpu);
+  gpu.beginFrame();
+  const SyncResult compacted = residency.sync(rig.scene);
+  EXPECT_TRUE(compacted.samePicture);
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "settled: ");
+
+  const GpuBytes settled = residency.ledger().total;
+  EXPECT_EQ(settled.remake, 0u);
+  EXPECT_EQ(settled.unread, 0u);
+  EXPECT_EQ(readBack<glm::vec3>(gpu, d.positions), drew);
+  EXPECT_TRUE(gpu.blas(residency.prim(uint32_t(d.prims[0]))->blas)->compacted);
+  EXPECT_FALSE(residency.meshGpu(rig.mesh)->refine);
+  EXPECT_FALSE(residency.meshGpu(rig.mesh)->cageJoints);
+
+  // and stays so while nothing changes
+  gpu.beginFrame();
+  const SyncResult quiet = residency.sync(rig.scene);
+  EXPECT_FALSE(quiet.changed);
+  EXPECT_EQ(residency.deformCounts().skins, 0u);
+  EXPECT_TRUE(residency.isSettled(rig.mesh));
+}
+
+// A pose wakes it, in the sync the pose changes, and from there it is as if it had never settled
+TEST(RetainedDeform, APoseWakesASettledMeshAsIfItHadNeverSettled)
+{
+  RibbonRig      settled, control;
+  FakeGpuBackend gpuA, gpuB;
+  Residency      a(gpuA, {.settleQuietFrames = 0}), b(gpuB);
+  a.replace(settled.scene);
+  b.replace(control.scene);
+  const auto turn = [&](RibbonRig& rig, float degrees) {
+    Transform t;
+    t.rotation = glm::angleAxis(glm::radians(degrees), glm::vec3(0, 0, 1));
+    rig.scene.setLocal(rig.bone, t);
+  };
+  const auto step = [&] {
+    gpuA.beginFrame();
+    gpuB.beginFrame();
+    a.sync(settled.scene);
+    b.sync(control.scene);
+  };
+  turn(settled, 20);
+  turn(control, 20);
+  step();
+  a.settle(settled.mesh);
+  step();
+  drain(gpuA);
+  drain(gpuB);
+  ASSERT_TRUE(a.isSettled(settled.mesh));
+
+  turn(settled, 70);
+  turn(control, 70);
+  step();
+  EXPECT_FALSE(a.isSettled(settled.mesh));
+  expectClean(settled.scene, a, gpuA, "woken: ");
+  EXPECT_TRUE(a.meshGpu(settled.mesh)->refine);
+  const Residency::DrawerGpu& da = *a.drawer(settled.body, settled.mesh);
+  const Residency::DrawerGpu& db = *b.drawer(control.body, control.mesh);
+  EXPECT_EQ(readBack<glm::vec3>(gpuA, da.positions), readBack<glm::vec3>(gpuB, db.positions));
+  // what the last frame drew, for DLSS, as if it had never gone
+  EXPECT_EQ(readBack<glm::vec3>(gpuA, da.prevPositions), readBack<glm::vec3>(gpuB, db.prevPositions));
+  // it refits from then on
+  EXPECT_FALSE(gpuA.blas(a.prim(uint32_t(da.prims[0]))->blas)->compacted);
+  drain(gpuA);
+  expectClean(settled.scene, a, gpuA, "after its retires: ");
+}
+
+// Waking with nothing changed writes nothing: no pass, no refit, and the still goes on. A second drawer on
+// a settled mesh wakes it too, and is what it should be.
+TEST(RetainedDeform, WakingWithNothingChangedWritesNothing)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 0});
+  residency.replace(rig.scene);
+  residency.settle(rig.mesh);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  drain(gpu);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  ASSERT_TRUE(residency.isSettled(rig.mesh));
+
+  residency.setLive({rig.mesh});
+  gpu.beginFrame();
+  const SyncResult woke = residency.sync(rig.scene);
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  EXPECT_EQ(residency.deformCounts().skins, 0u);
+  EXPECT_FALSE(woke.changed && !woke.samePicture);
+  expectClean(rig.scene, residency, gpu, "woken: ");
+
+  // it wakes as it becomes live, not for being so: short of memory it can settle after everything else
+  residency.settle(rig.mesh);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_TRUE(residency.isSettled(rig.mesh));
+  residency.setLive({});
+  residency.setLive({rig.mesh});
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  residency.setLive({});
+
+  residency.settle(rig.mesh);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  const EntityId second = rig.scene.createEntity("second", {}, rig.root);
+  MeshInstance   instance;
+  instance.parts.push_back({rig.mesh, {rig.material}});
+  instance.skin = rig.skin;
+  rig.scene.setMeshInstance(second, instance);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  ASSERT_TRUE(residency.drawer(second, rig.mesh));
+  EXPECT_TRUE(residency.drawer(second, rig.mesh)->posed);
+  EXPECT_EQ(residency.deformCounts().skins, 1u) << "only the new one runs";
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "a second drawer: ");
+}
+
+// What is being edited settles after everything else
+TEST(RetainedDeform, WhatIsBeingEditedSettlesLast)
+{
+  RibbonRig    rig;
+  const MeshId other = rig.scene.addMesh(ribbonPiece());
+  const EntityId second = rig.scene.createEntity("second", {}, rig.root);
+  MeshInstance instance;
+  instance.parts.push_back({other, {rig.material}});
+  instance.skin = rig.skin;
+  rig.scene.setMeshInstance(second, instance);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 0});
+  residency.replace(rig.scene);
+  residency.setLive({rig.mesh});
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  EXPECT_TRUE(residency.isSettled(other));
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu);
+
+  // still short: it goes too, rather than anything showing a loss
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_TRUE(residency.isSettled(rig.mesh));
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu);
+}
+
+// A drawer that has been written of late doesn't settle: a clip or a drag rules it out
+TEST(RetainedDeform, OnlyWhatHasBeenQuietSettles)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 100});
+  residency.replace(rig.scene);
+  EXPECT_TRUE(residency.nextToGo(rig.scene).empty());
+  for(int i = 0; i < 101; i++)
+  {
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+  }
+  EXPECT_FALSE(residency.nextToGo(rig.scene).empty());
+  Transform t;
+  t.rotation = glm::angleAxis(glm::radians(5.f), glm::vec3(0, 0, 1));
+  rig.scene.setLocal(rig.bone, t);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_TRUE(residency.nextToGo(rig.scene).empty());
+}
+
+// Short of memory, what isn't being edited settles before any texture comes down
+TEST(RetainedDeform, ShortOfMemoryItSettlesBeforeATextureComesDown)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 0});
+  residency.replace(rig.scene);
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_TRUE(residency.isSettled(rig.mesh));
+  EXPECT_EQ(residency.settledCount(), 1u);
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu);
+}
+
+// A wear doesn't skin every other figure again: where a drawer's matrices go says nothing of what it holds
+TEST(RetainedDeform, ANewDrawerRunsAloneOfTheOthers)
+{
+  Rig            rig(false);
+  rig.bend(30);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  EXPECT_EQ(residency.deformCounts().skins, 1u);
+  const EntityId second = Rig::drawSkinned(rig.scene, rig.mesh, rig.skin, rig.material, rig.root);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(residency.deformCounts().skins, 1u) << "the new one's";
+  ASSERT_TRUE(residency.drawer(second, rig.mesh));
+  expectClean(rig.scene, residency, gpu);
+}
+
 // What doesn't pose (here a second entity, unskinned) brings back the mesh's own streams that only it
 // reads, refined from the cage then and not before
 TEST(RetainedDeform, AnUnposedDrawOfAPosedMeshBringsBackItsOwnStreams)

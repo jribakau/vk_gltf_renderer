@@ -51,7 +51,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   renderer->setNoticeSink([impl](const std::string& text) { impl->notice(text); });
   renderer->setMemorySink([impl](const HostRenderer::MemoryReport& r) {
     impl->protocol->events().snapshot("memory", {{"lowered", r.lowered}, {"largest", r.largest}, {"parked", r.parked}, {"spilledBytes", r.spilledBytes},
-                                                 {"letGoHidden", r.letGoHidden}, {"budgetBytes", r.budget}, {"usedBytes", r.used},
+                                                 {"letGoHidden", r.letGoHidden}, {"settled", r.settled}, {"budgetBytes", r.budget}, {"usedBytes", r.used},
                                                  {"geometryBytes", r.geometry}, {"textureBytes", r.textures}, {"nextToGo", r.nextToGo}});
   });
 

@@ -196,6 +196,8 @@ void Residency::clear()
   m_prevResting.clear();
   m_letGoHidden.clear();
   m_bringBack.clear();
+  m_settleBuilds.clear();
+  m_wakeAsked.clear();
   m_drawersWrittenLast.clear();
   m_compacting.clear();
   m_refineAcquired.clear();
@@ -684,7 +686,10 @@ Residency::MeshGpu& Residency::acquireMesh(const RetainedScene& scene, MeshId id
 {
   auto it = m_meshes.find(id);
   if(it != m_meshes.end())
+  {
+    wake(scene, id);  // something new draws it
     return it->second;
+  }
   MeshGpu& gpu = m_meshes[id];
   if(const MeshRecord* record = scene.mesh(id))
   {
@@ -1210,6 +1215,162 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::hiddenMeshes() const
   return out;
 }
 
+std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes() const
+{
+  const MemoryLedger                       ledger = this->ledger();
+  std::vector<std::pair<MeshId, uint64_t>> out;
+  for(const MemoryLedger::Mesh& m : ledger.meshes)
+  {
+    const auto mesh = m_meshes.find(m.mesh);
+    if(mesh == m_meshes.end() || mesh->second.settled || m_parked.count(m.mesh))
+      continue;
+    if(std::any_of(mesh->second.prims.begin(), mesh->second.prims.end(), [](int32_t p) { return p >= 0; }))
+      continue;  // a static draw reads what would go
+    bool drawn = false, quiet = true;
+    for(const auto& [key, d] : m_drawers)
+      if(key.second == m.mesh)
+      {
+        drawn = true;
+        quiet = quiet && d.ran && m_gpu.frame() >= d.writtenAt + m_options.settleQuietFrames;
+      }
+    if(drawn && quiet)
+      out.emplace_back(m.mesh, m.bytes.remake + m.bytes.working + m.bytes.unread + uint64_t(double(m.bytes.bvh) * (1.0 - kCompactedBlasShare)));
+  }
+  // the largest first, so that few have to wake; what is being edited after everything else
+  std::stable_sort(out.begin(), out.end(), [&](const auto& a, const auto& b) {
+    const bool liveA = m_live.count(a.first) > 0, liveB = m_live.count(b.first) > 0;
+    return liveA != liveB ? liveB : a.second > b.second;
+  });
+  return out;
+}
+
+void Residency::settle(MeshId id)
+{
+  const auto it = m_meshes.find(id);
+  if(it == m_meshes.end() || it->second.settled)
+    return;
+  // a static draw reads what would go, and a drawer that hasn't run has nothing yet to draw
+  if(std::any_of(it->second.prims.begin(), it->second.prims.end(), [](int32_t p) { return p >= 0; }))
+    return;
+  bool drawn = false;
+  for(const auto& [key, d] : m_drawers)
+    if(key.second == id)
+    {
+      if(!d.ran)
+        return;
+      drawn = true;
+    }
+  if(!drawn)
+    return;
+  MeshGpu& mesh = it->second;
+  mesh.settled  = true;
+  mesh.hadBase  = std::exchange(mesh.hasBase, false);
+  for(BufferHandle* b : {&mesh.positions, &mesh.normals, &mesh.tangents, &mesh.joints, &mesh.weights, &mesh.joints1, &mesh.weights1, &mesh.dualQuatShares,
+                         &mesh.cageJoints, &mesh.cageWeights, &mesh.cageJoints1, &mesh.cageWeights1, &mesh.cageShares, &mesh.positionDeltas, &mesh.normalDeltas,
+                         &mesh.tangentDeltas})
+    retireBuffer(std::exchange(*b, {}));
+  retireRefine(mesh);
+  for(auto& [key, d] : m_drawers)
+  {
+    if(key.second != id)
+      continue;
+    for(BufferHandle* b : {&d.morphedPositions, &d.morphedNormals, &d.morphedTangents, &d.prevPositions})
+      retireBuffer(std::exchange(*b, {}));
+    if(std::exchange(d.prevInUse, false))
+      for(int32_t p : d.prims)
+        if(p >= 0)
+          m_dirtyPrevPrims.insert(uint32_t(p));
+    m_prevResting.erase(key);
+    for(int32_t p : d.prims)
+      if(p >= 0)
+        m_settleBuilds.insert(uint32_t(p));
+  }
+}
+
+bool Residency::isSettled(MeshId id) const
+{
+  const auto it = m_meshes.find(id);
+  return it != m_meshes.end() && it->second.settled;
+}
+
+size_t Residency::settledCount() const
+{
+  size_t n = 0;
+  for(const auto& [id, mesh] : m_meshes)
+    n += mesh.settled ? 1 : 0;
+  return n;
+}
+
+void Residency::wake(const RetainedScene& scene, MeshId id)
+{
+  const auto it = m_meshes.find(id);
+  if(it == m_meshes.end() || !it->second.settled)
+    return;
+  const MeshRecord* record = scene.mesh(id);
+  if(!record)
+    return;
+  MeshGpu& mesh = it->second;
+  mesh.settled  = false;
+  m_woke        = true;
+  makeRefine(*record, mesh);
+  if(std::exchange(mesh.hadBase, false))
+    ensureBase(*record, mesh);
+  for(auto& [key, d] : m_drawers)
+  {
+    if(key.second != id)
+      continue;
+    makeDeformInputs(*record, mesh, d.skin, d.posed);
+    // what the morph writes for the skin to read is gone: both run at the next change of either
+    if(d.morph && d.skin)
+    {
+      const uint64_t n      = mesh.vertexCount;
+      const auto     output = [&](BufferHandle& buffer, uint64_t element, const char* name) {
+        buffer = m_gpu.createBuffer({.size = n * element, .usage = eBufferStorage, .name = name, .mayFail = true});
+      };
+      output(d.morphedPositions, sizeof(glm::vec3), "morphed positions");
+      if(!record->normals.empty())
+        output(d.morphedNormals, sizeof(glm::vec3), "morphed normals");
+      if(!record->tangents.empty())
+        output(d.morphedTangents, sizeof(glm::vec4), "morphed tangents");
+      d.lastWeights.clear();
+    }
+    // no need to compact what is about to move
+    for(int32_t p : d.prims)
+      if(p >= 0)
+        m_settleBuilds.erase(uint32_t(p));
+  }
+  if(m_gpu.takeAllocationFailed())
+    m_failedMeshes.insert(id);
+}
+
+void Residency::wakeWhatChanged(RetainedScene& scene, const std::set<MeshId>& edited)
+{
+  for(MeshId id : edited)
+    wake(scene, id);
+  for(MeshId id : std::exchange(m_wakeAsked, {}))
+    wake(scene, id);
+  for(const auto& [key, d] : m_drawers)
+  {
+    const auto mesh = m_meshes.find(key.second);
+    if(mesh == m_meshes.end() || !mesh->second.settled)
+      continue;
+    const Entity*     e      = scene.entity(d.entity);
+    const MeshRecord* record = scene.mesh(d.mesh);
+    if(!e || !e->mesh || !record)
+      continue;
+    bool changed = d.skin && scene.jointPose(d.entity) != d.lastPose;
+    if(d.morph && !changed)
+    {
+      const std::vector<float>& source = e->mesh->morphWeights.empty() ? record->targetWeights : e->mesh->morphWeights;
+      std::vector<float>        weights(d.targetCount, 0.f);
+      std::copy_n(source.begin(), std::min<size_t>(source.size(), d.targetCount), weights.begin());
+      changed = weights != d.lastWeights;
+    }
+    if(changed)
+      wake(scene, key.second);
+  }
+}
+
 std::set<Residency::ImageKey> Residency::favouredImages(const RetainedScene& scene) const
 {
   std::set<ImageKey> out;
@@ -1348,6 +1509,12 @@ std::string Residency::nextToGo(const RetainedScene& scene) const
     const MeshRecord* record = scene.mesh(largest->first);
     return "a hidden item" + (record && !record->name.empty() ? ": " + record->name : std::string());
   }
+  const std::vector<std::pair<MeshId, uint64_t>> settleable = settleableMeshes();
+  if(!settleable.empty())
+  {
+    const MeshRecord* record = scene.mesh(settleable.front().first);
+    return "what lets " + (record && !record->name.empty() ? record->name : std::string("an item")) + " be edited at once";
+  }
   std::vector<ResidentImage> residents;
   std::vector<ImageFit>      fits;
   residentFits(scene, false, residents, fits);
@@ -1403,8 +1570,14 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
   std::vector<uint64_t>                          hiddenBytes;
   for(const auto& [mesh, bytes] : hidden)
     hiddenBytes.push_back(bytes);
-  const FitPlan plan = planToFit(wanted, {.idleBytes = m_graceBytes, .hidden = hiddenBytes, .images = fits, .leastExtent = kLeastImageExtent});
+  const std::vector<std::pair<MeshId, uint64_t>> settleable = settleableMeshes();
+  std::vector<uint64_t>                          settleBytes;
+  for(const auto& [mesh, bytes] : settleable)
+    settleBytes.push_back(bytes);
+  const FitPlan plan = planToFit(wanted, {.idleBytes = m_graceBytes, .hidden = hiddenBytes, .settle = settleBytes, .images = fits, .leastExtent = kLeastImageExtent});
   trimGrace(m_graceBytes - plan.idle);
+  for(size_t i : plan.settled)
+    settle(settleable[i].first);
   for(size_t i : plan.hidden)
   {
     m_letGoHidden.insert(hidden[i].first);
@@ -1929,7 +2102,7 @@ void Residency::layOutPacks(SyncResult& result)
     weights += uint64_t(d.targetCount) * sizeof(float);
     if(d.dualQuat)
       dualQuats += uint64_t(d.jointCount) * sizeof(JointDualQuat);
-    d.ran = false;
+    // (its matrices are written before each run, wherever they go: a wear needn't skin every figure again)
   }
   // a pack grows by doubling, so a wear's new drawers seldom make it again
   const auto fit = [&](BufferHandle& buffer, uint64_t bytes, const char* name) {
@@ -2170,6 +2343,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
       continue;
     DrawerGpu& d = *run.d;
     d.ran        = true;
+    d.writtenAt  = m_gpu.frame();
     if(run.morph)
       d.lastWeights = run.weights;
     if(run.skin)
@@ -2313,6 +2487,9 @@ SyncResult Residency::sync(RetainedScene& scene)
   const bool compacting = !m_compacting.empty();
   // images asked of it between syncs (raiseImages, lowerImages)
   const bool imagesAsked = !m_decodeQueue.empty() || m_fitSlack;
+  // a settled mesh's BVH, looked at now and then: it waits for room
+  const bool settleBuild = !m_settleBuilds.empty() && m_gpu.frame() % 30 == 0;
+  const bool liveAsleep  = !m_wakeAsked.empty();
   const bool parkedChanged = std::exchange(m_parkedChanged, false);
   // what a large chain worked in goes once nothing has posed for a while
   constexpr uint64_t kChainScratchIdleFrames = 600;
@@ -2335,7 +2512,7 @@ SyncResult Residency::sync(RetainedScene& scene)
       retireBuffer(std::exchange(d->second.prevPositions, {}));
     it = m_prevResting.erase(it);
   }
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged)
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged && !settleBuild && !liveAsleep)
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);
@@ -2382,6 +2559,8 @@ SyncResult Residency::sync(RetainedScene& scene)
     edited.insert(m_heldMaterials.begin(), m_heldMaterials.end());
   if(!edited.empty())
     syncMaterials(scene, edited, result);
+  // what is about to change, ready first
+  wakeWhatChanged(scene, changes.meshes);
   result.imagesMoved = decodeQueued(scene, fresh || changes.structure);
   // refined meshes made resident now: their positions and normals from their cages, as every edit after
   if(!m_refineAcquired.empty())
@@ -2470,7 +2649,7 @@ SyncResult Residency::sync(RetainedScene& scene)
   result.changed     = result.changed || result.samePicture;
   m_compactedOnly    = false;
   // everything uploaded above, before the frame's shading reads it
-  if(result.changed)
+  if(result.changed || std::exchange(m_woke, false))
     m_gpu.barrier(GpuBarrier::eTransferToShader);
   // what this sync let go of and didn't take again
   trimGrace(m_options.textureGraceBytes);
@@ -2752,6 +2931,33 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   const bool otherRows = tlasRows;
   const bool compacted = !m_compacting.empty() && takeCompacted();
   tlasRows             = tlasRows || compacted;
+  // a settled mesh's BVH built again to be compacted, one a sync, once there is room for it beside the old
+  bool rebuilt = false;
+  for(auto it = m_settleBuilds.begin(); it != m_settleBuilds.end() && !rebuilt;)
+  {
+    const uint32_t p = *it;
+    if(p >= m_prims.size() || !m_prims[p] || !m_prims[p]->blas)
+    {
+      it = m_settleBuilds.erase(it);
+      continue;
+    }
+    Prim&          prim  = *m_prims[p];
+    const uint64_t bytes = m_gpu.accelBytes(prim.blas);
+    if(const std::optional<int64_t> room = m_gpu.imageHeadroom(); room && *room < int64_t(bytes * 2))
+      break;  // (and its scratch)
+    m_gpu.barrier(GpuBarrier::eTransferToBuild);
+    retireAccel(prim.blas);
+    prim.blas        = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowCompaction);
+    prim.compactable = prim.compacting = true;
+    prim.refits      = 0;
+    prim.outgrown    = false;
+    m_compacting.insert(p);
+    it      = m_settleBuilds.erase(it);
+    rebuilt = true;
+    if(m_gpu.takeAllocationFailed())
+      m_failedMeshes.insert(prim.mesh);
+  }
+  tlasRows = tlasRows || rebuilt;
   for(uint32_t p : builds)
   {
     build(*m_prims[p]);
@@ -2771,7 +2977,7 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   if(tlasRows || !builds.empty() || result.drawListChanged || result.tlasHandleChanged || result.verticesWritten || m_bitsChanged)
   {
     // the same surfaces, in a smaller BVH: nothing to start again for
-    const bool onlyCompacted = compacted && !otherRows && builds.empty() && !result.drawListChanged && !result.tlasHandleChanged && !result.verticesWritten && !m_bitsChanged;
+    const bool onlyCompacted = (compacted || rebuilt) && !otherRows && builds.empty() && !result.drawListChanged && !result.tlasHandleChanged && !result.verticesWritten && !m_bitsChanged;
     buildTlas();
     m_gpu.barrier(GpuBarrier::eBuildToTrace);
     m_compactedOnly = onlyCompacted;

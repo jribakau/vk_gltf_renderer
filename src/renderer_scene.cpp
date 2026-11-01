@@ -458,6 +458,12 @@ void GltfRenderer::applyMemoryFill(VkCommandBuffer cmd)
       vkCmdFillBuffer(cmd, m_memoryFill[m_memoryFillNext++ % m_memoryFill.size()].buffer, 0, VK_WHOLE_SIZE, uint32_t(m_resources.frameCount));
 }
 
+void GltfRenderer::setLiveMeshes(std::set<rs::MeshId> meshes)
+{
+  if(m_resources.retainedGpu)
+    m_resources.retainedGpu->setLive(std::move(meshes));
+}
+
 void GltfRenderer::watchMemory()
 {
   m_resources.imagePrefetch.dropOlderThan(120);
@@ -480,6 +486,7 @@ void GltfRenderer::watchMemory()
                 .parked       = uint32_t(gpu.residency().parkedForMemory()),
                 .spilledBytes = step(spilled),
                 .letGoHidden  = uint32_t(gpu.residency().letGoHidden().size()),
+                .settled      = uint32_t(gpu.residency().settledCount()),
                 .budget       = step(budget.budget),
                 .used         = step(budget.usage),
                 .geometry     = step(ledger.total.total() - ledger.total.images),

@@ -2102,6 +2102,11 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
           p.z += 0.25f;
         scene.setMeshVertices(mesh, moved, {});
       }
+      // what isn't being edited settles, and wakes for whatever comes
+      if(rng() % 5 == 0)
+        residency.settle(pick(meshes));
+      if(rng() % 7 == 0)
+        residency.setLive(rng() % 2 == 0 ? std::set<MeshId>{pick(meshes)} : std::set<MeshId>{});
       gpu.beginFrame();
       residency.sync(scene);
       morphs += residency.deformCounts().morphs;
