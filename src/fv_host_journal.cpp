@@ -86,6 +86,24 @@ std::vector<int> materialsNamed(const Json& v)
   return out;
 }
 
+// The surfaces a material.reset reaches on a figure (all without `material`) that have a shader preset chosen
+std::set<int> shaderChosen(const Prop& p, const Json& args)
+{
+  const std::vector<fv::Material>& materials = p.figure->fig->loaded.scene.materials;
+  std::set<int>                    out;
+  const auto                       note = [&](int i) {
+    if(i >= 0 && i < int(materials.size()) && materials[size_t(i)].shaderChoice)
+      out.insert(i);
+  };
+  if(args.contains("material"))
+    for(int i : materialsNamed(args["material"]))
+      note(i);
+  else
+    for(int i = 0; i < int(materials.size()); i++)
+      note(i);
+  return out;
+}
+
 const char* dforceModeName(fv::dforce::Mode m)
 {
   return m == fv::dforce::Mode::eLive ? "live" : m == fv::dforce::Mode::eLiveGpu ? "gpu" : "settle";
@@ -177,6 +195,9 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     const auto p = propArg(args);
     if(!p || !p->materials)
       return nullptr;
+    // a reset that takes a shader preset off rewrites surfaces, not only their edits
+    if(cmd == "material.reset" && p->figure && !shaderChosen(*p, args).empty())
+      return {{"kind", "look"}, {"prop", p->id}};
     std::vector<int> index;
     if(args.contains("material"))
       index = materialsNamed(args["material"]);
@@ -187,7 +208,7 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     return {{"kind", "materials"}, {"prop", p->id}, {"materials", index}};
   }
   // what rewrites a figure's surfaces: its whole look before and after
-  if(cmd == "preset" || cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "material.tattoo" || cmd == "wardrobe.color"
+  if(cmd == "preset" || cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "material.tattoo" || cmd == "material.shader" || cmd == "wardrobe.color"
      || cmd == "figure.look")
   {
     const auto p = figureProp(args);
@@ -407,7 +428,7 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
     return "Remove " + name;
   if(cmd == "preset")
     return "Apply " + args.value("name", std::string("preset"));
-  if(cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "material.tattoo" || cmd == "wardrobe.color")
+  if(cmd == "material.skin" || cmd == "material.eyes" || cmd == "material.makeup" || cmd == "material.tattoo" || cmd == "material.shader" || cmd == "wardrobe.color")
     return args.value("label", cmd);
   if(cmd == "wardrobe.remove")
   {
@@ -581,6 +602,8 @@ Json FvHost::Impl::applyOp(const Json& o)
     auto p = propArg(args);
     if(!p || !p->materials)
       throw std::runtime_error("Select a figure or a model: its surfaces are edited here.");
+    if(cmd == "material.reset" && p->figure)
+      p->materials->surfacesChanged(fv::dson::removeShaderPreset(p->figure->fig->loaded.scene, shaderChosen(*p, args)));
     return cmd == "material.set" ? p->materials->set(args) : p->materials->reset(args);
   }
   if(cmd == "wardrobe.visible")

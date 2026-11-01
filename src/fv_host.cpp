@@ -182,6 +182,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("material.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("material.set", args); }); });
   cmds.add("material.reset", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("material.reset", args); }); });
   cmds.add("material.eyes", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialEyes(args); }); });
+  cmds.add("material.shader", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialShader(args); }); });
   cmds.add("wardrobe.color", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->wardrobeColor(args); }); });
   cmds.add("material.skin", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialSkin(args); }); });
   cmds.add("material.makeup", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->materialMakeup(args); }); });

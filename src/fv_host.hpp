@@ -76,6 +76,15 @@
 //   material.set    {prop, material, values, gesture?}   edit a surface (fv_materials.hpp); material.reset {prop, material?}
 //                                                `gesture` {id, end?}: a slider's drag, one step of the history
 //                                                however long it takes, until the message that ends it
+//   material.shader {prop, material, rel: string | null}   -> {job}: a shader preset (DAZ's "Metal - Gold", a fabric
+//                                                pack's) on those surfaces of a figure or DAZ prop, whatever
+//                                                their names. A whole one replaces each surface; an option
+//                                                (a tiling, a colour) goes over it; null takes it all off.
+//                                                material.reset takes it off too, and an item's colour replaces
+//                                                it. The surface's item says it as shaderPreset {rel, options}.
+//                                                The job ends {state: "done", shader: rel | null, changed: n},
+//                                                or "failed" for a preset that names a shader of its own (an
+//                                                MDL brick, 3Delight) or only switches shader (fv::dson::shaderPresetKind)
 //   material.eyes   {prop, rel: string | null}   -> {job}: a figure's eyes become the eye preset `rel` (null: the
 //                                                character's own, its file's and its add-ons' presets). Each
 //                                                choice starts from the character's own, so eyes don't stack,

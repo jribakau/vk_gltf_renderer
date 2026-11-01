@@ -510,7 +510,7 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
 
       std::string cmd;
       Json        args = Json::object();
-      switch(rng() % 32)
+      switch(rng() % 33)
       {
         case 0: cmd = "prop.set", args = {{"prop", id}, {"transform", {{"t", {u(-1, 1), 0.0, u(-1, 1)}}}}}; break;
         case 1: cmd = "prop.set", args = {{"prop", any(props)}, {"transform", {{"e", {u(-90, 90), u(-90, 90), 0.0}}}}}; break;
@@ -558,6 +558,10 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
         case 29: cmd = "material.skin", args = {{"prop", id}, {"rel", coin() ? Json("People/Test/Materials/Box Body Red.duf") : Json()}}; break;
         case 30: cmd = "wardrobe.color", args = {{"prop", id}, {"item", item}, {"rel", coin() ? Json("People/Test/Materials/Box Shirt Blue.duf") : Json()}}; break;
         case 31: cmd = "material.makeup", args = {{"prop", id}, {"rel", Json()}}; break;
+        case 32:
+          cmd  = "material.shader";
+          args = {{"prop", id}, {"material", "m:" + std::to_string(rng() % 2)}, {"rel", coin() ? Json() : coin() ? Json("Shader Presets/Test/Box Gold.duf") : Json("Shader Presets/Test/Box Tile 2.duf")}};
+          break;
         default:
           if(rng() % 4 == 0)
             cmd = "scene.clear";
@@ -1850,6 +1854,103 @@ TEST(FvHost, AnInstallIsSeenInTheLibraryThroughContentChanged)
   fs::remove_all(dir);
 }
 
+namespace {
+
+// The worn shirt's surface
+std::string shirtSurface(HostRig& rig, const std::string& id)
+{
+  const Json items = rig.topic("materials/" + id).value("items", Json::object());
+  for(const auto& [m, it] : items.items())
+    if(it.value("name", "") == "Shirt")
+      return m;
+  return "";
+}
+
+}  // namespace
+
+// A shader preset goes on the surface picked, whatever its name, and nowhere else. It replaces the
+// surface and what the panel had on it; an option goes over it; each is a step; a scene file brings
+// them back; a reset, or a colour for the item, takes them off.
+TEST(FvHost, AShaderPresetGoesOnTheSurfacePicked)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("wear", {{"prop", id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(rig.settle());
+  const Json        worn = rig.topic("wardrobe/" + id).value("items", Json::object());
+  ASSERT_EQ(worn.size(), 1u);
+  const std::string item  = worn.begin().key();
+  const std::string shirt = shirtSurface(rig, id);
+  ASSERT_FALSE(shirt.empty());
+  const auto surface = [&](const std::string& m) { return rig.topic("materials/" + id).at("items").at(m); };
+  const auto choose  = [&](const Json& rel, const Json& on) {
+    const Json answer = rig.cmd("material.shader", {{"prop", id}, {"material", on}, {"rel", rel}});
+    EXPECT_TRUE(answer.value("ok", false)) << answer.dump();
+    EXPECT_TRUE(rig.settle());
+  };
+  const char* gold = "Shader Presets/Test/Box Gold.duf";
+  const char* tile = "Shader Presets/Test/Box Tile 2.duf";
+  const Json  own  = surface(shirt);
+  EXPECT_TRUE(own.value("shaderPreset", Json()).is_null());
+  // tiling and a fabric stay on a new material, the rest of the panel's edits go
+  rig.cmd("material.set", {{"prop", id}, {"material", shirt}, {"values", {{"roughness", 0.9}, {"uvScaleU", 2}}}});
+
+  choose(gold, shirt);
+  const Json on = surface(shirt);
+  EXPECT_EQ(on.at("shaderPreset").at("rel"), gold);
+  EXPECT_FLOAT_EQ(on.at("values").at("metalness").get<float>(), 1.f);
+  EXPECT_FLOAT_EQ(on.at("values").at("roughness").get<float>(), 0.2f);
+  EXPECT_EQ(on.at("edited"), Json::parse(R"(["uvScaleU","shaderPreset"])"));
+  // the figure's own surfaces stay as they were
+  for(const auto& [m, it] : rig.topic("materials/" + id).at("items").items())
+    if(m != shirt)
+      EXPECT_TRUE(it.value("shaderPreset", Json()).is_null()) << m;
+
+  // an option goes over it, the edits it left alone stay
+  rig.cmd("material.set", {{"prop", id}, {"material", shirt}, {"values", {{"roughness", 0.3}}}});
+  choose(tile, shirt);
+  EXPECT_EQ(surface(shirt).at("shaderPreset").at("rel"), gold);
+  EXPECT_EQ(surface(shirt).at("shaderPreset").at("options"), Json::array({tile}));
+  EXPECT_FLOAT_EQ(surface(shirt).at("values").at("roughness").get<float>(), 0.3f);
+
+  // a scene file brings them back, under the edits
+  const Json saved = rig.cmd("scene.state", {{"prop", id}}).at("result");
+  ASSERT_TRUE(saved.contains("shaders")) << saved.dump();
+  const Json shown = surface(shirt);
+  choose(nullptr, shirt);
+  EXPECT_TRUE(surface(shirt).value("shaderPreset", Json()).is_null());
+  EXPECT_FALSE(rig.cmd("scene.state", {{"prop", id}}).at("result").contains("shaders"));
+  Json restore    = {{"prop", id}, {"shaders", saved.at("shaders")}, {"materials", saved.at("materials")}};
+  const Json back = rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(back.value("ok", false)) << back.dump();
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(differ(shown, surface(shirt)), "");
+
+  // Reset garment takes it off, one step, and undo brings it back
+  const size_t steps = rig.topic("history").at("undo").size();
+  rig.cmd("material.reset", {{"prop", id}, {"material", Json::array({shirt})}});
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(rig.topic("history").at("undo").size(), steps + 1);
+  EXPECT_EQ(differ(own, surface(shirt)), "");
+  EXPECT_FALSE(historyStep(rig, "history.undo").contains("problems"));
+  EXPECT_EQ(differ(shown, surface(shirt)), "");
+
+  // a colour for the item replaces it
+  ASSERT_TRUE(rig.cmd("wardrobe.color", {{"prop", id}, {"item", item}, {"rel", "People/Test/Materials/Box Shirt Blue.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  EXPECT_TRUE(surface(shirt).value("shaderPreset", Json()).is_null());
+
+  // what it can't draw is said, and changes nothing
+  const Json before = surface(shirt);
+  for(const char* rel : {"Shader Presets/Test/Box Concrete.duf", "Shader Presets/Test/Box Base.duf"})
+  {
+    choose(rel, shirt);
+    EXPECT_EQ(differ(before, surface(shirt)), "") << rel;
+  }
+}
+
 // A preset, a skin, an item's colour: each a step whose undo puts the figure's look back as it was,
 // surfaces and all, and whose redo brings the change back.
 TEST(FvHost, APresetOrALookChoiceUndoesToTheLookBefore)
@@ -1879,6 +1980,7 @@ TEST(FvHost, APresetOrALookChoiceUndoesToTheLookBefore)
       {"load", {{"prop", id}, {"rel", "People/Test/Materials/Box Body Red.duf"}}},
       {"material.skin", {{"prop", id}, {"rel", "People/Test/Materials/Box Body Red.duf"}}},
       {"wardrobe.color", {{"prop", id}, {"item", item}, {"rel", "People/Test/Materials/Box Shirt Blue.duf"}}},
+      {"material.shader", {{"prop", id}, {"material", shirtSurface(rig, id)}, {"rel", "Shader Presets/Test/Box Gold.duf"}}},
   };
   for(const auto& [cmd, args] : edits)
   {

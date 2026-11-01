@@ -31,6 +31,21 @@ fv::dson::MaterialDefinitions definitionsOf(const fv::Figure& fig, const fv::dso
   return doc ? fv::dson::definitionsIn(*doc, fig.store()) : fv::dson::MaterialDefinitions{};
 }
 
+// The edits a new material keeps: how its maps are placed and the fabric laid over them.
+fv::mat::Edits mapPlacement(const fv::mat::Edits& was)
+{
+  fv::mat::Edits kept;
+  kept.uvScaleU       = was.uvScaleU;
+  kept.uvScaleV       = was.uvScaleV;
+  kept.uvOffsetU      = was.uvOffsetU;
+  kept.uvOffsetV      = was.uvOffsetV;
+  kept.uvRotation     = was.uvRotation;
+  kept.fabric         = was.fabric;
+  kept.fabricScale    = was.fabricScale;
+  kept.fabricStrength = was.fabricStrength;
+  return kept;
+}
+
 }  // namespace
 
 std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> FvHost::Impl::boneAt(rs::EntityId entity) const
@@ -315,15 +330,7 @@ Json FvHost::Impl::applyItemColor(Prop& prop, const std::vector<int>& items, con
     for(int i : surfaces)
       if(fv::mat::Edits& was = scene.materials[size_t(i)].edits; !was.empty())
       {
-        fv::mat::Edits kept;
-        kept.uvScaleU       = was.uvScaleU;
-        kept.uvScaleV       = was.uvScaleV;
-        kept.uvOffsetU      = was.uvOffsetU;
-        kept.uvOffsetV      = was.uvOffsetV;
-        kept.uvRotation     = was.uvRotation;
-        kept.fabric         = was.fabric;
-        kept.fabricScale    = was.fabricScale;
-        kept.fabricStrength = was.fabricStrength;
+        fv::mat::Edits kept = mapPlacement(was);
         kept.sheenColor     = was.sheenColor;
         kept.sheenRoughness = was.sheenRoughness;
         was                 = kept;
@@ -495,13 +502,13 @@ void FvHost::Impl::publishEyes(Prop& p)
 // read on a worker, and applied by `apply` on the application thread once the figure's add-ons
 // (Genesis 9's eyes and mouth) are on. The job fails, changing nothing, for a prop that is not a
 // figure, or when `apply` throws.
-Json FvHost::Impl::choiceJob(const Json& args, const std::string& command, const std::string& part, ChoiceApply apply)
+Json FvHost::Impl::choiceJob(const Json& args, const std::string& command, const std::string& part, ChoiceApply apply, const std::string& own)
 {
   if(!args.contains("rel") || !(args["rel"].is_string() || args["rel"].is_null()))
-    throw std::runtime_error(command + " wants rel: a library path, or null for the character's own");
+    throw std::runtime_error(command + " wants rel: a library path, or null for " + own);
   const std::string rel   = args["rel"].is_string() ? args["rel"].get<std::string>() : std::string();
   const uint64_t    jobId = ++jobs;
-  const std::string label = part + ": " + (rel.empty() ? std::string("the character's own") : fileStem(rel));
+  const std::string label = part + ": " + (rel.empty() ? own : fileStem(rel));
   job(jobId, {{"label", label}, {"state", "running"}});
   const auto fail = [this, jobId, label](const std::string& why) { job(jobId, {{"label", label}, {"state", "failed"}, {"error", why}}); };
   const auto prop = figureProp(args);
@@ -554,6 +561,52 @@ Json FvHost::Impl::choiceJob(const Json& args, const std::string& command, const
   else
     choose();
   return {{"job", jobId}};
+}
+
+// The shader preset `rel` on `surfaces`, `doc` its file (null, with `rel` "", takes off what was chosen
+// for them): a whole one replaces each surface, an option goes over it. Unless `keepEdits`, a whole
+// one and taking one off drop the panel's edits of those surfaces, as an item's colour does, but for
+// what places the maps. Throws, changing nothing, for a preset this renderer can't draw.
+Json FvHost::Impl::applyShader(Prop& prop, const std::set<int>& surfaces, const std::string& rel, const fv::dson::Json* doc, bool keepEdits)
+{
+  Loaded&         f     = *prop.figure;
+  fv::SceneGraph& scene = f.fig->loaded.scene;
+  if(surfaces.empty())
+    throw std::runtime_error("Pick a surface for " + (rel.empty() ? std::string("it") : fileStem(rel)) + " to go on.");
+  std::set<int> changed;
+  bool          replaces = true;
+  if(doc)
+  {
+    const fv::dson::ShaderPresetKind kind = fv::dson::shaderPresetKind(*doc);
+    if(kind == fv::dson::ShaderPresetKind::eNoValues)
+      throw std::runtime_error(fileStem(rel) + " only switches the shader: it sets no values to show.");
+    if(kind == fv::dson::ShaderPresetKind::eOtherShader)
+      throw std::runtime_error(fileStem(rel) + " is a shader of its own, and the renderer draws Iray Uber and PBRSkin surfaces.");
+    changed  = fv::dson::applyShaderPreset(*doc, scene, surfaces, rel, definitionsOf(*f.fig, doc));
+    replaces = kind == fv::dson::ShaderPresetKind::eWhole;
+  }
+  else
+    changed = fv::dson::removeShaderPreset(scene, surfaces);
+  if(replaces && !keepEdits)
+    for(int i : changed)
+      if(fv::mat::Edits& was = scene.materials[size_t(i)].edits; !was.empty())
+        was = mapPlacement(was);
+  if(prop.materials)
+    prop.materials->surfacesChanged(changed);
+  return {{"shader", rel.empty() ? Json(nullptr) : Json(rel)}, {"changed", changed.size()}};
+}
+
+// material.shader {prop, material, rel}: fails for a prop that is no figure, surfaces it doesn't have,
+// or a preset that can't be drawn.
+Json FvHost::Impl::materialShader(const Json& args)
+{
+  const auto          p = propArg(args);
+  std::set<int>       surfaces;
+  if(p && p->materials)
+    for(int i : p->materials->targets(args))
+      surfaces.insert(i);
+  return choiceJob(
+      args, "material.shader", "Shader", [this, surfaces](Prop& on, const std::string& rel, const fv::dson::Json* doc) { return applyShader(on, surfaces, rel, doc, false); }, "as it came");
 }
 
 // material.eyes {prop, rel}: fails for a figure with no eyes, or a preset none of whose surfaces are its eyes.

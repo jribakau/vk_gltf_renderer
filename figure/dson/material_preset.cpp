@@ -441,10 +441,141 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, con
     {
       Material& m = scene.materials[size_t(i)];
       if((entry && m.channels && presetMaterial(m, *entry, kept, definitions, images)) || overrideChannels(m, kept))
+      {
+        // what it went on over isn't what the surface is now
+        m.shaderChoice.reset();
         result.changed.insert(i);
+      }
     }
   }
   return result;
+}
+
+namespace {
+
+// The preset's scene material for the surfaces selected: the first that names no group.
+const Json* selectionMaterial(const Json& doc)
+{
+  const Json* materials = get(get(&doc, "scene"), "materials");
+  if(!materials || !materials->is_array())
+    return nullptr;
+  for(const Json& m : *materials)
+    if(!m.contains("groups"))
+      return &m;
+  return nullptr;
+}
+
+// The library entry a scene material's url names in the preset itself ("#Default"), which holds the
+// shader's channels at their defaults.
+const Json* localDefinition(const Json& doc, const Json& entry)
+{
+  const auto  ref     = parseRef(getString(&entry, "url"), "");
+  const Json* library = get(&doc, "material_library");
+  if(!ref || !ref->file.empty() || ref->id.empty() || !library || !library->is_array())
+    return nullptr;
+  for(const Json& m : *library)
+    if(dec(getString(&m, "id")) == dec(ref->id))
+      return &m;
+  return nullptr;
+}
+
+// What a preset sets on the surfaces selected, whatever node its urls start from.
+std::vector<ChannelOverride> selectionOverrides(const Json& doc)
+{
+  std::vector<ChannelOverride> out;
+  for(const auto& [key, overrides] : parseOverrides(doc, nullptr))
+    if(key.second.empty())
+      out.insert(out.end(), overrides.begin(), overrides.end());
+  return out;
+}
+
+bool setsSomething(const ChannelOverride& o)
+{
+  return o.value || (o.image && !o.image->empty());
+}
+
+}  // namespace
+
+ShaderPresetKind shaderPresetKind(const Json& doc)
+{
+  const std::vector<ChannelOverride> overrides = selectionOverrides(doc);
+  const auto                         set       = std::count_if(overrides.begin(), overrides.end(), setsSomething);
+  if(set == 0)
+    return ShaderPresetKind::eNoValues;
+  if(const Json* entry = selectionMaterial(doc))
+    if(const Json* extra = get(entry, "extra"); extra && extra->is_array())
+      for(const Json& ex : *extra)
+        if(const std::string type = getString(&ex, "type"); type == "studio/material/daz_brick" || type == "studio/material/daz_shader")
+          return ShaderPresetKind::eOtherShader;
+  return set >= kFullIrayPreset ? ShaderPresetKind::eWhole : ShaderPresetKind::eOption;
+}
+
+std::set<int> applyShaderPreset(const Json& doc, SceneGraph& scene, const std::set<int>& surfaces, const std::string& rel, const MaterialDefinitions& definitions)
+{
+  std::set<int>      changed;
+  const ShaderPresetKind kind = shaderPresetKind(doc);
+  if(kind != ShaderPresetKind::eWhole && kind != ShaderPresetKind::eOption)
+    return changed;
+  const std::vector<ChannelOverride> overrides = selectionOverrides(doc);
+  std::unordered_map<std::string, std::string> images;
+  collectImages(doc, images);
+  const Json* entry = selectionMaterial(doc);
+  // the shader's channels at their defaults, for a whole one: the definition its url names, then the
+  // entry's own
+  Channels start;
+  if(kind == ShaderPresetKind::eWhole && entry)
+  {
+    if(const auto def = definitions.find(definitionUrl(*entry)); def != definitions.end())
+      start = def->second;
+    collectChannels(localDefinition(doc, *entry), start, images, {});
+    collectChannels(entry, start, images, {});
+  }
+  std::set<std::string> ids;
+  for(const ChannelOverride& o : overrides)
+    if(setsSomething(o))
+      ids.insert(norm(o.channel));
+  for(int i : surfaces)
+  {
+    if(i < 0 || i >= int(scene.materials.size()) || !scene.materials[size_t(i)].channels)
+      continue;
+    Material&            m      = scene.materials[size_t(i)];
+    Material::ShaderChoice choice = m.shaderChoice.value_or(Material::ShaderChoice{});
+    if(!choice.under)
+      choice.under = m.channels;
+    if(kind == ShaderPresetKind::eWhole)
+    {
+      m.channels = std::make_shared<const Channels>(start);
+      overrideChannels(m, overrides);
+      choice.rel = rel;
+      choice.options.clear();
+    }
+    else
+    {
+      if(!overrideChannels(m, overrides))
+        continue;
+      std::erase_if(choice.options, [&](const Material::ShaderOption& o) { return std::includes(ids.begin(), ids.end(), o.channels.begin(), o.channels.end()); });
+      choice.options.push_back({rel, ids});
+    }
+    m.shaderChoice = std::move(choice);
+    changed.insert(i);
+  }
+  return changed;
+}
+
+std::set<int> removeShaderPreset(SceneGraph& scene, const std::set<int>& surfaces)
+{
+  std::set<int> changed;
+  for(int i : surfaces)
+  {
+    if(i < 0 || i >= int(scene.materials.size()) || !scene.materials[size_t(i)].shaderChoice)
+      continue;
+    Material& m = scene.materials[size_t(i)];
+    m.channels  = m.shaderChoice->under;
+    m.surface   = parseSurface(m.name, *m.channels, m.context);
+    m.shaderChoice.reset();
+    changed.insert(i);
+  }
+  return changed;
 }
 
 namespace {
@@ -566,6 +697,7 @@ std::set<int> restoreBaseline(SceneGraph& scene, const std::set<int>& which)
       continue;
     m.channels = m.baseline;
     m.surface  = parseSurface(m.name, *m.baseline, m.context);
+    m.shaderChoice.reset();
     changed.insert(i);
   }
   return changed;

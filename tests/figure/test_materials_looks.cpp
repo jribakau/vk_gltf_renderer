@@ -1,5 +1,10 @@
 // What a character is built as, and what's laid on it: chosen eyes, iris and sclera colours, makeup, tattoos.
 
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <map>
+
 #include "materials_test_util.hpp"
 
 using namespace materials_test;
@@ -914,6 +919,212 @@ TEST(Materials, AMetalMapReachesMetallicRoughnessBlue)
   EXPECT_FLOAT_EQ(edited.material["pbrMetallicRoughness"]["metallicFactor"].get<float>(), 0.5f);
   ASSERT_TRUE(metalRequest(edited));
   EXPECT_EQ(metalRequest(edited)->channels, "mt");
+}
+
+// ---- a shader preset chosen for some surfaces
+
+const char* kGarment = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+  {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1],"image_file":"/Runtime/Textures/shirt_d.jpg"}},
+  {"channel":{"id":"Translucency Weight","type":"float","current_value":0.5}},
+  {"channel":{"id":"Glossy Roughness","type":"float","current_value":0.7}}
+]}]})";
+
+const char* kThreeDelightGarment = R"({
+  "diffuse":{"channel":{"id":"diffuse","type":"color","current_value":[0.5,0.5,0.5],"image_file":"/Runtime/Textures/old_d.jpg"}},
+  "extra":[{"type":"studio/material/daz_shader","definition":"support/DAZ/shaders/dzDefault/dzDefault.dse"}]})";
+
+// A shader preset as DAZ writes one: its scene material names the shader, its library entry holds the
+// shader's channels at their defaults, and every url is for the selection. `filler` more values.
+Json shaderPreset(const std::vector<std::pair<std::string, Json>>& values, int filler = 0, const char* type = "studio/material/uber_iray")
+{
+  Json animations = Json::array();
+  const auto add  = [&](const std::string& channel, const Json& value) {
+    animations.push_back({{"url", "name://@selection#materials:?extra/studio_material_channels/channels/" + channel}, {"keys", Json::array({Json::array({0, value})})}});
+  };
+  for(const auto& [channel, value] : values)
+    add(channel, value);
+  for(int i = 0; i < filler; i++)
+    add("Filler%20" + std::to_string(i) + "/value", 0.5);
+  return {{"asset_info", {{"type", "preset_shader"}}},
+          {"material_library", Json::array({{{"id", "Default"},
+                                              {"extra", Json::array({{{"type", type}}, {{"type", "studio_material_channels"}, {"channels", Json::array({{{"channel", {{"id", "Metallic Weight"}, {"type", "float"}, {"value", 0}}}}})}}})}}})},
+          {"scene", {{"materials", Json::array({{{"url", "#Default"}, {"extra", Json::array({{{"type", type}}})}}})}, {"animations", animations}}}};
+}
+
+Json goldPreset()
+{
+  return shaderPreset({{"diffuse/value", Json::array({1, 0.9, 0.6})}, {"diffuse/image", nullptr}, {"Metallic%20Weight/value", 1}, {"Glossy%20Roughness/value", 0.2}}, fv::dson::kFullIrayPreset);
+}
+
+fv::SceneGraph garmentScene()
+{
+  fv::SceneGraph scene;
+  scene.materials.push_back(fv::dson::buildMaterial("Shirt", channelsOf(kGarment)));
+  scene.materials.push_back(fv::dson::buildMaterial("Collar", channelsOf(kGarment)));
+  scene.materials.push_back(fv::dson::buildMaterial("Old", channelsOf(kThreeDelightGarment)));
+  return scene;
+}
+
+TEST(ShaderPresets, WhatOneCanDo)
+{
+  using Kind = fv::dson::ShaderPresetKind;
+  EXPECT_EQ(fv::dson::shaderPresetKind(goldPreset()), Kind::eWhole);
+  EXPECT_EQ(fv::dson::shaderPresetKind(shaderPreset({{"Horizontal%20Tiles/value", 2}})), Kind::eOption);
+  // "!Iray Uber Base" and DS Defaults' only switch the shader
+  EXPECT_EQ(fv::dson::shaderPresetKind(shaderPreset({})), Kind::eNoValues);
+  // NVIDIA's MDL examples and FilaToon are bricks, 3Delight's a shader of its own: their values mean nothing here
+  EXPECT_EQ(fv::dson::shaderPresetKind(shaderPreset({{"Diffuse%20Color/value", "/resources/concrete.png"}}, 0, "studio/material/daz_brick")), Kind::eOtherShader);
+  EXPECT_EQ(fv::dson::shaderPresetKind(shaderPreset({{"Ka/value", 0.5}}, 0, "studio/material/daz_shader")), Kind::eOtherShader);
+  // made for a surface by name, it is a material preset
+  EXPECT_EQ(fv::dson::shaderPresetKind(boxersPreset("Black", 50)), Kind::eNoValues);
+}
+
+TEST(ShaderPresets, AWholeOneReplacesTheSurfacesItGoesOn)
+{
+  fv::SceneGraph scene = garmentScene();
+  // whatever their names and shaders
+  EXPECT_EQ(fv::dson::applyShaderPreset(goldPreset(), scene, {0, 2, 99}, "Gold.duf"), std::set<int>({0, 2}));
+  for(int i : {0, 2})
+  {
+    const fv::Material& m = scene.materials[size_t(i)];
+    EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::eIray) << m.name;
+    EXPECT_TRUE(m.surface.base.map.empty()) << m.name;
+    EXPECT_FLOAT_EQ(m.surface.metallic.value, 1.f) << m.name;
+    EXPECT_FLOAT_EQ(m.surface.glossy.roughness.value, 0.2f) << m.name;
+    ASSERT_TRUE(m.shaderChoice) << m.name;
+    EXPECT_EQ(m.shaderChoice->rel, "Gold.duf");
+  }
+  // nothing of the old material stays
+  EXPECT_FALSE(scene.materials[0].channels->get(fv::dson::norm("Translucency Weight")));
+  // the one not picked keeps its own
+  EXPECT_EQ(scene.materials[1].surface.base.map, "/Runtime/Textures/shirt_d.jpg");
+  EXPECT_FALSE(scene.materials[1].shaderChoice);
+  // the shader's defaults are under the values the preset sets
+  EXPECT_TRUE(scene.materials[0].channels->get(fv::dson::norm("Metallic Weight")));
+}
+
+TEST(ShaderPresets, OnOverAnotherItComesOffToTheSurfaceBeforeBoth)
+{
+  fv::SceneGraph scene = garmentScene();
+  const auto     own   = scene.materials[0].channels;
+  fv::dson::applyShaderPreset(goldPreset(), scene, {0}, "Gold.duf");
+  fv::dson::applyShaderPreset(shaderPreset({{"Metallic%20Weight/value", 0}}, fv::dson::kFullIrayPreset), scene, {0}, "Silk.duf");
+  EXPECT_EQ(scene.materials[0].shaderChoice->rel, "Silk.duf");
+  EXPECT_EQ(scene.materials[0].shaderChoice->under, own);
+  // only those that have one count
+  EXPECT_EQ(fv::dson::removeShaderPreset(scene, {0, 1, 99}), std::set<int>({0}));
+  EXPECT_EQ(scene.materials[0].channels, own);
+  EXPECT_EQ(scene.materials[0].surface.base.map, "/Runtime/Textures/shirt_d.jpg");
+  EXPECT_FALSE(scene.materials[0].shaderChoice);
+}
+
+TEST(ShaderPresets, AnOptionGoesOverTheSurfaceAndTakesThePlaceOfOneThatSetsNoMore)
+{
+  fv::SceneGraph scene = garmentScene();
+  const auto     own   = scene.materials[0].channels;
+  const auto     tiles = [](int n) { return shaderPreset({{"Horizontal%20Tiles/value", n}, {"Vertical%20Tiles/value", n}}); };
+  const Json     gloss = shaderPreset({{"Glossy%20Roughness/value", 0.1}});
+
+  // alone, on the surface's own: its maps stay
+  EXPECT_EQ(fv::dson::applyShaderPreset(gloss, scene, {0}, "Gloss.duf"), std::set<int>({0}));
+  EXPECT_EQ(scene.materials[0].surface.base.map, "/Runtime/Textures/shirt_d.jpg");
+  EXPECT_FLOAT_EQ(scene.materials[0].surface.glossy.roughness.value, 0.1f);
+  ASSERT_TRUE(scene.materials[0].shaderChoice);
+  EXPECT_TRUE(scene.materials[0].shaderChoice->rel.empty());
+
+  const auto options = [&] {
+    std::vector<std::string> out;
+    for(const fv::Material::ShaderOption& o : scene.materials[0].shaderChoice->options)
+      out.push_back(o.rel);
+    return out;
+  };
+  fv::dson::applyShaderPreset(tiles(2), scene, {0}, "Tile 2.duf");
+  EXPECT_EQ(options(), (std::vector<std::string>{"Gloss.duf", "Tile 2.duf"}));
+  // another tiling in place of the first, the gloss stays
+  fv::dson::applyShaderPreset(tiles(3), scene, {0}, "Tile 3.duf");
+  EXPECT_EQ(options(), (std::vector<std::string>{"Gloss.duf", "Tile 3.duf"}));
+  // a whole one takes them all off and goes on what they went on
+  fv::dson::applyShaderPreset(goldPreset(), scene, {0}, "Gold.duf");
+  EXPECT_TRUE(options().empty());
+  EXPECT_EQ(scene.materials[0].shaderChoice->under, own);
+  fv::dson::applyShaderPreset(tiles(2), scene, {0}, "Tile 2.duf");
+  EXPECT_EQ(options(), (std::vector<std::string>{"Tile 2.duf"}));
+  EXPECT_EQ(scene.materials[0].shaderChoice->rel, "Gold.duf");
+  // what it went on over comes back from under all of it
+  fv::dson::removeShaderPreset(scene, {0});
+  EXPECT_EQ(scene.materials[0].channels, own);
+}
+
+TEST(ShaderPresets, WhatCantBeDrawnChangesNothing)
+{
+  fv::SceneGraph scene = garmentScene();
+  const auto     own   = scene.materials[0].channels;
+  EXPECT_TRUE(fv::dson::applyShaderPreset(shaderPreset({}), scene, {0}, "Base.duf").empty());
+  EXPECT_TRUE(fv::dson::applyShaderPreset(shaderPreset({{"Diffuse%20Color/value", "/concrete.png"}}, 50, "studio/material/daz_brick"), scene, {0}, "Concrete.duf").empty());
+  EXPECT_EQ(scene.materials[0].channels, own);
+  EXPECT_FALSE(scene.materials[0].shaderChoice);
+}
+
+// What later rewrites a surface leaves no shader said to be on it
+TEST(ShaderPresets, AColourOrAMaterialPresetOverOneReplacesIt)
+{
+  fv::SceneGraph scene = garmentScene();
+  fv::dson::applyShaderPreset(goldPreset(), scene, {0}, "Gold.duf");
+  EXPECT_EQ(fv::dson::restoreBaseline(scene, {0}), std::set<int>({0}));
+  EXPECT_FALSE(scene.materials[0].shaderChoice);
+
+  fv::dson::applyShaderPreset(goldPreset(), scene, {0, 1}, "Gold.duf");
+  fv::dson::applyMaterialPreset(Json::parse(R"({"scene":{"animations":[
+    {"url":"name://@selection#materials/Shirt:?diffuse/value","keys":[[0,[1,0,0]]]}
+  ]}})"),
+                                scene);
+  EXPECT_FALSE(scene.materials[0].shaderChoice);
+  EXPECT_TRUE(scene.materials[1].shaderChoice);
+}
+
+// Every shader preset of a library lowers to what its name says, and the table of them goes to the output. With DAZ_LIBRARY set.
+TEST(ShaderPresets, TheLibrarysLowerToWhatTheirNamesSay)
+{
+  const char* lib = std::getenv("DAZ_LIBRARY");
+  if(!lib || !*lib)
+    GTEST_SKIP() << "DAZ_LIBRARY not set";
+  namespace fs = std::filesystem;
+  const auto library = std::make_shared<fv::dson::Library>(std::vector<fs::path>{fs::path(lib)});
+  fv::dson::Store store(library);
+  const fs::path  root = fs::path(lib) / "Shader Presets";
+  ASSERT_TRUE(fs::exists(root));
+  std::map<std::string, int> kinds;
+  for(const auto& entry : fs::recursive_directory_iterator(root))
+  {
+    if(!entry.is_regular_file() || entry.path().extension() != ".duf")
+      continue;
+    const std::string rel = fs::relative(entry.path(), fs::path(lib)).generic_string();
+    const auto        doc = store.load(rel);
+    ASSERT_TRUE(doc) << rel;
+    const fv::dson::ShaderPresetKind kind = fv::dson::shaderPresetKind(doc->json);
+    kinds[kind == fv::dson::ShaderPresetKind::eWhole ? "whole" : kind == fv::dson::ShaderPresetKind::eOption ? "option" : kind == fv::dson::ShaderPresetKind::eOtherShader ? "other shader" : "no values"]++;
+    if(kind != fv::dson::ShaderPresetKind::eWhole)
+      continue;
+    fv::SceneGraph scene = garmentScene();
+    ASSERT_EQ(fv::dson::applyShaderPreset(doc->json, scene, {0}, rel, fv::dson::definitionsIn(doc->json, store)), std::set<int>({0})) << rel;
+    const fv::Material& m = scene.materials[0];
+    const LoweredJson   l = loweredJson(m.surface, {}, {});
+    const Json&         pbr = l.material["pbrMetallicRoughness"];
+    const float         metal = pbr.value("metallicFactor", 1.f), rough = pbr.value("roughnessFactor", 1.f);
+    const float         transmit = l.material.contains("extensions") && l.material["extensions"].contains("KHR_materials_transmission") ? l.material["extensions"]["KHR_materials_transmission"].value("transmissionFactor", 0.f) : 0.f;
+    const std::string   name = entry.path().stem().string();
+    std::printf("%-58s %-8s metal %.2f rough %.2f transmit %.2f maps %zu\n", name.c_str(), m.surface.shader == fv::mat::Surface::Shader::eIray ? "iray" : "other", metal, rough, transmit, l.requests.size());
+    EXPECT_EQ(m.surface.shader, fv::mat::Surface::Shader::eIray) << rel;
+    // DAZ wrote these two in Weighted mode: a strong glossy lobe, no metallic
+    if(name.rfind("Metal - ", 0) == 0 && name != "Metal - Magnesium Alloy" && name != "Metal - Steel - Galvanized")
+      EXPECT_GT(metal, 0.9f) << rel;
+    if(name.rfind("Glass - ", 0) == 0 || name.rfind("Water", 0) == 0 || name == "Diamond")
+      EXPECT_GT(transmit, 0.5f) << rel;
+    if(name.rfind("Fabric - ", 0) == 0 || name.rfind("Plastic - ", 0) == 0 || name.rfind("Rubber - ", 0) == 0 || name == "Leather")
+      EXPECT_LT(metal, 0.1f) << rel;
+  }
+  for(const auto& [what, n] : kinds)
+    std::printf("%s: %d\n", what.c_str(), n);
 }
 
 }  // namespace

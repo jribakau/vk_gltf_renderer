@@ -496,6 +496,32 @@ Json FvMaterials::editState() const
   return out;
 }
 
+Json FvMaterials::shaderState() const
+{
+  Json out = Json::object();
+  if(!m_scene)
+    return out;
+  const auto keys = materialKeys(*m_scene);
+  for(size_t i = 0; i < m_count; i++)
+    if(const fv::Material& m = m_scene->materials[i]; !keys[i].empty() && m.shaderChoice)
+    {
+      Json options = Json::array();
+      for(const fv::Material::ShaderOption& o : m.shaderChoice->options)
+        options.push_back(o.rel);
+      out[keys[i]] = {{"rel", m.shaderChoice->rel}, {"options", options}};
+    }
+  return out;
+}
+
+int FvMaterials::indexOfKey(const std::string& key) const
+{
+  if(!m_scene)
+    return -1;
+  const auto keys = materialKeys(*m_scene);
+  const auto at   = std::find(keys.begin(), keys.end(), key);
+  return at == keys.end() ? -1 : int(at - keys.begin());
+}
+
 Json FvMaterials::editsOf(int index) const
 {
   Json edited = Json::object();
@@ -810,13 +836,26 @@ Json FvMaterials::item(int index) const
   Json textures = Json::array();
   for(const fv::mat::MapSlot& t : fv::mat::mapSlots(s, m.edits))
     textures.push_back({{"slot", t.slot}, {"label", t.label}, {"file", baseName(t.rel)}, {"rel", t.rel}, {"edited", t.edited}});
+  // a shader preset chosen for it counts as a change, so the panels' marks and resets follow; null
+  // when none, so a merge patch takes an old one away
+  Json edited       = editedKeys(m.edits);
+  Json shaderPreset = nullptr;
+  if(m.shaderChoice)
+  {
+    edited.push_back("shaderPreset");
+    Json options = Json::array();
+    for(const fv::Material::ShaderOption& o : m.shaderChoice->options)
+      options.push_back(o.rel);
+    shaderPreset = {{"rel", m.shaderChoice->rel.empty() ? Json(nullptr) : Json(m.shaderChoice->rel)}, {"options", options}};
+  }
   Json out = {{"name", m.name},
               {"kind", kindName(s.kind)},
               {"shader", shaderName(s.shader)},
               {"meshes", m_meshesOf[index]},
               {"textures", textures},
               {"values", values},
-              {"edited", editedKeys(m.edits)},
+              {"edited", edited},
+              {"shaderPreset", shaderPreset},
               {"colorBaked", v.colorBaked},
               {"colorUnused", v.colorUnused},
               {"fibre", v.fibre},

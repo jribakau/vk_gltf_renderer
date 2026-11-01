@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,22 @@ struct Material
   // the channels as the character came: its file's own and the presets its add-ons were worn with.
   // Choosing other eyes, or the character's own, puts these back; presets opened later leave it.
   std::shared_ptr<const dson::Channels> baseline;
+  // The shader preset chosen for this surface alone (dson::applyShaderPreset): a whole one, "" for
+  // none, with the option presets laid over it since, each with the channels it sets, and the channels
+  // it all went on over, which taking it off puts back. A copy of the material (a look kept for undo)
+  // keeps it.
+  struct ShaderOption
+  {
+    std::string           rel;
+    std::set<std::string> channels;
+  };
+  struct ShaderChoice
+  {
+    std::string                           rel;
+    std::vector<ShaderOption>             options;
+    std::shared_ptr<const dson::Channels> under;
+  };
+  std::optional<ShaderChoice> shaderChoice;
   // its item is marked Keep full (Figure::setItemKeepFull)
   bool keepFull = false;
   // How much surface one UV unit covers, in metres (the square root of area over UV area), on the

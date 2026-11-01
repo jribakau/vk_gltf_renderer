@@ -414,6 +414,9 @@ Json FvHost::Impl::sceneState(const Json& args)
                 {"pose", pose},
                 {"materialPresets", prop->figure->materialPresets},
                 {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  // the shader presets chosen for surfaces; none when none are
+  if(Json shaders = prop->materials ? prop->materials->shaderState() : Json::object(); !shaders.empty())
+    state["shaders"] = std::move(shaders);
   // the presets laid over the skin and eyes chosen; none when none are
   if(!prop->figure->presetsOver.empty())
   {
@@ -724,6 +727,37 @@ Json FvHost::Impl::sceneRestore(const Json& args)
             problems.push_back(i.label + ": " + e.what());
           }
     }
+    step.reset();
+    step.emplace("restore: shaders", 5);
+    // the shader presets chosen for surfaces, over those colours and under the edits
+    if(prop->materials && args.contains("shaders") && args["shaders"].is_object())
+      for(const auto& [key, chosen] : args["shaders"].items())
+      {
+        const int surface = prop->materials->indexOfKey(key);
+        if(surface < 0)
+        {
+          problems.push_back("material " + key + " not found");
+          continue;
+        }
+        std::vector<std::string> rels;
+        if(const std::string rel = chosen.value("rel", std::string()); !rel.empty())
+          rels.push_back(rel);
+        for(const Json& o : chosen.value("options", Json::array()))
+          if(o.is_string())
+            rels.push_back(o.get<std::string>());
+        for(const std::string& rel : rels)
+          try
+          {
+            if(const auto doc = fig.store().load(rel))
+              applyShader(*prop, {surface}, rel, &doc->json, true);
+            else
+              problems.push_back("the shader " + fileStem(rel) + " isn't in the content library");
+          }
+          catch(const std::exception& e)
+          {
+            problems.push_back(key + ": " + e.what());
+          }
+      }
     step.reset();
     step.emplace("restore: edits", 5);
     if(prop->materials && args.contains("materials") && args["materials"].is_object())

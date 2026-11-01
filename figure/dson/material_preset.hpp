@@ -61,6 +61,26 @@ MaterialPresetResult applyMaterialPreset(const Json& doc, SceneGraph& scene, con
 // The scene materials a material preset would change, without changing them.
 std::set<int> materialPresetTargets(const Json& doc, const SceneGraph& scene);
 
+// A shader preset (DAZ's "Metal - Gold", a fabric pack's): its urls name no surface, as DAZ Studio
+// puts it on those selected. What it can do here:
+enum class ShaderPresetKind
+{
+  eNoValues,     // sets nothing: "!Iray Uber Base" only switches the shader, DS Defaults likewise
+  eOtherShader,  // a shader of its own (an MDL brick, a 3Delight shader), which the lowering can't read
+  eWhole,        // a whole material, kFullIrayPreset values or more: it replaces the surface
+  eOption,       // a few values (a tiling, a colour, a gloss) laid over the surface as it is
+};
+ShaderPresetKind shaderPresetKind(const Json& doc);
+
+// Puts the shader preset `rel` on `surfaces`, whatever their names. A whole one starts each from the
+// shader it names: nothing of the old material stays, its maps and enables included, as its file sets
+// every channel. An option goes over what is there and takes the place of earlier options that set
+// nothing else. Material::shaderChoice says what is on and keeps what it went on over. Returns the
+// surfaces changed; none for a preset of another kind.
+std::set<int> applyShaderPreset(const Json& doc, SceneGraph& scene, const std::set<int>& surfaces, const std::string& rel, const MaterialDefinitions& definitions = {});
+// The channels those surfaces had before a shader preset went on, parsed again; returns those that had one.
+std::set<int> removeShaderPreset(SceneGraph& scene, const std::set<int>& surfaces);
+
 // The scene's channels as they are now become its materials' baseline: a wearable with the presets
 // of the add-on it was worn as.
 void keepBaseline(SceneGraph& scene);

@@ -943,6 +943,9 @@ struct FvHost::Impl
   // a worn item's colour (fv_host.hpp wardrobe.color): `rel` "" and no `doc` for the item as it was worn
   Json wardrobeColor(const Json& args);
   Json applyItemColor(Prop& prop, const std::vector<int>& items, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
+  // a shader preset on some surfaces (fv_host.hpp material.shader): `rel` "" and no `doc` takes off what was chosen for them
+  Json materialShader(const Json& args);
+  Json applyShader(Prop& prop, const std::set<int>& surfaces, const std::string& rel, const fv::dson::Json* doc, bool keepEdits);
   // A skin or eyes `rel` chosen, over `surfaces`: it isn't a preset any more, and what lay over those
   // surfaces is gone from them, so goes back before the choice.
   void choiceReplaced(Loaded& f, const std::string& rel, const std::set<int>& surfaces);
@@ -968,7 +971,7 @@ struct FvHost::Impl
   std::set<int> wornSurfaces(const Loaded& f);
   // a preset chosen for part of a figure, read on a worker and applied by `apply` once the add-ons are on
   using ChoiceApply = std::function<Json(Prop&, const std::string& rel, const fv::dson::Json* doc)>;
-  Json choiceJob(const Json& args, const std::string& command, const std::string& part, ChoiceApply apply);
+  Json choiceJob(const Json& args, const std::string& command, const std::string& part, ChoiceApply apply, const std::string& own = "the character's own");
 
   // ---- lighting (fv_lighting.hpp), application thread only
   nvutils::ParameterRegistry* registry = nullptr;

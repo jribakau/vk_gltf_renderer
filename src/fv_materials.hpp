@@ -161,12 +161,18 @@ public:
 
   fv::Json set(const fv::Json& args);
   fv::Json reset(const fv::Json& args);
+  // The materials `args.material` names ("m:3", a list of them); none without it. Throws for one it doesn't hold.
+  std::vector<int> targets(const fv::Json& args) const;
 
   // The edits of every material that has any, by "<name>" or "<name>#n" (the n-th material of that
   // name), as material.set values: for a scene file.
   fv::Json editState() const;
   // Puts such edits back; returns what could not be: materials that are not there any more.
   std::vector<std::string> restoreEdits(const fv::Json& state);
+  // The shader presets chosen for surfaces, by the same names ({rel, options}), and which material a
+  // name is (-1 for none): for a scene file.
+  fv::Json shaderState() const;
+  int      indexOfKey(const std::string& key) const;
   // One material's edits as material.set values (empty when it has none), its name, and how many
   // materials there are
   fv::Json    editsOf(int index) const;
@@ -224,7 +230,6 @@ private:
   void publish(const std::set<int>& materials, bool all);
   std::string stateOf(const fv::mat::Lowered& lowered) const;
   fv::Json item(int index) const;
-  std::vector<int> targets(const fv::Json& args) const;
 
   Hooks m_hooks;
 
