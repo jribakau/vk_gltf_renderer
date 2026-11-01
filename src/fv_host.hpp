@@ -66,7 +66,7 @@
 //                                                frame's size (a /size lands before the next frame)
 //   render.capture  {path}  -> {samples, converged}   the frame as a linear .hdr (path tracer), answered once saved
 //   render.ledger   {}  -> {total, idleImages, retiring, spilled, meshes}   what the scene holds on the GPU, by who reads it
-//   render.budget   {}  -> {known, budgetBytes, usageBytes, headroomBytes?, bytesPerPixel, width, height}   GPU
+//   render.budget   {}  -> {known, budgetBytes, usageBytes, allocatorBlockBytes, allocatorAllocationBytes, headroomBytes?, bytesPerPixel, width, height}   GPU
 //                                                memory: the driver's budget, what is free beyond what is kept
 //                                                back, and what a pixel of the frame costs, so an export size
 //                                                is judged before /size refuses it (507)

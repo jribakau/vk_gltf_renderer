@@ -192,9 +192,10 @@ positions while the mesh node's transform stays put, so instance motion alone re
 current shape under camera motion only, and Ray Reconstruction smears the surface while a pose, a
 shape dial or a clip moves it.
 
-The residency keeps a copy of those positions, 12 bytes a vertex, made at the top of the next sync
-from what the last one wrote (`SceneGpuView::prevPositionTable`). When nothing wrote in between, the
-copy taken earlier still matches. On frames where a
+The residency keeps a copy of those positions, 12 bytes a vertex, only while they move: made just
+before a sync writes them (`SceneGpuView::prevPositionTable`). At the first sync that doesn't, the row
+points at the positions themselves, which are the same numbers, so a surface at rest has zero motion
+from the same reads and a still's guide doesn't change; the copy goes 120 frames later. On frames where a
 writer ran, `dlssDeformMotionActive` binds `PathtracePushConstant::prevVertexPositions`, a table of
 device addresses, one per render primitive.
 

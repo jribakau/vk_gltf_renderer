@@ -232,6 +232,9 @@ struct DeformDispatch
   // normals and uvs, each over the triangles whose corners (3 * triangle + corner)
   // columns[rowStart[v] .. rowStart[v + 1]) names, as tinygltf::utils::computeTangents makes them
   BufferRange rowStart, columns, stencilWeights, stencilOffsets, triangles;  // uint32, uint32, float, float3, uint3
+  // a stencil's offsets turned: per base element where its X and Y axes went (float4, float3), each row's
+  // offset turning as its first column has; none: as they are
+  BufferRange frameX, frameY;
   BufferRange uvs;                                                           // float2
   uint32_t    sourceCount = 0, triangleCount = 0;
 };

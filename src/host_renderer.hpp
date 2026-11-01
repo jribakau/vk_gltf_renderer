@@ -167,6 +167,8 @@ public:
     VkDeviceSize budget = 0;
     VkDeviceSize usage  = 0;
     bool         known  = false;
+    // of the usage, what the allocator holds on the device and what of that it has handed out
+    VkDeviceSize allocatorBlocks = 0, allocatorAllocations = 0;
   };
   virtual MemoryBudget deviceMemoryBudget() const = 0;
   virtual uint32_t     frameBytesPerPixel() const = 0;

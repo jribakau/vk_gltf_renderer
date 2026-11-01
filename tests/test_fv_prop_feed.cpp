@@ -290,9 +290,26 @@ TEST(FvPropFeed, AFigureChangedIsFedAgainAndEverythingGoesWithTheFeed)
   EXPECT_EQ(scene.clipCount(), 0u);
 }
 
+// What a figure's mesh is drawn from: its own streams, or with none (it poses its cage) its drawer's
+struct DrawnBuffers
+{
+  rs::BufferHandle positions, normals, tangents;
+};
+DrawnBuffers drawnBuffers(const fv::SceneGraph& graph, const fv::FigureFeed& figure, const rs::Residency& residency, int mi)
+{
+  const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(mi));
+  if(mesh->hasBase)
+    return {mesh->positions, mesh->normals, mesh->tangents};
+  for(size_t n = 0; n < graph.nodes.size(); n++)
+    if(graph.nodes[n].kind == fv::NodeKind::eMesh && graph.nodes[n].mesh == mi)
+      if(const rs::Residency::DrawerGpu* d = residency.drawer(figure.entityOf(int(n)), figure.meshOf(mi)))
+        return {d->positions, d->normals, d->tangents};
+  return {};
+}
+
 // The deltas a composition makes, resident as a frame's sync takes them: every one checked by the
 // residency oracle, and none waits for the device (the structural path has no idle wait from P5).
-// figureGpuRefine (gpu-figures-plan.md F1): a subdivided figure fed with its morphed cages is refined
+// gpu-figures-plan.md F1: a subdivided figure fed with its morphed cages is refined
 // on the GPU. The oracle checks the residency's streams against the cage subdivided as the shaders do
 // it; those are the CPU's drawn positions and normals to float precision, as fed and after a dial.
 TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
@@ -319,10 +336,11 @@ TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
       if(!record || !mesh || !mesh->refine)
         continue;
       refined++;
-      const size_t           n = record->positions.size();
+      const size_t           n     = record->positions.size();
+      const DrawnBuffers     drawn = drawnBuffers(box->loaded.scene, *feed.fed("p:1")->figure, residency, int(mi));
       std::vector<glm::vec3> positions(n), normals(n);
-      std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
-      std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(mesh->normals), n * 12).data(), n * 12);
+      std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(drawn.positions), n * 12).data(), n * 12);
+      std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(drawn.normals), n * 12).data(), n * 12);
       for(size_t v = 0; v < n; v++)
       {
         ASSERT_LT(glm::distance(positions[v], record->positions[v]), 1e-4f) << when << " vertex " << v;
@@ -346,8 +364,8 @@ TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
 }
 
 // MorphSet::cageOnly (gpu-figures-plan.md F1b): a dial's step moves a refined mesh's cage alone, the
-// CPU's drawn vertices left as they were; the GPU's are what the CPU makes with the path off (a second
-// box dialled the same way); the CPU's stay as they were at settled() and catch up at catchUp() (an
+// CPU's drawn vertices left as they were; the GPU's are what the CPU makes of the dial (a second box
+// dialled the same way); the CPU's stay as they were at settled() and catch up at catchUp() (an
 // export's).
 TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
 {
@@ -368,7 +386,7 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
       out.push_back(c.mesh);
     return out;
   };
-  // the dial's file read, as the path off does it
+  // the dial's file read
   for(fv::Figure* f : {box.get(), reference.get()})
   {
     f->morphs->set("Taper", 0.5);
@@ -408,11 +426,12 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
     const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(int(mi)));
     if(!mesh || !mesh->refine)
       continue;
-    const fv::mesh::BuiltMesh& want = *reference->loaded.scene.meshes[mi].geo;
-    const size_t               n    = want.position.size() / 3;
+    const fv::mesh::BuiltMesh& want  = *reference->loaded.scene.meshes[mi].geo;
+    const size_t               n     = want.position.size() / 3;
+    const DrawnBuffers         drawnNow = drawnBuffers(box->loaded.scene, figure, residency, int(mi));
     std::vector<glm::vec3>     positions(n), normals(n);
-    std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
-    std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(mesh->normals), n * 12).data(), n * 12);
+    std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(drawnNow.positions), n * 12).data(), n * 12);
+    std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(drawnNow.normals), n * 12).data(), n * 12);
     for(size_t v = 0; v < n; v++)
     {
       ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&want.position[v * 3])), 1e-4f) << "mesh " << mi << " vertex " << v;
@@ -481,7 +500,7 @@ TEST(FvPropFeed, AKeptRefinedMeshIsFedTheCageItsMorphsMoved)
     const fv::mesh::BuiltMesh& want = *reference->loaded.scene.meshes[mi].geo;
     const size_t               n    = want.position.size() / 3;
     std::vector<glm::vec3>     positions(n);
-    std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
+    std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(drawnBuffers(box->loaded.scene, figure, residency, int(mi)).positions), n * 12).data(), n * 12);
     for(size_t v = 0; v < n; v++)
       ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&want.position[v * 3])), 1e-4f) << "mesh " << mi << " vertex " << v;
   }
@@ -527,7 +546,7 @@ TEST(FvPropFeed, ARefinedNormalMappedFiguresTangentsAreMadeOnTheGpu)
       std::memcpy(normals.data(), geo.normal.data(), n * 12);
       std::vector<glm::vec4> want(n, glm::vec4(0.f)), got(n);
       tinygltf::utils::computeTangents(positions, normals, record->uv0, record->refine->tangentIndices, want);
-      std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(mesh->tangents), n * 16).data(), n * 16);
+      std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(drawnBuffers(box->loaded.scene, figure, residency, int(mi)).tangents), n * 16).data(), n * 16);
       for(size_t v = 0; v < n; v++)
       {
         ASSERT_GT(glm::dot(glm::vec3(got[v]), glm::vec3(want[v])), 0.999f) << when << " mesh " << mi << " vertex " << v;
@@ -560,41 +579,36 @@ TEST(FvPropFeed, ARefinedNormalMappedFiguresTangentsAreMadeOnTheGpu)
   check("a cage step");
 }
 
-// figureDazSkinning (gpu-figures-plan.md F3): a figure's records carry its meshes' dual quaternion
-// share and its drawers skin with the joints' dual quaternions (the oracle skins as the shader does);
-// without it they are glTF's linear blend
-TEST(FvPropFeed, DazSkinningCarriesTheFilesDualQuaternionShare)
+// gpu-figures-plan.md F3: a figure's records carry its meshes' dual quaternion share and its drawers
+// skin with the joints' dual quaternions (the oracle skins as the shader does)
+TEST(FvPropFeed, AFiguresRecordsCarryTheFilesDualQuaternionShare)
 {
-  for(const bool daz : {false, true})
+  const auto box = loadBox();
+  for(fv::Mesh& m : box->loaded.scene.meshes)
+    m.skin.dualQuat = 1.f;
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  feed.sync(props);
+  residency.replace(scene);
+  for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+    ADD_FAILURE() << p;
+  size_t skinned = 0;
+  for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
   {
-    const auto box = loadBox();
-    for(fv::Mesh& m : box->loaded.scene.meshes)
-      m.skin.dualQuat = 1.f;
-    rs::RetainedScene         scene;
-    rs::FakeGpuBackend        gpu(2);
-    rs::Residency             residency(gpu);
-    fv::PropFeed              feed(scene);
-    std::vector<fv::PropSpec> props(1);
-    props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-    props[0].figureDazSkinning = daz;
-    feed.sync(props);
-    residency.replace(scene);
-    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
-      ADD_FAILURE() << (daz ? "daz: " : "linear: ") << p;
-    size_t skinned = 0;
-    for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
-    {
-      const rs::MeshRecord* record = scene.mesh(feed.fed("p:1")->figure->meshOf(int(mi)));
-      if(!record || record->joints.empty())
-        continue;
-      skinned++;
-      EXPECT_EQ(record->dualQuat, daz ? 1.f : 0.f) << mi;
-    }
-    EXPECT_GT(skinned, 0u);
+    const rs::MeshRecord* record = scene.mesh(feed.fed("p:1")->figure->meshOf(int(mi)));
+    if(!record || record->joints.empty())
+      continue;
+    skinned++;
+    EXPECT_EQ(record->dualQuat, 1.f) << mi;
   }
+  EXPECT_GT(skinned, 0u);
 }
 
-// figureDazOrder (gpu-figures-plan.md F4): a refined mesh's drawer skins the cage, then refines the
+// gpu-figures-plan.md F4: a refined mesh's drawer skins the cage, then refines the
 // posed cage into its streams (the oracle holds them to that, exactly). At rest that is the mesh's
 // refined base; a turned bone moves it.
 TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
@@ -606,9 +620,7 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
   fv::PropFeed              feed(scene);
   std::vector<fv::PropSpec> props(1);
   props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-  props[0].figureCageOf      = [&](int mesh) { return box->morphs->morphedCage(mesh); };
-  props[0].figureDazSkinning = true;
-  props[0].figureDazOrder    = true;
+  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
   feed.sync(props);
   residency.replace(scene);
   const fv::FigureFeed& figure = *feed.fed("p:1")->figure;
@@ -618,7 +630,7 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
   };
   check("at rest");
 
-  // the drawers that pose their cage, and their outputs at rest: the refined base
+  // the drawers that pose their cage, and their outputs at rest: the refined mesh as the CPU has it
   std::vector<std::pair<const rs::Residency::DrawerGpu*, rs::MeshId>> posed;
   for(size_t n = 0; n < box->loaded.scene.nodes.size(); n++)
     if(const fv::Node& node = box->loaded.scene.nodes[n]; node.kind == fv::NodeKind::eMesh && node.mesh >= 0)
@@ -629,11 +641,13 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
   for(const auto& [d, mesh] : posed)
   {
     const size_t           n = scene.mesh(mesh)->positions.size();
-    std::vector<glm::vec3> got(n), base(n);
+    std::vector<glm::vec3> got(n);
     std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(d->positions), n * 12).data(), n * 12);
-    std::memcpy(base.data(), gpu.bytesAt(gpu.bufferAddress(residency.meshGpu(mesh)->positions), n * 12).data(), n * 12);
     for(size_t v = 0; v < n; v++)
-      ASSERT_LT(glm::distance(got[v], base[v]), 1e-4f) << v;
+      ASSERT_LT(glm::distance(got[v], scene.mesh(mesh)->positions[v]), 1e-4f) << v;
+    // nothing reads the mesh's own vertices or the drawn vertices' skin, so nothing holds them
+    EXPECT_FALSE(residency.meshGpu(mesh)->positions);
+    EXPECT_FALSE(residency.meshGpu(mesh)->joints);
     rest.push_back(got);
   }
 
@@ -663,46 +677,41 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
 }
 
 // A mesh's price, made before anything is fed, is what its buffers hold once resident: the residency's
-// formats and scene_price.hpp stay together. With DAZ's order, the mesh's own streams are read by nothing.
+// formats and scene_price.hpp stay together. The mesh's own streams are read by nothing, so aren't held.
 TEST(FvPropFeed, AMeshsPriceIsWhatItHoldsOnceResident)
 {
-  for(const bool dazOrder : {false, true})
+  const auto                box = loadBox();
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  feed.sync(props);
+  residency.replace(scene);
+  const fv::FigureFeed&  figure = *feed.fed("p:1")->figure;
+  const rs::MemoryLedger ledger = residency.ledger();
+  size_t                 priced = 0;
+  for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
   {
-    const auto                box = loadBox();
-    rs::RetainedScene         scene;
-    rs::FakeGpuBackend        gpu(2);
-    rs::Residency             residency(gpu);
-    fv::PropFeed              feed(scene);
-    std::vector<fv::PropSpec> props(1);
-    props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-    props[0].figureCageOf      = [&](int mesh) { return box->morphs->morphedCage(mesh); };
-    props[0].figureDazSkinning = true;
-    props[0].figureDazOrder    = dazOrder;
-    feed.sync(props);
-    residency.replace(scene);
-    const fv::FigureFeed&  figure = *feed.fed("p:1")->figure;
-    const rs::MemoryLedger ledger = residency.ledger();
-    size_t                 priced = 0;
-    for(size_t mi = 0; mi < box->loaded.scene.meshes.size(); mi++)
-    {
-      const rs::MeshRecord* record = scene.mesh(figure.meshOf(int(mi)));
-      if(!record)
-        continue;
-      const auto entry = std::find_if(ledger.meshes.begin(), ledger.meshes.end(), [&](const auto& m) { return m.mesh == figure.meshOf(int(mi)); });
-      ASSERT_NE(entry, ledger.meshes.end()) << mi;
-      rs::MeshCounts c = fv::meshCounts(box->loaded.scene.meshes[mi], true, true, dazOrder);
-      // what its materials asked, which the price can only guess
-      c.tangents         = !record->tangents.empty();
-      c.tangentTriangles = record->refine ? record->refine->tangentIndices.size() / 3 : 0;
-      EXPECT_EQ(rs::meshBufferBytes(c), entry->bytes.total() - entry->bytes.bvh) << "mesh " << mi << " with DAZ's order " << dazOrder;
-      EXPECT_EQ(entry->triangles, c.triangles) << mi;
-      EXPECT_EQ(entry->prop, 1u);
-      EXPECT_EQ(entry->local, int(mi));
-      priced++;
-    }
-    EXPECT_GT(priced, 0u);
-    EXPECT_EQ(ledger.total.unread > 0, dazOrder);
+    const rs::MeshRecord* record = scene.mesh(figure.meshOf(int(mi)));
+    if(!record)
+      continue;
+    const auto entry = std::find_if(ledger.meshes.begin(), ledger.meshes.end(), [&](const auto& m) { return m.mesh == figure.meshOf(int(mi)); });
+    ASSERT_NE(entry, ledger.meshes.end()) << mi;
+    rs::MeshCounts c = fv::meshCounts(box->loaded.scene.meshes[mi]);
+    // what its materials asked, which the price can only guess
+    c.tangents         = !record->tangents.empty();
+    c.tangentTriangles = record->refine ? record->refine->tangentIndices.size() / 3 : 0;
+    EXPECT_EQ(rs::meshBufferBytes(c), entry->bytes.total() - entry->bytes.bvh) << "mesh " << mi;
+    EXPECT_EQ(entry->triangles, c.triangles) << mi;
+    EXPECT_EQ(entry->prop, 1u);
+    EXPECT_EQ(entry->local, int(mi));
+    priced++;
   }
+  EXPECT_GT(priced, 0u);
+  EXPECT_EQ(ledger.total.unread, 0u);
 }
 
 // A strand's segments are drawn as two each, split at their middles: a midpoint is refined halfway

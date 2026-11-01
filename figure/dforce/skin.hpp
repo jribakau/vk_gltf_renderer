@@ -39,8 +39,8 @@ SkinPose currentSkin(const SceneGraph& scene, const std::vector<Mat4>& worlds, c
 std::vector<float> transformPoints(const Mat4& m, const std::vector<float>& src);
 
 // How a mesh's cage is skinned: the four strongest influences per cage vertex, renormalised (the
-// solver's pose transition turns them), and with DAZ's skinning (figureDazSkinning) the eight
-// strongest and the file's dual quaternion share, as the drawn mesh's skin pass blends them.
+// solver's pose transition turns them), and the eight strongest and the file's dual quaternion share,
+// as the drawn mesh's skin pass blends them.
 struct CageSkin
 {
   std::vector<uint16_t> index;  // four per vertex
@@ -50,7 +50,7 @@ struct CageSkin
   float                 dualQuat = 0;
   std::vector<float>    dualQuatShare;  // per vertex; empty: dualQuat for every vertex
 };
-CageSkin cageSkin(const mesh::SkinInput& in, bool dazSkinning = false);
+CageSkin cageSkin(const mesh::SkinInput& in);
 
 // Each bone's skin matrix in the mesh's space: bindInverse * bone * bind.
 std::vector<Mat4> skinMatrices(const SkinPose& pose);

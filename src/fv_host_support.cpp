@@ -162,34 +162,34 @@ TextureCalls& textureCalls()
 }
 
 namespace {
-uint64_t priced(const rs::MeshCounts& c, const GeometryPricing& pricing)
+uint64_t priced(const rs::MeshCounts& c, const HostRenderer& renderer)
 {
-  return rs::meshBufferBytes(c) + pricing.renderer->blasBytes(c.triangles, c.vertices, c.deforms());
+  return rs::meshBufferBytes(c) + renderer.blasBytes(c.triangles, c.vertices, c.deforms());
 }
 }  // namespace
 
-uint64_t geometryBytes(const fv::SceneGraph& scene, const GeometryPricing& pricing)
+uint64_t geometryBytes(const fv::SceneGraph& scene, const HostRenderer& renderer)
 {
   uint64_t bytes = 0;
   for(const fv::Mesh& m : scene.meshes)
-    bytes += priced(fv::meshCounts(m, pricing.gpuRefine, pricing.dazSkinning, pricing.dazOrder), pricing);
+    bytes += priced(fv::meshCounts(m), renderer);
   return bytes;
 }
 
-uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes, const GeometryPricing& pricing)
+uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes, const HostRenderer& renderer)
 {
   uint64_t bytes = 0;
   for(int m : meshes)
     if(m >= 0 && m < int(scene.meshes.size()))
-      bytes += priced(fv::meshCounts(scene.meshes[size_t(m)], pricing.gpuRefine, pricing.dazSkinning, pricing.dazOrder), pricing);
+      bytes += priced(fv::meshCounts(scene.meshes[size_t(m)]), renderer);
   return bytes;
 }
 
-uint64_t geometryBytes(const tinygltf::Model& model, const GeometryPricing& pricing)
+uint64_t geometryBytes(const tinygltf::Model& model, const HostRenderer& renderer)
 {
   uint64_t bytes = 0;
   for(const rs::MeshCounts& c : rs::modelMeshCounts(model))
-    bytes += priced(c, pricing);
+    bytes += priced(c, renderer);
   return bytes;
 }
 

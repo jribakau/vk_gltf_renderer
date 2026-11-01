@@ -234,7 +234,7 @@ std::vector<Mat4> skinMatrices(const SkinPose& pose)
   return out;
 }
 
-CageSkin cageSkin(const mesh::SkinInput& in, bool dazSkinning)
+CageSkin cageSkin(const mesh::SkinInput& in)
 {
   const size_t n = in.start.empty() ? 0 : in.start.size() - 1;
   CageSkin     out;
@@ -263,8 +263,6 @@ CageSkin cageSkin(const mesh::SkinInput& in, bool dazSkinning)
       out.weight[v * 4 + k] = pick[k].second / sum;
     }
   }
-  if(!dazSkinning)
-    return out;
   out.dualQuat      = in.dualQuat;
   out.dualQuatShare = in.dualQuatMap.size() == n ? in.dualQuatMap : std::vector<float>{};
   // the eight strongest, where some vertex has more than four

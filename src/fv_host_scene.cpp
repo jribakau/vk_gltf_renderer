@@ -48,7 +48,7 @@ Json FvHost::Impl::importModel(const std::string& path, std::function<void(std::
         return;
       }
       {
-        const uint64_t    bytes     = geometryBytes(*model, geometryPricing());
+        const uint64_t    bytes     = geometryBytes(*model, *renderer);
         const std::string shortfall = renderer->geometryShortfall(bytes);
         renderer->admitGeometry(bytes);
         if(!shortfall.empty())
@@ -234,20 +234,15 @@ tinygltf::Model FvHost::Impl::editedModel(const Prop& p) const
 // at their own intensity, a hidden one's root marked hidden; no sun of the host's; the sky. What the
 // composer can't carry over is stripped, with a notice. The figures are built here, on the app
 // thread: a worker would race the dials, which change their meshes in place on this thread.
-// glTF skins linearly with four influences a vertex: an export of a figure drawn with DAZ's skinning
-// (figureDazSkinning) says its posed joints will not look as they do here
+// glTF skins linearly with four influences a vertex, after subdividing: an export of a figure whose file
+// asks for more says its posed joints will not look as they do here
 void FvHost::Impl::noticeLinearExport(const Loaded& f)
 {
-  bool daz = false;
-  {
-    std::lock_guard lock(settingsMutex);
-    daz = settings.figureDazSkinning;
-  }
   for(const fv::Mesh& m : f.fig->loaded.scene.meshes)
-    if(daz && m.skinned() && (m.skin.dualQuat > 0 || !m.skin.dualQuatShare.empty() || !m.skin.skinIndex8.empty()))
+    if(m.skinned() && (m.skin.dualQuat > 0 || !m.skin.dualQuatShare.empty() || !m.skin.skinIndex8.empty()))
     {
-      notice("Export: glTF skins linearly with four influences a vertex, so posed shoulders and twisted forearms look as "
-             "they do with DAZ's skinning off");
+      notice("Export: glTF skins linearly with four influences a vertex, after subdividing, so posed shoulders, elbows and "
+             "twisted forearms won't look as they do here");
       return;
     }
 }

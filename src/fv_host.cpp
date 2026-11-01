@@ -74,9 +74,6 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     impl->renderer->setMaxTextureExtent(uint32_t(std::max(st.maxTextureSize, 0)));
     st.subdivision    = args.value("subdivision", st.subdivision);
     st.originalTextures = args.value("originalTextures", st.originalTextures);
-    st.figureGpuRefine  = args.value("figureGpuRefine", st.figureGpuRefine);
-    st.figureDazSkinning = args.value("figureDazSkinning", st.figureDazSkinning);
-    st.figureDazOrder    = args.value("figureDazOrder", st.figureDazOrder);
     return Json{{"ok", true}};
   });
   // load works out on a worker what the file is, and comes to the application thread for the rest
@@ -329,7 +326,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       const auto       b    = impl->renderer->deviceMemoryBudget();
       const VkExtent2D size = impl->renderer->renderSize();
       Json answer{{"known", b.known},   {"budgetBytes", b.budget},
-                  {"usageBytes", b.usage}, {"bytesPerPixel", impl->renderer->frameBytesPerPixel()},
+                  {"usageBytes", b.usage}, {"allocatorBlockBytes", b.allocatorBlocks}, {"allocatorAllocationBytes", b.allocatorAllocations},
+                  {"bytesPerPixel", impl->renderer->frameBytesPerPixel()},
                   {"width", size.width},   {"height", size.height}};
       if(const std::optional<int64_t> headroom = impl->renderer->sceneHeadroom())
         answer["headroomBytes"] = *headroom;

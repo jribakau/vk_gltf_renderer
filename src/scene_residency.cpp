@@ -177,15 +177,16 @@ void Residency::clear()
   {
     for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
       retireBuffer(b);
-    for(BufferHandle b : d.posedBuffers())
-      retireBuffer(b);
   }
   m_drawers.clear();
-  for(BufferHandle b : {m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable})
+  for(BufferHandle b : {m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable, m_chainScratch, m_unitAxes})
     retireBuffer(b);
-  m_jointPack = m_normalPack = m_weightPack = m_dualQuatPack = m_prevPositionTable = m_prevWorldTable = {};
+  m_jointPack = m_normalPack = m_weightPack = m_dualQuatPack = m_prevPositionTable = m_prevWorldTable = m_chainScratch = m_unitAxes = {};
+  m_unitAxesCount = 0;
   m_packsDirty = false;
   m_drawersWritten.clear();
+  m_prevResting.clear();
+  m_drawersWrittenLast.clear();
   m_compacting.clear();
   m_refineAcquired.clear();
   m_meshesWritten.clear();
@@ -421,14 +422,11 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
     g.start   = table(l.start, "stencil starts");
     g.columns = table(l.columns, "stencil columns");
     g.weights = table(l.weights, "stencil weights");
-    g.out = m_gpu.createBuffer({.size = uint64_t(g.rows) * sizeof(glm::vec3), .usage = eBufferStorage, .name = "refined level", .mayFail = true});
     r.levels.push_back(g);
     source = g.rows;
   }
   r.refinedCount   = t->refinedCount();
   r.triangleCount  = uint32_t(t->triangles.size() / 3);
-  r.refinedNormals = m_gpu.createBuffer(
-      {.size = uint64_t(r.refinedCount) * sizeof(glm::vec3), .usage = eBufferStorage, .name = "refined normals", .mayFail = true});
   r.drawnFrom       = table(t->drawnFrom, "drawn from");
   r.triangles       = table(t->triangles, "refined triangles");
   r.normalStart     = table(t->normalStart, "normal starts");
@@ -436,7 +434,7 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
   if(!t->offsets.empty())
     r.offsets = table(t->offsets, "refined offsets");
   // the tangents too, over its own corners, when it has them and the UVs they read
-  if(!t->tangentIndices.empty() && gpu.tangents && t->tangentStart.size() == record.positions.size() + 1
+  if(!t->tangentIndices.empty() && !record.tangents.empty() && t->tangentStart.size() == record.positions.size() + 1
      && t->tangentCorners.size() == t->tangentIndices.size() / 3 * 3)
   {
     r.tangentTriangles     = table(t->tangentIndices, "tangent triangles");
@@ -453,87 +451,162 @@ void Residency::refineOnGpu(std::span<MeshGpu* const> meshes)
     return;
   std::vector<RefineRun> runs;
   for(const MeshGpu* g : meshes)
-  {
-    RefineRun& run     = runs.emplace_back();
-    run.mesh           = g;
-    run.cage           = g->refine->cage;
-    run.refinedNormals = g->refine->refinedNormals;
-    for(const MeshGpu::Refine::Level& l : g->refine->levels)
-      run.levels.push_back(l.out);
-    run.positions = g->positions;
-    run.normals   = g->normals;
-    run.tangents  = g->tangents;
-  }
+    if(g->hasBase)  // what poses its cage has no base to make
+      runs.push_back({.mesh = g, .positions = g->positions, .normals = g->normals, .tangents = g->tangents});
+  if(runs.empty())
+    return;
   m_gpu.barrier(GpuBarrier::eTransferToShader);  // the cages
   refineChains(runs);
   // the refits read the positions, the skin passes both, this frame's draws both
   m_gpu.barrier(GpuBarrier::eComputeToBuild);
 }
 
+void Residency::ensureUnitAxes(uint64_t count)
+{
+  if(count <= m_unitAxesCount)
+    return;
+  retireBuffer(m_unitAxes);
+  m_unitAxesCount = std::max<uint64_t>(std::bit_ceil(count), 1024);
+  std::vector<std::byte> bytes(m_unitAxesCount * (sizeof(glm::vec3) + sizeof(glm::vec4)));
+  for(uint64_t v = 0; v < m_unitAxesCount; v++)
+  {
+    const glm::vec3 y(0.f, 1.f, 0.f);
+    const glm::vec4 x(1.f, 0.f, 0.f, 1.f);
+    std::memcpy(bytes.data() + v * sizeof(glm::vec3), &y, sizeof(y));
+    std::memcpy(bytes.data() + m_unitAxesCount * sizeof(glm::vec3) + v * sizeof(glm::vec4), &x, sizeof(x));
+  }
+  m_unitAxes = m_gpu.createBuffer({.size = bytes.size(), .usage = eBufferStorage, .name = "unit axes", .mayFail = true});
+  m_gpu.upload(m_unitAxes, 0, bytes);
+}
+
 void Residency::refineChains(std::span<const RefineRun> runs)
 {
-  size_t levels = 0;
-  for(const RefineRun& r : runs)
-    levels = std::max(levels, r.mesh->refine->levels.size());
-  for(size_t i = 0; i < levels; i++)
+  // what a chain makes on the way to its outputs, the first part only for one that poses its cage
+  const auto chainBytes = [](const RefineRun& run) {
+    const MeshGpu::Refine& t = *run.mesh->refine;
+    const uint64_t         c = t.levels.front().sourceCount;
+    uint64_t               bytes = uint64_t(t.refinedCount) * sizeof(glm::vec3);
+    for(const MeshGpu::Refine::Level& l : t.levels)
+      bytes += uint64_t(l.rows) * sizeof(glm::vec3);
+    if(run.posedBy)
+      bytes += c * sizeof(glm::vec3) + (t.offsets ? c * (sizeof(glm::vec3) + sizeof(glm::vec4)) + 16 : 0);
+    return bytes;
+  };
+  uint64_t largest = 0;
+  for(const RefineRun& run : runs)
+    largest = std::max(largest, chainBytes(run));
+  if(m_gpu.bufferSize(m_chainScratch) < largest)
   {
-    for(const RefineRun& r : runs)
-      if(const MeshGpu::Refine& t = *r.mesh->refine; i < t.levels.size())
-      {
-        const MeshGpu::Refine::Level& l    = t.levels[i];
-        const bool                    last = i + 1 == t.levels.size();
-        m_gpu.dispatchDeform({.kind           = DeformKind::eStencil,
-                              .vertexCount    = l.rows,
-                              .basePositions  = {i ? r.levels[i - 1] : r.cage},
-                              .outPositions   = {r.levels[i]},
-                              .rowStart       = {l.start},
-                              .columns        = {l.columns},
-                              .stencilWeights = {l.weights},
-                              .stencilOffsets = {last ? t.offsets : BufferHandle{}},
-                              .sourceCount    = l.sourceCount});
-      }
-    m_gpu.barrier(GpuBarrier::eComputeToCompute);
+    retireBuffer(m_chainScratch);
+    m_chainScratch = m_gpu.createBuffer({.size = largest, .usage = eBufferStorage, .name = "refine chain scratch", .mayFail = true});
+    m_gpu.takeAllocationFailed();  // with none the passes do nothing, and the outputs stay as they were
   }
-  for(const RefineRun& r : runs)
+  m_chainScratchUsed = m_gpu.frame();
+
+  bool first = true;
+  for(const RefineRun& run : runs)
   {
-    const MeshGpu::Refine& t = *r.mesh->refine;
+    if(!std::exchange(first, false))
+      m_gpu.barrier(GpuBarrier::eComputeToCompute);  // the next chain writes the same scratch
+    const MeshGpu&         mesh = *run.mesh;
+    const MeshGpu::Refine& t    = *mesh.refine;
+    uint64_t               at   = 0;
+    const auto             take = [&](uint64_t bytes, uint64_t alignment = 4) {
+      at                  = (at + alignment - 1) / alignment * alignment;
+      const BufferRange r{m_chainScratch, at};
+      at += bytes;
+      return r;
+    };
+    BufferRange    cage{t.cage}, frameX, frameY;
+    const uint64_t cageCount = t.levels.front().sourceCount;
+    if(run.posedBy)
+    {
+      const DrawerGpu& d = *run.posedBy;
+      cage               = take(cageCount * sizeof(glm::vec3));
+      // the axes turned with the pose: the skin's own normals and tangents of the rest's, its dual
+      // quaternions included. A ribbon has one level, so its stencil's columns are cage vertices.
+      const bool turns = t.offsets && t.levels.size() == 1 && m_unitAxes && m_unitAxesCount >= cageCount;
+      if(turns)
+      {
+        frameY = take(cageCount * sizeof(glm::vec3));
+        frameX = take(cageCount * sizeof(glm::vec4), 16);
+      }
+      m_gpu.dispatchDeform({.kind           = DeformKind::eSkin,
+                            .vertexCount    = uint32_t(cageCount),
+                            .basePositions  = {t.cage},
+                            .baseNormals    = turns ? BufferRange{m_unitAxes} : BufferRange{},
+                            .baseTangents   = turns ? BufferRange{m_unitAxes, m_unitAxesCount * sizeof(glm::vec3)} : BufferRange{},
+                            .outPositions   = cage,
+                            .outNormals     = frameY,
+                            .outTangents    = frameX,
+                            .joints         = {mesh.cageJoints},
+                            .weights        = {mesh.cageWeights},
+                            .jointMatrices  = {m_jointPack, d.jointOffset},
+                            .normalMatrices = {m_normalPack, d.normalOffset},
+                            .jointCount     = d.jointCount,
+                            .joints1        = {mesh.cageJoints1},
+                            .weights1       = {mesh.cageWeights1},
+                            .jointDualQuats = {d.dualQuat ? m_dualQuatPack : BufferHandle{}, d.dualQuatOffset},
+                            .dualQuatShares = {mesh.cageShares},
+                            .dualQuat       = d.dualQuatShare});
+      m_deformCounts.skins++;
+      m_gpu.barrier(GpuBarrier::eComputeToCompute);
+    }
+    BufferRange level = cage;
+    for(size_t i = 0; i < t.levels.size(); i++)
+    {
+      const MeshGpu::Refine::Level& l    = t.levels[i];
+      const bool                    last = i + 1 == t.levels.size();
+      const BufferRange             out  = take(uint64_t(l.rows) * sizeof(glm::vec3));
+      m_gpu.dispatchDeform({.kind           = DeformKind::eStencil,
+                            .vertexCount    = l.rows,
+                            .basePositions  = level,
+                            .outPositions   = out,
+                            .rowStart       = {l.start},
+                            .columns        = {l.columns},
+                            .stencilWeights = {l.weights},
+                            .stencilOffsets = {last ? t.offsets : BufferHandle{}},
+                            .frameX         = frameX,
+                            .frameY         = frameY,
+                            .sourceCount    = l.sourceCount});
+      m_gpu.barrier(GpuBarrier::eComputeToCompute);
+      level = out;
+    }
+    const BufferRange refinedNormals = take(uint64_t(t.refinedCount) * sizeof(glm::vec3));
     m_gpu.dispatchDeform({.kind          = DeformKind::eNormals,
                           .vertexCount   = t.refinedCount,
-                          .basePositions = {r.levels.back()},
-                          .outNormals    = {r.refinedNormals},
+                          .basePositions = level,
+                          .outNormals    = refinedNormals,
                           .rowStart      = {t.normalStart},
                           .columns       = {t.normalTriangles},
                           .triangles     = {t.triangles},
                           .sourceCount   = t.refinedCount,
                           .triangleCount = t.triangleCount});
-  }
-  m_gpu.barrier(GpuBarrier::eComputeToCompute);
-  // the splits: a gather of positions and of normals, each drawn vertex its refined vertex's
-  for(const RefineRun& r : runs)
-    for(const auto& [from, to] : {std::pair{r.levels.back(), r.positions}, std::pair{r.refinedNormals, r.normals}})
+    m_gpu.barrier(GpuBarrier::eComputeToCompute);
+    // the splits: a gather of positions and of normals, each drawn vertex its refined vertex's
+    for(const auto& [from, to] : {std::pair{level, run.positions}, std::pair{refinedNormals, run.normals}})
       if(to)
         m_gpu.dispatchDeform({.kind          = DeformKind::eStencil,
-                              .vertexCount   = r.mesh->vertexCount,
-                              .basePositions = {from},
+                              .vertexCount   = mesh.vertexCount,
+                              .basePositions = from,
                               .outPositions  = {to},
-                              .columns       = {r.mesh->refine->drawnFrom},
-                              .sourceCount   = r.mesh->refine->refinedCount});
-  // the tangents, from the drawn positions, normals and UVs
-  if(std::any_of(runs.begin(), runs.end(), [](const RefineRun& r) { return r.mesh->refine->tangentTriangles && r.tangents; }))
-  {
-    m_gpu.barrier(GpuBarrier::eComputeToCompute);
-    for(const RefineRun& r : runs)
-      if(const MeshGpu::Refine& t = *r.mesh->refine; t.tangentTriangles && r.normals && r.tangents)
-        m_gpu.dispatchDeform({.kind          = DeformKind::eTangents,
-                              .vertexCount   = r.mesh->vertexCount,
-                              .basePositions = {r.positions},
-                              .baseNormals   = {r.normals},
-                              .outTangents   = {r.tangents},
-                              .rowStart      = {t.tangentStart},
-                              .columns       = {t.tangentCorners},
-                              .triangles     = {t.tangentTriangles},
-                              .uvs           = {r.mesh->uv0},
-                              .triangleCount = t.tangentTriangleCount});
+                              .columns       = {t.drawnFrom},
+                              .sourceCount   = t.refinedCount});
+    // the tangents, from the drawn positions, normals and UVs
+    if(t.tangentTriangles && run.normals && run.tangents)
+    {
+      m_gpu.barrier(GpuBarrier::eComputeToCompute);
+      m_gpu.dispatchDeform({.kind          = DeformKind::eTangents,
+                            .vertexCount   = mesh.vertexCount,
+                            .basePositions = {run.positions},
+                            .baseNormals   = {run.normals},
+                            .outTangents   = {run.tangents},
+                            .rowStart      = {t.tangentStart},
+                            .columns       = {t.tangentCorners},
+                            .triangles     = {t.tangentTriangles},
+                            .uvs           = {mesh.uv0},
+                            .triangleCount = t.tangentTriangleCount});
+    }
   }
 }
 
@@ -556,10 +629,13 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
   };
   if(vertices && gpu.refine)
     m_gpu.upload(gpu.refine->cage, 0, bytesOf(record.cage));
-  stream(gpu.positions, bytesOf(record.positions), eBufferVertex | eBufferStorage | eBufferAccelInput, "positions");
-  stream(gpu.normals, bytesOf(record.normals), eBufferStorage, "normals");
-  if(!vertices || gpu.tangentRev != record.tangentRev)
-    stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+  if(gpu.hasBase)
+  {
+    stream(gpu.positions, bytesOf(record.positions), eBufferVertex | eBufferStorage | eBufferAccelInput, "positions");
+    stream(gpu.normals, bytesOf(record.normals), eBufferStorage, "normals");
+    if(!vertices || gpu.tangentRev != record.tangentRev)
+      stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+  }
   gpu.contentRev = record.contentRev;
   gpu.tangentRev = record.tangentRev;
   if(vertices)  // a vertex edit keeps the count, so the UVs and colours are as they were
@@ -577,6 +653,23 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
   gpu.vertexCount = uint32_t(record.positions.size());
 }
 
+// A static prim draws the mesh's own streams, and a drawer that doesn't pose its cage deforms from them. A
+// refined mesh's are made from its cage (m_refineAcquired), in this sync.
+void Residency::ensureBase(const MeshRecord& record, MeshGpu& gpu)
+{
+  if(std::exchange(gpu.hasBase, true))
+    return;
+  const auto stream = [&](BufferHandle& buffer, std::span<const std::byte> bytes, BufferUsageFlags usage, const char* name) {
+    if(bytes.empty())
+      return;
+    buffer = m_gpu.createBuffer({.size = bytes.size(), .usage = usage, .name = name, .mayFail = true});
+    m_gpu.upload(buffer, 0, bytes);
+  };
+  stream(gpu.positions, bytesOf(record.positions), eBufferVertex | eBufferStorage | eBufferAccelInput, "positions");
+  stream(gpu.normals, bytesOf(record.normals), eBufferStorage, "normals");
+  stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+}
+
 Residency::MeshGpu& Residency::acquireMesh(const RetainedScene& scene, MeshId id)
 {
   auto it = m_meshes.find(id);
@@ -588,8 +681,6 @@ Residency::MeshGpu& Residency::acquireMesh(const RetainedScene& scene, MeshId id
     gpu.owner = record->owner;
     uploadStreams(*record, gpu);
     makeRefine(*record, gpu);
-    if(gpu.refine)
-      m_refineAcquired.push_back(id);
     gpu.prims.assign(record->submeshes.size(), -1);
   }
   return gpu;
@@ -612,12 +703,12 @@ void Residency::retireRefine(MeshGpu& m)
 {
   if(!m.refine)
     return;
-  for(BufferHandle b : {m.refine->cage, m.refine->refinedNormals, m.refine->drawnFrom, m.refine->triangles, m.refine->normalStart,
+  for(BufferHandle b : {m.refine->cage, m.refine->drawnFrom, m.refine->triangles, m.refine->normalStart,
                         m.refine->normalTriangles, m.refine->offsets, m.refine->tangentTriangles, m.refine->tangentStart,
                         m.refine->tangentCorners})
     retireBuffer(b);
   for(const MeshGpu::Refine::Level& l : m.refine->levels)
-    for(BufferHandle b : {l.start, l.columns, l.weights, l.out})
+    for(BufferHandle b : {l.start, l.columns, l.weights})
       retireBuffer(b);
   m.refine.reset();
 }
@@ -704,6 +795,12 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
     m_prims.resize(size_t(slot) + 1);
 
   const MeshRecord& record = *scene.mesh(id);
+  if(!d && !mesh.hasBase)
+  {
+    ensureBase(record, mesh);
+    if(mesh.refine)
+      m_refineAcquired.push_back(id);
+  }
   const Submesh     run    = record.drawnRun(submesh);
   Prim              prim;
   prim.mesh       = id;
@@ -1532,7 +1629,7 @@ bool Residency::deforms(const RetainedScene& scene, EntityId entity, MeshId mesh
 
 // What a mesh's drawers deform from, beside its streams: joints and weights for a skin, the targets'
 // deltas for a morph (a target without normals or tangents adds none of them)
-void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool skin)
+void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool skin, bool posed)
 {
   const auto make = [&](BufferHandle& buffer, std::span<const std::byte> bytes, const char* name) {
     if(buffer || bytes.empty())
@@ -1540,7 +1637,7 @@ void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool s
     buffer = m_gpu.createBuffer({.size = bytes.size(), .usage = eBufferStorage, .name = name, .mayFail = true});
     m_gpu.upload(buffer, 0, bytes);
   };
-  if(skin)
+  if(skin && !posed)
   {
     make(mesh.joints, bytesOf(record.joints), "skin joints");  // uint4 here, int4 in the shader: the same bits
     make(mesh.weights, bytesOf(record.weights), "skin weights");
@@ -1551,8 +1648,10 @@ void Residency::makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool s
     }
     if(record.dualQuatShares.size() == record.positions.size())
       make(mesh.dualQuatShares, bytesOf(record.dualQuatShares), "dual quaternion shares");
+  }
+  if(skin && posed)
+  {
     // DAZ's order: the cage's
-    if(record.cageJoints.size() == record.cage.size() && record.cageWeights.size() == record.cage.size() && !record.cage.empty())
     {
       make(mesh.cageJoints, bytesOf(record.cageJoints), "cage skin joints");
       make(mesh.cageWeights, bytesOf(record.cageWeights), "cage skin weights");
@@ -1598,24 +1697,19 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
   d.mesh                 = id;
   d.morph                = !record.targets.empty();
   d.skin = scene.skin(e.mesh->skin) && record.joints.size() == record.positions.size() && record.weights.size() == record.positions.size();
-  makeDeformInputs(record, mesh, d.skin);
   // DAZ's order: a refined mesh's cage posed, then refined, when the cage has its influences
   // (tangents too, when it has them: the chain makes them, nothing skins the base's)
-  const bool posed = d.skin && !d.morph && mesh.refine && mesh.cageJoints && mesh.cageWeights
-                     && (!mesh.tangents || mesh.refine->tangentTriangles);
-  d.dualQuat      = d.skin && (record.dualQuat > 0.f || (posed ? bool(mesh.cageShares) : bool(mesh.dualQuatShares)));
-  d.dualQuatShare = record.dualQuat;
-  if(posed)
+  const bool cageInfluences = !record.cage.empty() && record.cageJoints.size() == record.cage.size() && record.cageWeights.size() == record.cage.size();
+  d.posed = d.skin && !d.morph && mesh.refine && cageInfluences && (record.tangents.empty() || mesh.refine->tangentTriangles);
+  makeDeformInputs(record, mesh, d.skin, d.posed);
+  if(!d.posed && !mesh.hasBase)
   {
-    const auto work = [&](uint64_t count, const char* name) {
-      return m_gpu.createBuffer({.size = std::max<uint64_t>(count, 1) * sizeof(glm::vec3), .usage = eBufferStorage, .name = name, .mayFail = true});
-    };
-    DrawerGpu::Posed& p = d.posed.emplace();
-    p.cage              = work(mesh.refine->levels.front().sourceCount, "posed cage");
-    for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
-      p.levels.push_back(work(l.rows, "posed level"));
-    p.refinedNormals = work(mesh.refine->refinedCount, "posed refined normals");
+    ensureBase(record, mesh);
+    if(mesh.refine)
+      m_refineAcquired.push_back(id);
   }
+  d.dualQuat      = d.skin && (record.dualQuat > 0.f || (d.posed ? bool(mesh.cageShares) : bool(mesh.dualQuatShares)));
+  d.dualQuatShare = record.dualQuat;
   d.targetCount = d.morph ? mesh.targetCount : 0;
   d.jointCount  = d.skin ? uint32_t(scene.skin(e.mesh->skin)->joints.size()) : 0;
   const uint64_t n      = mesh.vertexCount;
@@ -1623,19 +1717,18 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
     buffer = m_gpu.createBuffer({.size = n * element, .usage = usage, .name = name, .mayFail = true});
   };
   output(d.positions, sizeof(glm::vec3), eBufferVertex | eBufferStorage | eBufferAccelInput, "deformed positions");
-  if(mesh.normals)
+  if(!record.normals.empty())
     output(d.normals, sizeof(glm::vec3), eBufferStorage, "deformed normals");
-  if(mesh.tangents)
+  if(!record.tangents.empty())
     output(d.tangents, sizeof(glm::vec4), eBufferStorage, "deformed tangents");
   if(d.morph && d.skin)
   {
     output(d.morphedPositions, sizeof(glm::vec3), eBufferStorage, "morphed positions");
-    if(mesh.normals)
+    if(!record.normals.empty())
       output(d.morphedNormals, sizeof(glm::vec3), eBufferStorage, "morphed normals");
-    if(mesh.tangents)
+    if(!record.tangents.empty())
       output(d.morphedTangents, sizeof(glm::vec4), eBufferStorage, "morphed tangents");
   }
-  output(d.prevPositions, sizeof(glm::vec3), eBufferStorage, "previous positions");
   d.prims.assign(record.submeshes.size(), -1);
   m_packsDirty = true;
   return d;
@@ -1649,10 +1742,9 @@ void Residency::releaseDrawer(const DrawerKey& key)
   const DrawerGpu& d = it->second;
   for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
     retireBuffer(b);
-  for(BufferHandle b : d.posedBuffers())
-    retireBuffer(b);
   m_drawers.erase(it);
   m_drawersWritten.erase(key);
+  m_drawersWrittenLast.erase(key);
   m_packsDirty = true;
   if(!meshInUse(key.second))
     retireMesh(key.second);
@@ -1698,17 +1790,8 @@ void Residency::layOutPacks(SyncResult& result)
 void Residency::snapshotPrevPositions()
 {
   bool copied = false;
-  for(const DrawerKey& key : m_drawersWritten)
-    if(auto it = m_drawers.find(key); it != m_drawers.end())
-    {
-      DrawerGpu& d = it->second;
-      m_gpu.copyBuffer(d.positions, 0, d.prevPositions, 0, m_gpu.bufferSize(d.positions));
-      copied = true;
-      if(!std::exchange(d.prevValid, true))
-        for(int32_t p : d.prims)
-          if(p >= 0)
-            m_dirtyPrevPrims.insert(uint32_t(p));
-    }
+  m_drawersWrittenLast.swap(m_drawersWritten);
+  m_drawersWritten.clear();
   for(MeshId id : m_meshesWritten)
     if(auto it = m_meshes.find(id); it != m_meshes.end() && it->second.prevPositions)
     {
@@ -1720,10 +1803,48 @@ void Residency::snapshotPrevPositions()
           if(p >= 0)
             m_dirtyPrevPrims.insert(uint32_t(p));
     }
-  m_drawersWritten.clear();
   m_meshesWritten.clear();
   if(copied)
     m_gpu.barrier(GpuBarrier::eTransferToShader);  // the copies, then the uploads and passes that overwrite what they read
+}
+
+void Residency::copyPrevPositions(DrawerGpu& d)
+{
+  if(!d.ran)
+    return;  // no motion the frame it appears
+  if(!d.prevPositions)
+  {
+    d.prevPositions = m_gpu.createBuffer({.size = m_gpu.bufferSize(d.positions), .usage = eBufferStorage, .name = "previous positions", .mayFail = true});
+    if(m_gpu.takeAllocationFailed())  // only its motion goes without
+    {
+      retireBuffer(std::exchange(d.prevPositions, {}));
+      return;
+    }
+  }
+  m_gpu.copyBuffer(d.positions, 0, d.prevPositions, 0, m_gpu.bufferSize(d.positions));
+  d.prevValid = true;
+  m_prevResting.erase({d.entity, d.mesh});
+  if(!std::exchange(d.prevInUse, true))
+    for(int32_t p : d.prims)
+      if(p >= 0)
+        m_dirtyPrevPrims.insert(uint32_t(p));
+}
+
+void Residency::settlePrevPositions()
+{
+  for(const DrawerKey& key : m_drawersWrittenLast)
+    if(auto it = m_drawers.find(key); it != m_drawers.end() && !m_drawersWritten.count(key))
+    {
+      DrawerGpu& d = it->second;
+      if(d.prevPositions)
+        m_prevResting[key] = m_gpu.frame();
+      d.prevInUse = false;
+      d.prevValid = true;
+      for(int32_t p : d.prims)
+        if(p >= 0)
+          m_dirtyPrevPrims.insert(uint32_t(p));
+    }
+  m_drawersWrittenLast.clear();
 }
 
 // The deform passes whose inputs changed: the morph weights, the joint matrices, or the mesh's
@@ -1790,6 +1911,16 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
   if(morphs.empty() && skins.empty())
     return;
 
+  // what the last frame drew, before the passes write over it
+  for(Run& run : runs)
+    if(run.morph || run.skin)
+      copyPrevPositions(*run.d);
+  uint64_t turningCage = 0;
+  for(const Run* run : skins)
+    if(const MeshGpu& mesh = m_meshes.at(run->d->mesh); run->d->posed && mesh.refine->offsets)
+      turningCage = std::max<uint64_t>(turningCage, mesh.refine->levels.front().sourceCount);
+  ensureUnitAxes(turningCage);
+
   // this frame's weights and matrices, then the passes
   for(Run* run : morphs)
     m_gpu.upload(m_weightPack, run->d->weightOffset, bytesOf(run->weights));
@@ -1839,29 +1970,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     const MeshGpu&   mesh = m_meshes.at(d.mesh);
     if(d.posed)
     {
-      // the cage posed (positions only), for the refine chain below
-      m_gpu.dispatchDeform({.kind           = DeformKind::eSkin,
-                            .vertexCount    = mesh.refine->levels.front().sourceCount,
-                            .basePositions  = {mesh.refine->cage},
-                            .outPositions   = {d.posed->cage},
-                            .joints         = {mesh.cageJoints},
-                            .weights        = {mesh.cageWeights},
-                            .jointMatrices  = {m_jointPack, d.jointOffset},
-                            .normalMatrices = {m_normalPack, d.normalOffset},
-                            .jointCount     = d.jointCount,
-                            .joints1        = {mesh.cageJoints1},
-                            .weights1       = {mesh.cageWeights1},
-                            .jointDualQuats = {d.dualQuat ? m_dualQuatPack : BufferHandle{}, d.dualQuatOffset},
-                            .dualQuatShares = {mesh.cageShares},
-                            .dualQuat       = d.dualQuatShare});
-      m_deformCounts.skins++;
-      posedRuns.push_back({.mesh           = &mesh,
-                           .cage           = d.posed->cage,
-                           .refinedNormals = d.posed->refinedNormals,
-                           .levels         = d.posed->levels,
-                           .positions      = d.positions,
-                           .normals        = d.normals,
-                           .tangents       = d.tangents});
+      posedRuns.push_back({.mesh = &mesh, .posedBy = &d, .positions = d.positions, .normals = d.normals, .tangents = d.tangents});
       continue;
     }
     m_gpu.dispatchDeform({.kind           = DeformKind::eSkin,
@@ -1952,8 +2061,9 @@ void Residency::writeMotionTables(SyncResult& result)
         continue;
       if(!prim->drawer.isNone())
       {
+        // at rest what the last frame drew is what its positions hold
         const DrawerGpu& d = m_drawers.at({prim->drawer, prim->mesh});
-        rows[i]            = d.prevValid ? m_gpu.bufferAddress(d.prevPositions) : 0;
+        rows[i]            = d.prevValid ? m_gpu.bufferAddress(d.prevInUse ? d.prevPositions : d.positions) : 0;
       }
       else if(const MeshGpu& mesh = m_meshes.at(prim->mesh); mesh.prevValid)
         rows[i] = m_gpu.bufferAddress(mesh.prevPositions);
@@ -1968,8 +2078,11 @@ void Residency::writeMotionTables(SyncResult& result)
         rows[i] = m_prevWorlds[first + i];
     m_gpu.upload(m_prevWorldTable, uint64_t(first) * sizeof(glm::mat4), bytesOf(rows));
   }
-  if(!prims.empty() || !nodes.empty())
+  // (a prim's row says what its motion is: the picture isn't changed by one coming to rest)
+  if(!nodes.empty())
     result.changed = true;
+  else if(!prims.empty())
+    m_gpu.barrier(GpuBarrier::eTransferToShader);
 }
 
 const Residency::DrawerGpu* Residency::drawer(EntityId entity, MeshId mesh) const
@@ -2040,6 +2153,27 @@ SyncResult Residency::sync(RetainedScene& scene)
   // images asked of it between syncs (raiseImages, lowerImages)
   const bool imagesAsked = !m_decodeQueue.empty() || m_fitSlack;
   const bool parkedChanged = std::exchange(m_parkedChanged, false);
+  // what a large chain worked in goes once nothing has posed for a while
+  constexpr uint64_t kChainScratchIdleFrames = 600;
+  if(m_chainScratch && m_gpu.frame() > m_chainScratchUsed + kChainScratchIdleFrames)
+  {
+    retireBuffer(std::exchange(m_chainScratch, {}));
+    retireBuffer(std::exchange(m_unitAxes, {}));
+    m_unitAxesCount = 0;
+  }
+  // and last frame's positions a little sooner, as a drag that only pauses keeps them
+  constexpr uint64_t kPrevPositionsIdleFrames = 120;
+  for(auto it = m_prevResting.begin(); it != m_prevResting.end();)
+  {
+    if(m_gpu.frame() <= it->second + kPrevPositionsIdleFrames)
+    {
+      ++it;
+      continue;
+    }
+    if(auto d = m_drawers.find(it->first); d != m_drawers.end() && !d->second.prevInUse)
+      retireBuffer(std::exchange(d->second.prevPositions, {}));
+    it = m_prevResting.erase(it);
+  }
   if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged)
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
@@ -2087,6 +2221,7 @@ SyncResult Residency::sync(RetainedScene& scene)
   if(m_gpu.takeAllocationFailed())
     m_failedMeshes.insert(written.begin(), written.end());
   syncDeforms(scene, written, result);
+  settlePrevPositions();
   ensureCapacity(result);
   // textures before materials before geometry (see "The sync"): the textures are written as their
   // materials take them, and every material is converted here, before an instance draws with it
@@ -2736,12 +2871,12 @@ size_t Residency::liveBuffers() const
       n += b ? 1 : 0;
     if(mesh.refine)
     {
-      for(BufferHandle b : {mesh.refine->cage, mesh.refine->refinedNormals, mesh.refine->drawnFrom, mesh.refine->triangles,
+      for(BufferHandle b : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles,
                             mesh.refine->normalStart, mesh.refine->normalTriangles, mesh.refine->offsets,
                             mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners})
         n += b ? 1 : 0;
       for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
-        for(BufferHandle b : {l.start, l.columns, l.weights, l.out})
+        for(BufferHandle b : {l.start, l.columns, l.weights})
           n += b ? 1 : 0;
     }
   }
@@ -2749,13 +2884,12 @@ size_t Residency::liveBuffers() const
   {
     for(BufferHandle b : {d.positions, d.normals, d.tangents, d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
       n += b ? 1 : 0;
-    n += d.posedBuffers().size();
   }
   for(const std::optional<Prim>& p : m_prims)
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
                         m_emissiveTable, m_emissiveGroupTable, m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
-                        m_prevWorldTable})
+                        m_prevWorldTable, m_chainScratch, m_unitAxes})
     n += b ? 1 : 0;
   return n;
 }
@@ -2799,14 +2933,8 @@ MemoryLedger Residency::ledger() const
       for(BufferHandle s : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles, mesh.refine->normalStart, mesh.refine->normalTriangles,
                             mesh.refine->offsets, mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners})
         b.remake += bytes(s);
-      // the refined base's way there, which only the mesh's own streams come from
-      uint64_t& baseLevels = drawnItself || readByADrawer ? b.working : b.unread;
-      baseLevels += bytes(mesh.refine->refinedNormals);
       for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
-      {
         b.remake += bytes(l.start) + bytes(l.columns) + bytes(l.weights);
-        baseLevels += bytes(l.out);
-      }
     }
   }
   for(const auto& [key, d] : m_drawers)
@@ -2816,8 +2944,6 @@ MemoryLedger Residency::ledger() const
       for(BufferHandle s : {d.positions, d.normals, d.tangents})
         b.drawn += bytes(s);
       for(BufferHandle s : {d.morphedPositions, d.morphedNormals, d.morphedTangents, d.prevPositions})
-        b.working += bytes(s);
-      for(BufferHandle s : d.posedBuffers())
         b.working += bytes(s);
     }
   for(const std::optional<Prim>& p : m_prims)
@@ -2831,6 +2957,7 @@ MemoryLedger Residency::ledger() const
       }
   for(const MemoryLedger::Mesh& m : out.meshes)
     out.total += m.bytes;
+  out.total.working += bytes(m_chainScratch) + bytes(m_unitAxes);
   for(const auto& [key, mm] : m_micromaps)
     out.total.bvh += m_gpu.accelBytes(mm.accel);
   for(const auto& [key, decoded] : m_decoded)

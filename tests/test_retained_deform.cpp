@@ -152,6 +152,61 @@ std::vector<T> readBack(const FakeGpuBackend& gpu, BufferHandle b)
   return out;
 }
 
+// A strand ribbon's piece as the feed makes one: three cage points on bone 0, each drawn once, widened
+// along x by the refine's offsets
+const glm::vec3 kRibbonWidth(0.1f, 0.f, 0.f);
+MeshRecord ribbonPiece()
+{
+  MeshRecord m;
+  m.name = "ribbon";
+  m.cage = {{0, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  for(const glm::vec3& p : m.cage)
+  {
+    m.positions.push_back(p + kRibbonWidth);
+    m.normals.push_back({1, 0, 0});
+    m.joints.push_back({0, 0, 0, 0});
+    m.weights.push_back({1, 0, 0, 0});
+    m.cageJoints.push_back({0, 0, 0, 0});
+    m.cageWeights.push_back({1, 0, 0, 0});
+  }
+  m.indices = {0, 1, 2};
+  m.submeshes.push_back({.firstIndex = 0, .indexCount = 3, .material = 0, .order = 0});
+  auto t       = std::make_shared<RefineTables>();
+  t->cageCount = 3;
+  t->levels.push_back({.start = {0, 1, 2, 3}, .columns = {0, 1, 2}, .weights = {1, 1, 1}});
+  t->drawnFrom       = {0, 1, 2};
+  t->triangles       = {0, 1, 2};
+  t->normalStart     = {0, 1, 2, 3};
+  t->normalTriangles = {0, 0, 0};
+  t->offsets.assign(3, kRibbonWidth);
+  m.refine = t;
+  return m;
+}
+
+// That ribbon drawn by an entity skinned with one bone, which it can pose
+struct RibbonRig
+{
+  RetainedScene scene;
+  EntityId      root, bone, body;
+  MeshId        mesh;
+  SkinId        skin;
+  MaterialId    material;
+
+  explicit RibbonRig(MeshRecord record = ribbonPiece())
+  {
+    root     = scene.createEntity("root", {});
+    bone     = scene.createEntity("bone", {}, root);
+    mesh     = scene.addMesh(std::move(record));
+    material = scene.addMaterial({});
+    skin     = scene.addSkin({.name = "skin", .joints = {bone}, .inverseBind = {glm::mat4(1.f)}});
+    MeshInstance instance;
+    instance.parts.push_back({mesh, {material}});
+    instance.skin = skin;
+    body          = scene.createEntity("body", {}, root);
+    scene.setMeshInstance(body, instance);
+  }
+};
+
 uint32_t refitsOf(const Residency& residency, const FakeGpuBackend& gpu, const Residency::DrawerGpu& d)
 {
   uint32_t n = 0;
@@ -187,6 +242,118 @@ TEST(RetainedDeform, ASkinnedMeshIsDrawnFromItsSkinsOutput)
   const std::vector<glm::vec3> skinned = readBack<glm::vec3>(gpu, d->positions);
   EXPECT_NE(skinned[2].z, 0.f);
   EXPECT_EQ(readBack<glm::vec3>(gpu, residency.meshGpu(rig.mesh)->positions), rig.scene.mesh(rig.mesh)->positions);
+}
+
+// DAZ's order on a strand ribbon: what widens it turns with the bone, and a bone's move doesn't stretch it
+TEST(RetainedDeform, ARibbonsWidthTurnsWithItsBone)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  expectClean(rig.scene, residency, gpu, "at rest: ");
+  const Residency::DrawerGpu* d = residency.drawer(rig.body, rig.mesh);
+  ASSERT_NE(d, nullptr);
+  ASSERT_TRUE(d->posed);
+  EXPECT_FALSE(residency.meshGpu(rig.mesh)->hasBase);
+
+  Transform t;
+  t.translation = {2, 0, 0};
+  t.rotation    = glm::angleAxis(glm::radians(90.f), glm::vec3(0, 0, 1));
+  rig.scene.setLocal(rig.bone, t);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  expectClean(rig.scene, residency, gpu, "turned: ");
+  const std::vector<glm::vec3> drawn = readBack<glm::vec3>(gpu, d->positions);
+  const std::vector<glm::vec3> cage  = rig.scene.mesh(rig.mesh)->cage;
+  ASSERT_EQ(drawn.size(), cage.size());
+  for(size_t v = 0; v < cage.size(); v++)
+  {
+    const glm::vec3 expected = t.translation + t.rotation * (cage[v] + kRibbonWidth);
+    EXPECT_LT(glm::distance(drawn[v], expected), 1e-5f) << v;
+  }
+}
+
+// What only a pose reads goes once nothing has posed for a while, and the next pose makes it again
+TEST(RetainedDeform, WhatOnlyAPoseReadsGoesAtRestAndComesBackWithThePose)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  const auto turn = [&](float degrees) {
+    Transform t;
+    t.rotation = glm::angleAxis(glm::radians(degrees), glm::vec3(0, 0, 1));
+    rig.scene.setLocal(rig.bone, t);
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+    expectClean(rig.scene, residency, gpu);
+  };
+  turn(30);
+  EXPECT_GT(residency.ledger().total.working, 0u);
+  for(int i = 0; i < 700; i++)
+  {
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+  }
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "at rest: ");
+  EXPECT_EQ(residency.ledger().total.working, 0u);
+
+  turn(90);
+  EXPECT_GT(residency.ledger().total.working, 0u);
+  const std::vector<glm::vec3> drawn = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions);
+  const glm::quat              turned = glm::angleAxis(glm::radians(90.f), glm::vec3(0, 0, 1));
+  EXPECT_LT(glm::distance(drawn[1], turned * (rig.scene.mesh(rig.mesh)->cage[1] + kRibbonWidth)), 1e-5f);
+}
+
+// What doesn't pose (here a second entity, unskinned) brings back the mesh's own streams that only it
+// reads, refined from the cage then and not before
+TEST(RetainedDeform, AnUnposedDrawOfAPosedMeshBringsBackItsOwnStreams)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  EXPECT_FALSE(residency.meshGpu(rig.mesh)->hasBase);
+
+  const EntityId still = rig.scene.createEntity("still", {}, rig.root);
+  MeshInstance   instance;
+  instance.parts.push_back({rig.mesh, {rig.material}});
+  rig.scene.setMeshInstance(still, instance);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  expectClean(rig.scene, residency, gpu);
+  const Residency::MeshGpu* mesh = residency.meshGpu(rig.mesh);
+  ASSERT_TRUE(mesh->hasBase);
+  const std::vector<glm::vec3> base = readBack<glm::vec3>(gpu, mesh->positions);
+  const std::vector<glm::vec3> fed  = rig.scene.mesh(rig.mesh)->positions;
+  ASSERT_EQ(base.size(), fed.size());
+  for(size_t v = 0; v < fed.size(); v++)
+    EXPECT_LT(glm::distance(base[v], fed[v]), 1e-5f) << v;
+}
+
+// Tangents the GPU can't make (no tables: a mesh with no UVs has none) have to be skinned, so the mesh
+// is refined first and its drawn vertices skinned after, and it holds what that reads
+TEST(RetainedDeform, TangentsWithNoTablesAreSkinnedFromTheRefinedMesh)
+{
+  MeshRecord record = ribbonPiece();
+  record.tangents.assign(record.positions.size(), glm::vec4(0, 1, 0, 1));
+  RibbonRig      rig(std::move(record));
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  const Residency::DrawerGpu* d = residency.drawer(rig.body, rig.mesh);
+  ASSERT_NE(d, nullptr);
+  EXPECT_FALSE(d->posed);
+  EXPECT_TRUE(residency.meshGpu(rig.mesh)->hasBase);
+  Transform t;
+  t.rotation = glm::angleAxis(glm::radians(90.f), glm::vec3(0, 0, 1));
+  rig.scene.setLocal(rig.bone, t);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  expectClean(rig.scene, residency, gpu);
+  EXPECT_LT(glm::distance(glm::vec3(readBack<glm::vec4>(gpu, d->tangents)[0]), glm::vec3(-1, 0, 0)), 1e-5f);
 }
 
 // The skin turns the normals by the packed normal matrices, read at their stride as the shader does
@@ -456,8 +623,8 @@ TEST(RetainedDeform, EachEntityDrawingASkinnedMeshHasItsOwnDrawer)
   EXPECT_NE(readBack<glm::vec3>(gpu, a->positions), readBack<glm::vec3>(gpu, b->positions));
 }
 
-// DLSS motion: a new drawer has no previous positions; positions written in one sync are copied at
-// the top of the next, before anything writes them again; once nothing writes them, the copy rests
+// DLSS motion: a new drawer has no previous positions; positions a sync writes are copied before it
+// does; once nothing writes them the row names the positions, and after a while the copy goes
 TEST(RetainedDeform, PreviousPositionsAreWhatTheLastFrameDrew)
 {
   Rig            rig(false);
@@ -483,10 +650,38 @@ TEST(RetainedDeform, PreviousPositionsAreWhatTheLastFrameDrew)
   const std::vector<glm::vec3> posed = readBack<glm::vec3>(gpu, d.positions);
   EXPECT_NE(posed, rest);
 
-  gpu.beginFrame();  // nothing moves: the copy catches up, so the frame shows no motion
+  gpu.beginFrame();  // nothing moves: its row names what it holds, so the frame shows no motion
   residency.sync(rig.scene);
-  EXPECT_EQ(readBack<glm::vec3>(gpu, d.prevPositions), posed);
+  EXPECT_EQ(row(), gpu.bufferAddress(d.positions));
   expectClean(rig.scene, residency, gpu, "rest: ");
+
+  // a drag that only pauses keeps the copy, which then holds where it paused
+  const BufferHandle copy = d.prevPositions;
+  ASSERT_TRUE(copy);
+  rig.bend(10);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(d.prevPositions, copy);
+  EXPECT_EQ(row(), gpu.bufferAddress(copy));
+  EXPECT_EQ(readBack<glm::vec3>(gpu, copy), posed);
+  expectClean(rig.scene, residency, gpu, "moved again: ");
+  const std::vector<glm::vec3> paused = readBack<glm::vec3>(gpu, d.positions);
+
+  // left at rest, the copy goes; moved after that, there is a new one of where it rested
+  for(int i = 0; i < 200; i++)
+  {
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+  }
+  EXPECT_FALSE(d.prevPositions);
+  EXPECT_EQ(row(), gpu.bufferAddress(d.positions));
+  expectClean(rig.scene, residency, gpu, "at rest: ");
+  rig.bend(20);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(row(), gpu.bufferAddress(d.prevPositions));
+  EXPECT_EQ(readBack<glm::vec3>(gpu, d.prevPositions), paused);
+  expectClean(rig.scene, residency, gpu, "after resting: ");
 }
 
 // An instance that moves keeps, for one sync, the world it was drawn with; a static mesh a host edit

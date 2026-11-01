@@ -415,9 +415,10 @@ void GltfRenderer::logMemoryLedger()
   m_ledgerLogged = total;
   const MemoryBudget budget = deviceMemoryBudget();
   const auto         mb     = [](uint64_t bytes) { return unsigned(bytes >> 20); };
-  LOGI("[memory] scene %u MB: drawn %u, BVH %u, remake %u, working %u, unread %u, images %u (idle %u), scene %u; retiring %u; in system memory %u; driver %u of %u MB\n",
+  LOGI("[memory] scene %u MB: drawn %u, BVH %u, remake %u, working %u, unread %u, images %u (idle %u), scene %u; retiring %u; in system memory %u; allocated %u in blocks of %u; driver %u of %u MB\n",
        mb(total), mb(ledger.total.drawn), mb(ledger.total.bvh), mb(ledger.total.remake), mb(ledger.total.working), mb(ledger.total.unread),
-       mb(ledger.total.images), mb(ledger.idleImages), mb(ledger.total.scene), mb(ledger.retiring), mb(ledger.spilled), mb(budget.usage), mb(budget.budget));
+       mb(ledger.total.images), mb(ledger.idleImages), mb(ledger.total.scene), mb(ledger.retiring), mb(ledger.spilled),
+       mb(budget.allocatorAllocations), mb(budget.allocatorBlocks), mb(budget.usage), mb(budget.budget));
 }
 
 // memoryFillMB: device memory nothing else uses, touched every frame so the driver has to keep it where it

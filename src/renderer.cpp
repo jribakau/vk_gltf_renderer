@@ -617,6 +617,9 @@ GltfRenderer::MemoryBudget GltfRenderer::deviceMemoryBudget() const
       b.usage += budget.heapUsage[i];
     }
   b.known = true;
+  const AllocatedMemory allocated = allocatedMemory();
+  b.allocatorBlocks               = allocated.blocks;
+  b.allocatorAllocations          = allocated.allocations;
   return b;
 }
 

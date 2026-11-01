@@ -387,7 +387,6 @@ Json tightReport(fv::Figure& fig, const std::string& what, float amount)
 {
   const int body = fig.loaded.morphs.meshes[fig.loaded.morphs.mainMeshes[0]].mesh;
   fv::wardrobe::Collider collider(fig.loaded.scene, *fig.morphs, body, fig.loaded.root);
-  collider.dazSkinning = true;
   collider.settings = [&fig] {
     std::map<int, fv::dson::Smoothing> all;
     for(const fv::WornItem& w : fig.items)
@@ -436,7 +435,7 @@ Json tightReport(fv::Figure& fig, const std::string& what, float amount)
     const fv::Mesh&       m      = scene.meshes[size_t(mesh)];
     if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
       return fv::dforce::transformPoints(to, rest);
-    return fv::dforce::transformPoints(to, fv::dforce::skinLocal(rest, fv::dforce::cageSkin(m.cageSkin, true), fv::dforce::currentSkin(scene, worlds, nodeOf, mesh)));
+    return fv::dforce::transformPoints(to, fv::dforce::skinLocal(rest, fv::dforce::cageSkin(m.cageSkin), fv::dforce::currentSkin(scene, worlds, nodeOf, mesh)));
   };
   const auto measure = [&](const char* name) {
     const auto bodyNow = posedCage(body);

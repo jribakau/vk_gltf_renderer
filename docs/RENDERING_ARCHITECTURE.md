@@ -38,7 +38,8 @@ are sized by capacity (a power of two at or above the high-water mark); the shad
 `GltfShadeMaterial` row and a span of the texture-info table; texture and sampler slots (slot 0
 the defaults), one image per texture and colour space; dense lights in document order; the
 emissive table over shown instances whose materials emit; per prim slot the address of its
-previous positions and per instance slot its previous world (the DLSS motion tables); and the
+previous positions (at rest, its positions) and per instance slot its previous world (the DLSS
+motion tables); and the
 packed joint matrices, normal matrices and morph weights of every drawer.
 
 **BLAS lifecycle.** A prim's BLAS is built in the frame its prim is made, recorded into that

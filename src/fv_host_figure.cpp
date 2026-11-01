@@ -125,7 +125,7 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           throw std::runtime_error("Select the figure to put " + fileStem(rel) + " on.");
       }
       const auto t0 = std::chrono::steady_clock::now();
-      auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision, .cageMorphs = s.figureGpuRefine}, [this, jobId, label](const std::string& step) {
+      auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision, .cageMorphs = true}, [this, jobId, label](const std::string& step) {
         job(jobId, {{"label", label + ": " + step}, {"state", "running"}});
       });
       if(generation != loadGeneration)
@@ -262,7 +262,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     return;
   }
   {
-    const uint64_t    bytes     = geometryBytes(fig->loaded.scene, geometryPricing());
+    const uint64_t    bytes     = geometryBytes(fig->loaded.scene, *renderer);
     const std::string shortfall = renderer->geometryShortfall(bytes);
     renderer->admitGeometry(bytes);
     if(!shortfall.empty())
@@ -312,17 +312,9 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     };
     // off until the Wardrobe toggle (or a scene file) turns it on: a settle costs seconds on a dressed figure
     f->dforce->setEnabled(false);
-    {
-      std::lock_guard lock(settingsMutex);
-      f->dforce->dazSkinning = settings.figureDazSkinning;
-    }
     // on from the start: a pass is a fraction of a second on the pool, and it is what keeps a garment
     // fitted to another shape or generation out of the body
     f->collider = std::make_unique<fv::wardrobe::Collider>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
-    {
-      std::lock_guard lock(settingsMutex);
-      f->collider->dazSkinning = settings.figureDazSkinning;
-    }
     f->collider->settings = [fig = f->fig.get()] {
       std::map<int, fv::dson::Smoothing> all;
       for(const fv::WornItem& w : fig->items)

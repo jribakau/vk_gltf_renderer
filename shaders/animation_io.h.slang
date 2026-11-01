@@ -77,6 +77,10 @@ struct StencilPushConstant
   uint*   columns;
   float*  weights;
   float3* offsets;  // per row, added to its sum; null: none
+  // per source element, the axes its offset's X and Y turned to (the skin's tangent and normal of the rest's
+  // axes); a row's offset turns as its first column does. Null: as it is.
+  float4* frameX;
+  float3* frameY;
   uint    rowCount;
   uint    sourceCount;
 };

@@ -100,7 +100,7 @@ struct Deformed
 // A refined mesh's base as the residency makes it on the GPU from its cage: each level's stencils, the
 // welded normals, the splits; arithmetic as shaders/stencil.comp.slang and vertex_normals.comp.slang
 // do it (and the fake runs them)
-MeshRecord refinedBase(const MeshRecord& r)
+MeshRecord refinedBase(const MeshRecord& r, const std::vector<glm::vec4>* frameX = nullptr, const std::vector<glm::vec3>* frameY = nullptr)
 {
   MeshRecord             out = r;
   const RefineTables&    t   = *r.refine;
@@ -120,7 +120,22 @@ MeshRecord refinedBase(const MeshRecord& r)
   }
   if(!t.offsets.empty() && t.offsets.size() == src.size())
     for(size_t v = 0; v < src.size(); v++)
-      src[v] += t.offsets[v];
+    {
+      glm::vec3 offset = t.offsets[v];
+      // a posed ribbon's turn as their first columns have
+      if(frameX && t.levels.size() == 1 && t.levels[0].start[v] < t.levels[0].start[v + 1])
+      {
+        const uint32_t  c = t.levels[0].columns[t.levels[0].start[v]];
+        const glm::vec3 x((*frameX)[c]);
+        glm::vec3       z = glm::cross(x, (*frameY)[c]);
+        if(const float length = glm::length(z); length > 0.f)
+        {
+          z /= length;
+          offset = x * offset.x + glm::cross(z, x) * offset.y + z * offset.z;
+        }
+      }
+      src[v] += offset;
+    }
   std::vector<glm::vec3> normals(src.size());
   const size_t           triangleCount = t.triangles.size() / 3;
   for(size_t v = 0; v < src.size(); v++)
@@ -209,17 +224,22 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
     if(r.dualQuat > 0.f || r.cageDualQuatShares.size() == nc)
       for(const glm::mat4& j : joints)
         dualQuats.push_back(jointDualQuat(j));
-    MeshRecord posed = r;
+    MeshRecord             posed = r;
+    std::vector<glm::vec4> frameX(nc);
+    std::vector<glm::vec3> frameY(nc);
+    const glm::vec3        axisY(0.f, 1.f, 0.f);
+    const glm::vec4        axisX(1.f, 0.f, 0.f, 1.f);
     for(size_t v = 0; v < nc; v++)
     {
       const glm::ivec4 j[2]  = {glm::ivec4(r.cageJoints[v]), eight ? glm::ivec4(r.cageJoints1[v]) : glm::ivec4(0)};
       const glm::vec4  w[2]  = {r.cageWeights[v], eight ? r.cageWeights1[v] : glm::vec4(0.f)};
       const float      share = dualQuats.empty() ? 0.f : r.cageDualQuatShares.size() == nc ? r.cageDualQuatShares[v] : r.dualQuat;
-      posed.cage[v] = skinVertex(r.cage[v], nullptr, nullptr, {j, size_t(eight ? 2 : 1)}, {w, size_t(eight ? 2 : 1)},
-                                 {joints, normalMats, dualQuats}, share)
-                          .position;
+      const auto       skinned = skinVertex(r.cage[v], &axisY, &axisX, {j, size_t(eight ? 2 : 1)}, {w, size_t(eight ? 2 : 1)}, {joints, normalMats, dualQuats}, share);
+      posed.cage[v] = skinned.position;
+      frameY[v]     = skinned.normal;
+      frameX[v]     = skinned.tangent;
     }
-    const MeshRecord refined = refinedBase(posed);
+    const MeshRecord refined = refinedBase(posed, &frameX, &frameY);
     return {refined.positions, refined.normals, refined.tangents};
   }
   // DAZ's skinning: the second set of four, and the joints' dual quaternions where the record has a share
@@ -405,8 +425,11 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(prim->indices), uint64_t(run.indexCount) * 4),
                   record->indices.data() + run.firstIndex, run.indexCount))
       out.push_back(at("I3", p) + "its index buffer does not hold its submesh's indices");
-    if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(mesh->positions), record->positions.size() * sizeof(glm::vec3)),
-                  record->positions.data(), record->positions.size()))
+    // (what poses its cage has no base: nothing would read it)
+    if(mesh->hasBase != bool(mesh->positions))
+      out.push_back(at("I3", p) + "its mesh's positions don't match whether it is to have them");
+    if(mesh->hasBase && !sameBytes(gpu.bytesAt(gpu.bufferAddress(mesh->positions), record->positions.size() * sizeof(glm::vec3)),
+                                   record->positions.data(), record->positions.size()))
       out.push_back(at("I3", p) + "its mesh's position buffer does not hold the mesh's positions");
     if(drawer)
     {
@@ -530,7 +553,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       if(!prim->drawer.isNone())
       {
         if(const Residency::DrawerGpu* d = residency.drawer(prim->drawer, prim->mesh); d && d->prevValid)
-          want = gpu.bufferAddress(d->prevPositions);
+          want = gpu.bufferAddress(d->prevInUse ? d->prevPositions : d->positions);
       }
       else if(const Residency::MeshGpu* mesh = residency.meshGpu(prim->mesh); mesh && mesh->prevValid)
         want = gpu.bufferAddress(mesh->prevPositions);

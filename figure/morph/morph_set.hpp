@@ -152,7 +152,7 @@ public:
   const std::vector<Channel>& channels() const { return m_channels; }
   Driver*                     driver = nullptr;
   // Meshes whose drawn vertices something else makes from their cage (the GPU refines them:
-  // figureGpuRefine, daz-viewer docs/gpu-figures-plan.md). A flush keeps their morphed cage and
+  // daz-viewer docs/gpu-figures-plan.md). A flush keeps their morphed cage and
   // reports a cage change; their drawn positions and normals stay as they were until catchUp(), or
   // until the mesh is no longer cageOnly (the next pump). Asked on the owner's thread.
   std::function<bool(int mesh)> cageOnly;

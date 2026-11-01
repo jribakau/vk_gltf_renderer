@@ -63,7 +63,7 @@ struct LoadOptions
   float strandKeep = 1;
   std::optional<AttachTarget> attach;
   // morphs move only the cages of the meshes whose drawn vertices are made from them
-  // (mesh::drawnFromCage): the GPU makes those (figureGpuRefine)
+  // (mesh::drawnFromCage): the GPU makes those
   bool cageMorphs = false;
 };
 

@@ -66,20 +66,15 @@ struct FigureFeedOptions
   rs::EntityId parent;
   // a subdivided mesh's cage as its morphs have moved it (MorphSet::morphedCage), xyz per cage
   // vertex: given, the feed sends it with the mesh's vertices and the GPU makes the drawn positions
-  // and normals from it (figureGpuRefine, daz-viewer docs/gpu-figures-plan.md F1)
+  // and normals from it, and with DAZ's order: its drawers skin the cage and refine the posed cage, so
+  // its record carries the cage's influences too (daz-viewer docs/gpu-figures-plan.md F1, F4)
   std::function<std::vector<float>(int mesh)> cageOf;
-  // DAZ's skinning (figureDazSkinning, daz-viewer docs/gpu-figures-plan.md F3): records carry up to
-  // eight influences and the file's dual quaternion share; otherwise glTF's four, linear
-  bool dazSkinning = false;
-  // DAZ's order (figureDazOrder, gpu-figures-plan.md F4): a refined mesh's drawers skin its cage and
-  // refine the posed cage; records carry the cage's influences
-  bool dazOrder = false;
 };
 
 // What a mesh will hold once fed (scene_price.hpp), for a price before it is: the counts of the record
 // FigureFeed::meshRecord makes of it. Whether it has tangents is a guess: that is for its materials to
 // say, and a garment's nearly always ask while a strand's rarely do.
-rs::MeshCounts meshCounts(const Mesh& mesh, bool gpuRefine, bool dazSkinning, bool dazOrder);
+rs::MeshCounts meshCounts(const Mesh& mesh);
 
 class FigureFeed
 {

@@ -537,7 +537,7 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
 {
   for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
                               &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
-                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs})
+                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY})
     if(const auto it = m_buffers.find(r->buffer.value); it != m_buffers.end() && it->second.noMemory)
       return;  // as the Vulkan backend: a pass over a buffer that found no memory does nothing
   m_deforms.push_back(d);
@@ -638,6 +638,8 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     const Span<uint32_t>  columns{range(d.columns, 4, entries, "columns", false), entries};
     const Span<float>     w{stencil ? range(d.stencilWeights, 4, entries, "stencil weights", false) : nullptr, entries};
     const Span<glm::vec3> offsets{stencil && start ? range(d.stencilOffsets, 12, n, "stencil offsets", false) : nullptr, n};
+    const Span<glm::vec4> frameX{stencil && start && d.stencilOffsets.buffer ? range(d.frameX, 16, m, "frame x", false) : nullptr, m};
+    const Span<glm::vec3> frameY{stencil && start && d.stencilOffsets.buffer ? range(d.frameY, 12, m, "frame y", false) : nullptr, m};
     const Span<glm::uvec3> tris{stencil ? nullptr : range(d.triangles, 12, d.triangleCount, "triangles", false), d.triangleCount};
     const Span<glm::vec3> out{range(stencil ? d.outPositions : d.outNormals, 12, n, "outputs", true), n};
     if(!ok || !base || !columns || !out || (!stencil && (!start || !tris)))
@@ -646,8 +648,9 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
         error("dispatchDeform: a figure pass without its base, columns, triangles or output");
       return;
     }
-    if((stencil ? d.outPositions : d.outNormals).buffer == d.basePositions.buffer)
-      error("dispatchDeform: writes the buffer it reads");
+    if(const BufferRange& to = stencil ? d.outPositions : d.outNormals;
+       to.buffer == d.basePositions.buffer && to.offset < d.basePositions.offset + m * 12 && d.basePositions.offset < to.offset + n * 12)
+      error("dispatchDeform: writes the range it reads");
     for(uint64_t r = 0; r < n; r++)
     {
       glm::vec3 sum(0.f);
@@ -675,7 +678,21 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
         sum += glm::cross(base.get(t.y) - a, base.get(t.z) - a);
       }
       if(offsets)
-        sum += offsets.get(r);
+      {
+        glm::vec3 offset = offsets.get(r);
+        if(frameX && start.get(r) < start.get(r + 1))
+        {
+          const uint32_t  c = columns.get(start.get(r));
+          const glm::vec3 x(frameX.get(c));
+          glm::vec3       z = glm::cross(x, frameY.get(c));
+          if(const float length = glm::length(z); length > 0.f)
+          {
+            z /= length;
+            offset = x * offset.x + glm::cross(z, x) * offset.y + z * offset.z;
+          }
+        }
+        sum += offset;
+      }
       const float l = glm::length(sum);
       out.set(r, stencil ? sum : l > 0.f ? sum / l : glm::vec3(0.f));
     }

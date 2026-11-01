@@ -755,8 +755,8 @@ options and written by the feed (`syncMaterials`); a model's is its file's mater
 laid over, set on its import's record. Each frame `syncRetainedScene` moves the clip on and the
 residency syncs what changed.
 
-With `figureGpuRefine` (a host setting, on by default; daz-viewer `docs/gpu-figures-plan.md`) a
-subdivided figure mesh, or a widened strand mesh, is fed with its morphed cage and its `rs::RefineTables`,
+A subdivided figure mesh, or a widened strand mesh (daz-viewer `docs/gpu-figures-plan.md`), is fed with
+its morphed cage and its `rs::RefineTables`,
 and the residency makes its positions and normals on the GPU (`refineOnGpu`: the stencil levels in
 `stencil.comp.slang`, the welded normals in `vertex_normals.comp.slang`, the UV seam splits as a
 gather) before the refits and the skin pass. A strand mesh's one level copies each point to its
@@ -766,7 +766,7 @@ and UVs as well (`vertex_tangents.comp.slang`, over each vertex's corners in `co
 order and arithmetic), so the feed makes and sends none for it, and a drag's shading is never
 stale. A dial's step then moves the cage alone:
 `MorphSet::cageOnly` keeps the morphed cage and reports a cage change, fed by `syncCages`
-(`RetainedScene::setMeshCage`). A figure loaded with the setting on moves only cages from the start
+(`RetainedScene::setMeshCage`). A figure moves only cages from the start
 (`dson::LoadOptions::cageMorphs`, by `mesh::drawnFromCage`, the rule the feed refines by); the host
 points the predicate at the feed's `refines` once it composes, and a mesh it does not refine
 catches up at the next `pump`. The CPU's drawn vertices of the rest stay as loaded until an export
@@ -776,7 +776,7 @@ dForce's drape steps keep cage deltas alone. A refined prim's bounds (the select
 bounds, the auto ground) are its cage's around the cage vertices its vertices are made from
 (`Prim::cageSupport`), widened by the longest offset.
 
-With `figureDazSkinning` (a host setting, off by default) a figure is skinned as its file asks:
+A figure is skinned as its file asks:
 `skinBinding` reads the skin modifier's `skin_settings` (Genesis 3 and 8 all dual quaternion,
 Genesis 9 half dual quaternion, half linear), the records carry up to eight influences
 (`joints1`/`weights1`) and the dual quaternion share (`dualQuat`, `dualQuatShares`), and
@@ -785,12 +785,19 @@ dual quaternions the residency packs (`rs::JointDualQuat` in `scene_skin.hpp`: r
 translation, and the stretch left over, blended linearly first). dForce and the collider skin the
 cage the same way (`dforce::CageSkin`); glTF export stays at four influences, linear, and says so.
 
-With `figureDazOrder` as well (off by default) a refined mesh is posed in DAZ Studio's order: the
-records carry the cage's own influences (`cageJoints`, `cageWeights` and the second four, the cage's
-shares), and the mesh's drawer (`DrawerGpu::posed`) skins the cage, positions only, then runs the
-refine chain on the posed cage into its outputs (`Residency::refineChains`, the passes the unposed
-base runs, over working streams of the drawer's own), so a pose step refines again. A catch-up of the
-CPU's drawn vertices (`MeshChange::caughtUp`) is no reason for dForce or the collider to run again.
+A refined mesh is posed in DAZ Studio's order: the records carry the cage's own influences
+(`cageJoints`, `cageWeights` and the second four, the cage's shares), and the mesh's drawer
+(`DrawerGpu::posed`) skins the cage, then runs the refine chain on the posed cage into its outputs
+(`Residency::refineChains`), so a pose step refines again. Chains run one at a time over one scratch
+buffer the size of the largest (`m_chainScratch`), let go of after 600 idle frames. A strand ribbon's
+`offsets` turn with its points: the same skin pass turns unit axes (`m_unitAxes`) into a frame per
+cage point, which the last stencil level reads (`frameX`, `frameY` in `stencil.comp.slang`). A catch-up
+of the CPU's drawn vertices (`MeshChange::caughtUp`) is no reason for dForce or the collider to run again.
+
+Such a mesh holds nothing the route it doesn't take would read: no positions, normals or tangents of
+its own, and no skin on its drawn vertices (`MeshGpu::hasBase`). They come, refined once then, when
+something needs them (`Residency::ensureBase`): a static draw of the mesh, or a drawer that can't pose,
+one with morph targets on the record, or tangents with no tables to make them from.
 
 A sync decodes the images it needs in one batch, side by side on the worker pool
 (`VulkanGpuBackend::createImages`), a file the host prefetched taken from
@@ -805,9 +812,10 @@ the output streams the morph pass and then the skin pass write (through
 `nvvkgltf::DeformPipelines`), and its prims' BLASes are built over them and refit
 after each pass. A pass runs only when what it reads changed: the weights, the joint matrices or the
 mesh's vertices (`rs::Residency`, "Deformation"). DLSS motion comes from two tables the residency
-keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): positions a sync wrote are
-copied at the top of the next one, and an instance keeps the world it was drawn with for one sync
-after it moves. The clip that plays is a `rs::ClipPlayer` on the store (`setHostClip`), driven by
+keeps (`SceneGpuView::prevPositionTable`, `prevObjectToWorldTable`): a drawer's positions are copied
+before a sync writes them; at the first sync that doesn't, its row points at the positions themselves,
+and the copy goes 120 frames later, so a drag that pauses keeps it; and an instance keeps the world it was drawn with for one sync after it
+moves. The clip that plays is a `rs::ClipPlayer` on the store (`setHostClip`), driven by
 `AnimationControl`.
 
 Four settings, none remembered:

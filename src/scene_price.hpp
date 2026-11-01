@@ -39,8 +39,8 @@ struct GpuBytes
   uint64_t drawn   = 0;  // what rays and raster read: the drawn vertex streams and indices
   uint64_t bvh     = 0;  // BLASes, opacity micromaps and their indices
   uint64_t remake  = 0;  // what makes a pose or a shape again: cages, skin inputs, refine tables, morph deltas
-  uint64_t working = 0;  // only a pass's own: levels on the way to the drawn streams, last frame's positions
-  uint64_t unread  = 0;  // nothing reads it, the mesh's every drawer making its streams from the posed cage
+  uint64_t working = 0;  // only a pass's own: the refine chains' scratch, last frame's positions while moving
+  uint64_t unread  = 0;  // nothing reads it: a mesh's own streams kept after what read them has gone
   uint64_t images  = 0;
   uint64_t scene   = 0;  // what the whole scene shares: its tables, the TLAS, build scratch
 
@@ -112,29 +112,29 @@ inline uint64_t meshBufferBytes(const MeshCounts& m)
 {
   constexpr uint64_t kPosition = 12, kNormal = 12, kTangent = 16, kUv = 8, kColor = 4, kJoints = 16, kWeights = 16, kIndex3 = 12;
   const uint64_t     v = m.vertices;
-  // the mesh's streams
-  uint64_t bytes = v * (kPosition + (m.normals ? kNormal : 0) + (m.tangents ? kTangent : 0) + (m.uv0 ? kUv : 0) + (m.uv1 ? kUv : 0) + (m.colors ? kColor : 0));
-  bytes += m.triangles * kIndex3;
+  const uint64_t     outputs = kPosition + (m.normals ? kNormal : 0) + (m.tangents ? kTangent : 0);
+  // the mesh's UVs and colours and indices, and its own vertices unless every drawer poses its cage
+  uint64_t bytes = v * ((m.uv0 ? kUv : 0) + (m.uv1 ? kUv : 0) + (m.colors ? kColor : 0)) + m.triangles * kIndex3;
+  if(!m.posed)
+    bytes += v * outputs;
   // its skin and morphs
-  if(m.skinned)
+  if(m.skinned && !m.posed)
     bytes += v * ((kJoints + kWeights) * (m.eightInfluences ? 2 : 1) + (m.dualQuatShares ? 4 : 0));
   bytes += m.morphTargets * v * (kPosition + (m.morphNormals ? kNormal : 0) + (m.morphTangents ? kTangent : 0));
-  // what a drawer makes: its outputs, and last frame's positions
+  // what a drawer makes
   if(m.deforms())
   {
-    const uint64_t outputs = kPosition + (m.normals ? kNormal : 0) + (m.tangents ? kTangent : 0);
-    bytes += v * (outputs + kPosition);
+    bytes += v * outputs;
     if(m.skinned && m.morphTargets > 0)
       bytes += v * outputs;
   }
-  // refined: the cage and its tables, and the levels on the way to the drawn vertices
+  // refined: the cage and its tables
   if(!m.levels.empty())
   {
     const uint64_t refined = m.refinedVertices();
     bytes += m.cageVertices * kPosition;
     for(const MeshCounts::Level& l : m.levels)
-      bytes += (l.rows + 1) * 4 + l.entries * 8 + l.rows * kPosition;  // starts, columns and weights, its output
-    bytes += refined * kNormal;                                        // the refined normals
+      bytes += (l.rows + 1) * 4 + l.entries * 8;                       // starts, columns and weights
     bytes += v * 4;                                                    // drawn from
     bytes += m.refinedTriangles * kIndex3;                             // the triangles
     bytes += (refined + 1) * 4 + m.refinedTriangles * 3 * 4;           // each refined vertex's triangles
@@ -143,13 +143,7 @@ inline uint64_t meshBufferBytes(const MeshCounts& m)
     if(m.tangentTriangles > 0)
       bytes += m.tangentTriangles * kIndex3 + (v + 1) * 4 + m.tangentTriangles * kIndex3;
     if(m.posed)
-    {
       bytes += m.cageVertices * ((kJoints + kWeights) * (m.cageEightInfluences ? 2 : 1) + (m.cageDualQuatShares ? 4 : 0));
-      // the drawer's own run of the chain
-      bytes += m.cageVertices * kPosition + refined * kNormal;
-      for(const MeshCounts::Level& l : m.levels)
-        bytes += l.rows * kPosition;
-    }
   }
   return bytes;
 }

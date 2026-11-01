@@ -116,15 +116,6 @@ struct HostSettings
   int                                maxTextureSize = 4096;
   int                                subdivision    = 0;
   bool originalTextures = false;  // the source images, not the BC7 cache: only what the renderer cannot read is cooked
-  // subdivided figure meshes refined on the GPU from their morphed cages, for the figures loaded from
-  // now on (daz-viewer docs/gpu-figures-plan.md)
-  bool figureGpuRefine = true;
-  // DAZ's skinning (up to eight influences, the file's dual quaternion share) for the figures fed
-  // from now on (gpu-figures-plan.md F3)
-  bool figureDazSkinning = false;
-  // DAZ's order (skin the cage, then refine the posed cage) for the figures fed from now on, with
-  // figureGpuRefine (gpu-figures-plan.md F4)
-  bool figureDazOrder = false;
 };
 
 // A loaded figure and what the renderer made of it. Lives on the application thread.
@@ -481,14 +472,9 @@ std::string fileStem(const std::string& rel);
 // What a figure's or a model's meshes will take on the GPU, for HostRenderer::geometryShortfall: their
 // buffers in the residency's formats (scene_price.hpp) and what the driver says their BLASes hold.
 // Their textures aren't in it: those come down to fit as they arrive.
-struct GeometryPricing
-{
-  const HostRenderer* renderer  = nullptr;
-  bool                gpuRefine = false, dazSkinning = false, dazOrder = false;  // HostSettings' figure*
-};
-uint64_t geometryBytes(const fv::SceneGraph& scene, const GeometryPricing& pricing);
-uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes, const GeometryPricing& pricing);
-uint64_t geometryBytes(const tinygltf::Model& model, const GeometryPricing& pricing);
+uint64_t geometryBytes(const fv::SceneGraph& scene, const HostRenderer& renderer);
+uint64_t geometryBytes(const fv::SceneGraph& scene, const std::vector<int>& meshes, const HostRenderer& renderer);
+uint64_t geometryBytes(const tinygltf::Model& model, const HostRenderer& renderer);
 
 // The registered parameters nvmcp can read and write: values, not triggers or custom parsers, and
 // none that loads or saves the scene behind the host (fv::hostExposesParameter).
@@ -527,11 +513,6 @@ struct FvHost::Impl
 
   mutable std::mutex settingsMutex;
   HostSettings   settings;
-  GeometryPricing geometryPricing() const
-  {
-    std::lock_guard lock(settingsMutex);
-    return {.renderer = renderer, .gpuRefine = settings.figureGpuRefine, .dazSkinning = settings.figureDazSkinning, .dazOrder = settings.figureDazOrder};
-  }
 
   // work for the application thread, run in onUpdate
   std::mutex                        queueMutex;

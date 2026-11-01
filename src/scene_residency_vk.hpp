@@ -123,7 +123,7 @@ public:
   const nvvkgltf::GpuMemoryTracker& memory() const { return m_memory; }
 
   // GpuBackend
-  void         beginFrame() override { m_frame++; }
+  void         beginFrame() override;
   uint64_t     frame() const override { return m_frame; }
   void         retire(std::function<void()> closure) override;
   void         waitIdle() override;
@@ -253,6 +253,7 @@ private:
   std::unordered_map<uint64_t, TlasEntry>   m_tlases;
   std::vector<QueuedBuild>                  m_queued;
   nvvk::Buffer                              m_blasScratch;
+  uint64_t                                  m_blasScratchUsed = 0;  // the last frame that built with it
   std::unordered_map<uint32_t, VkSampler>   m_samplers;  // by sampler slot
   nvvk::Image                               m_white, m_missing;
   bool                                      m_defaultsUploaded = false;

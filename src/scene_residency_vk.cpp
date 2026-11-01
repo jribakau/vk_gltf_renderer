@@ -276,7 +276,7 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
   // a pass over a buffer that found no memory does nothing
   for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
                               &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
-                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs})
+                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY})
     if(auto it = r->buffer ? m_buffers.find(r->buffer.value) : m_buffers.end(); it != m_buffers.end() && !it->second.buffer.buffer)
       return;
   // a range's device address; null for none, as the shaders test
@@ -298,6 +298,8 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
     pc.columns     = reinterpret_cast<uint32_t*>(at(d.columns));
     pc.weights     = reinterpret_cast<float*>(at(d.stencilWeights));
     pc.offsets     = reinterpret_cast<glm::vec3*>(at(d.stencilOffsets));
+    pc.frameX      = reinterpret_cast<glm::vec4*>(at(d.frameX));
+    pc.frameY      = reinterpret_cast<glm::vec3*>(at(d.frameY));
     pc.rowCount    = d.vertexCount;
     pc.sourceCount = d.sourceCount;
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.stencil);
@@ -417,6 +419,22 @@ void VulkanGpuBackend::destroyBuffer(BufferHandle handle)
     m_info.alloc->destroyBuffer(it->second.buffer);
   }
   m_buffers.erase(it);
+}
+
+// A large load's build scratch goes once nothing has built for a while: it is only ever needed again
+// for another build, and a figure's refits fit what is made for them
+void VulkanGpuBackend::beginFrame()
+{
+  constexpr uint64_t kIdleFrames = 600;
+  m_frame++;
+  if(m_blasScratch.buffer && m_frame > m_blasScratchUsed + kIdleFrames)
+  {
+    retire([alloc = m_info.alloc, &memory = m_memory, scratch = m_blasScratch]() mutable {
+      memory.untrack(kMemScratch, scratch.allocation);
+      alloc->destroyBuffer(scratch);
+    });
+    m_blasScratch = {};
+  }
 }
 
 uint64_t VulkanGpuBackend::bufferAddress(BufferHandle handle) const
@@ -990,6 +1008,7 @@ void VulkanGpuBackend::flushBuilds()
     sizes.push_back(q.update ? data.sizeInfo.updateScratchSize : data.sizeInfo.buildScratchSize);
   }
   const ScratchPlan plan = planScratch(sizes, m_scratchAlignment, m_info.blasScratchBudget);
+  m_blasScratchUsed      = m_frame;
   if(m_blasScratch.bufferSize < plan.size)
   {
     if(m_blasScratch.buffer)

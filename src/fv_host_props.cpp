@@ -759,14 +759,7 @@ fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
     s.figureRoot    = f->fig->loaded.root;
     s.figureOptions = buildOptionsOf(*f, skinMode.load());
     s.figureChanged = figureChanged;
-    bool gpuRefine  = false;
-    {
-      std::lock_guard lock(settingsMutex);
-      gpuRefine           = settings.figureGpuRefine;
-      s.figureDazSkinning = settings.figureDazSkinning;
-      s.figureDazOrder    = settings.figureDazOrder;
-    }
-    if(gpuRefine && f->fig->morphs)
+    if(f->fig->morphs)
       s.figureCageOf = [morphs = f->fig->morphs.get()](int mesh) { return morphs->morphedCage(mesh); };
   }
   else if(p.model)
@@ -869,7 +862,7 @@ void FvHost::Impl::compose()
     if(p->figure)
     {
       p->figure->feed = f && f->figure ? f->figure.get() : nullptr;
-      // a dial moves only the cages of the meshes its feed has the GPU refine (figureGpuRefine)
+      // a dial moves only the cages of the meshes its feed has the GPU refine
       if(p->figure->fig->morphs)
         p->figure->fig->morphs->cageOnly = [l = p->figure.get()](int mesh) { return l->feed && l->feed->refines(mesh); };
     }

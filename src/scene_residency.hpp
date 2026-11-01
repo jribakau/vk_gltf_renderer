@@ -40,11 +40,15 @@
 //   outputs and refit after each pass. A pass runs only when what it computes from changed: the
 //   joint matrices, the morph weights, or the mesh's vertices (a dial). The joint matrices, their
 //   normal matrices and the morph weights of every drawer are packed into three buffers.
+// - Nothing is held that nothing reads. A mesh's own positions, normals and tangents exist once a static
+//   prim draws them or a drawer deforms from them; a drawer that poses the cage reads neither them nor
+//   the drawn vertices' skin. What a refine chain makes on the way to its outputs (a posed cage, the levels,
+//   the refined normals) lies in one scratch buffer, a chain at a time, the size of the largest.
 // - Motion for DLSS: per prim slot, the address of what its positions held when the last frame was
-//   drawn (0 for none: no deformation motion), copied at the top of a sync from positions written
-//   the sync before, before anything writes them again; per instance slot, the world matrix the
-//   last frame drew it with. A new slot starts with its current values, so it shows no motion,
-//   never another object's.
+//   drawn (0 for none: no deformation motion). A drawer holds a copy only while it is being written: the
+//   passes copy its positions first, and once a sync writes none, its row names the positions themselves
+//   and the copy goes. Per instance slot, the world matrix the last frame drew it with. A new slot starts
+//   with its current values, so it shows no motion, never another object's.
 // - Instance, prim and material slots come lowest-first from pools, so a fresh scene numbers them
 //   in document order; a freed slot is a hole (a zeroed row, a null TLAS row) until its retire
 //   frame, when it goes back to its pool. The tables are sized by capacity, a power of two at or
@@ -159,6 +163,7 @@ public:
   struct MeshGpu
   {
     BufferHandle         positions, normals, tangents, uv0, uv1, colors;
+    bool                 hasBase = false;  // positions, normals and tangents are wanted (ensureBase)
     OwnerTag             owner;
     uint32_t             vertexCount = 0;
     uint32_t             contentRev  = 0;
@@ -182,10 +187,10 @@ public:
     {
       struct Level
       {
-        BufferHandle start, columns, weights, out;  // out: this level's vertices
+        BufferHandle start, columns, weights;
         uint32_t     rows = 0, sourceCount = 0;
       };
-      BufferHandle       cage, refinedNormals, drawnFrom, triangles, normalStart, normalTriangles, offsets;
+      BufferHandle       cage, drawnFrom, triangles, normalStart, normalTriangles, offsets;
       BufferHandle       tangentTriangles, tangentStart, tangentCorners;  // none: the CPU's tangents
       std::vector<Level> levels;
       uint32_t           refinedCount = 0, triangleCount = 0, tangentTriangleCount = 0;
@@ -200,8 +205,9 @@ public:
     BufferHandle         positions, normals, tangents;  // the outputs: its prims' vertex streams
     // with both passes, what the morph writes and the skin reads (the skin never reads its own output)
     BufferHandle         morphedPositions, morphedNormals, morphedTangents;
-    BufferHandle         prevPositions;
-    bool                 prevValid = false;
+    BufferHandle         prevPositions;      // while it is being written, and a moment after (motion for DLSS)
+    bool                 prevInUse = false;  // its motion row names them; otherwise its positions, which at rest are the same numbers
+    bool                 prevValid = false;  // it has been drawn: its motion row names something
     std::vector<int32_t> prims;  // per submesh
     uint32_t             users       = 0;  // instances drawing it
     bool                 morph       = false, skin = false;
@@ -212,25 +218,8 @@ public:
     float                dualQuatShare = 0;
     uint64_t             dualQuatOffset = 0;
     // DAZ's order (MeshRecord::cageJoints): the skin poses the mesh's cage, and the refine chain
-    // makes the outputs from it, with working streams of the drawer's own
-    struct Posed
-    {
-      BufferHandle              cage, refinedNormals;
-      std::vector<BufferHandle> levels;
-    };
-    std::optional<Posed> posed;
-    // the buffers `posed` holds
-    std::vector<BufferHandle> posedBuffers() const
-    {
-      std::vector<BufferHandle> out;
-      if(posed)
-      {
-        out = posed->levels;
-        out.push_back(posed->cage);
-        out.push_back(posed->refinedNormals);
-      }
-      return out;
-    }
+    // makes the outputs from it
+    bool posed = false;
     // the inputs it last ran with; empty: it runs at the next sync
     std::vector<float>     lastWeights;
     std::vector<glm::mat4> lastPose;
@@ -498,7 +487,12 @@ private:
   bool             deforms(const RetainedScene& scene, EntityId entity, MeshId mesh) const;
   DrawerGpu&       acquireDrawer(const RetainedScene& scene, EntityId entity, MeshId mesh);
   void             releaseDrawer(const DrawerKey& key);
-  void             makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool skin);
+  void             makeDeformInputs(const MeshRecord& record, MeshGpu& mesh, bool skin, bool posed);
+  // the drawers' copies of what the last frame drew, before this sync's passes write over it
+  void             copyPrevPositions(DrawerGpu& d);
+  // the drawers written last sync and not this one: their rows name their positions, and the copies go
+  void             settlePrevPositions();
+  void             ensureBase(const MeshRecord& record, MeshGpu& gpu);
 
   MeshGpu& acquireMesh(const RetainedScene& scene, MeshId id);
   // a submesh's prim: the mesh's own, or `drawer`'s when the entity draws it deformed
@@ -561,18 +555,20 @@ private:
   // the welded normals, then each refined vertex copied to its drawn splits, then the tangents of
   // those with tangent tables; ends compute-to-build
   void refineOnGpu(std::span<MeshGpu* const> meshes);
-  // One refine chain: a cage (a mesh's, or a drawer's posed one) through its mesh's tables into
-  // drawn positions, normals and tangents, over working streams of its own
+  // One refine chain: a cage through its mesh's tables into drawn positions, normals and tangents. With
+  // `posedBy`, that drawer's skin poses the mesh's cage first (its ribbons' offsets turning with it)
   struct RefineRun
   {
-    const MeshGpu*            mesh = nullptr;
-    BufferHandle              cage, refinedNormals;
-    std::vector<BufferHandle> levels;  // each level's output
-    BufferHandle              positions, normals, tangents;
+    const MeshGpu*   mesh    = nullptr;
+    const DrawerGpu* posedBy = nullptr;
+    BufferHandle     positions, normals, tangents;
   };
-  // the chains' passes side by side, a barrier between stages; what wrote the cages and what reads
-  // the outputs are the caller's barriers
+  // a chain at a time over one scratch buffer, a barrier between stages; what wrote what they read and what
+  // reads the outputs are the caller's barriers
   void refineChains(std::span<const RefineRun> runs);
+  // the axes a posed ribbon's offsets turn by, for up to `count` cage vertices: a skin pass's normals and
+  // tangents of the rest's Y and X, ahead of the barrier that fences them
+  void ensureUnitAxes(uint64_t count);
 
   void ensureCapacity(SyncResult& result);
   void writeRenderNodes(const std::set<uint32_t>& slots);
@@ -597,6 +593,12 @@ private:
   DeformCounts                         m_deformCounts;
   // positions written by the last sync, copied to their previous positions at the top of the next
   std::set<DrawerKey>                  m_drawersWritten;
+  std::set<DrawerKey>                  m_drawersWrittenLast;  // this sync: what the last wrote
+  std::map<DrawerKey, uint64_t>        m_prevResting;         // previous positions nothing reads now, by the frame they stopped
+  BufferHandle                         m_chainScratch;        // what refineChains works in
+  uint64_t                             m_chainScratchUsed = 0;
+  BufferHandle                         m_unitAxes;            // ensureUnitAxes: Y's, then X's
+  uint64_t                             m_unitAxesCount = 0;
   std::set<MeshId>                     m_meshesWritten;
   BufferHandle                         m_prevPositionTable, m_prevWorldTable;
   std::vector<glm::mat4>               m_prevWorlds;          // by instance slot: what the table row holds

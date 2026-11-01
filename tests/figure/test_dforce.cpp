@@ -874,7 +874,7 @@ TEST(Dforce, aDualQuaternionSkinKeepsATwistedJointsVolumeAndDrapesBack)
   for(const float share : {0.f, 0.5f, 1.f})
   {
     in.dualQuat                 = share;
-    const dforce::CageSkin skin = dforce::cageSkin(in, true);
+    const dforce::CageSkin skin = dforce::cageSkin(in);
     const auto             posed = dforce::skinLocal(rest, skin, pose);
     EXPECT_NEAR(std::hypot(posed[1], posed[2]), 2.0 * share, 1e-5) << share;
     EXPECT_NEAR(posed[0], 1.0, 1e-5) << share;
@@ -891,9 +891,6 @@ TEST(Dforce, aDualQuaternionSkinKeepsATwistedJointsVolumeAndDrapesBack)
     for(size_t i = share > 0.f ? 0 : 3; i < back.size(); i++)
       EXPECT_NEAR(back[i], simulated[i], 1e-4) << share << " " << i;
   }
-  // off, the share is not read
-  in.dualQuat = 1.f;
-  EXPECT_EQ(dforce::cageSkin(in).dualQuat, 0.f);
 }
 
 TEST(Dforce, readsTheSettingsOfASimulationSurface)

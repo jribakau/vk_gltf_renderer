@@ -197,7 +197,7 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     const Mesh& m = m_scene.meshes[size_t(mesh)];
     if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
       return rest;
-    dforce::CageSkin s = dforce::cageSkin(m.cageSkin, dazSkinning);
+    dforce::CageSkin s = dforce::cageSkin(m.cageSkin);
     dforce::SkinPose p = dforce::currentSkin(m_scene, worlds, nodeOf, mesh);
     auto             posed = dforce::skinLocal(rest, s, p);
     if(skin)

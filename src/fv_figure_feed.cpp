@@ -574,7 +574,7 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
   {
     r.joints.resize(count);
     r.weights.resize(count);
-    const bool eight = m_options.dazSkinning && m.skin.skinIndex8.size() == count * 8 && m.skin.skinWeight8.size() == count * 8;
+    const bool eight = m.skin.skinIndex8.size() == count * 8 && m.skin.skinWeight8.size() == count * 8;
     if(eight)
     {
       r.joints1.resize(count);
@@ -595,12 +595,9 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
       r.joints[v]       = glm::uvec4(j[0], j[1], j[2], j[3]);
       r.weights[v]      = glm::make_vec4(&m.skin.skinWeight[v * 4]);
     }
-    if(m_options.dazSkinning)
-    {
-      r.dualQuat = m.skin.dualQuat;
-      if(m.skin.dualQuatShare.size() == count)
-        r.dualQuatShares = m.skin.dualQuatShare;
-    }
+    r.dualQuat = m.skin.dualQuat;
+    if(m.skin.dualQuatShare.size() == count)
+      r.dualQuatShares = m.skin.dualQuatShare;
   }
   r.indices = drawn.index();
   for(size_t k = 0; k < drawn.groups().size(); k++)
@@ -613,7 +610,7 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
   return r;
 }
 
-rs::MeshCounts meshCounts(const Mesh& m, bool gpuRefine, bool dazSkinning, bool dazOrder)
+rs::MeshCounts meshCounts(const Mesh& m)
 {
   rs::MeshCounts c;
   if(!m.geo)
@@ -626,9 +623,9 @@ rs::MeshCounts meshCounts(const Mesh& m, bool gpuRefine, bool dazSkinning, bool 
   // what its materials ask isn't known yet: a garment's nearly always have normal maps, a strand's rarely do
   c.tangents        = c.uv0 && !geo.ribbon;
   c.skinned         = m.skinned() && m.skin.skinIndex.size() == c.vertices * 4;
-  c.eightInfluences = c.skinned && dazSkinning && m.skin.skinIndex8.size() == c.vertices * 8;
-  c.dualQuatShares  = c.skinned && dazSkinning && m.skin.dualQuatShare.size() == c.vertices;
-  if(gpuRefine && mesh::drawnFromCage(geo) && !geo.cagePositions.empty())
+  c.eightInfluences = c.skinned && m.skin.skinIndex8.size() == c.vertices * 8;
+  c.dualQuatShares  = c.skinned && m.skin.dualQuatShare.size() == c.vertices;
+  if(mesh::drawnFromCage(geo) && !geo.cagePositions.empty())
   {
     c.cageVertices = geo.cagePositions.size() / 3;
     for(const subdiv::Stencils& s : geo.refinement->levels)
@@ -636,8 +633,8 @@ rs::MeshCounts meshCounts(const Mesh& m, bool gpuRefine, bool dazSkinning, bool 
     c.refinedTriangles = geo.renderTris.size() / 3;
     c.offsets          = geo.ribbon.has_value();
     c.tangentTriangles = c.tangents ? c.triangles : 0;
-    c.posed            = dazOrder && c.skinned && m.cageSkin.start.size() == c.cageVertices + 1;
-    if(c.posed && dazSkinning)
+    c.posed            = c.skinned && m.cageSkin.start.size() == c.cageVertices + 1;
+    if(c.posed)
     {
       for(size_t v = 0; v < c.cageVertices && !c.cageEightInfluences; v++)
         c.cageEightInfluences = m.cageSkin.start[v + 1] - m.cageSkin.start[v] > 4;
@@ -714,9 +711,9 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
         r.refine = f.refine;
       }
       // DAZ's order: the cage's own influences, as dForce and the collider skin the cage
-      if(f.refine && m_options.dazOrder && m.skinned() && m.cageSkin.start.size() == r.cage.size() + 1)
+      if(f.refine && m.skinned() && m.cageSkin.start.size() == r.cage.size() + 1)
       {
-        const dforce::CageSkin cs    = dforce::cageSkin(m.cageSkin, m_options.dazSkinning);
+        const dforce::CageSkin cs    = dforce::cageSkin(m.cageSkin);
         const size_t           n     = r.cage.size();
         const bool             eight = cs.index8.size() == n * 8;
         const auto&            index = eight ? cs.index8 : cs.index;

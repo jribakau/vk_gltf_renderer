@@ -337,7 +337,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       return s;
     }
     s.skinned = true;
-    s.skin    = cageSkin(m.cageSkin, dazSkinning);
+    s.skin    = cageSkin(m.cageSkin);
     s.pose    = currentSkin(m_scene, worlds, nodeOf, mesh);
     s.posed   = skinLocal(s.rest, s.skin, s.pose);
     return s;

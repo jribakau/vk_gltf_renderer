@@ -229,7 +229,7 @@ struct CageDeltas
 };
 
 // A morph target: its cage deltas, and its drawn vertices' deltas made from them the first time
-// they are asked for. A mesh the GPU refines from its cage (figureGpuRefine) is moved by the cage
+// they are asked for. A mesh the GPU refines from its cage is moved by the cage
 // deltas alone, so its targets never make theirs (daz-viewer docs/gpu-figures-plan.md F5).
 struct RenderTarget
 {
@@ -270,8 +270,8 @@ RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d);
 // hair's strands lists a million).
 RenderTarget target(const BuiltMesh& mesh, std::vector<uint32_t> cageIndices, std::vector<float> cageDeltas);
 
-// Whether a mesh's drawn vertices can be made from its cage alone, as the GPU makes them
-// (figureGpuRefine): subdivided, or strand ribbons once widened.
+// Whether a mesh's drawn vertices can be made from its cage alone, as the GPU makes them: subdivided,
+// or strand ribbons once widened.
 bool drawnFromCage(const BuiltMesh& mesh);
 
 // Replaces the cage positions and returns the delta of the drawn vertices (xyz each), so a fit can
