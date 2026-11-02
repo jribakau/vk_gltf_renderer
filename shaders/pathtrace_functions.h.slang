@@ -1871,6 +1871,9 @@ struct PathTracerState
 #if GLTF_USE_HAIR
   int hairBounces = 0;  // fibre events, on the hair's own budget (PathtracePushConstant::hairBudget)
 #endif
+#if GLTF_USE_TRANSMISSION
+  int glassBounces = 0;  // clear-glass events, on the glass's own budget (PathtracePushConstant::glassBudget)
+#endif
 #if GLTF_USE_TRANSMISSION || GLTF_USE_VOLUME
   bool isInside = false;
 #endif
@@ -1917,7 +1920,14 @@ struct BounceScratch
   float3 shadowRayExtinction = float3(0.0F);  // ...of this extinction.
   bool   hairEvent           = false;         // This vertex was a fibre's and spent the hair budget, not a surface bounce
   bool   fibre               = false;         // This vertex was a fibre's, within the budget or past it
+  bool   glassEvent          = false;         // This vertex was clear glass and spent the glass budget, not a surface bounce
 };
+
+// The glass's own budget (PathtracePushConstant::glassBudget, the host's ptGlassBounces): events on clear
+// glass (smooth, transmissive, nothing scattering inside: the surfaces shadow rays pass straight through,
+// CLEAR_CROSSING_ALPHA) a path may take before they count as surface bounces, whichever lobe it took
+// there. Each side of a pane is one, so under the live view's few bounces a second pane, and what is
+// behind it, went black. A cornea is clear glass too.
 
 // The hair's own budget (PathtracePushConstant::hairBudget, the host's ptHairBounces and
 // ptHairBouncesDlss): fibre events a path may take before they count as surface bounces. The light a
@@ -1976,17 +1986,20 @@ bool ptIsInside(PathTracerState pt)
 #endif
 }
 
-// Whether the path has met nothing yet. Not surfaceDepth alone: a fibre event spends the hair's own
-// budget and leaves it at 0, and a ray leaving a fibre is no camera ray. It sees no backplate (one that
-// reached the sky replaced the path's light with the backdrop, so black hair showed the sky behind it)
-// and captures no first hit.
+// Whether the path has met nothing yet. Not surfaceDepth alone: a fibre or clear-glass event spends a
+// budget of its own and leaves it at 0, and a ray leaving one is no camera ray. It sees no backplate
+// (one that reached the sky replaced the path's light with the backdrop, so black hair showed the sky
+// behind it) and captures no first hit.
 bool ptOnCameraRay(PathTracerState pt)
 {
+  bool none = pt.surfaceDepth == 0;
 #if GLTF_USE_HAIR
-  return pt.surfaceDepth == 0 && pt.hairBounces == 0;
-#else
-  return pt.surfaceDepth == 0;
+  none = none && pt.hairBounces == 0;
 #endif
+#if GLTF_USE_TRANSMISSION
+  none = none && pt.glassBounces == 0;
+#endif
+  return none;
 }
 
 // The light a path's ray meets on sized lights before `tMax` (with `escaped`, the discs of

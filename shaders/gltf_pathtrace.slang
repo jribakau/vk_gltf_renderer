@@ -757,13 +757,19 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     bounce.hairEvent = hairOn && pt.hairBounces < pushConst.hairBudget;
     bounce.fibre     = hairOn;
 #endif
+    // So does an event on clear glass, the glass's (glassBudget): the surface shadow rays pass straight
+    // through, so what is behind a pane is lit, and the path goes on to see it
+#if GLTF_USE_TRANSMISSION
+    bounce.glassEvent = !hairOn && materialIndex >= 0 && pt.glassBounces < pushConst.glassBudget && pbrMat.transmission > MIN_TRANSMISSION
+                        && materialAlpha <= CLEAR_CROSSING_ALPHA && materials[materialIndex].scatterStrengthFactor <= 0.0F;
+#endif
     // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
     // have no BSDF-sampled partner: weight 1, as for a punctual light, and the full environment table.
     bool hairCut = false;
 #if GLTF_USE_HAIR
     hairCut = hairCutHere(bounce.fibre, pt.hairBounces);
 #endif
-    const bool lastVertex = hairCut || (!bounce.hairEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth);
+    const bool lastVertex = hairCut || (!bounce.hairEvent && !bounce.glassEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth);
     // The lobe mixture for this vertex's light sample and BSDF sample alike, so their MIS agrees. With
     // ePtLobeMixtureDirect only where the path is still direct: there a catchlight is seen, through a
     // cornea one sample in forty with a single lobe; past a rough bounce one lobe costs a third less.
@@ -1163,7 +1169,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     fibreRoulette = bounce.fibre && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss)
                     && pushConst.hairRouletteDlss < 1.0F && pt.hairBounces >= pushConst.hairRouletteFrom;
 #endif
-    if((depth >= RR_MIN_DEPTH || fibreRoulette) && (bounce.hairEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
+    if((depth >= RR_MIN_DEPTH || fibreRoulette) && (bounce.hairEvent || bounce.glassEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
     {
       float rrCap = 1.0F;
 #if GLTF_USE_HAIR
@@ -1181,12 +1187,17 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       }
     }
 
-    // Consume one surface bounce, or one of the hair's; a path cut at a fibre (hairCutDlss) ends here
+    // Consume one surface bounce, or one of the hair's or the glass's; a path cut at a fibre (hairCutDlss) ends here
 #if GLTF_USE_HAIR
     if(hairCutHere(bounce.fibre, pt.hairBounces))
       pt.surfaceDepth = pushConst.maxDepth;
     else if(bounce.hairEvent)
       pt.hairBounces++;
+    else
+#endif
+#if GLTF_USE_TRANSMISSION
+    if(bounce.glassEvent)
+      pt.glassBounces++;
     else
 #endif
       pt.surfaceDepth++;

@@ -241,10 +241,10 @@ is shaded once. The extra work is paid only by pixels whose primary hit is clear
 with the path-trace GPU timer; the cost grows with
 glass screen coverage.
 
-The guides must agree with the noisy color. The path spends one bounce per glass surface, so
-when the chain crosses as many glass surfaces as `--ptMaxDepth` allows, the path never reached the
-surface behind and the pixel is dark. That pixel keeps the glass's own guides; otherwise RR gets a
-bright albedo against a black color and tints the result.
+The guides must agree with the noisy color. Clear glass spends a budget of its own, not surface
+bounces (`ptGlassBounces`, `PathtracePushConstant::glassBudget`), so when the chain crosses more glass
+surfaces than that allows, the path never reached the surface behind and the pixel is dark. That pixel
+keeps the glass's own guides; otherwise RR gets a bright albedo against a black color and tints the result.
 
 What PSR does not capture: the glass's own reflections and refraction edges are lighting with no
 guide edge, so they stay softer than the reference. Rough, tinted, or partly opaque glass is left

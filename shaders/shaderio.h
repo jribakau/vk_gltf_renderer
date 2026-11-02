@@ -381,7 +381,7 @@ struct PathtracePushConstant
   float           adaptiveThreshold = 0.09f;    // ePtAdaptiveStop: a pixel stops once its mean's standard error is at most this times the root of its luminance...
   int             adaptiveMin       = 32;       // ...and it has at least this many samples
   float           hairResponsivity  = 0.0f;     // DLSS frames: the responsivity mask where the first hit is hair (0: no mask)
-  int             responsivityPad   = 0;        // keeps the table 16-byte aligned
+  int             glassBudget       = 8;        // Clear-glass events a path takes before they count as surface bounces (also keeps the table 16-byte aligned)
   // ePtAdaptiveStop: how much more noise a pixel may keep where the tone mapper flattens its brightness,
   // a stop apart from mid grey's luminance in the scene (adaptiveRelaxBase; 0: none). adaptive_relax.hpp
   float4          adaptiveRelax[3];

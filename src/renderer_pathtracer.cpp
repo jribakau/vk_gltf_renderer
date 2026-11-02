@@ -331,6 +331,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "tree over them); off: by power alone, wherever they are",
                  .callbackSuccess = reset},
                 &m_lightTree, Persist::eNo);
+  settings->add({.name            = "ptGlassBounces",
+                 .help            = "PathTracer: Events on clear glass (smooth, transmissive, nothing scattering inside) a path "
+                                    "takes before they count as surface bounces; 0: every one counts",
+                 .callbackSuccess = reset},
+                &m_pushConst.glassBudget, Persist::eNo, 0, 64);
   settings->add({.name            = "ptHairBounces",
                  .help            = "PathTracer: Fibre events a path takes through hair before they count as surface bounces (stills)",
                  .callbackSuccess = reset},
