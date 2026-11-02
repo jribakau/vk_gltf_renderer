@@ -662,6 +662,7 @@ Json FvHost::Impl::historyStep(bool undo)
   return startRun({.undo     = undo,
                    .serial   = step->serial,
                    .label    = step->label,
+                   .open     = step->open,
                    .ops      = undo ? step->undo : step->redo,
                    .jobLabel = (undo ? "Undoing " : "Redoing ") + step->label});
 }
@@ -675,7 +676,7 @@ Json FvHost::Impl::startRun(HistoryRun run)
   historyRun->job = ++jobs;
   job(historyRun->job, {{"label", historyRun->jobLabel}, {"state", "running"}});
   publishHistory();
-  return {{"label", historyRun->label}, {"job", historyRun->job}};
+  return {{"label", historyRun->label}, {"open", historyRun->open}, {"job", historyRun->job}};
 }
 
 std::optional<Json> FvHost::Impl::runHistory()
@@ -708,7 +709,7 @@ std::optional<Json> FvHost::Impl::runHistory()
   }
   replaying = false;
   journal.rewrite(run.serial, !run.undo, run.opposite);
-  Json out = {{"label", run.label}};
+  Json out = {{"label", run.label}, {"open", run.open}};
   if(!run.problems.empty())
     out["problems"] = run.problems;
   if(run.job)

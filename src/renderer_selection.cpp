@@ -158,6 +158,9 @@ void GltfRenderer::setWireframe(bool on)
 
 void GltfRenderer::setShowGrid(bool on)
 {
+  // view.set sends the grid with the other display options: the same one again keeps a still refining
+  if(m_resources.settings.showGrid == on)
+    return;
   m_resources.settings.showGrid = on;
   resetFrame();
 }

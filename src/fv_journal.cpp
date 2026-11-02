@@ -38,6 +38,7 @@ void Journal::record(JournalStep step)
       return;
     }
     step.label   = m_group->label;
+    step.open    = m_group->open;
     step.key     = {};
     step.gesture = step.closes = false;
   }
@@ -102,9 +103,9 @@ void Journal::clear()
   m_group.reset();
 }
 
-void Journal::begin(std::string label)
+void Journal::begin(std::string label, bool open)
 {
-  m_group  = Group{.label = std::move(label)};
+  m_group  = Group{.label = std::move(label), .open = open};
   m_sealed = true;
 }
 

@@ -127,11 +127,29 @@ TEST(FvEvents, LaggingSubscriberResyncsFromSnapshots)
     hub.patch("morphs/fig:1", {{"fig:1/morph/FBMHeavy", i}});
 
   auto events = hub.next(rev, 0ms);
-  ASSERT_EQ(events.size(), 2u);
+  ASSERT_EQ(events.size(), 3u);
   EXPECT_EQ(events[0].kind, "reset");
   EXPECT_EQ(events[1].kind, "snapshot");
   EXPECT_EQ(events[1].data["fig:1/morph/FBMHeavy"], 9);
+  // the end of the snapshots: what the subscriber kept and didn't get again is gone
+  EXPECT_EQ(events[2].kind, "synced");
   EXPECT_EQ(rev, hub.rev());
+}
+
+// A new subscriber gets every topic, then the mark that they are all there.
+TEST(FvEvents, SubscribeEndsWithSynced)
+{
+  fv::EventHub hub;
+  hub.snapshot("scene", Json::object());
+  hub.snapshot("selection", {{"id", nullptr}});
+  uint64_t upTo = 0;
+  auto     all  = hub.subscribe(&upTo);
+  ASSERT_EQ(all.size(), 3u);
+  EXPECT_EQ(all[0].kind, "snapshot");
+  EXPECT_EQ(all[1].kind, "snapshot");
+  EXPECT_EQ(all[2].kind, "synced");
+  EXPECT_TRUE(all[2].topic.empty());
+  EXPECT_EQ(upTo, hub.rev());
 }
 
 // A prop that leaves the scene takes its topics along: subscribers get a drop, later ones never see it.

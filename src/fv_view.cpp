@@ -250,9 +250,12 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         const double aspect = args["frameAspect"].is_null() ? 0.0 : args["frameAspect"].get<double>();
         if(!(aspect >= 0) || aspect > 10)
           throw std::runtime_error("frameAspect is a width over height up to 10, or 0 for none");
-        m_frameAspect = aspect;
-        m_aspect      = -1;
-        applyLens();
+        if(aspect != m_frameAspect)
+        {
+          m_frameAspect = aspect;
+          m_aspect      = -1;
+          applyLens();
+        }
       }
       if(args.contains("transform"))
       {

@@ -144,7 +144,7 @@ TEST(FvJournal, AGroupIsOneStepOfEverythingRecordedInIt)
   const auto step = [&](const char* redo, const char* undo, std::chrono::steady_clock::duration at) {
     return fv::JournalStep{.redo = op(redo), .undo = op(undo), .label = redo, .key = redo, .at = t0 + at};
   };
-  j.begin("Open scene");
+  j.begin("Open scene", true);
   ASSERT_TRUE(j.grouping());
   j.record(step("a", "-a", 1s));
   j.record(step("b", "-b", 1s));
@@ -164,6 +164,9 @@ TEST(FvJournal, AGroupIsOneStepOfEverythingRecordedInIt)
   };
   EXPECT_EQ(cmds(group->redo), (std::vector<std::string>{"a", "b", "b"}));
   EXPECT_EQ(cmds(group->undo), (std::vector<std::string>{"-b2", "-b", "-a"}));
+  // it says it was a scene opening, which a step of its own isn't
+  EXPECT_TRUE(group->open);
   // it doesn't merge into the step before it
   EXPECT_EQ(j.undoCount(), 1u);
+  EXPECT_FALSE(j.takeUndo()->open);
 }

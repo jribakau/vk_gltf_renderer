@@ -74,7 +74,8 @@ struct Event
 {
   uint64_t    rev{};
   std::string topic;
-  std::string kind;  // "snapshot", "patch", "drop", or "reset" before a lagging subscriber's resync
+  std::string kind;  // "snapshot", "patch", "drop", "reset" before a lagging subscriber's resync, or
+                     // "synced" after the snapshots a subscriber starts or starts over with
   Json        data;
 };
 
@@ -94,10 +95,13 @@ public:
   uint64_t rev() const;
   // Every topic's current state as snapshot events, and the rev they are current up to.
   std::vector<Event> snapshots(uint64_t* upTo) const;
+  // What a new subscriber starts with: the snapshots, then "synced" (no topic), so it knows a
+  // topic it kept from an earlier connection and didn't get again is gone.
+  std::vector<Event> subscribe(uint64_t* upTo) const;
   // The events after `rev`, waiting up to `timeout` for one. A subscriber so far behind that the
-  // events it missed are gone gets a "reset" event (no topic: forget every topic) and every
-  // snapshot instead, and `rev` moves to their rev. Empty
-  // when nothing happened in time, or once closed.
+  // events it missed are gone gets a "reset" event (no topic: forget every topic), every snapshot
+  // and "synced" instead, and `rev` moves to their rev. Empty when nothing happened in time, or
+  // once closed.
   std::vector<Event> next(uint64_t& rev, std::chrono::milliseconds timeout);
   // Wakes every waiting subscriber and makes `next` return at once from now on.
   void close();

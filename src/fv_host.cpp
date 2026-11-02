@@ -123,10 +123,11 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // the edit history (fv_journal.hpp): the step to undo or redo, applied -> {label}, null when there is none
   cmds.add("history.undo", [impl](const Json&) { return impl->onApp([impl] { return impl->historyStep(true); }); });
   cmds.add("history.redo", [impl](const Json&) { return impl->onApp([impl] { return impl->historyStep(false); }); });
-  // a scene file opening is one step: what is recorded from begin to end, under its label
+  // a scene file opening is one step: what is recorded from begin to end, under its label (`open`: it
+  // is one, which an undo or redo answers with; else a click's edits made one, native/oneStep.ts)
   cmds.add("history.begin", [impl](const Json& args) {
-    return impl->onApp([impl, label = args.value("label", std::string("Open scene"))] {
-      impl->journal.begin(label);
+    return impl->onApp([impl, label = args.value("label", std::string("Open scene")), open = args.value("open", false)] {
+      impl->journal.begin(label, open);
       impl->publishHistory();
       return Json{{"ok", true}};
     });
@@ -297,6 +298,35 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   {"width", size.width},
                   {"height", size.height}};
     });
+  });
+  // The frame as an image file without its overlays, answered once it is on disk, or an error when it
+  // isn't: what the app's exports save (a .hdr gets the linear image, saveViewportImage)
+  cmds.add("render.save", [impl](const Json& args) {
+    const std::filesystem::path path = pathOf(args.at("path").get<std::string>());
+    std::string                 ext  = utf8Of(path.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if(ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".hdr")
+      throw std::runtime_error("render.save writes a .png, .jpg or .hdr file");
+    // a file there already is the one Save as chose to replace: written is a newer one
+    std::error_code ignored;
+    const auto      before = std::filesystem::last_write_time(path, ignored);
+    const bool      had    = !ignored;
+    impl->onApp([impl, path] {
+      impl->renderer->saveImage(path);
+      return Json{};
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(impl->onApp([impl] { return impl->renderer->imageSavePending(); }))
+    {
+      if(std::chrono::steady_clock::now() > deadline)
+        throw std::runtime_error("render.save: no frame drew in a minute");
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    std::error_code missing;
+    const auto      after = std::filesystem::last_write_time(path, missing);
+    if(missing || (had && after == before))
+      throw std::runtime_error("could not write " + utf8Of(path) + " (is the folder writable, and the disk not full?)");
+    return Json{{"path", utf8Of(path)}};
   });
   // The frame as a linear .hdr, answered once it is on disk: the path tracer's own image, before tone
   // mapping and any denoiser, for numbers to compare (scripts/fv.py's capture waits for the still first)

@@ -156,6 +156,13 @@ std::vector<Event> EventHub::snapshots(uint64_t* upTo) const
   return out;
 }
 
+std::vector<Event> EventHub::subscribe(uint64_t* upTo) const
+{
+  std::vector<Event> out = snapshots(upTo);
+  out.push_back({upTo ? *upTo : rev(), "", "synced", nullptr});
+  return out;
+}
+
 std::vector<Event> EventHub::next(uint64_t& rev, std::chrono::milliseconds timeout)
 {
   std::unique_lock lock(m_mutex);
@@ -170,6 +177,7 @@ std::vector<Event> EventHub::next(uint64_t& rev, std::chrono::milliseconds timeo
     out.push_back({m_rev, "", "reset", nullptr});
     for(const auto& [topic, data] : m_state)
       out.push_back({m_rev, topic, "snapshot", data});
+    out.push_back({m_rev, "", "synced", nullptr});
     rev = m_rev;
     return out;
   }

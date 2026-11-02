@@ -63,6 +63,7 @@ struct JournalStep
   std::chrono::steady_clock::time_point at;
   bool gesture = false;  // merges with its key whatever the time between
   bool closes  = false;  // a gesture's last: nothing merges into it after
+  bool open    = false;  // a scene file opening (begin's `open`): undone, the scene is no file's
   uint64_t serial = 0;   // given by record()
 };
 
@@ -77,8 +78,8 @@ public:
   std::optional<JournalStep> takeUndo();
   std::optional<JournalStep> takeRedo();
   void                       clear();
-  // The steps recorded from now until end() are one, labelled `label`
-  void begin(std::string label);
+  // The steps recorded from now until end() are one, labelled `label`; `open`: a scene file opening
+  void begin(std::string label, bool open = false);
   void end();
   bool grouping() const { return m_group.has_value(); }
   // The step `serial`'s ops one way (`undo`, else redo), as an undo or redo read them; nothing when
@@ -107,6 +108,7 @@ private:
   struct Group
   {
     std::string label;
+    bool        open   = false;
     uint64_t    serial = 0;  // its step, once one is recorded
   };
   std::optional<Group> m_group;

@@ -412,9 +412,10 @@ Json FvMaterials::set(const Json& args)
       if((scratch.makeupColor || scratch.makeupWeight) && (m_model || !m.surface.makeup))
         throw std::runtime_error("makeupColor is for a surface with a makeup layer, and " + m.name + " has none");
       // a model has no Surface to lower: its images, their tiling and a detail layer stay its file's
+      // (null, a value back to its own, is nothing to do there: the Surface section's Reset sends them all)
       if(m_model)
         for(auto it = values->begin(); it != values->end(); ++it)
-          if(fv::mat::figureOnlyKey(it.key()))
+          if(fv::mat::figureOnlyKey(it.key()) && !it.value().is_null())
             throw std::runtime_error(it.key() + " is for a figure's surfaces, and " + m.name + " belongs to a model");
     }
   }

@@ -1094,6 +1094,7 @@ struct FvHost::Impl
     bool        undo = true;
     uint64_t    serial = 0;
     std::string label;
+    bool        open = false;  // the step of a scene file opening
     Json        ops;
     size_t      next     = 0;
     Json        opposite = Json::array();  // what each op read before it applied: the way back

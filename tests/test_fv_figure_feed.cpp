@@ -1280,3 +1280,28 @@ TEST(FvMaterialsBake, AnEditTakenBackLeavesNoBakeBehind)
   b.landed();
   EXPECT_EQ(b.base(b.head), "/baked" + kHeadMap + "?" + kBodyMap);
 }
+
+// A model's surface reset whole (the Surface section's Reset sends null for every value of its table):
+// a value only a figure's surfaces take is nothing to reset on a model, so the rest goes through
+TEST(FvMaterialsModel, AResetOfEveryValueGoesThroughOnAModel)
+{
+  FakeHostRenderer renderer;
+  fv::EventHub     events;
+  int              written = 0;
+  FvMaterials      materials(FvMaterials::Hooks{.renderer   = &renderer,
+                                                .events     = &events,
+                                                .post       = [](std::function<void()> run) { run(); },
+                                                .notice     = [](const std::string&, const char*) {},
+                                                .writeModel = [&](int, fv::mat::Material) { written++; }});
+  tinygltf::Model    model;
+  tinygltf::Material paint;
+  paint.name = "Paint";
+  model.materials.push_back(paint);
+  materials.attachModel("p:1", model);
+  materials.set({{"material", {"m:0"}}, {"values", {{"roughness", 0.3}}}});
+  const int before = written;
+  EXPECT_NO_THROW(materials.set({{"material", {"m:0"}}, {"values", {{"roughness", nullptr}, {"microDetail", nullptr}, {"sweat", nullptr}}}}));
+  EXPECT_GT(written, before);
+  // a figure's value given one is still refused
+  EXPECT_THROW(materials.set({{"material", {"m:0"}}, {"values", {{"sweat", 0.5}}}}), std::runtime_error);
+}
