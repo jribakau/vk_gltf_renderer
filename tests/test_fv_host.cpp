@@ -2514,6 +2514,70 @@ TEST(FvHost, AFigureOnAColdCacheCooksWhatItCanOnlyShowCookedOnce)
   EXPECT_EQ(cooker.unflippedCooks.load(), 0);
 }
 
+namespace {
+
+// The PBRSkin box with nothing on its body but a plain colour map, which a cold cache shows from its
+// source and cooks after the load, in a library root of its own beside the test's. Returns the rig's
+// settings for both roots and the cooker.
+Json plainMapSettings(const FakeCooker& cooker)
+{
+  const fs::path root = fs::temp_directory_path() / "fv-host-plain-map";
+  fs::create_directories(root / "People");
+  Json duf = Json::parse(std::ifstream(fs::path(FV_TEST_DATA) / "daz-library/People/Test/Box Figure PBRSkin.duf"));
+  duf["scene"]["materials"][0]["extra"][0]["channels"] = Json::array(
+      {{{"channel", {{"id", "Diffuse Color"}, {"type", "color"}, {"current_value", {1, 1, 1}}, {"image_file", "/Runtime/Textures/Test/BoxSkin_D.png"}}}}});
+  std::ofstream(root / "People/Box Painted.duf") << duf.dump();
+  return {{"texServer", cooker.url()},
+          {"libraryRoots", {(fs::path(FV_TEST_DATA) / "daz-library").generic_string(), root.generic_string()}}};
+}
+
+}  // namespace
+
+// What a cold cache cooks after the load lands one map at a time: a still waits for all of them, so
+// it begins once instead of starting again as each lands, and render.status says how many are left
+TEST(FvHost, AStillWaitsForTheTexturesStillCooking)
+{
+  FakeCooker cooker;
+  HostRig    rig;
+  const auto cooking = [&] { return rig.cmd("render.status").value("result", Json::object()).value("texturesCooking", -1); };
+  ASSERT_TRUE(rig.cmd("settings.apply", plainMapSettings(cooker)).value("ok", false));
+  EXPECT_EQ(cooking(), 0);
+  EXPECT_FALSE(rig.renderer.texturesArriving);
+
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Box Painted.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  // the plain maps' cooks wait at the cooker
+  EXPECT_GT(cooking(), 0);
+  EXPECT_TRUE(rig.renderer.texturesArriving);
+
+  cooker.open();
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while(rig.renderer.texturesArriving && std::chrono::steady_clock::now() < end)
+  {
+    rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_FALSE(rig.renderer.texturesArriving);
+  EXPECT_EQ(cooking(), 0);
+}
+
+// Cooks for a figure that has left the scene keep no still waiting
+TEST(FvHost, CooksOfAFigureThatLeftTheSceneKeepNoStillWaiting)
+{
+  FakeCooker cooker;
+  HostRig    rig;
+  ASSERT_TRUE(rig.cmd("settings.apply", plainMapSettings(cooker)).value("ok", false));
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Box Painted.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  ASSERT_TRUE(rig.renderer.texturesArriving);
+  ASSERT_TRUE(rig.cmd("scene.clear").value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  EXPECT_FALSE(rig.renderer.texturesArriving);
+  EXPECT_EQ(rig.cmd("render.status").value("result", Json::object()).value("texturesCooking", -1), 0);
+  // the cooks still held let go, or the rig's detach waits out the cooker
+  cooker.open();
+}
+
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr
 TEST(FvHost, ACaptureIsAnHdrOfThePathTracersImage)
 {

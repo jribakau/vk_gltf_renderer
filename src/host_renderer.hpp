@@ -116,6 +116,10 @@ public:
   // An export is running: textures don't follow GPU memory until it ends, unless it runs past the
   // driver's budget (rs::MemoryWatch). Application thread.
   virtual void holdTextures(bool held) = 0;
+  // Textures the scene took are still being cooked, to land one by one (FvHost::Impl::cookInPlace): a
+  // still doesn't begin until they are in, DLSS drawing the view meanwhile, so it isn't restarted as
+  // each lands. Application thread, every frame.
+  virtual void setTexturesArriving(bool arriving) = 0;
   // what is shown, where it is now (world space)
   virtual nvutils::Bbox visibleSceneBounds() = 0;
 

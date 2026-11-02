@@ -294,6 +294,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer},
                   // the driver's shader cache is full, and every start compiles the path tracer again
                   {"driverCacheFull", impl->renderer->driverCacheFull()},
+                  // textures the scene took that are still cooking: the still waits for them
+                  {"texturesCooking", impl->texturesCooking()},
                   // the frame's size: a /size lands before the next frame, and until then the rest is the old frame's
                   {"width", size.width},
                   {"height", size.height}};
@@ -732,6 +734,8 @@ void FvHost::onUpdate()
     }
   }
   timePhase("frame: the rest");
+  // a still begins once the scene's cooks are in, not again as each one lands
+  s.renderer->setTexturesArriving(s.texturesCooking() > 0);
   if(fv::timing::enabled())
     if(const std::string line = s.dialTiming.report(std::chrono::steady_clock::now()); !line.empty())
     {

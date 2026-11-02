@@ -191,9 +191,12 @@ void FvHost::Impl::cookInPlace(const std::shared_ptr<Loaded>& f, std::vector<fv:
     std::lock_guard lock(settingsMutex);
     s = settings;
   }
+  const int count = int(requests.size());
+  f->cooking += count;
   // a worker the detach joins: a cook it waits on is stopped then, and what lands after is dropped
-  loaders.spawn([this, s, requests = std::move(requests), weak = std::weak_ptr<Loaded>(f)]() mutable {
-    cookAll(s, std::move(requests), [this, weak](const fv::build::TextureRequest& req, fv::build::TextureImage image) {
+  loaders.spawn([this, s, requests = std::move(requests), weak = std::weak_ptr<Loaded>(f), count]() mutable {
+    std::atomic<int> posted{0};  // cooks land side by side
+    cookAll(s, std::move(requests), [this, weak, &posted](const fv::build::TextureRequest& req, fv::build::TextureImage image) {
       const auto f = weak.lock();
       if(!f)
         return;
@@ -201,13 +204,32 @@ void FvHost::Impl::cookInPlace(const std::shared_ptr<Loaded>& f, std::vector<fv:
         std::lock_guard lock(f->landedMutex);
         f->landed.emplace_back(req, std::move(image));
       }
-      // several that land within a frame are taken by the first of these
+      posted++;
+      // several that land within a frame are taken by the first of these; each is one fewer cooking
       post([this, weak] {
-        if(const auto f = weak.lock(); f && inScene(f))
-          takeLanded(*f);
+        if(const auto f = weak.lock())
+        {
+          if(inScene(f))
+            takeLanded(*f);
+          f->cooking = std::max(0, f->cooking - 1);
+        }
       });
     });
+    // the rest won't land: a cook that failed, or stopped by a detach
+    post([weak, rest = count - posted.load()] {
+      if(const auto f = weak.lock())
+        f->cooking = std::max(0, f->cooking - rest);
+    });
   });
+}
+
+int FvHost::Impl::texturesCooking() const
+{
+  int n = 0;
+  for(const auto& p : props)
+    if(p->figure)
+      n += p->figure->cooking;
+  return n;
 }
 
 void FvHost::Impl::takeLanded(Loaded& f)

@@ -401,6 +401,7 @@ public:
   bool                                  m_prevDlssFrame{false};
   bool                                  m_handoffFrame{false};
   int                                   m_dlssHandoffDelayMs{0};
+  bool                                  m_stillWaits{false};  // setStillWaits
   std::chrono::steady_clock::time_point m_accumulationStart{};
   // DLSS draws this frame (onRender decides it before the variant is picked: they must agree)
   bool m_dlssShaderFrame = true;
@@ -474,12 +475,18 @@ public:
   // so the renderer holds its frame count (GltfRenderer::updateFrameCounter) and no sample of
   // theirs is counted (updateStatistics); neither bound can end the still before it begins
   bool dlssHandoffDelayPending() const { return m_dlssFrame && isAccumulationDenoiserEnabled() && inHandoffDelay(); }
-  // The view has been still for less than dlssHandoffDelayMs (false when there is no delay)
+  // The view has been still for less than dlssHandoffDelayMs (false when there is no delay), or the
+  // still waits for textures still arriving (setStillWaits)
   bool inHandoffDelay() const
   {
-    return m_dlssHandoffDelayMs > 0
-           && std::chrono::steady_clock::now() - m_accumulationStart < std::chrono::milliseconds(m_dlssHandoffDelayMs);
+    return m_stillWaits
+           || (m_dlssHandoffDelayMs > 0
+               && std::chrono::steady_clock::now() - m_accumulationStart < std::chrono::milliseconds(m_dlssHandoffDelayMs));
   }
+  // Textures are still arriving: the hand-off waits for them, DLSS drawing the view, so the still
+  // begins once instead of starting again as each lands. Needs DLSS and an accumulation denoiser,
+  // as the delay does; without them the still restarts as it did.
+  void setStillWaits(bool on) { m_stillWaits = on; }
 
   // True when the user has DLSS-RR enabled
   bool isDlssEnabled() const

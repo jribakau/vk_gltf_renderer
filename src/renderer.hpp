@@ -321,6 +321,7 @@ public:
   void setItemDetail(rs::ItemDetail detail) override;
   void setDetailSink(std::function<void(uint64_t item, bool up)> sink) override { m_detailSink = std::move(sink); }
   void holdTextures(bool held) override { m_texturesHeld = held; }
+  void setTexturesArriving(bool arriving) override { m_pathTracer.setStillWaits(arriving); }
 
   /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
   void          setRenderSystem(RenderingMode mode) override;

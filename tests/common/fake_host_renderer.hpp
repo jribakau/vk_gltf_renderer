@@ -81,6 +81,8 @@ public:
   std::function<void(const MemoryReport&)> memorySink;
   void               holdTextures(bool held) override { texturesHeld = held; }
   bool               texturesHeld = false;
+  void               setTexturesArriving(bool arriving) override { texturesArriving = arriving; }
+  bool               texturesArriving = false;
   nvutils::Bbox      visibleSceneBounds() override
   {
     const auto b = m_scene.bounds();

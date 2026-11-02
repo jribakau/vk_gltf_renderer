@@ -148,6 +148,8 @@ struct Loaded
   // cooks that landed on a worker for its fallbacks (cookInPlace), for the application thread to take
   std::mutex                                                                    landedMutex;
   std::vector<std::pair<fv::build::TextureRequest, fv::build::TextureImage>> landed;
+  // of those cooks, the ones not yet taken or given up on (application thread): a still waits for them
+  int cooking = 0;
   // its DAZ library, for source textures and what it wears (the settings mutex)
   std::shared_ptr<fv::dson::Library> lib;
   // how it was opened ({rel} or {path}), for a scene file
@@ -854,6 +856,8 @@ struct FvHost::Impl
   // The cooks that landed for `f` since the last call: its images, its feed's textures, and the
   // materials that sample them lowered again (with their edits)
   void takeLanded(Loaded& f);
+  // Textures the scene's figures still have cooking (Loaded::cooking): render.status says it, and a still waits
+  int texturesCooking() const;
   // wardrobe: what a figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
   struct WearRequest
   {
