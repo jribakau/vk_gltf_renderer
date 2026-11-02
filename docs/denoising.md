@@ -67,6 +67,7 @@ the enum for the authoritative list and formats):
 | `eDlssMotion` | Pixel-space motion vectors (see below) | `pInMotionVectors` |
 | `eDlssDepth` | NDC depth (`z/w`, `1.0` on miss) | `pInDepth` |
 | `eDlssSpecularHitDist` | Specular hit distance, captured at the first reflection bounce | `pInSpecularHitDistance` (optional) |
+| `eDlssResponsivity` | How far a pixel trusts its history: `ptHairResponsivity` where the first hit is hair, 0 elsewhere (see [hair](#hair-the-responsivity-mask)) | `pInResponsivityMask` (optional) |
 
 - **OptiX and OIDN** share one shader path for their guides: `eDenoiserAlbedo` and
   `eDenoiserNormal` (world-space normal), written when `ePtDenoiserGuides` is set. The shader does
@@ -273,7 +274,8 @@ wide, with `BLEND` alpha sampled at the pixel's mip. On a hair figure it looked 
 turned the maps' crisp 0/1 strands into partial opacity, and pixel-sized cells turned that into
 per-pixel dither that RR kept as grain. The hair looked frizzy when still and shimmered no less
 in motion. Point-sampled hair texels are mostly 0 or 1, which no hash changes, so the hair's
-shimmer in motion has another cause. That cause is not yet found.
+shimmer in motion has another cause. The [responsivity mask](#hair-the-responsivity-mask) is what
+holds it.
 
 Every other frame draws from the path seed, which advances it. `USE_DLSS_SHADER` stays on for the
 whole time DLSS is enabled, including frames where OptiX accumulates, so the runtime flag is the
@@ -293,6 +295,16 @@ particles. We prototyped it here by retracing pixels whose primary hit was trans
 surfaces skipped. On top of PSR it added rays and a full-resolution RGBA32F buffer and slightly
 increased the error, so it is not wired. A path tracer has no "before transparency" image to
 snapshot.
+
+## Hair: the responsivity mask
+
+RR's optional `pInResponsivityMask` (one channel, -1 to 1) says per pixel how far to trust the
+history. Where a DLSS frame's first hit is hair, the path tracer writes
+`ptHairResponsivity` into `eDlssResponsivity`; elsewhere 0. Negative trusts the history more, which
+stops thin fibres from shimmering while the view moves. The price to watch for is strands trailing
+behind the head in motion. At 0 the path tracer passes no mask (`Dlss::setResponsivityMask`). The guide shares the
+still's `eConvergence` slot, which DLSS frames never use. The default and its measurement are at
+`m_hairResponsivity` (`renderer_pathtracer.hpp`).
 
 ## Sky / background
 
