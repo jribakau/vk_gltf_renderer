@@ -28,9 +28,12 @@
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
-//   view.set      {display, grid, gizmo, pick, transform, helpers, frameAspect}  display: shaded, clay, wireframe, normals;
+//   view.set      {display, grid, gizmo, pick, select, transform, helpers, frameAspect}  display: shaded, clay, wireframe, normals;
 //                                               pick: "object" (the default: a click selects the prop),
 //                                               "mesh" (the node hit) or "bone" (the posed bone nearest);
+//                                               select: whether a click picks at all (true, the default;
+//                                               off, the selection stays as it is and a double-click
+//                                               still centres the view);
 //                                               transform: the gizmo's "move", "rotate" or "scale";
 //                                               helpers: whether camera and light markers show;
 //                                               frameAspect: a frame's width over height the view is
@@ -179,6 +182,7 @@ private:
   bool                                          m_publishAgain = true;
   std::string                                   m_surfaceProp, m_surface;  // what the last click hit
   std::string                                   m_pick      = "object";
+  bool                                          m_select    = true;  // a click picks (view.set select)
   std::string                                   m_transform = "move";
   bool                                          m_helpers   = true;
   double                                        m_frameAspect = 0;

@@ -2327,6 +2327,27 @@ TEST(FvHost, ADoubleClickTurnsTheViewToTheSurfaceUnderIt)
   EXPECT_FALSE(rig.renderer.picks[3].second);
 }
 
+TEST(FvHost, WithSelectOffAClickPicksNothingAndADoubleClickStillTurnsTheView)
+{
+  HostRig rig;
+  const auto click = [](double x) {
+    return Json::array({{{"t", "down"}, {"b", 0}, {"x", x}, {"y", 180}}, {{"t", "up"}, {"b", 0}, {"x", x}, {"y", 180}}});
+  };
+  ASSERT_TRUE(rig.cmd("view.set", {{"select", false}}).value("ok", false));
+  rig.input(click(320));
+  EXPECT_TRUE(rig.renderer.picks.empty());
+
+  // a double-click turns the view to the surface under it, which selects nothing
+  rig.input({{{"t", "dblclick"}, {"x", 320}, {"y", 180}}});
+  ASSERT_EQ(rig.renderer.picks.size(), 1u);
+  EXPECT_TRUE(rig.renderer.picks[0].second);
+
+  ASSERT_TRUE(rig.cmd("view.set", {{"select", true}}).value("ok", false));
+  rig.input(click(900));
+  ASSERT_EQ(rig.renderer.picks.size(), 2u);
+  EXPECT_FALSE(rig.renderer.picks[1].second);
+}
+
 TEST(FvHost, FlyingStopsWhenTheKeysStopComing)
 {
   HostRig rig;

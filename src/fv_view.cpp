@@ -243,6 +243,8 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         // the gizmo moves props and poses bones; a mesh pick only shows what was hit
         m_renderer->setShowGizmo(m_pick != "mesh");
       }
+      if(args.contains("select"))
+        m_select = args["select"].get<bool>();
       if(args.contains("helpers"))
         m_helpers = args["helpers"].get<bool>();
       if(args.contains("frameAspect"))
@@ -323,7 +325,7 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
     {
       const bool click = m_click && std::hypot(x - m_x0, y - m_y0) < 4;
       m_click          = false;
-      if(!click)
+      if(!click || !m_select)
         continue;
       // the second click of a double-click picks nothing: the first one selected, and picking again
       // would let go of a mesh it selected (the renderer's toggle); a third click picks again
