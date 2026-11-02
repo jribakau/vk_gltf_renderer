@@ -192,7 +192,7 @@ struct Settings
   // means "treat it as twice the size"; 0 switches the term off. A viewer setting rather than scene
   // data -- it describes how big the model is meant to be, which no extension has a field for.
   float     atmoAerialPerspectiveScale = 1.0f;
-  glm::vec3 atmoGroundAlbedo           = {0.1f, 0.1f, 0.1f};  // linear; what the ground reflects
+  glm::vec3 atmoGroundAlbedo           = {0.2f, 0.2f, 0.2f};  // linear; what the ground reflects, as the floor does
 
   // The rest of the atmosphere: what the planet is made of, and how big it is.
   //

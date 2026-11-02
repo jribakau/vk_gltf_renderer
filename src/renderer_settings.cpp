@@ -113,8 +113,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   // auto-exposure off -- what a reproducible capture wants. Out-of-range values are clamped rather
   // than refused, so too high a floor is silent: the run succeeds and the image is simply not the
   // one that was asked for.
+  // The ceiling is the host's lighting.set exposure (1e5, for the physical sky at twilight) over
+  // ACES's 0.6 (fv_lighting.cpp tmExposure), with room.
   m_settings.add({"tmExposure", "Tonemapper: Exposure multiplier"}, &m_resources.tonemapperData.exposure, Persist::eYes,
-                 0.01F, 200.0F);
+                 0.01F, 1e6F);
   m_settings.add({"tmContrast", "Tonemapper: Contrast"}, &m_resources.tonemapperData.contrast, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmBrightness", "Tonemapper: Brightness"}, &m_resources.tonemapperData.brightness, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmSaturation", "Tonemapper: Saturation"}, &m_resources.tonemapperData.saturation, Persist::eYes, 0.0F, 2.0F);

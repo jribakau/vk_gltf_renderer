@@ -72,7 +72,8 @@ static constexpr AtmospherePreset kPresets[] = {
         .ozoneExtinction     = {0.000649717F, 0.0018809F, 8.50167e-05F},
         .ozoneCenter         = 25.0F,
         .ozoneWidth          = 30.0F,
-        .groundAlbedo        = {0.1F, 0.1F, 0.1F},
+        // average ground, as the floor under a figure is (fv_lighting.hpp Ground::color)
+        .groundAlbedo        = {0.2F, 0.2F, 0.2F},
         .bottomRadius        = 6360.0F,
         .thickness           = 60.0F,
         .sunAngularRadius    = 0.004675F,

@@ -84,7 +84,9 @@ struct Ground
   std::string mode = "floor";
   bool        autoHeight = true;
   double      height     = 0.0;  // when not autoHeight
-  std::string color      = "#5a5d62";
+  // 20% grey, linear: average ground, the reflectance daylighting assumes (CIE's 0.2); grass, dry
+  // soil and worn concrete sit near it. The physical sky's own ground is the same (sky_bruneton.cpp)
+  std::string color      = "#7c7c7c";
   double      roughness  = 0.9;
   double      darkness   = 0.6;
   double      fade       = 3.0;

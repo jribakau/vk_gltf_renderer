@@ -164,6 +164,15 @@ TEST(FvLighting, DefaultsRoundTripThroughJson)
   EXPECT_EQ(L::toJson(back), L::toJson(s));
 }
 
+TEST(FvLighting, TheFloorIsAverageGround)
+{
+  // a neutral 20% grey, linear: what daylighting takes the ground to reflect
+  const glm::vec3 c = L::linearColor(L::Ground{}.color);
+  EXPECT_NEAR(0.2126F * c.x + 0.7152F * c.y + 0.0722F * c.z, 0.2F, 0.005F);
+  EXPECT_FLOAT_EQ(c.x, c.y);
+  EXPECT_FLOAT_EQ(c.y, c.z);
+}
+
 TEST(FvLighting, UnknownKeyRejectsTheWholePatch)
 {
   const L::State s;
@@ -191,6 +200,14 @@ TEST(FvLighting, NumbersAreClamped)
   EXPECT_EQ(s.ground.darkness, 1);
   EXPECT_EQ(L::applyPatch(L::State{}, {{"shadow", {{"size", 100}}}}).shadow.size, 1024);
   EXPECT_EQ(L::applyPatch(L::State{}, {{"shadow", {{"size", 1e6}}}}).shadow.size, 8192);
+  // as wide as a softbox: 30 degrees, at 0.15 a unit
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"sun", {{"softness", 150}}}}).sun.softness, 150);
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"sun", {{"softness", 500}}}}).sun.softness, 200);
+  EXPECT_NEAR(L::sunRadiusKm(200) / 149597870.0, std::tan(15.0 * 3.14159265358979 / 180.0), 1e-9);
+  // twilight under the physical sky takes thousands (lighting.ts sentExposure)
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 4000}}}}).tonemap.exposure, 4000);
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 1e7}}}}).tonemap.exposure, 1e5);
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 0}}}}).tonemap.exposure, 0.01);
 }
 
 TEST(FvLighting, NullResetsAndReadOnlyKeysAreIgnored)

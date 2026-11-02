@@ -161,7 +161,8 @@ void patchSun(Sun& s, const Json& p)
     else if(k == "color")
       field(s.color, d.color, v, [&](const Json& x) { return color(x, key); });
     else if(k == "softness")
-      field(s.softness, d.softness, v, [&](const Json& x) { return number(x, key, 0.0, 20.0); });
+      // 0.15 degrees each (sunRadiusKm): up to 30, a softbox at arm's length
+      field(s.softness, d.softness, v, [&](const Json& x) { return number(x, key, 0.0, 200.0); });
     else if(k == "shadows")
       field(s.shadows, d.shadows, v, [&](const Json& x) { return boolean(x, key); });
     else
@@ -242,7 +243,9 @@ void patchTonemap(Tonemap& t, const Json& p)
     if(k == "method")
       field(t.method, d.method, v, [&](const Json& x) { return oneOf(x, key, {"aces", "agx", "neutral", "filmic"}); });
     else if(k == "exposure")
-      field(t.exposure, d.exposure, v, [&](const Json& x) { return number(x, key, 0.01, 100.0); });
+      // the app opens it up as the physical sky's sun goes down: twilight is some 10,000 times
+      // darker than the studio (lighting.ts sentExposure)
+      field(t.exposure, d.exposure, v, [&](const Json& x) { return number(x, key, 0.01, 1e5); });
     else if(k == "contrast")
       field(t.contrast, d.contrast, v, [&](const Json& x) { return number(x, key, 0.0, 2.0); });
     else if(k == "saturation")
