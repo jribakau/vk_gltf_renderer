@@ -491,6 +491,8 @@ std::string meshDifference(const rs::MeshRecord& a, const rs::MeshRecord& b)
     return "UVs";
   if(a.colors != b.colors)
     return "colours";
+  if(a.masks != b.masks)
+    return "masks";
   if(a.joints != b.joints || a.weights != b.weights)
     return "joints or weights";
   if(a.indices != b.indices)

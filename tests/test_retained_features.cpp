@@ -89,6 +89,7 @@ const KnownExtension kExtensions[] = {
     {KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS_EXTENSION_NAME, SceneFeatureSet::eSpecularGlossiness},
     {FV_MATERIALS_DETAIL_EXTENSION_NAME, SceneFeatureSet::eDetail},
     {FV_MATERIALS_HAIR_EXTENSION_NAME, SceneFeatureSet::eHair},
+    {FV_MATERIALS_PROCEDURAL_EXTENSION_NAME, SceneFeatureSet::eProcedural},
 };
 
 // The places KHR_texture_transform can sit: the five core texture infos, the coat's map, and in an

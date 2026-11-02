@@ -1736,6 +1736,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     HitState  hit  = getHitState(prim, barys, node.worldToObject, node.objectToWorld, payload.primitiveID, dir);
     MeshState mesh = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, isInside, 0.0f);
     mesh.baseColorVertexMul = hit.color;
+    mesh.masks              = hit.masks;
     mat    = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
                               hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
     origin       = hit.pos;

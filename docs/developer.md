@@ -445,6 +445,34 @@ guides follow that ray. Rays leaving the eye go straight, so the eye needs no me
 internal reflection to lose light to, and a lit iris is as bright as without it; the cost is that the
 cornea focuses no caustic. A GLB export leaves it out. It has no Inspector section.
 
+### `FV_materials_procedural`: sweat and the like over a surface
+
+A vendor extension written by Figure Viewer for a layer an edit puts over a figure's surface. A layer
+is one row of the table in [`figure/materials/procedural.cpp`](../figure/materials/procedural.cpp), which
+says where it lands and what it does there, so a new one is a row, its tile and its edit.
+
+Where it lands is a field over the body: soft patches around the skeleton's landmarks in the rest pose
+(`bodyLandmarks`, from the bones' anatomical slots, so Genesis 2 to 9 share it), which a layer can break
+up with 3D noise (sweat's film doesn't, as patches of film read as blotches; its beads do, so they
+cluster). A layer has two fields, its film's and its beads', each in a channel.
+It is written per drawn vertex into a channel of the mesh's own stream, `masks`, beside `colors`
+(`proceduralMasks`, `FigureFeed::syncMeshes`). So a layer has no UV seams, rides with the skin through
+any pose, and bakes nothing into a surface's maps. A mesh has the stream only once a layer has been on it
+(`FedMesh::masks`): the layer's first coming makes the mesh again, and its amount after that only changes
+the material row.
+
+What it does is in `evaluateMaterial()`: the amount grows the layer from where the mask is highest until,
+at 1, it covers everything the mask touches; a tile says what is finer than the mesh (how early each
+droplet shows). The film is the surface itself made smoother and a little darker; the beads are a clear coat of
+their own, domes from the tile's normal map, whose shortened mipped normals turn into coat roughness
+(Toksvig) so far beads blend into a sheen. The gating promotes clearcoat and specular with `eProcedural`
+(`detectMaterialFeatures`), since a scene with neither would compile out what the layer writes to. As the
+detail layer, the droplets leave a measured skin's thin preview, where one sample a pixel would only
+shimmer. A GLB export leaves the extension out; the masks are not exported either.
+
+A row holds one layer, the first the surface takes (`proceduralOn`): a second at once needs the row's
+fields twice and the evaluation in a loop.
+
 ### A wear that doesn't fit GPU memory
 
 `GltfRenderer::geometryShortfall` weighs what a wear would add. Falling short is not the end while

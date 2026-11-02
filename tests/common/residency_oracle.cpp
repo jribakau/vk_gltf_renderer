@@ -425,7 +425,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
        || uint64_t(row.vertexBuffer.tangents) != gpu.bufferAddress(drawer ? drawer->tangents : mesh->tangents)
        || uint64_t(row.vertexBuffer.texCoord0) != gpu.bufferAddress(mesh->uv0)
        || uint64_t(row.vertexBuffer.texCoord1) != gpu.bufferAddress(mesh->uv1)
-       || uint64_t(row.vertexBuffer.colors) != gpu.bufferAddress(mesh->colors))
+       || uint64_t(row.vertexBuffer.colors) != gpu.bufferAddress(mesh->colors)
+       || uint64_t(row.vertexBuffer.masks) != gpu.bufferAddress(mesh->masks))
       out.push_back(at("I3", p) + "its prim row's addresses are not its buffers'");
     const Submesh& run = record->submeshes[prim->submesh];
     if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(prim->indices), uint64_t(run.indexCount) * 4),

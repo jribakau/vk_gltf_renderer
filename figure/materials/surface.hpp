@@ -337,6 +337,8 @@ struct Edits
   std::optional<float>       fabricScale, fabricStrength;
   // Skin's micro-relief (skinMicroDetail): its normal's strength; 0 takes it off
   std::optional<float>       microDetail;
+  // A procedural layer's amount, 0..1 (procedural.hpp): how far it has grown over the surface
+  std::optional<float>       sweat;
   // KHR_materials_sheen: its colour (none or black: no sheen) and roughness (0.5 when unset)
   std::optional<Rgb>         sheenColor;
   std::optional<float>       sheenRoughness;

@@ -69,6 +69,7 @@ set(TEST_SOURCES
     figure/test_presets.cpp
     figure/test_materials.cpp
     figure/test_materials_looks.cpp
+    figure/test_materials_procedural.cpp
     figure/test_materials_coat_volume.cpp
     figure/test_materials_clothes.cpp
     figure/test_materials_shaders.cpp

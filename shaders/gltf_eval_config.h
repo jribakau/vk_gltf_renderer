@@ -95,6 +95,9 @@ layout off). Each pair has a compile-time guard below.
 #ifndef GLTF_USE_HAIR
 #define GLTF_USE_HAIR MAT_EXT_HAIR
 #endif
+#ifndef GLTF_USE_PROCEDURAL
+#define GLTF_USE_PROCEDURAL MAT_EXT_PROCEDURAL
+#endif
 
 // Compile-time guards: behavior-on while layout-off is illegal.
 // We cannot turn on a GLTF_USE_X if the MAT_EXT_X is disabled.
@@ -121,6 +124,9 @@ layout off). Each pair has a compile-time guard below.
 #endif
 #if GLTF_USE_HAIR && !MAT_EXT_HAIR
 #error GLTF_USE_HAIR requires MAT_EXT_HAIR
+#endif
+#if GLTF_USE_PROCEDURAL && !MAT_EXT_PROCEDURAL
+#error GLTF_USE_PROCEDURAL requires MAT_EXT_PROCEDURAL
 #endif
 #if GLTF_USE_IRIDESCENCE && !MAT_EXT_IRIDESCENCE
 #error GLTF_USE_IRIDESCENCE requires MAT_EXT_IRIDESCENCE

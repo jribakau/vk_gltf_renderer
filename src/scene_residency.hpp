@@ -172,7 +172,7 @@ public:
   // A mesh record's streams on the GPU
   struct MeshGpu
   {
-    BufferHandle         positions, normals, tangents, uv0, uv1, colors;
+    BufferHandle         positions, normals, tangents, uv0, uv1, colors, masks;
     bool                 hasBase = false;  // positions, normals and tangents are wanted (ensureBase)
     bool                 settled = false;  // Residency::settle: only what is drawn is held
     bool                 hadBase = false;  // settled: it wants those again when it wakes

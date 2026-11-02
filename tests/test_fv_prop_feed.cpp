@@ -834,6 +834,69 @@ TEST(FvPropFeed, APosedStrandHairHoldsNoDrawnVerticesOnTheCpu)
   check("not any more");
 }
 
+// A procedural layer's first coming takes a sync, which gives the meshes wearing it their masks. Taken off,
+// its material goes back to what it was and the mesh keeps them, so putting it back makes nothing again.
+TEST(FvPropFeed, AProceduralLayerGivesItsMeshMasksAndTheyStay)
+{
+  const auto         box = loadBox();
+  rs::RetainedScene  scene;
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu);
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); }});
+  fv::SceneGraph&    graph = box->loaded.scene;
+  const int          root  = box->loaded.root;
+  feed.sync(graph, root);
+  residency.replace(scene);
+
+  std::vector<int> materials(graph.materials.size());
+  for(size_t i = 0; i < materials.size(); i++)
+    materials[i] = int(i);
+  const auto masked = [&] {
+    size_t n = 0;
+    for(size_t mi = 0; mi < graph.meshes.size(); mi++)
+      if(const rs::MeshRecord* r = scene.mesh(feed.meshOf(int(mi))); r && !r->masks.empty())
+      {
+        EXPECT_EQ(r->masks.size(), r->vertexCount()) << mi;
+        n++;
+      }
+    return n;
+  };
+  ASSERT_EQ(masked(), 0u) << "a figure wearing none pays for none";
+
+  for(fv::Material& m : graph.materials)
+  {
+    m.surface.kind = fv::mat::Kind::eSkin;
+    m.edits.sweat  = 0.5f;
+  }
+  EXPECT_FALSE(feed.syncMaterials(graph, materials)) << "its meshes need their masks";
+  feed.sync(graph, root);
+  residency.replace(scene);
+  EXPECT_GT(masked(), 0u);
+  const rs::MaterialRecord* worn = scene.material(feed.materialOf(0));
+  ASSERT_TRUE(worn);
+  ASSERT_TRUE(worn->payload.procedural);
+  EXPECT_FLOAT_EQ(worn->payload.procedural->amount, 0.5f);
+  for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+    ADD_FAILURE() << p;
+
+  // the amount moved: the materials alone
+  for(fv::Material& m : graph.materials)
+    m.edits.sweat = 0.8f;
+  EXPECT_TRUE(feed.syncMaterials(graph, materials));
+
+  const rs::MeshId kept = feed.meshOf(0);
+  for(fv::Material& m : graph.materials)
+    m.edits.sweat = std::nullopt;
+  EXPECT_TRUE(feed.syncMaterials(graph, materials));
+  feed.sync(graph, root);
+  residency.replace(scene);
+  EXPECT_EQ(feed.meshOf(0), kept);
+  EXPECT_GT(masked(), 0u);
+  EXPECT_FALSE(scene.material(feed.materialOf(0))->payload.procedural);
+  for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 // An item in the scene comes down a step and back. All that lives on its cage stays, what it was drawn with goes
 // (nothing holds the old mesh, or the memory wasn't given back), and what is drawn is what a wear at that level draws.
 TEST(FvPropFeed, AWornItemComesDownAStepAndBack)

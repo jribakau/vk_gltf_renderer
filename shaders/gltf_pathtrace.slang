@@ -461,6 +461,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;
+      mesh.masks              = hit.masks;
       pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials, simplifyScatter);
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
       if(diffuseExit)
@@ -1630,6 +1631,7 @@ void probeCameraMedium(IRaytracer raytracer)
       {
         MeshState mesh          = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, !hit.frontFace, 0.0F);
         mesh.baseColorVertexMul = hit.color;
+        mesh.masks              = hit.masks;
         // the thin preview has no medium to be inside of
         PbrMaterial mat = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
                                            hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));

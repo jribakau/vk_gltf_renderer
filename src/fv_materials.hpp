@@ -37,7 +37,7 @@
 //                    scleraColor, recolor, recolorStrength, tone, toneStrength, makeupColor,
 //                    makeupWeight, scatterScale, baseMap, opacityMap, normalMap, bumpMap,
 //                    roughnessMap, uvScaleU, uvScaleV, uvOffsetU, uvOffsetV, uvRotation, fabric,
-//                    fabricScale, fabricStrength, microDetail, sheenColor, sheenRoughness}}   null resets a value
+//                    fabricScale, fabricStrength, microDetail, sweat, sheenColor, sheenRoughness}}   null resets a value
 //   material.reset  {material}                    drops the edits of a material (or of all, if none)
 //   Colours are "#rrggbb" in sRGB, as the colour pickers hold them. alphaMode: opaque, cutout, blend.
 //   irisColor and irisStrength (0..1) recolour an eye's iris in its map (the cooker's ir=), and are

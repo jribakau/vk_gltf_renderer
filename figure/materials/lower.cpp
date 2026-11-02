@@ -8,6 +8,7 @@
 #include <figure/materials/fabric.hpp>
 #include <figure/materials/hair_strands.hpp>
 #include <figure/materials/lobes.hpp>
+#include <figure/materials/procedural.hpp>
 
 namespace fv::mat {
 
@@ -792,6 +793,39 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       de.roughnessMap = b.plain(d.roughnessMap, false, std::nullopt, UvTransform{d.tiles, d.offset});
     out.detail = de;
   }
+  // A procedural layer. Its tile needs the surface's size; a surface of unknown size has its film alone,
+  // evenly. Nothing the layer changes goes into a file for other tools.
+  if(const ProceduralDef* def = proceduralOn(s, e); def && !opts.forFile)
+  {
+    Procedural l;
+    l.amount        = std::clamp((e.*def->amount).value_or(0.f), 0.f, 1.f);
+    l.channel       = def->channel;
+    l.dropChannel   = def->dropChannel;
+    l.tint          = def->tint;
+    l.filmRoughness = def->filmRoughness;
+    l.coat          = def->coat;
+    l.dropRoughness = def->dropRoughness;
+    if(opts.metresPerUv > 0)
+    {
+      const float        tiles = std::clamp(opts.metresPerUv / def->tileMetres, 1.f, 4096.f);
+      const UvTransform  tiling{{tiles, tiles}, {0, 0}};
+      TextureRequest     height;
+      height.rel        = def->heightMap;
+      height.srgb       = false;
+      height.channels   = "bn";
+      height.bumpHeight = def->relief;
+      l.normalMap = b.info(std::move(height), 1.f, tiling);
+      l.coverMap  = b.plain(def->coverMap, false, std::nullopt, tiling);
+    }
+    out.procedural = l;
+  }
+  for(const ProceduralDef& def : proceduralDefs())
+    if(takesProcedural(def, s))
+    {
+      eff.sweat = (e.*def.amount).value_or(0.f);
+      break;
+    }
+
   // the micro-relief's strength, and an edit of it that took it off, so the slider can bring it back
   if(s.detail && s.detail->map == kSkinMicroMap)
     eff.microDetail = s.detail->strength;

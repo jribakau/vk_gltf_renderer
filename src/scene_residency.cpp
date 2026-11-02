@@ -175,7 +175,7 @@ void Residency::clear()
 {
   for(auto& [id, mesh] : m_meshes)
   {
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.masks, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
                           mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
                           mesh.tangentDeltas, mesh.prevPositions})
       retireBuffer(b);
@@ -669,6 +669,7 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
       packed[i] = glm::packUnorm4x8(record.colors[i]);
     stream(gpu.colors, bytesOf(packed), eBufferStorage, "colors");
   }
+  stream(gpu.masks, bytesOf(record.masks), eBufferStorage, "masks");
   gpu.vertexCount = uint32_t(record.vertexCount());
 }
 
@@ -721,7 +722,7 @@ void Residency::retireMesh(MeshId id)
   if(it == m_meshes.end())
     return;
   MeshGpu& m = it->second;
-  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.joints, m.cageJoints, m.cageWeights, m.cageJoints1, m.cageWeights1, m.cageShares, m.joints1, m.weights1,
+  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.masks, m.joints, m.cageJoints, m.cageWeights, m.cageJoints1, m.cageWeights1, m.cageShares, m.joints1, m.weights1,
                         m.dualQuatShares, m.weights, m.positionDeltas, m.normalDeltas, m.tangentDeltas, m.prevPositions})
     retireBuffer(b);
   retireRefine(m);
@@ -1730,7 +1731,7 @@ uint32_t Residency::bringBack(const RetainedScene& scene, uint64_t room)
     const MeshGpu* mesh = meshGpu(id);
     if(!mesh)
       return false;
-    for(BufferHandle b : {mesh->positions, mesh->normals, mesh->tangents, mesh->uv0, mesh->uv1, mesh->colors})
+    for(BufferHandle b : {mesh->positions, mesh->normals, mesh->tangents, mesh->uv0, mesh->uv1, mesh->colors, mesh->masks})
       if(m_gpu.bufferSpilled(b))
         return true;
     for(const auto& [key, d] : m_drawers)
@@ -3345,6 +3346,7 @@ void Residency::writeRenderPrims(const std::set<uint32_t>& slots)
       row.vertexBuffer.texCoord0 = (glm::vec2*)m_gpu.bufferAddress(mesh.uv0);
       row.vertexBuffer.texCoord1 = (glm::vec2*)m_gpu.bufferAddress(mesh.uv1);
       row.vertexBuffer.colors    = (glm::uint*)m_gpu.bufferAddress(mesh.colors);
+      row.vertexBuffer.masks     = (glm::uint*)m_gpu.bufferAddress(mesh.masks);
     }
     m_gpu.upload(m_renderPrims, uint64_t(first) * sizeof(shaderio::GltfRenderPrimitive), bytesOf(rows));
   }
@@ -3572,7 +3574,7 @@ size_t Residency::liveBuffers() const
   size_t n = 0;
   for(const auto& [id, mesh] : m_meshes)
   {
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.masks, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
                           mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
                           mesh.tangentDeltas, mesh.prevPositions})
       n += b ? 1 : 0;
@@ -3626,7 +3628,7 @@ MemoryLedger Residency::ledger() const
     uint64_t&  ownStreams    = drawnItself ? b.drawn : readByADrawer ? b.remake : b.unread;
     for(BufferHandle s : {mesh.positions, mesh.normals, mesh.tangents})
       ownStreams += bytes(s);
-    for(BufferHandle s : {mesh.uv0, mesh.uv1, mesh.colors})
+    for(BufferHandle s : {mesh.uv0, mesh.uv1, mesh.colors, mesh.masks})
       b.drawn += bytes(s);
     // what deforms it: the drawn vertices' skin is the posed cage's to do when every drawer poses
     uint64_t& drawnSkin = readByADrawer ? b.remake : b.unread;

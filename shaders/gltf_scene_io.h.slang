@@ -52,6 +52,7 @@ struct VertexBuffers
   float3* positions;
   float3* normals;
   uint*   colors;  // packed as 4 uint8_t
+  uint*   masks;   // packed as 4 uint8_t: where a procedural layer lands, a channel each (FV_materials_procedural)
   float4* tangents;
   // TEXCOORD_0 and TEXCOORD_1 as two members, not a `float2* texCoords[2]` array: AMD's Vulkan
   // driver crashes compiling a shader that loads a struct holding an array of buffer pointers.
@@ -331,6 +332,19 @@ struct GltfShadeMaterial
   float detailRoughnessFactor = 1;
 #endif
 
+#if MAT_EXT_PROCEDURAL
+  // FV_materials_procedural: a layer over the surface, where the mesh's mask channel and the amount
+  // reach (gltf_material_eval.h.slang). proceduralAmount is 0 unless the extension is present.
+  float  proceduralAmount        = 0;
+  uint   proceduralChannel       = 0;  // the film's
+  uint   proceduralDropChannel   = 0;  // the beads'
+  float3 proceduralTint          = float3(1);
+  float  proceduralFilmRoughness = 0.2f;
+  float  proceduralCoat          = 0;
+  float  proceduralDropRoughness = 0.05f;
+  float  proceduralNormalScale   = 1;  // proceduralNormalTexture.scale; ten floats keep the row a multiple of 8
+#endif
+
 #if MAT_EXT_HAIR
   // FV_materials_hair. hairFactor is 0 unless the extension is present: a ribbon fibre, shaded
   // with a hair BSDF instead of the glTF lobes. Absorption is Chiang's σ_a; the hit's along-UV
@@ -431,6 +445,13 @@ struct GltfShadeMaterial
   uint16_t detailWeightTexture    = 0;
   uint16_t detailRoughnessTexture = 0;
   uint16_t _detailPad             = 0;  // keeps the texture block a whole number of 4-byte words
+#endif
+
+#if MAT_EXT_PROCEDURAL
+  uint16_t proceduralNormalTexture = 0;
+  uint16_t proceduralCoverTexture  = 0;
+  uint16_t _proceduralTexturePad0  = 0;  // keeps the row a multiple of 8 with no padding
+  uint16_t _proceduralTexturePad1  = 0;
 #endif
 
 #if MAT_EXT_DLSS_NR

@@ -285,6 +285,11 @@ struct KHR_materials_diffuse_transmission
 // roughness, are multiplied by mix(1, detailRoughnessFactor * detailRoughnessTexture.r, weight).
 #define FV_MATERIALS_DETAIL_EXTENSION_NAME "FV_materials_detail"
 
+// FV_materials_procedural (Figure Viewer): a layer such as sweat over a surface, where a channel of
+// the mesh's masks and the amount reach (fv::mat::Procedural). A build of the renderer's own: a file
+// for other tools leaves it out.
+#define FV_MATERIALS_PROCEDURAL_EXTENSION_NAME "FV_materials_procedural"
+
 // FV_texture_flip_green (Figure Viewer): on a normal texture info, an empty object saying the
 // image's green channel points the other way (Y down), so the shader negates the decoded Y.
 // Figure Viewer's texture cache keeps one cooked copy of each normal map for its own viewer and

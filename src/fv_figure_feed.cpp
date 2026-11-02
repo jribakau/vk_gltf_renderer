@@ -24,6 +24,7 @@
 #include <set>
 
 #include <figure/dforce/skin.hpp>
+#include <figure/materials/procedural.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 #include "scene_import_gltf.hpp"
@@ -147,6 +148,24 @@ rs::TextureRecord textureRecord(const mat::TextureRequest& req, const build::Tex
   if(image.mimeType == "image/ktx2")
     t.sourceExtension = "KHR_texture_basisu";
   return t;
+}
+
+// The figure's landmarks: the bones of all its meshes, most bones first, so the body's are the ones that
+// count and what it doesn't skin comes from the mesh that does (Genesis 9's eyes are a mesh of their
+// own). Rest positions come back through the inverse binds.
+mat::BodyLandmarks figureLandmarks(const SceneGraph& figure)
+{
+  std::vector<const Mesh*> meshes;
+  for(const Mesh& m : figure.meshes)
+    if(m.skinned() && m.boneInverses.size() == m.bones.size())
+      meshes.push_back(&m);
+  std::stable_sort(meshes.begin(), meshes.end(), [](const Mesh* a, const Mesh* b) { return a->bones.size() > b->bones.size(); });
+  std::vector<std::pair<std::string, Vec3>> bones;
+  for(const Mesh* m : meshes)
+    for(size_t j = 0; j < m->bones.size(); j++)
+      if(m->bones[j] >= 0 && m->bones[j] < int(figure.nodes.size()))
+        bones.emplace_back(figure.nodes[size_t(m->bones[j])].name, inverse(m->boneInverses[j]).transformPoint(Vec3{0, 0, 0}));
+  return mat::bodyLandmarks(bones);
 }
 
 // Whether `next` has no map where `now` shows one
@@ -403,6 +422,9 @@ bool FigureFeed::syncMaterials(const SceneGraph& figure, std::span<const std::pa
     // and one that starts or stops giving light, whether a hair holds its triangles for the emissive table
     if(rs::materialEmits(r->payload) != rs::materialEmits(payload))
       all = false;
+    // and a procedural layer's first coming, the masks of the meshes using it
+    if(payload.procedural && !r->payload.procedural)
+      all = false;
     m_scene.setMaterial(id, std::move(payload), m_table);
   }
   // so are those whose groups merge differently now (mergePlan): an edit that sets one of a hair's
@@ -581,6 +603,17 @@ std::vector<bool> FigureFeed::tangentGroups(const std::vector<int>& materials) c
   return out;
 }
 
+bool FigureFeed::anyProcedural(const std::vector<int>& materials) const
+{
+  for(int mi : materials)
+  {
+    const rs::MaterialRecord* r = mi >= 0 && mi < int(m_materials.size()) ? m_scene.material(m_materials[size_t(mi)]) : nullptr;
+    if(r && r->payload.procedural)
+      return true;
+  }
+  return false;
+}
+
 bool FigureFeed::anyEmits(const std::vector<int>& materials) const
 {
   for(int mi : materials)
@@ -709,6 +742,7 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
   std::vector<rs::SkinId>   oldSkins;
   std::vector<std::vector<rs::MaterialId>> partMaterials(figure.meshes.size());
   m_meshes.resize(figure.meshes.size());
+  std::optional<mat::BodyLandmarks> body;  // only once a mesh asks
   for(size_t mi = 0; mi < figure.meshes.size(); mi++)
   {
     FedMesh& f = m_meshes[mi];
@@ -727,6 +761,8 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       partMaterials[mi].push_back(materialFor(g));
     const std::vector<bool> tangents = tangentGroups(groups);
     const bool              emits    = anyEmits(groups);
+    // kept once it has them, so a layer taken off and put back doesn't make the mesh again
+    const bool              masks    = !m.geo->ribbon && (f.masks || anyProcedural(groups));
     const bool              flipV    = !m_options.build.texturesFlipped;
     std::vector<std::pair<uint32_t, uint32_t>> runs;
     for(const mesh::Group& g : drawn.groups())
@@ -735,13 +771,20 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
     f.groupRuns                        = runs;
     f.groupMaterials                   = groups;
     if(f.id.isNone() || f.geo.lock() != m.geo || f.hidden != m.geo->hiddenPolys || f.flipV != flipV || f.tangentGroups != tangents
-       || f.merged != merged || (m.geo->ribbon && f.emits != emits))
+       || f.merged != merged || (m.geo->ribbon && f.emits != emits) || f.masks != masks)
     {
       // a strand hair whose drawers pose its cage: nothing reads its drawn vertices or their skin, unless it
       // gives light, when the emissive table does. If it can't pose after all (no cage to give, tangents with no
       // tables) they come back below.
       const bool     thin = m_options.cageOf && m.geo->ribbon && poses(m) && !emits;
       rs::MeshRecord r    = meshRecord(figure, int(mi), drawn, merged, thin);
+      f.masks             = masks;
+      if(masks)
+      {
+        if(!body)
+          body = figureLandmarks(figure);
+        r.masks = mat::proceduralMasks(m.geo->position, m.bindMatrix, *body);
+      }
       f.merged           = merged;
       f.tangentIndices   = tangentIndices(r, tangents);
       // subdivided, or strand ribbons once widened: the GPU makes its drawn vertices from its cage

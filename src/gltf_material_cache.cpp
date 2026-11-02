@@ -266,6 +266,20 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   handleTexture(dstMat.detailRoughnessTexture, detail.roughnessMap);
 #endif
 
+#if MAT_EXT_PROCEDURAL
+  const Procedural procedural     = srcMat.procedural.value_or(Procedural{});
+  dstMat.proceduralAmount         = procedural.amount;
+  dstMat.proceduralChannel        = uint32_t(std::clamp(procedural.channel, 0, 3));
+  dstMat.proceduralDropChannel    = uint32_t(std::clamp(procedural.dropChannel, 0, 3));
+  dstMat.proceduralTint           = rgb(procedural.tint);
+  dstMat.proceduralFilmRoughness  = procedural.filmRoughness;
+  dstMat.proceduralCoat           = procedural.coat;
+  dstMat.proceduralDropRoughness  = procedural.dropRoughness;
+  dstMat.proceduralNormalScale    = procedural.normalMap.scale.value_or(1.0f);
+  handleTexture(dstMat.proceduralNormalTexture, procedural.normalMap);
+  handleTexture(dstMat.proceduralCoverTexture, procedural.coverMap);
+#endif
+
 #if MAT_EXT_HAIR
   if(srcMat.hair)
   {

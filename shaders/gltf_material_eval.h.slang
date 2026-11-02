@@ -65,6 +65,7 @@ struct MeshState
   bool   isInside = false;
   float  texGrad  = 0.0f;  // Ray footprint for SampleGrad; 0 -> mip 0 in path tracer, implicit HW mips in fragment
   float4 baseColorVertexMul = float4(1);  // COLOR_0 multiplier for baseColor or spec-gloss diffuse
+  float4 masks              = float4(0);  // where procedural layers land, a channel each
 };
 
 
@@ -156,7 +157,7 @@ float3 decodeTangentSpaceNormal(float3 normal_vector, GltfTextureInfo textureInf
   return normal_vector;
 }
 
-#if GLTF_USE_DETAIL
+#if GLTF_USE_DETAIL || GLTF_USE_PROCEDURAL
 /*-------------------------------------------------------------------------------------------------
  * FV_materials_detail: bend a shading normal `N` by a tangent-space detail normal `d`, in the
  * surface's tangent frame (`T`, `B`) made orthogonal to `N`. Layering on the already bent normal
@@ -356,6 +357,57 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   }
 #endif
 
+#if GLTF_USE_PROCEDURAL
+  // FV_materials_procedural: a layer over the surface, a film and beads on it, each with a mask
+  // channel of its own. The amount grows the film out from where its mask is highest until, at 1, it
+  // covers everything its mask touches, evenly (patches of film read as blotches); the beads follow
+  // the body more closely and in clusters. The film is the surface itself made smoother and a little
+  // darker, as wet skin is; the beads are water on it, in the clearcoat block below. The tile holds,
+  // per bead, how early it appears (red; 0 between beads).
+  float  proceduralFilm         = 0.0F;
+  float  proceduralDrop         = 0.0F;
+  float  proceduralDropVariance = 0.0F;
+  float3 proceduralDropNormal   = float3(0.0F, 0.0F, 1.0F);
+  if(material.proceduralAmount > 0.0F)
+  {
+    const float mask  = state.masks[material.proceduralChannel];
+    const float reach = mask > 0.0F ? saturate(mask + 2.0F * material.proceduralAmount - 1.0F) : 0.0F;
+    if(reach > 0.0F)
+    {
+      proceduralFilm = smoothstep(0.15F, 0.7F, reach);
+      // the beads reach more slowly: at 1, all of them where their mask is high, the smallest elsewhere
+      const float dropReach = min(reach, saturate(state.masks[material.proceduralDropChannel] + 1.2F * material.proceduralAmount - 1.0F));
+      float       early     = 0.0F;
+      if(dropReach > 0.0F && isTexturePresent(material.proceduralCoverTexture))
+        early = getTexture(images, samplers, texInfos[material.proceduralCoverTexture], state.tc, state.texGrad).r;
+      proceduralDrop = saturate((early - (1.0F - dropReach)) / 0.04F);
+#if GLTF_USE_SCATTER && !defined(RASTER_PIPELINE)
+      // as the detail layer: a droplet at one sample a pixel only shimmers under DLSS
+      if(scatterAsThin && any(material.scatterDistance > 0.0F))
+        proceduralDrop = 0.0F;
+#endif
+      if(proceduralDrop > 0.0F && isTexturePresent(material.proceduralNormalTexture))
+      {
+        GltfTextureInfo dropInfo = texInfos[material.proceduralNormalTexture];
+        float3          raw      = getTexture(images, samplers, dropInfo, state.tc, state.texGrad).xyz * 2.0F - 1.0F;
+        // Toksvig: a mip averages the beads' normals, and how short that leaves them is how much they
+        // vary under the footprint, which goes into the coat's roughness. Far beads blend into a sheen
+        // instead of a dust of glints.
+        const float length2 = min(dot(raw, raw), 1.0F);
+        const float len     = sqrt(length2);
+        proceduralDropVariance = (1.0F - len) / max(len, 1e-3F);
+        proceduralDropNormal   = decodeTangentSpaceNormal(raw, dropInfo);
+        proceduralDropNormal.x *= material.proceduralNormalScale * proceduralDrop;
+        proceduralDropNormal.y *= material.proceduralNormalScale * proceduralDrop;
+      }
+      pbrMat.baseColor *= lerp(float3(1.0F), material.proceduralTint, proceduralFilm);
+      // pbrMat.roughness holds alpha = roughness^2
+      const float filmAlpha = material.proceduralFilmRoughness * material.proceduralFilmRoughness;
+      pbrMat.roughness += (min(pbrMat.roughness, float2(filmAlpha)) - pbrMat.roughness) * proceduralFilm;
+    }
+  }
+#endif
+
   // Emissive term
   pbrMat.emissive = material.emissiveFactor;
   if(isTexturePresent(material.emissiveTexture))
@@ -488,6 +540,20 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   pbrMat.specular2Roughness *= detailRoughnessMul;
 #endif
   pbrMat.specular2Roughness = max(pbrMat.specular2Roughness, 0.001F);
+
+#if GLTF_USE_PROCEDURAL
+  // The film smooths the tight lobe as it does the broad one. The beads are a coat of their own, a dome
+  // each: water, so clear, with no colour and nothing under them changed but what a coat takes.
+  pbrMat.specular2Roughness = lerp(pbrMat.specular2Roughness, min(pbrMat.specular2Roughness, material.proceduralFilmRoughness), proceduralFilm);
+  if(proceduralDrop > 0.0F)
+  {
+    const float dropAlpha     = material.proceduralDropRoughness * material.proceduralDropRoughness;
+    const float coatRoughness = sqrt(sqrt(dropAlpha * dropAlpha + proceduralDropVariance));
+    pbrMat.clearcoat          = max(pbrMat.clearcoat, material.proceduralCoat * proceduralDrop);
+    pbrMat.clearcoatRoughness = lerp(pbrMat.clearcoatRoughness, coatRoughness, proceduralDrop);
+    pbrMat.Nc                 = applyDetailNormal(pbrMat.Nc, state.T, state.B, proceduralDropNormal);
+  }
+#endif
 #endif
 
 #if GLTF_USE_IRIDESCENCE

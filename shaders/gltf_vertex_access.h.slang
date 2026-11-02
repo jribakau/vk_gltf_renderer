@@ -125,6 +125,15 @@ float4 getInterpolatedVertexColor(GltfRenderPrimitive renderPrim, uint3 idx, flo
   return col[0] * barycentrics.x + col[1] * barycentrics.y + col[2] * barycentrics.z;
 }
 
+// Where procedural layers land here, a channel each; nowhere on a mesh with no such layer
+float4 getInterpolatedVertexMask(GltfRenderPrimitive renderPrim, uint3 idx, float3 barycentrics)
+{
+  uint* masks = renderPrim.vertexBuffer.masks;
+  if(masks == nullptr)
+    return float4(0.0f);
+  return unpackUnorm4x8(masks[idx.x]) * barycentrics.x + unpackUnorm4x8(masks[idx.y]) * barycentrics.y + unpackUnorm4x8(masks[idx.z]) * barycentrics.z;
+}
+
 bool hasVertexTangent(GltfRenderPrimitive renderPrim)
 {
   return renderPrim.vertexBuffer.tangents != nullptr;

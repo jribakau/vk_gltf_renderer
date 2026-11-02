@@ -193,6 +193,8 @@ struct MeshRecord
   std::vector<glm::vec4>   tangents;  // generated when a submesh's material needs them
   std::vector<glm::vec2>   uv0, uv1;
   std::vector<glm::vec4>   colors;
+  // where procedural layers land, per drawn vertex (fv::mat::proceduralMasks); empty: none on this mesh
+  std::vector<uint32_t>    masks;
   std::vector<glm::uvec4>  joints;
   std::vector<glm::vec4>   weights;
   // DAZ's skinning (daz-viewer docs/gpu-figures-plan.md F3): influences five to eight (empty: none),

@@ -103,6 +103,7 @@ struct Effective
   bool                 doubleSided = false;
   std::optional<float> normalStrength, bumpStrength;  // set when the surface has such a map
   std::optional<float> microDetail;                   // set when the surface has skin's micro-relief
+  std::optional<float> sweat;                         // set when the surface can take sweat
   float                specular = 0, clearcoat = 0, clearcoatRoughness = 0.1f;
   Rgb                  emissive{0, 0, 0};
   float                emissiveIntensity = 1;

@@ -533,6 +533,7 @@ PixelOutput fragmentMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, f
   // Evaluate the material at the hit point
   MeshState mesh          = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false, 0.0f);
   mesh.baseColorVertexMul = hit.color;
+  mesh.masks              = hit.masks;
   PbrMaterial pbrMat      = evaluateMaterial(material, mesh, allImages, allSamplers, pushConst.gltfScene->textureInfos);
 
   output.color.xyz = pbrMat.baseColor;
@@ -817,6 +818,7 @@ uint4 fragmentPrepassMain(VertexOutput input, uint primitiveID: SV_PrimitiveID, 
                                primitiveID, normalize(input.worldPos - cameraPos));
     MeshState mesh          = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false, 0.0f);
     mesh.baseColorVertexMul = hit.color;
+    mesh.masks              = hit.masks;
     PbrMaterial pbrMat      = evaluateMaterial(material, mesh, allImages, allSamplers, pushConst.gltfScene->textureInfos);
     if(pbrMat.opacity < material.alphaCutoff)
       discard;
@@ -881,6 +883,7 @@ void fragmentShadowMain(ShadowVertexOutput input, uint primitiveID: SV_Primitive
 
   MeshState mesh          = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false, 0.0f);
   mesh.baseColorVertexMul = hit.color;
+  mesh.masks              = hit.masks;
   PbrMaterial pbrMat      = evaluateMaterial(material, mesh, allImages, allSamplers, pushConst.gltfScene->textureInfos);
 
   if(material.alphaMode == AlphaMode::eAlphaModeMask)

@@ -168,6 +168,21 @@ struct Detail
   bool        operator==(const Detail&) const = default;
 };
 
+// A procedural layer over the surface (procedural.hpp): a film where channel `channel` of the mesh's
+// masks and the amount reach, which tints the base colour and takes the surface's lobes down to
+// `filmRoughness`, and beads where channel `dropChannel` reaches, each a clear dome of coat at `coat`
+// and `dropRoughness`. `coverMap`, tiled, says per bead how early it shows (red; 0 between them);
+// `normalMap`, tiled, is the beads' own relief.
+struct Procedural
+{
+  float       amount = 0;
+  int         channel = 0, dropChannel = 0;
+  Rgb         tint{1, 1, 1};
+  float       filmRoughness = 0.2f, coat = 0, dropRoughness = 0.05f;
+  TextureSlot normalMap, coverMap;
+  bool        operator==(const Procedural&) const = default;
+};
+
 // OmniHair's absorption along a strand, as OmniHairBase.mdl and its brick have it: the colours (x
 // weight x melanin gamma, clamped only after the blend) blended root to tip through bias and gain,
 // turned to absorption, and mixed with the melanin's by melaninMix.
@@ -232,6 +247,7 @@ struct Material
   std::optional<Retroreflection>     retroreflection;
   std::optional<SpecularGlossiness>  specularGlossiness;
   std::optional<Detail>              detail;
+  std::optional<Procedural>          procedural;
   std::optional<Hair>                hair;
   std::optional<Rgba>                dlssNrMask;  // per-material DLSS NR strengths; left out: 1, 1, 1, 1
   bool                               unlit = false;
@@ -309,6 +325,11 @@ void forEachSlot(M& m, Fn&& fn)
     fn(m.detail->normalMap);
     fn(m.detail->weightMap);
     fn(m.detail->roughnessMap);
+  }
+  if(m.procedural)
+  {
+    fn(m.procedural->normalMap);
+    fn(m.procedural->coverMap);
   }
 }
 

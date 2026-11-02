@@ -352,6 +352,23 @@ Material fromGltf(const tinygltf::Material& g)
       read(v, "detailRoughnessTexture", d.roughnessMap);
       m.detail = d;
     }
+    else if(name == "FV_materials_procedural")
+    {
+      Procedural l;
+      read(v, "amount", l.amount);
+      float channel = 0, dropChannel = 0;
+      read(v, "channel", channel);
+      read(v, "dropChannel", dropChannel);
+      l.channel     = int(channel);
+      l.dropChannel = int(dropChannel);
+      read(v, "tint", l.tint);
+      read(v, "filmRoughness", l.filmRoughness);
+      read(v, "coatFactor", l.coat);
+      read(v, "dropRoughness", l.dropRoughness);
+      read(v, "normalTexture", l.normalMap);
+      read(v, "coverTexture", l.coverMap);
+      m.procedural = l;
+    }
     else if(name == "FV_materials_hair")
     {
       Hair h;
@@ -578,6 +595,17 @@ Json materialJson(const Material& m, const char* key)
     if(m.detail->roughnessMap.has())
       e["detailRoughnessTexture"] = info(m.detail->roughnessMap);
     ext["FV_materials_detail"] = e;
+  }
+  if(m.procedural)
+  {
+    const Procedural& l = *m.procedural;
+    Json e = {{"amount", l.amount},       {"channel", l.channel},     {"dropChannel", l.dropChannel},     {"tint", rgbJson(l.tint)},
+              {"filmRoughness", l.filmRoughness}, {"coatFactor", l.coat}, {"dropRoughness", l.dropRoughness}};
+    if(l.normalMap.has())
+      e["normalTexture"] = info(l.normalMap);
+    if(l.coverMap.has())
+      e["coverTexture"] = info(l.coverMap);
+    ext["FV_materials_procedural"] = e;
   }
   if(m.hair)
   {

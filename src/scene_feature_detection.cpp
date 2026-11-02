@@ -53,6 +53,7 @@ constexpr std::array<FeatureName, SceneFeatureSet::kFeatureCount> kFeatureNames{
     {SceneFeatureSet::eSpecularGlossiness, "specularGlossiness"},
     {SceneFeatureSet::eDetail, "detail"},
     {SceneFeatureSet::eHair, "hair"},
+    {SceneFeatureSet::eProcedural, "procedural"},
     {SceneFeatureSet::eTextureTransform, "textureTransform"},
     {SceneFeatureSet::eDlssGuide, "dlssGuide"},
 }};
@@ -189,6 +190,13 @@ SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m)
     set.enable(SceneFeatureSet::eDetail);
   if(m.hair)
     set.enable(SceneFeatureSet::eHair);
+  // the layer's film is a coat, over lobes it turns down
+  if(m.procedural)
+  {
+    set.enable(SceneFeatureSet::eProcedural);
+    set.enable(SceneFeatureSet::eClearcoat);
+    set.enable(SceneFeatureSet::eSpecular);
+  }
 
   if(materialHasTextureTransform(m))
     set.enable(SceneFeatureSet::eTextureTransform);

@@ -28,6 +28,7 @@ struct HitState
   float3 pos;                  // World-space hit position
   float3 nrm;                  // Shading normal (interpolated and transformed)
   float4 color;                // Vertex color
+  float4 masks;                // Where procedural layers land (FV_materials_procedural)
   float3 geonrm;               // Geometric normal (face normal, for back-face detection)
   float3 shadowPos;            // Shadow position
   float3 shadowPosOther = float3(0.0);  // The same for a ray leaving through the other side: a walk's exit, met from inside
@@ -186,6 +187,7 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
 
   // Color
   hit.color = getInterpolatedVertexColor(renderPrim, triangleIndex, barycentrics);
+  hit.masks = getInterpolatedVertexMask(renderPrim, triangleIndex, barycentrics);
 
   // Tangent - Bitangent
   float4 tng[3];

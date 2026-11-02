@@ -70,6 +70,7 @@ struct SceneFeatureSet
     eSpecularGlossiness,
     eDetail,
     eHair,
+    eProcedural,
     eTextureTransform,
 
     // Shader-side guide-buffer code (GuideScratch / dlssTraceClearGlass / etc.).

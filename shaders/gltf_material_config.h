@@ -80,6 +80,9 @@ otherwise the material buffer layout will disagree.
 #ifndef MAT_EXT_HAIR
 #define MAT_EXT_HAIR MAT_EXT_VAL  // FV_materials_hair (Figure Viewer: OmniHair ribbon fibre)
 #endif
+#ifndef MAT_EXT_PROCEDURAL
+#define MAT_EXT_PROCEDURAL MAT_EXT_VAL  // FV_materials_procedural (Figure Viewer: sweat and the like over a surface)
+#endif
 #ifndef MAT_EXT_TEXTURE_TRANSFORM
 #define MAT_EXT_TEXTURE_TRANSFORM                                                                                      \
   MAT_EXT_VAL  // KHR_texture_transform (adds float3x2 to every GltfTextureInfo, ~24B/slot)

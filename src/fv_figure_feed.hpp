@@ -153,6 +153,7 @@ private:
     std::weak_ptr<mesh::BuiltMesh>              geo;
     bool                                        thin  = false;  // MeshRecord::thinVertices
     bool                                        emits = false;  // one of its groups gives light
+    bool                                        masks = false;  // a procedural layer has been on it: it has their masks
     std::map<std::string, std::vector<int32_t>> hidden;  // the geometry's hidden polygons
     bool                                        flipV = false;
     std::vector<bool>                           tangentGroups;  // the drawn groups whose materials need tangents
@@ -203,6 +204,7 @@ private:
   rs::MaterialId   materialFor(int material);
   std::vector<bool>      tangentGroups(const std::vector<int>& materials) const;
   bool                   anyEmits(const std::vector<int>& materials) const;
+  bool                   anyProcedural(const std::vector<int>& materials) const;
   // Submesh::mergedInto for each drawn group: a group that follows another in the indices, both
   // drawing something, with a material the same as that group's in all but its name, is drawn and
   // traced with it (one prim, one BLAS)
