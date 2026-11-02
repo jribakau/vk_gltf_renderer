@@ -44,14 +44,14 @@ struct MaterialBits
 {
   uint32_t instanceFlags = 0;
   uint8_t  instanceMask  = 0;
-  // the raster buckets' key (Scene::computeMaterialBucketKey): no texel is part see-through (alpha mode
-  // OPAQUE, or MASK: the prepass tests the cutout and its depth is the main pass's test), double-sided,
-  // transmissive
+  // what sorted a node into the rasterizer's draw lists: no texel is part see-through (alpha mode
+  // OPAQUE, or MASK), double-sided, transmissive. TODO: only Residency::buildDrawLists reads these,
+  // and nothing reads its lists since the rasterizer went (see SceneGpuView::drawList)
   bool alphaSolid   = false;
   bool doubleSided  = false;
   bool transmission = false;
 
-  // the raster lists, as Scene::getShadedNodes sorts render nodes
+  // the draw lists (Residency::buildDrawLists)
   bool solid() const { return alphaSolid && !doubleSided && !transmission; }
   bool solidDoubleSided() const { return alphaSolid && doubleSided; }
   bool blend() const { return !alphaSolid || transmission; }

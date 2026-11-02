@@ -105,6 +105,10 @@ public:
   // Render node ids are below this; 0 without a scene
   virtual uint32_t renderNodeCapacity() const = 0;
 
+  // TODO: the rasterizer was the only reader of the draw lists, draw records, world centres,
+  // transformsRevision() and hasTransmission(); since it went (2026-11-02) nothing calls them.
+  // Remove them here, in RetainedSceneVk and in rs::Residency (buildDrawLists, MaterialBits'
+  // list predicates).
   // The render nodes of a raster list; its membership changes with drawListsRevision()
   virtual const std::vector<uint32_t>& drawList(DrawList list) const = 0;
   virtual uint64_t                     drawListsRevision() const     = 0;

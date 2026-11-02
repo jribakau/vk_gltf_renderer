@@ -6,14 +6,15 @@
 
 ## Backends
 
-- **DLSS** — Ray Reconstruction (RR) and Super Resolution (SR): `src/dlss.{cpp,hpp}` (app adapter,
-  jitter, guide buffers, UI) over `src/dlss_wrapper.{cpp,hpp}` (project-independent NGX/Vulkan wrapper).
+- **DLSS** — Ray Reconstruction (RR): `src/dlss.{cpp,hpp}` (app adapter, jitter, guide buffers, UI)
+  over `src/dlss_wrapper.{cpp,hpp}` (project-independent NGX/Vulkan wrapper). Its Super Resolution
+  (SR) kind served the rasterizer, removed on 2026-11-02; nothing constructs it now.
+  <!-- TODO: remove Dlss::Kind::SR and its inner GBuffer (initSr, SrSlot, dlssQuality) from src/dlss.*. -->
 - **OptiX AI Denoiser** — `src/optix_denoiser.{cpp,hpp}` (+ CUDA interop in `src/vk_cuda*`).
 - **OIDN AI Denoiser** — `src/oidn_denoiser.{cpp,hpp}` over [vk_oidn](https://github.com/nvpro-samples/vk_oidn),
   which runs the Intel Open Image Denoise networks with Vulkan compute shaders. CMake downloads the
   prebuilt SDK package of the release pinned by `VK_OIDN_VERSION`; nothing of vk_oidn is built here.
-- The **path tracer** (`renderer_pathtracer`) is the reference producer of the guide buffers; the
-  **rasterizer** produces a subset for DLSS-SR.
+- The **path tracer** (`renderer_pathtracer`) produces the guide buffers.
 
 ## OptiX blend with the accumulation
 
@@ -43,8 +44,7 @@ and creates the feature at that same mode. **Quality**, the default, traces abou
 width and height, so the path tracer traces fewer pixels with DLSS-RR on than off; that usually
 more than pays for the DLSS pass itself. **DLAA** traces at native resolution.
 
-The DLSS-SR quality setting (`--dlssQuality`) is unrelated: it only sizes the rasterizer's Super
-Resolution input. The DLSS-RR panel shows the resolution actually in use
+The DLSS-RR panel shows the resolution actually in use
 ("Input resolution"), and each resize is logged as `DLSS-RR: input WxH for output WxH`. Changing
 the mode from any source (the app, command line, MCP) recreates the feature and
 resets its temporal history; `Dlss::needsRecreate` compares the setting with the mode the feature
@@ -68,7 +68,6 @@ the enum for the authoritative list and formats):
 | `eDlssDepth` | NDC depth (`z/w`, `1.0` on miss) | `pInDepth` |
 | `eDlssSpecularHitDist` | Specular hit distance, captured at the first reflection bounce | `pInSpecularHitDistance` (optional) |
 
-- **DLSS-SR** uses only color + depth + motion — the material guides above are RR-only.
 - **OptiX and OIDN** share one shader path for their guides: `eDenoiserAlbedo` and
   `eDenoiserNormal` (world-space normal), written when `ePtDenoiserGuides` is set. The shader does
   not know which denoiser reads them: each owns its own two images, and the path tracer binds those
@@ -206,9 +205,7 @@ added. The live buffer is not swapped for a second one: the BLAS refit reuses bu
 the fixed vertex address, and the shaders read positions through the scene description's vertex
 pointers.
 
-A dolly or orbit of a posed figure is camera motion and was already correct. The rasterizer lacks
-this and also lacks the instance vectors the path tracer has: `vertexMain` in
-`shaders/gltf_raster.slang` multiplies the current position by `prevMVP`.
+A dolly or orbit of a posed figure is camera motion and was already correct.
 
 ## Clear glass: primary surface replacement
 
@@ -305,8 +302,7 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
 
 ## Jitter & reset
 
-- Halton jitter is applied as a ray subpixel offset (path tracer) or clip-space shift (raster),
-  never baked into `viewProjMatrix` / `prevMVP`; NGX de-jitters via `InJitterOffset` (negated in
+- Halton jitter is applied as a ray subpixel offset, never baked into `viewProjMatrix` / `prevMVP`; NGX de-jitters via `InJitterOffset` (negated in
   `src/dlss_wrapper.cpp`).
 - Temporal history is **intentionally not reset on camera motion.** `InReset` is only for
   discontinuities (resize, preset/quality change, re-enable, and a material/light property write via
@@ -345,8 +341,7 @@ In the DLSS panel, expand **Developer Guide Buffers** and select the **Motion** 
 ## DLSS-NR (Neural Rendering)
 
 DLSS-NR (`NVSDK_NGX_Feature_DLSSNR`) is a **display-resolution image enhancer** that runs
-**after** DLSS-RR or DLSS-SR and **after tonemapping**. It is orthogonal to RR/SR: any instance
-(path-tracer RR or rasterizer SR) can optionally run NR on top. Gated by the `USE_DLSSNR` CMake
+**after** DLSS-RR and **after tonemapping**, optionally, on top of the path tracer's RR. Gated by the `USE_DLSSNR` CMake
 option and the `#if defined(USE_DLSSNR)` guards in `src/dlss.{cpp,hpp}`.
 
 ### Why post-tonemap?
@@ -356,15 +351,15 @@ NR expects **LDR input** (0–1 range). Running it on the pre-tonemap HDR image
 values blow out the internal normalisation. The correct pipeline is:
 
 ```text
-path tracer / rasterizer
-  → DLSS-RR or DLSS-SR evaluate    (→ eImgRendered)
+path tracer
+  → DLSS-RR evaluate                (→ eImgRendered)
   → tonemap()                       (→ eImgTonemapped, R8G8B8A8_UNORM)
   → Dlss::evaluateNr()              (reads & writes eImgTonemapped)
 ```
 
 `evaluateNr()` is called from `GltfRenderer::onRender` (`src/renderer.cpp`) immediately after
-`tonemap()`. Call sites: the path tracer and rasterizer both call `setNrImage(eImgTonemapped,…)`
-at resize time (`renderer_pathtracer.cpp`, `renderer_rasterizer.cpp`).
+`tonemap()`. The path tracer calls `setNrImage(eImgTonemapped,…)` at resize time
+(`renderer_pathtracer.cpp`).
 
 ### NR GBuffer
 
@@ -380,14 +375,11 @@ Without depth and motion, NR re-computes local structure detection independently
 producing a characteristic **flicker** between two local-structure states. `evaluateNr()` provides
 `pInDepth` and `pInMVec` so NGX can stabilise across frames.
 
-| Kind | Depth source | Motion source |
-|---|---|---|
-| RR (path tracer) | `eDlssDepth` colour attachment, R16_SFLOAT linearised ViewZ | `eDlssMotion` colour attachment, R16G16_SFLOAT |
-| SR (rasterizer) | hardware depth attachment (reversed-Z), `VK_IMAGE_ASPECT_DEPTH_BIT` | `getSrImage(SrSlot::eMotion)` |
-
-MV are in render-pixel space; NR operates at display resolution. `InMVecScaleX/Y` is set to
-`displayWidth / renderWidth` (and `…Y`). `InDepthInverted = 0` for RR (linearised), `1` for SR
-(reversed-Z).
+Depth is the `eDlssDepth` guide (NDC `z/w`, see the guide table) and motion the `eDlssMotion`
+one, both colour attachments of the RR inner GBuffer. MV are in render-pixel space; NR operates at
+display resolution. `InMVecScaleX/Y` is set to `displayWidth / renderWidth` (and `…Y`).
+`InDepthInverted = 0`: the depth is not reversed-Z. (`evaluateNr` still has a branch for the SR
+kind's reversed-Z hardware depth.)
 
 ### NR control parameters
 
@@ -441,15 +433,11 @@ This is exposed as the `EXT_DLSS_NR` glTF material extension. The full pipeline:
 
 4. **NGX wiring** — `Dlss::evaluateNr()` reads `eNrMask` directly from `m_innerGBuffer` (Kind::RR
    only) and passes it as `pInControlMask` with `InControlMaskSubrectSize` at render resolution.
-   When a mask is present, `InUseAutoMask = 0`; when absent (Kind::SR or path tracer not active),
-   it falls back to the `useAutoMask` setting.
+   When a mask is present, `InUseAutoMask = 0`; when absent (path tracer not active), it falls
+   back to the `useAutoMask` setting.
 
 5. **glTF support** — the extension's data goes through the material payload
    (`figure/materials/material_gltf.cpp`).
-
-> **Rasterizer note:** The rasterizer does not write `eNrMask` (no 4th framebuffer attachment in
-> the SR pass). For Kind::SR, `pInControlMask = nullptr` and `InUseAutoMask` follows the global
-> `useAutoMask` setting. Per-material masking from `EXT_DLSS_NR` is a path-tracer-only feature.
 
 ### Adding a new NR parameter
 

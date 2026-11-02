@@ -71,7 +71,7 @@ inline constexpr VkFormat kRrInnerFormats[] = {
     VK_FORMAT_R16G16B16A16_SFLOAT,  // #DLSS - SpecAlbedo           : eDlssSpecAlbedo
     VK_FORMAT_R16G16B16A16_SFLOAT,  // #DLSS - Normal / Roughness   : eDlssNormalRoughness
     VK_FORMAT_R16G16_SFLOAT,        // #DLSS - Motion vectors       : eDlssMotion
-    VK_FORMAT_R16_SFLOAT,           // #DLSS - ViewZ                : eDlssDepth
+    VK_FORMAT_R16_SFLOAT,           // #DLSS - NDC depth (z/w)      : eDlssDepth
     VK_FORMAT_R16_SFLOAT,           // #DLSS - Specular Hit Dist    : eDlssSpecularHitDist
     VK_FORMAT_R16G16B16A16_SFLOAT,  // #DLSS-NR - Per-material mask : eNrMask
     VK_FORMAT_R16_SFLOAT,           // #DLSS - Responsivity mask    : eDlssResponsivity
@@ -501,7 +501,7 @@ void Dlss::evaluateNr(VkCommandBuffer cmd)
 
   // Depth and motion vectors — needed for NR to temporally stabilise the local structure effect.
   // Kind::RR: both are colour attachments in the inner GBuffer written by the path tracer
-  //   (linearised ViewZ R16_SFLOAT; screen-space motion R16G16_SFLOAT) at render resolution.
+  //   (NDC depth z/w R16_SFLOAT; screen-space motion R16G16_SFLOAT) at render resolution.
   //   MV values are in render-pixel space; scale to display-pixel space so NR tracks correctly.
   NVSDK_NGX_Resource_VK  depthRes{}, motionRes{};
   NVSDK_NGX_Resource_VK* pDepth   = nullptr;
@@ -517,7 +517,7 @@ void Dlss::evaluateNr(VkCommandBuffer cmd)
 
   if(m_kind == Kind::RR)
   {
-    // Linearised ViewZ (R16_SFLOAT) and motion (R16G16_SFLOAT) are colour attachments in inner GBuffer.
+    // NDC depth (R16_SFLOAT) and motion (R16G16_SFLOAT) are colour attachments in inner GBuffer.
     const VkExtent2D rs        = getRenderSize();
     const auto       depthIdx  = static_cast<uint32_t>(shaderio::OutputImage::eDlssDepth);
     const auto       motionIdx = static_cast<uint32_t>(shaderio::OutputImage::eDlssMotion);
