@@ -43,8 +43,8 @@ namespace {
 // (an image of the frame, answered once it is on disk), and the event stream's "synced" after the
 // snapshots it starts or starts over with. 17: the path tracer only: render.status has no `rtx`,
 // the lighting has no sun.shadows or shadow section (the raster view's shadow map; still taken from
-// a kept scene), and render.mode takes "raster" as the path tracer.
-constexpr int kProtocolVersion = 17;
+// a kept scene). 18: render.mode refuses "raster", and a skin it already has changes nothing.
+constexpr int kProtocolVersion = 18;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -2578,16 +2578,16 @@ TEST(FvHost, CooksOfAFigureThatLeftTheSceneKeepNoStillWaiting)
   cooker.open();
 }
 
-// The renderer path traces only: an app before protocol 17 still asks for its raster view, and gets
-// the path tracer with the skin it asked for
-TEST(FvHost, ARasterModeIsThePathTracer)
+// The renderer path traces only: render.mode sets the skin, and there is no raster view to ask for
+TEST(FvHost, TheRendererPathTracesOnly)
 {
-  HostRig    rig;
-  const Json answer = rig.cmd("render.mode", {{"mode", "raster"}, {"skin", "thin"}});
+  HostRig rig;
+  EXPECT_EQ(rig.topic("render").value("mode", ""), "rtx");
+  const Json answer = rig.cmd("render.mode", {{"skin", "thin"}});
   ASSERT_TRUE(answer.value("ok", false)) << answer.dump();
   EXPECT_EQ(answer["result"].value("mode", ""), "rtx");
-  EXPECT_EQ(rig.topic("render").value("mode", ""), "rtx");
-  EXPECT_FALSE(rig.cmd("render.mode", {{"mode", "wireframe"}}).value("ok", false));
+  EXPECT_TRUE(rig.cmd("render.mode", {{"mode", "rtx"}, {"skin", "thin"}}).value("ok", false));
+  EXPECT_FALSE(rig.cmd("render.mode", {{"mode", "raster"}}).value("ok", false));
 }
 
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr

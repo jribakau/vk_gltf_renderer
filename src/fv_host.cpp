@@ -250,12 +250,10 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return Json{{"ok", true}};
     }); });
   });
-  // The renderer path traces, whatever the mode: an app before protocol 17, which still had a raster
-  // view, sends "raster" too.
+  // The skin the path tracer renders; `mode`, when sent, is "rtx": the renderer path traces only
   cmds.add("render.mode", [impl](const Json& args) {
-    const std::string mode = args.value("mode", std::string("rtx"));
-    if(mode != "raster" && mode != "rtx")
-      throw std::runtime_error("mode is raster or rtx");
+    if(args.value("mode", std::string("rtx")) != "rtx")
+      throw std::runtime_error("mode is rtx: the renderer path traces only");
     // skin: a volume of measured human skin (the default), the file's Iray volume, or thin-walled
     // scattering at the surface
     const std::string skin = args.value("skin", std::string("measured"));
@@ -265,7 +263,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                                       skin == "measured" ? fv::mat::SkinMode::eMeasured :
                                                            fv::mat::SkinMode::eVolume;
     return impl->onApp([impl, rtxSkin] {
-      impl->skinMode = rtxSkin;
+      // the app sends it at every start and scene open: the skin it has already lowers nothing again
+      if(impl->skinMode.exchange(rtxSkin) == rtxSkin)
+        return Json{{"mode", "rtx"}};
       for(const auto& p : impl->props)
         if(p->figure && p->materials)
         {
@@ -277,7 +277,6 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
           }
           p->materials->setSkinMode(impl->skinMode);
         }
-      impl->protocol->events().snapshot("render", {{"mode", "rtx"}});
       return Json{{"mode", "rtx"}};
     });
   });
@@ -524,7 +523,7 @@ void FvHost::onAttach(nvapp::Application* app)
 {
   m_impl->app = app;
   textureCalls().resume();
-  // the app's RTX settings start on it (an app before protocol 17 also had a "raster" view)
+  // the renderer draws from now on: the app sends its RTX settings when this comes
   m_impl->protocol->events().snapshot("render", {{"mode", "rtx"}});
   m_impl->publishScene();
   m_impl->publishHistory();

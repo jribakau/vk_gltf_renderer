@@ -62,8 +62,8 @@
 //   morph.set       {prop, values: {name: value}, gesture?}   coalesced, one setMany per frame
 //   morph.reset     {prop}                                    every dial back to where its file rests it
 //   render.mode     {mode?: "rtx", skin?: "measured" | "volume" | "thin"}   the skin the path tracer
-//                                                renders ("raster", from an app before protocol 17,
-//                                                path traces as well)
+//                                                renders; the topic `render` {mode: "rtx"} comes once
+//                                                the renderer draws
 //   render.status   {}  -> {refining, still, converged, complete, samples, maxSamples, driverCacheFull,
 //                                                texturesCooking, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame);
