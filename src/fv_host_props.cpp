@@ -409,7 +409,8 @@ void FvHost::Impl::drawHelpers()
   if(view && view->helpersShown() && manip)
   {
     const glm::vec2 size(renderer->renderSize().width, renderer->renderSize().height);
-    const float     aspect   = size.y > 0 ? size.x / size.y : 1.5f;
+    // a camera's marker has the shape of the frame the view is composed for, else the view's own
+    const float aspect = view->frameAspect() > 0 ? float(view->frameAspect()) : size.y > 0 ? size.x / size.y : 1.5f;
     const std::string selected = view->selectedProp();
     // markers keep their size on screen: scaled with the distance from the eye
     const glm::vec3 eye = glm::vec3(manip->getEye());

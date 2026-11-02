@@ -36,17 +36,25 @@
 #include "host_renderer.hpp"
 #include "shaders/shaderio.h"
 
+double fovForFrame(double mm, double viewAspect, double frameAspect)
+{
+  mm = std::max(mm, 1.0);
+  // tangents of the half fields: the long side's is 17.5 mm over the focal length
+  const auto halfY = [&](double aspect) { return 17.5 / mm / std::max(aspect, 1.0); };
+  double     tanY  = halfY(viewAspect);
+  if(frameAspect > 0 && viewAspect > 0)
+  {
+    const double frameY = halfY(frameAspect), frameX = frameY * frameAspect;
+    tanY                = std::max(frameY, frameX / viewAspect) * (1 + kFrameMargin);
+  }
+  return 2.0 * std::atan(tanY) * (180.0 / 3.14159265358979323846);
+}
+
 namespace {
 
 // Windows' default double-click time: a second click sooner, in the same place, is a double-click's
 constexpr auto kDoubleClickTime = std::chrono::milliseconds(500);
 
-double fovForFocalLength(double mm, double aspect)
-{
-  mm                = std::max(mm, 1.0);
-  const double film = 35.0 / std::max(aspect, 1.0);
-  return 2.0 * std::atan(film / 2.0 / mm) * (180.0 / 3.14159265358979323846);
-}
 
 // Camera direction from the target. Figures face +Z, so front looks along +Z. A hair off the pole
 // keeps a top or bottom view from looking straight along the up axis.
@@ -237,6 +245,15 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       }
       if(args.contains("helpers"))
         m_helpers = args["helpers"].get<bool>();
+      if(args.contains("frameAspect"))
+      {
+        const double aspect = args["frameAspect"].is_null() ? 0.0 : args["frameAspect"].get<double>();
+        if(!(aspect >= 0) || aspect > 10)
+          throw std::runtime_error("frameAspect is a width over height up to 10, or 0 for none");
+        m_frameAspect = aspect;
+        m_aspect      = -1;
+        applyLens();
+      }
       if(args.contains("transform"))
       {
         const std::string t = args["transform"].get<std::string>();
@@ -421,7 +438,7 @@ void FvView::applyLens()
     return;
   // the renderer sets up its own camera for a loaded scene, so check the camera's fov, not just the aspect
   const double aspect = double(size.x) / double(size.y);
-  const double fov    = fovForFocalLength(m_lens.focalLength, aspect);
+  const double fov    = fovForFrame(m_lens.focalLength, aspect, m_frameAspect);
   if(std::abs(aspect - m_aspect) < 1e-4 && std::abs(manip->getFov() - fov) < 1e-4)
     return;
   manip->setFov(fov);

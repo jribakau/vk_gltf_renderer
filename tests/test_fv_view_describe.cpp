@@ -20,6 +20,7 @@
 // A prop's "nodes/<prop>" topic and its map into the renderer's scene (FvView::describeFigure,
 // describeModel): what the app's scene tree lists.
 
+#include <cmath>
 #include <gtest/gtest.h>
 
 #include <memory>
@@ -100,4 +101,39 @@ TEST(FvViewDescribe, AModelsNodesAreItsFilesWithNamesFromThere)
   FvView::PropNodes none;
   EXPECT_TRUE(FvView::describeModel(none, model, {})["nodes"].empty());
   EXPECT_TRUE(none.entityOf.empty());
+}
+
+// ---- the frame guide's field of view (fovForFrame), which the app draws the frame against (src/lib/frame.ts)
+
+double tanHalf(double fovDeg)
+{
+  return std::tan(fovDeg * 3.14159265358979323846 / 360.0);
+}
+
+TEST(FvViewFrame, NoFrameIsTheLensAcrossTheViewsLongSide)
+{
+  // 50 mm on a landscape view: 35 mm across, so 35 / (16/9) up
+  EXPECT_NEAR(tanHalf(fovForFrame(50, 16.0 / 9)), 17.5 / 50 / (16.0 / 9), 1e-9);
+  // a portrait view: 35 mm up
+  EXPECT_NEAR(tanHalf(fovForFrame(50, 9.0 / 16)), 17.5 / 50, 1e-9);
+}
+
+TEST(FvViewFrame, AFrameOfTheViewsShapeIsHeldWithTheMarginAround)
+{
+  EXPECT_NEAR(tanHalf(fovForFrame(50, 16.0 / 9, 16.0 / 9)), 17.5 / 50 / (16.0 / 9) * (1 + kFrameMargin), 1e-9);
+}
+
+TEST(FvViewFrame, APortraitFrameInAWideViewWidensItToHoldTheFramesHeight)
+{
+  // a 4:5 frame's 35 mm is up: the view must reach that, and its margin, vertically
+  const double tanY = tanHalf(fovForFrame(50, 16.0 / 9, 4.0 / 5));
+  EXPECT_NEAR(tanY, 17.5 / 50 * (1 + kFrameMargin), 1e-9);
+  // and the frame's width fits across: its half width over the view's
+  EXPECT_LT(17.5 / 50 * 0.8, tanY * 16.0 / 9);
+}
+
+TEST(FvViewFrame, AFrameWiderThanTheViewIsHeldByItsWidth)
+{
+  const double tanY = tanHalf(fovForFrame(50, 4.0 / 3, 2.39));
+  EXPECT_NEAR(tanY * 4.0 / 3, 17.5 / 50 * (1 + kFrameMargin), 1e-9);
 }

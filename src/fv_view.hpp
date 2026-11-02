@@ -28,11 +28,13 @@
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
-//   view.set      {display, grid, gizmo, pick, transform, helpers}  display: shaded, clay, wireframe, normals;
+//   view.set      {display, grid, gizmo, pick, transform, helpers, frameAspect}  display: shaded, clay, wireframe, normals;
 //                                               pick: "object" (the default: a click selects the prop),
 //                                               "mesh" (the node hit) or "bone" (the posed bone nearest);
 //                                               transform: the gizmo's "move", "rotate" or "scale";
-//                                               helpers: whether camera and light markers show
+//                                               helpers: whether camera and light markers show;
+//                                               frameAspect: a frame's width over height the view is
+//                                               widened to hold, with a margin (0: none; fovForFrame)
 //
 // Topics: "selection" ({prop, node, name, mesh, kind, bone, surface}: `node` is null when the prop itself
 // is selected; `bone`, the pose bone id, when a posable bone is; `surface`, after a click on the prop,
@@ -55,6 +57,15 @@
 #include "fv_scene_map.hpp"
 
 class HostRenderer;
+
+// How far a frame guide leaves the frame from the view's edges, as a share of the frame where it is
+// tightest. The app's FRAME_MARGIN (src/lib/frame.ts) is the same number, which it draws the frame with.
+constexpr double kFrameMargin = 0.12;
+
+// The vertical field of view, in degrees, of a lens of `mm` whose 35 mm spans the long side of a view
+// of `viewAspect` (width over height). With a `frameAspect`, the field is widened so that a frame of that
+// shape, its long side at 35 mm, fits in the view with kFrameMargin to spare.
+double fovForFrame(double mm, double viewAspect, double frameAspect = 0);
 namespace tinygltf {
 class Model;
 }
@@ -115,6 +126,8 @@ public:
   // Whether the host draws its camera and light markers, and which prop's marker is at a pixel
   // ("" for none), asked before a click's ray pick.
   bool helpersShown() const { return m_helpers; }
+  // The frame the view is composed for (view.set's frameAspect), 0 for none: camera markers take its shape.
+  double frameAspect() const { return m_frameAspect; }
   void onHelperPick(std::function<std::string(const glm::vec2& px)> f) { m_helperPick = std::move(f); }
 
   // The lens of the view in use: the free view's, or the camera prop's it looks through.
@@ -168,6 +181,7 @@ private:
   std::string                                   m_pick      = "object";
   std::string                                   m_transform = "move";
   bool                                          m_helpers   = true;
+  double                                        m_frameAspect = 0;
   std::function<std::string(const glm::vec2&)>  m_helperPick;
 
   fv::Json                              m_camera;
