@@ -250,21 +250,22 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return Json{{"ok", true}};
     }); });
   });
+  // The renderer path traces, whatever the mode: an app before protocol 17, which still had a raster
+  // view, sends "raster" too.
   cmds.add("render.mode", [impl](const Json& args) {
-    const std::string mode = args.at("mode").get<std::string>();
+    const std::string mode = args.value("mode", std::string("rtx"));
     if(mode != "raster" && mode != "rtx")
       throw std::runtime_error("mode is raster or rtx");
-    // RTX skin: a volume of measured human skin (the default), the file's Iray volume, or
-    // thin-walled scattering at the surface
+    // skin: a volume of measured human skin (the default), the file's Iray volume, or thin-walled
+    // scattering at the surface
     const std::string skin = args.value("skin", std::string("measured"));
     if(skin != "volume" && skin != "thin" && skin != "measured")
       throw std::runtime_error("skin is volume, thin or measured");
     const fv::mat::SkinMode rtxSkin = skin == "thin"       ? fv::mat::SkinMode::eThin :
                                       skin == "measured" ? fv::mat::SkinMode::eMeasured :
                                                            fv::mat::SkinMode::eVolume;
-    return impl->onApp([impl, mode, rtxSkin] {
-      impl->renderer->setRenderSystem(mode == "rtx" ? RenderingMode::ePathtracer : RenderingMode::eRasterizer);
-      impl->skinMode = mode == "rtx" ? rtxSkin : fv::mat::SkinMode::eRaster;
+    return impl->onApp([impl, rtxSkin] {
+      impl->skinMode = rtxSkin;
       for(const auto& p : impl->props)
         if(p->figure && p->materials)
         {
@@ -276,8 +277,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
           }
           p->materials->setSkinMode(impl->skinMode);
         }
-      impl->protocol->events().snapshot("render", {{"mode", mode}});
-      return Json{{"mode", mode}};
+      impl->protocol->events().snapshot("render", {{"mode", "rtx"}});
+      return Json{{"mode", "rtx"}};
     });
   });
   // whether the renderer is still refining a still, for an image export that waits for it
@@ -291,7 +292,6 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                   // samples per pixel so far, and the cap: the viewport's badge counts them
                   {"samples", impl->renderer->accumulatedSamples()},
                   {"maxSamples", impl->renderer->sampleCap()},
-                  {"rtx", impl->renderer->renderSystem() == RenderingMode::ePathtracer},
                   // the driver's shader cache is full, and every start compiles the path tracer again
                   {"driverCacheFull", impl->renderer->driverCacheFull()},
                   // textures the scene took that are still cooking: the still waits for them
@@ -341,8 +341,6 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     std::error_code ignored;
     std::filesystem::remove(path, ignored);  // what is found afterwards is this capture's
     const Json answer = impl->onApp([impl, path] {
-      if(impl->renderer->renderSystem() != RenderingMode::ePathtracer)
-        throw std::runtime_error("render.capture needs the path tracer");
       impl->renderer->saveImage(path);
       return Json{{"samples", impl->renderer->accumulatedSamples()}, {"converged", impl->renderer->isStillConverged()}};
     });
@@ -526,8 +524,8 @@ void FvHost::onAttach(nvapp::Application* app)
 {
   m_impl->app = app;
   textureCalls().resume();
-  m_impl->protocol->events().snapshot(
-      "render", {{"mode", m_impl->renderer->renderSystem() == RenderingMode::ePathtracer ? "rtx" : "raster"}});
+  // the app's RTX settings start on it (an app before protocol 17 also had a "raster" view)
+  m_impl->protocol->events().snapshot("render", {{"mode", "rtx"}});
   m_impl->publishScene();
   m_impl->publishHistory();
 }

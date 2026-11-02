@@ -48,17 +48,9 @@ NAMESPACE_SHADERIO_BEGIN()
 #define INSTANCE_MASK_OTHER 0x02
 
 
-// Indices into `texturesCube[]` (eTexturesCube binding).
-#define HDR_DIFFUSE_INDEX 0  // Lambert-prefiltered HDR environment cubemap
-#define HDR_GLOSSY_INDEX 1   // GGX-prefiltered HDR environment cubemap
-
-// Indices into `texturesHdr[]` (eTexturesHdr binding). Grouped here because they are all 2D
-// Sampler2D slots consumed together at shade time for IBL + KHR_materials_transmission.
+// Indices into `texturesHdr[]` (eTexturesHdr binding).
 #define HDR_IMAGE_INDEX 0    // Lat-long HDR environment image
-#define HDR_LUT_INDEX 1      // GGX split-sum BRDF LUT (hdr_integrate_brdf)
-#define HDR_SHEEN_INDEX 2    // Charlie sheen directional-albedo LUT (hdr_charlie_brdf_lut)
-#define HDR_OPAQUE_INDEX 3   // Raster-only opaque-pass color capture (screen-space transmission)
-#define HDR_TEXTURE_COUNT 4  // Count for descriptor binding
+#define HDR_TEXTURE_COUNT 1  // Count for descriptor binding
 
 // Environment types.
 //
@@ -102,14 +94,9 @@ enum BindingPoints
   eOutImages,     // Output image (RGBA32); eSelectImage slot = ObjectID in .r (R32_SFLOAT)
   eOutDepth,      // Scene depth output (D32_SFLOAT as r32f storage image)
   eTextures,      // glTF material images (bindless SAMPLED_IMAGE array; indexed by GltfTextureInfo.index)
-  eTexturesCube,  // Prefiltered HDR env cubemaps (HDR_DIFFUSE_INDEX, HDR_GLOSSY_INDEX)
-  eTexturesHdr,   // 2D IBL/transmission textures (HDR_{IMAGE,LUT,SHEEN,OPAQUE}_INDEX)
+  eTexturesHdr,   // 2D environment textures (HDR_IMAGE_INDEX)
   eSamplers,      // glTF samplers (bindless SAMPLER array; indexed by GltfTextureInfo.samplerIndex, slot 0 = default)
 };
-
-// Fixed resolution of the opaque-pass color capture used for screen-space transmission.
-// Matches the Khronos reference (1024x1024). Square so the LOD = log2(size) is unambiguous.
-#define OPAQUE_COLOR_SIZE 1024
 
 enum OptixBindingPoints
 {
@@ -283,23 +270,8 @@ struct SceneFrameInfo
   uint envSamplingGridWidth  = 1;
   uint envSamplingGridHeight = 1;
 
-  // The rasterizer's sun shadow map (Rasterizer::renderShadowMap). `shadowLightIndex` is the index
-  // in the raster light loop -- numLights for the renderer's own sun -- or -1 when nothing casts.
-  // The map is an orthographic depth image along that light: `shadowViewProj` takes world space to
-  // its clip space, `shadowTexelWorld` is one texel in metres and `shadowDepthRange` the metres its
-  // [0, 1] depth spans. The path tracer ignores all of it. (Appended, per the note above.)
-  float4x4 shadowViewProj;
-  int      shadowLightIndex       = -1;
-  float    shadowTexelWorld       = 0.0F;
-  float    shadowDepthRange       = 1.0F;
-  float    shadowBias             = 0.0F;  // metres along the light
-  float    shadowNormalBias       = 0.0F;  // metres along the receiver's normal
-  float    shadowMinRadius        = 0.0F;  // metres: the smallest filter radius (and the whole of it without contact hardening)
-  int      shadowContactHardening = 1;     // 1: the penumbra grows with the blocker distance (PCSS)
-  int      shadowMapSize          = 0;
-
   // The ground (infinite plane) fades out to nothing over the outer part of a disk around the
-  // scene, as both renderers draw it. Radius 0: no fade.
+  // scene. Radius 0: no fade.
   float groundFadeCenterX = 0.0F;
   float groundFadeCenterZ = 0.0F;
   float groundFadeRadius  = 0.0F;
@@ -401,80 +373,6 @@ struct OptixCopyPushConstant
 {
   uint2           imageSize;  // Input (render) size
   SceneFrameInfo* frameInfo;  // View matrix: the guide normal is converted to camera space
-};
-
-// Push constant
-// Blended surfaces are drawn twice: their near-solid texels first, writing depth, so a hair card's
-// clear texels hide nothing behind them; then the rest, sorted and blended, without.
-enum RasterBlendPass
-{
-  eRasterBlendAll   = 0,  // every texel (the opaque buckets, the shadow map)
-  eRasterBlendSolid = 1,  // opacity at RASTER_BLEND_SOLID or more, depth written
-  eRasterBlendSheer = 2,  // below it, depth tested only
-};
-#define RASTER_BLEND_SOLID 0.9
-
-struct RasterPushConstant
-{
-  int             materialID       = 0;       // Material used by the rendering instance
-  int             renderNodeID     = 0;       // Node used by the rendering instance
-  int             renderPrimID     = 0;       // Primitive used by the rendering instance
-  int             opaqueColorReady = 0;       // 1 = transmission framebuffer ready (mip chain valid)
-  int             rtShadowRays     = 0;       // Rays per light for the traced shadows (0: none, no TLAS bound)
-  int             aoRays           = 0;       // Rays per pixel for the traced ambient occlusion (0: none, no TLAS bound)
-  int             blendPass        = 0;       // RasterBlendPass: which texels of a blended surface this draw keeps
-  int             occlusionReady   = 0;       // 1 = the occlusion pass traced this frame (set 3, binding 1)
-  int             prepassDepth     = 0;       // 1 = the depth prepass drew the opaque buckets: cutouts are tested
-  int             prepassPad       = 0;
-  float2          mouseCoord       = {0, 0};  // Mouse coordinates (use for debug)
-  SceneFrameInfo* frameInfo;                  // Camera info (incl. viewProjMatrix, prevMVP, jitter)
-  GltfScene*      gltfScene;                  // GLTF scene
-};
-
-
-// The rasterizer's occlusion pass (raster_occlusion.slang, Rasterizer::traceOcclusion): after a
-// depth prepass writes each pixel's position and normal (the G-buffer), it traces the ambient
-// occlusion and the shadows of the lights the shadow map does not cover once per half-resolution
-// texel, then filters them; the raster's light loop reads the result (set 3, binding 1).
-enum RasterOcclusionBindings
-{
-  eRasterOccTlas     = 0,  // the scene's TLAS
-  eRasterOccGbuffer  = 1,  // the prepass's G-buffer: world position (xyz, float bits), octahedral normal (w)
-  eRasterOccRaw      = 2,  // the traced texels, two layers (raster_rays.h.slang)
-  eRasterOccFiltered = 3,  // the same after the depth-aware filter: what the raster reads
-};
-
-struct RasterOcclusionPushConstant
-{
-  SceneFrameInfo* frameInfo;
-  GltfScene*      gltfScene;
-  int             aoRays     = 0;  // occlusion rays per texel (0: none)
-  int             shadowRays = 0;  // rays per light (0: none)
-  int             groundOn   = 0;  // the infinite plane is drawn: texels without a surface trace the floor
-  int             pad        = 0;
-};
-
-// Background pass for authored skies (rasterizer). The sky parameters ride in SceneFrameInfo
-// rather than in the push constant: SkyOmiParameters plus a 4x4 matrix would exceed the 128-byte
-// push-constant size Vulkan guarantees, and the frame info already carries them for the path
-// tracer, so both paths read the same numbers from the same place.
-enum SkyBackgroundBindings
-{
-  eSkyBackgroundOutImage = 0,
-};
-
-// What the rasterizer's background pass should do with the pixel it owns.
-enum SkyBackgroundMode
-{
-  eSkyBackgroundAuthored = 0,  // Write the authored sky's radiance (plain, gradient)
-  eSkyBackgroundSunDisk  = 1,  // Add the solar disk on top of a backdrop already drawn
-};
-
-struct SkyBackgroundPushConstant
-{
-  SceneFrameInfo* frameInfo;  // Sky type + parameters + intensity/rotation, and the camera
-  int             mode;       // SkyBackgroundMode
-  int             _pad[3];
 };
 
 struct DenoiserHandoffPushConstant

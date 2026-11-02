@@ -27,10 +27,8 @@
 // ray. It is why distant hills go pale and blue while near ones do not, and it is the one thing a
 // baked lat-long can never supply, because it depends on how far away the surface is.
 //
-// Both render paths include this header and call the same function on the same inputs, so the
-// rasterizer's haze and the path tracer's cannot drift. Each declares the LUT bindings at its own
-// set index and passes them in -- a shared header cannot fix a set number that differs between two
-// pipelines, and passing the samplers is what the Bruneton port already does everywhere else.
+// The caller declares the LUT bindings at its own set index and passes them in, as the Bruneton
+// port does everywhere else.
 //
 // Physical sky only. The other environments do not model air: a gradient is a painting, a loaded
 // HDR already has whatever haze the photographer stood in, and inventing an atmosphere for either
@@ -76,10 +74,9 @@ bool hasAerialPerspective(SceneFrameInfo* frameInfo)
 // scattering is also returned on its own, together with one point on the segment picked in
 // proportion to it -- `sunEstimate` is the one-sample estimate of `sunInScatter` taken at that point
 // (step chosen with probability luminance / total, `u.y` placing it within the step). A caller that
-// can trace scene visibility from that point to the sun (the path tracer) replaces `sunInScatter` by
-// `visibility * sunEstimate`, which is unbiased and converges as samples accumulate; one that cannot
-// (the rasterizer) keeps the unshadowed total. The multiple-scattering term is light from the whole
-// sky, not from the sun, and is left as it is.
+// traces scene visibility from that point to the sun (the path tracer) replaces `sunInScatter` by
+// `visibility * sunEstimate`, which is unbiased and converges as samples accumulate. The
+// multiple-scattering term is light from the whole sky, not from the sun, and is left as it is.
 struct AerialMarch
 {
   float3 inScatter;      // everything the air adds, sun included
@@ -258,22 +255,6 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
   march.sunInScatter *= toScene;
   march.sunEstimate *= toScene;
   return march;
-}
-
-// The rasterizer's form: no scene visibility to trace, so the sun lights the whole segment.
-//
-//     seen = surfaceRadiance * transmittance + inScatter
-float3 applyAerialPerspective(float3                  surfaceRadiance,
-                              float3                  worldPos,
-                              float3                  cameraPos,
-                              SceneFrameInfo*         frameInfo,
-                              SkyAtmosphereParameters atmosphere,
-                              Sampler2D<float3>       transmittanceTexture,
-                              Sampler2D<float3>       irradianceTexture)
-{
-  const AerialMarch march = evalAerialPerspective(worldPos, cameraPos, frameInfo, atmosphere, transmittanceTexture,
-                                                  irradianceTexture, float2(0.5F));
-  return surfaceRadiance * march.transmittance + march.inScatter;
 }
 
 #endif  // AERIAL_PERSPECTIVE_H

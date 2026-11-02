@@ -11,13 +11,10 @@ The render process of Figure Viewer, a fork that no longer merges upstream: it r
 its host (`src/fv_*`) driving it over a local protocol, with no window or panels of its own. It began as
 a Vulkan **ray tracing** renderer for glTF 2.0 scenes, built on
 [nvpro_core2](https://github.com/nvpro-samples/nvpro_core2) with
-[Slang](https://github.com/shader-slang/slang) shaders. Two render paths share
-the same Vulkan resources and scene data:
-
-- **RTX path tracer** (`renderer_pathtracer`) — the authoritative, high-quality
-  reference for glTF PBR material evaluation and new extensions.
-- **Rasterizer** (`renderer_rasterizer`) — a fast preview path for interaction
-  and editing. Not the material reference.
+[Slang](https://github.com/shader-slang/slang) shaders. It has one render path, the **RTX path
+tracer** (`renderer_pathtracer`), kept interactive by DLSS Ray Reconstruction while the view moves.
+The rasterizer it once had beside it was removed (2026-11-02): don't bring a second render path back
+for previews.
 
 C++20. Host and device share structs via `shaders/shaderio.h`.
 
@@ -58,9 +55,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 
 ## Source layout (one line each; full map in developer.md)
 
-- `src/renderer*.{cpp,hpp}` — render backends (`BaseRenderer` → `PathTracer` /
-  `Rasterizer`), plus a separate `Silhouette` compute pass, all orchestrated by
-  `renderer.cpp` (`GltfRenderer`).
+- `src/renderer*.{cpp,hpp}` — the render backend (`BaseRenderer` → `PathTracer`), plus a separate
+  `Silhouette` compute pass, orchestrated by `renderer.cpp` (`GltfRenderer`).
 - `src/scene_retained*`, `src/scene_residency*`, `src/scene_import_gltf.*`, `src/scene_export_gltf.*` —
   the scene: its store, kept resident (GPU tables, BLAS, TLAS), and glTF in and out.
 - `src/env_baker.*`, `src/gltf_environment_sky.*` — the analytic sky bake (an authored or
@@ -92,18 +88,15 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 
 ## Invariants — do not break these
 
-- **The two render paths share resources.** Scene buffers, textures, and
-  descriptors are built once and consumed by both. A change for one path must
-  not fork or duplicate that shared state — if you touch shared resources,
-  verify both paths still work. The retained scene owns them, fed by a stream
-  host or imported by `--scenefile`; both renderers read it through `SceneGpuView`
-  (`Resources::gpuView()`), never the backend's own objects.
+- **The scene's GPU resources are the retained scene's.** Scene buffers, textures and descriptors
+  are built once, fed by a stream host or imported by `--scenefile`; the path tracer, the silhouette
+  and the pickers read them through `SceneGpuView` (`Resources::gpuView()`), never the backend's own
+  objects.
 - **Instances are derived from entities**, incrementally (`rs::Residency`): don't hand-mutate its
   tables; edit the store (`GltfRenderer::hostScene`), and there is no glTF model beside it.
-- **The path tracer is the material reference.** New glTF material extensions
-  land in the path tracer's Slang material eval first
-  (`shaders/gltf_material_eval.h.slang`, gated by `MAT_EXT_*` flags in
-  `shaders/gltf_material_config.h`). The rasterizer follows, it does not lead.
+- **Materials are evaluated in one place.** New glTF material extensions land in the path tracer's
+  Slang material eval (`shaders/gltf_material_eval.h.slang`, gated by `MAT_EXT_*` flags in
+  `shaders/gltf_material_config.h`).
 - **Host/device structs live in `shaders/shaderio.h`** (and the `*_io.h.slang` /
   `*_shaderio.h.slang` headers). Change both sides together; never let CPU and
   GPU layouts drift.
@@ -226,8 +219,6 @@ Key CMake options: `USE_DLSS`, `USE_OPTIX_DENOISER`, `USE_OIDN_DENOISER`, `USE_D
 `NVPRO2_ENABLE_nvmcp` (all `ON`; the last one adds the `--mcp` endpoint and fetches
 cpp-mcp at configure time — see [docs/mcp.md](docs/mcp.md)),
 `BUILD_TESTING` (`OFF` — turn on to build unit tests + benchmarks; `ctest` runs the
-unit tests, run the benchmark executable directly), `USE_SOFTWARE_VULKAN` (`OFF` — a
-path-tracer-only build that starts on Mesa's lavapipe, for headless CI and benchmarks),
-`FV_DFORCE_GPU` (`ON` — the GPU dForce cloth solver, `src/fv_dforce_gpu*` and
+unit tests, run the benchmark executable directly), `FV_DFORCE_GPU` (`ON` — the GPU dForce cloth solver, `src/fv_dforce_gpu*` and
 `shaders/dforce_cloth*.slang`, the app's "Live (GPU)" mode; a build without it says so in the
 protocol's `features` and the app hides the mode).

@@ -3,7 +3,7 @@
 How this renderer's skies work: what each one models, what units they produce, where the sun comes
 from, and what survives a glTF round trip.
 
-This is about the **models**. The pipeline they feed — bake, alias table, prefiltered cubes, the
+This is about the **models**. The pipeline they feed — bake, alias table, the
 lighting/background split, preview vs commit — is described in
 [developer.md § Environment Lighting](developer.md#environment-lighting), and is the same for every
 sky type. Read that first if you are changing the pipeline rather than a sky.
@@ -78,7 +78,7 @@ tiers' numbers, and the measurement that chose them, are in [Cost](#cost).
 
 The sky is baked from a fixed point above the planet surface, not from the camera. That is what
 makes a single baked image valid for the whole scene: an observer that moved with the camera would
-invalidate the image every frame, and with it the alias table and the prefiltered cubes. Altitude
+invalidate the image every frame, and with it the alias table. Altitude
 is a settable parameter, and raising it visibly thins the horizon haze — the horizon moves farther
 away, so there is more air between it and you.
 
@@ -111,7 +111,7 @@ scattering on its own and one point on the segment picked in proportion to it, a
 traces one shadow ray from there (`TraceShadow`, so glass and alpha-cut surfaces transmit as they do
 for the sun's NEE). Visibility times that one-sample estimate replaces the unshadowed share — unbiased,
 and converging with the rest of the image. The multiple-scattering term is light from the whole sky
-and stays unshadowed; the rasterizer keeps the unshadowed total. The segment is marched in the
+and stays unshadowed. The segment is marched in the
 environment's frame, like the bake, so a tilted sky tilts its haze.
 
 The bake answers the one case it can on its own — an observer looking at its own planet — with the
@@ -525,20 +525,14 @@ carries its *radiance*, and a half-degree disk at physical brightness has an eno
 (~3e5 here) for a modest illuminance. Scenes with sharp speculars may still want it raised by hand
 -- which is now something that sticks.
 
-## Both renderers must agree
+## One camera ray
 
-The rasterizer draws the sky through a compute pass and the path tracer through escaped rays, so
-the two can only agree about *where* the sky is if they reconstruct the camera ray the same way.
-They call the same function to do it — `getRay` in `shaders/camera_ray.h.slang`.
-
-That is deliberate rather than tidy. The background pass once had its own copy, which normalised a
-world-space point on the far plane instead of a direction from the eye: identical wherever the
-camera sat at the origin, and wrong in proportion to how far away it was. A half-degree sun disk
-landed about 70 pixels from where the path tracer drew it at 500 units out, while the smooth sky
-gradient hid the same error completely.
-
-A sharp feature is the test worth running: put the sun in frame, render both paths, and compare
-where the disk lands.
+Whatever reconstructs a camera ray from a pixel calls `getRay` in `shaders/camera_ray.h.slang`. A
+background pass the renderer once had kept its own copy, which normalised a world-space point on
+the far plane instead of a direction from the eye: identical wherever the camera sat at the origin,
+and wrong in proportion to how far away it was. A half-degree sun disk landed about 70 pixels off at
+500 units out, while the smooth sky gradient hid the same error completely. A sharp feature is the
+test worth running: put the sun in frame and check where the disk lands.
 
 ## Verifying a change
 

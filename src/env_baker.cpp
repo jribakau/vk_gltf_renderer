@@ -26,11 +26,8 @@
 //   + mipmap chain                    (folded into the dispatch submit)
 //   HdrIbl::updateFromGpuImage        ~0.5 ms: the alias table is built over kEnvSamplingGrid,
 //                                     not the image
-//   HdrEnvDome::updateEnvironment     ~28 ms; rasterizer only
 //
-// The mip chain is not an optimization detail to be dropped: the GGX prefilter samples the
-// lat-long image thousands of times per output texel and thrashes cache without it -- ~63 ms
-// unmipped against ~28 ms mipped.
+// The mip chain is what the blurred background reads (smoothHDRBlur picks a level by the blur).
 //
 // Known limitation: commit() is synchronous. Pipelining the importance readback across frames
 // (dispatch on N, poll the fence on N+1, run Vose on N+2) would keep the application thread off
@@ -307,7 +304,7 @@ void EnvBaker::recordBake(VkCommandBuffer cmd)
 // with NEE, most visibly around a small bright feature. The visible background does not come from
 // here at all, so what the user watches still follows the slider exactly.
 //
-void EnvBaker::preview(VkCommandBuffer cmd, Resources& res, bool refreshDome)
+void EnvBaker::preview(VkCommandBuffer cmd, Resources& res)
 {
   assert(m_initialized && "init must be called first");
   if(m_needsCommit)
@@ -315,25 +312,19 @@ void EnvBaker::preview(VkCommandBuffer cmd, Resources& res, bool refreshDome)
 
   recordBake(cmd);
 
-  // The bake also rewrote the sun-disk buffer, which the background, raster, and path-tracing
-  // passes later in this same command buffer read through frameInfo->sunDisk. The mip barrier
+  // The bake also rewrote the sun-disk buffer, which the path tracer later in this same command
+  // buffer reads through frameInfo->sunDisk. The mip barrier
   // inside recordBake orders the image only. (commit() needs no equivalent: it submits and waits.)
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
                              | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-
-  // Diffuse cube only: the glossy one is twice the cost and this runs every frame of a drag. A
-  // colour change shows up mostly in the diffuse term, and the commit on release refreshes both,
-  // so what lags during the interaction is specular reflection sharpness -- not the sky's colour.
-  if(refreshDome)
-    res.hdrDome.updateEnvironment(cmd, res.hdrIbl.getDescriptorSet(), nvshaders::HdrEnvDome::PrefilterSet::eDiffuseOnly);
 }
 
 //--------------------------------------------------------------------------------------------------
 // Full refresh. Three submits, matching the three steps Phase 1 benchmarked independently.
 //
-void EnvBaker::commit(Resources& res, bool refreshDome)
+void EnvBaker::commit(Resources& res)
 {
   assert(m_initialized && "init must be called first");
   if(m_size.width == 0 || m_size.height == 0)
@@ -390,22 +381,8 @@ void EnvBaker::commit(Resources& res, bool refreshDome)
   res.hdrIbl.updateFromGpuImage(queueInfo, m_colorImage, m_importanceBuf, m_size, kEnvSamplingGrid);
   timings.aliasMs = mark(stage);
 
-  // -- Prefiltered cubemaps for raster IBL ---------------------------------------------------
-  // Reuses the cubes allocated by HdrEnvDome::create() at renderer init; only the two prefilter
-  // dispatches rerun, so the cube descriptors written once at init stay valid and must not be
-  // rewritten here.
-  if(refreshDome)
-  {
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    NVVK_CHECK(nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool));
-    res.hdrDome.updateEnvironment(cmd, res.hdrIbl.getDescriptorSet());
-    nvvk::endSingleTimeCommands(cmd, m_device, m_transientCmdPool, queueInfo.queue);
-    timings.prefilterMs = mark(stage);
-  }
-
   timings.totalMs = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-  LOGI("EnvBaker::commit %.2f ms (bake %.2f, alias+pdf %.2f, prefilter %.2f)\n", timings.totalMs, timings.bakeMs,
-       timings.aliasMs, timings.prefilterMs);
+  LOGI("EnvBaker::commit %.2f ms (bake %.2f, alias+pdf %.2f)\n", timings.totalMs, timings.bakeMs, timings.aliasMs);
 
   m_needsCommit = false;
 }

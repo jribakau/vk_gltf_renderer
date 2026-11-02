@@ -24,8 +24,8 @@
 // every frame it accumulates, so the viewer waits on frames, not on the clock. Those run unpaced
 // and only the frames the stream is due are copied out.
 //
-// The other exception is nothing happening: when the renderer has drawn nothing (a converged still,
-// a static rasterized view) and no request has come in for a while, the loop slows to the idle
+// The other exception is nothing happening: when the renderer has drawn nothing (a converged still)
+// and no request has come in for a while, the loop slows to the idle
 // period. Each idle frame still copies the image out and the encoder still compares it with the
 // last one sent, so a change that reached the image without a draw or a request shows within an
 // idle period; a request ends the idle at once (FrameStream wakes the sleep).

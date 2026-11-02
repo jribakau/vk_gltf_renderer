@@ -100,7 +100,7 @@ vk_gltf_measure {"timers": ["Frame", "Path Trace (RTX)", "DLSS", "GltfRenderer::
 
 Measured one after another during a drag or an orbit, the later timers are read after the motion
 ended, from other frames (the parts then do not add up to the frame), and a timer that never ticks
-(DLSS under accumulation, the raster's blend sort with nothing to sort) holds the call for the
+(DLSS under accumulation) holds the call for the
 first-sample budget, 60 s. Together, each comes from the same frames, and one that does not tick
 comes back as an entry with an `error` as soon as the others have their samples. One that stops
 ticking for 5 s keeps the samples it has: check `samples`.

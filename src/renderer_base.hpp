@@ -18,7 +18,7 @@
  */
 
 //
-// Abstract base class for renderers (path tracer, rasterizer, etc.).
+// Abstract base class of the path tracer.
 // Defines the virtual interface for attach/detach, resize, render,
 // shader compilation, and pipeline creation that each concrete
 // renderer implementation must provide.

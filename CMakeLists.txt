@@ -1,5 +1,5 @@
 #####################################################################################
-# vk_gltf_renderer — Vulkan glTF ray tracing renderer (path tracer + rasterizer)
+# vk_gltf_renderer — Vulkan glTF path tracer
 #####################################################################################
 
 cmake_minimum_required(VERSION 3.22...3.31)
@@ -66,7 +66,6 @@ option(USE_DRACO              "Enable Draco mesh compression when importing glTF
 option(FV_DFORCE_GPU          "Build the GPU dForce cloth solver (src/fv_dforce_gpu, shaders/dforce_cloth)."    ON)
 option(USE_DEFAULT_SCENE      "Load a bundled default scene at startup."                              OFF)
 option(BUILD_TESTING          "Build unit tests and benchmarks (GoogleTest + Google Benchmark)."      OFF)
-option(USE_SOFTWARE_VULKAN    "Run on software Vulkan (lavapipe) for CI: path tracer only, see below." OFF)
 
 # ---- nvpro_core2 module toggles ----------------------------------------------------
 # These are read by nvpro_core2 during its own configure. We disable modules we
@@ -370,11 +369,6 @@ file(GLOB SHADER_H_FILES "shaders/*.h" "shaders/*.h.slang")
 set(SHADER_SHARED_SLANG_FILES
   ${NVSHADERS_DIR}/nvshaders/tonemapper.slang
   ${NVSHADERS_DIR}/nvshaders/sky_physical.slang
-  ${NVSHADERS_DIR}/nvshaders/hdr_prefilter_diffuse.slang
-  ${NVSHADERS_DIR}/nvshaders/hdr_prefilter_glossy.slang
-  ${NVSHADERS_DIR}/nvshaders/hdr_dome.slang
-  ${NVSHADERS_DIR}/nvshaders/hdr_integrate_brdf.slang
-  ${NVSHADERS_DIR}/nvshaders/hdr_charlie_brdf_lut.slang
   # Environment-image consumer, driven by HdrIbl::updateFromGpuImage: writes the sampling PDF into
   # the baked image's alpha. The bake that feeds it is ours (shaders/env_bake.slang), picked up by
   # the glob above.
@@ -390,7 +384,7 @@ set(SHADER_CAPABILITIES
   spvGroupNonUniformArithmetic   # arithmetic across subgroups
   spvGroupNonUniform             # subgroup ops (required for wave operations)
   nonuniformqualifier            # NonUniformResourceIndex on the bindless texture/sampler arrays
-  spvRayQueryKHR                 # the raster's traced shadows, and the path tracer's ray queries
+  spvRayQueryKHR                 # the path tracer's ray queries
 )
 
 # Probe DLSS / OptiX / OIDN backend availability here (before compile_slang) so the
@@ -476,17 +470,13 @@ if(TARGET nvpro2::nvaftermath)
 endif()
 
 # Shader gates:
-#   HAS_DLSS_MOTION  : makes gltf_raster.slang emit SV_TARGET2 motion vectors for DLAA.
 #   USE_GUIDE_SHADER : enables the path tracer's per-bounce guide buffers
 #                      (albedo + normalRoughness) consumed by DLSS, OptiX and OIDN.
 #   USE_DLSS_SHADER  : DLSS-only path (drops per-frame MS loop to relieve register
 #                      pressure). Off in the main embedded path tracer; a second
 #                      embedded copy has it on (see compile_slang ... _dlss below).
-# All three stay independently controllable.
+# Both stay independently controllable.
 set(SHADER_EXTRA_FLAGS "-I${NVSHADERS_DIR}")
-if(DLSS_AVAILABLE)
-  list(APPEND SHADER_EXTRA_FLAGS "-DHAS_DLSS_MOTION=1")
-endif()
 if(DLSS_AVAILABLE OR OPTIX_DENOISER_AVAILABLE OR OIDN_DENOISER_AVAILABLE)
   list(APPEND SHADER_EXTRA_FLAGS "-DUSE_GUIDE_SHADER=1")
 endif()
@@ -611,14 +601,6 @@ endif()
 #####################################################################################
 # Third-party deps (Draco, RapidJSON, WebP).
 #####################################################################################
-# Software Vulkan drivers (Mesa's lavapipe) ray trace but lack fragment shader barycentrics,
-# which only the rasterizer's fragment shader reads (gltf_raster.slang). This build asks for them
-# as optional, so the renderer starts there; the raster view then can't draw. For headless path
-# tracing in CI and benchmarks, never for a build people use.
-if(USE_SOFTWARE_VULKAN)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE USE_SOFTWARE_VULKAN)
-endif()
-
 if(USE_DRACO)
   include(cmake/draco.cmake)
   download_draco()
@@ -802,7 +784,6 @@ _summary_feature("USE_DLSSNR"         ${USE_DLSSNR}         ${DLSSNR_AVAILABLE})
 _summary_feature("USE_OPTIX_DENOISER" ${USE_OPTIX_DENOISER} ${OPTIX_DENOISER_AVAILABLE})
 _summary_feature("USE_OIDN_DENOISER"  ${USE_OIDN_DENOISER}  ${OIDN_DENOISER_AVAILABLE})
 _summary_bool("USE_DRACO"            ${USE_DRACO})
-_summary_bool("USE_SOFTWARE_VULKAN"  ${USE_SOFTWARE_VULKAN})
 _summary_bool("USE_DEFAULT_SCENE"    ${USE_DEFAULT_SCENE})
 _summary_bool("BUILD_TESTING"        ${BUILD_TESTING})
 

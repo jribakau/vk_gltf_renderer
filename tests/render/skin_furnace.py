@@ -81,7 +81,7 @@ def center_rgb(path):
 
 def render(exe, scene_path, output_path, technique, diffuse_entry, walk_guiding):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
-           "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", "1", "1", "1", "--renderSystem", "0",
+           "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", "1", "1", "1",
            "--ptTechnique", str(technique), "--ptVolumeDiffuseExit", "1",
            "--ptDiffuseEntry", "1" if diffuse_entry else "0", "--ptWalkGuiding", str(walk_guiding), "--ptMaxDepth", "20",
            "--frames", "0", "--ptMaxSamples", str(SAMPLES), "--output", str(output_path)]

@@ -165,7 +165,7 @@ PLACEMENTS = {
 
 def render(exe, scene_path, output_path, technique):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
-           "--scenefile", str(scene_path), "--envSystem", "2", "--renderSystem", "0",
+           "--scenefile", str(scene_path), "--envSystem", "2",
            "--ptTechnique", str(technique), "--ptShadowTransmission", "0",
            "--frames", "0", "--ptMaxSamples", str(SAMPLES), "--output", str(output_path)]
     result = subprocess.run(cmd, capture_output=True, text=True)

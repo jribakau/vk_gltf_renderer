@@ -41,8 +41,10 @@ namespace {
 // kept for a crash, recovery.file, recovery.peek and scene.recover. 14: a prop rides on a figure's
 // bone (prop.set's `bone`, the scene topic's). 16: view.set's frameAspect, render.save {path}
 // (an image of the frame, answered once it is on disk), and the event stream's "synced" after the
-// snapshots it starts or starts over with.
-constexpr int kProtocolVersion = 16;
+// snapshots it starts or starts over with. 17: the path tracer only: render.status has no `rtx`,
+// the lighting has no sun.shadows or shadow section (the raster view's shadow map; still taken from
+// a kept scene), and render.mode takes "raster" as the path tracer.
+constexpr int kProtocolVersion = 17;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

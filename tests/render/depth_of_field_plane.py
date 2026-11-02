@@ -150,7 +150,7 @@ def regions(path):
 
 def render(exe, scene_path, output_path, technique, focal_distance):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
-           "--scenefile", str(scene_path), "--envSystem", "2", "--renderSystem", "0",
+           "--scenefile", str(scene_path), "--envSystem", "2",
            "--ptTechnique", str(technique),
            "--ptAutoFocus", "0", "--ptFocalDistance", str(focal_distance), "--ptAperture", str(APERTURE),
            "--frames", "0", "--ptMaxSamples", str(SAMPLES), "--output", str(output_path)]

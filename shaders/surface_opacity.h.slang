@@ -1,9 +1,8 @@
 #ifndef SURFACE_OPACITY_H
 #define SURFACE_OPACITY_H
 
-// A hit's opacity for an alpha test, from its material and texture at mip 0. Shared by the path
-// tracer's any-hit and the raster's ray-traced shadows (gltf_raster.slang). Reads the including
-// shader's pushConst.gltfScene, allImages and allSamplers.
+// A hit's opacity for an alpha test, from its material and texture at mip 0: the path tracer's
+// any-hit. Reads the including shader's pushConst.gltfScene, allImages and allSamplers.
 
 //----------------------------------------------------------
 // Testing if the hit is opaque or alpha-transparent

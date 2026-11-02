@@ -26,13 +26,14 @@
 //
 //   env:     source studio|hdr|sky|plain|none, path, intensity, rotation (degrees about +Y),
 //            background environment|blurred|color, blur (three's blurriness), color, plainColor, skyPreset
-//   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness, shadows
-//   shadow:  size (texels), contactHardening, bias, normalBias (shadow-map texels)
+//   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness
 //   ground:  mode floor|catcher|off, height ("auto" or world units), color, roughness, darkness, fade
 //   tonemap: method aces|agx|neutral|filmic, exposure, contrast, saturation, vignette,
 //            temperature (Kelvin), tint (Duv)
 //
-// Colours are "#rrggbb" in sRGB, as the panel shows them.
+// Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
+// scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
+// taken and dropped.
 //
 
 #include <cstdint>
@@ -68,15 +69,6 @@ struct Sun
   double      elevation = 50.0;
   std::string color     = "#fff4e6";
   double      softness  = 3.0;
-  bool        shadows   = true;
-};
-
-struct Shadow
-{
-  int    size             = 4096;
-  bool   contactHardening = true;
-  double bias             = 1.0;
-  double normalBias       = 1.5;
 };
 
 struct Ground
@@ -107,7 +99,6 @@ struct State
 {
   Env     env;
   Sun     sun;
-  Shadow  shadow;
   Ground  ground;
   Tonemap tonemap;
 };

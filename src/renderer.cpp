@@ -167,7 +167,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // is a compute pass that has to be created up front. Without it EnvBaker::commit dispatches a
   // null pipeline -- caught only by an assert, so a release build simply crashes.
   m_resources.hdrIbl.initGpuWriter(std::span(env_write_pdf_slang));
-  m_resources.hdrDome.init(&m_resources.allocator, &m_resources.samplerPool, m_app->getQueue(0));
 
   // Application-level memory tracker (frame targets, DLSS, OptiX images)
   m_resources.appMemoryTracker.init(&m_resources.allocator);
@@ -206,8 +205,8 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_silhouette.init(m_resources);
 
 
-  // Producer for analytic skies. Its lat-long image feeds the same HdrIbl / HdrEnvDome pair the
-  // HDR file path uses, so both render paths consume one environment regardless of sky type.
+  // Producer for analytic skies. Its lat-long image feeds the same HdrIbl the HDR file path uses,
+  // so the path tracer consumes one environment regardless of sky type.
   // Allocated here but only dispatched once a baked sky type is selected.
 
   // Bruneton atmosphere LUTs. Built once here from the Earth defaults; they depend only on the
@@ -269,10 +268,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     m_resources.slangCompiler.addCapability("spvGroupNonUniformArithmetic");  // # Arithmetic operations across subgroups
     m_resources.slangCompiler.addCapability("nonuniformqualifier");  // # NonUniformResourceIndex on the bindless arrays (also in CMake)
 
-#if defined(USE_DLSS)
-    m_resources.slangCompiler.addMacro({"HAS_DLSS_MOTION", "1"});
-#endif
-
 #if defined(AFTERMATH_AVAILABLE)
     // This aftermath callback is used to report the shader hash (Spirv) to the Aftermath library.
     m_resources.slangCompiler.setCompileCallback([&](const std::filesystem::path& sourceFile, const uint32_t* spirvCode, size_t spirvSize) {
@@ -294,10 +289,8 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_pathTracer.onAttach(m_resources, &m_profilerGpuTimer);
   m_pathTracer.setProfilerTimeline(m_profilerTimeline);
   m_pathTracer.setBusyState(&m_busy);
-  m_rasterizer.onAttach(m_resources, &m_profilerGpuTimer);
 
   m_pathTracer.createPipeline(m_resources);
-  m_rasterizer.createPipeline(m_resources);
   // the RTX pipeline the first path-traced frame needs, built on a thread while the app starts
   m_pathTracer.startPipelineWarm(m_resources);
 
@@ -340,7 +333,6 @@ void GltfRenderer::onDetach()
   vkDeviceWaitIdle(m_device);
   m_visualHelpers.deinit();
   m_pathTracer.onDetach(m_resources);
-  m_rasterizer.onDetach(m_resources);
   destroyResources();
 }
 
@@ -353,8 +345,6 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
   m_resources.gBuffers.cmdClear(cmd);
   m_resources.appMemoryTracker.track("GBuffers", m_resources.gBuffers, Resources::eImgCount);
   m_pathTracer.onResize(cmd, size, m_resources);
-  m_rasterizer.onResize(cmd, size, m_resources);
-  m_resources.hdrDome.setOutImage(m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered));
   m_resources.tonemappedUi.update(m_resources.gBuffers.getUiImageView(Resources::eImgTonemapped));
 
   // Resize visual helpers (depth buffer + scene depth descriptor set)
@@ -436,7 +426,7 @@ std::filesystem::path GltfRenderer::headlessOutputPathOrDefault() const
 int GltfRenderer::displayedImageSamples(DisplayBuffer& source) const
 {
   source = m_resources.settings.displayBuffer;
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.handoffImage(m_resources))
+  if(m_pathTracer.handoffImage(m_resources))
     return -1;
 #if defined(USE_OPTIX_DENOISER)
   if(const OptiXDenoiser* optix = m_pathTracer.getOptiXDenoiser();
@@ -484,7 +474,7 @@ void GltfRenderer::updateSampleCaptures()
 {
   SampleCapture& capture = m_sampleCapture;
   refreshSampleTargets();
-  if(capture.targets.empty() || m_resources.settings.renderSystem != RenderingMode::ePathtracer)
+  if(capture.targets.empty())
     return;
 
   // A .hdr capture saves the rendered image, never a denoiser's (saveViewportImage): name it after
@@ -524,7 +514,7 @@ void GltfRenderer::onPostRender()
   // A still's frames run one at a time. Queued, they gain a sample nothing can see, and an edit arriving
   // now would wait for all of them before its first moving frame, freezing and then jumping the image
   // at the start of every action. (A moving view's frames queue, for their rate; a window presents after this.)
-  if(m_streamHost && m_resources.settings.renderSystem == RenderingMode::ePathtracer && !m_pathTracer.dlssFrame())
+  if(m_streamHost && !m_pathTracer.dlssFrame())
   {
     const nvvk::SemaphoreInfo frame = m_app->getFrameSignalSemaphore();
     const VkSemaphoreWaitInfo wait{.sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -592,12 +582,10 @@ void GltfRenderer::onUIRender()
 
 //--------------------------------------------------------------------------------------------------
 // Render the scene
-// What a pixel of the frame holds in GPU memory, for refuseFrameSize and for the room a change of mode
-// has to find: the driver's usage between 1080p and 4K, a session per mode (scripts/memory-limit-check.py,
-// RTX 4080, 2026-11-01). Both renderers keep their targets at the frame's size whichever draws, so
-// the rasterizer's holds the path tracer's too. DLSS is its guides and the upscaler's history, which the
-// driver holds.
-constexpr uint32_t kRasterBytesPerPixel     = 236;
+// What a pixel of the frame holds in GPU memory, for refuseFrameSize and for the room DLSS has to find
+// when it comes on: the driver's usage between 1080p and 4K (scripts/memory-limit-check.py, RTX 4080,
+// 2026-11-01, while a rasterizer still kept its targets beside the path tracer's, so an upper bound now).
+// DLSS is its guides and the upscaler's history, which the driver holds.
 constexpr uint32_t kPathTracerBytesPerPixel = 209;
 constexpr uint32_t kDlssBytesPerPixel       = 143;
 constexpr uint32_t kMostBytesPerPixel       = kPathTracerBytesPerPixel + kDlssBytesPerPixel;
@@ -717,7 +705,7 @@ uint64_t GltfRenderer::sceneBudget() const
 }
 
 // A tenth of the budget stays free for what grows unasked (a BLAS refit, a denoiser's targets), and so
-// does what the path tracer's frame would add to the rasterizer's, for a switch of mode to find.
+// does what DLSS would add to the frame, for it to find when it comes on.
 std::optional<int64_t> GltfRenderer::sceneHeadroom() const
 {
   const MemoryBudget b = deviceMemoryBudget();
@@ -794,9 +782,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
   m_profilerTimeline->frameAdvance();
   // for refuseFrameSize on the stream's thread
-  m_frameBytesPerPixel.store(m_resources.settings.renderSystem == RenderingMode::ePathtracer ?
-                                 kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0) :
-                                 kRasterBytesPerPixel);
+  m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0));
   {
     const VkExtent2D s = renderSize();
     m_frameSizePacked.store(uint64_t(s.width) << 32 | s.height);
@@ -838,10 +824,6 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     m_envPreviewPending = false;
     if(isBakedEnvironment(m_resources.settings.envSystem))
     {
-      // Only the rasterizer reads the prefiltered cubemaps, so the path tracer skips the prefilter
-      // and a drag costs it little more than the bake itself.
-      const bool refreshDome = m_resources.settings.renderSystem == RenderingMode::eRasterizer;
-
       // Nothing waits here, so order explicitly: the LUTs, the lat-long image and the sun-disk
       // buffer are still being read by frames in flight, and are read again by this frame's
       // ray-tracing and graphics passes after the rewrite.
@@ -867,7 +849,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
       // per-ray from settings, so only the lighting lagged -- but the Bruneton sky *is* its baked
       // image, so without this a drag showed nothing until the mouse came up.
       updateBakerParameters();
-      m_envBaker.preview(cmd, m_resources, refreshDome);
+      m_envBaker.preview(cmd, m_resources);
       nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
       resetFrame();
@@ -907,7 +889,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   changed |= syncRetainedScene(cmd);  // the clip, and the residency's sync of the host's edits
 
   // #DLSS motion: the retained scene keeps both tables current every sync (a row at rest is no motion)
-  const bool dlss = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.isDlssEnabled();
+  const bool dlss = m_pathTracer.isDlssEnabled();
   m_resources.dlssInstanceMotionActive = dlss && m_resources.gpuView().prevObjectToWorldTable() != 0;
   m_resources.dlssDeformMotionActive   = dlss && m_resources.gpuView().prevPositionTable() != 0;
 
@@ -919,7 +901,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
   bool frameChanged = updateFrameCounter();  // Check if the frame counter has changed
   // A shader variant built off the frame goes in only when a frame draws: one draws for it even with
   // the still converged, or the edits it holds back would wait for an unrelated change
-  const bool variantWaiting = m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_pathTracer.variantBuilt();
+  const bool variantWaiting = m_pathTracer.variantBuilt();
 
   if(changed || frameChanged || variantWaiting)
   {
@@ -945,8 +927,8 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
             ((m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic) ? shaderio::eSceneIsOrthographic : 0)
             | (m_resources.settings.useSolidBackground ? shaderio::eSceneUseSolidBackground : 0)
             // A baked analytic sky IS an environment image by the time the shaders see it:
-            // same lat-long texture, same alias table, same prefiltered cubes. Flagging it as
-            // such is what keeps sampling, MIS and raster IBL free of per-sky-type branches.
+            // same lat-long texture, same alias table. Flagging it as such is what keeps
+            // sampling and MIS free of per-sky-type branches.
             | ((m_resources.settings.envSystem == shaderio::EnvSystem::eHdr || isBakedEnvironment(m_resources.settings.envSystem)) ?
                    shaderio::eSceneUseHdrEnvironment :
                    0)
@@ -991,7 +973,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
         .skySunScale           = m_resources.settings.skySunScale,
         .envPickEstimate       = 0.25F * m_resources.hdrIbl.getIntegral(),
     };
-    fillShadowAndGround(finfo);
+    fillGround(finfo);
     // Update the camera information
     m_prevMVP = finfo.viewProjMatrix;
 
@@ -1001,17 +983,8 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     // Make sure buffer is ready to be used
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
-    // Switch between renderers based on the current mode
     ++m_resources.drawnFrameCount;
-    switch(m_resources.settings.renderSystem)
-    {
-      case RenderingMode::ePathtracer:
-        m_pathTracer.onRender(cmd, m_resources);
-        break;
-      case RenderingMode::eRasterizer:
-        m_rasterizer.onRender(cmd, m_resources);
-        break;
-    }
+    m_pathTracer.onRender(cmd, m_resources);
   }
   else
   {
@@ -1022,7 +995,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
       m_cpuTimePrinted = true;
     }
     // Auto denoise the final image of the accumulation
-    if(m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.accumulationComplete())
+    if(m_resources.accumulationComplete())
     {
       m_pathTracer.onAccumulationComplete(cmd, m_resources);
       // A headless run given --ptMaxSamples is done: this frame shows the final image (and its
@@ -1052,7 +1025,7 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
     silhouette(cmd);
   updateSampleCaptures();  // --outputSamples: the image is final for this frame
   // Async click ray-pick: record the pick dispatch on this frame's own command buffer - the TLAS is
-  // already proven valid here (the path tracer/rasterizer just used it above) - then hand off a
+  // already proven valid here (the path tracer just used it above) - then hand off a
   // frame-semaphore to poll instead of blocking. See m_pendingClickPick's comment (renderer.hpp).
   if(m_pendingClickPick)
   {
@@ -1087,15 +1060,15 @@ void GltfRenderer::onLastHeadlessFrame()
 
 #if defined(USE_DLSS)
 //--------------------------------------------------------------------------------------------------
-// Returns the Dlss instance owned by whichever renderer is currently active.
+// The path tracer's DLSS (Ray Reconstruction).
 Dlss* GltfRenderer::activeDlss()
 {
-  return (m_resources.settings.renderSystem == RenderingMode::ePathtracer) ? m_pathTracer.getDlss() : m_rasterizer.getDlss();
+  return m_pathTracer.getDlss();
 }
 
 const Dlss* GltfRenderer::activeDlss() const
 {
-  return (m_resources.settings.renderSystem == RenderingMode::ePathtracer) ? m_pathTracer.getDlss() : m_rasterizer.getDlss();
+  return m_pathTracer.getDlss();
 }
 #endif
 
@@ -1103,9 +1076,6 @@ const Dlss* GltfRenderer::activeDlss() const
 // Runtime gate for path-tracer guide-buffer shader code.
 bool GltfRenderer::dlssGuideRequired() const
 {
-  if(m_resources.settings.renderSystem != RenderingMode::ePathtracer)
-    return false;
-
 #if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
   // The build with guides is the one in the exe, warmed at start, and it writes none unless a denoiser
   // asks (ePtDenoiserGuides). Without guides there's nothing prepared: turning the denoiser off froze
@@ -1155,7 +1125,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   // OptiX / OIDN denoised output (path-tracer only). Routed via the global DisplayBuffer toggle the
   // denoisers write when they denoise or the user clicks their thumbnail.
 #if defined(USE_OPTIX_DENOISER)
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.settings.displayBuffer == DisplayBuffer::eOptixDenoised)
+  if(m_resources.settings.displayBuffer == DisplayBuffer::eOptixDenoised)
   {
     const OptiXDenoiser* optix = m_pathTracer.getOptiXDenoiser();
     if(optix && optix->hasValidDenoisedOutput())
@@ -1166,7 +1136,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   }
 #endif
 #if defined(USE_OIDN_DENOISER)
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.settings.displayBuffer == DisplayBuffer::eOidnDenoised)
+  if(m_resources.settings.displayBuffer == DisplayBuffer::eOidnDenoised)
   {
     const OidnDenoiser* oidn = m_pathTracer.getOidnDenoiser();
     if(oidn && oidn->hasValidDenoisedOutput())
@@ -1177,13 +1147,10 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   }
 #endif
   // The DLSS hand-off, shown in place of the denoiser's view while OptiX or OIDN takes over from DLSS
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer)
+  if(const VkDescriptorImageInfo* handoff = m_pathTracer.handoffImage(m_resources))
   {
-    if(const VkDescriptorImageInfo* handoff = m_pathTracer.handoffImage(m_resources))
-    {
-      inputBuffer         = *handoff;
-      inputBuffer.sampler = m_resources.linearSampler;
-    }
+    inputBuffer         = *handoff;
+    inputBuffer.sampler = m_resources.linearSampler;
   }
 
 #if defined(USE_DLSS)
@@ -1313,15 +1280,13 @@ void GltfRenderer::renderVisualHelpers(VkCommandBuffer cmd)
   glm::vec2        viewportSize(static_cast<float>(size.width), static_cast<float>(size.height));
   glm::vec2        depthBufferSize = viewportSize;
 #if defined(USE_DLSS)
-  // The path tracer writes depth at the DLSS render size into the corner of the G-buffer depth; the
-  // rasterizer blits DLSS's inner depth up to full size. isActive() is strict (false during async
-  // init), so we never pick up a 0x0 inner extent.
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer)
-    if(const Dlss* dlss = activeDlss(); dlss && dlss->isActive())
-    {
-      const VkExtent2D rs = dlss->getRenderSize();
-      depthBufferSize     = {static_cast<float>(rs.width), static_cast<float>(rs.height)};
-    }
+  // The path tracer writes depth at the DLSS render size into the corner of the G-buffer depth.
+  // isActive() is strict (false during async init), so we never pick up a 0x0 inner extent.
+  if(const Dlss* dlss = activeDlss(); dlss && dlss->isActive())
+  {
+    const VkExtent2D rs = dlss->getRenderSize();
+    depthBufferSize     = {static_cast<float>(rs.width), static_cast<float>(rs.height)};
+  }
 #endif
 
   m_visualHelpers.render(cmd, m_resources.gBuffers.getColorImage(Resources::eImgTonemapped),
@@ -1393,8 +1358,6 @@ void GltfRenderer::createResourceBuffers()
 //--------------------------------------------------------------------------------------------------
 // Create the descriptor set and the pipelines
 // There are two descriptor: one for the textures (set) and one (push) for the top level acceleration structure and the default output image
-// There are two pipelines: one for the PathTracer and one for the Rasterizer
-// The descriptor set is shared between the two pipelines
 void GltfRenderer::createDescriptorSets()
 {
   // Reserve texture descriptors (m_maxTextures from renderer.hpp, clamped to device limits)
@@ -1413,19 +1376,9 @@ void GltfRenderer::createDescriptorSets()
                                               m_maxSamplers, VK_SHADER_STAGE_ALL, nullptr,
                                               VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
                                                   | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
-  // 2D IBL/transmission textures (see shaderio.h HDR_* indices):
-  //   [0] HDR_IMAGE_INDEX   lat-long HDR environment image
-  //   [1] HDR_LUT_INDEX     GGX split-sum BRDF LUT
-  //   [2] HDR_SHEEN_INDEX   Charlie sheen directional-albedo LUT (raster only)
-  //   [3] HDR_OPAQUE_INDEX  opaque-pass color capture for screen-space transmission (raster only)
-  // PARTIALLY_BOUND lets the path tracer leave slots [2]/[3] unbound.
+  // 2D environment textures (see shaderio.h HDR_* indices): the lat-long HDR environment image.
   m_resources.descriptorBinding[0].addBinding(shaderio::BindingPoints::eTexturesHdr, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                               HDR_TEXTURE_COUNT, VK_SHADER_STAGE_ALL, nullptr,
-                                              VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
-                                                  | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
-  // Prefiltered HDR cubemaps: [0] diffuse Lambertian, [1] GGX glossy.
-  m_resources.descriptorBinding[0].addBinding(shaderio::BindingPoints::eTexturesCube,
-                                              VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, VK_SHADER_STAGE_ALL, nullptr,
                                               VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT
                                                   | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
   NVVK_CHECK(m_resources.descriptorBinding[0].createDescriptorSetLayout(
@@ -1433,7 +1386,7 @@ void GltfRenderer::createDescriptorSets()
   NVVK_DBG_NAME(m_resources.descriptorSetLayout[0]);
 
   // Pool sizes are derived from descriptorBinding[0] (now SAMPLED_IMAGE + SAMPLER for the scene, plus
-  // COMBINED_IMAGE_SAMPLER for the HDR/cube arrays). Each nvapp::ImTexture (viewport: 1, DLSS guides: 8,
+  // COMBINED_IMAGE_SAMPLER for the HDR array). Each nvapp::ImTexture (viewport: 1, DLSS guides: 8,
   // OptiX denoised: 1 + margin) additionally uses one VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE descriptor.
   constexpr uint32_t                kImTextureMaxSets = 15;
   std::vector<VkDescriptorPoolSize> poolSize          = m_resources.descriptorBinding[0].calculatePoolSizes();
@@ -1472,16 +1425,8 @@ void GltfRenderer::createDescriptorSets()
   NVVK_DBG_NAME(m_resources.descriptorSetLayout[1]);
 }
 
-void GltfRenderer::setRenderSystem(RenderingMode mode)
-{
-  if(m_resources.settings.renderSystem == mode)
-    return;
-  m_resources.settings.renderSystem = mode;
-  resetFrame();
-}
-
 //--------------------------------------------------------------------------------------------------
-// Recompile the active renderer's shaders and show the result.
+// Recompile the path tracer's shaders and show the result.
 // SYNC NOTE: the recompile destroys live pipelines, so the queue must be drained first.
 bool GltfRenderer::reloadShaders()
 {
@@ -1492,15 +1437,11 @@ bool GltfRenderer::reloadShaders()
 }
 
 //--------------------------------------------------------------------------------------------------
-// Recompile the shaders of the current renderer.
+// Recompile the path tracer's shaders.
 bool GltfRenderer::compileShaders()
 {
   nvutils::ScopedTimer st(__FUNCTION__);
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer)
-  {
-    return m_pathTracer.reloadShader(m_resources);
-  }
-  return m_rasterizer.compileShader(m_resources, true);
+  return m_pathTracer.reloadShader(m_resources);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1533,23 +1474,9 @@ bool GltfRenderer::updateFrameCounter()
   {
     return false;
   }
-  // The rasterizer's image is complete after one frame: drawing it again changes nothing, and a
-  // drawn-frame count that stands still is what lets the frame stream idle (frame_stream.cpp). A
-  // dirty scene still draws (the caller ORs this with its dirty flags). Not with DLSS on, whose
-  // super-resolution accumulates its jittered frames.
-  if(m_resources.settings.renderSystem == RenderingMode::eRasterizer && m_resources.frameCount >= 1)
-  {
-#if defined(USE_DLSS)
-    const bool dlssActive = m_rasterizer.getDlss() && m_rasterizer.getDlss()->isActive();
-#else
-    const bool dlssActive = false;
-#endif
-    if(!dlssActive)
-      return false;
-  }
   // The DLSS frames of a hand-off delay are no part of the accumulation: the count waits at 1 (frame
   // 0 was DLSS's) so the frame bound cannot end the still before it begins. They draw all the same.
-  if(m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.frameCount >= 1 && m_pathTracer.dlssHandoffDelayPending())
+  if(m_resources.frameCount >= 1 && m_pathTracer.dlssHandoffDelayPending())
     return true;
   m_resources.frameCount++;
   return true;
@@ -1597,7 +1524,6 @@ void GltfRenderer::destroyResources()
   m_resources.tonemappedUi.deinit();
   m_resources.gBuffers.deinit();
   m_resources.hdrIbl.deinit();
-  m_resources.hdrDome.deinit();
   m_resources.samplerPool.deinit();
   m_resources.staging.deinit();
   m_rayPicker.deinit();

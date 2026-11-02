@@ -35,9 +35,9 @@ struct Resources;
 // Lat-long size an analytic sky is baked into. Fixed rather than a setting, because nothing a user
 // would choose it for depends on it any more: sampling quality comes from kEnvSamplingGrid below,
 // not from this size, and the path tracer evaluates the visible sky per ray. What it still sets is
-// the sharpness of what rays read from the image -- rough reflections, and the physical sky's
-// horizon in the rasterizer -- and 1024x512 keeps both where they were. A loaded HDR panorama
-// ignores this and keeps its native file resolution.
+// the sharpness of what rays read from the image -- rough reflections and the blurred background --
+// and 1024x512 keeps them where they were. A loaded HDR panorama ignores this and keeps its native
+// file resolution.
 static constexpr VkExtent2D kEnvBakeSize{1024, 512};
 
 // The grid the alias table is built over, independently of the bake size (see
@@ -54,14 +54,13 @@ static_assert(HDR_WORKGROUP_SIZE % (kEnvBakeSize.width / kEnvSamplingGrid.width)
               "each sampling-grid cell must fit whole inside one env_bake workgroup");
 
 //--------------------------------------------------------------------------------------------------
-// EnvBaker -- turns an analytic sky into the lighting environment every renderer path already
-// knows how to consume.
+// EnvBaker -- turns an analytic sky into the lighting environment the path tracer already knows
+// how to consume.
 //
 // It owns one lat-long image and one importance buffer, dispatches `env_bake.slang` into them,
-// and hands the pair to `nvvk::HdrIbl::updateFromGpuImage` + `nvshaders::HdrEnvDome::
-// updateEnvironment`. The point of the exercise is that afterwards a plain or gradient sky *is*
-// an HDR environment as far as importance sampling, MIS and raster IBL are concerned -- no sky
-// type earns a branch in any sampling path. A loaded HDR panorama skips this class entirely and
+// and hands the pair to `nvvk::HdrIbl::updateFromGpuImage`. The point of the exercise is that
+// afterwards a plain or gradient sky *is* an HDR environment as far as importance sampling and MIS
+// are concerned -- no sky type earns a branch in any sampling path. A loaded HDR panorama skips this class entirely and
 // keeps going through HdrIbl's file-load path at its native resolution.
 //
 // What it produces is the lighting field only: `env_bake.slang` omits the sun, because the sun is
@@ -73,9 +72,9 @@ static_assert(HDR_WORKGROUP_SIZE % (kEnvBakeSize.width / kEnvSamplingGrid.width)
 //
 //   * `preview(cmd)` re-bakes color only. Cheap enough to run every frame while a slider is
 //     being dragged. The bake leaves the PDF in alpha at zero, so until the commit the path tracer
-//     lights the environment by BSDF sampling alone -- unbiased, but noisier on a moving image --
-//     and the raster path loses nothing. Records into the caller's command buffer.
-//   * `commit()` runs the whole pipeline -- bake, alias rebuild, PDF write, prefilter refresh --
+//     lights the environment by BSDF sampling alone -- unbiased, but noisier on a moving image.
+//     Records into the caller's command buffer.
+//   * `commit()` runs the whole pipeline -- bake, alias rebuild, PDF write --
 //     on slider release, on load, and on any MCP or command-line write. It submits and waits
 //     internally, because `HdrIbl::updateFromGpuImage` reads the per-cell importance back to the
 //     CPU to build the alias table; it cannot be folded into a caller's command buffer.
@@ -129,15 +128,12 @@ public:
   // while this holds, because HdrIbl's descriptors do not yet point at our image.
   bool needsCommit() const { return m_needsCommit; }
 
-  // Color-only re-bake into the caller's command buffer. `refreshDome` reruns the prefilter
-  // dispatches, which only the raster path needs -- the path tracer samples the lat-long image
-  // directly and would pay ~5 ms per frame for nothing.
-  void preview(VkCommandBuffer cmd, Resources& res, bool refreshDome);
+  // Color-only re-bake into the caller's command buffer.
+  void preview(VkCommandBuffer cmd, Resources& res);
 
-  // Full refresh: bake, alias table, PDF, and (when `refreshDome`) the prefiltered cubemaps.
-  // Submits and waits internally. Callers must reset frame accumulation afterwards -- a new
-  // environment landing mid-accumulation blends two different skies.
-  void commit(Resources& res, bool refreshDome);
+  // Full refresh: bake, alias table, PDF. Submits and waits internally. Callers must reset frame
+  // accumulation afterwards -- a new environment landing mid-accumulation blends two different skies.
+  void commit(Resources& res);
 
   // Wall-clock cost of a `commit()`, per stage, for the log line it prints.
   //
@@ -149,7 +145,6 @@ public:
   {
     double bakeMs{0.0};       // env_bake dispatch (+ mip chain)
     double aliasMs{0.0};      // PDF into alpha, Vose table build, descriptor rebind
-    double prefilterMs{0.0};  // diffuse + glossy cubes; 0 when the dome was not refreshed
     double totalMs{0.0};
   };
 

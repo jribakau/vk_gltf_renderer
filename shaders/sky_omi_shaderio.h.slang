@@ -40,8 +40,7 @@ later phases add types.
 -------------------------------------------------------------------------------------------------*/
 
 // Sky types, naming which parameter block below is live. Shared by every stage that has to agree
-// on "which sky is this": the lat-long bake, the path tracer's background, and the rasterizer's
-// background pass.
+// on "which sky is this": the lat-long bake and the path tracer's background.
 //
 // Runtime-only: nothing persists a SkyType. The host derives one per frame from its own
 // environment type (`bakeSkyType` in the sample's resources.hpp), so these values are free to

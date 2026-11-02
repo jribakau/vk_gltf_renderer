@@ -177,7 +177,7 @@ enum class GpuBarrier
   eComputeToBuild,    // deform and transform passes, then AS builds and the frame's shading
   eComputeToCompute,  // a deform pass, then the deform pass that reads what it wrote (morph, then skin)
   eBuildToBuild,      // BLAS builds, then the TLAS build
-  eBuildToTrace,      // AS builds, then ray tracing and raster
+  eBuildToTrace,      // AS builds, then ray tracing
   // what the frames still in flight read, then this frame's uploads, copies and deform passes that
   // overwrite it (a vertex stream, a table row): recorded before the first of them
   eFrameToWrite,

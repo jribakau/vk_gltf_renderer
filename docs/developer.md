@@ -2,7 +2,7 @@
 
 > **For contributors and agents.** High-level architecture, source map, and the material system — concepts plus pointers into `src/` and `shaders/`, not a restatement of the code. For the scene data-flow deep dive see [Rendering Architecture](RENDERING_ARCHITECTURE.md).
 
-This project is developer-oriented: the **RTX path tracer** is the primary high-quality reference for ray tracing glTF PBR materials, while the **rasterizer** is a practical fallback for fast interaction and iteration. Both renderers share Vulkan resources and Slang shaders.
+This project is developer-oriented: the **RTX path tracer** is the renderer and the reference for ray tracing glTF PBR materials; DLSS Ray Reconstruction keeps it interactive while the view moves. (A forward rasterizer it once had beside the path tracer was removed on 2026-11-02.)
 
 ## Quick Navigation
 
@@ -29,7 +29,7 @@ For the internal data-flow walkthrough (retained scene -> residency -> GPU/TLAS)
 |---|---|
 | `onAttach()` | Create Vulkan resources, compile shaders, set up descriptor sets |
 | `onDetach()` | Clean up all GPU resources |
-| `onRender(cmd)` | Record rendering commands (dispatch to path tracer or rasterizer, then tone map) |
+| `onRender(cmd)` | Record rendering commands (the path tracer, then tone map) |
 | `onResize()` | Recreate G-Buffer and notify renderers |
 | `onUIRender()` | Frame-top work that may wait on the GPU: pending loads, environment bakes, resizes (nothing draws a UI; the name is `nvapp`'s) |
 
@@ -81,15 +81,14 @@ src/
 ├── fv_journal.cpp/hpp          # The edit history's steps (undo, redo, merge); fv_host_journal.cpp captures
 │                               #   each edit's undo and redo from the host's state as it applies
 ├── renderer_selection.cpp      # What the host calls for picks, selection, Fit and the gizmo; selection events into Resources
-├── renderer_base.hpp           # BaseRenderer: abstract base for PathTracer / Rasterizer
+├── renderer_base.hpp           # BaseRenderer: abstract base of the PathTracer
 ├── renderer_pathtracer.cpp/hpp # Monte Carlo path tracer (Vulkan ray tracing + ray query)
 ├── renderer_pathtracer_shaders.cpp # Its shaders and pipelines: compiling, the SPIR-V cache, the variants
 ├── sample_schedule.hpp         # Samples per frame: ending on stops (cap, --outputSamples), the Auto SPP controller
-├── renderer_rasterizer.cpp/hpp # Forward PBR rasterizer
 ├── renderer_silhouette.cpp/hpp # Selection highlight (compute shader)
 ├── env_image_loader.cpp/hpp    # Decodes .hdr / .exr lat-longs to float RGBA for HdrIbl
 ├── env_baker.cpp/hpp           # Bakes an analytic sky into the lat-long image + importance buffer
-│                               #   that HdrIbl / HdrEnvDome consume (preview vs. commit)
+│                               #   that HdrIbl consumes (preview vs. commit)
 ├── gltf_environment_sky.cpp/hpp# OMI_environment_sky parse/write/strip, raw-value passthrough
 ├── mcp_timing.cpp/hpp          # Optional MCP endpoint (--mcp): recompile shaders, time a
 │                               #   GPU pass over a window (docs/mcp.md)
@@ -176,7 +175,6 @@ src/
 
 shaders/
 ├── gltf_pathtrace.slang        # Path tracer (compute + ray generation)
-├── gltf_raster.slang           # PBR rasterizer (vertex + fragment)
 ├── silhouette.comp.slang       # Selection edge detection
 ├── skinning.comp.slang         # GPU skinning
 ├── morph.comp.slang            # GPU morph-target blending
@@ -195,8 +193,7 @@ shaders/
 ├── optix_image_to_buffer.slang # OptiX denoiser buffer conversion
 ├── denoiser_handoff.slang      # DLSS hand-off blend of two images
 ├── gltf_light_ies.h.slang      # EXT_lights_ies: photometric-profile falloff lookup
-├── sky_background.h.slang      # Background (sun-bearing) field for authored skies; shared by both paths
-├── sky_background.slang        # Rasterizer background pass that draws it
+├── sky_background.h.slang      # Background (sun-bearing) field for authored skies
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks
 ├── sky_gradient.h.slang        # OMI `gradient` evaluator (bands + sun), shared by bake and background
 ├── env_bake.slang              # Bakes any sky into the lat-long image + importance buffer; one
@@ -235,8 +232,7 @@ are **forked locally** into `shaders/gltf_*.h.slang` rather than using the upstr
    Defaults are all `1`, reproducing the upstream behavior byte-for-byte.
 3. **Behavior gating (runtime-safe)**: `GLTF_USE_*` in
    [`shaders/gltf_eval_config.h`](../shaders/gltf_eval_config.h) gates material eval, path-tracer
-   state (`PathTracerState`, volume segment, shadow transmission), and raster extension paths
-   without changing buffer layout. Optimal mode passes each gate as `-DGLTF_USE_X=0` or `1`
+   state (`PathTracerState`, volume segment, shadow transmission) without changing buffer layout. Optimal mode passes each gate as `-DGLTF_USE_X=0` or `1`
    from `SceneFeatureSet` (never `-DMAT_EXT_X=0` at runtime). `MAT_EXT_*` remains layout authority
    on host and device only.
 
@@ -365,9 +361,8 @@ Some things about the transport are worth knowing before touching it:
 - Path regularisation (later lobes at least as rough as the roughest material so far) runs only
   where `ePtRegularize` is set (`ptRegularize`: DLSS frames by default), and never on a surface that
   refracts without scattering.
-- The thickness texture is a rasterizer-only stand-in for the path length through the medium:
-  `evaluateMaterial()` applies it under `RASTER_PIPELINE` only. In the path tracer the ray measures
-  that length, and `thicknessFactor` alone selects thin-walled vs. volume. It is also what makes a
+- The thickness texture, glTF's stand-in for the path length through the medium, is not read: the
+  ray measures that length, and `thicknessFactor` alone selects thin-walled vs. volume. It is also what makes a
   surface a medium boundary: the path and its shadow rays count themselves inside only across
   surfaces with a thickness.
 - Light reaching the camera through a medium is attenuated wherever it comes from. The medium in
@@ -382,10 +377,6 @@ Some things about the transport are worth knowing before touching it:
   follows the center camera ray to the nearest medium boundary and, if it meets it from behind,
   records that medium for `pathTrace()` to start in. Without it, a camera inside a fog sees no fog
   in front of it and fog behind the far wall.
-
-The rasterizer cannot trace inside a medium, so `evaluateMaterial()` compiles only the thin-walled
-branch for `RASTER_PIPELINE` — the approximation the scatter spec explicitly permits for renderers
-without volumetric transport.
 
 A medium is bounded by its mesh, and a path leaves it only through a back face. When a path that
 is inside meets a front face instead, the mesh had an opening and the walk escaped through it
@@ -582,8 +573,7 @@ already blended also fades its opacity there. The panel's roughness and specular
 (β, and the reflecting orders), not only the unused sheet lobe. Fields are on `FV_materials_hair`
 in [`src/tinygltf_utils.hpp`](../src/tinygltf_utils.hpp). Card hair is unchanged (anisotropy from
 the measured strand direction). A glTF written for other tools keeps the old diffuse-transmission
-sheet, because they have no fibre BSDF. The raster preview only stretches the highlight across the
-strand. Gated like the detail layer (`MAT_EXT_HAIR`, `GLTF_USE_HAIR` from `SceneFeatureSet::eHair`).
+sheet, because they have no fibre BSDF. Gated like the detail layer (`MAT_EXT_HAIR`, `GLTF_USE_HAIR` from `SceneFeatureSet::eHair`).
 
 ### Strand hair the file only guides
 
@@ -621,7 +611,7 @@ grows at most `kMostHairsGrown`.
 6. In [`src/scene_feature_detection.cpp`](../src/scene_feature_detection.cpp) and
    [`src/scene_shader_macros.cpp`](../src/scene_shader_macros.cpp), detect scene usage and emit
    `-DGLTF_USE_<NAME>=0|1` in optimal mode.
-7. If the path tracer or raster reads the new field outside `evaluateMaterial()` (e.g.
+7. If the path tracer reads the new field outside `evaluateMaterial()` (e.g.
    `getShadowTransmission()` in `pathtrace_functions.h.slang`), gate with `#if GLTF_USE_<NAME>`.
 8. Update the extension support list in [`README.md`](../README.md).
 
@@ -680,15 +670,14 @@ attachment is ignored.
 
 `Settings::envSystem` (`shaderio::EnvSystem`) selects the environment source. The shaders do not
 branch on it: every mode but `eNone` reaches them as **one lat-long image plus its alias table**
-(`Resources::hdrIbl`) and, for the rasterizer, the prefiltered cubes derived from it
-(`Resources::hdrDome`). That is the whole point of the design — sampling, MIS and raster IBL stay
-free of per-sky-type code, and adding a sky type adds no shader branches.
+(`Resources::hdrIbl`). That is the whole point of the design — sampling and MIS stay free of
+per-sky-type code, and adding a sky type adds no shader branches.
 
 An HDR file arrives there by being loaded. The analytic types — the physical sky and the
 `OMI_environment_sky` types — arrive there by being **baked**: [`src/env_baker.*`](../src/env_baker.hpp)
 dispatches [`shaders/env_bake.slang`](../shaders/env_bake.slang) — one switch over every sky type
 — into a lat-long image and an importance buffer, then hands the pair to
-`nvvk::HdrIbl::updateFromGpuImage` and `nvshaders::HdrEnvDome::updateEnvironment`. The bake's
+`nvvk::HdrIbl::updateFromGpuImage`. The bake's
 bindings and push constant are ours ([`shaders/env_bake_io.h.slang`](../shaders/env_bake_io.h.slang));
 what nvpro_core2 fixes is the lat-long mapping and texel weighting (`latlongToDir`,
 `texelSolidAngle` in `nvshaders/functions.h.slang`), next to the functions that read the image back.
@@ -710,11 +699,10 @@ settle test, rather than an ImGui "is a control held" question, is what keeps a 
 gizmo or by an animation from committing once per frame. `GltfRenderer::updateHdrImages()` remains the single place that writes the
 `texturesCube[]` / `texturesHdr[HDR_IMAGE_INDEX]` descriptors.
 
-The image, its alias table and the cubes are all stored in the **environment's own frame**. One
-orientation, `SceneFrameInfo::envRotation` — a unit quaternion, `OMI_environment_sky`'s `rotation`
-verbatim — takes that frame to world. Every lookup brings a world direction into it with
-`quatRotateInverse` (`nvshaders/functions.h.slang`), and nvpro_core2's raster IBL (`evalKhronosIBL`)
-and `HdrEnvDome::draw` take the same quaternion. Rotating the environment therefore never re-bakes;
+The image and its alias table are stored in the **environment's own frame**. One orientation,
+`SceneFrameInfo::envRotation` — a unit quaternion, `OMI_environment_sky`'s `rotation` verbatim —
+takes that frame to world. Every lookup brings a world direction into it with `quatRotateInverse`
+(`nvshaders/functions.h.slang`). Rotating the environment therefore never re-bakes;
 only the physical sky does, when the sun moves relative to it.
 
 ### Two fields: lighting and background
@@ -732,17 +720,14 @@ The environment is **two** fields, and which one a ray reads is the part that ha
   bake uses (`shaders/sky_bruneton_radiance.h.slang`), plus the half-degree disk
   (`evalSunDiskBackground` in the same header, fed by a radiance the bake publishes). What the
   camera sees is then independent of the bake resolution — the horizon, where sky meets ground in a
-  hard edge, is what a lat-long would otherwise smear. The rasterizer still draws the baked image for
-  this sky and adds the disk, so its horizon keeps the bake's resolution.
+  hard edge, is what a lat-long would otherwise smear.
 
 A camera ray, and an escaped ray whose last bounce was delta/specular, read the background field;
 any other escaped ray reads the lighting field **plus the sun disk** (`evalSkySunDisk`),
 MIS-weighted against the sun's NEE sample. The disk is needed there because a glTF roughness of 0
 is clamped to a tiny but finite lobe, not a delta: NEE's cone samples almost never land in it, so
 without the disk smooth glass or a mirror shows no sun. The header states the rule at its
-definition because getting it wrong is silent and off by roughly 2x. Both render paths include that same
-header — the path tracer from `gltf_pathtrace.slang`, the rasterizer from its background compute
-pass `shaders/sky_background.slang` — so the two can never drift.
+definition because getting it wrong is silent and off by roughly 2x.
 
 ### Panorama: where the image URI lives
 
@@ -794,7 +779,7 @@ over the persisted `.ini`.
 ### Add a renderer setting
 
 1. Add state in shared settings/resources.
-2. Bind and consume it in `renderer_pathtracer.cpp` or `renderer_rasterizer.cpp`.
+2. Bind and consume it in `renderer_pathtracer.cpp`.
 3. Persist with the settings handler when needed. The app reaches it by name through the host's
    parameter messages; `src/fv_parameter_filter.hpp` lists what the host keeps to itself.
 
@@ -927,7 +912,7 @@ Four settings, none remembered:
   by file (path, size, write time) or by a hash of held bytes, and the colour space
   (`rs::textureKeyOf`), and shared by every texture that is that image.
 - `sceneBudgetMB` (0): the GPU memory the scene is fitted to, where less than the device's budget; 0 is that budget.
-  A tenth of it stays free, and what the path tracer's frame would add under the rasterizer. `Residency::fitQueuedToMemory`
+  A tenth of it stays free, and what DLSS would add to the frame. `Residency::fitQueuedToMemory`
   runs before each batch of decodes: idle decodes go first, then top levels, the largest first, down to 256, of the batch and
   of what is resident (decoded again, the slots rewritten, the frame reset). It reads free room as the driver's usage less the
   allocator's free space inside its blocks, as `gpuAllocatedMB` in the frame profile shows. A scene that grew is fitted with

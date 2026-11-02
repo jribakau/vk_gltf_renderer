@@ -100,7 +100,7 @@ def scene(double_sided, camera, emitter=False):
 
 def render(exe, scene_path, output_path, technique, sky):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
-           "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", str(sky), str(sky), str(sky), "--renderSystem", "0",
+           "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", str(sky), str(sky), str(sky),
            # the path tracer compiled from shaders/, as emitter_cutout.py
            "--dlssEnable", "0", "--ptOptimalShader", "1",
            "--ptTechnique", str(technique), "--ptMaxDepth", "3",

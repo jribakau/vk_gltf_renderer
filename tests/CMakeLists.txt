@@ -133,10 +133,9 @@ set(TEST_SOURCES
     # Phase 5a: NOAA sun position, checked against astronomy rather than recorded output
     test_sun_position.cpp
     ${CMAKE_SOURCE_DIR}/src/sun_position.cpp
-    # Native P4a: the Light tab's state and unit conversions, and where the sun's shadow map goes
+    # Native P4a: the Light tab's state and unit conversions
     test_fv_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_lighting.cpp
-    test_shadow_fit.cpp
     # OptiX / OIDN auto-denoise schedule: interval multiples and the final image (header only)
     test_denoiser_schedule.cpp
     # Path tracer samples per frame: ending on stops, the Auto SPP controller (header only)

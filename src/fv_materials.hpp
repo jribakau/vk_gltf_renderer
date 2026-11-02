@@ -257,7 +257,7 @@ private:
   std::vector<std::string>                            m_applied;   // per material, the glTF last written (as JSON text)
   std::vector<std::vector<int>>                       m_meshesOf;  // per material, the scene meshes using it
   bool                                                m_flipped = false;
-  fv::mat::SkinMode                                   m_skin    = fv::mat::SkinMode::eRaster;
+  fv::mat::SkinMode                                   m_skin    = fv::mat::SkinMode::eMeasured;
   uint64_t                                            m_generation = 0;
   fv::Json                                            m_eyes;       // the topic's `eyes`, null for none
   fv::Json                                            m_skinState;  // the topic's `skin`, null for none

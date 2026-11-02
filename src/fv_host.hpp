@@ -61,8 +61,10 @@
 //   pose.eyes       {prop}                       aim the eyeballs at the camera
 //   morph.set       {prop, values: {name: value}, gesture?}   coalesced, one setMany per frame
 //   morph.reset     {prop}                                    every dial back to where its file rests it
-//   render.mode     {mode: "raster" | "rtx", skin?: "measured" | "volume" | "thin"}
-//   render.status   {}  -> {refining, still, converged, complete, samples, maxSamples, rtx, driverCacheFull,
+//   render.mode     {mode?: "rtx", skin?: "measured" | "volume" | "thin"}   the skin the path tracer
+//                                                renders ("raster", from an app before protocol 17,
+//                                                path traces as well)
+//   render.status   {}  -> {refining, still, converged, complete, samples, maxSamples, driverCacheFull,
 //                                                texturesCooking, width, height}   where the still is, and the
 //                                                frame's size (a /size lands before the next frame);
 //                                                texturesCooking: textures the scene took on a cold cache
@@ -210,7 +212,7 @@
 // camera or a light as a record, and the sun. A composition feeds the props' changes as deltas
 // (fv_prop_feed.hpp); what didn't change keeps its handles.
 //
-// Lighting: the environment, tone mapping, the raster shadow map and the ground are renderer
+// Lighting: the environment, tone mapping and the ground are renderer
 // parameters; the sun is a directional light the host adds to every scene it composes, marked as the
 // sky's sun. Light props are lights of their own beside it. An HDR decodes on a worker (a "jobs"
 // entry) and uploads on the application thread. An environment preset .duf sets the HDR from its

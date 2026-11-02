@@ -1134,8 +1134,8 @@ struct FvHost::Impl
   void pollHistory();
 
   std::unique_ptr<FvView> view;
-  // how skin is shaded for the render mode
-  std::atomic<fv::mat::SkinMode> skinMode{fv::mat::SkinMode::eRaster};
+  // how skin is shaded (render.mode's skin)
+  std::atomic<fv::mat::SkinMode> skinMode{fv::mat::SkinMode::eMeasured};
   // a texture a material bake needs, from the cooker or a library (worker threads)
   std::optional<fv::build::TextureImage> bakeTexture(const std::shared_ptr<fv::dson::Library>& lib, const fv::build::TextureRequest& req, bool flipped);
 };

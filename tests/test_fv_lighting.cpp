@@ -189,17 +189,13 @@ TEST(FvLighting, NumbersAreClamped)
 {
   const L::State s = L::applyPatch(L::State{},
                                    {{"sun", {{"elevation", 120}, {"intensity", -3}, {"azimuth", 190}}},
-                                    {"shadow", {{"size", 3000}}},
                                     {"env", {{"blur", 4}}},
                                     {"ground", {{"darkness", 2}}}});
   EXPECT_EQ(s.sun.elevation, 90);
   EXPECT_EQ(s.sun.intensity, 0);
   EXPECT_EQ(s.sun.azimuth, -170);
-  EXPECT_EQ(s.shadow.size, 4096);  // the nearest power of two
   EXPECT_EQ(s.env.blur, 1);
   EXPECT_EQ(s.ground.darkness, 1);
-  EXPECT_EQ(L::applyPatch(L::State{}, {{"shadow", {{"size", 100}}}}).shadow.size, 1024);
-  EXPECT_EQ(L::applyPatch(L::State{}, {{"shadow", {{"size", 1e6}}}}).shadow.size, 8192);
   // as wide as a softbox: 30 degrees, at 0.15 a unit
   EXPECT_EQ(L::applyPatch(L::State{}, {{"sun", {{"softness", 150}}}}).sun.softness, 150);
   EXPECT_EQ(L::applyPatch(L::State{}, {{"sun", {{"softness", 500}}}}).sun.softness, 200);
@@ -228,6 +224,18 @@ TEST(FvLighting, NullResetsAndReadOnlyKeysAreIgnored)
   EXPECT_NO_THROW(L::applyPatch(L::State{}, topic));
 }
 
+// A scene kept before protocol 17 has the raster view's shadow map in its lighting: it still opens
+TEST(FvLighting, TheRasterShadowMapOfAnOlderSceneIsDropped)
+{
+  const L::State s = L::applyPatch(L::State{}, {{"sun", {{"intensity", 3}, {"shadows", false}}},
+                                                {"shadow", {{"size", 2048}, {"contactHardening", false}}}});
+  EXPECT_EQ(s.sun.intensity, 3);
+  const Json topic = L::toJson(s);
+  EXPECT_FALSE(topic.contains("shadow"));
+  EXPECT_FALSE(topic["sun"].contains("shadows"));
+  EXPECT_FALSE(L::rendererParams(s, {}).contains("rasterShadows"));
+}
+
 TEST(FvLighting, MergeDiffIsTheMinimalPatch)
 {
   const Json a = {{"env", {{"intensity", 1}, {"name", "x"}}}, {"sun", {{"enabled", true}}}};
@@ -242,7 +250,6 @@ TEST(FvLighting, RendererParamsFollowTheState)
   s.env.source       = "sky";
   s.env.background   = "color";
   s.ground.mode      = "catcher";
-  s.sun.shadows      = false;
   s.tonemap.method   = "agx";
   s.tonemap.exposure = 1.5;
   const Json p       = L::rendererParams(s, {2048, 1024});
@@ -251,7 +258,6 @@ TEST(FvLighting, RendererParamsFollowTheState)
   EXPECT_EQ(p["hdrBlur"], 0.0);
   EXPECT_EQ(p["useInfinitePlane"], true);
   EXPECT_EQ(p["isShadowCatcher"], true);
-  EXPECT_EQ(p["rasterShadows"], false);
   EXPECT_EQ(p["tmMethod"], 4);
   EXPECT_EQ(p["tmExposure"], 1.5);
   // the firefly clamp goes with the lighting, 16 before the tone mapper's exposure

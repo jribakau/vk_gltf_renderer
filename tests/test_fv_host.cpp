@@ -2578,18 +2578,26 @@ TEST(FvHost, CooksOfAFigureThatLeftTheSceneKeepNoStillWaiting)
   cooker.open();
 }
 
+// The renderer path traces only: an app before protocol 17 still asks for its raster view, and gets
+// the path tracer with the skin it asked for
+TEST(FvHost, ARasterModeIsThePathTracer)
+{
+  HostRig    rig;
+  const Json answer = rig.cmd("render.mode", {{"mode", "raster"}, {"skin", "thin"}});
+  ASSERT_TRUE(answer.value("ok", false)) << answer.dump();
+  EXPECT_EQ(answer["result"].value("mode", ""), "rtx");
+  EXPECT_EQ(rig.topic("render").value("mode", ""), "rtx");
+  EXPECT_FALSE(rig.cmd("render.mode", {{"mode", "wireframe"}}).value("ok", false));
+}
+
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr
 TEST(FvHost, ACaptureIsAnHdrOfThePathTracersImage)
 {
   HostRig                     rig;
   const fs::path file = fs::temp_directory_path() / "fv_capture_test.hdr";
 
-  rig.renderer.setRenderSystem(RenderingMode::eRasterizer);
-  EXPECT_FALSE(rig.cmd("render.capture", {{"path", file.generic_string()}}).value("ok", false));
-  EXPECT_TRUE(rig.renderer.savedImage.empty());
-
-  rig.renderer.setRenderSystem(RenderingMode::ePathtracer);
   EXPECT_FALSE(rig.cmd("render.capture", {{"path", "still.png"}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.savedImage.empty());
 
   rig.renderer.stillSamples = 64;
   const Json answer         = rig.cmd("render.capture", {{"path", file.generic_string()}});

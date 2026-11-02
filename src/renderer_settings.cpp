@@ -46,10 +46,6 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Environment: [Sky:0, HDR:1, None:2, Plain:3, Gradient:4]",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { onEnvironmentChanged(); }},
                  (int*)&m_resources.settings.envSystem, Persist::eYes, 0, 4);
-  m_settings.add({.name            = "renderSystem",
-                  .help            = "Renderer [Path tracer:0, Rasterizer:1]",
-                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { onRenderSystemChanged(); }},
-                 (int*)&m_resources.settings.renderSystem, Persist::eYes, 0, 1);
   // what the path tracer reads of the environment: a change starts the still again, or it blends in
   const auto restartStill = [this](const nvutils::ParameterBase* const) { resetFrame(); };
   m_settings.add({.name = "hdrIntensity", .help = "HDR Environment Intensity", .callbackSuccess = restartStill},
@@ -449,7 +445,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"uiSnapRotation", "Rotation snap increment (degrees)"}, &m_resources.settings.snapRotation, Persist::eYes);
   m_settings.add({"uiSnapScale", "Scale snap increment"}, &m_resources.settings.snapScale, Persist::eYes);
 
-  // The ground: the path tracer's infinite plane and the rasterizer's floor pass draw the same one.
+  // The ground: the path tracer's infinite plane.
   const auto groundChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };
   m_settings.add({.name = "useInfinitePlane", .help = "Ground: draw an infinite plane under the scene", .callbackSuccess = groundChanged},
                  &m_resources.settings.useInfinitePlane, Persist::eYes);
@@ -470,29 +466,8 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({.name = "skySunScale", .help = "Sky: multiplier on the light the sky's sun gives (0: no sun light)", .callbackSuccess = groundChanged},
                  &m_resources.settings.skySunScale, Persist::eNo, 0.0F, 100.0F);
 
-  // The rasterizer's sun shadow map.
-  const auto shadowChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };
-  m_settings.add({.name = "rasterShadows", .help = "Rasterizer: sun shadow map [Off:0, On:1]", .callbackSuccess = shadowChanged},
-                 &m_resources.settings.rasterShadows, Persist::eYes);
-  m_settings.add({.name = "shadowLight",
-                  .help = "Rasterizer: scene light index that casts the shadow map, or -1 for the sun (the marked sun light, "
-                          "else the sky's sun, else the brightest directional light)",
-                  .callbackSuccess = shadowChanged},
-                 &m_resources.settings.shadowLight, Persist::eNo, -1, 1 << 20);
-  m_settings.add({.name = "shadowMapSize", .help = "Rasterizer: shadow map size in texels (1024..8192)", .callbackSuccess = shadowChanged},
-                 &m_resources.settings.shadowMapSize, Persist::eYes, 1024, 8192);
-  m_settings.add({.name = "shadowContactHardening",
-                  .help = "Rasterizer: penumbrae widen with the distance to the occluder, from the light's angular size [Off:0, On:1]",
-                  .callbackSuccess = shadowChanged},
-                 &m_resources.settings.shadowContactHardening, Persist::eYes);
-  m_settings.add({.name = "shadowBias", .help = "Rasterizer: shadow depth bias, in shadow-map texels", .callbackSuccess = shadowChanged},
-                 &m_resources.settings.shadowBias, Persist::eYes, 0.0F, 50.0F);
-  m_settings.add({.name = "shadowNormalBias", .help = "Rasterizer: shadow normal offset, in shadow-map texels", .callbackSuccess = shadowChanged},
-                 &m_resources.settings.shadowNormalBias, Persist::eYes, 0.0F, 50.0F);
-
   // Register PathTracer-specific command line parameters
   m_pathTracer.registerParameters(&m_settings, [this]() { resetFrame(); });
-  m_rasterizer.registerParameters(&m_settings);
 
   // Saves the viewport without its overlays (scripts/render-scene.py). The next frame is drawn that
   // way and saved once submitted (onPostRender).

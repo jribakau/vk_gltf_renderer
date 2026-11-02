@@ -113,7 +113,6 @@ select the mode at runtime via `frameInfo->visualization`.
 The path tracer treats emissive triangle **meshes** as area lights it samples directly (next-event
 estimation + MIS in `sampleLights` / `gltf_pathtrace.slang`), instead of only finding them by chance
 when a bounce ray happens to hit one. Punctual lights and the environment are sampled the same way.
-Path tracer only — the rasterizer is unaffected.
 
 **How it works, step by step**
 

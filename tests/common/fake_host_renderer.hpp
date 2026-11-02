@@ -110,8 +110,6 @@ public:
   void setShowAxis(bool) override {}
   void setDepthOfField(float, float, bool, int, float) override {}
 
-  void          setRenderSystem(RenderingMode mode) override { m_mode = mode; }
-  RenderingMode renderSystem() const override { return m_mode; }
   bool          isStill() const override { return false; }
   bool          isRefiningStill() const override { return false; }
   bool          isStillConverged() const override { return false; }
@@ -154,7 +152,6 @@ private:
   rs::RetainedScene                           m_scene;
   rs::EntityId                                m_selected;
   std::shared_ptr<nvutils::CameraManipulator> m_camera = std::make_shared<nvutils::CameraManipulator>();
-  RenderingMode                               m_mode   = RenderingMode::eRasterizer;
   rs::ClipId                                  m_clip;
   float                                       m_clipTime = 0.f;
   AnimationControl                            m_animation;

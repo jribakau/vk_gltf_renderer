@@ -129,7 +129,7 @@ def scene(masked):
 
 def render(exe, scene_path, output_path, technique):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
-           "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", "0", "0", "0", "--renderSystem", "0",
+           "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", "0", "0", "0",
            # the path tracer compiled from shaders/: a run keeps the exe's embedded build unless the
            # variant it asks for differs, and the optimal shader is one that does
            "--dlssEnable", "0", "--ptOptimalShader", "1",

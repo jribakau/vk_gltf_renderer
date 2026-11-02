@@ -24,17 +24,6 @@
 namespace nvvkgltf {
 
 /*-------------------------------------------------------------------------------------------------
-# function applyCommonShaderMacros
-
-> Reapply preprocessor macros that must exist for every file-based Slang compile on the shared
-> `nvslang::SlangCompiler` instance (for example `HAS_DLSS_MOTION` when DLSS is enabled).
->
-> Call after `clearMacros()` and before pass-specific or scene-optimal macros so a prior path
-> tracer recompile cannot leave stale defines on the compiler used by the rasterizer.
--------------------------------------------------------------------------------------------------*/
-void applyCommonShaderMacros(nvslang::SlangCompiler& compiler);
-
-/*-------------------------------------------------------------------------------------------------
 # function appendPathTracerOptimalMacros
 
 > Append scene-aware optimal-mode macros for path tracer recompiles.

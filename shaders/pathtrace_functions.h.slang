@@ -256,7 +256,7 @@ float rayConeWorldFootprint(RayCone cone, float hitT, float3 N, float3 V)
 // Alpha testing
 //-----------------------------------------------------------------------
 
-#include "surface_opacity.h.slang"  // getOpacity, shared with the raster's shadow rays
+#include "surface_opacity.h.slang"  // getOpacity
 
 // Cells across one barycentric axis. A fixed grid, so the decision is a property of the
 // triangle: a dolly does not reshuffle it, and motion vectors can follow it. On a card a few
@@ -366,8 +366,8 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   if(isTexturePresent(mat.transmissionTexture))
     tFactor *= sampleShadowTexture(renderPrim, texInfos[mat.transmissionTexture], indices, barycentrics).r;
 
-  // thicknessFactor alone selects thin-walled vs. volume; the thickness texture is a rasterizer
-  // stand-in for the path length, which a traced ray measures (hitT).
+  // thicknessFactor alone selects thin-walled vs. volume; the thickness texture stands in for the
+  // path length, which a traced ray measures (hitT).
   float thickness = 0.0;
 #if GLTF_USE_VOLUME
   thickness = mat.thicknessFactor;
@@ -1216,11 +1216,11 @@ float computeSkySunHitMisWeight(float lastSamplePdf, LightPick pick)
 // Infinite plane and shadow catcher
 //-----------------------------------------------------------------------
 
-// A shadow catcher composites, as the rasterizer's does: the ray passes through the plane and sees
+// A shadow catcher composites: the ray passes through the plane and sees
 // exactly what it would without it -- the same background, the same camera-ray status -- darkened by
 // how much of the light the plane would receive is blocked there. One next-event sample's
 // visibility per pass, so the darkening converges to the occluded share of the light, sun and
-// environment alike; its strength is the rasterizer's (groundCatcherStrength).
+// environment alike; its strength is groundCatcherStrength's.
 //
 // Returns true: the path always continues, below the plane.
 bool handleShadowCatcher(IRaytracer      raytracer,
@@ -1255,7 +1255,7 @@ bool handleShadowCatcher(IRaytracer      raytracer,
   return true;
 }
 
-// The plane fades out at the edge of its disk as the rasterizer's floor does (groundFadeWeight): a
+// The plane fades out at the edge of its disk (groundFadeWeight): a
 // ray hits it with probability equal to the fade there, and otherwise passes on to whatever is behind.
 bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout HitState hit, SceneFrameInfo* frameInfo, inout uint seed)
 {

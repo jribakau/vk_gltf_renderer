@@ -60,13 +60,11 @@ float3 EnvBRDFApprox2(float3 SpecularColor, float alpha, float NoV)
   return mad(SpecularColor, max(0, scale), max(0, bias));
 }
 
-// Pixel-space motion vector for DLSS / DLAA. The two overloads share one piece of math:
+// Pixel-space motion vector for DLSS:
 // `MV = (prev_NDC - curr_NDC) * 0.5 * resolution` (equivalent to `(prev_UV - curr_UV) * resolution`).
-// NGX expects pixel-space MVs when InMVScaleX/Y = 1.0, which is what both renderers configure.
+// NGX expects pixel-space MVs when InMVScaleX/Y = 1.0, which is what the path tracer configures.
 //
-// Overload 1 (raster vertex shader): the vertex shader has already transformed the world position
-// through the unjittered viewProj / prevMVP, so the fragment shader just consumes the two clip
-// positions interpolated by the rasterizer.
+// Overload 1: from the two clip positions, through the unjittered viewProj / prevMVP.
 inline float2 calculateMotionVector(float4 currClip, float4 prevClip, float2 resolution)
 {
   float2 currNDC = currClip.xy / currClip.w;

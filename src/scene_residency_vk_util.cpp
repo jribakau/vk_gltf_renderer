@@ -146,7 +146,7 @@ VkBarrierScope vkBarrierScope(GpuBarrier barrier)
       return {VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, kBuild,
               VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR};
     case GpuBarrier::eComputeToBuild:
-      // the deform outputs are vertex streams too: the raster and the path tracer read them this frame
+      // the deform outputs are vertex streams too: the path tracer reads them this frame
       return {VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, kBuild | kShading | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
               kShaderRead | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_TRANSFER_READ_BIT};
     case GpuBarrier::eComputeToCompute:

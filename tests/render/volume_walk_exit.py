@@ -177,7 +177,7 @@ def center_luminance(path):
 
 def render(exe, scene_path, output_path, technique):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
-           "--scenefile", str(scene_path), "--envSystem", "2", "--renderSystem", "0",
+           "--scenefile", str(scene_path), "--envSystem", "2",
            "--ptTechnique", str(technique), "--ptShadowTransmission", "1",
            "--ptVolumeDiffuseExit", "1",
            # The bright exits this looks for are what a firefly clamp cuts: the load calibrates

@@ -1121,7 +1121,6 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     SCOPED_TIMER("Slang compile from file");
 
     resources.slangCompiler.clearMacros();
-    nvvkgltf::applyCommonShaderMacros(resources.slangCompiler);
 
     const std::vector<std::pair<std::string, std::string>> macros = variantMacros(key);
     if(key.optimal)
@@ -1467,7 +1466,7 @@ void PathTracer::releaseVariant(Resources& resources, VkShaderModule module, VkP
 }
 
 //--------------------------------------------------------------------------------------------------
-// The shader macros of a variant, after applyCommonShaderMacros()'s: what compileShader() compiles
+// The shader macros of a variant: what compileShader() compiles
 // it with, and a variant job with it, so both find the same SPIR-V in the disk cache.
 std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const VariantKey& key) const
 {
@@ -1597,7 +1596,6 @@ PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
   compiler.targets() = job.targets;
   compiler.options() = job.options;
   compiler.addSearchPaths(job.searchPaths);
-  nvvkgltf::applyCommonShaderMacros(compiler);
   for(const auto& [name, value] : job.macros)
     compiler.addMacro({name.c_str(), value.c_str()});
   const uint64_t        spirvKey = spirvCacheKey(compiler);

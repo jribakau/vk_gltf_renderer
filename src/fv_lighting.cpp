@@ -164,31 +164,9 @@ void patchSun(Sun& s, const Json& p)
       // 0.15 degrees each (sunRadiusKm): up to 30, a softbox at arm's length
       field(s.softness, d.softness, v, [&](const Json& x) { return number(x, key, 0.0, 200.0); });
     else if(k == "shadows")
-      field(s.shadows, d.shadows, v, [&](const Json& x) { return boolean(x, key); });
-    else
-      reject("unknown key " + key);
-  }
-}
-
-void patchShadow(Shadow& s, const Json& p)
-{
-  const Shadow d;
-  for(auto it = p.begin(); it != p.end(); ++it)
-  {
-    const std::string& k   = it.key();
-    const Json&        v   = it.value();
-    const std::string  key = "shadow." + k;
-    if(k == "size")
-      field(s.size, d.size, v, [&](const Json& x) {
-        // a power of two, as the map is allocated
-        return int(std::exp2(std::round(std::log2(number(x, key, 1024.0, 8192.0)))));
-      });
-    else if(k == "contactHardening")
-      field(s.contactHardening, d.contactHardening, v, [&](const Json& x) { return boolean(x, key); });
-    else if(k == "bias")
-      field(s.bias, d.bias, v, [&](const Json& x) { return number(x, key, 0.0, 50.0); });
-    else if(k == "normalBias")
-      field(s.normalBias, d.normalBias, v, [&](const Json& x) { return number(x, key, 0.0, 50.0); });
+    {
+      // the raster view's shadow map, from before protocol 17
+    }
     else
       reject("unknown key " + key);
   }
@@ -267,7 +245,6 @@ Json toJson(const State& s)
 {
   const Env&     e = s.env;
   const Sun&     u = s.sun;
-  const Shadow&  h = s.shadow;
   const Ground&  g = s.ground;
   const Tonemap& t = s.tonemap;
   return {
@@ -287,9 +264,7 @@ Json toJson(const State& s)
         {"azimuth", u.azimuth},
         {"elevation", u.elevation},
         {"color", u.color},
-        {"softness", u.softness},
-        {"shadows", u.shadows}}},
-      {"shadow", {{"size", h.size}, {"contactHardening", h.contactHardening}, {"bias", h.bias}, {"normalBias", h.normalBias}}},
+        {"softness", u.softness}}},
       {"ground",
        {{"mode", g.mode},
         {"height", g.autoHeight ? Json("auto") : Json(g.height)},
@@ -322,7 +297,9 @@ State applyPatch(const State& s, const Json& patch)
     else if(k == "sun")
       reset ? void(out.sun = Sun{}) : patchSun(out.sun, section(patch, "sun"));
     else if(k == "shadow")
-      reset ? void(out.shadow = Shadow{}) : patchShadow(out.shadow, section(patch, "shadow"));
+    {
+      // the raster view's shadow map, from before protocol 17
+    }
     else if(k == "ground")
       reset ? void(out.ground = Ground{}) : patchGround(out.ground, section(patch, "ground"));
     else if(k == "tonemap")
@@ -622,11 +599,6 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       // after a load or an environment change and sends it again
       {"ptFireflyClamp", kFireflyClamp / tmExposure(t.method, t.exposure)},
       {"ptFireflyClampStill", kFireflyClampStill / tmExposure(t.method, t.exposure)},
-      {"rasterShadows", s.sun.enabled && s.sun.shadows},
-      {"shadowMapSize", s.shadow.size},
-      {"shadowContactHardening", s.shadow.contactHardening},
-      {"shadowBias", s.shadow.bias},
-      {"shadowNormalBias", s.shadow.normalBias},
       {"useInfinitePlane", g.mode != "off"},
       {"isShadowCatcher", g.mode == "catcher"},
       {"infinitePlaneBaseColor", vec3(linearColor(g.color))},

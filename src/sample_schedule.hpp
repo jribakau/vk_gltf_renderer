@@ -50,8 +50,8 @@ inline int frameSamples(int accumulated, int perFrame, int maxSamples, std::span
 }
 
 // The view has reached Max Samples (`maxSamples`): `accumulated` samples per pixel since the last reset,
-// `frameCount` frames (-1 right after a reset). A view that accumulates no samples -- the rasterizer,
-// a still refined by DLSS frames alone -- counts its frames instead. Not once samples accumulate: a
+// `frameCount` frames (-1 right after a reset). A view that accumulates no samples -- a still refined
+// by DLSS frames alone -- counts its frames instead. Not once samples accumulate: a
 // still's DLSS hand-off frames are frames that add no sample, and counting them ended it one short.
 // `converged`: the adaptive stop found all but a few pixels done (ptAdaptiveDone), which ends a view
 // with samples before the cap.

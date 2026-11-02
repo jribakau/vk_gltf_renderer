@@ -30,8 +30,7 @@
 // this file, which evaluates it analytically per ray -- which also keeps the disk sharp, something
 // a 1024x512 bake could never do for a half-degree sun.
 //
-// Both render paths include this header so the two can never drift: the path tracer calls it on
-// camera rays and after a delta bounce, and the rasterizer's background pass calls it per pixel.
+// The path tracer calls it on camera rays and after a delta bounce.
 //
 // Who calls this, and when, is the part that has to be exactly right:
 //

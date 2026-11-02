@@ -12,9 +12,9 @@
  */
 
 //
-// Builds Slang `-D` macro lists for shared and scene-optimal shader compiles.
+// Builds Slang `-D` macro lists for scene-optimal shader compiles.
 // Consumes `SceneFeatureSet` from scene_feature_detection and is called from the path
-// tracer and rasterizer before `SlangCompiler::compileFile()`.
+// tracer before `SlangCompiler::compileFile()`.
 //
 
 #include "scene_shader_macros.hpp"
@@ -59,13 +59,6 @@ constexpr std::array<FeatureMacro, SceneFeatureSet::kExtensionFeatureCount> kPat
 }};
 
 }  // namespace
-
-void applyCommonShaderMacros(nvslang::SlangCompiler& compiler)
-{
-#if defined(USE_DLSS)
-  compiler.addMacro({"HAS_DLSS_MOTION", "1"});
-#endif
-}
 
 void appendPathTracerOptimalMacros(std::vector<std::pair<std::string, std::string>>& macros, const SceneFeatureSet& features)
 {

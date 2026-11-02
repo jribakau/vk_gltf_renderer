@@ -42,7 +42,6 @@
 #include <nvutils/camera_manipulator.hpp>
 
 #include "env_image_loader.hpp"
-#include "rendering_mode.hpp"
 #include "scene_price.hpp"
 #include "scene_retained.hpp"
 #include "shaders/gizmo_lines_shaderio.h.slang"
@@ -167,8 +166,6 @@ public:
   virtual void setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades = 0, float bladeRotation = 0) = 0;
 
   // ---- Rendering, and its states the app shows
-  virtual void          setRenderSystem(RenderingMode mode) = 0;
-  virtual RenderingMode renderSystem() const               = 0;
   virtual bool          isStill() const                    = 0;
   virtual bool          isRefiningStill() const            = 0;
   virtual bool          isStillConverged() const           = 0;

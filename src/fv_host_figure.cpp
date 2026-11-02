@@ -145,7 +145,6 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       // built for the cooked images: the ones the cache has, and until the rest are cooked their
       // fallbacks (cookInPlace swaps each in as it lands). Original textures, or no cooker, builds it
       // for the sources, cutouts composed here.
-      // the path tracer gets the skin's volume; the rasterizer would show it see-through
       const fv::mat::SkinMode skin = skinMode.load();
       job(jobId, {{"label", label + ": Textures"}, {"state", "running"}});
       const bool cooked = !s.texServer.empty() && !s.rootId.empty() && !s.originalTextures;

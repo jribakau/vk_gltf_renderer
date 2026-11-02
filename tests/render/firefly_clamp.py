@@ -178,7 +178,7 @@ def mean_luminance(path, fraction=1.0):
 
 def render(exe, scene_path, output_path, technique, clamp, mode=None, diffuse_exit=True):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
-           "--scenefile", str(scene_path), "--envSystem", "2", "--renderSystem", "0",
+           "--scenefile", str(scene_path), "--envSystem", "2",
            "--ptTechnique", str(technique), "--ptShadowTransmission", "1",
            "--ptVolumeDiffuseExit", "1" if diffuse_exit else "0",
            # The load recalibrates ptFireflyClamp; an accumulation's frames clamp at the still's value

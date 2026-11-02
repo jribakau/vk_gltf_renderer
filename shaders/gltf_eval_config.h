@@ -14,7 +14,7 @@ layout authority and must match between host and device builds.
 Default (non-optimal) compiles: each GLTF_USE_X defaults to MAT_EXT_X (typically all 1).
 
 Optimal path-tracer recompile: host sets every GLTF_USE_X explicitly to 0 or 1 from
-SceneFeatureSet. All shader behavior (material eval, path-tracer state, raster) uses
+SceneFeatureSet. All shader behavior (material eval, path-tracer state) uses
 #if GLTF_USE_X only. MAT_EXT_* is for gltf_scene_io.h.slang struct layout (host/device
 ABI), not behavioral #if guards.
 

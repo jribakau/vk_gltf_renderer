@@ -1,6 +1,6 @@
 # Figure Viewer's renderer
 
-The render process of [Figure Viewer](../..): a Vulkan path tracer and rasterizer that runs headless,
+The render process of [Figure Viewer](../..): a Vulkan path tracer that runs headless,
 driven by its host (`src/fv_*`) over a local protocol, and hands the app its frames. It began as a fork
 of NVIDIA's [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer) on
 [nvpro_core2](https://github.com/nvpro-samples/nvpro_core2), and no longer merges it: the standalone

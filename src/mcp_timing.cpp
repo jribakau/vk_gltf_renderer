@@ -237,8 +237,8 @@ std::string GltfRenderer::waitUntilMeasurable() const
 // rendered frames, so a short window (a drag, an orbit) times all of them while it lasts instead
 // of one after another, the later ones after it ended.
 //
-// A frame records only the sections that ran, so some timers never tick in a given window (the
-// raster's blend sort with nothing to sort, DLSS under accumulation). Such a timer is reported
+// A frame records only the sections that ran, so some timers never tick in a given window (DLSS
+// under accumulation). Such a timer is reported
 // with an error once every timer that did tick has its samples, instead of holding the call for
 // the first-sample budget. One that stops ticking for the per-sample budget (the motion ended)
 // keeps the samples it has; `samples` says how many.

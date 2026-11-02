@@ -327,7 +327,7 @@ public:
   struct VariantCompileJob
   {
     VariantKey                                       key;
-    std::vector<std::pair<std::string, std::string>> macros;  // after applyCommonShaderMacros()'s
+    std::vector<std::pair<std::string, std::string>> macros;
     std::vector<std::filesystem::path>               searchPaths;
     std::vector<slang::TargetDesc>                   targets;
     std::vector<slang::CompilerOptionEntry>          options;

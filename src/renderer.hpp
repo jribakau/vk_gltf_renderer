@@ -55,7 +55,6 @@
 #include "shaders/gizmo_lines_shaderio.h.slang"
 
 #include "renderer_pathtracer.hpp"
-#include "renderer_rasterizer.hpp"
 #include "resources.hpp"
 #include "renderer_silhouette.hpp"
 #include "env_baker.hpp"
@@ -223,15 +222,6 @@ public:
   /// frame, because it submits and waits on the queue.
   void onEnvironmentChanged() { m_envBakeDirty = true; }
 
-  /// The active renderer changed. A baked sky committed under the path tracer skipped the prefilter,
-  /// so the rasterizer arriving would light from cubemaps of an older environment.
-  void onRenderSystemChanged()
-  {
-    if(m_resources.settings.renderSystem == RenderingMode::eRasterizer && isBakedEnvironment(m_resources.settings.envSystem))
-      onEnvironmentChanged();
-    resetFrame();
-  }
-
   /// Copy the current sky settings into EnvBaker. Cheap and safe mid-frame, so both the preview
   /// and the commit call it; the resolution is not part of it, since changing that reallocates.
   void updateBakerParameters();
@@ -267,9 +257,8 @@ public:
   /// clamp -- which is why it is one function.
   [[nodiscard]] glm::vec3 gradientSunIlluminance() const;
 
-  /// The rasterizer's shadow-map light and box, and the ground's fade disk, into the frame info.
-  /// `rendererSunLight` is the frame's own flag: whether the sky's sun is a light past the scene's.
-  void fillShadowAndGround(shaderio::SceneFrameInfo& finfo);
+  /// The ground's fade disk into the frame info.
+  void fillGround(shaderio::SceneFrameInfo& finfo) const;
 
   /// Frame-top consumer of onEnvironmentChanged(). Called from onUIRender, not onRender: it waits
   /// on the device and rewrites descriptors, which is unsafe mid-command-buffer.
@@ -322,10 +311,6 @@ public:
   void setDetailSink(std::function<void(uint64_t item, bool up)> sink) override { m_detailSink = std::move(sink); }
   void holdTextures(bool held) override { m_texturesHeld = held; }
   void setTexturesArriving(bool arriving) override { m_pathTracer.setStillWaits(arriving); }
-
-  /// The path tracer or the rasterizer, as the renderSystem parameter switches them.
-  void          setRenderSystem(RenderingMode mode) override;
-  RenderingMode renderSystem() const override { return m_resources.settings.renderSystem; }
 
   // The tonemapped output and its size, for the headless frame stream (src/frame_stream.hpp). The
   // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.
@@ -381,8 +366,7 @@ public:
   // denoiser, or the hand-off delay's frames with one): its frames rebuild the image each time.
   bool isStill() const override
   {
-    return m_resources.settings.renderSystem == RenderingMode::ePathtracer && m_resources.frameCount >= 1
-           && !m_pathTracer.dlssFrame();
+    return m_resources.frameCount >= 1 && !m_pathTracer.dlssFrame();
   }
   bool isStillConverged() const override { return isStill() && m_resources.accumulationComplete(); }
   void saveImage(const std::filesystem::path& path) override
@@ -610,7 +594,6 @@ private:
   Resources             m_resources;
   std::filesystem::path m_cacheDir;   // --cacheDir, applied to the path tracer before onAttach
   PathTracer            m_pathTracer;  // Path tracer renderer
-  Rasterizer m_rasterizer;  // Rasterizer renderer
 
   SkySun         m_skySun;          // Who the sun is, and where it points
 

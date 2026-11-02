@@ -200,7 +200,6 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   // any Scene-pointer-based invalidation inside the render loop would be unreliable -- this is
   // the authoritative invalidation point.
   m_pathTracer.onSceneInvalidated(m_resources);
-  m_rasterizer.onSceneInvalidated(m_resources);
   // The retained scene is kept, emptied, when images are kept for reuse (retainedSpare); otherwise
   // destroyed now, its backend waiting for the device and running what it retired.
   if(m_resources.retainedGpu && keepImagesForReuse)
@@ -597,19 +596,11 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
 // What a retained sync's result asks of the renderers; true when the frame changed
 bool GltfRenderer::afterRetainedSync(const rs::SyncResult& result)
 {
-  // The rasterizer's recorded draws name instances and buffers; any change records them again
-  if(result.changed)
-    m_rasterizer.freeRecordCommandBuffer(m_resources);
   // instances came or went: the selection's outline follows
   if(result.drawListChanged)
     refreshEntitySelection();
   if(result.dlssReset)
-  {
-    if(m_resources.settings.renderSystem == RenderingMode::ePathtracer)
-      m_pathTracer.notifyDlssContentReset(m_resources);
-    else
-      m_rasterizer.notifyDlssContentReset(m_resources);
-  }
+    m_pathTracer.notifyDlssContentReset(m_resources);
   m_texturesMoved = m_texturesMoved || result.imagesMoved;
   return result.changed && !result.samePicture;
 }
@@ -629,8 +620,6 @@ void GltfRenderer::updateRetainedFeatures(bool grow)
 
 std::optional<nvvkgltf::SceneFeatureSet> GltfRenderer::drawableFeatures()
 {
-  if(m_resources.settings.renderSystem != RenderingMode::ePathtracer)
-    return std::nullopt;
   return m_pathTracer.liveShaderFeatures();
 }
 

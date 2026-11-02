@@ -19,9 +19,8 @@
 
 // Core resource management header for the Vulkan glTF renderer.
 //
-// Defines the main resource structures and settings for a Vulkan-based 3D renderer
-// that supports both path tracing and rasterization. Manages Vulkan resources, glTF scene data,
-// environment maps, and rendering settings.
+// Defines the main resource structures and settings for the Vulkan path tracer. Manages Vulkan
+// resources, glTF scene data, environment maps, and rendering settings.
 
 #pragma once
 #include <algorithm>
@@ -41,7 +40,6 @@
 #include "sample_schedule.hpp"
 #include "shaders/shaderio.h"  // Shared between host and device
 
-#include <nvshaders_host/hdr_env_dome.hpp>
 #include <nvshaders_host/tonemapper.hpp>
 #include <nvslang/slang.hpp>
 #include <nvutils/camera_manipulator.hpp>
@@ -60,7 +58,6 @@
 #include <nvapp/application.hpp>
 #include <nvapp/imgui_texture.hpp>
 
-#include "rendering_mode.hpp"
 
 // Which special view the user wants in the viewport. The DLSS guide-buffer entries that used
 // to live here are gone -- DLSS guide selection is now encapsulated inside the Dlss class
@@ -134,7 +131,6 @@ inline bool skyHasSun(shaderio::EnvSystem env)
 
 struct Settings
 {
-  RenderingMode           renderSystem           = RenderingMode::ePathtracer;          // Renderer to use
   shaderio::Visualization visualization          = shaderio::Visualization::eRendered;  // Visualization mode
   bool                    wireframe              = false;                      // Wireframe overlay on rendered meshes
   shaderio::EnvSystem     envSystem              = shaderio::EnvSystem::eSky;  // Environment system: Sky or HDR
@@ -259,20 +255,11 @@ struct Settings
   float     infinitePlaneMetallic   = 0.0;                       // Default non-metallic
   float     infinitePlaneRoughness  = 0.5;                       // Default medium roughness
   float     shadowCatcherDarkness   = 0.0f;                      // Non-physical shadow darkening
-  // The ground fades out over a disk of this many scene radii around the scene (0: no fade), in
-  // both renderers, as the Figure Viewer's floor does.
+  // The ground fades out over a disk of this many scene radii around the scene (0: no fade), as the
+  // Figure Viewer's floor does.
   float groundFade = 0.0f;
   // A multiplier on the light the sky's sun gives (SceneFrameInfo::skySunScale).
   float skySunScale = 1.0f;
-  // The rasterizer's sun shadow map. `shadowLight` is a scene light index, or -1 for the sun: the
-  // light the scene marks as the sky's sun, else the renderer's own sun, else the brightest
-  // directional light. Biases are in shadow-map texels, so they hold at any map size and scene scale.
-  bool  rasterShadows          = true;
-  int   shadowLight            = -1;
-  int   shadowMapSize          = 4096;
-  bool  shadowContactHardening = true;
-  float shadowBias             = 1.0f;
-  float shadowNormalBias       = 1.5f;
   bool      dlssRrHardwareAvailable = false;  // DLSS Ray Reconstruction hardware/extensions available (set at startup)
   bool dlssSrHardwareAvailable = false;  // DLSS Super Resolution / DLAA hardware/extensions available (set at startup)
   bool serHardwareAvailable    = false;  // VK_EXT_ray_tracing_invocation_reorder enabled on the device (set at startup)
@@ -375,7 +362,6 @@ struct Resources
   // directly, because EnvBaker is handed it at init.
   VkDescriptorSetLayout skyLutDescriptorSetLayout{};
   VkDescriptorSet       skyLutDescriptorSet{};
-  nvshaders::HdrEnvDome hdrDome;
   // Main frame target (tonemapped + rendered + selection + depth). Accessor cheat sheet:
   //   raster attachment  -> getColorAttachmentView() / getDepthImageView()
   //   compute write      -> getColorStorageImageInfo()
@@ -396,9 +382,6 @@ struct Resources
   // interpret the same azimuth/elevation pair differently.
   glm::vec3                                   sunDirection{-1.23413404e-08F, 0.707106829F, 0.707106709F};
   bool                                        sunYIsUp{true};
-  // This frame's SceneFrameInfo names a shadow-casting light, so the rasterizer draws its shadow
-  // map. Written with the frame info (GltfRenderer::fillShadowAndGround).
-  bool shadowPassActive{false};
   nvshaders::Tonemapper                       tonemapper{};                       // Tonemapper
   shaderio::TonemapperData                    tonemapperData{.autoExposure = 1};  // Tonemapper data
   std::shared_ptr<nvutils::CameraManipulator> cameraManip;         // Camera manipulator (owned by GltfRenderer)
@@ -423,9 +406,8 @@ struct Resources
 
   // The accumulation is complete: rendering stops until the next reset (resetFrame). The path tracer
   // stops when its image holds settings.maxSamples samples per pixel, or once its adaptive stop is
-  // done. The frame bound stops a renderer that adds no samples (the rasterizer, or a path tracer with
-  // nothing to trace); a frame that does render adds at least one sample, so it never cuts an
-  // accumulation short.
+  // done. The frame bound stops a path tracer that adds no samples (nothing to trace); a frame that
+  // does render adds at least one sample, so it never cuts an accumulation short.
   bool accumulationComplete() const
   {
     return sample_schedule::accumulationComplete(frameCount, accumulatedSamples, settings.maxSamples, adaptiveDone);

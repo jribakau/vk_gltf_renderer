@@ -21,8 +21,8 @@
 
 //
 // What the renderers read of the scene on the GPU (docs: daz-viewer docs/retained-scene-plan.md,
-// "Coexistence"): the path tracer, the rasterizer, the silhouette, the pickers and the frame's
-// shadow and ground fit read this; RetainedSceneVk stands behind it.
+// "Coexistence"): the path tracer, the silhouette, the pickers and the frame's ground fit read
+// this; RetainedSceneVk stands behind it.
 //
 // Per-slot side tables: every GPU array indexed by a render node, render primitive or material
 // slot. A new one belongs here, so the retained residency layer sizes, grows, fills and retires it

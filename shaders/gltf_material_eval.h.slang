@@ -110,17 +110,11 @@ float4 getTexture(Texture2D images[], SamplerState samplers[], GltfTextureInfo t
     return tex.SampleGrad(sampler, tt, ddx_uv, ddy_uv);
 #endif
   }
-  // texGrad == 0 means "use the sharpest mip". In a fragment shader (RASTER_PIPELINE) the
-  // implicit-LOD Sample() has valid quad derivatives and yields proper hardware mipmapping.
-  // In the path tracer (compute Ray Query / raygen Ray Tracing) there are no such derivatives:
-  // raygen falls back to mip 0, but a compute dispatch emits quad derivatives that explode at
-  // geometry silhouettes/discontinuities, snapping to the coarsest mip and flattening the
-  // texture to its average (~base color). Force explicit mip 0 there so both RT paths match.
-#ifdef RASTER_PIPELINE
-  return tex.Sample(sampler, tt);
-#else
+  // texGrad == 0 means "use the sharpest mip". The path tracer (compute Ray Query / raygen Ray
+  // Tracing) has no quad derivatives: raygen falls back to mip 0, but a compute dispatch emits quad
+  // derivatives that explode at geometry silhouettes/discontinuities, snapping to the coarsest mip
+  // and flattening the texture to its average (~base color). Force explicit mip 0 so both match.
   return tex.SampleLevel(sampler, tt, 0.0f);
-#endif
 #else
   return float4(1.0F);
 #endif
@@ -173,9 +167,7 @@ float3 applyDetailNormal(float3 N, float3 T, float3 B, float3 d)
 }
 #endif
 
-// Volumetric scattering is path-tracer only (see the scatter block in evaluateMaterial), so this
-// mapping is not compiled into the raster pipeline.
-#if GLTF_USE_SCATTER && !defined(RASTER_PIPELINE)
+#if GLTF_USE_SCATTER
 /*-------------------------------------------------------------------------------------------------
  * Convert multi-scatter albedo to single-scatter albedo (Kulla-Conty mapping).
  * Formula from the KHR_materials_scatter specification. The anisotropy g of the
@@ -324,7 +316,7 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   // Not on skin shaded as the thin preview: a fine relief at one sample a pixel only shimmers under
   // DLSS, and the roughness that makes up for it goes with it, so a highlight keeps its width.
   bool detailOn = material.detailWeightFactor > 0.0F;
-#if GLTF_USE_SCATTER && !defined(RASTER_PIPELINE)
+#if GLTF_USE_SCATTER
   if(scatterAsThin && any(material.scatterDistance > 0.0F))
     detailOn = false;
 #endif
@@ -381,7 +373,7 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
       if(dropReach > 0.0F && isTexturePresent(material.proceduralCoverTexture))
         early = getTexture(images, samplers, texInfos[material.proceduralCoverTexture], state.tc, state.texGrad).r;
       proceduralDrop = saturate((early - (1.0F - dropReach)) / 0.04F);
-#if GLTF_USE_SCATTER && !defined(RASTER_PIPELINE)
+#if GLTF_USE_SCATTER
       // as the detail layer: a droplet at one sample a pixel only shimmers under DLSS
       if(scatterAsThin && any(material.scatterDistance > 0.0F))
         proceduralDrop = 0.0F;
@@ -423,17 +415,10 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   // correctly disabled.
   pbrMat.attenuationColor    = material.attenuationColor;
   pbrMat.attenuationDistance = material.attenuationDistance;
+  // thicknessFactor alone selects thin-walled vs. volume: the thickness texture stands in for the
+  // path length through the medium, which a traced ray gets from hitT, and a zero texel must not
+  // turn a volume thin-walled.
   pbrMat.thickness           = material.thicknessFactor;
-#ifdef RASTER_PIPELINE
-  // KHR_materials_volume: per-fragment thickness = thicknessFactor * thicknessTexture.g. It stands
-  // in for the path length through the medium, which only the rasterizer cannot measure; a traced
-  // ray gets it from hitT. thicknessFactor alone selects thin-walled vs. volume, so the path
-  // tracer must not let a zero texel turn a volume thin-walled.
-  if(isTexturePresent(material.thicknessTexture))
-  {
-    pbrMat.thickness *= getTexture(images, samplers, texInfos[material.thicknessTexture], state.tc, state.texGrad).g;
-  }
-#endif
 #endif
 
 #if GLTF_USE_SPECULAR
@@ -680,12 +665,6 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
 
     float g = material.scatterAnisotropy;
 
-    // Volumetric mode needs to track a path *inside* the medium, which the rasterizer cannot do.
-    // The spec allows a renderer without volumetric transport to approximate it with the
-    // thin-walled behaviour ("for materials with very short scattering distances relative to
-    // their size (dense subsurface), the visual difference is small"), so the raster preview
-    // always takes the thin-walled branch and the volume branch is path-tracer only.
-#ifndef RASTER_PIPELINE
     // scatterAsThin forces the thin branch for the interactive preview: the walk collapsed to its
     // diffuse exit at zero distance, so the base map (skin map and tint) is its colour, no walk.
     if(pbrMat.thickness > 0.0 && !scatterAsThin)
@@ -728,7 +707,6 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
       pbrMat.transmissionTint = 1.0 / max(pbrMat.baseColor, float3(1e-4));
     }
     else
-#endif  // !RASTER_PIPELINE
     {
       // The preview keeps the thin lobe's fixed back-scatter, whatever anisotropy the medium
       // authored, and leaves in the base colour as the volume walk does lit from the front
@@ -783,21 +761,6 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
       float along = abs(state.tc[0].y - material.hairRootV);
       pbrMat.opacity *= smoothstep(0.0F, material.hairRootFade, along);
     }
-#ifdef RASTER_PIPELINE
-    // The path tracer replaces these lobes with the fibre BSDF. The preview only stretches the
-    // highlight across the strand (the bitangent) and lets a little light through the sheet.
-    float bm = clamp(material.hairLongitudinal, 0.05, 1.0);
-    float bn = clamp(material.hairAzimuthal, 0.05, 1.0);
-    float alphaM = bm * bm;
-    pbrMat.T = normalize(pbrMat.B);
-    pbrMat.B = normalize(cross(pbrMat.N, pbrMat.T));
-    pbrMat.roughness = float2(lerp(alphaM, 1.0, saturate(0.5 + 0.5 * bn)), alphaM);
-    pbrMat.metallic = 0.0;
-    pbrMat.specular = 1.0;
-    pbrMat.ior2 = 1.55;
-    pbrMat.diffuseTransmissionFactor = 0.25;
-    pbrMat.diffuseTransmissionColorFactor = pbrMat.baseColor;
-#endif
   }
 #endif
 

@@ -46,8 +46,8 @@ float infinitePlaneShadowTransmittance(float3 origin, float3 direction, float tM
   return t < 0.0F ? 1.0F : 1.0F - groundFadeWeight(origin + direction * t, frameInfo);
 }
 
-// The rasterizer's catcher has no path to trace, so it darkens by a fraction of what it catches.
-// Most of it at darkness 0, all of it at 1, so the setting reads the same way in both renderers.
+// How much of the light it catches a shadow catcher darkens by: most of it at darkness 0, all of it
+// at 1.
 float groundCatcherStrength(SceneFrameInfo* frameInfo)
 {
   return lerp(0.6F, 1.0F, saturate(frameInfo->shadowCatcherDarkenAmount));

@@ -23,15 +23,11 @@
 //
 // The camera ray for a pixel -- one definition, shared.
 //
-// It lived in the path tracer, and the rasterizer's sky-background pass grew its own. The two
-// disagreed: that copy built a world-space *point* on the far plane and normalised it, which is a
-// direction from the world origin rather than from the eye. Identical wherever the camera happened
-// to sit at the origin, and wrong in proportion to how far away it was -- a half-degree sun disk
-// landed about 70 pixels from where the path tracer drew it at 500 units out.
-//
-// Anything that reconstructs a ray from a pixel should call this rather than re-derive it. The
-// two renderers agreeing about where the sky is has to be structural, not a coincidence that
-// holds until someone edits one of them.
+// Anything that reconstructs a ray from a pixel should call this rather than re-derive it. A copy
+// that once built a world-space *point* on the far plane and normalised it got a direction from
+// the world origin rather than from the eye: identical wherever the camera happened to sit at the
+// origin, and wrong in proportion to how far away it was -- a half-degree sun disk landed about 70
+// pixels off at 500 units out.
 //
 
 #include "nvshaders/functions.h.slang"
