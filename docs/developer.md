@@ -168,6 +168,8 @@ src/
 ├── tinygltf_converter.cpp/hpp  # OBJ to glTF converter
 ├── tiny_stb_implementation.cpp # STB library implementation (single compilation unit)
 ├── pipeline_cache_util.cpp/hpp # Vulkan pipeline cache persistence
+├── pipeline_build_record.hpp   # The pipelines built before: tells a full driver cache from a new shader (unit-tested)
+├── driver_shader_cache.hpp     # NVIDIA's shader cache of the renderer's own, set before Vulkan starts, emptied when full (unit-tested)
 ├── scene_feature_detection.cpp/hpp # Detect which extensions a scene uses
 ├── scene_shader_macros.cpp/hpp # Emit -DGLTF_USE_* macros from detected features
 ├── timeline_pipeline.cpp/hpp   # Timeline-semaphore submission helper

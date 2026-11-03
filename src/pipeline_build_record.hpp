@@ -31,8 +31,11 @@
 // code, its specialization and flags, and the driver version (an update empties the driver's cache).
 // A line "ms <n>" says how long a compile took, and the last one is the longest of the last run that compiled:
 // the one number there is for how long the next will take, since the driver reports nothing from inside one.
+// A line "dropped" says a run found the driver had dropped a pipeline: the next start empties the driver's
+// cache (driver_shader_cache.hpp) and forgets the keys, which then say nothing of what it holds.
 //-------------------------------------------------------------------------------------------------------
 
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -44,6 +47,9 @@
 class PipelineBuildRecord
 {
 public:
+  // The record's name, beside the pipeline cache
+  static constexpr const char* kFileName = "pipeline_builds.txt";
+
   // Slower than this, a pipeline was compiled: a cached one takes well under a second (0.07-0.7 s
   // measured), a compile of the path tracer 10-25 s
   static constexpr double kCompiledMs = 3000.0;
@@ -56,17 +62,22 @@ public:
     m_keys.clear();
     std::ifstream in(path);
     for(std::string line; std::getline(in, line);)
-      if(!line.empty())
+    {
+      if(!line.empty() && line.back() == '\r')
+        line.pop_back();
+      if(line == kDroppedLine)
+        m_droppedOnRecord = true;
+      else if(line.starts_with(kMsPrefix))
         try
         {
-          if(line.starts_with(kMsPrefix))
-            m_lastCompiledMs = std::stod(line.substr(kMsPrefix.size()));
-          else
-            m_keys.insert(std::stoull(line, nullptr, 16));
+          m_lastCompiledMs = std::stod(line.substr(kMsPrefix.size()));
         }
         catch(...)  // a line cut short by a killed write
         {
         }
+      else if(uint64_t key = 0; parseKey(line, key))
+        m_keys.insert(key);
+    }
     m_earlier = m_keys;
   }
 
@@ -93,6 +104,10 @@ public:
     }
     if(!earlier || ms < kCompiledMs)
       return false;
+    // marked once a run, for the next start (driver_shader_cache.hpp)
+    if(!m_dropped && !m_path.empty())
+      if(std::ofstream out(m_path, std::ios::app); out)
+        out << kDroppedLine << '\n';
     m_dropped = true;
     return true;
   }
@@ -111,14 +126,46 @@ public:
     return m_dropped;
   }
 
+  // An earlier run found the driver had dropped a pipeline, as load() found the record
+  bool droppedOnRecord() const
+  {
+    std::lock_guard lock(m_mutex);
+    return m_droppedOnRecord;
+  }
+
+  // The driver's cache was emptied: the keys and the mark say nothing of it any more, so `path` keeps
+  // only its compile times. Not while a record of `path` is in use.
+  static void forgetKeys(const std::filesystem::path& path)
+  {
+    std::string kept;
+    {
+      std::ifstream in(path);
+      if(!in)
+        return;
+      for(std::string line; std::getline(in, line);)
+        if(line.starts_with(kMsPrefix))
+          kept += line + '\n';
+    }
+    std::ofstream(path, std::ios::trunc) << kept;
+  }
+
 private:
-  static constexpr std::string_view kMsPrefix = "ms ";
+  static constexpr std::string_view kMsPrefix    = "ms ";
+  static constexpr std::string_view kDroppedLine = "dropped";
+
+  // A whole line of hex; anything else (a line a killed write cut short) is no key
+  static bool parseKey(std::string_view line, uint64_t& key)
+  {
+    const auto [end, ec] = std::from_chars(line.data(), line.data() + line.size(), key, 16);
+    return ec == std::errc() && end == line.data() + line.size() && !line.empty();
+  }
 
   mutable std::mutex           m_mutex;
   std::filesystem::path        m_path;
   std::unordered_set<uint64_t> m_keys;
   std::unordered_set<uint64_t> m_earlier;  // the keys load() found
-  bool                         m_dropped = false;
+  bool                         m_dropped         = false;
+  bool                         m_droppedOnRecord = false;
   double                       m_lastCompiledMs = 0;
   double                       m_longestThisRun = 0;
 };

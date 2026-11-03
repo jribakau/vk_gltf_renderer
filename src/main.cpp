@@ -49,6 +49,7 @@
 #include <figure/dson/store.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include "fv_protocol.hpp"
+#include "driver_shader_cache.hpp"
 
 #include <algorithm>
 #include "version.hpp"
@@ -232,6 +233,32 @@ auto main(int argc, char** argv) -> int
 
   elemGltfRenderer->setCacheDir(cacheDir);
   cacheDirApplied = true;
+  // NVIDIA's driver: a shader cache of the renderer's own beside the pipeline cache, emptied when it was
+  // full, before Vulkan starts and the driver opens it (driver_shader_cache.hpp). One already set is kept.
+  {
+#pragma warning(suppress : 4996)  // getenv: read once, at start-up
+    const char* givenPath = std::getenv(driver_shader_cache::kPathVariable);
+    if(givenPath && *givenPath)
+      LOGI("Driver shader cache: %s, as the environment has it\n", givenPath);
+    else
+    {
+      const driver_shader_cache::Setup driverCache =
+          driver_shader_cache::prepare(cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir);
+      const std::string size = std::to_string(driver_shader_cache::kCapBytes);
+#ifdef _WIN32
+      _wputenv_s(L"__GL_SHADER_DISK_CACHE_PATH", driverCache.folder.c_str());
+      _putenv_s(driver_shader_cache::kSizeVariable, size.c_str());
+#else
+      setenv(driver_shader_cache::kPathVariable, driverCache.folder.c_str(), 1);
+      setenv(driver_shader_cache::kSizeVariable, size.c_str(), 1);
+#endif
+      const char* why = driverCache.emptied == driver_shader_cache::Emptied::eDropped ? ", emptied: the last run found it full" :
+                        driverCache.emptied == driver_shader_cache::Emptied::eNearCap ? ", emptied: near its cap" :
+                                                                                         "";
+      LOGI("Driver shader cache: %s (%.0f MB of %.0f%s)\n", nvutils::utf8FromPath(driverCache.folder).c_str(),
+           double(driverCache.bytes) / (1 << 20), double(driver_shader_cache::kCapBytes) / (1 << 20), why);
+    }
+  }
   // parsed DSON files (a strand hair's 76 MB geometry) beside the pipeline cache
   fv::dson::setParsedCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "dson");
   fv::wardrobe::setBindCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "bind");

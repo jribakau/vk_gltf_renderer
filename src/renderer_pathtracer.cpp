@@ -103,7 +103,7 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
       LOGW("PathTracer: cache directory '%s' was not created (%s); disk caches will fail to write\n",
            nvutils::utf8FromPath(cacheRoot).c_str(), cacheEc.message().c_str());
     m_pipelineCache.init(m_device, cacheRoot / "pipeline_cache.bin");
-    m_buildRecord.load(cacheRoot / "pipeline_builds.txt");
+    m_buildRecord.load(cacheRoot / PipelineBuildRecord::kFileName);
     shader_work_detail::lastBuildMs() = int64_t(m_buildRecord.lastCompiledMs());
     if(!cacheEc)
     {
