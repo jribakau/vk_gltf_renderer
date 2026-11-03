@@ -1,9 +1,9 @@
-// nvapp::ResourceFreeRing: a closure that frees a resource runs once every frame submitted before it
-// was queued has completed, whether it was queued in the loop's update step (the previous frame still
-// in flight) or while a frame was being recorded.
+// nvapp::ResourceFreeRing: a closure that frees a resource runs once the frame of the loop
+// iteration it was queued in has completed, whether it was queued in the update step (the previous
+// frame still in flight, this frame's copies about to be recorded) or while the frame was recorded.
 //
 // The loop here orders its steps as Application::headlessRun() and run() do: onUpdate, the wait for
-// the frame that last used the ring slot (N frames back), the slot's queue, record, submit, advance.
+// the frame that last used the ring slot (N frames back), the slot's drain, record, submit, advance.
 
 #include <gtest/gtest.h>
 #include <nvapp/resource_free_ring.hpp>
@@ -49,13 +49,14 @@ struct Loop
     ring.frameCompleted(k % n);                                        // freeResourcesQueue()
     if(onRender)
       onRender();  // frame k is recorded
-    k++;           // submitted; the next slot
+    ring.frameAdvanced();  // submitted; advanceFrame()
+    k++;
   }
 };
 
 }  // namespace
 
-TEST(ResourceFreeRing, QueuedInAnUpdateRunsOnceThePreviousFrameHasCompleted)
+TEST(ResourceFreeRing, QueuedInAnUpdateRunsOnceThatIterationsFrameHasCompleted)
 {
   for(uint32_t slots : {2u, 3u})
   {
@@ -67,10 +68,11 @@ TEST(ResourceFreeRing, QueuedInAnUpdateRunsOnceThePreviousFrameHasCompleted)
     ASSERT_EQ(loop.ran.size(), 12u) << slots << " slots";
     for(const Ran& r : loop.ran)
     {
-      // not before frame queuedAt - 1, the one in flight as it was queued, has completed...
-      EXPECT_GE(r.completedThrough, int(r.queuedAt) - 1) << slots << " slots, queued in " << r.queuedAt;
-      // ...and at the first iteration that has waited for it (the first update has no frame to wait for)
-      EXPECT_EQ(r.ranAt, r.queuedAt == 0 ? 0 : r.queuedAt + slots - 1) << slots << " slots, queued in " << r.queuedAt;
+      // not before frame queuedAt has completed: the previous frame, in flight as it was queued,
+      // and this one, whose recording may copy from what the closure frees, have both...
+      EXPECT_GE(r.completedThrough, int(r.queuedAt)) << slots << " slots, queued in " << r.queuedAt;
+      // ...and at the first iteration that has waited for it
+      EXPECT_EQ(r.ranAt, r.queuedAt + slots) << slots << " slots, queued in " << r.queuedAt;
     }
   }
 }
@@ -93,13 +95,15 @@ TEST(ResourceFreeRing, QueuedWhileRecordingRunsOnceThatFrameHasCompleted)
   }
 }
 
-TEST(ResourceFreeRing, QueuedBeforeAnyFrameRunsAtTheFirst)
+TEST(ResourceFreeRing, QueuedBeforeAnyFrameWaitsForTheFirst)
 {
   Loop loop(2);
   loop.queue();
-  loop.iterate({});
+  for(uint32_t i = 0; i < 3; i++)
+    loop.iterate({});
   ASSERT_EQ(loop.ran.size(), 1u);
-  EXPECT_EQ(loop.ran[0].ranAt, 0u);
+  EXPECT_EQ(loop.ran[0].ranAt, 2u);
+  EXPECT_GE(loop.ran[0].completedThrough, 0);
 }
 
 TEST(ResourceFreeRing, WithNoSlotsAClosureRunsAsItIsQueued)
@@ -113,20 +117,17 @@ TEST(ResourceFreeRing, WithNoSlotsAClosureRunsAsItIsQueued)
   EXPECT_EQ(runs, 2);
 }
 
-TEST(ResourceFreeRing, AClosureQueuedByOneRunningWaitsItsOwnFrames)
+TEST(ResourceFreeRing, AClosureQueuedByOneRunningWaitsItsOwnFrame)
 {
   // A retire that retires something else (a backend's queue draining into the app's): the second
-  // waits for the frames in flight as it was queued, like any other.
+  // runs once the frame of the iteration it was queued in has completed, like any other.
   Loop loop(2);
   int  second = -1;
-  for(uint32_t i = 0; i < 3; i++)
+  loop.iterate([&] { loop.ring.submit([&] { loop.ring.submit([&] { second = int(loop.k); }); }); });  // k = 0
+  for(uint32_t i = 0; i < 6; i++)
     loop.iterate({});
-  loop.iterate([&] { loop.ring.submit([&] { loop.ring.submit([&] { second = int(loop.k); }); }); });  // k = 3
-  for(uint32_t i = 0; i < 4; i++)
-    loop.iterate({});
-  // the first, queued with frame 2 in flight, ran in iteration 4 (its wait is for frame 2); the second,
-  // queued then with frame 3 in flight, in iteration 5
-  EXPECT_EQ(second, 5);
+  // the first ran in iteration 2 (after the wait for frame 0); the second, queued then, in iteration 4
+  EXPECT_EQ(second, 4);
 }
 
 TEST(ResourceFreeRing, ResetRunsEverythingIncludingWhatAClosureQueues)

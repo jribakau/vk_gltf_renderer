@@ -25,9 +25,11 @@
 #include <fmt/format.h>
 #include <stb/stb_image.h>
 #include <GLFW/glfw3.h>
+#include <cstdlib>
 #include <fstream>
 #include <unordered_set>
 #include <string>
+#include <string_view>
 #undef APIENTRY
 
 #include <nvaftermath/aftermath.hpp>
@@ -373,6 +375,23 @@ auto main(int argc, char** argv) -> int
 #else
   validation.setPreset(nvvk::ValidationSettings::LayerPresets::eStandard);
 #endif
+
+  // The app starts the renderer with its own arguments, so a diagnostic run is asked for in the
+  // environment: FV_VVL=1 validates the API as --vvl does; FV_VVL=gpuav also instruments the
+  // shaders, so a read through a descriptor that names nothing, or past a buffer, is reported
+  // with its binding and index as it happens, in the log, instead of the device going. Slow.
+  const char* vvlEnv = std::getenv("FV_VVL");
+  if(vvlEnv && *vvlEnv && std::string_view(vvlEnv) != "0")
+  {
+    vkSetup.enableValidationLayers = true;
+    if(std::string_view(vvlEnv) == "gpuav")
+    {
+      validation.setPreset(nvvk::ValidationSettings::LayerPresets::eGpuAssisted);
+      LOGW("FV_VVL=gpuav: GPU-assisted validation instruments every shader; frames are slow\n");
+    }
+    else
+      LOGW("FV_VVL=%s: the Vulkan validation layer is on\n", vvlEnv);
+  }
 
   // Optimize VVL for fast pipeline creation while keeping critical validation
   if(vkSetup.enableValidationLayers)
