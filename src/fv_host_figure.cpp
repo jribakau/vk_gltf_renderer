@@ -54,6 +54,9 @@ Json FvHost::Impl::load(const Json& args)
       throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
     name = path;
   }
+  // a pose file's keys, played on the figure named or selected
+  if(args.value("as", "") == "animation")
+    return loadAnimation(library->first, library->second, args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "");
   // how it was opened, for a scene file
   const Json source = args.contains("rel") ? Json{{"rel", args["rel"]}} : Json{{"path", args["path"]}};
   // a wearable goes on the figure named or selected, unless it is to be a prop of its own
@@ -67,6 +70,56 @@ Json FvHost::Impl::load(const Json& args)
           into->push_back(r.get<std::string>());
   return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp, {}, std::move(prefetch), std::move(iray), {},
                     args.value("place", Json()));
+}
+
+Json FvHost::Impl::loadAnimation(std::vector<std::filesystem::path> roots, std::string rel, std::string target)
+{
+  const uint64_t    jobId = ++jobs;
+  const std::string label = "Loading " + utf8Of(pathOf(rel).filename());
+  job(jobId, {{"label", label}, {"state", "running"}});
+  loaders.spawn([this, roots = std::move(roots), rel = std::move(rel), target = std::move(target), jobId, label] {
+    const auto failed = [this, jobId, label](const std::string& problem) {
+      job(jobId, {{"label", label}, {"state", "failed"}, {"error", problem}});
+      notice(problem, "error");
+    };
+    try
+    {
+      auto       store  = std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(roots));
+      auto       doc    = store->load(rel);
+      const auto preset = doc ? fv::dson::describePreset(doc->json) : std::nullopt;
+      if(!preset || preset->kind != "pose preset")
+        throw std::runtime_error(fileStem(rel) + " isn't a DAZ pose file, so it has no animation to play.");
+      if(!fv::pose::isAnimated(doc->json))
+        throw std::runtime_error(fileStem(rel) + " is a still pose, not an animation: open it from the Library or the Pose tab's Load.");
+      post([this, body = doc->json, rel, target, jobId, label, failed] {
+        try
+        {
+          const auto prop = figureProp(target.empty() ? Json::object() : Json{{"prop", target}});
+          if(!prop || !prop->figure->fig->pose)
+            throw std::runtime_error(fileStem(rel) + " is an animation for a DAZ figure. Select one first, then open it.");
+          fv::pose::PoseClip clip    = prop->figure->fig->loadPoseClip(body);
+          const size_t       skipped = clip.skipped.size();
+          holdAnimation(*prop, std::move(clip), rel, true);
+          const FigureAnimation& a = *prop->figure->animation;
+          char                   length[32];
+          std::snprintf(length, sizeof(length), "%.1f s", a.clip.duration);
+          notice("Playing " + a.name + " on " + prop->name + " (" + length + "). The Anim tab has its controls."
+                     + (skipped ? " " + std::to_string(skipped) + " of its controls aren't on this figure and were skipped." : ""),
+                 "info");
+          job(jobId, {{"label", label}, {"state", "done"}});
+        }
+        catch(const std::exception& e)
+        {
+          failed(problemOf(e));
+        }
+      });
+    }
+    catch(const std::exception& e)
+    {
+      failed(problemOf(e));
+    }
+  });
+  return {{"job", jobId}};
 }
 
 Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,

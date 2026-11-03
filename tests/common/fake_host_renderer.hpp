@@ -147,6 +147,7 @@ public:
   int stillSamples   = 0;  // what accumulatedSamples() and sampleCap() say
   int stillSampleCap = 0;
   std::filesystem::path savedImage;  // the last saveImage's path
+  rs::ClipId            hostClip() const { return m_clip; }  // the model's clip setHostClip last gave
 
 private:
   rs::RetainedScene                           m_scene;

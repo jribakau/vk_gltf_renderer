@@ -155,7 +155,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return Json{{"ok", true}};
     });
   });
-  for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop"})
+  for(const char* name : {"select", "play", "pause", "stop", "seek", "speed", "loop", "remove"})
     cmds.add(std::string("anim.") + name, [impl, cmd = std::string(name)](const Json& args) {
       return impl->onApp([impl, cmd, args] { return impl->animationCommand(cmd, args); });
     });
@@ -670,6 +670,8 @@ void FvHost::onUpdate()
   if(!s.viewCamera.empty() && s.frameIn == 0)
     s.cameraFromView();
   s.applyPendingMorphs();
+  // a figure's animation after the panels' edits, so what it drives shows its frame
+  s.applyFigureAnimation();
   s.watchSystemMemory();
   for(const auto& p : s.props)
   {

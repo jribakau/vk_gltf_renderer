@@ -133,6 +133,17 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
     if(!figure || !figure->fig->pose)
       notice(name + " is a DAZ " + kind + ". Select a DAZ figure first, then open it.");
     else
+    {
+      // a pose file whose keys run over time is also held as the figure's animation, paused at its
+      // end, which is the pose it sets: held first, so it goes back to the pose the figure has now.
+      // Many such files are still poses, a rest-to-pose ramp saved for dForce, so it doesn't play.
+      float animated = -1;
+      if(kind == "pose preset" && fv::pose::isAnimated(doc))
+        if(fv::pose::PoseClip clip = figure->fig->loadPoseClip(doc); !clip.channels.empty())
+        {
+          animated = clip.duration;
+          holdAnimation(*prop, std::move(clip), rel, false);
+        }
       // a step of the history: the figure's look before and after
       journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
         fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
@@ -152,14 +163,25 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         // it showed or hid worn items (a geograft's Apply and Remove presets)
         if(!r.itemsShown.empty())
           requestCompose("Showing", {}, figure.get());
+        // an animation's pose is its last frame, and the Anim tab can play the rest
+        std::string played;
+        if(animated >= 0)
+        {
+          char length[32];
+          std::snprintf(length, sizeof(length), "%.1f s", animated);
+          played = std::string(" at its last frame. It's an animation (") + length + "): the Anim tab plays it.";
+        }
         if(!r.applied)
           notice(name + ": nothing in this " + kind + " matches " + prop->name + ".");
         else if(!r.skipped.empty())
-          notice("Applied " + name + ". " + std::to_string(r.skipped.size()) + " of its controls aren't on this figure and were skipped.", "info");
+          notice("Applied " + name + (played.empty() ? "." : played) + " " + std::to_string(r.skipped.size())
+                     + " of its controls aren't on this figure and were skipped.",
+                 "info");
         else
-          notice("Applied " + name + " to " + prop->name, "info");
+          notice("Applied " + name + " to " + prop->name + played, "info");
         return Json();
       });
+    }
   }
   else if(kind == "material preset" || kind == "layered image preset")
   {

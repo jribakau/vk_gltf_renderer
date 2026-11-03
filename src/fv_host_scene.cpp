@@ -96,19 +96,34 @@ rs::ClipId FvHost::Impl::clipOf(int number) const
   return {};
 }
 
+Loaded* FvHost::Impl::figureClipOf(int number) const
+{
+  if(number < 0)
+    return nullptr;
+  for(const auto& p : props)
+    if(p->figure && p->figure->animation && p->figure->animation->number == number)
+      return p->figure.get();
+  return nullptr;
+}
+
 std::vector<int> FvHost::Impl::clipOrder() const
 {
   std::vector<int> out;
   for(const auto& p : props)
+  {
     for(int i = 0; i < int(p->imported.clips.size()); i++)
       if(!p->imported.clips[size_t(i)].isNone())
         if(const auto it = clipNumbers.find({p->id, i}); it != clipNumbers.end())
           out.push_back(it->second);
+    if(p->figure && p->figure->animation)
+      out.push_back(p->figure->animation->number);
+  }
   return out;
 }
 
 // The clips in the scene by their numbers, which stay theirs while their prop is here (D4), each with
-// the prop it came with, in display order; and where playback is (`current` null without clips).
+// the prop it came with, in display order, a model's own (`kind` "clip") or a DAZ animation opened onto
+// a figure ("figure"); and where playback is (`current` null without clips).
 Json FvHost::Impl::animationTopic()
 {
   Json                    clips = Json::object();
@@ -120,6 +135,7 @@ Json FvHost::Impl::animationTopic()
   const rs::RetainedScene& scene = renderer->hostScene();
   int                      order = 0;
   for(const auto& p : props)
+  {
     for(int i = 0; i < int(p->imported.clips.size()); i++)
     {
       const rs::ClipRecord* clip = scene.clip(p->imported.clips[size_t(i)]);
@@ -130,14 +146,22 @@ Json FvHost::Impl::animationTopic()
       clips[std::to_string(number)] = {{"name", clip->name.empty() ? "Clip " + std::to_string(order + 1) : clip->name},
                                        {"duration", std::max(0.f, range[1] - range[0])},
                                        {"order", order++},
-                                       {"prop", p->id}};
+                                       {"prop", p->id},
+                                       {"kind", "clip"}};
     }
+    if(p->figure && p->figure->animation)
+    {
+      const FigureAnimation& a = *p->figure->animation;
+      clips[std::to_string(a.number)] = {{"name", a.name}, {"duration", a.clip.duration}, {"order", order++}, {"prop", p->id}, {"kind", "figure"}};
+    }
+  }
   out["clips"] = clips;
   if(currentClip >= 0 && clips.contains(std::to_string(currentClip)))
   {
-    out["current"] = currentClip;
-    out["playing"] = ctrl.play;
-    out["time"]    = std::round(renderer->hostClipTime() * 1000.f) / 1000.0;
+    const Loaded* figure = figureClipOf(currentClip);
+    out["current"]       = currentClip;
+    out["playing"]       = ctrl.play;
+    out["time"]          = std::round((figure ? figure->animation->time : renderer->hostClipTime()) * 1000.f) / 1000.0;
   }
   return out;
 }
@@ -161,44 +185,89 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
   const std::vector<int> order = clipOrder();
   if(order.empty())
     throw std::runtime_error("nothing in the scene has animations");
-  // the clip a command acts on: the current one, else the first
+  // the clip a command acts on: the current one, else the first; the figure it is the animation of
   const auto current = [&] {
-    if(clipOf(currentClip).isNone())
+    if(!clipExists(currentClip))
     {
       currentClip = order.front();
       renderer->setHostClip(clipOf(currentClip));
     }
+    return figureClipOf(currentClip);
+  };
+  // a figure's animation, sampled again and sent whole at the next frame
+  const auto again = [](Loaded* f) {
+    if(!f)
+      return;
+    f->animation->dirty = true;
+    std::fill(f->animation->applied.begin(), f->animation->applied.end(), std::numeric_limits<double>::quiet_NaN());
   };
   if(cmd == "select")
   {
     const int clip = args.at("clip").get<int>();
-    if(clipOf(clip).isNone())
+    if(!clipExists(clip))
       throw std::runtime_error("no such clip");
     currentClip = clip;
+    // none for a figure's animation, which plays on its own: no model's clip under it
     renderer->setHostClip(clipOf(clip));
-    ctrl.reset   = true;
-    ctrl.play    = args.value("play", true);
-    ctrl.runOnce = !ctrl.play;
+    ctrl.play = args.value("play", true);
+    if(Loaded* f = figureClipOf(clip))
+    {
+      f->animation->time = 0;
+      again(f);
+    }
+    else
+    {
+      ctrl.reset   = true;
+      ctrl.runOnce = !ctrl.play;
+    }
   }
   else if(cmd == "play")
   {
-    current();
     // playing from the end starts over
-    if(renderer->hostClipTime() >= renderer->hostClipDuration() - 1e-3f && !ctrl.loop)
+    if(Loaded* f = current())
+    {
+      if(f->animation->time >= f->animation->clip.duration - 1e-3f && !ctrl.loop)
+        f->animation->time = 0;
+      again(f);
+    }
+    else if(renderer->hostClipTime() >= renderer->hostClipDuration() - 1e-3f && !ctrl.loop)
       ctrl.reset = true;
     ctrl.play = true;
   }
   else if(cmd == "pause")
+  {
     ctrl.play = false;
+    again(figureClipOf(currentClip));
+  }
   else if(cmd == "stop")
   {
-    ctrl.play  = false;
-    ctrl.reset = true;
+    ctrl.play = false;
+    // a figure goes back to the pose its animation found; a model's clip to its start
+    if(Loaded* f = figureClipOf(currentClip))
+    {
+      f->animation->time = 0;
+      restoreBeforeAnimation(*f);
+    }
+    else
+      ctrl.reset = true;
   }
   else if(cmd == "seek")
   {
-    current();
-    renderer->seekHostClip(args.at("time").get<float>());
+    if(Loaded* f = current())
+    {
+      f->animation->time = std::clamp(args.at("time").get<float>(), 0.f, f->animation->clip.duration);
+      ctrl.play          = false;
+      again(f);
+    }
+    else
+      renderer->seekHostClip(args.at("time").get<float>());
+  }
+  else if(cmd == "remove")
+  {
+    Loaded* f = figureClipOf(args.at("clip").get<int>());
+    if(!f)
+      throw std::runtime_error("only an animation opened onto a figure can be removed");
+    dropAnimation(*f);
   }
   else if(cmd == "speed")
     ctrl.speed = std::clamp(args.at("speed").get<float>(), 0.f, 100.f);
@@ -206,6 +275,134 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
     ctrl.loop = args.at("loop").get<bool>();
   publishAnimation(true);
   return {{"ok", true}};
+}
+
+void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play)
+{
+  Loaded& f = *prop.figure;
+  if(clip.channels.empty())
+    throw std::runtime_error(fileStem(rel) + ": nothing in this animation matches " + prop.name + ".");
+  if(f.animation)
+    dropAnimation(f);
+  FigureAnimation a;
+  a.number = nextClip++;
+  a.name   = fileStem(rel);
+  a.rel    = rel;
+  a.clip   = std::move(clip);
+  a.time   = play ? 0.f : a.clip.duration;
+  // what each channel is now, to go back to
+  for(const fv::pose::PoseClip::Channel& c : a.clip.channels)
+  {
+    const fv::pose::PoseBone* pb = c.target.kind == fv::pose::PresetTarget::Kind::eBone ? f.fig->pose->get(c.target.bone) : nullptr;
+    a.before.push_back(pb                ? pb->posed(c.target.channel, fv::pose::axisIndex(c.target.axis)) :
+                       f.fig->morphs ? f.fig->morphs->get(c.target.name) :
+                                       0.0);
+  }
+  a.applied.assign(a.clip.channels.size(), std::numeric_limits<double>::quiet_NaN());
+  f.animation = std::move(a);
+  currentClip = f.animation->number;
+  renderer->setHostClip({});
+  renderer->editAnimationControl().play = play;
+  publishAnimation(true);
+}
+
+void FvHost::Impl::restoreBeforeAnimation(Loaded& f)
+{
+  if(!f.animation || !f.fig->pose)
+    return;
+  FigureAnimation&                            a = *f.animation;
+  std::vector<fv::pose::ChannelValue>         bones;
+  std::vector<std::pair<std::string, double>> dials;
+  for(size_t i = 0; i < a.clip.channels.size(); i++)
+  {
+    const fv::pose::PresetTarget& t = a.clip.channels[i].target;
+    if(t.kind == fv::pose::PresetTarget::Kind::eBone)
+      bones.push_back({t.bone, t.channel, t.axis, a.before[i]});
+    else
+      dials.emplace_back(t.name, a.before[i]);
+  }
+  f.fig->pose->setMany(bones);
+  if(f.fig->morphs && !dials.empty())
+    f.fig->morphs->setMany(dials);
+  std::fill(a.applied.begin(), a.applied.end(), std::numeric_limits<double>::quiet_NaN());
+  a.dirty = false;
+  protocol->events().snapshot("pose/" + f.id, poseSnapshot(f));
+}
+
+void FvHost::Impl::dropAnimation(Loaded& f)
+{
+  if(!f.animation)
+    return;
+  restoreBeforeAnimation(f);
+  const int number = f.animation->number;
+  f.animation.reset();
+  if(currentClip == number)
+  {
+    const std::vector<int> order = clipOrder();
+    currentClip                  = order.empty() ? -1 : order.front();
+    renderer->setHostClip(clipOf(currentClip));
+    if(Loaded* next = figureClipOf(currentClip))
+      next->animation->dirty = true;
+    renderer->editAnimationControl().play = false;
+  }
+  publishAnimation(true);
+}
+
+void FvHost::Impl::applyFigureAnimation()
+{
+  const auto now = std::chrono::steady_clock::now();
+  // the time since the last frame, at most a quarter of a second: a frame that stalled doesn't jump
+  const float dt       = std::min(0.25f, std::chrono::duration<float>(now - figureAnimationFrame).count());
+  figureAnimationFrame = now;
+  Loaded* f            = figureClipOf(currentClip);
+  if(!f || !f->fig->pose)
+    return;
+  FigureAnimation&  a    = *f->animation;
+  AnimationControl& ctrl = renderer->editAnimationControl();
+  if(ctrl.play)
+  {
+    a.time += dt * ctrl.speed;
+    const float end = a.clip.duration;
+    if(a.time >= end)
+    {
+      if(ctrl.loop && end > 0)
+        a.time = std::fmod(a.time, end);
+      else
+      {
+        a.time    = end;
+        ctrl.play = false;
+      }
+    }
+    a.dirty = true;
+  }
+  if(!a.dirty)
+    return;
+  a.dirty = false;
+  std::vector<fv::pose::ChannelValue>         bones;
+  std::vector<std::pair<std::string, double>> dials;
+  for(size_t i = 0; i < a.clip.channels.size(); i++)
+  {
+    const fv::pose::PoseClip::Channel& c     = a.clip.channels[i];
+    const double                       value = fv::pose::sample(c, a.time);
+    if(value == a.applied[i])
+      continue;
+    a.applied[i] = value;
+    if(c.target.kind == fv::pose::PresetTarget::Kind::eBone)
+      bones.push_back({c.target.bone, c.target.channel, c.target.axis, value});
+    else
+      dials.emplace_back(c.target.name, value);
+  }
+  // as a pose preset sets them: the bones, then the dials; the figure's pump this frame takes it on
+  if(!bones.empty())
+    f->fig->pose->setMany(bones);
+  if(f->fig->morphs && !dials.empty())
+    f->fig->morphs->setMany(dials);
+  // the Pose tab's sliders: ten times a second while it plays, and where it stopped
+  if(!ctrl.play || now - a.posePublished >= std::chrono::milliseconds(100))
+  {
+    a.posePublished = now;
+    protocol->events().snapshot("pose/" + f->id, poseSnapshot(*f));
+  }
 }
 
 // A prop as a GLB for other tools, as it stands. A figure: pose, dials, worn items and material

@@ -987,7 +987,7 @@ void FvHost::Impl::compose()
         p->figure->collider->poke();
     }
   // the clip that plays plays on; when its prop went, the first clip there is, if any
-  if(clipOf(currentClip).isNone())
+  if(!clipExists(currentClip))
   {
     const std::vector<int> order = clipOrder();
     currentClip                  = order.empty() ? -1 : order.front();

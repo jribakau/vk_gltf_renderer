@@ -23,8 +23,10 @@
 // speed), and whether a scene has anything to play.
 //
 // State owner: Resources::animationControl. The renderer's update path
-// (GltfRenderer::updateAnimation) reads the queries (doAnimation, deltaTime,
-// isReset) and calls clearStates() after consuming a one-shot step/reset.
+// (GltfRenderer::advanceHostClip, renderer_scene.cpp) reads the queries (doAnimation,
+// deltaTime, isReset) and calls clearStates() after consuming a one-shot step/reset.
+// A DAZ figure's animation is the host's to play (FvHost::Impl::applyFigureAnimation)
+// under the same play, speed and loop.
 // GltfRenderer::cleanupScene resets the struct to defaults on scene load, then
 // sets `play` from GltfRenderer::m_animPlay -- the user's last explicit
 // Play/Pause choice, persisted as --animPlay.

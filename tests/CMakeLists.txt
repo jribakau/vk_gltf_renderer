@@ -69,6 +69,7 @@ set(TEST_SOURCES
     figure/test_eyes.cpp
     figure/test_pose_gizmo.cpp
     figure/test_presets.cpp
+    figure/test_pose_clip.cpp
     figure/test_materials.cpp
     figure/test_materials_looks.cpp
     figure/test_materials_procedural.cpp

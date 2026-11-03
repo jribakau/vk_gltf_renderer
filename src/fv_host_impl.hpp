@@ -153,6 +153,23 @@ std::optional<Json> listedPatch(const std::vector<ListedDial>& sent, const std::
 // moves: a dial found at its place in `listed` costs no lookup by name.
 Json valuesPatch(const fv::morph::MorphSet& morphs, std::vector<ListedDial>& listed, const std::unordered_map<std::string, size_t>& listedAt);
 
+// A DAZ pose file's keys over time played on a figure, as a clip of the "animation" topic
+// (fv_host_scene.cpp): opened from the Library it waits at its end, which is the pose the file sets;
+// imported it plays. Every frame it plays, its channels go through the figure's pose rig and dials
+// as a pose preset's do, and are no step of the history.
+struct FigureAnimation
+{
+  int                 number = -1;  // its clip number, from Impl::nextClip
+  std::string         name, rel;
+  fv::pose::PoseClip  clip;
+  float               time  = 0;
+  bool                dirty = true;  // to be sampled and applied at the next frame
+  // each channel's value before it came, which Rest pose and Remove put back, and as last applied
+  // (NaN: to be sent), so a frame sends only what moved
+  std::vector<double> before, applied;
+  std::chrono::steady_clock::time_point posePublished{};
+};
+
 // A loaded figure and what the renderer made of it. Lives on the application thread.
 struct Loaded
 {
@@ -246,6 +263,8 @@ struct Loaded
   // copy of this figure, and another figure's has nothing to wait for here
   std::mutex                         wearMutex;
   std::vector<std::function<void()>> afterAddons;
+  // a DAZ animation opened onto it: one at a time
+  std::optional<FigureAnimation> animation;
 };
 
 enum class PropKind
@@ -997,12 +1016,27 @@ struct FvHost::Impl
   int                                        nextClip    = 0;
   int                                        currentClip = -1;  // the number of the clip the renderer plays
   int                                        clipNumber(const std::string& prop, int index);
-  // a clip number's record in the scene, none when it isn't there
+  // a clip number's record in the scene, none when it isn't there or is a figure's animation
   rs::ClipId clipOf(int number) const;
+  // the figure whose animation a clip number is, or null
+  Loaded* figureClipOf(int number) const;
+  bool    clipExists(int number) const { return !clipOf(number).isNone() || figureClipOf(number); }
   // the clips in the scene in display order: their numbers
   std::vector<int>                      clipOrder() const;
   Json lastAnimation;
   std::chrono::steady_clock::time_point animationAt{};
+  // A pose file's animation onto a figure, held there and made the current clip: paused at its end
+  // or playing from its start. Another the figure had goes first, putting back the pose it found.
+  // Throws when nothing in it reaches the figure.
+  void holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play);
+  // the figure's animation off it, its channels back where it found them
+  void dropAnimation(Loaded& f);
+  void restoreBeforeAnimation(Loaded& f);
+  // The current clip, a figure's animation, moved on by this frame's time and applied
+  void applyFigureAnimation();
+  std::chrono::steady_clock::time_point figureAnimationFrame{};
+  // load {as: "animation"}: a pose file read on a worker and played on the figure named or selected
+  Json loadAnimation(std::vector<std::filesystem::path> roots, std::string rel, std::string target);
   Json exportGlb(const Json& args);
   Json sceneState(const Json& args);
   Json sceneRestore(const Json& args);

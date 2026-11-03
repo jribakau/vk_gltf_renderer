@@ -23,6 +23,7 @@
 #include <figure/morph/morph_set.hpp>
 #include <figure/pose/figure_driver.hpp>
 #include <figure/pose/morph_reach.hpp>
+#include <figure/pose/pose_clip.hpp>
 #include <figure/pose/pose_rig.hpp>
 
 namespace fv {
@@ -39,13 +40,11 @@ struct PosePresetResult
 };
 
 // Applies a DAZ pose, shape or property preset (.duf `scene.animations`) to a rig and its morphs:
-// the last key of each animation, `name://@selection` urls, `name://<node>#<modifier>` urls (a dial
-// of a worn item, a geograft's say) and hierarchical `#bone?rotation/x/value` urls. Node visibility
-// is reported, not applied. Figure::applyPosePreset is this, on the figure's own pose and morphs.
-// `channelOf` finds the dial a modifier id means on a node (empty: the selection) when the figure
-// has none of that name: a worn item's.
-PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc,
-                                 const std::function<std::string(const std::string& node, const std::string& modifier)>& channelOf = {});
+// the last key of each animation, its url resolved as pose::PresetResolver does (pose_clip.hpp).
+// Node visibility is reported, not applied. Figure::applyPosePreset is this, on the figure's own pose
+// and morphs. `channelOf` finds the dial a modifier id means on a node when the figure has none of
+// that name: a worn item's.
+PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, const dson::Json& doc, const pose::ChannelOf& channelOf = {});
 
 // What the figure wears: one wearable's nodes, which go on and come off together. Items that came
 // with the scene file are listed too, with no library path.
@@ -326,8 +325,14 @@ public:
   // Applies a DAZ pose, shape or property preset to this figure's bones, morph dials and the
   // visibility of what it wears.
   PosePresetResult applyPosePreset(const dson::Json& doc);
+  // A pose file's keys over time, resolved against this figure's bones, its dials and its worn items' dials.
+  pose::PoseClip loadPoseClip(const dson::Json& doc);
 
 private:
+  // a worn item by one of its nodes' DAZ names, or its label
+  WornItem* itemNamed(const std::string& node);
+  // the dial a preset's modifier means on a worn item (pose::ChannelOf)
+  pose::ChannelOf wornDials();
   Figure() = default;
   void setup(const Progress& progress);
   void applyOtherDials(const dson::MorphContext& ctx, const std::vector<dson::Item>& items, const std::vector<const dson::SceneDial*>& dials, const Progress& progress);

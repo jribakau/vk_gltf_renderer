@@ -41,7 +41,10 @@
 //   load            {path} or {rel}, prop?, as?   -> {job}; a figure or model becomes a new prop (the job's
 //                                                end state has its {prop}); a wearable goes on the figure
 //                                                (`prop`, or the selected or only one) unless `as` is "prop";
-//                                                a pose, shape or material preset applies to that figure;
+//                                                a pose, shape or material preset applies to that figure
+//                                                (a pose file whose keys run over time is also held as its
+//                                                animation, paused at its end); `as` "animation" plays a
+//                                                pose file's keys on that figure instead;
 //                                                `prefetch` [rel] names files a figure will wear soon (a
 //                                                scene file's worn list), read from the start of its load
 //   prop.add        {path|rel} as load; or {kind: "camera"|"light", type?: point|spot|directional,
@@ -165,9 +168,12 @@
 //                                                item's `id` is the "i:N" it goes back on under; the edits name
 //                                                the surfaces in use, so a taken-off item's count for nothing. A prop's id is
 //                                                never given out twice, scene.clear or not
-//   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models'), by the
-//                                                number the "animation" topic gives each: it stays the
-//                                                clip's while its prop is in the scene, never reused
+//   anim.select|play|pause|stop|seek|speed|loop  the clips in the scene (glTF and OBJ models', and a DAZ
+//                                                animation opened onto a figure), by the number the
+//                                                "animation" topic gives each: it stays the clip's while its
+//                                                prop is in the scene, never reused. Stop puts a figure back
+//                                                in the pose its animation found
+//   anim.remove     {clip}                       a figure's animation taken off it, its pose put back
 //   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
 //                                                whole scene, written at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state

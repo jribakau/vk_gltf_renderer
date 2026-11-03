@@ -19,7 +19,7 @@
 
 //
 // Playback state: play/pause, clip selection, scrub, reset, speed. State owner:
-// Resources::animationControl; GltfRenderer::updateAnimation drives it every frame.
+// Resources::animationControl; GltfRenderer::advanceHostClip drives it every frame.
 //
 
 #include "animation_control.hpp"

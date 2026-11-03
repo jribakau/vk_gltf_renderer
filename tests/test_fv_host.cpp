@@ -361,6 +361,174 @@ TEST(FvHost, ARemovedFigureLeavesTheSceneAndItsTopics)
 }
 
 //--------------------------------------------------------------------------------------------------
+// A DAZ animation played on a figure: the test library's Box Nod Animation turns the head from 0 to
+// 40 degrees about y and the CTRL Nod dial from 0 to 1 over a second
+
+namespace {
+
+struct Nodding
+{
+  HostRig     rig;
+  std::string id;
+
+  // the box figure, and the animation opened onto it from the Library (`as` "") or imported ("animation")
+  explicit Nodding(const std::string& as)
+  {
+    EXPECT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    id = figureId(rig.topic("scene"));
+    EXPECT_FALSE(id.empty());
+    open(as);
+  }
+  void open(const std::string& as)
+  {
+    Json args = {{"prop", id}, {"rel", "People/Test/Poses/Box Nod Animation.duf"}};
+    if(!as.empty())
+      args["as"] = as;
+    EXPECT_TRUE(rig.cmd("load", args).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+  }
+  Json   anim() const { return rig.topic("animation"); }
+  int    current() const { return anim().value("current", Json()).is_number() ? anim()["current"].get<int>() : -1; }
+  double headY() const { return rig.topic("pose/" + id).at("bones").at("head").at("axes").at("rotation/y").value("value", -1.0); }
+  double nod() const { return rig.topic("morphs/" + id).at("channels").value("CTRL Nod", Json::object()).value("value", -1.0); }
+};
+
+}  // namespace
+
+TEST(FvHost, APoseFileWithKeysFromTheLibraryPosesAtItsEndAndWaitsAsAClip)
+{
+  Nodding n("");
+  const Json anim = n.anim();
+  ASSERT_GE(n.current(), 0) << anim.dump();
+  const Json clip = anim.at("clips").at(std::to_string(n.current()));
+  EXPECT_EQ(clip.value("kind", ""), "figure");
+  EXPECT_EQ(clip.value("prop", ""), n.id);
+  EXPECT_EQ(clip.value("name", ""), "Box Nod Animation");
+  EXPECT_DOUBLE_EQ(clip.value("duration", 0.0), 1.0);
+  // a pose preset as before, its last key: many such files are still poses saved for dForce
+  EXPECT_FALSE(anim.value("playing", true));
+  EXPECT_DOUBLE_EQ(anim.value("time", 0.0), 1.0);
+  EXPECT_DOUBLE_EQ(n.headY(), 40.0);
+  EXPECT_DOUBLE_EQ(n.nod(), 1.0);
+  EXPECT_NE(n.rig.topic("notices").dump().find("the Anim tab plays it"), std::string::npos) << n.rig.topic("notices").dump();
+}
+
+TEST(FvHost, AnImportedAnimationPlaysAndASeekPosesTheFigureAtThatTime)
+{
+  Nodding n("animation");
+  ASSERT_GE(n.current(), 0);
+  EXPECT_TRUE(n.anim().value("playing", false));
+  EXPECT_TRUE(n.rig.renderer.hostClip().isNone());
+
+  n.rig.cmd("anim.seek", {{"time", 0.25}});
+  EXPECT_FALSE(n.anim().value("playing", true));
+  EXPECT_DOUBLE_EQ(n.anim().value("time", 0.0), 0.25);
+  EXPECT_NEAR(n.headY(), 10.0, 1e-9);
+  EXPECT_NEAR(n.nod(), 0.25, 1e-9);
+
+  // a still pose file is no animation to import
+  n.rig.cmd("load", {{"prop", n.id}, {"rel", "People/Test/Poses/Box Look Left.duf"}, {"as", "animation"}});
+  ASSERT_TRUE(n.rig.settle());
+  EXPECT_NE(n.rig.topic("notices").dump().find("is a still pose"), std::string::npos) << n.rig.topic("notices").dump();
+  EXPECT_NEAR(n.headY(), 10.0, 1e-9);
+}
+
+TEST(FvHost, StopPutsTheFigureBackAndRemoveTakesTheAnimationOff)
+{
+  Nodding n("animation");
+  const int clip = n.current();
+  ASSERT_GE(clip, 0);
+  n.rig.cmd("anim.seek", {{"time", 0.5}});
+  EXPECT_NEAR(n.headY(), 20.0, 1e-9);
+
+  // the pose it found
+  n.rig.cmd("anim.stop");
+  EXPECT_DOUBLE_EQ(n.headY(), 0.0);
+  EXPECT_DOUBLE_EQ(n.nod(), 0.0);
+  EXPECT_FALSE(n.anim().value("playing", true));
+
+  n.rig.cmd("anim.select", {{"clip", clip}, {"play", false}});
+  n.rig.cmd("anim.seek", {{"time", 1.0}});
+  EXPECT_DOUBLE_EQ(n.headY(), 40.0);
+  const Json removed = n.rig.cmd("anim.remove", {{"clip", clip}});
+  ASSERT_TRUE(removed.value("ok", false)) << removed.dump();
+  EXPECT_DOUBLE_EQ(n.headY(), 0.0);
+  EXPECT_TRUE(n.anim().at("clips").empty()) << n.anim().dump();
+  EXPECT_TRUE(n.anim().at("current").is_null());
+}
+
+TEST(FvHost, AnotherAnimationOnTheFigureTakesThePlaceOfTheFirst)
+{
+  Nodding   n("");
+  const int first = n.current();
+  ASSERT_GE(first, 0);
+  n.open("animation");
+  const Json anim = n.anim();
+  EXPECT_EQ(anim.at("clips").size(), 1u) << anim.dump();
+  EXPECT_NE(n.current(), first);
+  // what it goes back to is what the figure had before the first
+  n.rig.cmd("anim.stop");
+  EXPECT_DOUBLE_EQ(n.headY(), 0.0);
+}
+
+TEST(FvHost, AFigureAnimationStaysCurrentThroughACompositionAndLeavesWithItsFigure)
+{
+  Nodding   n("animation");
+  const int clip = n.current();
+  ASSERT_GE(clip, 0);
+  n.rig.cmd("wear", {{"prop", n.id}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(n.rig.settle());
+  EXPECT_EQ(n.current(), clip) << n.anim().dump();
+  n.rig.cmd("anim.seek", {{"time", 0.5}});
+  EXPECT_NEAR(n.headY(), 20.0, 1e-9);
+
+  ASSERT_TRUE(n.rig.cmd("prop.remove", {{"prop", n.id}}).value("ok", false));
+  ASSERT_TRUE(n.rig.settle());
+  EXPECT_TRUE(n.anim().at("clips").empty()) << n.anim().dump();
+  EXPECT_TRUE(n.anim().at("current").is_null());
+}
+
+// A model's own clip and a figure's animation, one current at a time
+TEST(FvHost, AModelsClipAndAFiguresAnimationTakeTurns)
+{
+  Nodding        n("animation");
+  const fs::path dir = fs::temp_directory_path() / "fv_host_clip_test";
+  fs::create_directories(dir);
+  const fs::path gltf = dir / "slide.gltf";
+  std::ofstream(gltf) << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"slider"}],
+    "buffers":[{"byteLength":32,"uri":"data:application/octet-stream;base64,AAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAA="}],
+    "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":8},{"buffer":0,"byteOffset":8,"byteLength":24}],
+    "accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
+                 {"bufferView":1,"componentType":5126,"count":2,"type":"VEC3"}],
+    "animations":[{"name":"Slide","samplers":[{"input":0,"output":1}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}]})";
+  ASSERT_TRUE(n.rig.cmd("load", {{"path", gltf.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(n.rig.settle());
+  const int  figureClip = n.current();
+  int        modelClip  = -1;
+  const Json clips      = n.anim().at("clips");
+  for(const auto& [number, c] : clips.items())
+    if(c.value("kind", "") == "clip")
+      modelClip = std::stoi(number);
+  ASSERT_GE(modelClip, 0) << n.anim().dump();
+  ASSERT_NE(modelClip, figureClip);
+
+  n.rig.cmd("anim.select", {{"clip", modelClip}, {"play", false}});
+  EXPECT_EQ(n.current(), modelClip);
+  EXPECT_FALSE(n.rig.renderer.hostClip().isNone());
+  n.rig.cmd("anim.seek", {{"time", 0.5}});
+  EXPECT_FLOAT_EQ(n.rig.renderer.hostClipTime(), 0.5f);
+
+  n.rig.cmd("anim.select", {{"clip", figureClip}, {"play", false}});
+  EXPECT_TRUE(n.rig.renderer.hostClip().isNone());
+  n.rig.cmd("anim.seek", {{"time", 0.5}});
+  EXPECT_NEAR(n.headY(), 20.0, 1e-9);
+  // only a figure's animation can be taken off
+  EXPECT_FALSE(n.rig.cmd("anim.remove", {{"clip", modelClip}}).value("ok", true));
+  fs::remove_all(dir);
+}
+
+//--------------------------------------------------------------------------------------------------
 // The edit history (C1)
 
 namespace {
