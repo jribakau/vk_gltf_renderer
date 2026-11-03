@@ -1096,13 +1096,14 @@ void GltfRenderer::uploadHdrEnvironment(EnvImage&& envImage, const std::filesyst
 
   VkCommandBuffer cmd{};
   nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool);
-  // The image goes up in one piece, so the staging block holds it whole: its own size, not a fixed
-  // 1 GiB (an 8K RGBA32F) that every 2K load made and destroyed as well.
+  // Each piece goes up whole, so the staging block holds the largest: the image, or its compensated
+  // alias table, a cell a texel and one more a row. Sized from the image, not a fixed 1 GiB (an 8K
+  // RGBA32F) that every 2K load made and destroyed as well.
   const VkDeviceSize   imageBytes = VkDeviceSize(envImage.pixels.size()) * sizeof(float);
   nvvk::FrameUploader uploader;
   NVVK_CHECK(uploader.init({
       .allocator = &m_resources.allocator,
-      .blockSize = std::max<VkDeviceSize>(imageBytes, 16ull * 1024 * 1024),
+      .blockSize = std::max<VkDeviceSize>(imageBytes + imageBytes / 4, 16ull * 1024 * 1024),
       .debugName = "hdrUpload",
   }));
 

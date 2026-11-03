@@ -69,6 +69,11 @@ nvutils::ProfilerManager g_profilerManager;  // #PROFILER
 ///
 auto main(int argc, char** argv) -> int
 {
+  // The app reads the log through a file the output is redirected to. Unbuffered, so that a process
+  // it ends, or that the driver takes down, leaves every line it wrote; a line is rare enough.
+  setvbuf(stdout, nullptr, _IONBF, 0);
+  setvbuf(stderr, nullptr, _IONBF, 0);
+
   nvapp::ApplicationCreateInfo appInfo;
   nvvk::ContextInitInfo        vkSetup;
   nvutils::Logger&             logger   = nvutils::Logger::getInstance();
