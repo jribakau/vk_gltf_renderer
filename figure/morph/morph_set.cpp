@@ -849,8 +849,11 @@ void MorphSet::removeChannels(const std::vector<std::string>& names)
 void MorphSet::applyWeights(const std::vector<std::pair<std::string, double>>& values)
 {
   projectAhead(values);
-  for(const auto& [name, weight] : values)
-    apply(name, weight);
+  {
+    fv::timing::Accum t("morph.apply");
+    for(const auto& [name, weight] : values)
+      apply(name, weight);
+  }
   flush();
 }
 
@@ -948,6 +951,7 @@ void MorphSet::flush()
       dirty.emplace_back(mesh, &st);
   if(dirty.empty())
     return;
+  fv::timing::Accum flushTime("morph.flush");
   // Each mesh's buffers, welder and state are its own, so the meshes update side by side; the
   // changes are recorded afterwards, in mesh order, as one thread's work would have.
   std::vector<MeshUpdate> updates(dirty.size());
@@ -1026,17 +1030,28 @@ void MorphSet::catchUp(const std::function<bool(int mesh)>& which)
 
 void MorphSet::updateCage(int mesh, MeshState& st)
 {
+  fv::timing::Accum      cageTime("morph.cage");
   const mesh::BuiltMesh& geo = *m_geo(mesh);
   const auto             add = [&](const mesh::RenderTarget& t, double dw) {
-    for(size_t i = 0; i < t.cageIndices.size(); i++)
-    {
-      const size_t v = t.cageIndices[i];
-      if(v * 3 + 2 >= st.cage.size())
-        continue;
-      st.cage[v * 3]     = float(st.cage[v * 3] + t.cageDeltas[i * 3] * dw);
-      st.cage[v * 3 + 1] = float(st.cage[v * 3 + 1] + t.cageDeltas[i * 3 + 1] * dw);
-      st.cage[v * 3 + 2] = float(st.cage[v * 3 + 2] + t.cageDeltas[i * 3 + 2] * dw);
-    }
+    const auto run = [&](size_t begin, size_t end) {
+      for(size_t i = begin; i < end; i++)
+      {
+        const size_t v = t.cageIndices[i];
+        if(v * 3 + 2 >= st.cage.size())
+          continue;
+        st.cage[v * 3]     = float(st.cage[v * 3] + t.cageDeltas[i * 3] * dw);
+        st.cage[v * 3 + 1] = float(st.cage[v * 3 + 1] + t.cageDeltas[i * 3 + 1] * dw);
+        st.cage[v * 3 + 2] = float(st.cage[v * 3 + 2] + t.cageDeltas[i * 3 + 2] * dw);
+      }
+    };
+    // A target lists each vertex once, so its chunks write disjoint positions, each what one thread
+    // would have: a body shape projected onto a hair moves ~800k of its points, which held the whole
+    // flush on one thread for ~1.6 ms of a drag frame.
+    const size_t count = t.cageIndices.size();
+    if(count < kParallelDeltas)
+      run(0, count);
+    else
+      jobs::parallelFor(count, kParallelDeltas, run);
   };
   if(st.cage.size() != geo.cagePositions.size() || ++st.sinceCageRebuild > kRebuildEvery)
   {

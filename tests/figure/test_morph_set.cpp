@@ -446,6 +446,40 @@ TEST(FigureMorphSet, ACageOnlyMeshsTargetsMakeNoDrawnDeltasUntilACatchUp)
   EXPECT_LT(worst(geo.normal, reference.normal), 1e-6);
 }
 
+// A cageOnly mesh's target over more cage vertices than one parallel chunk (a body shape projected onto
+// a hair) moves its cage in chunks to what one pass writes, float for float, step after step.
+TEST(FigureMorphSet, ALargeTargetMovesACageInChunks)
+{
+  fv::mesh::BuiltMesh geo = grid(200, 1);
+  const size_t        n   = geo.cagePositions.size() / 3;
+  std::vector<int32_t> verts;
+  std::vector<float>   deltas;
+  for(size_t v = 0; v < n; v += 2)
+  {
+    verts.push_back(int32_t(v));
+    deltas.insert(deltas.end(), {0.001f * float(v % 13), 0.f, 0.01f * float(v % 7 + 1)});
+  }
+  ASSERT_GT(verts.size(), 16384u);
+  const auto          t = targetOf(geo, verts, deltas);
+  fv::morph::MorphSet set([&](int) { return &geo; });
+  set.cageOnly = [](int) { return true; };
+  set.addTarget("shape", 0, t);
+  std::vector<float> serial = geo.cagePositions;
+  double             before = 0;
+  for(const double w : {0.3, 0.55, 0.2})
+  {
+    set.set("shape", w);
+    for(size_t i = 0; i < t->cageIndices.size(); i++)
+    {
+      const size_t v = t->cageIndices[i];
+      for(int c = 0; c < 3; c++)
+        serial[v * 3 + c] = float(serial[v * 3 + c] + t->cageDeltas[i * 3 + c] * (w - before));
+    }
+    before = w;
+    EXPECT_EQ(set.morphedCage(0), serial) << "at " << w;
+  }
+}
+
 // A mesh that stops being cageOnly (its feed no longer refines it) is drawn as its morphs have it at
 // the next pump: a load moves cages alone before the host knows what its feed refines.
 TEST(FigureMorphSet, AMeshNoLongerCageOnlyCatchesUpAtThePump)
