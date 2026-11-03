@@ -33,6 +33,7 @@
 
 #include "memory_plan.hpp"
 #include "renderer.hpp"
+#include "gpu_crash_trail.hpp"
 #include "fv_compose.hpp"
 #include "scene_import_gltf.hpp"
 
@@ -573,6 +574,31 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   applyMemoryFill(cmd);
   watchMemory();
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
+  {
+    // the frame's memory and what its sync did, for what a lost device leaves in the log
+    const MemoryBudget                          budget  = deviceMemoryBudget();
+    const nvvk::BufferCircularAllocator::Report staging = m_resources.staging.getStagingReport();
+    const rs::Residency&                        res     = m_resources.retainedGpu->residency();
+    const rs::Residency::ImageCounts            images  = res.imageCounts();
+    std::string                                 did;
+    for(const auto& [on, name] : {std::pair{result.changed, "changed"}, std::pair{result.imagesMoved, "textures moved"},
+                                  std::pair{result.drawListChanged, "instances"}, std::pair{result.buffersChanged, "buffers"},
+                                  std::pair{result.tlasHandleChanged, "TLAS made"}, std::pair{result.verticesWritten, "vertices"}})
+      if(on)
+        did += did.empty() ? name : std::string(", ") + name;
+    gpu_trail::record({.frame       = m_trailFrames,
+                       .budget      = budget.budget,
+                       .usage       = budget.usage,
+                       .allocated   = budget.allocatorBlocks,
+                       .spilled     = m_resources.retainedGpu->backend().spilledBytes(),
+                       .stagingHeld = staging.allocatedSize,
+                       .stagingLive = staging.requestedSize,
+                       .decoded     = images.decoded,
+                       .copied      = images.copied,
+                       .refused     = images.refused,
+                       .queued      = uint32_t(res.queuedDecodes()),
+                       .sync        = std::move(did)});
+  }
   if(result.drawListChanged)
     m_pendingGeometry = 0;  // what was accepted is resident, and counted as used
   // an export keeps the detail it began with

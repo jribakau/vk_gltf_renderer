@@ -664,6 +664,7 @@ private:
   MemoryReport                             m_memoryReported;
   double                                   m_retryParkedAt = 0;  // when what found no memory is tried again
   uint64_t              m_ledgerLogged = 0;          // the scene's bytes the last [memory] line said
+  uint64_t              m_trailFrames  = 0;          // frames begun, as the crash trail numbers them (gpu_crash_trail.hpp)
   std::vector<nvvk::Buffer> m_memoryFill;            // memoryFillMB's
   size_t                m_memoryFillNext = 0;        // the block memoryFillWriteMB writes next
   rs::MemoryWatch       m_memoryWatch;

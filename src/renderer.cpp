@@ -71,6 +71,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "renderer.hpp"
+#include "gpu_crash_trail.hpp"
 
 #ifdef NVP_SUPPORTS_BASISU
 // the EXR writer of basis_universal's tinyexr, which env_image_loader.cpp reads environments with
@@ -883,6 +884,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
 {
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
   m_profilerTimeline->frameAdvance();
+  gpu_trail::frameStart(cmd, ++m_trailFrames);
   // for refuseFrameSize on the stream's thread
   m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0)
                               + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0));

@@ -39,6 +39,8 @@
 #include <nvutils/parameter_parser.hpp>
 #include <nvutils/parameter_sequencer.hpp>
 #include <nvvk/context.hpp>
+#include <nvvk/check_error.hpp>
+#include <nvvk/profiler_vk.hpp>
 #include <nvvk/validation_settings.hpp>
 
 #include "renderer.hpp"
@@ -50,6 +52,7 @@
 #include <figure/wardrobe/bind_cache.hpp>
 #include "fv_protocol.hpp"
 #include "driver_shader_cache.hpp"
+#include "gpu_crash_trail.hpp"
 
 #include <algorithm>
 #include "version.hpp"
@@ -296,6 +299,7 @@ auto main(int argc, char** argv) -> int
   VkPhysicalDeviceOpacityMicromapFeaturesKHR ommFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR};
   VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR addressCmdFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR};
   VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipelineExecFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+  VkPhysicalDeviceFaultFeaturesEXT faultFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
   // clang-format on
 
   // Requesting the extensions and features needed
@@ -313,6 +317,8 @@ auto main(int argc, char** argv) -> int
       {VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME, &ommFeature, false},                // Optional: Opacity Micromap (OMM)
       {VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, &pipelineExecFeature, false},  // Optional: path-tracer register counts in the log
       {VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, nullptr, false},  // Optional: the VRAM budget a frame size is checked against (GltfRenderer::refuseFrameSize)
+      {VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, nullptr, false},  // Optional: where a lost device's queue had got to (gpu_crash_trail.hpp)
+      {VK_EXT_DEVICE_FAULT_EXTENSION_NAME, &faultFeature, false},             // Optional: what a lost device read or wrote (gpu_crash_trail.hpp)
   };
 
   // Only request the graphics queue
@@ -454,6 +460,21 @@ auto main(int argc, char** argv) -> int
     LOGE("Failed to initialize Vulkan context!");
     return -1;
   }
+
+  // What a lost device leaves in the log: checkpoints at each profiled section, the driver's fault report, the
+  // last frames' memory (gpu_crash_trail.hpp)
+  gpu_trail::init(vkContext.getDevice(), vkContext.getQueueInfos()[0].queue,
+                  vkContext.hasExtensionEnabled(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME),
+                  vkContext.hasExtensionEnabled(VK_EXT_DEVICE_FAULT_EXTENSION_NAME) && faultFeature.deviceFault);
+  if(gpu_trail::checkpointsOn())
+    nvvk::ProfilerGpuTimer::sectionHook = &gpu_trail::section;
+  nvvk::CheckError::getInstance().setCallbackFunction([](VkResult result) {
+    if(result == VK_ERROR_DEVICE_LOST)
+      gpu_trail::deviceLost();
+#if defined(USE_NSIGHT_AFTERMATH)
+    AftermathCrashTracker::getInstance().errorCallback(result);
+#endif
+  });
 
   // Check per-feature extension enablement after vkContext.init: the NGX query may have
   // succeeded but the loader could still have dropped optional extensions on the floor.

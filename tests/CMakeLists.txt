@@ -153,6 +153,9 @@ set(TEST_SOURCES
     test_variant_compile_job.cpp
     # nvslang's compiler: no global session until it compiles, names looked up then
     test_slang_compiler.cpp
+    # What a lost device leaves in the log: the frames kept, what each says
+    test_gpu_crash_trail.cpp
+    ${CMAKE_SOURCE_DIR}/src/gpu_crash_trail.cpp
     # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)
     # What a selected node puts in selectedRenderNodes, whether or not the UI pass runs (header only)
     # The retained scene's GPU seam without a GPU (rs::GpuBackend): the fake's own tests
