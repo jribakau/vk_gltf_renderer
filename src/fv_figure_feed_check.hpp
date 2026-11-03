@@ -70,7 +70,7 @@ inline std::vector<std::string> checkFeed(const SceneGraph& scene, int root, con
     if(n.kind != NodeKind::eMesh || n.mesh < 0 || n.mesh >= int(scene.meshes.size()))
       return false;
     const Mesh& m = scene.meshes[size_t(n.mesh)];
-    return m.geo && !m.geo->position.empty() && !m.geo->groups.empty();
+    return m.geo && m.geo->drawnCount() > 0 && !m.geo->groups.empty();
   };
 
   // the nodes traversal reaches, depth first as the feed and the build meet them (taken-off
@@ -149,6 +149,7 @@ inline std::vector<std::string> checkFeed(const SceneGraph& scene, int root, con
     const std::string       name     = "mesh " + std::to_string(mi) + " ";
     const Mesh&             m        = scene.meshes[mi];
     const mesh::BuiltMesh&  geo      = *m.geo;
+    mesh::ensureDrawn(geo);  // a thin hair's, to hold the record to
     const size_t            count    = geo.position.size() / 3;
     const mesh::Drawn       drawn    = mesh::drawnTriangles(geo);
     const rs::MeshInstance& instance = *store.entity(feed.entityOf(nodesOf[mi].front()))->mesh;

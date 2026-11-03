@@ -34,8 +34,10 @@
 // payloads change rather than found by a scan.
 //
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <set>
@@ -156,6 +158,75 @@ struct MorphTarget
   bool                   operator==(const MorphTarget&) const = default;
 };
 
+// A record's stream: its own, or read where another keeps it (`borrow`: a figure mesh's UVs and
+// triangles, held once for both), with `owner` keeping that alive. Read as a vector is; anything
+// written to it (assigning, push_back, insert, resize, own()) makes it its own first.
+template <class T>
+class Stream
+{
+public:
+  Stream() = default;
+  Stream(std::vector<T> v)
+      : m_own(std::move(v))
+  {
+  }
+  Stream(std::initializer_list<T> v)
+      : m_own(v)
+  {
+  }
+  static Stream borrow(std::span<const T> data, std::shared_ptr<const void> owner)
+  {
+    Stream s;
+    s.m_view  = data;
+    s.m_owner = std::move(owner);
+    return s;
+  }
+  Stream& operator=(std::vector<T> v)
+  {
+    m_own = std::move(v);
+    m_view = {};
+    m_owner.reset();
+    return *this;
+  }
+  Stream& operator=(std::initializer_list<T> v) { return *this = std::vector<T>(v); }
+
+  bool     borrowed() const { return m_owner != nullptr; }
+  const T* data() const { return m_owner ? m_view.data() : m_own.data(); }
+  size_t   size() const { return m_owner ? m_view.size() : m_own.size(); }
+  bool     empty() const { return size() == 0; }
+  const T& operator[](size_t i) const { return data()[i]; }
+  const T* begin() const { return data(); }
+  const T* end() const { return data() + size(); }
+  operator std::span<const T>() const { return {data(), size()}; }
+
+  // its own, copied first when borrowed
+  std::vector<T>& own()
+  {
+    if(m_owner)
+    {
+      m_own.assign(m_view.begin(), m_view.end());
+      m_view = {};
+      m_owner.reset();
+    }
+    return m_own;
+  }
+  void push_back(const T& v) { own().push_back(v); }
+  template <class It>
+  void insert(const T* at, It first, It last)
+  {
+    const size_t i = size_t(at - data());
+    own().insert(m_own.begin() + std::ptrdiff_t(i), first, last);
+  }
+  void resize(size_t n) { own().resize(n); }
+  void clear() { *this = std::vector<T>(); }
+  bool operator==(const Stream& o) const { return std::equal(begin(), end(), o.begin(), o.end()); }
+
+private:
+  std::vector<T>              m_own;
+  std::span<const T>          m_view;
+  std::shared_ptr<const void> m_owner;
+};
+
 // How a subdivided mesh's drawn vertices come from its cage (daz-viewer docs/gpu-figures-plan.md,
 // F1): the subdivision stencils level by level, the refined vertex each drawn vertex is (UV seam
 // splits share one), and the refined triangles with, per refined vertex, the ones whose area-weighted
@@ -191,7 +262,8 @@ struct MeshRecord
   OwnerTag                 owner;
   std::vector<glm::vec3>   positions, normals;
   std::vector<glm::vec4>   tangents;  // generated when a submesh's material needs them
-  std::vector<glm::vec2>   uv0, uv1;
+  Stream<glm::vec2>        uv0;  // a figure mesh's own UVs when they go as they are (no flip)
+  std::vector<glm::vec2>   uv1;
   std::vector<glm::vec4>   colors;
   // where procedural layers land, per drawn vertex (fv::mat::proceduralMasks); empty: none on this mesh
   std::vector<uint32_t>    masks;
@@ -223,7 +295,8 @@ struct MeshRecord
       return !cage.empty() && cageJoints.size() == cage.size() && cageWeights.size() == cage.size();
     return !positions.empty() && joints.size() == positions.size() && weights.size() == positions.size();
   }
-  std::vector<uint32_t>    indices;  // u32 always; a non-indexed primitive gets 0..n-1
+  // u32 always; a non-indexed primitive gets 0..n-1; a figure mesh's own when it hides nothing
+  Stream<uint32_t>         indices;
   std::vector<Submesh>     submeshes;
   std::vector<MorphTarget> targets;
   std::vector<float>       targetWeights;  // the mesh's default morph weights

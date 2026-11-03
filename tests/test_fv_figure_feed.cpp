@@ -279,6 +279,55 @@ TEST(FigureFeed, ADialAPoseAndHiddenPolygonsAreFedAsTheBuildHasThem)
   }
 }
 
+// A record reads the mesh's own UVs and triangles where the mesh keeps them, when they go as they are
+// (the textures' rows run as the UVs do, no polygon hidden), so they aren't held twice; otherwise it
+// has its own. Writing to a borrowed stream makes it its own and leaves the mesh's alone.
+TEST(FigureFeed, ARecordReadsTheMeshsOwnUvsAndTrianglesWhenTheyGoAsTheyAre)
+{
+  const auto              f     = loadBox();
+  fv::mesh::BuiltMesh&    geo   = *f->loaded.scene.meshes[0].geo;
+  fv::build::BuildOptions asIs  = textured();
+  asIs.texturesFlipped          = true;
+  const auto              flips = textured();
+  {
+    rs::RetainedScene fed;
+    fv::FigureFeed    feed(fed, {.build = asIs});
+    feed.sync(f->loaded.scene, f->loaded.root);
+    expectFed(f->loaded.scene, f->loaded.root, feed, fed, asIs);
+    const rs::MeshRecord& r = *fed.mesh(feed.meshOf(0));
+    EXPECT_TRUE(r.uv0.borrowed());
+    EXPECT_EQ(static_cast<const void*>(r.uv0.data()), static_cast<const void*>(geo.uv.data()));
+    EXPECT_TRUE(r.indices.borrowed());
+    EXPECT_EQ(r.indices.data(), geo.fullIndex.data());
+
+    rs::MeshRecord copy = r;
+    copy.indices.own()[0] += 1;
+    EXPECT_FALSE(copy.indices.borrowed());
+    EXPECT_EQ(copy.indices[0], geo.fullIndex[0] + 1);
+    EXPECT_EQ(r.indices[0], geo.fullIndex[0]);
+  }
+  {
+    rs::RetainedScene fed;
+    fv::FigureFeed    feed(fed, {.build = flips});
+    feed.sync(f->loaded.scene, f->loaded.root);
+    expectFed(f->loaded.scene, f->loaded.root, feed, fed, flips);
+    const rs::MeshRecord& r = *fed.mesh(feed.meshOf(0));
+    EXPECT_FALSE(r.uv0.borrowed());  // turned over: its own
+    EXPECT_TRUE(r.indices.borrowed());
+  }
+  {
+    geo.hiddenPolys["w1"] = {int32_t(geo.triPoly[0])};
+    rs::RetainedScene fed;
+    fv::FigureFeed    feed(fed, {.build = asIs});
+    feed.sync(f->loaded.scene, f->loaded.root);
+    expectFed(f->loaded.scene, f->loaded.root, feed, fed, asIs);
+    const rs::MeshRecord& r = *fed.mesh(feed.meshOf(0));
+    EXPECT_FALSE(r.indices.borrowed());  // fewer than the mesh's: its own
+    const size_t gone = size_t(std::count(geo.triPoly.begin(), geo.triPoly.end(), geo.triPoly[0]));
+    EXPECT_EQ(r.indices.size(), geo.fullIndex.size() - gone * 3);
+  }
+}
+
 // A normal-mapped body under a dial: its tangents are made again only near the vertices that moved
 // (tinygltf::utils::updateTangents), and they are the ones the build's import makes over all of it.
 TEST(FigureFeed, ADialOnANormalMappedBodyRemakesItsTangentsAsTheBuildHasThem)
@@ -860,10 +909,10 @@ TEST(FigureFeed, CheckFeedCatchesARecordCorruptedInTheStore)
     store.setMeshVertices(feed.meshOf(0), std::move(positions), {});
   });
   caught({"mesh 0 indices 0"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
-    replaced(store, feed, [](rs::MeshRecord& r) { std::swap(r.indices[r.submeshes[0].firstIndex], r.indices[r.submeshes[0].firstIndex + 1]); });
+    replaced(store, feed, [](rs::MeshRecord& r) { std::swap(r.indices.own()[r.submeshes[0].firstIndex], r.indices.own()[r.submeshes[0].firstIndex + 1]); });
   });
   caught({"mesh 0 UVs"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
-    replaced(store, feed, [](rs::MeshRecord& r) { r.uv0[0].y += 0.5f; });
+    replaced(store, feed, [](rs::MeshRecord& r) { r.uv0.own()[0].y += 0.5f; });
   });
   caught({"mesh 0 joints"}, [&](rs::RetainedScene& store, const fv::FigureFeed& feed) {
     replaced(store, feed, [](rs::MeshRecord& r) { r.joints[0].x += 1; });

@@ -708,6 +708,11 @@ TEST(FvPropFeed, APosedStrandHairHoldsNoDrawnVerticesOnTheCpu)
     }
   }
   EXPECT_TRUE(ribbon->skin.skinIndex.empty()) << "made only by what asks";
+  // what the CPU has of them now, to hold what it makes again to (normals: a weld of these positions)
+  const std::vector<int32_t> firstSplit = geo.firstSplit, nextSplit = geo.nextSplit;
+  const std::vector<float>   positions  = geo.position;
+  std::vector<float>         normals(positions.size());
+  fv::mesh::NormalWelder(geo.renderIndex, firstSplit, nextSplit, geo.renderTris, geo.renderVertexCount).full(positions, normals);
 
   rs::RetainedScene  scene;
   rs::FakeGpuBackend gpu(2);
@@ -751,7 +756,23 @@ TEST(FvPropFeed, APosedStrandHairHoldsNoDrawnVerticesOnTheCpu)
   ASSERT_TRUE(residency.meshGpu(id)->refine) << "a drawer has nothing else to make them from";
   check("at rest");
 
-  // at rest, what the CPU keeps
+  // fed thin, the CPU lets go of its drawn vertices (mesh::letGoOfDrawn) and makes them again when
+  // asked: what the drawers make at rest, the splits as build made them, the normals of a weld
+  EXPECT_TRUE(geo.drawnLetGo);
+  EXPECT_TRUE(geo.position.empty() && geo.normal.empty() && geo.firstSplit.empty() && geo.nextSplit.empty());
+  EXPECT_EQ(geo.drawnCount(), n);
+  EXPECT_TRUE(geo.hasNormals());
+  fv::mesh::ensureDrawn(geo);
+  EXPECT_FALSE(geo.drawnLetGo);
+  EXPECT_EQ(geo.firstSplit, firstSplit);
+  EXPECT_EQ(geo.nextSplit, nextSplit);
+  ASSERT_EQ(geo.position.size(), positions.size());
+  ASSERT_EQ(geo.normal.size(), normals.size());
+  for(size_t i = 0; i < positions.size(); i++)
+  {
+    ASSERT_NEAR(geo.position[i], positions[i], 1e-4f) << i;
+    ASSERT_NEAR(geo.normal[i], normals[i], 1e-3f) << i;
+  }
   const std::vector<glm::vec3> rest = drawnNow();
   for(size_t v = 0; v < n; v++)
     ASSERT_LT(glm::distance(rest[v], glm::make_vec3(&geo.position[v * 3])), 1e-4f) << v;
@@ -832,6 +853,22 @@ TEST(FvPropFeed, APosedStrandHairHoldsNoDrawnVerticesOnTheCpu)
   EXPECT_EQ(scene.mesh(feed.meshOf(mi))->thinVertices, n);
   EXPECT_EQ(residency.emissiveCount(), 0u);
   check("not any more");
+
+  // thin again, it lets go again; an export makes them again for the file
+  EXPECT_TRUE(geo.drawnLetGo);
+  const fv::build::BuildResult again = fv::build::buildGltf(graph, root, {});
+  EXPECT_FALSE(geo.drawnLetGo);
+  for(const std::string& p : fv::build::checkBuild(graph, again, {}))
+    ADD_FAILURE() << p;
+  for(size_t i = 0; i < positions.size(); i++)
+    ASSERT_NEAR(geo.position[i], positions[i], 1e-4f) << i;
+  // and the next sync lets go of them again, its record as it was
+  const rs::MeshId kept = feed.meshOf(mi);
+  feed.sync(graph, root);
+  EXPECT_TRUE(geo.drawnLetGo);
+  EXPECT_EQ(feed.meshOf(mi), kept);
+  frames(1);
+  check("let go again");
 }
 
 // A procedural layer's first coming takes a sync, which gives the meshes wearing it their masks. Taken off,

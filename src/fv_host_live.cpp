@@ -138,7 +138,7 @@ void FvHost::Impl::applyMesh(Loaded& f, const fv::morph::MeshChange& change)
      || !f.fig->loaded.scene.meshes[change.mesh].geo)
     return;
   const fv::mesh::BuiltMesh& geo   = *f.fig->loaded.scene.meshes[change.mesh].geo;
-  const size_t              count = (change.cage ? geo.cagePositions.size() : geo.position.size()) / 3;
+  const size_t              count = change.cage ? geo.cagePositions.size() / 3 : geo.drawnCount();
   if(!change.all && change.indices.empty())
     return;
   dialTiming.addUpload(change.all ? count : change.indices.size(), change.all);

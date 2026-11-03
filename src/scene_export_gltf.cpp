@@ -44,11 +44,21 @@ public:
   }
 
   template <class T>
-  int accessor(const std::vector<T>& data, int componentType, int type, int target = 0)
+  int accessor(std::span<const T> data, int componentType, int type, int target = 0)
   {
     if(data.empty())
       return -1;
     return tinygltf::utils::appendAccessor(m_model, 0, data.data(), data.size() * sizeof(T), componentType, type, data.size(), target);
+  }
+  template <class T>
+  int accessor(const std::vector<T>& data, int componentType, int type, int target = 0)
+  {
+    return accessor(std::span<const T>(data), componentType, type, target);
+  }
+  template <class T>
+  int accessor(const Stream<T>& data, int componentType, int type, int target = 0)
+  {
+    return accessor(std::span<const T>(data), componentType, type, target);
   }
 
   int vec3(const std::vector<glm::vec3>& d, bool bounds = false)

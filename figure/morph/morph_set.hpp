@@ -298,6 +298,9 @@ private:
     std::unordered_map<const mesh::RenderTarget*, Active> cageApplied;
     int                                                   sinceCageRebuild = 0;
     bool                                                  behind           = false;
+    // the mesh's BuiltMesh::drawnRev the drawn buffers and what is kept of them were made over: another
+    // means they were let go and made again as they were at rest, so they start again (freshen)
+    uint32_t drawnRev = 0;
   };
 
   struct FollowerState
@@ -343,6 +346,9 @@ private:
   };
   MeshUpdate rebuild(int mesh, MeshState& st);
   MeshUpdate update(int mesh, MeshState& st);
+  // the mesh's drawn vertices there to write (mesh::ensureDrawn), and what is kept over them started
+  // again if they were let go since: true when they were
+  bool       freshen(int mesh, MeshState& st);
   // a cageOnly mesh's cage brought to `active`: each changed target's cage deltas, or every target
   // over the base cage when it is not kept yet or is due a rebuild
   void       updateCage(int mesh, MeshState& st);

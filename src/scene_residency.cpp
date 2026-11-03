@@ -85,6 +85,12 @@ std::span<const std::byte> bytesOf(const std::vector<T>& v)
 }
 
 template <class T>
+std::span<const std::byte> bytesOf(const Stream<T>& v)
+{
+  return std::as_bytes(std::span<const T>(v));
+}
+
+template <class T>
 std::span<const std::byte> bytesOf(const T& value)
 {
   return std::as_bytes(std::span(&value, 1));

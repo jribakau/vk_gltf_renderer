@@ -145,6 +145,7 @@ std::shared_ptr<const std::vector<uint32_t>> weldOf(const std::shared_ptr<mesh::
       if(auto ids = it->second.ids.lock())
         return ids;
   }
+  mesh::ensureDrawn(*geo);
   auto ids = std::make_shared<const std::vector<uint32_t>>(mat::weldPositions(geo->position));
   std::lock_guard lock(g_strandMutex);
   std::erase_if(g_welds, [](const auto& kv) { return kv.second.geo.expired(); });
@@ -175,6 +176,7 @@ std::shared_ptr<const mat::StrandTally> strandVotesOf(const std::shared_ptr<mesh
         if(p.geo.lock() == geo && p.flipV == flipV && p.indexCount == index.size() && sameRanges(p.ranges, ranges))
           return p.votes;
   }
+  mesh::ensureDrawn(*geo);  // made on the worker before a hair lets go of them; asked again, made again
   std::vector<float>     flipped;
   std::span<const float> uv = geo->uv;
   if(flipV)
@@ -572,6 +574,7 @@ std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& 
       const mat::Surface& sf = scene.materials[mi].surface;
       if(mat::needsArea(sf))
       {
+        mesh::ensureDrawn(geo);
         double area = 0;
         const uint32_t* idx = drawn.index().data() + group.start;
         for(uint32_t t = 0; t + 2 < group.count; t += 3)
@@ -641,6 +644,10 @@ BuildResult buildGltf(const SceneGraph& scene, int root, const BuildOptions& opt
   out.meshOf.assign(scene.meshes.size(), -1);
   out.skinOf.assign(scene.meshes.size(), -1);
 
+  // what a strand hair let go of once fed, for the file
+  for(const Mesh& m : scene.meshes)
+    if(m.geo)
+      mesh::ensureDrawn(*m.geo);
   const Drawing drawn = drawing(scene, root);
   for(size_t k = 0; k < drawn.order.size(); k++)
     out.nodeOf[drawn.order[k]] = int(k);

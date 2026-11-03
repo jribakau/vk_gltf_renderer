@@ -47,7 +47,7 @@ bool draws(const SceneGraph& figure, const Node& n)
   if(n.kind != NodeKind::eMesh || n.mesh < 0 || n.mesh >= int(figure.meshes.size()))
     return false;
   const Mesh& m = figure.meshes[size_t(n.mesh)];
-  return m.geo && !m.geo->position.empty() && !m.geo->groups.empty();
+  return m.geo && m.geo->drawnCount() > 0 && !m.geo->groups.empty();
 }
 
 // Whether what draws it can pose its cage: it has the cage's own influences
@@ -61,7 +61,7 @@ void addDrawnSkin(rs::MeshRecord& r, const Mesh& m)
 {
   if(!m.skinned() || !m.geo)
     return;
-  const size_t     count = m.geo->position.size() / 3;
+  const size_t     count = m.geo->drawnCount();
   mesh::SkinOutput made;
   if(m.skin.skinIndex.empty())
     made = mesh::skin(*m.geo, m.cageSkin);
@@ -629,6 +629,7 @@ bool FigureFeed::anyEmits(const std::vector<int>& materials) const
 // The drawn vertices into a record
 static void addDrawnVertices(rs::MeshRecord& r, const mesh::BuiltMesh& geo)
 {
+  mesh::ensureDrawn(geo);
   const size_t count = geo.position.size() / 3;
   r.positions.resize(count);
   std::memcpy(r.positions.data(), geo.position.data(), count * sizeof(glm::vec3));
@@ -643,28 +644,38 @@ rs::MeshRecord FigureFeed::meshRecord(const SceneGraph& figure, int mesh, const 
 {
   const Mesh&            m     = figure.meshes[size_t(mesh)];
   const mesh::BuiltMesh& geo   = *m.geo;
-  const size_t           count = geo.position.size() / 3;
+  const size_t           count = geo.drawnCount();
   rs::MeshRecord         r;
   r.name  = m.name;
   r.owner = {m_options.prop, int32_t(mesh)};
   if(thin)
   {
     r.thinVertices = count;
-    r.thinNormals  = geo.normal.size() == count * 3;
+    r.thinNormals  = geo.hasNormals();
   }
   else
   {
     addDrawnVertices(r, geo);
     addDrawnSkin(r, m);
   }
+  // the mesh's own UVs and triangles, read where it keeps them, when they go as they are: a strand
+  // hair's are 180 MB that would otherwise be held twice
   if(geo.uv.size() == count * 2)
   {
-    r.uv0.resize(count);
-    const bool flip = !m_options.build.texturesFlipped;
-    for(size_t v = 0; v < count; v++)
-      r.uv0[v] = glm::vec2(geo.uv[v * 2], flip ? 1 - geo.uv[v * 2 + 1] : geo.uv[v * 2 + 1]);
+    if(m_options.build.texturesFlipped)
+      r.uv0 = rs::Stream<glm::vec2>::borrow({reinterpret_cast<const glm::vec2*>(geo.uv.data()), count}, m.geo);
+    else
+    {
+      std::vector<glm::vec2> uv(count);
+      for(size_t v = 0; v < count; v++)
+        uv[v] = glm::vec2(geo.uv[v * 2], 1 - geo.uv[v * 2 + 1]);
+      r.uv0 = std::move(uv);
+    }
   }
-  r.indices = drawn.index();
+  if(geo.hiddenPolys.empty())
+    r.indices = rs::Stream<uint32_t>::borrow(geo.fullIndex, m.geo);
+  else
+    r.indices = drawn.index();
   for(size_t k = 0; k < drawn.groups().size(); k++)
   {
     const mesh::Group& g = drawn.groups()[k];
@@ -681,9 +692,9 @@ rs::MeshCounts meshCounts(const Mesh& m)
   if(!m.geo)
     return c;
   const mesh::BuiltMesh& geo = *m.geo;
-  c.vertices                 = geo.position.size() / 3;
+  c.vertices                 = geo.drawnCount();
   c.triangles                = (geo.fullIndex.empty() ? geo.renderTris.size() : geo.fullIndex.size()) / 3;
-  c.normals                  = geo.normal.size() == c.vertices * 3;
+  c.normals                  = geo.hasNormals();
   c.uv0                      = geo.uv.size() == c.vertices * 2;
   // what its materials ask isn't known yet: a garment's nearly always have normal maps, a strand's rarely do
   c.tangents        = c.uv0 && !geo.ribbon;
@@ -859,11 +870,20 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       f.tangentGroups = tangents;
       f.emits         = emits;
       f.tangentsLate  = false;
+      // a thin strand hair's record reads none of its drawn vertices, and nothing else here needs them
+      // again unless asked (mesh::ensureDrawn): they go
+      if(f.thin)
+        mesh::letGoOfDrawn(*m.geo);
     }
     else
+    {
       // kept: its vertices as the scene has them now, which something may have written in place
       // without a change to report (a wear's looks set the dials its file restores)
       moveVertices(m, f);
+      // made again since for something that asked (an export): they go again
+      if(f.thin)
+        mesh::letGoOfDrawn(*m.geo);
+    }
 
     // its skin: the bones' entities and the inverse binds the build writes
     if(std::optional<rs::SkinRecord> skin = skinRecord(m))
@@ -916,6 +936,7 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
   }
   // the same triangles over vertices that moved
   const mesh::BuiltMesh& geo   = *m.geo;
+  mesh::ensureDrawn(geo);
   const size_t           count = geo.position.size() / 3;
   std::vector<glm::vec3> positions(count), normals;
   std::memcpy(positions.data(), geo.position.data(), count * sizeof(glm::vec3));
@@ -1009,7 +1030,7 @@ std::vector<glm::vec3> FigureFeed::cageOf(int mesh, const FedMesh& f) const
 
 std::optional<rs::SkinRecord> FigureFeed::skinRecord(const Mesh& m) const
 {
-  const size_t count = m.geo ? m.geo->position.size() / 3 : 0;
+  const size_t count = m.geo ? m.geo->drawnCount() : 0;
   if(!m.skinned() || (!poses(m) && (m.skin.skinIndex.size() != count * 4 || m.skin.skinWeight.size() != count * 4)))
     return std::nullopt;
   rs::SkinRecord skin;
@@ -1028,7 +1049,7 @@ bool FigureFeed::fedAsItIs(const SceneGraph& figure, int mesh) const
   const Mesh&    m = figure.meshes[size_t(mesh)];
   const FedMesh& f = m_meshes[size_t(mesh)];
   return !f.id.isNone() && m.geo && f.geo.lock() == m.geo && f.hidden == m.geo->hiddenPolys && m_scene.mesh(f.id)
-         && m_scene.mesh(f.id)->vertexCount() == m.geo->position.size() / 3;
+         && m_scene.mesh(f.id)->vertexCount() == m.geo->drawnCount();
 }
 
 bool FigureFeed::syncVertices(const SceneGraph& figure, std::span<const int> meshes, bool tangentsLater)

@@ -136,6 +136,23 @@ void MorphSet::keepBase(const mesh::BuiltMesh& geo, MeshState& st)
   st.baseNrm = geo.normal;
 }
 
+bool MorphSet::freshen(int mesh, MeshState& st)
+{
+  const mesh::BuiltMesh& geo = *m_geo(mesh);
+  mesh::ensureDrawn(geo);
+  if(st.drawnRev == geo.drawnRev)
+    return false;
+  // made again at rest: nothing of the weights it held is in it, and the welder read the old splits
+  st.drawnRev = geo.drawnRev;
+  std::vector<float>().swap(st.basePos);
+  std::vector<float>().swap(st.baseNrm);
+  std::vector<uint8_t>().swap(st.mark);
+  st.welder.reset();
+  st.applied.clear();
+  st.sinceRebuild = 0;
+  return true;
+}
+
 void MorphSet::bind(const std::string& name, Binding b, double value, const ChannelOptions& opts)
 {
   auto it = m_bindings.find(name);
@@ -1016,7 +1033,7 @@ void MorphSet::catchUp(const std::function<bool(int mesh)>& which)
 {
   std::vector<std::pair<int, MeshState*>> behind;
   for(auto& [mesh, st] : m_cpu)
-    if(st.behind && !st.dirty && which(mesh))
+    if((st.behind || (st.drawnRev != m_geo(mesh)->drawnRev && !st.active.empty())) && !st.dirty && which(mesh))
       behind.emplace_back(mesh, &st);
   if(behind.empty())
     return;
@@ -1087,8 +1104,9 @@ void MorphSet::updateCage(int mesh, MeshState& st)
 // Adds each changed target's weight difference; re-welds normals around the moved vertices.
 MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
 {
-  MeshUpdate       out;
+  MeshUpdate out;
   out.mesh = mesh;
+  freshen(mesh, st);
   mesh::BuiltMesh& geo = *m_geo(mesh);
   keepBase(geo, st);
   float*           pos = geo.position.data();
@@ -1162,6 +1180,7 @@ MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
 MorphSet::MeshUpdate MorphSet::rebuild(int mesh, MeshState& st)
 {
   fv::timing::Accum rebuildTime("morph.rebuild");
+  freshen(mesh, st);
   st.sinceRebuild      = 0;
   mesh::BuiltMesh& geo = *m_geo(mesh);
   keepBase(geo, st);

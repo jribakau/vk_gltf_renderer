@@ -446,6 +446,54 @@ TEST(FigureMorphSet, ACageOnlyMeshsTargetsMakeNoDrawnDeltasUntilACatchUp)
   EXPECT_LT(worst(geo.normal, reference.normal), 1e-6);
 }
 
+// A cageOnly mesh whose drawn vertices were let go once fed (mesh::letGoOfDrawn, as a thin strand
+// hair's are) is made again at rest by the next catch-up, which then adds every weight: what it had
+// applied before isn't in them any more, whether or not a dial moved since.
+TEST(FigureMorphSet, AMeshThatLetGoOfItsDrawnVerticesIsCaughtUpFromRest)
+{
+  fv::mesh::BuiltMesh geo = grid(6, 2), reference = grid(6, 2);
+  geo.ribbon.emplace().offsets.assign(size_t(geo.renderVertexCount) * 3, 0.f);  // a ribbon of no width
+  const std::vector<float> rest = geo.position, restNormals = geo.normal;
+  fv::morph::MorphSet      set([&](int) { return &geo; }), off([&](int) { return &reference; });
+  set.cageOnly = [](int) { return true; };
+  set.addTarget("bump", 0, targetOf(geo, {8, 9, 16}, {0, 0, 1, 0.5f, 0, 0.25f, 0, -0.5f, 0}));
+  off.addTarget("bump", 0, targetOf(reference, {8, 9, 16}, {0, 0, 1, 0.5f, 0, 0.25f, 0, -0.5f, 0}));
+  set.takeChanges();
+  set.set("bump", 0.75);
+  off.set("bump", 0.75);
+  set.settled();
+  set.catchUp();
+  set.takeChanges();
+  ASSERT_LT(worst(geo.position, reference.position), 1e-6);
+
+  // let go, and made again as they were at rest, bit for bit (no width to add)
+  ASSERT_TRUE(fv::mesh::letGoOfDrawn(geo));
+  EXPECT_TRUE(geo.position.empty() && geo.normal.empty() && geo.firstSplit.empty());
+  EXPECT_EQ(geo.drawnCount(), rest.size() / 3);
+  EXPECT_TRUE(geo.hasNormals());
+  EXPECT_FALSE(fv::mesh::letGoOfDrawn(geo));
+  fv::mesh::ensureDrawn(geo);
+  EXPECT_EQ(geo.position, rest);
+  EXPECT_EQ(geo.normal, restNormals);
+
+  // nothing moved since: the catch-up still puts the weight back on
+  set.catchUp();
+  const auto caught = set.takeChanges();
+  ASSERT_EQ(caught.size(), 1u);
+  EXPECT_LT(worst(geo.position, reference.position), 1e-6);
+  EXPECT_LT(worst(geo.normal, reference.normal), 1e-6);
+
+  // let go again, and a dial moved meanwhile
+  ASSERT_TRUE(fv::mesh::letGoOfDrawn(geo));
+  set.set("bump", 0.25);
+  off.set("bump", 0.25);
+  set.settled();
+  set.catchUp();
+  set.takeChanges();
+  EXPECT_LT(worst(geo.position, reference.position), 1e-6);
+  EXPECT_LT(worst(geo.normal, reference.normal), 1e-6);
+}
+
 // A cageOnly mesh's target over more cage vertices than one parallel chunk (a body shape projected onto
 // a hair) moves its cage in chunks to what one pass writes, float for float, step after step.
 TEST(FigureMorphSet, ALargeTargetMovesACageInChunks)

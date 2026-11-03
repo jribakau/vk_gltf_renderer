@@ -183,6 +183,16 @@ struct BuiltMesh
   std::shared_ptr<const MeshInput> source;
 
   bool refined() const { return refinement != nullptr; }
+
+  // A strand hair the GPU draws from its cage reads none of its drawn positions, normals or splits once
+  // fed: letGoOfDrawn lets go of them (290 MB of a 9.5M-vertex hair) and ensureDrawn makes them again
+  // for whatever reads them later (an export, the CPU morph, a record that holds them). Meanwhile how
+  // many drawn vertices there are, and whether they have normals, stay as they were.
+  bool     drawnLetGo   = false;
+  bool     letGoNormals = false;
+  uint32_t drawnRev     = 0;  // moves on with each letting go: state kept over the drawn vertices starts again
+  size_t   drawnCount() const { return drawnLetGo ? renderIndex.size() : position.size() / 3; }
+  bool     hasNormals() const { return drawnLetGo ? letGoNormals : normal.size() == position.size(); }
 };
 
 BuiltMesh build(const MeshInput& m);
@@ -297,5 +307,14 @@ bool drawnFromCage(const BuiltMesh& mesh);
 // Replaces the cage positions and returns the delta of the drawn vertices (xyz each), so a fit can
 // move the rest shape without discarding morphs already applied.
 std::vector<float> shiftCage(BuiltMesh& mesh, std::span<const float> positions);
+
+// Lets go of a strand ribbon's drawn positions, normals and splits: only one the GPU draws from its cage
+// (refined, its widths made into offsets). False when it isn't one, or has let go already.
+bool letGoOfDrawn(BuiltMesh& mesh);
+// Makes them again when they were let go, from the cage as it is (`cagePositions`): refined and moved
+// by the ribbons' offsets as a drawer makes them, the splits from renderIndex in the order build made
+// them, the normals welded, as widenRibbons left them to float rounding. Any thread; it writes into
+// the mesh, whose const-ness only says it is read: what it makes is what was there.
+void ensureDrawn(const BuiltMesh& mesh);
 
 }  // namespace fv::mesh

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <mutex>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -1517,6 +1518,72 @@ std::vector<float> shiftCage(BuiltMesh& mesh, std::span<const float> positions)
     delta[i * 3 + 2] = render[v + 2];
   }
   return delta;
+}
+
+namespace {
+// one letting go or making again at a time, whichever thread asks
+std::mutex g_drawnMutex;
+}  // namespace
+
+bool letGoOfDrawn(BuiltMesh& m)
+{
+  std::lock_guard lock(g_drawnMutex);
+  if(m.drawnLetGo || !m.refinement || !m.ribbon || m.ribbon->offsets.empty() || m.cagePositions.empty()
+     || m.position.size() != m.renderIndex.size() * 3 || m.ribbon->offsets.size() != size_t(std::max(m.renderVertexCount, 0)) * 3)
+    return false;
+  m.letGoNormals = m.normal.size() == m.position.size();
+  std::vector<float>().swap(m.position);
+  std::vector<float>().swap(m.normal);
+  std::vector<int32_t>().swap(m.firstSplit);
+  std::vector<int32_t>().swap(m.nextSplit);
+  m.drawnLetGo = true;
+  m.drawnRev++;
+  return true;
+}
+
+void ensureDrawn(const BuiltMesh& mesh)
+{
+  std::lock_guard lock(g_drawnMutex);
+  if(!mesh.drawnLetGo)
+    return;
+  timing::Scope t("drawn vertices made again", 10);
+  BuiltMesh&    m      = const_cast<BuiltMesh&>(mesh);
+  const size_t  drawn  = m.renderIndex.size();
+  const size_t  render = size_t(std::max(m.renderVertexCount, 0));
+  // each render vertex's drawn vertices, chained in the order build made them, which is theirs
+  m.firstSplit.assign(render, -1);
+  m.nextSplit.assign(drawn, -1);
+  {
+    std::vector<int32_t> last(render, -1);
+    for(size_t i = 0; i < drawn; i++)
+    {
+      const uint32_t v = m.renderIndex[i];
+      if(v >= render)
+        continue;
+      if(last[v] < 0)
+        m.firstSplit[v] = int32_t(i);
+      else
+        m.nextSplit[size_t(last[v])] = int32_t(i);
+      last[v] = int32_t(i);
+    }
+  }
+  // the cage refined, each strand point moved off its guide and across by its width
+  const std::vector<float>  refined = subdiv::refineDense(*m.refinement, m.cagePositions, 3);
+  const std::vector<float>& offsets = m.ribbon->offsets;
+  m.position.assign(drawn * 3, 0.f);
+  jobs::parallelFor(drawn, 16384, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      const size_t v = size_t(m.renderIndex[i]) * 3;
+      if(v + 2 < refined.size() && v + 2 < offsets.size())
+        for(size_t k = 0; k < 3; k++)
+          m.position[i * 3 + k] = refined[v + k] + offsets[v + k];
+    }
+  });
+  m.normal.assign(m.letGoNormals ? drawn * 3 : 0, 0.f);
+  if(m.letGoNormals)
+    NormalWelder(m.renderIndex, m.firstSplit, m.nextSplit, m.renderTris, m.renderVertexCount).full(m.position, m.normal);
+  m.drawnLetGo = false;
 }
 
 }  // namespace fv::mesh

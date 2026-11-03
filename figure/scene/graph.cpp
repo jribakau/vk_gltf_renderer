@@ -85,6 +85,7 @@ void measureUvScales(SceneGraph& scene)
       const int mi = group.materialIndex >= 0 && group.materialIndex < int(m.materials.size()) ? m.materials[size_t(group.materialIndex)] : -1;
       if(mi < 0 || mi >= int(scene.materials.size()) || scene.materials[size_t(mi)].metresPerUv > 0)
         continue;
+      mesh::ensureDrawn(g);
       for(uint32_t t = group.start; t + 2 < group.start + group.count && t + 2 < g.fullIndex.size(); t += 3)
       {
         const uint32_t a = g.fullIndex[t], b = g.fullIndex[t + 1], c = g.fullIndex[t + 2];
