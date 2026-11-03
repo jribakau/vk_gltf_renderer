@@ -311,8 +311,8 @@ std::optional<SkinBinding> strandBinding(const Doc& doc, const Json& modifier, c
     const int  group = int(lines->cell(l, 0));
     const auto named = group >= 0 && size_t(group) < groups.size() ? boneOfGroup.find(groups[size_t(group)]) : boneOfGroup.end();
     const int  bone  = indexOf(named == boneOfGroup.end() ? fallback : named->second);
-    for(int k = lines->start[l] + 2; k < lines->start[l + 1]; k++)
-      if(const int v = int(lines->data[k]); v >= 0 && v < nv)
+    for(int k = 2; k < lines->size(l); k++)
+      if(const int v = int(lines->cell(l, k)); v >= 0 && v < nv)
         out.input.bone[size_t(v)] = bone;
   }
   auto root          = boneIndex.find(rig.root);

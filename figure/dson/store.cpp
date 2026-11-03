@@ -33,8 +33,6 @@ std::optional<Rows> pack(const Json& table)
 {
   if(!table.is_array())
     return std::nullopt;
-  Rows   out;
-  size_t n = 0;
   for(const Json& row : table)
   {
     if(!row.is_array())
@@ -42,19 +40,15 @@ std::optional<Rows> pack(const Json& table)
     for(const Json& x : row)
       if(!x.is_number())
         return std::nullopt;
-    n += row.size();
   }
-  out.count = int(table.size());
-  out.start.assign(table.size() + 1, 0);
-  out.data.reserve(n);
-  int i = 0;
+  RowsBuilder rows;
   for(const Json& row : table)
   {
     for(const Json& x : row)
-      out.data.push_back(x.get<double>());
-    out.start[++i] = int32_t(out.data.size());
+      rows.add(x.get<double>());
+    rows.endRow();
   }
-  return out;
+  return rows.finish();
 }
 
 // Calls `visit` for every place a DSON document keeps a bulk table: geometry, morphs, skins, UV
@@ -170,6 +164,41 @@ uintmax_t textSize(const std::filesystem::path& path, uintmax_t fileSize)
 
 //--------------------------------------------------------------------------------------------------
 
+Rows RowsBuilder::finish()
+{
+  Rows out;
+  out.count  = int(m_start.size()) - 1;
+  int  widest = 0;
+  bool same   = out.count > 0;
+  for(int i = 0; i < out.count; i++)
+  {
+    const int n = m_start[i + 1] - m_start[i];
+    widest      = std::max(widest, n);
+    same        = same && n == m_start[1] - m_start[0];
+  }
+  if(same && widest > 0)
+    out.width = widest;
+  else
+    out.start = m_start;
+  // a column is whole while every number in it is
+  const auto isWhole = [](double v) { return v >= double(INT32_MIN) && v <= double(INT32_MAX) && v == std::trunc(v); };
+  out.whole.assign(size_t(widest), 1);
+  for(int i = 0; i < out.count; i++)
+    for(int at = m_start[i], k = 0; at < m_start[i + 1]; at++, k++)
+      if(out.whole[size_t(k)] && !isWhole(m_values[size_t(at)]))
+        out.whole[size_t(k)] = 0;
+  out.cells.resize(m_values.size());
+  for(int i = 0; i < out.count; i++)
+    for(int at = m_start[i], k = 0; at < m_start[i + 1]; at++, k++)
+    {
+      const double v        = m_values[size_t(at)];
+      out.cells[size_t(at)] = out.whole[size_t(k)] ? std::bit_cast<uint32_t>(int32_t(v)) : std::bit_cast<uint32_t>(float(v));
+    }
+  m_values.clear();
+  m_start.assign(1, 0);
+  return out;
+}
+
 std::shared_ptr<const Rows> Doc::rows(const Json* node) const
 {
   static const auto empty = std::make_shared<const Rows>();
@@ -207,7 +236,7 @@ std::shared_ptr<Doc> parseDocDom(std::string text)
     auto packed = pack(table);
     if(!packed)
       return;
-    doc->bytes += packed->data.size() * sizeof(double) + packed->start.size() * sizeof(int32_t);
+    doc->bytes += packed->bytes();
     table = Json{{"$table", doc->tables.size()}};
     doc->tables.push_back(std::move(*packed));
   });

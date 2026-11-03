@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -32,8 +33,8 @@ std::string readFile(const fs::path& p)
   return fv::readMaybeCompressed(p);  // inflated when the file is gzip
 }
 
-// The tree with every packed table written back as rows of doubles, so two documents compare by
-// content whatever order their tables were numbered in.
+// The tree with every packed table written back as rows of numbers (as the cells hold them), so two
+// documents compare by content whatever order their tables were numbered in.
 Json expanded(const Json& node, const Doc& doc)
 {
   if(node.is_object())
@@ -45,8 +46,8 @@ Json expanded(const Json& node, const Doc& doc)
       for(int i = 0; i < rows.count; i++)
       {
         Json row = Json::array();
-        for(int32_t k = rows.start[i]; k < rows.start[i + 1]; k++)
-          row.push_back(rows.data[k]);
+        for(int k = 0; k < rows.size(i); k++)
+          row.push_back(rows.cell(i, k));
         out.push_back(std::move(row));
       }
       return out;
@@ -77,8 +78,7 @@ void expectSame(const std::string& text, const std::string& what)
   size_t matched = 0;
   for(const auto& ta : a->tables)
     for(const auto& tb : b->tables)
-      if(ta.count == tb.count && ta.start == tb.start && ta.data.size() == tb.data.size()
-         && (ta.data.empty() || std::memcmp(ta.data.data(), tb.data.data(), ta.data.size() * sizeof(double)) == 0))
+      if(ta == tb)
       {
         matched++;
         break;
@@ -101,12 +101,7 @@ void expectCacheRoundTrip(const Doc& doc, const std::string& what)
   EXPECT_EQ(back->bytes, doc.bytes) << what;
   ASSERT_EQ(back->tables.size(), doc.tables.size()) << what;
   for(size_t i = 0; i < doc.tables.size(); i++)
-  {
-    EXPECT_EQ(back->tables[i].count, doc.tables[i].count) << what;
-    EXPECT_EQ(back->tables[i].start, doc.tables[i].start) << what;
-    ASSERT_EQ(back->tables[i].data.size(), doc.tables[i].data.size()) << what;
-    EXPECT_EQ(std::memcmp(back->tables[i].data.data(), doc.tables[i].data.data(), doc.tables[i].data.size() * sizeof(double)), 0) << what;
-  }
+    EXPECT_TRUE(back->tables[i] == doc.tables[i]) << what << ", table " << i;
   fs::remove_all(dir);
 }
 
@@ -209,6 +204,42 @@ TEST(DsonParse, AStoreLetsGoOfWhatOnlyItHolds)
   EXPECT_THROW(store.load("People/Test/not there.duf"), fv::dson::MissingFileError);
 }
 
+// A table's cells are 4 bytes typed by column: a column of whole numbers keeps them exactly as int32,
+// past float's 2^24 too, and any other column is float; rows of one length keep that length.
+TEST(DsonParse, ATablesWholeColumnsStayExactAndTheRestAreFloat)
+{
+  const std::string text = R"({"modifier_library": [{"morph": {"deltas": {"values": [[16777217, 0.1, 2, -3], [20032121, -2.5e-7, 4, 5.5]]}}}],)"
+                           R"( "geometry_library": [{"polylist": {"values": [[0, 1, 2, 3, 4], [0, 1, 5, 6, 7, 8]]}}]})";
+  for(const auto& doc : {fv::dson::parseDoc(text), fv::dson::parseDocDom(text)})
+  {
+    ASSERT_EQ(doc->tables.size(), 2u);
+    const auto            deltasAt = doc->rows(&doc->json["modifier_library"][0]["morph"]["deltas"]["values"]);
+    const auto            polysAt  = doc->rows(&doc->json["geometry_library"][0]["polylist"]["values"]);
+    const fv::dson::Rows& deltas   = *deltasAt;
+    EXPECT_EQ(deltas.count, 2);
+    EXPECT_EQ(deltas.width, 4);
+    EXPECT_TRUE(deltas.start.empty());
+    EXPECT_EQ(deltas.whole, (std::vector<uint8_t>{1, 0, 1, 0}));
+    EXPECT_EQ(deltas.cell(0, 0), 16777217.0);  // float would make it 16777216
+    EXPECT_EQ(deltas.cell(1, 0), 20032121.0);
+    EXPECT_EQ(deltas.cell(0, 1), double(0.1f));
+    EXPECT_EQ(deltas.cell(1, 1), double(-2.5e-7f));
+    EXPECT_EQ(deltas.cell(1, 2), 4.0);
+    EXPECT_EQ(deltas.cell(0, 3), -3.0);  // a whole number in a column that is not
+    EXPECT_EQ(deltas.cell(1, 3), 5.5);
+    EXPECT_TRUE(std::isnan(deltas.cell(0, 4)));
+    EXPECT_EQ(deltas.bytes(), 8 * sizeof(uint32_t) + 4);
+    // rows of several lengths keep their starts
+    const fv::dson::Rows& polys = *polysAt;
+    EXPECT_EQ(polys.width, 0);
+    EXPECT_EQ(polys.start, (std::vector<int32_t>{0, 5, 11}));
+    EXPECT_EQ(polys.whole, (std::vector<uint8_t>(6, 1)));
+    EXPECT_EQ(polys.size(1), 6);
+    EXPECT_EQ(polys.cell(1, 5), 8.0);
+    EXPECT_TRUE(std::isnan(polys.cell(0, 5)));
+  }
+}
+
 TEST(DsonParse, TheParsedCacheGivesTheDocumentBackAndMissesWhenTheFileChanged)
 {
   const std::string text = R"({"a": 1, "b": 1.5, "c": "x", "d": [true, null, -0.0, 1e3, 2.5e-7, 18446744073709551615, -9007199254740993],)"
@@ -228,6 +259,14 @@ TEST(DsonParse, TheParsedCacheGivesTheDocumentBackAndMissesWhenTheFileChanged)
   EXPECT_FALSE(fv::dson::readParsed(file, fv::dson::ParsedStamp{.pathHash = 7, .size = text.size(), .mtime = 100}));
   EXPECT_FALSE(fv::dson::readParsed(file, fv::dson::ParsedStamp{.pathHash = 8, .size = text.size(), .mtime = 99}));
   EXPECT_FALSE(fv::dson::readParsed(dir / "missing.fvd", stamp));
+  // a file of the format before (doubles, every table's starts) is a miss
+  {
+    std::fstream old(file, std::ios::binary | std::ios::in | std::ios::out);
+    const uint32_t version = 1;
+    old.seekp(4);  // Header::version
+    old.write(reinterpret_cast<const char*>(&version), sizeof version);
+  }
+  EXPECT_FALSE(fv::dson::readParsed(file, stamp));
   // a damaged file is a miss, not a crash
   {
     std::ofstream cut(file, std::ios::binary | std::ios::trunc);
@@ -269,8 +308,15 @@ TEST(DsonParse, TheParsedCacheGivesTheDocumentBackAndMissesWhenTheFileChanged)
     if(const auto back = fv::dson::readParsed(file, stamp))
       for(const fv::dson::Rows& t : back->tables)
       {
-        EXPECT_EQ(t.start.size(), size_t(t.count) + 1);
-        EXPECT_EQ(size_t(t.start.back()), t.data.size());
+        if(t.width)
+          EXPECT_TRUE(t.start.empty() && t.cells.size() == size_t(t.count) * size_t(t.width) && t.whole.size() == size_t(t.width));
+        else
+        {
+          ASSERT_EQ(t.start.size(), size_t(t.count) + 1);
+          EXPECT_EQ(size_t(t.start.back()), t.cells.size());
+          for(int i = 0; i < t.count; i++)
+            EXPECT_LE(size_t(t.size(i)), t.whole.size());
+        }
       }
   }
   fs::remove_all(dir);

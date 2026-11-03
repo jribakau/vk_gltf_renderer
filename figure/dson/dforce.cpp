@@ -121,9 +121,7 @@ std::vector<float> influenceMap(const Found& mod, int vertexCount)
   static const std::regex re("influence", std::regex::icase);
   const auto take = [&](const Json* table) {
     const auto t = mod.doc->rows(table);
-    if(!t || !t->count || t->start.size() < 2)
-      return;
-    if(t->start[1] - t->start[0] < 2)
+    if(!t || !t->count || t->size(0) < 2)
       return;
     for(int i = 0; i < t->count; i++)
     {
@@ -343,8 +341,8 @@ std::shared_ptr<const mesh::GrowthSurface> growthSurfaceFor(Store& store, const 
     surface->polyStart.reserve(size_t(polys->count) + 1);
     for(int p = 0; p < polys->count; p++)
     {
-      for(int k = polys->start[p] + 2; k < polys->start[p + 1]; k++)
-        surface->polyVerts.push_back(int32_t(polys->data[k]));
+      for(int k = 2; k < polys->size(p); k++)
+        surface->polyVerts.push_back(int32_t(polys->cell(p, k)));
       surface->polyStart.push_back(int32_t(surface->polyVerts.size()));
     }
     return surface;
@@ -468,9 +466,9 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
   for(int pi = 0; pi < np; pi++)
   {
     const Surface& s = perPoly[size_t(pi)];
-    for(int k = polys->start[pi] + 2; k < polys->start[pi + 1]; k++)
+    for(int k = 2; k < polys->size(pi); k++)
     {
-      const double d = polys->data[k];
+      const double d = polys->cell(pi, k);
       if(d < 0 || d >= nv)
         continue;
       Sum& a = sum[size_t(d)];
@@ -546,9 +544,9 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
   for(int pi = 0; pi < np; pi++)
   {
     const size_t at = out->polyVerts.size();
-    for(int k = polys->start[pi] + 2; k < polys->start[pi + 1]; k++)
+    for(int k = 2; k < polys->size(pi); k++)
     {
-      const double d = polys->data[k];
+      const double d = polys->cell(pi, k);
       if(d >= 0 && d < nv)
         out->polyVerts.push_back(int32_t(d));
     }
@@ -564,9 +562,9 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
     for(int li = 0; li < lines->count; li++)
     {
       const size_t at = out->strandVerts.size();
-      for(int k = lines->start[li] + 2; k < lines->start[li + 1]; k++)
+      for(int k = 2; k < lines->size(li); k++)
       {
-        const double v = lines->data[k];
+        const double v = lines->cell(li, k);
         if(v >= 0 && v < nv)
           out->strandVerts.push_back(int32_t(v));
       }

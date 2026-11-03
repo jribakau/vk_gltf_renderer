@@ -1,8 +1,8 @@
 // The DSON parse that streams the bulk tables: nlohmann's SAX events build the document tree as
 // Json::parse would (the same lexer, the same number conversions, the same handling of a repeated
-// key), except at the places eachTable() packs, where the rows' numbers go straight into a Rows and
-// the tree gets the {"$table": n} placeholder. A 76 MB strand-hair geometry is mostly those numbers,
-// and building a tree node for each of them was most of its parse.
+// key), except at the places eachTable() packs, where the rows' numbers go straight to a RowsBuilder
+// and the tree gets the {"$table": n} placeholder. A 76 MB strand-hair geometry is mostly those
+// numbers, and building a tree node for each of them was most of its parse.
 
 #include <figure/dson/store.hpp>
 
@@ -192,7 +192,6 @@ public:
       Frame& f   = m_frames.back();  // a table is always the value of a key, so under an object frame
       f.hadTable = true;
       f.tableKey = m_tableKey;
-      m_table    = Rows{};
       m_inTable  = true;
       m_rowDepth = 0;
       return true;
@@ -207,15 +206,13 @@ public:
       if(m_rowDepth == 1)
       {
         m_rowDepth = 0;
-        m_table.start.push_back(int32_t(m_table.data.size()));
-        m_table.count++;
+        m_table.endRow();
         return true;
       }
       // the table is complete: the tree gets its placeholder
       m_inTable = false;
       const std::size_t n = tables.size();
-      tables.push_back(std::move(m_table));
-      m_table = Rows{};
+      tables.push_back(m_table.finish());
       string_t key = "$table";
       return m_dom.start_object(1) && m_dom.key(key) && m_dom.number_unsigned(n) && m_dom.end_object();
     }
@@ -249,7 +246,7 @@ private:
   {
     if(m_rowDepth != 1)
       return giveUp();  // a number directly in the table, not in a row
-    m_table.data.push_back(v);
+    m_table.add(v);
     return true;
   }
   bool giveUp()
@@ -263,7 +260,7 @@ private:
   string_t           m_tableKey;  // the key whose value is the table about to start
   bool               m_inTable  = false;
   int                m_rowDepth = 0;
-  Rows               m_table;
+  RowsBuilder        m_table;  // the table being read
 };
 
 // Keeps the tables the tree names, numbered in tree order, and renumbers the placeholders.
@@ -302,7 +299,7 @@ std::shared_ptr<Doc> parseDoc(std::string text)
   else
     doc->tables = std::move(sax.tables);
   for(const Rows& t : doc->tables)
-    doc->bytes += t.data.size() * sizeof(double) + t.start.size() * sizeof(int32_t);
+    doc->bytes += t.bytes();
   return doc;
 }
 

@@ -8,13 +8,14 @@
 // DSON keeps its bulk data as tables of numeric rows: vertices [[x, y, z], ...], polygons
 // [[group, material, v0, v1, ...], ...], morph deltas, skin weights, UVs. A Genesis figure has
 // hundreds of thousands of these little arrays, so a parsed document has them taken out and packed
-// (Rows: one flat array and the rows' starts), each replaced by {"$table": n}; read them through
-// Doc::rows(). A port of src/lib/loaders/dson/parse.ts and rows.ts.
+// (Rows: one flat array of 4-byte cells, typed by column), each replaced by {"$table": n}; read them
+// through Doc::rows(). A port of src/lib/loaders/dson/parse.ts and rows.ts.
 //
 // Documents are kept as nlohmann::ordered_json: keys stay in file order, which decides how
 // material channels override each other.
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -38,20 +39,47 @@ namespace fv::dson {
 
 using Json = nlohmann::ordered_json;
 
-// A table of numeric rows, flat: row i is data[start[i]] up to data[start[i + 1]].
+// A table of numeric rows, flat: row i is cells begin(i) up to begin(i) + size(i). A cell takes 4
+// bytes: a column (an entry's place in its row) whose numbers are all whole and within int32 keeps
+// them as int32, exactly (vertex and polygon indices, past float's 2^24 too); any other column as
+// float, which is what every reader makes of DSON's decimals (written to about seven digits). Rows of
+// one length (vertices, UVs, weights, deltas: nearly all) keep that length, not their starts.
 struct Rows
 {
-  int                  count = 0;
-  std::vector<int32_t> start{0};
-  std::vector<double>  data;
+  int                   count = 0;
+  int                   width = 0;  // every row's length when they share one above 0; 0: `start` has them
+  std::vector<int32_t>  start;      // when width is 0: row i's first cell, and the end after the last
+  std::vector<uint8_t>  whole;      // per column: 1 when its cells hold int32, 0 when they hold float
+  std::vector<uint32_t> cells;
 
-  int size(int i) const { return start[i + 1] - start[i]; }
+  size_t begin(int i) const { return width ? size_t(i) * size_t(width) : size_t(start[i]); }
+  int    size(int i) const { return width ? width : start[i + 1] - start[i]; }
   // Row i's entry k, or NaN past the end of the row (as reading a short array gives undefined).
   double cell(int i, int k) const
   {
-    const int at = start[i] + k;
-    return at < start[i + 1] ? data[at] : NAN;
+    if(k >= size(i))
+      return NAN;
+    const uint32_t c = cells[begin(i) + size_t(k)];
+    return whole[size_t(k)] ? double(std::bit_cast<int32_t>(c)) : double(std::bit_cast<float>(c));
   }
+  // what it holds in memory
+  size_t bytes() const { return cells.size() * sizeof(uint32_t) + start.size() * sizeof(int32_t) + whole.size(); }
+  bool   operator==(const Rows&) const = default;
+};
+
+// Rows from numbers given a row at a time, as the parsers read them: each column's type is known
+// only once the table is complete.
+class RowsBuilder
+{
+public:
+  void add(double v) { m_values.push_back(v); }
+  void endRow() { m_start.push_back(int32_t(m_values.size())); }
+  // The table given so far; the builder is empty again after it.
+  Rows finish();
+
+private:
+  std::vector<double>  m_values;
+  std::vector<int32_t> m_start{0};
 };
 
 // A parsed document: its JSON, with the bulk tables packed.

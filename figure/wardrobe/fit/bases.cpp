@@ -68,12 +68,12 @@ std::shared_ptr<const BaseCage> build(const dson::Doc& doc)
     const auto polys = doc.rows(get(get(best, "polylist"), "values"));
     for(int p = 0; p < polys->count; p++)
     {
-      const int s = polys->start[p] + 2, e = polys->start[p + 1];
-      if(e - s < 3)
+      const int e = polys->size(p);
+      if(e - 2 < 3)
         continue;
-      const uint32_t a = uint32_t(polys->data[s]);
-      for(int k = s + 2; k < e; k++)
-        cage->tris.insert(cage->tris.end(), {a, uint32_t(polys->data[k - 1]), uint32_t(polys->data[k])});
+      const uint32_t a = uint32_t(polys->cell(p, 2));
+      for(int k = 4; k < e; k++)
+        cage->tris.insert(cage->tris.end(), {a, uint32_t(polys->cell(p, k - 1)), uint32_t(polys->cell(p, k))});
     }
   }
   // the skeleton: bone nodes with their names, parents and centres

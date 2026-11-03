@@ -257,7 +257,7 @@ mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, i
   // and material would move the rows after it back over the buffer, and a corner is an index
   for(int pi = 0; pi < np; pi++)
   {
-    const int cells = polys->start[pi + 1] - polys->start[pi];
+    const int cells = polys->size(pi);
     if(cells < 2)
       throw std::runtime_error("polygon " + std::to_string(pi) + " has no group or material");
     m.polyStart[pi + 1] = m.polyStart[pi] + cells - 2;
@@ -279,8 +279,8 @@ mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, i
       throw std::runtime_error("polygon " + std::to_string(pi) + " names material " + std::to_string(m.polyMaterial[pi]));
     if(polyGroup)
       (*polyGroup)[size_t(pi)] = toInt32(polys->cell(pi, 0));
-    for(int k = polys->start[pi] + 2, at = m.polyStart[pi]; k < polys->start[pi + 1]; k++, at++)
-      m.polyVerts[at] = vertexOf(polys->data[k]);
+    for(int k = 2, at = m.polyStart[pi]; k < polys->size(pi); k++, at++)
+      m.polyVerts[at] = vertexOf(polys->cell(pi, k));
   }
   m.materialCount = int(materialGroups.size());
   if(uvSet)
@@ -305,14 +305,14 @@ mesh::MeshInput meshInput(const Doc& doc, const Json& geo, const UvSet* uvSet, i
       mesh::Lines lines;
       lines.start.assign(size_t(t->count) + 1, 0);
       for(int l = 0; l < t->count; l++)
-        lines.start[l + 1] = lines.start[l] + std::max(0, t->start[l + 1] - t->start[l] - 2);
+        lines.start[l + 1] = lines.start[l] + std::max(0, t->size(l) - 2);
       lines.verts.resize(lines.start[t->count]);
       lines.material.resize(t->count);
       for(int l = 0; l < t->count; l++)
       {
         lines.material[l] = toInt32(t->cell(l, 1));
-        for(int k = t->start[l] + 2, at = lines.start[l]; k < t->start[l + 1]; k++, at++)
-          lines.verts[at] = vertexOf(t->data[k]);
+        for(int k = 2, at = lines.start[l]; k < t->size(l); k++, at++)
+          lines.verts[at] = vertexOf(t->cell(l, k));
       }
       m.lines = std::move(lines);
     }
