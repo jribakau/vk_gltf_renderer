@@ -41,6 +41,36 @@ TEST(GpuCrashTrail, AFrameSaysItsMemoryAndWhatItsSyncDid)
                   "staging 128 MB held, 12 live; images 0 decoded, 2 copied, 0 refused, 3 waiting; sync: changed, textures moved");
 }
 
+TEST(GpuCrashTrail, AFaultsAddressIsNamedByTheBufferItWasIn)
+{
+  const auto handle = [](uint64_t h) { return reinterpret_cast<VkBuffer>(h); };
+  gpu_trail::frameStart(VK_NULL_HANDLE, 40);
+  gpu_trail::buffer(handle(0x1001), 0x7000'0000, 1 << 20, true);
+  gpu_trail::named(VK_OBJECT_TYPE_BUFFER, 0x1001, "previous positions");
+  gpu_trail::named(VK_OBJECT_TYPE_IMAGE, 0x1001, "an image's name is not a buffer's");
+  gpu_trail::buffer(handle(0x1002), 0x7010'0000, 1 << 20, true);  // the next MB, with no name
+  gpu_trail::frameStart(VK_NULL_HANDLE, 45);
+  gpu_trail::buffer(handle(0x1001), 0x7000'0000, 1 << 20, false);
+
+  EXPECT_EQ(gpu_trail::whereIs(0x7000'5000, 0x1000),
+            "in 'previous positions' (1.0 MB from 0x70000000), made in frame 40 and destroyed in frame 45");
+  EXPECT_EQ(gpu_trail::whereIs(0x7010'0000, 0x1000), "in 'a buffer with no name' (1.0 MB from 0x70100000), made in frame 40, there still");
+  // a page reaching into the next buffer is in both
+  EXPECT_EQ(gpu_trail::whereIs(0x700F'F800, 0x1000),
+            "in 'a buffer with no name' (1.0 MB from 0x70100000), made in frame 40, there still; before that in 'previous positions' "
+            "(1.0 MB from 0x70000000), made in frame 40 and destroyed in frame 45");
+  EXPECT_EQ(gpu_trail::whereIs(0x9000'0000, 0x1000).rfind("in none of the ", 0), 0u);
+
+  // the range made again: what is there now, then what was
+  gpu_trail::frameStart(VK_NULL_HANDLE, 50);
+  gpu_trail::buffer(handle(0x1003), 0x7000'0000, 1 << 19, true);
+  gpu_trail::named(VK_OBJECT_TYPE_BUFFER, 0x1003, "scene");
+  EXPECT_EQ(gpu_trail::whereIs(0x7000'0000, 0x1000), "in 'scene' (0.5 MB from 0x70000000), made in frame 50, there still; before that in "
+                                                     "'previous positions' (1.0 MB from 0x70000000), made in frame 40 and destroyed in frame 45");
+  for(uint64_t h : {0x1002, 0x1003})
+    gpu_trail::buffer(handle(h), 0, 0, false);
+}
+
 TEST(GpuCrashTrail, WithoutTheExtensionsNothingIsMarked)
 {
   // no device: init never ran, so checkpoints are off and a section or frame marks nothing

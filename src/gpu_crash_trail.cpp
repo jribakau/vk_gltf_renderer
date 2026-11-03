@@ -21,20 +21,33 @@
 namespace gpu_trail {
 namespace {
 
-// What a checkpoint points to: its text, at an address that stays for the program's life
+constexpr size_t kFramesKept   = 600;
+constexpr size_t kFramesDumped = 120;
+constexpr size_t kFrameMarkers = 16;  // more than frames in flight: a lost queue's marker still names its frame
+constexpr double kSlowFrameMs  = 1000;
+constexpr size_t kFreedKept    = 20000;  // buffers destroyed, the last of them
+constexpr size_t kWhereShown   = 3;      // of those an address was in, the latest
+
+// What a checkpoint points to, at an address that stays for the program's life: its text, and the frame slot it was set
+// in (FrameMarker), so that it names its frame
 struct Marker
 {
   std::string text;
+  size_t      slot = 0;
 };
 struct FrameMarker
 {
   uint64_t frame = 0;
 };
+using SectionMarkers = std::array<std::pair<const Marker*, const Marker*>, kFrameMarkers>;  // a start and an end a slot
 
-constexpr size_t kFramesKept    = 600;
-constexpr size_t kFramesDumped  = 120;
-constexpr size_t kFrameMarkers  = 16;  // more than frames in flight: a lost queue's marker still names its frame
-constexpr double kSlowFrameMs   = 1000;
+struct BufferRange
+{
+  VkDeviceAddress address = 0;
+  VkDeviceSize    size    = 0;
+  std::string     name;
+  uint64_t        made = 0, destroyed = 0;  // frames
+};
 
 struct State
 {
@@ -44,10 +57,13 @@ struct State
   bool                 checkpoints = false;
   bool                 deviceFault = false;
   bool                 lost        = false;
+  uint64_t             frame       = 0;  // the one recording (frameStart)
   std::deque<Marker>   markers;
-  std::unordered_map<std::string, std::pair<const Marker*, const Marker*>> named;  // a section's start and end
-  std::unordered_map<VkCommandBuffer, std::vector<const Marker*>>         open;   // the ends of the sections open
+  std::unordered_map<std::string, SectionMarkers>                 named;  // a section's, by name
+  std::unordered_map<VkCommandBuffer, std::vector<const Marker*>> open;   // the ends of the sections open
   std::array<FrameMarker, kFrameMarkers> frameMarkers{};
+  std::unordered_map<VkBuffer, BufferRange> buffers;  // those there now
+  std::deque<BufferRange>                   freed;    // the last destroyed, oldest first
   std::array<Frame, kFramesKept>         frames{};
   size_t                                 frameCount = 0;
   std::chrono::steady_clock::time_point  start      = std::chrono::steady_clock::now();
@@ -67,7 +83,7 @@ std::string markerText(const State& s, const void* marker)
     return fmt::format("frame {} begins", frame->frame);
   for(const Marker& m : s.markers)
     if(&m == marker)
-      return m.text;
+      return fmt::format("frame {}: {}", s.frameMarkers[m.slot].frame, m.text);
   return "(no checkpoint)";
 }
 
@@ -149,8 +165,13 @@ void logFault(const State& s)
   }
   LOGE("[gpu]   the driver's report: %s\n", info.description);
   for(const VkDeviceFaultAddressInfoEXT& a : addresses)
+  {
     LOGE("[gpu]   %s: 0x%llx, to within 0x%llx\n", addressTypeName(a.addressType), (unsigned long long)a.reportedAddress,
          (unsigned long long)a.addressPrecision);
+    if(a.addressType == VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT || a.addressType == VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT
+       || a.addressType == VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT)
+      LOGE("[gpu]     it was %s\n", whereIs(a.reportedAddress, a.addressPrecision).c_str());
+  }
   for(const VkDeviceFaultVendorInfoEXT& v : vendor)
     LOGE("[gpu]   %s (code 0x%llx, data 0x%llx)\n", v.description, (unsigned long long)v.vendorFaultCode, (unsigned long long)v.vendorFaultData);
   if(addresses.empty())
@@ -179,10 +200,11 @@ bool checkpointsOn()
 
 void frameStart(VkCommandBuffer cmd, uint64_t frame)
 {
-  State& s = state();
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  s.frame = frame;
   if(!s.checkpoints)
     return;
-  std::lock_guard<std::recursive_mutex> lock(s.mutex);
   FrameMarker& marker = s.frameMarkers[frame % kFrameMarkers];
   marker.frame        = frame;
   vkCmdSetCheckpointNV(cmd, &marker);
@@ -196,15 +218,15 @@ void section(VkCommandBuffer cmd, const char* name)
   std::lock_guard<std::recursive_mutex> lock(s.mutex);
   if(name)
   {
-    auto it = s.named.find(name);
-    if(it == s.named.end())
+    const size_t slot  = s.frame % kFrameMarkers;
+    auto& [begin, end] = s.named[name][slot];
+    if(!begin)
     {
-      const Marker* begin = &s.markers.emplace_back(Marker{fmt::format("{} starts", name)});
-      const Marker* end   = &s.markers.emplace_back(Marker{fmt::format("{} ends", name)});
-      it                  = s.named.emplace(name, std::make_pair(begin, end)).first;
+      begin = &s.markers.emplace_back(Marker{fmt::format("{} starts", name), slot});
+      end   = &s.markers.emplace_back(Marker{fmt::format("{} ends", name), slot});
     }
-    vkCmdSetCheckpointNV(cmd, it->second.first);
-    s.open[cmd].push_back(it->second.second);
+    vkCmdSetCheckpointNV(cmd, begin);
+    s.open[cmd].push_back(end);
     return;
   }
   const auto open = s.open.find(cmd);
@@ -212,6 +234,64 @@ void section(VkCommandBuffer cmd, const char* name)
     return;
   vkCmdSetCheckpointNV(cmd, open->second.back());
   open->second.pop_back();
+}
+
+void buffer(VkBuffer buffer, VkDeviceAddress address, VkDeviceSize size, bool made)
+{
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  if(made)
+  {
+    s.buffers[buffer] = {.address = address, .size = size, .made = s.frame};
+    return;
+  }
+  const auto  it    = s.buffers.find(buffer);
+  BufferRange range = it != s.buffers.end() ? std::move(it->second) : BufferRange{.address = address, .size = size};
+  if(it != s.buffers.end())
+    s.buffers.erase(it);
+  range.destroyed = s.frame;
+  s.freed.push_back(std::move(range));
+  if(s.freed.size() > kFreedKept)
+    s.freed.pop_front();
+}
+
+void named(VkObjectType type, uint64_t handle, const char* name)
+{
+  if(type != VK_OBJECT_TYPE_BUFFER || !name)
+    return;
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  if(const auto it = s.buffers.find(reinterpret_cast<VkBuffer>(handle)); it != s.buffers.end())
+    it->second.name = name;
+}
+
+std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
+{
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  const VkDeviceAddress end    = address + std::max<VkDeviceSize>(precision, 1);
+  const auto            within = [&](const BufferRange& b) { return b.size > 0 && b.address < end && address < b.address + b.size; };
+  const auto            what   = [](const BufferRange& b) {
+    return fmt::format("'{}' ({:.1f} MB from 0x{:x}), made in frame {}", b.name.empty() ? "a buffer with no name" : b.name,
+                       double(b.size) / double(1 << 20), b.address, b.made);
+  };
+  std::vector<std::string> said;
+  for(const auto& [handle, b] : s.buffers)
+    if(within(b))
+      said.push_back("in " + what(b) + ", there still");
+  size_t gone = 0;
+  for(auto it = s.freed.rbegin(); it != s.freed.rend() && gone < kWhereShown; ++it)
+    if(within(*it))
+    {
+      said.push_back(fmt::format("in {} and destroyed in frame {}", what(*it), it->destroyed));
+      gone++;
+    }
+  if(said.empty())
+    return fmt::format("in none of the {} buffers there or the last {} destroyed: an image, or the driver's own", s.buffers.size(), s.freed.size());
+  std::string out = said[0];
+  for(size_t i = 1; i < said.size(); i++)
+    out += "; before that " + said[i];
+  return out;
 }
 
 void record(Frame frame)

@@ -41,6 +41,8 @@
 #include <nvvk/context.hpp>
 #include <nvvk/check_error.hpp>
 #include <nvvk/profiler_vk.hpp>
+#include <nvvk/resource_allocator.hpp>
+#include <nvvk/debug_util.hpp>
 #include <nvvk/validation_settings.hpp>
 
 #include "renderer.hpp"
@@ -461,13 +463,19 @@ auto main(int argc, char** argv) -> int
     return -1;
   }
 
-  // What a lost device leaves in the log: checkpoints at each profiled section, the driver's fault report, the
-  // last frames' memory (gpu_crash_trail.hpp)
+  // What a lost device leaves in the log: checkpoints at each profiled section, the driver's fault report and what
+  // its addresses were in, the last frames' memory (gpu_crash_trail.hpp)
+  const bool faultReport = vkContext.hasExtensionEnabled(VK_EXT_DEVICE_FAULT_EXTENSION_NAME) && faultFeature.deviceFault;
   gpu_trail::init(vkContext.getDevice(), vkContext.getQueueInfos()[0].queue,
-                  vkContext.hasExtensionEnabled(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME),
-                  vkContext.hasExtensionEnabled(VK_EXT_DEVICE_FAULT_EXTENSION_NAME) && faultFeature.deviceFault);
+                  vkContext.hasExtensionEnabled(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME), faultReport);
   if(gpu_trail::checkpointsOn())
     nvvk::ProfilerGpuTimer::sectionHook = &gpu_trail::section;
+  if(faultReport)
+  {
+    // before the first buffer is made
+    nvvk::ResourceAllocator::bufferHook = &gpu_trail::buffer;
+    nvvk::DebugUtil::nameHook           = &gpu_trail::named;
+  }
   nvvk::CheckError::getInstance().setCallbackFunction([](VkResult result) {
     if(result == VK_ERROR_DEVICE_LOST)
       gpu_trail::deviceLost();
