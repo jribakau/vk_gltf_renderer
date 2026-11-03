@@ -198,9 +198,10 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         return std::min(1.0, wsum);
       });
     }
-    // footwear keeps the bone transfer and the foot box: a heel's rest is often its posed shape (the
-    // foot already pointed), which a correction measured against the flat base would bend. It is
-    // still pushed out of the foot: a sole stays, lying off the foot's faces rather than behind them
+    // footwear keeps the bone transfer and the foot box: a heel rests shaped for the foot pose its
+    // file sets (its heel below the floor), not around the flat base a correction measures against,
+    // which would bend it. It is still pushed out of the foot: a sole stays, lying off the foot's
+    // faces rather than behind them
     if(!footwear)
     {
       if(base)

@@ -387,6 +387,63 @@ TEST(Wardrobe, TakingAnItemOffLetsGoOfItsMesh)
   (void)fv::build::buildGltf(figure->loaded.scene, figure->loaded.root, {});
 }
 
+namespace {
+// A box figure with a left foot, and a heel for it whose file points that foot 30 degrees
+std::unique_ptr<fv::Figure> footFigure()
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  fv::dson::LoadOptions       options;
+  options.subdivision = 1;
+  auto figure = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library})),
+                                 "People/Test/Foot Figure.duf", options);
+  figure->settle();
+  return figure;
+}
+const char* const kFootHeels  = "People/Test/Clothing/Foot Heels.duf";
+const char* const kFootOutfit = "People/Test/Clothing/Foot Outfit.duf";
+double            footX(const fv::Figure& figure)
+{
+  return figure.pose->posed("l_foot", "rotation", "x").value_or(NAN);
+}
+}  // namespace
+
+// A heel's file points the feet of the figure it goes on, one it was made for as well as one it is
+// refitted to: the shoe rests shaped for that pose. Taken off, the feet go back.
+TEST(Wardrobe, AHeelPointsTheFeetOfTheFigureItWasMadeFor)
+{
+  const auto figure = footFigure();
+  ASSERT_TRUE(figure->pose);
+  ASSERT_EQ(footX(*figure), 0);
+  const fv::WearResult worn = figure->commitWear(figure->prepareWear(kFootHeels, 1), kFootHeels);
+  figure->settle();
+  ASSERT_EQ(worn.items.size(), 1u);
+  EXPECT_DOUBLE_EQ(footX(*figure), 30);
+
+  ASSERT_TRUE(figure->removeItem(worn.items[0]));
+  EXPECT_EQ(footX(*figure), 0);
+}
+
+// An outfit's items all carry its file's pose, set once and kept by the item on the feet: the shirt
+// listed first comes off and the feet stay pointed, the heel comes off and they go back.
+TEST(Wardrobe, AnOutfitsFeetGoBackWithItsShoeNotItsShirt)
+{
+  const auto           figure = footFigure();
+  const fv::WearResult worn   = figure->commitWear(figure->prepareWear(kFootOutfit, 1), kFootOutfit);
+  figure->settle();
+  ASSERT_EQ(worn.items.size(), 2u);
+  EXPECT_DOUBLE_EQ(footX(*figure), 30);
+  int shirt = 0, heel = 0;
+  for(int id : worn.items)
+    (figure->item(id)->label == "Foot Heel" ? heel : shirt) = id;
+  ASSERT_TRUE(shirt && heel);
+  EXPECT_TRUE(figure->item(shirt)->footSet.empty());
+
+  ASSERT_TRUE(figure->removeItem(shirt));
+  EXPECT_DOUBLE_EQ(footX(*figure), 30);
+  ASSERT_TRUE(figure->removeItem(heel));
+  EXPECT_EQ(footX(*figure), 0);
+}
+
 // A wear reads the skeleton and the body of a figure, on another thread: it isn't given the rest, which
 // grows with what is worn. The faces its stencils were worked out from are gone by then too.
 TEST(Wardrobe, AWearIsGivenTheSkeletonAndTheBodyOnly)

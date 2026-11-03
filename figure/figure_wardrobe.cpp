@@ -60,6 +60,17 @@ std::string kindOf(const std::string& rel, const std::string& label, const std::
   return "Clothing";
 }
 
+// How many of an item's vertices hang from a foot (their strongest bone's): which of an outfit's items
+// is its shoe
+size_t footVertices(const SceneGraph& scene, const std::vector<int>& meshes)
+{
+  size_t n = 0;
+  for(int m : meshes)
+    for(int16_t l : wardrobe::meshLimbs(scene, scene.meshes[size_t(m)]))
+      n += l == wardrobe::limb::kLFoot || l == wardrobe::limb::kRFoot;
+  return n;
+}
+
 // Each material as its meshes' contexts say, the first of them when they differ
 void placeSurfaces(SceneGraph& scene, const std::map<int, mat::Context>& meshes)
 {
@@ -789,37 +800,44 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   result.fit = total ? double(matched) / double(total) : 1.0;
 
   // A heel's file poses the figure's feet, as DAZ Studio applies its scene animations to the figure
-  // it goes on. Only a refitted item takes it: the refit moves the shoe's bones onto the figure's
-  // joints, flattening a heel whose rest is its pointed shape, and the pose points it again.
-  if(pose)
-    for(size_t k = 0; k < added.size() && k < p.fits.size(); k++)
+  // it goes on, made for this figure or refitted to it. A heel rests shaped for that pose, around a
+  // flat foot with its heel below the floor (every heel in the library, G8 and G9, 3 to 13 cm), so
+  // without it the shoe is bent and the foot flat. All of a file's items carry its pose; it is set
+  // once, and the item with the most of its vertices on the feet keeps what it set (an outfit's
+  // shoes, not its dress), so the feet go back when that one comes off.
+  if(pose && !w.items.empty())
+  {
+    std::vector<std::string> names;
+    for(const auto& [id, node] : loaded.rigs[size_t(loaded.mainRig)].bones)
+      names.push_back(dst.nodes[size_t(node)].name);
+    const std::vector<wardrobe::FootChannel> feet  = wardrobe::retargetFootPose(w.items[0].footPose, names);
+    WornItem*                                owner = nullptr;
+    size_t                                   most  = 0;
+    if(!feet.empty())
+      for(int id : added)
+        for(WornItem& i : items)
+          if(i.id == id)
+            if(const size_t on = added.size() > 1 ? footVertices(dst, i.meshes) : 0; !owner || on > most)
+            {
+              owner = &i;
+              most  = on;
+            }
+    std::vector<pose::ChannelValue> set;
+    for(const wardrobe::FootChannel& c : feet)
+      if(const auto before = owner ? pose->posed(c.bone, "rotation", c.axis) : std::nullopt)
+      {
+        set.push_back({c.bone, pose::ChannelKind::eRotation, c.axis, c.value});
+        owner->footSet.push_back({c.bone, c.axis, c.value, *before});
+      }
+    if(!set.empty())
     {
-      if(!p.fits[k])
-        continue;
-      WornItem* worn = nullptr;
-      for(WornItem& i : items)
-        if(i.id == added[k])
-          worn = &i;
-      if(!worn)
-        continue;
-      std::vector<std::string> names;
-      for(const auto& [id, node] : loaded.rigs[size_t(loaded.mainRig)].bones)
-        names.push_back(dst.nodes[size_t(node)].name);
-      std::vector<pose::ChannelValue> set;
-      for(const wardrobe::FootChannel& c : wardrobe::retargetFootPose(w.items[k].footPose, names))
-        if(const auto before = pose->posed(c.bone, "rotation", c.axis))
-        {
-          set.push_back({c.bone, pose::ChannelKind::eRotation, c.axis, c.value});
-          worn->footSet.push_back({c.bone, c.axis, c.value, *before});
-        }
-      if(set.empty())
-        continue;
       pose->setMany(set);
       // what the rig kept after its limits, so undoing compares like with like
-      for(WornItem::FootSet& f : worn->footSet)
+      for(WornItem::FootSet& f : owner->footSet)
         if(const auto now = pose->posed(f.bone, "rotation", f.axis))
           f.value = *now;
     }
+  }
 
   // ---- the wearable's own morph dials, then the items' fitting to the body's shape
   const std::set<std::string> before = [&] {
