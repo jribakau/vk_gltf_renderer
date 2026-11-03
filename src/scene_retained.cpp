@@ -20,6 +20,7 @@
 #include "scene_retained.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <cassert>
 #include <functional>
 #include <limits>
@@ -271,6 +272,23 @@ void RetainedScene::setMeshCage(MeshId id, std::vector<glm::vec3> cage)
   r->value.contentRev++;
   m_changes.meshes.insert(id);
   m_boundsRevision++;
+}
+
+bool RetainedScene::setMeshCage(MeshId id, std::span<const float> xyz)
+{
+  assertOwner();
+  auto* r = m_meshes.get(id);
+  if(!r || !r->value.refine || xyz.empty() || xyz.size() != r->value.cage.size() * 3)
+    return false;
+  static_assert(sizeof(glm::vec3) == 3 * sizeof(float));
+  const size_t bytes = xyz.size() * sizeof(float);
+  if(std::memcmp(r->value.cage.data(), xyz.data(), bytes) == 0)
+    return false;
+  std::memcpy(r->value.cage.data(), xyz.data(), bytes);
+  r->value.contentRev++;
+  m_changes.meshes.insert(id);
+  m_boundsRevision++;
+  return true;
 }
 
 void RetainedScene::setSkin(SkinId id, SkinRecord skin)

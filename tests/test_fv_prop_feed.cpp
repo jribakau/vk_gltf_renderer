@@ -322,7 +322,7 @@ TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
   fv::PropFeed              feed(scene);
   std::vector<fv::PropSpec> props(1);
   props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  props[0].figureCageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); };
   feed.sync(props);
   residency.replace(scene);
   const auto check = [&](const char* when) {
@@ -377,7 +377,7 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
   fv::PropFeed              feed(scene);
   std::vector<fv::PropSpec> props(1);
   props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  props[0].figureCageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); };
   feed.sync(props);
   residency.replace(scene);
   fv::FigureFeed& figure = *feed.fed("p:1")->figure;
@@ -474,7 +474,7 @@ TEST(FvPropFeed, AKeptRefinedMeshIsFedTheCageItsMorphsMoved)
   fv::PropFeed              feed(scene);
   std::vector<fv::PropSpec> props(1);
   props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  props[0].figureCageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); };
   feed.sync(props);
   residency.replace(scene);
   fv::FigureFeed& figure = *feed.fed("p:1")->figure;
@@ -525,7 +525,7 @@ TEST(FvPropFeed, ARefinedNormalMappedFiguresTangentsAreMadeOnTheGpu)
   props[0].figureOptions.texture = [](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
     return fv::build::TextureImage{.uri = (fs::path(FV_TEST_DATA) / "daz-library" / req.rel).generic_string(), .mimeType = "image/png"};
   };
-  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  props[0].figureCageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); };
   feed.sync(props);
   residency.replace(scene);
   fv::FigureFeed& figure = *feed.fed("p:1")->figure;
@@ -621,7 +621,7 @@ TEST(FvPropFeed, DazOrderSkinsTheCageThenRefinesIt)
   fv::PropFeed              feed(scene);
   std::vector<fv::PropSpec> props(1);
   props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  props[0].figureCageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); };
   feed.sync(props);
   residency.replace(scene);
   const fv::FigureFeed& figure = *feed.fed("p:1")->figure;
@@ -713,7 +713,7 @@ TEST(FvPropFeed, APosedStrandHairHoldsNoDrawnVerticesOnTheCpu)
   rs::FakeGpuBackend gpu(2);
   rs::Residency      residency(gpu, {.settleQuietFrames = 0});
   std::vector<float> cage = geo.cagePositions;
-  fv::FigureFeed     feed(scene, {.cageOf = [&](int) { return cage; }});
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int, std::vector<float>&) { return std::span<const float>(cage); }});
   feed.sync(graph, root);
   residency.replace(scene);
   const rs::MeshId id = feed.meshOf(mi);
@@ -842,7 +842,7 @@ TEST(FvPropFeed, AProceduralLayerGivesItsMeshMasksAndTheyStay)
   rs::RetainedScene  scene;
   rs::FakeGpuBackend gpu(2);
   rs::Residency      residency(gpu);
-  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); }});
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); }});
   fv::SceneGraph&    graph = box->loaded.scene;
   const int          root  = box->loaded.root;
   feed.sync(graph, root);
@@ -906,7 +906,7 @@ TEST(FvPropFeed, AWornItemComesDownAStepAndBack)
   rs::RetainedScene  scene;
   rs::FakeGpuBackend gpu(2);
   rs::Residency      residency(gpu);
-  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); }});
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); }});
   feed.sync(box->loaded.scene, box->loaded.root);
   residency.replace(scene);
   box->morphs->cageOnly = [&](int mesh) { return feed.refinesOnceFed(box->loaded.scene, mesh); };
@@ -1003,7 +1003,7 @@ TEST(FvPropFeed, AWearsDialsMoveOnlyItsCageBeforeItIsFed)
   rs::RetainedScene  scene;
   rs::FakeGpuBackend gpu(2);
   rs::Residency      residency(gpu);
-  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); }});
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); }});
   feed.sync(box->loaded.scene, box->loaded.root);
   residency.replace(scene);
   box->morphs->cageOnly = [&](int mesh) { return feed.refinesOnceFed(box->loaded.scene, mesh); };
@@ -1062,7 +1062,7 @@ TEST(FvPropFeed, AMeshsPriceIsWhatItHoldsOnceResident)
   fv::PropFeed              feed(scene);
   std::vector<fv::PropSpec> props(1);
   props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
-  props[0].figureCageOf = [&](int mesh) { return box->morphs->morphedCage(mesh); };
+  props[0].figureCageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); };
   feed.sync(props);
   residency.replace(scene);
   const fv::FigureFeed&  figure = *feed.fed("p:1")->figure;
@@ -1402,7 +1402,7 @@ static void strandRibbonsAreRefinedFromTheirPoints(std::vector<fv::mesh::Growth>
   rs::FakeGpuBackend gpu(2);
   rs::Residency      residency(gpu);
   std::vector<float> cage = geo->cagePositions;
-  fv::FigureFeed     feed(store, {.cageOf = [&](int) { return cage; }});
+  fv::FigureFeed     feed(store, {.cageOf = [&](int, std::vector<float>&) { return std::span<const float>(cage); }});
   feed.sync(scene, root);
   ASSERT_TRUE(feed.refines(0));
   residency.replace(store);

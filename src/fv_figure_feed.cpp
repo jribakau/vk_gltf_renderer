@@ -910,8 +910,8 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
   // made from its cage, whatever has happened to the CPU's copy
   if(f.thin)
   {
-    if(std::vector<glm::vec3> cage = cageOf(int(&f - m_meshes.data()), f); !cage.empty() && cage != m_scene.mesh(f.id)->cage)
-      m_scene.setMeshCage(f.id, std::move(cage));
+    if(f.refine && m_options.cageOf)
+      m_scene.setMeshCage(f.id, m_options.cageOf(int(&f - m_meshes.data()), m_cageScratch));
     return;
   }
   // the same triangles over vertices that moved
@@ -932,9 +932,8 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
   if(same && std::memcmp(had.positions.data(), positions.data(), count * sizeof(glm::vec3)) == 0
      && std::memcmp(had.normals.data(), normals.data(), normals.size() * sizeof(glm::vec3)) == 0 && (tangentsLater || !f.tangentsLate))
   {
-    if(f.refine)
-      if(std::vector<glm::vec3> cage = cageOf(int(&f - m_meshes.data()), f); !cage.empty() && cage != had.cage)
-        m_scene.setMeshCage(f.id, std::move(cage));
+    if(f.refine && m_options.cageOf)
+      m_scene.setMeshCage(f.id, m_options.cageOf(int(&f - m_meshes.data()), m_cageScratch));
     return;
   }
   std::vector<glm::vec4> t;
@@ -999,7 +998,8 @@ std::vector<glm::vec3> FigureFeed::cageOf(int mesh, const FedMesh& f) const
 {
   if(!f.refine || !m_options.cageOf)
     return {};
-  const std::vector<float> xyz = m_options.cageOf(mesh);
+  std::vector<float>           scratch;
+  const std::span<const float> xyz = m_options.cageOf(mesh, scratch);
   if(xyz.size() != size_t(f.refine->cageCount) * 3)
     return {};
   std::vector<glm::vec3> out(f.refine->cageCount);
@@ -1062,9 +1062,9 @@ bool FigureFeed::syncCages(const SceneGraph& figure, std::span<const int> meshes
       moveVertices(figure.meshes[size_t(mi)], f, true);
       continue;
     }
-    std::vector<glm::vec3> cage = cageOf(mi, f);
-    if(cage != m_scene.mesh(f.id)->cage)
-      m_scene.setMeshCage(f.id, std::move(cage));
+    // the morphs' own cage, into the store's: no buffer made or freed on a dial's step
+    if(m_options.cageOf)
+      m_scene.setMeshCage(f.id, m_options.cageOf(mi, m_cageScratch));
   }
   return all;
 }

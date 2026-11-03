@@ -761,7 +761,7 @@ fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
     s.figureOptions = buildOptionsOf(*f, skinMode.load());
     s.figureChanged = figureChanged;
     if(f->fig->morphs)
-      s.figureCageOf = [morphs = f->fig->morphs.get()](int mesh) { return morphs->morphedCage(mesh); };
+      s.figureCageOf = [morphs = f->fig->morphs.get()](int mesh, std::vector<float>& scratch) { return morphs->morphedCageView(mesh, scratch); };
   }
   else if(p.model)
   {

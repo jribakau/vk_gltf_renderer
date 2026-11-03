@@ -64,11 +64,12 @@ struct FigureFeedOptions
   uint32_t prop = 0;
   // where the figure root goes; none: a root of the retained scene
   rs::EntityId parent;
-  // a subdivided mesh's cage as its morphs have moved it (MorphSet::morphedCage), xyz per cage
+  // a subdivided mesh's cage as its morphs have moved it (MorphSet::morphedCageView: the morphs' own
+  // when they keep it, else made into `scratch`), xyz per cage
   // vertex: given, the feed sends it with the mesh's vertices and the GPU makes the drawn positions
   // and normals from it, and with DAZ's order: its drawers skin the cage and refine the posed cage, so
   // its record carries the cage's influences too (daz-viewer docs/gpu-figures-plan.md F1, F4)
-  std::function<std::vector<float>(int mesh)> cageOf;
+  std::function<std::span<const float>(int mesh, std::vector<float>& scratch)> cageOf;
 };
 
 // What a mesh will hold once fed (scene_price.hpp), for a price before it is: the counts of the record
@@ -193,6 +194,8 @@ private:
   static bool gpuTangents(const FedMesh& f);
   // the mesh's morphed cage, when the GPU refines it; empty otherwise
   std::vector<glm::vec3> cageOf(int mesh, const FedMesh& f) const;
+  // syncCages' room for a cage the morphs don't keep
+  std::vector<float> m_cageScratch;
   // the skin the mesh draws with, if it is skinned
   std::optional<rs::SkinRecord> skinRecord(const Mesh& m) const;
   // whether the mesh is fed with its current geometry and hidden polygons

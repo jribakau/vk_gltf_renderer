@@ -519,6 +519,10 @@ public:
   // A refined mesh's cage alone, moved (a dial's step): the residency refines it again; `positions`
   // and `normals` stay what they were until a setMeshVertices brings them up to it
   void setMeshCage(MeshId id, std::vector<glm::vec3> cage);
+  // The same from xyz floats, copied into the cage the store has, so a dial's step (every frame, a
+  // hair's millions of floats) makes and frees no buffer. Nothing changes, and false, when it is the
+  // same cage or not one of its size.
+  bool setMeshCage(MeshId id, std::span<const float> xyz);
   // joints, inverse binds and skeleton replaced (a rebind)
   void setSkin(SkinId id, SkinRecord skin);
   void setMaterial(MaterialId id, fv::mat::Material payload);

@@ -279,6 +279,14 @@ std::vector<float> MorphSet::morphedCage(int mesh, const mesh::RenderTarget* exc
   return out;
 }
 
+std::span<const float> MorphSet::morphedCageView(int mesh, std::vector<float>& scratch) const
+{
+  if(const auto it = m_cpu.find(mesh); it != m_cpu.end() && !it->second.dirty && !it->second.cage.empty())
+    return it->second.cage;
+  scratch = morphedCage(mesh);
+  return scratch;
+}
+
 dson::TargetPtr MorphSet::cpuTarget(const std::string& name, int mesh) const
 {
   const auto it = m_bindings.find(name);

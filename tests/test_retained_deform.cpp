@@ -1109,3 +1109,29 @@ TEST(RetainedDeform, SampleAssetsPlayThroughTheirDrawers)
   EXPECT_GT(morphs, 0u);
   std::printf("played %d files through their drawers: %u morph and %u skin passes\n", tested, morphs, skins);
 }
+
+// A dial's step hands a refined mesh's cage over as floats, which the store copies into the cage it
+// has: a change of it is a change of the mesh, the same cage or one of another size nothing
+TEST(RetainedDeform, ACageGivenAsFloatsIsCopiedIntoTheStores)
+{
+  RibbonRig          rig;
+  RetainedScene&     scene = rig.scene;
+  scene.takeChanges();
+  const glm::vec3*   kept  = scene.mesh(rig.mesh)->cage.data();
+  const uint64_t     rev   = scene.mesh(rig.mesh)->contentRev;
+  std::vector<float> same  = {0, 0, 0, 0, 1, 0, 0, 0, 1};
+  EXPECT_FALSE(scene.setMeshCage(rig.mesh, std::span<const float>(same)));
+  EXPECT_EQ(scene.mesh(rig.mesh)->contentRev, rev);
+  EXPECT_TRUE(scene.takeChanges().meshes.empty());
+
+  std::vector<float> moved = {0, 0, 0, 0, 2, 0, 0, 0, 1};
+  EXPECT_TRUE(scene.setMeshCage(rig.mesh, std::span<const float>(moved)));
+  EXPECT_EQ(scene.mesh(rig.mesh)->cage[1], glm::vec3(0, 2, 0));
+  EXPECT_EQ(scene.mesh(rig.mesh)->cage.data(), kept);
+  EXPECT_GT(scene.mesh(rig.mesh)->contentRev, rev);
+  EXPECT_EQ(scene.takeChanges().meshes.count(rig.mesh), 1u);
+
+  std::vector<float> fewer = {0, 0, 0, 0, 3, 0};
+  EXPECT_FALSE(scene.setMeshCage(rig.mesh, std::span<const float>(fewer)));
+  EXPECT_EQ(scene.mesh(rig.mesh)->cage[1], glm::vec3(0, 2, 0));
+}

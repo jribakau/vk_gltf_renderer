@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -262,6 +263,10 @@ public:
   // The mesh's cage with every active target's cage deltas applied, except `except` (a mesh's own
   // drape or collision correction is left out when a simulation reads the shape underneath it).
   std::vector<float> morphedCage(int mesh, const mesh::RenderTarget* except = nullptr) const;
+  // The same, without a copy when the set keeps it (a cageOnly mesh with nothing waiting for a flush),
+  // else made into `scratch`: a dial step hands it on every frame, a hair's millions of floats. Good
+  // until the set next changes.
+  std::span<const float> morphedCageView(int mesh, std::vector<float>& scratch) const;
   // Binds `target` as the channel's target on a mesh, making the channel when it is new and
   // dropping the target it had there. The channel's weight applies to it at once.
   void replaceCpuTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts = {});

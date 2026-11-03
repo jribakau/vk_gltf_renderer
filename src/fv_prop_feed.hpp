@@ -65,7 +65,7 @@ struct PropSpec
   bool figureChanged = false;
   // its subdivided meshes' morphed cages, for the GPU to refine (FigureFeedOptions::cageOf); taken
   // when the figure's feed is made
-  std::function<std::vector<float>(int mesh)> figureCageOf;
+  std::function<std::span<const float>(int mesh, std::vector<float>& scratch)> figureCageOf;
   // a model's file, imported once (another file: imported again)
   std::shared_ptr<const tinygltf::Model> model;
   std::vector<std::filesystem::path>     imageSearchPaths;
