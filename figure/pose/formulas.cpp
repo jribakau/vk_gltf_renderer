@@ -13,12 +13,18 @@ double at(const std::vector<double>& k, size_t i)
 }
 }  // namespace
 
-double splineTcb(double x, std::vector<const std::vector<double>*> knots, bool linear)
+double splineTcb(double x, std::span<const std::vector<double>* const> given, bool linear)
 {
   // DSON writes knots in order; only an unordered list pays for a sorted copy
   auto less = [](const std::vector<double>* a, const std::vector<double>* b) { return at(*a, 0) < at(*b, 0); };
-  if(!std::is_sorted(knots.begin(), knots.end(), less))
-    std::stable_sort(knots.begin(), knots.end(), less);
+  std::vector<const std::vector<double>*>     sorted;
+  std::span<const std::vector<double>* const> knots = given;
+  if(!std::is_sorted(given.begin(), given.end(), less))
+  {
+    sorted.assign(given.begin(), given.end());
+    std::stable_sort(sorted.begin(), sorted.end(), less);
+    knots = sorted;
+  }
   if(knots.empty())
     return 0;
   auto K = [&](size_t i) -> const std::vector<double>& { return *knots[i]; };

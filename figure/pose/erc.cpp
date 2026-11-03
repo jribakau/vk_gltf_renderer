@@ -90,6 +90,8 @@ KeyId ErcGraph::intern(const std::string& key)
     Key k;
     k.name = key;
     k.info = parseKey(key);
+    if(k.info.morph)
+      k.meta = meta(k.info.id);
     m_keys.push_back(std::move(k));
   }
   return it->second;
@@ -159,7 +161,12 @@ void ErcGraph::addModifier(const std::string& id, const std::string& file, const
 {
   m_files[id] = file;
   if(meta)
-    m_metas[id] = *meta;
+  {
+    ChannelMeta& kept = m_metas[id];
+    kept              = *meta;
+    if(const KeyId k = find("m:" + id); k >= 0)
+      m_keys[size_t(k)].meta = &kept;
+  }
   if(formulas && formulas->is_array())
     for(const Json& f : *formulas)
       addFormula(f, file);
@@ -230,9 +237,9 @@ std::optional<double> ErcGraph::Evaluator::operator()(KeyId key)
     return m_value[size_t(key)];
   if(m_state[size_t(key)] == eUnknown)
     return std::nullopt;
-  const Key&         k       = m_graph.m_keys[size_t(key)];
-  const ChannelMeta* meta    = k.info.morph ? m_graph.meta(k.info.id) : nullptr;
-  std::optional<double> v    = m_base(k.info);
+  const Key&            k    = m_graph.m_keys[size_t(key)];
+  const ChannelMeta*    meta = k.meta;
+  std::optional<double> v    = m_base(key);
   if(!v && meta)
     v = meta->base;
   if(!v && k.formulas.empty())

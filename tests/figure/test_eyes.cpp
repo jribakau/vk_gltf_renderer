@@ -79,7 +79,7 @@ TEST(Eyes, bothEyesTrackAPointWhileTheHeadIsTurned)
 TEST(Eyes, keepsAFormulaOffsetAndStillLandsOnTheAim)
 {
   Eyes eyes = figure();
-  eyes.pose->setDriven({{"lEye|rotation|y", 15}});
+  eyes.pose->setDriven({{eyes.pose->indexOf("lEye"), fv::pose::ChannelKind::eRotation, 1, 15}});
   const int      eye = eyes.rig.byId("lEye");
   const fv::Mat4 w   = eyes.scene.world(eye);
   const fv::Vec3 at{w.e[12], w.e[13], w.e[14]};

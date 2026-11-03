@@ -59,6 +59,8 @@ struct ChannelMeta
 
 // Looks a property's base up: a dial, a posed bone value; nullopt for a property nothing knows.
 using BaseOf = std::function<std::optional<double>(const KeyInfo&)>;
+// The same by the property's id, for a caller that has worked out what each key reads once.
+using BaseById = std::function<std::optional<double>(KeyId key)>;
 
 class ErcGraph
 {
@@ -75,6 +77,8 @@ public:
   KeyId find(const std::string& key) const;
   const KeyInfo&     info(KeyId k) const { return m_keys[size_t(k)].info; }
   const std::string& name(KeyId k) const { return m_keys[size_t(k)].name; }
+  // How many keys there are: ids run from 0 to this.
+  size_t size() const { return m_keys.size(); }
 
   // Every property some formula writes, in the order the formulas were added.
   const std::vector<KeyId>& outputs() const { return m_outputs; }
@@ -96,7 +100,7 @@ public:
   class Evaluator
   {
   public:
-    Evaluator(ErcGraph& graph, BaseOf base)
+    Evaluator(ErcGraph& graph, BaseById base)
         : m_graph(graph)
         , m_base(std::move(base))
     {
@@ -114,11 +118,15 @@ public:
       eUnknown,
     };
     ErcGraph&             m_graph;
-    BaseOf                m_base;
+    BaseById              m_base;
     std::vector<uint8_t>  m_state;
     std::vector<double>   m_value;
   };
-  Evaluator evaluator(BaseOf base) { return Evaluator(*this, std::move(base)); }
+  Evaluator evaluator(BaseOf base)
+  {
+    return Evaluator(*this, [this, base = std::move(base)](KeyId k) { return base(info(k)); });
+  }
+  Evaluator evaluatorById(BaseById base) { return Evaluator(*this, std::move(base)); }
 
   // Bumped whenever formulas are added, so cached results can tell.
   int version = 0;
@@ -137,6 +145,8 @@ private:
     std::string           name;
     KeyInfo               info;
     std::vector<Compiled> formulas;
+    // a modifier's channel, once a file has given it (an entry of m_metas, which stay where they are)
+    const ChannelMeta* meta = nullptr;
   };
 
   void addFormula(const dson::Json& f, const std::string& file);

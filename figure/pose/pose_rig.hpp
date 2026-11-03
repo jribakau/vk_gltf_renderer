@@ -6,11 +6,14 @@
 // (pose/figure_driver.hpp) add to the posed values and move joint centres. A port of
 // src/lib/pose/PoseRig.ts.
 
+#include <array>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -28,6 +31,8 @@ enum class ChannelKind
 
 const char* kindName(ChannelKind k);
 bool        parseKind(const std::string& s, ChannelKind& out);
+// A channel's axis as an index: x 0, y 1, z 2, general 3; -1 for anything else.
+int axisIndex(std::string_view axis);
 
 struct Axis : JointChannel
 {
@@ -43,10 +48,43 @@ struct PoseBone
   // same-named bones of conforming clothing, which move with this one
   std::vector<int>  followers;
   std::vector<Axis> axes;
-  Quat              orient;
-  std::string       order;  // three Euler order
+  // where each kind's axis is in `axes` (by axisIndex), -1 where the bone has none
+  std::array<std::array<int8_t, 4>, 3> slot{};
+  Quat                                 orient;
+  std::string                          order;  // three Euler order
   // rest position of the bone and of each follower
   std::vector<std::pair<int, Vec3>> rest;
+  // what formulas add to its channels, by kind and axis (as `slot`), whether it has the axis or not,
+  // and how far they move its joint centre (cm, figure space, relative to the load)
+  std::array<std::array<double, 4>, 3> driven{};
+  Vec3                                 centerOffset;
+
+  const Axis* axis(ChannelKind kind, int axis) const
+  {
+    const int s = axis >= 0 && axis < 4 ? slot[size_t(kind)][size_t(axis)] : -1;
+    return s >= 0 ? &axes[size_t(s)] : nullptr;
+  }
+  // a channel's posed value before formulas: 0, or 1 for a scale, where the bone has no such axis
+  double posed(ChannelKind kind, int axis) const
+  {
+    const Axis* a = this->axis(kind, axis);
+    return a ? a->value : kind == ChannelKind::eScale ? 1.0 : 0.0;
+  }
+};
+
+// What formulas add to one channel of a bone (PoseRig::bones() index, axisIndex).
+struct DrivenValue
+{
+  int         bone = -1;
+  ChannelKind kind = ChannelKind::eRotation;
+  int         axis = 0;
+  double      value = 0;
+};
+// How far formulas move a bone's joint centre (PoseRig::bones() index; cm, figure space, from the load).
+struct CenterOffset
+{
+  int  bone = -1;
+  Vec3 offset;
 };
 
 struct ChannelValue
@@ -71,6 +109,8 @@ public:
   const std::vector<PoseBone>& bones() const { return m_bones; }
   // a bone by name, else by id
   const PoseBone* get(const std::string& nameOrId) const;
+  // where a bone is in bones(): by name, else by id, or by id first; -1 for none
+  int indexOf(const std::string& bone, bool idFirst = false) const;
 
   // Sets channels (clamped to their limits where the figure says so) and poses the bones. Then
   // `afterPose` runs, so formulas that read the pose see it. Returns the bone nodes moved by the
@@ -107,13 +147,13 @@ public:
   std::optional<double> posed(const std::string& bone, const std::string& kind, const std::string& axis) const;
   bool                  hasBone(const std::string& bone) const;
 
-  // Sets what formulas add to bone channels ("bone id|kind|axis" -> amount), and moves the bones
-  // whose total changed.
-  void setDriven(const std::map<std::string, double>& values);
-  // Moves joint centres by formula offsets (bone id -> cm in figure space, relative to the load):
-  // each bone's rest position and its followers' move, and the bones are re-posed. The skins need
-  // re-binding at the new centres (rebind).
-  void setCenterOffsets(const std::map<std::string, Vec3>& offsets);
+  // Sets what formulas add to bone channels, all of it: a channel not in `values` gets nothing. Moves
+  // the bones whose total changed.
+  void setDriven(const std::vector<DrivenValue>& values);
+  // Moves joint centres by formula offsets, all of them, as setDriven: each bone's rest position and
+  // its followers' move, and the bones are re-posed. The skins need re-binding at the new centres
+  // (rebind).
+  void setCenterOffsets(const std::vector<CenterOffset>& offsets);
 
   // Re-binds skinned meshes to their bones' rest positions as they are now: each bone's inverse
   // bind matrix becomes the inverse of where it is at rest, so the rest pose deforms nothing and a
@@ -146,6 +186,8 @@ private:
   Axis*            axis(PoseBone& pb, ChannelKind kind, const std::string& axis);
   const Axis*      axis(const PoseBone& pb, ChannelKind kind, const std::string& axis) const;
   std::vector<int> apply(PoseBone& pb);
+  // the posed value plus what formulas add, or `fallback` plus that without the axis
+  static double total(const PoseBone& pb, ChannelKind kind, int axis, double fallback);
   // Rotation channels, in degrees, that turn this bone's local +Z toward `worldPoint`.
   std::optional<std::array<double, 3>> aimAngles(const PoseBone& pb, const Vec3& worldPoint) const;
   Vec3             localOffset(const PoseBone& pb) const;
@@ -155,10 +197,11 @@ private:
   std::vector<PoseBone>                        m_bones;
   std::unordered_map<std::string, size_t>      m_byName, m_byId;
   std::unordered_map<int, size_t>              m_byNode;
-  // formula contributions on top of the posed values, by "bone id|kind|axis"
-  std::map<std::string, double>                m_driven;
-  // joint centre offsets from formulas (cm, figure space), by bone id, relative to the load
-  std::map<std::string, Vec3>                  m_centerOffsets;
+  // setDriven's and setCenterOffsets' working space: each bone's new values (NaN: not driven), and
+  // which bones changed
+  std::vector<std::array<std::array<double, 4>, 3>> m_nextDriven;
+  std::vector<Vec3>                                 m_nextCenter;
+  std::vector<uint8_t>                              m_marked;
   // each bone's rest position with no centre offsets: the main bones' and their followers'
   std::unordered_map<int, Vec3>                m_restBase;
   // a bone node's own scale, as its channels and formulas have it, before inherits_scale is divided out

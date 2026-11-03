@@ -220,3 +220,66 @@ TEST(FigureErc, AFileRegistersOnce)
   auto                                v = g.evaluator([&](const KeyInfo& k) { return lookup(dials, k); });
   EXPECT_DOUBLE_EQ(v("m:B").value_or(-1), 1);
 }
+
+// Formulas on a thread share one stack: a formula whose push reads a property runs that property's
+// formulas, a spline among them, on top of its own entries, which must be as they were afterwards.
+// A meta given after a key was made still clamps it.
+TEST(FigureErc, AnInputsFormulasRunAboveTheReadersStack)
+{
+  ErcGraph g;
+  g.addDoc(docOf(R"({
+    "modifier_library": [
+      {"id": "B", "channel": {"value": 0}, "formulas": [
+        {"output": "#B?value", "operations": [
+          {"op": "push", "val": [0, 7, 0, 0, 0]}, {"op": "pop"},
+          {"op": "push", "val": 2}, {"op": "push", "url": "#Inner?value"}, {"op": "mult"}]}
+      ]},
+      {"id": "Inner", "channel": {"value": 0}, "formulas": [
+        {"output": "#Inner?value", "operations": [
+          {"op": "push", "url": "#X?value"},
+          {"op": "push", "val": [0, 0, 0, 0, 0]}, {"op": "push", "val": [1, 10, 0, 0, 0]},
+          {"op": "push", "val": 2}, {"op": "spline_linear"}]}
+      ]}
+    ]
+  })"),
+          kFile);
+  std::map<std::string, double> dials{{"m:X", 0.5}};
+  {
+    auto v = g.evaluator([&](const KeyInfo& k) { return lookup(dials, k); });
+    // an unknown op ("pop") makes the formula nothing
+    EXPECT_DOUBLE_EQ(v("m:B").value_or(-1), 0);
+  }
+
+  ErcGraph h;
+  h.addDoc(docOf(R"({
+    "modifier_library": [
+      {"id": "B", "channel": {"value": 0}, "formulas": [
+        {"output": "#B?value", "operations": [{"op": "push", "val": 2}, {"op": "push", "url": "#Inner?value"}, {"op": "mult"}]},
+        {"output": "#C?value", "operations": [{"op": "push", "url": "#B?value"}]}
+      ]},
+      {"id": "Inner", "channel": {"value": 0}, "formulas": [
+        {"output": "#Inner?value", "operations": [
+          {"op": "push", "url": "#X?value"},
+          {"op": "push", "val": [0, 0, 0, 0, 0]}, {"op": "push", "val": [1, 10, 0, 0, 0]},
+          {"op": "push", "val": 2}, {"op": "spline_linear"}]}
+      ]}
+    ]
+  })"),
+          kFile);
+  {
+    auto v = h.evaluator([&](const KeyInfo& k) { return lookup(dials, k); });
+    EXPECT_DOUBLE_EQ(v("m:Inner").value_or(-1), 5);
+    EXPECT_DOUBLE_EQ(v("m:B").value_or(-1), 10);
+    EXPECT_DOUBLE_EQ(v("m:C").value_or(-1), 10);
+  }
+  {
+    auto v = h.evaluator([&](const KeyInfo& k) { return lookup(dials, k); });
+    // evaluated from the top, B's 2 waits below Inner's spline
+    EXPECT_DOUBLE_EQ(v("m:C").value_or(-1), 10);
+  }
+  // C was made before any file gave its channel: the clamp it gets later holds
+  const fv::pose::ChannelMeta clamp{0, true, 0, 4};
+  h.addModifier("C", kFile, &clamp, nullptr);
+  auto v = h.evaluator([&](const KeyInfo& k) { return lookup(dials, k); });
+  EXPECT_DOUBLE_EQ(v("m:C").value_or(-1), 4);
+}

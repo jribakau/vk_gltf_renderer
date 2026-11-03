@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <regex>
 
@@ -32,6 +33,11 @@ bool parseKind(const std::string& s, ChannelKind& out)
   else
     return false;
   return true;
+}
+
+int axisIndex(std::string_view axis)
+{
+  return axis == "x" ? 0 : axis == "y" ? 1 : axis == "z" ? 2 : axis == "general" ? 3 : -1;
 }
 
 std::string groupOf(const std::string& name, bool isRoot)
@@ -83,10 +89,15 @@ PoseRig::PoseRig(SceneGraph& scene, const dson::Rig& main, const std::vector<con
     pb.label = d->label.empty() ? bone.name : d->label;
     pb.group = groupOf(bone.name, node == main.root);
     pb.bone  = node;
+    for(auto& kind : pb.slot)
+      kind.fill(-1);
     auto add = [&](ChannelKind kind, const std::vector<JointChannel>& list) {
       for(const JointChannel& c : list)
         if(!c.locked && c.max > c.min)
         {
+          // the first of a kind and axis is the one posed, as a search of the list finds it
+          if(const int ai = axisIndex(c.axis); ai >= 0 && pb.slot[size_t(kind)][size_t(ai)] < 0)
+            pb.slot[size_t(kind)][size_t(ai)] = int8_t(pb.axes.size());
           Axis a;
           static_cast<JointChannel&>(a) = c;
           a.kind                        = kind;
@@ -181,12 +192,20 @@ const PoseBone* PoseRig::get(const std::string& nameOrId) const
   return nullptr;
 }
 
+int PoseRig::indexOf(const std::string& bone, bool idFirst) const
+{
+  const auto& first  = idFirst ? m_byId : m_byName;
+  const auto& second = idFirst ? m_byName : m_byId;
+  if(auto it = first.find(bone); it != first.end())
+    return int(it->second);
+  if(auto it = second.find(bone); it != second.end())
+    return int(it->second);
+  return -1;
+}
+
 Axis* PoseRig::axis(PoseBone& pb, ChannelKind kind, const std::string& axisName)
 {
-  for(Axis& a : pb.axes)
-    if(a.kind == kind && a.axis == axisName)
-      return &a;
-  return nullptr;
+  return const_cast<Axis*>(pb.axis(kind, axisIndex(axisName)));
 }
 
 std::vector<int> PoseRig::setMany(const std::vector<ChannelValue>& values)
@@ -298,10 +317,8 @@ int PoseRig::aimEyes(const Vec3& worldPoint)
       const Axis* a = axis(pb, ChannelKind::eRotation, axisName);
       if(!a)
         continue;
-      const std::string key    = pb.id + "|rotation|" + axisName;
-      const auto        driven = m_driven.find(key);
-      const double      add    = driven == m_driven.end() ? 0 : driven->second;
-      const int         i      = axisName[0] == 'x' ? 0 : axisName[0] == 'y' ? 1 : 2;
+      const int    i   = axisName[0] == 'x' ? 0 : axisName[0] == 'y' ? 1 : 2;
+      const double add = pb.driven[size_t(ChannelKind::eRotation)][size_t(i)];
       const double      total  = a->clamped ? std::clamp((*angles)[i], a->min, a->max) : (*angles)[i];
       values.push_back({pb.name, ChannelKind::eRotation, axisName, total - add});
       wrote = true;
@@ -318,10 +335,7 @@ std::vector<int> PoseRig::setLocalTransform(const std::string& bone, const Quat&
   const PoseBone* pb = get(bone);
   if(!pb)
     return {};
-  auto drivenOf = [&](ChannelKind kind, const char* axisName) {
-    const auto it = m_driven.find(pb->id + "|" + kindName(kind) + "|" + axisName);
-    return it == m_driven.end() ? 0.0 : it->second;
-  };
+  auto drivenOf = [&](ChannelKind kind, const char* axisName) { return pb->driven[size_t(kind)][size_t(axisIndex(axisName))]; };
   std::vector<ChannelValue> values;
   const char*               names[3] = {"x", "y", "z"};
   // where the bone's Euler is now, formulas included
@@ -455,25 +469,16 @@ std::set<int> PoseRig::drivenNodes() const
 
 const Axis* PoseRig::axis(const PoseBone& pb, ChannelKind kind, const std::string& axisName) const
 {
-  for(const Axis& a : pb.axes)
-    if(a.kind == kind && a.axis == axisName)
-      return &a;
-  return nullptr;
+  return pb.axis(kind, axisIndex(axisName));
 }
 
 std::optional<double> PoseRig::posed(const std::string& bone, const std::string& kind, const std::string& axisName) const
 {
-  // by id first, then by name
-  const PoseBone* pb = nullptr;
-  if(auto it = m_byId.find(bone); it != m_byId.end())
-    pb = &m_bones[it->second];
-  else if(auto it2 = m_byName.find(bone); it2 != m_byName.end())
-    pb = &m_bones[it2->second];
+  const int   b = indexOf(bone, true);
   ChannelKind k;
-  if(!pb || !parseKind(kind, k))
+  if(b < 0 || !parseKind(kind, k))
     return std::nullopt;
-  const Axis* a = axis(*pb, k, axisName);
-  return a ? a->value : (k == ChannelKind::eScale ? 1.0 : 0.0);
+  return m_bones[size_t(b)].posed(k, axisIndex(axisName));
 }
 
 bool PoseRig::hasBone(const std::string& bone) const
@@ -491,24 +496,28 @@ bool PoseRig::takeRestMoved()
   return std::exchange(m_restMoved, false);
 }
 
+double PoseRig::total(const PoseBone& pb, ChannelKind kind, int axis, double fallback)
+{
+  const Axis*  a      = pb.axis(kind, axis);
+  double       out    = a ? a->value : fallback;
+  const double driven = pb.driven[size_t(kind)][size_t(axis)];
+  // nothing driven adds nothing, not even a zero's sign
+  if(driven != 0)
+    out += driven;
+  return out;
+}
+
 // Writes a bone's channels into it and its followers; returns the bones moved.
 std::vector<int> PoseRig::apply(PoseBone& pb)
 {
-  auto v = [&](ChannelKind kind, const char* axisName, double fallback) {
-    const Axis* a   = axis(pb, kind, axisName);
-    double      out = a ? a->value : fallback;
-    if(!m_driven.empty())
-      if(auto it = m_driven.find(pb.id + "|" + kindName(kind) + "|" + axisName); it != m_driven.end())
-        out += it->second;
-    return out;
-  };
-  const Quat e = quatFromEuler(v(ChannelKind::eRotation, "x", 0) * kDeg, v(ChannelKind::eRotation, "y", 0) * kDeg,
-                               v(ChannelKind::eRotation, "z", 0) * kDeg, pb.order);
+  auto v = [&](ChannelKind kind, int axis, double fallback) { return total(pb, kind, axis, fallback); };
+  const Quat e = quatFromEuler(v(ChannelKind::eRotation, 0, 0) * kDeg, v(ChannelKind::eRotation, 1, 0) * kDeg,
+                               v(ChannelKind::eRotation, 2, 0) * kDeg, pb.order);
   // rotate about the joint's own axes: orient · R · orient⁻¹
   const Quat   q = pb.orient * e * pb.orient.inverse();
-  const Vec3   t{v(ChannelKind::eTranslation, "x", 0), v(ChannelKind::eTranslation, "y", 0), v(ChannelKind::eTranslation, "z", 0)};
-  const double g = v(ChannelKind::eScale, "general", 1);
-  const Vec3   s{v(ChannelKind::eScale, "x", 1) * g, v(ChannelKind::eScale, "y", 1) * g, v(ChannelKind::eScale, "z", 1) * g};
+  const Vec3   t{v(ChannelKind::eTranslation, 0, 0), v(ChannelKind::eTranslation, 1, 0), v(ChannelKind::eTranslation, 2, 0)};
+  const double g = v(ChannelKind::eScale, 3, 1);
+  const Vec3   s{v(ChannelKind::eScale, 0, 1) * g, v(ChannelKind::eScale, 1, 1) * g, v(ChannelKind::eScale, 2, 1) * g};
   std::vector<int> moved;
   bool             rescaled = false;
   for(const auto& [node, rest] : pb.rest)
@@ -555,85 +564,75 @@ std::vector<int> PoseRig::apply(PoseBone& pb)
   return moved;
 }
 
-void PoseRig::setDriven(const std::map<std::string, double>& values)
+void PoseRig::setDriven(const std::vector<DrivenValue>& values)
 {
-  std::set<size_t> touched;
-  auto             mark = [&](const std::string& key) {
-    if(auto it = m_byId.find(key.substr(0, key.find('|'))); it != m_byId.end())
-      touched.insert(it->second);
-  };
-  for(const auto& [key, v] : values)
+  constexpr double kNone = std::numeric_limits<double>::quiet_NaN();
+  std::array<std::array<double, 4>, 3> none;
+  for(auto& kind : none)
+    kind.fill(kNone);
+  m_nextDriven.assign(m_bones.size(), none);
+  for(const DrivenValue& v : values)
+    if(v.bone >= 0 && size_t(v.bone) < m_bones.size() && v.axis >= 0 && v.axis < 4)
+      m_nextDriven[size_t(v.bone)][size_t(v.kind)][size_t(v.axis)] = v.value;
+  for(size_t i = 0; i < m_bones.size(); i++)
   {
-    auto it = m_driven.find(key);
-    if(std::abs((it == m_driven.end() ? 0.0 : it->second) - v) < 1e-6)
-      continue;
-    if(v == 0)
-      m_driven.erase(key);
-    else
-      m_driven[key] = v;
-    mark(key);
+    PoseBone& pb      = m_bones[i];
+    bool      touched = false;
+    for(size_t k = 0; k < 3; k++)
+      for(size_t a = 0; a < 4; a++)
+      {
+        double&      now  = pb.driven[k][a];
+        const double next = m_nextDriven[i][k][a];
+        // a channel nothing drives any more goes back to its own value; one that moves less than this stays
+        if(std::isnan(next) ? now == 0 : std::abs(now - next) < 1e-6)
+          continue;
+        now     = std::isnan(next) ? 0 : next;
+        touched = true;
+      }
+    if(touched)
+      apply(pb);
   }
-  for(auto it = m_driven.begin(); it != m_driven.end();)
-  {
-    if(values.count(it->first))
-    {
-      ++it;
-      continue;
-    }
-    mark(it->first);
-    it = m_driven.erase(it);
-  }
-  for(size_t i : touched)
-    apply(m_bones[i]);
 }
 
 // How far a bone's rest position moves relative to its parent's: its centre offset minus its parent's.
 Vec3 PoseRig::localOffset(const PoseBone& pb) const
 {
-  const Vec3 zero;
-  auto       offsetOf = [&](const std::string& id) {
-    auto it = m_centerOffsets.find(id);
-    return it == m_centerOffsets.end() ? zero : it->second;
-  };
-  const Vec3 own = offsetOf(pb.id);
-  const int  parent = pb.bone >= 0 ? m_scene.nodes[pb.bone].parent : -1;
-  Vec3       up     = zero;
+  const int parent = pb.bone >= 0 ? m_scene.nodes[pb.bone].parent : -1;
+  Vec3      up;
   if(parent >= 0)
     if(auto it = m_byNode.find(parent); it != m_byNode.end())
-      up = offsetOf(m_bones[it->second].id);
-  return own - up;
+      up = m_bones[it->second].centerOffset;
+  return pb.centerOffset - up;
 }
 
-void PoseRig::setCenterOffsets(const std::map<std::string, Vec3>& offsets)
+void PoseRig::setCenterOffsets(const std::vector<CenterOffset>& offsets)
 {
-  auto same = [](const Vec3& a, const Vec3& b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
-  std::set<std::string> changed;
-  for(const auto& [id, v] : offsets)
-  {
-    auto it = m_centerOffsets.find(id);
-    if(!same(it == m_centerOffsets.end() ? Vec3{} : it->second, v))
-      changed.insert(id);
-  }
-  for(const auto& [id, v] : m_centerOffsets)
-    if(!offsets.count(id))
-      changed.insert(id);
-  if(changed.empty())
-    return;
-  m_centerOffsets = offsets;
+  m_nextCenter.assign(m_bones.size(), Vec3{});
+  for(const CenterOffset& o : offsets)
+    if(o.bone >= 0 && size_t(o.bone) < m_bones.size())
+      m_nextCenter[size_t(o.bone)] = o.offset;
   // a bone's rest position depends on its own centre and its parent's
-  std::set<size_t> affected;
-  for(const std::string& id : changed)
+  m_marked.assign(m_bones.size(), 0);
+  bool any = false;
+  for(size_t i = 0; i < m_bones.size(); i++)
   {
-    auto it = m_byId.find(id);
-    if(it == m_byId.end())
+    PoseBone&   pb   = m_bones[i];
+    const Vec3& next = m_nextCenter[i];
+    if(pb.centerOffset.x == next.x && pb.centerOffset.y == next.y && pb.centerOffset.z == next.z)
       continue;
-    affected.insert(it->second);
-    for(int c : m_scene.nodes[m_bones[it->second].bone].children)
+    pb.centerOffset = next;
+    any             = true;
+    m_marked[i]     = 1;
+    for(int c : m_scene.nodes[pb.bone].children)
       if(auto child = m_byNode.find(c); child != m_byNode.end())
-        affected.insert(child->second);
+        m_marked[child->second] = 1;
   }
-  for(size_t i : affected)
+  if(!any)
+    return;
+  for(size_t i = 0; i < m_bones.size(); i++)
   {
+    if(!m_marked[i])
+      continue;
     PoseBone&  pb    = m_bones[i];
     const Vec3 local = localOffset(pb);
     for(auto& [node, rest] : pb.rest)
@@ -645,8 +644,7 @@ void PoseRig::setCenterOffsets(const std::map<std::string, Vec3>& offsets)
     {
       if(!d->centerBase)
         d->centerBase = d->center;
-      auto       it = m_centerOffsets.find(pb.id);
-      const Vec3 o  = it == m_centerOffsets.end() ? Vec3{} : it->second;
+      const Vec3& o = pb.centerOffset;
       d->center     = {(*d->centerBase)[0] + o.x, (*d->centerBase)[1] + o.y, (*d->centerBase)[2] + o.z};
     }
     apply(pb);

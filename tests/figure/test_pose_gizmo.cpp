@@ -63,7 +63,7 @@ void zero(fv::pose::PoseRig& pose, const std::string& bone)
 TEST(PoseGizmo, rotationRoundTripsThroughOrientAndAFormulaOffset)
 {
   auto r = arm();
-  r->pose->setDriven({{"lForearm|rotation|y", 10}});
+  r->pose->setDriven({{r->pose->indexOf("lForearm"), ChannelKind::eRotation, 1, 10}});
   r->pose->setMany({{"lForearm", ChannelKind::eRotation, "x", 25}, {"lForearm", ChannelKind::eRotation, "y", -35},
                     {"lForearm", ChannelKind::eRotation, "z", 15}});
   const int      node = r->rig.byId("lForearm");
@@ -114,7 +114,7 @@ TEST(PoseGizmo, aDragPastHalfATurnKeepsGoingTheSameWay)
 TEST(PoseGizmo, hipTranslationRoundTrips)
 {
   auto r = arm();
-  r->pose->setDriven({{"hip|translation|y", 4}});
+  r->pose->setDriven({{r->pose->indexOf("hip"), ChannelKind::eTranslation, 1, 4}});
   r->pose->setMany({{"hip", ChannelKind::eTranslation, "x", 3}, {"hip", ChannelKind::eTranslation, "y", -2},
                     {"hip", ChannelKind::eTranslation, "z", 5}});
   const int      node = r->rig.root;
@@ -214,7 +214,7 @@ TEST(PoseScale, ABoneThatDoesNotInheritIsNotSizedByItsParent)
 TEST(PoseScale, TheFiguresRootScalesEveryBone)
 {
   const auto r = hand();
-  r->pose->setDriven({{"body|scale|general", 0.5}});
+  r->pose->setDriven({{r->pose->indexOf("body"), ChannelKind::eScale, 3, 0.5}});
   const fv::Mat4 wrap = r->scene.world(r->wrap);
   const double   unit = sizeOf(wrap);
   for(const char* b : {"body", "hand", "finger", "tip"})

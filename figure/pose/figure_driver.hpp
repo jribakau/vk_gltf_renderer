@@ -93,25 +93,79 @@ public:
   std::string nameOf(const std::string& id) const;
 
 private:
+  // What a key of the graph reads and writes here, worked out the first time it is asked for and kept
+  // while the channels, the aliases, the files' dials and the rig stay as they were (Stamp): a run
+  // reads thousands of keys, each once a name looked up in several tables.
+  struct Resolved
+  {
+    enum class Base : uint8_t
+    {
+      eUnset,
+      eNone,   // nothing knows it
+      eDial,   // a channel's value (`index`)
+      eRest,   // a dial no channel holds, where its file says it rests (`rest`)
+      eBone,   // a bone channel's posed value (`index`, `kind`, `axis`)
+      eJoint,  // a joint centre or another bone property: 0
+    };
+    enum class Out : uint8_t
+    {
+      eNone,
+      eMorph,   // a morph a formula moves: the channel `out` (-1: not one yet)
+      ePose,    // a bone channel: the bone `out`, by name first
+      eCenter,  // a joint centre's axis of the bone `out`
+    };
+    Base               base  = Base::eUnset;
+    Out                outKind = Out::eNone;
+    pose::ChannelKind  kind  = pose::ChannelKind::eRotation;
+    int8_t             axis  = -1;  // pose::axisIndex
+    int                index = -1;
+    int                out   = -1;
+    double             rest  = 0;
+  };
+  struct Stamp
+  {
+    int            layout = -1, aliases = -1, files = -1;
+    const PoseRig* rig    = nullptr;
+    bool           operator==(const Stamp&) const = default;
+  };
+  Stamp           stamp() const;
+  // forgets what was resolved when the stamp moved
+  void            refresh();
+  const Resolved& resolved(KeyId key);
+  // the graph key a channel's weight is read from (m:<its modifier id>)
+  KeyId keyOfChannel(size_t channel);
+
   // the channel that holds a modifier's dial: by its id, or the listing's before its file has said so
   const morph::Channel* dialOf(const std::string& id) const;
-  // a modifier's value by that channel, or where its file says it rests when a hidden name has none
-  std::optional<double> dialValue(const std::string& id, double morph::Channel::*value) const;
-  std::optional<double> base(const KeyInfo& key);
-  std::optional<double> baseAtLoad(const KeyInfo& key);
+  std::optional<double> base(KeyId key);
+  std::optional<double> baseAtLoad(KeyId key);
   void                  run();
 
   morph::MorphSet&                      m_morphs;
   std::shared_ptr<FigureSource>         m_source;
   // modifier id -> channel name, and back
   std::unordered_map<std::string, std::string> m_alias, m_idOf;
+  int                                          m_aliasVersion = 0;
   MorphFiles                                   m_files;
-  // joint centre values the figure loaded with (its scene stored the moved centres): offsets count from here
-  std::map<std::string, double> m_baseline;
+  int                                          m_filesVersion = 0;
+  // joint centre values the figure loaded with (its scene stored the moved centres), by key: offsets
+  // count from here
+  std::vector<double>           m_baseline;
   // the graph's version the baseline was taken at, -1 for a figure with none
   int                           m_baselineFormulas = -1;
   bool                          m_running = false;
   bool                          m_again   = false;
+
+  Stamp                 m_resolvedFor;
+  std::vector<Resolved> m_resolved;
+  std::vector<KeyId>    m_channelKeys;
+  // a run's working space
+  std::vector<size_t>                         m_names;
+  std::vector<uint8_t>                        m_named;
+  std::vector<DrivenValue>                    m_driven;
+  std::vector<Vec3>                           m_centers;  // by bone
+  std::vector<CenterOffset>                   m_centerList;
+  std::vector<std::pair<std::string, double>> m_weights;
 };
 
 }  // namespace fv::pose

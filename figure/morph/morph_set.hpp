@@ -71,6 +71,8 @@ struct Channel
   // what it can do, once the figure's files have been gone through. Unknown until then, and for good
   // on a dial no file holds (a body slider, a worn item's).
   std::optional<Reach> reach;
+  // the weight it is applied at when a driver set one other than its dial; unset, it is its value
+  std::optional<double> weight;
 };
 
 struct ChannelOptions
@@ -179,10 +181,17 @@ public:
   void markLoaded(const std::set<std::string>& except = {});
 
   const Channel* channel(const std::string& name) const;
+  // Where a channel is in channels(), or -1: good while layoutVersion() stands.
+  int indexOf(const std::string& name) const;
+  // Counts up whenever channels() gains, loses or reorders entries, so an index kept into it can tell
+  // it is stale.
+  int layoutVersion() const { return m_layout; }
   // A channel's dial value: what its slider shows.
   double get(const std::string& name) const;
   // The weight a channel is applied at: its dial, or what the driver made of it.
   double weightOf(const std::string& name) const;
+  // The same for channels()[i].
+  double weightAt(size_t i) const { return m_channels[i].weight.value_or(m_channels[i].value); }
   // Whether a channel with this name exists, loaded or not.
   bool has(const std::string& name) const;
 
@@ -340,8 +349,7 @@ private:
   std::function<mesh::BuiltMesh*(int)>                  m_geo;
   std::vector<Channel>                                  m_channels;
   std::unordered_map<std::string, size_t>               m_index;
-  // the weight each channel is applied at, when a driver set one other than its dial
-  std::unordered_map<std::string, double>               m_weights;
+  int                                                   m_layout = 0;
   std::unordered_map<std::string, std::vector<Binding>> m_bindings;
   std::unordered_map<int, MeshState>                    m_cpu;
   std::unordered_map<std::string, Loader>               m_lazy;

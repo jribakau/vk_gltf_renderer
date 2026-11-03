@@ -77,12 +77,19 @@ void MorphSet::reindex()
   m_index.clear();
   for(size_t i = 0; i < m_channels.size(); i++)
     m_index[m_channels[i].name] = i;
+  m_layout++;
 }
 
 const Channel* MorphSet::channel(const std::string& name) const
 {
   auto it = m_index.find(name);
   return it == m_index.end() ? nullptr : &m_channels[it->second];
+}
+
+int MorphSet::indexOf(const std::string& name) const
+{
+  auto it = m_index.find(name);
+  return it == m_index.end() ? -1 : int(it->second);
 }
 
 Channel* MorphSet::channelMut(const std::string& name)
@@ -99,8 +106,8 @@ double MorphSet::get(const std::string& name) const
 
 double MorphSet::weightOf(const std::string& name) const
 {
-  auto it = m_weights.find(name);
-  return it != m_weights.end() ? it->second : get(name);
+  const Channel* c = channel(name);
+  return c ? c->weight.value_or(c->value) : 0;
 }
 
 bool MorphSet::has(const std::string& name) const
@@ -154,6 +161,7 @@ void MorphSet::bind(const std::string& name, Binding b, double value, const Chan
     c.dialled = opts.value.has_value();
     m_index[name] = m_channels.size();
     m_channels.push_back(std::move(c));
+    m_layout++;
   }
   it->second.push_back(std::move(b));
 }
@@ -328,6 +336,7 @@ void MorphSet::addLazy(const std::string& name, Loader loader, const ChannelOpti
   c.hidden      = opts.hidden;
   m_index[name] = m_channels.size();
   m_channels.push_back(std::move(c));
+  m_layout++;
   m_listVersion++;
 }
 
@@ -367,8 +376,8 @@ bool MorphSet::describe(const std::string& name, const dson::MorphInfo& info)
   }
   // the buffers still hold the old weight until the driver says otherwise; a file not read has none,
   // and takes the weight when something does read it
-  if(driver && !m_lazy.count(name) && !m_weights.count(name))
-    m_weights[name] = ch->value;
+  if(driver && !m_lazy.count(name) && !ch->weight)
+    ch->weight = ch->value;
   ch->value = info.rest;
   m_version++;
   if(driver)
@@ -576,8 +585,8 @@ void MorphSet::setMany(const std::vector<std::pair<std::string, double>>& values
     if(ch->value == value)
       continue;
     // the buffers still hold the old weight until the driver says otherwise
-    if(driver && !m_weights.count(name))
-      m_weights[name] = ch->value;
+    if(driver && !ch->weight)
+      ch->weight = ch->value;
     ch->value = value;
     changed.emplace_back(name, value);
   }
@@ -592,19 +601,15 @@ void MorphSet::setMany(const std::vector<std::pair<std::string, double>>& values
 
 bool MorphSet::apply(const std::string& name, double value)
 {
-  const Channel* ch = channel(name);
+  Channel* ch = channelMut(name);
   if(!ch)
     return false;
-  {
-    const auto   old    = m_weights.find(name);
-    const double before = old == m_weights.end() ? ch->value : old->second;
-    if(value != before)
-      m_version++;
-  }
+  if(value != ch->weight.value_or(ch->value))
+    m_version++;
   if(value == ch->value)
-    m_weights.erase(name);
+    ch->weight.reset();
   else
-    m_weights[name] = value;
+    ch->weight = value;
   if(m_lazy.count(name))
   {
     // what a formula reads at its rest is the channel's own value: only leaving it wants the file
@@ -798,7 +803,6 @@ void MorphSet::removeMeshes(const std::set<int>& gone)
       if(!m_lazy.count(name))
       {
         m_channels.erase(std::remove_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return c.name == name; }), m_channels.end());
-        m_weights.erase(name);
       }
     }
     else
@@ -834,7 +838,6 @@ void MorphSet::removeChannels(const std::vector<std::string>& names)
       }
     m_bindings.erase(n);
     m_lazy.erase(n);
-    m_weights.erase(n);
     m_loading.erase(n);
   }
   m_channels.erase(std::remove_if(m_channels.begin(), m_channels.end(), [&](const Channel& c) { return gone.count(c.name) > 0; }), m_channels.end());

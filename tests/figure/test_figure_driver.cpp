@@ -489,6 +489,32 @@ TEST(FigureDriver, ControllerDrivesAMorphABoneAndTheCorrective)
   EXPECT_NEAR(f->morphs->weightOf("JCM"), 0, 1e-4);
 }
 
+// The driver keeps where each formula's dial and bone are; reordering the channels (a sort puts the
+// moved ones first) or taking one out must not leave it reading another channel's value.
+TEST(FigureDriver, KeepsDrivingAfterTheChannelsAreReorderedOrRemoved)
+{
+  auto f = setup();
+  f->morphs->set("CTRL", 0.75);
+  f->morphs->settled();
+  ASSERT_NEAR(f->morphs->weightOf("Tail"), 0.55, 1e-4);
+  const int before = f->morphs->indexOf("CTRL");
+
+  f->morphs->sort();
+  ASSERT_NE(f->morphs->indexOf("CTRL"), before);
+  f->morphs->set("CTRL", 1);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Tail"), 1, 1e-4);
+  EXPECT_NEAR(f->y(2), 21, 1e-4);
+  const double half = 30 * fv::kDeg / 2;
+  EXPECT_NEAR(f->scene.nodes[f->head].quaternion.x, std::sin(half), 1e-5);
+
+  f->morphs->removeChannels({"Shape"});
+  f->morphs->set("CTRL", 0.5);
+  f->morphs->settled();
+  EXPECT_NEAR(f->morphs->weightOf("Tail"), 0.1, 1e-4);
+  EXPECT_NEAR(f->scene.nodes[f->head].quaternion.x, std::sin(15 * fv::kDeg / 2), 1e-5);
+}
+
 TEST(FigureDriver, AShapeMovesTheJointAndTheSkinRebindsThere)
 {
   auto f = setup();
