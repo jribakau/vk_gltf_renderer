@@ -3085,13 +3085,19 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
   std::set<MeshId>      written;
   std::vector<uint32_t> refits;  // after every upload, behind one barrier
   std::vector<MeshGpu*> refined;  // their positions and normals made from their cages
+  std::optional<fv::timing::Accum> timeSync;  // a frame's, when it has edits
+  if(!meshes.empty())
+    timeSync.emplace("vertex sync");
   for(MeshId id : meshes)
   {
     auto              it     = m_meshes.find(id);
     const MeshRecord* record = scene.mesh(id);
     if(it == m_meshes.end() || !record || it->second.contentRev == record->contentRev)
       continue;
-    MeshGpu&           gpu    = it->second;
+    MeshGpu& gpu = it->second;
+    // each edited mesh's upload and bounds: a refined one sends its cage, an unrefined one its whole
+    // positions and normals and rescans its index lists (the host logs both once a second)
+    fv::timing::Accum  timeMesh(gpu.refine ? "vertex sync: refined mesh" : "vertex sync: unrefined mesh");
     const BufferHandle before = gpu.positions;
     uploadStreams(*record, gpu, true);
     if(gpu.refine)
