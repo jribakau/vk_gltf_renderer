@@ -200,6 +200,17 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
   // (nvvk::BufferCircularAllocator asserts size <= blockSize per subAllocate).
   // Row-strip chunking (linear per-row layout)
   // and works for arbitrarily large mips (e.g. 8K/16K, 16-bpc, HDR32F).
+  // System memory for the staging can run out part way (what a frame stages waits there for the GPU): the
+  // appends after it are left out, and the caller is given the image to let go of once this frame has run,
+  // as the ones made copy into it
+  bool       staged = true;
+  const auto append = [&](VkOffset3D offset, VkExtent3D extent, const VkImageSubresourceLayers& subresource, size_t bytes, const char* data) {
+    if(staged && staging.appendImageSub(resultImage, offset, extent, subresource, bytes, data, resultImage.descriptor.imageLayout) != VK_SUCCESS)
+    {
+      LOGW("Image '%s' (%ux%u): no system memory to stage it; using the default image.\n", name.c_str(), imgSize.width, imgSize.height);
+      staged = false;
+    }
+  };
   auto uploadMipLevel = [&](uint32_t mip, const VkExtent3D& mipExtent, std::span<const char> mipBytes) {
     VkImageSubresourceLayers subresource{};
     subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -223,8 +234,7 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
     // is a safe fall-back for the current asset formats.
     if(mipSize <= kAppendCap || bytesPerRow == 0 || bytesPerRow * height != mipSize)
     {
-      NVVK_CHECK(staging.appendImageSub(resultImage, {0, 0, 0}, mipExtent, subresource, mipSize, mipBytes.data(),
-                                        resultImage.descriptor.imageLayout));
+      append({0, 0, 0}, mipExtent, subresource, mipSize, mipBytes.data());
       return;
     }
 
@@ -241,8 +251,7 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
       // The cap can't hold even a single block row. Fall back to a single append;
       // if the mip still exceeds the cap the underlying allocator will assert, matching
       // the pre-existing behaviour for pathologically wide compressed mips.
-      NVVK_CHECK(staging.appendImageSub(resultImage, {0, 0, 0}, mipExtent, subresource, mipSize, mipBytes.data(),
-                                        resultImage.descriptor.imageLayout));
+      append({0, 0, 0}, mipExtent, subresource, mipSize, mipBytes.data());
       return;
     }
     rowsPerStrip = std::min(rowsPerStrip, height);
@@ -253,8 +262,7 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
       const VkOffset3D offset{0, static_cast<int32_t>(y), 0};
       const VkExtent3D extent{mipExtent.width, stripH, 1};
       const size_t     stripBytes = static_cast<size_t>(stripH) * bytesPerRow;
-      NVVK_CHECK(staging.appendImageSub(resultImage, offset, extent, subresource, stripBytes,
-                                        mipBytes.data() + static_cast<size_t>(y) * bytesPerRow, resultImage.descriptor.imageLayout));
+      append(offset, extent, subresource, stripBytes, mipBytes.data() + static_cast<size_t>(y) * bytesPerRow);
     }
   };
 
@@ -264,7 +272,8 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
   // The image require to generate the mipmaps
   if(mipData.size() == 1 && (canGenerateMipmaps && generateMipmaps))
   {
-    nvvk::cmdGenerateMipmaps(cmd, resultImage.image, imgSize, imageCreateInfo.mipLevels, 1, resultImage.descriptor.imageLayout);
+    if(staged)
+      nvvk::cmdGenerateMipmaps(cmd, resultImage.image, imgSize, imageCreateInfo.mipLevels, 1, resultImage.descriptor.imageLayout);
   }
   else
   {
@@ -293,5 +302,11 @@ bool nvvkgltf::createSampledImage(VkCommandBuffer                       cmd,
     NVVK_DBG_NAME(resultImage.image);
   }
   out = resultImage;
+  if(!staged)
+  {
+    if(outOfMemory)
+      *outOfMemory = true;
+    return false;
+  }
   return true;
 }

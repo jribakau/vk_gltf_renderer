@@ -1055,6 +1055,43 @@ struct FitScene
   }
 };
 
+// A sync decodes and stages so many bytes of textures (decodeBatchBytes), the first one whatever its size; the rest
+// wait for the next syncs, on the default image till then, and all of them come
+TEST(RetainedResidency, TexturesComeABatchOfBytesASync)
+{
+  const char* uris[] = {"chain_1", "chain_2", "chain_3", "chain_4", "chain_5"};
+  for(const uint64_t batch : {chainBytes(64) * 5 / 2, uint64_t(1)})
+  {
+    SCOPED_TRACE(batch);
+    RetainedScene          scene;
+    std::vector<TextureId> textures;
+    auto                   table = std::make_shared<TextureTable>();
+    for(const char* uri : uris)
+    {
+      textures.push_back(scene.addTexture(chainTexture(uri, 64)));
+      table->push_back({textures.back(), {}});
+    }
+    for(int i = 0; i < int(textures.size()); i++)
+      drawn(scene, uris[i], scene.addMesh(gridMesh(2, 0.f)), {coloured(scene, table, i)});
+    FakeGpuBackend gpu(2);
+    Residency      residency(gpu, {.decodeBatchBytes = batch});
+    residency.replace(scene);
+    const size_t first = batch > 1 ? 2 : 1;
+    EXPECT_EQ(gpu.imageBatches(), std::vector<size_t>{first});
+    EXPECT_EQ(residency.queuedDecodes(), textures.size() - first);
+    EXPECT_FALSE(residency.image(textures.back(), true)) << "the last waits";
+    for(int frame = 0; frame < 8 && residency.queuedDecodes() > 0; frame++)
+    {
+      gpu.beginFrame();
+      residency.sync(scene);
+    }
+    EXPECT_EQ(gpu.imageBatches(), batch > 1 ? (std::vector<size_t>{2, 2, 1}) : (std::vector<size_t>{1, 1, 1, 1, 1}));
+    for(const TextureId t : textures)
+      EXPECT_TRUE(residency.image(t, true));
+    expectClean(scene, residency, gpu);
+  }
+}
+
 // Max texture size: every image is decoded under it, and a change takes effect on what is decoded next
 TEST(RetainedResidency, MaxTextureSizeLimitsWhatIsDecoded)
 {

@@ -469,7 +469,12 @@ void VulkanGpuBackend::upload(BufferHandle dst, uint64_t offset, std::span<const
   if(bytes.empty())
     return;
   flushBuilds();  // the appended uploads always precede the queued builds (call order)
-  NVVK_CHECK(appendBufferChunked(*m_info.staging, it->second.buffer, size_t(offset), bytes));
+  // no system memory to stage it: the mesh it is for fails as one whose buffers found none does, and is tried again
+  if(appendBufferChunked(*m_info.staging, it->second.buffer, size_t(offset), bytes) != VK_SUCCESS)
+  {
+    LOGW("VulkanGpuBackend::upload: no system memory to stage %zu bytes\n", bytes.size());
+    m_allocationFailed = true;
+  }
   m_uploadsPending = true;
 }
 
@@ -587,7 +592,12 @@ ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkg
   nvvk::Image image;
   if(!nvvkgltf::createSampledImage(m_cmd, *m_info.staging, *m_info.alloc, m_info.physicalDevice, m_info.generateMipmaps,
                                    loaded.format, loaded.size, loaded.mipData, loaded.componentMapping, source.name, image, &info.outOfMemory))
+  {
+    // its staging found no system memory part way: what was staged copies into it in this frame
+    if(image.image)
+      retire([alloc = m_info.alloc, image]() mutable { alloc->destroyImage(image); });
     return {};
+  }
   m_uploadsPending = false;
   m_memory.track(kMemImages, image.allocation);
   info.width         = loaded.size.width;

@@ -34,7 +34,9 @@ namespace nvvkgltf {
 // strips under the uploader's block size), the rest of its chain generated when there is one level,
 // `generateMipmaps` is set and the format can be blitted, and left in SHADER_READ_ONLY_OPTIMAL.
 // False, with nothing created, for an empty image, a format the device can't sample, or GPU memory
-// that can't hold it (`outOfMemory` set then).
+// that can't hold it (`outOfMemory` set then). False with `outOfMemory` set and `out` made when system
+// memory for the staging ran out part way: what was staged is recorded into `cmd`, so the caller lets
+// go of `out` only once that has run.
 bool createSampledImage(VkCommandBuffer                       cmd,
                         nvvk::CmdUploaderInterface&           staging,
                         nvvk::ResourceAllocator&              alloc,

@@ -113,6 +113,10 @@ struct ResidencyOptions
   // The triangles of what is new made resident in one sync; the first always comes, however large. Every BVH a sync
   // asks for is built in the frame's one submission, and a few large hairs at once come near what a driver allows one.
   uint64_t arrivalTriangles = 16'000'000;
+  // The bytes of textures decoded and staged in one sync; the first always comes, however large, and the rest wait for
+  // the next. What a sync stages stays in system memory, beside its decoded texels, until the GPU has copied it: a
+  // scene's textures all at once (an environment's 267 at 8192, some 9 GB of each) ran system memory out.
+  uint64_t decodeBatchBytes = 512ull << 20;
   // A worn item's step down in detail isn't worth a new record for less than this: a tear, an eyelash
   uint64_t leastDetailStep = uint64_t(32) << 20;
   // blasRefitsBeforeRebuild: a BLAS refitted this many times since its build is built again in place
@@ -325,6 +329,8 @@ public:
     uint32_t refused = 0;  // those GPU memory could not hold, left on the default image
   };
   ImageCounts imageCounts() const { return m_imageCounts; }
+  // the images waiting to be decoded, a sync's batch at most at a time (ResidencyOptions::decodeBatchBytes)
+  size_t queuedDecodes() const { return m_decodeQueue.size(); }
   // The scene features the live shader variant has compiled in (the path tracer's optimal build);
   // none: every feature. A replace writes every material whatever these are.
   void                                            setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features);

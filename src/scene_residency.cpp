@@ -2001,6 +2001,36 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     else if(!q.moveOnly)
       decoding.push_back(std::move(q));
   }
+  // What one sync decodes and stages is bounded (ResidencyOptions::decodeBatchBytes), the rest waiting in the queue for
+  // the next: by its chain's levels from the first kept where the header says, else its texels as given or as sized
+  const auto stagedBytes = [&](const ImageSource& source) -> uint64_t {
+    if(const std::optional<ImageChain> chain = m_gpu.imageChain(source))
+    {
+      uint64_t bytes = 0;
+      for(size_t l = levelsToSkip(chain->width, chain->height, uint32_t(chain->levelBytes.size()), source.maxExtent); l < chain->levelBytes.size(); l++)
+        bytes += chain->levelBytes[l];
+      return bytes;
+    }
+    if(!source.pixels.empty())
+      return uint64_t(source.pixels.size()) * 4 / 3;
+    if(source.width > 0 && source.height > 0)
+      return uint64_t(source.width) * uint64_t(source.height) * 4 * 4 / 3;
+    return uint64_t(64) << 20;  // nothing says: about a 4096 texture's
+  };
+  std::vector<QueuedDecode> later;
+  {
+    uint64_t staged = 0;
+    size_t   take   = 0;
+    for(; take < decoding.size(); take++)
+    {
+      const uint64_t bytes = stagedBytes(decoding[take].source);
+      if(take > 0 && staged + bytes > m_options.decodeBatchBytes)
+        break;
+      staged += bytes;
+    }
+    later.assign(std::make_move_iterator(decoding.begin() + ptrdiff_t(take)), std::make_move_iterator(decoding.end()));
+    decoding.resize(take);
+  }
   std::vector<ImageSource> sources;
   for(const QueuedDecode& q : decoding)
     sources.push_back(q.source);
@@ -2011,7 +2041,7 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
   m_imageCounts.decoded += uint32_t(sources.size());
   for(size_t i = 0; i < decoding.size(); i++)
     install(decoding[i], images[i], infos[i]);
-  m_decodeQueue.clear();
+  m_decodeQueue = std::move(later);
   for(const auto& [slotKey, use] : m_textureSlots)
     if(const ImageKey image{std::get<0>(slotKey), std::get<1>(slotKey)}; written.count(image))
       m_gpu.writeTextureDescriptor(use.slot, m_images.at(image).image);
