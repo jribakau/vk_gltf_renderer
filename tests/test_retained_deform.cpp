@@ -587,6 +587,58 @@ TEST(RetainedDeform, ShortOfMemoryItSettlesBeforeATextureComesDown)
   expectClean(rig.scene, residency, gpu);
 }
 
+// A settled mesh's BVH built again to be compacted, as another mesh comes in, at every memory limit from none to
+// room for both: whatever finds no memory, no TLAS is left pointing at a BLAS once that is destroyed (the lost
+// device of 11-03: the path tracer read a BLAS 148 frames after it went)
+TEST(RetainedDeform, NoTlasPointsAtABlasLetGoOfWhateverFindsNoMemory)
+{
+  const auto addStatic = [](RibbonRig& rig) {
+    MeshInstance instance;
+    instance.parts.push_back({rig.scene.addMesh(skinnedGrid(false)), {rig.material, rig.material}});  // its two submeshes
+    rig.scene.setMeshInstance(rig.scene.createEntity("plate", {}, rig.root), instance);
+  };
+  uint64_t room = 0;
+  {
+    RibbonRig      rig;
+    FakeGpuBackend gpu;
+    Residency      residency(gpu, {.settleQuietFrames = 0});
+    residency.replace(rig.scene);
+    addStatic(rig);
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+    drain(gpu);
+    expectClean(rig.scene, residency, gpu, "with room: ");
+    room = gpu.liveBytes();
+  }
+  for(uint64_t limit = 0; limit <= room * 2; limit += std::max<uint64_t>(room / 41, 1))
+  {
+    RibbonRig      rig;
+    FakeGpuBackend gpu;
+    Residency      residency(gpu, {.settleQuietFrames = 0});
+    residency.replace(rig.scene);
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+    residency.settle(rig.mesh);  // its BVH is built again in the next sync, and the one it had let go of
+    addStatic(rig);              // with another mesh coming in that sync
+    gpu.setMemoryLimit(limit);
+    for(int f = 0; f < 8; f++)
+    {
+      gpu.beginFrame();
+      residency.retryParked();
+      residency.sync(rig.scene);
+    }
+    gpu.setMemoryLimit(std::nullopt);
+    for(int f = 0; f < 4; f++)
+    {
+      gpu.beginFrame();
+      residency.retryParked();
+      residency.sync(rig.scene);
+    }
+    drain(gpu);
+    expectClean(rig.scene, residency, gpu, "at a limit of " + std::to_string(limit) + " of " + std::to_string(room) + ": ");
+  }
+}
+
 // A wear doesn't skin every other figure again: where a drawer's matrices go says nothing of what it holds
 TEST(RetainedDeform, ANewDrawerRunsAloneOfTheOthers)
 {

@@ -29,6 +29,7 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <unordered_set>
 
 #include <glm/gtc/packing.hpp>
 
@@ -219,6 +220,12 @@ void Residency::clear()
   m_dirtyPrevPrims.clear();
   m_dirtyPrevNodes.clear();
   m_movedLast.clear();
+  // the TLAS before the BLASes it points at
+  retireAccel(m_tlas);
+  m_tlasRefs->rows.clear();
+  m_tlasRefs->indexed = false;
+  m_tlasRefs->dropped.clear();
+  retireHeld();
   for(const std::optional<Prim>& p : m_prims)
     if(p)
     {
@@ -257,7 +264,6 @@ void Residency::clear()
   m_emissiveStale                           = false;
   m_shadeMaterials.clear();
   m_descDirty = false;
-  retireAccel(m_tlas);
   m_meshes.clear();
   m_prims.clear();
   m_instances.clear();
@@ -302,16 +308,48 @@ void Residency::retireBuffer(BufferHandle buffer)
   });
 }
 
-void Residency::retireAccel(AccelHandle accel)
+void Residency::retireAccel(AccelHandle accel, const char* why)
 {
   if(!accel)
     return;
   const uint64_t bytes = m_gpu.accelBytes(accel);
   *m_retiring += bytes;
-  m_gpu.retire([&gpu = m_gpu, accel, retiring = m_retiring, bytes] {
+  m_gpu.retire([&gpu = m_gpu, accel, retiring = m_retiring, bytes, refs = m_tlasRefs, why, retired = m_gpu.frame()] {
+    // the frames in flight trace the TLAS as built when they were recorded: one built after the retire may still
+    // point at it, and the one last built does
+    const uint32_t* row     = refs->rowOf(accel.value);
+    const auto      dropped = refs->dropped.find(accel.value);
+    if(row || (dropped != refs->dropped.end() && dropped->second > retired))
+    {
+      if(refs->holds[accel.value]++ == 0)
+      {
+        if(row)
+          LOGE("[gpu] A BLAS (%.1f MB) let go of in frame %llu (%s) is still in the TLAS built in frame %llu, at row %u: it "
+               "is kept until a TLAS is built without it\n",
+               double(bytes) / double(1 << 20), (unsigned long long)retired, why, (unsigned long long)refs->frame, *row);
+        else
+          LOGE("[gpu] A BLAS (%.1f MB) let go of in frame %llu (%s) was in the TLAS until frame %llu: it is kept a frame "
+               "cycle past that\n",
+               double(bytes) / double(1 << 20), (unsigned long long)retired, why, (unsigned long long)dropped->second);
+      }
+      refs->held.push_back({accel, bytes, why});
+      return;
+    }
+    if(dropped != refs->dropped.end())
+      refs->dropped.erase(dropped);
+    refs->holds.erase(accel.value);
     gpu.destroyAccel(accel);
     *retiring -= bytes;
   });
+}
+
+void Residency::retireHeld()
+{
+  for(const TlasRefs::Held& h : std::exchange(m_tlasRefs->held, {}))
+  {
+    *m_retiring -= h.bytes;
+    retireAccel(h.accel, h.why);
+  }
 }
 
 void Residency::retireImage(ImageHandle image, uint64_t bytes)
@@ -387,7 +425,7 @@ void Residency::refit(Prim& prim)
     return;
   }
   // refitted enough, out of its shape, or built for compaction: its vertices move after all
-  retireAccel(prim.blas);
+  retireAccel(prim.blas, "built again: refitted enough, out of its shape, or built for compaction");
   prim.blas        = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowUpdate);
   prim.refits      = 0;
   prim.outgrown    = false;
@@ -416,7 +454,7 @@ bool Residency::takeCompacted()
     it              = m_compacting.erase(it);
     if(copy == prim.blas)
       continue;  // kept as built
-    retireAccel(prim.blas);
+    retireAccel(prim.blas, "compacted");
     prim.blas = copy;
     any       = true;
   }
@@ -874,7 +912,7 @@ void Residency::releasePrim(uint32_t slot)
   if(--prim.users > 0)
     return;
   retireBuffer(prim.indices);
-  retireAccel(prim.blas);
+  retireAccel(prim.blas, "its prim released");
   unlinkMicromap(prim);  // retired after the BLAS
   if(!prim.drawer.isNone())
   {
@@ -3178,7 +3216,7 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
       fitBounds(prim, *record);
       if(moved || !prim.blas)
       {
-        retireAccel(prim.blas);
+        retireAccel(prim.blas, "its mesh's buffers moved");
         prim.blas = {};  // built with the others in syncRows
       }
       else
@@ -3245,8 +3283,9 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   if(m_allNodes)
     for(uint32_t s = 0; s < m_instances.size(); s++)
       nodes.insert(s);
-  m_allNodes    = false;
-  bool tlasRows = !nodes.empty();
+  m_allNodes = false;
+  // (a BLAS held for the TLAS that pointed at it: one built without it, so that it can go)
+  bool tlasRows = !nodes.empty() || !m_tlasRefs->held.empty();
   for(const DrawItem& item : items)
   {
     const uint32_t slot = m_slotOf.at({item.entity, item.mesh, item.submesh, item.copy});
@@ -3305,16 +3344,21 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
     if(const std::optional<int64_t> room = m_gpu.imageHeadroom(); room && *room < int64_t(bytes * 2))
       break;  // (and its scratch)
     m_gpu.barrier(GpuBarrier::eTransferToBuild);
-    retireAccel(prim.blas);
-    prim.blas        = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowCompaction);
+    const AccelHandle built = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowCompaction);
+    if(m_gpu.takeAllocationFailed())
+    {
+      // no memory for it beside the one it has, which draws on: tried again in a later sync
+      retireAccel(built, "found no memory to be built again compacted");
+      break;
+    }
+    retireAccel(prim.blas, "settled: built again to be compacted");
+    prim.blas        = built;
     prim.compactable = prim.compacting = true;
     prim.refits      = 0;
     prim.outgrown    = false;
     m_compacting.insert(p);
     it      = m_settleBuilds.erase(it);
     rebuilt = true;
-    if(m_gpu.takeAllocationFailed())
-      m_failedMeshes.insert(prim.mesh);
   }
   tlasRows = tlasRows || rebuilt;
   for(uint32_t p : builds)
@@ -3413,6 +3457,21 @@ void Residency::buildTlas()
       row.blas = m_prims[inst->prim]->blas;
   }
   m_gpu.buildTlas(m_tlas, rows, TlasMode::eBuild);
+  // what it points at now, and since when each it pointed at before no longer is (a drag's builds point at the same)
+  std::vector<uint64_t> now(rows.size());
+  for(size_t s = 0; s < rows.size(); s++)
+    now[s] = rows[s].blas.value;
+  if(now != m_tlasRefs->rows)
+  {
+    const std::unordered_set<uint64_t> kept(now.begin(), now.end());
+    for(uint64_t blas : m_tlasRefs->rows)
+      if(blas && !kept.count(blas))
+        m_tlasRefs->dropped[blas] = m_gpu.frame();
+    m_tlasRefs->rows    = std::move(now);
+    m_tlasRefs->indexed = false;
+  }
+  m_tlasRefs->frame = m_gpu.frame();
+  retireHeld();
 }
 
 void Residency::writeSceneDesc()

@@ -76,6 +76,7 @@
 #include <map>
 #include <optional>
 #include <memory>
+#include <unordered_map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -620,7 +621,8 @@ private:
   bool     emits(const Instance& inst) const;
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
-  void     retireAccel(AccelHandle accel);
+  // `why`: what let go of it, for the log should the last TLAS built still point at it once it is destroyed
+  void     retireAccel(AccelHandle accel, const char* why = "");
   void     retireImage(ImageHandle image, uint64_t bytes);
   // the prim's BLAS built, for compaction when it is static and blasCompactStatic is on
   void build(Prim& prim);
@@ -695,6 +697,42 @@ private:
   bool             m_parkedChanged = false;  // since the last sync
   // the bytes retired and not freed yet; shared with the closures, which may outlive a clear()
   std::shared_ptr<uint64_t> m_retiring = std::make_shared<uint64_t>(0);
+  // What the TLAS points at, so that a BLAS goes only once no frame can trace a TLAS that points at it: one
+  // retired while the TLAS last built still does, or built without it only after the retire, is held instead,
+  // and retired again after the next TLAS build. Shared with the retire closures likewise.
+  struct TlasRefs
+  {
+    struct Held
+    {
+      AccelHandle accel;
+      uint64_t    bytes = 0;
+      const char* why   = "";
+    };
+    std::vector<uint64_t>                  rows;       // the BLAS each row of the last TLAS built points at (0: none)
+    uint64_t                               frame = 0;  // that build's
+    std::unordered_map<uint64_t, uint64_t> dropped;    // the frame of the first build without each, until it goes
+    std::vector<Held>                      held;
+    std::unordered_map<uint64_t, uint32_t> holds;      // how often each was held, to say so once
+    // the row of the last TLAS built that points at `blas`, if any (indexed when first asked after a build)
+    const uint32_t* rowOf(uint64_t blas)
+    {
+      if(!indexed)
+      {
+        index.clear();
+        for(size_t r = 0; r < rows.size(); r++)
+          if(rows[r])
+            index.emplace(rows[r], uint32_t(r));
+        indexed = true;
+      }
+      const auto it = index.find(blas);
+      return it == index.end() ? nullptr : &it->second;
+    }
+    std::unordered_map<uint64_t, uint32_t> index;
+    bool                                   indexed = false;
+  };
+  std::shared_ptr<TlasRefs> m_tlasRefs = std::make_shared<TlasRefs>();
+  // the held BLASes retired again, the TLAS built since
+  void retireHeld();
 
   // shared with the retire closures that give slots back, which may outlive a clear()
   std::shared_ptr<nvutils::IDPool> m_instancePool, m_primPool, m_materialPool;

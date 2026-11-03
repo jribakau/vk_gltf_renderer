@@ -73,6 +73,16 @@ void FakeGpuBackend::beginFrame()
   m_retires.erase(split, m_retires.end());
   for(Retire& r : ready)
     r.closure();
+  // what this frame may trace: a TLAS still here that points at a BLAS gone (one let go of with no TLAS built
+  // without it since, where the TLAS didn't go with it)
+  for(const auto& [t, tlas] : m_tlases)
+    for(size_t r = 0; r < tlas.rows.size(); r++)
+      if(tlas.rows[r].blas && !m_blases.count(tlas.rows[r].blas.value))
+      {
+        error("beginFrame: TLAS " + std::to_string(t) + " (built in frame " + std::to_string(tlas.builtFrame) + ") points from row "
+              + std::to_string(r) + " at BLAS " + std::to_string(tlas.rows[r].blas.value) + ", destroyed");
+        break;
+      }
 }
 
 void FakeGpuBackend::retire(std::function<void()> closure)
