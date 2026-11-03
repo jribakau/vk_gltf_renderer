@@ -176,6 +176,28 @@ bool hairCutHere(bool fibre, int hairBounces)
          && hairBounces + 1 >= abs(pushConst.hairCutDlss);
 }
 
+#if GLTF_USE_VOLUME
+// A path inside a medium leaves it through a back face; whether meeting the front face of a surface of
+// `material` takes it out too. In a medium that scatters, a walk through skin, such a face is an opening
+// the walk escaped through (an eye socket, a mouth) or what sits in one (an eyeball, a tooth): the
+// medium ends there. In one that only absorbs (glass, a liquid: closed solids) it is something inside
+// the medium, which the path meets and leaves in it, so that its light sample's shadow ray and the path
+// from it go on through the medium. A surface that bounds a medium of its own takes the path out of
+// this one either way, so that its refraction enters that one (the path is in one medium at a time).
+// `shadedThin`: scatter materials are shaded as the thin preview here, which has no inside to enter.
+bool frontFaceLeavesMedium(VolumeMedium medium, GltfShadeMaterial* material, bool shadedThin)
+{
+  bool scatters = false;
+  bool thin     = false;
+#if GLTF_USE_SCATTER
+  const float3 sigmaS = float3(medium.scatterCoefficient);
+  scatters            = max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
+  thin                = shadedThin && material.scatterStrengthFactor > 0.0F;
+#endif
+  return scatters || (!thin && surfaceBoundsMedium(material));
+}
+#endif
+
 PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout uint seed, inout PathTracerState pt, inout BounceScratch bounce)
 {
   {
@@ -397,11 +419,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       materialIndex = max(0, renderNode.materialID);
 
 #if GLTF_USE_VOLUME
-      // A path inside a medium can only leave it through a back face. Meeting a front face means
-      // the mesh had an opening (an eye socket, a mouth on a figure) and the walk escaped through
-      // it: the medium ended at the opening, so the path continues outside, with no transmittance
-      // charged for the way here and this surface shaded from its front.
-      if(ptIsInside(pt) && hit.frontFace)
+      // A front face met inside a medium (frontFaceLeavesMedium): where it ends the medium, the path
+      // continues outside it, this surface shaded from its front; the segment up to here was charged
+      // above either way. Where it doesn't, the medium stays: the absorbing box's panel in
+      // volume_transmittance came out 61% bright when it was dropped, its light's leg uncharged.
+      if(ptIsInside(pt) && hit.frontFace && frontFaceLeavesMedium(pt.volumeMedium, materials + materialIndex, simplifyScatter))
       {
         pt.isInside     = false;
         pt.volumeMedium = {};
@@ -1623,20 +1645,8 @@ void probeCameraMedium(IRaytracer raytracer)
     float3              barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
     HitState hit = getHitState(prim, barys, node.worldToObject, node.objectToWorld, payload.primitiveID, ray.Direction);
 
-    // A boundary the path would cross into a medium through (see the pt.isInside toggle). The mesh
-    // bounds the medium, so the material's factors decide, not their textured values at the hit: a
-    // texel with no transmission (a logo on glass) is still the medium's wall, and passing it would
-    // take the far wall, met from behind, for the camera being inside (upstream 10f2de0). Only the
-    // transmissions this shader evaluates count, as in evaluateMaterial().
-    const GltfShadeMaterial factors      = materials[max(0, node.materialID)];
-    bool                    transmissive = false;
-#if GLTF_USE_TRANSMISSION
-    transmissive = transmissive || factors.transmissionFactor > 0.0F;
-#endif
-#if GLTF_USE_DIFFUSE_TRANSMISSION
-    transmissive = transmissive || factors.diffuseTransmissionFactor > 0.0F;
-#endif
-    if(factors.thicknessFactor > 0.0F && transmissive)
+    // A boundary the path would cross into a medium through
+    if(surfaceBoundsMedium(materials + max(0, node.materialID)))
     {
       if(!hit.frontFace)
       {

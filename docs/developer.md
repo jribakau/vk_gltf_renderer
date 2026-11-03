@@ -381,11 +381,15 @@ Some things about the transport are worth knowing before touching it:
   records that medium for `pathTrace()` to start in. Without it, a camera inside a fog sees no fog
   in front of it and fog behind the far wall.
 
-A medium is bounded by its mesh, and a path leaves it only through a back face. When a path that
-is inside meets a front face instead, the mesh had an opening and the walk escaped through it
-(a figure's eye sockets or mouth); the bounce loop then treats the medium as having ended at the
-opening — the inside state is cleared before the hit is shaded and no transmittance is charged for
-the segment — instead of darkening everything the path meets afterwards.
+A medium is bounded by its mesh, and a path leaves it through a back face. What a front face met
+from inside means depends on the medium (`frontFaceLeavesMedium` in `gltf_pathtrace.slang`). In one
+that scatters, a walk through skin, the mesh had an opening the walk escaped through (a figure's eye
+sockets or mouth) or reached what sits in one (an eyeball, a tooth): the medium ends there, and the
+inside state is cleared before the hit is shaded, instead of darkening everything the path meets
+afterwards. In one that only absorbs (glass, a liquid) the surface is inside the medium, and the path
+stays in it, its shadow rays too. A surface that bounds a medium of its own ends the current one
+either way, so that its refraction enters the new one. The segment up to the hit is charged first in
+every case.
 
 ### `FV_materials_detail`: a tiled detail layer
 

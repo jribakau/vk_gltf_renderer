@@ -485,6 +485,24 @@ float3 rayIntoEyeChamber(float3 dir, float3 N, HitState hit, GltfShadeMaterial* 
   return dir;
 }
 
+#if GLTF_USE_VOLUME
+// Whether a surface of `material` bounds a medium a path crosses into (the pt.isInside toggle): a
+// thickness, and a transmission this shader evaluates (as in evaluateMaterial). The factors decide, not
+// their textured values at a hit: a texel with no transmission (a logo on glass) is still the medium's
+// wall, and passing it would take the far wall, met from behind, for the inside (upstream 10f2de0).
+bool surfaceBoundsMedium(GltfShadeMaterial* material)
+{
+  bool transmissive = false;
+#if GLTF_USE_TRANSMISSION
+  transmissive = transmissive || material.transmissionFactor > 0.0F;
+#endif
+#if GLTF_USE_DIFFUSE_TRANSMISSION
+  transmissive = transmissive || material.diffuseTransmissionFactor > 0.0F;
+#endif
+  return material.thicknessFactor > 0.0F && transmissive;
+}
+#endif
+
 // Beer-Lambert transmittance of a shadow-ray segment: every segment travelled inside a medium,
 // whatever ends it -- a boundary, another surface, or the light itself.
 float3 shadowMediumTransmittance(bool isInside, float3 extinction, float segmentLength)
