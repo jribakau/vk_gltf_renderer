@@ -192,7 +192,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
 
 namespace {
 
-constexpr uint64_t kSpirvCacheVersion   = 3;
+constexpr uint64_t kSpirvCacheVersion   = 4;  // 4: the profile and capabilities hashed by name
 constexpr size_t   kMaxCachedSpirvBytes = 64ULL * 1024 * 1024;
 // Keys kept in shaders/ after pruning, least recently used dropped first. Each key is one
 // variant (DLSS, wireframe, optimal-shader feature set, ...) of several MB.
@@ -285,6 +285,10 @@ uint64_t spirvCacheKey(nvslang::SlangCompiler& compiler)
   }
   for(const slang::CompilerOptionEntry& option : compiler.options())
     hashOption(hash, option);
+  // the profile and capabilities by name: the compiler looks them up only when it compiles
+  hash = fnv1a(hash, std::string_view(compiler.profile()));
+  for(const std::string& capability : compiler.capabilities())
+    hash = fnv1a(hash, std::string_view(capability));
   for(const slang::TargetDesc& target : compiler.targets())
   {
     const int format = static_cast<int>(target.format);
@@ -1565,17 +1569,19 @@ bool PathTracer::buildsOffTheFrame(Resources& resources, const PendingCompileWor
 void PathTracer::startVariantJob(Resources& resources, const VariantKey& key)
 {
   VariantCompileJob job{
-      .key         = key,
-      .macros      = variantMacros(key),
-      .searchPaths = resources.slangCompiler.searchPaths(),
-      .targets     = resources.slangCompiler.targets(),
-      .options     = resources.slangCompiler.options(),
+      .key          = key,
+      .macros       = variantMacros(key),
+      .searchPaths  = resources.slangCompiler.searchPaths(),
+      .targets      = resources.slangCompiler.targets(),
+      .options      = resources.slangCompiler.options(),
+      .profile      = resources.slangCompiler.profile(),
+      .capabilities = resources.slangCompiler.capabilities(),
       // the technique of the view the variant draws (a sibling is built for the other view)
-      .rayQuery    = m_supportRayQuery && (key.dlss ? m_techniqueDlss : m_techniqueStill) == RenderTechnique::RayQuery,
-      .useSER      = m_useSER && m_supportSER,
-      .layout      = m_pipelineLayout,
-      .rtxFlags    = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats),
-      .rqFlags     = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u,
+      .rayQuery     = m_supportRayQuery && (key.dlss ? m_techniqueDlss : m_techniqueStill) == RenderTechnique::RayQuery,
+      .useSER       = m_useSER && m_supportSER,
+      .layout       = m_pipelineLayout,
+      .rtxFlags     = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats),
+      .rqFlags      = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u,
   };
   VariantKey live;
   {
@@ -1592,9 +1598,12 @@ PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
 {
   const ShaderWarmScope  working;  // /stats says so: behind the view, like the warm-up
   const auto             start = std::chrono::steady_clock::now();
-  nvslang::SlangCompiler compiler;  // a global session of its own: the application thread's is not shared
+  nvslang::SlangCompiler compiler;  // a global session of its own, made if it compiles: the application thread's is not shared
   compiler.targets() = job.targets;
   compiler.options() = job.options;
+  compiler.setProfile(job.profile.c_str());
+  for(const std::string& capability : job.capabilities)
+    compiler.addCapability(capability.c_str());
   compiler.addSearchPaths(job.searchPaths);
   for(const auto& [name, value] : job.macros)
     compiler.addMacro({name.c_str(), value.c_str()});

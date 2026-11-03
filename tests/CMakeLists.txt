@@ -151,6 +151,8 @@ set(TEST_SOURCES
     test_hit_signal.cpp
     # A shader variant built off the application thread, with a fake compiler (header only)
     test_variant_compile_job.cpp
+    # nvslang's compiler: no global session until it compiles, names looked up then
+    test_slang_compiler.cpp
     # The tlasPolicy setting: when a TLAS sync builds rather than updates (header only)
     # What a selected node puts in selectedRenderNodes, whether or not the UI pass runs (header only)
     # The retained scene's GPU seam without a GPU (rs::GpuBackend): the fake's own tests

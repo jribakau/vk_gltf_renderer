@@ -331,6 +331,8 @@ public:
     std::vector<std::filesystem::path>               searchPaths;
     std::vector<slang::TargetDesc>                   targets;
     std::vector<slang::CompilerOptionEntry>          options;
+    std::string                                      profile;       // by name, as the compiler keeps them
+    std::vector<std::string>                         capabilities;  // until it compiles
     bool                                             rayQuery = false;
     bool                                             useSER   = false;
     VkPipelineLayout      layout   = VK_NULL_HANDLE;  // the path tracer's: a job is discarded before it goes
