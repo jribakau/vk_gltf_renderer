@@ -961,6 +961,36 @@ TEST(FigureMorphSet, AControllerMovesTheItemsThatHoldWhatItDrives)
   EXPECT_TRUE(w.set.itemsMoving("Natural").empty());
 }
 
+// Asked for many dials at once (the panel's whole list), each is told what it would be alone: the items
+// holding its own copy or binding, or a driven dial's, an item of several meshes once, in the order the
+// items came, past 64 worn meshes too.
+TEST(FigureMorphSet, ManyDialsAtOnceAreToldTheItemsEachMoves)
+{
+  WornItemSet w;
+  for(const char* name : {"Pupils", "Natural", "Curl", "Other"})
+    w.set.addLazy(name, emptyFile());
+  w.set.addTarget("Bound", 1, w.copy);
+  w.set.addFollower(holdingItem("Pupils", w.copy));
+  w.set.addFollower(holdingItem("Pupils", w.copy));  // the same item's second mesh
+  for(int i = 0; i < 70; i++)
+  {
+    fv::morph::Follower f = holdingItem(i == 66 ? "Curl" : "nothing", w.copy);
+    f.mesh                = 2;  // not the one "Bound" binds
+    f.label               = "Item " + std::to_string(i);
+    w.set.addFollower(std::move(f));
+  }
+  fv::morph::Reach natural;
+  natural.drives = {"Curl", "Bound"};
+  w.set.setReach("Natural", natural);
+
+  using Items = std::vector<std::string>;
+  const std::vector<std::string> names{"Pupils", "Natural", "Curl", "Other", "Bound", "Natural", "no such dial"};
+  const std::vector<Items>       want{{"Eyes"}, {"Eyes", "Item 66"}, {"Item 66"}, {}, {"Eyes"}, {"Eyes", "Item 66"}, {}};
+  EXPECT_EQ(w.set.itemsMoving(names), want);
+  for(size_t i = 0; i < names.size(); i++)
+    EXPECT_EQ(w.set.itemsMoving(names[i]), want[i]) << names[i];
+}
+
 // An item's binding to a dial doesn't make the dial the item's: with it taken off, the dial, whose own
 // file was empty, stays for the next item, and a listing of the name makes no second one.
 TEST(FigureMorphSet, AnEmptyDialOutlivesAnItemBoundToIt)

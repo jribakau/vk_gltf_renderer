@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <regex>
+#include <string_view>
 
 #include <figure/jobs/pool.hpp>
 
@@ -195,17 +196,55 @@ std::set<int> MorphSet::meshesOf(const std::string& name) const
 
 std::vector<std::string> MorphSet::itemsMoving(const std::string& name) const
 {
-  std::vector<std::string> out;
-  const Channel*           ch = channel(name);
-  for(const auto& st : m_followers)
+  return std::move(itemsMoving(std::vector<std::string>{name}).front());
+}
+
+std::vector<std::vector<std::string>> MorphSet::itemsMoving(const std::vector<std::string>& names) const
+{
+  // which followers hold a morph, a bit each, `words` 64-bit words a morph: its binding on the
+  // follower's mesh or the follower's own copy of it. Worked out the first time a morph is asked of.
+  const size_t                                n     = m_followers.size();
+  const size_t                                words = (n + 63) / 64;
+  std::vector<uint64_t>                       bits;
+  std::unordered_map<std::string_view, size_t> at;  // a morph -> its first word in `bits`
+  const auto                                  holders = [&](const std::string& morph) {
+    if(const auto it = at.find(morph); it != at.end())
+      return it->second;
+    const size_t first = bits.size();
+    bits.resize(first + words, 0);
+    const auto bound = m_bindings.find(morph);
+    for(size_t i = 0; i < n; i++)
+    {
+      const Follower& f     = m_followers[i]->f;
+      const bool      binds = bound != m_bindings.end()
+                         && std::any_of(bound->second.begin(), bound->second.end(), [&](const Binding& b) { return b.mesh == f.mesh; });
+      if(binds || (f.hasOwn && f.hasOwn(morph)))
+        bits[first + i / 64] |= uint64_t(1) << (i % 64);
+    }
+    at.emplace(morph, first);
+    return first;
+  };
+  std::vector<std::vector<std::string>> out(names.size());
+  std::vector<uint64_t>                 moves(words);
+  for(size_t k = 0; k < names.size(); k++)
   {
-    const Follower& f = st->f;
-    // an item of several meshes follows once for each
-    if(std::find(out.begin(), out.end(), f.label) != out.end())
-      continue;
-    const auto holds = [&](const std::string& dial) { return meshesOf(dial).count(f.mesh) || (f.hasOwn && f.hasOwn(dial)); };
-    if(holds(name) || (ch && ch->reach && std::any_of(ch->reach->drives.begin(), ch->reach->drives.end(), holds)))
-      out.push_back(f.label);
+    std::fill(moves.begin(), moves.end(), 0);
+    const auto add = [&](const std::string& morph) {
+      const size_t first = holders(morph);
+      for(size_t w = 0; w < words; w++)
+        moves[w] |= bits[first + w];
+    };
+    add(names[k]);
+    if(const Channel* ch = channel(names[k]); ch && ch->reach)
+      for(const std::string& driven : ch->reach->drives)
+        add(driven);
+    for(size_t i = 0; i < n; i++)
+    {
+      // an item of several meshes follows once for each
+      const std::string& label = m_followers[i]->f.label;
+      if((moves[i / 64] >> (i % 64) & 1) && std::find(out[k].begin(), out[k].end(), label) == out[k].end())
+        out[k].push_back(label);
+    }
   }
   return out;
 }

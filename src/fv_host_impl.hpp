@@ -74,6 +74,7 @@
 #include <figure/dson/material_preset.hpp>
 #include <figure/dson/presets.hpp>
 #include <figure/figure.hpp>
+#include <figure/morph/morph_set.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
 #include <figure/gltf/export_glb.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -120,6 +121,34 @@ struct HostSettings
   bool originalTextures = false;  // the source images, not the BC7 cache: only what the renderer cannot read is cooked
 };
 
+// A shown dial as the morph topic lists it (publishMorphs): what the panel is told of it, as last sent.
+struct ListedDial
+{
+  // what the list says of a Reach: cm and deg to a thousandth, as no one reads 17 digits of them
+  struct Reach
+  {
+    double cm = 0, deg = 0;
+    int    morphs = 0, bones = 0, scales = 0;
+
+    bool operator==(const Reach&) const = default;
+  };
+  std::string              name, label, group, path, region, kind;
+  double                   value = 0, min = 0, max = 1, weight = 0, rest = 0;
+  bool                     helper = false, inert = false;
+  std::optional<Reach>     reach;
+  std::vector<std::string> items;  // the worn items it moves (MorphSet::itemsMoving)
+
+  bool operator==(const ListedDial&) const = default;
+};
+
+// The shown dials of a figure's morphs, in the list's order.
+std::vector<ListedDial> listedDials(const fv::morph::MorphSet& morphs);
+// The topic's `channels` for them, each with its place in the order.
+Json listedChannels(const std::vector<ListedDial>& dials);
+// The patch to `channels` that turns `sent` into `now`, empty when they say the same; none when the
+// whole list must go again: dials came, went or moved in the order, which each one's `order` says.
+std::optional<Json> listedPatch(const std::vector<ListedDial>& sent, const std::vector<ListedDial>& now);
+
 // A loaded figure and what the renderer made of it. Lives on the application thread.
 struct Loaded
 {
@@ -135,10 +164,13 @@ struct Loaded
   // the feed's entities is; set by each composition
   fv::FigureFeed*             feed = nullptr;
   std::map<rs::EntityId, int> nodeOf;
-  // morph topic: -1 until the channel list has been published, then the value and weight last sent
-  int                                                          morphList = -1;
-  std::unordered_map<std::string, std::pair<double, double>> published;
-  int                                                          morphsSeen = -1;  // MorphSet::version() last published
+  // morph topic: -1 until the channel list has been published, then the shown dials as last sent, in
+  // the list's order, and where each is in it. A change to the channels (MorphSet::listVersion) that
+  // leaves them as they were sends nothing: a dial's first drag brings its correctives in, hidden.
+  int                                     morphList = -1;
+  std::vector<ListedDial>                 listed;
+  std::unordered_map<std::string, size_t> listedAt;
+  int                                     morphsSeen = -1;  // MorphSet::version() last published
   uint64_t                                                     busyJob = 0;
   bool                                                         busyOn  = false;
   // the textures the glTF was built with, by request key, and whether their rows run bottom-up:

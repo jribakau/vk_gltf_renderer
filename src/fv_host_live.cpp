@@ -26,6 +26,90 @@
 
 #include <cmath>
 
+namespace {
+
+Json listedJson(const ListedDial& d, size_t order)
+{
+  Json j = {{"label", d.label}, {"group", d.group},   {"value", d.value},      {"min", d.min},
+            {"max", d.max},     {"weight", d.weight}, {"order", int(order)}};
+  if(!d.path.empty())
+    j["path"] = d.path;
+  if(!d.region.empty())
+    j["region"] = d.region;
+  if(!d.kind.empty())
+    j["kind"] = d.kind;
+  if(d.helper)
+    j["helper"] = true;
+  if(d.rest != 0)
+    j["rest"] = d.rest;
+  if(d.reach)
+    j["reach"] = {{"cm", d.reach->cm}, {"deg", d.reach->deg}, {"morphs", d.reach->morphs}, {"bones", d.reach->bones}, {"scales", d.reach->scales}};
+  if(d.inert)
+    j["inert"] = true;
+  if(!d.items.empty())
+    j["items"] = d.items;
+  return j;
+}
+
+}  // namespace
+
+std::vector<ListedDial> fvhost::listedDials(const fv::morph::MorphSet& morphs)
+{
+  const auto               thousandths = [](double v) { return std::round(v * 1000) / 1000; };
+  std::vector<ListedDial>  out;
+  std::vector<std::string> names;
+  for(const fv::morph::Channel& ch : morphs.channels())
+  {
+    if(ch.hidden)
+      continue;
+    ListedDial& d = out.emplace_back();
+    d.name        = ch.name;
+    d.label       = ch.label;
+    d.group       = ch.group;
+    d.path        = ch.path;
+    d.region      = ch.region;
+    d.kind        = ch.kind;
+    d.value       = ch.value;
+    d.min         = ch.min;
+    d.max         = ch.max;
+    d.weight      = morphs.weightOf(ch.name);
+    d.rest        = ch.rest;
+    d.helper      = ch.helper;
+    d.inert       = ch.inert;
+    if(ch.reach)
+      d.reach = ListedDial::Reach{thousandths(ch.reach->cm), thousandths(ch.reach->deg), ch.reach->morphs,
+                                  ch.reach->bones, ch.reach->scales};
+    names.push_back(ch.name);
+  }
+  std::vector<std::vector<std::string>> items = morphs.itemsMoving(names);
+  for(size_t i = 0; i < out.size(); i++)
+    out[i].items = std::move(items[i]);
+  return out;
+}
+
+Json fvhost::listedChannels(const std::vector<ListedDial>& dials)
+{
+  Json channels = Json::object();
+  for(size_t i = 0; i < dials.size(); i++)
+    channels[dials[i].name] = listedJson(dials[i], i);
+  return channels;
+}
+
+std::optional<Json> fvhost::listedPatch(const std::vector<ListedDial>& sent, const std::vector<ListedDial>& now)
+{
+  if(sent.size() != now.size())
+    return std::nullopt;
+  for(size_t i = 0; i < now.size(); i++)
+    if(sent[i].name != now[i].name)
+      return std::nullopt;
+  Json channels = Json::object();
+  for(size_t i = 0; i < now.size(); i++)
+    if(!(sent[i] == now[i]))
+      if(Json diff = fv::lighting::mergeDiff(listedJson(sent[i], i), listedJson(now[i], i)); !diff.empty())
+        channels[now[i].name] = std::move(diff);
+  return channels;
+}
+
 // The figure's moved nodes, fed: their transforms (a pose step), or the whole figure when a node is new
 void FvHost::Impl::feedWhole(Loaded& f)
 {
@@ -181,46 +265,30 @@ void FvHost::Impl::publishMorphs(Loaded& f)
   const bool           listChanged = morphs.listVersion() != f.morphList;
   if(!listChanged && f.morphsSeen == morphs.version())
     return;
-  f.morphsSeen = morphs.version();
-  auto& events = protocol->events();
+  f.morphsSeen            = morphs.version();
+  auto&             events = protocol->events();
+  const std::string topic  = "morphs/" + f.id;
   if(listChanged)
   {
-    Json channels = Json::object();
-    f.published.clear();
-    int order = 0;
-    // this goes out for every dial each time the list changes, and no one reads 17 digits of it
-    const auto thousandths = [](double v) { return std::round(v * 1000) / 1000; };
-    for(const fv::morph::Channel& ch : morphs.channels())
+    // What changed in the shown dials, while the same ones stand in the same order: a change the list
+    // version counts is often to hidden channels alone (a dial's first drag brings in its correctives,
+    // ~100 of them, each joining and then loading), and the whole list of ~3500 dials took ~50 ms of
+    // this thread each time it went (docs/improvements.md)
+    std::vector<ListedDial>   now   = listedDials(morphs);
+    const std::optional<Json> patch = f.morphList < 0 ? std::nullopt : listedPatch(f.listed, now);
+    f.morphList                     = morphs.listVersion();
+    if(!patch)
     {
-      if(ch.hidden)
-        continue;
-      const double w = morphs.weightOf(ch.name);
-      channels[ch.name] = {{"label", ch.label}, {"group", ch.group}, {"value", ch.value}, {"min", ch.min},
-                           {"max", ch.max},     {"weight", w},       {"order", order++}};
-      if(!ch.path.empty())
-        channels[ch.name]["path"] = ch.path;
-      if(!ch.region.empty())
-        channels[ch.name]["region"] = ch.region;
-      if(!ch.kind.empty())
-        channels[ch.name]["kind"] = ch.kind;
-      if(ch.helper)
-        channels[ch.name]["helper"] = true;
-      if(ch.rest != 0)
-        channels[ch.name]["rest"] = ch.rest;
-      if(ch.reach)
-        channels[ch.name]["reach"] = {{"cm", thousandths(ch.reach->cm)},
-                                      {"deg", thousandths(ch.reach->deg)},
-                                      {"morphs", ch.reach->morphs},
-                                      {"bones", ch.reach->bones},
-                                      {"scales", ch.reach->scales}};
-      if(ch.inert)
-        channels[ch.name]["inert"] = true;
-      if(std::vector<std::string> items = morphs.itemsMoving(ch.name); !items.empty())
-        channels[ch.name]["items"] = std::move(items);
-      f.published[ch.name] = {ch.value, w};
+      f.listedAt.clear();
+      for(size_t i = 0; i < now.size(); i++)
+        f.listedAt[now[i].name] = i;
+      Json data        = {{"figure", f.id}};
+      data["channels"] = listedChannels(now);
+      events.snapshot(topic, std::move(data));
     }
-    f.morphList = morphs.listVersion();
-    events.snapshot("morphs/" + f.id, {{"figure", f.id}, {"channels", channels}});
+    else if(!patch->empty())
+      events.patch(topic, {{"channels", *patch}});
+    f.listed = std::move(now);
     return;
   }
   Json channels = Json::object();
@@ -228,15 +296,20 @@ void FvHost::Impl::publishMorphs(Loaded& f)
   {
     if(ch.hidden)
       continue;
-    const double w  = morphs.weightOf(ch.name);
-    const auto   it = f.published.find(ch.name);
-    if(it != f.published.end() && it->second.first == ch.value && it->second.second == w)
+    const double w    = morphs.weightOf(ch.name);
+    const auto   it   = f.listedAt.find(ch.name);
+    ListedDial*  sent = it == f.listedAt.end() ? nullptr : &f.listed[it->second];
+    if(sent && sent->value == ch.value && sent->weight == w)
       continue;
-    channels[ch.name]    = {{"value", ch.value}, {"weight", w}};
-    f.published[ch.name] = {ch.value, w};
+    channels[ch.name] = {{"value", ch.value}, {"weight", w}};
+    if(sent)
+    {
+      sent->value  = ch.value;
+      sent->weight = w;
+    }
   }
   if(!channels.empty())
-    events.patch("morphs/" + f.id, {{"channels", channels}});
+    events.patch(topic, {{"channels", channels}});
 }
 
 void FvHost::Impl::publishBusy(Loaded& f)

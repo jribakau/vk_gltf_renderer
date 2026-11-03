@@ -245,6 +245,9 @@ public:
   // or a binding, its own or a dial's it drives (Reach::drives), each once. Not the ones that only
   // project what the source has.
   std::vector<std::string> itemsMoving(const std::string& name) const;
+  // The same for each of `names`, in their order: what each follower holds is asked once a morph, not
+  // once for every dial that is it or drives it (a figure's list of ~3500 dials asks all of them).
+  std::vector<std::vector<std::string>> itemsMoving(const std::vector<std::string>& names) const;
   // The target a channel binds on a mesh, or null.
   dson::TargetPtr cpuTarget(const std::string& name, int mesh) const;
   // The mesh's cage with every active target's cage deltas applied, except `except` (a mesh's own
