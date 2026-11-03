@@ -111,3 +111,30 @@ TEST(MorphList, TheWholeListSaysEachDialsPlaceAndWhatItHas)
   for(const char* key : {"label", "group", "value", "min", "max", "weight", "order"})
     EXPECT_TRUE(channels.at("Smile").contains(key)) << key;
 }
+
+// A drag's frames send the value and weight of the dials that moved, each found at its place in the
+// list as sent, or by its name once the channels stand in another order.
+TEST(MorphList, AMovedDialSendsItsValueAndWeight)
+{
+  Dials                                   dials{"Smile", "Waist", "Brow"};
+  fv::morph::MorphSet&                    set    = dials.set;
+  std::vector<ListedDial>                 listed = listedDials(set);
+  std::unordered_map<std::string, size_t> at;
+  for(size_t i = 0; i < listed.size(); i++)
+    at[listed[i].name] = i;
+  EXPECT_TRUE(valuesPatch(set, listed, at).empty());
+
+  set.set("Waist", 0.5);
+  const Json patch = valuesPatch(set, listed, at);
+  EXPECT_EQ(patch, (Json{{"Waist", {{"value", 0.5}, {"weight", 0.5}}}}));
+  EXPECT_DOUBLE_EQ(listed[at["Waist"]].value, 0.5);
+  EXPECT_TRUE(valuesPatch(set, listed, at).empty());
+
+  // Waist, moved, sorts first: the list as sent is no longer in the channels' order
+  set.sort();
+  ASSERT_EQ(set.channels().front().name, "Waist");
+  set.set("Brow", 0.25);
+  EXPECT_EQ(valuesPatch(set, listed, at), (Json{{"Brow", {{"value", 0.25}, {"weight", 0.25}}}}));
+  EXPECT_DOUBLE_EQ(listed[at["Brow"]].value, 0.25);
+  EXPECT_DOUBLE_EQ(listed[at["Smile"]].value, 0);
+}

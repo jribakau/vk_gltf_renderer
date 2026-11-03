@@ -291,14 +291,28 @@ void FvHost::Impl::publishMorphs(Loaded& f)
     f.listed = std::move(now);
     return;
   }
-  Json channels = Json::object();
-  for(const fv::morph::Channel& ch : morphs.channels())
+  if(Json channels = valuesPatch(morphs, f.listed, f.listedAt); !channels.empty())
+    events.patch(topic, {{"channels", std::move(channels)}});
+}
+
+Json fvhost::valuesPatch(const fv::morph::MorphSet& morphs, std::vector<ListedDial>& listed, const std::unordered_map<std::string, size_t>& listedAt)
+{
+  // The shown dials stand as listed, in that order, while the list version does, so each is found at
+  // its place there; one that isn't (the channels moved without the list version) by its name
+  Json                                   channels = Json::object();
+  const std::vector<fv::morph::Channel>& all      = morphs.channels();
+  size_t                                 shown    = 0;
+  for(size_t i = 0; i < all.size(); i++)
   {
+    const fv::morph::Channel& ch = all[i];
     if(ch.hidden)
       continue;
-    const double w    = morphs.weightOf(ch.name);
-    const auto   it   = f.listedAt.find(ch.name);
-    ListedDial*  sent = it == f.listedAt.end() ? nullptr : &f.listed[it->second];
+    const double w    = morphs.weightAt(i);
+    ListedDial*  sent = shown < listed.size() && listed[shown].name == ch.name ? &listed[shown] : nullptr;
+    shown++;
+    if(!sent)
+      if(const auto it = listedAt.find(ch.name); it != listedAt.end() && it->second < listed.size())
+        sent = &listed[it->second];
     if(sent && sent->value == ch.value && sent->weight == w)
       continue;
     channels[ch.name] = {{"value", ch.value}, {"weight", w}};
@@ -308,8 +322,7 @@ void FvHost::Impl::publishMorphs(Loaded& f)
       sent->weight = w;
     }
   }
-  if(!channels.empty())
-    events.patch(topic, {{"channels", channels}});
+  return channels;
 }
 
 void FvHost::Impl::publishBusy(Loaded& f)

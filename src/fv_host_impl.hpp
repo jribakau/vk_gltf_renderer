@@ -148,6 +148,10 @@ Json listedChannels(const std::vector<ListedDial>& dials);
 // The patch to `channels` that turns `sent` into `now`, empty when they say the same; none when the
 // whole list must go again: dials came, went or moved in the order, which each one's `order` says.
 std::optional<Json> listedPatch(const std::vector<ListedDial>& sent, const std::vector<ListedDial>& now);
+// The patch to `channels` for the shown dials whose value or weight moved since `listed` was sent
+// (`listedAt`: where each is in it), which `listed` takes on; empty when none did. Every frame a dial
+// moves: a dial found at its place in `listed` costs no lookup by name.
+Json valuesPatch(const fv::morph::MorphSet& morphs, std::vector<ListedDial>& listed, const std::unordered_map<std::string, size_t>& listedAt);
 
 // A loaded figure and what the renderer made of it. Lives on the application thread.
 struct Loaded
