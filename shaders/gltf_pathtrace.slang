@@ -860,11 +860,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // Classed by the path before this vertex, as the sample below is about to change it
         bounce.indirect = pt.pathRoughness > DIRECT_PATH_ROUGHNESS;
       }
-      else
-      {
-        // The BSDF cannot scatter toward the light, so the shadow ray could only multiply zero
+      // The shadow ray could only multiply zero: the BSDF cannot scatter toward the light, or the
+      // light sends nothing this way (a black texel of an emissive texture, a sized spot's sample
+      // outside its cone, a light picked evenly among more than LIGHT_PICK_MAX_LIGHTS). A non-finite
+      // contribution still traces, so its sample is dropped as before (the end of samplePixel).
+      if(all(bounce.contribution == 0.0F))
         bounce.nextEventValid = false;
-      }
 
 #if GLTF_USE_VOLUME
       // The medium the shadow ray starts in, read before the BSDF sample below moves the path into
