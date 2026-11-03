@@ -88,6 +88,9 @@ struct MemoryLedger
   // the bus. On an RTX 4080 that starts about at the driver's budget, an allocation then taking 125 ms
   // (scripts/memory-limit-check.py, 2026-11-01)
   uint64_t          spilled = 0;
+  // the upload staging ring in system memory: its blocks, and what in them a frame in flight still reads
+  uint64_t          stagingHeld = 0;
+  uint64_t          stagingLive = 0;
 };
 
 // What a mesh will hold, in the counts that decide it. A refined mesh's drawn vertices are made on the

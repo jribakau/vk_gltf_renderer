@@ -390,7 +390,13 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       Json hits = Json::array();
       for(const rs::MemoryLedger::MaterialHits& h : ledger.hits)
         hits.push_back({{"prop", h.prop}, {"local", h.local}, {"bins", h.bins}});
-      return Json{{"hits", std::move(hits)}, {"total", classes(ledger.total)}, {"idleImages", ledger.idleImages}, {"retiring", ledger.retiring}, {"spilled", ledger.spilled}, {"meshes", std::move(meshes)}};
+      return Json{{"hits", std::move(hits)},
+                  {"total", classes(ledger.total)},
+                  {"idleImages", ledger.idleImages},
+                  {"retiring", ledger.retiring},
+                  {"spilled", ledger.spilled},
+                  {"staging", {{"heldBytes", ledger.stagingHeld}, {"liveBytes", ledger.stagingLive}}},
+                  {"meshes", std::move(meshes)}};
     });
   });
   // An export's whole run: textures stay as they are, so its frames match and its still isn't restarted

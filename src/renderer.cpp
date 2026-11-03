@@ -152,9 +152,11 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // blockSize is the max size of a single append (circular allocator constraint) and
   // is larger than the library default so scene-create can stage large meshes/textures.
   NVVK_CHECK(m_resources.staging.init({
-      .allocator = &m_resources.allocator,
-      .blockSize = kFrameUploaderBlockSize,  // shared with createSampledImage's row-strip chunking
-      .debugName = "frameUploads",
+      .allocator      = &m_resources.allocator,
+      .blockSize      = kFrameUploaderBlockSize,  // shared with createSampledImage's row-strip chunking
+      .debugName      = "frameUploads",
+      .keepBlockCount = kFrameUploaderKeepBlocks,
+      .maxBlocks      = kFrameUploaderMaxBlocks,
   }));
 
   m_resources.commandPool = app->getCommandPool();
@@ -859,7 +861,11 @@ uint64_t GltfRenderer::blasBytes(uint64_t triangles, uint64_t vertices, bool ref
 
 rs::MemoryLedger GltfRenderer::memoryLedger() const
 {
-  return m_resources.retainedGpu ? m_resources.retainedGpu->residency().ledger() : rs::MemoryLedger{};
+  rs::MemoryLedger ledger = m_resources.retainedGpu ? m_resources.retainedGpu->residency().ledger() : rs::MemoryLedger{};
+  const nvvk::BufferCircularAllocator::Report staging = m_resources.staging.getStagingReport();
+  ledger.stagingHeld                                  = staging.allocatedSize;
+  ledger.stagingLive                                  = staging.requestedSize;
+  return ledger;
 }
 
 void GltfRenderer::onRender(VkCommandBuffer cmd)

@@ -36,19 +36,26 @@
 //
 // Keeping both call sites bound to this one symbol guarantees they cannot drift.
 //
-// Rationale for the current value:
-//   * Must be large enough for the biggest typical single upload we stage in one
-//     shot (index/vertex buffers of large scenes, single mip levels of large
-//     textures).
-//   * Kept below 512 MiB so cold init doesn't reserve a huge host-visible chunk
-//     up front. Any single mip that exceeds this is uploaded in row-strips by
-//     `createSampledImage`, so this is not a hard cap on texture size.
-constexpr VkDeviceSize kFrameUploaderBlockSize = 256ull * 1024 * 1024;
+// Rationale for the current values:
+//   * Every block the uploader keeps is written end to end as the ring goes round, so
+//     all of it stays in system memory: kept blocks are what staging costs at rest.
+//     256 MiB blocks kept 512 MiB (the written one and a spare). Now at most
+//     (1 + kFrameUploaderKeepBlocks) * 32 MiB = 128 MiB.
+//   * A drag stages some 15-25 MB a frame with a few frames in flight, which the kept
+//     blocks hold without creating or destroying one per frame.
+//   * A load stages far more at once (a strand hair, some 800 MB): blocks past the kept
+//     ones are made for it and destroyed once the GPU is done. kFrameUploaderMaxBlocks
+//     keeps the most held at once at 16 GiB, as 256 MiB blocks had it.
+//   * Big arrays and mips are appended in pieces of at most one block (below, and the
+//     row strips of `createSampledImage`), so this is not a cap on a mesh or a texture.
+constexpr VkDeviceSize kFrameUploaderBlockSize  = 32ull * 1024 * 1024;
+constexpr uint32_t     kFrameUploaderKeepBlocks = 3;
+constexpr uint32_t     kFrameUploaderMaxBlocks  = 512;  // 16 GiB of 32 MiB blocks
 
 // Append a large array in pieces that each fit one staging block. A single append must stay
 // under kFrameUploaderBlockSize (see above), but the uploader accepts several appends before a
 // flush, so arrays that scale with the scene (render nodes, TLAS instances) go through here:
-// 136-byte render nodes would otherwise overflow the block beyond ~1.97M entries.
+// 136-byte render nodes would otherwise overflow the block beyond ~246K entries.
 template <typename T>
 VkResult appendBufferChunked(nvvk::CmdUploaderInterface& staging, const nvvk::Buffer& buffer, size_t offset, std::span<const T> data)
 {
