@@ -134,8 +134,10 @@ struct SampleResult
   float4 radiance    = float4(0, 0, 0, 0);
   float3 hitPosition = 1e34f;  // World-space first-hit position; always present (drives NDC depth + DLSS motion).
 #if USE_GUIDE_SHADER
-  float3      hitPositionPrev = 1e34f;  // Previous-frame world-space position of the first-hit point (instance motion).
-  GuideOutput guideOutput     = {};
+#if USE_DLSS_SHADER
+  float3 hitPositionPrev = 1e34f;  // Previous-frame world-space position of the first-hit point (DLSS motion).
+#endif
+  GuideOutput guideOutput = {};
 #endif
 };
 
@@ -1547,7 +1549,7 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
 // DLSS guide buffers
 //-----------------------------------------------------------------------
 
-#if USE_GUIDE_SHADER
+#if USE_GUIDE_SHADER && USE_DLSS_SHADER
 // Previous-frame world position of the surface point at `hitPos`, on triangle `triangleID` of
 // render primitive `rprimID` in render node `rnodeID`, with the barycentrics getHitState used.
 // A primitive skinned, morphed or re-uploaded this frame takes its triangle's previous corners
@@ -1575,7 +1577,7 @@ float3 dlssPrevHitPos(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim,
       pushConst.prevRenderNodeObjectToWorld != nullptr ? pushConst.prevRenderNodeObjectToWorld[rnodeID] : renderNode.objectToWorld;
   return mul(float4(objPos, 1.0), objectToWorld).xyz;
 }
-#endif  // USE_GUIDE_SHADER
+#endif  // USE_GUIDE_SHADER && USE_DLSS_SHADER
 
 #if USE_DLSS_SHADER
 float3 dlssEnforceMinAlbedo(float3 albedo, float3 specularAlbedo)
@@ -1917,8 +1919,10 @@ struct PathTracerState
   float  walkGuide  = 0.0F;
 #endif
 #if USE_GUIDE_SHADER
-  GuideScratch guide           = {};
-  float3       firstHitPosPrev = float3(1e34f);  // Previous-frame world position of the first hit (instance motion).
+  GuideScratch guide = {};
+#if USE_DLSS_SHADER
+  float3 firstHitPosPrev = float3(1e34f);  // Previous-frame world position of the first hit (DLSS motion).
+#endif
 #endif
 #if WIREFRAME
   float firstHitWireframeAlpha = 0.0;
@@ -2144,7 +2148,7 @@ bool tryPrimaryMissBackplate(RayDesc ray, SceneFrameInfo* frameInfo, inout PathT
   // processPixel projects this with w=0 (camera translation cancels). NDC depth for a miss is written
   // as far (1.0) on the !hasSolidHit branch, so this value is consumed only by motion vectors.
   pt.firstHitPos = ray.Direction;
-#if USE_GUIDE_SHADER
+#if USE_GUIDE_SHADER && USE_DLSS_SHADER
   // Sky is fixed in world space; the previous-frame view direction is identical (w=0 yields camera-only motion).
   pt.firstHitPosPrev = ray.Direction;
 #endif
@@ -2184,7 +2188,9 @@ SampleResult packSampleResult(PathTracerState pt)
   sampleResult.radiance     = float4(pt.radiance, pt.solid ? 1 : 0);
   sampleResult.hitPosition  = pt.firstHitPos;
 #if USE_GUIDE_SHADER
-  sampleResult.hitPositionPrev             = pt.firstHitPosPrev;
+#if USE_DLSS_SHADER
+  sampleResult.hitPositionPrev = pt.firstHitPosPrev;
+#endif
   sampleResult.guideOutput.albedo          = float16_t4(pt.guide.albedo, pt.solid ? 1.0h : 0.0h);
   sampleResult.guideOutput.normalRoughness = pt.guide.normalRoughness;
 #if USE_DLSS_SHADER

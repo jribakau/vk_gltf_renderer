@@ -577,13 +577,16 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       pt.firstHitPos = hit.pos;
 
 #if USE_GUIDE_SHADER
+#if USE_DLSS_SHADER
       // #DLSS instance and deformation motion - Previous-frame world position of this surface point.
+      // Only DLSS's motion vectors read it: the other denoisers' variant leaves it out.
       pt.firstHitPosPrev = hit.pos;
       if(!hitInfinitePlane)
       {
         const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
         pt.firstHitPosPrev = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos);
       }
+#endif  // USE_DLSS_SHADER
 
       // Base-color guide albedo (shared by DLSS and the other denoisers). Stored temporarily, written at end to
       // reduce live state. OptiX and OIDN take the surface colour, metal included; DLSS-RR the diffuse
