@@ -1077,9 +1077,10 @@ TEST(Dforce, readsTheDensityASurfaceGrowsAndAtWhichStage)
   EXPECT_FLOAT_EQ(radius.at("Back").density, 0.f);
 }
 
-// A strand hair's points are in no polygon: each takes the settings a polygon mesh's loose vertex
-// does, without the per-vertex sums a polygon mesh adds up.
-TEST(Dforce, PointsInNoPolygonTakeTheSettingsALooseVertexDoes)
+// A strand hair's points are in no polygon: they get no per-vertex settings, which only a polygon
+// mesh's constraints read (a million points' worth), and its strands take the settings a polygon
+// mesh's loose vertex does.
+TEST(Dforce, PointsInNoPolygonGetNoPerVertexSettings)
 {
   const auto scene = dson::parseDoc(R"({
     "scene": {"modifiers": [
@@ -1090,7 +1091,10 @@ TEST(Dforce, PointsInNoPolygonTakeTheSettingsALooseVertexDoes)
         {"channel": {"id": "Simulation Object Type", "current_value": 1}}]}]}
     ]
   })");
-  const auto strands = dson::parseDoc(R"({"vertices": {"count": 5, "values": [[0,0,0],[1,0,0],[1,0,1],[0,0,1],[2,0,2]]}})");
+  const auto strands = dson::parseDoc(R"({
+    "vertices": {"count": 5, "values": [[0,0,0],[1,0,0],[1,0,1],[0,0,1],[2,0,2]]},
+    "polyline_list": {"count": 2, "values": [[0, 0, 0, 1, 2], [0, 0, 3, 4]]}
+  })");
   const auto mesh    = dson::parseDoc(R"({
     "vertices": {"count": 5, "values": [[0,0,0],[1,0,0],[1,0,1],[0,0,1],[2,0,2]]},
     "polylist": {"count": 1, "values": [[0, 0, 0, 1, 2, 3]]}
@@ -1098,28 +1102,27 @@ TEST(Dforce, PointsInNoPolygonTakeTheSettingsALooseVertexDoes)
   const auto points = dson::buildDforce(*scene, nullptr, "Hair", "Hair-1", *strands, strands->json, {});
   const auto loose  = dson::buildDforce(*scene, nullptr, "Hair", "Hair-1", *mesh, mesh->json, {});
   ASSERT_TRUE(points && loose);
-  const auto same = [&](const auto& a, const auto& b, const char* what) {
-    ASSERT_EQ(a.size(), 5u) << what;
-    for(size_t v = 0; v < 5; v++)
-      EXPECT_EQ(a[v], b[4]) << what << " at " << v;
-  };
-  same(points->strength, loose->strength, "strength");
-  same(points->stretch, loose->stretch, "stretch");
-  same(points->shear, loose->shear, "shear");
-  same(points->bend, loose->bend, "bend");
-  same(points->buckling, loose->buckling, "buckling");
-  same(points->bucklingRatio, loose->bucklingRatio, "buckling ratio");
-  same(points->density, loose->density, "density");
-  same(points->contraction, loose->contraction, "contraction");
-  same(points->damping, loose->damping, "damping");
-  same(points->friction, loose->friction, "friction");
-  same(points->offset, loose->offset, "offset");
-  same(points->layer, loose->layer, "layer");
-  same(points->selfCollide, loose->selfCollide, "self collide");
-  same(points->surfaceVisible, loose->surfaceVisible, "visible");
-  same(points->surfaceCollide, loose->surfaceCollide, "collide");
-  EXPECT_EQ(points->polyStart, std::vector<int32_t>{0});
+  for(const auto* a : {&points->strength, &points->stretch, &points->shear, &points->bend, &points->buckling, &points->bucklingRatio,
+                       &points->density, &points->contraction, &points->damping, &points->friction, &points->offset})
+    EXPECT_TRUE(a->empty());
+  EXPECT_TRUE(points->layer.empty());
+  EXPECT_TRUE(points->selfCollide.empty());
+  EXPECT_TRUE(points->surfaceVisible.empty());
+  EXPECT_TRUE(points->surfaceCollide.empty());
+  EXPECT_FALSE(points->hasPolygons());
   EXPECT_TRUE(points->polyVerts.empty());
+  // the polygon mesh's loose vertex 4 has what each strand has
+  ASSERT_EQ(loose->strength.size(), 5u);
+  ASSERT_EQ(points->strandStart, (std::vector<int32_t>{0, 3, 5}));
+  for(size_t s = 0; s < 2; s++)
+  {
+    EXPECT_EQ(points->strandStrength[s], loose->strength[4]);
+    EXPECT_EQ(points->strandOffset[s], loose->offset[4]);
+    EXPECT_EQ(points->strandFriction[s], loose->friction[4]);
+    EXPECT_EQ(points->strandCollide[s], loose->surfaceCollide[4]);
+  }
+  // nothing to loosen past full: a strand's strength stops at 1
+  EXPECT_EQ(fv::clothLoosest(points), 1.f);
 }
 
 TEST(Dforce, aSparseInfluenceMapLeavesUnlistedVerticesOnTheSkin)

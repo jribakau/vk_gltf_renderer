@@ -494,8 +494,6 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
   }
   const Surface d;
   const auto    fill = [&](double Sum::*field, float fallback) {
-    if(sum.empty())
-      return std::vector<float>(static_cast<size_t>(nv), fallback);
     std::vector<float> a(static_cast<size_t>(nv));
     for(int v = 0; v < nv; v++)
       a[size_t(v)] = sum[size_t(v)].n ? float(sum[size_t(v)].*field / sum[size_t(v)].n) : fallback;
@@ -508,34 +506,38 @@ std::shared_ptr<DforceData> buildDforce(const Doc& scene, const Doc* geoDoc, con
   out->visible    = node ? node->visible : true;
   if(node)
     out->influence = node->influence;
-  out->strength = fill(&Sum::strength, d.strength);
-  if(!out->influence.empty())
-    for(int v = 0; v < nv; v++)
-      out->strength[size_t(v)] *= out->influence[size_t(v)];
-  out->stretch       = fill(&Sum::stretch, d.stretch);
-  out->shear         = fill(&Sum::shear, d.shear);
-  out->bend          = fill(&Sum::bend, d.bend);
-  out->buckling      = fill(&Sum::buckling, d.buckling);
-  out->bucklingRatio = fill(&Sum::bucklingRatio, d.bucklingRatio);
-  out->density       = fill(&Sum::density, d.density);
-  out->contraction   = fill(&Sum::contraction, d.contraction);
-  out->damping       = fill(&Sum::damping, d.damping);
-  out->friction      = fill(&Sum::friction, d.friction);
-  out->offset        = fill(&Sum::offset, d.offset);
-  const auto layers  = fill(&Sum::layer, d.layer);
-  out->layer.resize(size_t(nv));
-  out->selfCollide.resize(size_t(nv), 1);
-  out->surfaceVisible.resize(size_t(nv), 1);
-  out->surfaceCollide.resize(size_t(nv), 1);
-  if(sum.empty())
-    out->layer.assign(size_t(nv), int16_t(std::lround(float(d.layer))));
-  for(int v = 0; v < int(sum.size()); v++)
+  // Points in no polygon (a strand hair's million) get no per-vertex settings: only the cloth
+  // solver's polygon constraints read them, and the strands carry their own below. Filled, they were
+  // ~53 bytes a point, copied again by every change of the item's cloth settings.
+  if(!sum.empty())
   {
-    const Sum& a = sum[size_t(v)];
-    out->layer[size_t(v)]          = int16_t(std::lround(layers[size_t(v)]));
-    out->selfCollide[size_t(v)]    = a.n ? (a.self / a.n >= 0.5 ? 1 : 0) : 1;
-    out->surfaceVisible[size_t(v)] = a.n ? (a.visible > 0 ? 1 : 0) : 1;
-    out->surfaceCollide[size_t(v)] = a.n ? (a.collide > 0 ? 1 : 0) : 1;
+    out->strength = fill(&Sum::strength, d.strength);
+    if(!out->influence.empty())
+      for(int v = 0; v < nv; v++)
+        out->strength[size_t(v)] *= out->influence[size_t(v)];
+    out->stretch       = fill(&Sum::stretch, d.stretch);
+    out->shear         = fill(&Sum::shear, d.shear);
+    out->bend          = fill(&Sum::bend, d.bend);
+    out->buckling      = fill(&Sum::buckling, d.buckling);
+    out->bucklingRatio = fill(&Sum::bucklingRatio, d.bucklingRatio);
+    out->density       = fill(&Sum::density, d.density);
+    out->contraction   = fill(&Sum::contraction, d.contraction);
+    out->damping       = fill(&Sum::damping, d.damping);
+    out->friction      = fill(&Sum::friction, d.friction);
+    out->offset        = fill(&Sum::offset, d.offset);
+    const auto layers  = fill(&Sum::layer, d.layer);
+    out->layer.resize(size_t(nv));
+    out->selfCollide.resize(size_t(nv), 1);
+    out->surfaceVisible.resize(size_t(nv), 1);
+    out->surfaceCollide.resize(size_t(nv), 1);
+    for(int v = 0; v < nv; v++)
+    {
+      const Sum& a = sum[size_t(v)];
+      out->layer[size_t(v)]          = int16_t(std::lround(layers[size_t(v)]));
+      out->selfCollide[size_t(v)]    = a.n ? (a.self / a.n >= 0.5 ? 1 : 0) : 1;
+      out->surfaceVisible[size_t(v)] = a.n ? (a.visible > 0 ? 1 : 0) : 1;
+      out->surfaceCollide[size_t(v)] = a.n ? (a.collide > 0 ? 1 : 0) : 1;
+    }
   }
   // polygon loops for the constraints, without vertices the geometry doesn't have (a malformed
   // row would index past the per-vertex arrays) or loops left with fewer than two corners

@@ -40,7 +40,8 @@ struct DforceData
   // 0 sticks to the skinned vertex, 1 is free (a vertex the file's sparse map leaves out is 0);
   // empty means every vertex is free
   std::vector<float> influence;
-  // Dynamics Strength x influence, already multiplied
+  // Per cage vertex, for a geometry with polygons (empty without: a strand hair's settings are its
+  // strands'). Strength is Dynamics Strength x influence, already multiplied
   std::vector<float> strength, stretch, shear, bend, buckling, bucklingRatio, density, contraction, damping, friction, offset;
   std::vector<int16_t> layer;
   std::vector<uint8_t> selfCollide;
