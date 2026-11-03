@@ -680,6 +680,19 @@ void VulkanGpuBackend::destroyImage(ImageHandle handle)
     LOGE("VulkanGpuBackend::destroyImage: dead or unknown image %llu\n", (unsigned long long)handle.value);
     return;
   }
+  // The invariant a frame's reads rest on: no texture slot shows an image that is gone. A slot is
+  // rewritten before its image is retired, so one still showing it here names the path that didn't;
+  // the slot gets the missing image, a valid read in place of a fault once the driver takes the pages.
+  for(auto& [slot, shown] : m_slotImage)
+    if(shown == handle.value)
+    {
+      const auto made = m_imageMade.find(handle.value);
+      LOGE("[gpu] An image (%s, %ux%u) is destroyed while texture slot %u still shows it: whatever rewrote the slot missed it; it shows the missing image now\n",
+           made != m_imageMade.end() ? made->second.name.c_str() : "unnamed",
+           made != m_imageMade.end() ? made->second.info.width : 0, made != m_imageMade.end() ? made->second.info.height : 0, slot);
+      writeImageDescriptor(slot, m_missing);
+      shown = 0;
+    }
   m_memory.untrack(kMemImages, it->second.allocation);
   m_info.alloc->destroyImage(it->second);
   m_images.erase(it);
@@ -725,6 +738,7 @@ void VulkanGpuBackend::writeTextureDescriptor(uint32_t slot, ImageHandle handle)
   if(handle && it == m_images.end())
     LOGE("VulkanGpuBackend::writeTextureDescriptor: slot %u given a dead or unknown image\n", slot);
   writeImageDescriptor(slot, it != m_images.end() ? it->second : slot == 0 ? m_white : m_missing);
+  m_slotImage[slot] = it != m_images.end() ? handle.value : 0;
 }
 
 void VulkanGpuBackend::writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc)

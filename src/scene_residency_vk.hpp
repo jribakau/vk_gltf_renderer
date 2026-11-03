@@ -264,6 +264,7 @@ private:
     ImageInfo          info;
   };
   std::unordered_map<uint64_t, ImageMade>   m_imageMade;
+  std::unordered_map<uint32_t, uint64_t>    m_slotImage;  // what each texture slot shows (0: a default), to check at destroyImage
   nvvk::Buffer                              m_blasScratch;
   uint64_t                                  m_blasScratchUsed = 0;  // the last frame that built with it
   std::unordered_map<uint32_t, VkSampler>   m_samplers;  // by sampler slot

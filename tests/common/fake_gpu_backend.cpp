@@ -319,6 +319,12 @@ void FakeGpuBackend::destroyImage(ImageHandle handle)
   m_spilledImages.erase(handle.value);
   if(!m_images.erase(handle.value))
     error("destroyImage: dead or unknown image " + std::to_string(handle.value));
+  // the invariant a frame's reads rest on: no texture slot shows an image that is gone. A slot is
+  // rewritten before its image is retired, so one still showing it here names the path that didn't
+  for(const auto& [slot, shown] : m_textureDescriptors)
+    if(shown == handle)
+      error("destroyImage: image " + std::to_string(handle.value) + " destroyed while texture slot "
+            + std::to_string(slot) + " still shows it");
 }
 
 void FakeGpuBackend::writeTextureDescriptor(uint32_t slot, ImageHandle handle)

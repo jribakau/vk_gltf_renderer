@@ -313,6 +313,20 @@ TEST(FakeGpuBackend, DescriptorsNameLiveImagesOrTheDefault)
   EXPECT_EQ(gpu.errors().size(), 1u);
 }
 
+TEST(FakeGpuBackend, AnImageDestroyedWhileASlotShowsItIsAnError)
+{
+  FakeGpuBackend                   gpu;
+  const std::vector<unsigned char> pixel(4);
+  ImageInfo                        info;
+  const ImageHandle image = gpu.createImage({.pixels = pixel, .width = 1, .height = 1, .component = 4, .srgb = true}, info);
+  gpu.writeTextureDescriptor(3, image);
+  gpu.writeTextureDescriptor(5, image);
+  gpu.destroyImage(image);
+  ASSERT_EQ(gpu.errors().size(), 2u);
+  EXPECT_NE(gpu.errors()[0].find("texture slot 3 still shows it"), std::string::npos) << gpu.errors()[0];
+  EXPECT_NE(gpu.errors()[1].find("texture slot 5 still shows it"), std::string::npos) << gpu.errors()[1];
+}
+
 namespace {
 
 template <class T>
