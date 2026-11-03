@@ -40,11 +40,14 @@ bool checkpointsOn();
 void frameStart(VkCommandBuffer cmd, uint64_t frame);
 // a profiled section's start (its name) or end (nullptr), as the GPU profiler calls it
 void section(VkCommandBuffer cmd, const char* name);
-// a buffer's GPU address range made or about to be destroyed (nvvk::ResourceAllocator::bufferHook), and the name it is
-// given (nvvk::DebugUtil::nameHook: only a buffer's is kept)
+// a buffer's GPU address range made or about to be destroyed (nvvk::ResourceAllocator::bufferHook), an image's memory's
+// (nvvk::ResourceAllocator::imageHook: address 0 when its memory is dedicated to it and tells none; `systemMemory` when
+// the device's was full), and the name either is given (nvvk::DebugUtil::nameHook)
 void buffer(VkBuffer buffer, VkDeviceAddress address, VkDeviceSize size, bool made);
+void image(VkImage image, VkDeviceAddress address, VkDeviceSize size, bool systemMemory, bool made);
 void named(VkObjectType type, uint64_t handle, const char* name);
-// what the `precision` bytes from `address` were in: a buffer still there, ones destroyed (and in which frames), or none
+// what the `precision` bytes from `address` were in: a buffer or an image still there, ones destroyed (and in which
+// frames), or none
 std::string whereIs(VkDeviceAddress address, VkDeviceSize precision);
 // a frame's memory: the last few hundred are kept
 void record(Frame frame);

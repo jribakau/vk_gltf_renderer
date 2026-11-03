@@ -493,6 +493,7 @@ auto main(int argc, char** argv) -> int
   {
     // before the first buffer is made
     nvvk::ResourceAllocator::bufferHook = &gpu_trail::buffer;
+    nvvk::ResourceAllocator::imageHook  = &gpu_trail::image;
     nvvk::DebugUtil::nameHook           = &gpu_trail::named;
   }
   nvvk::CheckError::getInstance().setCallbackFunction([](VkResult result) {

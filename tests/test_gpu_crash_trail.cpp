@@ -71,6 +71,28 @@ TEST(GpuCrashTrail, AFaultsAddressIsNamedByTheBufferItWasIn)
     gpu_trail::buffer(handle(h), 0, 0, false);
 }
 
+TEST(GpuCrashTrail, AFaultsAddressIsNamedByTheImageItWasIn)
+{
+  const auto image = [](uint64_t h) { return reinterpret_cast<VkImage>(h); };
+  gpu_trail::frameStart(VK_NULL_HANDLE, 60);
+  gpu_trail::image(image(0x2001), 0x8000'0000, 4 << 20, false, true);
+  gpu_trail::named(VK_OBJECT_TYPE_IMAGE, 0x2001, "skin_D_1001.jpg");
+  gpu_trail::named(VK_OBJECT_TYPE_BUFFER, 0x2001, "a buffer's name is not an image's");
+  gpu_trail::image(image(0x2002), 0x8040'0000, 4 << 20, true, true);  // spilled to system memory
+  gpu_trail::image(image(0x2003), 0, 64 << 20, false, true);          // dedicated memory: no address
+  gpu_trail::frameStart(VK_NULL_HANDLE, 66);
+  gpu_trail::image(image(0x2001), 0, 0, false, false);
+
+  EXPECT_EQ(gpu_trail::whereIs(0x8000'1000, 0x1000),
+            "in the image 'skin_D_1001.jpg' (4.0 MB from 0x80000000), made in frame 60 and destroyed in frame 66");
+  EXPECT_EQ(gpu_trail::whereIs(0x8040'1000, 0x1000),
+            "in the image 'an image with no name' (4.0 MB from 0x80400000, in system memory), made in frame 60, there still");
+  // the one with no address is counted where nothing is found, never matched (not at 0 either)
+  EXPECT_NE(gpu_trail::whereIs(0x0000'1000, 0x1000).find("one of the 1 images in memory of their own"), std::string::npos);
+  for(uint64_t h : {0x2002, 0x2003})
+    gpu_trail::image(image(h), 0, 0, false, false);
+}
+
 TEST(GpuCrashTrail, WithoutTheExtensionsNothingIsMarked)
 {
   // no device: init never ran, so checkpoints are off and a section or frame marks nothing

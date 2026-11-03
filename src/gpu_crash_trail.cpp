@@ -41,12 +41,15 @@ struct FrameMarker
 };
 using SectionMarkers = std::array<std::pair<const Marker*, const Marker*>, kFrameMarkers>;  // a start and an end a slot
 
+// A buffer's or an image's memory, by GPU address
 struct BufferRange
 {
-  VkDeviceAddress address = 0;
+  VkDeviceAddress address = 0;  // an image's: 0 when its memory is dedicated to it, which tells no address
   VkDeviceSize    size    = 0;
   std::string     name;
   uint64_t        made = 0, destroyed = 0;  // frames
+  bool            image        = false;
+  bool            systemMemory = false;  // an image made in system memory, the device's being full
 };
 
 struct State
@@ -63,7 +66,8 @@ struct State
   std::unordered_map<VkCommandBuffer, std::vector<const Marker*>> open;   // the ends of the sections open
   std::array<FrameMarker, kFrameMarkers> frameMarkers{};
   std::unordered_map<VkBuffer, BufferRange> buffers;  // those there now
-  std::deque<BufferRange>                   freed;    // the last destroyed, oldest first
+  std::unordered_map<VkImage, BufferRange>  images;   // those there now
+  std::deque<BufferRange>                   freed;    // the last destroyed, buffers and images, oldest first
   std::array<Frame, kFramesKept>         frames{};
   size_t                                 frameCount = 0;
   std::chrono::steady_clock::time_point  start      = std::chrono::steady_clock::now();
@@ -236,32 +240,59 @@ void section(VkCommandBuffer cmd, const char* name)
   open->second.pop_back();
 }
 
-void buffer(VkBuffer buffer, VkDeviceAddress address, VkDeviceSize size, bool made)
+namespace {
+
+// A buffer or an image made (`made` true: into `live`) or destroyed (out of it, into the freed, with the frame)
+template <class Handle>
+void journal(std::unordered_map<Handle, BufferRange>& live, Handle handle, BufferRange range, bool made)
 {
-  State&                                s = state();
-  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  State& s = state();
   if(made)
   {
-    s.buffers[buffer] = {.address = address, .size = size, .made = s.frame};
+    range.made   = s.frame;
+    live[handle] = std::move(range);
     return;
   }
-  const auto  it    = s.buffers.find(buffer);
-  BufferRange range = it != s.buffers.end() ? std::move(it->second) : BufferRange{.address = address, .size = size};
-  if(it != s.buffers.end())
-    s.buffers.erase(it);
+  const auto it = live.find(handle);
+  if(it != live.end())
+  {
+    range = std::move(it->second);
+    live.erase(it);
+  }
   range.destroyed = s.frame;
   s.freed.push_back(std::move(range));
   if(s.freed.size() > kFreedKept)
     s.freed.pop_front();
 }
 
+}  // namespace
+
+void buffer(VkBuffer buffer, VkDeviceAddress address, VkDeviceSize size, bool made)
+{
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  journal(s.buffers, buffer, {.address = address, .size = size}, made);
+}
+
+void image(VkImage image, VkDeviceAddress address, VkDeviceSize size, bool systemMemory, bool made)
+{
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  journal(s.images, image, {.address = address, .size = size, .image = true, .systemMemory = systemMemory}, made);
+}
+
 void named(VkObjectType type, uint64_t handle, const char* name)
 {
-  if(type != VK_OBJECT_TYPE_BUFFER || !name)
+  if(!name || (type != VK_OBJECT_TYPE_BUFFER && type != VK_OBJECT_TYPE_IMAGE))
     return;
   State&                                s = state();
   std::lock_guard<std::recursive_mutex> lock(s.mutex);
-  if(const auto it = s.buffers.find(reinterpret_cast<VkBuffer>(handle)); it != s.buffers.end())
+  if(type == VK_OBJECT_TYPE_BUFFER)
+  {
+    if(const auto it = s.buffers.find(reinterpret_cast<VkBuffer>(handle)); it != s.buffers.end())
+      it->second.name = name;
+  }
+  else if(const auto it = s.images.find(reinterpret_cast<VkImage>(handle)); it != s.images.end())
     it->second.name = name;
 }
 
@@ -270,15 +301,22 @@ std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
   State&                                s = state();
   std::lock_guard<std::recursive_mutex> lock(s.mutex);
   const VkDeviceAddress end    = address + std::max<VkDeviceSize>(precision, 1);
-  const auto            within = [&](const BufferRange& b) { return b.size > 0 && b.address < end && address < b.address + b.size; };
+  const auto            within = [&](const BufferRange& b) {
+    return b.size > 0 && !(b.image && b.address == 0) && b.address < end && address < b.address + b.size;
+  };
   const auto            what   = [](const BufferRange& b) {
-    return fmt::format("'{}' ({:.1f} MB from 0x{:x}), made in frame {}", b.name.empty() ? "a buffer with no name" : b.name,
-                       double(b.size) / double(1 << 20), b.address, b.made);
+    return fmt::format("{}'{}' ({:.1f} MB from 0x{:x}{}), made in frame {}", b.image ? "the image " : "",
+                       b.name.empty() ? (b.image ? "an image with no name" : "a buffer with no name") : b.name,
+                       double(b.size) / double(1 << 20), b.address, b.systemMemory ? ", in system memory" : "", b.made);
   };
   std::vector<std::string> said;
-  for(const auto& [handle, b] : s.buffers)
-    if(within(b))
-      said.push_back("in " + what(b) + ", there still");
+  const auto               stillThere = [&](const auto& live) {
+    for(const auto& [handle, b] : live)
+      if(within(b))
+        said.push_back("in " + what(b) + ", there still");
+  };
+  stillThere(s.buffers);
+  stillThere(s.images);
   size_t gone = 0;
   for(auto it = s.freed.rbegin(); it != s.freed.rend() && gone < kWhereShown; ++it)
     if(within(*it))
@@ -287,7 +325,14 @@ std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
       gone++;
     }
   if(said.empty())
-    return fmt::format("in none of the {} buffers there or the last {} destroyed: an image, or the driver's own", s.buffers.size(), s.freed.size());
+  {
+    size_t unplaced = 0;
+    for(const auto& [handle, b] : s.images)
+      unplaced += b.address == 0;
+    return fmt::format("in none of the {} buffers and {} images there or the last {} destroyed: one of the {} images in memory of their own, "
+                       "whose address is not known, or the driver's own",
+                       s.buffers.size(), s.images.size() - unplaced, s.freed.size(), unplaced);
+  }
   std::string out = said[0];
   for(size_t i = 1; i < said.size(); i++)
     out += "; before that " + said[i];
