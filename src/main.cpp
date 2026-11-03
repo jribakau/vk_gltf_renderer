@@ -518,6 +518,7 @@ auto main(int argc, char** argv) -> int
             if(auto fs = streamRef->lock())
               fs->setLocalViewer(local);
           },
+          .gpuMs       = [r] { return r->frameGpuMs(); },
       });
       // after the renderer, so the copy sees the frame it just rendered
       frameStream = std::make_shared<FrameStream>(FrameStreamCreateInfo{

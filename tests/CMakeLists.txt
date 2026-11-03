@@ -50,6 +50,7 @@ set(TEST_SOURCES
     test_alias_table.cpp
     # --stream frame pacing: paced, except a still being refined
     test_frame_pacing.cpp
+    test_present_pacing.cpp
     test_present_policy.cpp
     test_present_slots.cpp
     # Figure Viewer scene logic (figure/)

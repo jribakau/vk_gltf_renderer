@@ -34,14 +34,17 @@
 #include <volk.h>
 
 #include <d3d11_4.h>
+#include <dwmapi.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "dxgi.lib")
 
 #include "frame_present.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -92,6 +95,7 @@ public:
   std::string present(int slot, uint64_t value, PresentSize frame, PresentSize view) override;
   bool        presentable() override;
   bool        waitPresentable(uint32_t timeoutMs) override;
+  double      refreshMs() override;
 
 private:
   struct Slot
@@ -127,6 +131,9 @@ private:
   PresentSize       m_capacity;
   PresentSize       m_buffer;  // the swapchain's buffers
   PresentSize       m_source;  // the part of them shown, stretched over the whole (SetSourceSize)
+
+  double                                m_refreshMs{0.0};
+  std::chrono::steady_clock::time_point m_refreshAsked{};
 };
 
 D3D11Target::~D3D11Target()
@@ -455,6 +462,25 @@ bool D3D11Target::presentable()
 bool D3D11Target::waitPresentable(uint32_t timeoutMs)
 {
   return WaitForSingleObjectEx(m_waitable, timeoutMs, FALSE) == WAIT_OBJECT_0;
+}
+
+// The compositor's refresh, which the swapchain's frames are shown at. A composition swapchain has no
+// output of its own to ask (GetContainingOutput), and DWM answers for its main display: on displays of
+// different rates the app's may differ. Asked again once a second, as the display can change.
+double D3D11Target::refreshMs()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if(m_refreshAsked != std::chrono::steady_clock::time_point{} && now - m_refreshAsked < std::chrono::seconds(1))
+    return m_refreshMs;
+  m_refreshAsked = now;
+  DWM_TIMING_INFO timing{};
+  timing.cbSize = sizeof(timing);
+  if(SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &timing)) && timing.rateRefresh.uiNumerator > 0
+     && timing.rateRefresh.uiDenominator > 0)
+    m_refreshMs = 1000.0 * double(timing.rateRefresh.uiDenominator) / double(timing.rateRefresh.uiNumerator);
+  else
+    m_refreshMs = 0.0;
+  return m_refreshMs;
 }
 
 }  // namespace

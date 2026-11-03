@@ -147,6 +147,7 @@ src/
 ├── frame_present.cpp/hpp       # Native presentation: the frames into a host window's DirectComposition
 │                               #   surface (POST /present/attach), through images shared with D3D11
 ├── frame_present_win32.cpp     # Its D3D11 side: the swapchain, the shared textures and fence (Windows)
+├── present_pacing.hpp          # Where native presentation waits for the swapchain: before the input or the present (unit-tested)
 ├── present_policy.hpp          # Who watches a --stream run, and what FrameStream copies for them (unit-tested)
 ├── present_slots.hpp           # The shared images' hand-off between Vulkan and D3D (unit-tested)
 │

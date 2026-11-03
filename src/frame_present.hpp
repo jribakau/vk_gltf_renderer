@@ -40,12 +40,16 @@
 //                                           shared image busy) and skipped (the swapchain had no
 //                                           room: the next draw goes instead), the input latency (an
 //                                           /input's arrival to the Present() of the first frame
-//                                           drawn after it, average and last, in ms), the last error
+//                                           drawn after it, average and last, in ms), where frames
+//                                           wait for the swapchain ("input" or "present"), what they
+//                                           cost and the display's refresh period (ms), the last error
 //
-// The swapchain paces the loop: before the host element takes its input, the element waits for
-// the swapchain to take a frame, so frames follow the display's refresh (present_policy.hpp lifts
-// the stream's cap). Not while a still refines: that runs unpaced, and a frame the swapchain has no
-// room for then is skipped.
+// The swapchain paces the loop (present_policy.hpp lifts the stream's cap), taking one frame at a
+// time. A frame that renders within a refresh waits for it before the host element takes its input,
+// so that it is shown at the next refresh; one that takes longer waits after its submit, before its
+// present, so the GPU has the next frame while the one before is still being shown
+// (present_pacing.hpp). Not while a still refines: that runs unpaced, and a frame the swapchain has
+// no room for then is skipped.
 //
 // While attached and visible the stream is told it has a local viewer (FrameStream::setLocalViewer):
 // it stops copying frames out for nobody, and the loop runs at the stream's rate. A failure while
@@ -60,6 +64,7 @@
 
 #include <nvapp/application.hpp>
 
+#include "present_pacing.hpp"
 #include "present_slots.hpp"
 
 namespace httplib {
@@ -90,6 +95,8 @@ public:
   virtual bool presentable() = 0;
   // presentable(), waiting up to `timeoutMs` for the swapchain to take a frame.
   virtual bool waitPresentable(uint32_t timeoutMs) = 0;
+  // The display's refresh period in milliseconds, 0 when unknown. Cheap enough to ask every frame.
+  virtual double refreshMs() = 0;
 };
 
 struct PresentTargetInfo
@@ -119,6 +126,9 @@ struct FramePresentCreateInfo
   std::function<int64_t()> takeInput;
   // The stream has (or no longer has) a local viewer (FrameStream::setLocalViewer). Optional.
   std::function<void(bool)> localViewer;
+  // The GPU time of the last frame the renderer finished, in ms (GltfRenderer::frameGpuMs), for
+  // where frames wait for the swapchain. Optional: without it the pacing sees the CPU's share alone.
+  std::function<double()> gpuMs;
 };
 
 class FramePresent : public nvapp::IAppElement

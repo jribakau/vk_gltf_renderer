@@ -90,9 +90,15 @@ struct FramePresent::Impl
   PresentSize       lastSize;
   uint64_t          lastDrawn{~uint64_t(0)};
   Clock::time_point lastPresent{};
-  // the swapchain's next frame is ours (waited for in onUpdate or found free in onRender)
+  // the swapchain's next frame is ours (waited for in onUpdate or onPostRender, or found free in onRender)
   bool    token{false};
   int64_t pendingInputNs{0};
+  // Where frames wait for the swapchain (present_pacing.hpp), and this frame's part in it: it follows
+  // the display (no refining still), it waits after its submit, and when the host took its input
+  PresentPacing     pacing;
+  bool              paced{false};
+  bool              late{false};
+  Clock::time_point frameStart{};
 
   // the viewport's size (POST /present/view), packed width << 32 | height: HTTP -> application thread
   std::atomic<uint64_t> view{0};
@@ -114,6 +120,9 @@ struct FramePresent::Impl
   std::atomic<double>   inputMs{0.0};
   std::atomic<double>   inputMsLast{0.0};
   std::atomic<uint64_t> inputSamples{0};
+  std::atomic<bool>     waitsLate{false};
+  std::atomic<double>   costMs{0.0};
+  std::atomic<double>   refreshMs{0.0};
 
   // HTTP thread: runs `work` on the application thread and returns what it returns.
   std::string run(std::function<std::string()> work);
@@ -183,11 +192,16 @@ void FramePresent::onUpdate()
   }
   for(auto& w : work)
     w();
-  // Wait for the swapchain to take a frame before the host takes its input: the frame drawn next is
-  // shown at the next refresh, and the loop follows the display's rate. Not while a still refines
-  // (it runs unpaced), and at most 50 ms, so an occluded window can't stall the loop.
-  if(s.target && s.visible && !s.token && !(s.info.refining && s.info.refining()))
+  // Wait for the swapchain to take a frame, so the loop follows the display's rate. A frame that renders
+  // within a refresh waits before the host takes its input: drawn next, it is shown at the next refresh.
+  // One that doesn't waits after its submit (onPostRender), so the GPU has it while the frame before is
+  // still being shown (present_pacing.hpp). Not while a still refines (it runs unpaced), and at most
+  // 50 ms, so an occluded window can't stall the loop.
+  s.paced = s.target && s.visible && !(s.info.refining && s.info.refining());
+  s.late  = s.paced && s.pacing.waitsLate();
+  if(s.paced && !s.late && !s.token)
     s.token = s.target->waitPresentable(50);
+  s.frameStart = Impl::Clock::now();
 }
 
 void FramePresent::onRender(VkCommandBuffer cmd)
@@ -215,14 +229,17 @@ void FramePresent::onRender(VkCommandBuffer cmd)
     s.dropped++;
     return;
   }
-  // A refining still isn't waited for (onUpdate): a frame the swapchain has no room for is skipped,
-  // and the next draw, or the re-present above, goes instead.
-  if(!s.token)
-    s.token = s.target->presentable();
-  if(!s.token)
+  // A frame that waits late takes the swapchain's frame after its submit (onPostRender). A refining
+  // still isn't waited for at all: a frame the swapchain has no room for is skipped, and the next
+  // draw, or the re-present above, goes instead.
+  if(!s.token && !s.late)
   {
-    s.skipped++;
-    return;
+    s.token = s.target->presentable();
+    if(!s.token)
+    {
+      s.skipped++;
+      return;
+    }
   }
   const VkImage  dst    = s.target->slotImage(slot);
   const uint32_t family = s.app->getQueue(0).familyIndex;
@@ -317,8 +334,26 @@ void FramePresent::onPostRender()
   Impl& s = *m_impl;
   if(s.pendingSlot < 0 || !s.target)
     return;
-  const int slot      = s.pendingSlot;
-  s.pendingSlot       = -1;
+  const int slot = s.pendingSlot;
+  s.pendingSlot  = -1;
+  // What the frame cost, from the host's input to its submit and on the GPU: where the next one waits
+  if(s.paced)
+  {
+    const double cpuMs = std::chrono::duration<double, std::milli>(Impl::Clock::now() - s.frameStart).count();
+    const double gpuMs = s.info.gpuMs ? s.info.gpuMs() : 0.0;
+    const double rate  = s.target->refreshMs();
+    s.pacing.note(cpuMs + gpuMs, rate);
+    s.waitsLate = s.pacing.waitsLate();
+    s.costMs    = s.pacing.costMs();
+    s.refreshMs = rate;
+  }
+  // A frame that waits late: for the swapchain to take it, now that the GPU has it. The slot it was
+  // copied into is free again once a later frame's present has passed it (present_slots.hpp).
+  if(!s.token && !s.target->waitPresentable(50))
+  {
+    s.skipped++;
+    return;
+  }
   s.token             = false;
   const uint64_t    v = s.view.load();
   const PresentSize view{uint32_t(v >> 32), uint32_t(v & 0xffffffffu)};
@@ -379,6 +414,8 @@ std::string FramePresent::Impl::attach(uintptr_t surface)
   slots     = PresentSlots(target->slotCount());
   lastDrawn = ~uint64_t(0);
   token     = false;
+  pacing.reset();
+  waitsLate = false;
   attached  = true;
   LOGI("native presentation: attached, %ux%u\n", ti.frame.width, ti.frame.height);
   setStatus(visible ? "attached" : "hidden", "");
@@ -397,6 +434,8 @@ void FramePresent::Impl::detach(const std::string& why)
   }
   pendingSlot = -1;
   token       = false;
+  paced       = false;
+  late        = false;
   attached    = false;
   if(info.localViewer)
     info.localViewer(false);
@@ -431,6 +470,8 @@ std::string FramePresent::Impl::statusJson()
          + ",\"dropped\":" + std::to_string(dropped.load()) + ",\"skipped\":" + std::to_string(skipped.load())
          + ",\"inputMs\":" + std::to_string(inputMs.load()) + ",\"inputMsLast\":" + std::to_string(inputMsLast.load())
          + ",\"inputSamples\":" + std::to_string(inputSamples.load())
+         + ",\"pacing\":" + std::string(waitsLate.load() ? "\"present\"" : "\"input\"")
+         + ",\"costMs\":" + std::to_string(costMs.load()) + ",\"refreshMs\":" + std::to_string(refreshMs.load())
          + ",\"error\":" + (error.empty() ? std::string("null") : jsonString(error)) + "}";
 }
 
