@@ -27,7 +27,8 @@
 // images it shares with D3D11 (present_slots.hpp has the hand-off). Nothing is read back to the CPU.
 //
 // The routes, on the frame stream's server (with its token):
-//   POST /present/attach?surface=<handle>   the surface handle, duplicated into this process.
+//   POST /present/attach?surface=<handle>   the surface handle, duplicated into this process, and
+//        [&window=<hwnd>]                   the window it is in, for the display it is on (HDR).
 //                                           Answers {"ok":true,...} once the swapchain presents,
 //                                           or {"ok":false,"error":...}; the stream goes on as before
 //   POST /present/detach                    back to the stream alone
@@ -42,7 +43,8 @@
 //                                           /input's arrival to the Present() of the first frame
 //                                           drawn after it, average and last, in ms), where frames
 //                                           wait for the swapchain ("input" or "present"), what they
-//                                           cost and the display's refresh period (ms), the last error
+//                                           cost and the display's refresh period (ms), whether frames
+//                                           are HDR, the display's HDR mode and levels, the last error
 //
 // The swapchain paces the loop (present_policy.hpp lifts the stream's cap), taking one frame at a
 // time. A frame that renders within a refresh waits for it before the host element takes its input,
@@ -55,6 +57,11 @@
 // it stops copying frames out for nobody, and the loop runs at the stream's rate. A failure while
 // presenting (a lost device) detaches and records the error; the app falls back to the stream.
 //
+// HDR: while the display the window is on is in HDR mode (Windows' "Use HDR") and the renderer makes
+// HDR frames (presentHdr, hdr_output.hpp), the shared images and the swapchain are scRGB half floats;
+// otherwise 8-bit sRGB as before. The display is looked at about once a second, so turning HDR on or
+// off, or moving the window to another display, switches within a second.
+//
 // Windows only (frame_present_win32.cpp); elsewhere attach answers that it is not supported.
 //
 
@@ -64,6 +71,7 @@
 
 #include <nvapp/application.hpp>
 
+#include "present_hdr.hpp"
 #include "present_pacing.hpp"
 #include "present_slots.hpp"
 
@@ -97,6 +105,14 @@ public:
   virtual bool waitPresentable(uint32_t timeoutMs) = 0;
   // The display's refresh period in milliseconds, 0 when unknown. Cheap enough to ask every frame.
   virtual double refreshMs() = 0;
+  // The display the window is on, as far as HDR goes. Cheap enough to ask every frame.
+  virtual DisplayHdr displayHdr() = 0;
+  // Frames are scRGB half floats (true) or 8-bit sRGB (false): the shared images and the swapchain
+  // are made again in that format. Vulkan's device must be idle. Returns an error, or empty.
+  virtual std::string setHdr(bool on) = 0;
+  virtual bool        hdr() const     = 0;
+  // The GPU can take HDR frames into the shared images: when it can't, frames stay SDR
+  virtual bool canHdr() = 0;
 };
 
 struct PresentTargetInfo
@@ -105,6 +121,7 @@ struct PresentTargetInfo
   VkPhysicalDevice physicalDevice{};
   VkDevice         device{};
   uintptr_t        surface{};  // the composition surface handle, this process's
+  uintptr_t        window{};   // the window it is in (HWND), for its display; 0: the primary display
   PresentSize      frame;      // the frame's size
 };
 
@@ -129,6 +146,12 @@ struct FramePresentCreateInfo
   // The GPU time of the last frame the renderer finished, in ms (GltfRenderer::frameGpuMs), for
   // where frames wait for the swapchain. Optional: without it the pacing sees the CPU's share alone.
   std::function<double()> gpuMs;
+  // The display the frames go to, each frame (GltfRenderer::setDisplayHdr): returns whether the frames
+  // image() gives are HDR from now on. Optional: without it frames are SDR.
+  std::function<bool(const DisplayHdr&)> hdr;
+  // The format of what image() gives: a frame whose format isn't the swapchain's is not presented.
+  // Optional: without it image() is taken to be 8-bit sRGB.
+  std::function<VkFormat()> imageFormat;
 };
 
 class FramePresent : public nvapp::IAppElement

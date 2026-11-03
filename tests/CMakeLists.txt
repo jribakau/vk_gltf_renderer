@@ -50,6 +50,7 @@ set(TEST_SOURCES
     test_alias_table.cpp
     # --stream frame pacing: paced, except a still being refined
     test_frame_pacing.cpp
+    test_present_hdr.cpp
     test_present_pacing.cpp
     test_present_policy.cpp
     test_present_slots.cpp
@@ -318,7 +319,7 @@ set_target_properties(${TEST_NAME} PROPERTIES
 # the BSDF header needs GLM's swizzles
 set(BSDF_TEST_NAME ${PROJECT_NAME}_bsdf_tests)
 add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp test_light_pick.cpp test_sobol.cpp test_ground.cpp test_walk_guide.cpp
-               test_thin_scatter.cpp test_hair_bsdf.cpp)
+               test_thin_scatter.cpp test_hair_bsdf.cpp test_hdr_output.cpp)
 target_link_libraries(${BSDF_TEST_NAME} PRIVATE GTest::gtest GTest::gtest_main glm)
 target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})
 gtest_discover_tests(${BSDF_TEST_NAME})

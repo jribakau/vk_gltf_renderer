@@ -67,8 +67,14 @@ int64_t steadyNs()
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// Four bytes a pixel in each of the three shared images and the swapchain's two buffers
-constexpr double kBytesPerPixel = 4.0 * (3 + 2);
+// A pixel in each of the three shared images and the swapchain's two buffers: four bytes, eight in HDR
+constexpr double kImagesPerPixel = 3 + 2;
+
+// What a frame has to be to go into the shared images
+VkFormat slotFormat(bool hdr)
+{
+  return hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+}
 
 }  // namespace
 
@@ -123,10 +129,12 @@ struct FramePresent::Impl
   std::atomic<bool>     waitsLate{false};
   std::atomic<double>   costMs{0.0};
   std::atomic<double>   refreshMs{0.0};
+  std::atomic<bool>     hdrFrames{false};
+  DisplayHdr            display;  // under statusMutex
 
   // HTTP thread: runs `work` on the application thread and returns what it returns.
   std::string run(std::function<std::string()> work);
-  std::string attach(uintptr_t surface);
+  std::string attach(uintptr_t surface, uintptr_t window);
   // Back to the stream alone; `why` is the error that ended presenting, if one did.
   void        detach(const std::string& why);
   void        setVisible(bool on);
@@ -192,6 +200,31 @@ void FramePresent::onUpdate()
   }
   for(auto& w : work)
     w();
+  // HDR: the frames follow the display the window is on, as the renderer makes them. A change makes the
+  // shared images and the swapchain again, in the other format, with nothing in flight using them.
+  if(s.target)
+  {
+    DisplayHdr display = s.target->displayHdr();
+    // a GPU that can't share half-float images with D3D shows an HDR display SDR frames
+    display.hdr    = display.hdr && s.target->canHdr();
+    const bool hdr = s.info.hdr && s.info.hdr(display);
+    if(hdr != s.target->hdr())
+    {
+      vkDeviceWaitIdle(s.app->getDevice());
+      if(const std::string err = s.target->setHdr(hdr); !err.empty())
+      {
+        s.detach(err);
+        return;
+      }
+      s.slots.reset();
+      s.lastDrawn = ~uint64_t(0);  // the frame drawn next is presented, changed or not
+      LOGI("native presentation: %s (SDR white %.0f nits, peak %.0f)\n", hdr ? "HDR, scRGB" : "SDR",
+           double(display.sdrWhiteNits), double(display.peakNits));
+    }
+    s.hdrFrames = s.target->hdr();
+    std::lock_guard lock(s.statusMutex);
+    s.display = display;
+  }
   // Wait for the swapchain to take a frame, so the loop follows the display's rate. A frame that renders
   // within a refresh waits before the host takes its input: drawn next, it is shown at the next refresh.
   // One that doesn't waits after its submit (onPostRender), so the GPU has it while the frame before is
@@ -215,6 +248,12 @@ void FramePresent::onRender(VkCommandBuffer cmd)
   const PresentSize size{extent.width, extent.height};
   if(image == VK_NULL_HANDLE || size.width == 0 || size.height == 0 || !fits(s.target->capacity(), size))
     return;  // a resize on its way grows the images (onResize)
+  // a frame made before a switch between SDR and HDR reached the renderer
+  if((s.info.imageFormat ? s.info.imageFormat() : VK_FORMAT_R8G8B8A8_UNORM) != slotFormat(s.target->hdr()))
+  {
+    s.dropped++;
+    return;
+  }
 
   // An unchanged image is presented again only now and then: a change that reached it without a
   // draw (a tonemapper setting) still shows within a tenth of a second.
@@ -391,7 +430,7 @@ std::string FramePresent::Impl::run(std::function<std::string()> work)
   return result.get();
 }
 
-std::string FramePresent::Impl::attach(uintptr_t surface)
+std::string FramePresent::Impl::attach(uintptr_t surface, uintptr_t window)
 {
   if(target)
     detach("");
@@ -404,7 +443,8 @@ std::string FramePresent::Impl::attach(uintptr_t surface)
       .frame          = {std::max(extent.width, 16u), std::max(extent.height, 16u)},
   };
   std::string err;
-  target = createPresentTarget(ti, err);
+  ti.window = window;
+  target    = createPresentTarget(ti, err);
   if(!target)
   {
     LOGW("native presentation: %s\n", err.c_str());
@@ -437,6 +477,10 @@ void FramePresent::Impl::detach(const std::string& why)
   paced       = false;
   late        = false;
   attached    = false;
+  // nothing shows HDR frames now: the renderer makes none
+  if(info.hdr)
+    info.hdr(DisplayHdr{});
+  hdrFrames   = false;
   if(info.localViewer)
     info.localViewer(false);
   if(!why.empty())
@@ -472,6 +516,8 @@ std::string FramePresent::Impl::statusJson()
          + ",\"inputSamples\":" + std::to_string(inputSamples.load())
          + ",\"pacing\":" + std::string(waitsLate.load() ? "\"present\"" : "\"input\"")
          + ",\"costMs\":" + std::to_string(costMs.load()) + ",\"refreshMs\":" + std::to_string(refreshMs.load())
+         + ",\"hdr\":" + (hdrFrames.load() ? "true" : "false") + ",\"display\":{\"hdr\":" + (display.hdr ? "true" : "false")
+         + ",\"sdrWhiteNits\":" + std::to_string(display.sdrWhiteNits) + ",\"peakNits\":" + std::to_string(display.peakNits) + "}"
          + ",\"error\":" + (error.empty() ? std::string("null") : jsonString(error)) + "}";
 }
 
@@ -480,9 +526,12 @@ void FramePresent::registerRoutes(httplib::Server& http)
   Impl& s = *m_impl;
   http.Post("/present/attach", [&s](const httplib::Request& req, httplib::Response& res) {
     uintptr_t surface = 0;
+    uintptr_t window  = 0;  // optional: an app that doesn't send it gets the primary display's HDR mode
     try
     {
       surface = uintptr_t(std::stoull(req.get_param_value("surface"), nullptr, 0));
+      if(req.has_param("window"))
+        window = uintptr_t(std::stoull(req.get_param_value("window"), nullptr, 0));
     }
     catch(const std::exception&)
     {
@@ -493,7 +542,7 @@ void FramePresent::registerRoutes(httplib::Server& http)
       res.set_content("surface=<handle> is required", "text/plain");
       return;
     }
-    const std::string err = s.run([&s, surface] { return s.attach(surface); });
+    const std::string err = s.run([&s, surface, window] { return s.attach(surface, window); });
     res.set_content("{\"ok\":" + std::string(err.empty() ? "true" : "false") + ",\"status\":" + s.statusJson() + "}", "application/json");
   });
   http.Post("/present/detach", [&s](const httplib::Request&, httplib::Response& res) {
@@ -530,7 +579,7 @@ void FramePresent::registerRoutes(httplib::Server& http)
 
 double FramePresent::bytesPerPixel() const
 {
-  return m_impl->attached ? kBytesPerPixel : 0.0;
+  return m_impl->attached ? kImagesPerPixel * (m_impl->hdrFrames ? 8.0 : 4.0) : 0.0;
 }
 
 #ifndef _WIN32

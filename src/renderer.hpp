@@ -57,6 +57,7 @@
 #include "renderer_pathtracer.hpp"
 #include "resources.hpp"
 #include "renderer_silhouette.hpp"
+#include "hdr_output.hpp"
 #include "env_baker.hpp"
 #include "env_image_loader.hpp"
 #include "sky_bruneton.hpp"
@@ -315,6 +316,12 @@ public:
   // The tonemapped output and its size, for the headless frame stream (src/frame_stream.hpp). The
   // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.
   VkImage    tonemappedImage() const { return m_resources.gBuffers.getColorImage(Resources::eImgTonemapped); }
+  // What a display is shown (FramePresent): the HDR image while frames are HDR, else the SDR image
+  VkImage  presentImage() const;
+  VkFormat presentFormat() const;
+  // The display the frames are presented to (FramePresent, each frame): returns whether they are HDR
+  bool setDisplayHdr(const DisplayHdr& display);
+  const HdrOutput& hdrOutput() const { return m_hdrOutput; }
   // The allocator, for a host element that owns GPU work of its own (the dForce GPU solver)
   nvvk::ResourceAllocator& allocator() { return m_resources.allocator; }
   nvvk::ResourceAllocator* deviceAllocator() override { return &m_resources.allocator; }
@@ -469,6 +476,7 @@ private:
   void onDetach() override;
   void onLastHeadlessFrame() override;
   void onRender(VkCommandBuffer cmd) override;
+  void renderFrame(VkCommandBuffer cmd);  // onRender's frame, before the HDR output's end
   void onPostRender() override;
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
   void onUIRender() override;
@@ -511,6 +519,7 @@ private:
   void silhouette(VkCommandBuffer cmd);
   bool tonemap(VkCommandBuffer cmd);
   bool runTonemapPass(VkCommandBuffer cmd);
+  void saveExr(const std::filesystem::path& filename);  // saveViewportImage's .exr
   void renderVisualHelpers(VkCommandBuffer cmd);
 #if defined(USE_DLSS)
   Dlss*       activeDlss();
@@ -599,6 +608,16 @@ private:
 
   BusyState    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
+  HdrOutput     m_hdrOutput;      // The frame an HDR display is shown, and EXR exports
+  // What the last frame's tonemapper took: an .exr export is made from it (saveExr)
+  struct TonemapInput
+  {
+    VkDescriptorImageInfo    image{};
+    VkExtent2D               size{};
+    shaderio::TonemapperData data{};
+  } m_tonemapInput;
+  bool          m_presentHdr     = true;  // presentHdr: HDR frames when the display is in HDR mode
+  float         m_presentHdrPeak = 0.0F;  // presentHdrPeak: the display's peak in nits; 0 = as it reports
   VisualHelpers m_visualHelpers;  // Grid + transform gizmo overlay
   EnvBaker      m_envBaker;       // Bakes analytic skies into the shared lighting environment
   SkyBruneton   m_skyBruneton;    // Precomputed atmospheric scattering LUTs

@@ -301,13 +301,14 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     });
   });
   // The frame as an image file without its overlays, answered once it is on disk, or an error when it
-  // isn't: what the app's exports save (a .hdr gets the linear image, saveViewportImage)
+  // isn't: what the app's exports save (a .hdr gets the path tracer's raw image, an .exr the exposed
+  // linear one before tone mapping: saveViewportImage)
   cmds.add("render.save", [impl](const Json& args) {
     const std::filesystem::path path = pathOf(args.at("path").get<std::string>());
     std::string                 ext  = utf8Of(path.extension());
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    if(ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".hdr")
-      throw std::runtime_error("render.save writes a .png, .jpg or .hdr file");
+    if(ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".hdr" && ext != ".exr")
+      throw std::runtime_error("render.save writes a .png, .jpg, .hdr or .exr file");
     // a file there already is the one Save as chose to replace: written is a newer one
     std::error_code ignored;
     const auto      before = std::filesystem::last_write_time(path, ignored);

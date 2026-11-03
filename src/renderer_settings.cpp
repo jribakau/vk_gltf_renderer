@@ -68,6 +68,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.addVector({"silhouetteColor", "Color of the silhouette"}, &m_resources.settings.silhouetteColor, Persist::eYes);
   m_settings.add({"dbgVisualization", "Visualization Mode"}, (int*)&m_resources.settings.visualization, Persist::eYes);
   m_settings.add({"dbgWireframe", "Enable wireframe overlay"}, &m_resources.settings.wireframe, Persist::eYes);
+  // Native presentation on an HDR display (hdr_output.hpp): the frames it is shown go to the display in
+  // HDR, their highlights past SDR white. The stream, screenshots and exports stay SDR.
+  m_settings.add({"presentHdr", "Presentation: on a display in HDR mode, show the frames in HDR"}, &m_presentHdr, Persist::eYes);
+  m_settings.add({"presentHdrPeak", "Presentation: the HDR display's peak in nits (0 = as the display reports it)"},
+                 &m_presentHdrPeak, Persist::eYes, 0.0F, 10000.0F);
   m_settings.add({"ptOptimalShader",
                   "Compile gltf_pathtrace.slang with GLTF_USE_* gates specialized per scene "
                   "(no runtime MAT_EXT_* changes; triggers shader recompile on scene/material change). Default off."},

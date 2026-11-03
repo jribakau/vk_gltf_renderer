@@ -533,7 +533,7 @@ auto main(int argc, char** argv) -> int
       // app shows frames itself, so the stream it needs is set once that exists
       auto streamRef = std::make_shared<std::weak_ptr<FrameStream>>();
       auto present   = std::make_shared<FramePresent>(FramePresentCreateInfo{
-          .image       = [r] { return r->tonemappedImage(); },
+          .image       = [r] { return r->presentImage(); },
           .imageSize   = [r] { return r->renderSize(); },
           .drawn       = [r] { return r->drawnFrameCount(); },
           .refining    = [r] { return r->isRefiningStill(); },
@@ -546,6 +546,8 @@ auto main(int argc, char** argv) -> int
               fs->setLocalViewer(local);
           },
           .gpuMs       = [r] { return r->frameGpuMs(); },
+          .hdr         = [r](const DisplayHdr& display) { return r->setDisplayHdr(display); },
+          .imageFormat = [r] { return r->presentFormat(); },
       });
       // after the renderer, so the copy sees the frame it just rendered
       frameStream = std::make_shared<FrameStream>(FrameStreamCreateInfo{

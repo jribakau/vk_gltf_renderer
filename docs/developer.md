@@ -147,6 +147,8 @@ src/
 ├── frame_present.cpp/hpp       # Native presentation: the frames into a host window's DirectComposition
 │                               #   surface (POST /present/attach), through images shared with D3D11
 ├── frame_present_win32.cpp     # Its D3D11 side: the swapchain, the shared textures and fence (Windows)
+├── present_hdr.hpp             # An HDR display's SDR white and peak, as the HDR output takes them (unit-tested)
+├── hdr_output.cpp/hpp          # The frame an HDR display is shown (scRGB), and EXR exports' linear image
 ├── present_pacing.hpp          # Where native presentation waits for the swapchain: before the input or the present (unit-tested)
 ├── present_policy.hpp          # Who watches a --stream run, and what FrameStream copies for them (unit-tested)
 ├── present_slots.hpp           # The shared images' hand-off between Vulkan and D3D (unit-tested)
@@ -195,6 +197,9 @@ shaders/
 ├── gizmo_visuals_shaderio.h.slang # Gizmo shader I/O
 ├── optix_image_to_buffer.slang # OptiX denoiser buffer conversion
 ├── denoiser_handoff.slang      # DLSS hand-off blend of two images
+├── hdr_output.slang            # HDR display output (tone map, overlays) and the EXR export's linear image
+├── hdr_output.h.slang          # Its tone curve: Neutral with the display's peak, the others' shoulder opened (unit-tested)
+├── hdr_output_io.h.slang       # Its bindings and push constant
 ├── gltf_light_ies.h.slang      # EXT_lights_ies: photometric-profile falloff lookup
 ├── sky_background.h.slang      # Background (sun-bearing) field for authored skies
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks

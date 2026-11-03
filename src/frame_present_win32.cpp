@@ -41,6 +41,7 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "user32.lib")  // QueryDisplayConfig, DisplayConfigGetDeviceInfo, MonitorFromWindow
 
 #include "frame_present.hpp"
 
@@ -54,10 +55,51 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-constexpr int         kSlots     = 3;
-constexpr DXGI_FORMAT kFormat    = DXGI_FORMAT_R8G8B8A8_UNORM;  // the tonemapped image's, sRGB-encoded values
-constexpr VkFormat    kVkFormat  = VK_FORMAT_R8G8B8A8_UNORM;
-constexpr UINT        kSwapFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+constexpr int  kSlots     = 3;
+constexpr UINT kSwapFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+
+// What frames are, as D3D and Vulkan name it, and how the display is to read them
+struct FrameFormat
+{
+  DXGI_FORMAT           dxgi;
+  VkFormat              vk;
+  DXGI_COLOR_SPACE_TYPE colorSpace;
+};
+// SDR: the tonemapped image's sRGB-encoded values
+constexpr FrameFormat kSdrFormat{DXGI_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709};
+// HDR: scRGB, linear half floats where 1.0 is 80 nits, which the compositor maps to the display
+constexpr FrameFormat kHdrFormat{DXGI_FORMAT_R16G16B16A16_FLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709};
+
+// Windows' SDR white level of the display GDI calls `gdiName` (MONITORINFOEX::szDevice), in nits; 0 when
+// it can't be read (before Windows 10 1709, or a display that left)
+float sdrWhiteNits(const wchar_t* gdiName)
+{
+  UINT32 pathCount = 0, modeCount = 0;
+  if(GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS)
+    return 0.0F;
+  std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+  std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+  if(QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) != ERROR_SUCCESS)
+    return 0.0F;
+  for(UINT32 i = 0; i < pathCount; i++)
+  {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+    source.header.type      = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size      = sizeof(source);
+    source.header.adapterId = paths[i].sourceInfo.adapterId;
+    source.header.id        = paths[i].sourceInfo.id;
+    if(DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS || wcscmp(source.viewGdiDeviceName, gdiName) != 0)
+      continue;
+    DISPLAYCONFIG_SDR_WHITE_LEVEL white{};
+    white.header.type      = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+    white.header.size      = sizeof(white);
+    white.header.adapterId = paths[i].targetInfo.adapterId;
+    white.header.id        = paths[i].targetInfo.id;
+    if(DisplayConfigGetDeviceInfo(&white.header) == ERROR_SUCCESS)
+      return present_hdr::sdrWhiteNits(white.SDRWhiteLevel);
+  }
+  return 0.0F;
+}
 
 std::string failed(const char* what, HRESULT hr)
 {
@@ -80,6 +122,7 @@ public:
       : m_device(info.device)
       , m_physicalDevice(info.physicalDevice)
       , m_surface(reinterpret_cast<HANDLE>(info.surface))
+      , m_window(reinterpret_cast<HWND>(info.window))
   {
   }
   ~D3D11Target() override;
@@ -96,6 +139,10 @@ public:
   bool        presentable() override;
   bool        waitPresentable(uint32_t timeoutMs) override;
   double      refreshMs() override;
+  DisplayHdr  displayHdr() override;
+  std::string setHdr(bool on) override;
+  bool        hdr() const override { return m_format.dxgi == kHdrFormat.dxgi; }
+  bool        canHdr() override;
 
 private:
   struct Slot
@@ -105,7 +152,8 @@ private:
     VkDeviceMemory          memory{};
   };
 
-  std::string supported() const;
+  // Vulkan can import D3D11 textures of `format` (and the fence): empty, or why not
+  std::string supported(VkFormat format) const;
   std::string makeSlots(PresentSize capacity);
   void        destroySlots();
   // D3D's queue is done with every frame handed to it (or the timeout passed)
@@ -134,6 +182,15 @@ private:
 
   double                                m_refreshMs{0.0};
   std::chrono::steady_clock::time_point m_refreshAsked{};
+
+  HWND        m_window{};  // the app's: the display it is on decides HDR
+  FrameFormat m_format = kSdrFormat;
+  int         m_canHdr = -1;  // canHdr(), once asked: 0 or 1
+  // The display, as last looked at (displayHdr), through a factory of its own that is made again once
+  // the outputs change (a display turned to HDR, plugged in or out)
+  ComPtr<IDXGIFactory1>                 m_outputs;
+  DisplayHdr                            m_display;
+  std::chrono::steady_clock::time_point m_displayAsked{};
 };
 
 D3D11Target::~D3D11Target()
@@ -157,7 +214,7 @@ D3D11Target::~D3D11Target()
     CloseHandle(m_surface);
 }
 
-std::string D3D11Target::supported() const
+std::string D3D11Target::supported(VkFormat vkFormat) const
 {
   if(!vkGetMemoryWin32HandlePropertiesKHR || !vkImportSemaphoreWin32HandleKHR)
     return "the Vulkan device lacks VK_KHR_external_memory_win32 or VK_KHR_external_semaphore_win32";
@@ -169,7 +226,7 @@ std::string D3D11Target::supported() const
   const VkPhysicalDeviceImageFormatInfo2 format{
       .sType  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
       .pNext  = &external,
-      .format = kVkFormat,
+      .format = vkFormat,
       .type   = VK_IMAGE_TYPE_2D,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
       .usage  = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -195,7 +252,7 @@ std::string D3D11Target::supported() const
 
 std::string D3D11Target::init(PresentSize frame)
 {
-  if(std::string err = supported(); !err.empty())
+  if(std::string err = supported(kSdrFormat.vk); !err.empty())
     return err;
 
   // D3D11 on the renderer's GPU: a laptop's other GPU could not open its images
@@ -265,7 +322,7 @@ std::string D3D11Target::init(PresentSize frame)
   const DXGI_SWAP_CHAIN_DESC1 desc{
       .Width       = frame.width,
       .Height      = frame.height,
-      .Format      = kFormat,
+      .Format      = m_format.dxgi,
       .SampleDesc  = {1, 0},
       .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
       .BufferCount = 2,
@@ -283,7 +340,7 @@ std::string D3D11Target::init(PresentSize frame)
   m_swapchain->SetMaximumFrameLatency(1);
   m_waitable = m_swapchain->GetFrameLatencyWaitableObject();
   if(ComPtr<IDXGISwapChain3> sc3; SUCCEEDED(m_swapchain.As(&sc3)))
-    sc3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+    sc3->SetColorSpace1(m_format.colorSpace);
   m_buffer = m_source = frame;
   return "";
 }
@@ -299,7 +356,7 @@ std::string D3D11Target::makeSlots(PresentSize capacity)
         .Height     = capacity.height,
         .MipLevels  = 1,
         .ArraySize  = 1,
-        .Format     = kFormat,
+        .Format     = m_format.dxgi,
         .SampleDesc = {1, 0},
         .Usage      = D3D11_USAGE_DEFAULT,
         .BindFlags  = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
@@ -322,7 +379,7 @@ std::string D3D11Target::makeSlots(PresentSize capacity)
         .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext         = &external,
         .imageType     = VK_IMAGE_TYPE_2D,
-        .format        = kVkFormat,
+        .format        = m_format.vk,
         .extent        = {capacity.width, capacity.height, 1},
         .mipLevels     = 1,
         .arrayLayers   = 1,
@@ -481,6 +538,79 @@ double D3D11Target::refreshMs()
   else
     m_refreshMs = 0.0;
   return m_refreshMs;
+}
+
+// The display the window is on, found among the outputs by its monitor: in HDR when Windows shows it in
+// BT.2100 PQ ("Use HDR"), its peak from its EDID, its SDR white level from the display configuration.
+// Looked at again once a second: HDR turned on or off, or the window moved, shows within one.
+DisplayHdr D3D11Target::displayHdr()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if(m_displayAsked != std::chrono::steady_clock::time_point{} && now - m_displayAsked < std::chrono::seconds(1))
+    return m_display;
+  m_displayAsked = now;
+
+  const HMONITOR monitor = m_window ? MonitorFromWindow(m_window, MONITOR_DEFAULTTONEAREST) :
+                                      MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  // a factory sees the outputs as they were when it was made
+  if(!m_outputs || !m_outputs->IsCurrent())
+  {
+    m_outputs.Reset();
+    if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&m_outputs))))
+      return m_display = {};
+  }
+  DisplayHdr found;
+  ComPtr<IDXGIAdapter1> adapter;
+  for(UINT a = 0; m_outputs->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; a++)
+  {
+    ComPtr<IDXGIOutput> output;
+    for(UINT o = 0; adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; o++)
+    {
+      ComPtr<IDXGIOutput6> output6;
+      DXGI_OUTPUT_DESC1    desc{};
+      if(FAILED(output.As(&output6)) || FAILED(output6->GetDesc1(&desc)) || desc.Monitor != monitor)
+        continue;
+      found.hdr          = desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+      found.peakNits     = desc.MaxLuminance;
+      found.sdrWhiteNits = sdrWhiteNits(desc.DeviceName);
+      return m_display = found;
+    }
+  }
+  return m_display = found;
+}
+
+bool D3D11Target::canHdr()
+{
+  if(m_canHdr < 0)
+    m_canHdr = supported(kHdrFormat.vk).empty() ? 1 : 0;
+  return m_canHdr == 1;
+}
+
+std::string D3D11Target::setHdr(bool on)
+{
+  const FrameFormat& format = on ? kHdrFormat : kSdrFormat;
+  if(format.dxgi == m_format.dxgi)
+    return "";
+  // Nothing of D3D's may still use the shared images or the swapchain's buffers
+  if(!drain(1000))
+    return "D3D did not finish with the shared images";
+  m_context->ClearState();
+  m_context->Flush();
+  destroySlots();
+  HRESULT hr = m_swapchain->ResizeBuffers(0, m_buffer.width, m_buffer.height, format.dxgi, kSwapFlags);
+  if(FAILED(hr))
+    return failed("ResizeBuffers (format)", hr);
+  if(ComPtr<IDXGISwapChain3> sc3; SUCCEEDED(m_swapchain.As(&sc3)))
+  {
+    UINT support = 0;
+    if(FAILED(sc3->CheckColorSpaceSupport(format.colorSpace, &support)) || !(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+      return on ? "the swapchain can't present scRGB" : "the swapchain can't present sRGB";
+    if(FAILED(hr = sc3->SetColorSpace1(format.colorSpace)))
+      return failed("SetColorSpace1", hr);
+  }
+  m_format = format;
+  m_source = m_buffer;
+  return makeSlots(m_capacity);
 }
 
 }  // namespace

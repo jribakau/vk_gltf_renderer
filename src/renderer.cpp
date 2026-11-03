@@ -72,6 +72,12 @@
 
 #include "renderer.hpp"
 
+#ifdef NVP_SUPPORTS_BASISU
+// the EXR writer of basis_universal's tinyexr, which env_image_loader.cpp reads environments with
+#include <3rdparty/tinyexr.h>
+#endif
+#include <nvvk/helpers.hpp>
+
 #include <figure/io/timing.hpp>
 #include "staging_config.hpp"
 #include "tinygltf_utils.hpp"
@@ -203,6 +209,8 @@ void GltfRenderer::onAttach(nvapp::Application* app)
 
   // Silhouette renderer
   m_silhouette.init(m_resources);
+  // The frame an HDR display is shown
+  m_hdrOutput.init(m_resources);
 
 
   // Producer for analytic skies. Its lat-long image feeds the same HdrIbl the HDR file path uses,
@@ -345,6 +353,7 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
   m_resources.gBuffers.cmdClear(cmd);
   m_resources.appMemoryTracker.track("GBuffers", m_resources.gBuffers, Resources::eImgCount);
   m_pathTracer.onResize(cmd, size, m_resources);
+  m_hdrOutput.onResize(cmd, size);
   m_resources.tonemappedUi.update(m_resources.gBuffers.getUiImageView(Resources::eImgTonemapped));
 
   // Resize visual helpers (depth buffer + scene depth descriptor set)
@@ -535,13 +544,80 @@ void GltfRenderer::onPostRender()
 }
 
 // One rule for every way the viewport is saved (--output, --outputSamples, the screenshot
-// parameter): a .hdr file gets the linear rendered image, so it can be measured; any
-// other extension gets what the screen shows.
+// parameter): a .hdr file gets the linear rendered image, so it can be measured; an .exr the
+// linear image the screen is made from (saveExr); any other extension gets what the screen shows.
 void GltfRenderer::saveViewportImage(const std::filesystem::path& filename)
 {
+  if(nvutils::extensionMatches(filename, ".exr"))
+  {
+    saveExr(filename);
+    return;
+  }
   const Resources::ImageType imageType =
       nvutils::extensionMatches(filename, ".hdr") ? Resources::eImgRendered : Resources::eImgTonemapped;
   m_app->saveImageToFile(m_resources.gBuffers.getColorImage(imageType), m_resources.gBuffers.getSize(), filename);
+}
+
+// An EXR of what the frame was made from, for compositing and grading elsewhere: the denoised image the
+// tonemapper took, with its exposure and white balance, linear Rec. 709 half floats, unclamped, before the
+// tone curve and the grading. From the last frame drawn, its images as it left them: after a frame's
+// submit (onPostRender) or at a headless run's end (--output).
+void GltfRenderer::saveExr(const std::filesystem::path& filename)
+{
+  const TonemapInput& in = m_tonemapInput;
+  if(in.size.width == 0 || in.size.height == 0)
+  {
+    LOGE("Saving %s: no frame was drawn to export\n", nvutils::utf8FromPath(filename).c_str());
+    return;
+  }
+#ifdef NVP_SUPPORTS_BASISU
+  // The frame's images still hold what it drew: the export pass from them, then its read back
+  VkImage         linear{};
+  VkDeviceMemory  linearMemory{};
+  VkCommandBuffer cmd = m_app->createTempCmdBuffer();
+  m_hdrOutput.cmdExportLinear(cmd, m_resources, in.size, in.data, in.image);
+  const VkExtent2D size   = m_hdrOutput.exportSize();
+  VkResult         result = nvvk::imageToLinear(cmd, m_device, m_app->getPhysicalDevice(), m_hdrOutput.exportImage(), size,
+                                                linear, linearMemory, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_GENERAL);
+  m_app->submitAndWaitTempCmdBuffer(cmd);
+  std::vector<float> pixels;
+  if(result == VK_SUCCESS)
+  {
+    VkImageSubresource  subresource{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+    VkSubresourceLayout layout{};
+    vkGetImageSubresourceLayout(m_device, linear, &subresource, &layout);
+    const char* data = nullptr;
+    result           = vkMapMemory(m_device, linearMemory, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+    if(result == VK_SUCCESS)
+    {
+      pixels.resize(size_t(size.width) * size.height * 4);
+      data += layout.offset;
+      for(uint32_t y = 0; y < size.height; y++, data += layout.rowPitch)
+        std::memcpy(pixels.data() + size_t(y) * size.width * 4, data, size_t(size.width) * 4 * sizeof(float));
+      vkUnmapMemory(m_device, linearMemory);
+    }
+  }
+  vkDeviceWaitIdle(m_device);  // nothing reads the export any more
+  vkDestroyImage(m_device, linear, nullptr);
+  vkFreeMemory(m_device, linearMemory, nullptr);
+  m_hdrOutput.releaseExport();
+  if(result != VK_SUCCESS)
+  {
+    LOGE("Saving %s: reading the image back failed (VkResult %d)\n", nvutils::utf8FromPath(filename).c_str(), int(result));
+    return;
+  }
+  const char* err = nullptr;
+  if(SaveEXR(pixels.data(), int(size.width), int(size.height), 4, /*save_as_fp16=*/1, nvutils::utf8FromPath(filename).c_str(), &err) != TINYEXR_SUCCESS)
+  {
+    LOGE("Saving %s: %s\n", nvutils::utf8FromPath(filename).c_str(), err ? err : "the EXR writer failed");
+    FreeEXRErrorMessage(err);
+    return;
+  }
+  LOGI("Saved %s (%ux%u, linear half floats)\n", nvutils::utf8FromPath(filename).c_str(), size.width, size.height);
+#else
+  m_hdrOutput.releaseExport();
+  LOGE("Saving %s: this build has no EXR writer (basis_universal's tinyexr)\n", nvutils::utf8FromPath(filename).c_str());
+#endif
 }
 
 void GltfRenderer::saveHeadlessOutputImage()
@@ -779,10 +855,18 @@ rs::MemoryLedger GltfRenderer::memoryLedger() const
 
 void GltfRenderer::onRender(VkCommandBuffer cmd)
 {
+  renderFrame(cmd);
+  // Whatever the frame did, or returned early from: the HDR image gets its overlays, or the SDR image whole
+  m_hdrOutput.cmdFinish(cmd, m_resources);
+}
+
+void GltfRenderer::renderFrame(VkCommandBuffer cmd)
+{
   NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
   m_profilerTimeline->frameAdvance();
   // for refuseFrameSize on the stream's thread
-  m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0));
+  m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0)
+                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0));
   {
     const VkExtent2D s = renderSize();
     m_frameSizePacked.store(uint64_t(s.width) << 32 | s.height);
@@ -1018,6 +1102,8 @@ void GltfRenderer::onRender(VkCommandBuffer cmd)
         dlss->evaluateNr(cmd);
       }
 #endif
+  // The SDR image is final: the HDR one keeps a copy to tell the overlays drawn next from it
+  m_hdrOutput.cmdKeepSdr(cmd, m_resources);
   // The overlays go into the tonemapped image; a frame a screenshot takes is drawn without them
   // (the stream shows that one frame bare, the next has them again)
   const bool overlays = m_screenshotPending.empty();
@@ -1112,6 +1198,23 @@ bool GltfRenderer::tonemap(VkCommandBuffer cmd)
   return runTonemapPass(cmd);
 }
 
+VkImage GltfRenderer::presentImage() const
+{
+  const VkImage hdr = m_hdrOutput.active() ? m_hdrOutput.image() : VK_NULL_HANDLE;
+  return hdr != VK_NULL_HANDLE ? hdr : tonemappedImage();
+}
+
+VkFormat GltfRenderer::presentFormat() const
+{
+  return m_hdrOutput.active() && m_hdrOutput.image() != VK_NULL_HANDLE ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+}
+
+bool GltfRenderer::setDisplayHdr(const DisplayHdr& display)
+{
+  m_hdrOutput.setDisplay(display, m_presentHdr, m_presentHdrPeak);
+  return m_hdrOutput.active();
+}
+
 bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 {
   // Select which buffer to tonemap based on user selection
@@ -1187,6 +1290,14 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 
   m_resources.tonemapper.runCompute(cmd, gbufSize, tonemapperData, inputBuffer,
                                     m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped));
+
+  // The HDR image from the same input and settings, while frames are HDR. Not for a DLSS guide view,
+  // drawn into a corner of the SDR image, nor with auto exposure, which only the SDR tonemapper
+  // measures: those frames show the SDR image whole (HdrOutput::cmdFinish).
+  if(!usingGuideBuffer && !bypassTonemapper && !tonemapperData.autoExposure)
+    m_hdrOutput.cmdTonemap(cmd, m_resources, gbufSize, tonemapperData, inputBuffer);
+  // What an .exr saved from this frame is made from (saveExr)
+  m_tonemapInput = {.image = inputBuffer, .size = gbufSize, .data = tonemapperData};
 
   // Barrier: tonemapper compute writes must be visible to both the DLSS-NR compute pass (which
   // reads eImgTonemapped immediately after tonemap()) and the silhouette fragment shader.
@@ -1516,6 +1627,7 @@ void GltfRenderer::destroyResources()
     m_profilerTimeline = nullptr;
   }
   m_silhouette.deinit(m_resources);
+  m_hdrOutput.deinit(m_resources);
   m_skyBruneton.deinit(m_resources);
   m_envBaker.deinit(m_resources);
 

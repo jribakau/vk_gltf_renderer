@@ -69,6 +69,9 @@
 //                                                frame's size (a /size lands before the next frame);
 //                                                texturesCooking: textures the scene took on a cold cache
 //                                                that are still cooking, which a still waits for
+//   render.save     {path}  -> {path}             the frame without its overlays, answered once on disk: .png or .jpg as
+//                                                the screen shows it, .hdr the path tracer's raw image, .exr the exposed
+//                                                linear image before tone mapping (GltfRenderer::saveExr)
 //   render.capture  {path}  -> {samples, converged}   the frame as a linear .hdr (path tracer), answered once saved
 //   render.ledger   {}  -> {hits, total, idleImages, retiring, spilled, meshes}   what the scene holds on the GPU, by who reads it, and what first hits last wanted of it
 //   wardrobe.keepFull {prop, item, on}            short of GPU memory, its textures come down only when nothing else can
