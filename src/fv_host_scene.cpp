@@ -867,6 +867,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
           // With their keys too, each at its place in the file, and a piece that was taken off stays
           // off; a file from before keys were saved has neither.
           WearRequest request{rel, "", {}};
+          request.posesFeet = false;
           for(const Json& same : worn)
             if(relKey(same.value("rel", "")) == relKey(rel) && same.value("id", 0) > 0)
             {

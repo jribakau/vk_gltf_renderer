@@ -353,7 +353,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
         auto done  = std::make_shared<std::promise<bool>>();
         auto ok    = done->get_future();
         auto again = std::make_shared<bool>(false);
-        post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, keys = request.keys, only = request.only, step = request.step, label,
+        post([this, target, prepared = slot.prepared, rel = request.rel, ids = request.ids, keys = request.keys, only = request.only, step = request.step, feet = request.posesFeet, label,
               images = std::move(slot.images), uncooked = std::move(slot.uncooked), done, autoColor = slot.autoColor,
               autoColorDoc = slot.autoColorDoc, problems = looks.problems, quality = slot.quality, subdivision = s.subdivision, again]() mutable {
           if(!inScene(target))
@@ -388,7 +388,7 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
             if(step)
               for(const fv::WornItem& w : target->fig->items)
                 had[w.id] = itemRecord(*target, w);
-            fv::WearResult r = target->fig->commitWear(prepared, rel, ids, keys, only);
+            fv::WearResult r = target->fig->commitWear(prepared, rel, ids, keys, only, feet);
             if(only)
             {
               // one item of the file put back: the others are worn already, or were not

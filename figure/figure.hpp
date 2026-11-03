@@ -285,8 +285,10 @@ public:
   // `keys` the same for their keys, so what names their dials ("Loosen Neck@w3": a scene file, the
   // history) still does. `only`: just the items with an id are coming back, so the file's other
   // items, worn or not, aren't replaced; the caller takes the new copies of those off again.
+  // `posesFeet`: the file's foot pose goes on the figure (a heel's); a scene file coming back has the
+  // feet as they were saved, which that pose would turn a second time.
   WearResult commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids = {},
-                        const std::vector<std::string>& keys = {}, bool only = false);
+                        const std::vector<std::string>& keys = {}, bool only = false, bool posesFeet = true);
   // The worn items commitWear would replace, given the same `ids` and `only`: the same garment again.
   std::vector<int> itemsReplacedBy(const PreparedWear& wear, const std::vector<int>& ids, bool only) const;
   // What building the item at `quality` reads, copied; null when it is gone or none of it would change. Owning thread.

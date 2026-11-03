@@ -1268,6 +1268,37 @@ TEST(FvHost, ADialTurnedToNothingStaysThereWhenReopened)
   EXPECT_EQ(Reopened(old).dial("Stretch"), 0.5);
 }
 
+// A heel worn points the feet, but one coming back with a scene file doesn't: the file has the feet as
+// they were saved, which the heel's pose would turn a second time. Feet flattened by hand after the
+// heel went on stay flat, whether it turned the bone (Foot Heels) or set the figure's dial (Foot Boots).
+TEST(FvHost, AHeelComingBackWithASceneLeavesTheFeetAsTheyWereSaved)
+{
+  const std::string figure = "People/Test/Foot Figure.duf", dial = "body_ctrl_lFootHeeledShoe";
+  const auto footX = [](HostRig& rig, const std::string& id) {
+    return rig.topic("pose/" + id).at("bones").at("l_foot").at("axes").at("rotation/x").value("value", -1.0);
+  };
+  for(const char* boots : {"People/Test/Clothing/Foot Heels.duf", "People/Test/Clothing/Foot Boots.duf"})
+  {
+    SCOPED_TRACE(boots);
+    HostRig rig;
+    ASSERT_TRUE(rig.cmd("load", {{"rel", figure}}).value("ok", false));
+    ASSERT_TRUE(rig.settle());
+    const std::string id = figureId(rig.topic("scene"));
+    ASSERT_TRUE(rig.cmd("wear", {{"prop", id}, {"rel", boots}}).at("result").contains("job"));
+    ASSERT_TRUE(rig.settle());
+    const Json dialled = rig.topic("morphs/" + id).at("channels").value(dial, Json::object()).value("value", Json());
+    ASSERT_TRUE(footX(rig, id) == 30 || dialled == 0.8) << footX(rig, id) << " " << dialled;
+
+    rig.cmd("pose.set", {{"prop", id}, {"values", {{"l_foot/rotation/x", 0.0}}}});
+    rig.cmd("morph.set", {{"prop", id}, {"values", {{dial, 0.0}}}});
+    rig.host->onUpdate();
+    Reopened back(rig.cmd("scene.state", {{"prop", id}}).at("result"), figure);
+    EXPECT_FALSE(itemNamed(back.items(), "Foot Heel").empty()) << back.items().dump();
+    EXPECT_EQ(footX(back.rig, back.id), 0);
+    EXPECT_EQ(back.dial(dial), 0.0);
+  }
+}
+
 // A layered image preset goes on as a makeup, and as a preset opened by itself (a tattoo): each was
 // refused for being neither a material preset nor anything the viewport could put on.
 TEST(FvHost, ALayeredImagePresetGoesOnAsAMakeupAndAsAPreset)

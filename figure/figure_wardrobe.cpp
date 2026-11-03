@@ -602,7 +602,7 @@ std::vector<int> Figure::itemsReplacedBy(const PreparedWear& wear, const std::ve
 }
 
 WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::string& rel, const std::vector<int>& ids,
-                              const std::vector<std::string>& keys, bool only)
+                              const std::vector<std::string>& keys, bool only, bool posesFeet)
 {
   timing::Scope     t("commitWear " + rel);
   PreparedWear&     p   = *wear;
@@ -807,7 +807,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   // file's items carry its pose; it is set once, and the item with the most of its vertices on the
   // feet keeps what it set (an outfit's shoes, not its dress), so the feet go back when that one
   // comes off. A dial the figure lacks (a G9 heel on G8) is left out.
-  if(pose && !w.items.empty())
+  if(pose && posesFeet && !w.items.empty())
   {
     std::vector<std::string> names;
     for(const auto& [id, node] : loaded.rigs[size_t(loaded.mainRig)].bones)

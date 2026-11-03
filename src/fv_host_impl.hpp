@@ -965,6 +965,8 @@ struct FvHost::Impl
     std::vector<std::string> keys;  // the keys they had, the same way
     bool only = false;  // its items without an id come off again at once: one item of a file put back
     bool step = false;  // the user put it on: a step of the history
+    // the file's foot pose goes on (a heel's); not for a scene file's items, whose feet it has
+    bool posesFeet = true;
   };
   Json     wear(const Json& args);
   // What a restore sets on the figure besides its wardrobe, put on before the wear's composition so
