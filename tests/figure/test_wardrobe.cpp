@@ -13,6 +13,7 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <numbers>
 #include <set>
 #include <string>
 #include <thread>
@@ -28,6 +29,7 @@
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
+#include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
 
@@ -401,9 +403,16 @@ std::unique_ptr<fv::Figure> footFigure()
 }
 const char* const kFootHeels  = "People/Test/Clothing/Foot Heels.duf";
 const char* const kFootOutfit = "People/Test/Clothing/Foot Outfit.duf";
+const char* const kFootBoots  = "People/Test/Clothing/Foot Boots.duf";
 double            footX(const fv::Figure& figure)
 {
   return figure.pose->posed("l_foot", "rotation", "x").value_or(NAN);
+}
+// The foot's turn as drawn, posed and driven together, in degrees
+double footTurn(const fv::Figure& figure)
+{
+  const fv::Quat& q = figure.loaded.scene.nodes[size_t(figure.loaded.rigs[size_t(figure.loaded.mainRig)].find(figure.loaded.scene, "l_foot"))].quaternion;
+  return 2 * std::acos(std::min(1.0, std::abs(q.w))) * 180 / std::numbers::pi;
 }
 }  // namespace
 
@@ -442,6 +451,50 @@ TEST(Wardrobe, AnOutfitsFeetGoBackWithItsShoeNotItsShirt)
   EXPECT_DOUBLE_EQ(footX(*figure), 30);
   ASSERT_TRUE(figure->removeItem(heel));
   EXPECT_EQ(footX(*figure), 0);
+}
+
+// A Genesis 9 heel may set only the figure's own foot dial, body_ctrl_lFootHeeledShoe, whose formula
+// points the foot: the dial is set and the foot turns, a dial the figure lacks is passed over, and
+// taken off, the dial goes back.
+TEST(Wardrobe, AHeelSettingTheFiguresFootDialPointsTheFoot)
+{
+  const auto figure = footFigure();
+  ASSERT_NE(figure->morphs->channel("body_ctrl_lFootHeeledShoe"), nullptr);
+  ASSERT_NEAR(footTurn(*figure), 0, 1e-6);
+  const fv::WearResult worn = figure->commitWear(figure->prepareWear(kFootBoots, 1), kFootBoots);
+  figure->settle();
+  ASSERT_EQ(worn.items.size(), 1u);
+  EXPECT_DOUBLE_EQ(figure->morphs->get("body_ctrl_lFootHeeledShoe"), 0.8);
+  EXPECT_EQ(footX(*figure), 0);
+  EXPECT_NEAR(footTurn(*figure), 0.8 * 55, 1e-3);
+
+  ASSERT_TRUE(figure->removeItem(worn.items[0]));
+  figure->settle();
+  EXPECT_EQ(figure->morphs->get("body_ctrl_lFootHeeledShoe"), 0);
+  EXPECT_NEAR(footTurn(*figure), 0, 1e-6);
+}
+
+TEST(Fit, AHeelsFootChannelsAreItsBonesTurnsAndTheFiguresFootDials)
+{
+  const auto doc = fv::dson::Json::parse(R"({"scene": {"animations": [
+    {"url": "name://@selection#body_ctrl_lFootHeeledShoe:?value/value", "keys": [[0, 0.85]]},
+    {"url": "name://@selection#body_ctrl_lToesSpread:?value/value", "keys": [[0, -0.5]]},
+    {"url": "name://@selection#body_ctrl_lMouthOpen:?value/value", "keys": [[0, 1]]},
+    {"url": "name://@selection/l_foot:?scale/x/value", "keys": [[0, 1]]},
+    {"url": "name://@selection/l_foot:?rotation/x/value", "keys": [[0, 39.3]]},
+    {"url": "name://@selection/l_toes#body_ctrl_lToesSpread:?value/value", "keys": [[0, 1]]}]}})");
+  const std::vector<fv::wardrobe::FootChannel> feet = fv::wardrobe::footChannels(doc);
+  ASSERT_EQ(feet.size(), 3u);
+  EXPECT_EQ(feet[0].dial, "body_ctrl_lFootHeeledShoe");
+  EXPECT_DOUBLE_EQ(feet[0].value, 0.85);
+  EXPECT_EQ(feet[1].dial, "body_ctrl_lToesSpread");
+  EXPECT_EQ(feet[2].bone, "l_foot");
+  EXPECT_EQ(feet[2].axis, "x");
+  EXPECT_TRUE(feet[2].dial.empty());
+
+  // a dial a hundredth from rest is a pose; all of a file's channels at rest are none
+  EXPECT_EQ(fv::wardrobe::retargetFootPose({{"", "", 0.02, "body_ctrl_lFootHeeledShoe"}}, {"l_foot"}).size(), 1u);
+  EXPECT_TRUE(fv::wardrobe::retargetFootPose({{"", "", 0.005, "body_ctrl_lFootHeeledShoe"}, {"l_foot", "x", 0.2}}, {"l_foot"}).empty());
 }
 
 // A wear reads the skeleton and the body of a figure, on another thread: it isn't given the rest, which

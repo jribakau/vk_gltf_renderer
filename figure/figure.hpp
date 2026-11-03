@@ -134,11 +134,12 @@ struct WornItem
   // each mesh's settings as its file had them (null: none), kept once the user first changes them
   std::map<int, std::shared_ptr<const dson::DforceData>> fileDforce;
   // foot channels it set on the figure (a heel poses the feet; of a file's items, the one most on the
-  // feet holds them), and the values they had before
+  // feet holds them), and the values they had before: a bone's rotation, or the figure's `dial`
   struct FootSet
   {
     std::string bone, axis;
     double      value = 0, before = 0;
+    std::string dial;
   };
   std::vector<FootSet> footSet;
 };

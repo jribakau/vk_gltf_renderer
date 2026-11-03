@@ -800,11 +800,13 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   result.fit = total ? double(matched) / double(total) : 1.0;
 
   // A heel's file poses the figure's feet, as DAZ Studio applies its scene animations to the figure
-  // it goes on, made for this figure or refitted to it. A heel rests shaped for that pose, around a
-  // flat foot with its heel below the floor (every heel in the library, G8 and G9, 3 to 13 cm), so
-  // without it the shoe is bent and the foot flat. All of a file's items carry its pose; it is set
-  // once, and the item with the most of its vertices on the feet keeps what it set (an outfit's
-  // shoes, not its dress), so the feet go back when that one comes off.
+  // it goes on, made for this figure or refitted to it: bone rotations, or the figure's foot dials (a
+  // G9 heel may only set body_ctrl_lFootHeeledShoe, whose formulas turn the bones). A heel rests
+  // shaped for that pose, around a flat foot with its heel below the floor (every heel in the
+  // library, G8 and G9, 3 to 13 cm), so without it the shoe is bent and the foot flat. All of a
+  // file's items carry its pose; it is set once, and the item with the most of its vertices on the
+  // feet keeps what it set (an outfit's shoes, not its dress), so the feet go back when that one
+  // comes off. A dial the figure lacks (a G9 heel on G8) is left out.
   if(pose && !w.items.empty())
   {
     std::vector<std::string> names;
@@ -822,21 +824,35 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
               owner = &i;
               most  = on;
             }
-    std::vector<pose::ChannelValue> set;
+    std::vector<pose::ChannelValue>             set;
+    std::vector<std::pair<std::string, double>> dials;
     for(const wardrobe::FootChannel& c : feet)
-      if(const auto before = owner ? pose->posed(c.bone, "rotation", c.axis) : std::nullopt)
+      if(!owner)
+        break;
+      else if(!c.dial.empty())
+      {
+        if(morphs->channel(c.dial))
+        {
+          dials.emplace_back(c.dial, c.value);
+          owner->footSet.push_back({"", "", c.value, morphs->get(c.dial), c.dial});
+        }
+      }
+      else if(const auto before = pose->posed(c.bone, "rotation", c.axis))
       {
         set.push_back({c.bone, pose::ChannelKind::eRotation, c.axis, c.value});
         owner->footSet.push_back({c.bone, c.axis, c.value, *before});
       }
+    if(!dials.empty())
+      morphs->setMany(dials);
     if(!set.empty())
-    {
       pose->setMany(set);
-      // what the rig kept after its limits, so undoing compares like with like
+    // what the rig and the dials kept after their limits, so undoing compares like with like
+    if(owner)
       for(WornItem::FootSet& f : owner->footSet)
-        if(const auto now = pose->posed(f.bone, "rotation", f.axis))
+        if(!f.dial.empty())
+          f.value = morphs->get(f.dial);
+        else if(const auto now = pose->posed(f.bone, "rotation", f.axis))
           f.value = *now;
-    }
   }
 
   // ---- the wearable's own morph dials, then the items' fitting to the body's shape
@@ -1025,10 +1041,18 @@ bool Figure::removeItem(int id)
     for(int r : gone.rigs)
       pose->removeFollowers(loaded.rigs[size_t(r)]);
     // the feet go back where they were before the item posed them, unless they were moved since
-    std::vector<pose::ChannelValue> back;
+    std::vector<pose::ChannelValue>             back;
+    std::vector<std::pair<std::string, double>> dialsBack;
     for(const WornItem::FootSet& f : gone.footSet)
-      if(const auto now = pose->posed(f.bone, "rotation", f.axis); now && *now == f.value)
+      if(!f.dial.empty())
+      {
+        if(morphs->channel(f.dial) && morphs->get(f.dial) == f.value)
+          dialsBack.emplace_back(f.dial, f.before);
+      }
+      else if(const auto now = pose->posed(f.bone, "rotation", f.axis); now && *now == f.value)
         back.push_back({f.bone, pose::ChannelKind::eRotation, f.axis, f.before});
+    if(!dialsBack.empty())
+      morphs->setMany(dialsBack);
     if(!back.empty())
       pose->setMany(back);
   }
