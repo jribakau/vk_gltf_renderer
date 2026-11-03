@@ -563,9 +563,23 @@ void FvHost::onDetach()
 
 void FvHost::onUpdate()
 {
-  Impl& s = *m_impl;
-  if(s.lastUpdateEnd && fv::timing::enabled())
-    fv::timing::report("frame: renderer between updates", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *s.lastUpdateEnd).count(), 100);
+  Impl&      s           = *m_impl;
+  const bool timed       = fv::timing::enabled();
+  const auto updateStart = std::chrono::steady_clock::now();
+  const auto msSince     = [](std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+  };
+  if(s.lastUpdateEnd && timed)
+    fv::timing::report("frame: renderer between updates", msSince(*s.lastUpdateEnd), 100);
+  // a drag frame's loop ends here, recorded and submitted since its update
+  if(timed && s.dragFrame && s.lastUpdateStart)
+  {
+    const HostRenderer::FrameCpu cpu = s.renderer->lastFrameCpu();
+    s.dialTiming.addFrame(std::chrono::duration<double, std::milli>(updateStart - *s.lastUpdateStart).count(),
+                          cpu.recordMs, cpu.gpuIdleAtSubmit);
+  }
+  s.lastUpdateStart       = updateStart;
+  const uint64_t landedBefore = s.dialTiming.landed;
   // the default look until the app sends its own: the renderer's remembered settings don't apply here
   if(!s.lightingStarted)
   {
@@ -588,10 +602,21 @@ void FvHost::onUpdate()
     std::lock_guard lock(s.queueMutex);
     work.swap(s.queue);
   }
-  // a phase of the frame that holds the application thread up shows in the timing log
-  std::optional<fv::timing::Scope> phase;
-  const auto timePhase = [&phase](const char* name) {
+  // a phase of the frame that holds the application thread up shows in the timing log, and a drag
+  // frame's phases go to its line (DialTiming)
+  std::optional<fv::timing::Scope>            phase;
+  const char*                                 phaseName  = nullptr;
+  std::chrono::steady_clock::time_point       phaseStart = updateStart;
+  std::vector<std::pair<const char*, double>> phaseMs;
+  const auto                                  endPhase = [&] {
+    if(timed && phaseName)
+      phaseMs.emplace_back(phaseName, msSince(phaseStart));
     phase.reset();
+  };
+  const auto timePhase = [&](const char* name) {
+    endPhase();
+    phaseName  = name;
+    phaseStart = std::chrono::steady_clock::now();
     phase.emplace(name, 20);
   };
   timePhase("frame: queued work");
@@ -719,8 +744,10 @@ void FvHost::onUpdate()
       }
       // the tangents of a mesh still for a moment: the whole body's take 15-20 ms, too much for
       // every step of a dial drag
+      timePhase("frame: settle tangents");
       if(f.feed)
         f.feed->settleTangents(std::chrono::milliseconds(100));
+      timePhase("frame: publish figure");
       for(const std::string& w : f.fig->takeWarnings())
         s.notice(p->name + ": " + w);
       s.publishBusy(f);
@@ -767,6 +794,9 @@ void FvHost::onUpdate()
   s.drawHelpers();
   if(s.view)
     s.view->onFrame();
-  phase.reset();
+  endPhase();
+  s.dragFrame = timed && s.dialTiming.landed != landedBefore;
+  if(s.dragFrame)
+    s.dialTiming.addHost(msSince(updateStart), phaseMs);
   s.lastUpdateEnd = std::chrono::steady_clock::now();
 }

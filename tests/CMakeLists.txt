@@ -179,6 +179,7 @@ set(TEST_SOURCES
     # (daz-viewer docs/command-journal-plan.md, C0 and C1)
     test_fv_host.cpp
     test_fv_journal.cpp
+    test_fv_host_timing.cpp
     common/fake_host_renderer.hpp
     ${CMAKE_SOURCE_DIR}/src/fv_host.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_figure.cpp

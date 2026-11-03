@@ -335,6 +335,7 @@ public:
   // G-buffers; under RTX the DLSS guides and output, OptiX's images and shared buffers, the hand-off
   // and the upscaler's own history). Updated each frame; any thread.
   uint32_t frameBytesPerPixel() const override { return m_frameBytesPerPixel.load(); }
+  FrameCpu lastFrameCpu() const override { return m_lastFrameCpu; }
   // Why a frame of this size must not be asked for (the budget cannot hold what it adds over the
   // frame drawn now), or empty. Its targets would lie in system memory, and the frame crawl, so the
   // stream's /size asks here first. Any thread.
@@ -651,6 +652,8 @@ private:
   std::filesystem::path m_screenshotParam;  // --screenshot, taken up by m_screenshotPending
   // for refuseFrameSize on another thread: the frame's per-pixel cost and size, written each frame
   std::atomic<uint32_t> m_frameBytesPerPixel{0};
+  FrameCpu              m_lastFrameCpu;           // lastFrameCpu(); application thread
+  uint64_t              m_lastFrameSignal = 0;    // the frame semaphore's value the last frame signals
   std::atomic<uint64_t> m_frameSizePacked{0};  // width << 32 | height
   bool                  m_memoryBudgetExtension = false;  // the device has VK_EXT_memory_budget (onAttach)
   std::atomic<uint32_t> m_maxTextureExtent{0};

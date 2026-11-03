@@ -189,6 +189,15 @@ public:
   };
   virtual MemoryBudget deviceMemoryBudget() const = 0;
   virtual uint32_t     frameBytesPerPixel() const = 0;
+  // The last frame the application thread recorded, for the host's drag timing at its next update: its
+  // recording's time (onRender), and whether the frame before it was already done on the GPU when it
+  // was submitted, so the GPU had sat idle waiting for the CPU. Measured only with a timing sink.
+  struct FrameCpu
+  {
+    double recordMs        = 0;
+    bool   gpuIdleAtSubmit = false;
+  };
+  virtual FrameCpu lastFrameCpu() const { return {}; }
   // the device allocator a GPU simulation allocates from (dForce); none without a device
   virtual nvvk::ResourceAllocator* deviceAllocator() = 0;
 

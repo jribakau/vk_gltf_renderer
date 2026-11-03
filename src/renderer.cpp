@@ -520,6 +520,15 @@ void GltfRenderer::onPostRender()
 {
   if(!m_app)
     return;
+  // the frame just submitted: had the GPU already finished the one before it, and waited on the CPU?
+  if(fv::timing::enabled())
+  {
+    const nvvk::SemaphoreInfo frame = m_app->getFrameSignalSemaphore();
+    uint64_t                  done  = 0;
+    vkGetSemaphoreCounterValue(m_device, frame.semaphore, &done);
+    m_lastFrameCpu.gpuIdleAtSubmit = m_lastFrameSignal != 0 && done >= m_lastFrameSignal;
+    m_lastFrameSignal              = frame.value;
+  }
   // A still's frames run one at a time. Queued, they gain a sample nothing can see, and an edit arriving
   // now would wait for all of them before its first moving frame, freezing and then jumping the image
   // at the start of every action. (A moving view's frames queue, for their rate; a window presents after this.)
@@ -855,9 +864,13 @@ rs::MemoryLedger GltfRenderer::memoryLedger() const
 
 void GltfRenderer::onRender(VkCommandBuffer cmd)
 {
+  const bool timed = fv::timing::enabled();
+  const auto start = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   renderFrame(cmd);
   // Whatever the frame did, or returned early from: the HDR image gets its overlays, or the SDR image whole
   m_hdrOutput.cmdFinish(cmd, m_resources);
+  if(timed)
+    m_lastFrameCpu.recordMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
 void GltfRenderer::renderFrame(VkCommandBuffer cmd)

@@ -327,6 +327,9 @@ constexpr uint32_t    kStudioWidth = 512, kStudioHeight = 256;
 // fv::timing::Accum lines), a pose step, the node transforms, the vertex uploads it queues for the
 // renderer (and how many vertices, how many of them whole meshes) and the rebinds. Phase 6 of
 // docs/pipeline-roadmap.md reads these.
+// And a second line, of the frames those landed in ("drag frames"): the application thread's loop from
+// one host update to the next, the host's update in its phases, the renderer's recording, and on how
+// many the GPU had finished the frame before when this one was submitted, so it waited on the CPU.
 struct DialTiming
 {
   enum Kind
@@ -336,6 +339,9 @@ struct DialTiming
     ePoseSet,
     eApplyNodes,
     eApplyRebind,
+    eFrameLoop,
+    eFrameHost,
+    eFrameRecord,
     eCount
   };
   struct Sum
@@ -349,9 +355,13 @@ struct DialTiming
   size_t                                vertices    = 0;  // uploaded this second, meshes summed
   int                                   uploads     = 0;
   int                                   fullUploads = 0;  // of them whole meshes (`all`)
+  std::vector<std::pair<std::string, double>> phases;     // the host update's ms, by name, in order
+  int                                   idleAtSubmit = 0;  // drag frames the GPU waited for
+  uint64_t                              landed       = 0;  // samples ever, kept across reports
 
   void add(Kind k, double ms)
   {
+    landed++;
     if(since == std::chrono::steady_clock::time_point{})
       since = std::chrono::steady_clock::now();
     Sum& s = sums[size_t(k)];
@@ -367,6 +377,30 @@ struct DialTiming
     vertices += vertexCount;
     uploads++;
     fullUploads += all ? 1 : 0;
+  }
+
+  // a drag frame's update, its phases as (name, ms) with a name repeated for each figure
+  void addHost(double ms, const std::vector<std::pair<const char*, double>>& phaseMs)
+  {
+    const uint64_t keep = landed;
+    add(eFrameHost, ms);
+    landed = keep;
+    for(const auto& [name, t] : phaseMs)
+    {
+      auto it = std::find_if(phases.begin(), phases.end(), [&](const auto& p) { return p.first == name; });
+      if(it == phases.end())
+        it = phases.insert(phases.end(), {name, 0.0});
+      it->second += t;
+    }
+  }
+  // the frame after a drag frame was recorded and submitted: its loop, recording and wait
+  void addFrame(double loopMs, double recordMs, bool gpuIdle)
+  {
+    const uint64_t keep = landed;
+    add(eFrameLoop, loopMs);
+    add(eFrameRecord, recordMs);
+    landed = keep;
+    idleAtSubmit += gpuIdle ? 1 : 0;
   }
 
   // The line to log once a second has passed since the first sample, else empty; clears the sums.
@@ -386,8 +420,32 @@ struct DialTiming
              "%d frames of mesh changes, applyMesh %.1f ms mean, %.1f max (%d uploads, %d whole meshes, %zu vertices); "
              "applyNodes %.1f ms mean over %d, applyRebind %.1f ms mean over %d",
              a.n, mean(a), a.maxMs, p.n, mean(p), p.maxMs, b.n, mean(b), b.maxMs, uploads, fullUploads, vertices, mean(nd), nd.n, mean(rb), rb.n);
-    *this = DialTiming{};
-    return line;
+    std::string out = line;
+    const Sum&  lp  = sums[eFrameLoop];
+    const Sum&  hu  = sums[eFrameHost];
+    const Sum&  rc  = sums[eFrameRecord];
+    if(hu.n > 0)
+    {
+      snprintf(line, sizeof line,
+               "\n[fv-time] drag frames: %d, loop %.1f ms mean, %.1f max; host update %.1f ms mean, %.1f max (", hu.n,
+               mean(lp), lp.maxMs, mean(hu), hu.maxMs);
+      out += line;
+      for(size_t i = 0; i < phases.size(); i++)
+      {
+        const std::string& full = phases[i].first;  // "frame: <phase>"
+        const size_t       c    = full.rfind(": ");
+        const std::string  name = c == std::string::npos ? full : full.substr(c + 2);
+        snprintf(line, sizeof line, "%s%s %.1f", i ? ", " : "", name.c_str(), phases[i].second / hu.n);
+        out += line;
+      }
+      snprintf(line, sizeof line, "); recording %.1f ms mean, %.1f max; the GPU waited on %d of %d", mean(rc), rc.maxMs,
+               idleAtSubmit, lp.n);
+      out += line;
+    }
+    const uint64_t keep = landed;
+    *this               = DialTiming{};
+    landed              = keep;
+    return out;
   }
 };
 
@@ -999,6 +1057,8 @@ struct FvHost::Impl
   DialTiming                  dialTiming;
   // when the last frame's update ended: the renderer's own work in between shows when it is long
   std::optional<std::chrono::steady_clock::time_point> lastUpdateEnd;
+  std::optional<std::chrono::steady_clock::time_point> lastUpdateStart;
+  bool dragFrame = false;  // the last update landed a dial or pose step or an edit's vertices (DialTiming)
   Json                        appliedSun;                        // the sun light as last written
   Json                        publishedLighting;
   // the environment image in the renderer ("studio", "hdr:<path>"), and the one asked for
