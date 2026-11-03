@@ -1055,6 +1055,13 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
     outputImages[shaderio::eConvergence] = m_convergence.getColorStorageImageInfo(0);
   }
 
+  // A slot below the count that this frame's images leave empty (a still's DLSS guide slots under its
+  // convergence, slot 9) gets the rendered image: a null view is invalid without nullDescriptor, and
+  // the shader writes no slot the frame didn't fill
+  for(uint32_t i = 0; i < outputCount; ++i)
+    if(outputImages[i].imageView == VK_NULL_HANDLE)
+      outputImages[i] = outputImages[shaderio::eResultImage];
+
   VkWriteDescriptorSet allTextures = resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eOutImages);
   allTextures.descriptorCount      = outputCount;
   write.append(allTextures, outputImages.data());
