@@ -922,6 +922,7 @@ void FrameStream::Impl::serve()
                              + ",\"encodeMs\":" + std::to_string(encodeMs.load()) + ",\"clients\":" + std::to_string(clients.load())
                              + ",\"idle\":" + (idle.load() ? "true" : "false")
                              + ",\"buildingPipeline\":" + (pipelineBuildsRunning().load() > 0 ? "true" : "false")
+                             + ",\"validated\":" + (validatedRun().load() ? "true" : "false")
                              + ",\"shaderWork\":{\"stage\":\"" + shaderWorkName(shaderWork.work) + "\",\"ms\":" + std::to_string(shaderWork.ms) + ",\"done\":" + std::to_string(shaderWork.done)
                              + ",\"total\":" + std::to_string(shaderWork.total) + ",\"lastMs\":" + std::to_string(shaderWork.lastMs) + "}"
                              + ",\"inputMs\":" + std::to_string(inputMs.load()) + ",\"inputMsLast\":" + std::to_string(inputMsLast.load())

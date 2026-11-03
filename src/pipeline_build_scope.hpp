@@ -19,6 +19,14 @@ inline std::atomic<int>& pipelineBuildsRunning()
   return running;
 }
 
+// Whether this run validates the API or the shaders (FV_VVL in the environment): a frame may then
+// take tens of seconds and a pipeline minutes, so /stats says so and the app's watchdog waits.
+inline std::atomic<bool>& validatedRun()
+{
+  static std::atomic<bool> validated{false};
+  return validated;
+}
+
 // What /stats reports. eCompile and ePipeline hold the view until they end; eWarm is the warm-up's
 // threads, building ahead of need while everything goes on.
 enum class ShaderWork : int

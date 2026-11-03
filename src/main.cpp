@@ -30,6 +30,7 @@
 #include <unordered_set>
 #include <string>
 #include <string_view>
+#include "pipeline_build_scope.hpp"
 #undef APIENTRY
 
 #include <nvaftermath/aftermath.hpp>
@@ -389,6 +390,7 @@ auto main(int argc, char** argv) -> int
   if(vvlEnv && *vvlEnv && std::string_view(vvlEnv) != "0")
   {
     vkSetup.enableValidationLayers = true;
+    validatedRun()                 = true;  // /stats says so: the app's watchdog waits through the slow frames
     if(std::string_view(vvlEnv) == "gpuav")
     {
       validation.setPreset(nvvk::ValidationSettings::LayerPresets::eGpuAssisted);
