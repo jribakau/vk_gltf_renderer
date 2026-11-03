@@ -91,6 +91,34 @@ TEST(GpuCrashTrail, AFaultsAddressIsNamedByTheImageItWasIn)
   EXPECT_NE(gpu_trail::whereIs(0x0000'1000, 0x1000).find("one of the 1 images in memory of their own"), std::string::npos);
   for(uint64_t h : {0x2002, 0x2003})
     gpu_trail::image(image(h), 0, 0, false, false);
+  gpu_trail::forgetJournals();
+}
+
+// The driver's report names whatever it bound at an address: an image in system memory's type, which no buffer may
+// bind to and so the allocator's hooks can't place, a memory block, the driver's own
+TEST(GpuCrashTrail, AFaultsAddressIsNamedByWhatTheDriverBoundThere)
+{
+  gpu_trail::forgetJournals();
+  gpu_trail::frameStart(VK_NULL_HANDLE, 70);
+  gpu_trail::binding(VK_OBJECT_TYPE_DEVICE_MEMORY, 0x3001, 0x9000'0000, 64 << 20, true, false);
+  gpu_trail::binding(VK_OBJECT_TYPE_IMAGE, 0x3002, 0x9000'0000, 16 << 20, true, false);
+  gpu_trail::named(VK_OBJECT_TYPE_IMAGE, 0x3002, "wall_N.jpg");
+  gpu_trail::named(VK_OBJECT_TYPE_BUFFER, 0x3003, "named before it was bound");
+  gpu_trail::binding(VK_OBJECT_TYPE_BUFFER, 0x3003, 0x9400'0000, 1 << 20, true, false);
+  gpu_trail::binding(VK_OBJECT_TYPE_DEVICE_MEMORY, 0x3004, 0x9500'0000, 1 << 20, true, true);
+  gpu_trail::frameStart(VK_NULL_HANDLE, 75);
+  gpu_trail::binding(VK_OBJECT_TYPE_IMAGE, 0x3002, 0x9000'0000, 16 << 20, false, false);
+  gpu_trail::binding(VK_OBJECT_TYPE_DEVICE_MEMORY, 0x3001, 0x9000'0000, 64 << 20, false, false);
+
+  EXPECT_EQ(gpu_trail::whereIs(0x9000'1000, 0x1000),
+            "in the memory block 'with no name' (64.0 MB from 0x90000000), made in frame 70 and destroyed in frame 75; before that in "
+            "the image 'wall_N.jpg' (16.0 MB from 0x90000000), made in frame 70 and destroyed in frame 75");
+  EXPECT_EQ(gpu_trail::whereIs(0x9400'0000, 0x1000),
+            "in the buffer 'named before it was bound' (1.0 MB from 0x94000000), made in frame 70, there still");
+  EXPECT_EQ(gpu_trail::whereIs(0x9500'0800, 0x100),
+            "in the memory block 'with no name' (1.0 MB from 0x95000000, the driver's own), made in frame 70, there still");
+  EXPECT_EQ(gpu_trail::whereIs(0x1'0000'0000, 0x1000).rfind("in nothing the driver gave that address", 0), 0u);
+  gpu_trail::forgetJournals();
 }
 
 TEST(GpuCrashTrail, WithoutTheExtensionsNothingIsMarked)

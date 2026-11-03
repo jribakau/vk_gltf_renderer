@@ -9,6 +9,7 @@
 #include <array>
 #include <chrono>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -25,7 +26,7 @@ constexpr size_t kFramesKept   = 600;
 constexpr size_t kFramesDumped = 120;
 constexpr size_t kFrameMarkers = 16;  // more than frames in flight: a lost queue's marker still names its frame
 constexpr double kSlowFrameMs  = 1000;
-constexpr size_t kFreedKept    = 20000;  // buffers destroyed, the last of them
+constexpr size_t kFreedKept    = 50000;  // buffers, images and memory destroyed, the last of them
 constexpr size_t kWhereShown   = 3;      // of those an address was in, the latest
 
 // What a checkpoint points to, at an address that stays for the program's life: its text, and the frame slot it was set
@@ -49,7 +50,9 @@ struct BufferRange
   std::string     name;
   uint64_t        made = 0, destroyed = 0;  // frames
   bool            image        = false;
-  bool            systemMemory = false;  // an image made in system memory, the device's being full
+  bool            systemMemory = false;    // an image made in system memory, the device's being full
+  const char*     kind         = nullptr;  // what the driver said it bound there (bindingMessage): "image", "memory block", ...
+  bool            internal     = false;    // memory the driver bound for itself
 };
 
 struct State
@@ -67,7 +70,12 @@ struct State
   std::array<FrameMarker, kFrameMarkers> frameMarkers{};
   std::unordered_map<VkBuffer, BufferRange> buffers;  // those there now
   std::unordered_map<VkImage, BufferRange>  images;   // those there now
-  std::deque<BufferRange>                   freed;    // the last destroyed, buffers and images, oldest first
+  // what the driver reports binding (VK_EXT_device_address_binding_report), by object and address: every object,
+  // in every memory type, the driver's own too. When it reports, the two above stay empty
+  std::map<std::pair<uint64_t, VkDeviceAddress>, BufferRange> bound;
+  std::unordered_map<uint64_t, std::string>                   names;  // given before an object was bound
+  bool                                                        reported = false;
+  std::deque<BufferRange>                   freed;    // the last destroyed, oldest first
   std::array<Frame, kFramesKept>         frames{};
   size_t                                 frameCount = 0;
   std::chrono::steady_clock::time_point  start      = std::chrono::steady_clock::now();
@@ -281,12 +289,93 @@ void image(VkImage image, VkDeviceAddress address, VkDeviceSize size, bool syste
   journal(s.images, image, {.address = address, .size = size, .image = true, .systemMemory = systemMemory}, made);
 }
 
+namespace {
+
+const char* kindOf(VkObjectType type)
+{
+  switch(type)
+  {
+    case VK_OBJECT_TYPE_BUFFER:
+      return "buffer";
+    case VK_OBJECT_TYPE_IMAGE:
+      return "image";
+    case VK_OBJECT_TYPE_DEVICE_MEMORY:
+      return "memory block";
+    case VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR:
+      return "acceleration structure";
+    case VK_OBJECT_TYPE_MICROMAP_EXT:
+      return "micromap";
+    default:
+      return "object";
+  }
+}
+
+}  // namespace
+
+void binding(VkObjectType type, uint64_t handle, VkDeviceAddress address, VkDeviceSize size, bool bound, bool internal)
+{
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  if(!std::exchange(s.reported, true))
+    LOGI("GPU crash trail: the driver reports the addresses it binds (the first: a %s, %.1f MB)\n", kindOf(type), double(size) / double(1 << 20));
+  const auto       key = std::pair{handle, address};
+  const auto       name = s.names.find(handle);
+  if(bound)
+  {
+    s.bound[key] = {.address  = address,
+                    .size     = size,
+                    .name     = name != s.names.end() ? name->second : std::string{},
+                    .made     = s.frame,
+                    .kind     = kindOf(type),
+                    .internal = internal};
+    return;
+  }
+  BufferRange range{.address = address, .size = size, .kind = kindOf(type), .internal = internal};
+  if(const auto it = s.bound.find(key); it != s.bound.end())
+  {
+    range = std::move(it->second);
+    s.bound.erase(it);
+  }
+  if(range.name.empty() && name != s.names.end())
+    range.name = name->second;
+  if(name != s.names.end())
+    s.names.erase(name);
+  range.destroyed = s.frame;
+  s.freed.push_back(std::move(range));
+  if(s.freed.size() > kFreedKept)
+    s.freed.pop_front();
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL bindingMessage(VkDebugUtilsMessageSeverityFlagBitsEXT /*severity*/, VkDebugUtilsMessageTypeFlagsEXT type,
+                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void* /*user*/)
+{
+  if(!(type & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) || !data || data->objectCount == 0 || !data->pObjects)
+    return VK_FALSE;
+  for(auto* p = static_cast<const VkBaseInStructure*>(data->pNext); p; p = p->pNext)
+    if(p->sType == VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT)
+    {
+      const auto* b = reinterpret_cast<const VkDeviceAddressBindingCallbackDataEXT*>(p);
+      binding(data->pObjects[0].objectType, data->pObjects[0].objectHandle, b->baseAddress, b->size,
+              b->bindingType == VK_DEVICE_ADDRESS_BINDING_TYPE_BIND_EXT, (b->flags & VK_DEVICE_ADDRESS_BINDING_INTERNAL_OBJECT_BIT_EXT) != 0);
+    }
+  return VK_FALSE;
+}
+
 void named(VkObjectType type, uint64_t handle, const char* name)
 {
-  if(!name || (type != VK_OBJECT_TYPE_BUFFER && type != VK_OBJECT_TYPE_IMAGE))
+  if(!name)
     return;
   State&                                s = state();
   std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  if(s.reported)
+  {
+    // what the driver bound for this object, named; kept for a binding still to come
+    bool any = false;
+    for(auto it = s.bound.lower_bound({handle, 0}); it != s.bound.end() && it->first.first == handle; ++it, any = true)
+      it->second.name = name;
+    if(!any)
+      s.names[handle] = name;
+  }
   if(type == VK_OBJECT_TYPE_BUFFER)
   {
     if(const auto it = s.buffers.find(reinterpret_cast<VkBuffer>(handle)); it != s.buffers.end())
@@ -294,6 +383,18 @@ void named(VkObjectType type, uint64_t handle, const char* name)
   }
   else if(const auto it = s.images.find(reinterpret_cast<VkImage>(handle)); it != s.images.end())
     it->second.name = name;
+}
+
+void forgetJournals()
+{
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  s.buffers.clear();
+  s.images.clear();
+  s.bound.clear();
+  s.names.clear();
+  s.freed.clear();
+  s.reported = false;
 }
 
 std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
@@ -305,6 +406,9 @@ std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
     return b.size > 0 && !(b.image && b.address == 0) && b.address < end && address < b.address + b.size;
   };
   const auto            what   = [](const BufferRange& b) {
+    if(b.kind)  // the driver's report
+      return fmt::format("the {} '{}' ({:.1f} MB from 0x{:x}{}), made in frame {}", b.kind, b.name.empty() ? "with no name" : b.name,
+                         double(b.size) / double(1 << 20), b.address, b.internal ? ", the driver's own" : "", b.made);
     return fmt::format("{}'{}' ({:.1f} MB from 0x{:x}{}), made in frame {}", b.image ? "the image " : "",
                        b.name.empty() ? (b.image ? "an image with no name" : "a buffer with no name") : b.name,
                        double(b.size) / double(1 << 20), b.address, b.systemMemory ? ", in system memory" : "", b.made);
@@ -317,6 +421,7 @@ std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
   };
   stillThere(s.buffers);
   stillThere(s.images);
+  stillThere(s.bound);
   size_t gone = 0;
   for(auto it = s.freed.rbegin(); it != s.freed.rend() && gone < kWhereShown; ++it)
     if(within(*it))
@@ -324,6 +429,9 @@ std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
       said.push_back(fmt::format("in {} and destroyed in frame {}", what(*it), it->destroyed));
       gone++;
     }
+  if(said.empty() && s.reported)
+    return fmt::format("in nothing the driver gave that address: none of the {} bindings there or the last {} let go of", s.bound.size(),
+                       s.freed.size());
   if(said.empty())
   {
     size_t unplaced = 0;

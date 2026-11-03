@@ -310,6 +310,7 @@ auto main(int argc, char** argv) -> int
   VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR addressCmdFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR};
   VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipelineExecFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
   VkPhysicalDeviceFaultFeaturesEXT faultFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+  VkPhysicalDeviceAddressBindingReportFeaturesEXT bindingReportFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
   // clang-format on
 
   // Requesting the extensions and features needed
@@ -329,6 +330,7 @@ auto main(int argc, char** argv) -> int
       {VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, nullptr, false},  // Optional: the VRAM budget a frame size is checked against (GltfRenderer::refuseFrameSize)
       {VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, nullptr, false},  // Optional: where a lost device's queue had got to (gpu_crash_trail.hpp)
       {VK_EXT_DEVICE_FAULT_EXTENSION_NAME, &faultFeature, false},             // Optional: what a lost device read or wrote (gpu_crash_trail.hpp)
+      {VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME, &bindingReportFeature, false},  // Optional: what each such address was bound to (gpu_crash_trail.hpp)
   };
 
   // Only request the graphics queue
@@ -496,12 +498,32 @@ auto main(int argc, char** argv) -> int
                   vkContext.hasExtensionEnabled(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME), faultReport);
   if(gpu_trail::checkpointsOn())
     nvvk::ProfilerGpuTimer::sectionHook = &gpu_trail::section;
+  // Where the driver reports every address it binds, that is the journal: any object in any memory type, the
+  // driver's own too. Else the allocator's hooks, which miss an image in memory no buffer binds to (system memory's)
+  VkDebugUtilsMessengerEXT bindingMessenger = VK_NULL_HANDLE;
+  if(faultReport && vkContext.hasExtensionEnabled(VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME)
+     && bindingReportFeature.reportAddressBinding && vkCreateDebugUtilsMessengerEXT)
+  {
+    const VkDebugUtilsMessengerCreateInfoEXT messenger{
+        .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+                           | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+        .messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
+        .pfnUserCallback = &gpu_trail::bindingMessage,
+    };
+    if(vkCreateDebugUtilsMessengerEXT(vkContext.getInstance(), &messenger, nullptr, &bindingMessenger) != VK_SUCCESS)
+      bindingMessenger = VK_NULL_HANDLE;
+  }
   if(faultReport)
   {
     // before the first buffer is made
-    nvvk::ResourceAllocator::bufferHook = &gpu_trail::buffer;
-    nvvk::ResourceAllocator::imageHook  = &gpu_trail::image;
-    nvvk::DebugUtil::nameHook           = &gpu_trail::named;
+    if(!bindingMessenger)
+    {
+      nvvk::ResourceAllocator::bufferHook = &gpu_trail::buffer;
+      nvvk::ResourceAllocator::imageHook  = &gpu_trail::image;
+    }
+    nvvk::DebugUtil::nameHook = &gpu_trail::named;
+    LOGI("GPU crash trail: addresses from %s\n", bindingMessenger ? "the driver's binding report" : "the allocator's buffers and images");
   }
   nvvk::CheckError::getInstance().setCallbackFunction([](VkResult result) {
     if(result == VK_ERROR_DEVICE_LOST)
@@ -702,7 +724,9 @@ auto main(int argc, char** argv) -> int
   nvvk::CheckError::getInstance().setCallbackFunction(nullptr);
 #endif
 
-  // Deinit Vulkan context
+  // Deinit Vulkan context: the binding report's messenger first, as it belongs to the instance
+  if(bindingMessenger)
+    vkDestroyDebugUtilsMessengerEXT(vkContext.getInstance(), bindingMessenger, nullptr);
   vkContext.deinit();
 
   return 0;

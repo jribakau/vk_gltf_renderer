@@ -560,6 +560,10 @@ void PathTracer::notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER,
 {
   if(code == 0)
     return;  // a module made from code nobody hashed
+  // A validated run's pipelines are built from shaders the layer instruments, so they always
+  // compile again and take minutes: not the driver's cache full, and no estimate for a normal start
+  if(validatedRun().load())
+    return;
   const uint64_t state[] = {code, rayQuery ? 1u : 0u, uint64_t(useSER), uint64_t(transparency), uint64_t(flags), m_driverVersion};
   if(m_buildRecord.note(nvvk::fnv1a64(state, sizeof(state)), ms))
     LOGW("[PathTracer] A pipeline built before compiled again (%.0f ms): the driver's shader cache is full, and the next start empties it\n", ms);

@@ -46,9 +46,18 @@ void section(VkCommandBuffer cmd, const char* name);
 void buffer(VkBuffer buffer, VkDeviceAddress address, VkDeviceSize size, bool made);
 void image(VkImage image, VkDeviceAddress address, VkDeviceSize size, bool systemMemory, bool made);
 void named(VkObjectType type, uint64_t handle, const char* name);
+// What the driver reports binding or unbinding (VK_EXT_device_address_binding_report): any object in any memory type,
+// the driver's own included, where buffer() and image() see only what the allocator makes and an image in memory no
+// buffer may bind to (system memory's, where a full device spills) has no address. bindingMessage() is the messenger's
+// callback (VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) that calls binding().
+void binding(VkObjectType type, uint64_t handle, VkDeviceAddress address, VkDeviceSize size, bool bound, bool internal);
+VKAPI_ATTR VkBool32 VKAPI_CALL bindingMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
+                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void* user);
 // what the `precision` bytes from `address` were in: a buffer or an image still there, ones destroyed (and in which
 // frames), or none
 std::string whereIs(VkDeviceAddress address, VkDeviceSize precision);
+// every journal forgotten, the driver's report off again (tests)
+void forgetJournals();
 // a frame's memory: the last few hundred are kept
 void record(Frame frame);
 // the last `count` frames recorded, oldest first
