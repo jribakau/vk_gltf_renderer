@@ -73,7 +73,11 @@ inline constexpr VkFormat kRrInnerFormats[] = {
     VK_FORMAT_R16G16_SFLOAT,        // #DLSS - Motion vectors       : eDlssMotion
     VK_FORMAT_R16_SFLOAT,           // #DLSS - ViewZ                : eDlssDepth
     VK_FORMAT_R16_SFLOAT,           // #DLSS - Specular Hit Dist    : eDlssSpecularHitDist
+#if defined(USE_DLSSNR)
     VK_FORMAT_R16G16B16A16_SFLOAT,  // #DLSS-NR - Per-material mask : eNrMask
+#else
+    VK_FORMAT_UNDEFINED,  // #DLSS-NR - Per-material mask : eNrMask, not allocated: nothing reads it without DLSS-NR
+#endif
     VK_FORMAT_R16_SFLOAT,           // #DLSS - Responsivity mask    : eDlssResponsivity
 };
 
@@ -1073,7 +1077,12 @@ VkImage Dlss::getRrImage(shaderio::OutputImage which) const
 VkDescriptorImageInfo Dlss::getRrAttachment(shaderio::OutputImage which) const
 {
   assertKind(Kind::RR);
-  return m_innerGBuffer.getColorStorageImageInfo(static_cast<uint32_t>(which));
+  // A slot this build leaves unallocated (the NR mask without DLSS-NR) still needs an image bound:
+  // the specular albedo's, which the shader never writes through that slot (ePtWriteNrMask stays off)
+  uint32_t index = static_cast<uint32_t>(which);
+  if(m_innerGBuffer.getColorFormat(index) == VK_FORMAT_UNDEFINED)
+    index = static_cast<uint32_t>(shaderio::OutputImage::eDlssSpecAlbedo);
+  return m_innerGBuffer.getColorStorageImageInfo(index);
 }
 
 

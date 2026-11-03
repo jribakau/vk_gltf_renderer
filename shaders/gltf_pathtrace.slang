@@ -1564,7 +1564,8 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     outImages[int(OutputImage::eDlssAlbedo)][int2(samplePos)] = guideAlbedo;
     outImages[int(OutputImage::eDlssSpecAlbedo)][int2(samplePos)] = float4(sampleResult.guideOutput.specularAlbedo.xyz, 1.0f);
     outImages[int(OutputImage::eDlssSpecularHitDist)][int2(samplePos)] = float4(sampleResult.guideOutput.specularHitDist);
-    outImages[int(OutputImage::eNrMask)][int2(samplePos)] = float4(sampleResult.guideOutput.nrMask);
+    if(hasFlag(pushConst.flags, PathtracerFlags::ePtWriteNrMask))
+      outImages[int(OutputImage::eNrMask)][int2(samplePos)] = float4(sampleResult.guideOutput.nrMask);
     if(pushConst.hairResponsivity != 0.0f)
       outImages[int(OutputImage::eDlssResponsivity)][int2(samplePos)] = float4(sampleResult.guideOutput.responsivity);
   }

@@ -312,6 +312,7 @@ enum PathtracerFlags
   ePtAdaptiveStop        = 1 << 20,  // An accumulation's pixel stops once its mean has converged (eConvergence, adaptiveThreshold)
   ePtWalkGuiding         = 1 << 21,  // A scatter walk entered from a surface draws half its steps towards it (Dwivedi guiding, unbiased)
   ePtLightTree           = 1 << 22,  // The emitters' light tree is picked among the lights by distance (light_tree.h.slang); off: the one table by power
+  ePtWriteNrMask         = 1 << 23,  // A DLSS frame writes the per-material DLSS-NR mask (eNrMask): only while DLSS-NR runs
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

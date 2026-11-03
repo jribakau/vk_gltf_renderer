@@ -706,7 +706,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   // If DLSS is effectively enabled for this frame, perform denoising
   if(getEffectiveDlssEnabled(resources))
   {
-    denoiseDlss(cmd, resources);
+    denoiseDlss(cmd, resources, (pushConst.flags & shaderio::ePtWriteSelection) != 0);
     m_dlssFrame0 = isAccumulationDenoiserEnabled();  // frame 0 and the delay's frames, then OptiX or OIDN takes over
   }
 #endif
@@ -1255,7 +1255,7 @@ void PathTracer::probeCameraMedium(VkCommandBuffer cmd, const shaderio::Pathtrac
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(pushConst), &pushConst);
 }
 
-void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources)
+void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources, bool selectionWritten)
 {
 #if defined(USE_DLSS)
   auto timerSection = m_profiler->cmdFrameSection(cmd, "DLSS");
@@ -1267,12 +1267,16 @@ void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources)
   m_dlss->setResponsivityMask(m_hairResponsivity != 0.0F);
   m_dlss->evaluate(cmd, view, proj);
 
-  // The selection image the blit reads was written by the path tracer's ray-tracing or compute
-  // stage (the barrier after traceRays only made it visible to compute)
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                         VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-
+  // The selection image goes to the full-size one only on a frame that traced it (SelectionWrite):
+  // otherwise the full-size image keeps what it last got, which the inner one still holds too. A
+  // blit every DLSS frame was 33 MB and two barriers a 4K frame for an image nothing read.
+  if(selectionWritten)
   {
+    // The selection image the blit reads was written by the path tracer's ray-tracing or compute
+    // stage (the barrier after traceRays only made it visible to compute)
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+
     // Blit the selection image from the DLSS GBuffer (different resolution) to the Renderer GBuffer Selection
     const VkExtent2D innerSz   = m_dlss->getRenderSize();
     VkOffset3D       minCorner = {0, 0, 0};
@@ -1285,13 +1289,13 @@ void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources)
     vkCmdBlitImage(cmd, m_dlss->getRrImage(shaderio::OutputImage::eSelectImage), VK_IMAGE_LAYOUT_GENERAL,
                    resources.gBuffers.getColorImage(Resources::eImgSelection), VK_IMAGE_LAYOUT_GENERAL, 1, &blitRegions,
                    VK_FILTER_NEAREST);  // ObjectID in .r, no interpolation
-
-    // The blit's write, and DLSS's compute write of the rendered image, before the compute passes
-    // that read them (the hand-off, the tonemapper)
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-                           VK_ACCESS_2_SHADER_READ_BIT);
   }
+
+  // DLSS's compute write of the rendered image, and the blit's, before the compute passes that read
+  // them (the hand-off, the tonemapper, the silhouette)
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | (selectionWritten ? VK_PIPELINE_STAGE_2_BLIT_BIT : 0),
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_SHADER_WRITE_BIT | (selectionWritten ? VK_ACCESS_2_TRANSFER_WRITE_BIT : 0), VK_ACCESS_2_SHADER_READ_BIT);
 #endif
 }
 
@@ -1355,6 +1359,10 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   // per pixel no one read was 8% of the moving trace (30.2 -> 27.9 ms, the harness figure at Optimal input)
   const bool selectionRead = !resources.selectedRenderNodes.empty();
   m_pushConst.flags |= m_selectionWrite.due(resources.frameCount == 0, useDlss, selectionRead) ? shaderio::ePtWriteSelection : 0;
+#if defined(USE_DLSSNR)
+  // The per-material NR mask only while DLSS-NR runs: nothing else reads it
+  m_pushConst.flags |= (useDlss && m_dlss->isNrActive()) ? shaderio::ePtWriteNrMask : 0;
+#endif
   m_pushConst.flags |= m_shadowTransmission ? shaderio::ePtShadowTransmission : 0;
   m_pushConst.flags |= (m_scatterAsThin == 1 || (m_scatterAsThin == 2 && useDlss)) ? shaderio::ePtScatterAsThin : 0;
   m_pushConst.flags |= m_volumeDiffuseExit ? shaderio::ePtVolumeDiffuseExit : 0;

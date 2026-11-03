@@ -433,7 +433,10 @@ This is exposed as the `EXT_DLSS_NR` glTF material extension. The full pipeline:
    (`shaders/gltf_pathtrace.slang`) on the first-hit block under `USE_DLSS_SHADER &&
    MAT_EXT_DLSS_NR`, reading directly from `materials[materialIndex].nrMask`. The slot is
    registered in `kRrSlots[]` in `renderer_pathtracer.cpp` so it is wired into the `outImages`
-   bindless array. The format is declared in `kRrInnerFormats[]` (`src/dlss.cpp`).
+   bindless array. The format is declared in `kRrInnerFormats[]` (`src/dlss.cpp`). The write
+   happens only while DLSS-NR runs (`ePtWriteNrMask`, from `Dlss::isNrActive()`). A build without
+   `USE_DLSSNR` doesn't allocate the slot (`VK_FORMAT_UNDEFINED`), and `Dlss::getRrAttachment` binds
+   the specular albedo's image there, which the shader then never writes through it.
 
 3. **Temporal accumulation** — the mask is captured in `GuideScratch.nrMask` (first-hit only,
    no per-bounce accumulation) and copied to `GuideOutput.nrMask` by `packSampleResult`

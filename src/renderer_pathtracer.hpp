@@ -550,7 +550,8 @@ private:
   // Find the medium the camera is in (ePtProbeCameraMedium) on the bound pipeline, then push
   // `pushConst` back for the frame.
   void probeCameraMedium(VkCommandBuffer cmd, const shaderio::PathtracePushConstant& pushConst);
-  void denoiseDlss(VkCommandBuffer cmd, Resources& resources);
+  // `selectionWritten`: the frame traced the selection image (ePtWriteSelection), which then goes to full size
+  void denoiseDlss(VkCommandBuffer cmd, Resources& resources, bool selectionWritten);
   // Push this frame's constants; returns what was pushed.
   shaderio::PathtracePushConstant setupPushConstant(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize);
   // Determine if DLSS should actively denoise this frame
