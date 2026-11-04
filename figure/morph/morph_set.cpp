@@ -14,6 +14,21 @@ namespace {
 
 // Incremental flushes before the buffer is rebuilt from the base positions, so rounding can't build up.
 constexpr int kRebuildEvery = 400;
+
+// A mesh's active targets in a fixed order, by channel and then part, so a sum of them rounds the
+// same in every run.
+template <class Map>
+std::vector<const typename Map::value_type*> inOrder(const Map& map)
+{
+  std::vector<const typename Map::value_type*> out;
+  out.reserve(map.size());
+  for(const auto& entry : map)
+    out.push_back(&entry);
+  std::sort(out.begin(), out.end(), [](const auto* a, const auto* b) {
+    return a->second.name != b->second.name ? a->second.name < b->second.name : a->second.part < b->second.part;
+  });
+  return out;
+}
 // a target with at least this many vertices adds its deltas in parallel chunks of this size
 constexpr size_t kParallelDeltas = 16384;
 // How long a lazy file waits for others before the driver runs for it.
@@ -193,7 +208,7 @@ void MorphSet::addTarget(const std::string& name, int mesh, dson::TargetPtr targ
   if(v != 0)
   {
     MeshState& st            = m_cpu.at(mesh);
-    st.active[target.get()] = {target, v};
+    st.active[target.get()] = {target, v, name, partOf(name, mesh, target.get())};
     st.dirty                 = true;
   }
 }
@@ -204,10 +219,26 @@ std::vector<std::pair<dson::TargetPtr, double>> MorphSet::activeTargets(int mesh
   const auto it = m_cpu.find(mesh);
   if(it == m_cpu.end())
     return out;
-  for(const auto& [key, a] : it->second.active)
-    if(key != except)
-      out.emplace_back(a.target, a.weight);
+  for(const auto* entry : inOrder(it->second.active))
+    if(entry->first != except)
+      out.emplace_back(entry->second.target, entry->second.weight);
   return out;
+}
+
+int MorphSet::partOf(const std::string& name, int mesh, const mesh::RenderTarget* target) const
+{
+  const auto it = m_bindings.find(name);
+  if(it == m_bindings.end())
+    return 0;
+  int part = 0;
+  for(const Binding& b : it->second)
+    if(b.mesh == mesh)
+    {
+      if(b.target.get() == target)
+        return part;
+      part++;
+    }
+  return part;
 }
 
 std::set<int> MorphSet::meshesOf(const std::string& name) const
@@ -341,7 +372,7 @@ void MorphSet::replaceCpuTarget(const std::string& name, int mesh, dson::TargetP
   it->second.push_back({mesh, target});
   const double v = weightOf(name);
   if(v != 0)
-    st.active[target.get()] = {target, v};
+    st.active[target.get()] = {target, v, name, partOf(name, mesh, target.get())};
   st.dirty = true;
   flush();
 }
@@ -448,6 +479,7 @@ void MorphSet::finishLoad(const std::string& name, std::future<Finish>& fut)
     const Finish     finish = fut.get();
     const LazyResult result = finish();
     m_lazy.erase(name);
+    m_freshDue = true;
     // removed while it loaded (the item it belonged to was taken off)
     Channel* ch = channelMut(name);
     if(!ch)
@@ -557,6 +589,7 @@ void MorphSet::pump()
         own.targets.clear();
       }
       own.state = own.targets.empty() ? FollowerState::Own::State::eNone : FollowerState::Own::State::eReady;
+      m_freshDue = true;
       if(own.state == FollowerState::Own::State::eReady)
       {
         const double v = weightOf(name);
@@ -568,19 +601,30 @@ void MorphSet::pump()
     flush();
   if(m_driverDirty && (m_loading.empty() || std::chrono::steady_clock::now() - m_driverSince >= kDriverDelay))
     runDriver();
+  // every load in and the formulas run: summed afresh, so the same scene comes out the same
+  if(m_freshDue && m_loading.empty() && !m_driverDirty && !anyPending())
+    refresh();
   // meshes no longer cageOnly (the GPU stopped refining them) are drawn as their morphs have them
   catchUp([this](int mesh) { return !cageOnly || !cageOnly(mesh); });
 }
 
-void MorphSet::settled()
+void MorphSet::settled(bool itemCopies)
 {
   for(;;)
   {
-    while(!m_loading.empty())
+    // the files, and with `itemCopies` the worn items' own fitted targets, which are worked out on the
+    // pool: a drape started before those land would see the item as it was, and differ with the timing
+    while(!m_loading.empty() || (itemCopies && anyPending()))
     {
       {
         fv::timing::Accum t("settled: wait for a load");
-        m_loading.begin()->second.wait();
+        if(!m_loading.empty())
+          m_loading.begin()->second.wait();
+        else
+          for(const auto& st : m_followers)
+            for(const auto& [name, own] : st->own)
+              if(own.state == FollowerState::Own::State::ePending)
+                own.future.wait();
       }
       fv::timing::Accum t("settled: pump");
       pump();
@@ -590,6 +634,8 @@ void MorphSet::settled()
     fv::timing::Accum t("settled: driver");
     runDriver();
   }
+  if(m_freshDue && !anyPending())
+    refresh();
   catchUp([this](int mesh) { return !cageOnly || !cageOnly(mesh); });
 }
 
@@ -653,7 +699,7 @@ bool MorphSet::apply(const std::string& name, double value)
     if(value == 0)
       st.active.erase(b.target.get());
     else
-      st.active[b.target.get()] = {b.target, value};
+      st.active[b.target.get()] = {b.target, value, name, partOf(name, b.mesh, b.target.get())};
     st.dirty = true;
   }
   return true;
@@ -716,8 +762,8 @@ bool MorphSet::follow(FollowerState& st, const std::string& name, double value)
   if(value == 0 || !moving || own)
     return true;
   auto targets = followerTargets(st, name, sources);
-  for(const auto& t : targets)
-    cpu->second.active[t.get()] = {t, value};
+  for(size_t k = 0; k < targets.size(); k++)
+    cpu->second.active[targets[k].get()] = {targets[k], value, name, int(k)};
   st.applied[name] = std::move(targets);
   return true;
 }
@@ -1009,6 +1055,60 @@ void MorphSet::flush()
       change(updates[i].mesh, updates[i].all, updates[i].moved, updates[i].written);
 }
 
+bool MorphSet::anyPending() const
+{
+  for(const auto& st : m_followers)
+    for(const auto& [name, own] : st->own)
+      if(own.state == FollowerState::Own::State::ePending)
+        return true;
+  return false;
+}
+
+void MorphSet::refresh()
+{
+  m_freshDue = false;
+  flush();
+  fv::timing::Accum t("morph.fresh");
+  std::vector<std::pair<int, MeshState*>> meshes;
+  for(auto& [mesh, st] : m_cpu)
+    if(m_geo(mesh))
+      meshes.emplace_back(mesh, &st);
+  // each mesh is its own, so they sum side by side; what changed is said in mesh order
+  std::vector<uint8_t> cageMoved(meshes.size(), 0), moved(meshes.size(), 0);
+  jobs::parallelFor(meshes.size(), 1, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      auto& [mesh, st] = meshes[i];
+      if(!st->cage.empty())
+      {
+        const std::vector<float> was = st->cage;
+        st->sinceCageRebuild         = kRebuildEvery;
+        updateCage(mesh, *st);
+        cageMoved[i] = st->cage != was;
+      }
+      if(st->behind)
+      {
+        // drawn later (catchUp), from scratch then too
+        st->sinceRebuild = kRebuildEvery;
+        continue;
+      }
+      if(st->applied.empty() && st->active.empty())
+        continue;
+      const std::vector<float> was = m_geo(mesh)->position;
+      rebuild(mesh, *st);
+      st->applied = st->active;
+      moved[i]    = m_geo(mesh)->position != was;
+    }
+  });
+  for(size_t i = 0; i < meshes.size(); i++)
+  {
+    if(cageMoved[i])
+      change(meshes[i].first, true, {}, {}, true);
+    if(moved[i])
+      change(meshes[i].first, true, {}, {});
+  }
+}
+
 void MorphSet::catchUp()
 {
   catchUp([](int) { return true; });
@@ -1082,21 +1182,21 @@ void MorphSet::updateCage(int mesh, MeshState& st)
   {
     st.sinceCageRebuild = 0;
     st.cage             = geo.cagePositions;
-    for(const auto& [key, a] : st.active)
-      add(*a.target, a.weight);
+    for(const auto* entry : inOrder(st.active))
+      add(*entry->second.target, entry->second.weight);
   }
   else
   {
-    for(const auto& [key, a] : st.active)
+    for(const auto* entry : inOrder(st.active))
     {
-      const auto   it   = st.cageApplied.find(key);
+      const auto   it   = st.cageApplied.find(entry->first);
       const double prev = it == st.cageApplied.end() ? 0 : it->second.weight;
-      if(a.weight != prev)
-        add(*a.target, a.weight - prev);
+      if(entry->second.weight != prev)
+        add(*entry->second.target, entry->second.weight - prev);
     }
-    for(const auto& [key, prev] : st.cageApplied)
-      if(!st.active.count(key) && prev.weight != 0)
-        add(*prev.target, -prev.weight);
+    for(const auto* entry : inOrder(st.cageApplied))
+      if(!st.active.count(entry->first) && entry->second.weight != 0)
+        add(*entry->second.target, -entry->second.weight);
   }
   st.cageApplied = st.active;
 }
@@ -1146,16 +1246,16 @@ MorphSet::MeshUpdate MorphSet::update(int mesh, MeshState& st)
     for(const auto& f : found)
       moved.insert(moved.end(), f.begin(), f.end());
   };
-  for(const auto& [key, a] : st.active)
+  for(const auto* entry : inOrder(st.active))
   {
-    auto         it   = st.applied.find(key);
+    auto         it   = st.applied.find(entry->first);
     const double prev = it == st.applied.end() ? 0 : it->second.weight;
-    if(a.weight != prev)
-      add(*a.target, a.weight - prev);
+    if(entry->second.weight != prev)
+      add(*entry->second.target, entry->second.weight - prev);
   }
-  for(const auto& [key, prev] : st.applied)
-    if(!st.active.count(key) && prev.weight != 0)
-      add(*prev.target, -prev.weight);
+  for(const auto* entry : inOrder(st.applied))
+    if(!st.active.count(entry->first) && entry->second.weight != 0)
+      add(*entry->second.target, -entry->second.weight);
   for(uint32_t v : moved)
     st.mark[v] = 0;
   fv::timing::accumulate("morph.deltas", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - deltasStart).count());
@@ -1187,8 +1287,9 @@ MorphSet::MeshUpdate MorphSet::rebuild(int mesh, MeshState& st)
   geo.position         = st.basePos;
   geo.normal           = st.baseNrm;
   float* pos           = geo.position.data();
-  for(const auto& [key, a] : st.active)
+  for(const auto* entry : inOrder(st.active))
   {
+    const Active&                    a = entry->second;
     const mesh::RenderTarget::Drawn& t = a.target->drawn(geo);
     for(size_t i = 0, n = t.indices.size(); i < n; i++)
     {

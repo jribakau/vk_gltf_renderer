@@ -207,8 +207,10 @@ public:
   // Takes the lazy loads that finished, runs the driver for them (once they have all arrived, or
   // after a short wait if more keep coming) and flushes what moved. Call every frame.
   void pump();
-  // Waits for every load, including the ones those start, and the driver after them.
-  void settled();
+  // Waits for every load, including the ones those start, and the driver after them; with
+  // `itemCopies` also for the worn items' own copies of the dials (Figure::settle). Then sums the
+  // meshes afresh (refresh) once nothing is left to land.
+  void settled(bool itemCopies = false);
   bool loading() const { return !m_loading.empty(); }
 
   // Applies pending morph changes to the drawn vertices of the meshes (to the cages of cageOnly ones).
@@ -249,6 +251,14 @@ public:
   // The targets applied to a mesh now and the weight of each, except `except` (a mesh's own drape
   // is left out when a simulation reads the shape underneath it).
   std::vector<std::pair<dson::TargetPtr, double>> activeTargets(int mesh, const mesh::RenderTarget* except = nullptr) const;
+  // a binding's place among its channel's targets on its mesh
+  int partOf(const std::string& name, int mesh, const mesh::RenderTarget* target) const;
+  // Once every load is in and the formulas have run: each mesh summed afresh from its base, in the
+  // fixed order, so what it holds doesn't depend on the order files landed in or the steps weights
+  // took getting there. A mesh that comes out the same reports no change.
+  void refresh();
+  // a worn item's own fitted targets still being worked out
+  bool anyPending() const;
   // The meshes a channel's targets move (none while it is not loaded).
   std::set<int> meshesOf(const std::string& name) const;
   // The labels of the followers a channel moves through something of their own, a copy of the morph
@@ -281,6 +291,10 @@ private:
   {
     dson::TargetPtr target;
     double          weight = 0;
+    // its channel and its place among that channel's targets on the mesh: the order sums of the
+    // targets run in, the same in every run (the maps are keyed by where targets sit in memory)
+    std::string name;
+    int         part = 0;
   };
   struct MeshState
   {
@@ -366,6 +380,8 @@ private:
   std::unordered_map<std::string, Loader>               m_lazy;
   std::map<std::string, std::future<Finish>>            m_loading;
   bool                                                  m_driverDirty = false;
+  // a load landed since the last refresh()
+  bool m_freshDue = false;
   std::chrono::steady_clock::time_point                 m_driverSince;
   bool                                                  m_running = false;
   int                                                   m_listVersion = 0;

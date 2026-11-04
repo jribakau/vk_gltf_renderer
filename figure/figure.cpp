@@ -448,7 +448,7 @@ void Figure::settle()
     {
       timing::Scope t("settle: dials", 1);
       do
-        morphs->settled();
+        morphs->settled(true);
       while(noteMorphs());
     }
     if(m_correctiveJobs.empty())

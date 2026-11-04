@@ -164,6 +164,51 @@ TEST_P(FigureMorphSet, IncrementalFlushMatchesARebuild)
 
 INSTANTIATE_TEST_SUITE_P(Subdivision, FigureMorphSet, testing::Values(0, 1));
 
+// The same final weights reached two ways, the targets made in opposite orders: summed afresh once
+// every load is in (refresh), both meshes hold the same positions and cage to the bit, where their
+// running sums each rounded their own way. (The targets are kept by where they sit in memory: a sum
+// in that order would differ from run to run, and a chaotic drape grows the difference to centimetres.)
+TEST(FigureMorphSet, AFreshSumIsTheSameWhicheverWayTheWeightsCame)
+{
+  const int n    = 8;
+  const int cage = (n + 1) * (n + 1);
+  auto      geoA = std::make_shared<fv::mesh::BuiltMesh>(grid(n, 0));
+  auto      geoB = std::make_shared<fv::mesh::BuiltMesh>(grid(n, 0));
+  std::vector<int32_t> allV(cage);
+  std::vector<float>   d0(size_t(cage) * 3), d1(size_t(cage) * 3), d2(size_t(cage) * 3);
+  for(int i = 0; i < cage; i++)
+    allV[i] = i;
+  for(size_t i = 0; i < d0.size(); i++)
+  {
+    d0[i] = float(std::cos(double(i)) * 0.137);
+    d1[i] = float(std::sin(double(i) * 1.3) * 3.1);
+    d2[i] = float(std::cos(double(i) * 0.7) * 0.0091);
+  }
+  fv::morph::MorphSet a([&](int) { return geoA.get(); }), b([&](int) { return geoB.get(); });
+  for(int k = 0; k < 3; k++)
+    a.addTarget("m" + std::to_string(k), 0, targetOf(*geoA, allV, k == 0 ? d0 : k == 1 ? d1 : d2));
+  for(int k = 3; k-- > 0;)
+    b.addTarget("m" + std::to_string(k), 0, targetOf(*geoB, allV, k == 0 ? d0 : k == 1 ? d1 : d2));
+  // a: a dial dragged through many values; b: straight to where a ends
+  int  seed = 11;
+  auto rand = [&] {
+    seed = int(seed * 16807ll % 2147483647);
+    return seed / 2147483647.0;
+  };
+  for(int step = 0; step < 60; step++)
+    a.set("m" + std::to_string(step % 3), rand() * 2 - 0.5);
+  a.set("m0", 0.31);
+  a.set("m1", -0.47);
+  a.set("m2", 0.83);
+  b.setMany({{"m2", 0.83}, {"m0", 0.31}, {"m1", -0.47}});
+  a.refresh();
+  b.refresh();
+  EXPECT_TRUE(geoA->position == geoB->position) << "summed afresh, the two still differ";
+  std::vector<float> scratchA, scratchB;
+  const auto         cageA = a.morphedCageView(0, scratchA), cageB = b.morphedCageView(0, scratchB);
+  EXPECT_TRUE(std::equal(cageA.begin(), cageA.end(), cageB.begin(), cageB.end()));
+}
+
 // The host republishes the morph topic when version() moved: a dial's value, or a weight a driver
 // applied (a corrective after a pose). The same value again, or an unknown dial, is not a change.
 TEST(FigureMorphSet, VersionMovesOnlyWhenAValueOrAWeightChanges)
