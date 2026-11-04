@@ -1135,6 +1135,8 @@ struct FvHost::Impl
   // a figure's posed bone at an entity, or {nullptr, nullptr}
   std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> boneAt(rs::EntityId entity) const;
   void                      applyGizmoEdit();
+  // where the gizmo turns a prop's root entity, in its own space (GizmoHooks::pivot)
+  std::optional<glm::vec3> gizmoPivot(rs::EntityId entity) const;
   void applyPreset(const fv::dson::Json&                             doc,
                    const std::string&                                kind,
                    uint64_t                                          jobId,

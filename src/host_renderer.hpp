@@ -146,6 +146,10 @@ public:
   {
     std::function<uint32_t(rs::EntityId entity)> attach;
     std::function<void(rs::EntityId entity, const glm::vec3& t, const glm::quat& r, const glm::vec3& s, bool done)> edit;
+    // Where the gizmo sits on the entity, and what it turns and scales the entity about, in the
+    // entity's own space (under its local transform); none: its origin. `edit` still gets the
+    // entity's own transform (gizmo_pivot.hpp).
+    std::function<std::optional<glm::vec3>(rs::EntityId entity)> pivot;
   };
   virtual void setGizmoHooks(GizmoHooks hooks) = 0;
   virtual void setShowGizmo(bool on)           = 0;

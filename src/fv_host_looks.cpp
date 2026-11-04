@@ -64,6 +64,24 @@ std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> FvHost::Impl::bone
   return {nullptr, nullptr};
 }
 
+// A figure turns and scales about its own origin, its root bone, which a pose can carry far from
+// the prop's (a chair's sit preset moves Genesis 9's root by metres); anything else about its origin.
+std::optional<glm::vec3> FvHost::Impl::gizmoPivot(rs::EntityId entity) const
+{
+  const FvView::PropNodes* nodes = view ? view->propOfRoot(entity) : nullptr;
+  const auto               p     = nodes ? findProp(nodes->id) : nullptr;
+  if(!p || !p->figure || !p->figure->feed || !renderer->feedsHostScene())
+    return std::nullopt;
+  const fv::dson::LoadResult& loaded = p->figure->fig->loaded;
+  if(loaded.mainRig < 0 || size_t(loaded.mainRig) >= loaded.rigs.size())
+    return std::nullopt;
+  rs::RetainedScene& scene = renderer->hostScene();
+  const rs::EntityId bone  = p->figure->feed->entityOf(loaded.rigs[size_t(loaded.mainRig)].root);
+  if(!scene.entity(bone) || !scene.entity(p->root))
+    return std::nullopt;
+  return glm::vec3(glm::inverse(scene.world(p->root)) * scene.world(bone)[3]);
+}
+
 void FvHost::Impl::applyGizmoEdit()
 {
   if(!gizmoEdit)

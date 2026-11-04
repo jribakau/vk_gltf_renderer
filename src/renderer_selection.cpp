@@ -26,6 +26,7 @@
 #include <nvutils/bounding_box.hpp>
 #include <nvutils/logger.hpp>
 
+#include "gizmo_pivot.hpp"
 #include "renderer.hpp"
 #include "tinygltf_utils.hpp"
 
@@ -266,6 +267,10 @@ void GltfRenderer::updateEntityGizmo()
     }
     m_gizmoRotation          = glm::degrees(glm::eulerAngles(rotation));
     m_gizmoParentWorldMatrix = entity->parent.isNone() ? glm::mat4(1.f) : store->world(entity->parent);
+    // on its pivot (a figure's root bone), turned as the drag will turn it back
+    const std::optional<glm::vec3> pivot = m_gizmoHooks.pivot ? m_gizmoHooks.pivot(m_selectedEntity) : std::nullopt;
+    m_gizmoPivot                         = pivot.value_or(glm::vec3(0.f));
+    m_gizmoPosition = pivotPosition(m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, m_gizmoPivot);
   };
   if(m_selectedEntity != m_gizmoEntity || (flags != m_gizmoFlags && !m_visualHelpers.transform.isDragging()))
   {

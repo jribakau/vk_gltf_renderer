@@ -71,6 +71,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "renderer.hpp"
+#include "gizmo_pivot.hpp"
 #include "gpu_crash_trail.hpp"
 
 #ifdef NVP_SUPPORTS_BASISU
@@ -322,15 +323,15 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     };
     m_visualHelpers.init(helperRes);
 
-    m_visualHelpers.transform.setOnTransformChange([this]() {
-      if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
-        m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, false);
-    });
-
-    m_visualHelpers.transform.setOnTransformEnd([this]() {
-      if(!m_gizmoEntity.isNone() && m_gizmoHooks.edit)
-        m_gizmoHooks.edit(m_gizmoEntity, m_gizmoPosition, glm::quat(glm::radians(m_gizmoRotation)), m_gizmoScale, true);
-    });
+    // the gizmo drags its pivot; the host gets the entity's own transform
+    const auto sendGizmo = [this](bool done) {
+      if(m_gizmoEntity.isNone() || !m_gizmoHooks.edit)
+        return;
+      const glm::quat r = glm::quat(glm::radians(m_gizmoRotation));
+      m_gizmoHooks.edit(m_gizmoEntity, translationFromPivot(m_gizmoPosition, r, m_gizmoScale, m_gizmoPivot), r, m_gizmoScale, done);
+    };
+    m_visualHelpers.transform.setOnTransformChange([sendGizmo]() { sendGizmo(false); });
+    m_visualHelpers.transform.setOnTransformEnd([sendGizmo]() { sendGizmo(true); });
   }
 
 }

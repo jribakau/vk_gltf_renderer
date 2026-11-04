@@ -524,6 +524,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                                                   std::nullopt,
                                               impl->gizmoGesture};
           },
+      .pivot = [impl](rs::EntityId entity) { return impl->gizmoPivot(entity); },
   });
 }
 

@@ -44,6 +44,7 @@
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
+#include "gizmo_pivot.hpp"
 #include <figure/dson/dforce.hpp>
 #include <figure/dson/listing.hpp>
 #include <figure/dson/store.hpp>
@@ -2284,6 +2285,64 @@ TEST(FvHost, AGizmoDragOfAPropIsOneStep)
   EXPECT_NEAR(rig.topic("scene").at("props").at(id).at("transform").at("t")[0].get<double>(), 0.5, 1e-5);
   rig.cmd("history.undo");
   EXPECT_EQ(differ(start, rig.topic("scene").at("props").at(id).at("transform")), "");
+}
+
+// The gizmo drags a point of the prop's own: turned and scaled about it, that point stays where it
+// is, and the prop's own transform comes back out of where the gizmo left it.
+TEST(FvHost, aGizmoTurnAboutAPivotLeavesThePivotWhereItWas)
+{
+  const glm::vec3 pivot{-2.2f, 0.4f, 0.96f}, t{-1.f, 0.11f, -2.24f}, s{1.5f};
+  const glm::quat r  = glm::angleAxis(glm::radians(90.f), glm::vec3(0, 1, 0));
+  const glm::vec3 at = pivotPosition(t, r, s, pivot);
+  const auto      world = [&](const glm::vec3& tt, const glm::quat& rr, const glm::vec3& ss) {
+    return glm::translate(glm::mat4(1.f), tt) * glm::mat4_cast(rr) * glm::scale(glm::mat4(1.f), ss);
+  };
+  EXPECT_LT(glm::length(glm::vec3(world(t, r, s) * glm::vec4(pivot, 1.f)) - at), 1e-5f);
+  // a turn and a scale on the gizmo, which stays put
+  const glm::quat turned = glm::angleAxis(glm::radians(35.f), glm::vec3(0, 1, 0)) * r;
+  const glm::vec3 scaled{2.f};
+  const glm::vec3 t2 = translationFromPivot(at, turned, scaled, pivot);
+  EXPECT_LT(glm::length(glm::vec3(world(t2, turned, scaled) * glm::vec4(pivot, 1.f)) - at), 1e-5f);
+  // a move carries the prop by the same
+  EXPECT_LT(glm::length(translationFromPivot(at + glm::vec3(0.3f, 0, 0), r, s, pivot) - (t + glm::vec3(0.3f, 0, 0))), 1e-5f);
+}
+
+// A figure turns about its own origin, its root bone, which a pose can carry far from the prop's
+// (a chair's sit preset moves Genesis 9's root by metres): the gizmo's pivot is that bone in the
+// prop's own space. A bone has none.
+TEST(FvHost, theGizmoTurnsAFigureAboutItsRootBone)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id = figureId(rig.topic("scene"));
+  rig.cmd("prop.set", {{"prop", id}, {"transform", {{"t", {-1.0, 0.11, -2.24}}, {"e", {0.0, 90.0, 0.0}}}}});
+  ASSERT_TRUE(rig.cmd("select", {{"prop", id}}).value("ok", false));
+  const rs::EntityId root = rig.renderer.selectedEntity();
+  ASSERT_TRUE(rig.renderer.gizmo.pivot);
+  const std::optional<glm::vec3> home = rig.renderer.gizmo.pivot(root);
+  ASSERT_TRUE(home);
+  EXPECT_LT(glm::length(*home), 1e-5f) << "the Box Figure's root is at its origin";
+
+  const Json nodes = rig.topic("nodes/" + id).value("nodes", Json::object());
+  int        figureRoot = -1;
+  for(const auto& [index, n] : nodes.items())
+    if(n.value("name", "") == "BoxFigure")
+      figureRoot = std::stoi(index);
+  ASSERT_GE(figureRoot, 0) << nodes.dump();
+  ASSERT_TRUE(rig.cmd("select", {{"prop", id}, {"node", figureRoot}}).value("ok", false));
+  const rs::EntityId bone = rig.renderer.selectedEntity();
+  EXPECT_FALSE(rig.renderer.gizmo.pivot(bone));
+
+  // the root carried off, as a pose's translation would
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  rs::Transform      moved = {.translation = {120.f, 0.f, -45.f}};
+  scene.setLocal(bone, moved);
+  const std::optional<glm::vec3> pivot = rig.renderer.gizmo.pivot(root);
+  ASSERT_TRUE(pivot);
+  EXPECT_GT(glm::length(*pivot), 0.5f) << "the pivot stayed at the prop's origin";
+  const glm::vec3 boneAt = glm::vec3(scene.world(bone)[3]);
+  EXPECT_LT(glm::length(glm::vec3(scene.world(root) * glm::vec4(*pivot, 1.f)) - boneAt), 1e-4f);
 }
 
 TEST(FvHost, AGizmoDragOfABoneIsOneStep)

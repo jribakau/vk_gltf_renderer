@@ -685,6 +685,7 @@ private:
   glm::vec3 m_gizmoRotation{0.f};  // Euler angles in degrees
   glm::vec3 m_gizmoScale{1.f};
   glm::mat4 m_gizmoParentWorldMatrix{1.f};
+  glm::vec3 m_gizmoPivot{0.f};  // what the gizmo sits on, in the entity's own space (GizmoHooks::pivot)
   uint32_t  m_gizmoFlags     = 0;
   GizmoHooks m_gizmoHooks;
   glm::vec2  m_gizmoInputLast{0.f};
