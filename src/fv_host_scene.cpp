@@ -1132,12 +1132,15 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       soft["prop"] = target->id;
       physicsSoft(soft);
     }
-    // a file from before body contact has no block, and opens as it was saved: without dents
+    // a file from before body contact has no block, and opens as it was saved: without dents; one
+    // from before self-contact, without its parts pressing on one another
     if(target->contact)
     {
       Json contact = args.value("contact", Json());
       if(!contact.is_object())
         contact = {{"on", false}};
+      if(!contact.contains("self"))
+        contact["self"] = false;
       contact["prop"] = target->id;
       figureContact(contact);
     }

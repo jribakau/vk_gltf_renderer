@@ -3239,7 +3239,7 @@ TEST(FvHost, aDentSettlesWithoutPassesPokingEachOther)
 }
 
 // The settings are a step of the history and part of the figure's scene state; a scene file from
-// before body contact opens without it.
+// before body contact opens without it, and one from before self-contact without that.
 TEST(FvHost, contactSettingsSurviveTheSceneFileAndUndo)
 {
   Seated s;
@@ -3254,7 +3254,18 @@ TEST(FvHost, contactSettingsSurviveTheSceneFileAndUndo)
   ASSERT_TRUE(s.rig.cmd("history.redo").value("ok", false));
   EXPECT_FLOAT_EQ(s.contact().value("bulge", 0.f), 0.3f);
 
-  // restored with the block it was saved with; then from a file that has none
+  // self-contact: on for a new figure, a step of its own, kept with the rest
+  EXPECT_TRUE(s.contact().value("self", false)) << s.contact().dump();
+  EXPECT_TRUE(state["contact"].value("self", false));
+  ASSERT_TRUE(s.rig.cmd("figure.contact", {{"prop", s.figure}, {"self", false}}).value("ok", false));
+  EXPECT_FALSE(s.contact().value("self", true));
+  EXPECT_FALSE(s.rig.cmd("scene.state", {{"prop", s.figure}}).value("result", Json::object())["contact"].value("self", true));
+  ASSERT_TRUE(s.rig.cmd("history.undo").value("ok", false));
+  EXPECT_TRUE(s.contact().value("self", false));
+  EXPECT_FLOAT_EQ(s.contact().value("bulge", 0.f), 0.3f) << "the undo took the bulge's step too";
+
+  // restored with the block it was saved with, which from before self-contact has it off; then from a
+  // file that has none
   Json restore       = state;
   restore["prop"]    = s.figure;
   restore["contact"] = {{"on", true}, {"softness", 0.5}, {"bulge", 0.9}, {"reach", 4}};
@@ -3262,6 +3273,11 @@ TEST(FvHost, contactSettingsSurviveTheSceneFileAndUndo)
   ASSERT_TRUE(s.rig.settle());
   EXPECT_FLOAT_EQ(s.contact().value("bulge", 0.f), 0.9f);
   EXPECT_FLOAT_EQ(s.contact().value("reach", 0.f), 4.f);
+  EXPECT_FALSE(s.contact().value("self", true));
+  restore["contact"]["self"] = true;
+  s.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_TRUE(s.contact().value("self", false));
   restore.erase("contact");
   s.rig.cmd("scene.restore", restore);
   ASSERT_TRUE(s.rig.settle());

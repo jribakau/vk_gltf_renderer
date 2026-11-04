@@ -369,6 +369,218 @@ TEST(Contact, twoBodiesSplitTheOverlapBySoftness)
   EXPECT_LT(xb - xa, 0.1f);
 }
 
+namespace {
+
+// A tube of radius r round a path in xy (`along(s)` gives x, y for s from 0 to `length`), its rings
+// `step` apart and `segments` round, open at its ends. Its faces point out where the path is straight;
+// where it turns tighter than r its inner side folds through itself, as a bent knee's skin does. Each
+// vertex's s goes in `at`.
+Soup tube(double length, double r, double step, int segments, const std::function<std::array<double, 2>(double)>& along, std::vector<double>& at)
+{
+  Soup      s;
+  const int nu = int(std::lround(length / step));
+  for(int i = 0; i <= nu; i++)
+  {
+    const double u = i * step;
+    const auto   c = along(u);
+    const auto   a = along(std::max(0.0, u - 0.01)), b = along(std::min(length, u + 0.01));
+    const double l = std::hypot(b[0] - a[0], b[1] - a[1]);
+    const double tx = (b[0] - a[0]) / l, ty = (b[1] - a[1]) / l;
+    for(int j = 0; j < segments; j++)
+    {
+      const double th = 2 * kPi * j / segments;
+      s.positions.insert(s.positions.end(), {float(c[0] - r * std::cos(th) * ty), float(c[1] + r * std::cos(th) * tx), float(r * std::sin(th))});
+      at.push_back(u);
+    }
+  }
+  // along the path, then round it: (T + dθ) × T is dθ × T, which points away from the axis
+  const auto v = [&](int i, int j) { return uint32_t(i * segments + (j % segments)); };
+  for(int i = 0; i < nu; i++)
+    for(int j = 0; j < segments; j++)
+      s.tris.insert(s.tris.end(), {v(i, j), v(i + 1, j + 1), v(i + 1, j), v(i, j), v(i, j + 1), v(i + 1, j + 1)});
+  return s;
+}
+
+// A leg folded at the knee as in a kneel: the thigh along +x at y = 0, a turn of radius 2.5 at x = 20,
+// the calf back along -x at y = 5. Both are 3 cm round, so the calf lies 1 cm into the thigh along
+// their length. The thigh is to the middle of the turn, the calf after; unposed, the leg is straight.
+struct Kneel
+{
+  Soup                 leg, straight;
+  std::vector<double>  at;
+  std::vector<uint8_t> parts;
+  static constexpr double kLength = 20, kTurn = 2.5;
+
+  Kneel()
+  {
+    const double        turn = kPi * kTurn;
+    std::vector<double> unused;
+    straight = tube(2 * kLength + turn, 3, 0.5, 32, [](double s) { return std::array<double, 2>{s, 0}; }, unused);
+    leg      = tube(2 * kLength + turn, 3, 0.5, 32, [&](double s) {
+      if(s <= kLength)
+        return std::array<double, 2>{s, 0};
+      if(s <= kLength + turn)
+      {
+        const double phi = (s - kLength) / kTurn;
+        return std::array<double, 2>{kLength + kTurn * std::sin(phi), kTurn - kTurn * std::cos(phi)};
+      }
+      return std::array<double, 2>{kLength - (s - kLength - turn), 2 * kTurn};
+    }, at);
+    for(double s : at)
+      parts.push_back(s < kLength + turn / 2 ? part::kLThigh : part::kLShin);
+  }
+};
+
+ContactResult resolveSelf(const Soup& body, std::span<const uint8_t> parts, const Soup& rest, float bulge = 0.f)
+{
+  ContactInput in;
+  in.body  = body.positions;
+  in.tris  = body.tris;
+  in.parts = parts;
+  in.rest  = rest.positions;
+  in.bulge = bulge;
+  return resolveContacts(in);
+}
+
+}  // namespace
+
+// Folded at the knee, the thigh and the calf 1 cm into each other each give way by half and meet
+// between, at y = 2.5, with no more than the clearance between them. By the knee, where the skin of
+// the two is the joint's, they are left as they were.
+TEST(Contact, aKneelingThighMeetsTheCalfAtTheMidpoint)
+{
+  const Kneel k;
+  const auto  r = resolveSelf(k.leg, k.parts, k.straight);
+  EXPECT_GT(r.pressed, 0);
+  int   met = 0;
+  float gap = INFINITY, worst = 0;
+  for(size_t v = 0; v < k.at.size(); v++)
+  {
+    const float* p = &k.leg.positions[v * 3];
+    const float* q = &r.positions[v * 3];
+    if(std::fabs(p[2]) > 1e-3f || p[0] < 4 || p[0] > 14)
+      continue;
+    // the thigh's top and the calf's underside, in the middle of their run
+    if(k.parts[v] == part::kLThigh && std::fabs(p[1] - 3) < 1e-3f)
+    {
+      EXPECT_NEAR(q[1], 2.5f - 0.025f, 0.03f) << "thigh at x " << p[0];
+      met++;
+    }
+    else if(k.parts[v] == part::kLShin && std::fabs(p[1] - 2) < 1e-3f)
+    {
+      EXPECT_NEAR(q[1], 2.5f + 0.025f, 0.03f) << "calf at x " << p[0];
+      met++;
+    }
+  }
+  EXPECT_GT(met, 30);
+  // a slice through both: the calf's lowest point stays above the thigh's highest
+  for(float x = 4; x <= 14; x += 0.5f)
+  {
+    float top = -INFINITY, under = INFINITY;
+    for(size_t v = 0; v < k.at.size(); v++)
+      if(std::fabs(k.leg.positions[v * 3] - x) < 0.26f && std::fabs(r.positions[v * 3 + 2]) < 0.3f)
+      {
+        if(k.parts[v] == part::kLThigh)
+          top = std::max(top, r.positions[v * 3 + 1]);
+        else
+          under = std::min(under, r.positions[v * 3 + 1]);
+      }
+    gap   = std::min(gap, under - top);
+    worst = std::max(worst, under - top);
+  }
+  EXPECT_GE(gap, -0.01f) << "they still overlap";
+  EXPECT_LT(worst, 0.1f) << "they parted";
+  // nothing moves further than the two are into each other, the knee's skin folded through itself
+  // on the inside of the turn included
+  float most = 0;
+  for(size_t v = 0; v < k.at.size(); v++)
+    most = std::max(most, std::hypot(r.positions[v * 3] - k.leg.positions[v * 3], r.positions[v * 3 + 1] - k.leg.positions[v * 3 + 1],
+                                     r.positions[v * 3 + 2] - k.leg.positions[v * 3 + 2]));
+  EXPECT_LT(most, 1.f);
+}
+
+// A leg bent 60 degrees at the knee folds its inner skin into itself within 2 cm of the joint: that
+// is the joint's own, and nothing presses on anything.
+TEST(Contact, neighboursAtAJointDoNotCollide)
+{
+  std::vector<double>  at;
+  const Soup           straight = tube(30, 3, 0.5, 32, [](double s) { return std::array<double, 2>{s - 15, 0}; }, at);
+  Soup                 leg      = straight;
+  std::vector<uint8_t> parts;
+  const double         c = std::cos(kPi / 3), s = std::sin(kPi / 3);
+  for(size_t v = 0; v < at.size(); v++)
+  {
+    float* p = &leg.positions[v * 3];
+    parts.push_back(p[0] < 0 ? part::kLThigh : part::kLShin);
+    if(p[0] > 0)
+    {
+      const float x = p[0], y = p[1];
+      p[0]          = float(c * x - s * y);
+      p[1]          = float(s * x + c * y);
+    }
+  }
+  // the bend does fold it: some of the calf's inner skin is inside the thigh
+  bool folded = false;
+  for(size_t v = 0; v < at.size(); v++)
+    folded = folded || (parts[v] == part::kLShin && leg.positions[v * 3] < -0.05f && std::fabs(leg.positions[v * 3 + 1]) < 3);
+  ASSERT_TRUE(folded);
+  const auto r = resolveSelf(leg, parts, straight, 0.7f);
+  EXPECT_EQ(r.pressed, 0);
+  EXPECT_EQ(r.patches, 0);
+  for(size_t v = 0; v < r.positions.size(); v++)
+    EXPECT_EQ(r.positions[v], leg.positions[v]);
+}
+
+// A vertex's part is its bone's limb or its nearest ancestor's, for Genesis 8's names and 9's.
+TEST(Contact, aBonesPartIsItsLimbsOrItsAncestors)
+{
+  SceneGraph scene;
+  const auto bone = [&](const std::string& name, int parent) {
+    Node n;
+    n.name = name;
+    n.kind = NodeKind::eBone;
+    return scene.add(n, parent);
+  };
+  const int hip    = bone("hip", -1);
+  const int pelvis = bone("pelvis", hip);
+  const int thigh  = bone("lThighBend", pelvis);
+  const int shin   = bone("lShin", bone("lThighTwist", thigh));
+  const int toe    = bone("lToe", bone("lMetatarsals", bone("lFoot", shin)));
+  const int chest  = bone("chestUpper", bone("chestLower", bone("abdomenUpper", bone("abdomenLower", hip))));
+  const int collar = bone("rCollar", chest);
+  const int arm    = bone("rShldrBend", collar);
+  const int fore   = bone("rForearmTwist", bone("rForearmBend", bone("rShldrTwist", arm)));
+  const int finger = bone("rIndex3", bone("rIndex2", bone("rIndex1", bone("rCarpal1", bone("rHand", fore)))));
+  const int jaw    = bone("lowerJaw", bone("head", bone("neckUpper", bone("neckLower", chest))));
+  const int breast = bone("lPectoral", chest);
+  EXPECT_EQ(partOfBone(scene, hip), part::kTorso);
+  EXPECT_EQ(partOfBone(scene, pelvis), part::kTorso);
+  EXPECT_EQ(partOfBone(scene, thigh), part::kLThigh);
+  EXPECT_EQ(partOfBone(scene, shin), part::kLShin);
+  EXPECT_EQ(partOfBone(scene, toe), part::kLFoot);
+  EXPECT_EQ(partOfBone(scene, collar), part::kTorso);
+  EXPECT_EQ(partOfBone(scene, arm), part::kRUpperArm);
+  EXPECT_EQ(partOfBone(scene, fore), part::kRForearm);
+  EXPECT_EQ(partOfBone(scene, finger), part::kRHand);
+  EXPECT_EQ(partOfBone(scene, jaw), part::kHead);
+  EXPECT_EQ(partOfBone(scene, breast), part::kTorso);
+  // Genesis 9
+  const int g9      = bone("l_shoulder", chest);
+  const int g9Arm   = bone("l_upperarmtwist1", bone("l_upperarm", g9));
+  const int g9Fore  = bone("l_forearmtwist2", bone("l_forearm", g9Arm));
+  const int g9Thumb = bone("l_thumb3", bone("l_hand", g9Fore));
+  const int g9Thigh = bone("r_thightwist1", bone("r_thigh", pelvis));
+  const int g9Toes  = bone("r_bigtoe2", bone("r_toes", bone("r_metatarsal", bone("r_foot", bone("r_shin", g9Thigh)))));
+  const int g9Eye   = bone("l_eye", bone("head", bone("neck2", bone("neck1", chest))));
+  EXPECT_EQ(partOfBone(scene, g9), part::kTorso);
+  EXPECT_EQ(partOfBone(scene, g9Arm), part::kLUpperArm);
+  EXPECT_EQ(partOfBone(scene, g9Fore), part::kLForearm);
+  EXPECT_EQ(partOfBone(scene, g9Thumb), part::kLHand);
+  EXPECT_EQ(partOfBone(scene, g9Thigh), part::kRThigh);
+  EXPECT_EQ(partOfBone(scene, g9Toes), part::kRFoot);
+  EXPECT_EQ(partOfBone(scene, g9Eye), part::kHead);
+}
+
 // A prop turned and scaled up is queried in its own space; the answer is the one a copy carried into
 // the body's space gives. A prop stretched unevenly is such a copy.
 TEST(Physics, aScaledPropsOwnSpaceQueryMatchesATransformedCopy)

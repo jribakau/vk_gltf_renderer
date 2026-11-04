@@ -38,6 +38,9 @@
 // its middle and extent in the rest cage (cm), and its softest share; then bobs the skin up and down
 // (2 cm at 2 Hz, a walk's) for "frames" frames at 60 fps and reports the solve's time a frame and
 // each lobe's largest offset, and the time of a frame's skin of the lobes at the figure's pose.
+// {"contact": label} runs the body's contact pass at the pose it is in with nothing near it, so only
+// its own parts press on one another (figure/physics/contact, step 10): the vertices pressed, the
+// dents, how many vertices moved and how far at most, by part, and the pass's time.
 //
 // Every step's time goes to stderr ("[step] ..."), with the library's phase timers ("[fv-time] ...")
 // inside it: the case in cases/native_test.json is the profile of a scene file's load.
@@ -67,6 +70,7 @@
 #include <figure/gltf/gltf_check.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/dson/rig.hpp>
+#include <figure/physics/contact/contact.hpp>
 #include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/flesh/follow.hpp>
 #include <figure/pose/retarget.hpp>
@@ -1031,6 +1035,69 @@ int main(int argc, char** argv)
                      {"pastLimitsDegrees", pastLimits},
                      {"lowerAnkleRiseCm", {{"source", r(lowSrc[1] - lowSrc[0])}, {"figure", r(lowDst[1] - lowDst[0])}}}};
         std::cerr << "retarget " << label << ": " << dump.dump() << "\n";
+        dumps[label] = dump;
+      }
+      else if(step.contains("contact"))
+      {
+        if(!loaded)
+          throw std::runtime_error("contact before a figure loads");
+        const auto& ctx = loaded->loaded.morphs;
+        if(ctx.mainMeshes.empty())
+          throw std::runtime_error("contact without a figure body");
+        const std::string label = step["contact"].get<std::string>();
+        const int         body  = ctx.meshes[ctx.mainMeshes[0]].mesh;
+        fv::SceneGraph&   scene = loaded->loaded.scene;
+        const fv::Mesh&   m     = scene.meshes[size_t(body)];
+        const int         root  = loaded->loaded.root;
+        // as the pass's job has it: posed and unposed, in the root's space
+        const auto                 p0     = std::chrono::steady_clock::now();
+        const std::vector<int>     meshes{body};
+        const auto                 posed  = fv::physics::posedCages(scene, *loaded->morphs, meshes, root);
+        std::vector<float>         scratch;
+        const auto                 view   = loaded->morphs->morphedCageView(body, scratch);
+        const auto                 worlds = scene.worlds();
+        const auto                 nodeOf = fv::dforce::nodeOfMesh(scene);
+        const fv::Mat4             toRoot = inverse(worlds[size_t(root)]) * (nodeOf[size_t(body)] >= 0 ? worlds[size_t(nodeOf[size_t(body)])] : fv::Mat4{});
+        const std::vector<float>   rest   = fv::dforce::transformPoints(toRoot, std::vector<float>(view.begin(), view.end()));
+        const std::vector<uint8_t> parts  = fv::physics::bodyParts(scene, m);
+        const double prepareMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
+        fv::physics::ContactInput in;
+        in.body      = posed[0];
+        in.tris      = m.geo->dsonTris;
+        in.polyStart = m.geo->cagePolyStart;
+        in.polyVerts = m.geo->cagePolyVerts;
+        in.parts     = parts;
+        in.rest      = rest;
+        const auto   t0     = std::chrono::steady_clock::now();
+        const auto   result = fv::physics::resolveContacts(in);
+        const double passMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        static const char* const names[] = {"torso", "head", "lUpperArm", "rUpperArm", "lForearm", "rForearm", "lHand", "rHand",
+                                            "lThigh", "rThigh", "lShin", "rShin", "lFoot", "rFoot"};
+        Json   byPart = Json::object(), sizes = Json::object();
+        int    moved  = 0;
+        double most   = 0;
+        for(size_t v = 0; v < parts.size(); v++)
+        {
+          const float* a = &posed[0][v * 3];
+          const float* b = &result.positions[v * 3];
+          const double d = std::sqrt(double(b[0] - a[0]) * (b[0] - a[0]) + double(b[1] - a[1]) * (b[1] - a[1]) + double(b[2] - a[2]) * (b[2] - a[2]));
+          const std::string name = parts[v] < std::size(names) ? names[parts[v]] : "?";
+          sizes[name]            = sizes.value(name, 0) + 1;
+          most                   = std::max(most, d);
+          if(d > 0.01)
+          {
+            moved++;
+            if(!byPart.contains(name))
+              byPart[name] = {{"vertices", 0}, {"largestCm", 0.0}};
+            Json& p        = byPart[name];
+            p["vertices"]  = p.value("vertices", 0) + 1;
+            p["largestCm"] = r(std::max(p.value("largestCm", 0.0), d));
+          }
+        }
+        Json dump = {{"pressed", result.pressed},  {"patches", result.patches}, {"moved", moved}, {"largestCm", r(most)},
+                     {"byPart", byPart},          {"partSizes", sizes},        {"vertices", parts.size()},
+                     {"prepareMs", r(prepareMs)}, {"passMs", r(passMs)}};
+        std::cerr << "contact " << label << ": " << dump.dump() << "\n";
         dumps[label] = dump;
       }
       else if(step.contains("flesh"))

@@ -152,10 +152,13 @@
 //                                                reaches the item becomes its colour
 //   wardrobe.collision {prop, on}                 worn conforming meshes are pushed out of the posed body
 //                                                (figure/wardrobe/collider.hpp), on by default
-//   figure.contact  {prop, on?, softness?, bulge?, reach?, gesture?}   the body dents where a prop presses
-//                                                into it and bulges around the dent by the volume pushed in
-//                                                (figure/physics/contact/contact.hpp): on for a person's
-//                                                body, off for one from a scene file without the block;
+//   figure.contact  {prop, on?, self?, softness?, bulge?, reach?, gesture?}   the body dents where a prop
+//                                                presses into it and bulges around the dent by the volume
+//                                                pushed in (figure/physics/contact/contact.hpp): on for a
+//                                                person's body, off for one from a scene file without the
+//                                                block; `self` where its own parts press on one another (a
+//                                                kneel's calf on its thigh), on by default, off for a scene
+//                                                file's block without it;
 //                                                bulge 0-1 (0.7), reach 1-10 cm (3), softness 0-1 (0.5, the
 //                                                share of an overlap with another figure, not used yet)
 //   wardrobe.cloth  {prop, item, on?: bool | null, strength?, volume?}   dForce on one item: true drapes it (at the

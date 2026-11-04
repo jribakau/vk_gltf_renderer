@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/physics/collide/cage_graph.hpp>
 #include <figure/physics/volume.hpp>
+#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
 
 namespace fv::physics {
@@ -26,6 +29,10 @@ constexpr double kClosedDepth = 8;
 // Laplacian steps on the correction a round, and rounds of smoothing and pushing out again.
 constexpr int kSmooth = 3;
 constexpr int kRounds = 2;
+// How far apart along the skin two parts' vertices are at least, cm, for one to press on the other:
+// nearer, both are the skin of the joint between them (or of the parts beside it), which bends with
+// DAZ's corrective shapes and isn't contact.
+constexpr float kApart = 5;
 
 // A collider placed for this pass: queried in its own space, or, when its matrix stretches it
 // unevenly, as a copy carried into the body's.
@@ -98,6 +105,130 @@ std::vector<Placed> place(std::span<const ColliderRef> colliders, const Box& bod
   return out;
 }
 
+// The body met by itself: its surface as the pass starts, and per vertex its part and how far it is
+// along the skin from the edge of its part, up to kApart, unposed. Two vertices of different parts are
+// at least the sum of those apart along the skin, since the way between leaves the one part and enters
+// the other. Each part's triangles (those with a vertex on it) are indexed apart, so a vertex searches
+// only the parts it is near and not the skin around it, which is its own.
+struct Self
+{
+  struct Piece
+  {
+    std::vector<uint32_t> tris;
+    SurfaceIndex          index;
+    Box                   near;  // its bounds, grown by the depth
+  };
+  std::span<const float>   positions;
+  std::span<const uint8_t> parts;
+  std::vector<Piece>       pieces;
+  std::vector<float>       fromEdge;
+  // per vertex: how deep it may stay, half its depth when it first went in (the other side gives way
+  // by the other half); below 0 before
+  std::vector<double> keep;
+
+  Self(const ContactInput& in, const CageGraph& posed)
+      : positions(in.body)
+      , parts(in.parts)
+      , fromEdge(in.parts.size(), kApart)
+      , keep(in.parts.size(), -1.0)
+  {
+    pieces.resize(size_t(*std::max_element(parts.begin(), parts.end())) + 1);
+    for(size_t t = 0; t + 2 < in.tris.size(); t += 3)
+    {
+      // once in each part it touches
+      const uint8_t a = parts[in.tris[t]], b = parts[in.tris[t + 1]], c = parts[in.tris[t + 2]];
+      const auto    add = [&](uint8_t p) { pieces[p].tris.insert(pieces[p].tris.end(), {in.tris[t], in.tris[t + 1], in.tris[t + 2]}); };
+      add(a);
+      if(b != a)
+        add(b);
+      if(c != a && c != b)
+        add(c);
+    }
+    for(Piece& piece : pieces)
+    {
+      piece.index = SurfaceIndex(positions, piece.tris);
+      for(uint32_t v : piece.tris)
+        piece.near.add(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
+      piece.near = piece.near.grown(kDepth);
+    }
+    std::optional<CageGraph> unposed;
+    if(in.rest.size() == in.body.size())
+      unposed.emplace(in.rest, in.polyStart, in.polyVerts, in.tris);
+    const CageGraph&      graph = unposed ? *unposed : posed;
+    std::vector<uint32_t> edge;
+    for(size_t v = 0; v < graph.size(); v++)
+      for(uint32_t u : graph.next(v))
+        if(parts[u] != parts[v])
+        {
+          edge.push_back(uint32_t(v));
+          break;
+        }
+    // an edge between parts joins two vertices on edges, both at 0, so the distances stay in their part
+    for(const auto& [v, d] : graph.within(edge, kApart, [](uint32_t) { return true; }))
+      fromEdge[v] = d;
+  }
+
+  // Where vertex v, at p, is inside another part as the pass started: behind the closest face of a
+  // part far enough along the skin, and not past its edge.
+  Inside inside(size_t v, const double* p, Stamps& stamps) const
+  {
+    Inside                   out;
+    const uint8_t            own  = parts[v];
+    const float              from = fromEdge[v];
+    SurfaceIndex::Hit        hit;
+    const std::vector<uint32_t>* on = nullptr;
+    hit.d2                          = kDepth * kDepth;
+    for(size_t k = 0; k < pieces.size(); k++)
+    {
+      const Piece& piece = pieces[k];
+      if(k == own || piece.index.empty() || !piece.near.contains(p[0], p[1], p[2]))
+        continue;
+      const auto found = piece.index.nearest(
+          p[0], p[1], p[2],
+          [&](uint32_t t) {
+            for(int c = 0; c < 3; c++)
+            {
+              const uint32_t u = piece.tris[t * 3 + c];
+              if(parts[u] == own || from + fromEdge[u] < kApart)
+                return false;
+            }
+            return true;
+          },
+          hit.d2, stamps.stamp, stamps.next(piece.index.triangles()));
+      if(found.tri >= 0 && found.d2 <= hit.d2)
+      {
+        hit = found;
+        on  = &piece.tris;
+      }
+    }
+    if(!on)
+      return out;
+    const std::vector<uint32_t>& tris = *on;
+    const size_t a = tris[size_t(hit.tri) * 3] * 3ull, b = tris[size_t(hit.tri) * 3 + 1] * 3ull, c = tris[size_t(hit.tri) * 3 + 2] * 3ull;
+    const double ux = positions[b] - positions[a], uy = positions[b + 1] - positions[a + 1], uz = positions[b + 2] - positions[a + 2];
+    const double vx = positions[c] - positions[a], vy = positions[c + 1] - positions[a + 1], vz = positions[c + 2] - positions[a + 2];
+    std::array<double, 3> n   = {uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx};
+    const double          len = std::hypot(n[0], n[1], n[2]);
+    if(len < 1e-20)
+      return out;
+    std::array<double, 3> q;
+    for(int k = 0; k < 3; k++)
+    {
+      n[size_t(k)] /= len;
+      q[size_t(k)] = positions[a + k] * hit.u + positions[b + k] * hit.v + positions[c + k] * hit.w;
+    }
+    // within about 37 degrees of its face's normal: the skin a vertex may not meet leaves an edge in
+    // what it may, which it would otherwise be drawn to sideways
+    const double d[3] = {p[0] - q[0], p[1] - q[1], p[2] - q[2]};
+    const double dist = std::hypot(d[0], d[1], d[2]);
+    const double in   = -(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]);
+    if(in <= 0 || in < 0.8 * dist)
+      return out;
+    out = {true, q, n, dist};
+    return out;
+  }
+};
+
 // Each body vertex inside a collider moves onto its surface by its share; inside several, the one
 // that moves it furthest. It goes back into the body along the skin's normal (`normals`, unit, per
 // vertex), as Softie casts its rays, so skin pressed into a seat near its front edge goes up and not
@@ -107,8 +238,10 @@ std::vector<Placed> place(std::span<const ColliderRef> colliders, const Box& bod
 // `keep`, per collider and vertex, is how deep the vertex may stay, set from where it starts (`first`)
 // and held after, so the later rounds don't take a share of what is left each time. A vertex that
 // wasn't in at the start keeps nothing: the other body, which met this one undented, makes no room.
+// Inside another part of the body (`self`), it moves to its closest point by half, held as `keep` is
+// from the round it first went in: that part gives way by the other half. `hit` is 2 for those.
 void contacts(std::span<const double> x, std::span<const double> normals, const std::vector<Placed>& placed, std::vector<std::vector<double>>& keep,
-              bool first, std::vector<double>& target, std::vector<uint8_t>& hit)
+              Self* self, bool first, std::vector<double>& target, std::vector<uint8_t>& hit)
 {
   const size_t n = x.size() / 3;
   target.assign(n * 3, 0.0);
@@ -165,6 +298,27 @@ void contacts(std::span<const double> x, std::span<const double> normals, const 
           hit[v]            = 1;
         }
       }
+      if(!self)
+        continue;
+      const Inside in = self->inside(v, p, stamps);
+      if(!in.inside)
+        continue;
+      const double to[3] = {in.exit[0] + in.normal[0] * kClearance, in.exit[1] + in.normal[1] * kClearance, in.exit[2] + in.normal[2] * kClearance};
+      const double depth = std::hypot(to[0] - p[0], to[1] - p[1], to[2] - p[2]);
+      if(self->keep[v] < 0)
+        self->keep[v] = depth / 2;
+      if(depth <= self->keep[v])
+        continue;
+      const double f    = (depth - self->keep[v]) / depth;
+      const double m[3] = {(to[0] - p[0]) * f, (to[1] - p[1]) * f, (to[2] - p[2]) * f};
+      const double move = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+      if(move > best)
+      {
+        best = move;
+        for(int a = 0; a < 3; a++)
+          target[v * 3 + a] = p[a] + m[a];
+        hit[v] = 2;
+      }
     }
   });
 }
@@ -212,8 +366,9 @@ ContactResult resolveContacts(const ContactInput& in)
   const size_t n = in.body.size() / 3;
   if(!n)
     return out;
-  const std::vector<Placed> placed = place(in.colliders, boundsOf(in.body));
-  if(placed.empty())
+  const std::vector<Placed> placed  = place(in.colliders, boundsOf(in.body));
+  const bool                pressed = in.parts.size() == n;
+  if(placed.empty() && !pressed)
     return out;
   std::vector<double>       x(in.body.begin(), in.body.end());
   const std::vector<double> start = x;
@@ -222,10 +377,12 @@ ContactResult resolveContacts(const ContactInput& in)
   for(size_t v = 0; v < n; v++)
     for(int a = 0; a < 3; a++)
       normals[v * 3 + a] = graph.normal(v)[a];
+  const std::unique_ptr<Self>      self = pressed ? std::make_unique<Self>(in, graph) : nullptr;
   std::vector<double>              target;
   std::vector<uint8_t>             hit;
   std::vector<std::vector<double>> keep;
-  contacts(x, normals, placed, keep, true, target, hit);
+  contacts(x, normals, placed, keep, self.get(), true, target, hit);
+  out.pressed = int(std::count(hit.begin(), hit.end(), uint8_t(2)));
   if(!pushOut(x, target, hit))
     return out;
 
@@ -300,7 +457,7 @@ ContactResult resolveContacts(const ContactInput& in)
     for(size_t i = 0; i < correction.size(); i++)
       x[i] = start[i] + correction[i];
     bulge();
-    contacts(x, normals, placed, keep, false, target, hit);
+    contacts(x, normals, placed, keep, self.get(), false, target, hit);
     pushOut(x, target, hit);
   }
   for(size_t i = 0; i < x.size(); i++)
@@ -337,6 +494,59 @@ double overlapShare(const ContactSettings& self, const ContactSettings* other)
   return a + b > 0 ? a / (a + b) : 0.5;
 }
 
+uint8_t partOfBone(const SceneGraph& scene, int node)
+{
+  for(int b = node; b >= 0 && size_t(b) < scene.nodes.size(); b = scene.nodes[size_t(b)].parent)
+  {
+    const std::string&         name = scene.nodes[size_t(b)].name;
+    const wardrobe::ParsedBone p    = wardrobe::parseBone(name);
+    const bool                 left = p.side != 'r';
+    if(p.slot == "collar")
+      return part::kTorso;
+    if(p.slot == "upperarm")
+      return left ? part::kLUpperArm : part::kRUpperArm;
+    if(p.slot == "forearm")
+      return left ? part::kLForearm : part::kRForearm;
+    switch(wardrobe::limbOfBone(name))
+    {
+      case wardrobe::limb::kHead:
+        return part::kHead;
+      case wardrobe::limb::kLHand:
+        return part::kLHand;
+      case wardrobe::limb::kRHand:
+        return part::kRHand;
+      case wardrobe::limb::kLThigh:
+        return part::kLThigh;
+      case wardrobe::limb::kRThigh:
+        return part::kRThigh;
+      case wardrobe::limb::kLShin:
+        return part::kLShin;
+      case wardrobe::limb::kRShin:
+        return part::kRShin;
+      case wardrobe::limb::kLFoot:
+        return part::kLFoot;
+      case wardrobe::limb::kRFoot:
+        return part::kRFoot;
+      default:
+        break;
+    }
+  }
+  return part::kTorso;
+}
+
+std::vector<uint8_t> bodyParts(const SceneGraph& scene, const Mesh& mesh)
+{
+  std::vector<int16_t> boneParts;
+  for(int b : mesh.bones)
+    boneParts.push_back(partOfBone(scene, b));
+  const size_t               count = mesh.geo ? mesh.geo->cagePositions.size() / 3 : 0;
+  const std::vector<int16_t> each  = wardrobe::vertexLimbs(count, mesh.cageSkin.start.empty() ? nullptr : &mesh.cageSkin, boneParts);
+  std::vector<uint8_t>       out(each.size());
+  for(size_t v = 0; v < each.size(); v++)
+    out[v] = uint8_t(each[v]);
+  return out;
+}
+
 std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root,
                                            const std::string& without)
 {
@@ -370,6 +580,9 @@ struct Contact::Job
   std::vector<int32_t>     polyStart, polyVerts;
   std::vector<ColliderRef> colliders;
   ContactSettings          settings;
+  // per vertex, when the body's parts press on one another, and the body unposed in the root's space
+  std::vector<uint8_t> parts;
+  std::vector<float>   unposed;
   // for the write-back: the rest cage under the dent, its skin and pose in the mesh's space, and the way there
   std::vector<float> rest;
   bool               skinned = false;
@@ -440,9 +653,15 @@ std::shared_ptr<Contact::Job> Contact::prepare()
     return nullptr;
   auto job       = std::make_shared<Job>();
   job->colliders = colliders ? colliders() : std::vector<ColliderRef>{};
-  if(job->colliders.empty())
+  if(m_settings.self && m_parts.size() != body.geo->cagePositions.size() / 3)
+    m_parts = bodyParts(m_scene, body);
+  // a body all of one part (no skin) has nothing to press on itself
+  const bool self = m_settings.self && std::any_of(m_parts.begin(), m_parts.end(), [&](uint8_t p) { return p != m_parts[0]; });
+  if(job->colliders.empty() && !self)
     return nullptr;
   job->settings = m_settings;
+  if(self)
+    job->parts = m_parts;
 
   // the body under its own dent: the shape kept, less this channel's target at its weight
   job->rest = cageWithout(m_morphs, m_bodyMesh, m_writer.name);
@@ -464,6 +683,8 @@ std::shared_ptr<Contact::Job> Contact::prepare()
     posed = job->rest;
   job->body      = dforce::transformPoints(toSpace, posed);
   job->back      = inverse(toSpace);
+  if(!job->parts.empty())
+    job->unposed = dforce::transformPoints(toSpace, job->rest);
   job->tris      = body.geo->dsonTris;
   job->polyStart = body.geo->cagePolyStart;
   job->polyVerts = body.geo->cagePolyVerts;
@@ -528,6 +749,8 @@ bool Contact::pump()
           in.colliders = job->colliders;
           in.bulge     = job->settings.bulge;
           in.reach     = job->settings.reach;
+          in.parts     = job->parts;
+          in.rest      = job->unposed;
           const ContactResult r = resolveContacts(in);
           // back to the mesh's space, and to the cage deltas whose skinning gives it
           Landed     out;

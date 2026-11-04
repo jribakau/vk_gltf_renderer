@@ -1,0 +1,18 @@
+{
+  "about": "Self-contact (physics-plan step 10) on a Genesis 9 and a Genesis 8 body with nothing near them: what presses at rest (nothing should), with the knees folded as in a kneel, and with the arms lowered against the chest; and the pass's time. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"contact": "g9 rest"},
+    {"pose": {"l_shin/rotation/x": 150, "r_shin/rotation/x": 150}},
+    {"contact": "g9 knees folded"},
+    {"pose": {"l_shin/rotation/x": 0, "r_shin/rotation/x": 0, "l_upperarm/rotation/z": -35, "r_upperarm/rotation/z": 35}},
+    {"contact": "g9 arms lowered"},
+    {"load": "People/Genesis 8 Female/Genesis 8 Basic Female.duf"},
+    {"contact": "g8 rest"},
+    {"pose": {"lShin/rotation/x": 150, "rShin/rotation/x": 150}},
+    {"contact": "g8 knees folded"},
+    {"pose": {"lShin/rotation/x": 0, "rShin/rotation/x": 0, "lShldrBend/rotation/z": -35, "rShldrBend/rotation/z": 35}},
+    {"contact": "g8 arms lowered"}
+  ]
+}

@@ -48,6 +48,9 @@ public:
   // triangles this search has seen. With `limbs` (a limb id per vertex, wardrobe::BindFilter's) and a
   // `mask`, only a triangle with a vertex of an allowed limb, or of none, is acceptable.
   Hit search(double px, double py, double pz, int32_t mask, std::span<const int16_t> limbs, double maxDist2, std::vector<int32_t>& stamp, int32_t id) const;
+  // The same with `accept` (triangle index -> bool) saying which triangles are acceptable.
+  template <class Accept>
+  Hit nearest(double px, double py, double pz, Accept&& accept, double maxDist2, std::vector<int32_t>& stamp, int32_t id) const;
 
   // How many of the triangles `accept` takes (triangle index -> bool) the ray from o along d crosses
   // ahead of o. Walks the cells the ray passes through, so a big surface costs its cells, not its
@@ -138,6 +141,85 @@ void SurfaceIndex::walk(const double o[3], const double d[3], Visit&& visit) con
       return;
     next[a] += delta[a];
   }
+}
+
+template <class Accept>
+SurfaceIndex::Hit SurfaceIndex::nearest(double px, double py, double pz, Accept&& accept, double maxDist2, std::vector<int32_t>& stamp, int32_t id) const
+{
+  Hit hit;
+  if(!nt)
+    return hit;
+  if(maxDist2 < INFINITY)
+  {
+    // further than that from the grid's box: nothing can be within reach
+    const double bx = std::max({0.0, minX - px, px - maxX}), by = std::max({0.0, minY - py, py - maxY}), bz = std::max({0.0, minZ - pz, pz - maxZ});
+    if(bx * bx + by * by + bz * bz > maxDist2)
+      return hit;
+  }
+  const int ci = cellOf(px, minX, nx), cj = cellOf(py, minY, ny), ck = cellOf(pz, minZ, nz);
+  // clamped in from outside the grid: the cell does not contain the point, so its walls are not a bound
+  const bool contained = int(std::floor((px - minX) / cell)) == ci && int(std::floor((py - minY) / cell)) == cj && int(std::floor((pz - minZ) / cell)) == ck;
+  double     best      = INFINITY;
+  double     bu = 0, bv = 0, bw = 0;
+  for(int r = 0; r <= maxR; r++)
+  {
+    // cells r rings out are at least (r - 1) cells away
+    if(r > 1)
+    {
+      const double ring = std::pow((r - 1) * cell, 2);
+      if((hit.tri >= 0 && best <= ring) || ring > maxDist2)
+        break;
+    }
+    for(int k = ck - r; k <= ck + r; k++)
+    {
+      if(k < 0 || k >= nz)
+        continue;
+      for(int j = cj - r; j <= cj + r; j++)
+      {
+        if(j < 0 || j >= ny)
+          continue;
+        const bool shell = std::abs(k - ck) == r || std::abs(j - cj) == r;
+        for(int i = ci - r; i <= ci + r; i += shell ? 1 : std::max(1, 2 * r))
+        {
+          if(i < 0 || i >= nx)
+            continue;
+          const size_t c = (size_t(k) * ny + j) * nx + i;
+          for(uint32_t s = start[c], e = start[c + 1]; s < e; s++)
+          {
+            const uint32_t t = tris[s];
+            if(stamp[t] == id)
+              continue;
+            stamp[t] = id;
+            if(!accept(t))
+              continue;
+            const double d = closest(px, py, pz, T[t * 3] * 3ull, T[t * 3 + 1] * 3ull, T[t * 3 + 2] * 3ull, bu, bv, bw);
+            if(d < best)
+            {
+              best    = d;
+              hit.tri = t;
+              hit.u = bu, hit.v = bv, hit.w = bw;
+            }
+          }
+        }
+      }
+    }
+    // ring 0 holds every triangle that meets the cell: a point inside it, closer to its hit than
+    // to the nearest wall, has no strictly closer triangle outside it
+    if(r == 0 && contained && hit.tri >= 0)
+    {
+      const double dx   = std::min(px - (minX + ci * cell), minX + (ci + 1) * cell - px);
+      const double dy   = std::min(py - (minY + cj * cell), minY + (cj + 1) * cell - py);
+      const double dz   = std::min(pz - (minZ + ck * cell), minZ + (ck + 1) * cell - pz);
+      const double wall = std::min({dx, dy, dz}) - kWallSlack;
+      if(wall > 0 && best <= wall * wall)
+        break;
+    }
+  }
+  if(best > maxDist2)
+    hit.tri = -1;
+  else
+    hit.d2 = best;
+  return hit;
 }
 
 template <class Accept>

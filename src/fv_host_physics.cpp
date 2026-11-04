@@ -346,9 +346,10 @@ void FvHost::Impl::pokeContacts()
   }
 }
 
-// Topic "contact/<prop>": {enabled, busy, held, patches, softness, bulge, reach}: the body's contact
-// dents (figure/physics/contact/contact.hpp), for a figure that has them; `held` while they are at
-// weight 0 because what they meet moves (a clip, another figure's ragdoll).
+// Topic "contact/<prop>": {enabled, self, busy, held, patches, softness, bulge, reach}: the body's
+// contact dents (figure/physics/contact/contact.hpp), for a figure that has them; `self` when its own
+// parts press on one another too; `held` while they are at weight 0 because what they meet moves (a
+// clip, another figure's ragdoll).
 void FvHost::Impl::publishContact(Loaded& f)
 {
   if(!f.contact)
@@ -356,6 +357,7 @@ void FvHost::Impl::publishContact(Loaded& f)
   f.contactVersion                 = f.contact->version();
   const fv::physics::ContactSettings& s = f.contact->settings();
   protocol->events().snapshot("contact/" + f.id, {{"enabled", s.on},
+                                                  {"self", s.self},
                                                   {"busy", f.contact->busy()},
                                                   {"held", f.contact->held()},
                                                   {"patches", f.contact->patches()},
@@ -368,13 +370,13 @@ void FvHost::Impl::publishContact(Loaded& f)
 Json contactState(const Loaded& f)
 {
   const fv::physics::ContactSettings& s = f.contact->settings();
-  return {{"on", s.on}, {"softness", s.softness}, {"bulge", s.bulge}, {"reach", s.reach}};
+  return {{"on", s.on}, {"self", s.self}, {"softness", s.softness}, {"bulge", s.bulge}, {"reach", s.reach}};
 }
 
-// figure.contact {prop, on?, softness?, bulge?, reach?, gesture?}: the body dents where a prop presses
-// into it (on by default), how much of the volume pushed in bulges around the dent (0 to 1), how far
-// along the skin it reaches at least (1 to 10 cm), and the body's share of an overlap with another
-// figure (0 to 1).
+// figure.contact {prop, on?, self?, softness?, bulge?, reach?, gesture?}: the body dents where a prop
+// presses into it (on by default), and where its own parts press on one another (`self`, on by
+// default), how much of the volume pushed in bulges around the dent (0 to 1), how far along the skin it
+// reaches at least (1 to 10 cm), and the body's share of an overlap with another figure (0 to 1).
 Json FvHost::Impl::figureContact(const Json& args)
 {
   auto figure = figureArg(args);
@@ -383,6 +385,8 @@ Json FvHost::Impl::figureContact(const Json& args)
   fv::physics::ContactSettings s = figure->contact->settings();
   if(args.contains("on") && args["on"].is_boolean())
     s.on = args["on"].get<bool>();
+  if(args.contains("self") && args["self"].is_boolean())
+    s.self = args["self"].get<bool>();
   const auto number = [&](const char* key, float& out, float lo, float hi) {
     if(args.contains(key) && args[key].is_number())
       out = std::clamp(args[key].get<float>(), lo, hi);

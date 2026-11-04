@@ -18,7 +18,10 @@
 // own; everything else that reads the body (the collider, dForce, the renderer) sees the dent with no
 // code of its own. The pass reads the body without its own channel, so it never deepens its own dent.
 // Another person's body is met the same way, without its own dent, and each takes its share of the
-// overlap by softness (step 3), so the two passes don't chase each other.
+// overlap by softness (step 3), so the two passes don't chase each other. So are the body's own parts
+// (step 10), each giving way by half so the two meet between: a vertex meets the skin of another part
+// only when the way to it along the skin is long, so the crease of a bent knee or elbow, which DAZ's
+// own corrective shapes look after, is left as it is.
 // While what it meets is driven (a clip plays, another figure's ragdoll moves) the channel is at
 // weight 0 and no pass runs: a dent where a hand used to be looks wrong.
 //
@@ -45,6 +48,8 @@ std::string contactChannelOf(int mesh);
 struct ContactSettings
 {
   bool on = true;
+  // the body's own parts press on one another: a kneel's calf on its thigh, an arm on the chest
+  bool self = true;
   // this body's share of an overlap with another figure (step 3); a prop takes none
   float softness = 0.5f;
   // the share of the pushed-in volume put back around the dent: 0 is a dimple only
@@ -64,13 +69,30 @@ struct ContactInput
   std::span<const int32_t> polyStart, polyVerts;
   std::span<const ColliderRef> colliders;
   float                        bulge = 0.7f, reach = 3.f;
+  // per vertex, its part of the body (bodyParts): with them the parts press on one another
+  std::span<const uint8_t> parts;
+  // the body unposed, as `body`: the ways along the skin between parts are measured on it, since a
+  // bent joint squeezes or stretches its skin; empty, on `body`
+  std::span<const float> rest;
 };
 struct ContactResult
 {
   std::vector<float> positions;  // as `body`, dented
   int                patches = 0;
+  // vertices pressed into another part of the body, as the pass found them
+  int pressed = 0;
 };
 ContactResult resolveContacts(const ContactInput& in);
+
+// The parts of a body that press on one another. A vertex's is its strongest bone's, and a bone's its
+// own or its nearest ancestor's: the collar and the bones of no limb (the hip, the spine, the
+// pectorals) are the torso's, the neck and the face's bones the head's, the fingers the hand's.
+namespace part {
+constexpr uint8_t kTorso = 0, kHead = 1, kLUpperArm = 2, kRUpperArm = 3, kLForearm = 4, kRForearm = 5, kLHand = 6, kRHand = 7,
+                  kLThigh = 8, kRThigh = 9, kLShin = 10, kRShin = 11, kLFoot = 12, kRFoot = 13;
+}
+uint8_t              partOfBone(const SceneGraph& scene, int node);
+std::vector<uint8_t> bodyParts(const SceneGraph& scene, const Mesh& mesh);
 
 // A figure's meshes as posed now, with their morphs and skin: xyz per cage vertex in the space of its
 // root node (cm), one list per mesh asked, empty for one without a cage. How a DAZ prop (a chair) is
@@ -142,6 +164,8 @@ private:
   bool                       m_held    = false;
   int                        m_patches = 0;
   Box                        m_bounds;
+  // the body's parts, made the first time a pass presses them on one another
+  std::vector<uint8_t>       m_parts;
   StillPass<Landed>          m_pass;
 };
 
