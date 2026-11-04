@@ -3439,6 +3439,39 @@ TEST(FvHost, physicsModeIsAStepAndTheSceneFileKeepsIt)
   EXPECT_TRUE(r.on());
 }
 
+// The soft bones' settings are a step of the history and part of the figure's scene state; a file
+// without the block has them off. The Box Figure has no such bones: it keeps the settings, and says so.
+TEST(FvHost, softBodySettingsAreAStepAndTheSceneFileKeepsThem)
+{
+  Ragdolled  r;
+  const auto soft = [&] { return r.rig.topic("secondary/" + r.figure); };
+  EXPECT_FALSE(soft().value("available", true)) << soft().dump();
+  EXPECT_FALSE(soft().value("on", true));
+  ASSERT_TRUE(r.rig.cmd("physics.secondary", {{"prop", r.figure}, {"on", true}, {"bounce", 0.7}}).value("ok", false));
+  EXPECT_TRUE(soft().value("on", false));
+  EXPECT_DOUBLE_EQ(soft().value("bounce", 0.0), 0.7);
+  EXPECT_EQ(r.rig.topic("history").at("undo")[0], "Soft body on");
+  const Json state = r.rig.cmd("scene.state", {{"prop", r.figure}}).value("result", Json::object());
+  ASSERT_TRUE(state.contains("secondary")) << state.dump();
+  EXPECT_TRUE(state["secondary"].value("on", false));
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_FALSE(soft().value("on", true));
+  ASSERT_TRUE(r.rig.cmd("history.redo").value("ok", false));
+  EXPECT_TRUE(soft().value("on", false));
+
+  Json restore    = state;
+  restore["prop"] = r.figure;
+  restore.erase("secondary");
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_FALSE(soft().value("on", true)) << "a file without the block opened with them on";
+  restore["secondary"] = state["secondary"];
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_TRUE(soft().value("on", false));
+  EXPECT_DOUBLE_EQ(soft().value("bounce", 0.0), 0.7);
+}
+
 // A body group's own Hold is a step of the history, in the topic and the figure's scene state; null
 // gives the group back to the figure's Hold.
 TEST(FvHost, aGroupsHoldIsAStepAndTheSceneFileKeepsIt)

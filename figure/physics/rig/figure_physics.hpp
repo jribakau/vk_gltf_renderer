@@ -144,6 +144,8 @@ private:
   RigidWorld             m_world;
   std::vector<Part>      m_parts;
   std::vector<int>       m_partOfNode;
+  // the pose bones its parts are: what it writes to the physical layer
+  std::vector<int>       m_owned;
   int                    m_restVersion = -1;
   int                    m_hipPin = -1, m_pull = -1;
   Vec3                   m_gravity{0, -980, 0};

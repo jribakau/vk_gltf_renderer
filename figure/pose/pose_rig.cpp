@@ -406,7 +406,7 @@ Vec3 PoseRig::targetPosition(const PoseBone& pb) const
   return rest + Vec3{v(0), v(1), v(2)};
 }
 
-std::vector<int> PoseRig::setPhysical(const std::vector<PhysicalValue>& values)
+std::vector<int> PoseRig::setPhysical(const std::vector<PhysicalValue>& values, std::span<const int> owned)
 {
   fv::timing::Accum   setTime("pose.setPhysical");
   std::vector<uint8_t> listed(m_bones.size(), 0);
@@ -437,8 +437,12 @@ std::vector<int> PoseRig::setPhysical(const std::vector<PhysicalValue>& values)
     pb.physicalOn = true;
     repose(pb);
   }
+  std::vector<uint8_t> mine(m_bones.size(), owned.empty() ? 1 : 0);
+  for(const int b : owned)
+    if(b >= 0 && size_t(b) < m_bones.size())
+      mine[size_t(b)] = 1;
   for(size_t i = 0; i < m_bones.size(); i++)
-    if(!listed[i] && m_bones[i].physicalOn)
+    if(!listed[i] && mine[i] && m_bones[i].physicalOn)
     {
       m_bones[i].physicalOn = false;
       repose(m_bones[i]);
@@ -448,12 +452,13 @@ std::vector<int> PoseRig::setPhysical(const std::vector<PhysicalValue>& values)
   return moved;
 }
 
-void PoseRig::foldPhysical()
+void PoseRig::foldPhysical(std::span<const int> owned)
 {
   bool reposed = false;
-  for(PoseBone& pb : m_bones)
+  for(size_t b = 0; b < m_bones.size(); b++)
   {
-    if(!pb.physicalOn)
+    PoseBone& pb = m_bones[b];
+    if(!pb.physicalOn || (!owned.empty() && std::find(owned.begin(), owned.end(), int(b)) == owned.end()))
       continue;
     bool clamped = false;
     for(Axis& a : pb.axes)

@@ -479,8 +479,9 @@ void FvHost::Impl::stepPhysics()
   {
     if(!p->figure || !p->figure->physics)
       continue;
-    Loaded& f = *p->figure;
-    if(f.physics->settings().on && renderer->feedsHostScene() && f.feed)
+    Loaded&    f    = *p->figure;
+    const bool soft = f.secondary && f.secondary->settings().on;
+    if((f.physics->settings().on || soft) && renderer->feedsHostScene() && f.feed)
     {
       rs::RetainedScene& scene = renderer->hostScene();
       const rs::EntityId root  = f.feed->entityOf(f.fig->loaded.root);
@@ -489,6 +490,8 @@ void FvHost::Impl::stepPhysics()
         const glm::mat4 toRoot = glm::inverse(scene.world(root));
         const glm::vec3 down   = glm::normalize(glm::vec3(toRoot * glm::vec4(0, -1, 0, 0)));
         f.physics->setGravity({down.x * 980.0, down.y * 980.0, down.z * 980.0});
+        if(f.secondary)
+          f.secondary->setGravity({down.x * 980.0, down.y * 980.0, down.z * 980.0});
         if(lighting.ground.mode != "off")
         {
           const double    height = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
@@ -508,7 +511,54 @@ void FvHost::Impl::stepPhysics()
     }
     if(f.physicsVersion != f.physics->version())
       publishPhysics(f);
+    // the chest's soft bones answer the chest as the skeleton or the ragdoll has it now
+    if(f.secondary)
+    {
+      fv::timing::Scope t("secondary: frame", 2);
+      f.secondary->step(elapsed);
+      if(f.secondaryVersion != f.secondary->version())
+        publishSecondary(f);
+    }
   }
+}
+
+// Topic "secondary/<prop>": {available, on, awake, bounce, damping}: the chest's soft bones
+// (figure/physics/rig/secondary.hpp).
+void FvHost::Impl::publishSecondary(Loaded& f)
+{
+  if(!f.secondary)
+    return;
+  f.secondaryVersion                      = f.secondary->version();
+  const fv::physics::SecondarySettings& s = f.secondary->settings();
+  protocol->events().snapshot("secondary/" + f.id,
+                              {{"available", f.secondary->valid()}, {"on", s.on}, {"awake", f.secondary->awake()}, {"bounce", s.bounce}, {"damping", s.damping}});
+}
+
+// The soft bones' settings as the scene file and the history keep them.
+Json secondaryState(const Loaded& f)
+{
+  const fv::physics::SecondarySettings& s = f.secondary->settings();
+  return {{"on", s.on}, {"bounce", s.bounce}, {"damping", s.damping}};
+}
+
+// physics.secondary {prop, on?, bounce?, damping?, gesture?}: the chest's soft bones answer its
+// motion (off by default), how loose (0 firm to 1 loose) and how soon they settle (0 to 1). A figure
+// without such bones keeps the settings and nothing moves.
+Json FvHost::Impl::physicsSecondary(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure || !figure->secondary)
+    throw std::runtime_error("no figure with a body is selected");
+  fv::physics::SecondarySettings s = figure->secondary->settings();
+  if(args.contains("on") && args["on"].is_boolean())
+    s.on = args["on"].get<bool>();
+  if(args.contains("bounce") && args["bounce"].is_number())
+    s.bounce = std::clamp(args["bounce"].get<double>(), 0.0, 1.0);
+  if(args.contains("damping") && args["damping"].is_number())
+    s.damping = std::clamp(args["damping"].get<double>(), 0.0, 1.0);
+  figure->secondary->set(s);
+  publishSecondary(*figure);
+  return {{"ok", true}};
 }
 
 // physics.set {prop, on?, strength?, parts?, gravity?, letFall?, gesture?}: Physics mode on or off

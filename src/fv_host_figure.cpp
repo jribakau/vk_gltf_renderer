@@ -420,9 +420,10 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       f->contact            = std::make_unique<fv::physics::Contact>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
       f->contact->colliders = [this, raw = f.get()] { return contactColliders(*raw); };
       f->contact->driven    = [this, raw = f.get()] { return renderer->editAnimationControl().play || movesNear(*raw); };
-      // and a ragdoll, for Physics mode
+      // and a ragdoll, for Physics mode, and the chest's soft bones, in either
       if(f->fig->pose)
       {
+        f->secondary = std::make_unique<fv::physics::Secondary>(f->fig->loaded.scene, *f->fig->pose, f->fig->loaded.root);
         f->physics            = std::make_unique<fv::physics::FigurePhysics>(f->fig->loaded.scene, *f->fig->pose, f->fig->morphs.get(), body, f->fig->loaded.root);
         f->physics->colliders = [this, raw = f.get()] { return contactColliders(*raw, false); };
       }
@@ -514,4 +515,5 @@ void FvHost::Impl::publishFigure(Prop& p)
   publishDforce(*p.figure, true);
   publishContact(*p.figure);
   publishPhysics(*p.figure);
+  publishSecondary(*p.figure);
 }

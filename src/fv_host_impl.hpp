@@ -67,6 +67,7 @@
 #include <figure/dforce/dforce.hpp>
 #include <figure/physics/contact/contact.hpp>
 #include <figure/physics/rig/figure_physics.hpp>
+#include <figure/physics/rig/secondary.hpp>
 #include <figure/wardrobe/collider.hpp>
 #ifdef FV_DFORCE_GPU
 #include "fv_dforce_gpu.hpp"
@@ -193,6 +194,9 @@ struct Loaded
   // `contact`
   std::unique_ptr<fv::physics::FigurePhysics> physics;
   int                                         physicsVersion = -1;
+  // the chest's soft bones (figure/physics/rig/secondary.hpp), in either mode; null but for a person
+  std::unique_ptr<fv::physics::Secondary> secondary;
+  int                                     secondaryVersion = -1;
   // without dents of its own (a DAZ prop, a chair), it is what the bodies near it meet: its shown
   // meshes posed in its root's space (a person's body alone, without its own dent), made again once
   // its pose or shape moved (`contactRev` bumps; a person's own dent doesn't)
@@ -650,6 +654,7 @@ std::string figureGeneration(const Loaded& figure);
 // A figure's contact settings as the scene file and the history keep them ({on, softness, bulge,
 // reach}); the figure has a contact pass.
 Json contactState(const Loaded& f);
+Json secondaryState(const Loaded& f);
 Json physicsState(const Loaded& f);
 
 struct FvHost::Impl
@@ -1085,6 +1090,9 @@ struct FvHost::Impl
   Json physicsOps(const Loaded& f);
   Json physicsSet(const Json& args);
   Json physicsRestore(const Json& args);
+  // secondary motion: physics.secondary and the secondary/<prop> topic
+  void publishSecondary(Loaded& f);
+  Json physicsSecondary(const Json& args);
   bool cameraRay(const glm::vec2& px, glm::vec3& origin, glm::vec3& dir) const;
   bool pullAt(const std::string& phase, const glm::vec2& px);
   std::chrono::steady_clock::time_point physicsFrame{};

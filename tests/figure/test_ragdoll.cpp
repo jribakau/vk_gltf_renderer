@@ -12,6 +12,7 @@
 
 #include <figure/dson/rig.hpp>
 #include <figure/physics/rig/figure_physics.hpp>
+#include <figure/physics/rig/secondary.hpp>
 #include <figure/pose/pose_rig.hpp>
 
 namespace {
@@ -63,6 +64,8 @@ std::string skeleton()
     const double s = side[0] == 'l' ? 1 : -1;
     const auto   n = [&](const char* name) { return std::string(side) + "_" + name; };
     b.push_back(bone(n("shoulder"), "spine4", {4 * s, 142, 0}, {16 * s, 142, 0}, rotation(-30, 30, -30, 30, -30, 30)));
+    // as Genesis 9 has them: on spine3, pointing forward, a small box
+    b.push_back(bone(n("pectoral"), "spine3", {5 * s, 125, 0}, {9 * s, 127, 9}, rotation(-10, 10, -10, 10, -15, 15), "ZYX"));
     b.push_back(bone(n("upperarm"), n("shoulder"), {16 * s, 142, 0}, {44 * s, 142, 0}, rotation(-90, 90, -100, 100, -90, 90)));
     // the elbow bends forward only: for the left arm along +x, a turn about -y
     b.push_back(bone(n("forearm"), n("upperarm"), {44 * s, 142, 0}, {70 * s, 142, 0}, rotation(-60, 60, s > 0 ? -150 : 0, s > 0 ? 0 : 150, -5, 5)));
@@ -463,4 +466,98 @@ TEST(Ragdoll, thePhysicalLayerRoundTrips)
   EXPECT_FALSE(b.physics->awake());
 }
 
+//--------------------------------------------------------------------------------------------------
+// Secondary motion (figure/physics/rig/secondary.hpp, docs/physics-plan.md step 5)
+
+namespace {
+
+using fv::physics::Secondary;
+using fv::physics::SecondarySettings;
+
+SecondarySettings softOn(double bounce = 0.5, double damping = 0.2)
+{
+  SecondarySettings s;
+  s.on      = true;
+  s.bounce  = bounce;
+  s.damping = damping;
+  return s;
+}
+
+}  // namespace
+
+// The chest drops 2 cm in a tenth of a second and stops: the soft bones swing behind it, past their
+// pose and back, settle on it within a few seconds, and then show their channels again.
+TEST(Secondary, overshootsThenSettles)
+{
+  Person    p;
+  Secondary soft(p.scene, *p.pose, p.root);
+  ASSERT_TRUE(soft.valid());
+  EXPECT_EQ(soft.bones().size(), 2u);
+  soft.set(softOn());
+  soft.step(1.0 / 60);
+  std::array<double, 3> rest{}, lo{}, hi{};
+  for(int a = 0; a < 3; a++)
+    rest[size_t(a)] = p.shown("l_pectoral", a);
+  for(int f = 0; f < 300; f++)
+  {
+    const double t = std::min((f + 1) / 60.0, 0.1);
+    p.set("hip", "y", -2 * (1 - std::cos(kPi * t / 0.1)) / 2, ChannelKind::eTranslation);
+    soft.step(1.0 / 60);
+    for(int a = 0; a < 3; a++)
+    {
+      const double d  = p.shown("l_pectoral", a) - rest[size_t(a)];
+      lo[size_t(a)] = std::min(lo[size_t(a)], d);
+      hi[size_t(a)] = std::max(hi[size_t(a)], d);
+    }
+  }
+  bool swung = false;
+  for(int a = 0; a < 3; a++)
+    swung = swung || (lo[size_t(a)] < -0.5 && hi[size_t(a)] > 0.5);
+  EXPECT_TRUE(swung) << "lo " << lo[0] << " " << lo[1] << " " << lo[2] << ", hi " << hi[0] << " " << hi[1] << " " << hi[2];
+  EXPECT_FALSE(soft.awake()) << "still moving 5 s after the chest stopped";
+  EXPECT_FALSE(p.pose->get("l_pectoral")->physicalOn) << "at rest it shows its channels";
+  for(int a = 0; a < 3; a++)
+    EXPECT_NEAR(p.shown("l_pectoral", a), rest[size_t(a)], 1e-9);
+}
+
+// A figure standing still: nothing moves, nothing is written, nothing simulates.
+TEST(Secondary, aStillFigureWritesNothing)
+{
+  Person    p;
+  Secondary soft(p.scene, *p.pose, p.root);
+  soft.set(softOn());
+  p.pose->takeMoved();
+  for(int f = 0; f < 60; f++)
+    EXPECT_FALSE(soft.step(1.0 / 60)) << "frame " << f;
+  EXPECT_TRUE(p.pose->takeMoved().empty());
+  EXPECT_FALSE(soft.awake());
+}
+
+// With the ragdoll moving the chest, both write the physical layer, each its own bones: neither wipes
+// the other's, and leaving Physics folds the ragdoll's alone, so the bounce isn't kept in the soft
+// bones' channels.
+TEST(Secondary, theRagdollAndTheChestKeepTheirOwnBones)
+{
+  Person    p;
+  Secondary soft(p.scene, *p.pose, p.root);
+  p.on(0.5);
+  soft.set(softOn(0.8, 0.1));
+  soft.step(1.0 / 60);
+  p.set("spine1", "x", 20);
+  bool both = false;
+  for(int f = 0; f < 30; f++)
+  {
+    p.physics->step(1.0 / 60);
+    soft.step(1.0 / 60);
+    both = both || (p.pose->get("spine3")->physicalOn && p.pose->get("l_pectoral")->physicalOn);
+  }
+  EXPECT_TRUE(both) << "one wiped the other's bones";
+  ASSERT_TRUE(soft.awake());
+  PhysicsSettings off = p.physics->settings();
+  off.on              = false;
+  p.physics->set(off);
+  EXPECT_TRUE(p.pose->get("l_pectoral")->physicalOn) << "leaving Physics took the soft bones' motion";
+  for(const char* axis : {"x", "y", "z"})
+    EXPECT_EQ(*p.pose->posed("l_pectoral", "rotation", axis), 0.0) << "the bounce went into the channels";
+}
 

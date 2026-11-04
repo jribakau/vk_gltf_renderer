@@ -648,6 +648,8 @@ Json FvHost::Impl::sceneState(const Json& args)
     state["contact"] = contactState(*prop->figure);
   if(prop->figure->physics)
     state["physics"] = physicsState(*prop->figure);
+  if(prop->figure->secondary)
+    state["secondary"] = secondaryState(*prop->figure);
   if(prop->figure->dforce)
   {
     state["dforce"]     = prop->figure->dforce->enabled();
@@ -1020,6 +1022,15 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         physics = {{"on", false}};
       physics["prop"] = target->id;
       physicsRestore(physics);
+    }
+    // the chest's soft bones: a file without the block has them off
+    if(target->secondary)
+    {
+      Json soft = args.value("secondary", Json());
+      if(!soft.is_object())
+        soft = {{"on", false}};
+      soft["prop"] = target->id;
+      physicsSecondary(soft);
     }
     // a file from before body contact has no block, and opens as it was saved: without dents
     if(target->contact)

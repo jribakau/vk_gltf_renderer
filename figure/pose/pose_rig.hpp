@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -178,11 +179,13 @@ public:
 
   // Physics mode: poses the bones in `values` where the ragdoll has them, all of it as setDriven: a
   // bone not in `values` shows its channels again. Only bones whose pose changed move; then
-  // `afterPose` runs once, if any did. Returns the bone nodes moved.
-  std::vector<int> setPhysical(const std::vector<PhysicalValue>& values);
+  // `afterPose` runs once, if any did. Returns the bone nodes moved. `owned` (bones() indices) are the
+  // bones the caller poses, when it isn't the only one (the ragdoll and the chest's soft bones): of
+  // the others, none is touched. Empty: all.
+  std::vector<int> setPhysical(const std::vector<PhysicalValue>& values, std::span<const int> owned = {});
   // Leaving Physics mode: each bone's channels take where it is shown (clamped to their limits),
-  // and the physical layer goes. The pose doesn't move.
-  void foldPhysical();
+  // and the physical layer goes. The pose doesn't move. `owned` as above.
+  void foldPhysical(std::span<const int> owned = {});
   // Whether any bone is posed by the ragdoll.
   bool anyPhysical() const;
   // The rotation channel totals (value plus driven, degrees, x y z) that pose a bone at local

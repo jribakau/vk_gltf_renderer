@@ -227,6 +227,10 @@ void FigurePhysics::build()
     m_parts.clear();
     return;
   }
+  // the bones it poses, and no others (the chest's soft bones are another's)
+  m_owned.clear();
+  for(const Part& p : m_parts)
+    m_owned.insert(m_owned.end(), p.members.begin(), p.members.end());
 
   // each part's cage vertices: those whose strongest bone is it, or under it and no part
   std::vector<std::vector<Vec3>> points(m_parts.size());
@@ -606,7 +610,7 @@ bool FigurePhysics::set(const PhysicsSettings& settings, bool fold)
         v.translation = Vec3{pb.posed(ChannelKind::eTranslation, 0), pb.posed(ChannelKind::eTranslation, 1), pb.posed(ChannelKind::eTranslation, 2)};
       values.push_back(v);
     }
-    m_rig.setPhysical(values);
+    m_rig.setPhysical(values, m_owned);
     m_wasAwake = true;
     return true;
   }
@@ -618,9 +622,9 @@ bool FigurePhysics::set(const PhysicsSettings& settings, bool fold)
       m_pull = -1;
     }
     if(fold)
-      m_rig.foldPhysical();
+      m_rig.foldPhysical(m_owned);
     else
-      m_rig.setPhysical({});
+      m_rig.setPhysical({}, m_owned);
     m_world.sleep();
     m_wasAwake = false;
     return true;
@@ -786,7 +790,7 @@ void FigurePhysics::restorePhysical(const std::vector<std::pair<std::string, dou
       v.translation = t;
     list.push_back(v);
   }
-  m_rig.setPhysical(list);
+  m_rig.setPhysical(list, m_owned);
   placeBodies();
   m_lastTargets = targets();
   allowOverlaps();
@@ -841,7 +845,7 @@ bool FigurePhysics::writeBack()
   }
   if(!moved)
     return false;
-  m_rig.setPhysical(values);
+  m_rig.setPhysical(values, m_owned);
   return true;
 }
 

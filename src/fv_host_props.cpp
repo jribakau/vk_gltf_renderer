@@ -202,7 +202,7 @@ void FvHost::Impl::removeProp(const std::shared_ptr<Prop>& p)
   auto& events = protocol->events();
   if(p->materials)
     p->materials->detach();
-  for(const char* topic : {"nodes/", "pose/", "morphs/", "wardrobe/", "dforce/", "contact/", "physics/"})
+  for(const char* topic : {"nodes/", "pose/", "morphs/", "wardrobe/", "dforce/", "contact/", "physics/", "secondary/"})
     events.drop(topic + p->id);
   if(p->figure && p->figure->busyOn)
     job(p->figure->busyJob, {{"state", "done"}});
