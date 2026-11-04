@@ -252,6 +252,8 @@ private:
   std::unordered_map<uint64_t, Micromap>      m_micromaps;
   std::unordered_map<uint64_t, Tlas>          m_tlases;
   std::map<uint32_t, ImageHandle>             m_textureDescriptors;
+  std::map<uint32_t, uint64_t>                m_slotShownSince;  // a texture slot in use: the frame it was first written in
+  bool                                        m_inRetire = false;  // running the retire closures of beginFrame
   std::map<uint32_t, GpuSamplerDesc>          m_samplerDescriptors;
   std::vector<GpuBarrier>                     m_barriers;
   // buffers written since the last barrier that fences them for builds, and for shading; BLAS

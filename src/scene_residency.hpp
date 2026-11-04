@@ -549,6 +549,7 @@ private:
   {
     uint32_t slot  = 0;
     uint32_t users = 0;
+    uint64_t since = 0;  // the frame it was written in: from the next on, a frame in flight may sample it (moveSlots)
   };
 
   void syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result);
@@ -585,6 +586,8 @@ private:
   void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseImage(const ImageGpu& image);
   bool     decodeQueued(const RetainedScene& scene, bool sceneGrew);
+  // the slots of the textures whose image changed, each moved to a fresh one (a slot in use is never written again)
+  void     moveSlots(const std::set<ImageKey>& written);
   void     fitQueuedToMemory(const RetainedScene& scene, uint64_t slack);
   // A resident image as fitting sees it: what it is, and how many levels it leaves out
   struct ResidentImage
@@ -797,6 +800,7 @@ private:
   uint32_t                                             m_materialHighWater = 0;
   BufferHandle                                         m_materialTable, m_textureInfoTable;
   std::set<uint32_t>                                   m_dirtyMaterials;         // material slots to convert
+  std::set<uint32_t>                                   m_slotsFollowed;          // material slots whose textures moved slot: the same picture
   std::shared_ptr<nvutils::IDPool>                     m_textureInfoPool;        // spans; entry 0 held
   std::vector<shaderio::GltfTextureInfo>               m_textureInfos;           // the table's contents
   bool                                                 m_spansRepacked = false;  // this write

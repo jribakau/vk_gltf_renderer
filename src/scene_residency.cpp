@@ -276,6 +276,7 @@ void Residency::clear()
   m_materialHighWater = 0;
   m_materialTable = m_textureInfoTable = {};
   m_dirtyMaterials.clear();
+  m_slotsFollowed.clear();
   m_heldMaterials.clear();
   m_textureInfoPool = poolFromOne(m_options.textureInfoLimit);
   m_textureInfos.assign(1, {});
@@ -1140,6 +1141,7 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
   assert(ok && "out of texture slots");
   (void)ok;
   m_gpu.writeTextureDescriptor(use.slot, image.image);  // none: the default image
+  use.since = m_gpu.frame();
   SlotUse& samplerUse = m_samplerSlots[keyOf(sampler)];
   if(samplerUse.users++ == 0)
   {
@@ -1193,6 +1195,59 @@ void Residency::releaseImage(const ImageGpu& image)
   }
   else
     retireImage(image.image, image.info.bytes);
+}
+
+// The slots of the textures whose image changed (`written`), moved to the new image. A slot a frame in
+// flight may sample is never written again in place: a descriptor write is not ordered with the GPU's
+// work, so the frame still running reads the new image at once, before the driver has mapped it for
+// that frame. That was the lost device with memory full of 11-03: the harness's fault lay inside the
+// image a texture move had made a moment before, while the frame before it traced. Each takes a fresh
+// slot instead, which no frame uses, written now; its materials' rows point at it from this sync's
+// upload, which is ordered after the frames in flight (GpuBarrier::eFrameToWrite); the old slot shows
+// the old image until its retire hands it back to the pool, so that image is retired after it.
+void Residency::moveSlots(const std::set<ImageKey>& written)
+{
+  if(written.empty())
+    return;
+  std::set<std::tuple<TextureId, bool, SamplerKey>> moved;
+  for(auto& [slotKey, use] : m_textureSlots)
+  {
+    const ImageKey image{std::get<0>(slotKey), std::get<1>(slotKey)};
+    if(!written.count(image))
+      continue;
+    const ImageHandle shown = m_images.at(image).image;
+    if(use.since == m_gpu.frame())
+    {
+      // written this frame (a texture's first decode, in the sync that acquired it): no frame has sampled it
+      m_gpu.writeTextureDescriptor(use.slot, shown);
+      continue;
+    }
+    uint32_t fresh = 0;
+    if(!m_texturePool->createID(fresh))
+    {
+      // every slot taken: one in use is written again only with no frame in flight
+      m_gpu.waitIdle();
+      m_gpu.writeTextureDescriptor(use.slot, shown);
+      continue;
+    }
+    m_gpu.writeTextureDescriptor(fresh, shown);  // none: the default image
+    m_gpu.retire([&gpu = m_gpu, pool = m_texturePool, s = use.slot] {
+      gpu.writeTextureDescriptor(s, {});
+      pool->destroyID(s);
+    });
+    use.slot  = fresh;
+    use.since = m_gpu.frame();
+    moved.insert(slotKey);
+  }
+  if(moved.empty())
+    return;
+  for(const auto& [id, material] : m_materials)
+    for(const auto& t : material.textures)
+      if(t && moved.count({std::get<0>(*t), std::get<2>(*t), keyOf(std::get<1>(*t))}))
+      {
+        m_slotsFollowed.insert(material.slot);
+        break;
+      }
 }
 
 // The idle decodes, oldest first, destroyed at retire until the rest fit `budget`
@@ -1972,6 +2027,8 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     return false;
 
   std::set<ImageKey> written;
+  // the images replaced, retired once their slots are (moveSlots): a slot shows its image until its retire
+  std::vector<std::pair<ImageHandle, uint64_t>> replacedImages;
   bool               replaced = false;
   bool               restored = false;
   uint32_t           refused  = 0;
@@ -2004,7 +2061,7 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
       else
       {
         if(q.replaces)
-          retireImage(decoded->second.image, decoded->second.info.bytes);
+          replacedImages.emplace_back(decoded->second.image, decoded->second.info.bytes);
         decoded->second.image   = made;
         decoded->second.info    = info;
         decoded->second.lowered = q.lowered;
@@ -2015,7 +2072,7 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     else if(auto image = m_images.find(q.image); image != m_images.end() && !image->second.key)
     {
       if(q.replaces)
-        retireImage(image->second.image, image->second.info.bytes);
+        replacedImages.emplace_back(image->second.image, image->second.info.bytes);
       image->second.image   = made;
       image->second.info    = info;
       image->second.lowered = q.lowered;
@@ -2080,9 +2137,9 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
   for(size_t i = 0; i < decoding.size(); i++)
     install(decoding[i], images[i], infos[i]);
   m_decodeQueue = std::move(later);
-  for(const auto& [slotKey, use] : m_textureSlots)
-    if(const ImageKey image{std::get<0>(slotKey), std::get<1>(slotKey)}; written.count(image))
-      m_gpu.writeTextureDescriptor(use.slot, m_images.at(image).image);
+  moveSlots(written);
+  for(const auto& [image, bytes] : replacedImages)
+    retireImage(image, bytes);
   m_imageCounts.refused += refused;
   if(restored && loweredImages().count == 0 && std::exchange(m_noticedLowered, false))
     m_userNotices.push_back("GPU memory has room again: the textures are back to full size.");
@@ -2973,11 +3030,16 @@ SyncResult Residency::sync(RetainedScene& scene)
   ensureCapacity(result);
   // textures before materials before geometry (see "The sync"): the textures are written as their
   // materials take them, and every material is converted here, before an instance draws with it
-  // the tables exist from the first sync, even with no material in them
-  if(fresh || !m_dirtyMaterials.empty())
+  // the tables exist from the first sync, even with no material in them. A material whose rows only
+  // follow its textures to their new slots (moveSlots) draws the same picture: a still goes on
+  const bool materialsChanged = fresh || !m_dirtyMaterials.empty();
+  const bool slotsFollowed    = !m_slotsFollowed.empty();  // uploaded all the same: the barrier below
+  m_dirtyMaterials.insert(m_slotsFollowed.begin(), m_slotsFollowed.end());
+  m_slotsFollowed.clear();
+  if(!m_dirtyMaterials.empty() || fresh)
   {
     writeMaterials(scene);
-    result.changed = true;
+    result.changed = result.changed || materialsChanged;
   }
   if(m_tablesMoved)
     result.buffersChanged = true;
@@ -3041,7 +3103,7 @@ SyncResult Residency::sync(RetainedScene& scene)
   result.changed     = result.changed || result.samePicture;
   m_compactedOnly    = false;
   // everything uploaded above, before the frame's shading reads it
-  if(result.changed || std::exchange(m_woke, false))
+  if(result.changed || slotsFollowed || std::exchange(m_woke, false))
     m_gpu.barrier(GpuBarrier::eTransferToShader);
   // what this sync let go of and didn't take again
   trimGrace(m_options.textureGraceBytes);

@@ -71,8 +71,10 @@ void FakeGpuBackend::beginFrame()
                                      [&](const Retire& r) { return r.frame + m_framesInFlight > m_frame; });
   std::move(split, m_retires.end(), std::back_inserter(ready));
   m_retires.erase(split, m_retires.end());
+  m_inRetire = true;
   for(Retire& r : ready)
     r.closure();
+  m_inRetire = false;
   // what this frame may trace: a TLAS still here that points at a BLAS gone (one let go of with no TLAS built
   // without it since, where the TLAS didn't go with it)
   for(const auto& [t, tlas] : m_tlases)
@@ -93,6 +95,9 @@ void FakeGpuBackend::retire(std::function<void()> closure)
 void FakeGpuBackend::waitIdle()
 {
   m_waitIdleCount++;
+  // no frame in flight: a slot in use may be written again
+  for(auto& [slot, since] : m_slotShownSince)
+    since = m_frame;
 }
 
 // ---------- Buffers ----------
@@ -331,6 +336,17 @@ void FakeGpuBackend::writeTextureDescriptor(uint32_t slot, ImageHandle handle)
 {
   if(handle && !m_images.count(handle.value))
     error("writeTextureDescriptor: slot " + std::to_string(slot) + " given a dead or unknown image");
+  // A descriptor write is not ordered with the GPU's work: a frame still in flight that samples the slot reads the
+  // new image at once, before it is mapped for it (VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT allows
+  // writing only what no pending frame uses). A slot shown since an earlier frame is written again only at a retire,
+  // when every frame that could sample it has completed (which hands it back to its pool)
+  if(m_inRetire)
+    m_slotShownSince.erase(slot);
+  else if(const auto shown = m_slotShownSince.find(slot); shown != m_slotShownSince.end() && shown->second < m_frame)
+    error("writeTextureDescriptor: slot " + std::to_string(slot) + ", shown since frame " + std::to_string(shown->second)
+          + ", written again in frame " + std::to_string(m_frame) + " while a frame in flight may sample it");
+  else if(shown == m_slotShownSince.end())
+    m_slotShownSince[slot] = m_frame;
   m_textureDescriptors[slot] = handle;
 }
 
