@@ -16,7 +16,8 @@ struct Entry
 {
   std::string name;
   uint16_t    flags = 0, method = 0;
-  uint32_t    crc = 0, packed = 0, size = 0, local = 0;
+  uint32_t    crc    = 0;
+  uint64_t    packed = 0, size = 0, local = 0;
 };
 
 uint16_t u16(const std::string& b, size_t at)
@@ -27,6 +28,11 @@ uint16_t u16(const std::string& b, size_t at)
 uint32_t u32(const std::string& b, size_t at)
 {
   return uint32_t(uint8_t(b[at])) | uint32_t(uint8_t(b[at + 1])) << 8 | uint32_t(uint8_t(b[at + 2])) << 16 | uint32_t(uint8_t(b[at + 3])) << 24;
+}
+
+uint64_t u64(const std::string& b, size_t at)
+{
+  return uint64_t(u32(b, at)) | uint64_t(u32(b, at + 4)) << 32;
 }
 
 std::string readAt(std::ifstream& in, uint64_t at, size_t bytes)
@@ -61,17 +67,34 @@ std::vector<Entry> directory(std::ifstream& in, const std::filesystem::path& pat
     }
   if(at == std::string::npos)
     throw std::runtime_error(label(path) + " isn't a zip, as a VaM package is");
-  const uint16_t count    = u16(end, at + 10);
-  const uint32_t cdSize   = u32(end, at + 12);
-  const uint32_t cdOffset = u32(end, at + 16);
+  uint64_t count    = u16(end, at + 10);
+  uint64_t cdSize   = u32(end, at + 12);
+  uint64_t cdOffset = u32(end, at + 16);
+  // zip64: the locator just before the end record points at the record with the full sizes
   if(count == 0xFFFF || cdOffset == 0xFFFFFFFF || cdSize == 0xFFFFFFFF)
-    throw std::runtime_error(label(path) + " is a zip64 package, which this doesn't read");
-  if(uint64_t(cdOffset) + cdSize > size)
+  {
+    const uint64_t endAt = size - tail + at;
+    if(endAt < 20)
+      throw std::runtime_error(label(path) + " is damaged (its zip64 locator is missing)");
+    const std::string locator = readAt(in, endAt - 20, 20);
+    if(u32(locator, 0) != 0x07064b50)
+      throw std::runtime_error(label(path) + " is damaged (its zip64 locator is missing)");
+    const uint64_t recordAt = u64(locator, 8);
+    if(recordAt + 56 > size)
+      throw std::runtime_error(label(path) + " is damaged (its zip64 record is past its end)");
+    const std::string record = readAt(in, recordAt, 56);
+    if(u32(record, 0) != 0x06064b50)
+      throw std::runtime_error(label(path) + " is damaged (its zip64 record doesn't read)");
+    count    = u64(record, 32);
+    cdSize   = u64(record, 40);
+    cdOffset = u64(record, 48);
+  }
+  if(cdOffset + cdSize > size || cdSize > (uint64_t(1) << 31))
     throw std::runtime_error(label(path) + " is damaged (its directory is past its end)");
-  const std::string cd = readAt(in, cdOffset, cdSize);
+  const std::string cd = readAt(in, cdOffset, size_t(cdSize));
   std::vector<Entry> out;
   size_t             p = 0;
-  for(int i = 0; i < count; i++)
+  for(uint64_t i = 0; i < count; i++)
   {
     if(p + 46 > cd.size() || u32(cd, p) != 0x02014b50)
       throw std::runtime_error(label(path) + " is damaged (its directory doesn't read)");
@@ -87,6 +110,24 @@ std::vector<Entry> directory(std::ifstream& in, const std::filesystem::path& pat
       throw std::runtime_error(label(path) + " is damaged (an entry runs past its directory)");
     e.name = cd.substr(p + 46, nameBytes);
     std::replace(e.name.begin(), e.name.end(), '\\', '/');
+    // zip64's sizes and offset, in its extra field, for each the entry gives as 0xFFFFFFFF, in this order
+    for(size_t x = p + 46 + nameBytes, xEnd = x + extra; x + 4 <= xEnd;)
+    {
+      const size_t id = u16(cd, x), bytes = u16(cd, x + 2);
+      if(x + 4 + bytes > xEnd)
+        break;
+      if(id == 0x0001)
+      {
+        size_t f = x + 4;
+        for(uint64_t* field : {e.size == 0xFFFFFFFF ? &e.size : nullptr, e.packed == 0xFFFFFFFF ? &e.packed : nullptr, e.local == 0xFFFFFFFF ? &e.local : nullptr})
+          if(field && f + 8 <= x + 4 + bytes)
+          {
+            *field = u64(cd, f);
+            f += 8;
+          }
+      }
+      x += 4 + bytes;
+    }
     p += 46 + nameBytes + extra + comment;
     out.push_back(std::move(e));
   }
@@ -144,15 +185,15 @@ std::string zipRead(const std::filesystem::path& zip, const std::string& name, s
     throw std::runtime_error(name + " is compressed in a way this doesn't read (method " + std::to_string(e.method) + ")");
   if(e.size > maxBytes)
     throw std::runtime_error(name + " is too large to read (" + std::to_string(e.size >> 20) + " MiB)");
-  if(uint64_t(e.local) + 30 > size)
+  if(e.local + 30 > size)
     throw std::runtime_error(label(zip) + " is damaged (an entry is past its end)");
   const std::string local = readAt(in, e.local, 30);
   if(u32(local, 0) != 0x04034b50)
     throw std::runtime_error(label(zip) + " is damaged (an entry's header doesn't read)");
-  const uint64_t data = uint64_t(e.local) + 30 + u16(local, 26) + u16(local, 28);
-  if(data + e.packed > size)
+  const uint64_t data = e.local + 30 + u16(local, 26) + u16(local, 28);
+  if(data + e.packed > size || e.packed > maxBytes)
     throw std::runtime_error(label(zip) + " is damaged (an entry runs past its end)");
-  std::string packed = readAt(in, data, e.packed);
+  std::string packed = readAt(in, data, size_t(e.packed));
   std::string out;
   if(e.method == 0)
   {
@@ -162,7 +203,7 @@ std::string zipRead(const std::filesystem::path& zip, const std::string& name, s
   }
   else
   {
-    out.assign(e.size, '\0');
+    out.assign(size_t(e.size), '\0');
     z_stream s{};
     if(inflateInit2(&s, -15) != Z_OK)
       throw std::runtime_error("inflate: could not initialise zlib");

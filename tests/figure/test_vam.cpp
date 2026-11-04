@@ -546,8 +546,8 @@ TEST(VaM, aDamperOnlyDriveDampsWithoutPulling)
   EXPECT_LT(std::abs(heldAngle), 1) << "the spring didn't pull it back";
 }
 
-// A package is a zip: its scene's names listed, and read back whole, stored or deflated, its
-// checksum checked.
+// A package is a zip: its scene's names listed, and read back whole, stored or deflated, zip64's
+// sizes read, its checksum checked.
 TEST(VaM, aPackagesSceneReadsOutOfItsZip)
 {
   const std::filesystem::path dir = std::filesystem::temp_directory_path() / "fv_vam_test";
@@ -567,12 +567,15 @@ TEST(VaM, aPackagesSceneReadsOutOfItsZip)
     deflated.resize(z.total_out);
     deflateEnd(&z);
   }
+  // the last as VaM's packages write their entries: zip64's sizes in the extra field, 0xFFFFFFFF in
+  // the directory's
   struct File
   {
     std::string name, data;
     uint16_t    method;
+    bool        zip64 = false;
   };
-  const std::vector<File> files = {{"meta.json", "{}", 0}, {"Saves/scene/Test Scene.json", deflated, 8}};
+  const std::vector<File> files = {{"meta.json", "{}", 0}, {"Saves/scene/Test Scene.json", deflated, 8}, {"Custom/notes.txt", "notes", 0, true}};
   std::string             out, cd;
   const auto put16 = [](std::string& s, uint16_t v) { s += char(v & 255), s += char(v >> 8); };
   const auto put32 = [&](std::string& s, uint32_t v) { put16(s, uint16_t(v & 0xFFFF)), put16(s, uint16_t(v >> 16)); };
@@ -584,10 +587,17 @@ TEST(VaM, aPackagesSceneReadsOutOfItsZip)
     put32(out, 0x04034b50), put16(out, 20), put16(out, 0), put16(out, f.method), put32(out, 0), put32(out, crc);
     put32(out, uint32_t(f.data.size())), put32(out, uint32_t(plain.size())), put16(out, uint16_t(f.name.size())), put16(out, 0);
     out += f.name + f.data;
-    put32(cd, 0x02014b50), put16(cd, 20), put16(cd, 20), put16(cd, 0), put16(cd, f.method), put32(cd, 0), put32(cd, crc);
-    put32(cd, uint32_t(f.data.size())), put32(cd, uint32_t(plain.size())), put16(cd, uint16_t(f.name.size())), put16(cd, 0), put16(cd, 0);
+    put32(cd, 0x02014b50), put16(cd, 45), put16(cd, 45), put16(cd, 0), put16(cd, f.method), put32(cd, 0), put32(cd, crc);
+    put32(cd, f.zip64 ? 0xFFFFFFFF : uint32_t(f.data.size())), put32(cd, f.zip64 ? 0xFFFFFFFF : uint32_t(plain.size()));
+    put16(cd, uint16_t(f.name.size())), put16(cd, f.zip64 ? 20 : 0), put16(cd, 0);
     put16(cd, 0), put16(cd, 0), put32(cd, 0), put32(cd, at);
     cd += f.name;
+    if(f.zip64)
+    {
+      // the uncompressed size, then the compressed
+      put16(cd, 0x0001), put16(cd, 16);
+      put32(cd, uint32_t(plain.size())), put32(cd, 0), put32(cd, uint32_t(f.data.size())), put32(cd, 0);
+    }
   }
   const uint32_t cdAt = uint32_t(out.size());
   out += cd;
@@ -595,9 +605,10 @@ TEST(VaM, aPackagesSceneReadsOutOfItsZip)
   put32(out, uint32_t(cd.size())), put32(out, cdAt), put16(out, 0);
   std::ofstream(var, std::ios::binary).write(out.data(), std::streamsize(out.size()));
 
-  EXPECT_EQ(vam::zipEntries(var), (std::vector<std::string>{"meta.json", "Saves/scene/Test Scene.json"}));
+  EXPECT_EQ(vam::zipEntries(var), (std::vector<std::string>{"meta.json", "Saves/scene/Test Scene.json", "Custom/notes.txt"}));
   EXPECT_EQ(vam::varScenes(var), std::vector<std::string>{"Saves/scene/Test Scene.json"});
   EXPECT_EQ(vam::zipRead(var, "meta.json"), "{}");
+  EXPECT_EQ(vam::zipRead(var, "Custom/notes.txt"), "notes");
   const std::string read = vam::zipRead(var, "Saves/scene/Test Scene.json");
   EXPECT_EQ(read, text);
   EXPECT_EQ(vam::readScene(read).people.size(), 1u);
@@ -614,7 +625,7 @@ TEST(VaM, aPackagesSceneReadsOutOfItsZip)
   std::filesystem::remove_all(dir);
 }
 
-// The inspected scene's clip on Genesis 9, with DAZ_LIBRARY and VAM_SCENE (a VaM scene's .json; its
+// The inspected scene's clip on Genesis 9, with DAZ_LIBRARY and VAM_SCENE (a VaM scene's .json or a .var; its
 // clip VAM_CLIP, else "ANIMATION A") set, else skipped: how far each held part ends from its target
 // once the clip has come in, and what a frame costs, printed as a table. VAM_HOLD, VAM_DRIVES (VaM's
 // joint drives) and VAM_WHOLE (springs on the whole body's mass) try the player's other options;
@@ -630,9 +641,22 @@ TEST(VaM, theInspectedClipOnGenesis9)
   const char* at  = env("VAM_SCENE");
   if(!lib || !at)
     GTEST_SKIP() << "DAZ_LIBRARY or VAM_SCENE not set";
-  std::ifstream     in(std::filesystem::u8path(at), std::ios::binary);
-  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  const vam::Scene  s = vam::readScene(text);
+  // a scene's .json, or a package's first scene
+  const std::filesystem::path where = std::filesystem::u8path(at);
+  std::string                 text;
+  if(where.extension() == ".var")
+  {
+    const auto scenes = vam::varScenes(where);
+    ASSERT_FALSE(scenes.empty());
+    text = vam::zipRead(where, scenes.front());
+    std::printf("%s: %zu scene(s), %s, %zu bytes\n", where.filename().string().c_str(), scenes.size(), scenes.front().c_str(), text.size());
+  }
+  else
+  {
+    std::ifstream in(where, std::ios::binary);
+    text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  }
+  const vam::Scene s = vam::readScene(text);
   ASSERT_FALSE(s.people.empty());
   const std::string want = env("VAM_CLIP") ? env("VAM_CLIP") : "ANIMATION A";
   size_t            clip = 0;

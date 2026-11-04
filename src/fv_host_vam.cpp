@@ -1,6 +1,6 @@
 // VaM Timeline clips on a figure (docs/physics-plan.md step 16, figure/physics/vam/): load {as: "vam",
 // path, prop?, person?, clip?, scene?} reads a VaM scene, its .json or a .var package's, on a worker,
-// and plays one Person's clip on the figure named or selected as its animation (FigureAnimation), in
+// and plays one Person's clip (named, else its longest) on the figure named or selected as its animation (FigureAnimation), in
 // Physics mode, which it turns on. The Anim tab plays, seeks and stops it as it does a DAZ
 // animation; the animation topic's clip carries `vam` ({path, scene, person, people, clip, clips:
 // [{name, duration}]}), with which the tab opens another clip of the same scene.
@@ -32,14 +32,15 @@ std::string readWhole(const std::filesystem::path& path)
   return text;
 }
 
-// a clip to start on where none is named: the first of 10 s or more (a scene's short clips are
-// mostly poses it passes through), else the first
+// a clip to start on where none is named: the longest, the first of those (a scene's short clips
+// are mostly poses it passes through)
 size_t firstClip(const vam::Person& p)
 {
-  for(size_t i = 0; i < p.clips.size(); i++)
-    if(p.clips[i].length >= 10)
-      return i;
-  return 0;
+  size_t best = 0;
+  for(size_t i = 1; i < p.clips.size(); i++)
+    if(p.clips[i].length > p.clips[best].length)
+      best = i;
+  return best;
 }
 
 }  // namespace

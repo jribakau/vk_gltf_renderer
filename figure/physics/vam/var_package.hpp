@@ -10,8 +10,8 @@
 
 namespace fv::physics::vam {
 
-// The files in a zip, by their names in it. Throws when it isn't a zip this reads (a damaged one, or
-// one past 4 GiB, which needs zip64).
+// The files in a zip, by their names in it, zip64's sizes read where an entry has them (VaM's
+// packages do). Throws when it isn't a zip, or is damaged.
 std::vector<std::string> zipEntries(const std::filesystem::path& zip);
 
 // One file of a zip, inflated, its checksum checked. Throws when it isn't there, is encrypted or

@@ -3771,7 +3771,7 @@ TEST(FvHost, aVamClipHoldsTheRagdollInPhysicsMode)
   const Json anim = r.rig.topic("animation");
   ASSERT_TRUE(anim.value("current", Json()).is_number()) << anim.dump();
   const Json c = anim.at("clips").at(std::to_string(anim["current"].get<int>()));
-  EXPECT_EQ(c.value("name", ""), "Turn") << "not the first clip of 10 s or more";
+  EXPECT_EQ(c.value("name", ""), "Turn") << "not the longest clip";
   EXPECT_EQ(c.value("kind", ""), "figure");
   EXPECT_DOUBLE_EQ(c.value("duration", 0.0), 12);
   ASSERT_TRUE(c.contains("vam")) << c.dump();
