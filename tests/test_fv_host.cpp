@@ -3221,6 +3221,116 @@ TEST(FvHost, exportCarriesTheContactChannel)
 }
 
 //--------------------------------------------------------------------------------------------------
+// Contact between people (docs/physics-plan.md step 3): each body meets the other undented and gives
+// way by its share.
+
+namespace {
+
+// Two Box Figures (20 cm boxes, corners only), both turned 45 degrees so a corner of each points at
+// the other, their centres 27.28 cm apart: each corner 1 cm into the other box (side by side, every
+// corner would sit on the other's faces).
+struct Pressed
+{
+  HostRig     rig;
+  std::string a, b;
+  int         moves = 0;
+
+  Pressed()
+  {
+    EXPECT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    a = figureId(rig.topic("scene"));
+    EXPECT_TRUE(rig.cmd("prop.add", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    const Json props = rig.topic("scene").value("props", Json::object());
+    for(const auto& [id, p] : props.items())
+      if(p.value("kind", "") == "figure" && id != a)
+        b = id;
+    EXPECT_FALSE(b.empty());
+    rig.cmd("prop.set", {{"prop", a}, {"transform", {{"t", {0.0, 0.0, 0.0}}, {"e", {0.0, 45.0, 0.0}}}}});
+    place(0.2728);
+  }
+  void place(double x)
+  {
+    const Json placed =
+        rig.cmd("prop.set", {{"prop", b}, {"transform", {{"t", {x, 0.0, 0.0}}, {"e", {0.0, 45.0, 0.0}}}}, {"gesture", {{"id", ++moves}, {"end", true}}}});
+    EXPECT_TRUE(placed.value("ok", false)) << placed.dump();
+  }
+  Json contact(const std::string& id) const { return rig.topic("contact/" + id); }
+  int  patches(const std::string& id) const { return contact(id).value("patches", -1); }
+  bool busy(const std::string& id) const { return contact(id).value("busy", true); }
+  std::string dump() const { return contact(a).dump() + " " + contact(b).dump(); }
+  bool until(const std::function<bool()>& done, double seconds = 5)
+  {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while(std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      if(done())
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+  }
+  bool rests()
+  {
+    return until([&] { return !busy(a) && !busy(b); });
+  }
+};
+
+}  // namespace
+
+// Pressed together, both dent, and the dents come to rest: neither's write pokes the other. All the
+// give to one side, the firm one has nothing to dent and the soft one dents alone.
+TEST(FvHost, twoPeoplePressedTogetherDentEachOtherAndRest)
+{
+  Pressed s;
+  ASSERT_TRUE(s.until([&] { return s.patches(s.a) > 0 && s.patches(s.b) > 0; })) << s.dump();
+  ASSERT_TRUE(s.rests()) << s.dump();
+  for(int i = 0; i < 100; i++)
+  {
+    s.rig.host->onUpdate();
+    ASSERT_FALSE(s.busy(s.a)) << "frame " << i << ": " << s.dump();
+    ASSERT_FALSE(s.busy(s.b)) << "frame " << i << ": " << s.dump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(s.rig.cmd("figure.contact", {{"prop", s.a}, {"softness", 1.0}}).value("ok", false));
+  ASSERT_TRUE(s.rig.cmd("figure.contact", {{"prop", s.b}, {"softness", 0.0}}).value("ok", false));
+  ASSERT_TRUE(s.until([&] { return s.patches(s.b) == 0 && !s.busy(s.a) && !s.busy(s.b); })) << s.dump();
+  EXPECT_GT(s.patches(s.a), 0) << s.dump();
+}
+
+// Another person's pose change (the head turned) is a change to what this body meets: it looks again,
+// and comes to rest. Moved off, both dents go.
+TEST(FvHost, anotherFiguresPoseChangePokesContact)
+{
+  Pressed s;
+  ASSERT_TRUE(s.until([&] { return s.patches(s.a) > 0 && s.patches(s.b) > 0; })) << s.dump();
+  ASSERT_TRUE(s.rests()) << s.dump();
+  ASSERT_TRUE(s.rig.cmd("pose.set", {{"prop", s.b}, {"values", {{"head/rotation/x", 30.0}}}}).value("ok", false));
+  ASSERT_TRUE(s.until([&] { return s.busy(s.a); }, 1)) << "the other's pose didn't poke it: " << s.dump();
+  ASSERT_TRUE(s.rests()) << s.dump();
+  s.place(1.0);
+  ASSERT_TRUE(s.until([&] { return s.patches(s.a) == 0 && s.patches(s.b) == 0; })) << s.dump();
+}
+
+// While the other's ragdoll moves, this body's dent is held at weight 0 (it would show where the other
+// was a moment ago); once it rests, the dent comes back.
+TEST(FvHost, aDentFromAnotherFiguresRagdollIsHeldWhileItMoves)
+{
+  Pressed s;
+  ASSERT_TRUE(s.until([&] { return s.patches(s.a) > 0; })) << s.dump();
+  ASSERT_TRUE(s.rests()) << s.dump();
+  EXPECT_FALSE(s.contact(s.a).value("held", true));
+  ASSERT_TRUE(s.rig.cmd("physics.set", {{"prop", s.b}, {"on", true}, {"strength", 0.5}}).value("ok", false));
+  ASSERT_TRUE(s.rig.cmd("pose.set", {{"prop", s.b}, {"values", {{"head/rotation/x", 30.0}}}}).value("ok", false));
+  ASSERT_TRUE(s.until([&] { return s.contact(s.a).value("held", false); }, 2)) << s.dump();
+  const auto awake = [&] { return s.rig.topic("physics/" + s.b).value("awake", true); };
+  ASSERT_TRUE(s.until([&] { return !awake() && !s.contact(s.a).value("held", true) && !s.busy(s.a); }, 10)) << s.dump();
+  EXPECT_GT(s.patches(s.a), 0) << s.dump();
+}
+
+//--------------------------------------------------------------------------------------------------
 // Physics mode (figure/physics/rig/figure_physics.hpp, docs/physics-plan.md step 2)
 
 namespace {

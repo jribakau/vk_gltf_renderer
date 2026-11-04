@@ -17,8 +17,10 @@
 // The result is the hidden channel "contact:<body>", weight 1, written as the collider writes its
 // own; everything else that reads the body (the collider, dForce, the renderer) sees the dent with no
 // code of its own. The pass reads the body without its own channel, so it never deepens its own dent.
-// While a clip plays the channel is at weight 0 and no pass runs: a dent where a hand used to be
-// looks wrong.
+// Another person's body is met the same way, without its own dent, and each takes its share of the
+// overlap by softness (step 3), so the two passes don't chase each other.
+// While what it meets is driven (a clip plays, another figure's ragdoll moves) the channel is at
+// weight 0 and no pass runs: a dent where a hand used to be looks wrong.
 //
 // One thread (the figure's owner) calls everything; the pass runs on the pool over a snapshot.
 
@@ -73,7 +75,13 @@ ContactResult resolveContacts(const ContactInput& in);
 // A figure's meshes as posed now, with their morphs and skin: xyz per cage vertex in the space of its
 // root node (cm), one list per mesh asked, empty for one without a cage. How a DAZ prop (a chair) is
 // met by the bodies near it.
-std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root);
+// `without` is a hidden channel left out: a person's own dent, when it is met by another body.
+std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root,
+                                           const std::string& without = {});
+
+// A body's share of its overlap with another person's: its softness against theirs, half each when
+// both are 0, all of it when the other doesn't dent (off, or null).
+double overlapShare(const ContactSettings& self, const ContactSettings* other);
 
 class Contact
 {
@@ -84,15 +92,18 @@ public:
 
   // What the body meets, placed in its root's space; asked on the owner's thread as a pass starts.
   std::function<std::vector<ColliderRef>()> colliders;
-  // True while a clip plays.
-  std::function<bool()> playing;
+  // True while what it meets is driven: a clip plays, or another figure near it moves on its own.
+  std::function<bool()> driven;
 
   const ContactSettings& settings() const { return m_settings; }
+  int                    bodyMesh() const { return m_bodyMesh; }
   bool                   enabled() const { return m_settings.on; }
   // A pass is due or running.
   bool busy() const;
   // How many dents the last pass made.
   int patches() const { return m_patches; }
+  // The channel is at weight 0 while what it meets is driven.
+  bool held() const { return m_held; }
   // Bumps whenever busy(), patches() or the settings change, for a status topic.
   int version() const { return m_pass.version(); }
   // The posed body's bounds in the root's space as the last pass found it; empty before one.
@@ -127,7 +138,7 @@ private:
   int              m_root;
   ChannelWriter    m_writer;
   ContactSettings  m_settings;
-  // held at weight 0 while a clip plays
+  // held at weight 0 while driven
   bool                       m_held    = false;
   int                        m_patches = 0;
   Box                        m_bounds;

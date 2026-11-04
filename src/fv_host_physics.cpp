@@ -1,6 +1,7 @@
-// Physics on the host's side (docs/physics-plan.md). For now body contact (figure/physics/contact/
-// contact.hpp): the colliders a figure's pass meets, the look each frame at what moved near a figure,
-// the figure.contact command and the contact/<prop> topic.
+// Physics on the host's side (docs/physics-plan.md): body contact (figure/physics/contact/
+// contact.hpp): the colliders a figure's pass meets, props and other people, the look each frame at
+// what moved near a figure, the figure.contact command and the contact/<prop> topic; and Physics mode
+// (figure/physics/rig/figure_physics.hpp), below.
 
 #include "fv_host_impl.hpp"
 
@@ -79,6 +80,9 @@ fv::physics::Box meshBounds(const tinygltf::Model& model, int mesh)
 // is still taken as inside a closed prop.
 constexpr double kContactNear = 8;
 
+// How far a person's flesh reaches past their bones, cm: their body's bounds without posing its cage.
+constexpr double kFleshAroundBones = 25;
+
 // Whether a figure's node shows: neither it nor a node above it hidden or taken off.
 bool drawn(const fv::SceneGraph& scene, int node)
 {
@@ -86,6 +90,30 @@ bool drawn(const fv::SceneGraph& scene, int node)
     if(!scene.nodes[size_t(n)].visible || scene.nodes[size_t(n)].removed)
       return false;
   return true;
+}
+
+// A person's bones where the renderer has them (the world, metres), grown by their flesh: what their
+// body may touch, cheap enough to look at every frame. Empty without a pose.
+fv::physics::Box boneBounds(const Loaded& f, rs::RetainedScene& scene)
+{
+  fv::physics::Box out;
+  if(!f.feed || !f.fig->pose)
+    return out;
+  const rs::EntityId root = f.feed->entityOf(f.fig->loaded.root);
+  if(!scene.entity(root))
+    return out;
+  const auto     worlds  = f.fig->loaded.scene.worlds();
+  const fv::Mat4 placed  = toMat4(scene.world(root));
+  const fv::Mat4 toWorld = placed * inverse(worlds[size_t(f.fig->loaded.root)]);
+  for(const fv::pose::PoseBone& pb : f.fig->pose->bones())
+    if(pb.bone >= 0 && size_t(pb.bone) < worlds.size())
+    {
+      const fv::Mat4& w = worlds[size_t(pb.bone)];
+      const fv::Vec3  p = toWorld.transformPoint({w.e[12], w.e[13], w.e[14]});
+      out.add(p.x, p.y, p.z);
+    }
+  const double scale = fv::length(fv::Vec3{placed.e[0], placed.e[1], placed.e[2]});
+  return out.empty() ? out : out.grown(kFleshAroundBones * scale);
 }
 
 }  // namespace
@@ -101,7 +129,8 @@ std::shared_ptr<const fv::physics::SharedTriangles> FvHost::Impl::contactMesh(co
 }
 
 // A DAZ prop's shown meshes as triangle sets in its root's space, posed as it is now (its morphs and
-// bones): made again once its pose or shape moved, indexed on the pool the first time a pass needs one.
+// bones), or a person's body alone, without its own dent (which is theirs to make, not to be met):
+// made again once its pose or shape moved, indexed on the pool the first time a pass needs one.
 const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::Impl::contactSets(Loaded& prop)
 {
   if(prop.contactSetsAt == prop.contactRev)
@@ -109,11 +138,13 @@ const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::
   prop.contactSetsAt = prop.contactRev;
   prop.contactSets.clear();
   const fv::SceneGraph& scene = prop.fig->loaded.scene;
+  const int             body  = prop.contact ? prop.contact->bodyMesh() : -1;
   std::vector<int>      meshes;
   for(size_t n = 0; n < scene.nodes.size(); n++)
-    if(scene.nodes[n].mesh >= 0 && drawn(scene, int(n)))
+    if(scene.nodes[n].mesh >= 0 && (body < 0 || scene.nodes[n].mesh == body) && drawn(scene, int(n)))
       meshes.push_back(scene.nodes[n].mesh);
-  std::vector<std::vector<float>> posed = fv::physics::posedCages(scene, *prop.fig->morphs, meshes, prop.fig->loaded.root);
+  std::vector<std::vector<float>> posed =
+      fv::physics::posedCages(scene, *prop.fig->morphs, meshes, prop.fig->loaded.root, body >= 0 ? fv::physics::contactChannelOf(body) : std::string());
   for(size_t k = 0; k < meshes.size(); k++)
   {
     const auto& geo = scene.meshes[size_t(meshes[k])].geo;
@@ -134,8 +165,8 @@ const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::
 // Every shown model prop's meshes and DAZ prop's, placed in the figure root's space (centimetres):
 // where the renderer has each node now, so a prop riding a bone or carried by a parent is where it
 // shows. A model's skinned meshes are left out: their triangles are not where the file has them.
-// Another person is met from step 3 on, where each body takes its share of an overlap.
-std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loaded& f)
+// With `bodies`, another person's body too, of which this one takes its share of the overlap.
+std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loaded& f, bool bodies)
 {
   std::vector<fv::physics::ColliderRef> out;
   if(!renderer->feedsHostScene() || !f.feed)
@@ -162,21 +193,44 @@ std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loade
   for(const auto& p : props)
   {
     Loaded* prop = p->figure.get();
-    if(!prop || prop == &f || prop->contact || !prop->feed || !shown(*p))
+    if(!prop || prop == &f || (prop->contact && !bodies) || !prop->feed || !shown(*p))
       continue;
     const rs::EntityId at = prop->feed->entityOf(prop->fig->loaded.root);
     if(!scene.entity(at))
       continue;
     const fv::Mat4 toBody = fromWorld * toMat4(scene.world(at));
+    const double   share  = prop->contact && f.contact ? fv::physics::overlapShare(f.contact->settings(), &prop->contact->settings()) : 1.0;
     for(const auto& set : contactSets(*prop))
-      out.push_back({set, toBody, 1.0});
+      out.push_back({set, toBody, share});
   }
   return out;
 }
 
-// Once a frame, before the figures pump: a model prop that moved, showed, hid, came or went pokes
-// the contact of each figure whose body it is near, before or after; a figure placed elsewhere meets
-// its colliders anew. What a figure's own pose or shape does pokes it through its changes.
+// Another shown figure whose ragdoll is awake, near this one: a dent from it would show where it was
+// a moment ago, so this one's dents are held at weight 0 until it rests.
+bool FvHost::Impl::movesNear(const Loaded& f)
+{
+  if(!renderer->feedsHostScene())
+    return false;
+  rs::RetainedScene& scene = renderer->hostScene();
+  fv::physics::Box   mine;
+  for(const auto& p : props)
+  {
+    const Loaded* other = p->figure.get();
+    if(!other || other == &f || !other->physics || !other->physics->settings().on || !other->physics->awake() || !shown(*p))
+      continue;
+    if(mine.empty())
+      mine = boneBounds(f, scene);
+    if(boneBounds(*other, scene).overlaps(mine))
+      return true;
+  }
+  return false;
+}
+
+// Once a frame, before the figures pump: a model prop, a DAZ prop or another person that moved, showed,
+// hid, came or went (or whose pose or shape changed) pokes the contact of each figure whose body it is
+// near, before or after; a figure placed elsewhere meets its colliders anew. What a figure's own pose
+// or shape does pokes it through its changes, and a dent is no change of pose.
 void FvHost::Impl::pokeContacts()
 {
   std::vector<Loaded*> figures;
@@ -196,7 +250,7 @@ void FvHost::Impl::pokeContacts()
   std::unordered_map<std::string, ContactSeen> now;
   for(const auto& p : props)
   {
-    if(Loaded* prop = p->figure.get(); prop && !prop->contact && prop->feed)
+    if(Loaded* prop = p->figure.get(); prop && prop->feed)
     {
       const rs::EntityId at = prop->feed->entityOf(prop->fig->loaded.root);
       if(!scene.entity(at))
@@ -206,8 +260,12 @@ void FvHost::Impl::pokeContacts()
       seen.rev             = prop->contactRev;
       const glm::mat4 world = scene.world(at);
       seen.worlds.push_back(world);
-      for(const auto& set : contactSets(*prop))
-        seen.bounds.add(fv::physics::transformed(set->bounds(), toMat4(world)));
+      // a person by their bones: posing their cage every frame of a drag would cost milliseconds
+      if(prop->contact)
+        seen.bounds = boneBounds(*prop, scene);
+      else
+        for(const auto& set : contactSets(*prop))
+          seen.bounds.add(fv::physics::transformed(set->bounds(), toMat4(world)));
       continue;
     }
     if(p->kind != PropKind::eModel || !p->model)
@@ -225,8 +283,9 @@ void FvHost::Impl::pokeContacts()
       seen.bounds.add(fv::physics::transformed(contactMesh(p->model, n.mesh)->bounds(), toMat4(world)));
     }
   }
-  std::vector<fv::physics::Box> changed;
-  bool                          cameOrWent = now.size() != contactSeen.size();
+  // what changed, by whose it is
+  std::vector<std::pair<std::string, fv::physics::Box>> changed;
+  bool                                                  cameOrWent = now.size() != contactSeen.size();
   for(const auto& [id, s] : now)
   {
     const auto was = contactSeen.find(id);
@@ -234,16 +293,16 @@ void FvHost::Impl::pokeContacts()
       continue;
     cameOrWent = cameOrWent || was == contactSeen.end();
     if(s.shown)
-      changed.push_back(s.bounds);
+      changed.emplace_back(id, s.bounds);
     if(was != contactSeen.end() && was->second.shown)
-      changed.push_back(was->second.bounds);
+      changed.emplace_back(id, was->second.bounds);
   }
   for(const auto& [id, s] : contactSeen)
     if(!now.count(id))
     {
       cameOrWent = true;
       if(s.shown)
-        changed.push_back(s.bounds);
+        changed.emplace_back(id, s.bounds);
     }
   contactSeen = std::move(now);
   // a model no prop shows any more takes its triangles with it
@@ -265,9 +324,11 @@ void FvHost::Impl::pokeContacts()
       f->contact->poke();
       continue;
     }
-    const fv::physics::Box& body = f->contact->bodyBounds();
-    if(changed.empty())
+    // its own changes poke it through its pump, not here
+    const auto others = [&](const std::pair<std::string, fv::physics::Box>& c) { return c.first != f->id; };
+    if(std::none_of(changed.begin(), changed.end(), others))
       continue;
+    const fv::physics::Box& body = f->contact->bodyBounds();
     if(body.empty())
     {
       f->contact->poke();
@@ -275,13 +336,14 @@ void FvHost::Impl::pokeContacts()
     }
     const double           scale = glm::length(glm::vec3(placed[0]));
     const fv::physics::Box around = fv::physics::transformed(body, toMat4(placed)).grown((f->contact->settings().reach + kContactNear) * scale);
-    if(std::any_of(changed.begin(), changed.end(), [&](const fv::physics::Box& b) { return b.overlaps(around); }))
+    if(std::any_of(changed.begin(), changed.end(), [&](const auto& c) { return others(c) && c.second.overlaps(around); }))
       f->contact->poke();
   }
 }
 
-// Topic "contact/<prop>": {enabled, busy, patches, softness, bulge, reach}: the body's contact dents
-// (figure/physics/contact/contact.hpp), for a figure that has them.
+// Topic "contact/<prop>": {enabled, busy, held, patches, softness, bulge, reach}: the body's contact
+// dents (figure/physics/contact/contact.hpp), for a figure that has them; `held` while they are at
+// weight 0 because what they meet moves (a clip, another figure's ragdoll).
 void FvHost::Impl::publishContact(Loaded& f)
 {
   if(!f.contact)
@@ -290,6 +352,7 @@ void FvHost::Impl::publishContact(Loaded& f)
   const fv::physics::ContactSettings& s = f.contact->settings();
   protocol->events().snapshot("contact/" + f.id, {{"enabled", s.on},
                                                   {"busy", f.contact->busy()},
+                                                  {"held", f.contact->held()},
                                                   {"patches", f.contact->patches()},
                                                   {"softness", s.softness},
                                                   {"bulge", s.bulge},
@@ -322,7 +385,17 @@ Json FvHost::Impl::figureContact(const Json& args)
   number("softness", s.softness, 0.f, 1.f);
   number("bulge", s.bulge, 0.f, 1.f);
   number("reach", s.reach, 1.f, 10.f);
+  const fv::physics::ContactSettings was = figure->contact->settings();
   figure->contact->set(s);
+  // the people it presses into give way by its softness against theirs, or all of it while it's off
+  if((s.on != was.on || s.softness != was.softness) && renderer->feedsHostScene())
+  {
+    rs::RetainedScene&     scene = renderer->hostScene();
+    const fv::physics::Box mine  = boneBounds(*figure, scene);
+    for(const auto& p : props)
+      if(Loaded* other = p->figure.get(); other && other != figure.get() && other->contact && boneBounds(*other, scene).overlaps(mine))
+        other->contact->poke();
+  }
   publishContact(*figure);
   return {{"ok", true}};
 }

@@ -329,6 +329,46 @@ TEST(Contact, aClosedPropIsInsideDeeperThanAnOpenOne)
   EXPECT_FALSE(insideOf(set, {0, 1, 0}, 3, 8, threadStamps()).inside);
 }
 
+// Two bodies 1 cm into each other each give way by their share, each meeting the other undented: the
+// softer (0.75 against 0.25) takes three quarters and the other the rest, so they meet, with no gap
+// past the clearance and no overlap. The rounds after smoothing hold the share; they don't take a
+// share of what is left each time.
+TEST(Contact, twoBodiesSplitTheOverlapBySoftness)
+{
+  ContactSettings soft, firm, none;
+  soft.softness = 0.75f;
+  firm.softness = 0.25f;
+  none.softness = 0;
+  EXPECT_DOUBLE_EQ(overlapShare(soft, &firm), 0.75);
+  EXPECT_DOUBLE_EQ(overlapShare(firm, &soft), 0.25);
+  EXPECT_DOUBLE_EQ(overlapShare(none, &none), 0.5);
+  ContactSettings off = firm;
+  off.on              = false;
+  EXPECT_DOUBLE_EQ(overlapShare(soft, &off), 1) << "a body that doesn't dent gives no way";
+  EXPECT_DOUBLE_EQ(overlapShare(soft, nullptr), 1);
+
+  // 5 cm balls 9 cm apart: 1 cm in, between x = 4 and 5
+  const Soup a  = sphere(5, 48, 96);
+  const Soup b  = carried(a, turnedScaled(0, 1, {9, 0, 0}));
+  const auto ra = resolve(a, {ColliderRef{shared(b), Mat4{}, 0.75}}, 0.f);
+  const auto rb = resolve(b, {ColliderRef{shared(a), Mat4{}, 0.25}}, 0.f);
+  const auto at = [](const Soup& s, float x) {
+    for(size_t v = 0; v < s.positions.size() / 3; v++)
+      if(std::fabs(s.positions[v * 3] - x) < 1e-4f && std::fabs(s.positions[v * 3 + 1]) < 1e-4f && std::fabs(s.positions[v * 3 + 2]) < 1e-4f)
+        return v;
+    return size_t(-1);
+  };
+  const size_t va = at(a, 5), vb = at(b, 4);
+  ASSERT_NE(va, size_t(-1));
+  ASSERT_NE(vb, size_t(-1));
+  const float xa = ra.positions[va * 3], xb = rb.positions[vb * 3];
+  // each by its share of the overlap and the clearance, 1.05 cm
+  EXPECT_NEAR(xa, 5 - 0.75f * 1.05f, 0.02f);
+  EXPECT_NEAR(xb, 4 + 0.25f * 1.05f, 0.02f);
+  EXPECT_GE(xb - xa, 0.f) << "they still overlap";
+  EXPECT_LT(xb - xa, 0.1f);
+}
+
 // A prop turned and scaled up is queried in its own space; the answer is the one a copy carried into
 // the body's space gives. A prop stretched unevenly is such a copy.
 TEST(Physics, aScaledPropsOwnSpaceQueryMatchesATransformedCopy)
@@ -591,7 +631,7 @@ TEST(Contact, playbackHoldsTheChannelAtZero)
   Rig     r(flat(3, 0.25));
   Contact c(r.scene, r.morphs, 0, r.root);
   bool    playing = false;
-  c.playing       = [&] { return playing; };
+  c.driven        = [&] { return playing; };
   c.colliders     = [] { return std::vector<ColliderRef>{{shared(box({-1.1f, -1.f, -1.1f}, {1.1f, 4.f, 1.1f})), Mat4{}, 1}}; };
   ASSERT_TRUE(pumpUntilWritten(c));
   playing = true;

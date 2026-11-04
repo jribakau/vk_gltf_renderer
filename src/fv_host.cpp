@@ -706,6 +706,8 @@ void FvHost::onUpdate()
         changes.rebound.insert(changes.rebound.end(), more.rebound.begin(), more.rebound.end());
       };
       timePhase("frame: dForce and collision");
+      // its pose or shape changed (before its own dent is written: that is no change to whoever meets it)
+      const bool posedOrShaped = !changes.nodes.empty() || !moved.empty();
       // the body's dents first: when they change, the clothes are fitted and draped over them again
       if(f.contact)
       {
@@ -757,8 +759,10 @@ void FvHost::onUpdate()
           s.publishWardrobe(f);
       }
       timePhase("frame: figure changes applied");
-      // a prop's own pose or shape moved: the bodies it presses into look again (pokeContacts)
-      if(!f.contact && (!changes.nodes.empty() || std::any_of(changes.meshes.begin(), changes.meshes.end(), [](const fv::morph::MeshChange& m) { return !m.caughtUp; })))
+      // a prop's or a person's own pose or shape moved: the bodies it presses into look again
+      // (pokeContacts). A prop's clothes count; a person is met by their body, and their dent doesn't.
+      if(f.contact ? posedOrShaped
+                   : (!changes.nodes.empty() || std::any_of(changes.meshes.begin(), changes.meshes.end(), [](const fv::morph::MeshChange& m) { return !m.caughtUp; })))
         f.contactRev++;
       if(!changes.nodes.empty())
       {

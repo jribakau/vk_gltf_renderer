@@ -194,7 +194,8 @@ struct Loaded
   std::unique_ptr<fv::physics::FigurePhysics> physics;
   int                                         physicsVersion = -1;
   // without dents of its own (a DAZ prop, a chair), it is what the bodies near it meet: its shown
-  // meshes posed in its root's space, made again once its pose or shape moved (`contactRev` bumps)
+  // meshes posed in its root's space (a person's body alone, without its own dent), made again once
+  // its pose or shape moved (`contactRev` bumps; a person's own dent doesn't)
   int                                                               contactRev    = 0;
   int                                                               contactSetsAt = -1;
   std::vector<std::shared_ptr<const fv::physics::SharedTriangles>> contactSets;
@@ -1069,7 +1070,10 @@ struct FvHost::Impl
   Json wardrobeTight(const Json& args);
   // body contact (fv_host_physics.cpp): what a figure's pass meets, the look each frame at what moved
   // near a figure, figure.contact and its topic
-  std::vector<fv::physics::ColliderRef>               contactColliders(const Loaded& f);
+  // `bodies`: other people's too (a contact pass); without, props only (the ragdoll, until step 6)
+  std::vector<fv::physics::ColliderRef>               contactColliders(const Loaded& f, bool bodies = true);
+  // another figure near this one moves by physics: its dents are held until it rests
+  bool                                                movesNear(const Loaded& f);
   std::shared_ptr<const fv::physics::SharedTriangles> contactMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh);
   const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& contactSets(Loaded& prop);
   void                                                pokeContacts();

@@ -103,19 +103,32 @@ std::vector<Placed> place(std::span<const ColliderRef> colliders, const Box& bod
 // vertex), as Softie casts its rays, so skin pressed into a seat near its front edge goes up and not
 // out through the front; where that ray meets nothing within the depth, to the closest point.
 // `target` gets where, `hit` whether.
-void contacts(std::span<const double> x, std::span<const double> normals, const std::vector<Placed>& placed, std::vector<double>& target, std::vector<uint8_t>& hit)
+// Against another body (a share under 1) the rest of the overlap is left for that body to give way:
+// `keep`, per collider and vertex, is how deep the vertex may stay, set from where it starts (`first`)
+// and held after, so the later rounds don't take a share of what is left each time. A vertex that
+// wasn't in at the start keeps nothing: the other body, which met this one undented, makes no room.
+void contacts(std::span<const double> x, std::span<const double> normals, const std::vector<Placed>& placed, std::vector<std::vector<double>>& keep,
+              bool first, std::vector<double>& target, std::vector<uint8_t>& hit)
 {
   const size_t n = x.size() / 3;
   target.assign(n * 3, 0.0);
   hit.assign(n, 0);
+  if(first)
+  {
+    keep.assign(placed.size(), {});
+    for(size_t c = 0; c < placed.size(); c++)
+      if(placed[c].share < 1)
+        keep[c].assign(n, 0.0);
+  }
   jobs::parallelFor(n, 256, [&](size_t begin, size_t end) {
     Stamps& stamps = threadStamps();
     for(size_t v = begin; v < end; v++)
     {
       const double* p    = &x[v * 3];
       double        best = -1;
-      for(const Placed& c : placed)
+      for(size_t k = 0; k < placed.size(); k++)
       {
+        const Placed& c = placed[k];
         if(!c.inBody.contains(p[0], p[1], p[2]))
           continue;
         const Vec3   q  = c.fromBody.transformPoint({p[0], p[1], p[2]});
@@ -131,7 +144,17 @@ void contacts(std::span<const double> x, std::span<const double> normals, const 
           in = out;
         const double clear = kClearance / c.scale;
         const Vec3   to    = c.toBody.transformPoint({in.exit[0] + in.normal[0] * clear, in.exit[1] + in.normal[1] * clear, in.exit[2] + in.normal[2] * clear});
-        const double mx = (to.x - p[0]) * c.share, my = (to.y - p[1]) * c.share, mz = (to.z - p[2]) * c.share;
+        const double depth = std::sqrt((to.x - p[0]) * (to.x - p[0]) + (to.y - p[1]) * (to.y - p[1]) + (to.z - p[2]) * (to.z - p[2]));
+        if(depth <= 0)
+          continue;
+        if(first && !keep[k].empty())
+          keep[k][v] = (1 - c.share) * depth;
+        const double stay = keep[k].empty() ? 0 : keep[k][v];
+        if(depth <= stay)
+          continue;
+        // toward the exit, stopping `stay` short of it
+        const double f  = (depth - stay) / depth;
+        const double mx = (to.x - p[0]) * f, my = (to.y - p[1]) * f, mz = (to.z - p[2]) * f;
         const double move = mx * mx + my * my + mz * mz;
         if(move > best)
         {
@@ -199,9 +222,10 @@ ContactResult resolveContacts(const ContactInput& in)
   for(size_t v = 0; v < n; v++)
     for(int a = 0; a < 3; a++)
       normals[v * 3 + a] = graph.normal(v)[a];
-  std::vector<double>  target;
-  std::vector<uint8_t> hit;
-  contacts(x, normals, placed, target, hit);
+  std::vector<double>              target;
+  std::vector<uint8_t>             hit;
+  std::vector<std::vector<double>> keep;
+  contacts(x, normals, placed, keep, true, target, hit);
   if(!pushOut(x, target, hit))
     return out;
 
@@ -276,7 +300,7 @@ ContactResult resolveContacts(const ContactInput& in)
     for(size_t i = 0; i < correction.size(); i++)
       x[i] = start[i] + correction[i];
     bulge();
-    contacts(x, normals, placed, target, hit);
+    contacts(x, normals, placed, keep, false, target, hit);
     pushOut(x, target, hit);
   }
   for(size_t i = 0; i < x.size(); i++)
@@ -284,7 +308,37 @@ ContactResult resolveContacts(const ContactInput& in)
   return out;
 }
 
-std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root)
+namespace {
+
+// A mesh's morphed cage less a hidden channel's target at its weight.
+std::vector<float> cageWithout(const morph::MorphSet& morphs, int mesh, const std::string& channel)
+{
+  std::vector<float> scratch;
+  const auto         view = morphs.morphedCageView(mesh, scratch);
+  std::vector<float> out(view.begin(), view.end());
+  if(channel.empty())
+    return out;
+  if(const dson::TargetPtr own = morphs.cpuTarget(channel, mesh))
+    if(const double w = morphs.weightOf(channel); w != 0)
+      for(size_t k = 0; k < own->cageIndices.size(); k++)
+        if(size_t(own->cageIndices[k]) * 3 + 2 < out.size())
+          for(int a = 0; a < 3; a++)
+            out[own->cageIndices[k] * 3 + a] -= float(own->cageDeltas[k * 3 + a] * w);
+  return out;
+}
+
+}  // namespace
+
+double overlapShare(const ContactSettings& self, const ContactSettings* other)
+{
+  if(!other || !other->on)
+    return 1;
+  const double a = std::clamp(double(self.softness), 0.0, 1.0), b = std::clamp(double(other->softness), 0.0, 1.0);
+  return a + b > 0 ? a / (a + b) : 0.5;
+}
+
+std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root,
+                                           const std::string& without)
 {
   std::vector<std::vector<float>> out(meshes.size());
   const auto worlds    = scene.worlds();
@@ -298,9 +352,7 @@ std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph:
     const Mesh& m = scene.meshes[size_t(mesh)];
     if(!m.geo || m.geo->cagePositions.empty())
       continue;
-    std::vector<float> scratch;
-    const auto         view = morphs.morphedCageView(mesh, scratch);
-    std::vector<float> posed(view.begin(), view.end());
+    std::vector<float> posed = cageWithout(morphs, mesh, without);
     if(m.skinned() && m.cageSkin.start.size() == posed.size() / 3 + 1)
       posed = dforce::skinLocal(posed, dforce::cageSkin(m.cageSkin), dforce::currentSkin(scene, worlds, nodeOf, mesh));
     const int node = nodeOf[size_t(mesh)];
@@ -393,15 +445,7 @@ std::shared_ptr<Contact::Job> Contact::prepare()
   job->settings = m_settings;
 
   // the body under its own dent: the shape kept, less this channel's target at its weight
-  std::vector<float> scratch;
-  const auto         view = m_morphs.morphedCageView(m_bodyMesh, scratch);
-  job->rest.assign(view.begin(), view.end());
-  if(const dson::TargetPtr own = m_morphs.cpuTarget(m_writer.name, m_bodyMesh))
-    if(const double w = m_morphs.weightOf(m_writer.name); w != 0)
-      for(size_t k = 0; k < own->cageIndices.size(); k++)
-        if(size_t(own->cageIndices[k]) * 3 + 2 < job->rest.size())
-          for(int a = 0; a < 3; a++)
-            job->rest[own->cageIndices[k] * 3 + a] -= float(own->cageDeltas[k * 3 + a] * w);
+  job->rest = cageWithout(m_morphs, m_bodyMesh, m_writer.name);
 
   const auto worlds    = m_scene.worlds();
   const auto nodeOf    = dforce::nodeOfMesh(m_scene);
@@ -453,7 +497,7 @@ bool Contact::pump()
 {
   if(!m_settings.on)
     return false;
-  if(playing && playing())
+  if(driven && driven())
   {
     if(m_held)
       return false;
