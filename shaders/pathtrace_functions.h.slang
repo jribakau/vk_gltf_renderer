@@ -1303,6 +1303,36 @@ bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout
   return true;
 }
 
+// The ground's material at `pos`, for a ray footprint `footprint` wide: the plane's colour and
+// roughness, under the water the host sets (groundWaterAt). Damp ground darkens and turns glossier,
+// its top layer becoming water's; a puddle's surface is water, smooth but for its ripples, whose
+// detail finer than the footprint goes into its roughness. The ground's own normal stays flat.
+PbrMaterial groundMaterial(float3 pos, float footprint, SceneFrameInfo* frameInfo)
+{
+  const float3 up  = float3(0.0F, 1.0F, 0.0F);
+  PbrMaterial  mat = defaultPbrMaterial(frameInfo->infinitePlaneBaseColor, frameInfo->infinitePlaneMetallic,
+                                        frameInfo->infinitePlaneRoughness, up, up);
+  // The catcher is a compositing effect, not a surface
+  if(frameInfo->groundWater <= 0.0F || hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
+    return mat;
+
+  const GroundWater water = groundWaterAt(pos.xz, footprint, frameInfo->groundWater, frameInfo->groundRipples);
+  mat.baseColor           = lerp(mat.baseColor, groundWetAlbedo(mat.baseColor), water.damp);
+  mat.ior2                = lerp(mat.ior2, GROUND_WATER_IOR, water.damp);
+  // pbrMat.roughness holds alpha = roughness^2; the ripples' variance adds to the water's alpha^2 (twice
+  // the per-axis slope variance, as a Beckmann lobe's)
+  const float dry        = frameInfo->infinitePlaneRoughness;
+  const float damp       = lerp(dry, min(dry, GROUND_DAMP_ROUGHNESS), water.damp);
+  const float waterAlpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * water.slopeVariance);
+  mat.roughness          = float2(max(lerp(damp * damp, waterAlpha, water.puddle), MICROFACET_MIN_ROUGHNESS));
+  if(any(water.slope != float2(0.0F)))
+  {
+    mat.N = normalize(float3(-water.slope.x, 1.0F, -water.slope.y));
+    orthonormalBasis(mat.N, mat.T, mat.B);
+  }
+  return mat;
+}
+
 
 //-----------------------------------------------------------------------
 // In-volume step: Beer's-law absorption (always when GLTF_USE_VOLUME) +

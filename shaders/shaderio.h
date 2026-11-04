@@ -286,6 +286,11 @@ struct SceneFrameInfo
   // (HdrIbl::getIntegral) over 4, the irradiance a uniform sky of that power gives a surface facing
   // it. (Appended, per the note above.)
   float envPickEstimate = 0.0F;
+
+  // Water on the ground (groundWaterAt in ground.h.slang): how much, 0 dry to 1 a sheet of it, and
+  // how rippled its surface is, 0 still to 1. (Appended, per the note above.)
+  float groundWater   = 0.0F;
+  float groundRipples = 0.0F;
 };
 
 enum PathtracerFlags

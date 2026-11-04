@@ -280,6 +280,21 @@ TEST(FvLighting, RendererParamsFollowTheState)
   EXPECT_EQ(L::rendererParams(s, {})["envSystem"], 3);
 }
 
+// Water on the ground: within 0..1, dry by default (as a scene from before it), and on a floor only
+TEST(FvLighting, WaterWetsAFloorOnly)
+{
+  EXPECT_EQ(L::rendererParams(L::State{}, {})["groundWater"], 0.0);
+  L::State s = L::applyPatch(L::State{}, {{"ground", {{"water", 0.6}, {"ripples", 3}}}});
+  EXPECT_EQ(s.ground.water, 0.6);
+  EXPECT_EQ(s.ground.ripples, 1);
+  EXPECT_EQ(L::toJson(s)["ground"]["water"], 0.6);
+  EXPECT_EQ(L::rendererParams(s, {})["groundWater"], 0.6);
+  EXPECT_EQ(L::rendererParams(s, {})["groundRipples"], 1.0);
+  s.ground.mode = "catcher";
+  EXPECT_EQ(L::rendererParams(s, {})["groundWater"], 0.0);
+  EXPECT_EQ(L::applyPatch(s, {{"ground", {{"water", nullptr}}}}).ground.water, 0.0);
+}
+
 namespace {
 
 // A lat-long sky of luminance 1 with, optionally, a disc of `sun` around `toSun` (environment frame)

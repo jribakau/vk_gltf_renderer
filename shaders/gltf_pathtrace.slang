@@ -382,9 +382,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     //-----------------------------------------------------------------------
     if(hitInfinitePlane)
     {
-      // Replaced the material at the hit point with the infinite plane material
-      pbrMat = defaultPbrMaterial(frameInfo->infinitePlaneBaseColor, frameInfo->infinitePlaneMetallic,
-                                  frameInfo->infinitePlaneRoughness, hit.nrm, hit.nrm);
+      // Replaced the material at the hit point with the infinite plane material, and its water
+      pbrMat = groundMaterial(hit.pos, worldFoot, frameInfo);
 
       // Shadow catcher: invisible plane that shows only shadows for compositing
       if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))

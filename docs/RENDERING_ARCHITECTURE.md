@@ -214,7 +214,11 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
     and ends the search, which counts as blocked.
 - **The ground.** The infinite plane is analytic, not in the TLAS. `TraceShadow` multiplies in
   `infinitePlaneShadowTransmittance` (`shaders/ground.h.slang`): what a path's own ray would miss
-  where the shadow ray crosses the floor, and 1 for the shadow catcher.
+  where the shadow ray crosses the floor, and 1 for the shadow catcher. A path's hit takes
+  `groundMaterial` (`shaders/pathtrace_functions.h.slang`): the plane's colour and roughness under
+  the water the host sets on it (`groundWaterAt`), damp ground and puddles from a noise field in
+  world space, evaluated at the hit and filtered by its ray footprint. No texture and no extra ray;
+  the shadow test is the same wet or dry.
 
 The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-SER path traces with
 `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and reads the result from `rmissShadow`, which sets

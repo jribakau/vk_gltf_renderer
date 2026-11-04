@@ -468,6 +468,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.shadowCatcherDarkness, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name = "groundFade", .help = "Ground: fade the plane out over a disk of this many scene radii (0: no fade)", .callbackSuccess = groundChanged},
                  &m_resources.settings.groundFade, Persist::eYes, 0.0F, 100.0F);
+  m_settings.add({.name = "groundWater", .help = "Ground: water on the plane, 0 dry, damp to 0.5, puddles from 0.3, 1 a sheet of it", .callbackSuccess = groundChanged},
+                 &m_resources.settings.groundWater, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({.name = "groundRipples", .help = "Ground: ripples on its water, 0 still to 1", .callbackSuccess = groundChanged},
+                 &m_resources.settings.groundRipples, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name = "skySunScale", .help = "Sky: multiplier on the light the sky's sun gives (0: no sun light)", .callbackSuccess = groundChanged},
                  &m_resources.settings.skySunScale, Persist::eNo, 0.0F, 100.0F);
 

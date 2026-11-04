@@ -258,6 +258,9 @@ struct Settings
   // The ground fades out over a disk of this many scene radii around the scene (0: no fade), as the
   // Figure Viewer's floor does.
   float groundFade = 0.0f;
+  // Water on the ground, 0 dry to 1 a sheet of it, and its ripples (SceneFrameInfo::groundWater)
+  float groundWater   = 0.0f;
+  float groundRipples = 0.25f;
   // A multiplier on the light the sky's sun gives (SceneFrameInfo::skySunScale).
   float skySunScale = 1.0f;
   bool      dlssRrHardwareAvailable = false;  // DLSS Ray Reconstruction hardware/extensions available (set at startup)

@@ -205,6 +205,10 @@ void patchGround(Ground& g, const Json& p)
       field(g.darkness, d.darkness, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else if(k == "fade")
       field(g.fade, d.fade, v, [&](const Json& x) { return number(x, key, 0.0, 100.0); });
+    else if(k == "water")
+      field(g.water, d.water, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "ripples")
+      field(g.ripples, d.ripples, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -271,7 +275,9 @@ Json toJson(const State& s)
         {"color", g.color},
         {"roughness", g.roughness},
         {"darkness", g.darkness},
-        {"fade", g.fade}}},
+        {"fade", g.fade},
+        {"water", g.water},
+        {"ripples", g.ripples}}},
       {"tonemap",
        {{"method", t.method},
         {"exposure", t.exposure},
@@ -606,6 +612,9 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"infinitePlaneMetallic", 0.0},
       {"shadowCatcherDarkness", g.darkness},
       {"groundFade", g.fade},
+      // a shadow catcher is no surface to wet
+      {"groundWater", g.mode == "floor" ? g.water : 0.0},
+      {"groundRipples", g.ripples},
       // the physical sky measures its own sun; the panel's strength scales it, from the default up
       {"skySunScale", s.sun.enabled ? s.sun.intensity / Sun{}.intensity : 0.0},
   };
