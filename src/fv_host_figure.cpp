@@ -27,6 +27,9 @@
 
 Json FvHost::Impl::load(const Json& args)
 {
+  // a VaM scene's clip, which isn't in a DAZ library
+  if(args.value("as", "") == "vam")
+    return loadVam(args);
   HostSettings s;
   {
     std::lock_guard lock(settingsMutex);

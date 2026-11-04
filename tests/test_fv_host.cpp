@@ -3712,3 +3712,87 @@ TEST(FvHost, leavingPhysicsKeepsTheReachedPose)
   EXPECT_TRUE(r.on());
   EXPECT_NEAR(r.head("z"), z, 1e-6);
 }
+
+// A VaM scene's Timeline clip on the box figure (docs/physics-plan.md step 16): opened as "vam", it
+// plays in Physics mode as a figure's clip of the animation topic, with the Person's other clips; its
+// hip and head controllers hold the ragdoll, and the head turns as the clip turns it (Unity's turn
+// about y, mirrored onto ours). Stop lets it go, the head comes back, and the scene file leaves the
+// clip out.
+TEST(FvHost, aVamClipHoldsTheRagdollInPhysicsMode)
+{
+  Ragdolled r;
+  // a key as Timeline writes it: 'D', the time, the value and the curve type, as hex float32s
+  const auto key = [](float t, float v) {
+    char          out[32];
+    uint32_t      bits[2];
+    std::memcpy(&bits[0], &t, 4);
+    std::memcpy(&bits[1], &v, 4);
+    std::string s = "D";
+    for(uint32_t b : bits)
+      for(int i = 0; i < 4; i++)
+      {
+        std::snprintf(out, sizeof out, "%02X", unsigned((b >> (8 * i)) & 255));
+        s += out;
+      }
+    return s + "03";
+  };
+  // the head turned 40 degrees about Unity's y, held there over the clip
+  const double half  = 20 * 3.14159265358979323846 / 180;
+  const auto   track = [&](const char* controller, float y, float qy, float qw, float length) {
+    Json t = {{"Controller", controller}, {"TargetsPosition", "1"}, {"TargetsRotation", "1"}};
+    const float v[7] = {0, y, 0, 0, qy, 0, qw};
+    const char* names[7] = {"X", "Y", "Z", "RotX", "RotY", "RotZ", "RotW"};
+    for(int i = 0; i < 7; i++)
+      t[names[i]] = Json::array({key(0, v[i]), key(length, v[i])});
+    return t;
+  };
+  const auto clip = [&](const char* name, float length) {
+    Json pose = Json::array({{{"id", "control"}, {"position", {{"x", "0"}, {"y", "0"}, {"z", "0"}}}, {"rotation", {{"x", "0"}, {"y", "0"}, {"z", "0"}}}},
+                             {{"id", "hipControl"}, {"positionState", "On"}, {"rotationState", "On"}},
+                             {{"id", "headControl"}, {"positionState", "On"}, {"rotationState", "On"}, {"holdRotationSpring", "450"}}});
+    return Json{{"AnimationName", name},
+                {"AnimationLength", std::to_string(length)},
+                {"Loop", "0"},
+                {"Controllers", Json::array({track("hipControl", 0.1f, 0, 1, length), track("headControl", 0.2f, float(std::sin(half)), float(std::cos(half)), length)})},
+                {"Pose", {{"storables", pose}}}};
+  };
+  const Json scene = {{"atoms", Json::array({{{"id", "Person"},
+                                              {"type", "Person"},
+                                              {"storables", Json::array({{{"id", "plugin#0_VamTimeline.AtomPlugin"},
+                                                                          {"Animation", {{"SerializeVersion", "283"}, {"Clips", Json::array({clip("A POS", 1), clip("Turn", 12)})}}}}})}}})}};
+  const fs::path dir = fs::temp_directory_path() / "fv_host_vam_test";
+  fs::create_directories(dir);
+  const fs::path file = dir / "Turn Scene.json";
+  std::ofstream(file) << scene.dump();
+
+  ASSERT_TRUE(r.rig.cmd("load", {{"prop", r.figure}, {"path", file.string()}, {"as", "vam"}}).value("ok", false));
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_TRUE(r.on()) << "a VaM clip didn't turn Physics mode on";
+  const Json anim = r.rig.topic("animation");
+  ASSERT_TRUE(anim.value("current", Json()).is_number()) << anim.dump();
+  const Json c = anim.at("clips").at(std::to_string(anim["current"].get<int>()));
+  EXPECT_EQ(c.value("name", ""), "Turn") << "not the first clip of 10 s or more";
+  EXPECT_EQ(c.value("kind", ""), "figure");
+  EXPECT_DOUBLE_EQ(c.value("duration", 0.0), 12);
+  ASSERT_TRUE(c.contains("vam")) << c.dump();
+  EXPECT_EQ(c["vam"].value("person", ""), "Person");
+  EXPECT_EQ(c["vam"].value("clips", Json::array()).size(), 2u);
+  EXPECT_TRUE(anim.value("playing", false));
+
+  // Unity's turn about y is the other way about ours
+  const auto headY = [&] {
+    const Json state = r.rig.cmd("scene.state", {{"prop", r.figure}}).value("result", Json::object());
+    return state.value("physics", Json::object()).value("physical", Json::object()).value("head/rotation/y", 0.0);
+  };
+  EXPECT_TRUE(r.until([&] { return std::abs(headY() + 40) < 4; }, 8)) << "the head is at " << headY();
+  const Json state = r.rig.cmd("scene.state", {{"prop", r.figure}}).value("result", Json::object());
+  EXPECT_FALSE(state.contains("animation")) << "a VaM clip went into the scene file";
+
+  r.rig.cmd("anim.stop");
+  EXPECT_TRUE(r.until([&] { return std::abs(headY()) < 2; }, 8)) << "let go, the head stayed at " << headY();
+  // a scene without a Person with clips, and a figure without the clip named
+  r.rig.cmd("load", {{"prop", r.figure}, {"path", file.string()}, {"as", "vam"}, {"clip", "Nope"}});
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_NE(r.rig.topic("notices").dump().find("has no clip Nope"), std::string::npos) << r.rig.topic("notices").dump();
+  fs::remove_all(dir);
+}

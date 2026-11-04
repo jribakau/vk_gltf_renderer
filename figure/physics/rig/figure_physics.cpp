@@ -400,6 +400,8 @@ void FigurePhysics::placeBodies()
 
 double FigurePhysics::strengthOf(const Part& p) const
 {
+  if(m_drive.hold)
+    return std::clamp(*m_drive.hold, 0.0, 1.0);
   const auto it = m_settings.parts.find(p.group);
   return std::clamp(it != m_settings.parts.end() ? it->second : m_settings.strength, 0.0, 1.0);
 }
@@ -470,12 +472,22 @@ void FigurePhysics::updateJoints()
     j.damping      = 2;
     j.maxTorque    = 0;
   }
-  // the hip: where its channels put it under the figure's root bone
+  // a clip's own drives where it has them
+  for(const Drive::Joint& d : m_drive.joints)
+    if(d.part > 0 && size_t(d.part) < m_parts.size())
+    {
+      Joint& j        = m_world.joints[size_t(m_parts[size_t(d.part)].joint)];
+      j.compliance    = d.compliance;
+      j.driveDamping  = d.driveDamping;
+      j.damping       = d.damping;
+      j.maxTorque     = d.maxTorque;
+    }
+  // the hip: where its channels put it under the figure's root bone, or where a clip holds it
   Pin& hip = m_world.pins[size_t(m_hipPin)];
   {
     const Mat4 w     = targetWorld(m_parts[0].node);
-    hip.target       = originOf(w);
-    hip.rotation     = rotationOf(w);
+    hip.target       = m_drive.hip ? m_drive.hip->first : originOf(w);
+    hip.rotation     = m_drive.hip ? m_drive.hip->second : rotationOf(w);
     hip.on = !m_settings.letFall;
     // held hard: a soft hip would let the whole body sway on it, and the only damping that reaches
     // that sway is the hip's own, a few kilograms of the body's fifty. A pull bends the spine instead.
@@ -624,6 +636,7 @@ bool FigurePhysics::set(const PhysicsSettings& settings, bool fold)
       m_pull = -1;
     }
     m_held.clear();
+    m_drive = {};
     syncPins();
     if(fold)
       m_rig.foldPhysical(m_owned);
@@ -752,6 +765,20 @@ void FigurePhysics::syncPins()
     p.maxTorque         = p.maxForce * 10;
     m_world.pins.push_back(p);
   }
+  // a clip's, one for each of its pins, at its bone's origin
+  m_drivePin = int(m_world.pins.size());
+  for(const Drive::Pin& d : m_drive.pins)
+  {
+    Pin p;
+    p.on = d.part >= 0 && size_t(d.part) < m_parts.size();
+    if(p.on)
+    {
+      p.body  = d.part;
+      p.local = m_parts[size_t(d.part)].com * -1.0;
+    }
+    m_world.pins.push_back(p);
+  }
+  aimDrivePins(nullptr);
   m_pull = -1;
   if(pull)
   {
@@ -807,6 +834,44 @@ void FigurePhysics::restorePins(const std::vector<HeldPin>& pins)
       m_held.push_back(h);
   syncPins();
   m_version++;
+}
+
+void FigurePhysics::drive(Drive d)
+{
+  // the same pins on the same parts: only where they aim moves, which a step sweeps to
+  const bool same = d.pins.size() == m_drive.pins.size()
+                    && std::equal(d.pins.begin(), d.pins.end(), m_drive.pins.begin(),
+                                  [](const Drive::Pin& a, const Drive::Pin& b) { return a.part == b.part && a.move == b.move && a.turn == b.turn; });
+  const bool was = !m_drive.empty();
+  m_drive        = std::move(d);
+  if(!m_settings.on || m_parts.empty())
+    return;
+  if(!same)
+    syncPins();
+  if(was || !m_drive.empty())
+    wake();
+}
+
+void FigurePhysics::aimDrivePins(std::vector<std::pair<Vec3, Quat>>* from)
+{
+  if(m_drivePin < 0)
+    return;
+  for(size_t i = 0; i < m_drive.pins.size() && size_t(m_drivePin) + i < m_world.pins.size(); i++)
+  {
+    Pin&              p = m_world.pins[size_t(m_drivePin) + i];
+    const Drive::Pin& d = m_drive.pins[i];
+    if(from)
+      from->emplace_back(p.target, p.rotation);
+    p.move              = d.move;
+    p.turn              = d.turn;
+    p.target            = d.at;
+    p.rotation          = d.rotation;
+    p.compliance        = d.compliance;
+    p.angularCompliance = d.angularCompliance;
+    p.damping           = d.damping;
+    p.maxForce          = d.maxForce;
+    p.maxTorque         = d.maxTorque;
+  }
 }
 
 void FigurePhysics::setOthers(std::vector<Other> others)
@@ -1131,25 +1196,36 @@ bool FigurePhysics::step(double seconds)
     Pin&              hip     = m_world.pins[size_t(m_hipPin)];
     const Vec3        hipFrom = hip.target;
     const Quat        hipTurn = hip.rotation;
-    if(m_clip && m_aimed)
+    const bool sweep = m_clip && m_aimed;
+    if(sweep)
       for(size_t i = 1; i < m_parts.size(); i++)
         from.push_back(m_world.joints[size_t(m_parts[i].joint)].target);
     updateJoints();
     feedForward();
+    // a clip's pins: where they aimed at the last frame's end, swept from while it plays
+    std::vector<std::pair<Vec3, Quat>> pinFrom;
+    aimDrivePins(sweep ? &pinFrom : nullptr);
     m_aimed = true;
-    if(!from.empty())
+    if(sweep)
     {
       std::vector<Quat> to;
       for(size_t i = 1; i < m_parts.size(); i++)
         to.push_back(m_world.joints[size_t(m_parts[i].joint)].target);
       const Vec3 hipTo = hip.target;
       const Quat hipAt = hip.rotation;
-      m_world.onSubstep = [this, from = std::move(from), to = std::move(to), hipFrom, hipTo, hipTurn, hipAt](double t) {
-        for(size_t i = 1; i < m_parts.size(); i++)
-          m_world.joints[size_t(m_parts[i].joint)].target = slerp(from[i - 1], to[i - 1], t);
+      m_world.onSubstep = [this, from = std::move(from), to = std::move(to), hipFrom, hipTo, hipTurn, hipAt, pinFrom = std::move(pinFrom)](double t) {
+        for(size_t i = 0; i < from.size(); i++)
+          m_world.joints[size_t(m_parts[i + 1].joint)].target = slerp(from[i], to[i], t);
         Pin& h     = m_world.pins[size_t(m_hipPin)];
         h.target   = hipFrom + (hipTo - hipFrom) * t;
         h.rotation = slerp(hipTurn, hipAt, t);
+        for(size_t i = 0; i < pinFrom.size(); i++)
+        {
+          Pin&              p = m_world.pins[size_t(m_drivePin) + i];
+          const Drive::Pin& d = m_drive.pins[i];
+          p.target            = pinFrom[i].first + (d.at - pinFrom[i].first) * t;
+          p.rotation          = slerp(pinFrom[i].second, d.rotation, t);
+        }
       };
     }
     m_world.props = colliders ? colliders() : std::vector<ColliderRef>{};

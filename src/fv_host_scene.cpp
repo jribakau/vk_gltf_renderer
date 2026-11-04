@@ -153,6 +153,15 @@ Json FvHost::Impl::animationTopic()
     {
       const FigureAnimation& a = *p->figure->animation;
       clips[std::to_string(a.number)] = {{"name", a.name}, {"duration", a.clip.duration}, {"order", order++}, {"prop", p->id}, {"kind", "figure"}};
+      if(a.vam)
+      {
+        Json others = Json::array();
+        for(const fv::physics::vam::Clip& c : a.vam->person().clips)
+          others.push_back({{"name", c.name}, {"duration", c.length}});
+        Json vam                                 = a.source;
+        vam["clips"]                             = std::move(others);
+        clips[std::to_string(a.number)]["vam"] = std::move(vam);
+      }
     }
   }
   out["clips"] = clips;
@@ -212,7 +221,8 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
     ctrl.play = args.value("play", true);
     if(Loaded* f = figureClipOf(clip))
     {
-      f->animation->time = 0;
+      f->animation->time      = 0;
+      f->animation->vamBegins = true;
       again(f);
     }
     else
@@ -227,7 +237,10 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
     if(Loaded* f = current())
     {
       if(f->animation->time >= f->animation->clip.duration - 1e-3f && !ctrl.loop)
-        f->animation->time = 0;
+      {
+        f->animation->time      = 0;
+        f->animation->vamBegins = true;
+      }
       again(f);
     }
     else if(renderer->hostClipTime() >= renderer->hostClipDuration() - 1e-3f && !ctrl.loop)
@@ -255,8 +268,11 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
   {
     if(Loaded* f = current())
     {
-      f->animation->time = std::clamp(args.at("time").get<float>(), 0.f, f->animation->clip.duration);
-      ctrl.play          = false;
+      f->animation->time      = std::clamp(args.at("time").get<float>(), 0.f, f->animation->clip.duration);
+      f->animation->vamBegins = false;
+      if(f->animation->vam)
+        f->animation->vam->jump();
+      ctrl.play = false;
       again(f);
     }
     else
@@ -277,10 +293,11 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
   return {{"ok", true}};
 }
 
-void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play, Json source)
+void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play, Json source,
+                                 std::shared_ptr<fv::physics::vam::Player> vam)
 {
   Loaded& f = *prop.figure;
-  if(clip.channels.empty())
+  if(clip.channels.empty() && !vam)
     throw std::runtime_error(fileStem(rel) + ": nothing in this animation matches " + prop.name + ".");
   if(f.animation)
     dropAnimation(f);
@@ -290,6 +307,7 @@ void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std:
   a.rel    = rel;
   a.source = std::move(source);
   a.clip   = std::move(clip);
+  a.vam    = std::move(vam);
   a.time   = play ? 0.f : a.clip.duration;
   // what each channel is now, to go back to
   for(const fv::pose::PoseClip::Channel& c : a.clip.channels)
@@ -345,6 +363,11 @@ void FvHost::Impl::restoreBeforeAnimation(Loaded& f)
   if(!f.animation || !f.fig->pose)
     return;
   FigureAnimation&                            a = *f.animation;
+  if(a.vam && f.physics)
+  {
+    f.physics->drive({});
+    a.vamBegins = true;
+  }
   std::vector<fv::pose::ChannelValue>         bones;
   std::vector<std::pair<std::string, double>> dials;
   for(size_t i = 0; i < a.clip.channels.size(); i++)
@@ -436,6 +459,8 @@ void FvHost::Impl::applyFigureAnimation()
     f->fig->pose->setMany(bones);
   if(f->fig->morphs && !dials.empty())
     f->fig->morphs->setMany(dials);
+  if(a.vam)
+    driveVam(*f);
   // the Pose tab's sliders: ten times a second while it plays, and where it stopped
   if(!ctrl.play || now - a.posePublished >= std::chrono::milliseconds(100))
   {
@@ -687,7 +712,8 @@ Json FvHost::Impl::sceneState(const Json& args)
     state["secondary"] = secondaryState(*prop->figure);
   if(prop->figure->flesh)
     state["soft"] = softState(*prop->figure);
-  if(prop->figure->animation)
+  // a VaM clip isn't kept with the scene yet (docs/physics-plan.md step 16)
+  if(prop->figure->animation && !prop->figure->animation->vam)
     state["animation"] = animationState(*prop->figure);
   if(prop->figure->dforce)
   {

@@ -98,6 +98,45 @@ public:
   // Takes pins back (undo, a scene file) as they were held.
   void restorePins(const std::vector<HeldPin>& pins);
 
+  // A clip that holds the body itself (a VaM clip, docs/physics-plan.md step 16): parts held by
+  // springs of their own at targets that move, the hip held where the clip says rather than where its
+  // channels put it, and joints driven at a stiffness of their own rather than their Hold's. While a
+  // clip plays (setClip), each frame's targets are swept across its substeps from where the last
+  // frame's left them. None of it is a HeldPin: the history and the scene file keep the clip, not
+  // these. Leaving Physics drops it; an empty Drive lets it all go.
+  struct Drive
+  {
+    struct Pin
+    {
+      int  part = -1;
+      bool move = true, turn = false;
+      // where the part's bone has its origin (its joint), in the root's space, and the bone's turn
+      Vec3 at;
+      Quat rotation;
+      // as RigidWorld's Pin: cm/dyne, rad/(dyne cm), the share of its velocity gone each second,
+      // dyne, dyne cm (0: no limit)
+      double compliance = 0, angularCompliance = 0, damping = 0, maxForce = 0, maxTorque = 0;
+    };
+    struct Joint
+    {
+      int part = -1;
+      // as RigidWorld's Joint: rad/(dyne cm), or -1 for no pull toward the target; the pull's
+      // damping time (s); the share of its turn against the part above gone each second; dyne cm
+      double compliance = -1, driveDamping = 0, damping = 0, maxTorque = 0;
+    };
+    std::vector<Pin> pins;
+    // the hip bone's origin and turn, in the root's space
+    std::optional<std::pair<Vec3, Quat>> hip;
+    std::vector<Joint>                   joints;
+    // every part's Hold while the clip drives, in place of the settings' (theirs aim the channels,
+    // which the clip doesn't set)
+    std::optional<double> hold;
+
+    bool empty() const { return pins.empty() && !hip && joints.empty() && !hold; }
+  };
+  void         drive(Drive d);
+  const Drive& driving() const { return m_drive; }
+
   // Other figures' ragdolls near this one for the next step (stepTogether): whose, and their capsules
   // in this one's root space as they were at the frame's start; `moving` wakes this one where they
   // come near it.
@@ -171,8 +210,10 @@ private:
   int partAt(int poseBone) const;
   // a pin's point on its part, in the body's frame: its middle, a shin's top (the knee)
   Vec3 pinPoint(int part) const;
-  // the world's pins after the hip's from `m_held`, the pull's last
+  // the world's pins after the hip's from `m_held` and `m_drive`, the pull's last
   void syncPins();
+  // the drive's pins in the world aimed where `m_drive` has them, `from` taking where they aimed
+  void aimDrivePins(std::vector<std::pair<Vec3, Quat>>* from);
 
   SceneGraph&            m_scene;
   pose::PoseRig&         m_rig;
@@ -194,6 +235,9 @@ private:
   bool                   m_wasAwake   = false;
   bool                   m_clip       = false;
   std::vector<HeldPin>     m_held;
+  // a clip's drive, and where its pins start in the world's
+  Drive                    m_drive;
+  int                      m_drivePin = -1;
   std::vector<std::string> m_otherKeys;
   // the joints have been aimed since the build: a clip can sweep from where they aimed
   bool                   m_aimed      = false;

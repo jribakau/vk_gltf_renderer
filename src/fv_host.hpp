@@ -44,7 +44,12 @@
 //                                                a pose, shape or material preset applies to that figure
 //                                                (a pose file whose keys run over time is also held as its
 //                                                animation, paused at its end); `as` "animation" plays a
-//                                                pose file's keys on that figure instead;
+//                                                pose file's keys on that figure instead; `as` "vam" plays
+//                                                a VaM scene's Timeline clip ({path} a scene's .json or a
+//                                                .var package, person?, clip?, scene?: the package's) on it,
+//                                                in Physics mode, its controllers holding the ragdoll; the
+//                                                animation topic's clip carries `vam` {path, scene, person,
+//                                                people, clip, clips: [{name, duration}]};
 //                                                `prefetch` [rel] names files a figure will wear soon (a
 //                                                scene file's worn list), read from the start of its load
 //   prop.add        {path|rel} as load; or {kind: "camera"|"light", type?: point|spot|directional,

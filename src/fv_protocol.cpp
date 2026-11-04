@@ -54,7 +54,8 @@ namespace {
 // "water" with ground.depth and ground.waves.
 // 26: pins and two ragdolls: physics.pin, the physics topic's and scene state's `pins`.
 // 27: soft flesh: physics.soft, the soft/<prop> topic and the scene state's `soft`.
-constexpr int kProtocolVersion = 27;
+// 28: VaM Timeline clips: load's `as` "vam", and the animation topic's clip `vam`.
+constexpr int kProtocolVersion = 28;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

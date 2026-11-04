@@ -87,6 +87,7 @@ set(TEST_SOURCES
     figure/test_ragdoll.cpp
     figure/test_flesh.cpp
     figure/test_retarget.cpp
+    figure/test_vam.cpp
     figure/test_export.cpp
     figure/test_dforce.cpp
     figure/test_scene_load.cpp
@@ -209,6 +210,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_host_props.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_scene.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_support.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_vam.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_wardrobe.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_view.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_materials.cpp

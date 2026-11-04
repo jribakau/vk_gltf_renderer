@@ -69,6 +69,7 @@
 #include <figure/physics/rig/figure_physics.hpp>
 #include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/rig/secondary.hpp>
+#include <figure/physics/vam/player.hpp>
 #include <figure/wardrobe/collider.hpp>
 #ifdef FV_DFORCE_GPU
 #include "fv_dforce_gpu.hpp"
@@ -160,13 +161,17 @@ Json valuesPatch(const fv::morph::MorphSet& morphs, std::vector<ListedDial>& lis
 // A DAZ pose file's keys over time played on a figure, as a clip of the "animation" topic
 // (fv_host_scene.cpp): opened from the Library it waits at its end, which is the pose the file sets;
 // imported it plays. Every frame it plays, its channels go through the figure's pose rig and dials
-// as a pose preset's do, and are no step of the history.
+// as a pose preset's do, and are no step of the history. A VaM Timeline clip (fv_host_vam.cpp) has
+// no channels: its controllers hold the figure's ragdoll in Physics mode, set from it each frame.
 struct FigureAnimation
 {
   int                 number = -1;  // its clip number, from Impl::nextClip
   std::string         name, rel;
   Json                source;  // how it was opened, for a scene file: {rel} in the content folders, else {path}
   fv::pose::PoseClip  clip;
+  std::shared_ptr<fv::physics::vam::Player> vam;
+  // a VaM clip blends in from where the body is at its next frame: it begins (not after a seek)
+  bool vamBegins = true;
   float               time  = 0;
   bool                dirty = true;  // to be sampled and applied at the next frame
   // each channel's value before it came, which Rest pose and Remove put back, and as last applied
@@ -1060,8 +1065,10 @@ struct FvHost::Impl
   std::chrono::steady_clock::time_point animationAt{};
   // A pose file's animation onto a figure, held there and made the current clip: paused at its end
   // or playing from its start. Another the figure had goes first, putting back the pose it found.
-  // Throws when nothing in it reaches the figure. `source` is how it was opened (FigureAnimation).
-  void holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play, Json source);
+  // Throws when nothing in it reaches the figure. `source` is how it was opened (FigureAnimation);
+  // `vam`, a VaM clip's player, which moves the ragdoll instead of channels.
+  void holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play, Json source,
+                     std::shared_ptr<fv::physics::vam::Player> vam = nullptr);
   // the figure's animation off it, its channels back where it found them
   void dropAnimation(Loaded& f);
   void restoreBeforeAnimation(Loaded& f);
@@ -1072,6 +1079,12 @@ struct FvHost::Impl
   // `resume`, a scene file's "animation" block, puts it back as it was saved instead: at its time,
   // playing or not, with the pose it found, and no notice.
   Json loadAnimation(std::vector<std::filesystem::path> roots, std::string rel, std::string target, Json source, Json resume = nullptr);
+  // load {as: "vam", path, prop?, person?, clip?, scene?}: a VaM scene (.json, or a .var package's)
+  // read on a worker, one Person's Timeline clip played on the figure named or selected, in Physics
+  // mode (fv_host_vam.cpp)
+  Json loadVam(const Json& args);
+  // a VaM clip's targets onto its figure's ragdoll, at the clip's time
+  void driveVam(Loaded& f);
   // A figure's animation as a scene file keeps it (sceneState's "animation"), and a channel's key in it
   Json animationState(const Loaded& f);
   static std::string animationKey(const fv::pose::PresetTarget& t);
