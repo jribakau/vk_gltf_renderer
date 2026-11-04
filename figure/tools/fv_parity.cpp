@@ -27,6 +27,10 @@
 // "apply": true also runs the driver's own path (the settle on the pool, the drape written as a
 // morph) and measures the drape read back through the skin, as the renderer gets it;
 // "colliders": false leaves worn items without a simulation modifier out of the simulation.
+// {"flesh": label} finds the body's soft lobes (figure/physics/flesh) and reports each: its particles,
+// its middle and extent in the rest cage (cm), and its softest share; then bobs the skin up and down
+// (2 cm at 2 Hz, a walk's) for "frames" frames at 60 fps and reports the solve's time a frame and
+// each lobe's largest offset, and the time of a frame's skin of the lobes at the figure's pose.
 //
 // Every step's time goes to stderr ("[step] ..."), with the library's phase timers ("[fv-time] ...")
 // inside it: the case in cases/native_test.json is the profile of a scene file's load.
@@ -55,6 +59,7 @@
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/gltf/gltf_check.hpp>
 #include <figure/io/timing.hpp>
+#include <figure/physics/flesh/flesh.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/collider.hpp>
@@ -839,6 +844,91 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("fit before a figure loads");
         dumps[step["fit"].get<std::string>()] = {{"fit", fitReport(*loaded)}};
+      }
+      else if(step.contains("flesh"))
+      {
+        if(!loaded)
+          throw std::runtime_error("flesh before a figure loads");
+        const auto& ctx = loaded->loaded.morphs;
+        if(ctx.mainMeshes.empty())
+          throw std::runtime_error("flesh without a figure body");
+        const int         body = ctx.meshes[ctx.mainMeshes[0]].mesh;
+        const std::string label = step["flesh"].get<std::string>();
+        fv::physics::Flesh flesh(loaded->loaded.scene, *loaded->morphs, body);
+        if(!flesh.solver())
+          throw std::runtime_error("the body has no skin for flesh");
+        const fv::physics::FleshModel& m    = flesh.solver()->model();
+        const std::vector<float>&      cage = loaded->loaded.scene.meshes[size_t(body)].geo->cagePositions;
+        Json                           lobes = Json::array();
+        for(const fv::physics::FleshModel::Lobe& l : m.lobes)
+        {
+          double lo[3] = {1e9, 1e9, 1e9}, hi[3] = {-1e9, -1e9, -1e9}, mid[3] = {0, 0, 0}, total = 0;
+          float  soft = 0;
+          for(uint32_t p : l.particles)
+          {
+            const float* x = &cage[m.vertex[p] * 3];
+            for(int a = 0; a < 3; a++)
+            {
+              lo[a] = std::min(lo[a], double(x[a]));
+              hi[a] = std::max(hi[a], double(x[a]));
+              mid[a] += x[a] * m.share[p];
+            }
+            total += m.share[p];
+            soft = std::max(soft, m.share[p]);
+          }
+          lobes.push_back({{"name", l.name},
+                           {"particles", l.particles.size()},
+                           {"middle", {r(mid[0] / total), r(mid[1] / total), r(mid[2] / total)}},
+                           {"min", {r(lo[0]), r(lo[1]), r(lo[2])}},
+                           {"max", {r(hi[0]), r(hi[1]), r(hi[2])}},
+                           {"softest", r(soft)}});
+        }
+        // the skin of the lobes, as a frame makes it
+        fv::physics::FleshSettings s;
+        s.on = true;
+        flesh.set(s);
+        const auto skinStart = std::chrono::steady_clock::now();
+        for(int i = 0; i < 20; i++)
+          flesh.step(1.0 / 60);
+        const double skinMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - skinStart).count() / 20;
+        // the solve on its own, the skin bobbing
+        fv::physics::FleshSolver solver(m);
+        solver.set(s);
+        std::vector<float> rest;
+        for(uint32_t v : m.vertex)
+          rest.insert(rest.end(), {cage[v * 3], cage[v * 3 + 1], cage[v * 3 + 2]});
+        for(uint32_t v : m.support)
+          rest.insert(rest.end(), {cage[v * 3], cage[v * 3 + 1], cage[v * 3 + 2]});
+        const int           frames = step.value("frames", 240);
+        std::vector<double> most(m.lobes.size(), 0.0);
+        double              solveMs = 0;
+        for(int f = 0; f < frames; f++)
+        {
+          std::vector<float> t   = rest;
+          const double       bob = 2 * std::sin(2 * 3.14159265358979 * 2 * f / 60.0);
+          for(size_t k = 1; k < t.size(); k += 3)
+            t[k] += float(bob);
+          const auto t0 = std::chrono::steady_clock::now();
+          solver.step(t, 1.0 / 60);
+          solveMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          for(size_t l = 0; l < m.lobes.size(); l++)
+            for(uint32_t p : m.lobes[l].particles)
+            {
+              const double* d = &solver.offsets()[p * 3];
+              most[l]         = std::max(most[l], std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+            }
+        }
+        for(size_t l = 0; l < m.lobes.size(); l++)
+          lobes[l]["largestCm"] = r(most[l]);
+        Json dump = {{"flesh", lobes},
+                     {"particles", m.vertex.size()},
+                     {"support", m.support.size()},
+                     {"edges", m.edges.size()},
+                     {"cage", m.cageCount},
+                     {"solveMs", r(solveMs / frames)},
+                     {"skinAndSolveMs", r(skinMs)}};
+        std::cerr << "flesh " << label << ": " << dump.dump() << "\n";
+        dumps[label] = dump;
       }
       else if(step.contains("dforce"))
       {

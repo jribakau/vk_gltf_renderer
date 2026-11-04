@@ -322,6 +322,32 @@ std::vector<float> skinLocal(const std::vector<float>& rest, const CageSkin& ski
   return out;
 }
 
+std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, const SkinPose& pose, std::span<const uint32_t> vertices)
+{
+  const auto             S   = skinMatrices(pose);
+  const auto             dqs = jointDqs(S, skin);
+  std::vector<float>     out(vertices.size() * 3);
+  std::array<double, 16> m;
+  for(size_t k = 0; k < vertices.size(); k++)
+  {
+    const size_t v = vertices[k];
+    if(v * 3 + 2 >= rest.size())
+      continue;
+    const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
+    if(blend(S, dqs, skin, v, m) <= 0)
+    {
+      out[k * 3]     = rest[v * 3];
+      out[k * 3 + 1] = rest[v * 3 + 1];
+      out[k * 3 + 2] = rest[v * 3 + 2];
+      continue;
+    }
+    out[k * 3]     = float(m[0] * x + m[4] * y + m[8] * z + m[12]);
+    out[k * 3 + 1] = float(m[1] * x + m[5] * y + m[9] * z + m[13]);
+    out[k * 3 + 2] = float(m[2] * x + m[6] * y + m[10] * z + m[14]);
+  }
+  return out;
+}
+
 std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<float>& simulated, const CageSkin& skin, const SkinPose& pose)
 {
   const size_t       n   = rest.size() / 3;

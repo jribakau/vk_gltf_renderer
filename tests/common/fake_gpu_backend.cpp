@@ -738,6 +738,27 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     m_computeBeforeCompute.insert(d.outTangents.buffer.value);
     return;
   }
+  if(d.kind == DeformKind::eStencil && !d.rowStart.buffer && !d.columns.buffer)
+  {
+    // each row its base element plus its offset
+    const Span<glm::vec3> base{range(d.basePositions, 12, n, "base positions", false), n};
+    const Span<glm::vec3> offsets{range(d.stencilOffsets, 12, n, "stencil offsets", false), n};
+    const Span<glm::vec3> out{range(d.outPositions, 12, n, "outputs", true), n};
+    if(!ok || !base || !out)
+    {
+      if(ok)
+        error("dispatchDeform: a displacement without its base or output");
+      return;
+    }
+    if(d.outPositions.buffer == d.basePositions.buffer && d.outPositions.offset < d.basePositions.offset + n * 12
+       && d.basePositions.offset < d.outPositions.offset + n * 12)
+      error("dispatchDeform: writes the range it reads");
+    for(uint64_t r = 0; r < n; r++)
+      out.set(r, base.get(r) + (offsets ? offsets.get(r) : glm::vec3(0.f)));
+    m_computeBeforeBuild.insert(d.outPositions.buffer.value);
+    m_computeBeforeCompute.insert(d.outPositions.buffer.value);
+    return;
+  }
   if(d.kind == DeformKind::eStencil || d.kind == DeformKind::eNormals)
   {
     const bool            stencil = d.kind == DeformKind::eStencil;

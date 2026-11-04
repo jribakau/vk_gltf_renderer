@@ -238,7 +238,8 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
       const glm::vec4  w[2]  = {r.cageWeights[v], eight ? r.cageWeights1[v] : glm::vec4(0.f)};
       const float      share = dualQuats.empty() ? 0.f : r.cageDualQuatShares.size() == nc ? r.cageDualQuatShares[v] : r.dualQuat;
       const auto       skinned = skinVertex(r.cage[v], &axisY, &axisX, {j, size_t(eight ? 2 : 1)}, {w, size_t(eight ? 2 : 1)}, {joints, normalMats, dualQuats}, share);
-      posed.cage[v] = skinned.position;
+      // and where the flesh has moved on from the skin
+      posed.cage[v] = skinned.position + (r.displacement.size() == nc ? r.displacement[v] : glm::vec3(0.f));
       frameY[v]     = skinned.normal;
       frameX[v]     = skinned.tangent;
     }

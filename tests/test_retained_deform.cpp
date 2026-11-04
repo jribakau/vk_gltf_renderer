@@ -1187,3 +1187,110 @@ TEST(RetainedDeform, ACageGivenAsFloatsIsCopiedIntoTheStores)
   EXPECT_FALSE(scene.setMeshCage(rig.mesh, std::span<const float>(fewer)));
   EXPECT_EQ(scene.mesh(rig.mesh)->cage[1], glm::vec3(0, 2, 0));
 }
+
+// Soft flesh's displacement (physics-plan step 8): where the posed cage has moved on from its skin,
+// added after the cage's skin and before the levels, in the posed space (so not turned by the bones)
+TEST(RetainedDeform, ADisplacementAddsAfterTheCageSkin)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  Transform t;
+  t.translation = {2, 0, 0};
+  t.rotation    = glm::angleAxis(glm::radians(90.f), glm::vec3(0, 0, 1));
+  rig.scene.setLocal(rig.bone, t);
+  const std::vector<float> d = {0, 0, 0.5f, 0, 0, 0, -0.25f, 0, 0};
+  ASSERT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, d));
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  expectClean(rig.scene, residency, gpu, "displaced: ");
+  EXPECT_EQ(residency.deformCounts().displacements, 1u);
+  const std::vector<glm::vec3> drawn = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions);
+  const std::vector<glm::vec3> cage  = rig.scene.mesh(rig.mesh)->cage;
+  for(size_t v = 0; v < cage.size(); v++)
+  {
+    const glm::vec3 expected = t.translation + t.rotation * (cage[v] + kRibbonWidth) + glm::vec3(d[v * 3], d[v * 3 + 1], d[v * 3 + 2]);
+    EXPECT_LT(glm::distance(drawn[v], expected), 1e-5f) << v;
+  }
+}
+
+// The same displacement again is no change: nothing runs
+TEST(RetainedDeform, AnUnchangedDisplacementRunsNoSkin)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  const std::vector<float> d = {0, 0, 0.5f, 0, 0, 0, 0, 0, 0};
+  ASSERT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, d));
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(residency.deformCounts().skins, 1u);
+
+  EXPECT_FALSE(rig.scene.setMeshDisplacement(rig.mesh, d));
+  gpu.beginFrame();
+  const SyncResult again = residency.sync(rig.scene);
+  EXPECT_FALSE(again.changed);
+  EXPECT_EQ(residency.deformCounts().skins, 0u);
+  EXPECT_EQ(residency.deformCounts().displacements, 0u);
+  expectClean(rig.scene, residency, gpu);
+}
+
+// A displacement of zeros is none: the stage and its buffer go, and the drawer draws its skin alone
+TEST(RetainedDeform, AZeroDisplacementDropsTheStage)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  const std::vector<glm::vec3> before = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions);
+  ASSERT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>{0, 0.5f, 0, 0, 0, 0, 0, 0, 0}));
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  ASSERT_TRUE(residency.meshGpu(rig.mesh)->refine->displacement);
+  EXPECT_NE(readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions), before);
+
+  EXPECT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>(9, 0.f)));
+  EXPECT_TRUE(rig.scene.mesh(rig.mesh)->displacement.empty());
+  EXPECT_FALSE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>(9, 0.f))) << "none again is no change";
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(residency.deformCounts().skins, 1u);
+  EXPECT_EQ(residency.deformCounts().displacements, 0u);
+  EXPECT_FALSE(residency.meshGpu(rig.mesh)->refine->displacement);
+  EXPECT_EQ(readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions), before);
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "dropped: ");
+
+  // nor is one of another size, or on a mesh that isn't refined
+  EXPECT_FALSE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>{0, 1, 0}));
+  Rig plain(false);
+  EXPECT_FALSE(plain.scene.setMeshDisplacement(plain.mesh, std::vector<float>(27, 1.f)));
+}
+
+// A displacement wakes a settled mesh in the sync it changes
+TEST(RetainedDeform, ADisplacementWakesASettledMesh)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 0});
+  residency.replace(rig.scene);
+  residency.settle(rig.mesh);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  drain(gpu);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  ASSERT_TRUE(residency.isSettled(rig.mesh));
+
+  ASSERT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>{0, 0, 0, 0, 0, 0, 0, 0, 0.75f}));
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  EXPECT_EQ(residency.deformCounts().displacements, 1u);
+  const std::vector<glm::vec3> drawn = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions);
+  EXPECT_LT(glm::distance(drawn[2], rig.scene.mesh(rig.mesh)->cage[2] + kRibbonWidth + glm::vec3(0, 0, 0.75f)), 1e-5f);
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "woken: ");
+}

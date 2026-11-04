@@ -1,0 +1,10 @@
+{
+  "about": "Soft flesh's lobes on a Genesis 9 and a Genesis 8 body, and the solve's time a frame (physics-plan step 8). Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf", "subdivision": 1},
+    {"flesh": "g9"},
+    {"load": "People/Genesis 8 Female/Genesis 8 Basic Female.duf", "subdivision": 1},
+    {"flesh": "g8"}
+  ]
+}

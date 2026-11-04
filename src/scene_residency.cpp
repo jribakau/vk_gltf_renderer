@@ -507,6 +507,8 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
   r.normalTriangles = table(t->normalTriangles, "normal triangles");
   if(!t->offsets.empty())
     r.offsets = table(t->offsets, "refined offsets");
+  if(record.displacement.size() == record.cage.size())
+    r.displacement = table(record.displacement, "displacement");
   // the tangents too, over its own corners, when it has them and the UVs they read
   if(!t->tangentIndices.empty() && !record.tangents.empty() && t->tangentStart.size() == record.vertexCount() + 1
      && t->tangentCorners.size() == t->tangentIndices.size() / 3 * 3)
@@ -564,6 +566,8 @@ void Residency::refineChains(std::span<const RefineRun> runs)
       bytes += uint64_t(l.rows) * sizeof(glm::vec3);
     if(run.posedBy)
       bytes += c * sizeof(glm::vec3) + (t.offsets ? c * (sizeof(glm::vec3) + sizeof(glm::vec4)) + 16 : 0);
+    if(run.posedBy && t.displacement)
+      bytes += c * sizeof(glm::vec3);
     return bytes;
   };
   uint64_t largest = 0;
@@ -625,6 +629,20 @@ void Residency::refineChains(std::span<const RefineRun> runs)
                             .dualQuat       = d.dualQuatShare});
       m_deformCounts.skins++;
       m_gpu.barrier(GpuBarrier::eComputeToCompute);
+    }
+    // where the flesh has moved on from the skin, added out of place
+    if(run.posedBy && t.displacement)
+    {
+      const BufferRange moved = take(cageCount * sizeof(glm::vec3));
+      m_gpu.dispatchDeform({.kind           = DeformKind::eStencil,
+                            .vertexCount    = uint32_t(cageCount),
+                            .basePositions  = cage,
+                            .outPositions   = moved,
+                            .stencilOffsets = {t.displacement},
+                            .sourceCount    = uint32_t(cageCount)});
+      m_deformCounts.displacements++;
+      m_gpu.barrier(GpuBarrier::eComputeToCompute);
+      cage = moved;
     }
     BufferRange level = cage;
     for(size_t i = 0; i < t.levels.size(); i++)
@@ -790,7 +808,7 @@ void Residency::retireRefine(MeshGpu& m)
     return;
   for(BufferHandle b : {m.refine->cage, m.refine->drawnFrom, m.refine->triangles, m.refine->normalStart,
                         m.refine->normalTriangles, m.refine->offsets, m.refine->tangentTriangles, m.refine->tangentStart,
-                        m.refine->tangentCorners})
+                        m.refine->tangentCorners, m.refine->displacement})
     retireBuffer(b);
   for(const MeshGpu::Refine::Level& l : m.refine->levels)
     for(BufferHandle b : {l.start, l.columns, l.weights})
@@ -3090,7 +3108,9 @@ SyncResult Residency::sync(RetainedScene& scene)
   if(!edited.empty())
     syncMaterials(scene, edited, result);
   // what is about to change, ready first
-  wakeWhatChanged(scene, changes.meshes);
+  std::set<MeshId> reshaped = changes.meshes;
+  reshaped.insert(changes.displacements.begin(), changes.displacements.end());
+  wakeWhatChanged(scene, reshaped);
   const DecodesLanded landed = decodeQueued(scene, fresh || changes.structure);
   result.imagesMoved         = landed.replaced;
   // a texture's first image, decoded since the sync that took it: drawn with the default one until now
@@ -3107,6 +3127,9 @@ SyncResult Residency::sync(RetainedScene& scene)
   std::set<MeshId> written;
   if(!changes.meshes.empty())
     written = syncVertices(scene, changes.meshes, result);
+  if(!changes.displacements.empty())
+    for(MeshId id : syncDisplacements(scene, changes.displacements))
+      written.insert(id);
   if(m_gpu.takeAllocationFailed())
     m_failedMeshes.insert(written.begin(), written.end());
   syncDeforms(scene, written, result);
@@ -3296,6 +3319,37 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
   }
   if(result.drawListChanged)
     result.changed = true;
+}
+
+std::set<MeshId> Residency::syncDisplacements(const RetainedScene& scene, const std::set<MeshId>& meshes)
+{
+  std::set<MeshId> moved;
+  for(MeshId id : meshes)
+  {
+    auto              it     = m_meshes.find(id);
+    const MeshRecord* record = scene.mesh(id);
+    if(it == m_meshes.end() || !record || !it->second.refine)
+      continue;
+    BufferHandle&                 buffer = it->second.refine->displacement;
+    const std::vector<glm::vec3>& d      = record->displacement;
+    if(d.size() != record->cage.size() || d.empty())
+    {
+      if(!buffer)
+        continue;
+      retireBuffer(std::exchange(buffer, {}));
+    }
+    else
+    {
+      if(!buffer || m_gpu.bufferSize(buffer) != d.size() * sizeof(glm::vec3))
+      {
+        retireBuffer(buffer);
+        buffer = m_gpu.createBuffer({.size = d.size() * sizeof(glm::vec3), .usage = eBufferStorage, .name = "displacement", .mayFail = true});
+      }
+      m_gpu.upload(buffer, 0, bytesOf(d));
+    }
+    moved.insert(id);
+  }
+  return moved;
 }
 
 // Every mesh whose vertices were edited, uploaded again; its BLASes refit, or rebuilt when a
@@ -3829,7 +3883,8 @@ size_t Residency::liveBuffers() const
     {
       for(BufferHandle b : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles,
                             mesh.refine->normalStart, mesh.refine->normalTriangles, mesh.refine->offsets,
-                            mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners})
+                            mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners,
+                            mesh.refine->displacement})
         n += b ? 1 : 0;
       for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
         for(BufferHandle b : {l.start, l.columns, l.weights})
@@ -3889,6 +3944,7 @@ MemoryLedger Residency::ledger() const
       for(BufferHandle s : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles, mesh.refine->normalStart, mesh.refine->normalTriangles,
                             mesh.refine->offsets, mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners})
         b.remake += bytes(s);
+      b.working += bytes(mesh.refine->displacement);
       for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
         b.remake += bytes(l.start) + bytes(l.columns) + bytes(l.weights);
     }

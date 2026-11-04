@@ -210,6 +210,7 @@ public:
       };
       BufferHandle       cage, drawnFrom, triangles, normalStart, normalTriangles, offsets;
       BufferHandle       tangentTriangles, tangentStart, tangentCorners;  // none: the CPU's tangents
+      BufferHandle       displacement;  // MeshRecord::displacement; none: none
       std::vector<Level> levels;
       uint32_t           refinedCount = 0, triangleCount = 0, tangentTriangleCount = 0;
     };
@@ -445,7 +446,7 @@ public:
   // the deform passes the last sync ran
   struct DeformCounts
   {
-    uint32_t morphs = 0, skins = 0;
+    uint32_t morphs = 0, skins = 0, displacements = 0;
   };
   DeformCounts deformCounts() const { return m_deformCounts; }
   BufferHandle jointPack() const { return m_jointPack; }
@@ -558,6 +559,9 @@ private:
   bool parkFailed(const RetainedScene& scene, std::vector<DrawItem>& items);
   void syncRows(const std::vector<DrawItem>& items, SyncResult& result);
   std::set<MeshId> syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result);
+  // the refined meshes' displacements brought up to their records; returns the meshes whose
+  // displacement moved, came or went (their drawers run again)
+  std::set<MeshId> syncDisplacements(const RetainedScene& scene, const std::set<MeshId>& meshes);
   void             snapshotPrevPositions();
   void             syncDeforms(RetainedScene& scene, std::set<MeshId>& written, SyncResult& result);
   bool             meshInUse(MeshId id) const;

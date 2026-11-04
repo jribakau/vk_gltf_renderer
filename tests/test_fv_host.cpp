@@ -3509,6 +3509,44 @@ TEST(FvHost, softBodySettingsAreAStepAndTheSceneFileKeepsThem)
   EXPECT_DOUBLE_EQ(soft().value("bounce", 0.0), 0.7);
 }
 
+// Soft flesh's settings are steps of the history, in the topic and the figure's scene state; a file
+// without the block opens with it off. (The test figure has no lobes: the settings are kept all the same.)
+TEST(FvHost, softFleshSettingsAreAStepAndTheSceneFileKeepsThem)
+{
+  Ragdolled  r;
+  const auto soft = [&] { return r.rig.topic("soft/" + r.figure); };
+  EXPECT_FALSE(soft().value("on", true)) << soft().dump();
+  EXPECT_FALSE(soft().value("awake", true));
+  ASSERT_TRUE(r.rig.cmd("physics.soft", {{"prop", r.figure}, {"on", true}}).value("ok", false));
+  EXPECT_TRUE(soft().value("on", false));
+  EXPECT_EQ(r.rig.topic("history").at("undo")[0], "Soft flesh on");
+  ASSERT_TRUE(r.rig.cmd("physics.soft", {{"prop", r.figure}, {"softness", {{"glutes", 0.9}}}, {"damping", 0.6}}).value("ok", false));
+  EXPECT_DOUBLE_EQ(soft().at("softness").value("glutes", 0.0), 0.9) << soft().dump();
+  EXPECT_DOUBLE_EQ(soft().at("softness").value("chest", 0.0), 0.7) << "the others as they were";
+  EXPECT_DOUBLE_EQ(soft().value("damping", 0.0), 0.6);
+  const Json state = r.rig.cmd("scene.state", {{"prop", r.figure}}).value("result", Json::object());
+  ASSERT_TRUE(state.contains("soft")) << state.dump();
+  EXPECT_DOUBLE_EQ(state["soft"].at("softness").value("glutes", 0.0), 0.9);
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_DOUBLE_EQ(soft().at("softness").value("glutes", 0.0), 0.6);
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_FALSE(soft().value("on", true));
+  ASSERT_TRUE(r.rig.cmd("history.redo").value("ok", false));
+  EXPECT_TRUE(soft().value("on", false));
+
+  Json restore    = state;
+  restore["prop"] = r.figure;
+  restore.erase("soft");
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_FALSE(soft().value("on", true)) << "a file without the block opened with it on";
+  restore["soft"] = state["soft"];
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_TRUE(soft().value("on", false));
+  EXPECT_DOUBLE_EQ(soft().at("softness").value("glutes", 0.0), 0.9);
+}
+
 // A body group's own Hold is a step of the history, in the topic and the figure's scene state; null
 // gives the group back to the figure's Hold.
 TEST(FvHost, aGroupsHoldIsAStepAndTheSceneFileKeepsIt)

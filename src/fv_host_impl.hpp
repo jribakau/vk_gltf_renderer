@@ -67,6 +67,7 @@
 #include <figure/dforce/dforce.hpp>
 #include <figure/physics/contact/contact.hpp>
 #include <figure/physics/rig/figure_physics.hpp>
+#include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/rig/secondary.hpp>
 #include <figure/wardrobe/collider.hpp>
 #ifdef FV_DFORCE_GPU
@@ -197,6 +198,9 @@ struct Loaded
   // the chest's soft bones (figure/physics/rig/secondary.hpp), in either mode; null but for a person
   std::unique_ptr<fv::physics::Secondary> secondary;
   int                                     secondaryVersion = -1;
+  // its soft flesh (figure/physics/flesh/flesh.hpp), in either mode; null but for a person
+  std::unique_ptr<fv::physics::Flesh> flesh;
+  int                                 fleshVersion = -1;
   // without dents of its own (a DAZ prop, a chair), it is what the bodies near it meet: its shown
   // meshes posed in its root's space (a person's body alone, without its own dent), made again once
   // its pose or shape moved (`contactRev` bumps; a person's own dent doesn't)
@@ -655,6 +659,7 @@ std::string figureGeneration(const Loaded& figure);
 // reach}); the figure has a contact pass.
 Json contactState(const Loaded& f);
 Json secondaryState(const Loaded& f);
+Json softState(const Loaded& f);
 Json physicsState(const Loaded& f);
 
 struct FvHost::Impl
@@ -1095,9 +1100,14 @@ struct FvHost::Impl
   // secondary motion: physics.secondary and the secondary/<prop> topic
   void publishSecondary(Loaded& f);
   Json physicsSecondary(const Json& args);
+  // soft flesh: the frame's step once the figure is posed, physics.soft and the soft/<prop> topic
+  void stepFlesh(Loaded& f);
+  void publishSoft(Loaded& f);
+  Json physicsSoft(const Json& args);
   bool cameraRay(const glm::vec2& px, glm::vec3& origin, glm::vec3& dir) const;
   bool pullAt(const std::string& phase, const glm::vec2& px);
   std::chrono::steady_clock::time_point physicsFrame{};
+  double                                physicsElapsed = 0;  // the frame's, as stepPhysics found it (s)
   // the Pull's hold: the figure, how far along the pointer's ray it took hold, and what puts its
   // physics back as it was then (the history's step at the release)
   struct PullHold

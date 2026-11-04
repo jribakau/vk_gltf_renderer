@@ -61,7 +61,7 @@ std::array<float, 2> ClipRecord::range() const
 
 bool SceneChanges::empty() const
 {
-  return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty()
+  return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty() && displacements.empty()
          && materials.empty() && lights.empty() && skins.empty() && !features && !iesProfiles;
 }
 
@@ -288,6 +288,33 @@ bool RetainedScene::setMeshCage(MeshId id, std::span<const float> xyz)
   r->value.contentRev++;
   m_changes.meshes.insert(id);
   m_boundsRevision++;
+  return true;
+}
+
+bool RetainedScene::setMeshDisplacement(MeshId id, std::span<const float> xyz)
+{
+  assertOwner();
+  auto* r = m_meshes.get(id);
+  if(!r || !r->value.refine || (!xyz.empty() && xyz.size() != r->value.cage.size() * 3))
+    return false;
+  std::vector<glm::vec3>& d    = r->value.displacement;
+  const bool              none = std::all_of(xyz.begin(), xyz.end(), [](float f) { return f == 0.f; });
+  if(none)
+  {
+    if(d.empty())
+      return false;
+    d.clear();
+  }
+  else
+  {
+    static_assert(sizeof(glm::vec3) == 3 * sizeof(float));
+    const size_t bytes = xyz.size() * sizeof(float);
+    if(d.size() * 3 == xyz.size() && std::memcmp(d.data(), xyz.data(), bytes) == 0)
+      return false;
+    d.resize(xyz.size() / 3);
+    std::memcpy(d.data(), xyz.data(), bytes);
+  }
+  m_changes.displacements.insert(id);
   return true;
 }
 

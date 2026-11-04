@@ -171,6 +171,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("physics.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.set", args); }); });
   cmds.add("physics.pin", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.pin", args); }); });
   cmds.add("physics.secondary", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.secondary", args); }); });
+  cmds.add("physics.soft", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.soft", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
   // answered at once, as morph.set: a slider sends faster than a path traced frame ends, and the steps
   // would queue behind each other. The latest for an item applies in onUpdate
@@ -785,6 +786,9 @@ void FvHost::onUpdate()
         s.applyRebind(f, changes.rebound);
         s.dialTiming.add(DialTiming::eApplyRebind, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
       }
+      // the soft flesh, from the skin as it is now posed
+      timePhase("frame: flesh");
+      s.stepFlesh(f);
       // the tangents of a mesh still for a moment: the whole body's take 15-20 ms, too much for
       // every step of a dial drag
       timePhase("frame: settle tangents");

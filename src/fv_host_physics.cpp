@@ -494,6 +494,7 @@ void FvHost::Impl::stepPhysics()
   const auto   now     = std::chrono::steady_clock::now();
   const double elapsed = physicsFrame == std::chrono::steady_clock::time_point{} ? 0.0 : std::chrono::duration<double>(now - physicsFrame).count();
   physicsFrame         = now;
+  physicsElapsed       = elapsed;
   std::vector<fv::physics::Together> together;
   for(const auto& p : props)
   {
@@ -552,6 +553,82 @@ void FvHost::Impl::stepPhysics()
         publishSecondary(f);
     }
   }
+}
+
+// Once a frame for each person, after their pose and shape are on the graph: the soft flesh follows
+// the skin as it is now, and where it has strayed from it goes to the renderer, added after the body
+// cage's skin (a subdivided body; one drawn at its cage has no such stage, and shows none).
+void FvHost::Impl::stepFlesh(Loaded& f)
+{
+  if(!f.flesh)
+    return;
+  bool moved;
+  {
+    fv::timing::Scope t("flesh: frame", 2);
+    moved = f.flesh->step(physicsElapsed);
+  }
+  if(moved && renderer->feedsHostScene() && f.feed)
+    renderer->hostScene().setMeshDisplacement(f.feed->meshOf(f.flesh->bodyMesh()), f.flesh->displacement());
+  if(f.fleshVersion != f.flesh->version())
+    publishSoft(f);
+}
+
+namespace {
+
+Json softnessJson(const fv::physics::FleshSettings& s)
+{
+  Json out = Json::object();
+  for(int k = 0; k < fv::physics::kFleshParts; k++)
+    out[fv::physics::fleshPartName(fv::physics::FleshPart(k))] = s.softness[size_t(k)];
+  return out;
+}
+
+}  // namespace
+
+// Topic "soft/<prop>": {available, subdivided, on, awake, softness {chest, glutes, belly, thighs},
+// damping}: the soft flesh (figure/physics/flesh/flesh.hpp). `subdivided`: the body is drawn from its
+// cage, which the flesh moves (at subdivision 0 it can't show).
+void FvHost::Impl::publishSoft(Loaded& f)
+{
+  if(!f.flesh)
+    return;
+  f.fleshVersion                      = f.flesh->version();
+  const fv::physics::FleshSettings& s = f.flesh->settings();
+  protocol->events().snapshot("soft/" + f.id, {{"available", f.flesh->valid()},
+                                              {"subdivided", f.feed && f.feed->refines(f.flesh->bodyMesh())},
+                                              {"on", s.on},
+                                              {"awake", f.flesh->awake()},
+                                              {"softness", softnessJson(s)},
+                                              {"damping", s.damping}});
+}
+
+// The soft flesh's settings as the scene file and the history keep them.
+Json softState(const Loaded& f)
+{
+  const fv::physics::FleshSettings& s = f.flesh->settings();
+  return {{"on", s.on}, {"softness", softnessJson(s)}, {"damping", s.damping}};
+}
+
+// physics.soft {prop, on?, softness?: {chest?, glutes?, belly?, thighs?}, damping?, gesture?}: the
+// soft flesh trails the body's motion (off by default), how soft each part is (0 held to the skin to
+// 1 loosest) and how soon it settles (0 to 1). A body with nothing to move keeps the settings.
+Json FvHost::Impl::physicsSoft(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure || !figure->flesh)
+    throw std::runtime_error("no figure with a body is selected");
+  fv::physics::FleshSettings s = figure->flesh->settings();
+  if(args.contains("on") && args["on"].is_boolean())
+    s.on = args["on"].get<bool>();
+  if(const auto it = args.find("softness"); it != args.end() && it->is_object())
+    for(int k = 0; k < fv::physics::kFleshParts; k++)
+      if(const auto v = it->find(fv::physics::fleshPartName(fv::physics::FleshPart(k))); v != it->end() && v->is_number())
+        s.softness[size_t(k)] = std::clamp(v->get<double>(), 0.0, 1.0);
+  if(args.contains("damping") && args["damping"].is_number())
+    s.damping = std::clamp(args["damping"].get<double>(), 0.0, 1.0);
+  figure->flesh->set(s);
+  publishSoft(*figure);
+  return {{"ok", true}};
 }
 
 // Topic "secondary/<prop>": {available, on, awake, bounce, damping}: the chest's soft bones

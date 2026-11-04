@@ -4,6 +4,8 @@
 // rounds each step of the same sum from a double, so the last bits may differ. A row's offset, when
 // given, is added to its sum (strand ribbons' widths and grown strands' shifts), turned as its first
 // column has turned when that is given: an offset is in the rest shape, and a posed cage is not.
+// With neither row starts nor columns, each row is its base element plus its offset (a posed cage's
+// displacement).
 
 #include "animation_io.h.slang"
 
@@ -18,6 +20,11 @@ void main(uint3 tid: SV_DispatchThreadID)
   if(row >= pc.rowCount)
     return;
 
+  if(pc.rowStart == nullptr && pc.columns == nullptr)
+  {
+    pc.outValues[row] = pc.baseValues[row] + (pc.offsets != nullptr ? pc.offsets[row] : float3(0));
+    return;
+  }
   if(pc.rowStart == nullptr)
   {
     uint c              = pc.columns[row];

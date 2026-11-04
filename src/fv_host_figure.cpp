@@ -424,6 +424,7 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       if(f->fig->pose)
       {
         f->secondary = std::make_unique<fv::physics::Secondary>(f->fig->loaded.scene, *f->fig->pose, f->fig->loaded.root);
+        f->flesh     = std::make_unique<fv::physics::Flesh>(f->fig->loaded.scene, *f->fig->morphs, body);
         f->physics            = std::make_unique<fv::physics::FigurePhysics>(f->fig->loaded.scene, *f->fig->pose, f->fig->morphs.get(), body, f->fig->loaded.root);
         f->physics->colliders = [this, raw = f.get()] { return contactColliders(*raw, true, true); };
       }
@@ -516,4 +517,5 @@ void FvHost::Impl::publishFigure(Prop& p)
   publishContact(*p.figure);
   publishPhysics(*p.figure);
   publishSecondary(*p.figure);
+  publishSoft(*p.figure);
 }

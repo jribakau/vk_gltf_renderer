@@ -305,6 +305,10 @@ struct MeshRecord
   // them (the positions and normals here are what that gives)
   std::vector<glm::vec3>              cage;
   std::shared_ptr<const RefineTables> refine;
+  // where a refined mesh's posed cage has moved on from its skin, per cage vertex, in the mesh's posed
+  // space (soft flesh, physics-plan step 8): added after the cage's skin and before the levels, for
+  // every drawer that poses it. Empty: none.
+  std::vector<glm::vec3> displacement;
   // bumped by a vertex edit, and by one that sets tangents (a drag's steps keep them)
   uint32_t contentRev = 0;
   uint32_t tangentRev = 0;
@@ -522,6 +526,7 @@ struct SceneChanges
   std::set<EntityId>   visibility;         // their shown state may have changed (descendants included)
   std::set<EntityId>   morphWeights;       // their mesh instance's morph weights changed
   std::set<MeshId>     meshes;             // vertices edited
+  std::set<MeshId>     displacements;      // a refined mesh's displacement set, moved or dropped
   std::set<MaterialId> materials;          // payload edited
   std::set<LightId>    lights;             // payload, shown or sun edited
   std::set<SkinId>     skins;              // joints or inverse binds edited
@@ -596,6 +601,10 @@ public:
   // hair's millions of floats) makes and frees no buffer. Nothing changes, and false, when it is the
   // same cage or not one of its size.
   bool setMeshCage(MeshId id, std::span<const float> xyz);
+  // A refined mesh's displacement (MeshRecord::displacement) from xyz floats per cage vertex; empty or
+  // all zero drops it. Nothing changes, and false, when it is what the mesh has or not one of its
+  // cage's size.
+  bool setMeshDisplacement(MeshId id, std::span<const float> xyz);
   // joints, inverse binds and skeleton replaced (a rebind)
   void setSkin(SkinId id, SkinRecord skin);
   void setMaterial(MaterialId id, fv::mat::Material payload);

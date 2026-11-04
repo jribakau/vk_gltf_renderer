@@ -85,6 +85,7 @@ set(TEST_SOURCES
     figure/test_contact.cpp
     figure/test_rigid.cpp
     figure/test_ragdoll.cpp
+    figure/test_flesh.cpp
     figure/test_export.cpp
     figure/test_dforce.cpp
     figure/test_scene_load.cpp

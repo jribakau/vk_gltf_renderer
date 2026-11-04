@@ -11,6 +11,7 @@
 // weights. A port of src/lib/dforce/skin.ts.
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include <figure/math/xform.hpp>
@@ -58,6 +59,8 @@ std::vector<Mat4> skinMatrices(const SkinPose& pose);
 // Mesh-local skinned positions: bindInverse * (sum w_i bone_i) * bind * p, mixed with the dual
 // quaternion skin by the vertex's share.
 std::vector<float> skinLocal(const std::vector<float>& rest, const CageSkin& skin, const SkinPose& pose);
+// The same for some of the vertices alone, xyz per vertex listed (soft flesh's lobes, every frame).
+std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, const SkinPose& pose, std::span<const uint32_t> vertices);
 
 // Cage deltas whose skinning approximates `simulated` (mesh-local, same space as skinLocal). A
 // vertex whose blended 3x3 is singular keeps a zero delta.

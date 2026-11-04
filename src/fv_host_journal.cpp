@@ -232,6 +232,11 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     const auto p = figureProp(args);
     return p && p->figure && p->figure->secondary ? Json{{"kind", "secondary"}, {"prop", p->id}} : Json();
   }
+  if(cmd == "physics.soft")
+  {
+    const auto p = figureProp(args);
+    return p && p->figure && p->figure->flesh ? Json{{"kind", "soft"}, {"prop", p->id}} : Json();
+  }
   // physics.restore too: undo and redo rebuild each other from what each replayed op is about
   if(cmd == "physics.set" || cmd == "physics.restore" || cmd == "physics.pin")
   {
@@ -419,6 +424,12 @@ Json FvHost::Impl::journalState(const Json& scope)
     state["prop"] = id;
     ops.push_back(op("physics.secondary", state));
   }
+  else if(kind == "soft" && f.flesh)
+  {
+    Json state    = softState(f);
+    state["prop"] = id;
+    ops.push_back(op("physics.soft", state));
+  }
   else if(kind == "physics" && f.physics)
     for(const Json& o : physicsOps(f))
       ops.push_back(o);
@@ -547,6 +558,16 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
       return "Soft body damping";
     return "Soft body";
   }
+  if(cmd == "physics.soft")
+  {
+    if(args.contains("on"))
+      return "Soft flesh " + on();
+    if(const auto it = args.find("softness"); it != args.end() && it->is_object() && it->size() == 1)
+      return "Soft " + it->begin().key();
+    if(args.contains("damping"))
+      return "Soft flesh damping";
+    return "Soft flesh";
+  }
   if(cmd == "physics.set")
   {
     if(args.contains("on"))
@@ -619,7 +640,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
   // a slider's or a drag's edits merge into one step: the same edit of the same things, back to back
   bool merges = cmd == "morph.set" || cmd == "material.set" || cmd == "lighting.set" || cmd == "camera.set"
                 || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on")) || (cmd == "physics.set" && (args.contains("strength") || args.contains("parts")) && !args.contains("on"))
-                || (cmd == "physics.secondary" && !args.contains("on"));
+                || (cmd == "physics.secondary" && !args.contains("on")) || (cmd == "physics.soft" && !args.contains("on"));
   if(cmd == "prop.set")
     merges = !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);
@@ -693,6 +714,8 @@ Json FvHost::Impl::applyOp(const Json& o)
     return physicsRestore(args);
   if(cmd == "physics.secondary")
     return physicsSecondary(args);
+  if(cmd == "physics.soft")
+    return physicsSoft(args);
   if(cmd == "physics.pin")
     return physicsPin(args);
   if(cmd == "wardrobe.cloth")
