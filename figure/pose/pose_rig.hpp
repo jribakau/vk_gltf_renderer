@@ -131,6 +131,8 @@ public:
   const std::vector<PoseBone>& bones() const { return m_bones; }
   // a bone by name, else by id
   const PoseBone* get(const std::string& nameOrId) const;
+  // the graph it poses
+  const SceneGraph& scene() const { return m_scene; }
   // where a bone is in bones(): by name, else by id, or by id first; -1 for none
   int indexOf(const std::string& bone, bool idFirst = false) const;
 

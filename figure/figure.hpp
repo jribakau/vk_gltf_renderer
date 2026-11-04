@@ -326,7 +326,10 @@ public:
   // visibility of what it wears.
   PosePresetResult applyPosePreset(const dson::Json& doc);
   // A pose file's keys over time, resolved against this figure's bones, its dials and its worn items' dials.
-  pose::PoseClip loadPoseClip(const dson::Json& doc);
+  // A file made for another Genesis (its bones named so; `rel`, its path, says which when the names
+  // don't) is retargeted from that figure's skeleton (pose/retarget.hpp); `retargetedFrom` then names
+  // the skeleton's file.
+  pose::PoseClip loadPoseClip(const dson::Json& doc, const std::string& rel = {}, std::string* retargetedFrom = nullptr);
 
 private:
   // a worn item by one of its nodes' DAZ names, or its label

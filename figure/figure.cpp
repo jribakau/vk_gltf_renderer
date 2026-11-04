@@ -10,6 +10,7 @@
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/morph/shape_sliders.hpp>
+#include <figure/pose/retarget.hpp>
 
 namespace fv {
 
@@ -639,9 +640,43 @@ pose::ChannelOf Figure::wornDials()
   };
 }
 
-pose::PoseClip Figure::loadPoseClip(const dson::Json& doc)
+pose::PoseClip Figure::loadPoseClip(const dson::Json& doc, const std::string& rel, std::string* retargetedFrom)
 {
-  return pose::loadPoseClip(pose.get(), morphs.get(), doc, wornDials());
+  pose::PoseClip own = pose::loadPoseClip(pose.get(), morphs.get(), doc, wornDials());
+  if(!pose || pose::namesRigBones(doc, *pose))
+    return own;
+  const std::string source = pose::sourceFigureFile(doc, rel);
+  if(source.empty())
+    return own;
+  // the skeleton the file was made for, as its base figure has it
+  std::shared_ptr<const dson::Doc> file;
+  try
+  {
+    file = m_store->load(source);
+  }
+  catch(const std::exception&)
+  {
+    return own;
+  }
+  const auto library = file ? file->json.find("node_library") : dson::Json::const_iterator{};
+  if(!file || library == file->json.end())
+    return own;
+  SceneGraph                     scene;
+  const std::optional<dson::Rig> rig = dson::buildRig(scene, *library, nullptr);
+  if(!rig)
+    return own;
+  const pose::PoseRig from(scene, *rig, {});
+  pose::PoseClip      clip = pose::retargetClip(doc, from, *pose);
+  if(clip.channels.empty())
+    return own;
+  // the file's dials this figure has too go along
+  for(pose::PoseClip::Channel& c : own.channels)
+    if(c.target.kind == pose::PresetTarget::Kind::eDial)
+      clip.channels.push_back(std::move(c));
+  clip.duration = std::max(clip.duration, own.duration);
+  if(retargetedFrom)
+    *retargetedFrom = source;
+  return clip;
 }
 
 PosePresetResult Figure::applyPosePreset(const dson::Json& doc)

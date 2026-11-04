@@ -23,6 +23,8 @@
 
 #include "fv_host_impl.hpp"
 
+#include <figure/pose/retarget.hpp>
+
 namespace {
 
 // The shader definitions a preset's surfaces name, from the figure's store; none without a preset.
@@ -155,16 +157,37 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
       // a pose file whose keys run over time is also held as the figure's animation, paused at its
       // end, which is the pose it sets: held first, so it goes back to the pose the figure has now.
       // Many such files are still poses, a rest-to-pose ramp saved for dForce, so it doesn't play.
-      float animated = -1;
+      float              animated = -1;
+      std::string        madeFor;  // made for another Genesis: retargeted, and its last frame is the pose
+      fv::pose::PoseClip lastFrame;
       if(kind == "pose preset" && fv::pose::isAnimated(doc))
-        if(fv::pose::PoseClip clip = figure->fig->loadPoseClip(doc); !clip.channels.empty())
+        if(fv::pose::PoseClip clip = figure->fig->loadPoseClip(doc, rel, &madeFor); !clip.channels.empty())
         {
           animated = clip.duration;
+          if(!madeFor.empty())
+            lastFrame = clip;
           holdAnimation(*prop, std::move(clip), rel, false);
         }
       // a step of the history: the figure's look before and after
       journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
-        fv::PosePresetResult r = figure->fig->applyPosePreset(doc);
+        fv::PosePresetResult r;
+        if(!madeFor.empty())
+        {
+          // the bones the file names aren't this figure's: the retargeted clip's last frame poses it
+          std::vector<fv::pose::ChannelValue>         bones;
+          std::vector<std::pair<std::string, double>> dials;
+          for(const fv::pose::PoseClip::Channel& c : lastFrame.channels)
+            if(c.target.kind == fv::pose::PresetTarget::Kind::eBone)
+              bones.push_back({c.target.bone, c.target.channel, c.target.axis, fv::pose::sample(c, lastFrame.duration)});
+            else
+              dials.emplace_back(c.target.name, fv::pose::sample(c, lastFrame.duration));
+          figure->fig->pose->setMany(bones);
+          if(figure->fig->morphs && !dials.empty())
+            figure->fig->morphs->setMany(dials);
+          r.applied = int(bones.size() + dials.size());
+        }
+        else
+          r = figure->fig->applyPosePreset(doc);
         protocol->events().snapshot("pose/" + figure->id, poseSnapshot(*figure));
         // a property preset can also set surfaces ("#materials/<surface>:?<channel>" urls)
         const fv::dson::MaterialPresetResult surfaces = fv::dson::applyMaterialPreset(doc, figure->fig->loaded.scene, nullptr, definitionsOf(*figure->fig, &doc));
@@ -187,7 +210,8 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
         {
           char length[32];
           std::snprintf(length, sizeof(length), "%.1f s", animated);
-          played = std::string(" at its last frame. It's an animation (") + length + "): the Anim tab plays it.";
+          played = std::string(" at its last frame") + (madeFor.empty() ? "" : ", fitted from the " + fv::pose::sourceFigureName(madeFor) + " it was made for")
+                   + ". It's an animation (" + length + "): the Anim tab plays it.";
         }
         if(!r.applied)
           notice(name + ": nothing in this " + kind + " matches " + prop->name + ".");

@@ -1,0 +1,9 @@
+{
+  "about": "Genesis 8's walks played on a Genesis 9 (figure/pose/retarget.hpp): each limb's angle off the walk on its own skeleton, and the lower ankle's rise. The walks are Mocap Online's, in the user's library. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"retarget": "v8 relaxed loop on g9", "file": "People/Genesis 8 Female/Poses/Mocap Online/Walks Animation/Walk 01 Relaxed Loop IP Victoria 8.duf"},
+    {"retarget": "v8 strut loop on g9", "file": "People/Genesis 8 Female/Poses/Mocap Online/Walks Animation/Walk 14 Strut Loop  IP Victoria 8.duf"}
+  ]
+}

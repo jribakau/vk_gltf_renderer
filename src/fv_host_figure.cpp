@@ -23,6 +23,8 @@
 
 #include "fv_host_impl.hpp"
 
+#include <figure/pose/retarget.hpp>
+
 Json FvHost::Impl::load(const Json& args)
 {
   HostSettings s;
@@ -97,13 +99,16 @@ Json FvHost::Impl::loadAnimation(std::vector<std::filesystem::path> roots, std::
           const auto prop = figureProp(target.empty() ? Json::object() : Json{{"prop", target}});
           if(!prop || !prop->figure->fig->pose)
             throw std::runtime_error(fileStem(rel) + " is an animation for a DAZ figure. Select one first, then open it.");
-          fv::pose::PoseClip clip    = prop->figure->fig->loadPoseClip(body);
+          std::string        madeFor;
+          fv::pose::PoseClip clip    = prop->figure->fig->loadPoseClip(body, rel, &madeFor);
           const size_t       skipped = clip.skipped.size();
           holdAnimation(*prop, std::move(clip), rel, true);
           const FigureAnimation& a = *prop->figure->animation;
           char                   length[32];
           std::snprintf(length, sizeof(length), "%.1f s", a.clip.duration);
-          notice("Playing " + a.name + " on " + prop->name + " (" + length + "). The Anim tab has its controls."
+          notice("Playing " + a.name + " on " + prop->name + " (" + length + ")"
+                     + (madeFor.empty() ? "" : ", fitted from the " + fv::pose::sourceFigureName(madeFor) + " it was made for")
+                     + ". The Anim tab has its controls."
                      + (skipped ? " " + std::to_string(skipped) + " of its controls aren't on this figure and were skipped." : ""),
                  "info");
           job(jobId, {{"label", label}, {"state", "done"}});

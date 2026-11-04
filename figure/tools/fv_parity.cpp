@@ -27,6 +27,10 @@
 // "apply": true also runs the driver's own path (the settle on the pool, the drape written as a
 // morph) and measures the drape read back through the skin, as the renderer gets it;
 // "colliders": false leaves worn items without a simulation modifier out of the simulation.
+// {"retarget": label, "file": rel} plays a DAZ animation made for another Genesis on the loaded figure
+// (figure/pose/retarget.hpp) and, at every key, compares each limb's direction with the source figure's
+// skeleton playing the file as it is: the largest and mean angle a limb is off, and how far the
+// lower ankle rises and falls on each (cm), with the time the retarget takes.
 // {"flesh": label} finds the body's soft lobes (figure/physics/flesh) and reports each: its particles,
 // its middle and extent in the rest cage (cm), and its softest share; then bobs the skin up and down
 // (2 cm at 2 Hz, a walk's) for "frames" frames at 60 fps and reports the solve's time a frame and
@@ -59,7 +63,10 @@
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/gltf/gltf_check.hpp>
 #include <figure/io/timing.hpp>
+#include <figure/dson/rig.hpp>
 #include <figure/physics/flesh/flesh.hpp>
+#include <figure/pose/retarget.hpp>
+#include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/collider.hpp>
@@ -844,6 +851,133 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("fit before a figure loads");
         dumps[step["fit"].get<std::string>()] = {{"fit", fitReport(*loaded)}};
+      }
+      else if(step.contains("retarget"))
+      {
+        if(!loaded || !loaded->pose)
+          throw std::runtime_error("retarget before a figure loads");
+        const std::string label = step["retarget"].get<std::string>();
+        const std::string rel   = step.at("file").get<std::string>();
+        const auto        doc   = store->load(rel);
+        const std::string src   = fv::pose::sourceFigureFile(doc->json, rel);
+        if(src.empty())
+          throw std::runtime_error(rel + ": no Genesis's bones");
+        fv::SceneGraph srcScene;
+        const auto     srcRig = fv::dson::buildRig(srcScene, store->load(src)->json.at("node_library"), nullptr);
+        fv::pose::PoseRig from(srcScene, *srcRig, {});
+        const fv::pose::PoseClip own  = fv::pose::loadPoseClip(&from, nullptr, doc->json);
+        const auto               t0   = std::chrono::steady_clock::now();
+        const fv::pose::PoseClip clip = loaded->loadPoseClip(doc->json, rel);
+        const double             ms   = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        fv::pose::PoseRig&       to   = *loaded->pose;
+        fv::SceneGraph&          toScene = loaded->loaded.scene;
+        // each rig's limbs (a bone and its twist bones, by anatomy) and which way one points: from its
+        // top bone's joint to its last bone's end, as the retarget aligns them
+        const auto limbOf = [](const fv::pose::PoseRig& rig, const std::string& slot, char side) {
+          std::vector<const fv::pose::PoseBone*> out;
+          for(const auto& pb : rig.bones())
+            if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(pb.name); p.slot == slot && p.side == side)
+              out.push_back(&pb);
+          return out;
+        };
+        const auto way = [](const fv::SceneGraph& sc, const std::vector<const fv::pose::PoseBone*>& limb, const fv::Mat4& toFigure) {
+          // the top the shallowest; the last the deepest that the next limb hangs from (Genesis 8's
+          // twist bone, not Genesis 9's at the side), else the top
+          const auto depthOf = [&](const fv::pose::PoseBone* pb) {
+            int d = 0;
+            for(int n = pb->bone; n >= 0; n = sc.nodes[size_t(n)].parent)
+              d++;
+            return d;
+          };
+          const fv::pose::PoseBone* top = limb.front();
+          for(const auto* pb : limb)
+            if(depthOf(pb) < depthOf(top))
+              top = pb;
+          const fv::pose::PoseBone* last = top;
+          for(const auto* pb : limb)
+          {
+            bool carries = false;
+            for(size_t n = 0; n < sc.nodes.size() && !carries; n++)
+              carries = sc.nodes[n].parent == pb->bone && sc.nodes[n].joint
+                        && std::none_of(limb.begin(), limb.end(), [&](const fv::pose::PoseBone* q) { return q->bone == int(n); });
+            if(carries && depthOf(pb) > depthOf(last))
+              last = pb;
+          }
+          const fv::Mat4  wt = toFigure * sc.world(top->bone), wl = toFigure * sc.world(last->bone);
+          const auto&     j  = sc.nodes[size_t(last->bone)].joint;
+          const fv::Vec3  d{j->endPoint[0] - j->center[0], j->endPoint[1] - j->center[1], j->endPoint[2] - j->center[2]};
+          const fv::Vec3  tip{wl.e[12] + wl.e[0] * d.x + wl.e[4] * d.y + wl.e[8] * d.z, wl.e[13] + wl.e[1] * d.x + wl.e[5] * d.y + wl.e[9] * d.z,
+                              wl.e[14] + wl.e[2] * d.x + wl.e[6] * d.y + wl.e[10] * d.z};
+          return fv::normalize(tip - fv::Vec3{wt.e[12], wt.e[13], wt.e[14]});
+        };
+        struct Limb
+        {
+          std::string                            name;
+          std::vector<const fv::pose::PoseBone*> src, dst;
+        };
+        std::vector<Limb> limbs;
+        for(const char* slot : {"thigh", "shin", "foot", "toes", "collar", "upperarm", "forearm", "hand"})
+          for(const char side : {'l', 'r'})
+            if(auto a = limbOf(from, slot, side), b = limbOf(to, slot, side); !a.empty() && !b.empty())
+              limbs.push_back({std::string(1, side) + ":" + slot, a, b});
+        for(const char* slot : {"pelvis", "spine1", "spine2", "spine3", "spine4", "neck1", "neck2", "head"})
+          if(auto a = limbOf(from, slot, 0), b = limbOf(to, slot, 0); !a.empty() && !b.empty())
+            limbs.push_back({slot, a, b});
+        const auto at = [](const fv::SceneGraph& sc, const fv::pose::PoseRig& rig, const std::string& bone) {
+          const fv::Mat4 w = sc.world(rig.get(bone)->bone);
+          return fv::Vec3{w.e[12], w.e[13], w.e[14]};
+        };
+        std::map<std::pair<std::string, char>, std::string> srcBy, dstBy;
+        for(const auto& pb : from.bones())
+          if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(pb.name); !p.twist)
+            srcBy.try_emplace({p.slot, p.side}, pb.name);
+        for(const auto& pb : to.bones())
+          if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(pb.name); !p.twist)
+            dstBy.try_emplace({p.slot, p.side}, pb.name);
+        const auto apply = [](fv::pose::PoseRig& rig, const fv::pose::PoseClip& c, float t) {
+          std::vector<fv::pose::ChannelValue> values;
+          for(const auto& ch : c.channels)
+            if(ch.target.kind == fv::pose::PresetTarget::Kind::eBone)
+              values.push_back({ch.target.bone, ch.target.channel, ch.target.axis, fv::pose::sample(ch, t)});
+          rig.setMany(values);
+        };
+        std::map<std::string, std::pair<double, double>> err;  // most, sum
+        double lowSrc[2] = {1e9, -1e9}, lowDst[2] = {1e9, -1e9};
+        int    frames = 0;
+        const fv::Mat4 toRoot = fv::inverse(toScene.world(loaded->loaded.root));
+        for(float t = 0; t <= clip.duration + 1e-4f; t += 1.f / 30, frames++)
+        {
+          apply(from, own, t);
+          apply(to, clip, t);
+          for(const Limb& l : limbs)
+          {
+            const fv::Vec3 ds = way(srcScene, l.src, fv::Mat4{});
+            const fv::Vec3 dt = way(toScene, l.dst, toRoot);
+            const double   a  = std::acos(std::clamp(fv::dot(ds, dt), -1.0, 1.0)) * 180 / 3.14159265358979;
+            auto&          e  = err[l.name];
+            e.first           = std::max(e.first, a);
+            e.second += a;
+          }
+          // the lower ankle's height, each figure in its own centimetres
+          const auto ankle = [&](bool target, char side) {
+            const auto it = (target ? dstBy : srcBy).find({"foot", side});
+            return target ? toRoot.transformPoint(at(toScene, to, it->second)).y : at(srcScene, from, it->second).y;
+          };
+          const double ls = std::min(ankle(false, 'l'), ankle(false, 'r')), ld = std::min(ankle(true, 'l'), ankle(true, 'r'));
+          lowSrc[0] = std::min(lowSrc[0], ls), lowSrc[1] = std::max(lowSrc[1], ls);
+          lowDst[0] = std::min(lowDst[0], ld), lowDst[1] = std::max(lowDst[1], ld);
+        }
+        Json limbsOut = Json::object();
+        for(const auto& [name, e] : err)
+          limbsOut[name] = {{"most", r(e.first)}, {"mean", r(e.second / frames)}};
+        Json dump = {{"from", src},
+                     {"channels", clip.channels.size()},
+                     {"duration", clip.duration},
+                     {"ms", r(ms)},
+                     {"limbsDegrees", limbsOut},
+                     {"lowerAnkleRiseCm", {{"source", r(lowSrc[1] - lowSrc[0])}, {"figure", r(lowDst[1] - lowDst[0])}}}};
+        std::cerr << "retarget " << label << ": " << dump.dump() << "\n";
+        dumps[label] = dump;
       }
       else if(step.contains("flesh"))
       {
