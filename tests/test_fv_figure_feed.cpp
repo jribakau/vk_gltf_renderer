@@ -43,6 +43,7 @@
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
+#include <figure/physics/flesh/follow.hpp>
 #include <figure/pose/pose_rig.hpp>
 
 #include <figure/materials/material_gltf.hpp>
@@ -230,6 +231,47 @@ TEST(FigureFeed, AFedFigureIsTheImportOfItsBuild)
     feed.sync(f->loaded.scene, f->loaded.root);
     EXPECT_TRUE(fed.takeChanges().empty());
   }
+}
+
+// A mesh drawn as it is has a drawn vertex for each of its build's (BuiltMesh::renderIndex, its cage
+// vertex there), in its order: the soft flesh's offsets per cage vertex, spread over the drawn ones
+// (physics::drawnOffsets), are one a record's vertex, which the store takes
+TEST(FigureFeed, AMeshDrawnAsItIsHasADrawnVertexForEachOfItsBuilds)
+{
+  fv::dson::LoadOptions load;
+  load.subdivision = 0;
+  auto f = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<fs::path>{kLibrary})),
+                            "People/Test/Box Figure.duf", load);
+  f->settle();
+  f->drain();
+  rs::RetainedScene fed;
+  fv::FigureFeed    feed(fed, {.build = textured()});
+  feed.sync(f->loaded.scene, f->loaded.root);
+  int checked = 0;
+  for(size_t m = 0; m < f->loaded.scene.meshes.size(); m++)
+  {
+    const auto& geo = f->loaded.scene.meshes[m].geo;
+    if(!geo || feed.refines(int(m)) || feed.meshOf(int(m)).isNone())
+      continue;
+    const rs::MeshRecord& record = *fed.mesh(feed.meshOf(int(m)));
+    ASSERT_EQ(record.vertexCount(), geo->renderIndex.size()) << m;
+    // the build's drawn vertices in its order, each a cage vertex's, a seam's copies of one together
+    std::map<uint32_t, glm::vec3> atCage;
+    for(size_t v = 0; v < geo->renderIndex.size(); v++)
+    {
+      const glm::vec3 drawn(geo->position[v * 3], geo->position[v * 3 + 1], geo->position[v * 3 + 2]);
+      ASSERT_EQ(record.positions[v], drawn) << m << " vertex " << v;
+      ASSERT_LT(geo->renderIndex[v], uint32_t(geo->dsonVertexCount)) << m;
+      const auto [at, first] = atCage.try_emplace(geo->renderIndex[v], drawn);
+      ASSERT_TRUE(first || at->second == drawn) << m << " vertex " << v;
+    }
+    std::vector<float> cage(geo->cagePositions.size(), 0.f), drawn;
+    cage[1] = 0.5f;
+    fv::physics::drawnOffsets(cage, geo->renderIndex, drawn);
+    EXPECT_TRUE(fed.setMeshDisplacement(feed.meshOf(int(m)), drawn)) << m;
+    checked++;
+  }
+  EXPECT_GT(checked, 0);
 }
 
 TEST(FigureFeed, ADialAPoseAndHiddenPolygonsAreFedAsTheBuildHasThem)

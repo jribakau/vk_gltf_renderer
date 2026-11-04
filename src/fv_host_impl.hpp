@@ -1108,6 +1108,9 @@ struct FvHost::Impl
   Json physicsSecondary(const Json& args);
   // soft flesh: the frame's step once the figure is posed, physics.soft and the soft/<prop> topic
   void stepFlesh(Loaded& f);
+  // its offsets onto the renderer: the body's, and those of what is worn over it
+  void showFlesh(Loaded& f);
+  std::vector<float> fleshItem, fleshDrawn;  // showFlesh's, kept between frames
   void publishSoft(Loaded& f);
   Json physicsSoft(const Json& args);
   bool cameraRay(const glm::vec2& px, glm::vec3& origin, glm::vec3& dir) const;

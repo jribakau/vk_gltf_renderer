@@ -254,6 +254,8 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
     for(const glm::mat4& j : joints)
       dualQuats.push_back(jointDualQuat(j));
   const Deformed base = out;
+  // a mesh drawn as it is: where the flesh has moved on from the skin, per drawn vertex
+  const bool displaced = !r.refine && r.displacement.size() == n;
   for(size_t v = 0; v < n; v++)
   {
     const glm::ivec4    j[2]  = {glm::ivec4(r.joints[v]), eight ? glm::ivec4(r.joints1[v]) : glm::ivec4(0)};
@@ -262,7 +264,7 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
     const SkinnedVertex s     = skinVertex(base.positions[v], hasNormals ? &base.normals[v] : nullptr,
                                            hasTangents ? &base.tangents[v] : nullptr, {j, size_t(eight ? 2 : 1)},
                                            {w, size_t(eight ? 2 : 1)}, {joints, normalMats, dualQuats}, share);
-    out.positions[v] = s.position;
+    out.positions[v] = s.position + (displaced ? r.displacement[v] : glm::vec3(0.f));
     if(hasNormals)
       out.normals[v] = s.normal;
     if(hasTangents)

@@ -6,6 +6,7 @@
 #include "fv_host_impl.hpp"
 
 #include <figure/physics/collide/triangle_set.hpp>
+#include <figure/physics/flesh/follow.hpp>
 
 namespace {
 
@@ -556,8 +557,8 @@ void FvHost::Impl::stepPhysics()
 }
 
 // Once a frame for each person, after their pose and shape are on the graph: the soft flesh follows
-// the skin as it is now, and where it has strayed from it goes to the renderer, added after the body
-// cage's skin (a subdivided body; one drawn at its cage has no such stage, and shows none).
+// the skin as it is now, and where it has strayed from it goes to the renderer, with what is worn
+// over it.
 void FvHost::Impl::stepFlesh(Loaded& f)
 {
   if(!f.flesh)
@@ -568,9 +569,62 @@ void FvHost::Impl::stepFlesh(Loaded& f)
     moved = f.flesh->step(physicsElapsed);
   }
   if(moved && renderer->feedsHostScene() && f.feed)
-    renderer->hostScene().setMeshDisplacement(f.feed->meshOf(f.flesh->bodyMesh()), f.flesh->displacement());
+    showFlesh(f);
   if(f.fleshVersion != f.flesh->version())
     publishSoft(f);
+}
+
+// The body's offsets from its skin, and each worn item's that is bound near them (physics::followFlesh),
+// in that item mesh's own posed space. The renderer adds a subdivided mesh's per cage vertex, after its
+// cage's skin; a mesh drawn as it is takes them per drawn vertex, after its skin.
+void FvHost::Impl::showFlesh(Loaded& f)
+{
+  fv::timing::Scope     t("flesh: show", 2);
+  rs::RetainedScene&    scene = renderer->hostScene();
+  const fv::SceneGraph& graph = f.fig->loaded.scene;
+  const auto            put   = [&](int mesh, std::span<const float> cage) {
+    if(f.feed->refines(mesh) || !graph.meshes[size_t(mesh)].geo)
+      scene.setMeshDisplacement(f.feed->meshOf(mesh), cage);
+    else
+    {
+      fv::physics::drawnOffsets(cage, graph.meshes[size_t(mesh)].geo->renderIndex, fleshDrawn);
+      scene.setMeshDisplacement(f.feed->meshOf(mesh), fleshDrawn);
+    }
+  };
+  const int                    bodyMesh = f.flesh->bodyMesh();
+  const std::span<const float> body     = f.flesh->displacement();
+  put(bodyMesh, body);
+  const fv::physics::FleshSolver* solver = f.flesh->solver();
+  if(!solver)
+    return;
+  std::vector<int>      nodeOf;
+  std::vector<fv::Mat4> worlds;
+  for(const fv::WornItem& w : f.fig->items)
+    for(const fv::WornItem::Follow& follow : w.follows)
+    {
+      if(!follow.binding || follow.mesh < 0 || follow.mesh >= int(graph.meshes.size()) || !fv::physics::bindsTo(*follow.binding, solver->model().vertex))
+        continue;
+      // the item's posed space against the body's: their nodes' worlds, which DAZ's conforming items share
+      if(nodeOf.empty())
+      {
+        nodeOf = fv::dforce::nodeOfMesh(graph);
+        worlds = graph.worlds();
+      }
+      const int        bodyNode = nodeOf[size_t(bodyMesh)], itemNode = nodeOf[size_t(follow.mesh)];
+      std::optional<fv::Mat4> toItem;
+      if(bodyNode >= 0 && itemNode >= 0 && bodyNode != itemNode)
+      {
+        const fv::Mat4 m    = fv::inverse(worlds[size_t(itemNode)]) * worlds[size_t(bodyNode)];
+        bool           same = true;
+        for(int c = 0; c < 3; c++)
+          for(int r = 0; r < 3; r++)
+            same = same && std::abs(m.e[size_t(c * 4 + r)] - (c == r ? 1.0 : 0.0)) < 1e-6;
+        if(!same)
+          toItem = m;
+      }
+      fv::physics::followFlesh(*follow.binding, follow.rigidity.get(), body, toItem ? &*toItem : nullptr, fleshItem);
+      put(follow.mesh, fleshItem);
+    }
 }
 
 namespace {
@@ -585,9 +639,8 @@ Json softnessJson(const fv::physics::FleshSettings& s)
 
 }  // namespace
 
-// Topic "soft/<prop>": {available, subdivided, on, awake, softness {chest, glutes, belly, thighs},
-// damping}: the soft flesh (figure/physics/flesh/flesh.hpp). `subdivided`: the body is drawn from its
-// cage, which the flesh moves (at subdivision 0 it can't show).
+// Topic "soft/<prop>": {available, on, awake, softness {chest, glutes, belly, thighs}, damping}: the
+// soft flesh (figure/physics/flesh/flesh.hpp).
 void FvHost::Impl::publishSoft(Loaded& f)
 {
   if(!f.flesh)
@@ -595,7 +648,6 @@ void FvHost::Impl::publishSoft(Loaded& f)
   f.fleshVersion                      = f.flesh->version();
   const fv::physics::FleshSettings& s = f.flesh->settings();
   protocol->events().snapshot("soft/" + f.id, {{"available", f.flesh->valid()},
-                                              {"subdivided", f.feed && f.feed->refines(f.flesh->bodyMesh())},
                                               {"on", s.on},
                                               {"awake", f.flesh->awake()},
                                               {"softness", softnessJson(s)},

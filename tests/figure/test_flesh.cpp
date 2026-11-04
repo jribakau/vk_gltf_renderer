@@ -1,5 +1,5 @@
-// Soft flesh (docs/physics-plan.md step 8): the lobes found on a body, their solve against the skin,
-// and the skin the targets come from against the GPU's.
+// Soft flesh (docs/physics-plan.md steps 8 and 9): the lobes found on a body, their solve against the
+// skin, the skin the targets come from against the GPU's, and what is worn over it following it.
 
 #include <gtest/gtest.h>
 
@@ -11,6 +11,7 @@
 
 #include <figure/dforce/skin.hpp>
 #include <figure/physics/flesh/flesh.hpp>
+#include <figure/physics/flesh/follow.hpp>
 
 #include "../common/skin_reference.hpp"
 
@@ -420,4 +421,65 @@ TEST(Soft, aShapeDialMovesTheLobesWithoutAJiggle)
     ASSERT_EQ(solver.largest(), 0.0) << f;
     ASSERT_TRUE(solver.asleep()) << f;
   }
+}
+
+// A top bound to the chest (each of its vertices to three body vertices and their weights, as a
+// conforming item is) moves as the chest's flesh does: the weighted sum of the three, a rigid group (a
+// button) as one by its reference vertices' mean, and turned into the top's own space where that isn't
+// the body's
+TEST(Soft, aBoundTopMovesWithTheChest)
+{
+  // three top vertices: on body vertex 0; halfway between 1 and 2; and a button on vertex 3
+  fv::wardrobe::SurfaceBinding top;
+  top.verts   = {0, 1, 2, 1, 2, 0, 3, 0, 1};
+  top.weights = {1, 0, 0, 0.5f, 0.5f, 0, 1, 0, 0};
+  top.used    = {1, 1, 1, 1, 0};
+  const std::vector<float> body = {0, 0, 1, 0, 2, 0, 0, 4, 0, 1, 0, 0, 0, 0, 0};
+  std::vector<float>       out;
+  ASSERT_TRUE(followFlesh(top, nullptr, body, nullptr, out));
+  EXPECT_EQ(out, (std::vector<float>{0, 0, 1, 0, 3, 0, 1, 0, 0}));
+
+  // the button (vertex 2) moves with its reference, vertex 0, all the way
+  fv::wardrobe::Rigidity button;
+  button.weight = {0, 0, 1};
+  button.groups.push_back({.refs = {0}, .mask = {2}});
+  ASSERT_TRUE(followFlesh(top, &button, body, nullptr, out));
+  EXPECT_EQ(out, (std::vector<float>{0, 0, 1, 0, 3, 0, 0, 0, 1}));
+
+  // the top's space turned a quarter about y from the body's: +z there is +x here
+  fv::Mat4 turn;
+  turn.e = {0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 7, 8, 9, 1};
+  ASSERT_TRUE(followFlesh(top, nullptr, body, &turn, out));
+  EXPECT_NEAR(out[0], 1, 1e-6);
+  EXPECT_NEAR(out[2], 0, 1e-6);
+  EXPECT_NEAR(out[4], 3, 1e-6) << "a turn about y leaves y; the move isn't added";
+
+  // per drawn vertex of a top drawn as it is: a seam's two copies of a cage vertex alike
+  std::vector<float> drawn;
+  drawnOffsets(std::vector<float>{0, 0, 1, 0, 3, 0}, std::vector<uint32_t>{0, 1, 1, 0}, drawn);
+  EXPECT_EQ(drawn, (std::vector<float>{0, 0, 1, 0, 3, 0, 0, 3, 0, 0, 0, 1}));
+}
+
+// An item bound away from the lobes (shoes) never follows them, and one whose body points are still
+// stays: no offsets at all
+TEST(Soft, anUnboundItemStays)
+{
+  fv::wardrobe::SurfaceBinding shoe;
+  shoe.verts   = {4, 4, 4};
+  shoe.weights = {1, 0, 0};
+  shoe.used    = {0, 0, 0, 0, 1};
+  const std::vector<uint32_t> lobes = {0, 1, 2, 3};
+  EXPECT_FALSE(bindsTo(shoe, lobes));
+  std::vector<float> body(15, 0.f), out;
+  body[0] = 1;
+  EXPECT_FALSE(followFlesh(shoe, nullptr, body, nullptr, out));
+  EXPECT_EQ(out, std::vector<float>(3, 0.f));
+
+  fv::wardrobe::SurfaceBinding top;
+  top.verts   = {0, 1, 2};
+  top.weights = {0.2f, 0.3f, 0.5f};
+  top.used    = {1, 1, 1, 0, 0};
+  EXPECT_TRUE(bindsTo(top, lobes));
+  EXPECT_FALSE(followFlesh(top, nullptr, std::vector<float>(15, 0.f), nullptr, out)) << "asleep: the body's offsets all 0";
+  EXPECT_EQ(out, std::vector<float>(3, 0.f));
 }

@@ -199,6 +199,9 @@ public:
     // its positions as the last frame drew them, kept once a host edit writes them (static prims)
     BufferHandle prevPositions;
     bool         prevValid = false;
+    // MeshRecord::displacement of a mesh drawn as it is, one per drawn vertex, added after the drawn
+    // vertices' skin; a refined mesh's is its Refine's. None: none
+    BufferHandle displacement;
     // a refined mesh (MeshRecord::refine): its cage, and the tables and working streams that make
     // its positions and normals from it on the GPU (gpu-figures-plan.md F1); empty otherwise
     struct Refine
@@ -667,6 +670,8 @@ private:
   // a chain at a time over one scratch buffer, a barrier between stages; what wrote what they read and what
   // reads the outputs are the caller's barriers
   void refineChains(std::span<const RefineRun> runs);
+  // that scratch, at least `bytes` (one made larger retires the last, which frames in flight may still read)
+  void ensureChainScratch(uint64_t bytes);
   // the axes a posed ribbon's offsets turn by, for up to `count` cage vertices: a skin pass's normals and
   // tangents of the rest's Y and X, ahead of the barrier that fences them
   void ensureUnitAxes(uint64_t count);

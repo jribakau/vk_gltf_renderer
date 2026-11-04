@@ -295,7 +295,9 @@ bool RetainedScene::setMeshDisplacement(MeshId id, std::span<const float> xyz)
 {
   assertOwner();
   auto* r = m_meshes.get(id);
-  if(!r || !r->value.refine || (!xyz.empty() && xyz.size() != r->value.cage.size() * 3))
+  // a refined mesh's per cage vertex; one drawn as it is, per drawn vertex
+  const size_t count = r ? (r->value.refine ? r->value.cage.size() : size_t(r->value.vertexCount())) : 0;
+  if(!r || !count || (!xyz.empty() && xyz.size() != count * 3))
     return false;
   std::vector<glm::vec3>& d    = r->value.displacement;
   const bool              none = std::all_of(xyz.begin(), xyz.end(), [](float f) { return f == 0.f; });

@@ -19,11 +19,13 @@
 #include <thread>
 #include <vector>
 
+#include <figure/dforce/skin.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/gltf/gltf_check.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
+#include <figure/physics/flesh/follow.hpp>
 #include <figure/subdiv/catmark.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
@@ -355,6 +357,47 @@ std::unique_ptr<fv::Figure> boxFigure()
 }
 const char* const kBoxShirt = "People/Test/Clothing/Box Shirt.duf";
 }  // namespace
+
+// A conforming item keeps the binding its morphs follow the body by, for what moves the body after
+// them (soft flesh, physics-plan step 9): the body's cage moved 1 cm up moves the shirt 1 cm up. Its
+// mesh stands where the body's does, so the two meshes' posed spaces are one. Worn again, it has one
+// binding a mesh still.
+TEST(Wardrobe, AConformingItemKeepsItsBindingForTheFlesh)
+{
+  const auto           figure = boxFigure();
+  const fv::WearResult worn   = figure->commitWear(figure->prepareWear(kBoxShirt, 1), kBoxShirt);
+  figure->settle();
+  const fv::WornItem* shirt = figure->item(worn.items.at(0));
+  ASSERT_NE(shirt, nullptr);
+  ASSERT_EQ(shirt->follows.size(), shirt->meshes.size());
+  const fv::WornItem::Follow& follow = shirt->follows.front();
+  EXPECT_NE(std::find(shirt->meshes.begin(), shirt->meshes.end(), follow.mesh), shirt->meshes.end());
+  const fv::SceneGraph& scene = figure->loaded.scene;
+  ASSERT_TRUE(follow.binding);
+  ASSERT_EQ(follow.binding->verts.size(), size_t(scene.meshes[size_t(follow.mesh)].geo->dsonVertexCount) * 3);
+
+  const int          body  = figure->wearInputs().bodyMesh;
+  const int          count = scene.meshes[size_t(body)].geo->dsonVertexCount;
+  std::vector<float> up(size_t(count) * 3, 0.f), out;
+  for(int v = 0; v < count; v++)
+    up[size_t(v) * 3 + 1] = 1;
+  ASSERT_TRUE(fv::physics::followFlesh(*follow.binding, follow.rigidity.get(), up, nullptr, out));
+  for(size_t v = 0; v < out.size() / 3; v++)
+  {
+    EXPECT_NEAR(out[v * 3], 0, 1e-5) << v;
+    EXPECT_NEAR(out[v * 3 + 1], 1, 1e-5) << v;
+  }
+  const std::vector<int> nodeOf = fv::dforce::nodeOfMesh(scene);
+  const fv::Mat4         a = scene.world(nodeOf[size_t(body)]), b = scene.world(nodeOf[size_t(follow.mesh)]);
+  for(size_t i = 0; i < 16; i++)
+    EXPECT_NEAR(a.e[i], b.e[i], 1e-9) << i;
+
+  ASSERT_TRUE(figure->removeItem(worn.items.at(0)));
+  figure->settle();
+  const fv::WearResult again = figure->commitWear(figure->prepareWear(kBoxShirt, 1), kBoxShirt);
+  figure->settle();
+  EXPECT_EQ(figure->item(again.items.at(0))->follows.size(), figure->item(again.items.at(0))->meshes.size());
+}
 
 // Taken off, an item's built mesh and skin go, so that try-ons don't add up. Its slot stays, the figure
 // still builds, and it can go on again.

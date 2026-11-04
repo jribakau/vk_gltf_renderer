@@ -1263,10 +1263,55 @@ TEST(RetainedDeform, AZeroDisplacementDropsTheStage)
   drain(gpu);
   expectClean(rig.scene, residency, gpu, "dropped: ");
 
-  // nor is one of another size, or on a mesh that isn't refined
+  // nor is one of another size
   EXPECT_FALSE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>{0, 1, 0}));
-  Rig plain(false);
-  EXPECT_FALSE(plain.scene.setMeshDisplacement(plain.mesh, std::vector<float>(27, 1.f)));
+}
+
+// A mesh drawn as it is (a garment that isn't subdivided, physics-plan step 9) takes its displacement
+// per drawn vertex, after the drawn vertices' skin: there in the posed space, not turned by the bones;
+// one of its cage's size or another is none; zeros take the stage off again
+TEST(RetainedDeform, AnUnrefinedGarmentTakesItsDisplacementAfterThePlainSkin)
+{
+  Rig            rig(false);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  rig.bend(90);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  const std::vector<glm::vec3> skinned = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions);
+  const size_t                 n       = rig.scene.mesh(rig.mesh)->vertexCount();
+  ASSERT_EQ(skinned.size(), n);
+
+  EXPECT_FALSE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>{0, 1, 0})) << "not one per drawn vertex";
+  std::vector<float> d(n * 3, 0.f);
+  d[0]         = 0.5f;
+  d[n * 3 - 1] = -0.25f;
+  ASSERT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, d));
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  expectClean(rig.scene, residency, gpu, "displaced: ");
+  EXPECT_EQ(residency.deformCounts().skins, 1u);
+  EXPECT_EQ(residency.deformCounts().displacements, 1u);
+  ASSERT_TRUE(residency.meshGpu(rig.mesh)->displacement);
+  const std::vector<glm::vec3> drawn = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->positions);
+  for(size_t v = 0; v < n; v++)
+    EXPECT_LT(glm::distance(drawn[v], skinned[v] + glm::vec3(d[v * 3], d[v * 3 + 1], d[v * 3 + 2])), 1e-5f) << v;
+
+  // a pose after it: the skin again, the displacement on it
+  rig.bend(45);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  expectClean(rig.scene, residency, gpu, "bent again: ");
+  EXPECT_EQ(residency.deformCounts().displacements, 1u);
+
+  ASSERT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, std::vector<float>(n * 3, 0.f)));
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(residency.deformCounts().displacements, 0u);
+  EXPECT_FALSE(residency.meshGpu(rig.mesh)->displacement);
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "dropped: ");
 }
 
 // A displacement wakes a settled mesh in the sync it changes

@@ -68,6 +68,7 @@
 #include <figure/io/timing.hpp>
 #include <figure/dson/rig.hpp>
 #include <figure/physics/flesh/flesh.hpp>
+#include <figure/physics/flesh/follow.hpp>
 #include <figure/pose/retarget.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/bind.hpp>
@@ -1107,7 +1108,44 @@ int main(int argc, char** argv)
         }
         for(size_t l = 0; l < m.lobes.size(); l++)
           lobes[l]["largestCm"] = r(most[l]);
+        // what is worn over it, following the last frame's offsets (physics-plan step 9): each conforming
+        // mesh, whether it is bound near the lobes, whether its posed space is the body's, how far it
+        // moves against the body's farthest, and the gather's time
+        std::vector<float> bodyOffsets(size_t(m.cageCount) * 3, 0.f), out;
+        double             bodyMost = 0;
+        for(size_t p = 0; p < m.vertex.size(); p++)
+        {
+          const double* d = &solver.offsets()[p * 3];
+          for(int a = 0; a < 3; a++)
+            bodyOffsets[m.vertex[p] * 3ull + a] = float(d[a]);
+          bodyMost = std::max(bodyMost, std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+        }
+        const std::vector<int> nodeOf = fv::dforce::nodeOfMesh(loaded->loaded.scene);
+        Json                   worn   = Json::array();
+        for(const fv::WornItem& w : loaded->items)
+          for(const fv::WornItem::Follow& follow : w.follows)
+          {
+            const fv::Mat4 a = loaded->loaded.scene.world(nodeOf[size_t(body)]), b = loaded->loaded.scene.world(nodeOf[size_t(follow.mesh)]);
+            double         apart = 0;
+            for(size_t i = 0; i < 16; i++)
+              apart = std::max(apart, std::abs(a.e[i] - b.e[i]));
+            const bool near = fv::physics::bindsTo(*follow.binding, m.vertex);
+            const auto g0   = std::chrono::steady_clock::now();
+            fv::physics::followFlesh(*follow.binding, follow.rigidity.get(), bodyOffsets, nullptr, out);
+            const double gatherMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g0).count();
+            double       itemMost = 0;
+            for(size_t v = 0; v < out.size(); v += 3)
+              itemMost = std::max(itemMost, std::sqrt(double(out[v]) * out[v] + double(out[v + 1]) * out[v + 1] + double(out[v + 2]) * out[v + 2]));
+            worn.push_back({{"item", w.label},
+                            {"vertices", out.size() / 3},
+                            {"nearLobes", near},
+                            {"spaceApart", r(apart)},
+                            {"largestCm", r(itemMost)},
+                            {"gatherMs", r(gatherMs)}});
+          }
         Json dump = {{"flesh", lobes},
+                     {"worn", worn},
+                     {"bodyLargestCm", r(bodyMost)},
                      {"particles", m.vertex.size()},
                      {"support", m.support.size()},
                      {"edges", m.edges.size()},

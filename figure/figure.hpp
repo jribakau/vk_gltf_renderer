@@ -113,6 +113,16 @@ struct WornItem
   // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
   // (the file's modifier, or defaults for clothing): empty for hair, anatomy and props without one
   std::map<int, dson::Smoothing> collision;
+  // each conforming mesh's binding to the body's cage and its rigid groups, as its morphs follow the
+  // body's: what moves the body after them moves it too (soft flesh, physics::followFlesh). Not strand
+  // hair, which hangs from where it touches
+  struct Follow
+  {
+    int                                             mesh = -1;  // into SceneGraph::meshes
+    std::shared_ptr<const wardrobe::SurfaceBinding> binding;
+    std::shared_ptr<const wardrobe::Rigidity>       rigidity;  // null: none
+  };
+  std::vector<Follow> follows;
   // how far the collider pulls it onto the body, 0 (as it was made) to 1 (skin tight)
   float tight = 0;
   // the body polygons it covers, not drawn while it is tight (Figure::refreshTightHidden); whether

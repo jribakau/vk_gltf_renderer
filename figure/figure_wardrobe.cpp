@@ -891,6 +891,9 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     const dson::MeshRef ref = refOf(mesh);
     if(part.conforms && p.bindings[i])
     {
+      std::erase_if(worn->follows, [&](const WornItem::Follow& had) { return had.mesh == mesh; });
+      if(dst.meshes[size_t(mesh)].geo->cageLineStart.empty())
+        worn->follows.push_back({mesh, p.bindings[i], part.rigidity ? std::make_shared<const wardrobe::Rigidity>(*part.rigidity) : nullptr});
       morph::Follower f;
       f.mesh   = mesh;
       f.source = body;
