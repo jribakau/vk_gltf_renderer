@@ -420,6 +420,12 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       f->contact            = std::make_unique<fv::physics::Contact>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
       f->contact->colliders = [this, raw = f.get()] { return contactColliders(*raw); };
       f->contact->playing   = [this] { return renderer->editAnimationControl().play; };
+      // and a ragdoll, for Physics mode
+      if(f->fig->pose)
+      {
+        f->physics            = std::make_unique<fv::physics::FigurePhysics>(f->fig->loaded.scene, *f->fig->pose, f->fig->morphs.get(), body, f->fig->loaded.root);
+        f->physics->colliders = [this, raw = f.get()] { return contactColliders(*raw); };
+      }
       // the clothes are fitted and draped over the body as it will be once dented
       f->collider->waitWhile = [raw = f.get()] { return raw->contact && raw->contact->busy(); };
       f->dforce->waitWhile   = [raw = f.get()] { return raw->contact && raw->contact->busy(); };
@@ -507,4 +513,5 @@ void FvHost::Impl::publishFigure(Prop& p)
   publishWardrobe(*p.figure);
   publishDforce(*p.figure, true);
   publishContact(*p.figure);
+  publishPhysics(*p.figure);
 }

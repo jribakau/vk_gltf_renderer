@@ -197,9 +197,11 @@ void FigurePhysics::build()
   for(const int i : order)
   {
     const pose::PoseBone& pb = bones[size_t(i)];
-    if(pb.group == "Figure" || !hasRotation(pb))
+    const auto            parsed = slotOf(i);
+    // the hip is the root part whatever channels it has: held, its channels are its target, and
+    // falling it shows where it is on any axis
+    if(pb.group == "Figure" || (!hasRotation(pb) && parsed.slot != "hip"))
       continue;
-    const auto parsed = slotOf(i);
     const int  up     = partAbove(pb.bone);
     const bool part   = partSlots().count(parsed.slot) && (!parsed.twist || partBelow(pb.bone));
     if(part && (parsed.slot == "hip" ? up < 0 && m_parts.empty() : up >= 0))
@@ -559,7 +561,7 @@ void FigurePhysics::allowOverlaps()
   m_world.bodies = std::move(saved);
 }
 
-bool FigurePhysics::set(const PhysicsSettings& settings)
+bool FigurePhysics::set(const PhysicsSettings& settings, bool fold)
 {
   const PhysicsSettings old = m_settings;
   m_settings                = settings;
@@ -568,8 +570,8 @@ bool FigurePhysics::set(const PhysicsSettings& settings)
   m_version++;
   if(settings.on && !old.on)
   {
-    if(m_parts.empty() || m_restVersion != m_rig.restVersion())
-      build();
+    // fitted to the shape as it is now: a morph moves the body without moving a joint
+    build();
     if(m_parts.empty())
     {
       m_settings.on = false;
@@ -605,7 +607,10 @@ bool FigurePhysics::set(const PhysicsSettings& settings)
       m_world.pins.erase(m_world.pins.begin() + m_pull);
       m_pull = -1;
     }
-    m_rig.foldPhysical();
+    if(fold)
+      m_rig.foldPhysical();
+    else
+      m_rig.setPhysical({});
     m_world.sleep();
     m_wasAwake = false;
     return true;

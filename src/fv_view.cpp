@@ -237,11 +237,12 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       if(args.contains("pick"))
       {
         const std::string pick = args["pick"].get<std::string>();
-        if(pick != "object" && pick != "bone" && pick != "mesh")
-          throw std::runtime_error("pick is object, mesh or bone");
+        if(pick != "object" && pick != "bone" && pick != "mesh" && pick != "pull")
+          throw std::runtime_error("pick is object, mesh, bone or pull");
         m_pick = pick;
-        // the gizmo moves props and poses bones; a mesh pick only shows what was hit
-        m_renderer->setShowGizmo(m_pick != "mesh");
+        // the gizmo moves props and poses bones; a mesh pick only shows what was hit, and a pull's drag
+        // is on the body
+        m_renderer->setShowGizmo(m_pick != "mesh" && m_pick != "pull");
       }
       if(args.contains("select"))
         m_select = args["select"].get<bool>();
@@ -298,6 +299,25 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
     const bool        released = (type == "up" && left) || (type == "leave" && m_lmb);
     if(pressed || released)
       m_lmb = pressed;
+    // the Pull tool: a press on a figure in Physics mode holds it until the release; the camera
+    // doesn't move meanwhile
+    if(m_pulling)
+    {
+      if(type == "move")
+        m_pull("move", {float(x), float(y)});
+      else if(released)
+      {
+        m_pull("up", {float(x), float(y)});
+        m_pulling = false;
+      }
+      continue;
+    }
+    if(pressed && m_pick == "pull" && m_pull && m_pull("down", {float(x), float(y)}))
+    {
+      m_pulling = true;
+      m_click   = false;
+      continue;
+    }
     // a press on a handle, its drag and its release are the gizmo's: no orbit, no pick
     if((type == "down" || type == "up" || type == "move" || type == "leave")
        && m_renderer->gizmoInput({float(x), float(y)}, m_lmb, pressed, released))

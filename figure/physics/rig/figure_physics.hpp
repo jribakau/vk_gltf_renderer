@@ -54,8 +54,9 @@ public:
   bool valid() const { return !m_parts.empty(); }
   const PhysicsSettings& settings() const { return m_settings; }
   // Turning Physics on starts the parts where the pose is, at rest; off folds what they reached into
-  // the channels. True when the pose moved (the bones need applying).
-  bool set(const PhysicsSettings& settings);
+  // the channels, or with `fold` false drops it (undo: the channels are already as they were). True
+  // when the pose moved (the bones need applying).
+  bool set(const PhysicsSettings& settings, bool fold = true);
 
   // Gravity in the root's space (cm/s^2), the ground (none: no ground) and what else the body meets.
   void                                       setGravity(const Vec3& g);

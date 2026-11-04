@@ -326,3 +326,258 @@ Json FvHost::Impl::figureContact(const Json& args)
   publishContact(*figure);
   return {{"ok", true}};
 }
+
+//--------------------------------------------------------------------------------------------------
+// Physics mode (figure/physics/rig/figure_physics.hpp, docs/physics-plan.md step 2): the frame's
+// step, the Pull, physics.set and physics.restore, the physics/<prop> topic.
+
+// A figure's Physics mode as the scene file and the history keep it: the settings and, in Physics
+// mode, where its parts are.
+Json physicsState(const Loaded& f)
+{
+  const fv::physics::PhysicsSettings& s        = f.physics->settings();
+  Json                                physical = Json::object();
+  if(s.on)
+    for(const auto& [key, value] : f.physics->physicalValues())
+      physical[key] = value;
+  return {{"on", s.on}, {"strength", s.strength}, {"gravity", s.gravity}, {"letFall", s.letFall}, {"physical", physical}};
+}
+
+// What puts a figure's physics back as it is now: its parts' channels (where the motors aim), then
+// the mode, the settings and where the parts are.
+Json FvHost::Impl::physicsOps(const Loaded& f)
+{
+  Json values = Json::object();
+  for(const fv::physics::FigurePhysics::Part& part : f.physics->parts())
+    for(const int b : part.members)
+    {
+      const fv::pose::PoseBone& pb = f.fig->pose->bones()[size_t(b)];
+      for(const fv::pose::Axis& a : pb.axes)
+        if(a.kind != fv::pose::ChannelKind::eScale)
+          values[pb.id + "/" + fv::pose::kindName(a.kind) + "/" + a.axis] = a.value;
+    }
+  Json state    = physicsState(f);
+  state["prop"] = f.id;
+  return Json::array({{{"cmd", "pose.set"}, {"args", {{"prop", f.id}, {"values", values}}}}, {{"cmd", "physics.restore"}, {"args", state}}});
+}
+
+void FvHost::Impl::publishPhysics(Loaded& f)
+{
+  if(!f.physics)
+    return;
+  f.physicsVersion                      = f.physics->version();
+  const fv::physics::PhysicsSettings& s = f.physics->settings();
+  protocol->events().snapshot("physics/" + f.id, {{"available", f.physics->valid()},
+                                                  {"on", s.on},
+                                                  {"awake", f.physics->awake()},
+                                                  {"pulling", f.physics->pulling()},
+                                                  {"strength", s.strength},
+                                                  {"gravity", s.gravity},
+                                                  {"letFall", s.letFall}});
+}
+
+// Once a frame, after the queued edits and the clip, before the figures pump: each figure in Physics
+// mode gets the world it is in (gravity and the ground in its root's space) and simulates the time
+// since the last frame. What it reaches poses its bones, which the pump then takes.
+void FvHost::Impl::stepPhysics()
+{
+  const auto   now     = std::chrono::steady_clock::now();
+  const double elapsed = physicsFrame == std::chrono::steady_clock::time_point{} ? 0.0 : std::chrono::duration<double>(now - physicsFrame).count();
+  physicsFrame         = now;
+  for(const auto& p : props)
+  {
+    if(!p->figure || !p->figure->physics)
+      continue;
+    Loaded& f = *p->figure;
+    if(f.physics->settings().on && renderer->feedsHostScene() && f.feed)
+    {
+      rs::RetainedScene& scene = renderer->hostScene();
+      const rs::EntityId root  = f.feed->entityOf(f.fig->loaded.root);
+      if(scene.entity(root))
+      {
+        const glm::mat4 toRoot = glm::inverse(scene.world(root));
+        const glm::vec3 down   = glm::normalize(glm::vec3(toRoot * glm::vec4(0, -1, 0, 0)));
+        f.physics->setGravity({down.x * 980.0, down.y * 980.0, down.z * 980.0});
+        if(lighting.ground.mode != "off")
+        {
+          const double    height = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
+          const glm::vec3 at     = glm::vec3(toRoot * glm::vec4(0, float(height), 0, 1));
+          const glm::vec3 up     = -down;
+          f.physics->setGround(fv::physics::Plane{{up.x, up.y, up.z}, double(glm::dot(up, at))});
+        }
+        else
+          f.physics->setGround(std::nullopt);
+      }
+    }
+    {
+      fv::timing::Scope t("physics: frame", 2);
+      f.physics->step(elapsed);
+    }
+    if(f.physicsVersion != f.physics->version())
+      publishPhysics(f);
+  }
+}
+
+// physics.set {prop, on?, strength?, gravity?, letFall?, gesture?}: Physics mode on or off (leaving
+// keeps the pose it reached in the channels), Hold (0 limp to 1 rigid), gravity, and whether the hip
+// is let fall.
+Json FvHost::Impl::physicsSet(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure || !figure->physics)
+    throw std::runtime_error("no figure with a body is selected");
+  fv::physics::PhysicsSettings s = figure->physics->settings();
+  if(args.contains("on") && args["on"].is_boolean())
+    s.on = args["on"].get<bool>();
+  if(args.contains("strength") && args["strength"].is_number())
+    s.strength = std::clamp(args["strength"].get<double>(), 0.0, 1.0);
+  if(args.contains("gravity") && args["gravity"].is_boolean())
+    s.gravity = args["gravity"].get<bool>();
+  if(args.contains("letFall") && args["letFall"].is_boolean())
+    s.letFall = args["letFall"].get<bool>();
+  if(s.on && !figure->physics->valid())
+    throw std::runtime_error("this figure has no body bones for physics");
+  const bool leaving = figure->physics->settings().on && !s.on;
+  figure->physics->set(s);
+  if(leaving)
+  {
+    // the channels took the reached pose: every panel showing them
+    std::vector<std::string> bones;
+    for(const auto& part : figure->physics->parts())
+      for(const int b : part.members)
+        bones.push_back(figure->fig->pose->bones()[size_t(b)].id);
+    patchPose(*figure, bones);
+  }
+  publishPhysics(*figure);
+  return {{"ok", true}};
+}
+
+// physics.restore {prop, on, strength, gravity, letFall, physical}: the history's and a scene file's
+// way back to a figure's Physics mode, its channels already set. Off drops the physical layer
+// without keeping it in the channels; on takes the parts back where `physical` has them, at rest.
+Json FvHost::Impl::physicsRestore(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure || !figure->physics)
+    return {{"ok", false}};
+  fv::physics::PhysicsSettings s;
+  s.on       = args.value("on", false) && figure->physics->valid();
+  s.strength = std::clamp(args.value("strength", s.strength), 0.0, 1.0);
+  s.gravity  = args.value("gravity", s.gravity);
+  s.letFall  = args.value("letFall", s.letFall);
+  figure->physics->set(s, false);
+  if(s.on)
+  {
+    std::vector<std::pair<std::string, double>> values;
+    if(const auto it = args.find("physical"); it != args.end() && it->is_object())
+      for(auto v = it->begin(); v != it->end(); ++v)
+        if(v.value().is_number())
+          values.emplace_back(v.key(), v.value().get<double>());
+    if(!values.empty())
+      figure->physics->restorePhysical(values);
+  }
+  publishPhysics(*figure);
+  return {{"ok", true}};
+}
+
+// The camera's ray through a render pixel, in the world (metres).
+bool FvHost::Impl::cameraRay(const glm::vec2& px, glm::vec3& origin, glm::vec3& dir) const
+{
+  auto             manip = renderer->getCameraManipulator();
+  const VkExtent2D size  = renderer->renderSize();
+  if(!manip || !size.width || !size.height)
+    return false;
+  glm::dvec3 eye, center, up;
+  manip->getLookat(eye, center, up);
+  const glm::dvec3 f      = glm::normalize(center - eye);
+  const glm::dvec3 r      = glm::normalize(glm::cross(f, up));
+  const glm::dvec3 u      = glm::cross(r, f);
+  const double     t      = std::tan(glm::radians(double(manip->getFov())) * 0.5);
+  const double     aspect = double(size.width) / double(size.height);
+  const double     sx     = (2.0 * px.x / size.width - 1) * t * aspect;
+  const double     sy     = (1 - 2.0 * px.y / size.height) * t;
+  origin                  = glm::vec3(eye);
+  dir                     = glm::vec3(glm::normalize(f + r * sx + u * sy));
+  return true;
+}
+
+// The Pull (view.set {pick: "pull"}): a press on a figure in Physics mode takes hold of the part
+// under it, a move drags that point along the pointer at the depth it was taken at, and the release
+// leaves the parts where they got to, as the channels' new pose: one step of the history.
+bool FvHost::Impl::pullAt(const std::string& phase, const glm::vec2& px)
+{
+  glm::vec3 eye, dir;
+  if(!cameraRay(px, eye, dir) || !renderer->feedsHostScene())
+    return false;
+  rs::RetainedScene& scene = renderer->hostScene();
+  // the ray in a figure's root space (centimetres)
+  const auto toRoot = [&](Loaded& f, fv::Vec3& o, fv::Vec3& d) {
+    if(!f.feed)
+      return false;
+    const rs::EntityId root = f.feed->entityOf(f.fig->loaded.root);
+    if(!scene.entity(root))
+      return false;
+    const glm::mat4 inv = glm::inverse(scene.world(root));
+    const glm::vec3 a   = glm::vec3(inv * glm::vec4(eye, 1));
+    const glm::vec3 b   = glm::normalize(glm::vec3(inv * glm::vec4(dir, 0)));
+    o                   = {a.x, a.y, a.z};
+    d                   = {b.x, b.y, b.z};
+    return true;
+  };
+  if(phase == "down")
+  {
+    // the selected figure first
+    std::vector<std::shared_ptr<Prop>> order;
+    for(const auto& p : props)
+      if(p->figure && p->figure->physics && p->figure->physics->settings().on)
+      {
+        if(p->id == view->selectedProp())
+          order.insert(order.begin(), p);
+        else
+          order.push_back(p);
+      }
+    for(const auto& p : order)
+    {
+      fv::Vec3 o, d;
+      double   depth = 0;
+      if(!toRoot(*p->figure, o, d))
+        continue;
+      const Json before = physicsOps(*p->figure);
+      if(!p->figure->physics->grab(o, d, depth))
+        continue;
+      pull = PullHold{p->id, depth, before};
+      publishPhysics(*p->figure);
+      return true;
+    }
+    return false;
+  }
+  const auto p = pull ? findProp(pull->prop) : nullptr;
+  if(!p || !p->figure || !p->figure->physics)
+  {
+    pull.reset();
+    return false;
+  }
+  Loaded&  f = *p->figure;
+  fv::Vec3 o, d;
+  if(toRoot(f, o, d))
+    f.physics->drag(o + d * pull->depth);
+  if(phase != "up")
+    return true;
+  // let go: the channels take the reached pose, so the motors hold it there
+  const std::vector<fv::pose::ChannelValue> values = f.physics->release();
+  f.fig->pose->setMany(values);
+  std::vector<std::string> bones;
+  for(const auto& v : values)
+    if(const fv::pose::PoseBone* pb = f.fig->pose->get(v.bone); pb && std::find(bones.begin(), bones.end(), pb->id) == bones.end())
+      bones.push_back(pb->id);
+  patchPose(f, bones);
+  const Json after = physicsOps(f);
+  if(after != pull->before && !replaying)
+  {
+    journal.record({.redo = after, .undo = pull->before, .label = "Pull " + p->name, .key = std::string(), .at = std::chrono::steady_clock::now()});
+    publishHistory();
+  }
+  pull.reset();
+  publishPhysics(f);
+  return true;
+}

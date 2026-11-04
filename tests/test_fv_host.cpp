@@ -3160,3 +3160,143 @@ TEST(FvHost, exportCarriesTheContactChannel)
   const double plain = lowest("plain.glb");
   EXPECT_GT(dented, plain + 0.001);
 }
+
+//--------------------------------------------------------------------------------------------------
+// Physics mode (figure/physics/rig/figure_physics.hpp, docs/physics-plan.md step 2)
+
+namespace {
+
+// The Box Figure (a hip and a head, 40 cm tall) in front of a camera looking at its head from 2 m.
+struct Ragdolled
+{
+  HostRig     rig;
+  std::string figure;
+
+  Ragdolled()
+  {
+    EXPECT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    figure = figureId(rig.topic("scene"));
+    rig.cmd("camera.goto", {{"position", {0.0, 0.3, 2.0}}, {"target", {0.0, 0.3, 0.0}}});
+    rig.host->onUpdate();
+  }
+  Json physics() const { return rig.topic("physics/" + figure); }
+  bool on() const { return physics().value("on", false); }
+  // the head's rotation channels as the scene state keeps them
+  double head(const char* axis)
+  {
+    const Json state = rig.cmd("scene.state", {{"prop", figure}}).value("result", Json::object());
+    for(const Json& c : state.value("pose", Json::array()))
+      if(c.value("bone", "") == "head" && c.value("kind", "") == "rotation" && c.value("axis", "") == axis)
+        return c.value("value", 0.0);
+    return 0;
+  }
+  // frames of real time until `done`, or a few seconds
+  bool until(const std::function<bool()>& done, double seconds = 5)
+  {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while(std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      if(done())
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+  }
+};
+
+}  // namespace
+
+// Physics mode is a step of the history and part of the figure's scene state; a scene file from
+// before it opens in Skeletal mode.
+TEST(FvHost, physicsModeIsAStepAndTheSceneFileKeepsIt)
+{
+  Ragdolled r;
+  ASSERT_TRUE(r.physics().value("available", false)) << r.physics().dump();
+  EXPECT_FALSE(r.on());
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"on", true}}).value("ok", false));
+  EXPECT_TRUE(r.on());
+  EXPECT_EQ(r.rig.topic("history").at("undo")[0], "Physics on");
+  const Json state = r.rig.cmd("scene.state", {{"prop", r.figure}}).value("result", Json::object());
+  ASSERT_TRUE(state.contains("physics")) << state.dump();
+  EXPECT_TRUE(state["physics"].value("on", false));
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_FALSE(r.on());
+  ASSERT_TRUE(r.rig.cmd("history.redo").value("ok", false));
+  EXPECT_TRUE(r.on());
+  // and again, both ways: each replay rebuilds the other
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_FALSE(r.on());
+  ASSERT_TRUE(r.rig.cmd("history.redo").value("ok", false));
+  EXPECT_TRUE(r.on());
+
+  Json restore    = state;
+  restore["prop"] = r.figure;
+  restore.erase("physics");
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_FALSE(r.on()) << "a file without the block opened in Physics mode";
+  restore["physics"] = state["physics"];
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_TRUE(r.on());
+}
+
+// A drag with the Pull tool on the figure's head turns it, the channels keep where it got to, and
+// the pull is one step: undone, the head is back.
+TEST(FvHost, aPullTurnsTheHeadAndIsOneStep)
+{
+  Ragdolled r;
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"on", true}, {"strength", 0.5}}).value("ok", false));
+  ASSERT_TRUE(r.rig.cmd("view.set", {{"pick", "pull"}}).value("ok", false));
+  ASSERT_TRUE(r.until([&] { return !r.physics().value("awake", true); }));
+  const size_t steps = r.rig.topic("history").at("undo").size();
+
+  r.rig.input({{{"t", "down"}, {"b", 0}, {"x", 640}, {"y", 360}}});
+  ASSERT_TRUE(r.until([&] { return r.physics().value("pulling", false); }, 1)) << r.physics().dump();
+  // 10 cm to the side, at 2 m: the head tips over
+  r.rig.input({{{"t", "move"}, {"x", 640 + 60}, {"y", 360}}});
+  r.until([] { return false; }, 1);
+  r.rig.input({{{"t", "up"}, {"b", 0}, {"x", 640 + 60}, {"y", 360}}});
+  ASSERT_TRUE(r.until([&] { return !r.physics().value("pulling", true); }, 1));
+  const double z = r.head("z");
+  EXPECT_GT(std::abs(z) + std::abs(r.head("x")), 3) << "the pull didn't turn the head";
+  const Json undo = r.rig.topic("history").at("undo");
+  ASSERT_EQ(undo.size(), steps + 1);
+  EXPECT_EQ(undo[0], "Pull Box Figure");
+
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_NEAR(r.head("z"), 0, 1e-6);
+  EXPECT_NEAR(r.head("x"), 0, 1e-6);
+  // a drag that starts off the figure orbits the camera, as it would without the tool
+  r.rig.input({{{"t", "down"}, {"b", 0}, {"x", 40}, {"y", 40}}});
+  r.rig.host->onUpdate();
+  EXPECT_FALSE(r.physics().value("pulling", true));
+  r.rig.input({{{"t", "up"}, {"b", 0}, {"x", 40}, {"y", 40}}});
+}
+
+// Leaving Physics mode keeps the pose the ragdoll reached in the channels; undone, it is in Physics
+// mode again, the head where it was.
+TEST(FvHost, leavingPhysicsKeepsTheReachedPose)
+{
+  Ragdolled r;
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"on", true}, {"strength", 0.5}}).value("ok", false));
+  ASSERT_TRUE(r.rig.cmd("view.set", {{"pick", "pull"}}).value("ok", false));
+  r.rig.input({{{"t", "down"}, {"b", 0}, {"x", 640}, {"y", 360}}});
+  ASSERT_TRUE(r.until([&] { return r.physics().value("pulling", false); }, 1));
+  r.rig.input({{{"t", "move"}, {"x", 640 + 60}, {"y", 360}}});
+  r.until([] { return false; }, 1);
+  r.rig.input({{{"t", "up"}, {"b", 0}, {"x", 640 + 60}, {"y", 360}}});
+  ASSERT_TRUE(r.until([&] { return !r.physics().value("awake", true); }));
+  const double z = r.head("z"), x = r.head("x");
+  ASSERT_GT(std::abs(z) + std::abs(x), 3);
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"on", false}}).value("ok", false));
+  EXPECT_FALSE(r.on());
+  // what it shows, which settled a hair from what it was let go at
+  EXPECT_NEAR(r.head("z"), z, 0.05);
+  EXPECT_NEAR(r.head("x"), x, 0.05);
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_TRUE(r.on());
+  EXPECT_NEAR(r.head("z"), z, 1e-6);
+}

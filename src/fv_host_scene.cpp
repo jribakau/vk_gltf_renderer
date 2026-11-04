@@ -642,6 +642,8 @@ Json FvHost::Impl::sceneState(const Json& args)
     state["collision"] = prop->figure->collider->enabled();
   if(prop->figure->contact)
     state["contact"] = contactState(*prop->figure);
+  if(prop->figure->physics)
+    state["physics"] = physicsState(*prop->figure);
   if(prop->figure->dforce)
   {
     state["dforce"]     = prop->figure->dforce->enabled();
@@ -1005,6 +1007,16 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     }
     if(target->collider && args.contains("collision") && args["collision"].is_boolean())
       target->collider->setEnabled(args["collision"].get<bool>());
+    // Physics mode after the pose (the channels are its targets), before the dents and the drapes; a
+    // file without the block is in Skeletal mode
+    if(target->physics)
+    {
+      Json physics = args.value("physics", Json());
+      if(!physics.is_object())
+        physics = {{"on", false}};
+      physics["prop"] = target->id;
+      physicsRestore(physics);
+    }
     // a file from before body contact has no block, and opens as it was saved: without dents
     if(target->contact)
     {

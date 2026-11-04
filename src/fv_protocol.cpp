@@ -46,8 +46,9 @@ namespace {
 // a kept scene). 18: render.mode refuses "raster", and a skin it already has changes nothing. 19: a
 // DAZ animation played on a figure: load's `as` "animation", the animation topic's clips with a
 // `kind` ("clip" or "figure"), and anim.remove. 20: body contact: figure.contact, the contact/<prop>
-// topic, and the scene state's `contact`.
-constexpr int kProtocolVersion = 20;
+// topic, and the scene state's `contact`. 21: Physics mode: physics.set, the physics/<prop> topic,
+// the scene state's `physics`, and view.set's pick "pull".
+constexpr int kProtocolVersion = 21;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

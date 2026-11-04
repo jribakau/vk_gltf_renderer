@@ -66,6 +66,7 @@
 
 #include <figure/dforce/dforce.hpp>
 #include <figure/physics/contact/contact.hpp>
+#include <figure/physics/rig/figure_physics.hpp>
 #include <figure/wardrobe/collider.hpp>
 #ifdef FV_DFORCE_GPU
 #include "fv_dforce_gpu.hpp"
@@ -188,6 +189,10 @@ struct Loaded
   std::unique_ptr<fv::physics::Contact> contact;
   int                                   contactVersion = -1;
   std::optional<glm::mat4>              contactPlaced;
+  // its ragdoll and Physics mode (figure/physics/rig/figure_physics.hpp); null but for a person, as
+  // `contact`
+  std::unique_ptr<fv::physics::FigurePhysics> physics;
+  int                                         physicsVersion = -1;
   // without dents of its own (a DAZ prop, a chair), it is what the bodies near it meet: its shown
   // meshes posed in its root's space, made again once its pose or shape moved (`contactRev` bumps)
   int                                                               contactRev    = 0;
@@ -644,6 +649,7 @@ std::string figureGeneration(const Loaded& figure);
 // A figure's contact settings as the scene file and the history keep them ({on, softness, bulge,
 // reach}); the figure has a contact pass.
 Json contactState(const Loaded& f);
+Json physicsState(const Loaded& f);
 
 struct FvHost::Impl
 {
@@ -1069,6 +1075,24 @@ struct FvHost::Impl
   void                                                pokeContacts();
   void                                                publishContact(Loaded& f);
   Json                                                figureContact(const Json& args);
+  // Physics mode (fv_host_physics.cpp): the frame's step, the Pull, physics.set and physics.restore
+  void stepPhysics();
+  void publishPhysics(Loaded& f);
+  Json physicsOps(const Loaded& f);
+  Json physicsSet(const Json& args);
+  Json physicsRestore(const Json& args);
+  bool cameraRay(const glm::vec2& px, glm::vec3& origin, glm::vec3& dir) const;
+  bool pullAt(const std::string& phase, const glm::vec2& px);
+  std::chrono::steady_clock::time_point physicsFrame{};
+  // the Pull's hold: the figure, how far along the pointer's ray it took hold, and what puts its
+  // physics back as it was then (the history's step at the release)
+  struct PullHold
+  {
+    std::string prop;
+    double      depth = 0;
+    Json        before;
+  };
+  std::optional<PullHold> pull;
   // each prop as a collider at the last look (a model, or a DAZ prop and its shape's revision): its
   // meshes' worlds and bounds (metres), whether it showed; and each model's meshes as triangle sets,
   // read on the pool the first time a pass needs them

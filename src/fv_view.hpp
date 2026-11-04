@@ -30,7 +30,9 @@
 //   camera.goto   {position, target, up?, focalLength?}
 //   view.set      {display, grid, gizmo, pick, select, transform, helpers, frameAspect}  display: shaded, clay, wireframe, normals;
 //                                               pick: "object" (the default: a click selects the prop),
-//                                               "mesh" (the node hit) or "bone" (the posed bone nearest);
+//                                               "mesh" (the node hit), "bone" (the posed bone nearest) or
+//                                               "pull" (a drag on a figure in Physics mode pulls it, the
+//                                               view still orbiting from anywhere else);
 //                                               select: whether a click picks at all (true, the default;
 //                                               off, the selection stays as it is and a double-click
 //                                               still centres the view);
@@ -132,6 +134,9 @@ public:
   // The frame the view is composed for (view.set's frameAspect), 0 for none: camera markers take its shape.
   double frameAspect() const { return m_frameAspect; }
   void onHelperPick(std::function<std::string(const glm::vec2& px)> f) { m_helperPick = std::move(f); }
+  // The Pull tool's drag, in render pixels: "down" (true when it took hold of a figure: the drag is
+  // then its, not the camera's), "move", "up".
+  void onPull(std::function<bool(const std::string& phase, const glm::vec2& px)> f) { m_pull = std::move(f); }
 
   // The lens of the view in use: the free view's, or the camera prop's it looks through.
   struct Lens
@@ -187,6 +192,8 @@ private:
   bool                                          m_helpers   = true;
   double                                        m_frameAspect = 0;
   std::function<std::string(const glm::vec2&)>  m_helperPick;
+  std::function<bool(const std::string&, const glm::vec2&)> m_pull;
+  bool                                          m_pulling = false;  // a Pull drag holds a figure
 
   fv::Json                              m_camera;
   fv::Json                              m_cameraExtra = fv::Json::object();

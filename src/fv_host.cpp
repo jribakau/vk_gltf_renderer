@@ -168,6 +168,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wardrobe.keepFull", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.keepFull", args); }); });
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
   cmds.add("figure.contact", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("figure.contact", args); }); });
+  cmds.add("physics.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.set", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
   // answered at once, as morph.set: a slider sends faster than a path traced frame ends, and the steps
   // would queue behind each other. The latest for an item applies in onUpdate
@@ -438,6 +439,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return impl->onApp(std::move(f));
   });
   s.view->onHelperPick([impl](const glm::vec2& px) { return impl->helperAt(px); });
+  s.view->onPull([impl](const std::string& phase, const glm::vec2& px) { return impl->pullAt(phase, px); });
   // camera.set edits the lens of the view in use: the camera looked through keeps it, else the free view
   s.view->onLensChange([impl](const FvView::Lens& lens) {
     if(const auto p = impl->findProp(impl->viewCamera))
@@ -675,6 +677,9 @@ void FvHost::onUpdate()
   s.applyFigureAnimation();
   // props that moved near a figure poke its contact dents
   s.pokeContacts();
+  // the ragdolls of figures in Physics mode, before the figures pump: what they reach is this frame's pose
+  timePhase("frame: physics");
+  s.stepPhysics();
   s.watchSystemMemory();
   for(const auto& p : s.props)
   {
