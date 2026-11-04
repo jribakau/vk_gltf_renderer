@@ -27,8 +27,9 @@
 //   env:     source studio|hdr|sky|plain|none, path, intensity, rotation (degrees about +Y),
 //            background environment|blurred|color, blur (three's blurriness), color, plainColor, skyPreset
 //   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness
-//   ground:  mode floor|catcher|off, height ("auto" or world units), color, roughness, darkness, fade,
-//            water (0 dry to 1 a sheet of it, on a floor), ripples (on the water, 0 still to 1)
+//   ground:  mode floor|water|catcher|off, height ("auto" or world units), color, roughness,
+//            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
+//            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
 //   tonemap: method aces|agx|neutral|filmic, exposure, contrast, saturation, vignette,
 //            temperature (Kelvin), tint (Duv)
 //
@@ -85,6 +86,8 @@ struct Ground
   double      fade       = 3.0;
   double      water      = 0.0;
   double      ripples    = 0.25;
+  double      depth      = 0.5;  // knee-deep on a figure
+  double      waves      = 0.4;
 };
 
 struct Tonemap

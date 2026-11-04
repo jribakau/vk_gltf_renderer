@@ -1303,6 +1303,59 @@ bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout
   return true;
 }
 
+// The water's surface where a path's ray meets it before anything else it hit (groundWaterCrossing):
+// the hit on the surface, its normal the waves' turned to face the ray, and which side the ray came
+// from. Checked after the floor, which lies under the water.
+bool checkWaterIntersection(RayDesc ray, inout HitPayload payload, inout HitState hit, SceneFrameInfo* frameInfo, out bool fromAbove)
+{
+  fromAbove = false;
+  if(!groundHasWater(frameInfo))
+    return false;
+  const float               level    = groundWaterLevel(frameInfo);
+  const GroundWaterCrossing crossing = groundWaterCrossing(ray.Origin, ray.Direction, payload.hitT, level, groundWaterWaves(frameInfo));
+  if(crossing.t < 0.0F)
+    return false;
+  fromAbove = crossing.fromAbove;
+
+  float3            pos   = ray.Origin + ray.Direction * crossing.t;
+  const GroundWaves waves = groundWavesAt(pos.xz, 0.0F, groundWaterWaves(frameInfo));
+  pos.y                   = level + waves.height;  // on the surface, whatever the root finder left
+  const float3 up         = normalize(float3(-waves.slope.slope.x, 1.0F, -waves.slope.slope.y));
+  const float3 normal     = fromAbove ? up : -up;
+
+  payload.hitT  = crossing.t;
+  hit.pos       = pos;
+  hit.shadowPos = pos;
+  hit.nrm       = normal;
+  hit.geonrm    = normal;
+  orthonormalBasis(normal, hit.tangent, hit.bitangent);
+  hit.frontFace = fromAbove;
+  // A heightfield in floats: a tenth of a millimetre clears its rounding, and the next ray's
+  // crossing test starts on the side it left to
+  hit.offsetDistance = 1e-4F + roundingGamma(3) * dot(abs(normal), abs(pos));
+  return true;
+}
+
+// The water's surface as a material: clear water, refracting into it from above and out of it from
+// below, smooth but for what the footprint averages of its waves and ripples. `geometricNormal` is the
+// hit's, which faces the ray.
+PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAbove, float footprint, SceneFrameInfo* frameInfo)
+{
+  const GroundWaves waves   = groundWavesAt(pos.xz, footprint, groundWaterWaves(frameInfo));
+  const GroundSlope ripples = groundRipplesAt(pos.xz, footprint, frameInfo->groundRipples);
+  const float2      slope   = waves.slope.slope + ripples.slope;
+  const float3      up      = normalize(float3(-slope.x, 1.0F, -slope.y));
+  PbrMaterial       mat     = defaultPbrMaterial(float3(1.0F), 0.0F, 0.0F, fromAbove ? up : -up, geometricNormal);
+  // pbrMat.roughness holds alpha; the averaged-out slopes add to its square as in groundMaterial
+  const float alpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * (waves.slope.variance + ripples.variance));
+  mat.roughness     = float2(max(alpha, MICROFACET_MIN_ROUGHNESS));
+  mat.transmission  = 1.0F;
+  mat.thickness     = 1.0F;  // a volume, so the ray bends; the water's absorption is the path's (pt.inWater)
+  mat.ior1          = fromAbove ? 1.0F : GROUND_WATER_IOR;
+  mat.ior2          = fromAbove ? GROUND_WATER_IOR : 1.0F;
+  return mat;
+}
+
 // The ground's material at `pos`, for a ray footprint `footprint` wide: the plane's colour and
 // roughness, under the water the host sets (groundWaterAt). Damp ground darkens and turns glossier,
 // its top layer becoming water's; a puddle's surface is water, smooth but for its ripples, whose
@@ -1809,6 +1862,28 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
   }
   return result;  // Too many layers: keep the glass's own guides
 }
+
+// Primary surface replacement through the water's surface: what the clear-glass chain finds of the
+// meshes along the refracted ray, or the floor under the water where that is nearer. The floor is
+// no mesh, so the chain does not see it.
+DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir, SceneFrameInfo* frameInfo)
+{
+  DlssGlassPsr psr       = dlssTraceClearGlass(waterMat, waterHit, dir, false);
+  const float3 N         = dot(waterMat.N, dir) < 0.0f ? waterMat.N : -waterMat.N;
+  const float3 refracted = refract(dir, N, waterMat.ior1 / waterMat.ior2);
+  if(dot(refracted, refracted) <= 0.0f || refracted.y >= 0.0f)
+    return psr;  // reflected whole, or up out of the water: no floor that way
+  const float floorT = infinitePlaneCrossing(waterHit.pos, refracted, INFINITE, frameInfo);
+  if(floorT < 0.0f || (psr.valid && psr.pathLength <= floorT))
+    return psr;
+  psr.valid      = true;
+  psr.albedo     = frameInfo->infinitePlaneBaseColor;
+  psr.normal     = float3(0.0f, 1.0f, 0.0f);
+  psr.roughness  = frameInfo->infinitePlaneRoughness * frameInfo->infinitePlaneRoughness;
+  psr.pathLength = floorT;
+  psr.posDelta   = float3(0.0f);
+  return psr;
+}
 #endif  // USE_DLSS_SHADER
 
 
@@ -1927,6 +2002,11 @@ struct PathTracerState
 #if GLTF_USE_TRANSMISSION || GLTF_USE_VOLUME
   bool isInside = false;
 #endif
+  // Under the water's surface (groundHasWater): its absorption charges every segment outside a
+  // mesh's own medium. Its own flag, so a medium entered under water (a leg's skin) leaves the path
+  // in the water again. The surface's events go on a budget of their own, the glass's size.
+  bool inWater      = false;
+  int  waterBounces = 0;
 #if GLTF_USE_VOLUME
   VolumeMedium volumeMedium = {};
   // Set on a scatter. Volume NEE is the only direct-light estimator for the walk, so an
@@ -1973,6 +2053,7 @@ struct BounceScratch
   bool   hairEvent           = false;         // This vertex was a fibre's and spent the hair budget, not a surface bounce
   bool   fibre               = false;         // This vertex was a fibre's, within the budget or past it
   bool   glassEvent          = false;         // This vertex was clear glass and spent the glass budget, not a surface bounce
+  bool   waterEvent          = false;         // This vertex was the water's surface and spent its budget, not a surface bounce
 };
 
 // The glass's own budget (PathtracePushConstant::glassBudget, the host's ptGlassBounces): events on clear
@@ -2051,7 +2132,7 @@ bool ptOnCameraRay(PathTracerState pt)
 #if GLTF_USE_TRANSMISSION
   none = none && pt.glassBounces == 0;
 #endif
-  return none;
+  return none && pt.waterBounces == 0;
 }
 
 // The light a path's ray meets on sized lights before `tMax` (with `escaped`, the discs of

@@ -213,3 +213,240 @@ TEST(GroundWater, WetGroundDarkens)
     lastRatio = wet / a;
   }
 }
+
+namespace {
+
+SceneFrameInfo lakeAt(float floor, float depth, float waves)
+{
+  SceneFrameInfo frame{};
+  frame.flags                 = SceneFrameInfoFlags::eSceneUseInfinitePlane;
+  frame.infinitePlaneDistance = floor;
+  frame.waterDepth            = depth;
+  frame.waterWaves            = waves;
+  return frame;
+}
+
+// The ray's height above the water's surface at t
+float aboveWater(float3 origin, float3 direction, float t, float level, float waves)
+{
+  const float3 p = origin + direction * t;
+  return p.y - level - groundWavesAt(float2(p.x, p.z), 0.0f, waves).height;
+}
+
+// A direction `elevation` radians off the horizontal, down (or up), at azimuth `azimuth`
+float3 slanted(float elevation, float azimuth, bool down)
+{
+  return float3(std::cos(elevation) * std::cos(azimuth), (down ? -1.0f : 1.0f) * std::sin(elevation), std::cos(elevation) * std::sin(azimuth));
+}
+
+}  // namespace
+
+// The swell's slope is its height's, and its bound holds it: gentle, a few centimetres
+TEST(GroundWaves, TheSlopeIsTheHeightsAndTheBoundHoldsIt)
+{
+  const float bound = groundWaveBound(1.0f);
+  EXPECT_GT(bound, 0.04f);
+  EXPECT_LT(bound, 0.08f);
+  EXPECT_EQ(groundWaveBound(0.0f), 0.0f);
+  float highest = 0, worst = 0;
+  for(const float2& p : floorPoints(50000))
+  {
+    const float2      q = p * 0.05f;  // within 5 m, where a float resolves the step
+    const GroundWaves w = groundWavesAt(q, 0.0f, 1.0f);
+    highest             = std::max(highest, std::abs(w.height));
+    const float h       = 1e-3f;
+    const float dx = (groundWavesAt(q + float2(h, 0.0f), 0.0f, 1.0f).height - groundWavesAt(q - float2(h, 0.0f), 0.0f, 1.0f).height) / (2.0f * h);
+    const float dz = (groundWavesAt(q + float2(0.0f, h), 0.0f, 1.0f).height - groundWavesAt(q - float2(0.0f, h), 0.0f, 1.0f).height) / (2.0f * h);
+    worst = std::max(worst, std::max(std::abs(dx - w.slope.slope.x), std::abs(dz - w.slope.slope.y)));
+    EXPECT_EQ(w.slope.variance, 0.0f);
+  }
+  EXPECT_LE(highest, bound);
+  EXPECT_GT(highest, 0.5f * bound);
+  EXPECT_LT(worst, 1e-3f);
+  const GroundWaves still = groundWavesAt(float2(1.0f, 2.0f), 0.0f, 0.0f);
+  EXPECT_EQ(still.height, 0.0f);
+  EXPECT_EQ(still.slope.slope.x, 0.0f);
+}
+
+// What a footprint averages out of the swell's slope goes into the variance, so a far surface
+// reflects as rough a sky as a near one does on average
+TEST(GroundWaves, WavesTheFootprintCoversBecomeRoughness)
+{
+  double reference = -1;
+  for(const float footprint : {0.0f, 0.3f, 1.0f, 10.0f})
+  {
+    double                    total  = 0;
+    const std::vector<float2> points = floorPoints(100000);
+    for(const float2& p : points)
+    {
+      const GroundWaves w = groundWavesAt(p, footprint, 1.0f);
+      total += 0.5 * (double(w.slope.slope.x) * w.slope.slope.x + double(w.slope.slope.y) * w.slope.slope.y) + w.slope.variance;
+    }
+    total /= double(points.size());
+    if(reference < 0)
+      reference = total;
+    EXPECT_NEAR(total, reference, 0.1 * reference) << footprint;
+  }
+  // gentle: an RMS slope of a few hundredths per axis
+  EXPECT_GT(std::sqrt(reference), 0.02);
+  EXPECT_LT(std::sqrt(reference), 0.06);
+}
+
+// A ray meets the surface where it is, the first time it does. Steeper than the steepest wave, a
+// ray's height over the surface only falls (or rises), so the crossing is the one there is.
+TEST(GroundWaves, ARayMeetsTheSurfaceWhereItIs)
+{
+  const float level = 0.7f, waves = 1.0f;
+  const float bound = groundWaveBound(waves);
+  uint        state = 99u;
+  const auto  next  = [&state]() {
+    state = state * 747796405u + 2891336453u;
+    return float(state >> 8) / 16777216.0f;
+  };
+  for(int i = 0; i < 2000; ++i)
+  {
+    const bool   down      = (i & 1) == 0;
+    const float  elevation = 0.27f + next() * 1.3f;  // 15 to 90 degrees
+    const float3 direction = slanted(elevation, next() * 6.2831853f, down);
+    const float3 origin    = float3(next() * 20.0f - 10.0f, level + (down ? 0.3f + 2.0f * next() : -bound - 0.02f - 0.5f * next()), next() * 20.0f - 10.0f);
+    const GroundWaterCrossing c = groundWaterCrossing(origin, direction, 1e30f, level, waves);
+    ASSERT_GT(c.t, 0.0f) << i;
+    EXPECT_EQ(c.fromAbove, down) << i;
+    EXPECT_LT(std::abs(aboveWater(origin, direction, c.t, level, waves)), 1e-4f) << i;
+    for(int k = 0; k < 50; ++k)  // nothing nearer
+    {
+      const float f = aboveWater(origin, direction, c.t * float(k) / 50.0f * 0.999f, level, waves);
+      EXPECT_TRUE(down ? f > 0.0f : f < 0.0f) << i << " " << k;
+    }
+    // short of the surface, or away from it: none
+    EXPECT_LT(groundWaterCrossing(origin, direction, 0.5f * c.t, level, waves).t, 0.0f) << i;
+    EXPECT_LT(groundWaterCrossing(origin, -direction, 1e30f, level, waves).t, 0.0f) << i;
+  }
+  // Still water is the level
+  const GroundWaterCrossing still = groundWaterCrossing(float3(0, 2, 0), normalize(float3(0.5f, -1, 0)), 1e30f, level, 0.0f);
+  EXPECT_NEAR(still.t, (2.0f - level) * std::sqrt(1.25f), 1e-4f);
+}
+
+TEST(GroundWaves, TheSurfaceReflectsWhatWaterDoes)
+{
+  EXPECT_NEAR(groundWaterFresnel(1.0f), (0.33f / 2.33f) * (0.33f / 2.33f), 1e-5f);
+  EXPECT_NEAR(groundWaterFresnel(0.0f), 1.0f, 1e-5f);
+  float last = 1.0f;
+  for(float c = 0.05f; c <= 1.0f; c += 0.05f)
+  {
+    EXPECT_LE(groundWaterFresnel(c), last);
+    last = groundWaterFresnel(c);
+  }
+}
+
+// A shadow ray keeps what the surface lets through and the water does not absorb, along the part of
+// it under the water
+TEST(GroundWaves, AShadowRayThroughTheWater)
+{
+  SceneFrameInfo lake    = lakeAt(0.0f, 1.0f, 0.4f);
+  const float    through = 1.0f - groundWaterFresnel(1.0f);
+  const auto     near3   = [](float3 a, float3 b) {
+    EXPECT_NEAR(a.x, b.x, 1e-5f);
+    EXPECT_NEAR(a.y, b.y, 1e-5f);
+    EXPECT_NEAR(a.z, b.z, 1e-5f);
+  };
+  // the surface over the origin, waves and all
+  const float crest = groundWavesAt(float2(0.0f, 0.0f), 0.0f, 0.4f).height;
+  // up out of half a metre of water (and the wave there), to the sun
+  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, 1, 0), 1e32f, &lake), through * exp(-(0.5f + crest) * GROUND_WATER_ABSORPTION));
+  // down into it, to a light at the same point
+  near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, -1, 0), 1.5f, &lake), through * exp(-(0.5f + crest) * GROUND_WATER_ABSORPTION));
+  // in the air, and to a light still above the water
+  near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, 1, 0), 1e32f, &lake), float3(1.0f));
+  near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, -1, 0), 0.5f, &lake), float3(1.0f));
+  // all of it under water: absorbed only
+  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, -1, 0), 0.25f, &lake), exp(-0.25f * GROUND_WATER_ABSORPTION));
+  // red goes first
+  const float3 deep = groundWaterShadowTransmittance(float3(0, 0.01f, 0), float3(0, 1, 0), 1e32f, &lake);
+  EXPECT_LT(deep.x, deep.y);
+  EXPECT_LT(deep.y, deep.z);
+  // no water: a floor without depth, or the catcher
+  SceneFrameInfo dry = lakeAt(0.0f, 0.0f, 0.4f);
+  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, 1, 0), 1e32f, &dry), float3(1.0f));
+  SceneFrameInfo catcher = lake;
+  catcher.flags |= SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher;
+  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, 1, 0), 1e32f, &catcher), float3(1.0f));
+}
+
+// Under a crest, over the level, is in the water: a shadow ray from there crosses the surface and is
+// charged the water up to it, as the path's own rays see it
+TEST(GroundWaves, UnderACrestIsInTheWater)
+{
+  SceneFrameInfo lake = lakeAt(0.0f, 1.0f, 1.0f);
+  // the highest crest near the origin
+  float2 top = float2(0.0f);
+  float  h   = -1.0f;
+  for(int i = 0; i < 400; ++i)
+    for(int j = 0; j < 400; ++j)
+    {
+      const float2 p = float2(float(i), float(j)) * 0.01f;
+      const float  w = groundWavesAt(p, 0.0f, 1.0f).height;
+      if(w > h)
+      {
+        h   = w;
+        top = p;
+      }
+    }
+  ASSERT_GT(h, 0.02f);
+  const float3 under = float3(top.x, 1.0f + 0.5f * h, top.y);
+  EXPECT_TRUE(groundUnderWater(under, &lake));
+  const float3 t = groundWaterShadowTransmittance(under, float3(0, 1, 0), 1e32f, &lake);
+  EXPECT_LT(t.x, 1.0f - groundWaterFresnel(1.0f));
+  EXPECT_NEAR(t.z, (1.0f - groundWaterFresnel(1.0f)) * std::exp(-0.5f * h * GROUND_WATER_ABSORPTION.z), 1e-5f);
+}
+
+// In water shallower than its swell the waves are kept lower, so no trough reaches the floor
+TEST(GroundWaves, ShallowWaterKeepsItsTroughsOffTheFloor)
+{
+  for(const float depth : {0.01f, 0.03f, 0.06f, 0.2f})
+  {
+    SceneFrameInfo lake = lakeAt(0.0f, depth, 1.0f);
+    EXPECT_LE(groundWaveBound(groundWaterWaves(&lake)), 0.8f * depth + 1e-6f) << depth;
+  }
+  // deep enough, the waves are those asked for
+  SceneFrameInfo deep = lakeAt(0.0f, 0.5f, 0.7f);
+  EXPECT_EQ(groundWaterWaves(&deep), 0.7f);
+}
+
+// A ray low over the water, which can skim a crest and cross twice in the waves' band, meets the
+// surface where it first does
+TEST(GroundWaves, AGrazingRayMeetsTheFirstCrossing)
+{
+  const float level = 0.0f, waves = 1.0f;
+  uint        state = 7u;
+  const auto  next  = [&state]() {
+    state = state * 747796405u + 2891336453u;
+    return float(state >> 8) / 16777216.0f;
+  };
+  for(int i = 0; i < 2000; ++i)
+  {
+    const float  elevation = 0.1f + next() * 0.17f;  // 6 to 15 degrees
+    const float3 direction = slanted(elevation, next() * 6.2831853f, true);
+    const float3 origin    = float3(next() * 20.0f - 10.0f, 0.5f + next(), next() * 20.0f - 10.0f);
+    const GroundWaterCrossing c = groundWaterCrossing(origin, direction, 1e30f, level, waves);
+    ASSERT_GT(c.t, 0.0f) << i;
+    EXPECT_TRUE(c.fromAbove) << i;
+    EXPECT_LT(std::abs(aboveWater(origin, direction, c.t, level, waves)), 1e-4f) << i;
+    for(int k = 0; k < 400; ++k)  // nothing nearer, a few millimetres apart
+      EXPECT_GT(aboveWater(origin, direction, c.t * float(k) / 400.0f * 0.999f, level, waves), 0.0f) << i << " " << k;
+  }
+}
+
+TEST(GroundWaves, WhatIsUnderTheWater)
+{
+  SceneFrameInfo lake = lakeAt(-0.2f, 1.0f, 1.0f);
+  EXPECT_TRUE(groundUnderWater(float3(0.3f, 0.5f, 0.1f), &lake));
+  EXPECT_FALSE(groundUnderWater(float3(0.3f, 0.9f, 0.1f), &lake));
+  // the waves decide near the level
+  const float2 p = float2(1.7f, -0.4f);
+  const float  h = groundWavesAt(p, 0.0f, 1.0f).height;
+  EXPECT_TRUE(groundUnderWater(float3(p.x, 0.8f + h - 1e-3f, p.y), &lake));
+  EXPECT_FALSE(groundUnderWater(float3(p.x, 0.8f + h + 1e-3f, p.y), &lake));
+  SceneFrameInfo dry = lakeAt(-0.2f, 0.0f, 1.0f);
+  EXPECT_FALSE(groundUnderWater(float3(0.3f, 0.0f, 0.1f), &dry));
+}

@@ -80,7 +80,8 @@ interface IRaytracer
   void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask, uint rayFlags);
   void TraceLow(RayDesc ray, inout HitPayload payload);
   // A shadow ray that starts inside a medium says so, with that medium's extinction: it attenuates
-  // every segment it travels inside one, up to TMax.
+  // every segment it travels inside one, up to TMax. The floor and the water over it are analytic,
+  // and charged on top (ground.h.slang).
   float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0));
 }
 
@@ -193,7 +194,8 @@ struct RayQueryRaytracer : IRaytracer
       return float3(0., 0., 0.);
     }
 
-    return ground * totalTransmission * shadowTailTransmittance(ray, isInside, extinction, prevHitT);
+    return ground * groundWaterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * totalTransmission
+           * shadowTailTransmittance(ray, isInside, extinction, prevHitT);
   }
 }
 
@@ -294,7 +296,7 @@ struct TraditionalRaytracer : IRaytracer
     }
     seed = shadowPayload.seed;  // any-hit consumed random numbers; propagate on every path
 
-    return ground * shadowPayload.totalTransmission
+    return ground * groundWaterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * shadowPayload.totalTransmission
            * shadowTailTransmittance(ray, shadowPayload.isInside, shadowPayload.extinction, shadowPayload.prevHitT);
   }
 }

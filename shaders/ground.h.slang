@@ -127,6 +127,42 @@ float groundCover(float z, float share, float edge)
   return 1.0F / (1.0F + exp(min((threshold - z) / edge, 80.0F)));
 }
 
+// A water surface's slope at a point, as a footprint sees it
+struct GroundSlope
+{
+  float2 slope;     // along x and z
+  float  variance;  // per axis: the detail finer than the footprint, for the roughness
+};
+
+// The ripples at `xz`, for a footprint `footprint` metres wide: three octaves of equal slope from
+// GROUND_RIPPLE_SCALE down, each gradient turned back into world axes. An octave as fine as the
+// footprint fades out of the slope and into the variance.
+GroundSlope groundRipplesAt(float2 xz, float footprint, float ripples)
+{
+  GroundSlope s;
+  s.slope    = float2(0.0F, 0.0F);
+  s.variance = 0.0F;
+  if(ripples <= 0.0F)
+    return s;
+  const float weight = ripples * GROUND_RIPPLE_SLOPE / sqrt(3.0F * GROUND_NOISE_SLOPE_VARIANCE);
+  float2      axisX  = float2(1.0F, 0.0F);
+  float2      axisZ  = float2(0.0F, 1.0F);
+  float       scale  = GROUND_RIPPLE_SCALE;
+  for(int k = 0; k < 3; ++k)
+  {
+    const float  kept = saturate(2.0F - 4.0F * footprint / scale);
+    const float2 q    = float2(dot(axisX, xz), dot(axisZ, xz)) / scale + float2(-2.9F + 7.3F * float(k), 4.3F + 1.9F * float(k));
+    const float3 n    = groundNoise(q);
+    s.slope += weight * kept * (axisX * n.y + axisZ * n.z);
+    s.variance += weight * weight * GROUND_NOISE_SLOPE_VARIANCE * (1.0F - kept * kept);
+    const float2 turned = 0.8F * axisX - 0.6F * axisZ;
+    axisZ               = 0.6F * axisX + 0.8F * axisZ;
+    axisX               = turned;
+    scale *= 0.4F;
+  }
+  return s;
+}
+
 struct GroundWater
 {
   float  damp;           // 0..1: the ground wet, darker (groundWetAlbedo) and glossier
@@ -178,27 +214,11 @@ GroundWater groundWaterAt(float2 xz, float footprint, float amount, float ripple
   water.puddle     = groundCover(z, saturate((amount - 0.3F) / 0.7F), sqrt(GROUND_PUDDLE_EDGE * GROUND_PUDDLE_EDGE + blur));
   water.damp       = max(water.damp, water.puddle);
 
-  if(water.puddle < 1e-3F || ripples <= 0.0F)
+  if(water.puddle < 1e-3F)
     return water;
-  // Three octaves of equal slope from GROUND_RIPPLE_SCALE down, each gradient turned back into
-  // world axes
-  const float slopeWeight = ripples * GROUND_RIPPLE_SLOPE / sqrt(3.0F * GROUND_NOISE_SLOPE_VARIANCE);
-  axisX                   = float2(1.0F, 0.0F);
-  axisZ                   = float2(0.0F, 1.0F);
-  scale                   = GROUND_RIPPLE_SCALE;
-  for(int k = 0; k < 3; ++k)
-  {
-    const float  kept = saturate(2.0F - 4.0F * footprint / scale);
-    const float2 q    = float2(dot(axisX, xz), dot(axisZ, xz)) / scale + float2(-2.9F + 7.3F * float(k), 4.3F + 1.9F * float(k));
-    const float3 n    = groundNoise(q);
-    water.slope += slopeWeight * kept * (axisX * n.y + axisZ * n.z);
-    water.slopeVariance += slopeWeight * slopeWeight * GROUND_NOISE_SLOPE_VARIANCE * (1.0F - kept * kept);
-    const float2 turned = 0.8F * axisX - 0.6F * axisZ;
-    axisZ               = 0.6F * axisX + 0.8F * axisZ;
-    axisX               = turned;
-    scale *= 0.4F;
-  }
-  water.slope *= water.puddle;
+  const GroundSlope rippled = groundRipplesAt(xz, footprint, ripples);
+  water.slope               = rippled.slope * water.puddle;
+  water.slopeVariance       = rippled.variance;
   return water;
 }
 
@@ -212,6 +232,240 @@ float3 groundWetAlbedo(float3 dry)
   const float n2       = GROUND_WATER_IOR * GROUND_WATER_IOR;
   const float internal = 1.0F - (1.0F - 0.066F) / n2;
   return min(dry, dry / (n2 * (float3(1.0F, 1.0F, 1.0F) - dry * internal)));
+}
+
+//-----------------------------------------------------------------------
+// A body of water over the ground
+//-----------------------------------------------------------------------
+// The ground's water mode: a surface `waterDepth` above the floor, its gentle waves a heightfield
+// the rays meet (groundWaterCrossing), the ripples on them in its normal only. Under it light is
+// absorbed as by pure water, the red first, so depth turns the floor and what stands in it cyan and
+// then blue. A path's ray refracts at the surface; a shadow ray crosses it straight, losing its
+// Fresnel share, as through clear glass (groundWaterShadowTransmittance): there are no caustics.
+
+// Pure water's absorption, per metre, over the bands of the sRGB primaries (Pope and Fry 1997)
+static const float3 GROUND_WATER_ABSORPTION = float3(0.29F, 0.055F, 0.011F);
+static const float  GROUND_TWO_PI           = 6.28318531F;
+// The swell at Waves 1: four trains of one steepness (their slope's amplitude) from a wind
+// GROUND_SWELL_WIND radians round from +x, each with its wavelength (metres), heading off the wind
+// (radians) and phase; and two octaves of noise, GROUND_SWELL_NOISE metres across and as high as
+// GROUND_SWELL_NOISE_HEIGHT times steepness times that, that keep the trains from looking ruled.
+// About 6 cm from trough to crest at most, RMS slope 0.06.
+static const float GROUND_SWELL_STEEPNESS    = 0.04F;
+static const float GROUND_SWELL_WIND         = 0.52F;
+static const float GROUND_SWELL_LENGTH[4]    = {3.1F, 1.9F, 1.3F, 0.83F};
+static const float GROUND_SWELL_HEADING[4]   = {0.0F, 0.4F, -0.55F, 0.82F};
+static const float GROUND_SWELL_PHASE[4]     = {0.0F, 1.7F, 4.1F, 2.6F};
+static const float GROUND_SWELL_NOISE[2]     = {1.1F, 0.45F};
+static const float GROUND_SWELL_NOISE_HEIGHT = 0.35F;
+// groundNoise never leaves -1..1 (its gradients' components do not)
+static const float GROUND_NOISE_BOUND = 1.0F;
+
+struct GroundWaves
+{
+  float       height;  // above the water's level, with every train and octave
+  GroundSlope slope;   // as the footprint sees it
+};
+
+// The swell at `xz`, for a footprint `footprint` metres wide. A train or octave as fine as the
+// footprint fades out of the slope and into its variance; the height keeps them all, since it is
+// the surface the rays meet.
+GroundWaves groundWavesAt(float2 xz, float footprint, float waves)
+{
+  GroundWaves w;
+  w.height         = 0.0F;
+  w.slope.slope    = float2(0.0F, 0.0F);
+  w.slope.variance = 0.0F;
+  if(waves <= 0.0F)
+    return w;
+  const float steepness = GROUND_SWELL_STEEPNESS * waves;
+  for(int i = 0; i < 4; ++i)
+  {
+    const float  heading = GROUND_SWELL_WIND + GROUND_SWELL_HEADING[i];
+    const float2 dir     = float2(cos(heading), sin(heading));
+    const float  k       = GROUND_TWO_PI / GROUND_SWELL_LENGTH[i];
+    const float  phase   = k * dot(dir, xz) + GROUND_SWELL_PHASE[i];
+    const float  kept    = saturate(2.0F - 4.0F * footprint / GROUND_SWELL_LENGTH[i]);
+    w.height += steepness / k * sin(phase);
+    w.slope.slope += kept * steepness * cos(phase) * dir;
+    // a train's slope varies along its heading only: half its square there, a quarter per axis
+    w.slope.variance += (1.0F - kept * kept) * 0.25F * steepness * steepness;
+  }
+  for(int j = 0; j < 2; ++j)
+  {
+    const float  scale  = GROUND_SWELL_NOISE[j];
+    const float  height = GROUND_SWELL_NOISE_HEIGHT * steepness * scale;
+    const float3 n      = groundNoise(xz / scale + float2(11.3F + 6.1F * float(j), -5.7F + 2.3F * float(j)));
+    const float  kept   = saturate(2.0F - 4.0F * footprint / scale);
+    w.height += height * n.x;
+    w.slope.slope += kept * height / scale * float2(n.y, n.z);
+    w.slope.variance += (1.0F - kept * kept) * (height / scale) * (height / scale) * GROUND_NOISE_SLOPE_VARIANCE;
+  }
+  return w;
+}
+
+// How far the waves reach above and below the level: all their crests at once, which bounds them
+float groundWaveBound(float waves)
+{
+  const float steepness = GROUND_SWELL_STEEPNESS * max(waves, 0.0F);
+  float       bound     = 0.0F;
+  for(int i = 0; i < 4; ++i)
+    bound += steepness * GROUND_SWELL_LENGTH[i] / GROUND_TWO_PI;
+  for(int j = 0; j < 2; ++j)
+    bound += GROUND_NOISE_BOUND * GROUND_SWELL_NOISE_HEIGHT * steepness * GROUND_SWELL_NOISE[j];
+  return bound;
+}
+
+struct GroundWaterCrossing
+{
+  float t;          // along the ray; negative: it meets no water
+  bool  fromAbove;  // it comes down onto the water from the air
+};
+
+// The ray's height above the water's surface at t
+float groundHeightAboveWater(float3 origin, float3 direction, float t, float level, float waves)
+{
+  return origin.y + t * direction.y - level - groundWavesAt(float2(origin.x + t * direction.x, origin.z + t * direction.z), 0.0F, waves).height;
+}
+
+// Where a ray first meets the water surface, the heightfield over `level`, between 0 and tMax: in
+// the band the waves keep to, stepped across for its first change of side and closed by the
+// Illinois false position. A grazing ray can skim a crest and cross twice in the band; steps of
+// 15 cm across the water, a third of its shortest swell, find the first (at most 8: a ray within a
+// degree or so of the horizontal, far out, may still miss a crest).
+GroundWaterCrossing groundWaterCrossing(float3 origin, float3 direction, float tMax, float level, float waves)
+{
+  GroundWaterCrossing c;
+  c.t         = -1.0F;
+  c.fromAbove = false;
+  if(abs(direction.y) < 1e-6F)
+    return c;
+  // A still surface's band is a hair thick, so a flat level brackets like a wavy one
+  const float bound   = groundWaveBound(waves) + 1e-4F;
+  const float tTop    = (level + bound - origin.y) / direction.y;
+  const float tBottom = (level - bound - origin.y) / direction.y;
+  float       ta      = max(0.0F, min(tTop, tBottom));
+  float       tb      = min(tMax, max(tTop, tBottom));
+  if(!(ta < tb))
+    return c;
+  float       fa    = groundHeightAboveWater(origin, direction, ta, level, waves);
+  float       fb    = fa;
+  const float span  = (tb - ta) * sqrt(direction.x * direction.x + direction.z * direction.z);
+  const int   steps = clamp(int(ceil(span / 0.15F)), 1, 8);
+  const float end   = tb;
+  bool        found = false;
+  for(int s = 1; s <= steps && !found; ++s)
+  {
+    const float t = s == steps ? end : ta + (end - ta) * float(s) / float(steps);
+    const float f = groundHeightAboveWater(origin, direction, t, level, waves);
+    if((f > 0.0F) != (fa > 0.0F))
+    {
+      tb    = t;
+      fb    = f;
+      found = true;
+    }
+    else
+    {
+      ta = t;
+      fa = f;
+    }
+  }
+  if(!found)
+    return c;
+  c.fromAbove = fa > 0.0F;
+  int   side  = 0;
+  float t     = ta;
+  for(int i = 0; i < 10; ++i)
+  {
+    t             = (ta * fb - tb * fa) / (fb - fa);
+    const float f = groundHeightAboveWater(origin, direction, t, level, waves);
+    if(abs(f) < 1e-6F)
+      break;
+    if((f > 0.0F) == (fb > 0.0F))
+    {
+      tb = t;
+      fb = f;
+      if(side == -1)
+        fa *= 0.5F;
+      side = -1;
+    }
+    else
+    {
+      ta = t;
+      fa = f;
+      if(side == 1)
+        fb *= 0.5F;
+      side = 1;
+    }
+  }
+  c.t = t;
+  return c;
+}
+
+// The share of light the water's surface reflects, unpolarised, for light meeting it from the air
+// at `cosTheta` to its normal (or leaving it into the air there: the same share)
+float groundWaterFresnel(float cosTheta)
+{
+  const float c     = saturate(cosTheta);
+  const float n     = GROUND_WATER_IOR;
+  const float sinT2 = (1.0F - c * c) / (n * n);
+  const float cosT  = sqrt(max(1.0F - sinT2, 0.0F));
+  const float rs    = (c - n * cosT) / (c + n * cosT);
+  const float rp    = (n * c - cosT) / (n * c + cosT);
+  return 0.5F * (rs * rs + rp * rp);
+}
+
+// Whether there is a body of water: the plane is a floor (not the catcher) with a depth over it
+bool groundHasWater(SceneFrameInfo* frameInfo)
+{
+  return (frameInfo->flags & int(SceneFrameInfoFlags::eSceneUseInfinitePlane)) != 0
+         && (frameInfo->flags & int(SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher)) == 0 && frameInfo->waterDepth > 0.0F;
+}
+
+float groundWaterLevel(SceneFrameInfo* frameInfo)
+{
+  return frameInfo->infinitePlaneDistance + frameInfo->waterDepth;
+}
+
+// The waves the water has: those asked for, but in shallow water no higher than keeps every trough
+// a fifth of the depth off the floor
+float groundWaterWaves(SceneFrameInfo* frameInfo)
+{
+  return min(frameInfo->waterWaves, 0.8F * frameInfo->waterDepth / groundWaveBound(1.0F));
+}
+
+// Whether `pos` is under the water's surface, waves and all
+bool groundUnderWater(float3 pos, SceneFrameInfo* frameInfo)
+{
+  return groundHasWater(frameInfo)
+         && pos.y < groundWaterLevel(frameInfo) + groundWavesAt(float2(pos.x, pos.z), 0.0F, groundWaterWaves(frameInfo)).height;
+}
+
+// What a shadow ray keeps of its light through the water: its Fresnel share where it crosses the
+// surface, which it does straight, and what the water absorbs along the part of it under the
+// surface. The share is the one light from the air meets at the ray's angle to the level: it is that
+// light, bent on the way in, that the ray stands for (the waves' tilt is left out: no caustics).
+// Whether the ray starts under water is the surface's, waves and all, as for the path's own rays:
+// a leg under a crest is in the water.
+float3 groundWaterShadowTransmittance(float3 origin, float3 direction, float tMax, SceneFrameInfo* frameInfo)
+{
+  const float3 clear = float3(1.0F, 1.0F, 1.0F);
+  if(!groundHasWater(frameInfo))
+    return clear;
+  const float level = groundWaterLevel(frameInfo);
+  const float waves = groundWaterWaves(frameInfo);
+  // Over every crest and not going down, as most shadow rays are: in the air all the way
+  if(origin.y > level + groundWaveBound(waves) && direction.y >= 0.0F)
+    return clear;
+  const bool                under    = groundUnderWater(origin, frameInfo);
+  const GroundWaterCrossing crossing = groundWaterCrossing(origin, direction, tMax, level, waves);
+  if(!under && crossing.t < 0.0F)
+    return clear;  // the ray stays in the air
+  // how far the ray runs in the water: to the surface, or from it to the light; all of it when the
+  // light is in the water too
+  const float wet     = under ? (crossing.t >= 0.0F ? crossing.t : tMax) : tMax - crossing.t;
+  const float through = crossing.t >= 0.0F ? 1.0F - groundWaterFresnel(abs(direction.y)) : 1.0F;
+  return through * exp(-GROUND_WATER_ABSORPTION * wet);
 }
 
 #endif  // GROUND_H_SLANG

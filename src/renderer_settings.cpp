@@ -472,6 +472,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.groundWater, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name = "groundRipples", .help = "Ground: ripples on its water, 0 still to 1", .callbackSuccess = groundChanged},
                  &m_resources.settings.groundRipples, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({.name = "groundWaterDepth", .help = "Ground: a body of water this many metres deep over the plane (0: none)", .callbackSuccess = groundChanged},
+                 &m_resources.settings.groundWaterDepth, Persist::eYes, 0.0F, 10.0F);
+  m_settings.add({.name = "groundWaves", .help = "Ground: the waves on the body of water, 0 still to 1 gentle", .callbackSuccess = groundChanged},
+                 &m_resources.settings.groundWaves, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name = "skySunScale", .help = "Sky: multiplier on the light the sky's sun gives (0: no sun light)", .callbackSuccess = groundChanged},
                  &m_resources.settings.skySunScale, Persist::eNo, 0.0F, 100.0F);
 

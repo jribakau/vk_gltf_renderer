@@ -181,7 +181,7 @@ void patchGround(Ground& g, const Json& p)
     const Json&        v   = it.value();
     const std::string  key = "ground." + k;
     if(k == "mode")
-      field(g.mode, d.mode, v, [&](const Json& x) { return oneOf(x, key, {"floor", "catcher", "off"}); });
+      field(g.mode, d.mode, v, [&](const Json& x) { return oneOf(x, key, {"floor", "water", "catcher", "off"}); });
     else if(k == "height")
     {
       if(v.is_null() || (v.is_string() && v.get<std::string>() == "auto"))
@@ -209,6 +209,10 @@ void patchGround(Ground& g, const Json& p)
       field(g.water, d.water, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else if(k == "ripples")
       field(g.ripples, d.ripples, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "depth")
+      field(g.depth, d.depth, v, [&](const Json& x) { return number(x, key, 0.01, 10.0); });
+    else if(k == "waves")
+      field(g.waves, d.waves, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -277,7 +281,9 @@ Json toJson(const State& s)
         {"darkness", g.darkness},
         {"fade", g.fade},
         {"water", g.water},
-        {"ripples", g.ripples}}},
+        {"ripples", g.ripples},
+        {"depth", g.depth},
+        {"waves", g.waves}}},
       {"tonemap",
        {{"method", t.method},
         {"exposure", t.exposure},
@@ -615,6 +621,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       // a shadow catcher is no surface to wet
       {"groundWater", g.mode == "floor" ? g.water : 0.0},
       {"groundRipples", g.ripples},
+      {"groundWaterDepth", g.mode == "water" ? g.depth : 0.0},
+      {"groundWaves", g.waves},
       // the physical sky measures its own sun; the panel's strength scales it, from the default up
       {"skySunScale", s.sun.enabled ? s.sun.intensity / Sun{}.intensity : 0.0},
   };

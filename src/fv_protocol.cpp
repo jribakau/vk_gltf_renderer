@@ -50,8 +50,9 @@ namespace {
 // the scene state's `physics`, and view.set's pick "pull". 22: water on the ground, the lighting's
 // ground.water and ground.ripples. 23: a Hold per body group, physics.set's and the physics topic's
 // and scene state's `parts`. 24: the chest's soft bones: physics.secondary, the secondary/<prop> topic
-// and the scene state's `secondary`.
-constexpr int kProtocolVersion = 24;
+// and the scene state's `secondary`. 25: a body of water over the ground, the lighting's ground.mode
+// "water" with ground.depth and ground.waves.
+constexpr int kProtocolVersion = 25;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

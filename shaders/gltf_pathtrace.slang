@@ -246,6 +246,21 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // Check if we hit the infinite plane
     bool hitInfinitePlane = checkInfinitePlaneIntersection(ray, payload, hit, frameInfo, seed);
 
+    // Then the water's surface, over the floor: before it, it is the hit
+    bool       waterFromAbove = false;
+    const bool hitWater       = checkWaterIntersection(ray, payload, hit, frameInfo, waterFromAbove);
+    if(hitWater)
+      hitInfinitePlane = false;
+
+    // A segment under the water, outside any mesh's own medium, is charged its absorption. One that
+    // never meets the surface or the floor (past the floor's fade) is lost in it.
+    if(pt.inWater && !ptIsInside(pt))
+    {
+      if(payload.hitT == INFINITE)
+        return PathStepResult.eBreak;
+      pt.throughput *= exp(-GROUND_WATER_ABSORPTION * payload.hitT);
+    }
+
     //-----------------------------------------------------------------------
     // Hitting the environment
     //-----------------------------------------------------------------------
@@ -384,6 +399,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       // Replaced the material at the hit point with the infinite plane material, and its water
       pbrMat = groundMaterial(hit.pos, worldFoot, frameInfo);
+      // Under a body of water, what is over the floor is water
+      if(pt.inWater)
+        pbrMat.ior1 = GROUND_WATER_IOR;
 
       // Shadow catcher: invisible plane that shows only shadows for compositing
       if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
@@ -407,6 +425,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           return PathStepResult.eBreak;
         return PathStepResult.eEarlyContinue;  // On through the plane, as if it were not there
       }
+    }
+    //-----------------------------------------------------------------------
+    // Hitting the water's surface
+    //-----------------------------------------------------------------------
+    else if(hitWater)
+    {
+      pbrMat = waterSurfaceMaterial(hit.pos, hit.geonrm, waterFromAbove, worldFoot, frameInfo);
     }
     //-----------------------------------------------------------------------
     // Hitting the mesh
@@ -484,6 +509,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       mesh.baseColorVertexMul = hit.color;
       mesh.masks              = hit.masks;
       pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials, simplifyScatter);
+      // Under the water, what is outside a surface is water, not air: submerged skin all but loses its
+      // sheen, and glass bends less
+      if(pt.inWater)
+      {
+        if(!ptIsInside(pt))
+          pbrMat.ior1 = GROUND_WATER_IOR;
+        else if(pbrMat.ior2 == 1.0F)
+          pbrMat.ior2 = GROUND_WATER_IOR;
+      }
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
       if(diffuseExit)
       {
@@ -580,7 +614,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // #DLSS instance and deformation motion - Previous-frame world position of this surface point.
       // Only DLSS's motion vectors read it: the other denoisers' variant leaves it out.
       pt.firstHitPosPrev = hit.pos;
-      if(!hitInfinitePlane)
+      if(!hitInfinitePlane && !hitWater)
       {
         const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
         pt.firstHitPosPrev = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos);
@@ -620,7 +654,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // #DLSS primary surface replacement: describe what is seen through the glass. The albedo
         // keeps the glass's Fresnel share; depth and motion come from the replaced surface.
-        DlssGlassPsr psr     = dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt));
+        DlssGlassPsr psr     = hitWater ? dlssTraceWater(pbrMat, hit, ray.Direction, frameInfo)
+                                        : dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt));
         float        ndotv   = saturate(dot(pbrMat.N, -ray.Direction));
         float        fresnel = schlickFresnel((pbrMat.ior2 > 0.0f) ? (pbrMat.ior2 / pbrMat.ior1) : 1.5f, ndotv);
         guideAlbedo          = dlssEnforceMinAlbedo(lerp(psr.albedo, pbrMat.baseColor.xyz, fresnel), specularAlbedo);
@@ -711,11 +746,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // Emitters are also sampled as area lights, textured ones by their texture's mean; a BSDF ray that
     // hits one is MIS-weighted against the light technique, mirroring the env-hit MIS above. A one-sided
     // emitter met from behind is only a surface, as the light samples have it (sampleEmissiveTriangle).
-    const bool emitsThisWay = hitInfinitePlane || hit.frontFace || materials[materialIndex].doubleSided != 0;
+    const bool emitsThisWay = hitInfinitePlane || hitWater || hit.frontFace || materials[materialIndex].doubleSided != 0;
     if(!walkOwnsDirect && emitsThisWay && any(pbrMat.emissive > float3(0.0)))
     {
       float emissiveMis = 1.0;
-      if(!hitInfinitePlane)
+      if(!hitInfinitePlane && !hitWater)
       {
         // Power-weighted MIS pdf needs only the radiance the emitter was picked by, its geometric
         // normal, and W_total (the area cancels) -- no per-triangle lookup.
@@ -787,13 +822,16 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     bounce.glassEvent = !hairOn && materialIndex >= 0 && pt.glassBounces < pushConst.glassBudget && pbrMat.transmission > MIN_TRANSMISSION
                         && materialAlpha <= CLEAR_CROSSING_ALPHA && materials[materialIndex].scatterStrengthFactor <= 0.0F;
 #endif
+    // The water's surface likewise, on a count of its own the glass's size: its rays go into the water
+    // to the floor and what stands in it, and back out
+    bounce.waterEvent = hitWater && pt.waterBounces < pushConst.glassBudget;
     // The last vertex's BSDF continuation is never traced (the loop ends first), so its light samples
     // have no BSDF-sampled partner: weight 1, as for a punctual light, and the full environment table.
     bool hairCut = false;
 #if GLTF_USE_HAIR
     hairCut = hairCutHere(bounce.fibre, pt.hairBounces);
 #endif
-    const bool lastVertex = hairCut || (!bounce.hairEvent && !bounce.glassEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth);
+    const bool lastVertex = hairCut || (!bounce.hairEvent && !bounce.glassEvent && !bounce.waterEvent && pt.surfaceDepth + 1 >= pushConst.maxDepth);
     // The lobe mixture for this vertex's light sample and BSDF sample alike, so their MIS agrees. With
     // ePtLobeMixtureDirect only where the path is still direct: there a catchlight is seen, through a
     // cornea one sample in forty with a single lobe; past a rough bounce one lobe costs a third less.
@@ -949,6 +987,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
                       && (sampleData.event_type & (BSDF_EVENT_GLOSSY | BSDF_EVENT_IMPULSE)) != 0
                       && materialAlpha <= CLEAR_CROSSING_ALPHA && materials[materialIndex].scatterStrengthFactor <= 0.0F;
 #endif
+      // The water's surface is crossed so by shadow rays whatever its roughness (groundWaterShadowTransmittance)
+      clearCrossing = clearCrossing || (hitWater && (sampleData.event_type & BSDF_EVENT_TRANSMISSION) != 0);
       if(clearCrossing)
       {
         pt.lastSamplePdf = prevSamplePdf;
@@ -1023,7 +1063,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if GLTF_USE_TRANSMISSION
         // Thin-walled transmission (thickness == 0) has no interior, so it must not flip isInside.
         // The scatter preview evaluates a volumetric material as thin and likewise stays outside.
-        if(isTransmission && pbrMat.thickness > 0.0f)
+        if(isTransmission && pbrMat.thickness > 0.0f && !hitWater)
         {
           bool previewThin = false;
 #if GLTF_USE_SCATTER
@@ -1054,6 +1094,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           }
         }
 #endif
+
+        // Through the water's surface the path goes into the water or out of it; reflected, it stays
+        // on the side it came from
+        if(hitWater)
+          pt.inWater = isTransmission ? waterFromAbove : !waterFromAbove;
 
         // A walk entered from a surface seen directly keeps the path direct until it leaves, as in
         // Unreal: the skin's light is the walk's, and the exit's own diffuse sample makes the path rough.
@@ -1136,6 +1181,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
 {
   PathTracerState pt = {};
+  pt.inWater         = groundUnderWater(ray.Origin, pushConst.frameInfo);
 
 #if GLTF_USE_VOLUME
   // A camera path starts in the medium the camera is in (probeCameraMedium). No pointer: the scene
@@ -1194,7 +1240,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     fibreRoulette = bounce.fibre && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss)
                     && pushConst.hairRouletteDlss < 1.0F && pt.hairBounces >= pushConst.hairRouletteFrom;
 #endif
-    if((depth >= RR_MIN_DEPTH || fibreRoulette) && (bounce.hairEvent || bounce.glassEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
+    if((depth >= RR_MIN_DEPTH || fibreRoulette) && (bounce.hairEvent || bounce.glassEvent || bounce.waterEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
     {
       float rrCap = 1.0F;
 #if GLTF_USE_HAIR
@@ -1212,7 +1258,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       }
     }
 
-    // Consume one surface bounce, or one of the hair's or the glass's; a path cut at a fibre (hairCutDlss) ends here
+    // Consume one surface bounce, or one of the hair's, the glass's or the water's; a path cut at a fibre (hairCutDlss) ends here
 #if GLTF_USE_HAIR
     if(hairCutHere(bounce.fibre, pt.hairBounces))
       pt.surfaceDepth = pushConst.maxDepth;
@@ -1225,6 +1271,9 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       pt.glassBounces++;
     else
 #endif
+    if(bounce.waterEvent)
+      pt.waterBounces++;
+    else
       pt.surfaceDepth++;
   }
 

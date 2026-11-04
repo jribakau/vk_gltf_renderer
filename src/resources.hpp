@@ -261,6 +261,9 @@ struct Settings
   // Water on the ground, 0 dry to 1 a sheet of it, and its ripples (SceneFrameInfo::groundWater)
   float groundWater   = 0.0f;
   float groundRipples = 0.25f;
+  // A body of water over the ground: its depth in metres (0: none) and its waves (SceneFrameInfo::waterDepth)
+  float groundWaterDepth = 0.0f;
+  float groundWaves      = 0.4f;
   // A multiplier on the light the sky's sun gives (SceneFrameInfo::skySunScale).
   float skySunScale = 1.0f;
   bool      dlssRrHardwareAvailable = false;  // DLSS Ray Reconstruction hardware/extensions available (set at startup)

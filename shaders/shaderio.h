@@ -291,6 +291,12 @@ struct SceneFrameInfo
   // how rippled its surface is, 0 still to 1. (Appended, per the note above.)
   float groundWater   = 0.0F;
   float groundRipples = 0.0F;
+
+  // A body of water over the ground (groundHasWater): its surface this far above the plane, in
+  // metres (0: none), and how high its waves run, 0 still to 1. The ripples are groundRipples.
+  // (Appended, per the note above.)
+  float waterDepth = 0.0F;
+  float waterWaves = 0.0F;
 };
 
 enum PathtracerFlags

@@ -219,6 +219,15 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   the water the host sets on it (`groundWaterAt`), damp ground and puddles from a noise field in
   world space, evaluated at the hit and filtered by its ray footprint. No texture and no extra ray;
   the shadow test is the same wet or dry.
+- **A body of water over the ground** (`groundHasWater`). Its surface is a heightfield of gentle
+  waves (`groundWavesAt`) that a path's ray meets analytically after the floor
+  (`checkWaterIntersection`, `groundWaterCrossing`), shaded as smooth water with the waves and
+  ripples in its normal (`waterSurfaceMaterial`). The path keeps its own `inWater` flag beside a
+  mesh's medium: each segment under the surface is charged pure water's absorption, and what is
+  under it sees water, not air, outside its surfaces. Crossing the surface is a clear crossing for MIS
+  and spends a budget of its own, the glass's size. A shadow ray crosses the surface straight
+  (`groundWaterShadowTransmittance`), keeping its Fresnel share and what the water does not
+  absorb, so there are no caustics.
 
 The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-SER path traces with
 `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and reads the result from `rmissShadow`, which sets

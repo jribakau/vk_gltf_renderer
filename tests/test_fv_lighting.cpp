@@ -295,6 +295,25 @@ TEST(FvLighting, WaterWetsAFloorOnly)
   EXPECT_EQ(L::applyPatch(s, {{"ground", {{"water", nullptr}}}}).ground.water, 0.0);
 }
 
+// A body of water: the ground's water mode, its depth and waves; a floor's wet layer goes with it
+TEST(FvLighting, TheWaterModeIsABodyOfWater)
+{
+  EXPECT_EQ(L::rendererParams(L::State{}, {})["groundWaterDepth"], 0.0);
+  L::State s = L::applyPatch(L::State{}, {{"ground", {{"mode", "water"}, {"depth", 1.2}, {"waves", 0.7}, {"water", 0.5}}}});
+  Json     p = L::rendererParams(s, {});
+  EXPECT_EQ(p["useInfinitePlane"], true);
+  EXPECT_EQ(p["isShadowCatcher"], false);
+  EXPECT_EQ(p["groundWaterDepth"], 1.2);
+  EXPECT_EQ(p["groundWaves"], 0.7);
+  EXPECT_EQ(p["groundWater"], 0.0);
+  EXPECT_EQ(L::toJson(s)["ground"]["depth"], 1.2);
+  // a puddle's depth at least, ten metres at most
+  EXPECT_EQ(L::applyPatch(s, {{"ground", {{"depth", 0}}}}).ground.depth, 0.01);
+  EXPECT_EQ(L::applyPatch(s, {{"ground", {{"depth", 50}}}}).ground.depth, 10.0);
+  s.ground.mode = "floor";
+  EXPECT_EQ(L::rendererParams(s, {})["groundWaterDepth"], 0.0);
+}
+
 namespace {
 
 // A lat-long sky of luminance 1 with, optionally, a disc of `sun` around `toSun` (environment frame)

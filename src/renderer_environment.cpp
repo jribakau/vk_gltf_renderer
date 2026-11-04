@@ -679,6 +679,8 @@ void GltfRenderer::fillGround(shaderio::SceneFrameInfo& finfo) const
   const Settings&     settings = m_resources.settings;
   finfo.groundWater            = settings.groundWater;
   finfo.groundRipples          = settings.groundRipples;
+  finfo.waterDepth             = settings.groundWaterDepth;
+  finfo.waterWaves             = settings.groundWaves;
   const SceneGpuView& view     = m_resources.gpuView();
   if(!settings.useInfinitePlane || settings.groundFade <= 0.0F || !view.hasContent() || view.renderNodeCapacity() == 0)
     return;
