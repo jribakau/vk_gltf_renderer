@@ -751,6 +751,9 @@ void FvHost::onUpdate()
           s.publishWardrobe(f);
       }
       timePhase("frame: figure changes applied");
+      // a prop's own pose or shape moved: the bodies it presses into look again (pokeContacts)
+      if(!f.contact && (!changes.nodes.empty() || std::any_of(changes.meshes.begin(), changes.meshes.end(), [](const fv::morph::MeshChange& m) { return !m.caughtUp; })))
+        f.contactRev++;
       if(!changes.nodes.empty())
       {
         const auto t0 = std::chrono::steady_clock::now();

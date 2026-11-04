@@ -284,6 +284,31 @@ ContactResult resolveContacts(const ContactInput& in)
   return out;
 }
 
+std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root)
+{
+  std::vector<std::vector<float>> out(meshes.size());
+  const auto worlds    = scene.worlds();
+  const auto nodeOf    = dforce::nodeOfMesh(scene);
+  const Mat4 rootWorld = root >= 0 && size_t(root) < worlds.size() ? worlds[size_t(root)] : Mat4{};
+  for(size_t k = 0; k < meshes.size(); k++)
+  {
+    const int mesh = meshes[k];
+    if(mesh < 0 || size_t(mesh) >= scene.meshes.size())
+      continue;
+    const Mesh& m = scene.meshes[size_t(mesh)];
+    if(!m.geo || m.geo->cagePositions.empty())
+      continue;
+    std::vector<float> scratch;
+    const auto         view = morphs.morphedCageView(mesh, scratch);
+    std::vector<float> posed(view.begin(), view.end());
+    if(m.skinned() && m.cageSkin.start.size() == posed.size() / 3 + 1)
+      posed = dforce::skinLocal(posed, dforce::cageSkin(m.cageSkin), dforce::currentSkin(scene, worlds, nodeOf, mesh));
+    const int node = nodeOf[size_t(mesh)];
+    out[k]         = dforce::transformPoints(inverse(rootWorld) * (node >= 0 ? worlds[size_t(node)] : Mat4{}), posed);
+  }
+  return out;
+}
+
 // What a pass needs and where its result goes, taken on the owning thread.
 struct Contact::Job
 {

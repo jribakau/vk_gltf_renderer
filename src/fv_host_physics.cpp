@@ -79,6 +79,15 @@ fv::physics::Box meshBounds(const tinygltf::Model& model, int mesh)
 // is still taken as inside a closed prop.
 constexpr double kContactNear = 8;
 
+// Whether a figure's node shows: neither it nor a node above it hidden or taken off.
+bool drawn(const fv::SceneGraph& scene, int node)
+{
+  for(int n = node; n >= 0; n = scene.nodes[size_t(n)].parent)
+    if(!scene.nodes[size_t(n)].visible || scene.nodes[size_t(n)].removed)
+      return false;
+  return true;
+}
+
 }  // namespace
 
 std::shared_ptr<const fv::physics::SharedTriangles> FvHost::Impl::contactMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh)
@@ -91,9 +100,41 @@ std::shared_ptr<const fv::physics::SharedTriangles> FvHost::Impl::contactMesh(co
   return set;
 }
 
-// Every shown model prop's meshes, placed in the figure root's space (centimetres): where the
-// renderer has each node now, so a prop riding a bone or carried by a parent is where it shows.
-// Skinned meshes are left out: their triangles are not where the file has them.
+// A DAZ prop's shown meshes as triangle sets in its root's space, posed as it is now (its morphs and
+// bones): made again once its pose or shape moved, indexed on the pool the first time a pass needs one.
+const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::Impl::contactSets(Loaded& prop)
+{
+  if(prop.contactSetsAt == prop.contactRev)
+    return prop.contactSets;
+  prop.contactSetsAt = prop.contactRev;
+  prop.contactSets.clear();
+  const fv::SceneGraph& scene = prop.fig->loaded.scene;
+  std::vector<int>      meshes;
+  for(size_t n = 0; n < scene.nodes.size(); n++)
+    if(scene.nodes[n].mesh >= 0 && drawn(scene, int(n)))
+      meshes.push_back(scene.nodes[n].mesh);
+  std::vector<std::vector<float>> posed = fv::physics::posedCages(scene, *prop.fig->morphs, meshes, prop.fig->loaded.root);
+  for(size_t k = 0; k < meshes.size(); k++)
+  {
+    const auto& geo = scene.meshes[size_t(meshes[k])].geo;
+    if(posed[k].empty() || !geo || geo->dsonTris.empty())
+      continue;
+    const fv::physics::Box bounds = fv::physics::boundsOf(posed[k]);
+    prop.contactSets.push_back(std::make_shared<const fv::physics::SharedTriangles>(
+        [xyz = std::move(posed[k]), tris = geo->dsonTris]() mutable {
+          std::vector<std::pair<std::vector<float>, std::vector<uint32_t>>> out;
+          out.emplace_back(std::move(xyz), std::move(tris));
+          return out;
+        },
+        bounds));
+  }
+  return prop.contactSets;
+}
+
+// Every shown model prop's meshes and DAZ prop's, placed in the figure root's space (centimetres):
+// where the renderer has each node now, so a prop riding a bone or carried by a parent is where it
+// shows. A model's skinned meshes are left out: their triangles are not where the file has them.
+// Another person is met from step 3 on, where each body takes its share of an overlap.
 std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loaded& f)
 {
   std::vector<fv::physics::ColliderRef> out;
@@ -118,6 +159,18 @@ std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loade
       out.push_back({contactMesh(p->model, n.mesh), fromWorld * toMat4(scene.world(e)), 1.0});
     }
   }
+  for(const auto& p : props)
+  {
+    Loaded* prop = p->figure.get();
+    if(!prop || prop == &f || prop->contact || !prop->feed || !shown(*p))
+      continue;
+    const rs::EntityId at = prop->feed->entityOf(prop->fig->loaded.root);
+    if(!scene.entity(at))
+      continue;
+    const fv::Mat4 toBody = fromWorld * toMat4(scene.world(at));
+    for(const auto& set : contactSets(*prop))
+      out.push_back({set, toBody, 1.0});
+  }
   return out;
 }
 
@@ -135,10 +188,28 @@ void FvHost::Impl::pokeContacts()
     contactSeen.clear();
     return;
   }
+  // a clip moves the props it poses every frame, and no pass runs while it plays: the first look after
+  // it stops sees what moved
+  if(renderer->editAnimationControl().play)
+    return;
   rs::RetainedScene& scene = renderer->hostScene();
   std::unordered_map<std::string, ContactSeen> now;
   for(const auto& p : props)
   {
+    if(Loaded* prop = p->figure.get(); prop && !prop->contact && prop->feed)
+    {
+      const rs::EntityId at = prop->feed->entityOf(prop->fig->loaded.root);
+      if(!scene.entity(at))
+        continue;
+      ContactSeen& seen    = now[p->id];
+      seen.shown           = shown(*p);
+      seen.rev             = prop->contactRev;
+      const glm::mat4 world = scene.world(at);
+      seen.worlds.push_back(world);
+      for(const auto& set : contactSets(*prop))
+        seen.bounds.add(fv::physics::transformed(set->bounds(), toMat4(world)));
+      continue;
+    }
     if(p->kind != PropKind::eModel || !p->model)
       continue;
     ContactSeen& seen = now[p->id];
@@ -159,7 +230,7 @@ void FvHost::Impl::pokeContacts()
   for(const auto& [id, s] : now)
   {
     const auto was = contactSeen.find(id);
-    if(was != contactSeen.end() && was->second.worlds == s.worlds && was->second.shown == s.shown)
+    if(was != contactSeen.end() && was->second.worlds == s.worlds && was->second.shown == s.shown && was->second.rev == s.rev)
       continue;
     cameOrWent = cameOrWent || was == contactSeen.end();
     if(s.shown)

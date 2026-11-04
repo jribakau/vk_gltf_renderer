@@ -3101,6 +3101,36 @@ TEST(FvHost, contactSettingsSurviveTheSceneFileAndUndo)
   EXPECT_FALSE(s.contact().value("enabled", true)) << s.contact().dump();
 }
 
+// A DAZ prop (a chair from the library: here the Box Figure's mesh opened from Props, so it has no
+// dents of its own) is met as a model is: placed under the figure's feet it dents them, and posed away
+// from under them it lets them go.
+TEST(FvHost, aDazPropDentsAsItIsPosed)
+{
+  Seated s;
+  ASSERT_TRUE(s.rests());
+  ASSERT_TRUE(s.rig.cmd("prop.add", {{"rel", "Props/Test/Box Stool.duf"}}).value("ok", false));
+  ASSERT_TRUE(s.rig.settle());
+  std::string stool;
+  const Json  props = s.rig.topic("scene").value("props", Json::object());
+  for(const auto& [id, p] : props.items())
+    if(p.value("kind", "") == "figure" && id != s.figure)
+      stool = id;
+  ASSERT_FALSE(stool.empty());
+  EXPECT_TRUE(s.rig.topic("contact/" + stool).empty()) << "a prop got dents of its own";
+
+  // twice the Box Figure's size, 40 cm wide and 80 tall, its top 1 cm above the figure's soles
+  const Json placed = s.rig.cmd("prop.set", {{"prop", stool}, {"transform", {{"t", {0.0, -0.79, 0.0}}, {"s", {2.0, 2.0, 2.0}}}}, {"gesture", {{"id", 100}, {"end", true}}}});
+  ASSERT_TRUE(placed.value("ok", false)) << placed.dump();
+  ASSERT_TRUE(s.until([&] { return s.patches() > 0; })) << s.contact().dump();
+  ASSERT_TRUE(s.rests());
+
+  // its upper half (the head bone, from 20 cm up) turned 60 degrees takes its highest corner from
+  // 40 cm to 30 + 10 sin 60 = 38.7, so 1.7 cm under the soles: its placement is the same, its shape not
+  const Json posed = s.rig.cmd("pose.set", {{"prop", stool}, {"values", {{"head/rotation/x", 60.0}}}});
+  ASSERT_TRUE(posed.value("ok", false)) << posed.dump();
+  ASSERT_TRUE(s.until([&] { return s.patches() == 0; })) << s.contact().dump();
+}
+
 // A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's
 // lowest point is higher than the same export's without the dent.
 TEST(FvHost, exportCarriesTheContactChannel)

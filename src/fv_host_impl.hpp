@@ -188,6 +188,11 @@ struct Loaded
   std::unique_ptr<fv::physics::Contact> contact;
   int                                   contactVersion = -1;
   std::optional<glm::mat4>              contactPlaced;
+  // without dents of its own (a DAZ prop, a chair), it is what the bodies near it meet: its shown
+  // meshes posed in its root's space, made again once its pose or shape moved (`contactRev` bumps)
+  int                                                               contactRev    = 0;
+  int                                                               contactSetsAt = -1;
+  std::vector<std::shared_ptr<const fv::physics::SharedTriangles>> contactSets;
   // what it is in the renderer's scene, the prop feed's (fv_prop_feed.hpp), and the scene node each of
   // the feed's entities is; set by each composition
   fv::FigureFeed*             feed = nullptr;
@@ -1060,16 +1065,19 @@ struct FvHost::Impl
   // near a figure, figure.contact and its topic
   std::vector<fv::physics::ColliderRef>               contactColliders(const Loaded& f);
   std::shared_ptr<const fv::physics::SharedTriangles> contactMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh);
+  const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& contactSets(Loaded& prop);
   void                                                pokeContacts();
   void                                                publishContact(Loaded& f);
   Json                                                figureContact(const Json& args);
-  // each model prop as a collider at the last look: its meshes' worlds and bounds (metres), whether it
-  // showed; and each model's meshes as triangle sets, read on the pool the first time a pass needs them
+  // each prop as a collider at the last look (a model, or a DAZ prop and its shape's revision): its
+  // meshes' worlds and bounds (metres), whether it showed; and each model's meshes as triangle sets,
+  // read on the pool the first time a pass needs them
   struct ContactSeen
   {
     std::vector<glm::mat4> worlds;
     fv::physics::Box       bounds;
     bool                   shown = false;
+    int                    rev   = 0;
   };
   std::unordered_map<std::string, ContactSeen>                                                             contactSeen;
   std::map<std::pair<const tinygltf::Model*, int>, std::shared_ptr<const fv::physics::SharedTriangles>> contactMeshes;

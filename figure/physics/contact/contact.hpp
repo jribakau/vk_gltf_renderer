@@ -70,6 +70,11 @@ struct ContactResult
 };
 ContactResult resolveContacts(const ContactInput& in);
 
+// A figure's meshes as posed now, with their morphs and skin: xyz per cage vertex in the space of its
+// root node (cm), one list per mesh asked, empty for one without a cage. How a DAZ prop (a chair) is
+// met by the bodies near it.
+std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root);
+
 class Contact
 {
 public:
