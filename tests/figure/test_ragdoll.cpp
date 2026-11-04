@@ -8,6 +8,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <tuple>
 
 #include <figure/dson/rig.hpp>
 #include <figure/physics/rig/figure_physics.hpp>
@@ -19,6 +20,8 @@ using fv::Vec3;
 using fv::physics::FigurePhysics;
 using fv::physics::PhysicsSettings;
 using fv::pose::ChannelKind;
+
+constexpr double kPi = 3.14159265358979323846;
 
 std::string channel(const char* id, double min, double max, bool clamped = true)
 {
@@ -151,6 +154,120 @@ TEST(Ragdoll, aGenesisSkeletonGivesItsParts)
   EXPECT_EQ(p.physics->partOf(p.pose->indexOf("spine2")), p.physics->partOf(p.pose->indexOf("spine1")));
   EXPECT_EQ(p.physics->partOf(p.pose->indexOf("l_index1")), -1) << "a finger keeps its channels";
   EXPECT_EQ(p.physics->partOf(p.pose->indexOf("Genesis9")), -1) << "the root is the placement";
+  // each in the Pose tab's group, which its Hold is by: G9's collar and upper arm are the arm's
+  const auto group = [&](const char* bone) { return p.physics->parts()[size_t(p.physics->partOf(p.pose->indexOf(bone)))].group; };
+  EXPECT_EQ(group("hip"), "Torso");
+  EXPECT_EQ(group("spine3"), "Torso");
+  EXPECT_EQ(group("neck1"), "Head & neck");
+  EXPECT_EQ(group("l_shoulder"), "Left arm");
+  EXPECT_EQ(group("l_upperarm"), "Left arm");
+  EXPECT_EQ(group("r_hand"), "Right arm");
+  EXPECT_EQ(group("l_shin"), "Left leg");
+}
+
+// At full Hold a clip plays as in Skeletal mode: every frame ends on the clip's pose, at 60 frames a
+// second and at 15 (past the most a frame simulates), the targets swept across the frame's substeps.
+TEST(Ragdoll, atFullStrengthAClipPlaysAsInSkeletal)
+{
+  for(const double fps : {60.0, 15.0})
+  {
+    Person p;
+    p.on(1);
+    p.physics->setClip(true);
+    double worst = 0;
+    for(int f = 0; f < int(2 * fps); f++)
+    {
+      const double w = std::sin(2 * kPi * (f + 1) / fps);
+      const std::vector<std::tuple<const char*, int, double>> clip = {
+          {"l_upperarm", 2, -45 + 30 * w}, {"l_forearm", 1, -60 + 30 * w}, {"spine1", 1, 15 * w}, {"l_thigh", 0, -20 + 20 * w}, {"head", 1, 20 * w}};
+      static const char* axes[3] = {"x", "y", "z"};
+      for(const auto& [b, a, v] : clip)
+        p.set(b, axes[a], v);
+      p.physics->step(1.0 / fps);
+      for(const auto& [b, a, v] : clip)
+        worst = std::max(worst, std::abs(p.shown(b, a) - v));
+    }
+    EXPECT_LT(worst, 0.01) << "at " << fps << " fps";
+  }
+}
+
+// A clip at 15 frames a second moves the body through each frame, not in a jump at its start and
+// still after: at a frame's end the hip turns at the clip's own rate. A body that stops and starts
+// four times a second shakes whatever hangs loose from it. The clip advances by the time simulated,
+// which a frame this slow is more than (as the host plays it in Physics mode).
+TEST(Ragdoll, aClipMovesTheBodyThroughTheFrame)
+{
+  Person p;
+  p.on(1);
+  p.physics->setClip(true);
+  int    checked = 0;
+  double t       = 0;
+  for(int f = 0; f < 40; f++)
+  {
+    t += std::min(1.0 / 15, p.physics->maxFrame());
+    p.set("hip", "y", 30 * std::sin(kPi * t));
+    p.physics->step(1.0 / 15);
+    // the first frame has no aim before it to sweep from
+    // the clip's rate there, radians a second, where it is far from turning back
+    const double rate = 30 * kPi / 180 * kPi * std::cos(kPi * t);
+    if(f == 0 || std::abs(std::cos(kPi * t)) < 0.8)
+      continue;
+    checked++;
+    const double spin = p.physics->world().bodies[0].w.y;
+    EXPECT_NEAR(std::abs(spin), std::abs(rate), 0.25 * std::abs(rate)) << "frame " << f;
+  }
+  EXPECT_GT(checked, 5);
+}
+
+// The hip turned by a clip, the arms at Hold 0.1 and the rest at 1: the torso follows the clip, and
+// the arms swing behind it, well off their pose.
+TEST(Ragdoll, looseArmsSwingWhileTheTorsoFollows)
+{
+  Person p;
+  p.set("l_upperarm", "z", -45);
+  p.set("r_upperarm", "z", 45);
+  PhysicsSettings s;
+  s.on       = true;
+  s.strength = 1;
+  s.parts    = {{"Left arm", 0.1}, {"Right arm", 0.1}};
+  p.physics->set(s);
+  p.physics->setClip(true);
+  double torso = 0, arm = 0;
+  for(int f = 0; f < 120; f++)
+  {
+    p.set("hip", "y", 30 * std::sin(2 * kPi * (f + 1) / 60.0));
+    p.physics->step(1.0 / 60);
+    for(int a = 0; a < 3; a++)
+    {
+      torso = std::max({torso, std::abs(p.shown("spine1", a)), std::abs(p.shown("spine3", a)), std::abs(p.shown("neck1", a))});
+      arm   = std::max(arm, std::abs(p.shown("l_upperarm", a) - (a == 2 ? -45 : 0)));
+    }
+  }
+  EXPECT_LT(torso, 0.05);
+  EXPECT_GT(arm, 3) << "the loose arm kept its pose as the torso turned";
+}
+
+// A clip keeps it awake, through a moment it holds still too; once the clip stops, it comes to rest
+// within the 5 s a still may wait.
+TEST(Ragdoll, aClipKeepsItAwakeAndItSleepsOnceTheClipStops)
+{
+  Person p;
+  p.on();
+  p.physics->setClip(true);
+  for(int f = 0; f < 60; f++)
+  {
+    p.set("l_upperarm", "z", -45 * std::sin(kPi * (f + 1) / 60.0));
+    p.physics->step(1.0 / 60);
+  }
+  for(int f = 0; f < 60; f++)
+  {
+    p.physics->step(1.0 / 60);
+    ASSERT_TRUE(p.physics->awake()) << "asleep while the clip plays, frame " << f;
+  }
+  p.physics->setClip(false);
+  for(int f = 0; f < 300 && p.physics->awake(); f++)
+    p.physics->step(1.0 / 60);
+  EXPECT_FALSE(p.physics->awake());
 }
 
 TEST(Ragdoll, enteringPhysicsMovesNoBone)

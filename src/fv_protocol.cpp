@@ -48,8 +48,9 @@ namespace {
 // `kind` ("clip" or "figure"), and anim.remove. 20: body contact: figure.contact, the contact/<prop>
 // topic, and the scene state's `contact`. 21: Physics mode: physics.set, the physics/<prop> topic,
 // the scene state's `physics`, and view.set's pick "pull". 22: water on the ground, the lighting's
-// ground.water and ground.ripples.
-constexpr int kProtocolVersion = 22;
+// ground.water and ground.ripples. 23: a Hold per body group, physics.set's and the physics topic's
+// and scene state's `parts`.
+constexpr int kProtocolVersion = 23;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

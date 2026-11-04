@@ -460,6 +460,33 @@ TEST(FvHost, StopPutsTheFigureBackAndRemoveTakesTheAnimationOff)
   EXPECT_TRUE(n.anim().at("current").is_null());
 }
 
+// A clip plays through Physics mode: the ragdoll stays awake while it plays, even where the clip
+// holds still, and once it pauses the ragdoll comes to rest where the clip left it.
+TEST(FvHost, aClipPlaysThroughPhysicsMode)
+{
+  Nodding n("animation");
+  ASSERT_TRUE(n.anim().value("playing", false));
+  ASSERT_TRUE(n.rig.cmd("physics.set", {{"prop", n.id}, {"on", true}, {"strength", 1.0}}).value("ok", false));
+  const auto awake = [&] { return n.rig.topic("physics/" + n.id).value("awake", false); };
+  for(int f = 0; f < 30; f++)
+  {
+    n.rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    if(f > 0 && n.anim().value("playing", false))
+      ASSERT_TRUE(awake()) << "asleep while the clip plays, frame " << f;
+  }
+  n.rig.cmd("anim.seek", {{"time", 0.5}});
+  EXPECT_FALSE(n.anim().value("playing", true));
+  EXPECT_NEAR(n.headY(), 20.0, 1e-9);
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+  while(awake() && std::chrono::steady_clock::now() < end)
+  {
+    n.rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_FALSE(awake()) << "still moving after the clip paused";
+}
+
 TEST(FvHost, AnotherAnimationOnTheFigureTakesThePlaceOfTheFirst)
 {
   Nodding   n("");
@@ -3410,6 +3437,33 @@ TEST(FvHost, physicsModeIsAStepAndTheSceneFileKeepsIt)
   r.rig.cmd("scene.restore", restore);
   ASSERT_TRUE(r.rig.settle());
   EXPECT_TRUE(r.on());
+}
+
+// A body group's own Hold is a step of the history, in the topic and the figure's scene state; null
+// gives the group back to the figure's Hold.
+TEST(FvHost, aGroupsHoldIsAStepAndTheSceneFileKeepsIt)
+{
+  Ragdolled r;
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"on", true}}).value("ok", false));
+  const auto held = [&] { return r.physics().value("parts", Json::object()); };
+  EXPECT_TRUE(held().empty());
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"parts", {{"Head & neck", 0.2}}}}).value("ok", false));
+  EXPECT_DOUBLE_EQ(held().value("Head & neck", 0.0), 0.2) << r.physics().dump();
+  EXPECT_EQ(r.rig.topic("history").at("undo")[0], "Hold Head & neck");
+  const Json state = r.rig.cmd("scene.state", {{"prop", r.figure}}).value("result", Json::object());
+  EXPECT_DOUBLE_EQ(state.at("physics").value("parts", Json::object()).value("Head & neck", 0.0), 0.2) << state.dump();
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_TRUE(held().empty()) << r.physics().dump();
+  ASSERT_TRUE(r.rig.cmd("history.redo").value("ok", false));
+  EXPECT_DOUBLE_EQ(held().value("Head & neck", 0.0), 0.2);
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"parts", {{"Head & neck", nullptr}}}}).value("ok", false));
+  EXPECT_TRUE(held().empty());
+
+  Json restore    = state;
+  restore["prop"] = r.figure;
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_DOUBLE_EQ(held().value("Head & neck", 0.0), 0.2) << r.physics().dump();
 }
 
 // A drag with the Pull tool on the figure's head turns it, the channels keep where it got to, and

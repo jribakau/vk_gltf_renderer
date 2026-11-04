@@ -361,7 +361,11 @@ void FvHost::Impl::applyFigureAnimation()
   AnimationControl& ctrl = renderer->editAnimationControl();
   if(ctrl.play)
   {
-    a.time += dt * ctrl.speed;
+    // in Physics mode, by the time the ragdoll simulates: a slow frame slows both alike, or the clip
+    // would run ahead of the body
+    const bool  ragdoll = f->physics && f->physics->settings().on;
+    const float step    = ragdoll ? std::min(dt, float(f->physics->maxFrame())) : dt;
+    a.time += step * ctrl.speed;
     const float end = a.clip.duration;
     if(a.time >= end)
     {

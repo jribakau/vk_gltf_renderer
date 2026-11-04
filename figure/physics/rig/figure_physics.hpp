@@ -10,8 +10,10 @@
 // (pose::PoseBone::physical): the bones show it, the formulas read it, the channels stay the target.
 //
 // Gravity's torque is fed forward in each drive and the hip is held where it entered, so a pose holds
-// exactly and Hold only says how far a push moves a part: at 1 nothing gives, at 0 it is limp. With
-// "Let it fall" the hip goes free and nothing is fed forward: it falls as it is.
+// exactly and Hold only says how far a push moves a part: at 1 nothing gives, at 0 it is limp. Each
+// body group (the Pose tab's: "Left arm", "Torso", ...) may have a Hold of its own, so a clip can
+// walk the legs and torso while the arms swing loose (step 4). With "Let it fall" the hip goes free
+// and nothing is fed forward: it falls as it is.
 //
 // The Pull is a pin that drags a point of a part along the pointer; let go, the channels take the
 // reached pose. Fingers, toes, the face and the eyes keep their channels.
@@ -19,6 +21,7 @@
 // One thread (the figure's owner) calls everything.
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -39,6 +42,8 @@ struct PhysicsSettings
   bool   gravity  = true;
   // the hip goes free, and nothing holds the pose against gravity
   bool letFall = false;
+  // Hold by body group (pose::groupOf: "Left arm", "Head & neck", ...); a group not here has `strength`
+  std::map<std::string, double> parts;
 
   bool operator==(const PhysicsSettings&) const = default;
 };
@@ -85,6 +90,11 @@ public:
   bool awake() const { return m_settings.on && (!m_world.asleep() || m_pull >= 0); }
   // An input changed (a prop near it moved, the figure was placed elsewhere): it simulates again.
   void wake();
+  // A clip plays on it: it stays awake, and the targets the clip sets each frame are swept across the
+  // frame's substeps rather than jumped to at its first, so a part at full Hold has no lag.
+  void setClip(bool playing) { m_clip = playing; }
+  // The most a frame simulates (s): a clip advances no further in a frame, so it keeps with the body.
+  double maxFrame() const { return m_world.settings.maxFrame; }
   // Bumps when the settings, awake() or pulling() change, for a status topic.
   int version() const { return m_version; }
 
@@ -99,6 +109,8 @@ public:
     // the bones merged into it (its own first): the pelvis into the hip, spine2 into spine1, ...
     std::vector<int> members;
     double           subtreeMass = 0;
+    // its body group, for its Hold (PhysicsSettings::parts)
+    std::string group;
     // the rotation totals it was last written at (degrees), for the Euler branch
     std::array<double, 3> last{};
   };
@@ -121,6 +133,8 @@ private:
   // the target pose's world for a part's bone, from the bones' channels
   Mat4 targetWorld(int node) const;
   std::vector<double> targets() const;
+  // a part's Hold: its group's, or the figure's
+  double strengthOf(const Part& p) const;
 
   SceneGraph&            m_scene;
   pose::PoseRig&         m_rig;
@@ -138,6 +152,9 @@ private:
   double                 m_sinceInput = 0;
   int                    m_version    = 0;
   bool                   m_wasAwake   = false;
+  bool                   m_clip       = false;
+  // the joints have been aimed since the build: a clip can sweep from where they aimed
+  bool                   m_aimed      = false;
 };
 
 }  // namespace fv::physics

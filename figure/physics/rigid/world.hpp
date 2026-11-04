@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -161,6 +162,9 @@ public:
   // Simulates `seconds` (clamped to settings.maxFrame) in whole substeps, carrying the rest: how many
   // it took.
   int step(double seconds);
+  // Called before each substep of a step with how far through it that substep ends (0 to 1]: the
+  // owner sweeps what moves within a frame (a clip's targets) instead of jumping to it.
+  std::function<void(double)> onSubstep;
   // One substep of settings.h.
   void substep();
   // The time carried to the next frame.

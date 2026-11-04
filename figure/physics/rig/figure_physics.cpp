@@ -143,6 +143,7 @@ void FigurePhysics::build()
   m_parts.clear();
   m_world = RigidWorld{};
   m_hipPin = m_pull = -1;
+  m_aimed           = false;
   m_partOfNode.assign(m_scene.nodes.size(), -1);
   m_restVersion = m_rig.restVersion();
   const auto& bones = m_rig.bones();
@@ -211,6 +212,7 @@ void FigurePhysics::build()
       p.node     = pb.bone;
       p.parent   = up;
       p.members  = {i};
+      p.group    = pb.group;
       m_partOfNode[size_t(pb.bone)] = int(m_parts.size());
       m_parts.push_back(std::move(p));
     }
@@ -390,13 +392,20 @@ void FigurePhysics::placeBodies()
   }
 }
 
+double FigurePhysics::strengthOf(const Part& p) const
+{
+  const auto it = m_settings.parts.find(p.group);
+  return std::clamp(it != m_settings.parts.end() ? it->second : m_settings.strength, 0.0, 1.0);
+}
+
 void FigurePhysics::updateJoints()
 {
-  const double s    = m_settings.strength;
-  const double giveS = give(s);
   for(size_t i = 1; i < m_parts.size(); i++)
   {
     const Part&           p  = m_parts[i];
+    // the drive that turns a part is its own group's
+    const double          s     = strengthOf(p);
+    const double          giveS = give(s);
     const Part&           up = m_parts[size_t(p.parent)];
     const pose::PoseBone& pb = m_rig.bones()[size_t(p.poseBone)];
     Joint&                j  = m_world.joints[size_t(p.joint)];
@@ -472,12 +481,13 @@ void FigurePhysics::updateJoints()
 void FigurePhysics::feedForward()
 {
   const Vec3 g    = m_world.settings.gravity;
-  const bool feed = m_settings.gravity && !m_settings.letFall && m_settings.strength > 1e-3;
+  const bool feed = m_settings.gravity && !m_settings.letFall;
   for(size_t i = 1; i < m_parts.size(); i++)
   {
     Joint& j = m_world.joints[size_t(m_parts[i].joint)];
     j.feedForward = {};
-    if(!feed)
+    // a limp part has no drive to give it back
+    if(!feed || strengthOf(m_parts[i]) <= 1e-3)
       continue;
     // the torque gravity puts on everything under this joint, about it, given back by the drive
     const Vec3 at = m_world.bodies[i].toWorld(j.anchorB);
@@ -854,14 +864,42 @@ bool FigurePhysics::step(double seconds)
     allowOverlaps();
     wake();
   }
+  // a clip that holds still a moment is still playing
+  if(m_clip)
+    wake();
   bool wrote = false;
   if(awake())
   {
     m_world.settings.gravity = m_settings.gravity ? m_gravity : Vec3{};
+    // where the drives and the hip aimed at the last frame's end, swept from while a clip plays
+    std::vector<Quat> from;
+    Pin&              hip     = m_world.pins[size_t(m_hipPin)];
+    const Vec3        hipFrom = hip.target;
+    const Quat        hipTurn = hip.rotation;
+    if(m_clip && m_aimed)
+      for(size_t i = 1; i < m_parts.size(); i++)
+        from.push_back(m_world.joints[size_t(m_parts[i].joint)].target);
     updateJoints();
     feedForward();
+    m_aimed = true;
+    if(!from.empty())
+    {
+      std::vector<Quat> to;
+      for(size_t i = 1; i < m_parts.size(); i++)
+        to.push_back(m_world.joints[size_t(m_parts[i].joint)].target);
+      const Vec3 hipTo = hip.target;
+      const Quat hipAt = hip.rotation;
+      m_world.onSubstep = [this, from = std::move(from), to = std::move(to), hipFrom, hipTo, hipTurn, hipAt](double t) {
+        for(size_t i = 1; i < m_parts.size(); i++)
+          m_world.joints[size_t(m_parts[i].joint)].target = slerp(from[i - 1], to[i - 1], t);
+        Pin& h     = m_world.pins[size_t(m_hipPin)];
+        h.target   = hipFrom + (hipTo - hipFrom) * t;
+        h.rotation = slerp(hipTurn, hipAt, t);
+      };
+    }
     m_world.props = colliders ? colliders() : std::vector<ColliderRef>{};
     m_world.step(seconds);
+    m_world.onSubstep = nullptr;
     m_sinceInput = m_pull >= 0 ? 0 : m_sinceInput + seconds;
     // still shivering long after the last input: asleep anyway
     if(m_sinceInput > 5 && !m_world.asleep())

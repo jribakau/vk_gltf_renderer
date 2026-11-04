@@ -251,7 +251,11 @@ int RigidWorld::step(double seconds)
   m_carry     = std::max(0.0, m_carry - n * m_h);
   m_lastSpeed = 0;
   for(int i = 0; i < n && !m_asleep; i++)
+  {
+    if(onSubstep)
+      onSubstep(double(i + 1) / n);
     substep();
+  }
   return n;
 }
 

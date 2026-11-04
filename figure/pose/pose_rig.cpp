@@ -50,7 +50,8 @@ std::string groupOf(const std::string& name, bool isRoot)
       R"(^(l|r)?(eye|ear)|brow|lid|lip|cheek|nose|nostril|jaw|tongue|teeth|mouth|chin|squint|nasolabial|face|forehead|temple|upperfacerig|lowerfacerig|belowjaw|center|lash)");
   static const std::regex head(R"(^(head|neck|necklower|neckupper))");
   static const std::regex torso(R"(^(hip|pelvis|abdomen|chest|spine|lpectoral|rpectoral|pectoral))");
-  static const std::regex arm(R"((collar|shldr|forearm|hand|carpal|thumb|index|mid|ring|pinky))");
+  // G8's lCollar, lShldrBend; G9's l_shoulder, l_upperarm
+  static const std::regex arm(R"((collar|shldr|shoulder|upperarm|forearm|hand|carpal|thumb|index|mid|ring|pinky))");
   static const std::regex leg(R"((thigh|shin|foot|toe|metatarsal|heel))");
   if(std::regex_search(n, face))
     return "Face";

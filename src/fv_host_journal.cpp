@@ -526,6 +526,10 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
       return "Physics " + on();
     if(args.contains("strength"))
       return "Physics hold";
+    if(const auto it = args.find("parts"); it != args.end() && it->is_object() && it->size() == 1)
+      return "Hold " + it->begin().key();
+    if(args.contains("parts"))
+      return "Physics hold";
     if(args.contains("gravity"))
       return std::string("Gravity ") + (args.value("gravity", true) ? "on" : "off");
     if(args.contains("letFall"))
@@ -587,7 +591,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
   }
   // a slider's or a drag's edits merge into one step: the same edit of the same things, back to back
   bool merges = cmd == "morph.set" || cmd == "material.set" || cmd == "lighting.set" || cmd == "camera.set"
-                || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on")) || (cmd == "physics.set" && args.contains("strength") && !args.contains("on"));
+                || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on")) || (cmd == "physics.set" && (args.contains("strength") || args.contains("parts")) && !args.contains("on"));
   if(cmd == "prop.set")
     merges = !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);

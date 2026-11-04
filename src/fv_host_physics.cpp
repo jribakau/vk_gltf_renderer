@@ -404,6 +404,15 @@ Json FvHost::Impl::figureContact(const Json& args)
 // Physics mode (figure/physics/rig/figure_physics.hpp, docs/physics-plan.md step 2): the frame's
 // step, the Pull, physics.set and physics.restore, the physics/<prop> topic.
 
+// The Hold of each body group that has its own ({"Left arm": 0.2, ...}).
+static Json partsJson(const fv::physics::PhysicsSettings& s)
+{
+  Json parts = Json::object();
+  for(const auto& [group, strength] : s.parts)
+    parts[group] = strength;
+  return parts;
+}
+
 // A figure's Physics mode as the scene file and the history keep it: the settings and, in Physics
 // mode, where its parts are.
 Json physicsState(const Loaded& f)
@@ -413,7 +422,7 @@ Json physicsState(const Loaded& f)
   if(s.on)
     for(const auto& [key, value] : f.physics->physicalValues())
       physical[key] = value;
-  return {{"on", s.on}, {"strength", s.strength}, {"gravity", s.gravity}, {"letFall", s.letFall}, {"physical", physical}};
+  return {{"on", s.on}, {"strength", s.strength}, {"gravity", s.gravity}, {"letFall", s.letFall}, {"parts", partsJson(s)}, {"physical", physical}};
 }
 
 // What puts a figure's physics back as it is now: its parts' channels (where the motors aim), then
@@ -434,17 +443,26 @@ Json FvHost::Impl::physicsOps(const Loaded& f)
   return Json::array({{{"cmd", "pose.set"}, {"args", {{"prop", f.id}, {"values", values}}}}, {{"cmd", "physics.restore"}, {"args", state}}});
 }
 
+// Topic "physics/<prop>": {available, on, awake, pulling, strength, parts, groups, gravity, letFall}:
+// the figure's Physics mode; `parts` the body groups with a Hold of their own, `groups` all it has.
 void FvHost::Impl::publishPhysics(Loaded& f)
 {
   if(!f.physics)
     return;
   f.physicsVersion                      = f.physics->version();
   const fv::physics::PhysicsSettings& s = f.physics->settings();
+  // the body groups its parts are in, in order, each once: what may have a Hold of its own
+  Json groups = Json::array();
+  for(size_t i = 1; i < f.physics->parts().size(); i++)
+    if(const std::string& g = f.physics->parts()[i].group; std::find(groups.begin(), groups.end(), g) == groups.end())
+      groups.push_back(g);
   protocol->events().snapshot("physics/" + f.id, {{"available", f.physics->valid()},
                                                   {"on", s.on},
                                                   {"awake", f.physics->awake()},
                                                   {"pulling", f.physics->pulling()},
                                                   {"strength", s.strength},
+                                                  {"parts", partsJson(s)},
+                                                  {"groups", groups},
                                                   {"gravity", s.gravity},
                                                   {"letFall", s.letFall}});
 }
@@ -482,6 +500,8 @@ void FvHost::Impl::stepPhysics()
           f.physics->setGround(std::nullopt);
       }
     }
+    // a clip playing on it keeps it awake and is swept across the frame
+    f.physics->setClip(renderer->editAnimationControl().play && figureClipOf(currentClip) == &f);
     {
       fv::timing::Scope t("physics: frame", 2);
       f.physics->step(elapsed);
@@ -491,9 +511,10 @@ void FvHost::Impl::stepPhysics()
   }
 }
 
-// physics.set {prop, on?, strength?, gravity?, letFall?, gesture?}: Physics mode on or off (leaving
-// keeps the pose it reached in the channels), Hold (0 limp to 1 rigid), gravity, and whether the hip
-// is let fall.
+// physics.set {prop, on?, strength?, parts?, gravity?, letFall?, gesture?}: Physics mode on or off
+// (leaving keeps the pose it reached in the channels), Hold (0 limp to 1 rigid), a body group's own
+// Hold (parts: {"Left arm": 0.2}; null: back to the figure's), gravity, and whether the hip is let
+// fall.
 Json FvHost::Impl::physicsSet(const Json& args)
 {
   auto figure = figureArg(args);
@@ -504,6 +525,12 @@ Json FvHost::Impl::physicsSet(const Json& args)
     s.on = args["on"].get<bool>();
   if(args.contains("strength") && args["strength"].is_number())
     s.strength = std::clamp(args["strength"].get<double>(), 0.0, 1.0);
+  if(const auto it = args.find("parts"); it != args.end() && it->is_object())
+    for(auto g = it->begin(); g != it->end(); ++g)
+      if(g.value().is_number())
+        s.parts[g.key()] = std::clamp(g.value().get<double>(), 0.0, 1.0);
+      else if(g.value().is_null())
+        s.parts.erase(g.key());
   if(args.contains("gravity") && args["gravity"].is_boolean())
     s.gravity = args["gravity"].get<bool>();
   if(args.contains("letFall") && args["letFall"].is_boolean())
@@ -538,6 +565,10 @@ Json FvHost::Impl::physicsRestore(const Json& args)
   s.strength = std::clamp(args.value("strength", s.strength), 0.0, 1.0);
   s.gravity  = args.value("gravity", s.gravity);
   s.letFall  = args.value("letFall", s.letFall);
+  if(const auto it = args.find("parts"); it != args.end() && it->is_object())
+    for(auto g = it->begin(); g != it->end(); ++g)
+      if(g.value().is_number())
+        s.parts[g.key()] = std::clamp(g.value().get<double>(), 0.0, 1.0);
   figure->physics->set(s, false);
   if(s.on)
   {
