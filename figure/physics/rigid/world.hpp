@@ -78,17 +78,20 @@ struct Joint
   // compliance below 0 has no drive
   Quat   target;
   double compliance = -1;
-  // how much of the relative angular velocity goes each second (1/s)
+  // the drive's damping, as a time (s): its damper is driveDamping / compliance, in the solve, so it
+  // reaches the whole chain the drive turns. About 2 / its frequency damps it critically.
+  double driveDamping = 0;
+  // joint friction: how much of the relative angular velocity goes each second (1/s), on the two
+  // bodies alone (it barely reaches a chain's swing; a limp joint has nothing else)
   double damping = 0;
   // the torque the drive can give at most (dyne cm); 0: no limit
   double maxTorque = 0;
-  // a torque b takes and a gives back each substep, over the drive (dyne cm, world): gravity's
-  // compensation, set by the owner
+  // a torque the drive gives b and takes from a besides its spring (dyne cm, world): gravity's
+  // compensation, set by the owner. It moves the spring's rest by compliance times it, so a drive
+  // with no compliance gives none (it holds anyway)
   Vec3 feedForward;
   // the Euler angles where the joint was last, for the branch
   std::array<double, 3> euler{};
-  // the position constraint's accumulated multiplier, for a test to read the force it carried
-  double lambda = 0;
 };
 
 // A pin: a body's point `local` pulled to `target` (world), and its rotation to `rotation` when
@@ -102,7 +105,7 @@ struct Pin
   double compliance = 0, angularCompliance = 0, maxForce = 0, maxTorque = 0;
   // how much of the body's velocity (relative to the target, which stands still) goes each second
   double damping = 0;
-  // a force and torque the body takes each substep besides the pin (the weight it carries)
+  // a force and torque the pin gives besides its spring (the weight it carries), as a joint's
   Vec3 feedForward, feedForwardTorque;
   bool on = true;
 };
@@ -125,6 +128,8 @@ struct WorldSettings
 {
   // the substep length (s) and the most a frame simulates (s): a hitch slows the motion, not kicks it
   double h = 1.0 / 600, maxFrame = 1.0 / 20;
+  // Newton steps of the joints and the pins each substep, solved exactly over the tree they make
+  int iterations = 2;
   Vec3   gravity{0, -980, 0};
   // velocity caps (cm/s, rad/s): a safety net, not damping
   double maxSpeed = 3000, maxSpin = 50;
@@ -165,6 +170,8 @@ public:
   // Whether the bodies moved less than the rest speed for the rest time; reset by wake().
   bool asleep() const { return m_asleep; }
   void wake();
+  // Asleep now, still (a forced sleep, or a pose taken back at rest).
+  void sleep();
   // The fastest a capsule's end moved over the last frame's substeps (cm/s).
   double lastSpeed() const { return m_lastSpeed; }
 
@@ -184,9 +191,14 @@ private:
     double lambdaN = 0, lambdaT = 0;
   };
   void predict(double h);
-  void solveJoint(Joint& j, double h);
+  void solveAnchor(Joint& j);
+  void solveDrive(Joint& j, double h);
   void solveLimits(Joint& j);
   void solvePin(Pin& p, double h);
+  // The joints and the pins with no force limit, over the tree the bodies and they make, solved
+  // exactly (Baraff 1996, "Linear-time dynamics using Lagrange multipliers"): one Newton step of
+  // their projection. What would close a loop is marked for the sweep after it.
+  void solveTree(std::vector<uint8_t>& sweptJoint, std::vector<uint8_t>& sweptPin);
   void collide();
   void solveContact(Contact& c);
   void updateVelocities(double h);
@@ -199,10 +211,15 @@ private:
   void   applyPositionalImpulse(int a, int b, const Vec3& pa, const Vec3& pb, const Vec3& p);
 
   std::vector<Contact> m_contacts;
+  // the tree solve's multipliers this substep, six per joint and per pin
+  std::vector<double>  m_lambdaJoint, m_lambdaPin;
   double               m_carry = 0, m_still = 0, m_lastSpeed = 0;
   bool                 m_asleep = false;
   double               m_h      = 1.0 / 600;
 };
+
+// The closest points of segments p1-q1 and p2-q2.
+void closestSegments(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec3& q2, Vec3& c1, Vec3& c2);
 
 // The mass, inverse inertia and its frame of a solid capsule of density `rho` (g/cm^3).
 void setCapsuleMass(RigidBody& body, double rho = 1);

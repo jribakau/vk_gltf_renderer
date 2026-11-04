@@ -345,26 +345,8 @@ std::vector<int> PoseRig::setLocalTransform(const std::string& bone, const Quat&
     const Axis* a = axis(*pb, ChannelKind::eRotation, names[i]);
     now[i]        = (a ? a->value : 0) + drivenOf(ChannelKind::eRotation, names[i]);
   }
-  // q = orient · R · orient⁻¹, so the channel Euler is R. R has two Euler forms, (a, b, c) and
-  // (a + 180, 180 - b, c + 180) with b the middle axis, each any number of turns round: take the
-  // one nearest where the bone is, so a drag past ±90 or ±180 keeps going the same way
-  const std::array<double, 3> euler = eulerFromQuat(pb->orient.inverse() * q.normalized() * pb->orient, pb->order);
-  const int                   mid   = pb->order.size() == 3 ? pb->order[1] - 'X' : 1;
-  auto nearest = [&](bool other, double& cost) {
-    std::array<double, 3> out{};
-    cost = 0;
-    for(int i = 0; i < 3; i++)
-    {
-      out[i] = (other ? (i == mid ? 180 - euler[i] / kDeg : euler[i] / kDeg + 180) : euler[i] / kDeg);
-      out[i] += 360 * std::round((now[i] - out[i]) / 360);
-      cost += (out[i] - now[i]) * (out[i] - now[i]);
-    }
-    return out;
-  };
-  double                      costA = 0, costB = 0;
-  const std::array<double, 3> a     = nearest(false, costA);
-  const std::array<double, 3> b     = nearest(true, costB);
-  const std::array<double, 3> total = costB < costA ? b : a;
+  // so a drag past ±90 or ±180 keeps going the same way
+  const std::array<double, 3> total = rotationTotals(*pb, q, now);
   // a transform that round-trips through the renderer's floats comes back a hair off: a channel
   // that only moved that much stays as it was, so a bone isn't posed by a click
   auto push = [&](ChannelKind kind, const char* axisName, double value, double noise) {
@@ -382,6 +364,118 @@ std::vector<int> PoseRig::setLocalTransform(const std::string& bone, const Quat&
       push(ChannelKind::eTranslation, names[i], xyz[i] - drivenOf(ChannelKind::eTranslation, names[i]), 1e-4);
   }
   return setMany(values);
+}
+
+std::array<double, 3> PoseRig::rotationTotals(const PoseBone& pb, const Quat& q, const std::array<double, 3>& near) const
+{
+  // q = orient · R · orient⁻¹, so the channel Euler is R. R has two Euler forms, (a, b, c) and
+  // (a + 180, 180 - b, c + 180) with b the middle axis, each any number of turns round
+  const std::array<double, 3> euler = eulerFromQuat(pb.orient.inverse() * q.normalized() * pb.orient, pb.order);
+  const int                   mid   = pb.order.size() == 3 ? pb.order[1] - 'X' : 1;
+  auto nearest = [&](bool other, double& cost) {
+    std::array<double, 3> out{};
+    cost = 0;
+    for(int i = 0; i < 3; i++)
+    {
+      out[i] = (other ? (i == mid ? 180 - euler[i] / kDeg : euler[i] / kDeg + 180) : euler[i] / kDeg);
+      out[i] += 360 * std::round((near[i] - out[i]) / 360);
+      cost += (out[i] - near[i]) * (out[i] - near[i]);
+    }
+    return out;
+  };
+  double                      costA = 0, costB = 0;
+  const std::array<double, 3> a     = nearest(false, costA);
+  const std::array<double, 3> b     = nearest(true, costB);
+  return costB < costA ? b : a;
+}
+
+Quat PoseRig::targetRotation(const PoseBone& pb) const
+{
+  auto v = [&](int axis) {
+    const double d = pb.driven[size_t(ChannelKind::eRotation)][size_t(axis)];
+    return pb.posed(ChannelKind::eRotation, axis) + d;
+  };
+  return pb.orient * quatFromEuler(v(0) * kDeg, v(1) * kDeg, v(2) * kDeg, pb.order) * pb.orient.inverse();
+}
+
+Vec3 PoseRig::targetPosition(const PoseBone& pb) const
+{
+  auto v = [&](int axis) { return pb.posed(ChannelKind::eTranslation, axis) + pb.driven[size_t(ChannelKind::eTranslation)][size_t(axis)]; };
+  const Vec3 rest = pb.rest.empty() ? Vec3{} : pb.rest.front().second;
+  return rest + Vec3{v(0), v(1), v(2)};
+}
+
+std::vector<int> PoseRig::setPhysical(const std::vector<PhysicalValue>& values)
+{
+  fv::timing::Accum   setTime("pose.setPhysical");
+  std::vector<uint8_t> listed(m_bones.size(), 0);
+  std::vector<int>     moved;
+  bool                 any = false;
+  const auto           repose = [&](PoseBone& pb) {
+    const std::vector<int> m = apply(pb);
+    moved.insert(moved.end(), m.begin(), m.end());
+    any = true;
+  };
+  for(const PhysicalValue& v : values)
+  {
+    if(v.bone < 0 || size_t(v.bone) >= m_bones.size())
+      continue;
+    listed[size_t(v.bone)] = 1;
+    PoseBone& pb           = m_bones[size_t(v.bone)];
+    auto      next         = pb.physical;
+    for(int i = 0; i < 3; i++)
+    {
+      next[size_t(ChannelKind::eRotation)][size_t(i)] = v.rotation[size_t(i)];
+      // a bone held at its joint keeps its channels' translation
+      next[size_t(ChannelKind::eTranslation)][size_t(i)] =
+          v.translation ? (i == 0 ? v.translation->x : i == 1 ? v.translation->y : v.translation->z) : pb.posed(ChannelKind::eTranslation, i);
+    }
+    if(pb.physicalOn && next == pb.physical)
+      continue;
+    pb.physical   = next;
+    pb.physicalOn = true;
+    repose(pb);
+  }
+  for(size_t i = 0; i < m_bones.size(); i++)
+    if(!listed[i] && m_bones[i].physicalOn)
+    {
+      m_bones[i].physicalOn = false;
+      repose(m_bones[i]);
+    }
+  if(any && afterPose)
+    afterPose();
+  return moved;
+}
+
+void PoseRig::foldPhysical()
+{
+  bool reposed = false;
+  for(PoseBone& pb : m_bones)
+  {
+    if(!pb.physicalOn)
+      continue;
+    bool clamped = false;
+    for(Axis& a : pb.axes)
+    {
+      const int i = axisIndex(a.axis);
+      if(a.kind == ChannelKind::eScale || i < 0 || i > 2)
+        continue;
+      const double v = pb.physical[size_t(a.kind)][size_t(i)];
+      a.value        = a.clamped ? std::clamp(v, a.min, a.max) : v;
+      clamped        = clamped || a.value != v;
+    }
+    pb.physicalOn = false;
+    // what it showed on an axis it has no channel for (a hair off 0) goes, as it would on a clamp
+    apply(pb);
+    reposed = reposed || clamped;
+  }
+  if(reposed && afterPose)
+    afterPose();
+}
+
+bool PoseRig::anyPhysical() const
+{
+  return std::any_of(m_bones.begin(), m_bones.end(), [](const PoseBone& pb) { return pb.physicalOn; });
 }
 
 const PoseBone* PoseRig::boneForNode(int node) const
@@ -499,7 +593,7 @@ bool PoseRig::takeRestMoved()
 double PoseRig::total(const PoseBone& pb, ChannelKind kind, int axis, double fallback)
 {
   const Axis*  a      = pb.axis(kind, axis);
-  double       out    = a ? a->value : fallback;
+  double       out    = pb.physicalOn && kind != ChannelKind::eScale ? pb.physical[size_t(kind)][size_t(axis)] : a ? a->value : fallback;
   const double driven = pb.driven[size_t(kind)][size_t(axis)];
   // nothing driven adds nothing, not even a zero's sign
   if(driven != 0)
@@ -650,6 +744,7 @@ void PoseRig::setCenterOffsets(const std::vector<CenterOffset>& offsets)
     apply(pb);
   }
   m_restMoved = true;
+  m_restVersion++;
 }
 
 std::vector<int> PoseRig::rebind()

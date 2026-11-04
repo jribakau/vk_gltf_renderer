@@ -220,7 +220,8 @@ std::optional<double> FigureDriver::base(KeyId key)
     case Resolved::Base::eRest:
       return r.rest;
     case Resolved::Base::eBone:
-      return rig->bones()[size_t(r.index)].posed(r.kind, r.axis);
+      // as the bone shows: in Physics mode, where the ragdoll has it, so correctives follow it
+      return rig->bones()[size_t(r.index)].shown(r.kind, r.axis);
     case Resolved::Base::eJoint:
       return 0.0;
     default:
@@ -387,7 +388,7 @@ void FigureDriver::run()
         continue;
       if(r.outKind == Resolved::Out::ePose)
       {
-        const double d = *v - rig->bones()[size_t(r.out)].posed(r.kind, r.axis);
+        const double d = *v - rig->bones()[size_t(r.out)].shown(r.kind, r.axis);
         if(std::abs(d) > kEps)
           m_driven.push_back({r.out, r.kind, r.axis, d});
         continue;

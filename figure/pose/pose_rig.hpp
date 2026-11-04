@@ -58,18 +58,39 @@ struct PoseBone
   // and how far they move its joint centre (cm, figure space, relative to the load)
   std::array<std::array<double, 4>, 3> driven{};
   Vec3                                 centerOffset;
+  // Physics mode (docs/physics-plan.md, "The physical layer in PoseRig"): where the ragdoll has the
+  // bone, as channel values before formulas, by kind and axis, whether the bone has the axis or not.
+  // While `physicalOn`, the bone is posed there; its channels' values stay what the motors aim for.
+  std::array<std::array<double, 4>, 3> physical{};
+  bool                                 physicalOn = false;
 
   const Axis* axis(ChannelKind kind, int axis) const
   {
     const int s = axis >= 0 && axis < 4 ? slot[size_t(kind)][size_t(axis)] : -1;
     return s >= 0 ? &axes[size_t(s)] : nullptr;
   }
-  // a channel's posed value before formulas: 0, or 1 for a scale, where the bone has no such axis
+  // a channel's posed value before formulas: 0, or 1 for a scale, where the bone has no such axis.
+  // In Physics mode, the target: the history, presets and the scene file read this.
   double posed(ChannelKind kind, int axis) const
   {
     const Axis* a = this->axis(kind, axis);
     return a ? a->value : kind == ChannelKind::eScale ? 1.0 : 0.0;
   }
+  // what the bone shows: the physical value in Physics mode (rotation and translation), else posed().
+  // Formulas read this, so correctives follow the ragdoll.
+  double shown(ChannelKind kind, int axis) const
+  {
+    return physicalOn && kind != ChannelKind::eScale && axis >= 0 && axis < 4 ? physical[size_t(kind)][size_t(axis)] : posed(kind, axis);
+  }
+};
+
+// Where the ragdoll has a bone (PoseRig::bones() index): its rotation channels (degrees) and, for a
+// free bone (the hip), its translation (cm), both before formulas.
+struct PhysicalValue
+{
+  int                   bone = -1;
+  std::array<double, 3> rotation{};
+  std::optional<Vec3>   translation;
 };
 
 // What formulas add to one channel of a bone (PoseRig::bones() index, axisIndex).
@@ -155,6 +176,25 @@ public:
   // (rebind).
   void setCenterOffsets(const std::vector<CenterOffset>& offsets);
 
+  // Physics mode: poses the bones in `values` where the ragdoll has them, all of it as setDriven: a
+  // bone not in `values` shows its channels again. Only bones whose pose changed move; then
+  // `afterPose` runs once, if any did. Returns the bone nodes moved.
+  std::vector<int> setPhysical(const std::vector<PhysicalValue>& values);
+  // Leaving Physics mode: each bone's channels take where it is shown (clamped to their limits),
+  // and the physical layer goes. The pose doesn't move.
+  void foldPhysical();
+  // Whether any bone is posed by the ragdoll.
+  bool anyPhysical() const;
+  // The rotation channel totals (value plus driven, degrees, x y z) that pose a bone at local
+  // rotation `q`: of q's two Euler forms, each any number of turns round, the one nearest `near`.
+  std::array<double, 3> rotationTotals(const PoseBone& pb, const Quat& q, const std::array<double, 3>& near) const;
+  // A bone's local transform as its channels would pose it (value plus driven), Physics mode aside:
+  // where the ragdoll's motors aim.
+  Quat targetRotation(const PoseBone& pb) const;
+  Vec3 targetPosition(const PoseBone& pb) const;
+  // Bumps whenever formulas move joint centres (setCenterOffsets): the ragdoll fits its capsules again.
+  int restVersion() const { return m_restVersion; }
+
   // Re-binds skinned meshes to their bones' rest positions as they are now: each bone's inverse
   // bind matrix becomes the inverse of where it is at rest, so the rest pose deforms nothing and a
   // bend pivots at the new centre. Returns the meshes whose boneInverses changed.
@@ -209,7 +249,8 @@ private:
   // the bone that writes a node: its own, or its leader for a follower
   std::unordered_map<int, size_t>              m_writer;
   std::set<int>                                m_moved;
-  bool                                         m_restMoved = false;
+  bool                                         m_restMoved   = false;
+  int                                          m_restVersion = 0;
 };
 
 }  // namespace fv::pose
