@@ -4,11 +4,15 @@
 // A hit's opacity for an alpha test, from its material and texture at mip 0: the path tracer's
 // any-hit. Reads the including shader's pushConst.gltfScene, allImages and allSamplers.
 
+#include "woven_opacity.h.slang"
+
 //----------------------------------------------------------
 // Testing if the hit is opaque or alpha-transparent
 // Return 1.0 if it is opaque
+// `objectDirection` is the ray's, in the instance's object space: a woven cutout's opacity depends
+// on it (wovenOpacity). Zero takes the opacity head-on.
 //----------------------------------------------------------
-float getOpacity(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int triangleID, float3 barycentrics)
+float getOpacity(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int triangleID, float3 barycentrics, float3 objectDirection)
 {
   uint               matIndex  = max(0, renderNode.materialID);
   GltfShadeMaterial* materials = pushConst.gltfScene->materials;
@@ -66,6 +70,15 @@ float getOpacity(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int 
   if(mat.alphaMode == AlphaMode::eAlphaModeMask)
   {
     return baseColorAlpha >= mat.alphaCutoff ? 1.0 : 0.0;
+  }
+
+  // A weave: the triangle's own normal, as the threads lie in it, and the warp along its UV tangent
+  if(mat.opacityWoven != 0 && baseColorAlpha > 0.0 && baseColorAlpha < 1.0 && dot(objectDirection, objectDirection) > 0.0)
+  {
+    const float3 p0 = getVertexPosition(renderPrim, int(triangleIndex.x));
+    const float3 n  = cross(getVertexPosition(renderPrim, int(triangleIndex.y)) - p0, getVertexPosition(renderPrim, int(triangleIndex.z)) - p0);
+    if(dot(n, n) > 0.0)
+      baseColorAlpha = wovenOpacity(baseColorAlpha, objectDirection, n, getInterpolatedVertexTangent(renderPrim, triangleIndex, barycentrics).xyz);
   }
 
   return baseColorAlpha;

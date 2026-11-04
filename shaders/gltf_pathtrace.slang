@@ -1831,7 +1831,7 @@ void rahitMain(inout HitPayload payload, in BuiltInTriangleIntersectionAttribute
   GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
   GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
 
-  float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics);
+  float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, ObjectRayDirection());
   if(stochasticOpacityU(instanceID, triangleID, barycentrics, payload.seed) >= opacity)
   {
     IgnoreHit();

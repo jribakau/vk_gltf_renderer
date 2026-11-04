@@ -27,6 +27,7 @@ Material everything()
   m.name                 = "everything";
   m.id                   = "m:3";
   m.walkThrough          = true;
+  m.woven                = true;
   m.baseColor            = {0.1f, 0.2f, 0.3f, 0.4f};
   m.baseColorMap         = slot(1);
   m.metallic             = 0.25f;

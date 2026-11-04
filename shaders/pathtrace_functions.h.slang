@@ -563,7 +563,7 @@ bool shadowCrossSurface(GltfRenderNode      renderNode,
                         inout float         prevHitT,
                         inout uint          seed)
 {
-  const float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics);
+  const float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, mul(float4(rayDirection, 0.0F), worldToObject).xyz);
   if(opacity <= 0.0F)
     return true;
   const bool boundsMedium = shadowSurfaceBoundsMedium(renderNode);
@@ -911,7 +911,7 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
   // stochastic test), and so does what a light sample takes from it. A cutout's holes (a candle
   // flame's card, a lamp's pattern) emitted to light samples alone, so a masked panel lit a floor
   // 1.9x a panel with the same holes cut (tests/render/emitter_cutout.py).
-  es.radiance *= getOpacity(node, prim, int(et.triangleID), bary);
+  es.radiance *= getOpacity(node, prim, int(et.triangleID), bary, mul(float4(dir, 0.0F), node.worldToObject).xyz);
   // Power-weighted solid-angle pdf; the triangle area cancels (see header). Uses the defensive
   // luminance so it matches the host selection weight.
   es.pdf = emitterDefensiveLuminance(et.radiance) * dist2 / (wtot * cosLight);
@@ -1738,7 +1738,7 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
       const float2 bary         = rayQuery.CandidateTriangleBarycentrics();
       const float3 barycentrics = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
       const uint   triangleID   = rayQuery.CandidatePrimitiveIndex();
-      opacity = getOpacity(node, renderPrimitives[rayQuery.CandidateInstanceID()], triangleID, barycentrics);
+      opacity = getOpacity(node, renderPrimitives[rayQuery.CandidateInstanceID()], triangleID, barycentrics, rayQuery.CandidateObjectRayDirection());
       u       = alphaHashU(rayQuery.CandidateInstanceIndex(), triangleID, barycentrics);
     }
 

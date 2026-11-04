@@ -393,6 +393,32 @@ TEST(Materials, AnOpacityEditOnASurfaceThatLoadedOpaqueIsSeen)
   EXPECT_EQ(loweredJson(s, e, {}).material["alphaMode"], "OPAQUE");
 }
 
+TEST(Materials, ASheerGarmentIsAWeaveAndAHairCardIsNot)
+{
+  const char* sheer = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+    {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[0.1,0.1,0.1]}},
+    {"channel":{"id":"Cutout Opacity","type":"float","current_value":0.3,"image_file":"/Runtime/Textures/sheer_o.jpg"}}
+  ]}]})";
+  const auto woven = [&](const char* name, fv::mat::Context context, const fv::mat::LowerOptions& o = {}) {
+    return fv::mat::lower(fv::dson::parseSurface(name, channelsOf(sheer), context), {}, o).material.woven;
+  };
+  EXPECT_TRUE(woven("Stockings", fv::mat::Context::eItem));
+  EXPECT_TRUE(woven("Curtain", fv::mat::Context::eItem));
+  // strands, not threads in a plane
+  EXPECT_FALSE(woven("Hair", fv::mat::Context::eHair));
+  EXPECT_FALSE(woven("Eyelashes", fv::mat::Context::eItem));
+  // a figure's own surface
+  EXPECT_FALSE(woven("Torso", fv::mat::Context::eBody));
+  // a file's cutout goes out as a mask, whose test has no weave
+  fv::mat::LowerOptions file;
+  file.forFile = true;
+  EXPECT_FALSE(woven("Stockings", fv::mat::Context::eItem, file));
+  // an opacity edit back to opaque leaves nothing to see through
+  fv::mat::Edits opaque;
+  opaque.alphaMode = "opaque";
+  EXPECT_FALSE(fv::mat::lower(fv::dson::parseSurface("Stockings", channelsOf(sheer), fv::mat::Context::eItem), opaque, {}).material.woven);
+}
+
 TEST(Materials, OnlyTheMainSourceOfARequestIsLayered)
 {
   // a cutout, a makeup, a metal or a weight map of two layers: the cooker opens those as one file, and

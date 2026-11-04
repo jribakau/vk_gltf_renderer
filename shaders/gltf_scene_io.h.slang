@@ -227,6 +227,10 @@ struct GltfShadeMaterial
   // where the mean is unknown, 0 for an all-black texture (not a light). The path tracer's hit side
   // reads it to recover the pick the light sample made (emitterSelectionRadiance).
   float emissiveLightScale = 1;
+  // 1: the cutout is a fabric's weave, whose gaps close as the surface turns away from the ray
+  // (wovenOpacity); 0: the opacity is the same from every direction, as glTF has it
+  int opacityWoven = 0;
+  int _wovenPad    = 0;  // keeps the row a multiple of 8 with no padding: rows are compared byte by byte
 
 #if MAT_EXT_VOLUME
   float3 attenuationColor = float3(1);

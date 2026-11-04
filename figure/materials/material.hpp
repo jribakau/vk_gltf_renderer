@@ -253,6 +253,10 @@ struct Material
   bool                               unlit = false;
 
   bool walkThrough = false;  // a surface a scatter walk passes through: light under the skin ignores it
+  // The cutout is a fabric's weave: its gaps close as the cloth turns away from the ray, so a sheer
+  // stocking darkens towards the leg's outline (shaders/woven_opacity.h.slang). Off: the opacity is
+  // the same from every direction, as glTF has it.
+  bool woven = false;
 
   // What a file carried that nothing reads, to write back
   tinygltf::ExtensionMap foreignExtensions;

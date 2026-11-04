@@ -429,6 +429,10 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   };
   out.alphaMode   = alphaMode == "OPAQUE" ? AlphaMode::eOpaque : alphaMode == "MASK" ? AlphaMode::eMask : AlphaMode::eBlend;
   out.doubleSided = eff.doubleSided;
+  // A garment's or a prop's see-through cloth is a weave, whose gaps close as it turns away (a
+  // stocking's outline, a veil's folds). Not a hair card or lashes, whose cutout is strands, nor
+  // glass, nor a figure. Iray keeps a cutout the same from every side.
+  out.woven = out.alphaMode == AlphaMode::eBlend && s.context == Context::eItem && s.kind == Kind::eOther && !s.hairFibre && !refractive;
 
   // normal: the normal map and the bump map together when a surface has both (there is one slot),
   // else whichever one it has. DAZ skin keeps pores in the bump map. The bump strength is baked
