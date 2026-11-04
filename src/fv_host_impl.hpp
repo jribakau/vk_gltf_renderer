@@ -1075,8 +1075,9 @@ struct FvHost::Impl
   Json wardrobeTight(const Json& args);
   // body contact (fv_host_physics.cpp): what a figure's pass meets, the look each frame at what moved
   // near a figure, figure.contact and its topic
-  // `bodies`: other people's too (a contact pass); without, props only (the ragdoll, until step 6)
-  std::vector<fv::physics::ColliderRef>               contactColliders(const Loaded& f, bool bodies = true);
+  // `bodies`: other people's too; `ragdoll`: for a ragdoll, which meets the people in Physics mode by
+  // their capsules instead
+  std::vector<fv::physics::ColliderRef>               contactColliders(const Loaded& f, bool bodies = true, bool ragdoll = false);
   // another figure near this one moves by physics: its dents are held until it rests
   bool                                                movesNear(const Loaded& f);
   std::shared_ptr<const fv::physics::SharedTriangles> contactMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh);
@@ -1090,6 +1091,7 @@ struct FvHost::Impl
   Json physicsOps(const Loaded& f);
   Json physicsSet(const Json& args);
   Json physicsRestore(const Json& args);
+  Json physicsPin(const Json& args);
   // secondary motion: physics.secondary and the secondary/<prop> topic
   void publishSecondary(Loaded& f);
   Json physicsSecondary(const Json& args);

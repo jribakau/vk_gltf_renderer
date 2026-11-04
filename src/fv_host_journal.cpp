@@ -233,7 +233,7 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     return p && p->figure && p->figure->secondary ? Json{{"kind", "secondary"}, {"prop", p->id}} : Json();
   }
   // physics.restore too: undo and redo rebuild each other from what each replayed op is about
-  if(cmd == "physics.set" || cmd == "physics.restore")
+  if(cmd == "physics.set" || cmd == "physics.restore" || cmd == "physics.pin")
   {
     const auto p = figureProp(args);
     return p && p->figure && p->figure->physics ? Json{{"kind", "physics"}, {"prop", p->id}} : Json();
@@ -531,6 +531,12 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
         return std::string("Body contact ") + name;
     return "Body contact";
   }
+  if(cmd == "physics.pin")
+  {
+    const auto  p  = figureProp(args);
+    const auto* pb = p && p->figure && p->figure->fig->pose ? p->figure->fig->pose->get(args.value("bone", "")) : nullptr;
+    return std::string(args.value("on", true) ? "Pin " : "Unpin ") + (pb ? pb->label : args.value("bone", std::string()));
+  }
   if(cmd == "physics.secondary")
   {
     if(args.contains("on"))
@@ -687,6 +693,8 @@ Json FvHost::Impl::applyOp(const Json& o)
     return physicsRestore(args);
   if(cmd == "physics.secondary")
     return physicsSecondary(args);
+  if(cmd == "physics.pin")
+    return physicsPin(args);
   if(cmd == "wardrobe.cloth")
     return wardrobeCloth(args);
   if(cmd == "wardrobe.tight")

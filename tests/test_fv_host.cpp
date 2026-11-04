@@ -3439,6 +3439,43 @@ TEST(FvHost, physicsModeIsAStepAndTheSceneFileKeepsIt)
   EXPECT_TRUE(r.on());
 }
 
+// A pin is a step of the history and part of the figure's scene state; leaving Physics lets it go,
+// and undoing that holds it again. Out of Physics mode there is nothing to pin.
+TEST(FvHost, aPinIsAStepAndTheSceneFileKeepsIt)
+{
+  Ragdolled  r;
+  const auto pins = [&] { return r.rig.topic("physics/" + r.figure).value("pins", Json::array()); };
+  EXPECT_FALSE(r.rig.cmd("physics.pin", {{"prop", r.figure}, {"bone", "head"}}).value("ok", false)) << "pinned in Skeletal mode";
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"on", true}}).value("ok", false));
+  const Json pinned = r.rig.cmd("physics.pin", {{"prop", r.figure}, {"bone", "head"}});
+  ASSERT_TRUE(pinned.value("ok", false)) << pinned.dump();
+  ASSERT_EQ(pins().size(), 1u) << r.physics().dump();
+  EXPECT_EQ(pins()[0].value("bone", ""), "head");
+  EXPECT_EQ(r.rig.topic("history").at("undo")[0].get<std::string>().rfind("Pin ", 0), 0u) << r.rig.topic("history").dump();
+  const Json state = r.rig.cmd("scene.state", {{"prop", r.figure}}).value("result", Json::object());
+  ASSERT_EQ(state.at("physics").value("pins", Json::array()).size(), 1u) << state.dump();
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_TRUE(pins().empty());
+  ASSERT_TRUE(r.rig.cmd("history.redo").value("ok", false));
+  EXPECT_EQ(pins().size(), 1u);
+
+  ASSERT_TRUE(r.rig.cmd("physics.set", {{"prop", r.figure}, {"on", false}}).value("ok", false));
+  EXPECT_TRUE(pins().empty());
+  ASSERT_TRUE(r.rig.cmd("history.undo").value("ok", false));
+  EXPECT_EQ(pins().size(), 1u) << "undoing leaving Physics didn't hold the pin again";
+
+  Json restore    = state;
+  restore["prop"] = r.figure;
+  restore["physics"]["pins"] = Json::array();
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_TRUE(pins().empty());
+  restore["physics"] = state["physics"];
+  r.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(r.rig.settle());
+  EXPECT_EQ(pins().size(), 1u);
+}
+
 // The soft bones' settings are a step of the history and part of the figure's scene state; a file
 // without the block has them off. The Box Figure has no such bones: it keeps the settings, and says so.
 TEST(FvHost, softBodySettingsAreAStepAndTheSceneFileKeepsThem)

@@ -828,6 +828,11 @@ void RigidWorld::collide()
         al.depth = std::min(al.depth, std::max(0.0, depth));
   };
   std::vector<double> fixedDepth(bodies.size(), 0);
+  // the deepest each body is in each other figure this substep: its allowance shrinks to that
+  othersAllowed.resize(bodies.size());
+  std::vector<std::vector<double>> deepestOther(bodies.size());
+  for(size_t i = 0; i < bodies.size(); i++)
+    deepestOther[i].assign(othersAllowed[i].size(), 0.0);
   for(size_t i = 0; i < bodies.size(); i++)
   {
     const RigidBody& b = bodies[i];
@@ -894,6 +899,31 @@ void RigidWorld::collide()
         add(-1, w - n * r, cw, n, r - d);
       }
     }
+    // another figure's capsules, fixed for the frame
+    for(const Kinematic& k : others)
+    {
+      Vec3 ci, ck;
+      closestSegments(ea, eb, k.a, k.b, ci, ck);
+      const double d   = length(ci - ck);
+      const double pen = r + k.radius - d;
+      if(i >= deepestOther.size() || size_t(k.group) >= deepestOther[i].size())
+        continue;
+      deepestOther[i][size_t(k.group)] = std::max(deepestOther[i][size_t(k.group)], pen);
+      const double ok = othersAllowed[i][size_t(k.group)];
+      if(pen <= ok || d < 1e-9)
+        continue;
+      const Vec3 n = (ci - ck) * (1 / d);
+      Contact    c;
+      c.a       = int(i);
+      c.b       = -1;
+      c.ra      = rotate(ci - n * r - b.x, b.q.inverse());
+      c.rb      = ck + n * k.radius;
+      c.n       = n;
+      c.depth   = pen;
+      c.allowed = ok;
+      c.other   = true;
+      m_contacts.push_back(c);
+    }
     // the other bodies
     for(size_t j = i + 1; j < bodies.size(); j++)
     {
@@ -924,10 +954,13 @@ void RigidWorld::collide()
   // what a body is allowed into fixed things (it came in seated in a chair, its feet a hair under the
   // ground), shrinking as it leaves them
   for(Contact& c : m_contacts)
-    if(c.b < 0)
+    if(c.b < 0 && !c.other)
       c.allowed = std::min(allowed(c.a, -1), c.depth);
   for(size_t i = 0; i < bodies.size(); i++)
     shrink(int(i), -1, fixedDepth[i]);
+  for(size_t i = 0; i < bodies.size(); i++)
+    for(size_t g = 0; g < othersAllowed[i].size(); g++)
+      othersAllowed[i][g] = std::min(othersAllowed[i][g], std::max(0.0, deepestOther[i][g]));
 }
 
 void RigidWorld::solveContact(Contact& c)
@@ -1100,7 +1133,7 @@ void RigidWorld::allowOverlaps()
   collide();
   std::vector<double> fixed(bodies.size(), 0);
   for(const Contact& c : m_contacts)
-    if(c.b < 0)
+    if(c.b < 0 && !c.other)
       fixed[size_t(c.a)] = std::max(fixed[size_t(c.a)], c.depth);
   allowances = pairs;
   for(size_t i = 0; i < bodies.size(); i++)

@@ -158,6 +158,20 @@ public:
     double depth = 0;
   };
   std::vector<Allowance> allowances;
+  // Another figure's ragdoll, met as fixed capsules for a frame: set before each step from a snapshot
+  // taken at the frame's start, so which figure steps first changes nothing (stepTogether). `group`
+  // says whose (an index into the owner's list of them).
+  struct Kinematic
+  {
+    Vec3   a, b;
+    double radius = 0;
+    int    group  = 0;
+  };
+  std::vector<Kinematic> others;
+  // how deep each body may be in each group of `others` (cm), [body][group]: what it came in with
+  // (two figures entering Physics in a hug), only shrinking as they part. Kept apart from the
+  // allowances, which a target change grants again.
+  std::vector<std::vector<double>> othersAllowed;
 
   // Simulates `seconds` (clamped to settings.maxFrame) in whole substeps, carrying the rest: how many
   // it took.
@@ -192,6 +206,7 @@ private:
     Vec3   n;               // from b to a, the way a is pushed
     double depth   = 0;     // how far a must move along n
     double allowed = 0;
+    bool   other   = false;  // against another figure's capsule (`others`)
     double lambdaN = 0, lambdaT = 0;
   };
   void predict(double h);

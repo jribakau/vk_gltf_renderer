@@ -52,7 +52,8 @@ namespace {
 // and scene state's `parts`. 24: the chest's soft bones: physics.secondary, the secondary/<prop> topic
 // and the scene state's `secondary`. 25: a body of water over the ground, the lighting's ground.mode
 // "water" with ground.depth and ground.waves.
-constexpr int kProtocolVersion = 25;
+// 26: pins and two ragdolls: physics.pin, the physics topic's and scene state's `pins`.
+constexpr int kProtocolVersion = 26;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

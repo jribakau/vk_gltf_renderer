@@ -373,6 +373,8 @@ void FigurePhysics::build()
   m_world.pins.push_back(hip);
   if(m_ground)
     m_world.planes = {*m_ground};
+  m_otherKeys.clear();
+  syncPins();
 }
 
 void FigurePhysics::placeBodies()
@@ -621,6 +623,8 @@ bool FigurePhysics::set(const PhysicsSettings& settings, bool fold)
       m_world.pins.erase(m_world.pins.begin() + m_pull);
       m_pull = -1;
     }
+    m_held.clear();
+    syncPins();
     if(fold)
       m_rig.foldPhysical(m_owned);
     else
@@ -697,6 +701,253 @@ bool FigurePhysics::grab(const Vec3& origin, const Vec3& dir, double& depth)
   wake();
   m_version++;
   return true;
+}
+
+int FigurePhysics::partAt(int poseBone) const
+{
+  if(poseBone < 0 || size_t(poseBone) >= m_rig.bones().size())
+    return -1;
+  if(const int p = partOf(poseBone); p >= 0)
+    return p;
+  for(int n = m_rig.bones()[size_t(poseBone)].bone; n >= 0; n = m_scene.nodes[size_t(n)].parent)
+    if(size_t(n) < m_partOfNode.size() && m_partOfNode[size_t(n)] >= 0)
+      return m_partOfNode[size_t(n)];
+  return -1;
+}
+
+Vec3 FigurePhysics::pinPoint(int part) const
+{
+  const Part& p = m_parts[size_t(part)];
+  // the knee is a shin's top: its joint, which is its bone's origin
+  if(wardrobe::parseBone(m_rig.bones()[size_t(p.poseBone)].name).slot == "shin")
+    return p.com * -1.0;
+  return {};
+}
+
+void FigurePhysics::syncPins()
+{
+  if(m_hipPin < 0 || m_parts.empty())
+    return;
+  std::optional<Pin> pull;
+  if(m_pull >= 0)
+    pull = m_world.pins[size_t(m_pull)];
+  m_world.pins.resize(size_t(m_hipPin) + 1);
+  // stiff: a tenth of a millimetre under the figure's whole weight, a hundredth of a radian under it
+  // on a 10 cm lever
+  const double weight = std::max(1.0, m_parts[0].subtreeMass * kGravity);
+  for(const HeldPin& h : m_held)
+  {
+    const int part = partOf(h.poseBone);
+    if(part < 0)
+      continue;
+    Pin p;
+    p.body              = part;
+    p.local             = pinPoint(part);
+    p.target            = h.at;
+    p.turn              = h.turn;
+    p.rotation          = h.rotation;
+    p.compliance        = 0.01 / weight;
+    p.angularCompliance = 0.01 / (weight * 10);
+    p.maxForce          = h.maxForce > 0 ? h.maxForce : 10 * weight;
+    p.maxTorque         = p.maxForce * 10;
+    m_world.pins.push_back(p);
+  }
+  m_pull = -1;
+  if(pull)
+  {
+    m_pull = int(m_world.pins.size());
+    m_world.pins.push_back(*pull);
+  }
+}
+
+bool FigurePhysics::pin(int poseBone, bool turn, double maxForce)
+{
+  const int part = partAt(poseBone);
+  if(!m_settings.on || part < 0)
+    return false;
+  const RigidBody& b = m_world.bodies[size_t(part)];
+  HeldPin          h;
+  h.poseBone = m_parts[size_t(part)].poseBone;
+  h.turn     = turn;
+  h.at       = b.toWorld(pinPoint(part));
+  h.rotation = b.q;
+  h.maxForce = maxForce;
+  const auto it = std::find_if(m_held.begin(), m_held.end(), [&](const HeldPin& p) { return p.poseBone == h.poseBone; });
+  if(it != m_held.end())
+    *it = h;
+  else
+    m_held.push_back(h);
+  syncPins();
+  m_version++;
+  wake();
+  return true;
+}
+
+bool FigurePhysics::unpin(int poseBone)
+{
+  const int part = partAt(poseBone);
+  if(part < 0)
+    return false;
+  const int  own = m_parts[size_t(part)].poseBone;
+  const auto it  = std::find_if(m_held.begin(), m_held.end(), [&](const HeldPin& p) { return p.poseBone == own; });
+  if(it == m_held.end())
+    return false;
+  m_held.erase(it);
+  syncPins();
+  m_version++;
+  wake();
+  return true;
+}
+
+void FigurePhysics::restorePins(const std::vector<HeldPin>& pins)
+{
+  m_held.clear();
+  for(const HeldPin& h : pins)
+    if(partOf(h.poseBone) >= 0)
+      m_held.push_back(h);
+  syncPins();
+  m_version++;
+}
+
+void FigurePhysics::setOthers(std::vector<Other> others)
+{
+  // an allowance carried by whose it is; a figure not met before is allowed what it overlaps now
+  // (two figures entering Physics in a hug stay so), and it only shrinks as they part
+  const size_t                     n = m_world.bodies.size();
+  std::vector<std::vector<double>> allowed(n, std::vector<double>(others.size(), 0.0));
+  std::vector<std::string>         keys;
+  m_world.others.clear();
+  Box mine;
+  for(const RigidBody& b : m_world.bodies)
+    for(const Vec3& e : {b.toWorld(b.shape.a), b.toWorld(b.shape.b)})
+    {
+      mine.add(e.x - b.shape.radius, e.y - b.shape.radius, e.z - b.shape.radius);
+      mine.add(e.x + b.shape.radius, e.y + b.shape.radius, e.z + b.shape.radius);
+    }
+  bool near = false;
+  for(size_t g = 0; g < others.size(); g++)
+  {
+    const Other& o   = others[g];
+    const auto   was = std::find(m_otherKeys.begin(), m_otherKeys.end(), o.key);
+    const size_t old = size_t(was - m_otherKeys.begin());
+    keys.push_back(o.key);
+    Box theirs;
+    for(RigidWorld::Kinematic k : o.capsules)
+    {
+      k.group = int(g);
+      m_world.others.push_back(k);
+      for(const Vec3& e : {k.a, k.b})
+      {
+        theirs.add(e.x - k.radius, e.y - k.radius, e.z - k.radius);
+        theirs.add(e.x + k.radius, e.y + k.radius, e.z + k.radius);
+      }
+    }
+    for(size_t i = 0; i < n; i++)
+    {
+      if(was != m_otherKeys.end() && i < m_world.othersAllowed.size() && old < m_world.othersAllowed[i].size())
+      {
+        allowed[i][g] = m_world.othersAllowed[i][old];
+        continue;
+      }
+      const RigidBody& b = m_world.bodies[i];
+      for(const RigidWorld::Kinematic& k : o.capsules)
+      {
+        Vec3 ci, ck;
+        closestSegments(b.toWorld(b.shape.a), b.toWorld(b.shape.b), k.a, k.b, ci, ck);
+        allowed[i][g] = std::max(allowed[i][g], b.shape.radius + k.radius - length(ci - ck));
+      }
+    }
+    near = near || (o.moving && mine.grown(5).overlaps(theirs));
+  }
+  m_world.othersAllowed = std::move(allowed);
+  m_otherKeys           = std::move(keys);
+  // the world alone: no input of its own, so the forced sleep still comes
+  if(near && m_settings.on)
+    m_world.wake();
+}
+
+namespace {
+
+// The scale of a matrix that turns and scales the same along every axis; 0 when it doesn't.
+double evenScale(const Mat4& m)
+{
+  const Vec3   c[3] = {{m.e[0], m.e[1], m.e[2]}, {m.e[4], m.e[5], m.e[6]}, {m.e[8], m.e[9], m.e[10]}};
+  const double s    = length(c[0]);
+  if(s < 1e-12)
+    return 0;
+  for(int a = 0; a < 3; a++)
+  {
+    if(std::abs(length(c[a]) - s) > 1e-6 * s)
+      return 0;
+    if(std::abs(dot(c[a], c[(a + 1) % 3])) > 1e-6 * s * s)
+      return 0;
+  }
+  return s;
+}
+
+}  // namespace
+
+void stepTogether(std::span<const Together> figures, double seconds)
+{
+  // every ragdoll's capsules at the frame's start, in the shared world
+  struct Snap
+  {
+    std::vector<RigidWorld::Kinematic> capsules;
+    Box                                box;
+    double                             scale  = 0;
+    bool                               moving = false;
+  };
+  std::vector<Snap> snaps(figures.size());
+  for(size_t i = 0; i < figures.size(); i++)
+  {
+    const FigurePhysics* f = figures[i].physics;
+    if(!f || !f->settings().on || !f->valid())
+      continue;
+    Snap& s  = snaps[i];
+    s.scale  = evenScale(figures[i].root);
+    s.moving = f->awake();
+    for(const RigidBody& b : f->world().bodies)
+    {
+      RigidWorld::Kinematic k;
+      k.a      = figures[i].root.transformPoint(b.toWorld(b.shape.a));
+      k.b      = figures[i].root.transformPoint(b.toWorld(b.shape.b));
+      k.radius = b.shape.radius * s.scale;
+      for(const Vec3& e : {k.a, k.b})
+      {
+        s.box.add(e.x - k.radius, e.y - k.radius, e.z - k.radius);
+        s.box.add(e.x + k.radius, e.y + k.radius, e.z + k.radius);
+      }
+      s.capsules.push_back(k);
+    }
+  }
+  // each meets the others near it, in its own root's space
+  for(size_t i = 0; i < figures.size(); i++)
+  {
+    FigurePhysics* f = figures[i].physics;
+    if(!f)
+      continue;
+    std::vector<FigurePhysics::Other> others;
+    if(snaps[i].scale > 0)
+    {
+      const Mat4 toMine = inverse(figures[i].root);
+      for(size_t j = 0; j < figures.size(); j++)
+      {
+        const Snap& o = snaps[j];
+        if(j == i || o.scale <= 0 || std::abs(o.scale / snaps[i].scale - 1) > 1e-6 || !snaps[i].box.grown(10 * snaps[i].scale).overlaps(o.box))
+          continue;
+        FigurePhysics::Other other;
+        other.key    = figures[j].key;
+        other.moving = o.moving;
+        for(const RigidWorld::Kinematic& k : o.capsules)
+          other.capsules.push_back({toMine.transformPoint(k.a), toMine.transformPoint(k.b), k.radius / snaps[i].scale, 0});
+        others.push_back(std::move(other));
+      }
+    }
+    f->setOthers(std::move(others));
+  }
+  for(const Together& t : figures)
+    if(t.physics)
+      t.physics->step(seconds);
 }
 
 void FigurePhysics::drag(const Vec3& target)

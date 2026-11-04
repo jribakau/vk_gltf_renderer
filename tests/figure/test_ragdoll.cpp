@@ -466,6 +466,104 @@ TEST(Ragdoll, thePhysicalLayerRoundTrips)
   EXPECT_FALSE(b.physics->awake());
 }
 
+// Pinned by the left hand and let fall: the body hangs from the hand, which stays where it was.
+TEST(Ragdoll, aPinnedHandHoldsAgainstGravity)
+{
+  Person p;
+  p.on(0.5);
+  const int  hand = p.physics->partOf(p.pose->indexOf("l_hand"));
+  const Vec3 at   = p.physics->world().bodies[size_t(hand)].x;
+  ASSERT_TRUE(p.physics->pin(p.pose->indexOf("l_index1"), false)) << "a finger pins its hand";
+  ASSERT_EQ(p.physics->pins().size(), 1u);
+  EXPECT_EQ(p.physics->pins()[0].poseBone, p.pose->indexOf("l_hand"));
+  const Vec3      hip = p.at("hip");
+  PhysicsSettings s   = p.physics->settings();
+  s.letFall           = true;
+  p.physics->set(s);
+  p.run(3);
+  EXPECT_LT(length(p.physics->world().bodies[size_t(hand)].x - at), 1.0) << "the pinned hand moved";
+  EXPECT_GT(length(p.at("hip") - hip), 5) << "the body didn't hang from it";
+}
+
+// A pin holds up to its force: one far under the figure's weight lets the hand slip. Unpinned, the
+// pin goes, and leaving Physics lets every pin go.
+TEST(Ragdoll, aForceLimitLetsAPinSlip)
+{
+  Person p;
+  p.on(0.5);
+  const int    hand   = p.physics->partOf(p.pose->indexOf("l_hand"));
+  const Vec3   at     = p.physics->world().bodies[size_t(hand)].x;
+  const double weight = p.physics->parts()[0].subtreeMass * 980;
+  ASSERT_TRUE(p.physics->pin(p.pose->indexOf("l_hand"), false, 0.05 * weight));
+  PhysicsSettings s = p.physics->settings();
+  s.letFall         = true;
+  p.physics->set(s);
+  p.run(3);
+  EXPECT_GT(length(p.physics->world().bodies[size_t(hand)].x - at), 5) << "a pin a twentieth of the weight held it";
+  EXPECT_TRUE(p.physics->unpin(p.pose->indexOf("l_hand")));
+  EXPECT_TRUE(p.physics->pins().empty());
+  ASSERT_TRUE(p.physics->pin(p.pose->indexOf("r_hand"), true));
+  s.on = false;
+  p.physics->set(s);
+  EXPECT_TRUE(p.physics->pins().empty());
+}
+
+// Two figures let fall, the second from 1.8 m over the first: it lands on it, and they come to rest
+// with no capsule of one more than a centimetre into the other's. Stepped with either first, every body
+// ends in the same place.
+TEST(Ragdoll, twoRagdollsDroppedOnEachOtherEndApartWhicheverIsFirst)
+{
+  struct End
+  {
+    std::vector<double> x;
+    double              closest = INFINITY, deepest = 0;
+    bool                awake   = true;
+  };
+  const auto run = [](bool swapped) {
+    Person         a, b;
+    const fv::Mat4 ra = fv::compose({0, 0, 0}, fv::Quat{}, {0.01, 0.01, 0.01});
+    const fv::Mat4 rb = fv::compose({0.05, 1.8, 0.03}, fv::Quat{}, {0.01, 0.01, 0.01});
+    // the same floor, in b's root
+    b.physics->setGround(fv::physics::Plane{{0, 1, 0}, -180});
+    a.on(0, true);
+    b.on(0, true);
+    std::vector<fv::physics::Together> t = {{a.physics.get(), ra, "a"}, {b.physics.get(), rb, "b"}};
+    if(swapped)
+      std::swap(t[0], t[1]);
+    End        end;
+    const auto apart = [&](bool deepest) {
+      for(const auto& p : a.physics->world().bodies)
+        for(const auto& q : b.physics->world().bodies)
+        {
+          Vec3 cp, cq;
+          fv::physics::closestSegments(ra.transformPoint(p.toWorld(p.shape.a)), ra.transformPoint(p.toWorld(p.shape.b)), rb.transformPoint(q.toWorld(q.shape.a)),
+                                       rb.transformPoint(q.toWorld(q.shape.b)), cp, cq);
+          // in centimetres
+          const double gap = length(cp - cq) * 100 - p.shape.radius - q.shape.radius;
+          end.closest      = std::min(end.closest, gap);
+          if(deepest)
+            end.deepest = std::max(end.deepest, -gap);
+        }
+    };
+    for(int f = 0; f < 900 && (a.physics->awake() || b.physics->awake()); f++)
+    {
+      fv::physics::stepTogether(t, 1.0 / 60);
+      apart(false);
+    }
+    apart(true);
+    end.awake = a.physics->awake() || b.physics->awake();
+    for(const auto* w : {&a.physics->world(), &b.physics->world()})
+      for(const auto& body : w->bodies)
+        end.x.insert(end.x.end(), {body.x.x, body.x.y, body.x.z});
+    return end;
+  };
+  const End one = run(false), two = run(true);
+  EXPECT_LT(one.closest, 1) << "they never met";
+  EXPECT_LT(one.deepest, 1) << "a capsule ended " << one.deepest << " cm into the other figure";
+  EXPECT_FALSE(one.awake) << "still moving after 15 s";
+  EXPECT_EQ(one.x, two.x) << "which stepped first changed where they ended";
+}
+
 //--------------------------------------------------------------------------------------------------
 // Secondary motion (figure/physics/rig/secondary.hpp, docs/physics-plan.md step 5)
 

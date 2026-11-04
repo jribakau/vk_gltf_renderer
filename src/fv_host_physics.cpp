@@ -165,8 +165,9 @@ const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::
 // Every shown model prop's meshes and DAZ prop's, placed in the figure root's space (centimetres):
 // where the renderer has each node now, so a prop riding a bone or carried by a parent is where it
 // shows. A model's skinned meshes are left out: their triangles are not where the file has them.
-// With `bodies`, another person's body too, of which this one takes its share of the overlap.
-std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loaded& f, bool bodies)
+// With `bodies`, another person's body too, of which this one takes its share of the overlap; for a
+// `ragdoll`, the people not in Physics mode.
+std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loaded& f, bool bodies, bool ragdoll)
 {
   std::vector<fv::physics::ColliderRef> out;
   if(!renderer->feedsHostScene() || !f.feed)
@@ -194,6 +195,9 @@ std::vector<fv::physics::ColliderRef> FvHost::Impl::contactColliders(const Loade
   {
     Loaded* prop = p->figure.get();
     if(!prop || prop == &f || (prop->contact && !bodies) || !prop->feed || !shown(*p))
+      continue;
+    // for a ragdoll, another in Physics mode is met by its capsules (stepTogether)
+    if(ragdoll && prop->physics && prop->physics->settings().on)
       continue;
     const rs::EntityId at = prop->feed->entityOf(prop->fig->loaded.root);
     if(!scene.entity(at))
@@ -422,7 +426,14 @@ Json physicsState(const Loaded& f)
   if(s.on)
     for(const auto& [key, value] : f.physics->physicalValues())
       physical[key] = value;
-  return {{"on", s.on}, {"strength", s.strength}, {"gravity", s.gravity}, {"letFall", s.letFall}, {"parts", partsJson(s)}, {"physical", physical}};
+  Json pins = Json::array();
+  for(const fv::physics::FigurePhysics::HeldPin& h : f.physics->pins())
+    pins.push_back({{"bone", f.fig->pose->bones()[size_t(h.poseBone)].id},
+                    {"turn", h.turn},
+                    {"at", {h.at.x, h.at.y, h.at.z}},
+                    {"rotation", {h.rotation.x, h.rotation.y, h.rotation.z, h.rotation.w}},
+                    {"maxForce", h.maxForce}});
+  return {{"on", s.on}, {"strength", s.strength}, {"gravity", s.gravity}, {"letFall", s.letFall}, {"parts", partsJson(s)}, {"physical", physical}, {"pins", pins}};
 }
 
 // What puts a figure's physics back as it is now: its parts' channels (where the motors aim), then
@@ -443,14 +454,21 @@ Json FvHost::Impl::physicsOps(const Loaded& f)
   return Json::array({{{"cmd", "pose.set"}, {"args", {{"prop", f.id}, {"values", values}}}}, {{"cmd", "physics.restore"}, {"args", state}}});
 }
 
-// Topic "physics/<prop>": {available, on, awake, pulling, strength, parts, groups, gravity, letFall}:
-// the figure's Physics mode; `parts` the body groups with a Hold of their own, `groups` all it has.
+// Topic "physics/<prop>": {available, on, awake, pulling, strength, parts, groups, gravity, letFall,
+// pins}: the figure's Physics mode; `parts` the body groups with a Hold of their own, `groups` all it
+// has, `pins` the parts held where they are ({bone, label, turn}).
 void FvHost::Impl::publishPhysics(Loaded& f)
 {
   if(!f.physics)
     return;
   f.physicsVersion                      = f.physics->version();
   const fv::physics::PhysicsSettings& s = f.physics->settings();
+  Json pins = Json::array();
+  for(const fv::physics::FigurePhysics::HeldPin& h : f.physics->pins())
+  {
+    const fv::pose::PoseBone& pb = f.fig->pose->bones()[size_t(h.poseBone)];
+    pins.push_back({{"bone", pb.id}, {"label", pb.label}, {"turn", h.turn}});
+  }
   // the body groups its parts are in, in order, each once: what may have a Hold of its own
   Json groups = Json::array();
   for(size_t i = 1; i < f.physics->parts().size(); i++)
@@ -463,6 +481,7 @@ void FvHost::Impl::publishPhysics(Loaded& f)
                                                   {"strength", s.strength},
                                                   {"parts", partsJson(s)},
                                                   {"groups", groups},
+                                                  {"pins", pins},
                                                   {"gravity", s.gravity},
                                                   {"letFall", s.letFall}});
 }
@@ -475,6 +494,7 @@ void FvHost::Impl::stepPhysics()
   const auto   now     = std::chrono::steady_clock::now();
   const double elapsed = physicsFrame == std::chrono::steady_clock::time_point{} ? 0.0 : std::chrono::duration<double>(now - physicsFrame).count();
   physicsFrame         = now;
+  std::vector<fv::physics::Together> together;
   for(const auto& p : props)
   {
     if(!p->figure || !p->figure->physics)
@@ -505,10 +525,22 @@ void FvHost::Impl::stepPhysics()
     }
     // a clip playing on it keeps it awake and is swept across the frame
     f.physics->setClip(renderer->editAnimationControl().play && figureClipOf(currentClip) == &f);
-    {
-      fv::timing::Scope t("physics: frame", 2);
-      f.physics->step(elapsed);
-    }
+    fv::Mat4 placed;
+    if(renderer->feedsHostScene() && f.feed)
+      if(const rs::EntityId root = f.feed->entityOf(f.fig->loaded.root); renderer->hostScene().entity(root))
+        placed = toMat4(renderer->hostScene().world(root));
+    together.push_back({f.physics.get(), placed, p->id});
+  }
+  // the ragdolls, each meeting the others as they were at the frame's start
+  {
+    fv::timing::Scope t("physics: frame", 2);
+    fv::physics::stepTogether(together, elapsed);
+  }
+  for(const auto& p : props)
+  {
+    if(!p->figure || !p->figure->physics)
+      continue;
+    Loaded& f = *p->figure;
     if(f.physicsVersion != f.physics->version())
       publishPhysics(f);
     // the chest's soft bones answer the chest as the skeleton or the ragdoll has it now
@@ -629,7 +661,43 @@ Json FvHost::Impl::physicsRestore(const Json& args)
           values.emplace_back(v.key(), v.value().get<double>());
     if(!values.empty())
       figure->physics->restorePhysical(values);
+    // the pins as they were held
+    std::vector<fv::physics::FigurePhysics::HeldPin> pins;
+    for(const Json& j : args.value("pins", Json::array()))
+    {
+      const fv::pose::PoseBone* pb = j.is_object() ? figure->fig->pose->get(j.value("bone", "")) : nullptr;
+      const Json                at = j.is_object() ? j.value("at", Json()) : Json(), turn = j.is_object() ? j.value("rotation", Json()) : Json();
+      if(!pb || !at.is_array() || at.size() != 3 || !turn.is_array() || turn.size() != 4)
+        continue;
+      fv::physics::FigurePhysics::HeldPin h;
+      h.poseBone = int(pb - figure->fig->pose->bones().data());
+      h.turn     = j.value("turn", false);
+      h.at       = {at[0].get<double>(), at[1].get<double>(), at[2].get<double>()};
+      h.rotation = fv::Quat{turn[0].get<double>(), turn[1].get<double>(), turn[2].get<double>(), turn[3].get<double>()};
+      h.maxForce = j.value("maxForce", 0.0);
+      pins.push_back(h);
+    }
+    figure->physics->restorePins(pins);
   }
+  publishPhysics(*figure);
+  return {{"ok", true}};
+}
+
+// physics.pin {prop, bone, on?, rotation?}: in Physics mode, the part a bone is in (a finger: its
+// hand) held where it is now, its turn too unless rotation is false; on false lets it go.
+Json FvHost::Impl::physicsPin(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure || !figure->physics || !figure->physics->settings().on)
+    throw std::runtime_error("a pin holds a figure in Physics mode");
+  const fv::pose::PoseBone* pb = figure->fig->pose->get(args.value("bone", ""));
+  if(!pb)
+    throw std::runtime_error("no bone " + args.value("bone", std::string()));
+  const int  bone = int(pb - figure->fig->pose->bones().data());
+  const bool on   = args.value("on", true);
+  const bool done = on ? figure->physics->pin(bone, args.value("rotation", true)) : figure->physics->unpin(bone);
+  if(on && !done)
+    throw std::runtime_error(pb->label + " is no part of the body to pin");
   publishPhysics(*figure);
   return {{"ok", true}};
 }

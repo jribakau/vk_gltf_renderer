@@ -169,6 +169,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
   cmds.add("figure.contact", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("figure.contact", args); }); });
   cmds.add("physics.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.set", args); }); });
+  cmds.add("physics.pin", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.pin", args); }); });
   cmds.add("physics.secondary", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.secondary", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
   // answered at once, as morph.set: a slider sends faster than a path traced frame ends, and the steps

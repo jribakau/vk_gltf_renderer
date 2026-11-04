@@ -16,13 +16,16 @@
 // and nothing is fed forward: it falls as it is.
 //
 // The Pull is a pin that drags a point of a part along the pointer; let go, the channels take the
-// reached pose. Fingers, toes, the face and the eyes keep their channels.
+// reached pose. A pin holds a part where it is (a hand on a wall, the feet on the floor), stiff up to
+// a force past which it slips. Another figure's ragdoll is met by its capsules (stepTogether).
+// Fingers, toes, the face and the eyes keep their channels.
 //
 // One thread (the figure's owner) calls everything.
 
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -76,6 +79,35 @@ public:
   // The pull ends: the channel values that pose the reached pose, for the caller to set as targets
   // (the motors then hold it where it is).
   std::vector<pose::ChannelValue> release();
+
+  // Pins (step 6): the part a bone is in (a finger: its hand) held where it is now, at its middle (a
+  // shin at the knee), and its turn too with `turn`, up to a force past which it slips (dyne; 0: ten
+  // times the figure's weight). Pinned again, it holds where it is then. True when the bone is in a
+  // part. Leaving Physics lets every pin go.
+  bool pin(int poseBone, bool turn, double maxForce = 0);
+  bool unpin(int poseBone);
+  struct HeldPin
+  {
+    int    poseBone = -1;  // the part's own bone
+    bool   turn     = false;
+    Vec3   at;        // where its point is held, in the root's space
+    Quat   rotation;  // and its turn
+    double maxForce = 0;
+  };
+  const std::vector<HeldPin>& pins() const { return m_held; }
+  // Takes pins back (undo, a scene file) as they were held.
+  void restorePins(const std::vector<HeldPin>& pins);
+
+  // Other figures' ragdolls near this one for the next step (stepTogether): whose, and their capsules
+  // in this one's root space as they were at the frame's start; `moving` wakes this one where they
+  // come near it.
+  struct Other
+  {
+    std::string                     key;
+    std::vector<RigidWorld::Kinematic> capsules;
+    bool                            moving = false;
+  };
+  void setOthers(std::vector<Other> others);
   // Where each part is, as channel values: the reached pose (leaving, a scene file, undo).
   std::vector<pose::ChannelValue> reached() const;
   // The physical layer as a scene file keeps it: bone id/kind/axis -> value.
@@ -135,6 +167,12 @@ private:
   std::vector<double> targets() const;
   // a part's Hold: its group's, or the figure's
   double strengthOf(const Part& p) const;
+  // the part a bone is in, or the nearest above it (a finger's hand); -1 for none
+  int partAt(int poseBone) const;
+  // a pin's point on its part, in the body's frame: its middle, a shin's top (the knee)
+  Vec3 pinPoint(int part) const;
+  // the world's pins after the hip's from `m_held`, the pull's last
+  void syncPins();
 
   SceneGraph&            m_scene;
   pose::PoseRig&         m_rig;
@@ -155,8 +193,22 @@ private:
   int                    m_version    = 0;
   bool                   m_wasAwake   = false;
   bool                   m_clip       = false;
+  std::vector<HeldPin>     m_held;
+  std::vector<std::string> m_otherKeys;
   // the joints have been aimed since the build: a clip can sweep from where they aimed
   bool                   m_aimed      = false;
 };
+
+// Figures' ragdolls in one frame: each meets the others' capsules as they were at the frame's start,
+// so the order they come in changes nothing, then each steps. `root` is each one's root node in a
+// world they share; a pair of different scales (or a root not scaled evenly) doesn't meet. A figure
+// not in Physics mode steps as alone (it doesn't).
+struct Together
+{
+  FigurePhysics* physics = nullptr;
+  Mat4           root;
+  std::string    key;
+};
+void stepTogether(std::span<const Together> figures, double seconds);
 
 }  // namespace fv::physics
