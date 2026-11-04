@@ -241,7 +241,8 @@ float3 groundWetAlbedo(float3 dry)
 // the rays meet (groundWaterCrossing), the ripples on them in its normal only. Under it light is
 // absorbed as by pure water, the red first, so depth turns the floor and what stands in it cyan and
 // then blue. A path's ray refracts at the surface; a shadow ray crosses it straight, losing its
-// Fresnel share, as through clear glass (groundWaterShadowTransmittance): there are no caustics.
+// Fresnel share, as through clear glass, and from under it takes the caustic the surface focuses
+// there (groundWaterShadowTransmittance, groundWaterCaustic).
 
 // Pure water's absorption, per metre, over the bands of the sRGB primaries (Pope and Fry 1997)
 static const float3 GROUND_WATER_ABSORPTION = float3(0.29F, 0.055F, 0.011F);
@@ -441,12 +442,85 @@ bool groundUnderWater(float3 pos, SceneFrameInfo* frameInfo)
          && pos.y < groundWaterLevel(frameInfo) + groundWavesAt(float2(pos.x, pos.z), 0.0F, groundWaterWaves(frameInfo)).height;
 }
 
+// The most a caustic brightens the light. Where the surface focuses it to a line the brightness has
+// no bound for light from one direction; in nature the sun's width and the water's depth spread the
+// line, and here the light samples of a pixel do, the sun disc being sampled, past this cut.
+static const float GROUND_CAUSTIC_MAX = 8.0F;
+// How deep light goes before an octave of the ripples (or the swell's noise) focuses it, over the
+// octave's size, per unit of the ripples (waves): an octave as small as this times the depth the
+// light has come down is left out of the bending, as a footprint leaves out what it averages. Past
+// its focus an octave crosses its light into a web finer than itself, which one place of the surface
+// per floor point cannot follow; left in, the floor got up to 66% more light than came in. Set so
+// the landing never folds over at Waves and Ripples 1 (test_ground.cpp).
+static const float GROUND_CAUSTIC_RIPPLE_REACH = 0.045F;
+static const float GROUND_CAUSTIC_SWELL_REACH  = 0.045F;
+
+// Light from the air going `down`, bent into the water through a surface of normal `n` (Snell; from
+// the air there is no total reflection)
+float3 groundIntoWater(float3 down, float3 n)
+{
+  const float eta   = 1.0F / GROUND_WATER_IOR;
+  const float cosI  = max(-dot(down, n), 0.0F);
+  const float sin2T = eta * eta * (1.0F - cosI * cosI);
+  return eta * down + (eta * cosI - sqrt(max(1.0F - sin2T, 0.0F))) * n;
+}
+
+// The surface as light coming down to a depth sees it: the octaves too small to follow that far
+// left out (GROUND_CAUSTIC_RIPPLE_REACH)
+struct GroundCausticReach
+{
+  float waves, ripples;      // amounts
+  float swellOut, rippleOut;  // footprints, metres
+};
+
+// Where light from `toLight`, coming in through the surface over `xz`, lands at height `y` under it:
+// bent there by the swell's and the ripples' slope together, as a path's ray is (waterSurfaceMaterial),
+// but for the octaves `reach` leaves out
+float2 groundWaterLanding(float2 xz, float3 toLight, float y, float level, GroundCausticReach reach)
+{
+  const GroundWaves w     = groundWavesAt(xz, reach.swellOut, reach.waves);
+  const float2      slope = w.slope.slope + groundRipplesAt(xz, reach.rippleOut, reach.ripples).slope;
+  const float3      bent  = groundIntoWater(-toLight, normalize(float3(-slope.x, 1.0F, -slope.y)));
+  return xz + float2(bent.x, bent.z) * ((level + w.height - y) / max(-bent.y, 1e-4F));
+}
+
+// How much more light from `toLight`, above the water, reaches `origin` under it than still water
+// would let through: the waves and ripples focus it under a crest and spread it under a trough, the
+// floor's caustics. The light that lands at `origin` came in where the surface bends it there, found
+// from where still water would have let it in by steps towards that landing. Its brightness is the
+// inverse of how a patch of the surface there grows on its way down: the landing's Jacobian, taken
+// across a millimetre. With what has focused by that depth left out the landing does not fold, so
+// each floor point has the one place it is lit from, and the floor keeps the light that came in.
+float groundWaterCaustic(float3 origin, float3 toLight, float level, float waves, float ripples)
+{
+  if(waves <= 0.0F && ripples <= 0.0F)
+    return 1.0F;
+  const float2 p     = float2(origin.x, origin.z);
+  const float3 still = groundIntoWater(-toLight, float3(0.0F, 1.0F, 0.0F));
+  // how far the light comes down through the water
+  const float        path = max(level - origin.y, 0.0F) / max(-still.y, 1e-4F);
+  GroundCausticReach reach;
+  reach.waves     = waves;
+  reach.ripples   = ripples;
+  reach.swellOut  = GROUND_CAUSTIC_SWELL_REACH * waves * path;
+  reach.rippleOut = GROUND_CAUSTIC_RIPPLE_REACH * ripples * path;
+  float2 entry    = p - float2(still.x, still.z) * path;
+  for(int i = 0; i < 3; ++i)
+    entry += p - groundWaterLanding(entry, toLight, origin.y, level, reach);
+  const float  h   = 1e-3F;
+  const float2 at  = groundWaterLanding(entry, toLight, origin.y, level, reach);
+  const float2 dx  = (groundWaterLanding(entry + float2(h, 0.0F), toLight, origin.y, level, reach) - at) / h;
+  const float2 dz  = (groundWaterLanding(entry + float2(0.0F, h), toLight, origin.y, level, reach) - at) / h;
+  const float  det = abs(dx.x * dz.y - dx.y * dz.x);
+  return 1.0F / max(det, 1.0F / GROUND_CAUSTIC_MAX);
+}
+
 // What a shadow ray keeps of its light through the water: its Fresnel share where it crosses the
-// surface, which it does straight, and what the water absorbs along the part of it under the
-// surface. The share is the one light from the air meets at the ray's angle to the level: it is that
-// light, bent on the way in, that the ray stands for (the waves' tilt is left out: no caustics).
-// Whether the ray starts under water is the surface's, waves and all, as for the path's own rays:
-// a leg under a crest is in the water.
+// surface, which it does straight, what the water absorbs along the part of it under the surface, and
+// from under the water to a light above, the caustic there (groundWaterCaustic). The share is the one
+// light from the air meets at the ray's angle to the level: it is that light, bent on the way in,
+// that the ray stands for. Whether the ray starts under water is the surface's, waves and all, as for
+// the path's own rays: a leg under a crest is in the water.
 float3 groundWaterShadowTransmittance(float3 origin, float3 direction, float tMax, SceneFrameInfo* frameInfo)
 {
   const float3 clear = float3(1.0F, 1.0F, 1.0F);
@@ -465,7 +539,10 @@ float3 groundWaterShadowTransmittance(float3 origin, float3 direction, float tMa
   // light is in the water too
   const float wet     = under ? (crossing.t >= 0.0F ? crossing.t : tMax) : tMax - crossing.t;
   const float through = crossing.t >= 0.0F ? 1.0F - groundWaterFresnel(abs(direction.y)) : 1.0F;
-  return through * exp(-GROUND_WATER_ABSORPTION * wet);
+  const float focus   = under && crossing.t >= 0.0F && direction.y > 0.0F
+                            ? groundWaterCaustic(origin, direction, level, waves, frameInfo->groundRipples)
+                            : 1.0F;
+  return through * focus * exp(-GROUND_WATER_ABSORPTION * wet);
 }
 
 #endif  // GROUND_H_SLANG

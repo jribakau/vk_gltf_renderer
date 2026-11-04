@@ -227,7 +227,12 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   under it sees water, not air, outside its surfaces. Crossing the surface is a clear crossing for MIS
   and spends a budget of its own, the glass's size. A shadow ray crosses the surface straight
   (`groundWaterShadowTransmittance`), keeping its Fresnel share and what the water does not
-  absorb, so there are no caustics.
+  absorb. From under the water to a light above it also takes the caustic there
+  (`groundWaterCaustic`): it finds where the surface lets in the light that lands at its origin and
+  brightens it by how much the surface focuses that light on the way down, the inverse of the
+  landing's Jacobian. Ripple and swell octaves that focus before that depth are left out of the
+  bending, so the landing does not fold and the floor keeps the light that came in on average.
+  Only light samples carry it; a path's own ray refracts through the surface as it is.
 
 The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-SER path traces with
 `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and reads the result from `rmissShadow`, which sets

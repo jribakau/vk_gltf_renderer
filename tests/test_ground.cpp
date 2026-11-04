@@ -352,8 +352,9 @@ TEST(GroundWaves, AShadowRayThroughTheWater)
   };
   // the surface over the origin, waves and all
   const float crest = groundWavesAt(float2(0.0f, 0.0f), 0.0f, 0.4f).height;
-  // up out of half a metre of water (and the wave there), to the sun
-  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, 1, 0), 1e32f, &lake), through * exp(-(0.5f + crest) * GROUND_WATER_ABSORPTION));
+  // up out of half a metre of water (and the wave there), to the sun, with the caustic there
+  const float focus = groundWaterCaustic(float3(0, 0.5f, 0), float3(0, 1, 0), 1.0f, 0.4f, 0.0f);
+  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, 1, 0), 1e32f, &lake), through * focus * exp(-(0.5f + crest) * GROUND_WATER_ABSORPTION));
   // down into it, to a light at the same point
   near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, -1, 0), 1.5f, &lake), through * exp(-(0.5f + crest) * GROUND_WATER_ABSORPTION));
   // in the air, and to a light still above the water
@@ -396,8 +397,74 @@ TEST(GroundWaves, UnderACrestIsInTheWater)
   const float3 under = float3(top.x, 1.0f + 0.5f * h, top.y);
   EXPECT_TRUE(groundUnderWater(under, &lake));
   const float3 t = groundWaterShadowTransmittance(under, float3(0, 1, 0), 1e32f, &lake);
+  // a centimetre or so under the crest: next to no caustic yet
+  const float focus = groundWaterCaustic(under, float3(0, 1, 0), 1.0f, 1.0f, 0.0f);
+  EXPECT_NEAR(focus, 1.0f, 0.01f);
   EXPECT_LT(t.x, 1.0f - groundWaterFresnel(1.0f));
-  EXPECT_NEAR(t.z, (1.0f - groundWaterFresnel(1.0f)) * std::exp(-0.5f * h * GROUND_WATER_ABSORPTION.z), 1e-5f);
+  EXPECT_NEAR(t.z, (1.0f - groundWaterFresnel(1.0f)) * focus * std::exp(-0.5f * h * GROUND_WATER_ABSORPTION.z), 1e-5f);
+}
+
+namespace {
+
+// The caustic over a square of floor `side` metres across, `n` points a side, `depth` under the
+// level, lit from `toLight`
+struct CausticSpread
+{
+  double mean = 0, lowest = 1e9, highest = 0, bright = 0, dark = 0;  // bright: share over 1.5, dark: under 0.67
+};
+
+CausticSpread causticsOver(float depth, float waves, float ripples, float3 toLight, float side = 2.0f, int n = 200)
+{
+  CausticSpread s;
+  for(int i = 0; i < n; ++i)
+    for(int j = 0; j < n; ++j)
+    {
+      const float3 p(side * (float(i) + 0.37f) / float(n), 1.0f - depth, side * (float(j) + 0.61f) / float(n));
+      const float  c = groundWaterCaustic(p, normalize(toLight), 1.0f, waves, ripples);
+      s.mean += c;
+      s.lowest  = std::min(s.lowest, double(c));
+      s.highest = std::max(s.highest, double(c));
+      s.bright += c > 1.5f;
+      s.dark += c < 0.67f;
+    }
+  const double count = double(n) * double(n);
+  s.mean /= count;
+  s.bright /= count;
+  s.dark /= count;
+  return s;
+}
+
+}  // namespace
+
+// Still water focuses nothing; waves and ripples make bands of light on the floor that grow with
+// the depth, never past the cut, and move the light about rather than adding to it or taking it away
+TEST(GroundWaves, TheSurfaceFocusesTheSunIntoCaustics)
+{
+  EXPECT_EQ(groundWaterCaustic(float3(0.3f, 0.2f, 0.7f), float3(0, 1, 0), 1.0f, 0.0f, 0.0f), 1.0f);
+  // Measured 11-04 at Waves and Ripples 1, over 2 m of floor: the mean 0.98 to 1.0 overhead and 0.96
+  // to 1.02 at 48 degrees; at 0.6 m overhead 0.43x to 4.7x, 8% of the floor over 1.5x
+  for(const float3 sun : {float3(0, 1, 0), float3(0.6f, 0.7f, 0.2f)})
+    for(const float depth : {0.1f, 0.3f, 0.6f, 1.2f, 2.5f})
+    {
+      const CausticSpread c = causticsOver(depth, 1.0f, 1.0f, sun);
+      EXPECT_NEAR(c.mean, 1.0, 0.05) << depth;
+      EXPECT_LE(c.highest, GROUND_CAUSTIC_MAX + 1e-4) << depth;
+      EXPECT_GT(c.lowest, 0.25) << depth;
+      if(depth >= 0.3f && depth <= 1.2f)
+      {
+        EXPECT_GT(c.bright, 0.03) << depth;
+        EXPECT_GT(c.dark, 0.05) << depth;
+      }
+      // with the sun overhead the landing never folds, so nothing reaches the cut
+      if(sun.y == 1.0f)
+        EXPECT_LT(c.highest, GROUND_CAUSTIC_MAX - 1.0) << depth;
+    }
+  // light seen through a shallow film barely changes; deeper, the bands sharpen
+  EXPECT_LT(causticsOver(0.1f, 1.0f, 1.0f, float3(0, 1, 0)).bright, causticsOver(0.6f, 1.0f, 1.0f, float3(0, 1, 0)).bright);
+  // the ripples make most of it: the swell alone, a metre down, moves the light by a few percent
+  const CausticSpread swell = causticsOver(1.0f, 1.0f, 0.0f, float3(0, 1, 0));
+  EXPECT_GT(swell.lowest, 0.8);
+  EXPECT_LT(swell.highest, 1.25);
 }
 
 // In water shallower than its swell the waves are kept lower, so no trough reaches the floor
