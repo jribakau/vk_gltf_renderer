@@ -52,6 +52,7 @@
 #include "deform_pipelines.hpp"
 #include "gltf_image_loader.hpp"
 #include "gpu_memory_tracker.hpp"
+#include "image_decode_pool.hpp"
 #include "scene_gpu_view.hpp"
 #include "scene_residency.hpp"
 #include "scene_residency_vk_util.hpp"
@@ -136,13 +137,16 @@ public:
   void copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size) override;
   // decoded on this thread (a file, encoded bytes, or decoded pixels of 8 or 16 bits), its mips made
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
-  // decoded side by side on the worker pool (a file a host prefetched taken instead), then made in order
-  void dropPrefetch(const std::string& uri, bool srgb) override;
-  void createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos) override;
+  void        dropPrefetch(const std::string& uri, bool srgb) override;
+  // decoded on the pool's threads (a file a host prefetched taken instead), made in the sync that takes it
+  uint64_t               startDecode(const ImageSource& source) override;
+  std::vector<MadeImage> takeDecodes(uint64_t budget) override;
+  void                   cancelDecode(uint64_t ticket) override;
+  bool                   decodesReady() const override;
   uint32_t                  maxImageExtent() const override { return m_info.maxImageExtent ? m_info.maxImageExtent() : 0; }
   std::optional<int64_t>    imageHeadroom() const override { return m_info.imageHeadroom ? m_info.imageHeadroom() : std::nullopt; }
   std::optional<ImageChain> imageChain(const ImageSource& source) override;
-  // the images createImages took from a host's prefetches, since the last call
+  // the images takeDecodes took from a host's prefetches, since the last call
   uint32_t    takePrefetchCount() { return std::exchange(m_prefetchTaken, 0u); }
   // the BLASes compacted since the last call, their sizes before and after, and every BLAS's now
   struct Compaction
@@ -281,6 +285,7 @@ private:
   Compaction                                  m_compaction;
   uint32_t                                  m_prefetchTaken = 0;
   nvvkgltf::DeformPipelines                 m_deformPipelines;
+  std::unique_ptr<ImageDecodePool>          m_decodes;  // first in the destructor: its threads call takePrefetched
 };
 
 // The retained scene as the renderers read it: a VulkanGpuBackend and an rs::Residency over a

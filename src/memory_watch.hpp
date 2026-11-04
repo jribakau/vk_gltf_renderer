@@ -44,7 +44,7 @@ public:
   static constexpr double  kRaiseAfterLowering = 30;  // whatever took the memory may want more
   // left free by a lowering and by a raising, so that the one doesn't call for the other
   static constexpr int64_t kMargin = int64_t(256) << 20;
-  // decoded at a time: the frame waits for it
+  // raised at a reading: what it takes is read before the next asks for more
   static constexpr int64_t kRaiseBatch = int64_t(256) << 20;
 
   enum class Act
@@ -62,6 +62,7 @@ public:
     bool    lowered    = false;  // something is down
     bool    refining   = false;  // a still is being refined
     bool    held       = false;  // an export is running
+    bool    decoding   = false;  // textures are on their way: what they take isn't in the reading yet
   };
 
   bool due(double now) const { return now >= m_next; }
@@ -95,6 +96,9 @@ public:
       return Act::eNone;
     const bool settled = r.now - *m_roomSince >= kRaiseAfter && (!m_lowered || r.now - *m_lowered >= kRaiseAfterLowering);
     if(!m_raising && (r.refining || !settled))
+      return Act::eNone;
+    // the room it reads is the room before them: a raising goes on at the next reading
+    if(r.decoding)
       return Act::eNone;
     m_raising = true;
     return Act::eRaise;

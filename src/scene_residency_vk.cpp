@@ -27,7 +27,6 @@
 #include <nvutils/file_mapping.hpp>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/logger.hpp>
-#include <nvutils/parallel_work.hpp>
 #include <nvvk/barriers.hpp>
 #include <nvvk/check_error.hpp>
 #include <nvvk/debug_util.hpp>
@@ -95,6 +94,8 @@ bool fromPixels(const ImageSource& source, nvvkgltf::LoadedImageData& out)
 
 // ---------- Backend: frame and commands ----------
 
+static bool decodeSource(const ImageSource& source, nvvkgltf::LoadedImageData& loaded);
+
 VulkanGpuBackend::VulkanGpuBackend(const Info& info)
     : m_info(info)
 {
@@ -104,10 +105,24 @@ VulkanGpuBackend::VulkanGpuBackend(const Info& info)
   vkGetPhysicalDeviceProperties2(info.physicalDevice, &props);
   m_scratchAlignment = std::max<VkDeviceSize>(asProps.minAccelerationStructureScratchOffsetAlignment, 1);
   m_msPerTick        = double(props.properties.limits.timestampPeriod) * 1e-6;
+  m_decodes          = std::make_unique<ImageDecodePool>(
+      [takePrefetched = info.takePrefetched](const ImageSource& source, nvvkgltf::LoadedImageData& loaded, bool& prefetched) {
+        if(takePrefetched && source.pixels.empty() && source.bytes.empty() && !source.uri.empty())
+          if(std::optional<nvvkgltf::LoadedImageData> taken = takePrefetched(nvutils::pathFromUtf8(source.uri), source.srgb))
+          {
+            loaded = std::move(*taken);
+            nvvkgltf::trimLevels(loaded, source.maxExtent);
+            prefetched = true;
+            return true;
+          }
+        return decodeSource(source, loaded);
+      },
+      ImageDecodePool::defaultThreads());
 }
 
 VulkanGpuBackend::~VulkanGpuBackend()
 {
+  m_decodes.reset();  // what runs finishes; nothing is made of it
   vkDeviceWaitIdle(m_info.device);
   // what retire() handed on and the queue hasn't run: no frame can use it now
   std::map<uint64_t, std::function<void()>> pending = std::move(m_retired->pending);
@@ -554,33 +569,35 @@ void VulkanGpuBackend::dropPrefetch(const std::string& uri, bool srgb)
     m_info.takePrefetched(nvutils::pathFromUtf8(uri), srgb);
 }
 
-void VulkanGpuBackend::createImages(std::span<const ImageSource> sources, std::span<ImageHandle> images, std::span<ImageInfo> infos)
+uint64_t VulkanGpuBackend::startDecode(const ImageSource& source)
 {
-  if(!recording("createImages"))
-    return;
-  std::vector<nvvkgltf::LoadedImageData> loaded(sources.size());
-  std::vector<uint8_t>                   ok(sources.size(), 0), prefetched(sources.size(), 0);
-  nvutils::parallel_batches<1>(sources.size(), [&](uint64_t i) {
-    const ImageSource& source = sources[i];
-    if(m_info.takePrefetched && source.pixels.empty() && source.bytes.empty() && !source.uri.empty())
-      if(std::optional<nvvkgltf::LoadedImageData> taken =
-             m_info.takePrefetched(nvutils::pathFromUtf8(source.uri), source.srgb))
-      {
-        loaded[i] = std::move(*taken);
-        nvvkgltf::trimLevels(loaded[i], source.maxExtent);
-        ok[i]         = 1;
-        prefetched[i] = 1;
-        return;
-      }
-    ok[i] = decodeSource(source, loaded[i]) ? 1 : 0;
-  });
-  for(size_t i = 0; i < sources.size(); i++)
+  return m_decodes->start(HeldImageSource(source));
+}
+
+std::vector<GpuBackend::MadeImage> VulkanGpuBackend::takeDecodes(uint64_t budget)
+{
+  std::vector<MadeImage> made;
+  if(!recording("takeDecodes"))
+    return made;
+  for(ImageDecodePool::Done& done : m_decodes->take(budget))
   {
-    infos[i]  = {};
-    images[i] = ok[i] ? createFromDecoded(sources[i], loaded[i], infos[i]) : ImageHandle{};
-    loaded[i] = {};  // its texels uploaded: let them go before the next
-    m_prefetchTaken += prefetched[i];
+    MadeImage& m = made.emplace_back();
+    m.ticket     = done.ticket;
+    m.image      = done.ok ? createFromDecoded(done.source.source, done.loaded, m.info) : ImageHandle{};
+    done.loaded  = {};  // its texels uploaded: let them go before the next
+    m_prefetchTaken += done.prefetched;
   }
+  return made;
+}
+
+void VulkanGpuBackend::cancelDecode(uint64_t ticket)
+{
+  m_decodes->cancel(ticket);
+}
+
+bool VulkanGpuBackend::decodesReady() const
+{
+  return m_decodes->ready();
 }
 
 // An image from its decoded mips, uploaded through the frame uploader in the command buffer

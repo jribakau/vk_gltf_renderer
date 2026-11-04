@@ -130,6 +130,16 @@ public:
   }
   // the sizes of the createImages calls so far
   const std::vector<size_t>& imageBatches() const { return m_imageBatches; }
+  // Decodes begun are made at the next takeDecodes, all in one createImages batch, unless held: a decode
+  // still running on a worker
+  uint64_t               startDecode(const ImageSource& source) override;
+  std::vector<MadeImage> takeDecodes(uint64_t budget) override;
+  void                   cancelDecode(uint64_t ticket) override;
+  bool                   decodesReady() const override { return !m_decodesHeld && !m_decodes.empty(); }
+  void                   holdDecodes(bool held) { m_decodesHeld = held; }
+  // begun and not yet taken or cancelled, by name
+  std::vector<std::string> decodesRunning() const;
+  uint32_t                 decodesCancelled() const { return m_decodesCancelled; }
   // a chain's levels only: as createImage would make it with those left out, no decode counted
   ImageHandle copyImageLevels(ImageHandle image, uint32_t dropLevels, ImageInfo& info) override;
   uint32_t    imageCopies() const { return m_imageCopies; }
@@ -244,6 +254,10 @@ private:
   uint32_t                                    m_maxImageExtent = 0;
   std::optional<int64_t>                      m_imageHeadroom;
   std::vector<size_t>                         m_imageBatches;
+  std::map<uint64_t, HeldImageSource>         m_decodes;  // begun, by ticket
+  uint64_t                                    m_nextDecode       = 1;
+  bool                                        m_decodesHeld      = false;
+  uint32_t                                    m_decodesCancelled = 0;
   uint32_t                                    m_imageCopies = 0;
   bool                                        m_spilling    = false;
   std::set<uint64_t>                          m_spilledBuffers, m_spilledImages, m_spilledAccels;

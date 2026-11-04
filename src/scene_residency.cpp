@@ -248,6 +248,16 @@ void Residency::clear()
     m_gpu.retire([pool = m_samplerPool, slot = use.slot] { pool->destroyID(slot); });
   for(const auto& [id, image] : m_images)
     releaseImage(image);
+  // a texture's own image goes with the scene; one decoding for a key may still serve the next (m_decoded)
+  for(auto it = m_decoding.begin(); it != m_decoding.end();)
+    if(!it->second.key)
+    {
+      m_gpu.cancelDecode(it->first);
+      m_decodingBytes -= std::min(m_decodingBytes, it->second.staged);
+      it = m_decoding.erase(it);
+    }
+    else
+      ++it;
   retireBuffer(m_renderNodes);
   retireBuffer(m_renderPrims);
   retireBuffer(m_sceneDesc);
@@ -1666,10 +1676,10 @@ std::optional<double> Residency::hitShare(const std::vector<MaterialId>& materia
 std::optional<ItemDetail::Up> Residency::followHits(const RetainedScene& scene, int64_t room)
 {
   // what the last step did has to show in what is free
-  if(!m_hitsToFollow || m_hitsTotal == 0 || !m_decodeQueue.empty() || m_detailComing > 0 || *m_retiring > 0)
+  if(!m_hitsToFollow || m_hitsTotal == 0 || !m_decodeQueue.empty() || !m_decoding.empty() || m_detailComing > 0 || *m_retiring > 0)
     return std::nullopt;
   const uint64_t free = uint64_t(std::max<int64_t>(room, 0));
-  constexpr uint64_t kAtATime = uint64_t(256) << 20;  // the frame waits for what it decodes
+  constexpr uint64_t kAtATime = uint64_t(256) << 20;  // what it decodes shows in the memory before the next
   if(raiseImages(scene, std::min(free, kAtATime), 0, true) > 0)
     return std::nullopt;
   if(std::optional<ItemDetail::Up> up = nextDetailUp(free, false))
@@ -1789,6 +1799,10 @@ uint32_t Residency::raiseImages(const RetainedScene& scene, uint64_t room, uint3
       wanted.back() = missed;
     }
   }
+  // one whose decode is on its way already stays: what it comes back as shows in the memory first
+  for(size_t i = 0; i < residents.size(); i++)
+    if(decodingNow(residents[i].image, residents[i].key))
+      wanted[i] = fits[i].skip;
   raiseToFit(fits, wanted, room);
   uint32_t    raised = 0;
   std::string which;
@@ -1909,7 +1923,7 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
   uint64_t              need = 0;
   for(size_t i = 0; i < m_decodeQueue.size(); i++)
     // what comes down frees room rather than taking it
-    if(std::optional<ImageChain> chain = m_decodeQueue[i].dropLevels > 0 ? std::nullopt : m_gpu.imageChain(m_decodeQueue[i].source))
+    if(std::optional<ImageChain> chain = m_decodeQueue[i].dropLevels > 0 ? std::nullopt : chainOf(m_decodeQueue[i]))
     {
       const uint32_t levels = uint32_t(chain->levelBytes.size());
       const uint32_t skip   = levelsToSkip(chain->width, chain->height, levels, m_decodeQueue[i].source.maxExtent);
@@ -1917,6 +1931,9 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
       need += fits.back().bytes();
       queued.push_back(i);
     }
+  // what is decoding takes its memory when it is made, as it is
+  for(const auto& [ticket, q] : m_decoding)
+    need += q.chainBytes;
   const int64_t room = *headroom - int64_t(slack);
   if(int64_t(need) <= room)
     return;
@@ -2013,39 +2030,78 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
     m_userNotices.push_back("GPU memory is nearly full, so textures are being lowered to fit. They come back by themselves when there is room.");
 }
 
-// The queued images decoded in one batch (side by side where the backend can), handed to every
-// texture that is that image, and written to their slots. One nothing took meanwhile goes to grace;
-// an unreadable one leaves the default image and is tried again at its next acquisition. True when an
-// image already drawn was replaced, which changes the frame.
-bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
+bool Residency::decodingNow(const ImageKey& image, const std::optional<TextureKey>& key) const
+{
+  for(const auto& [ticket, q] : m_decoding)
+    if(sameImage(q, image, key))
+      return true;
+  return false;
+}
+
+const std::optional<ImageChain>& Residency::chainOf(QueuedDecode& q)
+{
+  if(!q.chain)
+    q.chain = m_gpu.imageChain(q.source);
+  return *q.chain;
+}
+
+void Residency::cancelDecodesOf(const QueuedDecode& q)
+{
+  for(auto it = m_decoding.begin(); it != m_decoding.end();)
+    if(sameImage(it->second, q.image, q.key))
+    {
+      m_gpu.cancelDecode(it->first);
+      m_decodingBytes -= std::min(m_decodingBytes, it->second.staged);
+      it = m_decoding.erase(it);
+    }
+    else
+      ++it;
+}
+
+// The queued images begun on the backend's workers, and those it has decoded made into images, handed
+// to every texture that is that image and written to their slots: the render thread never waits for a
+// decode (a 4096 JPEG is a few hundred milliseconds), and the image a texture shows meanwhile stays, the
+// default one before its first. What only comes down, or only moves, is copied in this frame. One
+// nothing took meanwhile goes to grace; an unreadable one leaves the default image and is tried again
+// at its next acquisition.
+Residency::DecodesLanded Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
 {
   const std::optional<uint64_t> slack = std::exchange(m_fitSlack, std::nullopt);
-  if(m_decodeQueue.empty() && !sceneGrew && !slack)
-    return false;
-  fitQueuedToMemory(scene, slack.value_or(0));
-  if(m_decodeQueue.empty())
-    return false;
+  const bool                    ready = m_gpu.decodesReady();
+  if(m_decodeQueue.empty() && !sceneGrew && !slack && !ready)
+    return {};
+  fv::timing::Accum time("textures queued, fitted and made");
+  if(!m_decodeQueue.empty() || sceneGrew || slack)
+    fitQueuedToMemory(scene, slack.value_or(0));
+  if(m_decodeQueue.empty() && !ready)
+    return {};
 
+  DecodesLanded      landed;
   std::set<ImageKey> written;
   // the images replaced, retired once their slots are (moveSlots): a slot shows its image until its retire
   std::vector<std::pair<ImageHandle, uint64_t>> replacedImages;
-  bool               replaced = false;
-  bool               restored = false;
-  uint32_t           refused  = 0;
-  const auto         install  = [&](const QueuedDecode& q, ImageHandle made, const ImageInfo& info) {
-    if(q.replaces && !made)
-      return;  // it keeps the image it has
-    replaced |= q.replaces;
+  bool                                          restored = false;
+  uint32_t                                      refused  = 0;
+  const auto                                    noted    = [&](const QueuedDecode& q, ImageHandle made, const ImageInfo& info) {
+    landed.replaced |= q.replaces;
+    landed.arrived |= !q.replaces && made;
     restored |= q.replaces && !q.lowered;
     refused += !q.replaces && info.outOfMemory;
+  };
+  // What an image showed goes once its slots have moved: a size it was lowered to, or the same image
+  // decoded twice (let go of and taken again while its first decode ran)
+  const auto install = [&](const QueuedDecode& q, ImageHandle made, const ImageInfo& info) {
     if(q.key)
     {
       auto decoded = m_decoded.find(*q.key);
-      if(decoded == m_decoded.end())
+      if(decoded == m_decoded.end())  // let go of meanwhile, and trimmed from grace
       {
         retireImage(made, info.bytes);
         return;
       }
+      if(!made && decoded->second.image)
+        return;  // it keeps the image it has
+      noted(q, made, info);
       for(auto& [id, image] : m_images)
         if(image.key == q.key)
         {
@@ -2057,21 +2113,29 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
           written.insert(id);
         }
       if(!made)
-        m_decoded.erase(decoded);
-      else
       {
-        if(q.replaces)
-          replacedImages.emplace_back(decoded->second.image, decoded->second.info.bytes);
-        decoded->second.image   = made;
-        decoded->second.info    = info;
-        decoded->second.lowered = q.lowered;
-        if(decoded->second.users == 0)
-          m_graceBytes += info.bytes;
+        m_decoded.erase(decoded);
+        return;
       }
+      DecodedImage& d = decoded->second;
+      if(d.image)
+      {
+        replacedImages.emplace_back(d.image, d.info.bytes);
+        if(d.users == 0)
+          m_graceBytes -= std::min(m_graceBytes, d.info.bytes);
+      }
+      d.image   = made;
+      d.info    = info;
+      d.lowered = q.lowered;
+      if(d.users == 0)
+        m_graceBytes += info.bytes;
     }
     else if(auto image = m_images.find(q.image); image != m_images.end() && !image->second.key)
     {
-      if(q.replaces)
+      if(!made && image->second.image)
+        return;  // it keeps the image it has
+      noted(q, made, info);
+      if(image->second.image)
         replacedImages.emplace_back(image->second.image, image->second.info.bytes);
       image->second.image   = made;
       image->second.info    = info;
@@ -2082,7 +2146,8 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
       retireImage(made, info.bytes);
   };
 
-  // what only comes down, or only moves, is copied from what it is, with nothing read or decoded
+  // what only comes down, or only moves, is copied from what it is, with nothing read or decoded; one
+  // that comes down undoes a raise still decoding, which a move doesn't
   std::vector<QueuedDecode> decoding;
   for(QueuedDecode& q : m_decodeQueue)
   {
@@ -2090,21 +2155,25 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     ImageInfo  info;
     if(const ImageHandle copy = image != m_images.end() ? m_gpu.copyImageLevels(image->second.image, q.dropLevels, info) : ImageHandle{})
     {
+      if(q.dropLevels)
+        cancelDecodesOf(q);
       install(q, copy, info);
       m_imageCounts.copied++;
     }
     else if(!q.moveOnly)
       decoding.push_back(std::move(q));
   }
-  // What one sync decodes and stages is bounded (ResidencyOptions::decodeBatchBytes), the rest waiting in the queue for
-  // the next: by its chain's levels from the first kept where the header says, else its texels as given or as sized
-  const auto stagedBytes = [&](const ImageSource& source) -> uint64_t {
-    if(const std::optional<ImageChain> chain = m_gpu.imageChain(source))
+  // What decodes at once is bounded (ResidencyOptions::decodeBatchBytes), the rest waiting in the queue, in
+  // order: by its chain's levels from the first kept where the header says, else its texels as given or as
+  // sized. The first always begins when none is decoding.
+  const auto stagedBytes = [&](QueuedDecode& q, uint64_t& chainBytes) -> uint64_t {
+    chainBytes                = 0;
+    const ImageSource& source = q.source;
+    if(const std::optional<ImageChain>& chain = chainOf(q))
     {
-      uint64_t bytes = 0;
       for(size_t l = levelsToSkip(chain->width, chain->height, uint32_t(chain->levelBytes.size()), source.maxExtent); l < chain->levelBytes.size(); l++)
-        bytes += chain->levelBytes[l];
-      return bytes;
+        chainBytes += chain->levelBytes[l];
+      return chainBytes;
     }
     if(!source.pixels.empty())
       return uint64_t(source.pixels.size()) * 4 / 3;
@@ -2113,30 +2182,42 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     return uint64_t(64) << 20;  // nothing says: about a 4096 texture's
   };
   std::vector<QueuedDecode> later;
+  for(QueuedDecode& q : decoding)
   {
-    uint64_t staged = 0;
-    size_t   take   = 0;
-    for(; take < decoding.size(); take++)
+    uint64_t       chainBytes = 0;
+    const uint64_t bytes      = later.empty() ? stagedBytes(q, chainBytes) : 0;
+    if(!later.empty() || (!m_decoding.empty() && m_decodingBytes + bytes > m_options.decodeBatchBytes))
     {
-      const uint64_t bytes = stagedBytes(decoding[take].source);
-      if(take > 0 && staged + bytes > m_options.decodeBatchBytes)
-        break;
-      staged += bytes;
+      later.push_back(std::move(q));
+      continue;
     }
-    later.assign(std::make_move_iterator(decoding.begin() + ptrdiff_t(take)), std::make_move_iterator(decoding.end()));
-    decoding.resize(take);
+    cancelDecodesOf(q);
+    q.staged     = bytes;
+    q.chainBytes = chainBytes;
+    m_decodingBytes += bytes;
+    const uint64_t ticket = m_gpu.startDecode(q.source);
+    m_decoding.emplace(ticket, std::move(q));
   }
-  std::vector<ImageSource> sources;
-  for(const QueuedDecode& q : decoding)
-    sources.push_back(q.source);
-  std::vector<ImageHandle> images(sources.size());
-  std::vector<ImageInfo>   infos(sources.size());
-  if(!sources.empty())
-    m_gpu.createImages(sources, images, infos);
-  m_imageCounts.decoded += uint32_t(sources.size());
-  for(size_t i = 0; i < decoding.size(); i++)
-    install(decoding[i], images[i], infos[i]);
   m_decodeQueue = std::move(later);
+  // and those done made, as many as a sync stages: what of the decodes is still the render thread's
+  std::optional<fv::timing::Accum> timeMade;
+  if(ready)
+    timeMade.emplace("textures made from their decodes");
+  const std::vector<GpuBackend::MadeImage> made = m_gpu.takeDecodes(m_options.decodeBatchBytes);
+  for(const GpuBackend::MadeImage& m : made)
+  {
+    auto it = m_decoding.find(m.ticket);
+    if(it == m_decoding.end())  // a backend makes none it was told to cancel
+    {
+      retireImage(m.image, m.info.bytes);
+      continue;
+    }
+    const QueuedDecode q = std::move(it->second);
+    m_decoding.erase(it);
+    m_decodingBytes -= std::min(m_decodingBytes, q.staged);
+    install(q, m.image, m.info);
+  }
+  m_imageCounts.decoded += uint32_t(made.size());
   moveSlots(written);
   for(const auto& [image, bytes] : replacedImages)
     retireImage(image, bytes);
@@ -2149,7 +2230,7 @@ bool Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
     if(!std::exchange(m_noticedRefused, true))
       m_userNotices.push_back("GPU memory is full: some textures could not be loaded and are drawn without their image.");
   }
-  return replaced;
+  return landed;
 }
 
 void Residency::setTextureGrace(uint64_t bytes)
@@ -2933,8 +3014,8 @@ SyncResult Residency::sync(RetainedScene& scene)
   const bool motionToSettle = !m_drawersWritten.empty() || !m_meshesWritten.empty() || !m_movedLast.empty();
   // static BLASes wait for their compacted copies (a few frames after their builds)
   const bool compacting = !m_compacting.empty();
-  // images asked of it between syncs (raiseImages, lowerImages)
-  const bool imagesAsked = !m_decodeQueue.empty() || m_fitSlack;
+  // images asked of it between syncs (raiseImages, lowerImages), or decoded since and waiting to be made
+  const bool imagesAsked = !m_decodeQueue.empty() || m_fitSlack || m_gpu.decodesReady();
   // a settled mesh's BVH, looked at now and then: it waits for room
   const bool settleBuild = !m_settleBuilds.empty() && m_gpu.frame() % 30 == 0;
   const bool liveAsleep  = !m_wakeAsked.empty();
@@ -3010,7 +3091,10 @@ SyncResult Residency::sync(RetainedScene& scene)
     syncMaterials(scene, edited, result);
   // what is about to change, ready first
   wakeWhatChanged(scene, changes.meshes);
-  result.imagesMoved = decodeQueued(scene, fresh || changes.structure);
+  const DecodesLanded landed = decodeQueued(scene, fresh || changes.structure);
+  result.imagesMoved         = landed.replaced;
+  // a texture's first image, decoded since the sync that took it: drawn with the default one until now
+  result.changed = result.changed || landed.arrived;
   // refined meshes made resident now: their positions and normals from their cages, as every edit after
   if(!m_refineAcquired.empty())
   {

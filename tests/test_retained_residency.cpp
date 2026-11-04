@@ -1092,6 +1092,220 @@ TEST(RetainedResidency, TexturesComeABatchOfBytesASync)
   }
 }
 
+// The render thread never waits for a decode: a texture is drawn with the default image while its decode
+// runs, a sync meanwhile has nothing to do for it, and its image's arrival is another picture
+TEST(RetainedResidency, ATextureIsDrawnWithTheDefaultImageUntilItsDecodeIsDone)
+{
+  FitScene       f("chain_a", 64, "chain_b", 64);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  gpu.holdDecodes(true);
+  residency.replace(f.scene);
+  EXPECT_FALSE(residency.image(f.first, true));
+  EXPECT_FALSE(residency.image(f.second, true));
+  EXPECT_EQ(gpu.decodesRunning().size(), 2u);
+  EXPECT_EQ(residency.queuedDecodes(), 2u);
+  expectClean(f.scene, residency, gpu, "decoding: ");
+  for(int frame = 0; frame < 3; frame++)  // what the replace wrote comes to rest
+  {
+    gpu.beginFrame();
+    residency.sync(f.scene);
+  }
+  gpu.beginFrame();
+  EXPECT_FALSE(residency.sync(f.scene).changed) << "nothing is done: nothing to do";
+  EXPECT_FALSE(residency.image(f.first, true));
+
+  gpu.holdDecodes(false);
+  gpu.beginFrame();
+  const SyncResult arrived = residency.sync(f.scene);
+  EXPECT_TRUE(arrived.changed);
+  EXPECT_FALSE(arrived.samePicture) << "the default image gave way to the texture's";
+  EXPECT_TRUE(residency.image(f.first, true));
+  EXPECT_TRUE(residency.image(f.second, true));
+  EXPECT_EQ(residency.queuedDecodes(), 0u);
+  EXPECT_EQ(residency.imageCounts().decoded, 2u);
+  expectClean(f.scene, residency, gpu, "arrived: ");
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
+// A raise keeps showing the lowered image while it decodes, isn't asked for again meanwhile, and is the
+// same picture when it comes
+TEST(RetainedResidency, ARaiseDecodingKeepsTheLoweredImageAndIsAskedOnce)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 64);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  drain(gpu);
+  const uint32_t lowered = gpu.imageInfo(residency.image(f.first, true)).width;
+  ASSERT_LT(lowered, 1024u);
+
+  gpu.setImageHeadroom(int64_t(1) << 30);
+  gpu.holdDecodes(true);
+  EXPECT_EQ(residency.raiseImages(f.scene, uint64_t(1) << 30), 1u);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, lowered) << "it shows what it has meanwhile";
+  EXPECT_EQ(gpu.decodesRunning(), std::vector<std::string>{"chain_a"});
+  EXPECT_EQ(residency.raiseImages(f.scene, uint64_t(1) << 30), 0u) << "on its way already";
+  expectClean(f.scene, residency, gpu, "raising: ");
+
+  gpu.holdDecodes(false);
+  gpu.beginFrame();
+  const SyncResult raised = residency.sync(f.scene);
+  EXPECT_TRUE(raised.imagesMoved);
+  EXPECT_TRUE(raised.samePicture);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, 1024u);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "raised: ");
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
+// Memory short again while a raise decodes: the lowering is what stays, and the raise never lands
+TEST(RetainedResidency, ALoweringUndoesARaiseStillDecoding)
+{
+  FitScene       f("chain_a", 1024, "chain_b", 64);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(f.scene);
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  drain(gpu);
+  const uint32_t lowered = gpu.imageInfo(residency.image(f.first, true)).width;
+
+  gpu.setImageHeadroom(int64_t(1) << 30);
+  gpu.holdDecodes(true);
+  ASSERT_EQ(residency.raiseImages(f.scene, uint64_t(1) << 30), 1u);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  ASSERT_EQ(gpu.decodesRunning().size(), 1u);
+
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.decodesCancelled(), 1u);
+  EXPECT_TRUE(gpu.decodesRunning().empty());
+  const uint32_t lowerStill = gpu.imageInfo(residency.image(f.first, true)).width;
+  EXPECT_LT(lowerStill, lowered);
+
+  gpu.holdDecodes(false);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(f.first, true)).width, lowerStill);
+  drain(gpu);
+  expectClean(f.scene, residency, gpu, "lowered again: ");
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
+// A scene replaced while its textures decode: a texture's own image goes with it, and one decoded for a
+// key lands in grace, for the next scene to take with nothing decoded again
+TEST(RetainedResidency, TexturesLetGoOfWhileTheyDecodeAreNeverDrawn)
+{
+  RetainedScene plain;
+  drawn(plain, "e", plain.addMesh(gridMesh(2, 0.f)), {material(plain, "m")});
+
+  {
+    RetainedScene scene;
+    const auto    table = textureTable(scene);  // files that aren't there: no key
+    drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {textured(scene, table, 0), textured(scene, table, 1)});
+    FakeGpuBackend gpu(2);
+    Residency      residency(gpu);
+    gpu.holdDecodes(true);
+    residency.replace(scene);
+    const size_t decoding = gpu.decodesRunning().size();
+    ASSERT_GT(decoding, 0u);
+    gpu.beginFrame();
+    residency.replace(plain);
+    EXPECT_EQ(gpu.decodesCancelled(), decoding);
+    EXPECT_EQ(residency.queuedDecodes(), 0u);
+    gpu.holdDecodes(false);
+    gpu.beginFrame();
+    residency.sync(plain);
+    drain(gpu);
+    EXPECT_EQ(gpu.liveImages(), 0u);
+    expectClean(plain, residency, gpu, "no key: ");
+    for(const std::string& p : residencyLeaks(residency, gpu))
+      ADD_FAILURE() << p;
+  }
+
+  FitScene       f("chain_a", 64, "chain_b", 64);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  gpu.holdDecodes(true);
+  residency.replace(f.scene);
+  gpu.beginFrame();
+  residency.replace(plain);
+  EXPECT_EQ(gpu.decodesCancelled(), 0u);
+  gpu.holdDecodes(false);
+  gpu.beginFrame();
+  residency.sync(plain);
+  EXPECT_EQ(gpu.liveImages(), 2u) << "in grace";
+  expectClean(plain, residency, gpu, "keyed, in grace: ");
+  gpu.beginFrame();
+  residency.replace(f.scene);
+  EXPECT_EQ(residency.imageCounts().decoded, 0u);
+  EXPECT_EQ(residency.imageCounts().reused, 2u);
+  EXPECT_TRUE(residency.image(f.first, true));
+  expectClean(f.scene, residency, gpu, "taken from grace: ");
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
+// Taken again while its first decode runs: a keyed image waits for that decode, one of its own is decoded
+// again, and either way one image is made
+TEST(RetainedResidency, ATextureTakenAgainWhileItDecodesIsMadeOnce)
+{
+  FitScene       f("chain_a", 64, "chain_b", 64);
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  gpu.holdDecodes(true);
+  residency.replace(f.scene);
+  gpu.beginFrame();
+  residency.replace(f.scene);
+  EXPECT_EQ(gpu.decodesRunning().size(), 2u) << "the decodes begun serve it";
+  gpu.holdDecodes(false);
+  gpu.beginFrame();
+  residency.sync(f.scene);
+  EXPECT_TRUE(residency.image(f.first, true));
+  EXPECT_TRUE(residency.image(f.second, true));
+  drain(gpu);
+  EXPECT_EQ(gpu.liveImages(), 2u);
+  expectClean(f.scene, residency, gpu, "keyed: ");
+
+  RetainedScene  scene;
+  const auto     table = textureTable(scene);
+  drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {textured(scene, table, 0), textured(scene, table, 1)});
+  FakeGpuBackend own(2);
+  Residency      again(own);
+  own.holdDecodes(true);
+  again.replace(scene);
+  const size_t decoding = own.decodesRunning().size();
+  own.beginFrame();
+  again.replace(scene);
+  EXPECT_EQ(own.decodesCancelled(), decoding);
+  EXPECT_EQ(own.decodesRunning().size(), decoding);
+  own.holdDecodes(false);
+  own.beginFrame();
+  again.sync(scene);
+  drain(own);
+  EXPECT_EQ(own.liveImages(), decoding);
+  expectClean(scene, again, own, "no key: ");
+  for(const std::string& p : residencyLeaks(again, own))
+    ADD_FAILURE() << p;
+}
+
 // Max texture size: every image is decoded under it, and a change takes effect on what is decoded next
 TEST(RetainedResidency, MaxTextureSizeLimitsWhatIsDecoded)
 {

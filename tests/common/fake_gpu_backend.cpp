@@ -285,6 +285,49 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
   return handle;
 }
 
+uint64_t FakeGpuBackend::startDecode(const ImageSource& source)
+{
+  const uint64_t ticket = m_nextDecode++;
+  m_decodes.emplace(ticket, HeldImageSource(source));
+  return ticket;
+}
+
+std::vector<GpuBackend::MadeImage> FakeGpuBackend::takeDecodes(uint64_t /*budget*/)
+{
+  std::vector<MadeImage> made;
+  if(m_decodesHeld || m_decodes.empty())
+    return made;
+  std::vector<ImageSource> sources;
+  for(const auto& [ticket, held] : m_decodes)
+  {
+    sources.push_back(held.source);
+    made.push_back({.ticket = ticket});
+  }
+  std::vector<ImageHandle> images(sources.size());
+  std::vector<ImageInfo>   infos(sources.size());
+  createImages(sources, images, infos);
+  for(size_t i = 0; i < made.size(); i++)
+  {
+    made[i].image = images[i];
+    made[i].info  = infos[i];
+  }
+  m_decodes.clear();
+  return made;
+}
+
+void FakeGpuBackend::cancelDecode(uint64_t ticket)
+{
+  m_decodesCancelled += uint32_t(m_decodes.erase(ticket));
+}
+
+std::vector<std::string> FakeGpuBackend::decodesRunning() const
+{
+  std::vector<std::string> names;
+  for(const auto& [ticket, held] : m_decodes)
+    names.push_back(held.source.name);
+  return names;
+}
+
 ImageHandle FakeGpuBackend::copyImageLevels(ImageHandle image, uint32_t dropLevels, ImageInfo& info)
 {
   info = {};

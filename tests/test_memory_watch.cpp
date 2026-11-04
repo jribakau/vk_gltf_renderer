@@ -138,6 +138,33 @@ TEST(MemoryWatch, ARaisingThatFittedNothingWaits)
   EXPECT_EQ(watch.read(roomFor(2 * MemoryWatch::kRaiseAfter)), Act::eRaise);
 }
 
+// Textures on their way take their memory when their decodes are done: the room read meanwhile is the room
+// before them, so a raising waits for the next reading, and a lowering doesn't wait at all
+TEST(MemoryWatch, ARaisingWaitsForTheTexturesOnTheirWay)
+{
+  MemoryWatch watch;
+  EXPECT_EQ(watch.read(roomFor(0)), Act::eNone);
+  MemoryWatch::Reading r = roomFor(MemoryWatch::kRaiseAfter);
+  r.decoding             = true;
+  EXPECT_EQ(watch.read(r), Act::eNone);
+  r.now += MemoryWatch::kPeriod;
+  r.decoding = false;
+  EXPECT_EQ(watch.read(r), Act::eRaise);
+  r.now += MemoryWatch::kPeriod;
+  r.decoding = true;
+  EXPECT_EQ(watch.read(r), Act::eNone) << "what the last step raised isn't in the reading yet";
+  r.now += MemoryWatch::kPeriod;
+  r.decoding = false;
+  EXPECT_EQ(watch.read(r), Act::eRaise) << "the raising went on";
+
+  MemoryWatch          lowering;
+  MemoryWatch::Reading s = shortOfMemory(0);
+  s.decoding             = true;
+  EXPECT_EQ(lowering.read(s), Act::eNone);
+  s.now = MemoryWatch::kLowerAfter;
+  EXPECT_EQ(lowering.read(s), Act::eLower);
+}
+
 // Read once a period
 TEST(MemoryWatch, IsDueOnceAPeriod)
 {

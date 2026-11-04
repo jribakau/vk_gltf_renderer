@@ -171,6 +171,9 @@ set(TEST_SOURCES
     test_light_tree.cpp
     # When textures follow GPU memory: the policy (header only)
     test_memory_watch.cpp
+    # Textures decoded away from the render thread: tickets, cancels, what a take hands over
+    test_image_decode_pool.cpp
+    ${CMAKE_SOURCE_DIR}/src/image_decode_pool.cpp
     # The retained scene on the fake GPU, every sync held to ResidencyOracle (oracles 1 and 2b)
     test_retained_residency.cpp
     # Skinned and morphed meshes drawn through their drawers, the passes run on the fake (I22), DLSS motion (I10)

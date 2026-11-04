@@ -89,6 +89,29 @@ struct ImageSource
   uint32_t                       maxExtent = 0;  // the stored levels above this long edge are left out; 0: none
 };
 
+// A source with its own copy of the bytes and pixels: what a decode away from the render thread reads,
+// as the record its spans were over may go meanwhile. A move keeps the spans, as a vector's storage
+// moves with it.
+struct HeldImageSource
+{
+  explicit HeldImageSource(const ImageSource& from)
+      : source(from)
+      , m_bytes(from.bytes.begin(), from.bytes.end())
+      , m_pixels(from.pixels.begin(), from.pixels.end())
+  {
+    source.bytes  = m_bytes;
+    source.pixels = m_pixels;
+  }
+  HeldImageSource(HeldImageSource&&)            = default;
+  HeldImageSource& operator=(HeldImageSource&&) = default;
+  HeldImageSource(const HeldImageSource&)       = delete;
+
+  ImageSource source;
+
+private:
+  std::vector<unsigned char> m_bytes, m_pixels;
+};
+
 // What decoding found, for the materials that sample the image
 struct ImageInfo
 {
@@ -282,6 +305,22 @@ public:
     for(size_t i = 0; i < sources.size(); i++)
       images[i] = createImage(sources[i], infos[i]);
   }
+  // Decodes away from the render thread, which never waits for one: a decode begun, by its ticket
+  // (never 0). What it decodes is made into an image by a later takeDecodes.
+  virtual uint64_t startDecode(const ImageSource& source) = 0;
+  struct MadeImage
+  {
+    uint64_t    ticket = 0;
+    ImageHandle image;  // none: it couldn't be read, or found no memory (info.outOfMemory)
+    ImageInfo   info;
+  };
+  // The decodes done since, each made into an image in this frame as createImage makes one, until
+  // `budget` bytes of texels are staged (the first whatever its size); the rest wait for the next call
+  virtual std::vector<MadeImage> takeDecodes(uint64_t budget) = 0;
+  // A decode not wanted after all: what it decodes is let go of, never made
+  virtual void cancelDecode(uint64_t ticket) = 0;
+  // Whether a takeDecodes now would make one
+  virtual bool decodesReady() const = 0;
   // A new image of `image`'s levels from `dropLevels` down, copied from it in this frame: nothing read or
   // decoded (0: all of them, which moves it to where a new allocation lands). None where it can't: no such
   // levels, or no memory for it (`info.outOfMemory`).

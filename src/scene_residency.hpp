@@ -114,9 +114,10 @@ struct ResidencyOptions
   // The triangles of what is new made resident in one sync; the first always comes, however large. Every BVH a sync
   // asks for is built in the frame's one submission, and a few large hairs at once come near what a driver allows one.
   uint64_t arrivalTriangles = 16'000'000;
-  // The bytes of textures decoded and staged in one sync; the first always comes, however large, and the rest wait for
-  // the next. What a sync stages stays in system memory, beside its decoded texels, until the GPU has copied it: a
-  // scene's textures all at once (an environment's 267 at 8192, some 9 GB of each) ran system memory out.
+  // The bytes of textures decoding at once on the backend's workers, and made and staged in one sync; the first always
+  // comes, however large, and the rest wait. Decoded texels wait in system memory to be made, and what a sync stages
+  // stays there until the GPU has copied it: a scene's textures all at once (an environment's 267 at 8192, some 9 GB
+  // of each) ran system memory out.
   uint64_t decodeBatchBytes = 512ull << 20;
   // A worn item's step down in detail isn't worth a new record for less than this: a tear, an eyelash
   uint64_t leastDetailStep = uint64_t(32) << 20;
@@ -330,8 +331,8 @@ public:
     uint32_t refused = 0;  // those GPU memory could not hold, left on the default image
   };
   ImageCounts imageCounts() const { return m_imageCounts; }
-  // the images waiting to be decoded, a sync's batch at most at a time (ResidencyOptions::decodeBatchBytes)
-  size_t queuedDecodes() const { return m_decodeQueue.size(); }
+  // the images waiting to be decoded or decoding, a sync's batch at most at a time (ResidencyOptions::decodeBatchBytes)
+  size_t queuedDecodes() const { return m_decodeQueue.size() + m_decoding.size(); }
   // The scene features the live shader variant has compiled in (the path tracer's optimal build);
   // none: every feature. A replace writes every material whatever these are.
   void                                            setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features);
@@ -585,7 +586,12 @@ private:
   void     acquireTexture(const RetainedScene& scene, TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseTexture(TextureId id, const GpuSamplerDesc& sampler, bool srgb);
   void     releaseImage(const ImageGpu& image);
-  bool     decodeQueued(const RetainedScene& scene, bool sceneGrew);
+  struct DecodesLanded
+  {
+    bool replaced = false;  // an image already drawn: the same picture, near enough
+    bool arrived  = false;  // a texture's first: another picture
+  };
+  DecodesLanded decodeQueued(const RetainedScene& scene, bool sceneGrew);
   // the slots of the textures whose image changed, each moved to a fresh one (a slot in use is never written again)
   void     moveSlots(const std::set<ImageKey>& written);
   void     fitQueuedToMemory(const RetainedScene& scene, uint64_t slack);
@@ -784,8 +790,25 @@ private:
     bool                      replaces = false;  // a resident image taken down: it stays if this fails
     uint32_t                  dropLevels = 0;    // that many of its top levels go: copied from what it is, where it can be
     bool                      moveOnly   = false;  // the same image, to be somewhere better: if not copied, left as it is
+    // once begun: what its decode stages, and what its stored levels take of GPU memory (0: none stored,
+    // so not known until decoded)
+    uint64_t staged = 0, chainBytes = 0;
+    // its source's stored levels, read once: every sync looks at all that wait, and a file is opened to say
+    std::optional<std::optional<ImageChain>> chain;
   };
+  const std::optional<ImageChain>& chainOf(QueuedDecode& q);
+  // whether a decode is of this image: of its key, or of it when it has none
+  static bool sameImage(const QueuedDecode& q, const ImageKey& image, const std::optional<TextureKey>& key)
+  {
+    return key ? q.key == key : !q.key && q.image == image;
+  }
+  bool                                                 decodingNow(const ImageKey& image, const std::optional<TextureKey>& key) const;
+  // a decode of the same image begun earlier: what it gives would only be replaced
+  void                                                 cancelDecodesOf(const QueuedDecode& q);
   std::vector<QueuedDecode>                            m_decodeQueue;
+  // begun on the backend's workers (startDecode), by ticket: one an image at most, made at a later sync
+  std::map<uint64_t, QueuedDecode>                     m_decoding;
+  uint64_t                                             m_decodingBytes = 0;  // what they stage
   std::optional<uint64_t>                              m_fitSlack;  // lowerImages' for the next sync
   bool                                                 m_compactedOnly = false;  // this sync's BLASes were only compacted
   std::set<MeshId>                                     m_letGoHidden;  // of m_parked: while hidden, for the Fit

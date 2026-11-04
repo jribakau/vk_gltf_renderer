@@ -516,7 +516,8 @@ void GltfRenderer::watchMemory()
                              .canLower   = gpu.lowerableImageBytes(rs::kLeastImageExtent) > 0 || !next.empty(),
                              .lowered    = lowered.count > 0 || spilled > 0 || gpu.residency().detailBelowFull(),
                              .refining   = isRefiningStill(),
-                             .held       = m_texturesHeld});
+                             .held       = m_texturesHeld,
+                             .decoding   = gpu.residency().queuedDecodes() > 0});
   // textures have stopped moving: a still takes its samples from them alone, once
   if(act == rs::MemoryWatch::Act::eNone && !m_texturesHeld && std::exchange(m_texturesMoved, false))
     resetFrame();
