@@ -47,9 +47,30 @@ Pool& pool()
   return instance;
 }
 
+namespace {
+thread_local bool tSerial = false;
+}
+
+Serial::Serial()
+    : m_was(tSerial)
+{
+  tSerial = true;
+}
+
+Serial::~Serial()
+{
+  tSerial = m_was;
+}
+
 void parallelFor(size_t count, size_t chunk, const std::function<void(size_t, size_t)>& fn, size_t maxHelpers)
 {
-  chunk               = std::max<size_t>(chunk, 1);
+  chunk = std::max<size_t>(chunk, 1);
+  if(tSerial)
+  {
+    for(size_t begin = 0; begin < count; begin += chunk)
+      fn(begin, std::min(count, begin + chunk));
+    return;
+  }
   const size_t chunks = (count + chunk - 1) / chunk;
   if(chunks <= 1)
   {

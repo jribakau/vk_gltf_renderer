@@ -15,6 +15,7 @@
 #include <figure/dforce/strands.hpp>
 #include <figure/dson/dforce.hpp>
 #include <figure/figure.hpp>
+#include <figure/jobs/pool.hpp>
 #include <figure/morph/morph_set.hpp>
 
 namespace {
@@ -657,6 +658,70 @@ TEST(Dforce, aLiveStepAfterASettleHoldsThePoseItReached)
   const auto p = sim.positions();
   for(int c = 0; c <= w; c++)
     EXPECT_NEAR(p[0][at(c, 0) * 3], 10 + c, 1e-3) << "pinned " << c;
+}
+
+TEST(Physics, theStepDoesNotDependOnTheThreadCount)
+{
+  // the swinging thigh's skirt, a row tethered at half strength: settled on the pool and on this
+  // thread alone, it lands the same to the bit, and its sweep's blocks are the fixed count
+  // (physics/particles), not one from how many cores the machine has
+  const int   around = 24, rows = 15;
+  const float R = 14, r = 10, len = 45, swing = 45 * float(std::acos(-1.0)) / 180;
+  Grid        skirt;
+  for(int i = 0; i <= rows; i++)
+    for(int j = 0; j < around; j++)
+    {
+      const float a = 2 * float(std::acos(-1.0)) * j / around;
+      skirt.pos.insert(skirt.pos.end(), {R * std::cos(a), -float(i) * (len / rows), R * std::sin(a)});
+    }
+  const auto at = [&](int j, int i) { return uint32_t(i * around + (j % around)); };
+  for(int i = 0; i < rows; i++)
+    for(int j = 0; j < around; j++)
+    {
+      skirt.tris.insert(skirt.tris.end(), {at(j, i), at(j, i + 1), at(j + 1, i), at(j + 1, i), at(j, i + 1), at(j + 1, i + 1)});
+      skirt.polyVerts.insert(skirt.polyVerts.end(), {int32_t(at(j, i)), int32_t(at(j, i + 1)), int32_t(at(j + 1, i + 1)), int32_t(at(j + 1, i))});
+      skirt.polyStart.push_back(int32_t(skirt.polyVerts.size()));
+    }
+  auto m = cloth(skirt);
+  for(int j = 0; j < around; j++)
+    m.strength[at(j, 0)] = 0;
+  for(int j = 0; j < around; j++)
+    m.strength[at(j, 1)] = 0.5f;
+  // the thigh: a cylinder from just under the hip, skinned to one bone that turns about x
+  const int             la = 24, lr = 30;
+  std::vector<float>    lrest, lposed;
+  std::vector<uint32_t> ltris;
+  const float           sn = std::sin(swing), cs = std::cos(swing);
+  for(int i = 0; i <= lr; i++)
+    for(int j = 0; j < la; j++)
+    {
+      const float a = 2 * float(std::acos(-1.0)) * j / la;
+      const float x = r * std::cos(a), y = -float(i) * (len + 15) / lr - 3, z = r * std::sin(a);
+      lrest.insert(lrest.end(), {x, y, z});
+      lposed.insert(lposed.end(), {x, cs * y - sn * z, sn * y + cs * z});
+    }
+  const auto lat = [&](int j, int i) { return uint32_t(i * la + (j % la)); };
+  for(int i = 0; i < lr; i++)
+    for(int j = 0; j < la; j++)
+      ltris.insert(ltris.end(), {lat(j, i), lat(j + 1, i), lat(j, i + 1), lat(j + 1, i), lat(j + 1, i + 1), lat(j, i + 1)});
+  dforce::SettleMesh leg = dforce::SettleMesh::collider(lrest, lposed, ltris, dforce::kBodyLayer, 0.2f, 0.4f);
+  leg.skinIndex.assign(lrest.size() / 3 * 4, 0);
+  leg.skinWeight.assign(lrest.size() / 3 * 4, 0.f);
+  for(size_t v = 0; v < lrest.size() / 3; v++)
+    leg.skinWeight[v * 4] = 1;
+  leg.bones     = {compose({}, quatFromEuler(swing, 0, 0, "XYZ"), {1, 1, 1})};
+  leg.restLocal = lrest;
+  const auto pooled = dforce::settle({leg, m});
+  std::vector<std::vector<float>> alone;
+  {
+    const jobs::Serial serial;
+    alone = dforce::settle({leg, m});
+  }
+  ASSERT_EQ(pooled.size(), alone.size());
+  for(size_t k = 0; k < pooled.size(); k++)
+    EXPECT_TRUE(pooled[k] == alone[k]) << "mesh " << k << " settled otherwise on one thread";
+  const dforce::ClothModel model = dforce::ClothModel::build({leg, m}, 0.f, true);
+  EXPECT_EQ(model.blocks.rows.size(), size_t(physics::particles::kBlocks));
 }
 
 TEST(Dforce, aSkirtDrapesOverALegThatSwings)

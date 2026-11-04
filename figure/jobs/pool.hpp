@@ -54,6 +54,20 @@ private:
 // The process-wide pool, sized to the machine (leaving the application thread its core).
 Pool& pool();
 
+// While one lives, parallelFor on this thread runs every chunk itself, in order: the same work on one
+// thread, to check that a result doesn't depend on how many there are.
+class Serial
+{
+public:
+  Serial();
+  ~Serial();
+  Serial(const Serial&)            = delete;
+  Serial& operator=(const Serial&) = delete;
+
+private:
+  bool m_was;
+};
+
 // Calls fn(begin, end) over [0, count) in chunks of `chunk`, on the pool and on the calling thread,
 // and returns when every chunk is done. The caller takes chunks too, so a pool job may call it: the
 // work finishes even when every pool thread is busy. The first exception is rethrown at the end.

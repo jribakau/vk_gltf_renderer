@@ -478,9 +478,6 @@ struct ClothSim::Impl : ClothModel
 
 namespace {
 
-// blocks of the vertex range, two per pool thread for balance; DSON vertex order is spatially
-// coherent, so few edges cross blocks. An edge belongs to the block of its free vertices; one
-// with a kinematic end goes with its free end, since the other is never written.
 // Links seeds of each spacing to the seeds around them, as long as the shortest way between them over
 // the mesh's stretch edges: its threads, which a shear doesn't lengthen, so a link leaves shear to the
 // fabric, and over a surface curved in its rest shape the way is longer than the chord, so it can
@@ -559,33 +556,13 @@ void addReachLinks(ClothModel& model)
   }
 }
 
+// The edges in blocks of the vertex range (physics/particles): an edge with a kinematic end goes with
+// its free end, since the other is never written; the edges that hold length lead each list.
 void partitionEdges(ClothModel& model)
 {
-  const int blocks = int(std::max<size_t>(1, 2 * (jobs::pool().size() + 1)));
-  model.blockEdges.assign(size_t(blocks), {});
-  model.crossingEdges.clear();
-  const auto blockOf = [&](int v) { return int(size_t(v) * size_t(blocks) / size_t(std::max(1, model.nv))); };
-  for(size_t e = 0; e < model.edges.size(); e++)
-  {
-    const Edge& edge = model.edges[e];
-    const bool  fa = model.inv[edge.a] > 0, fb = model.inv[edge.b] > 0;
-    if(!fa && !fb)
-      continue;
-    const int ba = blockOf(edge.a), bb = blockOf(edge.b);
-    if(fa && fb && ba != bb)
-      model.crossingEdges.push_back(int(e));
-    else
-      model.blockEdges[size_t(fa ? ba : bb)].push_back(int(e));
-  }
-  // stretch edges first in every list, so a sweep over them alone is a prefix
-  const auto stretchFirst = [&](std::vector<int>& list) {
-    const auto mid = std::stable_partition(list.begin(), list.end(), [&](int e) { return holdsLength(model.edges[size_t(e)].kind); });
-    return int(mid - list.begin());
-  };
-  model.blockStretch.clear();
-  for(auto& list : model.blockEdges)
-    model.blockStretch.push_back(stretchFirst(list));
-  model.crossingStretch = stretchFirst(model.crossingEdges);
+  model.blocks = physics::particles::partitionRows(
+      model.nv, model.edges.size(), [&](size_t e) { return std::pair{model.edges[e].a, model.edges[e].b}; },
+      [&](int v) { return !(model.inv[size_t(v)] > 0); }, [&](size_t e) { return holdsLength(model.edges[e].kind); });
 }
 
 }  // namespace
@@ -1290,72 +1267,25 @@ void ClothSim::Impl::solveEdges(float dt, bool stretchOnly)
     // not in a full sweep (one follows a collision pass): see the top of solver.hpp
     if(edge.kind == EdgeKind::eReach && !stretchOnly)
       return;
-    const int   a = edge.a, b = edge.b;
-    const float wa = inv[a], wb = inv[b];
-    const float w = wa + wb;
-    const float dx = x[b * 3] - x[a * 3], dy = x[b * 3 + 1] - x[a * 3 + 1], dz = x[b * 3 + 2] - x[a * 3 + 2];
-    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if(len < 1e-8f)
-      return;
-    float alpha = edge.alpha;
     // a bend strut shorter than its buckling length folds at the buckling stiffness
-    if(edge.kind == EdgeKind::eBend && len < edge.rest * edge.ratio)
-      alpha = edge.buckle > 0 ? alpha / edge.buckle : 1e6f;
-    const float C  = len - edge.rest;
-    const float nx = dx / len, ny = dy / len, nz = dz / len;
-    const float at = alpha * atScale;
-    float       dl = float((-C - at * lam[size_t(e)]) / (w + at));
-    // a reach link only ever pulls: what it has given back it can't give again
-    if(edge.kind == EdgeKind::eReach)
-      dl = float(std::min(lam[size_t(e)] + double(dl), 0.0) - lam[size_t(e)]);
-    lam[size_t(e)] += dl;
-    if(wa > 0)
-    {
-      x[a * 3] -= nx * wa * dl;
-      x[a * 3 + 1] -= ny * wa * dl;
-      x[a * 3 + 2] -= nz * wa * dl;
-    }
-    if(wb > 0)
-    {
-      x[b * 3] += nx * wb * dl;
-      x[b * 3 + 1] += ny * wb * dl;
-      x[b * 3 + 2] += nz * wb * dl;
-    }
+    const auto alphaAt = [&](float len) {
+      if(edge.kind == EdgeKind::eBend && len < edge.rest * edge.ratio)
+        return edge.buckle > 0 ? edge.alpha / edge.buckle : 1e6f;
+      return edge.alpha;
+    };
+    // a reach link only ever pulls
+    physics::particles::projectDistance(x.data(), edge.a, edge.b, inv[edge.a], inv[edge.b], edge.rest, alphaAt, atScale, lam[size_t(e)], edge.kind == EdgeKind::eReach);
   };
   // sweeps alternate direction, so a correction reaches both ends of a chain in two of them
-  const auto sweep = [&](const std::vector<int>& list, int count) {
-    const size_t n = stretchOnly ? size_t(count) : list.size();
-    if(forward)
-      for(size_t k = 0; k < n; k++)
-        project(list[k]);
-    else
-      for(size_t k = n; k-- > 0;)
-        project(list[k]);
-  };
-  jobs::parallelFor(blockEdges.size(), 1, [&](size_t begin, size_t end) {
-    for(size_t b = begin; b < end; b++)
-      sweep(blockEdges[b], blockStretch[b]);
-  });
-  sweep(crossingEdges, crossingStretch);
+  physics::particles::sweepBlocks(blocks, stretchOnly, forward, project);
   forward = !forward;
   // the tethers of partial strength: a distance-0 constraint to the skinned position, as compliant
   // as the strength makes it; each writes its own vertex only
   jobs::parallelFor(softVerts.size(), 1024, [&](size_t begin, size_t end) {
     for(size_t k = begin; k < end; k++)
     {
-      const int   i  = softVerts[k];
-      const float dx = x[i * 3] - anchor[i * 3], dy = x[i * 3 + 1] - anchor[i * 3 + 1], dz = x[i * 3 + 2] - anchor[i * 3 + 2];
-      const float C  = std::sqrt(dx * dx + dy * dy + dz * dz);
-      if(C < 1e-8f)
-        continue;
-      const float w  = inv[i];
-      const float at = attAlpha[i] * atScale;
-      const float dl = float((-C - at * lamAtt[size_t(i)]) / (w + at));
-      lamAtt[size_t(i)] += dl;
-      const float s = w * dl / C;
-      x[i * 3] += dx * s;
-      x[i * 3 + 1] += dy * s;
-      x[i * 3 + 2] += dz * s;
+      const int i = softVerts[k];
+      physics::particles::projectAttach(x.data(), i, &anchor[size_t(i) * 3], inv[i], attAlpha[i], atScale, lamAtt[size_t(i)]);
     }
   });
 }
@@ -1603,17 +1533,7 @@ void ClothSim::Impl::frame(float t0, float t1, float extraDamping, float seconds
       for(int k = 0; k < 3; k++)
         vel[i * 3 + k] = 0;
     for(int i : freeVerts)
-    {
-      const float damped = std::exp(-(dampRate[i] + extraDamping) * dt);
-      for(int k = 0; k < 3; k++)
-        vel[i * 3 + k] = (vel[i * 3 + k] + grav[i * 3 + k] * dt) * damped;
-      const float sp = std::sqrt(vel[i * 3] * vel[i * 3] + vel[i * 3 + 1] * vel[i * 3 + 1] + vel[i * 3 + 2] * vel[i * 3 + 2]);
-      if(sp > kMaxSpeed)
-        for(int k = 0; k < 3; k++)
-          vel[i * 3 + k] *= kMaxSpeed / sp;
-      for(int k = 0; k < 3; k++)
-        x[i * 3 + k] += vel[i * 3 + k] * dt;
-    }
+      physics::particles::integrate(&x[size_t(i) * 3], &vel[size_t(i) * 3], &grav[size_t(i) * 3], std::exp(-(dampRate[i] + extraDamping) * dt), dt, kMaxSpeed);
     std::fill(lam.begin(), lam.end(), 0.0);
     std::fill(lamAtt.begin(), lamAtt.end(), 0.0);
     for(int it = 0; it < std::max(1, opts.iterations); it++)

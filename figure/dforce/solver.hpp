@@ -35,6 +35,7 @@
 #include <memory>
 #include <vector>
 
+#include <figure/physics/particles/particles.hpp>
 #include <figure/math/xform.hpp>
 
 namespace fv::dforce {
@@ -132,13 +133,11 @@ struct ClothModel
   std::vector<int>     layer;
   std::vector<uint8_t> visible, collides, dynamic;
   std::vector<Edge>    edges;
-  // the sweep in parallel: edges whose free vertices all lie in one block of the vertex range run
-  // block by block on the pool, the few that cross blocks after them on one thread. Each list
-  // starts with the edges that hold length, this many, so a sweep over those alone is a prefix
-  std::vector<std::vector<int>> blockEdges;
-  std::vector<int>              crossingEdges;
-  std::vector<int>              blockStretch;
-  int                           crossingStretch = 0;
+  // the sweep in parallel (physics/particles): edges whose free vertices all lie in one block of the
+  // vertex range run block by block on the pool, the few that cross blocks after them on one thread.
+  // Each list starts with the edges that hold length, so a sweep over those alone is a prefix. The
+  // blocks are fixed at build from the vertex count, so a drape is the same on any machine
+  physics::particles::Blocks blocks;
   std::vector<Tri>              tris;
   // faces the pose moves and faces the cloth moves
   std::vector<int> staticTris, dynamicTris, allTris;
