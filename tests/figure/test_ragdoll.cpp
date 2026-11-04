@@ -180,6 +180,41 @@ TEST(Ragdoll, enteringPhysicsMovesNoBone)
   }
 }
 
+// Hold sets how far a push bends it, not whether it stands: barely held, the pose still holds
+// against gravity and a pull stays where it was let go; at 0 it is limp, and the arm falls
+TEST(Ragdoll, aLowHoldStillHoldsThePoseAndZeroIsLimp)
+{
+  {
+    Person p;
+    p.set("l_upperarm", "z", -45);
+    const auto before = p.rotations();
+    p.on(0.05);
+    p.run(3);
+    EXPECT_LT(maxDiff(p.rotations(), before), 0.05);
+    double     depth = 0;
+    // the middle of the hand, down the lowered arm
+    const Vec3 along = p.at("l_hand") - p.at("l_forearm");
+    const Vec3 hand  = p.at("l_hand") + along * (8 / length(along));
+    ASSERT_TRUE(p.physics->grab(hand + Vec3{0, 0, 100}, {0, 0, -1}, depth));
+    p.physics->drag(hand + Vec3{0, 20, 10});
+    p.run(1.5);
+    p.pose->setMany(p.physics->release());
+    p.run(0.5);
+    const auto reached = p.rotations();
+    EXPECT_GT(maxDiff(reached, before), 5) << "the pull didn't move the arm";
+    p.run(3);
+    EXPECT_LT(maxDiff(p.rotations(), reached), 0.05);
+  }
+  Person p;
+  p.set("l_upperarm", "z", -45);
+  const double arm = p.shown("l_upperarm", 2);
+  p.on(0);
+  p.run(3);
+  EXPECT_GT(std::abs(p.shown("l_upperarm", 2) - arm), 10) << "nothing held it, yet it stayed";
+  for(const double r : p.rotations())
+    ASSERT_TRUE(std::isfinite(r));
+}
+
 TEST(Ragdoll, aPulledHandReachesItsTargetAndTheElbowKeepsItsLimits)
 {
   Person p;

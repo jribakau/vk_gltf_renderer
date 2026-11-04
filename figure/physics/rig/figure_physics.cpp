@@ -699,6 +699,10 @@ std::vector<pose::ChannelValue> FigurePhysics::release()
     return {};
   m_world.pins.erase(m_world.pins.begin() + m_pull);
   m_pull = -1;
+  // let go, it stays: set down at rest, or a weak Hold's motors would let the swing carry on for
+  // seconds before they bring it back
+  for(RigidBody& b : m_world.bodies)
+    b.v = b.w = {};
   m_version++;
   wake();
   return reached();
