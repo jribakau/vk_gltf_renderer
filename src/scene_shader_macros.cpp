@@ -55,6 +55,7 @@ constexpr std::array<FeatureMacro, SceneFeatureSet::kExtensionFeatureCount> kPat
     {SceneFeatureSet::eDetail, "GLTF_USE_DETAIL"},
     {SceneFeatureSet::eHair, "GLTF_USE_HAIR"},
     {SceneFeatureSet::eProcedural, "GLTF_USE_PROCEDURAL"},
+    {SceneFeatureSet::eFlakes, "GLTF_USE_FLAKES"},
     {SceneFeatureSet::eTextureTransform, "GLTF_USE_TEXTURE_TRANSFORM"},
 }};
 

@@ -823,6 +823,35 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Cont
     }
     s.topCoat = t;
   }
+  // Metallic Flakes: like the coat, a weight makes them on Iray Uber, and PBRSkin also needs its switch.
+  // The roughness is Iray's taken as glTF's, as the coat's is. Only the Intensity colour effect moves
+  // the colour into the weight (add_metal_flakes' do_flakes_trasmit, effect > 1).
+  if(const Channel* weightCh = find({"Metallic Flakes Weight"}); weightCh && enabled("Metallic Flakes Enable") && num(weightCh, 0) > 0)
+  {
+    Surface::Flakes f;
+    f.weight               = float(clamp01(num(weightCh, 0)));
+    f.weightMap            = imageOf(weightCh);
+    const Channel* colorCh = find({"Metallic Flakes Color"});
+    f.color                = colorOr(colorCh);
+    f.colorMap             = imageOf(colorCh);
+    if(int(num(find({"Metallic Flakes Color Effect"}), 0)) > 1 && f.colorMap.empty())
+    {
+      const float peak = std::max({f.color[0], f.color[1], f.color[2]});
+      if(peak > 0)
+      {
+        f.weight *= 0.2126f * f.color[0] + 0.7152f * f.color[1] + 0.0722f * f.color[2];
+        for(float& c : f.color)
+          c /= peak;
+      }
+    }
+    const auto gloss = roughFromGloss("Metallic Flakes Glossiness");
+    f.roughness      = float(gloss ? *gloss : clamp01(num(find({"Metallic Flakes Roughness"}), 0)));
+    f.size           = float(num(find({"Metallic Flakes Size"}), 0.001));
+    f.strength       = float(num(find({"Metallic Flakes Strength"}), 1));
+    f.density        = float(num(find({"Metallic Flakes Density"}), 1));
+    if(f.size > 0)
+      s.flakes = f;
+  }
   if(pbrSkin && enabled("Detail Enable"))
   {
     s.detail = readDetail(find);

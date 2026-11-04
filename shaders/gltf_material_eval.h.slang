@@ -47,6 +47,9 @@ Design notes for the fork:
 #include "gltf_scene_io.h.slang"
 #include "gltf_eval_config.h"
 #include "thin_scatter.h.slang"
+#if GLTF_USE_FLAKES
+#include "flake_noise.h.slang"
+#endif
 
 /*-------------------------------------------------------------------------------------------------
 # `MICROFACET_MIN_ROUGHNESS` Define
@@ -760,6 +763,53 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
     {
       float along = abs(state.tc[0].y - material.hairRootV);
       pbrMat.opacity *= smoothstep(0.0F, material.hairRootFade, along);
+    }
+  }
+#endif
+
+#if GLTF_USE_FLAKES
+  // FV_materials_flakes: Iray Uber's metallic flakes, a layer over the base and its thin film and
+  // under the top coat. Where a flake shows, the surface is that flake: a metal mirror of its colour
+  // and roughness on its own tilted normal, the coat still over it; between flakes it is the base.
+  // The tight lobe, the film and any way through are the base's, which the flake covers.
+  if(material.flakesWeight > 0.0F && material.flakesSize > 0.0F)
+  {
+    float weight = material.flakesWeight;
+    if(isTexturePresent(material.flakesWeightTexture))
+    {
+      weight *= getTexture(images, samplers, texInfos[material.flakesWeightTexture], state.tc, state.texGrad).r;
+    }
+    const Flake flake = flakeAt(state.tc[0], material.flakesSize, material.flakesDensity);
+    if(flakeShows(flake, weight * flake.reflectivity))
+    {
+      float3 tint = material.flakesColor;
+      if(isTexturePresent(material.flakesColorTexture))
+      {
+        tint *= float3(getTexture(images, samplers, texInfos[material.flakesColorTexture], state.tc, state.texGrad).rgb);
+      }
+      pbrMat.baseColor = tint;
+      pbrMat.metallic  = 1.0F;
+      // pbrMat.roughness holds alpha = roughness^2
+      const float roughness = max(material.flakesRoughness, MICROFACET_MIN_ROUGHNESS);
+      pbrMat.roughness      = float2(roughness * roughness);
+      // its own frame, made as the tangent update above makes one, with no anisotropy's turn
+      pbrMat.N                  = flakeNormal(flake, state.T, state.B, pbrMat.N, material.flakesStrength);
+      pbrMat.B                  = normalize(cross(pbrMat.N, state.T));
+      const float bitangentSign = sign(dot(state.B, pbrMat.B));
+      pbrMat.B                  = pbrMat.B * bitangentSign;
+      pbrMat.T                  = normalize(cross(pbrMat.B, pbrMat.N) * bitangentSign);
+#if GLTF_USE_CLEARCOAT
+      pbrMat.specular2 = 0.0F;
+#endif
+#if GLTF_USE_IRIDESCENCE
+      pbrMat.iridescence = 0.0F;
+#endif
+#if GLTF_USE_TRANSMISSION
+      pbrMat.transmission = 0.0F;
+#endif
+#if GLTF_USE_DIFFUSE_TRANSMISSION
+      pbrMat.diffuseTransmissionFactor = 0.0F;
+#endif
     }
   }
 #endif

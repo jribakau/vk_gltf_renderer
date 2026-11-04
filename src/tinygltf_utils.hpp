@@ -290,6 +290,11 @@ struct KHR_materials_diffuse_transmission
 // for other tools leaves it out.
 #define FV_MATERIALS_PROCEDURAL_EXTENSION_NAME "FV_materials_procedural"
 
+// FV_materials_flakes (Figure Viewer): Iray Uber's metallic flakes, tilted metal mirrors over the
+// base and under the coat, one per cell of a ragged UV grid (fv::mat::Flakes,
+// shaders/flake_noise.h.slang). A build of the renderer's own: a file for other tools leaves it out.
+#define FV_MATERIALS_FLAKES_EXTENSION_NAME "FV_materials_flakes"
+
 // FV_texture_flip_green (Figure Viewer): on a normal texture info, an empty object saying the
 // image's green channel points the other way (Y down), so the shader negates the decoded Y.
 // Figure Viewer's texture cache keeps one cooked copy of each normal map for its own viewer and

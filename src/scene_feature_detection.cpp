@@ -54,6 +54,7 @@ constexpr std::array<FeatureName, SceneFeatureSet::kFeatureCount> kFeatureNames{
     {SceneFeatureSet::eDetail, "detail"},
     {SceneFeatureSet::eHair, "hair"},
     {SceneFeatureSet::eProcedural, "procedural"},
+    {SceneFeatureSet::eFlakes, "flakes"},
     {SceneFeatureSet::eTextureTransform, "textureTransform"},
     {SceneFeatureSet::eDlssGuide, "dlssGuide"},
 }};
@@ -197,6 +198,8 @@ SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m)
     set.enable(SceneFeatureSet::eClearcoat);
     set.enable(SceneFeatureSet::eSpecular);
   }
+  if(m.flakes)
+    set.enable(SceneFeatureSet::eFlakes);
 
   if(materialHasTextureTransform(m))
     set.enable(SceneFeatureSet::eTextureTransform);

@@ -281,6 +281,18 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   handleTexture(dstMat.proceduralCoverTexture, procedural.coverMap);
 #endif
 
+#if MAT_EXT_FLAKES
+  const Flakes flakes    = srcMat.flakes.value_or(Flakes{});
+  dstMat.flakesWeight    = srcMat.flakes ? flakes.weight : 0.0f;
+  dstMat.flakesColor     = rgb(flakes.color);
+  dstMat.flakesRoughness = flakes.roughness;
+  dstMat.flakesSize      = flakes.size;
+  dstMat.flakesStrength  = flakes.strength;
+  dstMat.flakesDensity   = flakes.density;
+  handleTexture(dstMat.flakesWeightTexture, flakes.weightMap);
+  handleTexture(dstMat.flakesColorTexture, flakes.colorMap);
+#endif
+
 #if MAT_EXT_HAIR
   if(srcMat.hair)
   {

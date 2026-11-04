@@ -83,6 +83,9 @@ otherwise the material buffer layout will disagree.
 #ifndef MAT_EXT_PROCEDURAL
 #define MAT_EXT_PROCEDURAL MAT_EXT_VAL  // FV_materials_procedural (Figure Viewer: sweat and the like over a surface)
 #endif
+#ifndef MAT_EXT_FLAKES
+#define MAT_EXT_FLAKES MAT_EXT_VAL  // FV_materials_flakes (Figure Viewer: Iray Uber's metallic flakes)
+#endif
 #ifndef MAT_EXT_TEXTURE_TRANSFORM
 #define MAT_EXT_TEXTURE_TRANSFORM                                                                                      \
   MAT_EXT_VAL  // KHR_texture_transform (adds float3x2 to every GltfTextureInfo, ~24B/slot)

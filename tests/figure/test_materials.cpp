@@ -419,6 +419,58 @@ TEST(Materials, ASheerGarmentIsAWeaveAndAHairCardIsNot)
   EXPECT_FALSE(fv::mat::lower(fv::dson::parseSurface("Stockings", channelsOf(sheer), fv::mat::Context::eItem), opaque, {}).material.woven);
 }
 
+TEST(Materials, IrayFlakesAreAMetalLayerUnderTheCoat)
+{
+  // DAZ's "Car Paint - Red - Small Flakes" Uber preset
+  const ChannelValues paint = {{"diffuse", Json::array({0.73, 0.73, 0.73})},
+                               {"Glossy Roughness", 0.7071068},
+                               {"Top Coat Weight", 0.8},
+                               {"Top Coat Roughness", 0.1},
+                               {"Metallic Flakes Weight", 1},
+                               {"Metallic Flakes Color", Json::array({0.7927927, 0.3172521, 0.2783647})},
+                               {"Metallic Flakes Roughness", 0.3162278},
+                               {"Metallic Flakes Size", 0.01},
+                               {"Metallic Flakes Strength", 1},
+                               {"Metallic Flakes Density", 1}};
+  const fv::mat::Surface s = surfaceOf("Paint", "studio/material/uber_iray", paint, {{"Metallic Flakes Weight", "/maps/glitter_mask.png"}});
+  ASSERT_TRUE(s.flakes);
+  EXPECT_FLOAT_EQ(s.flakes->size, 0.01f);
+  EXPECT_EQ(s.flakes->weightMap, "/maps/glitter_mask.png");
+
+  const fv::mat::Lowered l = fv::mat::lower(s, {}, {});
+  ASSERT_TRUE(l.material.flakes);
+  const fv::mat::Flakes& f = *l.material.flakes;
+  // the file's colour is sRGB, the layer's linear
+  const auto linear = [](double c) { return float(std::pow((c + 0.055) / 1.055, 2.4)); };
+  EXPECT_FLOAT_EQ(f.weight, 1.0f);
+  EXPECT_NEAR(f.color[0], linear(0.7927927), 1e-4f);
+  EXPECT_NEAR(f.color[2], linear(0.2783647), 1e-4f);
+  EXPECT_NEAR(f.roughness, 0.3162278f, 1e-6f);
+  EXPECT_FLOAT_EQ(f.size, 0.01f);
+  EXPECT_TRUE(f.weightMap.has());
+  EXPECT_FALSE(f.colorMap.has());
+  // the coat stays over them
+  ASSERT_TRUE(l.material.clearcoat);
+  EXPECT_NEAR(l.material.clearcoat->factor, 0.8f, 1e-6f);
+  // a file for other tools has no flakes to read
+  fv::mat::LowerOptions file;
+  file.forFile = true;
+  EXPECT_FALSE(fv::mat::lower(s, {}, file).material.flakes);
+}
+
+TEST(Materials, NoFlakesWithoutAWeight)
+{
+  // the Uber's defaults: a flake size and no weight
+  EXPECT_FALSE(surfaceOf("Paint", "studio/material/uber_iray", {{"Metallic Flakes Weight", 0}, {"Metallic Flakes Size", 0.001}}).flakes);
+  EXPECT_FALSE(surfaceOf("Paint", "studio/material/uber_iray", {{"Glossy Roughness", 0.5}}).flakes);
+  // the Intensity colour effect takes the colour's luminance into the weight (sRGB 0.5 is linear 0.214)
+  const fv::mat::Surface intensity = surfaceOf("Paint", "studio/material/uber_iray",
+                                               {{"Metallic Flakes Weight", 1}, {"Metallic Flakes Color", Json::array({0.5, 0.5, 0.5})}, {"Metallic Flakes Color Effect", 2}});
+  ASSERT_TRUE(intensity.flakes);
+  EXPECT_NEAR(intensity.flakes->weight, std::pow(0.555 / 1.055, 2.4), 1e-4f);
+  EXPECT_NEAR(intensity.flakes->color[1], 1.0f, 1e-5f);
+}
+
 TEST(Materials, OnlyTheMainSourceOfARequestIsLayered)
 {
   // a cutout, a makeup, a metal or a weight map of two layers: the cooker opens those as one file, and

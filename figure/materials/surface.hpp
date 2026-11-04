@@ -260,6 +260,18 @@ struct Surface
     std::string colorMap;
   };
   std::optional<TopCoat>      topCoat;
+  // Iray Uber's Metallic Flakes: tilted metal mirrors over the base and under the top coat (base.mdl's
+  // flake noise in UV space, mat::Flakes). The weight and colour are each the value times its map.
+  struct Flakes
+  {
+    float       weight = 0;
+    std::string weightMap;
+    Rgb         color{1, 1, 1};  // linear
+    std::string colorMap;
+    float       roughness = 0;
+    float       size = 0.001f, strength = 1, density = 1;  // size in UV units
+  };
+  std::optional<Flakes>       flakes;
   std::optional<Emission>     emission;
   std::optional<Translucency> translucency;  // none when the material has no translucency channels
   std::optional<DetailLayer>  detail;

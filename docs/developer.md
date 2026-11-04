@@ -476,6 +476,30 @@ shimmer. A GLB export leaves the extension out; the masks are not exported eithe
 A row holds one layer, the first the surface takes (`proceduralOn`): a second at once needs the row's
 fields twice and the evaluation in a loop.
 
+### `FV_materials_flakes`: Iray Uber's metallic flakes
+
+A vendor extension written by Figure Viewer for the Uber's Metallic Flakes channels (`Surface::Flakes`,
+`mat::Flakes`). The flakes are MDL `base.mdl`'s `flake_noise_texture` and `flake_noise_bump_texture` as
+the Uber calls them, ported to [`shaders/flake_noise.h.slang`](../shaders/flake_noise.h.slang): cells of
+the mesh's own UVs `size` across, made ragged by a smooth noise, each a flake with a weight and a tilt
+from a lattice noise at its cell. The lattice is a hash rather than `base.mdl`'s permutation tables, so
+the pattern is not Iray's flake for flake, only alike in size, weight and tilt.
+
+In `evaluateMaterial()` a flake replaces the base outright where it shows: a metal of the flakes'
+colour and roughness on the flake's normal, with the coat still over it. Iray mixes each flake in by its
+weight; here a flake shows or not by a draw that stays with its cell (`flakeShows`), the weight being
+the chance, so a sparkle keeps still from frame to frame under DLSS rather than averaging to a sheen.
+The Uber's flake thin film, the roughness map and Backface flakes are not read. A GLB export leaves the
+extension out.
+
+### Woven cutouts
+
+A garment's or a prop's BLEND cutout is a weave (`mat::Material::woven`, set by the lowering and kept
+in glTF as the `fvWoven` extra): `getOpacity` takes the ray's direction and
+[`shaders/woven_opacity.h.slang`](../shaders/woven_opacity.h.slang) closes the gaps between two sets of
+threads as the surface turns away from it, so sheer cloth darkens towards its outline. Camera rays,
+shadow rays and light samples all see the same opacity; holes and solid cloth do not change.
+
 ### A wear that doesn't fit GPU memory
 
 `GltfRenderer::geometryShortfall` weighs what a wear would add. Falling short is not the end while

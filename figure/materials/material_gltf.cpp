@@ -369,6 +369,19 @@ Material fromGltf(const tinygltf::Material& g)
       read(v, "coverTexture", l.coverMap);
       m.procedural = l;
     }
+    else if(name == "FV_materials_flakes")
+    {
+      Flakes f;
+      read(v, "weightFactor", f.weight);
+      read(v, "color", f.color);
+      read(v, "roughnessFactor", f.roughness);
+      read(v, "size", f.size);
+      read(v, "strength", f.strength);
+      read(v, "density", f.density);
+      read(v, "weightTexture", f.weightMap);
+      read(v, "colorTexture", f.colorMap);
+      m.flakes = f;
+    }
     else if(name == "FV_materials_hair")
     {
       Hair h;
@@ -611,6 +624,17 @@ Json materialJson(const Material& m, const char* key)
     if(l.coverMap.has())
       e["coverTexture"] = info(l.coverMap);
     ext["FV_materials_procedural"] = e;
+  }
+  if(m.flakes)
+  {
+    const Flakes& f = *m.flakes;
+    Json e = {{"weightFactor", f.weight}, {"color", rgbJson(f.color)}, {"roughnessFactor", f.roughness},
+              {"size", f.size},           {"strength", f.strength},     {"density", f.density}};
+    if(f.weightMap.has())
+      e["weightTexture"] = info(f.weightMap);
+    if(f.colorMap.has())
+      e["colorTexture"] = info(f.colorMap);
+    ext["FV_materials_flakes"] = e;
   }
   if(m.hair)
   {

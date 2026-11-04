@@ -349,6 +349,17 @@ struct GltfShadeMaterial
   float  proceduralNormalScale   = 1;  // proceduralNormalTexture.scale; ten floats keep the row a multiple of 8
 #endif
 
+#if MAT_EXT_FLAKES
+  // FV_materials_flakes: Iray Uber's metallic flakes, tilted metal mirrors over the base and under the
+  // coat (flake_noise.h.slang, gltf_material_eval.h.slang). flakesWeight is 0 unless the extension is present.
+  float  flakesWeight    = 0;
+  float3 flakesColor     = float3(1);
+  float  flakesRoughness = 0;
+  float  flakesSize      = 0.001f;  // a flake's cell across, in UV units
+  float  flakesStrength  = 1;       // how far the flakes tilt
+  float  flakesDensity   = 1;       // eight floats keep the row a multiple of 8
+#endif
+
 #if MAT_EXT_HAIR
   // FV_materials_hair. hairFactor is 0 unless the extension is present: a ribbon fibre, shaded
   // with a hair BSDF instead of the glTF lobes. Absorption is Chiang's σ_a; the hit's along-UV
@@ -456,6 +467,13 @@ struct GltfShadeMaterial
   uint16_t proceduralCoverTexture  = 0;
   uint16_t _proceduralTexturePad0  = 0;  // keeps the row a multiple of 8 with no padding
   uint16_t _proceduralTexturePad1  = 0;
+#endif
+
+#if MAT_EXT_FLAKES
+  uint16_t flakesWeightTexture = 0;
+  uint16_t flakesColorTexture  = 0;
+  uint16_t _flakesTexturePad0  = 0;  // keeps the row a multiple of 8 with no padding
+  uint16_t _flakesTexturePad1  = 0;
 #endif
 
 #if MAT_EXT_DLSS_NR

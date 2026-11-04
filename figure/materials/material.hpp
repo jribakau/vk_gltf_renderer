@@ -183,6 +183,20 @@ struct Procedural
   bool        operator==(const Procedural&) const = default;
 };
 
+// Iray Uber's metallic flakes (FV_materials_flakes): tilted metal mirrors of `color` and `roughness`
+// over the base and under the coat, one per cell of a ragged grid `size` UV units across. Each shows
+// by `weight` (times the map's red) times its own reflectivity, pow(noise, 1 / density), and tilts by
+// `strength` (shaders/flake_noise.h.slang).
+struct Flakes
+{
+  float       weight = 0;
+  Rgb         color{1, 1, 1};
+  float       roughness = 0;
+  float       size = 0.001f, strength = 1, density = 1;
+  TextureSlot weightMap, colorMap;
+  bool        operator==(const Flakes&) const = default;
+};
+
 // OmniHair's absorption along a strand, as OmniHairBase.mdl and its brick have it: the colours (x
 // weight x melanin gamma, clamped only after the blend) blended root to tip through bias and gain,
 // turned to absorption, and mixed with the melanin's by melaninMix.
@@ -248,6 +262,7 @@ struct Material
   std::optional<SpecularGlossiness>  specularGlossiness;
   std::optional<Detail>              detail;
   std::optional<Procedural>          procedural;
+  std::optional<Flakes>              flakes;
   std::optional<Hair>                hair;
   std::optional<Rgba>                dlssNrMask;  // per-material DLSS NR strengths; left out: 1, 1, 1, 1
   bool                               unlit = false;
@@ -334,6 +349,11 @@ void forEachSlot(M& m, Fn&& fn)
   {
     fn(m.procedural->normalMap);
     fn(m.procedural->coverMap);
+  }
+  if(m.flakes)
+  {
+    fn(m.flakes->weightMap);
+    fn(m.flakes->colorMap);
   }
 }
 

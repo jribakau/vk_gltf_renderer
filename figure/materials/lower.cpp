@@ -648,6 +648,24 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     eff.clearcoatRoughness = cc.roughness;
   }
 
+  // Iray Uber's metallic flakes, over the base and under the coat. Their cells are in the mesh's own
+  // UVs, as base.mdl's flake noise reads texture coordinate 0; their maps tile as the surface's.
+  if(s.flakes && !opts.forFile)
+  {
+    Flakes f;
+    f.weight    = s.flakes->weight;
+    f.color     = s.flakes->color;
+    f.roughness = s.flakes->roughness;
+    f.size      = s.flakes->size;
+    f.strength  = s.flakes->strength;
+    f.density   = s.flakes->density;
+    if(!s.flakes->weightMap.empty())
+      f.weightMap = b.plain(s.flakes->weightMap, false);
+    if(!s.flakes->colorMap.empty())
+      f.colorMap = b.plain(s.flakes->colorMap, true);
+    out.flakes = f;
+  }
+
   // refraction
   float       transmission = 0;
   std::string transmissionMap;  // Translucency Weight's map, where a skin lets light in
