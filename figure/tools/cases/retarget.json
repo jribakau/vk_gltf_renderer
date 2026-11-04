@@ -1,5 +1,5 @@
 {
-  "about": "Genesis 8's walks played on a Genesis 9 (figure/pose/retarget.hpp): each limb's angle off the walk on its own skeleton, and the lower ankle's rise. The walks are Mocap Online's, in the user's library. Run with DAZ_LIBRARY set to the content library.",
+  "about": "Genesis 8's walks played on a Genesis 9 (figure/pose/retarget.hpp): each limb's angle off turning as the walk turns it on its own skeleton, the bones it turns that the walk holds (none), and the lower ankle's rise. The walks are Mocap Online's, in the user's library. Run with DAZ_LIBRARY set to the content library.",
   "library": "$DAZ_LIBRARY",
   "steps": [
     {"load": "People/Genesis 9/Characters/Mirel.duf"},

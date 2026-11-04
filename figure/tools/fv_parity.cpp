@@ -28,9 +28,12 @@
 // morph) and measures the drape read back through the skin, as the renderer gets it;
 // "colliders": false leaves worn items without a simulation modifier out of the simulation.
 // {"retarget": label, "file": rel} plays a DAZ animation made for another Genesis on the loaded figure
-// (figure/pose/retarget.hpp) and, at every key, compares each limb's direction with the source figure's
-// skeleton playing the file as it is: the largest and mean angle a limb is off, and how far the
-// lower ankle rises and falls on each (cm), with the time the retarget takes.
+// (figure/pose/retarget.hpp) beside the source figure's skeleton playing the file as it is. At every
+// frame each limb's direction against its rest direction turned as the source's limb is turned: the
+// largest and mean angle off ("limbsDegrees"); how far apart each limb points at rest, the two builds
+// ("restDegrees"); the figure's bones turned over 1° where the file holds their counterparts at rest
+// ("heldButTurnedDegrees", empty when the figure keeps its own face); how far the lower ankle rises
+// and falls on each (cm); and the time the retarget takes.
 // {"flesh": label} finds the body's soft lobes (figure/physics/flesh) and reports each: its particles,
 // its middle and extent in the rest cage (cm), and its softest share; then bobs the skin up and down
 // (2 cm at 2 Hz, a walk's) for "frames" frames at 60 fps and reports the solve's time a frame and
@@ -880,9 +883,9 @@ int main(int argc, char** argv)
               out.push_back(&pb);
           return out;
         };
-        const auto way = [](const fv::SceneGraph& sc, const std::vector<const fv::pose::PoseBone*>& limb, const fv::Mat4& toFigure) {
-          // the top the shallowest; the last the deepest that the next limb hangs from (Genesis 8's
-          // twist bone, not Genesis 9's at the side), else the top
+        // a limb's top bone and last: the top the shallowest; the last the deepest that the next limb
+        // hangs from (Genesis 8's twist bone, not Genesis 9's at the side), else the top
+        const auto ends = [](const fv::SceneGraph& sc, const std::vector<const fv::pose::PoseBone*>& limb) {
           const auto depthOf = [&](const fv::pose::PoseBone* pb) {
             int d = 0;
             for(int n = pb->bone; n >= 0; n = sc.nodes[size_t(n)].parent)
@@ -903,12 +906,19 @@ int main(int argc, char** argv)
             if(carries && depthOf(pb) > depthOf(last))
               last = pb;
           }
-          const fv::Mat4  wt = toFigure * sc.world(top->bone), wl = toFigure * sc.world(last->bone);
-          const auto&     j  = sc.nodes[size_t(last->bone)].joint;
-          const fv::Vec3  d{j->endPoint[0] - j->center[0], j->endPoint[1] - j->center[1], j->endPoint[2] - j->center[2]};
-          const fv::Vec3  tip{wl.e[12] + wl.e[0] * d.x + wl.e[4] * d.y + wl.e[8] * d.z, wl.e[13] + wl.e[1] * d.x + wl.e[5] * d.y + wl.e[9] * d.z,
-                              wl.e[14] + wl.e[2] * d.x + wl.e[6] * d.y + wl.e[10] * d.z};
-          return fv::normalize(tip - fv::Vec3{wt.e[12], wt.e[13], wt.e[14]});
+          return std::pair{top, last};
+        };
+        // `v` turned by a bone's world matrix (a DAZ bone at rest has none, so it's the bone's turn)
+        const auto turned = [](const fv::Mat4& w, const fv::Vec3& v) {
+          return fv::Vec3{w.e[0] * v.x + w.e[4] * v.y + w.e[8] * v.z, w.e[1] * v.x + w.e[5] * v.y + w.e[9] * v.z, w.e[2] * v.x + w.e[6] * v.y + w.e[10] * v.z};
+        };
+        // which way a limb points: from its top bone's joint to its last bone's end
+        const auto way = [&](const fv::SceneGraph& sc, const std::vector<const fv::pose::PoseBone*>& limb, const fv::Mat4& toFigure) {
+          const auto [top, last] = ends(sc, limb);
+          const fv::Mat4 wt = toFigure * sc.world(top->bone), wl = toFigure * sc.world(last->bone);
+          const auto&    j  = sc.nodes[size_t(last->bone)].joint;
+          const fv::Vec3 d  = turned(wl, {j->endPoint[0] - j->center[0], j->endPoint[1] - j->center[1], j->endPoint[2] - j->center[2]});
+          return fv::normalize(fv::Vec3{wl.e[12], wl.e[13], wl.e[14]} + d - fv::Vec3{wt.e[12], wt.e[13], wt.e[14]});
         };
         struct Limb
         {
@@ -945,13 +955,26 @@ int main(int argc, char** argv)
         double lowSrc[2] = {1e9, -1e9}, lowDst[2] = {1e9, -1e9};
         int    frames = 0;
         const fv::Mat4 toRoot = fv::inverse(toScene.world(loaded->loaded.root));
+        // how far apart each limb points with both figures at rest: the two builds
+        from.reset();
+        to.reset();
+        Json                  restOut = Json::object();
+        std::vector<fv::Vec3> restWay;
+        for(const Limb& l : limbs)
+        {
+          restWay.push_back(way(toScene, l.dst, toRoot));
+          restOut[l.name] = r(std::acos(std::clamp(fv::dot(way(srcScene, l.src, fv::Mat4{}), restWay.back()), -1.0, 1.0)) * 180 / 3.14159265358979);
+        }
         for(float t = 0; t <= clip.duration + 1e-4f; t += 1.f / 30, frames++)
         {
           apply(from, own, t);
           apply(to, clip, t);
-          for(const Limb& l : limbs)
+          // each limb against its own rest direction turned as the source limb is turned (not for an
+          // arm re-aimed from another default pose, which isn't among these figures)
+          for(size_t i = 0; i < limbs.size(); i++)
           {
-            const fv::Vec3 ds = way(srcScene, l.src, fv::Mat4{});
+            const Limb&    l  = limbs[i];
+            const fv::Vec3 ds = fv::normalize(turned(srcScene.world(ends(srcScene, l.src).second->bone), restWay[i]));
             const fv::Vec3 dt = way(toScene, l.dst, toRoot);
             const double   a  = std::acos(std::clamp(fv::dot(ds, dt), -1.0, 1.0)) * 180 / 3.14159265358979;
             auto&          e  = err[l.name];
@@ -970,11 +993,41 @@ int main(int argc, char** argv)
         Json limbsOut = Json::object();
         for(const auto& [name, e] : err)
           limbsOut[name] = {{"most", r(e.first)}, {"mean", r(e.second / frames)}};
+        // the figure's bones turned (over 1°) where the file holds every counterpart at rest: a face
+        // keyed at 0 must stay the figure's own
+        std::set<std::pair<std::string, char>> movedSlots;
+        for(const auto& ch : own.channels)
+          if(ch.target.kind == fv::pose::PresetTarget::Kind::eBone && ch.target.channel == fv::pose::ChannelKind::eRotation
+             && std::any_of(ch.values.begin(), ch.values.end(), [](double v) { return std::abs(v) > 0.01; }))
+          {
+            const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(ch.target.bone);
+            movedSlots.insert({p.slot, p.side});
+          }
+        Json held = Json::object();
+        for(const auto& ch : clip.channels)
+          if(ch.target.kind == fv::pose::PresetTarget::Kind::eBone && ch.target.channel == fv::pose::ChannelKind::eRotation)
+            if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(ch.target.bone); !movedSlots.count({p.slot, p.side}))
+              for(double v : ch.values)
+                if(std::abs(v) > 1)
+                  held[ch.target.bone] = std::max(held.value(ch.target.bone, 0.0), r(std::abs(v)));
+        // the channels the figure's own limits stop short (degrees past, at most): where it can't follow
+        Json pastLimits = Json::object();
+        for(const auto& ch : clip.channels)
+          if(ch.target.kind == fv::pose::PresetTarget::Kind::eBone && ch.target.channel == fv::pose::ChannelKind::eRotation)
+            if(const fv::pose::PoseBone* pb = to.get(ch.target.bone))
+              if(const int a = ch.target.axis[0] - 'x'; a >= 0 && a < 3)
+                if(const fv::pose::Axis* axis = pb->axis(fv::pose::ChannelKind::eRotation, a); axis && axis->clamped)
+                  for(double v : ch.values)
+                    if(const double past = std::max(axis->min - v, v - axis->max); past > 0.1)
+                      pastLimits[ch.target.bone + "." + ch.target.axis] = std::max(pastLimits.value(ch.target.bone + "." + ch.target.axis, 0.0), r(past));
         Json dump = {{"from", src},
                      {"channels", clip.channels.size()},
                      {"duration", clip.duration},
                      {"ms", r(ms)},
                      {"limbsDegrees", limbsOut},
+                     {"restDegrees", restOut},
+                     {"heldButTurnedDegrees", held},
+                     {"pastLimitsDegrees", pastLimits},
                      {"lowerAnkleRiseCm", {{"source", r(lowSrc[1] - lowSrc[0])}, {"figure", r(lowDst[1] - lowDst[0])}}}};
         std::cerr << "retarget " << label << ": " << dump.dump() << "\n";
         dumps[label] = dump;

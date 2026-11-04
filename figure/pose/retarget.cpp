@@ -15,6 +15,11 @@ namespace fv::pose {
 
 namespace {
 
+// How far apart (degrees) two figures' upper arms rest when they stand in other default poses
+constexpr double kDefaultPoseApart = 15;
+// The longest gap (s) left between two of the figure's keys: a mocap file's frame
+constexpr float kKeyStep = 1.f / 30;
+
 // The bones a pose file's animations name, by their names as the urls give them.
 std::set<std::string> namedBones(const dson::Json& doc)
 {
@@ -326,16 +331,25 @@ PoseClip retargetClip(const dson::Json& doc, const PoseRig& from, const PoseRig&
   }
   if(timeSet.empty())
     return out;
-  const std::vector<float> times(timeSet.begin(), timeSet.end());
+  // keys of its own between the file's where they lie far apart (a hand-keyed file's): the figure's
+  // channels ease from key to key on its own axes, which part from the source's over a long gap
+  std::vector<float> times;
+  for(const float t : timeSet)
+  {
+    if(!times.empty())
+      for(float g = times.back() + kKeyStep; g < t - kKeyStep / 2; g += kKeyStep)
+        times.push_back(g);
+    times.push_back(t);
+  }
 
-  // the figure's limbs, each with its counterpart on the source and how its rest pose differs
+  // the figure's limbs, each with its counterpart on the source
   struct Match
   {
-    std::vector<int> bones;      // the figure's, top first
-    int              last = -1;  // the source limb's last bone: its turn is the limb's
-    Quat             rest;       // from the figure's rest direction to the source's
-    int              twist = 0;  // the figure's top bone's twist axis
-    Vec3             dir;        // the figure's top bone's own direction at rest
+    std::vector<int>    bones;      // the figure's, top first
+    int                 last = -1;  // the source limb's last bone: its turn is the limb's
+    std::optional<Quat> aim;        // an arm re-aimed from the figure's default pose onto the source's
+    int                 twist = 0;  // the figure's top bone's twist axis
+    Vec3                dir;        // the figure's top bone's own direction at rest
   };
   std::vector<Match>                matches;
   std::vector<int>                  matchOf(tb.size(), -1);
@@ -380,28 +394,33 @@ PoseClip retargetClip(const dson::Json& doc, const PoseRig& from, const PoseRig&
     if(!moves)
       continue;
     Match m;
-    m.bones           = bones;
-    m.last            = it->second.back();
-    const Vec3   dt   = dst.direction(bones), ds = src.direction(it->second);
-    const double cosA = dot(dt, ds);
-    m.rest            = cosA > std::cos(0.5 * kDeg) ? Quat{} : quatFromUnitVectors(dt, ds);
-    // a hinge below it (an elbow) bends about an axis set a little otherwise on each: the limb rolls
-    // about its own direction so the two hinges lie alike, or the hinge couldn't reach the source's bend
-    for(const std::vector<int>* child : dst.below(bones))
+    m.bones = bones;
+    m.last  = it->second.back();
+    // Genesis 2's arms rest level, later figures' some 45° down: the gap between a T and an A, far
+    // more than any two builds' (Genesis 8's and 9's upper arms rest 2° apart, their heads 24°)
+    const Vec3 dt = dst.direction(bones), ds = src.direction(it->second);
+    if(key.first == "upperarm" && dot(dt, ds) < std::cos(kDefaultPoseApart * kDeg))
     {
-      const auto                                    hinge = dst.hinge(*child);
-      const auto                                    other = counterpart(dst.slotOf[size_t(child->front())]);
-      const std::optional<Vec3>                     theirs = other != src.limb.end() ? src.hinge(other->second) : std::nullopt;
-      if(!hinge || !theirs)
-        continue;
-      const Vec3   a = across(rotate(*hinge, m.rest), ds), b = across(*theirs, ds);
-      const double s = dot(cross(a, b), ds), c = dot(a, b);
-      if(dot(a, a) > 0.5 && dot(b, b) > 0.5)
+      Quat aim = quatFromUnitVectors(dt, ds);
+      // a hinge below it (an elbow) bends about an axis set a little otherwise on each: the arm rolls
+      // about its new direction so the two hinges lie alike, or the hinge couldn't reach the source's bend
+      for(const std::vector<int>* child : dst.below(bones))
       {
-        const double angle = std::atan2(s, c), h = angle / 2;
-        m.rest             = (Quat{ds.x * std::sin(h), ds.y * std::sin(h), ds.z * std::sin(h), std::cos(h)} * m.rest).normalized();
+        const auto                hinge  = dst.hinge(*child);
+        const auto                other  = counterpart(dst.slotOf[size_t(child->front())]);
+        const std::optional<Vec3> theirs = other != src.limb.end() ? src.hinge(other->second) : std::nullopt;
+        if(!hinge || !theirs)
+          continue;
+        const Vec3   a = across(rotate(*hinge, aim), ds), b = across(*theirs, ds);
+        const double s = dot(cross(a, b), ds), c = dot(a, b);
+        if(dot(a, a) > 0.5 && dot(b, b) > 0.5)
+        {
+          const double h = std::atan2(s, c) / 2;
+          aim            = (Quat{ds.x * std::sin(h), ds.y * std::sin(h), ds.z * std::sin(h), std::cos(h)} * aim).normalized();
+        }
+        break;
       }
-      break;
+      m.aim = aim;
     }
     m.twist           = dst.twistAxis(bones);
     m.dir             = dst.own(bones.front());
@@ -409,6 +428,19 @@ PoseClip retargetClip(const dson::Json& doc, const PoseRig& from, const PoseRig&
       matchOf[size_t(b)] = int(matches.size());
     matches.push_back(std::move(m));
   }
+  // per figure bone, the re-aim it turns in: its own arm's, or the nearest one's above it (a hand
+  // hangs from the re-aimed arm), none for the rest
+  std::vector<Quat>              aimOf(tb.size());
+  std::vector<char>              aimed(tb.size(), 0);
+  const std::function<Quat(int)> aimAt = [&](int b) -> Quat {
+    if(!aimed[size_t(b)])
+    {
+      const int mi       = matchOf[size_t(b)];
+      aimOf[size_t(b)]   = mi >= 0 && matches[size_t(mi)].aim ? *matches[size_t(mi)].aim : dst.parent[size_t(b)] >= 0 ? aimAt(dst.parent[size_t(b)]) : Quat{};
+      aimed[size_t(b)]   = 1;
+    }
+    return aimOf[size_t(b)];
+  };
 
   // per figure bone, its channels over the keys
   std::vector<std::array<std::vector<double>, 3>> values(tb.size());
@@ -438,8 +470,8 @@ PoseClip retargetClip(const dson::Json& doc, const PoseRig& from, const PoseRig&
       sDone[size_t(b)]        = 1;
       return sWorld[size_t(b)];
     };
-    // the figure's: a matched limb as the source's, its rest pose turned onto the source's; the rest
-    // as they are at rest
+    // the figure's: a matched limb turned from its rest as the source's from its own (in a re-aimed
+    // arm's turn); the rest as they are at rest
     const std::function<Quat(int)> tw = [&](int b) -> Quat {
       if(tDone[size_t(b)])
         return tWorld[size_t(b)];
@@ -456,7 +488,7 @@ PoseClip retargetClip(const dson::Json& doc, const PoseRig& from, const PoseRig&
         // the limb's whole turn below its parent: on its top bone, or split with its twist bone as
         // DAZ's Euler splits it: the top bone's turn but its twist, then the twist alone
         // A bone lacking an axis takes what points it best, and what lies below makes up the rest.
-        const Quat            whole = (above.inverse() * sw(m.last) * m.rest).normalized();
+        const Quat            whole = (above.inverse() * sw(m.last) * aimAt(b)).normalized();
         std::array<double, 3> turn  = to.rotationTotals(tb[size_t(b)], whole, nearOf[size_t(b)]);
         if(m.bones.size() > 1)
         {

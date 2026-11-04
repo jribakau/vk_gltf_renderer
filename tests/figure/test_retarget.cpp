@@ -1,7 +1,8 @@
 // A DAZ animation made for one Genesis played on another (figure/pose/retarget.hpp): on two
 // skeletons that differ as Genesis 8 and 9 do (names, a limb split into bend and twist bones or not,
-// bones one has and the other hasn't, the arms' and legs' rest angles), every limb ends up pointing
-// where the file's own skeleton has it.
+// bones one has and the other hasn't, the arms' and legs' rest angles, a jaw's end placed otherwise),
+// every limb turns from its own rest as the file turns it on its own skeleton, and what the file holds
+// at rest stays as the figure has it.
 
 #include <gtest/gtest.h>
 
@@ -62,6 +63,10 @@ std::string skeleton(bool g8, double armDown, double legOut, double hipHeight)
   b.push_back(bone("pelvis", "hip", {0, h, 0}, {0, h - 8, 0}, "xyz", "YZX"));
   b.push_back(bone(name("spine1", "abdomenLower"), "hip", {0, h + 2, 0}, {0, h + 12, 0}, "xyz", "YZX"));
   b.push_back(bone(name("spine2", "chestUpper"), name("spine1", "abdomenLower"), {0, h + 12, 0}, {0, h + 40, 0}, "xyz", "YZX"));
+  // a head with a jaw, and a pectoral, whose ends each rig places its own way: some 20° apart
+  b.push_back(bone("head", name("spine2", "chestUpper"), {0, h + 48, 0}, {0, h + 60, 0}, "xyz", "YZX"));
+  b.push_back(bone(name("lowerjaw", "lowerJaw"), "head", {0, h + 50, 2}, g8 ? Vec3{0, h + 46, 8} : Vec3{0, h + 48, 9}, "xyz", "XYZ"));
+  b.push_back(bone(name("l_pectoral", "lPectoral"), name("spine2", "chestUpper"), {6, h + 30, 4}, g8 ? Vec3{8, h + 27, 12} : Vec3{9, h + 30, 12}, "xyz", "XYZ"));
   for(const double s : {1.0, -1.0})
   {
     const auto side = [&](const std::string& n) { return (s > 0 ? (g8 ? "l" : "l_") : (g8 ? "r" : "r_")) + n; };
@@ -145,10 +150,15 @@ struct Figure
   Vec3 tip(const std::string& bone) const
   {
     const fv::Node& n = scene.nodes[size_t(pose->get(bone)->bone)];
-    const fv::Mat4  w = scene.world(pose->get(bone)->bone);
-    const Vec3      d{n.joint->endPoint[0] - n.joint->center[0], n.joint->endPoint[1] - n.joint->center[1], n.joint->endPoint[2] - n.joint->center[2]};
-    return fv::normalize({w.e[0] * d.x + w.e[4] * d.y + w.e[8] * d.z, w.e[1] * d.x + w.e[5] * d.y + w.e[9] * d.z, w.e[2] * d.x + w.e[6] * d.y + w.e[10] * d.z});
+    return turned(bone, {n.joint->endPoint[0] - n.joint->center[0], n.joint->endPoint[1] - n.joint->center[1], n.joint->endPoint[2] - n.joint->center[2]});
   }
+  // `v` (unit) turned as the bone is turned from its rest (a bone at rest has no turn in the scene)
+  Vec3 turned(const std::string& bone, const Vec3& v) const
+  {
+    const fv::Mat4 w = scene.world(pose->get(bone)->bone);
+    return fv::normalize({w.e[0] * v.x + w.e[4] * v.y + w.e[8] * v.z, w.e[1] * v.x + w.e[5] * v.y + w.e[9] * v.z, w.e[2] * v.x + w.e[6] * v.y + w.e[10] * v.z});
+  }
+  double rotation(const std::string& bone, int axis) const { return pose->get(bone)->posed(ChannelKind::eRotation, axis); }
   void apply(const fv::pose::PoseClip& clip, float t)
   {
     std::vector<fv::pose::ChannelValue> values;
@@ -164,9 +174,10 @@ double degreesBetween(const Vec3& a, const Vec3& b)
   return std::acos(std::clamp(fv::dot(a, b), -1.0, 1.0)) * 180 / kPi;
 }
 
-// An animation over a second: the left leg swinging, the knee and foot bending, the arm lowering,
-// swinging and twisting with the elbow bent, the back turning, the hip bobbing
-fv::dson::Json walkFile(bool g8)
+// An animation keyed by hand over a second: the left leg swinging, the knee and foot bending, the arm
+// lowering, swinging and twisting with the elbow and wrist bent, the back and head turning, the hip bobbing, and the jaw
+// and pectoral held at rest (as Mocap Online's walks hold Genesis 8's whole face) or the jaw opened
+fv::dson::Json walkFile(bool g8, double jawOpen = 0)
 {
   const auto key = [](const std::string& bone, const char* channel, std::vector<std::pair<double, double>> keys) {
     fv::dson::Json a = {{"url", "name://@selection/" + bone + ":?" + channel + "/value"}, {"keys", fv::dson::Json::array()}};
@@ -187,7 +198,14 @@ fv::dson::Json walkFile(bool g8)
     anims.push_back(key("lShldrBend", "rotation/y", {{0, 0}, {0.5, -15}, {1, 10}}));
     anims.push_back(key("lShldrTwist", "rotation/x", {{0, 0}, {0.5, 30}, {1, -20}}));
     anims.push_back(key("lForearmBend", "rotation/y", {{0, 0}, {0.5, -50}, {1, -20}}));
+    anims.push_back(key("lHand", "rotation/z", {{0, 0}, {0.5, 10}, {1, -5}}));
     anims.push_back(key("abdomenLower", "rotation/y", {{0, 0}, {0.5, 8}, {1, -6}}));
+    anims.push_back(key("head", "rotation/y", {{0, 0}, {0.5, 20}, {1, -10}}));
+    for(const char* a : {"rotation/x", "rotation/y", "rotation/z"})
+    {
+      anims.push_back(key("lowerJaw", a, {{0, std::string(a) == "rotation/x" ? jawOpen : 0}}));
+      anims.push_back(key("lPectoral", a, {{0, 0}}));
+    }
     anims.push_back(key("hip", "translation/y", {{0, 0}, {0.5, -4}, {1, 2}}));
   }
   else
@@ -204,32 +222,48 @@ fv::dson::Json walkFile(bool g8)
 
 }  // namespace
 
-// Genesis 8's walk on a Genesis 9: every limb points where Genesis 8's does at every key
-TEST(Retarget, aGenesis8AnimationPointsAGenesis9sLimbsAsItsOwn)
+// The elbows of the two skeletons bend about axes 4° apart, as their arms rest 4° apart: one can't
+// bend about the other's, so a 50° bend leaves the forearm this far off (degrees) and the hand makes it up
+constexpr double kElbowApart = 2;
+
+// Genesis 8's walk on a Genesis 9: every limb turns from its own rest as Genesis 8's turns from its
+// rest, at every key, though the two rest 4° to 6° apart
+TEST(Retarget, aGenesis8AnimationTurnsAGenesis9sLimbsAsItsOwn)
 {
   Figure                   g8(true, 48, 8, 105), g9(false, 44, 2, 97);
+  const Figure             rest(false, 44, 2, 97);
   const fv::dson::Json     file = walkFile(true);
   const fv::pose::PoseClip own  = fv::pose::loadPoseClip(g8.pose.get(), nullptr, file);
   const fv::pose::PoseClip clip = fv::pose::retargetClip(file, *g8.pose, *g9.pose);
   ASSERT_FALSE(clip.channels.empty());
   EXPECT_FLOAT_EQ(clip.duration, 1.f);
+  // each of Genesis 9's limbs, from a joint to the next, and Genesis 8's bone whose turn is the limb's
+  struct Limb
+  {
+    const char* source;
+    const char* from;
+    const char* to;
+    double      within;
+  };
+  const Limb limbs[] = {
+      {"lThighTwist", "l_thigh", "l_shin", 0.5},
+      {"lShin", "l_shin", "l_foot", 0.5},
+      {"lFoot", "l_foot", "l_toes", 0.5},
+      {"lShldrTwist", "l_upperarm", "l_forearm", 0.5},
+      {"lForearmTwist", "l_forearm", "l_hand", kElbowApart},
+      {"abdomenLower", "spine1", "spine2", 0.5},
+      {"lCollar", "l_shoulder", "l_upperarm", 0.5},
+  };
   for(const float t : {0.f, 0.25f, 0.5f, 0.8f, 1.f})
   {
     g8.apply(own, t);
     g9.apply(clip, t);
-    const std::pair<const char*, const char*> limbs[][2] = {
-        {{"lThighBend", "lShin"}, {"l_thigh", "l_shin"}},
-        {{"lShin", "lFoot"}, {"l_shin", "l_foot"}},
-        {{"lFoot", "lMetatarsals"}, {"l_foot", "l_toes"}},
-        {{"lShldrBend", "lForearmBend"}, {"l_upperarm", "l_forearm"}},
-        {{"lForearmBend", "lHand"}, {"l_forearm", "l_hand"}},  // the twist turns the elbow's bend
-        {{"abdomenLower", "chestUpper"}, {"spine1", "spine2"}},
-        {{"lCollar", "lShldrBend"}, {"l_shoulder", "l_upperarm"}},
-    };
-    for(const auto& l : limbs)
-      EXPECT_LT(degreesBetween(g8.way(l[0].first, l[0].second), g9.way(l[1].first, l[1].second)), 0.5) << l[1].first << " at " << t;
-    // Genesis 9 has no metatarsals: their turn reaches its toes, which the file doesn't move itself
-    EXPECT_LT(degreesBetween(g8.tip("lToe"), g9.tip("l_toes")), 0.5) << "toes at " << t;
+    for(const Limb& l : limbs)
+      EXPECT_LT(degreesBetween(g8.turned(l.source, rest.way(l.from, l.to)), g9.way(l.from, l.to)), l.within) << l.from << " at " << t;
+    // the last bones, by their own ends. Genesis 9 has no metatarsals: their turn reaches its toes,
+    // which the file doesn't move itself
+    for(const auto& [source, bone] : {std::pair{"lToe", "l_toes"}, std::pair{"lHand", "l_hand"}, std::pair{"head", "head"}})
+      EXPECT_LT(degreesBetween(g8.turned(source, rest.tip(bone)), g9.tip(bone)), 0.5) << bone << " at " << t;
   }
   // the hip bobs as far for its height
   g8.apply(own, 0.5f);
@@ -242,6 +276,7 @@ TEST(Retarget, aGenesis8AnimationPointsAGenesis9sLimbsAsItsOwn)
 TEST(Retarget, aGenesis9AnimationSplitsALimbsTwistOntoItsTwistBone)
 {
   Figure                   g8(true, 48, 8, 105), g9(false, 44, 2, 97);
+  const Figure             rest(true, 48, 8, 105);
   const fv::dson::Json     file = walkFile(false);
   const fv::pose::PoseClip own  = fv::pose::loadPoseClip(g9.pose.get(), nullptr, file);
   const fv::pose::PoseClip clip = fv::pose::retargetClip(file, *g9.pose, *g8.pose);
@@ -250,12 +285,59 @@ TEST(Retarget, aGenesis9AnimationSplitsALimbsTwistOntoItsTwistBone)
   {
     g9.apply(own, t);
     g8.apply(clip, t);
-    EXPECT_LT(degreesBetween(g9.way("l_thigh", "l_shin"), g8.way("lThighBend", "lShin")), 0.5) << t;
-    EXPECT_LT(degreesBetween(g9.way("l_shin", "l_foot"), g8.way("lShin", "lFoot")), 0.5) << t;
-    EXPECT_LT(degreesBetween(g9.way("l_upperarm", "l_forearm"), g8.way("lShldrBend", "lForearmBend")), 0.5) << t;
-    EXPECT_LT(degreesBetween(g9.way("l_forearm", "l_hand"), g8.way("lForearmBend", "lHand")), 0.5) << t;
+    EXPECT_LT(degreesBetween(g9.turned("l_thigh", rest.way("lThighBend", "lShin")), g8.way("lThighBend", "lShin")), 0.5) << t;
+    EXPECT_LT(degreesBetween(g9.turned("l_shin", rest.way("lShin", "lFoot")), g8.way("lShin", "lFoot")), 0.5) << t;
+    EXPECT_LT(degreesBetween(g9.turned("l_upperarm", rest.way("lShldrBend", "lForearmBend")), g8.way("lShldrBend", "lForearmBend")), 0.5) << t;
+    EXPECT_LT(degreesBetween(g9.turned("l_forearm", rest.way("lForearmBend", "lHand")), g8.way("lForearmBend", "lHand")), kElbowApart) << t;
   }
   EXPECT_NE(g8.pose->get("lShldrTwist")->posed(ChannelKind::eRotation, 0), 0.0) << "the twist went to the twist bone";
+}
+
+// A face the file holds at rest stays the figure's own, though the two rigs place a jaw's and a
+// pectoral's ends 20° apart (Mocap Online's walks key all of Genesis 8's face at 0); a jaw it opens
+// opens as far, and the head carrying them turns with the walk
+TEST(Retarget, aFaceTheFileHoldsAtRestStaysTheFiguresOwn)
+{
+  for(const double open : {0.0, 12.0})
+  {
+    Figure                   g8(true, 48, 8, 105), g9(false, 44, 2, 97);
+    const fv::dson::Json     file = walkFile(true, open);
+    const fv::pose::PoseClip own  = fv::pose::loadPoseClip(g8.pose.get(), nullptr, file);
+    const fv::pose::PoseClip clip = fv::pose::retargetClip(file, *g8.pose, *g9.pose);
+    for(const float t : {0.f, 0.5f, 1.f})
+    {
+      g8.apply(own, t);
+      g9.apply(clip, t);
+      for(int a = 0; a < 3; a++)
+      {
+        EXPECT_NEAR(g9.rotation("lowerjaw", a), a == 0 ? open : 0, 1e-3) << "jaw open " << open << " at " << t;
+        EXPECT_NEAR(g9.rotation("l_pectoral", a), 0, 1e-3) << t;
+      }
+      EXPECT_LT(degreesBetween(g8.turned("head", {0, 1, 0}), g9.turned("head", {0, 1, 0})), 0.5) << t;
+    }
+  }
+}
+
+// A figure standing in a T (as Genesis 2 does) to one in an A: the arms are re-aimed onto the source's,
+// and the forearms and hands hang from them as there, so the arm points where the file has it; the
+// legs, a build apart rather than a pose, keep the figure's own stance
+TEST(Retarget, aTPosesArmsAreReAimedOntoAnAPose)
+{
+  Figure                   tpose(true, 0, 8, 105), g9(false, 44, 2, 97);
+  const fv::dson::Json     file = walkFile(true);
+  const fv::pose::PoseClip own  = fv::pose::loadPoseClip(tpose.pose.get(), nullptr, file);
+  const fv::pose::PoseClip clip = fv::pose::retargetClip(file, *tpose.pose, *g9.pose);
+  for(const float t : {0.f, 0.5f, 1.f})
+  {
+    tpose.apply(own, t);
+    g9.apply(clip, t);
+    EXPECT_LT(degreesBetween(tpose.way("lShldrBend", "lForearmBend"), g9.way("l_upperarm", "l_forearm")), 0.5) << t;
+    EXPECT_LT(degreesBetween(tpose.way("lForearmBend", "lHand"), g9.way("l_forearm", "l_hand")), 0.5) << t;
+    EXPECT_LT(degreesBetween(tpose.tip("lHand"), g9.tip("l_hand")), 0.5) << t;
+  }
+  tpose.apply(own, 0);
+  g9.apply(clip, 0);
+  EXPECT_GT(degreesBetween(tpose.way("lThighBend", "lShin"), g9.way("l_thigh", "l_shin")), 5);
 }
 
 // Which figure a file was made for: by its bones' names, then by its path
