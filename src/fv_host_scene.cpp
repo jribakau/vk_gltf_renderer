@@ -277,7 +277,7 @@ Json FvHost::Impl::animationCommand(const std::string& cmd, const Json& args)
   return {{"ok", true}};
 }
 
-void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play)
+void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play, Json source)
 {
   Loaded& f = *prop.figure;
   if(clip.channels.empty())
@@ -288,6 +288,7 @@ void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std:
   a.number = nextClip++;
   a.name   = fileStem(rel);
   a.rel    = rel;
+  a.source = std::move(source);
   a.clip   = std::move(clip);
   a.time   = play ? 0.f : a.clip.duration;
   // what each channel is now, to go back to
@@ -304,6 +305,39 @@ void FvHost::Impl::holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std:
   renderer->setHostClip({});
   renderer->editAnimationControl().play = play;
   publishAnimation(true);
+  // no step of the history, but the scene the crash copy keeps
+  noteRecovery();
+}
+
+std::string FvHost::Impl::animationKey(const fv::pose::PresetTarget& t)
+{
+  return t.kind == fv::pose::PresetTarget::Kind::eBone ? t.bone + "/" + fv::pose::kindName(t.channel) + "/" + t.axis : t.name;
+}
+
+// The file it came from, where it is, whether it plays, and the pose it found (what Stop and Remove
+// put back) where that isn't what the figure shows: the scene file's pose is the one shown, which is
+// where a figure comes back before its animation is on it again.
+Json FvHost::Impl::animationState(const Loaded& f)
+{
+  const FigureAnimation& a     = *f.animation;
+  Json                   out   = a.source;
+  Json                   bones = Json::object(), dials = Json::object();
+  for(size_t i = 0; i < a.clip.channels.size(); i++)
+  {
+    const fv::pose::PresetTarget& t = a.clip.channels[i].target;
+    if(t.kind == fv::pose::PresetTarget::Kind::eBone)
+    {
+      if(const fv::pose::PoseBone* pb = f.fig->pose ? f.fig->pose->get(t.bone) : nullptr;
+         pb && std::abs(a.before[i] - pb->posed(t.channel, fv::pose::axisIndex(t.axis))) > 1e-6)
+        bones[animationKey(t)] = std::round(a.before[i] * 1e5) / 1e5;
+    }
+    else if(f.fig->morphs && std::abs(a.before[i] - f.fig->morphs->get(t.name)) > 1e-6)
+      dials[t.name] = std::round(a.before[i] * 1e5) / 1e5;
+  }
+  out["time"]    = std::round(a.time * 1e3) / 1e3;
+  out["playing"] = currentClip == a.number && renderer->editAnimationControl().play;
+  out["before"]  = {{"bones", bones}, {"dials", dials}};
+  return out;
 }
 
 void FvHost::Impl::restoreBeforeAnimation(Loaded& f)
@@ -336,6 +370,7 @@ void FvHost::Impl::dropAnimation(Loaded& f)
   restoreBeforeAnimation(f);
   const int number = f.animation->number;
   f.animation.reset();
+  noteRecovery();
   if(currentClip == number)
   {
     const std::vector<int> order = clipOrder();
@@ -652,6 +687,8 @@ Json FvHost::Impl::sceneState(const Json& args)
     state["secondary"] = secondaryState(*prop->figure);
   if(prop->figure->flesh)
     state["soft"] = softState(*prop->figure);
+  if(prop->figure->animation)
+    state["animation"] = animationState(*prop->figure);
   if(prop->figure->dforce)
   {
     state["dforce"]     = prop->figure->dforce->enabled();
@@ -750,6 +787,32 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         fig.pose->setMany(values);
         protocol->events().snapshot("pose/" + target->id, poseSnapshot(*target));
       }
+    }
+    // the animation on it, read again once the pose is back (it keeps the pose it finds) and put
+    // back where it was
+    if(const Json anim = args.value("animation", Json()); anim.is_object() && fig.pose)
+    {
+      HostSettings s;
+      {
+        std::lock_guard lock(settingsMutex);
+        s = settings;
+      }
+      std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;
+      Json                                                                      source;
+      if(anim.contains("rel") && anim["rel"].is_string())
+      {
+        library = std::make_pair(s.roots, anim["rel"].get<std::string>());
+        source  = {{"rel", anim["rel"]}};
+      }
+      else if(anim.contains("path") && anim["path"].is_string())
+      {
+        library = libraryFor(s, pathOf(anim["path"].get<std::string>()));
+        source  = {{"path", anim["path"]}};
+        if(!library)
+          problems.push_back("the animation " + fileStem(anim["path"].get<std::string>()) + " is no longer in a DAZ content library");
+      }
+      if(library)
+        loadAnimation(library->first, library->second, target->id, std::move(source), anim);
     }
   };
   auto surfaces = [this, target, args, problemList] {

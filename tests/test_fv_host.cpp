@@ -518,6 +518,87 @@ TEST(FvHost, AFigureAnimationStaysCurrentThroughACompositionAndLeavesWithItsFigu
   EXPECT_TRUE(n.anim().at("current").is_null());
 }
 
+// A scene file keeps a figure's animation: the file it came from, where it was, whether it played,
+// and the pose it found, which Stop puts back after it reopens in another renderer
+TEST(FvHost, AnAnimationComesBackWithItsSceneWhereItWas)
+{
+  const auto saved = [](bool playing) {
+    HostRig rig;
+    EXPECT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    const std::string id = figureId(rig.topic("scene"));
+    // the pose it finds, turned already
+    rig.cmd("pose.set", {{"prop", id}, {"values", {{"head/rotation/y", 15.0}}}});
+    EXPECT_TRUE(rig.cmd("load", {{"prop", id}, {"rel", "People/Test/Poses/Box Nod Animation.duf"}, {"as", "animation"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    rig.cmd("anim.seek", {{"time", 0.5}});
+    if(playing)
+      rig.cmd("anim.play");
+    return rig.cmd("scene.state", {{"prop", id}}).value("result", Json::object());
+  };
+  // in a renderer of its own, onto the same figure loaded again
+  const auto reopened = [](Json state) {
+    auto rig = std::make_unique<HostRig>();
+    EXPECT_TRUE(rig->cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig->settle());
+    const std::string id = figureId(rig->topic("scene"));
+    state["prop"]        = id;
+    EXPECT_TRUE(rig->cmd("scene.restore", state).value("ok", false));
+    EXPECT_TRUE(rig->settle());
+    return std::pair{std::move(rig), id};
+  };
+  const auto headY = [](HostRig& rig, const std::string& id) {
+    return rig.topic("pose/" + id).at("bones").at("head").at("axes").at("rotation/y").value("value", -1.0);
+  };
+  const auto nod = [](HostRig& rig, const std::string& id) {
+    return rig.topic("morphs/" + id).at("channels").value("CTRL Nod", Json::object()).value("value", -1.0);
+  };
+
+  // paused halfway: the file by its library path, the time, and what the pose was before it
+  const Json paused = saved(false);
+  ASSERT_TRUE(paused.contains("animation")) << paused.dump();
+  const Json& anim = paused["animation"];
+  EXPECT_EQ(anim.value("rel", ""), "People/Test/Poses/Box Nod Animation.duf");
+  EXPECT_DOUBLE_EQ(anim.value("time", 0.0), 0.5);
+  EXPECT_FALSE(anim.value("playing", true));
+  EXPECT_DOUBLE_EQ(anim.at("before").at("bones").value("head/rotation/y", 0.0), 15.0) << anim.dump();
+  EXPECT_DOUBLE_EQ(anim.at("before").at("dials").value("CTRL Nod", -1.0), 0.0);
+  {
+    auto [rig, id] = reopened(paused);
+    const Json topic = rig->topic("animation");
+    ASSERT_EQ(topic.at("clips").size(), 1u) << topic.dump();
+    EXPECT_FALSE(topic.value("playing", true));
+    EXPECT_DOUBLE_EQ(topic.value("time", 0.0), 0.5);
+    rig->host->onUpdate();
+    EXPECT_NEAR(headY(*rig, id), 20.0, 1e-9);
+    EXPECT_NEAR(nod(*rig, id), 0.5, 1e-9);
+    // no notice that it plays: the scene put it back
+    EXPECT_EQ(rig->topic("notices").dump().find("Playing"), std::string::npos) << rig->topic("notices").dump();
+    // the pose it found before the scene was saved
+    rig->cmd("anim.stop");
+    EXPECT_DOUBLE_EQ(headY(*rig, id), 15.0);
+    EXPECT_DOUBLE_EQ(nod(*rig, id), 0.0);
+  }
+
+  // playing: it plays again
+  const Json playing = saved(true);
+  EXPECT_TRUE(playing.at("animation").value("playing", false)) << playing.dump();
+  {
+    auto [rig, id] = reopened(playing);
+    EXPECT_TRUE(rig->topic("animation").value("playing", false)) << rig->topic("animation").dump();
+  }
+
+  // a file no longer in the library: the figure comes back in the pose it was saved in, and says why
+  Json gone                 = paused;
+  gone["animation"]["rel"] = "People/Test/Poses/Gone Animation.duf";
+  {
+    auto [rig, id] = reopened(gone);
+    EXPECT_TRUE(rig->topic("animation").at("clips").empty());
+    EXPECT_NEAR(headY(*rig, id), 20.0, 1e-9);
+    EXPECT_NE(rig->topic("notices").dump().find("Gone Animation.duf is not installed"), std::string::npos) << rig->topic("notices").dump();
+  }
+}
+
 // A model's own clip and a figure's animation, one current at a time
 TEST(FvHost, AModelsClipAndAFiguresAnimationTakeTurns)
 {

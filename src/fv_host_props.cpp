@@ -1248,6 +1248,8 @@ Json FvHost::Impl::propDuplicate(const Json& args)
         requestCompose("Duplicating " + p->name);
       Json restore = state;
       restore["prop"] = p->id;
+      // in the pose the figure shows; its animation stays the figure's, as one plays at a time
+      restore.erase("animation");
       sceneRestore(restore);
       publishScene();
       recordAdded(p, "Duplicate " + name);

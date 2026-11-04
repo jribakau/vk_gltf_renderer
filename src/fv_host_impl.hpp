@@ -165,6 +165,7 @@ struct FigureAnimation
 {
   int                 number = -1;  // its clip number, from Impl::nextClip
   std::string         name, rel;
+  Json                source;  // how it was opened, for a scene file: {rel} in the content folders, else {path}
   fv::pose::PoseClip  clip;
   float               time  = 0;
   bool                dirty = true;  // to be sampled and applied at the next frame
@@ -1059,16 +1060,21 @@ struct FvHost::Impl
   std::chrono::steady_clock::time_point animationAt{};
   // A pose file's animation onto a figure, held there and made the current clip: paused at its end
   // or playing from its start. Another the figure had goes first, putting back the pose it found.
-  // Throws when nothing in it reaches the figure.
-  void holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play);
+  // Throws when nothing in it reaches the figure. `source` is how it was opened (FigureAnimation).
+  void holdAnimation(Prop& prop, fv::pose::PoseClip clip, const std::string& rel, bool play, Json source);
   // the figure's animation off it, its channels back where it found them
   void dropAnimation(Loaded& f);
   void restoreBeforeAnimation(Loaded& f);
   // The current clip, a figure's animation, moved on by this frame's time and applied
   void applyFigureAnimation();
   std::chrono::steady_clock::time_point figureAnimationFrame{};
-  // load {as: "animation"}: a pose file read on a worker and played on the figure named or selected
-  Json loadAnimation(std::vector<std::filesystem::path> roots, std::string rel, std::string target);
+  // load {as: "animation"}: a pose file read on a worker and played on the figure named or selected.
+  // `resume`, a scene file's "animation" block, puts it back as it was saved instead: at its time,
+  // playing or not, with the pose it found, and no notice.
+  Json loadAnimation(std::vector<std::filesystem::path> roots, std::string rel, std::string target, Json source, Json resume = nullptr);
+  // A figure's animation as a scene file keeps it (sceneState's "animation"), and a channel's key in it
+  Json animationState(const Loaded& f);
+  static std::string animationKey(const fv::pose::PresetTarget& t);
   Json exportGlb(const Json& args);
   Json sceneState(const Json& args);
   Json sceneRestore(const Json& args);

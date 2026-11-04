@@ -166,7 +166,7 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
           animated = clip.duration;
           if(!madeFor.empty())
             lastFrame = clip;
-          holdAnimation(*prop, std::move(clip), rel, false);
+          holdAnimation(*prop, std::move(clip), rel, false, {{"rel", rel}});
         }
       // a step of the history: the figure's look before and after
       journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
