@@ -412,6 +412,18 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       const fv::Mesh& m = raw->fig->loaded.scene.meshes[size_t(mesh)];
       return raw->dforce && raw->dforce->enabled() && m.dforce && m.dforce->simulated();
     };
+    // a person's body dents where props press into it; a rigged prop (a posable chair) doesn't. A
+    // person is a figure from the library's People, or one whose bones say which Genesis it is.
+    const std::string from = figureSource(*f);
+    if(from.rfind("People/", 0) == 0 || !figureGeneration(*f).empty())
+    {
+      f->contact            = std::make_unique<fv::physics::Contact>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
+      f->contact->colliders = [this, raw = f.get()] { return contactColliders(*raw); };
+      f->contact->playing   = [this] { return renderer->editAnimationControl().play; };
+      // the clothes are fitted and draped over the body as it will be once dented
+      f->collider->waitWhile = [raw = f.get()] { return raw->contact && raw->contact->busy(); };
+      f->dforce->waitWhile   = [raw = f.get()] { return raw->contact && raw->contact->busy(); };
+    }
   }
   {
     std::lock_guard lock(morphMutex);
@@ -494,4 +506,5 @@ void FvHost::Impl::publishFigure(Prop& p)
     protocol->events().snapshot("pose/" + p.id, poseSnapshot(*p.figure));
   publishWardrobe(*p.figure);
   publishDforce(*p.figure, true);
+  publishContact(*p.figure);
 }

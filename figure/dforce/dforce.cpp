@@ -605,7 +605,7 @@ bool Dforce::pump()
       }
     }
   }
-  if(m_scheduled && !m_job.valid() && !m_hairJob.valid() && !m_settling && std::chrono::steady_clock::now() >= m_due)
+  if(m_scheduled && !m_job.valid() && !m_hairJob.valid() && !m_settling && std::chrono::steady_clock::now() >= m_due && !(waitWhile && waitWhile()))
   {
     m_scheduled = false;
     if(m_enabled && active())

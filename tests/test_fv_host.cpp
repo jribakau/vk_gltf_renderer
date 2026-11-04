@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -2927,4 +2928,205 @@ TEST(FvHost, TwoFiguresRestoredAtOnceEachGetTheirOwn)
   }
   for(const std::string& id : ids)
     EXPECT_FALSE(rig.topic("wardrobe/" + id).value("items", Json::object()).empty()) << id;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Body contact (figure/physics/contact/contact.hpp, docs/physics-plan.md step 1)
+
+namespace {
+
+std::string base64(const std::vector<uint8_t>& bytes)
+{
+  static const char* abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string        out;
+  for(size_t i = 0; i < bytes.size(); i += 3)
+  {
+    const uint32_t n = uint32_t(bytes[i]) << 16 | (i + 1 < bytes.size() ? uint32_t(bytes[i + 1]) << 8 : 0) | (i + 2 < bytes.size() ? bytes[i + 2] : 0);
+    out += abc[(n >> 18) & 63];
+    out += abc[(n >> 12) & 63];
+    out += i + 1 < bytes.size() ? abc[(n >> 6) & 63] : '=';
+    out += i + 2 < bytes.size() ? abc[n & 63] : '=';
+  }
+  return out;
+}
+
+// A glTF of one closed box, in metres.
+void writeBox(const fs::path& path, std::array<float, 3> lo, std::array<float, 3> hi)
+{
+  std::vector<float> p;
+  for(int k = 0; k < 2; k++)
+    for(int j = 0; j < 2; j++)
+      for(int i = 0; i < 2; i++)
+        p.insert(p.end(), {i ? hi[0] : lo[0], j ? hi[1] : lo[1], k ? hi[2] : lo[2]});
+  const std::vector<uint32_t> t = {0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5};
+  std::vector<uint8_t>        bytes(p.size() * 4 + t.size() * 4);
+  std::memcpy(bytes.data(), p.data(), p.size() * 4);
+  std::memcpy(bytes.data() + p.size() * 4, t.data(), t.size() * 4);
+  const Json gltf = {
+      {"asset", {{"version", "2.0"}}},
+      {"scene", 0},
+      {"scenes", {{{"nodes", {0}}}}},
+      {"nodes", {{{"name", "box"}, {"mesh", 0}}}},
+      {"meshes", {{{"primitives", {{{"attributes", {{"POSITION", 0}}}, {"indices", 1}}}}}}},
+      {"buffers", {{{"byteLength", bytes.size()}, {"uri", "data:application/octet-stream;base64," + base64(bytes)}}}},
+      {"bufferViews", {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", p.size() * 4}}, {{"buffer", 0}, {"byteOffset", p.size() * 4}, {"byteLength", t.size() * 4}}}},
+      {"accessors",
+       {{{"bufferView", 0}, {"componentType", 5126}, {"count", 8}, {"type", "VEC3"}, {"min", {lo[0], lo[1], lo[2]}}, {"max", {hi[0], hi[1], hi[2]}}},
+        {{"bufferView", 1}, {"componentType", 5125}, {"count", t.size()}, {"type", "SCALAR"}}}}};
+  std::ofstream(path) << gltf.dump();
+}
+
+// The Box Figure (20 cm wide, 40 tall, standing on the ground) and a box prop under its feet that
+// reaches 2 cm into it, placed far off to start.
+struct Seated
+{
+  HostRig     rig;
+  fs::path    dir = fs::temp_directory_path() / "fv_contact_test";
+  std::string figure, box;
+  int         moves = 0;
+
+  Seated()
+  {
+    fs::create_directories(dir);
+    writeBox(dir / "box.gltf", {-0.15f, -0.1f, -0.15f}, {0.15f, 0.02f, 0.15f});
+    EXPECT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    figure = figureId(rig.topic("scene"));
+    EXPECT_TRUE(rig.cmd("load", {{"path", (dir / "box.gltf").generic_string()}}).value("ok", false));
+    EXPECT_TRUE(rig.settle());
+    const Json props = rig.topic("scene").value("props", Json::object());
+    for(const auto& [id, p] : props.items())
+      if(p.value("kind", "") == "model")
+        box = id;
+    place(5);
+  }
+  ~Seated() { fs::remove_all(dir); }
+
+  void place(double x)
+  {
+    // each move a step of its own, as a drag is
+    const Json placed = rig.cmd("prop.set", {{"prop", box}, {"transform", {{"t", {x, 0.0, 0.0}}}}, {"gesture", {{"id", ++moves}, {"end", true}}}});
+    EXPECT_TRUE(placed.value("ok", false)) << placed.dump();
+  }
+  Json contact() const { return rig.topic("contact/" + figure); }
+  // frames until `done` says so, or a few seconds
+  bool until(const std::function<bool()>& done)
+  {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while(std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      if(done())
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+  }
+  bool rests()
+  {
+    return until([&] { return !contact().value("busy", true); });
+  }
+  int patches() const { return contact().value("patches", -1); }
+};
+
+}  // namespace
+
+// A box moved under the figure's feet dents them; undone, the dent goes. A box moved about far from it
+// starts no pass.
+TEST(FvHost, aPropMovedIntoAFigurePokesItsContact)
+{
+  Seated s;
+  ASSERT_TRUE(s.rests());
+  EXPECT_EQ(s.patches(), 0) << s.contact().dump();
+  EXPECT_TRUE(s.contact().value("enabled", false));
+  s.place(0);
+  ASSERT_TRUE(s.until([&] { return s.patches() > 0; })) << s.contact().dump();
+  ASSERT_TRUE(s.rig.cmd("history.undo").value("ok", false));
+  ASSERT_TRUE(s.until([&] { return s.patches() == 0; })) << s.contact().dump();
+  ASSERT_TRUE(s.rests());
+  s.place(10);
+  for(int i = 0; i < 20; i++)
+  {
+    s.rig.host->onUpdate();
+    EXPECT_FALSE(s.contact().value("busy", true)) << "a box moved from 5 m to 10 m away poked it";
+  }
+}
+
+// A dent pokes the clothes' collider, and none of the passes pokes the others back: all come to rest.
+TEST(FvHost, aDentSettlesWithoutPassesPokingEachOther)
+{
+  Seated s;
+  s.rig.cmd("wear", {{"prop", s.figure}, {"rel", "People/Test/Clothing/Box Shirt.duf"}});
+  ASSERT_TRUE(s.rig.settle());
+  s.place(0);
+  ASSERT_TRUE(s.until([&] { return s.patches() > 0; }));
+  const auto collisionBusy = [&] { return s.rig.topic("wardrobe/" + s.figure).value("collision", Json::object()).value("busy", true); };
+  ASSERT_TRUE(s.until([&] { return !s.contact().value("busy", true) && !collisionBusy(); }));
+  for(int i = 0; i < 100; i++)
+  {
+    s.rig.host->onUpdate();
+    ASSERT_FALSE(s.contact().value("busy", true)) << "frame " << i;
+    ASSERT_FALSE(collisionBusy()) << "frame " << i;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
+
+// The settings are a step of the history and part of the figure's scene state; a scene file from
+// before body contact opens without it.
+TEST(FvHost, contactSettingsSurviveTheSceneFileAndUndo)
+{
+  Seated s;
+  ASSERT_TRUE(s.rig.cmd("figure.contact", {{"prop", s.figure}, {"bulge", 0.3}}).value("ok", false));
+  EXPECT_FLOAT_EQ(s.contact().value("bulge", 0.f), 0.3f);
+  const Json state = s.rig.cmd("scene.state", {{"prop", s.figure}}).value("result", Json::object());
+  ASSERT_TRUE(state.contains("contact")) << state.dump();
+  EXPECT_FLOAT_EQ(state["contact"].value("bulge", 0.f), 0.3f);
+  EXPECT_TRUE(state["contact"].value("on", false));
+  ASSERT_TRUE(s.rig.cmd("history.undo").value("ok", false));
+  EXPECT_FLOAT_EQ(s.contact().value("bulge", 0.f), 0.7f);
+  ASSERT_TRUE(s.rig.cmd("history.redo").value("ok", false));
+  EXPECT_FLOAT_EQ(s.contact().value("bulge", 0.f), 0.3f);
+
+  // restored with the block it was saved with; then from a file that has none
+  Json restore       = state;
+  restore["prop"]    = s.figure;
+  restore["contact"] = {{"on", true}, {"softness", 0.5}, {"bulge", 0.9}, {"reach", 4}};
+  s.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_FLOAT_EQ(s.contact().value("bulge", 0.f), 0.9f);
+  EXPECT_FLOAT_EQ(s.contact().value("reach", 0.f), 4.f);
+  restore.erase("contact");
+  s.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_FALSE(s.contact().value("enabled", true)) << s.contact().dump();
+}
+
+// A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's
+// lowest point is higher than the same export's without the dent.
+TEST(FvHost, exportCarriesTheContactChannel)
+{
+  Seated s;
+  s.place(0);
+  ASSERT_TRUE(s.until([&] { return s.patches() > 0; }));
+  ASSERT_TRUE(s.rests());
+  const auto lowest = [&](const char* name) {
+    const fs::path out = s.dir / name;
+    EXPECT_TRUE(s.rig.cmd("export.glb", {{"prop", s.figure}, {"path", out.generic_string()}}).value("ok", false));
+    EXPECT_TRUE(s.rig.settle());
+    tinygltf::Model    model;
+    tinygltf::TinyGLTF reader;
+    std::string        error, warning;
+    EXPECT_TRUE(reader.LoadBinaryFromFile(&model, &error, &warning, out.string())) << error;
+    double low = INFINITY;
+    for(const tinygltf::Mesh& m : model.meshes)
+      for(const tinygltf::Primitive& p : m.primitives)
+        if(const auto at = p.attributes.find("POSITION"); at != p.attributes.end() && model.accessors[size_t(at->second)].minValues.size() >= 2)
+          low = std::min(low, model.accessors[size_t(at->second)].minValues[1]);
+    return low;
+  };
+  const double dented = lowest("dented.glb");
+  ASSERT_TRUE(s.rig.cmd("figure.contact", {{"prop", s.figure}, {"on", false}}).value("ok", false));
+  s.rig.host->onUpdate();
+  const double plain = lowest("plain.glb");
+  EXPECT_GT(dented, plain + 0.001);
 }

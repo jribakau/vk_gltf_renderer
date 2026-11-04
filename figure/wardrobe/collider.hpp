@@ -60,6 +60,9 @@ public:
   std::function<std::vector<int>()> wornOrder;
   // True for a mesh a simulation owns (dForce drapes it), which is not pushed here.
   std::function<bool(int mesh)> owned;
+  // An upstream pass the garments wait for (the body's contact dents): while it says true, no pass
+  // starts, so the garments are pushed out of the body as it will be.
+  std::function<bool()> waitWhile;
 
   bool enabled() const { return m_enabled; }
   // A pass is waiting out its debounce or running.

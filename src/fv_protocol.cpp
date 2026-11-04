@@ -45,8 +45,9 @@ namespace {
 // the lighting has no sun.shadows or shadow section (the raster view's shadow map; still taken from
 // a kept scene). 18: render.mode refuses "raster", and a skin it already has changes nothing. 19: a
 // DAZ animation played on a figure: load's `as` "animation", the animation topic's clips with a
-// `kind` ("clip" or "figure"), and anim.remove.
-constexpr int kProtocolVersion = 19;
+// `kind` ("clip" or "figure"), and anim.remove. 20: body contact: figure.contact, the contact/<prop>
+// topic, and the scene state's `contact`.
+constexpr int kProtocolVersion = 20;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

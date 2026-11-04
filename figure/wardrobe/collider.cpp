@@ -270,7 +270,7 @@ bool Collider::pump()
     if(!m_scheduled)
       m_version++;
   }
-  if(!m_scheduled || m_job.valid() || std::chrono::steady_clock::now() < m_due)
+  if(!m_scheduled || m_job.valid() || std::chrono::steady_clock::now() < m_due || (waitWhile && waitWhile()))
     return wrote;
   m_scheduled = false;
   m_jobGen    = m_gen;

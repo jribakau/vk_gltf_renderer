@@ -65,6 +65,7 @@
 #include <nvutils/timers.hpp>
 
 #include <figure/dforce/dforce.hpp>
+#include <figure/physics/contact/contact.hpp>
 #include <figure/wardrobe/collider.hpp>
 #ifdef FV_DFORCE_GPU
 #include "fv_dforce_gpu.hpp"
@@ -181,6 +182,12 @@ struct Loaded
   // keeps the worn conforming meshes out of the posed body (figure/wardrobe/collider.hpp); null without a body
   std::unique_ptr<fv::wardrobe::Collider> collider;
   int                                     collisionVersion = -1;
+  // dents the body where a prop presses into it (figure/physics/contact/contact.hpp); null but for a
+  // person's body (fv_host_figure.cpp), not a rigged prop's. Where the figure stood at the last look,
+  // as a move pokes it.
+  std::unique_ptr<fv::physics::Contact> contact;
+  int                                   contactVersion = -1;
+  std::optional<glm::mat4>              contactPlaced;
   // what it is in the renderer's scene, the prop feed's (fv_prop_feed.hpp), and the scene node each of
   // the feed's entities is; set by each composition
   fv::FigureFeed*             feed = nullptr;
@@ -629,6 +636,9 @@ using namespace fvhost;
 
 std::string figureSource(const Loaded& figure);
 std::string figureGeneration(const Loaded& figure);
+// A figure's contact settings as the scene file and the history keep them ({on, softness, bulge,
+// reach}); the figure has a contact pass.
+Json contactState(const Loaded& f);
 
 struct FvHost::Impl
 {
@@ -1046,6 +1056,23 @@ struct FvHost::Impl
   Json wardrobeCollision(const Json& args);
   Json wardrobeCloth(const Json& args);
   Json wardrobeTight(const Json& args);
+  // body contact (fv_host_physics.cpp): what a figure's pass meets, the look each frame at what moved
+  // near a figure, figure.contact and its topic
+  std::vector<fv::physics::ColliderRef>               contactColliders(const Loaded& f);
+  std::shared_ptr<const fv::physics::SharedTriangles> contactMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh);
+  void                                                pokeContacts();
+  void                                                publishContact(Loaded& f);
+  Json                                                figureContact(const Json& args);
+  // each model prop as a collider at the last look: its meshes' worlds and bounds (metres), whether it
+  // showed; and each model's meshes as triangle sets, read on the pool the first time a pass needs them
+  struct ContactSeen
+  {
+    std::vector<glm::mat4> worlds;
+    fv::physics::Box       bounds;
+    bool                   shown = false;
+  };
+  std::unordered_map<std::string, ContactSeen>                                                             contactSeen;
+  std::map<std::pair<const tinygltf::Model*, int>, std::shared_ptr<const fv::physics::SharedTriangles>> contactMeshes;
   void showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible);
   void publishDforce(Loaded& f, bool force);
   Json dforceCommand(const std::string& cmd, const Json& args);

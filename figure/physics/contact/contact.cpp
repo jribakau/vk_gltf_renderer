@@ -1,0 +1,481 @@
+#include <figure/physics/contact/contact.hpp>
+
+#include <algorithm>
+#include <cmath>
+
+#include <figure/io/timing.hpp>
+#include <figure/jobs/pool.hpp>
+#include <figure/physics/collide/cage_graph.hpp>
+#include <figure/physics/volume.hpp>
+#include <figure/wardrobe/fit/transfer.hpp>
+
+namespace fv::physics {
+
+namespace {
+
+using namespace std::chrono_literals;
+
+// A drag moves a bone every frame: the pass waits for a pause this long, as the collider does.
+constexpr auto kDebounce = 120ms;
+// How far off a collider's surface the skin ends, cm.
+constexpr double kClearance = 0.05;
+// How deep a vertex is still taken as pushed in through the surface it is closest to, cm: deeper is
+// the far side of a thin prop. On a closed piece the crossings make inside certain, so deeper still.
+constexpr double kDepth       = 3;
+constexpr double kClosedDepth = 8;
+// Laplacian steps on the correction a round, and rounds of smoothing and pushing out again.
+constexpr int kSmooth = 3;
+constexpr int kRounds = 2;
+
+// A collider placed for this pass: queried in its own space, or, when its matrix stretches it
+// unevenly, as a copy carried into the body's.
+struct Placed
+{
+  const TriangleSet*                 set = nullptr;
+  std::shared_ptr<const TriangleSet> copy;
+  Mat4                               toBody, fromBody;
+  double                             scale = 1;  // the body's centimetres per unit of the set
+  double                             share = 1;
+  Box                                inBody;      // its bounds in the body's space, grown by the depth
+};
+
+// The scale of a matrix that is a rotation and a scale the same along every axis; 0 when it isn't.
+double uniformScale(const Mat4& m)
+{
+  const Vec3   c[3] = {{m.e[0], m.e[1], m.e[2]}, {m.e[4], m.e[5], m.e[6]}, {m.e[8], m.e[9], m.e[10]}};
+  const double s    = length(c[0]);
+  if(s < 1e-12)
+    return 0;
+  for(int a = 0; a < 3; a++)
+  {
+    if(std::fabs(length(c[a]) - s) > 1e-4 * s)
+      return 0;
+    if(std::fabs(dot(c[a], c[(a + 1) % 3])) > 1e-4 * s * s)
+      return 0;
+  }
+  return s;
+}
+
+std::vector<Placed> place(std::span<const ColliderRef> colliders, const Box& body)
+{
+  std::vector<Placed> out;
+  for(const ColliderRef& c : colliders)
+  {
+    if(!c.set || c.share <= 0)
+      continue;
+    const Box around = transformed(c.set->bounds(), c.toBody).grown(kClosedDepth);
+    if(!around.overlaps(body))
+      continue;
+    Placed p;
+    p.share  = std::min(c.share, 1.0);
+    p.inBody = around;
+    p.scale  = uniformScale(c.toBody);
+    if(p.scale > 0)
+    {
+      p.set      = &c.set->get();
+      p.toBody   = c.toBody;
+      p.fromBody = inverse(c.toBody);
+    }
+    else
+    {
+      // stretched unevenly: its distances don't scale alike, so its triangles go into the body's space
+      const TriangleSet&  set = c.set->get();
+      std::vector<float> positions(set.positions().begin(), set.positions().end());
+      for(size_t i = 0; i + 2 < positions.size(); i += 3)
+      {
+        const Vec3 q     = c.toBody.transformPoint({positions[i], positions[i + 1], positions[i + 2]});
+        positions[i]     = float(q.x);
+        positions[i + 1] = float(q.y);
+        positions[i + 2] = float(q.z);
+      }
+      p.copy  = std::make_shared<const TriangleSet>(std::move(positions), std::vector<uint32_t>(set.tris().begin(), set.tris().end()));
+      p.set   = p.copy.get();
+      p.scale = 1;
+    }
+    if(!p.set->index().empty())
+      out.push_back(std::move(p));
+  }
+  return out;
+}
+
+// Each body vertex inside a collider moves onto its surface by its share; inside several, the one
+// that moves it furthest. It goes back into the body along the skin's normal (`normals`, unit, per
+// vertex), as Softie casts its rays, so skin pressed into a seat near its front edge goes up and not
+// out through the front; where that ray meets nothing within the depth, to the closest point.
+// `target` gets where, `hit` whether.
+void contacts(std::span<const double> x, std::span<const double> normals, const std::vector<Placed>& placed, std::vector<double>& target, std::vector<uint8_t>& hit)
+{
+  const size_t n = x.size() / 3;
+  target.assign(n * 3, 0.0);
+  hit.assign(n, 0);
+  jobs::parallelFor(n, 256, [&](size_t begin, size_t end) {
+    Stamps& stamps = threadStamps();
+    for(size_t v = begin; v < end; v++)
+    {
+      const double* p    = &x[v * 3];
+      double        best = -1;
+      for(const Placed& c : placed)
+      {
+        if(!c.inBody.contains(p[0], p[1], p[2]))
+          continue;
+        const Vec3   q  = c.fromBody.transformPoint({p[0], p[1], p[2]});
+        Inside in = insideOf(*c.set, {q.x, q.y, q.z}, kDepth / c.scale, kClosedDepth / c.scale, stamps);
+        if(!in.inside)
+          continue;
+        // the skin's inward normal in the set's space
+        const Vec3   o    = c.fromBody.transformPoint({0, 0, 0});
+        const Vec3   w    = c.fromBody.transformPoint({-normals[v * 3], -normals[v * 3 + 1], -normals[v * 3 + 2]});
+        const Vec3   back = normalize(Vec3{w.x - o.x, w.y - o.y, w.z - o.z});
+        const Inside out  = exitAlong(*c.set, {q.x, q.y, q.z}, {back.x, back.y, back.z}, (in.depth > kDepth / c.scale ? kClosedDepth : kDepth) / c.scale, stamps);
+        if(out.inside)
+          in = out;
+        const double clear = kClearance / c.scale;
+        const Vec3   to    = c.toBody.transformPoint({in.exit[0] + in.normal[0] * clear, in.exit[1] + in.normal[1] * clear, in.exit[2] + in.normal[2] * clear});
+        const double mx = (to.x - p[0]) * c.share, my = (to.y - p[1]) * c.share, mz = (to.z - p[2]) * c.share;
+        const double move = mx * mx + my * my + mz * mz;
+        if(move > best)
+        {
+          best              = move;
+          target[v * 3]     = p[0] + mx;
+          target[v * 3 + 1] = p[1] + my;
+          target[v * 3 + 2] = p[2] + mz;
+          hit[v]            = 1;
+        }
+      }
+    }
+  });
+}
+
+// Moves the vertices that are inside onto their targets. True when any was.
+bool pushOut(std::span<double> x, const std::vector<double>& target, const std::vector<uint8_t>& hit)
+{
+  bool any = false;
+  for(size_t v = 0; v < hit.size(); v++)
+    if(hit[v])
+    {
+      for(int a = 0; a < 3; a++)
+        x[v * 3 + a] = target[v * 3 + a];
+      any = true;
+    }
+  return any;
+}
+
+// The volume a row's particles have been pushed in by, from where they started.
+double pushedIn(const DisplacementVolume& row, std::span<const double> x)
+{
+  double v = 0;
+  for(size_t k = 0; k < row.particles.size(); k++)
+  {
+    const size_t i = size_t(row.particles[k]) * 3;
+    double       d = 0;
+    for(int a = 0; a < 3; a++)
+      d += row.an[k * 3 + a] * (x[i + a] - row.start[k * 3 + a]);
+    v += std::max(0.0, -d);
+  }
+  return v;
+}
+
+}  // namespace
+
+std::string contactChannelOf(int mesh)
+{
+  return "contact:" + std::to_string(mesh);
+}
+
+ContactResult resolveContacts(const ContactInput& in)
+{
+  ContactResult out;
+  out.positions.assign(in.body.begin(), in.body.end());
+  const size_t n = in.body.size() / 3;
+  if(!n)
+    return out;
+  const std::vector<Placed> placed = place(in.colliders, boundsOf(in.body));
+  if(placed.empty())
+    return out;
+  std::vector<double>       x(in.body.begin(), in.body.end());
+  const std::vector<double> start = x;
+  const CageGraph           graph(in.body, in.polyStart, in.polyVerts, in.tris);
+  std::vector<double>       normals(n * 3);
+  for(size_t v = 0; v < n; v++)
+    for(int a = 0; a < 3; a++)
+      normals[v * 3 + a] = graph.normal(v)[a];
+  std::vector<double>  target;
+  std::vector<uint8_t> hit;
+  contacts(x, normals, placed, target, hit);
+  if(!pushOut(x, target, hit))
+    return out;
+
+  // the patches: what is inside, joined by the cage's edges
+  std::vector<int32_t>  patchOf(n, -1);
+  std::vector<std::vector<uint32_t>> patches;
+  for(size_t v = 0; v < n; v++)
+  {
+    if(!hit[v] || patchOf[v] >= 0)
+      continue;
+    std::vector<uint32_t> patch{uint32_t(v)};
+    patchOf[v] = int32_t(patches.size());
+    for(size_t k = 0; k < patch.size(); k++)
+      for(uint32_t u : graph.next(patch[k]))
+        if(hit[u] && patchOf[u] < 0)
+        {
+          patchOf[u] = int32_t(patches.size());
+          patch.push_back(u);
+        }
+    patches.push_back(std::move(patch));
+  }
+  out.patches = int(patches.size());
+
+  // around each, the skin that takes the volume back: along the surface from the patch, to a reach
+  // that grows with how deep it went. Its share fades from the rim, (1 - r/R)^2.
+  const double                    beta = std::clamp(double(in.bulge), 0.0, 1.0);
+  std::vector<DisplacementVolume> rows;
+  if(beta > 0)
+    for(const std::vector<uint32_t>& patch : patches)
+    {
+      double deepest = 0;
+      for(uint32_t v : patch)
+        deepest = std::max(deepest, std::hypot(x[v * 3] - start[v * 3], x[v * 3 + 1] - start[v * 3 + 1], x[v * 3 + 2] - start[v * 3 + 2]));
+      const float reach = float(std::max(double(in.reach), 3 * deepest));
+      const auto  ring  = graph.within(patch, reach, [&](uint32_t u) { return patchOf[u] < 0; });
+      DisplacementVolume row;
+      const auto         add = [&](uint32_t v, double weight) {
+        row.particles.push_back(v);
+        row.weight.push_back(weight);
+        const double* nv = graph.normal(v);
+        for(int a = 0; a < 3; a++)
+        {
+          row.an.push_back(graph.area(v) * nv[a]);
+          row.start.push_back(start[v * 3 + a]);
+        }
+      };
+      for(uint32_t v : patch)
+        add(v, 0);
+      for(const auto& [v, r] : ring)
+        if(patchOf[v] < 0 && graph.area(v) > 0)
+        {
+          const double f = 1 - r / reach;
+          add(v, f * f / graph.area(v));
+        }
+      rows.push_back(std::move(row));
+    }
+  // the dent's volume, as it stands, put back: at a bulge of 1 the swept volume comes to 0
+  const auto bulge = [&] {
+    for(DisplacementVolume& row : rows)
+    {
+      row.target = -(1 - beta) * pushedIn(row, x);
+      projectVolume(row, x);
+    }
+  };
+  bulge();
+  for(int round = 0; round < kRounds; round++)
+  {
+    std::vector<float> correction(n * 3);
+    for(size_t i = 0; i < correction.size(); i++)
+      correction[i] = float(x[i] - start[i]);
+    correction = wardrobe::laplacian(std::move(correction), in.tris, n, kSmooth);
+    for(size_t i = 0; i < correction.size(); i++)
+      x[i] = start[i] + correction[i];
+    bulge();
+    contacts(x, normals, placed, target, hit);
+    pushOut(x, target, hit);
+  }
+  for(size_t i = 0; i < x.size(); i++)
+    out.positions[i] = float(x[i]);
+  return out;
+}
+
+// What a pass needs and where its result goes, taken on the owning thread.
+struct Contact::Job
+{
+  // the body as posed now, without its own dent, in the root's space
+  std::vector<float>       body;
+  std::vector<uint32_t>    tris;
+  std::vector<int32_t>     polyStart, polyVerts;
+  std::vector<ColliderRef> colliders;
+  ContactSettings          settings;
+  // for the write-back: the rest cage under the dent, its skin and pose in the mesh's space, and the way there
+  std::vector<float> rest;
+  bool               skinned = false;
+  dforce::CageSkin   skin;
+  dforce::SkinPose   pose;
+  Mat4               back;
+};
+
+Contact::Contact(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root)
+    : m_scene(scene)
+    , m_morphs(morphs)
+    , m_bodyMesh(bodyMesh)
+    , m_root(root)
+    , m_pass(std::chrono::duration_cast<std::chrono::milliseconds>(kDebounce))
+{
+  m_writer.name  = contactChannelOf(bodyMesh);
+  m_writer.label = "Contact";
+  m_writer.mesh  = bodyMesh;
+  poke();
+}
+
+Contact::~Contact() = default;
+
+bool Contact::busy() const
+{
+  return m_settings.on && !m_held && m_pass.busy();
+}
+
+bool Contact::set(const ContactSettings& s)
+{
+  if(s == m_settings)
+    return false;
+  const bool was = m_settings.on;
+  m_settings     = s;
+  m_pass.bump();
+  if(!s.on)
+  {
+    m_pass.cancel();
+    m_patches = 0;
+    return was && m_writer.off(m_morphs);
+  }
+  if(!was)
+    m_pass.poke();
+  else
+    m_pass.pokeNow();
+  return false;
+}
+
+void Contact::changed(const std::vector<int>& meshes, bool nodesMoved)
+{
+  if(nodesMoved || std::find(meshes.begin(), meshes.end(), m_bodyMesh) != meshes.end())
+    poke();
+}
+
+void Contact::poke()
+{
+  if(m_settings.on)
+    m_pass.poke();
+}
+
+std::shared_ptr<Contact::Job> Contact::prepare()
+{
+  timing::Scope t("contact: prepare", 2);
+  if(m_bodyMesh < 0 || size_t(m_bodyMesh) >= m_scene.meshes.size())
+    return nullptr;
+  const Mesh& body = m_scene.meshes[size_t(m_bodyMesh)];
+  if(!body.geo || body.geo->cagePositions.empty())
+    return nullptr;
+  auto job       = std::make_shared<Job>();
+  job->colliders = colliders ? colliders() : std::vector<ColliderRef>{};
+  if(job->colliders.empty())
+    return nullptr;
+  job->settings = m_settings;
+
+  // the body under its own dent: the shape kept, less this channel's target at its weight
+  std::vector<float> scratch;
+  const auto         view = m_morphs.morphedCageView(m_bodyMesh, scratch);
+  job->rest.assign(view.begin(), view.end());
+  if(const dson::TargetPtr own = m_morphs.cpuTarget(m_writer.name, m_bodyMesh))
+    if(const double w = m_morphs.weightOf(m_writer.name); w != 0)
+      for(size_t k = 0; k < own->cageIndices.size(); k++)
+        if(size_t(own->cageIndices[k]) * 3 + 2 < job->rest.size())
+          for(int a = 0; a < 3; a++)
+            job->rest[own->cageIndices[k] * 3 + a] -= float(own->cageDeltas[k * 3 + a] * w);
+
+  const auto worlds    = m_scene.worlds();
+  const auto nodeOf    = dforce::nodeOfMesh(m_scene);
+  const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
+  const int  node      = nodeOf[size_t(m_bodyMesh)];
+  const Mat4 toSpace   = inverse(rootWorld) * (node >= 0 ? worlds[size_t(node)] : Mat4{});
+  job->skinned         = body.skinned() && body.cageSkin.start.size() == job->rest.size() / 3 + 1;
+  std::vector<float> posed;
+  if(job->skinned)
+  {
+    job->skin = dforce::cageSkin(body.cageSkin);
+    job->pose = dforce::currentSkin(m_scene, worlds, nodeOf, m_bodyMesh);
+    posed     = dforce::skinLocal(job->rest, job->skin, job->pose);
+  }
+  else
+    posed = job->rest;
+  job->body      = dforce::transformPoints(toSpace, posed);
+  job->back      = inverse(toSpace);
+  job->tris      = body.geo->dsonTris;
+  job->polyStart = body.geo->cagePolyStart;
+  job->polyVerts = body.geo->cagePolyVerts;
+  return job;
+}
+
+bool Contact::apply(const Landed* landed)
+{
+  timing::Scope t("contact: write", 2);
+  const Mesh&   body   = m_scene.meshes[size_t(m_bodyMesh)];
+  const int     before = m_patches;
+  bool          wrote  = false;
+  if(!landed)
+  {
+    // nothing near the body: whatever was dented shows as it is
+    m_patches = 0;
+    if(body.geo && m_morphs.cpuTarget(m_writer.name, m_bodyMesh))
+      wrote = m_writer.write(m_morphs, *body.geo, std::vector<float>(body.geo->cagePositions.size(), 0.f));
+  }
+  else if(body.geo && body.geo->cagePositions.size() == landed->delta.size())
+  {
+    m_patches = landed->patches;
+    wrote     = m_writer.write(m_morphs, *body.geo, landed->delta);
+  }
+  if(m_patches != before)
+    m_pass.bump();
+  return wrote;
+}
+
+bool Contact::pump()
+{
+  if(!m_settings.on)
+    return false;
+  if(playing && playing())
+  {
+    if(m_held)
+      return false;
+    m_held = true;
+    m_pass.cancel();
+    m_pass.bump();
+    return m_writer.off(m_morphs);
+  }
+  if(m_held)
+  {
+    // paused: a pass on the pose it stopped at
+    m_held = false;
+    m_pass.bump();
+    m_pass.poke();
+  }
+  return m_pass.pump(
+      [this] {
+        auto job = prepare();
+        if(!job)
+          return std::future<Landed>();
+        m_bounds = boundsOf(job->body);
+        return jobs::pool().submit([job] {
+          ContactInput in;
+          in.body      = job->body;
+          in.tris      = job->tris;
+          in.polyStart = job->polyStart;
+          in.polyVerts = job->polyVerts;
+          in.colliders = job->colliders;
+          in.bulge     = job->settings.bulge;
+          in.reach     = job->settings.reach;
+          const ContactResult r = resolveContacts(in);
+          // back to the mesh's space, and to the cage deltas whose skinning gives it
+          Landed     out;
+          const auto local = dforce::transformPoints(job->back, r.positions);
+          if(job->skinned)
+            out.delta = dforce::drapeDelta(job->rest, local, job->skin, job->pose);
+          else
+          {
+            out.delta.resize(local.size());
+            for(size_t i = 0; i < local.size(); i++)
+              out.delta[i] = local[i] - job->rest[i];
+          }
+          out.patches = r.patches;
+          return out;
+        });
+      },
+      [this](const Landed* landed) { return apply(landed); });
+}
+
+}  // namespace fv::physics

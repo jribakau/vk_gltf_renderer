@@ -640,6 +640,8 @@ Json FvHost::Impl::sceneState(const Json& args)
   }
   if(prop->figure->collider)
     state["collision"] = prop->figure->collider->enabled();
+  if(prop->figure->contact)
+    state["contact"] = contactState(*prop->figure);
   if(prop->figure->dforce)
   {
     state["dforce"]     = prop->figure->dforce->enabled();
@@ -1003,6 +1005,15 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     }
     if(target->collider && args.contains("collision") && args["collision"].is_boolean())
       target->collider->setEnabled(args["collision"].get<bool>());
+    // a file from before body contact has no block, and opens as it was saved: without dents
+    if(target->contact)
+    {
+      Json contact = args.value("contact", Json());
+      if(!contact.is_object())
+        contact = {{"on", false}};
+      contact["prop"] = target->id;
+      figureContact(contact);
+    }
     if(target->dforce && args.contains("dforceMode") && args["dforceMode"].is_string())
     {
       // a mode this build lacks (the GPU solver) falls back to live on the CPU, and the job still ends

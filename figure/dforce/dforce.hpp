@@ -68,6 +68,9 @@ public:
 
   // True while a clip is playing: in settle mode the last drape stays until playback stops.
   std::function<bool()> playing;
+  // An upstream pass a settle waits for (the body's contact dents): while it says true, no settle
+  // starts, so the cloth drapes the body as it will be.
+  std::function<bool()> waitWhile;
   // The time live steps are measured by; unset: the steady clock. For a test.
   std::function<std::chrono::steady_clock::time_point()> clock;
   // The GPU simulation, when the renderer offers one.

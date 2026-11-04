@@ -222,6 +222,11 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
       return nullptr;
     return {{"kind", "items"}, {"prop", p->id}, {"items", Json::array({itemIdOf(args["item"])})}};
   }
+  if(cmd == "figure.contact")
+  {
+    const auto p = figureProp(args);
+    return p && p->figure && p->figure->contact ? Json{{"kind", "contact"}, {"prop", p->id}} : Json();
+  }
   if(cmd.rfind("wardrobe.", 0) == 0 || cmd.rfind("dforce.", 0) == 0)
   {
     const auto p = figureProp(args);
@@ -391,6 +396,12 @@ Json FvHost::Impl::journalState(const Json& scope)
         ops.push_back(op("wardrobe.remove", {{"prop", id}, {"item", item}}));
   else if(kind == "collision" && f.collider)
     ops.push_back(op("wardrobe.collision", {{"prop", id}, {"on", f.collider->enabled()}}));
+  else if(kind == "contact" && f.contact)
+  {
+    Json state    = contactState(f);
+    state["prop"] = id;
+    ops.push_back(op("figure.contact", state));
+  }
   else if(kind == "dforce" && f.dforce)
   {
     ops.push_back(op("dforce.enable", {{"prop", id}, {"on", f.dforce->enabled()}}));
@@ -491,6 +502,15 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "wardrobe.collision")
     return "Collision " + on();
+  if(cmd == "figure.contact")
+  {
+    if(args.contains("on"))
+      return "Body contact " + on();
+    for(const auto& [key, name] : {std::pair{"bulge", "bulge"}, {"reach", "reach"}, {"softness", "softness"}})
+      if(args.contains(key))
+        return std::string("Body contact ") + name;
+    return "Body contact";
+  }
   if(cmd == "dforce.enable")
     return "dForce " + on();
   if(cmd == "dforce.mode")
@@ -546,7 +566,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
   }
   // a slider's or a drag's edits merge into one step: the same edit of the same things, back to back
   bool merges = cmd == "morph.set" || cmd == "material.set" || cmd == "lighting.set" || cmd == "camera.set"
-                || (cmd == "pose.set" && !args.contains("label"));
+                || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on"));
   if(cmd == "prop.set")
     merges = !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);
@@ -612,6 +632,8 @@ Json FvHost::Impl::applyOp(const Json& o)
     return wardrobeKeepFull(args);
   if(cmd == "wardrobe.collision")
     return wardrobeCollision(args);
+  if(cmd == "figure.contact")
+    return figureContact(args);
   if(cmd == "wardrobe.cloth")
     return wardrobeCloth(args);
   if(cmd == "wardrobe.tight")
@@ -1166,6 +1188,7 @@ Json FvHost::Impl::propRestore(const Json& args)
     p->figure->morphsSeen       = -1;
     p->figure->dforceVersion    = -1;
     p->figure->collisionVersion = -1;
+    p->figure->contactVersion   = -1;
   }
   requestCompose("Restoring " + p->name);
   publishScene();

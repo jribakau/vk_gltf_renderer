@@ -147,6 +147,12 @@
 //                                                reaches the item becomes its colour
 //   wardrobe.collision {prop, on}                 worn conforming meshes are pushed out of the posed body
 //                                                (figure/wardrobe/collider.hpp), on by default
+//   figure.contact  {prop, on?, softness?, bulge?, reach?, gesture?}   the body dents where a prop presses
+//                                                into it and bulges around the dent by the volume pushed in
+//                                                (figure/physics/contact/contact.hpp): on for a person's
+//                                                body, off for one from a scene file without the block;
+//                                                bulge 0-1 (0.7), reach 1-10 cm (3), softness 0-1 (0.5, the
+//                                                share of an overlap with another figure, not used yet)
 //   wardrobe.cloth  {prop, item, on?: bool | null, strength?, volume?}   dForce on one item: true drapes it (at the
 //                                                defaults when its file has no simulation settings), false
 //                                                holds it, null leaves it to the file; `strength` scales
@@ -240,7 +246,8 @@
 // cloth: {able, native, on, strength}, meshes: [scene mesh], color?: rel | null}}, collision: {enabled,
 // busy, corrected}}; `color` is the colour preset on the item, from wardrobe.color or the last preset that
 // reached it, null for its own; absent, it is as it was worn), "dforce/<prop>"
-// ({figure, enabled, mode, active, busy, draped}); a prop's topics
+// ({figure, enabled, mode, active, busy, draped}), "contact/<prop>" ({enabled, busy, patches, softness, bulge,
+// reach}, for a figure with body contact); a prop's topics
 // are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
 // env.name, env.size, env.loading. "pose/<prop>" carries `eyes` (whether the figure can look at
 // the camera). "morphs/<prop>" is the visible channels ({label, group, value, min, max, weight,

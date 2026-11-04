@@ -10,11 +10,18 @@ target_include_directories(fv_figure PUBLIC ${FV_FIGURE_ROOT})
 # tinygltf for the glTF model it builds and for nlohmann::json (<tinygltf/json.hpp>)
 target_link_libraries(fv_figure PUBLIC glm tinygltf PRIVATE zlib)
 set_property(TARGET fv_figure PROPERTY FOLDER "figure")
-# The bind cache's key (wardrobe/bind_cache.cpp): xxHash as zstd ships it, and bind.cpp's hash, so a
-# change to the binding code is another key. bind.cpp is a configure dependency for that.
+# The bind cache's key (wardrobe/bind_cache.cpp): xxHash as zstd ships it, and the hash of the binding
+# code (bind.cpp and the closest-point search it runs on), so a change to it is another key. Those
+# files are configure dependencies for that.
 target_include_directories(fv_figure PRIVATE ${nvpro_core2_SOURCE_DIR}/third_party/zstd/lib/common)
-file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/wardrobe/bind.cpp FV_BIND_SOURCE_SHA)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/wardrobe/bind.cpp)
+set(FV_BIND_SOURCES wardrobe/bind.cpp physics/collide/surface_index.hpp physics/collide/surface_index.cpp)
+set(FV_BIND_SOURCE_TEXT "")
+foreach(source ${FV_BIND_SOURCES})
+  file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/${source} sourceSha)
+  string(APPEND FV_BIND_SOURCE_TEXT "${sourceSha}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source})
+endforeach()
+string(SHA256 FV_BIND_SOURCE_SHA "${FV_BIND_SOURCE_TEXT}")
 set_source_files_properties(wardrobe/bind_cache.cpp PROPERTIES COMPILE_DEFINITIONS "FV_BIND_SOURCE_SHA=\"${FV_BIND_SOURCE_SHA}\"")
 
 # The parity harness's native side (see tools/fv_parity.cpp): no GPU. The library, and for its feed

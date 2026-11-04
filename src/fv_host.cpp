@@ -167,6 +167,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wardrobe.visible", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.visible", args); }); });
   cmds.add("wardrobe.keepFull", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.keepFull", args); }); });
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
+  cmds.add("figure.contact", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("figure.contact", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
   // answered at once, as morph.set: a slider sends faster than a path traced frame ends, and the steps
   // would queue behind each other. The latest for an item applies in onUpdate
@@ -672,6 +673,8 @@ void FvHost::onUpdate()
   s.applyPendingMorphs();
   // a figure's animation after the panels' edits, so what it drives shows its frame
   s.applyFigureAnimation();
+  // props that moved near a figure poke its contact dents
+  s.pokeContacts();
   s.watchSystemMemory();
   for(const auto& p : s.props)
   {
@@ -697,6 +700,23 @@ void FvHost::onUpdate()
         changes.rebound.insert(changes.rebound.end(), more.rebound.begin(), more.rebound.end());
       };
       timePhase("frame: dForce and collision");
+      // the body's dents first: when they change, the clothes are fitted and draped over them again
+      if(f.contact)
+      {
+        if(!changes.nodes.empty() || !moved.empty())
+          f.contact->changed(moved, !changes.nodes.empty());
+        if(f.contact->pump())
+        {
+          drainInto();
+          const std::vector<int> body{f.fig->loaded.morphs.meshes[f.fig->loaded.morphs.mainMeshes[0]].mesh};
+          if(f.collider)
+            f.collider->changed(body, false);
+          if(f.dforce)
+            f.dforce->changed(body, false);
+        }
+        if(f.contactVersion != f.contact->version())
+          s.publishContact(f);
+      }
       if(f.dforce)
       {
         // the Transform panel, a gizmo or what it rides on places the figure's entity, not its graph

@@ -82,6 +82,7 @@ set(TEST_SOURCES
     figure/test_bind_cache.cpp
     figure/test_hair_strands.cpp
     figure/test_collider.cpp
+    figure/test_contact.cpp
     figure/test_export.cpp
     figure/test_dforce.cpp
     figure/test_scene_load.cpp
@@ -199,6 +200,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_journal.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_live.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_physics.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_looks.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_props.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_scene.cpp
