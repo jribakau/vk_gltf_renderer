@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <random>
@@ -245,9 +246,10 @@ TEST(LightRis, MoreCandidatesLessNoise)
 TEST(LightReuse, ARecordSurvivesItsPacking)
 {
   LightReuseRecord r;
-  r.depth  = 300.125f;
-  r.normal = normalize(vec3(0.3f, -0.8f, -0.5f));
-  r.target = 0.0625f;
+  r.depth   = 300.125f;
+  r.normal  = normalize(vec3(0.3f, -0.8f, -0.5f));
+  r.shading = normalize(vec3(0.35f, -0.75f, -0.5f));
+  r.view    = normalize(vec3(-0.2f, 0.1f, 0.97f));
   r.kind   = LIGHT_REUSE_EMISSIVE;
   r.index  = 123456789u & 0x3FFFFFFFu;
   r.uv     = vec2(0.25f, 0.7f);
@@ -255,8 +257,9 @@ TEST(LightReuse, ARecordSurvivesItsPacking)
   r.M      = 17.0f;
   LightReuseRecord u = lightReuseUnpack(lightReusePackA(r), lightReusePackB(r));
   EXPECT_EQ(u.depth, r.depth);
-  EXPECT_EQ(u.target, r.target);
   EXPECT_GT(dot(u.normal, r.normal), 0.99999f);
+  EXPECT_GT(dot(u.shading, r.shading), 0.99999f);
+  EXPECT_GT(dot(u.view, r.view), 0.99999f);
   EXPECT_EQ(u.kind, r.kind);
   EXPECT_EQ(u.index, r.index);
   EXPECT_NEAR(u.uv.x, 0.25f, 1e-4f);
@@ -282,20 +285,27 @@ TEST(LightReuse, ABufferNoFrameWroteIsNoRecord)
   EXPECT_EQ(lightReuseUnpack(uvec4(0), uvec4(0, 0, nan, asuint(4.0f))).M, 0.0f);
 }
 
-TEST(LightReuse, ARecordWeighsNoMoreThanWhereItWasFound)
+TEST(LightReuse, TheMisWeightsSumToOneAndFollowTheTargets)
 {
-  LightReuseRecord r = lightReuseUnpack(uvec4(0), uvec4(0));
-  r.M                = 20.0f;
-  r.W                = 1.0f;
-  r.target           = 0.5f;
-  EXPECT_FLOAT_EQ(lightReuseEffectiveM(20.0f, r, 0.25f), 20.0f);  // dimmer here: as it was
-  EXPECT_FLOAT_EQ(lightReuseEffectiveM(20.0f, r, 5.0f), 2.0f);    // ten times brighter: a tenth of its M
-  // its weight then stays at what it was where it was found, however bright it looks here
-  for(float here : {1.0f, 10.0f, 1000.0f})
+  std::mt19937                          rng(5);
+  std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
+  for(int i = 0; i < 1000; i++)
   {
-    const float m = lightReuseEffectiveM(20.0f, r, here);
-    EXPECT_LE(lightReuseRecordWeight(r, here, 1.0f, m), 20.0f * r.target * r.W * 1.0001f) << here;
+    const float m = 1.0f + 8.0f * uniform(rng), here = uniform(rng) * 10.0f, there = uniform(rng) * 10.0f;
+    EXPECT_NEAR(lightReuseMis(true, 1.0f, here, m, there) + lightReuseMis(false, 1.0f, here, m, there), 1.0f, 1e-6f);
   }
+  // a sample as bright here as there: the M weights, 1 to 4
+  EXPECT_FLOAT_EQ(lightReuseMis(false, 1.0f, 0.5f, 4.0f, 0.5f), 0.8f);
+  // one the record's point cannot see (or no record can hold): this frame's alone; one neither sees, too
+  EXPECT_FLOAT_EQ(lightReuseMis(true, 1.0f, 0.5f, 4.0f, 0.0f), 1.0f);
+  EXPECT_FLOAT_EQ(lightReuseMis(false, 1.0f, 0.5f, 4.0f, 0.0f), 0.0f);
+  EXPECT_FLOAT_EQ(lightReuseMis(true, 1.0f, 0.0f, 4.0f, 0.0f), 1.0f);
+  // a record's sample many times brighter here than where it was found (the next bump of a grain)
+  // weighs at most its M share of what it weighed there, however bright it looks here
+  const float W = 2.0f, there = 0.01f;
+  for(float here : {0.01f, 1.0f, 100.0f, 1e6f})
+    EXPECT_LE(lightReuseWeight(lightReuseMis(false, 1.0f, here, 4.0f, there), here * W), 4.0f * there * W * 1.0001f) << here;
+  EXPECT_EQ(lightReuseWeight(1.0f, std::numeric_limits<float>::infinity()), 0.0f);
 }
 
 TEST(LightReuse, ASurfaceIsTheSameAtItsDepthAndNormal)
@@ -308,86 +318,191 @@ TEST(LightReuse, ASurfaceIsTheSameAtItsDepthAndNormal)
   EXPECT_FALSE(lightReuseSameSurface(r, 10.0f, normalize(vec3(0.6f, 0.8f, 0.0f))));  // a turned one
 }
 
-TEST(LightReuse, TheRecordsHistoryIsCappedAndShared)
+TEST(LightReuse, TheRecordsHistoryIsCapped)
 {
   LightReuseRecord r = lightReuseUnpack(uvec4(0), uvec4(0));
   r.M                = 1000.0f;
   r.W                = 2.0f;
-  const float recordM = lightReuseRecordM(r, 4.0f, 20.0f);
-  EXPECT_FLOAT_EQ(recordM, 80.0f);
-  EXPECT_FLOAT_EQ(lightReuseCandidateShare(true, 4.0f, recordM), 1.0f / 84.0f);
-  EXPECT_FLOAT_EQ(lightReuseCandidateShare(false, 4.0f, recordM), 1.0f / 4.0f);  // no record holds a punctual light
-  EXPECT_FLOAT_EQ(lightReuseRecordWeight(r, 0.5f, 4.0f, recordM), 80.0f / 84.0f * 0.5f * 2.0f);
-  // the M weights of a light a record holds sum to one: 4 candidates' and the record's
-  EXPECT_NEAR(4.0f * lightReuseCandidateShare(true, 4.0f, recordM) + recordM / (4.0f + recordM), 1.0f, 1e-6f);
+  EXPECT_FLOAT_EQ(lightReuseRecordM(r, 4.0f, 20.0f), 80.0f);
+  r.M = 3.0f;
+  EXPECT_FLOAT_EQ(lightReuseRecordM(r, 4.0f, 20.0f), 3.0f);
 }
 
-// A pixel's light over frames at one shading point, as the shader does it: each frame's candidates
-// are a point light (no record can hold it) or a point of a row of lamps along [0, 1), drawn
-// uniformly, some taking nothing; part of the row is shadowed. Each candidate weighs its M weight
-// times its estimate, the record its M weight times its target here times W; the kept sample is
-// shaded with its shadow and carried on, W 0 if it was shadowed or is the point light, M always.
-// Every frame's estimate must average to the point light plus the row's shadowed integral, and the
-// history must make the later frames less noisy.
-TEST(LightReuse, AChainOverFramesStaysUnbiased)
+// A pixel's light over frames, as the shader does it. Each frame's candidates are a point light (no
+// record can hold it) or a point of a row of lamps along [0, 1), drawn uniformly, some taking nothing;
+// part of the row is shadowed. The candidates are resampled into one, which then competes with the
+// record: each side weighs its MIS weight (M times its target here and at the record's point) times
+// its target here times its W. The kept sample is shaded with its shadow and carried on, W 0 if it
+// was shadowed or is the point light, M always.
+//
+// The shading point is the record's (`bumpy` false: a flat surface), or moves every frame across the
+// bumps of a grain (true): a sharp highlight on the row, its place drawn anew each frame, as a still's
+// jitter moves the bumped normal of the club's leather. Every frame's estimate must average to the
+// point light plus the row's shadowed integral (over the bumps), and the history must cut the noise.
+struct ReuseChain
 {
-  const vec3  pointLight(0.08f, 0.06f, 0.02f);
-  const float pickPoint = 0.2f;
-  const vec3  reference = pointLight + referenceIntegral(0.93f);  // the samples past 0.93 take nothing: no light there
-  const int   frames = 12, trials = 200000, candidates = 2;
-  std::vector<dvec3>  sum(frames, dvec3(0.0));
-  std::vector<double> sum2(frames, 0.0);
-  std::mt19937                          rng(321);
+  bool  bumpy = false;
+  int   candidates = 2;
+  float cap        = 1.0f;  // the renderer's ptLightReuseCap
+  bool  reuse      = true;
+  bool  constantM  = false;  // the M weights alone (M over the sum of M), as before the targets were in them
+};
+
+const vec3  kPointLight(0.08f, 0.06f, 0.02f);
+const float kPickPoint = 0.2f;
+
+// the row's light at x from a point whose bump puts its highlight at `peak` (flat: the lobe of integrand)
+vec3 bumpyIntegrand(float x, float peak)
+{
+  const float d    = (x - peak) / 0.04f;
+  const float bsdf = 12.0f * std::exp(-d * d);
+  return vec3(1.0f, 0.6f + 0.4f * x, 0.2f + x * x) * (0.05f + bsdf);
+}
+
+float drawPeak(std::mt19937& rng)
+{
+  return std::uniform_real_distribution<float>(0.2f, 0.95f)(rng);
+}
+
+vec3 rowAt(const ReuseChain& c, float x, float peak)
+{
+  if(x >= 0.93f)  // past it the sample takes nothing, as a cut node below the horizon does
+    return vec3(0.0f);
+  return c.bumpy ? bumpyIntegrand(x, peak) : integrand(x);
+}
+
+vec3 chainReference(const ReuseChain& c)
+{
+  if(!c.bumpy)
+    return kPointLight + referenceIntegral(0.93f);
+  // over the bumps: the peak uniform in [0.2, 0.95)
+  dvec3     sum(0.0);
+  const int nx = 1 << 13, np = 1 << 9;
+  for(int j = 0; j < np; j++)
+  {
+    const float peak = 0.2f + 0.75f * (float(j) + 0.5f) / float(np);
+    for(int i = 0; i < nx; i++)
+    {
+      const float x = (float(i) + 0.5f) / float(nx);
+      sum += dvec3(visibility(x) * rowAt(c, x, peak));
+    }
+  }
+  return kPointLight + vec3(sum / double(nx * np));
+}
+
+struct ChainResult
+{
+  std::vector<dvec3>  mean;
+  std::vector<double> variance;
+};
+
+ChainResult runChain(const ReuseChain& c, int frames, int trials, uint32_t seed)
+{
+  std::vector<dvec3>                    sum(frames, dvec3(0.0));
+  std::vector<double>                   sum2(frames, 0.0);
+  std::mt19937                          rng(seed);
   std::uniform_real_distribution<float> uniform(0.0f, 1.0f);
   for(int t = 0; t < trials; t++)
   {
-    LightReuseRecord record = lightReuseUnpack(uvec4(0), uvec4(0));
+    LightReuseRecord record     = lightReuseUnpack(uvec4(0), uvec4(0));
+    float            recordPeak = 0.0f;  // the record's point: its bump, as the record's shading normal
     for(int f = 0; f < frames; f++)
     {
-      const float    recordM = lightReuseRecordM(record, float(candidates), 20.0f);
-      LightReservoir r       = lightReservoirEmpty();
+      const float peak    = c.bumpy ? drawPeak(rng) : 0.0f;
+      const float recordM = c.reuse ? lightReuseRecordM(record, float(c.candidates), c.cap) : 0.0f;
+      // this frame's candidates, resampled
+      LightReservoir r         = lightReservoirEmpty();
       bool           keptPoint = false;
       float          keptX     = 0.0f;
-      for(int c = 0; c < candidates; c++)
+      for(int k = 0; k < c.candidates; k++)
       {
-        const bool point = uniform(rng) < pickPoint;
-        const float x    = uniform(rng);
-        float raw = 0.0f;
-        if(point)
-          raw = luminance709(pointLight / pickPoint);
-        else if(x < 0.93f)  // past it the sample takes nothing, as a cut node below the horizon does
-          raw = luminance709(integrand(x) / (1.0f - pickPoint));
-        r = lightReservoirAdd(r, lightReuseCandidateShare(!point, float(candidates), recordM) * raw, uniform(rng));
+        const bool  point = uniform(rng) < kPickPoint;
+        const float x     = uniform(rng);
+        const float raw   = point ? luminance709(kPointLight / kPickPoint) : luminance709(rowAt(c, x, peak) / (1.0f - kPickPoint));
+        r                 = lightReservoirAdd(r, raw, uniform(rng));
         if(r.keptLast)
         {
           keptPoint = point;
           keptX     = x;
         }
       }
-      // the record re-weighed here: the same point, so its target is the row's luminance at its sample
-      const float recordTarget = record.M > 0.0f ? luminance709(integrand(record.uv.x)) : 0.0f;
-      r                        = lightReservoirAdd(r, lightReuseRecordWeight(record, recordTarget, float(candidates), recordM), uniform(rng));
-      const bool  tookRecord = r.keptLast;
+      // this frame's side, its kept candidate's target at the record's point in the same measure
+      const float keptThere = (recordM > 0.0f && r.kept > 0.0f && !keptPoint) ? luminance709(rowAt(c, keptX, recordPeak) / (1.0f - kPickPoint)) : 0.0f;
+      const float meanWeight    = r.count > 0 ? r.weightSum / float(r.count) : 0.0f;
+      const float currentMis    = !c.constantM ? lightReuseMis(true, float(c.candidates), r.kept, recordM, keptThere)
+                                  : (keptPoint ? 1.0f : float(c.candidates) / (float(c.candidates) + recordM));
+      const float currentWeight = lightReuseWeight(currentMis, meanWeight);
+      // the record's side, in the row's measure
+      float recordTarget = 0.0f, recordWeight = 0.0f;
+      if(recordM > 0.0f && record.W > 0.0f)
+      {
+        recordTarget            = luminance709(rowAt(c, record.uv.x, peak));
+        const float recordThere = luminance709(rowAt(c, record.uv.x, recordPeak));
+        const float recordMis   = !c.constantM ? lightReuseMis(false, float(c.candidates), recordTarget, recordM, recordThere)
+                                  : recordM / (float(c.candidates) + recordM);
+        recordWeight = lightReuseWeight(recordMis, recordTarget * record.W);
+      }
+      LightReservoir pair = lightReservoirAdd(lightReservoirEmpty(), currentWeight, uniform(rng));
+      pair                = lightReservoirAdd(pair, recordWeight, uniform(rng));
+      const bool  tookRecord = pair.keptLast;
       const bool  point      = !tookRecord && keptPoint;
       const float y          = tookRecord ? record.uv.x : keptX;
-      const vec3  fy         = point ? pointLight : integrand(y);  // the sample's own measure: the light, or the row's
-      const float W          = r.kept > 0.0f ? r.weightSum / luminance709(fy) : 0.0f;
+      const vec3  fy         = point ? kPointLight : rowAt(c, y, peak);  // the sample's own measure: the light, or the row's
+      const float W          = (pair.weightSum > 0.0f && luminance709(fy) > 0.0f) ? pair.weightSum / luminance709(fy) : 0.0f;
       const vec3  e          = (point ? 1.0f : visibility(y)) * fy * W;
       sum[f] += dvec3(e);
       sum2[f] += double(luminance709(e)) * luminance709(e);
-      record.uv = vec2(y, 0.0f);
-      record.W  = (!point && visibility(y) > 0.0f) ? W : 0.0f;
-      record.M  = float(candidates) + recordM;
+      record.uv  = vec2(y, 0.0f);
+      record.W   = (!point && visibility(y) > 0.0f) ? W : 0.0f;
+      record.M   = float(c.candidates) + recordM;
+      recordPeak = peak;
     }
   }
+  ChainResult out;
   for(int f = 0; f < frames; f++)
+  {
+    out.mean.push_back(sum[f] / double(trials));
+    const double m = luminance709(vec3(out.mean.back()));
+    out.variance.push_back(sum2[f] / trials - m * m);
+  }
+  return out;
+}
+
+void expectUnbiased(const ReuseChain& c, const ChainResult& r, double tolerance)
+{
+  const vec3 reference = chainReference(c);
+  for(size_t f = 0; f < r.mean.size(); f++)
     for(int ch = 0; ch < 3; ch++)
-      EXPECT_NEAR(sum[f][ch] / trials, reference[ch], 0.015 * reference[ch]) << "frame " << f << ", channel " << ch;
-  auto variance = [&](int f) {
-    const double mean = luminance709(vec3(sum[f] / double(trials)));
-    return sum2[f] / trials - mean * mean;
-  };
-  EXPECT_LT(variance(frames - 1), 0.6 * variance(0)) << "the history should cut the noise";
+      EXPECT_NEAR(r.mean[f][ch], reference[ch], tolerance * reference[ch]) << "frame " << f << ", channel " << ch;
+}
+
+TEST(LightReuse, AChainOverFramesStaysUnbiased)
+{
+  ReuseChain        c;
+  const ChainResult r = runChain(c, 12, 200000, 321);
+  expectUnbiased(c, r, 0.015);
+  EXPECT_LT(r.variance.back(), 0.6 * r.variance.front()) << "the history should cut the noise";
+}
+
+// The club's leather: the highlight moves from frame to frame. Still unbiased, and the history still
+// cuts the noise rather than adding to it (with constant M weights a sample found off the highlight
+// and carried onto it weighed its whole history there).
+TEST(LightReuse, AChainOverABumpyGlossyPixelStaysUnbiased)
+{
+  ReuseChain c;
+  c.bumpy             = true;
+  const ChainResult r = runChain(c, 12, 400000, 99);
+  expectUnbiased(c, r, 0.015);
+  ReuseChain plain = c;
+  plain.reuse      = false;
+  const ChainResult p = runChain(plain, 2, 400000, 99);
+  EXPECT_LT(r.variance.back(), p.variance.back()) << "reuse should not add noise on a bumpy glossy pixel";
+  ReuseChain constant = c;
+  constant.constantM  = true;
+  const ChainResult k = runChain(constant, 12, 400000, 99);
+  EXPECT_LT(r.variance.back(), 0.5 * k.variance.back()) << "the targets in the MIS weights are what keep it down";
+  std::printf("bumpy pixel, last frame's variance: no reuse %.4g, M weights alone %.4g, with the targets %.4g\n", p.variance.back(),
+              k.variance.back(), r.variance.back());
 }
 
 }  // namespace

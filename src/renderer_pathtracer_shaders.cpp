@@ -1286,8 +1286,11 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
 #else
       0,
 #endif
-      // one variant for the DLSS frames and the still alike, so a camera start or stop stays a cached swap
-      m_lightCandidates > 1 || m_lightCandidatesDlss > 1 || m_lightReuse || m_lightReuseDlss,
+      // the light candidates and reuse compiled in for the frames that take them: DLSS's (ptLightCandidatesDlss,
+      // ptLightReuseDlss) or the still's. With reuse only while moving the still keeps the embedded shader:
+      // none of the dead code's 0.8%, and one variant to build the first time, not two. A camera start or
+      // stop stays a cached swap, both variants being in the cache once built.
+      lightRisFor(isDlssEnabled() && m_dlssShaderFrame),
   };
 }
 
@@ -1748,6 +1751,7 @@ void PathTracer::installBuiltVariant(Resources& resources)
     return;
   VariantKey sibling = job.key;
   sibling.dlss       = !job.key.dlss;
+  sibling.lightRis   = lightRisFor(sibling.dlss);  // the still's settings, not DLSS's (or the other way)
   bool known         = false;
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);

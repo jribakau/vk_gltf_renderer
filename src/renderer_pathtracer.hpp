@@ -227,7 +227,7 @@ public:
   // ptLightReuseCap; updateLightReuse): the records, and what the last frame wrote into them
   bool         m_lightReuse{false};
   bool         m_lightReuseDlss{false};
-  float        m_lightReuseCap{4.0F};  // 20 sparkled under Ray Reconstruction: one bright record copied along the motion
+  float        m_lightReuseCap{1.0F};  // longer histories sparkle and boil under Ray Reconstruction (ptLightReuseCap)
   nvvk::Buffer m_lightReservoirs;
   VkDeviceSize m_lightReservoirsSize{0};
   bool         m_lightReuseParity{false};
@@ -489,6 +489,12 @@ public:
   // DLSS-RR renders every frame, one sample each. Not with OptiX or OIDN also on: DLSS renders only
   // frame 0, and the frames they take trace the samples Auto SPP or Samples per Frame ask for.
   bool isDlssEveryFrame() const { return isDlssEnabled() && !isAccumulationDenoiserEnabled(); }
+  // Whether the path tracer's variant for DLSS's frames, or the still's, has the light candidates and
+  // reuse compiled in (VariantKey::lightRis): only for the frames whose settings take them
+  bool lightRisFor(bool dlssFrame) const
+  {
+    return dlssFrame ? (m_lightCandidatesDlss > 1 || m_lightReuseDlss) : (m_lightCandidates > 1 || m_lightReuse);
+  }
   // DLSS rendered the last frame (every frame, frame 0, or the frames of the hand-off delay)
   bool dlssFrame() const { return m_dlssFrame; }
   // DLSS renders on while the hand-off delay runs: those frames are no part of the accumulation,

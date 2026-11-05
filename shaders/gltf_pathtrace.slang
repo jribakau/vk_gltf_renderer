@@ -251,6 +251,23 @@ BsdfEvaluateData evaluateSurfaceForLight(PbrMaterial pbrMat, float3 k1, float3 t
     evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, toLight), exitFresnelEta);
   return evalData;
 }
+
+// The material at a light reuse record's shading point, as this point's with the record's shading
+// normal: the tangent frame turned with it, its handedness kept. On a still that is the record's own
+// point up to the textures across the jitter; on a moving view's reprojected pixel, nearly.
+PbrMaterial lightReuseMaterialThere(PbrMaterial m, float3 shading)
+{
+  const float3 n = normalize(shading);
+  const float3 t = m.T - n * dot(n, m.T);
+  if(dot(t, t) > 1e-12F)
+  {
+    const float handed = (dot(cross(m.N, m.T), m.B) < 0.0F) ? -1.0F : 1.0F;
+    m.T                = normalize(t);
+    m.B                = cross(n, m.T) * handed;
+  }
+  m.N = n;
+  return m;
+}
 #endif
 
 PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout uint seed, inout PathTracerState pt, inout BounceScratch bounce)
@@ -918,8 +935,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     BsdfEvaluateData keptEval   = {};
     if(candidates > 1 || reuseHere)
     {
-      // Last frame's record at this pixel, or what this frame's earlier sample of it wrote: read first,
-      // as its M sets every candidate's M weight (light_ris.h.slang)
+      // Last frame's record at this pixel, or what this frame's earlier sample of it wrote
       const bool       secondHalf = hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseParity);
       LightReuseRecord record = lightReuseUnpack(uint4(0u), uint4(0u));  // none
       float recordM = 0.0F;
@@ -949,28 +965,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         recordM = lightReuseRecordM(record, float(candidates), pushConst.lightReuseCap);
       }
 
-      // the record re-weighed here, before the candidates: how bright its sample looks here sets its M weight
-      float            recordTarget = 0.0F;
-      ReusedLight      reused       = {};
-      BsdfEvaluateData reusedEval   = {};
-      if(recordM > 0.0F && record.W > 0.0F)
-      {
-        reused = evaluateReusedLight(record, hit.pos, hit.nrm, directLight.pick, bothSides, /*compensatedEnv=*/!lastVertex);
-        if(any(reused.radiance > 0.0F))
-        {
-          reusedEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, reused.direction, lobeMixture, exitFresnelEta, seed);
-          if(reusedEval.pdf > 0.0F)
-          {
-            const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, reusedEval.pdf);
-            recordTarget = luminance(pt.throughput * reused.radiance * mis * (reusedEval.bsdf_diffuse + reusedEval.bsdf_glossy));
-          }
-        }
-      }
-      const float recordMHere = lightReuseEffectiveM(recordM, record, recordTarget);
-
       LightReservoir reservoir = lightReservoirEmpty();
       DirectLight    kept      = directLight;
-      float          keptShare = 1.0F;
       for(int c = 0; c < candidates; c++)
       {
         DirectLight candidate = directLight;
@@ -989,28 +985,73 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
             weight = luminance(pt.throughput * candidate.radianceOverPdf * mis * (candidateEval.bsdf_diffuse + candidateEval.bsdf_glossy));
           }
         }
-        // without reuse every candidate's M weight is the same, and lightReservoirScale divides by the count
-        const float share = reuseHere ? lightReuseCandidateShare(candidate.reuseKind != LIGHT_REUSE_NONE, float(candidates), recordMHere) : 1.0F;
-        reservoir = lightReservoirAdd(reservoir, share * weight, rand(seed));
+        reservoir = lightReservoirAdd(reservoir, weight, rand(seed));
         if(reservoir.keptLast)
         {
           kept      = candidate;
           keptEval  = candidateEval;
-          keptShare = share;
         }
       }
       // None weighed anything: the scale is 0, and the sample below adds nothing and traces no ray
       directLight = kept;
-      if(!reuseHere)
-        risScale = lightReservoirScale(reservoir);
-      else
+      risScale    = lightReservoirScale(reservoir);
+      if(reuseHere)
       {
-        // the record as one more candidate
-        reservoir = lightReservoirAdd(reservoir, lightReuseRecordWeight(record, recordTarget, float(candidates), recordMHere), rand(seed));
-        // What multiplies the kept sample's estimate: the M-weighted sum over its own unweighted weight.
-        // A current candidate's record W is that per solid angle and per the record's measure.
+        // Two sides: this frame's candidates, resampled above into the kept one, and the record. Each is
+        // weighed by its MIS weight (lightReuseMis: M times its target here and at the record's point,
+        // the second taken here with that point's shading normal and view direction) times its target
+        // here times its W.
+        const PbrMaterial thereMat = (recordM > 0.0F) ? lightReuseMaterialThere(pbrMat, record.shading) : pbrMat;
+
+        // this frame's side: the kept candidate's target here is its weight; there, only for a light a
+        // record can hold (a punctual one is this side's alone)
+        float keptThere = 0.0F;
+        if(recordM > 0.0F && reservoir.kept > 0.0F && directLight.reuseKind != LIGHT_REUSE_NONE && directLight.pdf != DIRAC)
+        {
+          const BsdfEvaluateData e = evaluateSurfaceForLight(thereMat, record.view, directLight.direction, lobeMixture, exitFresnelEta, seed);
+          if(e.pdf > 0.0F)
+          {
+            const float mis = lastVertex ? 1.0F : misPowerWeight(directLight.pdf, e.pdf);
+            keptThere       = luminance(pt.throughput * directLight.radianceOverPdf * mis * (e.bsdf_diffuse + e.bsdf_glossy));
+          }
+        }
+        const float meanWeight    = (reservoir.count > 0) ? reservoir.weightSum / float(reservoir.count) : 0.0F;
+        const float currentWeight = lightReuseWeight(lightReuseMis(true, float(candidates), reservoir.kept, recordM, keptThere), meanWeight);
+
+        // the record's side: its sample re-weighed here and at its own point, in the record's measure
+        float            recordTarget = 0.0F;
+        float            recordWeight = 0.0F;
+        ReusedLight      reused       = {};
+        BsdfEvaluateData reusedEval   = {};
+        if(recordM > 0.0F && record.W > 0.0F)
+        {
+          reused = evaluateReusedLight(record, hit.pos, hit.nrm, directLight.pick, bothSides, /*compensatedEnv=*/!lastVertex);
+          if(any(reused.radiance > 0.0F))
+          {
+            reusedEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, reused.direction, lobeMixture, exitFresnelEta, seed);
+            if(reusedEval.pdf > 0.0F)
+            {
+              const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, reusedEval.pdf);
+              recordTarget    = luminance(pt.throughput * reused.radiance * mis * (reusedEval.bsdf_diffuse + reusedEval.bsdf_glossy));
+            }
+            float                  recordThere = 0.0F;
+            const BsdfEvaluateData e           = evaluateSurfaceForLight(thereMat, record.view, reused.direction, lobeMixture, exitFresnelEta, seed);
+            if(e.pdf > 0.0F)
+            {
+              const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, e.pdf);
+              recordThere     = luminance(pt.throughput * reused.radiance * mis * (e.bsdf_diffuse + e.bsdf_glossy));
+            }
+            recordWeight = lightReuseWeight(lightReuseMis(false, float(candidates), recordTarget, recordM, recordThere), recordTarget * record.W);
+          }
+        }
+
+        // one of the two, in proportion to its weight. What multiplies the kept sample's estimate: the
+        // weights' sum over its own target here. A current candidate's record W is that per solid angle
+        // and per the record's measure.
+        LightReservoir pair = lightReservoirAdd(lightReservoirEmpty(), currentWeight, rand(seed));
+        pair                = lightReservoirAdd(pair, recordWeight, rand(seed));
         float measureOverScale = directLight.pdf * directLight.toMeasure;
-        if(reservoir.keptLast)
+        if(pair.keptLast)
         {
           directLight.direction       = reused.direction;
           directLight.distance        = reused.distance;
@@ -1020,25 +1061,25 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           directLight.reuseIndex      = record.index;
           directLight.reuseUv         = record.uv;
           keptEval                    = reusedEval;
-          risScale                    = reservoir.weightSum / recordTarget;
+          risScale                    = pair.weightSum / recordTarget;
           measureOverScale            = 1.0F;
         }
         else
-          risScale = (reservoir.kept > 0.0F) ? reservoir.weightSum * keptShare / reservoir.kept : 0.0F;
+          risScale = (reservoir.kept > 0.0F) ? pair.weightSum / reservoir.kept : 0.0F;
 
         // The record for the next frame (and this frame's next sample of the pixel): M whatever was
         // drawn; W 0 for what a record cannot hold or what weighed nothing, and if the shadow ray below
         // finds the sample shadowed
         LightReuseRecord next;
-        next.depth  = mul(float4(hit.pos, 1.0F), frameInfo->viewProjMatrix).w;
-        next.normal = hit.nrm;
-        // the kept sample's target here, in the record's measure: what it weighs against where it is used
-        next.target = reservoir.keptLast ? recordTarget : (keptShare > 0.0F ? reservoir.kept / keptShare : 0.0F) * measureOverScale;
-        next.kind   = directLight.reuseKind;
-        next.index  = directLight.reuseIndex;
-        next.uv     = directLight.reuseUv;
-        next.W      = (next.kind != LIGHT_REUSE_NONE && directLight.pdf != DIRAC && measureOverScale > 0.0F) ? risScale / measureOverScale : 0.0F;
-        next.M      = float(candidates) + recordM;
+        next.depth   = mul(float4(hit.pos, 1.0F), frameInfo->viewProjMatrix).w;
+        next.normal  = hit.nrm;
+        next.shading = pbrMat.N;
+        next.view    = -ray.Direction;
+        next.kind    = directLight.reuseKind;
+        next.index   = directLight.reuseIndex;
+        next.uv      = directLight.reuseUv;
+        next.W       = (next.kind != LIGHT_REUSE_NONE && directLight.pdf != DIRAC && measureOverScale > 0.0F) ? risScale / measureOverScale : 0.0F;
+        next.M       = float(candidates) + recordM;
         const uint slot                     = lightReuseSlot(g_reusePixel, secondHalf);
         pushConst.lightReservoirs[slot]     = lightReusePackA(next);
         pushConst.lightReservoirs[slot + 1] = lightReusePackB(next);

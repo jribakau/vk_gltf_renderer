@@ -359,8 +359,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                 &m_lightReuseDlss, Persist::eNo);
   settings->add({.name            = "ptLightReuseCap",
                  .help            = "PathTracer: ptLightReuse: a pixel's record stands for at most this many times a frame's "
-                                    "own candidates (the history's length). Above about 4 the moving view sparkles: a bright "
-                                    "record is copied along the motion, and Ray Reconstruction keeps the copies",
+                                    "own candidates (the history's length). A sample a pixel found lit stays with it for "
+                                    "about this many frames, and Ray Reconstruction keeps what lingers as detail: at 20 the "
+                                    "moving view sparkled along walls; at 4 on bumpy bark, and glossy leather flickered half "
+                                    "again as much as without reuse; at 1 no sparkle, the leather a fifth more, and the gain "
+                                    "on walls the same",
                  .callbackSuccess = reset},
                 &m_lightReuseCap, Persist::eNo, 1.0F, 1000.0F);
   settings->add({.name            = "ptGlassBounces",

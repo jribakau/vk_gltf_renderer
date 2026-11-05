@@ -74,18 +74,25 @@ float lightReservoirScale(LightReservoir r)
 }
 
 //-----------------------------------------------------------------------------------------------------
-// Reuse from frame to frame (ReSTIR's temporal pass, Bitterli et al. 2020, Algorithm 4 with its
-// M weights). A pixel's first surface hit keeps the sample it shaded, with the weight W that makes
-// f(y) W an estimate of the light, and M, the candidates it stands for. The next frame takes that
-// record in as one more candidate, re-weighed at its own shading point: target there (the sample's
-// unshadowed contribution, in the measure it was stored in: on the emitter's surface, or in
-// directions for the environment) times W times M. A record whose sample was shadowed keeps M but
-// W 0, so what a pixel carries forward is what it found lit, and the hidden lamps fall away.
+// Reuse from frame to frame (ReSTIR's temporal pass, Bitterli et al. 2020). A pixel's first surface
+// hit keeps the sample it shaded, with the weight W that makes f(y) W an estimate of the light, and
+// M, the candidates it stands for. The next frame resamples its own candidates into one sample, then
+// picks between that and the record, each weighed by its MIS weight times its target here times its
+// W (the target: the sample's unshadowed contribution, in the measure it was drawn or stored in). A
+// record whose sample was shadowed keeps M but W 0, so what a pixel carries forward is what it found
+// lit, and the hidden lamps fall away.
 //
-// Unbiased where the record's shading point is this one (a still: the same pixel, only its jitter
-// moved): the record then estimates the light that reaches the point unshadowed, the current
-// candidates all of it, and their M weights sum to one wherever light arrives. Elsewhere (a moving
-// view's reprojected pixel, the jitter across an edge) a record is used only if its point and normal
+// The MIS weights are the generalized balance heuristic's (Lin et al. 2022): each side's M times its
+// target at its own shading point. The record's sample was found where the record was written, which
+// is not this point even on a still: the jitter moved it, and on a bumpy surface the bumped normal
+// with it. Constant weights (M over the sum of M) gave a sample found on one bump of a leather grain
+// its whole history's weight on the next, where it could shine many times brighter: hard flicker on
+// the club's leather under both denoisers, and the still 4% dark where a cap on that held it back. The
+// target at the record's point is evaluated here, with its shading normal and its view direction, for
+// both sides' samples alike, so the two weights sum to one for every light.
+//
+// Unbiased where the record's shading point is this one up to that, as on a still. Elsewhere (a moving
+// view's reprojected pixel, the jitter across an edge) a record is used only if its depth and normal
 // are close (lightReuseSameSurface), and what bias is left lies along edges and shadow boundaries.
 
 static const uint LIGHT_REUSE_NONE        = 0u;  // nothing kept: a miss, a fibre, a light the record cannot name
@@ -94,10 +101,11 @@ static const uint LIGHT_REUSE_ENVIRONMENT = 2u;  // uv: the world direction, oct
 
 struct LightReuseRecord
 {
-  float  depth;   // the shading point's depth along the view, in the camera of the frame that wrote it
-  float3 normal;  // its shading normal
-  float  target;  // the sample's target there (its unshadowed contribution, in the record's measure)
-  uint   kind;    // LIGHT_REUSE_*
+  float  depth;    // the shading point's depth along the view, in the camera of the frame that wrote it
+  float3 normal;   // its smooth normal (before normal maps): what lightReuseSameSurface compares
+  float3 shading;  // its shading normal (normal and detail maps applied): what its BSDF was evaluated with
+  float3 view;     // the direction from it to the camera that saw it
+  uint   kind;     // LIGHT_REUSE_*
   uint   index;
   float2 uv;
   float  W;  // f(y) W estimates the light (0: the sample was shadowed)
@@ -152,7 +160,8 @@ float2 lightReuseUnpackUnorm2(uint p)
 // A record as the two uint4 it is kept in. The kind takes the index's top two bits.
 uint4 lightReusePackA(LightReuseRecord r)
 {
-  return uint4(asuint(r.depth), lightReusePackSnorm2(lightReuseOctEncode(r.normal)), asuint(r.target), 0u);
+  return uint4(asuint(r.depth), lightReusePackSnorm2(lightReuseOctEncode(r.normal)), lightReusePackSnorm2(lightReuseOctEncode(r.shading)),
+               lightReusePackSnorm2(lightReuseOctEncode(r.view)));
 }
 
 uint4 lightReusePackB(LightReuseRecord r)
@@ -164,9 +173,10 @@ uint4 lightReusePackB(LightReuseRecord r)
 LightReuseRecord lightReuseUnpack(uint4 a, uint4 b)
 {
   LightReuseRecord r;
-  r.depth  = asfloat(a.x);
-  r.normal = lightReuseOctDecode(lightReuseUnpackSnorm2(a.y));
-  r.target = asfloat(a.z);
+  r.depth   = asfloat(a.x);
+  r.normal  = lightReuseOctDecode(lightReuseUnpackSnorm2(a.y));
+  r.shading = lightReuseOctDecode(lightReuseUnpackSnorm2(a.z));
+  r.view    = lightReuseOctDecode(lightReuseUnpackSnorm2(a.w));
   r.kind   = b.x >> 30u;
   r.index  = b.x & 0x3FFFFFFFu;
   r.uv     = (r.kind == LIGHT_REUSE_ENVIRONMENT) ? lightReuseUnpackSnorm2(b.y) : lightReuseUnpackUnorm2(b.y);
@@ -187,43 +197,37 @@ bool lightReuseSameSurface(LightReuseRecord r, float depth, float3 normal)
   return depth > 0.0F && abs(r.depth - depth) <= 0.02F * depth && dot(r.normal, normal) >= 0.9F;
 }
 
-// The M weights (Bitterli et al.'s), by what a candidate is: the record and the current candidates
-// share the light a record can hold (emitters, the environment), each candidate 1 / (currentM + recordM)
-// and the record recordM / (currentM + recordM); a punctual light, which no record holds, the current
-// candidates alone, 1 / currentM each. They sum to one for every light, and none depends on what was
-// drawn: a pixel's M is the candidates it took in, kept whatever its sample was (a sample the record
-// cannot hold, or one that weighed nothing, is kept as W 0). A history wiped on such an outcome left
-// the current candidates their full weight on top of what the history covered: 6% too bright on
-// 7TEST, three times in its darkest corners.
+// The record's M, its history capped at `cap` times this frame's candidates. A pixel's M is the
+// candidates it took in, kept whatever its sample was (a sample the record cannot hold, or one that
+// weighed nothing, is kept as W 0): no M may depend on what was drawn. A history wiped on such an
+// outcome left the current candidates their full weight on top of what the history covered: 6% too
+// bright on 7TEST, three times in its darkest corners. The cap (ptLightReuseCap, 1) is how long a sample
+// a pixel found lit lingers, which Ray Reconstruction keeps as detail: at 20 a wall of sparkle on
+// 7TEST's moving view, at 4 sparkle on its palm's bark and the club's leather boiling.
 float lightReuseRecordM(LightReuseRecord r, float currentM, float cap)
 {
   return min(r.M, cap * currentM);
 }
 
-// The record's M, as much less as its sample looks brighter here than where it was found (its target
-// there over its target here, at most 1). W was made for that point: carried to one where the sample
-// gives several times more (a normal map's bump, the jitter across a lit edge), it made a firefly Ray
-// Reconstruction kept, a wall of them on 7TEST's moving view. With it the record weighs at most what it
-// did there. Biased where that happens (the balance heuristic's ratio, taken from the record's own
-// sample for every candidate), and not at all where the sample looks no brighter, as on a still's pixel.
-float lightReuseEffectiveM(float recordM, LightReuseRecord r, float recordTargetHere)
+// A sample's MIS weight between this frame's candidates (their M `currentM`, the sample's target
+// `here`) and the record (`recordM`, its target `there`, at the record's shading point): the
+// generalized balance heuristic's, `current` choosing which side's. The two sum to one. A light no
+// record can hold (a punctual one) has no target there, so this frame's side weighs 1; where neither
+// side's target sees the sample, no estimate takes it, and this frame's side has it.
+float lightReuseMis(bool current, float currentM, float here, float recordM, float there)
 {
-  if(!(recordTargetHere > r.target) || !(r.target > 0.0F))
-    return recordM;
-  return recordM * (r.target / recordTargetHere);
+  const float a = currentM * max(here, 0.0F);
+  const float b = recordM * max(there, 0.0F);
+  if(!(a + b > 0.0F) || !(a + b < 3.0e38F))
+    return current ? 1.0F : 0.0F;
+  return (current ? a : b) / (a + b);
 }
 
-// A current candidate's M weight, `storable` if a record can hold it (LIGHT_REUSE_EMISSIVE, _ENVIRONMENT)
-float lightReuseCandidateShare(bool storable, float currentM, float recordM)
+// A side's resampling weight: its MIS weight times its target here times its W. For this frame's
+// side that product is its candidates' mean weight.
+float lightReuseWeight(float mis, float targetTimesW)
 {
-  return 1.0F / (storable ? currentM + recordM : currentM);
-}
-
-// The record's resampling weight: its M weight times its target here (its sample's unshadowed
-// contribution at this point, in its own measure) times its W
-float lightReuseRecordWeight(LightReuseRecord r, float recordTargetHere, float currentM, float recordM)
-{
-  const float w = recordM / (currentM + recordM) * recordTargetHere * r.W;
+  const float w = mis * targetTimesW;
   return (w > 0.0F && w < 3.0e38F) ? w : 0.0F;
 }
 
